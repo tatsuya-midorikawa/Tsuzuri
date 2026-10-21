@@ -129,17 +129,17 @@ if piped == composed then piped else 0
 | 関数 | 引数の並び |
 | --- | --- |
 | `Array.map` | 変換、配列 |
-| `Array.map_ref` | `ref` を受け取る変換、配列 |
+| `Array.mapr` | `ref` を受け取る変換、配列 |
 | `Array.fold` | 畳み込み、初期値、配列 |
 | `Array.fold_back` | 畳み込み、配列、初期値 |
 
-`Array.map` は要素の `Copy` を要求します。文字列のように複製しない要素は `Array.map_ref` を使います。
+`Array.map` は要素の `Copy` を要求します。文字列のように複製しない要素は `Array.mapr` を使います。末尾の `r` は、要素を `ref` で借用して関数に渡す版の印です。`foldr`、`existsr` などにもあります。
 
 ```tsuzuri run=4321
 let numbers = [1, 2, 3, 4]
 let total = Array.fold (\acc value -> acc + value) 0 numbers
 let texts = ["a", "bcd"]
-let lengths = texts |> Array.map_ref (\text -> text.length)
+let lengths = texts |> Array.mapr (\text -> text.length)
 if total == 10 && lengths[1] == 3 then
     Array.fold_back (\value digits -> digits * 10 + value) numbers 0
 else
@@ -152,7 +152,7 @@ else
 4321
 ```
 
-呼び出しの引数に書いたラムダ式は、ほかの引数より後に型検査されます。`texts |> Array.map_ref (\text -> text.length)` では左の `texts` が先に検査されるので、`text` の型注釈は要りません。評価順は変わりません。引数は左から右です。
+呼び出しの引数に書いたラムダ式は、ほかの引数より後に型検査されます。`texts |> Array.mapr (\text -> text.length)` では左の `texts` が先に検査されるので、`text` の型注釈は要りません。評価順は変わりません。引数は左から右です。
 
 ローカルな `let` に束縛した関数値は単相です。同じ値を `i64` 用と `string` 用の両方には使えません。複数の型で使う処理は、型変数を持つ `def` にします。詳しくは[ジェネリック関数と型パラメータ制約](./generics-functions.md)です。
 

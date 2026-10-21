@@ -16,17 +16,17 @@ def classify :: Result<[i64], string> -> i64 = \r ->
 export def self_update_loop :: i64 -> i64 = \n ->
     let mut xs = new [i64](4, \_i -> 1)
     for i in 0 .. (n - 1) do
-        xs = Array.set xs (i % 4) (i * 3)
+        xs = Array.__set xs (i % 4) (i * 3)
     xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
 
 export def recursive_accumulate :: i64 -> i64 = \n ->
-    let rec go = \i xs -> if i == n then xs else go (i + 1) (Array.set xs (i % 4) (i * 5))
+    let rec go = \i xs -> if i == n then xs else go (i + 1) (Array.__set xs (i % 4) (i * 5))
     let out = go 0 (new [i64](4, \_i -> 2))
     out[0] + out[1] * 10 + out[2] * 100 + out[3] * 1000
 
 export def branch_last_reads :: i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + n)
-    let ys = if n % 2 == 0 then Array.set xs 0 7 else Array.set xs 1 9
+    let ys = if n % 2 == 0 then Array.__set xs 0 7 else Array.__set xs 1 9
     ys[0] * 100 + ys[1] * 10 + ys[2]
 
 export def build_from_locals :: i64 -> i64 = \n ->
@@ -38,40 +38,40 @@ export def build_from_locals :: i64 -> i64 = \n ->
 
 export def read_after_read :: i64 -> i64 = \n ->
     let xs = new [i64](4, \i -> i + n)
-    let ys = Array.set xs 0 99
+    let ys = Array.__set xs 0 99
     xs[0] * 1000 + ys[0]
 
 export def loop_invariant :: i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + 1)
     let mut total = 0
     for i in 0 .. (n - 1) do
-        let ys = Array.set xs 0 i
+        let ys = Array.__set xs 0 i
         total = total + ys[0] + xs[1]
     total
 
 export def later_argument_reads_it :: i64 -> i64 = \n ->
     let mut xs = new [i64](4, \i -> i + 1)
     for i in 0 .. (n - 1) do
-        xs = Array.set xs (i % 4) (xs[(i + 1) % 4] + i)
+        xs = Array.__set xs (i % 4) (xs[(i + 1) % 4] + i)
     xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
 
 export def borrow_alias :: i64 -> i64 = \n ->
     let xs = new [i64](4, \i -> i + n)
     let r = ref xs
-    let ys = Array.set xs 0 9
+    let ys = Array.__set xs 0 9
     r[0] * 100 + ys[0]
 
 export def closure_then_use :: i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + n)
     let f = \k -> xs[k]
-    let ys = Array.set xs 0 100
+    let ys = Array.__set xs 0 100
     f 0 + ys[0] * 10
 
 export def break_keeps_live :: i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + 1)
     let mut acc = 0
     for i in 0 .. (n - 1) do
-        let ys = Array.set xs 1 (i + 10)
+        let ys = Array.__set xs 1 (i + 10)
         acc = acc + ys[1]
         if i == 2 then break else ()
     acc + xs[1]

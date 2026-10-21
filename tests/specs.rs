@@ -248,8 +248,8 @@ fn std_higher_order_functions_take_the_callback_first() {
     for source in [
         "let values = [3, 5, 8]\nvalues |> Array.map (\\x -> x * 2) |> Array.sum",
         "let values = [3, 5, 8]\nvalues |> (Array.map (\\x -> x * 2) >> Array.sum)",
-        "let texts = [\"a\", \"bb\"]\ntexts |> Array.map_ref (\\t -> t.length) |> Array.sum",
-        "let texts = [\"a\", \"bb\"]\nArray.fold_ref (\\total t -> total + t.length) 0 (ref texts)",
+        "let texts = [\"a\", \"bb\"]\ntexts |> Array.mapr (\\t -> t.length) |> Array.sum",
+        "let texts = [\"a\", \"bb\"]\nArray.foldr (\\total t -> total + t.length) 0 (ref texts)",
         "let xs = [1, 2, 3]\nArray.fold_back (\\x state -> state * 10 + x) (ref xs) 0",
         "let xs = [|1, 2, 3|]\nList.fold (\\s x -> s + x) 0 (ref xs)",
         "Seq.unfold (\\n -> if n < 3 then Maybe.Some (n, n + 1) else Maybe.None) 0 |> Seq.map (\\n -> n * 2) |> Seq.to_array",
@@ -261,7 +261,7 @@ fn std_higher_order_functions_take_the_callback_first() {
     let ir = accepts("Array.sum (Array.map (\\x -> x + 1) (ref [1l, 2]))");
     assert!(ir.contains("@tz.fn.Array.sum"), "{ir}");
     rejects(
-        "let values = [1, 2]\nlet first = Array.find (\\x -> deref x > 0) (Array.copy (ref values))\n0",
+        "let values = [1, 2]\nlet first = Array.try_findr (\\x -> deref x > 0) (Array.copy (ref values))\n0",
         "E1013",
     );
 }

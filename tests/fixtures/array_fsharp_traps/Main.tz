@@ -1,0 +1,159 @@
+// Every test here must trap: the F# exceptions of `Array` (ArgumentException, KeyNotFoundException, IndexOutOfRangeException,
+// InvalidOperationException) are traps in Tsuzuri. A test that does not trap passes, so the harness expects every test to fail.
+
+private def sink :: 'a -> unit
+fn sink _value = ()
+
+private def zeros :: i64 -> [i64]
+fn zeros count = Array.zero_create count
+
+const no_ints: [i64] = []
+
+const no_floats: [f64] = []
+
+const ints: [i64] = [1, 2, 3]
+
+const pairs: [i64] = [1, 2]
+
+// ---- Access ----
+
+test "get past the end" = sink (Array.get ints 3)
+test "get below zero" = sink (Array.get ints (-1))
+test "item past the end" = sink (Array.item 3 ints)
+test "at past the end" = sink (Array.at ints 3)
+test "head of an empty array" = sink (Array.head no_ints)
+test "last of an empty array" = sink (Array.last no_ints)
+test "exactly_one of an empty array" = sink (Array.exactly_one no_ints)
+test "exactly_one of two elements" = sink (Array.exactly_one pairs)
+test "tail of an empty array" = sink (Array.tail no_ints)
+
+// ---- Creation ----
+
+test "init with a negative count" = sink (Array.init (-1) (\i -> i))
+test "create with a negative count" = sink (Array.create (-1) 0)
+test "replicate with a negative count" = sink (Array.replicate (-1) 0)
+test "zero_create with a negative count" = sink (zeros (-1))
+
+// ---- Slicing ----
+
+test "sub from a negative start" = sink (Array.sub ints (-1) 1)
+test "sub with a negative count" = sink (Array.sub ints 0 (-1))
+test "sub past the end" = sink (Array.sub ints 1 3)
+test "take a negative count" = sink (Array.take (-1) ints)
+test "take more than the length" = sink (Array.take 4 ints)
+test "skip more than the length" = sink (Array.skip 4 ints)
+test "split_at below zero" = sink (Array.split_at (-1) ints)
+test "split_at past the end" = sink (Array.split_at 4 ints)
+test "chunk_by_size zero" = sink (Array.chunk_by_size 0 ints)
+test "chunk_by_size negative" = sink (Array.chunk_by_size (-2) ints)
+test "windowed zero" = sink (Array.windowed 0 ints)
+test "windowed negative" = sink (Array.windowed (-1) ints)
+test "split_into zero" = sink (Array.split_into 0 ints)
+test "split_into negative" = sink (Array.split_into (-1) ints)
+
+// ---- Arrays of different lengths ----
+
+test "zip of different lengths" = sink (Array.zip ints pairs)
+test "zip3 of different lengths" = sink (Array.zip3 ints ints pairs)
+test "map2 of different lengths" = sink (Array.map2 (\a b -> a + b) ints pairs)
+test "mapi2 of different lengths" = sink (Array.mapi2 (\i a b -> i + a + b) ints pairs)
+test "map3 of different lengths" = sink (Array.map3 (\a b c -> a + b + c) ints ints pairs)
+test "iter2 of different lengths" = Array.iter2 (\_a _b -> ()) ints pairs
+test "iteri2 of different lengths" = Array.iteri2 (\_i _a _b -> ()) ints pairs
+test "fold2 of different lengths" = sink (Array.fold2 (\s a b -> s + a + b) 0 ints pairs)
+test "fold_back2 of different lengths" = sink (Array.fold_back2 (\a b s -> s + a + b) ints pairs 0)
+test "exists2 of different lengths" = sink (Array.exists2 (\_a _b -> false) ints pairs)
+test "forall2 of different lengths" = sink (Array.forall2 (\_a _b -> true) ints pairs)
+test "dot of different lengths" = sink (Array.dot [1.0, 2.0] [1.0])
+test "transpose of rows of different lengths" = sink (Array.transpose [[1, 2], [3]])
+
+// ---- Empty input ----
+
+test "average of an empty array" = sink (Array.average no_floats)
+test "average_by of an empty array" = sink (Array.average_by (\x -> x) no_floats)
+test "min of an empty array" = sink (Array.min no_ints)
+test "max of an empty array" = sink (Array.max no_ints)
+test "minr of an empty array" = sink (Array.minr no_ints)
+test "maxr of an empty array" = sink (Array.maxr no_ints)
+test "min_by of an empty array" = sink (Array.min_by (\x -> x) no_ints)
+test "max_by of an empty array" = sink (Array.max_by (\x -> x) no_ints)
+test "reduce of an empty array" = sink (Array.reduce (\a b -> a + b) no_ints)
+test "reduce_back of an empty array" = sink (Array.reduce_back (\a b -> a + b) no_ints)
+
+// ---- Nothing found ----
+
+test "find without a match" = sink (Array.find (\x -> x > 9) ints)
+test "find_back without a match" = sink (Array.find_back (\x -> x > 9) ints)
+test "find_index without a match" = sink (Array.find_index (\x -> x > 9) ints)
+test "find_index_back without a match" = sink (Array.find_index_back (\x -> x > 9) ints)
+test "findr without a match" = sink (Array.findr (\x -> *x > 9) ints)
+test "pick without a match" = sink (Array.pick (\x -> if x > 9 then Maybe.Some x else Maybe.None) ints)
+
+// ---- Updates ----
+
+test "update_at past the end" = sink (Array.update_at 3 0 [1, 2, 3])
+test "update_at below zero" = sink (Array.update_at (-1) 0 [1, 2, 3])
+test "insert_at past the end" = sink (Array.insert_at 4 0 ints)
+test "insert_at below zero" = sink (Array.insert_at (-1) 0 ints)
+test "insert_many_at past the end" = sink (Array.insert_many_at 4 pairs ints)
+test "remove_at past the end" = sink (Array.remove_at 3 ints)
+test "remove_at below zero" = sink (Array.remove_at (-1) ints)
+test "remove_many_at past the end" = sink (Array.remove_many_at 2 2 ints)
+test "remove_many_at a negative count" = sink (Array.remove_many_at 1 (-1) ints)
+test "permute with a repeated target" = sink (Array.permute (\_i -> 0) ints)
+test "permute out of range" = sink (Array.permute (\i -> i + 1) ints)
+
+test "set past the end" =
+    let mut values = [1, 2, 3]
+    Array.set values 3 0
+
+test "fill past the end" =
+    let mut values = [1, 2, 3]
+    Array.fill values 2 2 0
+
+test "fill with a negative count" =
+    let mut values = [1, 2, 3]
+    Array.fill values 0 (-1) 0
+
+test "blit from past the source" =
+    let mut values = [1, 2, 3]
+    Array.blit [1, 2] 1 values 0 2
+
+test "blit into past the target" =
+    let mut values = [1, 2, 3]
+    Array.blit [1, 2, 3] 0 values 2 2
+
+test "blit a negative count" =
+    let mut values = [1, 2, 3]
+    Array.blit [1, 2, 3] 0 values 0 (-1)
+
+// ---- Randomness ----
+
+test "random_choice_by of an empty array" = sink (Array.random_choice_by (\() -> 0.5) no_ints)
+test "random_choice_by with a randomizer of 1" = sink (Array.random_choice_by (\() -> 1.0) ints)
+test "random_choice_by with a negative randomizer" = sink (Array.random_choice_by (\() -> -0.5) ints)
+test "random_shuffle_by with a randomizer above 1" = sink (Array.random_shuffle_by (\() -> 2.0) ints)
+test "random_choices_by of an empty array" = sink (Array.random_choices_by (\() -> 0.5) 1 no_ints)
+test "random_choices_by a negative count" = sink (Array.random_choices_by (\() -> 0.5) (-1) ints)
+test "random_sample_by more than the length" = sink (Array.random_sample_by (\() -> 0.5) 4 ints)
+test "random_sample_by a negative count" = sink (Array.random_sample_by (\() -> 0.5) (-1) ints)
+test "random_choice_with of an empty array" = sink (Array.random_choice_with (Random.pcg 1i64u 1i64u) no_ints)
+test "random_sample_with more than the length" = sink (Array.random_sample_with (Random.pcg 1i64u 1i64u) 4 ints)
+
+// ---- The actions run: a callback that fails must be reached ----
+
+test "iter reaches the last element" = Array.iter (\x -> assert (x < 3)) ints
+test "iteri passes the index" = Array.iteri (\i x -> assert (x == i)) ints
+test "iter2 pairs the elements" = Array.iter2 (\a b -> assert (a == b + 1)) ints ints
+test "iteri2 passes the index" = Array.iteri2 (\i a b -> assert (i == a + b)) ints ints
+test "iterr reaches the last element" = Array.iterr (\x -> assert (*x < 3)) ints
+test "iterir passes the index" = Array.iterir (\i x -> assert (i == *x)) ints
+test "map reaches every element" = sink (Array.map (\x -> { assert (x < 3); x }) ints)
+test "exists reaches every element" = sink (Array.exists (\x -> { assert (x < 3); false }) ints)
+test "forall reaches every element" = sink (Array.forall (\x -> { assert (x < 3); true }) ints)
+test "fold reaches every element" = sink (Array.fold (\s x -> { assert (x < 3); s + x }) 0 ints)
+test "fold_back reaches the first element" = sink (Array.fold_back (\x s -> { assert (x > 1); s + x }) ints 0)
+test "filter reaches every element" = sink (Array.filter (\x -> { assert (x < 3); true }) ints)
+test "choose reaches every element" = sink (Array.choose (\x -> { assert (x < 3); Maybe.Some x }) ints)
+test "sort_with calls the comparer" = sink (Array.sort_with (\_a _b -> { assert false; 0 }) ints)
+test "sort_by calls the projection" = sink (Array.sort_by (\x -> { assert (x < 3); x }) ints)

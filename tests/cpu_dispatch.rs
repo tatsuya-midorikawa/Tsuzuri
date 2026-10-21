@@ -106,7 +106,7 @@ fn integer_kernels() -> String {
         ));
         for operation in ["min", "max"] {
             source.push_str(&format!(
-                "def {operation}_{name} :: ref [{name}] -> {name}\nfn {operation}_{name} values =\n    match Array.{operation} values with\n    | Maybe.Some value -> deref value\n    | Maybe.None -> 0{name}\n"
+                "def {operation}_{name} :: ref [{name}] -> {name}\nfn {operation}_{name} values =\n    if values.length == 0 then 0{name} else Array.{operation} values\n"
             ));
         }
         probe.push_str(&format!(
@@ -153,7 +153,7 @@ fn floats_and_wide_integers_keep_the_std_body() {
     let mut source = String::new();
     for name in ["f32", "f64", "i128", "i128u"] {
         source.push_str(&format!(
-            "def sum_{name} :: ref [{name}] -> {name}\nfn sum_{name} values = Array.sum values\ndef best_{name} :: ref [{name}] -> bool\nfn best_{name} values = Maybe.is_some (Array.max values) && Maybe.is_some (Array.min values)\n"
+            "def sum_{name} :: ref [{name}] -> {name}\nfn sum_{name} values = Array.sum values\ndef best_{name} :: ref [{name}] -> bool\nfn best_{name} values = Array.max values >= Array.min values\n"
         ));
     }
     source.push_str("export def probe :: i64\nfn probe =\n    let a = [1.0f32]\n    let b = [1.0]\n    let c = [1i128]\n    let d = [1i128u]\n    let sums = (sum_f32 (ref a) as i64) + (sum_f64 (ref b) as i64) + (sum_i128 (ref c) as i64) + (sum_i128u (ref d) as i64)\n    if best_f32 (ref a) && best_f64 (ref b) && best_i128 (ref c) && best_i128u (ref d) then sums else 0\n");

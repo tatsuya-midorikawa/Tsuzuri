@@ -342,7 +342,7 @@ fn shrink generator property start =
 				let middle = if first then 0i64u else low + (high - low) / 2i64u
 				first = false
 				attempts = attempts + 1
-				match attempt generator property (replay (Array.set current position middle)) with
+				match attempt generator property (replay (Array.__set current position middle)) with
 				| (false, found) when simpler (ref found) (ref current) ->
 					current = found
 					shrinks = shrinks + 1

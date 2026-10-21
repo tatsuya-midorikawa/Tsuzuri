@@ -80,7 +80,7 @@ fn sequence_loops_consume_state_and_preserve_existing_control_rules() {
 fn lazy_combinators_and_explicit_iterators_preserve_loans() {
     for source in [
         "let sequence = Seq.unfold (\\value -> if value < 4 then Maybe.Some (value, value + 1) else Maybe.None) 0\nlet mapped = Seq.map (\\value -> value * 2) sequence\nlet filtered = Seq.filter (\\value -> deref value > 2) mapped\nlet values = Seq.to_array filtered\nArray.sum (&values)",
-        "let strings = [\"a\", \"bc\"]\nlet mut total = 0\nfor value in Array.iter (&strings) do total = total + value.length\ntotal",
+        "let strings = [\"a\", \"bc\"]\nlet mut total = 0\nfor value in Array.to_seqr (&strings) do total = total + value.length\ntotal",
         "let strings = [|\"a\", \"bc\"|]\nlet mut total = 0\nfor value in List.iter (&strings) do total = total + value.length\ntotal",
         "let values = Vec.push (Vec.empty()) \"owned\"\nlet mut total = 0\nfor value in Vec.iter (&values) do total = total + value.length\ntotal",
         "let map = Map.singleton \"key\" \"value\"\nlet mut total = 0\nfor (key, value) in Map.iter (&map) do total = total + key.length + value.length\ntotal",
@@ -93,8 +93,8 @@ fn lazy_combinators_and_explicit_iterators_preserve_loans() {
         }
     }
     for source in [
-        "fn bad() -> Seq<ref string> { let values = [\"x\"]; Array.iter (&values) }",
-        "let values = [1]\nlet sequence = Array.iter (&values)\ntask { return Seq.to_array sequence }",
+        "fn bad() -> Seq<ref string> { let values = [\"x\"]; Array.to_seqr (&values) }",
+        "let values = [1]\nlet sequence = Array.to_seqr (&values)\ntask { return Seq.to_array sequence }",
     ] {
         assert_eq!(analyze(source).unwrap_err().code, "E1013", "{source}");
     }

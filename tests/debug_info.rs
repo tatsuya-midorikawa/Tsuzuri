@@ -488,7 +488,7 @@ fn debug_niche_unions_overlay_the_niche_on_the_payload() {
 
 #[test]
 fn debug_pointer_niches_overlay_the_null_pointer_on_native_targets_only() {
-    let source = "export def answer :: i64 -> i64\nfn answer n =\n    let values = [1, 2, 3]\n    let found = Array.find (\\x -> deref x == n) (ref values)\n    match found with\n    | Some value -> deref value\n    | None -> -1\n";
+    let source = "export def answer :: i64 -> i64\nfn answer n =\n    let values = [1, 2, 3]\n    let found = Array.try_findr (\\x -> deref x == n) (ref values)\n    match found with\n    | Some value -> deref value\n    | None -> -1\n";
     let native = debug_ir(source, tsuzuri::llvm::Entry::Library, false);
     let owner = "Maybe<ref i64>";
     // The union is the 8-byte pointer: `$payload` at offset 0 and `$niche` over the same bytes.

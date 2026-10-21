@@ -143,7 +143,7 @@ fn replaced n =
 export def ledger_array :: i64 -> i64
 fn ledger_array count =
     let all = new [Ledger](count, i -> ledger_of i)
-    Array.fold_ref (total -> l -> total + ledger_sum l) 0 (ref all) + Array.length (ref all)
+    Array.foldr (total -> l -> total + ledger_sum l) 0 (ref all) + Array.length (ref all)
 
 record Rows { open: bool, entries: [i64], level: i8 }
 
@@ -158,7 +158,7 @@ export def row_copies :: i64 -> i64
 fn row_copies count =
     let all = new [Rows](count, i -> rows_of i)
     let copied = Array.copy (ref all)
-    Array.fold_ref (total -> r -> total + rows_sum r) 0 (ref all) + Array.fold_ref (total -> r -> total + rows_sum r) 0 (ref copied) * 3
+    Array.foldr (total -> r -> total + rows_sum r) 0 (ref all) + Array.foldr (total -> r -> total + rows_sum r) 0 (ref copied) * 3
 
 def slot_of :: i64 -> Slot
 fn slot_of n = if n % 3 == 0 then Vacant elif n % 3 == 1 then Held (gauge_of n) else Both (gauge_of n, spread_of n)

@@ -129,9 +129,9 @@ Tsuzuri の型チェッカーは、関数呼び出しの実引数を検査する
 ```tsuzuri run=11
 let words = ["apple", "banana"]
 
-// ref words の型 ref [string] から Array.map_ref の型パラメーターが string と確定します。
+// ref words の型 ref [string] から Array.mapr の型パラメーターが string と確定します。
 // そのため、\w の型は自動的に ref string と推論され、String.length を安全に呼び出せます。
-let lengths = Array.map_ref (\w -> String.length w) (ref words)
+let lengths = Array.mapr (\w -> String.length w) (ref words)
 Array.sum lengths
 ```
 

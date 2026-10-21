@@ -59,7 +59,7 @@ def set :: Matrix<'a> -> i64 -> i64 -> 'a -> Matrix<'a>
 fn set matrix row col value =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     let index = row * matrix.cols + col
-    Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.set matrix.data index value }
+    Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.__set matrix.data index value }
 
 /// Applies `transform` to every element in row-major order.
 def map :: Copy<'a> => ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>

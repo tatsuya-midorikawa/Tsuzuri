@@ -42,10 +42,7 @@ fn checksum measure values =
 /// The minimum (`smallest`) or maximum of the values, or 0 when they are empty.
 def best :: (Ord<'a>, Numeric<'a>) => bool -> ref ['a] -> 'a
 fn best smallest values =
-    let found = if smallest then Array.min values else Array.max values
-    match found with
-    | Maybe.Some value -> deref value
-    | Maybe.None -> 0i64 as 'a
+    if values.length == 0 then 0i64 as 'a else if smallest then Array.min values else Array.max values
 
 export def sum_i8 :: i64 -> i64
 fn sum_i8 pattern =
