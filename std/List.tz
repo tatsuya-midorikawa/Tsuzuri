@@ -17,7 +17,8 @@ fn is_empty values = values.length == 0
 def copy :: Copy<'a> => ref [|'a|] -> [|'a|]
 fn copy values = *values
 
-/// The list of the elements of `items`, in order. The elements move, so they need not be `Copy`.
+/// The list of the elements of `items`, in order. The elements move, so they need not be `Copy`; the list is a chain of
+/// chunks, as one built by `List.cons` is.
 private def of_vec :: Vec<'a> -> [|'a|]
 fn of_vec items =
     let mut rest = items
@@ -91,7 +92,8 @@ fn try_exactly_one values = if values.length == 1 then Maybe.Some values[0] else
 
 // ---- Slicing and filtering ----
 
-/// The first `count` elements; `count` is in `0 .. values.length`. It stops at the last one, however long `values` is.
+/// The first `count` elements; `count` is in `0 .. values.length`. The walk stops after `count` elements, however long
+/// `values` is.
 private def prefix :: Copy<'a> => i64 -> ref [|'a|] -> [|'a|]
 fn prefix count values =
     let mut taken = Vec.with_capacity count
