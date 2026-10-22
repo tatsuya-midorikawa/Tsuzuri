@@ -167,7 +167,7 @@ fn add_to target amount = { deref target = deref target + amount; }
 
 private def append :: Buffer -> i64 -> Buffer
 fn append buffer value =
-    deref buffer.items = Vec.push (Vec.clone buffer.items) value
+    deref buffer.items = Vec.push value (Vec.clone buffer.items)
     buffer
 
 export def exclusive_loop :: i64 -> i64

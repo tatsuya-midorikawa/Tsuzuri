@@ -25,14 +25,14 @@ record Node { value: i64, edges: Vec<Arena.Handle<Node>> }
 def link :: Arena.Handle<Node> -> Node -> Node
 fn link target node =
     match node with
-    | Node { value = value, edges = edges } -> Node { value: value, edges: Vec.push edges target }
+    | Node { value = value, edges = edges } -> Node { value: value, edges: Vec.push target edges }
 
 def cycle :: i64
 fn cycle =
     let empty: Arena<Node> = Arena.empty()
     match Arena.insert empty (Node { value: 1, edges: Vec.empty() }) with
     | (with_a, a) ->
-        match Arena.insert with_a (Node { value: 20, edges: Vec.push (Vec.empty()) a }) with
+        match Arena.insert with_a (Node { value: 20, edges: Vec.push a (Vec.empty()) }) with
         | (with_b, b) ->
             let graph = Arena.update with_b a (link b)
             let first = Arena.at (ref graph) a
@@ -99,7 +99,7 @@ for value in 0i64 .. 4 do
     match Arena.insert arena value with
     | (next, handle) ->
         arena = next
-        handles = Vec.push handles handle
+        handles = Vec.push handle handles
 match Arena.remove arena handles[1] with
 | (removed, _one) ->
     match Arena.insert removed 5 with

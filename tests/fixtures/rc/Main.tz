@@ -162,9 +162,9 @@ fn rec total node =
 export def rc_dag :: i64
 fn rc_dag =
     let bottom = leaf 4
-    let left = Rc.new (Node { value: 2, children: Vec.push (Vec.empty()) (Rc.share (ref bottom)) })
-    let right = Rc.new (Node { value: 3, children: Vec.push (Vec.empty()) (Rc.share (ref bottom)) })
-    let top = Rc.new (Node { value: 1, children: Vec.push (Vec.push (Vec.empty()) left) right })
+    let left = Rc.new (Node { value: 2, children: Vec.push (Rc.share (ref bottom)) (Vec.empty()) })
+    let right = Rc.new (Node { value: 3, children: Vec.push (Rc.share (ref bottom)) (Vec.empty()) })
+    let top = Rc.new (Node { value: 1, children: Vec.push right (Vec.push left (Vec.empty())) })
     total (ref top) * 10 + Rc.strong_count (ref bottom)
 
 export def rc_ptr_eq :: i64
@@ -280,7 +280,7 @@ fn inner_product outer =
 // Named types that appear only inside shared pointers still get definitions.
 export def shared_named_types :: i64
 fn shared_named_types =
-    let items: Vec<Rc<Maybe<string>>> = Vec.push (Vec.push (Vec.empty()) (Rc.new (Maybe.Some "four"))) (Rc.new Maybe.None)
+    let items: Vec<Rc<Maybe<string>>> = Vec.push (Rc.new Maybe.None) (Vec.push (Rc.new (Maybe.Some "four")) (Vec.empty()))
     let text = match Rc.get (ref items[0]) with
         | Maybe.Some value -> value.length
         | Maybe.None -> 0
@@ -311,7 +311,7 @@ fn rc_weak_parent =
     let root = Rc.new (TreeNode { value: 7, parent: Maybe.None, children: Vec.empty() })
     let left = Rc.new (TreeNode { value: 2, parent: Maybe.Some (Rc.downgrade (ref root)), children: Vec.empty() })
     let right = Rc.new (TreeNode { value: 3, parent: Maybe.Some (Rc.downgrade (ref root)), children: Vec.empty() })
-    let top = TreeNode { value: 1, parent: Maybe.None, children: Vec.push (Vec.push (Vec.empty()) (Rc.share (ref left))) right }
+    let top = TreeNode { value: 1, parent: Maybe.None, children: Vec.push right (Vec.push (Rc.share (ref left)) (Vec.empty())) }
     let before = parent_value (ref left) + parent_value (ref top.children[1])
     let weak = Rc.weak_count (ref root)
     let mut children = 0

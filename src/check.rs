@@ -1285,13 +1285,13 @@ pub enum Builtin {
     /// slice, so the in-place `Array` algorithms run on its buffer and its capacity stays. Private to the std `Vec`
     /// module.
     VecView,
-    /// `Vec.__set_capacity :: Vec<'a> -> i64 -> Vec<'a>` reallocates the buffer to exactly the given capacity, which
+    /// `Vec.__set_capacity :: i64 -> Vec<'a> -> Vec<'a>` reallocates the buffer to exactly the given capacity, which
     /// must not be less than the length. Private to the std `Vec` module (the `Capacity` setter of .NET's `List<T>`).
     VecSetCapacity,
-    /// `Vec.__insert :: Vec<'a> -> i64 -> 'a -> Vec<'a>` moves the elements from the index on one slot up and stores
+    /// `Vec.__insert :: i64 -> 'a -> Vec<'a> -> Vec<'a>` moves the elements from the index on one slot up and stores
     /// the new element there (`List<T>.Insert`). Private to the std `Vec` module.
     VecInsert,
-    /// `Vec.__splice :: Vec<'a> -> i64 -> i64 -> ['a] -> Vec<'a>` drops `count` elements at the index, then moves the
+    /// `Vec.__splice :: i64 -> i64 -> ['a] -> Vec<'a> -> Vec<'a>` drops `count` elements at the index, then moves the
     /// elements of an owned array into their place (`RemoveRange` and `InsertRange` of .NET's `List<T>`). Private to
     /// the std `Vec` module.
     VecSplice,
@@ -2442,18 +2442,20 @@ impl Builtin {
                     Self::VecLength | Self::VecCapacity | Self::VecIsEmpty | Self::VecClone => {
                         vec![borrowed()]
                     }
-                    Self::VecGet | Self::VecAt => vec![borrowed(), Concrete(Type::I64)],
-                    Self::VecPush => vec![vector(), a()],
+                    Self::VecGet | Self::VecAt => vec![Concrete(Type::I64), borrowed()],
+                    Self::VecPush => vec![a(), vector()],
                     Self::VecReserve | Self::VecTruncate | Self::VecSetCapacity => {
-                        vec![vector(), Concrete(Type::I64)]
+                        vec![Concrete(Type::I64), vector()]
                     }
-                    Self::VecSet | Self::VecInsert => vec![vector(), Concrete(Type::I64), a()],
-                    Self::VecSwap => vec![vector(), Concrete(Type::I64), Concrete(Type::I64)],
+                    Self::VecSet | Self::VecInsert => {
+                        vec![Concrete(Type::I64), a(), vector()]
+                    }
+                    Self::VecSwap => vec![Concrete(Type::I64), Concrete(Type::I64), vector()],
                     Self::VecSplice => vec![
-                        vector(),
                         Concrete(Type::I64),
                         Concrete(Type::I64),
                         Array(Box::new(a())),
+                        vector(),
                     ],
                     Self::VecView => vec![Reference(Box::new(vector()), true)],
                     Self::VecOfArray => vec![Array(Box::new(a()))],

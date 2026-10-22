@@ -40,8 +40,8 @@ fn parallel_copy_functions =
 
 export def parallel_callback_snapshots :: i64 -> i64
 fn parallel_callback_snapshots count =
-    let seed = Vec.push Vec.empty() 7
-    let callback = index -> { let values = Vec.push seed index; Vec.length (ref values) }
+    let seed = Vec.push 7 Vec.empty()
+    let callback = index -> { let values = Vec.push index seed; Vec.length (ref values) }
     let values = Parallel.init count callback
     Array.sum (ref values)
 

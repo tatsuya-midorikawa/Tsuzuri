@@ -48,7 +48,7 @@ fn length arena = Vec.length (ref arena.values)
 private def position :: ref Arena<'a> -> Handle<'a> -> i64
 fn position arena handle =
 	if handle.arena == arena.id then
-		match Vec.get (ref arena.slots) handle.index with
+		match Vec.get handle.index (ref arena.slots) with
 		| Maybe.Some slot -> if slot.generation == handle.generation then slot.position else -1
 		| Maybe.None -> -1
 	else -1
@@ -78,12 +78,12 @@ fn insert arena value =
 		let next_position = Vec.length (ref values)
 		if free < 0 then
 			let index = Vec.length (ref slots)
-			let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners index, slots: Vec.push slots (Slot { position: next_position, generation: 0 }), free: free }
+			let result = Arena { id: id, values: Vec.push value values, owners: Vec.push index owners, slots: Vec.push (Slot { position: next_position, generation: 0 }) slots, free: free }
 			(result, Handle { arena: id, index: index, generation: 0 })
 		else
-			let slot = Maybe.get (Vec.get (ref slots) free)
+			let slot = Maybe.get (Vec.get free (ref slots))
 			let generation = -1 - slot.generation
-			let result = Arena { id: id, values: Vec.push values value, owners: Vec.push owners free, slots: Vec.set slots free (Slot { position: next_position, generation: generation }), free: slot.position }
+			let result = Arena { id: id, values: Vec.push value values, owners: Vec.push free owners, slots: Vec.set free (Slot { position: next_position, generation: generation }) slots, free: slot.position }
 			(result, Handle { arena: id, index: free, generation: generation })
 
 /// Moves the value that `handle` names out of the arena. The last value takes its position, and
@@ -99,13 +99,13 @@ fn remove arena handle =
 			let last = Vec.length (ref values) - 1
 			let moved = owners[last]
 			let retired = handle.generation == 9223372036854775807
-			let moved_slot = Maybe.get (Vec.get (ref slots) moved)
+			let moved_slot = Maybe.get (Vec.get moved (ref slots))
 			// Relink the moved value's slot before vacating, which also covers removing the last value.
-			let relinked = Vec.set slots moved (Slot { position: target, generation: moved_slot.generation })
-			let vacated = Vec.set relinked handle.index (Slot { position: (if retired then -1 else free), generation: (if retired then -1 else -2 - handle.generation) })
-			match Vec.pop (Vec.swap values target last) with
+			let relinked = Vec.set moved (Slot { position: target, generation: moved_slot.generation }) slots
+			let vacated = Vec.set handle.index (Slot { position: (if retired then -1 else free), generation: (if retired then -1 else -2 - handle.generation) }) relinked
+			match Vec.pop (Vec.swap target last values) with
 			| (remaining, Maybe.Some value) ->
-				match Vec.pop (Vec.swap owners target last) with
+				match Vec.pop (Vec.swap target last owners) with
 				| (remaining_owners, _) -> (Arena { id: id, values: remaining, owners: remaining_owners, slots: vacated, free: (if retired then free else handle.index) }, Maybe.Some value)
 			| (_, Maybe.None) -> unreachable ()
 
@@ -118,8 +118,8 @@ fn update arena handle change =
 	match arena with
 	| Arena { id = id, values = values, owners = owners, slots = slots, free = free } ->
 		let last = Vec.length (ref values) - 1
-		match Vec.pop (Vec.swap values target last) with
-		| (remaining, Maybe.Some value) -> Arena { id: id, values: Vec.swap (Vec.push remaining (change value)) target last, owners: owners, slots: slots, free: free }
+		match Vec.pop (Vec.swap target last values) with
+		| (remaining, Maybe.Some value) -> Arena { id: id, values: Vec.swap target last (Vec.push (change value) remaining), owners: owners, slots: slots, free: free }
 		| (_, Maybe.None) -> unreachable ()
 
 private def handle_at :: ref Arena<'a> -> i64 -> Handle<'a>

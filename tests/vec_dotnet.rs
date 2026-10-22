@@ -381,17 +381,17 @@ fn rejects(source: &str, code: &str) {
 fn value_forms_need_copy_elements_and_r_forms_borrow() {
     // The value forms copy an element to give it to the callback, so a Vec of strings is rejected.
     for call in [
-        "Vec.exists words (\\w -> w.length > 0)",
-        "Vec.true_for_all words (\\w -> w.length > 0)",
-        "Vec.find words (\\w -> w.length > 0)",
-        "Vec.find_all words (\\w -> w.length > 0)",
-        "Vec.find_index words (\\w -> w.length > 0)",
-        "Vec.find_last_index words (\\w -> w.length > 0)",
-        "Vec.for_each words (\\w -> assert (w.length > 0))",
-        "Vec.convert_all words (\\w -> w.length)",
-        "Vec.sort_with words (\\a b -> a.length - b.length)",
-        "Vec.get_range words 0 1",
-        "Vec.find_index_range words 0 1 (\\w -> w.length > 0)",
+        "Vec.exists (\\w -> w.length > 0) words",
+        "Vec.true_for_all (\\w -> w.length > 0) words",
+        "Vec.find (\\w -> w.length > 0) words",
+        "Vec.find_all (\\w -> w.length > 0) words",
+        "Vec.find_index (\\w -> w.length > 0) words",
+        "Vec.find_last_index (\\w -> w.length > 0) words",
+        "Vec.for_each (\\w -> assert (w.length > 0)) words",
+        "Vec.convert_all (\\w -> w.length) words",
+        "Vec.sort_with (\\a b -> a.length - b.length) words",
+        "Vec.get_range 0 1 words",
+        "Vec.find_index_range 0 1 (\\w -> w.length > 0) words",
     ] {
         rejects(
             &format!("let words = Vec.of_array [\"a\"]\n{call}"),
@@ -400,22 +400,22 @@ fn value_forms_need_copy_elements_and_r_forms_borrow() {
     }
     // The r forms borrow each element, so they accept any element type.
     for call in [
-        "Vec.existsr words (\\w -> w.length > 0)",
-        "Vec.true_for_allr words (\\w -> w.length > 0)",
-        "Vec.find_indexr words (\\w -> w.length > 0)",
-        "Vec.find_last_indexr words (\\w -> w.length > 0)",
-        "Vec.for_eachr words (\\w -> assert (w.length > 0))",
-        "Vec.convert_allr words (\\w -> w.length)",
-        "match Vec.remove_allr words (\\w -> w.length > 5) with | (rest, removed) -> removed",
-        "(Vec.sort_withr words (\\a b -> a.length - b.length)).length",
-        "match Vec.findr words (\\w -> w.length == 1) with | Maybe.Some word -> word.length | Maybe.None -> 0",
-        "match Vec.find_lastr words (\\w -> w.length == 1) with | Maybe.Some word -> word.length | Maybe.None -> 0",
-        "Vec.containsr words (ref target)",
-        "Vec.index_ofr words (ref target)",
-        "Vec.last_index_ofr words (ref target)",
-        "match Vec.remover words (ref target) with | (rest, found) -> found",
-        "Vec.binary_searchr words (ref target)",
-        "Vec.binary_search_withr words (ref target) (\\a b -> a.length - b.length)",
+        "Vec.existsr (\\w -> w.length > 0) words",
+        "Vec.true_for_allr (\\w -> w.length > 0) words",
+        "Vec.find_indexr (\\w -> w.length > 0) words",
+        "Vec.find_last_indexr (\\w -> w.length > 0) words",
+        "Vec.for_eachr (\\w -> assert (w.length > 0)) words",
+        "Vec.convert_allr (\\w -> w.length) words",
+        "match Vec.remove_allr (\\w -> w.length > 5) words with | (rest, removed) -> removed",
+        "(Vec.sort_withr (\\a b -> a.length - b.length) words).length",
+        "match Vec.findr (\\w -> w.length == 1) words with | Maybe.Some word -> word.length | Maybe.None -> 0",
+        "match Vec.find_lastr (\\w -> w.length == 1) words with | Maybe.Some word -> word.length | Maybe.None -> 0",
+        "Vec.containsr (ref target) words",
+        "Vec.index_ofr (ref target) words",
+        "Vec.last_index_ofr (ref target) words",
+        "match Vec.remover (ref target) words with | (rest, found) -> found",
+        "Vec.binary_searchr (ref target) words",
+        "Vec.binary_search_withr (ref target) (\\a b -> a.length - b.length) words",
     ] {
         accepts(&format!(
             "let words = Vec.of_array [\"a\"]\nlet target = \"a\"\n{call}"
@@ -423,27 +423,27 @@ fn value_forms_need_copy_elements_and_r_forms_borrow() {
     }
     // What only compares or moves elements works for any element type, and the item is consumed.
     for call in [
-        "Vec.contains words \"a\"",
-        "Vec.index_of words \"a\"",
-        "Vec.last_index_of words \"a\"",
-        "Vec.index_of_from words \"a\" 0",
-        "Vec.index_of_range words \"a\" 0 1",
-        "Vec.last_index_of_from words \"a\" 0",
-        "Vec.last_index_of_range words \"a\" 0 1",
-        "Vec.binary_search words \"a\"",
-        "(Vec.add words \"b\").length",
-        "(Vec.insert words 0 \"b\").length",
-        "(Vec.remove_at words 0).length",
-        "(Vec.remove_range words 0 1).length",
+        "Vec.contains \"a\" words",
+        "Vec.index_of \"a\" words",
+        "Vec.last_index_of \"a\" words",
+        "Vec.index_of_from \"a\" 0 words",
+        "Vec.index_of_range \"a\" 0 1 words",
+        "Vec.last_index_of_from \"a\" 0 words",
+        "Vec.last_index_of_range \"a\" 0 1 words",
+        "Vec.binary_search \"a\" words",
+        "(Vec.add \"b\" words).length",
+        "(Vec.insert 0 \"b\" words).length",
+        "(Vec.remove_at 0 words).length",
+        "(Vec.remove_range 0 1 words).length",
         "(Vec.reverse words).length",
-        "(Vec.reverse_range words 0 1).length",
+        "(Vec.reverse_range 0 1 words).length",
         "(Vec.sort words).length",
-        "(Vec.sort_range words 0 1).length",
-        "(Vec.append words (Vec.empty())).length",
-        "(Vec.set_capacity words 5).length",
-        "(Vec.ensure_capacity words 5).length",
+        "(Vec.sort_range 0 1 words).length",
+        "(Vec.append (Vec.empty()) words).length",
+        "(Vec.set_capacity 5 words).length",
+        "(Vec.ensure_capacity 5 words).length",
         "(Vec.trim_excess words).length",
-        "match Vec.remove words \"a\" with | (rest, found) -> found",
+        "match Vec.remove \"a\" words with | (rest, found) -> found",
     ] {
         accepts(&format!("let words = Vec.of_array [\"a\"]\n{call}"));
     }
@@ -453,13 +453,13 @@ fn value_forms_need_copy_elements_and_r_forms_borrow() {
 fn updates_consume_the_vec_and_loans_block_them() {
     // The changed Vec is the result, so the old binding is gone.
     for update in [
-        "Vec.add values 3",
-        "Vec.insert values 0 3",
-        "Vec.remove_at values 0",
-        "Vec.remove_range values 0 1",
+        "Vec.add 3 values",
+        "Vec.insert 0 3 values",
+        "Vec.remove_at 0 values",
+        "Vec.remove_range 0 1 values",
         "Vec.reverse values",
         "Vec.sort values",
-        "Vec.set_capacity values 9",
+        "Vec.set_capacity 9 values",
         "Vec.trim_excess values",
     ] {
         rejects(
@@ -469,33 +469,33 @@ fn updates_consume_the_vec_and_loans_block_them() {
     }
     // A borrow that is alive keeps the Vec from being changed.
     for update in [
-        "Vec.add values 3",
-        "Vec.insert values 0 3",
-        "Vec.remove_at values 0",
+        "Vec.add 3 values",
+        "Vec.insert 0 3 values",
+        "Vec.remove_at 0 values",
         "Vec.sort values",
         "Vec.reverse values",
     ] {
         rejects(
             &format!(
-                "let values = Vec.of_array [1, 2]\nlet borrowed = Vec.at (ref values) 0\nlet changed = {update}\nderef borrowed"
+                "let values = Vec.of_array [1, 2]\nlet borrowed = Vec.at 0 (ref values)\nlet changed = {update}\nderef borrowed"
             ),
             "E1014",
         );
     }
     // The searches only read: the Vec is still there.
     accepts(
-        "let values = Vec.of_array [1, 2]\nlet found = Vec.find_index values (\\x -> x > 1)\nvalues.length + found",
+        "let values = Vec.of_array [1, 2]\nlet found = Vec.find_index (\\x -> x > 1) values\nvalues.length + found",
     );
     accepts(
-        "let values = Vec.of_array [1, 2]\nlet found = Vec.index_of values 2\nvalues.length + found",
+        "let values = Vec.of_array [1, 2]\nlet found = Vec.index_of 2 values\nvalues.length + found",
     );
     // The array that `copy_to` writes into is exclusive, so it must be `let mut`.
     rejects(
-        "let values = Vec.of_array [1]\nlet target = [0]\nVec.copy_to values target\n0",
+        "let values = Vec.of_array [1]\nlet target = [0]\nVec.copy_to target values\n0",
         "E1014",
     );
     accepts(
-        "let values = Vec.of_array [1]\nlet mut target = [0]\nVec.copy_to values target\ntarget[0]",
+        "let values = Vec.of_array [1]\nlet mut target = [0]\nVec.copy_to target values\ntarget[0]",
     );
     // The hidden builtins of std/Vec.tz: a mutable view of the elements, and its borrow rules.
     accepts(
@@ -508,13 +508,62 @@ fn updates_consume_the_vec_and_loans_block_them() {
 }
 
 #[test]
+fn the_vec_is_the_last_argument_so_pipelines_and_compositions_work() {
+    // The receiver-first order of the first version no longer type-checks, whichever way the types clash.
+    for call in [
+        "Vec.push values 3",
+        "Vec.add values 3",
+        "Vec.set values 0 3",
+        "Vec.swap values 0 1",
+        "Vec.reserve values 4",
+        "Vec.truncate values 1",
+        "Vec.get (ref values) 0",
+        "Vec.at (ref values) 0",
+        "Vec.insert values 0 3",
+        "Vec.remove_at values 0",
+        "Vec.remove_range values 0 1",
+        "Vec.index_of (ref values) 1",
+        "Vec.find_index (ref values) (\\x -> x > 1)",
+        "Vec.sort_with values (\\a b -> a - b)",
+        "Vec.get_range (ref values) 0 1",
+    ] {
+        let error = analyze(&format!("let values = Vec.of_array [1, 2]\n{call}")).expect_err(call);
+        assert!(
+            matches!(error.code, "E1003" | "E1015"),
+            "{call}\n{}: {}",
+            error.code,
+            error.message
+        );
+    }
+    // A pipeline passes the Vec on, and a partial application is a function of the Vec.
+    accepts(
+        "let values = Vec.empty() |> Vec.add 3 |> Vec.add 1 |> Vec.sort |> Vec.insert 1 10\nvalues[1]",
+    );
+    accepts(
+        "let tidy = Vec.sort >> Vec.reverse >> Vec.truncate 2\nlet top = Vec.of_array [5, 1, 9] |> tidy\ntop[0]",
+    );
+    accepts(
+        "let words = Vec.of_array [\"b\", \"a\"] |> Vec.sort_withr (\\x y -> x.length - y.length) |> Vec.add \"c\"\nwords.length",
+    );
+    // An argument before the Vec may borrow it, because the Vec itself is moved last.
+    accepts(
+        "let mut values = Vec.of_array [1, 2]\nvalues = Vec.insert (Vec.length (ref values)) 3 values\nvalues[2]",
+    );
+    // The call consumes the Vec, so the old binding cannot be used after it.
+    rejects(
+        "let values = Vec.of_array [1, 2]\nlet more = Vec.insert (Vec.length (ref values)) 3 values\nvalues.length",
+        "E1012",
+    );
+}
+
+#[test]
 fn the_r_suffix_names_the_borrowing_forms() {
     for name in BORROWING_FORMS {
         assert!(defined(name), "{name}");
     }
-    // The members that existed before keep their names and their types.
+    // The members that existed before keep their names and their types, except that the Vec is now the last argument.
     accepts(
-        "let mut values: Vec<i64> = Vec.empty()\nvalues = Vec.push values 1\nvalues = Vec.set values 0 2\nvalues = Vec.swap values 0 0\nlet size = Vec.length (ref values)\nlet space = Vec.capacity (ref values)\nmatch Vec.pop values with | (rest, last) -> Vec.is_empty (ref rest)",
+        "let mut values: Vec<i64> = Vec.empty()\nvalues = Vec.push 1 values\nvalues = Vec.set 0 2 values\nvalues = Vec.swap 0 0 values\nlet size = Vec.length (ref values)\nlet space = Vec.capacity (ref values)\nmatch Vec.pop values with | (rest, last) -> Vec.is_empty (ref rest)",
     );
     accepts(
         "let values = Vec.of_array [1, 2]\nlet copy = Vec.clone (ref values)\nlet items = Vec.to_array copy\nfor word in Vec.iter (ref values) do ()\nitems[0]",
@@ -530,9 +579,9 @@ fn library_ir(source: &str, wasm: bool) -> String {
 
 #[test]
 fn shifts_lower_to_memmove_and_copies_to_memcpy() {
-    let shifts = "export def shifted :: i64\nfn shifted =\n    let values = Vec.of_array [1, 2, 4]\n    let values = Vec.insert values 2 3\n    let values = Vec.remove_at values 0\n    values[0]\n";
-    let copies = "export def copied :: i64\nfn copied =\n    let values = Vec.of_array [1, 2, 4]\n    let values = Vec.add_range values (ref [5, 6])\n    values[0]\n";
-    let strings = "export def owned :: i64\nfn owned =\n    let values = Vec.of_array [\"a\" + \"b\", \"c\" + \"d\"]\n    let values = Vec.insert values 1 (\"e\" + \"f\")\n    let values = Vec.remove_range values 0 2\n    (Vec.at (ref values) 0).length\n";
+    let shifts = "export def shifted :: i64\nfn shifted =\n    let values = Vec.of_array [1, 2, 4]\n    let values = Vec.insert 2 3 values\n    let values = Vec.remove_at 0 values\n    values[0]\n";
+    let copies = "export def copied :: i64\nfn copied =\n    let values = Vec.of_array [1, 2, 4]\n    let values = Vec.add_range (ref [5, 6]) values\n    values[0]\n";
+    let strings = "export def owned :: i64\nfn owned =\n    let values = Vec.of_array [\"a\" + \"b\", \"c\" + \"d\"]\n    let values = Vec.insert 1 (\"e\" + \"f\") values\n    let values = Vec.remove_range 0 2 values\n    (Vec.at 0 (ref values)).length\n";
     for wasm in [false, true] {
         let width = if wasm { "i32" } else { "i64" };
         for source in [shifts, copies, strings] {

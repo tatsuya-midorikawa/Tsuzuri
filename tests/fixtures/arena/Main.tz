@@ -4,14 +4,14 @@ record Link { value: i64, next: Maybe<Arena.Handle<Link>> }
 def link :: Arena.Handle<Node> -> Node -> Node
 fn link target node =
     match node with
-    | Node { value = value, edges = edges } -> Node { value: value, edges: Vec.push edges target }
+    | Node { value = value, edges = edges } -> Node { value: value, edges: Vec.push target edges }
 
 export def arena_cycle :: i64
 fn arena_cycle =
     let empty: Arena<Node> = Arena.empty()
     match Arena.insert empty (Node { value: 1, edges: Vec.empty() }) with
     | (with_a, a) ->
-        match Arena.insert with_a (Node { value: 20, edges: Vec.push (Vec.empty()) a }) with
+        match Arena.insert with_a (Node { value: 20, edges: Vec.push a (Vec.empty()) }) with
         | (with_b, b) ->
             let graph = Arena.update with_b a (link b)
             let first = Arena.at (ref graph) a
@@ -32,7 +32,7 @@ fn arena_ring count =
         match Arena.insert graph (Node { value: index, edges: Vec.empty() }) with
         | (next, handle) ->
             graph = next
-            handles = Vec.push handles handle
+            handles = Vec.push handle handles
         index = index + 1
     index = 0
     while index < count do
@@ -82,7 +82,7 @@ fn arena_churn count =
         match Arena.insert arena (index * 3) with
         | (next, handle) ->
             arena = next
-            handles = Vec.push handles handle
+            handles = Vec.push handle handles
         index = index + 1
     let mut removed = 0
     let mut removals = 0
@@ -121,7 +121,7 @@ fn arena_order =
         match Arena.insert arena index with
         | (next, handle) ->
             arena = next
-            handles = Vec.push handles handle
+            handles = Vec.push handle handles
         index = index + 1
     match Arena.remove arena handles[1] with
     | (without, removed) ->
@@ -141,7 +141,7 @@ fn arena_strings count =
         match Arena.insert arena (to_string index) with
         | (next, handle) ->
             arena = next
-            handles = Vec.push handles handle
+            handles = Vec.push handle handles
         index = index + 1
     let mut removed = 0
     index = 0
@@ -204,7 +204,7 @@ fn arena_snapshot =
         match Arena.insert base ((index + 1) * 10) with
         | (next, handle) ->
             base = next
-            handles = Vec.push handles handle
+            handles = Vec.push handle handles
         index = index + 1
     let frozen = base
     let snapshot = \() -> frozen

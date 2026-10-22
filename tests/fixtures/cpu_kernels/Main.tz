@@ -25,7 +25,7 @@ fn data pattern bits signed =
     let mut values: Vec<'a> = Vec.with_capacity 4100
     for k in 0i64 .. 4099i64 do
         state = next state
-        values = Vec.push values ((element pattern bits signed k state) as 'a)
+        values = Vec.push ((element pattern bits signed k state) as 'a) values
     Vec.to_array values
 
 /// Folds `measure` over offsets 0 to 3 and lengths 0 to 70, 127 to 129, 255 to 257, and 4095

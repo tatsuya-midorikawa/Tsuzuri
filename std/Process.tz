@@ -17,9 +17,9 @@ fn join_arguments args =
 			let mut at = 0
 			while at < bytes.length do
 				if bytes[at] == 0ubyte then problem = 2
-				joined = Vec.push joined bytes[at]
+				joined = Vec.push bytes[at] joined
 				at = at + 1
-			joined = Vec.push joined 0ubyte
+			joined = Vec.push 0ubyte joined
 		index = index + 1
 	match problem with
 	| 1 -> Result.Error (Os.Error { kind: Os.InvalidEncoding, code: 0i32 })

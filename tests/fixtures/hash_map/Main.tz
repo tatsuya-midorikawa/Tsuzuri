@@ -133,7 +133,7 @@ fn colliding_keys count =
     let mut keys = Vec.with_capacity count
     let mut candidate = 0
     while Vec.length (ref keys) < count do
-        if ((flood_mix (Hash.hash (ref candidate))) & 2047) == 0 then keys = Vec.push keys candidate
+        if ((flood_mix (Hash.hash (ref candidate))) & 2047) == 0 then keys = Vec.push candidate keys
         candidate = candidate + 1
     keys
 

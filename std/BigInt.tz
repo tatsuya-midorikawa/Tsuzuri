@@ -23,7 +23,7 @@ fn of_i64 value =
     let mut rest = value
     while rest != 0 do
         let digit = rest % 1000000000
-        digits = Vec.push digits (if digit < 0 then 0 - digit else digit)
+        digits = Vec.push (if digit < 0 then 0 - digit else digit) digits
         rest = rest / 1000000000
     make (value < 0) (Vec.to_array digits)
 
@@ -59,7 +59,7 @@ fn of_string text =
                 if code < 48 || code > 57 then valid = false
                 limb = limb * 10 + (code - 48)
                 index = index + 1
-            digits = Vec.push digits limb
+            digits = Vec.push limb digits
             finish = first
         if valid then Maybe.Some (make negative (Vec.to_array digits)) else Maybe.None
 

@@ -38,7 +38,7 @@ try {
   writeFileSync(join(grow, "Grow.tz"), `export def grow :: i64 -> i64
 fn grow count =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 1i64 .. count do values = Vec.push values index
+    for index in 1i64 .. count do values = Vec.push index values
     let result = Vec.to_array values
     Array.sum ref result
 `);

@@ -67,8 +67,8 @@ fn csv_aggregate size seed =
             let amount = parse_u64 (ref fields[1])
             let sum = sums[category] + amount
             let count = counts[category] + 1
-            sums = Vec.set sums category sum
-            counts = Vec.set counts category count
+            sums = Vec.set category sum sums
+            counts = Vec.set category count counts
         let mut total = fold 0 (lines.length as i64u)
         for category in 0i64 .. 15i64 do total = fold (fold total sums[category]) counts[category]
         total
@@ -201,22 +201,22 @@ fn graph_bfs size seed =
         let mut degrees = Vec.of_array (new [i64](size, \_ -> 0))
         for (source, _destination) in edges do
             let degree = degrees[source] + 1
-            degrees = Vec.set degrees source degree
-        let mut offsets = Vec.push (Vec.with_capacity (size + 1)) 0i64
+            degrees = Vec.set source degree degrees
+        let mut offsets = Vec.push 0i64 (Vec.with_capacity (size + 1))
         let mut running = 0i64
         for index in 0i64 .. size - 1 do
             running = running + degrees[index]
-            offsets = Vec.push offsets running
+            offsets = Vec.push running offsets
         let starts = ref offsets
         let mut cursor = Vec.of_array (new [i64](size, \index -> starts[index]))
         let mut adjacent = Vec.of_array (new [i64](4 * size, \_ -> 0))
         for (source, destination) in edges do
             let position = cursor[source]
-            adjacent = Vec.set adjacent position destination
-            cursor = Vec.set cursor source (position + 1)
+            adjacent = Vec.set position destination adjacent
+            cursor = Vec.set source (position + 1) cursor
         let mut distances = Vec.of_array (new [i64](size, \_ -> -1))
-        distances = Vec.set distances 0 0
-        let mut queue = Vec.push (Vec.with_capacity size) 0i64
+        distances = Vec.set 0 0 distances
+        let mut queue = Vec.push 0i64 (Vec.with_capacity size)
         let mut head = 0i64
         while head < Vec.length (ref queue) do
             let source = queue[head]
@@ -225,8 +225,8 @@ fn graph_bfs size seed =
             for position in offsets[source] .. offsets[source + 1] - 1 do
                 let destination = adjacent[position]
                 if distances[destination] == -1 then
-                    distances = Vec.set distances destination distance
-                    queue = Vec.push queue destination
+                    distances = Vec.set destination distance distances
+                    queue = Vec.push destination queue
         let mut total = 0i64u
         for index in 0i64 .. size - 1 do total = fold total (distances[index] as i64u)
         total

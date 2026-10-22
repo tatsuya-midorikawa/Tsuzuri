@@ -57,7 +57,7 @@ fn record_choice source bound proposal =
 			else
 				0i64u
 		let value = if wanted > bound then bound else wanted
-		(value, (random, recorded, replaying, Vec.push choices value))
+		(value, (random, recorded, replaying, Vec.push value choices))
 
 /// `bits` reduced to [0, bound].
 private def below :: i64u -> i64u -> i64u
@@ -195,7 +195,7 @@ fn array_up_to limit element =
 						else
 							match element.run next with
 							| (value, last) ->
-								values = Vec.push values value
+								values = Vec.push value values
 								current = last
 		(Vec.to_array values, current) }
 
@@ -306,7 +306,7 @@ fn without values start count =
 	let mut index = 0
 	while index < values.length do
 		if index < start || index >= start + count then
-			kept = Vec.push kept values[index]
+			kept = Vec.push values[index] kept
 		index = index + 1
 	Vec.to_array kept
 

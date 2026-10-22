@@ -76,7 +76,7 @@ fn empty_slots size =
 	let mut slots = Vec.with_capacity size
 	let mut index = 0
 	while index < size do
-		slots = Vec.push slots (-1)
+		slots = Vec.push (-1) slots
 		index = index + 1
 	slots
 
@@ -93,7 +93,7 @@ fn rebuild entries size =
 	let mut index = 0
 	while index < Vec.length entries do
 		let position = locate (ref slots) entries[index].hash (-1)
-		slots = Vec.set slots position index
+		slots = Vec.set position index slots
 		index = index + 1
 	slots
 
@@ -172,15 +172,15 @@ fn insert map key value =
 	match map with
 	| HashMap { entries = entries, slots = slots, key0 = key0, key1 = key1, keyed = keyed } ->
 		if found >= 0 then
-			match Vec.pop (Vec.swap entries found (count - 1)) with
+			match Vec.pop (Vec.swap found (count - 1) entries) with
 			| (remaining, Maybe.Some old) ->
 				let replacement = Entry { hash: old.hash, key: old.key, value: value }
-				HashMap { entries: Vec.swap (Vec.push remaining replacement) found (count - 1), slots: slots, key0: key0, key1: key1, keyed: keyed }
+				HashMap { entries: Vec.swap found (count - 1) (Vec.push replacement remaining), slots: slots, key0: key0, key1: key1, keyed: keyed }
 			| (_, Maybe.None) -> unreachable ()
 		else
 			let grown = if 2 * (count + 1) > size then rebuild (ref entries) (if size == 0 then 8 else size * 2) else slots
 			let position = locate (ref grown) hash (-1)
-			HashMap { entries: Vec.push entries (Entry { hash: hash, key: key, value: value }), slots: Vec.set grown position count, key0: key0, key1: key1, keyed: keyed }
+			HashMap { entries: Vec.push (Entry { hash: hash, key: key, value: value }) entries, slots: Vec.set position count grown, key0: key0, key1: key1, keyed: keyed }
 
 private def unlink :: ref Vec<Entry<'key, 'value>> -> Vec<i64> -> i64 -> Vec<i64>
 fn unlink entries slots start =
@@ -192,10 +192,10 @@ fn unlink entries slots start =
 		let ideal = entries[current[position]].hash & mask
 		if ((position - ideal) & mask) >= ((position - hole) & mask) then
 			let moved = current[position]
-			current = Vec.set current hole moved
+			current = Vec.set hole moved current
 			hole = position
 		position = (position + 1) & mask
-	Vec.set current hole (-1)
+	Vec.set hole (-1) current
 
 def remove_ref :: (Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> ref 'key -> HashMap<'key, 'value>
 fn remove_ref map key =
@@ -211,8 +211,8 @@ fn remove_ref map key =
 				let unlinked = unlink (ref entries) slots slot
 				let relinked = if index == last then unlinked else
 					let position = locate (ref unlinked) entries[last].hash last
-					Vec.set unlinked position index
-				match Vec.pop (Vec.swap entries index last) with
+					Vec.set position index unlinked
+				match Vec.pop (Vec.swap index last entries) with
 				| (remaining, _removed) -> HashMap { entries: remaining, slots: relinked, key0: key0, key1: key1, keyed: keyed }
 
 def remove :: (Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> 'key -> HashMap<'key, 'value>

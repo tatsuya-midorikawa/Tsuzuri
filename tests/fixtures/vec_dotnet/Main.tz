@@ -16,7 +16,7 @@ private def check_words :: ref Vec<string> -> ref [string] -> unit
 fn check_words actual expected =
     eq actual.length expected.length
     for index in 0 .. (expected.length - 1) do
-        Test.equal (Vec.at actual index) (ref expected[index])
+        Test.equal (Vec.at index actual) (ref expected[index])
 
 private def is_nan :: f64 -> bool
 fn is_nan value = value != value
@@ -38,8 +38,8 @@ test "of_seq and of_list copy their elements" =
 
 test "clone makes a copy whose capacity is its length, as new List<T>(list) does" =
     let mut values: Vec<i64> = Vec.with_capacity 10
-    values = Vec.add values 1
-    values = Vec.add values 2
+    values = Vec.add 1 values
+    values = Vec.add 2 values
     let copy = Vec.clone (ref values)
     eq (items (ref copy)) [1, 2]
     eq (Vec.capacity (ref copy)) 2
@@ -51,55 +51,55 @@ test "clone makes a copy whose capacity is its length, as new List<T>(list) does
 test "set_capacity sets the capacity exactly" =
     let mut values = vec [1, 2, 3]
     eq (Vec.capacity (ref values)) 3
-    values = Vec.set_capacity values 10
+    values = Vec.set_capacity 10 values
     eq (Vec.capacity (ref values)) 10
     eq (items (ref values)) [1, 2, 3]
-    values = Vec.set_capacity values 3
+    values = Vec.set_capacity 3 values
     eq (Vec.capacity (ref values)) 3
     eq (items (ref values)) [1, 2, 3]
     let mut empty: Vec<i64> = Vec.with_capacity 5
-    empty = Vec.set_capacity empty 0
+    empty = Vec.set_capacity 0 empty
     eq (Vec.capacity (ref empty)) 0
-    empty = Vec.set_capacity empty 7
+    empty = Vec.set_capacity 7 empty
     eq (Vec.capacity (ref empty)) 7
     eq (Vec.length (ref empty)) 0
 
 test "ensure_capacity grows to the larger of the request and twice the capacity" =
     let mut values: Vec<i64> = Vec.empty()
-    values = Vec.ensure_capacity values 1
+    values = Vec.ensure_capacity 1 values
     eq (Vec.capacity (ref values)) 4
-    values = Vec.ensure_capacity values 3
+    values = Vec.ensure_capacity 3 values
     eq (Vec.capacity (ref values)) 4
-    values = Vec.ensure_capacity values 5
+    values = Vec.ensure_capacity 5 values
     eq (Vec.capacity (ref values)) 8
-    values = Vec.ensure_capacity values 100
+    values = Vec.ensure_capacity 100 values
     eq (Vec.capacity (ref values)) 100
-    values = Vec.ensure_capacity values 0
+    values = Vec.ensure_capacity 0 values
     eq (Vec.capacity (ref values)) 100
     let mut fresh: Vec<i64> = Vec.empty()
-    fresh = Vec.ensure_capacity fresh 10
+    fresh = Vec.ensure_capacity 10 fresh
     eq (Vec.capacity (ref fresh)) 10
 
 test "trim_excess shrinks the capacity only below 90 percent" =
     let mut ten: Vec<i64> = Vec.with_capacity 10
-    for number in 1 .. 9 do ten = Vec.add ten number
+    for number in 1 .. 9 do ten = Vec.add number ten
     ten = Vec.trim_excess ten
     eq (Vec.capacity (ref ten)) 10
-    ten = Vec.remove_at ten 0
+    ten = Vec.remove_at 0 ten
     ten = Vec.trim_excess ten
     eq (Vec.capacity (ref ten)) 8
     let mut hundred: Vec<i64> = Vec.with_capacity 100
-    for number in 1 .. 90 do hundred = Vec.add hundred number
+    for number in 1 .. 90 do hundred = Vec.add number hundred
     hundred = Vec.trim_excess hundred
     eq (Vec.capacity (ref hundred)) 100
-    hundred = Vec.remove_at hundred 0
+    hundred = Vec.remove_at 0 hundred
     hundred = Vec.trim_excess hundred
     eq (Vec.capacity (ref hundred)) 89
     let mut fifteen: Vec<i64> = Vec.with_capacity 15
-    for number in 1 .. 13 do fifteen = Vec.add fifteen number
+    for number in 1 .. 13 do fifteen = Vec.add number fifteen
     fifteen = Vec.trim_excess fifteen
     eq (Vec.capacity (ref fifteen)) 15
-    fifteen = Vec.remove_at fifteen 0
+    fifteen = Vec.remove_at 0 fifteen
     fifteen = Vec.trim_excess fifteen
     eq (Vec.capacity (ref fifteen)) 12
     let mut none: Vec<i64> = Vec.with_capacity 4
@@ -109,7 +109,7 @@ test "trim_excess shrinks the capacity only below 90 percent" =
 private def filled :: i64 -> Vec<i64>
 fn filled capacity =
     let mut values: Vec<i64> = Vec.with_capacity capacity
-    for index in 1 .. capacity do values = Vec.add values index
+    for index in 1 .. capacity do values = Vec.add index values
     values
 
 test "ensure_capacity, add_range, insert_range and insert grow by the same rule" =
@@ -117,16 +117,16 @@ test "ensure_capacity, add_range, insert_range and insert grow by the same rule"
         for extra in 1 .. (2 * capacity + 3) do
             let wanted = ensure_capacity_of capacity extra
             let more = new [i64](extra, index -> index)
-            let appended = Vec.add_range (filled capacity) (ref more)
+            let appended = Vec.add_range (ref more) (filled capacity)
             eq (Vec.capacity (ref appended)) wanted
-            let inserted = Vec.insert_range (filled capacity) (capacity / 2) (ref more)
+            let inserted = Vec.insert_range (capacity / 2) (ref more) (filled capacity)
             eq (Vec.capacity (ref inserted)) wanted
-        let single = Vec.insert (filled capacity) (capacity / 2) 0
+        let single = Vec.insert (capacity / 2) 0 (filled capacity)
         eq (Vec.capacity (ref single)) (ensure_capacity_of capacity 1)
 
 private def ensure_capacity_of :: i64 -> i64 -> i64
 fn ensure_capacity_of capacity extra =
-    let grown = Vec.ensure_capacity (filled capacity) (capacity + extra)
+    let grown = Vec.ensure_capacity (capacity + extra) (filled capacity)
     Vec.capacity (ref grown)
 
 // ---- Adding ----
@@ -134,129 +134,143 @@ fn ensure_capacity_of capacity extra =
 test "add appends and doubles the capacity from 4" =
     let mut values: Vec<i64> = Vec.empty()
     eq (Vec.capacity (ref values)) 0
-    values = Vec.add values 1
+    values = Vec.add 1 values
     eq (Vec.capacity (ref values)) 4
-    for number in 2 .. 5 do values = Vec.add values number
+    for number in 2 .. 5 do values = Vec.add number values
     eq (Vec.capacity (ref values)) 8
     eq (items (ref values)) [1, 2, 3, 4, 5]
 
 test "add_range copies an array to the end and grows to the new size when doubling is not enough" =
     let mut values: Vec<i64> = Vec.empty()
-    values = Vec.add_range values (ref [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    values = Vec.add_range (ref [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) values
     eq (Vec.capacity (ref values)) 10
-    values = Vec.add_range values (ref [11])
+    values = Vec.add_range (ref [11]) values
     eq (Vec.capacity (ref values)) 20
     let none: [i64] = []
-    values = Vec.add_range values (ref none)
+    values = Vec.add_range (ref none) values
     eq (Vec.capacity (ref values)) 20
     eq (Vec.length (ref values)) 11
     let mut four = vec [1, 2, 3, 4]
-    four = Vec.add_range four (ref [5, 6, 7, 8, 9])
+    four = Vec.add_range (ref [5, 6, 7, 8, 9]) four
     eq (Vec.capacity (ref four)) 9
     eq (items (ref four)) [1, 2, 3, 4, 5, 6, 7, 8, 9]
     let mut room: Vec<i64> = Vec.with_capacity 8
-    room = Vec.add_range room (ref [1, 2, 3])
+    room = Vec.add_range (ref [1, 2, 3]) room
     eq (Vec.capacity (ref room)) 8
 
 test "add_range copies elements that are arrays" =
     let mut rows: Vec<[i64]> = Vec.empty()
     let source = [[1, 2], [3]]
-    rows = Vec.add_range rows (ref source)
+    rows = Vec.add_range (ref source) rows
     eq (Vec.length (ref rows)) 2
-    eq (Array.sum (Vec.at (ref rows) 0)) 3
+    eq (Array.sum (Vec.at 0 (ref rows))) 3
     eq source[1][0] 3
 
 test "add_range_seq and append move owned elements" =
     let mut words = Vec.of_array ["a" + "1", "b" + "2"]
     let first = [1, 2]
-    words = Vec.add_range_seq words (Seq.map (\number -> "n" + to_string number) (Array.to_seq (ref first)))
+    words = Vec.add_range_seq (Seq.map (\number -> "n" + to_string number) (Array.to_seq (ref first))) words
     check_words (ref words) ["a1", "b2", "n1", "n2"]
     let more = Vec.of_array ["x" + "9", "y" + "9"]
-    words = Vec.append words more
+    words = Vec.append more words
     check_words (ref words) ["a1", "b2", "n1", "n2", "x9", "y9"]
     let none: Vec<string> = Vec.empty()
-    words = Vec.append words none
+    words = Vec.append none words
     eq (Vec.length (ref words)) 6
     let mut front: Vec<string> = Vec.empty()
-    front = Vec.append front words
+    front = Vec.append words front
     eq (Vec.length (ref front)) 6
 
 test "insert puts the element at the index and moves the later ones up" =
     let mut values = vec [1, 2, 4]
-    values = Vec.insert values 2 3
+    values = Vec.insert 2 3 values
     eq (items (ref values)) [1, 2, 3, 4]
     eq (Vec.capacity (ref values)) 6
-    values = Vec.insert values 0 0
-    values = Vec.insert values 5 5
+    values = Vec.insert 0 0 values
+    values = Vec.insert 5 5 values
     eq (items (ref values)) [0, 1, 2, 3, 4, 5]
     eq (Vec.capacity (ref values)) 6
-    values = Vec.insert values 6 6
+    values = Vec.insert 6 6 values
     eq (items (ref values)) [0, 1, 2, 3, 4, 5, 6]
     eq (Vec.capacity (ref values)) 12
     let mut one: Vec<i64> = Vec.empty()
-    one = Vec.insert one 0 9
+    one = Vec.insert 0 9 one
     eq (items (ref one)) [9]
     eq (Vec.capacity (ref one)) 4
 
 test "insert_range inserts the elements of an array" =
     let mut values = vec [1, 5]
-    values = Vec.insert_range values 1 (ref [2, 3, 4])
+    values = Vec.insert_range 1 (ref [2, 3, 4]) values
     eq (items (ref values)) [1, 2, 3, 4, 5]
     eq (Vec.capacity (ref values)) 5
-    values = Vec.insert_range values 0 (ref [0])
+    values = Vec.insert_range 0 (ref [0]) values
     eq (items (ref values)) [0, 1, 2, 3, 4, 5]
     eq (Vec.capacity (ref values)) 10
-    values = Vec.insert_range values 6 (ref [6, 7])
+    values = Vec.insert_range 6 (ref [6, 7]) values
     eq (items (ref values)) [0, 1, 2, 3, 4, 5, 6, 7]
     let none: [i64] = []
-    values = Vec.insert_range values 3 (ref none)
+    values = Vec.insert_range 3 (ref none) values
     eq (items (ref values)) [0, 1, 2, 3, 4, 5, 6, 7]
-    values = Vec.insert_range values 8 (ref none)
+    values = Vec.insert_range 8 (ref none) values
     eq (Vec.length (ref values)) 8
 
 test "insert_range_seq inserts the elements of a sequence" =
     let mut words = Vec.of_array ["a" + "1", "d" + "4"]
     let middle = [2, 3]
-    words = Vec.insert_range_seq words 1 (Seq.map (\number -> "m" + to_string number) (Array.to_seq (ref middle)))
+    words = Vec.insert_range_seq 1 (Seq.map (\number -> "m" + to_string number) (Array.to_seq (ref middle))) words
     check_words (ref words) ["a1", "m2", "m3", "d4"]
     let last = [5]
-    words = Vec.insert_range_seq words 4 (Seq.map (\number -> "e" + to_string number) (Array.to_seq (ref last)))
+    words = Vec.insert_range_seq 4 (Seq.map (\number -> "e" + to_string number) (Array.to_seq (ref last))) words
     check_words (ref words) ["a1", "m2", "m3", "d4", "e5"]
 
+test "a sequence grows the capacity by doubling and an array by one step, as in .NET" =
+    let twenty = new [i64](20, \index -> index)
+    let by_seq = Vec.insert_range_seq 1 (Array.to_seq (ref twenty)) (vec [1, 2, 3, 4])
+    eq (Vec.length (ref by_seq)) 24
+    eq (Vec.capacity (ref by_seq)) 32
+    let by_array = Vec.insert_range 1 (ref twenty) (vec [1, 2, 3, 4])
+    eq (Vec.capacity (ref by_array)) 24
+    let added = Vec.add_range_seq (Array.to_seq (ref twenty)) (vec [1, 2, 3, 4])
+    eq (Vec.capacity (ref added)) 32
+    let appended = Vec.add_range (ref twenty) (vec [1, 2, 3, 4])
+    eq (Vec.capacity (ref appended)) 24
+    let nothing: [i64] = []
+    let same = Vec.insert_range_seq 2 (Array.to_seq (ref nothing)) (vec [1, 2, 3, 4])
+    eq (Vec.capacity (ref same)) 4
 // ---- Removing ----
 
 test "remove_at removes one element and keeps the capacity" =
     let mut values = vec [10, 20, 30, 40]
-    values = Vec.remove_at values 1
+    values = Vec.remove_at 1 values
     eq (items (ref values)) [10, 30, 40]
-    values = Vec.remove_at values 2
+    values = Vec.remove_at 2 values
     eq (items (ref values)) [10, 30]
-    values = Vec.remove_at values 0
+    values = Vec.remove_at 0 values
     eq (items (ref values)) [30]
     eq (Vec.capacity (ref values)) 4
-    values = Vec.remove_at values 0
+    values = Vec.remove_at 0 values
     eq (Vec.length (ref values)) 0
 
 test "remove_range removes a range, which may be empty and may end at the length" =
     let mut values = vec [1, 2, 3, 4, 5, 6]
-    values = Vec.remove_range values 1 2
+    values = Vec.remove_range 1 2 values
     eq (items (ref values)) [1, 4, 5, 6]
-    values = Vec.remove_range values 2 0
-    values = Vec.remove_range values 4 0
+    values = Vec.remove_range 2 0 values
+    values = Vec.remove_range 4 0 values
     eq (items (ref values)) [1, 4, 5, 6]
-    values = Vec.remove_range values 1 3
+    values = Vec.remove_range 1 3 values
     eq (items (ref values)) [1]
-    values = Vec.remove_range values 0 1
+    values = Vec.remove_range 0 1 values
     eq (Vec.length (ref values)) 0
     eq (Vec.capacity (ref values)) 6
 
 test "remove removes the first equal element and says whether there was one" =
     let values = vec [5, 3, 5, 1]
-    match Vec.remove values 5 with
+    match Vec.remove 5 values with
     | (rest, found) ->
         Test.is_true found
         eq (items (ref rest)) [3, 5, 1]
-        match Vec.remove rest 9 with
+        match Vec.remove 9 rest with
         | (same, missing) ->
             Test.is_true (!missing)
             eq (items (ref same)) [3, 5, 1]
@@ -264,7 +278,7 @@ test "remove removes the first equal element and says whether there was one" =
 test "remover looks for a borrowed item that it does not consume" =
     let words = Vec.of_array ["a" + "1", "b" + "2", "a" + "1"]
     let target = "a" + "1"
-    match Vec.remover words (ref target) with
+    match Vec.remover (ref target) words with
     | (rest, found) ->
         Test.is_true found
         check_words (ref rest) ["b2", "a1"]
@@ -272,30 +286,30 @@ test "remover looks for a borrowed item that it does not consume" =
 
 test "remove_all removes the elements the predicate accepts and counts them" =
     let values = vec [1, 2, 3, 4, 5, 6, 7, 8]
-    match Vec.remove_all values (\number -> number % 3 == 0) with
+    match Vec.remove_all (\number -> number % 3 == 0) values with
     | (rest, removed) ->
         eq removed 2
         eq (items (ref rest)) [1, 2, 4, 5, 7, 8]
         eq (Vec.capacity (ref rest)) 8
-        match Vec.remove_all rest (\number -> number > 100) with
+        match Vec.remove_all (\number -> number > 100) rest with
         | (same, none) ->
             eq none 0
             eq (items (ref same)) [1, 2, 4, 5, 7, 8]
-            match Vec.remove_all same (\_number -> true) with
+            match Vec.remove_all (\_number -> true) same with
             | (empty, all) ->
                 eq all 6
                 eq (Vec.length (ref empty)) 0
 
 test "remove_allr keeps the order of the elements that stay" =
     let values = vec [5, 1, 4, 2, 3]
-    match Vec.remove_allr values (\number -> *number % 2 == 0) with
+    match Vec.remove_allr (\number -> *number % 2 == 0) values with
     | (rest, removed) ->
         eq removed 2
         eq (items (ref rest)) [5, 1, 3]
 
 test "remove_allr removes strings by a borrowed predicate" =
     let words = Vec.of_array ["aa" + "aa", "bbbb" + "b", "cc" + "cc", "dddd" + "d"]
-    match Vec.remove_allr words (\word -> word.length == 5) with
+    match Vec.remove_allr (\word -> word.length == 5) words with
     | (rest, removed) ->
         eq removed 2
         check_words (ref rest) ["aaaa", "cccc"]
@@ -341,12 +355,12 @@ test "reverse reverses the whole Vec in place" =
 
 test "reverse_range reverses a range" =
     let mut values = vec [1, 2, 3, 4, 5, 6]
-    values = Vec.reverse_range values 1 4
+    values = Vec.reverse_range 1 4 values
     eq (items (ref values)) [1, 5, 4, 3, 2, 6]
-    values = Vec.reverse_range values 0 1
-    values = Vec.reverse_range values 6 0
+    values = Vec.reverse_range 0 1 values
+    values = Vec.reverse_range 6 0 values
     eq (items (ref values)) [1, 5, 4, 3, 2, 6]
-    values = Vec.reverse_range values 4 2
+    values = Vec.reverse_range 4 2 values
     eq (items (ref values)) [1, 5, 4, 3, 6, 2]
 
 test "sort orders the elements in place and keeps the capacity" =
@@ -358,7 +372,7 @@ test "sort orders the elements in place and keeps the capacity" =
     words = Vec.sort words
     check_words (ref words) ["apple", "fig", "pear"]
     let mut many: Vec<i64> = Vec.empty()
-    for index in 0 .. 999 do many = Vec.add many ((index * 7919) % 1000)
+    for index in 0 .. 999 do many = Vec.add ((index * 7919) % 1000) many
     many = Vec.sort many
     for index in 0 .. 999 do eq many[index] index
     let mut empty: Vec<i64> = Vec.empty()
@@ -387,25 +401,25 @@ test "sort puts a NaN before every number, as .NET does" =
 
 test "sort_range sorts a range only" =
     let mut values = vec [9, 8, 7, 3, 2, 1, 0]
-    values = Vec.sort_range values 2 4
+    values = Vec.sort_range 2 4 values
     eq (items (ref values)) [9, 8, 1, 2, 3, 7, 0]
-    values = Vec.sort_range values 0 1
-    values = Vec.sort_range values 7 0
+    values = Vec.sort_range 0 1 values
+    values = Vec.sort_range 7 0 values
     eq (items (ref values)) [9, 8, 1, 2, 3, 7, 0]
-    values = Vec.sort_range values 0 7
+    values = Vec.sort_range 0 7 values
     eq (items (ref values)) [0, 1, 2, 3, 7, 8, 9]
 
 test "sort_with sorts by a comparison, stably" =
     let mut values = vec [3, 1, 2]
-    values = Vec.sort_with values (\left right -> right - left)
+    values = Vec.sort_with (\left right -> right - left) values
     eq (items (ref values)) [3, 2, 1]
     let mut points = Vec.of_array [Point { x: 1, y: 1 }, Point { x: 0, y: 2 }, Point { x: 1, y: 3 }, Point { x: 0, y: 4 }]
-    points = Vec.sort_with points (\left right -> left.x - right.x)
+    points = Vec.sort_with (\left right -> left.x - right.x) points
     eq points[0].y 2
     eq points[1].y 4
     eq points[2].y 1
     eq points[3].y 3
-    points = Vec.sort_range_with points 1 3 (\left right -> right.y - left.y)
+    points = Vec.sort_range_with 1 3 (\left right -> right.y - left.y) points
     eq points[0].y 2
     eq points[1].y 4
     eq points[2].y 3
@@ -413,12 +427,12 @@ test "sort_with sorts by a comparison, stably" =
 
 test "sort_withr sorts elements that are not Copy, stably" =
     let mut words = Vec.of_array ["ccc" + "", "a" + "", "bb" + "", "dd" + "", "e" + ""]
-    words = Vec.sort_withr words (\left right -> left.length - right.length)
+    words = Vec.sort_withr (\left right -> left.length - right.length) words
     check_words (ref words) ["a", "e", "bb", "dd", "ccc"]
-    words = Vec.sort_range_withr words 1 3 (\left right -> right.length - left.length)
+    words = Vec.sort_range_withr 1 3 (\left right -> right.length - left.length) words
     check_words (ref words) ["a", "bb", "dd", "e", "ccc"]
     let mut empty: Vec<string> = Vec.empty()
-    empty = Vec.sort_withr empty (\left right -> left.length - right.length)
+    empty = Vec.sort_withr (\left right -> left.length - right.length) empty
     eq (Vec.length (ref empty)) 0
 
 // The values are key * 1000 + position, so a stable sort by key leaves the positions of equal keys ascending.
@@ -428,7 +442,7 @@ fn tied length seed =
     let mut values: Vec<i64> = Vec.empty()
     for position in 0i64 .. length - 1 do
         state = (state * 1103515245 + 12345) % 2147483648
-        values = Vec.add values ((state / 65536) % 7 * 1000 + position)
+        values = Vec.add ((state / 65536) % 7 * 1000 + position) values
     values
 
 private def by_key :: i64 -> i64 -> i64
@@ -436,14 +450,14 @@ fn by_key left right = left / 1000 - right / 1000
 
 test "sort_withr and sort_range_withr agree with the stable sort_with for every length" =
     for length in 0i64 .. 170 do
-        let expected = Vec.sort_with (tied length length) by_key
-        let sorted = Vec.sort_withr (tied length length) (\left right -> by_key *left *right)
+        let expected = Vec.sort_with by_key (tied length length)
+        let sorted = Vec.sort_withr (\left right -> by_key *left *right) (tied length length)
         eq (items (ref sorted)) (items (ref expected))
         if length >= 6 then
-            let inner = Vec.sort_range_with (tied length 5) 2 (length - 5) by_key
-            let inner_r = Vec.sort_range_withr (tied length 5) 2 (length - 5) (\left right -> by_key *left *right)
+            let inner = Vec.sort_range_with 2 (length - 5) by_key (tied length 5)
+            let inner_r = Vec.sort_range_withr 2 (length - 5) (\left right -> by_key *left *right) (tied length 5)
             eq (items (ref inner_r)) (items (ref inner))
-        let descending = Vec.sort_withr (tied length 3) (\left right -> by_key *right *left)
+        let descending = Vec.sort_withr (\left right -> by_key *right *left) (tied length 3)
         let mut earlier = 7
         for value in Vec.iter (ref descending) do
             Test.is_true (*value / 1000 <= earlier)
@@ -452,160 +466,160 @@ test "sort_withr and sort_range_withr agree with the stable sort_with for every 
 test "sorting moves elements without dropping or duplicating them" =
     let shared = Rc.new "x"
     let mut owners: Vec<Rc<string>> = Vec.empty()
-    for _ in 1 .. 5 do owners = Vec.add owners (Rc.share (ref shared))
-    owners = Vec.sort_withr owners (\_left _right -> 0)
+    for _ in 1 .. 5 do owners = Vec.add (Rc.share (ref shared)) owners
+    owners = Vec.sort_withr (\_left _right -> 0) owners
     owners = Vec.reverse owners
-    owners = Vec.reverse_range owners 1 3
+    owners = Vec.reverse_range 1 3 owners
     eq (Rc.strong_count (ref shared)) 6
-    owners = Vec.truncate owners 0
+    owners = Vec.truncate 0 owners
     eq (Rc.strong_count (ref shared)) 1
 
 // ---- Searching ----
 
 test "contains and index_of look for equal elements" =
     let values = vec [5, 3, 5, 1]
-    Test.is_true (Vec.contains values 3)
-    Test.is_true (!(Vec.contains values 4))
-    eq (Vec.index_of values 5) 0
-    eq (Vec.index_of values 4) (-1)
-    eq (Vec.index_of_from values 5 1) 2
-    eq (Vec.index_of_from values 5 4) (-1)
-    eq (Vec.index_of_range values 5 1 1) (-1)
-    eq (Vec.index_of_range values 5 1 2) 2
-    eq (Vec.index_of_range values 1 0 0) (-1)
-    eq (Vec.index_of_range values 1 4 0) (-1)
+    Test.is_true (Vec.contains 3 values)
+    Test.is_true (!(Vec.contains 4 values))
+    eq (Vec.index_of 5 values) 0
+    eq (Vec.index_of 4 values) (-1)
+    eq (Vec.index_of_from 5 1 values) 2
+    eq (Vec.index_of_from 5 4 values) (-1)
+    eq (Vec.index_of_range 5 1 1 values) (-1)
+    eq (Vec.index_of_range 5 1 2 values) 2
+    eq (Vec.index_of_range 1 0 0 values) (-1)
+    eq (Vec.index_of_range 1 4 0 values) (-1)
     let empty: Vec<i64> = Vec.empty()
-    Test.is_true (!(Vec.contains empty 1))
-    eq (Vec.index_of empty 1) (-1)
-    eq (Vec.index_of_from empty 1 0) (-1)
+    Test.is_true (!(Vec.contains 1 empty))
+    eq (Vec.index_of 1 empty) (-1)
+    eq (Vec.index_of_from 1 0 empty) (-1)
 
 test "the r forms look for a borrowed item" =
     let words = Vec.of_array ["a" + "1", "b" + "2"]
     let target = "b" + "2"
-    Test.is_true (Vec.containsr words (ref target))
-    eq (Vec.index_ofr words (ref target)) 1
-    eq (Vec.last_index_ofr words (ref target)) 1
+    Test.is_true (Vec.containsr (ref target) words)
+    eq (Vec.index_ofr (ref target) words) 1
+    eq (Vec.last_index_ofr (ref target) words) 1
     eq target.length 2
-    Test.is_true (Vec.contains words ("a" + "1"))
-    eq (Vec.index_of words ("zz" + "")) (-1)
+    Test.is_true (Vec.contains ("a" + "1") words)
+    eq (Vec.index_of ("zz" + "") words) (-1)
 
 test "last_index_of looks backward" =
     let values = vec [5, 3, 5, 1]
-    eq (Vec.last_index_of values 5) 2
-    eq (Vec.last_index_of values 4) (-1)
-    eq (Vec.last_index_of_from values 5 1) 0
-    eq (Vec.last_index_of_from values 5 3) 2
-    eq (Vec.last_index_of_range values 5 3 2) 2
-    eq (Vec.last_index_of_range values 5 3 1) (-1)
-    eq (Vec.last_index_of_range values 5 3 0) (-1)
-    eq (Vec.last_index_of_range values 3 1 2) 1
+    eq (Vec.last_index_of 5 values) 2
+    eq (Vec.last_index_of 4 values) (-1)
+    eq (Vec.last_index_of_from 5 1 values) 0
+    eq (Vec.last_index_of_from 5 3 values) 2
+    eq (Vec.last_index_of_range 5 3 2 values) 2
+    eq (Vec.last_index_of_range 5 3 1 values) (-1)
+    eq (Vec.last_index_of_range 5 3 0 values) (-1)
+    eq (Vec.last_index_of_range 3 1 2 values) 1
     let empty: Vec<i64> = Vec.empty()
-    eq (Vec.last_index_of empty 1) (-1)
-    eq (Vec.last_index_of_from empty 1 (-1)) (-1)
-    eq (Vec.last_index_of_range empty 1 5 7) (-1)
+    eq (Vec.last_index_of 1 empty) (-1)
+    eq (Vec.last_index_of_from 1 (-1) empty) (-1)
+    eq (Vec.last_index_of_range 1 5 7 empty) (-1)
 
 test "find_index finds the first element the predicate accepts" =
     let values = vec [1, 4, 6, 7, 8]
-    eq (Vec.find_index values (\number -> number % 2 == 0)) 1
-    eq (Vec.find_index values (\number -> number > 100)) (-1)
-    eq (Vec.find_index_from values 2 (\number -> number % 2 == 0)) 2
-    eq (Vec.find_index_from values 5 (\_number -> true)) (-1)
-    eq (Vec.find_index_range values 2 2 (\number -> number % 2 == 0)) 2
-    eq (Vec.find_index_range values 3 1 (\number -> number % 2 == 0)) (-1)
-    eq (Vec.find_index_range values 5 0 (\_number -> true)) (-1)
+    eq (Vec.find_index (\number -> number % 2 == 0) values) 1
+    eq (Vec.find_index (\number -> number > 100) values) (-1)
+    eq (Vec.find_index_from 2 (\number -> number % 2 == 0) values) 2
+    eq (Vec.find_index_from 5 (\_number -> true) values) (-1)
+    eq (Vec.find_index_range 2 2 (\number -> number % 2 == 0) values) 2
+    eq (Vec.find_index_range 3 1 (\number -> number % 2 == 0) values) (-1)
+    eq (Vec.find_index_range 5 0 (\_number -> true) values) (-1)
     let words = Vec.of_array ["a" + "", "bb" + "", "ccc" + ""]
-    eq (Vec.find_indexr words (\word -> word.length == 2)) 1
-    eq (Vec.find_indexr words (\word -> word.length == 9)) (-1)
+    eq (Vec.find_indexr (\word -> word.length == 2) words) 1
+    eq (Vec.find_indexr (\word -> word.length == 9) words) (-1)
 
 test "find_last_index finds the last element the predicate accepts" =
     let values = vec [1, 4, 6, 7, 8]
-    eq (Vec.find_last_index values (\number -> number % 2 == 0)) 4
-    eq (Vec.find_last_index_from values 3 (\number -> number % 2 == 0)) 2
-    eq (Vec.find_last_index_range values 3 2 (\number -> number % 2 == 0)) 2
-    eq (Vec.find_last_index_range values 3 1 (\number -> number % 2 == 0)) (-1)
-    eq (Vec.find_last_index_range values 3 0 (\_number -> true)) (-1)
-    eq (Vec.find_last_index values (\number -> number > 100)) (-1)
+    eq (Vec.find_last_index (\number -> number % 2 == 0) values) 4
+    eq (Vec.find_last_index_from 3 (\number -> number % 2 == 0) values) 2
+    eq (Vec.find_last_index_range 3 2 (\number -> number % 2 == 0) values) 2
+    eq (Vec.find_last_index_range 3 1 (\number -> number % 2 == 0) values) (-1)
+    eq (Vec.find_last_index_range 3 0 (\_number -> true) values) (-1)
+    eq (Vec.find_last_index (\number -> number > 100) values) (-1)
     let empty: Vec<i64> = Vec.empty()
-    eq (Vec.find_last_index empty (\_number -> true)) (-1)
-    eq (Vec.find_last_index_from empty (-1) (\_number -> true)) (-1)
+    eq (Vec.find_last_index (\_number -> true) empty) (-1)
+    eq (Vec.find_last_index_from (-1) (\_number -> true) empty) (-1)
     let words = Vec.of_array ["a" + "", "bb" + "", "cc" + ""]
-    eq (Vec.find_last_indexr words (\word -> word.length == 2)) 2
+    eq (Vec.find_last_indexr (\word -> word.length == 2) words) 2
 
 test "find and find_last return the element or None where .NET returns the default" =
     let values = vec [1, 4, 6, 7, 8]
-    some_eq (Vec.find values (\number -> number % 2 == 0)) 4
-    some_eq (Vec.find_last values (\number -> number % 2 == 0)) 8
-    none (Vec.find values (\number -> number > 100))
-    none (Vec.find_last values (\number -> number > 100))
+    some_eq (Vec.find (\number -> number % 2 == 0) values) 4
+    some_eq (Vec.find_last (\number -> number % 2 == 0) values) 8
+    none (Vec.find (\number -> number > 100) values)
+    none (Vec.find_last (\number -> number > 100) values)
     let words = Vec.of_array ["a" + "", "bb" + "", "cc" + ""]
-    match Vec.findr words (\word -> word.length == 2) with
+    match Vec.findr (\word -> word.length == 2) words with
     | Maybe.Some word -> eq word.length 2
     | Maybe.None -> assert false
-    match Vec.find_lastr words (\word -> word.length == 2) with
-    | Maybe.Some word -> eq (Vec.index_ofr words word) 2
+    match Vec.find_lastr (\word -> word.length == 2) words with
+    | Maybe.Some word -> eq (Vec.index_ofr word words) 2
     | Maybe.None -> assert false
-    Test.is_true (Maybe.is_none (ref (Vec.findr words (\word -> word.length == 9))))
+    Test.is_true (Maybe.is_none (ref (Vec.findr (\word -> word.length == 9) words)))
 
 test "exists and true_for_all" =
     let values = vec [2, 4, 6]
-    Test.is_true (Vec.exists values (\number -> number == 4))
-    Test.is_true (!(Vec.exists values (\number -> number == 5)))
-    Test.is_true (Vec.true_for_all values (\number -> number % 2 == 0))
-    Test.is_true (!(Vec.true_for_all values (\number -> number > 2)))
+    Test.is_true (Vec.exists (\number -> number == 4) values)
+    Test.is_true (!(Vec.exists (\number -> number == 5) values))
+    Test.is_true (Vec.true_for_all (\number -> number % 2 == 0) values)
+    Test.is_true (!(Vec.true_for_all (\number -> number > 2) values))
     let empty: Vec<i64> = Vec.empty()
-    Test.is_true (!(Vec.exists empty (\_number -> true)))
-    Test.is_true (Vec.true_for_all empty (\_number -> false))
+    Test.is_true (!(Vec.exists (\_number -> true) empty))
+    Test.is_true (Vec.true_for_all (\_number -> false) empty)
     let words = Vec.of_array ["a" + "", "bb" + ""]
-    Test.is_true (Vec.existsr words (\word -> word.length == 2))
-    Test.is_true (!(Vec.existsr words (\word -> word.length == 3)))
-    Test.is_true (Vec.true_for_allr words (\word -> word.length > 0))
-    Test.is_true (!(Vec.true_for_allr words (\word -> word.length > 1)))
+    Test.is_true (Vec.existsr (\word -> word.length == 2) words)
+    Test.is_true (!(Vec.existsr (\word -> word.length == 3) words))
+    Test.is_true (Vec.true_for_allr (\word -> word.length > 0) words)
+    Test.is_true (!(Vec.true_for_allr (\word -> word.length > 1) words))
 
 test "find_all returns the elements the predicate accepts in a new Vec" =
     let values = vec [1, 2, 3, 4, 5, 6]
-    let even = Vec.find_all values (\number -> number % 2 == 0)
+    let even = Vec.find_all (\number -> number % 2 == 0) values
     eq (items (ref even)) [2, 4, 6]
     eq (Vec.capacity (ref even)) 4
-    let none = Vec.find_all values (\number -> number > 100)
+    let none = Vec.find_all (\number -> number > 100) values
     eq (Vec.length (ref none)) 0
     eq (Vec.capacity (ref none)) 0
     eq (items (ref values)) [1, 2, 3, 4, 5, 6]
 
 test "binary_search returns the index or the complement of the insertion point" =
     let values = vec [10, 20, 30, 40, 50]
-    eq (Vec.binary_search values 30) 2
-    eq (Vec.binary_search values 10) 0
-    eq (Vec.binary_search values 50) 4
-    eq (Vec.binary_search values 5) (-1)
-    eq (Vec.binary_search values 25) (-3)
-    eq (Vec.binary_search values 55) (-6)
+    eq (Vec.binary_search 30 values) 2
+    eq (Vec.binary_search 10 values) 0
+    eq (Vec.binary_search 50 values) 4
+    eq (Vec.binary_search 5 values) (-1)
+    eq (Vec.binary_search 25 values) (-3)
+    eq (Vec.binary_search 55 values) (-6)
     let empty: Vec<i64> = Vec.empty()
-    eq (Vec.binary_search empty 1) (-1)
+    eq (Vec.binary_search 1 empty) (-1)
     let twins = vec [1, 2, 2, 2, 3]
-    eq (Vec.binary_search twins 2) 2
+    eq (Vec.binary_search 2 twins) 2
     let more = vec [2, 2, 2, 2]
-    eq (Vec.binary_search more 2) 1
+    eq (Vec.binary_search 2 more) 1
     let nan = 0.0 / 0.0
     let floats = Vec.of_array [nan, 1.0, 2.0]
-    eq (Vec.binary_search floats nan) 0
-    eq (Vec.binary_search floats 0.5) (-2)
-    eq (Vec.binary_search floats 1.5) (-3)
+    eq (Vec.binary_search nan floats) 0
+    eq (Vec.binary_search 0.5 floats) (-2)
+    eq (Vec.binary_search 1.5 floats) (-3)
 
 test "binary_search_with and binary_search_range use a comparison" =
     let values = vec [50, 40, 30, 20, 10]
-    eq (Vec.binary_search_with values 30 (\left right -> right - left)) 2
-    eq (Vec.binary_search_with values 35 (\left right -> right - left)) (-3)
+    eq (Vec.binary_search_with 30 (\left right -> right - left) values) 2
+    eq (Vec.binary_search_with 35 (\left right -> right - left) values) (-3)
     let sorted = vec [1, 3, 5, 7, 9, 11]
-    eq (Vec.binary_search_range sorted 1 3 7 (\left right -> left - right)) 3
-    eq (Vec.binary_search_range sorted 1 3 1 (\left right -> left - right)) (-2)
-    eq (Vec.binary_search_range sorted 1 3 11 (\left right -> left - right)) (-5)
-    eq (Vec.binary_search_range sorted 6 0 11 (\left right -> left - right)) (-7)
+    eq (Vec.binary_search_range 1 3 7 (\left right -> left - right) sorted) 3
+    eq (Vec.binary_search_range 1 3 1 (\left right -> left - right) sorted) (-2)
+    eq (Vec.binary_search_range 1 3 11 (\left right -> left - right) sorted) (-5)
+    eq (Vec.binary_search_range 6 0 11 (\left right -> left - right) sorted) (-7)
     let words = Vec.of_array ["a" + "", "bb" + "", "ccc" + ""]
     let probe = "bb" + ""
-    eq (Vec.binary_search_withr words (ref probe) (\left right -> left.length - right.length)) 1
-    eq (Vec.binary_searchr words (ref probe)) 1
-    eq (Vec.binary_search words ("ccc" + "")) 2
-    eq (Vec.binary_search words ("b" + "")) (-2)
+    eq (Vec.binary_search_withr (ref probe) (\left right -> left.length - right.length) words) 1
+    eq (Vec.binary_searchr (ref probe) words) 1
+    eq (Vec.binary_search ("ccc" + "") words) 2
+    eq (Vec.binary_search ("b" + "") words) (-2)
 
 // ---- Visiting and converting ----
 
@@ -615,70 +629,106 @@ test "for_each visits the elements in order" =
     let tally = ref calls
     let sums = ref weighted
     let values = vec [3, 1, 4]
-    Vec.for_each values (\number -> tick tally sums number)
+    Vec.for_each (\number -> tick tally sums number) values
     eq (Atomic.load (Arc.get (ref calls))) 3
     eq (Atomic.load (Arc.get (ref weighted))) 9
     let words = Vec.of_array ["a" + "", "bb" + ""]
-    Vec.for_eachr words (\word -> tick tally sums word.length)
+    Vec.for_eachr (\word -> tick tally sums word.length) words
     eq (Atomic.load (Arc.get (ref calls))) 5
     eq (Atomic.load (Arc.get (ref weighted))) (9 + 3 * 1 + 4 * 2)
 
 test "convert_all converts each element into a new Vec with a capacity of its length" =
     let values = vec [1, 2, 3]
-    let doubled = Vec.convert_all values (\number -> number * 2)
+    let doubled = Vec.convert_all (\number -> number * 2) values
     eq (items (ref doubled)) [2, 4, 6]
     eq (Vec.capacity (ref doubled)) 3
-    let texts = Vec.convert_all values (\number -> to_string number)
+    let texts = Vec.convert_all (\number -> to_string number) values
     check_words (ref texts) ["1", "2", "3"]
     let words = Vec.of_array ["a" + "", "bb" + ""]
-    let lengths = Vec.convert_allr words (\word -> word.length)
+    let lengths = Vec.convert_allr (\word -> word.length) words
     eq (items (ref lengths)) [1, 2]
     let empty: Vec<i64> = Vec.empty()
-    let none = Vec.convert_all empty (\number -> number)
+    let none = Vec.convert_all (\number -> number) empty
     eq (Vec.capacity (ref none)) 0
 
 test "get_range and slice copy a range into a new Vec with a capacity of its count" =
     let values = vec [1, 2, 3, 4, 5]
-    let middle = Vec.get_range values 1 3
+    let middle = Vec.get_range 1 3 values
     eq (items (ref middle)) [2, 3, 4]
     eq (Vec.capacity (ref middle)) 3
-    let none = Vec.get_range values 5 0
+    let none = Vec.get_range 5 0 values
     eq (Vec.length (ref none)) 0
     eq (Vec.capacity (ref none)) 0
-    let tail = Vec.slice values 3 2
+    let tail = Vec.slice 3 2 values
     eq (items (ref tail)) [4, 5]
     eq (items (ref values)) [1, 2, 3, 4, 5]
 
 test "copy_to copies the elements into an array" =
     let values = vec [1, 2, 3]
     let mut target = [0, 0, 0, 0, 0]
-    Vec.copy_to values target
+    Vec.copy_to target values
     eq target [1, 2, 3, 0, 0]
-    Vec.copy_to_at values target 2
+    Vec.copy_to_at target 2 values
     eq target [1, 2, 1, 2, 3]
-    Vec.copy_to_range values 1 target 0 2
+    Vec.copy_to_range 1 target 0 2 values
     eq target [2, 3, 1, 2, 3]
-    Vec.copy_to_range values 3 target 5 0
+    Vec.copy_to_range 3 target 5 0 values
     eq target [2, 3, 1, 2, 3]
+
+// ---- The Vec comes last ----
+
+test "a pipeline passes the Vec on, and partial applications compose" =
+    let sorted =
+        Vec.empty()
+        |> Vec.add 3
+        |> Vec.add 1
+        |> Vec.add 2
+        |> Vec.sort
+        |> Vec.insert 1 10
+    eq (items (ref sorted)) [1, 10, 2, 3]
+    let top_two = Vec.sort >> Vec.reverse >> Vec.truncate 2
+    let top = vec [5, 1, 9, 3] |> top_two
+    eq (items (ref top)) [9, 5]
+    let without_first = Vec.remove_at 0
+    let rest = vec [1, 2, 3] |> without_first |> without_first
+    eq (items (ref rest)) [3]
+    let words = Vec.of_array ["pear", "fig", "banana"] |> Vec.sort_withr (\left right -> left.length - right.length)
+    check_words (ref words) ["fig", "pear", "banana"]
+    eq (Vec.index_ofr "pear" (ref words)) 1
+    let joined = vec [4, 8, 15] |> Vec.append (vec [16, 23])
+    eq (items (ref joined)) [4, 8, 15, 16, 23]
+
+test "the arguments before the Vec may borrow it, because it is moved last" =
+    let mut values = vec [1, 2, 3]
+    values = Vec.insert (Vec.length (ref values)) 4 values
+    values = Vec.insert (Vec.length (ref values) / 2) 9 values
+    eq (items (ref values)) [1, 2, 9, 3, 4]
+    values = Vec.set (Vec.length (ref values) - 1) (values[0] + 100) values
+    values = Vec.swap 0 (Vec.length (ref values) - 1) values
+    eq (items (ref values)) [101, 2, 9, 3, 1]
+    values = Vec.truncate (Vec.length (ref values) - 2) values
+    eq (items (ref values)) [101, 2, 9]
+    values = Vec.reserve (Vec.capacity (ref values)) values
+    Test.is_true (Vec.capacity (ref values) >= 10)
 
 // ---- Elements that own memory ----
 
 test "removed elements are dropped and moved ones are not" =
     let shared = Rc.new "x"
     let mut owners: Vec<Rc<string>> = Vec.empty()
-    for _ in 1 .. 6 do owners = Vec.add owners (Rc.share (ref shared))
+    for _ in 1 .. 6 do owners = Vec.add (Rc.share (ref shared)) owners
     eq (Rc.strong_count (ref shared)) 7
-    owners = Vec.remove_at owners 2
+    owners = Vec.remove_at 2 owners
     eq (Rc.strong_count (ref shared)) 6
-    owners = Vec.remove_range owners 1 3
+    owners = Vec.remove_range 1 3 owners
     eq (Rc.strong_count (ref shared)) 3
-    owners = Vec.insert owners 1 (Rc.share (ref shared))
+    owners = Vec.insert 1 (Rc.share (ref shared)) owners
     eq (Rc.strong_count (ref shared)) 4
     let more = Vec.of_array [Rc.share (ref shared), Rc.share (ref shared)]
-    owners = Vec.append owners more
+    owners = Vec.append more owners
     eq (Rc.strong_count (ref shared)) 6
     eq (Vec.length (ref owners)) 5
-    match Vec.remove_allr owners (\_owner -> true) with
+    match Vec.remove_allr (\_owner -> true) owners with
     | (rest, removed) ->
         eq removed 5
         eq (Vec.length (ref rest)) 0
@@ -687,29 +737,29 @@ test "removed elements are dropped and moved ones are not" =
 test "remove_allr keeps the elements that stay and drops the others" =
     let shared = Rc.new "x"
     let mut owners: Vec<Rc<string>> = Vec.empty()
-    for _ in 1 .. 8 do owners = Vec.add owners (Rc.share (ref shared))
-    match Vec.remove_allr owners (\owner -> Rc.strong_count owner > 100) with
+    for _ in 1 .. 8 do owners = Vec.add (Rc.share (ref shared)) owners
+    match Vec.remove_allr (\owner -> Rc.strong_count owner > 100) owners with
     | (same, removed) ->
         eq removed 0
         eq (Rc.strong_count (ref shared)) 9
         owners = same
-    owners = Vec.truncate owners 3
+    owners = Vec.truncate 3 owners
     eq (Rc.strong_count (ref shared)) 4
-    owners = Vec.truncate owners 0
+    owners = Vec.truncate 0 owners
     eq (Rc.strong_count (ref shared)) 1
 
 // ---- Large and random sequences of changes ----
 
 test "insert and remove_range move large blocks" =
     let mut values: Vec<i64> = Vec.with_capacity 20000
-    for index in 0 .. 9999 do values = Vec.add values index
-    values = Vec.insert values 5000 (-1)
+    for index in 0 .. 9999 do values = Vec.add index values
+    values = Vec.insert 5000 (-1) values
     eq values[4999] 4999
     eq values[5000] (-1)
     eq values[5001] 5000
     eq values[10000] 9999
     eq (Vec.length (ref values)) 10001
-    values = Vec.remove_range values 2000 3000
+    values = Vec.remove_range 2000 3000 values
     eq (Vec.length (ref values)) 7001
     eq values[1999] 1999
     eq values[2000] (-1)
@@ -719,8 +769,8 @@ test "insert and remove_range move large blocks" =
 
 test "remove_all and reverse work on a large Vec" =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 0 .. 9999 do values = Vec.add values index
-    match Vec.remove_all values (\number -> number % 3 == 0) with
+    for index in 0 .. 9999 do values = Vec.add index values
+    match Vec.remove_all (\number -> number % 3 == 0) values with
     | (rest, removed) ->
         eq removed 3334
         eq (Vec.length (ref rest)) 6666
@@ -742,20 +792,20 @@ test "insert and remove agree with the Array functions over many steps" =
         let place = (state / 8) % (length + 1)
         let chunk = [step, step + 1000, step + 2000]
         if kind == 0 || length == 0 then
-            values = Vec.insert values place step
+            values = Vec.insert place step values
             model = Array.insert_at place step (ref model)
         elif kind == 1 then
             let index = place % length
-            values = Vec.remove_at values index
+            values = Vec.remove_at index values
             model = Array.remove_at index (ref model)
         elif kind == 2 then
-            values = Vec.insert_range values place (ref chunk)
+            values = Vec.insert_range place (ref chunk) values
             model = Array.insert_many_at place (ref chunk) (ref model)
         else
             let wanted = (state / 32) % 4
             let count = if wanted > length then length else wanted
             let index = place % (length - count + 1)
-            values = Vec.remove_range values index count
+            values = Vec.remove_range index count values
             model = Array.remove_many_at index count (ref model)
         eq (Vec.length (ref values)) model.length
         Test.is_true (Vec.capacity (ref values) >= model.length)
@@ -766,11 +816,11 @@ test "sort and binary_search agree with a model over many elements" =
     let mut values: Vec<i64> = Vec.empty()
     for _ in 0 .. 499 do
         state = (state * 1103515245 + 12345) % 2147483648
-        values = Vec.add values (state / 65536 % 200)
+        values = Vec.add (state / 65536 % 200) values
     values = Vec.sort values
     for index in 1 .. 499 do Test.is_true (values[index - 1] <= values[index])
     for probe in 0 .. 199 do
-        let found = Vec.binary_search values probe
+        let found = Vec.binary_search probe values
         if found >= 0 then eq values[found] probe
         else
             let place = -1 - found
