@@ -1895,10 +1895,10 @@ impl Builtin {
             Self::ArrayToList => "Array.to_list",
             Self::ArraySortBy => "Array.__sort_with",
             Self::ListMap => "List.map",
-            Self::ListMapRef => "List.map_ref",
-            Self::ListReverse => "List.reverse",
+            Self::ListMapRef => "List.mapr",
+            Self::ListReverse => "List.rev",
             Self::ListToArray => "List.to_array",
-            Self::ListFoldRef => "List.fold_ref",
+            Self::ListFoldRef => "List.foldr",
             Self::VecEmpty => "Vec.empty",
             Self::SeqNext => "Seq.next",
             Self::SimdSplat => "Simd.splat",
@@ -10549,11 +10549,12 @@ impl<'a> Checker<'a> {
                 self.place_argument(expression, expected)
             }
             // A temporary is borrowed like a call's result:
-            // `xs |> Array.map f |> Array.sum` and `String.length "text"`.
+            // `xs |> Array.map f |> Array.sum`, `String.length "text"` and `List.length [|1, 2|]`.
             ExprKind::Binary(..)
             | ExprKind::String(_)
             | ExprKind::Interpolated(_)
             | ExprKind::Array(_)
+            | ExprKind::List(_)
             | ExprKind::Tuple(_)
                 if self.shared_reference(expected) =>
             {

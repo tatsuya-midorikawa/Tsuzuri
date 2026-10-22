@@ -764,14 +764,20 @@ fn split_into count values =
         let parts = if count < values.length then count else values.length
         new [['a]](parts, index -> part_at values (values.length / parts) (values.length % parts) index)
 
-private def rec unfold_into :: ('state -> Maybe<('a * 'state)>) -> 'state -> Vec<'a> -> Vec<'a>
-fn rec unfold_into generator state collected =
-    match generator state with
-    | Maybe.Some (value, next) -> unfold_into generator next (Vec.push collected value)
-    | Maybe.None -> collected
-
 def unfold :: ('state -> Maybe<('a * 'state)>) -> 'state -> ['a]
-fn unfold generator state = Vec.to_array (unfold_into generator state (Vec.empty()))
+fn unfold generator initial =
+    let mut current = Maybe.Some initial
+    let mut items = Vec.empty()
+    while Maybe.is_some (ref current) do
+        match current with
+        | Maybe.Some state ->
+            match generator state with
+            | Maybe.Some (item, next) ->
+                items = Vec.push items item
+                current = Maybe.Some next
+            | Maybe.None -> current = Maybe.None
+        | Maybe.None -> current = Maybe.None
+    Vec.to_array items
 
 def permute :: Copy<'a> => (i64 -> i64) -> ref ['a] -> ['a]
 fn permute index_map values =
@@ -997,7 +1003,11 @@ def sort_descending :: Ord<'a> => ref ['a] -> ['a]
 fn sort_descending values = Array.__sort_with (left -> right -> if Ord.lt left right then 1i64 else 0i64) values
 
 def sort_with :: Copy<'a> => ('a -> 'a -> i64) -> ref ['a] -> ['a]
-fn sort_with comparer values = Array.__sort_with (left -> right -> comparer *left *right) values
+fn sort_with comparer values = sort_with_borrowed (ref comparer) values
+
+/// The adapter captures a borrow of the comparer, so a comparison does not copy the comparer's environment into it.
+private def sort_with_borrowed :: Copy<'a> => ref ('a -> 'a -> i64) -> ref ['a] -> ['a]
+fn sort_with_borrowed comparer values = Array.__sort_with (left -> right -> (*comparer) *left *right) values
 
 private def indices :: i64 -> [i64]
 fn indices count = new [i64](count, \index -> index)
@@ -1018,15 +1028,26 @@ private def key_order :: Ord<'key> => ref ['key] -> bool -> [i64]
 fn key_order keys descending =
     Array.__sort_with (left -> right -> key_takes_right descending (ref keys[*left]) (ref keys[*right])) (indices keys.length)
 
+/// The keys of `values`, from a loop that calls `projection` directly: a callback that a closure also captures (as the
+/// initializer of `new` would) cannot be specialized, and then every call copies its environment.
+private def keys_of :: Copy<'a> => ('a -> 'key) -> ref ['a] -> ['key]
+fn keys_of projection values =
+    let mut keys = Vec.with_capacity values.length
+    let mut index = 0
+    while index < values.length do
+        keys = Vec.push keys (projection values[index])
+        index = index + 1
+    Vec.to_array keys
+
 def sort_by :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by projection values =
-    let keys = map projection values
+    let keys = keys_of projection values
     let order = key_order (ref keys) false
     new ['a](values.length, position -> values[order[position]])
 
 def sort_by_descending :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by_descending projection values =
-    let keys = map projection values
+    let keys = keys_of projection values
     let order = key_order (ref keys) true
     new ['a](values.length, position -> values[order[position]])
 

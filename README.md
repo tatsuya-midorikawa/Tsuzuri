@@ -164,8 +164,8 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 
 #### 配列・リスト・コレクション
 
-- **配列 (`[T]`)**: 固定長の連続メモリ領域です。`[1, 2, 3]` のように記述し、生成後の長さや要素は不変です。`ref values[start..end]` で終端を含まない共有スライス（型: `ref [T]`）を作成でき、コピーを発生させずに部分列を読み取れます。動的な初期化には `new [i32](count, i -> i as i32)` を使用します。
-- **連結リスト (`[|T|]`)**: 不変のリストです。リテラルは `[|1, 2, 3|]`、空リストは `[||]` です。要素は連続した領域（chunk）に並び、一度に作ったリスト（`new`・リテラル・複製）は 1 つの chunk、`List.cons` で伸ばしたリストは chunk の連なりです。要素への添字アクセスは、一度に作ったリストなら $O(1)$、`List.cons` で伸ばしたリストなら先行する chunk の数に比例します。要素数が定数の小さなリストを 1 つの関数の中で作って使って捨てる処理は、以前の node の連結（LLVM が確保を全部消して約 1 ns）より遅くなることがあります（`List.map`・`List.reverse`・`List.copy`・`List.cons` の連鎖・文字列のリストで 25〜80 ns）。要素数が実行時に決まるリストは速くなります。
+- **配列 (`[T]`)**: 固定長の連続メモリ領域です。`[1, 2, 3]` のように記述し、生成後の長さや要素は不変です。`ref values[start..end]` で終端を含まない共有スライス（型: `ref [T]`）を作成でき、コピーを発生させずに部分列を読み取れます。動的な初期化には `new [i32](count, i -> i as i32)` を使用します。F# の `Array` モジュールの関数は、F# と同じ名前（snake_case）と引数の順で使えます。詳細は [Array](_tsuzuri/language-reference/built-in-types-and-modules/array.md) を参照してください。
+- **連結リスト (`[|T|]`)**: 不変のリストです。リテラルは `[|1, 2, 3|]`、空リストは `[||]` です。F# の `List` モジュールの関数（`List.map`・`List.filter`・`List.fold` など）は、F# と同じ名前（snake_case）と引数の順で使えます。要素は連続した領域（chunk）に並び、一度に作ったリスト（`new`・リテラル・複製）は 1 つの chunk、`List.cons` で伸ばしたリストは chunk の連なりです。要素への添字アクセスは、一度に作ったリストなら $O(1)$、`List.cons` で伸ばしたリストなら先行する chunk の数に比例します。要素数が定数の小さなリストを 1 つの関数の中で作って使って捨てる処理は、以前の node の連結（LLVM が確保を全部消して約 1 ns）より遅くなることがあります（`List.map`・`List.rev`・`List.copy`・`List.cons` の連鎖・文字列のリストで 25〜80 ns）。要素数が実行時に決まるリストは速くなります。詳細は [List](_tsuzuri/language-reference/built-in-types-and-modules/list.md) を参照してください。
 - **ベクター (`Vec<T>`)**: 伸縮可能な所有バッファです。
 - **順序付きマップ・セット (`Map<K, V>` / `Set<K>`)**: 平衡二分探索木による不変コレクションです。キーの順序を保持し、検索は $O(\log n)$、挿入および削除は $O(n)$ で動作します。
 - **ハッシュマップ・ハッシュセット (`HashMap<K, V>` / `HashSet<K>`)**: 平均 $O(1)$ で検索・挿入・削除が可能なコレクションです。挿入順序が保持されます。詳細は [HashMap](_tsuzuri/language-reference/built-in-types-and-modules/hashmap.md) / [HashSet](_tsuzuri/language-reference/built-in-types-and-modules/hashset.md) を参照してください。

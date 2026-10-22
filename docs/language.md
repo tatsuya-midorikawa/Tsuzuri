@@ -1535,7 +1535,7 @@ Tsuzuri はガベージコレクション（GC）とプログラマによる手�
 参照カウントは、std の [Rc / Arc](#rc--arc) を明示的に使った値だけが行います（所有者は `share` で明示的に増やし、暗黙の複製はありません。サイクルコレクターはありません）。
 循環する構造は、std の [Arena](#arena) が値をまとめて所有し、Copy のハンドルで指すことで表します（ハンドルは値の寿命を延ばしません）。
 レコードはスタックやヒープに直接インライン配置される値型として保持され、配列は所有する要素データ領域へのポインタと長さを格納した記述子（ファットポインタ）として表現されます。ユーザーのレコードのフィールドは、宣言の順に並べるよりも小さくなるときだけ、アライメントの大きい順に格納します（同じアライメントは宣言の順。標準ライブラリのレコードとタプルは宣言の順のまま）。評価と drop の順、`deriving` の比較・Hash・Display、デバッグ情報のメンバー、公開 ABI の C の構造体は、宣言の順のまま変わりません。実際の大きさは [`record` のリファレンス](../_tsuzuri/language-reference/built-in-types-and-modules/record.md#メモリ上の大きさ)と `docs/architecture.md` に書きます。
-連結リストは所有する先頭の chunk へのポインタと要素数を保持し、chunk は 24 バイトの header（次の chunk へのポインタ、その後ろにある要素の数、容量）と、連続して並ぶ要素の領域を 1 回の確保で持ちます。一度に作ったリスト（`new`、リテラル、複製、`Array.to_list`、`List.map`、`List.reverse`）は要素数ちょうどの 1 つの chunk で、`List.cons` で伸ばしたリストは chunk の連なりです。
+連結リストは所有する先頭の chunk へのポインタと要素数を保持し、chunk は 24 バイトの header（次の chunk へのポインタ、その後ろにある要素の数、容量）と、連続して並ぶ要素の領域を 1 回の確保で持ちます。一度に作ったリスト（`new`、リテラル、複製、`Array.to_list`、`List.map`、`List.rev`）は要素数ちょうどの 1 つの chunk で、`List.cons` で伸ばしたリストは chunk の連なりです。
 配列の要素領域やリストの chunk をスタックとヒープのどちらに確保するかは、次節で解説するように生成時の構文（`new` の有無）によって決定論的に定まります。
 LLVM 最適化パスによって積極的なスカラー化（SROA）やコピーの除去が行われますが、巨大な構造体の値コピーが常にゼロコストになるわけではありません。
 型システムの保守的なインラインレイアウト上限は 64 KiB に設定されています
@@ -1702,7 +1702,7 @@ let len4 = text |> String.length
 ジェネリック関数であっても仮引数が `ref 'a` や `ref mut 'a` として明示宣言されている場合は、正しく自動補完の対象となります。
 明示的な型注釈や先行する引数からシグネチャが確定している高階関数や無名ラムダ式に対しても、この自動借用規則が自然に適用されます。
 なお、この自動補完機構は「関数呼び出しの実引数」に対してのみ作用するものであり、ローカル変数の代入文（例: `let r: ref T = value`）や関数の戻り値に対して暗黙の借用を勝手に捏造することはありません。
-共有参照 `ref T` を要求する仮引数に対しては、一時的な計算結果の所有値を直接渡すことも可能です（例: `Array.sum (Array.map f (ref xs))`、`xs |> Array.map double |> Array.sum`、`String.length "text"` など）。
+共有参照 `ref T` を要求する仮引数に対しては、一時的な計算結果の所有値を直接渡すことも可能です（例: `Array.sum (Array.map f (ref xs))`、`xs |> Array.map double |> Array.sum`、`String.length "text"`、`List.length [|1, 2, 3|]` など）。
 このような一時値は、呼び出した関数から制御が戻るまでの期間だけ一時的にスタック上で安全に借用され、関数呼び出しの完了直後に安全に解放されます（ただし、関数の戻り値がその借用参照を保持して外部へ返却するシグネチャになっている場合は、寿命切れ参照の脱出を防ぐため一時値を直接渡すことはできません。その場合は事前に `let` で明示的にローカル変数へ束縛してください）。
 
 `ref`、`ref mut`、および `deref` のオペランドは単一の「構文項（term）」として解釈されます。項とは、識別子名、リテラル、丸括弧で囲まれた式、ならびにそれに後続する `.field` アクセス、`[index]` 添字アクセス、隣接した `(...)` 関数適用、またはネストした前置単項演算（例: `ref deref r`）などを指します。
@@ -2931,7 +2931,7 @@ first_list ref values
 リストの生成後の要素および chunk の構造は完全に不変であり、内部の次の chunk へのポインタが外部へ露出することはありません。既存リストに対する破壊的な要素の追加・削除・インプレース代入は不可能です。
 `List.cons value values` は既存の所有リストの先頭に新しい要素を追加した新しいリストを返し、`List.tail values` は先頭要素を除外した残りの所有リストを返します。
 `List.cons` は、先頭の chunk に空きがあればそこへ書き、満杯なら新しい chunk を足します。新しい chunk の容量は直前の先頭の chunk の 1.5 倍で、header を含めて 32 KiB が上限です（最初の chunk は、要素が 8 バイト以下なら header 込みで 32 バイト以内に収まります。要素が 9 バイト以上なら slot が 1 つの chunk になり、32 バイトを超えます。16 バイトの `string` は 40 バイト、16 バイトにそろえる `i128` と 24 バイトの record は 48 バイトです。たとえば `i64` では 1、2、4、7、11、… 個、上限は 4,093 個です。要素 1 つが 32,744 バイトを超えるときは、1 slot の chunk がその 32 KiB を超えます）。要素が数個の小さいリストは、1 要素ごとにノードを確保していた以前より、確保の大きさの合計が大きくなることがあります（`i64` の要素 1 個のリストは 16 バイトから 32 バイトです）。要素が増えると小さくなり、`List.cons` で伸ばした 100 万要素の `i64` のリストは 16 MB から 8 MB です（測定は [PM04 の測定](benchmarks.md#pm04-連結リストの連続表現)）。
-要素数が定数の小さなリストを 1 つの関数の中で作って使って捨てる処理は、1 要素ごとにノードを確保していた以前より遅くなることがあります。以前は LLVM が確保を全部消して 1 回あたり約 1 ns で済みましたが、chunk の表現では、`new` のリテラルを走査するだけの場合（約 1 ns）を除き、`List.map`・`List.reverse`・`List.copy`・`List.cons` を重ねたリストや要素が `string` のリストで 1〜3 個の chunk の確保と解放が残り、3 要素で 1 回あたり約 25〜80 ns かかります。要素数が実行時に決まるリストはこの逆で速くなります（100 万要素の構築が約 36 倍、`for` での走査が約 14 倍）。原因と数値は [PM04 の測定](benchmarks.md#pm04-連結リストの連続表現)にあります。
+要素数が定数の小さなリストを 1 つの関数の中で作って使って捨てる処理は、1 要素ごとにノードを確保していた以前より遅くなることがあります。以前は LLVM が確保を全部消して 1 回あたり約 1 ns で済みましたが、chunk の表現では、`new` のリテラルを走査するだけの場合（約 1 ns）を除き、`List.map`・`List.rev`・`List.copy`・`List.cons` を重ねたリストや要素が `string` のリストで 1〜3 個の chunk の確保と解放が残り、3 要素で 1 回あたり約 25〜80 ns かかります。要素数が実行時に決まるリストはこの逆で速くなります（100 万要素の構築が約 36 倍、`for` での走査が約 14 倍）。原因と数値は [PM04 の測定](benchmarks.md#pm04-連結リストの連続表現)にあります。
 `tail` は空リストに対して呼び出された場合は安全にトラップし、先頭要素を drop します。先頭の chunk はその最後の要素と一緒に解放されます（Copy 型のリストの旧値を後から参照する場合は、通常のコピー規則に従って独立したリストが複製されます）。
 `let mut` や可変参照 `ref mut [|T|]` によって可能なのはリスト全体を別のリストインスタンスへ置換することのみです。
 配列およびリストの双方において、特定要素の排他借用 `ref mut values[0]` や入れ子要素の部分書き換えは禁止されています。
@@ -3182,8 +3182,8 @@ let result = Seq.to_array selected
 - `Seq.unfold generator state` は、状態遷移関数 `state -> Maybe<('a * state)>` を繰り返し呼び出して無限または有限の列を生成します（状態変数 `state` にはクロージャの通常の `Capture` 制約が適用されます）。
 - `Seq.map transform sequence` は要素変換 `'a -> 'b` を、`Seq.filter predicate sequence` は述語関数 `ref 'a -> bool` を遅延適用します（シーケンス内に保存される入力要素型には `Capture` 制約が要求されます）。
 - `Seq.to_array` はシーケンス全体を消費し、内部で可変長 Vec に集約した後に固定長所有配列へと移送して返却します（無限シーケンスに対して呼び出した場合の停止性は保証されません）。
-- `Array.to_seqr`、`Vec.iter`、`List.iter`、および `Set.iter` はコレクションの各要素への共有借用参照を順次列挙する Seq を返し、`Map.iter` はキーと値の参照タプル `(ref K * ref V)` の Seq を返します。配列の `Array.iter` は F# と同じく各要素に関数を適用して `unit` を返す関数です。元のコンテナの生存期間および借用競合チェックは厳格に維持されます。
-- `List.iter` は、リストのリンクを 1 回走査して各要素への参照ポインタを格納した一時 Vec を内部で準備します。この前準備には計算量 $O(n)$ の時間と一時メモリを消費しますが、要素データ自身のディープコピーは発生しません（なお、前述のリストに対する直接の `for…in` ループであれば、このような一時メモリを一切消費せず直接走査可能です）。
+- `Array.to_seqr`、`Vec.iter`、`List.to_seqr`、および `Set.iter` はコレクションの各要素への共有借用参照を順次列挙する Seq を返し、`Map.iter` はキーと値の参照タプル `(ref K * ref V)` の Seq を返します。要素が `Copy` なら、値を列挙する `Array.to_seq` と `List.to_seq` も使えます。配列の `Array.iter` とリストの `List.iter` は F# と同じく各要素に関数を適用して `unit` を返す関数です。元のコンテナの生存期間および借用競合チェックは厳格に維持されます。
+- `List.to_seqr` と `List.to_seq` は、リストのリンクを 1 回走査して各要素への参照ポインタを格納した一時 Vec を内部で準備します。この前準備には計算量 $O(n)$ の時間と一時メモリを消費しますが、要素データ自身のディープコピーは発生しません（なお、前述のリストに対する直接の `for…in` ループであれば、このような一時メモリを一切消費せず直接走査可能です）。
 
 Seq の内部データ構造は完全に不透明であり、ユーザーコードからのレコード構築、内部フィールドの参照、パターン分解、およびレコード更新構文の適用は禁止されています。シーケンスの `next` 呼び出しは、保持しているクロージャ環境をディープコピーすることなく効率的に呼び出します。
 なお、コンピュテーション式内の `For` 操作は従来どおりビルダーモジュールの API へと展開され、言語組み込みの Seq 反復へと勝手に書き換えられることはありません（展開後の構文木の入れ子に対しても、コンパイラの資源上限である深度 128 が適用されます）。
@@ -3531,14 +3531,17 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 添字、個数、比較関数の戻り値は `i64` で、F# が例外を投げる場面（空配列、範囲外、長さの不一致、見つからない `find`）は安全なトラップになります。`try_item`、`try_find`、`try_head` のように `try_` が付く関数は `Maybe` を返します。
 `seq` の引数は配列で受け取り（`to_seq` と `of_seq` は `Seq<'a>`）、`Choice` は `Result` に対応します。全関数の一覧と型は [Array](../_tsuzuri/language-reference/built-in-types-and-modules/array.md) にあります。
 F# にはない `at`、`count`、`index_of`、`equal`、`binary_search`、`product`、`sum_pairwise`、`sum_kahan`、`dot`、`dot_fma` と、更新の `update`、`swap`、`write`、`swap_in`、`split_at_mut` も提供します。
-`List` モジュールは、`length`、`is_empty`、`copy`、`map`、`map_ref`、`fold`、`fold_ref`、`reverse`、`to_array` などを提供します。
+`List` モジュールは、[F# の `List` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-listmodule.html)のうち、廃止予定の `nth` を除く 117 関数を、`Array` と同じ規則（snake_case の名前、F# と同じ引数順、`i64`、トラップと `try_`、`Choice` は `Result`、`seq` の引数はリスト）で提供します。全関数の一覧と型は [List](../_tsuzuri/language-reference/built-in-types-and-modules/list.md) にあります。
+F# にはない `cons`（式の `x :: xs` に当たります）と `copy` も提供します。`cons`、`tail`、`map`、`mapr`、`rev`、`foldr`、`to_array` はコンパイラ組み込みで、残りは `std/List.tz` の関数です。
+2 つのリストを取る関数は、F# と同じく共有する組を先に処理してから長さの違いをトラップします（`exists2` と `forall2` は、答えが決まれば長さを問いません。`fold_back2` と、コールバックのない `zip` などは先に検査します）。
+リストの添字は先行する chunk の数に比例するので、`List` の関数はリストを添字で回さず、`for` で走査するか、いったん配列へ複写して処理します。F# のリストと違ってリストどうしは末尾を共有しないため、`append` や `skip` は要素を複製します。
 なお、`Array.copy` および `List.copy` は、借用したコレクションの全要素を明示的に複製して新しい独立所有コレクションを構築する関数です（要素型に対して `Copy` 制約を要求します）。
 排他スライス `ref mut [T..]` を受け取るその場の更新として、`Array.write`（F# 互換の名前は `Array.set`）、`Array.fill`、`Array.blit`、`Array.swap_in`、`Array.split_at_mut`、および `Array.sort_in_place`（`Ord` による安定整列。作業領域を確保せず、NaN を含まない配列では結果が `Array.sort` と一致します）が提供されます。
 固定長配列 `[T; N]` は `FixedArray.init f` で作れ、`ref [T]` を受け取る `Array` の関数（`sum`、`foldr`、`find` など）には名前付きの値をそのまま渡せます（配列全体の共有スライスに変換されます）。
 
 要素の値を値として読み出すコールバック関数や、新しい所有コレクションへの要素コピーを伴う操作は、要素型に対して `Copy` 制約を要求します。
 要素を共有借用参照で取り扱う関数は、非 Copy な所有要素（文字列や配列の配列）に対しても安全に適用できます。`Array` モジュールでは、その借用版の名前は F# の関数名の最初の語の直後に `r` を付けたものです（`map` に対する `mapr`、`fold` に対する `foldr`、`fold_back` に対する `foldr_back`、`try_find` に対する `try_findr`）。
-借用版は `mapr`、`mapir`、`foldr`、`foldr_back`、`iterr`、`iterir`、`existsr`、`forallr`、`countr`、`findr`、`try_findr`、`minr`、`maxr`、`containsr`、`to_seqr` で、コールバックは `ref 'a` を受け取ります。`findr`、`minr`、`maxr` は要素への参照を返し、`try_findr` は `Maybe<ref T>` を返します。`List` などほかのモジュールの `_ref` の名前は変わりません。
+借用版は `mapr`、`mapir`、`foldr`、`foldr_back`、`iterr`、`iterir`、`existsr`、`forallr`、`countr`、`findr`、`try_findr`、`minr`、`maxr`、`containsr`、`to_seqr` で、コールバックは `ref 'a` を受け取ります。`findr`、`minr`、`maxr` は要素への参照を返し、`try_findr` は `Maybe<ref T>` を返します。`List` の借用版も同じ規則で、`mapr`、`mapir`、`foldr`、`foldr_back`、`iterr`、`iterir`、`existsr`、`forallr`、`findr`、`try_findr`、`minr`、`maxr`、`containsr`、`to_seqr` です（以前の `map_ref` と `fold_ref` は `mapr` と `foldr` になりました）。`Maybe`、`Result`、`HashMap`、`HashSet`、`Parallel` の `_ref` の名前は変わりません。
 `find`、`min`、`max`、`get`、`reduce` は値を返し、失敗する場面（空配列、範囲外、見つからない検索）ではトラップします。`index_of` および `binary_search` は `Maybe<i64>` を返します。
 `at` は要素への参照を、`get` と `item` は要素の値を返し、いずれも範囲外の添字に対して安全にトラップします（`Maybe` を返す形は `try_item`）。`sub values start count` は不正な範囲指定に対してトラップします。
 `zip` は 2 つのコレクションの長さが一致しない場合に安全にトラップします。
@@ -3554,7 +3557,7 @@ F# にはない `at`、`count`、`index_of`、`equal`、`binary_search`、`produ
 `binary_search` は同一の順序関係であらかじめ整列済みのコレクションを入力として要求し、重複要素が存在する場合は先頭の一致インデックスを返します。
 
 高階関数の引数順序は F# の設計規約に準拠し、関数引数を第 1 引数として受け取ります。`Array` モジュールでは `map f xs`、`mapi f xs`、`mapr f xs`、`mapir f xs`、`fold f state xs`、`foldr f state xs`、`fold_back f xs state`、`foldr_back f xs state`、`reduce f xs`、
-`exists p xs`、`forall p xs`、`count p xs`、`find p xs`、`filter p xs`、`sort_with compare xs`、`sort_by project xs` となり、`List` モジュールでは `map f xs`、`map_ref f xs`、`fold f state xs`、`fold_ref f state xs` となります。
+`exists p xs`、`forall p xs`、`count p xs`、`find p xs`、`filter p xs`、`sort_with compare xs`、`sort_by project xs` となり、`List` モジュールでは `map f xs`、`mapr f xs`、`mapi f xs`、`fold f state xs`、`foldr f state xs`、`fold_back f xs state`、`reduce f xs`、`exists p xs`、`filter p xs` などとなります。
 `Seq.unfold generator state`、`Seq.map f sequence`、`Seq.filter p sequence`、ならびに連想コレクション（`Map`、`Set`、`HashMap`、`HashSet`）の `fold f state collection`、および `Parallel` の各関数も同一の引数順序規約に従います（なお、サイズを第 1 引数に取る `init count f` や、コレクションのみを取る `sum` 等の引数構成は変わりません）。
 
 ```text

@@ -417,11 +417,11 @@ impl FunctionEmitter<'_, '_> {
             unreachable!()
         };
         // The instance types follow the order in which the scheme first names its variables, and
-        // `List.fold_ref` names its state before the element, so its element comes from the list.
+        // `List.foldr` names its state before the element, so its element comes from the list.
         let element = match (instance.builtin, parameters.get(2)) {
             (Builtin::ListFoldRef, Some(Type::Reference(list, false))) => match list.as_ref() {
                 Type::List(element) => element.as_ref(),
-                _ => unreachable!("List.fold_ref reads a borrowed list"),
+                _ => unreachable!("List.foldr reads a borrowed list"),
             },
             _ => &instance.types[0],
         };
@@ -498,7 +498,7 @@ impl FunctionEmitter<'_, '_> {
             | Builtin::ListReverse
             | Builtin::ListToArray
             | Builtin::ListFoldRef => {
-                // Callbacks come first, as in `List.map f xs` and `List.fold_ref f state xs`.
+                // Callbacks come first, as in `List.map f xs` and `List.foldr f state xs`.
                 let source = match instance.builtin {
                     Builtin::ListMap | Builtin::ListMapRef => "%arg1",
                     Builtin::ListFoldRef => "%arg2",

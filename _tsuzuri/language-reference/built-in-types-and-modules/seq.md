@@ -126,13 +126,13 @@ total=15
 
 ## 各コレクションからの `iter`
 
-すべての標準コレクションは、各要素への共有借用参照を列挙する関数を提供しています。名前は `iter` です。ただし配列では、F# の `Array.iter`（各要素に関数を適用して `unit` を返す）と同じ意味にしたので、この関数は `Array.to_seqr` です。要素が `Copy` なら、値を列挙する `Array.to_seq` も使えます。
+すべての標準コレクションは、各要素への共有借用参照を列挙する関数を提供しています。名前は `iter` です。ただし配列とリストでは、F# の `Array.iter` と `List.iter`（各要素に関数を適用して `unit` を返す）と同じ意味にしたので、この関数は `Array.to_seqr` と `List.to_seqr` です。要素が `Copy` なら、値を列挙する `Array.to_seq` と `List.to_seq` も使えます。
 
 | コレクション | 呼び出し | 返却型 | 特徴 |
 | --- | --- | --- | --- |
 | **Array** | `Array.to_seqr (ref xs)` | `Seq<ref 'a>` | 配列要素の参照をインデックス昇順に列挙 |
 | **Vec** | `Vec.iter (ref v)` | `Seq<ref 'a>` | バッファ要素の参照をインデックス昇順に列挙 |
-| **List** | `List.iter (ref xs)` | `Seq<ref 'a>` | 一時 Vec にポインタを準備（$O(n)$ 領域）してから列挙 |
+| **List** | `List.to_seqr (ref xs)` | `Seq<ref 'a>` | 一時 Vec にポインタを準備（$O(n)$ 領域）してから列挙 |
 | **Set** | `Set.iter (ref s)` | `Seq<ref 'key>` | 要素の参照をキー昇順に列挙 |
 | **HashSet** | `HashSet.iter (ref s)` | `Seq<ref 'key>` | 要素の参照を内部エントリ順に列挙 |
 | **Map** | `Map.iter (ref m)` | `Seq<(ref 'key * ref 'value)>` | キーと値の参照タプルをキー昇順に列挙 |
@@ -152,14 +152,14 @@ $"total={total}"
 total=7
 ```
 
-`iter` で作った `Seq` が生きている間、元のコレクションの移動・更新・排他借用は拒否されます。配列の `to_seqr` も同じです。
+`iter` で作った `Seq` が生きている間、元のコレクションの移動・更新・排他借用は拒否されます。配列とリストの `to_seqr` も同じです。
 
 直接の `for ... in` が使えるのは、配列、リスト、`Vec`、文字列、`utf8string`、整数範囲、そして `Seq` です。これらに `Module.iter` は要りません。`Map`、`Set`、`HashMap`、`HashSet` とユーザー定義型は対象外で、`for pair in Map.iter (ref map)` のように `Seq` を返す関数を自分で呼びます。省略すると `E1005` です。`iter` という名前だけでは反復対象になりません。コンピュテーション式の `For` も、`Seq` の反復へは書き換わりません。
 
-直接の `for` のループ変数は `ref` ではなく、読み取り専用の要素そのものです。`Array.to_seqr` や `Vec.iter` が返す `Seq<ref T>` を回すときのループ変数は `ref T` です。
+直接の `for` のループ変数は `ref` ではなく、読み取り専用の要素そのものです。`Array.to_seqr`、`List.to_seqr` や `Vec.iter` が返す `Seq<ref T>` を回すときのループ変数は `ref T` です。
 
 > [!NOTE]
-> `List.iter` は、リストのリンクを 1 度走査して各要素への参照ポインタを格納した一時 Vec を準備するため、前準備に $O(n)$ の時間と一時メモリを消費します。
+> `List.to_seqr` と `List.to_seq` は、リストのリンクを 1 度走査して各要素への参照ポインタを格納した一時 Vec を準備するため、前準備に $O(n)$ の時間と一時メモリを消費します。
 > 単純に 1 回リストを走査するだけであれば、前準備不要の直接の `for x in xs` を使用してください。
 
 ## 配列への変換と停止性

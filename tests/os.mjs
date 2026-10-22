@@ -532,6 +532,62 @@ def main :: unit -> i32 = \\() ->
     "length:200 permutation:true", "length:200 permutation:true", "member:true", "length:50 members:true",
     "length:20 members:true distinct:true", "length:0 members:true", "length:4 letters:10",
   ];
+  // The same for the List functions that seed their generator from the operating system (random_shuffle,
+  // random_choice, random_choices, random_sample).
+  const randomLists = program("randomlists", `
+def same_elements :: ref [|i64|] -> ref [|i64|] -> bool
+fn same_elements left right =
+    let ordered_left = List.sort left
+    let ordered_right = List.sort right
+    ordered_left == ordered_right
+
+def members :: ref [|i64|] -> ref [|i64|] -> bool
+fn members picked source = List.forall (\\item -> List.contains item source) picked
+
+def shuffle_text :: Result<[|i64|], Os.Error> -> ref [|i64|] -> string
+fn shuffle_text result source =
+    match result with
+    | Result.Ok shuffled -> "length:" + to_string shuffled.length + " permutation:" + to_string (same_elements (ref shuffled) source)
+    | Result.Error error -> Os.message (ref error)
+
+def choice_text :: Result<i64, Os.Error> -> ref [|i64|] -> string
+fn choice_text result source =
+    match result with
+    | Result.Ok value -> "member:" + to_string (List.contains value source)
+    | Result.Error error -> Os.message (ref error)
+
+def picked_text :: Result<[|i64|], Os.Error> -> ref [|i64|] -> string
+fn picked_text result source =
+    match result with
+    | Result.Ok picked -> "length:" + to_string picked.length + " members:" + to_string (members (ref picked) source)
+    | Result.Error error -> Os.message (ref error)
+
+def sample_text :: Result<[|i64|], Os.Error> -> ref [|i64|] -> string
+fn sample_text result source =
+    match result with
+    | Result.Ok picked ->
+        let kept = List.distinct picked
+        "length:" + to_string picked.length + " members:" + to_string (members (ref picked) source) + " distinct:" + to_string (kept.length == picked.length)
+    | Result.Error error -> Os.message (ref error)
+
+def main :: unit -> i32 = \\() ->
+    let source = new [|i64|](200, \\i -> i * 3)
+    let! shuffled = List.random_shuffle source
+    do! say (shuffle_text shuffled (ref source))
+    let! choice = List.random_choice source
+    do! say (choice_text choice (ref source))
+    let! choices = List.random_choices 50 source
+    do! say (picked_text choices (ref source))
+    let! sample = List.random_sample 20 source
+    do! say (sample_text sample (ref source))
+    let! none = List.random_choices 0 source
+    do! say (picked_text none (ref source))
+    0
+`);
+  const randomListLines = [
+    "length:200 permutation:true", "member:true", "length:50 members:true",
+    "length:20 members:true distinct:true", "length:0 members:true",
+  ];
   for (const optimization of optimizations) {
     const cwd = scratch("timing", optimization);
     const output = lines(run(timing(optimization), cwd));
@@ -545,6 +601,7 @@ def main :: unit -> i32 = \\() ->
     ]);
     assert.deepEqual(lines(run(randomMaps(optimization), cwd)), randomMapLines);
     assert.deepEqual(lines(run(randomArrays(optimization), cwd)), randomArrayLines);
+    assert.deepEqual(lines(run(randomLists(optimization), cwd)), randomListLines);
   }
 
   // 12. PCG-XSH-RR 64/32 against the published pcg-c-basic demonstration output and a BigInt reference.
@@ -676,12 +733,15 @@ def main :: unit -> i32 = \\() ->
     assert.ok(!existsSync(output));
   }
   // So are the Array functions that seed their generator from the operating system; the `_by` and `_with` forms are not.
-  for (const optimization of optimizations) {
-    const output = join(root, `rejected-randomarrays${optimization}`);
-    const result = execute(compiler, ["build", join(root, "project-randomarrays"), "--target", "wasm32", optimization, "-o", output], {}, false);
-    assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /E2000.*Random/s);
-    assert.ok(!existsSync(output));
+  // The List functions that do the same are rejected in the same way.
+  for (const name of ["randomarrays", "randomlists"]) {
+    for (const optimization of optimizations) {
+      const output = join(root, `rejected-${name}${optimization}`);
+      const result = execute(compiler, ["build", join(root, `project-${name}`), "--target", "wasm32", optimization, "-o", output], {}, false);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /E2000.*Random/s);
+      assert.ok(!existsSync(output));
+    }
   }
 
   // 13. Path and Os are pure: they build for wasm32 without imports and agree with native.
@@ -1314,6 +1374,7 @@ def main :: unit -> i32 = \\() ->
     ]);
     assert.deepEqual(lines(runWasi("randommaps", optimization, cwd)), randomMapLines);
     assert.deepEqual(lines(runWasi("randomarrays", optimization, cwd)), randomArrayLines);
+    assert.deepEqual(lines(runWasi("randomlists", optimization, cwd)), randomListLines);
     const published = lines(runWasi("pcg", optimization, cwd));
     assert.equal(published[0], "2707161783 2068313097 3122475824 2211639955 3215226955 3421331566 ");
     assert.equal(runWasi("paths", optimization, cwd).stdout, expectedPaths);

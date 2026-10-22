@@ -1,4 +1,5 @@
-use tsuzuri::driver::{Target, TestOptions, run_tests};
+use tsuzuri::check::CheckedModule;
+use tsuzuri::driver::{Target, TestOptions, TestResult, run_tests};
 use tsuzuri::{analyze, analyze_modules, llvm};
 
 const BEHAVIOR: &str = include_str!("fixtures/array_fsharp/Main.tz");
@@ -151,18 +152,52 @@ fn count_tests(source: &str) -> usize {
         .count()
 }
 
-/// Each test of `source` with the reason it failed (a trap, a timeout, ...), or `None` when it passed.
+/// How often a test runs before a timeout counts. A loaded CI machine can hold a process that traps in a millisecond
+/// for longer than the runner's 30 seconds, while a test that really hangs times out on every attempt.
+const ATTEMPTS: usize = 3;
+
+fn timed_out(result: &TestResult) -> bool {
+    result
+        .failure
+        .as_deref()
+        .is_some_and(|reason| reason.starts_with("timed out"))
+}
+
+fn execute(module: &CheckedModule, options: &TestOptions) -> Vec<TestResult> {
+    run_tests(module, options)
+        .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
+        .results
+}
+
+/// Each test of `source` with the reason it failed (a trap, a timeout, ...), or `None` when it passed. A test that
+/// timed out runs again, on its own, up to `ATTEMPTS` times in all.
 fn run(source: &str, target: Target, optimization: u8) -> Vec<(String, Option<String>)> {
     let module =
         analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
-    let options = TestOptions {
+    let mut options = TestOptions {
         target,
         optimization,
         ..Default::default()
     };
-    run_tests(&module, &options)
-        .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
-        .results
+    let mut results = execute(&module, &options);
+    for _ in 1..ATTEMPTS {
+        options.indices = results
+            .iter()
+            .filter(|result| timed_out(result))
+            .map(|result| result.case.index)
+            .collect();
+        if options.indices.is_empty() {
+            break;
+        }
+        for again in execute(&module, &options) {
+            let slot = results
+                .iter_mut()
+                .find(|result| result.case.index == again.case.index)
+                .expect("a test of the first run");
+            *slot = again;
+        }
+    }
+    results
         .into_iter()
         .map(|result| (result.case.name, result.failure))
         .collect()

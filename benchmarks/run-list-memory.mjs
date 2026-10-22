@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { arch, cpus, loadavg, platform, release, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,11 +61,24 @@ function run(program, programArguments) {
 
 const sha256 = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
-// The native library of the fixture at `opt`: the object that runs, and the tracked build whose IR was optimized first and instrumented after.
-function buildNative(compiler, label, directory, clang, tracker, opt) {
+// A compiler from before the F# List module knows List.fold_ref and not List.foldr, so a baseline of that age rejects the fixture (E1002).
+// It builds a copy that differs only in that name, which keeps the workload the same; a compiler that accepts the fixture builds it as it is.
+const earlierNames = [[/\bList\.foldr\b/g, "List.fold_ref"]];
+
+export function stageFixture(compiler, label, directory) {
+  const fixture = join(root, "benchmarks/list-memory");
+  if (spawnSync(compiler, ["check", fixture], { cwd: root, stdio: "ignore", timeout: 600_000 }).status === 0) return fixture;
+  const staged = join(directory, `${label}-fixture`);
+  cpSync(fixture, staged, { recursive: true });
+  const main = join(staged, "Main.tz");
+  writeFileSync(main, earlierNames.reduce((text, [current, earlier]) => text.replace(current, earlier), readFileSync(main, "utf8")));
+  return staged;
+}
+
+// The native library of `fixture` at `opt`: the object that runs, and the tracked build whose IR was optimized first and instrumented after.
+function buildNative(compiler, label, directory, clang, tracker, opt, fixture) {
   const work = join(directory, label);
   mkdirSync(work);
-  const fixture = join(root, "benchmarks/list-memory");
   const flags = [`-${opt}`, "-fPIC", "-fno-fast-math", "-ffp-contract=off"];
   const ir = join(work, "list-memory.ll"), object = join(work, "list-memory.o");
   run(compiler, ["build", fixture, "--emit", "llvm", `-${opt}`, "-o", ir]);
@@ -96,9 +109,9 @@ function sample(timed, name, size, quick) {
 }
 
 // wasm32: the memory of the instance after one call is the high-water mark of the heap, which is never given back; a trap is an out-of-memory.
-function wasmHeap(compiler, label, directory, grid, quick, opt) {
+function wasmHeap(compiler, label, directory, grid, quick, opt, fixture) {
   const output = join(directory, `${label}.wasm`);
-  run(compiler, ["build", join(root, "benchmarks/list-memory"), "--target", "wasm32", `-${opt}`, "-o", output]);
+  run(compiler, ["build", fixture, "--target", "wasm32", `-${opt}`, "-o", output]);
   const module = new WebAssembly.Module(readFileSync(output));
   assert.deepEqual(WebAssembly.Module.imports(module), [], "standalone WASM");
   const initial = new WebAssembly.Instance(module, {}).exports.memory.buffer.byteLength;
@@ -129,7 +142,8 @@ export function runListMemory(options) {
   try {
     const tracker = join(directory, "tracked_alloc.o");
     run(clang, ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-c", join(root, "benchmarks/tracked_alloc.c"), "-o", tracker]);
-    const builds = Object.fromEntries(variants.map(([variant, path]) => [variant, buildNative(path, variant, directory, clang, tracker, opt)]));
+    const fixtures = Object.fromEntries(variants.map(([variant, path]) => [variant, stageFixture(path, variant, directory)]));
+    const builds = Object.fromEntries(variants.map(([variant, path]) => [variant, buildNative(path, variant, directory, clang, tracker, opt, fixtures[variant])]));
     const grids = (name) => ({
       counted: quick ? sizes.quick : name === "index_walk" ? sizes.indexAllocations : sizes.allocations,
       timed: quick ? sizes.quick : name === "index_walk" ? sizes.indexMeasured : sizes.measured,
@@ -158,7 +172,7 @@ export function runListMemory(options) {
         results.push(entry);
       }
     }
-    const wasm = options.wasm ? Object.fromEntries(variants.map(([variant, path]) => [variant, wasmHeap(path, variant, directory, { names, sizes: sizes.wasm }, quick, opt)])) : null;
+    const wasm = options.wasm ? Object.fromEntries(variants.map(([variant, path]) => [variant, wasmHeap(path, variant, directory, { names, sizes: sizes.wasm }, quick, opt, fixtures[variant])])) : null;
     const endLoad = loadavg();
 
     if (metrics) {

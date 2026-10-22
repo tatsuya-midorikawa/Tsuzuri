@@ -27,7 +27,7 @@ export def seq_list :: i64 -> i64
 fn seq_list count =
     let values = new [|i64|](count, \index -> index)
     let mut total = 0
-    for value in List.iter (&values) do total = total + deref value
+    for value in List.to_seqr (&values) do total = total + deref value
     total
 
 export def seq_map_filter :: i64 -> i64
