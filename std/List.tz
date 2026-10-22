@@ -209,13 +209,13 @@ fn mapi transform values = mapi_array transform (List.to_array values)
 
 /// Like `mapi`, but `transform` borrows each element, so the elements need not be `Copy`.
 def mapir :: (i64 -> ref 'a -> 'b) -> ref [|'a|] -> [|'b|]
-fn mapir transform values = of_vec (List.foldr (\mapped value -> push_mapped transform mapped value) (Vec.empty()) values)
-
-private def push_mapped :: (i64 -> ref 'a -> 'b) -> Vec<'b> -> ref 'a -> Vec<'b>
-fn push_mapped transform mapped value =
-    let index = Vec.length (ref mapped)
-    Vec.push mapped (transform index value)
-
+fn mapir transform values =
+    let mut mapped = Vec.empty()
+    let mut index = 0
+    for value in values do
+        mapped = Vec.push mapped (transform index (ref value))
+        index = index + 1
+    of_vec mapped
 private def map2_arrays :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> [|'c|]
 fn map2_arrays transform left right =
     new [|'c|](common_length left.length right.length, index -> transform left[index] right[index])
