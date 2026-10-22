@@ -599,6 +599,17 @@ test "sort_with works with a comparer that owns a table" =
     Array.sort_in_place_with (\a b -> table[a] - table[b]) in_place
     Test.is_true (ordered_by_table (ref in_place) (ref table))
 
+// `sort_by` computes its keys from a loop that calls the projection as it is, not through a copy of its environment.
+test "sort_by and sort_by_descending work with a projection that owns a table" =
+    let table = new [i64](1500, \i -> (i * 7919) % 10007)
+    let indices = new [i64](1500, \i -> i)
+    let ascending = Array.sort_by (\x -> table[x]) indices
+    Test.is_true (ordered_by_table (ref ascending) (ref table))
+    let descending = Array.sort_by_descending (\x -> table[x]) indices
+    eq descending.length 1500
+    let reversed = Array.rev descending
+    Test.is_true (ordered_by_table (ref reversed) (ref table))
+
 // `sort` and `sort_descending` put NaN last in both directions; the keyed sorts do the same with NaN keys.
 test "sort_by sort_by_descending sort_in_place_by put NaN keys last like sort" =
     let nan = 0.0 / 0.0

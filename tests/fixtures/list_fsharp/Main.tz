@@ -668,6 +668,25 @@ test "sort_with works with a comparer that owns a table" =
     eq order.length 1500
     Test.is_true (ordered_by_table (ref order) (ref table))
 
+// The mapping functions call their callback from a loop, so a callback that owns a table is called as it is, not
+// through a copy of its environment. The results must not depend on that.
+test "mapi map2 mapi2 map3 mapir and sort_by work with a callback that owns a table" =
+    let table = new [i64](1500, \i -> (i * 7919) % 10007)
+    let indices = new [|i64|](1500, \i -> i)
+    let mapped = List.mapi (\i x -> table[x] + i) indices
+    eq mapped.length 1500
+    eq (List.item 7 mapped) (table[7] + 7)
+    let sums = List.map2 (\a b -> table[a] + b) indices indices
+    eq (List.item 1499 sums) (table[1499] + 1499)
+    let numbered = List.mapi2 (\i a b -> table[a] + b + i) indices indices
+    eq (List.item 3 numbered) (table[3] + 6)
+    let triples = List.map3 (\a b c -> table[a] + b + c) indices indices indices
+    eq (List.item 10 triples) (table[10] + 20)
+    let borrowed = List.mapir (\i x -> table[*x] + i) indices
+    eq (List.item 5 borrowed) (table[5] + 5)
+    let sorted = List.sort_by (\x -> table[x]) indices
+    Test.is_true (ordered_by_table (ref sorted) (ref table))
+
 // `sort` and `sort_descending` put NaN last in both directions; the keyed sorts do the same with NaN keys.
 test "sort sort_by sort_by_descending put NaN last" =
     let nan = 0.0 / 0.0

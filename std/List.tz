@@ -201,52 +201,68 @@ fn iteri2 action left right =
         index = index + 1
     assert (first.length == second.length)
 
-private def mapi_array :: Copy<'a> => (i64 -> 'a -> 'b) -> ref ['a] -> [|'b|]
-fn mapi_array transform source = new [|'b|](source.length, index -> transform index source[index])
-
+/// `mapi`, `mapir`, `map2`, `mapi2` and `map3` call the callback from a loop and collect the results in a `Vec`, as
+/// the other functions do: a callback that is also captured by a closure cannot be specialized, and then every call
+/// copies its environment. The results need not be `Copy`, so they cannot go through an array: `of_vec` builds the
+/// list, a chain of chunks.
 def mapi :: Copy<'a> => (i64 -> 'a -> 'b) -> ref [|'a|] -> [|'b|]
-fn mapi transform values = mapi_array transform (List.to_array values)
+fn mapi transform values =
+    let mut mapped = Vec.with_capacity values.length
+    let mut index = 0
+    for value in values do
+        mapped = Vec.push mapped (transform index value)
+        index = index + 1
+    of_vec mapped
 
 /// Like `mapi`, but `transform` borrows each element, so the elements need not be `Copy`.
 def mapir :: (i64 -> ref 'a -> 'b) -> ref [|'a|] -> [|'b|]
 fn mapir transform values =
-    let mut mapped = Vec.empty()
+    let mut mapped = Vec.with_capacity values.length
     let mut index = 0
     for value in values do
         mapped = Vec.push mapped (transform index (ref value))
         index = index + 1
     of_vec mapped
 
-private def map2_arrays :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> [|'c|]
-fn map2_arrays transform left right =
-    new [|'c|](common_length left.length right.length, index -> transform left[index] right[index])
-
 def map2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref [|'a|] -> ref [|'b|] -> [|'c|]
 fn map2 transform left right =
-    let mapped = map2_arrays transform (List.to_array left) (List.to_array right)
-    assert (left.length == right.length)
-    mapped
-
-private def mapi2_arrays :: (Copy<'a>, Copy<'b>) => (i64 -> 'a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> [|'c|]
-fn mapi2_arrays transform left right =
-    new [|'c|](common_length left.length right.length, index -> transform index left[index] right[index])
+    let first = List.to_array left
+    let second = List.to_array right
+    let count = common_length first.length second.length
+    let mut mapped = Vec.with_capacity count
+    let mut index = 0
+    while index < count do
+        mapped = Vec.push mapped (transform first[index] second[index])
+        index = index + 1
+    assert (first.length == second.length)
+    of_vec mapped
 
 def mapi2 :: (Copy<'a>, Copy<'b>) => (i64 -> 'a -> 'b -> 'c) -> ref [|'a|] -> ref [|'b|] -> [|'c|]
 fn mapi2 transform left right =
-    let mapped = mapi2_arrays transform (List.to_array left) (List.to_array right)
-    assert (left.length == right.length)
-    mapped
-
-private def map3_arrays :: (Copy<'a>, Copy<'b>, Copy<'c>) => ('a -> 'b -> 'c -> 'd) -> ref ['a] -> ref ['b] -> ref ['c] -> [|'d|]
-fn map3_arrays transform first second third =
-    new [|'d|](common_length first.length (common_length second.length third.length), index ->
-        transform first[index] second[index] third[index])
+    let first = List.to_array left
+    let second = List.to_array right
+    let count = common_length first.length second.length
+    let mut mapped = Vec.with_capacity count
+    let mut index = 0
+    while index < count do
+        mapped = Vec.push mapped (transform index first[index] second[index])
+        index = index + 1
+    assert (first.length == second.length)
+    of_vec mapped
 
 def map3 :: (Copy<'a>, Copy<'b>, Copy<'c>) => ('a -> 'b -> 'c -> 'd) -> ref [|'a|] -> ref [|'b|] -> ref [|'c|] -> [|'d|]
 fn map3 transform first second third =
-    let mapped = map3_arrays transform (List.to_array first) (List.to_array second) (List.to_array third)
-    assert (first.length == second.length && second.length == third.length)
-    mapped
+    let one = List.to_array first
+    let two = List.to_array second
+    let three = List.to_array third
+    let count = common_length one.length (common_length two.length three.length)
+    let mut mapped = Vec.with_capacity count
+    let mut index = 0
+    while index < count do
+        mapped = Vec.push mapped (transform one[index] two[index] three[index])
+        index = index + 1
+    assert (one.length == two.length && two.length == three.length)
+    of_vec mapped
 
 def map_fold :: Copy<'a> => ('state -> 'a -> ('b * 'state)) -> 'state -> ref [|'a|] -> ([|'b|] * 'state)
 fn map_fold mapping initial values =

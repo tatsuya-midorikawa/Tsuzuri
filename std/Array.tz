@@ -1028,15 +1028,26 @@ private def key_order :: Ord<'key> => ref ['key] -> bool -> [i64]
 fn key_order keys descending =
     Array.__sort_with (left -> right -> key_takes_right descending (ref keys[*left]) (ref keys[*right])) (indices keys.length)
 
+/// The keys of `values`, from a loop that calls `projection` directly: a callback that a closure also captures (as the
+/// initializer of `new` would) cannot be specialized, and then every call copies its environment.
+private def keys_of :: Copy<'a> => ('a -> 'key) -> ref ['a] -> ['key]
+fn keys_of projection values =
+    let mut keys = Vec.with_capacity values.length
+    let mut index = 0
+    while index < values.length do
+        keys = Vec.push keys (projection values[index])
+        index = index + 1
+    Vec.to_array keys
+
 def sort_by :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by projection values =
-    let keys = map projection values
+    let keys = keys_of projection values
     let order = key_order (ref keys) false
     new ['a](values.length, position -> values[order[position]])
 
 def sort_by_descending :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by_descending projection values =
-    let keys = map projection values
+    let keys = keys_of projection values
     let order = key_order (ref keys) true
     new ['a](values.length, position -> values[order[position]])
 
