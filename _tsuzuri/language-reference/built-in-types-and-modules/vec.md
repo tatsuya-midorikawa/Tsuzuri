@@ -15,7 +15,7 @@
 - .NET が例外を投げる場面（範囲外、負の個数、容量が長さより小さいなど）はトラップです。.NET が `-1` や、二分探索の補数（`~index`）を返す場面は、同じ値を返します。
 - コールバックが要素を値で受ける関数（`find_index`、`exists`、`sort_with` など）は、要素が `Copy` であることを要求します。`find_indexr`、`existsr`、`sort_withr` のように `r` を付けた関数は要素を借用するので、文字列のような `Copy` でない要素にも使えます。
 - 内部容量（capacity）は .NET と同じ規則（空なら 4、以降は 2 倍、足りなければ必要な数）で増えます。`capacity`、`set_capacity`、`ensure_capacity`、`trim_excess` の値も .NET と一致します。あらかじめ要素数が予測できる場合は `with_capacity` や `reserve` で再確保を防げます。
-- `sort` は安定で、NaN を他のどの数より前に置きます（.NET と同じ）。比較関数を取る `sort_with` と `sort_withr` も安定です。
+- `sort` と `sort_range` は安定で、NaN を他のどの数より前に置きます（.NET と同じ）。比較関数を取る `sort_with`・`sort_range_with`・`sort_withr`・`sort_range_withr` も安定で、NaN を特別に扱わず、渡した関数のとおりに並べます。
 - `pop` は `(残りのVec, Maybe<末尾要素>)` のタプルを返し、`Copy` でない要素も所有値として安全に取り出せます。
 - `Vec.to_array` と `Vec.of_array` は、所有しているバッファを移します。要素の複製はしません（.NET の `ToArray` は複製するので、そこが違います）。`Copy` 配列の引数渡しと、スタック配列のヒープ昇格は通常どおりです。
 - 要素そのものへの排他借用参照（`ref mut`）はバッファ破損を防ぐため取得できません。
@@ -841,7 +841,7 @@ total=2
 - .NET の `List<T>` のメンバーには、同じ名前（snake_case）の関数があります。引数は .NET の順で、`Vec` は最後です（`Vec.insert index item values`）。.NET の例外はトラップです。`-1` と二分探索の補数は同じ値を返します。
 - コールバックが要素を値で受ける関数は `Copy` を要求します。`find_indexr` や `sort_withr` のように `r` を付けた関数は、要素を借用するので文字列にも使えます。
 - 容量は .NET と同じ規則（空なら 4、以降は 2 倍、足りなければ必要な数）で増えます。負の容量やサイズのオーバーフローはトラップします。
-- 並べ替えは安定で、NaN を先頭に置きます。`Eq`（`==`）で比べる `contains` や `index_of` は、NaN を見つけません。
+- 並べ替えは安定です。`sort` と `sort_range` は NaN を先頭に置きますが、比較関数を渡す形は渡した関数のとおりに並べます。`Eq`（`==`）で比べる `contains` や `index_of` は、NaN を見つけません。
 - 要素の排他借用は `E1014` です。書き換えは `Vec.set` と `Vec.swap` です。
 - `to_array` / `of_array` は所有バッファを移します。引数渡しのコピーとは別です。
 
