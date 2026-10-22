@@ -400,6 +400,61 @@ test "sort puts a NaN before every number, as .NET does" =
     match tuples[0] with
     | (first, _) -> eq first 1
 
+test "sort moves the NaNs to the front in place, for every length and spacing" =
+    let nan = 0.0 / 0.0
+    for length in 0i64 .. 130 do
+        for every in 2i64 .. 4 do
+            let mut values: Vec<f64> = Vec.empty()
+            let mut numbers = 0i64
+            for position in 0i64 .. length - 1 do
+                if (position * 7 + length) % every == 0 then values = Vec.add nan values
+                else
+                    values = Vec.add (((position * 37 + length) % 11) as f64) values
+                    numbers = numbers + 1
+            let nans = length - numbers
+            values = Vec.sort values
+            eq (Vec.length (ref values)) length
+            for index in 0 .. (nans - 1) do Test.is_true (is_nan values[index])
+            for index in nans .. (length - 1) do Test.is_true (!(is_nan values[index]))
+            for index in (nans + 1) .. (length - 1) do Test.is_true (values[index - 1] <= values[index])
+
+test "the elements that differ from themselves keep their order when they move to the front" =
+    let nan = 0.0 / 0.0
+    for length in 0i64 .. 100 do
+        let mut values: Vec<(f64 * i64)> = Vec.empty()
+        for position in 0i64 .. length - 1 do
+            let key = if position % 3 == 1 then nan else ((position * 5) % 7) as f64
+            values = Vec.add (key, position) values
+        values = Vec.sort values
+        let mut last_nan = -1i64
+        let mut numbers_began = false
+        let mut last_key = -1.0
+        let mut last_position = -1i64
+        for item in values do
+            match item with
+            | (key, position) ->
+                if is_nan key then
+                    Test.is_true (!numbers_began)
+                    Test.is_true (position > last_nan)
+                    last_nan = position
+                else
+                    numbers_began = true
+                    Test.is_true (key > last_key || (key == last_key && position > last_position))
+                    last_key = key
+                    last_position = position
+
+test "sort_range moves the NaNs of its range only" =
+    let nan = 0.0 / 0.0
+    let mut values = Vec.of_array [5.0, nan, 4.0, nan, 3.0, 2.0, nan, 1.0, nan]
+    values = Vec.sort_range 2 5 values
+    eq values[0] 5.0
+    Test.is_true (is_nan values[1] && is_nan values[2] && is_nan values[3])
+    eq values[4] 2.0
+    eq values[5] 3.0
+    eq values[6] 4.0
+    eq values[7] 1.0
+    Test.is_true (is_nan values[8])
+
 test "sort_range sorts a range only" =
     let mut values = vec [9, 8, 7, 3, 2, 1, 0]
     values = Vec.sort_range 2 4 values

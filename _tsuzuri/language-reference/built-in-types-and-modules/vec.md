@@ -303,7 +303,7 @@ before=3 after=1
 
 - **安定**: 等しい要素は元の順序を保ちます。.NET の `Sort` は不安定なので、ここが違います。
 - **NaN**: `sort` と `sort_range` は、NaN を他のどの数より前に置き、NaN どうしは等しいとみなします（.NET の `double.CompareTo` と同じです）。
-- **メモリ**: `sort`、`sort_range`、`sort_withr`、`sort_range_withr` は、その場で並べ替えます（挿入ソートと、回転による併合 SymMerge）。比較は $O(n \log n)$ 回、要素の入れ替えは $O(n \log^2 n)$ 回です。`sort_with` と `sort_range_with` は、対象の長さの一時的な配列を使います。
+- **メモリ**: `sort`、`sort_range`、`sort_withr`、`sort_range_withr` は、その場で並べ替えます（挿入ソートと、回転による併合 SymMerge）。NaN を前へ移す処理も、回転で行うので、追加の領域は要りません。比較は $O(n \log n)$ 回、要素の入れ替えは $O(n \log^2 n)$ 回です。`sort_with` と `sort_range_with` は、対象の長さの一時的な配列を使います。
 
 ```tsuzuri run=order%3Dfig%20pear%20kiwi%20banana
 let mut words = Vec.of_array ["pear", "fig", "banana", "kiwi"]

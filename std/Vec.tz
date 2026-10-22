@@ -181,37 +181,32 @@ fn reverse_range index count values =
     reverse_slice (Vec.__view (ref mut owned)) index count
     owned
 
-/// Gives each element the place that `order` names: position `p` gets the element that was at `order[p]`. The order is
-/// used up.
-private def arrange :: ref mut ['a..] -> ref mut [i64..] -> unit
-fn arrange view order =
-    for start in 0 .. (order.length - 1) do
-        if order[start] != start then
-            let mut current = start
-            while order[current] != start do
-                let next = order[current]
-                Array.swap_in view current next
-                Array.write order current current
-                current = next
-            Array.write order current current
-
 /// Moves the elements that differ from themselves (a NaN) to the front, in their order, and returns their number; .NET
-/// sorts a NaN before every number.
+/// sorts a NaN before every number. A range without one is not touched. Otherwise the elements are partitioned in place
+/// by rotations, so nothing is allocated, and the recursion is about log2 of the length frames deep.
 private def unordered_first :: Eq<'a> => ref mut ['a..] -> i64
 fn unordered_first view =
     let length = view.length
     let mut found = 0
     for index in 0 .. (length - 1) do
         if !(Eq.eq (ref view[index]) (ref view[index])) then found = found + 1
-    if found > 0 then
-        let mut places: Vec<i64> = Vec.with_capacity length
-        for index in 0 .. (length - 1) do
-            if !(Eq.eq (ref view[index]) (ref view[index])) then places = Vec.push index places
-        for index in 0 .. (length - 1) do
-            if Eq.eq (ref view[index]) (ref view[index]) then places = Vec.push index places
-        let mut order = Vec.to_array places
-        arrange view (ref mut order)
+    if found > 0 && found < length then
+        let _end = partition_unordered view 0 length
+        ()
     found
+
+/// Moves the elements of `[first, last)` that differ from themselves to the front of the range, keeping the order inside
+/// both groups, and returns the end of the first group. The range is not empty.
+private def rec partition_unordered :: Eq<'a> => ref mut ['a..] -> i64 -> i64 -> i64
+fn rec partition_unordered view first last =
+    if last - first == 1 then
+        if Eq.eq (ref view[first]) (ref view[first]) then first else last
+    else
+        let middle = first + (last - first) / 2
+        let left = partition_unordered view first middle
+        let right = partition_unordered view middle last
+        if left < middle && middle < right then rotate_slice view left middle right
+        left + (right - middle)
 
 private def sort_view :: Ord<'a> => ref mut ['a..] -> i64 -> i64 -> unit
 fn sort_view view index count =
