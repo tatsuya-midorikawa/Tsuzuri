@@ -44,6 +44,11 @@ fn id_at pairs position =
     match pairs[position] with
     | (id, _) -> id
 
+private def value_at :: ref [|(i64 * f64)|] -> i64 -> f64
+fn value_at pairs position =
+    match pairs[position] with
+    | (_, value) -> value
+
 private def keyed_count :: ref [|((i64 * f64) * i64)|] -> i64 -> i64
 fn keyed_count counts position =
     match counts[position] with
@@ -712,6 +717,52 @@ test "sort sort_by sort_by_descending put NaN last" =
     eq (id_at (ref by_key) 1) 1
     eq (id_at (ref by_key) 2) 0
     eq (id_at (ref by_key) 3) 2
+    let by_key_descending = List.sort_by_descending (\p -> match p with | (_, key) -> key) tagged
+    eq (id_at (ref by_key_descending) 0) 1
+    eq (id_at (ref by_key_descending) 1) 3
+    eq (id_at (ref by_key_descending) 2) 0
+    eq (id_at (ref by_key_descending) 3) 2
+    // Keys that `Ord` orders keep that order, even with a NaN inside: the same as `sort`.
+    let composite = [|(0, nan), (1, 0.0)|]
+    let by_pair = List.sort_by (\p -> p) composite
+    let by_sort = List.sort composite
+    eq (id_at (ref by_pair) 0) (id_at (ref by_sort) 0)
+    eq (id_at (ref by_pair) 1) (id_at (ref by_sort) 1)
+    eq (id_at (ref by_pair) 0) 0
+    let by_pair_descending = List.sort_by_descending (\p -> p) composite
+    eq (id_at (ref by_pair_descending) 0) 1
+    eq (id_at (ref by_pair_descending) 1) 0
+    // Of two keys that `Ord` leaves unordered, the one that differs from itself goes last.
+    let unordered = [|(0, nan), (0, 5.0)|]
+    let after = List.sort_by (\p -> p) unordered
+    eq (value_at (ref after) 0) 5.0
+    Test.is_true (is_nan (value_at (ref after) 1))
+
+// `sort` moves the NaN of an f32 or f64 list last through its comparison builtin; an f16 NaN is left to `Ord`. A
+// keyed sort decides by the key itself, so it puts the NaN of any float format last.
+test "NaN of f32 and f16 in the sorts" =
+    let nan32 = 0.0f / 0.0f
+    let singles = [|nan32, 1.0f, 0.5f|]
+    let sorted32 = List.sort singles
+    eq (List.take 2 sorted32) [|0.5f, 1.0f|]
+    Test.is_true (sorted32[2] != sorted32[2])
+    let descending32 = List.sort_descending singles
+    eq (List.take 2 descending32) [|1.0f, 0.5f|]
+    Test.is_true (descending32[2] != descending32[2])
+    let with32 = List.sort_with (\a b -> if a < b then -1 else if a > b then 1 else 0) singles
+    eq (List.take 2 with32) [|0.5f, 1.0f|]
+    Test.is_true (with32[2] != with32[2])
+    let by_key32 = List.sort_by (\x -> x) singles
+    eq (List.take 2 by_key32) [|0.5f, 1.0f|]
+    Test.is_true (by_key32[2] != by_key32[2])
+    let nan16 = 0.0f16 / 0.0f16
+    let halves = [|nan16, 1.0f16, 0.5f16|]
+    let by_key16 = List.sort_by (\x -> x) halves
+    eq (List.take 2 by_key16) [|0.5f16, 1.0f16|]
+    Test.is_true (by_key16[2] != by_key16[2])
+    let by_key16_descending = List.sort_by_descending (\x -> x) halves
+    eq (List.take 2 by_key16_descending) [|1.0f16, 0.5f16|]
+    Test.is_true (by_key16_descending[2] != by_key16_descending[2])
 
 // ---- Updating ----
 
