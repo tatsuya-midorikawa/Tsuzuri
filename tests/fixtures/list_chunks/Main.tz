@@ -107,7 +107,7 @@ export def map_weighted :: i64 -> i64
 fn map_weighted n = weighted (ref (List.map (value -> value * 2 + 1) (ref (build n))))
 
 export def reverse_weighted :: i64 -> i64
-fn reverse_weighted n = weighted (ref (List.reverse (ref (build n))))
+fn reverse_weighted n = weighted (ref (List.rev (ref (build n))))
 
 export def to_array_weighted :: i64 -> i64
 fn to_array_weighted n = weighted_array (ref (List.to_array (ref (build n))))
@@ -214,7 +214,7 @@ fn words_tail n =
     weighted_words (ref values) * 10 + values.length
 
 export def words_map :: i64 -> i64
-fn words_map n = weighted (ref (List.map_ref (word -> word.length * 3) (ref (build_words n))))
+fn words_map n = weighted (ref (List.mapr (word -> word.length * 3) (ref (build_words n))))
 
 export def words_drop :: i64 -> i64
 fn words_drop n = (build_words n).length

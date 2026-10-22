@@ -1,0 +1,865 @@
+// The F# `List` module in Tsuzuri (std/List.tz): one test per F# function, the examples of the F# documentation,
+// the `r` forms for elements that are not `Copy`, and lists of several chunks, which `List.cons` builds.
+
+private def eq :: Eq<'a> => 'a -> 'a -> unit
+fn eq actual expected = Test.equal (ref actual) (ref expected)
+
+private def some_eq :: Eq<'a> => Maybe<'a> -> 'a -> unit
+fn some_eq maybe expected =
+    match maybe with
+    | Maybe.Some value -> eq value expected
+    | Maybe.None -> assert false
+
+private def none :: Maybe<'a> -> unit
+fn none maybe =
+    match maybe with
+    | Maybe.None -> ()
+    | Maybe.Some _ -> assert false
+
+private def is_nan :: f64 -> bool
+fn is_nan value = value != value
+
+private def count_key_is_nan :: ref [|(f64 * i64)|] -> i64 -> bool
+fn count_key_is_nan pairs position =
+    match pairs[position] with
+    | (key, _) -> is_nan key
+
+private def count_of :: ref [|(f64 * i64)|] -> i64 -> i64
+fn count_of pairs position =
+    match pairs[position] with
+    | (_, count) -> count
+
+private def group_key_is_nan :: ref [|(f64 * [|f64|])|] -> i64 -> bool
+fn group_key_is_nan groups position =
+    match groups[position] with
+    | (key, _) -> is_nan key
+
+private def group_size :: ref [|(f64 * [|f64|])|] -> i64 -> i64
+fn group_size groups position =
+    match groups[position] with
+    | (_, members) -> members.length
+
+private def id_at :: ref [|(i64 * f64)|] -> i64 -> i64
+fn id_at pairs position =
+    match pairs[position] with
+    | (id, _) -> id
+
+private def keyed_count :: ref [|((i64 * f64) * i64)|] -> i64 -> i64
+fn keyed_count counts position =
+    match counts[position] with
+    | (_, count) -> count
+
+private def keyed_id :: ref [|((i64 * f64) * i64)|] -> i64 -> i64
+fn keyed_id counts position =
+    match counts[position] with
+    | ((id, _), _) -> id
+
+private def grouped_id :: ref [|((i64 * f64) * [|(i64 * f64)|])|] -> i64 -> i64
+fn grouped_id groups position =
+    match groups[position] with
+    | ((id, _), _) -> id
+
+private def grouped_size :: ref [|((i64 * f64) * [|(i64 * f64)|])|] -> i64 -> i64
+fn grouped_size groups position =
+    match groups[position] with
+    | (_, members) -> members.length
+
+/// `0 .. count - 1` in one chunk.
+private def flat :: i64 -> [|i64|]
+fn flat count = new [|i64|](count, \i -> i)
+
+/// `0 .. count - 1` in several chunks: `List.cons` adds a chunk each time the first one is full.
+private def chunked :: i64 -> [|i64|]
+fn chunked count =
+    let mut values: [|i64|] = [||]
+    let mut index = count
+    while index > 0 do
+        index = index - 1
+        values = List.cons index values
+    values
+
+/// `value`, after one more call has been counted.
+private def counted :: ref Arc<Atomic<i64>> -> i64 -> i64
+fn counted counter value =
+    let _before = Atomic.fetch_add (Arc.get counter) 1
+    value
+
+// ---- Construction ----
+
+test "empty singleton replicate init" =
+    let no_ints: [|i64|] = [||]
+    eq (List.empty()) no_ints
+    eq (List.singleton 7) [|7|]
+    eq (List.replicate 3 1.5) [|1.5, 1.5, 1.5|]
+    eq (List.replicate 2 5) [|5, 5|]
+    eq (List.replicate 0 5) no_ints
+    eq (List.init 4 (\i -> i + 5)) [|5, 6, 7, 8|]
+    eq (List.init 0 (\i -> i)) no_ints
+    let words = List.init 3 (\i -> $"w{i}")
+    Test.equal (ref words[2]) (ref "w2")
+
+test "unfold" =
+    let no_ints: [|i64|] = [||]
+    eq (List.unfold (\s -> if s > 100 then Maybe.None else Maybe.Some (s, s * 2)) 1) [|1, 2, 4, 8, 16, 32, 64|]
+    eq (List.unfold (\s -> if s > 4 then Maybe.None else Maybe.Some (s * s, s + 1)) 1) [|1, 4, 9, 16|]
+    eq (List.unfold (\s -> if s > 0 then Maybe.None else Maybe.Some (s, s + 1)) 5) no_ints
+    let names = List.unfold (\n -> if n > 2 then Maybe.None else Maybe.Some ($"s{n}", n + 1)) 0
+    eq names.length 3
+    Test.equal (ref names[0]) (ref "s0")
+    Test.equal (ref names[2]) (ref "s2")
+
+// A loop, not a recursion: 100000 steps must not exhaust the stack of a build without tail-call elimination.
+test "unfold of many elements" =
+    let values = List.unfold (\s -> if s < 100000 then Maybe.Some (s, s + 1) else Maybe.None) 0
+    eq values.length 100000
+    eq (List.last values) 99999
+
+test "length is_empty" =
+    let no_ints: [|i64|] = [||]
+    eq (List.length [|1, 2, 3|]) 3
+    eq (List.length no_ints) 0
+    Test.is_true (List.is_empty no_ints)
+    Test.is_true (!(List.is_empty [|1|]))
+
+// ---- Access ----
+
+test "item try_item" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|10, 20, 30|]
+    eq (List.item 1 xs) 20
+    eq (List.item 2 xs) 30
+    some_eq (List.try_item 2 xs) 30
+    none (List.try_item 3 xs)
+    none (List.try_item (-1) xs)
+    none (List.try_item 0 no_ints)
+
+test "head last exactly_one and their try forms" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|10, 20, 30|]
+    eq (List.head xs) 10
+    eq (List.last xs) 30
+    some_eq (List.try_head xs) 10
+    some_eq (List.try_last xs) 30
+    none (List.try_head no_ints)
+    none (List.try_last no_ints)
+    eq (List.exactly_one [|9|]) 9
+    some_eq (List.try_exactly_one [|9|]) 9
+    none (List.try_exactly_one xs)
+    none (List.try_exactly_one no_ints)
+
+// ---- Slicing ----
+
+test "tail take skip truncate split_at" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|1, 2, 3, 4|]
+    eq (List.tail xs) [|2, 3, 4|]
+    eq (List.tail [|1|]) no_ints
+    eq (List.take 2 xs) [|1, 2|]
+    eq (List.take 0 xs) no_ints
+    eq (List.take 4 xs) [|1, 2, 3, 4|]
+    eq (List.skip 2 xs) [|3, 4|]
+    eq (List.skip (-1) xs) [|1, 2, 3, 4|]
+    eq (List.skip 4 xs) no_ints
+    eq (List.truncate 2 xs) [|1, 2|]
+    eq (List.truncate 6 xs) [|1, 2, 3, 4|]
+    eq (List.truncate 0 xs) no_ints
+    eq (List.truncate (-3) xs) no_ints
+    match List.split_at 3 [|8, 4, 3, 1, 6, 1|] with
+    | (front, back) ->
+        eq front [|8, 4, 3|]
+        eq back [|1, 6, 1|]
+    match List.split_at 0 xs with
+    | (front, back) ->
+        eq front no_ints
+        eq back xs
+    match List.split_at 4 xs with
+    | (front, back) ->
+        eq front xs
+        eq back no_ints
+
+test "take_while skip_while where filter" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|1, 2, 3, 4, 5|]
+    eq (List.take_while (\x -> x < 3) xs) [|1, 2|]
+    eq (List.take_while (\x -> x < 0) xs) no_ints
+    eq (List.take_while (\x -> x < 9) xs) xs
+    eq (List.skip_while (\x -> x < 3) xs) [|3, 4, 5|]
+    eq (List.skip_while (\x -> x < 9) xs) no_ints
+    eq (List.skip_while (\x -> x < 0) xs) xs
+    eq (List.where (\x -> x % 2 == 0) xs) [|2, 4|]
+    eq (List.filter (\x -> x % 2 == 1) xs) [|1, 3, 5|]
+    eq (List.filter (\x -> x > 9) xs) no_ints
+    eq (List.filter (\x -> x > 0) no_ints) no_ints
+
+test "chunk_by_size windowed split_into" =
+    let no_ints: [|i64|] = [||]
+    let no_rows: [|[|i64|]|] = [||]
+    eq (List.chunk_by_size 3 (flat 10)) [|[|0, 1, 2|], [|3, 4, 5|], [|6, 7, 8|], [|9|]|]
+    eq (List.chunk_by_size 10 [|1, 2, 3, 4, 5|]) [|[|1, 2, 3, 4, 5|]|]
+    eq (List.chunk_by_size 1 [|1, 2|]) [|[|1|], [|2|]|]
+    eq (List.chunk_by_size 2 no_ints) no_rows
+    eq (List.windowed 3 [|1, 2, 3, 4, 5|]) [|[|1, 2, 3|], [|2, 3, 4|], [|3, 4, 5|]|]
+    eq (List.windowed 5 [|1, 2, 3, 4, 5|]) [|[|1, 2, 3, 4, 5|]|]
+    eq (List.windowed 9 [|1, 2, 3|]) no_rows
+    eq (List.split_into 2 (flat 10)) [|[|0, 1, 2, 3, 4|], [|5, 6, 7, 8, 9|]|]
+    eq (List.split_into 4 (flat 10)) [|[|0, 1, 2|], [|3, 4, 5|], [|6, 7|], [|8, 9|]|]
+    eq (List.split_into 9 [|1, 2|]) [|[|1|], [|2|]|]
+    eq (List.split_into 1 [|1, 2, 3|]) [|[|1, 2, 3|]|]
+    eq (List.split_into 2 no_ints) no_rows
+
+// ---- Combining ----
+
+test "append concat copy rev cons" =
+    let no_ints: [|i64|] = [||]
+    let no_rows: [|[|i64|]|] = [||]
+    eq (List.append [|1, 2, 3|] [|4, 5, 6, 7|]) [|1, 2, 3, 4, 5, 6, 7|]
+    eq (List.append no_ints [|3|]) [|3|]
+    eq (List.append [|3|] no_ints) [|3|]
+    eq (List.concat [|[|1, 2|], no_ints, [|3|]|]) [|1, 2, 3|]
+    eq (List.concat no_rows) no_ints
+    eq (List.copy [|12, 13, 14|]) [|12, 13, 14|]
+    eq (List.rev [|0, 1, 2|]) [|2, 1, 0|]
+    eq (List.rev no_ints) no_ints
+    eq (List.cons 0 [|1, 2|]) [|0, 1, 2|]
+
+test "zip unzip all_pairs indexed pairwise transpose" =
+    let no_ints: [|i64|] = [||]
+    let no_rows: [|[|i64|]|] = [||]
+    eq (List.zip [|1, 2|] [|10, 20|]) [|(1, 10), (2, 20)|]
+    eq (List.zip3 [|1, 2|] [|10, 20|] [|100, 200|]) [|(1, 10, 100), (2, 20, 200)|]
+    match List.unzip [|(1, 10), (2, 20)|] with
+    | (left, right) ->
+        eq left [|1, 2|]
+        eq right [|10, 20|]
+    match List.unzip3 [|(1, 10, 100), (2, 20, 200)|] with
+    | (a, b, c) ->
+        eq a [|1, 2|]
+        eq b [|10, 20|]
+        eq c [|100, 200|]
+    eq (List.all_pairs [|1, 2|] [|3, 4|]) [|(1, 3), (1, 4), (2, 3), (2, 4)|]
+    eq (List.all_pairs [|1, 2|] no_ints) [||]
+    eq (List.indexed [|7, 8, 9|]) [|(0, 7), (1, 8), (2, 9)|]
+    eq (List.pairwise [|1, 2, 3, 4|]) [|(1, 2), (2, 3), (3, 4)|]
+    eq (List.pairwise [|1|]) [||]
+    eq (List.pairwise no_ints) [||]
+    eq (List.transpose [|[|10, 20, 30|], [|11, 21, 31|]|]) [|[|10, 11|], [|20, 21|], [|30, 31|]|]
+    eq (List.transpose [|[|1|], [|2|], [|3|]|]) [|[|1, 2, 3|]|]
+    eq (List.transpose no_rows) no_rows
+
+// ---- Traversal ----
+
+test "iter iteri iter2 iteri2 and the r forms run their actions" =
+    let no_ints: [|i64|] = [||]
+    List.iter (\x -> assert (x > 0)) [|1, 2, 3|]
+    List.iteri (\i x -> assert (x == i * 10)) [|0, 10, 20|]
+    List.iter2 (\a b -> assert (b == a * 2)) [|1, 2, 3|] [|2, 4, 6|]
+    List.iteri2 (\i a b -> assert (a + b == i * 3)) [|0, 1, 2|] [|0, 2, 4|]
+    List.iterr (\x -> assert (*x > 0)) [|1, 2, 3|]
+    List.iterir (\i x -> assert (*x == i * 10)) [|0, 10, 20|]
+    let words = [|"a", "bb"|]
+    List.iterr (\w -> assert (w.length > 0)) words
+    List.iterir (\i w -> assert (w.length == i + 1)) words
+    List.iter (\_x -> assert false) no_ints
+    List.iterr (\_x -> assert false) no_ints
+
+test "map mapi map2 mapi2 map3" =
+    let no_ints: [|i64|] = [||]
+    eq (List.map (\x -> x * 2) [|1, 2, 3|]) [|2, 4, 6|]
+    eq (List.mapi (\i x -> i + x) [|10, 10, 10|]) [|10, 11, 12|]
+    eq (List.map2 (\a b -> a * b) [|1, 2, 3|] [|4, 5, 6|]) [|4, 10, 18|]
+    eq (List.mapi2 (\i a b -> i + a + b) [|1, 2|] [|10, 20|]) [|11, 23|]
+    eq (List.map3 (\a b c -> a + b + c) [|1, 2|] [|10, 20|] [|100, 200|]) [|111, 222|]
+    eq (List.map (\x -> x + 1) no_ints) no_ints
+    eq (List.mapi (\i x -> i + x) no_ints) no_ints
+
+test "the results of mapi map2 map3 choose need not be Copy" =
+    let numbers = [|1, 2, 3|]
+    let labels = List.mapi (\i x -> $"{i}:{x}") numbers
+    Test.equal (ref labels[2]) (ref "2:3")
+    let pairs = List.map2 (\a b -> $"{a}{b}") numbers [|4, 5, 6|]
+    Test.equal (ref pairs[1]) (ref "25")
+    let triples = List.map3 (\a b c -> $"{a}{b}{c}") numbers numbers numbers
+    Test.equal (ref triples[0]) (ref "111")
+    let chosen = List.choose (\x -> if x > 1 then Maybe.Some $"c{x}" else Maybe.None) numbers
+    eq chosen.length 2
+    Test.equal (ref chosen[0]) (ref "c2")
+
+test "mapr mapir work for elements that are not Copy" =
+    let no_ints: [|i64|] = [||]
+    let words = [|"a", "bbb", "cc"|]
+    eq (List.mapr (\w -> w.length) words) [|1, 3, 2|]
+    eq (List.mapir (\i w -> i + w.length) words) [|1, 4, 4|]
+    let nested = [|[|1, 2|], no_ints, [|3|]|]
+    eq (List.mapr (\row -> row.length) nested) [|2, 0, 1|]
+    eq (List.mapr (\x -> *x + 1) [|1, 2, 3|]) [|2, 3, 4|]
+    eq (List.mapir (\i x -> i * *x) [|1, 2, 3|]) [|0, 2, 6|]
+    let labels = List.mapir (\i w -> $"{i}{w}") words
+    Test.equal (ref labels[1]) (ref "1bbb")
+
+test "map_fold map_fold_back" =
+    let no_ints: [|i64|] = [||]
+    match List.map_fold (\acc x -> (x * 2, acc + x)) 0 [|1, 2, 3|] with
+    | (mapped, total) ->
+        eq mapped [|2, 4, 6|]
+        eq total 6
+    match List.map_fold_back (\x acc -> (x * 2, acc + x)) [|1, 2, 3|] 0 with
+    | (mapped, total) ->
+        eq mapped [|2, 4, 6|]
+        eq total 6
+    match List.map_fold_back (\x acc -> (acc, acc + x)) [|1, 2, 3|] 0 with
+    | (mapped, total) ->
+        eq mapped [|5, 3, 0|]
+        eq total 6
+    match List.map_fold (\acc x -> (acc, acc + x)) 10 no_ints with
+    | (mapped, total) ->
+        eq mapped no_ints
+        eq total 10
+    match List.map_fold (\acc x -> ($"{acc}{x}", acc + x)) 0 [|1, 2, 3|] with
+    | (mapped, total) ->
+        eq mapped.length 3
+        Test.equal (ref mapped[2]) (ref "33")
+        eq total 6
+
+test "collect choose" =
+    let no_ints: [|i64|] = [||]
+    eq (List.collect (\x -> new [|i64|](x, \i -> i + 1)) [|1, 2, 3, 4|]) [|1, 1, 2, 1, 2, 3, 1, 2, 3, 4|]
+    eq (List.collect (\x -> [|x, x * 10|]) [|1, 2, 3|]) [|1, 10, 2, 20, 3, 30|]
+    eq (List.collect (\x -> [|x|]) no_ints) no_ints
+    eq (List.collect (\_x -> no_ints) [|1, 2|]) no_ints
+    eq (List.choose (\x -> if x % 2 == 0 then Maybe.Some (x * 10) else Maybe.None) [|1, 2, 3, 4|]) [|20, 40|]
+    eq (List.choose (\x -> Maybe.Some x) [|4, 5|]) [|4, 5|]
+    eq (List.choose (\x -> if x > 100 then Maybe.Some x else Maybe.None) [|4, 5|]) no_ints
+
+test "partition partition_with" =
+    let no_ints: [|i64|] = [||]
+    match List.partition (\x -> x % 2 == 0) [|1, 2, 3, 4|] with
+    | (even, odd) ->
+        eq even [|2, 4|]
+        eq odd [|1, 3|]
+    match List.partition_with (\x -> if x % 2 == 0 then Result.Ok (x * 10) else Result.Error (x + 100)) [|1, 2, 3, 4, 5|] with
+    | (evens, odds) ->
+        eq evens [|20, 40|]
+        eq odds [|101, 103, 105|]
+    match List.partition (\x -> x > 0) no_ints with
+    | (yes, no) ->
+        eq yes no_ints
+        eq no no_ints
+    match List.partition_with (\x -> if x > 1 then Result.Ok $"big{x}" else Result.Error $"small{x}") [|1, 2|] with
+    | (big, small) ->
+        eq big.length 1
+        Test.equal (ref big[0]) (ref "big2")
+        Test.equal (ref small[0]) (ref "small1")
+
+// ---- Folding ----
+
+test "fold fold_back fold2 fold_back2 and the r forms" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|1, 2, 3, 4|]
+    eq (List.fold (\acc x -> acc * 10 + x) 0 xs) 1234
+    eq (List.foldr (\acc x -> acc * 10 + *x) 0 xs) 1234
+    eq (List.fold_back (\x acc -> acc * 10 + x) xs 0) 4321
+    eq (List.foldr_back (\x acc -> acc * 10 + *x) xs 0) 4321
+    eq (List.fold2 (\acc a b -> acc + a * b) 0 [|1, 2, 3|] [|4, 5, 6|]) 32
+    eq (List.fold_back2 (\a b acc -> acc * 10 + a + b) [|1, 2, 3|] [|10, 20, 30|] 0) 3531
+    eq (List.fold (\acc x -> acc + x) 7 no_ints) 7
+    eq (List.fold_back (\x acc -> acc + x) no_ints 7) 7
+    eq (List.foldr_back (\x acc -> acc + *x) no_ints 7) 7
+    let words = [|"a", "bcd"|]
+    eq (List.foldr (\acc w -> acc + w.length) 0 words) 4
+    eq (List.foldr_back (\w acc -> acc * 10 + w.length) words 0) 31
+
+test "reduce reduce_back scan scan_back" =
+    let no_ints: [|i64|] = [||]
+    eq (List.reduce (\a b -> a * 10 + b) [|1, 3, 4, 2|]) 1342
+    eq (List.reduce_back (\a b -> a + b * 10) [|1, 3, 4, 2|]) 2431
+    eq (List.reduce (\a b -> a + b) [|5|]) 5
+    eq (List.reduce_back (\a b -> a + b) [|5|]) 5
+    eq (List.scan (\acc x -> acc + x) 0 [|1, 2, 3|]) [|0, 1, 3, 6|]
+    eq (List.scan_back (\x acc -> acc + x) [|1, 2, 3|] 0) [|6, 5, 3, 0|]
+    eq (List.scan (\acc x -> acc + x) 7 no_ints) [|7|]
+    eq (List.scan_back (\x acc -> acc + x) no_ints 7) [|7|]
+
+// ---- Searching ----
+
+test "exists forall exists2 forall2 and the r forms" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|1, 2, 3, 4, 5|]
+    Test.is_true (List.exists (\x -> x % 4 == 0) xs)
+    Test.is_true (!(List.exists (\x -> x % 6 == 0) xs))
+    Test.is_true (List.existsr (\x -> *x == 3) xs)
+    Test.is_true (List.forall (\x -> x > 0) xs)
+    Test.is_true (!(List.forall (\x -> x > 1) xs))
+    Test.is_true (List.forallr (\x -> *x > 0) xs)
+    Test.is_true (List.exists2 (\a b -> a > b) [|1, 4|] [|1, 3|])
+    Test.is_true (!(List.exists2 (\a b -> a > b) [|1, 2|] [|1, 3|]))
+    Test.is_true (List.forall2 (\a b -> a == b) [|1, 2, 3|] [|1, 2, 3|])
+    Test.is_true (!(List.forall2 (\a b -> a == b) [|2017, 1, 1|] [|2019, 19, 8|]))
+    Test.is_true (!(List.exists (\x -> x > 0) no_ints))
+    Test.is_true (List.forall (\x -> x > 0) no_ints)
+    Test.is_true (List.forall2 (\a b -> a == b) no_ints no_ints)
+    let words = [|"a", "bb", "ccc"|]
+    Test.is_true (List.existsr (\w -> w.length == 2) words)
+    Test.is_true (!(List.existsr (\w -> w.length == 4) words))
+    Test.is_true (List.forallr (\w -> w.length < 4) words)
+    Test.is_true (!(List.forallr (\w -> w.length < 3) words))
+
+// F# looks at the lists pair by pair and decides as soon as it can: a pair that settles the answer comes before the
+// check that the lists are as long as each other, which only the pairs that do not settle it reach.
+test "exists2 and forall2 decide before they compare the lengths" =
+    Test.is_true (List.exists2 (\_a _b -> true) [|1, 2, 3|] [|1|])
+    Test.is_true (List.exists2 (\_a _b -> true) [|1|] [|1, 2, 3|])
+    Test.is_true (List.exists2 (\a b -> a == b) [|1, 2, 3|] [|9, 2|])
+    Test.is_true (!(List.forall2 (\_a _b -> false) [|1, 2, 3|] [|1|]))
+    Test.is_true (!(List.forall2 (\_a _b -> false) [|1|] [|1, 2, 3|]))
+    Test.is_true (!(List.forall2 (\a b -> a == b) [|1, 2, 3|] [|1, 9|]))
+
+test "find find_back find_index find_index_back and the try forms" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|1, 2, 3, 4, 5|]
+    eq (List.find (\x -> x % 2 == 0) xs) 2
+    eq (List.find_back (\x -> x % 2 == 0) xs) 4
+    eq (List.find_index (\x -> x % 2 == 0) xs) 1
+    eq (List.find_index_back (\x -> x % 2 == 0) xs) 3
+    some_eq (List.try_find (\x -> x % 2 == 0) xs) 2
+    some_eq (List.try_find_back (\x -> x % 2 == 0) xs) 4
+    some_eq (List.try_find_index (\x -> x % 2 == 0) xs) 1
+    some_eq (List.try_find_index_back (\x -> x % 2 == 0) xs) 3
+    none (List.try_find (\x -> x % 6 == 0) xs)
+    none (List.try_find_back (\x -> x % 6 == 0) xs)
+    none (List.try_find_index (\x -> x % 6 == 0) xs)
+    none (List.try_find_index_back (\x -> x % 6 == 0) xs)
+    none (List.try_find (\_x -> true) no_ints)
+    eq (List.find_index (\x -> x == 1) xs) 0
+    eq (List.find_index (\x -> x == 5) xs) 4
+
+test "findr try_findr borrow the element" =
+    let xs = [|1, 2, 3, 4, 5|]
+    eq (*(List.findr (\x -> *x > 3) xs)) 4
+    match List.try_findr (\x -> *x > 3) xs with
+    | Maybe.Some found -> eq *found 4
+    | Maybe.None -> assert false
+    none (List.try_findr (\x -> *x > 9) xs)
+    let words = [|"apple", "fig", "banana"|]
+    eq (List.findr (\w -> w.length == 3) words).length 3
+    match List.try_findr (\w -> w.length > 5) words with
+    | Maybe.Some found -> eq found.length 6
+    | Maybe.None -> assert false
+
+test "pick try_pick" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|1, 2, 3, 4, 5|]
+    eq (List.pick (\x -> if x % 2 == 0 then Maybe.Some (x * 10) else Maybe.None) xs) 20
+    some_eq (List.try_pick (\x -> if x % 2 == 0 then Maybe.Some (x * 10) else Maybe.None) xs) 20
+    none (List.try_pick (\x -> if x > 9 then Maybe.Some x else Maybe.None) xs)
+    none (List.try_pick (\x -> Maybe.Some x) no_ints)
+
+test "contains containsr compare_with" =
+    let no_ints: [|i64|] = [||]
+    Test.is_true (List.contains 2 [|1, 2|])
+    Test.is_true (!(List.contains 5 [|1, 2|]))
+    Test.is_true (!(List.contains 5 no_ints))
+    let words = [|"a", "b"|]
+    let target = "b"
+    Test.is_true (List.containsr target words)
+    Test.is_true (!(List.containsr "z" words))
+    eq (List.compare_with (\a b -> a - b) [|1, 2, 3|] [|1, 2, 3|]) 0
+    eq (List.compare_with (\a b -> a - b) [|1, 2|] [|1, 2, 3|]) (-1)
+    eq (List.compare_with (\a b -> a - b) [|1, 2, 3|] [|1, 2|]) 1
+    eq (List.compare_with (\a b -> a - b) [|1, 5|] [|1, 3, 9|]) 2
+    eq (List.compare_with (\a b -> a - b) [|1, 2|] [|1, 3, 9|]) (-1)
+    eq (List.compare_with (\a b -> a - b) no_ints no_ints) 0
+
+// ---- Aggregates ----
+
+test "sum sum_by average average_by" =
+    let no_ints: [|i64|] = [||]
+    eq (List.sum [|1, 5, 3, 2|]) 11
+    eq (List.sum no_ints) 0
+    eq (List.sum [|0.5, 0.25|]) 0.75
+    eq (List.sum_by (\x -> x * x) [|1, 2, 3|]) 14
+    eq (List.sum_by (\x -> x * 0.5) [|1.0, 2.0, 3.0|]) 3.0
+    eq (List.sum_by (\x -> x) no_ints) 0
+    eq (List.average (List.init 9 (\i -> (i + 1) as f64))) 5.0
+    eq (List.average [|1.0, 2.0, 6.0|]) 3.0
+    eq (List.average_by (\x -> x * 2.0) [|1.0, 2.0, 6.0|]) 6.0
+    eq (List.average_by (\age -> age) [|26.0, 90.0, 37.0|]) 51.0
+
+// F# `sum` and `sumBy` use `Checked.(+)` and throw on overflow. Integer addition wraps in Tsuzuri, and so do these.
+test "sum and sum_by wrap on integer overflow" =
+    let largest: i64 = 9223372036854775807
+    eq (List.sum [|largest, 1|]) (largest + 1)
+    eq (List.sum_by (\x -> x) [|largest, 1|]) (largest + 1)
+    eq (List.sum_by (\x -> x) [|largest, 1|]) (-9223372036854775807 - 1)
+    let bytes: [|i8u|] = [|200, 100|]
+    eq (List.sum bytes) 44
+    eq (List.sum_by (\x -> x) bytes) 44
+    let signed: [|i8|] = [|100, 100|]
+    eq (List.sum signed) (-56)
+    eq (List.sum_by (\x -> x) signed) (-56)
+    let words: [|i64u|] = [|18446744073709551615, 2|]
+    eq (List.sum_by (\x -> x) words) 1
+
+test "min max min_by max_by minr maxr" =
+    eq (List.min [|10, 12, 11|]) 10
+    eq (List.max [|10, 12, 11|]) 12
+    eq (List.min [|7|]) 7
+    eq (List.min_by (\p -> p * p) [|3, -1, 2, 1|]) (-1)
+    eq (List.max_by (\p -> p * p) [|1, -3, 2, 3|]) (-3)
+    eq (List.min_by (\p -> match p with | (_, size) -> size) [|(0, 3), (1, 1), (2, 4)|]) (1, 1)
+    eq (List.max_by (\p -> match p with | (_, size) -> size) [|(0, 3), (1, 1), (2, 4)|]) (2, 4)
+    eq (List.min_by (\p -> match p with | (_, size) -> size) [|(0, 1), (1, 1)|]) (0, 1)
+    eq (List.max_by (\p -> match p with | (_, size) -> size) [|(0, 4), (1, 4)|]) (0, 4)
+    let numbers = [|10, 12, 11|]
+    eq (*(List.minr numbers)) 10
+    eq (*(List.maxr numbers)) 12
+    let words = [|"bb", "a", "ccc"|]
+    eq (List.minr words).length 1
+    eq (List.maxr words).length 3
+    eq (List.min [|2.5, 1.5, 1.5|]) 1.5
+    let nan = 0.0 / 0.0
+    Test.is_true (List.min [|nan, 1.0|] != List.min [|nan, 1.0|])
+    eq (List.max [|1.0, nan, 3.0|]) 3.0
+    eq (List.min [|3.0, nan, 1.0|]) 1.0
+
+// F# calls the projection once for each element: `minBy` and `maxBy` do not project the first element twice.
+test "min_by and max_by project every element once" =
+    let counter = Arc.new (Atomic.create 0i64)
+    let tally = ref counter
+    let _smallest = List.min_by (\x -> counted tally x) [|5, 3, 4|]
+    eq (Atomic.load (Arc.get (ref counter))) 3
+    let _largest = List.max_by (\x -> counted tally x) [|5, 3, 4|]
+    eq (Atomic.load (Arc.get (ref counter))) 6
+
+// ---- Sets and groups ----
+
+test "distinct distinct_by except" =
+    let no_ints: [|i64|] = [||]
+    eq (List.distinct [|1, 1, 2, 3, 2, 4|]) [|1, 2, 3, 4|]
+    eq (List.distinct no_ints) no_ints
+    eq (List.distinct [|(1, 2), (1, 2), (2, 1)|]) [|(1, 2), (2, 1)|]
+    eq (List.distinct_by (\x -> x % 3) [|1, 2, 3, 4, 5, 6|]) [|1, 2, 3|]
+    eq (List.except [|1, 3, 5|] [|1, 2, 3, 4, 5, 2|]) [|2, 4|]
+    eq (List.except no_ints [|3, 3, 4|]) [|3, 4|]
+    eq (List.except [|1|] no_ints) no_ints
+
+test "count_by group_by" =
+    let no_ints: [|i64|] = [||]
+    eq (List.count_by (\x -> x % 2) [|1, 2, 3, 4, 5|]) [|(1, 3), (0, 2)|]
+    eq (List.group_by (\x -> x % 2) [|1, 2, 3, 4, 5|]) [|(1, [|1, 3, 5|]), (0, [|2, 4|])|]
+    eq (List.count_by (\x -> x) no_ints) [||]
+    eq (List.group_by (\x -> x) no_ints) [||]
+    eq (List.group_by (\x -> x / 10) [|11, 25, 12, 27, 3, 15|]) [|(1, [|11, 12, 15|]), (2, [|25, 27|]), (0, [|3|])|]
+    eq (List.count_by (\x -> x / 10) [|11, 25, 12, 27, 3, 15|]) [|(1, 3), (2, 2), (0, 1)|]
+
+// F# hashes with generic equality, where NaN equals NaN: all NaNs are one value, even when there is only one.
+test "distinct distinct_by except count_by group_by treat every NaN as one value" =
+    let no_floats: [|f64|] = [||]
+    let nan = 0.0 / 0.0
+    let values = [|nan, 1.0, nan, 2.0, 1.0, nan|]
+    let single = List.distinct [|nan|]
+    eq single.length 1
+    Test.is_true (is_nan single[0])
+    let distinct = List.distinct values
+    eq distinct.length 3
+    Test.is_true (is_nan distinct[0])
+    eq (List.skip 1 distinct) [|1.0, 2.0|]
+    let by_key = List.distinct_by (\x -> x * 0.0) [|1.0, nan, 2.0, nan|]
+    eq by_key.length 2
+    eq by_key[0] 1.0
+    Test.is_true (is_nan by_key[1])
+    eq (List.except [|nan|] values) [|1.0, 2.0|]
+    let kept = List.except [|1.0|] values
+    eq kept.length 2
+    Test.is_true (is_nan kept[0])
+    eq kept[1] 2.0
+    let only = List.except [|2.0|] [|nan, nan|]
+    eq only.length 1
+    Test.is_true (is_nan only[0])
+    eq (List.except [|nan|] [|nan, nan|]) no_floats
+    let counts = List.count_by (\x -> x) values
+    eq counts.length 3
+    Test.is_true (count_key_is_nan (ref counts) 0)
+    eq (count_of (ref counts) 0) 3
+    eq (count_of (ref counts) 1) 2
+    eq (count_of (ref counts) 2) 1
+    let groups = List.group_by (\x -> x) values
+    eq groups.length 3
+    Test.is_true (group_key_is_nan (ref groups) 0)
+    eq (group_size (ref groups) 0) 3
+    eq (group_size (ref groups) 1) 2
+    eq (group_size (ref groups) 2) 1
+
+// A tuple that holds a NaN does not equal itself either, but only a NaN is the same as any other NaN:
+// `(0, nan)` and `(1, nan)` are two keys, `(0, nan)` and `(0, nan)` are one.
+test "distinct except count_by group_by keep keys that hold a NaN apart" =
+    let nan = 0.0 / 0.0
+    let pairs = [|(0, nan), (1, nan), (0, nan), (2, 1.0), (2, 1.0)|]
+    let distinct = List.distinct pairs
+    eq distinct.length 3
+    eq (id_at (ref distinct) 0) 0
+    eq (id_at (ref distinct) 1) 1
+    eq (id_at (ref distinct) 2) 2
+    let by_id = List.distinct_by (\p -> match p with | (id, _) -> id) pairs
+    eq by_id.length 3
+    let rest = List.except [|(0, nan)|] pairs
+    eq rest.length 2
+    eq (id_at (ref rest) 0) 1
+    eq (id_at (ref rest) 1) 2
+    eq (List.except pairs [|(1, nan), (0, nan), (2, 1.0)|]).length 0
+    let counts = List.count_by (\p -> p) pairs
+    eq counts.length 3
+    eq (keyed_id (ref counts) 0) 0
+    eq (keyed_count (ref counts) 0) 2
+    eq (keyed_id (ref counts) 1) 1
+    eq (keyed_count (ref counts) 1) 1
+    eq (keyed_id (ref counts) 2) 2
+    eq (keyed_count (ref counts) 2) 2
+    let groups = List.group_by (\p -> p) pairs
+    eq groups.length 3
+    eq (grouped_id (ref groups) 0) 0
+    eq (grouped_size (ref groups) 0) 2
+    eq (grouped_id (ref groups) 1) 1
+    eq (grouped_size (ref groups) 1) 1
+    eq (grouped_id (ref groups) 2) 2
+    eq (grouped_size (ref groups) 2) 2
+
+test "the keyed functions handle a larger list" =
+    let values = List.init 20000 (\i -> (i * 7919) % 10007)
+    eq (List.sort_by (\x -> x) values) (List.sort values)
+    eq (List.sort_by_descending (\x -> x) values) (List.sort_descending values)
+    eq (List.length (List.distinct values)) 10007
+    eq (List.length (List.group_by (\x -> x % 1000) values)) 1000
+    eq (List.length (List.count_by (\x -> x % 1000) values)) 1000
+
+// ---- Sorting ----
+
+test "sort sort_descending sort_by sort_by_descending sort_with" =
+    let no_ints: [|i64|] = [||]
+    eq (List.sort [|8, 4, 3, 1, 6, 1|]) [|1, 1, 3, 4, 6, 8|]
+    eq (List.sort_descending [|8, 4, 3, 1, 6, 1|]) [|8, 6, 4, 3, 1, 1|]
+    eq (List.sort no_ints) no_ints
+    eq (List.sort [|2.5, 1.5, 3.5|]) [|1.5, 2.5, 3.5|]
+    eq (List.sort_descending [|2.5, 1.5, 3.5|]) [|3.5, 2.5, 1.5|]
+    eq (List.sort_by (\x -> x * x) [|-3, 2, -1, 4|]) [|-1, 2, -3, 4|]
+    eq (List.sort_by_descending (\x -> x * x) [|-3, 2, -1, 4|]) [|4, -3, 2, -1|]
+    eq (List.sort_with (\a b -> a - b) [|3, 1, 2|]) [|1, 2, 3|]
+    eq (List.sort_with (\a b -> b - a) [|3, 1, 2|]) [|3, 2, 1|]
+    let pairs = [|(0, 2), (1, 3), (2, 2), (3, 2)|]
+    eq (List.sort_by (\p -> match p with | (_, size) -> size) pairs) [|(0, 2), (2, 2), (3, 2), (1, 3)|]
+    eq (List.sort_by_descending (\p -> match p with | (_, size) -> size) pairs) [|(1, 3), (0, 2), (2, 2), (3, 2)|]
+    eq (List.sort_with (\a b -> match (a, b) with | ((_, x), (_, y)) -> x - y) pairs) [|(0, 2), (2, 2), (3, 2), (1, 3)|]
+
+// `sort` and `sort_descending` put NaN last in both directions; the keyed sorts do the same with NaN keys.
+test "sort sort_by sort_by_descending put NaN last" =
+    let nan = 0.0 / 0.0
+    let values = [|nan, 1.0, 0.5, nan, 2.0|]
+    let sorted = List.sort values
+    eq (List.take 3 sorted) [|0.5, 1.0, 2.0|]
+    Test.is_true (is_nan sorted[3] && is_nan sorted[4])
+    let sorted_descending = List.sort_descending values
+    eq (List.take 3 sorted_descending) [|2.0, 1.0, 0.5|]
+    Test.is_true (is_nan sorted_descending[3] && is_nan sorted_descending[4])
+    let ascending = List.sort_by (\x -> x) values
+    eq (List.take 3 ascending) [|0.5, 1.0, 2.0|]
+    Test.is_true (is_nan ascending[3] && is_nan ascending[4])
+    let descending = List.sort_by_descending (\x -> x) values
+    eq (List.take 3 descending) [|2.0, 1.0, 0.5|]
+    Test.is_true (is_nan descending[3] && is_nan descending[4])
+    let with_comparer = List.sort_with (\a b -> if a < b then -1 else if a > b then 1 else 0) values
+    eq (List.take 3 with_comparer) [|0.5, 1.0, 2.0|]
+    Test.is_true (is_nan with_comparer[3] && is_nan with_comparer[4])
+    let tagged = [|(0, nan), (1, 1.0), (2, nan), (3, 0.5)|]
+    let by_key = List.sort_by (\p -> match p with | (_, key) -> key) tagged
+    eq (id_at (ref by_key) 0) 3
+    eq (id_at (ref by_key) 1) 1
+    eq (id_at (ref by_key) 2) 0
+    eq (id_at (ref by_key) 3) 2
+
+// ---- Updating ----
+
+test "update_at insert_at insert_many_at remove_at remove_many_at permute" =
+    let no_ints: [|i64|] = [||]
+    eq (List.update_at 1 9 [|0, 1, 2|]) [|0, 9, 2|]
+    eq (List.insert_at 1 9 [|0, 1, 2|]) [|0, 9, 1, 2|]
+    eq (List.insert_at 0 9 [|0, 1, 2|]) [|9, 0, 1, 2|]
+    eq (List.insert_at 3 9 [|0, 1, 2|]) [|0, 1, 2, 9|]
+    eq (List.insert_many_at 1 [|8, 9|] [|0, 1, 2|]) [|0, 8, 9, 1, 2|]
+    eq (List.insert_many_at 3 [|8, 9|] [|0, 1, 2|]) [|0, 1, 2, 8, 9|]
+    eq (List.insert_many_at 0 no_ints [|0, 1, 2|]) [|0, 1, 2|]
+    eq (List.remove_at 1 [|0, 1, 2|]) [|0, 2|]
+    eq (List.remove_at 0 [|0|]) no_ints
+    eq (List.remove_many_at 1 2 [|0, 1, 2, 3|]) [|0, 3|]
+    eq (List.remove_many_at 2 2 [|0, 1, 2, 3|]) [|0, 1|]
+    eq (List.remove_many_at 1 0 [|0, 1, 2, 3|]) [|0, 1, 2, 3|]
+    eq (List.permute (\x -> (x + 1) % 4) [|1, 2, 3, 4|]) [|4, 1, 2, 3|]
+    eq (List.permute (\x -> x) [|1, 2, 3|]) [|1, 2, 3|]
+    eq (List.permute (\x -> 2 - x) [|1, 2, 3|]) [|3, 2, 1|]
+
+test "update_at keeps the source" =
+    let xs = [|1, 2, 3|]
+    let updated = List.update_at 0 9 xs
+    eq xs [|1, 2, 3|]
+    eq updated [|9, 2, 3|]
+    let mut state = [|0, 0, 0, 0|]
+    for i in 0 .. 3 do
+        state = List.update_at i (i * 2) state
+    eq state [|0, 2, 4, 6|]
+
+// ---- Conversions ----
+
+test "of_array to_array of_seq to_seq to_seqr" =
+    let no_ints: [|i64|] = [||]
+    eq (List.of_array [1, 2, 3]) [|1, 2, 3|]
+    eq (List.to_array [|1, 2|]) [1, 2]
+    eq (List.of_array (List.to_array [|4, 5|])) [|4, 5|]
+    let source = [|4, 5, 6|]
+    eq (List.of_seq (List.to_seq source)) [|4, 5, 6|]
+    let words = [|"x", "yy"|]
+    let mut total = 0
+    for word in List.to_seqr words do total = total + word.length
+    eq total 3
+    let mut sum = 0
+    for value in List.to_seq source do sum = sum + value
+    eq sum 15
+    eq (List.of_seq (Seq.empty())) no_ints
+    let names = List.of_seq (Seq.unfold (\n -> if n > 2 then Maybe.None else Maybe.Some ($"s{n}", n + 1)) 0)
+    eq names.length 3
+    Test.equal (ref names[1]) (ref "s1")
+
+// ---- Randomness ----
+
+test "random_*_by with a fixed randomizer" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|10, 20, 30, 40, 50|]
+    eq (List.random_choice_by (\() -> 0.0) xs) 10
+    eq (List.random_choice_by (\() -> 0.5) xs) 30
+    eq (List.random_choice_by (\() -> 0.99) xs) 50
+    eq (List.random_choices_by (\() -> 0.0) 3 xs) [|10, 10, 10|]
+    eq (List.random_choices_by (\() -> 0.99) 2 xs) [|50, 50|]
+    eq (List.random_choices_by (\() -> 0.0) 0 no_ints) no_ints
+    eq (List.random_sample_by (\() -> 0.0) 2 xs) [|10, 20|]
+    eq (List.random_sample_by (\() -> 0.0) 0 xs) no_ints
+    eq (List.random_shuffle_by (\() -> 0.0) xs) xs
+    eq (List.random_shuffle_by (\() -> 0.99) xs) [|50, 10, 20, 30, 40|]
+    eq (List.sort (List.random_shuffle_by (\() -> 0.5) xs)) xs
+    eq (List.random_shuffle_by (\() -> 0.5) no_ints) no_ints
+
+test "random_*_with a Pcg generator" =
+    let no_ints: [|i64|] = [||]
+    let xs = [|10, 20, 30, 40, 50|]
+    let generator = Random.pcg 42i64u 54i64u
+    match List.random_shuffle_with generator xs with
+    | (shuffled, next) ->
+        eq (List.sort shuffled) xs
+        match List.random_shuffle_with generator xs with
+        | (again, _) -> eq again shuffled
+        match List.random_shuffle_with next xs with
+        | (other, _) -> eq (List.sort other) xs
+    match List.random_choice_with generator xs with
+    | (item, _) -> Test.is_true (List.contains item xs)
+    match List.random_choices_with generator 20 xs with
+    | (items, _) ->
+        eq items.length 20
+        Test.is_true (List.forall (\item -> List.contains item xs) items)
+    match List.random_sample_with generator 3 xs with
+    | (items, _) ->
+        eq items.length 3
+        eq (List.distinct items).length 3
+        Test.is_true (List.forall (\item -> List.contains item xs) items)
+    match List.random_sample_with generator 5 xs with
+    | (items, _) -> eq (List.sort items) xs
+    match List.random_choices_with generator 0 no_ints with
+    | (items, _) -> eq items no_ints
+
+// ---- Lists of several chunks ----
+
+// `List.cons` builds a list that is a chain of chunks. Every function reads one as it reads a list of one chunk.
+test "lists of several chunks give the same results as lists of one chunk" =
+    let count = 10000
+    let many = chunked count
+    let one = flat count
+    eq many one
+    eq (List.length many) count
+    eq (List.item 7000 many) 7000
+    eq (List.last many) (count - 1)
+    eq (List.take 6000 many) (List.take 6000 one)
+    eq (List.skip 6000 many) (List.skip 6000 one)
+    eq (List.truncate 9000 many) (List.truncate 9000 one)
+    eq (List.take_while (\x -> x < 8000) many) (List.take_while (\x -> x < 8000) one)
+    eq (List.skip_while (\x -> x < 8000) many) (List.skip_while (\x -> x < 8000) one)
+    eq (List.filter (\x -> x % 3 == 0) many) (List.filter (\x -> x % 3 == 0) one)
+    eq (List.rev many) (List.rev one)
+    eq (List.map (\x -> x * 2) many) (List.map (\x -> x * 2) one)
+    eq (List.mapi (\i x -> i + x) many) (List.mapi (\i x -> i + x) one)
+    eq (List.mapr (\x -> *x + 1) many) (List.mapr (\x -> *x + 1) one)
+    eq (List.append many one) (List.append one many)
+    eq (List.fold (\acc x -> acc + x) 0 many) 49995000
+    eq (List.foldr (\acc x -> acc + *x) 0 many) 49995000
+    eq (List.fold_back (\x acc -> acc + x) many 0) 49995000
+    eq (List.foldr_back (\x acc -> acc + *x) many 0) 49995000
+    eq (List.reduce (\a b -> a + b) many) 49995000
+    eq (List.reduce_back (\a b -> a + b) many) 49995000
+    eq (List.sum many) 49995000
+    eq (List.min many) 0
+    eq (List.max many) (count - 1)
+    eq (*(List.maxr many)) (count - 1)
+    eq (List.find (\x -> x > 9000) many) 9001
+    eq (List.find_back (\x -> x < 100) many) 99
+    eq (List.find_index (\x -> x == 9000) many) 9000
+    eq (List.find_index_back (\x -> x < 100) many) 99
+    eq (*(List.findr (\x -> *x == 9500) many)) 9500
+    Test.is_true (List.exists (\x -> x == 9999) many)
+    Test.is_true (List.forall (\x -> x >= 0) many)
+    Test.is_true (List.contains 9999 many)
+    Test.is_true (List.exists2 (\a b -> a + b == 19998) many one)
+    eq (List.zip many one) (List.zip one one)
+    eq (List.windowed 3 many) (List.windowed 3 one)
+    eq (List.chunk_by_size 7 many) (List.chunk_by_size 7 one)
+    eq (List.split_into 7 many) (List.split_into 7 one)
+    eq (List.pairwise many) (List.pairwise one)
+    eq (List.indexed many) (List.indexed one)
+    eq (List.sort_descending many) (List.rev one)
+    eq (List.distinct many) one
+    eq (List.length (List.group_by (\x -> x % 10) many)) 10
+    eq (List.insert_at 5000 (-1) many) (List.insert_at 5000 (-1) one)
+    eq (List.remove_at 5000 many) (List.remove_at 5000 one)
+    eq (List.update_at 5000 (-1) many) (List.update_at 5000 (-1) one)
+    eq (List.to_array many) (List.to_array one)
+    eq (List.of_seq (List.to_seq many)) one
+    eq (List.length (List.collect (\x -> [|x, x|]) many)) 20000
+    eq (List.length (List.choose (\x -> if x % 2 == 0 then Maybe.Some x else Maybe.None) many)) 5000
+    eq (List.length (List.unfold (\s -> if s < count then Maybe.Some (s, s + 1) else Maybe.None) 0)) count
+    match List.split_at 6000 many with
+    | (front, back) ->
+        eq front (List.take 6000 one)
+        eq back (List.skip 6000 one)
+    match List.partition (\x -> x % 2 == 0) many with
+    | (even, odd) ->
+        eq (List.length even) 5000
+        eq (List.length odd) 5000
+    match List.map_fold_back (\x acc -> (x, acc + x)) many 0 with
+    | (mapped, total) ->
+        eq mapped one
+        eq total 49995000
+
+// ---- Tsuzuri's own functions ----
+
+test "ownership: elements that are not Copy" =
+    let words = [|"pear", "fig", "apple"|]
+    eq (List.length words) 3
+    Test.equal (List.minr words) "apple"
+    Test.equal (List.maxr words) "pear"
+    Test.is_true (List.containsr "fig" words)
+    Test.is_true (List.existsr (\w -> w.length == 4) words)
+    eq (List.mapr (\w -> w.length) words) [|4, 3, 5|]
+    let more = List.cons "plum" words
+    eq (List.length more) 4
+    eq (List.of_seq (Seq.map (\w -> w.length) (List.to_seqr more))) [|4, 4, 3, 5|]
+
+test "a pipeline reads like F#" =
+    let squares = [|1, 2, 3, 4, 5|] |> List.filter (\x -> x % 2 == 1) |> List.map (\x -> x * x)
+    eq squares [|1, 9, 25|]
+    eq (squares |> List.sum) 35
+    eq ([|3, 1, 2|] |> List.sort |> List.rev) [|3, 2, 1|]
+    eq ([|1, 2, 3|] |> List.fold (\acc x -> acc + x) 0) 6
+    eq ([|[|1, 2|], [|3|]|] |> List.concat |> List.map (\x -> x * 2)) [|2, 4, 6|]

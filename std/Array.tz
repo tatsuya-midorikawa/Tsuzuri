@@ -764,14 +764,20 @@ fn split_into count values =
         let parts = if count < values.length then count else values.length
         new [['a]](parts, index -> part_at values (values.length / parts) (values.length % parts) index)
 
-private def rec unfold_into :: ('state -> Maybe<('a * 'state)>) -> 'state -> Vec<'a> -> Vec<'a>
-fn rec unfold_into generator state collected =
-    match generator state with
-    | Maybe.Some (value, next) -> unfold_into generator next (Vec.push collected value)
-    | Maybe.None -> collected
-
 def unfold :: ('state -> Maybe<('a * 'state)>) -> 'state -> ['a]
-fn unfold generator state = Vec.to_array (unfold_into generator state (Vec.empty()))
+fn unfold generator initial =
+    let mut current = Maybe.Some initial
+    let mut items = Vec.empty()
+    while Maybe.is_some (ref current) do
+        match current with
+        | Maybe.Some state ->
+            match generator state with
+            | Maybe.Some (item, next) ->
+                items = Vec.push items item
+                current = Maybe.Some next
+            | Maybe.None -> current = Maybe.None
+        | Maybe.None -> current = Maybe.None
+    Vec.to_array items
 
 def permute :: Copy<'a> => (i64 -> i64) -> ref ['a] -> ['a]
 fn permute index_map values =

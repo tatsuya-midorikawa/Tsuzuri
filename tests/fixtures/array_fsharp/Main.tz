@@ -92,6 +92,12 @@ test "unfold" =
     eq (Array.unfold (\s -> if s > 4 then Maybe.None else Maybe.Some (s * s, s + 1)) 1) [1, 4, 9, 16]
     eq (Array.unfold (\s -> if s > 0 then Maybe.None else Maybe.Some (s, s + 1)) 5) no_ints
 
+// A loop, not a recursion: 100000 steps must not exhaust the stack of a build without tail-call elimination.
+test "unfold of many elements" =
+    let values = Array.unfold (\s -> if s < 100000 then Maybe.Some (s, s + 1) else Maybe.None) 0
+    eq values.length 100000
+    eq values[99999] 99999
+
 test "length is_empty" =
     eq (Array.length [1, 2, 3]) 3
     eq (Array.length no_ints) 0

@@ -4,9 +4,9 @@ use tsuzuri::{analyze, llvm};
 fn array_bulk_source_apis_and_borrowed_results() {
     for source in [
         "let values = [3, 1, 2]\nlet sorted = Array.sort (ref values)\nArray.sum (ref sorted)",
-        "let values = [1, 2, 3]\nlet lists = Array.to_list (ref values)\nlet mapped = List.map (value -> value + 1) (ref lists)\nlet reversed = List.reverse (ref mapped)\nlet result = List.to_array (ref reversed)\nArray.sum (ref result)",
-        "let values = [|\"a\", \"bb\"|]\nlet mapped = List.map_ref (text -> text.length) (ref values)\nList.fold (total -> value -> total + value) 0 (ref mapped)",
-        "let values = [|\"a\", \"bb\"|]\nList.fold_ref (total -> value -> total + value.length) 0 (ref values)",
+        "let values = [1, 2, 3]\nlet lists = Array.to_list (ref values)\nlet mapped = List.map (value -> value + 1) (ref lists)\nlet reversed = List.rev (ref mapped)\nlet result = List.to_array (ref reversed)\nArray.sum (ref result)",
+        "let values = [|\"a\", \"bb\"|]\nlet mapped = List.mapr (text -> text.length) (ref values)\nList.fold (total -> value -> total + value) 0 (ref mapped)",
+        "let values = [|\"a\", \"bb\"|]\nList.foldr (total -> value -> total + value.length) 0 (ref values)",
         "let values = [[1, 2], [], [3]]\nlet combined = Array.concat (ref values)\nArray.sum (ref combined)",
         "let values = [1, 2, 3]\nArray.sum (ref values) + Array.product (ref values)",
         "let values = [1.0, 2.0, 3.0]\nArray.sum (ref values) + Array.product (ref values)",
@@ -26,11 +26,11 @@ fn array_bulk_source_apis_and_borrowed_results() {
     }
 }
 
-/// `List.fold_ref` names its state before the element, so the element type is taken from the
+/// `List.foldr` names its state before the element, so the element type is taken from the
 /// list, not from the first type argument: a state aligned more strictly than the element
 /// (a union with a `string` payload) must not change the chunk layout that reads the element.
 #[test]
-fn list_fold_ref_reads_elements_with_the_list_chunk_layout() {
+fn list_foldr_reads_elements_with_the_list_chunk_layout() {
     for (element, list, chunk) in [
         ("i64", "[|3, 4|]", "{ ptr, i64, i64, [0 x i64] }"),
         (
@@ -46,7 +46,7 @@ fn list_fold_ref_reads_elements_with_the_list_chunk_layout() {
         ("i128", "[|1i128, 2i128|]", "{ ptr, i64, i64, [0 x i128] }"),
     ] {
         let source = format!(
-            "def total :: ref [|{element}|] -> Result<i64, string>\nfn total values = List.fold_ref (\\state item -> match state with | Ok sum -> Ok (sum + 1) | Error error -> Error error) (Ok 0) values\n\nlet values = {list}\nmatch total (ref values) with | Ok sum -> sum | Error _ -> -1"
+            "def total :: ref [|{element}|] -> Result<i64, string>\nfn total values = List.foldr (\\state item -> match state with | Ok sum -> Ok (sum + 1) | Error error -> Error error) (Ok 0) values\n\nlet values = {list}\nmatch total (ref values) with | Ok sum -> sum | Error _ -> -1"
         );
         let module = analyze(&source)
             .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
@@ -61,10 +61,10 @@ fn list_fold_ref_reads_elements_with_the_list_chunk_layout() {
                 .find(|function| {
                     function.lines().any(|line| {
                         line.starts_with("define internal ")
-                            && line.contains(" @tz.builtin.List.fold_ref.")
+                            && line.contains(" @tz.builtin.List.foldr.")
                     })
                 })
-                .unwrap_or_else(|| panic!("{element}: no List.fold_ref body"));
+                .unwrap_or_else(|| panic!("{element}: no List.foldr body"));
             assert!(
                 body.contains(&format!("getelementptr inbounds {chunk}, ptr")),
                 "{element}: {body}"

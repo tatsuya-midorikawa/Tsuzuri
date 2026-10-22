@@ -1,0 +1,159 @@
+// Every test here must trap: the F# exceptions of `List` (ArgumentException, InvalidOperationException) are traps in
+// Tsuzuri. A test that does not trap passes, so the harness expects every test to fail.
+
+private def sink :: 'a -> unit
+fn sink _value = ()
+
+private def no_ints :: [|i64|]
+fn no_ints = [||]
+
+private def no_floats :: [|f64|]
+fn no_floats = [||]
+
+private def ints :: [|i64|]
+fn ints = [|1, 2, 3|]
+
+private def pairs :: [|i64|]
+fn pairs = [|1, 2|]
+
+// ---- Access ----
+
+test "item past the end" = sink (List.item 3 (ints()))
+test "item below zero" = sink (List.item (-1) (ints()))
+test "head of an empty list" = sink (List.head (no_ints()))
+test "last of an empty list" = sink (List.last (no_ints()))
+test "exactly_one of an empty list" = sink (List.exactly_one (no_ints()))
+test "exactly_one of two elements" = sink (List.exactly_one (pairs()))
+test "tail of an empty list" = sink (List.tail (no_ints()))
+
+// ---- Creation ----
+
+test "init with a negative count" = sink (List.init (-1) (\i -> i))
+test "replicate with a negative count" = sink (List.replicate (-1) 0)
+
+// ---- Slicing ----
+
+test "take a negative count" = sink (List.take (-1) (ints()))
+test "take more than the length" = sink (List.take 4 (ints()))
+test "skip more than the length" = sink (List.skip 4 (ints()))
+test "split_at below zero" = sink (List.split_at (-1) (ints()))
+test "split_at past the end" = sink (List.split_at 4 (ints()))
+test "chunk_by_size zero" = sink (List.chunk_by_size 0 (ints()))
+test "chunk_by_size negative" = sink (List.chunk_by_size (-2) (ints()))
+test "windowed zero" = sink (List.windowed 0 (ints()))
+test "windowed negative" = sink (List.windowed (-1) (ints()))
+test "split_into zero" = sink (List.split_into 0 (ints()))
+test "split_into negative" = sink (List.split_into (-1) (ints()))
+
+// ---- Lists of different lengths ----
+
+test "zip of different lengths" = sink (List.zip (ints()) (pairs()))
+test "zip3 of different lengths" = sink (List.zip3 (ints()) (ints()) (pairs()))
+test "map2 of different lengths" = sink (List.map2 (\a b -> a + b) (ints()) (pairs()))
+test "mapi2 of different lengths" = sink (List.mapi2 (\i a b -> i + a + b) (ints()) (pairs()))
+test "map3 of different lengths" = sink (List.map3 (\a b c -> a + b + c) (ints()) (ints()) (pairs()))
+test "iter2 of different lengths" = List.iter2 (\_a _b -> ()) (ints()) (pairs())
+test "iteri2 of different lengths" = List.iteri2 (\_i _a _b -> ()) (ints()) (pairs())
+test "fold2 of different lengths" = sink (List.fold2 (\s a b -> s + a + b) 0 (ints()) (pairs()))
+test "fold_back2 of different lengths" = sink (List.fold_back2 (\a b s -> s + a + b) (ints()) (pairs()) 0)
+test "exists2 of different lengths" = sink (List.exists2 (\_a _b -> false) (ints()) (pairs()))
+test "forall2 of different lengths" = sink (List.forall2 (\_a _b -> true) (ints()) (pairs()))
+test "exists2 of different lengths, the longer one second" = sink (List.exists2 (\_a _b -> false) (pairs()) (ints()))
+test "transpose of rows of different lengths" = sink (List.transpose [|[|1, 2|], [|3|]|])
+
+// ---- Empty input ----
+
+test "average of an empty list" = sink (List.average (no_floats()))
+test "average_by of an empty list" = sink (List.average_by (\x -> x) (no_floats()))
+test "min of an empty list" = sink (List.min (no_ints()))
+test "max of an empty list" = sink (List.max (no_ints()))
+test "minr of an empty list" =
+    let values = no_ints()
+    sink (List.minr values)
+
+test "maxr of an empty list" =
+    let values = no_ints()
+    sink (List.maxr values)
+test "min_by of an empty list" = sink (List.min_by (\x -> x) (no_ints()))
+test "max_by of an empty list" = sink (List.max_by (\x -> x) (no_ints()))
+test "reduce of an empty list" = sink (List.reduce (\a b -> a + b) (no_ints()))
+test "reduce_back of an empty list" = sink (List.reduce_back (\a b -> a + b) (no_ints()))
+
+// ---- Nothing found ----
+
+test "find without a match" = sink (List.find (\x -> x > 9) (ints()))
+test "find_back without a match" = sink (List.find_back (\x -> x > 9) (ints()))
+test "find_index without a match" = sink (List.find_index (\x -> x > 9) (ints()))
+test "find_index_back without a match" = sink (List.find_index_back (\x -> x > 9) (ints()))
+test "findr without a match" =
+    let values = ints()
+    sink (List.findr (\x -> *x > 9) values)
+test "pick without a match" = sink (List.pick (\x -> if x > 9 then Maybe.Some x else Maybe.None) (ints()))
+
+// ---- Updates ----
+
+test "update_at past the end" = sink (List.update_at 3 0 [|1, 2, 3|])
+test "update_at below zero" = sink (List.update_at (-1) 0 [|1, 2, 3|])
+test "insert_at past the end" = sink (List.insert_at 4 0 (ints()))
+test "insert_at below zero" = sink (List.insert_at (-1) 0 (ints()))
+test "insert_many_at past the end" = sink (List.insert_many_at 4 (pairs()) (ints()))
+test "remove_at past the end" = sink (List.remove_at 3 (ints()))
+test "remove_at below zero" = sink (List.remove_at (-1) (ints()))
+test "remove_many_at past the end" = sink (List.remove_many_at 2 2 (ints()))
+test "remove_many_at a negative count" = sink (List.remove_many_at 1 (-1) (ints()))
+test "permute with a repeated target" = sink (List.permute (\_i -> 0) (ints()))
+test "permute out of range" = sink (List.permute (\i -> i + 1) (ints()))
+
+// ---- Randomness ----
+
+test "random_choice_by of an empty list" = sink (List.random_choice_by (\() -> 0.5) (no_ints()))
+test "random_choice_by with a randomizer of 1" = sink (List.random_choice_by (\() -> 1.0) (ints()))
+test "random_choice_by with a negative randomizer" = sink (List.random_choice_by (\() -> -0.5) (ints()))
+test "random_shuffle_by with a randomizer above 1" = sink (List.random_shuffle_by (\() -> 2.0) (ints()))
+test "random_choices_by of an empty list" = sink (List.random_choices_by (\() -> 0.5) 1 (no_ints()))
+test "random_choices_by a negative count" = sink (List.random_choices_by (\() -> 0.5) (-1) (ints()))
+test "random_sample_by more than the length" = sink (List.random_sample_by (\() -> 0.5) 4 (ints()))
+test "random_sample_by a negative count" = sink (List.random_sample_by (\() -> 0.5) (-1) (ints()))
+test "random_choice_with of an empty list" = sink (List.random_choice_with (Random.pcg 1i64u 1i64u) (no_ints()))
+test "random_sample_with more than the length" = sink (List.random_sample_with (Random.pcg 1i64u 1i64u) 4 (ints()))
+
+// ---- The actions run: a callback that fails must be reached ----
+
+test "iter reaches the last element" = List.iter (\x -> assert (x < 3)) (ints())
+test "iteri passes the index" = List.iteri (\i x -> assert (x == i)) (ints())
+test "iter2 pairs the elements" = List.iter2 (\a b -> assert (a == b + 1)) (ints()) (ints())
+test "iteri2 passes the index" = List.iteri2 (\i a b -> assert (i == a + b)) (ints()) (ints())
+test "iterr reaches the last element" = List.iterr (\x -> assert (*x < 3)) (ints())
+test "iterir passes the index" = List.iterir (\i x -> assert (i == *x)) (ints())
+test "map reaches every element" = sink (List.map (\x -> { assert (x < 3); x }) (ints()))
+test "mapr reaches every element" = sink (List.mapr (\x -> { assert (*x < 3); *x }) (ints()))
+test "mapi reaches every element" = sink (List.mapi (\_i x -> { assert (x < 3); x }) (ints()))
+test "exists reaches every element" = sink (List.exists (\x -> { assert (x < 3); false }) (ints()))
+test "existsr reaches every element" = sink (List.existsr (\x -> { assert (*x < 3); false }) (ints()))
+test "forall reaches every element" = sink (List.forall (\x -> { assert (x < 3); true }) (ints()))
+test "forallr reaches every element" = sink (List.forallr (\x -> { assert (*x < 3); true }) (ints()))
+test "fold reaches every element" = sink (List.fold (\s x -> { assert (x < 3); s + x }) 0 (ints()))
+test "foldr reaches every element" = sink (List.foldr (\s x -> { assert (*x < 3); s + *x }) 0 (ints()))
+test "fold_back reaches the first element" = sink (List.fold_back (\x s -> { assert (x > 1); s + x }) (ints()) 0)
+test "foldr_back reaches the first element" = sink (List.foldr_back (\x s -> { assert (*x > 1); s + *x }) (ints()) 0)
+test "filter reaches every element" = sink (List.filter (\x -> { assert (x < 3); true }) (ints()))
+test "choose reaches every element" = sink (List.choose (\x -> { assert (x < 3); Maybe.Some x }) (ints()))
+test "collect reaches every element" = sink (List.collect (\x -> { assert (x < 3); [|x|] }) (ints()))
+test "take_while reaches the first element that fails" = sink (List.take_while (\x -> { assert (x < 3); true }) (ints()))
+test "skip_while reaches the first element that fails" = sink (List.skip_while (\x -> { assert (x < 3); true }) (ints()))
+test "sort_with calls the comparer" = sink (List.sort_with (\_a _b -> { assert false; 0 }) (ints()))
+test "sort_by calls the projection" = sink (List.sort_by (\x -> { assert (x < 3); x }) (ints()))
+
+// F# visits the pairs the two lists share before it notices that their lengths differ: each of these prints the first
+// element of every pair it is called with, and traps afterwards. The harness reads what they printed.
+private def seen :: i64 -> unit
+fn seen value = Debug.print (ref $"pair {value}")
+
+test "iter2 calls the action on the shared pairs first" = List.iter2 (\a _b -> seen a) (ints()) (pairs())
+test "iteri2 calls the action on the shared pairs first" = List.iteri2 (\_i a _b -> seen a) (ints()) (pairs())
+test "fold2 calls the folder on the shared pairs first" = sink (List.fold2 (\s a _b -> { seen a; s }) 0 (ints()) (pairs()))
+test "map2 calls the mapping on the shared pairs first" = sink (List.map2 (\a _b -> { seen a; a }) (ints()) (pairs()))
+test "mapi2 calls the mapping on the shared pairs first" = sink (List.mapi2 (\_i a _b -> { seen a; a }) (ints()) (pairs()))
+test "map3 calls the mapping on the shared triples first" = sink (List.map3 (\a _b _c -> { seen a; a }) (ints()) (ints()) (pairs()))
+test "exists2 calls the predicate on the shared pairs first" = sink (List.exists2 (\a _b -> { seen a; false }) (ints()) (pairs()))
+test "forall2 calls the predicate on the shared pairs first" = sink (List.forall2 (\a _b -> { seen a; true }) (ints()) (pairs()))

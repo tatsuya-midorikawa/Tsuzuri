@@ -7819,7 +7819,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
 **生成コードの確認（Phase 1 の cursor。`walk_list` の `for` の総和、`clang -O3` の arm64）.** cursor の slot を `select` で進めた最初の版は、1 要素あたり `add`・`cmp`・`csinc` が slot の再帰の経路（3 cycle）に入り、総和が node の連結と同じ約 1 ns でした。chunk の終わりを分岐し、slot を分岐の合流点の `phi` にすると、LLVM は chunk の更新を分岐のままにし、slot の再帰は `add` 1 つになります。1 要素あたりの命令は `add x12, x9, #1`・`ldr x13, [x11, #16]`（容量）・`cmp`・`b.ne`・`ldr`（要素）・`add`（総和）と、レジスタの移動と回数の `subs` です。この loop は 1 要素ずつ進むのでベクトル化できず、Phase 2a で替えました。
 
-**Phase 2a（chunk ごとの二重 loop）.** 走査（`for`、`List.fold_ref`、clone、`List.to_array`、hash、display）を、chunk を順にたどる外側の loop と、chunk の live な slot `run` 個を 0 から数える内側の loop にしました。内側の loop は配列の loop と同じ形で、要素は基点からの `getelementptr inbounds T, ptr base, i64 offset` です。2 つのリストの構造比較は、左右の現在の chunk に残る slot の数と残りの組数の最小を run とし、run ごとに内側の loop を回して、run で使い切った側だけが次の chunk に進みます。測定の workload に `fold_list`（`List.fold_ref` の総和 16 回）と `compare_list`（`List.cons` で作ったリストと、同じ要素の `new` のリストの比較 16 回。chunk の境界が左右で違う）を足しました（全 9 種目）。
+**Phase 2a（chunk ごとの二重 loop）.** 走査（`for`、`List.foldr`、clone、`List.to_array`、hash、display）を、chunk を順にたどる外側の loop と、chunk の live な slot `run` 個を 0 から数える内側の loop にしました。内側の loop は配列の loop と同じ形で、要素は基点からの `getelementptr inbounds T, ptr base, i64 offset` です。2 つのリストの構造比較は、左右の現在の chunk に残る slot の数と残りの組数の最小を run とし、run ごとに内側の loop を回して、run で使い切った側だけが次の chunk に進みます。測定の workload に `fold_list`（`List.foldr` の総和 16 回）と `compare_list`（`List.cons` で作ったリストと、同じ要素の `new` のリストの比較 16 回。chunk の境界が左右で違う）を足しました（全 9 種目）。
 
 条件は Phase 1 と同じ機械で、Phase 1 のコンパイラー（`0f9f16af`、SHA-256 `78eb5882…`）と Phase 2a のコンパイラー（SHA-256 `93fcbfb4…`）を `node benchmarks/run-list-memory.mjs $PHASE2A --baseline $PHASE1 --samples 9 --wasm` で交互に測りました（中央値 ms、load average は 15〜45）。確保の回数と bytes、WASM の heap の高水位は Phase 1 と同じです。
 
@@ -7828,7 +7828,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 | `walk_list`（`for` の総和 16 回） | 1,000,000 | 9.264 | 2.243 | 0.24 |
 | | 1,000 | 0.00768 | 0.00161 | 0.21 |
 | | 16 | 1.47e-4 | 9.68e-5 | 0.66 |
-| `fold_list`（`List.fold_ref` の総和 16 回） | 1,000,000 | 9.267 | 2.287 | 0.25 |
+| `fold_list`（`List.foldr` の総和 16 回） | 1,000,000 | 9.267 | 2.287 | 0.25 |
 | | 1,000 | 0.00784 | 0.00136 | 0.17 |
 | | 16 | 1.47e-4 | 5.23e-5 | 0.36 |
 | `compare_list`（`==` 16 回） | 1,000,000 | 15.701 | 7.940 | 0.51 |
@@ -7869,12 +7869,12 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 | `heap_literal`（`new [\|n, n + 1, n + 2\|]` の総和） | 0.97 | 24.7 | 0.97 | 0 |
 | `pattern_sum`（`a :: b :: c :: _` で分解） | 1.01 | 25.1 | 1.01 | 0 |
 | `mapped`（`List.map`） | 0.99 | 40.1 | 24.5 | 1 |
-| `reversed`（`List.reverse`） | 0.99 | 39.8 | 25.0 | 1 |
+| `reversed`（`List.rev`） | 0.99 | 39.8 | 25.0 | 1 |
 | `copied`（`List.copy`） | 1.00 | 44.9 | 45.5 | 2 |
 | `cons_three`（`List.cons` を 3 回） | 1.0〜1.3 | 53.1 | 54〜66 | 2 |
 | `words`（文字列 2 個の `new`） | 1.1〜2.5 | 68.3 | 74〜82 | 3 |
 
-20,000,000 回呼んだ 1 回あたりの時間です（`target/perf/PM04/small`。load average 20〜40 の共有機）。残る理由で確認できたものは 2 つです。`List.map`・`List.reverse` は、並んだ slot への store が `store <2 x i64>` にまとめられ、chunk の scalar の load が store から取れません。`List.copy` は、元の chunk が `llvm.memcpy` の source になって残ります（Phase 1・2a の loop の版も 45 ns で、memcpy が原因ではありません）。`List.cons` の連鎖は、2 つの chunk をたどる外側の loop の回数が chunk の header から load した値で決まるので展開できません（node の連結の loop は、記述子の長さで数えるので展開できました）。要素が文字列のリストは、要素の drop の loop を持つので最初の chunk の解放を前に出していません。リストの大きさが実行時に決まる場合は node の連結が要素ごとに確保するので、chunk の方が速くなります（`bulk_new` の 16 個で 11 倍）。実際の benchmark（`control`）の list の kernel は大きさが定数ではないので、この影響は受けません。
+20,000,000 回呼んだ 1 回あたりの時間です（`target/perf/PM04/small`。load average 20〜40 の共有機）。残る理由で確認できたものは 2 つです。`List.map`・`List.rev` は、並んだ slot への store が `store <2 x i64>` にまとめられ、chunk の scalar の load が store から取れません。`List.copy` は、元の chunk が `llvm.memcpy` の source になって残ります（Phase 1・2a の loop の版も 45 ns で、memcpy が原因ではありません）。`List.cons` の連鎖は、2 つの chunk をたどる外側の loop の回数が chunk の header から load した値で決まるので展開できません（node の連結の loop は、記述子の長さで数えるので展開できました）。要素が文字列のリストは、要素の drop の loop を持つので最初の chunk の解放を前に出していません。リストの大きさが実行時に決まる場合は node の連結が要素ごとに確保するので、chunk の方が速くなります（`bulk_new` の 16 個で 11 倍）。実際の benchmark（`control`）の list の kernel は大きさが定数ではないので、この影響は受けません。
 
 **最終の測定（全フェーズ、12 種目）.** 基準は main `9dd0fbbc`（SHA-256 `5e1b9687…`）、変更後は PM02・PR07・PR08・PB06 を取り込んだ merge 後の tree の release コンパイラー（SHA-256 `e92ced7a…`、`ee00e255`）です。`node benchmarks/run-list-memory.mjs $AFTER --baseline $BEFORE --samples 9 --wasm`（交互、1 回の warm-up の後、中央値。load average は 8〜16）。
 
