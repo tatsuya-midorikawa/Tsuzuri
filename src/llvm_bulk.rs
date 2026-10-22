@@ -296,6 +296,96 @@ impl FunctionEmitter<'_, '_> {
                 }
                 self.value(format!("insertvalue %tz.vec %arg0, i64 {next_length}, 1"))
             }
+            VecView => {
+                let value = self.value("load %tz.vec, ptr %arg0");
+                let data = self.value(format!("extractvalue %tz.vec {value}, 0"));
+                let length = self.value(format!("extractvalue %tz.vec {value}, 1"));
+                let view = self.value(format!(
+                    "insertvalue %tz.array zeroinitializer, ptr {data}, 0"
+                ));
+                self.value(format!("insertvalue %tz.array {view}, i64 {length}, 1"))
+            }
+            VecSetCapacity => {
+                let length = self.value("extractvalue %tz.vec %arg0, 1");
+                let capacity = self.value("extractvalue %tz.vec %arg0, 2");
+                let valid = self.value(format!("icmp sge i64 %arg1, {length}"));
+                self.guard(&valid, TrapKind::BoundsCheck);
+                let same = self.value(format!("icmp eq i64 %arg1, {capacity}"));
+                let unchanged = self.label();
+                let resize = self.label();
+                let done = self.label();
+                self.branch(&same, &unchanged, &resize);
+                self.begin(&unchanged);
+                self.jump(&done);
+                self.begin(&resize);
+                let data = self.value("extractvalue %tz.vec %arg0, 0");
+                let old_size = self.allocation_size(&self.ty(element), &capacity);
+                let new_size = self.allocation_size(&self.ty(element), "%arg1");
+                let data = self.value(format!(
+                    "call ptr @tz.realloc(ptr {data}, i64 {old_size}, i64 {new_size})"
+                ));
+                let resized = self.make_vector(&data, &length, "%arg1");
+                let resized_block = self.block.clone();
+                self.jump(&done);
+                self.begin(&done);
+                self.value(format!(
+                    "phi %tz.vec [ %arg0, %{unchanged} ], [ {resized}, %{resized_block} ]"
+                ))
+            }
+            VecInsert => {
+                let length = self.value("extractvalue %tz.vec %arg0, 1");
+                let valid = self.value(format!("icmp ule i64 %arg1, {length}"));
+                self.guard(&valid, TrapKind::BoundsCheck);
+                let room = self.value(format!("icmp ult i64 {length}, 9223372036854775807"));
+                self.guard(&room, TrapKind::AllocationSize);
+                let required = self.value(format!("add i64 {length}, 1"));
+                let grown = self.grow_vector(element, "%arg0", &required);
+                let data = self.value(format!("extractvalue %tz.vec {grown}, 0"));
+                let slot = self.element_pointer(element, &data, "%arg1");
+                let above = self.value("add i64 %arg1, 1");
+                let target = self.element_pointer(element, &data, &above);
+                let tail = self.value(format!("sub i64 {length}, %arg1"));
+                self.vector_copy_slots(element, &target, &slot, &tail, true);
+                self.instruction(format!("store {} %arg2, ptr {slot}", self.ty(element)));
+                self.value(format!("insertvalue %tz.vec {grown}, i64 {required}, 1"))
+            }
+            VecSplice => {
+                let length = self.value("extractvalue %tz.vec %arg0, 1");
+                let valid = self.value(format!("icmp ule i64 %arg1, {length}"));
+                self.guard(&valid, TrapKind::BoundsCheck);
+                let rest = self.value(format!("sub i64 {length}, %arg1"));
+                let valid = self.value(format!("icmp ule i64 %arg2, {rest}"));
+                self.guard(&valid, TrapKind::BoundsCheck);
+                let items = self.value("extractvalue %tz.array %arg3, 0");
+                let count = self.value("extractvalue %tz.array %arg3, 1");
+                let kept = self.value(format!("sub i64 {length}, %arg2"));
+                let room = self.value(format!("sub i64 9223372036854775807, {kept}"));
+                let fits = self.value(format!("icmp ule i64 {count}, {room}"));
+                self.guard(&fits, TrapKind::AllocationSize);
+                let next_length = self.value(format!("add i64 {kept}, {count}"));
+                if element.needs_drop(&self.module.types()) {
+                    let data = self.value("extractvalue %tz.vec %arg0, 0");
+                    self.array_loop("%arg2", |emitter, index| {
+                        let index = emitter.value(format!("add i64 %arg1, {index}"));
+                        let pointer = emitter.element_pointer(element, &data, &index);
+                        let value =
+                            emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
+                        emitter.drop_value(element, &value);
+                    });
+                }
+                let grown = self.grow_vector(element, "%arg0", &next_length);
+                let data = self.value(format!("extractvalue %tz.vec {grown}, 0"));
+                let from = self.value("add i64 %arg1, %arg2");
+                let source = self.element_pointer(element, &data, &from);
+                let to = self.value(format!("add i64 %arg1, {count}"));
+                let target = self.element_pointer(element, &data, &to);
+                let tail = self.value(format!("sub i64 {rest}, %arg2"));
+                self.vector_copy_slots(element, &target, &source, &tail, true);
+                let slot = self.element_pointer(element, &data, "%arg1");
+                self.vector_copy_slots(element, &slot, &items, &count, false);
+                self.instruction(format!("call void @tz.free(ptr {items})"));
+                self.value(format!("insertvalue %tz.vec {grown}, i64 {next_length}, 1"))
+            }
             VecPop => {
                 let result = signature.after_arguments(1);
                 let Type::Tuple(fields) = &result else {
@@ -398,6 +488,85 @@ impl FunctionEmitter<'_, '_> {
         self.value(format!(
             "phi %tz.vec [ {value}, %{unchanged} ], [ {resized}, %{resized_block} ]"
         ))
+    }
+
+    /// Grows the buffer of the vector `value` to hold at least `required` elements by the rule of .NET's `List<T>`:
+    /// twice the capacity (4 for an empty vector), or `required` when that is more. The length stays.
+    fn grow_vector(&mut self, element: &Type, value: &str, required: &str) -> String {
+        let length = self.value(format!("extractvalue %tz.vec {value}, 1"));
+        let capacity = self.value(format!("extractvalue %tz.vec {value}, 2"));
+        let enough = self.value(format!("icmp ule i64 {required}, {capacity}"));
+        let unchanged = self.label();
+        let grow = self.label();
+        let done = self.label();
+        self.branch(&enough, &unchanged, &grow);
+        self.begin(&unchanged);
+        self.jump(&done);
+        self.begin(&grow);
+        let empty = self.value(format!("icmp eq i64 {capacity}, 0"));
+        let doubled = self.value(format!("mul i64 {capacity}, 2"));
+        let next = self.value(format!("select i1 {empty}, i64 4, i64 {doubled}"));
+        let doubles = self.value(format!("icmp ule i64 {capacity}, 4611686018427387903"));
+        let next = self.value(format!("select i1 {doubles}, i64 {next}, i64 {required}"));
+        let larger = self.value(format!("icmp ugt i64 {required}, {next}"));
+        let next_capacity = self.value(format!("select i1 {larger}, i64 {required}, i64 {next}"));
+        let data = self.value(format!("extractvalue %tz.vec {value}, 0"));
+        let old_size = self.allocation_size(&self.ty(element), &capacity);
+        let new_size = self.allocation_size(&self.ty(element), &next_capacity);
+        let data = self.value(format!(
+            "call ptr @tz.realloc(ptr {data}, i64 {old_size}, i64 {new_size})"
+        ));
+        let resized = self.make_vector(&data, &length, &next_capacity);
+        let resized_block = self.block.clone();
+        self.jump(&done);
+        self.begin(&done);
+        self.value(format!(
+            "phi %tz.vec [ {value}, %{unchanged} ], [ {resized}, %{resized_block} ]"
+        ))
+    }
+
+    /// Copies `count` slots of `element` from `source` to `target` as bytes: with `llvm.memmove` when the two may
+    /// overlap, else with `llvm.memcpy`. Nothing is read or written for no bytes, so the pointers may be null then.
+    fn vector_copy_slots(
+        &mut self,
+        element: &Type,
+        target: &str,
+        source: &str,
+        count: &str,
+        overlapping: bool,
+    ) {
+        let ty = self.ty(element);
+        let bytes = self.value(format!(
+            "mul i64 {count}, ptrtoint (ptr getelementptr ({ty}, ptr null, i32 1) to i64)"
+        ));
+        let some = self.value(format!("icmp ne i64 {bytes}, 0"));
+        let copy = self.label();
+        let done = self.label();
+        self.branch(&some, &copy, &done);
+        self.begin(&copy);
+        // The buffers exist, so the byte count fits the pointer width of a 32-bit target.
+        let (width, bytes) = if self.globals.wasm && !self.globals.memory64 {
+            ("i32", self.value(format!("trunc i64 {bytes} to i32")))
+        } else {
+            ("i64", bytes)
+        };
+        if overlapping {
+            self.intrinsics.insert(format!(
+                "declare void @llvm.memmove.p0.p0.{width}(ptr writeonly, ptr readonly, {width}, i1 immarg)"
+            ));
+            self.instruction(format!(
+                "call void @llvm.memmove.p0.p0.{width}(ptr {target}, ptr {source}, {width} {bytes}, i1 false)"
+            ));
+        } else {
+            self.intrinsics.insert(format!(
+                "declare void @llvm.memcpy.p0.p0.{width}(ptr noalias writeonly, ptr noalias readonly, {width}, i1 immarg)"
+            ));
+            self.instruction(format!(
+                "call void @llvm.memcpy.p0.p0.{width}(ptr {target}, ptr {source}, {width} {bytes}, i1 false)"
+            ));
+        }
+        self.jump(&done);
+        self.begin(&done);
     }
 
     pub(super) fn borrowed_element(&mut self, element: &Type, pointer: &str) -> String {

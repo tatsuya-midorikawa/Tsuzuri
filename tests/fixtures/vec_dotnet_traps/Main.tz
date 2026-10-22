@@ -1,0 +1,202 @@
+// Every test here must trap: the exceptions of .NET's `List<T>` (ArgumentOutOfRangeException and ArgumentException) are
+// traps in Tsuzuri, and each condition is one that the source of `List<T>` (dotnet/runtime, List.cs) throws on. A test that
+// does not trap passes, so the harness expects every test to fail. The tests whose names say "in order" print what their
+// callbacks see (with Debug.print) and then fail on purpose: tests/vec_dotnet.rs reads the output.
+
+private def sink :: 'a -> unit
+fn sink _value = ()
+
+/// A new `Vec` of three elements, with a capacity of three.
+private def numbers :: Vec<i64>
+fn numbers = Vec.of_array [1, 2, 3]
+
+private def no_numbers :: Vec<i64>
+fn no_numbers = Vec.empty()
+
+private def seen :: i64 -> bool -> bool
+fn seen value result =
+    Debug.print (ref $"seen {value}")
+    result
+
+private def probed :: i64 -> i64 -> i64
+fn probed value order =
+    Debug.print (ref $"seen {value}")
+    order
+
+// ---- Capacity ----
+
+test "set_capacity below the length" = sink (Vec.set_capacity (numbers()) 2)
+test "set_capacity negative" = sink (Vec.set_capacity (numbers()) (-1))
+test "ensure_capacity negative" = sink (Vec.ensure_capacity (numbers()) (-1))
+
+// ---- Adding ----
+
+test "insert below zero" = sink (Vec.insert (numbers()) (-1) 0)
+test "insert past the length" = sink (Vec.insert (numbers()) 4 0)
+test "insert_range below zero" = sink (Vec.insert_range (numbers()) (-1) (ref [1]))
+test "insert_range past the length" = sink (Vec.insert_range (numbers()) 4 (ref [1]))
+test "insert_range of nothing past the length" =
+    let none: [i64] = []
+    sink (Vec.insert_range (numbers()) 4 (ref none))
+test "insert_range_seq below zero" =
+    let source = [1]
+    sink (Vec.insert_range_seq (numbers()) (-1) (Array.to_seq (ref source)))
+test "insert_range_seq past the length" =
+    let source = [1]
+    sink (Vec.insert_range_seq (numbers()) 4 (Array.to_seq (ref source)))
+
+// ---- Removing ----
+
+test "remove_at below zero" = sink (Vec.remove_at (numbers()) (-1))
+test "remove_at at the length" = sink (Vec.remove_at (numbers()) 3)
+test "remove_at past the length" = sink (Vec.remove_at (numbers()) 4)
+test "remove_at of an empty Vec" = sink (Vec.remove_at (no_numbers()) 0)
+test "remove_range below zero" = sink (Vec.remove_range (numbers()) (-1) 1)
+test "remove_range with a negative count" = sink (Vec.remove_range (numbers()) 1 (-1))
+test "remove_range past the length" = sink (Vec.remove_range (numbers()) 2 2)
+test "remove_range with an index past the length" = sink (Vec.remove_range (numbers()) 4 0)
+
+// ---- Reversing and sorting ----
+
+test "reverse_range below zero" = sink (Vec.reverse_range (numbers()) (-1) 1)
+test "reverse_range with a negative count" = sink (Vec.reverse_range (numbers()) 0 (-1))
+test "reverse_range past the length" = sink (Vec.reverse_range (numbers()) 1 3)
+test "reverse_range with an index past the length" = sink (Vec.reverse_range (numbers()) 4 0)
+test "sort_range below zero" = sink (Vec.sort_range (numbers()) (-1) 1)
+test "sort_range with a negative count" = sink (Vec.sort_range (numbers()) 0 (-1))
+test "sort_range past the length" = sink (Vec.sort_range (numbers()) 2 2)
+test "sort_range_with below zero" = sink (Vec.sort_range_with (numbers()) (-1) 1 (\left right -> left - right))
+test "sort_range_with past the length" = sink (Vec.sort_range_with (numbers()) 2 2 (\left right -> left - right))
+test "sort_range_withr below zero" = sink (Vec.sort_range_withr (numbers()) (-1) 1 (\left right -> *left - *right))
+test "sort_range_withr past the length" = sink (Vec.sort_range_withr (numbers()) 2 2 (\left right -> *left - *right))
+
+// ---- Searching by value ----
+
+test "index_of_from below zero" = sink (Vec.index_of_from (numbers()) 1 (-1))
+test "index_of_from past the length" = sink (Vec.index_of_from (numbers()) 1 4)
+test "index_of_range below zero" = sink (Vec.index_of_range (numbers()) 1 (-1) 1)
+test "index_of_range past the length" = sink (Vec.index_of_range (numbers()) 1 4 0)
+test "index_of_range with a negative count" = sink (Vec.index_of_range (numbers()) 1 0 (-1))
+test "index_of_range with too large a count" = sink (Vec.index_of_range (numbers()) 1 1 3)
+test "last_index_of_from at the length" = sink (Vec.last_index_of_from (numbers()) 1 3)
+test "last_index_of_from below zero" = sink (Vec.last_index_of_from (numbers()) 1 (-1))
+test "last_index_of_from of an empty Vec at zero" = sink (Vec.last_index_of_from (no_numbers()) 1 0)
+test "last_index_of_range below zero" = sink (Vec.last_index_of_range (numbers()) 1 (-1) 0)
+test "last_index_of_range with a negative count" = sink (Vec.last_index_of_range (numbers()) 1 1 (-1))
+test "last_index_of_range at the length" = sink (Vec.last_index_of_range (numbers()) 1 3 1)
+test "last_index_of_range with too large a count" = sink (Vec.last_index_of_range (numbers()) 1 1 3)
+
+// ---- Searching by predicate ----
+
+test "find_index_from below zero" = sink (Vec.find_index_from (numbers()) (-1) (\_number -> true))
+test "find_index_from past the length" = sink (Vec.find_index_from (numbers()) 4 (\_number -> true))
+test "find_index_range with a negative count" = sink (Vec.find_index_range (numbers()) 0 (-1) (\_number -> true))
+test "find_index_range with too large a count" = sink (Vec.find_index_range (numbers()) 1 3 (\_number -> true))
+test "find_index_range with an index past the length" = sink (Vec.find_index_range (numbers()) 4 0 (\_number -> true))
+test "find_last_index_from at the length" = sink (Vec.find_last_index_from (numbers()) 3 (\_number -> true))
+test "find_last_index_from below zero" = sink (Vec.find_last_index_from (numbers()) (-1) (\_number -> true))
+test "find_last_index_from of an empty Vec at zero" = sink (Vec.find_last_index_from (no_numbers()) 0 (\_number -> true))
+test "find_last_index_range with a negative count" = sink (Vec.find_last_index_range (numbers()) 1 (-1) (\_number -> true))
+test "find_last_index_range with too large a count" = sink (Vec.find_last_index_range (numbers()) 1 3 (\_number -> true))
+test "find_last_index_range of an empty Vec with a count" = sink (Vec.find_last_index_range (no_numbers()) (-1) 1 (\_number -> true))
+
+test "binary_search_range below zero" = sink (Vec.binary_search_range (numbers()) (-1) 1 2 (\left right -> left - right))
+test "binary_search_range with a negative count" = sink (Vec.binary_search_range (numbers()) 0 (-1) 2 (\left right -> left - right))
+test "binary_search_range past the length" = sink (Vec.binary_search_range (numbers()) 2 2 2 (\left right -> left - right))
+
+// ---- Ranges and copies ----
+
+test "get_range below zero" = sink (Vec.get_range (numbers()) (-1) 1)
+test "get_range with a negative count" = sink (Vec.get_range (numbers()) 0 (-1))
+test "get_range past the length" = sink (Vec.get_range (numbers()) 2 2)
+test "get_range with an index past the length" = sink (Vec.get_range (numbers()) 4 0)
+test "slice past the length" = sink (Vec.slice (numbers()) 1 3)
+test "copy_to into an array that is too small" =
+    let values = numbers()
+    let mut target = [0, 0]
+    Vec.copy_to values target
+test "copy_to_at below zero" =
+    let values = numbers()
+    let mut target = [0, 0, 0]
+    Vec.copy_to_at values target (-1)
+test "copy_to_at past the end of the array" =
+    let values = numbers()
+    let mut target = [0, 0, 0, 0]
+    Vec.copy_to_at values target 2
+test "copy_to_range below zero" =
+    let values = numbers()
+    let mut target = [0, 0, 0]
+    Vec.copy_to_range values (-1) target 0 1
+test "copy_to_range with a negative count" =
+    let values = numbers()
+    let mut target = [0, 0, 0]
+    Vec.copy_to_range values 0 target 0 (-1)
+test "copy_to_range past the length" =
+    let values = numbers()
+    let mut target = [0, 0, 0, 0, 0]
+    Vec.copy_to_range values 2 target 0 2
+test "copy_to_range past the end of the array" =
+    let values = numbers()
+    let mut target = [0, 0, 0]
+    Vec.copy_to_range values 0 target 2 2
+test "copy_to_range to an array index past the end" =
+    let values = numbers()
+    let mut target = [0, 0, 0]
+    Vec.copy_to_range values 0 target 4 0
+
+// ---- The callbacks run in the order of .NET and stop where .NET stops ----
+
+test "remove_all calls the predicate once for each element in order" =
+    match Vec.remove_all (Vec.of_array [5, 1, 4, 2, 3]) (\number -> seen number (number % 2 == 0)) with
+    | (_rest, _removed) -> assert false
+
+test "remove_allr calls the predicate once for each element in order" =
+    match Vec.remove_allr (Vec.of_array [5, 1, 4, 2, 3]) (\number -> seen *number (*number % 2 == 0)) with
+    | (_rest, _removed) -> assert false
+
+test "exists stops at the first match in order" =
+    let values = Vec.of_array [1, 2, 3, 4]
+    sink (Vec.exists values (\number -> seen number (number == 3)))
+    assert false
+
+test "true_for_all stops at the first rejection in order" =
+    let values = Vec.of_array [1, 2, 3, 4]
+    sink (Vec.true_for_all values (\number -> seen number (number < 3)))
+    assert false
+
+test "find_last looks backward in order" =
+    let values = Vec.of_array [1, 2, 3, 4]
+    sink (Vec.find_last values (\number -> seen number (number == 2)))
+    assert false
+
+test "find_index_from starts at the index in order" =
+    let values = Vec.of_array [1, 2, 3, 4]
+    sink (Vec.find_index_from values 2 (\number -> seen number false))
+    assert false
+
+test "find_last_index_range looks backward from the start in order" =
+    let values = Vec.of_array [1, 2, 3, 4]
+    sink (Vec.find_last_index_range values 3 2 (\number -> seen number false))
+    assert false
+
+test "for_each visits the elements in order" =
+    let values = Vec.of_array [1, 2, 3]
+    Vec.for_each values (\number -> sink (seen number true))
+    assert false
+
+test "convert_all converts the elements in order" =
+    let values = Vec.of_array [1, 2, 3]
+    sink (Vec.convert_all values (\number -> { sink (seen number true); number }))
+    assert false
+
+test "find_all tests the elements in order" =
+    let values = Vec.of_array [1, 2, 3]
+    sink (Vec.find_all values (\number -> seen number true))
+    assert false
+
+test "binary_search_with probes the elements like .NET in order" =
+    let values = Vec.of_array [10, 20, 30, 40, 50]
+    sink (Vec.binary_search_with values 40 (\left right -> probed left (left - right)))
+    assert false
+
+// END

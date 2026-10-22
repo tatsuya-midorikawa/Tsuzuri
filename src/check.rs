@@ -1281,6 +1281,20 @@ pub enum Builtin {
     VecClone,
     VecOfArray,
     VecToArray,
+    /// `Vec.__view :: ref mut Vec<'a> -> ref mut ['a..]` borrows the initialized elements of a vector as an exclusive
+    /// slice, so the in-place `Array` algorithms run on its buffer and its capacity stays. Private to the std `Vec`
+    /// module.
+    VecView,
+    /// `Vec.__set_capacity :: Vec<'a> -> i64 -> Vec<'a>` reallocates the buffer to exactly the given capacity, which
+    /// must not be less than the length. Private to the std `Vec` module (the `Capacity` setter of .NET's `List<T>`).
+    VecSetCapacity,
+    /// `Vec.__insert :: Vec<'a> -> i64 -> 'a -> Vec<'a>` moves the elements from the index on one slot up and stores
+    /// the new element there (`List<T>.Insert`). Private to the std `Vec` module.
+    VecInsert,
+    /// `Vec.__splice :: Vec<'a> -> i64 -> i64 -> ['a] -> Vec<'a>` drops `count` elements at the index, then moves the
+    /// elements of an owned array into their place (`RemoveRange` and `InsertRange` of .NET's `List<T>`). Private to
+    /// the std `Vec` module.
+    VecSplice,
     CharToU16,
     CharOfU16,
     Utf8CharToU32,
@@ -1682,6 +1696,10 @@ impl Builtin {
         Self::VecClone,
         Self::VecOfArray,
         Self::VecToArray,
+        Self::VecView,
+        Self::VecSetCapacity,
+        Self::VecInsert,
+        Self::VecSplice,
         Self::CharToU16,
         Self::CharOfU16,
         Self::Utf8CharToU32,
@@ -1937,6 +1955,10 @@ impl Builtin {
             Self::VecClone => "Vec.clone",
             Self::VecOfArray => "Vec.of_array",
             Self::VecToArray => "Vec.to_array",
+            Self::VecView => "Vec.__view",
+            Self::VecSetCapacity => "Vec.__set_capacity",
+            Self::VecInsert => "Vec.__insert",
+            Self::VecSplice => "Vec.__splice",
             Self::CharToU16 => "Char.to_u16",
             Self::CharOfU16 => "Char.of_u16",
             Self::Utf8CharToU32 => "Utf8Char.to_u32",
@@ -2402,7 +2424,11 @@ impl Builtin {
             | Self::VecAt
             | Self::VecClone
             | Self::VecOfArray
-            | Self::VecToArray => {
+            | Self::VecToArray
+            | Self::VecView
+            | Self::VecSetCapacity
+            | Self::VecInsert
+            | Self::VecSplice => {
                 let vector = || BuiltinType::Vec(Box::new(a()));
                 let borrowed = || Reference(Box::new(vector()), false);
                 let option = || BuiltinType::Std {
@@ -2418,9 +2444,18 @@ impl Builtin {
                     }
                     Self::VecGet | Self::VecAt => vec![borrowed(), Concrete(Type::I64)],
                     Self::VecPush => vec![vector(), a()],
-                    Self::VecReserve | Self::VecTruncate => vec![vector(), Concrete(Type::I64)],
-                    Self::VecSet => vec![vector(), Concrete(Type::I64), a()],
+                    Self::VecReserve | Self::VecTruncate | Self::VecSetCapacity => {
+                        vec![vector(), Concrete(Type::I64)]
+                    }
+                    Self::VecSet | Self::VecInsert => vec![vector(), Concrete(Type::I64), a()],
                     Self::VecSwap => vec![vector(), Concrete(Type::I64), Concrete(Type::I64)],
+                    Self::VecSplice => vec![
+                        vector(),
+                        Concrete(Type::I64),
+                        Concrete(Type::I64),
+                        Array(Box::new(a())),
+                    ],
+                    Self::VecView => vec![Reference(Box::new(vector()), true)],
                     Self::VecOfArray => vec![Array(Box::new(a()))],
                     _ => vec![vector()],
                 };
@@ -2431,6 +2466,9 @@ impl Builtin {
                     Self::VecGet => option(),
                     Self::VecAt => Reference(Box::new(a()), false),
                     Self::VecToArray => Array(Box::new(a())),
+                    Self::VecView => {
+                        Reference(Box::new(BuiltinType::ArrayView(Box::new(a()))), true)
+                    }
                     _ => vector(),
                 };
                 let constraints = if matches!(self, Self::VecGet | Self::VecClone) {
