@@ -1,5 +1,5 @@
-use tsuzuri::analyze;
 use tsuzuri::driver::{Target, TestOptions, run_tests};
+use tsuzuri::{analyze, analyze_modules, llvm};
 
 const BEHAVIOR: &str = include_str!("fixtures/array_fsharp/Main.tz");
 const TRAPS: &str = include_str!("fixtures/array_fsharp_traps/Main.tz");
@@ -345,4 +345,35 @@ fn fsharp_idioms_report_their_type_errors() {
     rejects("Array.zip [1] [\"a\"] == 3", "E1003");
     // An index is an i64, like every size.
     rejects("Array.take 1i32 [1, 2]", "E1003");
+}
+
+/// The IR of `source` as a library, for the native target or for wasm.
+fn library_ir(source: &str, wasm: bool) -> String {
+    let module = analyze_modules(&[("Main.tz", source)])
+        .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap()
+}
+
+#[test]
+fn only_the_unsuffixed_random_functions_reach_the_operating_system() {
+    // The `_by` and `_with` forms take their randomness from the caller, so they need no runtime on any target.
+    let given = "export def shuffled :: i64\nfn shuffled =\n    let values = Array.random_shuffle_by (\\() -> 0.5) [1, 2, 3]\n    values[0]\n\nexport def sampled :: i64\nfn sampled =\n    match Array.random_sample_with (Random.pcg 1i64u 2i64u) 2 [1, 2, 3] with\n    | (values, _) -> values[0]\n";
+    // Each of the five that seed a generator from the operating system calls the OS random primitive, with
+    // elements that are not Copy as well for the one that moves the array in and out.
+    let seeded = [
+        "let! picked = Array.random_shuffle [1, 2, 3]\n    do! IO.write_line (Result.is_ok (&picked))",
+        "let! picked = Array.random_shuffle_in_place [\"a\", \"b\"]\n    do! IO.write_line (Result.is_ok (&picked))",
+        "let! picked = Array.random_choice [1, 2, 3]\n    do! IO.write_line (Result.is_ok (&picked))",
+        "let! picked = Array.random_choices 2 [1, 2, 3]\n    do! IO.write_line (Result.is_ok (&picked))",
+        "let! picked = Array.random_sample 2 [1, 2, 3]\n    do! IO.write_line (Result.is_ok (&picked))",
+    ];
+    for wasm in [false, true] {
+        let ir = library_ir(given, wasm);
+        assert!(!ir.contains("tsuzuri_os_"), "{ir}");
+        for body in seeded {
+            let source = format!("def main :: unit -> i32 = \\() ->\n    {body}\n    0\n");
+            let ir = library_ir(&source, wasm);
+            assert!(ir.contains("@tsuzuri_os_random"), "{source}\n{ir}");
+        }
+    }
 }

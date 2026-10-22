@@ -462,6 +462,76 @@ def main :: unit -> i32 = \\() ->
     0
 `);
   const randomMapLines = ["len:2000 found:2000 sum:1999000", "len:2000 found:2000 sum:1999000", "len:500 present:500", "flood ok"];
+  // The Array functions whose generator is seeded by the operating system (random_shuffle, random_shuffle_in_place,
+  // random_choice, random_choices, random_sample). The output is random, so the program prints properties: the
+  // length, that the result is a permutation or only holds elements of the source, and that a sample has no repeats.
+  const randomArrays = program("randomarrays", `
+def same_elements :: ref [i64] -> ref [i64] -> bool
+fn same_elements left right =
+    let ordered_left = Array.sort left
+    let ordered_right = Array.sort right
+    Array.equal (ref ordered_left) (ref ordered_right)
+
+def members :: ref [i64] -> ref [i64] -> bool
+fn members picked source = Array.forall (\\item -> Array.contains item source) picked
+
+def shuffle_text :: Result<[i64], Os.Error> -> ref [i64] -> string
+fn shuffle_text result source =
+    match result with
+    | Result.Ok shuffled -> "length:" + to_string shuffled.length + " permutation:" + to_string (same_elements (ref shuffled) source)
+    | Result.Error error -> Os.message (ref error)
+
+def choice_text :: Result<i64, Os.Error> -> ref [i64] -> string
+fn choice_text result source =
+    match result with
+    | Result.Ok value -> "member:" + to_string (Array.contains value source)
+    | Result.Error error -> Os.message (ref error)
+
+def picked_text :: Result<[i64], Os.Error> -> ref [i64] -> string
+fn picked_text result source =
+    match result with
+    | Result.Ok picked -> "length:" + to_string picked.length + " members:" + to_string (members (ref picked) source)
+    | Result.Error error -> Os.message (ref error)
+
+def sample_text :: Result<[i64], Os.Error> -> ref [i64] -> string
+fn sample_text result source =
+    match result with
+    | Result.Ok picked ->
+        let kept = Array.distinct picked
+        "length:" + to_string picked.length + " members:" + to_string (members (ref picked) source) + " distinct:" + to_string (kept.length == picked.length)
+    | Result.Error error -> Os.message (ref error)
+
+def words_text :: Result<[string], Os.Error> -> string
+fn words_text result =
+    match result with
+    | Result.Ok words ->
+        let letters = Array.foldr (\\total word -> total + word.length) 0 words
+        "length:" + to_string words.length + " letters:" + to_string letters
+    | Result.Error error -> Os.message (ref error)
+
+def main :: unit -> i32 = \\() ->
+    let source = new [i64](200, \\i -> i * 3)
+    let! shuffled = Array.random_shuffle source
+    do! say (shuffle_text shuffled (ref source))
+    let! moved = Array.random_shuffle_in_place source
+    do! say (shuffle_text moved (ref source))
+    let! choice = Array.random_choice source
+    do! say (choice_text choice (ref source))
+    let! choices = Array.random_choices 50 source
+    do! say (picked_text choices (ref source))
+    let! sample = Array.random_sample 20 source
+    do! say (sample_text sample (ref source))
+    let! none = Array.random_choices 0 source
+    do! say (picked_text none (ref source))
+    let words = ["a", "bb", "ccc", "dddd"]
+    let! mixed = Array.random_shuffle_in_place words
+    do! say (words_text mixed)
+    0
+`);
+  const randomArrayLines = [
+    "length:200 permutation:true", "length:200 permutation:true", "member:true", "length:50 members:true",
+    "length:20 members:true distinct:true", "length:0 members:true", "length:4 letters:10",
+  ];
   for (const optimization of optimizations) {
     const cwd = scratch("timing", optimization);
     const output = lines(run(timing(optimization), cwd));
@@ -474,6 +544,7 @@ def main :: unit -> i32 = \\() ->
       "ok:", "lengths:1000,1000 same:false", "invalid input", "invalid input", "word", "length:1048576",
     ]);
     assert.deepEqual(lines(run(randomMaps(optimization), cwd)), randomMapLines);
+    assert.deepEqual(lines(run(randomArrays(optimization), cwd)), randomArrayLines);
   }
 
   // 12. PCG-XSH-RR 64/32 against the published pcg-c-basic demonstration output and a BigInt reference.
@@ -600,6 +671,14 @@ def main :: unit -> i32 = \\() ->
   for (const optimization of optimizations) {
     const output = join(root, `rejected-randommaps${optimization}`);
     const result = execute(compiler, ["build", join(root, "project-randommaps"), "--target", "wasm32", optimization, "-o", output], {}, false);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /E2000.*Random/s);
+    assert.ok(!existsSync(output));
+  }
+  // So are the Array functions that seed their generator from the operating system; the `_by` and `_with` forms are not.
+  for (const optimization of optimizations) {
+    const output = join(root, `rejected-randomarrays${optimization}`);
+    const result = execute(compiler, ["build", join(root, "project-randomarrays"), "--target", "wasm32", optimization, "-o", output], {}, false);
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /E2000.*Random/s);
     assert.ok(!existsSync(output));
@@ -1234,6 +1313,7 @@ def main :: unit -> i32 = \\() ->
       "ok:", "lengths:1000,1000 same:false", "invalid input", "invalid input", "word", "length:1048576",
     ]);
     assert.deepEqual(lines(runWasi("randommaps", optimization, cwd)), randomMapLines);
+    assert.deepEqual(lines(runWasi("randomarrays", optimization, cwd)), randomArrayLines);
     const published = lines(runWasi("pcg", optimization, cwd));
     assert.equal(published[0], "2707161783 2068313097 3122475824 2211639955 3215226955 3421331566 ");
     assert.equal(runWasi("paths", optimization, cwd).stdout, expectedPaths);
