@@ -172,6 +172,11 @@ impl Outcome {
             .as_deref()
             .is_some_and(|reason| reason.starts_with("timed out"))
     }
+
+    /// The test ended in a trap: one that passed did not trap, and one that timed out hung.
+    fn trapped(&self) -> bool {
+        self.failure.is_some() && !self.timed_out()
+    }
 }
 
 /// How often a test runs before a timeout counts. A loaded CI machine can hold a process that traps in a millisecond
@@ -312,7 +317,12 @@ fn functions_of_two_lists_visit_the_shared_pairs_before_they_trap() {
         let ordered = run_matching(TRAPS, Target::Native, optimization, Some("on the shared"));
         assert_eq!(ordered.len(), 8);
         for outcome in ordered {
-            assert!(outcome.failure.is_some(), "{} did not trap", outcome.name);
+            assert!(
+                outcome.trapped(),
+                "-O{optimization} {} did not trap: {:?}",
+                outcome.name,
+                outcome.failure
+            );
             assert!(
                 outcome.output.contains("pair 1") && outcome.output.contains("pair 2"),
                 "-O{optimization} {} did not call the callback on the shared pairs: {:?}",
