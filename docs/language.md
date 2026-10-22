@@ -3532,7 +3532,7 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 F# にはない `at`、`count`、`index_of`、`equal`、`binary_search`、`product`、`sum_pairwise`、`sum_kahan`、`dot`、`dot_fma` と、更新の `update`、`swap`、`write`、`swap_in`、`split_at_mut` も提供します。
 `List` モジュールは、`length`、`is_empty`、`copy`、`map`、`map_ref`、`fold`、`fold_ref`、`reverse`、`to_array` などを提供します。
 なお、`Array.copy` および `List.copy` は、借用したコレクションの全要素を明示的に複製して新しい独立所有コレクションを構築する関数です（要素型に対して `Copy` 制約を要求します）。
-排他スライス `ref mut [T..]` を受け取るその場の更新として、`Array.write`（F# 互換の名前は `Array.set`）、`Array.fill`、`Array.blit`、`Array.swap_in`、`Array.split_at_mut`、および `Array.sort_in_place`（`Ord` による安定整列。作業領域を確保せず、結果は `Array.sort` と一致します）が提供されます。
+排他スライス `ref mut [T..]` を受け取るその場の更新として、`Array.write`（F# 互換の名前は `Array.set`）、`Array.fill`、`Array.blit`、`Array.swap_in`、`Array.split_at_mut`、および `Array.sort_in_place`（`Ord` による安定整列。作業領域を確保せず、NaN を含まない配列では結果が `Array.sort` と一致します）が提供されます。
 固定長配列 `[T; N]` は `FixedArray.init f` で作れ、`ref [T]` を受け取る `Array` の関数（`sum`、`foldr`、`find` など）には名前付きの値をそのまま渡せます（配列全体の共有スライスに変換されます）。
 
 要素の値を値として読み出すコールバック関数や、新しい所有コレクションへの要素コピーを伴う操作は、要素型に対して `Copy` 制約を要求します。
@@ -3549,7 +3549,7 @@ F# にはない `at`、`count`、`index_of`、`equal`、`binary_search`、`produ
 `min` および `max` は、比較によって値の改善が認められた場合にのみ最良値を更新するため、同値の要素、符号付きゼロ（`+0` と `-0`）、および先頭に現れた NaN の順序関係が忠実に維持されます。空のコレクションでは `min`、`max`、`reduce`、`average` などがトラップします。
 `sort`、`sort_descending`、`sort_by`、`sort_by_descending`、`sort_with` は新しい配列を返し、`sort_in_place`、`sort_in_place_by`、`sort_in_place_with` は排他スライスをその場で整列します。どれも幅 1, 2, 4, ... のボトムアップ方式による安定マージソート（stable merge sort）の順序です（`sort_in_place` は作業領域なしの回転マージ、`sort_in_place_by` と `sort_in_place_with` は一時配列を使います）。
 `sort_with` の比較関数（comparator）は左右の要素を値で受け取り、負・ゼロ・正の `i64` 値を返します（双方のランに要素が残っている間、現在の左右要素が 1 回ずつ比較されます）。`sort_by` と `sort_by_descending` はキー `f x` を各要素につき 1 回だけ計算して、キーの `Ord` で整列します。キーが NaN の要素は、昇順でも降順でも最後に、入力の順のまま置かれます。キーの `Ord` で順序が決まる 2 つの要素（`(0, nan)` と `(1, 0.0)` など）はその順序のままで、等しくも、どちらが小さいとも言えない 2 つのうちでは、自分自身と等しくないキーを持つほうが後ろになります。
-`f32` および `f64` においては、比較関数呼び出し後に非数 NaN が通常の数値の後方に整列配置され、NaN 同士の元の入力順序や、デフォルト比較における符号付きゼロの入力順序が安定ソートとして保持されます。
+`f32` および `f64` においては、`sort`、`sort_descending`、`sort_with`（と `sort_in_place_with`）で、比較関数呼び出し後に非数 NaN が通常の数値の後方に整列配置され、NaN 同士の元の入力順序や、デフォルト比較における符号付きゼロの入力順序が安定ソートとして保持されます。`f16`、`f128`、`decimal` の NaN と、`sort_in_place` には、この特別扱いはありません。
 `binary_search` は同一の順序関係であらかじめ整列済みのコレクションを入力として要求し、重複要素が存在する場合は先頭の一致インデックスを返します。
 
 高階関数の引数順序は F# の設計規約に準拠し、関数引数を第 1 引数として受け取ります。`Array` モジュールでは `map f xs`、`mapi f xs`、`mapr f xs`、`mapir f xs`、`fold f state xs`、`foldr f state xs`、`fold_back f xs state`、`foldr_back f xs state`、`reduce f xs`、

@@ -1049,8 +1049,9 @@ fn sort_in_place_by projection values =
     let sorted = sort_by projection values
     overwrite values (ref sorted)
 
-/// Sorts an exclusive slice in place, stably and without allocating: the order of `Array.sort`.
-/// Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge, as Go's `sort.Stable`).
+/// Sorts an exclusive slice in place, stably and without allocating: the order of `Array.sort` for arrays without NaN
+/// (it does not move a NaN last). Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge, as
+/// Go's `sort.Stable`).
 def sort_in_place :: Ord<'a> => ref mut ['a..] -> unit
 fn sort_in_place values =
     let length = values.length

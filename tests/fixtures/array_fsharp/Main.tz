@@ -622,6 +622,32 @@ test "sort_by sort_by_descending sort_in_place_by put NaN keys last like sort" =
     eq (value_at (ref after) 0) 5.0
     Test.is_true (is_nan (value_at (ref after) 1))
 
+// `sort` moves the NaN of an f32 or f64 array last through its comparison builtin; an f16 NaN is left to `Ord`. A
+// keyed sort decides by the key itself, so it puts the NaN of any float format last.
+test "NaN of f32 and f16 in the sorts" =
+    let nan32 = 0.0f / 0.0f
+    let singles = [nan32, 1.0f, 0.5f]
+    let sorted32 = Array.sort singles
+    eq (Array.sub sorted32 0 2) [0.5f, 1.0f]
+    Test.is_true (sorted32[2] != sorted32[2])
+    let descending32 = Array.sort_descending singles
+    eq (Array.sub descending32 0 2) [1.0f, 0.5f]
+    Test.is_true (descending32[2] != descending32[2])
+    let with32 = Array.sort_with (\a b -> if a < b then -1 else if a > b then 1 else 0) singles
+    eq (Array.sub with32 0 2) [0.5f, 1.0f]
+    Test.is_true (with32[2] != with32[2])
+    let by_key32 = Array.sort_by (\x -> x) singles
+    eq (Array.sub by_key32 0 2) [0.5f, 1.0f]
+    Test.is_true (by_key32[2] != by_key32[2])
+    let nan16 = 0.0f16 / 0.0f16
+    let halves = [nan16, 1.0f16, 0.5f16]
+    let by_key16 = Array.sort_by (\x -> x) halves
+    eq (Array.sub by_key16 0 2) [0.5f16, 1.0f16]
+    Test.is_true (by_key16[2] != by_key16[2])
+    let by_key16_descending = Array.sort_by_descending (\x -> x) halves
+    eq (Array.sub by_key16_descending 0 2) [1.0f16, 0.5f16]
+    Test.is_true (by_key16_descending[2] != by_key16_descending[2])
+
 test "sort_in_place sort_in_place_by sort_in_place_with" =
     let mut xs = [8, 4, 3, 1, 6, 1]
     Array.sort_in_place xs
