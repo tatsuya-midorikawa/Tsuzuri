@@ -216,6 +216,7 @@ fn mapir transform values =
         mapped = Vec.push mapped (transform index (ref value))
         index = index + 1
     of_vec mapped
+
 private def map2_arrays :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> [|'c|]
 fn map2_arrays transform left right =
     new [|'c|](common_length left.length right.length, index -> transform left[index] right[index])

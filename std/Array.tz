@@ -1003,7 +1003,11 @@ def sort_descending :: Ord<'a> => ref ['a] -> ['a]
 fn sort_descending values = Array.__sort_with (left -> right -> if Ord.lt left right then 1i64 else 0i64) values
 
 def sort_with :: Copy<'a> => ('a -> 'a -> i64) -> ref ['a] -> ['a]
-fn sort_with comparer values = Array.__sort_with (left -> right -> comparer *left *right) values
+fn sort_with comparer values = sort_with_borrowed (ref comparer) values
+
+/// The adapter captures a borrow of the comparer, so a comparison does not copy the comparer's environment into it.
+private def sort_with_borrowed :: Copy<'a> => ref ('a -> 'a -> i64) -> ref ['a] -> ['a]
+fn sort_with_borrowed comparer values = Array.__sort_with (left -> right -> (*comparer) *left *right) values
 
 private def indices :: i64 -> [i64]
 fn indices count = new [i64](count, \index -> index)

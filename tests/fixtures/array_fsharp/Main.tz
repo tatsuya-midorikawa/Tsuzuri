@@ -578,6 +578,27 @@ test "sort sort_descending sort_by sort_by_descending sort_with" =
     eq (Array.sort_by_descending (\p -> match p with | (_, size) -> size) pairs) [(1, 3), (0, 2), (2, 2), (3, 2)]
     eq (Array.sort_with (\a b -> match (a, b) with | ((_, x), (_, y)) -> x - y) pairs) [(0, 2), (2, 2), (3, 2), (1, 3)]
 
+// A comparer that owns a collection: the adapter of `sort_with` borrows the comparer, so a comparison copies the
+// comparer's environment once, not once more into the adapter. The result must not depend on that.
+private def ordered_by_table :: ref [i64] -> ref [i64] -> bool
+fn ordered_by_table order table =
+    let mut index = 1
+    let mut ordered = true
+    while index < order.length do
+        if table[order[index - 1]] > table[order[index]] then ordered = false
+        index = index + 1
+    ordered
+
+test "sort_with works with a comparer that owns a table" =
+    let table = new [i64](1500, \i -> (i * 7919) % 10007)
+    let indices = new [i64](1500, \i -> i)
+    let order = Array.sort_with (\a b -> table[a] - table[b]) indices
+    eq order.length 1500
+    Test.is_true (ordered_by_table (ref order) (ref table))
+    let mut in_place = new [i64](1500, \i -> i)
+    Array.sort_in_place_with (\a b -> table[a] - table[b]) in_place
+    Test.is_true (ordered_by_table (ref in_place) (ref table))
+
 // `sort` and `sort_descending` put NaN last in both directions; the keyed sorts do the same with NaN keys.
 test "sort_by sort_by_descending sort_in_place_by put NaN keys last like sort" =
     let nan = 0.0 / 0.0
