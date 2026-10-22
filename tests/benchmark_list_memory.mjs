@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { parseArguments, runListMemory } from "../benchmarks/run-list-memory.mjs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArguments, runListMemory, stageFixture } from "../benchmarks/run-list-memory.mjs";
 import { consChunks, reference, repeats, sizes, workloads } from "../benchmarks/list-memory/reference.mjs";
 
 // The quick run below needs the compiler. A missing argument or a path that does not exist fails, so that a CI step that lost its path
@@ -38,6 +40,24 @@ assert.deepEqual(options.only, ["bulk_new", "cons_build"]);
 assert.equal(parseArguments(["--samples", "9", "/some/compiler", "--baseline", "/older"]).baseline, resolve("/older"));
 for (const bad of [["--samples", "0"], ["--only", "missing"], ["--unknown"], ["a", "b"], ["--baseline"], ["--opt", "O2"], ["--samples", "3", "--metrics", "somewhere"]]) {
   assert.throws(() => parseArguments(bad), /Usage:|unknown|invalid|missing|unexpected/, bad.join(" "));
+}
+
+// A baseline from before List.fold_ref became List.foldr rejects the fixture, so it builds a copy that differs only in that name; a compiler
+// that accepts the fixture builds it as it is. The stub rejects what such an older compiler rejects.
+const staging = mkdtempSync(join(tmpdir(), "tsuzuri-list-memory-test-"));
+try {
+  const fixture = fileURLToPath(new URL("../benchmarks/list-memory", import.meta.url));
+  assert.equal(stageFixture(compiler, "default", staging), fixture, "the compiler that knows List.foldr builds the fixture itself");
+  const older = join(staging, "older-tsuzuri");
+  writeFileSync(older, "#!/bin/sh\n! grep -q 'List.foldr' \"$2/Main.tz\"\n", { mode: 0o755 });
+  const staged = stageFixture(older, "before", staging);
+  assert.notEqual(staged, fixture);
+  const earlier = readFileSync(join(staged, "Main.tz"), "utf8");
+  assert.ok(earlier.includes("List.fold_ref") && !/\bList\.foldr\b/.test(earlier), "the old spelling");
+  assert.equal(earlier.replace(/List\.fold_ref/g, "List.foldr"), readFileSync(join(fixture, "Main.tz"), "utf8"), "only the name differs");
+  assert.equal(readFileSync(join(staged, "host.c"), "utf8"), readFileSync(join(fixture, "host.c"), "utf8"), "the host is copied");
+} finally {
+  rmSync(staging, { recursive: true, force: true });
 }
 
 // The quick run builds the fixture, checks every checksum, counts allocations (all freed) and reads the wasm32 heap.

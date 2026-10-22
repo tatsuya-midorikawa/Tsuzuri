@@ -7760,6 +7760,8 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 
 **条件.** 基準は main `9dd0fbbc` の release コンパイラー（SHA-256 `5e1b9687…`）、変更後は Phase 1 のコンパイラー（SHA-256 `78eb5882…`、`0f9f16af`）です。Apple M1 Max、macOS 27.0.1、Apple clang 21.0.0、Node 20.19.6、native `-O3` と wasm32 `-O3`。確保の回数と bytes は決定的です（`benchmarks/tracked_alloc.c` が数える要求量で、allocator の丸めは含みません）。時間と peak RSS は `node benchmarks/run-list-memory.mjs $COMPILER --baseline $BEFORE --samples 9 --wasm`（before と after の build を交互に、標本ごとに 1 回の warm-up の後、中央値）で、他の作業が並行して動く共有機の値です（開始時の 1 分の load average は 22〜65）。同じコンパイラーどうしを交互に測る A/A の差は 0.1〜1.2%（after の `bulk_new` 1,000,000 個が 4.7%、`walk_list` 1,000 個が 3.8%）でした。時間は参考値で、速度の合否の閾値は置きません。
 
+**`--baseline` の綴り.** F# 互換の `List` が `List.fold_ref` を `List.foldr` に改名したので、改名より前のコンパイラーは `benchmarks/list-memory` をそのままではビルドできません（`E1002`）。ハーネスは各コンパイラーに `tsuzuri check` で fixture を試させ、通らないコンパイラーには `List.foldr` を `List.fold_ref` に置き換えただけの複製をビルドさせます。変わるのは名前だけで、測る負荷は同じです。
+
 **確保（要求 bytes。回数 / bytes）.**
 
 | workload | n | before | after |
