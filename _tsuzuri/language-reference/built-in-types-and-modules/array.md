@@ -455,7 +455,7 @@ $"sum={total} prod={prod} min={Array.min vals} max={Array.max vals}"
 sum=170 prod=24 min=10 max=30
 ```
 
-`sum_by`、`average`、`average_by`、`min_by`、`max_by` は F# と同じです。`average` と `average_by` は浮動小数点数（`Float`）の配列を取り、空の配列でトラップします。`min_by` と `max_by` は、同じキーが複数あるとき最初の要素を返します。
+`sum_by`、`average`、`average_by`、`min_by`、`max_by` は F# と同じ引数と結果です。`average` と `average_by` は浮動小数点数（`Float`）の配列を取り、空の配列でトラップします。`min_by` と `max_by` は、同じキーが複数あるとき最初の要素を返します。整数の `sum` と `sum_by` だけは F# と違い、言語の整数の `+` と同じく桁あふれで折り返します。F# は `Checked.(+)` で桁あふれを検査して `OverflowException` にしますが、Tsuzuri の `Array.sum` と `Array.sum_by` はトラップしません（`i64` の `9223372036854775807` と `1` の和は `-9223372036854775808` です）。
 
 > [!NOTE]
 > native の実行ファイルとオブジェクトファイルでは、整数 8 型（`i8`〜`i64`、`i8u`〜`i64u`）の `Array.sum`、`Array.min`、`Array.max` が CPU ディスパッチの対象です。x86 では SSE4.2 と AVX2 を、OS が XMM/YMM を保存できるかも見て選びます。自動選択は AVX2 までで、AVX-512 と SVE は `TSUZURI_CPU_FORCE` のときだけ使います。それ以外と WASM はベースラインです。整数の和は桁あふれで折り返すので加算順で値は変わらず、`min` / `max` は最初に現れた位置を返すので、結果はスカラー版と同じ契約です。実機での速度は未測定です。
@@ -538,6 +538,7 @@ length=5 sum=15
 | `Random.Shared`（`random_choice` など接尾辞なし） | `IO<Result<_, Os.Error>>`。OS の乱数で種を作ります |
 | `float`（`average`、`average_by`） | `f64` など浮動小数点数（`Float`）。整数は F# と同じく使えません |
 | `zeroCreate` の既定値 | `Default<'a>` の `Default.default()` |
+| 整数の `sum`、`sum_by`（`Checked.(+)`。桁あふれで `OverflowException`） | 桁あふれで折り返します。言語の整数の `+` と同じで、トラップにはなりません |
 
 トラップになる F# の例外は、空配列（`head`、`last`、`reduce`、`min`、`max`、`average` など）、負の個数（`init`、`create`、`take`、`chunk_by_size`、`windowed`、`split_into` など）、範囲外（`get`、`set`、`update_at`、`insert_at`、`remove_at`、`sub`、`split_at`、`take`、`skip`、`blit`、`fill`）、長さの不一致（`zip`、`map2`、`fold2`、`exists2`、`transpose` など）、見つからない検索（`find`、`find_back`、`find_index`、`pick`）、順列でない `permute` です。
 

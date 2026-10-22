@@ -151,7 +151,8 @@ fn count_tests(source: &str) -> usize {
         .count()
 }
 
-fn run(source: &str, target: Target, optimization: u8) -> Vec<(String, bool)> {
+/// Each test of `source` with the reason it failed (a trap, a timeout, ...), or `None` when it passed.
+fn run(source: &str, target: Target, optimization: u8) -> Vec<(String, Option<String>)> {
     let module =
         analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
     let options = TestOptions {
@@ -163,7 +164,7 @@ fn run(source: &str, target: Target, optimization: u8) -> Vec<(String, bool)> {
         .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
         .results
         .into_iter()
-        .map(|result| (result.case.name, result.failure.is_none()))
+        .map(|result| (result.case.name, result.failure))
         .collect()
 }
 
@@ -192,8 +193,9 @@ fn the_fsharp_functions_agree_with_their_documentation_on_every_target() {
             assert_eq!(results.len(), expected);
             let failed: Vec<_> = results
                 .iter()
-                .filter(|(_, passed)| !passed)
-                .map(|(name, _)| name)
+                .filter_map(|(name, failure)| {
+                    failure.as_ref().map(|reason| format!("{name}: {reason}"))
+                })
                 .collect();
             assert!(
                 failed.is_empty(),
@@ -212,12 +214,26 @@ fn contract_violations_trap_where_fsharp_raises() {
         assert_eq!(results.len(), expected);
         let survived: Vec<_> = results
             .iter()
-            .filter(|(_, passed)| *passed)
+            .filter(|(_, failure)| failure.is_none())
             .map(|(name, _)| name)
             .collect();
         assert!(
             survived.is_empty(),
             "{target:?} -O{optimization} did not trap: {survived:?}"
+        );
+        // A test that hangs is killed by the runner and reported as a failure too: that is not a trap.
+        let hung: Vec<_> = results
+            .iter()
+            .filter(|(_, failure)| {
+                failure
+                    .as_deref()
+                    .is_some_and(|reason| reason.starts_with("timed out"))
+            })
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            hung.is_empty(),
+            "{target:?} -O{optimization} timed out instead of trapping: {hung:?}"
         );
     }
 }
