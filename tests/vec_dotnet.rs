@@ -497,13 +497,21 @@ fn updates_consume_the_vec_and_loans_block_them() {
     accepts(
         "let values = Vec.of_array [1]\nlet mut target = [0]\nVec.copy_to target values\ntarget[0]",
     );
-    // The hidden builtins of std/Vec.tz: a mutable view of the elements, and its borrow rules.
+    // The primitives of std/Vec.tz (a mutable view of the elements, the capacity setter, and the two bulk moves) are
+    // private to that module: a user module reaches the same work through the public API.
+    for call in [
+        "Vec.__view (ref mut values)",
+        "Vec.__set_capacity 4 values",
+        "Vec.__insert 0 3 values",
+        "Vec.__splice 0 0 [] values",
+    ] {
+        rejects(
+            &format!("let values = Vec.of_array [2, 1]\nlet result = {call}\n0"),
+            "E1022",
+        );
+    }
     accepts(
-        "let mut values = Vec.of_array [2, 1]\nArray.sort_in_place (Vec.__view (ref mut values))\nvalues[0]",
-    );
-    rejects(
-        "let values = Vec.of_array [2, 1]\nArray.sort_in_place (Vec.__view (ref mut values))\n0",
-        "E1014",
+        "let mut values = Vec.of_array [2, 1]\nvalues = Vec.sort values\nvalues = Vec.insert 1 9 values\nvalues = Vec.remove_range 0 1 values\nvalues = Vec.set_capacity 8 values\nvalues[0]",
     );
 }
 
