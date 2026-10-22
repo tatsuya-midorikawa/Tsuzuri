@@ -192,8 +192,8 @@ lldb -o "target symbols add .tsuzuri/test/runner.dwarf" -- .tsuzuri/test/runner 
 ```tsuzuri project=properties file=Properties.tz
 test "reverse twice is the original" =
     Gen.for_all (Gen.array (Gen.i64())) (\values ->
-        let once = Array.reverse (ref values)
-        let twice = Array.reverse (ref once)
+        let once = Array.rev (ref values)
+        let twice = Array.rev (ref once)
         Array.equal (ref twice) (ref values))
 ```
 

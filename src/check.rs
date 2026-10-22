@@ -1215,6 +1215,8 @@ pub enum Builtin {
     Hash,
     HashMix,
     DisplayQuoted,
+    /// `Array.__set :: ['a] -> i64 -> 'a -> ['a]` replaces one element of an owned array and returns it. It is private
+    /// to the std `Array` module, whose `update_at` gives it the F# argument order.
     ArraySet,
     ArrayUpdate,
     ArraySwap,
@@ -1233,6 +1235,8 @@ pub enum Builtin {
     ListTail,
     ArrayConcat,
     ArrayToList,
+    /// `Array.__sort_with :: Copy<'a> => (ref 'a -> ref 'a -> i64) -> ref ['a] -> ['a]` is the stable merge sort behind
+    /// the std `Array` sorts, which give it by-value comparers and keys. It is private to the std `Array` module.
     ArraySortBy,
     ListMap,
     ListMapRef,
@@ -1877,7 +1881,7 @@ impl Builtin {
             Self::Hash => "$builtin.hash",
             Self::HashMix => "$builtin.hash_mix",
             Self::DisplayQuoted => "$builtin.display_quoted",
-            Self::ArraySet => "Array.set",
+            Self::ArraySet => "Array.__set",
             Self::ArrayUpdate => "Array.update",
             Self::ArraySwap => "Array.swap",
             Self::ArrayWrite => "Array.write",
@@ -1889,7 +1893,7 @@ impl Builtin {
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
             Self::ArrayToList => "Array.to_list",
-            Self::ArraySortBy => "Array.sort_by",
+            Self::ArraySortBy => "Array.__sort_with",
             Self::ListMap => "List.map",
             Self::ListMapRef => "List.map_ref",
             Self::ListReverse => "List.reverse",

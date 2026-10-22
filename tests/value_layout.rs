@@ -339,7 +339,7 @@ fn an_option_of_a_reference_is_its_pointer_on_native_targets_only() {
     let source = "export def find :: i64 -> i64
 fn find n =
     let values = [1, 2, 3]
-    match Array.find (\\x -> deref x == n) (ref values) with
+    match Array.try_findr (\\x -> deref x == n) (ref values) with
     | Some value -> deref value
     | None -> -1
 ";
@@ -349,7 +349,7 @@ fn find n =
         !native.contains("tz.union.Maybe.Maybe[ref[i64]]"),
         "{native}"
     );
-    let search = "tz.fn.Array.find.$mono.1";
+    let search = "tz.fn.Array.try_findr.$mono.1";
     assert!(body(&native, search).contains("ret ptr null"), "{native}");
     let find = body(&native, "tz.fn.Main.find");
     assert!(find.contains("icmp eq ptr"), "{find}");

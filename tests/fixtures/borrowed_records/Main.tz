@@ -35,7 +35,7 @@ fn view_iteration count =
     while index < count do
         let values = [1, 2, 3]
         let view = View { data: ref values }
-        for value in Array.iter view.data do total = total + deref value
+        for value in Array.to_seqr view.data do total = total + deref value
         index = index + 1
     total
 

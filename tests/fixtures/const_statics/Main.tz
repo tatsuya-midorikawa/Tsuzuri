@@ -155,7 +155,7 @@ fn closures_and_tasks =
 export def owned_copies :: i64
 fn owned_copies =
     let copied = Array.copy (ref Squares)
-    let reversed = Array.reverse (ref Primes)
+    let reversed = Array.rev (ref Primes)
     let sorted = Array.sort (ref reversed)
     let doubled = Array.map (value -> value * 2) (ref Primes)
     let joined = Array.append (ref Primes) (ref Primes)

@@ -12,7 +12,7 @@
 - `Seq.next` は現在のシーケンスを消費し、` (次のSeq * Maybe<要素>)` のタプルを返します。
 - `Seq.map` や `Seq.filter` は遅延適用され、終端操作（`for` ループや `Seq.to_array`）が呼ばれるまで計算は実行されません。
 - `for ... in` ループはシーケンスの所有権を 1 回消費して反復します。`break` で途中脱出した場合も未消費のリソースは安全に解放されます。
-- 各コレクションの `iter` 関数（`Array.iter`, `Vec.iter` 等）から要素への共有借用参照を順次列挙する `Seq` を取得できます。
+- 各コレクションの `iter` 関数（`Vec.iter` など。配列は `Array.to_seqr`）から要素への共有借用参照を順次列挙する `Seq` を取得できます。
 
 ## 基本の書き方と生成
 
@@ -126,11 +126,11 @@ total=15
 
 ## 各コレクションからの `iter`
 
-すべての標準コレクションは、各要素への共有借用参照を列挙する `iter` 関数を提供しています。
+すべての標準コレクションは、各要素への共有借用参照を列挙する関数を提供しています。名前は `iter` です。ただし配列では、F# の `Array.iter`（各要素に関数を適用して `unit` を返す）と同じ意味にしたので、この関数は `Array.to_seqr` です。要素が `Copy` なら、値を列挙する `Array.to_seq` も使えます。
 
 | コレクション | 呼び出し | 返却型 | 特徴 |
 | --- | --- | --- | --- |
-| **Array** | `Array.iter (ref xs)` | `Seq<ref 'a>` | 配列要素の参照をインデックス昇順に列挙 |
+| **Array** | `Array.to_seqr (ref xs)` | `Seq<ref 'a>` | 配列要素の参照をインデックス昇順に列挙 |
 | **Vec** | `Vec.iter (ref v)` | `Seq<ref 'a>` | バッファ要素の参照をインデックス昇順に列挙 |
 | **List** | `List.iter (ref xs)` | `Seq<ref 'a>` | 一時 Vec にポインタを準備（$O(n)$ 領域）してから列挙 |
 | **Set** | `Set.iter (ref s)` | `Seq<ref 'key>` | 要素の参照をキー昇順に列挙 |
@@ -141,7 +141,7 @@ total=15
 ```tsuzuri run=total%3D7
 let words = ["Tsu", "zuri"]
 let mut total = 0
-for word in Array.iter (ref words) do
+for word in Array.to_seqr (ref words) do
     total = total + word.length
 $"total={total}"
 ```
@@ -152,11 +152,11 @@ $"total={total}"
 total=7
 ```
 
-`iter` で作った `Seq` が生きている間、元のコレクションの移動・更新・排他借用は拒否されます。
+`iter` で作った `Seq` が生きている間、元のコレクションの移動・更新・排他借用は拒否されます。配列の `to_seqr` も同じです。
 
 直接の `for ... in` が使えるのは、配列、リスト、`Vec`、文字列、`utf8string`、整数範囲、そして `Seq` です。これらに `Module.iter` は要りません。`Map`、`Set`、`HashMap`、`HashSet` とユーザー定義型は対象外で、`for pair in Map.iter (ref map)` のように `Seq` を返す関数を自分で呼びます。省略すると `E1005` です。`iter` という名前だけでは反復対象になりません。コンピュテーション式の `For` も、`Seq` の反復へは書き換わりません。
 
-直接の `for` のループ変数は `ref` ではなく、読み取り専用の要素そのものです。`Array.iter` や `Vec.iter` が返す `Seq<ref T>` を回すときのループ変数は `ref T` です。
+直接の `for` のループ変数は `ref` ではなく、読み取り専用の要素そのものです。`Array.to_seqr` や `Vec.iter` が返す `Seq<ref T>` を回すときのループ変数は `ref T` です。
 
 > [!NOTE]
 > `List.iter` は、リストのリンクを 1 度走査して各要素への参照ポインタを格納した一時 Vec を準備するため、前準備に $O(n)$ の時間と一時メモリを消費します。

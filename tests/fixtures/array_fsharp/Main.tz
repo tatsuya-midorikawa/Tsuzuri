@@ -1,0 +1,820 @@
+// The F# `Array` module in Tsuzuri (std/Array.tz): one test per F# function, the examples of the F# documentation,
+// the `r` forms for elements that are not `Copy`, and the Tsuzuri functions that F# does not have.
+
+private def eq :: Eq<'a> => 'a -> 'a -> unit
+fn eq actual expected = Test.equal (ref actual) (ref expected)
+
+private def some_eq :: Eq<'a> => Maybe<'a> -> 'a -> unit
+fn some_eq maybe expected =
+    match maybe with
+    | Maybe.Some value -> eq value expected
+    | Maybe.None -> assert false
+
+private def none :: Maybe<'a> -> unit
+fn none maybe =
+    match maybe with
+    | Maybe.None -> ()
+    | Maybe.Some _ -> assert false
+
+const no_ints: [i64] = []
+
+const no_floats: [f64] = []
+
+const no_rows: [[i64]] = []
+
+private def is_nan :: f64 -> bool
+fn is_nan value = value != value
+
+private def count_key_is_nan :: ref [(f64 * i64)] -> i64 -> bool
+fn count_key_is_nan pairs position =
+    match pairs[position] with
+    | (key, _) -> is_nan key
+
+private def count_of :: ref [(f64 * i64)] -> i64 -> i64
+fn count_of pairs position =
+    match pairs[position] with
+    | (_, count) -> count
+
+private def group_key_is_nan :: ref [(f64 * [f64])] -> i64 -> bool
+fn group_key_is_nan groups position =
+    match groups[position] with
+    | (key, _) -> is_nan key
+
+private def group_size :: ref [(f64 * [f64])] -> i64 -> i64
+fn group_size groups position =
+    match groups[position] with
+    | (_, members) -> members.length
+
+private def id_at :: ref [(i64 * f64)] -> i64 -> i64
+fn id_at pairs position =
+    match pairs[position] with
+    | (id, _) -> id
+
+private def value_at :: ref [(i64 * f64)] -> i64 -> f64
+fn value_at pairs position =
+    match pairs[position] with
+    | (_, value) -> value
+
+private def keyed_count :: ref [((i64 * f64) * i64)] -> i64 -> i64
+fn keyed_count counts position =
+    match counts[position] with
+    | (_, count) -> count
+
+private def keyed_id :: ref [((i64 * f64) * i64)] -> i64 -> i64
+fn keyed_id counts position =
+    match counts[position] with
+    | ((id, _), _) -> id
+
+private def grouped_id :: ref [((i64 * f64) * [(i64 * f64)])] -> i64 -> i64
+fn grouped_id groups position =
+    match groups[position] with
+    | ((id, _), _) -> id
+
+private def grouped_size :: ref [((i64 * f64) * [(i64 * f64)])] -> i64 -> i64
+fn grouped_size groups position =
+    match groups[position] with
+    | (_, members) -> members.length
+
+// ---- Construction ----
+
+test "empty singleton create replicate zero_create init" =
+    eq (Array.empty()) no_ints
+    eq (Array.singleton 7) [7]
+    eq (Array.create 3 1.5) [1.5, 1.5, 1.5]
+    eq (Array.replicate 2 5) [5, 5]
+    eq (Array.replicate 0 5) no_ints
+    eq (Array.zero_create 3) [0, 0, 0]
+    eq (Array.zero_create 2) [0.0, 0.0]
+    eq (Array.init 4 (\i -> i + 5)) [5, 6, 7, 8]
+    eq (Array.init 0 (\i -> i)) no_ints
+
+test "unfold" =
+    eq (Array.unfold (\s -> if s > 4 then Maybe.None else Maybe.Some (s * s, s + 1)) 1) [1, 4, 9, 16]
+    eq (Array.unfold (\s -> if s > 0 then Maybe.None else Maybe.Some (s, s + 1)) 5) no_ints
+
+test "length is_empty" =
+    eq (Array.length [1, 2, 3]) 3
+    eq (Array.length no_ints) 0
+    Test.is_true (Array.is_empty no_ints)
+    Test.is_true (!(Array.is_empty [1]))
+
+// ---- Access ----
+
+test "get item try_item at" =
+    let xs = [10, 20, 30]
+    eq (Array.get xs 1) 20
+    eq (Array.item 2 xs) 30
+    some_eq (Array.try_item 2 xs) 30
+    none (Array.try_item 3 xs)
+    none (Array.try_item (-1) xs)
+    eq (*(Array.at xs 0)) 10
+    let words = ["a", "bb"]
+    eq (Array.at words 1).length 2
+
+test "head last exactly_one and their try forms" =
+    let xs = [10, 20, 30]
+    eq (Array.head xs) 10
+    eq (Array.last xs) 30
+    some_eq (Array.try_head xs) 10
+    some_eq (Array.try_last xs) 30
+    none (Array.try_head no_ints)
+    none (Array.try_last no_ints)
+    eq (Array.exactly_one [9]) 9
+    some_eq (Array.try_exactly_one [9]) 9
+    none (Array.try_exactly_one xs)
+    none (Array.try_exactly_one no_ints)
+
+// ---- Slicing ----
+
+test "sub tail take skip truncate split_at" =
+    let xs = [1, 2, 3, 4]
+    eq (Array.sub xs 1 2) [2, 3]
+    eq (Array.sub xs 4 0) no_ints
+    eq (Array.tail xs) [2, 3, 4]
+    eq (Array.tail [1]) no_ints
+    eq (Array.take 2 xs) [1, 2]
+    eq (Array.take 0 xs) no_ints
+    eq (Array.take 4 xs) [1, 2, 3, 4]
+    eq (Array.skip 2 xs) [3, 4]
+    eq (Array.skip (-1) xs) [1, 2, 3, 4]
+    eq (Array.skip 4 xs) no_ints
+    eq (Array.truncate 2 xs) [1, 2]
+    eq (Array.truncate 6 xs) [1, 2, 3, 4]
+    eq (Array.truncate 0 xs) no_ints
+    eq (Array.truncate (-3) xs) no_ints
+    match Array.split_at 3 [8, 4, 3, 1, 6, 1] with
+    | (front, back) ->
+        eq front [8, 4, 3]
+        eq back [1, 6, 1]
+    match Array.split_at 0 xs with
+    | (front, back) ->
+        eq front no_ints
+        eq back xs
+    match Array.split_at 4 xs with
+    | (front, back) ->
+        eq front xs
+        eq back no_ints
+
+test "take_while skip_while where filter" =
+    let xs = [1, 2, 3, 4, 5]
+    eq (Array.take_while (\x -> x < 3) xs) [1, 2]
+    eq (Array.take_while (\x -> x < 0) xs) no_ints
+    eq (Array.skip_while (\x -> x < 3) xs) [3, 4, 5]
+    eq (Array.skip_while (\x -> x < 9) xs) no_ints
+    eq (Array.where (\x -> x % 2 == 0) xs) [2, 4]
+    eq (Array.filter (\x -> x % 2 == 1) xs) [1, 3, 5]
+    eq (Array.filter (\x -> x > 9) xs) no_ints
+    eq (Array.filter (\x -> x > 0) no_ints) no_ints
+
+test "chunk_by_size windowed split_into" =
+    eq (Array.chunk_by_size 2 [1, 2, 3]) [[1, 2], [3]]
+    eq (Array.chunk_by_size 5 [1, 2, 3]) [[1, 2, 3]]
+    eq (Array.chunk_by_size 1 [1, 2]) [[1], [2]]
+    eq (Array.chunk_by_size 2 no_ints) []
+    eq (Array.windowed 3 [1, 2, 3, 4, 5]) [[1, 2, 3], [2, 3, 4], [3, 4, 5]]
+    eq (Array.windowed 5 [1, 2, 3, 4, 5]) [[1, 2, 3, 4, 5]]
+    eq (Array.windowed 9 [1, 2, 3]) []
+    eq (Array.split_into 3 [1, 2, 3, 4, 5]) [[1, 2], [3, 4], [5]]
+    eq (Array.split_into 2 [1, 2, 3]) [[1, 2], [3]]
+    eq (Array.split_into 9 [1, 2]) [[1], [2]]
+    eq (Array.split_into 2 [1, 2, 3, 4]) [[1, 2], [3, 4]]
+    eq (Array.split_into 1 [1, 2, 3]) [[1, 2, 3]]
+    eq (Array.split_into 2 no_ints) []
+
+// ---- Combining ----
+
+test "append concat copy rev" =
+    eq (Array.append [1, 2] [3, 4]) [1, 2, 3, 4]
+    eq (Array.append no_ints [3]) [3]
+    eq (Array.append [3] no_ints) [3]
+    eq (Array.concat [[1, 2], [], [3]]) [1, 2, 3]
+    eq (Array.copy [12, 13, 14]) [12, 13, 14]
+    eq (Array.rev [0, 1, 2]) [2, 1, 0]
+    eq (Array.rev no_ints) no_ints
+
+test "zip unzip all_pairs indexed pairwise transpose" =
+    eq (Array.zip [1, 2] [10, 20]) [(1, 10), (2, 20)]
+    eq (Array.zip3 [1, 2] [10, 20] [100, 200]) [(1, 10, 100), (2, 20, 200)]
+    match Array.unzip [(1, 10), (2, 20)] with
+    | (left, right) ->
+        eq left [1, 2]
+        eq right [10, 20]
+    match Array.unzip3 [(1, 10, 100), (2, 20, 200)] with
+    | (a, b, c) ->
+        eq a [1, 2]
+        eq b [10, 20]
+        eq c [100, 200]
+    eq (Array.all_pairs [1, 2] [3, 4]) [(1, 3), (1, 4), (2, 3), (2, 4)]
+    eq (Array.all_pairs [1, 2] no_ints) []
+    eq (Array.indexed [7, 8, 9]) [(0, 7), (1, 8), (2, 9)]
+    eq (Array.pairwise [1, 2, 3, 4]) [(1, 2), (2, 3), (3, 4)]
+    eq (Array.pairwise [1]) []
+    eq (Array.pairwise no_ints) []
+    eq (Array.transpose [[10, 20, 30], [11, 21, 31]]) [[10, 11], [20, 21], [30, 31]]
+    eq (Array.transpose [[1], [2], [3]]) [[1, 2, 3]]
+    eq (Array.transpose no_rows) no_rows
+
+// ---- Traversal ----
+
+test "iter iteri iter2 iteri2 and the r forms run their actions" =
+    Array.iter (\x -> assert (x > 0)) [1, 2, 3]
+    Array.iteri (\i x -> assert (x == i * 10)) [0, 10, 20]
+    Array.iter2 (\a b -> assert (b == a * 2)) [1, 2, 3] [2, 4, 6]
+    Array.iteri2 (\i a b -> assert (a + b == i * 3)) [0, 1, 2] [0, 2, 4]
+    Array.iterr (\x -> assert (*x > 0)) [1, 2, 3]
+    Array.iterir (\i x -> assert (*x == i * 10)) [0, 10, 20]
+    let words = ["a", "bb"]
+    Array.iterr (\w -> assert (w.length > 0)) words
+    Array.iterir (\i w -> assert (w.length == i + 1)) words
+    Array.iter (\_x -> assert false) no_ints
+    Array.iterr (\_x -> assert false) no_ints
+
+test "map mapi map2 mapi2 map3" =
+    eq (Array.map (\x -> x * 2) [1, 2, 3]) [2, 4, 6]
+    eq (Array.mapi (\i x -> i + x) [10, 10, 10]) [10, 11, 12]
+    eq (Array.map2 (\a b -> a * b) [1, 2, 3] [4, 5, 6]) [4, 10, 18]
+    eq (Array.mapi2 (\i a b -> i + a + b) [1, 2] [10, 20]) [11, 23]
+    eq (Array.map3 (\a b c -> a + b + c) [1, 2] [10, 20] [100, 200]) [111, 222]
+    eq (Array.map (\x -> x + 1) no_ints) no_ints
+
+test "mapr mapir work for elements that are not Copy" =
+    let words = ["a", "bbb", "cc"]
+    eq (Array.mapr (\w -> w.length) words) [1, 3, 2]
+    eq (Array.mapir (\i w -> i + w.length) words) [1, 4, 4]
+    let nested = [[1, 2], [], [3]]
+    eq (Array.mapr (\row -> row.length) nested) [2, 0, 1]
+    eq (Array.mapr (\x -> *x + 1) [1, 2, 3]) [2, 3, 4]
+    eq (Array.mapir (\i x -> i * *x) [1, 2, 3]) [0, 2, 6]
+
+test "map_fold map_fold_back" =
+    match Array.map_fold (\acc x -> (x * 2, acc + x)) 0 [1, 2, 3] with
+    | (mapped, total) ->
+        eq mapped [2, 4, 6]
+        eq total 6
+    match Array.map_fold_back (\x acc -> (x * 2, acc + x)) [1, 2, 3] 0 with
+    | (mapped, total) ->
+        eq mapped [2, 4, 6]
+        eq total 6
+    match Array.map_fold_back (\x acc -> (acc, acc + x)) [1, 2, 3] 0 with
+    | (mapped, total) ->
+        eq mapped [5, 3, 0]
+        eq total 6
+    match Array.map_fold (\acc x -> (acc, acc + x)) 10 no_ints with
+    | (mapped, total) ->
+        eq mapped no_ints
+        eq total 10
+
+test "collect choose" =
+    eq (Array.collect (\x -> [x, x * 10]) [1, 2, 3]) [1, 10, 2, 20, 3, 30]
+    eq (Array.collect (\x -> [x]) no_ints) no_ints
+    eq (Array.collect (\_x -> no_ints) [1, 2]) no_ints
+    eq (Array.choose (\x -> if x % 2 == 0 then Maybe.Some (x * 10) else Maybe.None) [1, 2, 3, 4]) [20, 40]
+    eq (Array.choose (\x -> Maybe.Some x) [4, 5]) [4, 5]
+    eq (Array.choose (\x -> if x > 100 then Maybe.Some x else Maybe.None) [4, 5]) no_ints
+
+test "partition partition_with" =
+    match Array.partition (\x -> x % 2 == 0) [1, 2, 3, 4] with
+    | (even, odd) ->
+        eq even [2, 4]
+        eq odd [1, 3]
+    match Array.partition_with (\x -> if x % 2 == 0 then Result.Ok (x * 10) else Result.Error (x + 100)) [1, 2, 3, 4, 5] with
+    | (evens, odds) ->
+        eq evens [20, 40]
+        eq odds [101, 103, 105]
+    match Array.partition (\x -> x > 0) no_ints with
+    | (yes, no) ->
+        eq yes no_ints
+        eq no no_ints
+
+// ---- Folding ----
+
+test "fold fold_back fold2 fold_back2 and the r forms" =
+    let xs = [1, 2, 3, 4]
+    eq (Array.fold (\acc x -> acc * 10 + x) 0 xs) 1234
+    eq (Array.foldr (\acc x -> acc * 10 + *x) 0 xs) 1234
+    eq (Array.fold_back (\x acc -> acc * 10 + x) xs 0) 4321
+    eq (Array.foldr_back (\x acc -> acc * 10 + *x) xs 0) 4321
+    eq (Array.fold2 (\acc a b -> acc + a * b) 0 [1, 2, 3] [4, 5, 6]) 32
+    eq (Array.fold_back2 (\a b acc -> acc * 10 + a + b) [1, 2, 3] [10, 20, 30] 0) 3531
+    eq (Array.fold (\acc x -> acc + x) 7 no_ints) 7
+    let words = ["a", "bcd"]
+    eq (Array.foldr (\acc w -> acc + w.length) 0 words) 4
+    eq (Array.foldr_back (\w acc -> acc * 10 + w.length) words 0) 31
+
+test "reduce reduce_back scan scan_back" =
+    eq (Array.reduce (\a b -> a * 10 + b) [1, 3, 4, 2]) 1342
+    eq (Array.reduce_back (\a b -> a + b * 10) [1, 3, 4, 2]) 2431
+    eq (Array.reduce (\a b -> a + b) [5]) 5
+    eq (Array.reduce_back (\a b -> a + b) [5]) 5
+    eq (Array.scan (\acc x -> acc + x) 0 [1, 2, 3]) [0, 1, 3, 6]
+    eq (Array.scan_back (\x acc -> acc + x) [1, 2, 3] 0) [6, 5, 3, 0]
+    eq (Array.scan (\acc x -> acc + x) 7 no_ints) [7]
+    eq (Array.scan_back (\x acc -> acc + x) no_ints 7) [7]
+
+// ---- Searching ----
+
+test "exists forall exists2 forall2 count and the r forms" =
+    let xs = [1, 2, 3, 4, 5]
+    Test.is_true (Array.exists (\x -> x % 4 == 0) xs)
+    Test.is_true (!(Array.exists (\x -> x % 6 == 0) xs))
+    Test.is_true (Array.existsr (\x -> *x == 3) xs)
+    Test.is_true (Array.forall (\x -> x > 0) xs)
+    Test.is_true (!(Array.forall (\x -> x > 1) xs))
+    Test.is_true (Array.forallr (\x -> *x > 0) xs)
+    Test.is_true (Array.exists2 (\a b -> a > b) [1, 4] [1, 3])
+    Test.is_true (!(Array.exists2 (\a b -> a > b) [1, 2] [1, 3]))
+    Test.is_true (Array.forall2 (\a b -> a == b) [1, 2, 3] [1, 2, 3])
+    Test.is_true (!(Array.forall2 (\a b -> a == b) [2017, 1, 1] [2019, 19, 8]))
+    Test.is_true (!(Array.exists (\x -> x > 0) no_ints))
+    Test.is_true (Array.forall (\x -> x > 0) no_ints)
+    Test.is_true (Array.forall2 (\a b -> a == b) no_ints no_ints)
+    eq (Array.count (\x -> x % 2 == 1) xs) 3
+    eq (Array.countr (\x -> *x % 2 == 0) xs) 2
+    let words = ["a", "bb", "ccc"]
+    Test.is_true (Array.existsr (\w -> w.length == 2) words)
+    Test.is_true (!(Array.existsr (\w -> w.length == 4) words))
+    Test.is_true (Array.forallr (\w -> w.length < 4) words)
+    eq (Array.countr (\w -> w.length > 1) words) 2
+
+test "find find_back find_index find_index_back and the try forms" =
+    let xs = [1, 2, 3, 4, 5]
+    eq (Array.find (\x -> x % 2 == 0) xs) 2
+    eq (Array.find_back (\x -> x % 2 == 0) xs) 4
+    eq (Array.find_index (\x -> x % 2 == 0) xs) 1
+    eq (Array.find_index_back (\x -> x % 2 == 0) xs) 3
+    some_eq (Array.try_find (\x -> x % 2 == 0) xs) 2
+    some_eq (Array.try_find_back (\x -> x % 2 == 0) xs) 4
+    some_eq (Array.try_find_index (\x -> x % 2 == 0) xs) 1
+    some_eq (Array.try_find_index_back (\x -> x % 2 == 0) xs) 3
+    none (Array.try_find (\x -> x % 6 == 0) xs)
+    none (Array.try_find_back (\x -> x % 6 == 0) xs)
+    none (Array.try_find_index (\x -> x % 6 == 0) xs)
+    none (Array.try_find_index_back (\x -> x % 6 == 0) xs)
+    none (Array.try_find (\_x -> true) no_ints)
+
+test "findr try_findr borrow the element" =
+    let xs = [1, 2, 3, 4, 5]
+    eq (*(Array.findr (\x -> *x > 3) xs)) 4
+    match Array.try_findr (\x -> *x > 3) xs with
+    | Maybe.Some found -> eq *found 4
+    | Maybe.None -> assert false
+    none (Array.try_findr (\x -> *x > 9) xs)
+    let words = ["apple", "fig", "banana"]
+    eq (Array.findr (\w -> w.length == 3) words).length 3
+    match Array.try_findr (\w -> w.length > 5) words with
+    | Maybe.Some found -> eq found.length 6
+    | Maybe.None -> assert false
+
+test "pick try_pick" =
+    let xs = [1, 2, 3, 4, 5]
+    eq (Array.pick (\x -> if x % 2 == 0 then Maybe.Some (x * 10) else Maybe.None) xs) 20
+    some_eq (Array.try_pick (\x -> if x % 2 == 0 then Maybe.Some (x * 10) else Maybe.None) xs) 20
+    none (Array.try_pick (\x -> if x > 9 then Maybe.Some x else Maybe.None) xs)
+    none (Array.try_pick (\x -> Maybe.Some x) no_ints)
+
+test "contains containsr index_of equal binary_search compare_with" =
+    Test.is_true (Array.contains 2 [1, 2])
+    Test.is_true (!(Array.contains 5 [1, 2]))
+    Test.is_true (!(Array.contains 5 no_ints))
+    let words = ["a", "b"]
+    let target = "b"
+    Test.is_true (Array.containsr target words)
+    Test.is_true (!(Array.containsr "z" words))
+    some_eq (Array.index_of [5, 6, 7] (ref 7)) 2
+    none (Array.index_of [5, 6, 7] (ref 9))
+    Test.is_true (Array.equal [1, 2] [1, 2])
+    Test.is_true (!(Array.equal [1, 2] [1, 3]))
+    Test.is_true (!(Array.equal [1, 2] [1]))
+    some_eq (Array.binary_search [1, 2, 2, 5] (ref 2)) 1
+    none (Array.binary_search [1, 2, 2, 5] (ref 4))
+    none (Array.binary_search no_ints (ref 4))
+    eq (Array.compare_with (\a b -> a - b) [1, 2, 3] [1, 2, 3]) 0
+    eq (Array.compare_with (\a b -> a - b) [1, 2] [1, 2, 3]) (-1)
+    eq (Array.compare_with (\a b -> a - b) [1, 2, 3] [1, 2]) 1
+    eq (Array.compare_with (\a b -> a - b) [1, 5] [1, 3, 9]) 2
+    eq (Array.compare_with (\a b -> a - b) [1, 2] [1, 3, 9]) (-1)
+    eq (Array.compare_with (\a b -> a - b) no_ints no_ints) 0
+
+// ---- Aggregates ----
+
+test "sum sum_by average average_by product" =
+    eq (Array.sum [1, 5, 3, 2]) 11
+    eq (Array.sum no_ints) 0
+    eq (Array.sum [0.5, 0.25]) 0.75
+    eq (Array.sum_by (\x -> x * x) [1, 2, 3]) 14
+    eq (Array.sum_by (\x -> x * 0.5) [1.0, 2.0, 3.0]) 3.0
+    eq (Array.sum_by (\x -> x) no_ints) 0
+    eq (Array.average [1.0, 2.0, 6.0]) 3.0
+    eq (Array.average_by (\x -> x * 2.0) [1.0, 2.0, 6.0]) 6.0
+    eq (Array.average_by (\r -> r) [2.0, 4.0]) 3.0
+    eq (Array.product [1, 2, 3, 4]) 24
+    eq (Array.product no_ints) 1
+
+// F# `sum` and `sumBy` use `Checked.(+)` and throw on overflow. Integer addition wraps in Tsuzuri, and so do these.
+test "sum and sum_by wrap on integer overflow" =
+    let largest: i64 = 9223372036854775807
+    eq (Array.sum [largest, 1]) (largest + 1)
+    eq (Array.sum_by (\x -> x) [largest, 1]) (largest + 1)
+    eq (Array.sum_by (\x -> x) [largest, 1]) (-9223372036854775807 - 1)
+    let bytes: [i8u] = [200, 100]
+    eq (Array.sum bytes) 44
+    eq (Array.sum_by (\x -> x) bytes) 44
+    let signed: [i8] = [100, 100]
+    eq (Array.sum signed) (-56)
+    eq (Array.sum_by (\x -> x) signed) (-56)
+    let words: [i64u] = [18446744073709551615, 2]
+    eq (Array.sum_by (\x -> x) words) 1
+
+test "min max min_by max_by minr maxr" =
+    eq (Array.min [10, 12, 11]) 10
+    eq (Array.max [10, 12, 11]) 12
+    eq (Array.min [7]) 7
+    eq (Array.min_by (\p -> p * p) [3, -1, 2, 1]) (-1)
+    eq (Array.max_by (\p -> p * p) [1, -3, 2, 3]) (-3)
+    eq (Array.min_by (\p -> match p with | (_, size) -> size) [(0, 3), (1, 1), (2, 4)]) (1, 1)
+    eq (Array.max_by (\p -> match p with | (_, size) -> size) [(0, 3), (1, 1), (2, 4)]) (2, 4)
+    eq (Array.min_by (\p -> match p with | (_, size) -> size) [(0, 1), (1, 1)]) (0, 1)
+    eq (Array.max_by (\p -> match p with | (_, size) -> size) [(0, 4), (1, 4)]) (0, 4)
+    let numbers = [10, 12, 11]
+    eq (*(Array.minr numbers)) 10
+    eq (*(Array.maxr numbers)) 12
+    let words = ["bb", "a", "ccc"]
+    eq (Array.minr words).length 1
+    eq (Array.maxr words).length 3
+    eq (Array.min [2.5, 1.5, 1.5]) 1.5
+    let nan = 0.0 / 0.0
+    Test.is_true (Array.min [nan, 1.0] != Array.min [nan, 1.0])
+    eq (Array.max [1.0, nan, 3.0]) 3.0
+    eq (Array.min [3.0, nan, 1.0]) 1.0
+
+test "float sums keep their ordering contracts" =
+    let xs = [0.1, 0.2, 0.3]
+    Test.is_true (Array.sum_pairwise xs > 0.59)
+    Test.is_true (Array.sum_kahan xs > 0.59)
+    eq (Array.dot [1.0, 2.0] [3.0, 4.0]) 11.0
+    eq (Array.dot_fma [1.0, 2.0] [3.0, 4.0]) 11.0
+
+// ---- Sets and groups ----
+
+test "distinct distinct_by except" =
+    eq (Array.distinct [1, 1, 2, 3, 2, 4]) [1, 2, 3, 4]
+    eq (Array.distinct no_ints) no_ints
+    eq (Array.distinct [(1, 2), (1, 2), (2, 1)]) [(1, 2), (2, 1)]
+    eq (Array.distinct_by (\x -> x % 3) [1, 2, 3, 4, 5, 6]) [1, 2, 3]
+    eq (Array.except [1, 3, 5] [1, 2, 3, 4, 5, 2]) [2, 4]
+    eq (Array.except no_ints [3, 3, 4]) [3, 4]
+    eq (Array.except [1] no_ints) no_ints
+
+test "count_by group_by" =
+    eq (Array.count_by (\x -> x % 2) [1, 2, 3, 4, 5]) [(1, 3), (0, 2)]
+    eq (Array.group_by (\x -> x % 2) [1, 2, 3, 4, 5]) [(1, [1, 3, 5]), (0, [2, 4])]
+    eq (Array.count_by (\x -> x) no_ints) []
+    eq (Array.group_by (\x -> x) no_ints) []
+    eq (Array.group_by (\x -> x / 10) [11, 25, 12, 27, 3, 15]) [(1, [11, 12, 15]), (2, [25, 27]), (0, [3])]
+    eq (Array.count_by (\x -> x / 10) [11, 25, 12, 27, 3, 15]) [(1, 3), (2, 2), (0, 1)]
+
+// F# hashes with generic equality, where NaN equals NaN: all NaNs are one value, even when there is only one.
+test "distinct distinct_by except count_by group_by treat every NaN as one value" =
+    let nan = 0.0 / 0.0
+    let values = [nan, 1.0, nan, 2.0, 1.0, nan]
+    let single = Array.distinct [nan]
+    eq single.length 1
+    Test.is_true (is_nan single[0])
+    let distinct = Array.distinct values
+    eq distinct.length 3
+    Test.is_true (is_nan distinct[0])
+    eq (Array.sub distinct 1 2) [1.0, 2.0]
+    let by_key = Array.distinct_by (\x -> x * 0.0) [1.0, nan, 2.0, nan]
+    eq by_key.length 2
+    eq by_key[0] 1.0
+    Test.is_true (is_nan by_key[1])
+    eq (Array.except [nan] values) [1.0, 2.0]
+    let kept = Array.except [1.0] values
+    eq kept.length 2
+    Test.is_true (is_nan kept[0])
+    eq kept[1] 2.0
+    let only = Array.except [2.0] [nan, nan]
+    eq only.length 1
+    Test.is_true (is_nan only[0])
+    eq (Array.except [nan] [nan, nan]) no_floats
+    let counts = Array.count_by (\x -> x) values
+    eq counts.length 3
+    Test.is_true (count_key_is_nan (ref counts) 0)
+    eq (count_of (ref counts) 0) 3
+    eq (count_of (ref counts) 1) 2
+    eq (count_of (ref counts) 2) 1
+    let groups = Array.group_by (\x -> x) values
+    eq groups.length 3
+    Test.is_true (group_key_is_nan (ref groups) 0)
+    eq (group_size (ref groups) 0) 3
+    eq (group_size (ref groups) 1) 2
+    eq (group_size (ref groups) 2) 1
+
+// A tuple that holds a NaN does not equal itself either, but only a NaN is the same as any other NaN:
+// `(0, nan)` and `(1, nan)` are two keys, `(0, nan)` and `(0, nan)` are one.
+test "distinct except count_by group_by keep keys that hold a NaN apart" =
+    let nan = 0.0 / 0.0
+    let pairs = [(0, nan), (1, nan), (0, nan), (2, 1.0), (2, 1.0)]
+    let distinct = Array.distinct pairs
+    eq distinct.length 3
+    eq (id_at (ref distinct) 0) 0
+    eq (id_at (ref distinct) 1) 1
+    eq (id_at (ref distinct) 2) 2
+    let by_id = Array.distinct_by (\p -> match p with | (id, _) -> id) pairs
+    eq by_id.length 3
+    let rest = Array.except [(0, nan)] pairs
+    eq rest.length 2
+    eq (id_at (ref rest) 0) 1
+    eq (id_at (ref rest) 1) 2
+    eq (Array.except pairs [(1, nan), (0, nan), (2, 1.0)]).length 0
+    let counts = Array.count_by (\p -> p) pairs
+    eq counts.length 3
+    eq (keyed_id (ref counts) 0) 0
+    eq (keyed_count (ref counts) 0) 2
+    eq (keyed_id (ref counts) 1) 1
+    eq (keyed_count (ref counts) 1) 1
+    eq (keyed_id (ref counts) 2) 2
+    eq (keyed_count (ref counts) 2) 2
+    let groups = Array.group_by (\p -> p) pairs
+    eq groups.length 3
+    eq (grouped_id (ref groups) 0) 0
+    eq (grouped_size (ref groups) 0) 2
+    eq (grouped_id (ref groups) 1) 1
+    eq (grouped_size (ref groups) 1) 1
+    eq (grouped_id (ref groups) 2) 2
+    eq (grouped_size (ref groups) 2) 2
+
+test "the keyed functions handle a larger array" =
+    let values = new [i64](20000, \i -> (i * 7919) % 10007)
+    eq (Array.sort_by (\x -> x) values) (Array.sort values)
+    eq (Array.sort_by_descending (\x -> x) values) (Array.sort_descending values)
+    eq (Array.length (Array.distinct values)) 10007
+    eq (Array.length (Array.group_by (\x -> x % 1000) values)) 1000
+    eq (Array.length (Array.count_by (\x -> x % 1000) values)) 1000
+    let mut in_place = values
+    Array.sort_in_place_by (\x -> x) in_place
+    eq in_place (Array.sort values)
+
+// ---- Sorting ----
+
+test "sort sort_descending sort_by sort_by_descending sort_with" =
+    eq (Array.sort [8, 4, 3, 1, 6, 1]) [1, 1, 3, 4, 6, 8]
+    eq (Array.sort_descending [8, 4, 3, 1, 6, 1]) [8, 6, 4, 3, 1, 1]
+    eq (Array.sort no_ints) no_ints
+    eq (Array.sort [2.5, 1.5, 3.5]) [1.5, 2.5, 3.5]
+    eq (Array.sort_descending [2.5, 1.5, 3.5]) [3.5, 2.5, 1.5]
+    eq (Array.sort_by (\x -> x * x) [-3, 2, -1, 4]) [-1, 2, -3, 4]
+    eq (Array.sort_by_descending (\x -> x * x) [-3, 2, -1, 4]) [4, -3, 2, -1]
+    eq (Array.sort_with (\a b -> a - b) [3, 1, 2]) [1, 2, 3]
+    eq (Array.sort_with (\a b -> b - a) [3, 1, 2]) [3, 2, 1]
+    let pairs = [(0, 2), (1, 3), (2, 2), (3, 2)]
+    eq (Array.sort_by (\p -> match p with | (_, size) -> size) pairs) [(0, 2), (2, 2), (3, 2), (1, 3)]
+    eq (Array.sort_by_descending (\p -> match p with | (_, size) -> size) pairs) [(1, 3), (0, 2), (2, 2), (3, 2)]
+    eq (Array.sort_with (\a b -> match (a, b) with | ((_, x), (_, y)) -> x - y) pairs) [(0, 2), (2, 2), (3, 2), (1, 3)]
+
+// `sort` and `sort_descending` put NaN last in both directions; the keyed sorts do the same with NaN keys.
+test "sort_by sort_by_descending sort_in_place_by put NaN keys last like sort" =
+    let nan = 0.0 / 0.0
+    let values = [nan, 1.0, 0.5, nan, 2.0]
+    let sorted = Array.sort values
+    eq (Array.sub sorted 0 3) [0.5, 1.0, 2.0]
+    Test.is_true (is_nan sorted[3] && is_nan sorted[4])
+    let sorted_descending = Array.sort_descending values
+    eq (Array.sub sorted_descending 0 3) [2.0, 1.0, 0.5]
+    Test.is_true (is_nan sorted_descending[3] && is_nan sorted_descending[4])
+    let ascending = Array.sort_by (\x -> x) values
+    eq (Array.sub ascending 0 3) [0.5, 1.0, 2.0]
+    Test.is_true (is_nan ascending[3] && is_nan ascending[4])
+    let descending = Array.sort_by_descending (\x -> x) values
+    eq (Array.sub descending 0 3) [2.0, 1.0, 0.5]
+    Test.is_true (is_nan descending[3] && is_nan descending[4])
+    let with_comparer = Array.sort_with (\a b -> if a < b then -1 else if a > b then 1 else 0) values
+    eq (Array.sub with_comparer 0 3) [0.5, 1.0, 2.0]
+    Test.is_true (is_nan with_comparer[3] && is_nan with_comparer[4])
+    let mut in_place = values
+    Array.sort_in_place_by (\x -> x) in_place
+    eq (Array.sub in_place 0 3) [0.5, 1.0, 2.0]
+    Test.is_true (is_nan in_place[3] && is_nan in_place[4])
+    let tagged = [(0, nan), (1, 1.0), (2, nan), (3, 0.5)]
+    let by_key = Array.sort_by (\p -> match p with | (_, key) -> key) tagged
+    eq (id_at (ref by_key) 0) 3
+    eq (id_at (ref by_key) 1) 1
+    eq (id_at (ref by_key) 2) 0
+    eq (id_at (ref by_key) 3) 2
+    let by_key_descending = Array.sort_by_descending (\p -> match p with | (_, key) -> key) tagged
+    eq (id_at (ref by_key_descending) 0) 1
+    eq (id_at (ref by_key_descending) 1) 3
+    eq (id_at (ref by_key_descending) 2) 0
+    eq (id_at (ref by_key_descending) 3) 2
+    // Keys that `Ord` orders keep that order, even with a NaN inside: the same as `sort`.
+    let composite = [(0, nan), (1, 0.0)]
+    let by_pair = Array.sort_by (\p -> p) composite
+    let by_sort = Array.sort composite
+    eq (id_at (ref by_pair) 0) (id_at (ref by_sort) 0)
+    eq (id_at (ref by_pair) 1) (id_at (ref by_sort) 1)
+    eq (id_at (ref by_pair) 0) 0
+    let by_pair_descending = Array.sort_by_descending (\p -> p) composite
+    eq (id_at (ref by_pair_descending) 0) 1
+    eq (id_at (ref by_pair_descending) 1) 0
+    // Of two keys that `Ord` leaves unordered, the one that differs from itself goes last.
+    let unordered = [(0, nan), (0, 5.0)]
+    let after = Array.sort_by (\p -> p) unordered
+    eq (value_at (ref after) 0) 5.0
+    Test.is_true (is_nan (value_at (ref after) 1))
+
+// `sort` moves the NaN of an f32 or f64 array last through its comparison builtin; an f16 NaN is left to `Ord`. A
+// keyed sort decides by the key itself, so it puts the NaN of any float format last.
+test "NaN of f32 and f16 in the sorts" =
+    let nan32 = 0.0f / 0.0f
+    let singles = [nan32, 1.0f, 0.5f]
+    let sorted32 = Array.sort singles
+    eq (Array.sub sorted32 0 2) [0.5f, 1.0f]
+    Test.is_true (sorted32[2] != sorted32[2])
+    let descending32 = Array.sort_descending singles
+    eq (Array.sub descending32 0 2) [1.0f, 0.5f]
+    Test.is_true (descending32[2] != descending32[2])
+    let with32 = Array.sort_with (\a b -> if a < b then -1 else if a > b then 1 else 0) singles
+    eq (Array.sub with32 0 2) [0.5f, 1.0f]
+    Test.is_true (with32[2] != with32[2])
+    let by_key32 = Array.sort_by (\x -> x) singles
+    eq (Array.sub by_key32 0 2) [0.5f, 1.0f]
+    Test.is_true (by_key32[2] != by_key32[2])
+    let nan16 = 0.0f16 / 0.0f16
+    let halves = [nan16, 1.0f16, 0.5f16]
+    let by_key16 = Array.sort_by (\x -> x) halves
+    eq (Array.sub by_key16 0 2) [0.5f16, 1.0f16]
+    Test.is_true (by_key16[2] != by_key16[2])
+    let by_key16_descending = Array.sort_by_descending (\x -> x) halves
+    eq (Array.sub by_key16_descending 0 2) [1.0f16, 0.5f16]
+    Test.is_true (by_key16_descending[2] != by_key16_descending[2])
+
+test "sort_in_place sort_in_place_by sort_in_place_with" =
+    let mut xs = [8, 4, 3, 1, 6, 1]
+    Array.sort_in_place xs
+    eq xs [1, 1, 3, 4, 6, 8]
+    let mut ys = [3, -1, 2, -4]
+    Array.sort_in_place_by (\x -> x * x) ys
+    eq ys [-1, 2, 3, -4]
+    let mut zs = [3, 1, 2]
+    Array.sort_in_place_with (\a b -> b - a) zs
+    eq zs [3, 2, 1]
+    let mut many = Array.init 100 (\i -> (i * 37) % 101)
+    Array.sort_in_place many
+    eq many (Array.sort (Array.init 100 (\i -> (i * 37) % 101)))
+    let mut words = ["pear", "fig", "apple"]
+    Array.sort_in_place words
+    eq words ["apple", "fig", "pear"]
+
+// ---- Updating ----
+
+test "update_at insert_at insert_many_at remove_at remove_many_at permute" =
+    eq (Array.update_at 1 9 [0, 1, 2]) [0, 9, 2]
+    eq (Array.insert_at 1 9 [0, 1, 2]) [0, 9, 1, 2]
+    eq (Array.insert_at 0 9 [0, 1, 2]) [9, 0, 1, 2]
+    eq (Array.insert_at 3 9 [0, 1, 2]) [0, 1, 2, 9]
+    eq (Array.insert_many_at 1 [8, 9] [0, 1, 2]) [0, 8, 9, 1, 2]
+    eq (Array.insert_many_at 3 [8, 9] [0, 1, 2]) [0, 1, 2, 8, 9]
+    eq (Array.insert_many_at 0 no_ints [0, 1, 2]) [0, 1, 2]
+    eq (Array.remove_at 1 [0, 1, 2]) [0, 2]
+    eq (Array.remove_at 0 [0]) no_ints
+    eq (Array.remove_many_at 1 2 [0, 1, 2, 3]) [0, 3]
+    eq (Array.remove_many_at 2 2 [0, 1, 2, 3]) [0, 1]
+    eq (Array.remove_many_at 1 0 [0, 1, 2, 3]) [0, 1, 2, 3]
+    eq (Array.permute (\x -> (x + 1) % 4) [1, 2, 3, 4]) [4, 1, 2, 3]
+    eq (Array.permute (\x -> x) [1, 2, 3]) [1, 2, 3]
+    eq (Array.permute (\x -> 2 - x) [1, 2, 3]) [3, 2, 1]
+
+test "update_at keeps the source when it is copied" =
+    let xs = [1, 2, 3]
+    let updated = Array.update_at 0 9 (Array.copy xs)
+    eq xs [1, 2, 3]
+    eq updated [9, 2, 3]
+    let mut state = [0, 0, 0, 0]
+    for i in 0 .. 3 do
+        state = Array.update_at i (i * 2) state
+    eq state [0, 2, 4, 6]
+    eq (Array.update [1, 2, 3] 1 (\x -> x * 10)) [1, 20, 3]
+    eq (Array.swap [1, 2, 3] 0 2) [3, 2, 1]
+    eq (Array.update_at 1 "x" ["a", "b"]) ["a", "x"]
+
+test "set fill blit write swap_in in place" =
+    let mut target = [0, 1, 2, 3, 4, 5]
+    Array.fill target 3 2 100
+    eq target [0, 1, 2, 100, 100, 5]
+    Array.fill target 6 0 7
+    eq target [0, 1, 2, 100, 100, 5]
+    let mut copy_into = [0, 1, 2, 3, 4, 5]
+    Array.blit [12, 13, 14] 1 copy_into 3 2
+    eq copy_into [0, 1, 2, 13, 14, 5]
+    Array.blit [12, 13, 14] 3 copy_into 6 0
+    eq copy_into [0, 1, 2, 13, 14, 5]
+    let mut values = [1, 2, 3]
+    Array.set values 1 20
+    eq values [1, 20, 3]
+    Array.write values 0 10
+    eq values [10, 20, 3]
+    Array.swap_in values 0 2
+    eq values [3, 20, 10]
+    let mut words = ["a", "b"]
+    Array.set words 0 "z"
+    eq words ["z", "b"]
+
+test "slices of a larger array are updated in place" =
+    let mut values = [0, 1, 2, 3, 4, 5]
+    Array.fill (ref mut values[2..5]) 0 2 9
+    eq values [0, 1, 9, 9, 4, 5]
+    Array.set (ref mut values[1..3]) 0 7
+    eq values [0, 7, 9, 9, 4, 5]
+    Array.blit [8, 8] 0 (ref mut values[4..6]) 0 2
+    eq values [0, 7, 9, 9, 8, 8]
+
+// ---- Conversions ----
+
+test "of_list to_list of_seq to_seq to_seqr" =
+    let list = [|1, 2, 3|]
+    eq (Array.of_list list) [1, 2, 3]
+    eq (Array.to_list [1, 2]) [|1, 2|]
+    let source = [4, 5, 6]
+    eq (Array.of_seq (Array.to_seq source)) [4, 5, 6]
+    let words = ["x", "yy"]
+    let mut total = 0
+    for word in Array.to_seqr words do total = total + word.length
+    eq total 3
+    let mut sum = 0
+    for value in Array.to_seq source do sum = sum + value
+    eq sum 15
+
+// ---- Randomness ----
+
+test "random_*_by with a fixed randomizer" =
+    let xs = [10, 20, 30, 40, 50]
+    eq (Array.random_choice_by (\() -> 0.0) xs) 10
+    eq (Array.random_choice_by (\() -> 0.5) xs) 30
+    eq (Array.random_choice_by (\() -> 0.99) xs) 50
+    eq (Array.random_choices_by (\() -> 0.0) 3 xs) [10, 10, 10]
+    eq (Array.random_choices_by (\() -> 0.99) 2 xs) [50, 50]
+    eq (Array.random_choices_by (\() -> 0.0) 0 no_ints) no_ints
+    eq (Array.random_sample_by (\() -> 0.0) 2 xs) [10, 20]
+    eq (Array.random_sample_by (\() -> 0.0) 0 xs) no_ints
+    eq (Array.random_shuffle_by (\() -> 0.0) xs) xs
+    eq (Array.random_shuffle_by (\() -> 0.99) xs) [50, 10, 20, 30, 40]
+    eq (Array.sort (Array.random_shuffle_by (\() -> 0.5) xs)) xs
+    eq (Array.random_shuffle_by (\() -> 0.5) no_ints) no_ints
+    let mut ys = [1, 2, 3, 4, 5]
+    Array.random_shuffle_in_place_by (\() -> 0.0) ys
+    eq ys [1, 2, 3, 4, 5]
+    Array.random_shuffle_in_place_by (\() -> 0.99) ys
+    eq ys [5, 1, 2, 3, 4]
+
+test "random_*_with a Pcg generator" =
+    let xs = [10, 20, 30, 40, 50]
+    let generator = Random.pcg 42i64u 54i64u
+    match Array.random_shuffle_with generator xs with
+    | (shuffled, next) ->
+        eq (Array.sort shuffled) xs
+        match Array.random_shuffle_with generator xs with
+        | (again, _) -> eq again shuffled
+        match Array.random_shuffle_with next xs with
+        | (other, _) -> eq (Array.sort other) xs
+    match Array.random_choice_with generator xs with
+    | (item, _) -> Test.is_true (Array.contains item xs)
+    match Array.random_choices_with generator 20 xs with
+    | (items, _) ->
+        eq items.length 20
+        Test.is_true (Array.forall (\item -> Array.contains item xs) items)
+    match Array.random_sample_with generator 3 xs with
+    | (items, _) ->
+        eq items.length 3
+        eq (Array.distinct items).length 3
+        Test.is_true (Array.forall (\item -> Array.contains item xs) items)
+    match Array.random_sample_with generator 5 xs with
+    | (items, _) -> eq (Array.sort items) xs
+    let mut zs = [1, 2, 3, 4, 5, 6, 7, 8]
+    let _next = Array.random_shuffle_in_place_with generator zs
+    eq (Array.sort zs) [1, 2, 3, 4, 5, 6, 7, 8]
+    match Array.random_choices_with generator 0 no_ints with
+    | (items, _) -> eq items no_ints
+
+// ---- Tsuzuri's own functions ----
+
+test "ownership: elements that are not Copy" =
+    let words = ["pear", "fig", "apple"]
+    eq (Array.length words) 3
+    Test.equal (Array.at words 2) "apple"
+    Test.equal (Array.minr words) "apple"
+    Test.equal (Array.maxr words) "pear"
+    Test.is_true (Array.containsr "fig" words)
+    some_eq (Array.index_of words (ref "fig")) 1
+    eq (Array.countr (\w -> w.length == 4) words) 1
+    Test.is_true (Array.equal words ["pear", "fig", "apple"])
+    let mut sortable = ["pear", "fig", "apple"]
+    Array.sort_in_place sortable
+    eq sortable ["apple", "fig", "pear"]
+
+test "a pipeline reads like F#" =
+    let squares = [1, 2, 3, 4, 5] |> Array.filter (\x -> x % 2 == 1) |> Array.map (\x -> x * x)
+    eq squares [1, 9, 25]
+    eq (squares |> Array.sum) 35
+    eq ([3, 1, 2] |> Array.sort |> Array.rev) [3, 2, 1]
+    eq ([1, 2, 3] |> Array.fold (\acc x -> acc + x) 0) 6
+    eq ([[1, 2], [3]] |> Array.concat |> Array.map (\x -> x * 2)) [2, 4, 6]

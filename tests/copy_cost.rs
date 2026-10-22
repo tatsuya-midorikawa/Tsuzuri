@@ -193,8 +193,8 @@ fn pattern_bindings_and_loop_elements_copy_at_their_names() {
 #[test]
 fn last_uses_and_owned_pattern_bindings_do_not_warn() {
     for source in [
-        "def f :: [i64] -> [i64] = \\xs -> if xs.length > 2 then Array.set xs 0 9 else xs\n0",
-        "def f :: [i64] -> [i64] = \\xs ->\n    let mut ys = xs\n    for i in 0 .. 3 do\n        ys = Array.set ys i i\n    ys\n0",
+        "def f :: [i64] -> [i64] = \\xs -> if xs.length > 2 then Array.__set xs 0 9 else xs\n0",
+        "def f :: [i64] -> [i64] = \\xs ->\n    let mut ys = xs\n    for i in 0 .. 3 do\n        ys = Array.__set ys i i\n    ys\n0",
         "let pair = ([1, 2], 3)\nmatch pair with\n| (items, n) -> items[0] + n",
         "match Maybe.Some [1, 2] with | Maybe.Some items -> items[0] | Maybe.None -> 0",
     ] {
@@ -202,7 +202,7 @@ fn last_uses_and_owned_pattern_bindings_do_not_warn() {
         llvm::emit(&module(source), llvm::Entry::Library).unwrap();
     }
     assert_warnings(
-        "let xs = [1, 2]\nlet ys = Array.set xs 0 9\nxs[0] + ys[0]",
+        "let xs = [1, 2]\nlet ys = Array.__set xs 0 9\nxs[0] + ys[0]",
         &[("xs", ARRAY)],
     );
 }

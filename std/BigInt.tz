@@ -85,9 +85,9 @@ fn add_limbs left right =
         let b = if index < right.length then right[index] else 0
         let sum = a + b + carry
         carry = if sum >= 1000000000 then 1 else 0
-        out = Array.set out index (sum - carry * 1000000000)
+        out = Array.__set out index (sum - carry * 1000000000)
         index = index + 1
-    Array.set out length carry
+    Array.__set out length carry
 
 /// `left - right` for magnitudes with `left >= right`.
 private def sub_limbs :: ref [i64] -> ref [i64] -> [i64]
@@ -99,7 +99,7 @@ fn sub_limbs left right =
         let b = if index < right.length then right[index] else 0
         let difference = left[index] - b - borrow
         borrow = if difference < 0 then 1 else 0
-        out = Array.set out index (difference + borrow * 1000000000)
+        out = Array.__set out index (difference + borrow * 1000000000)
         index = index + 1
     out
 
@@ -113,9 +113,9 @@ fn mul_limbs left right =
         while j < right.length do
             let current = out[i + j] + left[i] * right[j] + carry
             carry = current / 1000000000
-            out = Array.set out (i + j) (current % 1000000000)
+            out = Array.__set out (i + j) (current % 1000000000)
             j = j + 1
-        out = Array.set out (i + right.length) carry
+        out = Array.__set out (i + right.length) carry
         i = i + 1
     out
 
@@ -128,9 +128,9 @@ fn scale_limbs digits factor =
     while index < digits.length do
         let current = digits[index] * factor + carry
         carry = current / 1000000000
-        out = Array.set out index (current % 1000000000)
+        out = Array.__set out index (current % 1000000000)
         index = index + 1
-    trim (Array.set out digits.length carry)
+    trim (Array.__set out digits.length carry)
 
 /// The quotient and remainder of magnitudes, by long division with a nonzero divisor.
 private def divide_limbs :: ref [i64] -> ref [i64] -> ([i64] * [i64])
@@ -141,10 +141,10 @@ fn divide_limbs left right =
     while index > 0 do
         index = index - 1
         let mut shifted = new [i64](remainder.length + 1, \_position -> 0)
-        shifted = Array.set shifted 0 left[index]
+        shifted = Array.__set shifted 0 left[index]
         let mut position = 0
         while position < remainder.length do
-            shifted = Array.set shifted (position + 1) remainder[position]
+            shifted = Array.__set shifted (position + 1) remainder[position]
             position = position + 1
         remainder = trim shifted
         let mut low = 0
@@ -156,7 +156,7 @@ fn divide_limbs left right =
         if low > 0 then
             let product = scale_limbs right low
             remainder = trim (sub_limbs (ref remainder) (ref product))
-        quotient = Array.set quotient index low
+        quotient = Array.__set quotient index low
     (trim quotient, remainder)
 
 private def add_values :: ref BigInt -> ref BigInt -> BigInt

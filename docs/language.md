@@ -648,7 +648,7 @@ def answer :: i32 = {
 
 匿名関数（ラムダ式）は、Haskell と同様のバックスラッシュを用いた `\引数 -> 本体` の構文で記述します。`\x y -> 式` のように複数の引数を並べることも、`\x -> \y -> 式` のようにネストして記述することも可能です。
 例えば `let f = \x -> \y -> \z -> x + y + z` に対して `f 2 3 4` を評価すると、計算結果は `9` となります。
-引数の型は、明示的な型注釈、呼び出し元の文脈、および関数本体の処理から自動的に双方向推論されます。関数呼び出しの実引数として渡されたラムダ式は他の引数よりも後回しで型検査され、パイプライン演算子 `xs |> f` では左辺の `xs` が先行して検査されるため、`texts |> Array.map_ref (\t -> t.length)` のようなコードでもラムダ式の引数 `t` の型がスムーズに推論されます（式の評価順序自体は変わりません）。
+引数の型は、明示的な型注釈、呼び出し元の文脈、および関数本体の処理から自動的に双方向推論されます。関数呼び出しの実引数として渡されたラムダ式は他の引数よりも後回しで型検査され、パイプライン演算子 `xs |> f` では左辺の `xs` が先行して検査されるため、`texts |> Array.mapr (\t -> t.length)` のようなコードでもラムダ式の引数 `t` の型がスムーズに推論されます（式の評価順序自体は変わりません）。
 `let f: i32 -> i32 = \x -> x + 1;` のように束縛側に型注釈を付与することも可能です。
 また、`\(x: i32) y -> x + y`、`\(f: i64 -> i64) x -> f x`、`\(x, y) -> x + y`、`\() -> 42` のように、引数位置での型注釈、パターンの構造分解、および unit パターンの指定にも柔軟に対応しています。
 旧構文の `fx x -> 式` は廃止され、`fx` は通常の識別子名として解放されました（従来の `x -> y -> 式` は互換性のために引き続き受理されます）。
@@ -2860,9 +2860,9 @@ def choose :: bool -> [i32] = \flag -> if flag { [1] } else { [2, 3, 4] }
 配列のインデックス添字も `i64` 型であり、負のインデックスや `length` 以上の範囲外アクセスは安全にトラップします。
 空配列リテラル `[]` は、戻り値型、引数型、または `let` の型注釈等から要素型が一意に推論可能な文脈において記述できます。
 配列を構成する各要素はすべて同一の型である必要があり、生成後の長さは不変、要素内容は共有されている間は不変です。配列自身の動的な伸縮や、代入構文による特定インデックスへの要素代入はサポートされていません（その場での更新は後述の排他スライスを使います）。
-所有権を受け取って更新された新しい配列を返却する関数として、`Array.set values index value`、`Array.update values index (old -> replacement)`、および
+所有権を受け取って更新された新しい配列を返却する関数として、`Array.update_at index value values`（F# の `Array.updateAt`）、`Array.update values index (old -> replacement)`、および
 `Array.swap values first second` が提供されています。これらはすべての引数式を左から右へ評価した後に厳密な境界検査を行い、
-検査に成功した場合にのみ要素へのアクセスを実行します。`set` は上書きされた古い要素を解放し、`update` は古い要素の所有権を更新関数へ引き渡します。
+検査に成功した場合にのみ要素へのアクセスを実行します。`update_at` は上書きされた古い要素を解放し、`update` は古い要素の所有権を更新関数へ引き渡します。
 `swap` は同一インデックスが指定された場合は配列を変更せず、異なるインデックスであっても不要な要素の複製や解放を伴わずに安全に要素を入れ替えます。
 非 Copy な要素を持つ配列は所有権が消費され、Copy 型の要素を持つ配列の元の値を後から観測する場合は、独立した新しいコピーが生成されて更新されます。
 単一の所有者しか持たないヒープ配列であれば内部バッファが効率的にインプレース再利用され、スタック上に配置された配列が渡された場合は事前にヒープ領域へと安全に昇格されます。
@@ -2899,7 +2899,7 @@ Array.sort_in_place (ref mut values[1..])
 型 `[T..]` は `ref mut` の直後にだけ記述でき、`[T..]` 単独や `ref [T..]` は `E1005` です。範囲の評価順序と境界検査は共有スライスと同じで、少なくとも一方の境界が必要です（全体は `ref mut values[0..]`。`ref mut values[..]` は `E0002`）。
 リテラルや関数の戻り値などの一時値、`let` で束縛された配列、共有参照を元にした排他スライスは `E1014` です。
 排他スライスの長さは固定で、添字による読み取り、`.length`、`for`、再スライス（`ref mut slice[a..b]` と `ref slice[a..b]`）、`ref [T]` を受け取る関数への受け渡しは共有スライスと同じように行えます。
-要素の置換は `Array.write slice index value`、交換は `Array.swap_in slice first second`、互いに素な二つの排他スライスへの分割は `Array.split_at_mut slice middle`、安定整列は `Array.sort_in_place slice` で行います。
+要素の置換は `Array.write slice index value`（F# 互換の名前 `Array.set` も同じ関数です）、交換は `Array.swap_in slice first second`、互いに素な二つの排他スライスへの分割は `Array.split_at_mut slice middle`、安定整列は `Array.sort_in_place slice` で行います。
 `write` と `swap_in` は全引数の評価後に境界を検査し、`write` は検査の成功後に旧要素を解放してから新しい値を格納します。`split_at_mut` は `0 <= middle <= length` に違反するとトラップします。
 
 `ref mut [T..]` を要求する場所へ `ref mut values` を書くと、配列全体の排他スライスになります。関数呼び出しの実引数では、`let mut` の配列そのものや `ref mut [T]` の参照も同じように変換されます。
@@ -3182,7 +3182,7 @@ let result = Seq.to_array selected
 - `Seq.unfold generator state` は、状態遷移関数 `state -> Maybe<('a * state)>` を繰り返し呼び出して無限または有限の列を生成します（状態変数 `state` にはクロージャの通常の `Capture` 制約が適用されます）。
 - `Seq.map transform sequence` は要素変換 `'a -> 'b` を、`Seq.filter predicate sequence` は述語関数 `ref 'a -> bool` を遅延適用します（シーケンス内に保存される入力要素型には `Capture` 制約が要求されます）。
 - `Seq.to_array` はシーケンス全体を消費し、内部で可変長 Vec に集約した後に固定長所有配列へと移送して返却します（無限シーケンスに対して呼び出した場合の停止性は保証されません）。
-- `Array.iter`、`Vec.iter`、`List.iter`、および `Set.iter` はコレクションの各要素への共有借用参照を順次列挙する Seq を返し、`Map.iter` はキーと値の参照タプル `(ref K * ref V)` の Seq を返します。元のコンテナの生存期間および借用競合チェックは厳格に維持されます。
+- `Array.to_seqr`、`Vec.iter`、`List.iter`、および `Set.iter` はコレクションの各要素への共有借用参照を順次列挙する Seq を返し、`Map.iter` はキーと値の参照タプル `(ref K * ref V)` の Seq を返します。配列の `Array.iter` は F# と同じく各要素に関数を適用して `unit` を返す関数です。元のコンテナの生存期間および借用競合チェックは厳格に維持されます。
 - `List.iter` は、リストのリンクを 1 回走査して各要素への参照ポインタを格納した一時 Vec を内部で準備します。この前準備には計算量 $O(n)$ の時間と一時メモリを消費しますが、要素データ自身のディープコピーは発生しません（なお、前述のリストに対する直接の `for…in` ループであれば、このような一時メモリを一切消費せず直接走査可能です）。
 
 Seq の内部データ構造は完全に不透明であり、ユーザーコードからのレコード構築、内部フィールドの参照、パターン分解、およびレコード更新構文の適用は禁止されています。シーケンスの `next` 呼び出しは、保持しているクロージャ環境をディープコピーすることなく効率的に呼び出します。
@@ -3527,31 +3527,34 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 `Array` モジュールが提供する逐次集計関数群と、前述の [データ並列 API](#データ並列-api) は、演算順序や並列化の有無が異なる独立した API です。コンパイラが逐次集計をデータ並列処理へ自動的に切り替えることはありません。
 
 コレクションの読み取り操作は `ref [T]` または `ref [|T|]` の共有借用参照を受け取り、コレクション全体の不要なディープコピーを発生させません。
-`Array` モジュールは、`length`、`is_empty`、`get`、`at`、`sub`、`init`、`reverse`、`copy`、`append`、`concat`、`zip`、`to_list`、
-`map`、`mapi`、`fold`、`fold_back`、`reduce`、ならびに各 `_ref` 版関数、`sum`、`product`、`min`、`max`、
-`any`、`all`、`count`、`find`、`index_of`、`contains`、`equal`、`sort`、`sort_by`、`binary_search`、`filter` などの充実したコレクション操作を提供します。
+`Array` モジュールは、[F# の `Array` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-arraymodule.html)のうち `Array.Parallel` を除く 131 関数を、同じ引数順で提供します。名前は camelCase を snake_case にしたもの（`tryFind` は `try_find`、`foldBack` は `fold_back`）です。
+添字、個数、比較関数の戻り値は `i64` で、F# が例外を投げる場面（空配列、範囲外、長さの不一致、見つからない `find`）は安全なトラップになります。`try_item`、`try_find`、`try_head` のように `try_` が付く関数は `Maybe` を返します。
+`seq` の引数は配列で受け取り（`to_seq` と `of_seq` は `Seq<'a>`）、`Choice` は `Result` に対応します。全関数の一覧と型は [Array](../_tsuzuri/language-reference/built-in-types-and-modules/array.md) にあります。
+F# にはない `at`、`count`、`index_of`、`equal`、`binary_search`、`product`、`sum_pairwise`、`sum_kahan`、`dot`、`dot_fma` と、更新の `update`、`swap`、`write`、`swap_in`、`split_at_mut` も提供します。
 `List` モジュールは、`length`、`is_empty`、`copy`、`map`、`map_ref`、`fold`、`fold_ref`、`reverse`、`to_array` などを提供します。
 なお、`Array.copy` および `List.copy` は、借用したコレクションの全要素を明示的に複製して新しい独立所有コレクションを構築する関数です（要素型に対して `Copy` 制約を要求します）。
-排他スライス `ref mut [T..]` を受け取るその場の更新として、`Array.write`、`Array.swap_in`、`Array.split_at_mut`、および `Array.sort_in_place`（`Ord` による安定整列。作業領域を確保せず、結果は `Array.sort` と一致します）が提供されます。
-固定長配列 `[T; N]` は `FixedArray.init f` で作れ、`ref [T]` を受け取る `Array` の関数（`sum`、`fold_ref`、`find` など）には名前付きの値をそのまま渡せます（配列全体の共有スライスに変換されます）。
+排他スライス `ref mut [T..]` を受け取るその場の更新として、`Array.write`（F# 互換の名前は `Array.set`）、`Array.fill`、`Array.blit`、`Array.swap_in`、`Array.split_at_mut`、および `Array.sort_in_place`（`Ord` による安定整列。作業領域を確保せず、NaN を含まない配列では結果が `Array.sort` と一致します）が提供されます。
+固定長配列 `[T; N]` は `FixedArray.init f` で作れ、`ref [T]` を受け取る `Array` の関数（`sum`、`foldr`、`find` など）には名前付きの値をそのまま渡せます（配列全体の共有スライスに変換されます）。
 
 要素の値を値として読み出すコールバック関数や、新しい所有コレクションへの要素コピーを伴う操作は、要素型に対して `Copy` 制約を要求します。
-一方、末尾に `_ref` が付与されたバリアントや、要素の比較・検索操作は要素を共有借用参照で取り扱うため、非 Copy な所有要素に対しても安全に適用できます。返却型としては、`find`、`min`、`max` が `Maybe<ref T>`、
-`get` および `reduce` が `Maybe<T>`、`index_of` および `binary_search` が `Maybe<i64>` を返します。
-`at` はインデックス範囲外アクセスに対して安全にトラップし、`get` は範囲外に対して `None` を返し、`sub values start count` は不正な範囲指定に対してトラップします。
+要素を共有借用参照で取り扱う関数は、非 Copy な所有要素（文字列や配列の配列）に対しても安全に適用できます。`Array` モジュールでは、その借用版の名前は F# の関数名の最初の語の直後に `r` を付けたものです（`map` に対する `mapr`、`fold` に対する `foldr`、`fold_back` に対する `foldr_back`、`try_find` に対する `try_findr`）。
+借用版は `mapr`、`mapir`、`foldr`、`foldr_back`、`iterr`、`iterir`、`existsr`、`forallr`、`countr`、`findr`、`try_findr`、`minr`、`maxr`、`containsr`、`to_seqr` で、コールバックは `ref 'a` を受け取ります。`findr`、`minr`、`maxr` は要素への参照を返し、`try_findr` は `Maybe<ref T>` を返します。`List` などほかのモジュールの `_ref` の名前は変わりません。
+`find`、`min`、`max`、`get`、`reduce` は値を返し、失敗する場面（空配列、範囲外、見つからない検索）ではトラップします。`index_of` および `binary_search` は `Maybe<i64>` を返します。
+`at` は要素への参照を、`get` と `item` は要素の値を返し、いずれも範囲外の添字に対して安全にトラップします（`Maybe` を返す形は `try_item`）。`sub values start count` は不正な範囲指定に対してトラップします。
 `zip` は 2 つのコレクションの長さが一致しない場合に安全にトラップします。
 
-コレクションの走査は基本的に先頭から順に行われ、末尾からの走査を行うのは `fold_back`（および `fold_back_ref`）のみです。`any`、`all`、`find`、`index_of`、`contains`、および `equal` は結果が確定した時点で短絡評価（早期終了）されます。
+コレクションの走査は基本的に先頭から順に行われ、末尾からの走査を行うのは `fold_back`、`reduce_back`、`scan_back`、`find_back` など `_back` が付く関数（およびその借用版 `foldr_back`）のみです。`exists`、`forall`、`find`、`index_of`、`contains`、および `equal` は結果が確定した時点で短絡評価（早期終了）されます。
 `filter` は指定された述語関数を各要素に対して 1 回ずつ呼び出し、条件を満たした Copy 要素を入力順序を維持して出力配列に格納します。
-`sum` および `product` は数値型専用の集約関数であり、空コレクションに対してはそれぞれ 0 または 1 を返し、浮動小数点数に対しても左から右への厳格な逐次加算・乗算を実行します。
-`min` および `max` は、比較によって値の改善が認められた場合にのみ最良値を更新するため、同値の要素、符号付きゼロ（`+0` と `-0`）、および先頭に現れた NaN の順序関係が忠実に維持されます。
-`sort` および `sort_by` は、幅 1, 2, 4, ... のボトムアップ方式による安定マージソート（stable merge sort）として実装されています。
-`sort_by` の比較関数（comparator）は左右の要素の共有借用参照を受け取り、負・ゼロ・正の `i64` 値を返します（双方のランに要素が残っている間、現在の左右要素が 1 回ずつ比較されます）。
-`f32` および `f64` においては、比較関数呼び出し後に非数 NaN が通常の数値の後方に整列配置され、NaN 同士の元の入力順序や、デフォルト比較における符号付きゼロの入力順序が安定ソートとして保持されます。
+`distinct`、`distinct_by`、`except`、`count_by`、`group_by` はハッシュ表を使い、F# と同じく NaN を 1 つの値として扱います（`HashMap` のキーが自分自身と等しくないときのトラップは、これらの関数では起きません）。自分自身と等しくないキー（NaN、または NaN を含むタプルやレコード）は `Hash.hash` が同じものを同じキーとし、NaN はすべて 1 つのキー、`(0, nan)` と `(1, nan)` は別のキーです。キーは最初に現れた順に並びます。
+`sum` および `product` は数値型専用の集約関数であり、空コレクションに対してはそれぞれ 0 または 1 を返し、浮動小数点数に対しても左から右への厳格な逐次加算・乗算を実行します。整数の `sum`、`sum_by`、`product` は言語の整数演算と同じく桁あふれで折り返し、トラップしません（F# の `sum` と `sum_by` は桁あふれを検査して例外にします）。
+`min` および `max` は、比較によって値の改善が認められた場合にのみ最良値を更新するため、同値の要素、符号付きゼロ（`+0` と `-0`）、および先頭に現れた NaN の順序関係が忠実に維持されます。空のコレクションでは `min`、`max`、`reduce`、`average` などがトラップします。
+`sort`、`sort_descending`、`sort_by`、`sort_by_descending`、`sort_with` は新しい配列を返し、`sort_in_place`、`sort_in_place_by`、`sort_in_place_with` は排他スライスをその場で整列します。どれも幅 1, 2, 4, ... のボトムアップ方式による安定マージソート（stable merge sort）の順序です（`sort_in_place` は作業領域なしの回転マージ、`sort_in_place_by` と `sort_in_place_with` は一時配列を使います）。
+`sort_with` の比較関数（comparator）は左右の要素を値で受け取り、負・ゼロ・正の `i64` 値を返します（双方のランに要素が残っている間、現在の左右要素が 1 回ずつ比較されます）。`sort_by` と `sort_by_descending` はキー `f x` を各要素につき 1 回だけ計算して、キーの `Ord` で整列します。キーが NaN の要素は、昇順でも降順でも最後に、入力の順のまま置かれます。キーの `Ord` で順序が決まる 2 つの要素（`(0, nan)` と `(1, 0.0)` など）はその順序のままで、等しくも、どちらが小さいとも言えない 2 つのうちでは、自分自身と等しくないキーを持つほうが後ろになります。
+`f32` および `f64` においては、`sort`、`sort_descending`、`sort_with`（と `sort_in_place_with`）で、比較関数呼び出し後に非数 NaN が通常の数値の後方に整列配置され、NaN 同士の元の入力順序や、デフォルト比較における符号付きゼロの入力順序が安定ソートとして保持されます。`f16`、`f128`、`decimal` の NaN と、`sort_in_place` には、この特別扱いはありません。
 `binary_search` は同一の順序関係であらかじめ整列済みのコレクションを入力として要求し、重複要素が存在する場合は先頭の一致インデックスを返します。
 
-高階関数の引数順序は F# の設計規約に準拠し、関数引数を第 1 引数として受け取ります。`Array` モジュールでは `map f xs`、`mapi f xs`、`map_ref f xs`、`mapi_ref f xs`、`fold f state xs`、`fold_ref f state xs`、`fold_back f xs state`、`fold_back_ref f xs state`、`reduce f xs`、
-`any p xs`、`all p xs`、`count p xs`、`find p xs`、`filter p xs`、`sort_by compare xs` となり、`List` モジュールでは `map f xs`、`map_ref f xs`、`fold f state xs`、`fold_ref f state xs` となります。
+高階関数の引数順序は F# の設計規約に準拠し、関数引数を第 1 引数として受け取ります。`Array` モジュールでは `map f xs`、`mapi f xs`、`mapr f xs`、`mapir f xs`、`fold f state xs`、`foldr f state xs`、`fold_back f xs state`、`foldr_back f xs state`、`reduce f xs`、
+`exists p xs`、`forall p xs`、`count p xs`、`find p xs`、`filter p xs`、`sort_with compare xs`、`sort_by project xs` となり、`List` モジュールでは `map f xs`、`map_ref f xs`、`fold f state xs`、`fold_ref f state xs` となります。
 `Seq.unfold generator state`、`Seq.map f sequence`、`Seq.filter p sequence`、ならびに連想コレクション（`Map`、`Set`、`HashMap`、`HashSet`）の `fold f state collection`、および `Parallel` の各関数も同一の引数順序規約に従います（なお、サイズを第 1 引数に取る `init count f` や、コレクションのみを取る `sum` 等の引数構成は変わりません）。
 
 ```text
@@ -3559,7 +3562,7 @@ let xs = [1, 2, 3, 4]
 let total = Array.fold (\acc x -> acc + x) 0 xs              // 10
 let digits = Array.fold_back (\x acc -> acc * 10 + x) xs 0   // 4321
 let texts = ["a", "bcd"]
-let lengths = texts |> Array.map_ref (\t -> t.length)        // [1, 3]
+let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 ```
 
 ### 演算子

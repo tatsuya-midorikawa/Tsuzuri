@@ -38,19 +38,19 @@ fn allocations_by_target(source: &str, name: &str, expected: [usize; 2]) {
 }
 
 const PROBE: &str = r"
-def branch_reads :: [i64] -> [i64] = \xs -> if xs.length > 2 then Array.set xs 0 1 else xs
+def branch_reads :: [i64] -> [i64] = \xs -> if xs.length > 2 then Array.__set xs 0 1 else xs
 def loop_update :: [i64] -> [i64] = \xs ->
     let mut ys = xs
     for i in 0 .. 3 do
-        ys = Array.set ys i i
+        ys = Array.__set ys i i
     ys
 def read_twice :: [i64] -> i64 = \xs ->
-    let ys = Array.set xs 0 9
+    let ys = Array.__set xs 0 9
     xs[0] + ys[0]
 def invariant_loop :: [i64] -> i64 = \xs ->
     let mut total = 0
     for i in 0 .. 3 do
-        let ys = Array.set xs 0 i
+        let ys = Array.__set xs 0 i
         total = total + ys[0]
     total + xs[1]
 def build_pair :: [i64] -> [i64] -> ([i64] * [i64]) = \a b ->
@@ -85,7 +85,7 @@ fn appendix_b_exact_allocation_counts() {
 #[test]
 fn moves_the_last_straight_line_read() {
     allocations(
-        r"def f :: [i64] -> i64 = \xs -> { let ys = Array.set xs 0 9; let zs = Array.set xs 0 8; ys[0] + zs[0] }",
+        r"def f :: [i64] -> i64 = \xs -> { let ys = Array.__set xs 0 9; let zs = Array.__set xs 0 8; ys[0] + zs[0] }",
         "f",
         1,
     );
@@ -94,7 +94,7 @@ fn moves_the_last_straight_line_read() {
 #[test]
 fn copies_when_a_later_argument_reads_the_local() {
     allocations(
-        r"def f :: [i64] -> [i64] = \xs -> Array.set xs 0 (xs[1] + 1)",
+        r"def f :: [i64] -> [i64] = \xs -> Array.__set xs 0 (xs[1] + 1)",
         "f",
         1,
     );
@@ -103,7 +103,7 @@ fn copies_when_a_later_argument_reads_the_local() {
 #[test]
 fn copies_a_borrowed_local() {
     allocations(
-        r"def f :: [i64] -> i64 = \xs -> { let r = ref xs; let ys = Array.set xs 0 9; r[0] + ys[0] }",
+        r"def f :: [i64] -> i64 = \xs -> { let r = ref xs; let ys = Array.__set xs 0 9; r[0] + ys[0] }",
         "f",
         1,
     );
@@ -113,7 +113,7 @@ fn copies_a_borrowed_local() {
 fn closure_capture_copies_and_the_later_read_moves() {
     // Native Windows keeps the documented heap fallback for local binding initializers.
     allocations_by_target(
-        r"def f :: [i64] -> i64 = \xs -> { let g = \i -> xs[i]; let ys = Array.set xs 0 9; g 0 + ys[0] }",
+        r"def f :: [i64] -> i64 = \xs -> { let g = \i -> xs[i]; let ys = Array.__set xs 0 9; g 0 + ys[0] }",
         "f",
         [if cfg!(windows) { 2 } else { 1 }, 1],
     );
@@ -128,7 +128,7 @@ fn moves_the_last_read_in_each_branch() {
 fn recursive_array_accumulators_have_no_clone_in_the_lifted_worker() {
     let module = analyze(
         r"def fill :: i64 -> [i64] -> [i64] = \n values ->
-    let rec go = \i xs -> if i == n then xs else go (i + 1) (Array.set xs 0 i)
+    let rec go = \i xs -> if i == n then xs else go (i + 1) (Array.__set xs 0 i)
     go 0 values",
     )
     .unwrap();
@@ -181,7 +181,7 @@ fn recursive_array_accumulators_have_no_clone_in_the_lifted_worker() {
 #[test]
 fn moves_a_self_update() {
     allocations(
-        r"def f :: [i64] -> [i64] = \xs -> { let mut ys = xs; ys = Array.set ys 0 1; ys }",
+        r"def f :: [i64] -> [i64] = \xs -> { let mut ys = xs; ys = Array.__set ys 0 1; ys }",
         "f",
         0,
     );
@@ -190,7 +190,7 @@ fn moves_a_self_update() {
 #[test]
 fn copies_a_read_before_a_partial_assignment() {
     allocations(
-        r"def f :: [i64] -> i64 = \xs -> { let mut a = xs; let b = Array.set a 0 9; Array.write (ref mut a[0..]) 0 3; a[0] + b[0] }",
+        r"def f :: [i64] -> i64 = \xs -> { let mut a = xs; let b = Array.__set a 0 9; Array.write (ref mut a[0..]) 0 3; a[0] + b[0] }",
         "f",
         1,
     );
@@ -211,9 +211,9 @@ fn while_and_nested_loop_fixed_points_preserve_self_updates() {
         i = i + 1
         for j in 0 .. 2 do
             if j == 1 then continue else ()
-            ys = Array.set ys 0 i
+            ys = Array.__set ys 0 i
         if i == 2 then continue else ()
-        ys = Array.set ys 1 i
+        ys = Array.__set ys 1 i
     ys",
         "f",
         0,
@@ -249,7 +249,7 @@ fn copies_before_a_break_when_the_local_is_read_after_the_loop() {
         r"def f :: [i64] -> i64 = \xs ->
     let mut total = 0
     for i in 0 .. 3 do
-        let ys = Array.set xs 0 i
+        let ys = Array.__set xs 0 i
         total = total + ys[0]
         if i == 2 then break else ()
     total + xs[1]",
@@ -265,7 +265,7 @@ fn moves_a_loop_local() {
     let mut total = 0
     for i in 0 .. n do
         let xs = new [i64](2, \_k -> i)
-        let ys = Array.set xs 0 i
+        let ys = Array.__set xs 0 i
         total = total + ys[0]
     total",
         "f",
@@ -279,7 +279,7 @@ fn continue_keeps_the_head_live() {
         r"def f :: [i64] -> i64 = \xs ->
     let mut total = 0
     for i in 0 .. 3 do
-        let ys = Array.set xs 0 i
+        let ys = Array.__set xs 0 i
         total = total + ys[0]
         if i % 2 == 0 then continue else ()
     total",
@@ -294,7 +294,7 @@ fn break_in_a_later_argument_preserves_the_old_value() {
         r"def f :: [i64] -> [i64] = \xs ->
     let mut ys = xs
     for i in 0 .. 3 do
-        ys = Array.set ys 0 (if i == 2 then { break; i } else i)
+        ys = Array.__set ys 0 (if i == 2 then { break; i } else i)
     ys",
         "f",
         1,
@@ -334,7 +334,7 @@ fn moves_in_each_arm() {
     allocations(
         r"def f :: i64 -> [i64] -> [i64] = \n xs ->
     match n with
-    | 0 -> Array.set xs 0 9
+    | 0 -> Array.__set xs 0 9
     | _ -> xs",
         "f",
         0,
@@ -346,7 +346,7 @@ fn match_arm_reads_after_a_binding() {
     allocations(
         r"def f :: [i64] -> i64 = \xs ->
     match xs with
-    | bound -> { let ys = Array.set xs 0 9; ys[0] + bound[0] }",
+    | bound -> { let ys = Array.__set xs 0 9; ys[0] + bound[0] }",
         "f",
         1,
     );

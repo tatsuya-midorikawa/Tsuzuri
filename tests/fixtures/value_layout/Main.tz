@@ -517,15 +517,15 @@ fn tasked i =
 export def references :: i64 -> i64
 fn references count =
     let values = new [i64](count, i -> (i * 7) % 11)
-    let smallest = Array.min (ref values)
-    let found = Array.find (\x -> deref x > 5) (ref values)
-    let missing = Array.find (\x -> deref x > 100) (ref values)
+    let smallest = if count == 0 then Maybe.None else Maybe.Some (Array.minr (ref values))
+    let found = Array.try_findr (\x -> deref x > 5) (ref values)
+    let missing = Array.try_findr (\x -> deref x > 100) (ref values)
     (match smallest with | Some v -> deref v | None -> -1) + (match found with | Some v -> deref v * 100 | None -> -2) + (match missing with | Some v -> deref v * 10000 | None -> -3)
 
 export def word_references :: i64 -> i64
 fn word_references count =
     let words = new [string](count, i -> "w" + to_string i)
-    let long = Array.find (\word -> word.length > 3) (ref words)
+    let long = Array.try_findr (\word -> word.length > 3) (ref words)
     match long with
     | Some word -> word.length * 1000 + count
     | None -> -1
