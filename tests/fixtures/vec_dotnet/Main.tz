@@ -237,6 +237,7 @@ test "a sequence grows the capacity by doubling and an array by one step, as in 
     let nothing: [i64] = []
     let same = Vec.insert_range_seq 2 (Array.to_seq (ref nothing)) (vec [1, 2, 3, 4])
     eq (Vec.capacity (ref same)) 4
+
 // ---- Removing ----
 
 test "remove_at removes one element and keeps the capacity" =

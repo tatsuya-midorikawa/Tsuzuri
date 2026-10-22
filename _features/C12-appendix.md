@@ -30,22 +30,22 @@ private const MergeLimit: i64 = 256
 private def take :: Vec<'a> -> i64 -> (Vec<'a> * 'a)
 fn take items index =
 	let last = Vec.length (ref items) - 1
-	match Vec.pop (Vec.swap items index last) with
+	match Vec.pop (Vec.swap index last items) with
 	| (rest, Maybe.Some item) -> (rest, item)
 	| (_, Maybe.None) -> unreachable ()
 
 private def put :: Vec<'a> -> i64 -> 'a -> Vec<'a>
 fn put items index item =
-	let pushed = Vec.push items item
+	let pushed = Vec.push item items
 	let last = Vec.length (ref pushed) - 1
-	Vec.swap pushed index last
+	Vec.swap index last pushed
 
 private def insert_at :: Vec<'a> -> i64 -> 'a -> Vec<'a>
 fn insert_at items index item =
-	let mut result = Vec.push items item
+	let mut result = Vec.push item items
 	let mut position = Vec.length (ref result) - 1
 	while position > index do
-		result = Vec.swap result position (position - 1)
+		result = Vec.swap position (position - 1) result
 		position = position - 1
 	result
 
@@ -55,7 +55,7 @@ fn remove_at items index =
 	let last = Vec.length (ref result) - 1
 	let mut position = index
 	while position < last do
-		result = Vec.swap result position (position + 1)
+		result = Vec.swap position (position + 1) result
 		position = position + 1
 	match Vec.pop result with
 	| (rest, Maybe.Some item) -> (rest, item)
@@ -67,7 +67,7 @@ fn reverse items =
 	let count = Vec.length (ref result)
 	let mut index = 0
 	while index < count / 2 do
-		result = Vec.swap result index (count - 1 - index)
+		result = Vec.swap index (count - 1 - index) result
 		index = index + 1
 	result
 
@@ -80,7 +80,7 @@ fn split_off items at =
 		match Vec.pop head with
 		| (rest, Maybe.Some item) ->
 			head = rest
-			tail = Vec.push tail item
+			tail = Vec.push item tail
 		| (rest, Maybe.None) -> head = rest
 	(head, reverse tail)
 
@@ -93,7 +93,7 @@ fn join head tail =
 		match Vec.pop rest with
 		| (remaining, Maybe.Some item) ->
 			rest = remaining
-			result = Vec.push result item
+			result = Vec.push item result
 		| (remaining, Maybe.None) -> rest = remaining
 	result
 
@@ -101,7 +101,7 @@ def empty :: Map<'key, 'value>
 fn empty = Map { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
 def singleton :: 'key -> 'value -> Map<'key, 'value>
-fn singleton key value = Map { head: Vec.push (Vec.empty()) (Entry { key: key, value: value }), rest: Vec.empty(), length: 1 }
+fn singleton key value = Map { head: Vec.push (Entry { key: key, value: value }) (Vec.empty()), rest: Vec.empty(), length: 1 }
 
 def length :: ref Map<'key, 'value> -> i64
 fn length map = map.length
@@ -198,14 +198,14 @@ fn replace_value map chunk offset value =
 private def add_entry :: Map<'key, 'value> -> i64 -> i64 -> Entry<'key, 'value> -> Map<'key, 'value>
 fn add_entry map chunk offset entry =
 	let count = map.length
-	if count == 0 then Map { head: Vec.push (Vec.empty()) entry, rest: Vec.empty(), length: 1 }
+	if count == 0 then Map { head: Vec.push entry (Vec.empty()), rest: Vec.empty(), length: 1 }
 	else
 		let total = chunk_total (ref map)
 		let size = Vec.length (chunk_of (ref map) chunk)
 		if size < MaxChunk then
 			match take_chunk map chunk with
 			| (hole, entries) -> put_chunk hole chunk (insert_at entries offset entry) (count + 1)
-		elif chunk == total - 1 && offset == size then Map { head: map.head, rest: Vec.push map.rest (Vec.push (Vec.empty()) entry), length: count + 1 }
+		elif chunk == total - 1 && offset == size then Map { head: map.head, rest: Vec.push (Vec.push entry (Vec.empty())) map.rest, length: count + 1 }
 		else
 			match take_chunk map chunk with
 			| (hole, entries) ->
@@ -293,7 +293,7 @@ fn append_pairs output entries =
 	let mut result = output
 	let mut offset = 0
 	while offset < Vec.length entries do
-		result = Vec.push result (entries[offset].key, entries[offset].value)
+		result = Vec.push (entries[offset].key, entries[offset].value) result
 		offset = offset + 1
 	result
 
@@ -302,7 +302,7 @@ fn append_keys output entries =
 	let mut result = output
 	let mut offset = 0
 	while offset < Vec.length entries do
-		result = Vec.push result entries[offset].key
+		result = Vec.push entries[offset].key result
 		offset = offset + 1
 	result
 
@@ -311,7 +311,7 @@ fn append_values output entries =
 	let mut result = output
 	let mut offset = 0
 	while offset < Vec.length entries do
-		result = Vec.push result entries[offset].value
+		result = Vec.push entries[offset].value result
 		offset = offset + 1
 	result
 
@@ -418,22 +418,22 @@ private const BulkFill: i64 = 384
 private def take :: Vec<'a> -> i64 -> (Vec<'a> * 'a)
 fn take items index =
 	let last = Vec.length (ref items) - 1
-	match Vec.pop (Vec.swap items index last) with
+	match Vec.pop (Vec.swap index last items) with
 	| (rest, Maybe.Some item) -> (rest, item)
 	| (_, Maybe.None) -> unreachable ()
 
 private def put :: Vec<'a> -> i64 -> 'a -> Vec<'a>
 fn put items index item =
-	let pushed = Vec.push items item
+	let pushed = Vec.push item items
 	let last = Vec.length (ref pushed) - 1
-	Vec.swap pushed index last
+	Vec.swap index last pushed
 
 private def insert_at :: Vec<'a> -> i64 -> 'a -> Vec<'a>
 fn insert_at items index item =
-	let mut result = Vec.push items item
+	let mut result = Vec.push item items
 	let mut position = Vec.length (ref result) - 1
 	while position > index do
-		result = Vec.swap result position (position - 1)
+		result = Vec.swap position (position - 1) result
 		position = position - 1
 	result
 
@@ -443,7 +443,7 @@ fn remove_at items index =
 	let last = Vec.length (ref result) - 1
 	let mut position = index
 	while position < last do
-		result = Vec.swap result position (position + 1)
+		result = Vec.swap position (position + 1) result
 		position = position + 1
 	match Vec.pop result with
 	| (rest, Maybe.Some item) -> (rest, item)
@@ -455,7 +455,7 @@ fn reverse items =
 	let count = Vec.length (ref result)
 	let mut index = 0
 	while index < count / 2 do
-		result = Vec.swap result index (count - 1 - index)
+		result = Vec.swap index (count - 1 - index) result
 		index = index + 1
 	result
 
@@ -468,7 +468,7 @@ fn split_off items at =
 		match Vec.pop head with
 		| (rest, Maybe.Some item) ->
 			head = rest
-			tail = Vec.push tail item
+			tail = Vec.push item tail
 		| (rest, Maybe.None) -> head = rest
 	(head, reverse tail)
 
@@ -481,7 +481,7 @@ fn join head tail =
 		match Vec.pop rest with
 		| (remaining, Maybe.Some item) ->
 			rest = remaining
-			result = Vec.push result item
+			result = Vec.push item result
 		| (remaining, Maybe.None) -> rest = remaining
 	result
 
@@ -489,7 +489,7 @@ def empty :: Set<'key>
 fn empty = Set { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
 def singleton :: 'key -> Set<'key>
-fn singleton key = Set { head: Vec.push (Vec.empty()) key, rest: Vec.empty(), length: 1 }
+fn singleton key = Set { head: Vec.push key (Vec.empty()), rest: Vec.empty(), length: 1 }
 
 def length :: ref Set<'key> -> i64
 fn length set = set.length
@@ -556,14 +556,14 @@ fn put_chunk set index chunk count =
 private def add_key :: Set<'key> -> i64 -> i64 -> 'key -> Set<'key>
 fn add_key set chunk offset key =
 	let count = set.length
-	if count == 0 then Set { head: Vec.push (Vec.empty()) key, rest: Vec.empty(), length: 1 }
+	if count == 0 then Set { head: Vec.push key (Vec.empty()), rest: Vec.empty(), length: 1 }
 	else
 		let total = chunk_total (ref set)
 		let size = Vec.length (chunk_of (ref set) chunk)
 		if size < MaxChunk then
 			match take_chunk set chunk with
 			| (hole, keys) -> put_chunk hole chunk (insert_at keys offset key) (count + 1)
-		elif chunk == total - 1 && offset == size then Set { head: set.head, rest: Vec.push set.rest (Vec.push (Vec.empty()) key), length: count + 1 }
+		elif chunk == total - 1 && offset == size then Set { head: set.head, rest: Vec.push (Vec.push key (Vec.empty())) set.rest, length: count + 1 }
 		else
 			match take_chunk set chunk with
 			| (hole, keys) ->
@@ -649,7 +649,7 @@ fn append_keys output keys =
 	let mut result = output
 	let mut offset = 0
 	while offset < Vec.length keys do
-		result = Vec.push result keys[offset]
+		result = Vec.push keys[offset] result
 		offset = offset + 1
 	result
 
@@ -736,22 +736,22 @@ fn union left right =
 					left_keys = remaining
 					let key = Maybe.get value
 					assert (Eq.eq (ref key) (ref key))
-					current = Vec.push current key
+					current = Vec.push key current
 			else
 				match Vec.pop right_keys with
 				| (remaining, value) ->
 					right_keys = remaining
 					let key = Maybe.get value
 					assert (Eq.eq (ref key) (ref key))
-					current = Vec.push current key
+					current = Vec.push key current
 			total = total + 1
 			if order == 0 then
 				match Vec.pop right_keys with
 				| (remaining, _duplicate) -> right_keys = remaining
 			if Vec.length (ref current) == BulkFill then
-				finished = Vec.push finished (reverse current)
+				finished = Vec.push (reverse current) finished
 				current = Vec.with_capacity BulkFill
-	if Vec.length (ref current) > 0 then finished = Vec.push finished (reverse current)
+	if Vec.length (ref current) > 0 then finished = Vec.push (reverse current) finished
 	from_chunks (reverse finished) total
 
 /// The key at `offset` of chunk `chunk`, copied. Like `append_keys`, it reads through its own parameter.
@@ -785,10 +785,10 @@ fn select left right include_equal =
 				compare_keys (ref key) (ref other)
 		if order <= 0 then
 			if (order == 0) == include_equal then
-				current = Vec.push current key
+				current = Vec.push key current
 				total = total + 1
 				if Vec.length (ref current) == BulkFill then
-					finished = Vec.push finished current
+					finished = Vec.push current finished
 					current = Vec.with_capacity BulkFill
 			left_index = left_index + 1
 			if left_offset + 1 < chunk_size left left_chunk then left_offset = left_offset + 1
@@ -802,7 +802,7 @@ fn select left right include_equal =
 				else
 					right_chunk = right_chunk + 1
 					right_offset = 0
-	if Vec.length (ref current) > 0 then finished = Vec.push finished current
+	if Vec.length (ref current) > 0 then finished = Vec.push current finished
 	from_chunks finished total
 
 def intersect :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> Set<'key>
@@ -871,7 +871,7 @@ fn random_keys size =
     let mut state = 88172645463325252
     for _index in 0i64 .. size - 1 do
         state = next_state state
-        keys = Vec.push keys (state >>> 20)
+        keys = Vec.push (state >>> 20) keys
     Vec.to_array keys
 
 def filled :: ref [i64u] -> Map<i64u, i64u>
@@ -1035,9 +1035,9 @@ fn collect source =
 	while index < source.length do
 		let keys = chunk_of source chunk
 		let key = keys[offset]
-		current = Vec.push current key
+		current = Vec.push key current
 		if Vec.length (ref current) == 4 then
-			finished = Vec.push finished current
+			finished = Vec.push current finished
 			current = Vec.empty()
 		index = index + 1
 		if offset + 1 < Vec.length keys then offset = offset + 1
@@ -1050,7 +1050,7 @@ def run :: i64 -> i64
 fn run size =
 	let hits = Atomic.create 0i64
 	let mut items: Vec<Probe> = Vec.empty()
-	for index in 0i64 .. size - 1 do items = Vec.push items (Probe { value: index, hits: ref hits })
+	for index in 0i64 .. size - 1 do items = Vec.push (Probe { value: index, hits: ref hits }) items
 	let bag = Bag { head: items, rest: Vec.empty(), length: size }
 	let chunks = collect (ref bag)
 	Vec.length (ref chunks)
@@ -1070,9 +1070,9 @@ fn collect source =
 	let mut current: Vec<'key> = Vec.empty()
 	let mut index = 0
 	while index < source.length do
-		current = Vec.push current (key_at source 0 index)
+		current = Vec.push (key_at source 0 index) current
 		if Vec.length (ref current) == 4 then
-			finished = Vec.push finished current
+			finished = Vec.push current finished
 			current = Vec.empty()
 		index = index + 1
 	finished

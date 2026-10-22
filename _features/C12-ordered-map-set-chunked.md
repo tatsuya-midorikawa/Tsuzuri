@@ -138,7 +138,7 @@ ok 5 - Main Set algebra follows the table model on long seeded runs
 **`E1014` の実機での再現**（落とし穴 1 の根拠。キーが借用 `ref Atomic<i64>` を持つとき、ローカルの `ref` 変数経由で `Copy` の要素を読んで `Vec` に集めると拒否され、引数経由なら通る。HEAD のコンパイラ。プログラムは付録 E）:
 
 ```sh
-$ target/release/tsuzuri check r2/Main.tz       # let keys = chunk_of source chunk; ... Vec.push current key ...; finished = Vec.push finished current
+$ target/release/tsuzuri check r2/Main.tz       # let keys = chunk_of source chunk; ... Vec.push key current ...; finished = Vec.push current finished
 r2/Main.tz:19:33: error[E1014]: cannot move an exclusive reference while it is reborrowed
 $ target/release/tsuzuri check r3/Main.tz       # 同じ読み出しを、引数 `ref Bag` を受け取る関数 key_at に分ける
 （出力なし。通る）

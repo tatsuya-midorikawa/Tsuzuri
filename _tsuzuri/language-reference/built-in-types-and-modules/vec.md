@@ -67,7 +67,7 @@ $"sorted={sorted_array} top={top_array}"
 sorted=[1, 10, 2, 3] top=[9, 5]
 ```
 
-要素の値や位置を先に渡し、`Vec` を最後に渡す順なので、`Vec.add 1` は「`Vec` を受け取って 1 を足した `Vec` を返す関数」です。`Vec.remove_at 0` や `Vec.sort_with (\a b -> a - b)` のように、一部だけ適用した形をそのまま値として持ち回れます。引数の順序の全体は [.NET の List<T> との対応](#net-の-listt-との対応) の[引数の順序](#引数の順序)にあります。
+要素の値や位置を先に渡し、`Vec` を最後に渡す順なので、`Vec.add 1` は「`Vec` を受け取って 1 を足した `Vec` を返す関数」です。`Vec.remove_at 0` や `Vec.sort_with (\a b -> a - b)` のように、一部だけ適用した形をそのまま値として持ち回れます。`Vec.index_of` のように `Vec` を借用する関数にも、`values |> Vec.index_of 2` と渡せます。このときは `Vec` が借用されるだけで、`values` は使い続けられます。引数の順序の全体は [.NET の List<T> との対応](#net-の-listt-との対応) の[引数の順序](#引数の順序)にあります。
 
 ### 事前確保 `Vec.with_capacity`
 
