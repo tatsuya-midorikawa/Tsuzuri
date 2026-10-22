@@ -131,11 +131,26 @@ impl FunctionEmitter<'_, '_> {
         ))
     }
 
-    /// A copy of the vector whose capacity is its length, as `new List<T>(list)` of .NET makes one.
+    /// A copy of the vector with the capacity of `source`: the implicit copy that a closure environment makes of a vector
+    /// it captured, which has to behave as the original does, spare capacity included.
     pub(super) fn clone_vector(&mut self, element: &Type, source: &str) -> String {
+        self.copy_vector(element, source, false)
+    }
+
+    /// A copy of the vector whose capacity is its length, as `new List<T>(list)` of .NET makes one: `Vec.clone`.
+    fn clone_vector_exactly(&mut self, element: &Type, source: &str) -> String {
+        self.copy_vector(element, source, true)
+    }
+
+    fn copy_vector(&mut self, element: &Type, source: &str, exactly: bool) -> String {
         let data = self.value(format!("extractvalue %tz.vec {source}, 0"));
         let length = self.value(format!("extractvalue %tz.vec {source}, 1"));
-        let output = self.vector_buffer(element, &length);
+        let capacity = if exactly {
+            length.clone()
+        } else {
+            self.value(format!("extractvalue %tz.vec {source}, 2"))
+        };
+        let output = self.vector_buffer(element, &capacity);
         self.array_loop(&length, |emitter, index| {
             let pointer = emitter.element_pointer(element, &data, index);
             let value = emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
@@ -146,7 +161,7 @@ impl FunctionEmitter<'_, '_> {
                 emitter.ty(element)
             ));
         });
-        self.make_vector(&output, &length, &length)
+        self.make_vector(&output, &length, &capacity)
     }
 
     pub(super) fn vector_builtin(
@@ -178,7 +193,7 @@ impl FunctionEmitter<'_, '_> {
             }
             VecClone => {
                 let value = self.value("load %tz.vec, ptr %arg0");
-                self.clone_vector(element, &value)
+                self.clone_vector_exactly(element, &value)
             }
             VecReserve => self.reserve_vector(element, "%arg1", "%arg0"),
             VecPush => {

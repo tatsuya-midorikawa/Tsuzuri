@@ -48,6 +48,19 @@ test "clone makes a copy whose capacity is its length, as new List<T>(list) does
     let nothing = Vec.clone (ref spare)
     eq (Vec.capacity (ref nothing)) 0
 
+test "a copied closure keeps the spare capacity of the Vec it captured" =
+    let mut values: Vec<i64> = Vec.with_capacity 10
+    values = Vec.add 1 values
+    let read = offset -> Vec.capacity (ref values) + offset
+    let copied = read
+    eq (read 0) 10
+    eq (copied 0) 10
+    let empty: Vec<i64> = Vec.with_capacity 7
+    let look = offset -> Vec.capacity (ref empty) * 100 + offset
+    let again = look
+    eq (again 1) 701
+    eq (look 2) 702
+
 test "set_capacity sets the capacity exactly" =
     let mut values = vec [1, 2, 3]
     eq (Vec.capacity (ref values)) 3

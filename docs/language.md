@@ -2991,7 +2991,7 @@ let total = sum3 point            // point は Copy なのでこの後も使え�
 `sort`・`sort_range`・`sort_with` などの並べ替えは安定で（.NET の `Sort` は不安定です）、NaN を他のどの数より前に置きます。`sort`・`sort_range`・`sort_withr`・`sort_range_withr` はその場で行い、追加の領域を使いません。`contains`・`index_of`・`remove` は `Eq`（`==`）で比べるので、浮動小数点数の NaN は見つかりません（.NET の `Equals` は NaN を NaN と等しいとみなします）。
 デストラクタによる破棄や `clone` による複製は実際に初期化済みの要素数（length）のみを対象として実行され、未初期化の余剰容量メモリを読み取ることはありません。`clone` は容量を長さにそろえます（`new List<T>(list)` と同じです）。
 `Vec.of_array` および `Vec.to_array` は所有権を持つ内部バッファをそのまま引き渡すため、要素データの無駄なディープコピーは発生しません（ただし、Copy 配列の引数渡しやスタック配置配列のヒープ昇格処理は、言語の通常の所有権規則に従って安全に行われます）。.NET の `ToArray` は複製しますが、`Vec.to_array` は `Vec` を消費します。空の配列が渡された場合は不要なヒープバッファが即座に解放され、空の Vec インスタンスとして正規化されます。
-なお、クロージャの内部へキャプチャされた Vec は、クロージャが複製される際に独立した内部スナップショットが安全に作成されます。利用者向けの詳細と例は言語リファレンスの [Vec](../_tsuzuri/language-reference/built-in-types-and-modules/vec.md) にあります。
+なお、クロージャの内部へキャプチャされた Vec は、クロージャが複製される際に独立した内部スナップショットが安全に作成されます（容量もそのまま複製され、複製した関数は元と同じに振る舞います。容量を長さにそろえるのは明示的な `Vec.clone` だけです）。利用者向けの詳細と例は言語リファレンスの [Vec](../_tsuzuri/language-reference/built-in-types-and-modules/vec.md) にあります。
 
 ### Json
 
