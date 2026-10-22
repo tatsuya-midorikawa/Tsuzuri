@@ -131,11 +131,11 @@ impl FunctionEmitter<'_, '_> {
         ))
     }
 
+    /// A copy of the vector whose capacity is its length, as `new List<T>(list)` of .NET makes one.
     pub(super) fn clone_vector(&mut self, element: &Type, source: &str) -> String {
         let data = self.value(format!("extractvalue %tz.vec {source}, 0"));
         let length = self.value(format!("extractvalue %tz.vec {source}, 1"));
-        let capacity = self.value(format!("extractvalue %tz.vec {source}, 2"));
-        let output = self.vector_buffer(element, &capacity);
+        let output = self.vector_buffer(element, &length);
         self.array_loop(&length, |emitter, index| {
             let pointer = emitter.element_pointer(element, &data, index);
             let value = emitter.value(format!("load {}, ptr {pointer}", emitter.ty(element)));
@@ -146,7 +146,7 @@ impl FunctionEmitter<'_, '_> {
                 emitter.ty(element)
             ));
         });
-        self.make_vector(&output, &length, &capacity)
+        self.make_vector(&output, &length, &length)
     }
 
     pub(super) fn vector_builtin(

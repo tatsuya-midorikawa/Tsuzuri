@@ -36,6 +36,18 @@ test "of_seq and of_list copy their elements" =
     let texts = Vec.of_seq (Seq.map (\number -> to_string number) (Array.to_seq (ref numbers)))
     check_words (ref texts) ["7", "8"]
 
+test "clone makes a copy whose capacity is its length, as new List<T>(list) does" =
+    let mut values: Vec<i64> = Vec.with_capacity 10
+    values = Vec.add values 1
+    values = Vec.add values 2
+    let copy = Vec.clone (ref values)
+    eq (items (ref copy)) [1, 2]
+    eq (Vec.capacity (ref copy)) 2
+    eq (Vec.capacity (ref values)) 10
+    let spare: Vec<i64> = Vec.with_capacity 5
+    let nothing = Vec.clone (ref spare)
+    eq (Vec.capacity (ref nothing)) 0
+
 test "set_capacity sets the capacity exactly" =
     let mut values = vec [1, 2, 3]
     eq (Vec.capacity (ref values)) 3
@@ -408,6 +420,34 @@ test "sort_withr sorts elements that are not Copy, stably" =
     let mut empty: Vec<string> = Vec.empty()
     empty = Vec.sort_withr empty (\left right -> left.length - right.length)
     eq (Vec.length (ref empty)) 0
+
+// The values are key * 1000 + position, so a stable sort by key leaves the positions of equal keys ascending.
+private def tied :: i64 -> i64 -> Vec<i64>
+fn tied length seed =
+    let mut state = seed
+    let mut values: Vec<i64> = Vec.empty()
+    for position in 0i64 .. length - 1 do
+        state = (state * 1103515245 + 12345) % 2147483648
+        values = Vec.add values ((state / 65536) % 7 * 1000 + position)
+    values
+
+private def by_key :: i64 -> i64 -> i64
+fn by_key left right = left / 1000 - right / 1000
+
+test "sort_withr and sort_range_withr agree with the stable sort_with for every length" =
+    for length in 0i64 .. 170 do
+        let expected = Vec.sort_with (tied length length) by_key
+        let sorted = Vec.sort_withr (tied length length) (\left right -> by_key *left *right)
+        eq (items (ref sorted)) (items (ref expected))
+        if length >= 6 then
+            let inner = Vec.sort_range_with (tied length 5) 2 (length - 5) by_key
+            let inner_r = Vec.sort_range_withr (tied length 5) 2 (length - 5) (\left right -> by_key *left *right)
+            eq (items (ref inner_r)) (items (ref inner))
+        let descending = Vec.sort_withr (tied length 3) (\left right -> by_key *right *left)
+        let mut earlier = 7
+        for value in Vec.iter (ref descending) do
+            Test.is_true (*value / 1000 <= earlier)
+            earlier = *value / 1000
 
 test "sorting moves elements without dropping or duplicating them" =
     let shared = Rc.new "x"

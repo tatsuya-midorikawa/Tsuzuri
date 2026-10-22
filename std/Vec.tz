@@ -243,26 +243,98 @@ fn sort_with values comparison =
     let length = Vec.length (ref values)
     sort_range_with values 0 length comparison
 
-private def arrange_range :: ref mut ['a..] -> i64 -> ref mut [i64..] -> unit
-fn arrange_range view index order =
-    arrange (ref mut view[index .. index + order.length]) order
-
-/// Like `sort_range_with`, but the comparison borrows the elements, so they need not be `Copy`. The elements are
-/// ordered through an array of their positions, which takes `count` words of memory.
+/// Sorts a range in place, like `sort_range_with`, but the comparison borrows the elements, so they need not be `Copy`.
+/// Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge), so it is stable and takes no
+/// extra memory.
 def sort_range_withr :: Vec<'a> -> i64 -> i64 -> (ref 'a -> ref 'a -> i64) -> Vec<'a>
 fn sort_range_withr values index count comparison =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
     let mut owned = values
-    let reader = ref owned
-    let positions = new [i64](count, position -> position)
-    let mut order = Array.__sort_with (first -> second -> comparison (ref reader[index + *first]) (ref reader[index + *second])) (ref positions)
-    arrange_range (Vec.__view (ref mut owned)) index (ref mut order)
+    sort_view_by comparison (Vec.__view (ref mut owned)) index count
     owned
 
 def sort_withr :: Vec<'a> -> (ref 'a -> ref 'a -> i64) -> Vec<'a>
 fn sort_withr values comparison =
     let length = Vec.length (ref values)
     sort_range_withr values 0 length comparison
+
+private def sort_view_by :: (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> i64 -> i64 -> unit
+fn sort_view_by comparison view index count =
+    sort_slice_by comparison (ref mut view[index .. index + count])
+
+private def sort_slice_by :: (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> unit
+fn sort_slice_by comparison values =
+    let length = values.length
+    let blocks = length / 20
+    for block in 0i64 .. (blocks - 1) do
+        insertion_by comparison values (block * 20) (block * 20 + 20)
+    insertion_by comparison values (blocks * 20) length
+    let mut width = 20i64
+    let mut double = 40i64
+    while width < length do
+        let pairs = length / double
+        for pair in 0i64 .. (pairs - 1) do
+            merge_by comparison values (pair * double) (pair * double + width) (pair * double + double)
+        let rest = pairs * double
+        if rest + width < length then merge_by comparison values rest (rest + width) length
+        width = double
+        double = double * 2
+
+private def insertion_by :: (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> i64 -> i64 -> unit
+fn insertion_by comparison values first last =
+    for index in (first + 1) .. (last - 1) do
+        let mut current = index
+        while current > first && comparison (ref values[current]) (ref values[current - 1]) < 0 do
+            Array.swap_in values current (current - 1)
+            current = current - 1
+
+/// Merges the sorted runs `[first, middle)` and `[middle, last)` in place, stably (SymMerge).
+private def rec merge_by :: (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> i64 -> i64 -> i64 -> unit
+fn rec merge_by comparison values first middle last =
+    if middle - first == 1 then
+        let mut low = middle
+        let mut high = last
+        while low < high do
+            let half = low + (high - low) / 2
+            if comparison (ref values[half]) (ref values[first]) < 0 then low = half + 1 else high = half
+        for index in first .. (low - 2) do
+            Array.swap_in values index (index + 1)
+    elif last - middle == 1 then
+        let mut low = first
+        let mut high = middle
+        while low < high do
+            let half = low + (high - low) / 2
+            if !(comparison (ref values[middle]) (ref values[half]) < 0) then low = half + 1 else high = half
+        for index in middle .. -1 .. (low + 1) do
+            Array.swap_in values index (index - 1)
+    else
+        let center = first + (last - first) / 2
+        let total = center + middle
+        let mut start = if middle > center then total - last else first
+        let mut bound = if middle > center then center else middle
+        let probe = total - 1
+        while start < bound do
+            let half = start + (bound - start) / 2
+            if !(comparison (ref values[probe - half]) (ref values[half]) < 0) then start = half + 1 else bound = half
+        let finish = total - start
+        if start < middle && middle < finish then rotate_slice values start middle finish
+        if first < start && start < center then merge_by comparison values first start center
+        if center < finish && finish < last then merge_by comparison values center finish last
+
+/// Exchanges the adjacent runs `[first, middle)` and `[middle, last)` by swaps.
+private def rotate_slice :: ref mut ['a..] -> i64 -> i64 -> i64 -> unit
+fn rotate_slice values first middle last =
+    let mut left = middle - first
+    let mut right = last - middle
+    while left != right do
+        let count = if left > right then right else left
+        let source = middle - left
+        let target = if left > right then middle else middle + right - left
+        for step in 0i64 .. (count - 1) do
+            Array.swap_in values (source + step) (target + step)
+        if left > right then left = left - right else right = right - left
+    for step in 0i64 .. (left - 1) do
+        Array.swap_in values (middle - left + step) (middle + step)
 
 // ---- Searching ----
 
