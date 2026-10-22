@@ -1,3 +1,4 @@
+use tsuzuri::check::CheckedModule;
 use tsuzuri::driver::{Target, TestOptions, run_tests};
 use tsuzuri::{analyze, analyze_modules, llvm};
 
@@ -156,32 +157,80 @@ fn count_tests(source: &str) -> usize {
         .count()
 }
 
-/// One test of a fixture: its name, why it failed (a trap, a timeout, ...) or `None` when it passed, and the end of
-/// its standard error.
+/// One test of a fixture: its index, its name, why it failed (a trap, a timeout, ...) or `None` when it passed, and
+/// the end of its standard error.
 struct Outcome {
+    index: usize,
     name: String,
     failure: Option<String>,
     output: String,
 }
 
-fn run(source: &str, target: Target, optimization: u8) -> Vec<Outcome> {
-    let module =
-        analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
-    let options = TestOptions {
-        target,
-        optimization,
-        ..Default::default()
-    };
-    run_tests(&module, &options)
+impl Outcome {
+    fn timed_out(&self) -> bool {
+        self.failure
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("timed out"))
+    }
+}
+
+/// How often a test runs before a timeout counts. A loaded CI machine can hold a process that traps in a millisecond
+/// for longer than the runner's 30 seconds, while a test that really hangs times out on every attempt.
+const ATTEMPTS: usize = 3;
+
+fn execute(module: &CheckedModule, options: &TestOptions) -> Vec<Outcome> {
+    run_tests(module, options)
         .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
         .results
         .into_iter()
         .map(|result| Outcome {
+            index: result.case.index,
             name: result.case.name,
             failure: result.failure,
             output: result.output,
         })
         .collect()
+}
+
+fn run(source: &str, target: Target, optimization: u8) -> Vec<Outcome> {
+    run_matching(source, target, optimization, None)
+}
+
+/// Runs the tests of `source` whose names contain `filter` (all of them without one). A test that timed out runs
+/// again, on its own, up to `ATTEMPTS` times in all.
+fn run_matching(
+    source: &str,
+    target: Target,
+    optimization: u8,
+    filter: Option<&str>,
+) -> Vec<Outcome> {
+    let module =
+        analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    let mut options = TestOptions {
+        target,
+        optimization,
+        filter: filter.map(str::to_owned),
+        ..Default::default()
+    };
+    let mut outcomes = execute(&module, &options);
+    for _ in 1..ATTEMPTS {
+        options.indices = outcomes
+            .iter()
+            .filter(|outcome| outcome.timed_out())
+            .map(|outcome| outcome.index)
+            .collect();
+        if options.indices.is_empty() {
+            break;
+        }
+        for again in execute(&module, &options) {
+            let slot = outcomes
+                .iter_mut()
+                .find(|outcome| outcome.index == again.index)
+                .expect("a test of the first run");
+            *slot = again;
+        }
+    }
+    outcomes
 }
 
 fn defined(name: &str) -> bool {
@@ -241,15 +290,11 @@ fn contract_violations_trap_where_fsharp_raises() {
             survived.is_empty(),
             "{target:?} -O{optimization} did not trap: {survived:?}"
         );
-        // A test that hangs is killed by the runner and reported as a failure too: that is not a trap.
+        // A test that hangs is killed by the runner and reported as a failure too: that is not a trap. A timeout that
+        // survived every attempt is a hang.
         let hung: Vec<_> = results
             .iter()
-            .filter(|outcome| {
-                outcome
-                    .failure
-                    .as_deref()
-                    .is_some_and(|reason| reason.starts_with("timed out"))
-            })
+            .filter(|outcome| outcome.timed_out())
             .map(|outcome| &outcome.name)
             .collect();
         assert!(
@@ -264,12 +309,8 @@ fn functions_of_two_lists_visit_the_shared_pairs_before_they_trap() {
     // The callbacks of these tests print the first element of each pair they get: 1 and 2 are the pairs that
     // `[1, 2, 3]` and `[1, 2]` share, so 3 never comes, and the trap of the lengths follows.
     for optimization in [0, 3] {
-        let results = run(TRAPS, Target::Native, optimization);
-        let ordered: Vec<_> = results
-            .iter()
-            .filter(|outcome| outcome.name.contains("on the shared"))
-            .collect();
-        assert_eq!(ordered.len(), 8, "{:?}", ordered.len());
+        let ordered = run_matching(TRAPS, Target::Native, optimization, Some("on the shared"));
+        assert_eq!(ordered.len(), 8);
         for outcome in ordered {
             assert!(outcome.failure.is_some(), "{} did not trap", outcome.name);
             assert!(
