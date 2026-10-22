@@ -7306,6 +7306,7 @@ fn emit_typed_builtin(
     let mut builtins = Builtins::new();
     let mut local_globals = Globals {
         wasm: shared_globals.wasm,
+        memory64: shared_globals.memory64,
         f16: shared_globals.f16,
         range_flags: shared_globals.range_flags,
         strings: shared_globals.strings,

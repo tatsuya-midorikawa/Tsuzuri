@@ -611,3 +611,38 @@ fn shifts_lower_to_memmove_and_copies_to_memcpy() {
         assert!(!ir.contains("@llvm.memmove"), "{ir}");
     }
 }
+
+#[test]
+fn wasm64_moves_with_64_bit_lengths_without_trap_information() {
+    // The test runner of a wasm build has no trap instrumentation, so the builtins are emitted separately; they must
+    // still know that the memory is 64-bit, or a transfer of 4 GiB or more would pass the wrong length. The copies of
+    // the elements of a `List` read the same flag.
+    let vec = "test \"moves\" =\n    let values = Vec.of_array [1, 2, 4]\n    let values = Vec.insert 2 3 values\n    let values = Vec.add_range (ref [5, 6]) values\n    let values = Vec.remove_at 0 values\n    Test.is_true (values[0] == 2)\n";
+    let list = "test \"copies\" =\n    let numbers = new [|i64|](8, \\index -> index)\n    let array = List.to_array numbers\n    Test.is_true (array[7] == 7)\n";
+    for (source, intrinsics) in [(vec, &["memmove", "memcpy"][..]), (list, &["memcpy"][..])] {
+        let module = analyze_modules(&[("Main.tz", source)])
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+        for (memory64, width, other) in [(false, "i32", "i64"), (true, "i64", "i32")] {
+            let ir = llvm::emit_test_runner_with(
+                &module,
+                &[0],
+                llvm::TestRunnerOptions {
+                    wasm: true,
+                    memory64,
+                    ..llvm::TestRunnerOptions::default()
+                },
+            )
+            .unwrap();
+            for intrinsic in intrinsics {
+                assert!(
+                    ir.contains(&format!("declare void @llvm.{intrinsic}.p0.p0.{width}(")),
+                    "memory64 {memory64}, {intrinsic}: {ir}"
+                );
+                assert!(
+                    !ir.contains(&format!("@llvm.{intrinsic}.p0.p0.{other}")),
+                    "memory64 {memory64}, {intrinsic}: {ir}"
+                );
+            }
+        }
+    }
+}
