@@ -1643,7 +1643,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | A22 | edition 2027 の正準形（`..<`／`..=`・接尾辞・借用の表記・旧ラムダ）と移行 | P1 | L | なし（Phase 3 の fix の付与は G22 Phase 1、統合試験は G24 Phase 3 が要る） |
 | C12 | [`Map`／`Set` の更新を対数時間に近づける（チャンク化したソート配列）](_completed/C12-ordered-map-set-chunked.md)。Phase 1・2 完了 | P1 | M | なし |
 | D13 | 補間の穴の一時値（`{s.length}` の `E1013` の解消） | P1 | S | なし |
-| F14 | 構造的な性能表明（確保数のテスト用 API と `bench` の確保数） | P1 | L | F13（done）、G18（done） |
+| [F14](_completed/F14-structural-performance-assertions.md) | 構造的な性能表明（確保数のテスト用 API と `bench` の確保数）。Phase 1・2・3 完了 | P1 | L | F13（done）、G18（done） |
 | G25 | 型つき穴 `?` と `tsuzuri find`（型でのシグネチャ検索）、未解決名の候補 | P2 | L | G22 |
 | G29 | `tsuzuri mcp`（MCP サーバー） | P2 | L | Phase 1 は なし。Phase 2 以降のツールごとに G21・G23・G26〜G28（あるものだけ公開する） |
 | G30 | 図表の生成（Mermaid。モジュール・型・呼び出し・所有権・並行・レイアウト・状態遷移） | P2 | L | G26、G27 |
@@ -1803,11 +1803,11 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | CLI | `--applicability certain\|likely\|maybe`・`--dry-run` | G24 | `fix` の適用範囲と差分の表示 |
 | CLI | `--contracts off\|check\|test\|prove` | A21 | 契約の扱い（既定は `build` が `off`、`run`・`test`・`repl` が `check`。`check`・`doc` は何も生成せず常に型検査だけ。`--prove-timeout`・`--function` は `prove` のときだけ） |
 | CLI | `--overflow-report` | A23 | 折り返しの報告の計装（`test` は既定で有効） |
-| CLI | `--allocator counting` の `test` への対応 | F14 | 確保数の計装 |
+| CLI | `--allocator counting` の `build`・`run`・`test` への対応 | F14 | 確保数の計装（`build`・`run` は明示、`test` は `Alloc` に到達すると自動） |
 | 環境変数 | `TSUZURI_KB`（`0` で作らない）・`TSUZURI_KB_DIR` | G27 | KB |
 | 環境変数 | `TSUZURI_GUIDE_EXAMPLES`（テスト用） | G21 | ガイドの例の検証の対象の切り替え |
 | std | `Text`（型クラスとモジュール） | D14 | 文字列の API の統一 |
-| std | `Alloc` | F14 | 確保数の測定（テスト用） |
+| std | `Alloc` | F14 | 確保数の測定（テストでは自動、通常の `build`・`run` は counting を明示） |
 | std | `Domain` | B10 | 純粋関数の失敗の閉じ込め |
 | std | `Monoid`（クラス）と `Parallel.fold` など | F15 | 還元の保証 |
 | 属性 | `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` | A20 | D-53 |
