@@ -36,6 +36,50 @@ Phase 3 の外部実測の取り込み、静的サイズ測定・上限検査、
 ## 結果
 
 <!-- generated:ai-cost -->
+測定: tsuzuri 0.1.0、コミット 3ce98f8ce35b、タスク 37 件、行 104
+
+### 型ごとの値（下位の中央値）
+
+| 型 | 戦略 | 件数 | chars | calls | est_tokens | complete |
+| --- | --- | --- | --- | --- | --- | --- |
+| definition | baseline-grep | 6 | 7743 | 3 | 1936 | 6/6 |
+| definition | baseline-grep-chunk | 6 | 218 | 1 | 55 | 6/6 |
+| definition | baseline-grep-window | 6 | 218 | 1 | 55 | 6/6 |
+| definition | baseline-docs | 1 | 15122 | 2 | 6966 | 1/1 |
+| callers | baseline-grep | 6 | 34476 | 4 | 8619 | 6/6 |
+| callers | baseline-grep-chunk | 6 | 27412 | 3 | 6853 | 6/6 |
+| callers | baseline-grep-window | 6 | 7781 | 3 | 1946 | 6/6 |
+| diagnostic | diag-v1 | 7 | 1666 | 6 | 417 | 7/7 |
+| type-search | baseline-grep | 6 | 9451 | 2 | 2363 | 6/6 |
+| type-search | baseline-grep-chunk | 6 | 127 | 1 | 32 | 6/6 |
+| type-search | baseline-grep-window | 6 | 127 | 1 | 32 | 6/6 |
+| spec | baseline-grep | 6 | 397843 | 5 | 320291 | 6/6 |
+| spec | baseline-grep-chunk | 6 | 799 | 1 | 470 | 6/6 |
+| spec | baseline-grep-window | 6 | 799 | 1 | 470 | 6/6 |
+| spec | baseline-docs | 6 | 15410 | 2 | 7868 | 6/6 |
+| impact | baseline-grep | 6 | 4320 | 8 | 1080 | 6/6 |
+| impact | baseline-grep-chunk | 6 | 3860 | 6 | 965 | 6/6 |
+| impact | baseline-grep-window | 6 | 3860 | 6 | 965 | 6/6 |
+
+### 診断の修復（C）のタスクごとの値
+
+| タスク | コード | 戦略 | chars | calls | rounds | est_tokens |
+| --- | --- | --- | --- | --- | --- | --- |
+| C-01 | E1012 | diag-v1 | 1824 | 6 | 2 | 456 |
+| C-02 | E1014 | diag-v1 | 1241 | 4 | 1 | 311 |
+| C-03 | E1003 | diag-v1 | 1757 | 6 | 2 | 440 |
+| C-04 | E0002 | diag-v1 | 1666 | 6 | 2 | 417 |
+| C-05 | E1013 | diag-v1 | 1681 | 6 | 2 | 421 |
+| C-06 | E1021 | diag-v1 | 1462 | 4 | 1 | 366 |
+| C-07 | E1005 | diag-v1 | 1449 | 4 | 1 | 363 |
+
+### 測らなかったもの
+
+- 戦略 `diag-v2`: check --json has no related spans
+- 戦略 `diag-fix`: tsuzuri fix is not available
+- 戦略 `kb`: tsuzuri kb show is not available (definition); tsuzuri kb callers is not available (callers); tsuzuri kb find is not available (type-search); tsuzuri kb tests-for is not available (impact)
+- 戦略 `kb-oriented`: tsuzuri kb brief is not available
+- 戦略 `mcp-tools-list`: tsuzuri mcp did not answer tools/list
 <!-- /generated:ai-cost -->
 
 ## 再現手順

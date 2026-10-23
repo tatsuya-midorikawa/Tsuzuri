@@ -577,6 +577,7 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 - 手順 3 のテストを先に実行し、`ERR_MODULE_NOT_FOUND` で失敗することを確認してから計測コードを実装しました。`node scripts/slot.mjs -- node tests/ai_cost.mjs <既存 dev compiler>` は **40 passed、0 failed、5 skipped**（実コンパイラにない G22/G24/G21・KB/MCP）。未実装入口の成功経路もローカル子プロセスの fixture で検査しました。fixture の値を実測には含めません。
 - 独立した付録 D の shop golden 27 組が全一致し、`sh benchmarks/ai/golden.sh` の grep/sort/wc による 9 件の検算も一致しました。コンパイラの `check`・`test --list`、診断 7 件のコード・行・正誤パッチ、修復の calls/rounds を検査しました。
 - `run` は基準コンパイラで 104 行（Phase 1 の 97 行＋C の 7 行）です。`verify --strict` は **37 tasks、0 failures、0 drift**。異なる出力先への 2 回の実行で results/static/meta の byte 一致と work の消去を検査しました。
+- 公開レポートも 2 回生成して byte 一致を確認しました。変更文書のリンク・アンカー 6 件が成功し、既存の `check-docs.mjs`（検査対象は `_tsuzuri/` のみ）で関連する引数順序のページを検査しました: **1 ページ・41 リンク・3 例・native O0/O3 の 6 実行が成功**。コンパイラを走らせる最終文書検証には隔離した `TSUZURI_CACHE_DIR` を使い、共有キャッシュは変更・削除していません。
 - Phase 3 の外部 JSONL の検証・表、10 種の静的成果物の計測・サイズ上限、KB の事前構築・ID 解決・1/2 往復、MCP initialize/tools/list と終了処理を実装しました。G21/G27/G28/G29 自体は実装していません。不在の能力は測定値を捏造せず、明示した不在戦略はエラーです。
 - 文書: README、docs/ai-cost.md、docs/architecture.md、docs/benchmarks.md、付録の現行 API 追補。targets.yml の既存ベンチマーク検証に 1 行を追加しました。言語利用者の挙動は変わらないため、言語リファレンス・docs/language.md の更新と Rust の再ビルドは不要です。main の基準 CI `39954858404`（`41f80bc7`）は成功でした。
 - 主なファイル: benchmarks/ai/run.mjs、lib/{measure,corpus,tasks,derive,strategies,report,external,static,kb,mcp}.mjs、tasks/*.json（6）、corpus/shop/*.tz（6）・corpus/diag/c0*/Main.tz（7）、golden.sh、tests/ai_cost.mjs と上記文書です。
