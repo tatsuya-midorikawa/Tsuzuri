@@ -100,7 +100,7 @@ fn prefix count values =
     let mut index = 0
     for value in values do
         if index == count then break
-        taken = Vec.push taken value
+        taken = Vec.push value taken
         index = index + 1
     Array.to_list (Vec.to_array taken)
 
@@ -143,7 +143,7 @@ def where :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> [|'a|]
 fn where predicate values =
     let mut selected = Vec.empty()
     for value in values do
-        if predicate value then selected = Vec.push selected value
+        if predicate value then selected = Vec.push value selected
     Array.to_list (Vec.to_array selected)
 
 def filter :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> [|'a|]
@@ -152,7 +152,7 @@ fn filter predicate values = where predicate values
 def transpose :: Copy<'a> => ref [|[|'a|]|] -> [|[|'a|]|]
 fn transpose lists =
     let mut rows = Vec.empty()
-    for row in lists do rows = Vec.push rows (List.to_array row)
+    for row in lists do rows = Vec.push (List.to_array row) rows
     lists_of (Array.transpose (Vec.to_array rows))
 
 // ---- Traversal: iter, map, collect, choose ----
@@ -210,7 +210,7 @@ fn mapi transform values =
     let mut mapped = Vec.with_capacity values.length
     let mut index = 0
     for value in values do
-        mapped = Vec.push mapped (transform index value)
+        mapped = Vec.push (transform index value) mapped
         index = index + 1
     of_vec mapped
 
@@ -220,7 +220,7 @@ fn mapir transform values =
     let mut mapped = Vec.with_capacity values.length
     let mut index = 0
     for value in values do
-        mapped = Vec.push mapped (transform index (ref value))
+        mapped = Vec.push (transform index (ref value)) mapped
         index = index + 1
     of_vec mapped
 
@@ -232,7 +232,7 @@ fn map2 transform left right =
     let mut mapped = Vec.with_capacity count
     let mut index = 0
     while index < count do
-        mapped = Vec.push mapped (transform first[index] second[index])
+        mapped = Vec.push (transform first[index] second[index]) mapped
         index = index + 1
     assert (first.length == second.length)
     of_vec mapped
@@ -245,7 +245,7 @@ fn mapi2 transform left right =
     let mut mapped = Vec.with_capacity count
     let mut index = 0
     while index < count do
-        mapped = Vec.push mapped (transform index first[index] second[index])
+        mapped = Vec.push (transform index first[index] second[index]) mapped
         index = index + 1
     assert (first.length == second.length)
     of_vec mapped
@@ -259,7 +259,7 @@ fn map3 transform first second third =
     let mut mapped = Vec.with_capacity count
     let mut index = 0
     while index < count do
-        mapped = Vec.push mapped (transform one[index] two[index] three[index])
+        mapped = Vec.push (transform one[index] two[index] three[index]) mapped
         index = index + 1
     assert (one.length == two.length && two.length == three.length)
     of_vec mapped
@@ -271,7 +271,7 @@ fn map_fold mapping initial values =
     for value in values do
         match mapping state value with
         | (item, next) ->
-            mapped = Vec.push mapped item
+            mapped = Vec.push item mapped
             state = next
     (of_vec mapped, state)
 
@@ -294,7 +294,7 @@ fn collect mapping values =
     let mut items = Vec.empty()
     for value in values do
         let part = mapping value
-        for item in part do items = Vec.push items item
+        for item in part do items = Vec.push item items
     Array.to_list (Vec.to_array items)
 
 def choose :: Copy<'a> => ('a -> Maybe<'b>) -> ref [|'a|] -> [|'b|]
@@ -302,7 +302,7 @@ fn choose chooser values =
     let mut chosen = Vec.empty()
     for value in values do
         match chooser value with
-        | Maybe.Some item -> chosen = Vec.push chosen item
+        | Maybe.Some item -> chosen = Vec.push item chosen
         | Maybe.None -> ()
     of_vec chosen
 
@@ -332,7 +332,7 @@ fn fold_back folder values initial = Array.fold_back folder (List.to_array value
 
 /// References to the elements of `values`, in order.
 private def references :: ref [|'a|] -> Vec<ref 'a>
-fn references values = List.foldr (\collected value -> Vec.push collected value) (Vec.empty()) values
+fn references values = List.foldr (\collected value -> Vec.push value collected) (Vec.empty()) values
 
 /// Like `fold_back`, but `folder` borrows each element, so the elements need not be `Copy`.
 def foldr_back :: (ref 'a -> 'state -> 'state) -> ref [|'a|] -> 'state -> 'state
@@ -364,10 +364,10 @@ fn reduce_back folder values = Array.reduce_back folder (List.to_array values)
 def scan :: (Copy<'a>, Copy<'state>) => ('state -> 'a -> 'state) -> 'state -> ref [|'a|] -> [|'state|]
 fn scan folder initial values =
     let mut state = initial
-    let mut states = Vec.push (Vec.empty()) state
+    let mut states = Vec.push state (Vec.empty())
     for value in values do
         state = folder state value
-        states = Vec.push states state
+        states = Vec.push state states
     Array.to_list (Vec.to_array states)
 
 def scan_back :: (Copy<'a>, Copy<'state>) => ('a -> 'state -> 'state) -> ref [|'a|] -> 'state -> [|'state|]
@@ -517,8 +517,8 @@ fn partition predicate values =
     let mut accepted = Vec.empty()
     let mut rejected = Vec.empty()
     for value in values do
-        if predicate value then accepted = Vec.push accepted value
-        else rejected = Vec.push rejected value
+        if predicate value then accepted = Vec.push value accepted
+        else rejected = Vec.push value rejected
     (Array.to_list (Vec.to_array accepted), Array.to_list (Vec.to_array rejected))
 
 def partition_with :: Copy<'a> => ('a -> Result<'b, 'c>) -> ref [|'a|] -> ([|'b|] * [|'c|])
@@ -527,8 +527,8 @@ fn partition_with partitioner values =
     let mut right = Vec.empty()
     for value in values do
         match partitioner value with
-        | Result.Ok item -> left = Vec.push left item
-        | Result.Error item -> right = Vec.push right item
+        | Result.Ok item -> left = Vec.push item left
+        | Result.Error item -> right = Vec.push item right
     (of_vec left, of_vec right)
 
 // ---- Aggregates ----
@@ -654,7 +654,7 @@ fn append left right = Array.to_list (Array.append (List.to_array left) (List.to
 def concat :: Copy<'a> => ref [|[|'a|]|] -> [|'a|]
 fn concat lists =
     let mut parts = Vec.empty()
-    for part in lists do parts = Vec.push parts (List.to_array part)
+    for part in lists do parts = Vec.push (List.to_array part) parts
     Array.to_list (Array.concat (Vec.to_array parts))
 
 def zip :: (Copy<'a>, Copy<'b>) => ref [|'a|] -> ref [|'b|] -> [|('a * 'b)|]
@@ -734,7 +734,7 @@ fn unfold generator initial =
         | Maybe.Some state ->
             match generator state with
             | Maybe.Some (item, next) ->
-                items = Vec.push items item
+                items = Vec.push item items
                 current = Maybe.Some next
             | Maybe.None -> current = Maybe.None
         | Maybe.None -> current = Maybe.None
@@ -769,7 +769,7 @@ fn of_array values = Array.to_list values
 def of_seq :: Seq<'a> -> [|'a|]
 fn of_seq source =
     let mut items = Vec.empty()
-    for value in source do items = Vec.push items value
+    for value in source do items = Vec.push value items
     of_vec items
 
 /// Like `to_seq`, but yields references, so the elements need not be `Copy`.

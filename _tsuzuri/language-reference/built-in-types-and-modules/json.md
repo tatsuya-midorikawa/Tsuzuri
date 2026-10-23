@@ -162,7 +162,7 @@ record Point { x: i64, y: f64 } deriving (Encode, Decode)
 union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Encode, Decode)
 record Scene { name: string, points: [Point], shapes: Vec<Shape>, note: Maybe<string> } deriving (Encode, Decode)
 
-let shapes = Vec.push (Vec.push (Vec.push (Vec.empty()) (Circle 2.0)) (Rect (1.0, 2.5))) Empty
+let shapes = Vec.push Empty (Vec.push (Rect (1.0, 2.5)) (Vec.push (Circle 2.0) (Vec.empty())))
 let scene = Scene { name: "a", points: [Point { x: 1, y: 0.5 }], shapes: shapes, note: None }
 let text = Result.get (Json.serialize (ref scene))
 let back: Result<Scene, Json.Error> = Json.deserialize (ref text)

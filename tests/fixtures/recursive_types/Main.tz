@@ -100,7 +100,7 @@ union BufferTree = Children of Vec<BufferTree>
 export def vec_clone :: i64 -> i64
 fn vec_clone count =
     let mut tree = Children (Vec.empty())
-    for _index in 1i64 .. count do tree = Children (Vec.push (Vec.empty()) tree)
+    for _index in 1i64 .. count do tree = Children (Vec.push tree (Vec.empty()))
     let read = offset -> (match ref tree with | Children children -> children.length) + offset
     let copied = read
     copied 1 + read 2

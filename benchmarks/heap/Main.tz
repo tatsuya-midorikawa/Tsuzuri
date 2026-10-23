@@ -15,14 +15,14 @@ fn steady_churn slots rounds spread seed =
     let mut values: Vec<[i64u]> = Vec.with_capacity slots
     for _index in 0 .. (slots - 1) do
         state = step state
-        values = Vec.push values (block state (1 + ((state >>> 40) as i64) % spread))
+        values = Vec.push (block state (1 + ((state >>> 40) as i64) % spread)) values
     for _round in 0 .. (rounds - 1) do
         state = step state
         let slot = ((state >>> 33) as i64) % slots
-        values = Vec.set values slot (block state (1 + ((state >>> 20) as i64) % spread))
+        values = Vec.set slot (block state (1 + ((state >>> 20) as i64) % spread)) values
     let mut total = 0i64u
     for index in 0 .. (slots - 1) do
-        let row = Vec.at (ref values) index
+        let row = Vec.at index (ref values)
         total = total * 31 + row[0] + row[row.length - 1] + (row.length as i64u)
     total
 
@@ -33,6 +33,6 @@ fn vec_growth count rounds seed =
     let mut total = 0i64u
     for round in 0 .. (rounds - 1) do
         let mut values: Vec<i64u> = Vec.empty()
-        for index in 0 .. (count - 1) do values = Vec.push values (seed + (index as i64u) + (round as i64u))
+        for index in 0 .. (count - 1) do values = Vec.push (seed + (index as i64u) + (round as i64u)) values
         for value in values do total = total * 31 + value
     total

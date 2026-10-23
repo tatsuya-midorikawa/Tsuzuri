@@ -812,7 +812,7 @@ function evaluate(program, input) {
 const OWNED_HELPERS = [
   "def h_len :: ref Vec<i32> -> i64\nfn h_len v = (Vec.length v)",
   "def h_sum :: ref Vec<i32> -> i64\nfn h_sum v = ({ let mut acc: i64 = 0i64; for i in 0i64 .. ((Vec.length v) - 1i64) do { acc = (acc + ((v[i]) as i64)); () }; acc })",
-  "def h_grow :: Vec<i32> -> i32 -> Vec<i32>\nfn h_grow v x = (Vec.push (Vec.push v x) (x + 1i32))",
+  "def h_grow :: Vec<i32> -> i32 -> Vec<i32>\nfn h_grow v x = (Vec.push (x + 1i32) (Vec.push x v))",
   "def h_pop :: Vec<i32> -> Vec<i32>\nfn h_pop v = (match Vec.pop v with | (rest, _) -> rest)",
   "def h_drop :: Vec<i32> -> i64\nfn h_drop v = (Vec.length (ref v))",
   "def h_arr :: Vec<i32> -> i64\nfn h_arr v =\n    let a: [i32] = Vec.to_array v\n    ((Array.sum (ref a)) as i64)",
@@ -929,10 +929,10 @@ function sourceOwned(program, tail) {
         case "newvec": return `let mut ${s.n}: Vec<i32> = ${s.init === "empty" ? "Vec.empty()" : s.init === "capacity" ? "Vec.with_capacity 4" : `Vec.of_array [${s.items.map((v) => literalText(I32, v)).join(", ")}]`}`;
         case "newstr": return `let mut ${s.n}: string = ${t}`;
         case "newq": return `let mut ${s.n}: Vec<string> = Vec.empty()`;
-        case "push": return `${s.n} = Vec.push ${s.n} ${e32Text(s.e)}`;
+        case "push": return `${s.n} = Vec.push ${e32Text(s.e)} ${s.n}`;
         case "grow": return `${s.n} = h_grow ${s.n} ${e32Text(s.e)}`;
         case "pop": return `${s.n} = h_pop ${s.n}`;
-        case "loop": return `for ${s.i} in 0i64 .. ${literalText(I64, BigInt(s.count))} do { ${s.n} = Vec.push ${s.n} (${s.i} as i32); () }`;
+        case "loop": return `for ${s.i} in 0i64 .. ${literalText(I64, BigInt(s.count))} do { ${s.n} = Vec.push (${s.i} as i32) ${s.n}; () }`;
         case "whilepop": return `while ((Vec.length (ref ${s.n})) > 1i64) do { ${s.n} = h_pop ${s.n}; () }`;
         case "len": return `let ${s.out} = h_len (ref ${s.n})`;
         case "sum": return `let ${s.out} = h_sum (ref ${s.n})`;
@@ -946,8 +946,8 @@ function sourceOwned(program, tail) {
         case "slen": return `let ${s.out} = h_slen (ref ${s.n})`;
         case "take": return `let ${s.out} = h_take ${s.n}`;
         case "cat": return `let mut ${s.n}: string = h_cat ${s.a} ${s.b}`;
-        case "qpush": return `${s.n} = Vec.push ${s.n} ${t}`;
-        case "qpushs": return `${s.n} = Vec.push ${s.n} ${s.s}`;
+        case "qpush": return `${s.n} = Vec.push ${t} ${s.n}`;
+        case "qpushs": return `${s.n} = Vec.push ${s.s} ${s.n}`;
         case "qpop": return `${s.n} = (match Vec.pop ${s.n} with | (rest, _) -> rest)`;
         case "qclear": return `${s.n} = Vec.clear ${s.n}`;
         case "qlen": return `let ${s.out} = h_qlen (ref ${s.n})`;

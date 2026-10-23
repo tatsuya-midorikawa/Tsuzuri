@@ -203,7 +203,7 @@ fn fold_orbit_hash =
         let mut previous = -1
         for index in start .. stop - 1 do
             let member = grouped[index] % 2097152
-            if member != previous then keyed = Vec.push keyed (least * 2097152 + member)
+            if member != previous then keyed = Vec.push (least * 2097152 + member) keyed
             previous = member
         start = stop
     let mut members = Vec.to_array keyed

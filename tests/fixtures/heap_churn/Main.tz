@@ -14,7 +14,7 @@ fn churn rounds =
         let count = if index % 2 == 0 then 300000 else 37500
         let scratch = new [i64](count, k -> k)
         let node = new [i64](6, k -> k)
-        kept = Vec.push kept node
+        kept = Vec.push node kept
         total = total + scratch[count - 1]
         index = index + 1
     total + Vec.length (ref kept)
@@ -35,13 +35,13 @@ fn steady_churn slots rounds spread seed =
     let mut values: Vec<[i64u]> = Vec.with_capacity slots
     for _index in 0 .. (slots - 1) do
         state = step state
-        values = Vec.push values (block state (1 + ((state >>> 40) as i64) % spread))
+        values = Vec.push (block state (1 + ((state >>> 40) as i64) % spread)) values
     for _round in 0 .. (rounds - 1) do
         state = step state
         let slot = ((state >>> 33) as i64) % slots
-        values = Vec.set values slot (block state (1 + ((state >>> 20) as i64) % spread))
+        values = Vec.set slot (block state (1 + ((state >>> 20) as i64) % spread)) values
     let mut total = 0i64u
     for index in 0 .. (slots - 1) do
-        let row = Vec.at (ref values) index
+        let row = Vec.at index (ref values)
         total = total * 31 + row[0] + row[row.length - 1] + (row.length as i64u)
     total as i64

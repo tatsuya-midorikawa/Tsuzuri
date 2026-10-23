@@ -17,7 +17,7 @@ fn hex bytes =
     let digits = "0123456789abcdef"
     let mut units = Vec.empty()
     for byte in bytes do
-        units = Vec.push (Vec.push units digits[(byte >>> 4ubyte) as i64]) digits[(byte &&& 15ubyte) as i64]
+        units = Vec.push digits[(byte &&& 15ubyte) as i64] (Vec.push digits[(byte >>> 4ubyte) as i64] units)
     String.from_code_units (Vec.to_array units)
 
 def cbor :: utf8string -> string

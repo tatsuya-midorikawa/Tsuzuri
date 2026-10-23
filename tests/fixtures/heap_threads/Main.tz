@@ -17,7 +17,7 @@ fn churn seed rounds =
         let large = block seed 75
         let huge = block seed 625
         let label = to_string round + "-" + to_string seed
-        values = Vec.push values (small[3] + medium[11] + large[74] + huge[624] + label.length)
+        values = Vec.push (small[3] + medium[11] + large[74] + huge[624] + label.length) values
         round = round + 1
     Vec.to_array values
 
@@ -42,5 +42,5 @@ fn exhaust count =
 export def grow :: i64 -> i64
 fn grow count =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 0 .. (count - 1) do values = Vec.push values index
+    for index in 0 .. (count - 1) do values = Vec.push index values
     Vec.length (ref values)

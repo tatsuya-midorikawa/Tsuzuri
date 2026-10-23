@@ -37,7 +37,7 @@ fn unhex text =
         let high = text[index] as i64
         let low = text[index + 1] as i64
         let value = (if high >= 97 then high - 87 else high - 48) * 16 + (if low >= 97 then low - 87 else low - 48)
-        bytes = Vec.push bytes (value as ubyte)
+        bytes = Vec.push (value as ubyte) bytes
         index = index + 2
     Vec.to_array bytes
 
@@ -138,8 +138,8 @@ fn decode_hash case =
 export def nesting :: i64 -> i64
 fn nesting count =
     let mut bytes = Vec.empty()
-    for _index in 1 .. count do bytes = Vec.push bytes 129ubyte
-    let input = Vec.to_array (Vec.push bytes 128ubyte)
+    for _index in 1 .. count do bytes = Vec.push 129ubyte bytes
+    let input = Vec.to_array (Vec.push 128ubyte bytes)
     match Cbor.decode (ref input) with
     | Ok _ -> -1
     | Error error -> error_status (ref error)
@@ -169,7 +169,7 @@ fn scene_hash =
 def descending_keys :: i64 -> Vec<i64>
 fn descending_keys count =
     let mut keys = Vec.with_capacity count
-    for index in 1 .. count do keys = Vec.push keys (count - index)
+    for index in 1 .. count do keys = Vec.push (count - index) keys
     keys
 
 /// `count` entries whose keys descend, decoded from CBOR: inserting them into the sorted `Map` or
@@ -187,7 +187,7 @@ fn descending case count =
         | Error error -> error_status (ref error)
     | _ ->
         let mut pairs = Vec.with_capacity count
-        for index in 1 .. count do pairs = Vec.push pairs (count - index, (count - index) * 3)
+        for index in 1 .. count do pairs = Vec.push (count - index, (count - index) * 3) pairs
         let bytes = Result.get (Cbor.serialize (ref pairs))
         let decoded: Result<Map<i64, i64>, Json.Error> = Cbor.deserialize (ref bytes)
         match decoded with
@@ -201,7 +201,7 @@ fn scattered count =
     let mut keys = Vec.with_capacity count
     for index in 0 .. (count - 1) do
         let source = if index == count - 1 then 0 elif index == count / 2 then count / 3 else index
-        keys = Vec.push keys ((source * 7919) % count)
+        keys = Vec.push ((source * 7919) % count) keys
     keys
 
 /// The FNV-1a hash of the text of the error of decoding the CBOR of `keys` as a set, or 0.
@@ -239,11 +239,11 @@ fn bignum_round_trip digits sign =
 /// A positive bignum (tag 2) of `length` bytes 0xff, the largest value of that length.
 export def bignum_bytes :: i64 -> i64
 fn bignum_bytes length =
-    let mut bytes = Vec.push (Vec.push (Vec.push (Vec.empty()) 0xc2ubyte) 0x59ubyte) ((length / 256) as ubyte)
-    bytes = Vec.push bytes ((length % 256) as ubyte)
+    let mut bytes = Vec.push ((length / 256) as ubyte) (Vec.push 0x59ubyte (Vec.push 0xc2ubyte (Vec.empty())))
+    bytes = Vec.push ((length % 256) as ubyte) bytes
     let mut index = 0
     while index < length do
-        bytes = Vec.push bytes 0xffubyte
+        bytes = Vec.push 0xffubyte bytes
         index = index + 1
     let input = Vec.to_array bytes
     match Cbor.decode (ref input) with

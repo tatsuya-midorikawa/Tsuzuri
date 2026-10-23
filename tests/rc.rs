@@ -50,7 +50,7 @@ fn shared_pointer_programs_type_check_and_emit() {
         "let shared: Arc<[i64]> = Arc.new [1, 2, 3]\nlet weak: Arc.Weak<[i64]> = Arc.downgrade (ref shared)\nArray.sum (Arc.get (ref shared)) + Arc.weak_count (ref shared)",
         "def wrap :: 'a -> Rc<'a> = \\value -> Rc.new value\nlet number = wrap 5\nlet text = wrap \"x\"\nRc.strong_count (ref number) + (Rc.get (ref text)).length",
         "record Pair { left: Rc<string>, right: Rc<string> }\nlet shared = Rc.new \"x\"\nlet pair = Pair { left: Rc.share (ref shared), right: shared }\nRc.strong_count (ref pair.left)",
-        "let values = Vec.push (Vec.push (Vec.empty()) (Rc.new 1)) (Rc.new 2)\nlet copied = Rc.share (ref values[0])\nRc.strong_count (ref copied)",
+        "let values = Vec.push (Rc.new 2) (Vec.push (Rc.new 1) (Vec.empty()))\nlet copied = Rc.share (ref values[0])\nRc.strong_count (ref copied)",
     ] {
         emits(source);
     }
@@ -70,7 +70,7 @@ fn shared_pointers_are_owned_and_never_copied() {
         let message = rejects(&source, "E1005");
         assert!(message.contains("no instance for Copy"), "{message}");
     }
-    for source in both("let values = Vec.push (Vec.empty()) (Rc.new 1)\nVec.get (ref values) 0") {
+    for source in both("let values = Vec.push (Rc.new 1) (Vec.empty())\nVec.get 0 (ref values)") {
         rejects(&source, "E1005");
     }
     for source in both("let first = Rc.new 1\nlet second = Rc.new 1\nfirst == second") {
@@ -223,7 +223,8 @@ fn recursive_shared_values_drop_through_the_pending_list() {
     let tree = "record Node { value: i64, children: Vec<Rc<Node>> }\n\
         def leaf :: i64 -> Rc<Node>\nfn leaf value = Rc.new (Node { value: value, children: Vec.empty() })\n\
         let bottom = leaf 4\n\
-        let top = Rc.new (Node { value: 1, children: Vec.push (Vec.push (Vec.empty()) (Rc.share (ref bottom))) bottom })\n\
+        let shared = Rc.share (ref bottom)\n\
+        let top = Rc.new (Node { value: 1, children: Vec.push bottom (Vec.push shared (Vec.empty())) })\n\
         Vec.length (ref (Rc.get (ref top)).children)";
     for ir in emits(tree) {
         assert!(ir.contains(

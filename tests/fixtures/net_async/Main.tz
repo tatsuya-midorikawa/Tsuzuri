@@ -181,7 +181,7 @@ fn rec make_pairs listener target count clients servers =
 	else IO.bind (Net.connect target (Maybe.Some 5000)) (\connected ->
 		IO.bind (Net.accept listener (Maybe.Some 5000)) (\accepted ->
 			match (connected, accepted) with
-			| (Result.Ok client, Result.Ok server) -> make_pairs listener target (count - 1) (Vec.push clients client) (Vec.push servers server)
+			| (Result.Ok client, Result.Ok server) -> make_pairs listener target (count - 1) (Vec.push client clients) (Vec.push server servers)
 			| _ -> IO.pure (clients, servers)))
 
 /// One connected pair on a listener of its own: the listener, the client end, and the server end.

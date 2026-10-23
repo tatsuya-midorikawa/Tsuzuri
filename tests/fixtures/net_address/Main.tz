@@ -11,7 +11,7 @@ fn render _unit =
 	let mut lines: Vec<string> = Vec.with_capacity inputs.length
 	let mut index = 0
 	while index < inputs.length do
-		lines = Vec.push lines (show (ref inputs[index]))
+		lines = Vec.push (show (ref inputs[index])) lines
 		index = index + 1
 	let separator = "\n"
 	String.join (ref separator) (ref (Vec.to_array lines)) + "\n"

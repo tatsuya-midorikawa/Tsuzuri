@@ -5,7 +5,7 @@ def empty :: Map<'key, 'value>
 fn empty = Map { entries: Vec.empty() }
 
 def singleton :: 'key -> 'value -> Map<'key, 'value>
-fn singleton key value = Map { entries: Vec.push (Vec.empty()) (Entry { key: key, value: value }) }
+fn singleton key value = Map { entries: Vec.push (Entry { key: key, value: value }) (Vec.empty()) }
 
 def length :: ref Map<'key, 'value> -> i64
 fn length map = Vec.length (ref map.entries)
@@ -46,17 +46,17 @@ fn insert map key value =
 	let index = lower_bound (ref map) (ref key)
 	let count = length (ref map)
 	if found (ref map) (ref key) index then
-		let entries = Vec.swap map.entries index (count - 1)
+		let entries = Vec.swap index (count - 1) map.entries
 		match Vec.pop entries with
 		| (remaining, Maybe.Some old) ->
 			let replacement = Entry { key: old.key, value: value }
-			Map { entries: Vec.swap (Vec.push remaining replacement) index (count - 1) }
+			Map { entries: Vec.swap index (count - 1) (Vec.push replacement remaining) }
 		| (_, Maybe.None) -> unreachable ()
 	else
-		let mut entries = Vec.push map.entries (Entry { key: key, value: value })
+		let mut entries = Vec.push (Entry { key: key, value: value }) map.entries
 		let mut position = count
 		while position > index do
-			entries = Vec.swap entries position (position - 1)
+			entries = Vec.swap position (position - 1) entries
 			position = position - 1
 		Map { entries: entries }
 
@@ -68,7 +68,7 @@ fn remove map key =
 		let mut entries = map.entries
 		let mut position = index
 		while position < count - 1 do
-			entries = Vec.swap entries position (position + 1)
+			entries = Vec.swap position (position + 1) entries
 			position = position + 1
 		match Vec.pop entries with
 		| (remaining, _removed) -> Map { entries: remaining }

@@ -30,23 +30,23 @@ fn vec_types_are_parametric_owned_and_noncopy() {
 fn vec_access_cannot_move_borrowed_elements_or_invalidate_loans() {
     for (source, code) in [
         (
-            "let values = Vec.push (Vec.empty()) \"owned\"\nvalues[0]",
+            "let values = Vec.push \"owned\" (Vec.empty())\nvalues[0]",
             "E1012",
         ),
         (
-            "let values = Vec.push (Vec.empty()) \"owned\"\nVec.get (ref values) 0",
+            "let values = Vec.push \"owned\" (Vec.empty())\nVec.get 0 (ref values)",
             "E1005",
         ),
         (
-            "let values = Vec.push (Vec.empty()) 1\nlet borrowed = Vec.at (ref values) 0\nlet changed = Vec.push values 2\nderef borrowed",
+            "let values = Vec.push 1 (Vec.empty())\nlet borrowed = Vec.at 0 (ref values)\nlet changed = Vec.push 2 values\nderef borrowed",
             "E1014",
         ),
         (
-            "let borrowed = { let values = Vec.push (Vec.empty()) 1; Vec.at (ref values) 0 }\nderef borrowed",
+            "let borrowed = { let values = Vec.push 1 (Vec.empty()); Vec.at 0 (ref values) }\nderef borrowed",
             "E1013",
         ),
         (
-            "let mut values = Vec.push (Vec.empty()) 1\nref mut values[0]",
+            "let mut values = Vec.push 1 (Vec.empty())\nref mut values[0]",
             "E1014",
         ),
         ("type Vec = i64", "E1001"),
@@ -59,11 +59,11 @@ fn vec_access_cannot_move_borrowed_elements_or_invalidate_loans() {
 #[test]
 fn vec_capacity_and_clone_lowering() {
     for source in [
-        "let values = Vec.push (Vec.empty()) 42\nvalues[0]",
-        "let values = Vec.push (Vec.empty()) \"owned\"\n(Vec.at (ref values) 0).length",
-        "let values = Vec.of_array [1, 2]\nlet values = Vec.reserve values 10\nlet values = Vec.swap values 0 1\nlet values = Vec.set values 0 42\nlet array = Vec.to_array values\narray[0]",
-        "let values = Vec.push (Vec.empty()) 42\nmatch Vec.pop values with | (remaining, item) -> Vec.length (ref remaining) + Maybe.get item",
-        "let values = Vec.push (Vec.empty()) \"owned\"\nlet values = Vec.truncate values 0\nlet values = Vec.clear values\nVec.length (ref values)",
+        "let values = Vec.push 42 (Vec.empty())\nvalues[0]",
+        "let values = Vec.push \"owned\" (Vec.empty())\n(Vec.at 0 (ref values)).length",
+        "let values = Vec.of_array [1, 2]\nlet values = Vec.reserve 10 values\nlet values = Vec.swap 0 1 values\nlet values = Vec.set 0 42 values\nlet array = Vec.to_array values\narray[0]",
+        "let values = Vec.push 42 (Vec.empty())\nmatch Vec.pop values with | (remaining, item) -> Vec.length (ref remaining) + Maybe.get item",
+        "let values = Vec.push \"owned\" (Vec.empty())\nlet values = Vec.truncate 0 values\nlet values = Vec.clear values\nVec.length (ref values)",
         "let values: Vec<i64> = Vec.empty()\nVec.length (ref values)",
         "let values: Vec<string> = Vec.with_capacity 4\nVec.capacity (ref values)",
         "let values: Vec<i64> = Vec.with_capacity 4\nlet copy = Vec.clone (ref values)\nVec.is_empty (ref copy)",

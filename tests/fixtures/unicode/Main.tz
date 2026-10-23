@@ -26,9 +26,9 @@ fn chunk start step =
     let mut units: Vec<i16u> = Vec.with_capacity (2 * (stop - start))
     let mut code = start
     while code < stop do
-        if code >= 65536 then units = Vec.push (Vec.push units ((55296 + (code - 65536) / 1024) as i16u)) ((56320 + code % 1024) as i16u)
-        elif code < 55296 || code > 57343 then units = Vec.push units (code as i16u)
-        if code < 55296 || code > 57343 then units = Vec.push units 32i16u
+        if code >= 65536 then units = Vec.push ((56320 + code % 1024) as i16u) (Vec.push ((55296 + (code - 65536) / 1024) as i16u) units)
+        elif code < 55296 || code > 57343 then units = Vec.push (code as i16u) units
+        if code < 55296 || code > 57343 then units = Vec.push 32i16u units
         code = code + step
     String.from_code_units (Vec.to_array units)
 
@@ -40,8 +40,8 @@ fn unpack a b c d e =
     for index in 0 .. 14 do
         let slot = (packed[index / 3] >>> (21 * (index % 3))) &&& 2097151
         let code = slot - 1
-        if code >= 65536 then units = Vec.push (Vec.push units ((55296 + (code - 65536) / 1024) as i16u)) ((56320 + code % 1024) as i16u)
-        elif code >= 0 then units = Vec.push units (code as i16u)
+        if code >= 65536 then units = Vec.push ((56320 + code % 1024) as i16u) (Vec.push ((55296 + (code - 65536) / 1024) as i16u) units)
+        elif code >= 0 then units = Vec.push (code as i16u) units
     String.from_code_units (Vec.to_array units)
 
 private def mask :: ref [i64] -> i64
@@ -149,11 +149,11 @@ fn segments_packed which a b c d e =
 export def word_run :: i64 -> i64 -> i64 -> i64 -> i64
 fn word_run first middle last run =
     let mut units: Vec<i16u> = Vec.empty()
-    units = Vec.push units (first as i16u)
-    for _index in 1 .. run do units = Vec.push units 769i16u
-    units = Vec.push units (middle as i16u)
-    for _index in 1 .. run do units = Vec.push units 769i16u
-    units = Vec.push units (last as i16u)
+    units = Vec.push (first as i16u) units
+    for _index in 1 .. run do units = Vec.push 769i16u units
+    units = Vec.push (middle as i16u) units
+    for _index in 1 .. run do units = Vec.push 769i16u units
+    units = Vec.push (last as i16u) units
     let text = String.from_code_units (Vec.to_array units)
     let bytes = Utf8String.from_string (ref text)
     let offsets = Unicode.word_boundaries (ref text)

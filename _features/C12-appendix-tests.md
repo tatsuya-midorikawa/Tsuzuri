@@ -283,14 +283,14 @@ def table_keys :: ref Table -> [i64]
 fn table_keys table =
     let mut keys = Vec.empty()
     for key in 0i64 .. table.present.length - 1 do
-        if table.present[key] then keys = Vec.push keys key
+        if table.present[key] then keys = Vec.push key keys
     Vec.to_array keys
 
 def table_values :: ref Table -> [i64]
 fn table_values table =
     let mut values = Vec.empty()
     for key in 0i64 .. table.present.length - 1 do
-        if table.present[key] then values = Vec.push values table.values[key]
+        if table.present[key] then values = Vec.push table.values[key] values
     Vec.to_array values
 
 def same :: ref [i64] -> ref [i64] -> bool
@@ -403,7 +403,7 @@ fn profile_operations profile seed =
         state = next_state state
         let key = draw state range
         let kind = if choice < inserts then 0 elif choice < inserts + (100 - inserts) * 3 / 4 then 1 else 2
-        operations = Vec.push operations (kind, key)
+        operations = Vec.push (kind, key) operations
     Vec.to_array operations
 
 // 1 when the Map, the Set, or the set operations agree with the model for the run of `profile` that `seed` draws.

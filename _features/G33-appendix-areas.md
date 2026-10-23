@@ -163,7 +163,7 @@
 | STD-007 | `Array.binary_search` MUST return the index of a present element in a sorted array. | LR/built-in-types-and-modules/array.md | `let scores = [5, 2, 9, 1, 8]⏎let ascending = Array.sort (ref scores)⏎match Array.binary_search (ref ascending) (ref 5) with⏎\| Some i -> to_string i⏎\| None -> "not found"` → `expect: stdout "2\n"` |
 | STD-008 | `Array.product` MUST multiply the elements of an array. | LR/built-in-types-and-modules/array.md | `let factors = [1, 2, 3, 4]⏎Array.product (ref factors)` → `expect: stdout "24\n"` |
 | STD-009 | `Parse.parse` MUST return `Some` for the text of a number and `None` otherwise. | LR/types-and-type-inference/cast.md | `let good = "42"⏎let bad = "4x2"⏎let a: Maybe<i64> = Parse.parse (ref good)⏎let b: Maybe<i64> = Parse.parse (ref bad)⏎let sa = match a with⏎\| Some v -> to_string v⏎\| None -> "none"⏎let sb = match b with⏎\| Some v -> to_string v⏎\| None -> "none"⏎$"{sa} {sb}"` → `expect: stdout "42 none\n"` |
-| STD-010 | `Vec.push` MUST append and `for` over a `Vec` MUST visit the elements in insertion order. | LR/loops-and-conditionals/for-in.md | `let values = Vec.push (Vec.push (Vec.empty()) 20) 40⏎let mut text = ""⏎for item in values do⏎    text = text + to_string item⏎text` → `expect: stdout "2040\n"` |
+| STD-010 | `Vec.push` MUST append and `for` over a `Vec` MUST visit the elements in insertion order. | LR/loops-and-conditionals/for-in.md | `let values = Vec.push 40 (Vec.push 20 (Vec.empty()))⏎let mut text = ""⏎for item in values do⏎    text = text + to_string item⏎text` → `expect: stdout "2040\n"` |
 
 ## C.10 EDN（edition。10 件。3 件が cli モード）
 

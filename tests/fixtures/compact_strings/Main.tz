@@ -248,7 +248,7 @@ fn probe_collections a b =
     let mut items: Vec<string> = Vec.empty()
     let mut index = 0
     while index < 6 do
-        items = Vec.push items (variant (a + index) index + variant (b + index) 1)
+        items = Vec.push (variant (a + index) index + variant (b + index) 1) items
         index = index + 1
     let array = Vec.to_array items
     let mut order = 0

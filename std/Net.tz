@@ -71,13 +71,13 @@ fn parse_v6 bytes start stop =
 		if index < stop && bytes[index] == 46ubyte then
 			let tail = parse_v4 bytes begin stop
 			if tail >= 0 && Vec.length (ref groups) <= 6 then
-				groups = Vec.push groups (tail / 65536)
-				groups = Vec.push groups (tail % 65536)
+				groups = Vec.push (tail / 65536) groups
+				groups = Vec.push (tail % 65536) groups
 				index = stop
 				more = false
 			else valid = false
 		elif digits >= 1 && digits <= 4 && Vec.length (ref groups) < 8 then
-			groups = Vec.push groups value
+			groups = Vec.push value groups
 			if index == stop then more = false
 			elif bytes[index] == 58ubyte then
 				if index + 1 < stop && bytes[index + 1] == 58ubyte then

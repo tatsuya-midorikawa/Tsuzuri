@@ -55,7 +55,7 @@ fn text_hash result =
 
 def scene :: unit -> Scene
 fn scene _unit =
-    let shapes = Vec.push (Vec.push (Vec.push (Vec.empty()) (Circle 2.0)) (Rect (1.0, 2.5))) Empty
+    let shapes = Vec.push Empty (Vec.push (Rect (1.0, 2.5)) (Vec.push (Circle 2.0) (Vec.empty())))
     Scene { name: "a", points: [Point { x: 1, y: 0.5 }], shapes: shapes, note: None }
 
 export def scene_hash :: i64
@@ -78,8 +78,8 @@ fn scene_round_trip =
 export def nesting :: i64 -> i64
 fn nesting count =
     let mut bytes = Vec.with_capacity (count * 2)
-    for _index in 1 .. count do bytes = Vec.push bytes 91ubyte
-    for _index in 1 .. count do bytes = Vec.push bytes 93ubyte
+    for _index in 1 .. count do bytes = Vec.push 91ubyte bytes
+    for _index in 1 .. count do bytes = Vec.push 93ubyte bytes
     let text = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
     status (Json.parse (ref text))
 
@@ -88,9 +88,9 @@ export def object_nesting :: i64 -> i64
 fn object_nesting count =
     let mut bytes = Vec.with_capacity (count * 6 + 1)
     for _index in 1 .. count do
-        bytes = Vec.push (Vec.push (Vec.push (Vec.push (Vec.push bytes 123ubyte) 34ubyte) 97ubyte) 34ubyte) 58ubyte
-    bytes = Vec.push bytes 49ubyte
-    for _index in 1 .. count do bytes = Vec.push bytes 125ubyte
+        bytes = Vec.push 58ubyte (Vec.push 34ubyte (Vec.push 97ubyte (Vec.push 34ubyte (Vec.push 123ubyte bytes))))
+    bytes = Vec.push 49ubyte bytes
+    for _index in 1 .. count do bytes = Vec.push 125ubyte bytes
     let text = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
     status (Json.parse (ref text))
 
@@ -98,7 +98,7 @@ fn object_nesting count =
 export def too_large :: i64
 fn too_large =
     let mut bytes = Vec.with_capacity 67108865
-    for _index in 1 .. 67108865 do bytes = Vec.push bytes 32ubyte
+    for _index in 1 .. 67108865 do bytes = Vec.push 32ubyte bytes
     let text = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
     status (Json.parse (ref text))
 
@@ -320,7 +320,7 @@ fn container_hash case =
 def descending_keys :: i64 -> Vec<i64>
 fn descending_keys count =
     let mut keys = Vec.with_capacity count
-    for index in 1 .. count do keys = Vec.push keys (count - index)
+    for index in 1 .. count do keys = Vec.push (count - index) keys
     keys
 
 /// "k" and `number` in five digits.
@@ -336,7 +336,7 @@ fn descending_object count =
     let mut members = Vec.with_capacity count
     for index in 1 .. count do
         let number = count - index
-        members = Vec.push members (key_name number, Result.get (Json.encode (ref number)))
+        members = Vec.push (key_name number, Result.get (Json.encode (ref number))) members
     let object = Json.Object (Vec.to_array members)
     Json.to_utf8string (ref object)
 
@@ -355,7 +355,7 @@ fn descending case count =
         | Error error -> error_status (ref error)
     | 1 ->
         let mut pairs = Vec.with_capacity count
-        for index in 1 .. count do pairs = Vec.push pairs (count - index, (count - index) * 3)
+        for index in 1 .. count do pairs = Vec.push (count - index, (count - index) * 3) pairs
         let text = Result.get (Json.serialize (ref pairs))
         let decoded: Result<Map<i64, i64>, Json.Error> = Json.deserialize (ref text)
         match decoded with
@@ -375,7 +375,7 @@ fn scattered count =
     let mut keys = Vec.with_capacity count
     for index in 0 .. (count - 1) do
         let source = if index == count - 1 then 0 elif index == count / 2 then count / 3 else index
-        keys = Vec.push keys ((source * 7919) % count)
+        keys = Vec.push ((source * 7919) % count) keys
     keys
 
 def unit_of :: Result<'a, Json.Error> -> Result<unit, Json.Error>

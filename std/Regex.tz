@@ -208,11 +208,11 @@ fn normalize ranges =
 		let last = keys[index] % 2097152
 		if low >= 0 && first <= high + 1 then (if last > high then high = last)
 		else
-			if low >= 0 then output = Vec.push (Vec.push output low) high
+			if low >= 0 then output = Vec.push high (Vec.push low output)
 			low = first
 			high = last
 		index = index + 1
-	if low >= 0 then output = Vec.push (Vec.push output low) high
+	if low >= 0 then output = Vec.push high (Vec.push low output)
 	output
 
 /// The scalars outside normalized ranges.
@@ -222,10 +222,10 @@ fn complement ranges =
 	let mut next = 0
 	let mut index = 0
 	while index < Vec.length (ref ranges) do
-		if ranges[index] > next then output = Vec.push (Vec.push output next) (ranges[index] - 1)
+		if ranges[index] > next then output = Vec.push (ranges[index] - 1) (Vec.push next output)
 		next = ranges[index + 1] + 1
 		index = index + 2
-	if next <= LastScalar then output = Vec.push (Vec.push output next) LastScalar
+	if next <= LastScalar then output = Vec.push LastScalar (Vec.push next output)
 	output
 
 private def holds_scalar :: ref Vec<i64> -> i64 -> bool
@@ -255,16 +255,16 @@ fn fold ranges pairs =
 	let mut targets: Vec<i64> = Vec.empty()
 	let mut index = 0
 	while index < count do
-		if holds_scalar (ref ranges) pairs[2 * index] || holds_scalar (ref ranges) pairs[2 * index + 1] then targets = Vec.push targets pairs[2 * index + 1]
+		if holds_scalar (ref ranges) pairs[2 * index] || holds_scalar (ref ranges) pairs[2 * index + 1] then targets = Vec.push pairs[2 * index + 1] targets
 		index = index + 1
 	let mut folded = Vec.to_array targets
 	Array.sort_in_place (ref mut folded)
 	let mut output = ranges
 	index = 0
 	while index < count do
-		if sorted_holds (ref folded) pairs[2 * index + 1] then output = Vec.push (Vec.push output pairs[2 * index]) pairs[2 * index]
+		if sorted_holds (ref folded) pairs[2 * index + 1] then output = Vec.push pairs[2 * index] (Vec.push pairs[2 * index] output)
 		index = index + 1
-	for code in folded do output = Vec.push (Vec.push output code) code
+	for code in folded do output = Vec.push code (Vec.push code output)
 	normalize output
 
 private def unicode_pairs :: unit -> [i64]
@@ -273,7 +273,7 @@ fn unicode_pairs _unit =
 	let mut flat: Vec<i64> = Vec.with_capacity (2 * pairs.length)
 	for pair in pairs do
 		match pair with
-		| (code, folded) -> flat = Vec.push (Vec.push flat code) folded
+		| (code, folded) -> flat = Vec.push folded (Vec.push code flat)
 	Vec.to_array flat
 
 private def ascii_pairs :: unit -> [i64]
@@ -286,7 +286,7 @@ fn append_property output name =
 	| Maybe.Some ranges ->
 		for pair in ranges do
 			match pair with
-			| (first, last) -> result = Vec.push (Vec.push result first) last
+			| (first, last) -> result = Vec.push last (Vec.push first result)
 	| Maybe.None -> ()
 	result
 
@@ -320,7 +320,7 @@ fn special pattern which offset length negated flags pairs =
 				let mut flat: Vec<i64> = Vec.with_capacity (2 * ranges.length)
 				for pair in ranges do
 					match pair with
-					| (first, last) -> flat = Vec.push (Vec.push flat first) last
+					| (first, last) -> flat = Vec.push last (Vec.push first flat)
 				Maybe.Some flat
 			| Maybe.None -> Maybe.None
 	match base with
@@ -402,19 +402,19 @@ fn bracket pattern open flags pairs =
 					| (Single high, finish) ->
 						if high < low then problem = Maybe.Some (invalid_range pos)
 						else
-							set = Vec.push (Vec.push set low) high
+							set = Vec.push high (Vec.push low set)
 							pos = finish
 					| (Many _, _) -> problem = Maybe.Some (invalid_range pos)
 					| (Again, _) -> problem = Maybe.Some (invalid_range pos)
 					| (Broken error, _) -> problem = Maybe.Some error
 				else
-					set = Vec.push (Vec.push set low) low
+					set = Vec.push low (Vec.push low set)
 					pos = after
 			| (Many ranges, after) ->
 				if dash_at pattern after then problem = Maybe.Some (invalid_range pos)
 				else
-					for value in Vec.to_array ranges do set = Vec.push set value
-					seen = Vec.push (Vec.push seen pos) (after - pos)
+					for value in Vec.to_array ranges do set = Vec.push value set
+					seen = Vec.push (after - pos) (Vec.push pos seen)
 					pos = after
 			| (Again, after) -> if dash_at pattern after then problem = Maybe.Some (invalid_range pos) else pos = after
 			| (Broken error, _) -> problem = Maybe.Some error
@@ -435,9 +435,9 @@ fn add_class classes ranges set =
 	if start / 2 + count > MaxRanges then (classes, ranges, -1)
 	else
 		let mut output = ranges
-		for value in Vec.to_array set do output = Vec.push output value
+		for value in Vec.to_array set do output = Vec.push value output
 		let id = Vec.length (ref classes) / 2
-		(Vec.push (Vec.push classes start) count, output, id)
+		(Vec.push count (Vec.push start classes), output, id)
 
 private def same_text :: ref string -> i64 -> i64 -> i64 -> bool
 fn same_text pattern first second length =
@@ -457,7 +457,7 @@ fn recall memo pattern key offset length =
 	found
 
 private def add_node :: Vec<i64> -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> Vec<i64>
-fn add_node tree kind a b c d size = Vec.push (Vec.push (Vec.push (Vec.push (Vec.push (Vec.push tree kind) a) b) c) d) (if size > MaxInstructions then MaxInstructions + 1 else size)
+fn add_node tree kind a b c d size = Vec.push (if size > MaxInstructions then MaxInstructions + 1 else size) (Vec.push d (Vec.push c (Vec.push b (Vec.push a (Vec.push kind tree)))))
 
 /// Appends the node over `members[start..]`: an empty node for none, the member itself for one, else a
 /// sequence or an alternation (`kind`). Returns the tree and the node.
@@ -475,7 +475,7 @@ fn combine tree members start kind =
 		let mut output = add_node tree (if count == 0 then NodeEmpty else kind) count 0 0 0 size
 		index = start
 		while index < Vec.length members do
-			output = Vec.push output members[index]
+			output = Vec.push members[index] output
 			index = index + 1
 		(output, id)
 
@@ -633,7 +633,7 @@ fn atom pattern pos flags pairs tables =
 				ranges = updated_ranges
 				class_id = id
 				if id < 0 then problem = Maybe.Some (failure TooLarge 0 "character classes exceed 65536 ranges in total")
-				elif special_key >= 0 then memo = Vec.push (Vec.push (Vec.push (Vec.push memo memo_key) name_offset) name_length) id
+				elif special_key >= 0 then memo = Vec.push id (Vec.push name_length (Vec.push name_offset (Vec.push memo_key memo)))
 		| Maybe.None -> ()
 		let node = if kind == NodeAssert then kind elif class_id >= 0 then NodeClass else kind
 		let a = if node == NodeClass then class_id else key
@@ -665,8 +665,8 @@ fn parse pattern =
 			match combine tree (ref items) item_start NodeConcat with
 			| (updated, node) ->
 				tree = updated
-				items = Vec.truncate items item_start
-				alternatives = Vec.push alternatives node
+				items = Vec.truncate item_start items
+				alternatives = Vec.push node alternatives
 			repeatable = false
 			if code == 124 then pos = pos + 1
 			elif code == 41 && depth == 0 then problem = Maybe.Some (failure Syntax pos "unmatched ')'; escape it as '\\)'")
@@ -676,16 +676,16 @@ fn parse pattern =
 				match combine tree (ref alternatives) alternative_start NodeAlternate with
 				| (updated, node) ->
 					tree = updated
-					alternatives = Vec.truncate alternatives alternative_start
+					alternatives = Vec.truncate alternative_start alternatives
 					if code < 0 then root = node
 					else
 						let capture = frames[5 * depth - 3]
 						flags = frames[5 * depth - 2]
-						frames = Vec.truncate frames (5 * depth - 5)
+						frames = Vec.truncate (5 * depth - 5) frames
 						let id = Vec.length (ref tree)
 						let size = tree[node + 5] + 2
 						if capture >= 0 then tree = add_node tree NodeGroup capture node 0 0 size
-						items = Vec.push items (if capture >= 0 then id else node)
+						items = Vec.push (if capture >= 0 then id else node) items
 						repeatable = true
 						pos = pos + 1
 		elif code == 40 then
@@ -702,12 +702,12 @@ fn parse pattern =
 					elif bad >= 0 then problem = Maybe.Some (failure Syntax bad ("unknown flag '" + text_at pattern bad + "'; use i, m, s or u"))
 					elif unit pattern finish == 41 && pos > 0 then problem = Maybe.Some (failure Unsupported pos "inline flags are allowed only at the start; use (?flags:...)")
 					else
-						if unit pattern finish != 41 then frames = Vec.push (Vec.push (Vec.push (Vec.push (Vec.push frames (Vec.length (ref items))) (Vec.length (ref alternatives))) (-1)) flags) pos
+						if unit pattern finish != 41 then frames = Vec.push pos (Vec.push flags (Vec.push (-1) (Vec.push (Vec.length (ref alternatives)) (Vec.push (Vec.length (ref items)) frames))))
 						flags = updated
 						pos = finish + 1
 			else
 				groups = groups + 1
-				frames = Vec.push (Vec.push (Vec.push (Vec.push (Vec.push frames (Vec.length (ref items))) (Vec.length (ref alternatives))) groups) flags) pos
+				frames = Vec.push pos (Vec.push flags (Vec.push groups (Vec.push (Vec.length (ref alternatives)) (Vec.push (Vec.length (ref items)) frames))))
 				pos = pos + 1
 		elif code == 42 || code == 43 || code == 63 || code == 123 then
 			match quantifier pattern pos with
@@ -724,7 +724,7 @@ fn parse pattern =
 					let id = Vec.length (ref tree)
 					let size = repeat_size tree[child + 5] minimum maximum
 					tree = add_node tree NodeRepeat child minimum maximum (if lazy then 0 else 1) size
-					items = Vec.push (Vec.truncate items last) id
+					items = Vec.push id (Vec.truncate last items)
 					repeatable = false
 					pos = end
 		else
@@ -738,7 +738,7 @@ fn parse pattern =
 				| Maybe.None ->
 					let id = Vec.length (ref tree)
 					tree = add_node tree kind a b 0 0 1
-					items = Vec.push items id
+					items = Vec.push id items
 					repeatable = kind != NodeAssert
 					pos = finish
 	match problem with
@@ -851,8 +851,8 @@ fn escape text =
 	let mut output: Vec<i16u> = Vec.with_capacity text.length
 	let mut index = 0
 	while index < text.length do
-		if is_syntax (text[index] as i64) then output = Vec.push output 92i16u
-		output = Vec.push output text[index]
+		if is_syntax (text[index] as i64) then output = Vec.push 92i16u output
+		output = Vec.push text[index] output
 		index = index + 1
 	String.from_code_units (Vec.to_array output)
 
@@ -1044,7 +1044,7 @@ fn spans_of re text bytes utf8 =
 		while group <= re.groups do
 			let first = ws[best + 2 * group]
 			let last = ws[best + 2 * group + 1]
-			spans = Vec.push spans (if first < 0 || last < 0 then (-1, -1) else (first, last))
+			spans = Vec.push (if first < 0 || last < 0 then (-1, -1) else (first, last)) spans
 			group = group + 1
 		Maybe.Some (Vec.to_array spans)
 	else Maybe.None
@@ -1063,7 +1063,7 @@ fn all_matches re text bytes utf8 slots =
 		if search re text bytes utf8 (ref mut ws) start slots false then
 			let mut slot = 0
 			while slot < slots do
-				output = Vec.push output ws[best + slot]
+				output = Vec.push ws[best + slot] output
 				slot = slot + 1
 			let first = ws[best]
 			let last = ws[best + 1]
@@ -1079,7 +1079,7 @@ fn spans flat =
 	let mut output: Vec<(i64 * i64)> = Vec.with_capacity count
 	let mut index = 0
 	while index < count do
-		output = Vec.push output (flat[2 * index], flat[2 * index + 1])
+		output = Vec.push (flat[2 * index], flat[2 * index + 1]) output
 		index = index + 1
 	Vec.to_array output
 
@@ -1100,7 +1100,7 @@ fn template text bytes utf8 groups =
 	while index < length do
 		let next = code_at text bytes utf8 (index + 1)
 		if code_at text bytes utf8 index == 36 && next == 36 then
-			parts = Vec.push (Vec.push (Vec.push parts 0) literal) (index + 1)
+			parts = Vec.push (index + 1) (Vec.push literal (Vec.push 0 parts))
 			index = index + 2
 			literal = index
 		elif code_at text bytes utf8 index == 36 && next == 123 then
@@ -1110,20 +1110,20 @@ fn template text bytes utf8 groups =
 				group = if group > groups then group else group * 10 + code_at text bytes utf8 digits - 48
 				digits = digits + 1
 			if digits > index + 2 && code_at text bytes utf8 digits == 125 then
-				parts = Vec.push (Vec.push (Vec.push parts 0) literal) index
-				parts = Vec.push (Vec.push (Vec.push parts 1) group) 0
+				parts = Vec.push index (Vec.push literal (Vec.push 0 parts))
+				parts = Vec.push 0 (Vec.push group (Vec.push 1 parts))
 				index = digits + 1
 				literal = index
 			else index = index + 1
 		else index = index + 1
-	Vec.push (Vec.push (Vec.push parts 0) literal) length
+	Vec.push length (Vec.push literal (Vec.push 0 parts))
 
 private def units :: Vec<i16u> -> ref string -> i64 -> i64 -> Vec<i16u>
 fn units output text first last =
 	let mut result = output
 	let mut index = first
 	while index < last do
-		result = Vec.push result text[index]
+		result = Vec.push text[index] result
 		index = index + 1
 	result
 
@@ -1132,7 +1132,7 @@ fn bytes_of output text first last =
 	let mut result = output
 	let mut index = first
 	while index < last do
-		result = Vec.push result text[index]
+		result = Vec.push text[index] result
 		index = index + 1
 	result
 
@@ -1212,10 +1212,10 @@ fn split re text =
 	let mut start = 0
 	let mut index = 0
 	while index < count do
-		output = Vec.push output (Maybe.get (String.slice text start flat[2 * index]))
+		output = Vec.push (Maybe.get (String.slice text start flat[2 * index])) output
 		start = flat[2 * index + 1]
 		index = index + 1
-	output = Vec.push output (Maybe.get (String.slice text start text.length))
+	output = Vec.push (Maybe.get (String.slice text start text.length)) output
 	Vec.to_array output
 
 /// The number of VM steps of `find` on `text`: threads explored plus threads stepped. It grows linearly
@@ -1291,8 +1291,8 @@ fn split_utf8 re text =
 	let mut start = 0
 	let mut index = 0
 	while index < count do
-		output = Vec.push output (Maybe.get (Utf8String.slice text start flat[2 * index]))
+		output = Vec.push (Maybe.get (Utf8String.slice text start flat[2 * index])) output
 		start = flat[2 * index + 1]
 		index = index + 1
-	output = Vec.push output (Maybe.get (Utf8String.slice text start text.length))
+	output = Vec.push (Maybe.get (Utf8String.slice text start text.length)) output
 	Vec.to_array output

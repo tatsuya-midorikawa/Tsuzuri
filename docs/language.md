@@ -2976,18 +2976,22 @@ let total = sum3 point            // point は Copy なのでこの後も使え�
 
 ### Vec
 
-`Vec<T>` は、動的な要素追加が可能な所有権付きの可変長バッファ型であり、常に非 Copy 型として扱われます。インスタンスの生成には `Vec.empty()` または事前確保を行う `Vec.with_capacity count` を使用します。
-`Vec.length`、`Vec.capacity`、`Vec.is_empty`、`Vec.get`、`Vec.at`、および `Vec.clone` は共有借用参照を受け取り、
-その他の更新操作は所有する Vec インスタンスを消費して更新後の新しい Vec インスタンスを返却します（なお `Vec.get` および `clone` は要素型に対して `Copy` 制約を要求します）。
-`push` は末尾への要素追加、`reserve` は追加要素数分の容量事前確保、`truncate` および `clear` は削除された余剰要素を先頭から順次解放し、
-`pop` はタプル `(残りのVec, Maybe<末尾要素>)` を返します。`set` および `swap` は既存インデックス要素の安全な更新および交換を行います。
+`Vec<T>` は、動的な要素追加が可能な所有権付きの可変長バッファ型であり、常に非 Copy 型として扱われます。インスタンスの生成には `Vec.empty()`、事前確保を行う `Vec.with_capacity count`、配列・列・リストからの `Vec.of_array`・`Vec.of_seq`・`Vec.of_list` を使用します。
+`Vec` モジュールは、.NET の `List<T>` のメンバー（コンストラクター、`Capacity`、`Count`、インデクサーを含む）に、同じ名前（snake_case）の関数で対応します。`AsReadOnly` だけは、共有借用 `ref values` が代わりです。引数は .NET の順に並べ、**`Vec` は最後の引数**です（`Vec.insert index item values`、`Vec.index_of_range item index count values`）。F# の `List` や `Array` と同じ形なので、`|>` と `>>` でつなげられ、前の引数が同じ `Vec` を借りて計算することもできます（`Vec.insert (Vec.length (ref values)) item values`）。
+`Vec.length`、`Vec.capacity`、`Vec.is_empty`、`Vec.get`、`Vec.at`、`Vec.clone`、`Vec.iter`、および検索・走査・複製の関数（`index_of`、`contains`、`find_index`、`exists`、`binary_search`、`for_each`、`convert_all`、`get_range`、`copy_to` など）は共有借用参照を受け取り、
+`push`・`add`・`insert`・`remove_at`・`reverse`・`sort` などの更新操作は所有する Vec インスタンスを消費して更新後の新しい Vec インスタンスを返却します。`remove` と `remove_all` は結果との組 `(Vec, bool)`・`(Vec, i64)`、`pop` はタプル `(残りのVec, Maybe<末尾要素>)` を返します。
+`Vec.get`、`clone`、および要素を値で受け取るコールバックの関数（`find_index`、`exists`、`sort_with`、`remove_all`、`get_range` など）は要素型に対して `Copy` 制約を要求します。関数名の末尾に `r` を付けた形（`find_indexr`、`existsr`、`sort_withr`、`remove_allr`、`containsr` など）は要素や探す値を借用するので、`Copy` でない要素にも使えます。`_from` と `_range` を付けた範囲指定の関数は、値で受ける形だけです。
+`push` は末尾への要素追加（`add` と同じ）、`reserve` は追加要素数分の容量事前確保、`truncate` および `clear` は削除された余剰要素を先頭から順次解放し、
+`set` および `swap` は既存インデックス要素の安全な更新および交換を行います。
 `at` は要素への共有借用参照を返し、範囲外アクセスの場合は安全にトラップします（`get` は範囲外に対して `None` を返します）。
 インデックス添字アクセスおよび `for` ループによる走査にも対応しており、非 Copy な要素は借用参照として安全に取り扱われます（なお、要素に対する排他借用参照を取得することはできません）。
 
-内部バッファの容量は初回確保の 4 要素から必要に応じて自動的に倍増し、要素数、容量、および合計バイト数の整数オーバーフロー、ならびに負の容量指定は安全にトラップします。
-デストラクタによる破棄や `clone` による複製は実際に初期化済みの要素数（length）のみを対象として実行され、未初期化の余剰容量メモリを読み取ることはありません。
-`Vec.of_array` および `Vec.to_array` は所有権を持つ内部バッファをそのまま引き渡すため、要素データの無駄なディープコピーは発生しません（ただし、Copy 配列の引数渡しやスタック配置配列のヒープ昇格処理は、言語の通常の所有権規則に従って安全に行われます）。空の配列が渡された場合は不要なヒープバッファが即座に解放され、空の Vec インスタンスとして正規化されます。
-なお、クロージャの内部へキャプチャされた Vec は、クロージャが複製される際に独立した内部スナップショットが安全に作成されます。
+.NET が例外を投げる場面（範囲外の添字、負の個数、`Vec` の外に出る範囲、長さより小さい `set_capacity`、足りない書き込み先の配列など）は安全にトラップします。.NET が `-1` を返す検索（`index_of`、`find_index` など）と、二分探索の補数（`-1 - 位置`）は同じ値を返します。`find` と `find_last` は、見つからないと `None` を返します。
+内部バッファの容量は .NET の `List<T>` と同じ規則（空なら 4、以降は 2 倍、足りなければ必要な個数）で増え、`set_capacity`・`ensure_capacity`・`trim_excess` の値も一致します。要素数、容量、および合計バイト数の整数オーバーフロー、ならびに負の容量指定は安全にトラップします。
+`sort`・`sort_range`・`sort_with` などの並べ替えは安定です（.NET の `Sort` は不安定です）。`Ord` の順に並べる `sort` と `sort_range` は、NaN を他のどの数より前に置きます（.NET の `double.CompareTo` と同じです）。比較関数を渡す形（`sort_with`・`sort_range_with`・`sort_withr`・`sort_range_withr`）は、NaN を特別に扱わず、渡された関数のとおりに並べます。`sort`・`sort_range`・`sort_withr`・`sort_range_withr` はその場で行い、追加の領域を使いません。`contains`・`index_of`・`remove` は `Eq`（`==`）で比べるので、浮動小数点数の NaN は見つかりません（.NET の `Equals` は NaN を NaN と等しいとみなします）。
+デストラクタによる破棄や `clone` による複製は実際に初期化済みの要素数（length）のみを対象として実行され、未初期化の余剰容量メモリを読み取ることはありません。`clone` は容量を長さにそろえます（`new List<T>(list)` と同じです）。
+`Vec.of_array` および `Vec.to_array` は所有権を持つ内部バッファをそのまま引き渡すため、要素データの無駄なディープコピーは発生しません（ただし、Copy 配列の引数渡しやスタック配置配列のヒープ昇格処理は、言語の通常の所有権規則に従って安全に行われます）。.NET の `ToArray` は複製しますが、`Vec.to_array` は `Vec` を消費します。空の配列が渡された場合は不要なヒープバッファが即座に解放され、空の Vec インスタンスとして正規化されます。
+なお、クロージャの内部へキャプチャされた Vec は、クロージャが複製される際に独立した内部スナップショットが安全に作成されます（容量もそのまま複製され、複製した関数は元と同じに振る舞います。容量を長さにそろえるのは明示的な `Vec.clone` だけです）。利用者向けの詳細と例は言語リファレンスの [Vec](../_tsuzuri/language-reference/built-in-types-and-modules/vec.md) にあります。
 
 ### Json
 

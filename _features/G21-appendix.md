@@ -48,7 +48,7 @@ test "area" = assert (area (Circle 2) == 12)
 - `do! action` runs an effect statement; `let! line = IO.read_line ()` binds its result. `main :: unit -> i32` returns the exit code.
 - `if c then a else b`, several lines: `elif`. `match v with | P -> e | _ -> d`. Lambda: `\x -> x + 1`. `let mut x = 0`, then `x = x + 1`.
 - `for x in xs do`, `for i in a .. b do` (includes `b`), `while c do`, `break`, `continue`.
-- Strings: `a + b`, `$"n = {n}"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push v 1`.
+- Strings: `a + b`, `$"n = {n}"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push 1 v`.
 - Errors are values: `Maybe<T>` (`Some x`, `None`), `Result<T, E>` (`Ok x`, `Error e`). No exceptions, no `?`.
 - Std names are qualified (`Array.sum xs`, `Int.abs n`, `Math.sqrt x`). A def without parameters is called `f()`.
 

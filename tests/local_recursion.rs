@@ -209,7 +209,7 @@ fn checks_local_let_rec_types_and_captures() {
         "def f :: string -> i64 -> i64 = \\text n ->\n    let rec go = \\k -> if k == 0 then String.length (ref text) else go (k - 1)\n    go n\n",
         "def f :: [i64] -> i64 = \\values ->\n    let rec go = \\i -> if i == values.length then 0 else values[i] + go (i + 1)\n    go 0\n",
         "def f :: [|i64|] -> i64 = \\values ->\n    let rec go = \\k -> if k == 0 then List.length (ref values) else go (k - 1)\n    go 2\n",
-        "def f :: i64 -> i64 = \\n ->\n    let values = Vec.push (Vec.empty()) 7\n    let rec go = \\k -> if k == 0 then Vec.length (ref values) else go (k - 1)\n    go n\n",
+        "def f :: i64 -> i64 = \\n ->\n    let values = Vec.push 7 (Vec.empty())\n    let rec go = \\k -> if k == 0 then Vec.length (ref values) else go (k - 1)\n    go n\n",
         "record Named { name: string, size: i64 }\ndef f :: Named -> i64 = \\item ->\n    let rec go = \\k -> if k == 0 then item.size else go (k - 1)\n    go 2\n",
         "def f :: i64 -> i64 = \\n ->\n    let double = \\x -> x * 2\n    let rec go = \\k -> if k == 0 then 0 else double k + go (k - 1)\n    go n\n",
     ] {

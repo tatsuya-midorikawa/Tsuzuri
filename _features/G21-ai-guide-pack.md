@@ -410,7 +410,7 @@ pub fn expand_generated(text: &str, generate: &dyn Fn(&str) -> Option<String>) -
 
 - 変更: `src/guide_std.rs`（`builtin_signature`・`BuiltinType` の描画・`collect` の組み込みの部分）。
 - 内容: 17 variant を wildcard なしで描画する。`Vec.push`・`Int.abs`・`Math.sqrt`・`Rc.new`・`sqrt`（`prelude`）の行を手で確かめる。
-- 確認: 単体テスト `builtin_signatures_render_every_variant`（17 variant を 1 つずつ含む scheme を作って期待の文字列と比べる）。`Vec.push` が `Vec.push :: Vec<'a> -> 'a -> Vec<'a>` になるか、`Builtin::scheme()` の実際の型から手で導いた値と一致する。
+- 確認: 単体テスト `builtin_signatures_render_every_variant`（17 variant を 1 つずつ含む scheme を作って期待の文字列と比べる）。`Vec.push` が `Vec.push :: 'a -> Vec<'a> -> Vec<'a>` になるか、`Builtin::scheme()` の実際の型から手で導いた値と一致する。
 
 #### 手順 16: 描画・溢れの規則・CLI
 

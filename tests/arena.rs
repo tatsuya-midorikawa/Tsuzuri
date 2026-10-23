@@ -23,7 +23,7 @@ fn emits(source: &str) -> [String; 2] {
 
 const NODE: &str = "record Node { value: i64, edges: Vec<Arena.Handle<Node>> }\n\
 def link :: Arena.Handle<Node> -> Node -> Node\n\
-fn link target node =\n    match node with\n    | Node { value = value, edges = edges } -> Node { value: value, edges: Vec.push edges target }\n";
+fn link target node =\n    match node with\n    | Node { value = value, edges = edges } -> Node { value: value, edges: Vec.push target edges }\n";
 
 #[test]
 fn arena_id_primitive_is_private() {
@@ -155,7 +155,7 @@ fn arena_api_programs_emit_for_both_targets() {
         "let arena: Arena<string> = Arena.with_capacity 2\nmatch Arena.insert arena \"a\" with\n| (filled, a) ->\n    match Arena.insert filled \"bc\" with\n    | (more, b) ->\n        let first = Arena.get (ref more) a\n        let total = (match first with | Maybe.Some text -> text.length | Maybe.None -> 0) + (Arena.at (ref more) b).length\n        match Arena.remove more a with\n        | (removed, value) ->\n            match Arena.insert removed \"def\" with\n            | (reused, c) -> total + Arena.length (ref reused) + (if Arena.contains (ref reused) a then 100 else 0) + (if c == a then 1000 else 0) + (match value with | Maybe.Some text -> text.length | Maybe.None -> 0)",
         "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert arena 1 with\n| (filled, handle) ->\n    let updated = Arena.update filled handle (\\value -> value + 41)\n    let mut total = 0\n    for (key, value) in Arena.iter (ref updated) do\n        if key == handle then total = total + deref value\n    total",
         &format!(
-            "{NODE}def cycle :: i64\nfn cycle =\n    let empty: Arena<Node> = Arena.empty()\n    match Arena.insert empty (Node {{ value: 1, edges: Vec.empty() }}) with\n    | (with_a, a) ->\n        match Arena.insert with_a (Node {{ value: 20, edges: Vec.push (Vec.empty()) a }}) with\n        | (with_b, b) ->\n            let graph = Arena.update with_b a (link b)\n            let first = Arena.at (ref graph) a\n            let second = Arena.at (ref graph) first.edges[0]\n            let back = Arena.at (ref graph) second.edges[0]\n            let mut total = 0\n            for (handle, node) in Arena.iter (ref graph) do\n                total = total + node.value\n                if handle == a then total = total + 100\n            first.value + second.value + back.value + total\ncycle()"
+            "{NODE}def cycle :: i64\nfn cycle =\n    let empty: Arena<Node> = Arena.empty()\n    match Arena.insert empty (Node {{ value: 1, edges: Vec.empty() }}) with\n    | (with_a, a) ->\n        match Arena.insert with_a (Node {{ value: 20, edges: Vec.push a (Vec.empty()) }}) with\n        | (with_b, b) ->\n            let graph = Arena.update with_b a (link b)\n            let first = Arena.at (ref graph) a\n            let second = Arena.at (ref graph) first.edges[0]\n            let back = Arena.at (ref graph) second.edges[0]\n            let mut total = 0\n            for (handle, node) in Arena.iter (ref graph) do\n                total = total + node.value\n                if handle == a then total = total + 100\n            first.value + second.value + back.value + total\ncycle()"
         ),
         "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert arena 1 with\n| (filled, handle) ->\n    match Arena.remove filled handle with\n    | (removed, _value) ->\n        let updated = Arena.update removed handle (\\value -> value + 1)\n        Arena.length (ref updated)",
         "let keys: Map<Arena.Handle<i64>, i64> = Map.empty()\nlet arena: Arena<i64> = Arena.empty()\nmatch Arena.insert arena 7 with\n| (filled, handle) ->\n    let map = Map.insert keys handle 3\n    let table = HashMap.insert (HashMap.empty()) handle 4\n    Maybe.get (Map.get (ref map) handle) + Maybe.get (HashMap.get (ref table) handle) + Arena.length (ref filled)",
@@ -179,7 +179,7 @@ fn snapshots =
         match Arena.insert base ((index + 1) * 10) with
         | (next, handle) ->
             base = next
-            handles = Vec.push handles handle
+            handles = Vec.push handle handles
         index = index + 1
     let frozen = base
     let snapshot = \\() -> frozen

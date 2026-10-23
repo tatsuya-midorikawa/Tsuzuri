@@ -50,7 +50,7 @@ fn seq_owned count =
 export def seq_borrowed :: i64
 fn seq_borrowed =
     let strings = ["a", "bc"]
-    let vector = Vec.push (Vec.empty()) "owned"
+    let vector = Vec.push "owned" (Vec.empty())
     let map = Map.singleton "key" "value"
     let set = Set.singleton "borrowed"
     let mut total = 0

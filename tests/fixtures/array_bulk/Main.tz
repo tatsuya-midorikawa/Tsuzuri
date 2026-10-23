@@ -141,7 +141,7 @@ fn foldr_union_state =
     let lengths: Result<i64, string> = List.foldr (state -> row -> match state with | Ok total -> Ok (total * 10 + row.length) | Error error -> Error error) (Ok 0) (ref rows)
     let words = new [|"ab", "cde"|]
     let joined: Result<string, string> = List.foldr (state -> word -> match state with | Ok text -> Ok (text + clone_string word) | Error error -> Error error) (Ok "") (ref words)
-    let rendered: Result<Vec<string>, string> = List.foldr (state -> item -> match state with | Ok items -> Ok (Vec.push items (Display.display item)) | Error error -> Error error) (Ok (Vec.empty())) (ref numbers)
+    let rendered: Result<Vec<string>, string> = List.foldr (state -> item -> match state with | Ok items -> Ok (Vec.push (Display.display item) items) | Error error -> Error error) (Ok (Vec.empty())) (ref numbers)
     let first = match digits with
         | Ok value -> value
         | Error _ -> -1

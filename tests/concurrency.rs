@@ -58,7 +58,7 @@ fn atomic_programs_type_check_and_emit() {
     for source in [
         "def bump :: (AtomicValue<'a>, Integer<'a>) => ref Atomic<'a> -> 'a -> 'a = \\cell amount -> Atomic.fetch_add cell amount\nlet cell = Atomic.create 4i32\nbump (ref cell) 3",
         "record Counters { hits: Atomic<i64>, misses: Atomic<i32> }\nlet counters = Counters { hits: Atomic.create 0i64, misses: Atomic.create 0i32 }\nlet _hit = Atomic.fetch_add (ref counters.hits) 1\nAtomic.load (ref counters.hits)",
-        "let cells = Vec.push (Vec.push (Vec.empty()) (Atomic.create 1i64)) (Atomic.create 2i64)\nAtomic.load (ref cells[0]) + Atomic.load (ref cells[1])",
+        "let cells = Vec.push (Atomic.create 2i64) (Vec.push (Atomic.create 1i64) (Vec.empty()))\nAtomic.load (ref cells[0]) + Atomic.load (ref cells[1])",
         "let cell = Atomic.create 7i64\nTask.run (task { return Atomic.load (ref cell) })",
     ] {
         emits(source);

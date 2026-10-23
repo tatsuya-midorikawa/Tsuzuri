@@ -2919,6 +2919,17 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if matches!(
+            builtin,
+            Builtin::VecView | Builtin::VecSetCapacity | Builtin::VecInsert | Builtin::VecSplice
+        ) && !(self.module == "Vec" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the Vec primitives are private to the standard Vec module; use its API instead (Vec.insert, Vec.remove_range, Vec.set_capacity, Vec.sort, ...)",
+                span,
+            ));
+        }
         // A dyn value is built only where its type is known, so `Dyn.of` is never a value (A14 D9).
         if builtin == Builtin::DynOf && !std::mem::take(&mut self.dyn_callee) {
             return Err(Diagnostic::new(
