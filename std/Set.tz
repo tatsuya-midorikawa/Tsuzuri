@@ -26,11 +26,11 @@ fn lower_bound set key =
 private def found :: Ord<'key> => ref Set<'key> -> ref 'key -> i64 -> bool
 fn found set key index = index < length set && !(Ord.lt key (ref set.entries[index]))
 
-def contains :: Ord<'key> => ref Set<'key> -> 'key -> bool
-fn contains set key = found set (ref key) (lower_bound set (ref key))
+def contains :: Ord<'key> => 'key -> ref Set<'key> -> bool
+fn contains key set = found set (ref key) (lower_bound set (ref key))
 
-def insert :: Ord<'key> => Set<'key> -> 'key -> Set<'key>
-fn insert set key =
+def insert :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+fn insert key set =
 	let index = lower_bound (ref set) (ref key)
 	let count = length (ref set)
 	if found (ref set) (ref key) index then set else
@@ -41,8 +41,8 @@ fn insert set key =
 			position = position - 1
 		Set { entries: entries }
 
-def remove :: Ord<'key> => Set<'key> -> 'key -> Set<'key>
-fn remove set key =
+def remove :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+fn remove key set =
 	let index = lower_bound (ref set) (ref key)
 	let count = length (ref set)
 	if found (ref set) (ref key) index then

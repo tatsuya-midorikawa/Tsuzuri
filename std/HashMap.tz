@@ -140,31 +140,31 @@ fn try_randomized _unit = IO.map (\seed ->
 def randomized :: unit -> IO<HashMap<'key, 'value>>
 fn randomized _unit = IO.map (\made -> Result.get made) (try_randomized ())
 
-def contains_key_ref :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> ref 'key -> bool
-fn contains_key_ref map key = find map key >= 0
+def contains_key_ref :: (Hash<'key>, Eq<'key>) => ref 'key -> ref HashMap<'key, 'value> -> bool
+fn contains_key_ref key map = find map key >= 0
 
-def contains_key :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key -> bool
-fn contains_key map key = contains_key_ref map (ref key)
+def contains_key :: (Hash<'key>, Eq<'key>) => 'key -> ref HashMap<'key, 'value> -> bool
+fn contains_key key map = contains_key_ref (ref key) map
 
-def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Maybe<'value>
-fn get_ref map key =
+def get_ref :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref 'key -> ref HashMap<'key, 'value> -> Maybe<'value>
+fn get_ref key map =
 	let index = find map key
 	if index >= 0 then Maybe.Some map.entries[index].value else Maybe.None
 
-def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Maybe<'value>
-fn get map key = get_ref map (ref key)
+def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => 'key -> ref HashMap<'key, 'value> -> Maybe<'value>
+fn get key map = get_ref (ref key) map
 
-def at_ref {r s} :: (Hash<'key>, Eq<'key>) => ref {r} HashMap<'key, 'value> -> ref {s} 'key -> ref {r} 'value
-fn at_ref map key =
+def at_ref {r s} :: (Hash<'key>, Eq<'key>) => ref {s} 'key -> ref {r} HashMap<'key, 'value> -> ref {r} 'value
+fn at_ref key map =
 	let index = find map key
 	assert (index >= 0)
 	ref map.entries[index].value
 
-def at :: (Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key -> ref 'value
-fn at map key = at_ref map (ref key)
+def at :: (Hash<'key>, Eq<'key>) => 'key -> ref HashMap<'key, 'value> -> ref 'value
+fn at key map = at_ref (ref key) map
 
-def insert :: (Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> 'key -> 'value -> HashMap<'key, 'value>
-fn insert map key value =
+def insert :: (Hash<'key>, Eq<'key>) => 'key -> 'value -> HashMap<'key, 'value> -> HashMap<'key, 'value>
+fn insert key value map =
 	let hash = hash_of (ref map) (ref key)
 	let count = length (ref map)
 	let size = Vec.length (ref map.slots)
@@ -197,8 +197,8 @@ fn unlink entries slots start =
 		position = (position + 1) & mask
 	Vec.set hole (-1) current
 
-def remove_ref :: (Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> ref 'key -> HashMap<'key, 'value>
-fn remove_ref map key =
+def remove_ref :: (Hash<'key>, Eq<'key>) => ref 'key -> HashMap<'key, 'value> -> HashMap<'key, 'value>
+fn remove_ref key map =
 	let hash = hash_of (ref map) key
 	let count = length (ref map)
 	if count == 0 then map else
@@ -215,8 +215,8 @@ fn remove_ref map key =
 				match Vec.pop (Vec.swap index last entries) with
 				| (remaining, _removed) -> HashMap { entries: remaining, slots: relinked, key0: key0, key1: key1, keyed: keyed }
 
-def remove :: (Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> 'key -> HashMap<'key, 'value>
-fn remove map key = remove_ref map (ref key)
+def remove :: (Hash<'key>, Eq<'key>) => 'key -> HashMap<'key, 'value> -> HashMap<'key, 'value>
+fn remove key map = remove_ref (ref key) map
 
 /// How far the entry that sits farthest from its ideal table position is from it: 0 for an empty map.
 /// A diagnostic for tuning and tests; a map that is flooded with colliding keys has a large value.

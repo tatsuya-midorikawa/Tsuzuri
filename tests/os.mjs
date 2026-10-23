@@ -384,7 +384,7 @@ fn fill start count =
     let mut map = start
     let mut index = 0
     while index < count do
-        map = HashMap.insert map (index * 7919 - 5000) index
+        map = HashMap.insert (index * 7919 - 5000) index map
         index = index + 1
     map
 
@@ -394,7 +394,7 @@ fn found map count =
     let mut index = 0
     while index < count do
         let key = index * 7919 - 5000
-        if HashMap.contains_key (ref map) key && deref (HashMap.at (ref map) key) == index then total = total + 1
+        if HashMap.contains_key key (ref map) && deref (HashMap.at key (ref map)) == index then total = total + 1
         index = index + 1
     total
 
@@ -415,13 +415,13 @@ fn set_text start =
     let mut set = start
     let mut index = 0
     while index < 500 do
-        set = HashSet.insert set (to_string index)
+        set = HashSet.insert (to_string index) set
         index = index + 1
     let mut present = 0
     index = 0
     while index < 1000 do
         let key = to_string index
-        if HashSet.contains_ref (ref set) (ref key) then present = present + 1
+        if HashSet.contains_ref (ref key) (ref set) then present = present + 1
         index = index + 1
     $"len:{HashSet.length (ref set)} present:{present}"
 
@@ -446,7 +446,7 @@ fn flood_text start =
     let mut map = start
     let mut index = 0
     while index < Vec.length (ref keys) do
-        map = HashMap.insert map keys[index] index
+        map = HashMap.insert keys[index] index map
         index = index + 1
     if HashMap.length (ref map) == 600 && HashMap.longest_probe (ref map) <= 64 then "flood ok" else "flood bad"
 
@@ -753,7 +753,7 @@ fn show value =
     | Maybe.None -> "None"
 
 def copy :: ref string -> string
-fn copy text = Maybe.get (String.slice text 0 text.length)
+fn copy text = Maybe.get (String.slice 0 text.length text)
 
 def joined :: string -> string -> string
 fn joined left right = Path.join (ref left) (ref right)
@@ -845,7 +845,7 @@ fn rec drain handle total = IO {
 }
 
 def drain_all :: File.Handle -> IO<string>
-fn drain_all handle = IO.bind (drain handle 0) (\\text -> IO.map (\\closed -> text + "," + unit_text closed) (File.close handle))
+fn drain_all handle = IO.bind (\\text -> IO.map (\\closed -> text + "," + unit_text closed) (File.close handle)) (drain handle 0)
 
 def read_checks :: File.Handle -> IO<string>
 fn read_checks handle = IO {
@@ -866,7 +866,7 @@ fn write_checks handle = IO {
 }
 
 def reread :: File.Handle -> IO<string>
-fn reread handle = IO.bind (File.read handle 2) (\\bytes -> IO.map (\\closed -> bytes_text bytes + "," + unit_text closed) (File.close handle))
+fn reread handle = IO.bind (\\bytes -> IO.map (\\closed -> bytes_text bytes + "," + unit_text closed) (File.close handle)) (File.read handle 2)
 
 def after_close :: File.Handle -> IO<string>
 fn after_close first = IO {
@@ -955,10 +955,10 @@ fn failed result =
 def rec churn :: i64 -> i64 -> IO<i64>
 fn rec churn remaining failures =
     if remaining <= 0 then IO.pure failures
-    else IO.bind (File.open "data.txt" File.Read) (\\opened ->
+    else IO.bind (\\opened ->
         match opened with
-        | Result.Ok handle -> IO.bind (File.close handle) (\\closed -> churn (remaining - 1) (failures + failed closed))
-        | Result.Error _ -> churn (remaining - 1) (failures + 1))
+        | Result.Ok handle -> IO.bind (\\closed -> churn (remaining - 1) (failures + failed closed)) (File.close handle)
+        | Result.Error _ -> churn (remaining - 1) (failures + 1)) (File.open "data.txt" File.Read)
 
 def both :: File.Handle -> File.Handle -> File.Handle -> IO<i64>
 fn both a b c = IO {
@@ -1183,7 +1183,7 @@ def big_input :: unit -> [ubyte]
 fn big_input _unit = new [ubyte](1048576, index -> ((index * 7 + index / 256) % 256) as ubyte)
 
 def run_say :: string -> [string] -> [ubyte] -> IO<unit>
-fn run_say program args input = IO.bind (Process.run program args input) (\\result -> say (output_text result))
+fn run_say program args input = IO.bind (\\result -> say (output_text result)) (Process.run program args input)
 
 def count :: unit -> IO<i64>
 fn count _unit = IO {
@@ -1202,10 +1202,10 @@ fn length_of result =
 def rec spawn_many :: i64 -> i64 -> IO<i64>
 fn rec spawn_many remaining failures =
     if remaining <= 0 then IO.pure failures
-    else IO.bind (Process.run "true" [] []) (\\result ->
+    else IO.bind (\\result ->
         match result with
         | Result.Ok _ -> spawn_many (remaining - 1) failures
-        | Result.Error _ -> spawn_many (remaining - 1) (failures + 1))
+        | Result.Error _ -> spawn_many (remaining - 1) (failures + 1)) (Process.run "true" [] [])
 
 def main :: unit -> i32 = \\() ->
     let nothing: [ubyte] = []

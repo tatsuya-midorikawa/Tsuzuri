@@ -347,7 +347,7 @@ IO.write_error :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
 IO.write_error_line :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
 IO.writeln :: (Display<'a>, Capture<'a>) => 'a -> IO<unit>
 Json.decode :: Decode<'a> => ref Value -> Result<'a, Error>
-Json.serialize_pretty :: Encode<'a> => ref 'a -> i64 -> Result<utf8string, Error>
+Json.serialize_pretty :: Encode<'a> => i64 -> ref 'a -> Result<utf8string, Error>
 Json.to_i64 :: ref Numeral -> Result<i64, Error>
 List.is_empty :: ref [|'a|] -> bool
 Map.is_empty :: ref Map<'key, 'value> -> bool
@@ -369,8 +369,8 @@ Random.pcg :: i64u -> i64u -> Pcg
 Random.pcg_next_u32 :: Pcg -> (i32u * Pcg)
 Random.pcg_next_u64 :: Pcg -> (i64u * Pcg)
 Set.is_empty :: ref Set<'key> -> bool
-Set.remove :: Ord<'key> => Set<'key> -> 'key -> Set<'key>
-String.sub :: ref string -> i64 -> i64 -> Maybe<string>
+Set.remove :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+String.sub :: i64 -> i64 -> ref string -> Maybe<string>
 String.trim_end :: ref string -> string
 String.trim_start :: ref string -> string
 Tensor.data { r } :: ref View<'a> { r } -> ref { r } ['a]
@@ -381,7 +381,7 @@ Time.monotonic_ns :: unit -> IO<Result<i64, Os.Error>>
 Time.sleep_ms :: i64 -> IO<Result<unit, Os.Error>>
 Time.unix_ns :: unit -> IO<Result<i64, Os.Error>>
 Unicode.version :: unit -> string
-Utf8String.sub :: ref utf8string -> i64 -> i64 -> Maybe<utf8string>
+Utf8String.sub :: i64 -> i64 -> ref utf8string -> Maybe<utf8string>
 Utf8String.trim_end :: ref utf8string -> utf8string
 Utf8String.trim_start :: ref utf8string -> utf8string
 ```
@@ -537,8 +537,8 @@ def a_guard2 :: ref [i64] -> i64 -> i64 = \xs i ->
 def a_guard3 :: ref [i64] -> i64 -> i64 = \xs i ->
     if i < 0 || i > xs.length then 0 else xs[i]
 def uses_mapget :: i64 -> i64 = \k ->
-    let m = Map.insert Map.empty() k k
-    match Map.get (ref m) k with
+    let m = Map.insert k k Map.empty()
+    match Map.get k (ref m) with
     | Maybe.Some v -> v
     | Maybe.None -> 0
 def main :: unit -> i32 = \() -> 0

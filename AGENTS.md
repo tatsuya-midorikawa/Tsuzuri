@@ -41,6 +41,41 @@ comparisons and their limitations are in `docs/benchmarks.md`.
   container only to check a change that needs one; CI has native x86-64 Linux.
 - Keep scratch output under `target/scratch/<name>/` and delete it when the work is done.
 
+## Standard library API conventions
+
+These rules cover every public function of `std/` and every compiler builtin that a program can call. They keep
+pipelines (`x |> M.f a`) and compositions (`M.f a >> M.g b`) working in every module, as in F#.
+`tests/std_argument_order.rs` enforces them on the `def` lines of every `std/` file and on the schemes of the `Array`,
+`List`, `Vec`, `String` and `Utf8String` builtins: it fails for a function that breaks the rule and for a `std/` file that
+its `MODULES` table does not classify. Record of the decision: `_features/GUIDE.md` D-59. User-facing text:
+`_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md`.
+
+- **The subject is the last argument.** The value that a function reads, transforms or updates (a collection, a
+  string, a `Maybe` or `Result`, an `IO` action, a matrix or tensor view, an arena, a writer) is its last parameter.
+  Everything else (keys, indices, counts, positions, callbacks, separators) comes before it, in the order that F# or
+  .NET gives those arguments: `Map.insert key value map`, `String.sub first count text`, `Maybe.bind f maybe`.
+  When several arguments are subjects (`append`, `zip`, `union`, `mul`), keep the F# order; when a function writes
+  into one of them, the written one is last (`MatrixView.copy_from source target`).
+- Constructors and functions without a subject (`empty`, `init`, `of_array`, `parse`) are not affected. A borrowing
+  twin (`get_ref`, `foldr`) takes the same order as the function it mirrors.
+- The subject is lent last, so an argument before it may read it (`Array.write 0 (v[1] * 10) v`); the pipeline form
+  lends it first (`v |> Array.write 0 (v[1] * 10)` is `E1014`).
+- When a function also takes a value of the subject's own type (a needle and a text: `String.find`,
+  `Regex.replace_all`), the types cannot tell them apart. Name the last parameter `text` (`parts` for a list of
+  texts); the test checks the name.
+- **Exemptions are these four kinds and nothing else** (a `std/` file's exemption carries its reason in its `MODULES`
+  row; a module that is only a compiler builtin has no file, so this list is its record):
+  resource handles (`File`, `Net`, `Process`, `Atomic`, `Mutex`, `Channel`, `Rc`, `Arc`, `Owned`, `Task`: the handle
+  comes first, like the receiver of a .NET method); numeric functions (`Int`, `Math`, `Simd`, `Char`: operand order of
+  the formula); compiler protocol (the capitalised builder operations `Bind`, `Return`..., and the helpers that
+  `src/derive.rs` calls); test and benchmark entry points (`Gen.for_all`, `Test.*`, `Bench.*`). A pure
+  transformation is never exempt.
+- A function that the compiler recognises by its name or position (`String.slice` in `src/llvm_strings.rs`, the
+  builtin `Utf8String.decode_at`, the `Array.__*` builtins) changes together with its hook: search `src/` for the
+  name before you reorder, and run the compact-strings suites.
+- New module or function: decide the subject first and write it last; add the file to `MODULES` (`subject(&["Type"])`,
+  or an exemption with its reason); give the module page an "引数の順序" section and keep `argument-order.md` true.
+
 ## Verification
 
 Pick the cheapest tier that can show the change is right. Repeat T0 and T1 while you work and run T2 once before you

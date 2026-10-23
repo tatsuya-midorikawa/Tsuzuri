@@ -74,7 +74,7 @@ fn scalar16 text index =
 private def scalar8 :: ref utf8string -> i64 -> i64
 fn scalar8 text index =
 	if index < 0 || index >= text.length then -1 else
-		match Utf8String.decode_at text index with
+		match Utf8String.decode_at index text with
 		| (value, next) -> (Utf8Char.to_u32 value as i64) * 8 + next - index
 
 /// The scalar that ends at `index`, or -1 at the start.
@@ -109,7 +109,7 @@ fn is_syntax code = code == 94 || code == 36 || code == 92 || code == 46 || code
 private def text_at :: ref string -> i64 -> string
 fn text_at pattern index =
 	let here = scalar16 pattern index
-	if here < 0 then "" else Maybe.get (String.slice pattern index (index + here % 8))
+	if here < 0 then "" else Maybe.get (String.slice index (index + here % 8) pattern)
 
 private def nothing_to_repeat :: i64 -> Error
 fn nothing_to_repeat offset = failure Syntax offset "repetition operator has nothing to repeat; add an expression before it or escape it"
@@ -185,7 +185,7 @@ fn escape_at pattern start in_class =
 		if unit pattern after != 123 then (Failed (unknown_property start (text_at pattern after)), after)
 		else
 			let close = closing pattern (after + 1)
-			if close >= pattern.length then (Failed (unknown_property start (Maybe.get (String.slice pattern (after + 1) close))), close)
+			if close >= pattern.length then (Failed (unknown_property start (Maybe.get (String.slice (after + 1) close pattern))), close)
 			else (Property (after + 1, close - after - 1, letter == 80), close + 1)
 	elif !in_class && (letter == 98 || letter == 66) then (Assertion (if letter == 98 then 4 else 5), after)
 	elif !in_class && (letter == 65 || letter == 122) then (Assertion (if letter == 65 then 0 else 1), after)
@@ -314,7 +314,7 @@ fn special pattern which offset length negated flags pairs =
 	let base =
 		if which < 3 then Maybe.Some (perl_ranges which ((flags &&& FlagU) != 0))
 		else
-			let name = Maybe.get (String.slice pattern offset (offset + length))
+			let name = Maybe.get (String.slice offset (offset + length) pattern)
 			match Unicode.property_ranges (ref name) with
 			| Maybe.Some ranges ->
 				let mut flat: Vec<i64> = Vec.with_capacity (2 * ranges.length)
@@ -361,7 +361,7 @@ fn class_atom pattern start flags pairs seen =
 			else
 				match special pattern 3 offset length negated flags pairs with
 				| Maybe.Some ranges -> (Many ranges, after)
-				| Maybe.None -> (Broken (unknown_property start (Maybe.get (String.slice pattern offset (offset + length)))), after)
+				| Maybe.None -> (Broken (unknown_property start (Maybe.get (String.slice offset (offset + length) pattern))), after)
 		| (Assertion _, after) -> (Single 0, after)
 		| (Failed error, after) -> (Broken error, after)
 
@@ -621,7 +621,7 @@ fn atom pattern pos flags pairs tables =
 			let negated = if special_key >= 6 then special_key == 7 else special_key % 2 == 1
 			match special pattern which name_offset name_length negated special_flags pairs with
 			| Maybe.Some ranges -> set = Maybe.Some ranges
-			| Maybe.None -> problem = Maybe.Some (unknown_property pos (Maybe.get (String.slice pattern name_offset (name_offset + name_length))))
+			| Maybe.None -> problem = Maybe.Some (unknown_property pos (Maybe.get (String.slice name_offset (name_offset + name_length) pattern)))
 		if kind == NodeChar && (flags &&& FlagI) != 0 then
 			let folded = fold (Vec.of_array [key, key]) pairs
 			if Vec.length (ref folded) > 2 || folded[0] != key || folded[1] != key then set = Maybe.Some folded
@@ -717,7 +717,7 @@ fn parse pattern =
 				if !repeatable then problem = Maybe.Some (if code == 123 && status == 1 then failure Syntax pos "unescaped '{'; escape it as '\\{'" else nothing_to_repeat pos)
 				elif status == 1 then problem = Maybe.Some (failure Syntax pos "invalid counted repetition; use {n}, {n,} or {n,m} with n <= m")
 				elif status == 2 then problem = Maybe.Some (failure TooLarge pos "repetition count exceeds 1000")
-				elif !lazy && unit pattern end == 43 then problem = Maybe.Some (failure Unsupported pos ("unsupported syntax '" + Maybe.get (String.slice pattern pos (end + 1)) + "'"))
+				elif !lazy && unit pattern end == 43 then problem = Maybe.Some (failure Unsupported pos ("unsupported syntax '" + Maybe.get (String.slice pos (end + 1) pattern) + "'"))
 				else
 					let last = Vec.length (ref items) - 1
 					let child = items[last]
@@ -1159,8 +1159,8 @@ fn find re text =
 
 /// `find` from `start`; the scalars before `start` still decide `^`, `\b` and `\B`. `None` when `start` is
 /// outside the text or between the units of a surrogate pair.
-def find_at :: ref Regex -> ref string -> i64 -> Maybe<(i64 * i64)>
-fn find_at re text start =
+def find_at :: ref Regex -> i64 -> ref string -> Maybe<(i64 * i64)>
+fn find_at re start text =
 	let bytes = u8""
 	locate re text (ref bytes) false start
 
@@ -1180,7 +1180,7 @@ fn captures re text =
 /// `text` with every match replaced by `replacement`, where `${n}` is the text of group n (empty when the
 /// group took no part or does not exist) and `$$` is `$`.
 def replace_all :: ref Regex -> ref string -> ref string -> string
-fn replace_all re text replacement =
+fn replace_all re replacement text =
 	let bytes = u8""
 	let slots = 2 * (re.groups + 1)
 	let flat = all_matches re text (ref bytes) false slots
@@ -1212,10 +1212,10 @@ fn split re text =
 	let mut start = 0
 	let mut index = 0
 	while index < count do
-		output = Vec.push (Maybe.get (String.slice text start flat[2 * index])) output
+		output = Vec.push (Maybe.get (String.slice start flat[2 * index] text)) output
 		start = flat[2 * index + 1]
 		index = index + 1
-	output = Vec.push (Maybe.get (String.slice text start text.length)) output
+	output = Vec.push (Maybe.get (String.slice start text.length text)) output
 	Vec.to_array output
 
 /// The number of VM steps of `find` on `text`: threads explored plus threads stepped. It grows linearly
@@ -1241,8 +1241,8 @@ fn find_utf8 re text =
 	locate re (ref units) text true 0
 
 /// `find_at` on a `utf8string`; `None` when `start` is outside the text or a continuation byte.
-def find_at_utf8 :: ref Regex -> ref utf8string -> i64 -> Maybe<(i64 * i64)>
-fn find_at_utf8 re text start =
+def find_at_utf8 :: ref Regex -> i64 -> ref utf8string -> Maybe<(i64 * i64)>
+fn find_at_utf8 re start text =
 	let units = ""
 	locate re (ref units) text true start
 
@@ -1260,7 +1260,7 @@ fn captures_utf8 re text =
 
 /// `replace_all` on a `utf8string`.
 def replace_all_utf8 :: ref Regex -> ref utf8string -> ref utf8string -> utf8string
-fn replace_all_utf8 re text replacement =
+fn replace_all_utf8 re replacement text =
 	let units = ""
 	let slots = 2 * (re.groups + 1)
 	let flat = all_matches re (ref units) text true slots
@@ -1291,8 +1291,8 @@ fn split_utf8 re text =
 	let mut start = 0
 	let mut index = 0
 	while index < count do
-		output = Vec.push (Maybe.get (Utf8String.slice text start flat[2 * index])) output
+		output = Vec.push (Maybe.get (Utf8String.slice start flat[2 * index] text)) output
 		start = flat[2 * index + 1]
 		index = index + 1
-	output = Vec.push (Maybe.get (Utf8String.slice text start text.length)) output
+	output = Vec.push (Maybe.get (Utf8String.slice start text.length text)) output
 	Vec.to_array output

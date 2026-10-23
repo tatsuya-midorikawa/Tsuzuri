@@ -2344,8 +2344,8 @@ impl Builtin {
             ),
             Self::Utf8StringDecodeAt => (
                 vec![
-                    Reference(Box::new(Concrete(Type::Utf8String)), false),
                     Concrete(Type::I64),
+                    Reference(Box::new(Concrete(Type::Utf8String)), false),
                 ],
                 BuiltinType::Tuple(vec![Concrete(Type::Utf8Char), Concrete(Type::I64)]),
                 Vec::new(),

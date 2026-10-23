@@ -24,10 +24,10 @@
 
 ```tsuzuri run=len%3D3%20elements%3D%5B1%2C%202%2C%203%5D
 let mut set: Set<i64> = Set.empty()
-set = Set.insert set 3
-set = Set.insert set 1
-set = Set.insert set 2
-set = Set.insert set 1
+set = Set.insert 3 set
+set = Set.insert 1 set
+set = Set.insert 2 set
+set = Set.insert 1 set
 
 let len = Set.length (ref set)
 let arr = Set.to_array (ref set)
@@ -42,16 +42,46 @@ len=3 elements=[1, 2, 3]
 
 重複して挿入された `1` は無視され、要素は常に昇順（`[1, 2, 3]`）に整列されて保持されます。
 
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読み取る、または更新する集合は、必ず最後の引数です。`numbers |> Set.insert key` のようにパイプで渡せ、`Set.insert 1 >> Set.remove 2` のように、集合だけが足りない関数を合成できます。F# の `Set` の関数と同じ順序です。
+
+| F# | Tsuzuri |
+| --- | --- |
+| `Set.add value set` | `Set.insert key set` |
+| `Set.contains value set` | `Set.contains key (ref set)` |
+| `Set.remove value set` | `Set.remove key set` |
+
+`union`・`intersect`・`difference` は、2 つの引数がどちらも対象の集合なので、`Set.union left right` の形のままです。F# の `Set.union set1 set2` と同じ順です。
+
+```tsuzuri run=len%3D1%20has_one%3Dtrue%20has_two%3Dfalse
+let step = Set.insert 1 >> Set.remove 2
+let numbers: Set<i64> = Set.empty() |> Set.insert 2 |> step
+let has_one = numbers |> Set.contains 1
+let has_two = numbers |> Set.contains 2
+$"len={Set.length (ref numbers)} has_one={has_one} has_two={has_two}"
+```
+
+実行結果:
+
+```text
+len=1 has_one=true has_two=false
+```
+
+集合を借用する `contains` に `numbers |> Set.contains 1` と渡しても、`numbers` は消費されません。
+
 ## 包含判定と削除
 
-- `Set.contains (ref set) key`: 要素が含まれているかを二分探索（$O(\log n)$）で判定します。
-- `Set.remove set key`: 指定された要素を削除した新しい集合を返します（$O(n)$）。存在しない要素を指定した場合は何も変更せずそのまま返します。
+- `Set.contains key (ref set)`: 要素が含まれているかを二分探索（$O(\log n)$）で判定します。
+- `Set.remove key set`: 指定された要素を削除した新しい集合を返します（$O(n)$）。存在しない要素を指定した場合は何も変更せずそのまま返します。
 
 ```tsuzuri run=has_two%3Dtrue%20rem_has_two%3Dfalse
-let mut numbers = Set.insert (Set.insert (Set.singleton 1) 2) 3
-let has_two = Set.contains (ref numbers) 2
-numbers = Set.remove numbers 2
-let rem_has_two = Set.contains (ref numbers) 2
+let mut numbers = Set.insert 3 (Set.insert 2 (Set.singleton 1))
+let has_two = Set.contains 2 (ref numbers)
+numbers = Set.remove 2 numbers
+let rem_has_two = Set.contains 2 (ref numbers)
 $"has_two={has_two} rem_has_two={rem_has_two}"
 ```
 
@@ -72,8 +102,8 @@ has_two=true rem_has_two=false
 `Set` では数学的な集合演算がモジュール関数として提供されています。
 
 ```tsuzuri run=union%3D%5B1%2C%202%2C%203%2C%204%5D%20inter%3D%5B2%2C%203%5D%20diff%3D%5B1%5D
-let left = Set.insert (Set.insert (Set.singleton 1) 2) 3
-let right = Set.insert (Set.insert (Set.singleton 2) 3) 4
+let left = Set.insert 3 (Set.insert 2 (Set.singleton 1))
+let right = Set.insert 4 (Set.insert 3 (Set.singleton 2))
 
 let common = Set.intersect (ref left) (ref right)
 let different = Set.difference (ref left) (ref right)
@@ -107,9 +137,9 @@ union=[1, 2, 3, 4] inter=[2, 3] diff=[1]
 
 ```tsuzuri run=sum%3D60
 let mut numbers: Set<i64> = Set.empty()
-numbers = Set.insert numbers 20
-numbers = Set.insert numbers 10
-numbers = Set.insert numbers 30
+numbers = Set.insert 20 numbers
+numbers = Set.insert 10 numbers
+numbers = Set.insert 30 numbers
 
 let sum = Set.fold (\acc x -> acc + *x) 0 (ref numbers)
 $"sum={sum}"
@@ -133,14 +163,14 @@ sum=60
 | `singleton` | `'key -> Set<'key>` | 1 つの要素を持つ集合を生成します |
 | `length` | `ref Set<'key> -> i64` | 集合内の要素数を返します |
 | `is_empty` | `ref Set<'key> -> bool` | 集合が空かどうかを返します |
-| `contains` | `Ord<'key> => ref Set<'key> -> 'key -> bool` | 要素が含まれているかを判定します（$O(\log n)$） |
+| `contains` | `Ord<'key> => 'key -> ref Set<'key> -> bool` | 要素が含まれているかを判定します（$O(\log n)$） |
 
 ### 更新・削除
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `insert` | `Ord<'key> => Set<'key> -> 'key -> Set<'key>` | 要素を追加した新しい集合を返します（$O(n)$） |
-| `remove` | `Ord<'key> => Set<'key> -> 'key -> Set<'key>` | 指定要素を削除した新しい集合を返します（$O(n)$） |
+| `insert` | `Ord<'key> => 'key -> Set<'key> -> Set<'key>` | 要素を追加した新しい集合を返します（$O(n)$） |
+| `remove` | `Ord<'key> => 'key -> Set<'key> -> Set<'key>` | 指定要素を削除した新しい集合を返します（$O(n)$） |
 
 ### 集合演算
 

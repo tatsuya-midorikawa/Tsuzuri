@@ -138,7 +138,7 @@ match answer with
 
 ## 公開 API
 
-引数の順序に注意してください。`map`、`map_ref`、`map_error` は関数が先、`bind`、`bind_ref`、`or_else` は値が先です。失敗のときは成功用の関数を呼び出しません。
+`map`、`map_ref`、`map_error`、`bind`、`bind_ref`、`or_else` は、どれも関数が先で、`Result` が最後の引数です（[引数の順序](#引数の順序)）。失敗のときは成功用の関数を呼び出しません。
 
 ### 調査と取り出し
 
@@ -160,9 +160,9 @@ match answer with
 | `Result.map` | `('a -> 'b) -> Result<'a, 'e> -> Result<'b, 'e>` | 成功値を消費して変換する |
 | `Result.map_ref` | `Copy<'e> => (&'a -> 'b) -> &(Result<'a, 'e>) -> Result<'b, 'e>` | 成功値を借用し、失敗値は複製する |
 | `Result.map_error` | `('e -> 'f) -> Result<'a, 'e> -> Result<'a, 'f>` | 失敗値だけを変換する |
-| `Result.bind` | `Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>` | 成功値を次の `Result` へ渡す |
-| `Result.bind_ref` | `Copy<'e> => &(Result<'a, 'e>) -> (&'a -> Result<'b, 'e>) -> Result<'b, 'e>` | 借用した成功値から次の `Result` を作る |
-| `Result.or_else` | `Result<'a, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>` | 失敗のときだけ代替を呼ぶ |
+| `Result.bind` | `('a -> Result<'b, 'e>) -> Result<'a, 'e> -> Result<'b, 'e>` | 成功値を次の `Result` へ渡す |
+| `Result.bind_ref` | `Copy<'e> => (&'a -> Result<'b, 'e>) -> &(Result<'a, 'e>) -> Result<'b, 'e>` | 借用した成功値から次の `Result` を作る |
+| `Result.or_else` | `(unit -> Result<'a, 'e>) -> Result<'a, 'e> -> Result<'a, 'e>` | 失敗のときだけ代替を呼ぶ |
 
 `map_ref` と `bind_ref` が `Copy<'e>` を要求するのは、失敗値を結果へ複製するためです。成功側の Copy は不要です。`string` のエラーに使うと `E1005` になります。
 
@@ -189,6 +189,29 @@ match value with
 ```text
 3
 ```
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+操作する `Result` は、必ず最後の引数です。`r |> Result.bind f` のようにパイプで渡せ、`Result.bind f >> Result.map g` のように一部だけ渡した関数を合成できます。`bind`、`bind_ref`、`or_else` も `map` と同じく関数を先に取り、`default_value fallback r` や `map_error f r` のように、ほかの引数は `Result` の前に置きます。F# の `Option`・`Result` の関数と同じ順序です（`Option.bind f opt`、`Option.orElseWith f opt`、`Result.bind f result`）。
+
+```tsuzuri run=60%200
+let positive = \n -> if n > 0 then Ok n else Error "not positive"
+let halve = \n -> if n % 2 == 0 then Ok (n / 2) else Error "odd"
+let check = Result.bind positive >> Result.bind halve
+let a = Ok 12 |> check |> Result.map (\n -> n * 10)
+let b = Ok 7 |> check |> Result.or_else (\_ -> Ok 0)
+$"{Result.default_value (-1) a} {Result.default_value (-1) b}"
+```
+
+実行結果:
+
+```text
+60 0
+```
+
+コンピュテーション式の展開先になる先頭が大文字の関数（`Result.Bind` など）は別で、順序は [ビルダー操作](#ビルダー操作) の表のとおりです。
 
 ### Maybe との変換
 

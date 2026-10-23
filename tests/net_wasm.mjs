@@ -118,7 +118,7 @@ try {
   writeFileSync(join(plain, "Main.tz"), `extern def report :: i64 -> unit
 export def probe :: i64 -> i64
 fn probe port =
-    let address = Maybe.get (Net.parse_ip (ref "127.0.0.1") port)
+    let address = Maybe.get (Net.parse_ip port (ref "127.0.0.1"))
     let! connected = Net.connect address Maybe.None
     if Result.is_ok (ref connected) then 1 else 0
 `);
@@ -150,7 +150,7 @@ fn probe port =
       mkdirSync(pure, { recursive: true });
       writeFileSync(join(pure, "Main.tz"), `export def probe :: i64 -> i64
 fn probe port =
-    match Net.parse_ip (ref "127.0.0.1") port with
+    match Net.parse_ip port (ref "127.0.0.1") with
     | Maybe.Some address -> Net.port address
     | Maybe.None -> 0 - 1
 `);

@@ -50,7 +50,7 @@ fn contraction_probe64 one =
     let left = Matrix.of_array 1 2 [one + 0.000000001862645149230957031250, -(one + 0.000000000931322574615478515625)]
     let right = Matrix.of_array 2 1 [one, one + 0.000000000931322574615478515625]
     let product = Matrix.mul (ref left) (ref right)
-    deref (Matrix.at (ref product) 0 0)
+    deref (Matrix.at 0 0 (ref product))
 
 export def contraction_probe32 :: f64 -> f64
 fn contraction_probe32 one =
@@ -58,7 +58,7 @@ fn contraction_probe32 one =
     let left = Matrix.of_array 1 2 [unit + 0.000244140625f32, -(unit + 0.0001220703125f32)]
     let right = Matrix.of_array 2 1 [unit, unit + 0.0001220703125f32]
     let product = Matrix.mul (ref left) (ref right)
-    deref (Matrix.at (ref product) 0 0) as f64
+    deref (Matrix.at 0 0 (ref product)) as f64
 
 export def zero_signs :: i64
 fn zero_signs =
@@ -70,7 +70,7 @@ fn zero_signs =
     let product = Matrix.mul (ref minus_zero) (ref one)
     let summed = Matrix.add (ref minus_zero) (ref minus_zero)
     let transposed = Matrix.transpose (ref minus_zero)
-    negative (deref (Matrix.at (ref inner_zero) 0 0)) + 2 * negative (deref (Matrix.at (ref product) 0 0)) + 4 * negative (deref (Matrix.at (ref summed) 0 0)) + 8 * negative (deref (Matrix.at (ref transposed) 0 0))
+    negative (deref (Matrix.at 0 0 (ref inner_zero))) + 2 * negative (deref (Matrix.at 0 0 (ref product))) + 4 * negative (deref (Matrix.at 0 0 (ref summed))) + 8 * negative (deref (Matrix.at 0 0 (ref transposed)))
 
 private def nan :: f64 -> i64
 fn nan x = if Math.is_nan x then 1 else 0
@@ -86,7 +86,7 @@ fn nan_count =
     let infinite_times_zero = Matrix.mul (ref infinite) (ref nothing)
     let negative_infinite = Matrix.of_array 1 1 [-1.0 / zero]
     let opposite = Matrix.add (ref infinite) (ref negative_infinite)
-    nan (deref (Matrix.at (ref from_nan) 0 0)) + nan (deref (Matrix.at (ref infinite_times_zero) 0 0)) + nan (deref (Matrix.at (ref opposite) 0 0))
+    nan (deref (Matrix.at 0 0 (ref from_nan))) + nan (deref (Matrix.at 0 0 (ref infinite_times_zero))) + nan (deref (Matrix.at 0 0 (ref opposite)))
 
 export def shapes :: i64 -> i64
 fn shapes n =
@@ -94,13 +94,13 @@ fn shapes n =
     let t = Matrix.transpose (ref m)
     let mut total = Matrix.fold (\acc x -> acc * 31 + x) 7 (ref t)
     for i in 0i64 .. (n - 1) do
-        total = total * 17 + Array.sum (Matrix.row (ref m) i)
+        total = total * 17 + Array.sum (Matrix.row i (ref m))
     let doubled = Matrix.map (\x -> x * 2) (ref m)
     total = total * 13 + Matrix.fold (\acc x -> acc + x) 0 (ref doubled)
-    let inside = Maybe.default_value (-1) (Matrix.get (ref m) (n - 1) (n + 1))
-    let below = Maybe.default_value (-1) (Matrix.get (ref m) n 0)
-    let right = Maybe.default_value (-1) (Matrix.get (ref m) 0 (n + 2))
-    let before = Maybe.default_value (-1) (Matrix.get (ref m) (-1) 0)
+    let inside = Maybe.default_value (-1) (Matrix.get (n - 1) (n + 1) (ref m))
+    let below = Maybe.default_value (-1) (Matrix.get n 0 (ref m))
+    let right = Maybe.default_value (-1) (Matrix.get 0 (n + 2) (ref m))
+    let before = Maybe.default_value (-1) (Matrix.get (-1) 0 (ref m))
     total = total * 11 + inside + below * 3 + right * 5 + before * 7
     let rebuilt = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (Matrix.to_array m)
     total * 7 + Matrix.rows (ref rebuilt) * 3 + Matrix.cols (ref rebuilt) + Array.length (Matrix.as_array (ref rebuilt))
@@ -111,12 +111,12 @@ fn owned_elements n =
     let mut total = 0
     for i in 0i64 .. (n - 1) do
         for j in 0i64 .. (n - 1) do
-            let e = Matrix.at (ref m) i j
+            let e = Matrix.at i j (ref m)
             total = total * 3 + e.length + (if e.length > 0 then e[e.length - 1] else 0)
-    if n > 0 then total = total * 5 + Array.length (Matrix.row (ref m) (n - 1))
+    if n > 0 then total = total * 5 + Array.length (Matrix.row (n - 1) (ref m))
     let words = Matrix.init n 2 (\i j -> $"{i}:{j}")
     for i in 0i64 .. (n - 1) do
-        let word = Matrix.at (ref words) i 1
+        let word = Matrix.at i 1 (ref words)
         total = total * 11 + word.length
     let transposed = Matrix.transpose (ref m)
     let flat = Matrix.to_array transposed
@@ -144,17 +144,17 @@ fn mul_shape =
 export def at_col :: i64 -> i64
 fn at_col col =
     let m = Matrix.init 2 3 (\i j -> i * 10 + j)
-    deref (Matrix.at (ref m) 0 col)
+    deref (Matrix.at 0 col (ref m))
 
 export def at_row :: i64 -> i64
 fn at_row row =
     let m = Matrix.init 2 3 (\i j -> i * 10 + j)
-    deref (Matrix.at (ref m) row 0)
+    deref (Matrix.at row 0 (ref m))
 
 export def row_index :: i64 -> i64
 fn row_index index =
     let m = Matrix.init 2 3 (\i j -> i * 10 + j)
-    Array.sum (Matrix.row (ref m) index)
+    Array.sum (Matrix.row index (ref m))
 
 export def negative_dims :: i64
 fn negative_dims = Matrix.rows (ref (Matrix.init (-1) 3 (\_i _j -> 0)))
@@ -345,7 +345,7 @@ fn kernel_probe64 one mode =
         | 1 -> Matrix.mul_parallel (ref left) (ref right)
         | 2 -> Matrix.mul_fma (ref left) (ref right)
         | _ -> Matrix.mul_fma_parallel (ref left) (ref right)
-    deref (Matrix.at (ref product) 0 0)
+    deref (Matrix.at 0 0 (ref product))
 
 export def kernel_probe32 :: f64 -> i64 -> f64
 fn kernel_probe32 one mode =
@@ -358,7 +358,7 @@ fn kernel_probe32 one mode =
         | 1 -> Matrix.mul_parallel (ref left) (ref right)
         | 2 -> Matrix.mul_fma (ref left) (ref right)
         | _ -> Matrix.mul_fma_parallel (ref left) (ref right)
-    deref (Matrix.at (ref product) 0 0) as f64
+    deref (Matrix.at 0 0 (ref product)) as f64
 
 // Integer products wrap and need no particular order; the parallel one must agree with the sequential one.
 export def integer_parallel :: i64 -> i64 -> i64 -> i64 -> i64
@@ -381,12 +381,12 @@ fn set_checksum n =
     let mut m = Matrix.init n (n + 1) (\i j -> i * 100 + j)
     let mut step = 0
     while step < n * 3 do
-        m = Matrix.set m (step % n) ((step * 7) % (n + 1)) (step * 1000 + 1)
+        m = Matrix.set (step % n) ((step * 7) % (n + 1)) (step * 1000 + 1) m
         step = step + 1
     Matrix.fold (\total x -> total * 31 + x) 7 (ref m)
 
 export def set_row :: i64 -> i64
-fn set_row row = Matrix.rows (ref (Matrix.set (Matrix.init 2 3 (\i j -> i + j)) row 0 1))
+fn set_row row = Matrix.rows (ref (Matrix.set row 0 1 (Matrix.init 2 3 (\i j -> i + j))))
 
 export def set_col :: i64 -> i64
-fn set_col col = Matrix.rows (ref (Matrix.set (Matrix.init 2 3 (\i j -> i + j)) 0 col 1))
+fn set_col col = Matrix.rows (ref (Matrix.set 0 col 1 (Matrix.init 2 3 (\i j -> i + j))))

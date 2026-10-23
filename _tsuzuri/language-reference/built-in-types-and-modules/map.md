@@ -23,9 +23,9 @@
 
 ```tsuzuri run=len%3D3%20first_key%3D1
 let mut map: Map<i64, string> = Map.empty()
-map = Map.insert map 3 "three"
-map = Map.insert map 1 "one"
-map = Map.insert map 2 "two"
+map = Map.insert 3 "three" map
+map = Map.insert 1 "one" map
+map = Map.insert 2 "two" map
 
 let len = Map.length (ref map)
 let keys = Map.keys (ref map)
@@ -47,8 +47,8 @@ len=3 first_key=1
 
 ```tsuzuri run=val%3Dnew_one
 let mut map = Map.singleton 1 "old_one"
-map = Map.insert map 1 "new_one"
-let val = Map.at (ref map) 1
+map = Map.insert 1 "new_one" map
+let val = Map.at 1 (ref map)
 $"val={val}"
 ```
 
@@ -58,22 +58,52 @@ $"val={val}"
 val=new_one
 ```
 
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読み取る、または更新するマップは、必ず最後の引数です。`table |> Map.insert key value` のようにパイプで渡せ、`Map.insert 1 "one" >> Map.remove 2` のように、マップだけが足りない関数を合成できます。F# の `Map` の関数と同じ順序です。
+
+| F# | Tsuzuri |
+| --- | --- |
+| `Map.add key value table` | `Map.insert key value map` |
+| `Map.find key table` | `Map.at key (ref map)` |
+| `Map.tryFind key table` | `Map.get key (ref map)` |
+| `Map.containsKey key table` | `Map.contains_key key (ref map)` |
+| `Map.remove key table` | `Map.remove key map` |
+
+```tsuzuri run=len%3D1%20one%3Done%20has_two%3Dfalse
+let step = Map.insert 1 "one" >> Map.remove 2
+let table: Map<i64, string> = Map.empty() |> Map.insert 2 "two" |> step
+let one = table |> Map.at 1
+let has_two = table |> Map.contains_key 2
+$"len={Map.length (ref table)} one={one} has_two={has_two}"
+```
+
+実行結果:
+
+```text
+len=1 one=one has_two=false
+```
+
+マップを借用する関数（`at`、`get`、`contains_key`）に `table |> Map.at 1` と渡しても、`table` は消費されません。`>>` で合成した関数は、前の関数が返したマップを、次の関数が借りて受け取ります。借りた一時のマップの中を指す参照を返す `at` につなぐと（`Map.insert 1 "one" >> Map.at 1`）、参照が一時のマップより長生きしてしまうので `E1013` です。値を取り出すには、`get` を使うか、マップを `let` に束縛します。
+
 ## 検索と要素アクセス
 
 `Map` から値を取得・検索するには以下の関数を使用します：
 
-- `Map.contains_key (ref map) key`: キーが存在するかどうかを `bool` で返します。
-- `Map.get (ref map) key`: キーに対応する値を `Maybe<V>` で返します。値型に **`Copy` 制約が必要**です。
-- `Map.at (ref map) key`: キーに対応する値への共有借用参照 `ref V` を返します。キーが存在しない場合は安全にトラップします。
+- `Map.contains_key key (ref map)`: キーが存在するかどうかを `bool` で返します。
+- `Map.get key (ref map)`: キーに対応する値を `Maybe<V>` で返します。値型に **`Copy` 制約が必要**です。
+- `Map.at key (ref map)`: キーに対応する値への共有借用参照 `ref V` を返します。キーが存在しない場合は安全にトラップします。
 
 ```tsuzuri run=has_two%3Dtrue%20at_two%3D2%20missing%3Dnone
 let mut map: Map<string, i64> = Map.empty()
-map = Map.insert map "one" 1
-map = Map.insert map "two" 2
+map = Map.insert "one" 1 map
+map = Map.insert "two" 2 map
 
-let has_two = Map.contains_key (ref map) "two"
-let at_two = Map.at (ref map) "two"
-let missing = match Map.get (ref map) "three" with
+let has_two = Map.contains_key "two" (ref map)
+let at_two = Map.at "two" (ref map)
+let missing = match Map.get "three" (ref map) with
 | Some v -> to_string v
 | None -> "none"
 
@@ -94,12 +124,12 @@ has_two=true at_two=2 missing=none
 
 ## 要素の削除
 
-`Map.remove map key` は、キーが存在すればそのエントリを安全に解放し、後続要素をシフトして順序を維持した新しい `Map` を返します。キーが存在しない場合はマップを変更せずにそのまま返します。
+`Map.remove key map` は、キーが存在すればそのエントリを安全に解放し、後続要素をシフトして順序を維持した新しい `Map` を返します。キーが存在しない場合はマップを変更せずにそのまま返します。
 
 ```tsuzuri run=before%3D2%20after%3D1
-let mut map = Map.insert (Map.singleton 1 "one") 2 "two"
+let mut map = Map.insert 2 "two" (Map.singleton 1 "one")
 let before_len = Map.length (ref map)
-map = Map.remove map 1
+map = Map.remove 1 map
 let after_len = Map.length (ref map)
 $"before={before_len} after={after_len}"
 ```
@@ -122,9 +152,9 @@ before=2 after=1
 
 ```tsuzuri run=keys%3D%5B10%2C%2020%2C%2030%5D%20summary%3D10%3Aa%2C%2020%3Ab%2C%2030%3Ac
 let mut map: Map<i64, string> = Map.empty()
-map = Map.insert map 30 "c"
-map = Map.insert map 10 "a"
-map = Map.insert map 20 "b"
+map = Map.insert 30 "c" map
+map = Map.insert 10 "a" map
+map = Map.insert 20 "b" map
 
 let keys = Map.keys (ref map)
 
@@ -159,16 +189,16 @@ keys=[10, 20, 30] summary=10:a, 20:b, 30:c
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `contains_key` | `Ord<'key> => ref Map<'key, 'value> -> 'key -> bool` | 指定キーが存在するか判定します（$O(\log n)$） |
-| `get` | `(Ord<'key>, Copy<'value>) => ref Map<'key, 'value> -> 'key -> Maybe<'value>` | キーに対応する値を `Some` で返します。存在しない場合は `None` |
-| `at` | `Ord<'key> => ref Map<'key, 'value> -> 'key -> ref 'value` | キーに対応する値の共有参照を返します。存在しない場合はトラップ |
+| `contains_key` | `Ord<'key> => 'key -> ref Map<'key, 'value> -> bool` | 指定キーが存在するか判定します（$O(\log n)$） |
+| `get` | `(Ord<'key>, Copy<'value>) => 'key -> ref Map<'key, 'value> -> Maybe<'value>` | キーに対応する値を `Some` で返します。存在しない場合は `None` |
+| `at` | `Ord<'key> => 'key -> ref Map<'key, 'value> -> ref 'value` | キーに対応する値の共有参照を返します。存在しない場合はトラップ |
 
 ### 更新・削除
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `insert` | `Ord<'key> => Map<'key, 'value> -> 'key -> 'value -> Map<'key, 'value>` | キーと値を挿入・更新した新しいマップを返します（$O(n)$） |
-| `remove` | `Ord<'key> => Map<'key, 'value> -> 'key -> Map<'key, 'value>` | 指定キーのエントリを削除した新しいマップを返します（$O(n)$） |
+| `insert` | `Ord<'key> => 'key -> 'value -> Map<'key, 'value> -> Map<'key, 'value>` | キーと値を挿入・更新した新しいマップを返します（$O(n)$） |
+| `remove` | `Ord<'key> => 'key -> Map<'key, 'value> -> Map<'key, 'value>` | 指定キーのエントリを削除した新しいマップを返します（$O(n)$） |
 
 ### 変換・反復
 

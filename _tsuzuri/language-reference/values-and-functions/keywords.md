@@ -208,8 +208,8 @@ record Item { type: string }
 予約語のうち `union`・`yield`・`new` は、ドット `.` の直後に置くメンバー名として許可されています。単独では引き続きキーワードです。
 
 ```tsuzuri run=3
-let s1 = Set.insert (Set.singleton 1) 2
-let s2 = Set.insert (Set.singleton 2) 3
+let s1 = Set.insert 2 (Set.singleton 1)
+let s2 = Set.insert 3 (Set.singleton 2)
 let s3 = Set.union s1 s2
 
 Set.length ref s3

@@ -24,12 +24,12 @@
 
 ```tsuzuri run=len%3D3%20score%3D95
 let mut scores: HashMap<string, i64> = HashMap.empty()
-scores = HashMap.insert scores "Alice" 90
-scores = HashMap.insert scores "Bob" 85
-scores = HashMap.insert scores "Charlie" 95
+scores = HashMap.insert "Alice" 90 scores
+scores = HashMap.insert "Bob" 85 scores
+scores = HashMap.insert "Charlie" 95 scores
 
 let len = HashMap.length (ref scores)
-let score = HashMap.at (ref scores) "Charlie"
+let score = HashMap.at "Charlie" (ref scores)
 $"len={len} score={score}"
 ```
 
@@ -45,9 +45,9 @@ len=3 score=95
 
 ```tsuzuri run=val%3D100
 let mut scores: HashMap<string, i64> = HashMap.empty()
-scores = HashMap.insert scores "Alice" 90
-scores = HashMap.insert scores "Alice" 100
-let val = HashMap.at (ref scores) "Alice"
+scores = HashMap.insert "Alice" 90 scores
+scores = HashMap.insert "Alice" 100 scores
+let val = HashMap.at "Alice" (ref scores)
 $"val={val}"
 ```
 
@@ -56,6 +56,28 @@ $"val={val}"
 ```text
 val=100
 ```
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読み取る、または更新するマップは、必ず最後の引数です。`table |> HashMap.insert key value` のようにパイプで渡せ、`HashMap.insert 1 10 >> HashMap.remove 2` のように、マップだけが足りない関数を合成できます。キーと値は、関数名が示す順でマップの前に並べます（`HashMap.insert key value table`、`HashMap.remove key table`、`HashMap.get key (ref table)`）。借用版も同じ形です（`HashMap.get_ref (ref key) (ref table)`）。
+
+```tsuzuri run=len%3D1%20ten%3D10%20has_two%3Dfalse
+let step = HashMap.insert 1 10 >> HashMap.remove 2
+let table: HashMap<i64, i64> = HashMap.empty() |> HashMap.insert 2 20 |> step
+let ten = table |> HashMap.at 1
+let has_two = table |> HashMap.contains_key 2
+$"len={HashMap.length (ref table)} ten={ten} has_two={has_two}"
+```
+
+実行結果:
+
+```text
+len=1 ten=10 has_two=false
+```
+
+マップを借用する関数（`at`、`get`、`contains_key`）に `table |> HashMap.at 1` と渡しても、`table` は消費されません。`>>` で合成した関数は、前の関数が返したマップを、次の関数が借りて受け取ります。借りた一時のマップの中を指す参照を返す `at` につなぐと（`HashMap.insert 1 10 >> HashMap.at 1`）、参照が一時のマップより長生きしてしまうので `E1013` です。値を取り出すには、`get` を使うか、マップを `let` に束縛します。
 
 ## 反復順序と swap-remove の仕組み
 
@@ -67,12 +89,12 @@ val=100
 
 ```tsuzuri run=keys%3D%5B10%2C%2040%2C%2030%5D
 let mut ages: HashMap<i64, i64> = HashMap.empty()
-ages = HashMap.insert ages 10 1
-ages = HashMap.insert ages 20 2
-ages = HashMap.insert ages 30 3
-ages = HashMap.insert ages 40 4
-ages = HashMap.insert ages 10 5
-ages = HashMap.remove ages 20
+ages = HashMap.insert 10 1 ages
+ages = HashMap.insert 20 2 ages
+ages = HashMap.insert 30 3 ages
+ages = HashMap.insert 40 4 ages
+ages = HashMap.insert 10 5 ages
+ages = HashMap.remove 20 ages
 
 let keys = HashMap.keys (ref ages)
 $"keys={keys}"
@@ -94,20 +116,20 @@ keys=[10, 40, 30]
 
 | 値渡し版 | 借用版 | 動作 |
 | --- | --- | --- |
-| `contains_key (ref m) key` | `contains_key_ref (ref m) (ref key)` | キーの存在判定 |
-| `get (ref m) key` | `get_ref (ref m) (ref key)` | `Maybe<V>` を返す（`Copy<V>` が必要） |
-| `at (ref m) key` | `at_ref (ref m) (ref key)` | 共有参照 `ref V` を返す（存在しないとトラップ） |
-| `remove m key` | `remove_ref m (ref key)` | エントリの削除 |
+| `contains_key key (ref m)` | `contains_key_ref (ref key) (ref m)` | キーの存在判定 |
+| `get key (ref m)` | `get_ref (ref key) (ref m)` | `Maybe<V>` を返す（`Copy<V>` が必要） |
+| `at key (ref m)` | `at_ref (ref key) (ref m)` | 共有参照 `ref V` を返す（存在しないとトラップ） |
+| `remove key m` | `remove_ref (ref key) m` | エントリの削除 |
 
 所有文字列など非 Copy なキーを検索する際、値渡し版を使うとキーの所有権が消費されてしまいます。検索後もキーを手元に残したい場合は **`*_ref` 版** を使用します。
 
 ```tsuzuri run=has%3Dtrue%20val%3D100%20key%3Dscore
 let mut map: HashMap<string, i64> = HashMap.empty()
-map = HashMap.insert map "score" 100
+map = HashMap.insert "score" 100 map
 
 let key = "score"
-let has = HashMap.contains_key_ref (ref map) (ref key)
-let val = HashMap.at_ref (ref map) (ref key)
+let has = HashMap.contains_key_ref (ref key) (ref map)
+let val = HashMap.at_ref (ref key) (ref map)
 
 $"has={has} val={val} key={key}"
 ```
@@ -138,7 +160,7 @@ Tsuzuri では暗号論的ハッシュ関数を用いた HashDoS 対策機能を
 
 ```tsuzuri run=len%3D1
 let mut map: HashMap<string, i64> = HashMap.with_seed 42i64u
-map = HashMap.insert map "safe" 1
+map = HashMap.insert "safe" 1 map
 let len = HashMap.length (ref map)
 $"len={len}"
 ```
@@ -181,20 +203,20 @@ seed を付けても走査順は変わりません。同じ操作列なら、see
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `contains_key` | `(Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key -> bool` | キーの存在判定（値渡し） |
-| `contains_key_ref` | `(Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> ref 'key -> bool` | キーの存在判定（借用） |
-| `get` | `(Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> 'key -> Maybe<'value>` | 値を `Some` で取得（値渡し） |
-| `get_ref` | `(Hash<'key>, Eq<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> ref 'key -> Maybe<'value>` | 値を `Some` で取得（借用） |
-| `at` | `(Hash<'key>, Eq<'key>) => ref HashMap<'key, 'value> -> 'key -> ref 'value` | 値への参照を取得（存在しないとトラップ） |
-| `at_ref` | `{r s} :: (Hash<'key>, Eq<'key>) => ref {r} HashMap<'key, 'value> -> ref {s} 'key -> ref {r} 'value` | キー借用で値への参照を取得 |
+| `contains_key` | `(Hash<'key>, Eq<'key>) => 'key -> ref HashMap<'key, 'value> -> bool` | キーの存在判定（値渡し） |
+| `contains_key_ref` | `(Hash<'key>, Eq<'key>) => ref 'key -> ref HashMap<'key, 'value> -> bool` | キーの存在判定（借用） |
+| `get` | `(Hash<'key>, Eq<'key>, Copy<'value>) => 'key -> ref HashMap<'key, 'value> -> Maybe<'value>` | 値を `Some` で取得（値渡し） |
+| `get_ref` | `(Hash<'key>, Eq<'key>, Copy<'value>) => ref 'key -> ref HashMap<'key, 'value> -> Maybe<'value>` | 値を `Some` で取得（借用） |
+| `at` | `(Hash<'key>, Eq<'key>) => 'key -> ref HashMap<'key, 'value> -> ref 'value` | 値への参照を取得（存在しないとトラップ） |
+| `at_ref` | `{r s} :: (Hash<'key>, Eq<'key>) => ref {s} 'key -> ref {r} HashMap<'key, 'value> -> ref {r} 'value` | キー借用で値への参照を取得 |
 
 ### 更新・削除
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `insert` | `(Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> 'key -> 'value -> HashMap<'key, 'value>` | キーと値を挿入・更新したマップを返します |
-| `remove` | `(Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> 'key -> HashMap<'key, 'value>` | キーを削除したマップを返します（swap-remove） |
-| `remove_ref` | `(Hash<'key>, Eq<'key>) => HashMap<'key, 'value> -> ref 'key -> HashMap<'key, 'value>` | キー借用で削除したマップを返します |
+| `insert` | `(Hash<'key>, Eq<'key>) => 'key -> 'value -> HashMap<'key, 'value> -> HashMap<'key, 'value>` | キーと値を挿入・更新したマップを返します |
+| `remove` | `(Hash<'key>, Eq<'key>) => 'key -> HashMap<'key, 'value> -> HashMap<'key, 'value>` | キーを削除したマップを返します（swap-remove） |
+| `remove_ref` | `(Hash<'key>, Eq<'key>) => ref 'key -> HashMap<'key, 'value> -> HashMap<'key, 'value>` | キー借用で削除したマップを返します |
 
 ### 変換・反復
 

@@ -221,7 +221,7 @@ fn rec parse_value text start depth =
 		elif byte == 110ubyte then keyword text start u8"null" Null
 		elif byte == 45ubyte || is_digit byte then
 			match scan_number text start with
-			| Result.Ok finish -> Result.Ok (Number (Numeral { text: Maybe.get (Utf8String.slice text start finish) }), finish)
+			| Result.Ok finish -> Result.Ok (Number (Numeral { text: Maybe.get (Utf8String.slice start finish text) }), finish)
 			| Result.Error error -> Result.Error error
 		else Result.Error (failure Syntax start)
 and parse_items text start depth =
@@ -482,8 +482,8 @@ fn rec emit_pretty output value indent level =
 
 /// The JSON text of `value` indented as `JSON.stringify(value, null, indent)` indents it: each
 /// level adds `indent` spaces (at most 10), and an `indent` below 1 writes no white space.
-def to_utf8string_pretty :: ref Value -> i64 -> utf8string
-fn to_utf8string_pretty value indent =
+def to_utf8string_pretty :: i64 -> ref Value -> utf8string
+fn to_utf8string_pretty indent value =
 	let width = if indent > 10 then 10 else indent
 	if width < 1 then to_utf8string value else text_of (emit_pretty (Vec.empty()) value width 0)
 
@@ -981,7 +981,7 @@ instance (Decode<'k>, Decode<'v>, Ord<'k>) => Decode<Map<'k, 'v>> {
 					match Vec.pop rest with
 					| (remaining, Maybe.Some entry) ->
 						rest = remaining
-						map = Map.insert map entry.key entry.value
+						map = Map.insert entry.key entry.value map
 					| (remaining, Maybe.None) -> rest = remaining
 				if duplicate >= 0 then Result.Error (duplicate_entry value duplicate) else Result.Ok map
 }
@@ -1004,7 +1004,7 @@ instance (Decode<'k>, Decode<'v>, Hash<'k>, Eq<'k>) => Decode<HashMap<'k, 'v>> {
 					rest = remaining
 					let before = HashMap.length (ref map)
 					let index = entry.index
-					map = HashMap.insert map entry.key entry.value
+					map = HashMap.insert entry.key entry.value map
 					if HashMap.length (ref map) == before then problem = Maybe.Some (duplicate_entry value index)
 				| (remaining, Maybe.None) -> rest = remaining
 			match problem with
@@ -1029,7 +1029,7 @@ instance (Decode<'k>, Ord<'k>) => Decode<Set<'k>> {
 					match Vec.pop rest with
 					| (remaining, Maybe.Some element) ->
 						rest = remaining
-						set = Set.insert set element.key
+						set = Set.insert element.key set
 					| (remaining, Maybe.None) -> rest = remaining
 				if duplicate >= 0 then Result.Error (failure (DuplicateKey (element_name value duplicate)) (-1)) else Result.Ok set
 }
@@ -1052,7 +1052,7 @@ instance (Decode<'k>, Hash<'k>, Eq<'k>) => Decode<HashSet<'k>> {
 				| (remaining, Maybe.Some key) ->
 					rest = remaining
 					let before = HashSet.length (ref set)
-					set = HashSet.insert set key
+					set = HashSet.insert key set
 					if HashSet.length (ref set) == before then problem = Maybe.Some (failure (DuplicateKey (element_name value index)) (-1))
 				| (remaining, Maybe.None) -> rest = remaining
 				index = index + 1
@@ -1113,10 +1113,10 @@ fn rec serialize value =
 	| Result.Error error -> Result.Error error
 
 /// `value` encoded and written as indented JSON text, as `to_utf8string_pretty` writes it.
-def rec serialize_pretty :: Encode<'a> => ref 'a -> i64 -> Result<utf8string, Error>
-fn rec serialize_pretty value indent =
+def rec serialize_pretty :: Encode<'a> => i64 -> ref 'a -> Result<utf8string, Error>
+fn rec serialize_pretty indent value =
 	match Encode.encode value with
-	| Result.Ok json -> Result.Ok (to_utf8string_pretty (ref json) indent)
+	| Result.Ok json -> Result.Ok (to_utf8string_pretty indent (ref json))
 	| Result.Error error -> Result.Error error
 
 /// The value that the JSON text `text` describes: `parse`, then `Decode`.
@@ -1440,8 +1440,8 @@ fn token_text text token =
 		| Result.Error error -> Result.Error error
 
 /// Whether the string token spells `expected`. A token without escapes is compared in place, without building its text.
-def token_matches :: ref utf8string -> ref Lexeme -> ref string -> bool
-fn token_matches text token expected =
+def token_matches :: ref string -> ref utf8string -> ref Lexeme -> bool
+fn token_matches expected text token =
 	if token.escaped || token.start < 1 || token.finish >= text.length || token.finish < token.start then
 		match token_text text token with
 		| Result.Ok value -> value == *expected
@@ -1478,7 +1478,7 @@ fn token_matches text token expected =
 def token_numeral :: ref utf8string -> ref Lexeme -> Result<Numeral, Error>
 fn token_numeral text token =
 	if token.start < 0 || token.finish <= token.start || token.finish > text.length then Result.Error (failure Syntax token.start) else
-		match Utf8String.slice text token.start token.finish with
+		match Utf8String.slice token.start token.finish text with
 		| Maybe.Some candidate -> if is_numeral (ref candidate) then Result.Ok (Numeral { text: candidate }) else Result.Error (failure Syntax token.start)
 		| Maybe.None -> Result.Error (failure Syntax token.start)
 
@@ -1515,8 +1515,8 @@ fn write_null writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes `true` or `false`.
-def write_bool :: Writer -> bool -> Result<Writer, Error>
-fn write_bool writer flag =
+def write_bool :: bool -> Writer -> Result<Writer, Error>
+fn write_bool flag writer =
 	match value_slot writer with
 	| Result.Ok ready ->
 		let bytes = if flag then push_word ready.bytes u8"true" else push_word ready.bytes u8"false"
@@ -1524,8 +1524,8 @@ fn write_bool writer flag =
 	| Result.Error error -> Result.Error error
 
 /// Writes a number. A `Numeral` whose text is not a JSON number gives `Syntax` at the end of the output.
-def write_number :: Writer -> ref Numeral -> Result<Writer, Error>
-fn write_number writer numeral =
+def write_number :: ref Numeral -> Writer -> Result<Writer, Error>
+fn write_number numeral writer =
 	if !(is_numeral (ref numeral.text)) then Result.Error (failure Syntax (Vec.length (ref writer.bytes))) else
 		match value_slot writer with
 		| Result.Ok ready ->
@@ -1534,8 +1534,8 @@ fn write_number writer numeral =
 		| Result.Error error -> Result.Error error
 
 /// Writes a string with the escapes of `to_utf8string`.
-def write_text :: Writer -> ref string -> Result<Writer, Error>
-fn write_text writer text =
+def write_text :: ref string -> Writer -> Result<Writer, Error>
+fn write_text text writer =
 	match value_slot writer with
 	| Result.Ok ready ->
 		let bytes = emit_string ready.bytes text
@@ -1543,8 +1543,8 @@ fn write_text writer text =
 	| Result.Error error -> Result.Error error
 
 /// Writes a whole value as `to_utf8string` writes it.
-def write_json :: Writer -> ref Value -> Result<Writer, Error>
-fn write_json writer value =
+def write_json :: ref Value -> Writer -> Result<Writer, Error>
+fn write_json value writer =
 	match value_slot writer with
 	| Result.Ok ready ->
 		let bytes = emit_value ready.bytes value
@@ -1552,8 +1552,8 @@ fn write_json writer value =
 	| Result.Error error -> Result.Error error
 
 /// Writes the key of the next member of the innermost open object, with its `,` and `:`.
-def write_key :: Writer -> ref string -> Result<Writer, Error>
-fn write_key writer key =
+def write_key :: ref string -> Writer -> Result<Writer, Error>
+fn write_key key writer =
 	let count = Vec.length (ref writer.containers)
 	let in_object = count > 0 && writer.containers[count - 1]
 	let state = writer.state

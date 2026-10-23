@@ -173,7 +173,7 @@ fn trap_table_is_deterministic_and_uses_the_source_map() {
 
 #[test]
 fn typed_builtins_keep_guard_kinds_and_user_call_sites() {
-    let source = "export def replace :: i64 -> i64\nfn replace index = { let values = Array.__set index 3 [1, 2]; values.length }\nexport def reserve :: i64 -> i64\nfn reserve count = { let values: Vec<i64> = Vec.with_capacity count; Vec.length (ref values) }\nexport def decode :: i64 -> i64\nfn decode index = { let text = u8\"text\"; match Utf8String.decode_at (ref text) index with | (_, next) -> next }\nexport def units :: i64\nfn units = (String.from_code_units [1i16u]).length";
+    let source = "export def replace :: i64 -> i64\nfn replace index = { let values = Array.__set index 3 [1, 2]; values.length }\nexport def reserve :: i64 -> i64\nfn reserve count = { let values: Vec<i64> = Vec.with_capacity count; Vec.length (ref values) }\nexport def decode :: i64 -> i64\nfn decode index = { let text = u8\"text\"; match Utf8String.decode_at index (ref text) with | (_, next) -> next }\nexport def units :: i64\nfn units = (String.from_code_units [1i16u]).length";
     let module = tsuzuri::analyze(source).unwrap();
     let sources = [TrapSource {
         path: "Main.tz",
@@ -198,7 +198,7 @@ fn typed_builtins_keep_guard_kinds_and_user_call_sites() {
         (TrapKind::AllocationSize, "Vec.with_capacity count"),
         (
             TrapKind::BoundsCheck,
-            "Utf8String.decode_at (ref text) index",
+            "Utf8String.decode_at index (ref text)",
         ),
         (TrapKind::AllocationSize, "String.from_code_units [1i16u]"),
     ] {

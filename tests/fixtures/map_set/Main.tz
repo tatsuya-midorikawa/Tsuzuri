@@ -3,7 +3,7 @@ fn map_insert_lookup count =
     let mut map: Map<i64, i64> = Map.empty()
     let mut index = 0
     while index < count do
-        map = Map.insert map (index * 37 % 101) (index * 3)
+        map = Map.insert (index * 37 % 101) (index * 3) map
         index = index + 1
     let keys = Map.keys (&map)
     let values = Map.values (&map)
@@ -11,8 +11,8 @@ fn map_insert_lookup count =
     assert (keys.length == values.length && values.length == pairs.length)
     index = 0
     while index < keys.length do
-        assert (Map.contains_key (&map) keys[index])
-        assert (Maybe.get (Map.get (&map) keys[index]) == values[index])
+        assert (Map.contains_key keys[index] (&map))
+        assert (Maybe.get (Map.get keys[index] (&map)) == values[index])
         index = index + 1
     Map.fold (\total key value -> total * 31 + deref key * 7 + deref value) 0 (&map)
 
@@ -21,7 +21,7 @@ fn map_replace_drop count =
     let mut map: Map<string, string> = Map.empty()
     let mut index = 0
     while index < count do
-        map = Map.insert map (to_string (index % 9)) (to_string index)
+        map = Map.insert (to_string (index % 9)) (to_string index) map
         index = index + 1
     Map.fold (\total key value -> total + key.length + value.length) 0 (&map)
 
@@ -30,13 +30,13 @@ fn map_remove count =
     let mut map: Map<i64, i64> = Map.empty()
     let mut index = 0
     while index < count do
-        map = Map.insert map index (index * 2)
+        map = Map.insert index (index * 2) map
         index = index + 1
     index = 0
     while index < count do
-        map = Map.remove map index
+        map = Map.remove index map
         index = index + 2
-    map = Map.remove map (-1)
+    map = Map.remove (-1) map
     Map.fold (\total key value -> total + deref key + deref value) 0 (&map)
 
 export def set_algebra :: i64 -> i64
@@ -45,8 +45,8 @@ fn set_algebra count =
     let mut right: Set<i64> = Set.empty()
     let mut index = 0
     while index < count do
-        if index % 2 == 0 then left = Set.insert left index
-        if index % 3 == 0 then right = Set.insert right index
+        if index % 2 == 0 then left = Set.insert index left
+        if index % 3 == 0 then right = Set.insert index right
         index = index + 1
     let common = Set.intersect (&left) (&right)
     let different = Set.difference (&left) (&right)
@@ -58,57 +58,57 @@ fn set_algebra count =
 
 export def set_owned_union :: i64
 fn set_owned_union =
-    let combined = Set.union (Set.singleton "a") (Set.insert (Set.singleton "a") "b")
-    assert (Set.contains (&combined) "a" && Set.contains (&combined) "b")
+    let combined = Set.union (Set.singleton "a") (Set.insert "b" (Set.singleton "a"))
+    assert (Set.contains "a" (&combined) && Set.contains "b" (&combined))
     Set.fold (\total key -> total + key.length) 0 (&combined)
 
 export def map_capture :: i64
 fn map_capture =
     let map = Map.singleton "answer" 42
-    let read = \() -> Maybe.get (Map.get (&map) "answer")
+    let read = \() -> Maybe.get (Map.get "answer" (&map))
     read () + read ()
 
 export def map_borrowed_values :: i64
 fn map_borrowed_values =
     let text = "borrowed"
     let map = Map.singleton 1 (ref text)
-    let value = Map.at (&map) 1
+    let value = Map.at 1 (&map)
     value.length
 
 export def first_representative :: bool
 fn first_representative =
-    let map = Map.insert (Map.singleton (-0.0) 1) 0.0 2
+    let map = Map.insert 0.0 2 (Map.singleton (-0.0) 1)
     let keys = Map.keys (&map)
     let set = Set.union (Set.singleton (-0.0)) (Set.singleton 0.0)
     let set_keys = Set.to_array (&set)
-    keys.length == 1 && 1.0 / keys[0] < 0.0 && Maybe.get (Map.get (&map) 0.0) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
+    keys.length == 1 && 1.0 / keys[0] < 0.0 && Maybe.get (Map.get 0.0 (&map)) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
 
 export def map_task_drop :: i64
 fn map_task_drop =
     let text = "owned capture"
     let map = Map.singleton 1 (task { return text.length })
-    let empty = Map.remove map 1
+    let empty = Map.remove 1 map
     Map.length (&empty)
 
 record Key { name: string } deriving (Eq, Ord)
 
 export def owned_record_keys :: i64
 fn owned_record_keys =
-    let map = Map.insert (Map.empty()) (Key { name: "answer" }) 42
-    Maybe.get (Map.get (&map) (Key { name: "answer" }))
+    let map = Map.insert (Key { name: "answer" }) 42 (Map.empty())
+    Maybe.get (Map.get (Key { name: "answer" }) (&map))
 
 export def map_at_missing :: i64
 fn map_at_missing =
     let map: Map<i64, string> = Map.empty()
-    let value = Map.at (&map) 1
+    let value = Map.at 1 (&map)
     value.length
 
 export def nan_query :: i64
 fn nan_query =
-    let map = Map.insert (Map.empty()) (0.0 / 0.0) 1
+    let map = Map.insert (0.0 / 0.0) 1 (Map.empty())
     Map.length (&map)
 
 export def nan_stored :: bool
 fn nan_stored =
     let map = Map.singleton (0.0 / 0.0) 1
-    Map.contains_key (&map) 1.0
+    Map.contains_key 1.0 (&map)

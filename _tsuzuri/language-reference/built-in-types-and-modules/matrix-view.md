@@ -21,7 +21,7 @@
 let m = Matrix.init 2 3 (\row col -> row * 10 + col)
 let view = MatrixView.of_matrix (ref m)
 let flipped = MatrixView.transpose view
-let corner = MatrixView.at flipped 2 1
+let corner = MatrixView.at 2 1 flipped
 let copy = MatrixView.to_matrix flipped
 $"{MatrixView.rows flipped}x{MatrixView.cols flipped} {deref corner} {Matrix.rows (ref copy)}"
 ```
@@ -45,8 +45,8 @@ $"{MatrixView.rows flipped}x{MatrixView.cols flipped} {deref corner} {Matrix.row
 ```tsuzuri run=34%2021%20false%20false%2030
 let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 let whole = MatrixView.of_array 3 4 (ref data)
-let window = MatrixView.sub whole 1 1 2 2
-let column = MatrixView.col whole 2
+let window = MatrixView.sub 1 1 2 2 whole
+let column = MatrixView.col 2 whole
 let repeated = MatrixView.strided 0 3 4 0 1 (ref data)
 let window_sum = MatrixView.fold (\total x -> total + x) 0 window
 let column_sum = MatrixView.fold (\total x -> total + x) 0 column
@@ -67,9 +67,9 @@ $"{window_sum} {column_sum} {MatrixView.is_contiguous window} {MatrixView.is_con
 | 操作 | 形 | offset | row_stride | col_stride |
 | --- | --- | --- | --- | --- |
 | `transpose view` | `cols` 行 `rows` 列 | 同じ | `col_stride` | `row_stride` |
-| `sub view r c h w` | `h` 行 `w` 列 | `offset + r * row_stride + c * col_stride` | 同じ | 同じ |
-| `row view i` | `sub view i 0 1 cols` | 同上 | 同じ | 同じ |
-| `col view j` | `sub view 0 j rows 1` | 同上 | 同じ | 同じ |
+| `sub r c h w view` | `h` 行 `w` 列 | `offset + r * row_stride + c * col_stride` | 同じ | 同じ |
+| `row i view` | `sub i 0 1 cols view` | 同上 | 同じ | 同じ |
+| `col j view` | `sub 0 j rows 1 view` | 同上 | 同じ | 同じ |
 
 `sub` は、`0 <= r <= rows`、`0 <= c <= cols`、`h <= rows - r`、`w <= cols - c` でないとトラップします。`h` や `w` が 0 の空の窓も作れます。
 
@@ -82,8 +82,8 @@ $"{window_sum} {column_sum} {MatrixView.is_contiguous window} {MatrixView.is_con
 | `MatrixView.rows view` / `cols` | 行数・列数 |
 | `MatrixView.offset view` / `row_stride` / `col_stride` | 配置 |
 | `MatrixView.data view` | 窓の外も含む、借りた配列全体 |
-| `MatrixView.at view row col` | 要素への共有借用。行と列を別々に検査し、範囲外はトラップ |
-| `MatrixView.get view row col` | 要素のコピーの `Maybe<'a>`。範囲外は `None`（`Copy<'a>` が必要） |
+| `MatrixView.at row col view` | 要素への共有借用。行と列を別々に検査し、範囲外はトラップ |
+| `MatrixView.get row col view` | 要素のコピーの `Maybe<'a>`。範囲外は `None`（`Copy<'a>` が必要） |
 | `MatrixView.fold folder initial view` | 窓の行優先で左から右に畳み込む |
 | `MatrixView.map transform view` | 窓の行優先で 1 回ずつ変換した新しい `Matrix` |
 | `MatrixView.to_matrix view` | 窓の要素を行優先に複製した新しい `Matrix` |
@@ -102,7 +102,7 @@ let view = MatrixView.of_matrix (ref a)
 let gram = MatrixView.mul (MatrixView.transpose view) view
 let plain = Matrix.mul (ref (Matrix.transpose (ref a))) (ref a)
 let same = Matrix.fold (\total x -> total * 31 + x) 0 (ref gram) == Matrix.fold (\total x -> total * 31 + x) 0 (ref plain)
-$"{Matrix.rows (ref gram)}x{Matrix.cols (ref gram)} {deref (Matrix.at (ref gram) 1 2)} {same}"
+$"{Matrix.rows (ref gram)}x{Matrix.cols (ref gram)} {deref (Matrix.at 1 2 (ref gram))} {same}"
 ```
 
 実行結果:
@@ -119,23 +119,23 @@ $"{Matrix.rows (ref gram)}x{Matrix.cols (ref gram)} {deref (Matrix.at (ref gram)
 
 | API | 説明 |
 | --- | --- |
-| `MatrixView.write (ref mut w) row col value` | 1 要素を置き換える。範囲外はトラップ |
-| `MatrixView.row_mut (ref mut w) i` | 1 行を `ref mut ['a..]` で借りる。`col_stride` が 1 でない窓（転置した窓）ではトラップ |
-| `MatrixView.sub_mut (ref mut w) row col rows cols` | 部分行列の書き込める窓。元の窓は、これが生きている間は使えない |
+| `MatrixView.write row col value (ref mut w)` | 1 要素を置き換える。範囲外はトラップ |
+| `MatrixView.row_mut i (ref mut w)` | 1 行を `ref mut ['a..]` で借りる。`col_stride` が 1 でない窓（転置した窓）ではトラップ |
+| `MatrixView.sub_mut row col rows cols (ref mut w)` | 部分行列の書き込める窓。元の窓は、これが生きている間は使えない |
 | `MatrixView.transpose_mut w` | 窓を消費して、行と列を入れ替えた窓を返す |
-| `MatrixView.fill (ref mut w) value` | 全要素に `value` を書く |
-| `MatrixView.copy_from (ref mut w) source` | 同じ形の読み取りの窓から複製する。形が違うとトラップ |
+| `MatrixView.fill value (ref mut w)` | 全要素に `value` を書く |
+| `MatrixView.copy_from source (ref mut w)` | 同じ形の読み取りの窓から複製する。形が違うとトラップ |
 | `MatrixView.map_in_place transform (ref mut w)` | 全要素を `transform` の結果に置き換える |
 | `MatrixView.freeze (ref w)` | 読み取りの窓として借りる。次の書き込みの前に使い終える |
 
 ```tsuzuri run=1%2C5%2C0%2C0%2C7%2C7
 let mut buffer = new [i64](6, _ -> 0)
 let mut grid = MatrixView.of_array_mut 2 3 (ref mut buffer)
-let line = MatrixView.row_mut (ref mut grid) 0
+let line = MatrixView.row_mut 0 (ref mut grid)
 Array.write 1 5 line
-let mut part = MatrixView.sub_mut (ref mut grid) 1 1 1 2
-MatrixView.fill (ref mut part) 7
-MatrixView.write (ref mut grid) 0 0 1
+let mut part = MatrixView.sub_mut 1 1 1 2 (ref mut grid)
+MatrixView.fill 7 (ref mut part)
+MatrixView.write 0 0 1 (ref mut grid)
 $"{buffer[0]},{buffer[1]},{buffer[2]},{buffer[3]},{buffer[4]},{buffer[5]}"
 ```
 
@@ -157,7 +157,7 @@ let mut data = Matrix.to_array m
 let mut window = MatrixView.of_array_mut 2 3 (ref mut data)
 MatrixView.map_in_place (\x -> x + 100) (ref mut window)
 let changed = Matrix.of_array 2 3 data
-deref (Matrix.at (ref changed) 1 2)
+deref (Matrix.at 1 2 (ref changed))
 ```
 
 実行結果:
@@ -225,11 +225,11 @@ MatrixView.rows view
 | `strided` | `i64 -> i64 -> i64 -> i64 -> i64 -> ref { r } ['a] -> MatrixView<'a> { r }` |
 | `rows` / `cols` / `offset` / `row_stride` / `col_stride` | `MatrixView<'a> { r } -> i64` |
 | `data` | `MatrixView<'a> { r } -> ref { r } ['a]` |
-| `at` | `MatrixView<'a> { r } -> i64 -> i64 -> ref { r } 'a` |
-| `get` | `Copy<'a> => MatrixView<'a> { r } -> i64 -> i64 -> Maybe<'a>` |
+| `at` | `i64 -> i64 -> MatrixView<'a> { r } -> ref { r } 'a` |
+| `get` | `Copy<'a> => i64 -> i64 -> MatrixView<'a> { r } -> Maybe<'a>` |
 | `transpose` | `MatrixView<'a> { r } -> MatrixView<'a> { r }` |
-| `sub` | `MatrixView<'a> { r } -> i64 -> i64 -> i64 -> i64 -> MatrixView<'a> { r }` |
-| `row` / `col` | `MatrixView<'a> { r } -> i64 -> MatrixView<'a> { r }` |
+| `sub` | `i64 -> i64 -> i64 -> i64 -> MatrixView<'a> { r } -> MatrixView<'a> { r }` |
+| `row` / `col` | `i64 -> MatrixView<'a> { r } -> MatrixView<'a> { r }` |
 | `is_contiguous` | `MatrixView<'a> { r } -> bool` |
 | `to_matrix` | `Copy<'a> => MatrixView<'a> { r } -> Matrix<'a>` |
 | `fold` | `Copy<'a> => ('state -> 'a -> 'state) -> 'state -> MatrixView<'a> { r } -> 'state` |
@@ -237,13 +237,38 @@ MatrixView.rows view
 | `mul` | `Numeric<'a> => MatrixView<'a> { r } -> MatrixView<'a> { s } -> Matrix<'a>` |
 | `of_array_mut` | `i64 -> i64 -> ref mut { r } ['a..] -> Mut<'a> { r }` |
 | `freeze` | `ref { r } Mut<'a> { r } -> MatrixView<'a> { r }` |
-| `write` | `ref mut Mut<'a> { r } -> i64 -> i64 -> 'a -> unit` |
-| `row_mut` | `ref mut { r } Mut<'a> { r } -> i64 -> ref mut { r } ['a..]` |
-| `sub_mut` | `ref mut { r } Mut<'a> { r } -> i64 -> i64 -> i64 -> i64 -> Mut<'a> { r }` |
+| `write` | `i64 -> i64 -> 'a -> ref mut Mut<'a> { r } -> unit` |
+| `row_mut` | `i64 -> ref mut { r } Mut<'a> { r } -> ref mut { r } ['a..]` |
+| `sub_mut` | `i64 -> i64 -> i64 -> i64 -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }` |
 | `transpose_mut` | `Mut<'a> { r } -> Mut<'a> { r }` |
-| `fill` | `Copy<'a> => ref mut Mut<'a> { r } -> 'a -> unit` |
-| `copy_from` | `Copy<'a> => ref mut Mut<'a> { r } -> MatrixView<'a> { s } -> unit` |
+| `fill` | `Copy<'a> => 'a -> ref mut Mut<'a> { r } -> unit` |
+| `copy_from` | `Copy<'a> => MatrixView<'a> { s } -> ref mut Mut<'a> { r } -> unit` |
 | `map_in_place` | `Copy<'a> => ('a -> 'a) -> ref mut Mut<'a> { r } -> unit` |
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読む窓や書き込む窓は、必ず最後の引数です。`view |> MatrixView.sub 1 1 2 2` のようにパイプで渡せ、`MatrixView.row 2 >> MatrixView.fold folder 0` のように一部だけ渡した関数を合成できます。ほかの引数（行、列、添字、値）は窓の前に置きます。`write row col value w` と `fill value w` は、書き込む窓が最後です。`copy_from source w` は、複製する元の窓を先に、書き込まれる窓を最後に置きます。`fold folder initial view` と `map transform view` も、窓が最後です。`mul left right` のように 2 つの読み取りの窓を取る関数は左、右の順で、右の窓が最後の引数です。
+
+```tsuzuri run=22%2086%207%2C7%2C5%2C0
+let m = Matrix.init 3 4 (\row col -> row * 10 + col)
+let view = MatrixView.of_matrix (ref m)
+let corner = view |> MatrixView.sub 1 1 2 2 |> MatrixView.at 1 1
+let row_sum = view |> (MatrixView.row 2 >> MatrixView.fold (\total x -> total + x) 0)
+let mut buffer = new [i64](4, _ -> 0)
+let mut grid = MatrixView.of_array_mut 2 2 (ref mut buffer)
+let mut top = ref mut grid |> MatrixView.sub_mut 0 0 1 2
+ref mut top |> MatrixView.fill 7
+ref mut grid |> MatrixView.write 1 0 5
+$"{deref corner} {row_sum} {buffer[0]},{buffer[1]},{buffer[2]},{buffer[3]}"
+```
+
+実行結果:
+
+```text
+22 86 7,7,5,0
+```
 
 ## 計算量
 

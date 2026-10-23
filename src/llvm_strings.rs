@@ -284,7 +284,7 @@ impl FunctionEmitter<'_, '_> {
         }
         let signature = &self.function.signature;
         match (signature.parameters.as_slice(), self.function.name.as_str()) {
-            ([Type::Reference(text, false), first, last], "slice")
+            ([first, last, Type::Reference(text, false)], "slice")
                 if **text == Type::String && *first == Type::I64 && *last == Type::I64 =>
             {
                 let result = signature.result.clone();
@@ -316,7 +316,8 @@ impl FunctionEmitter<'_, '_> {
         }
     }
 
-    /// `String.slice text first last`: `None` unless 0 <= first <= last <= length.
+    /// `String.slice first last text`: `None` unless 0 <= first <= last <= length. The text is the
+    /// last parameter, `%p2`, after the two positions `%p0` and `%p1`.
     fn slice_body(&mut self, result: &Type) {
         let Type::Union(id, _) = result else {
             unreachable!("String.slice returns a Maybe")
@@ -326,13 +327,13 @@ impl FunctionEmitter<'_, '_> {
             .iter()
             .position(|(name, _)| name == "None")
             .expect("Maybe.None exists");
-        let text = self.value("load %tz.string, ptr %p0");
+        let text = self.value("load %tz.string, ptr %p2");
         let data = self.value(format!("extractvalue %tz.string {text}, 0"));
         let word = self.value(format!("extractvalue %tz.string {text}, 1"));
         let length = self.value(format!("and i64 {word}, {MASK}"));
-        let before = self.value("icmp slt i64 %p1, 0");
-        let inverted = self.value("icmp slt i64 %p2, %p1");
-        let beyond = self.value(format!("icmp sgt i64 %p2, {length}"));
+        let before = self.value("icmp slt i64 %p0, 0");
+        let inverted = self.value("icmp slt i64 %p1, %p0");
+        let beyond = self.value(format!("icmp sgt i64 %p1, {length}"));
         let rejected = self.value(format!("or i1 {before}, {inverted}"));
         let invalid = self.value(format!("or i1 {rejected}, {beyond}"));
         let missing = self.label();
@@ -343,7 +344,7 @@ impl FunctionEmitter<'_, '_> {
         self.instruction(format!("ret {} {empty}", self.ty(result)));
         self.begin(&present);
         let piece = self.value(format!(
-            "call %tz.string @tz.string.slice(ptr {data}, i64 {word}, i64 %p1, i64 %p2)"
+            "call %tz.string @tz.string.slice(ptr {data}, i64 {word}, i64 %p0, i64 %p1)"
         ));
         let some = self.integer_some(result, &Type::String, &piece);
         self.instruction(format!("ret {} {some}", self.ty(result)));

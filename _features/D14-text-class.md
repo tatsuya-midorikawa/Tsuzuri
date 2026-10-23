@@ -195,8 +195,8 @@ instance の本体は、メソッド `m` が `String.m <引数>`（`utf8string` 
 | 7 | `contains` | `ref 's -> ref 's -> bool` | なし（#4） |
 | 8 | `starts_with` | `ref 's -> ref 's -> bool` | なし（#5） |
 | 9 | `ends_with` | `ref 's -> ref 's -> bool` | なし（#6） |
-| 10 | `slice` | `ref 's -> i64 -> i64 -> Maybe<'s>` | 境界（#7） |
-| 11 | `sub` | `ref 's -> i64 -> i64 -> Maybe<'s>` | 境界（#8） |
+| 10 | `slice` | `i64 -> i64 -> ref 's -> Maybe<'s>` | 境界（#7） |
+| 11 | `sub` | `i64 -> i64 -> ref 's -> Maybe<'s>` | 境界（#8） |
 | 12 | `join` | `ref 's -> ref ['s] -> 's` | 結果の上限（#12） |
 | 13 | `concat` | `ref ['s] -> 's` | 結果の上限（#13） |
 | 14 | `split` | `ref 's -> ref 's -> ['s]` | 空の区切り（#14） |
@@ -205,10 +205,10 @@ instance の本体は、メソッド `m` が `String.m <引数>`（`utf8string` 
 | 17 | `trim_end` | `ref 's -> 's` | なし（#16） |
 | 18 | `to_ascii_lower` | `ref 's -> 's` | なし（#18） |
 | 19 | `to_ascii_upper` | `ref 's -> 's` | なし（#19） |
-| 20 | `repeat` | `ref 's -> i64 -> 's` | 結果の上限（#20） |
+| 20 | `repeat` | `i64 -> ref 's -> 's` | 結果の上限（#20） |
 | 21 | `replace` | `ref 's -> ref 's -> ref 's -> 's` | 空のパターン（#21） |
 
-引数の順は `String.*` と同じ: パターン・区切り・接頭辞・接尾辞が**先**で本文が後（`find needle text`、`split separator text`、`replace needle replacement text`、`join separator parts`）。`slice text first last`・`sub text first count`・`repeat text count` は本文が先。
+引数の順は `String.*` と同じ: パターン・区切り・接頭辞・接尾辞が**先**で本文が後（`find needle text`、`split separator text`、`replace needle replacement text`、`join separator parts`）。`slice first last text`・`sub first count text`・`repeat count text` も本文が後。
 
 ### 仕様 3: 意味の規則（決定表）
 
@@ -252,9 +252,9 @@ instance の本体は、メソッド `m` が `String.m <引数>`（`utf8string` 
 
 ### 仕様 6: `RegexText` と `Regex.*_text`（Phase 2）
 
-- `std/RegexText.tt`（opt-in。付録 C.4）: `class RegexText<'s>`（スーパークラスなし）。7 メソッド `is_match`・`find`・`find_at`・`find_all`・`captures`・`replace_all`・`split`。各メソッドの第 1 引数は `ref Regex`、第 2 引数はテキスト `ref 's`。
+- `std/RegexText.tt`（opt-in。付録 C.4）: `class RegexText<'s>`（スーパークラスなし）。7 メソッド `is_match`・`find`・`find_at`・`find_all`・`captures`・`replace_all`・`split`。各メソッドの第 1 引数は `ref Regex`、最後の引数はテキスト `ref 's`。
 - instance（`std/Regex.tz` の末尾。付録 C.5）: `instance RegexText<string>` は `Regex.is_match`・`find`・`find_at`・`find_all`・`captures`・`replace_all`・`split` を、`instance RegexText<utf8string>` は `Regex.is_match_utf8`・`find_utf8`・`find_at_utf8`・`find_all_utf8`・`captures_utf8`・`replace_all_utf8`・`split_utf8` を、それぞれ 1 回呼ぶ。
-- 利用者が呼ぶ 7 つの関数（`std/Regex.tz`）: `Regex.is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text`。署名は `RegexText<'s> => ref Regex -> ref 's -> …`（付録 A.4 と C.5）。`replace_all_text` の置換文字列は本文と同じ型（`'s`）。範囲の単位は `string` がコード単位、`utf8string` がバイト。
+- 利用者が呼ぶ 7 つの関数（`std/Regex.tz`）: `Regex.is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text`。署名は `RegexText<'s> => ref Regex -> …`（テキスト `ref 's` は最後の引数。付録 A.4 と C.5）。`replace_all_text` の置換文字列は本文と同じ型（`'s`）。範囲の単位は `string` がコード単位、`utf8string` がバイト。
 - `Regex.compile`・`escape`・`group_count`・`search_steps` は対象外（A.4）。
 - ユーザーのコードから: `Regex.find_text (ref re) text` は普通に呼べる。ジェネリックな関数に制約を書くときは `RegexText.RegexText<'s>`、メソッドを直接呼ぶときは `RegexText.RegexText.find_all`（`RegexText<'s>` の無修飾は `E1016: unknown type class 'RegexText'`、`RegexText.find_all` は `E1002: module 'RegexText' has no function or union case 'find_all'`）。`Regex.is_match_text (ref re) (ref 5)` は `E1005: no instance for RegexText.RegexText<i32>; define an instance or use a supported type`。
 - `Regex` か `RegexText` を名指さないプログラムは、どちらも読み込まない（D-40）。

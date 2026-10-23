@@ -256,8 +256,8 @@ int main(void) {
   writeFileSync(source, `def announce :: i64 -> IO<i64>
 fn announce value = IO { do! IO.write value; return value + 1 }
 IO {
-    let! first = IO.bind (IO.pure 2) announce
-    let! second = IO.bind (announce 3) IO.pure
+    let! first = IO.bind announce (IO.pure 2)
+    let! second = IO.bind IO.pure (announce 3)
     let! third = IO.map (value -> value + 1) (IO.pure 3)
     for number in [first, second, third] do do! IO.write number
     let! left = IO.pure 5

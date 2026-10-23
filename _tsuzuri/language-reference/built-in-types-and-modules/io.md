@@ -251,7 +251,7 @@ stdout
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
 | `IO.pure` | `Capture<'a> => 'a -> IO<'a>` | 値を副作用のないアクションにする |
-| `IO.bind` | `IO<'a> -> ('a -> IO<'b>) -> IO<'b>` | 実行結果を次のアクションへ渡す |
+| `IO.bind` | `('a -> IO<'b>) -> IO<'a> -> IO<'b>` | 実行結果を次のアクションへ渡す |
 | `IO.map` | `('a -> 'b) -> IO<'a> -> IO<'b>` | 実行結果を関数で変換する |
 | `IO.read_line` | `unit -> IO<Maybe<string>>` | 1 行読む。失敗するとトラップする |
 | `IO.try_read_line` | `unit -> IO<Result<Maybe<string>, IO.Error>>` | 1 行読む。失敗は `Error` |
@@ -277,6 +277,28 @@ stdout
 | `Using` | `Maybe` や `Result` など、別の計算との合成 |
 
 呼び出しは `IO.read_line ()` のように、`unit` 引数を `()` で渡します。
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+`IO.bind` と `IO.map` は、つなぐアクションが最後の引数です。`IO.pure 20 |> IO.bind f` のようにパイプで渡せ、`IO.bind f >> IO.map g` のように一部だけ渡した関数を合成できます。`bind` は `map` と同じく、関数を先に取ります。
+
+```tsuzuri run=42
+def main :: unit -> i32 = \() ->
+    let step = IO.bind (\n -> IO.pure (n * 2)) >> IO.map (\n -> n + 2)
+    let! answer = IO.pure 20 |> step
+    do! IO.write_line answer
+    0
+```
+
+実行結果:
+
+```text
+42
+```
+
+コンピュテーション式の展開先になる `Bind` などの操作は別で、アクションが先です（`Bind action next`）。
 
 ## 所有権
 

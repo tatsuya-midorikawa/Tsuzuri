@@ -28,9 +28,9 @@ fn emits(source: &str) -> [String; 2] {
 const BASE: &str =
     "let m = Matrix.init 3 4 (\\i j -> i * 10 + j)\nlet whole = MatrixView.of_matrix (ref m)\n";
 
-const READ_ONLY: &str = "let m = Matrix.init 3 4 (\\i j -> i * 10 + j)\nlet whole = MatrixView.of_matrix (ref m)\nlet t = MatrixView.transpose whole\nlet window = MatrixView.sub whole 1 1 2 2\nlet column = MatrixView.col whole 2\nlet top = MatrixView.row whole 0\nlet copy = MatrixView.to_matrix t\nlet sum = MatrixView.fold (\\acc x -> acc + x) 0 window\nlet product = MatrixView.mul t whole\nlet mapped = MatrixView.map (\\x -> x * 2) window\nlet strided = MatrixView.strided 1 2 2 4 2 (Matrix.as_array (ref m))\nderef (MatrixView.at t 2 1) + MatrixView.rows column + MatrixView.cols top + sum + Maybe.default_value 0 (MatrixView.get top 0 3) + deref (Matrix.at (ref copy) 3 2) + deref (Matrix.at (ref product) 3 3) + deref (Matrix.at (ref mapped) 1 0) + MatrixView.offset strided + MatrixView.row_stride strided + MatrixView.col_stride strided + Array.length (MatrixView.data whole)";
+const READ_ONLY: &str = "let m = Matrix.init 3 4 (\\i j -> i * 10 + j)\nlet whole = MatrixView.of_matrix (ref m)\nlet t = MatrixView.transpose whole\nlet window = MatrixView.sub 1 1 2 2 whole\nlet column = MatrixView.col 2 whole\nlet top = MatrixView.row 0 whole\nlet copy = MatrixView.to_matrix t\nlet sum = MatrixView.fold (\\acc x -> acc + x) 0 window\nlet product = MatrixView.mul t whole\nlet mapped = MatrixView.map (\\x -> x * 2) window\nlet strided = MatrixView.strided 1 2 2 4 2 (Matrix.as_array (ref m))\nderef (MatrixView.at 2 1 t) + MatrixView.rows column + MatrixView.cols top + sum + Maybe.default_value 0 (MatrixView.get 0 3 top) + deref (Matrix.at 3 2 (ref copy)) + deref (Matrix.at 3 3 (ref product)) + deref (Matrix.at 1 0 (ref mapped)) + MatrixView.offset strided + MatrixView.row_stride strided + MatrixView.col_stride strided + Array.length (MatrixView.data whole)";
 
-const MUTABLE: &str = "let mut data = [0, 0, 0, 0, 0, 0, 0, 0, 0]\nlet mut view = MatrixView.of_array_mut 3 3 (ref mut data)\nMatrixView.write (ref mut view) 1 2 7\nMatrixView.fill (ref mut view) 4\nlet row = MatrixView.row_mut (ref mut view) 1\nArray.write 0 9 row\nlet mut inner = MatrixView.sub_mut (ref mut view) 1 1 2 2\nMatrixView.fill (ref mut inner) 1\nlet source = [10, 20, 30, 40]\nlet from = MatrixView.of_array 2 2 (ref source)\nlet mut corner = MatrixView.sub_mut (ref mut view) 0 0 2 2\nMatrixView.copy_from (ref mut corner) (MatrixView.transpose from)\nMatrixView.map_in_place (\\x -> x + 1) (ref mut corner)\nlet seen = MatrixView.freeze (ref view)\nlet total = MatrixView.fold (\\acc x -> acc + x) 0 seen\nlet flipped = MatrixView.transpose_mut view\nlet last = MatrixView.freeze (ref flipped)\ntotal + MatrixView.rows last";
+const MUTABLE: &str = "let mut data = [0, 0, 0, 0, 0, 0, 0, 0, 0]\nlet mut view = MatrixView.of_array_mut 3 3 (ref mut data)\nMatrixView.write 1 2 7 (ref mut view)\nMatrixView.fill 4 (ref mut view)\nlet row = MatrixView.row_mut 1 (ref mut view)\nArray.write 0 9 row\nlet mut inner = MatrixView.sub_mut 1 1 2 2 (ref mut view)\nMatrixView.fill 1 (ref mut inner)\nlet source = [10, 20, 30, 40]\nlet from = MatrixView.of_array 2 2 (ref source)\nlet mut corner = MatrixView.sub_mut 0 0 2 2 (ref mut view)\nMatrixView.copy_from (MatrixView.transpose from) (ref mut corner)\nMatrixView.map_in_place (\\x -> x + 1) (ref mut corner)\nlet seen = MatrixView.freeze (ref view)\nlet total = MatrixView.fold (\\acc x -> acc + x) 0 seen\nlet flipped = MatrixView.transpose_mut view\nlet last = MatrixView.freeze (ref flipped)\ntotal + MatrixView.rows last";
 
 #[test]
 fn matrix_views_accept_the_documented_operations() {
@@ -38,7 +38,7 @@ fn matrix_views_accept_the_documented_operations() {
     emits(MUTABLE);
     // A view of a view, and several views of one owner, at once.
     emits(&format!(
-        "{BASE}let a = MatrixView.sub whole 0 0 2 2\nlet b = MatrixView.transpose a\nlet c = MatrixView.of_matrix (ref m)\nMatrixView.rows a + MatrixView.rows b + MatrixView.cols c"
+        "{BASE}let a = MatrixView.sub 0 0 2 2 whole\nlet b = MatrixView.transpose a\nlet c = MatrixView.of_matrix (ref m)\nMatrixView.rows a + MatrixView.rows b + MatrixView.cols c"
     ));
     // The owner is usable again after the last use of its views.
     emits(&format!(
@@ -80,7 +80,7 @@ fn views_borrow_their_owner_and_cannot_outlive_it() {
     assert!(message.contains("does not live long enough"), "{message}");
     for source in [
         "let moved = m\nMatrixView.rows whole + Matrix.rows (ref moved)",
-        "let changed = Matrix.set m 0 0 1\nMatrixView.rows whole",
+        "let changed = Matrix.set 0 0 1 m\nMatrixView.rows whole",
         "let flat = Matrix.to_array m\nMatrixView.rows whole",
     ] {
         let message = rejects(&format!("{BASE}{source}"), "E1014");
@@ -105,10 +105,10 @@ fn writable_views_hold_an_exclusive_borrow() {
     let prefix =
         "let mut data = [1, 2, 3, 4]\nlet mut view = MatrixView.of_array_mut 2 2 (ref mut data)\n";
     for source in [
-        "let first = data[0]\nMatrixView.write (ref mut view) 0 0 9\nfirst",
-        "let mut second = MatrixView.of_array_mut 2 2 (ref mut data)\nMatrixView.write (ref mut view) 0 0 9\nMatrixView.write (ref mut second) 0 0 1",
-        "let seen = MatrixView.freeze (ref view)\nMatrixView.write (ref mut view) 0 0 9\nMatrixView.rows seen",
-        "let row = MatrixView.row_mut (ref mut view) 0\nMatrixView.write (ref mut view) 0 0 9\nArray.write 0 1 row",
+        "let first = data[0]\nMatrixView.write 0 0 9 (ref mut view)\nfirst",
+        "let mut second = MatrixView.of_array_mut 2 2 (ref mut data)\nMatrixView.write 0 0 9 (ref mut view)\nMatrixView.write 0 0 1 (ref mut second)",
+        "let seen = MatrixView.freeze (ref view)\nMatrixView.write 0 0 9 (ref mut view)\nMatrixView.rows seen",
+        "let row = MatrixView.row_mut 0 (ref mut view)\nMatrixView.write 0 0 9 (ref mut view)\nArray.write 0 1 row",
     ] {
         let message = rejects(&format!("{prefix}{source}"), "E1014");
         assert!(
@@ -118,10 +118,10 @@ fn writable_views_hold_an_exclusive_borrow() {
     }
     // The data is readable again once the view is no longer used.
     emits(&format!(
-        "{prefix}MatrixView.write (ref mut view) 0 0 9\nlet first = data[0]\nfirst"
+        "{prefix}MatrixView.write 0 0 9 (ref mut view)\nlet first = data[0]\nfirst"
     ));
     let message = rejects(
-        &format!("{prefix}let moved = view\nMatrixView.write (ref mut view) 0 0 9"),
+        &format!("{prefix}let moved = view\nMatrixView.write 0 0 9 (ref mut view)"),
         "E1012",
     );
     assert!(
@@ -129,7 +129,7 @@ fn writable_views_hold_an_exclusive_borrow() {
         "{message}"
     );
     let message = rejects(
-        &format!("{prefix}Task.run (task {{ return MatrixView.write (ref mut view) 0 0 9 }})"),
+        &format!("{prefix}Task.run (task {{ return MatrixView.write 0 0 9 (ref mut view) }})"),
         "E1013",
     );
     assert!(
@@ -142,15 +142,15 @@ fn writable_views_hold_an_exclusive_borrow() {
 fn view_constraints_follow_array_rules() {
     let words = "let w = Matrix.init 2 2 (\\i j -> \"x\")\nlet v = MatrixView.of_matrix (ref w)\n";
     for source in [
-        "let s = MatrixView.at v 0 1\ns.length",
-        "MatrixView.rows (MatrixView.transpose (MatrixView.sub v 0 0 1 2))",
+        "let s = MatrixView.at 0 1 v\ns.length",
+        "MatrixView.rows (MatrixView.transpose (MatrixView.sub 0 0 1 2 v))",
     ] {
         emits(&format!("{words}{source}"));
     }
     for source in [
         "let n = MatrixView.to_matrix v\nMatrix.rows (ref n)",
         "MatrixView.fold (\\total s -> total + 1) 0 v",
-        "Maybe.is_some (ref (MatrixView.get v 0 0))",
+        "Maybe.is_some (ref (MatrixView.get 0 0 v))",
         "let n = MatrixView.map (\\s -> 1) v\nMatrix.rows (ref n)",
         "let p = MatrixView.mul v v\nMatrix.rows (ref p)",
     ] {
@@ -162,10 +162,10 @@ fn view_constraints_follow_array_rules() {
     }
     let mut_words = "let mut data = [\"a\", \"b\"]\nlet mut view = MatrixView.of_array_mut 1 2 (ref mut data)\n";
     emits(&format!(
-        "{mut_words}MatrixView.write (ref mut view) 0 0 \"z\"\n0"
+        "{mut_words}MatrixView.write 0 0 \"z\" (ref mut view)\n0"
     ));
     for source in [
-        "MatrixView.fill (ref mut view) \"z\"",
+        "MatrixView.fill \"z\" (ref mut view)",
         "MatrixView.map_in_place (\\s -> s) (ref mut view)",
     ] {
         let message = rejects(&format!("{mut_words}{source}"), "E1005");

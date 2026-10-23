@@ -35,7 +35,7 @@ match Regex.compile (ref pattern) with
 found 6..8
 ```
 
-`find_at re text start` は `start` から探します。`start` より前の文字も `^` と `\b` の判定に使うので、本文の途中から探しても単語境界の意味は変わりません。`start` が範囲外（負、長さ超）か、スカラーの内部（サロゲートペアの間、UTF-8 の継続 byte）なら `None` です。
+`find_at re start text` は `start` から探します。`start` より前の文字も `^` と `\b` の判定に使うので、本文の途中から探しても単語境界の意味は変わりません。`start` が範囲外（負、長さ超）か、スカラーの内部（サロゲートペアの間、UTF-8 の継続 byte）なら `None` です。
 
 ## 捕捉 group と置換
 
@@ -48,7 +48,7 @@ let pattern = "(\\w+)@(\\w+)"
 let re = Result.get (Regex.compile (ref pattern))
 let text = "mail alice@example and bob@test"
 let template = "${2}:${1}"
-let replaced = Regex.replace_all (ref re) (ref text) (ref template)
+let replaced = Regex.replace_all (ref re) (ref template) (ref text)
 let groups = Maybe.get (Regex.captures (ref re) (ref text))
 $"replaced={replaced} groups={groups}"
 ```
@@ -219,12 +219,36 @@ JavaScript は、最小回数を超えた繰り返しの本体が空文字列に
 | `group_count` | `ref Regex -> i64` | 捕捉 group の数（全体の一致を除く） |
 | `is_match` / `is_match_utf8` | `ref Regex -> ref string -> bool` | どこかに一致するか |
 | `find` / `find_utf8` | `ref Regex -> ref string -> Maybe<(i64 * i64)>` | 最初の一致の範囲 |
-| `find_at` / `find_at_utf8` | `ref Regex -> ref string -> i64 -> Maybe<(i64 * i64)>` | `start` からの最初の一致の範囲 |
+| `find_at` / `find_at_utf8` | `ref Regex -> i64 -> ref string -> Maybe<(i64 * i64)>` | `start` からの最初の一致の範囲 |
 | `find_all` / `find_all_utf8` | `ref Regex -> ref string -> [(i64 * i64)]` | 重ならない一致の範囲をすべて |
 | `captures` / `captures_utf8` | `ref Regex -> ref string -> Maybe<[(i64 * i64)]>` | 最初の一致の全体と各 group の範囲 |
-| `replace_all` / `replace_all_utf8` | `ref Regex -> ref string -> ref string -> string` | すべての一致を置換文字列で置き換えます |
+| `replace_all` / `replace_all_utf8` | `ref Regex -> ref string -> ref string -> string` | 置換文字列、テキストの順に取り、すべての一致を置換文字列で置き換えます |
 | `split` / `split_utf8` | `ref Regex -> ref string -> [string]` | 一致の間の部分文字列 |
 | `search_steps` | `ref Regex -> ref string -> i64` | `find` と同じ探索の VM の手数。線形時間の試験のための関数です |
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+対象のテキストは、必ず最後の引数です。`ref text |> Regex.find (ref re)` のようにパイプで渡せ、`Regex.find_all (ref re) >> Array.length` のように一部だけ渡した関数を合成できます。ほかの引数は、`find_at re start text` や `replace_all re replacement text` のように、テキストの前に置きます。`_utf8` の関数も同じ順序です。`replace_all` は置換文字列とテキストがどちらも `ref string` なので、順序を取り違えても型検査を通ります。
+
+```tsuzuri run=%2817%2C%2018%29%20order%20%23%20shipped%20%23%202
+let re = Result.get (Regex.compile (ref "\\d+"))
+let text = "order 66 shipped 7"
+let mark = "#"
+let later = ref text |> Regex.find_at (ref re) 8 |> Maybe.default_value (-1, -1)
+let masked = ref text |> Regex.replace_all (ref re) (ref mark)
+let count = ref text |> (Regex.find_all (ref re) >> Array.length)
+$"{later} {masked} {count}"
+```
+
+実行結果:
+
+```text
+(17, 18) order # shipped # 2
+```
+
+一部だけ渡す関数に文字列リテラルの借用 `ref "#"` を渡すと `E1013` です。上の例の `mark` のように、先に `let` へ束縛した値を借ります。
 
 ## 所有権と借用
 

@@ -146,8 +146,8 @@ fn parse_address text =
 			else Maybe.Some (Address { v6: false, high: 0i64u, low: host as i64u, port: port })
 
 /// An IP address without a port ("127.0.0.1" or "::1", no brackets) with the port `port`, which must be 0 to 65535.
-def parse_ip :: ref string -> i64 -> Maybe<Address>
-fn parse_ip text port =
+def parse_ip :: i64 -> ref string -> Maybe<Address>
+fn parse_ip port text =
 	match ascii_bytes text with
 	| Maybe.None -> Maybe.None
 	| Maybe.Some bytes ->
@@ -441,7 +441,7 @@ fn resolve_with host port =
 				index = index + 1
 			if bytes.length == 0 || bytes.length > 253 || has_nul then Result.Error (invalid ())
 			elif numeric_looking (ref bytes) then
-				match parse_ip host port with
+				match parse_ip port host with
 				| Maybe.Some address -> Result.Ok (Array.init 1 (\_ -> address))
 				| Maybe.None -> Result.Error (invalid ())
 			else
@@ -544,54 +544,54 @@ fn close_udp socket = IO.map (\() -> no_value (Net.__close 0i32 socket.id)) (IO.
 /// result is an error. The action's value is returned unless closing fails.
 def with_connection :: Capture<'a> => Address -> Maybe<i64> -> (TcpStream -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_connection address timeout body =
-	IO.bind (connect address timeout) (\opened ->
+	connect address timeout |> IO.bind (\opened ->
 		match opened with
 		| Result.Error error -> IO.pure (Result.Error error)
 		| Result.Ok stream ->
-			IO.bind (body stream) (\value ->
-				IO.map (\closed ->
+			body stream |> IO.bind (\value ->
+				close stream |> IO.map (\closed ->
 					match closed with
 					| Result.Ok _ -> Result.Ok value
-					| Result.Error error -> Result.Error error) (close stream)))
+					| Result.Error error -> Result.Error error)))
 
 /// Waits for a connection, runs the action with the stream, and closes it, as `with_connection` does.
 def with_accepted :: Capture<'a> => TcpListener -> Maybe<i64> -> (TcpStream -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_accepted listener timeout body =
-	IO.bind (accept listener timeout) (\accepted ->
+	accept listener timeout |> IO.bind (\accepted ->
 		match accepted with
 		| Result.Error error -> IO.pure (Result.Error error)
 		| Result.Ok stream ->
-			IO.bind (body stream) (\value ->
-				IO.map (\closed ->
+			body stream |> IO.bind (\value ->
+				close stream |> IO.map (\closed ->
 					match closed with
 					| Result.Ok _ -> Result.Ok value
-					| Result.Error error -> Result.Error error) (close stream)))
+					| Result.Error error -> Result.Error error)))
 
 /// Binds a listener, runs the action with it, and closes it, as `with_connection` does.
 def with_listener :: Capture<'a> => Address -> (TcpListener -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_listener address body =
-	IO.bind (bind address) (\opened ->
+	bind address |> IO.bind (\opened ->
 		match opened with
 		| Result.Error error -> IO.pure (Result.Error error)
 		| Result.Ok listener ->
-			IO.bind (body listener) (\value ->
-				IO.map (\closed ->
+			body listener |> IO.bind (\value ->
+				close_listener listener |> IO.map (\closed ->
 					match closed with
 					| Result.Ok _ -> Result.Ok value
-					| Result.Error error -> Result.Error error) (close_listener listener)))
+					| Result.Error error -> Result.Error error)))
 
 /// Binds a UDP socket, runs the action with it, and closes it, as `with_connection` does.
 def with_udp :: Capture<'a> => Address -> (UdpSocket -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_udp address body =
-	IO.bind (bind_udp address) (\opened ->
+	bind_udp address |> IO.bind (\opened ->
 		match opened with
 		| Result.Error error -> IO.pure (Result.Error error)
 		| Result.Ok socket ->
-			IO.bind (body socket) (\value ->
-				IO.map (\closed ->
+			body socket |> IO.bind (\value ->
+				close_udp socket |> IO.map (\closed ->
 					match closed with
 					| Result.Ok _ -> Result.Ok value
-					| Result.Error error -> Result.Error error) (close_udp socket)))
+					| Result.Error error -> Result.Error error)))
 
 // The async operations. An async computation runs inside `Async.block_on` and cannot run an `IO` action, so each
 // operation that a computation needs has a twin here. It does its I/O on the thread of the executor and never

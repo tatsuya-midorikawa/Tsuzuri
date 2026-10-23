@@ -58,9 +58,9 @@ grep -cE 'Self::[A-Za-z0-9]+ => "(String|Utf8String|Char|Utf8Char)\.[a-z_0-9]+"|
 | 4 | `contains` | `ref S -> ref S -> bool` | 同じ | メソッド | なし。空のパターンは真 |
 | 5 | `starts_with` | `ref S -> ref S -> bool` | 同じ | メソッド | なし |
 | 6 | `ends_with` | `ref S -> ref S -> bool` | 同じ | メソッド | なし |
-| 7 | `slice` | `ref S -> i64 -> i64 -> Maybe<S>` | 違う | メソッド | `string` はサロゲートの途中で切れる（`slice 1 2` は長さ 1 の `Some`）。`utf8string` はスカラーの境界でなければ、空の範囲でも `None`（`slice 1 2` は `None`） |
-| 8 | `sub` | `ref S -> i64 -> i64 -> Maybe<S>` | 違う | メソッド | 同上（`sub text first count`） |
-| 9 | `decode_at` | `String`: `ref string -> i64 -> (char * i64)`（`def`）。`Utf8String`: `ref utf8string -> i64 -> (utf8char * i64)`（組み込み） | 違う | 入れない | 戻りの型が違う。`char` は 1 コード単位でサロゲートを結合せず、次の位置は +1。`utf8char` はスカラーで、次の位置は +1〜+4 |
+| 7 | `slice` | `i64 -> i64 -> ref S -> Maybe<S>` | 違う | メソッド | `string` はサロゲートの途中で切れる（`slice 1 2` は長さ 1 の `Some`）。`utf8string` はスカラーの境界でなければ、空の範囲でも `None`（`slice 1 2` は `None`） |
+| 8 | `sub` | `i64 -> i64 -> ref S -> Maybe<S>` | 違う | メソッド | 同上（`sub first count text`） |
+| 9 | `decode_at` | `String`: `i64 -> ref string -> (char * i64)`（`def`）。`Utf8String`: `i64 -> ref utf8string -> (utf8char * i64)`（組み込み） | 違う | 入れない | 戻りの型が違う。`char` は 1 コード単位でサロゲートを結合せず、次の位置は +1。`utf8char` はスカラーで、次の位置は +1〜+4 |
 | 10 | `char_count` | `ref S -> i64` | 違う | 入れない | `String` は `length` と同じ値（O(1)。`😀` で 2）、`Utf8String` はスカラーの数（O(n)。`😀` で 1）。同じ名前で意味が違う |
 | 11 | `chars` | `ref string -> [char]`／`ref utf8string -> [utf8char]` | 違う | 入れない | 要素の型が違う |
 | 12 | `join` | `ref S -> ref [S] -> S` | 違う | メソッド | 結果の上限: `string` は 2^53 − 1 コード単位、`utf8string` は `i64` の範囲（超えるとトラップ） |
@@ -71,7 +71,7 @@ grep -cE 'Self::[A-Za-z0-9]+ => "(String|Utf8String|Char|Utf8Char)\.[a-z_0-9]+"|
 | 17 | `trim` | `ref S -> S` | 同じ | メソッド | なし |
 | 18 | `to_ascii_lower` | `ref S -> S` | 同じ | メソッド | なし。`A`〜`Z` だけ |
 | 19 | `to_ascii_upper` | `ref S -> S` | 同じ | メソッド | なし |
-| 20 | `repeat` | `ref S -> i64 -> S` | 違う | メソッド | 負の回数はトラップ。結果の上限は `join` と同じ |
+| 20 | `repeat` | `i64 -> ref S -> S` | 違う | メソッド | 負の回数はトラップ。結果の上限は `join` と同じ |
 | 21 | `replace` | `ref S -> ref S -> ref S -> S` | 違う | メソッド | 空のパターン: `string` はコード単位のあいだ（`😀` で 5 単位）、`utf8string` はスカラーの前後（6 バイト） |
 
 `Text` に入る `def` は 18 個（#1〜8 と #12〜21）、入れない `def` は 3 個（#9〜11 の `decode_at`・`char_count`・`chars`）。
@@ -94,7 +94,7 @@ grep -cE 'Self::[A-Za-z0-9]+ => "(String|Utf8String|Char|Utf8Char)\.[a-z_0-9]+"|
 | 10 | `String.from_code_units` | `[i16u] -> string` | `Utf8String.from_bytes` | 入れない |
 | 11 | `Utf8String.to_bytes` | `utf8string -> [i8u]` | `String.to_code_units` | 入れない |
 | 12 | `Utf8String.from_bytes` | `[i8u] -> Maybe<utf8string>` | `String.from_code_units` | 入れない（検査して `Maybe` を返す） |
-| 13 | `Utf8String.decode_at` | `ref utf8string -> i64 -> (utf8char * i64)` | `String.decode_at` | 入れない（A.1 の #9） |
+| 13 | `Utf8String.decode_at` | `i64 -> ref utf8string -> (utf8char * i64)` | `String.decode_at` | 入れない（A.1 の #9） |
 | 14 | `Char.of_u16` | `i16u -> char` | なし | 入れない（A.3） |
 | 15 | `Char.to_u16` | `char -> i16u` | なし | 入れない |
 | 16 | `Utf8Char.of_u32` | `i32u -> Maybe<utf8char>` | なし | 入れない |
@@ -125,7 +125,7 @@ grep -cE 'Self::[A-Za-z0-9]+ => "(String|Utf8String|Char|Utf8Char)\.[a-z_0-9]+"|
 | 3 | `group_count` | `ref Regex -> i64` | なし（テキストを取らない） | 対象外 |
 | 4 | `is_match` | `ref Regex -> ref string -> bool` | #12 | `is_match_text` |
 | 5 | `find` | `ref Regex -> ref string -> Maybe<(i64 * i64)>` | #13 | `find_text` |
-| 6 | `find_at` | `ref Regex -> ref string -> i64 -> Maybe<(i64 * i64)>` | #14 | `find_at_text` |
+| 6 | `find_at` | `ref Regex -> i64 -> ref string -> Maybe<(i64 * i64)>` | #14 | `find_at_text` |
 | 7 | `find_all` | `ref Regex -> ref string -> [(i64 * i64)]` | #15 | `find_all_text` |
 | 8 | `captures` | `ref Regex -> ref string -> Maybe<[(i64 * i64)]>` | #16 | `captures_text` |
 | 9 | `replace_all` | `ref Regex -> ref string -> ref string -> string` | #17 | `replace_all_text` |
@@ -133,7 +133,7 @@ grep -cE 'Self::[A-Za-z0-9]+ => "(String|Utf8String|Char|Utf8Char)\.[a-z_0-9]+"|
 | 11 | `search_steps` | `ref Regex -> ref string -> i64` | なし（線形時間の試験用） | 対象外 |
 | 12 | `is_match_utf8` | `ref Regex -> ref utf8string -> bool` | #4 | 呼び出される側 |
 | 13 | `find_utf8` | `ref Regex -> ref utf8string -> Maybe<(i64 * i64)>` | #5 | 〃 |
-| 14 | `find_at_utf8` | `ref Regex -> ref utf8string -> i64 -> Maybe<(i64 * i64)>` | #6 | 〃 |
+| 14 | `find_at_utf8` | `ref Regex -> i64 -> ref utf8string -> Maybe<(i64 * i64)>` | #6 | 〃 |
 | 15 | `find_all_utf8` | `ref Regex -> ref utf8string -> [(i64 * i64)]` | #7 | 〃 |
 | 16 | `captures_utf8` | `ref Regex -> ref utf8string -> Maybe<[(i64 * i64)]>` | #8 | 〃 |
 | 17 | `replace_all_utf8` | `ref Regex -> ref utf8string -> ref utf8string -> utf8string` | #9 | 〃 |
@@ -152,11 +152,11 @@ grep -cE 'Self::[A-Za-z0-9]+ => "(String|Utf8String|Char|Utf8Char)\.[a-z_0-9]+"|
 | 3 | `to_i64` | `ref Numeral -> Result<i64, Error>` | なし |
 | 4 | `to_f64` | `ref Numeral -> Result<f64, Error>` | なし |
 | 5 | `to_utf8string` | `ref Value -> utf8string` | 文書 |
-| 6 | `to_utf8string_pretty` | `ref Value -> i64 -> utf8string` | 文書 |
+| 6 | `to_utf8string_pretty` | `i64 -> ref Value -> utf8string` | 文書 |
 | 7 | `encode` | `Encode<'a> => ref 'a -> Result<Value, Error>` | なし |
 | 8 | `decode` | `Decode<'a> => ref Value -> Result<'a, Error>` | なし |
 | 9 | `serialize` | `Encode<'a> => ref 'a -> Result<utf8string, Error>` | 文書 |
-| 10 | `serialize_pretty` | `Encode<'a> => ref 'a -> i64 -> Result<utf8string, Error>` | 文書 |
+| 10 | `serialize_pretty` | `Encode<'a> => i64 -> ref 'a -> Result<utf8string, Error>` | 文書 |
 | 11 | `deserialize` | `Decode<'a> => ref utf8string -> Result<'a, Error>` | 文書 |
 | 12 | `begin_object` | `i64 -> Result<Vec<(string * Value)>, Error>` | 内容 |
 | 13 | `encode_field` | `Encode<'a> => Result<Vec<(string * Value)>, Error> -> string -> ref 'a -> Result<Vec<(string * Value)>, Error>` | 内容 |
@@ -171,15 +171,15 @@ grep -cE 'Self::[A-Za-z0-9]+ => "(String|Utf8String|Char|Utf8Char)\.[a-z_0-9]+"|
 | 22 | `reader` | `ref utf8string -> Result<Reader, Error>` | 文書 |
 | 23 | `next` | `ref utf8string -> Reader -> Result<(Event * Reader), Error>` | 文書 |
 | 24 | `token_text` | `ref utf8string -> ref Lexeme -> Result<string, Error>` | 混在 |
-| 25 | `token_matches` | `ref utf8string -> ref Lexeme -> ref string -> bool` | 混在 |
+| 25 | `token_matches` | `ref string -> ref utf8string -> ref Lexeme -> bool` | 混在 |
 | 26 | `token_numeral` | `ref utf8string -> ref Lexeme -> Result<Numeral, Error>` | 文書 |
 | 27 | `writer` | `unit -> Writer` | なし |
 | 28 | `write_null` | `Writer -> Result<Writer, Error>` | なし |
-| 29 | `write_bool` | `Writer -> bool -> Result<Writer, Error>` | なし |
-| 30 | `write_number` | `Writer -> ref Numeral -> Result<Writer, Error>` | なし |
-| 31 | `write_text` | `Writer -> ref string -> Result<Writer, Error>` | 内容 |
-| 32 | `write_json` | `Writer -> ref Value -> Result<Writer, Error>` | なし |
-| 33 | `write_key` | `Writer -> ref string -> Result<Writer, Error>` | 内容 |
+| 29 | `write_bool` | `bool -> Writer -> Result<Writer, Error>` | なし |
+| 30 | `write_number` | `ref Numeral -> Writer -> Result<Writer, Error>` | なし |
+| 31 | `write_text` | `ref string -> Writer -> Result<Writer, Error>` | 内容 |
+| 32 | `write_json` | `ref Value -> Writer -> Result<Writer, Error>` | なし |
+| 33 | `write_key` | `ref string -> Writer -> Result<Writer, Error>` | 内容 |
 | 34 | `open_array` | `Writer -> Result<Writer, Error>` | なし |
 | 35 | `close_array` | `Writer -> Result<Writer, Error>` | なし |
 | 36 | `open_object` | `Writer -> Result<Writer, Error>` | なし |
@@ -218,8 +218,8 @@ fn facts _ =
     let b = Utf8String.char_count (ref bytes)
     let c = String.length (ref wide)
     let d = Utf8String.length (ref bytes)
-    let e = match String.slice (ref wide) 1 2 with | Some part -> part.length | None -> -1
-    let f = match Utf8String.slice (ref bytes) 1 2 with | Some part -> part.length | None -> -1
+    let e = match String.slice 1 2 (ref wide) with | Some part -> part.length | None -> -1
+    let f = match Utf8String.slice 1 2 (ref bytes) with | Some part -> part.length | None -> -1
     let g = (String.split (ref "") (ref wide)).length
     let h = (Utf8String.split (ref u8"") (ref bytes)).length
     let i = (String.replace (ref "") (ref "-") (ref wide)).length
@@ -316,7 +316,7 @@ $ <試作のコンパイラ> run target/d14-r1   # 試作（D.1 の腕を足し�
 export def score :: i64 -> i64
 fn score n =
 	let base = "ab"
-	let text = Text.repeat (ref base) n
+	let text = Text.repeat n (ref base)
 	let needle = "ba"
 	let a = if Text.contains (ref needle) (ref text) then 1 else 0
 	let b = if Text.starts_with (ref needle) (ref text) then 10 else 0
@@ -325,7 +325,7 @@ fn score n =
 export def score8 :: i64 -> i64
 fn score8 n =
 	let base = u8"ab"
-	let text = Text.repeat (ref base) n
+	let text = Text.repeat n (ref base)
 	let needle = u8"ba"
 	let a = if Text.contains (ref needle) (ref text) then 1 else 0
 	let b = if Text.starts_with (ref needle) (ref text) then 10 else 0
@@ -351,11 +351,11 @@ loop:
 呼び出し側（`Main.score` の `call` の行）。`Text` の版は instance のメソッドを直接呼び、直接の版は関数を直接呼ぶ。間接呼び出し・辞書・vtable はない（`grep -c "tz.dyn\|%tz.hkt\|dictionary" out.ll` は 0）:
 
 ```text
-Text の版:   %v5 = call %tz.string @tz.fn.String.$instance.446.repeat(ptr %v3, i64 %v4)
+Text の版:   %v5 = call %tz.string @tz.fn.String.$instance.446.repeat(i64 %v4, ptr %v3)
              %v10 = call i1 @tz.fn.String.$instance.433.contains(ptr %v9, ptr %v6)
              %v13 = call i1 @tz.fn.String.$instance.434.starts_with(ptr %v9, ptr %v6)
              %v19 = call i64 @tz.fn.String.$instance.428.length(ptr %v6)
-直接の版:    %v5 = call %tz.string @tz.fn.String.repeat(ptr %v3, i64 %v4)
+直接の版:    %v5 = call %tz.string @tz.fn.String.repeat(i64 %v4, ptr %v3)
              %v10 = call i1 @tz.fn.String.contains(ptr %v9, ptr %v6)
              %v13 = call i1 @tz.fn.String.starts_with(ptr %v9, ptr %v6)
              %v19 = call i64 @tz.fn.String.length(ptr %v6)
@@ -448,10 +448,10 @@ class Ord<'s> => Text<'s> {
     def ends_with :: ref 's -> ref 's -> bool
 
     /// The units from `first` up to, not including, `last`, or `None` for a bad range.
-    def slice :: ref 's -> i64 -> i64 -> Maybe<'s>
+    def slice :: i64 -> i64 -> ref 's -> Maybe<'s>
 
     /// `count` units from `first`, or `None` for a bad range.
-    def sub :: ref 's -> i64 -> i64 -> Maybe<'s>
+    def sub :: i64 -> i64 -> ref 's -> Maybe<'s>
 
     /// The parts joined by the separator (the first argument).
     def join :: ref 's -> ref ['s] -> 's
@@ -478,7 +478,7 @@ class Ord<'s> => Text<'s> {
     def to_ascii_upper :: ref 's -> 's
 
     /// The text repeated `count` times.
-    def repeat :: ref 's -> i64 -> 's
+    def repeat :: i64 -> ref 's -> 's
 
     /// The text with every match of the pattern (the first argument) replaced by the replacement (the second).
     def replace :: ref 's -> ref 's -> ref 's -> 's
@@ -499,8 +499,8 @@ instance Text<string> {
 	fn contains needle text = String.contains needle text
 	fn starts_with prefix text = String.starts_with prefix text
 	fn ends_with suffix text = String.ends_with suffix text
-	fn slice text first last = String.slice text first last
-	fn sub text first count = String.sub text first count
+	fn slice first last text = String.slice first last text
+	fn sub first count text = String.sub first count text
 	fn join separator parts = String.join separator parts
 	fn concat parts = String.concat parts
 	fn split separator text = String.split separator text
@@ -509,7 +509,7 @@ instance Text<string> {
 	fn trim_end text = String.trim_end text
 	fn to_ascii_lower text = String.to_ascii_lower text
 	fn to_ascii_upper text = String.to_ascii_upper text
-	fn repeat text count = String.repeat text count
+	fn repeat count text = String.repeat count text
 	fn replace needle replacement text = String.replace needle replacement text
 }
 ```
@@ -528,8 +528,8 @@ instance Text<utf8string> {
 	fn contains needle text = Utf8String.contains needle text
 	fn starts_with prefix text = Utf8String.starts_with prefix text
 	fn ends_with suffix text = Utf8String.ends_with suffix text
-	fn slice text first last = Utf8String.slice text first last
-	fn sub text first count = Utf8String.sub text first count
+	fn slice first last text = Utf8String.slice first last text
+	fn sub first count text = Utf8String.sub first count text
 	fn join separator parts = Utf8String.join separator parts
 	fn concat parts = Utf8String.concat parts
 	fn split separator text = Utf8String.split separator text
@@ -538,7 +538,7 @@ instance Text<utf8string> {
 	fn trim_end text = Utf8String.trim_end text
 	fn to_ascii_lower text = Utf8String.to_ascii_lower text
 	fn to_ascii_upper text = Utf8String.to_ascii_upper text
-	fn repeat text count = Utf8String.repeat text count
+	fn repeat count text = Utf8String.repeat count text
 	fn replace needle replacement text = Utf8String.replace needle replacement text
 }
 ```
@@ -560,7 +560,7 @@ class RegexText<'s> {
     def find :: ref Regex -> ref 's -> Maybe<(i64 * i64)>
 
     /// `Regex.find_at` or `Regex.find_at_utf8`.
-    def find_at :: ref Regex -> ref 's -> i64 -> Maybe<(i64 * i64)>
+    def find_at :: ref Regex -> i64 -> ref 's -> Maybe<(i64 * i64)>
 
     /// `Regex.find_all` or `Regex.find_all_utf8`.
     def find_all :: ref Regex -> ref 's -> [(i64 * i64)]
@@ -584,20 +584,20 @@ class RegexText<'s> {
 instance RegexText<string> {
 	fn is_match re text = Regex.is_match re text
 	fn find re text = Regex.find re text
-	fn find_at re text start = Regex.find_at re text start
+	fn find_at re start text = Regex.find_at re start text
 	fn find_all re text = Regex.find_all re text
 	fn captures re text = Regex.captures re text
-	fn replace_all re text replacement = Regex.replace_all re text replacement
+	fn replace_all re replacement text = Regex.replace_all re replacement text
 	fn split re text = Regex.split re text
 }
 
 instance RegexText<utf8string> {
 	fn is_match re text = Regex.is_match_utf8 re text
 	fn find re text = Regex.find_utf8 re text
-	fn find_at re text start = Regex.find_at_utf8 re text start
+	fn find_at re start text = Regex.find_at_utf8 re start text
 	fn find_all re text = Regex.find_all_utf8 re text
 	fn captures re text = Regex.captures_utf8 re text
-	fn replace_all re text replacement = Regex.replace_all_utf8 re text replacement
+	fn replace_all re replacement text = Regex.replace_all_utf8 re replacement text
 	fn split re text = Regex.split_utf8 re text
 }
 
@@ -610,8 +610,8 @@ def find_text :: RegexText<'s> => ref Regex -> ref 's -> Maybe<(i64 * i64)>
 fn find_text re text = RegexText.find re text
 
 /// `find_at` for a `string` or `find_at_utf8` for a `utf8string`.
-def find_at_text :: RegexText<'s> => ref Regex -> ref 's -> i64 -> Maybe<(i64 * i64)>
-fn find_at_text re text start = RegexText.find_at re text start
+def find_at_text :: RegexText<'s> => ref Regex -> i64 -> ref 's -> Maybe<(i64 * i64)>
+fn find_at_text re start text = RegexText.find_at re start text
 
 /// `find_all` for a `string` or `find_all_utf8` for a `utf8string`.
 def find_all_text :: RegexText<'s> => ref Regex -> ref 's -> [(i64 * i64)]
@@ -623,7 +623,7 @@ fn captures_text re text = RegexText.captures re text
 
 /// `replace_all` for a `string` or `replace_all_utf8` for a `utf8string`.
 def replace_all_text :: RegexText<'s> => ref Regex -> ref 's -> ref 's -> 's
-fn replace_all_text re text replacement = RegexText.replace_all re text replacement
+fn replace_all_text re replacement text = RegexText.replace_all re replacement text
 
 /// `split` for a `string` or `split_utf8` for a `utf8string`.
 def split_text :: RegexText<'s> => ref Regex -> ref 's -> ['s]

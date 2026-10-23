@@ -80,6 +80,7 @@
 
 #### 組み込み型 / 組み込みモジュール
 
+- [標準ライブラリの引数の順序](./built-in-types-and-modules/argument-order.md)
 - [Record](./built-in-types-and-modules/record.md)
 - [Union](./built-in-types-and-modules/union.md)
 - [Tuple](./built-in-types-and-modules/tuple.md)

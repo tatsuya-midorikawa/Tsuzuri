@@ -59,7 +59,7 @@ $"{Text.length title} {Text.length bytes} {at} {at8} {starts} {upper}"
 ```tsuzuri run=3%207%202%20-1%203
 def cut_length :: Text<'s> => ref 's -> i64 -> i64 -> i64
 fn cut_length text first last =
-    match Text.slice text first last with
+    match Text.slice first last text with
     | Some part -> Text.length (ref part)
     | None -> -1
 
@@ -142,8 +142,8 @@ $"{a} {b} {c} {d} {e}"
 | `contains` | `ref 's -> ref 's -> bool` | `String.contains`／`Utf8String.contains` |
 | `starts_with` | `ref 's -> ref 's -> bool` | `String.starts_with`／`Utf8String.starts_with` |
 | `ends_with` | `ref 's -> ref 's -> bool` | `String.ends_with`／`Utf8String.ends_with` |
-| `slice` | `ref 's -> i64 -> i64 -> Maybe<'s>` | `String.slice`／`Utf8String.slice` |
-| `sub` | `ref 's -> i64 -> i64 -> Maybe<'s>` | `String.sub`／`Utf8String.sub` |
+| `slice` | `i64 -> i64 -> ref 's -> Maybe<'s>` | `String.slice`／`Utf8String.slice` |
+| `sub` | `i64 -> i64 -> ref 's -> Maybe<'s>` | `String.sub`／`Utf8String.sub` |
 | `join` | `ref 's -> ref ['s] -> 's` | `String.join`／`Utf8String.join` |
 | `concat` | `ref ['s] -> 's` | `String.concat`／`Utf8String.concat` |
 | `split` | `ref 's -> ref 's -> ['s]` | `String.split`／`Utf8String.split` |
@@ -152,7 +152,7 @@ $"{a} {b} {c} {d} {e}"
 | `trim_end` | `ref 's -> 's` | `String.trim_end`／`Utf8String.trim_end` |
 | `to_ascii_lower` | `ref 's -> 's` | `String.to_ascii_lower`／`Utf8String.to_ascii_lower` |
 | `to_ascii_upper` | `ref 's -> 's` | `String.to_ascii_upper`／`Utf8String.to_ascii_upper` |
-| `repeat` | `ref 's -> i64 -> 's` | `String.repeat`／`Utf8String.repeat` |
+| `repeat` | `i64 -> ref 's -> 's` | `String.repeat`／`Utf8String.repeat` |
 | `replace` | `ref 's -> ref 's -> ref 's -> 's` | `String.replace`／`Utf8String.replace` |
 
 メソッドの失敗と計算量は、呼び出す関数と同じです。`is_empty` だけは `String` と `Utf8String` にない新しい操作で、`length` が 0 かどうかを返します。`compare`・`clone` は、組み込み関数 `String.compare`・`clone_string`（`Utf8String.compare`・`Utf8String.clone`）の名前をそろえた入口です。
@@ -232,8 +232,8 @@ Phase 2 のあと、`text.md` の「入っていないもの」の表の直前�
 +let first8 = match Regex.find_text (ref re) bytes with
 +    | Maybe.Some (start, stop) -> $"({start}, {stop})"
 +    | Maybe.None -> "none"
-+let dashed = Regex.replace_all_text (ref re) text "-"
-+let dashed8 = Regex.replace_all_text (ref re) bytes u8"-"
++let dashed = Regex.replace_all_text (ref re) "-" text
++let dashed8 = Regex.replace_all_text (ref re) u8"-" bytes
 +let counts = $"{match_count (ref re) text} {match_count (ref re) bytes}"
 +$"{first} {first8} {dashed} {dashed8} {counts} {Regex.is_match_text (ref re) bytes}"
  ```
@@ -253,7 +253,7 @@ Phase 2 のあと、`text.md` の「入っていないもの」の表の直前�
  | `split` / `split_utf8` | `ref Regex -> ref string -> [string]` | 一致の間の部分文字列 |
 +| `is_match_text` | `RegexText<'s> => ref Regex -> ref 's -> bool` | `is_match` か `is_match_utf8`（`'s` が `string` か `utf8string`） |
 +| `find_text` | `RegexText<'s> => ref Regex -> ref 's -> Maybe<(i64 * i64)>` | `find` か `find_utf8` |
-+| `find_at_text` | `RegexText<'s> => ref Regex -> ref 's -> i64 -> Maybe<(i64 * i64)>` | `find_at` か `find_at_utf8` |
++| `find_at_text` | `RegexText<'s> => ref Regex -> i64 -> ref 's -> Maybe<(i64 * i64)>` | `find_at` か `find_at_utf8` |
 +| `find_all_text` | `RegexText<'s> => ref Regex -> ref 's -> [(i64 * i64)]` | `find_all` か `find_all_utf8` |
 +| `captures_text` | `RegexText<'s> => ref Regex -> ref 's -> Maybe<[(i64 * i64)]>` | `captures` か `captures_utf8` |
 +| `replace_all_text` | `RegexText<'s> => ref Regex -> ref 's -> ref 's -> 's` | `replace_all` か `replace_all_utf8`。置換文字列は本文と同じ型 |

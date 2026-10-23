@@ -68,20 +68,20 @@ fn map_error transform result =
     | Ok value -> Ok value
     | Error error -> Error (transform error)
 
-def bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>
-fn bind result next =
+def bind :: ('a -> Result<'b, 'e>) -> Result<'a, 'e> -> Result<'b, 'e>
+fn bind next result =
     match result with
     | Ok value -> next value
     | Error error -> Error error
 
-def bind_ref :: Copy<'e> => &(Result<'a, 'e>) -> (&'a -> Result<'b, 'e>) -> Result<'b, 'e>
-fn bind_ref result next =
+def bind_ref :: Copy<'e> => (&'a -> Result<'b, 'e>) -> &(Result<'a, 'e>) -> Result<'b, 'e>
+fn bind_ref next result =
     match result with
     | Ok value -> next (&value)
     | Error error -> Error error
 
-def or_else :: Result<'a, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>
-fn or_else result fallback =
+def or_else :: (unit -> Result<'a, 'e>) -> Result<'a, 'e> -> Result<'a, 'e>
+fn or_else fallback result =
     match result with
     | Ok value -> Ok value
     | Error _ -> fallback ()
@@ -105,7 +105,7 @@ def ReturnFrom :: Result<'a, 'e> -> Result<'a, 'e>
 fn ReturnFrom result = result
 
 def Bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>
-fn Bind result next = bind result next
+fn Bind result next = bind next result
 
 def Zero :: Result<unit, 'e>
 fn Zero = Ok ()

@@ -53,12 +53,12 @@ none
 
 解析は厳密です。`inet_aton` が受ける `127.1`・`0x7f.0.0.1`・`010.0.0.1` も、ゾーン付きの `fe80::1%en0` も、ポートの無い `1.2.3.4` も `None` です。数値の先頭に 0 は付けられません（`0` だけ）。空白も受けません。`Net` でアドレスの文字列を読むのは、この解析器だけです。`resolve` も、アドレスに読める host を OS のリゾルバーに渡さず（[名前解決](#名前解決)）、`127.1` は `InvalidInput` になります。許可リストの検査と実際の接続先が、同じ解析器で決まるので、`127.1` のような書き方で検査を抜けることはできません。末尾の `::ffff:192.0.2.1` のような IPv4 は入力にだけ書けます。表示は 16 進（`::ffff:c000:201`）です。
 
-アドレスだけの文字列は `parse_ip text port` で、ポートは 0 から 65535 までです。括弧は付けません。
+アドレスだけの文字列は `parse_ip port text` で、ポートは 0 から 65535 までです。括弧は付けません。
 
 | 関数 | 型 | 説明 |
 | --- | --- | --- |
 | `parse_address` | `ref string -> Maybe<Address>` | `a.b.c.d:port` か `[ipv6]:port` |
-| `parse_ip` | `ref string -> i64 -> Maybe<Address>` | アドレスと port。port が範囲外なら `None` |
+| `parse_ip` | `i64 -> ref string -> Maybe<Address>` | アドレスと port。port が範囲外なら `None` |
 | `address_text` | `Address -> string` | `parse_address` の逆 |
 | `ip_text` | `Address -> string` | port を除いた `127.0.0.1` や `::1` |
 | `port` | `Address -> i64` | 0 から 65535 |
@@ -90,7 +90,7 @@ fn exchange client server = IO {
 }
 
 def main :: unit -> i32 = \() ->
-    let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+    let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
     let! outcome = Net.with_listener loopback (\listener ->
         Net.with_connection (Net.local_addr listener) (Maybe.Some 1000) (\client ->
             Net.with_accepted listener (Maybe.Some 1000) (\server -> exchange client server)))
@@ -151,7 +151,7 @@ fn kind_text result =
         | _ -> "else")
 
 def main :: unit -> i32 = \() ->
-    let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+    let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
     let! bound = Net.bind loopback
     match bound with
     | Result.Error _ -> do! IO.write_line "bind failed"
@@ -209,7 +209,7 @@ fn talk receiver sender = IO {
 }
 
 def main :: unit -> i32 = \() ->
-    let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+    let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
     let! outcome = Net.with_udp loopback (\receiver -> Net.with_udp loopback (\sender -> talk receiver sender))
     do! IO.write_line (match outcome with
         | Result.Ok (Result.Ok line) -> line
@@ -236,7 +236,7 @@ hello from 127.0.0.1 true
 - ASCII 以外のバイトを含む（`１２７．０．０．１`、`127。0。0。1`、`127｡0｡0｡1`、`２１３０７０６４３３`、`127.0.0.1` の後ろの U+00AD や U+200B、`例え.jp`）。
 - 最後のラベル（末尾の `.` が 1 つあれば除く）が数字だけ、または `0x`・`0X` で始まる（`127.1`、`0x7f000001`、`2130706433`、`010.0.0.1`、`1.2.3`、`0`、`1.2.3.4.`）。
 
-そのような host は `parse_ip host port` だけで決めます。厳密に読めればシステムを呼ばずにそのアドレス 1 つの配列を返し、読めなければ `InvalidInput`（`code` は 0）です。ゾーン付きのアドレスを返す方法はありません（`Address` にゾーンを持たせないためです）。それ以外の host、つまり ASCII の名前だけがリゾルバーに渡ります。国際化ドメイン名は、`xn--` で始まる ASCII の形（Punycode）で書いてください。ASCII 以外のバイトを含む host はどのターゲットでも `InvalidInput` で、リゾルバーが国際化ドメイン名を変換するかどうかで、結果が OS やホストによって変わることはありません。さらにネイティブのランタイムは、システムが数値のアドレスと読む host（`getaddrinfo` の `AI_NUMERICHOST` が受けるもの）を、名前の問い合わせの前に `InvalidInput` で断ります。上の分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めることはありません。
+そのような host は `parse_ip port host` だけで決めます。厳密に読めればシステムを呼ばずにそのアドレス 1 つの配列を返し、読めなければ `InvalidInput`（`code` は 0）です。ゾーン付きのアドレスを返す方法はありません（`Address` にゾーンを持たせないためです）。それ以外の host、つまり ASCII の名前だけがリゾルバーに渡ります。国際化ドメイン名は、`xn--` で始まる ASCII の形（Punycode）で書いてください。ASCII 以外のバイトを含む host はどのターゲットでも `InvalidInput` で、リゾルバーが国際化ドメイン名を変換するかどうかで、結果が OS やホストによって変わることはありません。さらにネイティブのランタイムは、システムが数値のアドレスと読む host（`getaddrinfo` の `AI_NUMERICHOST` が受けるもの）を、名前の問い合わせの前に `InvalidInput` で断ります。上の分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めることはありません。
 
 ```tsuzuri run=127.0.0.1%3A8080%0A%5B%3A%3A1%5D%3A80%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input
 def show :: Result<[Net.Address], Os.Error> -> string

@@ -38,8 +38,8 @@ def sum :: Numeric<'a> => ref ['a] -> 'a
 | `String.trim` | `run=hi` | `String.trim "  hi  "` | `hi` |
 | `Maybe.default_value` | `run=0` | `Maybe.default_value 0 Maybe.None` | `0` |
 | `Result.default_value` | `run=0` | `let failed: Result<i32, string> = Result.Error "bad"` ／ `Result.default_value 0 failed`（2 行） | `0` |
-| `Map.length` | `run=1` | `let map = Map.insert (Map.empty()) 1 "one"` ／ `Map.length (ref map)`（2 行） | `1` |
-| `Set.to_array` | `run=[1,%202]` | `let set = Set.insert (Set.insert (Set.empty()) 2) 1` ／ `Set.to_array (ref set)`（2 行） | `[1, 2]` |
+| `Map.length` | `run=1` | `let map = Map.insert 1 "one" (Map.empty())` ／ `Map.length (ref map)`（2 行） | `1` |
+| `Set.to_array` | `run=[1,%202]` | `let set = Set.insert 1 (Set.insert 2 (Set.empty()))` ／ `Set.to_array (ref set)`（2 行） | `[1, 2]` |
 | `Path.join` | `run=a/b` | `Path.join "a" "b"` | `a/b` |
 | `Char.is_ascii_digit` | `run=true` | `Char.is_ascii_digit '7'` | `true` |
 | `Maybe.Bind`（ビルダー） | `run=3` | `let total = Maybe {` ／ `    let! first = Maybe.Some 1` ／ `    let! second = Maybe.Some 2` ／ `    return first + second` ／ `}` ／ `Maybe.default_value 0 total`（6 行） | `3` |

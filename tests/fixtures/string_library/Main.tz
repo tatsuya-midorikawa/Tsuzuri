@@ -55,7 +55,7 @@ fn text_operation operation first second =
     | 10 -> hash (String.to_ascii_lower (ref text))
     | 11 -> hash (String.to_ascii_upper (ref text))
     | 12 -> String.compare (ref text) (ref needle)
-    | 13 -> hash (String.repeat (ref text) 2)
+    | 13 -> hash (String.repeat 2 (ref text))
     | _ -> 0
 
 export def utf8_operation :: i32 -> i64 -> i64 -> i64
@@ -88,18 +88,18 @@ fn utf8_operation operation first second =
         let order = Utf8String.compare (ref text) (ref needle)
         assert ((order < 0) == (text < needle) && (order > 0) == (text > needle))
         order
-    | 13 -> hash_utf8 (Utf8String.repeat (ref text) 2)
+    | 13 -> hash_utf8 (Utf8String.repeat 2 (ref text))
     | _ -> 0
 
 export def text_slice :: i64 -> i64 -> i64 -> i64
 fn text_slice which first last =
     let text = sample which
-    match String.slice (ref text) first last with | Some value -> hash value | None -> -1
+    match String.slice first last (ref text) with | Some value -> hash value | None -> -1
 
 export def utf8_slice :: i64 -> i64 -> i64 -> i64
 fn utf8_slice which first last =
     let text = utf8_sample which
-    match Utf8String.slice (ref text) first last with | Some value -> hash_utf8 value | None -> -1
+    match Utf8String.slice first last (ref text) with | Some value -> hash_utf8 value | None -> -1
 
 export def character_units :: i64
 fn character_units =
@@ -108,8 +108,8 @@ fn character_units =
     let units = String.chars (ref text)
     let scalars = Utf8String.chars (ref bytes)
     assert (units.length == 5 && scalars.length == 4)
-    let first = match String.decode_at (ref text) 3 with | (value, next) -> Char.to_u16 value as i64 + next
-    let second = match Utf8String.decode_at (ref bytes) 9 with | (value, next) -> Utf8Char.to_u32 value as i64 + next
+    let first = match String.decode_at 3 (ref text) with | (value, next) -> Char.to_u16 value as i64 + next
+    let second = match Utf8String.decode_at 9 (ref bytes) with | (value, next) -> Utf8Char.to_u32 value as i64 + next
     first + second + String.char_count (ref text) + Utf8String.char_count (ref bytes)
 
 export def all_unit_transfer :: i64
@@ -137,19 +137,19 @@ fn validate_bytes which =
 export def trap_decode_end :: i64
 fn trap_decode_end =
     let text = ""
-    match String.decode_at (ref text) 0 with | (_, next) -> next
+    match String.decode_at 0 (ref text) with | (_, next) -> next
 
 export def trap_decode_continuation :: i64
 fn trap_decode_continuation =
     let text = u8"\u{1F600}"
-    match Utf8String.decode_at (ref text) 1 with | (_, next) -> next
+    match Utf8String.decode_at 1 (ref text) with | (_, next) -> next
 
 export def trap_repeat_negative :: i64
 fn trap_repeat_negative =
     let text = ""
-    (String.repeat (ref text) (-1)).length
+    (String.repeat (-1) (ref text)).length
 
 export def trap_repeat_overflow :: i64
 fn trap_repeat_overflow =
     let text = "four"
-    (String.repeat (ref text) 9223372036854775807).length
+    (String.repeat 9223372036854775807 (ref text)).length

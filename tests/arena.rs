@@ -49,7 +49,7 @@ fn phantom_parameters_are_std_opaque_only() {
         "E1024",
     );
     emits(&format!(
-        "{NODE}let graph: Arena<Node> = Arena.empty()\nmatch Arena.insert graph (Node {{ value: 1, edges: Vec.empty() }}) with\n| (next, handle) -> Arena.length (ref next) + (Arena.at (ref next) handle).value"
+        "{NODE}let graph: Arena<Node> = Arena.empty()\nmatch Arena.insert (Node {{ value: 1, edges: Vec.empty() }}) graph with\n| (next, handle) -> Arena.length (ref next) + (Arena.at handle (ref next)).value"
     ));
     rejects("record Bad { value: i64, edges: Vec<Bad> }\n0", "E1010");
 }
@@ -62,8 +62,8 @@ fn arena_types_are_opaque_noncopy_owned_values() {
         "let arena: Arena<i64> = Arena.empty()\nlet other = { arena with free = 0 }\n0",
         "let arena: Arena<i64> = Arena.empty()\nmatch arena with\n| Arena { id = id, values = values, owners = owners, slots = slots, free = free } -> free",
         "let handle: Arena.Handle<i64> = Arena.Handle { arena: 0, index: 0, generation: 0 }\n0",
-        "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert arena 5 with\n| (next, handle) -> handle.index",
-        "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert arena 5 with\n| (next, Arena.Handle { arena = id, index = index, generation = generation }) -> index",
+        "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert 5 arena with\n| (next, handle) -> handle.index",
+        "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert 5 arena with\n| (next, Arena.Handle { arena = id, index = index, generation = generation }) -> index",
     ] {
         let message = rejects(source, "E1022");
         assert!(message.contains("is opaque"), "{source}\n{message}");
@@ -79,20 +79,20 @@ fn arena_types_are_opaque_noncopy_owned_values() {
     rejects("const bad: Arena<i64> = Arena.empty()\n0", "E1026");
     let error = tsuzuri::analyze_modules(&[("Arena", "")]).unwrap_err();
     assert_eq!(error.code, "E1011", "{}", error.message);
-    let source = "let first: Arena<i64> = Arena.empty()\nlet second: Arena<string> = Arena.with_capacity 2\nmatch Arena.insert first 1 with\n| (left, handle) ->\n    match Arena.insert second \"x\" with\n    | (right, other) -> Arena.length (ref left) + Arena.length (ref right) + (if Arena.contains (ref right) other then 1 else 0)";
+    let source = "let first: Arena<i64> = Arena.empty()\nlet second: Arena<string> = Arena.with_capacity 2\nmatch Arena.insert 1 first with\n| (left, handle) ->\n    match Arena.insert \"x\" second with\n    | (right, other) -> Arena.length (ref left) + Arena.length (ref right) + (if Arena.contains other (ref right) then 1 else 0)";
     emits(source);
 }
 
 #[test]
 fn handles_are_typed_copy_and_send() {
     emits(
-        "let arena: Arena<string> = Arena.empty()\nmatch Arena.insert arena \"x\" with\n| (filled, handle) ->\n    let copy = handle\n    let checked = Task.run (task { return copy == handle })\n    assert (checked && Arena.contains (ref filled) copy && Arena.contains (ref filled) handle)\n    Arena.length (ref filled)",
+        "let arena: Arena<string> = Arena.empty()\nmatch Arena.insert \"x\" arena with\n| (filled, handle) ->\n    let copy = handle\n    let checked = Task.run (task { return copy == handle })\n    assert (checked && Arena.contains copy (ref filled) && Arena.contains handle (ref filled))\n    Arena.length (ref filled)",
     );
     emits(
-        "let arena: Arena<ref string> = Arena.empty()\nlet text = \"borrowed\"\nmatch Arena.insert arena (ref text) with\n| (filled, handle) -> Task.run (task { return handle == handle })",
+        "let arena: Arena<ref string> = Arena.empty()\nlet text = \"borrowed\"\nmatch Arena.insert (ref text) arena with\n| (filled, handle) -> Task.run (task { return handle == handle })",
     );
     rejects(
-        "let numbers: Arena<i64> = Arena.empty()\nlet words: Arena<string> = Arena.empty()\nmatch Arena.insert words \"x\" with\n| (filled, handle) -> Arena.get (ref numbers) handle",
+        "let numbers: Arena<i64> = Arena.empty()\nlet words: Arena<string> = Arena.empty()\nmatch Arena.insert \"x\" words with\n| (filled, handle) -> Arena.get handle (ref numbers)",
         "E1003",
     );
 }
@@ -100,7 +100,7 @@ fn handles_are_typed_copy_and_send() {
 #[test]
 fn arena_borrows_follow_ownership_rules() {
     let message = rejects(
-        "let empty: Arena<string> = Arena.empty()\nmatch Arena.insert empty \"x\" with\n| (filled, handle) ->\n    let text = Arena.at (ref filled) handle\n    let more = Arena.insert filled \"y\"\n    text.length",
+        "let empty: Arena<string> = Arena.empty()\nmatch Arena.insert \"x\" empty with\n| (filled, handle) ->\n    let text = Arena.at handle (ref filled)\n    let more = Arena.insert \"y\" filled\n    text.length",
         "E1014",
     );
     assert!(
@@ -116,7 +116,7 @@ fn arena_borrows_follow_ownership_rules() {
         "{message}"
     );
     let message = rejects(
-        "let arena: Arena<i64> = Arena.empty()\nlet moved = Arena.insert arena 5\nArena.length (ref arena)",
+        "let arena: Arena<i64> = Arena.empty()\nlet moved = Arena.insert 5 arena\nArena.length (ref arena)",
         "E1012",
     );
     assert!(
@@ -152,13 +152,13 @@ fn arena_ir_has_one_atomic_counter() {
 #[test]
 fn arena_api_programs_emit_for_both_targets() {
     for source in [
-        "let arena: Arena<string> = Arena.with_capacity 2\nmatch Arena.insert arena \"a\" with\n| (filled, a) ->\n    match Arena.insert filled \"bc\" with\n    | (more, b) ->\n        let first = Arena.get (ref more) a\n        let total = (match first with | Maybe.Some text -> text.length | Maybe.None -> 0) + (Arena.at (ref more) b).length\n        match Arena.remove more a with\n        | (removed, value) ->\n            match Arena.insert removed \"def\" with\n            | (reused, c) -> total + Arena.length (ref reused) + (if Arena.contains (ref reused) a then 100 else 0) + (if c == a then 1000 else 0) + (match value with | Maybe.Some text -> text.length | Maybe.None -> 0)",
-        "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert arena 1 with\n| (filled, handle) ->\n    let updated = Arena.update filled handle (\\value -> value + 41)\n    let mut total = 0\n    for (key, value) in Arena.iter (ref updated) do\n        if key == handle then total = total + deref value\n    total",
+        "let arena: Arena<string> = Arena.with_capacity 2\nmatch Arena.insert \"a\" arena with\n| (filled, a) ->\n    match Arena.insert \"bc\" filled with\n    | (more, b) ->\n        let first = Arena.get a (ref more)\n        let total = (match first with | Maybe.Some text -> text.length | Maybe.None -> 0) + (Arena.at b (ref more)).length\n        match Arena.remove a more with\n        | (removed, value) ->\n            match Arena.insert \"def\" removed with\n            | (reused, c) -> total + Arena.length (ref reused) + (if Arena.contains a (ref reused) then 100 else 0) + (if c == a then 1000 else 0) + (match value with | Maybe.Some text -> text.length | Maybe.None -> 0)",
+        "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert 1 arena with\n| (filled, handle) ->\n    let updated = Arena.update handle (\\value -> value + 41) filled\n    let mut total = 0\n    for (key, value) in Arena.iter (ref updated) do\n        if key == handle then total = total + deref value\n    total",
         &format!(
-            "{NODE}def cycle :: i64\nfn cycle =\n    let empty: Arena<Node> = Arena.empty()\n    match Arena.insert empty (Node {{ value: 1, edges: Vec.empty() }}) with\n    | (with_a, a) ->\n        match Arena.insert with_a (Node {{ value: 20, edges: Vec.push a (Vec.empty()) }}) with\n        | (with_b, b) ->\n            let graph = Arena.update with_b a (link b)\n            let first = Arena.at (ref graph) a\n            let second = Arena.at (ref graph) first.edges[0]\n            let back = Arena.at (ref graph) second.edges[0]\n            let mut total = 0\n            for (handle, node) in Arena.iter (ref graph) do\n                total = total + node.value\n                if handle == a then total = total + 100\n            first.value + second.value + back.value + total\ncycle()"
+            "{NODE}def cycle :: i64\nfn cycle =\n    let empty: Arena<Node> = Arena.empty()\n    match Arena.insert (Node {{ value: 1, edges: Vec.empty() }}) empty with\n    | (with_a, a) ->\n        match Arena.insert (Node {{ value: 20, edges: Vec.push a (Vec.empty()) }}) with_a with\n        | (with_b, b) ->\n            let graph = Arena.update a (link b) with_b\n            let first = Arena.at a (ref graph)\n            let second = Arena.at first.edges[0] (ref graph)\n            let back = Arena.at second.edges[0] (ref graph)\n            let mut total = 0\n            for (handle, node) in Arena.iter (ref graph) do\n                total = total + node.value\n                if handle == a then total = total + 100\n            first.value + second.value + back.value + total\ncycle()"
         ),
-        "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert arena 1 with\n| (filled, handle) ->\n    match Arena.remove filled handle with\n    | (removed, _value) ->\n        let updated = Arena.update removed handle (\\value -> value + 1)\n        Arena.length (ref updated)",
-        "let keys: Map<Arena.Handle<i64>, i64> = Map.empty()\nlet arena: Arena<i64> = Arena.empty()\nmatch Arena.insert arena 7 with\n| (filled, handle) ->\n    let map = Map.insert keys handle 3\n    let table = HashMap.insert (HashMap.empty()) handle 4\n    Maybe.get (Map.get (ref map) handle) + Maybe.get (HashMap.get (ref table) handle) + Arena.length (ref filled)",
+        "let arena: Arena<i64> = Arena.empty()\nmatch Arena.insert 1 arena with\n| (filled, handle) ->\n    match Arena.remove handle filled with\n    | (removed, _value) ->\n        let updated = Arena.update handle (\\value -> value + 1) removed\n        Arena.length (ref updated)",
+        "let keys: Map<Arena.Handle<i64>, i64> = Map.empty()\nlet arena: Arena<i64> = Arena.empty()\nmatch Arena.insert 7 arena with\n| (filled, handle) ->\n    let map = Map.insert handle 3 keys\n    let table = HashMap.insert handle 4 (HashMap.empty())\n    Maybe.get (Map.get handle (ref map)) + Maybe.get (HashMap.get handle (ref table)) + Arena.length (ref filled)",
     ] {
         emits(source);
     }
@@ -167,7 +167,7 @@ fn arena_api_programs_emit_for_both_targets() {
 /// Two copies of one arena, made by copying a function value that captured it, keep its id.
 const SNAPSHOTS: &str = "def without :: Arena<i64> -> Arena.Handle<i64> -> Arena<i64>
 fn without arena handle =
-    match Arena.remove arena handle with
+    match Arena.remove handle arena with
     | (next, _value) -> next
 
 def snapshots :: i64
@@ -176,7 +176,7 @@ fn snapshots =
     let mut handles: Vec<Arena.Handle<i64>> = Vec.empty()
     let mut index = 0
     while index < 5 do
-        match Arena.insert base ((index + 1) * 10) with
+        match Arena.insert ((index + 1) * 10) base with
         | (next, handle) ->
             base = next
             handles = Vec.push handle handles
@@ -184,23 +184,23 @@ fn snapshots =
     let frozen = base
     let snapshot = \\() -> frozen
     let first = without (without (snapshot ()) handles[1]) handles[0]
-    match Arena.insert (without (snapshot ()) handles[0]) 99 with
+    match Arena.insert 99 (without (snapshot ()) handles[0]) with
     | (second, key) ->
         let mut flags = 0
-        if Arena.contains (ref first) key then flags = flags + 1000
-        match Arena.get (ref first) key with
+        if Arena.contains key (ref first) then flags = flags + 1000
+        match Arena.get key (ref first) with
         | Maybe.Some _value -> flags = flags + 200
         | Maybe.None -> flags = flags + 100
-        match Arena.remove first key with
+        match Arena.remove key first with
         | (kept, removed) ->
             match removed with
             | Maybe.Some _value -> flags = flags + 20
             | Maybe.None -> flags = flags + 10
-            if !(Arena.contains (ref second) handles[0]) && deref (Arena.at (ref second) key) == 99 then flags = flags + 1
+            if !(Arena.contains handles[0] (ref second)) && deref (Arena.at key (ref second)) == 99 then flags = flags + 1
             let mut refilled = kept
             let mut value = 7
             while value < 10 do
-                match Arena.insert refilled value with
+                match Arena.insert value refilled with
                 | (next, _handle) -> refilled = next
                 value = value + 1
             let mut digits = 0

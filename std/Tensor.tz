@@ -116,12 +116,12 @@ fn offset_of view index =
     offset
 
 /// Borrows one element; traps unless the index has one entry per axis, each inside its extent.
-def at { r } :: ref View<'a> { r } -> [i64] -> ref { r } 'a
-fn at view index = ref view.data[offset_of view (ref index)]
+def at { r } :: [i64] -> ref View<'a> { r } -> ref { r } 'a
+fn at index view = ref view.data[offset_of view (ref index)]
 
 /// Copies one element, or `None` unless the index has one entry per axis, each inside its extent.
-def get :: Copy<'a> => ref View<'a> -> [i64] -> Maybe<'a>
-fn get view index =
+def get :: Copy<'a> => [i64] -> ref View<'a> -> Maybe<'a>
+fn get index view =
     let mut inside = index.length == view.shape.length
     if inside then
         for axis in 0i64 .. (index.length - 1) do
@@ -130,8 +130,8 @@ fn get view index =
 
 /// Reorders the axes without touching the data: axis i of the result is axis axes[i] of the view.
 /// Traps unless `axes` is a permutation of 0 .. rank - 1.
-def permute { r } :: ref View<'a> { r } -> [i64] -> View<'a> { r }
-fn permute view axes =
+def permute { r } :: [i64] -> ref View<'a> { r } -> View<'a> { r }
+fn permute axes view =
     let rank = view.shape.length
     assert (axes.length == rank)
     for axis in 0i64 .. (rank - 1) do
@@ -140,15 +140,15 @@ fn permute view axes =
     View { data: view.data, offset: view.offset, shape: new [i64](rank, axis -> view.shape[axes[axis]]), strides: new [i64](rank, axis -> view.strides[axes[axis]]) }
 
 /// Fixes one axis at a position, which removes that axis; traps unless the position is inside its extent.
-def index_axis { r } :: ref View<'a> { r } -> i64 -> i64 -> View<'a> { r }
-fn index_axis view axis position =
+def index_axis { r } :: i64 -> i64 -> ref View<'a> { r } -> View<'a> { r }
+fn index_axis axis position view =
     let rank = view.shape.length
     assert (axis >= 0 && axis < rank && position >= 0 && position < view.shape[axis])
     View { data: view.data, offset: view.offset + position * view.strides[axis], shape: new [i64](rank - 1, d -> if d < axis then view.shape[d] else view.shape[d + 1]), strides: new [i64](rank - 1, d -> if d < axis then view.strides[d] else view.strides[d + 1]) }
 
 /// Keeps `length` positions of one axis starting at `start`; traps unless they lie inside the extent.
-def narrow { r } :: ref View<'a> { r } -> i64 -> i64 -> i64 -> View<'a> { r }
-fn narrow view axis start length =
+def narrow { r } :: i64 -> i64 -> i64 -> ref View<'a> { r } -> View<'a> { r }
+fn narrow axis start length view =
     let rank = view.shape.length
     assert (axis >= 0 && axis < rank && start >= 0 && length >= 0 && start <= view.shape[axis] && length <= view.shape[axis] - start)
     View { data: view.data, offset: view.offset + start * view.strides[axis], shape: new [i64](rank, d -> if d == axis then length else view.shape[d]), strides: Array.copy (ref view.strides) }
@@ -167,8 +167,8 @@ fn is_contiguous view =
 
 /// Gives a contiguous window a new shape without copying; traps unless the window is contiguous and
 /// the product of the shape is unchanged.
-def reshape_view { r } :: ref View<'a> { r } -> [i64] -> View<'a> { r }
-fn reshape_view view shape =
+def reshape_view { r } :: [i64] -> ref View<'a> { r } -> View<'a> { r }
+fn reshape_view shape view =
     assert (is_contiguous view && volume (ref shape) == volume (ref view.shape))
     let strides = dense_strides (ref shape)
     View { data: view.data, offset: view.offset, shape: shape, strides: strides }

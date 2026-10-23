@@ -35,18 +35,18 @@ fn kind_code error =
 	| Net.Unclassified -> 7
 
 def loopback :: i64 -> Net.Address
-fn loopback port = Maybe.get (Net.parse_ip (ref "127.0.0.1") port)
+fn loopback port = Maybe.get (Net.parse_ip port (ref "127.0.0.1"))
 
 /// Reads until `wanted` bytes arrived or the stream ended: the count and the sum, or the failure.
 def rec collect :: Net.TcpStream -> i64 -> i64 -> i64 -> IO<(i64 * i64)>
 fn rec collect stream wanted total sum =
 	if total >= wanted then IO.pure (total, sum)
-	else IO.bind (Net.read stream 4096 (Maybe.Some 20000)) (\received ->
+	else IO.bind (\received ->
 		match received with
 		| Result.Error error -> IO.pure (0 - kind_code error, 0)
 		| Result.Ok bytes ->
 			if bytes.length == 0 then IO.pure (total, sum)
-			else collect stream wanted (total + bytes.length) (sum + sum_of (ref bytes)))
+			else collect stream wanted (total + bytes.length) (sum + sum_of (ref bytes))) (Net.read stream 4096 (Maybe.Some 20000))
 
 /// The echo of 1024 bytes through the blocking API: the sum of what came back.
 export def echo :: i64 -> i64
@@ -197,10 +197,12 @@ fn is_invalid error =
 def rec refused_count :: [string] -> i64 -> i64 -> IO<i64>
 fn rec refused_count hosts index total =
 	if index >= hosts.length then IO.pure total
-	else IO.bind (Net.resolve (String.repeat (ref hosts[index]) 1) 80) (\found ->
-		match found with
-		| Result.Error error -> refused_count hosts (index + 1) (if is_invalid error then total + 1 else total)
-		| Result.Ok _ -> refused_count hosts (index + 1) total)
+	else
+		let resolving = Net.resolve (String.repeat 1 (ref hosts[index])) 80
+		IO.bind (\found ->
+			match found with
+			| Result.Error error -> refused_count hosts (index + 1) (if is_invalid error then total + 1 else total)
+			| Result.Ok _ -> refused_count hosts (index + 1) total) resolving
 
 def address_count :: Result<[Net.Address], Os.Error> -> i64
 fn address_count found =
@@ -339,7 +341,7 @@ fn lifecycle port =
 /// The echo of 1024 bytes over the IPv6 loopback, through the blocking API.
 export def echo6 :: i64 -> i64
 fn echo6 port =
-	let! connected = Net.connect (Maybe.get (Net.parse_ip (ref "::1") port)) (Maybe.Some 5000)
+	let! connected = Net.connect (Maybe.get (Net.parse_ip port (ref "::1"))) (Maybe.Some 5000)
 	match connected with
 	| Result.Error error -> 0 - 1000 - kind_code error
 	| Result.Ok stream ->
@@ -540,12 +542,12 @@ fn udp_flood _seed =
 
 def rec accept_all :: Net.TcpListener -> i64 -> i64 -> IO<i64>
 fn rec accept_all listener count last =
-	IO.bind (Net.accept listener (Maybe.Some 200)) (\accepted ->
+	IO.bind (\accepted ->
 		match accepted with
-		| Result.Ok stream -> IO.bind (Net.close stream) (\_closed -> accept_all listener (count + 1) last)
+		| Result.Ok stream -> IO.bind (\_closed -> accept_all listener (count + 1) last) (Net.close stream)
 		| Result.Error error ->
 			if kind_code error == 1 then IO.pure (count * 1000 + last)
-			else accept_all listener count (error.code as i64))
+			else accept_all listener count (error.code as i64)) (Net.accept listener (Maybe.Some 200))
 
 def close_accepted :: Result<Net.TcpStream, Os.Error> -> IO<unit>
 fn close_accepted accepted =
@@ -752,12 +754,12 @@ fn vanished_line receiver spare =
 	| Result.Error error -> IO.pure (failure_text error)
 	| Result.Ok gone ->
 		let vanished_target = Net.udp_local_addr gone
-		IO.bind (Net.close_udp gone) (\_closed ->
+		IO.bind (\_closed ->
 			Async.block_on (Async {
 				let! _sent = Net.send_to_async receiver (bytes_of (ref "x")) vanished_target
 				let! result = Net.recv_from_async receiver 64 (Maybe.Some 40)
 				return udp_text result
-			}))
+			})) (Net.close_udp gone)
 
 /// The `udp` case of the native fixture tests/fixtures/net_async (run_udp), line for line: what two UDP sockets of one executor
 /// print there is what the glue must give. The lines are joined by newlines.

@@ -122,15 +122,15 @@ fn close handle = IO.map (\() ->
 /// action's own result is an error. The action's value is returned unless closing fails.
 def with_open :: Capture<'a> => string -> Mode -> (Handle -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_open path mode body =
-	IO.bind (open path mode) (\opened ->
+	open path mode |> IO.bind (\opened ->
 		match opened with
 		| Result.Error error -> IO.pure (Result.Error error)
 		| Result.Ok handle ->
-			IO.bind (body handle) (\value ->
-				IO.map (\closed ->
+			body handle |> IO.bind (\value ->
+				close handle |> IO.map (\closed ->
 					match closed with
 					| Result.Ok _ -> Result.Ok value
-					| Result.Error error -> Result.Error error) (close handle)))
+					| Result.Error error -> Result.Error error)))
 
 /// What a path is. `Symlink` only comes from `link_metadata`; `Other` is a device, a socket, a pipe, and the like.
 union EntryKind = Regular | Directory | Symlink | Other
@@ -152,7 +152,7 @@ fn metadata_with operation path =
 				| 1ubyte -> Directory
 				| 2ubyte -> Symlink
 				| _ -> Other
-			Result.Ok (Metadata { kind: kind, size: Os.decode_i64 (ref bytes) 8, modified_ns: Os.decode_i64 (ref bytes) 16 })
+			Result.Ok (Metadata { kind: kind, size: Os.decode_i64 8 (ref bytes), modified_ns: Os.decode_i64 16 (ref bytes) })
 		| (status, _) -> Result.Error (Os.error_of_status status)
 
 /// Describes a path, following a symbolic link to what it points at.

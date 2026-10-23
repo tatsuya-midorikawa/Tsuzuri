@@ -306,7 +306,7 @@ fn string_library_buffer_primitives_preserve_encodings() {
     for source in [
         "let text = String.from_code_units [55296i16u, 0i16u]\nlet values = String.to_code_units text\nvalues[0] == 55296i16u",
         "let bytes = Utf8String.to_bytes u8\"hello\"\nlet text = Utf8String.from_bytes bytes\n(Maybe.get text).length",
-        "let text = u8\"\\u{1f600}\"\nmatch Utf8String.decode_at (ref text) 0 with | (value, next) -> Utf8Char.to_u32 value == 128512i32u && next == 4",
+        "let text = u8\"\\u{1f600}\"\nmatch Utf8String.decode_at 0 (ref text) with | (value, next) -> Utf8Char.to_u32 value == 128512i32u && next == 4",
         "let left = u8\"a\"\nlet right = u8\"b\"\nUtf8String.compare (ref left) (ref right)",
     ] {
         let module = tsuzuri::analyze(source).unwrap();
@@ -326,9 +326,9 @@ fn string_library_std_apis_preserve_units_and_types() {
             "contains (ref needle) (ref text)",
             "starts_with (ref needle) (ref text)",
             "ends_with (ref needle) (ref text)",
-            "slice (ref text) 0 1",
-            "sub (ref text) 0 1",
-            "decode_at (ref text) 0",
+            "slice 0 1 (ref text)",
+            "sub 0 1 (ref text)",
+            "decode_at 0 (ref text)",
             "chars (ref text)",
             "trim (ref text)",
             "trim_start (ref text)",
@@ -337,7 +337,7 @@ fn string_library_std_apis_preserve_units_and_types() {
             "to_ascii_lower (ref text)",
             "split (ref needle) (ref text)",
             "replace (ref needle) (ref needle) (ref text)",
-            "repeat (ref text) 3",
+            "repeat 3 (ref text)",
         ] {
             let source = format!(
                 "let text = {prefix}\"hello\"\nlet needle = {prefix}\"l\"\nlet result = {module}.{call}\n()"

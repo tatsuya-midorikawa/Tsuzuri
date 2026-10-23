@@ -31,8 +31,10 @@ fn addresses_text result =
 def rec resolve_each :: [string] -> i64 -> IO<unit>
 fn rec resolve_each hosts index =
 	if index >= hosts.length then IO.pure ()
-	else IO.bind (Net.resolve (String.repeat (ref hosts[index]) 1) 80) (\found ->
-		IO.bind (IO.write_line (addresses_text found)) (\_done -> resolve_each hosts (index + 1)))
+	else
+		let resolving = Net.resolve (String.repeat 1 (ref hosts[index])) 80
+		IO.bind (\found ->
+			IO.bind (\_done -> resolve_each hosts (index + 1)) (IO.write_line (addresses_text found))) resolving
 
 def main :: unit -> i32 = \() ->
 	do! resolve_each (Corpus.hosts ()) 0

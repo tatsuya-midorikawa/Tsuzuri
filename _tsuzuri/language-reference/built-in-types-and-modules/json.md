@@ -275,15 +275,15 @@ $"{String.from_utf8 (ref text)} missing={missing}"
 ## 字下げした出力
 
 ```text
-Json.to_utf8string_pretty :: ref Value -> i64 -> utf8string
-Json.serialize_pretty :: Encode<'a> => ref 'a -> i64 -> Result<utf8string, Error>
+Json.to_utf8string_pretty :: i64 -> ref Value -> utf8string
+Json.serialize_pretty :: Encode<'a> => i64 -> ref 'a -> Result<utf8string, Error>
 ```
 
 `indent` は 1 段あたりの空白の数で、`JSON.stringify(value, null, indent)` と同じく 10 で頭打ちになり、1 より小さいと空白なしの `to_utf8string` と同じです。空の配列と object は `[]` / `{}`、それ以外は要素ごとに改行し、キーの `:` の後に空白を 1 つ置きます。数値の字句と文字列のエスケープは `to_utf8string` と同じなので、`JSON.stringify` の正準形の数値だけを含む値なら、バイト列が `JSON.stringify(JSON.parse(text), null, indent)` と一致します。
 
 ```tsuzuri run=%7B%0A%20%20%22a%22%3A%20%5B%0A%20%20%20%201%2C%0A%20%20%20%20%5B%5D%0A%20%20%5D%2C%0A%20%20%22b%22%3A%20%7B%7D%0A%7D
 let value = Result.get (Json.parse (ref u8"{\"a\":[1,[]],\"b\":{}}"))
-Json.to_utf8string_pretty (ref value) 2
+Json.to_utf8string_pretty 2 (ref value)
 ```
 
 実行結果:
@@ -310,7 +310,7 @@ union Event = ObjectStart | ObjectEnd | ArrayStart | ArrayEnd | KeyToken of Lexe
 Json.reader :: ref utf8string -> Result<Reader, Error>
 Json.next :: ref utf8string -> Reader -> Result<(Event * Reader), Error>
 Json.token_text :: ref utf8string -> ref Lexeme -> Result<string, Error>
-Json.token_matches :: ref utf8string -> ref Lexeme -> ref string -> bool
+Json.token_matches :: ref string -> ref utf8string -> ref Lexeme -> bool
 Json.token_numeral :: ref utf8string -> ref Lexeme -> Result<Numeral, Error>
 ```
 
@@ -326,7 +326,7 @@ while going do
         match Json.next (ref text) reader with
         | Ok (event, after) ->
             match event with
-            | Json.KeyToken token -> if Json.token_matches (ref text) (ref token) (ref "id") then ids = ids + 1
+            | Json.KeyToken token -> if Json.token_matches (ref "id") (ref text) (ref token) then ids = ids + 1
             | Json.NumberToken token ->
                 let numeral = Result.get (Json.token_numeral (ref text) (ref token))
                 sum = sum + Result.get (Json.to_i64 (ref numeral))
@@ -358,12 +358,12 @@ sum=6 ids=2
 ```text
 Json.writer :: unit -> Writer
 Json.open_object / close_object / open_array / close_array :: Writer -> Result<Writer, Error>
-Json.write_key :: Writer -> ref string -> Result<Writer, Error>
+Json.write_key :: ref string -> Writer -> Result<Writer, Error>
 Json.write_null :: Writer -> Result<Writer, Error>
-Json.write_bool :: Writer -> bool -> Result<Writer, Error>
-Json.write_number :: Writer -> ref Numeral -> Result<Writer, Error>
-Json.write_text :: Writer -> ref string -> Result<Writer, Error>
-Json.write_json :: Writer -> ref Value -> Result<Writer, Error>
+Json.write_bool :: bool -> Writer -> Result<Writer, Error>
+Json.write_number :: ref Numeral -> Writer -> Result<Writer, Error>
+Json.write_text :: ref string -> Writer -> Result<Writer, Error>
+Json.write_json :: ref Value -> Writer -> Result<Writer, Error>
 Json.finish :: Writer -> Result<utf8string, Error>
 ```
 
@@ -371,11 +371,11 @@ Json.finish :: Writer -> Result<utf8string, Error>
 def build :: unit -> Result<utf8string, Json.Error>
 fn build _unit = Result {
     let! w0 = Json.open_object (Json.writer ())
-    let! w1 = Json.write_key w0 (ref "name")
-    let! w2 = Json.write_text w1 (ref "a")
-    let! w3 = Json.write_key w2 (ref "tags")
+    let! w1 = Json.write_key (ref "name") w0
+    let! w2 = Json.write_text (ref "a") w1
+    let! w3 = Json.write_key (ref "tags") w2
     let! w4 = Json.open_array w3
-    let! w5 = Json.write_bool w4 true
+    let! w5 = Json.write_bool true w4
     let! w6 = Json.write_null w5
     let! w7 = Json.close_array w6
     let! w8 = Json.close_object w7
@@ -437,8 +437,8 @@ $"{good} | {bad}"
 | `decode` | `Decode<'a> => ref Value -> Result<'a, Error>` | `Value` を値に |
 | `serialize` | `Encode<'a> => ref 'a -> Result<utf8string, Error>` | 値を JSON テキストに |
 | `deserialize` | `Decode<'a> => ref utf8string -> Result<'a, Error>` | JSON テキストを値に |
-| `to_utf8string_pretty` | `ref Value -> i64 -> utf8string` | 字下げした JSON テキストを書きます |
-| `serialize_pretty` | `Encode<'a> => ref 'a -> i64 -> Result<utf8string, Error>` | 値を字下げした JSON テキストに |
+| `to_utf8string_pretty` | `i64 -> ref Value -> utf8string` | 字下げした JSON テキストを書きます |
+| `serialize_pretty` | `Encode<'a> => i64 -> ref 'a -> Result<utf8string, Error>` | 値を字下げした JSON テキストに |
 | `reader` / `next` | `ref utf8string -> Result<Reader, Error>` / `ref utf8string -> Reader -> Result<(Event * Reader), Error>` | プル型の解析 |
 | `token_text` / `token_matches` / `token_numeral` | 上の「プル型の解析と逐次の出力」 | トークンの中身 |
 | `writer` / `open_*` / `close_*` / `write_*` / `finish` | 上の「プル型の解析と逐次の出力」 | 逐次の出力 |
@@ -457,6 +457,38 @@ $"{good} | {bad}"
 | `keep_error` | `Maybe<Error> -> Result<'a, Error> -> Maybe<Error>` | 最初の Error を残し、残りを解放 |
 | `case_index` | `ref Value -> ref [string] -> ref [bool] -> Result<i64, Error>` | case 名とペイロードの有無から添字を求め、形を検査 |
 | `decode_payload` | `Decode<'a> => ref Value -> Result<'a, Error>` | `case_index` の成功後に、ただ一つのメンバーの値を decode |
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読む値や書き込む `Writer` は、必ず最後の引数です。`to_utf8string_pretty indent value` と `serialize_pretty indent value` は値が、`token_matches expected text token` はトークンが最後です。`write_key key w`・`write_text text w`・`write_number numeral w`・`write_json value w`・`write_bool flag w` は `Writer` が最後なので、`Result.bind (Json.write_bool true)` のように、一部だけ渡した関数を `Result.bind` に渡して出力を連鎖で書けます。`open_*`・`close_*`・`write_null`・`finish` は `Writer` だけを取ります。導出コード用の補助関数は、導出したコードが呼ぶ形に固定してあり、この規則の対象ではありません。
+
+```tsuzuri run=%7B%22name%22%3A%22a%22%2C%22ok%22%3Atrue%7D
+let name = "name"
+let value = "a"
+let ok = "ok"
+let built =
+    Json.writer ()
+    |> Json.open_object
+    |> Result.bind (Json.write_key (ref name))
+    |> Result.bind (Json.write_text (ref value))
+    |> Result.bind (Json.write_key (ref ok))
+    |> Result.bind (Json.write_bool true)
+    |> Result.bind Json.close_object
+    |> Result.bind Json.finish
+match built with
+| Ok text -> String.from_utf8 (ref text)
+| Error error -> Display.display (ref error)
+```
+
+実行結果:
+
+```text
+{"name":"a","ok":true}
+```
+
+一部だけ渡す関数に文字列リテラルの借用 `ref "name"` を渡すと `E1013` です。上の例のように、先に `let` へ束縛した値を借ります。
 
 ## 他の言語との比較
 

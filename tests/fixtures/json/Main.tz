@@ -268,25 +268,25 @@ export def container_hash :: i64 -> i64
 fn container_hash case =
     match case with
     | 0 ->
-        let names = Map.insert (Map.insert Map.empty() "b" 2) "a" 1
+        let names = Map.insert "a" 1 (Map.insert "b" 2 Map.empty())
         text_hash (Json.serialize (ref names))
     | 1 ->
-        let numbers = Map.insert (Map.insert Map.empty() 10 "x") 2 "y"
+        let numbers = Map.insert 2 "y" (Map.insert 10 "x" Map.empty())
         text_hash (Json.serialize (ref numbers))
     | 2 ->
         let empty: Map<i64, string> = Map.empty()
         text_hash (Json.serialize (ref empty))
     | 3 ->
-        let table = HashMap.insert (HashMap.insert (HashMap.insert HashMap.empty() "z" 1) "a" 2) "z" 3
+        let table = HashMap.insert "z" 3 (HashMap.insert "a" 2 (HashMap.insert "z" 1 HashMap.empty()))
         text_hash (Json.serialize (ref table))
     | 4 ->
-        let colors = HashMap.insert (HashMap.insert HashMap.empty() Blue 1.5f16) Red 65504.0f16
+        let colors = HashMap.insert Red 65504.0f16 (HashMap.insert Blue 1.5f16 HashMap.empty())
         text_hash (Json.serialize (ref colors))
     | 5 ->
-        let set = Set.insert (Set.insert Set.empty() 2.50m) 1.0m
+        let set = Set.insert 1.0m (Set.insert 2.50m Set.empty())
         text_hash (Json.serialize (ref set))
     | 6 ->
-        let set = HashSet.insert (HashSet.insert (HashSet.insert HashSet.empty() 3) 1) 3
+        let set = HashSet.insert 3 (HashSet.insert 1 (HashSet.insert 3 HashSet.empty()))
         text_hash (Json.serialize (ref set))
     | 7 -> text_hash (Json.serialize (ref (0.5f16, 0.1f16, 1e300F, (1.10hm, -0.0M))))
     | 8 ->
@@ -482,21 +482,21 @@ export def pretty :: i64 -> i64
 fn pretty indent =
     let text = u8"{\"a\":[1,{\"b\":[]},{}],\"c\":\"d\",\"e\":{\"f\":null}}"
     let value = Result.get (Json.parse (ref text))
-    let indented = Json.to_utf8string_pretty (ref value) indent
+    let indented = Json.to_utf8string_pretty indent (ref value)
     fnv (ref indented)
 
 def write_all :: unit -> Result<utf8string, Json.Error>
 fn write_all _unit = Result {
     let! w0 = Json.open_object (Json.writer ())
-    let! w1 = Json.write_key w0 (ref "a")
+    let! w1 = Json.write_key (ref "a") w0
     let! w2 = Json.open_array w1
     let! w3 = Json.write_null w2
-    let! w4 = Json.write_bool w3 true
-    let! w5 = Json.write_number w4 (ref (Maybe.get (Json.numeral (ref u8"1.50"))))
-    let! w6 = Json.write_json w5 (ref (Json.Object [("x", Json.Items [])]))
+    let! w4 = Json.write_bool true w3
+    let! w5 = Json.write_number (ref (Maybe.get (Json.numeral (ref u8"1.50")))) w4
+    let! w6 = Json.write_json (ref (Json.Object [("x", Json.Items [])])) w5
     let! w7 = Json.close_array w6
-    let! w8 = Json.write_key w7 (ref "b\n")
-    let! w9 = Json.write_text w8 (ref "x\"y\uD800")
+    let! w8 = Json.write_key (ref "b\n") w7
+    let! w9 = Json.write_text (ref "x\"y\uD800") w8
     let! w10 = Json.close_object w9
     return! Json.finish w10
 }
@@ -511,7 +511,7 @@ fn write_bad case =
         }
     | 1 -> Result {
             let! w0 = Json.open_array (Json.writer ())
-            let! w1 = Json.write_key w0 (ref "k")
+            let! w1 = Json.write_key (ref "k") w0
             return! Json.finish w1
         }
     | 2 -> Result {
@@ -532,12 +532,12 @@ fn write_bad case =
     | 5 -> Json.finish (Json.writer ())
     | 6 -> Result {
             let! w0 = Json.open_object (Json.writer ())
-            let! w1 = Json.write_key w0 (ref "k")
+            let! w1 = Json.write_key (ref "k") w0
             let! w2 = Json.close_object w1
             return! Json.finish w2
         }
     | _ -> Result {
-            let! w0 = Json.write_number (Json.writer ()) (ref (Json.Numeral { text: u8"01" }))
+            let! w0 = Json.write_number (ref (Json.Numeral { text: u8"01" })) (Json.writer ())
             return! Json.finish w0
         }
 
@@ -552,7 +552,7 @@ fn event_text text event =
     | Json.ObjectEnd -> "}"
     | Json.ArrayStart -> "["
     | Json.ArrayEnd -> "]"
-    | Json.KeyToken token -> "K" + Result.get (Json.token_text text token) + (if token.escaped then "!" else "") + (if Json.token_matches text token (ref "a") then "=a" else "")
+    | Json.KeyToken token -> "K" + Result.get (Json.token_text text token) + (if token.escaped then "!" else "") + (if Json.token_matches (ref "a") text token then "=a" else "")
     | Json.TextToken token -> "S" + Result.get (Json.token_text text token) + (if token.escaped then "!" else "")
     | Json.NumberToken token ->
         let numeral = Result.get (Json.token_numeral text token)

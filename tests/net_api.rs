@@ -130,8 +130,8 @@ fn addresses_and_handles_are_opaque_copies() {
         assert_eq!(analyze(source).unwrap_err().code, "E1022", "{source}");
     }
     for source in [
-        "let address = Net.parse_ip (ref \"::1\") 1\nlet shown = Maybe.get address\nshown.port",
-        "let address = Net.parse_ip (ref \"::1\") 1\nlet shown = Maybe.get address\n{ shown with port = 70000 }.high",
+        "let address = Net.parse_ip 1 (ref \"::1\")\nlet shown = Maybe.get address\nshown.port",
+        "let address = Net.parse_ip 1 (ref \"::1\")\nlet shown = Maybe.get address\n{ shown with port = 70000 }.high",
     ] {
         assert_eq!(analyze(source).unwrap_err().code, "E1022", "{source}");
     }
@@ -367,7 +367,7 @@ fn net_glue_adds_the_sockets_and_leaves_other_glue_alone() {
 /// An export that opens a socket.
 const SOCKET_EXPORT: &str = "export def probe :: i64 -> i64
 fn probe port =
-    let address = Maybe.get (Net.parse_ip (ref \"127.0.0.1\") port)
+    let address = Maybe.get (Net.parse_ip port (ref \"127.0.0.1\"))
     let! connected = Net.connect address Maybe.None
     if Result.is_ok (ref connected) then 1 else 0
 ";
@@ -409,7 +409,7 @@ fn reaching_a_socket_is_decided_on_the_module_as_the_ir_does() {
         ("export def answer :: i64\nfn answer = 42\n", false),
         (
             "export def probe :: i64 -> i64
-fn probe port = match Net.parse_ip (ref \"127.0.0.1\") port with
+fn probe port = match Net.parse_ip port (ref \"127.0.0.1\") with
     | Maybe.Some address -> Net.port address
     | Maybe.None -> 0 - 1
 ",
@@ -456,7 +456,7 @@ fn lookup port =
         (
             "export def echo :: i64 -> i64
 fn echo port =
-    let address = Maybe.get (Net.parse_ip (ref \"127.0.0.1\") port)
+    let address = Maybe.get (Net.parse_ip port (ref \"127.0.0.1\"))
     let! opened = Async.block_on (Net.connect_async address Maybe.None)
     if Result.is_ok (ref opened) then 1 else 0
 ",
@@ -500,7 +500,7 @@ fn net_bindings_follow_the_sockets_that_a_module_reaches() {
     std::fs::create_dir_all(&sockets).unwrap();
     std::fs::write(
         plain.join("Main.tz"),
-        "export def answer :: i64\nfn answer = Net.port (Maybe.get (Net.parse_ip (ref \"127.0.0.1\") 7))\n",
+        "export def answer :: i64\nfn answer = Net.port (Maybe.get (Net.parse_ip 7 (ref \"127.0.0.1\")))\n",
     )
     .unwrap();
     std::fs::write(sockets.join("Main.tz"), SOCKET_EXPORT).unwrap();
@@ -590,7 +590,7 @@ fn types_the_phase_one_api() {
     module(
         "def main :: unit -> i32 = \\() ->
     let parse: ref string -> Maybe<Net.Address> = Net.parse_address
-    let parse_ip: ref string -> i64 -> Maybe<Net.Address> = Net.parse_ip
+    let parse_ip: i64 -> ref string -> Maybe<Net.Address> = Net.parse_ip
     let text: Net.Address -> string = Net.address_text
     let ip: Net.Address -> string = Net.ip_text
     let port: Net.Address -> i64 = Net.port

@@ -515,6 +515,15 @@ LLVM コード生成時、ユーザー由来の関数はすべて出力されま
 すべての組み込み関数は scheme に定められた引数個数を持つ `$builtin` ラッパーを経由して呼び出され、部分適用（カリー化）は通常の関数値と同様の仕組みで lowering されます。
 LLVM 上の定義は具体化の組み合わせごとに 1 回だけ `@tz.builtin.name` に型引数名を `.` で連結したシンボルとして出力され、型名に含まれる特殊記号は `$A`（`->`）、`$L`／`$R`（`[`／`]`）、`$C`（`,`）などの英数字に置換して LLVM 識別子に適合させます。
 
+#### 引数の順序とコンパイラのフック
+
+`std/` の公開関数と組み込み関数は、操作する値（対象）を最後の引数に取ります（D-59）。`tests/std_argument_order.rs` が、`std/` の全ファイルの `def` 行と、`Array`・`List`・`Vec`・`String`・`Utf8String` の組み込みの scheme を検査し、分類していない新しい `std/` のファイルを拒否します。コンパイラが名前や引数の位置で見ている関数は、順序を変えるときにそのフックを同時に直します。
+
+- `src/llvm_strings.rs` の `compact_body`: `compact` の `String.slice` を、引数の型が `i64`・`i64`・`ref string` の関数として読み（`%p0`・`%p1` が位置、`%p2` が文字列）、`String.join` を `ref string`・`ref [string]` の関数として読みます。型が合わない関数は、言語で書いた本体のままになります（確保が増えるだけで、結果は変わりません）。
+- 組み込みの `Utf8String.decode_at`: `src/check.rs` の scheme と `src/llvm_bulk.rs` の生成が、位置（`i64`）、文字列（`ref utf8string`）の順で読みます。
+- 組み込みの `Array.__set`・`Array.__sort_with`・`Array.update`・`Array.swap`・`Array.write`・`Array.swap_in`・`Array.split_at_mut`: 対象の配列が最後の引数です。
+- `src/derive.rs` が呼ぶ `Json`・`Result`・`Maybe` の関数は、導出コードの生成と対になっているので、順序を変えません。
+
 ### エントリー
 
 `Main.tz` のトップレベル式を統合した非公開の合成関数、または `Main.main` の関数 ID をエントリーポイントとして保持します。両者の併用は許可されず、他モジュールや `Main.tc` 内の `main` がエントリーに選ばれることはありません。

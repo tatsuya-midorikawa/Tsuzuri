@@ -25,12 +25,13 @@ impl FunctionEmitter<'_, '_> {
             return self.value(format!("sext i32 {order} to i64"));
         }
         if instance.builtin == Utf8StringDecodeAt {
-            let text = self.value("load %tz.utf8string, ptr %arg0");
+            // (offset, text): the text comes last.
+            let text = self.value("load %tz.utf8string, ptr %arg1");
             let length = self.value(format!("extractvalue %tz.utf8string {text}, 1"));
-            let valid = self.value(format!("icmp ult i64 %arg1, {length}"));
+            let valid = self.value(format!("icmp ult i64 %arg0, {length}"));
             self.guard(&valid, TrapKind::BoundsCheck);
             let data = self.value(format!("extractvalue %tz.utf8string {text}, 0"));
-            return self.value(format!("call {{ i32, i64 }} @tz.string.decode_utf8(ptr {data}, i64 {length}, i64 %arg1, i1 false)"));
+            return self.value(format!("call {{ i32, i64 }} @tz.string.decode_utf8(ptr {data}, i64 {length}, i64 %arg0, i1 false)"));
         }
         let input_type = self.ty(&parameters[0]);
         let mut input = "%arg0".to_owned();

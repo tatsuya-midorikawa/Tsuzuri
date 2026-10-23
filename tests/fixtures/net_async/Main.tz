@@ -107,7 +107,7 @@ fn serve_one listener = Async {
 
 def run_server :: unit -> IO<unit>
 fn run_server _unit = IO {
-	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
 	match bound with
 	| Result.Error error -> do! say (failure_text error)
@@ -163,7 +163,7 @@ fn rec crowd_server listener remaining handled = Async {
 
 def run_crowd :: unit -> IO<unit>
 fn run_crowd _unit = IO {
-	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
 	match bound with
 	| Result.Error error -> do! say (failure_text error)
@@ -178,25 +178,25 @@ fn run_crowd _unit = IO {
 def rec make_pairs :: Net.TcpListener -> Net.Address -> i64 -> Vec<Net.TcpStream> -> Vec<Net.TcpStream> -> IO<(Vec<Net.TcpStream> * Vec<Net.TcpStream>)>
 fn rec make_pairs listener target count clients servers =
 	if count == 0 then IO.pure (clients, servers)
-	else IO.bind (Net.connect target (Maybe.Some 5000)) (\connected ->
-		IO.bind (Net.accept listener (Maybe.Some 5000)) (\accepted ->
+	else IO.bind (\connected ->
+		IO.bind (\accepted ->
 			match (connected, accepted) with
 			| (Result.Ok client, Result.Ok server) -> make_pairs listener target (count - 1) (Vec.push client clients) (Vec.push server servers)
-			| _ -> IO.pure (clients, servers)))
+			| _ -> IO.pure (clients, servers)) (Net.accept listener (Maybe.Some 5000))) (Net.connect target (Maybe.Some 5000))
 
 /// One connected pair on a listener of its own: the listener, the client end, and the server end.
 def make_pair :: unit -> IO<Maybe<(Net.TcpListener * Net.TcpStream * Net.TcpStream)>>
 fn make_pair _unit =
-	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
-	IO.bind (Net.bind loopback) (\bound ->
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
+	IO.bind (\bound ->
 		match bound with
 		| Result.Error _ -> IO.pure Maybe.None
 		| Result.Ok listener ->
-			IO.bind (Net.connect (Net.local_addr listener) (Maybe.Some 5000)) (\connected ->
-				IO.bind (Net.accept listener (Maybe.Some 5000)) (\accepted ->
+			IO.bind (\connected ->
+				IO.bind (\accepted ->
 					match (connected, accepted) with
 					| (Result.Ok client, Result.Ok server) -> IO.pure (Maybe.Some (listener, client, server))
-					| _ -> IO.pure Maybe.None)))
+					| _ -> IO.pure Maybe.None) (Net.accept listener (Maybe.Some 5000))) (Net.connect (Net.local_addr listener) (Maybe.Some 5000))) (Net.bind loopback)
 
 /// A wait of a socket that has bytes coming: the sum of what arrives, or -1000.
 def wait_for_byte :: Net.TcpStream -> Async<i64>
@@ -240,7 +240,7 @@ fn close_all streams = Async {
 /// Sixty-four reads wait at once on sockets of their own; a writer feeds them one byte each after a pause.
 def run_waits :: unit -> IO<unit>
 fn run_waits _unit = IO {
-	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
 	match bound with
 	| Result.Error error -> do! say (failure_text error)
@@ -284,10 +284,10 @@ fn outcome_text outcome =
 def rec cancel_rounds :: Net.TcpStream -> i64 -> i64 -> IO<i64>
 fn rec cancel_rounds stream remaining cancelled =
 	if remaining == 0 then IO.pure cancelled
-	else IO.bind (Async.block_on (Async.all_results [idle_read stream, failing 0])) (\outcome ->
+	else IO.bind (\outcome ->
 		cancel_rounds stream (remaining - 1) (match outcome with
 			| Result.Error _ -> cancelled + 1
-			| Result.Ok _ -> cancelled))
+			| Result.Ok _ -> cancelled)) (Async.block_on (Async.all_results [idle_read stream, failing 0]))
 
 /// A read that nothing satisfies is cancelled when a sibling fails; the stream still works, and the cancelling can be
 /// done again and again.
@@ -503,7 +503,7 @@ fn udp_text result =
 /// does not fit (consumed, InvalidInput), the next one, and an empty one.
 def run_udp :: unit -> IO<unit>
 fn run_udp _unit = IO {
-	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! first = Net.bind_udp loopback
 	let! second = Net.bind_udp loopback
 	match (first, second) with
@@ -576,7 +576,7 @@ fn rec accept_greeted listener rounds = Async {
 /// listener and its gate first.
 def run_accept_reset :: unit -> IO<unit>
 fn run_accept_reset _unit = IO {
-	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
 	let! opened = Net.bind_udp loopback
 	match (bound, opened) with
@@ -617,7 +617,7 @@ fn run_shutdown _unit = IO {
 def run_stale :: Net.Address -> IO<unit>
 fn run_stale address = IO {
 	let! made = make_pair ()
-	let loopback = Maybe.get (Net.parse_ip (ref "127.0.0.1") 0)
+	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind_udp loopback
 	match (made, bound) with
 	| (Maybe.Some (listener, client, server), Result.Ok socket) ->
@@ -669,7 +669,7 @@ def main :: unit -> i32 = \() ->
 	let! host_text = IO.read_line ()
 	let case = Maybe.default_value "" name
 	let port: Maybe<i64> = Parse.parse (ref (Maybe.default_value "0" port_text))
-	match Net.parse_ip (ref (Maybe.default_value "127.0.0.1" host_text)) (Maybe.default_value 0 port) with
+	match Net.parse_ip (Maybe.default_value 0 port) (ref (Maybe.default_value "127.0.0.1" host_text)) with
 	| Maybe.None -> do! say "bad target"
 	| Maybe.Some address -> do! run_case (ref case) address
 	0

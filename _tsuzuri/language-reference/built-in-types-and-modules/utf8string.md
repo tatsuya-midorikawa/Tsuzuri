@@ -22,18 +22,18 @@
 | `length` | `ref utf8string -> i64` | バイト数。`.length` と同じで O(1) |
 | `char_count` | `ref utf8string -> i64` | スカラー数。バイト数ではない。O(n) |
 | `chars` | `ref utf8string -> [utf8char]` | スカラーを順に集めた新しい配列。O(n) |
-| `decode_at` | `ref utf8string -> i64 -> (utf8char * i64)` | その位置のスカラーと、次のバイト位置 |
+| `decode_at` | `i64 -> ref utf8string -> (utf8char * i64)` | その位置のスカラーと、次のバイト位置 |
 
 `decode_at` は共有借用です。index が範囲外、負、スカラーの途中だとトラップします。`utf8string` 自体は妥当な UTF-8 なので、先頭から順に呼べば途中バイトには当たりません。
 
 ```tsuzuri run=mid%3Dnone%20parts%3D%5Bu8%22%E3%81%82%22%5D%20decoded%3D12354%403%20count%3D1
 let bytes = u8"あ"
-let mid = Utf8String.slice (ref bytes) 1 3
+let mid = Utf8String.slice 1 3 (ref bytes)
 let mid_text = match mid with
     | Some _ -> "some"
     | None -> "none"
 let parts = Utf8String.split u8"" bytes
-let decoded = match Utf8String.decode_at (ref bytes) 0 with
+let decoded = match Utf8String.decode_at 0 (ref bytes) with
     | (value, next) -> to_string (Utf8Char.to_u32 value) + "@" + to_string next
 $"mid={mid_text} parts={parts} decoded={decoded} count={Utf8String.char_count bytes}"
 ```
@@ -81,10 +81,10 @@ WASM の SIMD は `--wasm-feature simd128` のオプトインで、既定の imp
 
 | 関数 | シグネチャ | 失敗 | 計算量 |
 | --- | --- | --- | --- |
-| `slice` | `ref utf8string -> i64 -> i64 -> Maybe<utf8string>` | 負の位置、`last < first`、範囲外、またはスカラー境界でないなら `None` | O(結果のバイト数) |
-| `sub` | `ref utf8string -> i64 -> i64 -> Maybe<utf8string>` | 負の位置、加算オーバーフロー、範囲外、またはスカラー境界でないなら `None` | O(結果のバイト数) |
+| `slice` | `i64 -> i64 -> ref utf8string -> Maybe<utf8string>` | 負の位置、`last < first`、範囲外、またはスカラー境界でないなら `None` | O(結果のバイト数) |
+| `sub` | `i64 -> i64 -> ref utf8string -> Maybe<utf8string>` | 負の位置、加算オーバーフロー、範囲外、またはスカラー境界でないなら `None` | O(結果のバイト数) |
 
-`slice text first last` の `last` は結果に含まれません。`sub text first count` は `first` から `count` バイトを切り出します。負の位置、逆順（`last < first`）、範囲外アクセス、および加算オーバーフローが発生した場合は `None` を返します。
+`slice first last text` の `last` は結果に含まれません。`sub first count text` は `first` から `count` バイトを切り出します。負の位置、逆順（`last < first`）、範囲外アクセス、および加算オーバーフローが発生した場合は `None` を返します。
 
 それに加えて、始点と終点が妥当な Unicode スカラー値の境界でなければ `None` を返します。長さ 0 の空区間であっても、後続バイト（continuation byte）の途中に位置する場合は `None` です。`String.slice` がサロゲートペアの途中インデックスをそのまま切り出すのと、この点が大きく異なります。
 
@@ -98,7 +98,7 @@ WASM の SIMD は `--wasm-feature simd128` のオプトインで、既定の imp
 | `join` | `ref utf8string -> ref [utf8string] -> utf8string` | 区切りが第 1 引数。空配列は `u8""` |
 | `split` | `ref utf8string -> ref utf8string -> [utf8string]` | 区切りが第 1 引数 |
 | `replace` | `ref utf8string -> ref utf8string -> ref utf8string -> utf8string` | パターン、置換、本文の順 |
-| `repeat` | `ref utf8string -> i64 -> utf8string` | 負の回数はトラップ。0 回は `u8""` |
+| `repeat` | `i64 -> ref utf8string -> utf8string` | 負の回数はトラップ。0 回は `u8""` |
 
 空でない区切りは、バイト列として一致した位置で切ります。連続や端の一致は空要素です。空文字列を `u8","` で割ると `[u8""]` です。
 
@@ -156,6 +156,27 @@ UTF-16 から来る文字列は、先に `String.is_well_formed` を見るか、
 
 > [!NOTE]
 > 添字 `bytes[index]` は `ubyte` です。スカラーが欲しいときは `decode_at` か `chars` を使います。途中バイトを `decode_at` に渡すとトラップし、`slice` に渡すと `None` です。
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+引数の順は [String](string.md#引数の順序) と同じで、読み取る `utf8string` は必ず最後の引数です。`u8"あいう" |> Utf8String.sub 3 3` のようにパイプで渡せ、`Utf8String.sub 3 3 >> Maybe.default_value u8""` のように、`utf8string` だけが足りない関数を合成できます。位置や個数などそれ以外の引数は、関数名が示す順で `utf8string` の前に並べます（`Utf8String.slice first last text`、`Utf8String.sub first count text`、`Utf8String.decode_at offset text`、`Utf8String.repeat count text`）。位置の単位はバイトです。
+
+```tsuzuri run=letter%3D%E3%81%84%20twice%3D%E3%81%84%E3%81%84%20bytes%3D6
+let middle = Utf8String.sub 3 3 >> Maybe.default_value u8""
+let letter = u8"あいう" |> middle
+let twice = letter |> Utf8String.repeat 2
+$"letter={letter} twice={twice} bytes={Utf8String.length (ref twice)}"
+```
+
+実行結果:
+
+```text
+letter=い twice=いい bytes=6
+```
+
+`あいう` の各文字は 3 バイトなので、`sub 3 3` は 2 文字目の `い` を切り出します。
 
 ## まとめ
 

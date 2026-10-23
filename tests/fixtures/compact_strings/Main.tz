@@ -26,7 +26,7 @@ fn piece which =
 
 def cut :: ref string -> i64 -> i64 -> string
 fn cut text first last =
-    match String.slice text first last with
+    match String.slice first last text with
     | Some part -> part
     | None -> ""
 
@@ -75,21 +75,21 @@ fn probe_compare a b =
 export def probe_hash :: i64 -> i64 -> i64
 fn probe_hash a b =
     let mut map: HashMap<string, i64> = HashMap.empty()
-    map = HashMap.insert map (variant a 0) 1
-    map = HashMap.insert map (variant b 1) 2
-    map = HashMap.insert map (variant a 2) 3
+    map = HashMap.insert (variant a 0) 1 map
+    map = HashMap.insert (variant b 1) 2 map
+    map = HashMap.insert (variant a 2) 3 map
     let mut set: HashSet<string> = HashSet.empty()
-    set = HashSet.insert set (variant a 3)
-    set = HashSet.insert set (variant b 0)
+    set = HashSet.insert (variant a 3) set
+    set = HashSet.insert (variant b 0) set
     let mut total = HashMap.length (ref map) * 1000 + HashSet.length (ref set)
     let mut x = 0
     while x < 4 do
         let key = variant a x
         let other = variant b x
-        total = total * 7 + (if HashMap.contains_key_ref (ref map) (ref key) then 1 else 0)
-        total = total * 7 + (if HashMap.contains_key_ref (ref map) (ref other) then 1 else 0)
-        total = total * 7 + (if HashSet.contains_ref (ref set) (ref key) then 1 else 0)
-        total = total * 7 + (match HashMap.get_ref (ref map) (ref key) with | Some value -> value | None -> 0 - 1)
+        total = total * 7 + (if HashMap.contains_key_ref (ref key) (ref map) then 1 else 0)
+        total = total * 7 + (if HashMap.contains_key_ref (ref other) (ref map) then 1 else 0)
+        total = total * 7 + (if HashSet.contains_ref (ref key) (ref set) then 1 else 0)
+        total = total * 7 + (match HashMap.get_ref (ref key) (ref map) with | Some value -> value | None -> 0 - 1)
         x = x + 1
     total
 
@@ -102,7 +102,7 @@ fn probe_slice a b =
     while first <= text.length + 1 do
         let mut last = first
         while last <= text.length + 1 do
-            let part = match String.slice (ref text) first last with | Some part -> digest (ref part) | None -> 0 - 1
+            let part = match String.slice first last (ref text) with | Some part -> digest (ref part) | None -> 0 - 1
             total = (total * 31 + part) % 1000000007
             last = last + 1
         first = first + 1
@@ -137,7 +137,7 @@ fn probe_edit a b =
     let pattern = variant b 0
     let replacement = variant a 3
     let replaced = if pattern.length == 0 then clone_string (ref text) else String.replace (ref text) (ref pattern) (ref replacement)
-    let repeated = String.repeat (ref text) 3
+    let repeated = String.repeat 3 (ref text)
     let trimmed = String.trim (ref text)
     let start = String.trim_start (ref text)
     let finish = String.trim_end (ref text)

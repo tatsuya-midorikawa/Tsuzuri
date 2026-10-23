@@ -80,10 +80,10 @@ fn keyed_map count =
     let mut map: HashMap<Keyed, i64> = HashMap.empty()
     let mut step = 0
     while step < count do
-        map = HashMap.insert map (keyed (if step % 2 == 0 then 1 else 0) (step % 13) (step % 7)) step
+        map = HashMap.insert (keyed (if step % 2 == 0 then 1 else 0) (step % 13) (step % 7)) step map
         step = step + 1
     let probe = keyed 1 4 4
-    HashMap.length (ref map) * 1000 + (if HashMap.contains_key (ref map) probe then deref (HashMap.at (ref map) probe) else -1)
+    HashMap.length (ref map) * 1000 + (if HashMap.contains_key probe (ref map) then deref (HashMap.at probe (ref map)) else -1)
 
 def spread_of :: i64 -> Spread
 fn spread_of i = Spread { a: (i % 7) as i8, b: i * 1000 + 17, c: (i % 5) as i8, d: (i * 3) as i32, e: i % 3 == 0 }

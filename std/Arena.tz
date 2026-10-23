@@ -54,25 +54,25 @@ fn position arena handle =
 	else -1
 
 /// Whether `handle` names a value of this arena.
-def contains :: ref Arena<'a> -> Handle<'a> -> bool
-fn contains arena handle = position arena handle >= 0
+def contains :: Handle<'a> -> ref Arena<'a> -> bool
+fn contains handle arena = position arena handle >= 0
 
 /// The value that `handle` names, or `None` when the handle is removed or from another arena.
-def get :: ref Arena<'a> -> Handle<'a> -> Maybe<ref 'a>
-fn get arena handle =
+def get :: Handle<'a> -> ref Arena<'a> -> Maybe<ref 'a>
+fn get handle arena =
 	let index = position arena handle
 	if index >= 0 then Maybe.Some (ref arena.values[index]) else Maybe.None
 
 /// The value that `handle` names; traps when the handle is removed or from another arena.
-def at :: ref Arena<'a> -> Handle<'a> -> ref 'a
-fn at arena handle =
+def at :: Handle<'a> -> ref Arena<'a> -> ref 'a
+fn at handle arena =
 	let index = position arena handle
 	assert (index >= 0)
 	ref arena.values[index]
 
 /// Moves `value` into the arena and returns the arena with a handle that names it.
-def insert :: Arena<'a> -> 'a -> (Arena<'a> * Handle<'a>)
-fn insert arena value =
+def insert :: 'a -> Arena<'a> -> (Arena<'a> * Handle<'a>)
+fn insert value arena =
 	match arena with
 	| Arena { id = id, values = values, owners = owners, slots = slots, free = free } ->
 		let next_position = Vec.length (ref values)
@@ -89,8 +89,8 @@ fn insert arena value =
 /// Moves the value that `handle` names out of the arena. The last value takes its position, and
 /// its slot is reused last-in first-out with the next generation. An invalid handle returns the
 /// arena unchanged with `None`.
-def remove :: Arena<'a> -> Handle<'a> -> (Arena<'a> * Maybe<'a>)
-fn remove arena handle =
+def remove :: Handle<'a> -> Arena<'a> -> (Arena<'a> * Maybe<'a>)
+fn remove handle arena =
 	let target = position (ref arena) handle
 	if target < 0 then (arena, Maybe.None)
 	else
@@ -111,8 +111,8 @@ fn remove arena handle =
 
 /// Replaces the value that `handle` names with `change value`, keeping the handle valid; traps
 /// without calling `change` when the handle is removed or from another arena.
-def update :: Arena<'a> -> Handle<'a> -> ('a -> 'a) -> Arena<'a>
-fn update arena handle change =
+def update :: Handle<'a> -> ('a -> 'a) -> Arena<'a> -> Arena<'a>
+fn update handle change arena =
 	let target = position (ref arena) handle
 	assert (target >= 0)
 	match arena with

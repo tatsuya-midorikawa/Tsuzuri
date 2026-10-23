@@ -20,17 +20,17 @@ fn render _unit =
 def facts :: unit -> string
 fn facts _unit =
 	let none = "none"
-	let v4 = Net.parse_ip (ref "192.0.2.7") 8080
-	let v6 = Net.parse_ip (ref "2001:db8::7") 0
+	let v4 = Net.parse_ip 8080 (ref "192.0.2.7")
+	let v6 = Net.parse_ip 0 (ref "2001:db8::7")
 	let described = \found ->
 		match found with
 		| Maybe.Some address -> Net.ip_text address + "|" + to_string (Net.port address) + "|" + to_string (Net.is_ipv6 address) + "|" + to_string address
 		| Maybe.None -> none
-	let bad_port = Net.parse_ip (ref "::1") 70000
-	let negative = Net.parse_ip (ref "::1") (-1)
-	let bracketed = Net.parse_ip (ref "[::1]") 1
-	let with_port = Net.parse_ip (ref "1.2.3.4:5") 1
-	let top = Net.parse_ip (ref "255.255.255.255") 65535
+	let bad_port = Net.parse_ip 70000 (ref "::1")
+	let negative = Net.parse_ip (-1) (ref "::1")
+	let bracketed = Net.parse_ip 1 (ref "[::1]")
+	let with_port = Net.parse_ip 1 (ref "1.2.3.4:5")
+	let top = Net.parse_ip 65535 (ref "255.255.255.255")
 	let same = match (v4, Net.parse_address (ref "192.0.2.7:8080")) with
 		| (Maybe.Some left, Maybe.Some right) -> left == right
 		| _ -> false
