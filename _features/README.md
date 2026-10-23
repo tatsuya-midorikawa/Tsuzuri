@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には、[2026-10-13 に追加](#追加チケット2026-10-13) した A18（全 Phase 実装・ローカル検証済み、PR48 は未マージ）・A19（`todo`）と、[2026-10-18 に追加](#追加チケット2026-10-18) した第3期の 27 件（A20〜A23、B10、C12、D13、D14、E15、F14、F15、G21〜G36。すべて `todo`。付録 `<ID>-appendix*.md` を伴う）があります。A17 は Phase 1・2 の実装・検証を終え、2026-10-15 に `done` として `_completed/` へ移動しました。G10 は 2026-10-13 に `done` になりました。第2期の 38 件は、D10・D11・G15・G19 を 2026-10-11 に実装して、すべて `done` になりました。[2026-10-07 に追加](#追加チケット2026-10-07) した D12 と B09 は 2026-10-12 に `done` になりました。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。現在直下には、[2026-10-13 に追加](#追加チケット2026-10-13) した A18（全 Phase 実装・ローカル検証済み、PR48 は未マージ）・A19（`todo`）と、[2026-10-18 に追加](#追加チケット2026-10-18) した第3期のうち 26 件（A20〜A23、B10、C12、D14、E15、F14、F15、G21〜G36。すべて `todo`。付録 `<ID>-appendix*.md` を伴う）があります。D13 は唯一の Phase の実装・検証を終え、2026-10-23 に `done` として付録とともに `_completed/` へ移動しました。A17 は Phase 1・2 の実装・検証を終え、2026-10-15 に `done` として `_completed/` へ移動しました。G10 は 2026-10-13 に `done` になりました。第2期の 38 件は、D10・D11・G15・G19 を 2026-10-11 に実装して、すべて `done` になりました。[2026-10-07 に追加](#追加チケット2026-10-07) した D12 と B09 は 2026-10-12 に `done` になりました。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -194,7 +194,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | D10 | [f16 のハードウェア演算経路](_completed/D10-f16-hardware.md) | P3 | M | D03 | done（Phase 1・2） |
 | D11 | [コンパイル時評価の拡張（const 関数・表の生成）](_completed/D11-const-evaluation.md) | P3 | L | D06, (A16) | done（Phase 1・2） |
 | D12 | [ランタイム IR と生成コードの intrinsic 宣言の重複の修正](_completed/D12-intrinsic-declaration-duplicates.md) | P1 | S | D04 | done |
-| D13 | [補間の穴の一時値（`{s.length}` の `E1013` の解消）](D13-interpolation-hole-temporaries.md) | P1 | S | – | todo（承認済み） |
+| D13 | [補間の穴の一時値（`{s.length}` の `E1013` の解消）](_completed/D13-interpolation-hole-temporaries.md) | P1 | S | – | done（2026-10-23。全 Phase・検証済み） |
 | D14 | [`Text` クラス（`String`／`Utf8String` の API の統一）](D14-text-class.md) | P2 | L | – | todo（承認済み） |
 
 ### E. モジュール・ホスト連携
@@ -271,7 +271,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G28 | [`tsuzuri kb` の照会と `impact`（facts の差分）](G28-kb-query-and-impact.md) | P1 | L | G27, G26, (G25) | todo（承認済み） |
 | G29 | [`tsuzuri mcp`（MCP サーバー）](G29-mcp-server.md) | P2 | L | (G21), (G23), (G26), (G27), (G28) | todo（承認済み） |
 | G30 | [図表の生成（Mermaid。モジュール・型・呼び出し・所有権・並行・レイアウト・状態遷移）](G30-diagrams.md) | P2 | L | G26, G27 | todo（承認済み） |
-| G31 | [AI 作業コスト指標（入力量と往復数を決定的に測る）](G31-ai-cost-metrics.md) | P1 | M | (G22), (G24), (G27) | todo（承認済み） |
+| G31 | [AI 作業コスト指標（入力量と往復数を決定的に測る）](_completed/G31-ai-cost-metrics.md) | P1 | M | (G21), (G22), (G24), (G27), (G28), (G29) | done（Phase 1〜3） |
 | G32 | [開発リポジトリの KB と `ticket-brief`（小さいモデルへ渡す文脈の自動生成）](G32-repo-kb-and-ticket-brief.md) | P0 | M | – | todo（承認済み） |
 | G33 | [仕様の規則 ID と適合性スイート](G33-spec-rule-ids-conformance.md) | P2 | L | – | todo（承認済み） |
 | G34 | [doc-test（`///` の例を実行する）と std の例](G34-doc-tests.md) | P2 | M | – | todo（承認済み） |
@@ -542,14 +542,14 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | [G28](G28-kb-query-and-impact.md) | 知識（照会） | `tsuzuri kb`（`show`・`brief`・`callers`・`callees`・`uses`・`search`・`tests-for`・`find`。1 項目 1〜3 行で、`--budget` で字数を抑える）と `kb impact`（2 つの KB・git の版の差を、署名・所有権の渡し方・効果・テストで分類し、回すべきテストを出す） | 承認済み |
 | [G29](G29-mcp-server.md) | 知識（接続口） | `tsuzuri mcp`: stdio の MCP サーバー（プロトコルは 2025-06-18 だけ）。読み取り専用で型つきの 11 ツール（`tz_check`・`tz_guide`・`tz_explain`・`tz_symbol`・`tz_brief`・`tz_search`・`tz_callers`・`tz_find`・`tz_impact`・`tz_fix_plan`・`tz_diagram`）。ファイルは書き換えず、`tz_fix_plan` は計画だけを返す | 承認済み |
 | [G30](G30-diagrams.md) | 知識（図） | `tsuzuri kb diagram KIND`: モジュールの依存・型・呼び出し・所有権・並行・メモリのレイアウト・状態遷移を、facts から決定的に Mermaid（と DOT）で出す（`views/*.mmd` も KB に置く）。ノード数の上限（`--max-nodes`）と、文書の Mermaid を検査する harness | 承認済み |
-| [G31](G31-ai-cost-metrics.md) | 計測 | `node benchmarks/ai/run.mjs`: LLM を呼ばず、模擬エージェントの規則で、作業が終わるまでに読む字数・ツール呼び出しの往復数・推定トークンを決定的に数える（6 型 37 件のタスク。戦略は grep・docs・診断 v1／v2・`fix`・KB）。基準値を `docs/ai-cost.md` に置き、G21〜G29 の効果を数字で言えるようにする | 承認済み |
+| [G31](_completed/G31-ai-cost-metrics.md) | 計測 | **Phase 1〜3 実装済み**。`node benchmarks/ai/run.mjs` が LLM・ネットワークなしで字数・往復数・推定トークンを決定的に数える（6 型 37 件）。grep・chunk・window・docs・診断 v1、外部実測の取り込み、静的サイズ上限と能力別アダプターを実装し、[基準値 104 行](../docs/ai-cost.md)を公開済み。G21・G27・G28・G29 本体は未実装で、ガイド・KB・MCP の実測行はない。診断 v2・`fix` もコンパイラの能力がなければ理由つきで省略し、改善値を捏造しない | 承認済み・実装済み（Phase 1〜3） |
 | [A20](A20-effect-summary-and-checked-attributes.md) | 検査付き属性 | `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` を署名の約束として検査する（`E1031`）。関数ごとの効果の要約（14 個の効果の閉じた語彙。呼び出しグラフ上の不動点）を `src/effects.rs` に作る。属性は IR を変えない表明。A19 が未実装なら、本チケットが `pure def` の基盤を先に作る（経路 B） | 承認済み |
 | [A21](A21-contracts-requires-ensures.md) | 契約 | `@requires`・`@ensures` を `def` の本体の先頭に書き、`--contracts off`／`check`／`test`／`prove` で、実行時検査（`run`・`test` の既定）・性質テスト（`Arbitrary`・`Gen.for_all_where`）・静的検証（外部ソルバー。`E1034`）につなぐ。契約を最適化の前提に使うモード（assume）は作らない | 承認済み |
 | [A22](A22-edition-2027-canonical-forms.md) | edition | 同じ意味の複数の書き方を edition `2027` の正準形に絞る: `for` の範囲は `..<`・`..=`、数値の接尾辞は型名、借用は `ref`／`ref mut`／`deref`、旧ラムダ `x -> e` は廃止。正準形は全 edition が受理し、2026 では `W1007`（既定は無効）、2027 では `E0004` で拒否する。`tsuzuri fix --edition 2027` が移行する。`..` の意味は edition で変えず、`LATEST` は `2026` のまま | 承認済み |
 | [A23](A23-integer-overflow-intent.md) | 数値 | `Int.wrapping_add`・`wrapping_sub`・`wrapping_mul`・`wrapping_neg`（折り返しの意図を明示）と、範囲の証明で溢れないと示せない整数演算を計装する `--overflow-report`（報告して、折り返した値で続ける。意味は変えない）。`tsuzuri test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告にとどめる） | 承認済み |
 | [B10](B10-trap-backtrace-and-domains.md) | 失敗の可観測性 | `E2005` にトラップのバックトレース（`at Main.level2 (./Main.tz:5:15)`。`llvm-symbolizer` で解決）と、配布した実行ファイルのクラッシュレポート（`TSUZURI_TRAP_REPORT`）を足す（Phase 1）。純粋関数の失敗を値として受ける `Domain`（E14 の追跡確保と `sigsetjmp` で、計算 1 件の失敗をプロセスを失わずに閉じ込める。Phase 2。`E1038`） | 承認済み |
 | [C12](C12-ordered-map-set-chunked.md) | 性能 | `Map`／`Set` の更新を、1 本のソート済み `Vec` の O(n) のずらし（ランダムな 10^5 件の挿入が約 1.3 秒、10^6 件が約 200 秒）から、チャンク化したソート配列で対数時間に近づける。Rust のコンパイラは変えず `std/Map.tz`・`std/Set.tz` を置き換える。README の「平衡二分探索木」の説明を実装に合わせる | 承認済み |
-| [D13](D13-interpolation-hole-temporaries.md) | 不具合 | `$"len = {s.length}"` が、利用者が書いていない一時値を指す `E1013`（`bind the temporary with 'let' first`）になる。補間の穴で一時値を受理する式の範囲を型付けした式で決め、`let` を書かずに通す。受理を増やすだけで、構文・診断コード・IR は変わらない | 承認済み |
+| [D13](_completed/D13-interpolation-hole-temporaries.md) | 不具合（修正済み） | 補間の穴を型付けした場所・参照・一時値に分類し、`$"len = {s.length}"`・文字列の添字・呼び出し結果の射影を受理する。明示の不正な借用と所有権の拒否規則は維持し、既存コーパス 114 件の IR は byte 一致 | done（2026-10-23） |
 | [D14](D14-text-class.md) | 標準ライブラリ | 型クラス `Text`（21 メソッド）を `String`／`Utf8String` の instance にして、同名の 20 関数を 1 つの名前で書けるようにする。ジェネリックな関数が両方の型を受けられ、単相化で直接呼び出しになる（ゼロコスト）。opt-in の `RegexText` も足す。既存の `String.*`・`Utf8String.*` は非推奨にしない | 承認済み |
 | [E15](E15-trust-boundary-and-capabilities.md) | 信頼 | `extern` の信頼を人が表明する `@trusted`（`E1037`・`W1010`・`--warn untrusted-extern`）、依存パッケージの権限を `Tsuzuri.toml` の `[capabilities]` で制限して検査する（`E1036`。語彙は `stdio`・`fs`・`env`・`time`・`random`・`process`・`net`・`gpu`・`ffi`）、`tsuzuri audit`。宣言がなければ何も変わらない（opt-in） | 承認済み |
 | [F14](F14-structural-performance-assertions.md) | 性能の保証 | 確保数をテストで確かめる `Alloc`（`snapshot`・`since`・`measure`）、`tsuzuri test` の自動の counting heap、`tsuzuri bench --allocs`、std の確保の契約 42 件。時間でなく構造（確保しない・償却で対数）を表明し、共有 CI に速度の閾値を置かない | 承認済み |

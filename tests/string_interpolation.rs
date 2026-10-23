@@ -1,4 +1,4 @@
-use tsuzuri::check::CheckedModule;
+use tsuzuri::check::{CheckedModule, TypedExpr, TypedExprKind};
 use tsuzuri::diagnostic::{Diagnostic, Span};
 use tsuzuri::formatter::format_source;
 use tsuzuri::lexer;
@@ -232,18 +232,23 @@ fn rejects_holes_without_display_or_with_conflicts() {
 
 #[test]
 fn emits_one_allocation_and_deterministic_ir() {
-    let source = "def f :: &string -> i64 -> string\nfn f s n = $\"a{s}b{n}c\"\nlet text = \"q\"\n(f (&text) 1).length";
-    let module = analyze(source).unwrap();
-    for wasm in [false, true] {
-        let ir = emit_utf16(&module, wasm);
-        let start = ir
-            .find("define internal %tz.string @tz.fn.Main.f(")
-            .expect("f is emitted");
-        let body = &ir[start..start + ir[start..].find("\n}\n").unwrap()];
-        assert_eq!(body.matches("@tz.string.allocate(").count(), 1, "{body}");
-        assert!(!body.contains("@tz.string.concat"), "{body}");
-        assert!(!body.contains("@tz.string.new"), "{body}");
-        assert_eq!(ir, emit_utf16(&module, wasm));
+    for source in [
+        "def f :: &string -> i64 -> string\nfn f s n = $\"a{s}b{n}c\"\nlet text = \"q\"\n(f (&text) 1).length",
+        "def f :: ref string -> ref [i64] -> string\nfn f s xs = $\"{s.length}|{xs.length}|{s[0]}\"\nlet text = \"q\"\nlet xs = [1, 2, 3]\n(f (ref text) (ref xs)).length",
+    ] {
+        let module = analyze(source).unwrap();
+        for wasm in [false, true] {
+            let ir = emit_utf16(&module, wasm);
+            let start = ir
+                .find("define internal %tz.string @tz.fn.Main.f(")
+                .expect("f is emitted");
+            let body = &ir[start..start + ir[start..].find("\n}\n").unwrap()];
+            assert_eq!(body.matches("@tz.string.allocate(").count(), 1, "{body}");
+            assert!(!body.contains("@tz.string.concat"), "{body}");
+            assert!(!body.contains("@tz.string.new"), "{body}");
+            assert!(!body.contains("@tz.alloc("), "{body}");
+            assert_eq!(ir, emit_utf16(&module, wasm));
+        }
     }
 }
 
@@ -530,4 +535,188 @@ fn format_holes_pass_the_spec_text_and_leave_padding_to_the_instance() {
     .unwrap();
     let ir = emit_utf16(&padded, false);
     assert!(ir.contains("call i64 @tz.format.fill."), "{ir}");
+}
+
+const HOLE_PRELUDE: &str = r#"record Pt { x: i64, name: string }
+record Line { a: Pt, b: Pt }
+record Pair { a: i64, b: i64 }
+record Res { id: i64, name: string }
+instance Drop<Res> {
+    fn drop _value = ()
+}
+const Nums: [i64] = [10, 20, 30]
+const Corner: Pair = Pair { a: 3, b: 4 }
+const Origin: Pt = Pt { x: 5, name: "origin" }
+const Words: [string] = ["a", "bb", "ccc"]
+const Title: string = "title"
+def id :: i64 -> i64
+fn id n = n
+def mk :: i64 -> Pt
+fn mk n = Pt { x: n, name: "seven" }
+def mkres :: i64 -> Res
+fn mkres n = Res { id: n, name: "res" }
+def make3 :: i64 -> [i64]
+fn make3 n = [n, n + 1, n + 2]
+def names :: unit -> [string]
+fn names _unit = ["a", "bb"]
+def mkref :: ref i64 -> ref i64
+fn mkref r = r
+let n: i64 = 5
+let i: i64 = 1
+let b = true
+let s = "abc"
+let u = u8"abc"
+let xs: [i64] = [1, 2, 3]
+let ws = ["a", "bb"]
+let ls: [| i64 |] = [| 1, 2 |]
+let fx: [i64; 3] = [1, 2, 3]
+let p = mk 7
+let ln = Line { a: mk 1, b: mk 2 }
+let r = ref n
+let rp = ref p
+let rx = ref xs
+let rs = ref s
+let part = ref xs[1..3]
+let mut m: i64 = 5
+"#;
+
+fn hole_source(holes: &str) -> String {
+    format!("{HOLE_PRELUDE}$\"{holes}\"\n")
+}
+
+fn hole_kinds(source: &str) -> Vec<&'static str> {
+    let module = analyze(source).unwrap_or_else(|error| {
+        panic!("{source}\n{}: {}", error.code, error.message);
+    });
+    let mut pending: Vec<&TypedExpr> = vec![&module.functions[module.entry.unwrap()].body];
+    while let Some(expression) = pending.pop() {
+        if let TypedExprKind::Interpolated(interpolation) = &expression.kind {
+            return interpolation
+                .holes
+                .iter()
+                .map(|hole| match &hole.operand.kind {
+                    TypedExprKind::Borrow(..) => "Borrow",
+                    TypedExprKind::BorrowOperand(_) => "BorrowOperand",
+                    _ => "other",
+                })
+                .collect();
+        }
+        pending.extend(expression.children());
+    }
+    panic!("{source}\nno interpolation in the entry");
+}
+
+fn all_holes_are(holes: &str, kind: &str) {
+    let kinds = hole_kinds(&hole_source(holes));
+    assert!(
+        !kinds.is_empty() && kinds.iter().all(|found| *found == kind),
+        "{holes}: {kinds:?}"
+    );
+}
+
+#[test]
+fn holes_that_are_places_stay_borrows() {
+    for holes in [
+        "{s}{n}",
+        "{p.name}{ln.a.x}",
+        "{xs[0]}{xs[i]}{ws[1]}{ls[0]}{fx[1]}",
+        "{rx[0]}",
+        "{deref r}{*r}{rp.x}{(deref rp).x}{deref (mkref r)}",
+        "{Nums[1]}{Nums[i]}{Corner.a}",
+        "{xs[xs.length - 1]}",
+        "{r}{rs}",
+        "{ref n}{&n}{ref mut m}",
+    ] {
+        all_holes_are(holes, "Borrow");
+    }
+}
+
+#[test]
+fn holes_that_are_not_places_are_temporaries() {
+    for holes in [
+        "{id n}{Array.length xs}{String.length s}",
+        "{n + 1}{-n}{n == 1}{!b}{n as i32}",
+        "{1}{\"abc\"}{'c'}{true}{1.5}{()}{[1, 2, 3]}",
+        "{if b then 1 else 2}",
+        "{s.length}{u.length}",
+        "{xs.length}{ls.length}{fx.length}",
+        "{rs.length}{rx.length}{part.length}",
+        "{p.name.length}{ln.a.name.length}{ws[1].length}",
+        "{s[0]}{rs[1]}{u[0]}",
+        "{(mk n).x}",
+        "{(mk n).name}{(mk n).name.length}",
+        "{(make3 n)[1]}",
+        "{(make3 n).length}{(names ()).length}{[1, 2, 3].length}",
+        "{(mkres n).id}",
+        "{Nums.length}{Words.length}{Title.length}",
+        "{Origin.x}{Origin.name}",
+        "{s.length:>5}{xs.length:x}{s.length:+}",
+    ] {
+        all_holes_are(holes, "BorrowOperand");
+    }
+}
+
+#[test]
+fn property_and_projection_holes_are_accepted() {
+    for holes in [
+        "{s.length}{u.length}{xs.length}{ls.length}{fx.length}{rs.length}{rx.length}{part.length}",
+        "{p.name.length}{ln.a.name.length}{ws[1].length}{s[0]}{rs[1]}{u[0]}",
+        "{(mk n).x}{(mk n).name}{(mk n).name.length}{(make3 n)[1]}",
+        "{(make3 n).length}{(names ()).length}{[1, 2, 3].length}{(mkres n).id}",
+        "{Nums.length}{Words.length}{Title.length}{Origin.x}{Origin.name}",
+        "{s.length:>5}|{xs.length:x}|{s.length:+}|{xs.length:*^7}",
+    ] {
+        accepts(&hole_source(holes));
+    }
+    accepts("let xs = [1, 2, 3]\nlet show = \\() -> $\"{xs.length}\"\nshow ()\n");
+    accepts("let s = \"abc\"\nu8$\"{s.length}|{s[1]}\"\n");
+    accepts("let s = \"abc\"\n$\"<{$\"[{s.length}]\"}>\"\n");
+}
+
+#[test]
+fn holes_that_move_out_of_a_temporary_are_rejected() {
+    rejects(&hole_source("{(names ())[0]}"), "E1012");
+    rejects(&hole_source("{Words[1]}"), "E1012");
+    rejects(&hole_source("{(mkres n).name}"), "E1012");
+    rejects(
+        "let b = true\nlet s = \"s\"\nlet t = \"t\"\nlet text = $\"{if b then s else t}\"\ns.length + text.length\n",
+        "E1012",
+    );
+}
+
+#[test]
+fn explicit_borrows_of_temporaries_stay_rejected() {
+    for holes in ["{ref (id n)}", "{ref s.length}", "{&s.length}"] {
+        rejects(&hole_source(holes), "E1013");
+    }
+    rejects(
+        "def id :: i64 -> i64 = \\n -> n\nlet r = ref (id 1)\nderef r",
+        "E1013",
+    );
+}
+
+#[test]
+fn a_temporary_hole_leaves_its_source_free() {
+    let poke = "def poke :: ref mut [i64] -> i64\nfn poke a =\n    Array.write 0 9 a\n    7\n";
+    accepts(&format!(
+        "{poke}let mut a = [1, 2, 3]\n$\"{{a.length}}{{poke (ref mut a)}}{{a[0]}}\"\n"
+    ));
+    rejects(
+        &format!("{poke}let mut a = [1, 2, 3]\n$\"{{a[0]}}{{poke (ref mut a)}}\"\n"),
+        "E1014",
+    );
+    let bump = "def bump :: ref mut i64 -> i64 = \\r ->\n    deref r = deref r + 1\n    deref r\n";
+    accepts(&format!(
+        "{bump}let mut m: i64 = 5\n$\"{{m + 0}}{{bump (ref mut m)}}{{m}}\"\n"
+    ));
+    rejects(
+        &format!("{bump}let mut m: i64 = 5\n$\"{{m}}{{bump (ref mut m)}}\"\n"),
+        "E1014",
+    );
+}
+
+#[test]
+fn format_specs_apply_to_property_holes() {
+    accepts("let s = \"abc\"\nlet xs = [1, 2, 3]\n$\"{s.length:x}|{xs.length:>5}|{s.length:+}\"\n");
+    rejects("let s = \"abc\"\n$\"{s.length:.2}\"\n", "E1003");
 }

@@ -1,0 +1,35 @@
+def record_hit :: ref mut i64 -> unit = \counter ->
+    deref counter = deref counter + 1
+
+def clamp :: i64 -> i64 -> i64 -> i64 = \low high value ->
+    if value < low then low
+    elif value > high then high
+    else value
+
+def percent :: i64 -> i64 -> i64 = \part whole ->
+    if whole == 0 then 0 else part * 100 / whole
+
+def bar :: i64 -> string = \percent_value ->
+    let filled = clamp 0 10 (percent_value / 10)
+    let mut text = ""
+    for i in 1 .. 10 do
+        text = text + (if i <= filled then "#" else ".")
+    text
+
+def summarize :: i64 -> i64 -> string = \hits misses ->
+    let rate = percent hits (hits + misses)
+    $"{bar rate} {rate}%"
+
+def run :: unit -> string = \() ->
+    let mut hits = 0
+    let mut misses = 0
+    let watcher = ref mut hits
+    misses = misses + 3
+    let snapshot = hits
+    record_hit watcher
+    record_hit watcher
+    summarize snapshot misses
+
+def main :: unit -> i32 = \() ->
+    do! IO.writeln (run ())
+    0

@@ -922,11 +922,34 @@ tsuzuri lsp
 
 ## 検証と性能測定
 
+G31 の着手時検証（基準 `41f80bc7`）: 旧付録の shop 全文を未変更のコンパイラで `check`・`test --list` に通し、無診断・16 テストと 5183 字（941/460/770/1394/662/956 字）を再現しました。D-59 の対象最後の順序を確認したところ、既存の `Array.map callback subject` はそのまま適合し、shop と診断コーパスの行・文字を変更する必要はありません。タスク D-02 だけは旧 `Array.get`（`Maybe` を返す）から同じ問いに答える現在の `Array.try_item` に改名します（`get` は現在トラップする取得）。shop の独立したシェル計算による golden は変更せず使います。std・文書の量は現 HEAD から測り直し、ハーネスの実出力を golden に写しません。
+同じ基準で B-04 の `Array.swap_in` 呼び出し元は、旧 4 関数に Array の reverse/shuffle/sample と Vec の 6 関数が加わった 15 関数です。ソースの `fn` と参照行を独立した `awk` で照合し、問いは変えず `expect` を更新しました。残る B/F の 11 タスクは旧一覧と一致します。
+
 Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため、網羅的なテストスイートとマルチ言語ベンチマークを備えています。
+
+開発用のリポジトリ KB（G32）は、現在の作業ツリーの件数・規約を索引にします。起票時の件数は固定せず、
+Markdown の節は「次の同じ以下のレベルの見出しの直前まで」という仕様に従います
+（付録の H1 の終了行の例より、この規則を優先します）。言語・ABI・生成 IR は変更しません。
+優先度セルの `P1（D-50 の表）` のような注記も受理し、優先度は `P1` として索引にします。
+第3期で増えた Phase ごとの依存は文章だけから強弱を推測せず、
+[_features/README.md](_features/README.md) の依存関係図に明示された辺を優先して補います。
+セルの原文も索引に残すため、Phase ごとの条件は `deps_raw` で確認できます。
+`section <ID> commands` は関連する検証コマンドを、`section <ID> symbols` は関連ファイルから選んだ公開宣言を省略せず表示します。
+子プロセス専用のヘルパーと、比較対象の旧ランタイムや明示的なワークロードを必要とする手動比較ランナーには、自動実行コマンドを生成しません。
+検証スイートの `cases:` と `get cases()` はどちらも静的に検出し、索引のために JavaScript を実行しません。
+8 MiB を超える入力は索引だけでなく、参照検査・公開宣言の照会・brief でも読み込み対象から除外します。必須の GUIDE 入力が過大な場合はエラーで止め、規則を黙って省いた brief は生成しません。
+索引と入力ハッシュは同じ読取済み内容・採否を使います。読取後にサイズが 8 MiB 境界をまたいでもハッシュだけを切り替えず、次の鮮度検査で変更を検出します。
+`--out` で選んだ出力ディレクトリとロックは入力から除外し、再構築ではプロセスごとに独立した一時ファイルを使います。
+構築・鮮度検査・照会の読み取りは、出力の隣の `<out>.repo-kb-lock/` で世代全体を直列化し、異なる入力の索引を混在させません。
+公開前に旧 manifest を無効化し、新 manifest を最後に公開するので、書き込み中断後に部分的な索引を fresh と判断しません。
+2 分以内にロックを取得できなければエラーになります。強制終了で残ったロックは `owner` に記録された PID の停止を確認してから除去し、再実行してください。
+JSONL を外部から直接読む場合は構築完了後に読み、並行する照会にはツールの読み取り API を使います。
 
 ### 何を回すか
 
 変更に見合う範囲だけを回します。作業中は T0 と T1 を繰り返し、完了を報告する前に T2 を 1 回回し、T3 は CI に任せます。
+
+開発時の読み替え（D13）: 古いチケットの例より、現在の対象を最後に取る API（D-59）を優先します（`Array.write 0 9 a`）。検証も現在の T0〜T3 に従い、dev バイナリと共有スロットを使い、stack の上限は増やしません。作業用の出力は `target/scratch/` に置きます。
 
 | 段 | 回すもの | 目安 |
 | --- | --- | --- |
@@ -1062,6 +1085,7 @@ node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB
 node tests/debugger_static.mjs target/release/tsuzuri   # PM02: lldb が必要（TSUZURI_LLDB で指定できる）。プロセスを起動せず、-g の実行ファイルの型を lldb に読ませて、関数値と Task（descriptor と environment の 2 メンバー）を formatter の is_function が見分けること、同じ名前のフィールドを持つ record（古い 4 欄の形、descriptor が整数や ref の record）は見分けないこと、descriptor が closure.descriptor（code・clone・drop）を指すことを確かめる
 node tests/frontend_cache.mjs target/release/tsuzuri
 node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
+node tests/ai_cost.mjs target/release/tsuzuri   # G31: AI 作業コストの定義・独立 golden・導出・診断・外部実測・静的サイズ・KB/MCP アダプター。LLM なしで決定的。結果は docs/ai-cost.md
 node tests/watch.mjs target/release/tsuzuri   # PB06: tsuzuri watch の各回の出力が単独のコマンドと byte 単位で同じこと、同じ長さ・同じ更新時刻の書き換え・追加・削除・新しいディレクトリの検出、touch で実行しないこと、--json の状態行、build・test、コマンド名のない引数の E2000、差し替えたコンパイラで次の回を始めずに止まること（待っているあいだも。Windows は実行中のファイルを差し替えられないので除く）、TSUZURI_TIME_PASSES が回ごとの報告であること（Windows でも動く）
 node tests/server.mjs target/release/tsuzuri   # PB06: tsuzuri serve（Unix だけ。Windows では serve が E2000 であることの確認）。サーバーが実行した check・build の出力と成果物が --no-server と同じこと（ソースの状態ごと、覚えたあとの編集を含む）、環境・作業ディレクトリ・コンパイラ・ルート・未対応のコマンド・protocol の断り、並行する要求、サーバーでないもの・残った socket・共有されたディレクトリでの黙った fallback、二重起動、実行中の status・--stop と去ったクライアントの要求の扱い（Clang を止めて確かめる）、idle・差し替えたコンパイラでの終了、TSUZURI_TIME_PASSES、読まれない標準エラーの pipe に何千もの断りを流しても答えと --stop が止まらないこと、serve の引数の E2000。ソケットのパス長のため TMPDIR は短くする（macOS で 103 byte まで）
 
@@ -1080,6 +1104,11 @@ node tests/gpu_vulkan_language.mjs target/release/tsuzuri   # 言語としての
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）
 node scripts/check-docs.mjs
+
+# 開発リポジトリの索引と GUIDE-LITE の参照検査（Node 20 以降）
+node tests/repo_kb.mjs
+node scripts/check-guide-lite.mjs
+node scripts/repo-kb.mjs build
 ```
 
 機能を追加・変更・修正・削除したときは、同じ変更で [言語リファレンス](_tsuzuri/language-reference/index.md) の関連ページも最新にします（手順は [_features/GUIDE.md §8](_features/GUIDE.md#8-ドキュメント更新規約)）。

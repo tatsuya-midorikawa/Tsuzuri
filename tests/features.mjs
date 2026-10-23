@@ -923,6 +923,35 @@ const suites = {
       assert.doesNotMatch(ir, /@printf|@snprintf|@strtod|@strtof/);
     },
   },
+  interpolation_temporaries: {
+    cases: (() => {
+      const ns = [-5n, 0n, 41n], table = [10n, 20n, 30n];
+      const digests = (name, text) => ns.map((n) => [name, [n], interpolationDigest(text(n))]);
+      return [
+        ...digests("length_holes", (n) => `3|3|3|3|2|${n}`),
+        ...digests("other_lengths", () => "5|6"),
+        ...digests("string_index", (n) => `97|99|${n}`),
+        ...digests("field_of_call", (n) => `${n}|seven|5`),
+        ...digests("index_of_call", (n) => `${n + 1n}|3|2`),
+        ...digests("property_of_place", (n) => `5|${n}`),
+        ...digests("property_specs", () => `${interpolationPad("4", 5, "right")}|11|+17|10001|${interpolationPad("4", 7, "center", "*")}`),
+        ...[0n, 1n, 2n].map((i) => ["constant_parts", [i], interpolationDigest(`20|3|3|5|origin|${table[Number(i)]}`)]),
+        ...digests("snapshot_holes", (n) => `${n}${n + 1n}${n + 1n}|379`),
+        ...digests("drop_temporary", (n) => `${n}`),
+        ["evaluation_order", [], 123003n], ["utf8_holes", [], 4n],
+        ["nested_holes", [], interpolationDigest("<[3]>")],
+        ...digests("captured_holes", (n) => `3:${n}`),
+        ...[0n, 1n, 1000n].map((count) => ["owned_loop", [count], (() => {
+          let total = 0n;
+          for (let index = 0n; index < count; index++) total += BigInt(`${index}:2:seven`.length);
+          return total;
+        })()]),
+      ];
+    })(),
+    inspect(ir) {
+      assert.doesNotMatch(ir, /@printf|@snprintf|@strtod|@strtof/);
+    },
+  },
   hierarchical: {
     cases: [
       ["distance_sum", [3n, 4n, 5n, 12n], 18n],

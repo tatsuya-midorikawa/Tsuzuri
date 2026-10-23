@@ -4,13 +4,13 @@
 | --- | --- |
 | ID | G31 |
 | 優先度 | P1 |
-| 規模 | 全体 L 寄りの M（D-50 の表は M。Phase 1 M、Phase 2 S、Phase 3 M。D-50 の M は Phase 1〜2 の規模）。Phase ごとに別の PR にする |
-| 依存 | なし（Phase 1・2 は HEAD の `tsuzuri check`・`tsuzuri test --list` を呼ぶだけ）。**弱い依存**（あれば測る行が増え、なければその行だけを出さない）: Phase 2 の `diag-v2` は [G22](G22-diagnostic-v2.md) の関連位置、`diag-fix` は [G24](G24-tsuzuri-fix.md) Phase 1。Phase 3 の静的サイズは [G21](G21-ai-guide-pack.md)・[G27](G27-build-time-kb.md)・G28、`kb` 方式は G27 Phase 2 と G28 Phase 1、MCP の行は [G29](G29-mcp-server.md) Phase 1 |
+| 規模 | 全体 L 寄りの M（D-50 の表は M。Phase 1 M、Phase 2 S、Phase 3 M。D-50 の M は Phase 1〜2 の規模）。当初の Phase 別 PR 案に対し、全 Phase の承認に従って PR #43 で一括実装 |
+| 依存 | なし（Phase 1・2 は HEAD の `tsuzuri check`・`tsuzuri test --list` を呼ぶだけ）。**弱い依存**（あれば測る行が増え、なければその行だけを出さない）: Phase 2 の `diag-v2` は [G22](../G22-diagnostic-v2.md) の関連位置、`diag-fix` は [G24](../G24-tsuzuri-fix.md) Phase 1。Phase 3 の静的サイズは [G21](../G21-ai-guide-pack.md)・[G27](../G27-build-time-kb.md)・G28、`kb` 方式は G27 Phase 2 と G28 Phase 1、MCP の行は [G29](../G29-mcp-server.md) Phase 1 |
 | 後続 | G21・G22・G24・G27・G28・G29（各チケットの「AI の作業コストが下がる」という主張を、`docs/ai-cost.md` の数値で裏づける）。G32 の `brief` を入力量に使う案は取り込まない（「対象外」） |
-| 状態 | todo |
+| 状態 | done（Phase 1〜3。[PR #43](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/43)。実装 head `5097b87` の CI・3 環境の targets は成功、Copilot は actionable な指摘なし。G21・G27・G28・G29 本体は未実装） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` の 41 行の削除だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
-| 改善する劣位 | 第3期の AI 向けの改善（ガイド G21・診断 v2 G22・`fix` G24・KB G27/G28・MCP G29）は、どれも「AI が読む量と往復を減らす」ことを理由に作る。だが HEAD には、AI の作業コストを測る仕組みも基準値もない（`benchmarks/ai` はなく、`docs/benchmarks.md` は実行速度の記録で入力量を測らない）。基準値がなければ、改善か退行かを言えない。D-50 の調査結論 (1)（事実を診断・ツールに出さない）と (4)（文書が大きすぎる）の効果を、決定的な量で測れるようにする |
+| 改善した劣位 | 着手前の基準 `41f80bc7` には、AI の作業コストを測る仕組みも基準値もなかった。現在は `benchmarks/ai` の決定的な計測器と [104 行の基準値](../../docs/ai-cost.md)を提供する。ガイド G21・診断 v2 G22・`fix` G24・KB G27/G28・MCP G29 の接続口は能力別に有効にするが、それらのコンパイラ機能自体が実装済みという意味ではない |
 | 手本にする既存実装 | `benchmarks/report.mjs` の `updateSummary`（マーカーの間だけを書き換える）・`writeAtomically`（一時ファイル → rename。export 済みなので import する）。`benchmarks/metrics.mjs` の JSON Lines の書き方（`schema` の定数。ただし日時・ホストは入れない）。`benchmarks/run-frontend.mjs`（`--out` を要求し、コンパイラを子プロセスで呼ぶ流儀）。`tests/benchmark_report.mjs`（assert だけの Node テスト。CI は `.github/workflows/targets.yml` の段 `Benchmark correctness and metric records` で実行）。`scripts/check-docs.mjs`（Markdown の走査） |
 | 主な影響ファイル | Phase 1（すべて新規）: `benchmarks/ai/run.mjs`、`benchmarks/ai/lib/{measure,corpus,tasks,derive,strategies,report}.mjs`、`benchmarks/ai/tasks/{a-definition,b-callers,d-type-search,e-spec,f-impact}.json`、`benchmarks/ai/corpus/shop/*.tz`（6）、`tests/ai_cost.mjs`、`docs/ai-cost.md`。変更: `.github/workflows/targets.yml`（1 行）、`README.md`・`docs/architecture.md`・`docs/benchmarks.md`（各 1 行）。Phase 2: 新規 `benchmarks/ai/tasks/c-diagnostic.json`・`benchmarks/ai/corpus/diag/c01`〜`c07`（各 `Main.tz`）。変更 `lib/strategies.mjs`・`lib/tasks.mjs`・`run.mjs`・`tests/ai_cost.mjs`。Phase 3: 新規 `lib/{external,static,kb,mcp}.mjs`。変更 `run.mjs`・`lib/report.mjs`・`docs/ai-cost.md`・`tests/ai_cost.mjs` |
 
@@ -505,7 +505,7 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 - **`docs/ai-cost.md`（新規。日本語）**: [付録 H](G31-appendix.md#付録-h-docsai-costmd-の骨格)の骨格（目的・測る量・タスクと戦略・結果（マーカーの間。`report --publish` が書く）・再現手順・限界の 6 項目）を置き、Phase 2・3 の戦略が加わったら表と説明を足す。**効果の主張は `baseline-grep-window` との比**と、限界の 6 項目は消さない。
 - **`README.md`**: 検証コマンドの列で `node tests/parallel_frontend.mjs target/release/tsuzuri …` の行の直後に `node tests/ai_cost.mjs target/release/tsuzuri   # AI 作業コスト指標（G31）。模擬エージェントの読む量・往復数の定義、shop の golden、導出、診断タスク、レポートの書式。LLM を呼ばず決定的。結果は docs/ai-cost.md` を足す。
 - **`docs/architecture.md`**: 「検証コマンド」の `sh` ブロックの `node tests/host_bindings.mjs target/release/tsuzuri` の行の直後に `node tests/ai_cost.mjs target/release/tsuzuri` を足す。
-- **`docs/benchmarks.md`**: 冒頭の説明（最初の `###` 見出しの前）の末尾に 1 段落「AI の作業コスト（入力量と往復数。速度ではない）は [ai-cost.md](ai-cost.md)。」を足す。
+- **`docs/benchmarks.md`**: 冒頭の説明（最初の `###` 見出しの前）の末尾に 1 段落 `AI の作業コスト（入力量と往復数。速度ではない）は [ai-cost.md](ai-cost.md)。` を足す。
 - **`.github/workflows/targets.yml`**: 手順 10。
 - **更新しない**: `_tsuzuri/language-reference/`・`docs/language.md`・`docs/stability.md`（コンパイラの利用者向けの挙動が変わらない開発用ツール。PR の説明に「言語リファレンスの更新は不要」と書く）。`_features/README.md`・GUIDE の台帳は統括者が更新する（完了報告に新しい名前を列挙する）。
 - 検証: `node tests/ai_cost.mjs target/release/tsuzuri`。`docs/ai-cost.md` は `_tsuzuri` の外なので `scripts/check-docs.mjs` の対象外（コード例を置かない）。
@@ -569,6 +569,23 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 - **D13: KB 方式は文字列の一致で `complete` を近似し、ID は `kb export --symbols` で解決する（数えない）。MCP は `tools/list` の固定費だけ。** 理由: G28 の書式が未確定。MCP のツールの `text` は CLI と同じ（G29）。
 - **D14: Node 20 以降・パッケージなし・Windows 対象外。** 理由: README の要件。CI は Linux・macOS。パスと CRLF の差を持ち込まない。
 - **D15: 外部エージェントの結果は `tz-ai-external/1` の JSON Lines を人手で置く。`variant` は自由な条件名。** 理由: 実測が要る効果（ガイドで最初に書けたか）を同じ表で比べる。却下: 自動収集（鍵とネットワークが要る）。
+
+## 実装と検証（2026-10-23）
+
+- 人間の全 Phase 承認に従い、Phase 1〜3 を同じ隔離 worktree・ブランチで実装しました。Node 20.19.6、外部パッケージ・LLM・ネットワーク呼び出しなしです。`src/`・`std/`・既存レポート helper は変更していません。既存テストの例外は、後述する承認済みの formatter の負例分類だけです。
+- 着手前に README へ D-59 と旧コーパスの照合をコミットしました。shop・diag は付録 C と byte 単位で同一、shop は 5183 字・16 テストです。D-02 の `get` → `try_item` と B-04 の現行 15 呼び出し元だけを、署名・独立した awk で確認してタスクに反映しました。ほかの B/F 11 件は元の期待値のままです。
+- 手順 3 のテストを先に実行し、`ERR_MODULE_NOT_FOUND` で失敗することを確認してから計測コードを実装しました。`node scripts/slot.mjs -- node tests/ai_cost.mjs <既存 dev compiler>` は **40 passed、0 failed、5 skipped**（実コンパイラにない G22/G24/G21・KB/MCP）。未実装入口の成功経路もローカル子プロセスの fixture で検査しました。fixture の値を実測には含めません。
+- 独立した付録 D の shop golden 27 組が全一致し、`sh benchmarks/ai/golden.sh` の grep/sort/wc による 9 件の検算も一致しました。コンパイラの `check`・`test --list`、診断 7 件のコード・行・正誤パッチ、修復の calls/rounds を検査しました。
+- `run` は基準コンパイラで 104 行（Phase 1 の 97 行＋C の 7 行）です。`verify --strict` は **37 tasks、0 failures、0 drift**。異なる出力先への 2 回の実行で results/static/meta の byte 一致と work の消去を検査しました。
+- 公開レポートも 2 回生成して byte 一致を確認しました。変更文書のリンク・アンカー 6 件が成功し、既存の `check-docs.mjs`（検査対象は `_tsuzuri/` のみ）で関連する引数順序のページを検査しました: **1 ページ・41 リンク・3 例・native O0/O3 の 6 実行が成功**。コンパイラを走らせる最終文書検証には隔離した `TSUZURI_CACHE_DIR` を使い、共有キャッシュは変更・削除していません。
+- Phase 3 の外部 JSONL の検証・表、10 種の静的成果物の計測・サイズ上限、KB の事前構築・ID 解決・1/2 往復、MCP initialize/tools/list と終了処理を実装しました。G21/G27/G28/G29 自体は実装していません。不在の能力は測定値を捏造せず、明示した不在戦略はエラーです。
+- PR #43 の Copilot レビューの 7 指摘を修正しました: KB コピーの basename 保持、正しいプロジェクトでの能力検出、falsy な needs の拒否、ファイル欠落時の論理パスによる決定的な理由、制御した文書 fixture、スキップ数に応じた件数検査、CI では drift を許す通常 verify です。各回帰ケースと深い MCP 応答の安全な拒否を追加し、再び **40 passed・0 failed・5 skipped** を確認しました。固定 golden は未変更です。
+- 再レビューの KB 2 件も修正しました。型別の不在を戦略全体の不在と混同しないテストと、build/export 失敗時にも短い ID で照会し、成功した baseline と不完全な KB 行を保存する回帰テストを追加しました。export 成功時の ID 欠落・曖昧性は引き続きエラーです。export 失敗の回帰は修正前に `0 matches` で失敗し、修正後の全体は **40 passed・0 failed・5 skipped** です。
+- CI `39968979163` は Rust **1717 passed・1 failed・2 skipped** で、唯一の失敗は formatter の成功コーパス走査が意図した構文エラー `diag/c04/Main.tz` を読んだことでした。コーディネーターの明示承認で、当初の「既存テストを変更しない」の例外として `tests/formatter.rs` のみを調整しました。負例の `benchmarks/ai/corpus/diag` だけを除外し、shop の全 6 ファイルが引き続き検査される件数アサートを加えました。コンパイラ・13 コーパスファイル・golden は未変更です。
+- このアサートの負例検証では、一時的に AI コーパス全体を除外すると **0 != 6** で失敗しました。正しい `diag` だけの除外に戻して、formatter **19 passed**（`--test-threads 2`）、fmt、clippy が成功しました。隔離 worktree で作った dev binary でも Node 全体は **40 passed・0 failed・5 skipped**、変更文書の 6 リンク・アンカーも成功です。
+- 統括者の同一タスク追加指示（2026-10-24）で、完了カタログの G31 2 行を Phase 1〜3 の実装済みに更新しました。カタログの運用規則に従って本チケットと付録を `_completed/` へ移し、参照リンクを更新しました。文書 5 ページの 243 ローカルリンク・アンカーを検査しました（`check-docs.mjs` の対象外なので同じリンク・見出し規則を使用）。付録 B・C・D と生成した測定表の byte 一致、実行コードの無差分を確認し、Rust・機能テストの再実行はしていません。
+- 文書: README、docs/ai-cost.md、docs/architecture.md、docs/benchmarks.md、付録の現行 API 追補。targets.yml の既存ベンチマーク検証に 1 行を追加しました。言語利用者の挙動は変わらないため、言語リファレンス・docs/language.md の更新は不要です。計測自体に Rust の再ビルドは不要ですが、承認済みの formatter テスト変更は隔離 worktree でビルド・検証します。main の基準 CI `39954858404`（`41f80bc7`）は成功でした。
+- 主なファイル: benchmarks/ai/run.mjs、lib/{measure,corpus,tasks,derive,strategies,report,external,static,kb,mcp}.mjs、tasks/*.json（6）、corpus/shop/*.tz（6）・corpus/diag/c0*/Main.tz（7）、golden.sh、tests/ai_cost.mjs と上記文書です。
 
 ## 付録
 

@@ -23,7 +23,7 @@
 
 - [リテラル](./literals-and-strings/literals.md)
 - [文字列](./literals-and-strings/strings.md)
-- [補間文字列](./literals-and-strings/interpolated-strings.md)
+- [補間文字列](./literals-and-strings/interpolated-strings.md) — 場所・参照・一時値の穴と書式指定
 
 #### 値と関数
 

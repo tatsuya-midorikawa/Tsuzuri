@@ -426,7 +426,7 @@ fn fingerprints_ignore_positions_but_preserve_program_structure() {
 #[test]
 fn corpus_is_idempotent_and_semantically_unchanged() {
     use std::{fs, path::Path};
-    fn visit(path: &Path, count: &mut usize) {
+    fn visit(path: &Path, count: &mut usize, shop_count: &mut usize) {
         let mut entries: Vec<_> = fs::read_dir(path)
             .unwrap()
             .map(|entry| entry.unwrap())
@@ -435,7 +435,10 @@ fn corpus_is_idempotent_and_semantically_unchanged() {
         for entry in entries {
             let path = entry.path();
             if entry.file_type().unwrap().is_dir() {
-                visit(&path, count);
+                // Negative diagnostics deliberately include syntax errors.
+                if !path.ends_with("benchmarks/ai/corpus/diag") {
+                    visit(&path, count, shop_count);
+                }
             } else if let Some(kind) = path
                 .extension()
                 .and_then(|extension| extension.to_str())
@@ -454,17 +457,29 @@ fn corpus_is_idempotent_and_semantically_unchanged() {
                     path.display()
                 );
                 *count += 1;
+                if path
+                    .parent()
+                    .is_some_and(|parent| parent.ends_with("benchmarks/ai/corpus/shop"))
+                {
+                    *shop_count += 1;
+                }
             }
         }
     }
     let mut count = 0;
+    let mut shop_count = 0;
     for directory in ["std", "tests/fixtures", "examples", "benchmarks"] {
         visit(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join(directory),
             &mut count,
+            &mut shop_count,
         );
     }
     assert!(count > 50, "{count} source files");
+    assert_eq!(
+        shop_count, 6,
+        "all positive AI benchmark sources are covered"
+    );
 }
 
 #[test]

@@ -926,7 +926,7 @@ Hash の canonical stream 仕様および文字型ごとの引用規則の詳細
 ### 文字列補間と書式指定
 
 `$"a{x}b"` および `u8$"..."` 形式のリテラルは、字句解析器によって `InterpolationStart`、`InterpolationMiddle`、`InterpolationEnd` の各トークンに分割され、構文解析器によって `ExprKind::Interpolated`（固定文字列片と `InterpolationHole { value, spec }` の列）へと変換されます。字句解析器は開かれた埋め込み穴を `holes` スタック（`OpenHole { utf8, depth, start }`）で管理し、括弧のネスト深度が 0 の位置にある `}` または `:` によって穴を閉じます。埋め込み穴は同一行内に収める必要があり、穴の内部にコメントを記述することはできません。埋め込み穴を含まない文字列リテラルは通常の文字列トークンとして維持されます。リソース制限として、1 つのリテラルあたり最大 1024 個の穴、幅と精度は最大 4096、ネスト深度はパーサーの標準上限が適用されます。
-型検査（`interpolation`／`interpolation_hole`）は `TypedExprKind::Interpolated(TypedInterpolation { texts, holes })` を構築し、型はリテラルのプレフィックスに応じて `string` または `utf8string` となります。`TypedHole.operand` は常に共有借用 `ref U` となります。評価場所（変数名、フィールド、添字、参照外し）は `ref` 引数と同様に借用され、既存の参照はそのまま再利用され、それ以外の評価結果は `BorrowOperand` による一時変数として確保された後に文字列結合完了時点で安全に drop されます（引数のない関数呼び出しや単独の union case のように値を生成する式も一時値として扱われます）。穴の式は左から右へと順次 1 回ずつ評価され、値の所有権を消費することはありません。適用されるメソッドは原則として `Display.display`（カスタム書式の場合は `Format.format`）であり、リテラル自身と同一の文字列型の穴や、符号・精度・型指定を持つ数値の穴に対してはメソッド呼び出しを行いません。
+型検査（`interpolation`／`interpolation_hole`）は `TypedExprKind::Interpolated(TypedInterpolation { texts, holes })` を構築し、型はリテラルのプレフィックスに応じて `string` または `utf8string` となります。`TypedHole.operand` は常に共有借用 `ref U` となります。穴が場所かどうかは書き方ではなく型付けした式で決まります（`hole_operand`・`hole_place`。`TypedExpr::is_place` と、平たい定数の一部 `C[i]`・`C.field`）。場所は `ref` 引数と同様に借用され、場所でない参照はそのまま再利用（排他の参照は共有に再借用）され、それ以外の評価結果は `BorrowOperand` による stack の slot に置かれ、文字列結合完了時点で安全に drop されます（`.length`・文字列の添字・呼び出し結果のフィールドや添字、引数のない関数呼び出しや単独の union case のように値を生成する式も一時値として扱われます）。平たい定数の一部は `constant_part` が見分け、fold 後の静的データの借用を保ちます。穴の式は左から右へと順次 1 回ずつ評価され、表示自体は値の所有権を消費しません（一時値の評価中のムーブには通常の所有権規則が適用されます）。適用されるメソッドは原則として `Display.display`（カスタム書式の場合は `Format.format`）であり、リテラル自身と同一の文字列型の穴や、符号・精度・型指定を持つ数値の穴に対してはメソッド呼び出しを行いません。
 LLVM コード生成（`llvm_display.rs`）では、すべての穴を左から右へ評価して `Piece`（データポインタ、長さ、所有者、ASCII 判定、パディング情報）を構築し、リテラルの固定長、各穴の展開長、およびフィル文字の必要数を合算して、最終結果を `@tz.string.allocate` または `@tz.utf8string.allocate` によって 1 回のメモリアロケーションで確保します。固定文字列片はメモリコピーで書き込まれ、穴の内容は各値の表示バッファから直接コピーされます（リテラルと同一型の文字列の穴は Display を経由せず元のバッファを直接読み込み、数値の ASCII 出力は UTF-16 結果の場合に `@tz.format.widen` で拡張しながらコピーします）。結合完了後、すべての一時値が解放されます。`TSUZURI_STRINGS=compact` の `string` の補間は `compact_interpolation` が書き、結果の形式（Latin-1 か UTF-16）を実行時に穴の形式から決めて `@tz.format.allocate`・`put`・`fill` で書きます（確保は 1 回で、数値の ASCII 出力は広げずに byte のままコピーします）。`u8$` リテラルにおいては、Display が生成した UTF-16 の結果を `@tz.utf8string.from_string` で UTF-8 へ変換し（孤立サロゲートを検出した場合はトラップ）、変換元のバッファを解放します。
 数値の書式指定処理は、ホスト環境の `printf` を使用せず、`src/runtime/numeric.c` の `tz_soft_format_spec` が多倍長の係数から直接最近接偶数丸めを行って ASCII 文字列を出力します（`numeric.ll` は `python3 src/runtime/generate.py`、`math.ll` は `python3 src/runtime/generate_math.py` で再生成します）。整数（`i8`〜`i128`、`i8u`〜`i128u`）の書式指定は `tz_soft_format_spec` ではなく、`runtime/integer.ll` の `tz.integer.spec`／`tz.integer.spec128` が同じ `flags` を受けて書きます（`f`・`e` と精度は整数には指定できません）。バッファは 160 byte で、テキストは末尾から前へ書くので、`number_piece` は末尾のアドレスを渡し、返った長さから先頭を求めます。`flags` は bit 0 で `+` 符号を、bit 4 以降で出力スタイル（0: デフォルト、1: `f`、2: `e`、3: `x`、4: `X`、5: `o`、6: `b`）を表現します。作業バッファには、`format_capacity` が型と精度から算出するサイズ（512 バイト以下）のエントリー `alloca`、または `@tz.alloc` で確保されたヒープ領域が使用されます。パディング用の補助関数群は `runtime/format.ll` に配置され（スカラー数計数の `@tz.format.scalars.utf16`／`utf8`、フィル書き込みの `@tz.format.fill.u16`／`u8`、ASCII 拡張の `@tz.format.widen`）、前後のフィル数は LLVM が穴ごとに正確に計算します。幅のカウントは Unicode スカラー数に基づいて行われます（サロゲートペアは 1、孤立サロゲートも 1、数値の ASCII は文字数そのもの）。余白の不足分は、デフォルトで数値は左揃え（右パディング）・その他は右揃え（左パディング）となり、中央揃え `^` は不足分の半分（端数切り捨て）を前方に配置します。
 
@@ -1622,6 +1622,23 @@ GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O�
 
 ## 開発と検証
 
+### 開発リポジトリの索引（G32）
+
+`scripts/repo-kb.mjs` は Node 20 以降と git だけで、チケット・決定・責務表・診断の発行箇所・テスト・文書を
+`target/repo-kb/` に索引化します。Rust 側の Facts／KB とは別の開発用ツールです。
+入力ハッシュで鮮度を確認し、照会の前に古い索引を作り直します。出力の隣のロックで構築・鮮度検査・読み取りを直列化し、
+全索引と manifest が同じ入力の世代になるように公開します。ロック自身と出力は入力ハッシュに含めません。
+`brief <ID>` は指定した Phase の文脈を
+既定 24,000 コードポイント以内に収め、削った部分の取得コマンドを残します。
+見出し・Rust の文字列とテスト領域は反復走査し、出力に実行日時やホスト固有の絶対パスを加えません。
+`check-guide-lite.mjs` は参照の存在を検査するだけで、文書を書き換えません。
+
+```sh
+node tests/repo_kb.mjs
+node scripts/check-guide-lite.mjs
+node scripts/repo-kb.mjs build
+```
+
 ### コンパイルの段階別時間
 
 `src/timings.rs` は `TSUZURI_TIME_PASSES=1` のときだけ時計と段の記録を使い、CLI の終了時に stderr の最後へ
@@ -1653,6 +1670,7 @@ PX01 の記録と PX03 のビルド比較は、この同じ JSON を使います
 ### 検証コマンド
 
 コンパイラの健全性を検証するコマンドと、変更の種類ごとに回す範囲は、[README の「検証と性能測定」](../README.md#検証と性能測定)にまとめています。ここには、各テストが何を確かめるかを書きます。
+`node tests/ai_cost.mjs target/release/tsuzuri` は、コンパイラを変更せず AI 作業コストの定義・独立 golden・37 タスク・診断ループ・外部実測・能力に応じた静的サイズと KB/MCP を検査します（[AI 作業コスト](ai-cost.md)）。
 
 Rust レベルの単体テストは、LLVM がインストールされていない軽量環境でも完全に実行可能です。字句解析、型検査、エラー発生ケース、メモリレイアウト計算、IR の不変条件検証、および 6,500 パターンに及ぶ決定論的なソースコード変異テスト（mutation test）を網羅的に実行します。
 `tests/diagnostics.rs` および CLI E2E テストは、複数ファイル構成、宣言境界の判定、括弧内行頭の `let`、不正なシグネチャや認識器のエラー抑制、関数内部での型・所有権エラーからの回復、スコープの復元、エラー関数から返された参照による二次エラーの抑制、50 件を超える正確な省略件数表示と 1000 件の収集上限、デフォルトスタックでの深い回復処理、JSON lines 形式の出力、ならびにファイル出力保護の堅牢性を検証します。
