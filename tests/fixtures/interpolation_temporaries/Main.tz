@@ -1,0 +1,149 @@
+record Pt { x: i64, name: string }
+
+record Pair { a: i64, b: i64 }
+
+record Res { id: i64, name: string }
+
+instance Drop<Res> {
+    fn drop _value = ()
+}
+
+const Nums: [i64] = [10, 20, 30]
+
+const Corner: Pair = Pair { a: 3, b: 4 }
+
+const Origin: Pt = Pt { x: 5, name: "origin" }
+
+def digest :: ref string -> i64
+fn digest text =
+    let mut hash = 0
+    let mut index = 0
+    while index < text.length do
+        hash = (hash * 131 + (text[index] as i64)) % 1000000007
+        index = index + 1
+    hash
+
+def mk :: i64 -> Pt
+fn mk n = Pt { x: n, name: "seven" }
+
+def make3 :: i64 -> [i64]
+fn make3 n = [n, n + 1, n + 2]
+
+def names :: unit -> [string]
+fn names _unit = ["a", "bb"]
+
+def mkres :: i64 -> Res
+fn mkres n = Res { id: n, name: "res" }
+
+def stamp :: ref mut i64 -> i64 -> i64
+fn stamp log digit =
+    deref log = deref log * 10 + digit
+    digit
+
+def bump :: ref mut i64 -> i64
+fn bump r =
+    deref r = deref r + 1
+    deref r
+
+def poke :: ref mut [i64] -> i64
+fn poke a =
+    Array.write 0 9 a
+    7
+
+export def length_holes :: i64 -> i64
+fn length_holes n =
+    let s = "abc"
+    let xs = [1, 2, 3]
+    let rs = ref s
+    let rx = ref xs
+    let part = ref xs[1..3]
+    let text = $"{s.length}|{xs.length}|{rs.length}|{rx.length}|{part.length}|{n}"
+    digest (ref text)
+
+export def other_lengths :: i64 -> i64
+fn other_lengths n =
+    let l = [| n, n, n, n, n |]
+    let u = u8"héllo"
+    let text = $"{l.length}|{u.length}"
+    digest (ref text)
+
+export def string_index :: i64 -> i64
+fn string_index n =
+    let s = "abc"
+    let text = $"{s[0]}|{s[2]}|{n}"
+    digest (ref text)
+
+export def field_of_call :: i64 -> i64
+fn field_of_call n =
+    let text = $"{(mk n).x}|{(mk n).name}|{(mk n).name.length}"
+    digest (ref text)
+
+export def index_of_call :: i64 -> i64
+fn index_of_call n =
+    let text = $"{(make3 n)[1]}|{(make3 n).length}|{(names ()).length}"
+    digest (ref text)
+
+export def property_of_place :: i64 -> i64
+fn property_of_place n =
+    let p = mk n
+    let text = $"{p.name.length}|{p.x}"
+    digest (ref text)
+
+export def property_specs :: i64 -> i64
+fn property_specs n =
+    let xs = [n, n, n, n]
+    let s = "abcdefghijklmnopq"
+    let text = $"{xs.length:>5}|{s.length:x}|{s.length:+}|{s.length:b}|{xs.length:*^7}"
+    digest (ref text)
+
+export def constant_parts :: i64 -> i64
+fn constant_parts i =
+    let text = $"{Nums[1]}|{Nums.length}|{Corner.a}|{Origin.x}|{Origin.name}|{Nums[i]}"
+    digest (ref text)
+
+export def snapshot_holes :: i64 -> i64
+fn snapshot_holes n =
+    let mut m = n
+    let mut a = [1, 2, 3]
+    let text = $"{m + 0}{bump (ref mut m)}{m}|{a.length}{poke (ref mut a)}{a[0]}"
+    digest (ref text)
+
+export def drop_temporary :: i64 -> i64
+fn drop_temporary n =
+    let text = $"{(mkres n).id}"
+    digest (ref text)
+
+export def evaluation_order :: i64
+fn evaluation_order =
+    let mut log = 0
+    let text = $"{stamp (ref mut log) 1}{(mk (stamp (ref mut log) 2)).x}{stamp (ref mut log) 3}"
+    log * 1000 + text.length
+
+export def utf8_holes :: i64
+fn utf8_holes =
+    let s = "abc"
+    let text = u8$"{s.length}|{s[1]}"
+    text.length
+
+export def nested_holes :: i64
+fn nested_holes =
+    let s = "abc"
+    let text = $"<{$"[{s.length}]"}>"
+    digest (ref text)
+
+export def captured_holes :: i64 -> i64
+fn captured_holes n =
+    let xs = [n, n, n]
+    let show = \() -> $"{xs.length}:{xs[0]}"
+    let text = show ()
+    digest (ref text)
+
+export def owned_loop :: i64 -> i64
+fn owned_loop count =
+    let mut total = 0
+    let mut index = 0
+    while index < count do
+        let text = $"{index}:{(names ()).length}:{(mk index).name}"
+        total = total + text.length
+        index = index + 1
+    total
