@@ -123,6 +123,19 @@ test('ticket_state_conflict_is_reported_and_location_wins', () => {
     assert.equal(t.state_cell, 'todo');
     assert.match(ctx.warnings[0], /^state_conflict B02:/);
 });
+test('ticket_in_progress_and_blocked_states', () => scratch(async dir => {
+    cpSync(mini, dir, { recursive: true });
+    const path = '_features/A01-alpha.md';
+    const source = readFileSync(resolve(dir, path), 'utf8');
+    for (const state of ['doing', 'blocked']) {
+        writeFileSync(resolve(dir, path), source.replace('| 状態 | todo |', `| 状態 | ${state}（詳細） |`));
+        const ctx = { ...context(), root: dir };
+        const t = parseTicket(ctx, path, false);
+        assert.equal(t.state, state);
+        assert.equal(t.state_cell, state);
+        assert.ok(!ctx.warnings.some(w => w === 'ticket_field_invalid A01: state'));
+    }
+}));
 test('deps_table_forms', () => {
     const known = new Set(['A01', 'A03', 'E01', 'E02', 'B01', 'G02', 'A15', 'G19', 'A17', 'G22', 'G23', 'F02', 'E05']);
     for (const [s, expected] of [

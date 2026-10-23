@@ -1196,6 +1196,10 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
   単一ファイル入力では他のモジュールを無断で edition 移行しないため manifest を変更しません。
   manifest のない旧入力は `--from 2026` で明示します。G24 の一般の warning fix は今回実装しません。
   std は埋め込みソースと一致する開発用ツリーだけを移行対象にし、依存パッケージは書き換えません。
+- 後から main に統合された G31 の固定コーパスは 2026 の測定契約を保ちます。
+  コピーした検証用 project にだけ明示 edition の manifest を置き、元の 6 ファイル・行番号・手計算の
+  golden は変更しません。現在の std を探すタスクは実際の `own` 署名へ追従させます。
+  edition 移行だけの `fix` を G31 の一般の診断修正能力として数えません。
 - A18 Phase 3 は型変数そのものを参照型に単一化せず、宣言ごとの読み取り規約を保持して
   引数 ABI にだけ共有借用を補います。generic／関数引数の本体は読み取り view を使い、
   値として取り出す場合の Copy 要件は既存の所有権推論に任せます。明示の `own` は従来の値 ABI です。

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { isAbsolute, relative, sep } from "node:path";
 
 export const GREP_MAX_LINES = 100;
 export const CHUNK_LINES = 500;
@@ -79,7 +80,11 @@ export class Agent {
   check(dir) {
     const result = invoke(this.compiler, ["check", ".", "--json"], dir);
     if (result.stdout || (result.status !== 0 && !result.stderr)) throw new Error("check did not return diagnostic JSON");
-    return this.emit("check", result.stderr);
+    const text = result.stderr.replace(/("path"\s*:\s*)("(?:[^"\\]|\\.)*")/g, (match, key, value) => {
+      const path = JSON.parse(value);
+      return isAbsolute(path) ? key + JSON.stringify("./" + relative(dir, path).split(sep).join("/")) : match;
+    });
+    return this.emit("check", text);
   }
   edit() { return this.emit("edit", "ok\n"); }
   fix(dir) {

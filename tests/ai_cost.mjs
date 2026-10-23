@@ -12,7 +12,7 @@ import { readExternal } from "../benchmarks/ai/lib/external.mjs";
 import { STATIC_ARTIFACTS, measureStatic } from "../benchmarks/ai/lib/static.mjs";
 import { kb, kbSucceeded, resolveKbId } from "../benchmarks/ai/lib/kb.mjs";
 import { mcpToolsList } from "../benchmarks/ai/lib/mcp.mjs";
-import { detectCapabilities, parseArguments, verifyTask } from "../benchmarks/ai/run.mjs";
+import { detectCapabilities, parseArguments, probe, verifyTask } from "../benchmarks/ai/run.mjs";
 
 if (process.platform === "win32") {
   console.log("skip: G31 is not supported on Windows");
@@ -165,12 +165,13 @@ test("callers_and_impact_match_expect_on_shop", () => {
   assert.equal(deriveImpact(task("F-02"), tree).grep.join(","), "percent_of,with_discount,with_tax,total_with_discount,gross,discounted,price_of,main,line_total,order_total,summary");
 });
 test("compiler_test_list_matches_parsed_tests", () => {
-  const result = invoke(compiler, ["test", ".", "--list"], tree.physical(shop));
+  const project = copyProject(tree.physical(shop), join(scratch, "shop-tests"));
+  const result = invoke(compiler, ["test", ".", "--list"], project);
   assert.equal(result.status, 0, result.stderr);
   const listed = result.stdout.trim().split("\n").map((line) => line.replace(/^\d+\s+/, "")).sort();
   assert.equal(listed.length, 16);
   assert.deepEqual(listed, parseItems([shop], tree).filter((i) => i.kind === "test").map((i) => i.id).sort());
-  assert.equal(invoke(compiler, ["check", "."], tree.physical(shop)).stderr, "");
+  assert.equal(invoke(compiler, ["check", "."], project).stderr, "");
 });
 test("shop_goldens_for_the_grep_baselines", () => {
   for (const id of Object.keys(GOLD)) for (const [i, strategy] of STRATEGIES.slice(0,3).entries()) {
@@ -298,9 +299,18 @@ test("report_publish_updates_the_document", () => {
 });
 test("diag_corpus_reports_the_expected_first_diagnostic", () => {
   for (const t of tasks.filter((t) => t.type === "diagnostic")) {
-    const d = firstError(new Agent(new Tree(tree.physical(t.project)),compiler).check(tree.physical(t.project)));
+    const project = copyProject(tree.physical(t.project), join(scratch, `original-${t.id}`));
+    assert.match(readFileSync(join(project, "Tsuzuri.toml"), "utf8"), /edition = "2026"/);
+    const d = firstError(new Agent(new Tree(project),compiler).check(project));
+    assert.equal(d.path, "./Main.tz");
     assert.deepEqual([d.code,d.span.line],[t.expect.code,t.expect.line]);
   }
+});
+test("edition_migration_is_not_diagnostic_fix", () => {
+  const binary = put(join(scratch, "migration-only"),
+    '#!/usr/bin/env node\nconsole.error("usage: tsuzuri fix --edition YEAR [--from YEAR] PATH"); process.exit(2);\n');
+  chmodSync(binary, 0o755);
+  assert.equal(probe(binary, ["fix"], scratch), false);
 });
 test("diag_patches_behave", () => {
   const ctx = context("patches");
