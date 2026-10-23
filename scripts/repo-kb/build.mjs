@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { listFiles, inputFiles, inputHash } from './repo.mjs';
 import { classify, parseTicket } from './tickets.mjs';
 import { mentions, parseDecisions } from './decisions.mjs';
@@ -12,10 +13,31 @@ import { cmp, jsonl, MAX_INPUT_BYTES, readText } from './text.mjs';
 
 const names = ['tickets', 'decisions', 'modules', 'diagnostics', 'tests', 'docs'];
 let temporarySerial = 0;
+const lockPath = out => `${resolve(out)}.repo-kb-lock`;
+async function withCacheLock(out, operation) {
+    const lock = lockPath(out);
+    mkdirSync(dirname(lock), { recursive: true });
+    const deadline = Date.now() + 120000;
+    while (true) {
+        try { mkdirSync(lock); break; }
+        catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+            // ponytail: killed owners need manual recovery; OS locks if automatic crash recovery becomes necessary.
+            if (Date.now() >= deadline) throw new Error(`cache lock is busy: ${lock}; check its owner before removing a stale lock`);
+            await delay(25);
+        }
+    }
+    try {
+        writeFileSync(join(lock, 'owner'), `${process.pid}\n`, { flag: 'wx' });
+        return await operation();
+    } finally {
+        rmSync(lock, { recursive: true, force: true });
+    }
+}
 async function prepare(root, out) {
-    const subtree = out === undefined ? null : relative(root, out).replaceAll('\\', '/');
-    if (subtree === '') throw new Error('output directory must not be the repository root');
-    const files = listFiles(root).filter(path => !subtree || subtree.startsWith('../') || (path !== subtree && !path.startsWith(`${subtree}/`)));
+    const subtrees = out === undefined ? [] : [out, lockPath(out)].map(path => relative(root, path).replaceAll('\\', '/'));
+    if (subtrees.includes('')) throw new Error('output directory must not be the repository root');
+    const files = listFiles(root).filter(path => !subtrees.some(subtree => !subtree.startsWith('../') && (path === subtree || path.startsWith(`${subtree}/`))));
     const texts = new Map();
     const paths = inputFiles(files);
     for (let i = 0; i < paths.length; i += 32) {
@@ -105,12 +127,13 @@ export function collect(root, prepared) {
             diagnostics: diagnostics.length, tests: tests.length, docs: docs.length }, warnings: warnings.sort(cmp) };
     return { manifest, tickets, decisions, modules, diagnostics, tests, docs };
 }
-export async function build(root, out) {
+async function buildUnlocked(root, out) {
     if (existsSync(out) && readdirSync(out).length && (!existsSync(join(out, '.repo-kb')) || readText(join(out, '.repo-kb')) !== 'tz-repo-kb/1\n')) {
         throw new Error('output directory is not a repo-kb directory');
     }
     const kb = collect(root, await prepare(root, out));
     mkdirSync(out, { recursive: true });
+    rmSync(join(out, 'manifest.json'), { force: true });
     const write = (name, text) => {
         const temporary = join(out, `${name}.${process.pid}.${temporarySerial++}.tmp`);
         try {
@@ -125,22 +148,42 @@ export async function build(root, out) {
     write('manifest.json', `${JSON.stringify(kb.manifest)}\n`);
     return kb;
 }
-export function loadKb(out) {
+function loadUnlocked(out) {
     const kb = { manifest: JSON.parse(readText(join(out, 'manifest.json'))) };
     for (const name of names) kb[name] = readText(join(out, `${name}.jsonl`)).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
     return kb;
 }
-export async function isFresh(root, out) {
+async function freshUnlocked(root, out) {
     if (!existsSync(join(out, 'manifest.json'))) return false;
     const manifest = JSON.parse(readText(join(out, 'manifest.json')));
     const { files, texts } = await prepare(root, out);
     return manifest.schema === 'tz-repo-kb/1' && manifest.input_sha256 === inputHash(root, files, texts);
 }
+function checkRoot(root, out) {
+    if (!statSync(root).isDirectory()) throw new Error('root is not a directory');
+    if (relative(root, out) === '') throw new Error('output directory must not be the repository root');
+}
+export async function build(root, out) {
+    checkRoot(root, out);
+    return withCacheLock(out, () => buildUnlocked(root, out));
+}
+export async function loadKb(out) {
+    if (!statSync(dirname(out)).isDirectory()) throw new Error('output parent is not a directory');
+    return withCacheLock(out, () => loadUnlocked(out));
+}
+export async function isFresh(root, out) {
+    checkRoot(root, out);
+    if (!existsSync(dirname(out))) return false;
+    return withCacheLock(out, () => freshUnlocked(root, out));
+}
 export async function ensureFresh(root, out, { refresh = true } = {}) {
-    if (!await isFresh(root, out)) {
-        if (!refresh) return null;
-        console.error('repo-kb: rebuilding (stale)');
-        return build(root, out);
-    }
-    return loadKb(out);
+    checkRoot(root, out);
+    return withCacheLock(out, async () => {
+        if (!await freshUnlocked(root, out)) {
+            if (!refresh) return null;
+            console.error('repo-kb: rebuilding (stale)');
+            return buildUnlocked(root, out);
+        }
+        return loadUnlocked(out);
+    });
 }

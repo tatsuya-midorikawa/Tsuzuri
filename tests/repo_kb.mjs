@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseMarkdown, splitRow } from '../scripts/repo-kb/markdown.mjs';
 import { cp, inputText, MAX_INPUT_BYTES, slug } from '../scripts/repo-kb/text.mjs';
 import { listFiles } from '../scripts/repo-kb/repo.mjs';
@@ -12,7 +13,7 @@ import { mentions, parseDecisions } from '../scripts/repo-kb/decisions.mjs';
 import { parseModuleTables } from '../scripts/repo-kb/modules.mjs';
 import { indexTests } from '../scripts/repo-kb/tests-index.mjs';
 import { indexDocs } from '../scripts/repo-kb/docs-index.mjs';
-import { build, collect, isFresh } from '../scripts/repo-kb/build.mjs';
+import { build, collect, isFresh, loadKb } from '../scripts/repo-kb/build.mjs';
 import { ticketText, decisionText, filesText, diagText, searchText, sectionText } from '../scripts/repo-kb/query.mjs';
 import { brief, cut, STAGES } from '../scripts/repo-kb/brief.mjs';
 import { checkGuideLite } from '../scripts/check-guide-lite.mjs';
@@ -385,13 +386,14 @@ test('node_version_gate', () => {
     checkNodeVersion('24.0.0');
 });
 
-test('concurrent_stale_queries_use_independent_temporary_paths', () => scratch(async dir => {
+for (const missing of [false, true]) test(missing ? 'concurrent_queries_initialize_a_missing_cache' : 'concurrent_stale_queries_use_independent_temporary_paths', () => scratch(async dir => {
     cpSync(mini, resolve(dir, 'repo'), { recursive: true });
     const repo = resolve(dir, 'repo');
     const out = resolve(dir, 'out');
-    await build(repo, out);
-    writeFileSync(resolve(repo, 'README.md'), '# Changed concurrently\n');
-    const { spawn } = await import('node:child_process');
+    if (!missing) {
+        await build(repo, out);
+        writeFileSync(resolve(repo, 'README.md'), '# Changed concurrently\n');
+    }
     const query = () => new Promise((done, reject) => {
         const child = spawn(process.execPath, [resolve(root, 'scripts/repo-kb.mjs'), 'ticket', 'A01', '--root', repo, '--out', out], { stdio: ['ignore', 'pipe', 'pipe'] });
         let errors = '';
@@ -402,6 +404,106 @@ test('concurrent_stale_queries_use_independent_temporary_paths', () => scratch(a
     await Promise.all(Array.from({ length: 8 }, query));
     assert.equal(readdirSync(out).length, 8);
     assert.ok(await isFresh(repo, out));
+}));
+test('overlapping_builders_publish_complete_source_generations', () => scratch(async dir => {
+    cpSync(mini, dir, { recursive: true });
+    const out = resolve(dir, 'target/cache');
+    await build(dir, out);
+    const barriers = resolve(dir, 'target/barriers');
+    mkdirSync(barriers, { recursive: true });
+    const flag = name => resolve(barriers, name);
+    const workers = [];
+    const worker = role => {
+        // A pauses before tickets, B after tickets: without locking their generations are spliced.
+        const code = `
+import fs from 'node:fs';
+import { basename, join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+const flag = name => join(${JSON.stringify(barriers)}, name);
+const wait = name => {
+    const deadline = Date.now() + 120000;
+    while (!fs.existsSync(flag(name))) {
+        if (Date.now() > deadline) throw new Error('barrier timed out: ' + name);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+};
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+    if (basename(to) !== 'tickets.jsonl') return rename(from, to);
+    if (${JSON.stringify(role)} === 'a') {
+        fs.writeFileSync(flag('a-ready'), '');
+        wait('release-a');
+        return rename(from, to);
+    }
+    const result = rename(from, to);
+    fs.writeFileSync(flag('b-ready'), '');
+    wait('release-b');
+    return result;
+};
+const mkdir = fs.mkdirSync;
+fs.mkdirSync = (path, ...args) => {
+    if (${JSON.stringify(role)} === 'b' && String(path).endsWith('.repo-kb-lock')) fs.writeFileSync(flag('b-lock'), '');
+    return mkdir(path, ...args);
+};
+syncBuiltinESMExports();
+const { build } = await import(${JSON.stringify(pathToFileURL(resolve(root, 'scripts/repo-kb/build.mjs')).href)});
+await build(${JSON.stringify(dir)}, ${JSON.stringify(out)});
+`;
+        const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: ['ignore', 'ignore', 'pipe'] });
+        let errors = '';
+        child.stderr.on('data', chunk => { errors += chunk; });
+        const done = new Promise((accept, reject) => {
+            child.on('error', reject);
+            child.on('exit', status => status === 0 ? accept() : reject(new Error(errors || `worker exited ${status}`)));
+        });
+        done.catch(() => {});
+        const item = { child, done };
+        workers.push(item);
+        return item;
+    };
+    const wait = async (predicate, active) => {
+        const deadline = Date.now() + 120000;
+        while (!predicate()) {
+            assert.ok(Date.now() < deadline, 'worker barrier timed out');
+            assert.ok(active.every(w => w.child.exitCode === null), 'worker exited before its barrier');
+            await delay(10);
+        }
+    };
+    try {
+        const a = worker('a');
+        await wait(() => existsSync(flag('a-ready')), [a]);
+        assert.equal(existsSync(resolve(out, 'manifest.json')), false, 'interrupted publication must not leave a valid old manifest');
+        const ticket = resolve(dir, '_features/A01-alpha.md');
+        writeFileSync(ticket, readFileSync(ticket, 'utf8').replace('Alpha', 'Changed Alpha'));
+        const b = worker('b');
+        await wait(() => existsSync(flag('b-lock')) || existsSync(flag('b-ready')), [a, b]);
+        writeFileSync(flag('release-a'), '');
+        await a.done;
+        await wait(() => existsSync(flag('b-ready')), [b]);
+        writeFileSync(flag('release-b'), '');
+        await b.done;
+        assert.ok(await isFresh(dir, out));
+        const cached = await loadKb(out);
+        assert.equal(cached.tickets.find(t => t.id === 'A01').title, collect(dir).tickets.find(t => t.id === 'A01').title);
+    } finally {
+        for (const { child } of workers) if (child.exitCode === null) child.kill();
+        await Promise.allSettled(workers.map(w => w.done));
+    }
+}));
+test('cache_readers_wait_for_generation_publication', () => scratch(async dir => {
+    const out = resolve(dir, 'cache');
+    await build(mini, out);
+    const lock = `${out}.repo-kb-lock`;
+    mkdirSync(lock);
+    let completed = false;
+    const read = Promise.resolve(loadKb(out)).then(kb => { completed = true; return kb; });
+    try {
+        await Promise.resolve();
+        assert.equal(completed, false);
+    } finally {
+        rmSync(lock, { recursive: true, force: true });
+    }
+    assert.ok((await read).tickets.some(t => t.id === 'A01'));
 }));
 test('in_tree_output_is_not_its_own_input', () => scratch(async dir => {
     cpSync(mini, dir, { recursive: true });
@@ -418,6 +520,13 @@ test('indexed_filter_runner_command_is_runnable', () => {
     const row = real().tests.find(t => t.path === 'tests/repo_kb.mjs');
     assert.equal(row.compiler_arg, false);
     assert.equal(row.command, 'node tests/repo_kb.mjs');
+});
+test('compiler_paths_are_detected_in_find_and_slice_runners', () => {
+    for (const path of ['tests/compact_strings.mjs', 'tests/compact_strings_raw.mjs', 'tests/small_allocator.mjs']) {
+        const row = real().tests.find(t => t.path === path);
+        assert.equal(row.compiler_arg, true, path);
+        assert.equal(row.command, `node ${path} target/release/tsuzuri`);
+    }
 });
 test('indexed_target_selector_runner_uses_valid_default', () => {
     const row = real().tests.find(t => t.path === 'tests/wasm_heap.mjs');
@@ -446,6 +555,13 @@ test('oversized_suite_source_is_not_read_or_indexed', () => scratch(async dir =>
     writeFileSync(path, source.replace('storage', 'renamed'));
     assert.ok(await isFresh(dir, out));
 }));
+test('required_guide_size_failure_is_not_silently_hidden', () => {
+    const ctx = context();
+    ctx.texts = new Map([['_features/GUIDE-LITE.md', 'x'.repeat(MAX_INPUT_BYTES + 1)]]);
+    assert.throws(() => pack(ctx, fixtureKb(), 'A01'), /GUIDE-LITE.*8 MiB/);
+    assert.throws(() => checkGuideLite(ctx, fixtureKb()), /GUIDE input.*8 MiB/);
+    assert.ok(pack(ctx, fixtureKb(), 'A01', { lite: false }));
+});
 test('ticket_entry_points_skip_sources_that_exceed_admission', () => scratch(dir => {
     cpSync(mini, dir, { recursive: true });
     const kb = collect(dir);

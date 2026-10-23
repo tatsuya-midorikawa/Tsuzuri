@@ -69,7 +69,9 @@ export function brief(ctx, kb, id, opts) {
     const symbols = symbolText(ctx, ticket, source);
     const commands = relatedCommands(kb, ticket, source);
     const litePath = '_features/GUIDE-LITE.md';
-    const lite = opts.lite && (ctx.texts?.has(litePath) || existsSync(join(ctx.root, litePath))) ? read(litePath) : null;
+    const hasLite = ctx.texts?.has(litePath) || existsSync(join(ctx.root, litePath));
+    const lite = opts.lite && hasLite ? read(litePath) : null;
+    if (opts.lite && hasLite && lite === null) throw new Error('GUIDE-LITE exceeds the 8 MiB file limit');
     function render(caps) {
         const content = [];
         const bodies = [];
