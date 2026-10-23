@@ -358,8 +358,9 @@ try {
   for (const line of [12, 13]) {
     assert.match(stops(`breakpoint set -f Main.tz -l ${line}`)[0], new RegExp(`Main\\.test@11:6(?: \\+ \\d+)? at Main\\.tz:${line}:`));
   }
-  assert.match(stops("run")[0], /stop reason = breakpoint 1\.1\n.*`Main\.test@11:6 at Main\.tz:12:\d+ \[opt\]/);
-  assert.match(stops("continue")[0], /stop reason = breakpoint 2\.1\n.*`Main\.test@11:6 at Main\.tz:13:\d+ \[opt\]/);
+  // Apple LLDB prints [opt]; LLVM LLDB prints [inlined] for the same optimized inline frame.
+  assert.match(stops("run")[0], /stop reason = breakpoint 1\.1\n.*`Main\.test@11:6 at Main\.tz:12:\d+ \[(?:opt|inlined)\]/);
+  assert.match(stops("continue")[0], /stop reason = breakpoint 2\.1\n.*`Main\.test@11:6 at Main\.tz:13:\d+ \[(?:opt|inlined)\]/);
   assert.match(stops("continue")[1], /exited with status = 0/);
   console.log("debugger: LLDB formatters, names and stepping verified");
 } finally { rmSync(root, { recursive: true, force: true }); }
