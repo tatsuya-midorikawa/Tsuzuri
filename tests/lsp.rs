@@ -1068,6 +1068,61 @@ const N_CIRCLE: &str = "namespace Demo::Shapes\n\ndef radius :: i64 -> i64 = \\x
 const N_REPORT: &str = "namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x + Shapes::Circle.radius x\n";
 
 #[test]
+fn own_and_inferred_read_signatures_keep_the_source_convention() {
+    use serde_json::json;
+    let source = "def take :: own string -> string = \\text -> text\n\
+        def size :: string -> i64 = \\text -> text.length\n\
+        def value :: i64 = { let text = take \"abc\"; size text }\n";
+    let manifest = "[package]\nname = \"conventions\"\nversion = \"0.1.0\"\nedition = \"2027\"\n";
+    let responses = scripted(
+        &[("Main.tz", source), ("Tsuzuri.toml", manifest)],
+        "utf-16",
+        |uri| {
+            [
+                ("textDocument/hover", "take ::"),
+                ("textDocument/hover", "size ::"),
+                ("textDocument/signatureHelp", "\"abc\""),
+                ("textDocument/signatureHelp", "text }\n"),
+            ]
+            .iter()
+            .enumerate()
+            .map(|(id, (method, needle))| {
+                json!({"id": id + 1, "method": method, "params": {"textDocument": {"uri": uri("Main.tz")}, "position": position(source, needle, "utf-16")}})
+            })
+            .chain(std::iter::once(json!({"id": 5, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": uri("Main.tz")}}})))
+            .collect()
+        },
+    );
+    for (response, signature) in responses
+        .iter()
+        .zip(["take :: own string -> string", "size :: string -> i64"])
+    {
+        let hover = response["result"]["contents"]["value"].as_str().unwrap();
+        assert!(hover.contains(signature), "{hover}");
+    }
+    for (response, parameter) in responses[2..4]
+        .iter()
+        .zip(["text: own string", "text: string"])
+    {
+        let label = &response["result"]["signatures"][0]["parameters"][0]["label"];
+        assert_eq!(label, parameter, "{response}");
+    }
+    let symbols = responses[4]["result"].as_array().unwrap();
+    assert!(
+        symbols[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("own string")
+    );
+    assert!(
+        !symbols[1]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("ref string")
+    );
+}
+
+#[test]
 fn const_def_hovers_show_the_qualifier() {
     use serde_json::json;
     let main = "const def twice :: i64 -> i64\nfn twice x = x * 2\ndef plain :: i64 -> i64\nfn plain x = x\nconst Answer: i64 = twice 21\nAnswer\n";

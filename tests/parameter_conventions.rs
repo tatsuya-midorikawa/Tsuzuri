@@ -6,6 +6,14 @@ use tsuzuri::syntax::SourceKind;
 use tsuzuri::{formatter, llvm};
 
 fn check(edition: &str, source: &str) -> Result<CheckedModule, Diagnostic> {
+    check_with_files(edition, source, &[])
+}
+
+fn check_with_files(
+    edition: &str,
+    source: &str,
+    extra: &[(&str, &str)],
+) -> Result<CheckedModule, Diagnostic> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target/scratch/parameter-conventions")
@@ -16,6 +24,9 @@ fn check(edition: &str, source: &str) -> Result<CheckedModule, Diagnostic> {
         ));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("Main.tz"), source).unwrap();
+    for (name, text) in extra {
+        std::fs::write(root.join(name), text).unwrap();
+    }
     std::fs::write(
         root.join("Tsuzuri.toml"),
         format!(
@@ -175,4 +186,72 @@ fn own_survives_formatter_and_documentation_round_trips() {
     let program = tsuzuri::parser::parse(&formatted).unwrap();
     assert!(tsuzuri::docgen::render_module("Main", &program).contains("own [|string|]"));
     check("2027", &formatted).unwrap();
+}
+
+#[test]
+fn own_is_accepted_on_fixed_class_method_parameters() {
+    let source = "instance Traits.Take<string> { fn take text = text.length }\n\
+        export def answer :: i64 = Traits.Take.take \"abc\"\n";
+    let declaration = "class Take<'a> { def take :: own 'a -> i64 }\n";
+    let emit = |edition, declaration: &str| {
+        let module = check_with_files(edition, source, &[("Traits.tt", declaration)])
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        llvm::emit(&module, llvm::Entry::Library).unwrap()
+    };
+    assert_eq!(emit("2026", declaration), emit("2027", declaration));
+    assert_eq!(
+        emit("2026", declaration),
+        emit("2026", &declaration.replace("own ", ""))
+    );
+    for signature in ["'a -> own i64", "(own 'a -> i64) -> i64"] {
+        let source = format!("class Bad<'a> {{ def bad :: {signature} }}\n");
+        assert_eq!(
+            check_with_files("2027", "", &[("Traits.tt", &source)])
+                .unwrap_err()
+                .code,
+            "E1005"
+        );
+    }
+}
+
+#[test]
+fn explicit_record_regions_keep_their_existing_parameter_contract() {
+    let source = "record Named {r s} { left: ref {r} string, right: ref {s} string, name: string }\n\
+        def size {r s} :: Named {r s} -> i64 = \\p -> p.name.length\n";
+    assert_eq!(ir("2026", source), ir("2027", source));
+}
+
+#[test]
+fn unrelated_type_errors_do_not_suggest_own() {
+    let error = check("2027", "def bad :: string -> i64 = \\text -> text\n").unwrap_err();
+    assert_eq!(error.code, "E1003");
+    assert!(!error.message.contains("read-only by default"), "{error:?}");
+    assert!(!error.message.contains("write 'own"), "{error:?}");
+}
+
+#[test]
+fn own_accepts_every_type_primary_starter() {
+    for ty in [
+        "own dyn Traits.Shape",
+        "own (dyn Traits.Shape)",
+        "(own dyn Traits.Shape)",
+        "(own fn(i64) -> i64)",
+        "(own (fn(i64) -> i64))",
+        "own &&string",
+        "own (&&string)",
+        "(own &&string)",
+    ] {
+        let source = format!("def accept :: {ty} -> i64 = \\_value -> 0\n");
+        for edition in ["2026", "2027"] {
+            check_with_files(
+                edition,
+                &source,
+                &[(
+                    "Traits.tt",
+                    "class Shape<'a> { def area :: ref 'a -> i64 }\n",
+                )],
+            )
+            .unwrap_or_else(|error| panic!("{edition}, {ty}: {error:?}"));
+        }
+    }
 }

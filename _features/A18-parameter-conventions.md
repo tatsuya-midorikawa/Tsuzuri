@@ -455,3 +455,9 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - **全 Phase 完了ではない。** Phase 2 の移行ツール・std／fixture の移行と既定版の更新、
   Phase 3 のジェネリック／関数引数の規約、Phase 4 の mut／要素・field 代入は未実装。
   チケットは `_completed/` に移さず、PR は進行中として扱う。
+- 検証追記: `594ef574` の全 Rust は 1726 件通過・2 件 skip（1714 件と、絶対 TMPDIR が必要な
+  targets 12 件を分けて実行）。PR48 の rust／reference も通過した。
+- Copilot の 6 指摘を修正した: class parameter の `own`、edition-only の保守的 api-diff、
+  明示 record region の固定署名、無関係な E1003 への案内の除去、own の全 type-primary starter、
+  hover／signature help／document symbol の表記。regression は規約 12・api-diff 24・LSP 36 件が通過。
+  fmt・strict clippy・dev build も通過した。review 修正後の全 Rust／IR corpus／文書の再確認は次の段階に残る。

@@ -1895,6 +1895,9 @@ impl Parser<'_> {
                         | TokenKind::LeftList
                         | TokenKind::Ref
                         | TokenKind::Ampersand
+                        | TokenKind::AndAnd
+                        | TokenKind::Dyn
+                        | TokenKind::Fn
                 )
             })
         {

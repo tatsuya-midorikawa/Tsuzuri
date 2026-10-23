@@ -966,7 +966,13 @@ impl Classes {
                             parameters: method
                                 .parameters
                                 .iter()
-                                .map(|ty| resolve_type_with_kinds(ty, module, names, &kinds))
+                                .map(|ty| {
+                                    let ty = match &ty.kind {
+                                        TypeExprKind::Own(inner) => inner.as_ref(),
+                                        _ => ty,
+                                    };
+                                    resolve_type_with_kinds(ty, module, names, &kinds)
+                                })
                                 .collect::<Result<_, _>>()?,
                             result: resolve_type_with_kinds(&method.result, module, names, &kinds)?,
                         };

@@ -21,6 +21,8 @@
 全 edition で `own T` は所有権を受け取る引数です。非 Copy 値は移動し、
 Copy のコレクションは必要に応じて複製されます。`own` は予約語ではありません。
 署名の引数型全体の前だけに書け、それ以外の位置は `E1005` です。
+class メソッドの引数にも書け、class／instance の既存の値渡しの契約は変わりません。
+LSP の hover・signature help・document symbol も `own` を保ちます。
 
 ```tsuzuri run=6
 def append_mark :: own string -> string = \text -> $"{text}!"
@@ -33,7 +35,7 @@ manifest で `edition = "2027"` を選んだ通常の `def` では、無印の
 読み取りは複製も移動も起こさず、実引数は呼び出し後も使えます。返すために所有権が必要なら `own` を書きます。
 
 数値などの小さな値、裸の型変数、関数型、`Task`、`dyn`、SIMD と可変束縛引数は値渡しのままです。
-明示の `ref`／`ref mut` は変わらず、返却型やコールバックの中の引数も補完しません。
+明示の `ref`／`ref mut` と region を指定した引数は変わらず、返却型やコールバックの中の引数も補完しません。
 `const def`・入口の `main`・`extern`・instance のメソッドは従来の契約を使います。
 2026、manifest のない入力、std は従来どおりです。
 edition の指定は[パッケージ](../organizing-tsuzuri/packages.md#言語版edition)を参照してください。

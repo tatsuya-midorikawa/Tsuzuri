@@ -1143,3 +1143,9 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
 - `own` は共有構文を一度だけ実装します。純粋性は検査であり、LLVM の属性や呼び出し消去・
   トラップ消去・結果の共有を許可するものではありません。
 - 新しい crate、stack・解析上限の引き上げは行いません。未実装の Phase を完了とは記録しません。
+- A18 の review で明示 region を持つ record 引数の補完が既存の複数 lifetime 契約と衝突したため、
+  明示 region の引数は固定署名として補完しません。region 推論や所有権規則は変えません。
+  class method の whole-parameter `own` は、固定署名を変えずに印だけを除いて受理します。
+- api-diff は解決後の型を比較する基盤がまだないため、edition による引数の既定の差を保守的な
+  breaking change として報告します（無印の引数がある通常 def が対象）。これは完全な型解決の代替ではありません。
+  editor は `own` と補完前の引数表記を保ち、無関係な型不一致には所有権の修正を勧めません。

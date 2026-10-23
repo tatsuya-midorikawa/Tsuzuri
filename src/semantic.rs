@@ -11,6 +11,7 @@ pub struct SemanticEntry {
 #[derive(Clone, Debug)]
 pub struct DocumentSymbol {
     pub name: String,
+    pub detail: String,
     pub kind: u8,
     pub span: Span,
     pub selection: Span,
@@ -198,6 +199,7 @@ impl SemanticIndex {
     fn symbol(&mut self, name: &Ident, kind: u8, end: Span, detail: String) {
         self.symbols.push(DocumentSymbol {
             name: name.text.clone(),
+            detail: detail.clone(),
             kind,
             span: name.span.through(end),
             selection: name.span,
@@ -276,6 +278,53 @@ fn type_name(shown: &str, key: &str, declared: &str) -> String {
     } else {
         format!("{shown}.{declared}")
     }
+}
+
+fn source_parameter_text(
+    declaration: &FunctionDecl,
+    function: &CheckedFunction,
+    position: usize,
+) -> Option<String> {
+    let parameter = declaration.parameters.get(position)?;
+    (matches!(parameter.ty.kind, TypeExprKind::Own(_))
+        || function.read_by_default.get(position) == Some(&true))
+    .then(|| crate::docgen::type_text(&parameter.ty))
+}
+
+fn declaration_signature(
+    declaration: &FunctionDecl,
+    function: &CheckedFunction,
+    types: &TypeContext<'_>,
+) -> String {
+    if !declaration
+        .parameters
+        .iter()
+        .enumerate()
+        .any(|(position, parameter)| {
+            matches!(parameter.ty.kind, TypeExprKind::Own(_))
+                || function.read_by_default.get(position) == Some(&true)
+        })
+    {
+        return function.signature.as_type().display(types);
+    }
+    function
+        .signature
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(position, ty)| {
+            source_parameter_text(declaration, function, position).unwrap_or_else(|| {
+                let text = ty.display(types);
+                if matches!(ty, Type::Function(..)) {
+                    format!("({text})")
+                } else {
+                    text
+                }
+            })
+        })
+        .chain(std::iter::once(function.signature.result.display(types)))
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 /// Defines every source declaration; fields and cases follow their container.
@@ -436,6 +485,7 @@ fn define_declarations(
                     declaration.visibility,
                     declaration.exported,
                     declaration.constant,
+                    Some(declaration),
                 )
             })
             .chain(program.externs.iter().map(|external| {
@@ -446,9 +496,10 @@ fn define_declarations(
                     external.visibility,
                     external.exported,
                     false,
+                    None,
                 )
             }));
-        for (declared, labels, kind, visibility, exported, constant) in callables {
+        for (declared, labels, kind, visibility, exported, constant, declaration) in callables {
             let qualified = format!("{name}.{}", declared.text);
             let Some(function) = checked.get(&qualified) else {
                 continue;
@@ -471,7 +522,12 @@ fn define_declarations(
                             || format!("arg{}", position + 1),
                             |label| label.text.clone(),
                         );
-                    format!("{label}: {}", ty.display(types))
+                    let text = declaration
+                        .and_then(|declaration| {
+                            source_parameter_text(declaration, function, position)
+                        })
+                        .unwrap_or_else(|| ty.display(types));
+                    format!("{label}: {text}")
                 })
                 .collect();
             let detail = if kind == SymbolKind::Extern {
@@ -481,7 +537,10 @@ fn define_declarations(
                     "{}def {shown}.{} :: {}",
                     if constant { "const " } else { "" },
                     declared.text,
-                    function.signature.as_type().display(types)
+                    declaration.map_or_else(
+                        || function.signature.as_type().display(types),
+                        |declaration| declaration_signature(declaration, function, types)
+                    )
                 )
             };
             let definition = index.define(Definition {
@@ -655,7 +714,7 @@ pub(super) fn collect(
                         "{}def {shown}.{} :: {}",
                         if declaration.constant { "const " } else { "" },
                         function.name,
-                        function.signature.as_type().display(&types)
+                        declaration_signature(declaration, function, &types)
                     ),
                 );
             }

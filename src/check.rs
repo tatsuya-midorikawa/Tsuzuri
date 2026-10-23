@@ -6935,6 +6935,7 @@ fn check_modules_collect(
                 let read = borrow_defaults
                     && !parameter.mutable
                     && !matches!(parameter.ty.kind, TypeExprKind::Own(_))
+                    && !regions::has_regions(&parameter.ty)
                     && read_by_default(&ty, &types);
                 let ty = if read {
                     Type::Reference(Box::new(ty), false)
@@ -9694,13 +9695,15 @@ impl<'a> Checker<'a> {
         };
         let result = result.map_err(|mut error| {
             if error.code == "E1003"
-                && error.message.contains("found ref ")
-                && let Some((_, root)) = expression_path(expression)
+                && let Some(expected) = expected
+                && let ExprKind::Name(root) = &expression.kind
                 && let Some(local) = self
                     .scopes
                     .iter()
                     .rev()
                     .find_map(|scope| scope.get(&root.text))
+                && let Type::Reference(inner, false) = self.inference.resolve(&local.ty)
+                && *inner == self.inference.resolve(expected)
                 && let Some((name, ty)) = self.default_reads.get(&local.id)
             {
                 read_only_hint(&mut error, name, ty);

@@ -1419,10 +1419,10 @@ macOS における再配置可能リンクでは `-keep_private_externs` を指�
 A18 の edition 2027 の引数補完は `check_modules_collect` の署名収集で完了します。
 解決済みの具体型が `needs_drop` であり、明示の借用・`own`・関数型・裸の型変数・
 `Task`・`dyn`・SIMD でない通常の引数だけを共有 `Type::Reference` にします。
-`const def`・入口の `main`・`extern`・instance のメソッドと可変束縛引数は除外します。
+`const def`・入口の `main`・`extern`・instance のメソッド、明示 region を持つ引数と可変束縛引数は除外します。
 生成と所有権検査は edition を見ず、明示の `ref T` と同じ経路を使います。
 region 契約を読む前に宣言の引数型にも同じ表面上の補完を反映し、region の推論規則は変更しません。
-`CheckedFunction.read_by_default` は診断の補足だけに使い、最適化や所有権の判定には使いません。
+`CheckedFunction.read_by_default` は診断の補足と editor の補完前の表記に使い、最適化や所有権の判定には使いません。
 
 型検査済みのローカル変数 ID および構造体のフィールドパスに対して、move（移動）と loan（借用）の妥当性が厳密に検証されます。
 関数引数などの一時的な借用であっても、後続のオペランド式の評価がすべて完了するまで安全に保持されます。
