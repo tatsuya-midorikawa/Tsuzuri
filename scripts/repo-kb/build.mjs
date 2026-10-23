@@ -1,0 +1,193 @@
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { listFiles, inputFiles, inputHash } from './repo.mjs';
+import { classify, parseTicket } from './tickets.mjs';
+import { mentions, parseDecisions } from './decisions.mjs';
+import { parseModuleTables } from './modules.mjs';
+import { diagSites } from './rust.mjs';
+import { indexTests } from './tests-index.mjs';
+import { indexDocs } from './docs-index.mjs';
+import { admittedText, cmp, inputText, jsonl, MAX_INPUT_BYTES, readText } from './text.mjs';
+
+const names = ['tickets', 'decisions', 'modules', 'diagnostics', 'tests', 'docs'];
+let temporarySerial = 0;
+const lockPath = out => `${resolve(out)}.repo-kb-lock`;
+async function withCacheLock(out, operation) {
+    const lock = lockPath(out);
+    mkdirSync(dirname(lock), { recursive: true });
+    const deadline = Date.now() + 120000;
+    while (true) {
+        try { mkdirSync(lock); break; }
+        catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+            // ponytail: killed owners need manual recovery; OS locks if automatic crash recovery becomes necessary.
+            if (Date.now() >= deadline) throw new Error(`cache lock is busy: ${lock}; check its owner before removing a stale lock`);
+            await delay(25);
+        }
+    }
+    try {
+        writeFileSync(join(lock, 'owner'), `${process.pid}\n`, { flag: 'wx' });
+        return await operation();
+    } finally {
+        rmSync(lock, { recursive: true, force: true });
+    }
+}
+async function prepare(root, out) {
+    const subtrees = out === undefined ? [] : [out, lockPath(out)].map(path => relative(root, path).replaceAll('\\', '/'));
+    if (subtrees.includes('')) throw new Error('output directory must not be the repository root');
+    const files = listFiles(root).filter(path => !subtrees.some(subtree => !subtree.startsWith('../') && (path === subtree || path.startsWith(`${subtree}/`))));
+    const texts = new Map();
+    const paths = inputFiles(files);
+    for (let i = 0; i < paths.length; i += 32) {
+        await Promise.all(paths.slice(i, i + 32).map(async path => {
+            if (statSync(join(root, path)).size <= MAX_INPUT_BYTES) {
+                const text = admittedText(await readFile(join(root, path), 'utf8'));
+                if (text !== null) texts.set(path, text);
+            }
+        }));
+    }
+    return { files, texts };
+}
+export function collect(root, prepared) {
+    const files = prepared?.files ?? listFiles(root);
+    const warnings = [];
+    const inputs = inputFiles(files);
+    const texts = prepared?.texts ?? new Map();
+    for (const path of inputs) {
+        if (!prepared) {
+            const text = inputText({ root }, path);
+            if (text !== null) texts.set(path, text);
+        }
+        if (!texts.has(path)) warnings.push(`file_too_large ${path}`);
+    }
+    const ctx = { root, files, fileSet: new Set(files), ticketIds: new Set(), decisionIds: new Set(), warnings, texts };
+    const ticketPaths = [];
+    const appendices = [];
+    for (const path of files.filter(p => /^(?:_features|_perfs)\/.*\.md$/.test(p) && texts.has(p))) {
+        const kind = classify(path);
+        if (!kind) continue;
+        if (kind.kind === 'skip') { warnings.push(`file_skipped ${path}`); continue; }
+        if (kind.kind === 'appendix') { appendices.push({ path, id: kind.id }); continue; }
+        if (ctx.ticketIds.has(kind.id)) throw new Error(`dup_ticket_id ${kind.id}`);
+        ctx.ticketIds.add(kind.id);
+        ticketPaths.push(path);
+    }
+    if (ticketPaths.length > 2000) throw new Error('ticket limit exceeded (2000)');
+    const guide = texts.get('_features/GUIDE.md') ?? '';
+    const decisions = parseDecisions(guide);
+    const decisionNumbers = new Set();
+    for (const d of decisions) {
+        const n = Number(d.id.slice(2));
+        if (decisionNumbers.has(n)) warnings.push(`decision_gap ${n}`);
+        decisionNumbers.add(n);
+        ctx.decisionIds.add(d.id);
+        Object.assign(d, mentions(`${d.id} ${d.title}\n${d.text}`, ctx, d.id));
+        delete d.refs;
+    }
+    for (let n = 1; n <= Math.max(0, ...decisionNumbers); n++) if (!decisionNumbers.has(n)) warnings.push(`decision_gap ${n}`);
+    // All decision IDs must be registered before resolving forward references.
+    for (const d of decisions) {
+        const refs = mentions(`${d.id} ${d.title}\n${d.text}`, ctx, d.id);
+        d.tickets = refs.tickets; d.diags = refs.diags; d.decisions = refs.decisions; d.files = refs.files;
+    }
+    const tickets = ticketPaths.map(path => {
+        const t = parseTicket(ctx, path, path.includes('/_completed/'));
+        t.appendices = appendices.filter(a => a.id === t.id).map(a => a.path);
+        return t;
+    }).sort((a, b) => cmp(a.id, b.id));
+    for (const m of (texts.get('_features/README.md') ?? '').matchAll(/^\s*([A-Z]{1,2}\d{2})\s*(-->|-\.->)\s*([A-Z]{1,2}\d{2})/gm)) {
+        const ticket = tickets.find(t => t.id === m[3]);
+        if (!ticket || !ctx.ticketIds.has(m[1])) continue;
+        const existing = ticket.deps.find(d => d.id === m[1]);
+        if (existing) existing.weak = m[2] === '-.->';
+        else ticket.deps.push({ id: m[1], weak: m[2] === '-.->' });
+    }
+    const modules = ['docs/architecture.md', '_features/GUIDE.md'].flatMap(path => texts.has(path) ? parseModuleTables(path, texts.get(path), ctx) : [])
+        .sort((a, b) => cmp(a.source, b.source) || a.table - b.table || a.row - b.row);
+    const sites = files.filter(p => /^src\/.*\.rs$/.test(p) && texts.has(p)).flatMap(path =>
+        diagSites(texts.get(path)).filter(s => !s.test).map(s => ({ code: s.code, path, function: s.function, line: s.line })));
+    const tests = indexTests({ ...ctx, files: files.filter(p => !inputs.includes(p) || texts.has(p)) });
+    const docs = indexDocs({ ...ctx, files: files.filter(p => texts.has(p)) });
+    const meanings = new Map();
+    for (const m of (texts.get('_tsuzuri/language-reference/compiler/diagnostics.md') ?? '').matchAll(/^\| `([EW][0-9]{4})` \| (.+) \|$/gm)) {
+        meanings.set(m[1], m[2].split(' | ')[0]);
+    }
+    const codes = new Set([...sites.map(s => s.code), ...meanings.keys()]);
+    for (const t of tickets) for (const code of t.refs.diags) codes.add(code);
+    for (const d of decisions) for (const code of d.diags) codes.add(code);
+    for (const d of docs) for (const m of texts.get(d.path).matchAll(/\b[EW][0-9]{4}\b/g)) codes.add(m[0]);
+    const diagnostics = [...codes].sort(cmp).map(code => {
+        const allSites = sites.filter(s => s.code === code).sort((a, b) => cmp(a.path, b.path) || a.line - b.line);
+        return { code, meaning: meanings.get(code) ?? '', site_count: allSites.length,
+            sites: allSites.slice(0, 100).map(({ path, function: fn, line }) => ({ path, function: fn, line })),
+            pages: docs.filter(d => new RegExp(`\\b${code}\\b`).test(texts.get(d.path))).map(d => d.path).slice(0, 30),
+            tickets: tickets.filter(t => t.refs.diags.includes(code)).map(t => t.id),
+            decisions: decisions.filter(d => d.diags.includes(code)).map(d => d.id) };
+    });
+    const manifest = { schema: 'tz-repo-kb/1', input_sha256: inputHash(files, texts), inputs: texts.size,
+        counts: { tickets: tickets.length, appendices: appendices.length, decisions: decisions.length, modules: modules.length,
+            diagnostics: diagnostics.length, tests: tests.length, docs: docs.length }, warnings: warnings.sort(cmp) };
+    return { manifest, tickets, decisions, modules, diagnostics, tests, docs };
+}
+async function buildUnlocked(root, out) {
+    if (existsSync(out) && readdirSync(out).length && (!existsSync(join(out, '.repo-kb')) || readText(join(out, '.repo-kb')) !== 'tz-repo-kb/1\n')) {
+        throw new Error('output directory is not a repo-kb directory');
+    }
+    const kb = collect(root, await prepare(root, out));
+    mkdirSync(out, { recursive: true });
+    rmSync(join(out, 'manifest.json'), { force: true });
+    const write = (name, text) => {
+        const temporary = join(out, `${name}.${process.pid}.${temporarySerial++}.tmp`);
+        try {
+            writeFileSync(temporary, text, { flag: 'wx' });
+            renameSync(temporary, join(out, name));
+        } finally {
+            rmSync(temporary, { force: true });
+        }
+    };
+    write('.repo-kb', 'tz-repo-kb/1\n');
+    for (const name of names) write(`${name}.jsonl`, jsonl(kb[name]));
+    write('manifest.json', `${JSON.stringify(kb.manifest)}\n`);
+    return kb;
+}
+function loadUnlocked(out) {
+    const kb = { manifest: JSON.parse(readText(join(out, 'manifest.json'))) };
+    for (const name of names) kb[name] = readText(join(out, `${name}.jsonl`)).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    return kb;
+}
+async function freshUnlocked(root, out) {
+    if (!existsSync(join(out, 'manifest.json'))) return false;
+    const manifest = JSON.parse(readText(join(out, 'manifest.json')));
+    const { files, texts } = await prepare(root, out);
+    return manifest.schema === 'tz-repo-kb/1' && manifest.input_sha256 === inputHash(files, texts);
+}
+function checkRoot(root, out) {
+    if (!statSync(root).isDirectory()) throw new Error('root is not a directory');
+    if (relative(root, out) === '') throw new Error('output directory must not be the repository root');
+}
+export async function build(root, out) {
+    checkRoot(root, out);
+    return withCacheLock(out, () => buildUnlocked(root, out));
+}
+export async function loadKb(out) {
+    if (!statSync(dirname(out)).isDirectory()) throw new Error('output parent is not a directory');
+    return withCacheLock(out, () => loadUnlocked(out));
+}
+export async function isFresh(root, out) {
+    checkRoot(root, out);
+    if (!existsSync(dirname(out))) return false;
+    return withCacheLock(out, () => freshUnlocked(root, out));
+}
+export async function ensureFresh(root, out, { refresh = true } = {}) {
+    checkRoot(root, out);
+    return withCacheLock(out, async () => {
+        if (!await freshUnlocked(root, out)) {
+            if (!refresh) return null;
+            console.error('repo-kb: rebuilding (stale)');
+            return buildUnlocked(root, out);
+        }
+        return loadUnlocked(out);
+    });
+}

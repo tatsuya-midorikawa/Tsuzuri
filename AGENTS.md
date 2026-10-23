@@ -31,7 +31,8 @@ comparisons and their limitations are in `docs/benchmarks.md`.
 
 - Read what the change needs. `docs/architecture.md` (500 KB) and `docs/language.md` (700 KB) are references: list the
   headings with `grep -n '^#' <file>`, then read that range. A ticket in `_features/` or `_perfs/` starts from
-  `_features/GUIDE-LITE.md` and the ticket, and uses `_features/GUIDE.md` only for the sections the ticket cites.
+  `node scripts/repo-kb.mjs brief <ID>` (including GUIDE-LITE and the ticket sections), and uses
+  `_features/GUIDE.md` only for the sections the ticket cites.
   `_features/_completed/` and `_perfs/_completed/` are history that `.ignore` keeps out of searches; name the directory
   to search it (`rg E1005 _features/_completed`).
 - One ticket or fix per branch and per pull request. Commit on your branch as you go; never commit to or push `main`.
@@ -135,3 +136,15 @@ interop, documented performance characteristics, and known limitations or bugs.
   commands: change it when the change makes one of those wrong. Pages
   are Japanese; see `_features/GUIDE.md` §8. If no page needs an update, say so
   in the PR description.
+
+## For AI agents working on tickets
+
+Run `node scripts/repo-kb.mjs brief <TICKET-ID>` before opening a whole ticket or GUIDE.md.
+Use `--phase N` for another phase or `--max-chars N` for a longer pack. The pack includes the
+ticket sections, cited decisions, public symbols, test commands, and GUIDE-LITE. Each
+`[shortened` or `[omitted` line names the command for retrieving the missing text, for example
+`node scripts/repo-kb.mjs section G22 spec`.
+
+Other lookups: `ticket <ID>`, `decision D-45`, `files <path>`, `diag E1012`, `search <words>`.
+The index under `target/repo-kb/` is refreshed when inputs change. Report contradictions rather
+than improvising; `node scripts/check-guide-lite.mjs` detects stale references.
