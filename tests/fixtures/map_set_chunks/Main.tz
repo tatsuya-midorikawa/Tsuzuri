@@ -70,6 +70,29 @@ fn set_algebra_chunks =
 
 record Probe { value: i64, hits: ref Atomic<i64> }
 
+export def array_key_selection :: bool -> i64
+fn array_key_selection intersection =
+    let mut left: Set<[i64]> = Set.empty()
+    let mut right: Set<[i64]> = Set.empty()
+    for value in 0i64 .. 2 do
+        left = Set.insert (new [i64](2, \index -> value * 2 + index)) left
+        right = Set.insert (new [i64](2, \index -> value + 1 + index)) right
+    let selected =
+        if intersection then Set.intersect (ref left) (ref right)
+        else Set.difference (ref left) (ref right)
+    Set.length (ref selected) * 100 + Set.fold (\sum key -> sum + Array.sum key) 0 (ref selected)
+
+// Inputs occupy 9.6 MB; one selected-key copy fits in 16 MiB, two comparison copies do not.
+export def large_array_key_selection :: bool -> i64
+fn large_array_key_selection intersection =
+    let left = Set.singleton (new [i64](600000, \index -> index + 1))
+    let right = Set.singleton (new [i64](600000, \index -> index))
+    let selected =
+        if intersection then Set.intersect (ref left) (ref right)
+        else Set.difference (ref left) (ref right)
+    Set.length (ref left) + Set.length (ref right) +
+        Set.fold (\sum key -> sum + Array.length key + key[0] + key[599999]) 0 (ref selected)
+
 instance Eq<Probe> {
     fn eq left right = left.value == right.value
     fn ne left right = left.value != right.value
