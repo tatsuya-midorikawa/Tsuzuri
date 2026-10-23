@@ -2,14 +2,14 @@
 
 `Array` は、要素を連続したメモリに置く配列です。型は `[T]` で、`Array<T>` とも書けます。作ったあとの長さは変わりません。添字は `i64` で、読み取りは $O(1)$ です。
 
-`Array` モジュールは、F# の `Array` モジュールと同じ関数を、同じ名前（snake_case）と同じ引数の順で提供します。`Array.map f xs` や `xs |> Array.filter p` のように、F# の書き方がそのまま使えます。所有権のために F# と違う点（失敗の扱い、`Copy`、`r` を付けた関数）は [F# の Array モジュールとの対応](#f-の-array-モジュールとの対応) にまとめました。
+`Array` モジュールは、F# の `Array` モジュールと同じ関数を、同じ名前（snake_case）で提供します。配列はどの関数でも最後の引数なので、`Array.map f xs` や `xs |> Array.filter p` のように F# の書き方がそのまま使え、`Array.sort >> Array.rev` のような関数合成もできます。F# で配列が最後にない 9 つの関数だけは、同じ理由で配列を最後に移しました（[引数の順序](#引数の順序)）。所有権のために F# と違う点（失敗の扱い、`Copy`、`r` を付けた関数）は [F# の Array モジュールとの対応](#f-の-array-モジュールとの対応) にまとめました。
 
 長さを型に含む `[T; N]` は別の型です。要素を値の中に持ち、ヒープは確保しません。C スタイルの `T[]` は書けません。`Array` は予約された型名で、同名の宣言は `E1001` です。
 
 ## この記事のポイント
 
 - 型は `[T]`（`Array<T>`）。長さは生成後に変わりません。空の `[]` には、要素型が分かる文脈が必要です。
-- F# の `Array` モジュールの関数（131 個。`Array.Parallel` を除く）がすべてあります。名前は snake_case、引数の順は F# と同じです。
+- F# の `Array` モジュールの関数（131 個。`Array.Parallel` を除く）がすべてあります。名前は snake_case です。配列は常に最後の引数で、`|>` でも `>>` でもつなげられます。F# で配列が最後にない関数（`get`、`set`、`sub`、`fill`、`blit`、`fold_back`、`fold_back2`、`scan_back`、`map_fold_back`）だけ、配列を最後に移しています。
 - F# が例外を投げる場面（空配列、範囲外、長さの不一致、見つからない `find`）はトラップです。`try_item` や `try_find` のように `try_` が付く関数は `Maybe` を返します。
 - コールバックが要素を値で受ける関数（`map`、`filter`、`exists` など）は、要素が `Copy` であることを要求します。`mapr`、`foldr`、`existsr` のように `r` を付けた関数は要素を借用するので、文字列や配列の配列にも使えます。
 - 固定長配列 `[T; N]` は `FixedArray.init` か、期待型のあるリテラルで作ります。名前付きの値は `Array.sum xs` のように、`ref [T]` を取る関数へそのまま渡せます。
@@ -134,16 +134,16 @@ value=20 opt=20 missing=none
 
 | トラップする | `Maybe` を返す | 取り出すもの |
 | --- | --- | --- |
-| `Array.get xs i`、`Array.item i xs` | `Array.try_item i xs` | 添字 `i` の要素 |
+| `Array.get i xs`、`Array.item i xs` | `Array.try_item i xs` | 添字 `i` の要素（`get` と `item` は同じ関数です） |
 | `Array.head xs` | `Array.try_head xs` | 先頭 |
 | `Array.last xs` | `Array.try_last xs` | 末尾 |
 | `Array.exactly_one xs` | `Array.try_exactly_one xs` | 要素が 1 つだけのときのその要素 |
 
-これらは要素を値で返すので `Copy` が要ります。非 `Copy` の要素への参照は `Array.at xs i` か `ref xs[i]` で借ります。
+これらは要素を値で返すので `Copy` が要ります。非 `Copy` の要素への参照は `Array.at i xs` か `ref xs[i]` で借ります。
 
 ### 境界外アクセスとトラップ
 
-添字アクセス `xs[i]` や `Array.at xs i` に範囲外のインデックス（負数または `.length` 以上）を指定すると、プログラムは安全にトラップして即座に停止します。安全に失敗をハンドリングしたい場合は、`Maybe<'a>` を返す `Array.try_item` を使用します。
+添字アクセス `xs[i]` や `Array.at i xs` に範囲外のインデックス（負数または `.length` 以上）を指定すると、プログラムは安全にトラップして即座に停止します。安全に失敗をハンドリングしたい場合は、`Maybe<'a>` を返す `Array.try_item` を使用します。
 
 ### コンパイラによる境界検査の除去
 
@@ -289,7 +289,7 @@ sliced=[20, 30] sum=50
 
 スライスの型は配列の共有参照と同じ `ref [T]` です。スライスが生きている間、元の配列の移動や排他借用は拒否されます。裸の `xs[start..end]` と、両端を省略した `ref xs[..]` は `E0002` です。配列全体は `ref xs` と書きます。
 
-コピーして取り出す F# の関数は、`Array.sub xs start count`、`Array.take n xs`、`Array.skip n xs`、`Array.truncate n xs`、`Array.tail xs`、`Array.split_at i xs` です。`take`、`skip`、`split_at` は、長さを超える個数や位置でトラップします（`skip` の負の個数は 0 として扱います。`truncate` は超えても短い配列を返します）。
+コピーして取り出す F# の関数は、`Array.sub start count xs`、`Array.take n xs`、`Array.skip n xs`、`Array.truncate n xs`、`Array.tail xs`、`Array.split_at i xs` です。`take`、`skip`、`split_at` は、長さを超える個数や位置でトラップします（`skip` の負の個数は 0 として扱います。`truncate` は超えても短い配列を返します）。
 
 ### 排他スライスとインプレース更新
 
@@ -297,7 +297,7 @@ sliced=[20, 30] sum=50
 
 ```tsuzuri run=updated%3D%5B10%2C%2099%2C%2030%5D
 let mut numbers = [10, 20, 30]
-Array.set numbers 1 99
+Array.set 1 99 numbers
 $"updated={numbers}"
 ```
 
@@ -307,22 +307,22 @@ $"updated={numbers}"
 updated=[10, 99, 30]
 ```
 
-`let mut` の配列は、そのまま渡せば全体の排他スライスになります。F# の破壊的な関数は、次の形です。
+`let mut` の配列は、そのまま渡せば全体の排他スライスになります。書き換える配列は最後の引数で、`ref mut numbers |> Array.set 1 99` のようにパイプで渡すこともできます。F# の破壊的な関数は、次の形です。
 
-- `Array.set slice index value`: 指定位置の要素をその場で上書きする。`Array.write` と同じ関数です
-- `Array.fill slice start count value`: `start` から `count` 個を `value` にする
-- `Array.blit source source_index slice target_index count`: `source` の一部を `slice` へ写す。排他借用なので、元と先は重なりません
+- `Array.set index value slice`: 指定位置の要素をその場で上書きする。`Array.write` と同じ関数です
+- `Array.fill start count value slice`: `start` から `count` 個を `value` にする
+- `Array.blit source_index target_index count source slice`: `source` の一部を `slice` へ写す。排他借用なので、元と先は重なりません
 - `Array.sort_in_place slice`: 作業領域を確保しない安定整列
 - `Array.sort_in_place_by projection slice`、`Array.sort_in_place_with comparer slice`: キーや比較関数で整列する。同じ長さの一時配列を使います
 - `Array.random_shuffle_in_place_by randomizer slice`、`Array.random_shuffle_in_place_with generator slice`: その場でシャッフルする
-- `Array.swap_in slice i j`: 2 つの要素をその場で入れ替える
-- `Array.split_at_mut slice index`: 指定位置で 2 つの排他スライスに分ける。`0 <= index <= length` を外れるとトラップする
+- `Array.swap_in i j slice`: 2 つの要素をその場で入れ替える
+- `Array.split_at_mut index slice`: 指定位置で 2 つの排他スライスに分ける。`0 <= index <= length` を外れるとトラップする
 
 ```tsuzuri run=target%3D%5B12%2C%2013%2C%202%2C%20100%2C%20100%2C%209%5D%20words%3D%5B30%2C%2020%2C%2010%5D
 let mut target = [0, 1, 2, 3, 4, 5]
-Array.fill target 3 2 100
-Array.blit [12, 13, 14] 0 target 0 2
-Array.set target 5 9
+Array.fill 3 2 100 target
+Array.blit 0 0 2 [12, 13, 14] target
+Array.set 5 9 target
 let mut words = [30, 10, 20]
 Array.sort_in_place_by (\x -> -x) words
 $"target={target} words={words}"
@@ -341,10 +341,10 @@ target=[12, 13, 2, 100, 100, 9] words=[30, 20, 10]
 > `split_at_mut` の 2 つの結果は、元の排他スライスからの 1 つの貸し直しです。片方をさらに貸している間、もう一方を使うと `E1014` です。先に片方を使い切ってから、もう片方を貸します。
 
 ```text
-match Array.split_at_mut values 1 with
+match Array.split_at_mut 1 values with
 | (left, right) ->
     let inner = ref mut left[0..1]
-    Array.write right 0 1
+    Array.write 0 1 right
 ```
 
 この断片は `E1014` になります。
@@ -368,8 +368,8 @@ original=[1, 2, 3] modified=[1, 20, 3]
 - `Array.update_at index value xs`: 指定位置を置き換えた配列を返す
 - `Array.insert_at index value xs`、`Array.insert_many_at index values xs`: 位置の前へ挿入した配列を返す
 - `Array.remove_at index xs`、`Array.remove_many_at index count xs`: 取り除いた配列を返す
-- `Array.update xs index (\old -> new)`: 古い要素に関数を適用した配列を返す（F# にはありません）
-- `Array.swap xs i j`: 2 つの位置を入れ替えた配列を返す（F# にはありません）
+- `Array.update index (\old -> new) xs`: 古い要素に関数を適用した配列を返す（F# にはありません）
+- `Array.swap i j xs`: 2 つの位置を入れ替えた配列を返す（F# にはありません）
 
 ```tsuzuri run=inserted%3D%5B0%2C%209%2C%201%2C%202%2C%203%5D%20removed%3D%5B0%2C%202%2C%203%5D%20replaced%3D%5B0%2C%201%2C%207%2C%203%5D%20cut%3D%5B0%2C%203%5D%20original%3D%5B0%2C%201%2C%202%2C%203%5D
 let xs = [0, 1, 2, 3]
@@ -395,7 +395,7 @@ inserted=[0, 9, 1, 2, 3] removed=[0, 2, 3] replaced=[0, 1, 7, 3] cut=[0, 3] orig
 ```tsuzuri run=sorted%3D%5B1%2C%202%2C%205%2C%208%2C%209%5D%20idx%3D2
 let scores = [5, 2, 9, 1, 8]
 let ascending = Array.sort scores
-let found_idx = match Array.binary_search ascending (ref 5) with
+let found_idx = match Array.binary_search (ref 5) ascending with
 | Some i -> to_string i
 | None -> "not found"
 $"sorted={ascending} idx={found_idx}"
@@ -529,7 +529,7 @@ length=5 sum=15
 
 ## F# の Array モジュールとの対応
 
-[F# の `Array` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-arraymodule.html)の関数は、`Array.Parallel` を除いてすべてあります。名前は camelCase を snake_case にしたもの（`tryFind` は `try_find`、`foldBack2` は `fold_back2`、`sortInPlaceBy` は `sort_in_place_by`）です。引数の順は F# と同じで、関数を先に、配列を最後に渡します。コンピュテーション式やパイプラインで、F# と同じ形に書けます。
+[F# の `Array` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-arraymodule.html)の関数は、`Array.Parallel` を除いてすべてあります。名前は camelCase を snake_case にしたもの（`tryFind` は `try_find`、`foldBack2` は `fold_back2`、`sortInPlaceBy` は `sort_in_place_by`）です。配列を最後に渡す点も F# と同じで、F# で配列が最後にない 9 つの関数だけ、配列を最後に移しています（[引数の順序](#引数の順序)）。コンピュテーション式やパイプラインで、F# と同じ形に書けます。
 
 ### 型と失敗
 
@@ -550,6 +550,41 @@ length=5 sum=15
 
 トラップになる F# の例外は、空配列（`head`、`last`、`reduce`、`min`、`max`、`average` など）、負の個数（`init`、`create`、`take`、`chunk_by_size`、`windowed`、`split_into` など）、範囲外（`get`、`set`、`update_at`、`insert_at`、`remove_at`、`sub`、`split_at`、`take`、`skip`、`blit`、`fill`）、長さの不一致（`zip`、`map2`、`fold2`、`exists2`、`transpose` など）、見つからない検索（`find`、`find_back`、`find_index`、`pick`）、順列でない `permute` です。
 
+### 引数の順序
+
+操作する配列は、必ず最後の引数です。`xs |> Array.f a` のようにパイプで渡せ、`Array.f a >> Array.g b` のように一部だけ渡した関数を合成できます。F# の `Array` も多くの関数がそうですが、次の 9 つは配列が最後にありません。Tsuzuri では、ほかの引数の順を保ったまま、配列を最後に移しました。
+
+| 関数 | F# | Tsuzuri |
+| --- | --- | --- |
+| `get` | `Array.get array index` | `Array.get index array`（`item` と同じ関数です） |
+| `set` | `Array.set array index value` | `Array.set index value array` |
+| `sub` | `Array.sub array start count` | `Array.sub start count array` |
+| `fill` | `Array.fill target index count value` | `Array.fill index count value target` |
+| `blit` | `Array.blit source sourceIndex target targetIndex count` | `Array.blit sourceIndex targetIndex count source target` |
+| `fold_back` | `Array.foldBack folder array state` | `Array.fold_back folder state array` |
+| `fold_back2` | `Array.foldBack2 folder array1 array2 state` | `Array.fold_back2 folder state array1 array2` |
+| `scan_back` | `Array.scanBack folder array state` | `Array.scan_back folder state array` |
+| `map_fold_back` | `Array.mapFoldBack mapping array state` | `Array.map_fold_back mapping state array` |
+
+`folder` と `mapping` の引数の順は F# のままです（`fold_back` の `folder` は `'a -> 'state -> 'state`）。`fold` と同じく、初期値は関数の直後に置きます。複数の配列を取る関数（`zip`、`append`、`fold2` など）は、F# と同じ順に配列を並べるので、最後の配列が最後の引数です。`blit` は添字と個数を先にまとめ、元の配列、先の配列の順に並べます。Tsuzuri だけの関数（`at`、`index_of`、`binary_search`、`update`、`swap`、`write`、`swap_in`、`split_at_mut`）も、配列を最後に取ります。
+
+```tsuzuri run=numbers%3D%5B10%2C%2099%2C%2030%5D%20top%3D%5B9%2C%204%5D%20folded%3D321
+let mut numbers = [10, 20, 30]
+ref mut numbers |> Array.set 1 99
+let sort_down = Array.sort >> Array.rev
+let top = [4, 9, 1] |> sort_down |> Array.take 2
+let folded = [1, 2, 3] |> Array.fold_back (\x acc -> acc * 10 + x) 0
+$"numbers={numbers} top={top} folded={folded}"
+```
+
+実行結果:
+
+```text
+numbers=[10, 99, 30] top=[9, 4] folded=321
+```
+
+`>>` で合成した関数は、前の関数が返した配列を、次の関数が借りて受け取ります。借りた一時の配列の中を指す参照を返す関数（`minr`、`findr` など）につなぐと、参照が一時の配列より長生きしてしまうので `E1013` です。要素を取り出すには、`min` や `find` のように値を返す関数を使うか、配列を `let` に束縛します。
+
 ### コールバックと `r` 形
 
 要素を値で受けるコールバックは、要素が `Copy` であることを要求します。文字列や配列の配列は `Copy` ではないので、値を取る形は使えません（`E1005`）。そのための借用形が、関数名の語幹（最初の語）の直後に `r` を付けた関数です。コールバックは要素の共有参照 `ref 'a` を受け取り、要素そのものを返す関数は参照を返すので、どんな要素型にも使えます。`fold_back` の借用形が `foldr_back` になるように、`_back` などの後ろの語は動きません。
@@ -559,7 +594,7 @@ length=5 sum=15
 | `map` | `mapr` | `(ref 'a -> 'b) -> ref ['a] -> ['b]` |
 | `mapi` | `mapir` | `(i64 -> ref 'a -> 'b) -> ref ['a] -> ['b]` |
 | `fold` | `foldr` | `('state -> ref 'a -> 'state) -> 'state -> ref ['a] -> 'state` |
-| `fold_back` | `foldr_back` | `(ref 'a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state` |
+| `fold_back` | `foldr_back` | `(ref 'a -> 'state -> 'state) -> 'state -> ref ['a] -> 'state` |
 | `iter` | `iterr` | `(ref 'a -> unit) -> ref ['a] -> unit` |
 | `iteri` | `iterir` | `(i64 -> ref 'a -> unit) -> ref ['a] -> unit` |
 | `exists` | `existsr` | `(ref 'a -> bool) -> ref ['a] -> bool` |
@@ -590,7 +625,7 @@ lengths=[5, 3, 6] total=14 long=2 has_fig=true
 
 ### 配列の更新
 
-F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き換えます。Tsuzuri の配列は値なので、書き換える関数は排他スライス `ref mut [T..]` を受け取り、`let mut` の配列を渡せば全体の排他スライスになります。`Array.set` は `Array.write` と同じ関数です。F# の `Array.updateAt` は、所有権を受け取って新しい配列を返す `Array.update_at` です。更新した配列を返す `Array.update` と `Array.swap` は F# にはありません。
+F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き換えます。Tsuzuri の配列は値なので、書き換える関数は排他スライス `ref mut [T..]` を最後の引数に受け取り、`let mut` の配列を渡せば全体の排他スライスになります。`Array.set` は `Array.write` と同じ関数です。F# の `Array.updateAt` は、所有権を受け取って新しい配列を返す `Array.update_at` です。更新した配列を返す `Array.update` と `Array.swap` は F# にはありません。
 
 ### F# にない関数
 
@@ -598,7 +633,7 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 
 | 関数 | 説明 |
 | --- | --- |
-| `at`、`get` の参照版 | `Array.at xs i` は `ref 'a` を返します（`Copy` 不要） |
+| `at`、`get` の参照版 | `Array.at i xs` は `ref 'a` を返します（`Copy` 不要） |
 | `count`、`countr` | 述語を満たす要素の個数 |
 | `index_of`、`equal`、`binary_search` | 値で探す、2 つの配列を比べる、整列済み配列を二分探索する |
 | `product` | 総乗 |
@@ -615,10 +650,10 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 | --- | --- | --- |
 | `length` | `ref ['a] -> i64` | 要素数を返します。`.length` プロパティと同じです |
 | `is_empty` | `ref ['a] -> bool` | 要素数が 0 かどうかを返します |
-| `get` | `Copy<'a> => ref ['a] -> i64 -> 'a` | 指定位置の要素。範囲外はトラップします。`xs[i]` と同じです |
-| `item` | `Copy<'a> => i64 -> ref ['a] -> 'a` | `get` の引数の順を替えたものです |
+| `get` | `Copy<'a> => i64 -> ref ['a] -> 'a` | 指定位置の要素。範囲外はトラップします。`xs[i]` と同じです |
+| `item` | `Copy<'a> => i64 -> ref ['a] -> 'a` | `get` と同じ関数です |
 | `try_item` | `Copy<'a> => i64 -> ref ['a] -> Maybe<'a>` | 範囲外は `None` です |
-| `at` | `ref ['a] -> i64 -> ref 'a` | 指定位置の要素の共有参照。範囲外はトラップします（F# にはありません） |
+| `at` | `i64 -> ref ['a] -> ref 'a` | 指定位置の要素の共有参照。範囲外はトラップします（F# にはありません） |
 | `head`、`last` | `Copy<'a> => ref ['a] -> 'a` | 先頭、末尾の要素。空配列はトラップします |
 | `try_head`、`try_last` | `Copy<'a> => ref ['a] -> Maybe<'a>` | 空配列は `None` です |
 | `exactly_one` | `Copy<'a> => ref ['a] -> 'a` | 要素が 1 つだけのときのその要素。それ以外はトラップします |
@@ -647,7 +682,7 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `sub` | `Copy<'a> => ref ['a] -> i64 -> i64 -> ['a]` | `sub xs start count` で指定範囲の部分配列を複製して返します |
+| `sub` | `Copy<'a> => i64 -> i64 -> ref ['a] -> ['a]` | `sub start count xs` で指定範囲の部分配列を複製して返します |
 | `take`、`skip`、`truncate` | `Copy<'a> => i64 -> ref ['a] -> ['a]` | 先頭 n 個、先頭 n 個を除いたもの、最大 n 個。`take` と `skip` は長さを超えるとトラップします |
 | `tail` | `Copy<'a> => ref ['a] -> ['a]` | 先頭を除いたもの。空配列はトラップします |
 | `split_at` | `Copy<'a> => i64 -> ref ['a] -> (['a] * ['a])` | 位置で 2 つに分けます |
@@ -672,7 +707,7 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 | `iter2`、`iteri2` | `(Copy<'a>, Copy<'b>) => ('a -> 'b -> unit) -> ref ['a] -> ref ['b] -> unit` | 2 つの配列の対応する要素に適用します |
 | `map`、`mapi` | `Copy<'a> => ('a -> 'b) -> ref ['a] -> ['b]` | 各要素に関数を適用した新しい配列を返します |
 | `map2`、`mapi2`、`map3` | `(Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> ['c]` | 2 つ、3 つの配列を同時に変換します |
-| `map_fold`、`map_fold_back` | `Copy<'a> => ('state -> 'a -> ('b * 'state)) -> 'state -> ref ['a] -> (['b] * 'state)` | 変換と畳み込みを同時に行います。`map_fold_back` は末尾から（結果は元の順） |
+| `map_fold`、`map_fold_back` | `Copy<'a> => ('state -> 'a -> ('b * 'state)) -> 'state -> ref ['a] -> (['b] * 'state)` | 変換と畳み込みを同時に行います。`map_fold_back` は `('a -> 'state -> ('b * 'state)) -> 'state -> ref ['a] -> (['b] * 'state)` で、末尾から（結果は元の順） |
 | `collect` | `(Copy<'a>, Copy<'b>) => ('a -> ['b]) -> ref ['a] -> ['b]` | 各要素が返す配列を連結します |
 | `choose` | `Copy<'a> => ('a -> Maybe<'b>) -> ref ['a] -> ['b]` | `Some` の中身だけを集めます |
 | `filter`、`where` | `Copy<'a> => ('a -> bool) -> ref ['a] -> ['a]` | 述語を満たす要素を、順序を保って集めます（`where` は同じ関数です） |
@@ -686,11 +721,11 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
 | `fold` | `Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref ['a] -> 'state` | 先頭から左畳み込みを行います |
-| `fold_back` | `Copy<'a> => ('a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state` | 末尾から右畳み込みを行います |
-| `fold2`、`fold_back2` | `(Copy<'a>, Copy<'b>) => ('state -> 'a -> 'b -> 'state) -> 'state -> ref ['a] -> ref ['b] -> 'state` | 2 つの配列を同時に畳み込みます。`fold_back2` は `('a -> 'b -> 'state -> 'state) -> ref ['a] -> ref ['b] -> 'state -> 'state` |
-| `foldr`、`foldr_back` | `('state -> ref 'a -> 'state) -> 'state -> ref ['a] -> 'state` | 要素の参照を受け取る `fold`、`fold_back` です（`foldr_back` は `(ref 'a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state`） |
+| `fold_back` | `Copy<'a> => ('a -> 'state -> 'state) -> 'state -> ref ['a] -> 'state` | 末尾から右畳み込みを行います |
+| `fold2`、`fold_back2` | `(Copy<'a>, Copy<'b>) => ('state -> 'a -> 'b -> 'state) -> 'state -> ref ['a] -> ref ['b] -> 'state` | 2 つの配列を同時に畳み込みます。`fold_back2` は `('a -> 'b -> 'state -> 'state) -> 'state -> ref ['a] -> ref ['b] -> 'state` |
+| `foldr`、`foldr_back` | `('state -> ref 'a -> 'state) -> 'state -> ref ['a] -> 'state` | 要素の参照を受け取る `fold`、`fold_back` です（`foldr_back` は `(ref 'a -> 'state -> 'state) -> 'state -> ref ['a] -> 'state`） |
 | `reduce`、`reduce_back` | `Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> 'a` | 先頭の要素を初期値にして畳み込みます。空配列はトラップします |
-| `scan`、`scan_back` | `(Copy<'a>, Copy<'state>) => ('state -> 'a -> 'state) -> 'state -> ref ['a] -> ['state]` | 途中の状態も含めて返します。長さは `n + 1` です |
+| `scan`、`scan_back` | `(Copy<'a>, Copy<'state>) => ('state -> 'a -> 'state) -> 'state -> ref ['a] -> ['state]` | 途中の状態も含めて返します。長さは `n + 1` です。`scan_back` は `('a -> 'state -> 'state) -> 'state -> ref ['a] -> ['state]` で、末尾から畳み込みます |
 
 ### 探索・判定
 
@@ -708,10 +743,10 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 | `findr`、`try_findr` | `(ref 'a -> bool) -> ref ['a] -> ref 'a` | 要素の参照を返す `find`、`try_find` です（`try_findr` は `Maybe<ref 'a>`） |
 | `pick`、`try_pick` | `Copy<'a> => ('a -> Maybe<'b>) -> ref ['a] -> 'b` | 最初に `Some` を返した結果。`try_pick` は `Maybe<'b>` を返します |
 | `count`、`countr` | `Copy<'a> => ('a -> bool) -> ref ['a] -> i64` | 述語を満たす要素の個数（F# にはありません）。`countr` は `ref 'a -> bool` を受けます |
-| `index_of` | `Eq<'a> => ref ['a] -> ref 'a -> Maybe<i64>` | 値と等しい最初の要素のインデックスを返します（F# にはありません） |
+| `index_of` | `Eq<'a> => ref 'a -> ref ['a] -> Maybe<i64>` | 値と等しい最初の要素のインデックスを返します（F# にはありません） |
 | `equal` | `Eq<'a> => ref ['a] -> ref ['a] -> bool` | 2 つの配列の全要素が等しいか判定します（F# にはありません） |
 | `compare_with` | `Copy<'a> => ('a -> 'a -> i64) -> ref ['a] -> ref ['a] -> i64` | 要素ごとに比べ、違いがなければ短い方を小さいとします |
-| `binary_search` | `Ord<'a> => ref ['a] -> ref 'a -> Maybe<i64>` | 整列済み配列に対して二分探索を行います（F# にはありません） |
+| `binary_search` | `Ord<'a> => ref 'a -> ref ['a] -> Maybe<i64>` | 整列済み配列に対して二分探索を行います（F# にはありません） |
 
 ### 集計・グループ化
 
@@ -752,13 +787,13 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 | `insert_many_at` | `Copy<'a> => i64 -> ref ['a] -> ref ['a] -> ['a]` | 位置の前へ複数の要素を挿入した新しい配列 |
 | `remove_at` | `Copy<'a> => i64 -> ref ['a] -> ['a]` | 指定位置を除いた新しい配列 |
 | `remove_many_at` | `Copy<'a> => i64 -> i64 -> ref ['a] -> ['a]` | 指定位置から個数ぶんを除いた新しい配列 |
-| `update` | `['a] -> i64 -> ('a -> 'a) -> ['a]` | 指定位置の要素に関数を適用して置換します（F# にはありません） |
-| `swap` | `['a] -> i64 -> i64 -> ['a]` | 指定された 2 つの位置の要素を入れ替えます（F# にはありません） |
-| `set`、`write` | `ref mut ['a..] -> i64 -> 'a -> unit` | 排他スライスの指定位置をインプレースで上書きします（同じ関数です） |
-| `fill` | `Copy<'a> => ref mut ['a..] -> i64 -> i64 -> 'a -> unit` | 排他スライスの範囲を同じ値で埋めます |
-| `blit` | `Copy<'a> => ref ['a] -> i64 -> ref mut ['a..] -> i64 -> i64 -> unit` | 配列の範囲を排他スライスへ複写します |
-| `swap_in` | `ref mut ['a..] -> i64 -> i64 -> unit` | 排他スライスの 2 つの位置をインプレースで入れ替えます |
-| `split_at_mut` | `ref mut ['a..] -> i64 -> (ref mut ['a..] * ref mut ['a..])` | 指定位置で 2 つに分ける。範囲外はトラップ。片方の再借用中にもう一方を使うと `E1014` |
+| `update` | `i64 -> ('a -> 'a) -> ['a] -> ['a]` | 指定位置の要素に関数を適用して置換します（F# にはありません） |
+| `swap` | `i64 -> i64 -> ['a] -> ['a]` | 指定された 2 つの位置の要素を入れ替えます（F# にはありません） |
+| `set`、`write` | `i64 -> 'a -> ref mut ['a..] -> unit` | 排他スライスの指定位置をインプレースで上書きします（同じ関数です） |
+| `fill` | `Copy<'a> => i64 -> i64 -> 'a -> ref mut ['a..] -> unit` | 排他スライスの範囲を同じ値で埋めます。`fill start count value slice` |
+| `blit` | `Copy<'a> => i64 -> i64 -> i64 -> ref ['a] -> ref mut ['a..] -> unit` | 配列の範囲を排他スライスへ複写します。`blit source_index target_index count source slice` |
+| `swap_in` | `i64 -> i64 -> ref mut ['a..] -> unit` | 排他スライスの 2 つの位置をインプレースで入れ替えます |
+| `split_at_mut` | `i64 -> ref mut ['a..] -> (ref mut ['a..] * ref mut ['a..])` | 指定位置で 2 つに分ける。範囲外はトラップ。片方の再借用中にもう一方を使うと `E1014` |
 
 ### 乱数
 
@@ -861,7 +896,7 @@ total=11
 ## まとめ
 
 - `[T]` は作ったあとに長さが変わらない連続配列です。`[T; N]` は長さが型の一部で、ヒープを確保しません。
-- F# の `Array` モジュールの関数がすべてあります。名前は snake_case、引数の順は F# と同じで、F# の例外はトラップ、`try_` は `Maybe` です。
+- F# の `Array` モジュールの関数がすべてあります。名前は snake_case、配列は常に最後の引数（F# で最後にない 9 つの関数も移しました）、F# の例外はトラップ、`try_` は `Maybe` です。
 - 要素を値で受ける関数は `Copy` の要素向けで、非 `Copy` の要素には `mapr`、`foldr`、`existsr` のような `r` 形を使います。
 - 名前付きの固定長配列は `Array.sum xs` とそのまま渡せます。`for`、排他スライス、パターン分解はできません。
 - その場の更新は排他スライスと `Array.set`（`Array.write`）、所有を渡す更新は `Array.update_at` です。

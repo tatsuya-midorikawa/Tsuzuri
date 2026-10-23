@@ -79,7 +79,7 @@ function expression(e) {
     case "var": return e.name;
     case "bin": return `(${expression(e.a)} ${e.op} ${expression(e.b)})`;
     case "get": return `${e.name}[${expression(e.i)}]`;
-    case "set": return `(Array.__set ${e.name} ${expression(e.i)} ${expression(e.v)})`;
+    case "set": return `(Array.__set ${expression(e.i)} ${expression(e.v)} ${e.name})`;
     case "if": return `(if ${expression(e.condition)} then ${expression(e.yes)} else ${expression(e.no)})`;
     case "call": return `(${e.name} ${expression(e.argument)})`;
     default: throw Error(e.tag);

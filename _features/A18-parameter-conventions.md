@@ -78,8 +78,8 @@ Phase 1 は、構文 `own`、edition `2027`、引数の補完、診断、文書�
 | `ref string` の引数を値として返す（`\s -> s`、`\s -> s + "!"`） | `E1003` expected string, found ref string |
 | `ref [string]` の引数を返す | `E1003` expected [string], found ref [string] |
 | `ref Parser`（`string` を含む record）の引数で `{ p with pos = 1 }` や `p.text` を返す | `E1012` cannot move a non-Copy value out of a reference |
-| `ref [i64]` の引数を `Array.set xs 0 1` に渡す | 受理される（Copy の配列は、値を要求する引数では参照外しで複製される） |
-| `let mut ys = xs`（`xs` は `ref [i64]`）に続けて `ys = Array.set ys 0 5` | `E1003` expected ref [i64], found [an undetermined type]（分かりにくい。D8 で扱う） |
+| `ref [i64]` の引数を `Array.update_at 0 1 xs` に渡す | 受理される（Copy の配列は、値を要求する引数では参照外しで複製される） |
+| `let mut ys = xs`（`xs` は `ref [i64]`）に続けて `ys = Array.update_at 0 5 ys` | `E1003` expected ref [i64], found [an undetermined type]（分かりにくい。D8 で扱う） |
 
 下の 2 つの表は、2027 の補完が「明示的に `ref` を書いたのと同じ」になることを示す。`ref` を書いた引数の挙動は、そのまま 2027 の既定の挙動になる。
 

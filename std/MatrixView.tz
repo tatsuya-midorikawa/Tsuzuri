@@ -109,7 +109,7 @@ def to_matrix { r } :: Copy<'a> => MatrixView<'a> { r } -> Matrix<'a>
 fn to_matrix view =
     let count = view.rows * view.cols
     if count == 0 then Matrix.init view.rows view.cols (\_row _col -> view.data[0])
-    elif is_contiguous view then Matrix.of_array view.rows view.cols (Array.sub view.data view.offset count)
+    elif is_contiguous view then Matrix.of_array view.rows view.cols (Array.sub view.offset count view.data)
     else
         let mut out = new ['a](count, _ -> view.data[view.offset])
         for i in 0i64 .. (view.rows - 1) do
@@ -117,7 +117,7 @@ fn to_matrix view =
             let base = view.offset + i * view.row_stride
             for j in 0i64 .. (view.cols - 1) do
                 let value = view.data[base + j * view.col_stride]
-                Array.write target j value
+                Array.write j value target
         Matrix.of_array view.rows view.cols out
 
 /// Folds the elements left to right in row-major order of the window.
@@ -162,7 +162,7 @@ def write { r } :: ref mut Mut<'a> { r } -> i64 -> i64 -> 'a -> unit
 fn write view row col value =
     assert (row >= 0 && row < view.rows && col >= 0 && col < view.cols)
     let index = view.offset + row * view.row_stride + col * view.col_stride
-    Array.write view.data index value
+    Array.write index value view.data
 
 /// Lends one row of a row-major window as an exclusive slice; traps unless col_stride is 1.
 def row_mut { r } :: ref mut { r } Mut<'a> { r } -> i64 -> ref mut { r } ['a..]
@@ -192,7 +192,7 @@ fn fill view value =
             let base = view.offset + i * view.row_stride
             for j in 0i64 .. (view.cols - 1) do
                 let index = base + j * view.col_stride
-                Array.write view.data index value
+                Array.write index value view.data
 
 /// Copies the elements of a window of the same shape; traps when the shapes differ.
 def copy_from { r s } :: Copy<'a> => ref mut Mut<'a> { r } -> MatrixView<'a> { s } -> unit
@@ -205,7 +205,7 @@ fn copy_from target source =
             for j in 0i64 .. (target.cols - 1) do
                 let value = source.data[source_base + j * source.col_stride]
                 let index = target_base + j * target.col_stride
-                Array.write target.data index value
+                Array.write index value target.data
 
 /// Replaces every element by `transform` of it, in row-major order of the window.
 def map_in_place { r } :: Copy<'a> => ('a -> 'a) -> ref mut Mut<'a> { r } -> unit
@@ -216,4 +216,4 @@ fn map_in_place transform view =
             for j in 0i64 .. (view.cols - 1) do
                 let index = base + j * view.col_stride
                 let value = transform view.data[index]
-                Array.write view.data index value
+                Array.write index value view.data

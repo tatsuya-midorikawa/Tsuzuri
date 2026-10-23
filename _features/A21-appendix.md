@@ -15,7 +15,7 @@
 | (a) 配列の引数 | `def first_pos_c :: [i64] -> i64 = \xs ->` ⏎ `assert (xs.length > 0)` ⏎ `let r = Array.sum xs` ⏎ `assert (r >= 0)` ⏎ `r` | 実行 `10`。`--emit llvm -O0` の `first_pos_c` に `@tz.alloc` がなく、`xs` を読む `extractvalue %tz.array %v1, 1` だけ。`Array.sum` の呼び出しは契約なしの版と同じ形 |
 | (b) 結果の名前の連鎖 | `let r1: [i64] = Array.sort xs` ⏎ `assert (r1.length == xs.length)` ⏎ `let r2: [i64] = r1` ⏎ `assert (r2.length >= 0)` ⏎ `r2` | `[1, 2, 3] [1, 2, 3]`。IR は `store %tz.array zeroinitializer, ptr %v3`（移動）で複製なし |
 | (c) 値渡しの引数を本体が移動 | `let r: i64 = { let t = s; t.length }` ⏎ `assert (r == s.length)` | `error[E1012]: use of moved or partially moved value 's'`（`3:18`） |
-| (d) `ref mut` の事後の値 | `def bump :: ref mut [i64..] -> i64 -> unit = \xs v ->` ⏎ `let r: unit = Array.write xs 0 v` ⏎ `assert (xs[0] == v)` ⏎ `r` | `bump (ref mut a) 9` のあと `a` は `[9, 2, 3]` |
+| (d) `ref mut` の事後の値 | `def bump :: ref mut [i64..] -> i64 -> unit = \xs v ->` ⏎ `let r: unit = Array.write 0 v xs` ⏎ `assert (xs[0] == v)` ⏎ `r` | `bump (ref mut a) 9` のあと `a` は `[9, 2, 3]` |
 | (e) 末尾呼び出し | `def rec plain :: i64 -> i64 -> i64 = \n acc ->` ⏎ `assert (n >= 0)` ⏎ `if n == 0 then acc else plain (n - 1) (acc + n)` | `plain 10000000 0` が `-O0` で `50000005000000`（末尾呼び出しが保たれる） |
 | (f) `ensures` に当たる形 | `let r: i64 = if n == 0 then acc else woven (n - 1) (acc + n)` ⏎ `assert (r >= 0)` ⏎ `r` | `-O0`: 10,000／30,000／60,000 段は通り、100,000 段以上は `trap: stack overflow`。`-O3`: 1 億段が通る |
 

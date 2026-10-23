@@ -3,16 +3,16 @@ fn rec negate_all values =
     let length = Array.length values
     if length == 1 then
         let value = values[0]
-        Array.write values 0 (0 - value)
+        Array.write 0 (0 - value) values
     elif length > 1 then
-        match Array.split_at_mut values (length / 2) with
+        match Array.split_at_mut (length / 2) values with
         | (left, right) ->
             negate_all left
             negate_all right
 
 def fill :: ref mut [i64..] -> i64 -> unit
 fn fill values value =
-    for index in 0i64 .. (values.length - 1) do Array.write values index value
+    for index in 0i64 .. (values.length - 1) do Array.write index value values
 
 def total :: ref [i64] -> i64
 fn total values =
@@ -24,10 +24,10 @@ export def write_swap :: i64
 fn write_swap =
     let mut values: [i64] = [1, 2, 3, 4]
     let tail = ref mut values[1..]
-    Array.write tail 0 20
-    Array.swap_in tail 1 2
+    Array.write 0 20 tail
+    Array.swap_in 1 2 tail
     let scaled = tail[1] * 10
-    Array.write tail 1 scaled
+    Array.write 1 scaled tail
     let mut sum = 0i64
     for value in tail do sum = sum + value
     sum * 10000 + values[0] * 1000 + values[1] + values[2] + values[3]
@@ -47,27 +47,27 @@ fn negate_sized count =
 export def alternating :: i64
 fn alternating =
     let mut values: [i64] = [1, 2, 3, 4]
-    match Array.split_at_mut (ref mut values) 2 with
+    match Array.split_at_mut 2 (ref mut values) with
     | (left, right) ->
-        Array.write left 0 10
-        Array.write right 0 30
-        Array.write left 1 20
-        Array.write right 1 40
+        Array.write 0 10 left
+        Array.write 0 30 right
+        Array.write 1 20 left
+        Array.write 1 40 right
     values[0] + 2 * values[1] + 3 * values[2] + 4 * values[3]
 
 export def copy_snapshot :: i64
 fn copy_snapshot =
     let mut a: [i64] = [1, 2, 3]
     let b = a
-    Array.write (ref mut a[0..]) 0 9
+    Array.write 0 9 (ref mut a[0..])
     b[0] * 10 + a[0]
 
 export def strings_drop :: i64
 fn strings_drop =
     let mut texts: [string] = ["a", "b", "c"]
     let words = ref mut texts[0..]
-    Array.write words 0 ("x" + "yz")
-    Array.swap_in words 1 2
+    Array.write 0 ("x" + "yz") words
+    Array.swap_in 1 2 words
     let lengths = words[0].length + words[1].length + words[2].length
     lengths + (if texts[1] == "c" then 100 else 0)
 
@@ -75,7 +75,7 @@ export def heap_strings :: i64 -> i64
 fn heap_strings count =
     let mut texts = new [string](count, index -> to_string index)
     let words = ref mut texts[0..]
-    for index in 0i64 .. (count - 1) do Array.write words index (to_string (index * 10))
+    for index in 0i64 .. (count - 1) do Array.write index (to_string (index * 10)) words
     let mut sum = 0i64
     for word in texts do sum = sum + word.length
     sum
@@ -84,8 +84,8 @@ export def nested_frames :: i64
 fn nested_frames =
     let mut grid: [[i64]] = [[1, 2], [3]]
     let rows = ref mut grid[0..]
-    Array.write rows 0 [7, 8, 9]
-    Array.swap_in rows 0 1
+    Array.write 0 [7, 8, 9] rows
+    Array.swap_in 0 1 rows
     grid[0].length * 100 + grid[1].length * 10 + grid[1][2]
 
 export def convert :: i64
@@ -106,9 +106,9 @@ fn views_of_views =
     let mut values: [i64] = [1, 2, 3, 4, 5, 6]
     let outer = ref mut values[1..5]
     let inner = ref mut outer[1..3]
-    Array.write inner 0 30
-    Array.write inner 1 40
-    Array.write outer 0 20
+    Array.write 0 30 inner
+    Array.write 1 40 inner
+    Array.write 0 20 outer
     let shared = ref outer[2..]
     let read = shared[0] * 1000
     read + values[1] * 10 + values[3]
@@ -123,7 +123,7 @@ fn sorted_same count =
     let part = ref mut values[0..]
     for index in 0i64 .. (count - 1) do
         seed = lcg seed
-        Array.write part index (seed % 100)
+        Array.write index (seed % 100) part
     let sorted = Array.sort (ref values)
     Array.sort_in_place (ref mut values)
     let mut same = true
@@ -161,7 +161,7 @@ fn sort_strings =
 record Cursor {r} { part: ref mut {r} [string..], position: i64 }
 
 private def put :: Cursor -> string -> unit
-fn put cursor text = Array.write cursor.part cursor.position text
+fn put cursor text = Array.write cursor.position text cursor.part
 
 export def record_cursor :: i64
 fn record_cursor =
@@ -173,25 +173,25 @@ fn record_cursor =
 export def trap_write_index :: i64
 fn trap_write_index =
     let mut values: [i64] = [1, 2, 3]
-    Array.write (ref mut values) 3 0
+    Array.write 3 0 (ref mut values)
     values[0]
 
 export def trap_split_past :: i64
 fn trap_split_past =
     let mut values: [i64] = [1, 2, 3]
-    match Array.split_at_mut (ref mut values) 4 with
+    match Array.split_at_mut 4 (ref mut values) with
     | (left, right) -> left.length + right.length
 
 export def trap_split_negative :: i64
 fn trap_split_negative =
     let mut values: [i64] = [1, 2, 3]
-    match Array.split_at_mut (ref mut values) (-1) with
+    match Array.split_at_mut (-1) (ref mut values) with
     | (left, right) -> left.length + right.length
 
 export def trap_swap_index :: i64
 fn trap_swap_index =
     let mut values: [i64] = [1, 2, 3]
-    Array.swap_in (ref mut values) 0 3
+    Array.swap_in 0 3 (ref mut values)
     values[0]
 
 export def trap_slice_order :: i64
@@ -205,7 +205,7 @@ def double_chunk :: i64 -> ref mut [i64..] -> unit
 fn double_chunk start chunk =
     for index in 0i64 .. (chunk.length - 1) do
         let value = chunk[index]
-        Array.write chunk index (value * 2 + (start + index) % 3)
+        Array.write index (value * 2 + (start + index) % 3) chunk
 
 export def parallel_double :: i64 -> i64 -> i64
 fn parallel_double count size =
@@ -218,7 +218,7 @@ fn parallel_captured count size =
     let mut values = new [i64](count, _index -> 0)
     let offset = count * 10
     Parallel.for_each_chunk size (\start chunk ->
-        for index in 0i64 .. (chunk.length - 1) do Array.write chunk index (start + index + offset)) (ref mut values)
+        for index in 0i64 .. (chunk.length - 1) do Array.write index (start + index + offset) chunk) (ref mut values)
     total values
 
 export def parallel_strings :: i64 -> i64
@@ -231,7 +231,7 @@ fn parallel_strings count =
 
 def mark :: ref mut [i64..] -> i64 -> i64 -> unit
 fn mark chunk start offset =
-    for index in 0i64 .. (chunk.length - 1) do Array.write chunk index (start + index + offset)
+    for index in 0i64 .. (chunk.length - 1) do Array.write index (start + index + offset) chunk
 
 // A callback chosen at run time is no known function, so every job runs its own copy of it.
 export def parallel_dynamic :: i64 -> i64 -> i64
@@ -245,5 +245,5 @@ fn parallel_dynamic count size =
 export def trap_chunk_size :: i64
 fn trap_chunk_size =
     let mut values: [i64] = [1, 2, 3]
-    Parallel.for_each_chunk 0 (\_start chunk -> Array.write chunk 0 1) (ref mut values)
+    Parallel.for_each_chunk 0 (\_start chunk -> Array.write 0 1 chunk) (ref mut values)
     values[0]

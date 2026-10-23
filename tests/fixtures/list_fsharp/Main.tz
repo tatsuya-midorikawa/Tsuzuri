@@ -307,11 +307,11 @@ test "map_fold map_fold_back" =
     | (mapped, total) ->
         eq mapped [|2, 4, 6|]
         eq total 6
-    match List.map_fold_back (\x acc -> (x * 2, acc + x)) [|1, 2, 3|] 0 with
+    match List.map_fold_back (\x acc -> (x * 2, acc + x)) 0 [|1, 2, 3|] with
     | (mapped, total) ->
         eq mapped [|2, 4, 6|]
         eq total 6
-    match List.map_fold_back (\x acc -> (acc, acc + x)) [|1, 2, 3|] 0 with
+    match List.map_fold_back (\x acc -> (acc, acc + x)) 0 [|1, 2, 3|] with
     | (mapped, total) ->
         eq mapped [|5, 3, 0|]
         eq total 6
@@ -362,16 +362,16 @@ test "fold fold_back fold2 fold_back2 and the r forms" =
     let xs = [|1, 2, 3, 4|]
     eq (List.fold (\acc x -> acc * 10 + x) 0 xs) 1234
     eq (List.foldr (\acc x -> acc * 10 + *x) 0 xs) 1234
-    eq (List.fold_back (\x acc -> acc * 10 + x) xs 0) 4321
-    eq (List.foldr_back (\x acc -> acc * 10 + *x) xs 0) 4321
+    eq (List.fold_back (\x acc -> acc * 10 + x) 0 xs) 4321
+    eq (List.foldr_back (\x acc -> acc * 10 + *x) 0 xs) 4321
     eq (List.fold2 (\acc a b -> acc + a * b) 0 [|1, 2, 3|] [|4, 5, 6|]) 32
-    eq (List.fold_back2 (\a b acc -> acc * 10 + a + b) [|1, 2, 3|] [|10, 20, 30|] 0) 3531
+    eq (List.fold_back2 (\a b acc -> acc * 10 + a + b) 0 [|1, 2, 3|] [|10, 20, 30|]) 3531
     eq (List.fold (\acc x -> acc + x) 7 no_ints) 7
-    eq (List.fold_back (\x acc -> acc + x) no_ints 7) 7
-    eq (List.foldr_back (\x acc -> acc + *x) no_ints 7) 7
+    eq (List.fold_back (\x acc -> acc + x) 7 no_ints) 7
+    eq (List.foldr_back (\x acc -> acc + *x) 7 no_ints) 7
     let words = [|"a", "bcd"|]
     eq (List.foldr (\acc w -> acc + w.length) 0 words) 4
-    eq (List.foldr_back (\w acc -> acc * 10 + w.length) words 0) 31
+    eq (List.foldr_back (\w acc -> acc * 10 + w.length) 0 words) 31
 
 test "reduce reduce_back scan scan_back" =
     let no_ints: [|i64|] = [||]
@@ -380,9 +380,9 @@ test "reduce reduce_back scan scan_back" =
     eq (List.reduce (\a b -> a + b) [|5|]) 5
     eq (List.reduce_back (\a b -> a + b) [|5|]) 5
     eq (List.scan (\acc x -> acc + x) 0 [|1, 2, 3|]) [|0, 1, 3, 6|]
-    eq (List.scan_back (\x acc -> acc + x) [|1, 2, 3|] 0) [|6, 5, 3, 0|]
+    eq (List.scan_back (\x acc -> acc + x) 0 [|1, 2, 3|]) [|6, 5, 3, 0|]
     eq (List.scan (\acc x -> acc + x) 7 no_ints) [|7|]
-    eq (List.scan_back (\x acc -> acc + x) no_ints 7) [|7|]
+    eq (List.scan_back (\x acc -> acc + x) 7 no_ints) [|7|]
 
 // ---- Searching ----
 
@@ -884,8 +884,8 @@ test "lists of several chunks give the same results as lists of one chunk" =
     eq (List.append many one) (List.append one many)
     eq (List.fold (\acc x -> acc + x) 0 many) 49995000
     eq (List.foldr (\acc x -> acc + *x) 0 many) 49995000
-    eq (List.fold_back (\x acc -> acc + x) many 0) 49995000
-    eq (List.foldr_back (\x acc -> acc + *x) many 0) 49995000
+    eq (List.fold_back (\x acc -> acc + x) 0 many) 49995000
+    eq (List.foldr_back (\x acc -> acc + *x) 0 many) 49995000
     eq (List.reduce (\a b -> a + b) many) 49995000
     eq (List.reduce_back (\a b -> a + b) many) 49995000
     eq (List.sum many) 49995000
@@ -926,7 +926,7 @@ test "lists of several chunks give the same results as lists of one chunk" =
     | (even, odd) ->
         eq (List.length even) 5000
         eq (List.length odd) 5000
-    match List.map_fold_back (\x acc -> (x, acc + x)) many 0 with
+    match List.map_fold_back (\x acc -> (x, acc + x)) 0 many with
     | (mapped, total) ->
         eq mapped one
         eq total 49995000
@@ -952,3 +952,20 @@ test "a pipeline reads like F#" =
     eq ([|3, 1, 2|] |> List.sort |> List.rev) [|3, 2, 1|]
     eq ([|1, 2, 3|] |> List.fold (\acc x -> acc + x) 0) 6
     eq ([|[|1, 2|], [|3|]|] |> List.concat |> List.map (\x -> x * 2)) [|2, 4, 6|]
+
+// ---- The list comes last ----
+
+test "the list is the last argument, so pipelines and compositions pass it on" =
+    eq ([|1, 2, 3|] |> List.fold_back (\x acc -> acc * 10 + x) 0) 321
+    eq ([|1, 2, 3|] |> List.foldr_back (\x acc -> acc * 10 + deref x) 0) 321
+    eq ([|1, 2, 3|] |> List.scan_back (\x acc -> acc + x) 0) [|6, 5, 3, 0|]
+    eq (List.fold_back2 (\x y acc -> acc + x * y) 0 [|1, 2, 3|] [|4, 5, 6|]) 32
+    match [|1, 2, 3, 4|] |> List.map_fold_back (\x acc -> (x + acc, acc + 1)) 0 with
+    | (mapped, last) ->
+        eq mapped [|4, 4, 4, 4|]
+        eq last 4
+    let both = List.sort >> List.rev
+    eq (both [|4, 9, 1|]) [|9, 4, 1|]
+    let top_two = List.sort >> List.rev >> List.truncate 2
+    eq ([|5, 8, 6|] |> top_two) [|8, 6|]
+    eq ([|3, 1, 2|] |> (List.sort >> List.rev)) [|3, 2, 1|]

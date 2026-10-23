@@ -30,7 +30,7 @@ const BASE: &str =
 
 const READ_ONLY: &str = "let m = Matrix.init 3 4 (\\i j -> i * 10 + j)\nlet whole = MatrixView.of_matrix (ref m)\nlet t = MatrixView.transpose whole\nlet window = MatrixView.sub whole 1 1 2 2\nlet column = MatrixView.col whole 2\nlet top = MatrixView.row whole 0\nlet copy = MatrixView.to_matrix t\nlet sum = MatrixView.fold (\\acc x -> acc + x) 0 window\nlet product = MatrixView.mul t whole\nlet mapped = MatrixView.map (\\x -> x * 2) window\nlet strided = MatrixView.strided 1 2 2 4 2 (Matrix.as_array (ref m))\nderef (MatrixView.at t 2 1) + MatrixView.rows column + MatrixView.cols top + sum + Maybe.default_value 0 (MatrixView.get top 0 3) + deref (Matrix.at (ref copy) 3 2) + deref (Matrix.at (ref product) 3 3) + deref (Matrix.at (ref mapped) 1 0) + MatrixView.offset strided + MatrixView.row_stride strided + MatrixView.col_stride strided + Array.length (MatrixView.data whole)";
 
-const MUTABLE: &str = "let mut data = [0, 0, 0, 0, 0, 0, 0, 0, 0]\nlet mut view = MatrixView.of_array_mut 3 3 (ref mut data)\nMatrixView.write (ref mut view) 1 2 7\nMatrixView.fill (ref mut view) 4\nlet row = MatrixView.row_mut (ref mut view) 1\nArray.write row 0 9\nlet mut inner = MatrixView.sub_mut (ref mut view) 1 1 2 2\nMatrixView.fill (ref mut inner) 1\nlet source = [10, 20, 30, 40]\nlet from = MatrixView.of_array 2 2 (ref source)\nlet mut corner = MatrixView.sub_mut (ref mut view) 0 0 2 2\nMatrixView.copy_from (ref mut corner) (MatrixView.transpose from)\nMatrixView.map_in_place (\\x -> x + 1) (ref mut corner)\nlet seen = MatrixView.freeze (ref view)\nlet total = MatrixView.fold (\\acc x -> acc + x) 0 seen\nlet flipped = MatrixView.transpose_mut view\nlet last = MatrixView.freeze (ref flipped)\ntotal + MatrixView.rows last";
+const MUTABLE: &str = "let mut data = [0, 0, 0, 0, 0, 0, 0, 0, 0]\nlet mut view = MatrixView.of_array_mut 3 3 (ref mut data)\nMatrixView.write (ref mut view) 1 2 7\nMatrixView.fill (ref mut view) 4\nlet row = MatrixView.row_mut (ref mut view) 1\nArray.write 0 9 row\nlet mut inner = MatrixView.sub_mut (ref mut view) 1 1 2 2\nMatrixView.fill (ref mut inner) 1\nlet source = [10, 20, 30, 40]\nlet from = MatrixView.of_array 2 2 (ref source)\nlet mut corner = MatrixView.sub_mut (ref mut view) 0 0 2 2\nMatrixView.copy_from (ref mut corner) (MatrixView.transpose from)\nMatrixView.map_in_place (\\x -> x + 1) (ref mut corner)\nlet seen = MatrixView.freeze (ref view)\nlet total = MatrixView.fold (\\acc x -> acc + x) 0 seen\nlet flipped = MatrixView.transpose_mut view\nlet last = MatrixView.freeze (ref flipped)\ntotal + MatrixView.rows last";
 
 #[test]
 fn matrix_views_accept_the_documented_operations() {
@@ -108,7 +108,7 @@ fn writable_views_hold_an_exclusive_borrow() {
         "let first = data[0]\nMatrixView.write (ref mut view) 0 0 9\nfirst",
         "let mut second = MatrixView.of_array_mut 2 2 (ref mut data)\nMatrixView.write (ref mut view) 0 0 9\nMatrixView.write (ref mut second) 0 0 1",
         "let seen = MatrixView.freeze (ref view)\nMatrixView.write (ref mut view) 0 0 9\nMatrixView.rows seen",
-        "let row = MatrixView.row_mut (ref mut view) 0\nMatrixView.write (ref mut view) 0 0 9\nArray.write row 0 1",
+        "let row = MatrixView.row_mut (ref mut view) 0\nMatrixView.write (ref mut view) 0 0 9\nArray.write 0 1 row",
     ] {
         let message = rejects(&format!("{prefix}{source}"), "E1014");
         assert!(

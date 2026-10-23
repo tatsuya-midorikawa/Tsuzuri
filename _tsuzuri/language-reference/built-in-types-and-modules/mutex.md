@@ -55,7 +55,7 @@ $"count={final.count} sum={final.sum}"
 count=100 sum=4950
 ```
 
-配列を入れて、子どもごとに別の要素を書くこともできます。`Mutex<[i64]>` の中の配列は `Array.write values index x` で書き換えます。`Vec` や `string` のように、書き換えが所有権の移動になる型は、新しい値を `deref value = ...` で書き戻します。
+配列を入れて、子どもごとに別の要素を書くこともできます。`Mutex<[i64]>` の中の配列は `Array.write index x values` で書き換えます。`Vec` や `string` のように、書き換えが所有権の移動になる型は、新しい値を `deref value = ...` で書き戻します。
 
 ## タスクへ持ち込む
 

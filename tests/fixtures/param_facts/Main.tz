@@ -16,7 +16,7 @@ fn shared_alias seed = together (ref seed) (ref seed)
 
 def copy_elements :: ref mut [i64..] -> ref [i64] -> unit
 fn copy_elements output input =
-    for index in 0i64 .. (input.length - 1) do Array.write output index (input[index] + 1)
+    for index in 0i64 .. (input.length - 1) do Array.write index (input[index] + 1) output
 
 export def buffer_loop :: i64 -> i64
 fn buffer_loop count =
@@ -35,12 +35,12 @@ fn overlapping_slices =
 
 def split_copy :: ref mut [i64..] -> unit
 fn split_copy values =
-    match Array.split_at_mut values 2 with
+    match Array.split_at_mut 2 values with
     | (left, right) ->
         let first = right[0]
         let second = right[1]
-        Array.write left 0 (first + 1)
-        Array.write left 1 (second + 1)
+        Array.write 0 (first + 1) left
+        Array.write 1 (second + 1) left
 
 export def disjoint_siblings :: i64
 fn disjoint_siblings =
@@ -102,7 +102,7 @@ export def self_tail :: i64 -> i64 -> i64
 fn self_tail count seed = fold count seed
 
 def copy_byte :: ref mut [ubyte..] -> ref [ubyte] -> unit
-fn copy_byte output input = Array.write output 0 input[0]
+fn copy_byte output input = Array.write 0 input[0] output
 
 export def byte_buffer :: i64
 fn byte_buffer =

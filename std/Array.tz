@@ -1,7 +1,10 @@
-// The F# `Array` module in Tsuzuri: the same names in snake_case (`tryFind` is `try_find`), the same argument order
-// and the same results, with `i64` for every index and count. Where F# raises an exception this module traps, and
-// `try_*` functions return `Maybe`. Callbacks that read an element take it by value, so the element type must be
-// `Copy`; the `r` forms (`mapr`, `foldr`, `existsr`, ...) borrow each element instead and work for any element type.
+// The F# `Array` module in Tsuzuri: the same names in snake_case (`tryFind` is `try_find`) and the same results, with
+// `i64` for every index and count. The array is always the last argument, so that `array |> Array.f x` and
+// `Array.f x >> Array.g y` work; F# does the same except in `get`, `set`, `sub`, `fill`, `blit`, `fold_back`,
+// `fold_back2`, `scan_back` and `map_fold_back`, where this module moves the array to the end too. Where F# raises an
+// exception this module traps, and `try_*` functions return `Maybe`. Callbacks that read an element take it by value,
+// so the element type must be `Copy`; the `r` forms (`mapr`, `foldr`, `existsr`, ...) borrow each element instead and
+// work for any element type.
 
 def length :: ref ['a] -> i64
 fn length values = values.length
@@ -31,8 +34,9 @@ fn init count initializer = new ['a](count, initializer)
 
 // ---- Access ----
 
-def get :: Copy<'a> => ref ['a] -> i64 -> 'a
-fn get values index = values[index]
+/// The element at `index`; traps when `index` is out of range. F# `get`, with the array last, which makes it `item`.
+def get :: Copy<'a> => i64 -> ref ['a] -> 'a
+fn get index values = values[index]
 
 def item :: Copy<'a> => i64 -> ref ['a] -> 'a
 fn item index values = values[index]
@@ -42,8 +46,8 @@ fn try_item index values =
     if index < 0 || index >= values.length then Maybe.None else Maybe.Some values[index]
 
 /// A reference to the element at `index`; traps when `index` is out of range.
-def at :: ref ['a] -> i64 -> ref 'a
-fn at values index = ref values[index]
+def at :: i64 -> ref ['a] -> ref 'a
+fn at index values = ref values[index]
 
 def head :: Copy<'a> => ref ['a] -> 'a
 fn head values =
@@ -71,8 +75,8 @@ fn try_exactly_one values = if values.length == 1 then Maybe.Some values[0] else
 
 // ---- Slicing and filtering ----
 
-def sub :: Copy<'a> => ref ['a] -> i64 -> i64 -> ['a]
-fn sub values start count =
+def sub :: Copy<'a> => i64 -> i64 -> ref ['a] -> ['a]
+fn sub start count values =
     assert (start >= 0 && start <= values.length && count >= 0 && count <= values.length - start)
     let selected = ref values[start..start + count]
     deref selected
@@ -80,39 +84,39 @@ fn sub values start count =
 def tail :: Copy<'a> => ref ['a] -> ['a]
 fn tail values =
     assert (values.length > 0)
-    sub values 1 (values.length - 1)
+    sub 1 (values.length - 1) values
 
 def take :: Copy<'a> => i64 -> ref ['a] -> ['a]
 fn take count values =
     assert (count >= 0 && count <= values.length)
-    sub values 0 count
+    sub 0 count values
 
 def skip :: Copy<'a> => i64 -> ref ['a] -> ['a]
 fn skip count values =
     assert (count <= values.length)
     let start = if count < 0 then 0 else count
-    sub values start (values.length - start)
+    sub start (values.length - start) values
 
 def truncate :: Copy<'a> => i64 -> ref ['a] -> ['a]
 fn truncate count values =
-    if count <= 0 then [] else sub values 0 (if count < values.length then count else values.length)
+    if count <= 0 then [] else sub 0 (if count < values.length then count else values.length) values
 
 def split_at :: Copy<'a> => i64 -> ref ['a] -> (['a] * ['a])
 fn split_at index values =
     assert (index >= 0 && index <= values.length)
-    (sub values 0 index, sub values index (values.length - index))
+    (sub 0 index values, sub index (values.length - index) values)
 
 def take_while :: Copy<'a> => ('a -> bool) -> ref ['a] -> ['a]
 fn take_while predicate values =
     let mut index = 0
     while index < values.length && predicate values[index] do index = index + 1
-    sub values 0 index
+    sub 0 index values
 
 def skip_while :: Copy<'a> => ('a -> bool) -> ref ['a] -> ['a]
 fn skip_while predicate values =
     let mut index = 0
     while index < values.length && predicate values[index] do index = index + 1
-    sub values index (values.length - index)
+    sub index (values.length - index) values
 
 def where :: Copy<'a> => ('a -> bool) -> ref ['a] -> ['a]
 fn where predicate values =
@@ -141,7 +145,7 @@ fn reverse_in_place values =
     let mut low = 0
     let mut high = values.length - 1
     while low < high do
-        Array.swap_in values low high
+        Array.swap_in low high values
         low = low + 1
         high = high - 1
 
@@ -235,8 +239,8 @@ fn map_fold mapping initial values =
         index = index + 1
     (Vec.to_array mapped, state)
 
-def map_fold_back :: Copy<'a> => ('a -> 'state -> ('b * 'state)) -> ref ['a] -> 'state -> (['b] * 'state)
-fn map_fold_back mapping values initial =
+def map_fold_back :: Copy<'a> => ('a -> 'state -> ('b * 'state)) -> 'state -> ref ['a] -> (['b] * 'state)
+fn map_fold_back mapping initial values =
     let mut state = initial
     let mut mapped = Vec.empty()
     let mut index = values.length
@@ -298,8 +302,8 @@ fn fold2 folder initial left right =
         index = index + 1
     state
 
-def fold_back :: Copy<'a> => ('a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state
-fn fold_back folder values initial =
+def fold_back :: Copy<'a> => ('a -> 'state -> 'state) -> 'state -> ref ['a] -> 'state
+fn fold_back folder initial values =
     let mut state = initial
     let mut index = values.length
     while index > 0 do
@@ -308,8 +312,8 @@ fn fold_back folder values initial =
     state
 
 /// Like `fold_back`, but `folder` borrows each element, so the elements need not be `Copy`.
-def foldr_back :: (ref 'a -> 'state -> 'state) -> ref ['a] -> 'state -> 'state
-fn foldr_back folder values initial =
+def foldr_back :: (ref 'a -> 'state -> 'state) -> 'state -> ref ['a] -> 'state
+fn foldr_back folder initial values =
     let mut state = initial
     let mut index = values.length
     while index > 0 do
@@ -317,8 +321,8 @@ fn foldr_back folder values initial =
         state = folder (ref values[index]) state
     state
 
-def fold_back2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'state -> 'state) -> ref ['a] -> ref ['b] -> 'state -> 'state
-fn fold_back2 folder left right initial =
+def fold_back2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'state -> 'state) -> 'state -> ref ['a] -> ref ['b] -> 'state
+fn fold_back2 folder initial left right =
     assert (left.length == right.length)
     let mut state = initial
     let mut index = left.length
@@ -358,8 +362,8 @@ fn scan folder initial values =
         index = index + 1
     Vec.to_array states
 
-def scan_back :: (Copy<'a>, Copy<'state>) => ('a -> 'state -> 'state) -> ref ['a] -> 'state -> ['state]
-fn scan_back folder values initial =
+def scan_back :: (Copy<'a>, Copy<'state>) => ('a -> 'state -> 'state) -> 'state -> ref ['a] -> ['state]
+fn scan_back folder initial values =
     let mut state = initial
     let mut states = Vec.push state (Vec.empty())
     let mut index = values.length
@@ -666,8 +670,8 @@ fn containsr target values =
 def contains :: Eq<'a> => 'a -> ref ['a] -> bool
 fn contains target values = containsr (ref target) values
 
-def index_of :: Eq<'a> => ref ['a] -> ref 'a -> Maybe<i64>
-fn index_of values target =
+def index_of :: Eq<'a> => ref 'a -> ref ['a] -> Maybe<i64>
+fn index_of target values =
     let mut index = 0
     while index < values.length && !(Eq.eq (ref values[index]) target) do index = index + 1
     if index < values.length then Maybe.Some index else Maybe.None
@@ -679,8 +683,8 @@ fn equal left right =
         while index < left.length && left[index] == right[index] do index = index + 1
         index == left.length
 
-def binary_search :: Ord<'a> => ref ['a] -> ref 'a -> Maybe<i64>
-fn binary_search values target =
+def binary_search :: Ord<'a> => ref 'a -> ref ['a] -> Maybe<i64>
+fn binary_search target values =
     let mut lower = 0
     let mut upper = values.length
     while lower < upper do
@@ -739,12 +743,12 @@ fn pairwise values =
 def windowed :: Copy<'a> => i64 -> ref ['a] -> [['a]]
 fn windowed size values =
     assert (size > 0)
-    if size > values.length then [] else new [['a]](values.length - size + 1, index -> sub values index size)
+    if size > values.length then [] else new [['a]](values.length - size + 1, index -> sub index size values)
 
 private def chunk_at :: Copy<'a> => ref ['a] -> i64 -> i64 -> ['a]
 fn chunk_at values size index =
     let start = index * size
-    sub values start (if values.length - start < size then values.length - start else size)
+    sub start (if values.length - start < size then values.length - start else size) values
 
 def chunk_by_size :: Copy<'a> => i64 -> ref ['a] -> [['a]]
 fn chunk_by_size size values =
@@ -755,7 +759,7 @@ fn chunk_by_size size values =
 private def part_at :: Copy<'a> => ref ['a] -> i64 -> i64 -> i64 -> ['a]
 fn part_at values base extra index =
     let start = index * base + (if index < extra then index else extra)
-    sub values start (if index < extra then base + 1 else base)
+    sub start (if index < extra then base + 1 else base) values
 
 def split_into :: Copy<'a> => i64 -> ref ['a] -> [['a]]
 fn split_into count values =
@@ -787,7 +791,7 @@ fn permute index_map values =
         let target = index_map index
         assert (target >= 0 && target < values.length)
         assert (sources[target] < 0)
-        Array.write (ref mut sources) target index
+        Array.write target index (ref mut sources)
         index = index + 1
     new ['a](values.length, target -> values[sources[target]])
 
@@ -823,30 +827,32 @@ fn remove_many_at index count values =
 /// A copy of `source` with the element at `index` replaced. It consumes `source`, whose buffer is reused unless
 /// `source` is used again (then it is copied first); `index` out of range traps. F# `updateAt`.
 def update_at :: i64 -> 'a -> ['a] -> ['a]
-fn update_at index value source = Array.__set source index value
+fn update_at index value source = Array.__set index value source
 
-/// Replaces one element of an exclusive slice in place, like `write`; `index` out of range traps. F# `set`.
-def set :: ref mut ['a..] -> i64 -> 'a -> unit
-fn set values index value = Array.write values index value
+/// Replaces one element of an exclusive slice in place, like `write`; `index` out of range traps. F# `set`, with the
+/// slice last.
+def set :: i64 -> 'a -> ref mut ['a..] -> unit
+fn set index value values = Array.write index value values
 
-/// Sets `count` elements of an exclusive slice from `start` to `value` in place.
-def fill :: Copy<'a> => ref mut ['a..] -> i64 -> i64 -> 'a -> unit
-fn fill target start count value =
+/// Sets `count` elements of an exclusive slice from `start` to `value` in place. F# `fill`, with the slice last.
+def fill :: Copy<'a> => i64 -> i64 -> 'a -> ref mut ['a..] -> unit
+fn fill start count value target =
     assert (start >= 0 && count >= 0 && start <= target.length && count <= target.length - start)
     let mut offset = 0
     while offset < count do
-        Array.write target (start + offset) value
+        Array.write (start + offset) value target
         offset = offset + 1
 
 /// Copies `count` elements of `source` from `source_index` into an exclusive slice from `target_index`.
-/// The two cannot overlap, because the slice is an exclusive borrow.
-def blit :: Copy<'a> => ref ['a] -> i64 -> ref mut ['a..] -> i64 -> i64 -> unit
-fn blit source source_index target target_index count =
+/// The two cannot overlap, because the slice is an exclusive borrow. F# `blit` takes the indices between the two
+/// arrays; here the indices come first and the arrays last, `source` before `target`.
+def blit :: Copy<'a> => i64 -> i64 -> i64 -> ref ['a] -> ref mut ['a..] -> unit
+fn blit source_index target_index count source target =
     assert (count >= 0 && source_index >= 0 && target_index >= 0)
     assert (source_index <= source.length - count && target_index <= target.length - count)
     let mut offset = 0
     while offset < count do
-        Array.write target (target_index + offset) source[source_index + offset]
+        Array.write (target_index + offset) source[source_index + offset] target
         offset = offset + 1
 
 // ---- Conversions ----
@@ -963,7 +969,7 @@ fn count_by projection values =
         let mut counts = new [i64](keys.length, \_group -> 0)
         for owner in owners do
             let current = counts[owner]
-            Array.write (ref mut counts) owner (current + 1)
+            Array.write owner (current + 1) (ref mut counts)
         new [('key * i64)](keys.length, group -> (keys[group], counts[group]))
 
 private def group_values :: Copy<'a> => ref ['a] -> ref [i64] -> i64 -> i64 -> ['a]
@@ -977,12 +983,12 @@ fn group_by projection values =
         let mut sizes = new [i64](count, \_group -> 0)
         for owner in owners do
             let current = sizes[owner]
-            Array.write (ref mut sizes) owner (current + 1)
+            Array.write owner (current + 1) (ref mut sizes)
         let mut starts = new [i64](count, \_group -> 0)
         let mut next = 0
         let mut group = 0
         while group < count do
-            Array.write (ref mut starts) group next
+            Array.write group next (ref mut starts)
             next = next + sizes[group]
             group = group + 1
         let mut cursors = copy starts
@@ -990,8 +996,8 @@ fn group_by projection values =
         for index in 0 .. values.length - 1 do
             let owner = owners[index]
             let position = cursors[owner]
-            Array.write (ref mut order) position index
-            Array.write (ref mut cursors) owner (position + 1)
+            Array.write position index (ref mut order)
+            Array.write owner (position + 1) (ref mut cursors)
         new [('key * ['a])](count, member -> (keys[member], group_values values (ref order) starts[member] sizes[member]))
 
 // ---- Sorting ----
@@ -1055,7 +1061,7 @@ private def overwrite :: Copy<'a> => ref mut ['a..] -> ref ['a] -> unit
 fn overwrite target source =
     let mut index = 0
     while index < source.length do
-        Array.write target index source[index]
+        Array.write index source[index] target
         index = index + 1
 
 /// Sorts an exclusive slice in place with a comparer, stably. Unlike `sort_in_place`, it needs a temporary array.
@@ -1096,7 +1102,7 @@ fn sort_in_place_insertion values first last =
     for index in (first + 1) .. (last - 1) do
         let mut current = index
         while current > first && Ord.lt (ref values[current]) (ref values[current - 1]) do
-            Array.swap_in values current (current - 1)
+            Array.swap_in current (current - 1) values
             current = current - 1
 
 private def rec sort_in_place_merge :: Ord<'a> => ref mut ['a..] -> i64 -> i64 -> i64 -> unit
@@ -1108,7 +1114,7 @@ fn rec sort_in_place_merge values first middle last =
             let half = low + (high - low) / 2
             if Ord.lt (ref values[half]) (ref values[first]) then low = half + 1 else high = half
         for index in first .. (low - 2) do
-            Array.swap_in values index (index + 1)
+            Array.swap_in index (index + 1) values
     elif last - middle == 1 then
         let mut low = first
         let mut high = middle
@@ -1116,7 +1122,7 @@ fn rec sort_in_place_merge values first middle last =
             let half = low + (high - low) / 2
             if !(Ord.lt (ref values[middle]) (ref values[half])) then low = half + 1 else high = half
         for index in middle .. -1 .. (low + 1) do
-            Array.swap_in values index (index - 1)
+            Array.swap_in index (index - 1) values
     else
         let center = first + (last - first) / 2
         let total = center + middle
@@ -1140,10 +1146,10 @@ fn sort_in_place_rotate values first middle last =
         let source = middle - left
         let target = if left > right then middle else middle + right - left
         for step in 0i64 .. (count - 1) do
-            Array.swap_in values (source + step) (target + step)
+            Array.swap_in (source + step) (target + step) values
         if left > right then left = left - right else right = right - left
     for step in 0i64 .. (left - 1) do
-        Array.swap_in values (middle - left + step) (middle + step)
+        Array.swap_in (middle - left + step) (middle + step) values
 
 // ---- Floating-point reductions in a fixed order (not in F#) ----
 
@@ -1160,7 +1166,7 @@ fn sum_pairwise values =
             while index < next do
                 let left = index * 2
                 let value = if left + 1 < remaining then buffer[left] + buffer[left + 1] else buffer[left]
-                buffer = Array.__set buffer index value
+                buffer = Array.__set index value buffer
                 index = index + 1
             remaining = next
         buffer[0]
@@ -1216,7 +1222,7 @@ fn shuffle_by randomizer values =
     let length = values.length
     let mut index = 0
     while index < length - 1 do
-        Array.swap_in values index (draw randomizer index length)
+        Array.swap_in index (draw randomizer index length) values
         index = index + 1
 
 /// Shuffles an exclusive slice in place with Fisher-Yates. `randomizer` returns numbers in `[0, 1)`; any other
@@ -1251,9 +1257,9 @@ fn random_sample_by randomizer count source =
     let mut pool = copy source
     let mut index = 0
     while index < count do
-        Array.swap_in (ref mut pool) index (draw randomizer index source.length)
+        Array.swap_in index (draw randomizer index source.length) (ref mut pool)
         index = index + 1
-    sub pool 0 count
+    sub 0 count pool
 
 private def next_unit :: Random.Pcg -> (f64 * Random.Pcg)
 fn next_unit generator =
@@ -1274,7 +1280,7 @@ fn shuffle_with generator values =
     while index < values.length - 1 do
         match draw_with state index values.length with
         | (other, next) ->
-            Array.swap_in values index other
+            Array.swap_in index other values
             state = next
         index = index + 1
     state
@@ -1323,10 +1329,10 @@ fn random_sample_with generator count source =
     while index < count do
         match draw_with state index source.length with
         | (other, next) ->
-            Array.swap_in (ref mut pool) index other
+            Array.swap_in index other (ref mut pool)
             state = next
         index = index + 1
-    (sub pool 0 count, state)
+    (sub 0 count pool, state)
 
 /// Runs `use` with a generator seeded from the operating system.
 private def entropy :: (Random.Pcg -> 'b) -> IO<Result<'b, Os.Error>>

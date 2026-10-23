@@ -261,7 +261,7 @@ pub fn own_alloc(functions: &BTreeMap<String, IrFunction>, symbol: &str) -> bool
 - **(b) 継承文脈**（std・組み込み・生成関数）`inherited_trap_kinds_are_covered`: 関数の本体の `%tz.trap.N = add i32 %tz.context, KIND` の `KIND`（`TrapKind` の判別値: `Assert` 0・`IntegerDivisionByZero` 1・`IntegerDivisionOverflow` 2・`BoundsCheck` 3・`AllocationSize` 4・`AllocationFailure` 5・`RangeStepZero` 6・`MatchFailure` 7・`PatternMismatch` 8・`StringConcatOverflow` 9・`NumericRuntime` 10・`WasmRuntime` 11・`Encoding` 12・`DebugOutput` 13・`StackOverflow` 14・`Overflow` 15）が `{0, 1, 2, 3, 6, 7, 10, 12, 15}` を含む関数は、規則側に `effect == Trap` の `Site` が 1 つ以上ある。HEAD: 対象 848 関数、違反 0。
 - **(c) 組み込み関数の表** `builtin_table_explains_every_ir_trap`: `@tz.builtin.<surface>.<型>` の本体の `add i32 %tz.context, KIND`（補助関数へは入らない）が論理を含むなら、`builtin_facts(b).trap || exempt_trap.is_some()`。HEAD: 出現 150 個で、`trap` が偽かつ免除なしは 0（付録 B）。
 
-**F.4 掃引** `std_public_functions_are_all_swept`: `std/*.tz`・`std/*.tc` の `^(export )?def ` の名前（559。`grep -hE "^(export )?def " std/*.tz std/*.tc | wc -l`）が、(i) コーパスのプログラムの関数名（`origin == Std`・`.$mono.N` を除く）か、(ii) 掃引の fixture の関数のどれかに現れること。HEAD: (i) で 443、残りの 116 を (ii) の `tests/fixtures/effects_sweep/Main.tz` が受け持つ。fixture は付録 G の署名ごとに、型変数を `i64` に、`'key`・`'value` を `i64` に、制約を満たす具体型に置き換えた**型注釈つきの値**を 1 行ずつ書く（例: `let array_get: ref [i64] -> i64 -> Maybe<i64> = Array.get`）。モジュール内の型名は修飾する（`Handle` → `File.Handle`）。**この fixture は `check` が通ること**を手順 14 で確かめ、書けなかった関数は `tests/effects_alloc_conservative.rs` の `SWEEP_EXCLUDED: &[(&str, &str)]`（名前と理由）に入れる（理由なしは禁止。件数が 10 を超えたら停止して報告）。
+**F.4 掃引** `std_public_functions_are_all_swept`: `std/*.tz`・`std/*.tc` の `^(export )?def ` の名前（559。`grep -hE "^(export )?def " std/*.tz std/*.tc | wc -l`）が、(i) コーパスのプログラムの関数名（`origin == Std`・`.$mono.N` を除く）か、(ii) 掃引の fixture の関数のどれかに現れること。HEAD: (i) で 443、残りの 116 を (ii) の `tests/fixtures/effects_sweep/Main.tz` が受け持つ。fixture は付録 G の署名ごとに、型変数を `i64` に、`'key`・`'value` を `i64` に、制約を満たす具体型に置き換えた**型注釈つきの値**を 1 行ずつ書く（例: `let array_get: i64 -> ref [i64] -> Maybe<i64> = Array.get`）。モジュール内の型名は修飾する（`Handle` → `File.Handle`）。**この fixture は `check` が通ること**を手順 14 で確かめ、書けなかった関数は `tests/effects_alloc_conservative.rs` の `SWEEP_EXCLUDED: &[(&str, &str)]`（名前と理由）に入れる（理由なしは禁止。件数が 10 を超えたら停止して報告）。
 
 ## 付録 G: 未被覆の std 公開関数（116。コーパスで実体が出ないもの。署名は `std/` の `def` の行そのまま）
 
@@ -270,7 +270,7 @@ pub fn own_alloc(functions: &BTreeMap<String, IrFunction>, symbol: &str) -> bool
 ```text
 Array.count :: (ref 'a -> bool) -> ref ['a] -> i64
 Array.equal :: Eq<'a> => ref ['a] -> ref ['a] -> bool
-Array.get :: Copy<'a> => ref ['a] -> i64 -> Maybe<'a>
+Array.get :: Copy<'a> => i64 -> ref ['a] -> Maybe<'a>
 Bench.of :: (unit -> 'b) -> i64 -> i64
 Bench.with_input :: (unit -> 'a) -> (ref 'a -> 'b) -> i64 -> i64
 Dir.create :: string -> IO<Result<unit, Os.Error>>
@@ -469,7 +469,7 @@ def a_div :: i64 -> i64 -> i64 = \a b -> a / b
 def a_div2 :: i64 -> i64 = \a -> a / 2
 def a_idx :: ref [i64] -> i64 -> i64 = \xs i -> xs[i]
 def a_get :: ref [i64] -> i64 -> i64 = \xs i ->
-    match Array.get xs i with
+    match Array.get i xs with
     | Maybe.Some v -> v
     | Maybe.None -> 0
 def a_match :: Maybe<i64> -> i64 = \m ->
@@ -528,10 +528,10 @@ def main :: unit -> i32 = \() -> 0
 
 ```tsuzuri
 def uses_get :: ref [i64] -> i64 -> i64 = \xs i ->
-    match Array.get xs i with
+    match Array.get i xs with
     | Maybe.Some v -> v
     | Maybe.None -> 0
-def uses_sub :: ref [i64] -> [i64] = \xs -> Array.sub xs 0 1
+def uses_sub :: ref [i64] -> [i64] = \xs -> Array.sub 0 1 xs
 def a_guard2 :: ref [i64] -> i64 -> i64 = \xs i ->
     if i < 0 || i >= xs.length then 0 else xs[i]
 def a_guard3 :: ref [i64] -> i64 -> i64 = \xs i ->

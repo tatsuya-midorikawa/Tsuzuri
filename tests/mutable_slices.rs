@@ -24,7 +24,7 @@ fn rejects(source: &str, code: &str, fragment: &str) {
     );
 }
 
-const FILL: &str = "def fill :: ref mut [i64..] -> i64 -> unit = \\values value ->\n    for index in 0i64 .. (values.length - 1) do Array.write values index value\n";
+const FILL: &str = "def fill :: ref mut [i64..] -> i64 -> unit = \\values value ->\n    for index in 0i64 .. (values.length - 1) do Array.write index value values\n";
 const CONFLICT: &str = "access conflicts with a live borrow";
 
 #[test]
@@ -53,7 +53,7 @@ fn exclusive_slice_types_resolve_only_after_ref_mut() {
         "E1005",
         "collections cannot hold exclusive borrows",
     );
-    let error = analyze("def f :: ref mut [i64..] -> unit = \\values ->\n    let g = \\x -> Array.write values 0 x\n    g 1\n").expect_err("capture");
+    let error = analyze("def f :: ref mut [i64..] -> unit = \\values ->\n    let g = \\x -> Array.write 0 x values\n    g 1\n").expect_err("capture");
     assert!(
         error.message.contains("ref mut [i64..]"),
         "{}",
@@ -64,10 +64,10 @@ fn exclusive_slice_types_resolve_only_after_ref_mut() {
 #[test]
 fn exclusive_slices_borrow_named_mutable_arrays() {
     accepts(
-        "let mut values: [i64] = [1, 2, 3, 4]\nlet a = ref mut values[1..3]\nArray.write a 0 9\nlet b = ref mut values[1..]\nArray.write b 0 8\nlet c = &mut values[..2]\nArray.write c 0 7\nlet d = ref mut values[1..values.length - 1]\nd.length\n",
+        "let mut values: [i64] = [1, 2, 3, 4]\nlet a = ref mut values[1..3]\nArray.write 0 9 a\nlet b = ref mut values[1..]\nArray.write 0 8 b\nlet c = &mut values[..2]\nArray.write 0 7 c\nlet d = ref mut values[1..values.length - 1]\nd.length\n",
     );
     accepts(
-        "let mut values: [i64] = [1, 2, 3, 4]\nlet part = ref mut values[1..3]\nArray.write part 0 9\nlet size = values.length\nlet again = ref mut values[0..1]\nArray.write again 0 5\nsize + again.length\n",
+        "let mut values: [i64] = [1, 2, 3, 4]\nlet part = ref mut values[1..3]\nArray.write 0 9 part\nlet size = values.length\nlet again = ref mut values[0..1]\nArray.write 0 5 again\nsize + again.length\n",
     );
     rejects(
         "let mut values: [i64] = [1, 2]\nlet part = ref mut values[..]\npart.length\n",
@@ -80,7 +80,7 @@ fn exclusive_slices_borrow_named_mutable_arrays() {
         "array slices must be borrows",
     );
     rejects(
-        "let mut values: [i64] = [1, 2, 3]\nlet left = ref mut values[0..1]\nlet right = ref mut values[1..3]\nArray.write left 0 5\nright.length\n",
+        "let mut values: [i64] = [1, 2, 3]\nlet left = ref mut values[0..1]\nlet right = ref mut values[1..3]\nArray.write 0 5 left\nright.length\n",
         "E1014",
         CONFLICT,
     );
@@ -122,7 +122,7 @@ fn exclusive_slices_reborrow_and_read_like_shared_slices() {
         "{FILL}let mut values: [i64] = [1, 2, 3]\nlet part = ref mut values[0..]\nfill part 1\nfill part 2\nlet again = ref mut *part\nfill again 3\nlet keyword = ref mut part\nfill keyword 4\nlet shared = ref part[0..1]\nlet copy = deref part\nshared[0] + part.length + copy[0]\n"
     ));
     accepts(
-        "def tail :: ref mut [i64..] -> ref mut [i64..] = \\values -> ref mut values[1..]\n\ndef whole :: ref mut [i64] -> ref mut [i64..] = \\values -> ref mut values[0..]\n\nlet mut values: [i64] = [1, 2, 3]\nlet rest = tail (whole (ref mut values))\nArray.write rest 0 5\nrest.length\n",
+        "def tail :: ref mut [i64..] -> ref mut [i64..] = \\values -> ref mut values[1..]\n\ndef whole :: ref mut [i64] -> ref mut [i64..] = \\values -> ref mut values[0..]\n\nlet mut values: [i64] = [1, 2, 3]\nlet rest = tail (whole (ref mut values))\nArray.write 0 5 rest\nrest.length\n",
     );
     for (source, code, fragment) in [
         (
@@ -136,7 +136,7 @@ fn exclusive_slices_reborrow_and_read_like_shared_slices() {
             "cannot replace an exclusive slice as a whole",
         ),
         (
-            "def f :: ref mut [i64..] -> unit = \\values ->\n    let g = \\x -> Array.write values 0 x\n    g 1\n",
+            "def f :: ref mut [i64..] -> unit = \\values ->\n    let g = \\x -> Array.write 0 x values\n    g 1\n",
             "E1005",
             "cannot capture ref mut [i64..] in a reusable function",
         ),
@@ -156,7 +156,7 @@ fn exclusive_slices_reborrow_and_read_like_shared_slices() {
             "",
         ),
         (
-            "def f :: ref mut [i64..] -> unit = \\values ->\n    for value in values do Array.write values 0 value\n",
+            "def f :: ref mut [i64..] -> unit = \\values ->\n    for value in values do Array.write 0 value values\n",
             "E1014",
             CONFLICT,
         ),
@@ -183,13 +183,13 @@ fn exclusive_slices_reborrow_and_read_like_shared_slices() {
 #[test]
 fn call_arguments_convert_to_exclusive_slices() {
     accepts(&format!(
-        "{FILL}def whole :: ref mut [i64] -> unit = \\array -> fill array 1\n\nlet mut values: [i64] = [1, 2, 3, 4, 5]\nfill (ref mut values) 7\nfill values 7\nfill &mut values 7\nwhole (ref mut values)\nlet converted: ref mut [i64..] = ref mut values\nArray.write converted 0 9\nvalues.length\n"
+        "{FILL}def whole :: ref mut [i64] -> unit = \\array -> fill array 1\n\nlet mut values: [i64] = [1, 2, 3, 4, 5]\nfill (ref mut values) 7\nfill values 7\nfill &mut values 7\nwhole (ref mut values)\nlet converted: ref mut [i64..] = ref mut values\nArray.write 0 9 converted\nvalues.length\n"
     ));
     accepts(
         "def sum_shared :: ref [i64] -> i64 = \\values -> Array.sum values\n\nlet mut values: [i64] = [1, 2, 3]\nlet part = ref mut values[1..]\nsum_shared part + Array.sum part + Array.length part\n",
     );
     let ir = accepts(
-        "def pass :: 'a -> 'a = \\value -> value\n\nlet mut values: [i64] = [1, 2, 3]\nlet whole = pass (ref mut values)\nlet size = whole.length\nlet part = pass (ref mut values[1..])\nArray.write part 0 5\nsize + part.length\n",
+        "def pass :: 'a -> 'a = \\value -> value\n\nlet mut values: [i64] = [1, 2, 3]\nlet whole = pass (ref mut values)\nlet size = whole.length\nlet part = pass (ref mut values[1..])\nArray.write 0 5 part\nsize + part.length\n",
     );
     let definitions = ir
         .lines()
@@ -223,15 +223,19 @@ fn call_arguments_convert_to_exclusive_slices() {
 #[test]
 fn in_place_writes_check_bounds_before_drop_and_store() {
     accepts(
-        "def run :: unit -> i64 = \\_unit ->\n    let mut values: [i64] = [1, 2, 3, 4]\n    let mut texts: [string] = [\"a\", \"b\", \"c\"]\n    let part = ref mut values[0..]\n    let mut index = 0i64\n    while index < 4 do\n        Array.write part index (index * 10)\n        index = index + 1\n    Array.swap_in part 0 3\n    let words = ref mut texts[0..]\n    Array.write words 0 \"xyz\"\n    Array.swap_in words 1 2\n    part[0] + words[0].length\n",
+        "def run :: unit -> i64 = \\_unit ->\n    let mut values: [i64] = [1, 2, 3, 4]\n    let mut texts: [string] = [\"a\", \"b\", \"c\"]\n    let part = ref mut values[0..]\n    let mut index = 0i64\n    while index < 4 do\n        Array.write index (index * 10) part\n        index = index + 1\n    Array.swap_in 0 3 part\n    let words = ref mut texts[0..]\n    Array.write 0 \"xyz\" words\n    Array.swap_in 1 2 words\n    part[0] + words[0].length\n",
+    );
+    // The slice is the last argument, so the value reads it before it is lent to the write.
+    accepts(
+        "let mut values: [i64] = [1, 2, 3]\nlet tail = ref mut values[1..]\nArray.write 1 (tail[1] * 10) tail\ntail.length\n",
     );
     rejects(
-        "let mut values: [i64] = [1, 2, 3]\nlet tail = ref mut values[1..]\nArray.write tail 1 (tail[1] * 10)\ntail.length\n",
+        "def put :: ref mut [i64..] -> i64 -> i64 -> unit = \\values index value -> Array.write index value values\n\nlet mut values: [i64] = [1, 2, 3]\nlet tail = ref mut values[1..]\nput tail 1 (tail[1] * 10)\ntail.length\n",
         "E1014",
         CONFLICT,
     );
     let ir = accepts(
-        "def put :: ref mut [string..] -> i64 -> string -> unit = \\values index text -> Array.write values index text\n",
+        "def put :: ref mut [string..] -> i64 -> string -> unit = \\values index text -> Array.write index text values\n",
     );
     let write = ir
         .split("\ndefine ")
@@ -246,15 +250,15 @@ fn in_place_writes_check_bounds_before_drop_and_store() {
 #[test]
 fn split_halves_share_one_loan() {
     accepts(
-        "def rec negate_all :: ref mut [i64..] -> unit = \\values ->\n    let length = Array.length values\n    if length == 1 then\n        let value = values[0]\n        Array.write values 0 (0 - value)\n    elif length > 1 then\n        match Array.split_at_mut values (length / 2) with\n        | (left, right) ->\n            negate_all left\n            negate_all right\n\ndef alternate :: ref mut [i64..] -> unit = \\values ->\n    match Array.split_at_mut values 2 with\n    | (left, right) ->\n        Array.write left 0 10\n        Array.write right 0 30\n        Array.write left 1 20\n        Array.write right 1 40\n",
+        "def rec negate_all :: ref mut [i64..] -> unit = \\values ->\n    let length = Array.length values\n    if length == 1 then\n        let value = values[0]\n        Array.write 0 (0 - value) values\n    elif length > 1 then\n        match Array.split_at_mut (length / 2) values with\n        | (left, right) ->\n            negate_all left\n            negate_all right\n\ndef alternate :: ref mut [i64..] -> unit = \\values ->\n    match Array.split_at_mut 2 values with\n    | (left, right) ->\n        Array.write 0 10 left\n        Array.write 0 30 right\n        Array.write 1 20 left\n        Array.write 1 40 right\n",
     );
     rejects(
-        "def f :: ref mut [i64..] -> unit = \\values ->\n    match Array.split_at_mut values 1 with\n    | (left, right) ->\n        Array.write values 0 1\n        Array.write left 0 2\n        Array.write right 0 3\n",
+        "def f :: ref mut [i64..] -> unit = \\values ->\n    match Array.split_at_mut 1 values with\n    | (left, right) ->\n        Array.write 0 1 values\n        Array.write 0 2 left\n        Array.write 0 3 right\n",
         "E1014",
         CONFLICT,
     );
     rejects(
-        "def f :: ref mut [i64..] -> unit = \\values ->\n    match Array.split_at_mut values 1 with\n    | (left, right) ->\n        let inner = ref mut left[0..1]\n        Array.write right 0 1\n        Array.write inner 0 2\n",
+        "def f :: ref mut [i64..] -> unit = \\values ->\n    match Array.split_at_mut 1 values with\n    | (left, right) ->\n        let inner = ref mut left[0..1]\n        Array.write 0 1 right\n        Array.write 0 2 inner\n",
         "E1014",
         CONFLICT,
     );
@@ -273,7 +277,7 @@ fn sort_in_place_specializes_only_when_used() {
 #[test]
 fn exclusive_slice_ir_is_deterministic_and_allocation_free() {
     let ir = accepts(&format!(
-        "{FILL}def rec negate_all :: ref mut [i64..] -> unit = \\values ->\n    let length = Array.length values\n    if length == 1 then\n        let value = values[0]\n        Array.write values 0 (0 - value)\n    elif length > 1 then\n        match Array.split_at_mut values (length / 2) with\n        | (left, right) ->\n            negate_all left\n            negate_all right\n"
+        "{FILL}def rec negate_all :: ref mut [i64..] -> unit = \\values ->\n    let length = Array.length values\n    if length == 1 then\n        let value = values[0]\n        Array.write 0 (0 - value) values\n    elif length > 1 then\n        match Array.split_at_mut (length / 2) values with\n        | (left, right) ->\n            negate_all left\n            negate_all right\n"
     ));
     for name in ["fill", "negate_all"] {
         let function = ir
@@ -287,12 +291,12 @@ fn exclusive_slice_ir_is_deterministic_and_allocation_free() {
 #[test]
 fn parallel_chunks_lend_disjoint_exclusive_slices() {
     let ir = accepts(
-        "def scale :: i64 -> ref mut [i64..] -> unit = \\start chunk ->\n    for index in 0i64 .. (chunk.length - 1) do Array.write chunk index (start + index)\n\nlet mut values: [i64] = [1, 2, 3]\nlet offset = 7i64\nParallel.for_each_chunk 2 scale (ref mut values)\nParallel.for_each_chunk 2 (\\start chunk -> Array.write chunk 0 (start + offset)) (ref mut values)\nlet mut words: [string] = [\"b\", \"a\"]\nParallel.for_each_chunk 1 (\\_start chunk -> Array.sort_in_place chunk) (ref mut words)\nvalues[0]\n",
+        "def scale :: i64 -> ref mut [i64..] -> unit = \\start chunk ->\n    for index in 0i64 .. (chunk.length - 1) do Array.write index (start + index) chunk\n\nlet mut values: [i64] = [1, 2, 3]\nlet offset = 7i64\nParallel.for_each_chunk 2 scale (ref mut values)\nParallel.for_each_chunk 2 (\\start chunk -> Array.write 0 (start + offset) chunk) (ref mut values)\nlet mut words: [string] = [\"b\", \"a\"]\nParallel.for_each_chunk 1 (\\_start chunk -> Array.sort_in_place chunk) (ref mut words)\nvalues[0]\n",
     );
     assert!(ir.contains("@tsuzuri_task_parallel("), "{ir}");
     for (source, code, fragment) in [
         (
-            "let mut values: [i64] = [1, 2, 3]\nlet other: [i64] = [5]\nlet shared = ref other\nParallel.for_each_chunk 2 (\\start chunk -> Array.write chunk 0 shared[0]) (ref mut values)\nvalues[0]\n",
+            "let mut values: [i64] = [1, 2, 3]\nlet other: [i64] = [5]\nlet shared = ref other\nParallel.for_each_chunk 2 (\\start chunk -> Array.write 0 shared[0] chunk) (ref mut values)\nvalues[0]\n",
             "E1013",
             "parallel callbacks and values cannot retain borrowed environments",
         ),
@@ -317,7 +321,7 @@ fn parallel_chunks_lend_disjoint_exclusive_slices() {
             "cannot mutate or exclusively reborrow through a shared reference",
         ),
         (
-            "let mut values: [i64] = [1, 2, 3]\nParallel.for_each_chunk 2 (\\start chunk -> Array.write values 0 1) (ref mut values)\n",
+            "let mut values: [i64] = [1, 2, 3]\nParallel.for_each_chunk 2 (\\start chunk -> Array.write 0 1 values) (ref mut values)\n",
             "E1014",
             "",
         ),

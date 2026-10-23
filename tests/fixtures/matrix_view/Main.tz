@@ -190,8 +190,8 @@ fn mut_script rows cols =
     let mut window = MatrixView.of_array_mut rows cols (ref mut buffer)
     MatrixView.write (ref mut window) 0 0 99
     let top = MatrixView.row_mut (ref mut window) 1
-    Array.write top 0 77
-    Array.write top (cols - 1) 78
+    Array.write 0 77 top
+    Array.write (cols - 1) 78 top
     let mut inner = MatrixView.sub_mut (ref mut window) 1 1 (rows - 1) (cols - 1)
     MatrixView.fill (ref mut inner) 5
     MatrixView.write (ref mut inner) 0 0 6
@@ -217,7 +217,7 @@ fn rowwise rows cols =
     for i in 0i64 .. (rows - 1) do
         let line = MatrixView.row_mut (ref mut window) i
         for j in 0i64 .. (cols - 1) do
-            Array.write line j (i * 1000 + j)
+            Array.write j (i * 1000 + j) line
     let mut total = 0
     let mut index = 0
     while index < rows * cols do

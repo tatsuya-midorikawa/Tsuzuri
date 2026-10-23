@@ -176,35 +176,35 @@ test "dropping an array frees its block" =
     expect "make and drop" used 1 0 1 80
     assert (length == 10)
 
-// Rule: at the last use of an owned array, `Array.set` reuses the buffer (array.md, ownership.md).
-test "Array.set on a uniquely owned array: in place" =
+// Rule: at the last use of an owned array, `Array.update_at` reuses the buffer (array.md, ownership.md).
+test "Array.update_at on a uniquely owned array: in place" =
     let xs = new [i64](4, \i -> i)
     let start = Alloc.snapshot ()
-    let ys = Array.set xs 0 5
+    let ys = Array.update_at 0 5 xs
     let used = Alloc.since start
-    expect "Array.set" used 0 0 0 0
+    expect "Array.update_at" used 0 0 0 0
     assert (ys[0] == 5)
 
-// Rule: `xs = Array.set xs i v` in a loop is a last use too (ownership.md).
-test "Array.set in a loop that rebinds the array: in place" =
+// Rule: `xs = Array.update_at i v xs` in a loop is a last use too (ownership.md).
+test "Array.update_at in a loop that rebinds the array: in place" =
     let mut xs = new [i64](100, \_i -> 0)
     let start = Alloc.snapshot ()
     for i in 0i64 .. 99i64 do
-        xs = Array.set xs i (i * 2)
+        xs = Array.update_at i (i * 2) xs
     let used = Alloc.since start
-    expect "Array.set loop" used 0 0 0 0
+    expect "Array.update_at loop" used 0 0 0 0
     let last = xs[99]
     assert (last == 198)
 
 // Rule: a local that is borrowed anywhere in the function is excluded from the last-use move
 // (ownership.md), so each of the 10 updates copies 100 x 8 bytes and frees the old array.
-test "Array.set in a loop on an array that is borrowed elsewhere: one copy per update" =
+test "Array.update_at in a loop on an array that is borrowed elsewhere: one copy per update" =
     let mut xs = new [i64](100, \_i -> 0)
     let start = Alloc.snapshot ()
     for i in 0i64 .. 9i64 do
-        xs = Array.set xs i 1
+        xs = Array.update_at i 1 xs
     let used = Alloc.since start
-    expect "Array.set loop with a borrow" used 10 0 10 8000
+    expect "Array.update_at loop with a borrow" used 10 0 10 8000
     assert (Array.length (ref xs) == 100)
 
 // Rule: binding an array to a second name and using both copies the elements (ownership.md).
@@ -217,13 +217,13 @@ test "using an array after binding it elsewhere: one implicit copy" =
     expect "implicit copy" used 1 0 0 80
     assert (total == 90)
 
-// Rule: the result of `Array.copy` is a unique temporary, so `Array.set` updates it in place.
-test "Array.set on a fresh copy: the copy only" =
+// Rule: the result of `Array.copy` is a unique temporary, so `Array.update_at` updates it in place.
+test "Array.update_at on a fresh copy: the copy only" =
     let xs = new [i64](10, \i -> i)
     let start = Alloc.snapshot ()
-    let ys = Array.set (Array.copy (ref xs)) 0 9
+    let ys = Array.update_at 0 9 (Array.copy (ref xs))
     let used = Alloc.since start
-    expect "Array.set on copy" used 1 0 0 80
+    expect "Array.update_at on copy" used 1 0 0 80
     assert (ys[0] == 9 && xs[0] == 0)
 
 // Rule: `Array.filter` pushes into a Vec (capacity 4, then doubling) and `Vec.to_array` hands over
@@ -518,7 +518,7 @@ fn since start =
 
 /// Runs `run` once and returns the events it caused with its result. A value that `run`
 /// captures is not uniquely owned inside it, so measure an operation that consumes a value
-/// (`Array.set xs i v`) with `snapshot` and `since` instead.
+/// (`Array.update_at i v xs`) with `snapshot` and `since` instead.
 def measure :: (unit -> 'a) -> Stats * 'a
 fn measure run =
     let start = snapshot ()
@@ -713,7 +713,7 @@ not ok 1 - Main 100 pushes realloc five times (the mutant expects six)
 | `to_string 12345` | 1, 0, 0, 10 | 同じ |
 | `String.repeat` 400 字 | 1, 0, 0, 800 | 同じ |
 | `s = s + "x"` を 3 回（所有する文字列） | 0, 3, 0, 2412 | 同じ |
-| `Array.set xs i v`（最後の使用）／ループの再束縛 | 0, 0, 0, 0 | 同じ |
+| `Array.update_at i v xs`（最後の使用）／ループの再束縛 | 0, 0, 0, 0 | 同じ |
 | ループの再束縛で `xs` が別の場所で借用される | 10, 0, 10, 8000（10 回の複製） | 同じ |
 | 3 ノードの再帰 union | 3 回確保（byte は pointer の大きさ次第。native で 168） | 3 回 |
 | `Rc.new (new [i64](4, f))` | 2 回確保（native の byte は 64） | 2 回 |
@@ -742,7 +742,7 @@ Array.map (\x -> x * factor) (ref xs)   （factor は捕捉する i64、xs は 1
 
 ```text
 let mut xs = new [i64](100, \i -> 0)
-for i in 0i64 .. 99i64 do xs = Array.set xs i (i * 2)
+for i in 0i64 .. 99i64 do xs = Array.update_at i (i * 2) xs
   後ろで xs を読まない／xs[99] を let で読む  : allocs 0  frees 0  bytes 0
   同じ関数のどこかで Array.length (ref xs) か $"{xs[99]}" を書く : allocs 100 frees 100 bytes 80000
 ```
@@ -769,7 +769,7 @@ warning: <unknown>:0:0: loop not unrolled: the optimizer was unable to perform t
 | 試作で `tsuzuri run <dir> -O0\|-O3 --allocator counting`、`tsuzuri build … --allocator counting` で作った実行ファイル | どちらも `90` を出す（`used.bytes + Array.length`＝80 + 10） |
 | 試作で `tsuzuri test <dir> --allocator counting` | 通る |
 | 4 つの Task が 1,000 回ずつ確保・解放（試作、`-O0`/`-O3` とも） | `allocs=4007 frees=4006`（4,000 + Task の実行器の確保 7 回。差 1 は結果の配列）。更新は失われない |
-| `Array.set` を閉包の中に入れた `Alloc.measure (\() -> Array.set xs 0 5)` | `allocs=1 bytes=32`（閉包の中の `xs` は一意でなく複製される）。`snapshot`／`since` なら 0。これが `snapshot`／`since` を足す理由（決定事項 D1） |
+| `Array.update_at` を閉包の中に入れた `Alloc.measure (\() -> Array.update_at 0 5 xs)` | `allocs=1 bytes=32`（閉包の中の `xs` は一意でなく複製される）。`snapshot`／`since` なら 0。これが `snapshot`／`since` を足す理由（決定事項 D1） |
 
 ## 付録 E: 契約 42 件の出典
 
@@ -789,11 +789,11 @@ warning: <unknown>:0:0: loop not unrolled: the optimizer was unable to perform t
 | 10 | reading an array | 0, 0, 0, 0 | `stack-and-heap.md`「共有借用…は…ゼロコスト」 |
 | 11 | a slice borrows | 0, 0, 0, 0 | `array.md`「スライス式…コピーせずに参照」 |
 | 12 | dropping an array | 1, 0, 1, 80 | 所有権（スコープの終わりで解放）。`ownership-and-memory/ownership.md` |
-| 13 | Array.set on a uniquely owned array | 0, 0, 0, 0 | `array.md` の計算量表「最後の使用を証明できればバッファを再利用」 |
-| 14 | Array.set in a loop that rebinds | 0, 0, 0, 0 | `ownership.md`「ループ内で `xs = Array.set xs i value` と再束縛する値も対象」 |
+| 13 | Array.update_at on a uniquely owned array | 0, 0, 0, 0 | `array.md` の計算量表「最後の使用を証明できればバッファを再利用」 |
+| 14 | Array.update_at in a loop that rebinds | 0, 0, 0, 0 | `ownership.md`「ループ内で `xs = Array.update_at i value xs` と再束縛する値も対象」 |
 | 15 | …borrowed elsewhere | 10, 0, 10, 8000 | `ownership.md`「借用・スライスの元となる局所…は…除外」。複製は 100 × 8 byte |
 | 16 | implicit copy | 1, 0, 0, 80 | `ownership.md`「`second` へ代入したあとも `first` を使っているので、要素全体が新しいバッファへコピーされます」 |
-| 17 | Array.set on a fresh copy | 1, 0, 0, 80 | `Array.copy` の結果は一時の所有値（13 と同じ規則） |
+| 17 | Array.update_at on a fresh copy | 1, 0, 0, 80 | `Array.copy` の結果は一時の所有値（13 と同じ規則） |
 | 18 | Array.filter | 1, 3, 0, 480 | コード: `std/Array.tz` の `filter`（`Vec.push` と `Vec.to_array`）、`vec.md`（容量 4 から倍） |
 | 19 | Array.sort_in_place | 0, 0, 0, 0 | コード: `std/Array.tz` の `sort_in_place` の doc コメント「without allocating」、`array.md`「作業領域を確保しない」 |
 | 20 | Vec.empty | 0, 0, 0, 0 | `vec.md`「空のバッファ `Vec.empty()`」 |

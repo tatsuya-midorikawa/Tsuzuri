@@ -919,7 +919,7 @@ fn by_key entries =
 	let mut low = 0
 	let mut high = sorted.length - 1
 	while low < high do
-		Array.swap_in (ref mut sorted) low high
+		Array.swap_in low high (ref mut sorted)
 		low = low + 1
 		high = high - 1
 	(Vec.of_array sorted, found)

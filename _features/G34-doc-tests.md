@@ -125,7 +125,7 @@ exit=2
 | `Array.sum ["a"]`（`fails=E1003` の例。実際は別のコード） | `{"severity":"error","code":"E1005","message":"no instance for Numeric<string>; define an instance or use a supported type",...,"span":{"start":0,"end":9,"line":1,"column":1,...}}` |
 | `test "fails on purpose" = Test.equal (ref (Counter.add_one 1)) (ref 3)` | `not ok 1 - Main fails on purpose` と `  failure: trapped or terminated by signal`、終了 1 |
 | `let _nothing = Counter.add_one 1`（`test` の例だが `test` 宣言がない） | `$T test fx/fail` は `0 passed; 0 failed; 0 ignored` で**終了 0**。doc の実行器が自分で検出する必要がある |
-| `Array.sub [1, 2, 3] 2 5` | `trap: assertion failed at fx/fail/Main.tz:1:1` と `error[E2005]: program terminated with signal: 5 (SIGTRAP); ...` |
+| `Array.sub 2 5 [1, 2, 3]` | `trap: assertion failed at fx/fail/Main.tz:1:1` と `error[E2005]: program terminated with signal: 5 (SIGTRAP); ...` |
 
 `Project::load_with_overlays` と `Project::load_from_root` の `overlays`（`BTreeMap<PathBuf, String>`）が、実在しない `Main.tz` を足す・ある `Main.tz` を置き換える道を既に持つ。`Project::single_main(path, text)` は、`Main.tz` だけを持ち、`text` が名指す std のモジュールだけを足す `Project` を作る（REPL が使う）。`Project::load_for_docs` は、入力が `std` という名前のディレクトリで、中身が `stdlib::SOURCES` と同じなら、全ソースを `ModuleOrigin::Std` に付け替える（`tsuzuri doc std` が動く理由）。
 

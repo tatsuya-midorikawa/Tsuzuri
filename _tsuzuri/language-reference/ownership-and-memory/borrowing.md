@@ -259,7 +259,7 @@ part[0] + part[1]
 ```tsuzuri run=99
 let mut values = [1, 2, 3]
 let part = ref mut values[0..2]
-Array.write part 0 99
+Array.write 0 99 part
 values[0]
 ```
 
@@ -278,10 +278,10 @@ values[0]
 
 | 関数 | シグネチャ | 動き |
 | --- | --- | --- |
-| `Array.write` | `ref mut ['a..] -> i64 -> 'a -> unit` | 指定位置の要素を置き換える。境界を見てから古い要素を解放する。範囲外はトラップする |
-| `Array.swap_in` | `ref mut ['a..] -> i64 -> i64 -> unit` | 2 つの位置の要素を交換する。範囲外はトラップする |
+| `Array.write` | `i64 -> 'a -> ref mut ['a..] -> unit` | 指定位置の要素を置き換える。境界を見てから古い要素を解放する。範囲外はトラップする |
+| `Array.swap_in` | `i64 -> i64 -> ref mut ['a..] -> unit` | 2 つの位置の要素を交換する。範囲外はトラップする |
 | `Array.sort_in_place` | `Ord<'a> => ref mut ['a..] -> unit` | 追加のバッファを使わず、`Array.sort` と同じ順で安定ソートする |
-| `Array.split_at_mut` | `ref mut ['a..] -> i64 -> (ref mut ['a..] * ref mut ['a..])` | 重ならない 2 つの可変スライスに分ける。範囲外はトラップする |
+| `Array.split_at_mut` | `i64 -> ref mut ['a..] -> (ref mut ['a..] * ref mut ['a..])` | 重ならない 2 つの可変スライスに分ける。範囲外はトラップする |
 
 ```tsuzuri run=1
 let mut values = [3, 1, 2]
@@ -299,10 +299,10 @@ values[0]
 
 ```tsuzuri run=40
 let mut values = [3, 1, 4, 2]
-match Array.split_at_mut (ref mut values) 2 with
+match Array.split_at_mut 2 (ref mut values) with
 | (left, right) ->
-    Array.write left 0 10
-    Array.write right 0 30
+    Array.write 0 10 left
+    Array.write 0 30 right
 values[0] + values[2]
 ```
 
@@ -314,7 +314,7 @@ values[0] + values[2]
 
 2 つの半分は、元のスライスからの 1 回の貸し直しとして扱われます。呼び出しが終われば両方を続けて使えます。一方をさらに `ref mut left[0..1]` のように貸し直している間は、もう一方も使えません（`E1014`）。
 
-`Array.write part 0 (part[1] * 10)` のように、書き込みの引数の中で同じスライスを読むのも `E1014` です。先に `let` で読み出します。可変スライスを `ref mut [T]` の仮引数へ渡すことはできません。配列全体の置換を許してしまうためで、`E1005` です。`deref part = other` による全体の置換も `E1014` です。
+`part |> Array.write 0 (part[1] * 10)` のように、スライスを先に渡してから同じ呼び出しの後ろの引数でそのスライスを読むのも `E1014` です。先に `let` で読み出します。スライスを最後に書く `Array.write 0 (part[1] * 10) part` は、読み取りが先に終わるので通ります。可変スライスを `ref mut [T]` の仮引数へ渡すことはできません。配列全体の置換を許してしまうためで、`E1005` です。`deref part = other` による全体の置換も `E1014` です。
 
 固定長配列 `[T; N]` に可変スライスはありません（`E1005`）。要素を置き換えるときは、`let mut` の束縛へ配列全体を代入します。可変スライスは Copy ではなく、通常のクロージャへの捕捉（`E1005`）や `task` への送信（`E1013`）もできません。
 

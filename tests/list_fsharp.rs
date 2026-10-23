@@ -350,12 +350,13 @@ fn rejects(source: &str, code: &str) {
 
 #[test]
 fn callbacks_take_values_and_the_r_forms_borrow() {
-    // F# code reads the same: callbacks receive the element, and arguments follow F#'s order.
+    // F# code reads the same: callbacks receive the element, and the list comes last as in F# (`fold_back` and a few
+    // others move it to the end; see tests/collection_last.rs).
     for source in [
         "[|1, 2, 3|] |> List.filter (\\x -> x > 1) |> List.map (\\x -> x * 2) |> List.sum",
         "List.exists (\\x -> x > 2) [|1, 2, 3|]",
         "List.fold (\\total x -> total + x) 0 [|1, 2, 3|]",
-        "List.fold_back (\\x total -> total + x) [|1, 2, 3|] 0",
+        "List.fold_back (\\x total -> total + x) 0 [|1, 2, 3|]",
         "List.contains 2 [|1, 2, 3|]",
         "List.sort_by (\\x -> -x) [|1, 2, 3|]",
         "List.try_find (\\x -> x > 1) [|1, 2, 3|]",
@@ -371,7 +372,7 @@ fn callbacks_take_values_and_the_r_forms_borrow() {
         "let words = [|\"a\", \"bb\"|]\nList.mapr (\\w -> w.length) words",
         "let words = [|\"a\", \"bb\"|]\nList.mapir (\\i w -> i + w.length) words",
         "let words = [|\"a\", \"bb\"|]\nList.foldr (\\total w -> total + w.length) 0 words",
-        "let words = [|\"a\", \"bb\"|]\nList.foldr_back (\\w total -> total + w.length) words 0",
+        "let words = [|\"a\", \"bb\"|]\nList.foldr_back (\\w total -> total + w.length) 0 words",
         "let words = [|\"a\", \"bb\"|]\nList.iterr (\\w -> assert (w.length > 0)) words",
         "let words = [|\"a\", \"bb\"|]\nList.iterir (\\i w -> assert (w.length > i)) words",
         "let words = [|\"a\", \"bb\"|]\nList.existsr (\\w -> w.length == 2) words",

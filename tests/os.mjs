@@ -1157,7 +1157,7 @@ def main :: unit -> i32 = \\() ->
   const processes = program("processes", `
 def text_of :: ref [ubyte] -> string
 fn text_of bytes =
-    match Os.decode (Array.sub bytes 0 bytes.length) with
+    match Os.decode (Array.sub 0 bytes.length bytes) with
     | Result.Ok text -> text
     | Result.Error _ -> "<binary>"
 

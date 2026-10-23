@@ -1215,16 +1215,19 @@ pub enum Builtin {
     Hash,
     HashMix,
     DisplayQuoted,
-    /// `Array.__set :: ['a] -> i64 -> 'a -> ['a]` replaces one element of an owned array and returns it. It is private
-    /// to the std `Array` module, whose `update_at` gives it the F# argument order.
+    /// `Array.__set :: i64 -> 'a -> ['a] -> ['a]` replaces one element of an owned array and returns it. It is private
+    /// to the std `Array` module, whose `update_at` forwards to it. Like every array function, it takes the array last.
     ArraySet,
+    /// `Array.update :: i64 -> ('a -> 'a) -> ['a] -> ['a]` replaces one element of an owned array with the result of
+    /// the function and returns the array.
     ArrayUpdate,
+    /// `Array.swap :: i64 -> i64 -> ['a] -> ['a]` exchanges two elements of an owned array and returns it.
     ArraySwap,
-    /// `Array.write :: ref mut ['a..] -> i64 -> 'a -> unit` replaces one element in place (C08).
+    /// `Array.write :: i64 -> 'a -> ref mut ['a..] -> unit` replaces one element in place (C08).
     ArrayWrite,
-    /// `Array.swap_in :: ref mut ['a..] -> i64 -> i64 -> unit` exchanges two elements in place.
+    /// `Array.swap_in :: i64 -> i64 -> ref mut ['a..] -> unit` exchanges two elements in place.
     ArraySwapIn,
-    /// `Array.split_at_mut :: ref mut ['a..] -> i64 -> (ref mut ['a..] * ref mut ['a..])`.
+    /// `Array.split_at_mut :: i64 -> ref mut ['a..] -> (ref mut ['a..] * ref mut ['a..])`.
     ArraySplitAtMut,
     /// `FixedArray.init :: (i64 -> 'a) -> ['a; N]`, whose length comes from the expected type (A16).
     FixedArrayInit,
@@ -2555,13 +2558,14 @@ impl Builtin {
                 }
             }
             Self::ArraySet | Self::ArrayUpdate | Self::ArraySwap => {
-                let third = match self {
+                let second = match self {
                     Self::ArraySet => a(),
                     Self::ArrayUpdate => BuiltinType::Function(vec![a()], Box::new(a())),
                     _ => Concrete(Type::I64),
                 };
+                // The array comes last, so that a pipeline or a composition can pass it on.
                 (
-                    vec![Array(Box::new(a())), Concrete(Type::I64), third],
+                    vec![Concrete(Type::I64), second, Array(Box::new(a()))],
                     Array(Box::new(a())),
                     Vec::new(),
                 )
@@ -2570,17 +2574,17 @@ impl Builtin {
                 let view = || Reference(Box::new(BuiltinType::ArrayView(Box::new(a()))), true);
                 match self {
                     Self::ArrayWrite => (
-                        vec![view(), Concrete(Type::I64), a()],
+                        vec![Concrete(Type::I64), a(), view()],
                         Concrete(Type::Unit),
                         Vec::new(),
                     ),
                     Self::ArraySwapIn => (
-                        vec![view(), Concrete(Type::I64), Concrete(Type::I64)],
+                        vec![Concrete(Type::I64), Concrete(Type::I64), view()],
                         Concrete(Type::Unit),
                         Vec::new(),
                     ),
                     _ => (
-                        vec![view(), Concrete(Type::I64)],
+                        vec![Concrete(Type::I64), view()],
                         BuiltinType::Tuple(vec![view(), view()]),
                         Vec::new(),
                     ),
@@ -10653,6 +10657,21 @@ impl<'a> Checker<'a> {
         if let Some(piped) = piped
             && let Type::Function(remaining, _) = self.inference.resolve(result)
         {
+            // An array that passes on as an exclusive slice (`ref mut xs |> Array.write 0 1`) is sliced by
+            // `coerce_slice_argument` once the call is complete; here only its elements are known to agree.
+            if let Type::Reference(view, true) = self.inference.resolve(&remaining[0])
+                && let Type::ArrayView(wanted) = *view
+                && let Some(element) = match self.inference.resolve(&piped) {
+                    Type::Reference(inner, true) => match *inner {
+                        Type::Array(element) => Some(*element),
+                        _ => None,
+                    },
+                    Type::Array(element) => Some(*element),
+                    _ => None,
+                }
+            {
+                return self.same(&element, &wanted, span);
+            }
             let hint = self.argument_hint(&piped, &remaining[0]);
             self.same(&piped, &hint, span)?;
         }

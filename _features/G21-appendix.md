@@ -81,7 +81,7 @@ def main :: unit -> i32 = \() ->
 ## Pitfalls
 - `pair.0` is E0002: `match pair with | (a, _) -> a`.
 - `x += 1` is E0002: `x = x + 1`.
-- `p.x = 1` and `xs[i] = v` are E1012 (fields and elements are immutable): `{ p with x = 1 }`, `xs = Array.set xs i v`.
+- `p.x = 1` and `xs[i] = v` are E1012 (fields and elements are immutable): `{ p with x = 1 }`, `xs = Array.update_at i v xs`.
 - `IO.writeln s` as a statement is E1003 (`expected unit, found IO<unit>`): `do! IO.writeln s`.
 - `for i in 0 .. xs.length` compiles, then traps: `..` includes the end. Use `0 .. xs.length - 1`.
 - `else if` on a new line is E0002: `elif`.
@@ -348,7 +348,7 @@ L1 は 4 章（`guide/language.md`・`ownership.md`・`pitfalls.md`・`workflow.
 3. 借用: `ref`／`ref mut`／`deref`、呼び出しでの自動の借用、スライス `ref xs[a..b]`・`ref mut xs[a..]`、`E1014` の 2 つの形（`let mut` がない、借用が生きている）。出典: `ownership-and-memory/borrowing.md`。
 4. 寿命と region: `E1013`、引数から導いた参照を返す書き方（`ref {r}` の region）、struct の中の参照が書けないこと。出典: `ownership-and-memory/lifetimes.md`。
 5. 共有と解放: `Rc`・`Arc`（`Rc.share`）、`Arena` とハンドル、`Drop`、スコープの終わりの解放、トラップでは巻き戻さないこと。出典: `built-in-types-and-modules/rc.md`・`arena.md`、`ownership-and-memory/drop.md`。
-6. 性能: 暗黙の複製の費用、`--warn implicit-copy`（`W1006`）、`xs = Array.set xs i v` と `Vec.push` の再束縛でバッファを再利用すること。出典: `ownership-and-memory/stack-and-heap.md`、`built-in-types-and-modules/array.md`・`vec.md`。
+6. 性能: 暗黙の複製の費用、`--warn implicit-copy`（`W1006`）、`xs = Array.update_at i v xs` と `Vec.push` の再束縛でバッファを再利用すること。出典: `ownership-and-memory/stack-and-heap.md`、`built-in-types-and-modules/array.md`・`vec.md`。
 
 **pitfalls**: 付録 E の 23 項目に加えて、HEAD で `check` して確かめた誤りを足す。候補（実測が要る）: 整数の `abs`、`xs[1..3]`（`E0002`: 借用でなければならない）、`let add = \x y -> x + y` の単独（`E1015`）、`Some` なしの `Maybe`、`==` の `Eq` なし（`E1005`）、`return`、`#` のコメント、`new` の使用、`fn name () = ...`、`u8"..."` の形、`String.length s` の呼び出し規約。
 

@@ -133,10 +133,10 @@ def channel :: ref Channel.Sender<i64> -> i64 = \value -> { let sent = Channel.s
 fn descriptor_abi_scopes_and_scalar_tbaa_are_proven_together() {
     let source = r#"
 def update :: ref mut [i64..] -> ref [i64] -> i64 -> unit =
-    \output input index -> Array.write output index input[index]
+    \output input index -> Array.write index input[index] output
 def same :: ref [i64] -> ref [i64] -> i64 = \left right -> left[0] + right[0]
 def bytes :: ref mut [ubyte..] -> ref [ubyte] -> unit =
-    \output input -> Array.write output 0 input[0]
+    \output input -> Array.write 0 input[0] output
 def different :: ref mut i64 -> ref f64 -> unit = \output input -> deref output = (deref input) as i64
 "#;
     for wasm in [false, true] {

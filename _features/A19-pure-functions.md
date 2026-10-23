@@ -49,7 +49,7 @@ pure def square_sum :: i64 -> i64 = \n -> Array.sum (Array.init n (\i -> i * i))
 | # | 経路 | HEAD の実測（付録 E） | 結論 |
 | --- | --- | --- | --- |
 | 1 | (a) 呼び出し側の値が奪われて、観測される | 非 Copy の値は移動で、移動後の変数は読めない（文字列を値渡しで消費したあとの `s.length` は `E1012`。e3）。Copy の値（配列・リスト）は、呼び出し側が後で読むなら複製して渡り、読まない最後の使用だけが移動になる | 保たれる |
-| 2 | (a) 呼び出し先が、呼び出し側から見える値を書き換える | 値渡しの引数は唯一の所有者が持つ値で、別名がない（借用中は移動できない: `E1014`。e6）。Copy の配列を値渡しで受けて `Array.set` で書き換えても、呼び出し側の配列は変わらない（`bump a` のあとで `a[0]` は 1、結果の `[0]` は 99。e2） | 保たれる |
+| 2 | (a) 呼び出し先が、呼び出し側から見える値を書き換える | 値渡しの引数は唯一の所有者が持つ値で、別名がない（借用中は移動できない: `E1014`。e6）。Copy の配列を値渡しで受けて `Array.update_at` で書き換えても、呼び出し側の配列は変わらない（`bump a` のあとで `a[0]` は 1、結果の `[0]` は 99。e2） | 保たれる |
 | 3 | (b) 値が、呼び出し側の変数への参照を保持する | `record Counter {r} { value: ref mut {r} i64, step: i64 }` を**値渡し**で受けた関数が、`deref c.value = deref c.value + c.step` で呼び出し側の変数を書き換える（`total` が 1 から 21 になり、出力は 41。e7）。`ref Counter` で受けると `E1014`（e8） | **壊れる。型で塞ぐ（D15）** |
 | 4 | (b) 値の破棄が、メモリの解放以外を起こす | 利用者の `Drop` は、値渡しで消費すると呼び出し先の中で `drop` が走る（`drop 7` の出力が `before` と `after` の間に出る。e4）。`Rc` は、値渡しで消費して捨てると、呼び出し側の `Rc.strong_count` が 2 から 1 に変わる（e1）。`ref Rc` なら変わらない（e5）。`extern` のハンドルは未確認 | **壊れる。型で塞ぐ（D15）** |
 | 5 | (b) 関数値が外から入る | 関数・`dyn`・`Task`（`Seq`・`IO`・`Async` の関数の field を含む）は、規則 4 が `ref` と `own` の両方で拒否する | 保たれる |
@@ -107,7 +107,7 @@ D15 の制限: `own` の引数の型が、保持するすべての型（record�
 | 3 | 文字列の `a + b`（`a`・`b` は `ref string`） | `E1003`（`+` は消費する） | `$"{a}{b}"`（補間）と書く |
 | 4 | `$"hello {a} and {b}"`（`ref string`） | 受理 | 受理 |
 | 5 | `Array.map (\x -> x * 2) xs`（`xs: ref [i64]`） | 受理 | 受理 |
-| 6 | `Array.set xs 0 v`（`xs: ref [i64]`） | 受理（引数の位置で暗黙の複製。元の配列は変わらない） | 受理 |
+| 6 | `Array.update_at 0 v xs`（`xs: ref [i64]`） | 受理（引数の位置で暗黙の複製。元の配列は変わらない） | 受理 |
 | 7 | `def same :: ref [i64] -> [i64] = \xs -> xs` | `E1003`（戻り値に `ref` は使えない） | 返すなら `own [i64]` で受ける（`pure def same :: own [i64] -> [i64]`）か、`Array.copy xs` で複製する |
 | 8 | `def same :: ref string -> string = \s -> s` | `E1003` | 返すなら `own string` で受けるか、`clone_string s` で複製する |
 | 9 | record の field の読み（`p.n`、`p.name.length`） | 受理 | 受理 |
@@ -117,7 +117,7 @@ D15 の制限: `own` の引数の型が、保持するすべての型（record�
 | 13 | `ref` の引数を捕捉するラムダを `Array.fold` に渡す | 受理 | 受理 |
 | 14 | `def apply :: ref (i64 -> i64) -> i64 -> i64 = \f x -> f x` | `E1005` only a function value can be called | 関数型の引数は持てない（D8） |
 | 15 | `export def total :: ref [i64] -> i64 = \xs -> Array.sum xs` | 受理（値渡しの `[i64]` は `E1008`） | `export pure def total :: [i64] -> i64` と書ける |
-| 16 | `let mut ys = Array.copy xs` と、ループの `ys = Array.set ys ..` | 受理（HEAD は各反復で複製する。A17 の対象） | 受理 |
+| 16 | `let mut ys = Array.copy xs` と、ループの `ys = Array.update_at .. ys` | 受理（HEAD は各反復で複製する。A17 の対象） | 受理 |
 
 `Array.sort` は要素が Copy でなければ `E1005`（no instance for Copy<..>）になる。`string` を持つ record の配列は、並べ替える前に別の形にする。
 
@@ -129,7 +129,7 @@ D15 の制限: `own` の引数の型が、保持するすべての型（record�
 | --- | --- | --- |
 | `def rec build :: i64 -> [\|i64\|] -> [\|i64\|]`（所有引数 `acc`、`List.cons n acc`。`pure def` では `own [\|i64\|]`） | 14.9 / 14.5 / 14.6 s | 分岐の両腕で `acc` を読むので、HEAD は毎回複製する（A17 の対象）。A17 の後は線形になる見込み（未測定） |
 | 同じ形で `acc` を `ref [\|i64\|]` にし、`List.copy acc` を明示 | 20.1 / 18.5 / 18.0 s | 借用した `acc` は移動できないので、A17 の後も二乗のまま |
-| ローカル可変のループ `acc = List.cons i acc`（`pure def` の中で書ける形） | 15.4 / 14.6 / 14.6 s | ループの再束縛は A17 の対象。A17 の後は線形になる見込み（未測定。`Array.set` の形は A17 の試作で 4.0 s → 0.02 s） |
+| ローカル可変のループ `acc = List.cons i acc`（`pure def` の中で書ける形） | 15.4 / 14.6 / 14.6 s | ループの再束縛は A17 の対象。A17 の後は線形になる見込み（未測定。`Array.update_at` の形は A17 の試作で 4.0 s → 0.02 s） |
 
 HEAD では、`own` の形（所有引数）も `ref` の形も二乗である（`own` の形は A17 の対象）。`pure def` で蓄積する引数は `own` で受けるか、ローカル可変のループにする。`ref` で受けて複製する形は、A17 の後も二乗のままなので避ける。
 
@@ -260,8 +260,8 @@ record Named { name: string, n: i64 }
 pure def add :: i64 -> i64 -> i64 = \a b -> a + b
 pure def greet :: string -> string -> string = \a b -> $"hello {a} and {b}"
 pure def doubled :: [i64] -> [i64] = \xs -> Array.map (\x -> x * 2) xs
-pure def with_first :: [i64] -> i64 -> [i64] = \xs v -> Array.set xs 0 v
-pure def with_first_own :: own [i64] -> i64 -> [i64] = \xs v -> Array.set xs 0 v
+pure def with_first :: [i64] -> i64 -> [i64] = \xs v -> Array.update_at 0 v xs
+pure def with_first_own :: own [i64] -> i64 -> [i64] = \xs v -> Array.update_at 0 v xs
 pure def first_or :: Maybe<[i64]> -> i64 = \m ->
     match m with
     | Maybe.Some xs -> xs[0]
@@ -275,7 +275,7 @@ pure def name_of :: Named -> string = \p -> clone_string (ref p.name)
 pure def renamed :: Named -> string -> Named = \p s -> Named { name: clone_string s, n: p.n }
 pure def largest_x :: [Point] -> i64 = \points ->
     let sorted = Array.sort points
-    if sorted.length == 0 then 0 else (Array.at (ref sorted) (sorted.length - 1)).x
+    if sorted.length == 0 then 0 else (Array.at (sorted.length - 1) (ref sorted)).x
 pure def rec fact :: i64 -> i64 = \n -> if n <= 1 then 1 else n * fact (n - 1)
 export pure def total :: [i64] -> i64 = \xs -> Array.sum xs
 ```
@@ -303,7 +303,7 @@ def plain_own :: own string -> i64 = \s -> s.length                      // E100
 - **`export`**: `export pure def total :: [i64] -> i64` は、補完後の `ref [i64]` が公開 ABI の検査を通るので書ける（付録 A の 15）。`own` の引数（`own [i64]`・`own string`）は値渡しのバッファなので、公開できず `E1008`（通常の `def` の `[i64]` と同じ）。
 - **`rec`・`and`**: 組の全員が `pure` で、各メンバーを調べる。
 - **`IO`**: `IO<T>` を返す関数や、`IO` のアクションを作る式は、Phase 1 では `pure def` に書けない（アクションの本体が `IO` の組み込み関数を参照するため、作るだけでも拒否される）。Phase 2 で、アクションを不透明な値として許すかを決める。
-- **A17**: `pure def` の中のローカル可変のループ（`ys = Array.set ys ..`）と、`own` の引数の最後の使用は、A17 の後に複製でなく移動になる。`pure def` の本体の読みも A17 の解析の対象である（`ref` の引数は借用なので移動されない）。A17 の「一意の所有者」の前提を、`pure` を根拠にした結果の共有（Phase 2 のメモ化・共通部分式の除去）が壊してはならない。
+- **A17**: `pure def` の中のローカル可変のループ（`ys = Array.update_at .. ys`）と、`own` の引数の最後の使用は、A17 の後に複製でなく移動になる。`pure def` の本体の読みも A17 の解析の対象である（`ref` の引数は借用なので移動されない）。A17 の「一意の所有者」の前提を、`pure` を根拠にした結果の共有（Phase 2 のメモ化・共通部分式の除去）が壊してはならない。
 - **A18**: D13・D16（`own` の構文を共有する）。
 - **PR01**: Phase 2(c) の「関数の `memory(...)`」は、確保・IO・Task・extern を副作用として扱う解析を要する。本チケットの `src/pure_rules.rs` が同じ分類を持つので、再利用を検討する（本チケットでは接続しない）。
 
@@ -706,7 +706,7 @@ def identity :: ref i64 -> i64 = \x -> x                              // 2: E100
 def cat :: ref string -> ref string -> string = \a b -> a + b         // 3: E1003 expected string, found ref string
 def greet :: ref string -> ref string -> string = \a b -> $"hello {a} and {b}"   // 4: hello x and y
 def doubled :: ref [i64] -> [i64] = \xs -> Array.map (\x -> x * 2) xs  // 5: 受理
-def with_first :: ref [i64] -> i64 -> [i64] = \xs v -> Array.set xs 0 v   // 6: 受理（元の配列は変わらない）
+def with_first :: ref [i64] -> i64 -> [i64] = \xs v -> Array.update_at 0 v xs   // 6: 受理（元の配列は変わらない）
 def same :: ref [i64] -> [i64] = \xs -> xs                            // 7: E1003 expected [i64], found ref [i64]
 def same_s :: ref string -> string = \s -> s                          // 8: E1003
 record P { name: string, n: i64 }
@@ -724,7 +724,7 @@ export def total :: ref [i64] -> i64 = \xs -> Array.sum xs            // 15: 受
 def local_update :: ref [i64] -> i64 -> i64 = \xs n ->                // 16: 受理（local_update [1, 2, 3, 4] 10 は 23094）
     let mut ys = Array.copy xs
     for i in 0 .. (n - 1) do
-        ys = Array.set ys (i % 4) (i * 3)
+        ys = Array.update_at (i % 4) (i * 3) ys
     ys[0] + ys[1] * 10 + ys[2] * 100 + ys[3] * 1000
 ```
 
@@ -786,7 +786,7 @@ record Point { x: i64, y: i64 } deriving (Eq, Ord)
 
 def largest_x :: ref [Point] -> i64 = \points ->
     let sorted = Array.sort points
-    if sorted.length == 0 then 0 else (Array.at (ref sorted) (sorted.length - 1)).x
+    if sorted.length == 0 then 0 else (Array.at (sorted.length - 1) (ref sorted)).x
 
 def squares :: i64 -> [i64] = \n -> Array.init n (\i -> i * i)
 def total_squares :: i64 -> i64 = \n -> Array.sum (ref (squares n))
@@ -814,14 +814,14 @@ pure def doubled_sum :: [i64] -> i64 = \xs -> Array.sum (Array.map (\x -> x * 2)
 pure def local_update :: [i64] -> i64 -> i64 = \xs n ->
     let mut ys = Array.copy xs
     for i in 0 .. (n - 1) do
-        ys = Array.set ys (i % 4) (i * 3)
+        ys = Array.update_at (i % 4) (i * 3) ys
     ys[0] + ys[1] * 10 + ys[2] * 100 + ys[3] * 1000
 
 pure def rec fact :: i64 -> i64 = \n -> if n <= 1 then 1 else n * fact (n - 1)
 
 pure def largest_x :: [Point] -> i64 = \points ->
     let sorted = Array.sort points
-    if sorted.length == 0 then 0 else (Array.at (ref sorted) (sorted.length - 1)).x
+    if sorted.length == 0 then 0 else (Array.at (sorted.length - 1) (ref sorted)).x
 
 pure def renamed :: Named -> string -> Named = \p s -> Named { name: clone_string s, n: p.n }
 
@@ -833,7 +833,7 @@ pure def first_or :: Maybe<[i64]> -> i64 = \m ->
 pure def pick :: [i64] -> [i64] -> i64 = \idx data ->
     Array.fold (\acc i -> acc + data[i]) 0 idx
 
-pure def with_first_own :: own [i64] -> i64 -> [i64] = \xs v -> Array.set xs 0 v
+pure def with_first_own :: own [i64] -> i64 -> [i64] = \xs v -> Array.update_at 0 v xs
 
 pure def rec build_list :: i64 -> own [|i64|] -> [|i64|] = \n acc ->
     if n == 0 then acc else build_list (n - 1) (List.cons n acc)
@@ -956,7 +956,7 @@ def main :: unit -> i32 = \() ->
 
 ```tsuzuri
 // e2: Copy の配列を値渡しで受けて書き換える
-def bump :: [i64] -> [i64] = \xs -> Array.set xs 0 99
+def bump :: [i64] -> [i64] = \xs -> Array.update_at 0 99 xs
 
 def main :: unit -> i32 = \() ->
     let a = [1, 2, 3]

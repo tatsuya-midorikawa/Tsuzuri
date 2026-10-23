@@ -393,7 +393,7 @@ fn recv_with socket count timeout =
 	if wait == -2 || count < 1 || count > 16777216 then Result.Error (invalid ())
 	else
 		match Net.__read 1i32 socket.id count wait with
-		| (0, bytes) -> Result.Ok (Array.sub (ref bytes) 20 (bytes.length - 20), address_at (ref bytes) 0)
+		| (0, bytes) -> Result.Ok (Array.sub 20 (bytes.length - 20) (ref bytes), address_at (ref bytes) 0)
 		| (status, _) -> failed status
 
 /// Whether `bytes`, a host, can be read as an IP address by a system's resolver: it holds a ':' or a '%' (IPv6, with
@@ -722,7 +722,7 @@ private def rec recv_loop :: UdpSocket -> i64 -> i64 -> Async<Result<([ubyte] * 
 fn rec recv_loop socket count deadline =
 	Async.Delay (\() ->
 		match Net.__read 1i32 socket.id count 0 with
-		| (0, bytes) -> Async.Return (Result.Ok (Array.sub (ref bytes) 20 (bytes.length - 20), address_at (ref bytes) 0))
+		| (0, bytes) -> Async.Return (Result.Ok (Array.sub 20 (bytes.length - 20) (ref bytes), address_at (ref bytes) 0))
 		| (status, _) ->
 			if status == pending () then
 				Async.Bind (ready socket.id 1i32 deadline) (\outcome ->
