@@ -206,7 +206,10 @@ fn functions(source: &str) -> Vec<Function> {
             let signature = signature.split(" = ").next().unwrap_or(signature);
             Some(Function {
                 name: name.to_owned(),
-                types: parameters(signature),
+                types: parameters(signature)
+                    .into_iter()
+                    .map(|ty| ty.strip_prefix("own ").unwrap_or(&ty).to_owned())
+                    .collect(),
                 names: headers
                     .get(name)
                     .map(|names| names.iter().map(|name| (*name).to_owned()).collect())
@@ -221,7 +224,9 @@ fn functions(source: &str) -> Vec<Function> {
 fn core(ty: &str) -> &str {
     let mut ty = ty.trim();
     loop {
-        let rest = if let Some(rest) = ty.strip_prefix("ref ") {
+        let rest = if let Some(rest) = ty.strip_prefix("own ") {
+            rest
+        } else if let Some(rest) = ty.strip_prefix("ref ") {
             rest
         } else if let Some(rest) = ty.strip_prefix("mut ") {
             rest

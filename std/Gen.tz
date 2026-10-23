@@ -15,16 +15,16 @@ fn default_cases = 100
 private def shrink_budget :: i64
 fn shrink_budget = 10000
 
-private def search :: i64u -> i64u -> Source
+private def search :: own i64u -> own i64u -> Source
 fn search seed stream =
 	let replay: [i64u] = []
 	(Random.pcg seed stream, replay, false, Vec.empty())
 
-private def replay :: [i64u] -> Source
+private def replay :: own [i64u] -> Source
 fn replay choices = (Random.pcg 0i64u 0i64u, choices, true, Vec.empty())
 
 /// The next random number while searching; 0 while replaying. It records nothing.
-private def random_bits :: Source -> (i64u * Source)
+private def random_bits :: own Source -> (i64u * Source)
 fn random_bits source =
 	match source with
 	| (random, recorded, replaying, choices) ->
@@ -37,14 +37,14 @@ fn random_bits source =
 /// Records and returns the next choice, at most `bound`: `proposal` while searching, or the
 /// recorded choice while replaying (0 past the end). Larger values become `bound`. A choice
 /// with bound 0 has one value and is not recorded.
-private def choose :: Source -> i64u -> i64u -> (i64u * Source)
+private def choose :: own Source -> own i64u -> own i64u -> (i64u * Source)
 fn choose source bound proposal =
 	if bound == 0i64u then
 		(0i64u, source)
 	else
 		record_choice source bound proposal
 
-private def record_choice :: Source -> i64u -> i64u -> (i64u * Source)
+private def record_choice :: own Source -> own i64u -> own i64u -> (i64u * Source)
 fn record_choice source bound proposal =
 	match source with
 	| (random, recorded, replaying, choices) ->
@@ -60,11 +60,11 @@ fn record_choice source bound proposal =
 		(value, (random, recorded, replaying, Vec.push value choices))
 
 /// `bits` reduced to [0, bound].
-private def below :: i64u -> i64u -> i64u
+private def below :: own i64u -> own i64u -> i64u
 fn below bits bound = if bound == 18446744073709551615i64u then bits else bits % (bound + 1i64u)
 
 /// A choice in [0, bound] whose random proposal is nearly uniform.
-private def uniform :: Source -> i64u -> (i64u * Source)
+private def uniform :: own Source -> own i64u -> (i64u * Source)
 fn uniform source bound =
 	match random_bits source with
 	| (bits, rest) -> choose rest bound (below bits bound)
@@ -75,7 +75,7 @@ fn uniform source bound =
 /// 1 in 16 proposals is instead the farthest value of its side, so that `low` and `high`, where
 /// integer arithmetic overflows, come up within a few dozen values (the minimum of i64 is 2^63
 /// below 0, which no random bit length of `first >>> 1` reaches).
-private def integer :: i64 -> i64 -> bool -> bool -> Source -> (i64 * Source)
+private def integer :: own i64 -> own i64 -> own bool -> own bool -> own Source -> (i64 * Source)
 fn integer low high scaled bounds source =
 	let origin = if low > 0 then low elif high < 0 then high else 0
 	let up = (high - origin) as i64u
@@ -116,7 +116,7 @@ fn integer low high scaled bounds source =
 
 /// Integers in [low, high], nearly uniform, shrinking toward the value nearest 0.
 /// An empty range traps.
-def range :: i64 -> i64 -> Gen<i64>
+def range :: own i64 -> own i64 -> Gen<i64>
 fn range low high =
 	assert (low <= high)
 	Gen { run: \source -> integer low high false false source }
@@ -151,7 +151,7 @@ fn f64 = Gen { run: \source ->
 				(if sign == 1i64u && magnitude != 0.0 then -magnitude else magnitude, last) }
 
 /// The character `offset` places after 'a' in a cycle of `count` code units from `first`.
-private def cycled :: i64 -> i64 -> i64 -> char
+private def cycled :: own i64 -> own i64 -> own i64 -> char
 fn cycled first count offset =
 	let index = (97 - first + offset) % count
 	Char.of_u16 ((first + index) as i16u)
@@ -174,7 +174,7 @@ fn unicode_char = Gen { run: \source ->
 /// Arrays of at most `limit` values of `element`, shrinking toward fewer and simpler values.
 /// Before each value the generator chooses whether to go on, so shrinking can drop any value.
 /// A negative limit traps.
-def array_up_to :: i64 -> Gen<'a> -> Gen<['a]>
+def array_up_to :: own i64 -> own Gen<'a> -> Gen<['a]>
 fn array_up_to limit element =
 	assert (limit >= 0)
 	Gen { run: \source ->
@@ -201,11 +201,11 @@ fn array_up_to limit element =
 
 /// Arrays of at most 32 values of `element` (about 7 on average), shrinking toward fewer and
 /// simpler values.
-def array :: Gen<'a> -> Gen<['a]>
+def array :: own Gen<'a> -> Gen<['a]>
 fn array element = array_up_to 32 element
 
 /// Strings of the characters of `character`, at most 32 code units long.
-def string_of :: Gen<char> -> Gen<string>
+def string_of :: own Gen<char> -> Gen<string>
 fn string_of character = Gen { run: \source ->
 	match (array_up_to 32 character).run source with
 	| (characters, rest) -> (String.from_code_units (Array.map Char.to_u16 (ref characters)), rest) }
@@ -215,7 +215,7 @@ def string :: Gen<string>
 fn string = string_of (Gen.char())
 
 /// `Maybe.None` or `Maybe.Some` of `value`, shrinking toward `Maybe.None`.
-def maybe :: Gen<'a> -> Gen<Maybe<'a>>
+def maybe :: own Gen<'a> -> Gen<Maybe<'a>>
 fn maybe value = Gen { run: \source ->
 	match random_bits source with
 	| (bits, rest) ->
@@ -226,7 +226,7 @@ fn maybe value = Gen { run: \source ->
 			| (inner, last) -> (Maybe.Some inner, last) }
 
 /// `Result.Ok` of `ok` or `Result.Error` of `error`, shrinking toward `Result.Ok`.
-def result :: Gen<'a> -> Gen<'e> -> Gen<Result<'a, 'e>>
+def result :: own Gen<'a> -> own Gen<'e> -> Gen<Result<'a, 'e>>
 fn result ok error = Gen { run: \source ->
 	match uniform source 1i64u with
 	| (0i64u, rest) ->
@@ -237,23 +237,23 @@ fn result ok error = Gen { run: \source ->
 		| (value, last) -> (Result.Error value, last) }
 
 /// Always `value`.
-def constant :: Copy<'a> => 'a -> Gen<'a>
+def constant :: Copy<'a> => own 'a -> Gen<'a>
 fn constant value = Gen { run: \source -> (value, source) }
 
 /// Applies `transform` to the values of `generator`; they shrink as the values they come from.
-def map :: ('a -> 'b) -> Gen<'a> -> Gen<'b>
+def map :: own ('a -> 'b) -> own Gen<'a> -> Gen<'b>
 fn map transform generator = Gen { run: \source ->
 	match generator.run source with
 	| (value, rest) -> (transform value, rest) }
 
 /// A value of the generator that `next` makes from a value of `generator`.
-def bind :: ('a -> Gen<'b>) -> Gen<'a> -> Gen<'b>
+def bind :: own ('a -> Gen<'b>) -> own Gen<'a> -> Gen<'b>
 fn bind next generator = Gen { run: \source ->
 	match generator.run source with
 	| (value, rest) -> (next value).run rest }
 
 /// Pairs of values of `first` and `second`.
-def pair :: Gen<'a> -> Gen<'b> -> Gen<('a * 'b)>
+def pair :: own Gen<'a> -> own Gen<'b> -> Gen<('a * 'b)>
 fn pair first second = Gen { run: \source ->
 	match first.run source with
 	| (left, rest) ->
@@ -261,7 +261,7 @@ fn pair first second = Gen { run: \source ->
 		| (right, last) -> ((left, right), last) }
 
 /// A value of one of `generators`, shrinking toward the first. An empty array traps.
-def one_of :: [Gen<'a>] -> Gen<'a>
+def one_of :: own [Gen<'a>] -> Gen<'a>
 fn one_of generators =
 	assert (generators.length > 0)
 	Gen { run: \source ->
@@ -269,7 +269,7 @@ fn one_of generators =
 		| (index, rest) -> generators[index as i64].run rest }
 
 /// One of `values`, shrinking toward the first. An empty array traps.
-def element :: Copy<'a> => ['a] -> Gen<'a>
+def element :: Copy<'a> => own ['a] -> Gen<'a>
 fn element values =
 	assert (values.length > 0)
 	Gen { run: \source ->
@@ -278,7 +278,7 @@ fn element values =
 
 /// Runs `generator` on `source`, then `property` on its value: whether it held, and the
 /// choices that the run made.
-private def attempt :: Gen<'a> -> ('a -> bool) -> Source -> (bool * [i64u])
+private def attempt :: own Gen<'a> -> own ('a -> bool) -> own Source -> (bool * [i64u])
 fn attempt generator property source =
 	match generator.run source with
 	| (value, (_, _, _, choices)) -> (property value, Vec.to_array choices)
@@ -300,7 +300,7 @@ fn simpler left right =
 		result
 
 /// `values` without the `count` values from `start`.
-private def without :: ref [i64u] -> i64 -> i64 -> [i64u]
+private def without :: ref [i64u] -> own i64 -> own i64 -> [i64u]
 fn without values start count =
 	let mut kept = Vec.empty()
 	let mut index = 0
@@ -313,7 +313,7 @@ fn without values start count =
 /// The simplest failing choices that the shrinker finds from the failing `start`, and the
 /// number of times it found simpler ones. It drops runs of 8 down to 1 choices, then lowers
 /// each choice to 0 or by binary search, and repeats until nothing changes or the budget ends.
-private def shrink :: Gen<'a> -> ('a -> bool) -> [i64u] -> ([i64u] * i64)
+private def shrink :: own Gen<'a> -> own ('a -> bool) -> own [i64u] -> ([i64u] * i64)
 fn shrink generator property start =
 	let mut current = start
 	let mut shrinks = 0
@@ -353,7 +353,7 @@ fn shrink generator property start =
 	(current, shrinks)
 
 /// The value of `generator` for `choices`, shown by `show`.
-private def describe :: (ref 'a -> string) -> Gen<'a> -> [i64u] -> string
+private def describe :: own (ref 'a -> string) -> own Gen<'a> -> own [i64u] -> string
 fn describe show generator choices =
 	match generator.run (replay choices) with
 	| (value, _) -> show (ref value)
@@ -362,7 +362,7 @@ fn describe show generator choices =
 /// false, after shrinking it and printing the seed, the case, and both values with `show` to
 /// stderr. The cases use the seed of `tsuzuri test --seed`, or a fixed one, so every run tries
 /// the same values. A property that traps itself ends the test without shrinking.
-def check :: (ref 'a -> string) -> i64 -> Gen<'a> -> ('a -> bool) -> unit
+def check :: own (ref 'a -> string) -> own i64 -> own Gen<'a> -> own ('a -> bool) -> unit
 fn check show cases generator property =
 	assert (cases > 0)
 	let seed = Gen.__seed()
@@ -387,9 +387,9 @@ fn check show cases generator property =
 			assert false
 
 /// Checks `property` on 100 values of `generator`, as `check` with `Display.display`.
-def for_all :: Display<'a> => Gen<'a> -> ('a -> bool) -> unit
+def for_all :: Display<'a> => own Gen<'a> -> own ('a -> bool) -> unit
 fn for_all generator property = check (\value -> Display.display value) (default_cases()) generator property
 
 /// Checks `property` on `cases` values of `generator`, as `check` with `Display.display`.
-def for_all_cases :: Display<'a> => i64 -> Gen<'a> -> ('a -> bool) -> unit
+def for_all_cases :: Display<'a> => own i64 -> own Gen<'a> -> own ('a -> bool) -> unit
 fn for_all_cases cases generator property = check (\value -> Display.display value) cases generator property

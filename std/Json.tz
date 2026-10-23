@@ -10,16 +10,16 @@ union ErrorKind = Syntax | UnexpectedEnd | InvalidEscape | ControlCharacter | Du
 /// A failure and the byte offset in the input where it was found; -1 outside parsing.
 record Error { kind: ErrorKind, offset: i64 } deriving (Eq)
 
-private def failure :: ErrorKind -> i64 -> Error
+private def failure :: own ErrorKind -> own i64 -> Error
 fn failure kind offset = Error { kind: kind, offset: offset }
 
-private def is_space :: ubyte -> bool
+private def is_space :: own ubyte -> bool
 fn is_space byte = byte == 32ubyte || byte == 10ubyte || byte == 13ubyte || byte == 9ubyte
 
-private def is_digit :: ubyte -> bool
+private def is_digit :: own ubyte -> bool
 fn is_digit byte = byte >= 48ubyte && byte <= 57ubyte
 
-private def skip_space :: ref utf8string -> i64 -> i64
+private def skip_space :: ref utf8string -> own i64 -> i64
 fn skip_space text start =
 	let mut index = start
 	let mut scanning = true
@@ -27,7 +27,7 @@ fn skip_space text start =
 		if index < text.length && is_space text[index] then index = index + 1 else scanning = false
 	index
 
-private def digits_end :: ref utf8string -> i64 -> i64
+private def digits_end :: ref utf8string -> own i64 -> i64
 fn digits_end text start =
 	let mut index = start
 	let mut scanning = true
@@ -36,7 +36,7 @@ fn digits_end text start =
 	index
 
 /// The end of the number that starts at `start`, or the first byte that breaks the number grammar.
-private def scan_number :: ref utf8string -> i64 -> Result<i64, Error>
+private def scan_number :: ref utf8string -> own i64 -> Result<i64, Error>
 fn scan_number text start =
 	let length = text.length
 	let mut index = start
@@ -58,14 +58,14 @@ fn scan_number text start =
 	elif bad >= length then Result.Error (failure UnexpectedEnd length)
 	else Result.Error (failure Syntax bad)
 
-private def hex_value :: ubyte -> i64
+private def hex_value :: own ubyte -> i64
 fn hex_value byte =
 	if byte >= 48ubyte && byte <= 57ubyte then (byte as i64) - 48
 	elif byte >= 97ubyte && byte <= 102ubyte then (byte as i64) - 87
 	elif byte >= 65ubyte && byte <= 70ubyte then (byte as i64) - 55
 	else -1
 
-private def escape_unit :: ubyte -> i64
+private def escape_unit :: own ubyte -> i64
 fn escape_unit byte =
 	if byte == 34ubyte || byte == 92ubyte || byte == 47ubyte then byte as i64
 	elif byte == 98ubyte then 8
@@ -76,7 +76,7 @@ fn escape_unit byte =
 	else -1
 
 /// The string whose opening quote is at `start` with its escapes resolved, and the offset after its closing quote.
-private def parse_string :: ref utf8string -> i64 -> Result<(string * i64), Error>
+private def parse_string :: ref utf8string -> own i64 -> Result<(string * i64), Error>
 fn parse_string text start =
 	let length = text.length
 	let mut units = Vec.empty()
@@ -143,7 +143,7 @@ fn parse_string text start =
 	| Maybe.None -> Result.Ok (String.from_code_units (Vec.to_array units), index)
 
 /// `word` when the input spells it at `start`; it ends at the first byte that differs.
-private def keyword :: ref utf8string -> i64 -> utf8string -> Value -> Result<(Value * i64), Error>
+private def keyword :: ref utf8string -> own i64 -> own utf8string -> own Value -> Result<(Value * i64), Error>
 fn keyword text start word value =
 	let mut index = 0
 	let mut scanning = true
@@ -183,13 +183,13 @@ fn first_duplicate members =
 				| (other, _) -> if key == other && (found < 0 || position < found) then found = position
 	found
 
-private def repeated :: ref Vec<(string * Value)> -> i64 -> i64 -> Maybe<Error>
+private def repeated :: ref Vec<(string * Value)> -> own i64 -> own i64 -> Maybe<Error>
 fn repeated members duplicate offset =
 	match members[duplicate] with
 	| (key, _) -> Maybe.Some (failure (DuplicateKey (clone_string key)) offset)
 
 /// The error of an object: the earlier of a repeated key among `members` and `problem`.
-private def object_failure :: ref Vec<(string * Value)> -> ref Vec<i64> -> Maybe<Error> -> Maybe<Error>
+private def object_failure :: ref Vec<(string * Value)> -> ref Vec<i64> -> own Maybe<Error> -> Maybe<Error>
 fn object_failure members offsets problem =
 	let duplicate = first_duplicate members
 	if duplicate < 0 then problem else
@@ -198,15 +198,15 @@ fn object_failure members offsets problem =
 		| Maybe.Some error -> if offset < error.offset then repeated members duplicate offset else Maybe.Some error
 		| Maybe.None -> repeated members duplicate offset
 
-private def replace_last :: Vec<(string * Value)> -> Value -> Vec<(string * Value)>
+private def replace_last :: own Vec<(string * Value)> -> own Value -> Vec<(string * Value)>
 fn replace_last members value =
 	match Vec.pop members with
 	| (rest, Maybe.Some (key, _)) -> Vec.push (key, value) rest
 	| (rest, Maybe.None) -> rest
 
-private def rec parse_value :: ref utf8string -> i64 -> i64 -> Result<(Value * i64), Error>
-private def and parse_items :: ref utf8string -> i64 -> i64 -> Result<(Value * i64), Error>
-private def and parse_object :: ref utf8string -> i64 -> i64 -> Result<(Value * i64), Error>
+private def rec parse_value :: ref utf8string -> own i64 -> own i64 -> Result<(Value * i64), Error>
+private def and parse_items :: ref utf8string -> own i64 -> own i64 -> Result<(Value * i64), Error>
+private def and parse_object :: ref utf8string -> own i64 -> own i64 -> Result<(Value * i64), Error>
 fn rec parse_value text start depth =
 	if start >= text.length then Result.Error (failure UnexpectedEnd text.length) else
 		let byte = text[start]
@@ -367,27 +367,27 @@ fn to_i64 numeral = integer_of numeral
 def to_f64 :: ref Numeral -> Result<f64, Error>
 fn to_f64 numeral = float_of numeral
 
-private def push_word :: Vec<ubyte> -> utf8string -> Vec<ubyte>
+private def push_word :: own Vec<ubyte> -> own utf8string -> Vec<ubyte>
 fn push_word output word =
 	let mut bytes = output
 	for byte in word do bytes = Vec.push byte bytes
 	bytes
 
-private def push_bytes :: Vec<ubyte> -> ref utf8string -> Vec<ubyte>
+private def push_bytes :: own Vec<ubyte> -> ref utf8string -> Vec<ubyte>
 fn push_bytes output text =
 	let mut bytes = output
 	for byte in text do bytes = Vec.push byte bytes
 	bytes
 
-private def hex_digit :: i64 -> ubyte
+private def hex_digit :: own i64 -> ubyte
 fn hex_digit value = if value < 10 then (48 + value) as ubyte else (87 + value) as ubyte
 
-private def emit_escape :: Vec<ubyte> -> i64 -> Vec<ubyte>
+private def emit_escape :: own Vec<ubyte> -> own i64 -> Vec<ubyte>
 fn emit_escape output unit =
 	let bytes = Vec.push 117ubyte (Vec.push 92ubyte output)
 	Vec.push (hex_digit (unit &&& 15)) (Vec.push (hex_digit ((unit >>> 4) &&& 15)) (Vec.push (hex_digit ((unit >>> 8) &&& 15)) (Vec.push (hex_digit (unit >>> 12)) bytes)))
 
-private def emit_control :: Vec<ubyte> -> i64 -> Vec<ubyte>
+private def emit_control :: own Vec<ubyte> -> own i64 -> Vec<ubyte>
 fn emit_control output unit =
 	if unit == 8 then Vec.push 98ubyte (Vec.push 92ubyte output)
 	elif unit == 12 then Vec.push 102ubyte (Vec.push 92ubyte output)
@@ -397,7 +397,7 @@ fn emit_control output unit =
 	else emit_escape output unit
 
 /// `text` as a JSON string: the escapes of `JSON.stringify`, other characters as UTF-8.
-private def emit_string :: Vec<ubyte> -> ref string -> Vec<ubyte>
+private def emit_string :: own Vec<ubyte> -> ref string -> Vec<ubyte>
 fn emit_string output text =
 	let mut bytes = Vec.push 34ubyte output
 	let mut index = 0
@@ -419,7 +419,7 @@ fn emit_string output text =
 		index = index + 1
 	Vec.push 34ubyte bytes
 
-private def rec emit_value :: Vec<ubyte> -> ref Value -> Vec<ubyte>
+private def rec emit_value :: own Vec<ubyte> -> ref Value -> Vec<ubyte>
 fn rec emit_value output value =
 	match value with
 	| Null -> push_word output u8"null"
@@ -444,21 +444,21 @@ fn rec emit_value output value =
 				bytes = emit_value bytes item
 		Vec.push 125ubyte bytes
 
-private def text_of :: Vec<ubyte> -> utf8string
+private def text_of :: own Vec<ubyte> -> utf8string
 fn text_of bytes = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
 
 /// The JSON text of `value` without white space. Object members keep their order; numbers keep their text.
 def to_utf8string :: ref Value -> utf8string
 fn to_utf8string value = text_of (emit_value (Vec.empty()) value)
 
-private def push_spaces :: Vec<ubyte> -> i64 -> Vec<ubyte>
+private def push_spaces :: own Vec<ubyte> -> own i64 -> Vec<ubyte>
 fn push_spaces output count =
 	let mut bytes = output
 	for _index in 1 .. count do bytes = Vec.push 32ubyte bytes
 	bytes
 
 /// `value` as `JSON.stringify(value, null, indent)` writes it for `indent` from 1 to 10.
-private def rec emit_pretty :: Vec<ubyte> -> ref Value -> i64 -> i64 -> Vec<ubyte>
+private def rec emit_pretty :: own Vec<ubyte> -> ref Value -> own i64 -> own i64 -> Vec<ubyte>
 fn rec emit_pretty output value indent level =
 	match value with
 	| Items items ->
@@ -482,7 +482,7 @@ fn rec emit_pretty output value indent level =
 
 /// The JSON text of `value` indented as `JSON.stringify(value, null, indent)` indents it: each
 /// level adds `indent` spaces (at most 10), and an `indent` below 1 writes no white space.
-def to_utf8string_pretty :: i64 -> ref Value -> utf8string
+def to_utf8string_pretty :: own i64 -> ref Value -> utf8string
 fn to_utf8string_pretty indent value =
 	let width = if indent > 10 then 10 else indent
 	if width < 1 then to_utf8string value else text_of (emit_pretty (Vec.empty()) value width 0)
@@ -514,7 +514,7 @@ instance Display<Error> {
 		if error.offset >= 0 then text + " at byte " + to_string error.offset else text
 }
 
-private def expected :: string -> Error
+private def expected :: own string -> Error
 fn expected name = failure (ExpectedType name) (-1)
 
 /// The number that `value` displays, or `NonFinite` when its text is `nan`, `inf`, or `-inf`.
@@ -692,7 +692,7 @@ instance Encode<'a> => Encode<[|'a|]> {
 }
 
 /// The list of `items` in order, without copying them.
-private def list_of :: Vec<'a> -> [|'a|]
+private def list_of :: own Vec<'a> -> [|'a|]
 fn list_of items =
 	let mut rest = items
 	let mut list: [|'a|] = [||]
@@ -708,13 +708,13 @@ instance Decode<'a> => Decode<[|'a|]> {
 	fn rec decode value = Result.map list_of (decode_items value)
 }
 
-private def tuple_shape :: ref Value -> i64 -> Result<unit, Error>
+private def tuple_shape :: ref Value -> own i64 -> Result<unit, Error>
 fn tuple_shape value count =
 	match value with
 	| Items items -> if items.length == count then Result.Ok () else Result.Error (expected ("array of " + to_string count))
 	| _ -> Result.Error (expected ("array of " + to_string count))
 
-private def rec push_encoded :: Encode<'a> => Result<Vec<Value>, Error> -> ref 'a -> Result<Vec<Value>, Error>
+private def rec push_encoded :: Encode<'a> => own Result<Vec<Value>, Error> -> ref 'a -> Result<Vec<Value>, Error>
 fn rec push_encoded items value =
 	match items with
 	| Result.Ok values ->
@@ -723,14 +723,14 @@ fn rec push_encoded items value =
 		| Result.Error error -> Result.Error error
 	| Result.Error error -> Result.Error error
 
-private def end_items :: Result<Vec<Value>, Error> -> Result<Value, Error>
+private def end_items :: own Result<Vec<Value>, Error> -> Result<Value, Error>
 fn end_items items =
 	match items with
 	| Result.Ok values -> Result.Ok (Items (Vec.to_array values))
 	| Result.Error error -> Result.Error error
 
 /// The element `index` of the array `value` decoded; `tuple_shape` has checked the length.
-private def rec decode_at :: Decode<'a> => ref Value -> i64 -> Result<'a, Error>
+private def rec decode_at :: Decode<'a> => ref Value -> own i64 -> Result<'a, Error>
 fn rec decode_at value index =
 	match value with
 	| Items items -> Decode.decode (ref items[index])
@@ -791,7 +791,7 @@ instance (Decode<'a>, Decode<'b>, Decode<'c>, Decode<'d>) => Decode<('a * 'b * '
 }
 
 /// The elements of `items` in reverse order, moved without copying.
-private def reversed :: Vec<'a> -> Vec<'a>
+private def reversed :: own Vec<'a> -> Vec<'a>
 fn reversed items =
 	let mut rest = items
 	let mut output = Vec.with_capacity (Vec.length (ref rest))
@@ -804,7 +804,7 @@ fn reversed items =
 	output
 
 /// Adds the encoded `key` and `value`; after an error it encodes nothing.
-private def rec push_entry :: (Encode<'k>, Encode<'v>) => Result<Vec<(Value * Value)>, Error> -> ref 'k -> ref 'v -> Result<Vec<(Value * Value)>, Error>
+private def rec push_entry :: (Encode<'k>, Encode<'v>) => own Result<Vec<(Value * Value)>, Error> -> ref 'k -> ref 'v -> Result<Vec<(Value * Value)>, Error>
 fn rec push_entry entries key value =
 	match entries with
 	| Result.Ok pairs ->
@@ -818,7 +818,7 @@ fn rec push_entry entries key value =
 
 /// A map as JSON: an object when every key encodes to a JSON string (so always for `string`
 /// keys, and `{}` for an empty map), otherwise an array of `[key, value]` arrays.
-private def end_entries :: Result<Vec<(Value * Value)>, Error> -> Result<Value, Error>
+private def end_entries :: own Result<Vec<(Value * Value)>, Error> -> Result<Value, Error>
 fn end_entries entries =
 	match entries with
 	| Result.Error error -> Result.Error error
@@ -909,7 +909,7 @@ fn rec decode_elements value =
 /// inserting the entries in document order would find. The result is in descending key order,
 /// so `Vec.pop` yields ascending keys and every `Map.insert` or `Set.insert` appends; inserting
 /// in document order would shift the entries after each smaller key (quadratic).
-private def by_key :: Ord<'k> => Vec<Keyed<'k, 'v>> -> (Vec<Keyed<'k, 'v>> * i64)
+private def by_key :: Ord<'k> => own Vec<Keyed<'k, 'v>> -> (Vec<Keyed<'k, 'v>> * i64)
 fn by_key entries =
 	let mut sorted = Vec.to_array entries
 	Array.sort_in_place (ref mut sorted)
@@ -924,7 +924,7 @@ fn by_key entries =
 		high = high - 1
 	(Vec.of_array sorted, found)
 
-private def rec decode_entry :: (Decode<'k>, Decode<'v>) => ref Value -> i64 -> Result<('k * 'v), Error>
+private def rec decode_entry :: (Decode<'k>, Decode<'v>) => ref Value -> own i64 -> Result<('k * 'v), Error>
 fn rec decode_entry value index =
 	match value with
 	| Object members ->
@@ -948,7 +948,7 @@ fn rec decode_entry value index =
 
 /// The JSON text that names entry `index` of a map or the element `index` of a set in a
 /// `DuplicateKey` error: an object key as it is, anything else as JSON text.
-private def entry_name :: ref Value -> i64 -> string
+private def entry_name :: ref Value -> own i64 -> string
 fn entry_name value index =
 	match value with
 	| Object members ->
@@ -961,7 +961,7 @@ fn entry_name value index =
 		String.from_utf8 (ref element)
 	| _ -> ""
 
-private def duplicate_entry :: ref Value -> i64 -> Error
+private def duplicate_entry :: ref Value -> own i64 -> Error
 fn duplicate_entry value index = failure (DuplicateKey (entry_name value index)) (-1)
 
 instance (Encode<'k>, Encode<'v>) => Encode<Map<'k, 'v>> {
@@ -1062,7 +1062,7 @@ instance (Decode<'k>, Hash<'k>, Eq<'k>) => Decode<HashSet<'k>> {
 }
 
 /// The JSON text of the element `index` of the array `value`, for a `DuplicateKey` error.
-private def element_name :: ref Value -> i64 -> string
+private def element_name :: ref Value -> own i64 -> string
 fn element_name value index =
 	match value with
 	| Items items ->
@@ -1113,7 +1113,7 @@ fn rec serialize value =
 	| Result.Error error -> Result.Error error
 
 /// `value` encoded and written as indented JSON text, as `to_utf8string_pretty` writes it.
-def rec serialize_pretty :: Encode<'a> => i64 -> ref 'a -> Result<utf8string, Error>
+def rec serialize_pretty :: Encode<'a> => own i64 -> ref 'a -> Result<utf8string, Error>
 fn rec serialize_pretty indent value =
 	match Encode.encode value with
 	| Result.Ok json -> Result.Ok (to_utf8string_pretty indent (ref json))
@@ -1127,11 +1127,11 @@ fn rec deserialize text =
 	| Result.Error error -> Result.Error error
 
 /// Derived `Encode` of a record starts its members with this.
-def begin_object :: i64 -> Result<Vec<(string * Value)>, Error>
+def begin_object :: own i64 -> Result<Vec<(string * Value)>, Error>
 fn begin_object count = Result.Ok (Vec.with_capacity count)
 
 /// Adds the member `key` with the encoded `value`; after an error it encodes nothing.
-def rec encode_field :: Encode<'a> => Result<Vec<(string * Value)>, Error> -> string -> ref 'a -> Result<Vec<(string * Value)>, Error>
+def rec encode_field :: Encode<'a> => own Result<Vec<(string * Value)>, Error> -> own string -> ref 'a -> Result<Vec<(string * Value)>, Error>
 fn rec encode_field members key value =
 	match members with
 	| Result.Ok entries ->
@@ -1141,21 +1141,21 @@ fn rec encode_field members key value =
 	| Result.Error error -> Result.Error error
 
 /// The object of the members that `begin_object` and `encode_field` collected.
-def end_object :: Result<Vec<(string * Value)>, Error> -> Result<Value, Error>
+def end_object :: own Result<Vec<(string * Value)>, Error> -> Result<Value, Error>
 fn end_object members =
 	match members with
 	| Result.Ok entries -> Result.Ok (Object (Vec.to_array entries))
 	| Result.Error error -> Result.Error error
 
 /// `{"name": payload}`: a union case with a payload.
-def rec encode_case :: Encode<'a> => string -> ref 'a -> Result<Value, Error>
+def rec encode_case :: Encode<'a> => own string -> ref 'a -> Result<Value, Error>
 fn rec encode_case name payload =
 	match Encode.encode payload with
 	| Result.Ok item -> Result.Ok (Object (new [(name, item)]))
 	| Result.Error error -> Result.Error error
 
 /// `"name"`: a union case without a payload.
-def encode_tag :: string -> Result<Value, Error>
+def encode_tag :: own string -> Result<Value, Error>
 fn encode_tag name = Result.Ok (Text name)
 
 /// `ExpectedType "object"` unless `value` is an object.
@@ -1180,7 +1180,7 @@ fn member_index value key =
 
 /// The member `key` of the object `value` decoded. A missing member decodes as `null`, and
 /// `MissingField key` replaces the error when that fails.
-def rec decode_field :: Decode<'a> => ref Value -> string -> Result<'a, Error>
+def rec decode_field :: Decode<'a> => ref Value -> own string -> Result<'a, Error>
 fn rec decode_field value key =
 	let index = member_index value (ref key)
 	if index >= 0 then
@@ -1196,7 +1196,7 @@ fn rec decode_field value key =
 		| Result.Error _ -> Result.Error (failure (MissingField key) (-1))
 
 /// `first`, or the error of `result` when `first` is `None`. It drops `result`.
-def keep_error :: Maybe<Error> -> Result<'a, Error> -> Maybe<Error>
+def keep_error :: own Maybe<Error> -> own Result<'a, Error> -> Maybe<Error>
 fn keep_error first result =
 	match first with
 	| Maybe.Some error -> Maybe.Some error
@@ -1263,7 +1263,7 @@ fn reader text =
 
 /// The end and the escapes of the string whose opening quote is at `start`, checked as `parse`
 /// checks it but not decoded.
-private def scan_string :: ref utf8string -> i64 -> Result<(Lexeme * i64), Error>
+private def scan_string :: ref utf8string -> own i64 -> Result<(Lexeme * i64), Error>
 fn scan_string text start =
 	let length = text.length
 	let mut index = start + 1
@@ -1305,7 +1305,7 @@ fn scan_string text start =
 	| Maybe.None -> Result.Ok (Lexeme { start: start + 1, finish: index, escaped: escaped }, index + 1)
 
 /// The earliest repeated key among `keys[first..last]`, with the offset of its opening quote.
-private def repeated_key :: ref utf8string -> ref Vec<Lexeme> -> i64 -> i64 -> Maybe<Error>
+private def repeated_key :: ref utf8string -> ref Vec<Lexeme> -> own i64 -> own i64 -> Maybe<Error>
 fn repeated_key text keys first last =
 	let mut members = Vec.with_capacity (last - first)
 	for index in first .. (last - 1) do
@@ -1321,7 +1321,7 @@ fn repeated_key text keys first last =
 		| (_, Maybe.None) -> Maybe.None
 
 /// `error`, or the earliest repeated key of an open object when that comes first (as `parse` reports it).
-private def reader_failure :: ref utf8string -> ref Reader -> Error -> Result<(Event * Reader), Error>
+private def reader_failure :: ref utf8string -> ref Reader -> own Error -> Result<(Event * Reader), Error>
 fn reader_failure text reader error =
 	let mut best = error
 	let count = Vec.length (ref reader.marks)
@@ -1332,12 +1332,12 @@ fn reader_failure text reader error =
 		| Maybe.None -> ()
 	Result.Error best
 
-private def after_value :: Reader -> i64 -> Reader
+private def after_value :: own Reader -> own i64 -> Reader
 fn after_value reader position =
 	let state = if Vec.is_empty (ref reader.containers) then 7 else 1
 	Reader { position: position, containers: reader.containers, keys: reader.keys, marks: reader.marks, state: state }
 
-private def open_container :: ref utf8string -> Reader -> i64 -> bool -> Result<(Event * Reader), Error>
+private def open_container :: ref utf8string -> own Reader -> own i64 -> own bool -> Result<(Event * Reader), Error>
 fn open_container text reader index object =
 	if Vec.length (ref reader.containers) >= 128 then reader_failure text (ref reader) (failure TooDeep index) else
 		let marks = if object then Vec.push (Vec.length (ref reader.keys)) reader.marks else reader.marks
@@ -1345,7 +1345,7 @@ fn open_container text reader index object =
 		let opened = Reader { position: index + 1, containers: Vec.push object reader.containers, keys: reader.keys, marks: marks, state: state }
 		Result.Ok ((if object then ObjectStart else ArrayStart), opened)
 
-private def close_container :: ref utf8string -> Reader -> i64 -> bool -> Result<(Event * Reader), Error>
+private def close_container :: ref utf8string -> own Reader -> own i64 -> own bool -> Result<(Event * Reader), Error>
 fn close_container text reader index object =
 	let first = if object then reader.marks[Vec.length (ref reader.marks) - 1] else Vec.length (ref reader.keys)
 	let repeated = if object then repeated_key text (ref reader.keys) first (Vec.length (ref reader.keys)) else Maybe.None
@@ -1358,7 +1358,7 @@ fn close_container text reader index object =
 		let closed = Reader { position: index + 1, containers: containers, keys: Vec.truncate first reader.keys, marks: marks, state: 1 }
 		Result.Ok ((if object then ObjectEnd else ArrayEnd), after_value closed (index + 1))
 
-private def read_literal :: ref utf8string -> Reader -> i64 -> Result<(Event * Reader), Error>
+private def read_literal :: ref utf8string -> own Reader -> own i64 -> Result<(Event * Reader), Error>
 fn read_literal text reader index =
 	let byte = text[index]
 	if byte == 116ubyte then
@@ -1375,7 +1375,7 @@ fn read_literal text reader index =
 		| Result.Error error -> reader_failure text (ref reader) error
 	else reader_failure text (ref reader) (failure Syntax index)
 
-private def read_value :: ref utf8string -> Reader -> i64 -> Result<(Event * Reader), Error>
+private def read_value :: ref utf8string -> own Reader -> own i64 -> Result<(Event * Reader), Error>
 fn read_value text reader index =
 	if index >= text.length then reader_failure text (ref reader) (failure UnexpectedEnd text.length) else
 		let byte = text[index]
@@ -1391,7 +1391,7 @@ fn read_value text reader index =
 			| Result.Error error -> reader_failure text (ref reader) error
 		else read_literal text reader index
 
-private def read_key :: ref utf8string -> Reader -> i64 -> Result<(Event * Reader), Error>
+private def read_key :: ref utf8string -> own Reader -> own i64 -> Result<(Event * Reader), Error>
 fn read_key text reader index =
 	if index >= text.length then reader_failure text (ref reader) (failure UnexpectedEnd text.length)
 	elif text[index] != 34ubyte then reader_failure text (ref reader) (failure Syntax index)
@@ -1407,7 +1407,7 @@ fn read_key text reader index =
 
 /// The next token of `text`. The reader checks the text as `parse` does and fails with the same
 /// error kinds and offsets; a repeated key is reported when its object ends or the text fails.
-def next :: ref utf8string -> Reader -> Result<(Event * Reader), Error>
+def next :: ref utf8string -> own Reader -> Result<(Event * Reader), Error>
 fn next text reader =
 	let index = skip_space text reader.position
 	let state = reader.state
@@ -1486,11 +1486,11 @@ fn token_numeral text token =
 record Writer { bytes: Vec<ubyte>, containers: Vec<bool>, state: i64 }
 
 /// A writer of a new JSON text.
-def writer :: unit -> Writer
+def writer :: own unit -> Writer
 fn writer _unit = Writer { bytes: Vec.empty(), containers: Vec.empty(), state: 0 }
 
 /// The writer ready for a value: `,` goes before a value that follows another in an array.
-private def value_slot :: Writer -> Result<Writer, Error>
+private def value_slot :: own Writer -> Result<Writer, Error>
 fn value_slot writer =
 	let state = writer.state
 	let count = Vec.length (ref writer.containers)
@@ -1500,13 +1500,13 @@ fn value_slot writer =
 	else Result.Error (failure Syntax (Vec.length (ref writer.bytes)))
 
 /// The writer after a complete value.
-private def wrote :: Vec<bool> -> Vec<ubyte> -> Writer
+private def wrote :: own Vec<bool> -> own Vec<ubyte> -> Writer
 fn wrote containers bytes =
 	let state = if Vec.is_empty (ref containers) then 7 else 1
 	Writer { bytes: bytes, containers: containers, state: state }
 
 /// Writes `null`.
-def write_null :: Writer -> Result<Writer, Error>
+def write_null :: own Writer -> Result<Writer, Error>
 fn write_null writer =
 	match value_slot writer with
 	| Result.Ok ready ->
@@ -1515,7 +1515,7 @@ fn write_null writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes `true` or `false`.
-def write_bool :: bool -> Writer -> Result<Writer, Error>
+def write_bool :: own bool -> own Writer -> Result<Writer, Error>
 fn write_bool flag writer =
 	match value_slot writer with
 	| Result.Ok ready ->
@@ -1524,7 +1524,7 @@ fn write_bool flag writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes a number. A `Numeral` whose text is not a JSON number gives `Syntax` at the end of the output.
-def write_number :: ref Numeral -> Writer -> Result<Writer, Error>
+def write_number :: ref Numeral -> own Writer -> Result<Writer, Error>
 fn write_number numeral writer =
 	if !(is_numeral (ref numeral.text)) then Result.Error (failure Syntax (Vec.length (ref writer.bytes))) else
 		match value_slot writer with
@@ -1534,7 +1534,7 @@ fn write_number numeral writer =
 		| Result.Error error -> Result.Error error
 
 /// Writes a string with the escapes of `to_utf8string`.
-def write_text :: ref string -> Writer -> Result<Writer, Error>
+def write_text :: ref string -> own Writer -> Result<Writer, Error>
 fn write_text text writer =
 	match value_slot writer with
 	| Result.Ok ready ->
@@ -1543,7 +1543,7 @@ fn write_text text writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes a whole value as `to_utf8string` writes it.
-def write_json :: ref Value -> Writer -> Result<Writer, Error>
+def write_json :: ref Value -> own Writer -> Result<Writer, Error>
 fn write_json value writer =
 	match value_slot writer with
 	| Result.Ok ready ->
@@ -1552,7 +1552,7 @@ fn write_json value writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes the key of the next member of the innermost open object, with its `,` and `:`.
-def write_key :: ref string -> Writer -> Result<Writer, Error>
+def write_key :: ref string -> own Writer -> Result<Writer, Error>
 fn write_key key writer =
 	let count = Vec.length (ref writer.containers)
 	let in_object = count > 0 && writer.containers[count - 1]
@@ -1561,7 +1561,7 @@ fn write_key key writer =
 		let separated = if state == 1 then Vec.push 44ubyte writer.bytes else writer.bytes
 		Result.Ok (Writer { bytes: Vec.push 58ubyte (emit_string separated key), containers: writer.containers, state: 6 })
 
-private def open_writer :: Writer -> bool -> Result<Writer, Error>
+private def open_writer :: own Writer -> own bool -> Result<Writer, Error>
 fn open_writer writer object =
 	if Vec.length (ref writer.containers) >= 128 then Result.Error (failure TooDeep (Vec.length (ref writer.bytes))) else
 		match value_slot writer with
@@ -1570,7 +1570,7 @@ fn open_writer writer object =
 			Result.Ok (Writer { bytes: bytes, containers: Vec.push object ready.containers, state: if object then 4 else 2 })
 		| Result.Error error -> Result.Error error
 
-private def close_writer :: Writer -> bool -> Result<Writer, Error>
+private def close_writer :: own Writer -> own bool -> Result<Writer, Error>
 fn close_writer writer object =
 	let count = Vec.length (ref writer.containers)
 	let state = writer.state
@@ -1584,22 +1584,22 @@ fn close_writer writer object =
 		Result.Ok (Writer { bytes: bytes, containers: containers, state: state })
 
 /// Starts an array.
-def open_array :: Writer -> Result<Writer, Error>
+def open_array :: own Writer -> Result<Writer, Error>
 fn open_array writer = open_writer writer false
 
 /// Ends the innermost open array.
-def close_array :: Writer -> Result<Writer, Error>
+def close_array :: own Writer -> Result<Writer, Error>
 fn close_array writer = close_writer writer false
 
 /// Starts an object.
-def open_object :: Writer -> Result<Writer, Error>
+def open_object :: own Writer -> Result<Writer, Error>
 fn open_object writer = open_writer writer true
 
 /// Ends the innermost open object.
-def close_object :: Writer -> Result<Writer, Error>
+def close_object :: own Writer -> Result<Writer, Error>
 fn close_object writer = close_writer writer true
 
 /// The JSON text once exactly one complete value is written; `UnexpectedEnd` at the end of the output otherwise.
-def finish :: Writer -> Result<utf8string, Error>
+def finish :: own Writer -> Result<utf8string, Error>
 fn finish writer =
 	if writer.state != 7 then Result.Error (failure UnexpectedEnd (Vec.length (ref writer.bytes))) else Result.Ok (text_of writer.bytes)

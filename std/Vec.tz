@@ -7,7 +7,7 @@
 // take it by value, so the element type must be `Copy`; the `r` forms (`existsr`, `findr`, `containsr`, ...) borrow
 // each element, or the item to look for, and work for any element type.
 
-private def rec iter_from :: ref Vec<'a> -> i64 -> Seq<ref 'a>
+private def rec iter_from :: ref Vec<'a> -> own i64 -> Seq<ref 'a>
 fn rec iter_from values index = Seq.defer (\() ->
     if index < Vec.length values then (iter_from values (index + 1), Maybe.Some (ref values[index]))
     else (Seq.empty(), Maybe.None))
@@ -18,7 +18,7 @@ fn iter values = iter_from values 0
 // ---- Construction ----
 
 /// A `Vec` of the elements of a sequence, as `new List<T>(IEnumerable<T>)`.
-def of_seq :: Seq<'a> -> Vec<'a>
+def of_seq :: own Seq<'a> -> Vec<'a>
 fn of_seq items = add_range_seq items (Vec.empty())
 
 /// A `Vec` of the elements of a list, which are copied.
@@ -28,7 +28,7 @@ fn of_list items = Vec.of_array (List.to_array items)
 // ---- Capacity ----
 
 /// The capacity that .NET grows to for `required` elements: twice the capacity (4 for none), or `required` if that is more.
-private def grown_capacity :: i64 -> i64 -> i64
+private def grown_capacity :: own i64 -> own i64 -> i64
 fn grown_capacity capacity required =
     let doubled =
         if capacity == 0 then 4
@@ -37,19 +37,19 @@ fn grown_capacity capacity required =
     if required > doubled then required else doubled
 
 /// Sets the capacity (`Capacity = value`), which must not be less than the length.
-def set_capacity :: i64 -> Vec<'a> -> Vec<'a>
+def set_capacity :: own i64 -> own Vec<'a> -> Vec<'a>
 fn set_capacity capacity values = Vec.__set_capacity capacity values
 
 /// Makes the capacity at least `capacity` elements in all (not additional ones, unlike `Vec.reserve`); the new
 /// capacity is `Vec.capacity` of the result.
-def ensure_capacity :: i64 -> Vec<'a> -> Vec<'a>
+def ensure_capacity :: own i64 -> own Vec<'a> -> Vec<'a>
 fn ensure_capacity capacity values =
     assert (capacity >= 0)
     let current = Vec.capacity (ref values)
     if current < capacity then Vec.__set_capacity (grown_capacity current capacity) values else values
 
 /// Shrinks the capacity to the length when the length is below 90% of the capacity.
-def trim_excess :: Vec<'a> -> Vec<'a>
+def trim_excess :: own Vec<'a> -> Vec<'a>
 fn trim_excess values =
     let capacity = Vec.capacity (ref values)
     let threshold = capacity / 10 * 9 + capacity % 10 * 9 / 10
@@ -58,17 +58,17 @@ fn trim_excess values =
 
 // ---- Adding ----
 
-def add :: 'a -> Vec<'a> -> Vec<'a>
+def add :: own 'a -> own Vec<'a> -> Vec<'a>
 fn add item values = Vec.push item values
 
 /// Adds copies of the elements of an array at the end.
-def add_range :: Copy<'a> => ref ['a] -> Vec<'a> -> Vec<'a>
+def add_range :: Copy<'a> => ref ['a] -> own Vec<'a> -> Vec<'a>
 fn add_range items values =
     let length = Vec.length (ref values)
     Vec.__splice length 0 (deref items) values
 
 /// Adds the elements of a sequence at the end, which may be any type, as the sequence gives them up one by one.
-def add_range_seq :: Seq<'a> -> Vec<'a> -> Vec<'a>
+def add_range_seq :: own Seq<'a> -> own Vec<'a> -> Vec<'a>
 fn add_range_seq items values =
     let mut result = values
     for item in items do result = Vec.push item result
@@ -76,21 +76,21 @@ fn add_range_seq items values =
 
 /// Moves all the elements of `other` to the end of `values`, so `values |> Vec.append other` puts `other` behind
 /// `values`; the elements need not be `Copy`.
-def append :: Vec<'a> -> Vec<'a> -> Vec<'a>
+def append :: own Vec<'a> -> own Vec<'a> -> Vec<'a>
 fn append other values =
     let length = Vec.length (ref values)
     Vec.__splice length 0 (Vec.to_array other) values
 
 /// Inserts an element at `index`, which may be the length, and moves the later elements up.
-def insert :: i64 -> 'a -> Vec<'a> -> Vec<'a>
+def insert :: own i64 -> own 'a -> own Vec<'a> -> Vec<'a>
 fn insert index item values = Vec.__insert index item values
 
-def insert_range :: Copy<'a> => i64 -> ref ['a] -> Vec<'a> -> Vec<'a>
+def insert_range :: Copy<'a> => own i64 -> ref ['a] -> own Vec<'a> -> Vec<'a>
 fn insert_range index items values = Vec.__splice index 0 (deref items) values
 
 /// Inserts the elements of a sequence at `index`. The capacity grows as for one insertion after another: it doubles
 /// until the elements fit, unlike `insert_range`, which grows by one step to the number that is needed.
-def insert_range_seq :: i64 -> Seq<'a> -> Vec<'a> -> Vec<'a>
+def insert_range_seq :: own i64 -> own Seq<'a> -> own Vec<'a> -> Vec<'a>
 fn insert_range_seq index items values =
     assert (index >= 0 && index <= Vec.length (ref values))
     let extra = of_seq items
@@ -99,24 +99,24 @@ fn insert_range_seq index items values =
 
 // ---- Removing ----
 
-def remove_at :: i64 -> Vec<'a> -> Vec<'a>
+def remove_at :: own i64 -> own Vec<'a> -> Vec<'a>
 fn remove_at index values = Vec.__splice index 1 [] values
 
-def remove_range :: i64 -> i64 -> Vec<'a> -> Vec<'a>
+def remove_range :: own i64 -> own i64 -> own Vec<'a> -> Vec<'a>
 fn remove_range index count values = Vec.__splice index count [] values
 
 /// Removes the first element equal to `item`; the result says whether there was one.
-def remover :: Eq<'a> => ref 'a -> Vec<'a> -> (Vec<'a> * bool)
+def remover :: Eq<'a> => ref 'a -> own Vec<'a> -> (Vec<'a> * bool)
 fn remover item values =
     let index = index_ofr item (ref values)
     if index >= 0 then (remove_at index values, true) else (values, false)
 
-def remove :: Eq<'a> => 'a -> Vec<'a> -> (Vec<'a> * bool)
+def remove :: Eq<'a> => own 'a -> own Vec<'a> -> (Vec<'a> * bool)
 fn remove item values = remover (ref item) values
 
 /// Moves the elements that the predicate rejects to the front, in order, and returns their number. The predicate runs
 /// once for each element, in order; the other elements end up behind them in no particular order.
-private def compact :: (ref 'a -> bool) -> ref mut ['a..] -> i64
+private def compact :: own (ref 'a -> bool) -> ref mut ['a..] -> i64
 fn compact predicate view =
     let length = view.length
     let mut kept = 0
@@ -128,7 +128,7 @@ fn compact predicate view =
         index = index + 1
     kept
 
-private def compact_values :: Copy<'a> => ('a -> bool) -> ref mut ['a..] -> i64
+private def compact_values :: Copy<'a> => own ('a -> bool) -> ref mut ['a..] -> i64
 fn compact_values predicate view =
     let length = view.length
     let mut kept = 0
@@ -142,14 +142,14 @@ fn compact_values predicate view =
 
 /// Removes every element that the predicate accepts and returns how many there were. The remaining elements keep their
 /// order; the removed ones are dropped after the last call of the predicate, in no particular order.
-def remove_allr :: (ref 'a -> bool) -> Vec<'a> -> (Vec<'a> * i64)
+def remove_allr :: own (ref 'a -> bool) -> own Vec<'a> -> (Vec<'a> * i64)
 fn remove_allr predicate values =
     let mut owned = values
     let kept = compact predicate (Vec.__view (ref mut owned))
     let removed = Vec.length (ref owned) - kept
     (Vec.truncate kept owned, removed)
 
-def remove_all :: Copy<'a> => ('a -> bool) -> Vec<'a> -> (Vec<'a> * i64)
+def remove_all :: Copy<'a> => own ('a -> bool) -> own Vec<'a> -> (Vec<'a> * i64)
 fn remove_all predicate values =
     let mut owned = values
     let kept = compact_values predicate (Vec.__view (ref mut owned))
@@ -158,7 +158,7 @@ fn remove_all predicate values =
 
 // ---- Reversing and sorting ----
 
-private def reverse_slice :: ref mut ['a..] -> i64 -> i64 -> unit
+private def reverse_slice :: ref mut ['a..] -> own i64 -> own i64 -> unit
 fn reverse_slice view first count =
     let mut low = first
     let mut high = first + count - 1
@@ -167,14 +167,14 @@ fn reverse_slice view first count =
         low = low + 1
         high = high - 1
 
-def reverse :: Vec<'a> -> Vec<'a>
+def reverse :: own Vec<'a> -> Vec<'a>
 fn reverse values =
     let mut owned = values
     let length = Vec.length (ref owned)
     reverse_slice (Vec.__view (ref mut owned)) 0 length
     owned
 
-def reverse_range :: i64 -> i64 -> Vec<'a> -> Vec<'a>
+def reverse_range :: own i64 -> own i64 -> own Vec<'a> -> Vec<'a>
 fn reverse_range index count values =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
     let mut owned = values
@@ -197,7 +197,7 @@ fn unordered_first view =
 
 /// Moves the elements of `[first, last)` that differ from themselves to the front of the range, keeping the order inside
 /// both groups, and returns the end of the first group. The range is not empty.
-private def rec partition_unordered :: Eq<'a> => ref mut ['a..] -> i64 -> i64 -> i64
+private def rec partition_unordered :: Eq<'a> => ref mut ['a..] -> own i64 -> own i64 -> i64
 fn rec partition_unordered view first last =
     if last - first == 1 then
         if Eq.eq (ref view[first]) (ref view[first]) then first else last
@@ -208,38 +208,38 @@ fn rec partition_unordered view first last =
         if left < middle && middle < right then rotate_slice view left middle right
         left + (right - middle)
 
-private def sort_view :: Ord<'a> => ref mut ['a..] -> i64 -> i64 -> unit
+private def sort_view :: Ord<'a> => ref mut ['a..] -> own i64 -> own i64 -> unit
 fn sort_view view index count =
     let window = ref mut view[index .. index + count]
     let numbers = unordered_first window
     Array.sort_in_place (ref mut window[numbers .. window.length])
 
 /// Sorts a range in place, stably, with `Ord`; a NaN comes first, as in .NET.
-def sort_range :: Ord<'a> => i64 -> i64 -> Vec<'a> -> Vec<'a>
+def sort_range :: Ord<'a> => own i64 -> own i64 -> own Vec<'a> -> Vec<'a>
 fn sort_range index count values =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
     let mut owned = values
     sort_view (Vec.__view (ref mut owned)) index count
     owned
 
-def sort :: Ord<'a> => Vec<'a> -> Vec<'a>
+def sort :: Ord<'a> => own Vec<'a> -> Vec<'a>
 fn sort values =
     let length = Vec.length (ref values)
     sort_range 0 length values
 
-private def sort_view_with :: Copy<'a> => ('a -> 'a -> i64) -> ref mut ['a..] -> i64 -> i64 -> unit
+private def sort_view_with :: Copy<'a> => own ('a -> 'a -> i64) -> ref mut ['a..] -> own i64 -> own i64 -> unit
 fn sort_view_with comparison view index count =
     Array.sort_in_place_with comparison (ref mut view[index .. index + count])
 
 /// Sorts a range in place, stably, with a comparison that returns a negative number, zero or a positive number.
-def sort_range_with :: Copy<'a> => i64 -> i64 -> ('a -> 'a -> i64) -> Vec<'a> -> Vec<'a>
+def sort_range_with :: Copy<'a> => own i64 -> own i64 -> own ('a -> 'a -> i64) -> own Vec<'a> -> Vec<'a>
 fn sort_range_with index count comparison values =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
     let mut owned = values
     sort_view_with comparison (Vec.__view (ref mut owned)) index count
     owned
 
-def sort_with :: Copy<'a> => ('a -> 'a -> i64) -> Vec<'a> -> Vec<'a>
+def sort_with :: Copy<'a> => own ('a -> 'a -> i64) -> own Vec<'a> -> Vec<'a>
 fn sort_with comparison values =
     let length = Vec.length (ref values)
     sort_range_with 0 length comparison values
@@ -247,23 +247,23 @@ fn sort_with comparison values =
 /// Sorts a range in place, like `sort_range_with`, but the comparison borrows the elements, so they need not be `Copy`.
 /// Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge), so it is stable and takes no
 /// extra memory.
-def sort_range_withr :: i64 -> i64 -> (ref 'a -> ref 'a -> i64) -> Vec<'a> -> Vec<'a>
+def sort_range_withr :: own i64 -> own i64 -> own (ref 'a -> ref 'a -> i64) -> own Vec<'a> -> Vec<'a>
 fn sort_range_withr index count comparison values =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
     let mut owned = values
     sort_view_by comparison (Vec.__view (ref mut owned)) index count
     owned
 
-def sort_withr :: (ref 'a -> ref 'a -> i64) -> Vec<'a> -> Vec<'a>
+def sort_withr :: own (ref 'a -> ref 'a -> i64) -> own Vec<'a> -> Vec<'a>
 fn sort_withr comparison values =
     let length = Vec.length (ref values)
     sort_range_withr 0 length comparison values
 
-private def sort_view_by :: (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> i64 -> i64 -> unit
+private def sort_view_by :: own (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> own i64 -> own i64 -> unit
 fn sort_view_by comparison view index count =
     sort_slice_by comparison (ref mut view[index .. index + count])
 
-private def sort_slice_by :: (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> unit
+private def sort_slice_by :: own (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> unit
 fn sort_slice_by comparison values =
     let length = values.length
     let blocks = length / 20
@@ -281,7 +281,7 @@ fn sort_slice_by comparison values =
         width = double
         double = double * 2
 
-private def insertion_by :: (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> i64 -> i64 -> unit
+private def insertion_by :: own (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> own i64 -> own i64 -> unit
 fn insertion_by comparison values first last =
     for index in (first + 1) .. (last - 1) do
         let mut current = index
@@ -290,7 +290,7 @@ fn insertion_by comparison values first last =
             current = current - 1
 
 /// Merges the sorted runs `[first, middle)` and `[middle, last)` in place, stably (SymMerge).
-private def rec merge_by :: (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> i64 -> i64 -> i64 -> unit
+private def rec merge_by :: own (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> own i64 -> own i64 -> own i64 -> unit
 fn rec merge_by comparison values first middle last =
     if middle - first == 1 then
         let mut low = middle
@@ -323,7 +323,7 @@ fn rec merge_by comparison values first middle last =
         if center < finish && finish < last then merge_by comparison values center finish last
 
 /// Exchanges the adjacent runs `[first, middle)` and `[middle, last)` by swaps.
-private def rotate_slice :: ref mut ['a..] -> i64 -> i64 -> i64 -> unit
+private def rotate_slice :: ref mut ['a..] -> own i64 -> own i64 -> own i64 -> unit
 fn rotate_slice values first middle last =
     let mut left = middle - first
     let mut right = last - middle
@@ -342,14 +342,14 @@ fn rotate_slice values first middle last =
 def index_ofr :: Eq<'a> => ref 'a -> ref Vec<'a> -> i64
 fn index_ofr item values = first_index values item 0 (Vec.length values)
 
-private def first_index :: Eq<'a> => ref Vec<'a> -> ref 'a -> i64 -> i64 -> i64
+private def first_index :: Eq<'a> => ref Vec<'a> -> ref 'a -> own i64 -> own i64 -> i64
 fn first_index values item start count =
     let last = start + count
     let mut index = start
     while index < last && !(Eq.eq (ref values[index]) item) do index = index + 1
     if index < last then index else -1
 
-private def last_index :: Eq<'a> => ref Vec<'a> -> ref 'a -> i64 -> i64 -> i64
+private def last_index :: Eq<'a> => ref Vec<'a> -> ref 'a -> own i64 -> own i64 -> i64
 fn last_index values item start count =
     let stop = start - count
     let mut index = start
@@ -357,17 +357,17 @@ fn last_index values item start count =
     if index > stop then index else -1
 
 /// The index of the first element equal to `item`, or `-1`.
-def index_of :: Eq<'a> => 'a -> ref Vec<'a> -> i64
+def index_of :: Eq<'a> => own 'a -> ref Vec<'a> -> i64
 fn index_of item values = first_index values (ref item) 0 (Vec.length values)
 
 /// Looks from `index` on; `index` may be the length.
-def index_of_from :: Eq<'a> => 'a -> i64 -> ref Vec<'a> -> i64
+def index_of_from :: Eq<'a> => own 'a -> own i64 -> ref Vec<'a> -> i64
 fn index_of_from item index values =
     assert (index >= 0 && index <= Vec.length values)
     first_index values (ref item) index (Vec.length values - index)
 
 /// Looks at `count` elements from `index` on.
-def index_of_range :: Eq<'a> => 'a -> i64 -> i64 -> ref Vec<'a> -> i64
+def index_of_range :: Eq<'a> => own 'a -> own i64 -> own i64 -> ref Vec<'a> -> i64
 fn index_of_range item index count values =
     assert (index >= 0 && index <= Vec.length values)
     assert (count >= 0 && index <= Vec.length values - count)
@@ -379,17 +379,17 @@ fn last_index_ofr item values =
     if length == 0 then -1 else last_index values item (length - 1) length
 
 /// The index of the last element equal to `item`, or `-1`.
-def last_index_of :: Eq<'a> => 'a -> ref Vec<'a> -> i64
+def last_index_of :: Eq<'a> => own 'a -> ref Vec<'a> -> i64
 fn last_index_of item values = last_index_ofr (ref item) values
 
 /// Looks backward from `index` to the front. An empty `Vec` takes `-1` as `index`, as in .NET.
-def last_index_of_from :: Eq<'a> => 'a -> i64 -> ref Vec<'a> -> i64
+def last_index_of_from :: Eq<'a> => own 'a -> own i64 -> ref Vec<'a> -> i64
 fn last_index_of_from item index values =
     assert (index < Vec.length values)
     last_index_of_range item index (index + 1) values
 
 /// Looks backward from `index` at `count` elements.
-def last_index_of_range :: Eq<'a> => 'a -> i64 -> i64 -> ref Vec<'a> -> i64
+def last_index_of_range :: Eq<'a> => own 'a -> own i64 -> own i64 -> ref Vec<'a> -> i64
 fn last_index_of_range item index count values =
     let length = Vec.length values
     if length == 0 then -1 else
@@ -401,11 +401,11 @@ fn last_index_of_range item index count values =
 def containsr :: Eq<'a> => ref 'a -> ref Vec<'a> -> bool
 fn containsr item values = index_ofr item values >= 0
 
-def contains :: Eq<'a> => 'a -> ref Vec<'a> -> bool
+def contains :: Eq<'a> => own 'a -> ref Vec<'a> -> bool
 fn contains item values = index_ofr (ref item) values >= 0
 
 /// Like `find_index`, but `predicate` borrows each element, so the elements need not be `Copy`.
-def find_indexr :: (ref 'a -> bool) -> ref Vec<'a> -> i64
+def find_indexr :: own (ref 'a -> bool) -> ref Vec<'a> -> i64
 fn find_indexr predicate values =
     let length = Vec.length values
     let mut index = 0
@@ -413,15 +413,15 @@ fn find_indexr predicate values =
     if index < length then index else -1
 
 /// The index of the first element that the predicate accepts, or `-1`.
-def find_index :: Copy<'a> => ('a -> bool) -> ref Vec<'a> -> i64
+def find_index :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_index predicate values = find_index_range 0 (Vec.length values) predicate values
 
-def find_index_from :: Copy<'a> => i64 -> ('a -> bool) -> ref Vec<'a> -> i64
+def find_index_from :: Copy<'a> => own i64 -> own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_index_from start predicate values =
     assert (start >= 0 && start <= Vec.length values)
     find_index_range start (Vec.length values - start) predicate values
 
-def find_index_range :: Copy<'a> => i64 -> i64 -> ('a -> bool) -> ref Vec<'a> -> i64
+def find_index_range :: Copy<'a> => own i64 -> own i64 -> own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_index_range start count predicate values =
     assert (start >= 0 && start <= Vec.length values)
     assert (count >= 0 && start <= Vec.length values - count)
@@ -430,24 +430,24 @@ fn find_index_range start count predicate values =
     while index < last && !(predicate values[index]) do index = index + 1
     if index < last then index else -1
 
-def find_last_indexr :: (ref 'a -> bool) -> ref Vec<'a> -> i64
+def find_last_indexr :: own (ref 'a -> bool) -> ref Vec<'a> -> i64
 fn find_last_indexr predicate values =
     let mut index = Vec.length values - 1
     while index >= 0 && !(predicate (ref values[index])) do index = index - 1
     index
 
 /// The index of the last element that the predicate accepts, or `-1`.
-def find_last_index :: Copy<'a> => ('a -> bool) -> ref Vec<'a> -> i64
+def find_last_index :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_last_index predicate values =
     find_last_index_range (Vec.length values - 1) (Vec.length values) predicate values
 
 /// Looks backward from `start` to the front. An empty `Vec` takes `-1` as `start`, as in .NET.
-def find_last_index_from :: Copy<'a> => i64 -> ('a -> bool) -> ref Vec<'a> -> i64
+def find_last_index_from :: Copy<'a> => own i64 -> own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_last_index_from start predicate values =
     find_last_index_range start (start + 1) predicate values
 
 /// Looks backward from `start` at `count` elements.
-def find_last_index_range :: Copy<'a> => i64 -> i64 -> ('a -> bool) -> ref Vec<'a> -> i64
+def find_last_index_range :: Copy<'a> => own i64 -> own i64 -> own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_last_index_range start count predicate values =
     let length = Vec.length values
     if length == 0 then assert (start == -1) else assert (start >= 0 && start < length)
@@ -457,13 +457,13 @@ fn find_last_index_range start count predicate values =
     while index > stop && !(predicate values[index]) do index = index - 1
     if index > stop then index else -1
 
-def existsr :: (ref 'a -> bool) -> ref Vec<'a> -> bool
+def existsr :: own (ref 'a -> bool) -> ref Vec<'a> -> bool
 fn existsr predicate values = find_indexr predicate values >= 0
 
-def exists :: Copy<'a> => ('a -> bool) -> ref Vec<'a> -> bool
+def exists :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> bool
 fn exists predicate values = find_index predicate values >= 0
 
-def true_for_allr :: (ref 'a -> bool) -> ref Vec<'a> -> bool
+def true_for_allr :: own (ref 'a -> bool) -> ref Vec<'a> -> bool
 fn true_for_allr predicate values =
     let length = Vec.length values
     let mut index = 0
@@ -471,7 +471,7 @@ fn true_for_allr predicate values =
     index == length
 
 /// Whether the predicate accepts every element; it does for an empty `Vec`.
-def true_for_all :: Copy<'a> => ('a -> bool) -> ref Vec<'a> -> bool
+def true_for_all :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> bool
 fn true_for_all predicate values =
     let length = Vec.length values
     let mut index = 0
@@ -479,29 +479,29 @@ fn true_for_all predicate values =
     index == length
 
 /// The first element that the predicate accepts. .NET returns the default value when there is none; this returns `None`.
-def findr :: (ref 'a -> bool) -> ref Vec<'a> -> Maybe<ref 'a>
+def findr :: own (ref 'a -> bool) -> ref Vec<'a> -> Maybe<ref 'a>
 fn findr predicate values =
     let index = find_indexr predicate values
     if index >= 0 then Maybe.Some (ref values[index]) else Maybe.None
 
-def find :: Copy<'a> => ('a -> bool) -> ref Vec<'a> -> Maybe<'a>
+def find :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> Maybe<'a>
 fn find predicate values =
     let index = find_index predicate values
     if index >= 0 then Maybe.Some values[index] else Maybe.None
 
-def find_lastr :: (ref 'a -> bool) -> ref Vec<'a> -> Maybe<ref 'a>
+def find_lastr :: own (ref 'a -> bool) -> ref Vec<'a> -> Maybe<ref 'a>
 fn find_lastr predicate values =
     let index = find_last_indexr predicate values
     if index >= 0 then Maybe.Some (ref values[index]) else Maybe.None
 
 /// The last element that the predicate accepts, or `None`.
-def find_last :: Copy<'a> => ('a -> bool) -> ref Vec<'a> -> Maybe<'a>
+def find_last :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> Maybe<'a>
 fn find_last predicate values =
     let index = find_last_index predicate values
     if index >= 0 then Maybe.Some values[index] else Maybe.None
 
 /// A `Vec` of the elements that the predicate accepts, in order.
-def find_all :: Copy<'a> => ('a -> bool) -> ref Vec<'a> -> Vec<'a>
+def find_all :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> Vec<'a>
 fn find_all predicate values =
     let length = Vec.length values
     let mut found: Vec<'a> = Vec.empty()
@@ -513,7 +513,7 @@ fn find_all predicate values =
 
 /// The index where `item` is, or the complement (`-1 - place`) of the index where it would go in a sorted `Vec`. It
 /// follows the search of .NET step by step, so a `Vec` with equal elements gives the same index.
-private def search :: ref Vec<'a> -> i64 -> i64 -> (ref 'a -> i64) -> i64
+private def search :: ref Vec<'a> -> own i64 -> own i64 -> own (ref 'a -> i64) -> i64
 fn search values index count compare =
     let mut low = index
     let mut high = index + count - 1
@@ -546,25 +546,25 @@ fn ordering left right =
 def binary_searchr :: Ord<'a> => ref 'a -> ref Vec<'a> -> i64
 fn binary_searchr item values = search values 0 (Vec.length values) (element -> ordering element item)
 
-def binary_search :: Ord<'a> => 'a -> ref Vec<'a> -> i64
+def binary_search :: Ord<'a> => own 'a -> ref Vec<'a> -> i64
 fn binary_search item values = binary_searchr (ref item) values
 
-def binary_search_withr :: ref 'a -> (ref 'a -> ref 'a -> i64) -> ref Vec<'a> -> i64
+def binary_search_withr :: ref 'a -> own (ref 'a -> ref 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_withr item comparison values =
     search values 0 (Vec.length values) (element -> comparison element item)
 
-def binary_search_with :: Copy<'a> => 'a -> ('a -> 'a -> i64) -> ref Vec<'a> -> i64
+def binary_search_with :: Copy<'a> => own 'a -> own ('a -> 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_with item comparison values =
     binary_search_range 0 (Vec.length values) item comparison values
 
-def binary_search_range :: Copy<'a> => i64 -> i64 -> 'a -> ('a -> 'a -> i64) -> ref Vec<'a> -> i64
+def binary_search_range :: Copy<'a> => own i64 -> own i64 -> own 'a -> own ('a -> 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_range index count item comparison values =
     assert (index >= 0 && count >= 0 && Vec.length values - index >= count)
     search values index count (element -> comparison (deref element) item)
 
 // ---- Visiting and converting ----
 
-def for_eachr :: (ref 'a -> unit) -> ref Vec<'a> -> unit
+def for_eachr :: own (ref 'a -> unit) -> ref Vec<'a> -> unit
 fn for_eachr action values =
     let length = Vec.length values
     let mut index = 0
@@ -572,7 +572,7 @@ fn for_eachr action values =
         action (ref values[index])
         index = index + 1
 
-def for_each :: Copy<'a> => ('a -> unit) -> ref Vec<'a> -> unit
+def for_each :: Copy<'a> => own ('a -> unit) -> ref Vec<'a> -> unit
 fn for_each action values =
     let length = Vec.length values
     let mut index = 0
@@ -580,7 +580,7 @@ fn for_each action values =
         action values[index]
         index = index + 1
 
-def convert_allr :: (ref 'a -> 'b) -> ref Vec<'a> -> Vec<'b>
+def convert_allr :: own (ref 'a -> 'b) -> ref Vec<'a> -> Vec<'b>
 fn convert_allr converter values =
     let length = Vec.length values
     let mut converted: Vec<'b> = Vec.with_capacity length
@@ -591,7 +591,7 @@ fn convert_allr converter values =
     converted
 
 /// A `Vec` of the converted elements, with a capacity of its length.
-def convert_all :: Copy<'a> => ('a -> 'b) -> ref Vec<'a> -> Vec<'b>
+def convert_all :: Copy<'a> => own ('a -> 'b) -> ref Vec<'a> -> Vec<'b>
 fn convert_all converter values =
     let length = Vec.length values
     let mut converted: Vec<'b> = Vec.with_capacity length
@@ -604,16 +604,16 @@ fn convert_all converter values =
 // ---- Ranges and copies ----
 
 /// A `Vec` of copies of `count` elements from `index` on, with a capacity of `count`.
-def get_range :: Copy<'a> => i64 -> i64 -> ref Vec<'a> -> Vec<'a>
+def get_range :: Copy<'a> => own i64 -> own i64 -> ref Vec<'a> -> Vec<'a>
 fn get_range index count values =
     assert (index >= 0 && count >= 0 && Vec.length values - index >= count)
     Vec.of_array (new ['a](count, position -> values[index + position]))
 
-def slice :: Copy<'a> => i64 -> i64 -> ref Vec<'a> -> Vec<'a>
+def slice :: Copy<'a> => own i64 -> own i64 -> ref Vec<'a> -> Vec<'a>
 fn slice start length values = get_range start length values
 
 /// Copies `count` elements from `index` on into `target` from `target_index` on.
-def copy_to_range :: Copy<'a> => i64 -> ref mut ['a..] -> i64 -> i64 -> ref Vec<'a> -> unit
+def copy_to_range :: Copy<'a> => own i64 -> ref mut ['a..] -> own i64 -> own i64 -> ref Vec<'a> -> unit
 fn copy_to_range index target target_index count values =
     assert (index >= 0 && count >= 0 && Vec.length values - index >= count)
     assert (target_index >= 0 && target.length - target_index >= count)
@@ -622,7 +622,7 @@ fn copy_to_range index target target_index count values =
         Array.write (target_index + offset) values[index + offset] target
         offset = offset + 1
 
-def copy_to_at :: Copy<'a> => ref mut ['a..] -> i64 -> ref Vec<'a> -> unit
+def copy_to_at :: Copy<'a> => ref mut ['a..] -> own i64 -> ref Vec<'a> -> unit
 fn copy_to_at target target_index values =
     copy_to_range 0 target target_index (Vec.length values) values
 

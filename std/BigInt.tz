@@ -4,20 +4,20 @@
 record BigInt { negative: bool, limbs: [i64] }
 
 /// The bigint with `negative` and the magnitude `limbs`, without high zero digits.
-private def make :: bool -> [i64] -> BigInt
+private def make :: own bool -> own [i64] -> BigInt
 fn make negative limbs =
     let digits = trim limbs
     BigInt { negative: negative && digits.length > 0, limbs: digits }
 
 /// Drops the high zero digits of a magnitude.
-private def trim :: [i64] -> [i64]
+private def trim :: own [i64] -> [i64]
 fn trim digits =
     let mut length = digits.length
     while length > 0 && digits[length - 1] == 0 do length = length - 1
     if length == digits.length then digits else Array.sub 0 length (ref digits)
 
 /// The bigint of `value`.
-def of_i64 :: i64 -> BigInt
+def of_i64 :: own i64 -> BigInt
 fn of_i64 value =
     let mut digits = Vec.empty()
     let mut rest = value
@@ -120,7 +120,7 @@ fn mul_limbs left right =
     out
 
 /// The magnitude `digits * factor` for `0 <= factor < 10^9`.
-private def scale_limbs :: ref [i64] -> i64 -> [i64]
+private def scale_limbs :: ref [i64] -> own i64 -> [i64]
 fn scale_limbs digits factor =
     let mut out = new [i64](digits.length + 1, \_index -> 0)
     let mut carry = 0
@@ -165,7 +165,7 @@ fn add_values left right =
         if compare_limbs (ref left.limbs) (ref right.limbs) >= 0 then make left.negative (sub_limbs (ref left.limbs) (ref right.limbs))
         else make right.negative (sub_limbs (ref right.limbs) (ref left.limbs))
 
-private def negate :: BigInt -> BigInt
+private def negate :: own BigInt -> BigInt
 fn negate value = BigInt { negative: !value.negative && value.limbs.length > 0, limbs: value.limbs }
 
 /// The truncated quotient and the remainder, whose sign is the dividend's.
@@ -183,7 +183,7 @@ fn compare left right =
         if left.negative then 0 - order else order
 
 /// `base ** exponent` for an exponent below 10^18; a negative exponent traps.
-private def power :: BigInt -> BigInt -> BigInt
+private def power :: own BigInt -> own BigInt -> BigInt
 fn power base exponent =
     assert (!exponent.negative && exponent.limbs.length <= 2)
     let mut count = 0

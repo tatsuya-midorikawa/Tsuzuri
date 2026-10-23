@@ -50,5 +50,5 @@ fn run_with program args input =
 /// then closed. A program name without "/" is looked up on PATH, and the child inherits the environment and
 /// the working directory. Both output streams are collected, up to 2^30 bytes together, after which the child
 /// is killed and the call is `Other`. Not available under `--wasm-host wasi`, where it is `Other`.
-def run :: string -> [string] -> [ubyte] -> IO<Result<Output, Os.Error>>
+def run :: own string -> own [string] -> own [ubyte] -> IO<Result<Output, Os.Error>>
 fn run program args input = IO.map (\() -> run_with (ref program) (ref args) (ref input)) (IO.pure ())

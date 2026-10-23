@@ -573,7 +573,7 @@ fn error_type_properties_and_codegen_barrier_are_explicit() {
         Type::Array(Box::new(Type::Error)),
         Type::List(Box::new(Type::Error)),
         Type::Tuple(vec![Type::Error]),
-        Type::Function(vec![Type::Error], Box::new(Type::Unit)),
+        Type::function(vec![Type::Error], Type::Unit),
         Type::Reference(Box::new(Type::Error), false),
         Type::Record(0, vec![Type::Error].into()),
         Type::Union(0, vec![Type::Error].into()),

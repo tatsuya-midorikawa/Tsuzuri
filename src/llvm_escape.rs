@@ -280,7 +280,7 @@ mod tests {
             Type::Tuple(vec![Type::Bool, Type::Bool]),
             Type::Handle("Host.Handle".into()),
             Type::Shared(Box::new(Type::Bool), SharedKind::Arc),
-            Type::Function(vec![Type::Bool], Box::new(Type::Bool)),
+            Type::function(vec![Type::Bool], Type::Bool),
         ] {
             assert!(!guaranteed_result(&ty), "{ty:?}");
         }

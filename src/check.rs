@@ -151,7 +151,7 @@ pub enum Type {
     Task(Box<Type>),
     /// An `extern type`: an opaque host handle named by its qualified name.
     Handle(Box<str>),
-    Function(Vec<Type>, Box<Type>),
+    Function(Box<FunctionParameters>, Box<Type>),
     Reference(Box<Type>, bool),
     /// `dyn C`: an owned value of some type with instances of the classes, stored as
     /// `{ data, vtable }` (A14). A leaf whose box keeps `Type` at four words.
@@ -159,6 +159,42 @@ pub enum Type {
     /// `Rc<T>`, `Rc.Weak<T>`, `Arc<T>`, or `Arc.Weak<T>` (C10 Phase 2): a pointer to a
     /// reference-counted heap block `{ i64 strong, i64 weak, T value }`.
     Shared(Box<Type>, SharedKind),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ParameterConvention {
+    Own,
+    Read,
+    Mut,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FunctionParameters {
+    pub types: Vec<Type>,
+    pub conventions: Box<[ParameterConvention]>,
+}
+
+impl std::ops::Deref for FunctionParameters {
+    type Target = Vec<Type>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.types
+    }
+}
+
+impl std::ops::DerefMut for FunctionParameters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.types
+    }
+}
+
+impl FunctionParameters {
+    pub fn convention(&self, index: usize) -> ParameterConvention {
+        self.conventions
+            .get(index)
+            .copied()
+            .unwrap_or(ParameterConvention::Own)
+    }
 }
 
 /// The pointer kind of `Type::Shared` (C10 Phase 2). Strong pointers own the value together;
@@ -308,17 +344,43 @@ impl Type {
         }
     }
 
-    pub(crate) fn function(mut parameters: Vec<Type>, mut result: Type) -> Self {
+    pub fn function(parameters: Vec<Type>, result: Type) -> Self {
+        Self::function_with_conventions(parameters, result, Vec::new())
+    }
+
+    pub(crate) fn function_with_conventions(
+        mut parameters: Vec<Type>,
+        mut result: Type,
+        mut conventions: Vec<ParameterConvention>,
+    ) -> Self {
+        if conventions
+            .iter()
+            .all(|mode| *mode == ParameterConvention::Own)
+        {
+            conventions.clear();
+        }
         if !parameters.is_empty() {
             while matches!(&result, Self::Function(more, _) if !more.is_empty()) {
                 let Self::Function(more, tail) = result else {
                     unreachable!()
                 };
-                parameters.extend(more);
+                if !more.conventions.is_empty() {
+                    conventions.resize(parameters.len(), ParameterConvention::Own);
+                    conventions.extend_from_slice(&more.conventions);
+                } else if !conventions.is_empty() {
+                    conventions.resize(parameters.len() + more.len(), ParameterConvention::Own);
+                }
+                parameters.extend(more.types);
                 result = *tail;
             }
         }
-        Self::Function(parameters, Box::new(result))
+        Self::Function(
+            Box::new(FunctionParameters {
+                types: parameters,
+                conventions: conventions.into_boxed_slice(),
+            }),
+            Box::new(result),
+        )
     }
 
     pub(crate) fn after_arguments(&self, count: usize) -> Self {
@@ -331,7 +393,11 @@ impl Type {
         if count == parameters.len() {
             (**result).clone()
         } else {
-            Self::function(parameters[count..].to_vec(), (**result).clone())
+            let mut remaining = Self::function(parameters[count..].to_vec(), (**result).clone());
+            if let Self::Function(arguments, _) = &mut remaining {
+                arguments.conventions = parameters.conventions.get(count..).unwrap_or(&[]).into();
+            }
+            remaining
         }
     }
 
@@ -3583,14 +3649,15 @@ impl CheckedUnion {
 fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
     !matches!(
         ty,
-        Type::Reference(..)
-            | Type::Function(..)
-            | Type::Variable(_)
-            | Type::Infer(_)
-            | Type::Task(_)
-            | Type::Dyn(_)
-            | Type::Simd(_)
-    ) && ty.needs_drop(types)
+        Type::Reference(..) | Type::Infer(_) | Type::Task(_) | Type::Dyn(_) | Type::Simd(_)
+    ) && (ty.needs_drop(types)
+        || types.reaches(ty, |part| {
+            matches!(part, Type::Variable(_) | Type::Function(..))
+        }))
+}
+
+pub(crate) fn has_explicit_parameter_regions(ty: &TypeExpr) -> bool {
+    regions::has_regions(ty)
 }
 
 pub(crate) fn read_only_hint(error: &mut Diagnostic, name: &str, ty: &str) {
@@ -5938,7 +6005,7 @@ fn validate_public_type(
             .iter()
             .try_for_each(|element| validate_public_type(element, module, owner, names)),
         TypeExprKind::Function(parameters, result) => {
-            for parameter in parameters {
+            for parameter in parameters.iter() {
                 validate_public_type(parameter, module, owner, names)?;
             }
             validate_public_type(result, module, owner, names)
@@ -7107,9 +7174,19 @@ fn check_modules_collect(
             {
                 constraints.extend(classes.inline_constraints(ty, module, &names)?);
             }
-            default_reads.insert(id, reads);
+            default_reads.insert(id, reads.clone());
             Ok(Scheme {
                 signature,
+                parameter_conventions: reads
+                    .into_iter()
+                    .map(|read| {
+                        if read {
+                            ParameterConvention::Read
+                        } else {
+                            ParameterConvention::Own
+                        }
+                    })
+                    .collect(),
                 variables,
                 constraints,
                 members,
@@ -7270,6 +7347,10 @@ fn check_modules_collect(
             }
             let signature = scheme.signature.clone();
             let mut checker = Checker::new(module, &names, types, &signatures, &classes);
+            checker.read_conventions = module_editions
+                .get(module.as_str())
+                .is_some_and(|edition| edition.borrows_parameters())
+                && names.modules.get(module) != Some(&ModuleOrigin::Std);
             checker.indexing = indexing;
             if let Some(active) = active_results.get(&id) {
                 checker.use_active_result(&signature.result, active);
@@ -7299,6 +7380,11 @@ fn check_modules_collect(
                         checker
                             .default_reads
                             .insert(local.id, (local.name.clone(), inner.display(&types)));
+                        if types.reaches(inner, |part| {
+                            matches!(part, Type::Variable(_) | Type::Function(..))
+                        }) {
+                            checker.read_value_parameters.insert(local.id);
+                        }
                     }
                     parameters.push(local);
                 }
@@ -9360,7 +9446,7 @@ impl Validation<'_> {
                 }
             }
             Type::Function(parameters, result) => {
-                for parameter in parameters {
+                for parameter in parameters.iter() {
                     self.check(parameter, span)?;
                 }
                 self.check(result, span)?;
@@ -9488,6 +9574,8 @@ struct Checker<'a> {
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
     default_reads: BTreeMap<usize, (String, String)>,
+    read_value_parameters: BTreeSet<usize>,
+    read_conventions: bool,
     poisoned: bool,
     recovering: bool,
     recovered: Vec<Diagnostic>,
@@ -9533,6 +9621,8 @@ impl<'a> Checker<'a> {
             shadowing_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
             default_reads: BTreeMap::new(),
+            read_value_parameters: BTreeSet::new(),
+            read_conventions: false,
             poisoned: false,
             recovering: false,
             recovered: Vec::new(),
@@ -9787,6 +9877,15 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Result<TypedExpr, Diagnostic> {
         let mut value = TypedExpr { kind, ty, span };
+        if matches!(value.kind, TypedExprKind::Local(id) if self.read_value_parameters.contains(&id))
+            && let Some(ty) = value.ty.dereferenced()
+        {
+            value = TypedExpr {
+                kind: TypedExprKind::Dereference(Box::new(value)),
+                ty,
+                span,
+            };
+        }
         if self.poisoned
             && (self.inference.resolve(&value.ty).contains_error()
                 || value
@@ -10047,6 +10146,7 @@ impl<'a> Checker<'a> {
             // lambdas' parameters, as in `Array.map (\text -> text.length) (ref texts)`.
             let mut checked = Vec::with_capacity(arguments.len());
             let mut deferred = false;
+            let mut callbacks = Vec::new();
             for (index, (argument, parameter)) in arguments.iter().zip(&parameters).enumerate() {
                 checked.push(match &argument.kind {
                     _ if Self::deferred_lambda(arguments, index) => {
@@ -10056,8 +10156,17 @@ impl<'a> Checker<'a> {
                     ExprKind::Lambda(names, body) if owned && index == 0 => {
                         self.owned_lambda(names, body, argument.span, parameter)?
                     }
+                    _ if self.read_conventions
+                        && Self::callback_parameter(&self.inference.resolve(parameter)) =>
+                    {
+                        callbacks.push((index, self.expression(argument, None)?));
+                        TypedExpr::error(argument.span)
+                    }
                     _ => self.argument(argument, parameter)?,
                 });
+            }
+            for (index, value) in callbacks {
+                checked[index] = self.coerce_argument(value, &parameters[index])?;
             }
             if deferred {
                 self.lambda_arguments(arguments, &parameters, &mut checked)?;
@@ -10688,6 +10797,8 @@ impl<'a> Checker<'a> {
                 self.call_expression(expression, Some(expected), true)
             }
             ExprKind::Name(_)
+            | ExprKind::QualifiedFunction(_)
+            | ExprKind::TypeFunction(..)
             | ExprKind::Field(..)
             | ExprKind::Index(..)
             | ExprKind::Dereference(..)
@@ -10704,6 +10815,24 @@ impl<'a> Checker<'a> {
             | ExprKind::List(_)
             | ExprKind::Tuple(_)
                 if self.shared_reference(expected) =>
+            {
+                self.temporary_argument(expression, expected)
+            }
+            ExprKind::Integer(..)
+            | ExprKind::Float(..)
+            | ExprKind::BigInt(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Unit
+            | ExprKind::Char(_)
+            | ExprKind::Utf8Char(_)
+            | ExprKind::Lambda(..)
+            | ExprKind::Unary(..)
+            | ExprKind::Record { .. }
+            | ExprKind::RecordUpdate { .. }
+            | ExprKind::NewArray(..)
+            | ExprKind::NewList(..)
+            | ExprKind::NewLiteral(_)
+                if self.read_conventions && self.shared_reference(expected) =>
             {
                 self.temporary_argument(expression, expected)
             }
@@ -10843,6 +10972,17 @@ impl<'a> Checker<'a> {
             Ok(converted) => return Ok(converted),
             Err(value) => value,
         };
+        if self.read_conventions {
+            let target = match &expected {
+                Type::Reference(inner, false) if matches!(**inner, Type::Function(..)) => {
+                    inner.as_ref()
+                }
+                _ => &expected,
+            };
+            if matches!(target, Type::Function(..)) {
+                value = self.callback_adapter(value, target)?;
+            }
+        }
         let literal = self.inference.is_numeric_literal(&value.ty);
         if matches!(value.ty, Type::Infer(_)) && !literal {
             self.same(&value.ty, &expected, value.span)?;
@@ -10869,6 +11009,125 @@ impl<'a> Checker<'a> {
             }
         }
         self.finish_expression(value.kind, value.ty, Some(&expected), value.span)
+    }
+
+    fn callback_parameter(ty: &Type) -> bool {
+        matches!(ty, Type::Function(..))
+            || matches!(ty, Type::Reference(inner, false) if matches!(**inner, Type::Function(..)))
+    }
+
+    fn callback_local(&mut self, ty: Type, span: Span) -> Local {
+        let id = self.next_local;
+        self.next_local += 1;
+        Local {
+            id,
+            ty,
+            name: format!("$convention.{id}"),
+            mutable: false,
+            span,
+            provenance: Provenance::Generated,
+        }
+    }
+
+    fn callback_adapter(
+        &mut self,
+        value: TypedExpr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let actual = self.inference.resolve(&value.ty);
+        let Type::Function(actual_parameters, actual_result) = &actual else {
+            return Ok(value);
+        };
+        let Type::Function(expected_parameters, expected_result) = expected else {
+            return Ok(value);
+        };
+        let mut exact = self.inference.clone();
+        if exact
+            .unify(&actual, expected, &self.types, value.span)
+            .is_ok()
+        {
+            self.inference = exact;
+            return Ok(value);
+        }
+        if actual_parameters.len() != expected_parameters.len() {
+            return Ok(value);
+        }
+        let mut trial = self.inference.clone();
+        let mut adapted = false;
+        for (actual, expected) in actual_parameters.iter().zip(expected_parameters.iter()) {
+            let (actual, expected) = match (actual, expected) {
+                (Type::Reference(inner, false), expected)
+                    if !matches!(expected, Type::Reference(..)) =>
+                {
+                    adapted = true;
+                    (inner.as_ref(), expected)
+                }
+                (actual, Type::Reference(inner, false))
+                    if !matches!(actual, Type::Reference(..)) =>
+                {
+                    adapted = true;
+                    (actual, inner.as_ref())
+                }
+                _ => (actual, expected),
+            };
+            if trial
+                .unify(actual, expected, &self.types, value.span)
+                .is_err()
+            {
+                return Ok(value);
+            }
+        }
+        if !adapted
+            || trial
+                .unify(actual_result, expected_result, &self.types, value.span)
+                .is_err()
+        {
+            return Ok(value);
+        }
+        self.inference = trial;
+        let span = value.span;
+        let captured = self.callback_local(self.inference.resolve(&value.ty), span);
+        let mut parameters = Vec::new();
+        let mut arguments = Vec::new();
+        for (parameter, actual) in expected_parameters.iter().zip(actual_parameters.iter()) {
+            let parameter = self.callback_local(self.inference.resolve(parameter), span);
+            let value = TypedExpr {
+                kind: TypedExprKind::Local(parameter.id),
+                ty: parameter.ty.clone(),
+                span,
+            };
+            arguments.push(self.coerce_argument(value, actual)?);
+            parameters.push(parameter);
+        }
+        let result = self.inference.resolve(expected_result);
+        let callback = TypedExpr {
+            kind: TypedExprKind::Local(captured.id),
+            ty: captured.ty.clone(),
+            span,
+        };
+        let lambda = TypedExpr {
+            kind: TypedExprKind::Lambda {
+                parameters,
+                captures: vec![captured.clone()],
+                body: Box::new(TypedExpr {
+                    kind: TypedExprKind::Call(Box::new(callback), arguments),
+                    ty: result,
+                    span,
+                }),
+                owned: false,
+                recursive: Vec::new(),
+            },
+            ty: self.inference.resolve(expected),
+            span,
+        };
+        Ok(TypedExpr {
+            ty: lambda.ty.clone(),
+            kind: TypedExprKind::Block {
+                bindings: vec![(captured, value)],
+                result: Box::new(lambda),
+            },
+            span,
+        })
     }
 
     /// Whether `actual`, open only in number literal types (as `ref {integer}`
@@ -11896,11 +12155,76 @@ impl<'a> Checker<'a> {
         if let Some(canonical) = self.names.canonical(self.module, &path)
             && let Some(id) = self.names.function(self.module, &canonical, span)?
         {
+            let read_name = if self.read_conventions
+                && self.names.modules.get("Array") == Some(&ModuleOrigin::Std)
+            {
+                match canonical.as_ref() {
+                    "Array.map" => Some("Array.mapr"),
+                    "Array.mapi" => Some("Array.mapir"),
+                    "Array.iter" => Some("Array.iterr"),
+                    "Array.iteri" => Some("Array.iterir"),
+                    "Array.fold" => Some("Array.foldr"),
+                    "Array.fold_back" => Some("Array.foldr_back"),
+                    "List.mapi" => Some("List.mapir"),
+                    "List.iter" => Some("List.iterr"),
+                    "List.iteri" => Some("List.iterir"),
+                    "List.fold" => Some("List.foldr"),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(read_name) = read_name {
+                let read =
+                    if let Some(read_id) = self.names.function(self.module, read_name, span)? {
+                        Some(self.function(read_id))
+                    } else {
+                        qualified_builtin(read_name)
+                            .map(|builtin| self.builtin(builtin, expression.span))
+                            .transpose()?
+                    };
+                if let Some((kind, mut ty)) = read {
+                    Self::read_callback_type(&mut ty);
+                    return Ok(Some((kind, ty)));
+                }
+            }
             return Ok(Some(self.function(id)));
         }
         qualified_builtin(&path)
-            .map(|builtin| self.builtin(builtin, expression.span))
+            .map(|builtin| {
+                let borrowed = self.read_conventions && builtin == Builtin::ListMap;
+                let builtin = if borrowed {
+                    match builtin {
+                        Builtin::ListMap => Builtin::ListMapRef,
+                        _ => unreachable!(),
+                    }
+                } else {
+                    builtin
+                };
+                let (kind, mut ty) = self.builtin(builtin, expression.span)?;
+                if borrowed {
+                    Self::read_callback_type(&mut ty);
+                }
+                Ok((kind, ty))
+            })
             .transpose()
+    }
+
+    fn read_callback_type(ty: &mut Type) {
+        if let Type::Function(parameters, _) = ty
+            && let Some(Type::Function(callback, _)) = parameters.types.first_mut()
+        {
+            callback.conventions = callback
+                .iter()
+                .map(|ty| {
+                    if matches!(ty, Type::Reference(_, false)) {
+                        ParameterConvention::Read
+                    } else {
+                        ParameterConvention::Own
+                    }
+                })
+                .collect();
+        }
     }
 
     /// Resolves `Module.Case`, the current module's `Union.Case`, and
@@ -12293,7 +12617,7 @@ mod allocation_tests {
             Type::Infer(0),
             Type::Reference(Box::new(Type::Integer(64, true)), true),
             Type::Shared(Box::new(Type::Integer(64, true)), SharedKind::Arc),
-            Type::Function(vec![], Box::new(Type::Unit)),
+            Type::function(vec![], Type::Unit),
         ] {
             assert!(!ty.is_frozen(&module.types()), "{ty:?}");
         }

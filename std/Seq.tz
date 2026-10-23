@@ -6,25 +6,25 @@ record Seq<'a> {
 def empty :: Seq<'a>
 fn empty = Seq { head: Maybe.None, step: Maybe.None }
 
-def once :: 'a -> Seq<'a>
+def once :: own 'a -> Seq<'a>
 fn once value = Seq { head: Maybe.Some value, step: Maybe.None }
 
-def defer :: (unit -> (Seq<'a> * Maybe<'a>)) -> Seq<'a>
+def defer :: own (unit -> (Seq<'a> * Maybe<'a>)) -> Seq<'a>
 fn defer step = Seq { head: Maybe.None, step: Maybe.Some step }
 
-def rec unfold :: Capture<'state> => ('state -> Maybe<('a * 'state)>) -> 'state -> Seq<'a>
+def rec unfold :: Capture<'state> => own ('state -> Maybe<('a * 'state)>) -> own 'state -> Seq<'a>
 fn rec unfold generator state = defer (\() ->
     match generator state with
     | Maybe.Some (value, remaining) -> (unfold generator remaining, Maybe.Some value)
     | Maybe.None -> (empty(), Maybe.None))
 
-def rec map :: Capture<'a> => ('a -> 'b) -> Seq<'a> -> Seq<'b>
+def rec map :: Capture<'a> => own ('a -> 'b) -> own Seq<'a> -> Seq<'b>
 fn rec map transform sequence = defer (\() ->
     match Seq.next sequence with
     | (remaining, Maybe.Some value) -> (map transform remaining, Maybe.Some (transform value))
     | (_, Maybe.None) -> (empty(), Maybe.None))
 
-def rec filter :: Capture<'a> => (ref 'a -> bool) -> Seq<'a> -> Seq<'a>
+def rec filter :: Capture<'a> => own (ref 'a -> bool) -> own Seq<'a> -> Seq<'a>
 fn rec filter predicate sequence = defer (\() ->
     let mut current = sequence
     let mut selected: Maybe<'a> = Maybe.None
@@ -42,7 +42,7 @@ fn rec filter predicate sequence = defer (\() ->
     let remaining = if Maybe.is_some (ref selected) then filter predicate current else empty()
     (remaining, selected))
 
-def to_array :: Seq<'a> -> ['a]
+def to_array :: own Seq<'a> -> ['a]
 fn to_array sequence =
     let mut values = Vec.empty()
     for value in sequence do values = Vec.push value values

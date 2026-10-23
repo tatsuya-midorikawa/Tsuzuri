@@ -1149,3 +1149,21 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
 - api-diff は解決後の型を比較する基盤がまだないため、edition による引数の既定の差を保守的な
   breaking change として報告します（無印の引数がある通常 def が対象）。これは完全な型解決の代替ではありません。
   editor は `own` と補完前の引数表記を保ち、無関係な型不一致には所有権の修正を勧めません。
+- A18 Phase 2 の移行は、本体から所有権を推測せず、旧署名の値渡しを `own` で保存します。
+  型変数・callback も明示し、後続の規約変更から旧 API を守ります。変更後を対象 edition で解析してから、
+  通常ファイル・内容一致の保護付きでソースを書き、manifest は最後に更新します。
+  単一ファイル入力では他のモジュールを無断で edition 移行しないため manifest を変更しません。
+  manifest のない旧入力は `--from 2026` で明示します。G24 の一般の warning fix は今回実装しません。
+  std は埋め込みソースと一致する開発用ツリーだけを移行対象にし、依存パッケージは書き換えません。
+- A18 Phase 3 は型変数そのものを参照型に単一化せず、宣言ごとの読み取り規約を保持して
+  引数 ABI にだけ共有借用を補います。generic／関数引数の本体は読み取り view を使い、
+  値として取り出す場合の Copy 要件は既存の所有権推論に任せます。明示の `own` は従来の値 ABI です。
+  矢印で書いた callback 型と型クラスの契約は既存のまま保ち、所有する callback 引数から
+  読み取り callback へ安全に貸す adapter を挿入します。これにより `Array.map` は読み取り callback も受けられ、
+  `map_ref` は互換 API として残します。adapter は callback の構築を再評価せず、借用結果の escape も既存の検査に通します。
+- 規約は関数の引数リストの metadata として保持し、値の型変数へ押し込みません。
+  関数を変数・戻り値・部分適用経由で渡しても、読み取り callback の lambda 束縛が参照値へ変わらないようにします。
+  関数の引数リストは box に置き、`Type` の大きさを増やしません。LLVM へは従来と同じ物理引数型を渡します。
+  2027 の `Array.map` は読み取り実装を使い、値 callback との変換は Copy と既存の借用検査で検証します。
+  古い ticket の `map_ref`／`fold_ref` は現在の API 名 `mapr`／`foldr` と読み替えます。
+  std 内部の既存の呼び出し規約は保存し、2027 の利用者側だけで読み取り API の入口を選択します。

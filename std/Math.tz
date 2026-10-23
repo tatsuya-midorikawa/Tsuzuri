@@ -1,4 +1,4 @@
-private def identity_f64 :: f64 -> f64
+private def identity_f64 :: own f64 -> f64
 fn identity_f64 value = value
 
 def zero :: f64

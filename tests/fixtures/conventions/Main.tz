@@ -25,3 +25,44 @@ export def owned_text :: i64 = (take "hello").length + Five
 export def trap :: i64 -> i64 = \index ->
     let xs = [10, 20]
     total xs + xs[index]
+
+def inspect :: 'a -> i64 = \value -> 3
+def twice :: (ref 'a -> i64) -> 'a -> i64 = \f value -> f value + f value
+def owned_inc :: own i64 -> i64 = \n -> n + 1
+def generic_identity :: 'a -> 'a = \value -> value
+
+export def generic_read :: i64 =
+    let text = "hello"
+    twice length_of text + inspect text + text.length
+
+export def generic_scalar :: i64 = generic_identity 42
+
+export def read_map :: i64 =
+    let texts = ["a", "bc"]
+    Array.sum (Array.map length_of texts) + texts.length
+
+export def read_map_alias :: i64 =
+    let texts = ["a", "bc"]
+    let mapper = Array.map
+    Array.sum (mapper (\text -> text.length) texts) + texts.length
+
+export def read_mapi :: i64 =
+    let texts = ["a", "bc"]
+    Array.sum (Array.mapi (\index text -> index + text.length) texts)
+
+export def read_fold :: i64 =
+    let texts = ["a", "bc"]
+    Array.fold (\total text -> total + text.length) 0 texts
+
+export def read_list_map :: i64 =
+    let texts = [|"a", "bc"|]
+    List.sum (List.map (\text -> text.length) texts)
+
+export def read_list_fold :: i64 =
+    let texts = [|"a", "bc"|]
+    List.fold (\total text -> total + text.length) 0 texts
+
+export def callback_constructed_once :: i64 =
+    let mut calls = 0
+    let values = Array.map ({ calls = calls + 1; owned_inc }) [1, 2, 3]
+    calls * 100 + Array.sum values

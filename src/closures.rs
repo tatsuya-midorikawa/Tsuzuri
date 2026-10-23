@@ -59,11 +59,24 @@ impl Checker<'_> {
         self.scopes.push(BTreeMap::new());
         let mut seen = BTreeSet::new();
         let mut parameters = Vec::new();
-        for ((name, mutable), ty) in names.iter().zip(parameter_types) {
+        let conventions = expected
+            .map(|ty| self.inference.resolve(ty))
+            .and_then(|ty| match ty {
+                Type::Function(parameters, _) => Some(parameters.conventions),
+                _ => None,
+            })
+            .unwrap_or_default();
+        for (index, ((name, mutable), ty)) in names.iter().zip(parameter_types).enumerate() {
             if name.text != "_" && !seen.insert(name.text.clone()) {
                 return Err(duplicate(name));
             }
-            parameters.push(self.bind(name, ty, *mutable));
+            let local = self.bind(name, ty, *mutable);
+            if conventions.get(index) == Some(&ParameterConvention::Read)
+                && matches!(local.ty, Type::Reference(..))
+            {
+                self.read_value_parameters.insert(local.id);
+            }
+            parameters.push(local);
         }
         let outer_loop_depth = std::mem::take(&mut self.normal_loop_depth);
         let body = self.expression(body, Some(&result));
@@ -262,7 +275,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                 exported: true,
                 parameters,
                 signature: Signature {
-                    parameters: types,
+                    parameters: types.types,
                     result: (*result).clone(),
                 },
                 body: TypedExpr {

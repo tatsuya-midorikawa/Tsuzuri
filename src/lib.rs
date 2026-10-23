@@ -21,6 +21,7 @@ pub mod coverage;
 pub mod diagnostic;
 pub mod docgen;
 pub mod driver;
+pub mod edition_migration;
 pub mod fetch;
 pub mod formatter;
 pub(crate) mod frontend_cache;

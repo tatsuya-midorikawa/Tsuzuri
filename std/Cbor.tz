@@ -1,9 +1,9 @@
 /// The error `kind` at the byte `offset` of the input, or -1 outside decoding.
-private def failure :: Json.ErrorKind -> i64 -> Json.Error
+private def failure :: own Json.ErrorKind -> own i64 -> Json.Error
 fn failure kind offset = Json.Error { kind: kind, offset: offset }
 
 /// The head of a data item: the major type and its argument in the shortest form (RFC 8949 §4.2.1).
-private def head :: Vec<ubyte> -> i64 -> i64u -> Vec<ubyte>
+private def head :: own Vec<ubyte> -> own i64 -> own i64u -> Vec<ubyte>
 fn head output major argument =
 	let initial = (major <<< 5) as i64u
 	if argument < 24i64u then Vec.push ((initial ||| argument) as ubyte) output
@@ -13,7 +13,7 @@ fn head output major argument =
 	else push_big (Vec.push ((initial ||| 27i64u) as ubyte) output) argument 8
 
 /// The low `count` bytes of `value`, most significant first.
-private def push_big :: Vec<ubyte> -> i64u -> i64 -> Vec<ubyte>
+private def push_big :: own Vec<ubyte> -> own i64u -> own i64 -> Vec<ubyte>
 fn push_big output value count =
 	let mut bytes = output
 	let mut shift = (count - 1) * 8
@@ -33,7 +33,7 @@ fn is_integer_text text =
 	integer
 
 /// The bits of a finite `f64`, computed with exact scaling by powers of two.
-private def f64_bits :: f64 -> i64u
+private def f64_bits :: own f64 -> i64u
 fn f64_bits value =
 	let sign = if Math.copysign 1.0 value < 0.0 then 9223372036854775808i64u else 0i64u
 	let magnitude = if value < 0.0 then 0.0 - value else value
@@ -62,7 +62,7 @@ fn f64_bits value =
 		sign ||| (((exponent + 1023) as i64u) <<< 52i64u) ||| fraction
 
 /// `value` as the shortest of half, single, and double precision that keeps it exactly (RFC 8949 §4.2.2).
-private def float_head :: Vec<ubyte> -> f64 -> Vec<ubyte>
+private def float_head :: own Vec<ubyte> -> own f64 -> Vec<ubyte>
 fn float_head output value =
 	let bits = f64_bits value
 	let sign = bits >>> 63i64u
@@ -82,7 +82,7 @@ fn float_head output value =
 	else push_big (Vec.push 251ubyte output) bits 8
 
 /// A bignum (tags 2 and 3) for an integer whose magnitude is above 2^64.
-private def bignum :: Vec<ubyte> -> bool -> ref string -> Vec<ubyte>
+private def bignum :: own Vec<ubyte> -> own bool -> ref string -> Vec<ubyte>
 fn bignum output negative digits =
 	let parsed = Maybe.get (BigInt.of_string digits)
 	let mut rest = if negative then parsed - BigInt.of_i64 1 else parsed
@@ -104,7 +104,7 @@ fn bignum output negative digits =
 /// A JSON number: an integer as major type 0 or 1 (a bignum beyond 64 bits), `-0` as the half
 /// float -0.0, and any other number as the nearest `f64` in its shortest float form. A `Numeral`
 /// whose text is not a JSON number gives `Syntax`.
-private def number :: Vec<ubyte> -> ref Json.Numeral -> Result<Vec<ubyte>, Json.Error>
+private def number :: own Vec<ubyte> -> ref Json.Numeral -> Result<Vec<ubyte>, Json.Error>
 fn number output numeral =
 	let text = ref numeral.text
 	let checked = Json.numeral text
@@ -127,7 +127,7 @@ fn number output numeral =
 			else Result.Ok (bignum output negative (ref wide))
 
 /// The bytes of `text` as a CBOR text string; a lone surrogate gives `LoneSurrogate`.
-private def text_item :: Vec<ubyte> -> ref string -> Result<Vec<ubyte>, Json.Error>
+private def text_item :: own Vec<ubyte> -> ref string -> Result<Vec<ubyte>, Json.Error>
 fn text_item output text =
 	if !(String.is_well_formed text) then Result.Error (failure Json.LoneSurrogate (-1)) else
 		let bytes = Utf8String.to_bytes (Utf8String.from_string text)
@@ -135,7 +135,7 @@ fn text_item output text =
 		for byte in bytes do out = Vec.push byte out
 		Result.Ok out
 
-private def rec item :: Vec<ubyte> -> ref Json.Value -> Result<Vec<ubyte>, Json.Error>
+private def rec item :: own Vec<ubyte> -> ref Json.Value -> Result<Vec<ubyte>, Json.Error>
 fn rec item output value =
 	match value with
 	| Json.Null -> Result.Ok (Vec.push 246ubyte output)
@@ -196,7 +196,7 @@ fn encode value =
 
 /// The argument of the head at `start` and the offset after it; `Syntax` for the reserved
 /// additional information 28 to 30, `Unsupported` for an indefinite length.
-private def argument :: ref [ubyte] -> i64 -> Result<(i64u * i64), Json.Error>
+private def argument :: ref [ubyte] -> own i64 -> Result<(i64u * i64), Json.Error>
 fn argument bytes start =
 	let info = (bytes[start] &&& 31ubyte) as i64
 	let size = if info < 24 then 0 elif info == 24 then 1 elif info == 25 then 2 elif info == 26 then 4 elif info == 27 then 8 else -1
@@ -210,7 +210,7 @@ fn argument bytes start =
 		Result.Ok (value, start + 1 + size)
 
 /// `2^power` as an `f64`, for `power` from -1074 to 1023, by exact doubling and halving.
-private def two_to :: i64 -> f64
+private def two_to :: own i64 -> f64
 fn two_to power =
 	let mut value = 1.0
 	let mut rest = power
@@ -230,7 +230,7 @@ fn two_to power =
 
 /// The value of an IEEE 754 binary float with `exponent_bits` exponent bits and `fraction_bits`
 /// fraction bits; `None` for an infinity or NaN.
-private def float_value :: i64u -> i64 -> i64 -> Maybe<f64>
+private def float_value :: own i64u -> own i64 -> own i64 -> Maybe<f64>
 fn float_value bits exponent_bits fraction_bits =
 	let fraction = bits &&& ((1i64u <<< (fraction_bits as i64u)) - 1i64u)
 	let biased = ((bits >>> (fraction_bits as i64u)) &&& ((1i64u <<< (exponent_bits as i64u)) - 1i64u)) as i64
@@ -242,11 +242,11 @@ fn float_value bits exponent_bits fraction_bits =
 		let magnitude = (significand as f64) * two_to power
 		Maybe.Some (if negative then -magnitude else magnitude)
 
-private def numeral_of :: string -> Json.Value
+private def numeral_of :: own string -> Json.Value
 fn numeral_of text = Json.Number (Maybe.get (Json.numeral (ref (Utf8String.from_string (ref text)))))
 
 /// The decimal text of an unsigned big-endian magnitude, `-1 - n` for a negative bignum.
-private def bignum_text :: ref [ubyte] -> i64 -> i64 -> bool -> string
+private def bignum_text :: ref [ubyte] -> own i64 -> own i64 -> own bool -> string
 fn bignum_text bytes first last negative =
 	let mut value = BigInt.of_i64 0
 	for index in first .. (last - 1) do value = value * BigInt.of_i64 256 + BigInt.of_i64 (bytes[index] as i64)
@@ -271,7 +271,7 @@ fn repeated members =
 	found
 
 /// The bignum (tag 2, or tag 3 when `negative`) whose byte string starts at `next`.
-private def bignum_at :: ref [ubyte] -> i64 -> i64 -> bool -> Result<(Json.Value * i64), Json.Error>
+private def bignum_at :: ref [ubyte] -> own i64 -> own i64 -> own bool -> Result<(Json.Value * i64), Json.Error>
 fn bignum_at bytes start next negative =
 	if next >= bytes.length then Result.Error (failure Json.UnexpectedEnd bytes.length)
 	elif (bytes[next] >>> 5ubyte) != 2ubyte then Result.Error (failure (Json.Unsupported "bignum without a byte string") next)
@@ -289,7 +289,7 @@ fn bignum_at bytes start next negative =
 				if digits > 4096 then Result.Error (failure Json.NumberRange start)
 				else Result.Ok (numeral_of text, last)
 /// A simple value or float of major type 7.
-private def simple :: ref [ubyte] -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
+private def simple :: ref [ubyte] -> own i64 -> own i64 -> Result<(Json.Value * i64), Json.Error>
 fn simple bytes start info =
 	if info == 20 then Result.Ok (Json.Bool false, start + 1)
 	elif info == 21 then Result.Ok (Json.Bool true, start + 1)
@@ -308,9 +308,9 @@ fn simple bytes start info =
 	elif info >= 28 then Result.Error (failure Json.Syntax start)
 	else Result.Error (failure (Json.Unsupported (if info == 23 then "undefined" else "simple value")) start)
 
-private def rec value_at :: ref [ubyte] -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
-private def and items_at :: ref [ubyte] -> i64 -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
-private def and members_at :: ref [ubyte] -> i64 -> i64 -> i64 -> Result<(Json.Value * i64), Json.Error>
+private def rec value_at :: ref [ubyte] -> own i64 -> own i64 -> Result<(Json.Value * i64), Json.Error>
+private def and items_at :: ref [ubyte] -> own i64 -> own i64 -> own i64 -> Result<(Json.Value * i64), Json.Error>
+private def and members_at :: ref [ubyte] -> own i64 -> own i64 -> own i64 -> Result<(Json.Value * i64), Json.Error>
 fn rec value_at bytes start depth =
 	if start >= bytes.length then Result.Error (failure Json.UnexpectedEnd bytes.length) else
 		let major = (bytes[start] >>> 5ubyte) as i64

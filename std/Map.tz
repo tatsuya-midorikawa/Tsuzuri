@@ -4,7 +4,7 @@ record Map<'key, 'value> { entries: Vec<Entry<'key, 'value>> }
 def empty :: Map<'key, 'value>
 fn empty = Map { entries: Vec.empty() }
 
-def singleton :: 'key -> 'value -> Map<'key, 'value>
+def singleton :: own 'key -> own 'value -> Map<'key, 'value>
 fn singleton key value = Map { entries: Vec.push (Entry { key: key, value: value }) (Vec.empty()) }
 
 def length :: ref Map<'key, 'value> -> i64
@@ -24,24 +24,24 @@ fn lower_bound map key =
 		if Ord.lt (ref map.entries[middle].key) key then lower = middle + 1 else upper = middle
 	lower
 
-private def found :: Ord<'key> => ref Map<'key, 'value> -> ref 'key -> i64 -> bool
+private def found :: Ord<'key> => ref Map<'key, 'value> -> ref 'key -> own i64 -> bool
 fn found map key index = index < length map && !(Ord.lt key (ref map.entries[index].key))
 
-def contains_key :: Ord<'key> => 'key -> ref Map<'key, 'value> -> bool
+def contains_key :: Ord<'key> => own 'key -> ref Map<'key, 'value> -> bool
 fn contains_key key map = found map (ref key) (lower_bound map (ref key))
 
-def get :: (Ord<'key>, Copy<'value>) => 'key -> ref Map<'key, 'value> -> Maybe<'value>
+def get :: (Ord<'key>, Copy<'value>) => own 'key -> ref Map<'key, 'value> -> Maybe<'value>
 fn get key map =
 	let index = lower_bound map (ref key)
 	if found map (ref key) index then Maybe.Some map.entries[index].value else Maybe.None
 
-def at :: Ord<'key> => 'key -> ref Map<'key, 'value> -> ref 'value
+def at :: Ord<'key> => own 'key -> ref Map<'key, 'value> -> ref 'value
 fn at key map =
 	let index = lower_bound map (ref key)
 	assert (found map (ref key) index)
 	ref map.entries[index].value
 
-def insert :: Ord<'key> => 'key -> 'value -> Map<'key, 'value> -> Map<'key, 'value>
+def insert :: Ord<'key> => own 'key -> own 'value -> own Map<'key, 'value> -> Map<'key, 'value>
 fn insert key value map =
 	let index = lower_bound (ref map) (ref key)
 	let count = length (ref map)
@@ -60,7 +60,7 @@ fn insert key value map =
 			position = position - 1
 		Map { entries: entries }
 
-def remove :: Ord<'key> => 'key -> Map<'key, 'value> -> Map<'key, 'value>
+def remove :: Ord<'key> => own 'key -> own Map<'key, 'value> -> Map<'key, 'value>
 fn remove key map =
 	let index = lower_bound (ref map) (ref key)
 	let count = length (ref map)
@@ -83,7 +83,7 @@ fn keys map = new ['key](length map, index -> map.entries[index].key)
 def values :: Copy<'value> => ref Map<'key, 'value> -> ['value]
 fn values map = new ['value](length map, index -> map.entries[index].value)
 
-def fold :: ('state -> ref 'key -> ref 'value -> 'state) -> 'state -> ref Map<'key, 'value> -> 'state
+def fold :: own ('state -> ref 'key -> ref 'value -> 'state) -> own 'state -> ref Map<'key, 'value> -> 'state
 fn fold folder initial map =
 	let mut state = initial
 	let mut index = 0
@@ -92,7 +92,7 @@ fn fold folder initial map =
 		index = index + 1
 	state
 
-private def rec iter_from :: ref Map<'key, 'value> -> i64 -> Seq<(ref 'key * ref 'value)>
+private def rec iter_from :: ref Map<'key, 'value> -> own i64 -> Seq<(ref 'key * ref 'value)>
 fn rec iter_from map index = Seq.defer (\() ->
 	if index < length map then (iter_from map (index + 1), Maybe.Some (ref map.entries[index].key, ref map.entries[index].value))
 	else (Seq.empty(), Maybe.None))

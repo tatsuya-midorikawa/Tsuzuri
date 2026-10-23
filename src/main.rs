@@ -62,6 +62,7 @@ Usage:
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--json]
+  tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] input
   tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
                     [--consume F:P]... [--json]
   tsuzuri toolchain info
@@ -2092,6 +2093,131 @@ fn api_diff_usage(json: bool) -> ExitCode {
     ExitCode::from(2)
 }
 
+fn fix_edition_command(arguments: &[OsString]) -> ExitCode {
+    use tsuzuri::syntax::Edition;
+    let json = arguments.iter().any(|argument| argument == "--json");
+    let mut target = None;
+    let mut from = None;
+    let mut dry_run = false;
+    let mut path = None;
+    let mut seen = BTreeSet::new();
+    let mut paths_only = false;
+    let mut arguments = arguments.iter();
+    let parsed = (|| {
+        while let Some(argument) = arguments.next() {
+            let word = argument.to_str().unwrap_or("");
+            if !paths_only && word == "--" {
+                paths_only = true;
+            } else if !paths_only && word.starts_with('-') {
+                if !seen.insert(word) {
+                    return Err(format!("{word} specified more than once"));
+                }
+                match word {
+                    "--edition" | "--from" => {
+                        let value = arguments
+                            .next()
+                            .and_then(|value| value.to_str())
+                            .ok_or_else(|| format!("{word} needs a year such as 2027"))?;
+                        let edition = Edition::parse(value).ok_or_else(|| {
+                            format!(
+                                "unsupported edition '{value}'; supported editions: {}",
+                                Edition::supported_names()
+                            )
+                        })?;
+                        if word == "--edition" {
+                            target = Some(edition);
+                        } else {
+                            from = Some(edition);
+                        }
+                    }
+                    "--dry-run" => dry_run = true,
+                    "--json" => {}
+                    _ => return Err(format!("unknown option '{word}' for edition migration")),
+                }
+            } else if path.replace(PathBuf::from(argument)).is_some() {
+                return Err("fix takes one input path".into());
+            }
+        }
+        target.zip(path).ok_or_else(|| {
+            "usage: tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] PATH".into()
+        })
+    })();
+    let (target, path) = match parsed {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            print_diagnostic(
+                &Diagnostic::new("E2000", message, Span::default()),
+                Path::new("<command line>"),
+                "",
+                json,
+            );
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(code) = invalid_thread_setting(&mut io::stderr(), json) {
+        return ExitCode::from(code);
+    }
+    let result = tsuzuri::edition_migration::prepare(&path, target, from).and_then(|migration| {
+        if !dry_run {
+            tsuzuri::edition_migration::apply(&migration)?;
+        }
+        Ok(migration)
+    });
+    match result {
+        Err(error) => {
+            let text = std::fs::read_to_string(&error.path).unwrap_or_default();
+            print_diagnostic(&error.diagnostic, &error.path, &text, json);
+            ExitCode::FAILURE
+        }
+        Ok(migration) => {
+            for change in &migration.changes {
+                if json {
+                    println!(
+                        "{{\"type\":\"edition_edit\",\"path\":{},\"dry_run\":{},\"before\":{},\"after\":{}}}",
+                        json_string(&change.path.to_string_lossy()),
+                        dry_run,
+                        json_string(&change.before),
+                        json_string(&change.after)
+                    );
+                } else if dry_run {
+                    println!(
+                        "--- {}\n+++ {}\n@@ -1,{} +1,{} @@",
+                        change.path.display(),
+                        change.path.display(),
+                        change.before.lines().count(),
+                        change.after.lines().count()
+                    );
+                    for line in change.before.lines() {
+                        println!("-{line}");
+                    }
+                    for line in change.after.lines() {
+                        println!("+{line}");
+                    }
+                } else {
+                    println!("migrated {}", change.path.display());
+                }
+            }
+            if json {
+                println!(
+                    "{{\"type\":\"edition_summary\",\"from\":{},\"target\":{},\"files\":{},\"manifest\":{},\"dry_run\":{}}}",
+                    json_string(&migration.source_edition.to_string()),
+                    json_string(&migration.target.to_string()),
+                    migration.changes.len(),
+                    migration.manifest,
+                    dry_run
+                );
+            } else if migration.source_edition == migration.target {
+                println!("edition is already {target}; nothing to migrate");
+            } else if !migration.manifest {
+                println!(
+                    "edition: source prepared for {target}; no manifest changed; migrate the project directory to update its edition"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
 /// `tsuzuri bindgen header.h -o Module.tz`: writes the module and reports each
 /// skipped declaration as a W2002 warning at the header.
 fn bindgen_command(arguments: &[OsString]) -> ExitCode {
@@ -2357,6 +2483,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "api-diff") {
         return api_diff_command(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "fix") {
+        return fix_edition_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "bindgen") {
         return bindgen_command(&raw[1..]);

@@ -24,7 +24,7 @@ fn volume shape =
             count = count * shape[axis]
     if empty then 0 else count
 
-private def stride_of :: ref [i64] -> i64 -> i64
+private def stride_of :: ref [i64] -> own i64 -> i64
 fn stride_of shape axis =
     let mut stride = 1
     for later in (axis + 1) .. (shape.length - 1) do stride = stride * shape[later]
@@ -34,25 +34,25 @@ private def dense_strides :: ref [i64] -> [i64]
 fn dense_strides shape = new [i64](shape.length, axis -> stride_of shape axis)
 
 /// Takes a row-major array without copying; traps unless its length is the product of the shape.
-def of_array :: [i64] -> ['a] -> Tensor<'a>
+def of_array :: own [i64] -> own ['a] -> Tensor<'a>
 fn of_array shape values =
     assert (values.length == volume (ref shape))
     Tensor { shape: shape, data: values }
 
 /// Calls `initializer index` once per element in row-major order, with the flat row-major index.
-def init :: [i64] -> (i64 -> 'a) -> Tensor<'a>
+def init :: own [i64] -> own (i64 -> 'a) -> Tensor<'a>
 fn init shape initializer =
     let count = volume (ref shape)
     Tensor { shape: shape, data: new ['a](count, initializer) }
 
 /// Turns a matrix into a rank 2 tensor without copying.
-def of_matrix :: Matrix<'a> -> Tensor<'a>
+def of_matrix :: own Matrix<'a> -> Tensor<'a>
 fn of_matrix matrix =
     let shape = [Matrix.rows (ref matrix), Matrix.cols (ref matrix)]
     Tensor { shape: shape, data: Matrix.to_array matrix }
 
 /// Turns a rank 2 tensor into a matrix without copying; traps unless the rank is 2.
-def to_matrix :: Tensor<'a> -> Matrix<'a>
+def to_matrix :: own Tensor<'a> -> Matrix<'a>
 fn to_matrix tensor =
     assert (tensor.shape.length == 2)
     Matrix.of_array tensor.shape[0] tensor.shape[1] tensor.data
@@ -62,11 +62,11 @@ def as_array :: ref Tensor<'a> -> ref ['a]
 fn as_array tensor = ref tensor.data
 
 /// Consumes the tensor and returns its row-major buffer without copying.
-def to_array :: Tensor<'a> -> ['a]
+def to_array :: own Tensor<'a> -> ['a]
 fn to_array tensor = tensor.data
 
 /// Gives the elements a new shape without copying; traps unless the product of the shape is unchanged.
-def reshape :: [i64] -> Tensor<'a> -> Tensor<'a>
+def reshape :: own [i64] -> own Tensor<'a> -> Tensor<'a>
 fn reshape shape tensor =
     assert (volume (ref shape) == tensor.data.length)
     Tensor { shape: shape, data: tensor.data }
@@ -76,7 +76,7 @@ def view { r } :: ref { r } Tensor<'a> -> View<'a> { r }
 fn view tensor = View { data: ref tensor.data, offset: 0, shape: Array.copy (ref tensor.shape), strides: dense_strides (ref tensor.shape) }
 
 /// Borrows a row-major array as a window of the given shape; traps unless its length is the product of the shape.
-def borrow { r } :: [i64] -> ref { r } ['a] -> View<'a> { r }
+def borrow { r } :: own [i64] -> ref { r } ['a] -> View<'a> { r }
 fn borrow shape data =
     assert (data.length == volume (ref shape))
     let strides = dense_strides (ref shape)
@@ -116,11 +116,11 @@ fn offset_of view index =
     offset
 
 /// Borrows one element; traps unless the index has one entry per axis, each inside its extent.
-def at { r } :: [i64] -> ref View<'a> { r } -> ref { r } 'a
+def at { r } :: own [i64] -> ref View<'a> { r } -> ref { r } 'a
 fn at index view = ref view.data[offset_of view (ref index)]
 
 /// Copies one element, or `None` unless the index has one entry per axis, each inside its extent.
-def get :: Copy<'a> => [i64] -> ref View<'a> -> Maybe<'a>
+def get :: Copy<'a> => own [i64] -> ref View<'a> -> Maybe<'a>
 fn get index view =
     let mut inside = index.length == view.shape.length
     if inside then
@@ -130,7 +130,7 @@ fn get index view =
 
 /// Reorders the axes without touching the data: axis i of the result is axis axes[i] of the view.
 /// Traps unless `axes` is a permutation of 0 .. rank - 1.
-def permute { r } :: [i64] -> ref View<'a> { r } -> View<'a> { r }
+def permute { r } :: own [i64] -> ref View<'a> { r } -> View<'a> { r }
 fn permute axes view =
     let rank = view.shape.length
     assert (axes.length == rank)
@@ -140,14 +140,14 @@ fn permute axes view =
     View { data: view.data, offset: view.offset, shape: new [i64](rank, axis -> view.shape[axes[axis]]), strides: new [i64](rank, axis -> view.strides[axes[axis]]) }
 
 /// Fixes one axis at a position, which removes that axis; traps unless the position is inside its extent.
-def index_axis { r } :: i64 -> i64 -> ref View<'a> { r } -> View<'a> { r }
+def index_axis { r } :: own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn index_axis axis position view =
     let rank = view.shape.length
     assert (axis >= 0 && axis < rank && position >= 0 && position < view.shape[axis])
     View { data: view.data, offset: view.offset + position * view.strides[axis], shape: new [i64](rank - 1, d -> if d < axis then view.shape[d] else view.shape[d + 1]), strides: new [i64](rank - 1, d -> if d < axis then view.strides[d] else view.strides[d + 1]) }
 
 /// Keeps `length` positions of one axis starting at `start`; traps unless they lie inside the extent.
-def narrow { r } :: i64 -> i64 -> i64 -> ref View<'a> { r } -> View<'a> { r }
+def narrow { r } :: own i64 -> own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn narrow axis start length view =
     let rank = view.shape.length
     assert (axis >= 0 && axis < rank && start >= 0 && length >= 0 && start <= view.shape[axis] && length <= view.shape[axis] - start)
@@ -167,13 +167,13 @@ fn is_contiguous view =
 
 /// Gives a contiguous window a new shape without copying; traps unless the window is contiguous and
 /// the product of the shape is unchanged.
-def reshape_view { r } :: [i64] -> ref View<'a> { r } -> View<'a> { r }
+def reshape_view { r } :: own [i64] -> ref View<'a> { r } -> View<'a> { r }
 fn reshape_view shape view =
     assert (is_contiguous view && volume (ref shape) == volume (ref view.shape))
     let strides = dense_strides (ref shape)
     View { data: view.data, offset: view.offset, shape: shape, strides: strides }
 
-private def rec fold_axis :: Copy<'a> => ('state -> 'a -> 'state) -> ref ['a] -> ref [i64] -> ref [i64] -> i64 -> i64 -> 'state -> 'state
+private def rec fold_axis :: Copy<'a> => own ('state -> 'a -> 'state) -> ref ['a] -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> own 'state -> 'state
 fn rec fold_axis folder data shape strides axis offset state =
     let mut result = state
     if axis == shape.length - 1 then
@@ -185,14 +185,14 @@ fn rec fold_axis folder data shape strides axis offset state =
     result
 
 /// Folds the elements left to right in row-major order of the window.
-def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref View<'a> -> 'state
+def fold :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> ref View<'a> -> 'state
 fn fold folder initial view =
     if volume (ref view.shape) == 0 then initial
     elif view.shape.length == 0 then folder initial view.data[view.offset]
     else fold_axis folder view.data (ref view.shape) (ref view.strides) 0 view.offset initial
 
 // Writes the elements of one axis and below into `out` from `position`; returns the next position.
-private def rec gather :: Copy<'a> => ref ['a] -> ref [i64] -> ref [i64] -> i64 -> i64 -> ref mut ['a..] -> i64 -> i64
+private def rec gather :: Copy<'a> => ref ['a] -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> ref mut ['a..] -> own i64 -> i64
 fn rec gather data shape strides axis offset out position =
     let mut next = position
     if axis == shape.length - 1 then
@@ -217,7 +217,7 @@ fn to_tensor view =
         Tensor { shape: Array.copy (ref view.shape), data: out }
 
 /// Applies `transform` to every element in row-major order of the window.
-def map :: Copy<'a> => ('a -> 'b) -> ref View<'a> -> Tensor<'b>
+def map :: Copy<'a> => own ('a -> 'b) -> ref View<'a> -> Tensor<'b>
 fn map transform view =
     let total = volume (ref view.shape)
     if total > 0 && is_contiguous view then

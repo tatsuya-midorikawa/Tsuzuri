@@ -3,7 +3,7 @@ record Set<'key> { entries: Vec<'key> }
 def empty :: Set<'key>
 fn empty = Set { entries: Vec.empty() }
 
-def singleton :: 'key -> Set<'key>
+def singleton :: own 'key -> Set<'key>
 fn singleton key = Set { entries: Vec.push key (Vec.empty()) }
 
 def length :: ref Set<'key> -> i64
@@ -23,13 +23,13 @@ fn lower_bound set key =
 		if Ord.lt (ref set.entries[middle]) key then lower = middle + 1 else upper = middle
 	lower
 
-private def found :: Ord<'key> => ref Set<'key> -> ref 'key -> i64 -> bool
+private def found :: Ord<'key> => ref Set<'key> -> ref 'key -> own i64 -> bool
 fn found set key index = index < length set && !(Ord.lt key (ref set.entries[index]))
 
-def contains :: Ord<'key> => 'key -> ref Set<'key> -> bool
+def contains :: Ord<'key> => own 'key -> ref Set<'key> -> bool
 fn contains key set = found set (ref key) (lower_bound set (ref key))
 
-def insert :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+def insert :: Ord<'key> => own 'key -> own Set<'key> -> Set<'key>
 fn insert key set =
 	let index = lower_bound (ref set) (ref key)
 	let count = length (ref set)
@@ -41,7 +41,7 @@ fn insert key set =
 			position = position - 1
 		Set { entries: entries }
 
-def remove :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+def remove :: Ord<'key> => own 'key -> own Set<'key> -> Set<'key>
 fn remove key set =
 	let index = lower_bound (ref set) (ref key)
 	let count = length (ref set)
@@ -58,7 +58,7 @@ fn remove key set =
 def to_array :: Copy<'key> => ref Set<'key> -> ['key]
 fn to_array set = new ['key](length set, index -> set.entries[index])
 
-def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref Set<'key> -> 'state
+def fold :: own ('state -> ref 'key -> 'state) -> own 'state -> ref Set<'key> -> 'state
 fn fold folder initial set =
 	let mut state = initial
 	let mut index = 0
@@ -72,7 +72,7 @@ fn compare_keys left right =
 	assert (Eq.eq left left && Eq.eq right right)
 	if Ord.lt left right then -1 else if Ord.lt right left then 1 else 0
 
-def union :: Ord<'key> => Set<'key> -> Set<'key> -> Set<'key>
+def union :: Ord<'key> => own Set<'key> -> own Set<'key> -> Set<'key>
 fn union left right =
 	let left_count = length (ref left)
 	let right_count = length (ref right)
@@ -108,7 +108,7 @@ fn union left right =
 		index = index + 1
 	Set { entries: output }
 
-private def select :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> bool -> Set<'key>
+private def select :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> own bool -> Set<'key>
 fn select left right include_equal =
 	let left_count = length left
 	let right_count = length right
@@ -131,7 +131,7 @@ fn intersect left right = select left right true
 def difference :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> Set<'key>
 fn difference left right = select left right false
 
-private def rec iter_from :: ref Set<'key> -> i64 -> Seq<ref 'key>
+private def rec iter_from :: ref Set<'key> -> own i64 -> Seq<ref 'key>
 fn rec iter_from set index = Seq.defer (\() ->
 	if index < length set then (iter_from set (index + 1), Maybe.Some (ref set.entries[index]))
 	else (Seq.empty(), Maybe.None))

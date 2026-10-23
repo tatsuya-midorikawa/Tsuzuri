@@ -24,10 +24,10 @@ record Async<'a> { start: Next<unit, Step<'a>> }
 /// receives the same id when the computation stops waiting for it before it completes.
 record Operation { start: i64 -> unit, cancel: i64 -> unit }
 
-private def later :: ('x -> 'y) -> Next<'x, 'y>
+private def later :: own ('x -> 'y) -> Next<'x, 'y>
 fn later call = Next { call: call }
 
-private def rec bind_step :: Step<'a> -> Next<'a, Step<'b>> -> Step<'b>
+private def rec bind_step :: own Step<'a> -> own Next<'a, Step<'b>> -> Step<'b>
 fn rec bind_step step next =
     match step with
     | Done value -> Async.__resume next value
@@ -37,7 +37,7 @@ fn rec bind_step step next =
         Suspend (ready, timer, operations, later (\event -> bind_step (Async.__resume resume event) next))
 
 /// Answers every `Now` with `tick`; the result is `Done`, `Begin`, or `Suspend`.
-private def settle :: Step<'a> -> i64 -> Step<'a>
+private def settle :: own Step<'a> -> own i64 -> Step<'a>
 fn settle step tick =
     let mut current = step
     let mut settled = false
@@ -51,37 +51,37 @@ fn settle step tick =
     current
 
 /// A suspension that only waits to be resumed once.
-private def paused :: unit -> Step<unit>
+private def paused :: own unit -> Step<unit>
 fn paused _unit =
     let operations: [i64] = []
     Suspend (true, Maybe.None, operations, later (\_event -> Done ()))
 
-def Return :: Capture<'a> => 'a -> Async<'a>
+def Return :: Capture<'a> => own 'a -> Async<'a>
 fn Return value = Async { start: later (\() -> Done value) }
 
-def ReturnFrom :: Async<'a> -> Async<'a>
+def ReturnFrom :: own Async<'a> -> Async<'a>
 fn ReturnFrom computation = computation
 
-def Bind :: Async<'a> -> ('a -> Async<'b>) -> Async<'b>
+def Bind :: own Async<'a> -> own ('a -> Async<'b>) -> Async<'b>
 fn Bind source next = Async { start: later (\() ->
     bind_step (Async.__resume source.start ()) (later (\value -> Async.__resume (Async.__resume (later next) value).start ()))) }
 
-def Delay :: (unit -> Async<'a>) -> Async<'a>
+def Delay :: own (unit -> Async<'a>) -> Async<'a>
 fn Delay body = Async { start: later (\() -> Async.__resume (Async.__resume (later body) ()).start ()) }
 
 def Zero :: Async<unit>
 fn Zero = Async { start: later (\() -> Done ()) }
 
-def Combine :: Async<unit> -> Async<'a> -> Async<'a>
+def Combine :: own Async<unit> -> own Async<'a> -> Async<'a>
 fn Combine first rest = Async { start: later (\() ->
     bind_step (Async.__resume first.start ()) (later (\() -> Async.__resume rest.start ()))) }
 
-def For :: (Copy<'a>, Capture<'a>) => ['a] -> ('a -> Async<unit>) -> Async<unit>
+def For :: (Copy<'a>, Capture<'a>) => own ['a] -> own ('a -> Async<unit>) -> Async<unit>
 fn For values body = Async { start: later (\() -> for_from values 0 body) }
 
 /// Runs the bodies from `index` on. Bodies that finish without suspending run in this loop;
 /// only a suspension builds a continuation, so long synchronous loops use no stack.
-private def rec for_from :: (Copy<'a>, Capture<'a>) => ['a] -> i64 -> ('a -> Async<unit>) -> Step<unit>
+private def rec for_from :: (Copy<'a>, Capture<'a>) => own ['a] -> own i64 -> own ('a -> Async<unit>) -> Step<unit>
 fn rec for_from values index body =
     let mut position = index
     let mut suspended: Maybe<Step<unit>> = Maybe.None
@@ -99,12 +99,12 @@ fn rec for_from values index body =
 
 /// Suspends once so that the other computations of the executor run first. The clock does not
 /// advance.
-def yield :: unit -> Async<unit>
+def yield :: own unit -> Async<unit>
 fn yield _unit = Async { start: later (\() -> paused ()) }
 
 /// Suspends until the clock is at least `duration` later. A duration of 0 or less suspends like
 /// `yield`; the wake-up time saturates at the largest `i64`.
-def sleep :: i64 -> Async<unit>
+def sleep :: own i64 -> Async<unit>
 fn sleep duration = Async { start: later (\() -> Now (later (\tick ->
     if duration <= 0 then paused ()
     else
@@ -112,13 +112,13 @@ fn sleep duration = Async { start: later (\() -> Now (later (\tick ->
         Suspend (false, Maybe.Some (Int.saturating_add tick duration), operations, later (\_event -> Done ()))))) }
 
 /// The current time of the executor's clock. It does not suspend.
-def now :: unit -> Async<i64>
+def now :: own unit -> Async<i64>
 fn now _unit = Async { start: later (\() -> Now (later (\tick -> Done tick))) }
 
 /// Runs a computation to completion on a virtual clock that starts at 0 and jumps to the
 /// earliest wake-up time when every computation sleeps. It traps when the computation waits
 /// for a host operation, which only `block_on` and `start` can complete.
-def run :: Async<'a> -> 'a
+def run :: own Async<'a> -> 'a
 fn run computation =
     let mut current = Maybe.Some (Async.__resume computation.start ())
     let mut output: Maybe<'a> = Maybe.None
@@ -143,7 +143,7 @@ fn run computation =
     Maybe.get output
 
 /// Whether `operation` is one of `operations`.
-private def waits_for :: ref [i64] -> i64 -> bool
+private def waits_for :: ref [i64] -> own i64 -> bool
 fn waits_for operations operation =
     let mut index = 0
     let mut found = false
@@ -154,7 +154,7 @@ fn waits_for operations operation =
 
 /// Whether `event` wakes a suspended child: `(0, 0)` wakes the ready children and those whose
 /// timer has passed, and `(operation, value)` the child that waits for the operation.
-private def wakes :: ref Step<'a> -> (i64 * i64) -> i64 -> bool
+private def wakes :: ref Step<'a> -> own (i64 * i64) -> own i64 -> bool
 fn wakes step event tick =
     match step with
     | Suspend (ready, timer, operations, _) ->
@@ -166,18 +166,18 @@ fn wakes step event tick =
     | _ -> false
 
 /// Resumes a suspended step with `event`.
-private def resume_with :: Step<'a> -> (i64 * i64) -> Step<'a>
+private def resume_with :: own Step<'a> -> own (i64 * i64) -> Step<'a>
 fn resume_with step event =
     match step with
     | Suspend (_, _, _, resume) -> Async.__resume resume event
     | other -> other
 
 /// Resumes a child if `event` wakes it.
-private def wake :: Step<'a> -> (i64 * i64) -> i64 -> Step<'a>
+private def wake :: own Step<'a> -> own (i64 * i64) -> own i64 -> Step<'a>
 fn wake step event tick = if wakes (ref step) event tick then resume_with step event else step
 
 /// The earlier of two optional timers.
-private def earliest :: Maybe<i64> -> Maybe<i64> -> Maybe<i64>
+private def earliest :: own Maybe<i64> -> own Maybe<i64> -> Maybe<i64>
 fn earliest first second =
     match (first, second) with
     | (Maybe.Some left, Maybe.Some right) -> Maybe.Some (if left < right then left else right)
@@ -187,12 +187,12 @@ fn earliest first second =
 /// One round of `all`: visits the children in index order (`waiting` holds them in reverse
 /// index order, `visited` the ones already visited) and resumes those that wait for `event`.
 /// `outcome` decides for each finished child whether the whole computation stops at once.
-private def rec round :: Capture<'c> => ('c -> Result<'c, 'r>) -> (Vec<'c> -> 'r) -> Vec<Step<'c>> -> Vec<Step<'c>> -> (i64 * i64) -> i64 -> Step<'r>
+private def rec round :: Capture<'c> => own ('c -> Result<'c, 'r>) -> own (Vec<'c> -> 'r) -> own Vec<Step<'c>> -> own Vec<Step<'c>> -> own (i64 * i64) -> own i64 -> Step<'r>
 /// Continues a round after a child started a host operation and went on with its id.
-private def and continued :: Capture<'c> => ('c -> Result<'c, 'r>) -> (Vec<'c> -> 'r) -> Vec<Step<'c>> -> Vec<Step<'c>> -> Step<'c> -> (i64 * i64) -> i64 -> Step<'r>
+private def and continued :: Capture<'c> => own ('c -> Result<'c, 'r>) -> own (Vec<'c> -> 'r) -> own Vec<Step<'c>> -> own Vec<Step<'c>> -> own Step<'c> -> own (i64 * i64) -> own i64 -> Step<'r>
 /// After a round: the values in index order when every child finished, or one suspension that
 /// waits for whatever any child waits for.
-private def and gather :: Capture<'c> => ('c -> Result<'c, 'r>) -> (Vec<'c> -> 'r) -> Vec<Step<'c>> -> Step<'r>
+private def and gather :: Capture<'c> => own ('c -> Result<'c, 'r>) -> own (Vec<'c> -> 'r) -> own Vec<Step<'c>> -> Step<'r>
 fn rec round outcome finish waiting visited event tick =
     let mut rest = waiting
     let mut done = visited
@@ -263,13 +263,13 @@ and gather outcome finish visited =
             round outcome finish waiting (Vec.empty()) event tick))))
 
 /// A child that has not started yet: ready, and started when it is first resumed.
-private def pending :: Async<'a> -> Step<'a>
+private def pending :: own Async<'a> -> Step<'a>
 fn pending computation =
     let operations: [i64] = []
     Suspend (true, Maybe.None, operations, later (\_event -> Async.__resume computation.start ()))
 
 /// The children as steps in reverse index order, which `round` expects.
-private def children :: [Async<'a>] -> Vec<Step<'a>>
+private def children :: own [Async<'a>] -> Vec<Step<'a>>
 fn children computations =
     let mut source = Vec.of_array computations
     let mut started = Vec.with_capacity (Vec.length (ref source))
@@ -284,7 +284,7 @@ fn children computations =
 /// Runs the computations concurrently on one executor and gives their values in index order.
 /// They start in index order; after that each round resumes, in index order, every child that
 /// can continue, once. An empty array gives `[]` without suspending.
-def all :: Capture<'a> => [Async<'a>] -> Async<['a]>
+def all :: Capture<'a> => own [Async<'a>] -> Async<['a]>
 fn all computations =
     let states = children computations
     Async { start: later (\() -> Now (later (\tick ->
@@ -293,20 +293,20 @@ fn all computations =
 /// Like `all` for computations that may fail: the first `Error` in scheduling order (by time,
 /// then by index within a round) is the result at once, and the other computations stop where
 /// they are suspended. Otherwise the values of the `Ok`s in index order.
-def all_results :: (Capture<'a>, Capture<'e>) => [Async<Result<'a, 'e>>] -> Async<Result<['a], 'e>>
+def all_results :: (Capture<'a>, Capture<'e>) => own [Async<Result<'a, 'e>>] -> Async<Result<['a], 'e>>
 fn all_results computations =
     let states = children computations
     Async { start: later (\() -> Now (later (\tick ->
         round failure successes states (Vec.empty()) (0, 0) tick))) }
 
-private def failure :: Result<'a, 'e> -> Result<Result<'a, 'e>, Result<['a], 'e>>
+private def failure :: own Result<'a, 'e> -> Result<Result<'a, 'e>, Result<['a], 'e>>
 fn failure value =
     match value with
     | Result.Ok kept -> Result.Ok (Result.Ok kept)
     | Result.Error error -> Result.Error (Result.Error error)
 
 /// The values in the opposite order, without copying them.
-private def reverse :: Vec<'a> -> Vec<'a>
+private def reverse :: own Vec<'a> -> Vec<'a>
 fn reverse values =
     let mut source = values
     let mut target = Vec.with_capacity (Vec.length (ref source))
@@ -318,7 +318,7 @@ fn reverse values =
         | (rest, Maybe.None) -> source = rest
     target
 
-private def successes :: Vec<Result<'a, 'e>> -> Result<['a], 'e>
+private def successes :: own Vec<Result<'a, 'e>> -> Result<['a], 'e>
 fn successes results =
     let mut source = reverse results
     let mut values = Vec.with_capacity (Vec.length (ref source))
@@ -336,7 +336,7 @@ fn successes results =
 /// stops waiting first (another computation of `all_results` failed), the executor calls
 /// `operation.cancel` with the id instead. Only `start` and `block_on` complete host operations;
 /// `run` traps when it reaches one.
-def host :: Operation -> Async<i64>
+def host :: own Operation -> Async<i64>
 fn host operation = Async { start: later (\() -> Begin (operation, later (\id ->
     Suspend (false, Maybe.None, [id], later (\event ->
         match event with
@@ -345,7 +345,7 @@ fn host operation = Async { start: later (\() -> Begin (operation, later (\id ->
 /// Hands a computation to the executor of the calling thread that the host drives, and returns at
 /// once. The host runs it on the same thread with `tsuzuri_async_poll`, which also gives the
 /// executor's clock, and completes its host operations with `tsuzuri_async_complete`.
-def start :: Async<unit> -> IO<unit>
+def start :: own Async<unit> -> IO<unit>
 fn start computation = IO.map (\() -> enqueue computation) (IO.pure ())
 
 /// The executor that the host drives: its clock and the computations that `start` handed over,
@@ -366,14 +366,14 @@ private record Registry {
 private record Running { active: bool }
 
 /// Takes the registry out of its slot, which stays locked until `keep` puts it back.
-private def registry :: unit -> Registry
+private def registry :: own unit -> Registry
 fn registry _unit =
     match Async.__take() with
     | Maybe.Some state -> state
     | Maybe.None -> Registry { pending: Vec.empty(), completed: Vec.empty(), incoming: Vec.empty() }
 
 /// Puts the registry back; an empty one leaves the slot empty.
-private def keep :: Registry -> unit
+private def keep :: own Registry -> unit
 fn keep state =
     let idle = Vec.is_empty (ref state.pending) && Vec.is_empty (ref state.completed) && Vec.is_empty (ref state.incoming)
     if idle then
@@ -381,7 +381,7 @@ fn keep state =
         Async.__put nothing
     else Async.__put (Maybe.Some state)
 
-private def enqueue :: Async<unit> -> unit
+private def enqueue :: own Async<unit> -> unit
 fn enqueue computation =
     // A program that starts computations exports the host entry points.
     ignore (__poll, __complete)
@@ -390,7 +390,7 @@ fn enqueue computation =
         keep (Registry { pending: pending, completed: completed, incoming: Vec.push computation incoming })
 
 /// The position of a pending operation, or -1.
-private def pending_index :: ref Vec<(i64 * Operation)> -> i64 -> i64
+private def pending_index :: ref Vec<(i64 * Operation)> -> own i64 -> i64
 fn pending_index pending operation =
     let mut index = 0
     let mut found = -1
@@ -401,13 +401,13 @@ fn pending_index pending operation =
     found
 
 /// Removes the entry at `index` by moving the last entry into its place.
-private def remove_at :: Vec<'a> -> i64 -> (Vec<'a> * Maybe<'a>)
+private def remove_at :: own Vec<'a> -> own i64 -> (Vec<'a> * Maybe<'a>)
 fn remove_at values index =
     let last = Vec.length (ref values) - 1
     Vec.pop (Vec.swap index last values)
 
 /// The completions without the one of `operation`, in their order.
-private def without :: i64 -> Vec<(i64 * i64)> -> Vec<(i64 * i64)>
+private def without :: own i64 -> own Vec<(i64 * i64)> -> Vec<(i64 * i64)>
 fn without operation completed =
     let mut source = reverse completed
     let mut kept = Vec.with_capacity (Vec.length (ref source))
@@ -421,11 +421,11 @@ fn without operation completed =
 
 /// The host's `tsuzuri_async_complete`: records the value of a pending host operation, which a
 /// later poll delivers. An id that is not pending (unknown, completed, or cancelled) traps.
-private def __complete :: i64 -> i64 -> unit
+private def __complete :: own i64 -> own i64 -> unit
 fn __complete operation value = if !(record_completion operation value) then unreachable ()
 
 /// Records the completion of a pending operation; false if `operation` is not pending.
-private def record_completion :: i64 -> i64 -> bool
+private def record_completion :: own i64 -> own i64 -> bool
 fn record_completion operation value =
     match registry () with
     | Registry { pending = pending, completed = completed, incoming = incoming } ->
@@ -441,7 +441,7 @@ fn record_completion operation value =
                 true
 
 /// Registers a host operation that a computation begins and starts it on the host.
-private def begin_operation :: Operation -> i64
+private def begin_operation :: own Operation -> i64
 fn begin_operation operation =
     let id = Async.__next_id()
     match registry () with
@@ -452,7 +452,7 @@ fn begin_operation operation =
 
 /// Stops an operation that no computation waits for any more: a pending one is removed and its
 /// `cancel` runs, and a completion that nothing received is dropped.
-private def cancel :: i64 -> unit
+private def cancel :: own i64 -> unit
 fn cancel operation =
     match registry () with
     | Registry { pending = pending, completed = completed, incoming = incoming } ->
@@ -467,7 +467,7 @@ fn cancel operation =
         else keep (Registry { pending: pending, completed: without operation completed, incoming: incoming })
 
 /// Whether a suspended step waits for `operation`.
-private def waits :: ref Step<'a> -> i64 -> bool
+private def waits :: ref Step<'a> -> own i64 -> bool
 fn waits step operation =
     match step with
     | Suspend (_, _, operations, _) -> waits_for (ref operations) operation
@@ -485,7 +485,7 @@ fn waited step =
 /// Resumes a computation with `event` and runs it until it suspends or finishes, answering `Now`
 /// with `clock`. It starts the host operations that the computation begins and cancels those
 /// that it began or waited for and no longer waits for.
-private def advance :: Step<unit> -> (i64 * i64) -> i64 -> Step<unit>
+private def advance :: own Step<unit> -> own (i64 * i64) -> own i64 -> Step<unit>
 fn advance step event clock =
     let before = waited (ref step)
     let mut begun: Vec<i64> = Vec.empty()
@@ -512,7 +512,7 @@ fn advance step event clock =
     current
 
 /// Takes the computation at `index` out of `tasks`, leaving `Done ()` in its place.
-private def take_task :: Vec<Step<unit>> -> i64 -> (Vec<Step<unit>> * Step<unit>)
+private def take_task :: own Vec<Step<unit>> -> own i64 -> (Vec<Step<unit>> * Step<unit>)
 fn take_task tasks index =
     let last = Vec.length (ref tasks)
     match Vec.pop (Vec.swap index last (Vec.push (Done ()) tasks)) with
@@ -520,14 +520,14 @@ fn take_task tasks index =
     | (rest, Maybe.None) -> (rest, Done ())
 
 /// Puts a computation back at `index`.
-private def put_task :: Vec<Step<unit>> -> i64 -> Step<unit> -> Vec<Step<unit>>
+private def put_task :: own Vec<Step<unit>> -> own i64 -> own Step<unit> -> Vec<Step<unit>>
 fn put_task tasks index step =
     let last = Vec.length (ref tasks)
     match Vec.pop (Vec.swap index last (Vec.push step tasks)) with
     | (rest, _) -> rest
 
 /// The position of the computation that waits for `operation`, or -1.
-private def waiting_task :: ref Vec<Step<unit>> -> i64 -> i64
+private def waiting_task :: ref Vec<Step<unit>> -> own i64 -> i64
 fn waiting_task tasks operation =
     let mut index = 0
     let mut found = -1
@@ -539,7 +539,7 @@ fn waiting_task tasks operation =
 /// When a poll should run next: the clock if a computation can continue at once, else the
 /// earliest timer, else the largest i64 (only host operations can wake them), or -1 without
 /// computations.
-private def next_wake :: ref Vec<Step<unit>> -> i64 -> i64
+private def next_wake :: ref Vec<Step<unit>> -> own i64 -> i64
 fn next_wake tasks clock =
     let mut timer: Maybe<i64> = Maybe.None
     let mut ready = false
@@ -563,7 +563,7 @@ fn next_wake tasks clock =
 /// The host's `tsuzuri_async_poll`: advances the clock to `now` (it never goes back), delivers the
 /// completed host operations in completion order, and then resumes once each computation that was
 /// ready or whose timer had passed when the poll began. A poll from inside a poll traps.
-private def __poll :: i64 -> i64
+private def __poll :: own i64 -> i64
 fn __poll now =
     assert (now >= 0)
     let mut clock = now
@@ -635,10 +635,10 @@ fn __poll now =
 /// over on this thread run meanwhile on the same executor; other threads have executors of their
 /// own. Natively on macOS, Linux, and Windows; on wasm32 it needs `--wasm-feature jspi`, which suspends the
 /// WebAssembly stack while it waits.
-def block_on :: Async<'a> -> IO<'a>
+def block_on :: own Async<'a> -> IO<'a>
 fn block_on computation = IO.map (\() -> reactor computation) (IO.pure ())
 
-private def reactor :: Async<'a> -> 'a
+private def reactor :: own Async<'a> -> 'a
 fn reactor computation =
     // JSPI can re-enter a suspended native-style call on the same thread. Only one block_on
     // owns that thread's result slot; the generated bindings queue later calls.
@@ -662,14 +662,14 @@ fn reactor computation =
     Maybe.get result
 
 /// Hands the value of the computation that `block_on` runs to it, through the slot of its type.
-private def deliver :: 'a -> unit
+private def deliver :: own 'a -> unit
 fn deliver value =
     let previous: Maybe<'a> = Async.__take()
     match previous with
     | Maybe.Some _ -> unreachable ()
     | Maybe.None -> Async.__put (Maybe.Some value)
 
-private def collect :: unit -> Maybe<'a>
+private def collect :: own unit -> Maybe<'a>
 fn collect _unit =
     let value: Maybe<'a> = Async.__take()
     let nothing: Maybe<'a> = Maybe.None
@@ -679,7 +679,7 @@ fn collect _unit =
 /// Records the completions that other threads posted to this thread with `tsuzuri_async_post`. The
 /// host cannot tell when a computation stops waiting, so a completion of an operation that no
 /// longer waits (it was cancelled or completed) is ignored.
-private def receive_posted :: unit -> unit
+private def receive_posted :: own unit -> unit
 fn receive_posted _unit =
     let mut more = true
     while more do

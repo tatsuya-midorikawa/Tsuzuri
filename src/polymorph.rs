@@ -153,6 +153,7 @@ impl MemberConstraint {
 
 pub(super) struct Scheme {
     pub signature: Signature,
+    pub parameter_conventions: Vec<ParameterConvention>,
     pub variables: Vec<String>,
     pub constraints: Vec<Constraint>,
     pub members: Vec<MemberConstraint>,
@@ -165,6 +166,7 @@ impl Scheme {
                 parameters: Vec::new(),
                 result: Type::Error,
             },
+            parameter_conventions: Vec::new(),
             variables: Vec::new(),
             constraints: Vec::new(),
             members: Vec::new(),
@@ -173,6 +175,14 @@ impl Scheme {
 
     pub fn is_poisoned(&self) -> bool {
         self.signature.result == Type::Error
+    }
+
+    pub fn as_type(&self) -> Type {
+        Type::function_with_conventions(
+            self.signature.parameters.clone(),
+            self.signature.result.clone(),
+            self.parameter_conventions.clone(),
+        )
     }
 }
 
@@ -213,9 +223,10 @@ fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
         Type::Tuple(elements) => Type::Tuple(elements.iter().map(|ty| map_type(ty, f)).collect()),
         Type::Task(result) => Type::Task(Box::new(map_type(result, f))),
         Type::Reference(value, mutable) => Type::Reference(Box::new(map_type(value, f)), *mutable),
-        Type::Function(parameters, result) => Type::function(
+        Type::Function(parameters, result) => Type::function_with_conventions(
             parameters.iter().map(|ty| map_type(ty, f)).collect(),
             map_type(result, f),
+            parameters.conventions.to_vec(),
         ),
         Type::Record(id, args) if !args.is_empty() => {
             Type::Record(*id, args.iter().map(|ty| map_type(ty, f)).collect())
@@ -357,9 +368,10 @@ impl Inference {
             Type::Reference(value, mutable) => {
                 Type::Reference(Box::new(self.resolve(value)), *mutable)
             }
-            Type::Function(parameters, result) => Type::function(
+            Type::Function(parameters, result) => Type::function_with_conventions(
                 parameters.iter().map(|ty| self.resolve(ty)).collect(),
                 self.resolve(result),
+                parameters.conventions.to_vec(),
             ),
             Type::Record(id, args) => {
                 Type::Record(*id, args.iter().map(|ty| self.resolve(ty)).collect())
@@ -468,7 +480,7 @@ impl Inference {
                 return self.unify(a, b, types, span);
             }
             (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
-                for (a, b) in a.iter().zip(b) {
+                for (a, b) in a.iter().zip(b.iter()) {
                     self.unify(a, b, types, span)?;
                 }
                 return Ok(());
@@ -502,7 +514,7 @@ impl Inference {
                 return Ok(());
             }
             (Type::Function(a, x), Type::Function(b, y)) if a.is_empty() == b.is_empty() => {
-                for (a, b) in a.iter().zip(b) {
+                for (a, b) in a.iter().zip(b.iter()) {
                     self.unify(a, b, types, span)?;
                 }
                 let common = a.len().min(b.len());
@@ -3238,7 +3250,7 @@ impl Checker<'_> {
                     TypedExprKind::Call(
                         Box::new(TypedExpr {
                             kind: TypedExprKind::Function(FunctionRef::User(id)),
-                            ty: scheme.signature.as_type(),
+                            ty: scheme.as_type(),
                             span: Span::default(),
                         }),
                         Vec::new(),
@@ -3248,7 +3260,7 @@ impl Checker<'_> {
             }
             return (
                 TypedExprKind::Function(FunctionRef::User(id)),
-                scheme.signature.as_type(),
+                scheme.as_type(),
             );
         }
         let types: Vec<_> = scheme
@@ -3264,7 +3276,7 @@ impl Checker<'_> {
             .collect();
         (
             TypedExprKind::GenericFunction(id, types),
-            substitute(&scheme.signature.as_type(), &substitutions),
+            substitute(&scheme.as_type(), &substitutions),
         )
     }
 
@@ -3436,14 +3448,18 @@ impl Checker<'_> {
                 let remaining = if parameters.len() == count {
                     *result
                 } else {
-                    Type::function(parameters[count..].to_vec(), *result)
+                    Type::function_with_conventions(
+                        parameters[count..].to_vec(),
+                        *result,
+                        parameters.conventions.get(count..).unwrap_or(&[]).to_vec(),
+                    )
                 };
                 Ok((parameters[..count].to_vec(), remaining))
             }
             Type::Function(parameters, result)
                 if count > parameters.len() && matches!(*result, Type::Infer(_)) =>
             {
-                let mut parameters = parameters;
+                let mut parameters = parameters.types;
                 let extra: Vec<_> = (parameters.len()..count)
                     .map(|_| self.inference.fresh())
                     .collect();

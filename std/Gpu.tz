@@ -3,7 +3,7 @@ union Error = Unavailable
 record Device { backend: Backend }
 record Buffer<'a> { values: ['a] }
 
-def request :: Backend -> Result<Device, Error>
+def request :: own Backend -> Result<Device, Error>
 fn request backend = match backend with
     | CpuReference -> Result.Ok (Device { backend: backend })
     | _ -> Result.Error Unavailable
@@ -11,20 +11,20 @@ fn request backend = match backend with
 def backend :: ref Device -> Backend
 fn backend device = device.backend
 
-def init :: ref Device -> i64 -> (i32 -> 'a) -> Buffer<'a>
+def init :: ref Device -> own i64 -> own (i32 -> 'a) -> Buffer<'a>
 fn init _device count initializer =
     assert (count >= 0 && count <= 2147483647)
     Buffer { values: Array.init count (\index -> initializer (index as i32)) }
 
-def map :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> Buffer<'b>
+def map :: Copy<'a> => ref Device -> own ('a -> 'b) -> own Buffer<'a> -> Buffer<'b>
 fn map _device transform buffer =
     let values = buffer.values
     Buffer { values: Array.map transform (ref values) }
 
-def init_relaxed :: ref Device -> i64 -> (i32 -> 'a) -> Buffer<'a>
+def init_relaxed :: ref Device -> own i64 -> own (i32 -> 'a) -> Buffer<'a>
 fn init_relaxed device count initializer = init device count initializer
 
-def map_relaxed :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> Buffer<'b>
+def map_relaxed :: Copy<'a> => ref Device -> own ('a -> 'b) -> own Buffer<'a> -> Buffer<'b>
 fn map_relaxed device transform buffer = map device transform buffer
 
 // The device-aware forms (F09 Phases 2 and 3), private to this module. A program that builds a non-CPU
@@ -36,7 +36,7 @@ fn map_relaxed device transform buffer = map device transform buffer
 // Auto backend needs no open: each call asks the runtime for the CPU reference or Vulkan by its measured
 // cost rule, so it always exists, and the CPU reference serves a call whenever no device is available or
 // worth its cost.
-private def request_on :: Backend -> Result<Device, Error>
+private def request_on :: own Backend -> Result<Device, Error>
 fn request_on backend = match backend with
     | CpuReference -> Result.Ok (Device { backend: backend })
     | WebGpu -> if Gpu.__open 1 (Gpu.__features()) == 0 then Result.Ok (Device { backend: backend }) else Result.Error Unavailable
@@ -45,7 +45,7 @@ fn request_on backend = match backend with
     | _ -> Result.Error Unavailable
 
 // The number of a backend in the runtime: its case index.
-private def backend_code :: Backend -> i32
+private def backend_code :: own Backend -> i32
 fn backend_code backend = match backend with
     | CpuReference -> 0
     | WebGpu -> 1
@@ -54,7 +54,7 @@ fn backend_code backend = match backend with
     | Metal -> 4
     | Auto -> 5
 
-private def init_on :: ref Device -> i64 -> (i32 -> 'a) -> i64 -> Buffer<'a>
+private def init_on :: ref Device -> own i64 -> own (i32 -> 'a) -> own i64 -> Buffer<'a>
 fn init_on device count initializer kernel =
     assert (count >= 0 && count <= 2147483647)
     let backend = Gpu.__select (backend_code device.backend) kernel 1 count
@@ -65,7 +65,7 @@ fn init_on device count initializer kernel =
         Buffer { values: Gpu.__run backend kernel 1 (ref none) count }
     }
 
-private def map_on :: Copy<'a> => ref Device -> ('a -> 'b) -> Buffer<'a> -> i64 -> Buffer<'b>
+private def map_on :: Copy<'a> => ref Device -> own ('a -> 'b) -> own Buffer<'a> -> own i64 -> Buffer<'b>
 fn map_on device transform buffer kernel =
     let values = buffer.values
     let backend = Gpu.__select (backend_code device.backend) kernel 0 values.length
@@ -76,7 +76,7 @@ fn map_on device transform buffer kernel =
 /// The backend that served the most recent `Gpu.init` or `Gpu.map` call (relaxed or not) of a program
 /// that names a non-CPU backend: `CpuReference` before any such call, and the backend that actually ran
 /// the call when the device was a `Gpu.Auto` one. Calls of other threads can come in any order.
-def last_backend :: unit -> Backend
+def last_backend :: own unit -> Backend
 fn last_backend _unit = match Gpu.__last() with
     | 1 -> WebGpu
     | 2 -> Vulkan
@@ -85,5 +85,5 @@ fn last_backend _unit = match Gpu.__last() with
 def from_array :: Copy<'a> => ref Device -> ref ['a] -> Buffer<'a>
 fn from_array _device values = Buffer { values: deref values }
 
-def to_array :: Buffer<'a> -> ['a]
+def to_array :: own Buffer<'a> -> ['a]
 fn to_array buffer = buffer.values

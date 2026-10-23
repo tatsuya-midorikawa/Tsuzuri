@@ -108,14 +108,100 @@ fn own_is_only_a_whole_def_parameter_and_is_not_reserved() {
 }
 
 #[test]
-fn scalar_and_generic_function_conventions_remain_values_in_phase_one() {
+fn explicit_ownership_preserves_generic_and_callable_value_conventions() {
     let source = "record Point { x: i64, y: i64 }\n\
         def get :: Point -> i64 = \\p -> p.x\n\
-        def identity :: 'a -> 'a = \\x -> x\n\
-        def apply :: ('a -> 'b) -> 'a -> 'b = \\f x -> f x\n\
+        def identity :: own 'a -> 'a = \\x -> x\n\
+        def apply :: own ('a -> 'b) -> own 'a -> 'b = \\f x -> f x\n\
         export def answer :: i64 -> i64 = \\n -> apply identity (get (Point { x: n, y: 2 }))\n";
     assert_eq!(ir("2026", source), ir("2027", source));
     check("2027", "def length :: ['a] -> i64 = \\xs -> xs.length\n").unwrap();
+}
+
+#[test]
+fn generic_reads_and_borrowed_callables_preserve_the_callers_values() {
+    let source = "def inspect :: 'a -> i64 = \\value -> 3\n\
+        def twice :: (ref 'a -> i64) -> 'a -> i64 = \\f value -> f value + f value\n\
+        def size :: string -> i64 = \\text -> text.length\n\
+        export def answer :: i64 = { let text = \"hello\"; twice size text + inspect text + text.length }\n";
+    check("2027", source).unwrap();
+    assert_eq!(check("2026", source).unwrap_err().code, "E1003");
+    check(
+        "2027",
+        "def identity :: 'a -> 'a = \\x -> x\n\
+         export def answer :: i64 = identity 42\n",
+    )
+    .unwrap();
+    let error = check(
+        "2027",
+        "def identity :: 'a -> 'a = \\x -> x\n\
+         export def answer :: i64 = (identity \"moved\").length\n",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "E1005");
+    assert!(error.message.contains("Copy<string>"), "{error:?}");
+}
+
+#[test]
+fn map_reads_noncopy_elements_and_keeps_first_class_callback_conventions() {
+    for callback in ["size", "(\\text -> text.length)"] {
+        check(
+            "2027",
+            &format!(
+                "def size :: string -> i64 = \\text -> text.length\n\
+                 export def answer :: i64 = {{ let texts = [\"a\", \"bc\"]; \
+                 let mapper = Array.map; \
+                 Array.sum (mapper {callback} texts) + texts.length }}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    check(
+        "2027",
+        "export def answer :: i64 = Array.sum (Array.map (\\n -> n + n) [1, 2, 3])\n",
+    )
+    .unwrap();
+    check(
+        "2027",
+        "def value :: own i64 -> i64 = \\n -> n + 1\n\
+         export def answer :: i64 = Array.sum (Array.map value [1, 2, 3])\n",
+    )
+    .unwrap();
+    check(
+        "2027",
+        "export def answer :: i64 = Array.sum (Array.mapr (\\n -> *n + 1) [1, 2, 3])\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn read_callbacks_cannot_escape_local_elements() {
+    let source = "def borrow_value :: ref i64 -> ref i64 = \\value -> value\n\
+        def leak :: unit -> [ref i64] = \\() -> { let values = [42]; Array.map borrow_value values }\n\
+        export def answer :: i64 = *(leak ())[0]\n";
+    let error = check("2027", source).unwrap_err();
+    assert!(matches!(error.code, "E1013" | "E1014"), "{error:?}");
+}
+
+#[test]
+fn generic_read_views_accept_borrowed_scalar_and_callable_temporaries() {
+    for value in ["42", "-42", "true", "'x'", "()", "\"hello\""] {
+        check(
+            "2027",
+            &format!(
+                "def inspect :: 'a -> i64 = \\value -> 1\n\
+                 export def answer :: i64 = inspect ({value})\n"
+            ),
+        )
+        .unwrap();
+    }
+    check(
+        "2027",
+        "def twice :: (ref 'a -> i64) -> 'a -> i64 = \\f value -> f value + f value\n\
+         export def answer :: i64 = twice (\\text -> text.length) \"hello\"\n",
+    )
+    .unwrap();
 }
 
 #[test]

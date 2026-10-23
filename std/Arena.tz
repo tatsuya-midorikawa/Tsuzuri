@@ -37,7 +37,7 @@ def empty :: Arena<'a>
 fn empty = Arena { id: Arena.__next_id(), values: Vec.empty(), owners: Vec.empty(), slots: Vec.empty(), free: -1 }
 
 /// An empty arena with room for `count` values; a negative count traps.
-def with_capacity :: i64 -> Arena<'a>
+def with_capacity :: own i64 -> Arena<'a>
 fn with_capacity count = Arena { id: Arena.__next_id(), values: Vec.with_capacity count, owners: Vec.with_capacity count, slots: Vec.with_capacity count, free: -1 }
 
 /// The number of values in the arena.
@@ -45,7 +45,7 @@ def length :: ref Arena<'a> -> i64
 fn length arena = Vec.length (ref arena.values)
 
 /// The dense position of the value that `handle` names, or -1 when the handle is not valid here.
-private def position :: ref Arena<'a> -> Handle<'a> -> i64
+private def position :: ref Arena<'a> -> own Handle<'a> -> i64
 fn position arena handle =
 	if handle.arena == arena.id then
 		match Vec.get handle.index (ref arena.slots) with
@@ -54,24 +54,24 @@ fn position arena handle =
 	else -1
 
 /// Whether `handle` names a value of this arena.
-def contains :: Handle<'a> -> ref Arena<'a> -> bool
+def contains :: own Handle<'a> -> ref Arena<'a> -> bool
 fn contains handle arena = position arena handle >= 0
 
 /// The value that `handle` names, or `None` when the handle is removed or from another arena.
-def get :: Handle<'a> -> ref Arena<'a> -> Maybe<ref 'a>
+def get :: own Handle<'a> -> ref Arena<'a> -> Maybe<ref 'a>
 fn get handle arena =
 	let index = position arena handle
 	if index >= 0 then Maybe.Some (ref arena.values[index]) else Maybe.None
 
 /// The value that `handle` names; traps when the handle is removed or from another arena.
-def at :: Handle<'a> -> ref Arena<'a> -> ref 'a
+def at :: own Handle<'a> -> ref Arena<'a> -> ref 'a
 fn at handle arena =
 	let index = position arena handle
 	assert (index >= 0)
 	ref arena.values[index]
 
 /// Moves `value` into the arena and returns the arena with a handle that names it.
-def insert :: 'a -> Arena<'a> -> (Arena<'a> * Handle<'a>)
+def insert :: own 'a -> own Arena<'a> -> (Arena<'a> * Handle<'a>)
 fn insert value arena =
 	match arena with
 	| Arena { id = id, values = values, owners = owners, slots = slots, free = free } ->
@@ -89,7 +89,7 @@ fn insert value arena =
 /// Moves the value that `handle` names out of the arena. The last value takes its position, and
 /// its slot is reused last-in first-out with the next generation. An invalid handle returns the
 /// arena unchanged with `None`.
-def remove :: Handle<'a> -> Arena<'a> -> (Arena<'a> * Maybe<'a>)
+def remove :: own Handle<'a> -> own Arena<'a> -> (Arena<'a> * Maybe<'a>)
 fn remove handle arena =
 	let target = position (ref arena) handle
 	if target < 0 then (arena, Maybe.None)
@@ -111,7 +111,7 @@ fn remove handle arena =
 
 /// Replaces the value that `handle` names with `change value`, keeping the handle valid; traps
 /// without calling `change` when the handle is removed or from another arena.
-def update :: Handle<'a> -> ('a -> 'a) -> Arena<'a> -> Arena<'a>
+def update :: own Handle<'a> -> own ('a -> 'a) -> own Arena<'a> -> Arena<'a>
 fn update handle change arena =
 	let target = position (ref arena) handle
 	assert (target >= 0)
@@ -122,12 +122,12 @@ fn update handle change arena =
 		| (remaining, Maybe.Some value) -> Arena { id: id, values: Vec.swap target last (Vec.push (change value) remaining), owners: owners, slots: slots, free: free }
 		| (_, Maybe.None) -> unreachable ()
 
-private def handle_at :: ref Arena<'a> -> i64 -> Handle<'a>
+private def handle_at :: ref Arena<'a> -> own i64 -> Handle<'a>
 fn handle_at arena dense =
 	let index = arena.owners[dense]
 	Handle { arena: arena.id, index: index, generation: arena.slots[index].generation }
 
-private def rec iter_from :: ref Arena<'a> -> i64 -> Seq<(Handle<'a> * ref 'a)>
+private def rec iter_from :: ref Arena<'a> -> own i64 -> Seq<(Handle<'a> * ref 'a)>
 fn rec iter_from arena index = Seq.defer (\() ->
 	if index < length arena then (iter_from arena (index + 1), Maybe.Some (handle_at arena index, ref arena.values[index]))
 	else (Seq.empty(), Maybe.None))
