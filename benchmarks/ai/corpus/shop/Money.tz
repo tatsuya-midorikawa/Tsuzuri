@@ -1,0 +1,15 @@
+/// Applies a percentage to an amount in cents, rounding toward zero.
+def percent_of :: i64 -> i64 -> i64 = \cents percent -> cents * percent / 100
+
+def with_tax :: i64 -> i64 -> i64 = \cents percent -> cents + percent_of cents percent
+
+def with_discount :: i64 -> i64 -> i64 = \cents percent -> cents - percent_of cents percent
+
+def pad2 :: i64 -> string = \n -> if n < 10 then $"0{n}" else to_string n
+
+def show :: i64 -> string = \cents -> $"{cents / 100}.{pad2 (cents % 100)}"
+
+test "percent_of rounds toward zero" = assert (percent_of 999 10 == 99)
+test "with_tax adds the percentage" = assert (with_tax 1000 8 == 1080)
+test "with_discount subtracts the percentage" = assert (with_discount 1000 25 == 750)
+test "show pads the cents" = assert (show 1205 == "12.05")

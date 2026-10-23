@@ -1,0 +1,31 @@
+record Span { start: i64, stop: i64 }
+
+def length_of :: Span -> i64 = \span -> span.stop - span.start
+
+def overlaps :: Span -> Span -> bool = \a b -> a.start < b.stop && b.start < a.stop
+
+def merge :: Span -> Span -> Span = \a b ->
+    Span { start: Int.min a.start b.start, stop: Int.max a.stop b.stop }
+
+def contains :: Span -> i64 -> bool = \span point -> point >= span.start && point < span.stop
+
+def bounds :: (i64 * i64) -> Span = \pair -> Span { start: pair.0, stop: pair.1 }
+
+def widest :: ref [Span] -> i64 = \spans ->
+    let mut best = 0
+    for i in 0 .. spans.length - 1 do
+        if length_of spans[i] > best then best = length_of spans[i]
+    best
+
+def count_covering :: ref [Span] -> i64 -> i64 = \spans point ->
+    let mut count = 0
+    for i in 0 .. spans.length - 1 do
+        if contains spans[i] point then count = count + 1
+    count
+
+def main :: unit -> i32 = \() ->
+    let a = bounds (2, 9)
+    let b = Span { start: 5, stop: 12 }
+    let spans = [a, b, merge a b]
+    do! IO.writeln $"{widest spans} {count_covering spans 6} {overlaps a b}"
+    0

@@ -7,7 +7,7 @@
 | 規模 | 全体 L 寄りの M（D-50 の表は M。Phase 1 M、Phase 2 S、Phase 3 M。D-50 の M は Phase 1〜2 の規模）。Phase ごとに別の PR にする |
 | 依存 | なし（Phase 1・2 は HEAD の `tsuzuri check`・`tsuzuri test --list` を呼ぶだけ）。**弱い依存**（あれば測る行が増え、なければその行だけを出さない）: Phase 2 の `diag-v2` は [G22](G22-diagnostic-v2.md) の関連位置、`diag-fix` は [G24](G24-tsuzuri-fix.md) Phase 1。Phase 3 の静的サイズは [G21](G21-ai-guide-pack.md)・[G27](G27-build-time-kb.md)・G28、`kb` 方式は G27 Phase 2 と G28 Phase 1、MCP の行は [G29](G29-mcp-server.md) Phase 1 |
 | 後続 | G21・G22・G24・G27・G28・G29（各チケットの「AI の作業コストが下がる」という主張を、`docs/ai-cost.md` の数値で裏づける）。G32 の `brief` を入力量に使う案は取り込まない（「対象外」） |
-| 状態 | todo |
+| 状態 | Phase 1〜3 実装済み（CI・レビューの結果は PR に記録） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` の 41 行の削除だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
 | 改善する劣位 | 第3期の AI 向けの改善（ガイド G21・診断 v2 G22・`fix` G24・KB G27/G28・MCP G29）は、どれも「AI が読む量と往復を減らす」ことを理由に作る。だが HEAD には、AI の作業コストを測る仕組みも基準値もない（`benchmarks/ai` はなく、`docs/benchmarks.md` は実行速度の記録で入力量を測らない）。基準値がなければ、改善か退行かを言えない。D-50 の調査結論 (1)（事実を診断・ツールに出さない）と (4)（文書が大きすぎる）の効果を、決定的な量で測れるようにする |
@@ -571,5 +571,16 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 - **D15: 外部エージェントの結果は `tz-ai-external/1` の JSON Lines を人手で置く。`variant` は自由な条件名。** 理由: 実測が要る効果（ガイドで最初に書けたか）を同じ表で比べる。却下: 自動収集（鍵とネットワークが要る）。
 
 ## 付録
+
+## 実装と検証（2026-10-23）
+
+- 人間の全 Phase 承認に従い、Phase 1〜3 を同じ隔離 worktree・ブランチで実装しました。Node 20.19.6、外部パッケージ・LLM・ネットワーク呼び出しなしです。`src/`・`std/`・既存テスト・既存レポート helper は変更していません。
+- 着手前に README へ D-59 と旧コーパスの照合をコミットしました。shop・diag は付録 C と byte 単位で同一、shop は 5183 字・16 テストです。D-02 の `get` → `try_item` と B-04 の現行 15 呼び出し元だけを、署名・独立した awk で確認してタスクに反映しました。ほかの B/F 11 件は元の期待値のままです。
+- 手順 3 のテストを先に実行し、`ERR_MODULE_NOT_FOUND` で失敗することを確認してから計測コードを実装しました。`node scripts/slot.mjs -- node tests/ai_cost.mjs <既存 dev compiler>` は **40 passed、0 failed、5 skipped**（実コンパイラにない G22/G24/G21・KB/MCP）。未実装入口の成功経路もローカル子プロセスの fixture で検査しました。fixture の値を実測には含めません。
+- 独立した付録 D の shop golden 27 組が全一致し、`sh benchmarks/ai/golden.sh` の grep/sort/wc による 9 件の検算も一致しました。コンパイラの `check`・`test --list`、診断 7 件のコード・行・正誤パッチ、修復の calls/rounds を検査しました。
+- `run` は基準コンパイラで 104 行（Phase 1 の 97 行＋C の 7 行）です。`verify --strict` は **37 tasks、0 failures、0 drift**。異なる出力先への 2 回の実行で results/static/meta の byte 一致と work の消去を検査しました。
+- Phase 3 の外部 JSONL の検証・表、10 種の静的成果物の計測・サイズ上限、KB の事前構築・ID 解決・1/2 往復、MCP initialize/tools/list と終了処理を実装しました。G21/G27/G28/G29 自体は実装していません。不在の能力は測定値を捏造せず、明示した不在戦略はエラーです。
+- 文書: README、docs/ai-cost.md、docs/architecture.md、docs/benchmarks.md、付録の現行 API 追補。targets.yml の既存ベンチマーク検証に 1 行を追加しました。言語利用者の挙動は変わらないため、言語リファレンス・docs/language.md の更新と Rust の再ビルドは不要です。main の基準 CI `39954858404`（`41f80bc7`）は成功でした。
+- 主なファイル: benchmarks/ai/run.mjs、lib/{measure,corpus,tasks,derive,strategies,report,external,static,kb,mcp}.mjs、tasks/*.json（6）、corpus/shop/*.tz（6）・corpus/diag/c0*/Main.tz（7）、golden.sh、tests/ai_cost.mjs と上記文書です。
 
 [G31-appendix.md](G31-appendix.md): A タスクの一覧（37 件）、B タスクの JSON、C コーパスの全文、D 検証の記録（golden・型ごとの中央値・診断の実出力）、E 出力と検査の書式、F 後続 Phase の戦略、G テスト計画の表、H `docs/ai-cost.md` の骨格。

@@ -282,6 +282,7 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then /usr/bin/time --version; fi
           node tests/benchmark_report.mjs
           node tests/benchmark_apps.mjs
+          node tests/ai_cost.mjs target/release/tsuzuri
           node benchmarks/run-control.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/run-cpp.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core
           node benchmarks/run-computations.mjs target/release/tsuzuri --quick --metrics target/perf/ci-core

@@ -1,0 +1,22 @@
+record Level { id: i64, count: i64 }
+
+def available :: ref [Level] -> i64 -> i64 = \levels id ->
+    let mut total = 0
+    for level in levels do
+        if level.id == id then total = total + level.count
+    total
+
+def can_fill :: ref [Level] -> i64 -> i64 -> bool = \levels id qty -> available levels id >= qty
+
+def take :: [Level] -> i64 -> i64 -> [Level] = \levels id qty ->
+    Array.map (\level -> if level.id == id then Level { id: level.id, count: level.count - qty } else level) levels
+
+test "available sums the levels of one id" =
+    let levels = [Level { id: 1, count: 4 }, Level { id: 2, count: 1 }, Level { id: 1, count: 3 }]
+    assert (available levels 1 == 7)
+test "can_fill compares with the available count" =
+    let levels = [Level { id: 1, count: 4 }]
+    assert (can_fill levels 1 4 && !(can_fill levels 1 5))
+test "take reduces the count" =
+    let levels = take [Level { id: 1, count: 4 }] 1 3
+    assert (available levels 1 == 1)

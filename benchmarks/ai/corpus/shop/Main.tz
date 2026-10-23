@@ -1,0 +1,8 @@
+def main :: unit -> i32 = \() ->
+    let items = [Catalog.make 1 "pen" 200, Catalog.make 2 "ink" 500]
+    let lines = [Orders.Line { id: 1, qty: 3 }, Orders.Line { id: 2, qty: 1 }]
+    let levels = [Stock.Level { id: 1, count: 10 }, Stock.Level { id: 2, count: 0 }]
+    do! IO.writeln (Report.summary items lines)
+    do! IO.writeln (Report.discounted items lines 10)
+    do! IO.writeln (if Orders.fillable levels lines then "in stock" else "backorder")
+    0

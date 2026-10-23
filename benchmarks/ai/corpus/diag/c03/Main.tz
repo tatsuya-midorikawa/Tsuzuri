@@ -1,0 +1,40 @@
+record Row { label: string, value: i64 }
+
+def make_row :: string -> i64 -> Row = \label value -> Row { label: label, value: value }
+
+def pad_left :: string -> i64 -> string = \text width ->
+    let mut out = text
+    while out.length < width do
+        out = " " + out
+    out
+
+def format_row :: string -> i64 -> string = \label value ->
+    $"{pad_left label 8}: {value}"
+
+def render :: ref Row -> string = \row -> format_row (clone_string row.label) row.value
+
+def double :: i64 -> i64 = \n -> n * 2
+
+def triple :: i64 -> i64 = \n -> n * 3
+
+def scale_all :: [i64] -> i64 -> [i64] = \values factor ->
+    Array.map (\v -> v * factor) values
+
+def checksum :: ref [i64] -> i64 = \values ->
+    let mut acc = 0
+    for i in 0 .. values.length - 1 do
+        acc = (acc * 31 + values[i]) % 1000003
+    acc
+
+def report :: ref [Row] -> string = \rows ->
+    let mut lines = ""
+    for i in 0 .. rows.length - 1 do
+        lines = lines + render (ref rows[i]) + "\n"
+    lines
+
+def main :: unit -> i32 = \() ->
+    let rows = [make_row "alpha" 3, make_row "beta" 14]
+    do! IO.write (report rows)
+    do! IO.writeln (format_row (double 21) "answer")
+    do! IO.writeln (checksum (scale_all [1, 2, 3] (triple 2)))
+    0
