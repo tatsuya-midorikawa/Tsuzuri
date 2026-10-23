@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Agent, invoke } from "./measure.mjs";
 import { copyProject } from "./corpus.mjs";
 
@@ -16,7 +16,7 @@ export function prepareKb(ctx, task) {
   ctx.kbProjects ??= new Map();
   const project = kbProject(task);
   if (!ctx.kbProjects.has(project)) {
-    const cwd = copyProject(ctx.tree.physical(project), join(ctx.work, "kb", `${ctx.kbProjects.size}`));
+    const cwd = copyProject(ctx.tree.physical(project), join(ctx.work, "kb", `${ctx.kbProjects.size}`, basename(project)));
     invoke(ctx.compiler, ["kb", "build"], cwd);
     ctx.kbProjects.set(project, cwd);
   }

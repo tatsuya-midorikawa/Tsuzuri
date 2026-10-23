@@ -55,7 +55,7 @@ function validateTask(task, type, ids) {
       logicalPath(row[0]);
     }
   };
-  if (task.needs) needs(task.needs);
+  if ("needs" in task) needs(task.needs);
   if (task.docs !== undefined) {
     if (!object(task.docs) || Object.keys(task.docs).join() !== "needs") fail("invalid docs");
     needs(task.docs.needs);

@@ -26,7 +26,7 @@ export async function measureStatic(ctx) {
   for (const artifact of STATIC_ARTIFACTS) {
     let text;
     if (artifact.artifact === "mcp-tools-list") {
-      const cwd = kbCwd ?? copyProject(ctx.tree.physical("benchmarks/ai/corpus/shop"), join(ctx.work, "mcp"));
+      const cwd = kbCwd ?? copyProject(ctx.tree.physical("benchmarks/ai/corpus/shop"), join(ctx.work, "mcp", "shop"));
       const measured = await mcpToolsList(ctx.compiler, cwd);
       if (measured) rows.push({ schema: "tz-ai-static/1", artifact: artifact.artifact,
         chars: measured.chars, est_tokens: measured.est_tokens, limit: null });

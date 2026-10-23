@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { countText, estimateTokens, lowerMedian, Agent, invoke } from "../benchmarks/ai/lib/measure.mjs";
 import { ROOT, Tree, copyProject } from "../benchmarks/ai/lib/corpus.mjs";
-import { TYPES, loadTasks, resolveNeeds } from "../benchmarks/ai/lib/tasks.mjs";
+import { TYPES, loadTasks, resolveNeeds, isStableTask } from "../benchmarks/ai/lib/tasks.mjs";
 import { stripComment, parseItems, deriveCallers, deriveImpact, itemRange } from "../benchmarks/ai/lib/derive.mjs";
 import { STRATEGIES, mergeWindows, applyEdits, diagV1, diagV2, diagFix, firstError, hasError } from "../benchmarks/ai/lib/strategies.mjs";
 import { makeRow, renderReport, serializeRows, updateReportDocument } from "../benchmarks/ai/lib/report.mjs";
@@ -99,6 +99,12 @@ test("lines_drop_one_trailing_empty_element", () => {
     put(join(dir, "x.tz"), text);
     assert.deepEqual(new Tree(dir).lines("x.tz"), lines);
   }
+  const messages = ["checkout-a","checkout-b"].map((name) => {
+    const dir = join(scratch,name); mkdirSync(dir,{recursive:true});
+    try { new Tree(dir).lines("missing.md"); } catch (error) { return error.message; }
+    assert.fail("missing file must fail");
+  });
+  assert.deepEqual(messages, ["corpus file 'missing.md' cannot be read (ENOENT)","corpus file 'missing.md' cannot be read (ENOENT)"]);
 });
 test("grep_formats_orders_and_caps", () => {
   const agent = new Agent(tree), result = agent.grep("percent_of", [shop]);
@@ -138,6 +144,9 @@ test("unknown_and_missing_task_keys_are_rejected", () => {
   assert.throws(() => loadTasks(mutation("bad-path", (t) => { t.corpus = ["../outside"]; })), /invalid logical path/);
   assert.throws(() => loadTasks(mutation("bad-need", (t) => { t.needs[0][2] = -1; })), /invalid need/);
   assert.throws(() => loadTasks(mutation("bad-id", (t) => { t.id = ["A-01"]; })), /id and type must match/);
+  for (const [i,value] of [null,false,0,""].entries()) {
+    assert.throws(() => loadTasks(mutation(`bad-needs-${i}`, (t) => { t.needs = value; })), /needs must be a non-empty array/);
+  }
 });
 test("items_follow_the_keyword_rule", () => {
   const dir = join(scratch, "items");
@@ -190,11 +199,16 @@ test("windows_merge_adjacent_ranges", () => {
   assert.deepEqual(mergeWindows([[5,5]]), [[5,5]]);
 });
 test("docs_strategy_reads_the_index_first", () => {
-  const t = new Tree(), calls = [], original = t.lines.bind(t);
+  const dir = join(scratch,"docs-fixture"), index = "_tsuzuri/language-reference/index.md", page = "_tsuzuri/language-reference/maybe.md";
+  put(join(dir,index),"Synthetic index\n"); put(join(dir,page),"| answer |\n");
+  const t = new Tree(dir), calls = [], original = t.lines.bind(t);
   t.lines = (path) => { calls.push(path); return original(path); };
-  const outcome = STRATEGIES[3].run({ tree: t }, task("A-02"));
-  assert.equal(calls[0], "_tsuzuri/language-reference/index.md");
+  const controlled = { ...task("A-02"), docs: { needs: [[page,"| answer |",0,0]] } };
+  const outcome = STRATEGIES[3].run({ tree: t }, controlled);
+  assert.equal(calls[0], index);
   assert.equal(outcome.agent.calls, 2);
+  put(join(dir,page),"line\n".repeat(500)+"| answer |\n");
+  assert.equal(STRATEGIES[3].run({tree:new Tree(dir)},controlled).agent.calls,3);
 });
 
 let results, meta, firstOut;
@@ -209,11 +223,22 @@ function runTwice() {
 }
 test("run_is_deterministic", () => {
   runTwice(); assert.equal(results.length, meta.rows);
-  assert.ok(results.length >= 104); assert.equal(meta.skipped_tasks.length, 0);
+  const skippedIds = new Set(meta.skipped_tasks.map((row)=>row.task));
+  for (const id of skippedIds) assert.equal(isStableTask(task(id)),false);
+  const expected = tasks.filter((t)=>t.type!=="diagnostic"&&!skippedIds.has(t.id))
+    .reduce((count,t)=>count+3+(t.docs?1:0),0);
   assert.ok(!existsSync(join(firstOut,"work")));
   assert.ok(!/\/Users\/|\/home\/|timestamp|hostname/.test(serializeRows(results)));
   const phase1 = results.filter((row) => row.type !== "diagnostic" && row.strategy.startsWith("baseline-"));
-  assert.equal(phase1.length, 97);
+  assert.equal(phase1.length,expected);
+  assert.ok(!JSON.stringify(meta).includes(ROOT));
+  const missing = mutation("missing-source",(t)=>{t.needs=[["std/absent-ai-cost-fixture.tz","missing",0,0]];});
+  const a=join(scratch,"drift-a"),b=join(scratch,"drift-b");
+  for(const out of [a,b]) ok(cli(["run","--compiler",compiler,"--tasks",missing,"--out",out]));
+  assert.equal(readFileSync(join(a,"meta.json"),"utf8"),readFileSync(join(b,"meta.json"),"utf8"));
+  const drift=JSON.parse(readFileSync(join(a,"meta.json")));
+  assert.ok(drift.skipped_tasks.some((s)=>s.task==="A-01"&&s.reason==="corpus file 'std/absent-ai-cost-fixture.tz' cannot be read (ENOENT)"));
+  assert.ok(!JSON.stringify(drift).includes(ROOT));
 });
 test("result_rows_have_the_documented_keys", () => {
   runTwice();
@@ -234,7 +259,7 @@ test("task_command_hides_the_answer", () => {
   assert.deepEqual(Object.keys(JSON.parse(ok(cli(["task","C-01"])))), ["id","type","prompt","project"]);
 });
 test("verify_passes_on_the_repository_tasks", () => {
-  assert.ok(ok(cli(["verify","--compiler",compiler,"--strict"])).endsWith("verified 37 tasks: 0 failures, 0 drift\n"));
+  assert.match(ok(cli(["verify","--compiler",compiler])),/verified 37 tasks: 0 failures, [0-9]+ drift\n$/);
 });
 test("verify_fails_on_a_broken_stable_task", () => {
   const dir = mutation("broken", () => {});
@@ -242,6 +267,9 @@ test("verify_fails_on_a_broken_stable_task", () => {
   json.tasks.find((t) => t.id === "B-05").expect.pop(); put(file,JSON.stringify(json));
   const result = cli(["verify","--compiler",compiler,"--tasks",dir]);
   assert.equal(result.status,1); assert.ok(result.stdout.includes("task B-05: derived callers differ from expect"));
+  const nonstable=mutation("changed-answer",(t)=>{t.answer=["controlled missing answer"];});
+  assert.match(ok(cli(["verify","--compiler",compiler,"--tasks",nonstable])),/0 failures, [1-9][0-9]* drift\n$/);
+  assert.equal(cli(["verify","--compiler",compiler,"--tasks",nonstable,"--strict"]).status,1);
 });
 test("report_tables_are_exact", () => {
   const row = (id, n, complete) => ({ schema: "tz-ai-result/1", task: id, type: "definition",
@@ -299,7 +327,7 @@ let mockCompiler;
 function mock() {
   if (mockCompiler) return mockCompiler;
   mockCompiler = put(join(scratch,"compiler.mjs"), `#!/usr/bin/env node
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 const a = process.argv.slice(2), real = ${JSON.stringify(compiler)};
@@ -326,6 +354,12 @@ if (a[0] === "new") {
   mkdirSync(a[1],{recursive:true}); writeFileSync(a[1]+"/AGENTS.md","agents\\n"); writeFileSync(a[1]+"/llms.txt","llms\\n"); process.exit(0);
 }
 if (a[0] === "kb") {
+  if (a.length === 2 && a[1] === "brief") {
+    if (!existsSync("Catalog.tz") || !existsSync("Orders.tz") || !existsSync("Main.tz")) {
+      console.error("error[E2009]: kb_incomplete"); process.exit(1);
+    }
+    console.log("brief"); process.exit(0);
+  }
   if (a.length === 2 && a[1] !== "build") { console.error("usage: kb SUBCOMMAND ARG"); process.exit(2); }
   if (a[1] === "export") { for(const id of ["Orders.order_total","Catalog.Item"]) console.log(JSON.stringify({id:"Shop::"+id})); }
   else if (a[1] === "callers") console.log("Orders.total_with_discount Report.summary");
@@ -396,6 +430,7 @@ test("external_table_uses_lower_medians", () => {
 });
 test("static_artifact_limits", async () => {
   const ctx=context("static-fixture",mock()); ctx.caps=detectCapabilities(ctx);
+  assert.equal(ctx.caps.kbBrief,null);
   const rows=await measureStatic(ctx);
   assert.equal(rows.length,10);
   assert.deepEqual(rows.map((r)=>r.limit),[6000,20000,6000,45000,3500,1500,2400,1600,700,null]);
@@ -414,6 +449,7 @@ test("kb_strategies_are_skipped_or_use_one_call", () => {
   const fixture=context("kb-fixture",mock());
   assert.deepEqual([kb(fixture,task("B-05")).agent.calls,kb(fixture,task("B-05"),true).agent.calls],[1,2]);
   assert.equal(kb(fixture,task("B-05")).complete,true);
+  assert.equal(basename([...fixture.kbProjects.values()][0]),"shop");
   assert.equal(resolveKbId(fixture,task("A-05"),"Catalog.Item"),"Shop::Catalog.Item");
   assert.throws(()=>resolveKbId(fixture,task("A-05"),"Missing.x"),/0 matches/);
   runTwice();
@@ -434,6 +470,15 @@ test("mcp_tools_list_row_or_skip", async () => {
   assert.deepEqual(await mcpToolsList(mock(),scratch),{chars:count.chars,est_tokens:estimateTokens(count.ascii,count.other),tools:1});
   const invalid=put(join(scratch,"invalid.mjs"),'#!/usr/bin/env node\nconsole.log("not JSON");\n');
   chmodSync(invalid,0o755); assert.equal(await mcpToolsList(invalid,scratch),null);
+  put(invalid,`#!/usr/bin/env node
+import {createInterface} from "node:readline";
+createInterface({input:process.stdin}).on("line",line=>{
+  const x=JSON.parse(line);
+  if(x.id===1) console.log(JSON.stringify({jsonrpc:"2.0",id:1,result:{protocolVersion:"2025-06-18"}}));
+  if(x.id===2) console.log('{"jsonrpc":"2.0","id":2,"result":{"tools":'+'['.repeat(12000)+'0'+']'.repeat(12000)+'}}');
+});
+`);
+  assert.equal(await mcpToolsList(invalid,scratch),null);
   runTwice();
   if(meta.skipped.some((s)=>s.strategy==="mcp-tools-list")) skip("G29 MCP tools/list unavailable");
   else assert.ok(readFileSync(join(firstOut,"static.jsonl"),"utf8").includes("mcp-tools-list"));

@@ -49,7 +49,12 @@ export class Tree {
   }
   lines(path) {
     if (!this.cache.has(path)) {
-      const lines = readFileSync(this.physical(path), "utf8").split("\n");
+      let lines;
+      try { lines = readFileSync(this.physical(path), "utf8").split("\n"); }
+      catch (error) {
+        if (!error.code) throw error;
+        throw new Error(`corpus file '${path}' cannot be read (${error.code})`);
+      }
       if (lines.at(-1) === "") lines.pop();
       this.cache.set(path, lines);
     }

@@ -53,16 +53,17 @@ export function probe(compiler, args, cwd) {
 export function detectCapabilities(ctx) {
   const project = copyProject(ctx.tree.physical("benchmarks/ai/corpus/diag/c01"), join(ctx.work, "probe"));
   const first = firstError(new Agent(new Tree(project), ctx.compiler).check(project));
+  const probeCwd = copyProject(ctx.tree.physical("benchmarks/ai/corpus/shop"), join(ctx.work, "capabilities", "shop"));
   const caps = {
     diagV2: first.related ? null : "check --json has no related spans",
-    diagFix: probe(ctx.compiler, ["fix"], ctx.work) ? null : "tsuzuri fix is not available",
+    diagFix: probe(ctx.compiler, ["fix"], probeCwd) ? null : "tsuzuri fix is not available",
     kb: {},
-    kbBrief: probe(ctx.compiler, ["kb", "brief"], ctx.work) ? null : "tsuzuri kb brief is not available",
+    kbBrief: probe(ctx.compiler, ["kb", "brief"], probeCwd) ? null : "tsuzuri kb brief is not available",
   };
   const samples = { definition: { kb: { id: "" } }, callers: { symbol: "" }, "type-search": { find: "" }, impact: { change: "" } };
   for (const type of Object.keys(KB_COMMANDS)) {
     const args = KB_COMMANDS[type](samples[type], (id) => id).slice(0, 2);
-    caps.kb[type] = probe(ctx.compiler, args, ctx.work) ? null : `tsuzuri ${args.join(" ")} is not available (${type})`;
+    caps.kb[type] = probe(ctx.compiler, args, probeCwd) ? null : `tsuzuri ${args.join(" ")} is not available (${type})`;
   }
   return caps;
 }
@@ -156,7 +157,7 @@ async function run(options, tasks) {
         if (task.docs) resolveNeeds(task.docs.needs, ctx.tree);
       } catch (error) {
         if (isStableTask(task)) throw error;
-        skippedTasks.push({ task: task.id, reason: error.message });
+        skippedTasks.push({ task: task.id, reason: error.message.replaceAll(ctx.tree.base + "/", "") });
         continue;
       }
       for (const strategy of available) if (strategy.types.includes(task.type) && (strategy.applies?.(task, ctx) ?? true)) {

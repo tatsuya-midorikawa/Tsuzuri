@@ -50,8 +50,10 @@ export function mcpToolsList(compiler, cwd) {
           deadline();
         } else {
           if (!Array.isArray(response.result.tools)) return finish(null);
-          const count = countText(JSON.stringify(response.result.tools));
-          finish({ chars: count.chars, est_tokens: estimateTokens(count.ascii, count.other), tools: response.result.tools.length });
+          try {
+            const count = countText(JSON.stringify(response.result.tools));
+            finish({ chars: count.chars, est_tokens: estimateTokens(count.ascii, count.other), tools: response.result.tools.length });
+          } catch { finish(null); }
         }
       }
     });
