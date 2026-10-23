@@ -4775,6 +4775,27 @@ fn module_stem(module: &str) -> &str {
     module.rsplit('.').next().unwrap_or(module)
 }
 
+/// The legacy, default-read and explicitly owning entry points across editions.
+pub(crate) const BORROWING_APIS: &[(&str, &str, &str)] = &[
+    ("Array.map", "Array.mapr", "Array.map_owned"),
+    ("Array.mapi", "Array.mapir", "Array.mapi_owned"),
+    ("Array.iter", "Array.iterr", "Array.iter_owned"),
+    ("Array.iteri", "Array.iterir", "Array.iteri_owned"),
+    ("Array.fold", "Array.foldr", "Array.fold_owned"),
+    (
+        "Array.fold_back",
+        "Array.foldr_back",
+        "Array.fold_back_owned",
+    ),
+    ("List.map", "List.mapr", "List.map_owned"),
+    ("List.mapi", "List.mapir", "List.mapi_owned"),
+    ("List.iter", "List.iterr", "List.iter_owned"),
+    ("List.iteri", "List.iterir", "List.iteri_owned"),
+    ("List.fold", "List.foldr", "List.fold_owned"),
+    ("List.fold_back", "List.foldr_back", "List.fold_back_owned"),
+    ("Vec.push", "Vec.push_mut", "Vec.push_owned"),
+];
+
 /// The builtin module function that `path` names, as `Task.run` or, with the
 /// std namespace, `std::Task.run`.
 fn qualified_builtin(path: &str) -> Option<Builtin> {
@@ -4783,9 +4804,10 @@ fn qualified_builtin(path: &str) -> Option<Builtin> {
         .and_then(|rest| rest.strip_prefix("::"))
         .filter(|member| member.contains('.'))
         .unwrap_or(path);
-    if path == "Vec.push_owned" {
-        return Some(Builtin::VecPush);
-    }
+    let path = BORROWING_APIS
+        .iter()
+        .find(|(_, _, owned)| *owned == path)
+        .map_or(path, |(value, _, _)| *value);
     Builtin::ALL
         .iter()
         .copied()
@@ -12225,43 +12247,43 @@ impl<'a> Checker<'a> {
             _ => expression.span,
         };
         self.names.check_path(self.module, &path, span)?;
-        if let Some(canonical) = self.names.canonical(self.module, &path)
-            && let Some(id) = self.names.function(self.module, &canonical, span)?
-        {
-            let read_name = if self.read_conventions
-                && self.names.modules.get("Array") == Some(&ModuleOrigin::Std)
-            {
-                match canonical.as_ref() {
-                    "Array.map" => Some("Array.mapr"),
-                    "Array.mapi" => Some("Array.mapir"),
-                    "Array.iter" => Some("Array.iterr"),
-                    "Array.iteri" => Some("Array.iterir"),
-                    "Array.fold" => Some("Array.foldr"),
-                    "Array.fold_back" => Some("Array.foldr_back"),
-                    "List.mapi" => Some("List.mapir"),
-                    "List.iter" => Some("List.iterr"),
-                    "List.iteri" => Some("List.iterir"),
-                    "List.fold" => Some("List.foldr"),
-                    _ => None,
+        if let Some(canonical) = self.names.canonical(self.module, &path) {
+            let standard = canonical.split_once('.').is_some_and(|(module, _)| {
+                self.names.modules.get(module) == Some(&ModuleOrigin::Std)
+            });
+            let owning = standard
+                .then(|| {
+                    BORROWING_APIS
+                        .iter()
+                        .find(|(_, _, owned)| *owned == canonical)
+                })
+                .flatten();
+            let function_name = owning.map_or(canonical.as_ref(), |(value, _, _)| *value);
+            if let Some(id) = self.names.function(self.module, function_name, span)? {
+                let read_name = (self.read_conventions && standard && owning.is_none())
+                    .then(|| {
+                        BORROWING_APIS
+                            .iter()
+                            .find(|(value, _, _)| *value == canonical)
+                            .map(|(_, read, _)| *read)
+                    })
+                    .flatten();
+                if let Some(read_name) = read_name {
+                    let read =
+                        if let Some(read_id) = self.names.function(self.module, read_name, span)? {
+                            Some(self.function(read_id))
+                        } else {
+                            qualified_builtin(read_name)
+                                .map(|builtin| self.builtin(builtin, expression.span))
+                                .transpose()?
+                        };
+                    if let Some((kind, mut ty)) = read {
+                        Self::read_callback_type(&mut ty);
+                        return Ok(Some((kind, ty)));
+                    }
                 }
-            } else {
-                None
-            };
-            if let Some(read_name) = read_name {
-                let read =
-                    if let Some(read_id) = self.names.function(self.module, read_name, span)? {
-                        Some(self.function(read_id))
-                    } else {
-                        qualified_builtin(read_name)
-                            .map(|builtin| self.builtin(builtin, expression.span))
-                            .transpose()?
-                    };
-                if let Some((kind, mut ty)) = read {
-                    Self::read_callback_type(&mut ty);
-                    return Ok(Some((kind, ty)));
-                }
+                return Ok(Some(self.function(id)));
             }
-            return Ok(Some(self.function(id)));
         }
         qualified_builtin(&path)
             .map(|builtin| {
@@ -12269,19 +12291,23 @@ impl<'a> Checker<'a> {
                     self.name_uses
                         .push((expression.span, NameTarget::Builtin(builtin)));
                 }
-                let borrowed = self.read_conventions && builtin == Builtin::ListMap;
-                let owned_push = path.ends_with("Vec.push_owned");
-                let builtin = if self.read_conventions && builtin == Builtin::VecPush && !owned_push
-                {
-                    Builtin::VecPushMut
-                } else if borrowed {
-                    match builtin {
-                        Builtin::ListMap => Builtin::ListMapRef,
-                        _ => unreachable!(),
-                    }
-                } else {
-                    builtin
-                };
+                let spelling = path
+                    .strip_prefix(crate::stdlib::NAMESPACE)
+                    .and_then(|rest| rest.strip_prefix("::"))
+                    .unwrap_or(&path);
+                let owning = BORROWING_APIS
+                    .iter()
+                    .any(|(_, _, owned)| *owned == spelling);
+                let read = (self.read_conventions && !owning)
+                    .then(|| {
+                        BORROWING_APIS
+                            .iter()
+                            .find(|(value, _, _)| *value == builtin.name())
+                            .and_then(|(_, read, _)| qualified_builtin(read))
+                    })
+                    .flatten();
+                let builtin = read.unwrap_or(builtin);
+                let borrowed = read.is_some() && builtin != Builtin::VecPushMut;
                 let (kind, mut ty) = self.builtin(builtin, expression.span)?;
                 if borrowed {
                     Self::read_callback_type(&mut ty);

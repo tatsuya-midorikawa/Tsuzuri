@@ -56,6 +56,78 @@ fn preserves_consuming_vector_push_in_generic_functions_and_function_values() {
 }
 
 #[test]
+fn preserves_all_callback_entry_points_and_their_exact_ir() {
+    for (name, body) in [
+        ("Array.map", "(callback (\\x -> x + 1) [1, 2]).length"),
+        ("Array.mapi", "(callback (\\i x -> i + x) [1, 2]).length"),
+        ("Array.iter", "callback (\\x -> ()) [1, 2]; 0"),
+        ("Array.iteri", "callback (\\i x -> ()) [1, 2]; 0"),
+        ("Array.fold", "callback (\\sum x -> sum + x) 0 [1, 2]"),
+        ("Array.fold_back", "callback (\\x sum -> sum + x) 0 [1, 2]"),
+        ("std::Array.map", "(callback (\\x -> x + 1) [1, 2]).length"),
+        ("List.map", "(callback (\\x -> x + 1) [|1, 2|]).length"),
+        ("List.mapi", "(callback (\\i x -> i + x) [|1, 2|]).length"),
+        ("List.iter", "callback (\\x -> ()) [|1, 2|]; 0"),
+        ("List.iteri", "callback (\\i x -> ()) [|1, 2|]; 0"),
+        ("List.fold", "callback (\\sum x -> sum + x) 0 [|1, 2|]"),
+        ("List.fold_back", "callback (\\x sum -> sum + x) 0 [|1, 2|]"),
+        ("std::List.map", "(callback (\\x -> x + 1) [|1, 2|]).length"),
+    ] {
+        let values = if name.contains("List.") {
+            "[|1, 2|]"
+        } else {
+            "[1, 2]"
+        };
+        let body = body.replace(values, "values");
+        let source = format!(
+            "export def answer :: i64 = {{ let values = {values}; \
+            let callback = {name}; {body} }}\n"
+        );
+        let root = Root::new(&[("Tsuzuri.toml", MANIFEST), ("Main.tz", &source)]);
+        let emit = || {
+            let module = Project::load(&root.0).unwrap().analyze().unwrap();
+            llvm::emit(&module, Entry::Library).unwrap()
+        };
+        let before = emit();
+        let migration = prepare(&root.0, Edition::E2027, None).unwrap();
+        apply(&migration).unwrap();
+        assert!(
+            root.read("Main.tz").contains(&format!("{name}_owned")),
+            "{name}"
+        );
+        assert_eq!(emit(), before, "{name}");
+    }
+}
+
+#[test]
+fn preserves_comments_in_qualified_builtin_paths_and_does_not_rewrite_user_functions() {
+    let source = "export def answer :: i64 = { \
+        let values = std::Vec /* keep */ . push 1 (Vec.empty()); values[0] }\n";
+    let root = Root::new(&[("Tsuzuri.toml", MANIFEST), ("Main.tz", source)]);
+    let migration = prepare(&root.0, Edition::E2027, None).unwrap();
+    apply(&migration).unwrap();
+    assert!(
+        root.read("Main.tz")
+            .contains("std::Vec /* keep */ . push_owned")
+    );
+    Project::load(&root.0).unwrap().analyze().unwrap();
+
+    let manifest = format!("{MANIFEST}namespace = \"custom\"\n");
+    let root = Root::new(&[
+        ("Tsuzuri.toml", &manifest),
+        ("Main.tz", "export def answer :: i64 = Helpers.map 41\n"),
+        ("Helpers.tz", "def map :: i64 -> i64 = \\n -> n + 1\n"),
+    ]);
+    let migration = prepare(&root.0, Edition::E2027, None).unwrap();
+    apply(&migration).unwrap();
+    assert_eq!(
+        root.read("Main.tz"),
+        "export def answer :: i64 = Helpers.map 41\n"
+    );
+    Project::load(&root.0).unwrap().analyze().unwrap();
+}
+
+#[test]
 fn preserves_value_signatures_callbacks_and_exact_ir() {
     let root = Root::new(&[("Tsuzuri.toml", MANIFEST), ("Main.tz", SOURCE)]);
     let emit = || {

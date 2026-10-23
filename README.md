@@ -1174,3 +1174,13 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
   射影先への書き込みは兄弟の loan を消しません。新旧 loan を保守的に合わせ、移動済みの射影は再初期化しません。
   要素単位の排他参照を追加するものではありません。`Vec.push` は 2027 では排他借用して unit を返し、
   従来の消費する操作は `Vec.push_owned` で明示できます。移行ツールは解決済みの builtin 参照だけを変更します。
+- Phase 2 の最終切り替えでは `LATEST = 2027` とし、manifest なしの CLI 入力・新規パッケージ・
+  script・REPL・文書・埋め込み std を新しい版で読みます。既存 manifest の省略時は引き続き 2026 です。
+  Rust の版を受け取らない `analyze*` と単独 checker は既存の利用者の意味を保つ 2026 の互換入口とし、
+  明示版の解析入口も提供します。テスト専用の環境変数や隠れた既定変更は使いません。
+  `SourceInput`／project の明示 edition はそのまま優先します。
+- 読み取り callback と値 callback の入口が異なる Array／List の map・mapi・iter・iteri・fold・
+  fold_back は、2027 では読み取り側を既定に統合します。移行時の契約を保存する `_owned` 入口と、
+  既存の `mapr`／`foldr` などの明示参照入口を残します。移行は解決された std 定義と builtin だけを対象にし、
+  同名の利用者定義は変更しません。`get` と `get_ref` のように返す値の所有権が異なる API は別の契約のままです。
+  std の内部呼び出しも消費する入口を明示してから移行し、2026 と同じ ABI と IR を検証します。

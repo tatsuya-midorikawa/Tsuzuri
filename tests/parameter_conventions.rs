@@ -175,6 +175,39 @@ fn map_reads_noncopy_elements_and_keeps_first_class_callback_conventions() {
 }
 
 #[test]
+fn all_read_callback_entry_points_accept_noncopy_elements() {
+    for (module, values) in [("Array", "[\"a\", \"bc\"]"), ("List", "[|\"a\", \"bc\"|]")] {
+        for (name, body) in [
+            (
+                "map",
+                "(callback (\\text -> text.length) texts).length + texts.length",
+            ),
+            (
+                "mapi",
+                "(callback (\\i text -> i + text.length) texts).length + texts.length",
+            ),
+            ("iter", "callback (\\text -> ()) texts; texts.length"),
+            ("iteri", "callback (\\i text -> ()) texts; texts.length"),
+            (
+                "fold",
+                "callback (\\sum text -> sum + text.length) 0 texts + texts.length",
+            ),
+            (
+                "fold_back",
+                "callback (\\text sum -> sum + text.length) 0 texts + texts.length",
+            ),
+        ] {
+            let source = format!(
+                "export def answer :: i64 = {{ let texts = {values}; \
+                 let callback = {module}.{name}; {body} }}\n"
+            );
+            check("2027", &source).unwrap_or_else(|error| panic!("{module}.{name}: {error:?}"));
+            assert_eq!(check("2026", &source).unwrap_err().code, "E1005");
+        }
+    }
+}
+
+#[test]
 fn read_callbacks_cannot_escape_local_elements() {
     let source = "def borrow_value :: ref i64 -> ref i64 = \\value -> value\n\
         def leak :: unit -> [ref i64] = \\() -> { let values = [42]; Array.map borrow_value values }\n\
@@ -310,6 +343,44 @@ fn fixed_class_methods_keep_explicit_mutable_conventions() {
         )],
     )
     .unwrap();
+}
+
+#[test]
+fn mixed_editions_keep_both_vector_push_abis_distinct() {
+    let old = tsuzuri::parser::parse_with_source(
+        "def make :: unit -> Vec<i64> = \\() -> Vec.push 1 (Vec.empty())\n",
+        0,
+        tsuzuri::syntax::Edition::E2026,
+    )
+    .unwrap();
+    let new = tsuzuri::parser::parse_with_source(
+        "export def answer :: i64 = { let mut values = Old.make (); \
+         Vec.push 2 values; values[0] + values[1] }\n",
+        1,
+        tsuzuri::syntax::Edition::E2027,
+    )
+    .unwrap();
+    let inputs = [
+        ("Old", &old, tsuzuri::syntax::Edition::E2026),
+        ("Main", &new, tsuzuri::syntax::Edition::E2027),
+    ]
+    .map(|(name, program, edition)| tsuzuri::check::ModuleInput {
+        name,
+        program,
+        origin: tsuzuri::check::ModuleOrigin::User,
+        namespace: "",
+        entry: name == "Main",
+        edition,
+        package: None,
+    });
+    let module = tsuzuri::check::check_modules(&inputs).unwrap();
+    let output = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(
+        output.contains("Vec.push_mut"),
+        "missing mutable push helper"
+    );
+    assert!(output.contains("Vec.push."), "missing legacy push helper");
+    assert_eq!(output, llvm::emit(&module, llvm::Entry::Library).unwrap());
 }
 
 #[test]

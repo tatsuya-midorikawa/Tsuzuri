@@ -6277,6 +6277,7 @@ mod tests {
             "api_diff_command",
             "bindgen_command",
             "debug_test",
+            "fix_edition_command",
             "main",
             "new_project",
             "print_coverage",

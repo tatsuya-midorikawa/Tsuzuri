@@ -31,8 +31,29 @@ fn analysis_error(project: &Project, diagnostic: Diagnostic) -> SourceError {
 fn preserve_parameters(
     project: &mut Project,
     indices: &[usize],
-    builtins: &[(crate::diagnostic::Span, crate::check::Builtin)],
+    semantic: &crate::check::semantic::SemanticIndex,
 ) -> Result<Vec<Change>, SourceError> {
+    let functions: std::collections::BTreeMap<_, _> = semantic
+        .definitions
+        .iter()
+        .enumerate()
+        .filter(|(_, definition)| {
+            definition.kind == crate::check::semantic::SymbolKind::Function
+                && definition
+                    .span
+                    .source
+                    .is_some_and(|source| project.sources[source].origin == ModuleOrigin::Std)
+        })
+        .filter_map(|(id, definition)| {
+            crate::check::BORROWING_APIS
+                .iter()
+                .find(|(value, _, _)| {
+                    value.split_once('.')
+                        == Some((definition.module.as_str(), definition.name.as_str()))
+                })
+                .map(|(_, _, owned)| (id, owned.rsplit('.').next().unwrap()))
+        })
+        .collect();
     let mut changes = Vec::new();
     for &id in indices {
         let source = &mut project.sources[id];
@@ -56,16 +77,57 @@ fn preserve_parameters(
                 edits.push((parameter.ty.span.start, parameter.ty.span.start, "own "));
             }
         }
-        for (span, builtin) in builtins {
-            if *builtin != crate::check::Builtin::VecPush || span.source != Some(id) {
+        for reference in &semantic.references {
+            if reference.role == crate::check::semantic::Role::Read
+                && reference.span.source == Some(id)
+                && let Some(&owned) = functions.get(&reference.definition)
+            {
+                edits.push((reference.span.start, reference.span.end, owned));
+            }
+        }
+        for (span, builtin) in &semantic.builtin_references {
+            if span.source != Some(id) {
                 continue;
             }
+            let Some((value, _, owned)) = crate::check::BORROWING_APIS
+                .iter()
+                .find(|(value, _, _)| *value == builtin.name())
+            else {
+                continue;
+            };
             let Some(spelling) = source.text.get(span.start..span.end) else {
                 continue;
             };
-            let path: String = spelling.chars().filter(|c| !c.is_whitespace()).collect();
-            if path == "Vec.push" || path == format!("{}::Vec.push", crate::stdlib::NAMESPACE) {
-                edits.push((span.end - "push".len(), span.end, "push_owned"));
+            let Ok(tokens) = crate::lexer::lex(spelling, source.edition) else {
+                continue;
+            };
+            let mut path = String::new();
+            let mut last = Span::default();
+            for token in tokens {
+                match token.kind {
+                    crate::syntax::TokenKind::Ident(name) => {
+                        path.push_str(&name);
+                        last = token.span;
+                    }
+                    crate::syntax::TokenKind::Dot => path.push('.'),
+                    crate::syntax::TokenKind::PathSep => path.push_str("::"),
+                    crate::syntax::TokenKind::End => {}
+                    _ => {
+                        path.clear();
+                        break;
+                    }
+                }
+            }
+            let path = path
+                .strip_prefix(crate::stdlib::NAMESPACE)
+                .and_then(|rest| rest.strip_prefix("::"))
+                .unwrap_or(&path);
+            if path == *value {
+                edits.push((
+                    span.start + last.start,
+                    span.start + last.end,
+                    owned.rsplit('.').next().unwrap(),
+                ));
             }
         }
         let before = source.text.clone();
@@ -160,7 +222,7 @@ pub fn prepare(
     crate::analyze_inputs_semantic(&project.inputs(), &mut semantic)
         .map_err(crate::first_error)
         .map_err(|diagnostic| analysis_error(&project, diagnostic))?;
-    let mut changes = preserve_parameters(&mut project, &indices, &semantic.builtin_references)?;
+    let mut changes = preserve_parameters(&mut project, &indices, &semantic)?;
     for &id in &indices {
         project.sources[id].edition = target;
     }
