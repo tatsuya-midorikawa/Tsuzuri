@@ -5,9 +5,9 @@
 | ID | F14 |
 | 優先度 | P1 |
 | 規模 | L（Phase 1: M、Phase 2: S、Phase 3: S）。種は M と見積もったが、`Alloc` の実装（ビルトイン・std・heap の連結・到達の制限・CLI）、`bench` の計数、42 件の契約を合わせると L になる。Phase は独立に出荷できる |
-| 依存 | [F13](_completed/F13-custom-allocators.md)（done。`--allocator counting`・`src/runtime/heap-counting.ll`・`tsuzuri_alloc_stats`）、[G18](_completed/G18-bench-coverage.md)（done。`tsuzuri bench`・`src/runtime/bench-runner.c`）。Phase 3 は Phase 1 |
+| 依存 | [F13](F13-custom-allocators.md)（done。`--allocator counting`・`src/runtime/heap-counting.ll`・`tsuzuri_alloc_stats`）、[G18](G18-bench-coverage.md)（done。`tsuzuri bench`・`src/runtime/bench-runner.c`）。Phase 3 は Phase 1 |
 | 後続 | A21（契約の `test` モードが `Alloc.snapshot`／`since` で `@no_alloc` の主張を実行時に確かめられる）、G31（AI 作業コスト指標。確保数は決定的な指標）、確保を減らす性能チケット（退行が「確保数が増えた」というテスト失敗になる） |
-| 状態 | todo |
+| 状態 | done（Phase 1・2・3。下記の実装・検証記録を参照） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `main` の `9dd0fbbc`で、差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D10 はすべて承認済み |
 | 改善する劣位 | 「確保しない」「償却で対数」といった構造的な性質は、時間では測れず（共有 CI に速度の合否の閾値を置かない。AGENTS.md）、HEAD にはテストで確かめる手段がない。Go の `testing.AllocsPerRun`・.NET の `GC.GetAllocatedBytesForCurrentThread`・Rust の `allocation-counter` crate（付録 F）に当たる手段がなく、`--allocator counting` は native 実行ファイルと `tsuzuri test` で使えない。最後の使用のコピー除去（A17）のような最適化は、退行しても結果が同じで時間だけが変わり、見つからない |
@@ -555,22 +555,22 @@ bench_allocs: bool,
 
 ### Phase 1
 
-- [ ] 手順 1.1 の 8 つの IR（`Alloc` を使わない）が、すべての手順の後で `cmp` で一致する。
-- [ ] `tsuzuri test` が、`Alloc` を使うテストを native・wasm32 の `-O0`／`-O3` で通す。`Alloc` を使わないテストの実行器に counting の heap が入らない（`test --allocator counting` を除く）。
-- [ ] `tsuzuri run --allocator counting`・`build --allocator counting`（実行ファイル）が `90` を出す。`--allocator` なしの `Alloc` つきの `build`・`run` が `E1018`。公開の補助関数が `Alloc` に届くだけでは通常のビルドは失敗しない。
-- [ ] `tsuzuri_alloc_stats` の値と構造体が変わらない（`node tests/allocator.mjs` が `allocator: ok`）。WASM の import が増えない。
-- [ ] `Bench.now` の `E1018` の既存テストが同じ文面で通る。`cargo test --locked`・`fmt`・`clippy` が通る。
-- [ ] 「ドキュメント」の Phase 1 の行を更新し、`node scripts/check-docs.mjs <ページ>` が通る。
+- [x] 手順 1.1 の 8 つの IR（`Alloc` を使わない）が、すべての手順の後で `cmp` で一致する。
+- [x] `tsuzuri test` が、`Alloc` を使うテストを native・wasm32 の `-O0`／`-O3` で通す。`Alloc` を使わないテストの実行器に counting の heap が入らない（`test --allocator counting` を除く）。
+- [x] `tsuzuri run --allocator counting`・`build --allocator counting`（実行ファイル）が `90` を出す。`--allocator` なしの `Alloc` つきの `build`・`run` が `E1018`。公開の補助関数が `Alloc` に届くだけでは通常のビルドは失敗しない。
+- [x] `tsuzuri_alloc_stats` の値と構造体が変わらない（`node tests/allocator.mjs` が `allocator: ok`）。WASM の import が増えない。
+- [x] `Bench.now` の `E1018` の既存テストが同じ文面で通る。`cargo test --locked`・`fmt`・`clippy` が通る。
+- [x] 「ドキュメント」の Phase 1 の行を更新し、`node scripts/check-docs.mjs <ページ>` が通る。
 
 ### Phase 2
 
-- [ ] `tsuzuri bench --allocs --json` の各行に `alloc_calls`・`alloc_bytes` が付き、付録の `bench2` の値（0／0、1／80、1／80、0／0、2／96）になり、2 回の実行で同じ。
-- [ ] `--allocs` を付けない `bench` の text・JSON が 1 byte も変わらない。`run`・`test` に `--allocs` を付けると終了コード 2。
+- [x] `tsuzuri bench --allocs --json` の各行に `alloc_calls`・`alloc_bytes` が付き、付録の `bench2` の値（0／0、1／80、1／80、0／0、2／96）になり、2 回の実行で同じ。
+- [x] `--allocs` を付けない `bench` の text・JSON が 1 byte も変わらない。`run`・`test` に `--allocs` を付けると終了コード 2。
 
 ### Phase 3
 
-- [ ] 42 件の契約が native と wasm32 の `-O0`／`-O3` で通る（`cargo test --locked --test alloc_contracts`）。期待値を書き換えていない。
-- [ ] 契約の表が `alloc.md` にあり、付録 E と一致する。
+- [x] 42 件の契約が native と wasm32 の `-O0`／`-O3` で通る（`cargo test --locked --test alloc_contracts`）。期待値を書き換えていない。
+- [x] 契約の表が `alloc.md` にあり、付録 E と一致する。
 
 ## 落とし穴
 
@@ -669,6 +669,49 @@ bench_allocs: bool,
 - 理由: opt-in の std モジュールを予約するのが既存の方式（`docs/stability.md` の既知の例外）。`Alloc.__counter` はプロセス全体の状態を読む試験用の補助で、`Debug.print` と同じ分類が自然。`alloc` は「確保しうる」で、読むだけの関数は確保しない。
 - 却下: 別の名前（D-55 が `Alloc` を割り当て済み）。名前を予約しない（`Alloc.tz` を持つ利用者との衝突が検出できない）。
 - 状態: 承認済み。
+
+## 実装・検証記録（41f80bc7 基準）
+
+全 3 Phase を実装し、以下を確認してから本チケットと付録を `_completed/` へ移動した。
+共有の `_features/README.md`・`GUIDE.md` の状態とリンクの更新は、指定どおり統括者に委ねる。
+
+- **Phase 1**: `Alloc.Stats`・`snapshot`・`since`・`measure`、std 専用の `Alloc.__counter`、
+  到達解析による自動計数、明示 counting の `build`・`run`・`test`。
+  `tests/alloc.rs` は 13 件。native/wasm32 の O0/O3、coverage、デバッグ実行器、
+  private・公開 helper・入口・export・Drop・非対応 allocator の診断を検査した。
+  `Alloc` は D-59 の `subject(&["Stats"])` で分類し、資源ハンドルの例外にはしていない。
+- **Phase 2**: 時間用とは別の counting 実行器による `bench --allocs`。`tests/bench.rs` は 14 件。
+  5 組の期待値 `(0,0), (1,80), (1,80), (0,0), (2,96)` を O0/O3 でそれぞれ 2 回確認した。
+  既定の JSON/text の形とキー順、指定先の制限、失敗と負の計数差分も検査した。
+- **Phase 3**: 42 契約 × native/wasm32 × O0/O3 = **168 件成功**。
+  Vec の期待する再確保を 5 回から 6 回へ変えた変異体が `reallocs 5/6` で失敗することも確認した。
+- `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。
+  `cargo nextest run --locked --test-threads 4` は **1739 passed / 2 skipped**。
+  全重作業を共有 slot 内で実行し、スタック・資源上限・依存 crate・unsafe は増やしていない。
+- 現在の dev バイナリで `allocator.mjs`、全 `features.mjs`（**19669 cases**）、
+  `parallel_frontend.mjs` が成功。`check-runtime-includes.sh` は **58 files**。
+- 変更した reference **10 pages / 396 links / 32 examples / 32 native runs / 7 test projects** が成功。
+  最後の prose 調整後に Alloc の **1 page / 9 links / 2 examples / 2 test projects** も再検証した。
+- `last_use`・`map_set`・`channel`・`point` の既定 heap の **8 IR が byte-identical**。
+  追加で O0/O3 の native object・WASM **16 成果物も byte-identical**。
+  明示 counting の内部 IR は 6 counters に変わるが、旧 `tsuzuri_alloc_stats` の
+  **32-byte・4-field ABI と値**は allocator suite で維持を確認した。
+
+### 最新契約との整合
+
+実装前の README 整合コミットは `b100231`。起票時の付録と現在の差は次のとおり。
+確保数の期待値は 46 の表明窓すべてで変更していない。
+
+- D-59 に合わせ fixture の helper の対象 `Stats` を最後にし、
+  `String.contains needle text`、現在の `Array.rev`、値を受ける `Array.filter` の述語に合わせた。
+- `"abcdefghij"` の反復には境界の `"j" + "ab"` に `"jab"` がある。
+  JavaScript の独立した検索でも確認し、旧引数順に由来する補助表明 `!found` だけを `found` に直した。
+- bench の差分は unsigned で計算し、引く前の比較で負の結果を拒否する。付録の signed-overflow UB は採用していない。
+- 現在の README の T2 に従い dev build を使用した。速度の主張はしていない。
+  共有 cache の metadata/open 停止を避ける専用 `TSUZURI_CACHE_DIR` と、
+  UNIX socket 長制約と子の cwd 変更を満たす repo 内の短い絶対 `TMPDIR` を使用した。
+- A19 との統合では `AllocCounter` を `Category::Debug` とし、理由は「確保数を読む」とする。
+  `alloc` 効果ではない（D10）。A19 担当者と確認済み。
 
 ## 付録
 

@@ -969,7 +969,7 @@ F14 の確保数の契約は、古い付録より現在の API と D-59（対象
 （`deref` なし）に読み替えます。42 契約の操作と期待値は維持します。
 検索結果の補助表明だけは、現在の順序で `"jab"` が反復境界の `"j" + "ab"` に見つかることを
 確認します（旧順の検索を前提にした `!found` は使いません）。確保数の期待値は変更しません。
-既存の `tsuzuri_allocation_stats`（32 bytes、4 fields）、`Alloc` を使わない出力、
+既存の `tsuzuri_allocation_stats`（32 bytes、4 fields）、`Alloc` を使わない既定の heap の出力、
 `--allocs` のない bench 出力を保持し、新しい Builtin は HEAD の一覧へ追加します（古い件数を使いません）。
 検証は以下の dev バイナリと共有スロットを使い、性能の主張をしない変更に release ビルドは要求しません。
 
