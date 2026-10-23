@@ -32,7 +32,8 @@ function session(project, commands) {
 /** Runs one LLDB batch of `commands` on the `-g` executable `app`, started with `args`. */
 function debug(app, args, commands) {
   // macOS keeps the DWARF in the `.dwarf` file beside the executable; Linux keeps it inside.
-  const options = ["-b", "-o", `command script import ${JSON.stringify(formatter)}`];
+  const options = ["--no-lldbinit", "-b", "-o", "settings set target.disable-aslr false",
+    "-o", `command script import ${JSON.stringify(formatter)}`];
   if (process.platform === "darwin") options.push("-o", `target symbols add ${JSON.stringify(`${app}.dwarf`)}`);
   for (const command of commands) options.push("-o", command);
   const output = execute(lldb, [...options, "--", app, ...args]);
@@ -121,11 +122,25 @@ try {
 
   // Stepping from line 18 enters std functions and the lambda, which have source, but not the
   // runtime (`Array.sum` calls a C kernel) or the builtin wrappers of `Vec.empty`, `Vec.push`.
-  const steps = sections(session(fixture, ["breakpoint set -f Main.tz -l 18", "run", ...Array(16).fill("thread step-in"), "kill"]))
-    .filter(part => part.command === "thread step-in")
-    .map(part => /frame #0: 0x[0-9a-f]+ app\d+`(.+?)(?:\(.*\))? at ([^:\s]+):(\d+)/.exec(part.text));
-  assert.ok(steps.every(Boolean), "every step stops in a frame with a source line");
-  const frames = steps.map(([, name, file, line]) => ({ name, file, line: Number(line) }));
+  // Stop once the three intended calls have been visited: a fixed number of steps can
+  // overshoot into process teardown on another architecture. Read source data, not UI formatting.
+  const stepScript = [
+    "import json",
+    "step_frames = []",
+    "required = {'Map.singleton', 'Array.sum', 'Main.show.lambda@22:15'}",
+    "for _ in range(16):",
+    "    lldb.process.GetSelectedThread().StepInto()",
+    "    frame = lldb.process.GetSelectedThread().GetFrameAtIndex(0)",
+    "    entry = frame.GetLineEntry()",
+    "    step_frames.append({'name': frame.GetFunctionName(), 'file': entry.GetFileSpec().GetFilename(), 'line': entry.GetLine()})",
+    "    if required <= {item['name'] for item in step_frames}: break",
+    "print('steps=' + json.dumps(step_frames))",
+  ].join("\n");
+  const stepped = session(fixture, ["breakpoint set -f Main.tz -l 18", "run",
+    `script exec(${JSON.stringify(stepScript)})`, "kill"]);
+  const frames = JSON.parse(/^steps=(.+)$/m.exec(stepped)?.[1] ?? "null");
+  assert.ok(frames?.length && frames.every(frame => frame.name && frame.file && frame.line > 0),
+    `every step stops in a frame with a source line\n${JSON.stringify(frames)}\n${stepped}`);
   for (const frame of frames) {
     assert.match(frame.file, /\.tz$/, JSON.stringify(frame));
     assert.doesNotMatch(frame.name, /^(tz\.|tsuzuri_|\$)/, JSON.stringify(frame));

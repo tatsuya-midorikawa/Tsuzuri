@@ -111,6 +111,15 @@ jobs:
       - name: End-to-end compiler tests (e2e)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/e2e.mjs target/debug/tsuzuri
+      - name: Ordered containers
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          TMPDIR: ${{ github.workspace }}/target/scratch/debugger/tmp
+          TSUZURI_CACHE_DIR: ${{ github.workspace }}/target/scratch/debugger/cache
+        run: |
+          mkdir -p "$TMPDIR"
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri map_set
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri map_set_chunks
       - name: Primitive types
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/primitives.mjs target/debug/tsuzuri

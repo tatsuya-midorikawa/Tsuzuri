@@ -21,14 +21,15 @@
 - **Phase 1・2 とも実装・ローカル検証済み**。作業基準は `41f80bc7`。
   実装前に README の D-59 整合確認を `51919beb` としてコミットした。
   付録 A・B は現在の subject-last の公開シグネチャ・`Vec` 呼び出しと一致し、
-  既存の公開 API はすべて維持した。`std/Map.tz`・`std/Set.tz` は付録と全文一致。
+  既存の公開 API はすべて維持した。`std/Map.tz`・`std/Set.tz` は付録と全文一致
+  （後述のレビュー修正は付録 B にも反映した）。
 - 本文の旧 release 前提は現行の dev（opt-level 1）に合わせた。
   std 埋め込みを再ビルドし、stack・解析上限は変更していない。性能比較だけは両コンパイラを release ビルドした。
 - Rust: `map_set` 3 件、`map_set_chunks` 1 件（5 properties × O0/O3）、
   `std_argument_order` 21 件、特殊化上限・Hash コンテナ予算・PDB/natvis の回帰各 1 件が成功。
   全 nextest は **1,719 passed / 2 skipped**。
   別途、サーバー 19 件と fake-toolchain/キャッシュ 1 件も成功。
-- E2E: `map_set` **26**、`map_set_chunks` **29**、`json` **165**、
+- E2E: `map_set` **26**、`map_set_chunks` **33**、`json` **165**、
   `iteration_protocol` **26** を native/WASM の O0/O3 で確認。
   `user_drop` も native/WASM の O0/O3 で成功。
 - 文書: 変更 6 ページ、163 links、52 examples、104 native runs（O0/O3）が成功。
@@ -43,6 +44,11 @@
   lazy なヘッダ読み取りは維持し、既存 List provider と同じ二分探索で所属チャンクを求める。
   128 チャンクのキャッシュ済み境界へのアクセスを対数回に制限する回帰試験は修正前に赤・修正後に緑で、
   CI の時間の閾値は使わない。
+- 後続レビューで `Set.select` の比較用キーコピーも修正した。比較はチャンクの借用で行い、
+  選んだ左キーだけを、借用元の情報を保つ `key_at` 経由でコピーする。
+  600,000 要素の配列キー 2 本と選択結果が収まる既存の WASM 16 MiB 上限で、
+  修正前は比較用の clone により trap、修正後は積・差とも native/WASM O0/O3 が成功した。
+  左右カーソルが別々に進む小さな配列キーのケースも追加し、4 件増の 33 件とした。
 - 初回の共有キャッシュの open 待ち、長すぎる／相対の `TMPDIR` は環境要因として切り分けた。
   自分専用の `TSUZURI_CACHE_DIR` と短い絶対 `TMPDIR` で全件を再検証し、共有キャッシュや他 worktree は変更していない。
 - `cargo fmt`、全 target の Clippy（warnings denied）、runtime include **58 files** が成功。

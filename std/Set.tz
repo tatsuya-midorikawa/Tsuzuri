@@ -374,16 +374,17 @@ fn select left right include_equal =
 	let mut right_chunk = 0
 	let mut right_offset = 0
 	while left_index < left_count do
-		let key = key_at left left_chunk left_offset
-		assert (Eq.eq (ref key) (ref key))
+		let keys = chunk_of left left_chunk
+		let key = ref keys[left_offset]
+		assert (Eq.eq key key)
 		let order =
 			if right_index >= right_count then -1
 			else
-				let other = key_at right right_chunk right_offset
-				compare_keys (ref key) (ref other)
+				let other = chunk_of right right_chunk
+				compare_keys key (ref other[right_offset])
 		if order <= 0 then
 			if (order == 0) == include_equal then
-				current = Vec.push key current
+				current = Vec.push (key_at left left_chunk left_offset) current
 				total = total + 1
 				if Vec.length (ref current) == BulkFill then
 					finished = Vec.push current finished

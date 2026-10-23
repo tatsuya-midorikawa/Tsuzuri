@@ -133,6 +133,7 @@ jobs:
           node tests/features.mjs target/release/tsuzuri last_use
           node tests/features.mjs target/release/tsuzuri param_facts
           node tests/features.mjs target/release/tsuzuri list_chunks
+          node tests/features.mjs target/release/tsuzuri map_set_chunks
       # PM02: a function value or a Task is { descriptor, environment }. primitives.mjs runs the four kinds of function value
       # through a C host that asserts live == 0; debugger_static.mjs asks the LLDB formatter about the DWARF types of a -g build
       # without running a process (LLDB is on the macOS runners only).

@@ -137,6 +137,29 @@ fn insert_bound count = lookup_bound count + 1
 // `size` random keys are inserted, looked up and removed. The result is 0 when no operation makes more calls than its bound and no phase makes more than
 // size * (floor(log2 size) + 6) calls; otherwise it is 11, 12 or 13 for the first operation of the phase (insert, lookup, remove) over its bound,
 // and 21, 22 or 23 for the first phase over its total.
+export def array_key_selection :: bool -> i64
+fn array_key_selection intersection =
+    let mut left: Set<[i64]> = Set.empty()
+    let mut right: Set<[i64]> = Set.empty()
+    for value in 0i64 .. 2 do
+        left = Set.insert (new [i64](2, \index -> value * 2 + index)) left
+        right = Set.insert (new [i64](2, \index -> value + 1 + index)) right
+    let selected =
+        if intersection then Set.intersect (ref left) (ref right)
+        else Set.difference (ref left) (ref right)
+    Set.length (ref selected) * 100 + Set.fold (\sum key -> sum + Array.sum key) 0 (ref selected)
+
+// Inputs occupy 9.6 MB; one selected-key copy fits in 16 MiB, two comparison copies do not.
+export def large_array_key_selection :: bool -> i64
+fn large_array_key_selection intersection =
+    let left = Set.singleton (new [i64](600000, \index -> index + 1))
+    let right = Set.singleton (new [i64](600000, \index -> index))
+    let selected =
+        if intersection then Set.intersect (ref left) (ref right)
+        else Set.difference (ref left) (ref right)
+    Set.length (ref left) + Set.length (ref right) +
+        Set.fold (\sum key -> sum + Array.length key + key[0] + key[599999]) 0 (ref selected)
+
 export def comparison_bounds :: i64 -> i64
 fn comparison_bounds size =
     let hits = Atomic.create 0i64
@@ -449,7 +472,7 @@ test "Set algebra follows the table model on long seeded runs" = Gen.for_all_cas
       const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Map\.(?:locate|chunk_of|chunk_total|get|at|contains_key)[^\n]*\{([\s\S]*?)^\}/gm)];
 ```
 
-**B2. suite `map_set_chunks` の追加**。`map_set` suite の閉じ括弧 `},` の直後（`arena: {` の直前）に、次を丸ごと足す。ケースは 5 + 4 + 4 + 1 + 3 + 12 = 29 件。
+**B2. suite `map_set_chunks` の追加**。`map_set` suite の閉じ括弧 `},` の直後（`arena: {` の直前）に、次を丸ごと足す。ケースは 5 + 4 + 4 + 1 + 3 + 4 + 12 = 33 件。配列キーの 4 ケースはレビュー後の回帰試験で、大きい配列の 2 ケースは既存の WASM 16 MiB 上限を変えずに比較用 clone の再導入を検出する。
 
 ```js
   map_set_chunks: {
@@ -460,6 +483,8 @@ test "Set algebra follows the table model on long seeded runs" = Gen.for_all_cas
       ["middle_split", [], 1002n], ["merge_after_removals", [], 22001256n], ["head_deleted", [], 201256n], ["tail_deleted", [], 2001n],
       ["set_algebra_chunks", [], 40202n],
       ["comparison_bounds", [32768n], 0n], ["set_algebra_bounds", [16384n], 0n], ["borrowed_keys_and_values", [], 33n],
+      ["array_key_selection", [1], 105n], ["array_key_selection", [0], 210n],
+      ["large_array_key_selection", [1], 2n], ["large_array_key_selection", [0], 1200003n],
       ...[0n, 1n, 2n, 3n].flatMap((profile) => [["model_map", [profile, 11n], 1n], ["model_set", [profile, 11n], 1n], ["model_algebra", [profile, 11n], 1n]]),
     ],
     traps: [],
