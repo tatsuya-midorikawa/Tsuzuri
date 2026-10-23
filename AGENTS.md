@@ -61,8 +61,8 @@ its `MODULES` table does not classify. Record of the decision: `_features/GUIDE.
 - The subject is lent last, so an argument before it may read it (`Array.write 0 (v[1] * 10) v`); the pipeline form
   lends it first (`v |> Array.write 0 (v[1] * 10)` is `E1014`).
 - When a function also takes a value of the subject's own type (a needle and a text: `String.find`,
-  `Regex.replace_all`), the types cannot tell them apart. Name the last parameter `text` (`parts` for a list of
-  texts); the test checks the name.
+  `Regex.replace_all`), the types cannot tell them apart. In `String`, `Utf8String` and `Regex`, name the last
+  parameter `text` (`parts` for a list of texts); the test checks the name.
 - **Exemptions are these four kinds and nothing else** (a `std/` file's exemption carries its reason in its `MODULES`
   row; a module that is only a compiler builtin has no file, so this list is its record):
   resource handles (`File`, `Net`, `Process`, `Atomic`, `Mutex`, `Channel`, `Rc`, `Arc`, `Owned`, `Task`: the handle
@@ -71,8 +71,9 @@ its `MODULES` table does not classify. Record of the decision: `_features/GUIDE.
   `src/derive.rs` calls); test and benchmark entry points (`Gen.for_all`, `Test.*`, `Bench.*`). A pure
   transformation is never exempt.
 - A function that the compiler recognises by its name or position (`String.slice` in `src/llvm_strings.rs`, the
-  builtin `Utf8String.decode_at`, the `Array.__*` builtins) changes together with its hook: search `src/` for the
-  name before you reorder, and run the compact-strings suites.
+  builtins `Utf8String.decode_at`, `Array.__set`, `Array.update`, `Array.swap`, `Array.write`, `Array.swap_in` and
+  `Array.split_at_mut`, which `Builtin::name` in `src/check.rs` lists) changes together with its hook: search `src/`
+  for the name before you reorder, and run the compact-strings suites.
 - New module or function: decide the subject first and write it last; add the file to `MODULES` (`subject(&["Type"])`,
   or an exemption with its reason); give the module page an "引数の順序" section and keep `argument-order.md` true.
 
