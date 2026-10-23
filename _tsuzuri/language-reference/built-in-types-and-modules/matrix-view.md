@@ -132,7 +132,7 @@ $"{Matrix.rows (ref gram)}x{Matrix.cols (ref gram)} {deref (Matrix.at (ref gram)
 let mut buffer = new [i64](6, _ -> 0)
 let mut grid = MatrixView.of_array_mut 2 3 (ref mut buffer)
 let line = MatrixView.row_mut (ref mut grid) 0
-Array.write line 1 5
+Array.write 1 5 line
 let mut part = MatrixView.sub_mut (ref mut grid) 1 1 1 2
 MatrixView.fill (ref mut part) 7
 MatrixView.write (ref mut grid) 0 0 1

@@ -197,7 +197,7 @@ private def normalize :: Vec<i64> -> Vec<i64>
 fn normalize ranges =
 	let count = Vec.length (ref ranges) / 2
 	let mut keys: [i64] = new [i64](count, \_index -> 0)
-	for index in 0 .. count - 1 do Array.write (ref mut keys) index (ranges[2 * index] * 2097152 + ranges[2 * index + 1])
+	for index in 0 .. count - 1 do Array.write index (ranges[2 * index] * 2097152 + ranges[2 * index + 1]) (ref mut keys)
 	Array.sort_in_place (ref mut keys)
 	let mut output: Vec<i64> = Vec.with_capacity (2 * count)
 	let mut low = -1
@@ -751,9 +751,9 @@ fn parse pattern =
 /// Writes one instruction at `pc` and returns the next pc.
 private def put :: ref mut [i64..] -> i64 -> i64 -> i64 -> i64 -> i64
 fn put code pc op a b =
-	Array.write code (3 * pc) op
-	Array.write code (3 * pc + 1) a
-	Array.write code (3 * pc + 2) b
+	Array.write (3 * pc) op code
+	Array.write (3 * pc + 1) a code
+	Array.write (3 * pc + 2) b code
 	pc + 1
 
 /// Writes the instructions of `node` from `pc` and returns the pc after them. The depth of the recursion
@@ -904,7 +904,7 @@ private def copy_slots :: ref mut [i64..] -> i64 -> i64 -> i64 -> unit
 fn copy_slots ws from into count =
 	for index in 0 .. count - 1 do
 		let value = ws[from + index]
-		Array.write ws (into + index) value
+		Array.write (into + index) value ws
 
 /// Adds the thread at `start` and every thread that it reaches without consuming input to list `list` in
 /// priority order, with the working slots as its slots, and returns the new length of the list. The stack
@@ -920,51 +920,51 @@ fn add_thread re ws slots list length start pos prev next =
 	let mut size = length
 	let mut steps = 0
 	let mut top = 2
-	Array.write ws stack start
-	Array.write ws (stack + 1) 0
+	Array.write stack start ws
+	Array.write (stack + 1) 0 ws
 	while top > 0 do
 		top = top - 2
 		let target = ws[stack + top]
 		if target < 0 then
 			let old = ws[stack + top + 1]
-			Array.write ws (work - 1 - target) old
+			Array.write (work - 1 - target) old ws
 		else
 			let seen = ws[sparse + target]
 			if seen >= size || ws[dense + seen] != target then
-				Array.write ws (sparse + target) size
-				Array.write ws (dense + size) target
+				Array.write (sparse + target) size ws
+				Array.write (dense + size) target ws
 				size = size + 1
 				steps = steps + 1
 				let op = re.code[3 * target]
 				if op == OpJump then
-					Array.write ws (stack + top) re.code[3 * target + 1]
-					Array.write ws (stack + top + 1) 0
+					Array.write (stack + top) re.code[3 * target + 1] ws
+					Array.write (stack + top + 1) 0 ws
 					top = top + 2
 				elif op == OpSplit then
-					Array.write ws (stack + top) re.code[3 * target + 2]
-					Array.write ws (stack + top + 1) 0
-					Array.write ws (stack + top + 2) re.code[3 * target + 1]
-					Array.write ws (stack + top + 3) 0
+					Array.write (stack + top) re.code[3 * target + 2] ws
+					Array.write (stack + top + 1) 0 ws
+					Array.write (stack + top + 2) re.code[3 * target + 1] ws
+					Array.write (stack + top + 3) 0 ws
 					top = top + 4
 				elif op == OpSave then
 					let slot = re.code[3 * target + 1]
 					if slot < slots then
 						let old = ws[work + slot]
-						Array.write ws (stack + top) (-1 - slot)
-						Array.write ws (stack + top + 1) old
-						Array.write ws (work + slot) pos
+						Array.write (stack + top) (-1 - slot) ws
+						Array.write (stack + top + 1) old ws
+						Array.write (work + slot) pos ws
 						top = top + 2
-					Array.write ws (stack + top) (target + 1)
-					Array.write ws (stack + top + 1) 0
+					Array.write (stack + top) (target + 1) ws
+					Array.write (stack + top + 1) 0 ws
 					top = top + 2
 				elif op == OpAssert then
 					if holds re re.code[3 * target + 1] re.code[3 * target + 2] prev next then
-						Array.write ws (stack + top) (target + 1)
-						Array.write ws (stack + top + 1) 0
+						Array.write (stack + top) (target + 1) ws
+						Array.write (stack + top + 1) 0 ws
 						top = top + 2
 				else copy_slots ws work (table + target * slots) slots
 	let total = ws[0] + steps
-	Array.write ws 0 total
+	Array.write 0 total ws
 	size
 
 /// Runs the Pike VM from `start` and returns whether a match was found; its slots are the best slots of
@@ -984,7 +984,7 @@ fn search re text bytes utf8 ws start slots first =
 	while running do
 		let code = if here < 0 then -1 else here / 8
 		if !matched && (pos == start || !re.anchored) then
-			for slot in 0 .. slots - 1 do Array.write ws (work + slot) (-1)
+			for slot in 0 .. slots - 1 do Array.write (work + slot) (-1) ws
 			length = add_thread re ws slots list length 0 pos prev code
 		if length == 0 then running = false
 		else
@@ -998,7 +998,7 @@ fn search re text bytes utf8 ws start slots first =
 			while index < length do
 				let target = ws[dense + index]
 				let steps = ws[0] + 1
-				Array.write ws 0 steps
+				Array.write 0 steps ws
 				let op = re.code[3 * target]
 				if op == OpMatch then
 					matched = true

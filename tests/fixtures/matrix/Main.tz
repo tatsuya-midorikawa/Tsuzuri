@@ -122,7 +122,7 @@ fn owned_elements n =
     let flat = Matrix.to_array transposed
     let mut index = 0
     while index < flat.length do
-        total = total * 7 + Array.length (Array.at (ref flat) index)
+        total = total * 7 + Array.length (Array.at index (ref flat))
         index = index + 1
     let kept = Matrix.to_array words
     total * 13 + kept.length

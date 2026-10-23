@@ -35,7 +35,7 @@ Tsuzuri は確保の場所を言語が約束する（`new` の有無・最後の
 HEAD で測った事実（付録 D）:
 
 - `Vec.push` を 100 回すると、確保 1 回・再確保 5 回・要求 2,016 byte。既存のカウンターは再確保を数えず、`tsuzuri_alloc_stats` の `allocations` は 1 に見える（D.2）。
-- ループの `xs = Array.set xs i v` は、その関数のどこかで `xs` を借用する（`Array.length (ref xs)`・補間の穴 `{xs[99]}`）だけで、更新ごとに配列全体を複製する（100 回の更新で確保 100 回・80,000 byte。借用しなければ 0）。規則どおり（`ownership.md`）だが、時間のテストでは見つけにくい（D.5）。
+- ループの `xs = Array.update_at i v xs` は、その関数のどこかで `xs` を借用する（`Array.length (ref xs)`・補間の穴 `{xs[99]}`）だけで、更新ごとに配列全体を複製する（100 回の更新で確保 100 回・80,000 byte。借用しなければ 0）。規則どおり（`ownership.md`）だが、時間のテストでは見つけにくい（D.5）。
 - `Array.sort` は n=100 で 318 回確保する（`Array.sort_in_place` は 0 回）。捕捉つきクロージャを `Array.map` に渡すと、wasm32 だけ環境の確保が 1 回増える（D.5）。
 
 提供するもの: (1) テストの中で確保を数える `Alloc`。(2) そのために `--allocator counting` を native 実行ファイル・`run`・`test` で使えるようにする。(3) `tsuzuri bench --allocs`（1 反復あたりの確保数）。(4) std の構造的な性質 42 件の契約スイート。退行は「確保数が増えた」というテストの失敗になり、時間の閾値は使わない。
@@ -148,7 +148,7 @@ def measure :: (unit -> 'a) -> Stats * 'a                              // Alloc.
 
 - `bytes` は要求バイト数の累計（`@tz.alloc` は `size`、再確保は新しい大きさ）。16 バイトのヘッダーは含めない。解放は引かない（累計であり、同時に生きている量ではない）。PX01 の `alloc_bytes` と同じ定義。
 - 値は `i64`。カウンターは 64 ビットの符号なしで、`i64` として返す（2^63 を超えると負になるが、実際には起きない）。
-- **閉包に注意**: `Alloc.measure` の閉包が捕捉した所有値は、閉包の中では一意でない。`Alloc.measure (\() -> Array.set xs 0 5)` は `xs` を複製する（`allocs 1`）が、`snapshot`／`since` なら 0。所有値を消費する操作は `snapshot`／`since` で測る。`Alloc.measure` の閉包の環境は呼び出しの前に作られるので窓の外。
+- **閉包に注意**: `Alloc.measure` の閉包が捕捉した所有値は、閉包の中では一意でない。`Alloc.measure (\() -> Array.update_at 0 5 xs)` は `xs` を複製する（`allocs 1`）が、`snapshot`／`since` なら 0。所有値を消費する操作は `snapshot`／`since` で測る。`Alloc.measure` の閉包の環境は呼び出しの前に作られるので窓の外。
 - 決定性: 単一スレッドなら、同じプログラムは常に同じ値になる（時刻・アドレス・順序に依らない）。`Task`・`Parallel` のスレッドの確保も、プロセス全体のカウンターに入る（実行器の内部の確保を含み、回数は実装の詳細）。
 - ビルトイン `Alloc.__counter :: i64 -> i64` は `std/Alloc.tz` だけが呼べる（付録 B）。0 `allocs`、1 `reallocs`、2 `frees`、3 `bytes`、4 現在量、5 最大量。5 を超えるとトラップ（`@tz.heap.counter`）。std の外から呼ぶと `E1022`。
 
@@ -496,7 +496,7 @@ bench_allocs: bool,
 | `public_alloc_helpers_stay_out_of_other_builds` | 公開の `def count_events :: unit -> i64`（`Alloc` を呼ぶ）と、それを呼ぶ `test`、`Debug.print "hi"` の入口。`private def` に直した版も作る | Console・Library の `emit` が成功し、IR に `tz.heap.counter` がない。`private` 版と IR が 1 byte も同じ |
 | `alloc_reached_from_entry_export_or_drop_is_rejected_by_name` | 入口が `report` を呼ぶ（`report` は `Alloc.measure` を使う）、`export def`、`Drop` の instance | `E1018`。メッセージに `the top-level code reaches it through `Main.report``、`export `Main.total_allocs` reads it`、`the Drop instance of` が出る。位置は `Span::default()` でない |
 | `alloc_with_host_or_small_allocator_is_rejected` | `emit_with_options(…, Allocator::Host)`・`Small` で `Alloc` を使う export | `E2000`（`Alloc needs the counting allocator`） |
-| `cli_test_counts_events_on_native_and_wasm32` | 3 件のテスト（`Array.map`＝1／0／0／80、`Array.set` を `snapshot`／`since`＝0、`Alloc.measure`＝1）の一時 project。`tsuzuri test <dir> -O0`・`-O3`・`--target wasm32 -O0`・`-O3` | 4 回とも終了コード 0、`3 passed; 0 failed; 0 ignored` |
+| `cli_test_counts_events_on_native_and_wasm32` | 3 件のテスト（`Array.map`＝1／0／0／80、`Array.update_at` を `snapshot`／`since`＝0、`Alloc.measure`＝1）の一時 project。`tsuzuri test <dir> -O0`・`-O3`・`--target wasm32 -O0`・`-O3` | 4 回とも終了コード 0、`3 passed; 0 failed; 0 ignored` |
 | `cli_run_and_build_executable_with_counting` | 付録 D.7 の `Main.tz`（`used.bytes + Array.length (ref ys)`）。`tsuzuri run <dir> --allocator counting`（`-O0`・`-O3`）と、`build … --allocator counting -o <exe>` の実行 | 標準出力が `90`、終了コード 0 |
 | `cli_build_without_counting_rejects_alloc` | 同じ project を `--allocator` なしで `build` と `run` | 終了コード 1、標準エラーに `E1018` と `--allocator counting` |
 | `cli_test_with_allocator_counting_runs_programs_that_do_not_use_alloc` | `Alloc` を使わない 2 件の簡単なテストの一時 project に `test --allocator counting`、`test --allocator host` | 前者は通る（`2 passed`）。後者は終了コード 2 と `--allocator is only valid with build` |
@@ -576,8 +576,8 @@ bench_allocs: bool,
 
 | 落とし穴 | 検出・回避 |
 | --- | --- |
-| 所有値を消費する操作を `Alloc.measure` の閉包の中で測ると、捕捉した値が複製されて 1 回余分に数える（`Array.set xs 0 5` が `allocs 1`） | 消費する操作は `snapshot`／`since`（付録 D.7）。ドキュメントに書く |
-| 窓の中で `Debug.print`・文字列補間・`Array.length (ref xs)` を使うと、確保が窓に入る／最後の使用の判定が変わる（ループの `Array.set` が 100 回複製される） | 窓の中は測る操作だけ。補間や借用は窓の外（付録 A の書き方）。付録 D.5 |
+| 所有値を消費する操作を `Alloc.measure` の閉包の中で測ると、捕捉した値が複製されて 1 回余分に数える（`Array.update_at 0 5 xs` が `allocs 1`） | 消費する操作は `snapshot`／`since`（付録 D.7）。ドキュメントに書く |
+| 窓の中で `Debug.print`・文字列補間・`Array.length (ref xs)` を使うと、確保が窓に入る／最後の使用の判定が変わる（ループの `Array.update_at` が 100 回複製される） | 窓の中は測る操作だけ。補間や借用は窓の外（付録 A の書き方）。付録 D.5 |
 | `ref "literal"` は書けない（`E1013`）。`{s.length}` の補間は `E1013`（D13 が直す） | 文字列は `let` に束縛してから `ref`。長さは `String.length (ref s)` |
 | `new [1, 2, 3]` の要素は `i32`（整数の既定）。`bytes` が 12 になる | 契約は `1i64` を明示（付録 A） |
 | 捕捉つきクロージャを std の関数へ渡すと、wasm32 は環境を確保する（native は確保しない）。ポインターを含む型の `bytes` は target で違う | 契約に入れない。`expect_events` を使う |
@@ -603,7 +603,7 @@ bench_allocs: bool,
 ### D1: API は `Stats`・`snapshot`・`since`・`measure`。ビルトインは `Alloc.__counter` 1 つ
 
 - 決定: 付録 B のとおり。種の `measure` に `snapshot`・`since` を足す。ビルトインは添字を取る 1 つ（`i64 -> i64`）。
-- 理由: 閉包を渡す `measure` だけでは、所有値を消費する操作（`Array.set xs 0 5`）が閉包の中で複製され測れない（付録 D.7。`allocs 1`）。ビルトインが 1 つなら、A19・A20 の効果の表の行も 1 つで済む。
+- 理由: 閉包を渡す `measure` だけでは、所有値を消費する操作（`Array.update_at 0 5 xs`）が閉包の中で複製され測れない（付録 D.7。`allocs 1`）。ビルトインが 1 つなら、A19・A20 の効果の表の行も 1 つで済む。
 - 却下: `measure` だけ（測れない）。4 つのビルトイン（分類が 4 行）。`Stats` を配列で返す（確保が窓に入る）。グローバルな `Alloc.reset`（窓が入れ子にできない）。
 - 状態: 承認済み。
 

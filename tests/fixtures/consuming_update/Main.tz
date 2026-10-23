@@ -1,7 +1,7 @@
 export def update_numbers :: i64 -> i64 -> i64 -> i64
 fn update_numbers count index value =
     let values = new [i64](count, offset -> offset)
-    let updated = Array.__set values index value
+    let updated = Array.__set index value values
     let mut total = 0
     for item in updated do total = total + item
     total
@@ -10,26 +10,33 @@ export def update_snapshot :: i64
 fn update_snapshot =
     let values = new [1, 2, 3]
     let borrowed = ref values[..2]
-    let updated = Array.swap values 0 2
+    let updated = Array.swap 0 2 values
     borrowed[0] * 1000 + values[0] * 100 + updated[0] * 10 + updated[2]
 
 export def update_callback :: i64
 fn update_callback =
     let values = new ["old" + "!", "last" + "!"]
     let suffix = "new" + "!"
-    let updated = Array.update values 0 (text -> text + suffix)
+    let updated = Array.update 0 (text -> text + suffix) values
     updated[0].length + updated[1].length
 
 export def update_owned :: i64 -> i64
 fn update_owned count =
     let mut values = new ["start" + "!", "last" + "!"]
     for index in 1 .. count do
-        values = Array.__set values 0 ("next" + "!")
+        values = Array.__set 0 ("next" + "!") values
     values[0].length + values[1].length
 
 export def update_partial :: i64
 fn update_partial =
-    let set = Array.__set [1, 2, 3] 0
+    let set = Array.__set 0 42
+    let values = set [1, 2, 3]
+    values[0] + values[2]
+
+export def update_captured :: i64
+fn update_captured =
+    let owned = [1, 2, 3]
+    let set = \value -> Array.__set 0 value owned
     let values = set 42
     values[0] + values[2]
 
@@ -49,7 +56,7 @@ fn update_list_snapshot =
 
 export def swap_same :: i64
 fn swap_same =
-    let values = Array.swap (new ["first" + "!", "second" + "!"]) 1 1
+    let values = Array.swap 1 1 (new ["first" + "!", "second" + "!"])
     values[0].length + values[1].length
 
 export def trap_update_index :: i64
@@ -57,7 +64,7 @@ fn trap_update_index = update_numbers 2 2 42
 
 export def trap_swap_index :: i64
 fn trap_swap_index =
-    let values = Array.swap [1, 2] 0 2
+    let values = Array.swap 0 2 [1, 2]
     values.length
 
 export def trap_empty_tail :: i64

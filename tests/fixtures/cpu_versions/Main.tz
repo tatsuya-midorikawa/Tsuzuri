@@ -29,7 +29,7 @@ fn scale values factor =
         index = index + 8
     while index < values.length do
         let value = values[index]
-        Array.write values index (value * factor)
+        Array.write index (value * factor) values
         index = index + 1
 
 /// Four running sums, added from lane 0, then the rest in order.

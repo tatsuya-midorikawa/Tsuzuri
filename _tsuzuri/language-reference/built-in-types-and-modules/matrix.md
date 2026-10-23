@@ -232,7 +232,7 @@ fn scale_row cols start chunk =
     let row = start / cols
     for j in 0i64 .. (chunk.length - 1) do
         let value = chunk[j]
-        Array.write chunk j (value * (row + 1))
+        Array.write j (value * (row + 1)) chunk
 
 let m = Matrix.init 3 4 (\_row _col -> 1)
 let mut data = Matrix.to_array m

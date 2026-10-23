@@ -358,7 +358,7 @@ fn same left right =
 def scale :: i64 -> ref mut [i64..] -> unit
 fn scale start chunk =
     for index in 0i64 .. (chunk.length - 1) do
-        Array.write chunk index ((start + index) * 2 + 1)
+        Array.write index ((start + index) * 2 + 1) chunk
 
 export def map_equal :: i64 -> i64
 fn map_equal count =

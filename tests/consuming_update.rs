@@ -3,13 +3,14 @@ use tsuzuri::{analyze, llvm};
 #[test]
 fn consuming_update_signatures_preserve_ownership() {
     for source in [
-        "Array.__set [1, 2, 3] 1 9",
-        "Array.update (new [string](2, index -> \"a\")) 1 (text -> text + \"x\")",
-        "Array.swap [\"first\", \"second\"] 0 1",
+        "Array.__set 1 9 [1, 2, 3]",
+        "Array.update 1 (text -> text + \"x\") (new [string](2, index -> \"a\"))",
+        "Array.swap 0 1 [\"first\", \"second\"]",
         "List.tail (List.cons \"first\" (new [|string|](2, index -> \"rest\")))",
-        "let values = [1, 2]\nlet updated = Array.__set values 0 9\nvalues[0] + updated[0]",
-        "let values = [1, 2]\nlet old = ref values[0]\nlet updated = Array.__set values 0 9\nderef old + updated[0]",
-        "let set = Array.__set [1, 2] 0\nset 9",
+        "let values = [1, 2]\nlet updated = Array.__set 0 9 values\nvalues[0] + updated[0]",
+        "let values = [1, 2]\nlet old = ref values[0]\nlet updated = Array.__set 0 9 values\nderef old + updated[0]",
+        "let set = Array.__set 0 9\nset [1, 2]",
+        "let owned = [1, 2]\nlet set = \\value -> Array.__set 0 value owned\nset 9",
         "let tail = List.tail\ntail [|1, 2|]",
     ] {
         let module = analyze(source)
@@ -23,17 +24,17 @@ fn consuming_update_signatures_preserve_ownership() {
         }
     }
     for (source, code) in [
-        ("Array.__set [1, 2] true 9", "E1003"),
+        ("Array.__set true 9 [1, 2]", "E1003"),
         (
-            "let values: [i64] = [1, 2]\nArray.__set values 0 true",
+            "let values: [i64] = [1, 2]\nArray.__set 0 true values",
             "E1003",
         ),
         (
-            "let values = [\"owned\"]\nlet updated = Array.__set values 0 \"next\"\nvalues.length",
+            "let values = [\"owned\"]\nlet updated = Array.__set 0 \"next\" values\nvalues.length",
             "E1012",
         ),
         (
-            "let values = [\"owned\"]\nlet old = ref values[0]\nlet updated = Array.__set values 0 \"next\"\nold.length",
+            "let values = [\"owned\"]\nlet old = ref values[0]\nlet updated = Array.__set 0 \"next\" values\nold.length",
             "E1014",
         ),
     ] {
@@ -45,7 +46,7 @@ fn consuming_update_signatures_preserve_ownership() {
 #[test]
 fn update_builtins_do_not_clone_their_input_buffers() {
     let module =
-        analyze("def update :: [i64] -> [i64]\nfn update values = Array.__set values 0 42")
+        analyze("def update :: [i64] -> [i64]\nfn update values = Array.__set 0 42 values")
             .unwrap();
     let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
     let body = ir

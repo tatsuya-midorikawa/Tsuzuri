@@ -47,7 +47,7 @@ fn bump r =
 
 def poke :: &mut [i64] -> i64
 fn poke a =
-    Array.write a 0 9
+    Array.write 0 9 a
     7
 
 // places and references: accepted at HEAD
@@ -213,7 +213,7 @@ fn bump r =
 
 def poke :: &mut [i64] -> i64
 fn poke a =
-    Array.write a 0 9
+    Array.write 0 9 a
     7
 
 export def length_holes :: i64 -> i64
@@ -527,7 +527,7 @@ fn explicit_borrows_of_temporaries_stay_rejected() {
 
 #[test]
 fn a_temporary_hole_leaves_its_source_free() {
-    let poke = "def poke :: &mut [i64] -> i64\nfn poke a =\n    Array.write a 0 9\n    7\n";
+    let poke = "def poke :: &mut [i64] -> i64\nfn poke a =\n    Array.write 0 9 a\n    7\n";
     accepts(&format!(
         "{poke}let mut a = [1, 2, 3]\n$\"{{a.length}}{{poke (&mut a)}}{{a[0]}}\"\n"
     ));

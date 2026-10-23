@@ -2,14 +2,14 @@
 
 `List` は、不変なリストです。型は `[|T|]` です。`List<T>` という別名はありません。要素は連続した領域（chunk）に並びます。`new`・リテラル・複製・`Array.to_list`・`List.map` のように一度に作ったリストは、要素数ちょうどの 1 つの chunk です。`List.cons` で伸ばしたリストは chunk の連なりです。先頭への追加と先頭の分解は $O(1)$、長さ `.length` もリストに保存されているので $O(1)$ です。添字は、一度に作ったリストなら $O(1)$ で、`List.cons` で伸ばしたリストでは、その要素より前の chunk の数に比例します（100 万要素で約 260 個です）。
 
-`List` モジュールは、F# の `List` モジュールと同じ関数を、同じ名前（snake_case）と同じ引数の順で提供します。`List.map f xs` や `xs |> List.filter p` のように、F# の書き方がそのまま使えます。所有権のために F# と違う点（失敗の扱い、`Copy`、`r` を付けた関数、リストを共有しないこと）は [F# の List モジュールとの対応](#f-の-list-モジュールとの対応) にまとめました。
+`List` モジュールは、F# の `List` モジュールと同じ関数を、同じ名前（snake_case）で提供します。リストはどの関数でも最後の引数なので、`List.map f xs` や `xs |> List.filter p` のように F# の書き方がそのまま使え、`List.sort >> List.rev` のような関数合成もできます。F# でリストが最後にない 4 つの関数だけは、同じ理由でリストを最後に移しました（[引数の順序](#引数の順序)）。所有権のために F# と違う点（失敗の扱い、`Copy`、`r` を付けた関数、リストを共有しないこと）は [F# の List モジュールとの対応](#f-の-list-モジュールとの対応) にまとめました。
 
 再帰やパターンマッチに向きます。リストの所有者は常に 1 つで、リストどうしが要素を共有することはありません。F# と記号が逆で、Tsuzuri の `[|1, 2|]` がリスト、`[1, 2]` が配列です。
 
 ## この記事のポイント
 
 - 型は `[|T|]`。要素も構造も生成後は不変です。`List<T>` とは書けません。
-- F# の `List` モジュールの関数（117 個。廃止予定の `nth` を除く）がすべてあります。名前は snake_case、引数の順は F# と同じです。
+- F# の `List` モジュールの関数（117 個。廃止予定の `nth` を除く）がすべてあります。名前は snake_case です。リストは常に最後の引数で、`|>` でも `>>` でもつなげられます。F# でリストが最後にない関数（`fold_back`、`fold_back2`、`scan_back`、`map_fold_back`）だけ、リストを最後に移しています。
 - F# が例外を投げる場面（空リスト、範囲外、長さの不一致、見つからない `find`）はトラップです。`try_item` や `try_find` のように `try_` が付く関数は `Maybe` を返します。
 - コールバックが要素を値で受ける関数（`filter`、`exists`、`fold` など）は、要素が `Copy` であることを要求します。`mapr`、`foldr`、`existsr` のように `r` を付けた関数は要素を借用するので、文字列やリストのリストにも使えます。
 - リテラル `[|1, 2, 3|]`、空リスト `[||]`、`new [|T|](n, \i -> ...)`、`List.cons` で作ります。`List.length [|1, 2, 3|]` のように、リテラルをそのまま引数に渡せます。
@@ -385,7 +385,7 @@ length=5 sum=15
 
 ## F# の List モジュールとの対応
 
-[F# の `List` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-listmodule.html)の関数は、廃止予定の `nth`（`item` を使います）を除いてすべてあります。名前は camelCase を snake_case にしたもの（`tryFind` は `try_find`、`foldBack2` は `fold_back2`、`splitInto` は `split_into`）です。引数の順は F# と同じで、関数を先に、リストを最後に渡します。コンピュテーション式やパイプラインで、F# と同じ形に書けます。
+[F# の `List` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-listmodule.html)の関数は、廃止予定の `nth`（`item` を使います）を除いてすべてあります。名前は camelCase を snake_case にしたもの（`tryFind` は `try_find`、`foldBack2` は `fold_back2`、`splitInto` は `split_into`）です。リストを最後に渡す点も F# と同じで、F# でリストが最後にない 4 つの関数だけ、リストを最後に移しています（[引数の順序](#引数の順序)）。コンピュテーション式やパイプラインで、F# と同じ形に書けます。
 
 ### 型と失敗
 
@@ -406,6 +406,34 @@ length=5 sum=15
 トラップになる F# の例外は、空リスト（`head`、`last`、`reduce`、`min`、`max`、`average`、`tail` など）、負の個数（`init`、`replicate`、`take`、`chunk_by_size`、`windowed`、`split_into` など）、範囲外（`item`、`update_at`、`insert_at`、`remove_at`、`split_at`、`take`、`skip`）、長さの不一致（`zip`、`map2`、`fold2`、`exists2`、`transpose` など）、見つからない検索（`find`、`find_back`、`find_index`、`pick`）、順列でない `permute` です。
 
 `remove_many_at` に負の個数を渡すと、F# のリストは何もせずにリストを返しますが、Tsuzuri は `Array.remove_many_at` と同じくトラップします。
+
+### 引数の順序
+
+操作するリストは、必ず最後の引数です。`xs |> List.f a` のようにパイプで渡せ、`List.f a >> List.g b` のように一部だけ渡した関数を合成できます。F# の `List` も多くの関数がそうですが、次の 4 つはリストが最後にありません。Tsuzuri では、ほかの引数の順を保ったまま、リストを最後に移しました。
+
+| 関数 | F# | Tsuzuri |
+| --- | --- | --- |
+| `fold_back` | `List.foldBack folder list state` | `List.fold_back folder state list` |
+| `fold_back2` | `List.foldBack2 folder list1 list2 state` | `List.fold_back2 folder state list1 list2` |
+| `scan_back` | `List.scanBack folder list state` | `List.scan_back folder state list` |
+| `map_fold_back` | `List.mapFoldBack mapping list state` | `List.map_fold_back mapping state list` |
+
+`folder` と `mapping` の引数の順は F# のままです（`fold_back` の `folder` は `'a -> 'state -> 'state`）。`fold` と同じく、初期値は関数の直後に置きます。
+
+```tsuzuri run=digits%3D321%20ordered%3D%5B%7C9%2C%204%7C%5D
+let digits = [|1, 2, 3|] |> List.fold_back (\x acc -> acc * 10 + x) 0
+let sort_down = List.sort >> List.rev
+let ordered = [|4, 9, 1|] |> sort_down |> List.take 2
+$"digits={digits} ordered={ordered}"
+```
+
+実行結果:
+
+```text
+digits=321 ordered=[|9, 4|]
+```
+
+`>>` で合成した関数は、前の関数が返したリストを、次の関数が借りて受け取ります。借りた一時のリストの中を指す参照を返す関数（`minr`、`findr` など）につなぐと、参照が一時のリストより長生きしてしまうので `E1013` です。
 
 ### 2 つのリストを取る関数
 
@@ -455,7 +483,7 @@ F# のリストは不変で、いくつものリストが末尾を共有しま�
 | `map` | `mapr` | `(ref 'a -> 'b) -> ref [\|'a\|] -> [\|'b\|]` |
 | `mapi` | `mapir` | `(i64 -> ref 'a -> 'b) -> ref [\|'a\|] -> [\|'b\|]` |
 | `fold` | `foldr` | `('state -> ref 'a -> 'state) -> 'state -> ref [\|'a\|] -> 'state` |
-| `fold_back` | `foldr_back` | `(ref 'a -> 'state -> 'state) -> ref [\|'a\|] -> 'state -> 'state` |
+| `fold_back` | `foldr_back` | `(ref 'a -> 'state -> 'state) -> 'state -> ref [\|'a\|] -> 'state` |
 | `iter` | `iterr` | `(ref 'a -> unit) -> ref [\|'a\|] -> unit` |
 | `iteri` | `iterir` | `(i64 -> ref 'a -> unit) -> ref [\|'a\|] -> unit` |
 | `exists` | `existsr` | `(ref 'a -> bool) -> ref [\|'a\|] -> bool` |
@@ -560,7 +588,7 @@ lengths=[|5, 3, 6|] total=14 has_long=true has_fig=true
 | `map` | `Copy<'a> => ('a -> 'b) -> ref [\|'a\|] -> [\|'b\|]` | 各要素に関数を適用した新しいリストを返します（組み込み） |
 | `mapi` | `Copy<'a> => (i64 -> 'a -> 'b) -> ref [\|'a\|] -> [\|'b\|]` | 位置も渡す `map` です |
 | `map2`、`mapi2`、`map3` | `(Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref [\|'a\|] -> ref [\|'b\|] -> [\|'c\|]` | 2 つ、3 つのリストを同時に変換します |
-| `map_fold`、`map_fold_back` | `Copy<'a> => ('state -> 'a -> ('b * 'state)) -> 'state -> ref [\|'a\|] -> ([\|'b\|] * 'state)` | 変換と畳み込みを同時に行います。`map_fold_back` は末尾から（結果は元の順）で、`('a -> 'state -> ('b * 'state)) -> ref [\|'a\|] -> 'state -> ([\|'b\|] * 'state)` |
+| `map_fold`、`map_fold_back` | `Copy<'a> => ('state -> 'a -> ('b * 'state)) -> 'state -> ref [\|'a\|] -> ([\|'b\|] * 'state)` | 変換と畳み込みを同時に行います。`map_fold_back` は末尾から（結果は元の順）で、`('a -> 'state -> ('b * 'state)) -> 'state -> ref [\|'a\|] -> ([\|'b\|] * 'state)` |
 | `collect` | `(Copy<'a>, Copy<'b>) => ('a -> [\|'b\|]) -> ref [\|'a\|] -> [\|'b\|]` | 各要素が返すリストを連結します |
 | `choose` | `Copy<'a> => ('a -> Maybe<'b>) -> ref [\|'a\|] -> [\|'b\|]` | `Some` の中身だけを集めます |
 | `filter`、`where` | `Copy<'a> => ('a -> bool) -> ref [\|'a\|] -> [\|'a\|]` | 述語を満たす要素を、順序を保って集めます（`where` は同じ関数です） |
@@ -574,11 +602,11 @@ lengths=[|5, 3, 6|] total=14 has_long=true has_fig=true
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
 | `fold` | `Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref [\|'a\|] -> 'state` | 先頭から左畳み込みを行います |
-| `fold_back` | `Copy<'a> => ('a -> 'state -> 'state) -> ref [\|'a\|] -> 'state -> 'state` | 末尾から右畳み込みを行います |
-| `fold2`、`fold_back2` | `(Copy<'a>, Copy<'b>) => ('state -> 'a -> 'b -> 'state) -> 'state -> ref [\|'a\|] -> ref [\|'b\|] -> 'state` | 2 つのリストを同時に畳み込みます。`fold_back2` は `('a -> 'b -> 'state -> 'state) -> ref [\|'a\|] -> ref [\|'b\|] -> 'state -> 'state` |
-| `foldr`、`foldr_back` | `('state -> ref 'a -> 'state) -> 'state -> ref [\|'a\|] -> 'state` | 要素の参照を受け取る `fold`、`fold_back` です（`foldr_back` は `(ref 'a -> 'state -> 'state) -> ref [\|'a\|] -> 'state -> 'state`。`foldr` は組み込み） |
+| `fold_back` | `Copy<'a> => ('a -> 'state -> 'state) -> 'state -> ref [\|'a\|] -> 'state` | 末尾から右畳み込みを行います |
+| `fold2`、`fold_back2` | `(Copy<'a>, Copy<'b>) => ('state -> 'a -> 'b -> 'state) -> 'state -> ref [\|'a\|] -> ref [\|'b\|] -> 'state` | 2 つのリストを同時に畳み込みます。`fold_back2` は `('a -> 'b -> 'state -> 'state) -> 'state -> ref [\|'a\|] -> ref [\|'b\|] -> 'state` |
+| `foldr`、`foldr_back` | `('state -> ref 'a -> 'state) -> 'state -> ref [\|'a\|] -> 'state` | 要素の参照を受け取る `fold`、`fold_back` です（`foldr_back` は `(ref 'a -> 'state -> 'state) -> 'state -> ref [\|'a\|] -> 'state`。`foldr` は組み込み） |
 | `reduce`、`reduce_back` | `Copy<'a> => ('a -> 'a -> 'a) -> ref [\|'a\|] -> 'a` | 先頭の要素を初期値にして畳み込みます。空リストはトラップします |
-| `scan`、`scan_back` | `(Copy<'a>, Copy<'state>) => ('state -> 'a -> 'state) -> 'state -> ref [\|'a\|] -> [\|'state\|]` | 途中の状態も含めて返します。長さは `n + 1` です |
+| `scan`、`scan_back` | `(Copy<'a>, Copy<'state>) => ('state -> 'a -> 'state) -> 'state -> ref [\|'a\|] -> [\|'state\|]` | 途中の状態も含めて返します。長さは `n + 1` です。`scan_back` は `('a -> 'state -> 'state) -> 'state -> ref [\|'a\|] -> [\|'state\|]` で、末尾から畳み込みます |
 
 ### 探索・判定
 
@@ -775,7 +803,7 @@ total=11
 ## まとめ
 
 - 型は `[|T|]` です。`List<T>` とは書けません。`::` はパターン専用で、先頭追加は `List.cons` です。
-- F# の `List` モジュールの関数がすべてあります。名前は snake_case、引数の順は F# と同じで、F# の例外はトラップ、`try_` は `Maybe` です。
+- F# の `List` モジュールの関数がすべてあります。名前は snake_case、リストは常に最後の引数（F# で最後にない 4 つの関数も移しました）、F# の例外はトラップ、`try_` は `Maybe` です。
 - 要素を値で受ける関数は `Copy` の要素向けで、非 `Copy` の要素には `mapr`、`foldr`、`existsr` のような `r` 形を使います。
 - 2 つのリストを取る関数は、F# と同じく共有する組を先に見ます。長さの違いは、答えが決まらなかったときにトラップします。
 - 長さは $O(1)$、添字は一度に作ったリストなら $O(1)$、`List.cons` で伸ばしたリストなら先行する chunk の数に比例します。`List` の関数は添字で回さないので、どちらのリストでも $O(n)$ 前後で終わります。走査は直接の `for ... in` が一時メモリを使いません。

@@ -120,18 +120,20 @@ if piped == composed then piped else 0
 
 `double` が `i64` を受け取るので、`quantities` は `[i64]` になります。`Array.map` は変換関数を先に取るため、`quantities |> Array.map double` と書けます。合成はパイプより強く結合しますが、上のように括弧でまとめると、パイプへ渡す関数が読みやすくなります。
 
+`Array.sort >> Array.rev` のように、`ref` を受け取る関数どうしも合成できます。前の関数が返した配列を、次の関数が呼び出しの間だけ借りて受け取ります。借りた配列の中を指す参照を返す関数（`Array.minr` など）につなぐと、参照が配列より長生きするので `E1013` です。
+
 値を捨てて `unit` にする組み込み関数が `ignore` です。`bool` の否定を関数として渡すときは `not` を使えます。`!` も論理否定です。
 
 ## 高階関数
 
-関数を受け取る、または返す関数が高階関数です。標準ライブラリは F# と同じく、関数を最初の引数に取ります。対象のコレクションが最後なので、パイプの右に置きやすい並びです。
+関数を受け取る、または返す関数が高階関数です。標準ライブラリは F# と同じく、関数を最初の引数に取ります。対象のコレクションは、`Array.write` のようにその場で書き換える関数も含めて最後なので、パイプの右に置きやすい並びです。
 
 | 関数 | 引数の並び |
 | --- | --- |
 | `Array.map` | 変換、配列 |
 | `Array.mapr` | `ref` を受け取る変換、配列 |
 | `Array.fold` | 畳み込み、初期値、配列 |
-| `Array.fold_back` | 畳み込み、配列、初期値 |
+| `Array.fold_back` | 畳み込み、初期値、配列 |
 
 `Array.map` は要素の `Copy` を要求します。文字列のように複製しない要素は `Array.mapr` を使います。末尾の `r` は、要素を `ref` で借用して関数に渡す版の印です。`foldr`、`existsr` などにもあります。
 
@@ -141,7 +143,7 @@ let total = Array.fold (\acc value -> acc + value) 0 numbers
 let texts = ["a", "bcd"]
 let lengths = texts |> Array.mapr (\text -> text.length)
 if total == 10 && lengths[1] == 3 then
-    Array.fold_back (\value digits -> digits * 10 + value) numbers 0
+    Array.fold_back (\value digits -> digits * 10 + value) 0 numbers
 else
     0
 ```

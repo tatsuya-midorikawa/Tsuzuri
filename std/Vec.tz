@@ -123,7 +123,7 @@ fn compact predicate view =
     let mut index = 0
     while index < length do
         if !(predicate (ref view[index])) then
-            if kept != index then Array.swap_in view kept index
+            if kept != index then Array.swap_in kept index view
             kept = kept + 1
         index = index + 1
     kept
@@ -135,7 +135,7 @@ fn compact_values predicate view =
     let mut index = 0
     while index < length do
         if !(predicate view[index]) then
-            if kept != index then Array.swap_in view kept index
+            if kept != index then Array.swap_in kept index view
             kept = kept + 1
         index = index + 1
     kept
@@ -163,7 +163,7 @@ fn reverse_slice view first count =
     let mut low = first
     let mut high = first + count - 1
     while low < high do
-        Array.swap_in view low high
+        Array.swap_in low high view
         low = low + 1
         high = high - 1
 
@@ -286,7 +286,7 @@ fn insertion_by comparison values first last =
     for index in (first + 1) .. (last - 1) do
         let mut current = index
         while current > first && comparison (ref values[current]) (ref values[current - 1]) < 0 do
-            Array.swap_in values current (current - 1)
+            Array.swap_in current (current - 1) values
             current = current - 1
 
 /// Merges the sorted runs `[first, middle)` and `[middle, last)` in place, stably (SymMerge).
@@ -299,7 +299,7 @@ fn rec merge_by comparison values first middle last =
             let half = low + (high - low) / 2
             if comparison (ref values[half]) (ref values[first]) < 0 then low = half + 1 else high = half
         for index in first .. (low - 2) do
-            Array.swap_in values index (index + 1)
+            Array.swap_in index (index + 1) values
     elif last - middle == 1 then
         let mut low = first
         let mut high = middle
@@ -307,7 +307,7 @@ fn rec merge_by comparison values first middle last =
             let half = low + (high - low) / 2
             if !(comparison (ref values[middle]) (ref values[half]) < 0) then low = half + 1 else high = half
         for index in middle .. -1 .. (low + 1) do
-            Array.swap_in values index (index - 1)
+            Array.swap_in index (index - 1) values
     else
         let center = first + (last - first) / 2
         let total = center + middle
@@ -332,10 +332,10 @@ fn rotate_slice values first middle last =
         let source = middle - left
         let target = if left > right then middle else middle + right - left
         for step in 0i64 .. (count - 1) do
-            Array.swap_in values (source + step) (target + step)
+            Array.swap_in (source + step) (target + step) values
         if left > right then left = left - right else right = right - left
     for step in 0i64 .. (left - 1) do
-        Array.swap_in values (middle - left + step) (middle + step)
+        Array.swap_in (middle - left + step) (middle + step) values
 
 // ---- Searching ----
 
@@ -619,7 +619,7 @@ fn copy_to_range index target target_index count values =
     assert (target_index >= 0 && target.length - target_index >= count)
     let mut offset = 0
     while offset < count do
-        Array.write target (target_index + offset) values[index + offset]
+        Array.write (target_index + offset) values[index + offset] target
         offset = offset + 1
 
 def copy_to_at :: Copy<'a> => ref mut ['a..] -> i64 -> ref Vec<'a> -> unit

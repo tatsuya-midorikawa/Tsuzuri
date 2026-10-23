@@ -598,7 +598,7 @@ WASM のデフォルト出力では、`tsuzuri_io` 以外のホストインポ�
 特殊化や所有権検査に先立って、明示的なスタックを用いた依存解析が行われ、定数の評価結果はキャッシュされて参照箇所へと型付きリテラルとしてインライン展開されます。
 型検査時には条件分岐の双方が通常の静的型検査を受け、定数評価器のみが短絡評価を行います。2進（binary）浮動小数点は `rustc_apfloat`（APFloat）を用いてビット幅ごとに正確に計算され、decimal 演算のコンパイル時評価は拒否されます。
 定数の内部宣言は非公開とされ、出力コードの到達性ルートからは除外されます。コンパイラコアに独立した定数ランタイムや共有所有メモリ領域を新設することはせず、既存の文字列リテラル用グローバル領域、集約値の生成機構、およびフレーム管理／ヒープ移送／デストラクタ（frame/relocate/drop）の仕組みをそのまま共有します。
-定数や式の一時値（関数呼び出しやパイプライン演算の結果など）を共有借用（`ref`）の引数へ渡す際は、`constants::temporary_borrows` がそれらを `BorrowOperand` に変換して一時値を生成・呼び出し後に安全に解放し、型検査によって「単一段階の完全適用であること」および「戻り値に借用が漏洩しないこと」を保証します。
+定数や式の一時値（関数呼び出しやパイプライン演算の結果など）を共有借用（`ref`）の引数へ渡す際は、`constants::temporary_borrows` がそれらを `BorrowOperand` に変換して一時値を生成・呼び出し後に安全に解放し、型検査によって「単一段階の完全適用であること」および「戻り値に借用が漏洩しないこと」を保証します。呼び出しを検査する時点で戻り値の型がまだ決まっていない場合（`Array.sort >> Array.rev` の合成は、要素の型が決まる前に `Array.rev` へ `Array.sort` の結果の配列を渡します）は、借用を `BorrowOperand` にせずに残し、関数の型が確定した `Checker::finish` で `settle_temporary_borrows` が同じ規則で決めます。確定した型でも規則を満たさない借用（`Array.sort >> Array.minr` のように、一時の配列を指す参照を返す呼び出し）は、これまでどおり所有権検査が `E1013` で拒否します。
 ### `const def`
 
 `def` 署名の `const` は構文木の `FunctionDecl::constant`／`SignatureDecl::constant` に保持され（フロントエンドキャッシュの形式は 3）、`Names::const_functions` に集められます。`constants::fold` は、まず全 `const def` の署名と本体を `const_rules` で検査します。署名は値型だけを許し、本体は `TypedExprKind` の全 variant を網羅した `match`（`_ =>` を持たない）で、評価するか `E1026` で拒否するかを決めます。評価は `const_machine::Machine` が行い、`const` の初期化式に現れる `const def` の呼び出し（引数は評価済みの値）もこの評価器へ渡します。
@@ -760,7 +760,7 @@ Error スタブは借用（loan）を持たないため、この回復パスで�
 型変数の段階では貸し直しは行われません。型が未確定（`Infer`）の被演算子は `undecided_borrows` に記録され、関数の `finish` 処理でデフォルト型が適用された後に参照型へと解決された場合は `E1015` エラーとなります。推論結果に基づいて事後的に型付き木の形状を改変することはありません。
 字句解析器では `ref` および `deref` を予約語として扱います。実引数位置における記号記法については、直前の空白の有無と被演算子との隣接関係に基づいて、前置の借用演算子（`f &x`）であるか二項ビット演算子（`a & b`、`a&b`）であるかを正確に判別します。
 
-関数呼び出し、パイプライン演算子 `|>`、およびアクティブパターン認識器の実引数は、`Checker::argument` において期待型に合わせて借用、再借用、および参照外しが自動的に補完されます。
+関数呼び出し、パイプライン演算子 `|>`、およびアクティブパターン認識器の実引数は、`Checker::argument` において期待型に合わせて借用、再借用、および参照外しが自動的に補完されます。`xs |> f a` では、`Checker::apply_piped` が `xs` の型を `f a` の次の引数へ先に当てはめ、`a` に書いたラムダの引数の型を決めます。`ref mut xs` や `let mut` の配列が排他スライス `ref mut [T..]` の引数へ渡るときは、スライスへの変換を呼び出しが完結してから `coerce_slice_argument` が行うので、`apply_piped` は要素の型だけを合わせます（`ref mut xs |> Array.write 0 1`）。
 変数名、フィールドアクセス、配列添字アクセス、および明示的参照外しは、まず元の型で型検査された後に既存の `Borrow` や `Dereference` へと変換されます。
 引数位置に置かれた関数呼び出しは `call_expression` で検査され、戻り値の参照の階層や可変性を保持した期待型を伝播させたうえで補完処理が行われます。
 これにより、数値リテラルやジェネリックな式の文脈依存型推論が損なわれるのを防ぎ、引数式が二重に検査・評価されるオーバーヘッドを回避しています。
@@ -952,7 +952,7 @@ VS Code 向け TextMate 文法では、`string.interpolated.tsuzuri`、`meta.emb
 
 ### 消費型コレクション更新
 
-`Array.__set`（std の `Array.update_at` の本体。`__` 付きの名前は利用者向けではなく、F# 互換の `Array.set` は排他スライスをその場で書き換える別の関数です）、`Array.update`、`Array.swap`、ならびに `List.cons`、`tail` は、通常の多相 `BuiltinInstance` として提供されます。
+`Array.__set`（std の `Array.update_at` の本体。`__` 付きの名前は利用者向けではなく、F# 互換の `Array.set` は排他スライスをその場で書き換える別の関数です）、`Array.update`、`Array.swap`、ならびに `List.cons`、`tail` は、通常の多相 `BuiltinInstance` として提供されます。`Array.__set`・`Array.update`・`Array.swap` の引数は（添字、値または関数または 2 つ目の添字、配列）の順で、配列が最後です。
 既存の組み込みラッパーおよび emitter の境界検査、drop、関数適用の仕組みを共有し、個別の専用フック関数は持ちません。
 呼び出し側の Copy／move およびスタックフレームからのヒープ移送が完了した所有バッファに対してインプレース更新を行うため、組み込み関数内部でコレクション全体を不必要に再複製することはありません。
 `update` における更新前の旧要素および関数のクロージャ環境は、所有権を持つクロージャ呼び出しへと安全に引き渡されるため、適用完了後に二重解放されることはありません。
@@ -1065,7 +1065,7 @@ NULL ポインタや要素数 0 のケースはヘッダー読み出しよりも
 排他スライスはすべて `TypedExprKind::Slice` として型付けされます。`ref mut values` や `ref mut [T]` から配列全体のビューへの変換（`src/check.rs` の `whole_view`）、ビューの貸し直しも同じ形になるため、所有権検査とコード生成の経路は一つです。
 所有権検査は二相です。`src/ownership.rs` は範囲式を評価している間だけ元の place に共有の guard loan を置き（範囲の中の読み取りは許し、書き込みは拒否します）、評価後に排他 loan を作ります。`Array.split_at_mut` の二つの結果は実引数の貸し直しの loan を一つ共有し、範囲を区別しません。
 スタックフレーム上の局所配列から排他スライスを作るときは、記述子を読む前に `own_heap_storage` が要素領域をヒープへ移します（`Array.write` が旧要素を解放するため、フレーム上の要素を `tz.free` に渡さないようにします）。参照外しを元とするスライスは移送しません。
-`Array.write`、`Array.swap_in`、`Array.split_at_mut` は組み込みで、`checked_element_pointer` の境界検査（`TrapKind::BoundsCheck`）の後に旧要素を解放して格納します。`Array.sort_in_place` は `std/Array.tz` の関数で、挿入整列と SymMerge による作業領域なしの安定整列です。
+`Array.write`、`Array.swap_in`、`Array.split_at_mut` は組み込みで、`checked_element_pointer` の境界検査（`TrapKind::BoundsCheck`）の後に旧要素を解放して格納します。スライスは最後の引数です（`Array.write 添字 値 スライス`、`Array.swap_in 添字 添字 スライス`、`Array.split_at_mut 添字 スライス`）。スライスより前の引数の式は、スライスを貸し出す前に評価し終わるので、同じ配列を読めます（`Array.write 0 (values[1] * 10) values`）。`llvm_facts::scalar_slice_call` は、この 2 つの書き込み（`write`、`swap_in`）の呼び出しの最後の IR 引数からスライスの記述子を読みます。`Array.sort_in_place` は `std/Array.tz` の関数で、挿入整列と SymMerge による作業領域なしの安定整列です。
 `Parallel.for_each_chunk` は `src/llvm_parallel.rs` の `parallel_chunks` が `ceil(length / size)` 個のチャンクへ分け、各 worker へ互いに素な記述子を渡します。
 
 ### 固定長配列

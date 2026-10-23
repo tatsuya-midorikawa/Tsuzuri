@@ -73,7 +73,7 @@ fn field_take_shared =
 export def field_update_reuse :: i64
 fn field_update_reuse =
     let holder = CopyHolder { values: new [1, 2, 3] }
-    let values = Array.__set holder.values 0 42
+    let values = Array.__set 0 42 holder.values
     values[0]
 
 def append_text :: string -> string -> string
@@ -127,19 +127,19 @@ fn utf8_repeat_allocation =
 export def transferred_array_update :: i64
 fn transferred_array_update =
     let values = new [1, 2, 3]
-    let updated = Array.__set values 0 42
+    let updated = Array.__set 0 42 values
     updated[0]
 
 export def copied_array_update :: i64
 fn copied_array_update =
     let values = new [1, 2, 3]
-    let updated = Array.__set values 0 42
+    let updated = Array.__set 0 42 values
     values[0] + updated[0]
 
 export def stack_array_update :: i64
 fn stack_array_update =
     let values = [1, 2, 3]
-    let updated = Array.__set values 0 42
+    let updated = Array.__set 0 42 values
     updated[0]
 
 export def record_update_owned :: i64

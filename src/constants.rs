@@ -343,6 +343,28 @@ impl Checker<'_> {
         Ok(())
     }
 
+    /// The temporary borrows that `temporary_borrows` left alone because a type was still open when the call was
+    /// checked, as in `let both = Array.sort >> Array.rev`: the composition applies `Array.rev` to the array that
+    /// `Array.sort` returns before the element type is known. Once the function is finished every type is known, and
+    /// the same rule settles them. A borrow that the rule still declines stays a borrow, and the ownership check
+    /// rejects it as before, so this only accepts programs that were rejected for want of a type.
+    pub(super) fn settle_temporary_borrows(
+        &self,
+        expression: &mut TypedExpr,
+    ) -> Result<(), Diagnostic> {
+        let span = expression.span;
+        let result = expression.ty.clone();
+        match &mut expression.kind {
+            TypedExprKind::Call(callee, arguments) => {
+                self.temporary_borrows(callee, arguments, &result, span)
+            }
+            TypedExprKind::Binary(BinaryOp::Pipe, argument, callee) => {
+                self.temporary_borrows(callee, std::slice::from_mut(&mut **argument), &result, span)
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Whether `value` names a constant of plain data, which a borrow takes as static data.
     pub(super) fn plain_constant(&self, value: &TypedExpr) -> bool {
         constant_id(value)

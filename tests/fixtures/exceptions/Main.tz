@@ -224,5 +224,5 @@ fn pipeline count =
     let values = Array.init count (\index -> index)
     let total = values |> Array.map double |> Array.sum
     let folded = Array.fold (\state value -> state * 3 + value) 0 (ref values)
-    let backward = Array.fold_back (\value state -> state * 3 + value) (ref values) 0
+    let backward = Array.fold_back (\value state -> state * 3 + value) 0 (ref values)
     total * 1000000 + (values |> (Array.map double >> Array.sum)) + folded % 1000 + backward % 7

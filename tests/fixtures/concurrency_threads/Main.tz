@@ -93,7 +93,7 @@ export def mutex_owned_array :: i64 -> i64
 fn mutex_owned_array n =
     let slots = Mutex.create (new [i64](n, \_index -> 0))
     let _done = Task.scope (ref slots) n (shared -> index -> Mutex.with_lock shared (values -> {
-        Array.write values index (index * 2 + 1);
+        Array.write index (index * 2 + 1) values;
         0
     }))
     Array.sum (ref (Mutex.into_inner slots))

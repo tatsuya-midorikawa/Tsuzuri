@@ -3506,6 +3506,9 @@ impl Checker<'_> {
             *ty = resolved;
             Ok(())
         })?;
+        walk(body, &mut |expression| {
+            self.settle_temporary_borrows(expression)
+        })?;
         for (class, ty, span) in captures(body, self.classes, &self.types, |id| {
             self.signatures[id].signature.parameters.len()
         })? {

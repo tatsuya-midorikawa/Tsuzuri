@@ -17,10 +17,10 @@ const pairs: [i64] = [1, 2]
 
 // ---- Access ----
 
-test "get past the end" = sink (Array.get ints 3)
-test "get below zero" = sink (Array.get ints (-1))
+test "get past the end" = sink (Array.get 3 ints)
+test "get below zero" = sink (Array.get (-1) ints)
 test "item past the end" = sink (Array.item 3 ints)
-test "at past the end" = sink (Array.at ints 3)
+test "at past the end" = sink (Array.at 3 ints)
 test "head of an empty array" = sink (Array.head no_ints)
 test "last of an empty array" = sink (Array.last no_ints)
 test "exactly_one of an empty array" = sink (Array.exactly_one no_ints)
@@ -36,9 +36,9 @@ test "zero_create with a negative count" = sink (zeros (-1))
 
 // ---- Slicing ----
 
-test "sub from a negative start" = sink (Array.sub ints (-1) 1)
-test "sub with a negative count" = sink (Array.sub ints 0 (-1))
-test "sub past the end" = sink (Array.sub ints 1 3)
+test "sub from a negative start" = sink (Array.sub (-1) 1 ints)
+test "sub with a negative count" = sink (Array.sub 0 (-1) ints)
+test "sub past the end" = sink (Array.sub 1 3 ints)
 test "take a negative count" = sink (Array.take (-1) ints)
 test "take more than the length" = sink (Array.take 4 ints)
 test "skip more than the length" = sink (Array.skip 4 ints)
@@ -61,7 +61,7 @@ test "map3 of different lengths" = sink (Array.map3 (\a b c -> a + b + c) ints i
 test "iter2 of different lengths" = Array.iter2 (\_a _b -> ()) ints pairs
 test "iteri2 of different lengths" = Array.iteri2 (\_i _a _b -> ()) ints pairs
 test "fold2 of different lengths" = sink (Array.fold2 (\s a b -> s + a + b) 0 ints pairs)
-test "fold_back2 of different lengths" = sink (Array.fold_back2 (\a b s -> s + a + b) ints pairs 0)
+test "fold_back2 of different lengths" = sink (Array.fold_back2 (\a b s -> s + a + b) 0 ints pairs)
 test "exists2 of different lengths" = sink (Array.exists2 (\_a _b -> false) ints pairs)
 test "forall2 of different lengths" = sink (Array.forall2 (\_a _b -> true) ints pairs)
 test "dot of different lengths" = sink (Array.dot [1.0, 2.0] [1.0])
@@ -105,27 +105,27 @@ test "permute out of range" = sink (Array.permute (\i -> i + 1) ints)
 
 test "set past the end" =
     let mut values = [1, 2, 3]
-    Array.set values 3 0
+    Array.set 3 0 values
 
 test "fill past the end" =
     let mut values = [1, 2, 3]
-    Array.fill values 2 2 0
+    Array.fill 2 2 0 values
 
 test "fill with a negative count" =
     let mut values = [1, 2, 3]
-    Array.fill values 0 (-1) 0
+    Array.fill 0 (-1) 0 values
 
 test "blit from past the source" =
     let mut values = [1, 2, 3]
-    Array.blit [1, 2] 1 values 0 2
+    Array.blit 1 0 2 [1, 2] values
 
 test "blit into past the target" =
     let mut values = [1, 2, 3]
-    Array.blit [1, 2, 3] 0 values 2 2
+    Array.blit 0 2 2 [1, 2, 3] values
 
 test "blit a negative count" =
     let mut values = [1, 2, 3]
-    Array.blit [1, 2, 3] 0 values 0 (-1)
+    Array.blit 0 0 (-1) [1, 2, 3] values
 
 // ---- Randomness ----
 
@@ -152,7 +152,7 @@ test "map reaches every element" = sink (Array.map (\x -> { assert (x < 3); x })
 test "exists reaches every element" = sink (Array.exists (\x -> { assert (x < 3); false }) ints)
 test "forall reaches every element" = sink (Array.forall (\x -> { assert (x < 3); true }) ints)
 test "fold reaches every element" = sink (Array.fold (\s x -> { assert (x < 3); s + x }) 0 ints)
-test "fold_back reaches the first element" = sink (Array.fold_back (\x s -> { assert (x > 1); s + x }) ints 0)
+test "fold_back reaches the first element" = sink (Array.fold_back (\x s -> { assert (x > 1); s + x }) 0 ints)
 test "filter reaches every element" = sink (Array.filter (\x -> { assert (x < 3); true }) ints)
 test "choose reaches every element" = sink (Array.choose (\x -> { assert (x < 3); Maybe.Some x }) ints)
 test "sort_with calls the comparer" = sink (Array.sort_with (\_a _b -> { assert false; 0 }) ints)

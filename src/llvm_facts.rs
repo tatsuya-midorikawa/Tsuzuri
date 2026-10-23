@@ -565,13 +565,17 @@ fn scalar_slice_call(
         return None;
     };
     if !matches!(instance.builtin, Builtin::ArrayWrite | Builtin::ArraySwapIn)
-        || !function.signature.parameters[0]
+        || !function
+            .signature
+            .parameters
+            .last()?
             .slice_element()
             .is_some_and(scalar)
     {
         return None;
     }
-    let descriptor = operand(arguments.strip_prefix("%tz.array ")?);
+    // The slice is the last argument, after the scalars (an index and a value or a second index).
+    let descriptor = operand(arguments.rsplit_once(", ")?.1.strip_prefix("%tz.array ")?);
     match values.get(descriptor) {
         Some(Origin::Descriptor(root)) => Some(*root),
         _ => None,

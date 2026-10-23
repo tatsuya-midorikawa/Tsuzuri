@@ -151,7 +151,7 @@ fn inline_definitions_and_implicit_unions_preserve_layout_and_fingerprints() {
 
 #[test]
 fn formats_exclusive_slices() {
-    let source = "def fill::ref mut [i64..]->i64->unit=\\values value->Array.write values 0 value\nlet mut values:[i64]=[1,2,3]\nlet tail=ref mut values[1..]\nfill tail 2\nlet head=&mut values[..2]\nfill head 1\nlet whole:ref mut [i64..]=ref mut values[0..]\nwhole.length\n";
+    let source = "def fill::ref mut [i64..]->i64->unit=\\values value->Array.write 0 value values\nlet mut values:[i64]=[1,2,3]\nlet tail=ref mut values[1..]\nfill tail 2\nlet head=&mut values[..2]\nfill head 1\nlet whole:ref mut [i64..]=ref mut values[0..]\nwhole.length\n";
     let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
     let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
     assert_eq!(first.formatted, second.formatted);

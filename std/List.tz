@@ -1,5 +1,7 @@
-// The F# `List` module in Tsuzuri: the same names in snake_case (`tryFind` is `try_find`), the same argument order and
-// the same results, with `i64` for every index and count. Where F# raises an exception this module traps, and `try_*`
+// The F# `List` module in Tsuzuri: the same names in snake_case (`tryFind` is `try_find`) and the same results, with
+// `i64` for every index and count. The list is always the last argument, so that `list |> List.f x` and
+// `List.f x >> List.g y` work; F# does the same except in `fold_back`, `fold_back2`, `scan_back` and `map_fold_back`,
+// where this module moves the list to the end too. Where F# raises an exception this module traps, and `try_*`
 // functions return `Maybe`. Callbacks that read an element take it by value, so the element type must be `Copy`; the
 // `r` forms (`mapr`, `foldr`, `existsr`, ...) borrow each element instead and work for any element type.
 //
@@ -275,8 +277,8 @@ fn map_fold mapping initial values =
             state = next
     (of_vec mapped, state)
 
-def map_fold_back :: Copy<'a> => ('a -> 'state -> ('b * 'state)) -> ref [|'a|] -> 'state -> ([|'b|] * 'state)
-fn map_fold_back mapping values initial =
+def map_fold_back :: Copy<'a> => ('a -> 'state -> ('b * 'state)) -> 'state -> ref [|'a|] -> ([|'b|] * 'state)
+fn map_fold_back mapping initial values =
     let source = List.to_array values
     let mut state = initial
     let mut mapped: [|'b|] = [||]
@@ -327,16 +329,16 @@ fn fold2 folder initial left right =
     assert (first.length == second.length)
     state
 
-def fold_back :: Copy<'a> => ('a -> 'state -> 'state) -> ref [|'a|] -> 'state -> 'state
-fn fold_back folder values initial = Array.fold_back folder (List.to_array values) initial
+def fold_back :: Copy<'a> => ('a -> 'state -> 'state) -> 'state -> ref [|'a|] -> 'state
+fn fold_back folder initial values = Array.fold_back folder initial (List.to_array values)
 
 /// References to the elements of `values`, in order.
 private def references :: ref [|'a|] -> Vec<ref 'a>
 fn references values = List.foldr (\collected value -> Vec.push value collected) (Vec.empty()) values
 
 /// Like `fold_back`, but `folder` borrows each element, so the elements need not be `Copy`.
-def foldr_back :: (ref 'a -> 'state -> 'state) -> ref [|'a|] -> 'state -> 'state
-fn foldr_back folder values initial =
+def foldr_back :: (ref 'a -> 'state -> 'state) -> 'state -> ref [|'a|] -> 'state
+fn foldr_back folder initial values =
     let elements = references values
     let mut state = initial
     let mut index = Vec.length (ref elements)
@@ -345,8 +347,8 @@ fn foldr_back folder values initial =
         state = folder elements[index] state
     state
 
-def fold_back2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'state -> 'state) -> ref [|'a|] -> ref [|'b|] -> 'state -> 'state
-fn fold_back2 folder left right initial = Array.fold_back2 folder (List.to_array left) (List.to_array right) initial
+def fold_back2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'state -> 'state) -> 'state -> ref [|'a|] -> ref [|'b|] -> 'state
+fn fold_back2 folder initial left right = Array.fold_back2 folder initial (List.to_array left) (List.to_array right)
 
 def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref [|'a|] -> 'a
 fn reduce folder values =
@@ -370,8 +372,8 @@ fn scan folder initial values =
         states = Vec.push state states
     Array.to_list (Vec.to_array states)
 
-def scan_back :: (Copy<'a>, Copy<'state>) => ('a -> 'state -> 'state) -> ref [|'a|] -> 'state -> [|'state|]
-fn scan_back folder values initial = Array.to_list (Array.scan_back folder (List.to_array values) initial)
+def scan_back :: (Copy<'a>, Copy<'state>) => ('a -> 'state -> 'state) -> 'state -> ref [|'a|] -> [|'state|]
+fn scan_back folder initial values = Array.to_list (Array.scan_back folder initial (List.to_array values))
 
 // ---- Searching ----
 

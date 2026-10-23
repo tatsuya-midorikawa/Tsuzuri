@@ -108,14 +108,14 @@ test "length is_empty" =
 
 test "get item try_item at" =
     let xs = [10, 20, 30]
-    eq (Array.get xs 1) 20
+    eq (Array.get 1 xs) 20
     eq (Array.item 2 xs) 30
     some_eq (Array.try_item 2 xs) 30
     none (Array.try_item 3 xs)
     none (Array.try_item (-1) xs)
-    eq (*(Array.at xs 0)) 10
+    eq (*(Array.at 0 xs)) 10
     let words = ["a", "bb"]
-    eq (Array.at words 1).length 2
+    eq (Array.at 1 words).length 2
 
 test "head last exactly_one and their try forms" =
     let xs = [10, 20, 30]
@@ -134,8 +134,8 @@ test "head last exactly_one and their try forms" =
 
 test "sub tail take skip truncate split_at" =
     let xs = [1, 2, 3, 4]
-    eq (Array.sub xs 1 2) [2, 3]
-    eq (Array.sub xs 4 0) no_ints
+    eq (Array.sub 1 2 xs) [2, 3]
+    eq (Array.sub 4 0 xs) no_ints
     eq (Array.tail xs) [2, 3, 4]
     eq (Array.tail [1]) no_ints
     eq (Array.take 2 xs) [1, 2]
@@ -257,11 +257,11 @@ test "map_fold map_fold_back" =
     | (mapped, total) ->
         eq mapped [2, 4, 6]
         eq total 6
-    match Array.map_fold_back (\x acc -> (x * 2, acc + x)) [1, 2, 3] 0 with
+    match Array.map_fold_back (\x acc -> (x * 2, acc + x)) 0 [1, 2, 3] with
     | (mapped, total) ->
         eq mapped [2, 4, 6]
         eq total 6
-    match Array.map_fold_back (\x acc -> (acc, acc + x)) [1, 2, 3] 0 with
+    match Array.map_fold_back (\x acc -> (acc, acc + x)) 0 [1, 2, 3] with
     | (mapped, total) ->
         eq mapped [5, 3, 0]
         eq total 6
@@ -298,14 +298,14 @@ test "fold fold_back fold2 fold_back2 and the r forms" =
     let xs = [1, 2, 3, 4]
     eq (Array.fold (\acc x -> acc * 10 + x) 0 xs) 1234
     eq (Array.foldr (\acc x -> acc * 10 + *x) 0 xs) 1234
-    eq (Array.fold_back (\x acc -> acc * 10 + x) xs 0) 4321
-    eq (Array.foldr_back (\x acc -> acc * 10 + *x) xs 0) 4321
+    eq (Array.fold_back (\x acc -> acc * 10 + x) 0 xs) 4321
+    eq (Array.foldr_back (\x acc -> acc * 10 + *x) 0 xs) 4321
     eq (Array.fold2 (\acc a b -> acc + a * b) 0 [1, 2, 3] [4, 5, 6]) 32
-    eq (Array.fold_back2 (\a b acc -> acc * 10 + a + b) [1, 2, 3] [10, 20, 30] 0) 3531
+    eq (Array.fold_back2 (\a b acc -> acc * 10 + a + b) 0 [1, 2, 3] [10, 20, 30]) 3531
     eq (Array.fold (\acc x -> acc + x) 7 no_ints) 7
     let words = ["a", "bcd"]
     eq (Array.foldr (\acc w -> acc + w.length) 0 words) 4
-    eq (Array.foldr_back (\w acc -> acc * 10 + w.length) words 0) 31
+    eq (Array.foldr_back (\w acc -> acc * 10 + w.length) 0 words) 31
 
 test "reduce reduce_back scan scan_back" =
     eq (Array.reduce (\a b -> a * 10 + b) [1, 3, 4, 2]) 1342
@@ -313,9 +313,9 @@ test "reduce reduce_back scan scan_back" =
     eq (Array.reduce (\a b -> a + b) [5]) 5
     eq (Array.reduce_back (\a b -> a + b) [5]) 5
     eq (Array.scan (\acc x -> acc + x) 0 [1, 2, 3]) [0, 1, 3, 6]
-    eq (Array.scan_back (\x acc -> acc + x) [1, 2, 3] 0) [6, 5, 3, 0]
+    eq (Array.scan_back (\x acc -> acc + x) 0 [1, 2, 3]) [6, 5, 3, 0]
     eq (Array.scan (\acc x -> acc + x) 7 no_ints) [7]
-    eq (Array.scan_back (\x acc -> acc + x) no_ints 7) [7]
+    eq (Array.scan_back (\x acc -> acc + x) 7 no_ints) [7]
 
 // ---- Searching ----
 
@@ -386,14 +386,14 @@ test "contains containsr index_of equal binary_search compare_with" =
     let target = "b"
     Test.is_true (Array.containsr target words)
     Test.is_true (!(Array.containsr "z" words))
-    some_eq (Array.index_of [5, 6, 7] (ref 7)) 2
-    none (Array.index_of [5, 6, 7] (ref 9))
+    some_eq (Array.index_of (ref 7) [5, 6, 7]) 2
+    none (Array.index_of (ref 9) [5, 6, 7])
     Test.is_true (Array.equal [1, 2] [1, 2])
     Test.is_true (!(Array.equal [1, 2] [1, 3]))
     Test.is_true (!(Array.equal [1, 2] [1]))
-    some_eq (Array.binary_search [1, 2, 2, 5] (ref 2)) 1
-    none (Array.binary_search [1, 2, 2, 5] (ref 4))
-    none (Array.binary_search no_ints (ref 4))
+    some_eq (Array.binary_search (ref 2) [1, 2, 2, 5]) 1
+    none (Array.binary_search (ref 4) [1, 2, 2, 5])
+    none (Array.binary_search (ref 4) no_ints)
     eq (Array.compare_with (\a b -> a - b) [1, 2, 3] [1, 2, 3]) 0
     eq (Array.compare_with (\a b -> a - b) [1, 2] [1, 2, 3]) (-1)
     eq (Array.compare_with (\a b -> a - b) [1, 2, 3] [1, 2]) 1
@@ -489,7 +489,7 @@ test "distinct distinct_by except count_by group_by treat every NaN as one value
     let distinct = Array.distinct values
     eq distinct.length 3
     Test.is_true (is_nan distinct[0])
-    eq (Array.sub distinct 1 2) [1.0, 2.0]
+    eq (Array.sub 1 2 distinct) [1.0, 2.0]
     let by_key = Array.distinct_by (\x -> x * 0.0) [1.0, nan, 2.0, nan]
     eq by_key.length 2
     eq by_key[0] 1.0
@@ -615,23 +615,23 @@ test "sort_by sort_by_descending sort_in_place_by put NaN keys last like sort" =
     let nan = 0.0 / 0.0
     let values = [nan, 1.0, 0.5, nan, 2.0]
     let sorted = Array.sort values
-    eq (Array.sub sorted 0 3) [0.5, 1.0, 2.0]
+    eq (Array.sub 0 3 sorted) [0.5, 1.0, 2.0]
     Test.is_true (is_nan sorted[3] && is_nan sorted[4])
     let sorted_descending = Array.sort_descending values
-    eq (Array.sub sorted_descending 0 3) [2.0, 1.0, 0.5]
+    eq (Array.sub 0 3 sorted_descending) [2.0, 1.0, 0.5]
     Test.is_true (is_nan sorted_descending[3] && is_nan sorted_descending[4])
     let ascending = Array.sort_by (\x -> x) values
-    eq (Array.sub ascending 0 3) [0.5, 1.0, 2.0]
+    eq (Array.sub 0 3 ascending) [0.5, 1.0, 2.0]
     Test.is_true (is_nan ascending[3] && is_nan ascending[4])
     let descending = Array.sort_by_descending (\x -> x) values
-    eq (Array.sub descending 0 3) [2.0, 1.0, 0.5]
+    eq (Array.sub 0 3 descending) [2.0, 1.0, 0.5]
     Test.is_true (is_nan descending[3] && is_nan descending[4])
     let with_comparer = Array.sort_with (\a b -> if a < b then -1 else if a > b then 1 else 0) values
-    eq (Array.sub with_comparer 0 3) [0.5, 1.0, 2.0]
+    eq (Array.sub 0 3 with_comparer) [0.5, 1.0, 2.0]
     Test.is_true (is_nan with_comparer[3] && is_nan with_comparer[4])
     let mut in_place = values
     Array.sort_in_place_by (\x -> x) in_place
-    eq (Array.sub in_place 0 3) [0.5, 1.0, 2.0]
+    eq (Array.sub 0 3 in_place) [0.5, 1.0, 2.0]
     Test.is_true (is_nan in_place[3] && is_nan in_place[4])
     let tagged = [(0, nan), (1, 1.0), (2, nan), (3, 0.5)]
     let by_key = Array.sort_by (\p -> match p with | (_, key) -> key) tagged
@@ -666,24 +666,24 @@ test "NaN of f32 and f16 in the sorts" =
     let nan32 = 0.0f / 0.0f
     let singles = [nan32, 1.0f, 0.5f]
     let sorted32 = Array.sort singles
-    eq (Array.sub sorted32 0 2) [0.5f, 1.0f]
+    eq (Array.sub 0 2 sorted32) [0.5f, 1.0f]
     Test.is_true (sorted32[2] != sorted32[2])
     let descending32 = Array.sort_descending singles
-    eq (Array.sub descending32 0 2) [1.0f, 0.5f]
+    eq (Array.sub 0 2 descending32) [1.0f, 0.5f]
     Test.is_true (descending32[2] != descending32[2])
     let with32 = Array.sort_with (\a b -> if a < b then -1 else if a > b then 1 else 0) singles
-    eq (Array.sub with32 0 2) [0.5f, 1.0f]
+    eq (Array.sub 0 2 with32) [0.5f, 1.0f]
     Test.is_true (with32[2] != with32[2])
     let by_key32 = Array.sort_by (\x -> x) singles
-    eq (Array.sub by_key32 0 2) [0.5f, 1.0f]
+    eq (Array.sub 0 2 by_key32) [0.5f, 1.0f]
     Test.is_true (by_key32[2] != by_key32[2])
     let nan16 = 0.0f16 / 0.0f16
     let halves = [nan16, 1.0f16, 0.5f16]
     let by_key16 = Array.sort_by (\x -> x) halves
-    eq (Array.sub by_key16 0 2) [0.5f16, 1.0f16]
+    eq (Array.sub 0 2 by_key16) [0.5f16, 1.0f16]
     Test.is_true (by_key16[2] != by_key16[2])
     let by_key16_descending = Array.sort_by_descending (\x -> x) halves
-    eq (Array.sub by_key16_descending 0 2) [1.0f16, 0.5f16]
+    eq (Array.sub 0 2 by_key16_descending) [1.0f16, 0.5f16]
     Test.is_true (by_key16_descending[2] != by_key16_descending[2])
 
 test "sort_in_place sort_in_place_by sort_in_place_with" =
@@ -731,39 +731,39 @@ test "update_at keeps the source when it is copied" =
     for i in 0 .. 3 do
         state = Array.update_at i (i * 2) state
     eq state [0, 2, 4, 6]
-    eq (Array.update [1, 2, 3] 1 (\x -> x * 10)) [1, 20, 3]
-    eq (Array.swap [1, 2, 3] 0 2) [3, 2, 1]
+    eq (Array.update 1 (\x -> x * 10) [1, 2, 3]) [1, 20, 3]
+    eq (Array.swap 0 2 [1, 2, 3]) [3, 2, 1]
     eq (Array.update_at 1 "x" ["a", "b"]) ["a", "x"]
 
 test "set fill blit write swap_in in place" =
     let mut target = [0, 1, 2, 3, 4, 5]
-    Array.fill target 3 2 100
+    Array.fill 3 2 100 target
     eq target [0, 1, 2, 100, 100, 5]
-    Array.fill target 6 0 7
+    Array.fill 6 0 7 target
     eq target [0, 1, 2, 100, 100, 5]
     let mut copy_into = [0, 1, 2, 3, 4, 5]
-    Array.blit [12, 13, 14] 1 copy_into 3 2
+    Array.blit 1 3 2 [12, 13, 14] copy_into
     eq copy_into [0, 1, 2, 13, 14, 5]
-    Array.blit [12, 13, 14] 3 copy_into 6 0
+    Array.blit 3 6 0 [12, 13, 14] copy_into
     eq copy_into [0, 1, 2, 13, 14, 5]
     let mut values = [1, 2, 3]
-    Array.set values 1 20
+    Array.set 1 20 values
     eq values [1, 20, 3]
-    Array.write values 0 10
+    Array.write 0 10 values
     eq values [10, 20, 3]
-    Array.swap_in values 0 2
+    Array.swap_in 0 2 values
     eq values [3, 20, 10]
     let mut words = ["a", "b"]
-    Array.set words 0 "z"
+    Array.set 0 "z" words
     eq words ["z", "b"]
 
 test "slices of a larger array are updated in place" =
     let mut values = [0, 1, 2, 3, 4, 5]
-    Array.fill (ref mut values[2..5]) 0 2 9
+    Array.fill 0 2 9 (ref mut values[2..5])
     eq values [0, 1, 9, 9, 4, 5]
-    Array.set (ref mut values[1..3]) 0 7
+    Array.set 0 7 (ref mut values[1..3])
     eq values [0, 7, 9, 9, 4, 5]
-    Array.blit [8, 8] 0 (ref mut values[4..6]) 0 2
+    Array.blit 0 0 2 [8, 8] (ref mut values[4..6])
     eq values [0, 7, 9, 9, 8, 8]
 
 // ---- Conversions ----
@@ -838,11 +838,11 @@ test "random_*_with a Pcg generator" =
 test "ownership: elements that are not Copy" =
     let words = ["pear", "fig", "apple"]
     eq (Array.length words) 3
-    Test.equal (Array.at words 2) "apple"
+    Test.equal (Array.at 2 words) "apple"
     Test.equal (Array.minr words) "apple"
     Test.equal (Array.maxr words) "pear"
     Test.is_true (Array.containsr "fig" words)
-    some_eq (Array.index_of words (ref "fig")) 1
+    some_eq (Array.index_of (ref "fig") words) 1
     eq (Array.countr (\w -> w.length == 4) words) 1
     Test.is_true (Array.equal words ["pear", "fig", "apple"])
     let mut sortable = ["pear", "fig", "apple"]
@@ -856,3 +856,55 @@ test "a pipeline reads like F#" =
     eq ([3, 1, 2] |> Array.sort |> Array.rev) [3, 2, 1]
     eq ([1, 2, 3] |> Array.fold (\acc x -> acc + x) 0) 6
     eq ([[1, 2], [3]] |> Array.concat |> Array.map (\x -> x * 2)) [2, 4, 6]
+
+// ---- The array comes last ----
+
+test "the array is the last argument, so pipelines and compositions pass it on" =
+    eq ([1, 2, 3] |> Array.fold_back (\x acc -> acc * 10 + x) 0) 321
+    eq ([1, 2, 3] |> Array.foldr_back (\x acc -> acc * 10 + deref x) 0) 321
+    eq ([1, 2, 3] |> Array.scan_back (\x acc -> acc + x) 0) [6, 5, 3, 0]
+    eq (Array.fold_back2 (\x y acc -> acc + x * y) 0 [1, 2, 3] [4, 5, 6]) 32
+    match [1, 2, 3, 4] |> Array.map_fold_back (\x acc -> (x + acc, acc + 1)) 0 with
+    | (mapped, last) ->
+        eq mapped [4, 4, 4, 4]
+        eq last 4
+    eq ([10, 20, 30, 40] |> Array.sub 1 2) [20, 30]
+    eq ([10, 20, 30] |> Array.get 1) 20
+    let both = Array.sort >> Array.rev
+    eq (both [4, 9, 1]) [9, 4, 1]
+    let top_two = Array.sort >> Array.rev >> Array.truncate 2
+    eq ([5, 8, 6] |> top_two) [8, 6]
+    eq ([3, 1, 2] |> (Array.sort >> Array.rev)) [3, 2, 1]
+    let changed = Array.update_at 0 9 >> Array.swap 0 1
+    eq (changed [1, 2, 3]) [2, 9, 3]
+    eq ([1, 2, 3] |> Array.update 1 (\x -> x * 10) |> Array.swap 0 2) [3, 20, 1]
+
+test "a mutable array pipes into the functions that write it" =
+    let mut xs = [1, 2, 3, 4, 5]
+    ref mut xs |> Array.set 0 9
+    ref mut xs |> Array.fill 3 2 7
+    ref mut xs |> Array.swap_in 1 2
+    ref mut xs |> Array.write 4 0
+    eq xs [9, 3, 2, 7, 0]
+    let source = [100, 200]
+    ref mut xs |> Array.blit 0 1 2 (ref source)
+    eq xs [9, 100, 200, 7, 0]
+    let mut ys = [3, 1, 2]
+    ref mut ys |> Array.sort_in_place_with (\a b -> a - b)
+    eq ys [1, 2, 3]
+    match Array.split_at_mut 1 (ref mut ys) with
+    | (left, right) ->
+        Array.write 0 8 left
+        Array.write 1 9 right
+    eq ys [8, 2, 9]
+
+test "an argument before the array may read the array that is lent last" =
+    let mut zs = [1, 2, 3]
+    Array.write 0 (zs[1] * 10) zs
+    eq zs [20, 2, 3]
+    Array.swap_in 0 (zs.length - 1) zs
+    eq zs [3, 2, 20]
+    Array.set (zs.length - 1) (zs[0] + zs[1]) zs
+    eq zs [3, 2, 5]
+    Array.fill 0 (zs[1]) 7 zs
+    eq zs [7, 7, 5]

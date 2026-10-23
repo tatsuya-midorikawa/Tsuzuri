@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn analysis_is_deterministic_and_budget_failure_is_empty() {
         let module = crate::analyze(
-            "def f :: [i64] -> [i64] = \\xs -> if xs.length > 1 then Array.__set xs 0 9 else xs\n0",
+            "def f :: [i64] -> [i64] = \\xs -> if xs.length > 1 then Array.__set 0 9 xs else xs\n0",
         )
         .unwrap();
         let function = module.functions.iter().find(|f| f.name == "f").unwrap();

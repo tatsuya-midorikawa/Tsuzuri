@@ -286,7 +286,7 @@ exact   Array.length :: ref ['a] -> i64
 exact   Array.product :: Numeric<'a> => ref ['a] -> 'a
 exact   Array.sum :: Numeric<'a> => ref ['a] -> 'a
 exact   Parallel.sum :: Numeric<'a>, Add<'a>, Copy<'a>, Send<'a> => ref ['a] -> 'a
-partial Array.at :: ref ['a] -> i64 -> ref 'a  (+1)
+partial Array.at :: i64 -> ref ['a] -> ref 'a  (+1)
 partial Array.count :: (ref 'a -> bool) -> ref ['a] -> i64  (+1)
 ...
 partial Array.fold_ref :: ('state -> ref 'a -> 'state) -> 'state -> ref ['a] -> 'state  (+2)

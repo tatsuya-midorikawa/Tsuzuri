@@ -274,10 +274,10 @@ fn blank range = Table { present: new [bool](range, \_ -> false), values: new [i
 
 def table_insert :: Table -> i64 -> i64 -> Table
 fn table_insert table key value =
-    Table { present: Array.set table.present key true, values: Array.set table.values key value }
+    Table { present: Array.update_at key true table.present, values: Array.update_at key value table.values }
 
 def table_remove :: Table -> i64 -> Table
-fn table_remove table key = Table { present: Array.set table.present key false, values: table.values }
+fn table_remove table key = Table { present: Array.update_at key false table.present, values: table.values }
 
 def table_keys :: ref Table -> [i64]
 fn table_keys table =

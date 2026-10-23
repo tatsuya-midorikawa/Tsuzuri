@@ -197,7 +197,7 @@ fn rec gather data shape strides axis offset out position =
     let mut next = position
     if axis == shape.length - 1 then
         for step in 0i64 .. (shape[axis] - 1) do
-            Array.write out next data[offset + step * strides[axis]]
+            Array.write next data[offset + step * strides[axis]] out
             next = next + 1
     else
         for step in 0i64 .. (shape[axis] - 1) do
@@ -209,7 +209,7 @@ def to_tensor :: Copy<'a> => ref View<'a> -> Tensor<'a>
 fn to_tensor view =
     let total = volume (ref view.shape)
     if total == 0 then Tensor { shape: Array.copy (ref view.shape), data: Array.init 0 (\_ -> view.data[0]) }
-    elif is_contiguous view then Tensor { shape: Array.copy (ref view.shape), data: Array.sub view.data view.offset total }
+    elif is_contiguous view then Tensor { shape: Array.copy (ref view.shape), data: Array.sub view.offset total view.data }
     else
         let mut out = new ['a](total, _ -> view.data[view.offset])
         let written = gather view.data (ref view.shape) (ref view.strides) 0 view.offset (ref mut out) 0

@@ -30,7 +30,7 @@
 | C-06 | E1021（網羅されない `match`）を直す | `E1021`・41 行目。`fix` は `Square _` の腕を足す | `diag/c06` |
 | C-07 | E1005（`Eq` の instance がない）を直す | `E1005`・27 行目。`fix` は `record Point` に `deriving (Eq)` | `diag/c07` |
 | D-01 | 型 `Ord<'a> => ref ['a] -> ['a]` の関数 | `std/Array.tz` の `def sort ::`（`Array.sort`） | `std` |
-| D-02 | 型 `Copy<'a> => ref ['a] -> i64 -> Maybe<'a>` の関数 | `std/Array.tz` の `def get ::`（`Array.get`）。grep は型の断片だけで探す | `std` |
+| D-02 | 型 `Copy<'a> => i64 -> ref ['a] -> Maybe<'a>` の関数 | `std/Array.tz` の `def get ::`（`Array.get`）。grep は型の断片だけで探す | `std` |
 | D-03 | 型 `ref string -> ref string -> [string]` の関数 | `std/String.tz` の `def split ::`（`String.split`） | `std` |
 | D-04 | 型 `'e -> Maybe<'a> -> Result<'a, 'e>` の関数 | `std/Maybe.tc` の `def to_result ::`（`Maybe.to_result`）。grep は断片 | `std` |
 | D-05 | 型 `string -> IO<Result<string, Os.Error>>` の関数 | `std/File.tz` の `def read_text ::`（`File.read_text`）。grep は断片 | `std` |
@@ -97,7 +97,7 @@
 ```json
 {"schema":"tz-ai-task/1","type":"type-search","tasks":[
   {"id":"D-01","type":"type-search","prompt":"Which std function has the type `Ord<'a> => ref ['a] -> ['a]`? Reply with Module.function.","corpus":["std"],"grep":["Ord<'a> => ref ['a] -> ['a]"],"needs":[["std/Array.tz","def sort :: Ord<'a> => ref ['a] -> ['a]",0,0]],"answer":["def sort :: Ord<'a> => ref ['a] -> ['a]"],"find":"ref ['a] -> ['a]"},
-  {"id":"D-02","type":"type-search","prompt":"Which std function has the type `Copy<'a> => ref ['a] -> i64 -> Maybe<'a>`? Reply with Module.function.","corpus":["std"],"grep":["ref ['a] -> i64 -> Maybe"],"needs":[["std/Array.tz","def get :: Copy<'a> => ref ['a] -> i64 -> Maybe<'a>",0,0]],"answer":["def get :: Copy<'a> => ref ['a] -> i64 -> Maybe<'a>"],"find":"ref ['a] -> i64 -> Maybe<'a>"},
+  {"id":"D-02","type":"type-search","prompt":"Which std function has the type `Copy<'a> => i64 -> ref ['a] -> Maybe<'a>`? Reply with Module.function.","corpus":["std"],"grep":["i64 -> ref ['a] -> Maybe"],"needs":[["std/Array.tz","def get :: Copy<'a> => i64 -> ref ['a] -> Maybe<'a>",0,0]],"answer":["def get :: Copy<'a> => i64 -> ref ['a] -> Maybe<'a>"],"find":"i64 -> ref ['a] -> Maybe<'a>"},
   {"id":"D-03","type":"type-search","prompt":"Which std function has the type `ref string -> ref string -> [string]`? Reply with Module.function.","corpus":["std"],"grep":["ref string -> ref string -> [string]"],"needs":[["std/String.tz","def split :: ref string -> ref string -> [string]",0,0]],"answer":["def split :: ref string -> ref string -> [string]"],"find":"ref string -> ref string -> [string]"},
   {"id":"D-04","type":"type-search","prompt":"Which std function has the type `'e -> Maybe<'a> -> Result<'a, 'e>`? Reply with Module.function.","corpus":["std"],"grep":["Maybe<'a> -> Result"],"needs":[["std/Maybe.tc","def to_result :: 'e -> Maybe<'a> -> Result<'a, 'e>",0,0]],"answer":["def to_result :: 'e -> Maybe<'a> -> Result<'a, 'e>"],"find":"'e -> Maybe<'a> -> Result<'a, 'e>"},
   {"id":"D-05","type":"type-search","prompt":"Which std function has the type `string -> IO<Result<string, Os.Error>>`? Reply with Module.function.","corpus":["std"],"grep":["IO<Result<string"],"needs":[["std/File.tz","def read_text :: string -> IO<Result<string, Os.Error>>",0,0]],"answer":["def read_text :: string -> IO<Result<string, Os.Error>>"],"find":"string -> IO<Result<string, Os.Error>>"},

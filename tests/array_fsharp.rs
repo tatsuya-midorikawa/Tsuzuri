@@ -284,12 +284,13 @@ fn rejects(source: &str, code: &str) {
 
 #[test]
 fn callbacks_take_values_and_the_r_forms_borrow() {
-    // F# code reads the same: callbacks receive the element, and arguments follow F#'s order.
+    // F# code reads the same: callbacks receive the element, and the array comes last as in F# (`fold_back` and a few
+    // others move it to the end; see tests/collection_last.rs).
     for source in [
         "[1, 2, 3] |> Array.filter (\\x -> x > 1) |> Array.map (\\x -> x * 2) |> Array.sum",
         "Array.exists (\\x -> x > 2) [1, 2, 3]",
         "Array.fold (\\total x -> total + x) 0 [1, 2, 3]",
-        "Array.fold_back (\\x total -> total + x) [1, 2, 3] 0",
+        "Array.fold_back (\\x total -> total + x) 0 [1, 2, 3]",
         "Array.contains 2 [1, 2, 3]",
         "Array.sort_by (\\x -> -x) [1, 2, 3]",
         "Array.try_find (\\x -> x > 1) [1, 2, 3]",
@@ -304,7 +305,7 @@ fn callbacks_take_values_and_the_r_forms_borrow() {
         "let words = [\"a\", \"bb\"]\nArray.mapr (\\w -> w.length) words",
         "let words = [\"a\", \"bb\"]\nArray.mapir (\\i w -> i + w.length) words",
         "let words = [\"a\", \"bb\"]\nArray.foldr (\\total w -> total + w.length) 0 words",
-        "let words = [\"a\", \"bb\"]\nArray.foldr_back (\\w total -> total + w.length) words 0",
+        "let words = [\"a\", \"bb\"]\nArray.foldr_back (\\w total -> total + w.length) 0 words",
         "let words = [\"a\", \"bb\"]\nArray.iterr (\\w -> assert (w.length > 0)) words",
         "let words = [\"a\", \"bb\"]\nArray.iterir (\\i w -> assert (w.length > i)) words",
         "let words = [\"a\", \"bb\"]\nArray.existsr (\\w -> w.length == 2) words",
@@ -356,11 +357,11 @@ fn the_ref_suffix_is_spelled_r_and_the_old_names_are_gone() {
 
 #[test]
 fn set_updates_in_place_and_update_at_consumes_the_array() {
-    accepts("let mut values = [1, 2, 3]\nArray.set values 1 9\nvalues[1]");
+    accepts("let mut values = [1, 2, 3]\nArray.set 1 9 values\nvalues[1]");
     accepts("let values = [1, 2, 3]\nlet updated = Array.update_at 1 9 values\nupdated[1]");
-    accepts("let mut values = [\"a\", \"b\"]\nArray.set values 0 \"z\"\nvalues.length");
+    accepts("let mut values = [\"a\", \"b\"]\nArray.set 0 \"z\" values\nvalues.length");
     // `set` needs a mutable array, like `write`.
-    rejects("let values = [1, 2, 3]\nArray.set values 1 9\n0", "E1014");
+    rejects("let values = [1, 2, 3]\nArray.set 1 9 values\n0", "E1014");
     // The consumed array cannot be read again when it is not Copy.
     rejects(
         "let values = [\"a\", \"b\"]\nlet updated = Array.update_at 0 \"z\" values\nvalues.length",
@@ -368,7 +369,7 @@ fn set_updates_in_place_and_update_at_consumes_the_array() {
     );
     // A statement of another type than unit is rejected, which catches the old functional use of `set`.
     rejects(
-        "let mut values = [1, 2, 3]\nvalues = Array.set values 1 9\n0",
+        "let mut values = [1, 2, 3]\nvalues = Array.set 1 9 values\n0",
         "E1003",
     );
 }

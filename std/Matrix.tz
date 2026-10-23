@@ -59,7 +59,7 @@ def set :: Matrix<'a> -> i64 -> i64 -> 'a -> Matrix<'a>
 fn set matrix row col value =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     let index = row * matrix.cols + col
-    Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.__set matrix.data index value }
+    Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.__set index value matrix.data }
 
 /// Applies `transform` to every element in row-major order.
 def map :: Copy<'a> => ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>
@@ -99,7 +99,7 @@ fn multiply_rows left right inner cols first out =
             let source = ref right[k * cols .. k * cols + cols]
             for j in 0i64 .. (row.length - 1) do
                 let value = row[j] + a * source[j]
-                Array.write row j value
+                Array.write j value row
 
 // The same loops with one explicit fused multiply-add per step: out = fma(a, b, out).
 private def fma_rows :: Float<'a> => ref ['a] -> ref ['a] -> i64 -> i64 -> i64 -> ref mut ['a..] -> unit
@@ -112,7 +112,7 @@ fn fma_rows left right inner cols first out =
             let source = ref right[k * cols .. k * cols + cols]
             for j in 0i64 .. (row.length - 1) do
                 let value = Math.fma a source[j] row[j]
-                Array.write row j value
+                Array.write j value row
 
 // A parallel chunk is a run of whole output rows that performs about 2^20 multiply-adds, and at
 // least one row. It depends only on the shape (inner and cols), never on the number of CPUs. A

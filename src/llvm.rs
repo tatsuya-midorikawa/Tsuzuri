@@ -7480,11 +7480,12 @@ fn emit_typed_builtin(
     } else {
         match instance.builtin {
             Builtin::ArraySet | Builtin::ArrayUpdate | Builtin::ArraySwap => {
+                // (index, value / function / second index, array): the array comes last.
                 let collection = Type::Array(Box::new(element.clone()));
-                let first = emitter.checked_element_pointer(&collection, "%arg0", "%arg1");
+                let first = emitter.checked_element_pointer(&collection, "%arg2", "%arg0");
                 if instance.builtin == Builtin::ArraySwap {
-                    let second = emitter.checked_element_pointer(&collection, "%arg0", "%arg2");
-                    let same = emitter.value("icmp eq i64 %arg1, %arg2");
+                    let second = emitter.checked_element_pointer(&collection, "%arg2", "%arg1");
+                    let same = emitter.value("icmp eq i64 %arg0, %arg1");
                     let done = emitter.label();
                     let exchange = emitter.label();
                     emitter.branch(&same, &done, &exchange);
@@ -7499,23 +7500,24 @@ fn emit_typed_builtin(
                     let previous = emitter.value(format!("load {element_type}, ptr {first}"));
                     let replacement = if instance.builtin == Builtin::ArraySet {
                         emitter.drop_value(element, &previous);
-                        "%arg2".to_owned()
+                        "%arg1".to_owned()
                     } else {
                         let callback = Type::function(vec![element.clone()], element.clone());
                         emitter
-                            .apply_value("%arg2", &callback, Some((element, &previous)), false)
+                            .apply_value("%arg1", &callback, Some((element, &previous)), false)
                             .0
                     };
                     emitter.instruction(format!("store {element_type} {replacement}, ptr {first}"));
                 }
-                "%arg0".to_owned()
+                "%arg2".to_owned()
             }
             Builtin::ArrayWrite | Builtin::ArraySwapIn => {
+                // (index, value / second index, slice): the slice comes last.
                 let collection = Type::Array(Box::new(element.clone()));
-                let first = emitter.checked_element_pointer(&collection, "%arg0", "%arg1");
+                let first = emitter.checked_element_pointer(&collection, "%arg2", "%arg0");
                 if instance.builtin == Builtin::ArraySwapIn {
-                    let second = emitter.checked_element_pointer(&collection, "%arg0", "%arg2");
-                    let same = emitter.value("icmp eq i64 %arg1, %arg2");
+                    let second = emitter.checked_element_pointer(&collection, "%arg2", "%arg1");
+                    let same = emitter.value("icmp eq i64 %arg0, %arg1");
                     let done = emitter.label();
                     let exchange = emitter.label();
                     emitter.branch(&same, &done, &exchange);
@@ -7529,21 +7531,22 @@ fn emit_typed_builtin(
                 } else {
                     let previous = emitter.value(format!("load {element_type}, ptr {first}"));
                     emitter.drop_value(element, &previous);
-                    emitter.instruction(format!("store {element_type} %arg2, ptr {first}"));
+                    emitter.instruction(format!("store {element_type} %arg1, ptr {first}"));
                 }
                 "0".to_owned()
             }
             Builtin::ArraySplitAtMut => {
-                let length = emitter.value("extractvalue %tz.array %arg0, 1");
-                let valid = emitter.value(format!("icmp ule i64 %arg1, {length}"));
+                // (index, slice)
+                let length = emitter.value("extractvalue %tz.array %arg1, 1");
+                let valid = emitter.value(format!("icmp ule i64 %arg0, {length}"));
                 emitter.guard(&valid, TrapKind::BoundsCheck);
-                let data = emitter.value("extractvalue %tz.array %arg0, 0");
+                let data = emitter.value("extractvalue %tz.array %arg1, 0");
                 let left = emitter.value(format!(
                     "insertvalue %tz.array zeroinitializer, ptr {data}, 0"
                 ));
-                let left = emitter.value(format!("insertvalue %tz.array {left}, i64 %arg1, 1"));
-                let rest = emitter.element_pointer(element, &data, "%arg1");
-                let remaining = emitter.value(format!("sub i64 {length}, %arg1"));
+                let left = emitter.value(format!("insertvalue %tz.array {left}, i64 %arg0, 1"));
+                let rest = emitter.element_pointer(element, &data, "%arg0");
+                let remaining = emitter.value(format!("sub i64 {length}, %arg0"));
                 let right = emitter.value(format!(
                     "insertvalue %tz.array zeroinitializer, ptr {rest}, 0"
                 ));

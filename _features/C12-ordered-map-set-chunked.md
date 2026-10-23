@@ -615,7 +615,7 @@ cargo test --locked hash_containers_leave_the_specialization_budget_to_users   #
 8. **LLDB が `run` で止まる環境**: `tests/debugger.mjs` を実行できない。検出: `lldb -b -o 'target create <exe>' -o run` が戻らない。モック試験は代わりにならない（停止条件 6）。
 9. **ベンチマークの揺れ**: 5 回の中央値と範囲、ロードアベレージを必ず併記し、1 回の値で「遅くなった」「速くなった」と書かない。速度の閾値をテスト・CI に入れない。
 10. **`cargo test` の件数 0**: 名前のフィルターは 0 件でも成功する。`running N tests` の `N` を確かめる。
-11. **fixture を直すときの言語の癖**: `let (a, b) = ...` は書けない（`match` を使う）。引数なしの関数は `f()` と呼ぶ。`$"...{a.length}..."` は `E1013`（先に `let` に束縛する）。`Array.set` は配列を消費する（`ref` ではない）。`Gen.array_up_to` は 100 件未満の配列しか作らないので、長い列は seed から作る擬似乱数で生成し、`Gen` は `(seed, profile)` を選ぶ。`Maybe` には `Eq` がない。
+11. **fixture を直すときの言語の癖**: `let (a, b) = ...` は書けない（`match` を使う）。引数なしの関数は `f()` と呼ぶ。`$"...{a.length}..."` は `E1013`（先に `let` に束縛する）。`Array.update_at` は配列を消費する（`ref` ではない）。`Gen.array_up_to` は 100 件未満の配列しか作らないので、長い列は seed から作る擬似乱数で生成し、`Gen` は `(seed, profile)` を選ぶ。`Maybe` には `Eq` がない。
 
 ## 対象外
 

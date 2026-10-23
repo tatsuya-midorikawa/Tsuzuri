@@ -32,7 +32,7 @@ def sum :: Numeric<'a> => ref ['a] -> 'a
 | `Array.reverse` | `run=[3,%202,%201]` | `Array.reverse [1, 2, 3]` | `[3, 2, 1]` |
 | `Array.sort` | `run=[1,%202,%203]` | `Array.sort [3, 1, 2]` | `[1, 2, 3]` |
 | `Array.contains` | `run=true` | `Array.contains [1, 2, 3] (ref 2)` | `true` |
-| `Array.get` | `run=20` | `match Array.get [10, 20, 30] 1 with` ／ `\| Maybe.Some value -> value` ／ `\| Maybe.None -> 0`（3 行） | `20` |
+| `Array.get` | `run=20` | `match Array.get 1 [10, 20, 30] with` ／ `\| Maybe.Some value -> value` ／ `\| Maybe.None -> 0`（3 行） | `20` |
 | `String.split` | `run=["a",%20"b",%20"c"]` | `String.split "," "a,b,c"`（区切りが先） | `["a", "b", "c"]` |
 | `String.contains` | `run=true` | `String.contains "ell" "hello"`（部分文字列が先） | `true` |
 | `String.trim` | `run=hi` | `String.trim "  hi  "` | `hi` |
@@ -185,7 +185,7 @@ Compile error: `E1003`.
 25 /// ```
 26 ///
 27 /// ```tsuzuri run=
-28 /// Array.sub [1, 2, 3] 2 5
+28 /// Array.sub 2 5 [1, 2, 3]
 29 /// ```
 30 def add_one :: i64 -> i64
 31 fn add_one n = n + 1
