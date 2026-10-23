@@ -424,6 +424,23 @@ test('indexed_target_selector_runner_uses_valid_default', () => {
     assert.equal(row.compiler_arg, false);
     assert.equal(row.command, 'node tests/wasm_heap.mjs');
 });
+test('indexed_child_only_harness_is_not_a_standalone_command', () => {
+    const row = real().tests.find(t => t.path === 'tests/os-wasi-host.mjs');
+    assert.equal(row.helper, true);
+    assert.equal(row.command, '');
+});
+test('oversized_suite_source_is_not_read_or_indexed', () => scratch(async dir => {
+    cpSync(mini, dir, { recursive: true });
+    const path = resolve(dir, 'tests/features.mjs');
+    const source = readFileSync(path, 'utf8') + '\n//' + 'x'.repeat(8 * 1024 * 1024);
+    writeFileSync(path, source);
+    const out = resolve(dir, 'kb-output');
+    const kb = await build(dir, out);
+    assert.ok(kb.manifest.warnings.includes('file_too_large tests/features.mjs'));
+    assert.ok(!kb.tests.some(t => t.path === 'tests/features.mjs'));
+    writeFileSync(path, source.replace('storage', 'renamed'));
+    assert.ok(await isFresh(dir, out));
+}));
 test('literal_h3_section_is_retrievable', () => {
     const text = sectionText(context(), fixtureKb(), 'A01', '停止条件');
     assert.match(text, /=== SECTION A01 停止条件/);

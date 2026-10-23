@@ -25,14 +25,14 @@ export function indexTests(ctx) {
     for (const path of mjs) {
         const name = posix.basename(path, '.mjs');
         const compiler_arg = !['tests/repo_kb.mjs', 'tests/wasm_heap.mjs'].includes(path) && /argv\[2\]/.test(contents.get(path));
-        const helper = [...contents].some(([other, text]) => other !== path
+        const helper = path === 'tests/os-wasi-host.mjs' || [...contents].some(([other, text]) => other !== path
             && [...text.matchAll(/\bfrom\s+["']\.\/([^"']+\.mjs)["']/g)].some(m => m[1] === `${name}.mjs`));
         result.push({ kind: 'mjs_test', path, name, compiler_arg, helper,
             command: helper ? '' : `node ${path}${compiler_arg ? ' target/release/tsuzuri' : ''}` });
     }
     const path = 'tests/features.mjs';
-    if (ctx.fileSet.has(path)) {
-        for (const suite of parseSuites(read(path))) {
+    if (contents.has(path)) {
+        for (const suite of parseSuites(contents.get(path))) {
             const fixture = `tests/fixtures/${suite.input || suite.name}`;
             const fixture_exists = ctx.fileSet.has(fixture) || ctx.files.some(p => p.startsWith(`${fixture}/`));
             if (!fixture_exists) ctx.warnings.push(`suite_fixture_missing ${suite.name}: ${fixture}`);
