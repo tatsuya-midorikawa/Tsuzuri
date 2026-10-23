@@ -596,6 +596,7 @@ struct Class {
     arity: usize,
     superclasses: Vec<Constraint>,
     methods: Vec<Method>,
+    method_mutability: Vec<Box<[bool]>>,
     builtin: bool,
 }
 
@@ -690,6 +691,7 @@ impl Classes {
                 arity: 0,
                 superclasses: Vec::new(),
                 methods: Vec::new(),
+                method_mutability: Vec::new(),
                 builtin: true,
             });
         }
@@ -979,6 +981,21 @@ impl Classes {
                                 .parameters
                                 .iter()
                                 .map(|ty| {
+                                    if let TypeExprKind::Mut(inner) = &ty.kind {
+                                        if !names.borrowing_modules.contains(module) {
+                                            return Err(Diagnostic::new(
+                                                "E1005",
+                                                "'mut T' parameter conventions require edition 2027",
+                                                ty.span,
+                                            ));
+                                        }
+                                        return Ok(Type::Reference(
+                                            Box::new(resolve_type_with_kinds(
+                                                inner, module, names, &kinds,
+                                            )?),
+                                            true,
+                                        ));
+                                    }
                                     let ty = match &ty.kind {
                                         TypeExprKind::Own(inner) => inner.as_ref(),
                                         _ => ty,
@@ -1021,6 +1038,17 @@ impl Classes {
                         arity,
                         superclasses: Vec::new(),
                         methods,
+                        method_mutability: declaration
+                            .methods
+                            .iter()
+                            .map(|method| {
+                                method
+                                    .parameters
+                                    .iter()
+                                    .map(|ty| matches!(ty.kind, TypeExprKind::Mut(_)))
+                                    .collect()
+                            })
+                            .collect(),
                         builtin: false,
                     });
                     Ok(())
@@ -1470,6 +1498,7 @@ impl Classes {
             | TypeExprKind::List(ty)
             | TypeExprKind::Task(ty)
             | TypeExprKind::Own(ty)
+            | TypeExprKind::Mut(ty)
             | TypeExprKind::Reference(ty, _)
             | TypeExprKind::Regions(ty, _)
             | TypeExprKind::Quantified(_, ty) => {
@@ -1504,10 +1533,11 @@ impl Classes {
                 let id = self.names[&format!("{}.{}", input.name, declaration.name.text)];
                 let class = &mut self.declarations[id];
                 for definition in &declaration.defaults {
-                    let method = class
+                    let (method_index, method) = class
                         .methods
                         .iter_mut()
-                        .find(|method| method.name == definition.name.text)
+                        .enumerate()
+                        .find(|(_, method)| method.name == definition.name.text)
                         .ok_or_else(|| {
                             Diagnostic::new(
                                 "E1016",
@@ -1535,6 +1565,10 @@ impl Classes {
                         input.name.to_owned(),
                         instance_function(
                             method.signature(definition.name.span)?,
+                            class
+                                .method_mutability
+                                .get(method_index)
+                                .map_or(&[], |flags| flags),
                             &BTreeMap::new(),
                             definition,
                             format!("$instance.default.{function}.{}", method.name),
@@ -1707,7 +1741,7 @@ impl Classes {
                     }
                     let substitutions = BTreeMap::from([(class.variable.clone(), ty.clone())]);
                     let mut implementations = Vec::new();
-                    for method in &class.methods {
+                    for (method_index, method) in class.methods.iter().enumerate() {
                         let signature = method.signature(instance.class.span)?;
                         let Some(definition) = methods.get(&method.name) else {
                             if let Some(function) = method.default {
@@ -1754,6 +1788,10 @@ impl Classes {
                             (*module).into(),
                             instance_function(
                                 &signature,
+                                class
+                                    .method_mutability
+                                    .get(method_index)
+                                    .map_or(&[], |flags| flags),
                                 &substitutions,
                                 definition,
                                 format!("$instance.{function_id}.{}", method.name),
@@ -2582,6 +2620,7 @@ fn validate_format_instance(
 
 fn instance_function(
     signature: &Signature,
+    mutability: &[bool],
     substitutions: &BTreeMap<String, Type>,
     definition: &Definition,
     name: String,
@@ -2610,11 +2649,20 @@ fn instance_function(
         .parameters
         .iter()
         .zip(&signature.parameters)
-        .map(|((name, mutable), ty)| Parameter {
-            name: name.clone(),
-            mutable: *mutable,
-            ty: type_expression(&substitute(ty, substitutions), types, name.span),
-            json: None,
+        .enumerate()
+        .map(|(index, ((name, mutable), ty))| {
+            let mut ty = type_expression(&substitute(ty, substitutions), types, name.span);
+            if mutability.get(index) == Some(&true)
+                && let TypeExprKind::Reference(inner, true) = ty.kind
+            {
+                ty.kind = TypeExprKind::Mut(inner);
+            }
+            Parameter {
+                name: name.clone(),
+                mutable: *mutable,
+                ty,
+                json: None,
+            }
         })
         .collect();
     Ok(FunctionDecl {
@@ -3315,7 +3363,22 @@ impl Checker<'_> {
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let declaration = &self.classes.declarations[class];
         let ty = self.inference.fresh();
-        let signature = declaration.methods[method].signature(span)?.as_type();
+        let mut signature = declaration.methods[method].signature(span)?.as_type();
+        if let Some(mutability) = declaration.method_mutability.get(method)
+            && mutability.iter().any(|mutable| *mutable)
+            && let Type::Function(parameters, _) = &mut signature
+        {
+            parameters.conventions = mutability
+                .iter()
+                .map(|mutable| {
+                    if *mutable {
+                        ParameterConvention::Mut
+                    } else {
+                        ParameterConvention::Own
+                    }
+                })
+                .collect();
+        }
         let mut substitutions = BTreeMap::from([(declaration.variable.clone(), ty.clone())]);
         for variable in variables(&signature) {
             substitutions

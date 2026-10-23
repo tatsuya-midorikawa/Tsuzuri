@@ -197,14 +197,25 @@ impl FunctionEmitter<'_, '_> {
                 self.clone_vector_exactly(element, &value)
             }
             VecReserve => self.reserve_vector(element, "%arg1", "%arg0"),
-            VecPush => {
-                let value = self.reserve_vector(element, "%arg1", "1");
+            VecPush | VecPushMut => {
+                let vector = if instance.builtin == VecPushMut {
+                    self.value("load %tz.vec, ptr %arg1")
+                } else {
+                    "%arg1".into()
+                };
+                let value = self.reserve_vector(element, &vector, "1");
                 let data = self.value(format!("extractvalue %tz.vec {value}, 0"));
                 let length = self.value(format!("extractvalue %tz.vec {value}, 1"));
                 let pointer = self.element_pointer(element, &data, &length);
                 self.instruction(format!("store {} %arg0, ptr {pointer}", self.ty(element)));
                 let length = self.value(format!("add i64 {length}, 1"));
-                self.value(format!("insertvalue %tz.vec {value}, i64 {length}, 1"))
+                let result = self.value(format!("insertvalue %tz.vec {value}, i64 {length}, 1"));
+                if instance.builtin == VecPushMut {
+                    self.instruction(format!("store %tz.vec {result}, ptr %arg1"));
+                    "0".into()
+                } else {
+                    result
+                }
             }
             VecToArray => {
                 let data = self.value("extractvalue %tz.vec %arg0, 0");

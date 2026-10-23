@@ -31,13 +31,14 @@ fn analysis_error(project: &Project, diagnostic: Diagnostic) -> SourceError {
 fn preserve_parameters(
     project: &mut Project,
     indices: &[usize],
+    builtins: &[(crate::diagnostic::Span, crate::check::Builtin)],
 ) -> Result<Vec<Change>, SourceError> {
     let mut changes = Vec::new();
     for &id in indices {
         let source = &mut project.sources[id];
         let program = crate::parser::parse_with_source(&source.text, id, source.edition)
             .map_err(|diagnostic| SourceError::new(&source.path, diagnostic))?;
-        let mut insertions = Vec::new();
+        let mut edits = Vec::new();
         for declaration in &program.functions {
             if declaration.constant || declaration.name.text.starts_with("$instance.") {
                 continue;
@@ -52,20 +53,32 @@ fn preserve_parameters(
                 {
                     continue;
                 }
-                insertions.push(parameter.ty.span.start);
+                edits.push((parameter.ty.span.start, parameter.ty.span.start, "own "));
+            }
+        }
+        for (span, builtin) in builtins {
+            if *builtin != crate::check::Builtin::VecPush || span.source != Some(id) {
+                continue;
+            }
+            let Some(spelling) = source.text.get(span.start..span.end) else {
+                continue;
+            };
+            let path: String = spelling.chars().filter(|c| !c.is_whitespace()).collect();
+            if path == "Vec.push" || path == format!("{}::Vec.push", crate::stdlib::NAMESPACE) {
+                edits.push((span.end - "push".len(), span.end, "push_owned"));
             }
         }
         let before = source.text.clone();
-        insertions.sort_unstable();
-        insertions.dedup();
-        for offset in insertions.into_iter().rev() {
-            if !source.text.is_char_boundary(offset) {
+        edits.sort_unstable();
+        edits.dedup();
+        for (start, end, replacement) in edits.into_iter().rev() {
+            if !source.text.is_char_boundary(start) || !source.text.is_char_boundary(end) {
                 return Err(error(
                     &source.path,
                     "invalid parameter span during migration",
                 ));
             }
-            source.text.insert_str(offset, "own ");
+            source.text.replace_range(start..end, replacement);
         }
         if source.text.len() > MAX_SOURCE_BYTES {
             return Err(error(
@@ -143,10 +156,11 @@ pub fn prepare(
             source.edition = current;
         }
     }
-    project
-        .analyze()
+    let mut semantic = crate::check::semantic::SemanticIndex::default();
+    crate::analyze_inputs_semantic(&project.inputs(), &mut semantic)
+        .map_err(crate::first_error)
         .map_err(|diagnostic| analysis_error(&project, diagnostic))?;
-    let mut changes = preserve_parameters(&mut project, &indices)?;
+    let mut changes = preserve_parameters(&mut project, &indices, &semantic.builtin_references)?;
     for &id in &indices {
         project.sources[id].edition = target;
     }

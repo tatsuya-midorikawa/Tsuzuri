@@ -71,8 +71,10 @@ impl Checker<'_> {
                 return Err(duplicate(name));
             }
             let local = self.bind(name, ty, *mutable);
-            if conventions.get(index) == Some(&ParameterConvention::Read)
-                && matches!(local.ty, Type::Reference(..))
+            if matches!(
+                conventions.get(index),
+                Some(ParameterConvention::Read | ParameterConvention::Mut)
+            ) && matches!(local.ty, Type::Reference(..))
             {
                 self.read_value_parameters.insert(local.id);
             }
@@ -464,12 +466,28 @@ fn lower_expression(
                     lower_expression(&mut body, functions, types, generated, origin)?;
                 }
                 let id = functions.len();
+                let region_slots = if builtin == Builtin::VecPushMut
+                    && signature.parameters[0].carries_loans(types)
+                {
+                    let count = match &signature.parameters[0] {
+                        Type::Record(id, _) => types.records[*id].region_count.max(1),
+                        _ => 1,
+                    };
+                    Some(RegionSlots {
+                        parameters: vec![vec![Some(0); count], vec![Some(1), Some(0)]],
+                        targets: vec![false, true],
+                        result_target: false,
+                        writes: true,
+                    })
+                } else {
+                    None
+                };
                 functions.push(CheckedFunction {
                     read_by_default: Vec::new(),
                     module: "$builtin".into(),
                     region_sources: None,
                     callback_contracts: Vec::new(),
-                    region_slots: None,
+                    region_slots,
                     origin,
                     // Instances of a polymorphic builtin get distinct symbols.
                     name: if scheme.variables.is_empty() {

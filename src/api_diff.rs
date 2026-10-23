@@ -432,6 +432,7 @@ impl Renaming {
             ),
             Reference(inner, mutable) => Reference(Box::new(self.ty(inner)), *mutable),
             Own(inner) => Own(Box::new(self.ty(inner))),
+            Mut(inner) => Mut(Box::new(self.ty(inner))),
             Dyn(dyn_type) => Dyn(dyn_type.clone()),
         };
         TypeExpr {
@@ -633,6 +634,7 @@ fn add_items(
                     && !matches!(
                         parameter.ty.kind,
                         TypeExprKind::Own(_)
+                            | TypeExprKind::Mut(_)
                             | TypeExprKind::Reference(..)
                             | TypeExprKind::Regions(..)
                             | TypeExprKind::Quantified(..)

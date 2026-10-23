@@ -1167,3 +1167,10 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
   2027 の `Array.map` は読み取り実装を使い、値 callback との変換は Copy と既存の借用検査で検証します。
   古い ticket の `map_ref`／`fold_ref` は現在の API 名 `mapr`／`foldr` と読み替えます。
   std 内部の既存の呼び出し規約は保存し、2027 の利用者側だけで読み取り API の入口を選択します。
+- A18 Phase 4 は 2027 の whole-parameter `mut T` を `ref mut T` の ABI と値 view に展開します。
+  明示の `ref mut` と 2026 の規約は保存します。2027 の可変な所有者または排他参照からの
+  field・collection 要素への代入を許可します（文字列の要素は引き続き不変）。
+  RHS、代入先、古い値の drop、store の順を保存し、添字は既存と同じ範囲検査を通します。
+  射影先への書き込みは兄弟の loan を消しません。新旧 loan を保守的に合わせ、移動済みの射影は再初期化しません。
+  要素単位の排他参照を追加するものではありません。`Vec.push` は 2027 では排他借用して unit を返し、
+  従来の消費する操作は `Vec.push_owned` で明示できます。移行ツールは解決済みの builtin 参照だけを変更します。

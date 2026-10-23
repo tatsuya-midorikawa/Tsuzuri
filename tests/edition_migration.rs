@@ -44,6 +44,18 @@ const SOURCE: &str = "def take :: string -> string = \\text -> text\n\
     export def answer :: i64 = (take (apply identity \"abc\")).length\n";
 
 #[test]
+fn preserves_consuming_vector_push_in_generic_functions_and_function_values() {
+    let source = "def append :: 'a -> Vec<'a> -> Vec<'a> = \\value values -> Vec.push value values\n\
+        export def answer :: i64 = { let push = Vec.push; \
+        let values = append 1 (push 2 (Vec.empty())); values[0] + values[1] }\n";
+    let root = Root::new(&[("Tsuzuri.toml", MANIFEST), ("Main.tz", source)]);
+    let migration = prepare(&root.0, Edition::E2027, None).unwrap();
+    apply(&migration).unwrap();
+    assert_eq!(root.read("Main.tz").matches("Vec.push_owned").count(), 2);
+    Project::load(&root.0).unwrap().analyze().unwrap();
+}
+
+#[test]
 fn preserves_value_signatures_callbacks_and_exact_ir() {
     let root = Root::new(&[("Tsuzuri.toml", MANIFEST), ("Main.tz", SOURCE)]);
     let emit = || {

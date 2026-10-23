@@ -773,7 +773,10 @@ impl Canonical {
 
     fn ty(&mut self, ty: &mut TypeExpr) {
         self.hints.types.push(ty.span);
-        if matches!(ty.kind, TypeExprKind::Reference(..) | TypeExprKind::Own(..)) {
+        if matches!(
+            ty.kind,
+            TypeExprKind::Reference(..) | TypeExprKind::Own(..) | TypeExprKind::Mut(..)
+        ) {
             self.hints.prefixes.insert(ty.span.start);
         }
         ty.span = Span::default();
@@ -801,6 +804,7 @@ impl Canonical {
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner)
             | TypeExprKind::Own(inner)
+            | TypeExprKind::Mut(inner)
             | TypeExprKind::Reference(inner, _) => self.ty(inner),
             TypeExprKind::Tuple(elements) => {
                 for element in elements {

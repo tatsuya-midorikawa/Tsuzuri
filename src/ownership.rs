@@ -1483,7 +1483,7 @@ impl<'a> Checker<'a, '_> {
             } else {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
-            if !mutable || !unmarked_fields(place).is_empty() {
+            if !mutable || (usage != Use::Write && !unmarked_fields(place).is_empty()) {
                 return self.report(place, error(
                     "E1014",
                     "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
@@ -2522,11 +2522,16 @@ impl<'a> Checker<'a, '_> {
                 let value = self.eval(value, Use::Consume, &during)?;
                 self.held.push(value.clone());
                 for (place, via) in self.exclusive_places(place, &during)? {
+                    if !unmarked_fields(&place).is_empty() {
+                        self.access(&place, &via, Use::Borrow, expression.span)?;
+                    }
                     self.access(&place, &via, Use::Write, expression.span)?;
-                    if value
-                        .loans
-                        .iter()
-                        .any(|id| self.loans[*id].place.overlaps(&place))
+                    if value.loans.iter().any(|id| {
+                        let source = &self.loans[*id].place;
+                        source.overlaps(&place)
+                            || (!unmarked_fields(&place).is_empty()
+                                && source.root == place.root)
+                    })
                     {
                         return Err(error(
                             "E1013",
@@ -2539,7 +2544,14 @@ impl<'a> Checker<'a, '_> {
                         .generic_moves
                         .retain(|moved, _| !moved.overlaps(&place));
                     if via.is_empty() {
-                        self.state.locals.get_mut(&place.root).unwrap().1 = value.clone();
+                        let stored = &mut self.state.locals.get_mut(&place.root).unwrap().1;
+                        if place.fields.is_empty() {
+                            *stored = value.clone();
+                        } else {
+                            join(stored, value.clone());
+                            stored.regions = None;
+                            stored.closed_result = [false; 2];
+                        }
                     } else if !value.loans.is_empty() {
                         self.store_through(&place, &value, expression.span)?;
                     }

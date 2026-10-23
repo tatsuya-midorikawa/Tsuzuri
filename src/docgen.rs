@@ -139,6 +139,7 @@ pub(crate) fn type_text(ty: &TypeExpr) -> String {
             type_text(inner)
         ),
         TypeExprKind::Own(inner) => format!("own {}", type_text(inner)),
+        TypeExprKind::Mut(inner) => format!("mut {}", type_text(inner)),
     }
 }
 

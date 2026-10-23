@@ -102,6 +102,7 @@ pub struct SemanticIndex {
     pub scopes: Vec<LocalScope>,
     /// Record-typed expressions and the definition of their record.
     pub receivers: Vec<(Span, usize)>,
+    pub builtin_references: Vec<(Span, Builtin)>,
 }
 
 impl SemanticIndex {
@@ -286,8 +287,10 @@ fn source_parameter_text(
     position: usize,
 ) -> Option<String> {
     let parameter = declaration.parameters.get(position)?;
-    (matches!(parameter.ty.kind, TypeExprKind::Own(_))
-        || function.read_by_default.get(position) == Some(&true))
+    (matches!(
+        parameter.ty.kind,
+        TypeExprKind::Own(_) | TypeExprKind::Mut(_)
+    ) || function.read_by_default.get(position) == Some(&true))
     .then(|| crate::docgen::type_text(&parameter.ty))
 }
 
@@ -301,8 +304,10 @@ fn declaration_signature(
         .iter()
         .enumerate()
         .any(|(position, parameter)| {
-            matches!(parameter.ty.kind, TypeExprKind::Own(_))
-                || function.read_by_default.get(position) == Some(&true)
+            matches!(
+                parameter.ty.kind,
+                TypeExprKind::Own(_) | TypeExprKind::Mut(_)
+            ) || function.read_by_default.get(position) == Some(&true)
         })
     {
         return function.signature.as_type().display(types);
@@ -1071,6 +1076,10 @@ fn index_function(
                 (links.unions[id].map(|union| union + 1 + case), Role::Read)
             }
             NameTarget::Local(id) => (definitions.get(&id).copied(), Role::Declaration),
+            NameTarget::Builtin(builtin) => {
+                index.builtin_references.push((span, builtin));
+                continue;
+            }
         };
         if let Some(definition) = definition {
             index.reference(span, definition, role);
@@ -1121,6 +1130,7 @@ fn type_entry(
         TypeExprKind::Apply(_, arguments) => arguments.iter().for_each(&mut recurse),
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)

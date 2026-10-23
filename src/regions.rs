@@ -9,6 +9,7 @@ fn children(expression: &TypeExpr) -> Vec<&TypeExpr> {
         TypeExprKind::Apply(_, arguments) => arguments.iter().collect(),
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
         | TypeExprKind::ArrayView(inner)

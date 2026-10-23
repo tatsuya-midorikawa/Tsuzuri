@@ -1884,6 +1884,8 @@ impl Parser<'_> {
         let start = self.current().span;
         let kind = if self.eat(&TokenKind::Ampersand) || self.eat(&TokenKind::Ref) {
             self.reference_type(start)?
+        } else if self.eat(&TokenKind::Mut) {
+            TypeExprKind::Mut(Box::new(self.type_primary()?))
         } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "own")
             && self.tokens.get(self.position + 1).is_some_and(|token| {
                 matches!(
@@ -1898,6 +1900,7 @@ impl Parser<'_> {
                         | TokenKind::AndAnd
                         | TokenKind::Dyn
                         | TokenKind::Fn
+                        | TokenKind::Mut
                 )
             })
         {

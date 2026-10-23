@@ -1339,6 +1339,7 @@ pub enum Builtin {
     VecCapacity,
     VecIsEmpty,
     VecPush,
+    VecPushMut,
     VecPop,
     VecReserve,
     VecTruncate,
@@ -1754,6 +1755,7 @@ impl Builtin {
         Self::VecCapacity,
         Self::VecIsEmpty,
         Self::VecPush,
+        Self::VecPushMut,
         Self::VecPop,
         Self::VecReserve,
         Self::VecTruncate,
@@ -2013,6 +2015,7 @@ impl Builtin {
             Self::VecCapacity => "Vec.capacity",
             Self::VecIsEmpty => "Vec.is_empty",
             Self::VecPush => "Vec.push",
+            Self::VecPushMut => "Vec.push_mut",
             Self::VecPop => "Vec.pop",
             Self::VecReserve => "Vec.reserve",
             Self::VecTruncate => "Vec.truncate",
@@ -2483,6 +2486,7 @@ impl Builtin {
             | Self::VecCapacity
             | Self::VecIsEmpty
             | Self::VecPush
+            | Self::VecPushMut
             | Self::VecPop
             | Self::VecReserve
             | Self::VecTruncate
@@ -2513,6 +2517,7 @@ impl Builtin {
                     }
                     Self::VecGet | Self::VecAt => vec![Concrete(Type::I64), borrowed()],
                     Self::VecPush => vec![a(), vector()],
+                    Self::VecPushMut => vec![a(), Reference(Box::new(vector()), true)],
                     Self::VecReserve | Self::VecTruncate | Self::VecSetCapacity => {
                         vec![Concrete(Type::I64), vector()]
                     }
@@ -2533,6 +2538,7 @@ impl Builtin {
                 let result = match self {
                     Self::VecLength | Self::VecCapacity => Concrete(Type::I64),
                     Self::VecIsEmpty => Concrete(Type::Bool),
+                    Self::VecPushMut => Concrete(Type::Unit),
                     Self::VecPop => BuiltinType::Tuple(vec![vector(), option()]),
                     Self::VecGet => option(),
                     Self::VecAt => Reference(Box::new(a()), false),
@@ -4535,6 +4541,7 @@ mod intern;
 #[derive(Default)]
 struct Names {
     warning_options: warnings::WarningOptions,
+    borrowing_modules: BTreeSet<String>,
     modules: BTreeMap<String, ModuleOrigin>,
     /// Module keys by full name (`Namespace.File`), and each module's namespace by key.
     full_modules: BTreeMap<String, String>,
@@ -4776,6 +4783,9 @@ fn qualified_builtin(path: &str) -> Option<Builtin> {
         .and_then(|rest| rest.strip_prefix("::"))
         .filter(|member| member.contains('.'))
         .unwrap_or(path);
+    if path == "Vec.push_owned" {
+        return Some(Builtin::VecPush);
+    }
     Builtin::ALL
         .iter()
         .copied()
@@ -5994,6 +6004,7 @@ fn validate_public_type(
         TypeExprKind::Variable(_) | TypeExprKind::Length(_) | TypeExprKind::Dyn(_) => Ok(()),
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -6066,6 +6077,11 @@ fn check_modules_collect(
     let module_editions: BTreeMap<_, _> = modules
         .iter()
         .map(|input| (input.name, input.edition))
+        .collect();
+    names.borrowing_modules = module_editions
+        .iter()
+        .filter(|(_, edition)| edition.borrows_parameters())
+        .map(|(module, _)| (*module).to_owned())
         .collect();
     let mut sources: BTreeMap<&str, (usize, ModuleOrigin)> = BTreeMap::new();
     for (source, module) in modules.iter().enumerate() {
@@ -6993,19 +7009,35 @@ fn check_modules_collect(
                 if parameter.name.text != "_" && !parameter_names.insert(&parameter.name.text) {
                     return Err(duplicate(&parameter.name));
                 }
+                let mutable = matches!(parameter.ty.kind, TypeExprKind::Mut(_));
+                if mutable
+                    && !function.name.text.starts_with("$instance.")
+                    && !module_editions
+                        .get(module.as_str())
+                        .is_some_and(|edition| edition.borrows_parameters())
+                {
+                    return Err(Diagnostic::new(
+                        "E1005",
+                        "'mut T' parameter conventions require edition 2027",
+                        parameter.ty.span,
+                    ));
+                }
                 let expression = match &parameter.ty.kind {
-                    TypeExprKind::Own(inner) => inner.as_ref(),
+                    TypeExprKind::Own(inner) | TypeExprKind::Mut(inner) => inner.as_ref(),
                     _ => &parameter.ty,
                 };
                 let ty = resolve_type_with_kinds(expression, module, &names, &kinds)?;
                 validate_size(&ty, &types, parameter.ty.span)?;
                 let read = borrow_defaults
                     && !parameter.mutable
-                    && !matches!(parameter.ty.kind, TypeExprKind::Own(_))
+                    && !matches!(
+                        parameter.ty.kind,
+                        TypeExprKind::Own(_) | TypeExprKind::Mut(_)
+                    )
                     && !regions::has_regions(&parameter.ty)
                     && read_by_default(&ty, &types);
-                let ty = if read {
-                    Type::Reference(Box::new(ty), false)
+                let ty = if read || mutable {
+                    Type::Reference(Box::new(ty), mutable)
                 } else {
                     ty
                 };
@@ -7179,8 +7211,11 @@ fn check_modules_collect(
                 signature,
                 parameter_conventions: reads
                     .into_iter()
-                    .map(|read| {
-                        if read {
+                    .zip(&function.parameters)
+                    .map(|(read, parameter)| {
+                        if matches!(parameter.ty.kind, TypeExprKind::Mut(_)) {
+                            ParameterConvention::Mut
+                        } else if read {
                             ParameterConvention::Read
                         } else {
                             ParameterConvention::Own
@@ -7360,6 +7395,11 @@ fn check_modules_collect(
                 for (index, parameter) in function.parameters.iter_mut().enumerate() {
                     if let TypeExprKind::Own(inner) = &parameter.ty.kind {
                         parameter.ty = (**inner).clone();
+                    } else if let TypeExprKind::Mut(inner) = &parameter.ty.kind {
+                        parameter.ty = TypeExpr {
+                            kind: TypeExprKind::Reference(inner.clone(), true),
+                            span: parameter.ty.span,
+                        };
                     } else if reads.get(index) == Some(&true) {
                         parameter.ty = TypeExpr {
                             kind: TypeExprKind::Reference(Box::new(parameter.ty.clone()), false),
@@ -7374,6 +7414,11 @@ fn check_modules_collect(
                 let mut parameters = Vec::new();
                 for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
                     let local = checker.bind(&parameter.name, ty.clone(), parameter.mutable);
+                    if scheme.parameter_conventions.get(parameters.len())
+                        == Some(&ParameterConvention::Mut)
+                    {
+                        checker.read_value_parameters.insert(local.id);
+                    }
                     if reads.get(parameters.len()) == Some(&true)
                         && let Type::Reference(inner, _) = ty
                     {
@@ -7722,6 +7767,15 @@ fn check_modules_collect(
     let module = closures::lower(module);
     drop(closures_time);
     let mut module = module?;
+    if module.functions.iter().any(|function| {
+        function.module == "$builtin"
+            && function
+                .region_slots
+                .as_ref()
+                .is_some_and(|slots| slots.writes)
+    }) {
+        regions::validate_contract_calls(&module)?;
+    }
     let ownership_time = crate::timings::Phase::start("ownership");
     diagnostics.extend(crate::ownership::check_all_with(&module, parallelism));
     drop(ownership_time);
@@ -8519,6 +8573,13 @@ fn resolve_type_with_kinds(
                 expression.span,
             ));
         }
+        TypeExprKind::Mut(_) => {
+            return Err(Diagnostic::new(
+                "E1005",
+                "'mut' is only valid on the type of a parameter in a 'def' signature",
+                expression.span,
+            ));
+        }
         TypeExprKind::ArrayView(_) => {
             return Err(Diagnostic::new(
                 "E1005",
@@ -8790,6 +8851,9 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Own(inner) => {
                 TypeExprKind::Own(Box::new(self.expand(inner, module, depth + 1)?))
             }
+            TypeExprKind::Mut(inner) => {
+                TypeExprKind::Mut(Box::new(self.expand(inner, module, depth + 1)?))
+            }
             TypeExprKind::Regions(inner, regions) => TypeExprKind::Regions(
                 Box::new(self.expand(inner, module, depth + 1)?),
                 regions.clone(),
@@ -8936,6 +9000,7 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Apply(_, args) => args.iter_mut().collect(),
             TypeExprKind::Regions(inner, _)
             | TypeExprKind::Own(inner)
+            | TypeExprKind::Mut(inner)
             | TypeExprKind::Quantified(_, inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
@@ -9003,6 +9068,7 @@ fn reject_expanded_field_constraints(
         }
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -9536,6 +9602,7 @@ pub(crate) enum NameTarget {
     Case(usize, usize),
     /// A later OR-pattern alternative binding an earlier alternative's local.
     Local(usize),
+    Builtin(Builtin),
 }
 
 struct Checker<'a> {
@@ -10727,10 +10794,16 @@ impl<'a> Checker<'a> {
                         expression.span,
                     ));
                 }
+                let projection = matches!(place.kind, TypedExprKind::Field(..))
+                    || matches!(&place.kind, TypedExprKind::Index(base, _) if matches!(
+                        base.ty,
+                        Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                    ));
                 if !matches!(
                     place.kind,
                     TypedExprKind::Local(_) | TypedExprKind::Dereference(_)
-                ) {
+                ) && !(self.read_conventions && projection)
+                {
                     return Err(Diagnostic::new(
                         "E1012",
                         "assignment replaces a mutable binding; record fields, array elements, and list elements are immutable",
@@ -12192,8 +12265,16 @@ impl<'a> Checker<'a> {
         }
         qualified_builtin(&path)
             .map(|builtin| {
+                if self.indexing {
+                    self.name_uses
+                        .push((expression.span, NameTarget::Builtin(builtin)));
+                }
                 let borrowed = self.read_conventions && builtin == Builtin::ListMap;
-                let builtin = if borrowed {
+                let owned_push = path.ends_with("Vec.push_owned");
+                let builtin = if self.read_conventions && builtin == Builtin::VecPush && !owned_push
+                {
+                    Builtin::VecPushMut
+                } else if borrowed {
                     match builtin {
                         Builtin::ListMap => Builtin::ListMapRef,
                         _ => unreachable!(),
@@ -12204,6 +12285,12 @@ impl<'a> Checker<'a> {
                 let (kind, mut ty) = self.builtin(builtin, expression.span)?;
                 if borrowed {
                     Self::read_callback_type(&mut ty);
+                }
+                if builtin == Builtin::VecPushMut
+                    && let Type::Function(parameters, _) = &mut ty
+                {
+                    parameters.conventions =
+                        vec![ParameterConvention::Own, ParameterConvention::Mut].into_boxed_slice();
                 }
                 Ok((kind, ty))
             })

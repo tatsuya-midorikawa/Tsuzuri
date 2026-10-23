@@ -156,7 +156,6 @@ fn map_reads_noncopy_elements_and_keeps_first_class_callback_conventions() {
         )
         .unwrap();
     }
-
     check(
         "2027",
         "export def answer :: i64 = Array.sum (Array.map (\\n -> n + n) [1, 2, 3])\n",
@@ -200,6 +199,115 @@ fn generic_read_views_accept_borrowed_scalar_and_callable_temporaries() {
         "2027",
         "def twice :: (ref 'a -> i64) -> 'a -> i64 = \\f value -> f value + f value\n\
          export def answer :: i64 = twice (\\text -> text.length) \"hello\"\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn mutable_conventions_update_scalar_fields_and_noncopy_elements() {
+    check(
+        "2027",
+        "record Named { text: string, n: i64 }\n\
+         def bump :: mut i64 -> unit = \\n -> n = n + 1\n\
+         def change :: mut Named -> unit = \\item -> { item.text = \"next\"; item.n = item.n + 1 }\n\
+         def overwrite :: own 'a -> mut ['a] -> unit = \\value values -> values[0] = value\n\
+         export def answer :: i64 = {\n\
+           let mut n = 1; bump n;\n\
+           let mut item = Named { text: \"old\", n: 2 }; change item;\n\
+           let mut texts = [\"first\", \"second\"]; overwrite \"changed\" texts;\n\
+           n + item.n + item.text.length + texts[0].length\n\
+         }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        check("2026", "def bump :: mut i64 -> unit = \\n -> n = n + 1\n")
+            .unwrap_err()
+            .code,
+        "E1005"
+    );
+    for source in [
+        "def bad :: unit -> mut i64 = \\() -> 0\n",
+        "record Bad { value: mut i64 }\n",
+        "def bad :: own mut i64 -> unit = \\value -> ()\n",
+    ] {
+        assert_eq!(check("2027", source).unwrap_err().code, "E1005", "{source}");
+    }
+}
+
+#[test]
+fn projected_writes_preserve_sibling_loans_and_require_unique_mutable_owners() {
+    for source in [
+        "export def answer :: i64 = { let values = [1]; values[0] = 2; values[0] }\n",
+        "def change :: ref [i64] -> unit = \\values -> values[0] = 2\n",
+        "record Holder { borrowed: ref i64, n: i64 }\n\
+         export def answer :: i64 = { let mut value = 1; \
+         let mut holder = Holder { borrowed: ref value, n: 0 }; \
+         holder.n = 1; value = 2; *holder.borrowed }\n",
+    ] {
+        assert_eq!(check("2027", source).unwrap_err().code, "E1014", "{source}");
+    }
+    let source = "record Holder { text: string, borrowed: ref string }\n\
+        export def answer :: i64 = { let outside = \"outside\"; \
+        let mut holder = Holder { text: \"inside\", borrowed: ref outside }; \
+        holder.borrowed = ref holder.text; holder.borrowed.length }\n";
+    assert_eq!(check("2027", source).unwrap_err().code, "E1013");
+}
+
+#[test]
+fn vector_push_borrows_mutably_only_in_2027_and_tracks_stored_borrows() {
+    check(
+        "2027",
+        "export def answer :: i64 = { let text = \"owned\"; \
+         let mut values: Vec<ref string> = Vec.empty(); \
+         Vec.push (ref text) values; values[0].length }\n",
+    )
+    .unwrap();
+    check(
+        "2027",
+        "export def answer :: i64 = { let mut values: Vec<i64> = Vec.empty(); \
+         Vec.push 1 values; Vec.push (values[0] + 1) values; \
+         let push = Vec.push; push 3 values; values[0] + values[1] + values[2] }\n",
+    )
+    .unwrap();
+    for edition in ["2026", "2027"] {
+        check(
+            edition,
+            "export def answer :: i64 = { \
+             let values = Vec.push_owned 42 (Vec.empty()); values[0] }\n",
+        )
+        .unwrap();
+    }
+    let source = "def leak :: unit -> Vec<ref string> = \\() -> { \
+        let text = \"local\"; let mut values: Vec<ref string> = Vec.empty(); \
+        Vec.push (ref text) values; values }\n\
+        export def answer :: i64 = (leak ())[0].length\n";
+    assert_eq!(check("2027", source).unwrap_err().code, "E1013");
+    let source = "export def answer :: i64 = { let text = \"owned\"; \
+        let mut values: Vec<ref string> = Vec.empty(); \
+        let push = Vec.push; push (ref text) values; values[0].length }\n";
+    let error = check("2027", source).unwrap_err();
+    assert_eq!(error.code, "E1013");
+    assert!(error.message.contains("directly"), "{error:?}");
+    for source in [
+        "export def answer :: i64 = { let mut values = Vec.of_array [1]; \
+         values |> Vec.push (values[0] + 1); values[0] }\n",
+        "export def answer :: i64 = { let mut values = Vec.of_array [1]; \
+         let element = Vec.at 0 values; Vec.push 2 values; *element }\n",
+    ] {
+        assert_eq!(check("2027", source).unwrap_err().code, "E1014", "{source}");
+    }
+}
+
+#[test]
+fn fixed_class_methods_keep_explicit_mutable_conventions() {
+    check_with_files(
+        "2027",
+        "instance Traits.Change<i64> { fn change value = value = value + 1 }\n\
+         export def answer :: i64 = { let mut value = 41; Traits.Change.change value; value }\n",
+        &[(
+            "Traits.tt",
+            "class Change<'a> { def change :: mut 'a -> unit }\n",
+        )],
     )
     .unwrap();
 }
@@ -271,6 +379,24 @@ fn own_survives_formatter_and_documentation_round_trips() {
     assert_eq!(formatted, second);
     let program = tsuzuri::parser::parse(&formatted).unwrap();
     assert!(tsuzuri::docgen::render_module("Main", &program).contains("own [|string|]"));
+    check("2027", &formatted).unwrap();
+}
+
+#[test]
+fn mut_survives_formatter_and_documentation_round_trips() {
+    let source = "def bump::mut i64->unit=\\n->n=n+1\n";
+    let formatted = formatter::format_source("Main.tz", source, SourceKind::Code)
+        .unwrap()
+        .formatted;
+    assert!(formatted.contains("mut i64"), "{formatted}");
+    assert_eq!(
+        formatted,
+        formatter::format_source("Main.tz", &formatted, SourceKind::Code)
+            .unwrap()
+            .formatted
+    );
+    let program = tsuzuri::parser::parse(&formatted).unwrap();
+    assert!(tsuzuri::docgen::render_module("Main", &program).contains("mut i64"));
     check("2027", &formatted).unwrap();
 }
 
