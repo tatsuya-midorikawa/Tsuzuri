@@ -1597,6 +1597,21 @@ GUI、ユーザー入力イベント、ネットワーク通信、非同期 I/O�
 
 ## 開発と検証
 
+### 開発リポジトリの索引（G32）
+
+`scripts/repo-kb.mjs` は Node 20 以降と git だけで、チケット・決定・責務表・診断の発行箇所・テスト・文書を
+`target/repo-kb/` に索引化します。Rust 側の Facts／KB とは別の開発用ツールです。
+入力ハッシュで鮮度を確認し、照会の前に古い索引を作り直します。`brief <ID>` は指定した Phase の文脈を
+既定 24,000 コードポイント以内に収め、削った部分の取得コマンドを残します。
+見出し・Rust の文字列とテスト領域は反復走査し、出力に実行日時やホスト固有の絶対パスを加えません。
+`check-guide-lite.mjs` は参照の存在を検査するだけで、文書を書き換えません。
+
+```sh
+node tests/repo_kb.mjs
+node scripts/check-guide-lite.mjs
+node scripts/repo-kb.mjs build
+```
+
 ### コンパイルの段階別時間
 
 `src/timings.rs` は `TSUZURI_TIME_PASSES=1` のときだけ時計と段の記録を使い、CLI の終了時に stderr の最後へ

@@ -36,11 +36,11 @@ export function inputFiles(files) {
         || /^_tsuzuri\/language-reference\/.*\.md$/.test(p) || /^docs\/[^/]+\.md$/.test(p)
         || p === 'README.md' || /^scripts\/repo-kb(?:\/[^/]+)?\.mjs$/.test(p));
 }
-export function inputHash(root, files) {
+export function inputHash(root, files, texts) {
     const rows = files.map(p => `F ${p}`);
     for (const p of inputFiles(files)) {
         if (statSync(join(root, p)).size > 8 * 1024 * 1024) continue;
-        rows.push(`H ${sha256(readText(join(root, p)))} ${p}`);
+        rows.push(`H ${sha256(texts?.get(p) ?? readText(join(root, p)))} ${p}`);
     }
     return sha256(rows.join('\n'));
 }

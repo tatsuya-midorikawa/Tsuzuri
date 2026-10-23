@@ -1,6 +1,8 @@
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build, isFresh } from './repo-kb/build.mjs';
+import { build, ensureFresh, isFresh } from './repo-kb/build.mjs';
+import { decisionId, decisionText, diagText, fileMatches, filesText, searchText, sectionText, ticketText } from './repo-kb/query.mjs';
+import { brief } from './repo-kb/brief.mjs';
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function checkNodeVersion(version) {
@@ -44,27 +46,49 @@ export function options(argv) {
     o.out ??= resolve(o.root, 'target/repo-kb');
     return { command, ...o };
 }
-export function main(argv) {
+export async function main(argv) {
     try {
         checkNodeVersion(process.versions.node);
         const o = options(argv);
         if (o.command === 'verify') {
-            const fresh = isFresh(o.root, o.out);
+            const fresh = await isFresh(o.root, o.out);
             console.log(fresh ? 'repo-kb: fresh' : 'repo-kb: stale (run: node scripts/repo-kb.mjs build)');
             return fresh ? 0 : 1;
         }
         if (o.command === 'build') {
-            const kb = build(o.root, o.out);
+            const kb = await build(o.root, o.out);
             for (const warning of kb.manifest.warnings) console.error(`repo-kb: warning: ${warning}`);
             const counts = Object.entries(kb.manifest.counts).filter(([key]) => key !== 'appendices').map(([key, value]) => `${key}=${value}`).join(' ');
             const out = relative(o.root, o.out).replaceAll('\\', '/') || '.';
             console.log(`repo-kb: ${counts} warnings=${kb.manifest.warnings.length} -> ${out}`);
             return 0;
         }
-        throw new Error('query commands are not yet implemented');
+        const kb = await ensureFresh(o.root, o.out, { refresh: o.refresh });
+        if (!kb) { console.error('repo-kb: stale (run: node scripts/repo-kb.mjs build)'); return 1; }
+        const [id, name] = o.args;
+        const ctx = { root: o.root };
+        const query = {
+            ticket: () => o.json ? kb.tickets.find(t => t.id === id) : ticketText(kb, id),
+            decision: () => o.json ? kb.decisions.find(d => d.id === decisionId(id)) : decisionText(kb, id),
+            files: () => o.json ? fileMatches(kb, id) : filesText(kb, id),
+            diag: () => o.json ? kb.diagnostics.find(d => d.code === id) : diagText(kb, id),
+            search: () => searchText(kb, o.args),
+            section: () => sectionText(ctx, kb, id, name, o.phase),
+            brief: () => brief(ctx, kb, id, o),
+        };
+        const result = query[o.command]();
+        if (result === null || result === undefined) {
+            const ticket = kb.tickets.find(t => t.id === id);
+            console.error(o.command === 'section' && ticket
+                ? `repo-kb: no such section: ${name} (have: ${ticket.headings.map(h => h.title).join(', ')})`
+                : `repo-kb: not found: ${id}`);
+            return 1;
+        }
+        console.log(o.json ? JSON.stringify(result) : result);
+        return 0;
     } catch (error) {
         console.error(`repo-kb: ${error.code ? `cannot read requested repository or output (${error.code})` : error.message}`);
         return error.status ?? 3;
     }
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = main(process.argv.slice(2));
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = await main(process.argv.slice(2));

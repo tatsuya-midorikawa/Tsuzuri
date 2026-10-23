@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { listFiles, inputFiles, inputHash } from './repo.mjs';
 import { classify, parseTicket } from './tickets.mjs';
@@ -10,14 +11,27 @@ import { indexDocs } from './docs-index.mjs';
 import { cmp, jsonl, readText } from './text.mjs';
 
 const names = ['tickets', 'decisions', 'modules', 'diagnostics', 'tests', 'docs'];
-export function collect(root) {
+async function prepare(root) {
     const files = listFiles(root);
+    const texts = new Map();
+    const paths = inputFiles(files);
+    for (let i = 0; i < paths.length; i += 32) {
+        await Promise.all(paths.slice(i, i + 32).map(async path => {
+            if (statSync(join(root, path)).size <= 8 * 1024 * 1024) {
+                texts.set(path, (await readFile(join(root, path), 'utf8')).replace(/\r\n/g, '\n'));
+            }
+        }));
+    }
+    return { files, texts };
+}
+export function collect(root, prepared) {
+    const files = prepared?.files ?? listFiles(root);
     const warnings = [];
     const inputs = inputFiles(files);
-    const texts = new Map();
+    const texts = prepared?.texts ?? new Map();
     for (const path of inputs) {
         if (statSync(join(root, path)).size > 8 * 1024 * 1024) warnings.push(`file_too_large ${path}`);
-        else texts.set(path, readText(join(root, path)));
+        else if (!texts.has(path)) texts.set(path, readText(join(root, path)));
     }
     const ctx = { root, files, fileSet: new Set(files), ticketIds: new Set(), decisionIds: new Set(), warnings, texts };
     const ticketPaths = [];
@@ -83,16 +97,16 @@ export function collect(root) {
             tickets: tickets.filter(t => t.refs.diags.includes(code)).map(t => t.id),
             decisions: decisions.filter(d => d.diags.includes(code)).map(d => d.id) };
     });
-    const manifest = { schema: 'tz-repo-kb/1', input_sha256: inputHash(root, files), inputs: texts.size,
+    const manifest = { schema: 'tz-repo-kb/1', input_sha256: inputHash(root, files, texts), inputs: texts.size,
         counts: { tickets: tickets.length, appendices: appendices.length, decisions: decisions.length, modules: modules.length,
             diagnostics: diagnostics.length, tests: tests.length, docs: docs.length }, warnings: warnings.sort(cmp) };
     return { manifest, tickets, decisions, modules, diagnostics, tests, docs };
 }
-export function build(root, out) {
+export async function build(root, out) {
     if (existsSync(out) && readdirSync(out).length && (!existsSync(join(out, '.repo-kb')) || readText(join(out, '.repo-kb')) !== 'tz-repo-kb/1\n')) {
         throw new Error('output directory is not a repo-kb directory');
     }
-    const kb = collect(root);
+    const kb = collect(root, await prepare(root));
     mkdirSync(out, { recursive: true });
     const write = (name, text) => {
         writeFileSync(join(out, `${name}.tmp`), text);
@@ -108,13 +122,14 @@ export function loadKb(out) {
     for (const name of names) kb[name] = readText(join(out, `${name}.jsonl`)).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
     return kb;
 }
-export function isFresh(root, out) {
+export async function isFresh(root, out) {
     if (!existsSync(join(out, 'manifest.json'))) return false;
     const manifest = JSON.parse(readText(join(out, 'manifest.json')));
-    return manifest.schema === 'tz-repo-kb/1' && manifest.input_sha256 === inputHash(root, listFiles(root));
+    const { files, texts } = await prepare(root);
+    return manifest.schema === 'tz-repo-kb/1' && manifest.input_sha256 === inputHash(root, files, texts);
 }
-export function ensureFresh(root, out, { refresh = true } = {}) {
-    if (!isFresh(root, out)) {
+export async function ensureFresh(root, out, { refresh = true } = {}) {
+    if (!await isFresh(root, out)) {
         if (!refresh) return null;
         console.error('repo-kb: rebuilding (stale)');
         return build(root, out);

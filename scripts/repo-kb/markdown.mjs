@@ -4,14 +4,17 @@ export function parseMarkdown(text) {
     const lines = text.replace(/\r\n/g, '\n').split('\n');
     const headings = [];
     const visible = [];
+    const languages = [];
     let fence = null;
+    let language = null;
     const stack = [];
     for (let i = 0; i < lines.length; i++) {
         const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(lines[i]);
         visible.push(!fence && !m);
+        languages.push(fence ? language : null);
         if (m) {
-            if (!fence) fence = m[1];
-            else if (m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim()) fence = null;
+            if (!fence) { fence = m[1]; language = m[2].trim().split(/\s+/)[0]; }
+            else if (m[1][0] === fence[0] && m[1].length >= fence.length && !m[2].trim()) { fence = null; language = null; }
         }
         if (!visible[i]) continue;
         const h = /^(#{1,6}) (.+)$/.exec(lines[i]);
@@ -24,7 +27,7 @@ export function parseMarkdown(text) {
         headings.push({ level, title: h[2], line: i + 1, end: lines.length, chars: 0 });
     }
     for (const h of headings) h.chars = cp(lines.slice(h.line - 1, h.end).join('\n'));
-    return { lines, headings, visible };
+    return { lines, headings, visible, languages };
 }
 
 export function splitRow(line) {
@@ -34,7 +37,8 @@ export function splitRow(line) {
     let i = line.trim().startsWith('|') ? line.indexOf('|') + 1 : 0;
     for (; i < line.length; i++) {
         const c = line[i];
-        if (c === '\\' && line[i + 1] === '|') { value += '|'; i++; }
+        if (c === '\\' && line[i + 1] === '\\') { value += '\\\\'; i++; }
+        else if (c === '\\' && line[i + 1] === '|') { value += '|'; i++; }
         else if (c === '`') {
             let n = 1;
             while (line[i + n] === '`') n++;

@@ -1,6 +1,6 @@
 import { join, posix } from 'node:path';
 import { scanRust } from './rust.mjs';
-import { readText } from './text.mjs';
+import { cmp, readText } from './text.mjs';
 
 export function parseSuites(text) {
     const body = /(?:^|\n)const suites = \{([\s\S]*?)^};$/m.exec(text)?.[1] ?? '';
@@ -41,5 +41,6 @@ export function indexTests(ctx) {
                 command: `node tests/features.mjs target/release/tsuzuri ${suite.name}` });
         }
     }
-    return result;
+    const order = { rust_test: 0, mjs_test: 1, suite: 2 };
+    return result.sort((a, b) => order[a.kind] - order[b.kind] || cmp(a.path, b.path) || cmp(a.name, b.name));
 }
