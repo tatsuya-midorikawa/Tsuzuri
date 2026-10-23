@@ -7,7 +7,7 @@
 | 規模 | 全体 M（3〜5 日）。Phase 1: M（3〜4 日。`std` は付録の全文の転記で、テスト・デバッガ表示・文書が作業の大半）、Phase 2: S（1 日未満） |
 | 依存 | なし。Rust のコンパイラは 1 行も変えない（`std/Map.tz`・`std/Set.tz` と、それを読むテスト・表示・文書だけを変える） |
 | 後続 | なし。G35（`@complexity` による文書の生成）が入るときは、`Map`／`Set` の計算量の表を本チケットの仕様 §5 の値に合わせる。`std/Json.tz` は動作を変えない |
-| 状態 | todo |
+| 状態 | done（Phase 1・2、2026-10-23） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1… はすべて承認済み |
 | 改善する劣位 | `Map`／`Set` の `insert`・`remove` は、整列した 1 本の `Vec` を `Vec.swap` で 1 要素ずつずらすので $O(n)$。実測（HEAD、`-O3`）はランダムな 10^5 件の挿入が約 1.3 秒、10^6 件が 200 秒。C++ の `std::map`・Rust の `BTreeMap` は同じ作業を 1 秒未満で終える。README は「平衡二分探索木」と書いており、実装と食い違う |
@@ -15,6 +15,42 @@
 | 主な影響ファイル | Phase 1: `std/Map.tz`・`std/Set.tz`、`tests/fixtures/map_set_chunks/Main.tz`（新規）、`tests/map_set_chunks.rs`（新規）、`tests/features.mjs`、`tests/map_set.rs`、`scripts/lldb/tsuzuri_lldb.py`、`src/runtime/tsuzuri.natvis`、`tests/debugger.mjs`、`std/Json.tz`・`tests/fixtures/json/Main.tz`（コメントだけ）、文書（`README.md`・`docs/language.md`・`docs/architecture.md`・`map.md`・`set.md`・`hashmap.md`・`array.md`・`json.md`）。Phase 2: `benchmarks/ordered/Main.tz`（新規）、`docs/benchmarks.md` |
 
 付録: [C12-appendix.md](C12-appendix.md)（A: `std/Map.tz` 全文、B: `std/Set.tz` 全文、C: ベンチマークの program、D: 実測）、[C12-appendix-tests.md](C12-appendix-tests.md)（付録 2。A: fixture 全文、B: `features.mjs`、C: Rust のテスト、D: `map_set.rs` の追加、E: LLDB、F: natvis、G: `debugger.mjs`、H: モック試験、I: 文書の文面）。
+
+## 実装・検証の記録（2026-10-23）
+
+- **Phase 1・2 とも実装・ローカル検証済み**。作業基準は `41f80bc7`。
+  実装前に README の D-59 整合確認を `51919beb` としてコミットした。
+  付録 A・B は現在の subject-last の公開シグネチャ・`Vec` 呼び出しと一致し、
+  既存の公開 API はすべて維持した。`std/Map.tz`・`std/Set.tz` は付録と全文一致。
+- 本文の旧 release 前提は現行の dev（opt-level 1）に合わせた。
+  std 埋め込みを再ビルドし、stack・解析上限は変更していない。性能比較だけは両コンパイラを release ビルドした。
+- Rust: `map_set` 3 件、`map_set_chunks` 1 件（5 properties × O0/O3）、
+  `std_argument_order` 21 件、特殊化上限・Hash コンテナ予算・PDB/natvis の回帰各 1 件が成功。
+  全 nextest は **1,719 passed / 2 skipped**。
+  別途、サーバー 19 件と fake-toolchain/キャッシュ 1 件も成功。
+- E2E: `map_set` **26**、`map_set_chunks` **29**、`json` **165**、
+  `iteration_protocol` **26** を native/WASM の O0/O3 で確認。
+  `user_drop` も native/WASM の O0/O3 で成功。
+- 文書: 変更 6 ページ、163 links、52 examples、104 native runs（O0/O3）が成功。
+  同じ 52 runnable projects を明示 WASI でも O0/O3 の **104 runs** で確認した。
+- デバッガー: natvis XML と 7 レイアウトのモックに加え、
+  **実 LLDB の `tests/debugger.mjs` 全体が成功**（既存表示・stepping と Set 513 件の `[511]`／`[512]` を含む）。
+  実機試験で付録 E の lazy header 読み取りに不備を発見したため、
+  `CreateValueFromAddress` が返す Vec ヘッダを `GetNonSyntheticValue()` にしてから読む修正を加えた。
+  `tests/lldb_collections.py` は合成 Vec を再現し、修正前に赤・修正後に緑となる永続的な回帰試験。
+  Linux CI にも LLDB 21 と実デバッガー suite を追加した。
+- 初回の共有キャッシュの open 待ち、長すぎる／相対の `TMPDIR` は環境要因として切り分けた。
+  自分専用の `TSUZURI_CACHE_DIR` と短い絶対 `TMPDIR` で全件を再検証し、共有キャッシュや他 worktree は変更していない。
+- `cargo fmt`、全 target の Clippy（warnings denied）、runtime include **58 files** が成功。
+  `src/` の累積差分は `src/runtime/tsuzuri.natvis` のみで、Rust・Vec builtin・依存関係は変更していない。
+- Phase 2: 同一ベンチマークの 6 workloads／15 sizes 組を 5 回ずつ交互に測り、
+  **150 回すべての checksum が組ごとに一致**。測定した実行ファイルは独立の `--no-cache` build とも byte 一致。
+  10 万件のランダム挿入は中央値で 52.8 倍、削除は 65.6 倍。
+  検索・カウンタ・集合演算の遅延増、全中央値・範囲、非常に高い load 124.57〜135.08 は
+  [実測表](../../docs/benchmarks.md#実測2026-10-23) に明記した。100 万件のランダム操作へは外挿せず、
+  CI に速度の合否は追加していない。
+- 台帳追記候補: 「C12 Phase 1・2 done、bounded chunk Map/Set、実 LLDB と 15 組の matched benchmark 検証済み」。
+  `_features/README.md` と GUIDE の台帳は本チケットの指示どおり統括者に委ねる。CI・レビューの結果は PR で追跡する。
 
 ## 実装者向け早見
 
@@ -444,7 +480,7 @@ python3 - <<'EOF'
 import re
 def code(text):
     return ''.join(line for line in text.splitlines(True) if not line.lstrip().startswith('///'))
-text = open('_features/C12-appendix.md', encoding='utf-8').read()
+text = open('_features/_completed/C12-appendix.md', encoding='utf-8').read()
 for marker in ('std/Map.tz', 'std/Set.tz'):
     block = re.search(r'<!-- file: ' + re.escape(marker) + r' -->\n```text\n(.*?)\n```\n', text, re.S).group(1) + '\n'
     print(marker, 'identical' if code(block) == code(open(marker, encoding='utf-8').read()) else 'DIFFERENT')
@@ -587,20 +623,20 @@ cargo test --locked hash_containers_leave_the_specialization_budget_to_users   #
 ## 受け入れ条件
 
 **Phase 1**
-- [ ] 手順 3 の `std/Map.tz`・`std/Set.tz` が付録 A・B と（`///` の行を除いて）一致する（手順 3 の `python3` の 2 行が `identical`）。
-- [ ] `cargo test --locked` が全件通る。`cargo test --locked --test map_set --test map_set_chunks` は `running 3 tests` と `running 1 test` で、すべて ok。
-- [ ] `node tests/features.mjs target/release/tsuzuri` の `map_set`（26）・`map_set_chunks`（29）・`json`（165）・`iteration_protocol`（26）が通る。
-- [ ] `target/release/tsuzuri test tests/fixtures/map_set_chunks`（`-O0` と `-O3`）が `5 passed; 0 failed; 0 ignored`。
-- [ ] `node tests/user_drop.mjs target/release/tsuzuri` が通る。`node tests/debugger.mjs target/release/tsuzuri` が通る（LLDB が使える環境。使えない場合は停止条件 6 のとおり未完了）。
-- [ ] natvis が整形式の XML。モック試験が `collection provider: ok`。
-- [ ] `src/` の Rust・`src/stdlib.rs`・`Vec` の組み込みに差分がない（`git diff --stat -- src` が `src/runtime/tsuzuri.natvis` だけ）。
-- [ ] 文書（付録 2 I）が更新され、`check-docs.mjs` の `Docs:` の行が編集前と同じ。`grep "平衡二分探索木"` が 0 件。
-- [ ] `cargo fmt --all -- --check` と `cargo clippy --all-targets -- -D warnings` が通る。
+- [x] 手順 3 の `std/Map.tz`・`std/Set.tz` が付録 A・B と（`///` の行を除いて）一致する（手順 3 の `python3` の 2 行が `identical`）。
+- [x] `cargo test --locked` が全件通る。`cargo test --locked --test map_set --test map_set_chunks` は `running 3 tests` と `running 1 test` で、すべて ok。
+- [x] `node tests/features.mjs target/release/tsuzuri` の `map_set`（26）・`map_set_chunks`（29）・`json`（165）・`iteration_protocol`（26）が通る。
+- [x] `target/release/tsuzuri test tests/fixtures/map_set_chunks`（`-O0` と `-O3`）が `5 passed; 0 failed; 0 ignored`。
+- [x] `node tests/user_drop.mjs target/release/tsuzuri` が通る。`node tests/debugger.mjs target/release/tsuzuri` が通る（LLDB が使える環境。使えない場合は停止条件 6 のとおり未完了）。
+- [x] natvis が整形式の XML。モック試験が `collection provider: ok`。
+- [x] `src/` の Rust・`src/stdlib.rs`・`Vec` の組み込みに差分がない（`git diff --stat -- src` が `src/runtime/tsuzuri.natvis` だけ）。
+- [x] 文書（付録 2 I）が更新され、`check-docs.mjs` の `Docs:` の行が編集前と同じ。`grep "平衡二分探索木"` が 0 件。
+- [x] `cargo fmt --all -- --check` と `cargo clippy --all-targets -- -D warnings` が通る。
 
 **Phase 2**
-- [ ] `benchmarks/ordered/Main.tz` が付録 C と一致し、`tsuzuri fmt --check` が通り、`tsuzuri build -O3` が通る。
-- [ ] 6 つの workload で、旧実装と新実装の checksum が一致する。
-- [ ] `docs/benchmarks.md` に節「順序付きコンテナ（C12）」があり、測定環境・日付・before／after の表・「参考値で閾値ではない」の一文・遅くなる箇所の記述がある。
+- [x] `benchmarks/ordered/Main.tz` が付録 C と一致し、`tsuzuri fmt --check` が通り、`tsuzuri build -O3` が通る。
+- [x] 6 つの workload で、旧実装と新実装の checksum が一致する。
+- [x] `docs/benchmarks.md` に節「順序付きコンテナ（C12）」があり、測定環境・日付・before／after の表・「参考値で閾値ではない」の一文・遅くなる箇所の記述がある。
 
 ## 落とし穴
 
@@ -649,4 +685,3 @@ cargo test --locked hash_containers_leave_the_specialization_budget_to_users   #
 - [C12-appendix.md](C12-appendix.md)（付録）: A `std/Map.tz` 全文、B `std/Set.tz` 全文、C ベンチマークの program、D 実測（before／after の表、B の振り、`Ord.lt` の回数）。
 - [C12-appendix-tests.md](C12-appendix-tests.md)（付録 2）: A fixture 全文、B `features.mjs`、C `tests/map_set_chunks.rs`、D `tests/map_set.rs` の追加、E LLDB の定義、F natvis、G `debugger.mjs` の追加、H モック試験、I 文書の文面。
 - 付録のコードブロックは、`<!-- file: ... -->` の行の直後のブロックが写す対象。付録 A・B・C、付録 2 A・E・H は、筆者の複製の作業木の検証済みのファイルと 1 バイトも違わない（抽出して比較した）。
-

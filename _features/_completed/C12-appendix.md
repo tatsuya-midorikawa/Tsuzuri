@@ -1,5 +1,7 @@
 # C12 付録: 検証済みの `std/Map.tz`・`std/Set.tz`・ベンチマーク・実測
 
+2026-10-23: Phase 1・2 完了。A・B の実装は現行 D-59 の公開 API と全文一致し、今回の実測は本体の実装・検証記録を参照。
+
 [C12 本体](C12-ordered-map-set-chunked.md)の付録。ここのコードは、HEAD のリポジトリの複製に置いて `cargo build --release` したコンパイラで、
 `map_set`（26 件）・`map_set_chunks`（29 件）・`json`（165 件）・`iteration_protocol`（26 件）の E2E suite（native と WASM の `-O0`／`-O3`）、
 `tsuzuri test tests/fixtures/map_set_chunks`（`-O0`／`-O3` とも 5 件通過）、`tests/user_drop.mjs` を通した**検証済みの全文**である。

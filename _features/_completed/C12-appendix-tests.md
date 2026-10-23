@@ -1,8 +1,10 @@
 # C12 付録 2: テスト・デバッガ表示・文書の文面
 
 [C12 本体](C12-ordered-map-set-chunked.md)の付録 2。`std` の全文とベンチマークは [C12-appendix.md](C12-appendix.md)。
-ここに書いたテストは、付録のコードの `std` を持つコンパイラで通ったもの（A・B・C・D）と、この環境では実行できなかったもの（E・F・G。LLDB が `run` で止まるため）に分かれる。
-**E・F・G は「未検証」と書いてある。** 実装者は、LLDB が使える環境で `node tests/debugger.mjs` を実行して確かめる（本体「停止条件」7）。
+2026-10-23: A・B・C・D と、E・G を含む実 LLDB suite を検証済み。
+E は lazy に作る Vec ヘッダの合成ビューを外す必要があり、H にもその回帰を反映した。
+F は XML 整形式と PDB 埋め込みを確認済み（Visual Studio の実 UI 表示は未確認）。
+永続的なモック試験は `tests/lldb_collections.py`、実測と検証数は本体の実装・検証記録を参照。
 
 ## A. `tests/fixtures/map_set_chunks/Main.tz`（新規。全文。423 行・20,241 バイト）
 
@@ -516,7 +518,7 @@ fn property_tests_pass_at_o0_and_o3() {
         "let set = Set.singleton 1\nset.rest.length",
 ```
 
-## E. `scripts/lldb/tsuzuri_lldb.py` の置き換え（**未検証**: この環境では LLDB の `run` が止まる。モック試験 H は通った）
+## E. `scripts/lldb/tsuzuri_lldb.py` の置き換え（実 LLDB とモック試験で検証済み）
 
 `def is_collection`・`def collection_summary`（`@guarded` 付き）・`class CollectionProvider` の 3 つを、次の text で**丸ごと**置き換える（ファイル内の位置は変えない。直前は `SequenceProvider`／`ListProvider` の定義、直後は `def union_node_type`）。
 使うのは既存の `field_names`・`target`・`length_of`・`member`・`strip`・`child_at`・`child_index`・`LENGTH_LIMIT`・`guarded` だけで、新しい import はない。
@@ -582,6 +584,7 @@ class CollectionProvider:
             )
             if chunk is None:
                 return None
+            chunk = chunk.GetNonSyntheticValue()
             self.read += 1
             self.firsts.append(member(chunk, "data").GetValueAsUnsigned())
             self.ends.append(self.ends[-1] + length_of(chunk))
@@ -612,7 +615,7 @@ class CollectionProvider:
         return child_at(self.valobj, f"[{index}]", address, self.element)
 ```
 
-## F. `src/runtime/tsuzuri.natvis` の置き換え（**未検証**: Windows の Visual Studio が要る。XML の整形式だけ確かめた）
+## F. `src/runtime/tsuzuri.natvis` の置き換え（XML・PDB 確認済み。Visual Studio 実 UI は未確認）
 
 `<Type Name="Map&lt;*,*&gt;">` と `<Type Name="Set&lt;*&gt;">` の 2 つの `<Type>`（それぞれ `DisplayString` と `ArrayItems` を持つ）を、次の 2 つで置き換える。直前の `<Type Name="Vec&lt;*&gt;">` と直後の `<!-- A Maybe of a string ...` のコメントは残す。
 `Vec` の natvis が `data`・`length` を使っているのと同じ名前を使う。`rest.data[chunk]` は `Vec<Entry>` で、その `length`・`data` を読む。
@@ -669,7 +672,7 @@ class CollectionProvider:
 確認（Windows がなくてもできる）: `python3 -c "import xml.dom.minidom as m; m.parse('src/runtime/tsuzuri.natvis')"` が例外なしで終わること、
 `cargo test --locked pdb_links_write_a_named_pdb_and_embed_the_natvis_views`（`src/driver.rs`。natvis の文字列をそのまま埋め込むことを調べる）が通ること。
 
-## G. `tests/debugger.mjs` の追加（**未検証**）
+## G. `tests/debugger.mjs` の追加（実 LLDB で検証済み）
 
 既存の期待（`(Map<i32, i32>) table = size=1 {`・`[0] = (key = 1, value = 10)`・`(Set<i32>) keys = size=3 {...}`）は、1 チャンク（`head` だけ）の場合なので**変えない**。
 複数のチャンクを調べるため、`extras` の節（`const edge = ...` と、その `assert` 群、`lookalike` の `assert.match` まで）の**後ろ**で、`// PM01:` のコメントの**前**に、次を足す。
@@ -794,7 +797,7 @@ class Value:
         return self.ty
 
     def IsValid(self):
-        return True
+        return self.ty.name != "invalid"
 
     def GetError(self):
         return Error()
@@ -812,7 +815,16 @@ class Value:
         return struct.unpack_from("<q", memory, self.address)[0]
 
     def CreateValueFromAddress(self, name, address, ty):
-        return Value(ty, address, name)
+        value = SyntheticValue if ty.name.startswith("Vec<") else Value
+        return value(ty, address, name)
+
+
+class SyntheticValue(Value):
+    def GetNonSyntheticValue(self):
+        return Value(self.ty, self.address, self.name)
+
+    def GetChildMemberWithName(self, name):
+        return Value(Type("invalid", 0), 0, name)
 
 
 i32 = Type("i32", 4)

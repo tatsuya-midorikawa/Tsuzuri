@@ -436,6 +436,7 @@ class CollectionProvider:
             )
             if chunk is None:
                 return None
+            chunk = chunk.GetNonSyntheticValue()
             self.read += 1
             self.firsts.append(member(chunk, "data").GetValueAsUnsigned())
             self.ends.append(self.ends[-1] + length_of(chunk))

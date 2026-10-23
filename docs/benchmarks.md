@@ -2178,6 +2178,94 @@ NaN のビット（符号とペイロード）を言語の仕様から外せば�
 
 つまり静的データの利点は、定数を名前で直接読む形で表を作り直さなくなること、`let` で束縛するための書き換えが要らないことです。束縛していた形（`bound`）の速さは変わりません。測ったのは M1 Max の 1 つの負荷（表 256 要素、`i32u`）だけで、x86-64 と Linux、ほかの表の大きさ、wasm32 の実行時間は測っていません。s の速度、`n = 1024` 以上、BLAS とのブロッキングを含む比較は未測定で、行列積の GPU カーネルはありません。
 
+## 順序付きコンテナ（C12）
+
+[`benchmarks/ordered/Main.tz`](../benchmarks/ordered/Main.tz) は、同じ入力・操作・checksum で
+旧実装（1 本の整列 `Vec`）とチャンク化実装を比較します。
+実行形式は `exe <workload> <size>`、出力は `<workload> <size> <checksum> <nanoseconds>` の 1 行です。
+対象を作る時間は検索・削除・集合演算の計時に含めません。挿入自体を測る workload は構築を含めます。
+乱数は固定 seed の整数 LCG で、キー生成も計時外です。
+
+| workload | 計時する操作 | checksum |
+| --- | --- | --- |
+| `insert_random` | ランダムなキーの Map への挿入 | 最終要素数 |
+| `lookup_random` | 全キーを生成順に Map から検索 | 値を `total * 31 + value` で畳み込んだ `i64u` |
+| `remove_random` | 全キーを生成順に Map から削除 | 最終要素数（0） |
+| `insert_ascending` | 昇順の Map 挿入 | 最終要素数 |
+| `update_counter` | 1,024 キーのカウンタを `size` 回検索・更新 | キー順に同じ式で畳み込んだカウント |
+| `set_algebra` | 2 の倍数と 3 の倍数の集合の積・差・和 | 3 つの結果の要素数の合計 |
+
+再現時は、旧実装を stash で入れ替えず、別の worktree のコンパイラに埋め込みます。
+以下はリポジトリのルートで実行します（Clang／LLD と Node.js が必要です）。
+
+```sh
+mkdir -p target/scratch/c12-run/tmp
+export TMPDIR="$PWD/target/scratch/c12-run/tmp"
+export TSUZURI_CACHE_DIR="$PWD/target/scratch/c12-run/cache"
+git worktree add --detach target/scratch/c12-base 41f80bc7
+node scripts/slot.mjs -- cargo build --release --locked --manifest-path target/scratch/c12-base/Cargo.toml --target-dir target/scratch/c12-base-target
+node scripts/slot.mjs -- cargo build --release --locked
+node scripts/slot.mjs -- target/scratch/c12-base-target/release/tsuzuri build benchmarks/ordered -O3 --no-cache -o target/scratch/ordered-before
+node scripts/slot.mjs -- target/release/tsuzuri build benchmarks/ordered -O3 --no-cache -o target/scratch/ordered-after
+node scripts/slot.mjs -- sh -c '
+  for workload in insert_random lookup_random remove_random insert_ascending update_counter set_algebra; do
+    for size in 10000 100000; do
+      for round in 1 2 3 4 5; do
+        if test $((round % 2)) = 1; then versions="before after"; else versions="after before"; fi
+        for version in $versions; do target/scratch/ordered-$version "$workload" "$size"; done
+      done
+    done
+  done'
+```
+
+各組の checksum が一致したことを確認してから、5 回の中央値と最小〜最大を比較します。
+`insert_ascending 1000000`、`update_counter 5000000`、`set_algebra 1000000` も同じ方法で測定します。
+**測定値はこの環境での参考値であり、CI の速度の閾値ではありません。**
+分割・併合時にはチャンク見出しの列の移動もあるため、「更新は常に対数時間」とは主張しません。
+SIMD・並列・GPU を追加した変更でもありません。
+
+### 実測（2026-10-23）
+
+Apple M1 Max、macOS 27.0.1（26A434、Darwin 27.0.0）、Homebrew Clang 23.1.1、
+Rust 1.98.1、Node.js 20.19.6。before は `41f80bc7`、after の Map／Set は
+`a384bad4` の実装で、それぞれ別に release ビルドしたコンパイラを使いました。
+同一の `benchmarks/ordered/Main.tz` を native `-O3` でコンパイルし、
+各組で before→after と after→before を交互にして 5 回ずつ実行しました。
+15 組・計 150 回すべてで、各組の checksum が一致しました。
+測定した実行ファイルは、両方とも `--no-cache` で独立に再コンパイルしたものと byte 単位で一致しました。
+生成 IR でも Map／Set の `{ %tz.vec, %tz.vec, i64 }` と型別に特殊化した挿入を確認しています。
+
+**単位は ms、中央値（最小〜最大）**です。ほかの worktree のビルド・試験と並行した測定で、
+各実行直前の 1 分ロードアベレージは **124.57〜135.08** でした。
+共有スロットを使っても負荷は非常に高く、範囲も広いため、専用の静穏なホストでの値ではありません。
+小さい差や汎用的な倍率の根拠にはせず、同じ入力での今回の参考値として読みます。
+
+| workload | size | before ms | after ms | 共通 checksum |
+| --- | ---: | ---: | ---: | ---: |
+| `insert_random` | 10,000 | 15.104 (13.143–24.441) | 6.558 (1.810–7.181) | 10000 |
+| `insert_random` | 100,000 | 1765.462 (1729.067–1900.311) | 33.431 (22.960–48.661) | 100000 |
+| `lookup_random` | 10,000 | 0.411 (0.402–1.355) | 0.654 (0.617–3.327) | 9172639423221651980 |
+| `lookup_random` | 100,000 | 7.156 (6.255–8.932) | 9.285 (9.093–19.486) | 4523595663754926707 |
+| `remove_random` | 10,000 | 9.454 (7.031–10.360) | 1.571 (1.348–2.270) | 0 |
+| `remove_random` | 100,000 | 1371.147 (1038.154–1687.129) | 20.913 (19.242–24.596) | 0 |
+| `insert_ascending` | 10,000 | 0.252 (0.244–1.041) | 0.128 (0.122–0.324) | 10000 |
+| `insert_ascending` | 100,000 | 3.328 (3.288–7.323) | 1.482 (1.119–3.245) | 100000 |
+| `update_counter` | 10,000 | 0.367 (0.357–0.634) | 0.531 (0.531–0.543) | 15655855375024371942 |
+| `update_counter` | 100,000 | 3.591 (3.575–4.092) | 6.140 (5.494–8.954) | 11993924697063202530 |
+| `set_algebra` | 10,000 | 0.130 (0.124–0.217) | 0.152 (0.150–0.405) | 26666 |
+| `set_algebra` | 100,000 | 1.268 (1.229–2.124) | 1.497 (1.471–2.863) | 266666 |
+| `insert_ascending` | 1,000,000 | 47.536 (45.073–57.426) | 13.788 (10.741–16.674) | 1000000 |
+| `update_counter` | 5,000,000 | 221.169 (207.372–241.294) | 335.086 (287.781–394.331) | 12708347969814356200 |
+| `set_algebra` | 1,000,000 | 13.845 (12.292–14.545) | 16.025 (15.170–17.480) | 2666666 |
+
+今回の中央値では、10 万件のランダム挿入は約 52.8 倍、ランダム削除は約 65.6 倍、
+100 万件の昇順挿入は約 3.45 倍でした。
+**一方、検索は所要時間が約 1.30〜1.59 倍、カウンタ更新は約 1.45〜1.71 倍、
+集合演算は約 1.16〜1.18 倍に増えています。**
+2 段の検索やチャンクの読み出しには固定費があり、検索だけ・集合演算だけでも速くなるとは主張しません。
+100 万件のランダム挿入・削除は今回測っておらず、この表から外挿もしません。
+メモリ使用量や SIMD・並列化の効果を測った表でもなく、速度を CI の合否には使いません。
+
 ## 性能指標の記録
 
 PX01 形式は `schema: 1` の JSON Lines です。生の標本、中央値、最小、最大、run_id、commit、

@@ -933,6 +933,11 @@ C12 の付録は古い HEAD を基準にしています。実装では現在の 
 照合の結果、付録 A・B の公開シグネチャと `Vec` 呼び出しは現行 API と一致しており、旧順への差し戻しは不要でした。
 追加する公開関数は `chunk_count` と `invariants_hold` だけです。古い release 前提や stack 増加は採用せず、
 検証は現行の dev（opt-level 1）、性能比較は同じ `-O3` workload と旧実装の checksum で行います。
+LLDB の実プロセス起動が使えないホストでもモックだけで完了とせず、Linux CI でも
+`tests/debugger.mjs` を実行し、複数チャンクをまたぐ表示と既存の stepping を検証します。
+複数 worktree の検証では `TSUZURI_CACHE_DIR` を各作業の `target/scratch/` 配下に分けます。
+LLDB とサーバーの検証用 `TMPDIR` は、Unix socket のパス長制限に収まる、
+リポジトリ内の短い**絶対パス**にします（相対パスは作業ディレクトリを変える試験では使えません）。
 
 Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため、網羅的なテストスイートとマルチ言語ベンチマークを備えています。
 

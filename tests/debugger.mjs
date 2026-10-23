@@ -55,6 +55,7 @@ try {
   execute("python3", ["tests/lldb_strings.py"]);
   // PM04: the walk over the chunks of a list, in the same way.
   execute("python3", ["tests/lldb_lists.py"]);
+  execute("python3", ["tests/lldb_collections.py"]);
   execute(lldb, ["--version"]);
   const output = session(fixture, [
     "type category list tsuzuri",
