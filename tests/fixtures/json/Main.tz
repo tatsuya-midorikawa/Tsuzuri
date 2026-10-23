@@ -341,7 +341,7 @@ fn descending_object count =
     Json.to_utf8string (ref object)
 
 /// `count` entries whose keys descend: inserting them into the sorted `Map` or `Set` one by one in
-/// document order would shift every entry (quadratic time). The number of entries when they come
+/// document order would move up to 511 entries of the first chunk each time. The number of entries when they come
 /// out as the keys 0, 1, ... in order (and, for maps, with their values), or the error status.
 export def descending :: own i64 -> own i64 -> i64
 fn descending case count =

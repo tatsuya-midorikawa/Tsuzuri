@@ -5548,7 +5548,7 @@ node benchmarks/metrics.mjs report target/perf/PX02-example
 | tokenize | 200,000／1,024 | 語の所有文字列を join・split し、長さを fold |
 | format_join | 100,000／1,024 | 所有の十進文字列を連結・分割・解析し、合計 |
 | csv_aggregate | 100,000／1,024 | 所有の行・field を作り、16 種の集計 |
-| map_count | 200,000／1,024 | 整列 Map／Set、二分探索、隣接交換による挿入 |
+| map_count | 200,000／1,024 | 整列 Map（チャンク化した整列配列）、二分探索、チャンク内の移動による挿入 |
 | record_sort | 200,000／1,024 | 同じ bottom-up merge。等しい key は左を先に取る安定な整列 |
 | tree_transform | 256／2 | 深さ 12 の式の木を左から作り、消費して簡約・評価 |
 | binary_trees | 2,000／4 | 深さ 4〜11 の完全二分木の構築・節の数え上げ・解放 |

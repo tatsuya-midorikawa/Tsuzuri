@@ -773,7 +773,24 @@ const suites = {
     ],
     traps: [["map_at_missing", []], ["nan_query", []], ["nan_stored", []]],
     inspect(ir) {
-      const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Map\.(?:lower_bound|found|get|at|contains_key)[^\n]*\{([\s\S]*?)^\}/gm)];
+      const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Map\.(?:locate|chunk_of|chunk_total|get|at|contains_key)[^\n]*\{([\s\S]*?)^\}/gm)];
+      assert.ok(lookups.length > 0);
+      for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
+    },
+  },
+  map_set_chunks: {
+    cases: [
+      // Ascending fills 512 before appending; descending splits the first full chunk in half.
+      ["ascending", [0n], 0n], ["ascending", [512n], 1n], ["ascending", [513n], 2n], ["ascending", [1024n], 2n], ["ascending", [1025n], 3n],
+      ["descending", [512n], 1n], ["descending", [513n], 2n], ["descending", [768n], 2n], ["descending", [769n], 3n],
+      ["middle_split", [], 1002n], ["merge_after_removals", [], 22001256n], ["head_deleted", [], 201256n], ["tail_deleted", [], 2001n],
+      ["set_algebra_chunks", [], 40202n],
+      ["comparison_bounds", [32768n], 0n], ["set_algebra_bounds", [16384n], 0n], ["borrowed_keys_and_values", [], 33n],
+      ...[0n, 1n, 2n, 3n].flatMap((profile) => [["model_map", [profile, 11n], 1n], ["model_set", [profile, 11n], 1n], ["model_algebra", [profile, 11n], 1n]]),
+    ],
+    traps: [],
+    inspect(ir) {
+      const lookups = [...ir.matchAll(/^define internal [^\n]*@tz\.fn\.Map\.(?:locate|chunk_of|chunk_total|beyond_last|get|contains_key)[^\n]*\{([\s\S]*?)^\}/gm)];
       assert.ok(lookups.length > 0);
       for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
     },

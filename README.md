@@ -168,7 +168,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **配列 (`[T]`)**: 固定長の連続メモリ領域です。`[1, 2, 3]` のように記述し、生成後の長さや要素は不変です。`ref values[start..end]` で終端を含まない共有スライス（型: `ref [T]`）を作成でき、コピーを発生させずに部分列を読み取れます。動的な初期化には `new [i32](count, i -> i as i32)` を使用します。F# の `Array` モジュールの関数は、F# と同じ名前（snake_case）で、配列を最後の引数にして使えます（F# で配列が最後にない `get`・`sub`・`fold_back` などだけ、F# と引数の順が違います）。詳細は [Array](_tsuzuri/language-reference/built-in-types-and-modules/array.md) を参照してください。
 - **連結リスト (`[|T|]`)**: 不変のリストです。リテラルは `[|1, 2, 3|]`、空リストは `[||]` です。F# の `List` モジュールの関数（`List.map`・`List.filter`・`List.fold` など）は、F# と同じ名前（snake_case）で、リストを最後の引数にして使えます（F# でリストが最後にない `fold_back` などだけ、F# と引数の順が違います）。要素は連続した領域（chunk）に並び、一度に作ったリスト（`new`・リテラル・複製）は 1 つの chunk、`List.cons` で伸ばしたリストは chunk の連なりです。要素への添字アクセスは、一度に作ったリストなら $O(1)$、`List.cons` で伸ばしたリストなら先行する chunk の数に比例します。要素数が定数の小さなリストを 1 つの関数の中で作って使って捨てる処理は、以前の node の連結（LLVM が確保を全部消して約 1 ns）より遅くなることがあります（`List.map`・`List.rev`・`List.copy`・`List.cons` の連鎖・文字列のリストで 25〜80 ns）。要素数が実行時に決まるリストは速くなります。詳細は [List](_tsuzuri/language-reference/built-in-types-and-modules/list.md) を参照してください。
 - **ベクター (`Vec<T>`)**: 伸縮可能な所有バッファです。.NET の `List<T>` のメンバーの関数が、同じ名前（snake_case）で使えます。引数は .NET の順で、`Vec` は最後に渡すので、`values |> Vec.add 3 |> Vec.sort` のようにパイプでつなげられます。容量の増え方と、範囲外などでのトラップ、`-1` と二分探索の補数の戻り値も .NET と同じです。詳細は [Vec](_tsuzuri/language-reference/built-in-types-and-modules/vec.md) を参照してください。
-- **順序付きマップ・セット (`Map<K, V>` / `Set<K>`)**: 平衡二分探索木による不変コレクションです。キーの順序を保持し、検索は $O(\log n)$、挿入および削除は $O(n)$ で動作します。
+- **順序付きマップ・セット (`Map<K, V>` / `Set<K>`)**: キーの昇順に並べたエントリを、1〜512 エントリのチャンクの列で持つ、所有権を消費して更新するコレクションです（木ではありません）。検索は $O(\log n)$ 回の比較、挿入および削除は $O(\log n)$ 回の比較と 1 チャンク内の移動（最大 511 エントリ）で動作し、チャンクの分割と併合はチャンクの個数に比例する移動を伴います。詳細は [Map](_tsuzuri/language-reference/built-in-types-and-modules/map.md) / [Set](_tsuzuri/language-reference/built-in-types-and-modules/set.md) を参照してください。
 - **ハッシュマップ・ハッシュセット (`HashMap<K, V>` / `HashSet<K>`)**: 平均 $O(1)$ で検索・挿入・削除が可能なコレクションです。挿入順序が保持されます。詳細は [HashMap](_tsuzuri/language-reference/built-in-types-and-modules/hashmap.md) / [HashSet](_tsuzuri/language-reference/built-in-types-and-modules/hashset.md) を参照してください。
 - **JSON (`Json`)**: RFC 8259 に厳密な `Json.parse`、決定的な `Json.to_utf8string`、字句を保つ数値 `Json.Numeral`、組み込み型クラス `Encode` / `Decode` と `Json.serialize` / `Json.deserialize` を提供します。入力 64 MiB・入れ子 128 段の上限を超える入力も `Result` のエラーで返します。`@json "名前"` による名前の変更、字下げした出力、木を作らないプル型の解析器と逐次の出力器、同じ値の CBOR（[Cbor](_tsuzuri/language-reference/built-in-types-and-modules/cbor.md)）も提供します。詳細は [Json](_tsuzuri/language-reference/built-in-types-and-modules/json.md) を参照してください。
 - **シーケンス (`Seq<T>`)**: 一度だけ消費可能な遅延反復ストリームです。`Seq.unfold`、`Seq.map`、`Seq.filter`、`Seq.to_array` などを提供します。
@@ -930,6 +930,7 @@ G31 の着手時検証（基準 `41f80bc7`）: 旧付録の shop 全文を未変
 C12 の付録は古い HEAD を基準にしています。実装では現在の D-59（対象は最後）と
 `std/Map.tz`・`std/Set.tz`・`Vec` の公開 API を正とし、既存の全シグネチャと引数順を維持します。
 付録のアルゴリズム・定数（512／256／384）・期待値は維持し、必要な呼び出しだけ現行 API に合わせます。
+照合の結果、付録 A・B の公開シグネチャと `Vec` 呼び出しは現行 API と一致しており、旧順への差し戻しは不要でした。
 追加する公開関数は `chunk_count` と `invariants_hold` だけです。古い release 前提や stack 増加は採用せず、
 検証は現行の dev（opt-level 1）、性能比較は同じ `-O3` workload と旧実装の checksum で行います。
 

@@ -1,103 +1,379 @@
 private record Entry<'key, 'value> { key: 'key, value: 'value }
-record Map<'key, 'value> { entries: Vec<Entry<'key, 'value>> }
+
+/// The entries in ascending key order, kept in chunks of 1 to 512 entries so that an update moves at most one chunk.
+/// `head` is the first chunk and `rest` holds the others in order; `length` is the number of entries. A map without entries has an empty
+/// `head` and an empty `rest`, and any two neighbouring chunks hold more than 256 entries together.
+record Map<'key, 'value> { head: Vec<Entry<'key, 'value>>, rest: Vec<Vec<Entry<'key, 'value>>>, length: i64 }
+
+/// The most entries of a chunk; a full chunk splits in two when an entry goes into it.
+private const MaxChunk: i64 = 512
+
+/// Two neighbouring chunks that hold this many entries or fewer together are merged into one.
+private const MergeLimit: i64 = 256
+
+/// Takes the item at `index` out of `items` in constant time, which moves the last item to `index`; `put` with the same `index` undoes that.
+private def take :: own Vec<'a> -> i64 -> (Vec<'a> * 'a)
+fn take items index =
+	let last = Vec.length (ref items) - 1
+	match Vec.pop (Vec.swap index last items) with
+	| (rest, Maybe.Some item) -> (rest, item)
+	| (_, Maybe.None) -> unreachable ()
+
+private def put :: own Vec<'a> -> i64 -> own 'a -> Vec<'a>
+fn put items index item =
+	let pushed = Vec.push_owned item items
+	let last = Vec.length (ref pushed) - 1
+	Vec.swap index last pushed
+
+private def insert_at :: own Vec<'a> -> i64 -> own 'a -> Vec<'a>
+fn insert_at items index item =
+	let mut result = Vec.push_owned item items
+	let mut position = Vec.length (ref result) - 1
+	while position > index do
+		result = Vec.swap position (position - 1) result
+		position = position - 1
+	result
+
+private def remove_at :: own Vec<'a> -> i64 -> (Vec<'a> * 'a)
+fn remove_at items index =
+	let mut result = items
+	let last = Vec.length (ref result) - 1
+	let mut position = index
+	while position < last do
+		result = Vec.swap position (position + 1) result
+		position = position + 1
+	match Vec.pop result with
+	| (rest, Maybe.Some item) -> (rest, item)
+	| (_, Maybe.None) -> unreachable ()
+
+private def reverse :: own Vec<'a> -> Vec<'a>
+fn reverse items =
+	let mut result = items
+	let count = Vec.length (ref result)
+	let mut index = 0
+	while index < count / 2 do
+		result = Vec.swap index (count - 1 - index) result
+		index = index + 1
+	result
+
+/// Moves the items from `at` on into a new `Vec`, in order.
+private def split_off :: own Vec<'a> -> i64 -> (Vec<'a> * Vec<'a>)
+fn split_off items at =
+	let mut head = items
+	let mut tail = Vec.with_capacity (Vec.length (ref head) - at)
+	while Vec.length (ref head) > at do
+		match Vec.pop head with
+		| (rest, Maybe.Some item) ->
+			head = rest
+			tail = Vec.push_owned item tail
+		| (rest, Maybe.None) -> head = rest
+	(head, reverse tail)
+
+/// Appends the items of `tail` to `head`, in order.
+private def join :: own Vec<'a> -> own Vec<'a> -> Vec<'a>
+fn join head tail =
+	let mut result = head
+	let mut rest = reverse tail
+	while Vec.length (ref rest) > 0 do
+		match Vec.pop rest with
+		| (remaining, Maybe.Some item) ->
+			rest = remaining
+			result = Vec.push_owned item result
+		| (remaining, Maybe.None) -> rest = remaining
+	result
 
 def empty :: Map<'key, 'value>
-fn empty = Map { entries: Vec.empty() }
+fn empty = Map { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
 def singleton :: own 'key -> own 'value -> Map<'key, 'value>
-fn singleton key value = Map { entries: Vec.push_owned (Entry { key: key, value: value }) (Vec.empty()) }
+fn singleton key value = Map { head: Vec.push_owned (Entry { key: key, value: value }) (Vec.empty()), rest: Vec.empty(), length: 1 }
 
 def length :: ref Map<'key, 'value> -> i64
-fn length map = Vec.length (ref map.entries)
+fn length map = map.length
 
 def is_empty :: ref Map<'key, 'value> -> bool
-fn is_empty map = length map == 0
+fn is_empty map = map.length == 0
 
-private def lower_bound :: Ord<'key> => ref Map<'key, 'value> -> ref 'key -> i64
-fn lower_bound map key =
+private def chunk_total :: ref Map<'key, 'value> -> i64
+fn chunk_total map = if map.length == 0 then 0 else 1 + Vec.length (ref map.rest)
+
+/// The number of chunks that hold the entries (0 for an empty map). A diagnostic for tests, like `HashMap.longest_probe`.
+def chunk_count :: ref Map<'key, 'value> -> i64
+fn chunk_count map = chunk_total map
+
+/// Chunk `index` in key order: `head` for 0, `rest[index - 1]` after it.
+private def chunk_of :: ref Map<'key, 'value> -> i64 -> ref Vec<Entry<'key, 'value>>
+fn chunk_of map index = if index == 0 then ref map.head else ref map.rest[index - 1]
+
+/// Where `key` is: `(chunk, offset)` when an entry has it, and `(chunk, -1 - offset)` when none has, where `offset` is the place in `chunk`
+/// where an entry for it would go. The chunk is the first one whose last key is not less than `key`, or the last chunk. An empty map gives `(0, -1)`.
+private def locate :: Ord<'key> => ref own Map<'key, 'value> -> ref 'key -> (i64 * i64)
+fn locate map key =
 	assert (Eq.eq key key)
-	let mut lower = 0
-	let mut upper = length map
-	while lower < upper do
-		let middle = lower + (upper - lower) / 2
-		assert (Eq.eq (ref map.entries[middle].key) (ref map.entries[middle].key))
-		if Ord.lt (ref map.entries[middle].key) key then lower = middle + 1 else upper = middle
-	lower
-
-private def found :: Ord<'key> => ref Map<'key, 'value> -> ref 'key -> own i64 -> bool
-fn found map key index = index < length map && !(Ord.lt key (ref map.entries[index].key))
+	let total = chunk_total map
+	if total == 0 then (0, -1)
+	else
+		let mut low = 0
+		let mut high = total - 1
+		while low < high do
+			let middle = low + (high - low) / 2
+			let chunk = chunk_of map middle
+			let last = Vec.length chunk - 1
+			assert (Eq.eq (ref chunk[last].key) (ref chunk[last].key))
+			if Ord.lt (ref chunk[last].key) key then low = middle + 1 else high = middle
+		let entries = chunk_of map low
+		let size = Vec.length entries
+		let mut start = 0
+		let mut stop = size
+		while start < stop do
+			let middle = start + (stop - start) / 2
+			assert (Eq.eq (ref entries[middle].key) (ref entries[middle].key))
+			if Ord.lt (ref entries[middle].key) key then start = middle + 1 else stop = middle
+		if start < size && !(Ord.lt key (ref entries[start].key)) then (low, start) else (low, -1 - start)
 
 def contains_key :: Ord<'key> => own 'key -> ref Map<'key, 'value> -> bool
-fn contains_key key map = found map (ref key) (lower_bound map (ref key))
+fn contains_key key map =
+	match locate map (ref key) with
+	| (_chunk, offset) -> offset >= 0
 
 def get :: (Ord<'key>, Copy<'value>) => own 'key -> ref Map<'key, 'value> -> Maybe<'value>
 fn get key map =
-	let index = lower_bound map (ref key)
-	if found map (ref key) index then Maybe.Some map.entries[index].value else Maybe.None
+	match locate map (ref key) with
+	| (chunk, offset) ->
+		if offset >= 0 then
+			let entries = chunk_of map chunk
+			Maybe.Some entries[offset].value
+		else Maybe.None
 
 def at :: Ord<'key> => own 'key -> ref Map<'key, 'value> -> ref 'value
 fn at key map =
-	let index = lower_bound map (ref key)
-	assert (found map (ref key) index)
-	ref map.entries[index].value
+	match locate map (ref key) with
+	| (chunk, offset) ->
+		assert (offset >= 0)
+		let entries = chunk_of map chunk
+		ref entries[offset].value
+
+/// Takes chunk `index` out of the map. The map that comes back has a hole at `index`; `put_chunk` fills it.
+private def take_chunk :: own Map<'key, 'value> -> i64 -> (Map<'key, 'value> * Vec<Entry<'key, 'value>>)
+fn take_chunk map index =
+	if index == 0 then (Map { head: Vec.empty(), rest: map.rest, length: map.length }, map.head)
+	else
+		match take map.rest (index - 1) with
+		| (others, chunk) -> (Map { head: map.head, rest: others, length: map.length }, chunk)
+
+private def put_chunk :: own Map<'key, 'value> -> i64 -> own Vec<own Entry<'key, 'value>> -> i64 -> Map<'key, 'value>
+fn put_chunk map index chunk count =
+	if index == 0 then Map { head: chunk, rest: map.rest, length: count }
+	else Map { head: map.head, rest: put map.rest (index - 1) chunk, length: count }
+
+/// The hot path of a counter update: it keeps the old key and takes the chunk out of the map only when the entry is not in `head`.
+private def replace_value :: own Map<'key, 'value> -> i64 -> i64 -> own 'value -> Map<'key, 'value>
+fn replace_value map chunk offset value =
+	let count = map.length
+	if chunk == 0 then
+		match take map.head offset with
+		| (remaining, old) -> Map { head: put remaining offset (Entry { key: old.key, value: value }), rest: map.rest, length: count }
+	else
+		match take map.rest (chunk - 1) with
+		| (others, entries) ->
+			match take entries offset with
+			| (remaining, old) -> Map { head: map.head, rest: put others (chunk - 1) (put remaining offset (Entry { key: old.key, value: value })), length: count }
+
+/// Puts `entry` at `offset` of chunk `chunk`. A full chunk splits in two halves first, except at the end of the last chunk, which starts a new chunk.
+private def add_entry :: own Map<'key, 'value> -> i64 -> i64 -> own Entry<'key, 'value> -> Map<'key, 'value>
+fn add_entry map chunk offset entry =
+	let count = map.length
+	if count == 0 then Map { head: Vec.push_owned entry (Vec.empty()), rest: Vec.empty(), length: 1 }
+	else
+		let total = chunk_total (ref map)
+		let size = Vec.length (chunk_of (ref map) chunk)
+		if size < MaxChunk then
+			match take_chunk map chunk with
+			| (hole, entries) -> put_chunk hole chunk (insert_at entries offset entry) (count + 1)
+		elif chunk == total - 1 && offset == size then Map { head: map.head, rest: Vec.push_owned (Vec.push_owned entry (Vec.empty())) map.rest, length: count + 1 }
+		else
+			match take_chunk map chunk with
+			| (hole, entries) ->
+				let middle = size / 2
+				match split_off entries middle with
+				| (left, right) ->
+					if offset <= middle then
+						let restored = put_chunk hole chunk (insert_at left offset entry) (count + 1)
+						Map { head: restored.head, rest: insert_at restored.rest chunk right, length: count + 1 }
+					else
+						let restored = put_chunk hole chunk left (count + 1)
+						Map { head: restored.head, rest: insert_at restored.rest chunk (insert_at right (offset - middle) entry), length: count + 1 }
+
+/// Whether `key` is greater than every key of the map, which makes an insertion an append.
+private def beyond_last :: Ord<'key> => ref own Map<'key, 'value> -> ref 'key -> bool
+fn beyond_last map key =
+	assert (Eq.eq key key)
+	if map.length == 0 then false
+	else
+		let entries = chunk_of map (chunk_total map - 1)
+		let last = Vec.length entries - 1
+		assert (Eq.eq (ref entries[last].key) (ref entries[last].key))
+		Ord.lt (ref entries[last].key) key
 
 def insert :: Ord<'key> => own 'key -> own 'value -> own Map<'key, 'value> -> Map<'key, 'value>
 fn insert key value map =
-	let index = lower_bound (ref map) (ref key)
-	let count = length (ref map)
-	if found (ref map) (ref key) index then
-		let entries = Vec.swap index (count - 1) map.entries
-		match Vec.pop entries with
-		| (remaining, Maybe.Some old) ->
-			let replacement = Entry { key: old.key, value: value }
-			Map { entries: Vec.swap index (count - 1) (Vec.push_owned replacement remaining) }
-		| (_, Maybe.None) -> unreachable ()
+	if beyond_last (ref map) (ref key) then
+		let chunk = chunk_total (ref map) - 1
+		let size = Vec.length (chunk_of (ref map) chunk)
+		add_entry map chunk size (Entry { key: key, value: value })
 	else
-		let mut entries = Vec.push_owned (Entry { key: key, value: value }) map.entries
-		let mut position = count
-		while position > index do
-			entries = Vec.swap position (position - 1) entries
-			position = position - 1
-		Map { entries: entries }
+		match locate (ref map) (ref key) with
+		| (chunk, offset) ->
+			if offset >= 0 then replace_value map chunk offset value
+			else add_entry map chunk (-1 - offset) (Entry { key: key, value: value })
+
+/// Merges chunk `index + 1` into chunk `index`.
+private def merge_next :: own Map<'key, 'value> -> i64 -> Map<'key, 'value>
+fn merge_next map index =
+	let count = map.length
+	match remove_at map.rest index with
+	| (others, tail) ->
+		match take_chunk (Map { head: map.head, rest: others, length: count }) index with
+		| (hole, entries) -> put_chunk hole index (join entries tail) count
+
+/// Restores the rule for neighbouring chunks after chunk `index` lost an entry: it merges with the chunk before it or, failing that, after it.
+private def shrink :: own Map<'key, 'value> -> i64 -> Map<'key, 'value>
+fn shrink map index =
+	let size = Vec.length (chunk_of (ref map) index)
+	if index > 0 && Vec.length (chunk_of (ref map) (index - 1)) + size <= MergeLimit then merge_next map (index - 1)
+	elif index + 1 < chunk_total (ref map) && size + Vec.length (chunk_of (ref map) (index + 1)) <= MergeLimit then merge_next map index
+	else map
+
+/// Removes chunk `index`, which holds one entry; the next chunk becomes `head` when that is chunk 0.
+private def delete_chunk :: own Map<'key, 'value> -> i64 -> Map<'key, 'value>
+fn delete_chunk map index =
+	let count = map.length - 1
+	if index == 0 then
+		if Vec.length (ref map.rest) == 0 then Map { head: Vec.empty(), rest: Vec.empty(), length: 0 }
+		else
+			match remove_at map.rest 0 with
+			| (others, first) -> Map { head: first, rest: others, length: count }
+	else
+		match remove_at map.rest (index - 1) with
+		| (others, _gone) -> Map { head: map.head, rest: others, length: count }
 
 def remove :: Ord<'key> => own 'key -> own Map<'key, 'value> -> Map<'key, 'value>
 fn remove key map =
-	let index = lower_bound (ref map) (ref key)
-	let count = length (ref map)
-	if found (ref map) (ref key) index then
-		let mut entries = map.entries
-		let mut position = index
-		while position < count - 1 do
-			entries = Vec.swap position (position + 1) entries
-			position = position + 1
-		match Vec.pop entries with
-		| (remaining, _removed) -> Map { entries: remaining }
-	else map
+	match locate (ref map) (ref key) with
+	| (chunk, offset) ->
+		if offset >= 0 then
+			let count = map.length
+			if Vec.length (chunk_of (ref map) chunk) == 1 then delete_chunk map chunk
+			else
+				match take_chunk map chunk with
+				| (hole, entries) ->
+					match remove_at entries offset with
+					| (remaining, _removed) -> shrink (put_chunk hole chunk remaining (count - 1)) chunk
+		else map
+
+/// The `append_*` functions read the entries through their own parameter, not through a local reference: a key or a value that holds a borrow
+/// would otherwise keep the loan of that reference alive in the `Vec` that is built, and moving that `Vec` would be rejected (`E1014`).
+private def append_pairs :: (Copy<'key>, Copy<'value>) => own Vec<('key * 'value)> -> ref Vec<Entry<'key, 'value>> -> Vec<('key * 'value)>
+fn append_pairs output entries =
+	let mut result = output
+	let mut offset = 0
+	while offset < Vec.length entries do
+		result = Vec.push_owned (entries[offset].key, entries[offset].value) result
+		offset = offset + 1
+	result
+
+private def append_keys :: Copy<'key> => own Vec<'key> -> ref Vec<Entry<'key, 'value>> -> Vec<'key>
+fn append_keys output entries =
+	let mut result = output
+	let mut offset = 0
+	while offset < Vec.length entries do
+		result = Vec.push_owned entries[offset].key result
+		offset = offset + 1
+	result
+
+private def append_values :: Copy<'value> => own Vec<'value> -> ref Vec<Entry<'key, 'value>> -> Vec<'value>
+fn append_values output entries =
+	let mut result = output
+	let mut offset = 0
+	while offset < Vec.length entries do
+		result = Vec.push_owned entries[offset].value result
+		offset = offset + 1
+	result
 
 def to_array :: (Copy<'key>, Copy<'value>) => ref Map<'key, 'value> -> [('key * 'value)]
-fn to_array map = new [('key * 'value)](length map, index -> (map.entries[index].key, map.entries[index].value))
+fn to_array map =
+	let mut output = append_pairs (Vec.with_capacity map.length) (ref map.head)
+	let mut chunk = 0
+	while chunk < Vec.length (ref map.rest) do
+		output = append_pairs output (ref map.rest[chunk])
+		chunk = chunk + 1
+	Vec.to_array output
 
 def keys :: Copy<'key> => ref Map<'key, 'value> -> ['key]
-fn keys map = new ['key](length map, index -> map.entries[index].key)
+fn keys map =
+	let mut output = append_keys (Vec.with_capacity map.length) (ref map.head)
+	let mut chunk = 0
+	while chunk < Vec.length (ref map.rest) do
+		output = append_keys output (ref map.rest[chunk])
+		chunk = chunk + 1
+	Vec.to_array output
 
 def values :: Copy<'value> => ref Map<'key, 'value> -> ['value]
-fn values map = new ['value](length map, index -> map.entries[index].value)
+fn values map =
+	let mut output = append_values (Vec.with_capacity map.length) (ref map.head)
+	let mut chunk = 0
+	while chunk < Vec.length (ref map.rest) do
+		output = append_values output (ref map.rest[chunk])
+		chunk = chunk + 1
+	Vec.to_array output
 
 def fold :: own ('state -> ref 'key -> ref 'value -> 'state) -> own 'state -> ref Map<'key, 'value> -> 'state
 fn fold folder initial map =
 	let mut state = initial
-	let mut index = 0
-	while index < length map do
-		state = folder state (ref map.entries[index].key) (ref map.entries[index].value)
-		index = index + 1
+	let total = chunk_total map
+	let mut chunk = 0
+	while chunk < total do
+		let entries = chunk_of map chunk
+		let count = Vec.length entries
+		let mut offset = 0
+		while offset < count do
+			state = folder state (ref entries[offset].key) (ref entries[offset].value)
+			offset = offset + 1
+		chunk = chunk + 1
 	state
 
-private def rec iter_from :: ref Map<'key, 'value> -> own i64 -> Seq<(ref 'key * ref 'value)>
-fn rec iter_from map index = Seq.defer (\() ->
-	if index < length map then (iter_from map (index + 1), Maybe.Some (ref map.entries[index].key, ref map.entries[index].value))
+private def rec iter_from :: ref Map<'key, 'value> -> i64 -> i64 -> Seq<(ref 'key * ref 'value)>
+fn rec iter_from map chunk offset = Seq.defer (\() ->
+	if chunk < chunk_total map then
+		let entries = chunk_of map chunk
+		let next = if offset + 1 < Vec.length entries then iter_from map chunk (offset + 1) else iter_from map (chunk + 1) 0
+		(next, Maybe.Some (ref entries[offset].key, ref entries[offset].value))
 	else (Seq.empty(), Maybe.None))
 
 def iter :: ref Map<'key, 'value> -> Seq<(ref 'key * ref 'value)>
-fn iter map = iter_from map 0
+fn iter map = iter_from map 0 0
 
-
+/// Whether the chunks obey their rules: 1 to 512 entries each, more than 256 entries in any two neighbours, strictly ascending keys,
+/// and `length` equal to the number of entries. A diagnostic for tests, like `HashMap.longest_probe`.
+def invariants_hold :: Ord<'key> => ref Map<'key, 'value> -> bool
+fn invariants_hold map =
+	let total = chunk_total map
+	let mut valid = map.length > 0 || (Vec.length (ref map.head) == 0 && Vec.length (ref map.rest) == 0)
+	let mut sum = 0
+	let mut chunk = 0
+	while chunk < total do
+		let entries = chunk_of map chunk
+		let size = Vec.length entries
+		if size < 1 || size > MaxChunk then valid = false
+		if chunk > 0 && Vec.length (chunk_of map (chunk - 1)) + size <= MergeLimit then valid = false
+		if size > 0 then
+			if chunk > 0 then
+				let before = chunk_of map (chunk - 1)
+				if !(Ord.lt (ref before[Vec.length before - 1].key) (ref entries[0].key)) then valid = false
+			let mut offset = 1
+			while offset < size do
+				if !(Ord.lt (ref entries[offset - 1].key) (ref entries[offset].key)) then valid = false
+				offset = offset + 1
+		sum = sum + size
+		chunk = chunk + 1
+	valid && sum == map.length

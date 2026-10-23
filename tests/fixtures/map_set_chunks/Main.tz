@@ -1,0 +1,389 @@
+// C12: the chunks of Map and Set. Build with `tsuzuri build` for the E2E suite `map_set_chunks`; run `tsuzuri test` for the property tests at the end.
+
+// Where the chunks split, merge and disappear. Expected values are worked out by hand in C12.
+
+def sequence :: i64 -> i64 -> i64 -> Map<i64, i64>
+fn sequence first step count =
+    let mut map: Map<i64, i64> = Map.empty()
+    for index in 0i64 .. count - 1 do map = Map.insert (first + index * step) index map
+    map
+
+def chunks :: ref Map<i64, i64> -> i64
+fn chunks map = if Map.invariants_hold map then Map.chunk_count map else -1
+
+export def ascending :: i64 -> i64
+fn ascending count =
+    let map = sequence 0 1 count
+    chunks (ref map)
+
+export def descending :: i64 -> i64
+fn descending count =
+    let map = sequence (count - 1) (-1) count
+    chunks (ref map)
+
+export def middle_split :: i64
+fn middle_split =
+    let map = sequence 0 2 512
+    let before = chunks (ref map)
+    let after = Map.insert 1 99 map
+    before * 1000 + chunks (ref after)
+
+// 257 + 256 keys become 129 + 128 (no merge), then 128 + 128 (merge).
+export def merge_after_removals :: i64
+fn merge_after_removals =
+    let mut map = sequence 0 2 512
+    map = Map.insert 1 99 map
+    let start = chunks (ref map)
+    for index in 0i64 .. 255 do map = Map.remove (2 + index * 4) map
+    let before = chunks (ref map)
+    map = Map.remove 0 map
+    let after = chunks (ref map)
+    start * 10000000 + before * 1000000 + after * 1000 + Map.length (ref map)
+
+export def head_deleted :: i64
+fn head_deleted =
+    let mut map = sequence 0 1 768
+    let before = chunks (ref map)
+    for key in 0i64 .. 511 do map = Map.remove key map
+    let after = chunks (ref map)
+    before * 100000 + after * 1000 + Map.length (ref map)
+
+export def tail_deleted :: i64
+fn tail_deleted =
+    let map = sequence 0 1 513
+    let before = chunks (ref map)
+    let map = Map.remove 512 map
+    before * 1000 + chunks (ref map)
+
+// A = 0..999, B = 500..1499: union 1,500 keys, intersection and difference 500 each.
+export def set_algebra_chunks :: i64
+fn set_algebra_chunks =
+    let mut left: Set<i64> = Set.empty()
+    let mut right: Set<i64> = Set.empty()
+    for key in 0i64 .. 999 do left = Set.insert key left
+    for key in 500i64 .. 1499 do right = Set.insert key right
+    let common = Set.intersect (ref left) (ref right)
+    let different = Set.difference (ref left) (ref right)
+    let both = Set.union left right
+    assert (Set.invariants_hold (ref common) && Set.invariants_hold (ref different) && Set.invariants_hold (ref both))
+    Set.chunk_count (ref both) * 10000 + Set.chunk_count (ref common) * 100 + Set.chunk_count (ref different)
+
+record Probe { value: i64, hits: ref Atomic<i64> }
+
+instance Eq<Probe> {
+    fn eq left right = left.value == right.value
+    fn ne left right = left.value != right.value
+}
+
+instance Ord<Probe> {
+    fn lt left right =
+        let _before = Atomic.fetch_add left.hits 1
+        left.value < right.value
+    fn le left right = !(Ord.lt right left)
+    fn gt left right = Ord.lt right left
+    fn ge left right = !(Ord.lt left right)
+}
+
+def next_state :: i64u -> i64u
+fn next_state state = state * 6364136223846793005 + 1442695040888963407
+
+def log2 :: i64 -> i64
+fn log2 n =
+    let mut value = n
+    let mut result = 0
+    while value > 1 do
+        value = value / 2
+        result = result + 1
+    result
+
+// Chunk search L(c), at most 10 comparisons inside a chunk, then one equality comparison.
+def lookup_bound :: i64 -> i64
+fn lookup_bound count = (if count <= 1 then 0 else log2 (count - 1) + 1) + 11
+
+def insert_bound :: i64 -> i64
+fn insert_bound count = lookup_bound count + 1
+
+// 0 on success; 11/12/13 identify an operation over its bound, 21/22/23 a phase over its total.
+export def comparison_bounds :: i64 -> i64
+fn comparison_bounds size =
+    let hits = Atomic.create 0i64
+    let mut map: Map<Probe, i64> = Map.empty()
+    let mut failure = 0
+    let total_bound = size * (log2 size + 6)
+    let mut state = 88172645463325252
+    let mut phase_start = 0
+    for index in 0i64 .. size - 1 do
+        state = next_state state
+        let before = Atomic.load (ref hits)
+        let allowed = insert_bound (Map.chunk_count (ref map))
+        map = Map.insert (Probe { value: (state >>> 20) as i64, hits: ref hits }) index map
+        if Atomic.load (ref hits) - before > allowed && failure == 0 then failure = 11
+    if Atomic.load (ref hits) - phase_start > total_bound && failure == 0 then failure = 21
+    phase_start = Atomic.load (ref hits)
+    state = 88172645463325252
+    for _index in 0i64 .. size - 1 do
+        state = next_state state
+        let before = Atomic.load (ref hits)
+        let found = Map.contains_key (Probe { value: (state >>> 20) as i64, hits: ref hits }) (ref map)
+        assert found
+        if Atomic.load (ref hits) - before > lookup_bound (Map.chunk_count (ref map)) && failure == 0 then failure = 12
+    if Atomic.load (ref hits) - phase_start > total_bound && failure == 0 then failure = 22
+    phase_start = Atomic.load (ref hits)
+    state = 88172645463325252
+    for _index in 0i64 .. size - 1 do
+        state = next_state state
+        let before = Atomic.load (ref hits)
+        let allowed = lookup_bound (Map.chunk_count (ref map))
+        map = Map.remove (Probe { value: (state >>> 20) as i64, hits: ref hits }) map
+        if Atomic.load (ref hits) - before > allowed && failure == 0 then failure = 13
+    if Atomic.load (ref hits) - phase_start > total_bound && failure == 0 then failure = 23
+    assert (Map.is_empty (ref map))
+    failure
+
+def probe_sets :: ref Atomic<i64> -> i64 -> (Set<Probe> * Set<Probe>)
+fn probe_sets hits size =
+    let mut left: Set<Probe> = Set.empty()
+    let mut right: Set<Probe> = Set.empty()
+    for index in 0i64 .. size - 1 do
+        left = Set.insert (Probe { value: index * 2, hits: hits }) left
+        right = Set.insert (Probe { value: index * 3, hits: hits }) right
+    (left, right)
+
+def algebra_calls :: i64 -> i64 -> i64
+fn algebra_calls operation size =
+    let hits = Atomic.create 0i64
+    match probe_sets (ref hits) size with
+    | (left, right) ->
+        let before = Atomic.load (ref hits)
+        if operation == 0 then
+            let result = Set.intersect (ref left) (ref right)
+            let calls = Atomic.load (ref hits) - before
+            assert (Set.invariants_hold (ref result))
+            calls
+        elif operation == 1 then
+            let result = Set.difference (ref left) (ref right)
+            let calls = Atomic.load (ref hits) - before
+            assert (Set.invariants_hold (ref result))
+            calls
+        else
+            let result = Set.union left right
+            let calls = Atomic.load (ref hits) - before
+            assert (Set.invariants_hold (ref result))
+            calls
+
+export def set_algebra_bounds :: i64 -> i64
+fn set_algebra_bounds size =
+    let limit = 2 * (size + size)
+    if algebra_calls 0 size > limit then 1
+    elif algebra_calls 1 size > limit then 2
+    elif algebra_calls 2 size > limit then 3
+    else 0
+
+// Keys and values containing borrows must work in every public operation.
+def use_map :: ref Atomic<i64> -> i64
+fn use_map hits =
+    let first = Probe { value: 1, hits: hits }
+    let second = Probe { value: 2, hits: hits }
+    let mut map: Map<Probe, Probe> = Map.singleton first second
+    map = Map.insert second first map
+    map = Map.insert first first map
+    let found = Map.get first (ref map)
+    let present = Map.contains_key second (ref map)
+    let at_value = (Map.at first (ref map)).value
+    let keys = Map.keys (ref map)
+    let values = Map.values (ref map)
+    let pairs = Map.to_array (ref map)
+    let total = Map.fold (\sum key value -> sum + key.value + value.value) 0 (ref map)
+    let mut seen = 0
+    for pair in Map.iter (ref map) do
+        match pair with
+        | (key, value) -> seen = seen + key.value + value.value
+    let sizes = keys.length + values.length + pairs.length
+    let found_value = match found with | Maybe.Some probe -> probe.value | Maybe.None -> 0
+    let removed = Map.remove second map
+    sizes + total + seen + Map.length (ref removed) + at_value + (if present then 1 else 0) + found_value
+
+def use_set :: ref Atomic<i64> -> i64
+fn use_set hits =
+    let first = Probe { value: 1, hits: hits }
+    let second = Probe { value: 2, hits: hits }
+    let mut left: Set<Probe> = Set.singleton first
+    left = Set.insert second left
+    let right: Set<Probe> = Set.singleton second
+    let keys = Set.to_array (ref left)
+    let common = Set.intersect (ref left) (ref right)
+    let different = Set.difference (ref left) (ref right)
+    let total = Set.fold (\sum key -> sum + key.value) 0 (ref left)
+    let mut seen = 0
+    for key in Set.iter (ref left) do seen = seen + key.value
+    let sizes = keys.length + Set.length (ref common) + Set.length (ref different)
+    let both = Set.union left right
+    let present = Set.contains first (ref both)
+    sizes + total + seen + Set.length (ref both) + (if present then 1 else 0)
+
+// 33 = use_map 20 + use_set 13, derived in the ticket.
+export def borrowed_keys_and_values :: i64
+fn borrowed_keys_and_values =
+    let hits = Atomic.create 0i64
+    use_map (ref hits) + use_set (ref hits)
+
+// Independent reference model: a table indexed by key.
+record Table { present: [bool], values: [i64] }
+
+def blank :: i64 -> Table
+fn blank range = Table { present: new [bool](range, \_ -> false), values: new [i64](range, \_ -> 0) }
+
+def table_insert :: Table -> i64 -> i64 -> Table
+fn table_insert table key value =
+    Table { present: Array.update_at key true table.present, values: Array.update_at key value table.values }
+
+def table_remove :: Table -> i64 -> Table
+fn table_remove table key = Table { present: Array.update_at key false table.present, values: table.values }
+
+def table_keys :: ref Table -> [i64]
+fn table_keys table =
+    let mut keys = Vec.empty()
+    for key in 0i64 .. table.present.length - 1 do
+        if table.present[key] then keys = Vec.push key keys
+    Vec.to_array keys
+
+def table_values :: ref Table -> [i64]
+fn table_values table =
+    let mut values = Vec.empty()
+    for key in 0i64 .. table.present.length - 1 do
+        if table.present[key] then values = Vec.push table.values[key] values
+    Vec.to_array values
+
+def same :: ref [i64] -> ref [i64] -> bool
+fn same left right =
+    let mut equal = left.length == right.length
+    let mut index = 0
+    while equal && index < left.length do
+        equal = left[index] == right[index]
+        index = index + 1
+    equal
+
+def map_agrees :: ref Table -> ref Map<i64, i64> -> bool
+fn map_agrees table map =
+    let keys = Map.keys map
+    let values = Map.values map
+    let expected_keys = table_keys table
+    let expected_values = table_values table
+    same (ref keys) (ref expected_keys) && same (ref values) (ref expected_values) && Map.length map == expected_keys.length
+
+def run_map :: i64 -> [(i64 * i64)] -> bool
+fn run_map range operations =
+    let mut map: Map<i64, i64> = Map.empty()
+    let mut table = blank range
+    let mut ok = true
+    let mut step = 0
+    while ok && step < operations.length do
+        match operations[step] with
+        | (kind, key) ->
+            if kind == 0 then
+                map = Map.insert key step map
+                table = table_insert table key step
+            elif kind == 1 then
+                map = Map.remove key map
+                table = table_remove table key
+            ok = ok && Map.contains_key key (ref map) == table.present[key]
+            ok = ok && Maybe.default_value (-1) (Map.get key (ref map)) == (if table.present[key] then table.values[key] else -1)
+        if step % 32 == 0 then ok = ok && Map.invariants_hold (ref map)
+        step = step + 1
+    ok && Map.invariants_hold (ref map) && map_agrees (ref table) (ref map)
+
+def set_agrees :: ref Table -> ref Set<i64> -> bool
+fn set_agrees table set =
+    let keys = Set.to_array set
+    let expected = table_keys table
+    same (ref keys) (ref expected) && Set.length set == expected.length
+
+def build_set :: i64 -> [(i64 * i64)] -> (Set<i64> * Table)
+fn build_set range operations =
+    let mut set: Set<i64> = Set.empty()
+    let mut table = blank range
+    for step in 0i64 .. operations.length - 1 do
+        match operations[step] with
+        | (kind, key) ->
+            if kind == 0 then
+                set = Set.insert key set
+                table = table_insert table key step
+            elif kind == 1 then
+                set = Set.remove key set
+                table = table_remove table key
+    (set, table)
+
+def run_set :: i64 -> [(i64 * i64)] -> bool
+fn run_set range operations =
+    match build_set range operations with
+    | (set, table) -> Set.invariants_hold (ref set) && set_agrees (ref table) (ref set)
+
+def run_algebra :: i64 -> ([(i64 * i64)] * [(i64 * i64)]) -> bool
+fn run_algebra range pair =
+    match pair with
+    | (first, second) ->
+        match (build_set range first, build_set range second) with
+        | ((left, left_table), (right, right_table)) ->
+            let mut both = blank range
+            let mut common = blank range
+            let mut different = blank range
+            for key in 0i64 .. range - 1 do
+                if left_table.present[key] || right_table.present[key] then both = table_insert both key 0
+                if left_table.present[key] && right_table.present[key] then common = table_insert common key 0
+                if left_table.present[key] && !right_table.present[key] then different = table_insert different key 0
+            let common_set = Set.intersect (ref left) (ref right)
+            let different_set = Set.difference (ref left) (ref right)
+            let both_set = Set.union left right
+            Set.invariants_hold (ref common_set) && set_agrees (ref common) (ref common_set) && Set.invariants_hold (ref different_set) && set_agrees (ref different) (ref different_set) && Set.invariants_hold (ref both_set) && set_agrees (ref both) (ref both_set)
+
+// Profile 0 stays below 300 keys, 1 grows past 1,500, 2 mostly removes, 3 churns about 3,000 keys.
+def profile_range :: i64 -> i64
+fn profile_range profile = if profile == 0 then 300 elif profile == 1 then 2500 elif profile == 2 then 2500 else 5000
+
+def profile_count :: i64 -> i64
+fn profile_count profile = if profile == 0 then 3000 elif profile == 3 then 12000 else 8000
+
+def profile_inserts :: i64 -> i64
+fn profile_inserts profile = if profile == 0 then 60 elif profile == 1 then 70 elif profile == 2 then 30 else 55
+
+def draw :: i64u -> i64 -> i64
+fn draw state bound = ((state >>> 33) % (bound as i64u)) as i64
+
+def profile_operations :: i64 -> i64u -> [(i64 * i64)]
+fn profile_operations profile seed =
+    let range = profile_range profile
+    let inserts = profile_inserts profile
+    let mut operations = Vec.with_capacity (profile_count profile)
+    let mut state = seed
+    for _step in 0i64 .. profile_count profile - 1 do
+        state = next_state state
+        let choice = draw state 100
+        state = next_state state
+        let key = draw state range
+        let kind = if choice < inserts then 0 elif choice < inserts + (100 - inserts) * 3 / 4 then 1 else 2
+        operations = Vec.push (kind, key) operations
+    Vec.to_array operations
+
+export def model_map :: i64 -> i64 -> i64
+fn model_map profile seed = if run_map (profile_range profile) (profile_operations profile (seed as i64u)) then 1 else 0
+
+export def model_set :: i64 -> i64 -> i64
+fn model_set profile seed = if run_set (profile_range profile) (profile_operations profile (seed as i64u)) then 1 else 0
+
+export def model_algebra :: i64 -> i64 -> i64
+fn model_algebra profile seed =
+    let first = profile_operations profile (seed as i64u)
+    let second = profile_operations profile ((seed as i64u) + 7919i64u)
+    if run_algebra (profile_range profile) (first, second) then 1 else 0
+
+def short_operations :: Gen<[(i64 * i64)]>
+fn short_operations = Gen.array_up_to 64 (Gen.pair (Gen.range 0 2) (Gen.range 0 49))
+
+def long_runs :: Gen<(i64 * i64)>
+fn long_runs = Gen.pair (Gen.range 0 1000000) (Gen.range 0 3)
+
+test "Map follows the table model on short operation lists" = Gen.for_all_cases 100 (short_operations()) (\operations -> run_map 50 operations)
+test "Set follows the table model on short operation lists" = Gen.for_all_cases 100 (short_operations()) (\operations -> run_set 50 operations)
+test "Map follows the table model on long seeded runs" = Gen.for_all_cases 12 (long_runs()) (\run -> match run with | (seed, profile) -> model_map profile seed == 1)
+test "Set follows the table model on long seeded runs" = Gen.for_all_cases 12 (long_runs()) (\run -> match run with | (seed, profile) -> model_set profile seed == 1)
+test "Set algebra follows the table model on long seeded runs" = Gen.for_all_cases 8 (long_runs()) (\run -> match run with | (seed, profile) -> model_algebra profile seed == 1)

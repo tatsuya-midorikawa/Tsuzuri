@@ -186,6 +186,31 @@ try {
   assert.match(edge, /^\(Main\.Lookalike\) lookalike = (?:\(code = 1, environment = 2, clone = 3, drop = 4\)|\{\n  code = 1\n  environment = 2\n  clone = 3\n  drop = 4\n\})$/m);
   assert.match(edge, /^\(Main\.Descriptive\) descriptive = (?:\(descriptor = 5, environment = 6\)|\{\n  descriptor = 5\n  environment = 6\n\})$/m);
 
+  // C12: cross from the 512-entry head to the next chunk, without eagerly reading every chunk.
+  const chunked = join(root, "chunked");
+  mkdirSync(chunked);
+  writeFileSync(join(chunked, "Main.tz"), [
+    "def build :: i64 -> Set<i64>",
+    "fn build count =",
+    "    let mut set: Set<i64> = Set.empty()",
+    "    for key in 0i64 .. count - 1 do set = Set.insert key set",
+    "    set",
+    "",
+    "def inspect :: i64 -> i64",
+    "fn inspect count =",
+    "    let many = build count",
+    "    Set.length (ref many)",
+    "",
+    "inspect 513",
+    "",
+  ].join("\n"));
+  const crossing = sections(session(chunked, ["breakpoint set -f Main.tz -l 10", "run", "frame variable many", "frame variable many[0] many[511] many[512]", "kill"]));
+  const summary = crossing.find(part => part.command === "frame variable many").text;
+  assert.match(summary, /^\(Set<i64>\) many = size=513 \{$/m, summary);
+  assert.match(summary, /^ {2}\[0\] = 0$/m, summary);
+  const picked = crossing.find(part => part.command === "frame variable many[0] many[511] many[512]").text;
+  for (const index of [0, 511, 512]) assert.match(picked, new RegExp(`^\\(i64\\) many\\[${index}\\] = ${index}$`, "m"), picked);
+
   // PM01: a union of a nullary case and a string or array payload stores no tag. `$niche` holds
   // the length -1 for the nullary case, and the formatter reads the case from it, whichever case
   // comes first. A native `Maybe<ref T>` is the pointer itself: the null pointer is `None`.
