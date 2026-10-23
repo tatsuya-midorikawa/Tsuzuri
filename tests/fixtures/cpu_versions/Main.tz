@@ -20,7 +20,7 @@ fn dot left right =
 
 /// Scales the elements in place: eight lanes at a time, then the rest.
 @cpu ["avx2", "sve"]
-def scale :: ref mut [f32..] -> f32 -> unit
+def scale :: ref mut [f32..] -> own f32 -> unit
 fn scale values factor =
     let mut index = 0
     while index + 8 <= values.length do

@@ -59,7 +59,7 @@ fn trim_excess values =
 // ---- Adding ----
 
 def add :: own 'a -> own Vec<'a> -> Vec<'a>
-fn add item values = Vec.push item values
+fn add item values = Vec.push_owned item values
 
 /// Adds copies of the elements of an array at the end.
 def add_range :: Copy<'a> => ref ['a] -> own Vec<'a> -> Vec<'a>
@@ -71,7 +71,7 @@ fn add_range items values =
 def add_range_seq :: own Seq<'a> -> own Vec<'a> -> Vec<'a>
 fn add_range_seq items values =
     let mut result = values
-    for item in items do result = Vec.push item result
+    for item in items do result = Vec.push_owned item result
     result
 
 /// Moves all the elements of `other` to the end of `values`, so `values |> Vec.append other` puts `other` behind
@@ -507,7 +507,7 @@ fn find_all predicate values =
     let mut found: Vec<'a> = Vec.empty()
     let mut index = 0
     while index < length do
-        if predicate values[index] then found = Vec.push values[index] found
+        if predicate values[index] then found = Vec.push_owned values[index] found
         index = index + 1
     found
 
@@ -586,7 +586,7 @@ fn convert_allr converter values =
     let mut converted: Vec<'b> = Vec.with_capacity length
     let mut index = 0
     while index < length do
-        converted = Vec.push (converter (ref values[index])) converted
+        converted = Vec.push_owned (converter (ref values[index])) converted
         index = index + 1
     converted
 
@@ -597,7 +597,7 @@ fn convert_all converter values =
     let mut converted: Vec<'b> = Vec.with_capacity length
     let mut index = 0
     while index < length do
-        converted = Vec.push (converter values[index]) converted
+        converted = Vec.push_owned (converter values[index]) converted
         index = index + 1
     converted
 

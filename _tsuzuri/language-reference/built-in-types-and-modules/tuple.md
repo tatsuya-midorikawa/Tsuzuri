@@ -24,7 +24,7 @@ i64 * string * bool
 要素式は左から右へ 1 回ずつ評価されます。型注釈の `*` の両側には型が必要で、`i64 *` のような 1 要素の型は構文エラー `E0002` です。
 
 ```tsuzuri run=42
-def first :: i64 * string -> i64 = \pair ->
+def first :: own i64 * string -> i64 = \pair ->
     match pair with
     | (number, _) -> number
 

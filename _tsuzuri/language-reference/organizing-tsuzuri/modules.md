@@ -23,7 +23,7 @@ Tsuzuri では 1 つのファイルが 1 つのモジュールです。ファイ
 record Point { x: f64, y: f64 }
 
 def make :: f64 -> f64 -> Point = \x y -> Point { x: x, y: y }
-def distance_squared :: Point -> f64 = \p -> p.x * p.x + p.y * p.y
+def distance_squared :: own Point -> f64 = \p -> p.x * p.x + p.y * p.y
 ```
 
 ```tsuzuri project=modules-basic file=Main.tz run=25
@@ -63,7 +63,7 @@ let p = Geometry::Point.make 3.0 4.0
 ```tsuzuri project=modules-samename file=Drawing/Point.tz
 record Point { x: i64, y: i64 }
 
-def scale :: Point -> i64 -> Point = \p factor ->
+def scale :: own Point -> i64 -> Point = \p factor ->
     Point { x: p.x * factor, y: p.y * factor }
 ```
 

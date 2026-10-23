@@ -217,7 +217,7 @@ struct Item {
     /// A `const def`, which a `const` initializer of another module may call.
     constant: bool,
     /// Conservative until API comparison resolves parameter types and aliases.
-    borrowing_defaults: bool,
+    borrowing_defaults: Vec<bool>,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
     derives: BTreeSet<&'static str>,
@@ -243,7 +243,7 @@ impl Item {
             header,
             exported: false,
             constant: false,
-            borrowing_defaults: false,
+            borrowing_defaults: Vec::new(),
             members: Vec::new(),
             derives: BTreeSet::new(),
             doc: None,
@@ -627,19 +627,39 @@ fn add_items(
             Item::new("def", qualified(&name), header).documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
         item.constant = declaration.constant;
-        item.borrowing_defaults = edition.borrows_parameters()
-            && !declaration.constant
-            && declaration.parameters.iter().any(|parameter| {
-                !parameter.mutable
-                    && !matches!(
-                        parameter.ty.kind,
+        let (parameters, _) = flatten(
+            declaration
+                .parameters
+                .iter()
+                .map(|p| p.ty.clone())
+                .collect(),
+            declaration.result.clone(),
+        );
+        item.borrowing_defaults = parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| {
+                edition.borrows_parameters()
+                    && !declaration.constant
+                    && !declaration.parameters.get(index).is_some_and(|p| p.mutable)
+                    && match &parameter.kind {
                         TypeExprKind::Own(_)
-                            | TypeExprKind::Mut(_)
-                            | TypeExprKind::Reference(..)
-                            | TypeExprKind::Regions(..)
-                            | TypeExprKind::Quantified(..)
-                    )
-            });
+                        | TypeExprKind::Mut(_)
+                        | TypeExprKind::Reference(..)
+                        | TypeExprKind::Regions(..)
+                        | TypeExprKind::Quantified(..) => false,
+                        TypeExprKind::Named(name) => {
+                            crate::numeric::primitive(name).is_none_or(|ty| {
+                                matches!(
+                                    ty,
+                                    crate::check::Type::String | crate::check::Type::Utf8String
+                                )
+                            })
+                        }
+                        _ => true,
+                    }
+            })
+            .collect();
         add(item);
     }
     for declaration in externs {
@@ -1058,7 +1078,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             old: Some(old.text()),
             new: Some(new.text()),
             note: if old.borrowing_defaults != new.borrowing_defaults {
-                "edition changes the default parameter convention; effective signatures may differ"
+                "default parameter conventions change; effective signatures may differ"
             } else {
                 ""
             },

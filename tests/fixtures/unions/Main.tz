@@ -9,36 +9,36 @@ union Pick = Left of i64 | Right of i64 | Neither
 record Tagged { label: string, shape: Shape }
 record Holder { item: Maybe<string> }
 
-def area :: Shape -> f64
+def area :: own Shape -> f64
 fn area shape =
     match shape with
     | Circle r -> r * r * 3.141592653589793
     | Rect (w, h) -> w * h
     | Empty -> 0.0
 
-def default_value :: 'a -> Maybe<'a> -> 'a
+def default_value :: own 'a -> own Maybe<'a> -> 'a
 fn default_value fallback value =
     match value with
     | Some x -> x
     | None -> fallback
 
-def color_code :: Color -> i64
+def color_code :: own Color -> i64
 fn color_code color =
     match color with
     | Red -> 1
     | Green -> 2
     | Blue -> 3
 
-def apply :: ('a -> 'b) -> 'a -> 'b
+def apply :: own ('a -> 'b) -> own 'a -> 'b
 fn apply f x = f x
 
-def text_length :: Maybe<string> -> i64
+def text_length :: own Maybe<string> -> i64
 fn text_length value =
     match value with
     | Some text -> text.length
     | None -> 0
 
-def sum_maybe :: Maybe<[i64]> -> i64
+def sum_maybe :: own Maybe<[i64]> -> i64
 fn sum_maybe value =
     match value with
     | Some items ->
@@ -48,13 +48,13 @@ fn sum_maybe value =
         total
     | None -> 0
 
-def describe :: Maybe<Tagged> -> i64
+def describe :: own Maybe<Tagged> -> i64
 fn describe value =
     match value with
     | Some Tagged { label = text; shape = s } -> text.length * 10 + to_int (area s)
     | None -> 0
 
-def total :: [Maybe<i64>] -> i64
+def total :: own [Maybe<i64>] -> i64
 fn total items =
     let mut sum = 0
     for item in items do
@@ -69,7 +69,7 @@ fn borrowed value =
     | Some n -> n
     | None -> 0
 
-def remote_radius :: Shapes.Shape -> i64
+def remote_radius :: own Shapes.Shape -> i64
 fn remote_radius shape =
     match shape with
     | Shapes.Circle r -> to_int r
@@ -94,7 +94,7 @@ export def color_sum :: i64
 fn color_sum =
     color_code Red * 100 + color_code Green * 10 + color_code Blue
 
-export def constructors :: i64 -> i64
+export def constructors :: own i64 -> i64
 fn constructors n =
     let wrap = Some
     let a = default_value 0 (apply Some n)
@@ -103,14 +103,14 @@ fn constructors n =
     let text = default_value "" (apply Some "abc")
     a + b * 10 + c * 100 + text.length * 1000
 
-export def either :: i64 -> i64
+export def either :: own i64 -> i64
 fn either n =
     let pick = if n > 0 then Left n elif n < 0 then Right (0 - n) else Neither
     match pick with
     | Left x | Right x -> x * 2
     | Neither -> 7
 
-export def guarded :: i64 -> i64
+export def guarded :: own i64 -> i64
 fn guarded n =
     let source = "guarded"
     let value = Some (clone_string ref source)
@@ -119,7 +119,7 @@ fn guarded n =
     | Some text -> text.length + 100
     | None -> 0
 
-export def nested :: i64 -> i64
+export def nested :: own i64 -> i64
 fn nested n =
     let value = if n > 0 then Some (Some n) elif n == 0 then Some None else None
     match value with
@@ -127,7 +127,7 @@ fn nested n =
     | Some None -> 100
     | None -> 200
 
-export def containers :: i64 -> i64
+export def containers :: own i64 -> i64
 fn containers n =
     let shapes = [Circle 1.0, Rect (2.0, to_float n), Empty]
     let mut total = 0.0
@@ -140,7 +140,7 @@ fn containers n =
     let tagged = Tagged { label: "box", shape: Rect (2.0, 3.0) }
     to_int total + count * 100 + describe (Some tagged) * 10000
 
-export def owned_collections :: i64 -> i64
+export def owned_collections :: own i64 -> i64
 fn owned_collections n =
     let holder = Holder { item: Some "abc" }
     let field = match holder.item with
@@ -156,7 +156,7 @@ fn owned_collections n =
     let kept = Some n
     field + total [Some 1, None, Some 2] + texts.length * 1000 + list.length * 100 + inner * 10000 + borrowed ref kept * 100000
 
-export def copy_reuse :: i64 -> i64
+export def copy_reuse :: own i64 -> i64
 fn copy_reuse n =
     let value = Some [n, n + 1, n + 2]
     let first = sum_maybe value
@@ -164,19 +164,19 @@ fn copy_reuse n =
     let again = color_code color + color_code color
     first * 1000 + sum_maybe value * 10 + again
 
-export def captured :: i64 -> i64
+export def captured :: own i64 -> i64
 fn captured n =
     let label = Some "abc"
     let shape = Rect (to_float n, 2.0)
     let measure = x -> x + to_int (area shape) + text_length label
     measure 1 + measure 2
 
-export def qualified :: i64 -> i64
+export def qualified :: own i64 -> i64
 fn qualified n =
     let remote = Shapes.Shape.Circle (to_float n)
     remote_radius remote * 10 + remote_radius Shapes.Empty + to_int (Shapes.radius (Shapes.Circle 2.0)) + to_int (area (Circle 1.0))
 
-export def churn :: i64 -> i64
+export def churn :: own i64 -> i64
 fn churn n =
     let base = "payload"
     let mut total = 0

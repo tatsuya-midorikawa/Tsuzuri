@@ -57,6 +57,7 @@ fn edition_names_parse_exactly() {
     }
     assert_eq!(Edition::E2026.to_string(), "2026");
     assert_eq!(Edition::SUPPORTED, [Edition::E2026, Edition::E2027]);
+    assert_eq!(Edition::LATEST, Edition::E2027);
     assert!(Edition::SUPPORTED.contains(&Edition::LATEST));
     // A manifest without `edition` keeps meaning what it meant, whatever the latest edition is.
     assert_eq!(Edition::MANIFEST_DEFAULT, Edition::E2026);
@@ -104,12 +105,14 @@ fn manifest_edition_selects_the_source_edition() {
         Project::load_for_tests(&root.join("app")).unwrap(),
         Project::load_for_docs(&root.join("app")).unwrap(),
     ] {
-        assert!(
-            project
-                .sources
-                .iter()
-                .all(|source| source.edition == Edition::E2026)
-        );
+        assert!(project.sources.iter().all(|source| {
+            source.edition
+                == if source.origin == ModuleOrigin::Std {
+                    Edition::LATEST
+                } else {
+                    Edition::E2026
+                }
+        }));
     }
     // A project without a manifest, and a single file, are read with the latest edition.
     let loose = self::root("loose", &[("Main.tz", "42\n")]);
@@ -128,6 +131,32 @@ fn manifest_edition_selects_the_source_edition() {
     }
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(loose).unwrap();
+}
+
+#[test]
+fn latest_cli_and_synthetic_inputs_borrow_but_versionless_manifests_stay_2026() {
+    let source = "def size :: string -> i64 = \\text -> text.length\n\
+        export def answer :: i64 = { let text = \"abc\"; size text + text.length }\n";
+    let directory = root("latest-conventions", &[("Main.tz", source)]);
+    Project::load(&directory).unwrap().analyze().unwrap();
+    Project::single_main(directory.join("Script.tz"), source.to_owned())
+        .analyze()
+        .unwrap();
+    let manifest = directory.join("Tsuzuri.toml");
+    std::fs::write(
+        &manifest,
+        "[package]\nname = \"latest\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let error = Project::load(&directory).unwrap().analyze().unwrap_err();
+    assert_eq!(error.code, "E1012");
+    std::fs::write(
+        manifest,
+        "[package]\nname = \"latest\"\nversion = \"0.1.0\"\nedition = \"2027\"\n",
+    )
+    .unwrap();
+    Project::load(&directory).unwrap().analyze().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

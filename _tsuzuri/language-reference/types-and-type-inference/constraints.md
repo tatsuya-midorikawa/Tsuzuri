@@ -34,7 +34,7 @@ def add :: 'a -> 'a -> 'a
 `@` 行は、型シグネチャの次の行に、`def` より深くインデントします。複数行は同じ深さです。型変数、コロン、制約リストは同じ行に書きます。行をまたぐと `E0002` です。
 
 ```tsuzuri run=42
-def keep :: 'a -> 'b -> 'a
+def keep :: own 'a -> own 'b -> 'a
     @'a : Copy
     @'b : Copy = \value _other -> value
 
@@ -118,7 +118,7 @@ flowchart TD
 分類の印は、リテラルや演算の型を決めるためにも使います。`value + 1` の `1` を型変数の整数として受け取るには `Integer` が必要です。
 
 ```tsuzuri run=42
-def increment :: 'a -> 'a
+def increment :: own 'a -> 'a
     @'a : Add, Integer = \value -> value + 1
 
 increment 41
@@ -137,7 +137,7 @@ increment 41
 本体の演算、メソッド呼び出し、所有権の検査から、必要な制約が集まります。呼び出した関数の制約も、相互再帰を含めて定義順に依存せず伝播します。明示した制約は、その集合へ追加されます。
 
 ```tsuzuri run=42
-def add :: 'a -> 'a -> 'a = \left right -> left + right
+def add :: own 'a -> own 'a -> 'a = \left right -> left + right
 
 add 20 22
 ```

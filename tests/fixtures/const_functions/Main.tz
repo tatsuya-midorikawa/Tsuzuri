@@ -13,7 +13,7 @@ fn crc_table = new [i32u](256, \i -> crc_entry (i as i32u))
 
 const CrcTable: [i32u] = crc_table()
 
-def crc_of :: [i32u] -> i32u
+def crc_of :: own [i32u] -> i32u
 fn crc_of table =
     let text = "123456789"
     let mut crc = ~(0 as i32u)

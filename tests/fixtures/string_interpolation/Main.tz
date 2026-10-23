@@ -21,7 +21,7 @@ instance Display<Boom> {
     fn display _value = unreachable ()
 }
 
-def stamp :: &mut i64 -> i64 -> i64
+def stamp :: &mut i64 -> own i64 -> i64
 fn stamp log digit =
     deref log = deref log * 10 + digit
     digit
@@ -49,7 +49,7 @@ fn evaluation_order =
     assert (text == "123")
     log * 1000 + text.length
 
-export def temporaries :: i64 -> i64
+export def temporaries :: own i64 -> i64
 fn temporaries n =
     let text = $"{n + 1}|{"abc"}|{42}"
     digest (&text)
@@ -74,7 +74,7 @@ fn display_instance =
     assert (text == "<label>")
     text.length
 
-export def owned_loop :: i64 -> i64
+export def owned_loop :: own i64 -> i64
 fn owned_loop count =
     let name = "ab"
     let mut total = 0
@@ -97,18 +97,18 @@ fn trap_display =
     let text = $"{boom}"
     text.length
 
-export def spec_integer :: i64 -> i64
+export def spec_integer :: own i64 -> i64
 fn spec_integer v =
     let text = $"{v:x}|{v:X}|{v:o}|{v:b}|{v:+}|{v:>25}|{v:*^25}|{v:0>25}"
     digest (&text)
 
-export def spec_unsigned :: i64 -> i64
+export def spec_unsigned :: own i64 -> i64
 fn spec_unsigned v =
     let u = v as i64u
     let text = $"{u:x}|{u:+}|{u:b}|{u:^22}"
     digest (&text)
 
-export def spec_narrow :: i64 -> i64
+export def spec_narrow :: own i64 -> i64
 fn spec_narrow v =
     let a = v as i8
     let b = v as i16u
@@ -121,17 +121,17 @@ fn spec_i128_min =
     let text = $"{m:x}|{m:+}|{m:b}"
     digest (&text)
 
-export def spec_f64 :: f64 -> i64
+export def spec_f64 :: own f64 -> i64
 fn spec_f64 x =
     let text = $"{x:.0}|{x:.2}|{x:.17}|{x:+.3}|{x:.0e}|{x:.3e}|{x:.16e}|{x:>12.1}"
     digest (&text)
 
-export def spec_f32 :: f32 -> i64
+export def spec_f32 :: own f32 -> i64
 fn spec_f32 x =
     let text = $"{x:.0}|{x:.2}|{x:.17}|{x:+.3}|{x:.0e}|{x:.3e}|{x:.16e}|{x:>12.1}"
     digest (&text)
 
-export def spec_wide :: i64 -> i64
+export def spec_wide :: own i64 -> i64
 fn spec_wide k =
     let text =
         match k with
@@ -207,7 +207,7 @@ fn display_case_holes =
     let text = $"{Quiet}{Loud}"
     digest (&text)
 
-private def describe :: Maybe<Format.Spec> -> string
+private def describe :: own Maybe<Format.Spec> -> string
 fn describe parsed =
     match parsed with
     | Maybe.None -> "none"

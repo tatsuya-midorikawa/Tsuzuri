@@ -149,7 +149,7 @@ Array.sum lengths
 
 ```tsuzuri run=42:5
 // シグネチャには制約を書いていませんが、x + x から Add<'a> が自動推論されます
-def double :: 'a -> 'a = \x -> x + x
+def double :: own 'a -> 'a = \x -> x + x
 
 let i = double 21
 let f = double 2.5

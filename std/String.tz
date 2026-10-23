@@ -4,7 +4,7 @@ fn length text = text.length
 private def append_range :: own Vec<i16u> -> ref string -> own i64 -> own i64 -> Vec<i16u>
 fn append_range initial text first last =
 	let mut output = initial
-	for index in first .. (last - 1) do output = Vec.push text[index] output
+	for index in first .. (last - 1) do output = Vec.push_owned text[index] output
 	output
 
 private def add_length :: own i64 -> own i64 -> i64
@@ -105,11 +105,11 @@ fn split separator text =
 		let mut offset = 0
 		while offset <= text.length - separator.length do
 			if matches_at separator text offset then
-				output = Vec.push (Maybe.get (slice start offset text)) output
+				output = Vec.push_owned (Maybe.get (slice start offset text)) output
 				offset = offset + separator.length
 				start = offset
 			else offset = offset + 1
-		output = Vec.push (Maybe.get (slice start text.length text)) output
+		output = Vec.push_owned (Maybe.get (slice start text.length text)) output
 		Vec.to_array output
 
 private def whitespace :: own i16u -> bool
@@ -168,6 +168,6 @@ fn replace needle replacement text =
 		if matched then output = append_range output replacement 0 replacement.length
 		if matched && needle.length > 0 then index = index + needle.length
 		else
-			if index < text.length then output = Vec.push text[index] output
+			if index < text.length then output = Vec.push_owned text[index] output
 			index = index + 1
 	String.from_code_units (Vec.to_array output)

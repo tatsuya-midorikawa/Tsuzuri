@@ -71,7 +71,7 @@
 
 #### 所有権とメモリ
 
-- [所有権とムーブ（`own`、edition 2027 の読み取り引数、最後の使用と match 束縛のコピー省略）](./ownership-and-memory/ownership.md)
+- [所有権とムーブ（`own`、edition 2027 の読み取り・可変引数、最後の使用と match 束縛のコピー省略）](./ownership-and-memory/ownership.md)
 - [借用と参照](./ownership-and-memory/borrowing.md)
 - [ライフタイムと region](./ownership-and-memory/lifetimes.md)
 - [スタックとヒープ](./ownership-and-memory/stack-and-heap.md)

@@ -191,7 +191,7 @@ $"{sum}:{root}:{clipped}:{shown}"
 
 ```tsuzuri run=1267650600228229401496703205376
 // 関数シグネチャでは標準ライブラリの型名 BigInt を指定します
-def double_bigint :: BigInt -> BigInt = \n -> n * 2I
+def double_bigint :: own BigInt -> BigInt = \n -> n * 2I
 
 // ローカル変数の注釈では小文字の bigint も使用できます
 let initial: bigint = 2I

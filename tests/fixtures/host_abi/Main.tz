@@ -9,13 +9,13 @@ export def sum_float :: ref [f64] -> f64
 fn sum_float values = Array.sum values
 
 export def checksum :: ref [ubyte] -> i64
-fn checksum values = Array.fold (total -> value -> total + value as i64) 0 values
+fn checksum values = Array.fold_owned (total -> value -> total + value as i64) 0 values
 
-export def make_bytes :: i64 -> [ubyte]
+export def make_bytes :: own i64 -> [ubyte]
 fn make_bytes count = new [ubyte](count, index -> index as ubyte)
 
 export def copy_values :: ref [i64] -> [i64]
-fn copy_values values = Array.map (value -> value) values
+fn copy_values values = Array.map_owned (value -> value) values
 
 export def copy_text :: ref string -> string
 fn copy_text text = clone_string text
@@ -33,8 +33,8 @@ export def update :: ref Outer -> Outer
 fn update value =
     Outer { inner: Inner { tiny: value.inner.tiny, wide: value.inner.wide, flag: value.inner.flag }, amount: value.amount + 1.0 }
 
-export def owned_record :: Outer -> f64
+export def owned_record :: own Outer -> f64
 fn owned_record value = value.amount + value.inner.tiny as f64
 
-export def empty_record :: Empty -> Empty
+export def empty_record :: own Empty -> Empty
 fn empty_record value = value

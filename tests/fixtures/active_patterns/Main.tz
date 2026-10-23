@@ -1,8 +1,8 @@
-def (|Absent|Present|) :: bool -> 'T = \flag ->
+def (|Absent|Present|) :: own bool -> 'T = \flag ->
     let _first = Absent
     if flag then Present "owned" else Absent
 
-export def active_repeated_case :: i32 -> i64 = \flag ->
+export def active_repeated_case :: own i32 -> i64 = \flag ->
     match flag != 0 with
     | Absent -> 0
     | Present text -> text.length
@@ -11,15 +11,15 @@ export def active_repeated_case :: i32 -> i64 = \flag ->
 def (|Parsed|_|) :: ref string -> Maybe<i64>
 fn (|Parsed|_|) text = Parse.parse text
 
-export def active_option :: i32 -> i64
+export def active_option :: own i32 -> i64
 fn active_option which =
     let text = if which == 0 then "42" else "bad"
     match text with | Parsed number -> number + 1 | _ -> -1
 
-def (|Owned|_|) :: i64 -> Maybe<string>
+def (|Owned|_|) :: own i64 -> Maybe<string>
 fn (|Owned|_|) number = if number < 0 then None else Some ("he" + "llo")
 
-export def active_owned :: i64 -> i64
+export def active_owned :: own i64 -> i64
 fn active_owned count =
     let mut total = 0
     for index in 0i64 .. count - 1 do
@@ -30,17 +30,17 @@ fn active_owned count =
             | _ -> 0)
     total
 
-def (|Even|Odd|) :: i64 -> 'T =
+def (|Even|Odd|) :: own i64 -> 'T =
     \number -> if number % 2 == 0 then Even else Odd
 
-export def active_parity :: i64 -> i64
+export def active_parity :: own i64 -> i64
 fn active_parity number = match number with | Even -> 0 | Odd -> 1 | _ -> -1
 
-def (|Small|Large|) :: i64 -> 'T = \number ->
+def (|Small|Large|) :: own i64 -> 'T = \number ->
     if number % 2 == 0 then Small ("sm" + "all")
     else Large ("la" + "rge")
 
-export def active_multi_owned :: i64 -> i64
+export def active_multi_owned :: own i64 -> i64
 fn active_multi_owned count =
     let mut total = 0
     for index in 0i64 .. count - 1 do
@@ -55,7 +55,7 @@ fn active_multi_owned count =
 def tick :: ref mut i64 -> i64
 fn tick state = { deref state = deref state + 1; deref state }
 
-def (|Combined|_|) :: i64 -> i64 -> i64 -> Maybe<i64>
+def (|Combined|_|) :: own i64 -> own i64 -> own i64 -> Maybe<i64>
 fn (|Combined|_|) left right value = Some (left * 100 + right * 10 + value)
 
 export def active_order :: i64
@@ -66,7 +66,7 @@ fn active_order =
         | _ -> 0
     state * 1000 + result
 
-def (|Left|Right|) :: ref mut i64 -> i64 -> 'T = \state _value ->
+def (|Left|Right|) :: ref mut i64 -> own i64 -> 'T = \state _value ->
     if tick state % 2 == 0 then Left else Right
 
 export def active_conservative :: i64
@@ -83,7 +83,7 @@ fn active_borrowed =
     let length = match ref texts with | Head text -> text.length | _ -> 0
     length + texts[1].length
 
-def (|Checked|_|) :: i64 -> Maybe<unit>
+def (|Checked|_|) :: own i64 -> Maybe<unit>
 fn (|Checked|_|) number = { assert (number != 0); Some () }
 
 export def active_trap :: i64

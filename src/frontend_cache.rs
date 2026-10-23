@@ -1014,18 +1014,19 @@ mod tests {
 
     #[test]
     fn the_same_text_under_another_edition_is_another_entry() {
-        let later = Edition(2027);
+        let earlier = Edition::E2026;
+        let later = Edition::E2027;
         assert_ne!(
-            parse_key(&IDENTITY, Edition::LATEST, SOURCE),
+            parse_key(&IDENTITY, earlier, SOURCE),
             parse_key(&IDENTITY, later, SOURCE)
         );
         let (_temporary, root) = root();
         let mut first = open(&root, IDENTITY);
-        first.parse(SOURCE, 0, Edition::LATEST).unwrap();
+        first.parse(SOURCE, 0, earlier).unwrap();
         first.finish(&[]);
         // The pack holds the text for the edition that parsed it, and no other reuses it.
         let mut second = open(&root, IDENTITY);
-        second.parse(SOURCE, 0, Edition::LATEST).unwrap();
+        second.parse(SOURCE, 0, earlier).unwrap();
         assert_eq!(second.stats, stats(1, 0, 0));
         second.parse(SOURCE, 1, later).unwrap();
         assert_eq!(second.stats, stats(1, 1, 0));

@@ -1,12 +1,12 @@
 record Result { valid: bool, value: i64 }
 
-def Return :: i64 -> Result
+def Return :: own i64 -> Result
 fn Return value = Result { valid: true, value: value }
 
-def ReturnFrom :: Result -> Result
+def ReturnFrom :: own Result -> Result
 fn ReturnFrom result = result
 
-def Bind :: Result -> (i64 -> Result) -> Result
+def Bind :: own Result -> own (i64 -> Result) -> Result
 fn Bind result next =
     if result.valid { next result.value } else { result }
 

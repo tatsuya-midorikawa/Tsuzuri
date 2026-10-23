@@ -18,7 +18,7 @@
 def copy :: ref string -> string
 fn copy text = Maybe.get (String.slice 0 text.length text)
 
-def names_of :: Result<[string], Os.Error> -> string
+def names_of :: own Result<[string], Os.Error> -> string
 fn names_of result =
     match result with
     | Result.Ok names ->
@@ -26,7 +26,7 @@ fn names_of result =
         String.join (ref separator) (ref names)
     | Result.Error error -> Os.message (ref error)
 
-def kind_of :: Result<unit, Os.Error> -> string
+def kind_of :: own Result<unit, Os.Error> -> string
 fn kind_of result =
     match result with
     | Result.Ok _ -> "ok"

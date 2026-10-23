@@ -1,47 +1,47 @@
 // The `unicode` suite of tests/features.mjs (D09 Phase 2). tests/unicode-cases.mjs computes the expected values
 // from the UCD test files and V8.
 
-private def mix :: i64 -> i64 -> i64
+private def mix :: own i64 -> own i64 -> i64
 fn mix hash value = (hash * 31 + value + 1) % 1000000007
 
-private def hash_string :: i64 -> ref string -> i64
+private def hash_string :: own i64 -> ref string -> i64
 fn hash_string seed text =
     let mut hash = mix seed text.length
     for index in 0 .. text.length - 1 do hash = mix hash (text[index] as i64)
     hash
 
-private def hash_bytes :: i64 -> ref utf8string -> i64
+private def hash_bytes :: own i64 -> ref utf8string -> i64
 fn hash_bytes seed text =
     let mut hash = mix seed text.length
     for index in 0 .. text.length - 1 do hash = mix hash (text[index] as i64)
     hash
 
-private def form_of :: i64 -> Unicode.NormalizationForm
+private def form_of :: own i64 -> Unicode.NormalizationForm
 fn form_of which = if which == 0 then Unicode.Nfc elif which == 1 then Unicode.Nfd elif which == 2 then Unicode.Nfkc else Unicode.Nfkd
 
 /// Every scalar of [start, start + 0x11000) with `step`, each followed by a space (surrogates skipped).
-private def chunk :: i64 -> i64 -> string
+private def chunk :: own i64 -> own i64 -> string
 fn chunk start step =
     let stop = if start + 69632 > 1114112 then 1114112 else start + 69632
     let mut units: Vec<i16u> = Vec.with_capacity (2 * (stop - start))
     let mut code = start
     while code < stop do
-        if code >= 65536 then units = Vec.push ((56320 + code % 1024) as i16u) (Vec.push ((55296 + (code - 65536) / 1024) as i16u) units)
-        elif code < 55296 || code > 57343 then units = Vec.push (code as i16u) units
-        if code < 55296 || code > 57343 then units = Vec.push 32i16u units
+        if code >= 65536 then units = Vec.push_owned ((56320 + code % 1024) as i16u) (Vec.push_owned ((55296 + (code - 65536) / 1024) as i16u) units)
+        elif code < 55296 || code > 57343 then units = Vec.push_owned (code as i16u) units
+        if code < 55296 || code > 57343 then units = Vec.push_owned 32i16u units
         code = code + step
     String.from_code_units (Vec.to_array units)
 
 /// The scalars packed by tests/unicode-cases.mjs: three 21-bit slots of code + 1 per argument.
-private def unpack :: i64 -> i64 -> i64 -> i64 -> i64 -> string
+private def unpack :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> string
 fn unpack a b c d e =
     let packed = [a, b, c, d, e]
     let mut units: Vec<i16u> = Vec.empty()
     for index in 0 .. 14 do
         let slot = (packed[index / 3] >>> (21 * (index % 3))) &&& 2097151
         let code = slot - 1
-        if code >= 65536 then units = Vec.push ((56320 + code % 1024) as i16u) (Vec.push ((55296 + (code - 65536) / 1024) as i16u) units)
-        elif code >= 0 then units = Vec.push (code as i16u) units
+        if code >= 65536 then units = Vec.push_owned ((56320 + code % 1024) as i16u) (Vec.push_owned ((55296 + (code - 65536) / 1024) as i16u) units)
+        elif code >= 0 then units = Vec.push_owned (code as i16u) units
     String.from_code_units (Vec.to_array units)
 
 private def mask :: ref [i64] -> i64
@@ -50,13 +50,13 @@ fn mask offsets =
     for index in 0 .. offsets.length - 1 do bits = bits ||| (1 <<< offsets[index])
     bits
 
-private def converted :: i64 -> ref string -> string
+private def converted :: own i64 -> ref string -> string
 fn converted kind text = if kind == 0 then Unicode.to_lower text elif kind == 1 then Unicode.to_title text elif kind == 2 then Unicode.to_upper text else Unicode.case_fold text
 
-private def converted_utf8 :: i64 -> ref utf8string -> utf8string
+private def converted_utf8 :: own i64 -> ref utf8string -> utf8string
 fn converted_utf8 kind text = if kind == 0 then Unicode.to_lower_utf8 text elif kind == 1 then Unicode.to_title_utf8 text elif kind == 2 then Unicode.to_upper_utf8 text else Unicode.case_fold_utf8 text
 
-export def category_chunk :: i64 -> i64
+export def category_chunk :: own i64 -> i64
 fn category_chunk start =
     let stop = if start + 69632 > 1114112 then 1114112 else start + 69632
     let mut hash = 0
@@ -69,7 +69,7 @@ fn category_chunk start =
     hash
 
 /// The hashes of the four normalization forms of every scalar of a chunk (each followed by a space).
-export def normalize_chunk :: i64 -> i64 -> i64 -> i64
+export def normalize_chunk :: own i64 -> own i64 -> own i64 -> i64
 fn normalize_chunk start step utf8 =
     let text = chunk start step
     let bytes = Utf8String.from_string (ref text)
@@ -85,7 +85,7 @@ fn normalize_chunk start step utf8 =
 
 /// The hash of a case conversion (`kinds` 0 lowercase and uppercase, 1 titlecase, 3 case folding) of `text` in
 /// UTF-16 and, when `utf8`, in UTF-8.
-private def case_hash :: ref string -> i64 -> bool -> i64
+private def case_hash :: ref string -> own i64 -> own bool -> i64
 fn case_hash text kinds utf8 =
     let bytes = Utf8String.from_string text
     let mut hash = 0
@@ -98,18 +98,18 @@ fn case_hash text kinds utf8 =
                 hash = hash_bytes hash (ref converted8)
     hash
 
-export def case_chunk :: i64 -> i64 -> i64 -> i64
+export def case_chunk :: own i64 -> own i64 -> own i64 -> i64
 fn case_chunk kinds start step =
     let text = chunk start step
     case_hash (ref text) kinds false
 
-export def case_packed :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64
+export def case_packed :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn case_packed kinds a b c d e =
     let text = unpack a b c d e
     case_hash (ref text) kinds true
 
 /// The hashes of the four normalization forms in UTF-16 and UTF-8, with whether the input was in each form.
-export def normalize_packed :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+export def normalize_packed :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn normalize_packed a b c d e =
     let text = unpack a b c d e
     let bytes = Utf8String.from_string (ref text)
@@ -123,7 +123,7 @@ fn normalize_packed a b c d e =
 
 /// The grapheme (`which` 0) or word boundaries of the text in UTF-16 units and in UTF-8 bytes, and for
 /// graphemes the pieces in both encodings.
-export def segments_packed :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64
+export def segments_packed :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn segments_packed which a b c d e =
     let text = unpack a b c d e
     let bytes = Utf8String.from_string (ref text)
@@ -146,14 +146,14 @@ fn segments_packed which a b c d e =
 
 /// `first`, `run` copies of U+0301 (Extend), `middle`, `run` copies of U+0301 and `last`, all in the BMP: the hash
 /// of its word boundaries in UTF-16 units and in UTF-8 bytes, and of its titlecase in both encodings.
-export def word_run :: i64 -> i64 -> i64 -> i64 -> i64
+export def word_run :: own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn word_run first middle last run =
     let mut units: Vec<i16u> = Vec.empty()
-    units = Vec.push (first as i16u) units
-    for _index in 1 .. run do units = Vec.push 769i16u units
-    units = Vec.push (middle as i16u) units
-    for _index in 1 .. run do units = Vec.push 769i16u units
-    units = Vec.push (last as i16u) units
+    units = Vec.push_owned (first as i16u) units
+    for _index in 1 .. run do units = Vec.push_owned 769i16u units
+    units = Vec.push_owned (middle as i16u) units
+    for _index in 1 .. run do units = Vec.push_owned 769i16u units
+    units = Vec.push_owned (last as i16u) units
     let text = String.from_code_units (Vec.to_array units)
     let bytes = Utf8String.from_string (ref text)
     let offsets = Unicode.word_boundaries (ref text)

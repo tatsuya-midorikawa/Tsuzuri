@@ -19,7 +19,7 @@ fn init _device count initializer =
 def map :: Copy<'a> => ref Device -> own ('a -> 'b) -> own Buffer<'a> -> Buffer<'b>
 fn map _device transform buffer =
     let values = buffer.values
-    Buffer { values: Array.map transform (ref values) }
+    Buffer { values: Array.map_owned transform (ref values) }
 
 def init_relaxed :: ref Device -> own i64 -> own (i32 -> 'a) -> Buffer<'a>
 fn init_relaxed device count initializer = init device count initializer
@@ -70,7 +70,7 @@ fn map_on device transform buffer kernel =
     let values = buffer.values
     let backend = Gpu.__select (backend_code device.backend) kernel 0 values.length
     match backend with
-    | 0 -> Buffer { values: Array.map transform (ref values) }
+    | 0 -> Buffer { values: Array.map_owned transform (ref values) }
     | _ -> Buffer { values: Gpu.__run backend kernel 0 (ref values) values.length }
 
 /// The backend that served the most recent `Gpu.init` or `Gpu.map` call (relaxed or not) of a program

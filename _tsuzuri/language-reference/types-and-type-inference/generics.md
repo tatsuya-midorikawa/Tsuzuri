@@ -27,7 +27,7 @@ union Reply<'a> = Pending | Ready of 'a
 record Pair<'a, 'b> { first: 'a, second: 'b }
 record Box<'a> { value: 'a }
 
-def total :: Box<Pair<i64, i64>> -> i64 = \box ->
+def total :: own Box<Pair<i64, i64>> -> i64 = \box ->
     box.value.first + box.value.second
 
 total (Box { value: Pair { first: 20, second: 22 } })
@@ -44,7 +44,7 @@ total (Box { value: Pair { first: 20, second: 22 } })
 ```tsuzuri run=20
 record Pair<'a, 'b> { first: 'a, second: 'b }
 
-def swap :: Pair<'a, 'b> -> Pair<'b, 'a> = \pair ->
+def swap :: own Pair<'a, 'b> -> Pair<'b, 'a> = \pair ->
     Pair { first: pair.second, second: pair.first }
 
 let swapped = swap (Pair { first: 20, second: "text" })
@@ -64,7 +64,7 @@ swapped.second
 ```tsuzuri run=42
 union Reply<'a> = Pending | Ready of 'a
 
-def ready_or :: 'a -> Reply<'a> -> 'a = \fallback value ->
+def ready_or :: own 'a -> own Reply<'a> -> 'a = \fallback value ->
     match value with
     | Ready inner -> inner
     | Pending -> fallback
@@ -90,7 +90,7 @@ ready_or 0 (Ready 42)
 type Meters = f64
 type Pair2<'a> = ('a * 'a)
 
-def total :: Pair2<i64> -> i64 = \pair ->
+def total :: own Pair2<i64> -> i64 = \pair ->
     match pair with
     | (left, right) -> left + right
 
@@ -172,7 +172,7 @@ instance Traits.Functor<Result<string>> {
     fn map transform value = Result.map transform value
 }
 
-def fmap :: Traits.Functor<'container> => ('input -> 'output) -> 'container<'input> -> 'container<'output> =
+def fmap :: Traits.Functor<'container> => own ('input -> 'output) -> own 'container<'input> -> 'container<'output> =
     \transform value -> Traits.Functor.map transform value
 
 let original: Result<i64, string> = Result.Ok 40

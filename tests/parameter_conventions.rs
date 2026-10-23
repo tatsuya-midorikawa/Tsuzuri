@@ -52,6 +52,7 @@ fn only_2027_borrows_unmarked_owned_data() {
         export def answer :: i64 = { let text = \"hello\"; size text + text.length }\n";
     assert_eq!(check("2026", source).unwrap_err().code, "E1012");
     assert_eq!(tsuzuri::analyze(source).unwrap_err().code, "E1012");
+    tsuzuri::analyze_with_edition(source, tsuzuri::syntax::Edition::E2027).unwrap();
     assert_eq!(
         ir("2027", source),
         ir("2027", &source.replace(":: string", ":: ref string"))
@@ -208,6 +209,61 @@ fn all_read_callback_entry_points_accept_noncopy_elements() {
 }
 
 #[test]
+fn owning_callback_aliases_keep_complete_editor_reference_spans() {
+    let source = "export def answer :: i64 = { let values = [1, 2]; \
+        let mapper = Array.map_owned; Array.sum (mapper (\\n -> n + 1) values) }\n";
+    let (_, index) = tsuzuri::analyze_modules_with_semantics(&[("Main", source)]).unwrap();
+    let offset = source.find("map_owned").unwrap();
+    let occurrence = index.occurrence_at(0, offset + 4).unwrap();
+    assert_eq!(
+        &source[occurrence.span.start..occurrence.span.end],
+        "map_owned"
+    );
+    assert_eq!(index.definitions[occurrence.definition].name, "map");
+    assert_eq!(index.definitions[occurrence.definition].module, "Array");
+}
+
+#[test]
+fn contextual_callbacks_keep_array_types_in_blocks_and_computation_continuations() {
+    check(
+        "2027",
+        "export def answer :: i64 = { let texts = [\"a\", \"bc\"]; \
+         Array.sum (Array.map ({ let ignored = 0; \\text -> text.length }) texts) }\n",
+    )
+    .unwrap();
+    let source = "def action :: unit -> IO<i64> = \\() -> Async.block_on (Async { \
+        let! values = Async.all [Async { return 1 }, Async { return 2 }]; \
+        return values[0] + values[1] })\n\
+        export def answer :: i64 = 0\n";
+    assert_eq!(ir("2027", source), ir("2026", source));
+}
+
+#[test]
+fn owning_generic_callbacks_constrain_implicit_borrows_before_value_arguments() {
+    let source = "def apply :: own ('a -> 'b) -> own 'a -> 'b = \\f x -> f x\n\
+        export def answer :: i64 = { let text = \"abc\"; \
+        let size = apply String.length text; \
+        let copied = clone_string text; assert (copied == text); \
+        size + text.length }\n";
+    assert_eq!(ir("2027", source), ir("2026", source));
+    let borrowed = source
+        .replace("own ('a -> 'b)", "ref ('a -> 'b)")
+        .replace("\\f x -> f x", "\\f x -> (deref f) x");
+    assert_eq!(ir("2027", &borrowed), ir("2026", &borrowed));
+}
+
+#[test]
+fn projected_updates_preserve_destructor_whole_value_restrictions() {
+    let source = "record Value { text: string }\n\
+        instance Drop<Value> { fn drop value = value.text = \"done\" }\n\
+        export def answer :: i64 = { let value = Value { text: \"old\" }; value.text.length }\n";
+    assert_eq!(check("2027", source).unwrap_err().code, "E1012");
+    assert_eq!(check("2026", source).unwrap_err().code, "E1012");
+    let whole = source.replace("value.text = \"done\"", "*value = Value { text: \"done\" }");
+    assert_eq!(check("2027", &whole).unwrap_err().code, "E1012");
+}
+
+#[test]
 fn read_callbacks_cannot_escape_local_elements() {
     let source = "def borrow_value :: ref i64 -> ref i64 = \\value -> value\n\
         def leak :: unit -> [ref i64] = \\() -> { let values = [42]; Array.map borrow_value values }\n\
@@ -234,6 +290,19 @@ fn generic_read_views_accept_borrowed_scalar_and_callable_temporaries() {
          export def answer :: i64 = twice (\\text -> text.length) \"hello\"\n",
     )
     .unwrap();
+}
+
+#[test]
+fn shared_callable_temporaries_keep_the_no_escape_rule() {
+    let source = "def apply :: (i64 -> i64) -> i64 -> i64 = \\f n -> f n\n\
+         def increment :: i64 -> i64 = \\n -> n + 1\n\
+         def add :: i64 -> i64 -> i64 = \\left right -> left + right\n\
+         def pass :: own (i64 -> i64) -> (i64 -> i64) = \\f -> f\n\
+         export def answer :: i64 = \
+           apply increment 41 + apply (add 1) 41 + apply (pass increment) 41\n";
+    check("2027", source).unwrap();
+    let unsafe_escape = source.replace("own (i64 -> i64)", "(i64 -> i64)");
+    assert_eq!(check("2027", &unsafe_escape).unwrap_err().code, "E1013");
 }
 
 #[test]

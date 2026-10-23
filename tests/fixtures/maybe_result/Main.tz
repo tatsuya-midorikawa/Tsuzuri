@@ -34,14 +34,14 @@ fn propagation_explicit_conversion =
     }
     Maybe.get (Result.to_maybe result)
 
-export def propagation_selected_branch :: bool -> i64
+export def propagation_selected_branch :: own bool -> i64
 fn propagation_selected_branch stop =
     Maybe.default_value 42 (Maybe {
         if stop then do! None else do! Some (assert false)
         return 1 / 0
     })
 
-export def propagation_eager_let :: i64 -> i64
+export def propagation_eager_let :: own i64 -> i64
 fn propagation_eager_let denominator =
     Maybe.default_value 42 (Maybe {
         let value = 1 / denominator
@@ -55,7 +55,7 @@ fn trap_propagation_eager_let = propagation_eager_let 0
 export def trap_propagation_statement :: i64
 fn trap_propagation_statement = propagation_selected_branch false
 
-export def maybe_loop :: i64 -> i64
+export def maybe_loop :: own i64 -> i64
 fn maybe_loop count =
     Maybe.default_value (-1) (Maybe {
         for n in new [i64](count, i -> i) do
@@ -63,7 +63,7 @@ fn maybe_loop count =
         return count
     })
 
-export def result_loop :: i64 -> i64
+export def result_loop :: own i64 -> i64
 fn result_loop count =
     let result: Result<i64, i64> = Result {
         for n in new [i64](count, i -> i) do
@@ -153,7 +153,7 @@ fn conversions =
 def size :: &string -> i64
 fn size text = text.length
 
-export def owned :: i64 -> i64
+export def owned :: own i64 -> i64
 fn owned count =
     let mut total = 0
     for _index in 1 .. count do

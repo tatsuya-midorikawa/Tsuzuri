@@ -12,7 +12,7 @@ instance Ord<Named> {
     fn ge left right = !(Ord.lt left right)
 }
 
-export def compare_loop :: i64 -> i64
+export def compare_loop :: own i64 -> i64
 fn compare_loop count =
     let values = new [Named](2, index -> Named { text: "own" + "ed", rank: index })
     let mut total = 0
@@ -27,12 +27,12 @@ fn compare_loop count =
         total = total + (if same then values[0].text.length else 0)
     total
 
-export def method_scalar :: i64 -> i64 -> bool
+export def method_scalar :: own i64 -> own i64 -> bool
 fn method_scalar left right =
     let compare: ref i64 -> ref i64 -> bool = Eq.eq
     compare (ref left) (ref right)
 
-export def method_float :: f64 -> f64 -> bool
+export def method_float :: own f64 -> own f64 -> bool
 fn method_float left right =
     Eq.eq (ref left) (ref right) == (left == right) &&
     Ord.lt (ref left) (ref right) == (left < right)
@@ -46,7 +46,7 @@ fn method_record =
     assert (partial (ref right))
     left.text.length + right.text.length
 
-def tick :: ref mut i64 -> i64 -> Named
+def tick :: ref mut i64 -> own i64 -> Named
 fn tick state digit =
     deref state = deref state * 10 + digit
     Named { text: "a" + "b", rank: digit }

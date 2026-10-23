@@ -1395,7 +1395,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&created[0])
                 .unwrap()
-                .contains("edition = \"2026\"\n")
+                .contains(&format!("edition = \"{}\"\n", Edition::LATEST))
         );
         let main = std::fs::read_to_string(&created[1]).unwrap();
         assert!(main.starts_with("namespace HelloWorld\n\n"), "{main}");

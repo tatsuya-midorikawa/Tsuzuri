@@ -221,10 +221,10 @@ def map :: Copy<'a> => own ('a -> 'b) -> ref View<'a> -> Tensor<'b>
 fn map transform view =
     let total = volume (ref view.shape)
     if total > 0 && is_contiguous view then
-        Tensor { shape: Array.copy (ref view.shape), data: Array.map transform (ref view.data[view.offset .. view.offset + total]) }
+        Tensor { shape: Array.copy (ref view.shape), data: Array.map_owned transform (ref view.data[view.offset .. view.offset + total]) }
     else
         let packed = to_tensor view
-        Tensor { shape: Array.copy (ref packed.shape), data: Array.map transform (ref packed.data) }
+        Tensor { shape: Array.copy (ref packed.shape), data: Array.map_owned transform (ref packed.data) }
 
 /// Views a rank 2 window as a matrix window without copying; traps unless the rank is 2.
 def as_matrix_view { r } :: ref View<'a> { r } -> MatrixView<'a> { r }

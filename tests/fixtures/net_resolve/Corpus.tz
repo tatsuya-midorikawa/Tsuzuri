@@ -1,4 +1,4 @@
-def hosts :: unit -> [string]
+def hosts :: own unit -> [string]
 fn hosts _unit = [
 	"127.0.0.1",
 	"0.0.0.0",

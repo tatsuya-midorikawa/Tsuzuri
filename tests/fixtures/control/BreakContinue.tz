@@ -1,13 +1,13 @@
 record JumpHeld { text: string, value: i64 }
 record JumpUnit { text: string, finished: unit }
 
-def discard :: string -> unit -> unit
+def discard :: own string -> own unit -> unit
 fn discard text finished = ()
 
-def reader :: string -> i64 -> i64
+def reader :: own string -> own i64 -> i64
 fn reader text = value -> text.length + value
 
-export def break_while :: i64 -> i64
+export def break_while :: own i64 -> i64
 fn break_while limit =
     let mut count = 0
     while count < limit do
@@ -15,7 +15,7 @@ fn break_while limit =
         if count == 42 then break
     count
 
-export def continue_sum :: i64 -> i64
+export def continue_sum :: own i64 -> i64
 fn continue_sum count =
     let mut total = 0
     for index in 0 .. (count - 1) do
@@ -47,7 +47,7 @@ fn break_nested =
         total = total + 100
     total
 
-export def break_owned :: i64 -> i64
+export def break_owned :: own i64 -> i64
 fn break_owned count =
     let mut total = 0
     for index in 0 .. (count - 1) do
@@ -56,7 +56,7 @@ fn break_owned count =
         if index >= 3 then break
     total
 
-export def continue_owned :: i64 -> i64
+export def continue_owned :: own i64 -> i64
 fn continue_owned count =
     let mut total = 0
     for index in 0 .. (count - 1) do
@@ -65,7 +65,7 @@ fn continue_owned count =
         total = total + values[0].length + values[1].length
     total
 
-export def break_sources :: bool -> i64
+export def break_sources :: own bool -> i64
 fn break_sources list =
     let mut total = 0
     if list then
@@ -88,7 +88,7 @@ fn break_match_owned =
             break
     total
 
-export def break_temporaries :: i32 -> i64
+export def break_temporaries :: own i32 -> i64
 fn break_temporaries kind =
     let mut count = 0
     while true do
@@ -130,7 +130,7 @@ fn break_temporaries kind =
             break
     count
 
-export def continue_temporaries :: i64 -> i64
+export def continue_temporaries :: own i64 -> i64
 fn continue_temporaries limit =
     let mut count = 0
     while count < limit do
@@ -148,7 +148,7 @@ fn nested_jump_temporaries =
         continue
     count
 
-export def branch_jump_temporaries :: bool -> i64
+export def branch_jump_temporaries :: own bool -> i64
 fn branch_jump_temporaries stop =
     let mut total = 0
     while true do
@@ -157,7 +157,7 @@ fn branch_jump_temporaries stop =
         break
     total
 
-export def match_jump_temporaries :: bool -> i64
+export def match_jump_temporaries :: own bool -> i64
 fn match_jump_temporaries stop =
     let mut total = 0
     while true do
@@ -166,7 +166,7 @@ fn match_jump_temporaries stop =
         break
     total
 
-export def break_skips_trap :: bool -> i64
+export def break_skips_trap :: own bool -> i64
 fn break_skips_trap stop =
     while true do
         if stop then break

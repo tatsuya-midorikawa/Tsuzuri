@@ -57,7 +57,7 @@ fn record_choice source bound proposal =
 			else
 				0i64u
 		let value = if wanted > bound then bound else wanted
-		(value, (random, recorded, replaying, Vec.push value choices))
+		(value, (random, recorded, replaying, Vec.push_owned value choices))
 
 /// `bits` reduced to [0, bound].
 private def below :: own i64u -> own i64u -> i64u
@@ -195,7 +195,7 @@ fn array_up_to limit element =
 						else
 							match element.run next with
 							| (value, last) ->
-								values = Vec.push value values
+								values = Vec.push_owned value values
 								current = last
 		(Vec.to_array values, current) }
 
@@ -208,7 +208,7 @@ fn array element = array_up_to 32 element
 def string_of :: own Gen<char> -> Gen<string>
 fn string_of character = Gen { run: \source ->
 	match (array_up_to 32 character).run source with
-	| (characters, rest) -> (String.from_code_units (Array.map Char.to_u16 (ref characters)), rest) }
+	| (characters, rest) -> (String.from_code_units (Array.map_owned Char.to_u16 (ref characters)), rest) }
 
 /// Strings of printable ASCII characters, at most 32 long, shrinking toward "".
 def string :: Gen<string>
@@ -306,7 +306,7 @@ fn without values start count =
 	let mut index = 0
 	while index < values.length do
 		if index < start || index >= start + count then
-			kept = Vec.push values[index] kept
+			kept = Vec.push_owned values[index] kept
 		index = index + 1
 	Vec.to_array kept
 

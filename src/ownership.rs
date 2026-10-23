@@ -1446,15 +1446,19 @@ impl<'a> Checker<'a, '_> {
                 ),
             );
         }
+        if usage == Use::Write && Some(place.root) == self.drop_root {
+            return Err(error(
+                "E1012",
+                if place.fields.is_empty() {
+                    "cannot replace the whole value inside Drop.drop; read or borrow its fields instead"
+                } else {
+                    "cannot assign to a field or element inside Drop.drop; read or borrow its fields instead"
+                },
+                span,
+            ));
+        }
         // Replacing the value reruns this drop, and a `ref mut` callee could replace it too.
         if place.fields.is_empty() {
-            if usage == Use::Write && Some(place.root) == self.drop_root {
-                return Err(error(
-                    "E1012",
-                    "cannot replace the whole value inside Drop.drop; read or borrow its fields instead",
-                    span,
-                ));
-            }
             // A move of the parameter (`usize::MAX - drop_root`) passes the reference on.
             if (usage == Use::MutBorrow && Some(place.root) == self.drop_root)
                 || (usage == Use::Consume && Some(usize::MAX - place.root) == self.drop_root)

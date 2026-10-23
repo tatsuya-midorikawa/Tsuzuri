@@ -116,7 +116,7 @@ before=6 after=-1
 `Arc<T>` の API は `Rc<T>` と同じ名前・同じ型で、モジュール名が `Arc` に変わるだけです。計数を atomic 命令で更新するので、`T` が `Send` で、後述のとおりタスク間で共有できる値なら `Arc<T>` も `Send` です。タスクごとに `Arc.share` で所有者を作って渡すと、配列を複製せずに複数のタスクで読めます。
 
 ```tsuzuri run=even%3D2450%20odd%3D2500%20owners%3D1
-def part :: Arc<[i64]> -> i64 -> Task<i64>
+def part :: own Arc<[i64]> -> i64 -> Task<i64>
 fn part values offset = task {
     let numbers = Arc.get (ref values);
     let mut total = 0;
@@ -166,7 +166,7 @@ even=2450 odd=2500 owners=1
 ```tsuzuri run=alive%3Dtrue
 record Node { id: i64, peer: Mutex<Maybe<Arc<Node>>> }
 
-def link :: ref Arc<Node> -> Arc<Node> -> i64
+def link :: ref Arc<Node> -> own Arc<Node> -> i64
 fn link node target =
     Mutex.with_lock (ref (Arc.get node).peer) (peer -> {
         deref peer = Maybe.Some target;
@@ -197,7 +197,7 @@ alive=true
 ```tsuzuri run=alive%3Dfalse
 record Node { id: i64, peer: Mutex<Maybe<Arc.Weak<Node>>> }
 
-def link :: ref Arc<Node> -> Arc.Weak<Node> -> i64
+def link :: ref Arc<Node> -> own Arc.Weak<Node> -> i64
 fn link node target =
     Mutex.with_lock (ref (Arc.get node).peer) (peer -> {
         deref peer = Maybe.Some target;

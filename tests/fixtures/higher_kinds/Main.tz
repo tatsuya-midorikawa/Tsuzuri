@@ -1,12 +1,12 @@
-def fmap :: Functor<'f> => ('a -> 'b) -> 'f<'a> -> 'f<'b>
+def fmap :: Functor<'f> => own ('a -> 'b) -> own 'f<'a> -> 'f<'b>
 fn fmap transform value =
     let result: 'f<'b> = Functor.mapped transform value
     result
 
-export def option_map :: i64 -> i64
+export def option_map :: own i64 -> i64
 fn option_map seed = Maybe.get (fmap (\value -> value + 1) (Maybe.Some seed))
 
-export def result_map :: i64 -> i64
+export def result_map :: own i64 -> i64
 fn result_map seed =
     let input: Result<i64, string> = Result.Ok seed
     let result: Result<i64, string> = fmap (\value -> value * 3) input
@@ -20,10 +20,10 @@ fn result_error =
     | Result.Ok value -> value
     | Result.Error message -> message.length
 
-def text_length :: string -> i64
+def text_length :: own string -> i64
 fn text_length text = text.length
 
-export def owned_option :: i64 -> i64
+export def owned_option :: own i64 -> i64
 fn owned_option count =
     let mut total = 0
     for _index in 0i64 .. (count - 1) do
@@ -36,7 +36,7 @@ export def all_constructors :: i64
 fn all_constructors =
     let array = Keep.keep [42]
     let list = Keep.keep [|42|]
-    let vector = Keep.keep (Vec.push 42 (Vec.empty()))
+    let vector = Keep.keep (Vec.push_owned 42 (Vec.empty()))
     let boxed = Keep.keep (Instances.Box { value: 42 })
     let work = Keep.keep task { 42 }
     array[0] + list[0] + Maybe.get (Vec.get 0 (& vector)) + boxed.value + Task.run work

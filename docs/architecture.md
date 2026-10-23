@@ -353,7 +353,9 @@ WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が�
 
 ### 言語版（G19）
 
-`Edition(u16)`（`src/syntax.rs`。`E2026`、`LATEST`、`MANIFEST_DEFAULT`、`SUPPORTED`）は、ソースを読む予約語の版です。`Manifest::edition`（`[package]` の `edition`。省略は `MANIFEST_DEFAULT`、対応しない値は `E0002`）から `driver` が `SourceFile::edition` を決め（manifest のない入力、`script`、`repl`、std は `LATEST`。path・git・registry の依存は自分の manifest の値）、`SourceInput`・`ModuleInput` を通って、lexer と parser の入口に必須の引数として渡ります。既定の `LATEST` を使うのは、manifest のない入口（`parser::parse`、`analyze*`、`check::check`）、std、`tsuzuri new` の雛形など数か所だけです。lexer は、キーワードの `match` より前に `reserved_in` で `EDITION_KEYWORDS`（予約を始める edition の表で、現在は空）を引くので、古い edition のソースは新しい予約語を識別子として読みます。モジュール名の予約語の検査（`E1011`）も、そのモジュールの edition です。edition は字句だけに作用します。`ModuleInput::edition` を使うのはモジュール名の検査だけで、型検査とコード生成は edition を見ないので、IR は edition の値で byte 単位で同じです。frontend cache の parse key は edition を含みます。`tsuzuri fmt` は、入力のディレクトリ（ファイルなら親）の manifest を `read_manifest` で読んでその edition を使い、なければ `LATEST` です。
+`Edition(u16)`（`src/syntax.rs`。`E2026`、`E2027`、`LATEST`、`MANIFEST_DEFAULT`、`SUPPORTED`）は、予約語と引数規約の版です。`Manifest::edition`（`[package]` の `edition`。省略は固定の `MANIFEST_DEFAULT = 2026`、対応しない値は `E0002`）から `driver` が `SourceFile::edition` を決めます。manifest のない CLI 入力、`script`、`repl`、std と新規パッケージは `LATEST = 2027`、依存は自分の manifest の値です。`SourceInput`・`ModuleInput` は版を lexer・parser・checker に渡します。版を受け取らない Rust の `analyze*` と単独 `check::check` は 2026 の互換入口で、`analyze_with_edition`・`analyze_modules_with_edition`・`analyze_inputs_all` は明示版を使えます。lexer の `EDITION_KEYWORDS`（現在は空）とモジュール名の予約語検査もソースの版を使います。2027 は署名収集時に読み取り・可変規約を物理的な参照型へ展開し、所有権検査と LLVM はその解決済みの型を使います。frontend cache と build cache の鍵は edition を含みます。`tsuzuri fmt` は入力のディレクトリ（ファイルなら親）の manifest を読み、なければ `LATEST` です。
+
+`edition_migration::prepare` は旧版の semantic index から署名と標準 API の参照を集め、値渡しを `own` と `_owned` 入口で保存します。同名の利用者定義、依存ソース、既に移行した綴りは書き換えません。対象版で全体を再検査し、通常ファイルと内容の一致を確認してから atomic に置換し、manifest は最後に更新します。失敗時は既に置換した内容を戻します。単一ファイルの指定では package の版を変えません。std の開発用ツリーは埋め込みソースとの一致を条件に検査し、std だけの semantic index は未使用関数の本体も含めます。
 
 ### 非推奨と W1005（G19）
 
@@ -1417,12 +1419,18 @@ macOS における再配置可能リンクでは `-keep_private_externs` を指�
 ### 所有権
 
 A18 の edition 2027 の引数補完は `check_modules_collect` の署名収集で完了します。
-解決済みの具体型が `needs_drop` であり、明示の借用・`own`・関数型・裸の型変数・
-`Task`・`dyn`・SIMD でない通常の引数だけを共有 `Type::Reference` にします。
+解決済みの具体型が `needs_drop` である通常の引数に加え、裸の型変数と関数型も共有 `Type::Reference` にします。
+明示の借用・`own`・`mut`・`Task`・`dyn`・SIMD は既定の読み取り補完から除きます。
 `const def`・入口の `main`・`extern`・instance のメソッド、明示 region を持つ引数と可変束縛引数は除外します。
 生成と所有権検査は edition を見ず、明示の `ref T` と同じ経路を使います。
 region 契約を読む前に宣言の引数型にも同じ表面上の補完を反映し、region の推論規則は変更しません。
 `CheckedFunction.read_by_default` は診断の補足と editor の補完前の表記に使い、最適化や所有権の判定には使いません。
+`Type::Function` の box 化した `FunctionParameters` は物理引数型と `Own`・`Read`・`Mut` の規約を保持します。
+全引数が `Own` の metadata は空に正規化し、2026 の型同一性を保ちます。規約は型変数の中へ埋めず、
+単相化・部分適用・型の解決で引数リストと一緒に引き継ぎます。読み取り・可変引数の本体と contextual lambda は
+参照先の値 view を使います。callback の adapter は既存の Copy・loan 検査を通し、callback 自体の構築は 1 回だけです。
+`BORROWING_APIS` は 2027 の Array／List の読み取り入口と Vec の可変入口、および旧版を保存する `_owned` 入口をまとめます。
+`Vec.push_mut` は `Vec.push_owned` と異なる builtin identity と LLVM helper を持ち、混在版の ABI を衝突させません。
 
 型検査済みのローカル変数 ID および構造体のフィールドパスに対して、move（移動）と loan（借用）の妥当性が厳密に検証されます。
 関数引数などの一時的な借用であっても、後続のオペランド式の評価がすべて完了するまで安全に保持されます。
@@ -1494,7 +1502,16 @@ region 契約を読む前に宣言の引数型にも同じ表面上の補完を�
 
 ### コレクションの不変性
 
-配列およびリストの各要素に対する再代入や可変借用（`ref mut`）は言語仕様として禁止されています。
+2026 では配列・リストの要素代入構文を禁止します。2027 では可変な所有者または排他参照を根とする
+record の field、配列・リスト・Vec・固定長配列の要素へ代入でき、既存の `Assign` と place の経路を使います。
+RHS、代入先、古い値の drop、store の順で評価し、添字は既存の範囲検査を通します。
+移動済みの射影の再初期化、共有 loan と重なる書き込み、自己参照の格納は拒否します。
+射影への store は新旧の loan を weak update で合わせ、兄弟 field の loan を消しません。
+`Drop.drop` の自己の field・要素への代入は、固定プロトコルの禁止を ownership 検査で維持します。
+LLVM の射影 store は `frame_of_store_place` で field と indexed element の frame 候補を引き継ぎ、
+導出した slot の古い値を `drop_framed` で解放します。動的な添字では元の各要素の候補を保守的に合わせます。
+この経路は新しい Field／Index の代入だけに適用し、従来の局所・参照先の代入の IR は変えません。
+文字列・UTF-8 文字列の要素と、要素単位の排他借用（`ref mut xs[i]`）は引き続き許しません。
 要素型から入れ子のフィールドや共有参照を辿って可変参照に到達できるような型定義も `validate_size` によって厳格に拒否され、単相化後のすべての具象型に対しても再検査が行われます（なお、関数シグネチャに含まれる可変参照はデータを格納する状態ではないため対象外であり、排他参照のクロージャ捕捉は既存の Capture 検査で拒否されます）。共有借用された要素の生存期間は通常の借用（loan）追跡によって安全に保護されます。
 可変変数（`let mut`）や `&mut` 参照を通じてコレクション全体を丸ごと新しいコレクションで置き換える操作は、従来どおり許可されます。
 

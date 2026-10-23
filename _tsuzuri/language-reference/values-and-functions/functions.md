@@ -29,16 +29,64 @@ def append_mark :: own string -> string = \text -> $"{text}!"
 (append_mark "hello").length
 ```
 
-manifest で `edition = "2027"` を選んだ通常の `def` では、無印の
+edition 2027 の通常の `def` では、無印の
 `string`・配列・リスト・`Vec`・解放が必要な record／union／tuple などは共有借用になります。
 `def length :: string -> i64` は、引数を `ref string` と書いた場合と同じです。
 読み取りは複製も移動も起こさず、実引数は呼び出し後も使えます。返すために所有権が必要なら `own` を書きます。
 
-数値などの小さな値、裸の型変数、関数型、`Task`、`dyn`、SIMD と可変束縛引数は値渡しのままです。
+裸の型変数と関数型も共有借用です。本体では値の読み取り view を使うため、引数を読むたびに
+`*` を書く必要はありません。借用した型変数の値を返す場合は `Copy` が必要です。
+消費して返す恒等関数は `def identity :: own 'a -> 'a = \value -> value` と書きます。
+数値などの小さな具体型、`Task`、`dyn`、SIMD と可変束縛引数は値渡しのままです。
 明示の `ref`／`ref mut` と region を指定した引数は変わらず、返却型やコールバックの中の引数も補完しません。
 `const def`・入口の `main`・`extern`・instance のメソッドは従来の契約を使います。
-2026、manifest のない入力、std は従来どおりです。
+2026 のパッケージの引数の契約は従来どおりです。
 edition の指定は[パッケージ](../organizing-tsuzuri/packages.md#言語版edition)を参照してください。
+
+```tsuzuri run=22
+def inspect :: 'a -> i64 = \value -> 7
+def twice :: (ref 'a -> i64) -> 'a -> i64 = \f value -> f value + f value
+def length :: string -> i64 = \text -> text.length
+let text = "hello"
+twice length text + inspect text + text.length
+```
+
+矢印で書いた callback の型は、引数規約を暗黙に書き換えません。上の `ref 'a` は
+読み取り callback の明示契約です。2027 の `Array`／`List` の `map`・`mapi`・`iter`・
+`iteri`・`fold`・`fold_back` は読み取り callback を使い、非 Copy の要素も扱えます。
+`map_owned` などの `_owned` 入口は 2026 の値 callback を保ちます。
+`mapr`／`foldr` などの入口も残り、その callback では従来どおり参照を明示します。
+一時 callback の借用は、一段で完全適用し、結果が借用を持たない呼び出しに限ります。
+関数値を返す結果も保守的に借用を持ち得るため、一時値を渡すと `E1013` です。
+先に `let` で束縛するか、関数値の所有権を受け渡す署名なら `own (T -> U)` を使います。
+
+### 書き換える引数（`mut T`）
+
+2027 の whole-parameter `mut T` は、排他参照の ABI と値 view を使います。
+呼び出し側では `let mut` の所有値か既存の排他参照を渡します。引数そのものに `*` は不要です。
+`mut T` は返却型や、入れ子の callback 型には書けません。そこでは明示の `ref mut T` を使います。
+
+```tsuzuri run=42
+record Counter { value: i64 }
+def bump :: i64 -> mut Counter -> unit = \step counter ->
+    counter.value = counter.value + step
+let mut counter = Counter { value: 40 }
+counter |> bump 2
+counter.value
+```
+
+可変な所有者または排他参照を通じて、record の field と配列・リスト・Vec・固定長配列の
+要素を代入できます。文字列の要素は不変です。右辺、代入先（添字を含む）、古い値の drop、
+store の順に評価し、範囲外は従来と同じトラップになります。移動済みの field の再初期化と
+要素単位の排他借用は、この構文では許しません。保持する借用は兄弟の field も含めて保守的に追跡します。
+固定プロトコルの `Drop.drop` 内の自己の field・要素への代入は全版で `E1012` です。
+`const def` の field・要素への代入も const 評価の対象外（`E1026`）です。
+
+`Vec.push value values` も 2027 では対象を排他借用して `unit` を返します。
+消費して新しい Vec を返す 2026 の操作は `Vec.push_owned value values` です。
+借用を含む値を push する場合は、格納した借用の契約を保つため、直接、全引数で呼びます。
+対象は最後なので `Vec.push (values[0] + 1) values` は可能ですが、
+先に対象を貸す `values |> Vec.push (values[0] + 1)` は `E1014` です。
 
 ```text
 def name :: 引数型 -> ... -> 返却型 = \引数 ... ->
@@ -159,7 +207,10 @@ if piped == composed then piped else 0
 | `Array.fold` | 畳み込み、初期値、配列 |
 | `Array.fold_back` | 畳み込み、初期値、配列 |
 
-`Array.map` は要素の `Copy` を要求します。文字列のように複製しない要素は `Array.mapr` を使います。末尾の `r` は、要素を `ref` で借用して関数に渡す版の印です。`foldr`、`existsr` などにもあります。
+2027 の `Array.map` は要素を読み取り view で callback へ渡すため、文字列のような非 Copy の要素も扱えます。
+その要素を callback が所有値として取り出す場合は Copy が必要です。2026 の `Array.map` と
+全版の `Array.map_owned` は値 callback の契約を使います。`Array.mapr` は参照を明示する互換入口です。
+末尾の `r` は、要素を `ref` で借用して関数に渡す版の印で、`foldr`、`existsr` などにもあります。
 
 ```tsuzuri run=4321
 let numbers = [1, 2, 3, 4]

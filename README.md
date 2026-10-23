@@ -12,6 +12,7 @@
 ## 主な特徴
 
 - **所有権と借用による安全なメモリ管理**: ガベージコレクション（GC）に頼らず、Rust と同様の所有権移動と借用検査（`ref` / `ref mut`）によってコンパイル時にメモリ安全性を保証します。参照カウントは標準ライブラリの `Rc` / `Arc` を明示的に使ったときだけです。
+- **引数規約（edition 2027）**: 通常の所有する引数・裸の型変数・関数引数は既定で読み取り、`own T` は値渡し、`mut T` は排他更新です。可変な所有者・排他参照からの field／要素の代入も検査します。既存 manifest の省略時は 2026 のままで、`fix --edition 2027 --from 2026` が旧契約を保って移行します。
 - **直感的で表現力豊かな関数型構文**: カリー化、強力な型推論、代数的データ型（`union`）、網羅性を検証するパターンマッチ、パイプライン演算子（`|>`）、関数合成（`>>` / `<<`）をサポートしています。
 - **ゼロコストの型クラス**: 型クラスはコンパイル時に静的に単相化（モノモーフィゼーション）され、動的ディスパッチやランタイム辞書のオーバーヘッドを生じさせません。異なる型の値を一つのコレクションへ入れるときだけ、`dyn` 型で実行時のディスパッチを明示できます。
 - **拡張可能なコンピュテーション式**: `.tc` ファイルでビルダーを定義することで、`Result` や `Maybe`、非同期処理などのモナディックな制御フローを言語本来の構文のように扱えます。
@@ -624,6 +625,16 @@ tsuzuri fmt src/
 tsuzuri fmt --check src/
 ```
 
+### 言語版の移行 (`tsuzuri fix`)
+
+値渡しの署名と標準 API を `own`・`_owned` で保存し、対象版で全体を再検査してから atomic に書き換えます。
+依存パッケージは変更せず、manifest の edition は最後に更新します（[詳細](_tsuzuri/language-reference/compiler/usage.md#fix)）。
+
+```sh
+tsuzuri fix --edition 2027 --from 2026 --dry-run app/
+tsuzuri fix --edition 2027 --from 2026 app/
+```
+
 ### 言語サーバー (`tsuzuri lsp`)
 
 VS Code や Neovim など、LSP 対応のエディタから利用可能な標準入出力（stdio）言語サーバーです。
@@ -1134,7 +1145,8 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
 - 利用者は A18 の D1〜D4 と、両チケットの全 Phase（設計だけの項目も含む）への着手を承認しました。
   A18 と A19 は別ブランチ・別 PR とし、A19 は A18 の上に積みます。
 - D-54 の「edition は意味を変えない」は A18 D1 と衝突します。今回承認された例外は
-  edition 2027 の通常の関数の引数の既定だけです。2026 の所有権・借用・診断・生成 IR は保ちます。
+  edition 2027 の読み取り・可変引数規約と、その規約を使う Array／List の callback 入口および
+  `Vec.push` の排他更新・unit 戻り値です。2026 の所有権・借用・診断・生成 IR は保ちます。
   A22 の正準形の受理・拒否は今回変更しません。
 - Phase 1 では `LATEST`・`MANIFEST_DEFAULT`・std を 2026 に保ちます。Phase 2 の既定版の更新は、
   移行ツールと std・fixture・文書の移行の検証後に限ります。古い manifest の既定は変更しません。
@@ -1184,3 +1196,15 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
   既存の `mapr`／`foldr` などの明示参照入口を残します。移行は解決された std 定義と builtin だけを対象にし、
   同名の利用者定義は変更しません。`get` と `get_ref` のように返す値の所有権が異なる API は別の契約のままです。
   std の内部呼び出しも消費する入口を明示してから移行し、2026 と同じ ABI と IR を検証します。
+- D-54 の A22 向けの「2027 を追加しても LATEST は 2026」という記述は、A18 Phase 1 の足場の
+  方針として扱います。全 Phase を承認された今回の既定版切り替えには適用しません。
+  未実装の A22 の正準形拒否・一般の `check/build --edition`・`NEW_PROJECT` 定数は先取りしません。
+  リリースして凍結した edition にあとから非互換な正準形拒否を追加することも許可しません。
+- `Drop.drop` は既存の固定プロトコルを保ち、自己の field・要素への代入も禁止します。
+  通常の mutable borrow と異なり destructor の呼び出しは frame をそのまま渡すため、
+  新しい射影代入を無条件に許すと呼び出し元の stack buffer を解放し得ることを tracking allocator で確認しました。
+  2026 の IR を変える一律の heap 昇格で隠さず、禁止を共有の ownership 検査で守ります。
+  通常の可変な所有者の Drop field の置換と、置換後の destructor／field 解放は検証します。
+- Phase 3 の一時 callback の借用も、既存の「一段で完全適用し、結果が借用を持たない」という条件を保ちます。
+  callback を受け取って関数値として返す旧 identity のような消費する契約には `own` を明示します。
+  関数を返すからといって temporary operand を直接作り、借用の escape 検査を迂回しません。

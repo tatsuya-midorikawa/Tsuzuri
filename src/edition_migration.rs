@@ -81,6 +81,8 @@ fn preserve_parameters(
             if reference.role == crate::check::semantic::Role::Read
                 && reference.span.source == Some(id)
                 && let Some(&owned) = functions.get(&reference.definition)
+                && source.text.get(reference.span.start..reference.span.end)
+                    == Some(semantic.definitions[reference.definition].name.as_str())
             {
                 edits.push((reference.span.start, reference.span.end, owned));
             }

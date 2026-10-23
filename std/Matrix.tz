@@ -63,11 +63,11 @@ fn set row col value matrix =
 
 /// Applies `transform` to every element in row-major order.
 def map :: Copy<'a> => own ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>
-fn map transform matrix = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map transform (ref matrix.data) }
+fn map transform matrix = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map_owned transform (ref matrix.data) }
 
 /// Folds the elements left to right in row-major order.
 def fold :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> ref Matrix<'a> -> 'state
-fn fold folder initial matrix = Array.fold folder initial (ref matrix.data)
+fn fold folder initial matrix = Array.fold_owned folder initial (ref matrix.data)
 
 /// Returns a new cols x rows matrix whose element (j, i) is the input element (i, j).
 def transpose :: Copy<'a> => ref Matrix<'a> -> Matrix<'a>

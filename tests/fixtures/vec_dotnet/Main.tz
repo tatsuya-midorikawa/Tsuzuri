@@ -2,14 +2,14 @@
 // growth of the capacity, and the drops that Tsuzuri adds for elements that own memory. The expected values come from
 // the source of `List<T>` (dotnet/runtime, List.cs) and were compared with a run of .NET 10.
 
-private def eq :: Eq<'a> => 'a -> 'a -> unit
+private def eq :: Eq<'a> => own 'a -> own 'a -> unit
 fn eq actual expected = Test.equal (ref actual) (ref expected)
 
 /// A copy of the elements of a `Vec<i64>`, so that a test can look at them and go on using the `Vec`.
 private def items :: ref Vec<i64> -> [i64]
 fn items values = Vec.to_array (Vec.clone values)
 
-private def vec :: [i64] -> Vec<i64>
+private def vec :: own [i64] -> Vec<i64>
 fn vec values = Vec.of_array values
 
 private def check_words :: ref Vec<string> -> ref [string] -> unit
@@ -18,7 +18,7 @@ fn check_words actual expected =
     for index in 0 .. (expected.length - 1) do
         Test.equal (Vec.at index actual) (ref expected[index])
 
-private def is_nan :: f64 -> bool
+private def is_nan :: own f64 -> bool
 fn is_nan value = value != value
 
 record Point { x: i64, y: i64 } deriving (Eq, Ord)
@@ -119,7 +119,7 @@ test "trim_excess shrinks the capacity only below 90 percent" =
     none = Vec.trim_excess none
     eq (Vec.capacity (ref none)) 0
 
-private def filled :: i64 -> Vec<i64>
+private def filled :: own i64 -> Vec<i64>
 fn filled capacity =
     let mut values: Vec<i64> = Vec.with_capacity capacity
     for index in 1 .. capacity do values = Vec.add index values
@@ -137,7 +137,7 @@ test "ensure_capacity, add_range, insert_range and insert grow by the same rule"
         let single = Vec.insert (capacity / 2) 0 (filled capacity)
         eq (Vec.capacity (ref single)) (ensure_capacity_of capacity 1)
 
-private def ensure_capacity_of :: i64 -> i64 -> i64
+private def ensure_capacity_of :: own i64 -> own i64 -> i64
 fn ensure_capacity_of capacity extra =
     let grown = Vec.ensure_capacity (capacity + extra) (filled capacity)
     Vec.capacity (ref grown)
@@ -328,13 +328,13 @@ test "remove_allr removes strings by a borrowed predicate" =
         eq removed 2
         check_words (ref rest) ["aaaa", "cccc"]
 
-private def some_eq :: Eq<'a> => Maybe<'a> -> 'a -> unit
+private def some_eq :: Eq<'a> => own Maybe<'a> -> own 'a -> unit
 fn some_eq maybe expected =
     match maybe with
     | Maybe.Some value -> eq value expected
     | Maybe.None -> assert false
 
-private def none :: Maybe<'a> -> unit
+private def none :: own Maybe<'a> -> unit
 fn none maybe =
     match maybe with
     | Maybe.None -> ()
@@ -342,7 +342,7 @@ fn none maybe =
 
 /// Counts a call and adds `position * value` to a weighted sum, where the position is the number of calls before: the sum
 /// shows the order in which a callback saw the values.
-private def tick :: ref Arc<Atomic<i64>> -> ref Arc<Atomic<i64>> -> i64 -> unit
+private def tick :: ref Arc<Atomic<i64>> -> ref Arc<Atomic<i64>> -> own i64 -> unit
 fn tick calls weighted value =
     let before = Atomic.fetch_add (Arc.get calls) 1
     let _sum = Atomic.fetch_add (Arc.get weighted) (before * value)
@@ -505,7 +505,7 @@ test "sort_withr sorts elements that are not Copy, stably" =
     eq (Vec.length (ref empty)) 0
 
 // The values are key * 1000 + position, so a stable sort by key leaves the positions of equal keys ascending.
-private def tied :: i64 -> i64 -> Vec<i64>
+private def tied :: own i64 -> own i64 -> Vec<i64>
 fn tied length seed =
     let mut state = seed
     let mut values: Vec<i64> = Vec.empty()
@@ -514,7 +514,7 @@ fn tied length seed =
         values = Vec.add ((state / 65536) % 7 * 1000 + position) values
     values
 
-private def by_key :: i64 -> i64 -> i64
+private def by_key :: own i64 -> own i64 -> i64
 fn by_key left right = left / 1000 - right / 1000
 
 test "sort_withr and sort_range_withr agree with the stable sort_with for every length" =

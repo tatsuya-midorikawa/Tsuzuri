@@ -61,6 +61,10 @@
 
 未知のフラグは `unknown option '...'; use --help` です。値を取り忘れると `--output needs a value` のように、そのフラグの名前で止まります。
 
+`fix` の専用オプションは `--edition YEAR`（必須）・`--from YEAR`・`--dry-run`・`--json` です。
+入力はファイルかディレクトリ 1 つで、ビルド用のフラグは受け付けません。
+`--edition` は一般の build/check のオプションではありません（[契約を保つ移行](usage.md#fix)）。
+
 ## 出力とターゲット
 
 | オプション | 既定 | 意味 |

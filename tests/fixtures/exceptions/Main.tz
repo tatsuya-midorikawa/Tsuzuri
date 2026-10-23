@@ -1,19 +1,19 @@
 // Checked arithmetic, try/with/finally, `**`, bigint, composition, and the
 // literal forms of _specs, on native and WASM at -O0 and -O3.
 
-def checked_add_work :: i64 -> i64 -> Result<i64, Exception> = \a b ->
+def checked_add_work :: own i64 -> own i64 -> Result<i64, Exception> = \a b ->
     try
         @checked a + b
     with
     | e is OverflowException -> e
 
-export def checked_add :: i64 -> i64 -> i64
+export def checked_add :: own i64 -> own i64 -> i64
 fn checked_add a b =
     match checked_add_work a b with
     | Ok value -> value
     | Error _ -> -1
 
-export def checked_mul_i32 :: i64 -> i64 -> i64
+export def checked_mul_i32 :: own i64 -> own i64 -> i64
 fn checked_mul_i32 a b =
     let left = a as i32
     let right = b as i32
@@ -22,40 +22,40 @@ fn checked_mul_i32 a b =
     | Ok value -> value as i64
     | Error _ -> -1
 
-export def checked_neg :: i64 -> i64
+export def checked_neg :: own i64 -> i64
 fn checked_neg a =
     match try (@checked -a) with | e -> e with
     | Ok value -> value
     | Error _ -> -1
 
-export def checked_power :: i64 -> i64 -> i64
+export def checked_power :: own i64 -> own i64 -> i64
 fn checked_power base exponent =
     match try (@checked base ** exponent) with | e -> e with
     | Ok value -> value
     | Error _ -> -1
 
-export def checked_power_u8 :: i64 -> i64 -> i64
+export def checked_power_u8 :: own i64 -> own i64 -> i64
 fn checked_power_u8 base exponent =
     let narrow = base as i8u
     match try (@checked narrow ** (exponent as i8u)) with | e -> e with
     | Ok value -> value as i64
     | Error _ -> -1
 
-export def power_wrap :: i64 -> i64 -> i64
+export def power_wrap :: own i64 -> own i64 -> i64
 fn power_wrap base exponent = base ** exponent
 
-export def power_i16 :: i64 -> i64 -> i64
+export def power_i16 :: own i64 -> own i64 -> i64
 fn power_i16 base exponent = ((base as i16) ** (exponent as i16)) as i64
 
-export def float_power :: f64 -> f64 -> f64
+export def float_power :: own f64 -> own f64 -> f64
 fn float_power base exponent = base ** exponent
 
-export def float_power_f32 :: f64 -> f64 -> f64
+export def float_power_f32 :: own f64 -> own f64 -> f64
 fn float_power_f32 base exponent = ((base as f32) ** (exponent as f32)) as f64
 
 /// The finally block runs on every path; an exception no arm matches
 /// propagates to the outer `try` after the inner `finally`.
-export def nested_finally :: i64 -> i64
+export def nested_finally :: own i64 -> i64
 fn nested_finally value =
     let mut ran = 0
     let outer =
@@ -80,7 +80,7 @@ fn nested_finally value =
 
 /// A `finally` that raises leaves its `try`: the result it was holding is
 /// dropped, and an exception that was leaving is replaced.
-export def finally_raises :: i64 -> i64
+export def finally_raises :: own i64 -> i64
 fn finally_raises value =
     let outer =
         try
@@ -102,7 +102,7 @@ fn finally_raises value =
     | Error _ -> -2
 
 /// Owned values that a raise leaves are dropped exactly once.
-export def loop_strings :: i64 -> i64
+export def loop_strings :: own i64 -> i64
 fn loop_strings count =
     let mut caught = 0
     let mut total = 0
@@ -120,10 +120,10 @@ fn loop_strings count =
         | Error _ -> caught = caught + 1
     total * 1000 + caught
 
-export def uncaught :: i64 -> i64
+export def uncaught :: own i64 -> i64
 fn uncaught value = @checked value + 1
 
-def checked_entry :: i32 -> i32 -> Result<i32, 'E>
+def checked_entry :: own i32 -> own i32 -> Result<i32, 'E>
     @'E : Err = \x y ->
     try
         @checked
@@ -132,18 +132,18 @@ def checked_entry :: i32 -> i32 -> Result<i32, 'E>
     with
     | e is OverflowException -> e
 
-export def checked_message :: i64 -> i64
+export def checked_message :: own i64 -> i64
 fn checked_message value =
     match checked_entry (value as i32) 1i32 with
     | Ok result -> result as i64
     | Error e -> (Err.msg (ref e)).length
 
-export def bigint_digits :: i64 -> i64
+export def bigint_digits :: own i64 -> i64
 fn bigint_digits exponent =
     let power = 2I ** BigInt.of_i64 exponent
     (to_string power).length
 
-export def bigint_mod :: i64 -> i64 -> i64
+export def bigint_mod :: own i64 -> own i64 -> i64
 fn bigint_mod high low =
     let value = BigInt.of_i64 high * 100000000000000000000I + BigInt.of_i64 low
     let modulus: bigint = 1000000007
@@ -151,7 +151,7 @@ fn bigint_mod high low =
     | Some result -> result
     | None -> -1
 
-export def bigint_division :: i64 -> i64 -> i64
+export def bigint_division :: own i64 -> own i64 -> i64
 fn bigint_division dividend divisor =
     let quotient = BigInt.of_i64 dividend / BigInt.of_i64 divisor
     let remainder = BigInt.of_i64 dividend % BigInt.of_i64 divisor
@@ -159,19 +159,19 @@ fn bigint_division dividend divisor =
     | (Some q, Some r) -> q * 1000 + r
     | _ -> 0
 
-export def bigint_compare :: i64 -> i64 -> i64
+export def bigint_compare :: own i64 -> own i64 -> i64
 fn bigint_compare left right =
     let a = BigInt.of_i64 left - 99999999999999999999I
     let b = BigInt.of_i64 right - 99999999999999999999I
     if a < b then -1 else if a == b then 0 else 1
 
-export def compose :: i64 -> i64
+export def compose :: own i64 -> i64
 fn compose value =
     let forward = (\x -> x + 1) >> (\x -> x * 2)
     let backward = (\x -> x + 1) << (\x -> x * 2)
     forward value * 1000 + backward value
 
-export def logic :: i64 -> i64 -> i64
+export def logic :: own i64 -> own i64 -> i64
 fn logic first second =
     let left = first != 0
     let right = second != 0
@@ -180,7 +180,7 @@ fn logic first second =
     ignore (to_string left)
     (if negated then 1 else 0) + (if piped then 10 else 0) + (if not (left && right) then 100 else 0)
 
-export def bits :: i64 -> i64 -> i64
+export def bits :: own i64 -> own i64 -> i64
 fn bits value shift =
     ((value &&& 0xFF) ||| (value ^^^ shift)) + (~~~value) + (value <<< shift) + (value >>> shift) + Bits.ushr value shift
 
@@ -218,11 +218,11 @@ fn default_literals =
     let square = r ** 2
     (wrapped as i64) + (square as i64)
 
-export def pipeline :: i64 -> i64
+export def pipeline :: own i64 -> i64
 fn pipeline count =
     let double = \value -> value * 2
     let values = Array.init count (\index -> index)
-    let total = values |> Array.map double |> Array.sum
-    let folded = Array.fold (\state value -> state * 3 + value) 0 (ref values)
-    let backward = Array.fold_back (\value state -> state * 3 + value) 0 (ref values)
-    total * 1000000 + (values |> (Array.map double >> Array.sum)) + folded % 1000 + backward % 7
+    let total = values |> Array.map_owned double |> Array.sum
+    let folded = Array.fold_owned (\state value -> state * 3 + value) 0 (ref values)
+    let backward = Array.fold_back_owned (\value state -> state * 3 + value) 0 (ref values)
+    total * 1000000 + (values |> (Array.map_owned double >> Array.sum)) + folded % 1000 + backward % 7

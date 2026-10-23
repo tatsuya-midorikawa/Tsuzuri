@@ -92,13 +92,13 @@ flowchart TD
 `Identity.tc`:
 
 ```tsuzuri project=identity file=Identity.tc
-def Return :: 'a -> 'a
+def Return :: own 'a -> 'a
 fn Return value = value
 
-def ReturnFrom :: 'a -> 'a
+def ReturnFrom :: own 'a -> 'a
 fn ReturnFrom value = value
 
-def Bind :: 'a -> ('a -> 'b) -> 'b
+def Bind :: own 'a -> own ('a -> 'b) -> 'b
 fn Bind value next = next value
 
 def Zero :: unit
@@ -133,13 +133,13 @@ Identity {
 ```tsuzuri project=identity-alias file=Identity.tc
 @alias identity
 
-def Return :: 'a -> 'a
+def Return :: own 'a -> 'a
 fn Return value = value
 
-def ReturnFrom :: 'a -> 'a
+def ReturnFrom :: own 'a -> 'a
 fn ReturnFrom value = value
 
-def Bind :: 'a -> ('a -> 'b) -> 'b
+def Bind :: own 'a -> own ('a -> 'b) -> 'b
 fn Bind value next = next value
 
 def Zero :: unit

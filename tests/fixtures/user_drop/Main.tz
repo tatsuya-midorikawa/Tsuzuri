@@ -54,11 +54,11 @@ instance Drop<Mode> {
         | Slow -> drop_log 31
 }
 
-private def resource :: i64 -> Resource = \id -> Resource { id: id, name: "resource" }
+private def resource :: own i64 -> Resource = \id -> Resource { id: id, name: "resource" }
 
-private def take :: Resource -> i64 = \value -> value.id
+private def take :: own Resource -> i64 = \value -> value.id
 
-private def job :: i64 -> Task<i64>
+private def job :: own i64 -> Task<i64>
 fn job index =
     let owned = resource index
     task { return owned.id }
@@ -124,7 +124,7 @@ fn chain =
     let links = Link (resource 1, Link (resource 2, Link (resource 3, End)))
     chain_length (ref links)
 
-export def long_chain :: i64 -> i64
+export def long_chain :: own i64 -> i64
 fn long_chain count =
     let mut counted = Stop
     let mut index = 0
@@ -241,7 +241,7 @@ fn owned_nested =
     let outer = Owned.function (\x -> Owned.call (ref inner) x * 2)
     Owned.call (ref outer) 1
 
-private def keep :: 'a -> Owned.Function<i64, i64>
+private def keep :: own 'a -> Owned.Function<i64, i64>
 fn keep value = Owned.function (\x -> { let _borrowed = ref value; x + 1 })
 
 export def owned_generic :: i64
@@ -277,7 +277,7 @@ fn packed_array =
 export def packed_temporary :: i64
 fn packed_temporary = (Packed { flag: true, id: 6, mark: 9, name: "t" }).id
 
-private def eat :: Packed -> i64
+private def eat :: own Packed -> i64
 fn eat packed = packed.id
 
 export def packed_consume :: i64
@@ -285,8 +285,8 @@ fn packed_consume =
     let packed = Packed { flag: true, id: 7, mark: 2, name: "x" }
     eat packed
 
-private def rec bounce :: i64 -> i64
-    def and rebound :: i64 -> i64
+private def rec bounce :: own i64 -> i64
+    def and rebound :: own i64 -> i64
 fn rec bounce n =
     let held = resource (100 + n)
     if n == 0 then held.id else rebound (n - 1)
@@ -304,8 +304,8 @@ fn tail_drops = bounce 2
 // that it makes has returned.
 union Outcome = Done of i64 | Wrapped of Outcome
 
-private def rec bounce_outcome :: i64 -> Outcome
-    def and rebound_outcome :: i64 -> Outcome
+private def rec bounce_outcome :: own i64 -> Outcome
+    def and rebound_outcome :: own i64 -> Outcome
 fn rec bounce_outcome n =
     let held = resource (300 + n)
     if n == 0 then Done held.id else rebound_outcome (n - 1)

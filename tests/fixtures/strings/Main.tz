@@ -1,4 +1,4 @@
-def sample :: i64 -> string
+def sample :: own i64 -> string
 fn sample index =
     match index with
     | 0 -> ""
@@ -34,10 +34,10 @@ fn sample index =
     | 30 -> "\uD801"
     | _ -> "\uDC01"
 
-export def length :: i64 -> i64
+export def length :: own i64 -> i64
 fn length index = (sample index).length
 
-export def module_length :: i64 -> i64
+export def module_length :: own i64 -> i64
 fn module_length index =
     let text = sample index
     let get_length: ref string -> i64 = String.length
@@ -46,7 +46,7 @@ fn module_length index =
     assert ((ref text |> String.length) == size)
     size
 
-export def utf8_module_length :: i64 -> i64
+export def utf8_module_length :: own i64 -> i64
 fn utf8_module_length index =
     let text = sample index
     let repaired = String.to_well_formed ref text
@@ -57,10 +57,10 @@ fn utf8_module_length index =
     assert ((ref bytes |> Utf8String.length) == size)
     size
 
-export def unit_at :: i64 -> i64 -> i16u
+export def unit_at :: own i64 -> own i64 -> i16u
 fn unit_at which index = (sample which)[index]
 
-export def iterated :: i64 -> i64
+export def iterated :: own i64 -> i64
 fn iterated which =
     let mut sum = 0
     let mut index = 1
@@ -70,7 +70,7 @@ fn iterated which =
         index = index + 1
     sum
 
-export def compared :: i64 -> i64 -> i64
+export def compared :: own i64 -> own i64 -> i64
 fn compared left right =
     let a = sample left
     let b = sample right
@@ -84,29 +84,29 @@ fn compared left right =
     assert (b.length == (sample right).length)
     equal + unequal + less + less_equal + greater + greater_equal
 
-def less :: Ord<'a> => 'a -> 'a -> bool
+def less :: Ord<'a> => own 'a -> own 'a -> bool
 fn less left right = left < right
 
-def combine :: Add<'a> => 'a -> 'a -> 'a
+def combine :: Add<'a> => own 'a -> own 'a -> 'a
 fn combine left right = left + right
 
-export def generic_less :: i64 -> i64 -> bool
+export def generic_less :: own i64 -> own i64 -> bool
 fn generic_less left right = less (sample left) (sample right)
 
-export def method_less :: i64 -> i64 -> bool
+export def method_less :: own i64 -> own i64 -> bool
 fn method_less left right =
     let compare: ref string -> ref string -> bool = Ord.lt
     let first = sample left
     let second = sample right
     compare (ref first) (ref second)
 
-export def concat_length :: i64 -> i64 -> i64
+export def concat_length :: own i64 -> own i64 -> i64
 fn concat_length left right = (combine (sample left) (sample right)).length
 
-export def concat_unit :: i64 -> i64 -> i64 -> i16u
+export def concat_unit :: own i64 -> own i64 -> own i64 -> i16u
 fn concat_unit left right index = (combine (sample left) (sample right))[index]
 
-export def displayed :: i64 -> i64
+export def displayed :: own i64 -> i64
 fn displayed which =
     let text = sample which + ""
     let copy = Display.display ref text
@@ -115,17 +115,17 @@ fn displayed which =
     assert (moved == copy)
     copy.length + moved.length
 
-export def display_unit :: i64 -> i64 -> i16u
+export def display_unit :: own i64 -> own i64 -> i16u
 fn display_unit which index =
     let text = sample which
     (Display.display ref text)[index]
 
-export def well_formed :: i64 -> bool
+export def well_formed :: own i64 -> bool
 fn well_formed which =
     let text = sample which
     String.is_well_formed ref text
 
-export def repaired_length :: i64 -> i64
+export def repaired_length :: own i64 -> i64
 fn repaired_length which =
     let text = sample which + ""
     let repaired = String.to_well_formed ref text
@@ -135,12 +135,12 @@ fn repaired_length which =
     assert (text == sample which)
     repaired.length
 
-export def repaired_unit :: i64 -> i64 -> i16u
+export def repaired_unit :: own i64 -> own i64 -> i16u
 fn repaired_unit which index =
     let text = sample which
     (String.to_well_formed ref text)[index]
 
-export def round_trip :: i64 -> i64
+export def round_trip :: own i64 -> i64
 fn round_trip which =
     let text = sample which
     let bytes = Utf8String.from_string ref text
@@ -152,7 +152,7 @@ fn round_trip which =
     assert (decoded == text && shown == text && moved == text)
     bytes.length
 
-export def encoded_byte :: i64 -> i64 -> ubyte
+export def encoded_byte :: own i64 -> own i64 -> ubyte
 fn encoded_byte which index =
     let text = sample which
     (Utf8String.from_string ref text)[index]
@@ -163,7 +163,7 @@ fn legacy = u8"\0aé日本語\u{1F600}\"\\\n\r\t"
 export def utf8_length :: i64
 fn utf8_length = legacy().length
 
-export def utf8_byte :: i64 -> ubyte
+export def utf8_byte :: own i64 -> ubyte
 fn utf8_byte index = legacy()[index]
 
 export def utf8_iterated :: i64
@@ -192,10 +192,10 @@ fn parses =
 
 record Pair<'a, 'b> { first: 'a, second: 'b }
 
-def identity :: 'a -> 'a
+def identity :: own 'a -> 'a
 fn identity value = value
 
-export def owned_paths :: i64 -> i64
+export def owned_paths :: own i64 -> i64
 fn owned_paths count =
     let mut total = 0
     for _ in 1 .. count do
@@ -234,10 +234,10 @@ fn task_values =
     texts[0] == "\uD800A\uDC00" && texts[1] == "\uDC00\uD800" &&
         byte_values[0] == u8"😀\0é" && byte_values[1] == u8"日本"
 
-def consume_text :: string -> i64
+def consume_text :: own string -> i64
 fn consume_text text = text.length
 
-export def pipeline_paths :: i64 -> i64
+export def pipeline_paths :: own i64 -> i64
 fn pipeline_paths count =
     let owned_text = "\uD800" + "😀"
     let owned_bytes = u8"é" + u8"😀"

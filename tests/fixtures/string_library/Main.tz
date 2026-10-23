@@ -1,4 +1,4 @@
-def sample :: i64 -> string
+def sample :: own i64 -> string
 fn sample index = match index with
     | 0 -> ""
     | 1 -> "hello hello"
@@ -11,24 +11,24 @@ fn sample index = match index with
     | 8 -> "\uDE00"
     | _ -> "aa"
 
-def utf8_sample :: i64 -> utf8string
+def utf8_sample :: own i64 -> utf8string
 fn utf8_sample index =
     let text = sample index
     Utf8String.from_string (ref text)
 
-def hash :: string -> i64
+def hash :: own string -> i64
 fn hash text =
     let mut value = text.length
     for unit in text do value = value * 31 + unit as i64
     value
 
-def hash_utf8 :: utf8string -> i64
+def hash_utf8 :: own utf8string -> i64
 fn hash_utf8 text =
     let mut value = text.length
     for byte in text do value = value * 31 + byte as i64
     value
 
-export def text_operation :: i32 -> i64 -> i64 -> i64
+export def text_operation :: own i32 -> own i64 -> own i64 -> i64
 fn text_operation operation first second =
     let text = sample first
     let needle = sample second
@@ -58,7 +58,7 @@ fn text_operation operation first second =
     | 13 -> hash (String.repeat 2 (ref text))
     | _ -> 0
 
-export def utf8_operation :: i32 -> i64 -> i64 -> i64
+export def utf8_operation :: own i32 -> own i64 -> own i64 -> i64
 fn utf8_operation operation first second =
     let text = utf8_sample first
     let needle = utf8_sample second
@@ -91,12 +91,12 @@ fn utf8_operation operation first second =
     | 13 -> hash_utf8 (Utf8String.repeat 2 (ref text))
     | _ -> 0
 
-export def text_slice :: i64 -> i64 -> i64 -> i64
+export def text_slice :: own i64 -> own i64 -> own i64 -> i64
 fn text_slice which first last =
     let text = sample which
     match String.slice first last (ref text) with | Some value -> hash value | None -> -1
 
-export def utf8_slice :: i64 -> i64 -> i64 -> i64
+export def utf8_slice :: own i64 -> own i64 -> own i64 -> i64
 fn utf8_slice which first last =
     let text = utf8_sample which
     match Utf8String.slice first last (ref text) with | Some value -> hash_utf8 value | None -> -1
@@ -117,9 +117,9 @@ fn all_unit_transfer =
     let units = new [i16u](65536, index -> index as i16u)
     let text = String.from_code_units units
     let moved = String.to_code_units text
-    Array.fold (total -> value -> total + value as i64) 0 (ref moved)
+    Array.fold_owned (total -> value -> total + value as i64) 0 (ref moved)
 
-export def validate_bytes :: i32 -> i64
+export def validate_bytes :: own i32 -> i64
 fn validate_bytes which =
     let bytes: [ubyte] = match which with
         | 0 -> []

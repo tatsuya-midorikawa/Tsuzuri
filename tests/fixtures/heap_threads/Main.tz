@@ -3,11 +3,11 @@
 // of them at once and returns one array, which the caller frees on another thread than the one that
 // allocated it. Every result is independent of the schedule.
 
-def block :: i64 -> i64 -> [i64]
+def block :: own i64 -> own i64 -> [i64]
 fn block seed count = new [i64](count, n -> seed + n)
 
 // The sum of the last elements of the four blocks and the length of a label, for each of `rounds` rounds.
-def churn :: i64 -> i64 -> [i64]
+def churn :: own i64 -> own i64 -> [i64]
 fn churn seed rounds =
     let mut values: Vec<i64> = Vec.empty()
     let mut round = 0
@@ -17,30 +17,30 @@ fn churn seed rounds =
         let large = block seed 75
         let huge = block seed 625
         let label = to_string round + "-" + to_string seed
-        values = Vec.push (small[3] + medium[11] + large[74] + huge[624] + label.length) values
+        values = Vec.push_owned (small[3] + medium[11] + large[74] + huge[624] + label.length) values
         round = round + 1
     Vec.to_array values
 
-def rec sum_rows :: &[[i64]] -> i64 -> i64 -> i64
+def rec sum_rows :: &[[i64]] -> own i64 -> own i64 -> i64
 fn rec sum_rows rows row total =
     if row == rows.length then total
     else sum_rows rows (row + 1) (total + Array.sum (ref rows[row]))
 
 // `tasks` tasks of `rounds` rounds each; the total over all of them.
-export def cross_free :: i64 -> i64 -> i64
+export def cross_free :: own i64 -> own i64 -> i64
 fn cross_free tasks rounds =
     let results = Task.run (Task.parallel (new [Task<[i64]>](tasks, index -> task { churn index rounds })))
     sum_rows (ref results) 0 0
 
 // More than the heap of 16 MiB holds: a trap that reports an allocation failure.
-export def exhaust :: i64 -> i64
+export def exhaust :: own i64 -> i64
 fn exhaust count =
     let values = new [i64](count, n -> n)
     values[count - 1]
 
 // A Vec that outgrows the heap by reallocation: the same trap from the other entry point.
-export def grow :: i64 -> i64
+export def grow :: own i64 -> i64
 fn grow count =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 0 .. (count - 1) do values = Vec.push index values
+    for index in 0 .. (count - 1) do values = Vec.push_owned index values
     Vec.length (ref values)

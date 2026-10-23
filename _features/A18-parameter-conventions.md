@@ -443,21 +443,32 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - 世代付き参照（Vale）を既定にすること: 誤りが実行時のトラップになり、コンパイル時に拒否する方針と逆になる（`Arena` のハンドルが局所的に採用済み）。
 - 呼び出し先の本体から引数の規約を推論する案（Lean の borrow inference）: 本体の変更が呼び出し側の `E1012` を変え、署名に契約が現れない（API の差分が見えない）。
 
-## 実装と検証（2026-10-23、進行中）
+## 実装と検証（2026-10-23、全 Phase の最終検証中）
 
-- Phase 1 の実装: edition 2027、全 edition の `own`、署名時の共有借用の補完、補完した引数だけの
-  `E1003`／`E1012` の案内、formatter／doc／cache／region の追従。所有権検査と LLVM の意味は変更しない。
-- 確認済み: fmt、strict clippy、edition 7 件、規約 8 件。
-  `conventions` は native／WASM × O0／O3 の 5 ケースと 2 トラップ、live 0、import なし。
-  文書は 7 ページ・262 リンク・36 例・70 native 実行・1 テストプロジェクト。runtime include 58 件。
-- Rust 全体の確認は進行中。新しい supported editions に追従して、チケットが挙げた integration test 以外にも、
-  lexer／manifest の unit test の旧一覧を修正した。既存の 2026 の言語の挙動の変更ではない。
-- **全 Phase 完了ではない。** Phase 2 の移行ツール・std／fixture の移行と既定版の更新、
-  Phase 3 のジェネリック／関数引数の規約、Phase 4 の mut／要素・field 代入は未実装。
-  チケットは `_completed/` に移さず、PR は進行中として扱う。
-- 検証追記: `594ef574` の全 Rust は 1726 件通過・2 件 skip（1714 件と、絶対 TMPDIR が必要な
-  targets 12 件を分けて実行）。PR48 の rust／reference も通過した。
-- Copilot の 6 指摘を修正した: class parameter の `own`、edition-only の保守的 api-diff、
-  明示 record region の固定署名、無関係な E1003 への案内の除去、own の全 type-primary starter、
-  hover／signature help／document symbol の表記。regression は規約 12・api-diff 24・LSP 36 件が通過。
-  fmt・strict clippy・dev build も通過した。review 修正後の全 Rust／IR corpus／文書の再確認は次の段階に残る。
+- **承認と旧案の読み方**: 同日の利用者の指示が D1〜D4 と Phase 1〜4 を承認した。
+  上の Phase 1 限定の対象外・D3 の `LATEST = 2026`・D4 の std 非移行・Phase 3/4 の未承認という
+  初期案は最終状態を表さない。実装前の README の決定記録で D-54／D-13／D-59 と照合した。
+  `MANIFEST_DEFAULT = 2026` は維持し、`LATEST = 2027` と std・裸の CLI・script・REPL の移行を実施した。
+- **Phase 1 実装済み**: edition、全版の `own`、具体型の読み取り補完、固定署名の例外、
+  補完した引数だけの診断、formatter／doc／semantic／LSP／cache／region。
+  `594ef574` の時点の全 Rust は 1726 件通過・2 skip。PR48 の初回 Copilot 6 指摘も修正した。
+- **Phase 2 実装済み**: `fix --edition 2027 --from 2026` の解析済み参照に基づく checked migration、
+  失敗時の無変更・依存保護・atomic 書き込み・再実行。std の所有署名と版別 API、
+  114 fixture/example と文書の移行、既定版の更新。版を取らない Rust 解析 API は 2026 を保つ。
+- **Phase 3 実装済み**: 型とは別の引数規約、裸の型変数と関数引数の read view、
+  特殊化、文脈付き callback adapter、Array／List の 12 組の read／owned 入口。
+  `Copy` の保証、所有 callback の旧推論順、callback の一度だけの構築を保つ。
+- **Phase 4 実装済み**: `mut T`、field／要素の代入、貸し出しと借用格納の弱い更新、
+  排他 `Vec.push` と `Vec.push_owned`。射影先の旧値の解放に stack frame の候補を引き継ぐ。
+  固定 Drop protocol 内の自己 field 置換と const evaluator の射影代入は対応対象にせず、診断で拒否する。
+- **最新の focused 実行**: `conventions` 31 ケース・10 トラップが native／WASM × O0／O3 で通過。
+  native は `live == 0`、WASM は import なし。非 Copy の Array／List／固定長配列／入れ子 field の
+  繰り返し代入と外側からの Drop record の field 置換を含む。
+  射影 frame 修正後、明示 2026 の凍結 114 プロジェクトと、移行した 2027 の同 114 プロジェクトが、
+  旧版との 3 回の比較で結果・診断内容・IR が一致した（移行後の診断の物理位置だけ正規化）。
+  全 Rust の最初の最終実行は 1737 通過・10 失敗・2 skip。既定版に追従する消費署名・Vec 入口・
+  cache／new の検査と api-diff の定数・curry 比較を修正し、関連 62 件は全通過した。
+  第 2 review の引数別 mutable binding の api-diff 漏れも回帰テストとともに修正した。
+  一時 callback の検査は escape 条件を保つ陽性・陰性の両方を検証した。fmt・strict clippy・dev build も通過。
+- **未完了**: 修正後の全 Rust・T2・全変更文書、
+  final Copilot／CI。これらが終わるまで全 Phase 完了や archive としない。

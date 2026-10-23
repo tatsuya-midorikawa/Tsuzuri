@@ -1,9 +1,9 @@
-def rec even :: i64 -> bool = \n -> if n == 0 then true else odd (n - 1)
-and odd :: i64 -> bool = \n -> if n == 0 then false else even (n - 1)
+def rec even :: own i64 -> bool = \n -> if n == 0 then true else odd (n - 1)
+and odd :: own i64 -> bool = \n -> if n == 0 then false else even (n - 1)
 
-def (|Even|_|) :: i64 -> bool = \n -> n % 2 == 0
+def (|Even|_|) :: own i64 -> bool = \n -> n % 2 == 0
 
-def positive :: i64 -> i64 = \number ->
+def positive :: own i64 -> i64 = \number ->
     match number with
     | value when value > 0 -> value
     | _ -> 0

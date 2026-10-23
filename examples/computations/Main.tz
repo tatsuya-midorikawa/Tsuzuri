@@ -1,4 +1,4 @@
-def divide :: i64 -> i64 -> Result<i64, i64> = \value divisor ->
+def divide :: own i64 -> own i64 -> Result<i64, i64> = \value divisor ->
     if divisor == 0 then Error divisor
     else Ok (value / divisor)
 

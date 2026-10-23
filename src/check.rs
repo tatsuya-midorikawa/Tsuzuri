@@ -4483,7 +4483,8 @@ fn visit_match_children_mut<'a>(
     Ok(())
 }
 
-/// Checks one `Main` module without a standard library.
+/// Checks one `Main` module without a standard library, preserving 2026 conventions.
+/// Use [`check_modules`] and an explicit [`ModuleInput::edition`] for newer conventions.
 pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
     let declared = program.namespace.as_ref().map(|namespace| &namespace.path);
     let (name, namespace) = crate::module_identity("Main", declared, "")?;
@@ -4493,7 +4494,7 @@ pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
         origin: ModuleOrigin::User,
         namespace: &namespace,
         entry: true,
-        edition: crate::syntax::Edition::LATEST,
+        edition: crate::syntax::Edition::E2026,
         package: None,
     }])
 }
@@ -7406,8 +7407,7 @@ fn check_modules_collect(
             let mut checker = Checker::new(module, &names, types, &signatures, &classes);
             checker.read_conventions = module_editions
                 .get(module.as_str())
-                .is_some_and(|edition| edition.borrows_parameters())
-                && names.modules.get(module) != Some(&ModuleOrigin::Std);
+                .is_some_and(|edition| edition.borrows_parameters());
             checker.indexing = indexing;
             if let Some(active) = active_results.get(&id) {
                 checker.use_active_result(&signature.result, active);
@@ -9618,6 +9618,7 @@ struct RecoveryMark {
 /// A source name that the typed tree does not keep, recorded for the semantic index.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum NameTarget {
+    Function(usize),
     Record(usize),
     Union(usize),
     Field(usize, usize),
@@ -9989,6 +9990,12 @@ impl<'a> Checker<'a> {
             return Ok(TypedExpr::error(span));
         }
         if let Some(expected) = expected {
+            if self.read_conventions
+                && matches!(expected, Type::Function(..) | Type::Infer(_))
+                && let target @ Type::Function(..) = self.inference.resolve(expected)
+            {
+                value = self.callback_adapter(value, &target)?;
+            }
             self.same(&value.ty, expected, span)?;
         }
         value.ty = self.inference.resolve(&value.ty);
@@ -10246,16 +10253,20 @@ impl<'a> Checker<'a> {
                         self.owned_lambda(names, body, argument.span, parameter)?
                     }
                     _ if self.read_conventions
-                        && Self::callback_parameter(&self.inference.resolve(parameter)) =>
+                        && Self::callback_parameter(
+                            &self.inference.resolve(parameter),
+                            matches!(&callee.ty, Type::Function(parameters, _)
+                                if parameters.convention(index) != ParameterConvention::Own),
+                        ) =>
                     {
-                        callbacks.push((index, self.expression(argument, None)?));
+                        callbacks.push(index);
                         TypedExpr::error(argument.span)
                     }
                     _ => self.argument(argument, parameter)?,
                 });
             }
-            for (index, value) in callbacks {
-                checked[index] = self.coerce_argument(value, &parameters[index])?;
+            for index in callbacks {
+                checked[index] = self.argument(&arguments[index], &parameters[index])?;
             }
             if deferred {
                 self.lambda_arguments(arguments, &parameters, &mut checked)?;
@@ -11106,9 +11117,18 @@ impl<'a> Checker<'a> {
         self.finish_expression(value.kind, value.ty, Some(&expected), value.span)
     }
 
-    fn callback_parameter(ty: &Type) -> bool {
-        matches!(ty, Type::Function(..))
-            || matches!(ty, Type::Reference(inner, false) if matches!(**inner, Type::Function(..)))
+    fn callback_parameter(ty: &Type, borrowed: bool) -> bool {
+        match ty {
+            Type::Function(parameters, _) => parameters
+                .conventions
+                .iter()
+                .any(|convention| *convention != ParameterConvention::Own),
+            Type::Reference(inner, false) => {
+                (borrowed && matches!(**inner, Type::Function(..)))
+                    || Self::callback_parameter(inner, false)
+            }
+            _ => false,
+        }
     }
 
     fn callback_local(&mut self, ty: Type, span: Span) -> Local {
@@ -12260,6 +12280,14 @@ impl<'a> Checker<'a> {
                 .flatten();
             let function_name = owning.map_or(canonical.as_ref(), |(value, _, _)| *value);
             if let Some(id) = self.names.function(self.module, function_name, span)? {
+                if self.indexing
+                    && standard
+                    && BORROWING_APIS
+                        .iter()
+                        .any(|(value, _, owned)| *value == canonical || *owned == canonical)
+                {
+                    self.name_uses.push((span, NameTarget::Function(id)));
+                }
                 let read_name = (self.read_conventions && standard && owning.is_none())
                     .then(|| {
                         BORROWING_APIS

@@ -716,7 +716,7 @@ fn formatting_matches_the_library_formatter() {
 #[test]
 fn inlay_hints_show_implicit_copies() {
     use serde_json::json;
-    let text = "record Bag { items: [i64] }\ndef total :: Bag -> i64\nfn total bag =\n    let xs = bag.items\n    let ys = bag.items\n    Array.length (ref xs) + Array.length (ref ys)\ndef reuse :: [i64] -> i64\nfn reuse a =\n    let b = a\n    let moved = [1]\n    let n = 2\n    let m = n\n    Array.length (ref a) + Array.length (ref b) + Array.length (ref moved) + m\n";
+    let text = "record Bag { items: [i64] }\ndef total :: own Bag -> i64\nfn total bag =\n    let xs = bag.items\n    let ys = bag.items\n    Array.length (ref xs) + Array.length (ref ys)\ndef reuse :: own [i64] -> i64\nfn reuse a =\n    let b = a\n    let moved = [1]\n    let n = 2\n    let m = n\n    Array.length (ref a) + Array.length (ref b) + Array.length (ref moved) + m\n";
     let broken = format!("{text}fn (");
     let responses = scripted(&[("Main.tz", text)], "utf-16", |uri| {
         let request = |id: u64, range: serde_json::Value| json!({"id": id, "method": "textDocument/inlayHint", "params": {"textDocument": {"uri": uri("Main.tz")}, "range": range}});

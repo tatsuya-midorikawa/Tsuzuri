@@ -11,10 +11,10 @@
 - 型は `[T]`（`Array<T>`）。長さは生成後に変わりません。空の `[]` には、要素型が分かる文脈が必要です。
 - F# の `Array` モジュールの関数（131 個。`Array.Parallel` を除く）がすべてあります。名前は snake_case です。配列は常に最後の引数で、`|>` でも `>>` でもつなげられます。F# で配列が最後にない関数（`get`、`set`、`sub`、`fill`、`blit`、`fold_back`、`fold_back2`、`scan_back`、`map_fold_back`）だけ、配列を最後に移しています。
 - F# が例外を投げる場面（空配列、範囲外、長さの不一致、見つからない `find`）はトラップです。`try_item` や `try_find` のように `try_` が付く関数は `Maybe` を返します。
-- コールバックが要素を値で受ける関数（`map`、`filter`、`exists` など）は、要素が `Copy` であることを要求します。`mapr`、`foldr`、`existsr` のように `r` を付けた関数は要素を借用するので、文字列や配列の配列にも使えます。
+- 2027 の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は要素の読み取り view を callback へ渡し、非 Copy の要素も扱えます。値 callback の `filter`・`exists` などや旧版を保つ `_owned` 入口は Copy を要求します。明示参照の `mapr`・`foldr` なども残ります。
 - 固定長配列 `[T; N]` は `FixedArray.init` か、期待型のあるリテラルで作ります。名前付きの値は `Array.sum xs` のように、`ref [T]` を取る関数へそのまま渡せます。
 - 範囲外の添字とスライスはトラップします。範囲内だと証明できた添字だけ、境界検査を省きます。
-- 部分の共有参照は `ref xs[a..b]`、その場の更新は `ref mut xs[a..b]` と `Array.set`（`Array.write` と同じ）です。
+- 部分の共有参照は `ref xs[a..b]`、その場の更新は `ref mut xs[a..b]` と `Array.set`（`Array.write` と同じ）です。2027 は可変な所有者・排他参照を根とする添字代入も使えます。
 - 整数 8 型の `Array.sum` / `min` / `max` は、native の実行ファイルとオブジェクトファイルで CPU に応じた kernel を選びます。結果の契約はスカラー版と同じです。
 
 ## コレクションの選び方
@@ -106,7 +106,7 @@ sum=160
 名前付きの固定長配列（束縛・フィールド・参照外し）は、`Array.sum triple` のように `ref [T]` を取る関数へそのまま渡せます。配列全体の共有スライスになります。`Array.sum (ref triple)` とは書きません。`ref triple` は `ref [T; N]` のままで、`ref [T]` にはなりません。一時値は先に `let` で束縛します（束縛しないスライスは `E1005`）。
 
 > [!WARNING]
-> 固定長配列は列挙できません。`for x in triple` は `E1005` なので、`for i in 0 .. triple.length - 1` と添字で歩きます。排他スライスは作れず（`E1005`）、パターン分解は `E1020` です。要素を置き換えるときは、`let mut` の束縛へ新しい値を代入します。
+> 固定長配列は列挙できません。`for x in triple` は `E1005` なので、`for i in 0 .. triple.length - 1` と添字で歩きます。排他スライスは作れず（`E1005`）、パターン分解は `E1020` です。`let mut` の束縛全体を代入でき、2027 は可変な所有者・排他参照からの添字代入も使えます。
 
 ## 要素へのアクセスと境界検査
 
@@ -159,7 +159,18 @@ for i in 0 .. values.length - 1 do
 
 ## 変換・畳み込み・探索
 
-F# の `Array` と同じ道具が揃っています。関数を先に、配列を最後に渡すので、`|>` でつなげます。コールバックは要素を値で受け取ります。
+F# の `Array` と同じ道具が揃っています。関数を先に、配列を最後に渡すので、`|>` でつなげます。
+2027 の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は要素の読み取り view を渡します。
+callback は要素を読むときに参照外しを書く必要がなく、非 Copy の要素を移動することはできません。
+これらの値 callback は `map_owned`・`mapi_owned`・`iter_owned`・`iteri_owned`・`fold_owned`・
+`fold_back_owned` で使えます。2026 の従来名は引き続き値 callback です。
+明示参照の `mapr`・`mapir`・`iterr`・`iterir`・`foldr`・`foldr_back` も互換入口として残ります。
+
+```tsuzuri run=6
+let texts = ["a", "bbb"]
+let lengths = Array.map (\text -> text.length) texts
+Array.sum lengths + texts.length
+```
 
 ```tsuzuri run=squares%3D%5B1%2C%209%2C%2025%5D%20sum%3D35
 let squares =

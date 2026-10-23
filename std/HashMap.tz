@@ -76,7 +76,7 @@ fn empty_slots size =
 	let mut slots = Vec.with_capacity size
 	let mut index = 0
 	while index < size do
-		slots = Vec.push (-1) slots
+		slots = Vec.push_owned (-1) slots
 		index = index + 1
 	slots
 
@@ -175,12 +175,12 @@ fn insert key value map =
 			match Vec.pop (Vec.swap found (count - 1) entries) with
 			| (remaining, Maybe.Some old) ->
 				let replacement = Entry { hash: old.hash, key: old.key, value: value }
-				HashMap { entries: Vec.swap found (count - 1) (Vec.push replacement remaining), slots: slots, key0: key0, key1: key1, keyed: keyed }
+				HashMap { entries: Vec.swap found (count - 1) (Vec.push_owned replacement remaining), slots: slots, key0: key0, key1: key1, keyed: keyed }
 			| (_, Maybe.None) -> unreachable ()
 		else
 			let grown = if 2 * (count + 1) > size then rebuild (ref entries) (if size == 0 then 8 else size * 2) else slots
 			let position = locate (ref grown) hash (-1)
-			HashMap { entries: Vec.push (Entry { hash: hash, key: key, value: value }) entries, slots: Vec.set position count grown, key0: key0, key1: key1, keyed: keyed }
+			HashMap { entries: Vec.push_owned (Entry { hash: hash, key: key, value: value }) entries, slots: Vec.set position count grown, key0: key0, key1: key1, keyed: keyed }
 
 private def unlink :: ref Vec<Entry<'key, 'value>> -> own Vec<i64> -> own i64 -> Vec<i64>
 fn unlink entries slots start =

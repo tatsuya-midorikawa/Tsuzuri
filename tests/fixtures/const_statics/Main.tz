@@ -50,19 +50,19 @@ fn sum_of xs =
         total = total + x
     total
 
-def table_of :: unit -> ref [i64]
+def table_of :: own unit -> ref [i64]
 fn table_of _ = ref Primes
 
-def window_of :: i64 -> ref [i64]
+def window_of :: own i64 -> ref [i64]
 fn window_of count = ref Squares[0..count]
 
-def view_of :: unit -> View
+def view_of :: own unit -> View
 fn view_of _ = View { data: ref Primes }
 
 def first_of :: ref [i64] -> i64
 fn first_of xs = xs[0]
 
-export def crc_buffer :: i64 -> i64
+export def crc_buffer :: own i64 -> i64
 fn crc_buffer count =
     let mut crc = ~(0 as i32u)
     for i in 0 .. count - 1 do
@@ -70,13 +70,13 @@ fn crc_buffer count =
         crc = CrcTable[((crc ^ byte) & 0xFF) as i64] ^ (crc >>> 8)
     (~crc) as i64
 
-export def squares_at :: i64 -> i64
+export def squares_at :: own i64 -> i64
 fn squares_at index = Squares[index]
 
-export def squares_sum :: i64 -> i64
+export def squares_sum :: own i64 -> i64
 fn squares_sum count = sum_of (ref Squares[0..count])
 
-export def squares_window :: i64 -> i64
+export def squares_window :: own i64 -> i64
 fn squares_window count = sum_of (window_of count)
 
 export def squares_length :: i64
@@ -89,13 +89,13 @@ fn primes_total =
         loop_total = loop_total + p
     loop_total + Array.sum Primes + sum_of (ref Primes) + first_of (table_of ())
 
-export def grid_at :: i64 -> i64
+export def grid_at :: own i64 -> i64
 fn grid_at index = Grid[index] + Grid.length
 
-export def bytes_at :: i64 -> i64
+export def bytes_at :: own i64 -> i64
 fn bytes_at index = Bytes[index] as i64
 
-export def wide_at :: i64 -> i64
+export def wide_at :: own i64 -> i64
 fn wide_at index = ((Wide[index] >>> 100) as i64) + (Wide[index] as i64)
 
 export def float_total :: f64
@@ -109,7 +109,7 @@ fn float_signs =
     let nan = if NotNumbers[0] != NotNumbers[0] then 1000 else 0
     double + single + half + nan
 
-export def flags_letters :: i64 -> i64
+export def flags_letters :: own i64 -> i64
 fn flags_letters index =
     let letter = Letters[index % 2]
     (if Flags[index] then 1 else 0) + (if letter == 'a' then 10 else 0) + (if Char.is_ascii_lower Letters[index % 2] then 100 else 0)
@@ -117,13 +117,13 @@ fn flags_letters index =
 export def empty_single :: i64
 fn empty_single = Empty.length * 1000 + Single.length * 100 + Single[0]
 
-export def points_at :: i64 -> i64
+export def points_at :: own i64 -> i64
 fn points_at index = (Points[index].x as i64) + Points[index].y
 
 export def corner_total :: i64
 fn corner_total = (Corner.x as i64) + Corner.y
 
-export def readings_at :: i64 -> i64
+export def readings_at :: own i64 -> i64
 fn readings_at index = match Readings[index] with
     | Missing -> 0
     | Value value -> value
@@ -157,7 +157,7 @@ fn owned_copies =
     let copied = Array.copy (ref Squares)
     let reversed = Array.rev (ref Primes)
     let sorted = Array.sort (ref reversed)
-    let doubled = Array.map (value -> value * 2) (ref Primes)
+    let doubled = Array.map_owned (value -> value * 2) (ref Primes)
     let joined = Array.append (ref Primes) (ref Primes)
     let kept = Primes
     Array.sum (ref copied) + reversed[0] + sorted[0] + doubled[5] + joined.length + kept[1] + Squares[3] + Primes[4]
@@ -177,7 +177,7 @@ fn strings_stay_values =
 export def scalar_borrow :: i64
 fn scalar_borrow = String.length $"{Answer}" + (Answer + 1)
 
-export def hot_loop :: i64 -> i64
+export def hot_loop :: own i64 -> i64
 fn hot_loop count =
     let mut total = 0
     for i in 0 .. count - 1 do

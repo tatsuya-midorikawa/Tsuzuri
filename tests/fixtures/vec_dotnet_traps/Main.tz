@@ -3,7 +3,7 @@
 // does not trap passes, so the harness expects every test to fail. The tests whose names say "in order" print what their
 // callbacks see (with Debug.print) and then fail on purpose: tests/vec_dotnet.rs reads the output.
 
-private def sink :: 'a -> unit
+private def sink :: own 'a -> unit
 fn sink _value = ()
 
 /// A new `Vec` of three elements, with a capacity of three.
@@ -13,12 +13,12 @@ fn numbers = Vec.of_array [1, 2, 3]
 private def no_numbers :: Vec<i64>
 fn no_numbers = Vec.empty()
 
-private def seen :: i64 -> bool -> bool
+private def seen :: own i64 -> own bool -> bool
 fn seen value result =
     Debug.print (ref $"seen {value}")
     result
 
-private def probed :: i64 -> i64 -> i64
+private def probed :: own i64 -> own i64 -> i64
 fn probed value order =
     Debug.print (ref $"seen {value}")
     order

@@ -70,7 +70,7 @@ Tsuzuri の標準コレクションには連続メモリ領域を使う配列（
 // 1. 単一行コメント
 /* 2. ブロックコメント /* 入れ子 */ も安全 */
 /// 関数のドキュメント
-def process_data :: Ord<'a> => 'a -> [|'a|] -> 'a = \fallback items ->
+def process_data :: Ord<'a> => own 'a -> own [|'a|] -> 'a = \fallback items ->
     match items with
     | head :: _ -> head
     | [||] -> fallback

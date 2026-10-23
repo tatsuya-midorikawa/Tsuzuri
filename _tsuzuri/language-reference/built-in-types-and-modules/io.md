@@ -92,7 +92,7 @@ def main :: unit -> i32 = \() ->
 `IO { ... }` と書くと、実行を遅らせたままアクションを合成できます。`return` の値がそのアクションの結果です。`let!` で取り出してから使います。
 
 ```tsuzuri run=1%0A2%0Ahello%20Tsuzuri%0A7%0A42
-def greet :: string -> IO<i64>
+def greet :: own string -> IO<i64>
 fn greet name = IO {
     do! IO.write_line $"hello {name}"
     return name.length

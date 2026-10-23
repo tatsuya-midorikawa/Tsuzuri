@@ -30,9 +30,9 @@ pub struct Edition(pub(crate) u16);
 impl Edition {
     pub const E2026: Self = Self(2026);
     pub const E2027: Self = Self(2027);
-    /// What a project without a manifest, the standard library, and every entry point that
-    /// knows no package are read with.
-    pub const LATEST: Self = Self::E2026;
+    /// What CLI projects without a manifest and the embedded standard library are read with.
+    /// Rust's source-only compatibility APIs retain E2026; explicit inputs choose their edition.
+    pub const LATEST: Self = Self::E2027;
     /// What a manifest without `edition` means. It never changes, or a compiler update would
     /// give the manifests that already exist new reserved words.
     pub const MANIFEST_DEFAULT: Self = Self::E2026;

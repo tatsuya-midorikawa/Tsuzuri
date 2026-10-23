@@ -206,9 +206,9 @@ fn rec round outcome finish waiting visited event tick =
             | Begin (operation, resume) -> begun = Maybe.Some (operation, resume)
             | Done value ->
                 match outcome value with
-                | Result.Ok kept -> done = Vec.push (Done kept) done
+                | Result.Ok kept -> done = Vec.push_owned (Done kept) done
                 | Result.Error stop -> stopped = Maybe.Some stop
-            | step -> done = Vec.push step done
+            | step -> done = Vec.push_owned step done
         | (remaining, Maybe.None) -> rest = remaining
     match stopped with
     | Maybe.Some stop -> Done stop
@@ -223,9 +223,9 @@ and continued outcome finish waiting visited child event tick =
         Begin (operation, later (\id -> continued outcome finish waiting visited (Async.__resume resume id) event tick))
     | Done value ->
         match outcome value with
-        | Result.Ok kept -> round outcome finish waiting (Vec.push (Done kept) visited) event tick
+        | Result.Ok kept -> round outcome finish waiting (Vec.push_owned (Done kept) visited) event tick
         | Result.Error stop -> Done stop
-    | step -> round outcome finish waiting (Vec.push step visited) event tick
+    | step -> round outcome finish waiting (Vec.push_owned step visited) event tick
 and gather outcome finish visited =
     let mut source = visited
     let mut waiting = Vec.with_capacity (Vec.length (ref source))
@@ -242,12 +242,12 @@ and gather outcome finish visited =
             timer = earliest timer until
             let mut index = 0
             while index < waits.length do
-                operations = Vec.push waits[index] operations
+                operations = Vec.push_owned waits[index] operations
                 index = index + 1
-            waiting = Vec.push (Suspend (runnable, until, waits, resume)) waiting
+            waiting = Vec.push_owned (Suspend (runnable, until, waits, resume)) waiting
         | (rest, Maybe.Some other) ->
             source = rest
-            waiting = Vec.push other waiting
+            waiting = Vec.push_owned other waiting
         | (rest, Maybe.None) -> source = rest
     if finished then
         let mut values = Vec.with_capacity (Vec.length (ref waiting))
@@ -255,7 +255,7 @@ and gather outcome finish visited =
             match Vec.pop waiting with
             | (rest, Maybe.Some (Done value)) ->
                 waiting = rest
-                values = Vec.push value values
+                values = Vec.push_owned value values
             | (rest, _) -> waiting = rest
         Done (finish values)
     else
@@ -277,7 +277,7 @@ fn children computations =
         match Vec.pop source with
         | (rest, Maybe.Some computation) ->
             source = rest
-            started = Vec.push (pending computation) started
+            started = Vec.push_owned (pending computation) started
         | (rest, Maybe.None) -> source = rest
     started
 
@@ -314,7 +314,7 @@ fn reverse values =
         match Vec.pop source with
         | (rest, Maybe.Some value) ->
             source = rest
-            target = Vec.push value target
+            target = Vec.push_owned value target
         | (rest, Maybe.None) -> source = rest
     target
 
@@ -326,7 +326,7 @@ fn successes results =
         match Vec.pop source with
         | (rest, Maybe.Some (Result.Ok value)) ->
             source = rest
-            values = Vec.push value values
+            values = Vec.push_owned value values
         | (rest, _) -> source = rest
     Result.Ok (Vec.to_array values)
 
@@ -387,7 +387,7 @@ fn enqueue computation =
     ignore (__poll, __complete)
     match registry () with
     | Registry { pending = pending, completed = completed, incoming = incoming } ->
-        keep (Registry { pending: pending, completed: completed, incoming: Vec.push computation incoming })
+        keep (Registry { pending: pending, completed: completed, incoming: Vec.push_owned computation incoming })
 
 /// The position of a pending operation, or -1.
 private def pending_index :: ref Vec<(i64 * Operation)> -> own i64 -> i64
@@ -415,7 +415,7 @@ fn without operation completed =
         match Vec.pop source with
         | (rest, Maybe.Some (id, value)) ->
             source = rest
-            if id != operation then kept = Vec.push (id, value) kept
+            if id != operation then kept = Vec.push_owned (id, value) kept
         | (rest, Maybe.None) -> source = rest
     kept
 
@@ -436,7 +436,7 @@ fn record_completion operation value =
         else
             match remove_at pending index with
             | (rest, _) ->
-                keep (Registry { pending: rest, completed: Vec.push (operation, value) completed, incoming: incoming })
+                keep (Registry { pending: rest, completed: Vec.push_owned (operation, value) completed, incoming: incoming })
                 Async.__retire operation
                 true
 
@@ -446,7 +446,7 @@ fn begin_operation operation =
     let id = Async.__next_id()
     match registry () with
     | Registry { pending = pending, completed = completed, incoming = incoming } ->
-        keep (Registry { pending: Vec.push (id, operation) pending, completed: completed, incoming: incoming })
+        keep (Registry { pending: Vec.push_owned (id, operation) pending, completed: completed, incoming: incoming })
     operation.start id
     id
 
@@ -497,7 +497,7 @@ fn advance step event clock =
             | Now resume -> Async.__resume resume clock
             | Begin (operation, resume) ->
                 let id = begin_operation operation
-                begun = Vec.push id begun
+                begun = Vec.push_owned id begun
                 Async.__resume resume id
             | other ->
                 running = false
@@ -515,7 +515,7 @@ fn advance step event clock =
 private def take_task :: own Vec<Step<unit>> -> own i64 -> (Vec<Step<unit>> * Step<unit>)
 fn take_task tasks index =
     let last = Vec.length (ref tasks)
-    match Vec.pop (Vec.swap index last (Vec.push (Done ()) tasks)) with
+    match Vec.pop (Vec.swap index last (Vec.push_owned (Done ()) tasks)) with
     | (rest, Maybe.Some step) -> (rest, step)
     | (rest, Maybe.None) -> (rest, Done ())
 
@@ -523,7 +523,7 @@ fn take_task tasks index =
 private def put_task :: own Vec<Step<unit>> -> own i64 -> own Step<unit> -> Vec<Step<unit>>
 fn put_task tasks index step =
     let last = Vec.length (ref tasks)
-    match Vec.pop (Vec.swap index last (Vec.push step tasks)) with
+    match Vec.pop (Vec.swap index last (Vec.push_owned step tasks)) with
     | (rest, _) -> rest
 
 /// The position of the computation that waits for `operation`, or -1.
@@ -582,14 +582,14 @@ fn __poll now =
             match Vec.pop fresh with
             | (rest, Maybe.Some computation) ->
                 fresh = rest
-                tasks = Vec.push (pending computation) tasks
+                tasks = Vec.push_owned (pending computation) tasks
             | (rest, Maybe.None) -> fresh = rest
         keep (Registry { pending: outstanding, completed: Vec.empty(), incoming: Vec.empty() })
     let count = Vec.length (ref tasks)
     let mut marks: Vec<bool> = Vec.with_capacity count
     let mut index = 0
     while index < count do
-        marks = Vec.push (wakes (Vec.at index (ref tasks)) (0, 0) clock) marks
+        marks = Vec.push_owned (wakes (Vec.at index (ref tasks)) (0, 0) clock) marks
         index = index + 1
     let due = Vec.to_array marks
     while !(Vec.is_empty (ref arrivals)) do
@@ -614,7 +614,7 @@ fn __poll now =
         | (rest, Maybe.Some (Done ())) -> source = rest
         | (rest, Maybe.Some step) ->
             source = rest
-            live = Vec.push step live
+            live = Vec.push_owned step live
         | (rest, Maybe.None) -> source = rest
     let mut next = next_wake (ref live) clock
     match registry () with

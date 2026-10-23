@@ -1,26 +1,26 @@
 record Point { x: i32, y: i32 }
 
-def id :: 'a -> 'a
+def id :: own 'a -> 'a
 fn id x = x
 
-def add :: Add<'a> -> 'a -> 'a
+def add :: own Add<'a> -> own 'a -> 'a
 fn add x y = x + y
 
-def apply :: ('a -> 'b) -> 'a -> 'b
+def apply :: own ('a -> 'b) -> own 'a -> 'b
 fn apply f x = f x
 
-def twice :: 'a -> 'a
+def twice :: own 'a -> 'a
 fn twice x = add x x
 
-def increment :: 'a -> 'a
+def increment :: own 'a -> 'a
     @'a : Add, Integer
 fn increment x = x + 1
 
-def rec sum :: i64 -> 'a -> 'a -> 'a
+def rec sum :: own i64 -> own 'a -> own 'a -> 'a
 fn rec sum n x total =
     if n == 0 { total } else { sum (n - 1) x (add total x) }
 
-def rec countdown :: i64 -> 'a -> 'a
+def rec countdown :: own i64 -> own 'a -> 'a
 fn rec countdown n value = {
     let unused = "dropped on every iteration";
     if n == 0 { value } else { countdown (n - 1) value }
@@ -41,13 +41,13 @@ instance Add<Point> {
 def score :: Classes.Score<'a> => &'a -> i32
 fn score value = Classes.Score.score value
 
-export def integer :: i32 -> i32 -> i32
+export def integer :: own i32 -> own i32 -> i32
 fn integer x y = add x y
 
-export def floating :: f64 -> f64 -> f64
+export def floating :: own f64 -> own f64 -> f64
 fn floating x y = add x y
 
-export def narrow :: i8 -> i8
+export def narrow :: own i8 -> i8
 fn narrow x = increment x
 
 export def decimal :: f64
@@ -97,7 +97,7 @@ fn borrowed = {
 def tick :: &mut i64 -> i64
 fn tick counter = { *counter = *counter + 1; *counter }
 
-def combine :: 'a -> 'a -> 'a
+def combine :: own 'a -> own 'a -> 'a
 fn combine x y = x * 10 + y
 
 export def ordered :: i64
@@ -106,32 +106,32 @@ fn ordered = {
     combine (tick (&mut counter)) (tick (&mut counter))
 }
 
-def distance :: Point -> i32
+def distance :: own Point -> i32
 fn distance point = point.x + point.y
 
-def distance_of :: 'T -> 'U
+def distance_of :: own 'T -> 'U
     @'T : Copy, #distance
 fn distance_of value = apply 'T.distance value
 
-def forward_distance :: 'T -> 'U
+def forward_distance :: own 'T -> 'U
 fn forward_distance value = distance_of value
 
-def scale_of :: 'T -> (f64 -> 'T)
+def scale_of :: own 'T -> (f64 -> 'T)
     @'T : #scale
 fn scale_of value = 'T.scale value
 
-def extract :: 'T -> 'U
+def extract :: own 'T -> 'U
     @'T : #unwrap
 fn extract value = 'T.unwrap value
 
-def read_choice :: 'T -> i64
+def read_choice :: own 'T -> i64
     @'T : #count
 fn read_choice value = 'T.count value
 
 export def constrained_integer :: i32
 fn constrained_integer = forward_distance (Point { x: 20, y: 22 })
 
-export def constrained_floating :: f64 -> f64 -> f64
+export def constrained_floating :: own f64 -> own f64 -> f64
 fn constrained_floating x y = forward_distance (Geometry.Point { x: x, y: y })
 
 export def constrained_partial :: f64
@@ -149,13 +149,13 @@ fn constrained_owned = {
 export def constrained_union :: i64
 fn constrained_union = read_choice (Geometry.Counted 42)
 
-def adjust :: ref mut i64 -> i64 -> unit
+def adjust :: ref mut i64 -> own i64 -> unit
 fn adjust reference amount = deref reference = deref reference + amount
 
-def number_value :: i64 -> i64
+def number_value :: own i64 -> i64
 fn number_value number = number
 
-def borrowed_sum :: ref i64 -> i64 -> i64
+def borrowed_sum :: ref i64 -> own i64 -> i64
 fn borrowed_sum reference amount = deref reference + amount
 
 def staged_borrow :: ref mut i64 -> i64 -> i64

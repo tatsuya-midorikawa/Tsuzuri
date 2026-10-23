@@ -154,3 +154,39 @@ export def mutable_vector_subject_last :: i64 =
     let mut values = Vec.of_array [1]
     Vec.push (values[0] + 1) values
     values[0] + values[1]
+
+record DropFields { text: string }
+
+instance Drop<DropFields> {
+    fn drop value = {
+        assert (value.text.length == 5);
+    }
+}
+
+export def mutable_drop_field :: i64 =
+    let mut value = DropFields { text: "drop" }
+    value.text = $"{value.text}!"
+    value.text.length
+
+record NestedText { text: string }
+
+export def mutable_local_projections :: i64 -> i64 = \index ->
+    let mut texts = ["a", "bb"]
+    texts[index] = $"changed{index}"
+    texts[index] = $"changed{index}"
+    let mut list = [|"ccc", "dddd"|]
+    list[index] = $"value{index}"
+    let mut fixed: [string; 2] = ["aaaaa", "bbbbbb"]
+    fixed[index] = $"x{index}"
+    let mut nested = [NestedText { text: "sevenxx" }, NestedText { text: "eightxxx" }]
+    nested[index].text = $"new{index}"
+    (texts[0].length + texts[1].length + list[0].length + list[1].length
+        + fixed[0].length + fixed[1].length + nested[0].text.length + nested[1].text.length)
+
+def apply_scalar :: (i64 -> i64) -> i64 -> i64 = \f n -> f n
+def increment :: i64 -> i64 = \n -> n + 1
+def add_scalar :: i64 -> i64 -> i64 = \left right -> left + right
+def pass_scalar :: own (i64 -> i64) -> (i64 -> i64) = \f -> f
+
+export def borrowed_callable_temporaries :: i64 =
+    apply_scalar increment 41 + apply_scalar (add_scalar 1) 41 + apply_scalar (pass_scalar increment) 41

@@ -1,4 +1,4 @@
-def os_kind_text :: Os.ErrorKind -> string
+def os_kind_text :: own Os.ErrorKind -> string
 fn os_kind_text kind =
 	match kind with
 	| Os.NotFound -> "NotFound"
@@ -10,16 +10,16 @@ fn os_kind_text kind =
 	| Os.Other -> "Other"
 
 /// "<Net.ErrorKind> <Os.ErrorKind> <system code>".
-def failure_text :: Os.Error -> string
+def failure_text :: own Os.Error -> string
 fn failure_text error = to_string (Net.error_kind error) + " " + os_kind_text error.kind + " " + to_string error.code
 
-def unit_text :: Result<unit, Os.Error> -> string
+def unit_text :: own Result<unit, Os.Error> -> string
 fn unit_text result =
 	match result with
 	| Result.Ok _ -> "ok"
 	| Result.Error error -> failure_text error
 
-def read_text :: Result<[ubyte], Os.Error> -> string
+def read_text :: own Result<[ubyte], Os.Error> -> string
 fn read_text result =
 	match result with
 	| Result.Ok bytes -> "read:" + to_string bytes.length
@@ -28,13 +28,13 @@ fn read_text result =
 def bytes_of :: ref string -> [ubyte]
 fn bytes_of text = Utf8String.to_bytes (Utf8String.from_string text)
 
-def text_of :: [ubyte] -> string
+def text_of :: own [ubyte] -> string
 fn text_of bytes =
 	match Utf8String.from_bytes bytes with
 	| Maybe.Some text -> String.from_utf8 (ref text)
 	| Maybe.None -> "?"
 
-def pattern :: i64 -> [ubyte]
+def pattern :: own i64 -> [ubyte]
 fn pattern count = Array.init count (\index -> (index % 256) as ubyte)
 
 def sum_of :: ref [ubyte] -> i64
@@ -51,12 +51,12 @@ fn reversed bytes =
 	let last = bytes.length - 1
 	Array.init bytes.length (\index -> bytes[last - index])
 
-def say :: string -> IO<unit>
+def say :: own string -> IO<unit>
 fn say text = IO.write_line text
 
 /// Reads until `wanted` bytes have arrived, the stream ends, or a read fails: the count and the sum of the bytes
 /// (-1 and -1 after a failure), reading `size` bytes at a time.
-def rec collect :: Net.TcpStream -> i64 -> i64 -> i64 -> i64 -> IO<(i64 * i64)>
+def rec collect :: own Net.TcpStream -> own i64 -> own i64 -> own i64 -> own i64 -> IO<(i64 * i64)>
 fn rec collect stream size wanted total sum =
 	if total >= wanted then IO.pure (total, sum)
 	else IO.bind (\received ->
@@ -67,14 +67,14 @@ fn rec collect stream size wanted total sum =
 			else collect stream size wanted (total + bytes.length) (sum + sum_of (ref bytes))) (Net.read stream size (Maybe.Some 20000))
 
 /// What `collect` found, as "<count> <sum>".
-def collected :: Net.TcpStream -> i64 -> i64 -> IO<string>
+def collected :: own Net.TcpStream -> own i64 -> own i64 -> IO<string>
 fn collected stream size wanted =
 	IO.map (\pair ->
 		match pair with
 		| (count, sum) -> to_string count + " " + to_string sum) (collect stream size wanted 0 0)
 
 /// Everything up to the end of the stream, as text.
-def rec drain :: Net.TcpStream -> [ubyte] -> IO<string>
+def rec drain :: own Net.TcpStream -> own [ubyte] -> IO<string>
 fn rec drain stream seen =
 	IO.bind (\received ->
 		match received with
@@ -83,7 +83,7 @@ fn rec drain stream seen =
 			if bytes.length == 0 then IO.pure (text_of seen)
 			else drain stream (Array.append (ref seen) (ref bytes))) (Net.read stream 4096 (Maybe.Some 20000))
 
-def run_echo :: Net.Address -> IO<unit>
+def run_echo :: own Net.Address -> IO<unit>
 fn run_echo address = IO {
 	let! connected = Net.connect address (Maybe.Some 5000)
 	match connected with
@@ -99,7 +99,7 @@ fn run_echo address = IO {
 		do! say (unit_text closed)
 }
 
-def run_server :: unit -> IO<unit>
+def run_server :: own unit -> IO<unit>
 fn run_server _unit = IO {
 	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
@@ -125,7 +125,7 @@ fn run_server _unit = IO {
 			do! say (unit_text closed + " " + unit_text closed_listener)
 }
 
-def run_eof :: Net.Address -> IO<unit>
+def run_eof :: own Net.Address -> IO<unit>
 fn run_eof address = IO {
 	let! connected = Net.connect address (Maybe.Some 5000)
 	match connected with
@@ -143,7 +143,7 @@ fn run_eof address = IO {
 		do! say (unit_text closed)
 }
 
-def run_refused :: Net.Address -> IO<unit>
+def run_refused :: own Net.Address -> IO<unit>
 fn run_refused address = IO {
 	let! connected = Net.connect address (Maybe.Some 5000)
 	do! say (match connected with
@@ -151,7 +151,7 @@ fn run_refused address = IO {
 		| Result.Error error -> failure_text error)
 }
 
-def run_timeout :: Net.Address -> IO<unit>
+def run_timeout :: own Net.Address -> IO<unit>
 fn run_timeout address = IO {
 	let! connected = Net.connect address (Maybe.Some 5000)
 	match connected with
@@ -167,7 +167,7 @@ fn run_timeout address = IO {
 		do! say (unit_text closed)
 }
 
-def rec flood :: Net.TcpStream -> i64 -> IO<string>
+def rec flood :: own Net.TcpStream -> own i64 -> IO<string>
 fn rec flood stream remaining =
 	if remaining <= 0 then IO.pure "no error"
 	else IO.bind (\written ->
@@ -175,7 +175,7 @@ fn rec flood stream remaining =
 		| Result.Error error -> IO.pure (failure_text error)
 		| Result.Ok _ -> flood stream (remaining - 1)) (Net.write stream (pattern 65536) (Maybe.Some 10000))
 
-def run_reset :: Net.Address -> IO<unit>
+def run_reset :: own Net.Address -> IO<unit>
 fn run_reset address = IO {
 	let! connected = Net.connect address (Maybe.Some 5000)
 	match connected with
@@ -187,7 +187,7 @@ fn run_reset address = IO {
 		do! say (unit_text closed)
 }
 
-def run_udp :: unit -> IO<unit>
+def run_udp :: own unit -> IO<unit>
 fn run_udp _unit = IO {
 	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind_udp loopback
@@ -206,7 +206,7 @@ fn run_udp _unit = IO {
 		do! say (unit_text closed)
 }
 
-def run_truncate :: unit -> IO<unit>
+def run_truncate :: own unit -> IO<unit>
 fn run_truncate _unit = IO {
 	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind_udp loopback
@@ -226,7 +226,7 @@ fn run_truncate _unit = IO {
 		do! say (unit_text closed)
 }
 
-def addresses_text :: Result<[Net.Address], Os.Error> -> string
+def addresses_text :: own Result<[Net.Address], Os.Error> -> string
 fn addresses_text result =
 	match result with
 	| Result.Error error -> failure_text error
@@ -238,7 +238,7 @@ fn addresses_text result =
 			index = index + 1
 		text
 
-def run_resolve :: unit -> IO<unit>
+def run_resolve :: own unit -> IO<unit>
 fn run_resolve _unit = IO {
 	let! numeric = Net.resolve "127.0.0.1" 8
 	do! say (addresses_text numeric)
@@ -262,7 +262,7 @@ fn run_resolve _unit = IO {
 	do! say (addresses_text zero_port)
 }
 
-def run_inuse :: Net.Address -> IO<unit>
+def run_inuse :: own Net.Address -> IO<unit>
 fn run_inuse address = IO {
 	let! bound = Net.bind address
 	do! say (match bound with
@@ -276,7 +276,7 @@ fn run_inuse address = IO {
 }
 
 /// Waits that nothing satisfies: a connection and a datagram.
-def run_waits :: unit -> IO<unit>
+def run_waits :: own unit -> IO<unit>
 fn run_waits _unit = IO {
 	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
@@ -302,7 +302,7 @@ fn run_waits _unit = IO {
 }
 
 /// The arguments that the API refuses before it asks the system.
-def run_validate :: Net.Address -> IO<unit>
+def run_validate :: own Net.Address -> IO<unit>
 fn run_validate address = IO {
 	let! connected = Net.connect address (Maybe.Some 5000)
 	match connected with
@@ -347,7 +347,7 @@ fn run_validate address = IO {
 
 /// A closed handle is dead for good: closing again or using it is InvalidInput, even when the system has handed the
 /// same descriptor number to a newer connection.
-def run_lifecycle :: Net.Address -> IO<unit>
+def run_lifecycle :: own Net.Address -> IO<unit>
 fn run_lifecycle address = IO {
 	let! first = Net.connect address (Maybe.Some 5000)
 	match first with
@@ -393,7 +393,7 @@ fn run_lifecycle address = IO {
 }
 
 /// Writes a megabyte-scale body that the peer reads slowly at first, so that the call has to wait for room.
-def run_bigwrite :: Net.Address -> IO<unit>
+def run_bigwrite :: own Net.Address -> IO<unit>
 fn run_bigwrite address = IO {
 	let! connected = Net.connect address (Maybe.Some 5000)
 	match connected with
@@ -408,7 +408,7 @@ fn run_bigwrite address = IO {
 }
 
 /// Reads with a request larger than the stack buffer, which receives straight into the result.
-def run_bigread :: Net.Address -> IO<unit>
+def run_bigread :: own Net.Address -> IO<unit>
 fn run_bigread address = IO {
 	let! connected = Net.connect address (Maybe.Some 5000)
 	match connected with
@@ -421,7 +421,7 @@ fn run_bigread address = IO {
 }
 
 /// An accepted connection that the peer resets: writing to it is an error, never SIGPIPE.
-def run_server_reset :: unit -> IO<unit>
+def run_server_reset :: own unit -> IO<unit>
 fn run_server_reset _unit = IO {
 	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
@@ -443,7 +443,7 @@ fn run_server_reset _unit = IO {
 
 /// A listener that rebinds its address at once, even while the closed connection waits in TIME_WAIT, and
 /// "::" and "0.0.0.0" that bind one port together.
-def run_reuse :: unit -> IO<unit>
+def run_reuse :: own unit -> IO<unit>
 fn run_reuse _unit = IO {
 	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
@@ -469,7 +469,7 @@ fn run_reuse _unit = IO {
 		| Result.Error error -> do! say ("rebind " + failure_text error)
 }
 
-def run_dual :: unit -> IO<unit>
+def run_dual :: own unit -> IO<unit>
 fn run_dual _unit = IO {
 	let any6 = Maybe.get (Net.parse_ip 0 (ref "::"))
 	let! six = Net.bind any6
@@ -488,7 +488,7 @@ fn run_dual _unit = IO {
 }
 
 /// Sockets that are open when a program starts is another program: none of them may reach a child.
-def run_cloexec :: unit -> IO<unit>
+def run_cloexec :: own unit -> IO<unit>
 fn run_cloexec _unit = IO {
 	let! before = Process.run "ls" ["/dev/fd"] []
 	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
@@ -510,7 +510,7 @@ fn run_cloexec _unit = IO {
 
 /// Everything on one machine in one process, with no peer: the program is both ends. It reads the same on every
 /// system except for the errno numbers, which it does not print.
-def run_self :: unit -> IO<unit>
+def run_self :: own unit -> IO<unit>
 fn run_self _unit = IO {
 	let loopback = Maybe.get (Net.parse_ip 0 (ref "127.0.0.1"))
 	let! bound = Net.bind loopback
@@ -569,7 +569,7 @@ fn run_self _unit = IO {
 	do! say ("resolve: " + addresses_text numeric)
 }
 
-def run_case :: ref string -> Net.Address -> IO<unit>
+def run_case :: ref string -> own Net.Address -> IO<unit>
 fn run_case name address =
 	match deref name with
 	| "echo" -> run_echo address
@@ -595,7 +595,7 @@ fn run_case name address =
 	| _ -> say "unknown case"
 
 /// The case name, the port of the peer, and the peer's host come on three lines of the standard input.
-def main :: unit -> i32 = \() ->
+def main :: own unit -> i32 = \() ->
 	let! name = IO.read_line ()
 	let! port_text = IO.read_line ()
 	let! host_text = IO.read_line ()

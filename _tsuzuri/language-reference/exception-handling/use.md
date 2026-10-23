@@ -189,7 +189,7 @@ def label :: i64 -> Maybe<i64> = \id ->
         return ticket.id
     }
 
-def show :: Maybe<i64> -> string = \value ->
+def show :: own Maybe<i64> -> string = \value ->
     match value with
     | Some id -> to_string id
     | None -> "none"

@@ -96,6 +96,12 @@ fn preserves_all_callback_entry_points_and_their_exact_ir() {
             "{name}"
         );
         assert_eq!(emit(), before, "{name}");
+        let migrated = root.read("Main.tz");
+        std::fs::write(root.0.join("Tsuzuri.toml"), MANIFEST).unwrap();
+        let repeated = prepare(&root.0, Edition::E2027, None).unwrap();
+        assert_eq!(repeated.changes.len(), 1, "{name}");
+        apply(&repeated).unwrap();
+        assert_eq!(root.read("Main.tz"), migrated, "{name}");
     }
 }
 

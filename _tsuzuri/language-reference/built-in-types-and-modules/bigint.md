@@ -118,7 +118,7 @@ Maybe.get parsed
 `BigInt` は Copy 型です。次のように、渡したあとも元の変数を使えます。
 
 ```tsuzuri run=3
-def twice :: BigInt -> BigInt
+def twice :: own BigInt -> BigInt
 fn twice value = value + value
 
 let unit = 1I

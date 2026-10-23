@@ -16,21 +16,21 @@ fn seq_cold =
     let _sequence: Seq<i64> = Seq.defer (\() -> { assert false; (Seq.empty(), Maybe.Some 0) })
     42
 
-export def seq_range_sum :: i64 -> i64
+export def seq_range_sum :: own i64 -> i64
 fn seq_range_sum count =
     let counter = Counter { start: 0, finish: count }
     let mut total = 0
     for value in Counter.iter (&counter) do total = total + value
     total
 
-export def seq_list :: i64 -> i64
+export def seq_list :: own i64 -> i64
 fn seq_list count =
     let values = new [|i64|](count, \index -> index)
     let mut total = 0
     for value in List.to_seqr (&values) do total = total + deref value
     total
 
-export def seq_map_filter :: i64 -> i64
+export def seq_map_filter :: own i64 -> i64
 fn seq_map_filter count =
     let counter = Counter { start: 0, finish: count }
     let mapped = Seq.map (\value -> value * 2) (Counter.iter (&counter))
@@ -38,7 +38,7 @@ fn seq_map_filter count =
     let values = Seq.to_array filtered
     Array.sum (&values)
 
-export def seq_owned :: i64 -> i64
+export def seq_owned :: own i64 -> i64
 fn seq_owned count =
     let counter = Counter { start: 0, finish: count }
     let text = Seq.map (\value -> to_string value) (Counter.iter (&counter))
@@ -50,7 +50,7 @@ fn seq_owned count =
 export def seq_borrowed :: i64
 fn seq_borrowed =
     let strings = ["a", "bc"]
-    let vector = Vec.push "owned" (Vec.empty())
+    let vector = Vec.push_owned "owned" (Vec.empty())
     let map = Map.singleton "key" "value"
     let set = Set.singleton "borrowed"
     let mut total = 0

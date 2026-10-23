@@ -480,6 +480,26 @@ tsuzuri doc demo -o demo-docs
 
 `demo-docs/index.md` がモジュール一覧、`demo-docs/Main.md` が各宣言です。印の `.tsuzuri-docs` も置きます。`Main.tz` がないライブラリディレクトリでも生成できます。
 
+### fix
+
+旧版の値渡しの契約を保って edition を移行します。所有する引数を `own` で明示し、
+Array／List の値 callback と消費する `Vec.push` を `_owned` 入口へ変更します。
+同名の利用者定義や依存パッケージは書き換えません。
+
+```sh
+tsuzuri fix --edition 2027 --from 2026 --dry-run app/
+tsuzuri fix --edition 2027 --from 2026 app/
+```
+
+`--edition YEAR` は移行先、`--from YEAR` は旧版です。既存 manifest の旧版と違う `--from` は拒否し、
+manifest のない旧入力には `--from 2026` を使います。`--dry-run` は書かずに差分を確認し、
+`--json` は決定的な変更一覧を JSON で出します。所有権が不要そうな本体でも、勝手に読み取りへ変更しません。
+全体を対象版で再検査し、誤りがあれば何も書きません。通常ファイルと内容の一致を確認して atomic に置換し、
+manifest の edition は最後に更新します。途中の書き込み失敗は既に置換したファイルを戻します。
+単一ファイルの入力では、そのファイルだけを変え、package の版は変えません。
+埋め込みソースに一致する開発用 std の移行も検査できますが、依存の std コピーを変更する操作ではありません。
+これは一般の警告修正や、非正準形を拒否する A22 の移行ではありません。
+
 ### api-diff
 
 パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で標準出力へ出します。版を上げる前や公開の前に、互換性のない変更を見つけるためのコマンドです。
@@ -509,7 +529,7 @@ union Light = Red | Green
 
 def twice :: i64 -> i64 = \n -> n * 2
 
-def scale :: Ord<'a> => 'a -> 'a -> 'a = \a b -> if a < b then b else a
+def scale :: Ord<'a> => own 'a -> own 'a -> 'a = \a b -> if a < b then b else a
 ```
 
 1.3.0 の `Tsuzuri.toml` は `version = "1.3.0"` だけが違います。
@@ -527,7 +547,7 @@ def twice :: i64 -> i64 = \n -> n * 2
 
 def double :: i64 -> i64 = \n -> n * 2
 
-def scale :: Ord<'t> => 't -> 't -> 't = \a b -> if a < b then b else a
+def scale :: Ord<'t> => own 't -> own 't -> 't = \a b -> if a < b then b else a
 ```
 
 2 つのディレクトリを比べると、次のように出ます。互換性のない変更があるので、終了コードは 1 です。

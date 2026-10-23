@@ -54,7 +54,7 @@ fn rec visit root relative found =
 				| Result.Ok pushed ->
 					let entry = Path.join relative (ref names[index])
 					let copy = Maybe.get (String.slice 0 entry.length (ref entry))
-					let listed = Vec.push copy pushed
+					let listed = Vec.push_owned copy pushed
 					let below = Path.join root (ref entry)
 					match is_directory (ref below) with
 					| Result.Error error -> Result.Error error

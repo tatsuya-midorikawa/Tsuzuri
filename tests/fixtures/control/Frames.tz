@@ -1,4 +1,4 @@
-export def frames_disjoint :: i64 -> i64
+export def frames_disjoint :: own i64 -> i64
 fn frames_disjoint n =
     if n > 0 then
         let a = [|n, n, n, n|]
@@ -7,36 +7,36 @@ fn frames_disjoint n =
         let b = [|1, 2, 3, n|]
         List.length b - n
 
-def rec count_frames :: i64 -> i64 -> i64
+def rec count_frames :: own i64 -> own i64 -> i64
 fn rec count_frames n acc =
     if n == 0 then acc
     else
         let xs = [|n, n, n|]
         count_frames (n - 1) (acc + List.length xs)
 
-export def frames_loop :: i64 -> i64
+export def frames_loop :: own i64 -> i64
 fn frames_loop n = count_frames n 0
 
-def fold_values :: i64 -> [|i64|] -> i64
+def fold_values :: own i64 -> own [|i64|] -> i64
 fn fold_values seed values =
     let mut total = seed
     for v in values do total = total * 7 + v
     total
 
-export def frames_moved :: i64 -> i64
+export def frames_moved :: own i64 -> i64
 fn frames_moved n =
     let a = [|n, n + 1, n + 2|]
     let b = [|n * 2, n * 3|]
     fold_values 1 a + List.length b
 
-export def frames_merge :: i64 -> i64
+export def frames_merge :: own i64 -> i64
 fn frames_merge n =
     let xs = if n > 0 then [|n, n + 1|] else [|n - 1, n - 2|]
     let mut total = 0
     for v in xs do total = total * 10 + v
     total
 
-export def frames_nested :: i64 -> i64
+export def frames_nested :: own i64 -> i64
 fn frames_nested n =
     let rows = [| [|n, n + 1|], [|n + 2|], [|n * 2, n * 3, n * 4|] |]
     let mut total = 0
@@ -44,7 +44,7 @@ fn frames_nested n =
         for v in row do total = total * 3 + v
     total + List.length rows
 
-export def frames_jumps :: i64 -> i64
+export def frames_jumps :: own i64 -> i64
 fn frames_jumps n =
     let mut total = 0
     for i in 0 .. n - 1 do
@@ -54,7 +54,7 @@ fn frames_jumps n =
         total = total + List.length xs + i
     total
 
-export def frames_buffers :: i64 -> i64
+export def frames_buffers :: own i64 -> i64
 fn frames_buffers n =
     let mut total = 0
     for i in 0 .. n - 1 do
@@ -62,7 +62,7 @@ fn frames_buffers n =
         total = total + joined.length + joined[0] as i64
     total
 
-export def frames_closures :: i64 -> i64
+export def frames_closures :: own i64 -> i64
 fn frames_closures n =
     let mut total = 0
     for i in 0 .. n - 1 do
@@ -74,7 +74,7 @@ fn frames_closures n =
 
 // Two literals of 64 elements in branches that never run together, in a function that recurses
 // without a tail call: at -O3 its frame holds one literal if the lifetimes of the two are disjoint.
-def rec spread :: i64 -> i64
+def rec spread :: own i64 -> i64
 fn rec spread n =
     if n <= 0 then 0
     else
@@ -89,20 +89,20 @@ fn rec spread n =
             for v in b do total = total * 17 + v
             total + spread (n - 1)
 
-export def frames_recursive :: i64 -> i64
+export def frames_recursive :: own i64 -> i64
 fn frames_recursive n = spread n
 
 // The arms of a match, and the branches of an if, make frames for one value. When the value is moved
 // out, the code compares its address with each of the frames, so LLVM must not give two of them one
 // stack slot: the frames of the arms get no lifetime markers (PM09). The literals are as long as one
 // another, so that the length does not tell the frames apart.
-def fold_owned :: [i64] -> i64
+def fold_owned :: own [i64] -> i64
 fn fold_owned values =
     let mut total = 0
     for v in values do total = total * 7 + v
     total
 
-export def frames_arms :: i64 -> i64
+export def frames_arms :: own i64 -> i64
 fn frames_arms which =
     let values: [i64] = match which with
         | 0 -> [1]
@@ -117,7 +117,7 @@ fn frames_arms which =
 // nine frames; with markers, LLVM gave eight of them one slot at -O3 (WebAssembly), the test of the
 // first passed for the arm that ran, and the code read the bytes of the first arm instead
 // (`string_library` in tests/features.mjs got 1 for [128]).
-export def frames_validate :: i32 -> i64
+export def frames_validate :: own i32 -> i64
 fn frames_validate which =
     let bytes: [ubyte] = match which with
         | 0 -> []
@@ -134,7 +134,7 @@ fn frames_validate which =
 
 // Four locals that an `if` chooses between: each frame keeps its markers and has a slot of its own, because
 // all four start before the `if`.
-export def frames_locals :: i32 -> i64
+export def frames_locals :: own i32 -> i64
 fn frames_locals which =
     let a: [ubyte] = [0]
     let b: [ubyte] = [128]
@@ -143,13 +143,13 @@ fn frames_locals which =
     let bytes = if which == 0 then a else if which == 1 then b else if which == 2 then c else d
     match Utf8String.from_bytes bytes with | Some text -> text.length | None -> -1
 
-export def frames_branches :: i64 -> i64
+export def frames_branches :: own i64 -> i64
 fn frames_branches n =
     let values = if n > 0 then [n, 100] else [n + 1, 200]
     fold_owned values
 
 // The initializer of a mutable binding: an assignment drops its value before the binding is done.
-export def frames_reassigned :: i64 -> i64
+export def frames_reassigned :: own i64 -> i64
 fn frames_reassigned n =
     let mut first = [n, n + 1]
     first = [n * 2, n * 3]

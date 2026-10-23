@@ -6,11 +6,11 @@ fn failure kind offset = Json.Error { kind: kind, offset: offset }
 private def head :: own Vec<ubyte> -> own i64 -> own i64u -> Vec<ubyte>
 fn head output major argument =
 	let initial = (major <<< 5) as i64u
-	if argument < 24i64u then Vec.push ((initial ||| argument) as ubyte) output
-	elif argument < 256i64u then Vec.push (argument as ubyte) (Vec.push ((initial ||| 24i64u) as ubyte) output)
-	elif argument < 65536i64u then push_big (Vec.push ((initial ||| 25i64u) as ubyte) output) argument 2
-	elif argument < 4294967296i64u then push_big (Vec.push ((initial ||| 26i64u) as ubyte) output) argument 4
-	else push_big (Vec.push ((initial ||| 27i64u) as ubyte) output) argument 8
+	if argument < 24i64u then Vec.push_owned ((initial ||| argument) as ubyte) output
+	elif argument < 256i64u then Vec.push_owned (argument as ubyte) (Vec.push_owned ((initial ||| 24i64u) as ubyte) output)
+	elif argument < 65536i64u then push_big (Vec.push_owned ((initial ||| 25i64u) as ubyte) output) argument 2
+	elif argument < 4294967296i64u then push_big (Vec.push_owned ((initial ||| 26i64u) as ubyte) output) argument 4
+	else push_big (Vec.push_owned ((initial ||| 27i64u) as ubyte) output) argument 8
 
 /// The low `count` bytes of `value`, most significant first.
 private def push_big :: own Vec<ubyte> -> own i64u -> own i64 -> Vec<ubyte>
@@ -18,7 +18,7 @@ fn push_big output value count =
 	let mut bytes = output
 	let mut shift = (count - 1) * 8
 	while shift >= 0 do
-		bytes = Vec.push ((value >>> (shift as i64u)) as ubyte) bytes
+		bytes = Vec.push_owned ((value >>> (shift as i64u)) as ubyte) bytes
 		shift = shift - 8
 	bytes
 
@@ -70,16 +70,16 @@ fn float_head output value =
 	let fraction = bits &&& 4503599627370495i64u
 	let exponent = biased - 1023
 	let significand = fraction ||| 4503599627370496i64u
-	if biased == 0 && fraction == 0i64u then push_big (Vec.push 249ubyte output) (sign <<< 15i64u) 2
+	if biased == 0 && fraction == 0i64u then push_big (Vec.push_owned 249ubyte output) (sign <<< 15i64u) 2
 	elif biased != 0 && exponent >= -14 && exponent <= 15 && (fraction &&& 4398046511103i64u) == 0i64u then
-		push_big (Vec.push 249ubyte output) ((sign <<< 15i64u) ||| (((exponent + 15) as i64u) <<< 10i64u) ||| (fraction >>> 42i64u)) 2
+		push_big (Vec.push_owned 249ubyte output) ((sign <<< 15i64u) ||| (((exponent + 15) as i64u) <<< 10i64u) ||| (fraction >>> 42i64u)) 2
 	elif biased != 0 && exponent >= -24 && exponent < -14 && (significand &&& ((1i64u <<< ((28 - exponent) as i64u)) - 1i64u)) == 0i64u then
-		push_big (Vec.push 249ubyte output) ((sign <<< 15i64u) ||| (significand >>> ((28 - exponent) as i64u))) 2
+		push_big (Vec.push_owned 249ubyte output) ((sign <<< 15i64u) ||| (significand >>> ((28 - exponent) as i64u))) 2
 	elif biased != 0 && exponent >= -126 && exponent <= 127 && (fraction &&& 536870911i64u) == 0i64u then
-		push_big (Vec.push 250ubyte output) ((sign <<< 31i64u) ||| (((exponent + 127) as i64u) <<< 23i64u) ||| (fraction >>> 29i64u)) 4
+		push_big (Vec.push_owned 250ubyte output) ((sign <<< 31i64u) ||| (((exponent + 127) as i64u) <<< 23i64u) ||| (fraction >>> 29i64u)) 4
 	elif biased != 0 && exponent >= -149 && exponent < -126 && (significand &&& ((1i64u <<< ((-exponent - 97) as i64u)) - 1i64u)) == 0i64u then
-		push_big (Vec.push 250ubyte output) ((sign <<< 31i64u) ||| (significand >>> ((-exponent - 97) as i64u))) 4
-	else push_big (Vec.push 251ubyte output) bits 8
+		push_big (Vec.push_owned 250ubyte output) ((sign <<< 31i64u) ||| (significand >>> ((-exponent - 97) as i64u))) 4
+	else push_big (Vec.push_owned 251ubyte output) bits 8
 
 /// A bignum (tags 2 and 3) for an integer whose magnitude is above 2^64.
 private def bignum :: own Vec<ubyte> -> own bool -> ref string -> Vec<ubyte>
@@ -91,13 +91,13 @@ fn bignum output negative digits =
 	while BigInt.compare (ref rest) (ref zero) > 0 do
 		let remainder = rest % BigInt.of_i64 256
 		let low = Maybe.get (BigInt.to_i64 (ref remainder))
-		little = Vec.push (low as ubyte) little
+		little = Vec.push_owned (low as ubyte) little
 		rest = rest / BigInt.of_i64 256
 	let tagged = head output 6 (if negative then 3i64u else 2i64u)
 	let mut bytes = head tagged 2 (Vec.length (ref little) as i64u)
 	let mut index = Vec.length (ref little) - 1
 	while index >= 0 do
-		bytes = Vec.push little[index] bytes
+		bytes = Vec.push_owned little[index] bytes
 		index = index - 1
 	bytes
 
@@ -132,14 +132,14 @@ fn text_item output text =
 	if !(String.is_well_formed text) then Result.Error (failure Json.LoneSurrogate (-1)) else
 		let bytes = Utf8String.to_bytes (Utf8String.from_string text)
 		let mut out = head output 3 (bytes.length as i64u)
-		for byte in bytes do out = Vec.push byte out
+		for byte in bytes do out = Vec.push_owned byte out
 		Result.Ok out
 
 private def rec item :: own Vec<ubyte> -> ref Json.Value -> Result<Vec<ubyte>, Json.Error>
 fn rec item output value =
 	match value with
-	| Json.Null -> Result.Ok (Vec.push 246ubyte output)
-	| Json.Bool flag -> Result.Ok (Vec.push (if flag then 245ubyte else 244ubyte) output)
+	| Json.Null -> Result.Ok (Vec.push_owned 246ubyte output)
+	| Json.Bool flag -> Result.Ok (Vec.push_owned (if flag then 245ubyte else 244ubyte) output)
 	| Json.Number numeral -> number output numeral
 	| Json.Text text -> text_item output text
 	| Json.Items items ->
@@ -161,7 +161,7 @@ fn rec item output value =
 					| Result.Ok encoded_key ->
 						match item (Vec.empty()) (ref element) with
 						| Result.Error error -> problem = Maybe.Some error
-						| Result.Ok encoded_value -> entries = Vec.push (Vec.to_array encoded_key, index, Vec.to_array encoded_value) entries
+						| Result.Ok encoded_value -> entries = Vec.push_owned (Vec.to_array encoded_key, index, Vec.to_array encoded_value) entries
 		match problem with
 		| Maybe.Some error -> Result.Error error
 		| Maybe.None ->
@@ -181,8 +181,8 @@ fn rec item output value =
 				for index in 0 .. (sorted.length - 1) do
 					match sorted[index] with
 					| (key, _, element) ->
-						for byte in key do bytes = Vec.push byte bytes
-						for byte in element do bytes = Vec.push byte bytes
+						for byte in key do bytes = Vec.push_owned byte bytes
+						for byte in element do bytes = Vec.push_owned byte bytes
 				Result.Ok bytes
 
 /// `value` in the core deterministic encoding of RFC 8949 §4.2.1: the shortest heads, definite
@@ -259,7 +259,7 @@ fn repeated members =
 	let mut keys = Vec.with_capacity count
 	for index in 0 .. (count - 1) do
 		match members[index] with
-		| (key, _) -> keys = Vec.push (clone_string (ref key), index) keys
+		| (key, _) -> keys = Vec.push_owned (clone_string (ref key), index) keys
 	let mut sorted = Vec.to_array keys
 	Array.sort_in_place (ref mut sorted)
 	let mut found = -1
@@ -328,7 +328,7 @@ fn rec value_at bytes start depth =
 					if count > (remaining as i64u) then Result.Error (failure Json.UnexpectedEnd bytes.length) else
 						let length = count as i64
 						let mut copy = Vec.with_capacity length
-						for index in next .. (next + length - 1) do copy = Vec.push bytes[index] copy
+						for index in next .. (next + length - 1) do copy = Vec.push_owned bytes[index] copy
 						match Utf8String.from_bytes (Vec.to_array copy) with
 						| Maybe.Some text -> Result.Ok (Json.Text (String.from_utf8 (ref text)), next + length)
 						| Maybe.None -> Result.Error (failure Json.InvalidUtf8 start)
@@ -348,7 +348,7 @@ and items_at bytes start count depth =
 	while Maybe.is_none (ref problem) && index < count do
 		match value_at bytes position (depth + 1) with
 		| Result.Ok (element, next) ->
-			items = Vec.push element items
+			items = Vec.push_owned element items
 			position = next
 		| Result.Error error -> problem = Maybe.Some error
 		index = index + 1
@@ -370,8 +370,8 @@ and members_at bytes start count depth =
 				match value_at bytes after (depth + 1) with
 				| Result.Error error -> problem = Maybe.Some error
 				| Result.Ok (element, next) ->
-					members = Vec.push (key, element) members
-					offsets = Vec.push position offsets
+					members = Vec.push_owned (key, element) members
+					offsets = Vec.push_owned position offsets
 					position = next
 			| Result.Ok (_, _) -> problem = Maybe.Some (failure (Json.Unsupported "map key that is not a text string") position)
 		index = index + 1

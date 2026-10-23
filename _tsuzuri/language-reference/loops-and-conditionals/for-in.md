@@ -164,7 +164,7 @@ total
 コンパイラがユーザー定義型の `iter` を暗黙に探すことはありません。直接渡せるのは、前の表の型だけです。`Vec` もその 1 つで、配列と同じように書けます。
 
 ```tsuzuri run=60
-let values = Vec.push 40 (Vec.push 20 (Vec.empty()))
+let values = Vec.push_owned 40 (Vec.push_owned 20 (Vec.empty()))
 let mut total = 0
 
 for item in values do
@@ -182,7 +182,7 @@ total
 `Map`、`Set`、`HashMap`、`HashSet` やレコードなどのユーザー定義型は、`Module.iter` で `Seq` を作ってから渡します。`Vec.iter` も使えますが、こちらは要素そのものではなく `ref 'a` の列です。非 Copy の要素を読み取るだけなら、直接の `for` の方が単純です。
 
 ```tsuzuri run=60
-let values = Vec.push 40 (Vec.push 20 (Vec.empty()))
+let values = Vec.push_owned 40 (Vec.push_owned 20 (Vec.empty()))
 let mut total = 0
 
 for item in Vec.iter (&values) do

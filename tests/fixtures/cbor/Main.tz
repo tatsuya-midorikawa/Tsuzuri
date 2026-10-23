@@ -37,11 +37,11 @@ fn unhex text =
         let high = text[index] as i64
         let low = text[index + 1] as i64
         let value = (if high >= 97 then high - 87 else high - 48) * 16 + (if low >= 97 then low - 87 else low - 48)
-        bytes = Vec.push (value as ubyte) bytes
+        bytes = Vec.push_owned (value as ubyte) bytes
         index = index + 2
     Vec.to_array bytes
 
-def json_input :: i64 -> utf8string
+def json_input :: own i64 -> utf8string
 fn json_input case =
     match case with
     | 0 -> u8"0"
@@ -79,7 +79,7 @@ fn json_input case =
     | _ -> u8"5e-324"
 
 /// The FNV-1a hash of `Cbor.encode` of JSON case `case`, or the error status.
-export def encode_hash :: i64 -> i64
+export def encode_hash :: own i64 -> i64
 fn encode_hash case =
     let text = json_input case
     let value = Result.get (Json.parse (ref text))
@@ -87,7 +87,7 @@ fn encode_hash case =
     | Ok bytes -> fnv (ref bytes)
     | Error error -> error_status (ref error)
 
-def cbor_input :: i64 -> string
+def cbor_input :: own i64 -> string
 fn cbor_input case =
     match case with
     | 0 -> "1bffffffffffffffff"
@@ -127,7 +127,7 @@ fn cbor_input case =
     | _ -> "f93c00"
 
 /// The FNV-1a hash of the JSON text of `Cbor.decode` of CBOR case `case`, or the error status.
-export def decode_hash :: i64 -> i64
+export def decode_hash :: own i64 -> i64
 fn decode_hash case =
     let bytes = unhex (ref (cbor_input case))
     match Cbor.decode (ref bytes) with
@@ -135,16 +135,16 @@ fn decode_hash case =
     | Error error -> error_status (ref error)
 
 /// `[` nested `count` times around an empty array: 0x81 repeated, then 0x80.
-export def nesting :: i64 -> i64
+export def nesting :: own i64 -> i64
 fn nesting count =
     let mut bytes = Vec.empty()
-    for _index in 1 .. count do bytes = Vec.push 129ubyte bytes
-    let input = Vec.to_array (Vec.push 128ubyte bytes)
+    for _index in 1 .. count do bytes = Vec.push_owned 129ubyte bytes
+    let input = Vec.to_array (Vec.push_owned 128ubyte bytes)
     match Cbor.decode (ref input) with
     | Ok _ -> -1
     | Error error -> error_status (ref error)
 
-def scene :: unit -> Scene
+def scene :: own unit -> Scene
 fn scene _unit =
     Scene { name: "a", points: [Point { x: 1, y: 0.5 }, Point { x: -2, y: -0.0 }], shapes: [Circle 2.0, Rect (1.0, 2.5), Empty], note: Some "é", big: 340282366920938463463374607431768211455i128u }
 
@@ -166,16 +166,16 @@ fn scene_hash =
     fnv (ref (Result.get (Cbor.serialize (ref value))))
 
 /// The integers from `count - 1` down to 0.
-def descending_keys :: i64 -> Vec<i64>
+def descending_keys :: own i64 -> Vec<i64>
 fn descending_keys count =
     let mut keys = Vec.with_capacity count
-    for index in 1 .. count do keys = Vec.push (count - index) keys
+    for index in 1 .. count do keys = Vec.push_owned (count - index) keys
     keys
 
 /// `count` entries whose keys descend, decoded from CBOR: inserting them into the sorted `Map` or
 /// `Set` one by one in document order would shift every entry (quadratic time). The number of
 /// entries when they come out as the keys 0, 1, ... in order (with their values), or the status.
-export def descending :: i64 -> i64 -> i64
+export def descending :: own i64 -> own i64 -> i64
 fn descending case count =
     match case with
     | 0 ->
@@ -187,7 +187,7 @@ fn descending case count =
         | Error error -> error_status (ref error)
     | _ ->
         let mut pairs = Vec.with_capacity count
-        for index in 1 .. count do pairs = Vec.push (count - index, (count - index) * 3) pairs
+        for index in 1 .. count do pairs = Vec.push_owned (count - index, (count - index) * 3) pairs
         let bytes = Result.get (Cbor.serialize (ref pairs))
         let decoded: Result<Map<i64, i64>, Json.Error> = Cbor.deserialize (ref bytes)
         match decoded with
@@ -196,16 +196,16 @@ fn descending case count =
 
 /// `count` keys in a scrambled order, `(index * 7919) % count`, except that the element `count / 2`
 /// repeats the key of the element `count / 3` and the last element repeats the first (0).
-def scattered :: i64 -> Vec<i64>
+def scattered :: own i64 -> Vec<i64>
 fn scattered count =
     let mut keys = Vec.with_capacity count
     for index in 0 .. (count - 1) do
         let source = if index == count - 1 then 0 elif index == count / 2 then count / 3 else index
-        keys = Vec.push ((source * 7919) % count) keys
+        keys = Vec.push_owned ((source * 7919) % count) keys
     keys
 
 /// The FNV-1a hash of the text of the error of decoding the CBOR of `keys` as a set, or 0.
-def set_message :: Vec<i64> -> i64
+def set_message :: own Vec<i64> -> i64
 fn set_message keys =
     let bytes = Result.get (Cbor.serialize (ref keys))
     let decoded: Result<Set<i64>, Json.Error> = Cbor.deserialize (ref bytes)
@@ -215,13 +215,13 @@ fn set_message keys =
 
 /// Keys repeated in a random order, from CBOR: the error names the element at the smallest index
 /// whose key repeats an earlier key. `count` 0 decodes `[9, 1, 9, 5, 1]`, others `scattered count`.
-export def duplicate_message :: i64 -> i64
+export def duplicate_message :: own i64 -> i64
 fn duplicate_message count = set_message (if count == 0 then Vec.of_array (new [9, 1, 9, 5, 1]) else scattered count)
 
 /// The integer of `digits` nines (negative when `sign` is 1) through `Cbor.encode` and
 /// `Cbor.decode`: 1 when it comes back with the same text, 2 when `encode` refuses it, and the
 /// error status when `decode` refuses it.
-export def bignum_round_trip :: i64 -> i64 -> i64
+export def bignum_round_trip :: own i64 -> own i64 -> i64
 fn bignum_round_trip digits sign =
     let mut text = if sign == 1 then "-" else ""
     let mut index = 0
@@ -237,13 +237,13 @@ fn bignum_round_trip digits sign =
         | Ok back -> if Json.to_utf8string (ref back) == Utf8String.from_string (ref text) then 1 else 0
 
 /// A positive bignum (tag 2) of `length` bytes 0xff, the largest value of that length.
-export def bignum_bytes :: i64 -> i64
+export def bignum_bytes :: own i64 -> i64
 fn bignum_bytes length =
-    let mut bytes = Vec.push ((length / 256) as ubyte) (Vec.push 0x59ubyte (Vec.push 0xc2ubyte (Vec.empty())))
-    bytes = Vec.push ((length % 256) as ubyte) bytes
+    let mut bytes = Vec.push_owned ((length / 256) as ubyte) (Vec.push_owned 0x59ubyte (Vec.push_owned 0xc2ubyte (Vec.empty())))
+    bytes = Vec.push_owned ((length % 256) as ubyte) bytes
     let mut index = 0
     while index < length do
-        bytes = Vec.push 0xffubyte bytes
+        bytes = Vec.push_owned 0xffubyte bytes
         index = index + 1
     let input = Vec.to_array bytes
     match Cbor.decode (ref input) with

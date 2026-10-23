@@ -22,7 +22,7 @@
 def copy :: ref string -> string
 fn copy text = Maybe.get (String.slice 0 text.length text)
 
-def show :: Result<string, Os.Error> -> string
+def show :: own Result<string, Os.Error> -> string
 fn show result =
     match result with
     | Result.Ok value -> value

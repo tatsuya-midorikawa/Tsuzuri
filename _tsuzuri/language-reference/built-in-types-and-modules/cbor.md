@@ -17,10 +17,10 @@ fn hex bytes =
     let digits = "0123456789abcdef"
     let mut units = Vec.empty()
     for byte in bytes do
-        units = Vec.push digits[(byte &&& 15ubyte) as i64] (Vec.push digits[(byte >>> 4ubyte) as i64] units)
+        units = Vec.push_owned digits[(byte &&& 15ubyte) as i64] (Vec.push_owned digits[(byte >>> 4ubyte) as i64] units)
     String.from_code_units (Vec.to_array units)
 
-def cbor :: utf8string -> string
+def cbor :: own utf8string -> string
 fn cbor text =
     let value = Result.get (Json.parse (ref text))
     hex (ref (Result.get (Cbor.encode (ref value))))
@@ -49,7 +49,7 @@ a26161016162820203 f93e00 fb3ff199999999999a c249010000000000000000
 ## 復号
 
 ```tsuzuri run=%7B%22a%22%3A1%2C%22b%22%3A%5B2%2C3%5D%7D%20%7C%20json%3A%20unsupported%20byte%20string%20at%20byte%200%20%7C%20json%3A%20unexpected%20end%20of%20input%20at%20byte%201
-def decode :: [ubyte] -> string
+def decode :: own [ubyte] -> string
 fn decode bytes =
     match Cbor.decode (ref bytes) with
     | Ok value -> String.from_utf8 (ref (Json.to_utf8string (ref value)))

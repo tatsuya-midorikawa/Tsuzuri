@@ -1,4 +1,4 @@
-def os_kind_text :: Os.ErrorKind -> string
+def os_kind_text :: own Os.ErrorKind -> string
 fn os_kind_text kind =
 	match kind with
 	| Os.NotFound -> "NotFound"
@@ -10,11 +10,11 @@ fn os_kind_text kind =
 	| Os.Other -> "Other"
 
 /// "<Net.ErrorKind> <Os.ErrorKind> <system code>".
-def failure_text :: Os.Error -> string
+def failure_text :: own Os.Error -> string
 fn failure_text error = to_string (Net.error_kind error) + " " + os_kind_text error.kind + " " + to_string error.code
 
 /// "<count>: <address> ..." of what a resolve found, or its failure.
-def addresses_text :: Result<[Net.Address], Os.Error> -> string
+def addresses_text :: own Result<[Net.Address], Os.Error> -> string
 fn addresses_text result =
 	match result with
 	| Result.Error error -> failure_text error
@@ -28,7 +28,7 @@ fn addresses_text result =
 
 /// One line for each host of the corpus, which is all of address text (or text that a system's resolver reads as
 /// an address): the port is 80, and no host is a name, so nothing here asks a resolver.
-def rec resolve_each :: [string] -> i64 -> IO<unit>
+def rec resolve_each :: own [string] -> own i64 -> IO<unit>
 fn rec resolve_each hosts index =
 	if index >= hosts.length then IO.pure ()
 	else
@@ -36,6 +36,6 @@ fn rec resolve_each hosts index =
 		IO.bind (\found ->
 			IO.bind (\_done -> resolve_each hosts (index + 1)) (IO.write_line (addresses_text found))) resolving
 
-def main :: unit -> i32 = \() ->
+def main :: own unit -> i32 = \() ->
 	do! resolve_each (Corpus.hosts ()) 0
 	0

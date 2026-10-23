@@ -57,7 +57,9 @@ namespace = "GeometryTools"
 
 `edition` は、そのパッケージのソースを読む規則の版です。`2026` と `2027` に対応します。
 値を省略したマニフェストは、新しい edition ができても `2026` のままです。
-2027 は通常の関数の引数を既定で共有借用にします。
+2027 は現在の最新で、通常の関数の引数を既定で共有借用にします。manifest のない CLI 入力・script・REPL、
+新規プロジェクトも 2027 です。`own T` は旧版の値渡し、`mut T` は排他借用を明示します。
+旧ソースは [`fix --edition 2027 --from 2026`](../compiler/usage.md#fix) で契約を保って移行できます。
 詳しくは[引数の所有権](../values-and-functions/functions.md#引数の所有権own-と-edition-2027)を参照してください。
 
 ```toml

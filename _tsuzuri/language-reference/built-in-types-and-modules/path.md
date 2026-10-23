@@ -17,13 +17,13 @@
 引数は `ref string` です。文字列リテラルや変数をそのまま渡せます。所有権は移りません。
 
 ```tsuzuri run=notes%2F2026%0Anotes%2F2026%0A2026%0Anotes%2F%2Fetc%0Aparent%20a%2Fb%2Fc%20-%3E%20Some%20a%2Fb%0Aparent%20%2Fa%20-%3E%20Some%20%2F%0Aparent%20a%20-%3E%20None%0Aparent%20%2F%20-%3E%20None%0Aparent%20%28empty%29%20-%3E%20None%0Aparent%20a%2Fb%2F%20-%3E%20Some%20a%0Aname%20a%2Fb.txt%20-%3E%20Some%20b.txt%0Aname%20a%2F..%20-%3E%20None%0Aname%20.%20-%3E%20None%0Aname%20%2F%20-%3E%20None%0Aname%20%28empty%29%20-%3E%20None%0Aname%20a%2Fb%2F%20-%3E%20Some%20b%0Aext%20a.tar.gz%20-%3E%20Some%20gz%0Aext%20.bashrc%20-%3E%20None%0Aext%20a.%20-%3E%20Some%20%0Aext%20a%2Fb.d%2Fc%20-%3E%20None%0Awindows%20-%3E%20Some%20C%3A%5Cdir%5Cnote.txt
-def show :: Maybe<string> -> string
+def show :: own Maybe<string> -> string
 fn show value =
     match value with
     | Maybe.Some text -> "Some " + text
     | Maybe.None -> "None"
 
-def line :: string -> Maybe<string> -> IO<unit>
+def line :: own string -> own Maybe<string> -> IO<unit>
 fn line label value = IO.write_line (label + show value)
 
 def main :: unit -> i32 = \() ->

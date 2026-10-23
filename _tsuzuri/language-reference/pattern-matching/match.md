@@ -26,7 +26,7 @@ match target with
 ```tsuzuri run=200
 union Status = Success of i64 | NotFound | Error of string
 
-def handle :: Status -> i64 = \status ->
+def handle :: own Status -> i64 = \status ->
     match status with
     | Success code -> code
     | NotFound -> 404

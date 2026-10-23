@@ -1,10 +1,10 @@
-def apply :: ('a -> 'b) -> 'a -> 'b
+def apply :: own ('a -> 'b) -> own 'a -> 'b
 fn apply body value = body value
 
-def twice :: (i64 -> i64) -> i64
+def twice :: own (i64 -> i64) -> i64
 fn twice body = body 20 + body 22
 
-def piped :: (i64 -> i64) -> i64
+def piped :: own (i64 -> i64) -> i64
 fn piped body = (20 |> body) + (22 |> body)
 
 export def opt_scalar :: i64
@@ -50,7 +50,7 @@ fn opt_copy_result = {
     first[0] + second[1]
 }
 
-def update_array :: [i64] -> i64 -> i64
+def update_array :: [i64] -> own i64 -> i64
 fn update_array mut values value = {
     values = [value];
     values[0]
@@ -63,7 +63,7 @@ fn opt_mutable_bound_array = {
     body 20 + body 21 + values[0]
 }
 
-def update_scalar :: i64 -> i64 -> i64
+def update_scalar :: i64 -> own i64 -> i64
 fn update_scalar mut state value = {
     state = state + value;
     state
@@ -105,10 +105,10 @@ fn opt_callee_replaced = {
     result + body 0
 }
 
-def retain :: (i64 -> i64) -> (i64 -> i64)
+def retain :: own (i64 -> i64) -> (i64 -> i64)
 fn retain body = { body }
 
-def make :: i64 -> (i64 -> i64)
+def make :: own i64 -> (i64 -> i64)
 fn make offset = {
     let text = "abc";
     retain (value -> offset + value + text.length)
@@ -121,7 +121,7 @@ fn opt_escaping = {
     body 10 + copy 9
 }
 
-def finish :: (unit -> &i64) -> &i64
+def finish :: own (unit -> &i64) -> &i64
 fn finish body = body ()
 
 export def opt_return_borrow :: i64
@@ -132,11 +132,11 @@ fn opt_return_borrow = {
     *result
 }
 
-def rec even :: i64 -> (i64 -> i64) -> i64
+def rec even :: own i64 -> own (i64 -> i64) -> i64
 fn rec even remaining body =
     if remaining == 0 { body 21 } else { odd (remaining - 1) body }
 
-def rec odd :: i64 -> (i64 -> i64) -> i64
+def rec odd :: own i64 -> own (i64 -> i64) -> i64
 fn rec odd remaining body =
     if remaining == 0 { body 21 } else { even (remaining - 1) body }
 
@@ -146,7 +146,7 @@ fn opt_mutual = {
     even 100 (value -> value + offset)
 }
 
-def combine :: (i64 -> i64) -> (i64 -> i64) -> i64
+def combine :: own (i64 -> i64) -> own (i64 -> i64) -> i64
 fn combine first second = first 20 + second 22
 
 export def opt_two_callbacks :: i64
@@ -155,7 +155,7 @@ fn opt_two_callbacks = {
     combine (value -> value + values[0]) (value -> value + values[1])
 }
 
-def initialize :: (i64 -> i64) -> [i64]
+def initialize :: own (i64 -> i64) -> [i64]
 fn initialize body = new [i64](32, body)
 
 export def opt_initializer :: i64

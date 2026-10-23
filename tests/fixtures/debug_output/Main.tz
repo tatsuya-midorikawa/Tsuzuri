@@ -4,7 +4,7 @@ fn debug_answer =
     Debug.print text
     Debug.trace 42
 
-export def debug_owned :: i64 -> i64
+export def debug_owned :: own i64 -> i64
 fn debug_owned count =
     let mut total = 0
     for _index in 0i64 .. count - 1 do

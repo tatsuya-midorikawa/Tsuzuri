@@ -1,8 +1,8 @@
-def add :: Add<'a> -> 'a -> 'a = \x -> \y -> x + y
+def add :: own Add<'a> -> own 'a -> 'a = \x -> \y -> x + y
 
-def apply_twice :: ('a -> 'a) -> 'a -> 'a = \f value -> f (f value)
+def apply_twice :: own ('a -> 'a) -> own 'a -> 'a = \f value -> f (f value)
 
-def main :: unit -> i32 = \() ->
+def main :: own unit -> i32 = \() ->
     let increment = add 1i32
     let offset: i32 = 20
     let shift = value -> value + offset

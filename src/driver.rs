@@ -8052,7 +8052,7 @@ mod tests {
                 ("Main.tz", "Identity { return 42 }"),
                 (
                     "Identity.tc",
-                    "def Return :: 'a -> 'a\nfn Return value = value",
+                    "def Return :: own 'a -> 'a\nfn Return value = value",
                 ),
                 (
                     "Classes.tt",

@@ -45,6 +45,6 @@ fn rec filter predicate sequence = defer (\() ->
 def to_array :: own Seq<'a> -> ['a]
 fn to_array sequence =
     let mut values = Vec.empty()
-    for value in sequence do values = Vec.push value values
+    for value in sequence do values = Vec.push_owned value values
     Vec.to_array values
 

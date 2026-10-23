@@ -147,16 +147,23 @@ impl SemanticIndex {
             .chain(self.references.iter().copied())
     }
 
-    /// Keeps only references whose source text spells their definition's name.
+    /// Keeps only references whose source text spells their definition or its owning alias.
     pub(crate) fn retain_spelled(&mut self, texts: &[&str]) {
         let definitions = &self.definitions;
         self.references.retain(|reference| {
-            reference
+            let spelling = reference
                 .span
                 .source
                 .and_then(|source| texts.get(source))
-                .and_then(|text| text.get(reference.span.start..reference.span.end))
-                == Some(definitions[reference.definition].name.as_str())
+                .and_then(|text| text.get(reference.span.start..reference.span.end));
+            let definition = &definitions[reference.definition];
+            spelling == Some(definition.name.as_str())
+                || (definition.kind == SymbolKind::Function
+                    && BORROWING_APIS.iter().any(|(value, _, owned)| {
+                        value.split_once('.')
+                            == Some((definition.module.as_str(), definition.name.as_str()))
+                            && spelling == owned.rsplit('.').next()
+                    }))
         });
     }
 
@@ -843,10 +850,14 @@ pub(super) fn collect(
             });
         }
     }
+    // A developer inspecting std itself needs its bodies, without inflating ordinary user indexes.
+    let std_only = modules
+        .iter()
+        .all(|module| module.origin == ModuleOrigin::Std);
     for (position, function) in functions
         .iter()
         .enumerate()
-        .filter(|(_, function)| function.origin.module == ModuleOrigin::User)
+        .filter(|(_, function)| std_only || function.origin.module == ModuleOrigin::User)
     {
         let uses = name_uses.get(position).map_or(&[][..], Vec::as_slice);
         index_function(&mut index, function, uses, functions, links, &types);
@@ -1066,6 +1077,13 @@ fn index_function(
     }
     for &(span, target) in uses {
         let (definition, role) = match target {
+            NameTarget::Function(id) => (
+                links
+                    .callables
+                    .get(&functions[id].qualified_name())
+                    .copied(),
+                Role::Read,
+            ),
             NameTarget::Record(id) => (links.records[id], Role::Read),
             NameTarget::Union(id) => (links.unions[id], Role::Read),
             NameTarget::Field(id, field) => (
@@ -1144,5 +1162,28 @@ fn type_entry(
             recurse(result);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn std_only_inspections_include_builtin_references_in_unused_bodies() {
+        let source = "def make :: unit -> Vec<i64> = \\() -> Vec.push 1 (Vec.empty())\n";
+        let inputs = [crate::SourceInput {
+            path: "std/Builder.tz",
+            text: source,
+            origin: ModuleOrigin::Std,
+            namespace: "",
+            edition: crate::syntax::Edition::E2026,
+            package: None,
+        }];
+        let mut index = SemanticIndex::default();
+        crate::analyze_inputs_semantic(&inputs, &mut index).unwrap();
+        assert!(index.builtin_references.iter().any(|(span, builtin)| {
+            *builtin == Builtin::VecPush && &source[span.start..span.end] == "Vec.push"
+        }));
     }
 }

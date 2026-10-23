@@ -91,6 +91,19 @@ fn edition_only_changes_warn_about_implicit_parameter_conventions() {
     std::fs::remove_dir_all(new).unwrap();
 }
 
+#[test]
+fn mutable_binding_changes_are_compared_for_each_parameter() {
+    let borrowed =
+        "def f :: string -> string -> i64 = \\left right -> left.length + right.length\n";
+    let mutable = borrowed.replace("\\left", "\\mut left");
+    check(borrowed, &mutable, &["breaking changed def Main.f"]);
+    check(&mutable, borrowed, &["breaking changed def Main.f"]);
+
+    let owned = borrowed.replace(":: string", ":: own string");
+    let mutable_owned = owned.replace("\\left", "\\mut left");
+    check(&owned, &mutable_owned, &[]);
+}
+
 fn check(old: &str, new: &str, expected: &[&str]) {
     assert_eq!(compare(old, new, &[]), expected, "{old}\n=>\n{new}");
 }

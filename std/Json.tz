@@ -103,7 +103,7 @@ fn parse_string text start =
 						unit = unit * 16 + hex_value text[digit]
 						digit = digit + 1
 					if digit == index + 6 then
-						units = Vec.push (unit as i16u) units
+						units = Vec.push_owned (unit as i16u) units
 						index = digit
 					elif digit >= length then
 						problem = Maybe.Some (failure UnexpectedEnd length)
@@ -117,26 +117,26 @@ fn parse_string text start =
 						problem = Maybe.Some (failure InvalidEscape (index + 1))
 						open = false
 					else
-						units = Vec.push (unit as i16u) units
+						units = Vec.push_owned (unit as i16u) units
 						index = index + 2
 			elif byte < 32ubyte then
 				problem = Maybe.Some (failure ControlCharacter index)
 				open = false
 			elif byte < 128ubyte then
-				units = Vec.push (byte as i16u) units
+				units = Vec.push_owned (byte as i16u) units
 				index = index + 1
 			elif byte < 224ubyte then
 				let point = ((byte as i64) &&& 31) <<< 6 ||| ((text[index + 1] as i64) &&& 63)
-				units = Vec.push (point as i16u) units
+				units = Vec.push_owned (point as i16u) units
 				index = index + 2
 			elif byte < 240ubyte then
 				let point = ((byte as i64) &&& 15) <<< 12 ||| ((text[index + 1] as i64) &&& 63) <<< 6 ||| ((text[index + 2] as i64) &&& 63)
-				units = Vec.push (point as i16u) units
+				units = Vec.push_owned (point as i16u) units
 				index = index + 3
 			else
 				let point = ((byte as i64) &&& 7) <<< 18 ||| ((text[index + 1] as i64) &&& 63) <<< 12 ||| ((text[index + 2] as i64) &&& 63) <<< 6 ||| ((text[index + 3] as i64) &&& 63)
 				let above = point - 65536
-				units = Vec.push ((56320 + (above &&& 1023)) as i16u) (Vec.push ((55296 + (above >>> 10)) as i16u) units)
+				units = Vec.push_owned ((56320 + (above &&& 1023)) as i16u) (Vec.push_owned ((55296 + (above >>> 10)) as i16u) units)
 				index = index + 4
 	match problem with
 	| Maybe.Some error -> Result.Error error
@@ -173,7 +173,7 @@ fn first_duplicate members =
 		let mut keys = Vec.with_capacity count
 		for index in 0 .. (count - 1) do
 			match members[index] with
-			| (key, _) -> keys = Vec.push (clone_string key, index) keys
+			| (key, _) -> keys = Vec.push_owned (clone_string key, index) keys
 		let mut sorted = Vec.to_array keys
 		Array.sort_in_place (ref mut sorted)
 		for index in 1 .. (count - 1) do
@@ -201,7 +201,7 @@ fn object_failure members offsets problem =
 private def replace_last :: own Vec<(string * Value)> -> own Value -> Vec<(string * Value)>
 fn replace_last members value =
 	match Vec.pop members with
-	| (rest, Maybe.Some (key, _)) -> Vec.push (key, value) rest
+	| (rest, Maybe.Some (key, _)) -> Vec.push_owned (key, value) rest
 	| (rest, Maybe.None) -> rest
 
 private def rec parse_value :: ref utf8string -> own i64 -> own i64 -> Result<(Value * i64), Error>
@@ -240,7 +240,7 @@ and parse_items text start depth =
 				problem = Maybe.Some error
 				open = false
 			| Result.Ok (item, next) ->
-				items = Vec.push item items
+				items = Vec.push_owned item items
 				let separator = skip_space text next
 				if separator >= length then
 					problem = Maybe.Some (failure UnexpectedEnd length)
@@ -279,8 +279,8 @@ and parse_object text start depth =
 					problem = Maybe.Some error
 					open = false
 				| Result.Ok (key, after) ->
-					members = Vec.push (key, Null) members
-					offsets = Vec.push index offsets
+					members = Vec.push_owned (key, Null) members
+					offsets = Vec.push_owned index offsets
 					let colon = skip_space text after
 					if colon >= length then
 						problem = Maybe.Some (failure UnexpectedEnd length)
@@ -370,13 +370,13 @@ fn to_f64 numeral = float_of numeral
 private def push_word :: own Vec<ubyte> -> own utf8string -> Vec<ubyte>
 fn push_word output word =
 	let mut bytes = output
-	for byte in word do bytes = Vec.push byte bytes
+	for byte in word do bytes = Vec.push_owned byte bytes
 	bytes
 
 private def push_bytes :: own Vec<ubyte> -> ref utf8string -> Vec<ubyte>
 fn push_bytes output text =
 	let mut bytes = output
-	for byte in text do bytes = Vec.push byte bytes
+	for byte in text do bytes = Vec.push_owned byte bytes
 	bytes
 
 private def hex_digit :: own i64 -> ubyte
@@ -384,40 +384,40 @@ fn hex_digit value = if value < 10 then (48 + value) as ubyte else (87 + value) 
 
 private def emit_escape :: own Vec<ubyte> -> own i64 -> Vec<ubyte>
 fn emit_escape output unit =
-	let bytes = Vec.push 117ubyte (Vec.push 92ubyte output)
-	Vec.push (hex_digit (unit &&& 15)) (Vec.push (hex_digit ((unit >>> 4) &&& 15)) (Vec.push (hex_digit ((unit >>> 8) &&& 15)) (Vec.push (hex_digit (unit >>> 12)) bytes)))
+	let bytes = Vec.push_owned 117ubyte (Vec.push_owned 92ubyte output)
+	Vec.push_owned (hex_digit (unit &&& 15)) (Vec.push_owned (hex_digit ((unit >>> 4) &&& 15)) (Vec.push_owned (hex_digit ((unit >>> 8) &&& 15)) (Vec.push_owned (hex_digit (unit >>> 12)) bytes)))
 
 private def emit_control :: own Vec<ubyte> -> own i64 -> Vec<ubyte>
 fn emit_control output unit =
-	if unit == 8 then Vec.push 98ubyte (Vec.push 92ubyte output)
-	elif unit == 12 then Vec.push 102ubyte (Vec.push 92ubyte output)
-	elif unit == 10 then Vec.push 110ubyte (Vec.push 92ubyte output)
-	elif unit == 13 then Vec.push 114ubyte (Vec.push 92ubyte output)
-	elif unit == 9 then Vec.push 116ubyte (Vec.push 92ubyte output)
+	if unit == 8 then Vec.push_owned 98ubyte (Vec.push_owned 92ubyte output)
+	elif unit == 12 then Vec.push_owned 102ubyte (Vec.push_owned 92ubyte output)
+	elif unit == 10 then Vec.push_owned 110ubyte (Vec.push_owned 92ubyte output)
+	elif unit == 13 then Vec.push_owned 114ubyte (Vec.push_owned 92ubyte output)
+	elif unit == 9 then Vec.push_owned 116ubyte (Vec.push_owned 92ubyte output)
 	else emit_escape output unit
 
 /// `text` as a JSON string: the escapes of `JSON.stringify`, other characters as UTF-8.
 private def emit_string :: own Vec<ubyte> -> ref string -> Vec<ubyte>
 fn emit_string output text =
-	let mut bytes = Vec.push 34ubyte output
+	let mut bytes = Vec.push_owned 34ubyte output
 	let mut index = 0
 	while index < text.length do
 		let unit = text[index] as i64
-		if unit == 34 || unit == 92 then bytes = Vec.push (unit as ubyte) (Vec.push 92ubyte bytes)
+		if unit == 34 || unit == 92 then bytes = Vec.push_owned (unit as ubyte) (Vec.push_owned 92ubyte bytes)
 		elif unit < 32 then bytes = emit_control bytes unit
-		elif unit < 128 then bytes = Vec.push (unit as ubyte) bytes
-		elif unit < 2048 then bytes = Vec.push ((128 ||| (unit &&& 63)) as ubyte) (Vec.push ((192 ||| (unit >>> 6)) as ubyte) bytes)
+		elif unit < 128 then bytes = Vec.push_owned (unit as ubyte) bytes
+		elif unit < 2048 then bytes = Vec.push_owned ((128 ||| (unit &&& 63)) as ubyte) (Vec.push_owned ((192 ||| (unit >>> 6)) as ubyte) bytes)
 		elif unit >= 55296 && unit <= 56319 && index + 1 < text.length && (text[index + 1] as i64) >= 56320 && (text[index + 1] as i64) <= 57343 then
 			let point = 65536 + ((unit - 55296) <<< 10) + ((text[index + 1] as i64) - 56320)
-			let lead = Vec.push ((128 ||| ((point >>> 12) &&& 63)) as ubyte) (Vec.push ((240 ||| (point >>> 18)) as ubyte) bytes)
-			bytes = Vec.push ((128 ||| (point &&& 63)) as ubyte) (Vec.push ((128 ||| ((point >>> 6) &&& 63)) as ubyte) lead)
+			let lead = Vec.push_owned ((128 ||| ((point >>> 12) &&& 63)) as ubyte) (Vec.push_owned ((240 ||| (point >>> 18)) as ubyte) bytes)
+			bytes = Vec.push_owned ((128 ||| (point &&& 63)) as ubyte) (Vec.push_owned ((128 ||| ((point >>> 6) &&& 63)) as ubyte) lead)
 			index = index + 1
 		elif unit >= 55296 && unit <= 57343 then bytes = emit_escape bytes unit
 		else
-			let lead = Vec.push ((224 ||| (unit >>> 12)) as ubyte) bytes
-			bytes = Vec.push ((128 ||| (unit &&& 63)) as ubyte) (Vec.push ((128 ||| ((unit >>> 6) &&& 63)) as ubyte) lead)
+			let lead = Vec.push_owned ((224 ||| (unit >>> 12)) as ubyte) bytes
+			bytes = Vec.push_owned ((128 ||| (unit &&& 63)) as ubyte) (Vec.push_owned ((128 ||| ((unit >>> 6) &&& 63)) as ubyte) lead)
 		index = index + 1
-	Vec.push 34ubyte bytes
+	Vec.push_owned 34ubyte bytes
 
 private def rec emit_value :: own Vec<ubyte> -> ref Value -> Vec<ubyte>
 fn rec emit_value output value =
@@ -429,20 +429,20 @@ fn rec emit_value output value =
 		push_bytes output (ref numeral.text)
 	| Text text -> emit_string output text
 	| Items items ->
-		let mut bytes = Vec.push 91ubyte output
+		let mut bytes = Vec.push_owned 91ubyte output
 		for index in 0 .. (items.length - 1) do
-			if index > 0 then bytes = Vec.push 44ubyte bytes
+			if index > 0 then bytes = Vec.push_owned 44ubyte bytes
 			bytes = emit_value bytes (ref items[index])
-		Vec.push 93ubyte bytes
+		Vec.push_owned 93ubyte bytes
 	| Object members ->
-		let mut bytes = Vec.push 123ubyte output
+		let mut bytes = Vec.push_owned 123ubyte output
 		for index in 0 .. (members.length - 1) do
-			if index > 0 then bytes = Vec.push 44ubyte bytes
+			if index > 0 then bytes = Vec.push_owned 44ubyte bytes
 			match members[index] with
 			| (key, item) ->
-				bytes = Vec.push 58ubyte (emit_string bytes key)
+				bytes = Vec.push_owned 58ubyte (emit_string bytes key)
 				bytes = emit_value bytes item
-		Vec.push 125ubyte bytes
+		Vec.push_owned 125ubyte bytes
 
 private def text_of :: own Vec<ubyte> -> utf8string
 fn text_of bytes = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
@@ -454,7 +454,7 @@ fn to_utf8string value = text_of (emit_value (Vec.empty()) value)
 private def push_spaces :: own Vec<ubyte> -> own i64 -> Vec<ubyte>
 fn push_spaces output count =
 	let mut bytes = output
-	for _index in 1 .. count do bytes = Vec.push 32ubyte bytes
+	for _index in 1 .. count do bytes = Vec.push_owned 32ubyte bytes
 	bytes
 
 /// `value` as `JSON.stringify(value, null, indent)` writes it for `indent` from 1 to 10.
@@ -462,22 +462,22 @@ private def rec emit_pretty :: own Vec<ubyte> -> ref Value -> own i64 -> own i64
 fn rec emit_pretty output value indent level =
 	match value with
 	| Items items ->
-		if items.length == 0 then Vec.push 93ubyte (Vec.push 91ubyte output) else
-			let mut bytes = Vec.push 91ubyte output
+		if items.length == 0 then Vec.push_owned 93ubyte (Vec.push_owned 91ubyte output) else
+			let mut bytes = Vec.push_owned 91ubyte output
 			for index in 0 .. (items.length - 1) do
-				if index > 0 then bytes = Vec.push 44ubyte bytes
-				bytes = emit_pretty (push_spaces (Vec.push 10ubyte bytes) (indent * (level + 1))) (ref items[index]) indent (level + 1)
-			Vec.push 93ubyte (push_spaces (Vec.push 10ubyte bytes) (indent * level))
+				if index > 0 then bytes = Vec.push_owned 44ubyte bytes
+				bytes = emit_pretty (push_spaces (Vec.push_owned 10ubyte bytes) (indent * (level + 1))) (ref items[index]) indent (level + 1)
+			Vec.push_owned 93ubyte (push_spaces (Vec.push_owned 10ubyte bytes) (indent * level))
 	| Object members ->
-		if members.length == 0 then Vec.push 125ubyte (Vec.push 123ubyte output) else
-			let mut bytes = Vec.push 123ubyte output
+		if members.length == 0 then Vec.push_owned 125ubyte (Vec.push_owned 123ubyte output) else
+			let mut bytes = Vec.push_owned 123ubyte output
 			for index in 0 .. (members.length - 1) do
-				if index > 0 then bytes = Vec.push 44ubyte bytes
+				if index > 0 then bytes = Vec.push_owned 44ubyte bytes
 				match members[index] with
 				| (key, item) ->
-					let start = push_spaces (Vec.push 10ubyte bytes) (indent * (level + 1))
-					bytes = emit_pretty (Vec.push 32ubyte (Vec.push 58ubyte (emit_string start (ref key)))) (ref item) indent (level + 1)
-			Vec.push 125ubyte (push_spaces (Vec.push 10ubyte bytes) (indent * level))
+					let start = push_spaces (Vec.push_owned 10ubyte bytes) (indent * (level + 1))
+					bytes = emit_pretty (Vec.push_owned 32ubyte (Vec.push_owned 58ubyte (emit_string start (ref key)))) (ref item) indent (level + 1)
+			Vec.push_owned 125ubyte (push_spaces (Vec.push_owned 10ubyte bytes) (indent * level))
 	| _ -> emit_value output value
 
 /// The JSON text of `value` indented as `JSON.stringify(value, null, indent)` indents it: each
@@ -626,7 +626,7 @@ fn rec encode_items values =
 	let mut index = 0
 	while Maybe.is_none (ref problem) && index < values.length do
 		match Encode.encode (ref values[index]) with
-		| Result.Ok item -> items = Vec.push item items
+		| Result.Ok item -> items = Vec.push_owned item items
 		| Result.Error error -> problem = Maybe.Some error
 		index = index + 1
 	match problem with
@@ -642,7 +642,7 @@ fn rec decode_items value =
 		let mut index = 0
 		while Maybe.is_none (ref problem) && index < items.length do
 			match Decode.decode (ref items[index]) with
-			| Result.Ok item -> decoded = Vec.push item decoded
+			| Result.Ok item -> decoded = Vec.push_owned item decoded
 			| Result.Error error -> problem = Maybe.Some error
 			index = index + 1
 		match problem with
@@ -665,7 +665,7 @@ instance Encode<'a> => Encode<Vec<'a>> {
 		let mut index = 0
 		while Maybe.is_none (ref problem) && index < Vec.length value do
 			match Encode.encode (Vec.at index value) with
-			| Result.Ok item -> items = Vec.push item items
+			| Result.Ok item -> items = Vec.push_owned item items
 			| Result.Error error -> problem = Maybe.Some error
 			index = index + 1
 		match problem with
@@ -684,7 +684,7 @@ instance Encode<'a> => Encode<[|'a|]> {
 		for item in value do
 			if Maybe.is_none (ref problem) then
 				match Encode.encode item with
-				| Result.Ok encoded -> items = Vec.push encoded items
+				| Result.Ok encoded -> items = Vec.push_owned encoded items
 				| Result.Error error -> problem = Maybe.Some error
 		match problem with
 		| Maybe.Some error -> Result.Error error
@@ -719,7 +719,7 @@ fn rec push_encoded items value =
 	match items with
 	| Result.Ok values ->
 		match Encode.encode value with
-		| Result.Ok item -> Result.Ok (Vec.push item values)
+		| Result.Ok item -> Result.Ok (Vec.push_owned item values)
 		| Result.Error error -> Result.Error error
 	| Result.Error error -> Result.Error error
 
@@ -799,7 +799,7 @@ fn reversed items =
 		match Vec.pop rest with
 		| (remaining, Maybe.Some item) ->
 			rest = remaining
-			output = Vec.push item output
+			output = Vec.push_owned item output
 		| (remaining, Maybe.None) -> rest = remaining
 	output
 
@@ -811,7 +811,7 @@ fn rec push_entry entries key value =
 		match Encode.encode key with
 		| Result.Ok encoded ->
 			match Encode.encode value with
-			| Result.Ok item -> Result.Ok (Vec.push (encoded, item) pairs)
+			| Result.Ok item -> Result.Ok (Vec.push_owned (encoded, item) pairs)
 			| Result.Error error -> Result.Error error
 		| Result.Error error -> Result.Error error
 	| Result.Error error -> Result.Error error
@@ -835,7 +835,7 @@ fn end_entries entries =
 				match Vec.pop rest with
 				| (remaining, Maybe.Some (Text key, item)) ->
 					rest = remaining
-					members = Vec.push (key, item) members
+					members = Vec.push_owned (key, item) members
 				| (remaining, _) -> rest = remaining
 			Result.Ok (Object (Vec.to_array members))
 		else
@@ -844,7 +844,7 @@ fn end_entries entries =
 				match Vec.pop rest with
 				| (remaining, Maybe.Some (key, item)) ->
 					rest = remaining
-					items = Vec.push (Items (new [key, item])) items
+					items = Vec.push_owned (Items (new [key, item])) items
 				| (remaining, Maybe.None) -> rest = remaining
 			Result.Ok (Items (Vec.to_array items))
 
@@ -879,7 +879,7 @@ fn rec decode_entries value =
 	let mut index = 0
 	while Maybe.is_none (ref problem) && index < count do
 		match decode_entry value index with
-		| Result.Ok (key, item) -> entries = Vec.push (Keyed { key: key, index: index, value: item }) entries
+		| Result.Ok (key, item) -> entries = Vec.push_owned (Keyed { key: key, index: index, value: item }) entries
 		| Result.Error error -> problem = Maybe.Some error
 		index = index + 1
 	match problem with
@@ -896,7 +896,7 @@ fn rec decode_elements value =
 		let mut index = 0
 		while Maybe.is_none (ref problem) && index < items.length do
 			match Decode.decode (ref items[index]) with
-			| Result.Ok key -> elements = Vec.push (Keyed { key: key, index: index, value: () }) elements
+			| Result.Ok key -> elements = Vec.push_owned (Keyed { key: key, index: index, value: () }) elements
 			| Result.Error error -> problem = Maybe.Some error
 			index = index + 1
 		match problem with
@@ -1080,13 +1080,13 @@ fn rec copy_value value =
 	| Text text -> Text (clone_string text)
 	| Items items ->
 		let mut copies = Vec.with_capacity items.length
-		for index in 0 .. (items.length - 1) do copies = Vec.push (copy_value (ref items[index])) copies
+		for index in 0 .. (items.length - 1) do copies = Vec.push_owned (copy_value (ref items[index])) copies
 		Items (Vec.to_array copies)
 	| Object members ->
 		let mut copies = Vec.with_capacity members.length
 		for index in 0 .. (members.length - 1) do
 			match members[index] with
-			| (key, item) -> copies = Vec.push (clone_string (ref key), copy_value (ref item)) copies
+			| (key, item) -> copies = Vec.push_owned (clone_string (ref key), copy_value (ref item)) copies
 		Object (Vec.to_array copies)
 
 instance Encode<Value> {
@@ -1136,7 +1136,7 @@ fn rec encode_field members key value =
 	match members with
 	| Result.Ok entries ->
 		match Encode.encode value with
-		| Result.Ok item -> Result.Ok (Vec.push (key, item) entries)
+		| Result.Ok item -> Result.Ok (Vec.push_owned (key, item) entries)
 		| Result.Error error -> Result.Error error
 	| Result.Error error -> Result.Error error
 
@@ -1311,8 +1311,8 @@ fn repeated_key text keys first last =
 	for index in first .. (last - 1) do
 		let token = keys[index]
 		match parse_string text (token.start - 1) with
-		| Result.Ok (key, _) -> members = Vec.push (key, Null) members
-		| Result.Error _ -> members = Vec.push ("", Null) members
+		| Result.Ok (key, _) -> members = Vec.push_owned (key, Null) members
+		| Result.Error _ -> members = Vec.push_owned ("", Null) members
 	let duplicate = first_duplicate (ref members)
 	if duplicate < 0 then Maybe.None else
 		let offset = keys[first + duplicate].start - 1
@@ -1340,9 +1340,9 @@ fn after_value reader position =
 private def open_container :: ref utf8string -> own Reader -> own i64 -> own bool -> Result<(Event * Reader), Error>
 fn open_container text reader index object =
 	if Vec.length (ref reader.containers) >= 128 then reader_failure text (ref reader) (failure TooDeep index) else
-		let marks = if object then Vec.push (Vec.length (ref reader.keys)) reader.marks else reader.marks
+		let marks = if object then Vec.push_owned (Vec.length (ref reader.keys)) reader.marks else reader.marks
 		let state = if object then 4 else 2
-		let opened = Reader { position: index + 1, containers: Vec.push object reader.containers, keys: reader.keys, marks: marks, state: state }
+		let opened = Reader { position: index + 1, containers: Vec.push_owned object reader.containers, keys: reader.keys, marks: marks, state: state }
 		Result.Ok ((if object then ObjectStart else ArrayStart), opened)
 
 private def close_container :: ref utf8string -> own Reader -> own i64 -> own bool -> Result<(Event * Reader), Error>
@@ -1400,7 +1400,7 @@ fn read_key text reader index =
 		| Result.Error error -> reader_failure text (ref reader) error
 		| Result.Ok (token, after) ->
 			let colon = skip_space text after
-			let keyed = Reader { position: reader.position, containers: reader.containers, keys: Vec.push token reader.keys, marks: reader.marks, state: reader.state }
+			let keyed = Reader { position: reader.position, containers: reader.containers, keys: Vec.push_owned token reader.keys, marks: reader.marks, state: reader.state }
 			if colon >= text.length then reader_failure text (ref keyed) (failure UnexpectedEnd text.length)
 			elif text[colon] != 58ubyte then reader_failure text (ref keyed) (failure Syntax colon)
 			else Result.Ok (KeyToken token, Reader { position: colon + 1, containers: keyed.containers, keys: keyed.keys, marks: keyed.marks, state: 6 })
@@ -1496,7 +1496,7 @@ fn value_slot writer =
 	let count = Vec.length (ref writer.containers)
 	let in_array = count > 0 && !writer.containers[count - 1]
 	if state == 0 || state == 2 || state == 6 then Result.Ok writer
-	elif state == 1 && in_array then Result.Ok (Writer { bytes: Vec.push 44ubyte writer.bytes, containers: writer.containers, state: state })
+	elif state == 1 && in_array then Result.Ok (Writer { bytes: Vec.push_owned 44ubyte writer.bytes, containers: writer.containers, state: state })
 	else Result.Error (failure Syntax (Vec.length (ref writer.bytes)))
 
 /// The writer after a complete value.
@@ -1558,16 +1558,16 @@ fn write_key key writer =
 	let in_object = count > 0 && writer.containers[count - 1]
 	let state = writer.state
 	if !in_object || (state != 4 && state != 1) then Result.Error (failure Syntax (Vec.length (ref writer.bytes))) else
-		let separated = if state == 1 then Vec.push 44ubyte writer.bytes else writer.bytes
-		Result.Ok (Writer { bytes: Vec.push 58ubyte (emit_string separated key), containers: writer.containers, state: 6 })
+		let separated = if state == 1 then Vec.push_owned 44ubyte writer.bytes else writer.bytes
+		Result.Ok (Writer { bytes: Vec.push_owned 58ubyte (emit_string separated key), containers: writer.containers, state: 6 })
 
 private def open_writer :: own Writer -> own bool -> Result<Writer, Error>
 fn open_writer writer object =
 	if Vec.length (ref writer.containers) >= 128 then Result.Error (failure TooDeep (Vec.length (ref writer.bytes))) else
 		match value_slot writer with
 		| Result.Ok ready ->
-			let bytes = Vec.push (if object then 123ubyte else 91ubyte) ready.bytes
-			Result.Ok (Writer { bytes: bytes, containers: Vec.push object ready.containers, state: if object then 4 else 2 })
+			let bytes = Vec.push_owned (if object then 123ubyte else 91ubyte) ready.bytes
+			Result.Ok (Writer { bytes: bytes, containers: Vec.push_owned object ready.containers, state: if object then 4 else 2 })
 		| Result.Error error -> Result.Error error
 
 private def close_writer :: own Writer -> own bool -> Result<Writer, Error>
@@ -1579,7 +1579,7 @@ fn close_writer writer object =
 	if !matches || !ready then Result.Error (failure Syntax (Vec.length (ref writer.bytes))) else
 		let containers = match Vec.pop writer.containers with
 			| (rest, _) -> rest
-		let bytes = Vec.push (if object then 125ubyte else 93ubyte) writer.bytes
+		let bytes = Vec.push_owned (if object then 125ubyte else 93ubyte) writer.bytes
 		let state = if Vec.is_empty (ref containers) then 7 else 1
 		Result.Ok (Writer { bytes: bytes, containers: containers, state: state })
 

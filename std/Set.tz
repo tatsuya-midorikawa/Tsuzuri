@@ -4,7 +4,7 @@ def empty :: Set<'key>
 fn empty = Set { entries: Vec.empty() }
 
 def singleton :: own 'key -> Set<'key>
-fn singleton key = Set { entries: Vec.push key (Vec.empty()) }
+fn singleton key = Set { entries: Vec.push_owned key (Vec.empty()) }
 
 def length :: ref Set<'key> -> i64
 fn length set = Vec.length (ref set.entries)
@@ -34,7 +34,7 @@ fn insert key set =
 	let index = lower_bound (ref set) (ref key)
 	let count = length (ref set)
 	if found (ref set) (ref key) index then set else
-		let mut entries = Vec.push key set.entries
+		let mut entries = Vec.push_owned key set.entries
 		let mut position = count
 		while position > index do
 			entries = Vec.swap position (position - 1) entries
@@ -90,14 +90,14 @@ fn union left right =
 				left_values = remaining
 				let key = Maybe.get value
 				assert (Eq.eq (ref key) (ref key))
-				output = Vec.push key output
+				output = Vec.push_owned key output
 		else
 			match Vec.pop right_values with
 			| (remaining, value) ->
 				right_values = remaining
 				let key = Maybe.get value
 				assert (Eq.eq (ref key) (ref key))
-				output = Vec.push key output
+				output = Vec.push_owned key output
 		if order == 0 then
 			match Vec.pop right_values with
 			| (remaining, _duplicate) -> right_values = remaining
@@ -120,7 +120,7 @@ fn select left right include_equal =
 		assert (Eq.eq (ref left.entries[left_index]) (ref left.entries[left_index]))
 		let order = if right_index >= right_count then -1 else compare_keys (ref left.entries[left_index]) (ref right.entries[right_index])
 		if order <= 0 then
-			if (order == 0) == include_equal then output = Vec.push left.entries[left_index] output
+			if (order == 0) == include_equal then output = Vec.push_owned left.entries[left_index] output
 			left_index = left_index + 1
 		if order >= 0 then right_index = right_index + 1
 	Set { entries: output }

@@ -185,7 +185,7 @@ union Tree =
     | Leaf
     | Node of Tree * i64 * Tree
 
-def rec count :: Tree -> i64 = \tree ->
+def rec count :: own Tree -> i64 = \tree ->
     match tree with
     | Leaf -> 0
     | Node (left, _, right) -> 1 + count left + count right

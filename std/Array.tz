@@ -123,7 +123,7 @@ fn where predicate values =
     let mut selected = Vec.empty()
     let mut index = 0
     while index < values.length do
-        if predicate values[index] then selected = Vec.push values[index] selected
+        if predicate values[index] then selected = Vec.push_owned values[index] selected
         index = index + 1
     Vec.to_array selected
 
@@ -234,7 +234,7 @@ fn map_fold mapping initial values =
     while index < values.length do
         match mapping state values[index] with
         | (item, next) ->
-            mapped = Vec.push item mapped
+            mapped = Vec.push_owned item mapped
             state = next
         index = index + 1
     (Vec.to_array mapped, state)
@@ -248,7 +248,7 @@ fn map_fold_back mapping initial values =
         index = index - 1
         match mapping values[index] state with
         | (item, next) ->
-            mapped = Vec.push item mapped
+            mapped = Vec.push_owned item mapped
             state = next
     let mut result = Vec.to_array mapped
     reverse_in_place (ref mut result)
@@ -259,7 +259,7 @@ fn collect mapping values =
     let mut parts = Vec.empty()
     let mut index = 0
     while index < values.length do
-        parts = Vec.push (mapping values[index]) parts
+        parts = Vec.push_owned (mapping values[index]) parts
         index = index + 1
     Array.concat (Vec.to_array parts)
 
@@ -269,7 +269,7 @@ fn choose chooser values =
     let mut index = 0
     while index < values.length do
         match chooser values[index] with
-        | Maybe.Some item -> chosen = Vec.push item chosen
+        | Maybe.Some item -> chosen = Vec.push_owned item chosen
         | Maybe.None -> ()
         index = index + 1
     Vec.to_array chosen
@@ -354,23 +354,23 @@ fn reduce_back folder values =
 def scan :: (Copy<'a>, Copy<'state>) => own ('state -> 'a -> 'state) -> own 'state -> ref ['a] -> ['state]
 fn scan folder initial values =
     let mut state = initial
-    let mut states = Vec.push state (Vec.empty())
+    let mut states = Vec.push_owned state (Vec.empty())
     let mut index = 0
     while index < values.length do
         state = folder state values[index]
-        states = Vec.push state states
+        states = Vec.push_owned state states
         index = index + 1
     Vec.to_array states
 
 def scan_back :: (Copy<'a>, Copy<'state>) => own ('a -> 'state -> 'state) -> own 'state -> ref ['a] -> ['state]
 fn scan_back folder initial values =
     let mut state = initial
-    let mut states = Vec.push state (Vec.empty())
+    let mut states = Vec.push_owned state (Vec.empty())
     let mut index = values.length
     while index > 0 do
         index = index - 1
         state = folder values[index] state
-        states = Vec.push state states
+        states = Vec.push_owned state states
     let mut result = Vec.to_array states
     reverse_in_place (ref mut result)
     result
@@ -525,8 +525,8 @@ fn partition predicate values =
     let mut rejected = Vec.empty()
     let mut index = 0
     while index < values.length do
-        if predicate values[index] then accepted = Vec.push values[index] accepted
-        else rejected = Vec.push values[index] rejected
+        if predicate values[index] then accepted = Vec.push_owned values[index] accepted
+        else rejected = Vec.push_owned values[index] rejected
         index = index + 1
     (Vec.to_array accepted, Vec.to_array rejected)
 
@@ -537,8 +537,8 @@ fn partition_with partitioner values =
     let mut index = 0
     while index < values.length do
         match partitioner values[index] with
-        | Result.Ok item -> left = Vec.push item left
-        | Result.Error item -> right = Vec.push item right
+        | Result.Ok item -> left = Vec.push_owned item left
+        | Result.Error item -> right = Vec.push_owned item right
         index = index + 1
     (Vec.to_array left, Vec.to_array right)
 
@@ -777,7 +777,7 @@ fn unfold generator initial =
         | Maybe.Some state ->
             match generator state with
             | Maybe.Some (item, next) ->
-                items = Vec.push item items
+                items = Vec.push_owned item items
                 current = Maybe.Some next
             | Maybe.None -> current = Maybe.None
         | Maybe.None -> current = Maybe.None
@@ -904,12 +904,12 @@ fn keep_new projection known known_codes values =
         if reflexive (ref key) then
             if !(HashSet.contains_ref (ref key) (ref seen)) then
                 seen = HashSet.insert key seen
-                kept = Vec.push values[index] kept
+                kept = Vec.push_owned values[index] kept
         else
             let code = Hash.hash (ref key)
             if !(HashSet.contains_ref (ref code) (ref seen_codes)) then
                 seen_codes = HashSet.insert code seen_codes
-                kept = Vec.push values[index] kept
+                kept = Vec.push_owned values[index] kept
         index = index + 1
     Vec.to_array kept
 
@@ -949,7 +949,7 @@ fn key_groups projection values =
             | Maybe.None ->
                 group = Vec.length (ref keys)
                 groups = HashMap.insert key group groups
-                keys = Vec.push key keys
+                keys = Vec.push_owned key keys
         else
             let code = Hash.hash (ref key)
             match HashMap.get_ref (ref code) (ref code_groups) with
@@ -957,8 +957,8 @@ fn key_groups projection values =
             | Maybe.None ->
                 group = Vec.length (ref keys)
                 code_groups = HashMap.insert code group code_groups
-                keys = Vec.push key keys
-        owners = Vec.push group owners
+                keys = Vec.push_owned key keys
+        owners = Vec.push_owned group owners
         index = index + 1
     (Vec.to_array owners, Vec.to_array keys)
 
@@ -1041,7 +1041,7 @@ fn keys_of projection values =
     let mut keys = Vec.with_capacity values.length
     let mut index = 0
     while index < values.length do
-        keys = Vec.push (projection values[index]) keys
+        keys = Vec.push_owned (projection values[index]) keys
         index = index + 1
     Vec.to_array keys
 
@@ -1314,7 +1314,7 @@ fn random_choices_with generator count source =
     while taken < count do
         match draw_with state 0 source.length with
         | (index, next) ->
-            chosen = Vec.push source[index] chosen
+            chosen = Vec.push_owned source[index] chosen
             state = next
         taken = taken + 1
     (Vec.to_array chosen, state)

@@ -1,47 +1,47 @@
 record Pair { left: [i64], right: [i64] }
 union Chain = End | Link of ([i64] * Chain)
 
-def make :: i64 -> Result<[i64], string> = \n ->
+def make :: own i64 -> Result<[i64], string> = \n ->
     if n >= 0 then Result.Ok (new [i64](3, \i -> (i + 1) * n)) else Result.Error "negative"
 
-def maybe_of :: i64 -> Maybe<[i64]> = \n ->
+def maybe_of :: own i64 -> Maybe<[i64]> = \n ->
     if n >= 0 then Maybe.Some (new [i64](3, \i -> (i + 1) * n + 1)) else Maybe.None
 
-def classify :: Result<[i64], string> -> i64 = \r ->
+def classify :: own Result<[i64], string> -> i64 = \r ->
     match r with
     | Result.Ok xs when xs[0] > 100 -> 1000 + xs[0]
     | Result.Ok xs -> xs[0] + xs[1] * 10 + xs[2] * 100
     | Result.Error e -> e.length
 
-export def self_update_loop :: i64 -> i64 = \n ->
+export def self_update_loop :: own i64 -> i64 = \n ->
     let mut xs = new [i64](4, \_i -> 1)
     for i in 0 .. (n - 1) do
         xs = Array.__set (i % 4) (i * 3) xs
     xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
 
-export def recursive_accumulate :: i64 -> i64 = \n ->
+export def recursive_accumulate :: own i64 -> i64 = \n ->
     let rec go = \i xs -> if i == n then xs else go (i + 1) (Array.__set (i % 4) (i * 5) xs)
     let out = go 0 (new [i64](4, \_i -> 2))
     out[0] + out[1] * 10 + out[2] * 100 + out[3] * 1000
 
-export def branch_last_reads :: i64 -> i64 = \n ->
+export def branch_last_reads :: own i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + n)
     let ys = if n % 2 == 0 then Array.__set 0 7 xs else Array.__set 1 9 xs
     ys[0] * 100 + ys[1] * 10 + ys[2]
 
-export def build_from_locals :: i64 -> i64 = \n ->
+export def build_from_locals :: own i64 -> i64 = \n ->
     let a = new [i64](2, \i -> i + n)
     let b = new [i64](2, \i -> i * n)
     let size = a.length + b.length
     let p = Pair { left: a, right: b }
     p.left[0] + p.left[1] * 10 + p.right[0] * 100 + p.right[1] * 1000 + size * 10000
 
-export def read_after_read :: i64 -> i64 = \n ->
+export def read_after_read :: own i64 -> i64 = \n ->
     let xs = new [i64](4, \i -> i + n)
     let ys = Array.__set 0 99 xs
     xs[0] * 1000 + ys[0]
 
-export def loop_invariant :: i64 -> i64 = \n ->
+export def loop_invariant :: own i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + 1)
     let mut total = 0
     for i in 0 .. (n - 1) do
@@ -49,34 +49,34 @@ export def loop_invariant :: i64 -> i64 = \n ->
         total = total + ys[0] + xs[1]
     total
 
-export def earlier_argument_reads_it :: i64 -> i64 = \n ->
+export def earlier_argument_reads_it :: own i64 -> i64 = \n ->
     let mut xs = new [i64](4, \i -> i + 1)
     for i in 0 .. (n - 1) do
         xs = Array.__set (i % 4) (xs[(i + 1) % 4] + i) xs
     xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
 
 // The array comes last in the builtin, so an argument that follows the array needs a function of our own.
-def set_at :: [i64] -> i64 -> i64 -> [i64] = \xs index value -> Array.__set index value xs
+def set_at :: own [i64] -> own i64 -> own i64 -> [i64] = \xs index value -> Array.__set index value xs
 
-export def later_argument_reads_it :: i64 -> i64 = \n ->
+export def later_argument_reads_it :: own i64 -> i64 = \n ->
     let mut xs = new [i64](4, \i -> i + 1)
     for i in 0 .. (n - 1) do
         xs = set_at xs (i % 4) (xs[(i + 1) % 4] + i)
     xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
 
-export def borrow_alias :: i64 -> i64 = \n ->
+export def borrow_alias :: own i64 -> i64 = \n ->
     let xs = new [i64](4, \i -> i + n)
     let r = ref xs
     let ys = Array.__set 0 9 xs
     r[0] * 100 + ys[0]
 
-export def closure_then_use :: i64 -> i64 = \n ->
+export def closure_then_use :: own i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + n)
     let f = \k -> xs[k]
     let ys = Array.__set 0 100 xs
     f 0 + ys[0] * 10
 
-export def break_keeps_live :: i64 -> i64 = \n ->
+export def break_keeps_live :: own i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + 1)
     let mut acc = 0
     for i in 0 .. (n - 1) do
@@ -85,18 +85,18 @@ export def break_keeps_live :: i64 -> i64 = \n ->
         if i == 2 then break else ()
     acc + xs[1]
 
-export def scrutinee_temp :: i64 -> i64 = \n ->
+export def scrutinee_temp :: own i64 -> i64 = \n ->
     match make n with
     | Result.Ok xs -> xs[0] + xs[1] * 10 + xs[2] * 100
     | Result.Error e -> e.length
 
-export def scrutinee_local_last :: i64 -> i64 = \n ->
+export def scrutinee_local_last :: own i64 -> i64 = \n ->
     let m = maybe_of n
     match m with
     | Maybe.Some xs -> xs[1] + xs[2]
     | Maybe.None -> 0
 
-export def scrutinee_local_used_after :: i64 -> i64 = \n ->
+export def scrutinee_local_used_after :: own i64 -> i64 = \n ->
     let m = maybe_of n
     let first = match m with
         | Maybe.Some xs -> xs[1]
@@ -106,38 +106,38 @@ export def scrutinee_local_used_after :: i64 -> i64 = \n ->
         | Maybe.None -> 0
     first * 100 + second
 
-export def guard_falls_through :: i64 -> i64 = \n -> classify (make n)
+export def guard_falls_through :: own i64 -> i64 = \n -> classify (make n)
 
-export def as_pattern_overlap :: i64 -> i64 = \n ->
+export def as_pattern_overlap :: own i64 -> i64 = \n ->
     match make n with
     | Result.Ok xs as whole -> xs[0] + (match whole with | Result.Ok ys -> ys[2] * 10 | Result.Error _ -> 0)
     | Result.Error e -> e.length
 
-export def tuple_scrutinee :: i64 -> i64 = \n ->
+export def tuple_scrutinee :: own i64 -> i64 = \n ->
     match (make n, make (n + 1)) with
     | (Result.Ok a, Result.Ok b) -> a[1] + b[1] * 10
     | _ -> 0
 
-export def list_cons_loop :: i64 -> i64 = \n ->
+export def list_cons_loop :: own i64 -> i64 = \n ->
     let mut items: [|i64|] = [||]
     for i in 0 .. (n - 1) do
         items = List.cons i items
-    List.fold (\acc x -> acc * 3 + x) 0 (ref items)
+    List.fold_owned (\acc x -> acc * 3 + x) 0 (ref items)
 
-export def stack_scrutinee :: i64 -> i64 = \n ->
+export def stack_scrutinee :: own i64 -> i64 = \n ->
     match Maybe.Some [1i64, 2i64, 3i64] with
     | Maybe.Some xs -> xs[0] + xs[2] + n
     | Maybe.None -> n
 
-export def recursive_scrutinee :: i64 -> i64 = \n ->
+export def recursive_scrutinee :: own i64 -> i64 = \n ->
     match Link (new [i64](3, \i -> i + n), End) with
     | Link (xs, rest) -> xs[0] + xs[2]
     | End -> 0
 
-def accepts_subject :: Maybe<[i64]> -> bool = \m ->
+def accepts_subject :: own Maybe<[i64]> -> bool = \m ->
     match m with | Maybe.Some xs -> xs[0] >= 0 | Maybe.None -> false
 
-export def guard_reads_subject :: i64 -> i64 = \n ->
+export def guard_reads_subject :: own i64 -> i64 = \n ->
     let m = maybe_of n
     match m with
     | Maybe.Some xs when accepts_subject m -> xs[0] + xs[2]

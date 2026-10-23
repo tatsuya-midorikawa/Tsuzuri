@@ -65,7 +65,7 @@ match Json.parse (ref text) with
 ## エラー
 
 ```tsuzuri run=json%3A%20duplicate%20key%20%22a%22%20at%20byte%207%20%7C%20json%3A%20syntax%20error%20at%20byte%205
-def describe :: utf8string -> string
+def describe :: own utf8string -> string
 fn describe text =
     match Json.parse (ref text) with
     | Ok _ -> "ok"
@@ -162,7 +162,7 @@ record Point { x: i64, y: f64 } deriving (Encode, Decode)
 union Shape = Circle of f64 | Rect of f64 * f64 | Empty deriving (Encode, Decode)
 record Scene { name: string, points: [Point], shapes: Vec<Shape>, note: Maybe<string> } deriving (Encode, Decode)
 
-let shapes = Vec.push Empty (Vec.push (Rect (1.0, 2.5)) (Vec.push (Circle 2.0) (Vec.empty())))
+let shapes = Vec.push_owned Empty (Vec.push_owned (Rect (1.0, 2.5)) (Vec.push_owned (Circle 2.0) (Vec.empty())))
 let scene = Scene { name: "a", points: [Point { x: 1, y: 0.5 }], shapes: shapes, note: None }
 let text = Result.get (Json.serialize (ref scene))
 let back: Result<Scene, Json.Error> = Json.deserialize (ref text)
@@ -185,14 +185,14 @@ $"{shown} round={round}"
 record Point { x: i64, y: i64 } deriving (Decode)
 union Shape = Circle of f64 | Empty deriving (Decode)
 
-def point :: utf8string -> string
+def point :: own utf8string -> string
 fn point text =
     let result: Result<Point, Json.Error> = Json.deserialize (ref text)
     match result with
     | Ok _ -> "ok"
     | Error error -> Display.display (ref error)
 
-def shape :: utf8string -> string
+def shape :: own utf8string -> string
 fn shape text =
     let result: Result<Shape, Json.Error> = Json.deserialize (ref text)
     match result with

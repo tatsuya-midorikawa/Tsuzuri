@@ -123,7 +123,7 @@ first=5 second=-1
 端を所有するタスクを `Task.parallel` に渡すのが、最も素直な書き方です。タスクが終わると、タスクが持つ `Sender` が drop され、最後の 1 つなら受け手に終わりが伝わります。
 
 ```tsuzuri run=sent%3D100%20sum%3D5050
-def produce :: Channel.Sender<i64> -> i64 -> Task<i64>
+def produce :: own Channel.Sender<i64> -> i64 -> Task<i64>
 fn produce sender count = task {
     let mut index = 1
     while index <= count do
@@ -132,7 +132,7 @@ fn produce sender count = task {
     return count
 }
 
-def consume :: Channel.Receiver<i64> -> Task<i64>
+def consume :: own Channel.Receiver<i64> -> Task<i64>
 fn consume receiver = task {
     let mut sum = 0
     let mut open = true
@@ -162,7 +162,7 @@ sent=100 sum=5050
 受け手は `Sync` なので、`Arc` に入れると、複数のタスクが 1 つの `Receiver` から取れます。要素は 1 つのワーカーにだけ届きます。ワーカーの結果は、`Arc<Mutex<T>>` に集めます。
 
 ```tsuzuri run=jobs%3D20%20squares%3D2870
-def produce :: Channel.Sender<i64> -> i64 -> Task<i64>
+def produce :: own Channel.Sender<i64> -> i64 -> Task<i64>
 fn produce sender count = task {
     let mut index = 1
     while index <= count do
@@ -171,7 +171,7 @@ fn produce sender count = task {
     return count
 }
 
-def work :: Arc<Channel.Receiver<i64>> -> Arc<Mutex<i64>> -> Task<i64>
+def work :: own Arc<Channel.Receiver<i64>> -> own Arc<Mutex<i64>> -> Task<i64>
 fn work receiver total = task {
     let mut done = 0
     let mut open = true

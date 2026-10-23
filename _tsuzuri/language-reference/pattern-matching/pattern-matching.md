@@ -207,7 +207,7 @@ OR パターン `p1 | p2` の両辺は、同じ変数名と同じ型を束縛し
 ```tsuzuri run=42
 union NumberOrPair = Single of i64 | Pair of i64 * i64
 
-def extract :: NumberOrPair -> i64 = \val ->
+def extract :: own NumberOrPair -> i64 = \val ->
     match val with
     | Single n | Pair (n, _) -> n
 

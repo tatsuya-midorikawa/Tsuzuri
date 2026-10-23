@@ -55,19 +55,19 @@ fn malformed =
         valid = valid && Maybe.is_none (&number) && Maybe.is_none (&real)
     valid
 
-export def round_f64 :: f64 -> f64
+export def round_f64 :: own f64 -> f64
 fn round_f64 value =
     let text = to_string value
     let result: Maybe<f64> = Parse.parse (&text)
     Maybe.get result
 
-export def round_f32 :: f32 -> f32
+export def round_f32 :: own f32 -> f32
 fn round_f32 value =
     let text = to_string value
     let result: Maybe<f32> = Parse.parse (&text)
     Maybe.get result
 
-export def custom :: i64 -> i64
+export def custom :: own i64 -> i64
 fn custom count =
     let mut size = 0
     for i in 1 .. count do

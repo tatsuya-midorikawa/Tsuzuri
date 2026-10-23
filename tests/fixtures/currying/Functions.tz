@@ -1,4 +1,4 @@
-def curry_add :: Add<'a> -> 'a -> 'a
+def curry_add :: own Add<'a> -> own 'a -> 'a
 let curry_add = x -> y -> x + y
 
 export def curried_integer :: i32
@@ -19,7 +19,7 @@ fn curried_decimal = {
     (add 0.2d128) as f64
 }
 
-def curry_make :: i32 -> i32 -> i32
+def curry_make :: own i32 -> i32 -> i32
 fn curry_make offset = {
     let scale: i32 = 2;
     x -> (x + offset) * scale
@@ -31,7 +31,7 @@ fn curried_capture = {
     f 1
 }
 
-export def curried_choose :: bool -> i32 -> i32
+export def curried_choose :: own bool -> i32 -> i32
 fn curried_choose flag =
     if flag { x -> x + 1 } else { x -> x - 1 }
 
@@ -94,7 +94,7 @@ fn curried_order = {
     curry_stage (&mut counter) (curry_tick (&mut counter))
 }
 
-def curry_combine :: i32 -> i32 -> i32
+def curry_combine :: own i32 -> own i32 -> i32
 fn curry_combine x y = x * 10 + y
 
 export def curried_pipeline :: i32
@@ -103,7 +103,7 @@ fn curried_pipeline = {
     curry_tick (&mut counter) |> curry_combine (curry_tick (&mut counter))
 }
 
-def curry_replace :: &mut string -> string -> unit
+def curry_replace :: &mut string -> own string -> unit
 fn curry_replace target value = { *target = value; }
 
 export def curried_exclusive :: i64
@@ -125,10 +125,10 @@ fn curried_class = {
     f 22 + g 1 2
 }
 
-def curry_apply :: ('a -> 'b) -> 'a -> 'b
+def curry_apply :: own ('a -> 'b) -> own 'a -> 'b
 fn curry_apply f x = f x
 
-def curry_hold :: 'a -> i32 -> 'a
+def curry_hold :: own 'a -> own i32 -> 'a
 fn curry_hold value n = value
 
 export def curried_higher :: i32
@@ -142,7 +142,7 @@ fn curried_higher = {
     identity (*result)
 }
 
-def rec curry_loop :: i64 -> i64 -> i64
+def rec curry_loop :: own i64 -> own i64 -> i64
 fn rec curry_loop n total = {
     let prefix = "abcdefghijklmnopqrstuvwxyz";
     let f = curry_add prefix;
@@ -152,10 +152,10 @@ fn rec curry_loop n total = {
     if n == 0 { total } else { curry_loop (n - 1) total }
 }
 
-export def curried_churn :: i64 -> i64
+export def curried_churn :: own i64 -> i64
 fn curried_churn n = curry_loop n 0
 
-export def curried_dynamic :: bool -> i64 -> i64
+export def curried_dynamic :: own bool -> own i64 -> i64
 fn curried_dynamic flag count =
     let owner = new [i64](4, \index -> index + 1)
     let transform: i64 -> i64 =
@@ -165,7 +165,7 @@ fn curried_dynamic flag count =
     for index in 0 .. count - 1 do total = transform total
     total
 
-export def curried_dynamic_owned :: bool -> i64
+export def curried_dynamic_owned :: own bool -> i64
 fn curried_dynamic_owned flag =
     let literal = "abc"
     let prefix = clone_string ref literal
@@ -183,7 +183,7 @@ fn curry_switch callback =
     deref callback = \value -> value + 1000
     3
 
-export def curried_replaced :: bool -> i64
+export def curried_replaced :: own bool -> i64
 fn curried_replaced flag =
     let seed = 7i64
     let mut callback: i64 -> i64 =
@@ -192,16 +192,16 @@ fn curried_replaced flag =
     let original = callback (curry_switch ref mut callback)
     original * 10000 + callback 2
 
-def curry_inc :: i64 -> i64
+def curry_inc :: own i64 -> i64
 fn curry_inc x = x + 1
 
-def curry_add3 :: i64 -> i64 -> i64 -> i64
+def curry_add3 :: own i64 -> own i64 -> own i64 -> i64
 fn curry_add3 a b c = a + b + c
 
 // The four kinds of function values side by side (PM02): a function without captures, a capture
 // that fits the environment slot, an environment on the heap, and a partial application. The
 // array copy clones every one of them, and the end of the function drops them all.
-export def curried_mixed_kinds :: i64 -> i64
+export def curried_mixed_kinds :: own i64 -> i64
 fn curried_mixed_kinds seed =
     let literal = "abc"
     let prefix = clone_string ref literal
@@ -217,7 +217,7 @@ fn curried_mixed_kinds seed =
 
 // An option of a function value stores no tag: a null descriptor is `None` (PM02). The copy clones
 // the environment, which owns a string.
-export def curried_optional :: bool -> i64 -> i64
+export def curried_optional :: own bool -> own i64 -> i64
 fn curried_optional flag seed =
     let literal = "abcd"
     let text = clone_string ref literal
@@ -232,7 +232,7 @@ fn curried_optional flag seed =
         | None -> -2
     first * 1000 + second
 
-export def curried_dynamic_init :: bool -> i64 -> i64
+export def curried_dynamic_init :: own bool -> own i64 -> i64
 fn curried_dynamic_init flag count =
     let literal = "abcd"
     let text = clone_string ref literal
@@ -246,38 +246,38 @@ fn curried_dynamic_init flag count =
     for value in list do total = total + value
     total
 
-export def curried_inline_integer :: bool -> i64u -> i64u
+export def curried_inline_integer :: own bool -> own i64u -> i64u
 fn curried_inline_integer flag value =
     let callback: unit -> i64u =
         if flag then \unused -> value else \unused -> ~value
     let copies = [callback, callback]
     copies[0] () ^ copies[1] () ^ callback ()
 
-export def curried_inline_float :: bool -> f64 -> f64
+export def curried_inline_float :: own bool -> own f64 -> f64
 fn curried_inline_float flag value =
     let callback: unit -> f64 =
         if flag then \unused -> value else \unused -> -value
     let copy = callback
     copy ()
 
-export def curried_inline_single :: bool -> f32 -> f32
+export def curried_inline_single :: own bool -> own f32 -> f32
 fn curried_inline_single flag value =
     let callback: unit -> f32 =
         if flag then \unused -> value else \unused -> -value
     let copy = callback
     copy ()
 
-export def curried_inline_bool :: bool -> bool -> bool
+export def curried_inline_bool :: own bool -> own bool -> bool
 fn curried_inline_bool flag value =
     let callback: unit -> bool =
         if flag then \unused -> value else \unused -> !value
     let copy = callback
     copy ()
 
-def curry_three :: i64u -> i64u -> i64u -> i64u
+def curry_three :: own i64u -> own i64u -> own i64u -> i64u
 fn curry_three seed left right = seed ^ (left * 17 + right)
 
-export def curried_inline_partial :: i64u -> i64u
+export def curried_inline_partial :: own i64u -> i64u
 fn curried_inline_partial seed =
     let first = curry_three seed
     let copies = [first, first]

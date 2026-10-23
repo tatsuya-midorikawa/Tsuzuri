@@ -593,6 +593,31 @@ impl FunctionEmitter<'_, '_> {
         }
     }
 
+    pub(super) fn frame_of_store_place(&self, expression: &TypedExpr) -> Vec<Frame> {
+        match &expression.kind {
+            TypedExprKind::Field(value, index) => self
+                .frame_of_store_place(value)
+                .into_iter()
+                .flat_map(|frame| match frame {
+                    Frame::Aggregate(mut fields) => fields.remove(index).unwrap_or_default(),
+                    _ => Vec::new(),
+                })
+                .collect(),
+            TypedExprKind::Index(value, _) => self
+                .frame_of_store_place(value)
+                .into_iter()
+                .flat_map(|frame| match frame {
+                    Frame::Array { elements, .. } | Frame::List { elements, .. } => {
+                        elements.into_iter().flatten().collect()
+                    }
+                    Frame::Aggregate(fields) => fields.into_values().flatten().collect(),
+                    _ => Vec::new(),
+                })
+                .collect(),
+            _ => self.frame_of_place(expression),
+        }
+    }
+
     /// Records that the value bound to `local` may contain the given stack parts.
     pub(super) fn bind_frames(&mut self, local: &Local, frames: Vec<Frame>) {
         if !frames.is_empty() {
