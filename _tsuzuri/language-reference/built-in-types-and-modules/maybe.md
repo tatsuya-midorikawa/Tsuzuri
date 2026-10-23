@@ -9,7 +9,7 @@ Tsuzuri 0.1.0 の `Maybe` は、以前の `Option` を置き換えたもので�
 ## この記事のポイント
 
 - 型は `Maybe<'a>`、ケースは `None` と `Some of 'a` です。
-- `map` は関数が先、`bind` は値が先です。ないときは継続を呼びません。
+- `map` も `bind` も関数が先で、`Maybe` は最後の引数です。ないときは継続を呼びません。
 - `Maybe { let! ... return ... }` は、`None` で残りの処理を短絡します。
 - `get` は `Some` 以外でトラップします。信頼できない値には `match` か `default_value` を使います。
 - 借用したまま変換する `map_ref` と `bind_ref` があります。
@@ -172,16 +172,16 @@ Maybe.default_value 42 missing
 
 ## 変換と連結
 
-引数の順序に注意してください。`map`、`map_ref`、`filter` は関数が先、`bind`、`bind_ref`、`or_else` は値が先です。値が不在（`None`）のときは成功用の関数を呼び出しません。
+`map`、`map_ref`、`filter`、`bind`、`bind_ref`、`or_else` は、どれも関数が先で、`Maybe` が最後の引数です（[引数の順序](#引数の順序)）。値が不在（`None`）のときは成功用の関数を呼び出しません。
 
 | 関数 | シグネチャ | 動き |
 | --- | --- | --- |
 | `Maybe.map` | `('a -> 'b) -> Maybe<'a> -> Maybe<'b>` | 中身を消費して変換する |
 | `Maybe.map_ref` | `(&'a -> 'b) -> &(Maybe<'a>) -> Maybe<'b>` | 中身を借用して、新しい所有値を作る |
-| `Maybe.bind` | `Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>` | 中身を次の `Maybe` へ渡す |
-| `Maybe.bind_ref` | `&(Maybe<'a>) -> (&'a -> Maybe<'b>) -> Maybe<'b>` | 借用した中身から次の `Maybe` を作る |
+| `Maybe.bind` | `('a -> Maybe<'b>) -> Maybe<'a> -> Maybe<'b>` | 中身を次の `Maybe` へ渡す |
+| `Maybe.bind_ref` | `(&'a -> Maybe<'b>) -> &(Maybe<'a>) -> Maybe<'b>` | 借用した中身から次の `Maybe` を作る |
 | `Maybe.filter` | `(&'a -> bool) -> Maybe<'a> -> Maybe<'a>` | 述語が偽なら `None`。真なら元の `Some` |
-| `Maybe.or_else` | `Maybe<'a> -> (unit -> Maybe<'a>) -> Maybe<'a>` | ないときだけ代替を呼ぶ |
+| `Maybe.or_else` | `(unit -> Maybe<'a>) -> Maybe<'a> -> Maybe<'a>` | ないときだけ代替を呼ぶ |
 
 ```tsuzuri run=5
 let value = Some "hello"
@@ -212,6 +212,28 @@ Maybe.get kept
 ```
 
 `&` と `ref` は同じ型です。表の `&(Maybe<'a>)` は `ref (Maybe<'a>)` とも書けます。
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+操作する `Maybe` は、必ず最後の引数です。`m |> Maybe.bind f` のようにパイプで渡せ、`Maybe.bind f >> Maybe.map g` のように一部だけ渡した関数を合成できます。`bind`、`bind_ref`、`or_else` も `map` と同じく関数を先に取り、`default_value fallback m` や `to_result error m` のように、ほかの引数は `Maybe` の前に置きます。F# の `Option`・`Result` の関数と同じ順序です（`Option.bind f opt`、`Option.orElseWith f opt`、`Result.bind f result`）。
+
+```tsuzuri run=30%200
+let halve = \n -> if n % 2 == 0 then Some (n / 2) else None
+let quarter = Maybe.bind halve >> Maybe.bind halve
+let a = Some 12 |> quarter |> Maybe.map (\n -> n * 10)
+let b = Some 6 |> quarter |> Maybe.or_else (\_ -> Some 0)
+$"{Maybe.default_value (-1) a} {Maybe.default_value (-1) b}"
+```
+
+実行結果:
+
+```text
+30 0
+```
+
+コンピュテーション式の展開先になる先頭が大文字の関数（`Maybe.Bind` など）は別で、順序は [ビルダー操作](#ビルダー操作) の表のとおりです。
 
 ## Result との変換
 

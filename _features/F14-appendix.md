@@ -329,8 +329,8 @@ test "Vec of arrays: one block per array and one for the Vec" =
 test "string literal, length, equality, search: no allocation" =
     let unit_text = "abcdefghij"
     let needle = "jab"
-    let a = String.repeat (ref unit_text) 40
-    let b = String.repeat (ref unit_text) 40
+    let a = String.repeat 40 (ref unit_text)
+    let b = String.repeat 40 (ref unit_text)
     let start = Alloc.snapshot ()
     let literal = "hello"
     let length = String.length (ref a) + String.length (ref literal)
@@ -352,7 +352,7 @@ test "to_string: one block of two bytes per digit" =
 test "String.repeat: one block of two bytes per character" =
     let unit_text = "abcdefghij"
     let start = Alloc.snapshot ()
-    let text = String.repeat (ref unit_text) 40
+    let text = String.repeat 40 (ref unit_text)
     let used = Alloc.since start
     expect "String.repeat" used 1 0 0 800
     assert (String.length (ref text) == 400)
@@ -360,7 +360,7 @@ test "String.repeat: one block of two bytes per character" =
 // Rule: an interpolation builds its result in one block. 400 + 1 + 400 = 801 code units.
 test "string interpolation: one block for the whole result" =
     let unit_text = "abcdefghij"
-    let a = String.repeat (ref unit_text) 40
+    let a = String.repeat 40 (ref unit_text)
     let start = Alloc.snapshot ()
     let text = $"{a}-{a}"
     let used = Alloc.since start
@@ -371,7 +371,7 @@ test "string interpolation: one block for the whole result" =
 // 401, 402, 403 code units: 2 x (401 + 402 + 403) = 2412 bytes in 3 resizes.
 test "s = s + text on an owned string: realloc in place, no new block" =
     let unit_text = "abcdefghij"
-    let mut s = String.repeat (ref unit_text) 40
+    let mut s = String.repeat 40 (ref unit_text)
     let start = Alloc.snapshot ()
     s = s + "x"
     s = s + "y"
@@ -383,7 +383,7 @@ test "s = s + text on an owned string: realloc in place, no new block" =
 // Rule: `String.trim` returns a new string. 40 x 14 = 560 code units minus 4 outer spaces = 556.
 test "String.trim: one block for the trimmed text" =
     let unit_text = "  abcdefghij  "
-    let a = String.repeat (ref unit_text) 40
+    let a = String.repeat 40 (ref unit_text)
     let start = Alloc.snapshot ()
     let text = String.trim (ref a)
     let used = Alloc.since start

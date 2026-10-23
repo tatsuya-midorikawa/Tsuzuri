@@ -22,13 +22,13 @@
 
 ```tsuzuri run=len%3D3%20has_apple%3Dtrue
 let mut fruits: HashSet<string> = HashSet.empty()
-fruits = HashSet.insert fruits "apple"
-fruits = HashSet.insert fruits "banana"
-fruits = HashSet.insert fruits "cherry"
-fruits = HashSet.insert fruits "apple"
+fruits = HashSet.insert "apple" fruits
+fruits = HashSet.insert "banana" fruits
+fruits = HashSet.insert "cherry" fruits
+fruits = HashSet.insert "apple" fruits
 
 let len = HashSet.length (ref fruits)
-let has_apple = HashSet.contains (ref fruits) "apple"
+let has_apple = HashSet.contains "apple" (ref fruits)
 $"len={len} has_apple={has_apple}"
 ```
 
@@ -58,25 +58,47 @@ len=0
 
 `count` が負、または $2^{60}$ を超えるとトラップします。負荷率と OS 乱数の使える環境は [HashMap](./hashmap.md) と同じです。
 
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読み取る、または更新する集合は、必ず最後の引数です。`set |> HashSet.insert key` のようにパイプで渡せ、`HashSet.insert 1 >> HashSet.remove 2` のように、集合だけが足りない関数を合成できます。要素は、関数名が示す順で集合の前に並べます（`HashSet.insert key set`、`HashSet.remove key set`、`HashSet.contains key (ref set)`）。借用版も同じ形です（`HashSet.contains_ref (ref key) (ref set)`）。
+
+```tsuzuri run=len%3D1%20has_one%3Dtrue%20has_two%3Dfalse
+let step = HashSet.insert 1 >> HashSet.remove 2
+let set: HashSet<i64> = HashSet.empty() |> HashSet.insert 2 |> step
+let has_one = set |> HashSet.contains 1
+let has_two = set |> HashSet.contains 2
+$"len={HashSet.length (ref set)} has_one={has_one} has_two={has_two}"
+```
+
+実行結果:
+
+```text
+len=1 has_one=true has_two=false
+```
+
+集合を借用する `contains` に `set |> HashSet.contains 1` と渡しても、`set` は消費されません。
+
 ## 包含判定・削除と借用版 API
 
 要素の判定や削除には、要素を値渡しする版と、共有借用参照で渡す `*_ref` 版が用意されています。
 
-- `HashSet.contains (ref set) key`: 要素が含まれているかを判定（値渡し）
-- `HashSet.contains_ref (ref set) (ref key)`: 要素が含まれているかを判定（借用）
-- `HashSet.remove set key`: 要素を削除した集合を返却（値渡し、swap-remove）
-- `HashSet.remove_ref set (ref key)`: 要素を削除した集合を返却（借用、swap-remove）
+- `HashSet.contains key (ref set)`: 要素が含まれているかを判定（値渡し）
+- `HashSet.contains_ref (ref key) (ref set)`: 要素が含まれているかを判定（借用）
+- `HashSet.remove key set`: 要素を削除した集合を返却（値渡し、swap-remove）
+- `HashSet.remove_ref (ref key) set`: 要素を削除した集合を返却（借用、swap-remove）
 
 非 Copy なキー（文字列など）を判定する際、手元にキーの所有権を残したい場合は **`contains_ref`** や **`remove_ref`** を使用します。
 
 ```tsuzuri run=has%3Dtrue%20rem_has%3Dfalse%20key%3Dtarget
 let mut set: HashSet<string> = HashSet.empty()
-set = HashSet.insert set "target"
+set = HashSet.insert "target" set
 
 let key = "target"
-let has = HashSet.contains_ref (ref set) (ref key)
-set = HashSet.remove_ref set (ref key)
-let rem_has = HashSet.contains_ref (ref set) (ref key)
+let has = HashSet.contains_ref (ref key) (ref set)
+set = HashSet.remove_ref (ref key) set
+let rem_has = HashSet.contains_ref (ref key) (ref set)
 
 $"has={has} rem_has={rem_has} key={key}"
 ```
@@ -100,11 +122,11 @@ has=true rem_has=false key=target
 
 ```tsuzuri run=elements%3D%5B%27a%27%2C%20%27d%27%2C%20%27c%27%5D
 let mut chars: HashSet<char> = HashSet.empty()
-chars = HashSet.insert chars 'a'
-chars = HashSet.insert chars 'b'
-chars = HashSet.insert chars 'c'
-chars = HashSet.insert chars 'd'
-chars = HashSet.remove chars 'b'
+chars = HashSet.insert 'a' chars
+chars = HashSet.insert 'b' chars
+chars = HashSet.insert 'c' chars
+chars = HashSet.insert 'd' chars
+chars = HashSet.remove 'b' chars
 
 let arr = HashSet.to_array (ref chars)
 $"elements={arr}"
@@ -130,7 +152,7 @@ elements=['a', 'd', 'c']
 
 ```tsuzuri run=len%3D1
 let mut set: HashSet<string> = HashSet.with_seed 100i64u
-set = HashSet.insert set "item"
+set = HashSet.insert "item" set
 let len = HashSet.length (ref set)
 $"len={len}"
 ```
@@ -165,16 +187,16 @@ seed を付けても走査順は変わりません。同じ操作列なら、see
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `contains` | `(Hash<'key>, Eq<'key>) => ref HashSet<'key> -> 'key -> bool` | 要素が含まれているか判定（値渡し） |
-| `contains_ref` | `(Hash<'key>, Eq<'key>) => ref HashSet<'key> -> ref 'key -> bool` | 要素が含まれているか判定（借用） |
+| `contains` | `(Hash<'key>, Eq<'key>) => 'key -> ref HashSet<'key> -> bool` | 要素が含まれているか判定（値渡し） |
+| `contains_ref` | `(Hash<'key>, Eq<'key>) => ref 'key -> ref HashSet<'key> -> bool` | 要素が含まれているか判定（借用） |
 
 ### 更新・削除
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `insert` | `(Hash<'key>, Eq<'key>) => HashSet<'key> -> 'key -> HashSet<'key>` | 要素を追加した新しい集合を返します |
-| `remove` | `(Hash<'key>, Eq<'key>) => HashSet<'key> -> 'key -> HashSet<'key>` | 要素を削除した新しい集合を返します（swap-remove） |
-| `remove_ref` | `(Hash<'key>, Eq<'key>) => HashSet<'key> -> ref 'key -> HashSet<'key>` | 要素借用で削除した新しい集合を返します |
+| `insert` | `(Hash<'key>, Eq<'key>) => 'key -> HashSet<'key> -> HashSet<'key>` | 要素を追加した新しい集合を返します |
+| `remove` | `(Hash<'key>, Eq<'key>) => 'key -> HashSet<'key> -> HashSet<'key>` | 要素を削除した新しい集合を返します（swap-remove） |
+| `remove_ref` | `(Hash<'key>, Eq<'key>) => ref 'key -> HashSet<'key> -> HashSet<'key>` | 要素借用で削除した新しい集合を返します |
 
 ### 変換・反復
 

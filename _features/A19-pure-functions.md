@@ -843,14 +843,14 @@ pure def shout :: own string -> string = \s -> $"{s}!"
 pure def pick_own :: own string -> own string -> bool -> string = \a b first -> if first then a else b
 
 export def t_square_sum :: i64 -> i64 = \n -> square_sum n
-export def t_greeting :: i64 -> i64 = \n -> greeting_length (String.repeat "x" n) (String.repeat "y" (n + 1))
+export def t_greeting :: i64 -> i64 = \n -> greeting_length (String.repeat n "x") (String.repeat (n + 1) "y")
 export def t_doubled_sum :: i64 -> i64 = \n -> doubled_sum (Array.init n (\i -> i + 1))
 export def t_local_update :: i64 -> i64 = \n -> local_update (Array.init 4 (\i -> i + 1)) n
 export def t_fact :: i64 -> i64 = \n -> fact n
 export def t_largest_x :: i64 -> i64 = \n -> largest_x (Array.init n (\i -> Point { x: (i * 7) % 11, y: i }))
 export def t_renamed :: i64 -> i64 = \n ->
-    let p = Named { name: String.repeat "p" n, n: n }
-    let q = renamed p (String.repeat "s" (n + 2))
+    let p = Named { name: String.repeat n "p", n: n }
+    let q = renamed p (String.repeat (n + 2) "s")
     q.name.length + q.n
 export def t_first_or :: i64 -> i64 = \n ->
     let m: Maybe<[i64]> = if n % 2 == 0 then Maybe.Some (Array.init 3 (\i -> n + i)) else Maybe.None
@@ -863,9 +863,9 @@ export def t_with_first_own :: i64 -> i64 = \n ->
 export def t_build_list :: i64 -> i64 = \n ->
     let empty: [|i64|] = [||]
     List.fold (\acc x -> acc * 3 + x) 0 (ref (build_list n empty))
-export def t_shout :: i64 -> i64 = \n -> (shout (String.repeat "z" n)).length
+export def t_shout :: i64 -> i64 = \n -> (shout (String.repeat n "z")).length
 export def t_pick_own :: i64 -> i64 = \n ->
-    (pick_own (String.repeat "a" n) (String.repeat "b" (n + 1)) (n % 2 == 0)).length
+    (pick_own (String.repeat n "a") (String.repeat (n + 1) "b") (n % 2 == 0)).length
 ```
 
 `if` の式を `ref` の引数へ直接渡すと `E1003`（型が決まらない）になるので、`t_first_or` は `let m: Maybe<[i64]>` に束縛している。`t_with_first_own` は、呼び出したあとで `xs` を読む（`own` で渡しても、Copy の値は複製されて、呼び出し側の配列は変わらない。付録 E の e2）。

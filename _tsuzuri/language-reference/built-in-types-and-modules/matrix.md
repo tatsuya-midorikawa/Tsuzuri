@@ -42,9 +42,9 @@ $"{flat[0]},{flat[1]},{flat[2]},{flat[3]},{flat[4]},{flat[5]}"
 | API | 返すもの |
 | --- | --- |
 | `Matrix.rows (ref m)` / `Matrix.cols (ref m)` | 行数・列数 |
-| `Matrix.at (ref m) row col` | 要素への共有借用 `ref 'a`。範囲外はトラップ |
-| `Matrix.get (ref m) row col` | 要素のコピーの `Maybe<'a>`。範囲外は `None`（`Copy<'a>` が必要） |
-| `Matrix.row (ref m) index` | 1 行を `ref ['a]`（長さ `cols`、複製なし）。行番号が範囲外ならトラップ |
+| `Matrix.at row col (ref m)` | 要素への共有借用 `ref 'a`。範囲外はトラップ |
+| `Matrix.get row col (ref m)` | 要素のコピーの `Maybe<'a>`。範囲外は `None`（`Copy<'a>` が必要） |
+| `Matrix.row index (ref m)` | 1 行を `ref ['a]`（長さ `cols`、複製なし）。行番号が範囲外ならトラップ |
 | `Matrix.as_array (ref m)` | 全要素を行優先の `ref ['a]` で借用する |
 | `Matrix.to_array m` | 行列を消費して、バッファを複製せずに `['a]` で返す |
 
@@ -52,8 +52,8 @@ $"{flat[0]},{flat[1]},{flat[2]},{flat[3]},{flat[4]},{flat[5]}"
 
 ```tsuzuri run=ab%3Acd
 let words = Matrix.init 1 2 (\_row col -> if col == 0 then "ab" else "cd")
-let first = Matrix.at (ref words) 0 0
-let second = Matrix.at (ref words) 0 1
+let first = Matrix.at 0 0 (ref words)
+let second = Matrix.at 0 1 (ref words)
 $"{first}:{second}"
 ```
 
@@ -67,12 +67,12 @@ ab:cd
 
 ## 要素を置き換える
 
-`Matrix.set m row col value` は、`m` を消費して、`(row, col)` を `value` に置き換えた行列を返します。バッファは複製せず、その場で書き換えます。行と列を別々に検査し、範囲外は `at` と同じくトラップです。
+`Matrix.set row col value m` は、`m` を消費して、`(row, col)` を `value` に置き換えた行列を返します。バッファは複製せず、その場で書き換えます。行と列を別々に検査し、範囲外は `at` と同じくトラップです。
 
 ```tsuzuri run=0%2010%2020%203
 let m = Matrix.init 2 2 (\row col -> row * 2 + col)
-let m = Matrix.set m 0 1 10
-let m = Matrix.set m 1 0 20
+let m = Matrix.set 0 1 10 m
+let m = Matrix.set 1 0 20 m
 let flat = Matrix.as_array (ref m)
 $"{flat[0]} {flat[1]} {flat[2]} {flat[3]}"
 ```
@@ -98,10 +98,10 @@ $"{flat[0]} {flat[1]} {flat[2]} {flat[3]}"
 let a = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
 let t = Matrix.transpose (ref a)
 let p = Matrix.mul (ref a) (ref t)
-let r = Matrix.row (ref p) 1
+let r = Matrix.row 1 (ref p)
 let s = Matrix.add (ref p) (ref p)
 let flat = Matrix.to_array s
-Array.sum r + deref (Matrix.at (ref p) 0 1) + flat[3] + Maybe.get (Matrix.get (ref p) 1 0)
+Array.sum r + deref (Matrix.at 0 1 (ref p)) + flat[3] + Maybe.get (Matrix.get 1 0 (ref p))
 ```
 
 実行結果:
@@ -132,7 +132,7 @@ total = total + (left(i, k) * right(k, j))
 let left = Matrix.of_array 1 3 [1e16, 1.0, -1e16]
 let right = Matrix.of_array 3 1 [1.0, 1.0, 1.0]
 let product = Matrix.mul (ref left) (ref right)
-deref (Matrix.at (ref product) 0 0)
+deref (Matrix.at 0 0 (ref product))
 ```
 
 実行結果:
@@ -172,7 +172,7 @@ let left = Matrix.of_array 1 2 [1.0 + 0.000000001862645149230957031250, -(1.0 + 
 let right = Matrix.of_array 2 1 [1.0, 1.0 + 0.000000000931322574615478515625]
 let separate = Matrix.mul (ref left) (ref right)
 let fused = Matrix.mul_fma (ref left) (ref right)
-$"{deref (Matrix.at (ref separate) 0 0)} {deref (Matrix.at (ref fused) 0 0)}"
+$"{deref (Matrix.at 0 0 (ref separate))} {deref (Matrix.at 0 0 (ref fused))}"
 ```
 
 実行結果:
@@ -209,7 +209,7 @@ let right = Matrix.init 70 128 (\k j -> (k * 5 + j * 2) % 13 - 6)
 let sequential = Matrix.mul (ref left) (ref right)
 let parallel = Matrix.mul_parallel (ref left) (ref right)
 let digest = Matrix.fold (\total x -> total * 31 + x) 7
-$"{Matrix.rows (ref parallel)}x{Matrix.cols (ref parallel)} {digest (ref sequential) == digest (ref parallel)} {deref (Matrix.at (ref parallel) 129 127)}"
+$"{Matrix.rows (ref parallel)}x{Matrix.cols (ref parallel)} {digest (ref sequential) == digest (ref parallel)} {deref (Matrix.at 129 127 (ref parallel))}"
 ```
 
 実行結果:
@@ -259,7 +259,7 @@ let m = Matrix.init 2 3 (\row col -> row * 10 + col)
 let buffer = Gpu.from_array (ref device) (Matrix.as_array (ref m))
 let doubled = Gpu.map (ref device) (\x -> x * 2) buffer
 let result = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (Gpu.to_array doubled)
-deref (Matrix.at (ref result) 1 2)
+deref (Matrix.at 1 2 (ref result))
 ```
 
 実行結果:
@@ -291,7 +291,7 @@ deref (Matrix.at (ref result) 1 2)
 Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (deref (Matrix.as_array (ref m)))
 ```
 
-- `let n = m` の後で `m` を使うと `E1012` です。`Matrix.to_array m` と `Matrix.set m …` の後も同じです。
+- `let n = m` の後で `m` を使うと `E1012` です。`Matrix.to_array m` と `Matrix.set … m` の後も同じです。
 - `at`・`row`・`as_array` の戻り値は、元の行列を共有借用します。借用が生きている間に行列を move・置換・`set` すると `E1014` です。
 - 借用を関数の外へ返そうとすると `E1013` です。
 - [MatrixView](./matrix-view.md) や [Tensor](./tensor.md) の窓も、持ち主の行列を借ります。同じ規則です。
@@ -305,12 +305,12 @@ Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (deref (Matrix.as_ar
 | `of_array` | `i64 -> i64 -> ['a] -> Matrix<'a>` |
 | `init` | `i64 -> i64 -> (i64 -> i64 -> 'a) -> Matrix<'a>` |
 | `rows` / `cols` | `ref Matrix<'a> -> i64` |
-| `at` | `ref Matrix<'a> -> i64 -> i64 -> ref 'a` |
-| `get` | `Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Maybe<'a>` |
-| `row` | `ref Matrix<'a> -> i64 -> ref ['a]` |
+| `at` | `i64 -> i64 -> ref Matrix<'a> -> ref 'a` |
+| `get` | `Copy<'a> => i64 -> i64 -> ref Matrix<'a> -> Maybe<'a>` |
+| `row` | `i64 -> ref Matrix<'a> -> ref ['a]` |
 | `as_array` | `ref Matrix<'a> -> ref ['a]` |
 | `to_array` | `Matrix<'a> -> ['a]` |
-| `set` | `Matrix<'a> -> i64 -> i64 -> 'a -> Matrix<'a>` |
+| `set` | `i64 -> i64 -> 'a -> Matrix<'a> -> Matrix<'a>` |
 | `map` | `Copy<'a> => ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>` |
 | `fold` | `Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref Matrix<'a> -> 'state` |
 | `transpose` | `Copy<'a> => ref Matrix<'a> -> Matrix<'a>` |
@@ -319,6 +319,29 @@ Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (deref (Matrix.as_ar
 | `mul_fma` | `Float<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>` |
 | `mul_parallel` | `(Numeric<'a>, Send<'a>) => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>` |
 | `mul_fma_parallel` | `(Float<'a>, Send<'a>) => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>` |
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読む行列や書き換える行列は、必ず最後の引数です。`ref m |> Matrix.row 1` のようにパイプで渡せ、`Matrix.set 0 1 10 >> Matrix.set 1 0 20` のように一部だけ渡した関数を合成できます。ほかの引数（行、列、添字、値）は行列の前に、`at row col m`・`set row col value m` の順で置きます。`map transform m` と `fold folder initial m` も行列が最後です。`add` や `mul` のように 2 つの行列を取る関数は、左、右の順に並べるので、右の行列が最後の引数です。
+
+```tsuzuri run=top%3D101%20last%3D77%20found%3D99
+let edit = Matrix.set 0 1 99 >> Matrix.set 1 2 77
+let m = Matrix.init 2 3 (\row col -> row * 10 + col) |> edit
+let top = ref m |> Matrix.row 0
+let last = ref m |> Matrix.at 1 2
+let found = ref m |> Matrix.get 0 1 |> Maybe.default_value 0
+$"top={Array.sum top} last={deref last} found={found}"
+```
+
+実行結果:
+
+```text
+top=101 last=77 found=99
+```
+
+`>>` で合成した関数は、前の関数が返した行列を、次の関数が借りて受け取ります。借りた一時の行列の中を指す参照を返す関数（`at`、`row`、`as_array`）につなぐと、参照が一時の行列より長生きしてしまうので `E1013` です。行列を `let` に束縛してから、上の例のように `ref m |> Matrix.at 1 2` と書きます。
 
 ## 計算量
 

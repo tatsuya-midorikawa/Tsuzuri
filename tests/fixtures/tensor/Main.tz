@@ -38,12 +38,12 @@ export def ops :: i64 -> i64 -> i64 -> i64
 fn ops a b c =
     let t = Tensor.init [a, b, c] element
     let v = Tensor.view (ref t)
-    let rotated = Tensor.permute (ref v) [2, 0, 1]
-    let spun = Tensor.permute (ref v) [1, 2, 0]
-    let reversed = Tensor.permute (ref v) [2, 1, 0]
-    let swapped = Tensor.permute (ref v) [0, 2, 1]
-    let back = Tensor.permute (ref rotated) [1, 2, 0]
-    let first = Tensor.narrow (ref v) 0 1 (a - 1)
+    let rotated = Tensor.permute [2, 0, 1] (ref v)
+    let spun = Tensor.permute [1, 2, 0] (ref v)
+    let reversed = Tensor.permute [2, 1, 0] (ref v)
+    let swapped = Tensor.permute [0, 2, 1] (ref v)
+    let back = Tensor.permute [1, 2, 0] (ref rotated)
+    let first = Tensor.narrow 0 1 (a - 1) (ref v)
     let mut total = 0
     total = mix total (digest (ref v))
     total = mix total (digest (ref rotated))
@@ -51,21 +51,21 @@ fn ops a b c =
     total = mix total (digest (ref reversed))
     total = mix total (digest (ref swapped))
     total = mix total (digest (ref back))
-    total = mix total (once (Tensor.index_axis (ref v) 0 (a - 1)))
-    total = mix total (once (Tensor.index_axis (ref v) 1 (b - 1)))
-    total = mix total (once (Tensor.index_axis (ref v) 2 (c - 1)))
-    total = mix total (once (Tensor.index_axis (ref rotated) 1 (a - 1)))
-    total = mix total (once (Tensor.narrow (ref v) 1 1 (b - 1)))
-    total = mix total (once (Tensor.narrow (ref v) 2 1 (c - 1)))
-    total = mix total (once (Tensor.narrow (ref reversed) 0 1 (c - 1)))
+    total = mix total (once (Tensor.index_axis 0 (a - 1) (ref v)))
+    total = mix total (once (Tensor.index_axis 1 (b - 1) (ref v)))
+    total = mix total (once (Tensor.index_axis 2 (c - 1) (ref v)))
+    total = mix total (once (Tensor.index_axis 1 (a - 1) (ref rotated)))
+    total = mix total (once (Tensor.narrow 1 1 (b - 1) (ref v)))
+    total = mix total (once (Tensor.narrow 2 1 (c - 1) (ref v)))
+    total = mix total (once (Tensor.narrow 0 1 (c - 1) (ref reversed)))
     total = mix total (digest (ref first))
-    total = mix total (once (Tensor.reshape_view (ref v) [a * b, c]))
-    total = mix total (once (Tensor.reshape_view (ref v) [a, b * c]))
-    total = mix total (once (Tensor.reshape_view (ref v) [a * b * c]))
-    total = mix total (once (Tensor.reshape_view (ref v) [1, a * b * c, 1]))
-    total = mix total (once (Tensor.reshape_view (ref first) [(a - 1) * b, c]))
-    let column = Tensor.narrow (ref v) 2 0 1
-    total = mix total (once (Tensor.index_axis (ref column) 2 0))
+    total = mix total (once (Tensor.reshape_view [a * b, c] (ref v)))
+    total = mix total (once (Tensor.reshape_view [a, b * c] (ref v)))
+    total = mix total (once (Tensor.reshape_view [a * b * c] (ref v)))
+    total = mix total (once (Tensor.reshape_view [1, a * b * c, 1] (ref v)))
+    total = mix total (once (Tensor.reshape_view [(a - 1) * b, c] (ref first)))
+    let column = Tensor.narrow 2 0 1 (ref v)
+    total = mix total (once (Tensor.index_axis 2 0 (ref column)))
     total
 
 // map and to_tensor produce contiguous tensors whatever the layout of the window.
@@ -73,10 +73,10 @@ export def maps :: i64 -> i64 -> i64 -> i64
 fn maps a b c =
     let t = Tensor.init [a, b, c] element
     let v = Tensor.view (ref t)
-    let rotated = Tensor.permute (ref v) [2, 0, 1]
+    let rotated = Tensor.permute [2, 0, 1] (ref v)
     let doubled = Tensor.map (\x -> x * 2 + 1) (ref v)
     let packed = Tensor.to_tensor (ref rotated)
-    let tail = Tensor.narrow (ref v) 2 1 (c - 1)
+    let tail = Tensor.narrow 2 1 (c - 1) (ref v)
     let slice = Tensor.map (\x -> x + 5) (ref tail)
     let doubled_view = Tensor.view (ref doubled)
     let packed_view = Tensor.view (ref packed)
@@ -112,13 +112,13 @@ fn empties =
     total = mix total (digest (ref fv))
     total = mix total (digest (ref sv))
     total = mix total (digest (ref nv))
-    total = mix total (once (Tensor.permute (ref nv) [2, 0, 1]))
-    total = mix total (once (Tensor.index_axis (ref nv) 0 1))
-    total = mix total (once (Tensor.index_axis (ref nv) 2 3))
-    total = mix total (once (Tensor.narrow (ref ev) 1 1 2))
-    total = mix total (once (Tensor.reshape_view (ref nv) [8, 0]))
-    total = mix total (once (Tensor.reshape_view (ref sv) [1, 1, 1]))
-    total = mix total (once (Tensor.reshape_view (ref fv) [0, 5]))
+    total = mix total (once (Tensor.permute [2, 0, 1] (ref nv)))
+    total = mix total (once (Tensor.index_axis 0 1 (ref nv)))
+    total = mix total (once (Tensor.index_axis 2 3 (ref nv)))
+    total = mix total (once (Tensor.narrow 1 1 2 (ref ev)))
+    total = mix total (once (Tensor.reshape_view [8, 0] (ref nv)))
+    total = mix total (once (Tensor.reshape_view [1, 1, 1] (ref sv)))
+    total = mix total (once (Tensor.reshape_view [0, 5] (ref fv)))
     let mapped = Tensor.map (\x -> x + 1) (ref nv)
     total = mix total (Array.length (Tensor.as_array (ref mapped)))
     let moved = Tensor.reshape [0, 3, 3] (Tensor.of_array [3, 0] (new [i64](0, _ -> 0)))
@@ -137,9 +137,9 @@ fn matrices rows cols =
     let t = Tensor.of_matrix m
     let v = Tensor.view (ref t)
     let windowed = Tensor.as_matrix_view (ref v)
-    let flipped = Tensor.permute (ref v) [1, 0]
+    let flipped = Tensor.permute [1, 0] (ref v)
     let flipped_window = Tensor.as_matrix_view (ref flipped)
-    let inner = MatrixView.sub windowed 1 1 (rows - 1) (cols - 1)
+    let inner = MatrixView.sub 1 1 (rows - 1) (cols - 1) windowed
     let back = Tensor.of_matrix_view inner
     let mut total = 0
     total = mix total (digest (ref v))
@@ -173,13 +173,13 @@ fn owned_tensor n =
     let words = Tensor.init [n, 2] (\i -> $"s{i}")
     let flat = Tensor.reshape [2, n] words
     let v = Tensor.view (ref flat)
-    let p = Tensor.permute (ref v) [1, 0]
+    let p = Tensor.permute [1, 0] (ref v)
     let mut total = 0
     for i in 0i64 .. (n - 1) do
         for j in 0i64 .. 1 do
-            let word = Tensor.at (ref p) [i, j]
+            let word = Tensor.at [i, j] (ref p)
             total = mix total word.length
-    let rest = Tensor.index_axis (ref p) 1 1
+    let rest = Tensor.index_axis 1 1 (ref p)
     mix total (Tensor.count (ref rest) * 100 + Tensor.rank (ref rest))
 
 // get returns None outside the extents and for an index of the wrong length.
@@ -190,13 +190,13 @@ fn lookups =
     let mut total = 0
     for i in (-1) .. 2 do
         for j in (-1) .. 3 do
-            total = mix total (Maybe.default_value (-1) (Tensor.get (ref v) [i, j]))
-    total = mix total (Maybe.default_value (-1) (Tensor.get (ref v) [1]))
-    total = mix total (Maybe.default_value (-1) (Tensor.get (ref v) [1, 1, 1]))
-    total = mix total (Maybe.default_value (-1) (Tensor.get (ref v) []))
+            total = mix total (Maybe.default_value (-1) (Tensor.get [i, j] (ref v)))
+    total = mix total (Maybe.default_value (-1) (Tensor.get [1] (ref v)))
+    total = mix total (Maybe.default_value (-1) (Tensor.get [1, 1, 1] (ref v)))
+    total = mix total (Maybe.default_value (-1) (Tensor.get [] (ref v)))
     let scalar = Tensor.init [] element
     let sv = Tensor.view (ref scalar)
-    mix total (Maybe.default_value (-1) (Tensor.get (ref sv) []))
+    mix total (Maybe.default_value (-1) (Tensor.get [] (ref sv)))
 
 // Windows with no elements next to an axis of 2^62 or 2^31 + 2^31 positions: fold, map and to_tensor return at once.
 // fold used to walk the empty axis (forever).
@@ -206,8 +206,8 @@ fn huge_empty =
     let cube = Tensor.init [2147483648, 2147483648, 0] element
     let tv = Tensor.view (ref tall)
     let cv = Tensor.view (ref cube)
-    let flipped = Tensor.permute (ref tv) [1, 0]
-    let reshaped = Tensor.reshape_view (ref tv) [0, 4611686018427387904]
+    let flipped = Tensor.permute [1, 0] (ref tv)
+    let reshaped = Tensor.reshape_view [0, 4611686018427387904] (ref tv)
     let mapped = Tensor.map (\x -> x + 1) (ref tv)
     let packed = Tensor.to_tensor (ref cv)
     let mapped_view = Tensor.view (ref mapped)
@@ -254,56 +254,56 @@ export def at_trap :: i64 -> i64 -> i64 -> i64
 fn at_trap i j k =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
-    deref (Tensor.at (ref v) [i, j, k])
+    deref (Tensor.at [i, j, k] (ref v))
 
 export def at_rank_trap :: i64
 fn at_rank_trap =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
-    deref (Tensor.at (ref v) [1, 1])
+    deref (Tensor.at [1, 1] (ref v))
 
 export def permute_trap :: i64 -> i64 -> i64 -> i64
 fn permute_trap x y z =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
-    rank_of (Tensor.permute (ref v) [x, y, z])
+    rank_of (Tensor.permute [x, y, z] (ref v))
 
 export def permute_rank_trap :: i64
 fn permute_rank_trap =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
-    rank_of (Tensor.permute (ref v) [0, 1])
+    rank_of (Tensor.permute [0, 1] (ref v))
 
 export def index_axis_trap :: i64 -> i64 -> i64
 fn index_axis_trap axis position =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
-    rank_of (Tensor.index_axis (ref v) axis position)
+    rank_of (Tensor.index_axis axis position (ref v))
 
 export def index_axis_scalar_trap :: i64
 fn index_axis_scalar_trap =
     let t = Tensor.init [] element
     let v = Tensor.view (ref t)
-    rank_of (Tensor.index_axis (ref v) 0 0)
+    rank_of (Tensor.index_axis 0 0 (ref v))
 
 export def narrow_trap :: i64 -> i64 -> i64 -> i64
 fn narrow_trap axis start length =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
-    rank_of (Tensor.narrow (ref v) axis start length)
+    rank_of (Tensor.narrow axis start length (ref v))
 
 export def reshape_view_trap :: i64 -> i64 -> i64
 fn reshape_view_trap rows cols =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
-    rank_of (Tensor.reshape_view (ref v) [rows, cols])
+    rank_of (Tensor.reshape_view [rows, cols] (ref v))
 
 export def reshape_view_strided_trap :: i64
 fn reshape_view_strided_trap =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
-    let flipped = Tensor.permute (ref v) [2, 1, 0]
-    rank_of (Tensor.reshape_view (ref flipped) [24])
+    let flipped = Tensor.permute [2, 1, 0] (ref v)
+    rank_of (Tensor.reshape_view [24] (ref flipped))
 
 export def to_matrix_trap :: i64
 fn to_matrix_trap =

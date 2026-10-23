@@ -25,7 +25,7 @@ fn emits(source: &str) -> [String; 2] {
     })
 }
 
-const ACCEPTED: &str = "let a = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]\nlet t = Matrix.transpose (ref a)\nlet p = Matrix.mul (ref a) (ref t)\nlet r = Matrix.row (ref p) 1\nlet s = Matrix.add (ref p) (ref p)\nlet flat = Matrix.to_array s\nArray.sum r + deref (Matrix.at (ref p) 0 1) + flat[3] + Maybe.get (Matrix.get (ref p) 1 0)";
+const ACCEPTED: &str = "let a = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]\nlet t = Matrix.transpose (ref a)\nlet p = Matrix.mul (ref a) (ref t)\nlet r = Matrix.row 1 (ref p)\nlet s = Matrix.add (ref p) (ref p)\nlet flat = Matrix.to_array s\nArray.sum r + deref (Matrix.at 0 1 (ref p)) + flat[3] + Maybe.get (Matrix.get 1 0 (ref p))";
 
 const PREFIX: &str = "let m = Matrix.init 2 3 (\\i j -> i + j)\n";
 
@@ -67,7 +67,7 @@ fn matrix_is_an_opaque_noncopy_std_record() {
 #[test]
 fn matrix_borrows_follow_array_rules() {
     emits(&format!(
-        "{PREFIX}let p = Matrix.mul (ref m) (ref (Matrix.transpose (ref m)))\nlet r = Matrix.row (ref p) 1\nlet s = Matrix.add (ref p) (ref p)\nArray.sum r + Matrix.rows (ref s)"
+        "{PREFIX}let p = Matrix.mul (ref m) (ref (Matrix.transpose (ref m)))\nlet r = Matrix.row 1 (ref p)\nlet s = Matrix.add (ref p) (ref p)\nArray.sum r + Matrix.rows (ref s)"
     ));
     emits(&format!(
         "{PREFIX}let again = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (Matrix.to_array m)\nMatrix.rows (ref again)"
@@ -76,7 +76,7 @@ fn matrix_borrows_follow_array_rules() {
         "{PREFIX}let copy = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (deref (Matrix.as_array (ref m)))\nMatrix.rows (ref m) + Matrix.rows (ref copy)"
     ));
     let message = rejects(
-        &format!("{PREFIX}let r = Matrix.row (ref m) 0\nlet n = m\nr[0]"),
+        &format!("{PREFIX}let r = Matrix.row 0 (ref m)\nlet n = m\nr[0]"),
         "E1014",
     );
     assert!(
@@ -101,8 +101,8 @@ fn matrix_borrows_follow_array_rules() {
     );
     // The borrows a function returns must outlive the function: a borrow of its own local matrix is rejected.
     for (result, call) in [
-        ("ref { r } i64", "Matrix.at (ref m) 0 0"),
-        ("ref { r } [i64]", "Matrix.row (ref m) 0"),
+        ("ref { r } i64", "Matrix.at 0 0 (ref m)"),
+        ("ref { r } [i64]", "Matrix.row 0 (ref m)"),
         ("ref { r } [i64]", "Matrix.as_array (ref m)"),
     ] {
         let source = format!(
@@ -115,7 +115,7 @@ fn matrix_borrows_follow_array_rules() {
         );
     }
     emits(
-        "def keep :: i64 -> i64\nfn keep n =\n    let m = Matrix.init 1 1 (\\i j -> n)\n    deref (Matrix.at (ref m) 0 0)\n0",
+        "def keep :: i64 -> i64\nfn keep n =\n    let m = Matrix.init 1 1 (\\i j -> n)\n    deref (Matrix.at 0 0 (ref m))\n0",
     );
 }
 
@@ -123,8 +123,8 @@ fn matrix_borrows_follow_array_rules() {
 fn matrix_constraints_match_array_apis() {
     let words = "let w = Matrix.init 1 2 (\\i j -> \"x\")\n";
     for source in [
-        "let s = Matrix.at (ref w) 0 1\ns.length",
-        "let r = Matrix.row (ref w) 0\nr.length",
+        "let s = Matrix.at 0 1 (ref w)\ns.length",
+        "let r = Matrix.row 0 (ref w)\nr.length",
         "Array.length (ref (Matrix.to_array w))",
         "Matrix.rows (ref w) + Matrix.cols (ref w)",
     ] {
@@ -134,7 +134,7 @@ fn matrix_constraints_match_array_apis() {
         "let n = Matrix.map (\\s -> 1) (ref w)\nMatrix.rows (ref n)",
         "Matrix.fold (\\total s -> total + 1) 0 (ref w)",
         "let t = Matrix.transpose (ref w)\nMatrix.rows (ref t)",
-        "Maybe.is_some (ref (Matrix.get (ref w) 0 0))",
+        "Maybe.is_some (ref (Matrix.get 0 0 (ref w)))",
         "let s = Matrix.add (ref w) (ref w)\nMatrix.rows (ref s)",
         "let p = Matrix.mul (ref w) (ref w)\nMatrix.rows (ref p)",
     ] {
@@ -299,21 +299,21 @@ fn matrices_move_through_gpu_cpu_reference_buffers() {
     // The public composition documented in matrix.md: flat arrays in and out of a Gpu buffer. There is
     // no matrix-product kernel; Gpu.map is element-wise.
     emits(
-        "let device = Result.get (Gpu.request Gpu.CpuReference)\nlet m = Matrix.init 2 3 (\\row col -> row * 10 + col)\nlet buffer = Gpu.from_array (ref device) (Matrix.as_array (ref m))\nlet doubled = Gpu.map (ref device) (\\x -> x * 2) buffer\nlet result = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (Gpu.to_array doubled)\nderef (Matrix.at (ref result) 1 2)",
+        "let device = Result.get (Gpu.request Gpu.CpuReference)\nlet m = Matrix.init 2 3 (\\row col -> row * 10 + col)\nlet buffer = Gpu.from_array (ref device) (Matrix.as_array (ref m))\nlet doubled = Gpu.map (ref device) (\\x -> x * 2) buffer\nlet result = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (Gpu.to_array doubled)\nderef (Matrix.at 1 2 (ref result))",
     );
 }
 
 #[test]
 fn set_replaces_an_element_of_a_consumed_matrix() {
     emits(
-        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet m = Matrix.set m 1 1 9\nderef (Matrix.at (ref m) 1 1)",
+        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet m = Matrix.set 1 1 9 m\nderef (Matrix.at 1 1 (ref m))",
     );
     rejects(
-        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet n = Matrix.set m 0 0 1\nMatrix.rows (ref m)",
+        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet n = Matrix.set 0 0 1 m\nMatrix.rows (ref m)",
         "E1012",
     );
     let message = rejects(
-        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet r = Matrix.row (ref m) 0\nlet n = Matrix.set m 0 0 1\nr[0]",
+        "let m = Matrix.init 2 2 (\\i j -> i + j)\nlet r = Matrix.row 0 (ref m)\nlet n = Matrix.set 0 0 1 m\nr[0]",
         "E1014",
     );
     assert!(

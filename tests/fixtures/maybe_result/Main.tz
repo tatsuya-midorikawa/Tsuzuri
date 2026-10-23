@@ -121,21 +121,21 @@ fn owned_loop_failures =
 
 export def remaining_functions :: i64
 fn remaining_functions =
-    let first = Maybe.or_else None (_unit -> Some 10)
+    let first = Maybe.or_else (_unit -> Some 10) None
     let missing: Result<i64, string> = Error ("ba" + "d")
     assert (Result.is_error (&missing))
-    let second = Result.or_else missing (_unit -> Ok 11)
+    let second = Result.or_else (_unit -> Ok 11) missing
     let success: Result<i64, string> = Ok 21
-    let third = Result.or_else success (_unit -> unreachable ())
+    let third = Result.or_else (_unit -> unreachable ()) success
     assert (Result.is_ok (&third))
-    let third = Result.bind (Result.map (n -> n + 1) third) (n -> Ok (n - 1))
+    let third = Result.bind (n -> Ok (n - 1)) (Result.map (n -> n + 1) third)
     Maybe.get first + Result.get second + Result.default_value 0 third
 
 export def defaults :: i64
 fn defaults =
     let first = Maybe.default_with (_unit -> 0 / 0) (Some 10)
     let second = Maybe.default_with (_unit -> 10) None
-    let third = Maybe.get (Maybe.or_else (Some 10) (_unit -> unreachable ()))
+    let third = Maybe.get (Maybe.or_else (_unit -> unreachable ()) (Some 10))
     let result: Result<i64, string> = Ok 12
     let fourth = Result.default_with (_unit -> 0 / 0) result
     first + second + third + fourth
@@ -159,12 +159,12 @@ fn owned count =
     for _index in 1 .. count do
         let maybe = Some ("ab" + "c")
         let length = Maybe.get (Maybe.map_ref size (&maybe))
-        let copy = Maybe.get (Maybe.bind_ref (&maybe) (text -> Some (clone_string text)))
+        let copy = Maybe.get (Maybe.bind_ref (text -> Some (clone_string text)) (&maybe))
         let filtered = Maybe.filter (text -> size text == 3) maybe
-        let joined = Maybe.get (Maybe.bind filtered (text -> Some (text + "!")))
+        let joined = Maybe.get (Maybe.bind (text -> Some (text + "!")) filtered)
         let result: Result<string, i64> = Ok copy
         let mapped = Result.map_ref size (&result)
-        let bound = Result.bind_ref (&result) (text -> Ok (clone_string text))
+        let bound = Result.bind_ref (text -> Ok (clone_string text)) (&result)
         let error: Result<string, string> = Error ("ba" + "d")
         let error = Result.map_error (text -> text + "!") error
         total = total + length + joined.length + Result.get mapped +

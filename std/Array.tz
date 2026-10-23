@@ -902,13 +902,13 @@ fn keep_new projection known known_codes values =
     while index < values.length do
         let key = projection values[index]
         if reflexive (ref key) then
-            if !(HashSet.contains_ref (ref seen) (ref key)) then
-                seen = HashSet.insert seen key
+            if !(HashSet.contains_ref (ref key) (ref seen)) then
+                seen = HashSet.insert key seen
                 kept = Vec.push values[index] kept
         else
             let code = Hash.hash (ref key)
-            if !(HashSet.contains_ref (ref seen_codes) (ref code)) then
-                seen_codes = HashSet.insert seen_codes code
+            if !(HashSet.contains_ref (ref code) (ref seen_codes)) then
+                seen_codes = HashSet.insert code seen_codes
                 kept = Vec.push values[index] kept
         index = index + 1
     Vec.to_array kept
@@ -924,10 +924,10 @@ fn except excluded values =
     while index < excluded.length do
         let value = excluded[index]
         if reflexive (ref value) then
-            if !(HashSet.contains_ref (ref seen) (ref value)) then seen = HashSet.insert seen value
+            if !(HashSet.contains_ref (ref value) (ref seen)) then seen = HashSet.insert value seen
         else
             let code = Hash.hash (ref value)
-            if !(HashSet.contains_ref (ref seen_codes) (ref code)) then seen_codes = HashSet.insert seen_codes code
+            if !(HashSet.contains_ref (ref code) (ref seen_codes)) then seen_codes = HashSet.insert code seen_codes
         index = index + 1
     keep_new (\value -> value) seen seen_codes values
 
@@ -944,19 +944,19 @@ fn key_groups projection values =
         let key = projection values[index]
         let mut group = -1
         if reflexive (ref key) then
-            match HashMap.get_ref (ref groups) (ref key) with
+            match HashMap.get_ref (ref key) (ref groups) with
             | Maybe.Some found -> group = found
             | Maybe.None ->
                 group = Vec.length (ref keys)
-                groups = HashMap.insert groups key group
+                groups = HashMap.insert key group groups
                 keys = Vec.push key keys
         else
             let code = Hash.hash (ref key)
-            match HashMap.get_ref (ref code_groups) (ref code) with
+            match HashMap.get_ref (ref code) (ref code_groups) with
             | Maybe.Some found -> group = found
             | Maybe.None ->
                 group = Vec.length (ref keys)
-                code_groups = HashMap.insert code_groups code group
+                code_groups = HashMap.insert code group code_groups
                 keys = Vec.push key keys
         owners = Vec.push group owners
         index = index + 1

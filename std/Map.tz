@@ -27,22 +27,22 @@ fn lower_bound map key =
 private def found :: Ord<'key> => ref Map<'key, 'value> -> ref 'key -> i64 -> bool
 fn found map key index = index < length map && !(Ord.lt key (ref map.entries[index].key))
 
-def contains_key :: Ord<'key> => ref Map<'key, 'value> -> 'key -> bool
-fn contains_key map key = found map (ref key) (lower_bound map (ref key))
+def contains_key :: Ord<'key> => 'key -> ref Map<'key, 'value> -> bool
+fn contains_key key map = found map (ref key) (lower_bound map (ref key))
 
-def get :: (Ord<'key>, Copy<'value>) => ref Map<'key, 'value> -> 'key -> Maybe<'value>
-fn get map key =
+def get :: (Ord<'key>, Copy<'value>) => 'key -> ref Map<'key, 'value> -> Maybe<'value>
+fn get key map =
 	let index = lower_bound map (ref key)
 	if found map (ref key) index then Maybe.Some map.entries[index].value else Maybe.None
 
-def at :: Ord<'key> => ref Map<'key, 'value> -> 'key -> ref 'value
-fn at map key =
+def at :: Ord<'key> => 'key -> ref Map<'key, 'value> -> ref 'value
+fn at key map =
 	let index = lower_bound map (ref key)
 	assert (found map (ref key) index)
 	ref map.entries[index].value
 
-def insert :: Ord<'key> => Map<'key, 'value> -> 'key -> 'value -> Map<'key, 'value>
-fn insert map key value =
+def insert :: Ord<'key> => 'key -> 'value -> Map<'key, 'value> -> Map<'key, 'value>
+fn insert key value map =
 	let index = lower_bound (ref map) (ref key)
 	let count = length (ref map)
 	if found (ref map) (ref key) index then
@@ -60,8 +60,8 @@ fn insert map key value =
 			position = position - 1
 		Map { entries: entries }
 
-def remove :: Ord<'key> => Map<'key, 'value> -> 'key -> Map<'key, 'value>
-fn remove map key =
+def remove :: Ord<'key> => 'key -> Map<'key, 'value> -> Map<'key, 'value>
+fn remove key map =
 	let index = lower_bound (ref map) (ref key)
 	let count = length (ref map)
 	if found (ref map) (ref key) index then

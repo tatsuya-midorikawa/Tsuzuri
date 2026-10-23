@@ -211,7 +211,7 @@ fn implicit_builders_use_signatures_and_generic_composition_operations() {
 
 #[test]
 fn implicit_computations_reject_ambiguity_and_preserve_safety_limits() {
-    let builder = "def Return :: 'a -> Maybe<'a>\nfn Return value = Some value\ndef Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>\nfn Bind value next = Maybe.bind value next";
+    let builder = "def Return :: 'a -> Maybe<'a>\nfn Return value = Some value\ndef Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>\nfn Bind value next = Maybe.bind next value";
     let error = analyze_modules(&[
         ("First.tc", builder),
         ("Second.tc", builder),

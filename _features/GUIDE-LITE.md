@@ -86,6 +86,7 @@ fn rejects(source: &str, code: &str) {
 
 - 新しい予約語は足さない（文脈キーワードか属性にする）。字句・構文の変更は `Edition`（D-45・D-54）を引数に取る入口を通す。`src/syntax_codec.rs` の符号化と `FRONTEND_FORMAT`（AST の符号化を変えるたびに 1 上げる）を忘れない。
 - 新しい組み込み関数は `Builtin::ALL`・`name`・`signature`・生成（`emit_builtin`）・効果の分類（A19・A20 の表）を全部更新する。
+- std や組み込みに関数・モジュールを足すときは、操作する値（対象）を最後の引数にする（D-59）。新しい `std/` のファイルは `tests/std_argument_order.rs` の `MODULES` に分類する（足さないと赤になる）。資源のハンドルを先に取る例外は、理由を同じ表に書く。
 - 新しい CLI オプションは `src/main.rs` の引数解析と、`rejects_ambiguous_or_unused_arguments` のテスト、`driver.rs` の `BuildOptions::validate`（使えない組み合わせは黙って無視せず `E2000`）、README の CLI 表と `_tsuzuri/language-reference/compiler/option.md` を更新する（G35 の `check-cli-docs` が `--help` の旗を両方に求める）。
 - std に公開関数・モジュールを足すときは、G34 の Phase 3 が済んでいる木（`ls tests/std_examples.rs`）なら、足した公開関数の `///` に G34 の形式の例を付け、新しいモジュールをそのファイルの床の表（FLOORS）に足す。G35 の Phase 2 が済んでいる木（`ls tests/std_tags.rs`）で、完全にタグ付けしたモジュールの一覧（TAGGED）にあるモジュール（`Array`・`Vec`・`Map`・`Set`・`HashMap`・`HashSet`・`List`・`String`）へ公開関数を足すときは、`@complexity` も付ける（新しい関数には `@since` も）。足さないと、それぞれのテストが赤になる。
 - 新しい `.ll` を足したら `.gitignore` の `!src/runtime/<name>.ll` と `scripts/check-runtime-includes.sh`。`numeric.ll`・`math.ll` は生成物で手で直さない。

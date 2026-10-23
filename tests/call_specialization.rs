@@ -409,11 +409,11 @@ fn tail_forwarding_to_a_cycle_keeps_every_ret() {
          def rec self_local :: i64 -> Maybe<i64>
          fn rec self_local n = if n == 0 then Some 7 else { let r = self_local (n - 1); r }
          def guard :: i64 -> (i64 -> Maybe<i64>) -> Maybe<i64>
-         fn guard n k = if n < 0 then None else Maybe.bind (Some (n - 1)) k
+         fn guard n k = if n < 0 then None else Maybe.bind k (Some (n - 1))
          def rec descend :: i64 -> Maybe<i64>
          fn rec descend n = if n == 0 then Some 7 else guard n (\\m -> descend m)
          def rec count_down :: i64 -> Maybe<i64>
-         fn rec count_down n = if n == 0 then Some 7 else Maybe.bind (Some (n - 1)) (\\m -> count_down m)
+         fn rec count_down n = if n == 0 then Some 7 else Maybe.bind (\\m -> count_down m) (Some (n - 1))
          def apply_to :: (i64 -> Maybe<i64>) -> i64 -> Maybe<i64>
          fn apply_to f x = if x < 0 then None else f x
          def wrap :: bool -> i64 -> Maybe<i64>

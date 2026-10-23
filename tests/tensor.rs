@@ -27,7 +27,7 @@ fn emits(source: &str) -> [String; 2] {
 
 const BASE: &str = "let t = Tensor.init [2, 3, 4] (\\i -> i)\nlet v = Tensor.view (ref t)\n";
 
-const ACCEPTED: &str = "let t = Tensor.init [2, 3, 4] (\\i -> i)\nlet v = Tensor.view (ref t)\nlet p = Tensor.permute (ref v) [2, 0, 1]\nlet slice = Tensor.index_axis (ref v) 1 2\nlet window = Tensor.narrow (ref v) 2 1 2\nlet packed = Tensor.to_tensor (ref p)\nlet sum = Tensor.fold (\\acc x -> acc * 3 + x) 0 (ref slice)\nlet flat = Tensor.reshape_view (ref v) [6, 4]\nlet matrix = Tensor.as_matrix_view (ref flat)\nlet back = Tensor.of_matrix_view matrix\nlet mapped = Tensor.map (\\x -> x + 1) (ref window)\nlet mapped_view = Tensor.view (ref mapped)\nlet raw = [1, 2, 3, 4, 5, 6]\nlet borrowed = Tensor.borrow [3, 2] (ref raw)\nderef (Tensor.at (ref v) [1, 2, 3]) + deref (Tensor.at (ref p) [3, 1, 2]) + Tensor.rank (ref slice) + Tensor.count (ref window) + Maybe.get (Tensor.get (ref v) [1, 0, 0]) + (if Maybe.is_some (ref (Tensor.get (ref v) [2, 0, 0])) then 1 else 0) + deref (Array.at 5 (Tensor.as_array (ref packed))) + sum + deref (MatrixView.at matrix 5 3) + deref (Tensor.at (ref back) [4, 2]) + Array.length (Tensor.shape (ref mapped_view)) + deref (Tensor.at (ref borrowed) [2, 1]) + (if Tensor.is_contiguous (ref p) then 1 else 0)";
+const ACCEPTED: &str = "let t = Tensor.init [2, 3, 4] (\\i -> i)\nlet v = Tensor.view (ref t)\nlet p = Tensor.permute [2, 0, 1] (ref v)\nlet slice = Tensor.index_axis 1 2 (ref v)\nlet window = Tensor.narrow 2 1 2 (ref v)\nlet packed = Tensor.to_tensor (ref p)\nlet sum = Tensor.fold (\\acc x -> acc * 3 + x) 0 (ref slice)\nlet flat = Tensor.reshape_view [6, 4] (ref v)\nlet matrix = Tensor.as_matrix_view (ref flat)\nlet back = Tensor.of_matrix_view matrix\nlet mapped = Tensor.map (\\x -> x + 1) (ref window)\nlet mapped_view = Tensor.view (ref mapped)\nlet raw = [1, 2, 3, 4, 5, 6]\nlet borrowed = Tensor.borrow [3, 2] (ref raw)\nderef (Tensor.at [1, 2, 3] (ref v)) + deref (Tensor.at [3, 1, 2] (ref p)) + Tensor.rank (ref slice) + Tensor.count (ref window) + Maybe.get (Tensor.get [1, 0, 0] (ref v)) + (if Maybe.is_some (ref (Tensor.get [2, 0, 0] (ref v))) then 1 else 0) + deref (Array.at 5 (Tensor.as_array (ref packed))) + sum + deref (MatrixView.at 5 3 matrix) + deref (Tensor.at [4, 2] (ref back)) + Array.length (Tensor.shape (ref mapped_view)) + deref (Tensor.at [2, 1] (ref borrowed)) + (if Tensor.is_contiguous (ref p) then 1 else 0)";
 
 #[test]
 fn tensors_accept_the_documented_operations() {
@@ -37,7 +37,7 @@ fn tensors_accept_the_documented_operations() {
         "let m = Matrix.init 2 3 (\\i j -> i * 10 + j)\nlet t = Tensor.of_matrix m\nlet r = Tensor.reshape [3, 2] t\nlet length = Array.length (Tensor.as_array (ref r))\nlet back = Tensor.to_matrix r\nlet flat = Tensor.to_array (Tensor.of_array [2, 2] [1, 2, 3, 4])\nlength + Matrix.rows (ref back) + flat.length",
     );
     emits(
-        "let t = Tensor.of_array [] [7]\nlet v = Tensor.view (ref t)\nderef (Tensor.at (ref v) [])",
+        "let t = Tensor.of_array [] [7]\nlet v = Tensor.view (ref t)\nderef (Tensor.at [] (ref v))",
     );
 }
 
@@ -95,7 +95,7 @@ fn tensor_views_borrow_their_owner() {
     // Views made from a view keep borrowing the same owner.
     let message = rejects(
         &format!(
-            "{BASE}let p = Tensor.permute (ref v) [2, 0, 1]\nlet moved = t\nTensor.rank (ref p)"
+            "{BASE}let p = Tensor.permute [2, 0, 1] (ref v)\nlet moved = t\nTensor.rank (ref p)"
         ),
         "E1014",
     );
@@ -113,8 +113,8 @@ fn tensor_views_borrow_their_owner() {
 fn tensor_constraints_follow_array_rules() {
     let words = "let w = Tensor.init [2] (\\i -> \"x\")\nlet v = Tensor.view (ref w)\n";
     for source in [
-        "let s = Tensor.at (ref v) [1]\ns.length",
-        "let first = Tensor.index_axis (ref v) 0 1\nTensor.rank (ref first)",
+        "let s = Tensor.at [1] (ref v)\ns.length",
+        "let first = Tensor.index_axis 0 1 (ref v)\nTensor.rank (ref first)",
         "Tensor.count (ref v)",
     ] {
         emits(&format!("{words}{source}"));
@@ -122,7 +122,7 @@ fn tensor_constraints_follow_array_rules() {
     for source in [
         "let n = Tensor.to_tensor (ref v)\nlet view = Tensor.view (ref n)\nTensor.rank (ref view)",
         "Tensor.fold (\\total s -> total + 1) 0 (ref v)",
-        "Maybe.is_some (ref (Tensor.get (ref v) [0]))",
+        "Maybe.is_some (ref (Tensor.get [0] (ref v)))",
         "let n = Tensor.map (\\s -> 1) (ref v)\nlet view = Tensor.view (ref n)\nTensor.rank (ref view)",
     ] {
         let message = rejects(&format!("{words}{source}"), "E1005");

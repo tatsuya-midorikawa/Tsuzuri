@@ -442,9 +442,9 @@ fn consume count =
 export def combinators :: i64 -> i64
 fn combinators i =
     let first = Maybe.map (\s -> s + "!") (text_option i)
-    let second = Maybe.bind first (\s -> if s.length > 3 then Some (s + "?") else None)
+    let second = Maybe.bind (\s -> if s.length > 3 then Some (s + "?") else None) first
     let third = Maybe.filter (\s -> s.length > 4) second
-    let fourth = Maybe.or_else third (\() -> Some "fallback")
+    let fourth = Maybe.or_else (\() -> Some "fallback") third
     (Maybe.default_value "none" fourth).length
 
 // Each assignment drops the value that it replaces.

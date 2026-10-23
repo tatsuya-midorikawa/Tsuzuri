@@ -16,7 +16,7 @@
 
 ```tsuzuri run=ok%0Aalready-exists%0AZ.txt,a,b.txt%0AZ.txt,a,a/x.txt,b.txt%0Aother%0Anot-found%0Aok
 def copy :: ref string -> string
-fn copy text = Maybe.get (String.slice text 0 text.length)
+fn copy text = Maybe.get (String.slice 0 text.length text)
 
 def names_of :: Result<[string], Os.Error> -> string
 fn names_of result =

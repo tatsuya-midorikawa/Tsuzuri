@@ -57,7 +57,7 @@ fn parse text =
 	let fill_length = fill_units text
 	let fill_valid = fill_length != 1 || is_fill_unit text 0
 	let has_align = fill_length > 0 || is_align_at text 0
-	let fill = if fill_length > 0 then Maybe.get (String.slice text 0 fill_length) else " "
+	let fill = if fill_length > 0 then Maybe.get (String.slice 0 fill_length text) else " "
 	let align = if has_align then align_of text fill_length else AlignAuto
 	let mut index = if has_align then fill_length + 1 else 0
 	let plus = is_at text index '+'
@@ -104,4 +104,4 @@ fn pad spec text =
 			| AlignRight -> missing
 			| AlignCenter -> missing / 2
 			| _ -> 0
-		String.repeat (ref spec.fill) before + text + String.repeat (ref spec.fill) (missing - before)
+		String.repeat before (ref spec.fill) + text + String.repeat (missing - before) (ref spec.fill)

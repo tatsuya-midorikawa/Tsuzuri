@@ -190,7 +190,7 @@ fn decode text bytes utf8 =
 	while index < length do
 		offsets = Vec.push index offsets
 		if utf8 then
-			match Utf8String.decode_at bytes index with
+			match Utf8String.decode_at index bytes with
 			| (value, next) ->
 				codes = Vec.push (Utf8Char.to_u32 value as i64) codes
 				index = next
@@ -466,10 +466,10 @@ fn word_boundaries_utf8 text =
 	segment_offsets (ref none) text true true
 
 private def pieces :: ref string -> ref [i64] -> [string]
-fn pieces text offsets = new [string](offsets.length - 1, \index -> Maybe.get (String.slice text offsets[index] offsets[index + 1]))
+fn pieces text offsets = new [string](offsets.length - 1, \index -> Maybe.get (String.slice offsets[index] offsets[index + 1] text))
 
 private def pieces_utf8 :: ref utf8string -> ref [i64] -> [utf8string]
-fn pieces_utf8 text offsets = new [utf8string](offsets.length - 1, \index -> Maybe.get (Utf8String.slice text offsets[index] offsets[index + 1]))
+fn pieces_utf8 text offsets = new [utf8string](offsets.length - 1, \index -> Maybe.get (Utf8String.slice offsets[index] offsets[index + 1] text))
 
 /// The extended grapheme clusters of `text` (user-perceived characters).
 def graphemes :: ref string -> [string]

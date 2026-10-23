@@ -384,7 +384,7 @@ fn phase_two_instances_type_check() {
         accepts(&round_trip(ty));
     }
     accepts(
-        "union Color = Red | Green deriving (Encode, Decode, Eq, Ord, Hash)\nrecord Palette { by_name: Map<Color, f16>, used: HashSet<Color> } deriving (Encode, Decode)\ndef text :: ref Palette -> Result<utf8string, Json.Error>\nfn text palette = Json.serialize_pretty palette 2\n",
+        "union Color = Red | Green deriving (Encode, Decode, Eq, Ord, Hash)\nrecord Palette { by_name: Map<Color, f16>, used: HashSet<Color> } deriving (Encode, Decode)\ndef text :: ref Palette -> Result<utf8string, Json.Error>\nfn text palette = Json.serialize_pretty 2 palette\n",
     );
     // Decoding a map or set needs the key operations of its container.
     let message = rejects(&round_trip("Map<Json.Value, i64>"), "E1005");
@@ -392,7 +392,7 @@ fn phase_two_instances_type_check() {
     let message = rejects(&round_trip("HashSet<Json.Value>"), "E1005");
     assert!(message.contains("Hash<Json.Value>"), "{message}");
     accepts(
-        "def pretty :: ref Json.Value -> utf8string\nfn pretty value = Json.to_utf8string_pretty value 4\n",
+        "def pretty :: ref Json.Value -> utf8string\nfn pretty value = Json.to_utf8string_pretty 4 value\n",
     );
 }
 
@@ -466,10 +466,10 @@ fn json_attributes_parse_format_and_check() {
 #[test]
 fn streaming_reader_and_writer_type_check() {
     accepts(
-        "def count :: utf8string -> i64\nfn count text =\n    let mut total = 0\n    let mut state = Json.reader (ref text)\n    let mut going = true\n    while going do\n        match state with\n        | Ok reader ->\n            match Json.next (ref text) reader with\n            | Ok (event, after) ->\n                match event with\n                | Json.KeyToken token -> if Json.token_matches (ref text) (ref token) (ref \"id\") then total = total + 1\n                | Json.EndOfInput -> going = false\n                | _ -> ()\n                state = Ok after\n            | Error error ->\n                going = false\n                state = Error error\n        | Error error ->\n            going = false\n            state = Error error\n    total\n",
+        "def count :: utf8string -> i64\nfn count text =\n    let mut total = 0\n    let mut state = Json.reader (ref text)\n    let mut going = true\n    while going do\n        match state with\n        | Ok reader ->\n            match Json.next (ref text) reader with\n            | Ok (event, after) ->\n                match event with\n                | Json.KeyToken token -> if Json.token_matches (ref \"id\") (ref text) (ref token) then total = total + 1\n                | Json.EndOfInput -> going = false\n                | _ -> ()\n                state = Ok after\n            | Error error ->\n                going = false\n                state = Error error\n        | Error error ->\n            going = false\n            state = Error error\n    total\n",
     );
     accepts(
-        "def write :: unit -> Result<utf8string, Json.Error>\nfn write _unit = Result {\n    let! w0 = Json.open_array (Json.writer ())\n    let! w1 = Json.write_text w0 (ref \"a\")\n    let! w2 = Json.close_array w1\n    return! Json.finish w2\n}\n",
+        "def write :: unit -> Result<utf8string, Json.Error>\nfn write _unit = Result {\n    let! w0 = Json.open_array (Json.writer ())\n    let! w1 = Json.write_text (ref \"a\") w0\n    let! w2 = Json.close_array w1\n    return! Json.finish w2\n}\n",
     );
     for source in [
         "let reader = Json.Reader { position: 0, containers: Vec.empty(), keys: Vec.empty(), marks: Vec.empty(), state: 0 }\n0",

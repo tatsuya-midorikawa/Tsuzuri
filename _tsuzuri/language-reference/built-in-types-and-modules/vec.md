@@ -459,7 +459,7 @@ converted=[1, 2, 3, 4] sum=10
 
 ### 引数の順序
 
-.NET のメソッドは `list.Insert(index, item)` のように `List<T>` を受け手として書きます。Tsuzuri の関数は、受け手の `Vec` を最後の引数にして、残りの引数を .NET の順に並べます。
+.NET のメソッドは `list.Insert(index, item)` のように `List<T>` を受け手として書きます。Tsuzuri の関数は、受け手の `Vec` を最後の引数にして、残りの引数を .NET の順に並べます。標準ライブラリのほかのモジュールも同じ規則です（[標準ライブラリの引数の順序](./argument-order.md)）。
 
 | .NET | Tsuzuri |
 | --- | --- |

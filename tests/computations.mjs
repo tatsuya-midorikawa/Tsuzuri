@@ -379,7 +379,7 @@ fn parity_deep n = Maybe.default_value 0 (even_m n)
 def rec count_down :: i64 -> Maybe<i64>
 fn rec count_down n =
     if n == 0 then Some 7
-    else Maybe.bind (Some (n - 1)) (\m -> count_down m)
+    else Maybe.bind (\m -> count_down m) (Some (n - 1))
 export def bind_deep :: i64 -> i64
 fn bind_deep n = Maybe.default_value 0 (count_down n)
 def rec even_l :: i64 -> Maybe<i64> = \n -> if n == 0 then Some 1 else { let r = odd_l (n - 1); r }
@@ -387,7 +387,7 @@ and odd_l :: i64 -> Maybe<i64> = \n -> if n == 0 then None else { let r = even_l
 export def parity_local_deep :: i64 -> i64
 fn parity_local_deep n = Maybe.default_value 0 (even_l n)
 def guard :: i64 -> (i64 -> Maybe<i64>) -> Maybe<i64>
-fn guard n k = if n < 0 then None else Maybe.bind (Some (n - 1)) k
+fn guard n k = if n < 0 then None else Maybe.bind k (Some (n - 1))
 def rec descend :: i64 -> Maybe<i64>
 fn rec descend n =
     if n == 0 then Some 7

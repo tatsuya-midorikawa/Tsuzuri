@@ -475,19 +475,19 @@ fn error_pattern which =
     | 76 -> "(?:a{100}){100}"
     | 77 -> "(?:a{999}){10}a{8}"
     | 78 -> "(?:a{999}){10}a{7}"
-    | 79 -> String.repeat (ref "(") 65 + String.repeat (ref ")") 65
-    | 80 -> String.repeat (ref "(") 64 + String.repeat (ref ")") 64
-    | 81 -> String.repeat (ref "a") 65537
-    | 82 -> String.repeat (ref "a") 65536
-    | 83 -> String.repeat (ref "(a)") 209
-    | 84 -> String.repeat (ref "(a)") 208
-    | 85 -> String.repeat (ref "[\\w]") 82
-    | 86 -> String.repeat (ref "[\\w]") 81
-    | 87 -> String.repeat (ref "[") 1 + String.repeat (ref "\\w") 170 + String.repeat (ref "]") 1
-    | 88 -> String.repeat (ref "[") 1 + String.repeat (ref "\\w\\p{L}\\p{Alphabetic}\\d\\W") 2000 + String.repeat (ref "]") 1
-    | 89 -> String.repeat (ref "[") 1 + String.repeat (ref "\\w") 170 + String.repeat (ref "]") 1 + String.repeat (ref "[\\w]") 80
-    | 90 -> String.repeat (ref "[") 1 + String.repeat (ref "\\w") 170 + String.repeat (ref "]") 1 + String.repeat (ref "[\\w]") 81
-    | 91 -> String.repeat (ref "\\w") 2000
+    | 79 -> String.repeat 65 (ref "(") + String.repeat 65 (ref ")")
+    | 80 -> String.repeat 64 (ref "(") + String.repeat 64 (ref ")")
+    | 81 -> String.repeat 65537 (ref "a")
+    | 82 -> String.repeat 65536 (ref "a")
+    | 83 -> String.repeat 209 (ref "(a)")
+    | 84 -> String.repeat 208 (ref "(a)")
+    | 85 -> String.repeat 82 (ref "[\\w]")
+    | 86 -> String.repeat 81 (ref "[\\w]")
+    | 87 -> String.repeat 1 (ref "[") + String.repeat 170 (ref "\\w") + String.repeat 1 (ref "]")
+    | 88 -> String.repeat 1 (ref "[") + String.repeat 2000 (ref "\\w\\p{L}\\p{Alphabetic}\\d\\W") + String.repeat 1 (ref "]")
+    | 89 -> String.repeat 1 (ref "[") + String.repeat 170 (ref "\\w") + String.repeat 1 (ref "]") + String.repeat 80 (ref "[\\w]")
+    | 90 -> String.repeat 1 (ref "[") + String.repeat 170 (ref "\\w") + String.repeat 1 (ref "]") + String.repeat 81 (ref "[\\w]")
+    | 91 -> String.repeat 2000 (ref "\\w")
     | 92 -> "a{1000}"
     | 93 -> "a{0,1000}?"
     | 94 -> "a{1000,}"

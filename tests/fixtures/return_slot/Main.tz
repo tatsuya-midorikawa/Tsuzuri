@@ -123,7 +123,7 @@ export def slot_hold :: i64 -> i64
 fn slot_hold n = Maybe.default_value (-1) (hold n)
 
 def guard :: i64 -> (i64 -> Maybe<i64>) -> Maybe<i64>
-fn guard n k = if n < 0 then None else Maybe.bind (Some (n - 1)) k
+fn guard n k = if n < 0 then None else Maybe.bind k (Some (n - 1))
 
 def rec descend :: i64 -> Maybe<i64>
 fn rec descend n =
@@ -142,7 +142,7 @@ fn slot_parity n = Maybe.default_value 0 (even_m n)
 def rec count_down :: i64 -> Maybe<i64>
 fn rec count_down n =
     if n == 0 then Some 7
-    else Maybe.bind (Some (n - 1)) (\m -> count_down m)
+    else Maybe.bind (\m -> count_down m) (Some (n - 1))
 
 export def slot_count_down :: i64 -> i64
 fn slot_count_down n = Maybe.default_value (-1) (count_down n)

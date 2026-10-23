@@ -188,8 +188,8 @@ fn shape i =
     r#"export def shape :: i64 -> i64
 fn shape i =
     let mut map: HashMap<string, i64> = HashMap.empty()
-    map = HashMap.insert map "caf\u00e9" i
-    map = HashMap.insert map "plain" 2
+    map = HashMap.insert "caf\u00e9" i map
+    map = HashMap.insert "plain" 2 map
     HashMap.length (ref map)
 "#,
     r#"export def shape :: i64 -> i64

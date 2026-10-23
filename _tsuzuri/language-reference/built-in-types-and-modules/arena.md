@@ -15,7 +15,7 @@
 
 ## 基本の書き方
 
-`Arena.empty()` か `Arena.with_capacity count` で空の arena を作り、`Arena.insert arena value` で値を移します。`insert` は arena を消費し、新しい arena とハンドルの組を返します。ほかの値を指すには、そのハンドルをフィールドに入れます。
+`Arena.empty()` か `Arena.with_capacity count` で空の arena を作り、`Arena.insert value arena` で値を移します。`insert` は arena を消費し、新しい arena とハンドルの組を返します。ほかの値を指すには、そのハンドルをフィールドに入れます。
 
 次の例は、2 つのノードが互いを指す循環グラフを作り、ハンドルでたどります。`a` を挿入した時点では `b` のハンドルがまだないので、`b` を挿入した後で `Arena.update` を使い `a` に辺を足します。
 
@@ -30,14 +30,14 @@ fn link target node =
 def cycle :: i64
 fn cycle =
     let empty: Arena<Node> = Arena.empty()
-    match Arena.insert empty (Node { value: 1, edges: Vec.empty() }) with
+    match Arena.insert (Node { value: 1, edges: Vec.empty() }) empty with
     | (with_a, a) ->
-        match Arena.insert with_a (Node { value: 20, edges: Vec.push a (Vec.empty()) }) with
+        match Arena.insert (Node { value: 20, edges: Vec.push a (Vec.empty()) }) with_a with
         | (with_b, b) ->
-            let graph = Arena.update with_b a (link b)
-            let first = Arena.at (ref graph) a
-            let second = Arena.at (ref graph) first.edges[0]
-            let back = Arena.at (ref graph) second.edges[0]
+            let graph = Arena.update a (link b) with_b
+            let first = Arena.at a (ref graph)
+            let second = Arena.at first.edges[0] (ref graph)
+            let back = Arena.at second.edges[0] (ref graph)
             let mut total = 0
             for (handle, node) in Arena.iter (ref graph) do
                 total = total + node.value
@@ -57,21 +57,46 @@ cycle()
 
 引数なしの関数は `Arena.empty()` と書きます。`Arena.empty ()` は unit を渡すので `E1006` です。
 
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読み取る、または更新する arena は、必ず最後の引数です。`arena |> Arena.insert value` のようにパイプで渡せ、`Arena.update a f >> Arena.update b g` のように、arena だけが足りない関数を合成できます。ハンドルや値、`update` に渡す関数 `change` は、関数名が示す順で arena の前に並べます（`Arena.insert value arena`、`Arena.get handle (ref arena)`、`Arena.remove handle arena`、`Arena.update handle change arena`）。
+
+```tsuzuri run=value%3D42%20has%3Dtrue
+let empty: Arena<i64> = Arena.empty()
+match empty |> Arena.insert 40 with
+| (arena, handle) ->
+    let twice = Arena.update handle (\value -> value + 1) >> Arena.update handle (\value -> value + 1)
+    let updated = arena |> twice
+    let value = updated |> Arena.at handle
+    let has = updated |> Arena.contains handle
+    $"value={value} has={has}"
+```
+
+実行結果:
+
+```text
+value=42 has=true
+```
+
+`insert` は arena とハンドルの組を返すので、パイプの結果は `match` で分けます。arena を借用する関数（`contains`、`get`、`at`）に `updated |> Arena.at handle` と渡しても、`updated` は消費されません。`>>` で合成した関数は、前の関数が返した arena を、次の関数が借りて受け取ります。借りた一時の arena の中を指す参照を返す `at` や `get` につなぐと（`Arena.update handle f >> Arena.at handle`）、参照が一時の arena より長生きしてしまうので `E1013` です。arena を `let` に束縛してから渡します。
+
 ## ハンドルの有効性
 
 ハンドルは、arena ID・slot の添字・世代の 3 つの `i64` です。`remove` は slot の世代を 1 増やすので、古いハンドルは同じ slot が再利用された後も無効のままです。
 
 ```tsuzuri run=stale%3Dfalse%20fresh%3Dtrue%20missing%3Dnone
 let empty: Arena<string> = Arena.empty()
-match Arena.insert empty "first" with
+match Arena.insert "first" empty with
 | (arena, first) ->
-    match Arena.remove arena first with
+    match Arena.remove first arena with
     | (removed, _value) ->
-        match Arena.insert removed "second" with
+        match Arena.insert "second" removed with
         | (reused, second) ->
-            let stale = Arena.contains (ref reused) first
-            let fresh = Arena.contains (ref reused) second
-            let missing = match Arena.get (ref reused) first with
+            let stale = Arena.contains first (ref reused)
+            let fresh = Arena.contains second (ref reused)
+            let missing = match Arena.get first (ref reused) with
             | Maybe.Some _text -> "some"
             | Maybe.None -> "none"
             $"stale={stale} fresh={fresh} missing={missing}"
@@ -96,13 +121,13 @@ stale=false fresh=true missing=none
 let mut arena: Arena<i64> = Arena.empty()
 let mut handles: Vec<Arena.Handle<i64>> = Vec.empty()
 for value in 0i64 .. 4 do
-    match Arena.insert arena value with
+    match Arena.insert value arena with
     | (next, handle) ->
         arena = next
         handles = Vec.push handle handles
-match Arena.remove arena handles[1] with
+match Arena.remove handles[1] arena with
 | (removed, _one) ->
-    match Arena.insert removed 5 with
+    match Arena.insert 5 removed with
     | (filled, fifth) ->
         let mut text = ""
         for (_handle, value) in Arena.iter (ref filled) do
@@ -134,10 +159,10 @@ order=04235 reused=true
 
 ```tsuzuri run=42
 let empty: Arena<i64> = Arena.empty()
-match Arena.insert empty 40 with
+match Arena.insert 40 empty with
 | (arena, handle) ->
-    let updated = Arena.update arena handle (\value -> value + 2)
-    Task.run (task { return deref (Arena.at (ref updated) handle) })
+    let updated = Arena.update handle (\value -> value + 2) arena
+    Task.run (task { return deref (Arena.at handle (ref updated)) })
 ```
 
 実行結果:
@@ -155,12 +180,12 @@ match Arena.insert empty 40 with
 | `empty` | `fn() -> Arena<'a>` | $O(1)$、確保なし | – |
 | `with_capacity` | `i64 -> Arena<'a>` | $O(1)$、3 つのバッファを確保 | –（負の容量はトラップ） |
 | `length` | `ref Arena<'a> -> i64` | $O(1)$ | – |
-| `contains` | `ref Arena<'a> -> Arena.Handle<'a> -> bool` | $O(1)$ | `false` |
-| `get` | `ref Arena<'a> -> Arena.Handle<'a> -> Maybe<ref 'a>` | $O(1)$ | `None` |
-| `at` | `ref Arena<'a> -> Arena.Handle<'a> -> ref 'a` | $O(1)$ | トラップ |
-| `insert` | `Arena<'a> -> 'a -> (Arena<'a> * Arena.Handle<'a>)` | 償却 $O(1)$ | – |
-| `remove` | `Arena<'a> -> Arena.Handle<'a> -> (Arena<'a> * Maybe<'a>)` | $O(1)$ | 変えない arena と `None` |
-| `update` | `Arena<'a> -> Arena.Handle<'a> -> ('a -> 'a) -> Arena<'a>` | $O(1)$ ＋ `change` | トラップ（`change` は呼ばない） |
+| `contains` | `Arena.Handle<'a> -> ref Arena<'a> -> bool` | $O(1)$ | `false` |
+| `get` | `Arena.Handle<'a> -> ref Arena<'a> -> Maybe<ref 'a>` | $O(1)$ | `None` |
+| `at` | `Arena.Handle<'a> -> ref Arena<'a> -> ref 'a` | $O(1)$ | トラップ |
+| `insert` | `'a -> Arena<'a> -> (Arena<'a> * Arena.Handle<'a>)` | 償却 $O(1)$ | – |
+| `remove` | `Arena.Handle<'a> -> Arena<'a> -> (Arena<'a> * Maybe<'a>)` | $O(1)$ | 変えない arena と `None` |
+| `update` | `Arena.Handle<'a> -> ('a -> 'a) -> Arena<'a> -> Arena<'a>` | $O(1)$ ＋ `change` | トラップ（`change` は呼ばない） |
 | `iter` | `ref Arena<'a> -> Seq<(Arena.Handle<'a> * ref 'a)>` | 全体で $O(n)$ | – |
 
 `'a` に制約はありません。引数は通常の関数呼び出しと同じく左から一度ずつ評価します。

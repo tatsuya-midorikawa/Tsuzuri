@@ -9,7 +9,7 @@
 - 宣言は `def name :: 型 = ラムダ式` が基本です。`::` を `:` にはできません。
 - 引数なしの `answer()` と、`unit` を 1 つ渡す `accept ()` は別の関数です。
 - `add 20 22` は `(add 20) 22` です。`20 |> add 22` のようにパイプでも渡せます。
-- 標準ライブラリの高階関数は、関数を最初の引数に取ります。
+- 標準ライブラリの高階関数は、関数を最初の引数に取ります。操作する値（コレクション、文字列、`Maybe` など）はどのモジュールでも最後の引数なので、`|>` と `>>` でつなげます（[標準ライブラリの引数の順序](../built-in-types-and-modules/argument-order.md)）。
 - 再帰は `def rec` と、相互再帰の `and` で明示します。直接の末尾再帰は `-O0` でもループになり、同じ再帰グループのほかの関数への末尾呼び出しは、ネイティブでは保証された末尾呼び出しです。関数やブロックの中では、`let rec`（相互再帰は `and`）で補助関数を定義できます。
 - `def` の前に `const` を付けた `const def` は、`const` の初期化式から呼ばれると、コンパイラが評価します。実行時にも呼べる普通の関数です。詳しくは[値](./values.md#コンパイル時に評価する関数-const-def)を参照してください。
 - 同じ名前のオーバーロードはありません。型で振り分けるときは型クラスを使います。
@@ -126,7 +126,7 @@ if piped == composed then piped else 0
 
 ## 高階関数
 
-関数を受け取る、または返す関数が高階関数です。標準ライブラリは F# と同じく、関数を最初の引数に取ります。対象のコレクションは、`Array.write` のようにその場で書き換える関数も含めて最後なので、パイプの右に置きやすい並びです。
+関数を受け取る、または返す関数が高階関数です。標準ライブラリは F# と同じく、関数を最初の引数に取ります。対象のコレクションは、`Array.write` のようにその場で書き換える関数も含めて最後なので、パイプの右に置きやすい並びです。`Map.insert key value map`、`String.sub first count text`、`Maybe.bind f maybe` のように、`Array` 以外のモジュールでも対象が最後です（[標準ライブラリの引数の順序](../built-in-types-and-modules/argument-order.md)）。
 
 | 関数 | 引数の並び |
 | --- | --- |
@@ -442,6 +442,7 @@ def add :: string -> string = \text -> text
 - [match 式](../pattern-matching/match.md)
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [Array](../built-in-types-and-modules/array.md)
+- [標準ライブラリの引数の順序](../built-in-types-and-modules/argument-order.md)
 - [関数の宣言と適用](../../../docs/language.md#関数の宣言と適用)
 - [関数ガード](../../../docs/language.md#関数ガード)
 - [再帰とスタック](../../../docs/language.md#再帰とスタック)

@@ -19,7 +19,7 @@ E2E suite `map_set_chunks`（`export def`）と、`tsuzuri test` が走らせる
 def sequence :: i64 -> i64 -> i64 -> Map<i64, i64>
 fn sequence first step count =
     let mut map: Map<i64, i64> = Map.empty()
-    for index in 0i64 .. count - 1 do map = Map.insert map (first + index * step) index
+    for index in 0i64 .. count - 1 do map = Map.insert (first + index * step) index map
     map
 
 // The number of chunks, or -1 when the chunks break one of their rules.
@@ -43,7 +43,7 @@ export def middle_split :: i64
 fn middle_split =
     let map = sequence 0 2 512
     let before = chunks (ref map)
-    let after = Map.insert map 1 99
+    let after = Map.insert 1 99 map
     before * 1000 + chunks (ref after)
 
 // 513 keys are 2 chunks of 257 and 256. Removing the 256 keys that are 2 mod 4 leaves 257, and one more removal leaves 256, which merges the two:
@@ -51,11 +51,11 @@ fn middle_split =
 export def merge_after_removals :: i64
 fn merge_after_removals =
     let mut map = sequence 0 2 512
-    map = Map.insert map 1 99
+    map = Map.insert 1 99 map
     let start = chunks (ref map)
-    for index in 0i64 .. 255 do map = Map.remove map (2 + index * 4)
+    for index in 0i64 .. 255 do map = Map.remove (2 + index * 4) map
     let before = chunks (ref map)
-    map = Map.remove map 0
+    map = Map.remove 0 map
     let after = chunks (ref map)
     start * 10000000 + before * 1000000 + after * 1000 + Map.length (ref map)
 
@@ -65,7 +65,7 @@ export def head_deleted :: i64
 fn head_deleted =
     let mut map = sequence 0 1 768
     let before = chunks (ref map)
-    for key in 0i64 .. 511 do map = Map.remove map key
+    for key in 0i64 .. 511 do map = Map.remove key map
     let after = chunks (ref map)
     before * 100000 + after * 1000 + Map.length (ref map)
 
@@ -74,7 +74,7 @@ export def tail_deleted :: i64
 fn tail_deleted =
     let map = sequence 0 1 513
     let before = chunks (ref map)
-    let map = Map.remove map 512
+    let map = Map.remove 512 map
     before * 1000 + chunks (ref map)
 
 // The sets A = 0..999 and B = 500..1499 give a union of 1,500 keys and an intersection and a difference of 500 keys. The chunks of what
@@ -83,8 +83,8 @@ export def set_algebra_chunks :: i64
 fn set_algebra_chunks =
     let mut left: Set<i64> = Set.empty()
     let mut right: Set<i64> = Set.empty()
-    for key in 0i64 .. 999 do left = Set.insert left key
-    for key in 500i64 .. 1499 do right = Set.insert right key
+    for key in 0i64 .. 999 do left = Set.insert key left
+    for key in 500i64 .. 1499 do right = Set.insert key right
     let common = Set.intersect (ref left) (ref right)
     let different = Set.difference (ref left) (ref right)
     let both = Set.union left right
@@ -147,7 +147,7 @@ fn comparison_bounds size =
         state = next_state state
         let before = Atomic.load (ref hits)
         let allowed = insert_bound (Map.chunk_count (ref map))
-        map = Map.insert map (Probe { value: (state >>> 20) as i64, hits: ref hits }) index
+        map = Map.insert (Probe { value: (state >>> 20) as i64, hits: ref hits }) index map
         if Atomic.load (ref hits) - before > allowed && failure == 0 then failure = 11
     if Atomic.load (ref hits) - phase_start > total_bound && failure == 0 then failure = 21
     phase_start = Atomic.load (ref hits)
@@ -155,7 +155,7 @@ fn comparison_bounds size =
     for _index in 0i64 .. size - 1 do
         state = next_state state
         let before = Atomic.load (ref hits)
-        let found = Map.contains_key (ref map) (Probe { value: (state >>> 20) as i64, hits: ref hits })
+        let found = Map.contains_key (Probe { value: (state >>> 20) as i64, hits: ref hits }) (ref map)
         assert found
         if Atomic.load (ref hits) - before > lookup_bound (Map.chunk_count (ref map)) && failure == 0 then failure = 12
     if Atomic.load (ref hits) - phase_start > total_bound && failure == 0 then failure = 22
@@ -165,7 +165,7 @@ fn comparison_bounds size =
         state = next_state state
         let before = Atomic.load (ref hits)
         let allowed = lookup_bound (Map.chunk_count (ref map))
-        map = Map.remove map (Probe { value: (state >>> 20) as i64, hits: ref hits })
+        map = Map.remove (Probe { value: (state >>> 20) as i64, hits: ref hits }) map
         if Atomic.load (ref hits) - before > allowed && failure == 0 then failure = 13
     if Atomic.load (ref hits) - phase_start > total_bound && failure == 0 then failure = 23
     assert (Map.is_empty (ref map))
@@ -177,8 +177,8 @@ fn probe_sets hits size =
     let mut left: Set<Probe> = Set.empty()
     let mut right: Set<Probe> = Set.empty()
     for index in 0i64 .. size - 1 do
-        left = Set.insert left (Probe { value: index * 2, hits: hits })
-        right = Set.insert right (Probe { value: index * 3, hits: hits })
+        left = Set.insert (Probe { value: index * 2, hits: hits }) left
+        right = Set.insert (Probe { value: index * 3, hits: hits }) right
     (left, right)
 
 // The `Ord.lt` calls of the intersection, the difference and the union (operation 0, 1, 2) of two sets of `size` keys, not counting the check of the result.
@@ -222,11 +222,11 @@ fn use_map hits =
     let first = Probe { value: 1, hits: hits }
     let second = Probe { value: 2, hits: hits }
     let mut map: Map<Probe, Probe> = Map.singleton first second
-    map = Map.insert map second first
-    map = Map.insert map first first
-    let found = Map.get (ref map) first
-    let present = Map.contains_key (ref map) second
-    let at_value = (Map.at (ref map) first).value
+    map = Map.insert second first map
+    map = Map.insert first first map
+    let found = Map.get first (ref map)
+    let present = Map.contains_key second (ref map)
+    let at_value = (Map.at first (ref map)).value
     let keys = Map.keys (ref map)
     let values = Map.values (ref map)
     let pairs = Map.to_array (ref map)
@@ -237,7 +237,7 @@ fn use_map hits =
         | (key, value) -> seen = seen + key.value + value.value
     let sizes = keys.length + values.length + pairs.length
     let found_value = match found with | Maybe.Some probe -> probe.value | Maybe.None -> 0
-    let removed = Map.remove map second
+    let removed = Map.remove second map
     sizes + total + seen + Map.length (ref removed) + at_value + (if present then 1 else 0) + found_value
 
 def use_set :: ref Atomic<i64> -> i64
@@ -245,7 +245,7 @@ fn use_set hits =
     let first = Probe { value: 1, hits: hits }
     let second = Probe { value: 2, hits: hits }
     let mut left: Set<Probe> = Set.singleton first
-    left = Set.insert left second
+    left = Set.insert second left
     let right: Set<Probe> = Set.singleton second
     let keys = Set.to_array (ref left)
     let common = Set.intersect (ref left) (ref right)
@@ -255,7 +255,7 @@ fn use_set hits =
     for key in Set.iter (ref left) do seen = seen + key.value
     let sizes = keys.length + Set.length (ref common) + Set.length (ref different)
     let both = Set.union left right
-    let present = Set.contains (ref both) first
+    let present = Set.contains first (ref both)
     sizes + total + seen + Set.length (ref both) + (if present then 1 else 0)
 
 // 33 = use_map 20 + use_set 13, both worked out by hand in the ticket.
@@ -321,13 +321,13 @@ fn run_map range operations =
         match operations[step] with
         | (kind, key) ->
             if kind == 0 then
-                map = Map.insert map key step
+                map = Map.insert key step map
                 table = table_insert table key step
             elif kind == 1 then
-                map = Map.remove map key
+                map = Map.remove key map
                 table = table_remove table key
-            ok = ok && Map.contains_key (ref map) key == table.present[key]
-            ok = ok && Maybe.default_value (-1) (Map.get (ref map) key) == (if table.present[key] then table.values[key] else -1)
+            ok = ok && Map.contains_key key (ref map) == table.present[key]
+            ok = ok && Maybe.default_value (-1) (Map.get key (ref map)) == (if table.present[key] then table.values[key] else -1)
         if step % 32 == 0 then ok = ok && Map.invariants_hold (ref map)
         step = step + 1
     ok && Map.invariants_hold (ref map) && map_agrees (ref table) (ref map)
@@ -346,10 +346,10 @@ fn build_set range operations =
         match operations[step] with
         | (kind, key) ->
             if kind == 0 then
-                set = Set.insert set key
+                set = Set.insert key set
                 table = table_insert table key step
             elif kind == 1 then
-                set = Set.remove set key
+                set = Set.remove key set
                 table = table_remove table key
     (set, table)
 
@@ -683,7 +683,7 @@ class CollectionProvider:
     "def build :: i64 -> Set<i64>",
     "fn build count =",
     "    let mut set: Set<i64> = Set.empty()",
-    "    for key in 0i64 .. count - 1 do set = Set.insert set key",
+    "    for key in 0i64 .. count - 1 do set = Set.insert key set",
     "    set",
     "",
     "def inspect :: i64 -> i64",
@@ -946,7 +946,7 @@ print("collection provider: ok")
 - 要素の検索は二分探索により **$O(\log n)$**、整列状態を維持した挿入・削除は **$O(\log n)$ 回の比較と 1 チャンク内の移動**です（チャンクの分割・併合では、チャンクの個数に比例する移動も加わります）。
 ```
 
-(c) 行頭が `` `Map.remove map key` は、キーが存在すれば `` の行: 文中の `後続要素をシフトして` だけを `同じチャンクの後続要素をシフトして` に直す。
+(c) 行頭が `` `Map.remove key map` は、キーが存在すれば `` の行: 文中の `後続要素をシフトして` だけを `同じチャンクの後続要素をシフトして` に直す。
 
 (d) API 表の `insert` と `remove` の 2 行: 行末の `（$O(n)$）` を `（$O(\log n)$ 回の比較と 1 チャンクの移動）` に直す。
 
@@ -991,7 +991,7 @@ print("collection provider: ok")
 - 要素の検索・包含判定は二分探索により **$O(\log n)$**、整列状態を維持した挿入・削除は **$O(\log n)$ 回の比較と 1 チャンク内の移動**です（チャンクの分割・併合では、チャンクの個数に比例する移動も加わります）。
 ```
 
-(c) 行頭が `` - `Set.remove set key`: `` の行、API 表の `insert` と `remove` の 2 行: `（$O(n)$）` を `（$O(\log n)$ 回の比較と 1 チャンクの移動）` に直す（3 行）。
+(c) 行頭が `` - `Set.remove key set`: `` の行、API 表の `insert` と `remove` の 2 行: `（$O(n)$）` を `（$O(\log n)$ 回の比較と 1 チャンクの移動）` に直す（3 行）。
 
 (d) 行頭が `` - `Set` はキー昇順の連続バッファです。 `` の行（「まとめ」の節）:
 

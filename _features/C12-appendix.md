@@ -146,13 +146,13 @@ fn locate map key =
 			if Ord.lt (ref entries[middle].key) key then start = middle + 1 else stop = middle
 		if start < size && !(Ord.lt key (ref entries[start].key)) then (low, start) else (low, -1 - start)
 
-def contains_key :: Ord<'key> => ref Map<'key, 'value> -> 'key -> bool
-fn contains_key map key =
+def contains_key :: Ord<'key> => 'key -> ref Map<'key, 'value> -> bool
+fn contains_key key map =
 	match locate map (ref key) with
 	| (_chunk, offset) -> offset >= 0
 
-def get :: (Ord<'key>, Copy<'value>) => ref Map<'key, 'value> -> 'key -> Maybe<'value>
-fn get map key =
+def get :: (Ord<'key>, Copy<'value>) => 'key -> ref Map<'key, 'value> -> Maybe<'value>
+fn get key map =
 	match locate map (ref key) with
 	| (chunk, offset) ->
 		if offset >= 0 then
@@ -160,8 +160,8 @@ fn get map key =
 			Maybe.Some entries[offset].value
 		else Maybe.None
 
-def at :: Ord<'key> => ref Map<'key, 'value> -> 'key -> ref 'value
-fn at map key =
+def at :: Ord<'key> => 'key -> ref Map<'key, 'value> -> ref 'value
+fn at key map =
 	match locate map (ref key) with
 	| (chunk, offset) ->
 		assert (offset >= 0)
@@ -230,8 +230,8 @@ fn beyond_last map key =
 		assert (Eq.eq (ref entries[last].key) (ref entries[last].key))
 		Ord.lt (ref entries[last].key) key
 
-def insert :: Ord<'key> => Map<'key, 'value> -> 'key -> 'value -> Map<'key, 'value>
-fn insert map key value =
+def insert :: Ord<'key> => 'key -> 'value -> Map<'key, 'value> -> Map<'key, 'value>
+fn insert key value map =
 	if beyond_last (ref map) (ref key) then
 		let chunk = chunk_total (ref map) - 1
 		let size = Vec.length (chunk_of (ref map) chunk)
@@ -272,8 +272,8 @@ fn delete_chunk map index =
 		match remove_at map.rest (index - 1) with
 		| (others, _gone) -> Map { head: map.head, rest: others, length: count }
 
-def remove :: Ord<'key> => Map<'key, 'value> -> 'key -> Map<'key, 'value>
-fn remove map key =
+def remove :: Ord<'key> => 'key -> Map<'key, 'value> -> Map<'key, 'value>
+fn remove key map =
 	match locate (ref map) (ref key) with
 	| (chunk, offset) ->
 		if offset >= 0 then
@@ -534,8 +534,8 @@ fn locate set key =
 			if Ord.lt (ref keys[middle]) key then start = middle + 1 else stop = middle
 		if start < size && !(Ord.lt key (ref keys[start])) then (low, start) else (low, -1 - start)
 
-def contains :: Ord<'key> => ref Set<'key> -> 'key -> bool
-fn contains set key =
+def contains :: Ord<'key> => 'key -> ref Set<'key> -> bool
+fn contains key set =
 	match locate set (ref key) with
 	| (_chunk, offset) -> offset >= 0
 
@@ -588,8 +588,8 @@ fn beyond_last set key =
 		assert (Eq.eq (ref keys[last]) (ref keys[last]))
 		Ord.lt (ref keys[last]) key
 
-def insert :: Ord<'key> => Set<'key> -> 'key -> Set<'key>
-fn insert set key =
+def insert :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+fn insert key set =
 	if beyond_last (ref set) (ref key) then
 		let chunk = chunk_total (ref set) - 1
 		let size = Vec.length (chunk_of (ref set) chunk)
@@ -628,8 +628,8 @@ fn delete_chunk set index =
 		match remove_at set.rest (index - 1) with
 		| (others, _gone) -> Set { head: set.head, rest: others, length: count }
 
-def remove :: Ord<'key> => Set<'key> -> 'key -> Set<'key>
-fn remove set key =
+def remove :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+fn remove key set =
 	match locate (ref set) (ref key) with
 	| (chunk, offset) ->
 		if offset >= 0 then
@@ -877,13 +877,13 @@ fn random_keys size =
 def filled :: ref [i64u] -> Map<i64u, i64u>
 fn filled keys =
     let mut map: Map<i64u, i64u> = Map.empty()
-    for index in 0i64 .. keys.length - 1 do map = Map.insert map keys[index] (keys[index] & 1023)
+    for index in 0i64 .. keys.length - 1 do map = Map.insert keys[index] (keys[index] & 1023) map
     map
 
 def ascending_set :: i64 -> i64 -> Set<i64>
 fn ascending_set size step =
     let mut set: Set<i64> = Set.empty()
-    for index in 0i64 .. size - 1 do set = Set.insert set (index * step)
+    for index in 0i64 .. size - 1 do set = Set.insert (index * step) set
     set
 
 def insert_random :: i64 -> (i64u * i64)
@@ -900,7 +900,7 @@ fn lookup_random size =
     let map = filled (ref keys)
     let! first = Time.monotonic_ns ()
     let mut total = 0i64u
-    for index in 0i64 .. size - 1 do total = fold total (Maybe.default_value 0 (Map.get (ref map) keys[index]))
+    for index in 0i64 .. size - 1 do total = fold total (Maybe.default_value 0 (Map.get keys[index] (ref map)))
     let! second = Time.monotonic_ns ()
     (total, Result.get second - Result.get first)
 
@@ -909,7 +909,7 @@ fn remove_random size =
     let keys = random_keys size
     let mut map = filled (ref keys)
     let! first = Time.monotonic_ns ()
-    for index in 0i64 .. size - 1 do map = Map.remove map keys[index]
+    for index in 0i64 .. size - 1 do map = Map.remove keys[index] map
     let! second = Time.monotonic_ns ()
     (Map.length (ref map) as i64u, Result.get second - Result.get first)
 
@@ -917,7 +917,7 @@ def insert_ascending :: i64 -> (i64u * i64)
 fn insert_ascending size =
     let! first = Time.monotonic_ns ()
     let mut map: Map<i64, i64> = Map.empty()
-    for index in 0i64 .. size - 1 do map = Map.insert map index 1
+    for index in 0i64 .. size - 1 do map = Map.insert index 1 map
     let! second = Time.monotonic_ns ()
     (Map.length (ref map) as i64u, Result.get second - Result.get first)
 
@@ -925,17 +925,17 @@ fn insert_ascending size =
 def update_counter :: i64 -> (i64u * i64)
 fn update_counter size =
     let mut counts: Map<i64u, i64u> = Map.empty()
-    for key in 0i64u .. 1023i64u do counts = Map.insert counts key 0
+    for key in 0i64u .. 1023i64u do counts = Map.insert key 0 counts
     let! first = Time.monotonic_ns ()
     let mut state = 1i64u
     for _index in 0i64 .. size - 1 do
         state = next_state state
         let key = (state >>> 33) & 1023
-        let count = Maybe.default_value 0 (Map.get (ref counts) key)
-        counts = Map.insert counts key (count + 1)
+        let count = Maybe.default_value 0 (Map.get key (ref counts))
+        counts = Map.insert key (count + 1) counts
     let! second = Time.monotonic_ns ()
     let mut total = 0i64u
-    for key in 0i64u .. 1023i64u do total = fold total (Maybe.default_value 0 (Map.get (ref counts) key))
+    for key in 0i64u .. 1023i64u do total = fold total (Maybe.default_value 0 (Map.get key (ref counts)))
     (total, Result.get second - Result.get first)
 
 def set_algebra :: i64 -> (i64u * i64)

@@ -285,7 +285,7 @@ fn rejects(source: &str, code: &str) {
 #[test]
 fn callbacks_take_values_and_the_r_forms_borrow() {
     // F# code reads the same: callbacks receive the element, and the array comes last as in F# (`fold_back` and a few
-    // others move it to the end; see tests/collection_last.rs).
+    // others move it to the end; see tests/std_argument_order.rs).
     for source in [
         "[1, 2, 3] |> Array.filter (\\x -> x > 1) |> Array.map (\\x -> x * 2) |> Array.sum",
         "Array.exists (\\x -> x > 2) [1, 2, 3]",

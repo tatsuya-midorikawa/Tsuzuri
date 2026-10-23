@@ -46,7 +46,7 @@ def main :: unit -> i32 = \() ->
         | Result.Ok _ -> "decoded"
         | Result.Error error -> Os.message (ref error))
     let packed = [8ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte]
-    do! IO.write_line (to_string (Os.decode_i64 (ref packed) 0))
+    do! IO.write_line (to_string (Os.decode_i64 0 (ref packed)))
     let names = [97ubyte, 0ubyte, 98ubyte, 0ubyte]
     do! IO.write_line (match Os.split_names (ref names) with
         | Result.Ok found ->
@@ -150,7 +150,7 @@ Windows 環境でコンパイラがネイティブバイナリをビルドする
 | `Os.decode` | `[ubyte] -> Result<string, Error>` | UTF-8 を `string` にする。不正なら `InvalidEncoding` |
 | `Os.error_of_status` | `i64 -> Error` | ランタイムの状態ワードを `Os.Error` に戻す |
 | `Os.split_names` | `ref [ubyte] -> Result<[string], Error>` | NUL 区切りの名前を分ける。1 つでも不正なら全体が失敗 |
-| `Os.decode_i64` | `ref [ubyte] -> i64 -> i64` | `offset` から 8 バイトをリトルエンディアンで読む |
+| `Os.decode_i64` | `i64 -> ref [ubyte] -> i64` | `offset` から 8 バイトをリトルエンディアンで読む |
 
 `encode` は所有権を移しません。`decode` はバイト列を受け取ります。配列は `Copy` なので、渡したあとも変数は残ります。
 

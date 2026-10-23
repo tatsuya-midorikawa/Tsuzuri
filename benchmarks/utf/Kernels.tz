@@ -45,7 +45,7 @@ fn utf_equal kind size repeat =
 export def utf_compare :: i64 -> i64 -> i64 -> i64
 fn utf_compare kind size repeat =
     let text = utf_text kind size
-    let right = Maybe.get (String.slice (ref text) 0 (text.length - 1)) + "\uFFFF"
+    let right = Maybe.get (String.slice 0 (text.length - 1) (ref text)) + "\uFFFF"
     let mut total = 0
     for _ in 1 .. repeat do
         // Keep the repeated comparison observable across iterations under -O3.

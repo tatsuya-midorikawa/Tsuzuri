@@ -346,7 +346,7 @@ export def pretty_hash :: i64 -> i64 -> i64
 fn pretty_hash index indent =
     let text = input index
     match Json.parse (ref text) with
-    | Ok value -> fnv (ref (Json.to_utf8string_pretty (ref value) indent))
+    | Ok value -> fnv (ref (Json.to_utf8string_pretty indent (ref value)))
     | Error _ -> 0
 
 def replay :: ref utf8string -> ref Json.Event -> Json.Writer -> Result<Json.Writer, Json.Error>
@@ -356,10 +356,10 @@ fn replay text event writer =
     | Json.ObjectEnd -> Json.close_object writer
     | Json.ArrayStart -> Json.open_array writer
     | Json.ArrayEnd -> Json.close_array writer
-    | Json.KeyToken token -> Json.write_key writer (ref (Result.get (Json.token_text text token)))
-    | Json.TextToken token -> Json.write_text writer (ref (Result.get (Json.token_text text token)))
-    | Json.NumberToken token -> Json.write_number writer (ref (Result.get (Json.token_numeral text token)))
-    | Json.BoolToken flag -> Json.write_bool writer flag
+    | Json.KeyToken token -> Json.write_key (ref (Result.get (Json.token_text text token))) writer
+    | Json.TextToken token -> Json.write_text (ref (Result.get (Json.token_text text token))) writer
+    | Json.NumberToken token -> Json.write_number (ref (Result.get (Json.token_numeral text token))) writer
+    | Json.BoolToken flag -> Json.write_bool flag writer
     | Json.NullToken -> Json.write_null writer
     | Json.EndOfInput -> Ok writer
 

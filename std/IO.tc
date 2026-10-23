@@ -5,8 +5,8 @@ union Error = ReadFailed | WriteFailed | InvalidEncoding
 def pure :: Capture<'a> => 'a -> IO<'a>
 fn pure value = IO { work: \() -> value }
 
-def bind :: IO<'a> -> ('a -> IO<'b>) -> IO<'b>
-fn bind action next = IO { work: \() -> {
+def bind :: ('a -> IO<'b>) -> IO<'a> -> IO<'b>
+fn bind next action = IO { work: \() -> {
     let value = action.work ();
     (next value).work ()
 } }
@@ -25,7 +25,7 @@ def ReturnFrom :: IO<'a> -> IO<'a>
 fn ReturnFrom action = action
 
 def Bind :: IO<'a> -> ('a -> IO<'b>) -> IO<'b>
-fn Bind action next = bind action next
+fn Bind action next = bind next action
 
 def Using :: (('a -> 'b) -> 'c) -> ('a -> IO<'b>) -> IO<'c>
 fn Using source next = IO { work: \() -> source (value -> (next value).work ()) }

@@ -21,11 +21,11 @@
 ```tsuzuri run=4x2x3%2023%2012%2012%20false
 let t = Tensor.init [2, 3, 4] (\i -> i)
 let v = Tensor.view (ref t)
-let rotated = Tensor.permute (ref v) [2, 0, 1]
-let plane = Tensor.index_axis (ref v) 0 1
-let window = Tensor.narrow (ref v) 2 1 2
+let rotated = Tensor.permute [2, 0, 1] (ref v)
+let plane = Tensor.index_axis 0 1 (ref v)
+let window = Tensor.narrow 2 1 2 (ref v)
 let shape = Tensor.shape (ref rotated)
-$"{shape[0]}x{shape[1]}x{shape[2]} {deref (Tensor.at (ref rotated) [3, 1, 2])} {Tensor.count (ref plane)} {Tensor.count (ref window)} {Tensor.is_contiguous (ref rotated)}"
+$"{shape[0]}x{shape[1]}x{shape[2]} {deref (Tensor.at [3, 1, 2] (ref rotated))} {Tensor.count (ref plane)} {Tensor.count (ref window)} {Tensor.is_contiguous (ref rotated)}"
 ```
 
 実行結果:
@@ -43,7 +43,7 @@ let scalar = Tensor.of_array [] [7]
 let single = Tensor.view (ref scalar)
 let nothing = Tensor.init [0, 3] (\i -> i)
 let empty = Tensor.view (ref nothing)
-$"{Tensor.rank (ref single)} {deref (Tensor.at (ref single) [])} {Tensor.count (ref empty)} {Tensor.rank (ref empty)}"
+$"{Tensor.rank (ref single)} {deref (Tensor.at [] (ref single))} {Tensor.count (ref empty)} {Tensor.rank (ref empty)}"
 ```
 
 実行結果:
@@ -58,10 +58,10 @@ $"{Tensor.rank (ref single)} {deref (Tensor.at (ref single) [])} {Tensor.count (
 
 | 操作 | shape | strides | offset |
 | --- | --- | --- | --- |
-| `permute v axes` | `shape[axes[i]]` を並べる | `strides[axes[i]]` を並べる | 同じ |
-| `index_axis v axis p` | `axis` の軸を取り除く | `axis` の軸を取り除く | `offset + p * strides[axis]` |
-| `narrow v axis start length` | `shape[axis]` を `length` にする | 同じ | `offset + start * strides[axis]` |
-| `reshape_view v shape` | 新しい形 | 新しい形の行優先 | 同じ |
+| `permute axes v` | `shape[axes[i]]` を並べる | `strides[axes[i]]` を並べる | 同じ |
+| `index_axis axis p v` | `axis` の軸を取り除く | `axis` の軸を取り除く | `offset + p * strides[axis]` |
+| `narrow axis start length v` | `shape[axis]` を `length` にする | 同じ | `offset + start * strides[axis]` |
+| `reshape_view shape v` | 新しい形 | 新しい形の行優先 | 同じ |
 
 - `permute` の `axes` は、`0 .. rank - 1` の並べ替えでないとトラップします。
 - `index_axis` は、`0 <= axis < rank`、`0 <= p < shape[axis]` でないとトラップします。
@@ -72,11 +72,11 @@ $"{Tensor.rank (ref single)} {deref (Tensor.at (ref single) [])} {Tensor.count (
 let t = Tensor.init [2, 3] (\i -> i * 10)
 let v = Tensor.view (ref t)
 let strides = Tensor.strides (ref v)
-let flipped = Tensor.permute (ref v) [1, 0]
+let flipped = Tensor.permute [1, 0] (ref v)
 let flipped_strides = Tensor.strides (ref flipped)
-let column = Tensor.index_axis (ref v) 1 2
+let column = Tensor.index_axis 1 2 (ref v)
 let column_strides = Tensor.strides (ref column)
-let tail = Tensor.narrow (ref v) 1 1 2
+let tail = Tensor.narrow 1 1 2 (ref v)
 $"{strides[0]},{strides[1]} {flipped_strides[0]},{flipped_strides[1]} {column_strides[0]} {Tensor.offset (ref column)} {Tensor.offset (ref tail)} {Tensor.count (ref tail)}"
 ```
 
@@ -96,8 +96,8 @@ $"{strides[0]},{strides[1]} {flipped_strides[0]},{flipped_strides[1]} {column_st
 | --- | --- |
 | `Tensor.rank view` / `Tensor.shape view` / `Tensor.count view` | 軸の数、各軸の長さ（`ref [i64]`）、要素数 |
 | `Tensor.strides view` / `Tensor.offset view` / `Tensor.data view` | 配置と、借りた配列全体 |
-| `Tensor.at view index` | 要素への共有借用。添字の数が軸の数と違う、または範囲外ならトラップ |
-| `Tensor.get view index` | 要素のコピーの `Maybe<'a>`。添字の数が違う、または範囲外なら `None`（`Copy<'a>` が必要） |
+| `Tensor.at index view` | 要素への共有借用。添字の数が軸の数と違う、または範囲外ならトラップ |
+| `Tensor.get index view` | 要素のコピーの `Maybe<'a>`。添字の数が違う、または範囲外なら `None`（`Copy<'a>` が必要） |
 | `Tensor.fold folder initial view` | 窓の行優先で左から右に畳み込む |
 | `Tensor.map transform view` | 窓の行優先で 1 回ずつ変換した新しい `Tensor` |
 | `Tensor.to_tensor view` | 窓の要素を行優先に複製した新しい `Tensor` |
@@ -123,12 +123,12 @@ let m = Matrix.init 2 3 (\row col -> row * 3 + col)
 let t = Tensor.of_matrix m
 let flat = Tensor.reshape [6] t
 let v = Tensor.view (ref flat)
-let grid = Tensor.reshape_view (ref v) [3, 2]
+let grid = Tensor.reshape_view [3, 2] (ref v)
 let window = Tensor.as_matrix_view (ref grid)
-let flipped = Tensor.permute (ref grid) [1, 0]
+let flipped = Tensor.permute [1, 0] (ref grid)
 let copy = Tensor.map (\x -> x * 2) (ref flipped)
 let doubled = Tensor.as_array (ref copy)
-$"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at window 2 1)} {doubled[1]} {doubled[2]} {Maybe.default_value (-1) (Tensor.get (ref grid) [3, 0])}"
+$"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 2 1 window)} {doubled[1]} {doubled[2]} {Maybe.default_value (-1) (Tensor.get [3, 0] (ref grid))}"
 ```
 
 実行結果:
@@ -184,18 +184,42 @@ $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at window
 | `rank` / `count` / `offset` | `ref View<'a> -> i64` |
 | `shape` / `strides` | `ref View<'a> -> ref [i64]` |
 | `data` | `ref View<'a> { r } -> ref { r } ['a]` |
-| `at` | `ref View<'a> { r } -> [i64] -> ref { r } 'a` |
-| `get` | `Copy<'a> => ref View<'a> -> [i64] -> Maybe<'a>` |
-| `permute` | `ref View<'a> { r } -> [i64] -> View<'a> { r }` |
-| `index_axis` | `ref View<'a> { r } -> i64 -> i64 -> View<'a> { r }` |
-| `narrow` | `ref View<'a> { r } -> i64 -> i64 -> i64 -> View<'a> { r }` |
+| `at` | `[i64] -> ref View<'a> { r } -> ref { r } 'a` |
+| `get` | `Copy<'a> => [i64] -> ref View<'a> -> Maybe<'a>` |
+| `permute` | `[i64] -> ref View<'a> { r } -> View<'a> { r }` |
+| `index_axis` | `i64 -> i64 -> ref View<'a> { r } -> View<'a> { r }` |
+| `narrow` | `i64 -> i64 -> i64 -> ref View<'a> { r } -> View<'a> { r }` |
 | `is_contiguous` | `ref View<'a> -> bool` |
-| `reshape_view` | `ref View<'a> { r } -> [i64] -> View<'a> { r }` |
+| `reshape_view` | `[i64] -> ref View<'a> { r } -> View<'a> { r }` |
 | `fold` | `Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref View<'a> -> 'state` |
 | `to_tensor` | `Copy<'a> => ref View<'a> -> Tensor<'a>` |
 | `map` | `Copy<'a> => ('a -> 'b) -> ref View<'a> -> Tensor<'b>` |
 | `as_matrix_view` | `ref View<'a> { r } -> MatrixView<'a> { r }` |
 | `of_matrix_view` | `MatrixView<'a> { r } -> View<'a> { r }` |
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読む窓や、形を変えるテンソルは、必ず最後の引数です。`ref v |> Tensor.permute [1, 0]` のようにパイプで渡せ、`Tensor.index_axis 0 1 >> Tensor.count` のように一部だけ渡した関数を合成できます。添字・軸・位置・個数・形などのほかの引数は、窓の前に置きます（`at index v`、`index_axis axis position v`、`narrow axis start length v`、`reshape_view shape v`）。`fold folder initial v` と `map transform v` も窓が最後で、`reshape shape t` もテンソルが最後です。
+
+```tsuzuri run=23%20-1%2012
+let t = Tensor.init [2, 3, 4] (\i -> i)
+let v = Tensor.view (ref t)
+let rotated = ref v |> Tensor.permute [2, 0, 1]
+let corner = ref rotated |> Tensor.at [3, 1, 2]
+let missing = ref rotated |> Tensor.get [4, 0, 0] |> Maybe.default_value (-1)
+let plane_count = ref v |> (Tensor.index_axis 0 1 >> Tensor.count)
+$"{deref corner} {missing} {plane_count}"
+```
+
+実行結果:
+
+```text
+23 -1 12
+```
+
+`>>` で合成した関数は、前の関数が返した窓を、次の関数が借りて受け取ります。借りた一時の窓の中を指す参照を返す関数（`at`、`shape`、`strides`）につなぐと、参照が一時の窓より長生きしてしまうので `E1013` です。窓を `let` に束縛してから、上の例のように `ref rotated |> Tensor.at [3, 1, 2]` と書きます。
 
 ## 計算量
 

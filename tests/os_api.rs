@@ -105,7 +105,7 @@ fn os_api_signatures_type_check() {
     let kinds = [File.Regular, File.Directory, File.Symlink, File.Other]
     let decode: [ubyte] -> Result<string, Os.Error> = Os.decode
     let names: ref [ubyte] -> Result<[string], Os.Error> = Os.split_names
-    let number: ref [ubyte] -> i64 -> i64 = Os.decode_i64
+    let number: i64 -> ref [ubyte] -> i64 = Os.decode_i64
     let message: ref Os.Error -> string = Os.message
     let encode: ref string -> Result<utf8string, Os.Error> = Os.encode
     let status: i64 -> Os.Error = Os.error_of_status
@@ -152,7 +152,7 @@ fn os_builtins_declare_runtime_only_when_reached() {
 #[test]
 fn seeded_hash_containers_need_no_runtime_but_randomized_ones_do() {
     let seeded = module(
-        "export def seeded :: i64\nfn seeded =\n    let map: HashMap<i64, i64> = HashMap.insert (HashMap.with_seed 7i64u) 1 2\n    HashMap.length (&map) + HashMap.longest_probe (&map)\n",
+        "export def seeded :: i64\nfn seeded =\n    let map: HashMap<i64, i64> = HashMap.insert 1 2 (HashMap.with_seed 7i64u)\n    HashMap.length (&map) + HashMap.longest_probe (&map)\n",
     );
     for wasm in [false, true] {
         let ir = ir(&seeded, llvm::Entry::Library, wasm);

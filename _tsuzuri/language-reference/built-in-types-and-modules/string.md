@@ -22,13 +22,13 @@
 | `length` | `ref string -> i64` | コード単位数。`.length` と同じで O(1)。コピーしない |
 | `char_count` | `ref string -> i64` | `length` と同じ値。スカラー数ではない。O(1) |
 | `chars` | `ref string -> [char]` | 各コード単位を `char` にした新しい配列。O(n) |
-| `decode_at` | `ref string -> i64 -> (char * i64)` | その位置の `char` と、次の位置。常に 1 進む |
+| `decode_at` | `i64 -> ref string -> (char * i64)` | その位置の `char` と、次の位置。常に 1 進む |
 
 `decode_at` はサロゲートペアを 1 文字にまとめません。添字が範囲外だとトラップします。`None` にはなりません。
 
 ```tsuzuri run=decoded%3D%5BA%5D1%20chars%3D%5B%27%5CuD83D%27%2C%20%27%5CuDE00%27%5D%20units%3D2
 let text = "AB"
-let decoded = match String.decode_at (ref text) 0 with
+let decoded = match String.decode_at 0 (ref text) with
     | (value, next) -> $"[{value}]{next}"
 let chars = String.chars "😀"
 $"decoded={decoded} chars={chars} units={String.char_count "😀"}"
@@ -101,10 +101,10 @@ Latin-1 から UTF-8 への変換・`to_ascii` の複写が対象です。`Strin
 
 | 関数 | シグネチャ | 失敗 | 計算量 |
 | --- | --- | --- | --- |
-| `slice` | `ref string -> i64 -> i64 -> Maybe<string>` | 負の位置、`last < first`、範囲外なら `None` | O(切り出し長) |
-| `sub` | `ref string -> i64 -> i64 -> Maybe<string>` | 負の位置、加算オーバーフロー、範囲外なら `None` | O(切り出し長) |
+| `slice` | `i64 -> i64 -> ref string -> Maybe<string>` | 負の位置、`last < first`、範囲外なら `None` | O(切り出し長) |
+| `sub` | `i64 -> i64 -> ref string -> Maybe<string>` | 負の位置、加算オーバーフロー、範囲外なら `None` | O(切り出し長) |
 
-`slice text first last` の `last` は結果に含まれません。`sub text first count` は `first` から `count` コード単位を切り出します。どちらも新しい所有文字列を `Some` で返します。
+`slice first last text` の `last` は結果に含まれません。`sub first count text` は `first` から `count` コード単位を切り出します。どちらも新しい所有文字列を `Some` で返します。
 
 負の位置、`last < first`、範囲外の指定、および加算オーバーフローが発生した場合は安全に `None` を返します（トラップしません）。サロゲートペアの途中インデックスであっても、位置として有効であればそのまま切り出します。
 
@@ -118,7 +118,7 @@ Latin-1 から UTF-8 への変換・`to_ascii` の複写が対象です。`Strin
 | `join` | `ref string -> ref [string] -> string` | 区切りは第 1 引数。空配列は `""` |
 | `split` | `ref string -> ref string -> [string]` | 区切りは第 1 引数。本文は第 2 引数 |
 | `replace` | `ref string -> ref string -> ref string -> string` | パターン、置換、本文の順 |
-| `repeat` | `ref string -> i64 -> string` | `count` 回繰り返す。0 回は `""` |
+| `repeat` | `i64 -> ref string -> string` | `count` 回繰り返す。0 回は `""` |
 
 `split` の区切りが空なら、コード単位のあいだで切ります。`"ab"` は `["a", "b"]`、空文字列は空配列です。区切りが空でないときは、一致ごとに切ります。先頭、末尾、連続した一致は空要素になります。空文字列を `","` で割ると `[""]` です。両端に、一致以外の空要素は足しません。
 
@@ -130,7 +130,7 @@ Latin-1 から UTF-8 への変換・`to_ascii` の複写が対象です。`Strin
 let title = "Tsuzuri"
 let found = String.find "zu" title
 let parts = String.split "," "a,,b"
-let piece = String.slice title 0 3
+let piece = String.slice 0 3 title
 let index = match found with
     | Some value -> to_string value
     | None -> "none"
@@ -151,7 +151,7 @@ index=3 parts=["a", "", "b"] piece=Tsu lower=tsuzuri
 ```tsuzuri run=dashed%3D-a-b-%20once%3D-%20rep%3Dhahaha
 let dashed = String.replace "" "-" "ab"
 let once = String.replace "" "-" ""
-$"dashed={dashed} once={once} rep={String.repeat "ha" 3}"
+$"dashed={dashed} once={once} rep={String.repeat 3 "ha"}"
 ```
 
 実行結果:
@@ -208,6 +208,28 @@ dashed=-a-b- once=- rep=hahaha
 
 > [!WARNING]
 > `slice` と `sub` の失敗は `None`、`decode_at` と添字の範囲外はトラップです。同じ「範囲外」でも戻り方が違います。
+
+### 引数の順序
+
+標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
+
+読み取る文字列は、必ず最後の引数です。`"Tsuzuri" |> String.sub 1 3` のようにパイプで渡せ、`String.sub 1 3 >> Maybe.default_value ""` のように、文字列だけが足りない関数を合成できます。位置や個数などそれ以外の引数は、関数名が示す順で文字列の前に並べます（`String.slice first last text`、`String.sub first count text`、`String.decode_at offset text`、`String.repeat count text`）。パターンや区切りを取る `find`・`split`・`replace` も、本文が最後です。`repeat` の順は、F# の `String.replicate count str` と同じです。
+
+```tsuzuri run=word%3Dsuz%20loud%3DSUZ%20twice%3Dsuzsuz
+let middle = String.sub 1 3 >> Maybe.default_value ""
+let word = "Tsuzuri" |> middle
+let loud = word |> String.to_ascii_upper
+let twice = word |> String.repeat 2
+$"word={word} loud={loud} twice={twice}"
+```
+
+実行結果:
+
+```text
+word=suz loud=SUZ twice=suzsuz
+```
+
+文字列を借用する関数に `word |> String.repeat 2` と渡しても、`word` は消費されません。
 
 ## まとめ
 

@@ -1363,7 +1363,7 @@ Windows 環境上で動作するコンパイラがネイティブバイナリを
 
 | 区分 | API |
 |---|---|
-| アドレス（純粋） | `parse_address :: ref string -> Maybe<Address>`、`parse_ip :: ref string -> i64 -> Maybe<Address>`、`address_text`／`ip_text :: Address -> string`、`port :: Address -> i64`、`is_ipv6 :: Address -> bool` |
+| アドレス（純粋） | `parse_address :: ref string -> Maybe<Address>`、`parse_ip :: i64 -> ref string -> Maybe<Address>`、`address_text`／`ip_text :: Address -> string`、`port :: Address -> i64`、`is_ipv6 :: Address -> bool` |
 | 名前解決 | `resolve :: string -> i64 -> IO<Result<[Address], Os.Error>>` |
 | TCP クライアント | `connect :: Address -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>`、`read :: TcpStream -> i64 -> Maybe<i64> -> IO<Result<[ubyte], Os.Error>>`、`write :: TcpStream -> [ubyte] -> Maybe<i64> -> IO<Result<unit, Os.Error>>`、`shutdown`、`close`、`stream_local_addr`、`peer_addr` |
 | TCP サーバー | `bind :: Address -> IO<Result<TcpListener, Os.Error>>`、`accept :: TcpListener -> Maybe<i64> -> IO<Result<TcpStream, Os.Error>>`、`local_addr`、`close_listener` |
@@ -1376,7 +1376,7 @@ Windows 環境上で動作するコンパイラがネイティブバイナリを
 
 `TcpStream { id, local, peer }`・`TcpListener { id, local }`・`UdpSocket { id, local }` は、runtime の世代検査付きのソケット表の添字と、2 つのアドレスを持つ不透明な `Copy` の値です（構築・フィールド参照は `E1022`）。`File.Handle` と同じ規則で、`Drop` にはしません（std の型は `Drop` の instance を持てず `E1016`、`Drop` の値は `let!` の継続をまたげず `E1005`）。開くたびに新しい世代が付くので、`close` 済みのハンドルは別のソケットに当たらず、使うと `InvalidInput`（`code` は `EBADF`）です。閉じ忘れたソケットはプロセスが終わるまで開いたままで、終了時に OS が閉じます。`close` は失敗しても、また `EINTR` でも再試行せずに、ハンドルを無効にします。
 
-時間制限は `Maybe<i64>` のミリ秒で、呼び出し全体の期限（`CLOCK_MONOTONIC`）です。`None` は無期限、`Some n` は 1〜2,147,483,647 で、範囲外は OS を呼ばずに `InvalidInput`（`code` 0）です。期限が来ると `ETIMEDOUT` を `code` に持つ `Os.ErrorKind.Other` を返し、`Net.error_kind` は `TimedOut` です。ソケットは壊れません。`read`・`recv_from` の最大長は 1〜16,777,216 byte で、範囲外は `InvalidInput`（`code` 0）です。`read` は 1 回の受信で得た分だけを返し、空の配列は相手の送信終了です。`recv_from` は最大長より長いデータグラムを切り詰めずに `InvalidInput`（`code` は `EMSGSIZE`）にし、そのデータグラムを捨てます。`write` は全 byte を送るまで繰り返し、途中で失敗しても送れた量は分かりません。`send_to` は 1 データグラムを送り、時間制限は取りません。`resolve` は host を UTF-8 にし（孤立サロゲートは `InvalidEncoding`）、空・NUL を含む・253 byte 超・port が 0〜65535 の外は `InvalidInput`（`code` 0）にします。アドレスに読める host は OS に渡さず、`parse_ip host port` だけで決めます。そのような host は、`:` か `%` を含む、空白か制御文字（0x20 以下と 0x7f）を含む、ASCII 以外のバイトを含む（Node.js の `dns.lookup` などが IDNA で ASCII に直し、全角の `１２７．０．０．１` を 127.0.0.1 に引くため。国際化ドメイン名は `xn--` の形で書く）、または最後のラベル（末尾の `.` が 1 つあれば除く）が数字だけか `0x`・`0X` で始まるものです。厳密に読めればシステムを呼ばずにそのアドレス 1 つの配列を返し、読めなければ `InvalidInput`（`code` 0）なので、`127.1`・`0x7f000001`・`2130706433`・`010.0.0.1`・`1.2.3`・`0`・`fe80::1%lo0`・`１２７．０．０．１` は拒否されます（`getaddrinfo` はこれらを数値のアドレスとして読み、読み方は OS で違います。`0177.0.0.1` は macOS が 177.0.0.1、先頭の 0 を 8 進数と読む実装は 127.0.0.1、ゾーンは捨てられます）。残りの名前だけが `getaddrinfo`（`AF_UNSPEC`、`SOCK_STREAM`、`AI_ADDRCONFIG` なし）に渡り、結果を OS の順で、重複を除き先頭 64 件まで返します。名前が無ければ `NotFound`（`code` 0）です。native のランタイムはさらに、`getaddrinfo` を `AI_NUMERICHOST` で呼び、システムが数値のアドレスと読む host を名前の問い合わせの前に `InvalidInput`（`code` 0）で断ります。分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めることはありません。
+時間制限は `Maybe<i64>` のミリ秒で、呼び出し全体の期限（`CLOCK_MONOTONIC`）です。`None` は無期限、`Some n` は 1〜2,147,483,647 で、範囲外は OS を呼ばずに `InvalidInput`（`code` 0）です。期限が来ると `ETIMEDOUT` を `code` に持つ `Os.ErrorKind.Other` を返し、`Net.error_kind` は `TimedOut` です。ソケットは壊れません。`read`・`recv_from` の最大長は 1〜16,777,216 byte で、範囲外は `InvalidInput`（`code` 0）です。`read` は 1 回の受信で得た分だけを返し、空の配列は相手の送信終了です。`recv_from` は最大長より長いデータグラムを切り詰めずに `InvalidInput`（`code` は `EMSGSIZE`）にし、そのデータグラムを捨てます。`write` は全 byte を送るまで繰り返し、途中で失敗しても送れた量は分かりません。`send_to` は 1 データグラムを送り、時間制限は取りません。`resolve` は host を UTF-8 にし（孤立サロゲートは `InvalidEncoding`）、空・NUL を含む・253 byte 超・port が 0〜65535 の外は `InvalidInput`（`code` 0）にします。アドレスに読める host は OS に渡さず、`parse_ip port host` だけで決めます。そのような host は、`:` か `%` を含む、空白か制御文字（0x20 以下と 0x7f）を含む、ASCII 以外のバイトを含む（Node.js の `dns.lookup` などが IDNA で ASCII に直し、全角の `１２７．０．０．１` を 127.0.0.1 に引くため。国際化ドメイン名は `xn--` の形で書く）、または最後のラベル（末尾の `.` が 1 つあれば除く）が数字だけか `0x`・`0X` で始まるものです。厳密に読めればシステムを呼ばずにそのアドレス 1 つの配列を返し、読めなければ `InvalidInput`（`code` 0）なので、`127.1`・`0x7f000001`・`2130706433`・`010.0.0.1`・`1.2.3`・`0`・`fe80::1%lo0`・`１２７．０．０．１` は拒否されます（`getaddrinfo` はこれらを数値のアドレスとして読み、読み方は OS で違います。`0177.0.0.1` は macOS が 177.0.0.1、先頭の 0 を 8 進数と読む実装は 127.0.0.1、ゾーンは捨てられます）。残りの名前だけが `getaddrinfo`（`AF_UNSPEC`、`SOCK_STREAM`、`AI_ADDRCONFIG` なし）に渡り、結果を OS の順で、重複を除き先頭 64 件まで返します。名前が無ければ `NotFound`（`code` 0）です。native のランタイムはさらに、`getaddrinfo` を `AI_NUMERICHOST` で呼び、システムが数値のアドレスと読む host を名前の問い合わせの前に `InvalidInput`（`code` 0）で断ります。分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めることはありません。
 
 失敗は `Os.Error` で、`Os.ErrorKind` に case を足せないため、`errno` を `code` に持つ `Other` が多くなります。`errno` から `Os.ErrorKind` への対応は、`EACCES`・`EPERM` が `PermissionDenied`、`EADDRINUSE` が `AlreadyExists`、`EINVAL`・`EAFNOSUPPORT`・`EADDRNOTAVAIL`・`EMSGSIZE` が `InvalidInput`、`getaddrinfo` の `EAI_NONAME`（と `EAI_NODATA`）が `NotFound`（`code` 0）、それ以外の `EAI_*` は `Other`（`code` 0）、残りは `Other` です。`Net.error_kind` は、`ETIMEDOUT` を `TimedOut`、`ECONNREFUSED` を `ConnectionRefused`、`ECONNRESET`・`ECONNABORTED`・`EPIPE` を `ConnectionReset`、`EADDRINUSE` を `AddressInUse`、`EADDRNOTAVAIL` を `AddressNotAvailable`、`ENETUNREACH`・`EHOSTUNREACH`・`ENETDOWN`・`EHOSTDOWN` を `Unreachable` に分類し、`code` 0 とそれ以外は `Unclassified` です。`errno` の値は OS ごとに違いますが、分類は同じ結果になります。`EINTR` はランタイムが再試行します。
 
@@ -1935,13 +1935,13 @@ Tsuzuri におけるインデックスアクセスは境界検査を伴う厳格
 | `split separator text` | 同一エンコーディングの文字列配列。非空の区切り文字が先頭・末尾・連続して一致した場合は空文字列要素も保持 |
 | `find needle text`／`rfind needle text` | `Maybe<i64>`。最初または最後に出現した一致位置。空の `needle` は先頭 `0` または末尾 `text.length` を返却 |
 | `contains needle text`／`starts_with prefix text`／`ends_with suffix text` | 一致有無の真偽値 `bool`。空の検索パターンの場合は常に `true` |
-| `slice text first last`／`sub text first count` | 部分文字列 `Maybe<string>` または `Maybe<utf8string>`。終了インデックスは結果に含まない |
-| `decode_at text offset` | `(char * i64)` または `(utf8char * i64)`。文字とその直後のオフセット位置のタプル。範囲外や境界不正はトラップ |
+| `slice first last text`／`sub first count text` | 部分文字列 `Maybe<string>` または `Maybe<utf8string>`。終了インデックスは結果に含まない |
+| `decode_at offset text` | `(char * i64)` または `(utf8char * i64)`。文字とその直後のオフセット位置のタプル。範囲外や境界不正はトラップ |
 | `chars text`／`char_count text` | `[char]` とコード単位数、または `[utf8char]` とスカラー文字数 |
 | `trim text`／`trim_start text`／`trim_end text` | ASCII 空白文字（文字コード 9〜13、32）のみをトリムした新しい所有文字列 |
 | `to_ascii_lower text`／`to_ascii_upper text` | ASCII 英文字の大小文字のみを変換した新しい所有文字列 |
 | `replace needle replacement text` | 左から右へ走査して重複しない一致部分を置換。置換後テキストの再解釈は行わない |
-| `repeat text count` | 文字列を `count` 回繰り返した連結文字列。負数は空文字列に対してもトラップ |
+| `repeat count text` | 文字列を `count` 回繰り返した連結文字列。負数は空文字列に対してもトラップ |
 | `compare left right` | 比較演算子と同様に辞書順比較を行い、`-1`／`0`／`1`（`i64`）を返却 |
 
 `slice` および `sub` は、負数の指定、開始・終了位置の逆転、範囲外アクセス、および加算オーバーフローが発生した場合に安全に `None` を返します。`String` においてはサロゲートペアの途中インデックスであっても有効な位置として受け入れられ、サロゲートコード単位がそのまま抽出されます。
@@ -2105,11 +2105,11 @@ $"[{p:>10}][{p:+}][{p:.2}][{p:*^6}]"    // [       1,2][+1,2][1,2/2][*1,2**]
 | `Maybe.get`、`Result.get`／`get_error` | union の所有権を消費してペイロードを直接取得。期待と異なるバリアントの場合は安全にトラップ |
 | 両モジュールの `default_value fallback value` | 成功時のペイロード、または先行評価された既定値 `fallback` を返却 |
 | 両モジュールの `default_with fallback value` | 値が不在または失敗の場合にのみ、遅延関数 `fallback ()` を呼び出してその結果を返却 |
-| 両モジュールの `map transform value`／`bind value next` | 成功ペイロードを消費して変換関数を実行し、新しい union を返却（失敗・不在時は継続クロージャを呼び出さない） |
-| 両モジュールの `map_ref transform value`／`bind_ref value next` | union および成功ペイロードを共有借用した状態で変換を実行し、独立した所有結果を返却 |
+| 両モジュールの `map transform value`／`bind next value` | 成功ペイロードを消費して変換関数を実行し、新しい union を返却（失敗・不在時は継続クロージャを呼び出さない） |
+| 両モジュールの `map_ref transform value`／`bind_ref next value` | union および成功ペイロードを共有借用した状態で変換を実行し、独立した所有結果を返却 |
 | `Maybe.filter predicate value` | ペイロードを借用して述語関数で検証し、条件を満たせば所有する `Some`、満たさなければ `None` を返却 |
 | `Result.map_error transform value` | `Error` のペイロードのみを消費して変換関数を適用 |
-| 両モジュールの `or_else value fallback` | 失敗・不在の場合にのみ、代替計算を行う関数 `fallback ()` を呼び出す |
+| 両モジュールの `or_else fallback value` | 失敗・不在の場合にのみ、代替計算を行う関数 `fallback ()` を呼び出す |
 | `Maybe.to_result error value`／`Result.of_maybe error value` | `Some` を `Ok` へ、`None` を引数で指定されたエラー値 `Error` へと相互変換 |
 | `Maybe.of_result value`／`Result.to_maybe value` | `Ok` を `Some` へ変換し、`Error` のエラー情報は安全に破棄して `None` へ変換 |
 
@@ -3020,7 +3020,7 @@ Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 - 入力は 64 MiB（`TooLarge`）、入れ子は 128 段（`TooDeep`、129 段目の `[`／`{` の位置）まで。解析は再帰の前に深さを検査する再帰下降なので、深い入力でもスタックは 128 段で止まります。重複キーの検査は 32 メンバー以下で線形、それを超えると整列して $O(n \log n)$ です。`Map`／`Set` の decode も要素を文書での位置とともにキーで安定整列してから昇順に挿入するので $O(n \log n)$ で、重複は文書順で前の要素とキーが等しい最初の要素を、その字句で報告します。
 - 数値の変換（`to_i64`、`to_f64`、数値の `Decode`）は字句を検査してから `Parse.parse` を一度だけ呼びます。整数型は小数・指数のある字句を `ExpectedType "integer"`、範囲外と 4096 バイト超の字句を `NumberRange` にします。浮動小数点は目的の型へ一度だけ最近接・偶数丸めし、無限大への overflow は `NumberRange` です。
 - `Encode`／`Decode` のインスタンスは std の `Json` と利用者のソースにだけあり、bool、全整数型、`f16`／`f32`／`f64`／`f128`、`d32`／`d64`／`d128`、string、utf8string、`Maybe<'a>`（`None` は `null`）、配列・リスト・`Vec`（JSON の配列）、2〜4 要素のタプル（同じ長さの配列）、`Map`／`HashMap`（すべてのキーが JSON の文字列になれば object、そうでなければ `[キー, 値]` の配列の配列。空のマップは `{}`。decode はどちらも受理し、重複キーは `DuplicateKey`）、`Set`／`HashSet`（配列）、`Json.Value` を扱います。`Map`／`Set` はキーの昇順、`HashMap`／`HashSet` は挿入順に書きます。文字列のキーとそれ以外のキーに別々のインスタンスを置くことは重複規則でできないため、マップの形は encode したキーで決まります。NaN・無限大の encode は `NonFinite`、孤立サロゲートを含む文字列の `utf8string` への decode は `LoneSurrogate` です。数値は `to_string` の最短表現（`-0`、`1e+7`）で、`JSON.stringify` とは書き方が異なることがあります。
-- `to_utf8string_pretty value indent`／`serialize_pretty` は `JSON.stringify(value, null, indent)` と同じ字下げ（1 段 `indent` 個の空白、10 で頭打ち、1 未満は空白なし）で書きます。
+- `to_utf8string_pretty indent value`／`serialize_pretty indent value` は `JSON.stringify(value, null, indent)` と同じ字下げ（1 段 `indent` 個の空白、10 で頭打ち、1 未満は空白なし）で書きます。
 - `Json.reader`／`Json.next` は木を作らないプル型の解析器で、`Event`（`ObjectStart`、`KeyToken of Lexeme` など）と、入力のバイト範囲 `Lexeme { start, finish, escaped }` を返します（`token_text`・`token_matches`・`token_numeral` で中身を取り出す）。検査・上限・エラーの種類と位置は `parse` と同じで、重複キーはその object が閉じるか入力が失敗したときに報告します。`Json.writer` と `open_object`／`write_key`／`write_text`／`finish` などは、`,`・`:` を補いながら入れ子と順序を検査する逐次の出力器で、誤りは出力のバイト数を位置とする `Syntax`／`UnexpectedEnd`／`TooDeep` です。`Reader`・`Writer` は不透明です。
 - std の `Cbor` は同じ `Json.Value` を RFC 8949 の決定的な符号化（最短の引数、長さを前置、値を保つ最短の浮動小数点、符号化したキーの辞書順）で `[ubyte]` に書き（`Cbor.encode`／`serialize`）、JSON のデータモデルに入る CBOR だけを厳密に読みます（`Cbor.decode`／`deserialize`。64 MiB、入れ子 128 段、バイト文字列やタグ 2・3 以外は `Unsupported`、不正な UTF-8 は `InvalidUtf8`）。整数の字句は整数（64 ビットを超えれば bignum）、それ以外の数値は `f64` に一度だけ丸めた値です。
 - `deriving (Encode, Decode)` の形は[自動導出](#自動導出deriving)にあります。`Json` を使わないプログラムの生成コードは、std の追加による生成関数の番号の付け替えを除いて変わりません。
@@ -3200,21 +3200,21 @@ Seq の内部データ構造は完全に不透明であり、ユーザーコー�
 比較処理の内部においてキーの反射的等価性（$k == k$）が検証され、NaN などがキーとして渡された場合は安全に言語トラップが発生します。制約を持たない単一要素のシングルトンコンテナは任意の 1 要素を格納可能ですが、その後の比較操作の実行時に同様の検証が行われます。
 
 ```text
-let map = Map.insert (Map.singleton 2 "two") 1 "one"
-let word = Map.at (&map) 1
+let map = Map.insert 1 "one" (Map.singleton 2 "two")
+let word = Map.at 1 (&map)
 assert (word.length == 3)
-let map = Map.remove map 2
+let map = Map.remove 2 map
 ```
 
 `Map` モジュールが提供する主な API は以下のとおりです:
-`empty()`、`singleton key value`、`length (&map)`、`is_empty (&map)`、`insert map key value`、`remove map key`、
-`contains_key (&map) key`、`get (&map) key`、`at (&map) key`、`to_array (&map)`、`keys (&map)`、`values (&map)`、`fold folder initial (&map)`。
+`empty()`、`singleton key value`、`length (&map)`、`is_empty (&map)`、`insert key value map`、`remove key map`、
+`contains_key key (&map)`、`get key (&map)`、`at key (&map)`、`to_array (&map)`、`keys (&map)`、`values (&map)`、`fold folder initial (&map)`。
 `get` は Copy 型の値に対して `Maybe<V>` を返し、`at` はキーが存在しない場合に安全にトラップする共有借用参照 `ref V` を返します。検索キーは通常の値渡しで渡され、関数呼び出し完了時に安全に解放されます。
 既存のキーと同一のキーに対して `insert` を行った場合は、最初に格納されていたキーの代表値がそのまま維持され、新しく渡されたキーと古い値が解放されて値のみが新しい値へと置換されます（キーが存在しない `remove` はマップを変更せずにそのまま返却します）。
 `to_array` はキーと値の双方に Copy 制約を要求し、`keys` はキーのみ、`values` は値のみに Copy 制約を要求します。`fold` のコールバックシグネチャは `state -> ref K -> ref V -> state` です。
 
 `Set` モジュールが提供する主な API は以下のとおりです:
-`empty()`、`singleton key`、`length`、`is_empty`、`insert set key`、`remove set key`、`contains (&set) key`、
+`empty()`、`singleton key`、`length`、`is_empty`、`insert key set`、`remove key set`、`contains key (&set)`、
 `to_array (&set)`、`fold folder initial (&set)`、`union left right`、`intersect (&left) (&right)`、`difference (&left) (&right)`。
 `union` は両方の Set の所有権を消費して統合し、重複キーが存在した場合は左辺側のキー代表値が維持されます。`intersect`、`difference`、および `to_array` は返却配列を構築するためキー型に `Copy` 制約を要求します。
 `fold` のコールバックシグネチャは `state -> ref K -> state` であり、非 Copy なキーに対しても安全に適用可能です。
@@ -3235,13 +3235,13 @@ let map = Map.remove map 2
 let a = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
 let t = Matrix.transpose (ref a)
 let p = Matrix.mul (ref a) (ref t)
-let row = Matrix.row (ref p) 1
+let row = Matrix.row 1 (ref p)
 ```
 
 主な API は次のとおりです。
 `of_array rows cols values`（平らな配列を複製せずに所有）、`init rows cols initializer`（`initializer row col` を行優先に 1 回ずつ呼ぶ）、`rows (ref m)`、`cols (ref m)`、
-`at (ref m) row col`（共有借用 `ref 'a`）、`get (ref m) row col`（`Maybe<'a>`。`Copy<'a>` が必要）、`row (ref m) index`（1 行の部分参照 `ref ['a]`）、`as_array (ref m)`、`to_array m`（消費して複製せずに返す）、
-`set m row col value`（消費して 1 要素をその場で置き換える）、`map transform (ref m)`、`fold folder initial (ref m)`、`transpose (ref m)`、`add (ref a) (ref b)`、
+`at row col (ref m)`（共有借用 `ref 'a`）、`get row col (ref m)`（`Maybe<'a>`。`Copy<'a>` が必要）、`row index (ref m)`（1 行の部分参照 `ref ['a]`）、`as_array (ref m)`、`to_array m`（消費して複製せずに返す）、
+`set row col value m`（消費して 1 要素をその場で置き換える）、`map transform (ref m)`、`fold folder initial (ref m)`、`transpose (ref m)`、`add (ref a) (ref b)`、
 `mul (ref a) (ref b)`、`mul_fma (ref a) (ref b)`、`mul_parallel (ref a) (ref b)`、`mul_fma_parallel (ref a) (ref b)`。
 `transform` と `folder` は行優先に 1 回ずつ呼ばれます。値で読む API は `Copy<'a>`、算術は `Numeric<'a>` を要求し、満たさない要素型は `E1005` です。
 
@@ -3280,12 +3280,12 @@ API は `of_matrix`・`of_array`・`strided`・`rows`・`cols`・`offset`・`row
 
 ```text
 let mut ages: HashMap<i64, i64> = HashMap.empty()
-ages = HashMap.insert ages 10 1
-ages = HashMap.insert ages 20 2
-ages = HashMap.insert ages 30 3
-ages = HashMap.insert ages 40 4
-ages = HashMap.insert ages 10 5          // 既存キーに対する insert は値のみを置換し、順序位置は不変
-ages = HashMap.remove ages 20            // 末尾要素 40 が削除位置 20 のスロットへ移動（swap-remove）
+ages = HashMap.insert 10 1 ages
+ages = HashMap.insert 20 2 ages
+ages = HashMap.insert 30 3 ages
+ages = HashMap.insert 40 4 ages
+ages = HashMap.insert 10 5 ages          // 既存キーに対する insert は値のみを置換し、順序位置は不変
+ages = HashMap.remove 20 ages            // 末尾要素 40 が削除位置 20 のスロットへ移動（swap-remove）
 to_string (HashMap.keys (ref ages))      // [10, 40, 30]
 ```
 
@@ -3293,9 +3293,9 @@ to_string (HashMap.keys (ref ages))      // [10, 40, 30]
 |---|---|
 | `empty()`／`with_capacity count` | 空のマップ、または `count` 件まで再確保なしで挿入可能な容量を事前確保したマップを生成（`count` は 0 以上 $2^{60}$ 以下の整数、範囲外はトラップ。0 は `empty()` と同一） |
 | `length (&map)`／`is_empty (&map)` | マップ内の要素数、および空かどうかの真偽値を返却 |
-| `insert map key value` | マップを消費して更新結果を返却。新しいキーは末尾に追加。`Eq` で等しい既存キーが存在する場合は最初のキー代表値を維持し、新しいキーと古い値を解放して値のみをインプレース置換（順序位置は変更なし） |
-| `remove map key` | マップを消費して結果を返却。キーが存在しなければそのまま返し、存在すればエントリを安全に解放（要素順序への影響は後述） |
-| `contains_key (&map) key`／`get (&map) key`／`at (&map) key` | 検索キーは値渡しで渡され、比較完了時に安全に解放。`get` は `Maybe<V>`（`Copy<V>` 制約が必要）、`at` はキーが存在しない場合にトラップする共有借用参照 `ref V` を返却 |
+| `insert key value map` | マップを消費して更新結果を返却。新しいキーは末尾に追加。`Eq` で等しい既存キーが存在する場合は最初のキー代表値を維持し、新しいキーと古い値を解放して値のみをインプレース置換（順序位置は変更なし） |
+| `remove key map` | マップを消費して結果を返却。キーが存在しなければそのまま返し、存在すればエントリを安全に解放（要素順序への影響は後述） |
+| `contains_key key (&map)`／`get key (&map)`／`at key (&map)` | 検索キーは値渡しで渡され、比較完了時に安全に解放。`get` は `Maybe<V>`（`Copy<V>` 制約が必要）、`at` はキーが存在しない場合にトラップする共有借用参照 `ref V` を返却 |
 | `contains_key_ref`／`get_ref`／`at_ref`／`remove_ref` | 上記と同一の操作を、キーを `ref 'key` の共有借用参照で受け取る形式。キーの所有権を手放さずに検索可能であり、`at_ref` の戻り値はマップ自身のみを借用 |
 | `to_array (&map)`／`keys (&map)`／`values (&map)` | 内部走査順序に従った `[(K * V)]`、`[K]`、`[V]` の配列を生成（複製される型に `Copy` 制約を要求） |
 | `fold folder initial (&map)`／`iter (&map)` | `folder` の型は `'state -> ref K -> ref V -> 'state`、`iter` は `Seq<(ref K * ref V)>` を返却（テーブル破損を防ぐためキーの排他借用は提供されない） |
@@ -3304,7 +3304,7 @@ to_string (HashMap.keys (ref ages))      // [10, 40, 30]
 | `longest_probe (&map)` | 理想のハッシュ位置から最も遠いエントリまでの最大探査距離（空マップでは 0、内部診断用） |
 | `sip13 key0 key1 word` | `i64u` の 1 ワードに対する SipHash-1-3 を計算して返す純粋関数（シード付きマップが内部で使用するアルゴリズムと同一） |
 
-`HashSet` モジュールも同様に、`empty()`、`with_capacity`、`length`、`is_empty`、`insert set key`、`remove`、`contains (&set) key`、`remove_ref`、`contains_ref`、`to_array`、`fold`、`iter`、`with_seed`、`with_capacity_and_seed`、`randomized`、`try_randomized`、`longest_probe` を備えており、動作契約は `HashMap` と完全に同一です（`fold` のコールバックシグネチャは `'state -> ref K -> 'state`、`iter` は `Seq<ref K>`、`to_array` は `[K]` を返します）。
+`HashSet` モジュールも同様に、`empty()`、`with_capacity`、`length`、`is_empty`、`insert key set`、`remove`、`contains key (&set)`、`remove_ref`、`contains_ref`、`to_array`、`fold`、`iter`、`with_seed`、`with_capacity_and_seed`、`randomized`、`try_randomized`、`longest_probe` を備えており、動作契約は `HashMap` と完全に同一です（`fold` のコールバックシグネチャは `'state -> ref K -> 'state`、`iter` は `Seq<ref K>`、`to_array` は `[K]` を返します）。
 所有権の管理規則は `Map` と同一です。`insert` や `remove` によって消費されたマップ変数を再利用しようとするとコンパイルエラー `E1012`、`at` による借用参照の生存中にマップ自身を更新・移動しようとすると `E1014`、`at` で得た参照を関数の外側へ返却しようとすると `E1013` エラーとなります。また、キー型に `Hash` または `Eq` インスタンスが定義されていない場合、ならびに `get`、`keys`、`values`、`to_array` において対象型に `Copy` 制約が満たされていない場合は `E1005` エラーとなります。
 
 #### 反復順序
@@ -3314,11 +3314,11 @@ to_string (HashMap.keys (ref ages))      // [10, 40, 30]
 
 ```text
 let mut set: HashSet<char> = HashSet.empty()
-set = HashSet.insert set 'a'
-set = HashSet.insert set 'b'
-set = HashSet.insert set 'c'
-set = HashSet.insert set 'd'
-set = HashSet.remove set 'b'
+set = HashSet.insert 'a' set
+set = HashSet.insert 'b' set
+set = HashSet.insert 'c' set
+set = HashSet.insert 'd' set
+set = HashSet.remove 'b' set
 to_string (HashSet.to_array (ref set))    // ['a', 'd', 'c']
 ```
 
@@ -3359,7 +3359,7 @@ to_string (HashSet.to_array (ref set))    // ['a', 'd', 'c']
 ```text
 def main :: unit -> i32 = \() ->
     let! made = HashMap.randomized ()
-    let filled: HashMap<string, i64> = HashMap.insert made "a" 1
+    let filled: HashMap<string, i64> = HashMap.insert "a" 1 made
     do! IO.write_line (to_string (HashMap.length (ref filled)))
     0
 ```
@@ -3374,7 +3374,7 @@ seed は反復順序に影響せず、seed 付きのmapの順序は同じ操作�
 ```text
 def main :: unit -> i32 = \() ->
     let! made = HashMap.randomized ()
-    let filled: HashMap<string, i64> = HashMap.insert made "a" 1
+    let filled: HashMap<string, i64> = HashMap.insert "a" 1 made
     do! IO.write_line (to_string (HashMap.length (ref filled)))
     0
 ```
@@ -3389,10 +3389,10 @@ def main :: unit -> i32 = \() ->
 
 ```text
 record Node { value: i64, edges: Vec<Arena.Handle<Node>> }
-match Arena.insert graph (Node { value: 1, edges: Vec.empty() }) with   // (Arena<Node> * Arena.Handle<Node>)
+match Arena.insert (Node { value: 1, edges: Vec.empty() }) graph with   // (Arena<Node> * Arena.Handle<Node>)
 | (filled, a) ->
-    let linked = Arena.update filled a (link a)                         // 後から辺を足して循環を作る
-    (Arena.at (ref linked) a).value                                     // 無効なハンドルはトラップ
+    let linked = Arena.update a (link a) filled                         // 後から辺を足して循環を作る
+    (Arena.at a (ref linked)).value                                     // 無効なハンドルはトラップ
 ```
 
 | API | 型 | 計算量 | 無効なハンドル |
@@ -3400,12 +3400,12 @@ match Arena.insert graph (Node { value: 1, edges: Vec.empty() }) with   // (Aren
 | `Arena.empty()` | `Arena<'a>` | $O(1)$、確保なし | – |
 | `Arena.with_capacity count` | `i64 -> Arena<'a>` | $O(1)$ | –（負の容量はトラップ） |
 | `Arena.length arena` | `ref Arena<'a> -> i64` | $O(1)$ | – |
-| `Arena.contains arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> bool` | $O(1)$ | `false` |
-| `Arena.get arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> Maybe<ref 'a>` | $O(1)$ | `None` |
-| `Arena.at arena handle` | `ref Arena<'a> -> Arena.Handle<'a> -> ref 'a` | $O(1)$ | トラップ |
-| `Arena.insert arena value` | `Arena<'a> -> 'a -> (Arena<'a> * Arena.Handle<'a>)` | 償却 $O(1)$ | – |
-| `Arena.remove arena handle` | `Arena<'a> -> Arena.Handle<'a> -> (Arena<'a> * Maybe<'a>)` | $O(1)$ | 変更しない arena と `None` |
-| `Arena.update arena handle change` | `Arena<'a> -> Arena.Handle<'a> -> ('a -> 'a) -> Arena<'a>` | $O(1)$ ＋ `change` | トラップ（`change` は呼ばない） |
+| `Arena.contains handle arena` | `Arena.Handle<'a> -> ref Arena<'a> -> bool` | $O(1)$ | `false` |
+| `Arena.get handle arena` | `Arena.Handle<'a> -> ref Arena<'a> -> Maybe<ref 'a>` | $O(1)$ | `None` |
+| `Arena.at handle arena` | `Arena.Handle<'a> -> ref Arena<'a> -> ref 'a` | $O(1)$ | トラップ |
+| `Arena.insert value arena` | `'a -> Arena<'a> -> (Arena<'a> * Arena.Handle<'a>)` | 償却 $O(1)$ | – |
+| `Arena.remove handle arena` | `Arena.Handle<'a> -> Arena<'a> -> (Arena<'a> * Maybe<'a>)` | $O(1)$ | 変更しない arena と `None` |
+| `Arena.update handle change arena` | `Arena.Handle<'a> -> ('a -> 'a) -> Arena<'a> -> Arena<'a>` | $O(1)$ ＋ `change` | トラップ（`change` は呼ばない） |
 | `Arena.iter arena` | `ref Arena<'a> -> Seq<(Arena.Handle<'a> * ref 'a)>` | 全体で $O(n)$ | – |
 
 ハンドルが有効なのは、同じ arena の中で、`insert` が返してから `remove` されるまでの間だけです。`update` は同じハンドルを有効なまま保ちます。
@@ -3502,7 +3502,7 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 
 ```text
 match Regex.compile (ref "(\\w+)@(\\w+)") with
-| Result.Ok re -> Regex.replace_all (ref re) (ref "x@y") (ref "${2} at ${1}")   // "y at x"
+| Result.Ok re -> Regex.replace_all (ref re) (ref "${2} at ${1}") (ref "x@y")   // "y at x"
 | Result.Error error -> error.message
 ```
 
@@ -3525,6 +3525,18 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 - `utf8string` の関数は名前に `_utf8` が付き、境界の位置は byte です。`string` の孤立サロゲートは 1 スカラーとして扱い、変換されずに残ります（カテゴリーは `Cs`、書記素では Control）。
 - 計算量は入力のスカラー数 $n$ と表の大きさ $t$ について $O(n \log t)$ で、正規化は連続する結合文字の並べ替え（$O(k \log k)$）を足します。結果と作業用のスカラーの配列は呼び出しごとに確保します。
 表は `scripts/generate-unicode.mjs` が生成したランタイム `src/runtime/unicode.ll` の定数で、`Unicode` か `Regex` の関数を使うプログラムにだけ連結されます。版の更新は結果を変えるので、生成器の入力の SHA-256 と `Unicode.version` を同時に変えます。
+
+### 標準ライブラリの引数の順序
+
+標準ライブラリの関数は、その関数が読む・変換する・更新する値（対象）を、最後の引数に取ります。対象は、コレクション（`Array`・`List`・`Vec`・`Map`・`Set`・`HashMap`・`HashSet`・`Arena`・`Seq`・`Gen`）、文字列（`String`・`Utf8String`・`Unicode`、`Regex` の検索対象）、`Maybe`・`Result`・`IO` の値、`Matrix`・`MatrixView`・`Tensor` の view、`Json` の値・書き込み器・読み取り器です。キー、添字、個数、位置、コールバック、区切りのようなほかの引数は、F# または .NET の順のまま、対象の前に並べます（`Map.insert key value map`、`String.sub first count text`、`Maybe.bind f maybe`、`Regex.find_at re start text`）。これで、パイプ `xs |> M.f a` と合成 `M.f a >> M.g b`（`\v -> g (f v)` に展開されます）が、どのモジュールでも同じ形で書けます。`Map`・`Set`・`Option`・`Result` の関数と `String.replicate` に当たる `String.repeat` は、F# と同じ順序です。
+
+- 対象を複数取る関数（`append`・`zip`・`union`・`mul`）は F# の順に並べ、最後の対象が最後の引数です。一方だけを書き換える関数は、書き換えられる方が最後です（`MatrixView.copy_from source target`）。
+- 対象を持たない関数（`empty`・`init`・`of_array`・`parse` など）は、この規則の外です。借用版の関数（`get_ref`・`foldr` など）は、値渡し版と同じ順序です。
+- 対象は最後に移動または借用されるので、それより前の引数の式は対象を読めます（`Array.write 0 (v[1] * 10) v`）。パイプは対象を先に借りるので、`v |> Array.write 0 (v[1] * 10)` は `E1014` です。
+- `Regex.replace_all` は `re replacement text` の順です。置換文字列とテキストはどちらも `ref string` なので、取り違えても型検査を通ります。`String.replace needle replacement text` も、3 つとも `ref string` です。
+- 例外は次の 4 種類だけです。(1) 資源のハンドルを先に取る関数（`File`・`Net`・`Process`・`Atomic`・`Mutex`・`Channel`・`Rc`・`Arc`・`Owned`・`Task`）。.NET のメソッドの受け手と同じです。(2) 数式の被演算子の順で書く数値の関数（`Int`・`Math`・`Simd`・`Char`）。(3) コンパイラが呼ぶ関数（計算式ビルダーの大文字の操作と、`derive` が生成するコードが呼ぶ `Json.decode_field`・`Json.case_index`）。(4) テストとベンチマークの入口（`Gen.for_all`・`Test.*`・`Bench.*`）。
+
+規則は `tests/std_argument_order.rs` が検査します。`std/` の `def` 行と、`Array`・`List`・`Vec`・`String`・`Utf8String` の組み込み関数の型を調べ、分類していない新しい `std/` のファイルがあると失敗します。モジュールごとの表と例は [標準ライブラリの引数の順序](../_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md) にあります。
 
 ### 配列・リスト API
 

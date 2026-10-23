@@ -10,12 +10,12 @@ fn run_map_ops start count seed =
         let key = (Bits.ushr r 3) % 4099 * 8 - 16000
         let op = r % 8
         if op < 4 then
-            map = HashMap.insert map key step
+            map = HashMap.insert key step map
         elif op < 6 then
-            map = HashMap.remove map key
+            map = HashMap.remove key map
         else
-            let found = HashMap.contains_key (ref map) key
-            acc = acc * 31 + (if found then deref (HashMap.at (ref map) key) else 7)
+            let found = HashMap.contains_key key (ref map)
+            acc = acc * 31 + (if found then deref (HashMap.at key (ref map)) else 7)
         step = step + 1
     HashMap.fold (\total key value -> total * 31 + deref key * 7 + deref value) (acc * 1000003 + HashMap.length (ref map)) (ref map)
 
@@ -31,11 +31,11 @@ fn run_set_ops start count seed =
         let key = (Bits.ushr r 3) % 4099 * 8 - 16000
         let op = r % 8
         if op < 4 then
-            set = HashSet.insert set key
+            set = HashSet.insert key set
         elif op < 6 then
-            set = HashSet.remove set key
+            set = HashSet.remove key set
         else
-            acc = acc * 31 + (if HashSet.contains (ref set) key then 1 else 7)
+            acc = acc * 31 + (if HashSet.contains key (ref set) then 1 else 7)
         step = step + 1
     HashSet.fold (\total key -> total * 31 + deref key * 7) (acc * 1000003 + HashSet.length (ref set)) (ref set)
 
@@ -65,33 +65,33 @@ fn hash_borrowed_keys count =
     let mut map: HashMap<string, i64> = HashMap.empty()
     let mut index = 0
     while index < count do
-        map = HashMap.insert map (to_string index) (index * 3)
+        map = HashMap.insert (to_string index) (index * 3) map
         index = index + 1
     let mut found = 0
     let mut sum = 0
     index = 0
     while index < 2 * count do
         let key = to_string index
-        let present = HashMap.contains_key_ref (ref map) (ref key)
+        let present = HashMap.contains_key_ref (ref key) (ref map)
         if present then found = found + 1
         let value =
-            match HashMap.get_ref (ref map) (ref key) with
+            match HashMap.get_ref (ref key) (ref map) with
             | Maybe.Some stored -> stored
             | Maybe.None -> -1
         sum = sum * 31 + value
-        if present then sum = sum + deref (HashMap.at_ref (ref map) (ref key))
+        if present then sum = sum + deref (HashMap.at_ref (ref key) (ref map))
         index = index + 1
     index = 0
     while index < 2 * count do
         if index % 2 == 0 then
             let key = to_string index
-            map = HashMap.remove_ref map (ref key)
+            map = HashMap.remove_ref (ref key) map
         index = index + 1
     let mut still = 0
     index = 0
     while index < 2 * count do
         let key = to_string index
-        if index % 2 == 0 && HashMap.contains_key_ref (ref map) (ref key) then still = still + 1
+        if index % 2 == 0 && HashMap.contains_key_ref (ref key) (ref map) then still = still + 1
         index = index + 1
     sum * 1000003 + found * 1009 + HashMap.length (ref map) * 7 + still
 
@@ -100,25 +100,25 @@ fn hash_set_borrowed_keys count =
     let mut set: HashSet<string> = HashSet.empty()
     let mut index = 0
     while index < count do
-        set = HashSet.insert set (to_string index)
+        set = HashSet.insert (to_string index) set
         index = index + 1
     let mut found = 0
     index = 0
     while index < 2 * count do
         let key = to_string index
-        if HashSet.contains_ref (ref set) (ref key) then found = found + 1
+        if HashSet.contains_ref (ref key) (ref set) then found = found + 1
         index = index + 1
     index = 0
     while index < 2 * count do
         if index % 2 == 0 then
             let key = to_string index
-            set = HashSet.remove_ref set (ref key)
+            set = HashSet.remove_ref (ref key) set
         index = index + 1
     let mut left = 0
     index = 0
     while index < 2 * count do
         let key = to_string index
-        if HashSet.contains_ref (ref set) (ref key) then left = left + 1
+        if HashSet.contains_ref (ref key) (ref set) then left = left + 1
         index = index + 1
     found * 1000003 + left * 1009 + HashSet.length (ref set)
 
@@ -142,7 +142,7 @@ fn flood_map start keys =
     let mut map = start
     let mut index = 0
     while index < Vec.length keys do
-        map = HashMap.insert map keys[index] index
+        map = HashMap.insert keys[index] index map
         index = index + 1
     assert (HashMap.length (ref map) == Vec.length keys)
     HashMap.longest_probe (ref map)
@@ -152,7 +152,7 @@ fn flood_set start keys =
     let mut set = start
     let mut index = 0
     while index < Vec.length keys do
-        set = HashSet.insert set keys[index]
+        set = HashSet.insert keys[index] set
         index = index + 1
     assert (HashSet.length (ref set) == Vec.length keys)
     HashSet.longest_probe (ref set)
@@ -179,9 +179,9 @@ fn hash_strings count =
     let mut map: HashMap<string, string> = HashMap.empty()
     let mut index = 0
     while index < count do
-        map = HashMap.insert map (to_string (index % 9)) (to_string index)
+        map = HashMap.insert (to_string (index % 9)) (to_string index) map
         index = index + 1
-    map = HashMap.remove map "3"
+    map = HashMap.remove "3" map
     HashMap.length (ref map) * 100000 + HashMap.fold (\total _key value -> total * 7 + value.length) 0 (ref map)
 
 record Bucketed { value: i64 } deriving (Eq)
@@ -195,40 +195,40 @@ fn hash_collisions count =
     let mut map: HashMap<Bucketed, i64> = HashMap.empty()
     let mut index = 0
     while index < count do
-        map = HashMap.insert map (Bucketed { value: index }) index
+        map = HashMap.insert (Bucketed { value: index }) index map
         index = index + 1
     index = 0
     while index < count do
-        map = HashMap.remove map (Bucketed { value: index })
+        map = HashMap.remove (Bucketed { value: index }) map
         index = index + 3
     let mut total = 0
     index = 0
     while index < count do
         if index % 3 != 0 then
-            assert (HashMap.contains_key (ref map) (Bucketed { value: index }))
-            total = total + deref (HashMap.at (ref map) (Bucketed { value: index }))
+            assert (HashMap.contains_key (Bucketed { value: index }) (ref map))
+            total = total + deref (HashMap.at (Bucketed { value: index }) (ref map))
         else
-            assert (!(HashMap.contains_key (ref map) (Bucketed { value: index })))
+            assert (!(HashMap.contains_key (Bucketed { value: index }) (ref map)))
         index = index + 1
     total * 1000 + HashMap.length (ref map)
 
 export def hash_iter_order :: i64
 fn hash_iter_order =
     let mut map: HashMap<i64, i64> = HashMap.empty()
-    map = HashMap.insert map 5 0
-    map = HashMap.insert map 6 0
-    map = HashMap.insert map 7 0
-    map = HashMap.insert map 8 0
-    map = HashMap.remove map 6
+    map = HashMap.insert 5 0 map
+    map = HashMap.insert 6 0 map
+    map = HashMap.insert 7 0 map
+    map = HashMap.insert 8 0 map
+    map = HashMap.remove 6 map
     let mut digits = 0
     for pair in HashMap.iter (ref map) do
         match pair with
         | (key, _value) -> digits = digits * 10 + deref key
     let mut set: HashSet<i64> = HashSet.empty()
-    set = HashSet.insert set 1
-    set = HashSet.insert set 2
-    set = HashSet.insert set 3
-    set = HashSet.remove set 1
+    set = HashSet.insert 1 set
+    set = HashSet.insert 2 set
+    set = HashSet.insert 3 set
+    set = HashSet.remove 1 set
     let mut members = 0
     for key in HashSet.iter (ref set) do
         members = members * 10 + deref key
@@ -236,37 +236,37 @@ fn hash_iter_order =
 
 export def first_representative :: bool
 fn first_representative =
-    let map = HashMap.insert (HashMap.insert HashMap.empty() (-0.0) 1) 0.0 2
+    let map = HashMap.insert 0.0 2 (HashMap.insert (-0.0) 1 HashMap.empty())
     let keys = HashMap.keys (ref map)
-    let set = HashSet.insert (HashSet.insert HashSet.empty() (-0.0)) 0.0
+    let set = HashSet.insert 0.0 (HashSet.insert (-0.0) HashSet.empty())
     let set_keys = HashSet.to_array (ref set)
-    keys.length == 1 && 1.0 / keys[0] < 0.0 && Maybe.get (HashMap.get (ref map) 0.0) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
+    keys.length == 1 && 1.0 / keys[0] < 0.0 && Maybe.get (HashMap.get 0.0 (ref map)) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
 
 record Key { name: string } deriving (Eq, Hash)
 
 export def owned_record_keys :: i64
 fn owned_record_keys =
-    let map = HashMap.insert HashMap.empty() (Key { name: "answer" }) 42
-    Maybe.get (HashMap.get (ref map) (Key { name: "answer" }))
+    let map = HashMap.insert (Key { name: "answer" }) 42 HashMap.empty()
+    Maybe.get (HashMap.get (Key { name: "answer" }) (ref map))
 
 export def hash_capture :: i64
 fn hash_capture =
-    let map = HashMap.insert HashMap.empty() "answer" 42
-    let read = \() -> Maybe.get (HashMap.get (ref map) "answer")
+    let map = HashMap.insert "answer" 42 HashMap.empty()
+    let read = \() -> Maybe.get (HashMap.get "answer" (ref map))
     read () + read ()
 
 export def hash_borrowed_values :: i64
 fn hash_borrowed_values =
     let text = "borrowed"
-    let map = HashMap.insert HashMap.empty() 1 (ref text)
-    let value = HashMap.at (ref map) 1
+    let map = HashMap.insert 1 (ref text) HashMap.empty()
+    let value = HashMap.at 1 (ref map)
     value.length
 
 export def hash_task_drop :: i64
 fn hash_task_drop =
     let text = "owned capture"
-    let map = HashMap.insert HashMap.empty() 1 (task { return text.length })
-    let empty = HashMap.remove map 1
+    let map = HashMap.insert 1 (task { return text.length }) HashMap.empty()
+    let empty = HashMap.remove 1 map
     HashMap.length (ref empty)
 
 export def hash_capacity :: i64 -> i64
@@ -274,29 +274,29 @@ fn hash_capacity count =
     let mut map: HashMap<i64, i64> = HashMap.with_capacity count
     let mut index = 0
     while index < count do
-        map = HashMap.insert map index index
+        map = HashMap.insert index index map
         index = index + 1
     HashMap.length (ref map)
 
 export def hash_at_missing :: i64
 fn hash_at_missing =
     let map: HashMap<i64, string> = HashMap.empty()
-    let value = HashMap.at (ref map) 1
+    let value = HashMap.at 1 (ref map)
     value.length
 
 export def hash_nan_insert :: i64
 fn hash_nan_insert =
-    let map = HashMap.insert HashMap.empty() (0.0 / 0.0) 1
+    let map = HashMap.insert (0.0 / 0.0) 1 HashMap.empty()
     HashMap.length (ref map)
 
 export def hash_nan_query_empty :: bool
 fn hash_nan_query_empty =
     let map: HashMap<f64, i64> = HashMap.empty()
-    HashMap.contains_key (ref map) (0.0 / 0.0)
+    HashMap.contains_key (0.0 / 0.0) (ref map)
 
 export def hash_set_nan :: i64
 fn hash_set_nan =
-    let set = HashSet.insert HashSet.empty() (0.0 / 0.0)
+    let set = HashSet.insert (0.0 / 0.0) HashSet.empty()
     HashSet.length (ref set)
 
 export def hash_capacity_negative :: i64

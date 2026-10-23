@@ -56,14 +56,14 @@ fn map_ref transform maybe =
     | Some value -> Some (transform (&value))
     | None -> None
 
-def bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
-fn bind maybe next =
+def bind :: ('a -> Maybe<'b>) -> Maybe<'a> -> Maybe<'b>
+fn bind next maybe =
     match maybe with
     | Some value -> next value
     | None -> None
 
-def bind_ref :: &(Maybe<'a>) -> (&'a -> Maybe<'b>) -> Maybe<'b>
-fn bind_ref maybe next =
+def bind_ref :: (&'a -> Maybe<'b>) -> &(Maybe<'a>) -> Maybe<'b>
+fn bind_ref next maybe =
     match maybe with
     | Some value -> next (&value)
     | None -> None
@@ -74,8 +74,8 @@ fn filter predicate maybe =
     | Some value -> if predicate (&value) then Some value else None
     | None -> None
 
-def or_else :: Maybe<'a> -> (unit -> Maybe<'a>) -> Maybe<'a>
-fn or_else maybe fallback =
+def or_else :: (unit -> Maybe<'a>) -> Maybe<'a> -> Maybe<'a>
+fn or_else fallback maybe =
     match maybe with
     | Some value -> Some value
     | None -> fallback ()
@@ -99,7 +99,7 @@ def ReturnFrom :: Maybe<'a> -> Maybe<'a>
 fn ReturnFrom maybe = maybe
 
 def Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
-fn Bind maybe next = bind maybe next
+fn Bind maybe next = bind next maybe
 
 def Zero :: Maybe<unit>
 fn Zero = Some ()

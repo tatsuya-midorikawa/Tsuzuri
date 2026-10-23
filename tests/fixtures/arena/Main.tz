@@ -9,14 +9,14 @@ fn link target node =
 export def arena_cycle :: i64
 fn arena_cycle =
     let empty: Arena<Node> = Arena.empty()
-    match Arena.insert empty (Node { value: 1, edges: Vec.empty() }) with
+    match Arena.insert (Node { value: 1, edges: Vec.empty() }) empty with
     | (with_a, a) ->
-        match Arena.insert with_a (Node { value: 20, edges: Vec.push a (Vec.empty()) }) with
+        match Arena.insert (Node { value: 20, edges: Vec.push a (Vec.empty()) }) with_a with
         | (with_b, b) ->
-            let graph = Arena.update with_b a (link b)
-            let first = Arena.at (ref graph) a
-            let second = Arena.at (ref graph) first.edges[0]
-            let back = Arena.at (ref graph) second.edges[0]
+            let graph = Arena.update a (link b) with_b
+            let first = Arena.at a (ref graph)
+            let second = Arena.at first.edges[0] (ref graph)
+            let back = Arena.at second.edges[0] (ref graph)
             let mut total = 0
             for (handle, node) in Arena.iter (ref graph) do
                 total = total + node.value
@@ -29,21 +29,21 @@ fn arena_ring count =
     let mut handles: Vec<Arena.Handle<Node>> = Vec.with_capacity count
     let mut index = 0
     while index < count do
-        match Arena.insert graph (Node { value: index, edges: Vec.empty() }) with
+        match Arena.insert (Node { value: index, edges: Vec.empty() }) graph with
         | (next, handle) ->
             graph = next
             handles = Vec.push handle handles
         index = index + 1
     index = 0
     while index < count do
-        graph = Arena.update graph handles[index] (link handles[(index + 1) % count])
+        graph = Arena.update handles[index] (link handles[(index + 1) % count]) graph
         index = index + 1
     let start = handles[0]
     let mut cursor = start
     let mut total = 0
     let mut step = 0
     while step < count do
-        let node = Arena.at (ref graph) cursor
+        let node = Arena.at cursor (ref graph)
         total = total + node.value * (step + 1)
         cursor = node.edges[0]
         step = step + 1
@@ -56,7 +56,7 @@ fn arena_chain count =
     let mut previous: Maybe<Arena.Handle<Link>> = Maybe.None
     let mut index = 0
     while index < count do
-        match Arena.insert chain (Link { value: index, next: previous }) with
+        match Arena.insert (Link { value: index, next: previous }) chain with
         | (next, handle) ->
             chain = next
             previous = Maybe.Some handle
@@ -67,7 +67,7 @@ fn arena_chain count =
     while walking do
         match cursor with
         | Maybe.Some handle ->
-            let node = Arena.at (ref chain) handle
+            let node = Arena.at handle (ref chain)
             total = total + node.value
             cursor = node.next
         | Maybe.None -> walking = false
@@ -79,7 +79,7 @@ fn arena_churn count =
     let mut handles: Vec<Arena.Handle<i64>> = Vec.empty()
     let mut index = 0
     while index < count do
-        match Arena.insert arena (index * 3) with
+        match Arena.insert (index * 3) arena with
         | (next, handle) ->
             arena = next
             handles = Vec.push handle handles
@@ -89,7 +89,7 @@ fn arena_churn count =
     index = 0
     while index < count do
         if index % 3 == 0 then
-            match Arena.remove arena handles[index] with
+            match Arena.remove handles[index] arena with
             | (next, Maybe.Some value) ->
                 arena = next
                 removed = removed + value
@@ -100,13 +100,13 @@ fn arena_churn count =
         index = index + 1
     let mut added = 0
     while added < removals do
-        match Arena.insert arena (1000000 + added) with
+        match Arena.insert (1000000 + added) arena with
         | (next, _handle) -> arena = next
         added = added + 1
     let mut stale = 0
     index = 0
     while index < count do
-        if index % 3 == 0 && !(Arena.contains (ref arena) handles[index]) then stale = stale + 1
+        if index % 3 == 0 && !(Arena.contains handles[index] (ref arena)) then stale = stale + 1
         index = index + 1
     let mut live = 0
     for (_handle, value) in Arena.iter (ref arena) do live = live + deref value
@@ -118,15 +118,15 @@ fn arena_order =
     let mut handles: Vec<Arena.Handle<i64>> = Vec.empty()
     let mut index = 0
     while index < 5 do
-        match Arena.insert arena index with
+        match Arena.insert index arena with
         | (next, handle) ->
             arena = next
             handles = Vec.push handle handles
         index = index + 1
-    match Arena.remove arena handles[1] with
+    match Arena.remove handles[1] arena with
     | (without, removed) ->
         assert (Maybe.get removed == 1)
-        match Arena.insert without 5 with
+        match Arena.insert 5 without with
         | (filled, fifth) ->
             let mut digits = 0
             for (_handle, value) in Arena.iter (ref filled) do digits = digits * 10 + deref value
@@ -138,7 +138,7 @@ fn arena_strings count =
     let mut handles: Vec<Arena.Handle<string>> = Vec.empty()
     let mut index = 0
     while index < count do
-        match Arena.insert arena (to_string index) with
+        match Arena.insert (to_string index) arena with
         | (next, handle) ->
             arena = next
             handles = Vec.push handle handles
@@ -147,7 +147,7 @@ fn arena_strings count =
     index = 0
     while index < count do
         if index % 4 == 1 then
-            match Arena.remove arena handles[index] with
+            match Arena.remove handles[index] arena with
             | (next, Maybe.Some text) ->
                 arena = next
                 removed = removed + text.length
@@ -157,7 +157,7 @@ fn arena_strings count =
         index = index + 1
     index = 0
     while index < count do
-        if index % 4 == 2 then arena = Arena.update arena handles[index] (\text -> text + "!")
+        if index % 4 == 2 then arena = Arena.update handles[index] (\text -> text + "!") arena
         index = index + 1
     let mut live = 0
     for (_handle, text) in Arena.iter (ref arena) do live = live + text.length
@@ -167,14 +167,14 @@ export def arena_foreign :: i64
 fn arena_foreign =
     let first: Arena<i64> = Arena.empty()
     let second: Arena<i64> = Arena.empty()
-    match Arena.insert first 1 with
+    match Arena.insert 1 first with
     | (a, ha) ->
-        match Arena.insert second 2 with
+        match Arena.insert 2 second with
         | (b, hb) ->
             let mut total = 0
-            if Arena.contains (ref b) ha then total = total + 1
+            if Arena.contains ha (ref b) then total = total + 1
             if ha == hb then total = total + 10
-            match Arena.get (ref b) ha with
+            match Arena.get ha (ref b) with
             | Maybe.Some _value -> total = total + 1000
             | Maybe.None -> total = total + 100
             assert (Arena.length (ref a) == 1)
@@ -183,14 +183,14 @@ fn arena_foreign =
 export def arena_capture :: i64
 fn arena_capture =
     let empty: Arena<i64> = Arena.empty()
-    match Arena.insert empty 42 with
+    match Arena.insert 42 empty with
     | (arena, handle) ->
-        let read = \() -> deref (Arena.at (ref arena) handle)
+        let read = \() -> deref (Arena.at handle (ref arena))
         read () + read ()
 
 def without :: Arena<i64> -> Arena.Handle<i64> -> Arena<i64>
 fn without arena handle =
-    match Arena.remove arena handle with
+    match Arena.remove handle arena with
     | (next, _value) -> next
 
 // Copying a function value copies the arena it captured, id included. A handle made in one copy
@@ -201,7 +201,7 @@ fn arena_snapshot =
     let mut handles: Vec<Arena.Handle<i64>> = Vec.empty()
     let mut index = 0
     while index < 5 do
-        match Arena.insert base ((index + 1) * 10) with
+        match Arena.insert ((index + 1) * 10) base with
         | (next, handle) ->
             base = next
             handles = Vec.push handle handles
@@ -209,23 +209,23 @@ fn arena_snapshot =
     let frozen = base
     let snapshot = \() -> frozen
     let first = without (without (snapshot ()) handles[1]) handles[0]
-    match Arena.insert (without (snapshot ()) handles[0]) 99 with
+    match Arena.insert 99 (without (snapshot ()) handles[0]) with
     | (second, key) ->
         let mut flags = 0
-        if Arena.contains (ref first) key then flags = flags + 1000
-        match Arena.get (ref first) key with
+        if Arena.contains key (ref first) then flags = flags + 1000
+        match Arena.get key (ref first) with
         | Maybe.Some _value -> flags = flags + 200
         | Maybe.None -> flags = flags + 100
-        match Arena.remove first key with
+        match Arena.remove key first with
         | (kept, removed) ->
             match removed with
             | Maybe.Some _value -> flags = flags + 20
             | Maybe.None -> flags = flags + 10
-            if !(Arena.contains (ref second) handles[0]) && deref (Arena.at (ref second) key) == 99 then flags = flags + 1
+            if !(Arena.contains handles[0] (ref second)) && deref (Arena.at key (ref second)) == 99 then flags = flags + 1
             let mut refilled = kept
             let mut value = 7
             while value < 10 do
-                match Arena.insert refilled value with
+                match Arena.insert value refilled with
                 | (next, _handle) -> refilled = next
                 value = value + 1
             let mut digits = 0
@@ -235,15 +235,15 @@ fn arena_snapshot =
 export def arena_task :: i64
 fn arena_task =
     let empty: Arena<i64> = Arena.empty()
-    match Arena.insert empty 42 with
-    | (arena, handle) -> Task.run (task { return deref (Arena.at (ref arena) handle) })
+    match Arena.insert 42 empty with
+    | (arena, handle) -> Task.run (task { return deref (Arena.at handle (ref arena)) })
 
 def fill_sum :: i64 -> i64 -> i64
 fn fill_sum offset count =
     let mut arena: Arena<i64> = Arena.with_capacity count
     let mut index = 0
     while index < count do
-        match Arena.insert arena (offset * count + index) with
+        match Arena.insert (offset * count + index) arena with
         | (next, _handle) -> arena = next
         index = index + 1
     let mut total = 0
@@ -259,36 +259,36 @@ export def arena_borrowed_values :: i64
 fn arena_borrowed_values =
     let text = "borrowed"
     let empty: Arena<ref string> = Arena.empty()
-    match Arena.insert empty (ref text) with
+    match Arena.insert (ref text) empty with
     | (arena, handle) ->
-        let value = Arena.at (ref arena) handle
+        let value = Arena.at handle (ref arena)
         value.length
 
 export def arena_at_removed :: i64
 fn arena_at_removed =
     let empty: Arena<i64> = Arena.empty()
-    match Arena.insert empty 42 with
+    match Arena.insert 42 empty with
     | (arena, handle) ->
-        match Arena.remove arena handle with
-        | (removed, _value) -> deref (Arena.at (ref removed) handle)
+        match Arena.remove handle arena with
+        | (removed, _value) -> deref (Arena.at handle (ref removed))
 
 export def arena_at_foreign :: i64
 fn arena_at_foreign =
     let first: Arena<i64> = Arena.empty()
     let second: Arena<i64> = Arena.empty()
-    match Arena.insert first 1 with
+    match Arena.insert 1 first with
     | (_a, ha) ->
-        match Arena.insert second 2 with
-        | (b, _hb) -> deref (Arena.at (ref b) ha)
+        match Arena.insert 2 second with
+        | (b, _hb) -> deref (Arena.at ha (ref b))
 
 export def arena_update_stale :: i64
 fn arena_update_stale =
     let empty: Arena<i64> = Arena.empty()
-    match Arena.insert empty 42 with
+    match Arena.insert 42 empty with
     | (arena, handle) ->
-        match Arena.remove arena handle with
+        match Arena.remove handle arena with
         | (removed, _value) ->
-            let updated = Arena.update removed handle (\value -> value + 1)
+            let updated = Arena.update handle (\value -> value + 1) removed
             Arena.length (ref updated)
 
 export def arena_negative_capacity :: i64

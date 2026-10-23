@@ -41,7 +41,7 @@ fn buffer_escape n =
 export def boundary_concat :: i64 -> i64
 fn boundary_concat n =
     let base = "x"
-    let text = String.repeat (ref base) (127 + n)
+    let text = String.repeat (127 + n) (ref base)
     let joined = text + "y"
     joined.length
 
@@ -122,7 +122,7 @@ fn string_replace_allocation =
 export def utf8_repeat_allocation :: i64
 fn utf8_repeat_allocation =
     let text = u8"hello"
-    (Utf8String.repeat (ref text) 3).length
+    (Utf8String.repeat 3 (ref text)).length
 
 export def transferred_array_update :: i64
 fn transferred_array_update =

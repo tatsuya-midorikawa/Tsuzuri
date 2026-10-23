@@ -5,15 +5,15 @@
 
 export def doubled :: i64 -> i64
 fn doubled n =
-    let first = String.repeat (ref "a") n
-    let second = String.repeat (ref "b") n
+    let first = String.repeat n (ref "a")
+    let second = String.repeat n (ref "b")
     let both = first + second
     both.length
 
 export def joined :: i64 -> i64
 fn joined n =
-    let first = String.repeat (ref "a") n
-    let second = String.repeat (ref "b") n
+    let first = String.repeat n (ref "a")
+    let second = String.repeat n (ref "b")
     let parts = [first, second]
     let all = String.join (ref "") (ref parts)
     all.length
@@ -22,7 +22,7 @@ fn joined n =
 // takes 9 MB and fits the heap, and only the limit on its UTF-16 size makes the forms trap at the same length.
 export def grown :: i64 -> i64
 fn grown units =
-    let piece = String.repeat (ref "a") 1000
+    let piece = String.repeat 1000 (ref "a")
     let mut text = ""
     let mut count = 0
     while count < units / 1000 do

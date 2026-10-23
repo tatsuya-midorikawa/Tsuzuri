@@ -71,8 +71,8 @@ fn decode bytes =
 	| Maybe.None -> Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
 
 /// Reads eight little-endian bytes at `offset` as a number, as the runtime lays out sizes, times, and codes.
-def decode_i64 :: ref [ubyte] -> i64 -> i64
-fn decode_i64 bytes offset =
+def decode_i64 :: i64 -> ref [ubyte] -> i64
+fn decode_i64 offset bytes =
 	let mut value = 0i64u
 	let mut index = 7
 	while index >= 0 do

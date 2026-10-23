@@ -29,20 +29,20 @@ fn try_randomized _unit = IO.map (\made ->
 def randomized :: unit -> IO<HashSet<'key>>
 fn randomized _unit = IO.map (\made -> Result.get made) (try_randomized ())
 
-def insert :: (Hash<'key>, Eq<'key>) => HashSet<'key> -> 'key -> HashSet<'key>
-fn insert set key = HashSet { map: HashMap.insert set.map key () }
+def insert :: (Hash<'key>, Eq<'key>) => 'key -> HashSet<'key> -> HashSet<'key>
+fn insert key set = HashSet { map: HashMap.insert key () set.map }
 
-def remove_ref :: (Hash<'key>, Eq<'key>) => HashSet<'key> -> ref 'key -> HashSet<'key>
-fn remove_ref set key = HashSet { map: HashMap.remove_ref set.map key }
+def remove_ref :: (Hash<'key>, Eq<'key>) => ref 'key -> HashSet<'key> -> HashSet<'key>
+fn remove_ref key set = HashSet { map: HashMap.remove_ref key set.map }
 
-def remove :: (Hash<'key>, Eq<'key>) => HashSet<'key> -> 'key -> HashSet<'key>
-fn remove set key = HashSet { map: HashMap.remove set.map key }
+def remove :: (Hash<'key>, Eq<'key>) => 'key -> HashSet<'key> -> HashSet<'key>
+fn remove key set = HashSet { map: HashMap.remove key set.map }
 
-def contains_ref :: (Hash<'key>, Eq<'key>) => ref HashSet<'key> -> ref 'key -> bool
-fn contains_ref set key = HashMap.contains_key_ref (ref set.map) key
+def contains_ref :: (Hash<'key>, Eq<'key>) => ref 'key -> ref HashSet<'key> -> bool
+fn contains_ref key set = HashMap.contains_key_ref key (ref set.map)
 
-def contains :: (Hash<'key>, Eq<'key>) => ref HashSet<'key> -> 'key -> bool
-fn contains set key = HashMap.contains_key (ref set.map) key
+def contains :: (Hash<'key>, Eq<'key>) => 'key -> ref HashSet<'key> -> bool
+fn contains key set = HashMap.contains_key key (ref set.map)
 
 /// The longest probe of the underlying table; see `HashMap.longest_probe`.
 def longest_probe :: ref HashSet<'key> -> i64

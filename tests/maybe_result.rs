@@ -97,7 +97,7 @@ fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
         "def nested :: ref (Maybe<ref i64>) -> ref i64\nfn nested value = Maybe.get (deref value)\nlet mut owner = 42\nlet container = Some (ref owner)\nlet borrowed = nested (ref container)\nowner = 1\nderef borrowed",
         "def nested :: ref (Maybe<ref i64>) -> ref i64\nfn nested value = Maybe.get (deref value)\nlet owner = 42\nlet borrowed = { let container = Some (ref owner); nested (ref container) }\nderef borrowed",
         "let option = Some 42\nlet borrowed: Maybe<&i64> = Maybe.map_ref (value -> value) (&option)\n*(Maybe.get borrowed)",
-        "let result: Result<i64, i64> = Ok 42\nlet borrowed: Result<&i64, i64> = Result.bind_ref (&result) (value -> Ok value)\n*(Result.get borrowed)",
+        "let result: Result<i64, i64> = Ok 42\nlet borrowed: Result<&i64, i64> = Result.bind_ref (value -> Ok value) (&result)\n*(Result.get borrowed)",
         "let borrowed = { let value = 42; Some (ref value) }\n*(Maybe.get borrowed)",
         "let mut value = 42\nlet borrowed = Some (ref value)\nvalue = 1\n*(Maybe.get borrowed)",
         "let mut value = 42\nlet borrowed = Some (ref mut value)\n()",
@@ -119,9 +119,9 @@ fn shared_union_payloads_preserve_owners_and_input_lifetimes() {
 fn maps_borrowed_noncopy_payloads_without_inferred_copy_constraints() {
     for source in [
         "let option = Some \"hello\"\nMaybe.get (Maybe.map_ref size (&option))",
-        "let option = Some \"hello\"\nMaybe.get (Maybe.bind_ref (&option) (s -> Some s.length))",
+        "let option = Some \"hello\"\nMaybe.get (Maybe.bind_ref (s -> Some s.length) (&option))",
         "let result: Result<string, i64> = Ok \"hello\"\nResult.get (Result.map_ref size (&result))",
-        "let result: Result<string, i64> = Ok \"hello\"\nResult.get (Result.bind_ref (&result) (s -> Ok s.length))",
+        "let result: Result<string, i64> = Ok \"hello\"\nResult.get (Result.bind_ref (s -> Ok s.length) (&result))",
         "let option = Some \"hello\"\nMaybe.get (Maybe.filter (s -> size s > 0) option)",
         "def length :: &(Maybe<'a>) -> (&'a -> i64) -> i64
          fn length option size =

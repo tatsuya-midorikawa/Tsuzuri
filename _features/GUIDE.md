@@ -402,6 +402,8 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
   宣言文字列を登録し重複させない。**演算子と組み込み関数で同じ intrinsic を使う**（`binary`／`cast` と揃える）。
 - 組み込み関数名はユーザーのトップレベル関数名として再定義できない（`check_modules` で拒否）。
   名前を追加すると既存ユーザーコードを壊す可能性があるため、新しい汎用名は std の修飾名（`Math.sin` など）を優先する。
+- 引数は D-59 の順（操作する値を最後）にする。`Array`・`List`・`Vec`・`String`・`Utf8String` の組み込みは、
+  `tests/std_argument_order.rs` が型を検査する。資源のハンドルを先に取る組み込み（`Atomic`・`Mutex`・`Channel` など）は例外で、理由を同じファイルの表に書く。
 
 ### 6.6 新しいランタイム関数
 
@@ -1836,6 +1838,17 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 
 - 形式は `AREA-NNN`（大文字 3 字・ハイフン・数字 3 桁）。AREA は `LEX`（字句）・`SYN`（構文）・`TYP`（型）・`OWN`（所有権と借用）・`EVL`（評価順序）・`NUM`（数値）・`STR`（文字列）・`CTL`（制御とパターン）・`MOD`（モジュールとパッケージ）・`TSK`（タスクと並行）・`DIA`（診断）・`CLI`・`ABI`・`STD`・`EDN`（edition）。
 - 文書の規則の文の直前に HTML コメント `<!-- rule: OWN-012 -->` を置く（表示に出ない）。規則の本体は `spec/rules/<AREA>.md` の表（ID・規則の 1 文・文書の節へのリンク・適合性テストの一覧）。ID は再利用しない。廃止は `retired` にする。
+
+### D-59 標準ライブラリの引数の順序（対象は最後）
+
+- **規則**: 関数が読む・変換する・更新する値（対象。コレクション、文字列、`Maybe`・`Result`・`IO`、行列・窓・テンソル、アリーナ、`Json` の書き込み器など）を最後の引数にする。キー・添字・個数・コールバック・区切りなどは、F# または .NET の順のまま、その前に置く。これで `x |> M.f a` と `M.f a >> M.g b`（`>>` は `\v -> g (f v)` に展開される）がどのモジュールでも通る。F# の `List`・`Map`・`Set`・`Option`・`Result` の関数と同じ並びで、F# が配列やリストを先に取る関数（`Array.get`・`set`・`sub`・`fill`・`blit`・`fold_back` 系と `List` の 4 関数）だけを、対象が最後になるよう移した。
+- 対象が複数ある関数（`append`・`zip`・`union`・`mul`）は F# の順で、最後の対象が最後。一方だけを書き換える関数は、書き換えられる方が最後（`MatrixView.copy_from source target`）。対象のない関数（`empty`・`init`・`of_array`・`parse`）はこの規則の外。借用版の双子（`get_ref`・`foldr`）は元の関数と同じ順。
+- 評価順: 対象は最後に移動・借用されるので、前の引数の式は対象を読める（`Array.write 0 (v[1] * 10) v`）。パイプ（`v |> Array.write 0 (v[1] * 10)`）は対象を先に借りるので `E1014`。
+- **例外は 4 種類だけ**（`std/` のファイルがある例外は、理由を `tests/std_argument_order.rs` の `MODULES` の行に書く。組み込みだけのモジュールにはファイルがないので、この一覧が記録）: (1) 資源のハンドル（`File`・`Net`・`Process`・`Atomic`・`Mutex`・`Channel`・`Rc`・`Arc`・`Owned`・`Task`）。ハンドルが先で、.NET のメソッドの受け手と同じ。(2) 数値の関数（`Int`・`Math`・`Simd`・`Char`）。数式の被演算子の順。(3) コンパイラが呼ぶプロトコル。計算式ビルダーの大文字の操作（`Bind` など）と、`derive` が呼ぶ `Json.decode_field`・`Json.case_index`。(4) テストとベンチマークの入口（`Gen.for_all`・`Test.*`・`Bench.*`）。理由のない例外と、純粋な変換の例外は認めない。資源のモジュールの順序を変えるときは、`Atomic`・`Mutex`・`Channel`・`Rc`・`Arc`・`Task` の組み込みの生成（`src/llvm_*.rs` が引数の位置で読む）と、ネットワーク・非同期のテストも一緒に直す別のチケットにする。
+- コンパイラが名前や位置で見ている std 関数は、順序を変えるときにフックも同時に直す。`String.slice`（`src/llvm_strings.rs` の `compact_body`）、組み込みの `Utf8String.decode_at`、組み込みの `Array.__set`・`Array.__sort_with`・`Array.update`・`Array.swap`・`Array.write`・`Array.swap_in`・`Array.split_at_mut`（`src/check.rs` の `Builtin::name` で見つかる）。`src/derive.rs` が呼ぶ `Json`・`Result`・`Maybe` の関数は順序を変えない。`src/` で名前を検索して確かめる。
+- 検査は `tests/std_argument_order.rs`。`std/` の全ファイルを `MODULES` に分類しないと赤になるので、新しいモジュールは必ずここに当たる。`def` 行の型で「対象を取る関数は対象が最後」を調べ、同じ型が 2 つ並ぶ `String`・`Utf8String`・`Regex` は `fn` 行の最後の仮引数名（`text`・`parts`）で調べる。コンパイラ組み込みの `Array`・`List`・`Vec`・`String`・`Utf8String` の型にも同じ規則を当て、旧順の呼び出しが型エラーになること、パイプと合成が通ることも確かめる。
+- 文書は、利用者向けの `_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md` と各モジュールのページの「引数の順序」の節、仕様の `docs/language.md`（標準ライブラリの引数の順序）、AI 向けの `AGENTS.md`（Standard library API conventions）。
+- 経緯: `Array`・`List`・`Vec` を先に揃え（`Vec` は .NET の `List<T>` との互換と同時）、その後に `Map`・`Set`・`HashMap`・`HashSet`・`Arena`・`String`・`Utf8String`・`Matrix`・`MatrixView`・`Tensor`・`Maybe`・`Result`・`IO`・`Regex`・`Json` を同じ規則に揃えた。
 
 ## 10. 完了の定義（全チケット共通）
 

@@ -71,14 +71,14 @@ def data { r } :: MatrixView<'a> { r } -> ref { r } ['a]
 fn data view = view.data
 
 /// Borrows one element; traps when the row or the column is out of range.
-def at { r } :: MatrixView<'a> { r } -> i64 -> i64 -> ref { r } 'a
-fn at view row col =
+def at { r } :: i64 -> i64 -> MatrixView<'a> { r } -> ref { r } 'a
+fn at row col view =
     assert (row >= 0 && row < view.rows && col >= 0 && col < view.cols)
     ref view.data[view.offset + row * view.row_stride + col * view.col_stride]
 
 /// Copies one element, or `None` when the row or the column is out of range.
-def get { r } :: Copy<'a> => MatrixView<'a> { r } -> i64 -> i64 -> Maybe<'a>
-fn get view row col =
+def get { r } :: Copy<'a> => i64 -> i64 -> MatrixView<'a> { r } -> Maybe<'a>
+fn get row col view =
     if row < 0 || row >= view.rows || col < 0 || col >= view.cols then Maybe.None
     else Maybe.Some view.data[view.offset + row * view.row_stride + col * view.col_stride]
 
@@ -87,18 +87,18 @@ def transpose { r } :: MatrixView<'a> { r } -> MatrixView<'a> { r }
 fn transpose view = MatrixView { data: view.data, offset: view.offset, rows: view.cols, cols: view.rows, row_stride: view.col_stride, col_stride: view.row_stride }
 
 /// The rows x cols window whose top-left element is (row, col); traps unless it lies inside the view.
-def sub { r } :: MatrixView<'a> { r } -> i64 -> i64 -> i64 -> i64 -> MatrixView<'a> { r }
-fn sub view row col rows cols =
+def sub { r } :: i64 -> i64 -> i64 -> i64 -> MatrixView<'a> { r } -> MatrixView<'a> { r }
+fn sub row col rows cols view =
     assert (row >= 0 && col >= 0 && rows >= 0 && cols >= 0 && row <= view.rows && col <= view.cols && rows <= view.rows - row && cols <= view.cols - col)
     MatrixView { data: view.data, offset: view.offset + row * view.row_stride + col * view.col_stride, rows: rows, cols: cols, row_stride: view.row_stride, col_stride: view.col_stride }
 
 /// One row as a 1 x cols window.
-def row { r } :: MatrixView<'a> { r } -> i64 -> MatrixView<'a> { r }
-fn row view index = sub view index 0 1 view.cols
+def row { r } :: i64 -> MatrixView<'a> { r } -> MatrixView<'a> { r }
+fn row index view = sub index 0 1 view.cols view
 
 /// One column as a rows x 1 window.
-def col { r } :: MatrixView<'a> { r } -> i64 -> MatrixView<'a> { r }
-fn col view index = sub view 0 index view.rows 1
+def col { r } :: i64 -> MatrixView<'a> { r } -> MatrixView<'a> { r }
+fn col index view = sub 0 index view.rows 1 view
 
 /// Whether the elements are one run of `data` in row-major order (an empty window is contiguous).
 def is_contiguous { r } :: MatrixView<'a> { r } -> bool
@@ -158,22 +158,22 @@ def freeze { r } :: ref { r } Mut<'a> { r } -> MatrixView<'a> { r }
 fn freeze view = MatrixView { data: ref view.data[0 ..], offset: view.offset, rows: view.rows, cols: view.cols, row_stride: view.row_stride, col_stride: view.col_stride }
 
 /// Replaces one element; traps when the row or the column is out of range.
-def write { r } :: ref mut Mut<'a> { r } -> i64 -> i64 -> 'a -> unit
-fn write view row col value =
+def write { r } :: i64 -> i64 -> 'a -> ref mut Mut<'a> { r } -> unit
+fn write row col value view =
     assert (row >= 0 && row < view.rows && col >= 0 && col < view.cols)
     let index = view.offset + row * view.row_stride + col * view.col_stride
     Array.write index value view.data
 
 /// Lends one row of a row-major window as an exclusive slice; traps unless col_stride is 1.
-def row_mut { r } :: ref mut { r } Mut<'a> { r } -> i64 -> ref mut { r } ['a..]
-fn row_mut view index =
+def row_mut { r } :: i64 -> ref mut { r } Mut<'a> { r } -> ref mut { r } ['a..]
+fn row_mut index view =
     assert (index >= 0 && index < view.rows && view.col_stride == 1)
     let start = view.offset + index * view.row_stride
     ref mut view.data[start .. start + view.cols]
 
 /// A writable sub-window; the original cannot be used while it lives.
-def sub_mut { r } :: ref mut { r } Mut<'a> { r } -> i64 -> i64 -> i64 -> i64 -> Mut<'a> { r }
-fn sub_mut view row col rows cols =
+def sub_mut { r } :: i64 -> i64 -> i64 -> i64 -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }
+fn sub_mut row col rows cols view =
     assert (row >= 0 && col >= 0 && rows >= 0 && cols >= 0 && row <= view.rows && col <= view.cols && rows <= view.rows - row && cols <= view.cols - col)
     let start = view.offset + row * view.row_stride + col * view.col_stride
     let row_stride = view.row_stride
@@ -185,8 +185,8 @@ def transpose_mut { r } :: Mut<'a> { r } -> Mut<'a> { r }
 fn transpose_mut view = Mut { data: view.data, offset: view.offset, rows: view.cols, cols: view.rows, row_stride: view.col_stride, col_stride: view.row_stride }
 
 /// Writes `value` to every element in row-major order of the window.
-def fill { r } :: Copy<'a> => ref mut Mut<'a> { r } -> 'a -> unit
-fn fill view value =
+def fill { r } :: Copy<'a> => 'a -> ref mut Mut<'a> { r } -> unit
+fn fill value view =
     if view.rows > 0 && view.cols > 0 then
         for i in 0i64 .. (view.rows - 1) do
             let base = view.offset + i * view.row_stride
@@ -195,8 +195,8 @@ fn fill view value =
                 Array.write index value view.data
 
 /// Copies the elements of a window of the same shape; traps when the shapes differ.
-def copy_from { r s } :: Copy<'a> => ref mut Mut<'a> { r } -> MatrixView<'a> { s } -> unit
-fn copy_from target source =
+def copy_from { s r } :: Copy<'a> => MatrixView<'a> { s } -> ref mut Mut<'a> { r } -> unit
+fn copy_from source target =
     assert (target.rows == source.rows && target.cols == source.cols)
     if target.rows > 0 && target.cols > 0 then
         for i in 0i64 .. (target.rows - 1) do

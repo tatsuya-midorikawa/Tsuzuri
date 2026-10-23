@@ -28,20 +28,20 @@ def cols :: ref Matrix<'a> -> i64
 fn cols matrix = matrix.cols
 
 /// Borrows one element; traps when the row or the column is out of range.
-def at :: ref Matrix<'a> -> i64 -> i64 -> ref 'a
-fn at matrix row col =
+def at :: i64 -> i64 -> ref Matrix<'a> -> ref 'a
+fn at row col matrix =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     ref matrix.data[row * matrix.cols + col]
 
 /// Copies one element, or `None` when the row or the column is out of range.
-def get :: Copy<'a> => ref Matrix<'a> -> i64 -> i64 -> Maybe<'a>
-fn get matrix row col =
+def get :: Copy<'a> => i64 -> i64 -> ref Matrix<'a> -> Maybe<'a>
+fn get row col matrix =
     if row < 0 || row >= matrix.rows || col < 0 || col >= matrix.cols then Maybe.None
     else Maybe.Some matrix.data[row * matrix.cols + col]
 
 /// Borrows one row as a slice without copying; traps when the row is out of range.
-def row :: ref Matrix<'a> -> i64 -> ref ['a]
-fn row matrix index =
+def row :: i64 -> ref Matrix<'a> -> ref ['a]
+fn row index matrix =
     assert (index >= 0 && index < matrix.rows)
     let start = index * matrix.cols
     ref matrix.data[start .. start + matrix.cols]
@@ -55,8 +55,8 @@ def to_array :: Matrix<'a> -> ['a]
 fn to_array matrix = matrix.data
 
 /// Consumes the matrix and replaces one element in place; traps when the row or the column is out of range.
-def set :: Matrix<'a> -> i64 -> i64 -> 'a -> Matrix<'a>
-fn set matrix row col value =
+def set :: i64 -> i64 -> 'a -> Matrix<'a> -> Matrix<'a>
+fn set row col value matrix =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     let index = row * matrix.cols + col
     Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.__set index value matrix.data }

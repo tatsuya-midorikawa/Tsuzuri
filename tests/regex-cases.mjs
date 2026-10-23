@@ -311,7 +311,7 @@ function table(name, values) {
 }
 
 const builtPattern = (item) => item.repeat
-  ? Array.from({ length: item.repeat.length / 2 }, (_, index) => `String.repeat (ref ${literal(item.repeat[2 * index])}) ${item.repeat[2 * index + 1]}`).join(" + ")
+  ? Array.from({ length: item.repeat.length / 2 }, (_, index) => `String.repeat ${item.repeat[2 * index + 1]} (ref ${literal(item.repeat[2 * index])})`).join(" + ")
   : literal(item.pattern);
 
 export function casesSource() {

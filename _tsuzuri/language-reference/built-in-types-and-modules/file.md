@@ -20,7 +20,7 @@
 
 ```tsuzuri run=hello%0Ahello%0Aworld%0Aremoved%0Anot%20found%20(os%20error%202)
 def copy :: ref string -> string
-fn copy text = Maybe.get (String.slice text 0 text.length)
+fn copy text = Maybe.get (String.slice 0 text.length text)
 
 def show :: Result<string, Os.Error> -> string
 fn show result =
@@ -66,7 +66,7 @@ not found (os error 2)
 
 ```tsuzuri run=true%202%0Ainvalid%20encoding%0A1%0Afile%201%0Aremoved
 def copy :: ref string -> string
-fn copy text = Maybe.get (String.slice text 0 text.length)
+fn copy text = Maybe.get (String.slice 0 text.length text)
 
 def main :: unit -> i32 = \() ->
     let path = "/tmp/tsuzuri-doc-file-bin.bin"
@@ -147,7 +147,7 @@ sequenceDiagram
 
 ```tsuzuri run=wrote%0Ahi%0Aalready%20exists%20(os%20error%2017)%0Aremoved
 def copy :: ref string -> string
-fn copy text = Maybe.get (String.slice text 0 text.length)
+fn copy text = Maybe.get (String.slice 0 text.length text)
 
 def main :: unit -> i32 = \() ->
     let path = "/tmp/tsuzuri-doc-file-stream.txt"

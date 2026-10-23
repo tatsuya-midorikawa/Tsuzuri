@@ -108,8 +108,8 @@ fn array =
 
 export def map_remove :: i64
 fn map_remove =
-    let map = Map.insert (Map.insert (Map.insert (Map.empty()) 1 (resource 1)) 2 (resource 2)) 3 (resource 3)
-    let rest = Map.remove map 2
+    let map = Map.insert 3 (resource 3) (Map.insert 2 (resource 2) (Map.insert 1 (resource 1) (Map.empty())))
+    let rest = Map.remove 2 map
     drop_log 100
     Map.length (ref rest)
 

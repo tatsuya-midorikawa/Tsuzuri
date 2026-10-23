@@ -82,11 +82,11 @@ fn map_count size seed =
     for _index in 0i64 .. size - 1 do
         state = state * 6364136223846793005 + 1442695040888963407
         let key = (state >>> 33) & 1023
-        let count = Maybe.default_value 0 (Map.get (ref counts) key)
-        counts = Map.insert counts key (count + 1)
-        keys = Set.insert keys (key & 255)
+        let count = Maybe.default_value 0 (Map.get key (ref counts))
+        counts = Map.insert key (count + 1) counts
+        keys = Set.insert (key & 255) keys
     let mut total = Map.length (ref counts) as i64u * 1000003 + Set.length (ref keys) as i64u
-    for key in 0i64u .. 1023i64u do total = fold total (Maybe.default_value 0 (Map.get (ref counts) key))
+    for key in 0i64u .. 1023i64u do total = fold total (Maybe.default_value 0 (Map.get key (ref counts)))
     total
 
 record Item { key: i64u, id: i64u }

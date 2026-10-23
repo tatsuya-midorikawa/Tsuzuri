@@ -94,7 +94,7 @@ fn text_operation operation first second =
     | 10 -> hash (Text.to_ascii_lower (ref text))
     | 11 -> hash (Text.to_ascii_upper (ref text))
     | 12 -> Text.compare (ref text) (ref needle)
-    | 13 -> hash (Text.repeat (ref text) 2)
+    | 13 -> hash (Text.repeat 2 (ref text))
     | _ -> 0
 
 export def utf8_operation :: i32 -> i64 -> i64 -> i64
@@ -127,28 +127,28 @@ fn utf8_operation operation first second =
         let order = Text.compare (ref text) (ref needle)
         assert ((order < 0) == (text < needle) && (order > 0) == (text > needle))
         order
-    | 13 -> hash_utf8 (Text.repeat (ref text) 2)
+    | 13 -> hash_utf8 (Text.repeat 2 (ref text))
     | _ -> 0
 
 export def text_slice :: i64 -> i64 -> i64 -> i64
 fn text_slice which first last =
     let text = sample which
-    match Text.slice (ref text) first last with | Some value -> hash value | None -> -1
+    match Text.slice first last (ref text) with | Some value -> hash value | None -> -1
 
 export def utf8_slice :: i64 -> i64 -> i64 -> i64
 fn utf8_slice which first last =
     let text = utf8_sample which
-    match Text.slice (ref text) first last with | Some value -> hash_utf8 value | None -> -1
+    match Text.slice first last (ref text) with | Some value -> hash_utf8 value | None -> -1
 
 export def text_sub :: i64 -> i64 -> i64 -> i64
 fn text_sub which first count =
     let text = sample which
-    match Text.sub (ref text) first count with | Some value -> hash value | None -> -1
+    match Text.sub first count (ref text) with | Some value -> hash value | None -> -1
 
 export def utf8_sub :: i64 -> i64 -> i64 -> i64
 fn utf8_sub which first count =
     let text = utf8_sample which
-    match Text.sub (ref text) first count with | Some value -> hash_utf8 value | None -> -1
+    match Text.sub first count (ref text) with | Some value -> hash_utf8 value | None -> -1
 
 export def text_extra :: i32 -> i64 -> i64
 fn text_extra operation which =
@@ -205,7 +205,7 @@ export def literal_arguments :: i64
 fn literal_arguments =
     let found = position (Text.find "l" "hello")
     let contained = flag (Text.contains "ell" "hello") + flag (Text.contains u8"ell" u8"hello")
-    let repeated = (Text.repeat "ab" 3).length + (Text.repeat u8"ab" 2).length
+    let repeated = (Text.repeat 3 "ab").length + (Text.repeat 2 u8"ab").length
     let replaced = (Text.replace "l" "LL" "hello").length
     let joined = (Text.join "," ["a", "b", "c"]).length
     found * 10000 + contained * 1000 + joined * 100 + repeated * 10 + replaced
@@ -213,12 +213,12 @@ fn literal_arguments =
 export def trap_repeat_negative :: i64
 fn trap_repeat_negative =
     let text = ""
-    (Text.repeat (ref text) (-1)).length
+    (Text.repeat (-1) (ref text)).length
 
 export def trap_repeat_negative_utf8 :: i64
 fn trap_repeat_negative_utf8 =
     let text = u8""
-    (Text.repeat (ref text) (-1)).length
+    (Text.repeat (-1) (ref text)).length
 ```
 
 `literal_arguments` の期待値 22607 の内訳: `found` = 2（最初の `l`）→ 20000、`contained` = 2 → 2000、`joined` = `"a,b,c"` の長さ 5 → 500、`repeated` = `"ababab"` の 6 ＋ `u8"abab"` の 4 = 10 → 100、`replaced` = `"heLLLLo"` の 7。合計 22607。`trap_repeat_negative*` は負の回数のトラップ（`features.mjs` の `traps`）。
@@ -298,7 +298,7 @@ fn trap_repeat_negative_utf8 =
 export def score :: i64 -> i64
 fn score n =
 	let base = "ab"
-	let text = String.repeat (ref base) n
+	let text = String.repeat n (ref base)
 	let needle = "ba"
 	let parts = [clone_string (ref text), clone_string (ref needle)]
 	let joined = String.join (ref ",") (ref parts)
@@ -306,8 +306,8 @@ fn score n =
 	let a = Maybe.default_value (-1) (String.find (ref needle) (ref text))
 	let b = Maybe.default_value (-1) (String.rfind (ref needle) (ref text))
 	let c = (if String.contains (ref needle) (ref text) then 1 else 0) + (if String.starts_with (ref needle) (ref text) then 2 else 0) + (if String.ends_with (ref needle) (ref text) then 4 else 0)
-	let d = match String.slice (ref text) 1 3 with | Some part -> String.length (ref part) | None -> -1
-	let e = match String.sub (ref text) 1 2 with | Some part -> String.length (ref part) | None -> -1
+	let d = match String.slice 1 3 (ref text) with | Some part -> String.length (ref part) | None -> -1
+	let e = match String.sub 1 2 (ref text) with | Some part -> String.length (ref part) | None -> -1
 	let f = (String.split (ref "a") (ref text)).length
 	let g = String.length (ref (String.trim (ref spaced))) + String.length (ref (String.trim_start (ref spaced))) + String.length (ref (String.trim_end (ref spaced)))
 	let h = String.length (ref (String.to_ascii_upper (ref text))) + String.length (ref (String.to_ascii_lower (ref text)))
@@ -318,7 +318,7 @@ fn score n =
 export def score8 :: i64 -> i64
 fn score8 n =
 	let base = u8"ab"
-	let text = Utf8String.repeat (ref base) n
+	let text = Utf8String.repeat n (ref base)
 	let needle = u8"ba"
 	let parts = [Utf8String.clone (ref text), Utf8String.clone (ref needle)]
 	let joined = Utf8String.join (ref u8",") (ref parts)
@@ -326,8 +326,8 @@ fn score8 n =
 	let a = Maybe.default_value (-1) (Utf8String.find (ref needle) (ref text))
 	let b = Maybe.default_value (-1) (Utf8String.rfind (ref needle) (ref text))
 	let c = (if Utf8String.contains (ref needle) (ref text) then 1 else 0) + (if Utf8String.starts_with (ref needle) (ref text) then 2 else 0) + (if Utf8String.ends_with (ref needle) (ref text) then 4 else 0)
-	let d = match Utf8String.slice (ref text) 1 3 with | Some part -> Utf8String.length (ref part) | None -> -1
-	let e = match Utf8String.sub (ref text) 1 2 with | Some part -> Utf8String.length (ref part) | None -> -1
+	let d = match Utf8String.slice 1 3 (ref text) with | Some part -> Utf8String.length (ref part) | None -> -1
+	let e = match Utf8String.sub 1 2 (ref text) with | Some part -> Utf8String.length (ref part) | None -> -1
 	let f = (Utf8String.split (ref u8"a") (ref text)).length
 	let g = Utf8String.length (ref (Utf8String.trim (ref spaced))) + Utf8String.length (ref (Utf8String.trim_start (ref spaced))) + Utf8String.length (ref (Utf8String.trim_end (ref spaced)))
 	let h = Utf8String.length (ref (Utf8String.to_ascii_upper (ref text))) + Utf8String.length (ref (Utf8String.to_ascii_lower (ref text)))
@@ -342,7 +342,7 @@ fn score8 n =
 export def score :: i64 -> i64
 fn score n =
 	let base = "ab"
-	let text = Text.repeat (ref base) n
+	let text = Text.repeat n (ref base)
 	let needle = "ba"
 	let parts = [Text.clone (ref text), Text.clone (ref needle)]
 	let joined = Text.join (ref ",") (ref parts)
@@ -350,8 +350,8 @@ fn score n =
 	let a = Maybe.default_value (-1) (Text.find (ref needle) (ref text))
 	let b = Maybe.default_value (-1) (Text.rfind (ref needle) (ref text))
 	let c = (if Text.contains (ref needle) (ref text) then 1 else 0) + (if Text.starts_with (ref needle) (ref text) then 2 else 0) + (if Text.ends_with (ref needle) (ref text) then 4 else 0)
-	let d = match Text.slice (ref text) 1 3 with | Some part -> Text.length (ref part) | None -> -1
-	let e = match Text.sub (ref text) 1 2 with | Some part -> Text.length (ref part) | None -> -1
+	let d = match Text.slice 1 3 (ref text) with | Some part -> Text.length (ref part) | None -> -1
+	let e = match Text.sub 1 2 (ref text) with | Some part -> Text.length (ref part) | None -> -1
 	let f = (Text.split (ref "a") (ref text)).length
 	let g = Text.length (ref (Text.trim (ref spaced))) + Text.length (ref (Text.trim_start (ref spaced))) + Text.length (ref (Text.trim_end (ref spaced)))
 	let h = Text.length (ref (Text.to_ascii_upper (ref text))) + Text.length (ref (Text.to_ascii_lower (ref text)))
@@ -362,7 +362,7 @@ fn score n =
 export def score8 :: i64 -> i64
 fn score8 n =
 	let base = u8"ab"
-	let text = Text.repeat (ref base) n
+	let text = Text.repeat n (ref base)
 	let needle = u8"ba"
 	let parts = [Text.clone (ref text), Text.clone (ref needle)]
 	let joined = Text.join (ref u8",") (ref parts)
@@ -370,8 +370,8 @@ fn score8 n =
 	let a = Maybe.default_value (-1) (Text.find (ref needle) (ref text))
 	let b = Maybe.default_value (-1) (Text.rfind (ref needle) (ref text))
 	let c = (if Text.contains (ref needle) (ref text) then 1 else 0) + (if Text.starts_with (ref needle) (ref text) then 2 else 0) + (if Text.ends_with (ref needle) (ref text) then 4 else 0)
-	let d = match Text.slice (ref text) 1 3 with | Some part -> Text.length (ref part) | None -> -1
-	let e = match Text.sub (ref text) 1 2 with | Some part -> Text.length (ref part) | None -> -1
+	let d = match Text.slice 1 3 (ref text) with | Some part -> Text.length (ref part) | None -> -1
+	let e = match Text.sub 1 2 (ref text) with | Some part -> Text.length (ref part) | None -> -1
 	let f = (Text.split (ref u8"a") (ref text)).length
 	let g = Text.length (ref (Text.trim (ref spaced))) + Text.length (ref (Text.trim_start (ref spaced))) + Text.length (ref (Text.trim_end (ref spaced)))
 	let h = Text.length (ref (Text.to_ascii_upper (ref text))) + Text.length (ref (Text.to_ascii_lower (ref text)))
@@ -472,8 +472,8 @@ instance Text<Name> {
 	fn contains needle text = String.contains (ref needle.value) (ref text.value)
 	fn starts_with prefix text = String.starts_with (ref prefix.value) (ref text.value)
 	fn ends_with suffix text = String.ends_with (ref suffix.value) (ref text.value)
-	fn slice text first last = match String.slice (ref text.value) first last with | Some part -> Some (Name { value: part }) | None -> None
-	fn sub text first count = match String.sub (ref text.value) first count with | Some part -> Some (Name { value: part }) | None -> None
+	fn slice first last text = match String.slice first last (ref text.value) with | Some part -> Some (Name { value: part }) | None -> None
+	fn sub first count text = match String.sub first count (ref text.value) with | Some part -> Some (Name { value: part }) | None -> None
 	fn join separator parts = Name { value: String.join (ref separator.value) (ref (Array.map_ref (\part -> clone_string (ref part.value)) parts)) }
 	fn concat parts = Name { value: String.concat (ref (Array.map_ref (\part -> clone_string (ref part.value)) parts)) }
 	fn split separator text =
@@ -484,7 +484,7 @@ instance Text<Name> {
 	fn trim_end text = Name { value: String.trim_end (ref text.value) }
 	fn to_ascii_lower text = Name { value: String.to_ascii_lower (ref text.value) }
 	fn to_ascii_upper text = Name { value: String.to_ascii_upper (ref text.value) }
-	fn repeat text count = Name { value: String.repeat (ref text.value) count }
+	fn repeat count text = Name { value: String.repeat count (ref text.value) }
 	fn replace needle replacement text = Name { value: String.replace (ref needle.value) (ref replacement.value) (ref text.value) }
 }
 
@@ -553,8 +553,8 @@ let m06 = Text.rfind (ref "a") (ref "ab")
 let m07 = Text.contains (ref "a") (ref "ab")
 let m08 = Text.starts_with (ref "a") (ref "ab")
 let m09 = Text.ends_with (ref "b") (ref "ab")
-let m10 = Text.slice (ref "abc") 0 1
-let m11 = Text.sub (ref "abc") 0 1
+let m10 = Text.slice 0 1 (ref "abc")
+let m11 = Text.sub 0 1 (ref "abc")
 let m12 = Text.join (ref ",") (ref ["a", "b"])
 let m13 = Text.concat (ref ["a", "b"])
 let m14 = Text.split (ref ",") (ref "a,b")
@@ -563,28 +563,28 @@ let m16 = Text.trim_start (ref " a ")
 let m17 = Text.trim_end (ref " a ")
 let m18 = Text.to_ascii_lower (ref "A")
 let m19 = Text.to_ascii_upper (ref "a")
-let m20 = Text.repeat (ref "ab") 2
+let m20 = Text.repeat 2 (ref "ab")
 let m21 = Text.replace (ref "a") (ref "b") (ref "aa")
 let d01 = String.compare (ref "a") (ref "b")
-let d02 = String.repeat (ref "ab") 2
+let d02 = String.repeat 2 (ref "ab")
 let d03 = String.replace (ref "a") (ref "b") (ref "aa")
 let d04 = String.find (ref "a") (ref "ab")
-let d05 = String.slice (ref "abc") 0 1
+let d05 = String.slice 0 1 (ref "abc")
 let d06 = Utf8String.compare (ref u8"a") (ref u8"b")
 let m22 = Text.compare (ref u8"a") (ref u8"b")
-let m23 = Text.repeat (ref u8"ab") 2
+let m23 = Text.repeat 2 (ref u8"ab")
 let m24 = Text.find (ref u8"a") (ref u8"ab")
 "#;
 
 const AUTO_BORROWED_LINES: &str = r#"let m03 = Text.compare "a" "b"
 let m05 = Text.find "a" "ab"
 let m07 = Text.contains "a" "ab"
-let m10 = Text.slice "abc" 0 1
+let m10 = Text.slice 0 1 "abc"
 let m12 = Text.join "," ["a", "b"]
 let m14 = Text.split "," "a,b"
-let m20 = Text.repeat "ab" 2
+let m20 = Text.repeat 2 "ab"
 let m21 = Text.replace "a" "b" "aa"
-let m22 = Text.repeat u8"ab" 2
+let m22 = Text.repeat 2 u8"ab"
 let m23 = Text.contains u8"a" u8"ab"
 let m24 = Text.contains (ref "a") "ab"
 let m25 = Text.contains "a" (ref "ab")
@@ -764,13 +764,13 @@ export def text_replaced :: i64 -> i64
 fn text_replaced which =
     let re = digits ()
     let text = sample which
-    hash (Regex.replace_all_text (ref re) (ref text) "<${0}>")
+    hash (Regex.replace_all_text (ref re) "<${0}>" (ref text))
 
 export def utf8_replaced :: i64 -> i64
 fn utf8_replaced which =
     let re = digits ()
     let text = utf8_sample which
-    hash_utf8 (Regex.replace_all_text (ref re) (ref text) u8"<${0}>")
+    hash_utf8 (Regex.replace_all_text (ref re) u8"<${0}>" (ref text))
 
 export def text_pieces :: i64 -> i64
 fn text_pieces which =
@@ -808,18 +808,18 @@ fn same_as_direct which =
     let strings =
         Regex.is_match_text (ref re) (ref text) == Regex.is_match (ref re) (ref text)
         && first_span (Regex.find_text (ref re) (ref text)) == first_span (Regex.find (ref re) (ref text))
-        && first_span (Regex.find_at_text (ref re) (ref text) 1) == first_span (Regex.find_at (ref re) (ref text) 1)
+        && first_span (Regex.find_at_text (ref re) 1 (ref text)) == first_span (Regex.find_at (ref re) 1 (ref text))
         && span_hash (ref (Regex.find_all_text (ref re) (ref text))) == span_hash (ref (Regex.find_all (ref re) (ref text)))
         && group_count (Regex.captures_text (ref both) (ref text)) == group_count (Regex.captures (ref both) (ref text))
-        && hash (Regex.replace_all_text (ref re) (ref text) (ref dash)) == hash (Regex.replace_all (ref re) (ref text) (ref dash))
+        && hash (Regex.replace_all_text (ref re) (ref dash) (ref text)) == hash (Regex.replace_all (ref re) (ref dash) (ref text))
         && (Regex.split_text (ref re) (ref text)).length == (Regex.split (ref re) (ref text)).length
     let utf8 =
         Regex.is_match_text (ref re) (ref bytes) == Regex.is_match_utf8 (ref re) (ref bytes)
         && first_span (Regex.find_text (ref re) (ref bytes)) == first_span (Regex.find_utf8 (ref re) (ref bytes))
-        && first_span (Regex.find_at_text (ref re) (ref bytes) 1) == first_span (Regex.find_at_utf8 (ref re) (ref bytes) 1)
+        && first_span (Regex.find_at_text (ref re) 1 (ref bytes)) == first_span (Regex.find_at_utf8 (ref re) 1 (ref bytes))
         && span_hash (ref (Regex.find_all_text (ref re) (ref bytes))) == span_hash (ref (Regex.find_all_utf8 (ref re) (ref bytes)))
         && group_count (Regex.captures_text (ref both) (ref bytes)) == group_count (Regex.captures_utf8 (ref both) (ref bytes))
-        && hash_utf8 (Regex.replace_all_text (ref re) (ref bytes) (ref dash8)) == hash_utf8 (Regex.replace_all_utf8 (ref re) (ref bytes) (ref dash8))
+        && hash_utf8 (Regex.replace_all_text (ref re) (ref dash8) (ref bytes)) == hash_utf8 (Regex.replace_all_utf8 (ref re) (ref dash8) (ref bytes))
         && (Regex.split_text (ref re) (ref bytes)).length == (Regex.split_utf8 (ref re) (ref bytes)).length
     if strings && utf8 then 1 else 0
 ```

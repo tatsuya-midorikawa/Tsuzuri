@@ -115,7 +115,7 @@ fn number output numeral =
 		| Result.Error error -> Result.Error error
 	else
 		let negative = text[0] == 45ubyte
-		let digits = if negative then Maybe.get (Utf8String.slice text 1 text.length) else Utf8String.clone text
+		let digits = if negative then Maybe.get (Utf8String.slice 1 text.length text) else Utf8String.clone text
 		let wide = String.from_utf8 (ref digits)
 		if wide == "0" && negative then Result.Ok (float_head output (-0.0))
 		elif wide.length > 4096 then Result.Error (failure Json.NumberRange (-1))
