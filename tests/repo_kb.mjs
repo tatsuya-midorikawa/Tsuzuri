@@ -429,6 +429,11 @@ test('indexed_child_only_harness_is_not_a_standalone_command', () => {
     assert.equal(row.helper, true);
     assert.equal(row.command, '');
 });
+test('manual_comparison_runner_does_not_advertise_missing_inputs', () => {
+    const row = real().tests.find(t => t.path === 'tests/display_parse_exhaustive.mjs');
+    assert.equal(row.helper, false);
+    assert.equal(row.command, '');
+});
 test('oversized_suite_source_is_not_read_or_indexed', () => scratch(async dir => {
     cpSync(mini, dir, { recursive: true });
     const path = resolve(dir, 'tests/features.mjs');

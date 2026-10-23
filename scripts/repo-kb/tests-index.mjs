@@ -28,7 +28,7 @@ export function indexTests(ctx) {
         const helper = path === 'tests/os-wasi-host.mjs' || [...contents].some(([other, text]) => other !== path
             && [...text.matchAll(/\bfrom\s+["']\.\/([^"']+\.mjs)["']/g)].some(m => m[1] === `${name}.mjs`));
         result.push({ kind: 'mjs_test', path, name, compiler_arg, helper,
-            command: helper ? '' : `node ${path}${compiler_arg ? ' target/release/tsuzuri' : ''}` });
+            command: helper || path === 'tests/display_parse_exhaustive.mjs' ? '' : `node ${path}${compiler_arg ? ' target/release/tsuzuri' : ''}` });
     }
     const path = 'tests/features.mjs';
     if (contents.has(path)) {
