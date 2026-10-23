@@ -27,7 +27,7 @@
   std 埋め込みを再ビルドし、stack・解析上限は変更していない。性能比較だけは両コンパイラを release ビルドした。
 - Rust: `map_set` 3 件、`map_set_chunks` 1 件（5 properties × O0/O3）、
   `std_argument_order` 21 件、特殊化上限・Hash コンテナ予算・PDB/natvis の回帰各 1 件が成功。
-  全 nextest は **1,719 passed / 2 skipped**。
+  レビュー後の std で再実行した全 nextest は **1,719 passed / 2 skipped**（4 threads、313 秒）。
   別途、サーバー 19 件と fake-toolchain/キャッシュ 1 件も成功。
 - E2E: `map_set` **26**、`map_set_chunks` **33**、`json` **165**、
   `iteration_protocol` **26** を native/WASM の O0/O3 で確認。
@@ -35,11 +35,14 @@
 - 文書: 変更 6 ページ、163 links、52 examples、104 native runs（O0/O3）が成功。
   同じ 52 runnable projects を明示 WASI でも O0/O3 の **104 runs** で確認した。
 - デバッガー: natvis XML と 7 レイアウトのモックに加え、
-  **実 LLDB の `tests/debugger.mjs` 全体が成功**（既存表示・stepping と Set 513 件の `[511]`／`[512]` を含む）。
+  **初回受入では実 LLDB の `tests/debugger.mjs` 全体が成功**（既存表示・stepping と Set 513 件の `[511]`／`[512]` を含む）。
   実機試験で付録 E の lazy header 読み取りに不備を発見したため、
   `CreateValueFromAddress` が返す Vec ヘッダを `GetNonSyntheticValue()` にしてから読む修正を加えた。
   `tests/lldb_collections.py` は合成 Vec を再現し、修正前に赤・修正後に緑となる永続的な回帰試験。
   Linux CI にも LLDB 21 と実デバッガー suite を追加した。
+  後続の macOS 再実行は既存の最初の `run` で timeout するため、最終 head は実 Linux LLDB の CI 成功を gate とする。
+  stepping は固定回数後の表示の正規表現ではなく、同期した `StepInto` の source entry を検査し、
+  目的の 3 関数を訪問したら停止する。各 frame の `.tz`、Main の行番号の単調性、3 関数の訪問という検査は維持した。
 - Copilot レビューの境界キャッシュの線形再走査の指摘も修正した。
   lazy なヘッダ読み取りは維持し、既存 List provider と同じ二分探索で所属チャンクを求める。
   128 チャンクのキャッシュ済み境界へのアクセスを対数回に制限する回帰試験は修正前に赤・修正後に緑で、
@@ -55,10 +58,12 @@
   `src/` の累積差分は `src/runtime/tsuzuri.natvis` のみで、Rust・Vec builtin・依存関係は変更していない。
 - Phase 2: 同一ベンチマークの 6 workloads／15 sizes 組を 5 回ずつ交互に測り、
   **150 回すべての checksum が組ごとに一致**。測定した実行ファイルは独立の `--no-cache` build とも byte 一致。
-  10 万件のランダム挿入は中央値で 52.8 倍、削除は 65.6 倍。
-  検索・カウンタ・集合演算の遅延増、全中央値・範囲、非常に高い load 124.57〜135.08 は
+  レビュー後の `733a33d8` の std で両実装を全組測り直し、10 万件のランダム挿入は中央値で 54.9 倍、削除は 42.7 倍。
+  検索・カウンタ・集合演算の遅延増、全中央値・範囲、load 10.07〜12.46 は
   [実測表](../../docs/benchmarks.md#実測2026-10-23) に明記した。100 万件のランダム操作へは外挿せず、
   CI に速度の合否は追加していない。
+- 大きい配列キーの積・差は、旧 flat 実装との O0/O3 WASM 比較でも checksum が一致した。
+  両方とも memory は積で 10,682,368 bytes、差で 15,466,496 bytes であり、16 MiB 上限は変えていない。
 - 台帳追記候補: 「C12 Phase 1・2 done、bounded chunk Map/Set、実 LLDB と 15 組の matched benchmark 検証済み」。
   `_features/README.md` と GUIDE の台帳は本チケットの指示どおり統括者に委ねる。CI・レビューの結果は PR で追跡する。
 

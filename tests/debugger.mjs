@@ -126,6 +126,7 @@ try {
   // overshoot into process teardown on another architecture. Read source data, not UI formatting.
   const stepScript = [
     "import json",
+    "lldb.debugger.SetAsync(False)",
     "step_frames = []",
     "required = {'Map.singleton', 'Array.sum', 'Main.show.lambda@22:15'}",
     "for _ in range(16):",
