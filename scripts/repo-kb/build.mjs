@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { listFiles, inputFiles, inputHash } from './repo.mjs';
 import { classify, parseTicket } from './tickets.mjs';
 import { mentions, parseDecisions } from './decisions.mjs';
@@ -11,8 +11,11 @@ import { indexDocs } from './docs-index.mjs';
 import { cmp, jsonl, readText } from './text.mjs';
 
 const names = ['tickets', 'decisions', 'modules', 'diagnostics', 'tests', 'docs'];
-async function prepare(root) {
-    const files = listFiles(root);
+let temporarySerial = 0;
+async function prepare(root, out) {
+    const subtree = out === undefined ? null : relative(root, out).replaceAll('\\', '/');
+    if (subtree === '') throw new Error('output directory must not be the repository root');
+    const files = listFiles(root).filter(path => !subtree || subtree.startsWith('../') || (path !== subtree && !path.startsWith(`${subtree}/`)));
     const texts = new Map();
     const paths = inputFiles(files);
     for (let i = 0; i < paths.length; i += 32) {
@@ -106,11 +109,16 @@ export async function build(root, out) {
     if (existsSync(out) && readdirSync(out).length && (!existsSync(join(out, '.repo-kb')) || readText(join(out, '.repo-kb')) !== 'tz-repo-kb/1\n')) {
         throw new Error('output directory is not a repo-kb directory');
     }
-    const kb = collect(root, await prepare(root));
+    const kb = collect(root, await prepare(root, out));
     mkdirSync(out, { recursive: true });
     const write = (name, text) => {
-        writeFileSync(join(out, `${name}.tmp`), text);
-        renameSync(join(out, `${name}.tmp`), join(out, name));
+        const temporary = join(out, `${name}.${process.pid}.${temporarySerial++}.tmp`);
+        try {
+            writeFileSync(temporary, text, { flag: 'wx' });
+            renameSync(temporary, join(out, name));
+        } finally {
+            rmSync(temporary, { force: true });
+        }
     };
     write('.repo-kb', 'tz-repo-kb/1\n');
     for (const name of names) write(`${name}.jsonl`, jsonl(kb[name]));
@@ -125,7 +133,7 @@ export function loadKb(out) {
 export async function isFresh(root, out) {
     if (!existsSync(join(out, 'manifest.json'))) return false;
     const manifest = JSON.parse(readText(join(out, 'manifest.json')));
-    const { files, texts } = await prepare(root);
+    const { files, texts } = await prepare(root, out);
     return manifest.schema === 'tz-repo-kb/1' && manifest.input_sha256 === inputHash(root, files, texts);
 }
 export async function ensureFresh(root, out, { refresh = true } = {}) {

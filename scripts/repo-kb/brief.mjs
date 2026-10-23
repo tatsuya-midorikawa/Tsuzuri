@@ -2,8 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseMarkdown, sectionLines } from './markdown.mjs';
 import { filterPhase, roleHeading } from './tickets.mjs';
-import { depends, followers } from './query.mjs';
-import { publicItems } from './rust.mjs';
+import { depends, followers, relatedCommands, symbolText } from './query.mjs';
 import { cmp, cp, readText, take } from './text.mjs';
 
 export const STAGES = [
@@ -17,7 +16,7 @@ export const STAGES = [
 ];
 export function cut(text, cap, pointer) {
     const total = cp(text);
-    const command = pointer.startsWith('cat ') ? pointer : `node scripts/repo-kb.mjs ${pointer}`;
+    const command = /^(?:cat|sed|node) /.test(pointer) ? pointer : `node scripts/repo-kb.mjs ${pointer}`;
     if (total <= cap) return { text, shown: total, total, state: 'full' };
     if (!cap) return { text: `[omitted: rest: ${command}]`, shown: 0, total, state: 'omitted' };
     const lines = [];
@@ -31,14 +30,6 @@ export function cut(text, cap, pointer) {
     const shown = lines.join('\n');
     return { text: `${shown}\n[shortened: ${cp(shown)} of ${total} chars; rest: ${command}]`,
         shown: cp(shown), total, state: 'shortened' };
-}
-const symbolsCache = new Map();
-function symbolsFor(path, source) {
-    const cached = symbolsCache.get(path);
-    if (cached?.source === source) return cached.items;
-    const items = publicItems(source);
-    symbolsCache.set(path, { source, items });
-    return items;
 }
 export function brief(ctx, kb, id, opts) {
     const ticket = kb.tickets.find(t => t.id === id);
@@ -57,13 +48,13 @@ export function brief(ctx, kb, id, opts) {
     });
     const interfaces = [];
     const own = roleHeading(md, 'needs');
-    if (own) interfaces.push(sectionLines(md, own));
+    if (own) interfaces.push({ id, role: 'needs', text: sectionLines(md, own) });
     for (const dep of ticket.deps.filter(d => !d.weak)) {
         const t = kb.tickets.find(t => t.id === dep.id);
         if (!t) continue;
         const parsed = parseMarkdown(read(t.path));
         const gives = roleHeading(parsed, 'gives');
-        if (gives) interfaces.push(`=== INTERFACE PROVIDED BY ${t.id} ===\n${sectionLines(parsed, gives)}`);
+        if (gives) interfaces.push({ id: t.id, role: 'gives', text: `=== INTERFACE PROVIDED BY ${t.id} ===\n${sectionLines(parsed, gives)}` });
     }
     const cited = new Set();
     const referenceText = md.lines.slice(0, (md.headings.find(h => h.level === 2)?.line ?? md.lines.length + 1) - 1).join('\n')
@@ -72,26 +63,8 @@ export function brief(ctx, kb, id, opts) {
         for (let n = Number(m[1]); n <= Math.min(Number(m[2] ?? m[1]), Number(m[1]) + 59); n++) cited.add(`D-${String(n).padStart(2, '0')}`);
     }
     const decisions = [...cited].map(id => kb.decisions.find(d => d.id === id)).filter(Boolean);
-    const symbols = [];
-    for (const file of ticket.files.filter(f => f.exists && f.path.endsWith('.rs'))) {
-        const items = symbolsFor(file.path, read(file.path));
-        const priority = item => source.includes(/\b(?:fn|struct|enum|trait|const|static|mod|type)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(item.signature)?.[1] ?? '\0') ? 0 : 1;
-        const selected = [...items].sort((a, b) => priority(a) - priority(b) || a.line - b.line).slice(0, 10);
-        symbols.push({ path: file.path, text: selected.map(s => `L${s.line} ${s.signature}`).join('\n') });
-    }
-    const commands = new Map();
-    for (const file of [...ticket.files, ...ticket.refs.files.map(path => ({ path, exists: true }))]) {
-        if (!file.exists) { commands.set(`# ${file.path} (new)`, 'new'); continue; }
-        for (const test of kb.tests) {
-            if (test.command && (test.path === file.path || (test.kind === 'suite' && (test.fixture === file.path.replace(/\/$/, '') || test.fixture.startsWith(file.path))))) {
-                commands.set(test.command, file.path);
-            }
-        }
-    }
-    for (const m of source.matchAll(/`([^`]+)`/g)) {
-        const suite = kb.tests.find(t => t.kind === 'suite' && t.name === m[1]);
-        if (suite) commands.set(suite.command, `suite ${suite.name}`);
-    }
+    const symbols = symbolText(ctx, ticket, source);
+    const commands = relatedCommands(kb, ticket, source);
     const litePath = '_features/GUIDE-LITE.md';
     const lite = opts.lite && (ctx.texts?.has(litePath) || existsSync(join(ctx.root, litePath))) ? read(litePath) : null;
     function render(caps) {
@@ -104,7 +77,8 @@ export function brief(ctx, kb, id, opts) {
             bodies.push(`=== ${title} ===\n${result.text}`);
         }
         for (const p of parts) add(p.key, p.title, p.text, caps[p.key], p.pointer);
-        add('interfaces', 'INTERFACES', interfaces.join('\n\n'), caps.interfaces, `section ${id} needs`);
+        add('interfaces', 'INTERFACES', interfaces.map(part => part.text).join('\n\n'), caps.interfaces,
+            interfaces.map(part => `node scripts/repo-kb.mjs section ${part.id} ${part.role}`).join('; '));
         for (const d of decisions.slice(0, caps.decisionCount)) {
             add(d.id, `DECISION ${d.id} ${d.title} (_features/GUIDE.md:${d.line})`, d.text,
                 caps.decisionChars, `decision ${d.id}`);
@@ -114,14 +88,14 @@ export function brief(ctx, kb, id, opts) {
             content.push(`decisions DECISIONS 0/${omitted.reduce((n, d) => n + cp(d.text), 0)} omitted`);
             bodies.push(`=== DECISIONS ===\n[omitted: ${omitted.map(d => d.id).join(', ')}; rest: node scripts/repo-kb.mjs decision ${omitted[0].id}; repeat for each ID]`);
         }
-        if (symbols.length) {
-            const text = symbols.map(s => `=== PUBLIC SYMBOLS ${s.path} ===\n${s.text}`).join('\n');
-            const result = cut(text, caps.symbols, `files ${ticket.files.find(f => f.path.endsWith('.rs'))?.path ?? 'src/'}`);
+        if (symbols) {
+            const result = cut(symbols, caps.symbols, `section ${id} symbols`);
             content.push(`symbols PUBLIC SYMBOLS ${result.shown}/${result.total} ${result.state}`);
             bodies.push(result.text);
         }
-        add('commands', 'TESTS AND COMMANDS', [...commands].slice(0, 12).map(([command, reason]) => `${command}   # ${reason}`).join('\n'),
-            caps.commands, `ticket ${id}`);
+        const commandText = commands.slice(0, 12).join('\n')
+            + (commands.length > 12 ? `\n[omitted: ${commands.length - 12} more commands; rest: node scripts/repo-kb.mjs section ${id} commands]` : '');
+        add('commands', 'TESTS AND COMMANDS', commandText, caps.commands, `section ${id} commands`);
         if (lite !== null) add('lite', 'GUIDE-LITE (_features/GUIDE-LITE.md)', lite, caps.lite, 'cat _features/GUIDE-LITE.md');
         const affected = ticket.files.slice(0, 20).map(f => f.path + (f.exists ? '' : ' (new)')).join(', ') || '(none)';
         return [

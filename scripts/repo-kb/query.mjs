@@ -1,5 +1,7 @@
+import { join } from 'node:path';
 import { extractRole } from './tickets.mjs';
-import { cmp, cp, take } from './text.mjs';
+import { publicItems } from './rust.mjs';
+import { cmp, cp, readText, take } from './text.mjs';
 
 const joinOrNone = (values, separator = '; ') => values.length ? values.join(separator) : '(none)';
 export const decisionId = value => /^(?:d-)?[0-9]{1,3}$/i.test(value) ? `D-${String(Number(value.replace(/^d-/i, ''))).padStart(2, '0')}` : null;
@@ -65,9 +67,46 @@ export function searchText(kb, words) {
     matched.sort((a, b) => exact(a) - exact(b) || cmp(a.kind, b.kind) || cmp(a.key, b.key));
     return matched.length ? matched.slice(0, 40).map(e => `${e.kind}\t${e.key}\t${take(e.text.replace(/\s+/g, ' '), 100)}`).join('\n') : '(no matches)';
 }
+const symbolsCache = new Map();
+export function symbolText(ctx, ticket, source) {
+    const symbols = [];
+    for (const file of ticket.files.filter(f => f.exists && f.path.endsWith('.rs'))) {
+        const text = ctx.texts?.get(file.path) ?? readText(join(ctx.root, file.path));
+        let cached = symbolsCache.get(file.path);
+        if (cached?.source !== text) {
+            cached = { source: text, items: publicItems(text) };
+            symbolsCache.set(file.path, cached);
+        }
+        const priority = item => source.includes(/\b(?:fn|struct|enum|trait|const|static|mod|type)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(item.signature)?.[1] ?? '\0') ? 0 : 1;
+        const selected = [...cached.items].sort((a, b) => priority(a) - priority(b) || a.line - b.line).slice(0, 10);
+        if (selected.length) symbols.push(`=== PUBLIC SYMBOLS ${file.path} ===\n${selected.map(s => `L${s.line} ${s.signature}`).join('\n')}`);
+    }
+    return symbols.join('\n');
+}
+export function relatedCommands(kb, ticket, source) {
+    const commands = new Map();
+    for (const file of [...ticket.files, ...ticket.refs.files.map(path => ({ path, exists: true }))]) {
+        if (!file.exists) { commands.set(`# ${file.path} (new)`, 'new'); continue; }
+        for (const test of kb.tests) {
+            if (test.command && (test.path === file.path || (test.kind === 'suite' && (test.fixture === file.path.replace(/\/$/, '') || test.fixture.startsWith(file.path))))) {
+                commands.set(test.command, file.path);
+            }
+        }
+    }
+    for (const m of source.matchAll(/`([^`]+)`/g)) {
+        const suite = kb.tests.find(t => t.kind === 'suite' && t.name === m[1]);
+        if (suite) commands.set(suite.command, `suite ${suite.name}`);
+    }
+    return [...commands].map(([command, reason]) => `${command}   # ${reason}`);
+}
 export function sectionText(ctx, kb, id, role, phase) {
     const t = kb.tickets.find(t => t.id === id);
     if (!t) return null;
+    if (role === 'commands' || role === 'symbols') {
+        const source = ctx.texts?.get(t.path) ?? readText(join(ctx.root, t.path));
+        const text = role === 'commands' ? relatedCommands(kb, t, source).join('\n') : symbolText(ctx, t, source);
+        return `=== SECTION ${id} ${role.toUpperCase()} (generated, ${cp(text)} chars) ===\n${text}`;
+    }
     const part = extractRole(ctx, t, role, phase);
     if (!part) return null;
     return `=== SECTION ${id} ${part.heading.title} (${t.path}:${part.heading.line}-${part.heading.end}, ${cp(part.text)} chars) ===\n${part.text}`;

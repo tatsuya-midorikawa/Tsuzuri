@@ -16,7 +16,8 @@ export const ROLES = {
 export const normalized = title => title.split('（')[0].trim();
 export function roleHeading(md, role) {
     for (const name of ROLES[role] ?? [role]) {
-        const found = md.headings.find(h => normalized(h.title) === name && (h.level === 2 || (['needs', 'gives'].includes(role) && h.level === 3)));
+        const found = md.headings.find(h => normalized(h.title) === name
+            && (h.level === 2 || (h.level === 3 && (!ROLES[role] || ['needs', 'gives'].includes(role)))));
         if (found) return found;
     }
 }
@@ -120,6 +121,7 @@ export function extractRole(ctx, ticket, role, phase) {
     const heading = roleHeading(md, role);
     if (!heading) return null;
     let text = sectionLines(md, heading);
-    if (phase !== undefined && ['steps', 'spec', 'design', 'tests', 'docs'].includes(role)) text = filterPhase(text, phase, role === 'steps');
+    const canonical = Object.entries(ROLES).find(([, names]) => names.includes(normalized(heading.title)))?.[0];
+    if (phase !== undefined && ['steps', 'spec', 'design', 'tests', 'docs'].includes(canonical)) text = filterPhase(text, phase, canonical === 'steps');
     return { heading, text };
 }

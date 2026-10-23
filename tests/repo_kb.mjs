@@ -385,6 +385,76 @@ test('node_version_gate', () => {
     checkNodeVersion('24.0.0');
 });
 
+test('concurrent_stale_queries_use_independent_temporary_paths', () => scratch(async dir => {
+    cpSync(mini, resolve(dir, 'repo'), { recursive: true });
+    const repo = resolve(dir, 'repo');
+    const out = resolve(dir, 'out');
+    await build(repo, out);
+    writeFileSync(resolve(repo, 'README.md'), '# Changed concurrently\n');
+    const { spawn } = await import('node:child_process');
+    const query = () => new Promise((done, reject) => {
+        const child = spawn(process.execPath, [resolve(root, 'scripts/repo-kb.mjs'), 'ticket', 'A01', '--root', repo, '--out', out], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let errors = '';
+        child.stderr.on('data', chunk => { errors += chunk; });
+        child.on('error', reject);
+        child.on('exit', code => code === 0 ? done() : reject(new Error(errors)));
+    });
+    await Promise.all(Array.from({ length: 8 }, query));
+    assert.equal(readdirSync(out).length, 8);
+    assert.ok(await isFresh(repo, out));
+}));
+test('in_tree_output_is_not_its_own_input', () => scratch(async dir => {
+    cpSync(mini, dir, { recursive: true });
+    const out = resolve(dir, 'kb-output');
+    await build(dir, out);
+    assert.ok(await isFresh(dir, out));
+    assert.equal(cli('ticket', 'A01', '--root', dir, '--out', out, '--no-refresh').status, 0);
+}));
+test('indexed_filter_runner_command_is_runnable', () => {
+    const row = real().tests.find(t => t.path === 'tests/repo_kb.mjs');
+    assert.equal(row.compiler_arg, false);
+    assert.equal(row.command, 'node tests/repo_kb.mjs');
+});
+test('literal_h3_section_is_retrievable', () => {
+    const text = sectionText(context(), fixtureKb(), 'A01', '停止条件');
+    assert.match(text, /=== SECTION A01 停止条件/);
+    assert.match(text, /E1012/);
+});
+test('literal_section_names_use_the_same_phase_filter_as_roles', () => {
+    const kb = fixtureKb();
+    for (const [role, title] of [['steps', '実装手順'], ['spec', '仕様']]) {
+        assert.equal(sectionText(context(), kb, 'A01', title, 1), sectionText(context(), kb, 'A01', role, 1));
+    }
+});
+test('interface_recovery_names_each_contributing_section', () => {
+    const ctx = context();
+    ctx.texts = new Map([
+        ['_features/A01-alpha.md', '# A01: Alpha\n## 前提とする他チケットのインターフェース\n' + 'own\n'.repeat(5000)],
+        ['_features/_completed/B02-beta.md', '# B02: Beta\n## 他チケットへの提供インターフェース\n' + 'provided\n'.repeat(5000)],
+    ]);
+    const text = pack(ctx, fixtureKb(), 'A01', { maxChars: 16000 });
+    assert.match(text, /section A01 needs/);
+    assert.match(text, /section B02 gives/);
+});
+test('symbol_recovery_reads_every_contributing_source', () => {
+    const ctx = context();
+    const original = readFileSync(resolve(mini, '_features/A01-alpha.md'), 'utf8');
+    ctx.texts = new Map([['_features/A01-alpha.md', original.replace('共通。D-01〜D-03。', 'long\n'.repeat(5000))]]);
+    const text = pack(ctx, fixtureKb(), 'A01', { maxChars: 16000 });
+    assert.match(text, /rest: node scripts\/repo-kb\.mjs section A01 symbols/);
+    const recovered = sectionText(ctx, fixtureKb(), 'A01', 'symbols');
+    assert.match(recovered, /PUBLIC SYMBOLS src\/check\.rs/);
+    assert.match(recovered, /PUBLIC SYMBOLS src\/lib\.rs/);
+    assert.match(recovered, /pub (?:fn|struct|enum)/);
+});
+test('command_recovery_returns_complete_generated_list', () => {
+    const ctx = context();
+    const kb = fixtureKb();
+    const text = sectionText(ctx, kb, 'A01', 'commands');
+    assert.match(text, /cargo test --locked --test alpha/);
+    assert.match(text, /node tests\/features\.mjs target\/release\/tsuzuri storage/);
+});
+
 let passed = 0;
 for (const { name, run } of tests) {
     if (process.argv[2] && !name.includes(process.argv[2])) continue;
