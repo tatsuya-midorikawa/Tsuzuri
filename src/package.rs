@@ -1329,12 +1329,12 @@ mod tests {
             (
                 "edition = \"2030\"\n",
                 0,
-                "unsupported edition '2030'; supported editions: 2026",
+                "unsupported edition '2030'; supported editions: 2026, 2027",
             ),
             (
                 "edition = \" 2026\"\n",
                 0,
-                "unsupported edition ' 2026'; supported editions: 2026",
+                "unsupported edition ' 2026'; supported editions: 2026, 2027",
             ),
             ("edition = 2026\n", 0, "expected '\"'"),
             (

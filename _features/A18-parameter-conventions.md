@@ -442,3 +442,16 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - 既定の参照カウント（Lobster・Perceus）: 注釈は要らないが、カウントの操作が見えず、drop の時点が最後の使用の直後になってスコープから読めなくなり、循環でリークする。
 - 世代付き参照（Vale）を既定にすること: 誤りが実行時のトラップになり、コンパイル時に拒否する方針と逆になる（`Arena` のハンドルが局所的に採用済み）。
 - 呼び出し先の本体から引数の規約を推論する案（Lean の borrow inference）: 本体の変更が呼び出し側の `E1012` を変え、署名に契約が現れない（API の差分が見えない）。
+
+## 実装と検証（2026-10-23、進行中）
+
+- Phase 1 の実装: edition 2027、全 edition の `own`、署名時の共有借用の補完、補完した引数だけの
+  `E1003`／`E1012` の案内、formatter／doc／cache／region の追従。所有権検査と LLVM の意味は変更しない。
+- 確認済み: fmt、strict clippy、edition 7 件、規約 8 件。
+  `conventions` は native／WASM × O0／O3 の 5 ケースと 2 トラップ、live 0、import なし。
+  文書は 7 ページ・262 リンク・36 例・70 native 実行・1 テストプロジェクト。runtime include 58 件。
+- Rust 全体の確認は進行中。新しい supported editions に追従して、チケットが挙げた integration test 以外にも、
+  lexer／manifest の unit test の旧一覧を修正した。既存の 2026 の言語の挙動の変更ではない。
+- **全 Phase 完了ではない。** Phase 2 の移行ツール・std／fixture の移行と既定版の更新、
+  Phase 3 のジェネリック／関数引数の規約、Phase 4 の mut／要素・field 代入は未実装。
+  チケットは `_completed/` に移さず、PR は進行中として扱う。
