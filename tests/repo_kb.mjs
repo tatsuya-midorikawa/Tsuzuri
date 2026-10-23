@@ -409,11 +409,20 @@ test('in_tree_output_is_not_its_own_input', () => scratch(async dir => {
     await build(dir, out);
     assert.ok(await isFresh(dir, out));
     assert.equal(cli('ticket', 'A01', '--root', dir, '--out', out, '--no-refresh').status, 0);
+    assert.equal(spawnSync('git', ['init', '-q'], { cwd: dir }).status, 0);
+    assert.ok(await isFresh(dir, out));
+    await build(dir, out);
+    assert.ok(await isFresh(dir, out));
 }));
 test('indexed_filter_runner_command_is_runnable', () => {
     const row = real().tests.find(t => t.path === 'tests/repo_kb.mjs');
     assert.equal(row.compiler_arg, false);
     assert.equal(row.command, 'node tests/repo_kb.mjs');
+});
+test('indexed_target_selector_runner_uses_valid_default', () => {
+    const row = real().tests.find(t => t.path === 'tests/wasm_heap.mjs');
+    assert.equal(row.compiler_arg, false);
+    assert.equal(row.command, 'node tests/wasm_heap.mjs');
 });
 test('literal_h3_section_is_retrievable', () => {
     const text = sectionText(context(), fixtureKb(), 'A01', '停止条件');

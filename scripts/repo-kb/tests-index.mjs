@@ -24,7 +24,7 @@ export function indexTests(ctx) {
     });
     for (const path of mjs) {
         const name = posix.basename(path, '.mjs');
-        const compiler_arg = path !== 'tests/repo_kb.mjs' && /argv\[2\]/.test(contents.get(path));
+        const compiler_arg = !['tests/repo_kb.mjs', 'tests/wasm_heap.mjs'].includes(path) && /argv\[2\]/.test(contents.get(path));
         const helper = [...contents].some(([other, text]) => other !== path
             && [...text.matchAll(/\bfrom\s+["']\.\/([^"']+\.mjs)["']/g)].some(m => m[1] === `${name}.mjs`));
         result.push({ kind: 'mjs_test', path, name, compiler_arg, helper,
