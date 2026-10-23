@@ -9,7 +9,7 @@ import { parseModuleTables } from './modules.mjs';
 import { diagSites } from './rust.mjs';
 import { indexTests } from './tests-index.mjs';
 import { indexDocs } from './docs-index.mjs';
-import { cmp, jsonl, MAX_INPUT_BYTES, readText } from './text.mjs';
+import { admittedText, cmp, inputText, jsonl, MAX_INPUT_BYTES, readText } from './text.mjs';
 
 const names = ['tickets', 'decisions', 'modules', 'diagnostics', 'tests', 'docs'];
 let temporarySerial = 0;
@@ -43,7 +43,8 @@ async function prepare(root, out) {
     for (let i = 0; i < paths.length; i += 32) {
         await Promise.all(paths.slice(i, i + 32).map(async path => {
             if (statSync(join(root, path)).size <= MAX_INPUT_BYTES) {
-                texts.set(path, (await readFile(join(root, path), 'utf8')).replace(/\r\n/g, '\n'));
+                const text = admittedText(await readFile(join(root, path), 'utf8'));
+                if (text !== null) texts.set(path, text);
             }
         }));
     }
@@ -55,8 +56,11 @@ export function collect(root, prepared) {
     const inputs = inputFiles(files);
     const texts = prepared?.texts ?? new Map();
     for (const path of inputs) {
-        if (statSync(join(root, path)).size > MAX_INPUT_BYTES) warnings.push(`file_too_large ${path}`);
-        else if (!texts.has(path)) texts.set(path, readText(join(root, path)));
+        if (!prepared) {
+            const text = inputText({ root }, path);
+            if (text !== null) texts.set(path, text);
+        }
+        if (!texts.has(path)) warnings.push(`file_too_large ${path}`);
     }
     const ctx = { root, files, fileSet: new Set(files), ticketIds: new Set(), decisionIds: new Set(), warnings, texts };
     const ticketPaths = [];
@@ -122,7 +126,7 @@ export function collect(root, prepared) {
             tickets: tickets.filter(t => t.refs.diags.includes(code)).map(t => t.id),
             decisions: decisions.filter(d => d.diags.includes(code)).map(d => d.id) };
     });
-    const manifest = { schema: 'tz-repo-kb/1', input_sha256: inputHash(root, files, texts), inputs: texts.size,
+    const manifest = { schema: 'tz-repo-kb/1', input_sha256: inputHash(files, texts), inputs: texts.size,
         counts: { tickets: tickets.length, appendices: appendices.length, decisions: decisions.length, modules: modules.length,
             diagnostics: diagnostics.length, tests: tests.length, docs: docs.length }, warnings: warnings.sort(cmp) };
     return { manifest, tickets, decisions, modules, diagnostics, tests, docs };
@@ -157,7 +161,7 @@ async function freshUnlocked(root, out) {
     if (!existsSync(join(out, 'manifest.json'))) return false;
     const manifest = JSON.parse(readText(join(out, 'manifest.json')));
     const { files, texts } = await prepare(root, out);
-    return manifest.schema === 'tz-repo-kb/1' && manifest.input_sha256 === inputHash(root, files, texts);
+    return manifest.schema === 'tz-repo-kb/1' && manifest.input_sha256 === inputHash(files, texts);
 }
 function checkRoot(root, out) {
     if (!statSync(root).isDirectory()) throw new Error('root is not a directory');

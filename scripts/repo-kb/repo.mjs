@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { lstatSync, readdirSync, statSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { cmp, MAX_INPUT_BYTES, readText, sha256 } from './text.mjs';
+import { cmp, sha256 } from './text.mjs';
 
 export function listFiles(root) {
     if (!statSync(root).isDirectory()) throw new Error('root is not a directory');
@@ -36,11 +36,10 @@ export function inputFiles(files) {
         || /^_tsuzuri\/language-reference\/.*\.md$/.test(p) || /^docs\/[^/]+\.md$/.test(p)
         || p === 'README.md' || /^scripts\/repo-kb(?:\/[^/]+)?\.mjs$/.test(p));
 }
-export function inputHash(root, files, texts) {
+export function inputHash(files, texts) {
     const rows = files.map(p => `F ${p}`);
     for (const p of inputFiles(files)) {
-        if (statSync(join(root, p)).size > MAX_INPUT_BYTES) continue;
-        rows.push(`H ${sha256(texts?.get(p) ?? readText(join(root, p)))} ${p}`);
+        if (texts.has(p)) rows.push(`H ${sha256(texts.get(p))} ${p}`);
     }
     return sha256(rows.join('\n'));
 }

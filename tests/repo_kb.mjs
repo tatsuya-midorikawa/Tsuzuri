@@ -6,7 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseMarkdown, splitRow } from '../scripts/repo-kb/markdown.mjs';
 import { cp, inputText, MAX_INPUT_BYTES, slug } from '../scripts/repo-kb/text.mjs';
-import { listFiles } from '../scripts/repo-kb/repo.mjs';
+import { inputFiles, listFiles } from '../scripts/repo-kb/repo.mjs';
 import { scanRust, diagSites, publicItems } from '../scripts/repo-kb/rust.mjs';
 import { classify, filterPhase, parseDeps, parseFilesCell, parseTicket, roleHeading } from '../scripts/repo-kb/tickets.mjs';
 import { mentions, parseDecisions } from '../scripts/repo-kb/decisions.mjs';
@@ -38,19 +38,21 @@ test('slug_matches_check_docs', () => {
         ['ムーブ後の使用エラーe1012', 'phase-1-差分', 'x', 'x-1']);
     for (const file of ['index.md', 'compiler/option.md', 'compiler/diagnostics.md']) {
         const path = resolve(root, '_tsuzuri/language-reference', file);
-        const source = readFileSync(path, 'utf8');
-        const duplicates = new Map();
-        const expected = [];
-        for (const line of source.replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, '').split('\n')) {
-            const m = /^#{1,6} (.+)$/.exec(line);
-            if (!m) continue;
-            const base = m[1].toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, '').replace(/ /g, '-');
-            const n = duplicates.get(base) ?? 0;
-            expected.push(n ? `${base}-${n}` : base);
-            duplicates.set(base, n + 1);
+        for (const newline of ['\n', '\r\n']) {
+            const source = readFileSync(path, 'utf8').replace(/\r\n/g, '\n').replace(/\n/g, newline);
+            const duplicates = new Map();
+            const expected = [];
+            for (const line of source.replace(/\r\n/g, '\n').replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, '').split('\n')) {
+                const m = /^#{1,6} (.+)$/.exec(line);
+                if (!m) continue;
+                const base = m[1].toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, '').replace(/ /g, '-');
+                const n = duplicates.get(base) ?? 0;
+                expected.push(n ? `${base}-${n}` : base);
+                duplicates.set(base, n + 1);
+            }
+            const actualSeen = new Map();
+            assert.deepEqual(parseMarkdown(source).headings.map(h => slug(h.title, actualSeen)), expected);
         }
-        const actualSeen = new Map();
-        assert.deepEqual(parseMarkdown(source).headings.map(h => slug(h.title, actualSeen)), expected);
     }
 });
 test('list_files_falls_back_to_walk', () => {
@@ -558,6 +560,28 @@ test('oversized_suite_source_is_not_read_or_indexed', () => scratch(async dir =>
     assert.ok(!kb.tests.some(t => t.path === 'tests/features.mjs'));
     writeFileSync(path, source.replace('storage', 'renamed'));
     assert.ok(await isFresh(dir, out));
+}));
+test('source_size_transitions_preserve_the_captured_content_hash', () => scratch(async dir => {
+    cpSync(mini, dir, { recursive: true });
+    const out = resolve(dir, 'target/cache');
+    const readme = resolve(dir, 'README.md');
+    const small = '# Captured README\n';
+    const oversized = 'x'.repeat(MAX_INPUT_BYTES + 1);
+    for (const [before, after] of [[small, oversized], [oversized, small]]) {
+        writeFileSync(readme, before);
+        const snapshot = await build(dir, out);
+        const files = listFiles(dir);
+        const texts = new Map(inputFiles(files).flatMap(path => {
+            const text = inputText({ root: dir }, path);
+            return text === null ? [] : [[path, text]];
+        }));
+        writeFileSync(readme, after);
+        const indexed = collect(dir, { files, texts });
+        writeFileSync(resolve(out, 'manifest.json'), JSON.stringify(indexed.manifest));
+        assert.equal(await isFresh(dir, out), false, 'a later size transition must make the captured snapshot stale');
+        assert.equal(indexed.manifest.input_sha256, snapshot.manifest.input_sha256);
+        assert.deepEqual(indexed.docs, snapshot.docs);
+    }
 }));
 test('required_guide_size_failure_is_not_silently_hidden', () => {
     const ctx = context();
