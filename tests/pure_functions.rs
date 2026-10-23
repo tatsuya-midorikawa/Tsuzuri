@@ -115,6 +115,16 @@ fn pure_function_values_keep_effects_and_call_stage_boundaries() {
 }
 
 #[test]
+fn weakening_a_pure_factory_keeps_the_closure_representation() {
+    let emitted = ir("type F = i64 -> i64\n\
+         pure def factory :: i64 -> F = \\offset -> { \\value -> offset + value }\n\
+         def invoke :: own (i64 -> i64 -> i64) -> i64 -> i64 = \\f value -> f value (value + 1)\n\
+         def borrowed :: ref (i64 -> i64 -> i64) -> i64 -> i64 = \\f value -> (*f) value (value + 1)\n\
+         export def answer :: i64 = invoke factory 20 + borrowed factory 20\n");
+    assert!(!emitted.contains("call void @tz_soft_cast"));
+}
+
+#[test]
 fn class_and_instance_purity_are_contracts_even_when_unused() {
     accepted(
         "record R { value: i64 }\n\

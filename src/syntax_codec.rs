@@ -2418,6 +2418,14 @@ mod tests {
         seen.extend(round_trips(patterns, 0).expect("the pattern sample parses"));
         seen.extend(round_trips("def take :: own string -> i64 = \\s -> s.length\n", 0).unwrap());
         seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
+        seen.extend(
+            round_trips(
+                "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
+                 class Measure<'a> { pure def size :: 'a -> i64 }\n",
+                0,
+            )
+            .unwrap(),
+        );
         // Only the checker, the computation expansion and `Bits.ushr` make these variants.
         let mut program = parse_with_source_all("def f :: i64 = 1\n", 0).unwrap();
         let body = program.functions[0].body.clone();

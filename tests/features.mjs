@@ -464,6 +464,8 @@ const suites = {
       };
       return [
         ...Object.entries(expectations).flatMap(([name, expected]) => range(13n).map((n) => [`t_${name}`, [n], expected(n)])),
+        ...["t_factory_owned", "t_factory_borrowed", "t_factory_returned"].flatMap(name =>
+          [-3n, 0n, 1n, 20n, 1024n, -(1n << 63n), (1n << 63n) - 1n].map(n => [name, [n], BigInt.asIntN(64, 2n * n + 1n)])),
         ...[0n, 1n, 5n, 10n, 20n].map((n) => ["t_fact", [n], range(n + 1n).slice(1).reduce((acc, i) => acc * i, 1n)]),
         ["t_unused_trap", [0n], 0n],
       ];

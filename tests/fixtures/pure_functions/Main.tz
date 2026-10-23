@@ -63,3 +63,11 @@ export def t_pick_own :: i64 -> i64 = \n ->
 export def t_unused_trap :: i64 -> i64 = \index ->
     let unused = bounds [1, 2] index
     0
+
+type Ordinary = i64 -> i64
+pure def factory :: i64 -> Ordinary = \offset -> { \value -> offset + value }
+def invoke_owned :: own (i64 -> i64 -> i64) -> i64 -> i64 = \f n -> f n (n + 1)
+def invoke_borrowed :: (i64 -> i64 -> i64) -> i64 -> i64 = \f n -> f n (n + 1)
+export def t_factory_owned :: i64 -> i64 = \n -> invoke_owned factory n
+export def t_factory_borrowed :: i64 -> i64 = \n -> invoke_borrowed factory n
+export def t_factory_returned :: i64 -> i64 = \n -> { let f = factory n; f (n + 1) }
