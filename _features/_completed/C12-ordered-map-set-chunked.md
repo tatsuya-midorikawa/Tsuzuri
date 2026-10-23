@@ -39,6 +39,10 @@
   `CreateValueFromAddress` が返す Vec ヘッダを `GetNonSyntheticValue()` にしてから読む修正を加えた。
   `tests/lldb_collections.py` は合成 Vec を再現し、修正前に赤・修正後に緑となる永続的な回帰試験。
   Linux CI にも LLDB 21 と実デバッガー suite を追加した。
+- Copilot レビューの境界キャッシュの線形再走査の指摘も修正した。
+  lazy なヘッダ読み取りは維持し、既存 List provider と同じ二分探索で所属チャンクを求める。
+  128 チャンクのキャッシュ済み境界へのアクセスを対数回に制限する回帰試験は修正前に赤・修正後に緑で、
+  CI の時間の閾値は使わない。
 - 初回の共有キャッシュの open 待ち、長すぎる／相対の `TMPDIR` は環境要因として切り分けた。
   自分専用の `TSUZURI_CACHE_DIR` と短い絶対 `TMPDIR` で全件を再検証し、共有キャッシュや他 worktree は変更していない。
 - `cargo fmt`、全 target の Clippy（warnings denied）、runtime include **58 files** が成功。

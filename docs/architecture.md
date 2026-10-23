@@ -987,7 +987,7 @@ VS Code 向け TextMate 文法では、`string.interpolated.tsuzuri`、`meta.emb
 `Set.union` は両辺のチャンクの末尾から要素を比較して pop し、384 エントリずつの逆順のチャンクを作った後に反転します。`intersect` および `difference` は、（チャンク番号, オフセット）の 2 本のカーソルを進めながら要素を選び、同じ形のチャンクを作ります。
 不透明レコードの内部には共有参照を格納できますが、排他参照（`ref mut`）の格納は拒否され、通常のレコードを経由して隠蔽格納しようとする試みも型検査によって確実に検出されます。
 NLL（非字句的生存期間）における借用情報の解放処理では、生存している借用の参照先と親要素を正しく追跡し、読み出しに必要となる元の所有者情報を維持します。
-検証は `cargo test --locked --test map_set --test map_set_chunks --test std_argument_order`、および `cargo build --locked` の後の `node tests/features.mjs target/debug/tsuzuri map_set` と同じコマンドの `map_set_chunks` で行います。LLDB と natvis は `head` に続いて `rest` のチャンクを列挙し、要約 `size=N` とキー順の `[0]`、`[1]`…の表示を維持します。
+検証は `cargo test --locked --test map_set --test map_set_chunks --test std_argument_order`、および `cargo build --locked` の後の `node tests/features.mjs target/debug/tsuzuri map_set` と同じコマンドの `map_set_chunks` で行います。LLDB と natvis は `head` に続いて `rest` のチャンクを列挙し、要約 `size=N` とキー順の `[0]`、`[1]`…の表示を維持します。LLDB は必要になったチャンクのヘッダだけを読み、キャッシュした境界の二分探索で子の所属チャンクを求めます。`tests/lldb_collections.py` は 128 チャンクの境界アクセス回数を検査し、全チャンクの再走査への退行を時間の閾値なしで検出します。
 
 ### ハッシュコンテナ
 

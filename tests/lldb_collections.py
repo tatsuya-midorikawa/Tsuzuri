@@ -11,7 +11,7 @@ sys.modules["lldb"] = fake
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "lldb"))
 import tsuzuri_lldb as formatter  # noqa: E402
 
-memory = bytearray(1 << 16)
+memory = bytearray(1 << 20)
 cursor = 64
 
 
@@ -164,4 +164,24 @@ for sizes in ([0], [1], [3], [2, 3, 1], [4, 1], [1, 1, 1, 1, 1], [512, 512, 7]):
     assert provider.get_child_at_index(total) is None
     assert provider.get_child_at_index(-1) is None
     assert provider.get_child_index("[3]") == 3
-print("collection provider: 7 layouts, synthetic Vec headers, lazy traversal: ok")
+
+
+class CountedBoundaries(list):
+    reads = 0
+
+    def __getitem__(self, index):
+        self.reads += 1
+        return super().__getitem__(index)
+
+
+value, where = build([257] * 128)
+provider = formatter.CollectionProvider(value, {})
+assert provider.read == 0
+assert provider.get_child_at_index(len(where) - 1).address == where[-1]
+provider.ends = CountedBoundaries(provider.ends)
+for index in [len(where) - 1, 0, len(where) // 2, 257 * 127]:
+    provider.ends.reads = 0
+    assert provider.get_child_at_index(index).address == where[index]
+    assert provider.ends.reads <= len(provider.ends).bit_length() + 2
+    assert provider.read == 127
+print("collection provider: 7 layouts, synthetic Vec headers, lazy/logarithmic traversal: ok")

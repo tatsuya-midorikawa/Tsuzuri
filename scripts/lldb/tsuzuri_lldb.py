@@ -440,9 +440,14 @@ class CollectionProvider:
             self.read += 1
             self.firsts.append(member(chunk, "data").GetValueAsUnsigned())
             self.ends.append(self.ends[-1] + length_of(chunk))
-        number = 0
-        while self.ends[number] <= index:
-            number += 1
+        low, high = 0, len(self.ends) - 1
+        while low < high:
+            middle = (low + high) // 2
+            if self.ends[middle] <= index:
+                low = middle + 1
+            else:
+                high = middle
+        number = low
         before = self.ends[number - 1] if number else 0
         return self.firsts[number] + (index - before) * self.stride
 
