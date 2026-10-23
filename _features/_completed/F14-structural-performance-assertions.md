@@ -690,6 +690,9 @@ bench_allocs: bool,
   全重作業を共有 slot 内で実行し、スタック・資源上限・依存 crate・unsafe は増やしていない。
 - 現在の dev バイナリで `allocator.mjs`、全 `features.mjs`（**19669 cases**）、
   `parallel_frontend.mjs` が成功。`check-runtime-includes.sh` は **58 files**。
+- 初回 IDE CI の予約モジュール整合テストが `Alloc` の不足を検出した。
+  隔離 worktree の `vsc/src/core.ts` の一覧も同期し、既存の **15 unit tests**・型検査・lint が成功した。
+  元の root の release ファイルは変更していない。
 - 変更した reference **10 pages / 396 links / 32 examples / 32 native runs / 7 test projects** が成功。
   最後の prose 調整後に Alloc の **1 page / 9 links / 2 examples / 2 test projects** も再検証した。
 - `last_use`・`map_set`・`channel`・`point` の既定 heap の **8 IR が byte-identical**。
