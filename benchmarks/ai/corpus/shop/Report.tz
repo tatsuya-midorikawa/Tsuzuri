@@ -1,0 +1,12 @@
+def summary :: ref [Catalog.Item] -> ref [Orders.Line] -> string = \items lines ->
+    $"total {Money.show (Orders.order_total items lines)}"
+
+def discounted :: ref [Catalog.Item] -> ref [Orders.Line] -> i64 -> string = \items lines percent ->
+    $"after {percent}%: {Money.show (Orders.total_with_discount items lines percent)}"
+
+test "summary shows the order total" =
+    let items = [Catalog.make 1 "pen" 200]
+    assert (summary items [Orders.Line { id: 1, qty: 2 }] == "total 4.32")
+test "discounted shows the reduced total" =
+    let items = [Catalog.make 1 "pen" 200]
+    assert (discounted items [Orders.Line { id: 1, qty: 5 }] 50 == "after 50%: 5.40")

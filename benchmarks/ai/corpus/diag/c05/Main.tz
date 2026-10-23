@@ -1,0 +1,38 @@
+record Note { title: string, text: string, stars: i64 }
+
+def make_note :: string -> string -> Note = \title text ->
+    Note { title: title, text: text, stars: 0 }
+
+def star :: Note -> Note = \note ->
+    let next = note.stars + 1
+    { note with stars = next }
+
+def short :: ref Note -> bool = \note -> note.text.length < 20
+
+def score :: ref Note -> i64 = \note -> note.stars * 10 + note.title.length
+
+def best_index :: ref [Note] -> i64 = \notes ->
+    let mut best = 0
+    for i in 1 .. notes.length - 1 do
+        if score (ref notes[i]) > score (ref notes[best]) then best = i
+    best
+
+def title_at :: ref [Note] -> i64 -> ref string = \notes index ->
+    ref notes[index].title
+
+def shortest :: ref [Note] -> i64 = \notes ->
+    let mut count = 0
+    for i in 0 .. notes.length - 1 do
+        if short (ref notes[i]) then count = count + 1
+    count
+
+def placeholder :: unit -> ref string = \() ->
+    let text = "untitled"
+    ref text
+
+def main :: unit -> i32 = \() ->
+    let notes = [star (make_note "todo" "buy milk"), make_note "ideas" "a long note about many things"]
+    do! IO.writeln (Display.display (title_at notes (best_index notes)))
+    do! IO.writeln $"{shortest notes} short notes"
+    do! IO.writeln (placeholder ())
+    0

@@ -1,0 +1,43 @@
+record Entry { name: string, score: i64 }
+
+def make :: string -> i64 -> Entry = \name score -> Entry { name: name, score: score }
+
+/// Builds the heading line of an entry. The name is consumed.
+def heading :: string -> i64 -> string = \name rank -> $"{rank}. {name}"
+
+def grade :: i64 -> string = \score ->
+    if score >= 90 then "A"
+    elif score >= 70 then "B"
+    else "C"
+
+def total :: ref [Entry] -> i64 = \entries ->
+    let mut sum = 0
+    for i in 0 .. entries.length - 1 do
+        sum = sum + entries[i].score
+    sum
+
+def average :: ref [Entry] -> i64 = \entries ->
+    if entries.length == 0 then 0 else total entries / entries.length
+
+def best :: ref [Entry] -> i64 = \entries ->
+    let mut top = 0
+    for i in 0 .. entries.length - 1 do
+        if entries[i].score > top then top = entries[i].score
+    top
+
+def passed :: ref [Entry] -> i64 -> i64 = \entries limit ->
+    let mut count = 0
+    for i in 0 .. entries.length - 1 do
+        if entries[i].score >= limit then count = count + 1
+    count
+
+def describe :: Entry -> i64 -> string = \entry rank ->
+    let title = heading entry.name rank
+    let letter = grade entry.score
+    $"{title} ({letter}) by {entry.name}"
+
+def main :: unit -> i32 = \() ->
+    let entries = [make "ada" 95, make "bob" 72, make "cy" 40]
+    do! IO.writeln $"avg {average entries} best {best entries} passed {passed entries 70}"
+    do! IO.writeln (describe (make "ada" 95) 1)
+    0

@@ -271,7 +271,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G28 | [`tsuzuri kb` の照会と `impact`（facts の差分）](G28-kb-query-and-impact.md) | P1 | L | G27, G26, (G25) | todo（承認済み） |
 | G29 | [`tsuzuri mcp`（MCP サーバー）](G29-mcp-server.md) | P2 | L | (G21), (G23), (G26), (G27), (G28) | todo（承認済み） |
 | G30 | [図表の生成（Mermaid。モジュール・型・呼び出し・所有権・並行・レイアウト・状態遷移）](G30-diagrams.md) | P2 | L | G26, G27 | todo（承認済み） |
-| G31 | [AI 作業コスト指標（入力量と往復数を決定的に測る）](G31-ai-cost-metrics.md) | P1 | M | (G22), (G24), (G27) | todo（承認済み） |
+| G31 | [AI 作業コスト指標（入力量と往復数を決定的に測る）](_completed/G31-ai-cost-metrics.md) | P1 | M | (G21), (G22), (G24), (G27), (G28), (G29) | done（Phase 1〜3） |
 | G32 | [開発リポジトリの KB と `ticket-brief`（小さいモデルへ渡す文脈の自動生成）](G32-repo-kb-and-ticket-brief.md) | P0 | M | – | todo（承認済み） |
 | G33 | [仕様の規則 ID と適合性スイート](G33-spec-rule-ids-conformance.md) | P2 | L | – | todo（承認済み） |
 | G34 | [doc-test（`///` の例を実行する）と std の例](G34-doc-tests.md) | P2 | M | – | todo（承認済み） |
@@ -542,7 +542,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | [G28](G28-kb-query-and-impact.md) | 知識（照会） | `tsuzuri kb`（`show`・`brief`・`callers`・`callees`・`uses`・`search`・`tests-for`・`find`。1 項目 1〜3 行で、`--budget` で字数を抑える）と `kb impact`（2 つの KB・git の版の差を、署名・所有権の渡し方・効果・テストで分類し、回すべきテストを出す） | 承認済み |
 | [G29](G29-mcp-server.md) | 知識（接続口） | `tsuzuri mcp`: stdio の MCP サーバー（プロトコルは 2025-06-18 だけ）。読み取り専用で型つきの 11 ツール（`tz_check`・`tz_guide`・`tz_explain`・`tz_symbol`・`tz_brief`・`tz_search`・`tz_callers`・`tz_find`・`tz_impact`・`tz_fix_plan`・`tz_diagram`）。ファイルは書き換えず、`tz_fix_plan` は計画だけを返す | 承認済み |
 | [G30](G30-diagrams.md) | 知識（図） | `tsuzuri kb diagram KIND`: モジュールの依存・型・呼び出し・所有権・並行・メモリのレイアウト・状態遷移を、facts から決定的に Mermaid（と DOT）で出す（`views/*.mmd` も KB に置く）。ノード数の上限（`--max-nodes`）と、文書の Mermaid を検査する harness | 承認済み |
-| [G31](G31-ai-cost-metrics.md) | 計測 | `node benchmarks/ai/run.mjs`: LLM を呼ばず、模擬エージェントの規則で、作業が終わるまでに読む字数・ツール呼び出しの往復数・推定トークンを決定的に数える（6 型 37 件のタスク。戦略は grep・docs・診断 v1／v2・`fix`・KB）。基準値を `docs/ai-cost.md` に置き、G21〜G29 の効果を数字で言えるようにする | 承認済み |
+| [G31](_completed/G31-ai-cost-metrics.md) | 計測 | **Phase 1〜3 実装済み**。`node benchmarks/ai/run.mjs` が LLM・ネットワークなしで字数・往復数・推定トークンを決定的に数える（6 型 37 件）。grep・chunk・window・docs・診断 v1、外部実測の取り込み、静的サイズ上限と能力別アダプターを実装し、[基準値 104 行](../docs/ai-cost.md)を公開済み。G21・G27・G28・G29 本体は未実装で、ガイド・KB・MCP の実測行はない。診断 v2・`fix` もコンパイラの能力がなければ理由つきで省略し、改善値を捏造しない | 承認済み・実装済み（Phase 1〜3） |
 | [A20](A20-effect-summary-and-checked-attributes.md) | 検査付き属性 | `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` を署名の約束として検査する（`E1031`）。関数ごとの効果の要約（14 個の効果の閉じた語彙。呼び出しグラフ上の不動点）を `src/effects.rs` に作る。属性は IR を変えない表明。A19 が未実装なら、本チケットが `pure def` の基盤を先に作る（経路 B） | 承認済み |
 | [A21](A21-contracts-requires-ensures.md) | 契約 | `@requires`・`@ensures` を `def` の本体の先頭に書き、`--contracts off`／`check`／`test`／`prove` で、実行時検査（`run`・`test` の既定）・性質テスト（`Arbitrary`・`Gen.for_all_where`）・静的検証（外部ソルバー。`E1034`）につなぐ。契約を最適化の前提に使うモード（assume）は作らない | 承認済み |
 | [A22](A22-edition-2027-canonical-forms.md) | edition | 同じ意味の複数の書き方を edition `2027` の正準形に絞る: `for` の範囲は `..<`・`..=`、数値の接尾辞は型名、借用は `ref`／`ref mut`／`deref`、旧ラムダ `x -> e` は廃止。正準形は全 edition が受理し、2026 では `W1007`（既定は無効）、2027 では `E0004` で拒否する。`tsuzuri fix --edition 2027` が移行する。`..` の意味は edition で変えず、`LATEST` は `2026` のまま | 承認済み |

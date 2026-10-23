@@ -1,0 +1,49 @@
+union Shape =
+    | Circle of i64
+    | Rect of i64 * i64
+    | Triangle of i64 * i64
+    | Square of i64
+
+def area :: Shape -> i64 = \shape ->
+    match shape with
+    | Circle r -> 3 * r * r
+    | Rect (w, h) -> w * h
+    | Triangle (b, h) -> b * h / 2
+    | Square s -> s * s
+
+def perimeter :: Shape -> i64 = \shape ->
+    match shape with
+    | Circle r -> 6 * r
+    | Rect (w, h) -> 2 * (w + h)
+    | Triangle (b, h) -> b + h + Int.max b h
+    | Square s -> 4 * s
+
+def name :: Shape -> string = \shape ->
+    match shape with
+    | Circle _ -> "circle"
+    | Rect _ -> "rect"
+    | Triangle _ -> "triangle"
+    | Square _ -> "square"
+
+def scale :: Shape -> i64 -> Shape = \shape k ->
+    match shape with
+    | Circle r -> Circle (r * k)
+    | Rect (w, h) -> Rect (w * k, h * k)
+    | Triangle (b, h) -> Triangle (b * k, h * k)
+    | Square s -> Square (s * k)
+
+def is_round :: Shape -> bool = \shape ->
+    match shape with
+    | Circle _ -> true
+    | _ -> false
+
+def sides :: Shape -> i64 = \shape ->
+    match shape with
+    | Circle _ -> 0
+    | Rect _ -> 4
+    | Triangle _ -> 3
+
+def main :: unit -> i32 = \() ->
+    let shape = scale (Rect (2, 3)) 2
+    do! IO.writeln $"{name shape} {area shape} {perimeter shape} {sides shape} {is_round shape}"
+    0

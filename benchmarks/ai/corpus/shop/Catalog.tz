@@ -1,0 +1,25 @@
+record Item { id: i64, name: string, price: i64, tax_percent: i64 }
+
+def make :: i64 -> string -> i64 -> Item = \id name price ->
+    Item { id: id, name: name, price: price, tax_percent: 8 }
+
+/// The price of one item with its tax, in cents.
+def gross :: ref Item -> i64 = \item -> Money.with_tax item.price item.tax_percent
+
+def position :: ref [Item] -> i64 -> i64 = \items id ->
+    let mut found = -1
+    for i in 0 .. items.length - 1 do
+        if items[i].id == id then found = i
+    found
+
+def price_of :: ref [Item] -> i64 -> i64 = \items id ->
+    let at = position items id
+    if at < 0 then 0 else gross (ref items[at])
+
+test "gross includes tax" = assert (gross (ref (make 1 "pen" 200)) == 216)
+test "position finds the item" =
+    let items = [make 1 "pen" 200, make 2 "ink" 500]
+    assert (position items 2 == 1)
+test "price_of an unknown id is zero" =
+    let items = [make 1 "pen" 200]
+    assert (price_of items 9 == 0)

@@ -1,0 +1,34 @@
+record Point { x: i64, y: i64 }
+
+record Segment { from: Point, to_point: Point }
+
+def origin :: Point = Point { x: 0, y: 0 }
+
+def add :: Point -> Point -> Point = \a b -> Point { x: a.x + b.x, y: a.y + b.y }
+
+def neg :: Point -> Point = \p -> Point { x: 0 - p.x, y: 0 - p.y }
+
+def manhattan :: Point -> i64 = \p -> Int.abs p.x + Int.abs p.y
+
+def length_of :: Segment -> i64 = \s ->
+    manhattan (add s.to_point (neg s.from))
+
+def midpoint :: Segment -> Point = \s ->
+    Point { x: (s.from.x + s.to_point.x) / 2, y: (s.from.y + s.to_point.y) / 2 }
+
+def shift :: Segment -> Point -> Segment = \s by ->
+    Segment { from: add s.from by, to_point: add s.to_point by }
+
+def is_degenerate :: Segment -> bool = \s -> length_of s == 0
+
+def count_at :: ref [Point] -> Point -> i64 = \points target ->
+    let mut count = 0
+    for i in 0 .. points.length - 1 do
+        if points[i] == target then count = count + 1
+    count
+
+def main :: unit -> i32 = \() ->
+    let points = [Point { x: 1, y: 2 }, origin(), Point { x: 1, y: 2 }]
+    let seg = Segment { from: origin(), to_point: Point { x: 4, y: 6 } }
+    do! IO.writeln $"{count_at points (Point { x: 1, y: 2 })} {length_of seg} {is_degenerate (shift seg origin())}"
+    0

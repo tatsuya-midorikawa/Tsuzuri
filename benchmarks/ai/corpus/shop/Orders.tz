@@ -1,0 +1,32 @@
+record Line { id: i64, qty: i64 }
+
+def line_total :: ref [Catalog.Item] -> Line -> i64 = \items line ->
+    Catalog.price_of items line.id * line.qty
+
+def order_total :: ref [Catalog.Item] -> ref [Line] -> i64 = \items lines ->
+    let mut sum = 0
+    for line in lines do
+        sum = sum + line_total items line
+    sum
+
+def total_with_discount :: ref [Catalog.Item] -> ref [Line] -> i64 -> i64 = \items lines percent ->
+    Money.with_discount (order_total items lines) percent
+
+def fillable :: ref [Stock.Level] -> ref [Line] -> bool = \levels lines ->
+    let mut ok = true
+    for line in lines do
+        if !(Stock.can_fill levels line.id line.qty) then ok = false
+    ok
+
+test "line_total multiplies the gross price" =
+    let items = [Catalog.make 1 "pen" 200]
+    assert (line_total items (Line { id: 1, qty: 3 }) == 648)
+test "order_total adds the lines" =
+    let items = [Catalog.make 1 "pen" 200, Catalog.make 2 "ink" 500]
+    assert (order_total items [Line { id: 1, qty: 1 }, Line { id: 2, qty: 2 }] == 1296)
+test "total_with_discount takes the percentage off" =
+    let items = [Catalog.make 1 "pen" 200]
+    assert (total_with_discount items [Line { id: 1, qty: 5 }] 50 == 540)
+test "fillable needs every line in stock" =
+    let levels = [Stock.Level { id: 1, count: 2 }]
+    assert (fillable levels [Line { id: 1, qty: 2 }] && !(fillable levels [Line { id: 1, qty: 3 }]))

@@ -911,6 +911,9 @@ tsuzuri lsp
 
 ## 検証と性能測定
 
+G31 の着手時検証（基準 `41f80bc7`）: 旧付録の shop 全文を未変更のコンパイラで `check`・`test --list` に通し、無診断・16 テストと 5183 字（941/460/770/1394/662/956 字）を再現しました。D-59 の対象最後の順序を確認したところ、既存の `Array.map callback subject` はそのまま適合し、shop と診断コーパスの行・文字を変更する必要はありません。タスク D-02 だけは旧 `Array.get`（`Maybe` を返す）から同じ問いに答える現在の `Array.try_item` に改名します（`get` は現在トラップする取得）。shop の独立したシェル計算による golden は変更せず使います。std・文書の量は現 HEAD から測り直し、ハーネスの実出力を golden に写しません。
+同じ基準で B-04 の `Array.swap_in` 呼び出し元は、旧 4 関数に Array の reverse/shuffle/sample と Vec の 6 関数が加わった 15 関数です。ソースの `fn` と参照行を独立した `awk` で照合し、問いは変えず `expect` を更新しました。残る B/F の 11 タスクは旧一覧と一致します。
+
 Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため、網羅的なテストスイートとマルチ言語ベンチマークを備えています。
 
 ### 何を回すか
@@ -1051,6 +1054,7 @@ node tests/debugger.mjs target/release/tsuzuri   # lldb が必要（TSUZURI_LLDB
 node tests/debugger_static.mjs target/release/tsuzuri   # PM02: lldb が必要（TSUZURI_LLDB で指定できる）。プロセスを起動せず、-g の実行ファイルの型を lldb に読ませて、関数値と Task（descriptor と environment の 2 メンバー）を formatter の is_function が見分けること、同じ名前のフィールドを持つ record（古い 4 欄の形、descriptor が整数や ref の record）は見分けないこと、descriptor が closure.descriptor（code・clone・drop）を指すことを確かめる
 node tests/frontend_cache.mjs target/release/tsuzuri
 node tests/parallel_frontend.mjs target/release/tsuzuri   # PB04: TSUZURI_THREADS が 1・2・8・未設定のどれでも、診断（順序・重複の除去・上限）、IR、終了コード、frontend cache の bytes が同じこと（examples・fixtures・合成 200／1,000 module・上限を超える誤り・入れ子の上限）。不正な値は E2000 で終了コード 2。TSUZURI_BASELINE=<PB04 より前の compiler> を付けるとその compiler とも比べる
+node tests/ai_cost.mjs target/release/tsuzuri   # G31: AI 作業コストの定義・独立 golden・導出・診断・外部実測・静的サイズ・KB/MCP アダプター。LLM なしで決定的。結果は docs/ai-cost.md
 node tests/watch.mjs target/release/tsuzuri   # PB06: tsuzuri watch の各回の出力が単独のコマンドと byte 単位で同じこと、同じ長さ・同じ更新時刻の書き換え・追加・削除・新しいディレクトリの検出、touch で実行しないこと、--json の状態行、build・test、コマンド名のない引数の E2000、差し替えたコンパイラで次の回を始めずに止まること（待っているあいだも。Windows は実行中のファイルを差し替えられないので除く）、TSUZURI_TIME_PASSES が回ごとの報告であること（Windows でも動く）
 node tests/server.mjs target/release/tsuzuri   # PB06: tsuzuri serve（Unix だけ。Windows では serve が E2000 であることの確認）。サーバーが実行した check・build の出力と成果物が --no-server と同じこと（ソースの状態ごと、覚えたあとの編集を含む）、環境・作業ディレクトリ・コンパイラ・ルート・未対応のコマンド・protocol の断り、並行する要求、サーバーでないもの・残った socket・共有されたディレクトリでの黙った fallback、二重起動、実行中の status・--stop と去ったクライアントの要求の扱い（Clang を止めて確かめる）、idle・差し替えたコンパイラでの終了、TSUZURI_TIME_PASSES、読まれない標準エラーの pipe に何千もの断りを流しても答えと --stop が止まらないこと、serve の引数の E2000。ソケットのパス長のため TMPDIR は短くする（macOS で 103 byte まで）
 
