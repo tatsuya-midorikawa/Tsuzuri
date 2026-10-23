@@ -13,7 +13,7 @@ export function parseSuites(text) {
         return { name: m[1], input: new RegExp(`^${indent}input: "([^"]+)"`, 'm').exec(data)?.[1] ?? '',
             traps: new RegExp(`^${indent}traps:`, 'm').test(data),
             inspect: new RegExp(`^${indent}inspect\\(`, 'm').test(data),
-            cases: new RegExp(`^${indent}cases:`, 'm').test(data) };
+            cases: new RegExp(`^${indent}(?:cases:|get cases\\s*\\()`, 'm').test(data) };
     });
 }
 export function indexTests(ctx) {

@@ -609,6 +609,13 @@ test('source_admission_enforces_utf8_byte_boundary_on_disk_and_cache', () => scr
     writeFileSync(path, boundary + 'x');
     assert.equal(inputText({ root: dir }, 'source.rs'), null);
 }));
+test('getter_backed_suite_cases_are_indexed', () => {
+    for (const name of ['regex', 'unicode']) {
+        const suite = real().tests.find(t => t.kind === 'suite' && t.name === name);
+        assert.ok(suite);
+        assert.equal(suite.cases, true, `${name} exposes cases through a getter`);
+    }
+});
 test('wrapped_suite_and_returned_metadata_are_indexed', () => {
     const suite = real().tests.find(t => t.kind === 'suite' && t.name === 'list_chunks');
     assert.ok(suite);
