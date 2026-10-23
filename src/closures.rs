@@ -251,6 +251,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
             };
             let arguments = parameters.iter().map(local_value).collect();
             bridges.push(CheckedFunction {
+                read_by_default: Vec::new(),
                 module: "$export".into(),
                 region_sources: None,
                 callback_contracts: Vec::new(),
@@ -339,6 +340,7 @@ fn lower_expression(
             let mut all_parameters = captures.clone();
             all_parameters.extend(parameters.iter().cloned());
             functions.push(CheckedFunction {
+                read_by_default: Vec::new(),
                 region_sources: None,
                 callback_contracts: Vec::new(),
                 region_slots: None,
@@ -450,6 +452,7 @@ fn lower_expression(
                 }
                 let id = functions.len();
                 functions.push(CheckedFunction {
+                    read_by_default: Vec::new(),
                     module: "$builtin".into(),
                     region_sources: None,
                     callback_contracts: Vec::new(),
@@ -509,6 +512,7 @@ fn lower_expression(
                     format!(".$mono.{id}")
                 };
                 functions.push(CheckedFunction {
+                    read_by_default: Vec::new(),
                     module: "$case".into(),
                     region_sources: None,
                     callback_contracts: Vec::new(),

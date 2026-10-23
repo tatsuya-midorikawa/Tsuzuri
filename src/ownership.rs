@@ -247,6 +247,13 @@ fn check_functions(
                 debug_assert!(recovered.is_empty());
                 debug_assert!(matches!(&checked, Ok(required) if required.is_empty()));
             }
+            for error in &mut recovered {
+                default_parameter_hint(module, function, error);
+            }
+            let checked = checked.map_err(|mut error| {
+                default_parameter_hint(module, function, &mut error);
+                error
+            });
             Some((recovered, checked))
         },
         |_, outcome| {
@@ -269,6 +276,49 @@ fn check_functions(
         Ok(constraints)
     } else {
         Err(diagnostics.into_vec())
+    }
+}
+
+fn default_parameter_hint(
+    module: &CheckedModule,
+    function: &crate::check::CheckedFunction,
+    error: &mut Diagnostic,
+) {
+    if error.code != "E1012"
+        || error.message != "cannot move a non-Copy value out of a reference"
+        || !function.read_by_default.iter().any(|read| *read)
+    {
+        return;
+    }
+    let mut pending = vec![&function.body];
+    while let Some(expression) = pending.pop() {
+        if expression.span == error.span {
+            let mut root = expression;
+            loop {
+                match &root.kind {
+                    E::Field(value, _) | E::Dereference(value) => root = value,
+                    E::RecordUpdate { base, .. } => root = base,
+                    _ => break,
+                }
+            }
+            if let E::Local(id) = root.kind
+                && let Some((index, parameter)) = function
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .find(|(_, parameter)| parameter.id == id)
+                && function.read_by_default.get(index) == Some(&true)
+                && let Type::Reference(inner, _) = &parameter.ty
+            {
+                crate::check::read_only_hint(
+                    error,
+                    &parameter.name,
+                    &inner.display(&module.types()),
+                );
+                return;
+            }
+        }
+        pending.extend(expression.children());
     }
 }
 

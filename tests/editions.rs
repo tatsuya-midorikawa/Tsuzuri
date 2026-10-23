@@ -43,6 +43,7 @@ const HELPER: &str = "[package]\nname = \"helper\"\nversion = \"0.1.0\"\n";
 #[test]
 fn edition_names_parse_exactly() {
     assert_eq!(Edition::parse("2026"), Some(Edition::E2026));
+    assert_eq!(Edition::parse("2027"), Some(Edition::E2027));
     for text in [
         "",
         " 2026",
@@ -55,7 +56,7 @@ fn edition_names_parse_exactly() {
         assert_eq!(Edition::parse(text), None, "{text:?}");
     }
     assert_eq!(Edition::E2026.to_string(), "2026");
-    assert_eq!(Edition::SUPPORTED, [Edition::E2026]);
+    assert_eq!(Edition::SUPPORTED, [Edition::E2026, Edition::E2027]);
     assert!(Edition::SUPPORTED.contains(&Edition::LATEST));
     // A manifest without `edition` keeps meaning what it meant, whatever the latest edition is.
     assert_eq!(Edition::MANIFEST_DEFAULT, Edition::E2026);
@@ -135,11 +136,11 @@ fn rejects_unknown_and_unsupported_editions() {
     for (keys, message) in [
         (
             "edition = \"2030\"\n",
-            "unsupported edition '2030'; supported editions: 2026",
+            "unsupported edition '2030'; supported editions: 2026, 2027",
         ),
         (
             "edition = \"latest\"\n",
-            "unsupported edition 'latest'; supported editions: 2026",
+            "unsupported edition 'latest'; supported editions: 2026, 2027",
         ),
         ("edition = 2026\n", "expected '\"'"),
         (

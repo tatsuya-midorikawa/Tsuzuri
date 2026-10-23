@@ -1451,6 +1451,7 @@ impl Classes {
             | TypeExprKind::FixedArray(ty, _)
             | TypeExprKind::List(ty)
             | TypeExprKind::Task(ty)
+            | TypeExprKind::Own(ty)
             | TypeExprKind::Reference(ty, _)
             | TypeExprKind::Regions(ty, _)
             | TypeExprKind::Quantified(_, ty) => {
@@ -4938,6 +4939,7 @@ impl Specializer<'_> {
             span,
         };
         self.templates.push(CheckedFunction {
+            read_by_default: Vec::new(),
             module: "$intrinsic".into(),
             region_sources: None,
             callback_contracts: Vec::new(),
@@ -4999,6 +5001,7 @@ impl Specializer<'_> {
         };
         let id = self.templates.len();
         self.templates.push(CheckedFunction {
+            read_by_default: Vec::new(),
             module: "$builtin".into(),
             region_sources: None,
             callback_contracts: Vec::new(),

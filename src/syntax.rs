@@ -23,21 +23,24 @@ impl SourceKind {
     }
 }
 
-/// A language edition (G19): the year whose reserved words a source file is read with. An
-/// edition decides only what a file may spell; a program that two editions both accept means
-/// the same in both, so packages of different editions link into one program.
+/// A source language edition, including its default parameter convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Edition(pub(crate) u16);
 
 impl Edition {
     pub const E2026: Self = Self(2026);
+    pub const E2027: Self = Self(2027);
     /// What a project without a manifest, the standard library, and every entry point that
     /// knows no package are read with.
     pub const LATEST: Self = Self::E2026;
     /// What a manifest without `edition` means. It never changes, or a compiler update would
     /// give the manifests that already exist new reserved words.
     pub const MANIFEST_DEFAULT: Self = Self::E2026;
-    pub const SUPPORTED: &'static [Self] = &[Self::E2026];
+    pub const SUPPORTED: &'static [Self] = &[Self::E2026, Self::E2027];
+
+    pub fn borrows_parameters(self) -> bool {
+        matches!(self, Self::E2027)
+    }
 
     /// The supported edition that `text` names, such as `2026`.
     pub fn parse(text: &str) -> Option<Self> {
@@ -617,6 +620,7 @@ pub enum TypeExprKind {
     Task(Box<TypeExpr>),
     Function(Vec<TypeExpr>, Box<TypeExpr>),
     Reference(Box<TypeExpr>, bool),
+    Own(Box<TypeExpr>),
     /// `dyn Shapes.Shape` or `dyn (Shape, Send)`: an owned value of some type with instances of
     /// the classes, dispatched at run time (A14). Boxed like `Apply` so `TypeExpr` does not grow.
     Dyn(Box<DynTypeExpr>),

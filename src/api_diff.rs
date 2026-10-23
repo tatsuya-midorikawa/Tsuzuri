@@ -428,6 +428,7 @@ impl Renaming {
                 Box::new(self.ty(result)),
             ),
             Reference(inner, mutable) => Reference(Box::new(self.ty(inner)), *mutable),
+            Own(inner) => Own(Box::new(self.ty(inner))),
             Dyn(dyn_type) => Dyn(dyn_type.clone()),
         };
         TypeExpr {

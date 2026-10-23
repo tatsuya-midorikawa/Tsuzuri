@@ -434,6 +434,16 @@ const descending = (n) => Array.from({ length: n }, (_, i) => BigInt(n - 1 - i))
 const ascending = (n) => Array.from({ length: n }, (_, i) => BigInt(i));
 
 const suites = {
+  conventions: {
+    cases: [
+      ["borrowed_text", [], 2n * BigInt("hello".length)],
+      ["borrowed_array", [], 2n + 3n + 5n + 7n + 4n + 5n],
+      ["borrowed_record", [], 2n * BigInt("hello".length) + 7n],
+      ["owned_text", [], BigInt("hello!".length + "hello".length)],
+      ["trap", [1n], 10n + 20n + 20n],
+    ],
+    traps: [["trap", [-1n]], ["trap", [2n]]],
+  },
   storage: {
     input: "storage/Storage.tz",
     cases: [

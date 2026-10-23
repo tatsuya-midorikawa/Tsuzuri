@@ -1,0 +1,27 @@
+record Named { text: string, n: i64 }
+
+def length_of :: string -> i64 = \text -> text.length
+def first :: ['a] -> i64 = \xs -> xs.length
+def name_length :: Named -> i64 = \named -> named.text.length + named.n
+def take :: own string -> string = \text -> $"{text}!"
+def total :: [i64] -> i64 = \xs -> Array.sum xs
+const def fixed_length :: string -> i64 = \text -> text.length
+const Five: i64 = fixed_length "hello"
+
+export def borrowed_text :: i64 =
+    let text = "hello"
+    length_of text + text.length
+
+export def borrowed_array :: i64 =
+    let xs = [2, 3, 5, 7]
+    total xs + first xs + xs[2]
+
+export def borrowed_record :: i64 =
+    let named = Named { text: "hello", n: 7 }
+    name_length named + named.text.length
+
+export def owned_text :: i64 = (take "hello").length + Five
+
+export def trap :: i64 -> i64 = \index ->
+    let xs = [10, 20]
+    total xs + xs[index]

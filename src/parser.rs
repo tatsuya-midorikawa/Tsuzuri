@@ -1884,6 +1884,22 @@ impl Parser<'_> {
         let start = self.current().span;
         let kind = if self.eat(&TokenKind::Ampersand) || self.eat(&TokenKind::Ref) {
             self.reference_type(start)?
+        } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "own")
+            && self.tokens.get(self.position + 1).is_some_and(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Ident(_)
+                        | TokenKind::TypeVariable(_)
+                        | TokenKind::LeftParen
+                        | TokenKind::LeftBracket
+                        | TokenKind::LeftList
+                        | TokenKind::Ref
+                        | TokenKind::Ampersand
+                )
+            })
+        {
+            self.position += 1;
+            TypeExprKind::Own(Box::new(self.type_primary()?))
         } else if self.eat(&TokenKind::AndAnd) {
             // As in Rust, `&&T` is `& &T` and `&&mut T` is `& &mut T`.
             let mutable = self.eat(&TokenKind::Mut);

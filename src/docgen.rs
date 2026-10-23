@@ -138,6 +138,7 @@ pub(crate) fn type_text(ty: &TypeExpr) -> String {
             if *mutable { " mut" } else { "" },
             type_text(inner)
         ),
+        TypeExprKind::Own(inner) => format!("own {}", type_text(inner)),
     }
 }
 

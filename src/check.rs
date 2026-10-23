@@ -3580,9 +3580,29 @@ impl CheckedUnion {
     }
 }
 
+fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
+    !matches!(
+        ty,
+        Type::Reference(..)
+            | Type::Function(..)
+            | Type::Variable(_)
+            | Type::Infer(_)
+            | Type::Task(_)
+            | Type::Dyn(_)
+            | Type::Simd(_)
+    ) && ty.needs_drop(types)
+}
+
+pub(crate) fn read_only_hint(error: &mut Diagnostic, name: &str, ty: &str) {
+    error.message.push_str(&format!(
+        "; parameter '{name}' is read-only by default (edition 2027); write 'own {ty}' in the signature to take ownership"
+    ));
+}
+
 #[derive(Clone, Debug)]
 pub struct CheckedFunction {
     pub module: String,
+    pub(crate) read_by_default: Vec<bool>,
     pub(crate) region_sources: Option<RegionSources>,
     /// The parameters with region-quantified function types; such a function is only called directly.
     pub(crate) callback_contracts: Vec<CallbackContract>,
@@ -5906,6 +5926,7 @@ fn validate_public_type(
         // Classes have no visibility, so a dyn type leaks nothing (A14).
         TypeExprKind::Variable(_) | TypeExprKind::Length(_) | TypeExprKind::Dyn(_) => Ok(()),
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Own(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -5975,6 +5996,10 @@ fn check_modules_collect(
         warning_options,
         ..Names::default()
     };
+    let module_editions: BTreeMap<_, _> = modules
+        .iter()
+        .map(|input| (input.name, input.edition))
+        .collect();
     let mut sources: BTreeMap<&str, (usize, ModuleOrigin)> = BTreeMap::new();
     for (source, module) in modules.iter().enumerate() {
         if diagnostics.is_full() {
@@ -6801,6 +6826,7 @@ fn check_modules_collect(
     };
     classes.check_superclasses(&types, diagnostics)?;
     let mut signatures = Vec::new();
+    let mut default_reads = BTreeMap::new();
     for (id, (module, function)) in function_declarations.iter().enumerate() {
         if diagnostics.is_full() {
             break;
@@ -6887,14 +6913,36 @@ fn check_modules_collect(
             }
             let mut parameter_names = BTreeSet::new();
             let mut parameters = Vec::new();
+            let mut reads = Vec::new();
+            let borrow_defaults = module_editions
+                .get(module.as_str())
+                .is_some_and(|edition| edition.borrows_parameters())
+                && !external_functions.contains_key(&id)
+                && !names.const_functions.contains(&id)
+                && !function.name.text.starts_with("$instance.")
+                && !(entry_module == Some(module.as_str()) && function.name.text == "main");
             let kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
             for parameter in &function.parameters {
                 if parameter.name.text != "_" && !parameter_names.insert(&parameter.name.text) {
                     return Err(duplicate(&parameter.name));
                 }
-                let ty = resolve_type_with_kinds(&parameter.ty, module, &names, &kinds)?;
+                let expression = match &parameter.ty.kind {
+                    TypeExprKind::Own(inner) => inner.as_ref(),
+                    _ => &parameter.ty,
+                };
+                let ty = resolve_type_with_kinds(expression, module, &names, &kinds)?;
                 validate_size(&ty, &types, parameter.ty.span)?;
+                let read = borrow_defaults
+                    && !parameter.mutable
+                    && !matches!(parameter.ty.kind, TypeExprKind::Own(_))
+                    && read_by_default(&ty, &types);
+                let ty = if read {
+                    Type::Reference(Box::new(ty), false)
+                } else {
+                    ty
+                };
                 parameters.push(ty);
+                reads.push(read);
             }
             let result = resolve_type_with_kinds(&function.result, module, &names, &kinds)?;
             validate_size(&result, &types, function.result.span)?;
@@ -7058,6 +7106,7 @@ fn check_modules_collect(
             {
                 constraints.extend(classes.inline_constraints(ty, module, &names)?);
             }
+            default_reads.insert(id, reads);
             Ok(Scheme {
                 signature,
                 variables,
@@ -7225,13 +7274,32 @@ fn check_modules_collect(
                 checker.use_active_result(&signature.result, active);
             }
             let checked = (|| {
+                let reads = default_reads.get(&id).cloned().unwrap_or_default();
+                for (index, parameter) in function.parameters.iter_mut().enumerate() {
+                    if let TypeExprKind::Own(inner) = &parameter.ty.kind {
+                        parameter.ty = (**inner).clone();
+                    } else if reads.get(index) == Some(&true) {
+                        parameter.ty = TypeExpr {
+                            kind: TypeExprKind::Reference(Box::new(parameter.ty.clone()), false),
+                            span: parameter.ty.span,
+                        };
+                    }
+                }
                 let contracts = regions::contract(function, module, &names, types)?;
                 checker.type_parameters = scheme.variables.clone();
                 checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
                 checker.members = scheme.members.clone();
                 let mut parameters = Vec::new();
                 for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
-                    parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
+                    let local = checker.bind(&parameter.name, ty.clone(), parameter.mutable);
+                    if reads.get(parameters.len()) == Some(&true)
+                        && let Type::Reference(inner, _) = ty
+                    {
+                        checker
+                            .default_reads
+                            .insert(local.id, (local.name.clone(), inner.display(&types)));
+                    }
+                    parameters.push(local);
                 }
                 computation::expand(&mut function.body, &names, module)?;
                 checker.recovering = true;
@@ -7261,6 +7329,7 @@ fn check_modules_collect(
                 };
                 Ok(CheckedFunction {
                     module: module.clone(),
+                    read_by_default: reads,
                     region_sources: contracts.result,
                     callback_contracts: contracts.callbacks,
                     region_slots: contracts.slots,
@@ -7370,6 +7439,7 @@ fn check_modules_collect(
                     ..FunctionOrigin::source(ModuleOrigin::User)
                 },
                 name: "$entry".into(),
+                read_by_default: Vec::new(),
                 visibility: Visibility::Public,
                 exported: false,
                 parameters: Vec::new(),
@@ -7803,6 +7873,7 @@ fn recovery_module(
         .iter()
         .map(|(module, declaration)| CheckedFunction {
             module: module.clone(),
+            read_by_default: Vec::new(),
             region_sources: None,
             callback_contracts: Vec::new(),
             region_slots: None,
@@ -8354,6 +8425,13 @@ fn resolve_type_with_kinds(
             }
             _ => Type::Reference(Box::new(resolve(ty)?), *mutable),
         },
+        TypeExprKind::Own(_) => {
+            return Err(Diagnostic::new(
+                "E1005",
+                "'own' is only valid on the type of a parameter in a 'def' signature",
+                expression.span,
+            ));
+        }
         TypeExprKind::ArrayView(_) => {
             return Err(Diagnostic::new(
                 "E1005",
@@ -8622,6 +8700,9 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Reference(inner, mutable) => {
                 TypeExprKind::Reference(Box::new(self.expand(inner, module, depth + 1)?), *mutable)
             }
+            TypeExprKind::Own(inner) => {
+                TypeExprKind::Own(Box::new(self.expand(inner, module, depth + 1)?))
+            }
             TypeExprKind::Regions(inner, regions) => TypeExprKind::Regions(
                 Box::new(self.expand(inner, module, depth + 1)?),
                 regions.clone(),
@@ -8767,6 +8848,7 @@ impl TypeAliasExpansion<'_> {
         let children: Vec<&mut TypeExpr> = match &mut expression.kind {
             TypeExprKind::Apply(_, args) => args.iter_mut().collect(),
             TypeExprKind::Regions(inner, _)
+            | TypeExprKind::Own(inner)
             | TypeExprKind::Quantified(_, inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
@@ -8833,6 +8915,7 @@ fn reject_expanded_field_constraints(
             args.iter().collect()
         }
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Own(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -9403,6 +9486,7 @@ struct Checker<'a> {
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
+    default_reads: BTreeMap<usize, (String, String)>,
     poisoned: bool,
     recovering: bool,
     recovered: Vec<Diagnostic>,
@@ -9447,6 +9531,7 @@ impl<'a> Checker<'a> {
             coverage: Vec::new(),
             shadowing_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
+            default_reads: BTreeMap::new(),
             poisoned: false,
             recovering: false,
             recovered: Vec::new(),
@@ -9607,6 +9692,21 @@ impl<'a> Checker<'a> {
             | ExprKind::Block { .. } => self.composed_expression(expression, expected),
             _ => self.value_expression(expression, expected),
         };
+        let result = result.map_err(|mut error| {
+            if error.code == "E1003"
+                && error.message.contains("found ref ")
+                && let Some((_, root)) = expression_path(expression)
+                && let Some(local) = self
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(&root.text))
+                && let Some((name, ty)) = self.default_reads.get(&local.id)
+            {
+                read_only_hint(&mut error, name, ty);
+            }
+            error
+        });
         self.finish_recovery(result, mark, expression.span)
     }
 

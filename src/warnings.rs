@@ -426,6 +426,7 @@ impl TypeReferences<'_> {
             | TypeExprKind::ArrayView(inner)
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner)
+            | TypeExprKind::Own(inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Regions(inner, _)
             | TypeExprKind::Quantified(_, inner) => self.ty(inner),

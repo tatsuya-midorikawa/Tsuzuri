@@ -358,6 +358,7 @@ fn lower_group(
         all_parameters.extend(parameters.iter().cloned());
         let id = first + position;
         functions.push(CheckedFunction {
+            read_by_default: Vec::new(),
             region_sources: None,
             callback_contracts: Vec::new(),
             region_slots: None,

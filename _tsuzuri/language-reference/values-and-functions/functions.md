@@ -16,6 +16,28 @@
 
 ## 基本の書き方
 
+### 引数の所有権（`own` と edition 2027）
+
+全 edition で `own T` は所有権を受け取る引数です。非 Copy 値は移動し、
+Copy のコレクションは必要に応じて複製されます。`own` は予約語ではありません。
+署名の引数型全体の前だけに書け、それ以外の位置は `E1005` です。
+
+```tsuzuri run=6
+def append_mark :: own string -> string = \text -> $"{text}!"
+(append_mark "hello").length
+```
+
+manifest で `edition = "2027"` を選んだ通常の `def` では、無印の
+`string`・配列・リスト・`Vec`・解放が必要な record／union／tuple などは共有借用になります。
+`def length :: string -> i64` は、引数を `ref string` と書いた場合と同じです。
+読み取りは複製も移動も起こさず、実引数は呼び出し後も使えます。返すために所有権が必要なら `own` を書きます。
+
+数値などの小さな値、裸の型変数、関数型、`Task`、`dyn`、SIMD と可変束縛引数は値渡しのままです。
+明示の `ref`／`ref mut` は変わらず、返却型やコールバックの中の引数も補完しません。
+`const def`・入口の `main`・`extern`・instance のメソッドは従来の契約を使います。
+2026、manifest のない入力、std は従来どおりです。
+edition の指定は[パッケージ](../organizing-tsuzuri/packages.md#言語版edition)を参照してください。
+
 ```text
 def name :: 引数型 -> ... -> 返却型 = \引数 ... ->
     本体
@@ -447,4 +469,3 @@ def add :: string -> string = \text -> text
 - [関数ガード](../../../docs/language.md#関数ガード)
 - [再帰とスタック](../../../docs/language.md#再帰とスタック)
 - [言語リファレンスの目次](../index.md)
-
