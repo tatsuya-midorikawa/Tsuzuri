@@ -286,14 +286,19 @@ fn allocator_options_reject_unsupported_outputs() {
             .validate()
             .unwrap();
         }
-        reject(
-            BuildOptions {
-                emit: Emit::Executable,
-                allocator,
-                ..base
-            },
-            "requires object, LLVM IR, header, or WebAssembly output",
-        );
+        let executable = BuildOptions {
+            emit: Emit::Executable,
+            allocator,
+            ..base
+        };
+        if allocator == Allocator::Counting {
+            executable.validate().unwrap();
+        } else {
+            reject(
+                executable,
+                "requires object, LLVM IR, header, or WebAssembly output",
+            );
+        }
         reject(
             BuildOptions {
                 allocator,

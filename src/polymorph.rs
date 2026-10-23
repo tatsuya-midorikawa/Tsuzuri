@@ -3050,6 +3050,15 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if builtin == Builtin::AllocCounter
+            && !(self.module == "Alloc" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::new(
+                "E1022",
+                "the allocation counters are private to the standard Alloc module; read them with Alloc.snapshot or Alloc.since",
+                span,
+            ));
+        }
         if builtin == Builtin::GenSeed
             && !(self.module == "Gen" && self.names.origin(self.module) == ModuleOrigin::Std)
         {

@@ -22,6 +22,8 @@ pub struct TestOptions {
     pub triple: Option<Triple>,
     /// Who turns the runner's IR into an object: Clang, or the fast backend (PB05).
     pub backend: Backend,
+    /// Force the counting heap even for tests that do not use `Alloc`.
+    pub allocator: llvm::Allocator,
 }
 
 impl Default for TestOptions {
@@ -37,6 +39,7 @@ impl Default for TestOptions {
             seed: None,
             triple: None,
             backend: Backend::Llvm,
+            allocator: llvm::Allocator::System,
         }
     }
 }
@@ -451,6 +454,7 @@ pub fn build_debug_runner(
             &[index],
             llvm::TestRunnerOptions {
                 seed: options.seed,
+                allocator: options.allocator,
                 debug: Some((sources, options.optimization != 0)),
                 f16: f16_path_for(options.backend, platform, options.target, Cpu::Generic),
                 ..llvm::TestRunnerOptions::default()
@@ -690,6 +694,7 @@ fn build_runner(
         selected,
         llvm::TestRunnerOptions {
             wasm,
+            allocator: options.allocator,
             memory64,
             coverage,
             seed: options.seed,

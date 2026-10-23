@@ -224,7 +224,7 @@ Build options:
                          tsuzuri_try_<name>, which returns a status and a trap record instead
                          of ending the process (implies --trap-info for object and llvm)
     --allocator system|host|counting|small
-                         Heap of object, llvm, header, or WASM output (default: system).
+                         Heap of native or WASM output (default: system; counting also with run and test).
                          host calls tsuzuri_host_alloc/free/realloc, which the host defines
                          (WASM imports them from tsuzuri_heap); counting adds the counts that
                          tsuzuri_alloc_stats reports; small serves blocks of up to 512 bytes
@@ -902,7 +902,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if trap_return && action != Action::Build {
         return Err("--trap-mode is only valid with build".into());
     }
-    if allocator.is_some() && action != Action::Build {
+    if allocator.is_some()
+        && action != Action::Build
+        && !(matches!(action, Action::Run | Action::Test)
+            && allocator == Some(tsuzuri::llvm::Allocator::Counting))
+    {
         return Err("--allocator is only valid with build".into());
     }
     if freestanding && action != Action::Build {
@@ -1330,6 +1334,7 @@ fn run_test_action(
         seed: arguments.test_seed,
         triple: arguments.options.triple,
         backend: arguments.options.backend,
+        allocator: arguments.options.allocator,
     };
     if options
         .indices
@@ -5903,6 +5908,12 @@ mod tests {
     fn parses_allocator_selection() {
         use tsuzuri::llvm::Allocator;
         let allocator = |values: &[&str]| parse(values).unwrap().options.allocator;
+        for action in ["build", "run", "test"] {
+            assert_eq!(
+                allocator(&[action, "Main.tz", "--allocator", "counting"]),
+                Allocator::Counting
+            );
+        }
         for emit in ["object", "llvm", "header"] {
             assert_eq!(
                 allocator(&["build", "Main.tz", "--emit", emit, "--allocator", "host"]),
@@ -5965,8 +5976,15 @@ mod tests {
                 host_output,
             ),
             (
-                vec!["build", "Main.tz", "--allocator", "counting"],
-                "--allocator counting requires object, LLVM IR, header, or WebAssembly output; the host reads the counts with tsuzuri_alloc_stats",
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "wgsl",
+                    "--allocator",
+                    "counting",
+                ],
+                "--allocator counting requires executable, object, shared library, LLVM IR, header, or WebAssembly output",
             ),
             (
                 vec![
