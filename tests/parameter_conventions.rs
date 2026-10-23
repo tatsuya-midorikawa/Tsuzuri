@@ -127,6 +127,22 @@ fn own_is_only_a_whole_def_parameter_and_is_not_reserved() {
 }
 
 #[test]
+fn own_type_names_do_not_consume_the_next_function_implementation() {
+    let source = "record own { n: i64 }\n\
+        def id :: own -> own\nfn id x = x\n";
+    let explicit = source.replace(":: own ->", ":: own own ->");
+    assert_eq!(ir("2026", source), ir("2026", &explicit));
+    assert_eq!(ir("2026", source), ir("2027", &explicit));
+    for edition in ["2026", "2027"] {
+        check(
+            edition,
+            "fn apply(f: own fn(i64) -> i64, x: i64) -> i64 { f(x) }\n",
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn explicit_ownership_preserves_generic_and_callable_value_conventions() {
     let source = "record Point { x: i64, y: i64 }\n\
         def get :: Point -> i64 = \\p -> p.x\n\

@@ -1901,7 +1901,11 @@ impl Parser<'_> {
                         | TokenKind::Dyn
                         | TokenKind::Fn
                         | TokenKind::Mut
-                )
+                ) && (token.kind != TokenKind::Fn
+                    || self
+                        .tokens
+                        .get(self.position + 2)
+                        .is_some_and(|token| token.kind == TokenKind::LeftParen))
             })
         {
             self.position += 1;

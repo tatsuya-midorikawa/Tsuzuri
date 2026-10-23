@@ -190,3 +190,8 @@ def pass_scalar :: own (i64 -> i64) -> (i64 -> i64) = \f -> f
 
 export def borrowed_callable_temporaries :: i64 =
     apply_scalar increment 41 + apply_scalar (add_scalar 1) 41 + apply_scalar (pass_scalar increment) 41
+
+record own { n: i64 }
+def identity_own :: own own -> own
+fn identity_own value = value
+export def contextual_own_type_name :: i64 = (identity_own (own { n: 42 })).n

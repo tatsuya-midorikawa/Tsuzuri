@@ -466,6 +466,7 @@ const suites = {
       ["mutable_local_projections", [0n], 10n + 10n + 8n + 12n],
       ["mutable_local_projections", [1n], 9n + 9n + 7n + 11n],
       ["borrowed_callable_temporaries", [], 3n * 42n],
+      ["contextual_own_type_name", [], 42n],
       ["trap", [1n], 10n + 20n + 20n],
     ],
     traps: [
