@@ -71,3 +71,18 @@ def invoke_borrowed :: (i64 -> i64 -> i64) -> i64 -> i64 = \f n -> f n (n + 1)
 export def t_factory_owned :: i64 -> i64 = \n -> invoke_owned factory n
 export def t_factory_borrowed :: i64 -> i64 = \n -> invoke_borrowed factory n
 export def t_factory_returned :: i64 -> i64 = \n -> { let f = factory n; f (n + 1) }
+
+pure def identity :: own 'a -> 'a = \value -> value
+pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \f value -> f value
+export def t_pure_generic :: i64 -> i64 = \n -> identity (n + n + 1)
+export def t_pure_callback :: i64 -> i64 = \n -> apply (\value -> value + n + 1) n
+
+instance Classes.StageFactory<i64> { fn make offset = { \value -> offset + value } }
+export def t_factory_class :: i64 -> i64 = \n ->
+    let callback = Classes.StageFactory.make n
+    callback (n + 1)
+
+@cpu ["avx2"] pure def cpu_twice :: i64 -> i64 = \n -> n + n + 1
+export def t_pure_cpu :: i64 -> i64 = \n -> cpu_twice n
+pure def deferred :: i64 -> IO<i64> = \n -> IO.map (\value -> { Debug.print (ref value); value }) (IO.pure n)
+export def t_pure_deferred :: i64 -> i64 = \n -> { let action = deferred n; n + n + 1 }

@@ -162,6 +162,48 @@ fn adding_a_pure_contract_is_compatible_and_removing_it_is_breaking() {
 }
 
 #[test]
+fn pure_call_stage_boundaries_are_not_flattened_away() {
+    let curried = "pure def f :: i64 -> i64 -> i64 = \\x y -> x + y\n";
+    let factory = "pure def f :: i64 -> (i64 -> i64) = \\x -> { \\y -> x + y }\n";
+    check(curried, factory, &["breaking changed def Main.f"]);
+    check(factory, curried, &["breaking changed def Main.f"]);
+    check(
+        &factory.replacen("pure ", "", 1),
+        factory,
+        &["non-breaking changed def Main.f"],
+    );
+}
+
+#[test]
+fn pure_class_method_contracts_and_call_stages_are_compared() {
+    let ordinary = "class Measure<'a> { def size :: ref 'a -> i64 }\n";
+    let pure = ordinary.replace("def size", "pure def size");
+    check(
+        ordinary,
+        &pure,
+        &["breaking changed method Main.Measure.size"],
+    );
+    check(
+        &pure,
+        ordinary,
+        &["breaking changed method Main.Measure.size"],
+    );
+    let curried = "class Combine<'a> { pure def combine :: ref 'a -> i64 -> i64 }\n";
+    let factory = "class Combine<'a> { pure def combine :: ref 'a -> (i64 -> i64) }\n";
+    check(
+        curried,
+        factory,
+        &["breaking changed method Main.Combine.combine"],
+    );
+    check(
+        factory,
+        curried,
+        &["breaking changed method Main.Combine.combine"],
+    );
+    check(&pure, &pure.replace("'a", "'element"), &[]);
+}
+
+#[test]
 fn const_def_is_part_of_the_signature() {
     // A `const` initializer of another module may call a const def, so dropping `const` breaks it,
     // while making a def a const def only adds a use. The body is not part of the API.

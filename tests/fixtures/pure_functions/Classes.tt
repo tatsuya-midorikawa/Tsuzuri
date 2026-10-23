@@ -1,0 +1,1 @@
+class StageFactory<'a> { pure def make :: own 'a -> (i64 -> i64) }

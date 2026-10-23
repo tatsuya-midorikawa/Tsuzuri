@@ -218,7 +218,8 @@ struct Item {
     constant: bool,
     /// Conservative until API comparison resolves parameter types and aliases.
     borrowing_defaults: Vec<bool>,
-    pure: bool,
+    /// The arity protected by the pure contract, excluding returned callable stages.
+    pure: Option<usize>,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
     derives: BTreeSet<&'static str>,
@@ -233,6 +234,7 @@ struct Member {
     shown: String,
     /// A class method that has a default.
     default: bool,
+    pure: Option<usize>,
 }
 
 impl Item {
@@ -245,7 +247,7 @@ impl Item {
             exported: false,
             constant: false,
             borrowing_defaults: Vec::new(),
-            pure: false,
+            pure: None,
             members: Vec::new(),
             derives: BTreeSet::new(),
             doc: None,
@@ -268,7 +270,7 @@ impl Item {
         if self.constant {
             text.push_str("const ");
         }
-        if self.pure {
+        if self.pure.is_some() {
             text.push_str("pure ");
         }
         text.push_str(&self.shown);
@@ -284,6 +286,7 @@ impl Member {
             shown: text.clone(),
             text,
             default: false,
+            pure: None,
         }
     }
 }
@@ -633,7 +636,7 @@ fn add_items(
             Item::new("def", qualified(&name), header).documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
         item.constant = declaration.constant;
-        item.pure = declaration.pure;
+        item.pure = declaration.pure.then_some(declaration.parameters.len());
         let (parameters, _) = flatten(
             declaration
                 .parameters
@@ -811,7 +814,7 @@ fn add_items(
                 "method",
                 method.name.text.clone(),
                 function_text(
-                    "def",
+                    if method.pure { "pure def" } else { "def" },
                     &method.name.text,
                     &method.regions,
                     &method.constraints,
@@ -820,6 +823,7 @@ fn add_items(
                     renaming.clone(),
                 ),
             );
+            member.pure = method.pure.then_some(method.parameters.len());
             member.default = declaration
                 .defaults
                 .iter()
@@ -1016,7 +1020,8 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             continue;
         };
         let (was, now) = (&old.members[index], &new.members[other]);
-        let (shown_was, shown_now) = if was.text != now.text {
+        let signature_changed = was.text != now.text || was.pure != now.pure;
+        let (shown_was, shown_now) = if signature_changed {
             (was.shown.clone(), now.shown.clone())
         } else if was.default != now.default {
             (with_default(was), with_default(now))
@@ -1027,13 +1032,13 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         // that comes is a convenience.
         let lost_default = was.default && !now.default;
         changes.push(Change {
-            breaking: was.text != now.text || lost_default,
+            breaking: signature_changed || lost_default,
             action: Action::Changed,
             kind: was.kind,
             name: format!("{}.{name}", new.name),
             old: Some(shown_was),
             new: Some(shown_now),
-            note: if lost_default && was.text == now.text {
+            note: if lost_default && !signature_changed {
                 "instances that relied on the default must define the method"
             } else {
                 ""
@@ -1078,7 +1083,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             && old.exported <= new.exported
             && old.constant <= new.constant
             && old.borrowing_defaults == new.borrowing_defaults
-            && old.pure <= new.pure;
+            && (old.pure.is_none() || old.pure == new.pure);
         changes.push(Change {
             breaking: !widened,
             action: Action::Changed,

@@ -151,6 +151,20 @@ fn class_and_instance_purity_are_contracts_even_when_unused() {
 }
 
 #[test]
+fn pure_class_factories_prove_construction_not_returned_callback_execution() {
+    let source = "class Factory<'a> { pure def make :: own 'a -> (i64 -> i64) }\n\
+         instance Factory<i64> { fn make offset = { \\value -> { Debug.print (ref value); offset + value } } }\n\
+         pure def factory :: i64 -> (i64 -> i64) = \\offset -> { Factory.make offset }\n";
+    accepted(source);
+    rejected(
+        &format!(
+            "{source}pure def bad :: i64 -> i64 = \\offset -> {{ let callback = Factory.make offset; callback 1 }}\n"
+        ),
+        "cannot be proven pure",
+    );
+}
+
+#[test]
 fn borrowed_drop_data_is_readable_without_claiming_its_destructor_is_pure() {
     accepted(
         "record Ticket { id: i64 }\n\
@@ -514,7 +528,14 @@ fn pure_calls_with_traps_are_not_discarded_and_results_are_not_shared() {
 #[test]
 fn pure_defs_reach_no_effectful_runtime_symbol() {
     use std::collections::{BTreeMap, BTreeSet};
-    let module = accepted(include_str!("fixtures/pure_functions/Main.tz"));
+    let module = tsuzuri::analyze_modules(&[
+        (
+            "Classes",
+            include_str!("fixtures/pure_functions/Classes.tt"),
+        ),
+        ("Main", include_str!("fixtures/pure_functions/Main.tz")),
+    ])
+    .unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
         let functions = ir

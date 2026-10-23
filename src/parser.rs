@@ -518,8 +518,7 @@ impl Parser<'_> {
                     if self.eat(&TokenKind::Def) {
                         let method = self.ident()?;
                         self.type_colon("'::' before the method type")?;
-                        let mut signature = self.signature(method.clone(), false, column)?;
-                        signature.pure = pure;
+                        let mut signature = self.signature(method.clone(), false, column, pure)?;
                         signature.doc = method_doc;
                         if self.eat(&TokenKind::Equal) {
                             let body = if self.at(&TokenKind::Backslash) { self.explicit_lambda()? } else { self.body_expression()? };
@@ -618,14 +617,13 @@ impl Parser<'_> {
                 if declaration {
                     let regions = if self.at(&TokenKind::LeftBrace) { self.region_list()? } else { Vec::new() };
                     self.type_colon("'::' after the declaration name")?;
-                    let mut signature = self.signature(name.clone(), exported, column)?;
+                    let mut signature = self.signature(name.clone(), exported, column, if continuation { pure_group } else { pure })?;
                     signature.doc = doc;
                     signature.regions = regions;
                     signature.recursion = recursion.clone();
                     signature.visibility = visibility;
                     signature.constant = if continuation { constant_group } else { constant };
                     constant_group = signature.constant;
-                    signature.pure = if continuation { pure_group } else { pure };
                     pure_group = signature.pure;
                     if signatures.contains_key(&name.text) || program.externs.iter().any(|external| external.name.text == name.text) {
                         return Err(Diagnostic::new(
@@ -1612,6 +1610,7 @@ impl Parser<'_> {
         name: Ident,
         exported: bool,
         column: usize,
+        pure: bool,
     ) -> Result<SignatureDecl, Diagnostic> {
         let mut constraints = self.constraints()?;
         let ty = self.type_expr()?;
@@ -1619,7 +1618,8 @@ impl Parser<'_> {
             TypeExprKind::Function(parameters, result) => (parameters, *result),
             _ => (Vec::new(), ty),
         };
-        while !parameters.is_empty()
+        while !pure
+            && !parameters.is_empty()
             && matches!(&result.kind, TypeExprKind::Function(parameters, _) if !parameters.is_empty())
         {
             let TypeExprKind::Function(more, tail) = result.kind else {
@@ -1698,7 +1698,7 @@ impl Parser<'_> {
             visibility: Visibility::Public,
             exported,
             constant: false,
-            pure: false,
+            pure,
             parameters,
             result,
             constraints,
@@ -3875,7 +3875,7 @@ impl Parser<'_> {
         }
         self.type_colon("'::' after the extern name")?;
         let outer = std::mem::replace(&mut self.extern_signature, true);
-        let signature = self.signature(name, false, column);
+        let signature = self.signature(name, false, column, false);
         self.extern_signature = outer;
         let mut signature = signature?;
         signature.doc = doc;
