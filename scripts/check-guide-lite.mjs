@@ -1,10 +1,10 @@
-import { dirname, join, posix, resolve } from 'node:path';
+import { dirname, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collect } from './repo-kb/build.mjs';
 import { parseMarkdown } from './repo-kb/markdown.mjs';
 import { scanRust } from './repo-kb/rust.mjs';
 import { listFiles } from './repo-kb/repo.mjs';
-import { readText, slug } from './repo-kb/text.mjs';
+import { inputText, slug } from './repo-kb/text.mjs';
 
 export const SECTION_KEYWORDS = {
     '1': '絶対に守る規則', '3.1': 'テスト選択', '6.7': '診断コード', '6.9': '走査箇所',
@@ -15,13 +15,16 @@ const escaped = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export function checkGuideLite(ctx, kb, file = '_features/GUIDE-LITE.md') {
     const files = ctx.files ?? listFiles(ctx.root);
     const set = new Set(files);
-    const read = path => ctx.texts?.get(path) ?? readText(join(ctx.root, path));
-    const md = parseMarkdown(read(file));
-    const guide = parseMarkdown(read('_features/GUIDE.md'));
+    const read = path => inputText(ctx, path);
+    const liteText = read(file);
+    const guideText = read('_features/GUIDE.md');
+    if (liteText === null || guideText === null) throw new Error('GUIDE input exceeds the 8 MiB file limit');
+    const md = parseMarkdown(liteText);
+    const guide = parseMarkdown(guideText);
     const seenSlugs = new Map();
     const anchors = new Set(guide.headings.map(h => slug(h.title, seenSlugs)));
-    const rust = files.filter(p => /^(?:src\/.*|tests\/[^/]+)\.rs$/.test(p)).map(p => scanRust(read(p)).code).join('\n');
-    const js = files.filter(p => /^tests\/[^/]+\.mjs$/.test(p)).map(read).join('\n');
+    const rust = files.filter(p => /^(?:src\/.*|tests\/[^/]+)\.rs$/.test(p)).map(read).filter(text => text !== null).map(text => scanRust(text).code).join('\n');
+    const js = files.filter(p => /^tests\/[^/]+\.mjs$/.test(p)).map(read).filter(text => text !== null).join('\n');
     const failures = [];
     const checked = new Set();
     function check(kind, token, line, reason) {

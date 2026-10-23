@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseMarkdown, splitRow } from '../scripts/repo-kb/markdown.mjs';
-import { cp, slug } from '../scripts/repo-kb/text.mjs';
+import { cp, inputText, MAX_INPUT_BYTES, slug } from '../scripts/repo-kb/text.mjs';
 import { listFiles } from '../scripts/repo-kb/repo.mjs';
 import { scanRust, diagSites, publicItems } from '../scripts/repo-kb/rust.mjs';
 import { classify, filterPhase, parseDeps, parseFilesCell, parseTicket, roleHeading } from '../scripts/repo-kb/tickets.mjs';
@@ -445,6 +445,57 @@ test('oversized_suite_source_is_not_read_or_indexed', () => scratch(async dir =>
     assert.ok(!kb.tests.some(t => t.path === 'tests/features.mjs'));
     writeFileSync(path, source.replace('storage', 'renamed'));
     assert.ok(await isFresh(dir, out));
+}));
+test('ticket_entry_points_skip_sources_that_exceed_admission', () => scratch(dir => {
+    cpSync(mini, dir, { recursive: true });
+    const kb = collect(dir);
+    writeFileSync(resolve(dir, '_features/A01-alpha.md'), 'x'.repeat(MAX_INPUT_BYTES + 1));
+    const ctx = { root: dir };
+    for (const role of ['spec', 'commands', 'symbols']) assert.equal(sectionText(ctx, kb, 'A01', role), null);
+    assert.equal(pack(ctx, kb, 'A01'), null);
+}));
+test('source_admission_enforces_utf8_byte_boundary_on_disk_and_cache', () => scratch(dir => {
+    const boundary = '\u{10000}'.repeat(MAX_INPUT_BYTES / 4);
+    const ctx = { root: dir, texts: new Map([['at', boundary], ['over', boundary + 'x']]) };
+    assert.ok(inputText(ctx, 'at') === boundary);
+    assert.equal(inputText(ctx, 'over'), null);
+    const path = resolve(dir, 'source.rs');
+    writeFileSync(path, boundary);
+    assert.ok(inputText({ root: dir }, 'source.rs') === boundary);
+    writeFileSync(path, boundary + 'x');
+    assert.equal(inputText({ root: dir }, 'source.rs'), null);
+}));
+test('wrapped_suite_and_returned_metadata_are_indexed', () => {
+    const suite = real().tests.find(t => t.kind === 'suite' && t.name === 'list_chunks');
+    assert.ok(suite);
+    assert.equal(suite.cases, true);
+    assert.equal(suite.traps, true);
+    assert.equal(suite.inspect, true);
+    assert.equal(suite.fixture, 'tests/fixtures/list_chunks');
+    assert.equal(suite.command, 'node tests/features.mjs target/release/tsuzuri list_chunks');
+});
+test('checker_skips_oversized_rust_and_javascript', () => scratch(async dir => {
+    cpSync(mini, dir, { recursive: true });
+    const padding = ' '.repeat(8 * 1024 * 1024);
+    writeFileSync(resolve(dir, 'src/oversized.rs'), padding + '\npub const ONLY_OVERSIZED_CONSTANT: i32 = 1;\n');
+    writeFileSync(resolve(dir, 'tests/oversized.mjs'), padding + '\nconst oversized_js_symbol_name = 1;\n');
+    writeFileSync(resolve(dir, '_features/GUIDE-LITE.md'), '# Guide\n`ONLY_OVERSIZED_CONSTANT`\n`oversized_js_symbol_name`\n');
+    const result = checkGuideLite({ root: dir }, collect(dir));
+    assert.equal(result.failures.length, 2);
+    assert.ok(result.failures.some(f => f.includes('ONLY_OVERSIZED_CONSTANT')));
+    assert.ok(result.failures.some(f => f.includes('oversized_js_symbol_name')));
+}));
+test('symbol_queries_and_briefs_skip_oversized_sources', () => scratch(async dir => {
+    cpSync(mini, dir, { recursive: true });
+    writeFileSync(resolve(dir, 'src/check.rs'), ' '.repeat(8 * 1024 * 1024) + '\npub fn oversized_declaration() {}\n');
+    const ctx = { root: dir };
+    const kb = collect(dir);
+    const recovered = sectionText(ctx, kb, 'A01', 'symbols');
+    assert.ok(!recovered.includes('oversized_declaration'));
+    assert.match(recovered, /PUBLIC SYMBOLS src\/lib\.rs/);
+    const text = pack(ctx, kb, 'A01');
+    assert.ok(!text.includes('oversized_declaration'));
+    assert.match(text, /PUBLIC SYMBOLS src\/lib\.rs/);
 }));
 test('literal_h3_section_is_retrievable', () => {
     const text = sectionText(context(), fixtureKb(), 'A01', '停止条件');

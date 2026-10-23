@@ -4,11 +4,16 @@ import { cmp, readText } from './text.mjs';
 
 export function parseSuites(text) {
     const body = /(?:^|\n)const suites = \{([\s\S]*?)^};$/m.exec(text)?.[1] ?? '';
-    const matches = [...body.matchAll(/^  ([A-Za-z_][A-Za-z0-9_]*): \{/gm)];
+    const matches = [...body.matchAll(/^  ([A-Za-z_][A-Za-z0-9_]*): (?:\{|\(\(\) => \{)/gm)];
     return matches.map((m, i) => {
         const source = body.slice(m.index, matches[i + 1]?.index ?? body.length);
-        return { name: m[1], input: /^    input: "([^"]+)"/m.exec(source)?.[1] ?? '',
-            traps: /^    traps:/m.test(source), inspect: /^    inspect\(/m.test(source), cases: /^    cases:/m.test(source) };
+        const wrapped = m[0].includes('(() =>');
+        const data = wrapped ? /^    return \{([\s\S]*?)^    \};/m.exec(source)?.[1] ?? '' : source;
+        const indent = wrapped ? '      ' : '    ';
+        return { name: m[1], input: new RegExp(`^${indent}input: "([^"]+)"`, 'm').exec(data)?.[1] ?? '',
+            traps: new RegExp(`^${indent}traps:`, 'm').test(data),
+            inspect: new RegExp(`^${indent}inspect\\(`, 'm').test(data),
+            cases: new RegExp(`^${indent}cases:`, 'm').test(data) };
     });
 }
 export function indexTests(ctx) {

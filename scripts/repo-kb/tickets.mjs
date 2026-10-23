@@ -2,7 +2,7 @@ import { basename, join } from 'node:path';
 import { parseMarkdown, sectionLines, tables } from './markdown.mjs';
 import { expandCell } from './repo.mjs';
 import { mentions } from './decisions.mjs';
-import { cp, readText, take } from './text.mjs';
+import { cp, inputText, readText, take } from './text.mjs';
 
 export const ROLES = {
     quick: ['実装者向け早見'], purpose: ['目的', '目的と実装範囲'], start: ['着手条件と停止条件'],
@@ -117,7 +117,9 @@ export function filterPhase(lines, phase, sticky = false) {
     return parts.join('\n');
 }
 export function extractRole(ctx, ticket, role, phase) {
-    const md = parseMarkdown(ctx.texts?.get(ticket.path) ?? readText(join(ctx.root, ticket.path)));
+    const source = inputText(ctx, ticket.path);
+    if (source === null) return null;
+    const md = parseMarkdown(source);
     const heading = roleHeading(md, role);
     if (!heading) return null;
     let text = sectionLines(md, heading);

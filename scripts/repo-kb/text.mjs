@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
+export const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 export const readText = path => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+export function inputText(ctx, path) {
+    const cached = ctx.texts?.get(path);
+    if (cached !== undefined) return Buffer.byteLength(cached, 'utf8') <= MAX_INPUT_BYTES ? cached : null;
+    const file = join(ctx.root, path);
+    return statSync(file).size <= MAX_INPUT_BYTES ? readText(file) : null;
+}
 export const cp = s => [...s].length;
 export const take = (s, n) => [...s].slice(0, n).join('');
 export const sha256 = data => createHash('sha256').update(data).digest('hex');

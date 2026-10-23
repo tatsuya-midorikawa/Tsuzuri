@@ -1,7 +1,6 @@
-import { join } from 'node:path';
 import { extractRole } from './tickets.mjs';
 import { publicItems } from './rust.mjs';
-import { cmp, cp, readText, take } from './text.mjs';
+import { cmp, cp, inputText, take } from './text.mjs';
 
 const joinOrNone = (values, separator = '; ') => values.length ? values.join(separator) : '(none)';
 export const decisionId = value => /^(?:d-)?[0-9]{1,3}$/i.test(value) ? `D-${String(Number(value.replace(/^d-/i, ''))).padStart(2, '0')}` : null;
@@ -71,7 +70,8 @@ const symbolsCache = new Map();
 export function symbolText(ctx, ticket, source) {
     const symbols = [];
     for (const file of ticket.files.filter(f => f.exists && f.path.endsWith('.rs'))) {
-        const text = ctx.texts?.get(file.path) ?? readText(join(ctx.root, file.path));
+        const text = inputText(ctx, file.path);
+        if (text === null) continue;
         let cached = symbolsCache.get(file.path);
         if (cached?.source !== text) {
             cached = { source: text, items: publicItems(text) };
@@ -103,7 +103,8 @@ export function sectionText(ctx, kb, id, role, phase) {
     const t = kb.tickets.find(t => t.id === id);
     if (!t) return null;
     if (role === 'commands' || role === 'symbols') {
-        const source = ctx.texts?.get(t.path) ?? readText(join(ctx.root, t.path));
+        const source = inputText(ctx, t.path);
+        if (source === null) return null;
         const text = role === 'commands' ? relatedCommands(kb, t, source).join('\n') : symbolText(ctx, t, source);
         return `=== SECTION ${id} ${role.toUpperCase()} (generated, ${cp(text)} chars) ===\n${text}`;
     }

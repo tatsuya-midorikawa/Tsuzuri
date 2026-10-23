@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { parseMarkdown, sectionLines } from './markdown.mjs';
 import { filterPhase, roleHeading } from './tickets.mjs';
 import { depends, followers, relatedCommands, symbolText } from './query.mjs';
-import { cmp, cp, readText, take } from './text.mjs';
+import { cmp, cp, inputText, take } from './text.mjs';
 
 export const STAGES = [
     { interfaces: 6000, decisionCount: 8, decisionChars: Infinity, symbols: 4000, commands: 1200, lite: Infinity },
@@ -34,8 +34,9 @@ export function cut(text, cap, pointer) {
 export function brief(ctx, kb, id, opts) {
     const ticket = kb.tickets.find(t => t.id === id);
     if (!ticket) return null;
-    const read = path => ctx.texts?.get(path) ?? readText(join(ctx.root, path));
+    const read = path => inputText(ctx, path);
     const source = read(ticket.path);
+    if (source === null) return null;
     const md = parseMarkdown(source);
     const roles = ['quick', 'start', 'spec', 'design', 'steps', 'tests', 'accept', ...opts.with];
     const parts = roles.map(role => {
@@ -52,7 +53,9 @@ export function brief(ctx, kb, id, opts) {
     for (const dep of ticket.deps.filter(d => !d.weak)) {
         const t = kb.tickets.find(t => t.id === dep.id);
         if (!t) continue;
-        const parsed = parseMarkdown(read(t.path));
+        const dependencyText = read(t.path);
+        if (dependencyText === null) continue;
+        const parsed = parseMarkdown(dependencyText);
         const gives = roleHeading(parsed, 'gives');
         if (gives) interfaces.push({ id: t.id, role: 'gives', text: `=== INTERFACE PROVIDED BY ${t.id} ===\n${sectionLines(parsed, gives)}` });
     }

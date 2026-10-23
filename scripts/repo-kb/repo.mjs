@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { lstatSync, readdirSync, statSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { cmp, readText, sha256 } from './text.mjs';
+import { cmp, MAX_INPUT_BYTES, readText, sha256 } from './text.mjs';
 
 export function listFiles(root) {
     if (!statSync(root).isDirectory()) throw new Error('root is not a directory');
@@ -39,7 +39,7 @@ export function inputFiles(files) {
 export function inputHash(root, files, texts) {
     const rows = files.map(p => `F ${p}`);
     for (const p of inputFiles(files)) {
-        if (statSync(join(root, p)).size > 8 * 1024 * 1024) continue;
+        if (statSync(join(root, p)).size > MAX_INPUT_BYTES) continue;
         rows.push(`H ${sha256(texts?.get(p) ?? readText(join(root, p)))} ${p}`);
     }
     return sha256(rows.join('\n'));

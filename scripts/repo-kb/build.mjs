@@ -8,7 +8,7 @@ import { parseModuleTables } from './modules.mjs';
 import { diagSites } from './rust.mjs';
 import { indexTests } from './tests-index.mjs';
 import { indexDocs } from './docs-index.mjs';
-import { cmp, jsonl, readText } from './text.mjs';
+import { cmp, jsonl, MAX_INPUT_BYTES, readText } from './text.mjs';
 
 const names = ['tickets', 'decisions', 'modules', 'diagnostics', 'tests', 'docs'];
 let temporarySerial = 0;
@@ -20,7 +20,7 @@ async function prepare(root, out) {
     const paths = inputFiles(files);
     for (let i = 0; i < paths.length; i += 32) {
         await Promise.all(paths.slice(i, i + 32).map(async path => {
-            if (statSync(join(root, path)).size <= 8 * 1024 * 1024) {
+            if (statSync(join(root, path)).size <= MAX_INPUT_BYTES) {
                 texts.set(path, (await readFile(join(root, path), 'utf8')).replace(/\r\n/g, '\n'));
             }
         }));
@@ -33,7 +33,7 @@ export function collect(root, prepared) {
     const inputs = inputFiles(files);
     const texts = prepared?.texts ?? new Map();
     for (const path of inputs) {
-        if (statSync(join(root, path)).size > 8 * 1024 * 1024) warnings.push(`file_too_large ${path}`);
+        if (statSync(join(root, path)).size > MAX_INPUT_BYTES) warnings.push(`file_too_large ${path}`);
         else if (!texts.has(path)) texts.set(path, readText(join(root, path)));
     }
     const ctx = { root, files, fileSet: new Set(files), ticketIds: new Set(), decisionIds: new Set(), warnings, texts };
