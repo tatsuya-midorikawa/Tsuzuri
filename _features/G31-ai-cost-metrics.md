@@ -572,7 +572,7 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 
 ## 実装と検証（2026-10-23）
 
-- 人間の全 Phase 承認に従い、Phase 1〜3 を同じ隔離 worktree・ブランチで実装しました。Node 20.19.6、外部パッケージ・LLM・ネットワーク呼び出しなしです。`src/`・`std/`・既存テスト・既存レポート helper は変更していません。
+- 人間の全 Phase 承認に従い、Phase 1〜3 を同じ隔離 worktree・ブランチで実装しました。Node 20.19.6、外部パッケージ・LLM・ネットワーク呼び出しなしです。`src/`・`std/`・既存レポート helper は変更していません。既存テストの例外は、後述する承認済みの formatter の負例分類だけです。
 - 着手前に README へ D-59 と旧コーパスの照合をコミットしました。shop・diag は付録 C と byte 単位で同一、shop は 5183 字・16 テストです。D-02 の `get` → `try_item` と B-04 の現行 15 呼び出し元だけを、署名・独立した awk で確認してタスクに反映しました。ほかの B/F 11 件は元の期待値のままです。
 - 手順 3 のテストを先に実行し、`ERR_MODULE_NOT_FOUND` で失敗することを確認してから計測コードを実装しました。`node scripts/slot.mjs -- node tests/ai_cost.mjs <既存 dev compiler>` は **40 passed、0 failed、5 skipped**（実コンパイラにない G22/G24/G21・KB/MCP）。未実装入口の成功経路もローカル子プロセスの fixture で検査しました。fixture の値を実測には含めません。
 - 独立した付録 D の shop golden 27 組が全一致し、`sh benchmarks/ai/golden.sh` の grep/sort/wc による 9 件の検算も一致しました。コンパイラの `check`・`test --list`、診断 7 件のコード・行・正誤パッチ、修復の calls/rounds を検査しました。
@@ -581,7 +581,9 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 - Phase 3 の外部 JSONL の検証・表、10 種の静的成果物の計測・サイズ上限、KB の事前構築・ID 解決・1/2 往復、MCP initialize/tools/list と終了処理を実装しました。G21/G27/G28/G29 自体は実装していません。不在の能力は測定値を捏造せず、明示した不在戦略はエラーです。
 - PR #43 の Copilot レビューの 7 指摘を修正しました: KB コピーの basename 保持、正しいプロジェクトでの能力検出、falsy な needs の拒否、ファイル欠落時の論理パスによる決定的な理由、制御した文書 fixture、スキップ数に応じた件数検査、CI では drift を許す通常 verify です。各回帰ケースと深い MCP 応答の安全な拒否を追加し、再び **40 passed・0 failed・5 skipped** を確認しました。固定 golden は未変更です。
 - 再レビューの KB 2 件も修正しました。型別の不在を戦略全体の不在と混同しないテストと、build/export 失敗時にも短い ID で照会し、成功した baseline と不完全な KB 行を保存する回帰テストを追加しました。export 成功時の ID 欠落・曖昧性は引き続きエラーです。export 失敗の回帰は修正前に `0 matches` で失敗し、修正後の全体は **40 passed・0 failed・5 skipped** です。
-- 文書: README、docs/ai-cost.md、docs/architecture.md、docs/benchmarks.md、付録の現行 API 追補。targets.yml の既存ベンチマーク検証に 1 行を追加しました。言語利用者の挙動は変わらないため、言語リファレンス・docs/language.md の更新と Rust の再ビルドは不要です。main の基準 CI `39954858404`（`41f80bc7`）は成功でした。
+- CI `39968979163` は Rust **1717 passed・1 failed・2 skipped** で、唯一の失敗は formatter の成功コーパス走査が意図した構文エラー `diag/c04/Main.tz` を読んだことでした。コーディネーターの明示承認で、当初の「既存テストを変更しない」の例外として `tests/formatter.rs` のみを調整しました。負例の `benchmarks/ai/corpus/diag` だけを除外し、shop の全 6 ファイルが引き続き検査される件数アサートを加えました。コンパイラ・13 コーパスファイル・golden は未変更です。
+- このアサートの負例検証では、一時的に AI コーパス全体を除外すると **0 != 6** で失敗しました。正しい `diag` だけの除外に戻して、formatter **19 passed**（`--test-threads 2`）、fmt、clippy が成功しました。隔離 worktree で作った dev binary でも Node 全体は **40 passed・0 failed・5 skipped**、変更文書の 6 リンク・アンカーも成功です。
+- 文書: README、docs/ai-cost.md、docs/architecture.md、docs/benchmarks.md、付録の現行 API 追補。targets.yml の既存ベンチマーク検証に 1 行を追加しました。言語利用者の挙動は変わらないため、言語リファレンス・docs/language.md の更新は不要です。計測自体に Rust の再ビルドは不要ですが、承認済みの formatter テスト変更は隔離 worktree でビルド・検証します。main の基準 CI `39954858404`（`41f80bc7`）は成功でした。
 - 主なファイル: benchmarks/ai/run.mjs、lib/{measure,corpus,tasks,derive,strategies,report,external,static,kb,mcp}.mjs、tasks/*.json（6）、corpus/shop/*.tz（6）・corpus/diag/c0*/Main.tz（7）、golden.sh、tests/ai_cost.mjs と上記文書です。
 
 ## 付録

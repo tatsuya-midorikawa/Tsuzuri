@@ -86,7 +86,7 @@ KB の可用性は照会の種類ごとに判定します。たとえば `kb fin
 
 ## 再現手順
 
-Node.js 20 以降と既存のコンパイラを使います（Rust の変更・再ビルドは不要です）。
+Node.js 20 以降と既存のコンパイラを使います（計測の実行に Rust の再ビルドは不要です）。
 
 ```sh
 node scripts/slot.mjs -- node benchmarks/ai/run.mjs verify --compiler target/debug/tsuzuri --strict
@@ -113,6 +113,8 @@ CLI は `run|verify|report|task ID` です。`run` の `--types A,C` と `--stra
 shop の 6 ファイルは旧付録の全文と byte 単位で同じ（5183 文字）、テスト 16 件です。全 27 組の shop golden は旧付録 D の手計算値を固定し、`golden.sh` が独立した grep/sort/wc の足し算でも検算します。結果を期待値にコピーしません。診断 7 件は元のコード・行と正しい修正・誤った初回修正を検査し、文言に依存する文字数ではなく calls/rounds を固定します。
 
 着手時の D-59・現在の API との照合は [README](../README.md#検証と性能測定) に記録しました。D-02 は `Array.get` から `Array.try_item`、B-04 は独立に確認した現在の 15 呼び出し元に合わせただけです。std・文書の量は現 HEAD から測ります。能力が不在の場合も、テスト用の小さなローカル子プロセスで各アダプターの成功・失敗を検査します（実測の行へは混ぜません）。
+
+診断コーパスには意図した構文エラーも含まれるため、有効なプログラムを対象とする Rust の formatter 検証では `corpus/diag` だけを除外します。`corpus/shop` の全 6 ファイルは引き続き構文木・冪等性を検査し、その件数も明示的に確認します。これはテスト範囲の分類で、コンパイラや固定コーパスの変更ではありません。
 
 ## 限界
 
