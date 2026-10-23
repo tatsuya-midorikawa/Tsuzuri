@@ -77,6 +77,24 @@ fn borrowed_arrays_match_explicit_references_without_copying() {
 }
 
 #[test]
+fn entry_and_active_result_inference_use_the_module_conventions() {
+    let entry = "let texts = [\"a\", \"bbb\"]\n\
+        let lengths = Array.map (\\text -> text.length) texts\n\
+        Array.sum lengths + texts.length\n";
+    check("2027", entry).unwrap();
+    assert_eq!(check("2026", entry).unwrap_err().code, "E1005");
+    check(
+        "2027",
+        "let mut values = Vec.empty()\nVec.push 2 values\nvalues.length\n",
+    )
+    .unwrap();
+    let active = "def (|Short|Long|) :: [string] -> 'T = \\texts -> \
+        if Array.sum (Array.map (\\text -> text.length) texts) < 5 then Short else Long\n";
+    check("2027", active).unwrap();
+    assert!(check("2026", active).is_err());
+}
+
+#[test]
 fn own_is_additive_and_keeps_the_2026_value_convention() {
     let source = "def take :: own string -> string = \\s -> s\n\
         export def answer :: i64 = (take \"hello\").length\n";

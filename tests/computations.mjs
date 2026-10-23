@@ -225,7 +225,7 @@ int main(int argc, char **argv) {
   const builder = join(invalid, "Builder.tc");
   const classes = join(invalid, "Classes.tt");
   writeFileSync(main, "Builder { return 42 }");
-  writeFileSync(builder, "def Return :: 'a -> 'a\nfn Return value = value");
+  writeFileSync(builder, "def Return :: own 'a -> 'a\nfn Return value = value");
   writeFileSync(classes, "class A<'a> { def f :: 'a -> i64 }\nclass B<'a> { def g :: 'a -> i64 }");
   cli(["check", classes]);
   for (const [path, text, code, original] of [

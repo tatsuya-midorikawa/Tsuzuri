@@ -7405,9 +7405,6 @@ fn check_modules_collect(
             }
             let signature = scheme.signature.clone();
             let mut checker = Checker::new(module, &names, types, &signatures, &classes);
-            checker.read_conventions = module_editions
-                .get(module.as_str())
-                .is_some_and(|edition| edition.borrows_parameters());
             checker.indexing = indexing;
             if let Some(active) = active_results.get(&id) {
                 checker.use_active_result(&signature.result, active);
@@ -9712,7 +9709,7 @@ impl<'a> Checker<'a> {
             borrowed: BTreeSet::new(),
             default_reads: BTreeMap::new(),
             read_value_parameters: BTreeSet::new(),
-            read_conventions: false,
+            read_conventions: names.borrowing_modules.contains(module),
             poisoned: false,
             recovering: false,
             recovered: Vec::new(),

@@ -1,16 +1,16 @@
-def both :: i64 -> i64 -> bool
+def both :: own i64 -> own i64 -> bool
 fn both a b =
     a > 0 &&
         b > 0
-def either :: i64 -> i64 -> bool
+def either :: own i64 -> own i64 -> bool
 fn either a b =
     a > 0 ||
         b > 0
-def never :: i64 -> bool
+def never :: own i64 -> bool
 fn never a =
     a > 100 &&
         a < 200
-def always :: i64 -> bool
+def always :: own i64 -> bool
 fn always a =
     a >= 0 ||
         a < -100

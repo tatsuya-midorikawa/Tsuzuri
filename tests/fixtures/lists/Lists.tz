@@ -2,13 +2,13 @@ record Empty {}
 record Bundle { strings: [|string|], numbers: [|i64|] }
 record Wide { flag: bool, value: i128 }
 
-def generate :: i64 -> (i64 -> 'a) -> [|'a|]
+def generate :: own i64 -> own (i64 -> 'a) -> [|'a|]
 fn generate n f = new [|'a|](n, f)
 
-def choose :: bool -> [|i64|]
+def choose :: own bool -> [|i64|]
 fn choose flag = if flag { [|10|] } else { [|20, 30, 40|] }
 
-export def list_values :: i64 -> i64
+export def list_values :: own i64 -> i64
 fn list_values n = {
     let values = generate n (i -> i + 10);
     let copy = values;
@@ -17,7 +17,7 @@ fn list_values n = {
     else { copy.length + borrowed.length + copy[0] + borrowed[n - 1] }
 }
 
-export def list_shapes :: bool -> i64
+export def list_shapes :: own bool -> i64
 fn list_shapes flag = {
     let values = choose flag;
     let nested: [|[|i64|]|] = [|[||], [|1|], [|2, 3, 4|]|];
@@ -34,7 +34,7 @@ fn list_empty = {
     generated.length
 }
 
-export def list_zero_sized :: i64 -> i64
+export def list_zero_sized :: own i64 -> i64
 fn list_zero_sized n = {
     let values = new [|Empty|](n, i -> Empty {});
     let copy = values;
@@ -42,7 +42,7 @@ fn list_zero_sized n = {
     values.length + copy.length
 }
 
-export def list_owned :: i64 -> i64
+export def list_owned :: own i64 -> i64
 fn list_owned n = {
     let prefix = "abc";
     let strings = new [|string|](n, i -> prefix + "d");
@@ -52,7 +52,7 @@ fn list_owned n = {
     else { (clone_string (&moved[n - 1])).length + nested[n - 1].length + nested[n - 1][0].length }
 }
 
-export def list_capture :: i64 -> i64
+export def list_capture :: own i64 -> i64
 fn list_capture n = {
     let bundle = Bundle {
         strings: new [|string|](n, i -> "abc"),
@@ -67,7 +67,7 @@ fn list_capture n = {
     take () + copy ()
 }
 
-export def list_functions :: i64 -> i64
+export def list_functions :: own i64 -> i64
 fn list_functions n = {
     let functions = new [|i64 -> i64|](n, i -> x -> i + x);
     let copy = functions;
@@ -101,7 +101,7 @@ fn list_wide = {
         && decimals[2] == 0.2 && flags[2] && !flags[0] && units[2] == ()
 }
 
-def refs :: &string -> i64 -> [|&string|]
+def refs :: &string -> own i64 -> [|&string|]
 fn refs value n = new [|&string|](n, i -> value)
 
 export def list_borrows :: i64
@@ -137,20 +137,20 @@ fn list_order = {
     order + values[0] + values[2]
 }
 
-def rec churn :: i64 -> [|string|] -> i64
+def rec churn :: own i64 -> own [|string|] -> i64
 fn rec churn n values = {
     let next = new [|string|](8, i -> "owned");
     if n == 0 { values.length } else { churn (n - 1) next }
 }
 
-export def list_churn :: i64 -> i64
+export def list_churn :: own i64 -> i64
 fn list_churn n = churn n (new [|string|](8, i -> "initial"))
 
-export def list_bounds :: i64 -> i64 -> i64
+export def list_bounds :: own i64 -> own i64 -> i64
 fn list_bounds n index = new [|i64|](n, i -> i)[index]
 
-export def list_length :: i64 -> i64
+export def list_length :: own i64 -> i64
 fn list_length n = new [|i64|](n, i -> i).length
 
-export def list_init_trap :: i64 -> i64
+export def list_init_trap :: own i64 -> i64
 fn list_init_trap n = new [|i64|](n, i -> 10 / (i - 1)).length

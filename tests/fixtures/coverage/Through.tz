@@ -1,10 +1,10 @@
 def pass :: own (i64 -> i64) -> (i64 -> i64)
 fn pass f = f
-def double :: i64 -> i64
+def double :: own i64 -> i64
 fn double x = x * 2
-def add :: i64 -> i64 -> i64
+def add :: own i64 -> own i64 -> i64
 fn add x y = x + y
-def apply :: own (i64 -> i64) -> i64 -> i64
+def apply :: own (i64 -> i64) -> own i64 -> i64
 fn apply f x = f x
 def ident :: own 'a -> 'a
 fn ident x = x
