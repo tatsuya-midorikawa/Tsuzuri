@@ -2,7 +2,7 @@
 
 本文は [G31-ai-cost-metrics.md](G31-ai-cost-metrics.md)。この付録の B・C は、実装者が `benchmarks/ai/` に**そのまま置く**ファイルの全文（HEAD `a2313d19` 相当の `target/release/tsuzuri` と試作の実行器で検証済み）。A はタスクの一覧、D は検証の記録（golden の数値）、E は出力と検査の書式、F は Phase 2・3 の戦略の擬似コード。
 
-実装時の追補（基準 `41f80bc7`）: C の全文と D の shop golden は変更なしで再現しました。D-59 の現行 API へ合わせる B の例外は D-02 の `def get` → `def try_item` と、B-04 の呼び出し元増加だけです。B-04 は現在 15 件（旧 4 件に `Array.random_sample_by`・`Array.random_sample_with`・`Array.reverse_in_place`・`Array.shuffle_by`・`Array.shuffle_with` と `Vec.compact`・`Vec.compact_values`・`Vec.insertion_by`・`Vec.merge_by`・`Vec.reverse_slice`・`Vec.rotate_slice` が加わります）。変更前に README に照合を記録し、署名と awk の参照行を独立に検査しました。下の旧記録は履歴として残し、現行タスク JSON と [測定結果](../docs/ai-cost.md) を実行の正とします。
+実装時の追補（基準 `41f80bc7`）: C の全文と D の shop golden は変更なしで再現しました。D-59 の現行 API へ合わせる B の例外は D-02 の `def get` → `def try_item` と、B-04 の呼び出し元増加だけです。B-04 は現在 15 件（旧 4 件に `Array.random_sample_by`・`Array.random_sample_with`・`Array.reverse_in_place`・`Array.shuffle_by`・`Array.shuffle_with` と `Vec.compact`・`Vec.compact_values`・`Vec.insertion_by`・`Vec.merge_by`・`Vec.reverse_slice`・`Vec.rotate_slice` が加わります）。変更前に README に照合を記録し、署名と awk の参照行を独立に検査しました。下の旧記録は履歴として残し、現行タスク JSON と [測定結果](../../docs/ai-cost.md) を実行の正とします。
 
 ## 付録 A: タスクの一覧
 
@@ -967,7 +967,7 @@ async function mcpToolsList(compiler, cwd):          // 改行区切りの JSON-
 ````markdown
 # AI 作業コスト（入力量と往復数）
 
-Tsuzuri の AI 向けの機能（ガイド・診断 v2・`fix`・KB・MCP）が、AI エージェントの作業を軽くするかを、LLM を呼ばずに**決定的に**数えて確かめるためのページ。実行速度の記録は [benchmarks.md](benchmarks.md)。ここで扱うのは、エージェントが読む文字数と、ツールを呼ぶ往復の数である。定義と設計は [G31](../_features/G31-ai-cost-metrics.md)。
+Tsuzuri の AI 向けの機能（ガイド・診断 v2・`fix`・KB・MCP）が、AI エージェントの作業を軽くするかを、LLM を呼ばずに**決定的に**数えて確かめるためのページ。実行速度の記録は [benchmarks.md](benchmarks.md)。ここで扱うのは、エージェントが読む文字数と、ツールを呼ぶ往復の数である。定義と設計は [G31](../_features/_completed/G31-ai-cost-metrics.md)。
 
 ## 測る量
 

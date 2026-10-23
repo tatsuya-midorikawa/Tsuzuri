@@ -1,6 +1,6 @@
 # AI 作業コスト（入力量と往復数）
 
-Tsuzuri の AI 向けの機能が、エージェントの読む量と往復を減らすかを、LLM・ネットワーク・外部パッケージなしで決定的に測ります。速度の記録は [benchmarks.md](benchmarks.md)、設計は [G31](../_features/G31-ai-cost-metrics.md) です。
+Tsuzuri の AI 向けの機能が、エージェントの読む量と往復を減らすかを、LLM・ネットワーク・外部パッケージなしで決定的に測ります。速度の記録は [benchmarks.md](benchmarks.md)、完了した設計・検証記録は [G31](../_features/_completed/G31-ai-cost-metrics.md) です。
 
 ## 測る量
 
