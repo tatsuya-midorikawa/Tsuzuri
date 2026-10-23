@@ -775,7 +775,10 @@ impl Canonical {
         self.hints.types.push(ty.span);
         if matches!(
             ty.kind,
-            TypeExprKind::Reference(..) | TypeExprKind::Own(..) | TypeExprKind::Mut(..)
+            TypeExprKind::Reference(..)
+                | TypeExprKind::Own(..)
+                | TypeExprKind::Mut(..)
+                | TypeExprKind::Pure(..)
         ) {
             self.hints.prefixes.insert(ty.span.start);
         }
@@ -805,6 +808,7 @@ impl Canonical {
             | TypeExprKind::Task(inner)
             | TypeExprKind::Own(inner)
             | TypeExprKind::Mut(inner)
+            | TypeExprKind::Pure(inner)
             | TypeExprKind::Reference(inner, _) => self.ty(inner),
             TypeExprKind::Tuple(elements) => {
                 for element in elements {

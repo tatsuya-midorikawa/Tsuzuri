@@ -5,6 +5,50 @@ fn failure(span: Span, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new("E1029", message, span)
 }
 
+fn opaque_input(ty: &Type, types: &TypeContext<'_>) -> bool {
+    types.reaches_closed(
+        ty,
+        |part| {
+            matches!(part, Type::Function(parameters, _) if !parameters.pure)
+                || matches!(
+                    part,
+                    Type::Dyn(_) | Type::Task(_) | Type::Reference(_, true)
+                )
+        },
+        |part| {
+            matches!(part, Type::Record(id, _) if types.records[*id].name == "IO.IO"
+        && types.records[*id].origin == ModuleOrigin::Std)
+        },
+    )
+}
+
+pub(super) fn check_function_type(
+    ty: &Type,
+    types: &TypeContext<'_>,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    let Type::Function(parameters, _) = ty else {
+        unreachable!()
+    };
+    for parameter in parameters.iter() {
+        if opaque_input(parameter, types) {
+            return Err(failure(
+                span,
+                "a pure function type takes only shared data and pure callbacks; mutable references, ordinary callbacks, dyn and task inputs are not supported",
+            ));
+        }
+        if !matches!(parameter, Type::Reference(..))
+            && own_violation_with(parameter, types, true).is_some()
+        {
+            return Err(failure(
+                span,
+                "a value parameter of a pure function type must be plain data; use a shared reference",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn plain_part(ty: &Type, types: &TypeContext<'_>) -> bool {
     match ty {
         Type::Integer(..)
@@ -41,9 +85,18 @@ fn plain_part(ty: &Type, types: &TypeContext<'_>) -> bool {
 }
 
 pub(super) fn own_violation(ty: &Type, types: &TypeContext<'_>) -> Option<Type> {
+    own_violation_with(ty, types, false)
+}
+
+fn own_violation_with(ty: &Type, types: &TypeContext<'_>, template: bool) -> Option<Type> {
     let found = std::cell::RefCell::new(None);
     types.stored_all(ty, |part| {
-        let plain = plain_part(part, types);
+        let plain = plain_part(part, types)
+            || (template
+                && matches!(
+                    part,
+                    Type::Variable(_) | Type::Application(..) | Type::FixedArray(..)
+                ));
         if !plain {
             found.borrow_mut().get_or_insert_with(|| part.clone());
         }
@@ -80,17 +133,15 @@ pub(super) fn check_parameter(
             "a pure def takes only shared references; take '{}' with 'ref' and return the new value",
             parameter.name.text
         ))
-    } else if types.reaches(ty, |part| {
-        matches!(part, Type::Function(..) | Type::Dyn(_) | Type::Task(_))
-    }) {
+    } else if owned {
+        own_violation_with(ty, types, true).map(|part| format!(
+            "an 'own' parameter of a pure def must be plain data; '{}' holds {}; take it with 'ref'",
+            ty.display(types), what(&part, types)
+        ))
+    } else if opaque_input(ty, types) {
         Some(format!(
             "a pure def cannot take a value that holds a function, 'dyn', or a task ('{}'); pass the data it needs instead",
             ty.display(types)
-        ))
-    } else if owned {
-        own_violation(ty, types).map(|part| format!(
-            "an 'own' parameter of a pure def must be plain data; '{}' holds {}; take it with 'ref'",
-            ty.display(types), what(&part, types)
         ))
     } else {
         None
@@ -266,6 +317,7 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | VecCapacity
         | VecIsEmpty
         | VecPush
+        | VecPushMut
         | VecPop
         | VecReserve
         | VecTruncate
@@ -356,6 +408,7 @@ pub(crate) enum Effect {
     Concurrency,
     Dyn,
     UserDrop(String),
+    Io,
     Unresolved,
 }
 
@@ -379,6 +432,7 @@ impl Effect {
             Self::Concurrency => "starts or waits for a task or a parallel operation".into(),
             Self::Dyn => "uses dyn dispatch".into(),
             Self::UserDrop(ty) => format!("holds a value whose type has a user Drop ('{ty}')"),
+            Self::Io => "may read or write the outside world by executing an I/O action".into(),
             Self::Unresolved => "cannot be proven pure".into(),
         }
     }
@@ -416,10 +470,135 @@ struct Scanner<'a> {
     nodes: usize,
     scanned: BTreeMap<usize, Scanned>,
     drops: BTreeMap<Type, bool>,
+    templates: bool,
+    trusted: BTreeSet<usize>,
 }
 
 fn position(span: Span) -> (usize, usize, usize) {
     (span.source.unwrap_or(usize::MAX), span.start, span.end)
+}
+
+struct CallTarget {
+    function: FunctionRef,
+    captures: usize,
+    direct: bool,
+    staged: bool,
+}
+
+fn closed_callable<'a>(
+    expression: &'a TypedExpr,
+    aliases: &BTreeMap<usize, &'a TypedExpr>,
+    trusted: &BTreeSet<usize>,
+    templates: bool,
+    nodes: &mut usize,
+    maximum: usize,
+    active: &mut Vec<&'a TypedExpr>,
+) -> Result<Option<Vec<CallTarget>>, LimitExceeded> {
+    let staged =
+        expression.ty.function_purity() == Some(true) || matches!(expression.ty, Type::Task(_));
+    let mut pending = vec![(expression, true, staged)];
+    let mut locals = BTreeSet::new();
+    let mut targets = Vec::new();
+    while let Some((value, direct, staged)) = pending.pop() {
+        *nodes += 1;
+        if *nodes > maximum {
+            return Err(LimitExceeded);
+        }
+        let mut ty = &value.ty;
+        while let Type::Reference(inner, false) = ty {
+            ty = inner;
+        }
+        if !staged
+            && matches!(ty, Type::Function(parameters, result)
+            if parameters.pure && result.function_purity() == Some(false))
+        {
+            return Ok(None);
+        }
+        use TypedExprKind as K;
+        match &value.kind {
+            K::Function(function) => targets.push(CallTarget {
+                function: function.clone(),
+                captures: 0,
+                direct,
+                staged,
+            }),
+            K::Closure(id, captures) => {
+                targets.push(CallTarget {
+                    function: FunctionRef::User(*id),
+                    captures: captures.len(),
+                    direct,
+                    staged,
+                });
+                pending.extend(
+                    captures
+                        .iter()
+                        .filter(|capture| capture.ty.function_purity().is_some())
+                        .map(|capture| {
+                            (capture, false, capture.ty.function_purity() == Some(true))
+                        }),
+                );
+            }
+            K::GenericFunction(id, _) if templates => targets.push(CallTarget {
+                function: FunctionRef::User(*id),
+                captures: 0,
+                direct,
+                staged,
+            }),
+            K::Lambda { body, .. } if templates => active.push(body),
+            K::Method(..) | K::TypeFunction { .. } if templates => {}
+            K::Local(id) if trusted.contains(id) || value.ty.function_purity() == Some(true) => {}
+            K::Local(id) if locals.insert(*id) => {
+                let Some(value) = aliases.get(id) else {
+                    return Ok(None);
+                };
+                pending.push((value, direct, staged));
+            }
+            K::Cast(value)
+            | K::Borrow(value, _)
+            | K::BorrowOperand(value)
+            | K::Dereference(value) => pending.push((value, direct, staged)),
+            K::Block { result, .. } => pending.push((result, direct, staged)),
+            K::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                pending.push((then_branch, direct, staged));
+                pending.push((else_branch, direct, staged));
+            }
+            _ if value.ty.function_purity() == Some(true) => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(targets))
+}
+
+fn standard_io(module: &CheckedModule, ty: &Type) -> bool {
+    matches!(ty, Type::Record(id, _) if module.records[*id].name == "IO.IO"
+        && module.records[*id].origin == ModuleOrigin::Std)
+}
+
+fn io_function(function: &CheckedFunction) -> bool {
+    function.module == "IO" && function.origin.module == ModuleOrigin::Std
+}
+
+fn unproven_call_stage(mut ty: &Type, mut arguments: usize) -> bool {
+    loop {
+        while let Type::Reference(inner, false) = ty {
+            ty = inner;
+        }
+        let Type::Function(parameters, result) = ty else {
+            return true;
+        };
+        if arguments <= parameters.len() {
+            return false;
+        }
+        if parameters.is_empty() || result.function_purity() != Some(true) {
+            return true;
+        }
+        arguments -= parameters.len();
+        ty = result;
+    }
 }
 
 impl<'a> Scanner<'a> {
@@ -430,7 +609,57 @@ impl<'a> Scanner<'a> {
             nodes: 0,
             scanned: BTreeMap::new(),
             drops: BTreeMap::new(),
+            templates: false,
+            trusted: BTreeSet::new(),
         }
+    }
+
+    fn targets(
+        &mut self,
+        targets: Vec<CallTarget>,
+        arguments: Option<usize>,
+        edges: &mut Vec<(usize, Span)>,
+        span: Span,
+    ) -> bool {
+        for target in targets {
+            let FunctionRef::User(id) = target.function else {
+                if matches!(target.function, FunctionRef::Builtin(instance) if builtin_impure(instance.builtin) && !closed_task_operation(instance.builtin))
+                {
+                    return false;
+                }
+                continue;
+            };
+            let function = &self.module.functions[id];
+            let supplied = target.captures
+                + if target.direct {
+                    arguments.unwrap_or(0)
+                } else {
+                    0
+                };
+            if arguments.is_none()
+                && !target.staged
+                && function.signature.result.function_purity() == Some(false)
+            {
+                return false;
+            }
+            if supplied > function.signature.parameters.len()
+                && function.signature.result.function_purity() != Some(true)
+            {
+                return false;
+            }
+            if function
+                .signature
+                .parameters
+                .iter()
+                .skip(supplied)
+                .any(|ty| ty.function_purity() == Some(false))
+            {
+                return false;
+            }
+            self.trusted.insert(id);
+            edges.push((id, span));
+        }
+        true
     }
 
     fn scan(&mut self, id: usize) -> Result<(), LimitExceeded> {
@@ -440,8 +669,33 @@ impl<'a> Scanner<'a> {
         if self.scanned.len() >= self.limits.functions {
             return Err(LimitExceeded);
         }
-        let mut effect = None;
+        let function = &self.module.functions[id];
+        let mut effect = (io_function(function)
+            && function.name.split(".$mono.").next() == Some("run"))
+        .then_some((Effect::Io, function.span));
+        for parameter in function.parameters.iter().take(function.capture_count) {
+            if !self.module.types().stored_all(&parameter.ty, |part| {
+                !part.has_user_drop(&self.module.types())
+            }) {
+                effect = Some((
+                    Effect::UserDrop(parameter.ty.display(&self.module.types())),
+                    parameter.span,
+                ));
+            }
+        }
         let mut edges = Vec::new();
+        let mut aliases = BTreeMap::new();
+        let mut read_places = BTreeSet::new();
+        let trusted = function
+            .parameters
+            .iter()
+            .filter(|parameter| {
+                self.trusted.contains(&id)
+                    && !parameter.mutable
+                    && parameter.ty.function_purity().is_some()
+            })
+            .map(|parameter| parameter.id)
+            .collect();
         let types = self.module.types();
         let mut pending = vec![&self.module.functions[id].body];
         while let Some(expression) = pending.pop() {
@@ -449,40 +703,156 @@ impl<'a> Scanner<'a> {
             if self.nodes > self.limits.nodes {
                 return Err(LimitExceeded);
             }
-            let has_drop = *self.drops.entry(expression.ty.clone()).or_insert_with(|| {
-                !types.stored_all(&expression.ty, |part| !part.has_user_drop(&types))
-            });
+            if let TypedExprKind::Block { bindings, .. } = &expression.kind {
+                for (local, value) in bindings {
+                    if !local.mutable {
+                        aliases.insert(local.id, value);
+                    }
+                }
+            }
+            let place = match &expression.kind {
+                TypedExprKind::Field(value, _)
+                | TypedExprKind::Index(value, _)
+                | TypedExprKind::Length(value)
+                | TypedExprKind::Borrow(value, _)
+                | TypedExprKind::BorrowOperand(value) => Some(value.as_ref()),
+                _ => None,
+            };
+            if let Some(place) = place
+                && matches!(
+                    place.kind,
+                    TypedExprKind::Local(_)
+                        | TypedExprKind::Dereference(_)
+                        | TypedExprKind::Field(..)
+                        | TypedExprKind::Index(..)
+                )
+            {
+                read_places.insert(place as *const TypedExpr);
+            }
+            let has_drop = !read_places.contains(&(expression as *const TypedExpr))
+                && *self.drops.entry(expression.ty.clone()).or_insert_with(|| {
+                    !types.stored_all(&expression.ty, |part| !part.has_user_drop(&types))
+                });
             let found = if has_drop {
                 Some(Effect::UserDrop(expression.ty.display(&types)))
             } else {
                 use TypedExprKind as K;
                 match &expression.kind {
                     K::HostCall(import, _) => Some(Effect::Host(import.native_symbol.clone())),
-                    K::TaskRun(_)
-                    | K::TaskParallel(_)
-                    | K::TaskParallelResults(_)
-                    | K::Parallel(..) => None,
+                    K::TaskRun(_) | K::TaskParallel(_) | K::TaskParallelResults(_) => None,
+                    K::Parallel(_, arguments) => {
+                        let mut closed = true;
+                        for argument in arguments
+                            .iter()
+                            .filter(|argument| argument.ty.function_purity().is_some())
+                        {
+                            let targets = closed_callable(
+                                argument,
+                                &aliases,
+                                &trusted,
+                                self.templates,
+                                &mut self.nodes,
+                                self.limits.nodes,
+                                &mut pending,
+                            )?;
+                            closed &= targets.is_some_and(|targets| {
+                                self.targets(targets, None, &mut edges, argument.span)
+                            });
+                        }
+                        (!closed).then_some(Effect::Unresolved)
+                    }
                     K::DynDispatch { .. } => Some(Effect::Dyn),
+                    K::Call(callee, arguments) => {
+                        let targets = closed_callable(
+                            callee,
+                            &aliases,
+                            &trusted,
+                            self.templates,
+                            &mut self.nodes,
+                            self.limits.nodes,
+                            &mut pending,
+                        )?;
+                        let deferred = targets.as_ref().is_some_and(|targets| !targets.is_empty() && targets.iter().all(|target| {
+                            matches!(target.function, FunctionRef::User(id) if io_function(&self.module.functions[id])
+                                && !self.module.functions[id].name.starts_with('$')
+                                && standard_io(self.module, &self.module.functions[id].signature.result))
+                        }));
+                        let builtin_effect_of = |targets: &Option<Vec<CallTarget>>| {
+                            targets.as_ref().and_then(|targets| {
+                                targets.iter().find_map(|target| {
+                                    if let FunctionRef::Builtin(instance) = &target.function {
+                                        builtin_effect(instance.builtin)
+                                            .filter(|_| !closed_task_operation(instance.builtin))
+                                            .map(|category| {
+                                                Effect::Builtin(instance.builtin.name(), category)
+                                            })
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                        };
+                        let mut call_effect = builtin_effect_of(&targets);
+                        let mut closed =
+                            targets.is_some() && !unproven_call_stage(&callee.ty, arguments.len());
+                        if let Some(targets) = targets {
+                            closed &= self.targets(
+                                targets,
+                                Some(arguments.len()),
+                                &mut edges,
+                                expression.span,
+                            );
+                        }
+                        for argument in arguments {
+                            if argument.ty.function_purity().is_some() {
+                                if deferred {
+                                    continue;
+                                }
+                                let targets = closed_callable(
+                                    argument,
+                                    &aliases,
+                                    &trusted,
+                                    self.templates,
+                                    &mut self.nodes,
+                                    self.limits.nodes,
+                                    &mut pending,
+                                )?;
+                                call_effect = call_effect.or_else(|| builtin_effect_of(&targets));
+                                closed &= targets.is_some();
+                                if let Some(targets) = targets {
+                                    closed &=
+                                        self.targets(targets, None, &mut edges, argument.span);
+                                }
+                            }
+                        }
+                        call_effect.or_else(|| (!closed).then_some(Effect::Unresolved))
+                    }
+                    K::GenericFunction(..) if self.templates => None,
+                    K::Method(..) | K::TypeFunction { .. } | K::Lambda { .. } if self.templates => {
+                        None
+                    }
                     K::Error
                     | K::GenericFunction(..)
                     | K::Method(..)
                     | K::TypeFunction { .. }
                     | K::Lambda { .. }
                     | K::CaseConstructor { .. } => Some(Effect::Unresolved),
-                    K::Function(FunctionRef::User(target)) | K::Closure(target, _) => {
-                        edges.push((*target, expression.span));
-                        None
+                    K::Function(_) | K::Closure(..) if matches!(expression.ty, Type::Task(_)) => {
+                        let targets = closed_callable(
+                            expression,
+                            &aliases,
+                            &trusted,
+                            self.templates,
+                            &mut self.nodes,
+                            self.limits.nodes,
+                            &mut pending,
+                        )?;
+                        (!targets.is_some_and(|targets| {
+                            self.targets(targets, None, &mut edges, expression.span)
+                        }))
+                        .then_some(Effect::Unresolved)
                     }
-                    K::Function(FunctionRef::Builtin(instance)) => {
-                        if builtin_impure(instance.builtin)
-                            && !closed_task_operation(instance.builtin)
-                        {
-                            builtin_effect(instance.builtin)
-                                .map(|category| Effect::Builtin(instance.builtin.name(), category))
-                        } else {
-                            None
-                        }
-                    }
+                    K::Function(_) | K::Closure(..) => None,
                     K::Int(_)
                     | K::Float(_)
                     | K::GenericInteger(..)
@@ -496,7 +866,6 @@ impl<'a> Scanner<'a> {
                     | K::Static(_)
                     | K::Unary(..)
                     | K::Binary(..)
-                    | K::Call(..)
                     | K::StructuralCompare(..)
                     | K::StructuralHash(_)
                     | K::StructuralDisplay(_)
@@ -542,7 +911,13 @@ impl<'a> Scanner<'a> {
             {
                 effect = Some((found, expression.span));
             }
-            pending.extend(expression.children());
+            if !matches!(expression.kind, TypedExprKind::Lambda { .. }) {
+                pending.extend(expression.children());
+            } else if matches!(expression.ty, Type::Task(_))
+                && let TypedExprKind::Lambda { body, .. } = &expression.kind
+            {
+                pending.push(body);
+            }
         }
         edges.sort_by_key(|(id, span)| (position(*span), *id));
         edges.dedup();
@@ -552,11 +927,17 @@ impl<'a> Scanner<'a> {
 
     fn witness(&mut self, root: usize) -> Result<Option<(Effect, Impurity)>, LimitExceeded> {
         let function = &self.module.functions[root];
-        if function.signature.parameters.iter().any(|ty| {
-            self.module.types().reaches(ty, |part| {
-                matches!(part, Type::Function(..) | Type::Task(_) | Type::Dyn(_))
+        if function
+            .signature
+            .parameters
+            .iter()
+            .skip(if self.trusted.contains(&root) {
+                function.capture_count
+            } else {
+                0
             })
-        }) {
+            .any(|ty| opaque_input(ty, &self.module.types()))
+        {
             let effect = Effect::Unresolved;
             return Ok(Some((
                 effect.clone(),
@@ -670,15 +1051,135 @@ pub(super) fn validate(module: &CheckedModule) -> Vec<Diagnostic> {
     validate_with(module, LIMITS)
 }
 
+pub(super) fn validate_templates(module: &CheckedModule) -> Vec<Diagnostic> {
+    validate_mode(module, LIMITS, true)
+}
+
 fn validate_with(module: &CheckedModule, limits: Limits) -> Vec<Diagnostic> {
+    validate_mode(module, limits, false)
+}
+
+fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec<Diagnostic> {
     let mut scanner = Scanner::new(module, limits);
+    scanner.templates = templates;
     let mut diagnostics = Vec::new();
-    for (id, function) in module
+    let mut roots: BTreeMap<usize, Span> = module
         .functions
         .iter()
         .enumerate()
-        .filter(|(_, function)| function.origin.pure)
-    {
+        .filter(|(_, function)| {
+            function.origin.pure
+                && (!templates
+                    || !function.type_parameters.is_empty()
+                    || !function.constraints.is_empty())
+        })
+        .map(|(id, function)| (id, function.span))
+        .collect();
+    if !templates {
+        let mut nodes = 0;
+        for function in module
+            .functions
+            .iter()
+            .filter(|function| function.origin.pure_values)
+        {
+            let mut pending = vec![&function.body];
+            let mut aliases = BTreeMap::new();
+            while let Some(expression) = pending.pop() {
+                nodes += 1;
+                if nodes > limits.nodes {
+                    diagnostics.push(Diagnostic::new("E1017", "pure function value validation exceeds the expression analysis limit; split the program", expression.span));
+                    return diagnostics;
+                }
+                if let TypedExprKind::Block { bindings, .. } = &expression.kind {
+                    aliases.extend(
+                        bindings
+                            .iter()
+                            .filter(|(local, _)| !local.mutable)
+                            .map(|(local, value)| (local.id, value)),
+                    );
+                }
+                if expression.ty.function_purity() == Some(true) {
+                    match &expression.kind {
+                        TypedExprKind::Function(FunctionRef::User(id))
+                        | TypedExprKind::Closure(id, _) => {
+                            let captures = match &expression.kind {
+                                TypedExprKind::Closure(_, captures) => captures.len(),
+                                _ => 0,
+                            };
+                            let mut qualified = &expression.ty;
+                            while let Type::Reference(inner, false) = qualified {
+                                qualified = inner;
+                            }
+                            if matches!(qualified, Type::Function(parameters, _) if parameters.len() + captures != module.functions[*id].signature.parameters.len())
+                            {
+                                diagnostics.push(failure(expression.span, "a returned function has a separate effect contract; qualify each call stage explicitly"));
+                                continue;
+                            }
+                            let targets = closed_callable(
+                                expression,
+                                &aliases,
+                                &BTreeSet::new(),
+                                false,
+                                &mut nodes,
+                                limits.nodes,
+                                &mut pending,
+                            );
+                            let mut edges = Vec::new();
+                            let captures_closed = match targets {
+                                Ok(Some(targets)) => {
+                                    scanner.targets(targets, None, &mut edges, expression.span)
+                                }
+                                _ => false,
+                            };
+                            if !captures_closed {
+                                diagnostics.push(failure(expression.span, "this pure function value captures a callback whose effects are unknown"));
+                                continue;
+                            }
+                            roots.entry(*id).or_insert(expression.span);
+                        }
+                        TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
+                            if let Some(category) = builtin_effect(instance.builtin) {
+                                diagnostics.push(failure(
+                                expression.span,
+                                format!(
+                                    "this builtin cannot satisfy a pure function contract: it {}",
+                                    Effect::Builtin(instance.builtin.name(), category).reason()
+                                ),
+                            ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                pending.extend(expression.children());
+            }
+        }
+    }
+    for (id, span) in roots {
+        let function = &module.functions[id];
+        if !templates
+            && let Some((index, part)) = function
+                .signature
+                .parameters
+                .iter()
+                .enumerate()
+                .filter(|(index, ty)| {
+                    !matches!(ty, Type::Reference(..))
+                        && !(*index < function.capture_count && ty.function_purity().is_some())
+                })
+                .find_map(|(index, ty)| {
+                    own_violation(ty, &module.types()).map(|part| (index, part))
+                })
+        {
+            diagnostics.push(failure(
+                function.parameters[index].span,
+                format!(
+                    "an 'own' parameter of a pure specialization must be plain data; found {}",
+                    what(&part, &module.types())
+                ),
+            ));
+            continue;
+        }
         match scanner.witness(id) {
             Ok(None) => {}
             Ok(Some((_, impurity))) => {
@@ -699,7 +1200,7 @@ fn validate_with(module: &CheckedModule, limits: Limits) -> Vec<Diagnostic> {
                 diagnostics.push(Diagnostic::new(
                     "E1017",
                     format!("a pure def reaches more than {} functions or {} expression nodes; split it", limits.functions, limits.nodes),
-                    function.span,
+                    span,
                 ));
                 break;
             }

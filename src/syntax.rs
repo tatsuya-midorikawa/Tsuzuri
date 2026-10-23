@@ -521,6 +521,7 @@ pub struct ExternTypeDecl {
 #[derive(Clone, Debug)]
 pub struct Definition {
     pub name: Ident,
+    pub pure: bool,
     pub recursion: Option<String>,
     pub parameters: Vec<(Ident, bool)>,
     pub body: Expr,
@@ -632,6 +633,7 @@ pub enum TypeExprKind {
     Reference(Box<TypeExpr>, bool),
     Own(Box<TypeExpr>),
     Mut(Box<TypeExpr>),
+    Pure(Box<TypeExpr>),
     /// `dyn Shapes.Shape` or `dyn (Shape, Send)`: an owned value of some type with instances of
     /// the classes, dispatched at run time (A14). Boxed like `Apply` so `TypeExpr` does not grow.
     Dyn(Box<DynTypeExpr>),

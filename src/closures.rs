@@ -154,12 +154,16 @@ impl Checker<'_> {
             self.require("Send", body.ty.clone(), body.span)?;
             Type::Task(Box::new(body.ty.clone()))
         } else {
-            Type::function(
+            let pure = expected.is_some_and(|ty| ty.function_purity() == Some(true));
+            self.pure_values |= pure;
+            Type::function_with_conventions(
                 parameters
                     .iter()
                     .map(|parameter| parameter.ty.clone())
                     .collect(),
                 body.ty.clone(),
+                Vec::new(),
+                pure,
             )
         };
         validate_size(&ty, &self.types, span)?;

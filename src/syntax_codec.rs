@@ -988,11 +988,13 @@ impl Wire for Definition {
     fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
         let Definition {
             name,
+            pure,
             recursion,
             parameters,
             body,
         } = self;
         name.put(out)?;
+        pure.put(out)?;
         recursion.put(out)?;
         parameters.put(out)?;
         body.put(out)
@@ -1001,6 +1003,7 @@ impl Wire for Definition {
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
         Ok(Definition {
             name: Ident::get(input)?,
+            pure: bool::get(input)?,
             recursion: Option::get(input)?,
             parameters: Vec::get(input)?,
             body: Expr::get(input)?,
@@ -1127,11 +1130,13 @@ impl Wire for InstanceDecl {
         for method in methods {
             let Definition {
                 name,
+                pure,
                 recursion,
                 parameters,
                 body: _,
             } = method;
             name.put(out)?;
+            pure.put(out)?;
             recursion.put(out)?;
             parameters.put(out)?;
         }
@@ -1280,6 +1285,10 @@ impl Wire for TypeExprKind {
                 out.tag("TypeExprKind", 16);
                 ty.put(out)
             }
+            Pure(ty) => {
+                out.tag("TypeExprKind", 17);
+                ty.put(out)
+            }
         }
     }
 
@@ -1315,7 +1324,8 @@ impl Wire for TypeExprKind {
             14 => variant(input, |input| Ok(Dyn(Box::get(input)?))),
             15 => variant(input, |input| Ok(Own(Box::get(input)?))),
             16 => variant(input, |input| Ok(Mut(Box::get(input)?))),
-            17..=u8::MAX => Err(Invalid),
+            17 => variant(input, |input| Ok(Pure(Box::get(input)?))),
+            18..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -2444,7 +2454,7 @@ mod tests {
         for (name, count) in [
             ("ConstraintName", 2),
             ("Kind", 2),
-            ("TypeExprKind", 17),
+            ("TypeExprKind", 18),
             ("StringLiteral", 2),
             ("ExprKind", 46),
             ("PatternKind", 14),

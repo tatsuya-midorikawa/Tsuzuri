@@ -153,6 +153,7 @@ impl MemberConstraint {
 
 pub(super) struct Scheme {
     pub signature: Signature,
+    pub pure: bool,
     pub parameter_conventions: Vec<ParameterConvention>,
     pub variables: Vec<String>,
     pub constraints: Vec<Constraint>,
@@ -167,6 +168,7 @@ impl Scheme {
                 result: Type::Error,
             },
             parameter_conventions: Vec::new(),
+            pure: false,
             variables: Vec::new(),
             constraints: Vec::new(),
             members: Vec::new(),
@@ -182,6 +184,7 @@ impl Scheme {
             self.signature.parameters.clone(),
             self.signature.result.clone(),
             self.parameter_conventions.clone(),
+            self.pure,
         )
     }
 }
@@ -227,6 +230,7 @@ fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
             parameters.iter().map(|ty| map_type(ty, f)).collect(),
             map_type(result, f),
             parameters.conventions.to_vec(),
+            parameters.pure,
         ),
         Type::Record(id, args) if !args.is_empty() => {
             Type::Record(*id, args.iter().map(|ty| map_type(ty, f)).collect())
@@ -372,6 +376,7 @@ impl Inference {
                 parameters.iter().map(|ty| self.resolve(ty)).collect(),
                 self.resolve(result),
                 parameters.conventions.to_vec(),
+                parameters.pure,
             ),
             Type::Record(id, args) => {
                 Type::Record(*id, args.iter().map(|ty| self.resolve(ty)).collect())
@@ -513,7 +518,11 @@ impl Inference {
                 }
                 return Ok(());
             }
-            (Type::Function(a, x), Type::Function(b, y)) if a.is_empty() == b.is_empty() => {
+            (Type::Function(a, x), Type::Function(b, y))
+                if a.is_empty() == b.is_empty()
+                    && a.pure == b.pure
+                    && (!a.pure || a.len() == b.len()) =>
+            {
                 for (a, b) in a.iter().zip(b.iter()) {
                     self.unify(a, b, types, span)?;
                 }
@@ -596,14 +605,22 @@ struct Class {
     arity: usize,
     superclasses: Vec<Constraint>,
     methods: Vec<Method>,
-    method_mutability: Vec<Box<[bool]>>,
+    conventions: Vec<MethodConventions>,
     builtin: bool,
+}
+
+#[derive(Default)]
+struct MethodConventions {
+    mutable: Box<[bool]>,
+    reads: Box<[bool]>,
+    pure: bool,
 }
 
 pub(super) struct Classes {
     declarations: Vec<Class>,
     names: BTreeMap<String, usize>,
     instances: Vec<InstanceTemplate>,
+    function_reads: BTreeMap<String, Box<[bool]>>,
 }
 
 struct InstanceTemplate {
@@ -669,6 +686,13 @@ pub(super) const BUILTIN_CLASSES: [&str; 33] = [
 ];
 
 impl Classes {
+    pub(super) fn reads_parameter(&self, function: &str, index: usize) -> bool {
+        self.function_reads
+            .get(function)
+            .and_then(|reads| reads.get(index))
+            == Some(&true)
+    }
+
     pub fn collect(
         modules: &[ModuleInput<'_>],
         names: &Names,
@@ -680,6 +704,7 @@ impl Classes {
             declarations: Vec::new(),
             names: BTreeMap::new(),
             instances: Vec::new(),
+            function_reads: BTreeMap::new(),
         };
         for name in BUILTIN_CLASSES {
             classes
@@ -691,7 +716,7 @@ impl Classes {
                 arity: 0,
                 superclasses: Vec::new(),
                 methods: Vec::new(),
-                method_mutability: Vec::new(),
+                conventions: Vec::new(),
                 builtin: true,
             });
         }
@@ -952,6 +977,7 @@ impl Classes {
                     let mut seen = BTreeSet::new();
                     let arity = higher_kinds::arity(&declaration.kind, declaration.variable.span)?;
                     let kinds = BTreeMap::from([(declaration.variable.text.clone(), arity)]);
+                    let mut conventions = Vec::new();
                     for method in &declaration.methods {
                         if method.name.text == "_" || !seen.insert(&method.name.text) {
                             return Err(duplicate(&method.name));
@@ -976,12 +1002,17 @@ impl Classes {
                                 ));
                             }
                         }
+                        let mut reads = Vec::new();
                         let signature = Signature {
                             parameters: method
                                 .parameters
                                 .iter()
                                 .map(|ty| {
                                     if let TypeExprKind::Mut(inner) = &ty.kind {
+                                        reads.push(false);
+                                        if method.pure {
+                                            return Err(Diagnostic::new("E1029", "a pure class method cannot take a mutable reference", ty.span));
+                                        }
                                         if !names.borrowing_modules.contains(module) {
                                             return Err(Diagnostic::new(
                                                 "E1005",
@@ -996,11 +1027,23 @@ impl Classes {
                                             true,
                                         ));
                                     }
-                                    let ty = match &ty.kind {
+                                    let owned = matches!(ty.kind, TypeExprKind::Own(_));
+                                    let expression = match &ty.kind {
                                         TypeExprKind::Own(inner) => inner.as_ref(),
                                         _ => ty,
                                     };
-                                    resolve_type_with_kinds(ty, module, names, &kinds)
+                                    let resolved = resolve_type_with_kinds(expression, module, names, &kinds)?;
+                                    if method.pure {
+                                        pure_rules::check_parameter(&Parameter {
+                                            name: method.name.clone(),
+                                            mutable: false,
+                                            ty: ty.clone(),
+                                            json: None,
+                                        }, &resolved, owned, types)?;
+                                    }
+                                    let read = method.pure && pure_rules::borrow_parameter(&resolved, owned, types);
+                                    reads.push(read);
+                                    Ok(if read { Type::Reference(Box::new(resolved), false) } else { resolved })
                                 })
                                 .collect::<Result<_, _>>()?,
                             result: resolve_type_with_kinds(&method.result, module, names, &kinds)?,
@@ -1024,6 +1067,15 @@ impl Classes {
                             operation: None,
                             default: None,
                         });
+                        conventions.push(MethodConventions {
+                            mutable: method
+                                .parameters
+                                .iter()
+                                .map(|ty| matches!(ty.kind, TypeExprKind::Mut(_)))
+                                .collect(),
+                            reads: reads.into(),
+                            pure: method.pure,
+                        });
                     }
                     if methods.is_empty() {
                         return Err(Diagnostic::new(
@@ -1038,17 +1090,7 @@ impl Classes {
                         arity,
                         superclasses: Vec::new(),
                         methods,
-                        method_mutability: declaration
-                            .methods
-                            .iter()
-                            .map(|method| {
-                                method
-                                    .parameters
-                                    .iter()
-                                    .map(|ty| matches!(ty.kind, TypeExprKind::Mut(_)))
-                                    .collect()
-                            })
-                            .collect(),
+                        conventions,
                         builtin: false,
                     });
                     Ok(())
@@ -1499,6 +1541,7 @@ impl Classes {
             | TypeExprKind::Task(ty)
             | TypeExprKind::Own(ty)
             | TypeExprKind::Mut(ty)
+            | TypeExprKind::Pure(ty)
             | TypeExprKind::Reference(ty, _)
             | TypeExprKind::Regions(ty, _)
             | TypeExprKind::Quantified(_, ty) => {
@@ -1565,10 +1608,7 @@ impl Classes {
                         input.name.to_owned(),
                         instance_function(
                             method.signature(definition.name.span)?,
-                            class
-                                .method_mutability
-                                .get(method_index)
-                                .map_or(&[], |flags| flags),
+                            class.conventions.get(method_index),
                             &BTreeMap::new(),
                             definition,
                             format!("$instance.default.{function}.{}", method.name),
@@ -1576,6 +1616,12 @@ impl Classes {
                             types,
                         )?,
                     ));
+                    if let Some(conventions) = class.conventions.get(method_index) {
+                        self.function_reads.insert(
+                            functions[function].1.name.text.clone(),
+                            conventions.reads.clone(),
+                        );
+                    }
                     method.default = Some(function);
                 }
             }
@@ -1788,10 +1834,7 @@ impl Classes {
                             (*module).into(),
                             instance_function(
                                 &signature,
-                                class
-                                    .method_mutability
-                                    .get(method_index)
-                                    .map_or(&[], |flags| flags),
+                                class.conventions.get(method_index),
                                 &substitutions,
                                 definition,
                                 format!("$instance.{function_id}.{}", method.name),
@@ -1799,6 +1842,12 @@ impl Classes {
                                 types,
                             )?,
                         ));
+                        if let Some(conventions) = class.conventions.get(method_index) {
+                            self.function_reads.insert(
+                                functions[function_id].1.name.text.clone(),
+                                conventions.reads.clone(),
+                            );
+                        }
                         implementations.push((
                             function_id,
                             variables(&substitute(&signature.as_type(), &substitutions))
@@ -1885,6 +1934,7 @@ impl Classes {
                             .as_ref()
                             .map_or(1, |signature| signature.parameters.len());
                         Definition {
+                            pure: false,
                             name: generated(method.name.clone()),
                             recursion: None,
                             parameters: (0..arity)
@@ -2620,7 +2670,7 @@ fn validate_format_instance(
 
 fn instance_function(
     signature: &Signature,
-    mutability: &[bool],
+    conventions: Option<&MethodConventions>,
     substitutions: &BTreeMap<String, Type>,
     definition: &Definition,
     name: String,
@@ -2628,6 +2678,7 @@ fn instance_function(
     types: &TypeContext<'_>,
 ) -> Result<FunctionDecl, Diagnostic> {
     let mut definition = definition.clone();
+    let pure = definition.pure || conventions.is_some_and(|conventions| conventions.pure);
     while let ExprKind::Lambda(parameters, body) = definition.body.kind {
         definition.parameters.extend(parameters);
         definition.body = *body;
@@ -2652,10 +2703,16 @@ fn instance_function(
         .enumerate()
         .map(|(index, ((name, mutable), ty))| {
             let mut ty = type_expression(&substitute(ty, substitutions), types, name.span);
-            if mutability.get(index) == Some(&true)
+            if conventions.is_some_and(|conventions| conventions.mutable.get(index) == Some(&true))
                 && let TypeExprKind::Reference(inner, true) = ty.kind
             {
                 ty.kind = TypeExprKind::Mut(inner);
+            }
+            if pure && !matches!(ty.kind, TypeExprKind::Reference(..) | TypeExprKind::Mut(_)) {
+                ty = TypeExpr {
+                    span: ty.span,
+                    kind: TypeExprKind::Own(Box::new(ty)),
+                };
             }
             Parameter {
                 name: name.clone(),
@@ -2677,7 +2734,7 @@ fn instance_function(
         visibility: Visibility::Public,
         exported: false,
         constant: false,
-        pure: false,
+        pure,
         parameters,
         result: type_expression(
             &substitute(
@@ -2731,13 +2788,20 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
         Type::Reference(ty, mutable) => {
             TypeExprKind::Reference(Box::new(type_expression(ty, types, span)), *mutable)
         }
-        Type::Function(parameters, result) => TypeExprKind::Function(
-            parameters
-                .iter()
-                .map(|ty| type_expression(ty, types, span))
-                .collect(),
-            Box::new(type_expression(result, types, span)),
-        ),
+        Type::Function(parameters, result) => {
+            let inner = TypeExprKind::Function(
+                parameters
+                    .iter()
+                    .map(|ty| type_expression(ty, types, span))
+                    .collect(),
+                Box::new(type_expression(result, types, span)),
+            );
+            if parameters.pure {
+                TypeExprKind::Pure(Box::new(TypeExpr { kind: inner, span }))
+            } else {
+                inner
+            }
+        }
         Type::Record(id, arguments) | Type::Union(id, arguments) if !arguments.is_empty() => {
             let name = match ty {
                 Type::Record(..) => &types.records[*id].name,
@@ -3364,22 +3428,29 @@ impl Checker<'_> {
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let declaration = &self.classes.declarations[class];
         let ty = self.inference.fresh();
-        let mut signature = declaration.methods[method].signature(span)?.as_type();
-        if let Some(mutability) = declaration.method_mutability.get(method)
-            && mutability.iter().any(|mutable| *mutable)
-            && let Type::Function(parameters, _) = &mut signature
-        {
-            parameters.conventions = mutability
-                .iter()
-                .map(|mutable| {
-                    if *mutable {
-                        ParameterConvention::Mut
-                    } else {
-                        ParameterConvention::Own
-                    }
-                })
-                .collect();
-        }
+        let signature = declaration.methods[method].signature(span)?;
+        let conventions = declaration.conventions.get(method);
+        let signature = Type::function_with_conventions(
+            signature.parameters.clone(),
+            signature.result.clone(),
+            conventions.map_or_else(Vec::new, |conventions| {
+                conventions
+                    .mutable
+                    .iter()
+                    .zip(&conventions.reads)
+                    .map(|(mutable, read)| {
+                        if *mutable {
+                            ParameterConvention::Mut
+                        } else if *read {
+                            ParameterConvention::Read
+                        } else {
+                            ParameterConvention::Own
+                        }
+                    })
+                    .collect()
+            }),
+            conventions.is_some_and(|conventions| conventions.pure),
+        );
         let mut substitutions = BTreeMap::from([(declaration.variable.clone(), ty.clone())]);
         for variable in variables(&signature) {
             substitutions
@@ -3516,9 +3587,21 @@ impl Checker<'_> {
                         parameters[count..].to_vec(),
                         *result,
                         parameters.conventions.get(count..).unwrap_or(&[]).to_vec(),
+                        parameters.pure,
                     )
                 };
                 Ok((parameters[..count].to_vec(), remaining))
+            }
+            Type::Function(parameters, result)
+                if count > parameters.len()
+                    && !parameters.is_empty()
+                    && result.function_purity().is_some() =>
+            {
+                let (tail, output) =
+                    self.call_signature(&result, count - parameters.len(), span)?;
+                let mut parameters = parameters.types;
+                parameters.extend(tail);
+                Ok((parameters, output))
             }
             Type::Function(parameters, result)
                 if count > parameters.len() && matches!(*result, Type::Infer(_)) =>
@@ -4478,8 +4561,10 @@ impl Specializer<'_> {
             function.name = format!("{}.$mono.{instance}", function.name);
             // The instances of a generic `@cpu` function keep its CPU levels (F08 Phase 3).
             let cpu = function.origin.cpu;
+            let pure = function.origin.pure;
             function.origin = function.origin.generated(instance);
             function.origin.cpu = cpu;
+            function.origin.pure = pure;
         }
         for constraint in &function.constraints {
             self.classes.validate(
@@ -4581,7 +4666,15 @@ impl Specializer<'_> {
             .zip(types.clone())
             .collect();
         inference.unify(
-            &substitute(&target.signature.as_type(), &substitutions),
+            &substitute(
+                &Type::function_with_conventions(
+                    target.signature.parameters.clone(),
+                    target.signature.result.clone(),
+                    Vec::new(),
+                    target.origin.pure,
+                ),
+                &substitutions,
+            ),
             expected,
             &self.types,
             member.span,

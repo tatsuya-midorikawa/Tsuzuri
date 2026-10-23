@@ -140,6 +140,7 @@ pub(crate) fn type_text(ty: &TypeExpr) -> String {
         ),
         TypeExprKind::Own(inner) => format!("own {}", type_text(inner)),
         TypeExprKind::Mut(inner) => format!("mut {}", type_text(inner)),
+        TypeExprKind::Pure(inner) => format!("pure ({})", type_text(inner)),
     }
 }
 

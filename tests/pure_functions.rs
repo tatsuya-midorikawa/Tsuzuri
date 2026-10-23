@@ -46,10 +46,143 @@ fn rejects_misplaced_pure() {
         "pure export def f :: i64 -> i64 = \\x -> x",
         "const pure def f :: i64 -> i64 = \\x -> x",
         "pure const def f :: i64 -> i64 = \\x -> x",
-        "@cpu [\"avx2\"] pure def f :: i64 -> i64 = \\x -> x",
     ] {
         assert_eq!(parser::parse(source).unwrap_err().code, "E0002", "{source}");
     }
+}
+
+#[test]
+fn pure_function_values_keep_effects_and_call_stage_boundaries() {
+    accepted(
+        "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
+         pure def increment :: i64 -> i64 = \\value -> value + 1\n\
+         def ordinary :: i64 -> i64 = \\value -> value + 2\n\
+         export def answer :: i64 = apply increment 20 + apply ordinary 19 + apply (\\value -> value + 3) 18\n",
+    );
+    rejected(
+        "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
+         def bad :: i64 = apply (\\value -> { Debug.print (ref value); value }) 1\n",
+        "debug output",
+    );
+    rejected(
+        "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
+         def bad :: (i64 -> i64) -> i64 = \\f -> apply f 1\n",
+        "unknown ordinary callback",
+    );
+    accepted(
+        "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
+         def weaken :: ref (i64 -> i64) -> i64 = \\f -> (*f) 20\n\
+         pure def increment :: i64 -> i64 = \\value -> value + 1\n\
+         export def answer :: i64 = { let f = increment; weaken (ref f) }\n",
+    );
+    assert!(
+        analyze(
+            "type F = i64 -> i64\n\
+         def factory :: unit -> F = \\() -> \\value -> { Debug.print (ref value); value }\n\
+         pure def apply :: pure (unit -> i64 -> i64) -> i64 = \\f -> f () 1\n\
+         def bad :: i64 = apply factory\n",
+        )
+        .is_err()
+    );
+    accepted(
+        "type F = i64 -> i64\n\
+         pure def factory :: unit -> F = \\() -> \\value -> { Debug.print (ref value); value }\n",
+    );
+    rejected(
+        "type F = i64 -> i64\n\
+         pure def factory :: unit -> F = \\() -> \\value -> { Debug.print (ref value); value }\n\
+         pure def bad :: unit -> i64 = \\() -> factory () 1\n",
+        "pure",
+    );
+    rejected(
+        "type F = i64 -> i64\n\
+         def invoke :: ref (unit -> i64 -> i64) -> i64 = \\f -> (*f) () 1\n\
+         pure def bad :: pure (unit -> F) -> i64 = \\factory -> invoke factory\n",
+        "pure",
+    );
+    rejected(
+        "type F = i64 -> i64\n\
+         pure def invoke :: pure (unit -> F) -> i64 = \\f -> f () 1\n",
+        "pure",
+    );
+    rejected(
+        "type F = i64 -> i64\n\
+         pure def factory :: unit -> F = \\() -> \\value -> { Debug.print (ref value); value }\n\
+         def invoke :: (unit -> i64 -> i64) -> i64 = \\f -> f () 1\n\
+         pure def bad :: unit -> i64 = \\() -> invoke factory\n",
+        "pure",
+    );
+}
+
+#[test]
+fn class_and_instance_purity_are_contracts_even_when_unused() {
+    accepted(
+        "record R { value: i64 }\n\
+         class Measure<'a> { pure def size :: 'a -> i64 }\n\
+         instance Measure<R> { fn size item = item.value }\n\
+         pure def answer :: R -> i64 = \\item -> Measure.size item\n",
+    );
+    rejected(
+        "record R { value: i64 }\n\
+         class Measure<'a> { pure def size :: 'a -> i64 }\n\
+         instance Measure<R> { fn size item = { Debug.print (ref item.value); item.value } }\n",
+        "debug output",
+    );
+    accepted(
+        "record R { value: i64 }\n\
+         instance Add<R> { pure fn add left right = R { value: left.value + right.value } }\n\
+         pure def answer :: i64 = ((R { value: 20 }) + (R { value: 22 })).value\n",
+    );
+    rejected(
+        "record R { value: i64 }\n\
+         instance Add<R> { pure fn add left right = { Debug.print (ref left.value); left } }\n",
+        "debug output",
+    );
+}
+
+#[test]
+fn borrowed_drop_data_is_readable_without_claiming_its_destructor_is_pure() {
+    accepted(
+        "record Ticket { id: i64 }\n\
+         instance Drop<Ticket> { fn drop value = Debug.print (ref value.id) }\n\
+         pure def read :: Ticket -> i64 = \\ticket -> ticket.id\n\
+         pure def count :: [Ticket] -> i64 = \\tickets -> tickets.length\n",
+    );
+    rejected(
+        "record Ticket { id: i64 }\n\
+         instance Drop<Ticket> { fn drop value = Debug.print (ref value.id) }\n\
+         pure def bad :: unit -> i64 = \\() -> (Ticket { id: 1 }).id\n",
+        "user Drop",
+    );
+}
+
+#[test]
+fn io_construction_is_deferred_but_execution_and_eager_captures_are_not() {
+    accepted(
+        "pure def action :: unit -> IO<unit> = \\() -> IO.write_line \"deferred\"\n\
+         pure def read :: unit -> IO<Maybe<string>> = \\() -> IO.read_line ()\n\
+         pure def composed :: unit -> IO<unit> = \\() -> IO.map (\\value -> { Debug.print (ref value); () }) (IO.pure 1)\n",
+    );
+    rejected(
+        "pure def bad :: unit -> IO<unit> = \\() -> { Debug.print (ref 1); IO.pure () }\n",
+        "debug output",
+    );
+    assert!(analyze(
+        "pure def bad :: unit -> unit = \\() -> { let action = IO.write_line \"not deferred\"; do! action; () }\n",
+    ).is_err());
+    rejected(
+        "pure def bad :: unit -> i64 = \\() -> { let callback = \\n -> { Debug.print (ref n); n }; let action = IO.map callback (IO.pure 1); callback 2 }\n",
+        "debug output",
+    );
+}
+
+#[test]
+fn cpu_specialized_pure_functions_keep_the_effect_contract() {
+    accepted("@cpu [\"avx2\"] pure def increment :: i64 -> i64 = \\value -> value + 1\n");
+    rejected(
+        "@cpu [\"avx2\"] pure def bad :: i64 -> i64 = \\value -> { Debug.print (ref value); value }\n",
+        "debug output",
+    );
 }
 
 #[test]
@@ -166,6 +299,37 @@ fn pure_def_own_parameters_are_values_and_require_plain_data() {
 }
 
 #[test]
+fn generic_pure_specializations_preserve_contracts_and_plain_data_obligations() {
+    let module = accepted(
+        "pure def length :: ['a] -> i64 = \\xs -> xs.length\n\
+         pure def identity :: own 'a -> 'a = \\value -> value\n\
+         pure def plus :: Add<'a> => own 'a -> own 'a -> 'a = \\left right -> left + right\n\
+         export def answer :: i64 = length [\"a\", \"bc\"] + (identity \"hello\").length + plus 20 15\n",
+    );
+    assert!(module.functions.iter().any(|function| {
+        function.origin.pure
+            && function.name.starts_with("identity.$mono.")
+            && function.signature.parameters == [Type::String]
+    }));
+    rejected(
+        "pure def inspect :: own 'a -> i64 = \\value -> 0\n\
+         def bad :: unit -> i64 = \\() -> inspect (Rc.new 1)\n",
+        "plain data",
+    );
+    rejected(
+        "pure def unused :: 'a -> i64 = \\value -> { let n = 1; Debug.print (ref n); n }\n",
+        "debug output",
+    );
+    rejected(
+        "record R { value: i64 }\n\
+         instance Add<R> { fn add left right = { Debug.print (ref left.value); left } }\n\
+         pure def plus :: Add<'a> => own 'a -> own 'a -> 'a = \\left right -> left + right\n\
+         def bad :: unit -> R = \\() -> plus (R { value: 1 }) (R { value: 2 })\n",
+        "debug output",
+    );
+}
+
+#[test]
 fn pure_def_own_keeps_existing_ownership_rules() {
     let error = analyze(
         "pure def eat :: own string -> i64 = \\s -> s.length\n\
@@ -206,7 +370,6 @@ fn inferred_pure_reads_have_ownership_guidance_but_explicit_refs_do_not() {
 #[test]
 fn pure_def_signature_rules_are_enforced_even_when_unused() {
     for (source, text) in [
-        ("pure def f :: ['a] -> i64 = \\xs -> xs.length", "concrete"),
         ("pure def f :: (i64 -> i64) -> i64 = \\f -> 0", "function"),
         (
             "record Callback { f: i64 -> i64 }\npure def f :: Callback -> i64 = \\x -> 0",

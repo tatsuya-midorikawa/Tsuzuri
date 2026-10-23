@@ -174,6 +174,7 @@ pub enum ParameterConvention {
 pub struct FunctionParameters {
     pub types: Vec<Type>,
     pub conventions: Box<[ParameterConvention]>,
+    pub pure: bool,
 }
 
 impl std::ops::Deref for FunctionParameters {
@@ -347,13 +348,30 @@ impl Type {
     }
 
     pub fn function(parameters: Vec<Type>, result: Type) -> Self {
-        Self::function_with_conventions(parameters, result, Vec::new())
+        Self::function_with_conventions(parameters, result, Vec::new(), false)
+    }
+
+    pub(crate) fn function_purity(&self) -> Option<bool> {
+        match self {
+            Self::Function(parameters, _) => Some(parameters.pure),
+            Self::Reference(inner, false) => inner.function_purity(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn set_function_purity(&mut self, pure: bool) {
+        match self {
+            Self::Function(parameters, _) => parameters.pure = pure,
+            Self::Reference(inner, false) => inner.set_function_purity(pure),
+            _ => {}
+        }
     }
 
     pub(crate) fn function_with_conventions(
         mut parameters: Vec<Type>,
         mut result: Type,
         mut conventions: Vec<ParameterConvention>,
+        pure: bool,
     ) -> Self {
         if conventions
             .iter()
@@ -361,8 +379,8 @@ impl Type {
         {
             conventions.clear();
         }
-        if !parameters.is_empty() {
-            while matches!(&result, Self::Function(more, _) if !more.is_empty()) {
+        if !pure && !parameters.is_empty() {
+            while matches!(&result, Self::Function(more, _) if !more.is_empty() && !more.pure) {
                 let Self::Function(more, tail) = result else {
                     unreachable!()
                 };
@@ -380,6 +398,7 @@ impl Type {
             Box::new(FunctionParameters {
                 types: parameters,
                 conventions: conventions.into_boxed_slice(),
+                pure,
             }),
             Box::new(result),
         )
@@ -395,11 +414,12 @@ impl Type {
         if count == parameters.len() {
             (**result).clone()
         } else {
-            let mut remaining = Self::function(parameters[count..].to_vec(), (**result).clone());
-            if let Self::Function(arguments, _) = &mut remaining {
-                arguments.conventions = parameters.conventions.get(count..).unwrap_or(&[]).into();
-            }
-            remaining
+            Self::function_with_conventions(
+                parameters[count..].to_vec(),
+                (**result).clone(),
+                parameters.conventions.get(count..).unwrap_or(&[]).to_vec(),
+                parameters.pure,
+            )
         }
     }
 
@@ -488,6 +508,14 @@ impl Type {
             Self::Handle(name) => type_display(name),
             Self::Dyn(dyn_type) => dyn_type.display(),
             Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display(types)),
+            Self::Function(parameters, _) if parameters.pure => {
+                let mut ordinary = self.clone();
+                let Self::Function(parameters, _) = &mut ordinary else {
+                    unreachable!()
+                };
+                parameters.pure = false;
+                format!("pure ({})", ordinary.display(types))
+            }
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(types))
             }
@@ -3470,6 +3498,7 @@ pub struct FunctionOrigin {
     /// `syntax::CPU_TARGETS` (F08 Phase 3). Generated helpers have none.
     pub cpu: u8,
     pub pure: bool,
+    pub pure_values: bool,
 }
 
 impl FunctionOrigin {
@@ -3483,6 +3512,7 @@ impl FunctionOrigin {
             bench: None,
             cpu: 0,
             pure: false,
+            pure_values: false,
         }
     }
 
@@ -6036,6 +6066,7 @@ fn validate_public_type(
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
         | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -7085,7 +7116,7 @@ fn check_modules_collect(
                     ty
                 };
                 parameters.push(ty);
-                reads.push(read);
+                reads.push(read || classes.reads_parameter(&function.name.text, reads.len()));
             }
             let result = resolve_type_with_kinds(&function.result, module, &names, &kinds)?;
             validate_size(&result, &types, function.result.span)?;
@@ -7129,13 +7160,6 @@ fn check_modules_collect(
             }
             polymorph::bounded_type(&signature.as_type(), function.name.span)?;
             let variables = polymorph::variables(&signature.as_type());
-            if function.pure && (!variables.is_empty() || !function.constraints.is_empty()) {
-                return Err(Diagnostic::new(
-                    "E1029",
-                    "a pure def must have a concrete signature; remove type variables and constraints",
-                    function.name.span,
-                ));
-            }
             if external_functions.contains_key(&id) {
                 if !variables.is_empty() {
                     return Err(Diagnostic::new(
@@ -7258,6 +7282,7 @@ fn check_modules_collect(
             }
             default_reads.insert(id, reads.clone());
             Ok(Scheme {
+                pure: function.pure,
                 signature,
                 parameter_conventions: reads
                     .into_iter()
@@ -7518,6 +7543,7 @@ fn check_modules_collect(
                         bench: bench_functions.get(&id).copied(),
                         cpu: cpu_levels.get(&id).copied().unwrap_or(0),
                         pure: function.pure,
+                        pure_values: checker.pure_values,
                         ..FunctionOrigin::source(names.origin(module))
                     },
                     name: function.name.text.clone(),
@@ -7615,6 +7641,7 @@ fn check_modules_collect(
                 callback_contracts: Vec::new(),
                 region_slots: None,
                 origin: FunctionOrigin {
+                    pure_values: checker.pure_values,
                     provenance: Provenance::Generated,
                     ..FunctionOrigin::source(ModuleOrigin::User)
                 },
@@ -7786,6 +7813,8 @@ fn check_modules_collect(
         statics,
     };
     validate_callbacks(&module)?;
+    diagnostics.extend(pure_rules::validate_templates(&module));
+    diagnostics.check()?;
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
     crate::gpu_devices::retarget_calls(&mut module);
@@ -8629,6 +8658,27 @@ fn resolve_type_with_kinds(
                 expression.span,
             ));
         }
+        TypeExprKind::Pure(inner) => {
+            let mut ty = if let TypeExprKind::Function(parameters, result) = &inner.kind {
+                Type::function_with_conventions(
+                    parameters.iter().map(resolve).collect::<Result<_, _>>()?,
+                    resolve(result)?,
+                    Vec::new(),
+                    true,
+                )
+            } else {
+                resolve(inner)?
+            };
+            let Type::Function(parameters, _) = &mut ty else {
+                return Err(Diagnostic::new(
+                    "E1029",
+                    "'pure' qualifies a function type; write 'pure (T -> U)'",
+                    expression.span,
+                ));
+            };
+            parameters.pure = true;
+            ty
+        }
         TypeExprKind::ArrayView(_) => {
             return Err(Diagnostic::new(
                 "E1005",
@@ -8903,6 +8953,9 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Mut(inner) => {
                 TypeExprKind::Mut(Box::new(self.expand(inner, module, depth + 1)?))
             }
+            TypeExprKind::Pure(inner) => {
+                TypeExprKind::Pure(Box::new(self.expand(inner, module, depth + 1)?))
+            }
             TypeExprKind::Regions(inner, regions) => TypeExprKind::Regions(
                 Box::new(self.expand(inner, module, depth + 1)?),
                 regions.clone(),
@@ -9050,6 +9103,7 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Regions(inner, _)
             | TypeExprKind::Own(inner)
             | TypeExprKind::Mut(inner)
+            | TypeExprKind::Pure(inner)
             | TypeExprKind::Quantified(_, inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
@@ -9118,6 +9172,7 @@ fn reject_expanded_field_constraints(
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
         | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -9561,6 +9616,9 @@ impl Validation<'_> {
                 }
             }
             Type::Function(parameters, result) => {
+                if parameters.pure {
+                    pure_rules::check_function_type(ty, &self.layouts.types, span)?;
+                }
                 for parameter in parameters.iter() {
                     self.check(parameter, span)?;
                 }
@@ -9693,6 +9751,7 @@ struct Checker<'a> {
     default_reads: BTreeMap<usize, (String, String, bool)>,
     read_value_parameters: BTreeSet<usize>,
     read_conventions: bool,
+    pure_values: bool,
     poisoned: bool,
     recovering: bool,
     recovered: Vec<Diagnostic>,
@@ -9740,6 +9799,7 @@ impl<'a> Checker<'a> {
             default_reads: BTreeMap::new(),
             read_value_parameters: BTreeSet::new(),
             read_conventions: names.borrowing_modules.contains(module),
+            pure_values: false,
             poisoned: false,
             recovering: false,
             recovered: Vec::new(),
@@ -10017,11 +10077,22 @@ impl<'a> Checker<'a> {
             return Ok(TypedExpr::error(span));
         }
         if let Some(expected) = expected {
+            value = self.callable_effect(value, expected)?;
             if self.read_conventions
                 && matches!(expected, Type::Function(..) | Type::Infer(_))
                 && let target @ Type::Function(..) = self.inference.resolve(expected)
             {
                 value = self.callback_adapter(value, &target)?;
+            }
+            if value.ty.function_purity() == Some(true) && expected.function_purity() == Some(false)
+            {
+                let mut ty = value.ty.clone();
+                ty.set_function_purity(false);
+                value = TypedExpr {
+                    span,
+                    kind: TypedExprKind::Cast(Box::new(value)),
+                    ty,
+                };
             }
             self.same(&value.ty, expected, span)?;
         }
@@ -10951,6 +11022,11 @@ impl<'a> Checker<'a> {
             {
                 self.temporary_argument(expression, expected)
             }
+            ExprKind::Lambda(..)
+                if self.shared_reference(expected) && expected.function_purity() == Some(true) =>
+            {
+                self.temporary_argument(expression, expected)
+            }
             ExprKind::Integer(..)
             | ExprKind::Float(..)
             | ExprKind::BigInt(_)
@@ -11105,6 +11181,7 @@ impl<'a> Checker<'a> {
             Ok(converted) => return Ok(converted),
             Err(value) => value,
         };
+        value = self.callable_effect(value, &expected)?;
         if self.read_conventions {
             let target = match &expected {
                 Type::Reference(inner, false) if matches!(**inner, Type::Function(..)) => {
@@ -11169,6 +11246,43 @@ impl<'a> Checker<'a> {
             span,
             provenance: Provenance::Generated,
         }
+    }
+
+    fn callable_effect(
+        &mut self,
+        mut value: TypedExpr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let actual = self.inference.resolve(&value.ty);
+        let expected = self.inference.resolve(expected);
+        let (Some(actual), Some(expected)) = (actual.function_purity(), expected.function_purity())
+        else {
+            return Ok(value);
+        };
+        if actual == expected || !expected {
+            return Ok(value);
+        }
+        if expected
+            && !matches!(
+                value.kind,
+                TypedExprKind::Function(_)
+                    | TypedExprKind::GenericFunction(..)
+                    | TypedExprKind::Lambda { .. }
+                    | TypedExprKind::Closure(..)
+                    | TypedExprKind::Method(..)
+                    | TypedExprKind::TypeFunction { .. }
+            )
+        {
+            return Err(Diagnostic::new(
+                "E1029",
+                "an unknown ordinary callback cannot satisfy a pure function contract; pass a pure callback or a closed function",
+                value.span,
+            ));
+        }
+        value.ty = self.inference.resolve(&value.ty);
+        value.ty.set_function_purity(expected);
+        self.pure_values = true;
+        Ok(value)
     }
 
     fn callback_adapter(

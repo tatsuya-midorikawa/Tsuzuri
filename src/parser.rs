@@ -432,13 +432,18 @@ impl Parser<'_> {
                         "'@cpu' cannot apply to a 'const def'; the compiler evaluates it once, for no CPU level",
                     ));
                 }
+                let cpu_definition = self.position + usize::from(self.at(&TokenKind::Export));
                 if cpu.is_some()
-                    && !self.at(&TokenKind::Def)
-                    && !(self.at(&TokenKind::Export)
-                        && self
-                            .tokens
-                            .get(self.position + 1)
-                            .is_some_and(|token| token.kind == TokenKind::Def))
+                    && !self
+                        .tokens
+                        .get(cpu_definition)
+                        .is_some_and(|token| token.kind == TokenKind::Def)
+                    && !(self.tokens.get(cpu_definition).is_some_and(
+                        |token| matches!(&token.kind, TokenKind::Ident(name) if name == "pure"),
+                    ) && self
+                        .tokens
+                        .get(cpu_definition + 1)
+                        .is_some_and(|token| token.kind == TokenKind::Def))
                 {
                     return Err(
                         self.error("'@cpu' applies to the 'def' signature of a top-level function")
@@ -508,14 +513,17 @@ impl Parser<'_> {
                 while !self.eat(&TokenKind::RightBrace) {
                     let method_doc = self.take_doc();
                     let column = self.column(self.current().span);
+                    let pure = self.pure_function_ahead();
+                    if pure { self.position += 1; }
                     if self.eat(&TokenKind::Def) {
                         let method = self.ident()?;
                         self.type_colon("'::' before the method type")?;
                         let mut signature = self.signature(method.clone(), false, column)?;
+                        signature.pure = pure;
                         signature.doc = method_doc;
                         if self.eat(&TokenKind::Equal) {
                             let body = if self.at(&TokenKind::Backslash) { self.explicit_lambda()? } else { self.body_expression()? };
-                            defaults.push(Definition { name: method, recursion: None, parameters: Vec::new(), body });
+                            defaults.push(Definition { name: method, pure, recursion: None, parameters: Vec::new(), body });
                         }
                         methods.push(signature);
                     } else {
@@ -564,7 +572,7 @@ impl Parser<'_> {
                 let recursion = recursive.then(|| name.text.clone());
                 definition_group = recursion.clone();
                 defined_names.insert(name.text.clone());
-                definitions.push(Definition { name, recursion, parameters: Vec::new(), body });
+                definitions.push(Definition { name, pure: false, recursion, parameters: Vec::new(), body });
                 self.eat(&TokenKind::Semicolon);
             } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) || self.constant_function_ahead() || self.pure_function_ahead() {
                 let export = self.current().span;
@@ -640,7 +648,7 @@ impl Parser<'_> {
                         };
                         definition_group = recursion.clone();
                         defined_names.insert(name.text.clone());
-                        definitions.push(Definition { name: name.clone(), recursion, parameters: Vec::new(), body });
+                        definitions.push(Definition { name: name.clone(), pure, recursion, parameters: Vec::new(), body });
                     } else if multiple_cases {
                         return Err(self.error("multi-case active patterns require an inline lambda and the implicit result type 'T"));
                     } else if typed_continuation {
@@ -1544,6 +1552,14 @@ impl Parser<'_> {
     }
 
     fn instance_method(&mut self) -> Result<Definition, Diagnostic> {
+        let pure = matches!(&self.current().kind, TokenKind::Ident(name) if name == "pure")
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Fn | TokenKind::Let));
+        if pure {
+            self.position += 1;
+        }
         let anonymous = self.eat(&TokenKind::Let);
         if !anonymous {
             self.expect(&TokenKind::Fn, "a 'fn' or 'let' method definition, or '}'")?;
@@ -1551,6 +1567,7 @@ impl Parser<'_> {
         let recursive = self.eat(&TokenKind::Rec);
         let name = self.ident()?;
         let mut definition = self.definition(name.clone())?;
+        definition.pure = pure;
         definition.recursion = recursive.then_some(name.text);
         if anonymous
             && (!definition.parameters.is_empty()
@@ -1727,6 +1744,7 @@ impl Parser<'_> {
             self.body_expression()?
         };
         Ok(Definition {
+            pure: false,
             name,
             recursion: None,
             parameters,
@@ -1960,6 +1978,14 @@ impl Parser<'_> {
         let start = self.current().span;
         let kind = if self.eat(&TokenKind::Ampersand) || self.eat(&TokenKind::Ref) {
             self.reference_type(start)?
+        } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "pure")
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| token.kind == TokenKind::LeftParen)
+        {
+            self.position += 1;
+            TypeExprKind::Pure(Box::new(self.type_primary()?))
         } else if self.eat(&TokenKind::Mut) {
             TypeExprKind::Mut(Box::new(self.type_primary()?))
         } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "own")

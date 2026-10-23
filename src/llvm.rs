@@ -6534,6 +6534,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         if expression.ty == *to {
             return value;
         }
+        if let Some(pure) = to.function_purity() {
+            let mut from = expression.ty.clone();
+            from.set_function_purity(pure);
+            if from == *to {
+                return value;
+            }
+        }
         if let (Type::Integer(from, signed), Type::Integer(bits, _)) = (&expression.ty, to) {
             if from == bits {
                 return value;

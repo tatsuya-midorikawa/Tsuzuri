@@ -365,6 +365,15 @@ impl TypeContext<'_> {
         !self.walk_types(root, |ty| !found(ty), |_| false, true)
     }
 
+    pub(crate) fn reaches_closed(
+        &self,
+        root: &Type,
+        found: impl Fn(&Type) -> bool,
+        closed: impl Fn(&Type) -> bool,
+    ) -> bool {
+        !self.walk_types(root, |ty| !found(ty), closed, true)
+    }
+
     fn walk_types(
         &self,
         root: &Type,

@@ -513,7 +513,8 @@ fn define_declarations(
                     None,
                 )
             }));
-        for (declared, labels, kind, visibility, exported, constant, pure, declaration) in callables {
+        for (declared, labels, kind, visibility, exported, constant, pure, declaration) in callables
+        {
             let qualified = format!("{name}.{}", declared.text);
             let Some(function) = checked.get(&qualified) else {
                 continue;
@@ -1163,6 +1164,7 @@ fn type_entry(
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
         | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
