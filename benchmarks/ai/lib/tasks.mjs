@@ -35,7 +35,8 @@ function validateTask(task, type, ids) {
   for (const key of Object.keys(task)) if (!keys.includes(key)) fail(`unknown key '${key}'`);
   for (const key of ["id", "type", "prompt", ...required[type]]) if (!(key in task)) fail(`missing key '${key}'`);
   const letter = Object.keys(TYPES).find((key) => TYPES[key].name === type);
-  if (!new RegExp(`^${letter}-[0-9]{2}$`).test(task.id) || task.type !== type) fail("id and type must match the task file");
+  if (typeof task.id !== "string" || !new RegExp(`^${letter}-[0-9]{2}$`).test(task.id) ||
+      task.type !== type) fail("id and type must match the task file");
   if (ids.has(task.id)) fail("duplicate id");
   ids.add(task.id);
   if (!text(task.prompt)) fail("prompt must be a non-empty string");
@@ -70,7 +71,7 @@ function validateTask(task, type, ids) {
     if (!strings(task.expect) || JSON.stringify(task.expect) !== JSON.stringify([...new Set(task.expect)].sort())) fail("expect must be sorted and unique");
   }
   if (type === "diagnostic") {
-    if (!object(task.expect) || !/^E[0-9]{4}$/.test(task.expect.code) ||
+    if (!object(task.expect) || typeof task.expect.code !== "string" || !/^E[0-9]{4}$/.test(task.expect.code) ||
         !natural(task.expect.line) || task.expect.line < 1 ||
         Object.keys(task.expect).some((key) => !["code", "line"].includes(key))) fail("invalid diagnostic expect");
     for (const key of ["fix", "first_try"]) if (key in task) {

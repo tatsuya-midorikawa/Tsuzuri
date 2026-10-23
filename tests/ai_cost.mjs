@@ -137,6 +137,7 @@ test("unknown_and_missing_task_keys_are_rejected", () => {
   assert.throws(() => loadTasks(mutation("missing", (t) => { delete t.grep; })), /task A-01: missing key 'grep'/);
   assert.throws(() => loadTasks(mutation("bad-path", (t) => { t.corpus = ["../outside"]; })), /invalid logical path/);
   assert.throws(() => loadTasks(mutation("bad-need", (t) => { t.needs[0][2] = -1; })), /invalid need/);
+  assert.throws(() => loadTasks(mutation("bad-id", (t) => { t.id = ["A-01"]; })), /id and type must match/);
 });
 test("items_follow_the_keyword_rule", () => {
   const dir = join(scratch, "items");

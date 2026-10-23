@@ -570,8 +570,6 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 - **D14: Node 20 以降・パッケージなし・Windows 対象外。** 理由: README の要件。CI は Linux・macOS。パスと CRLF の差を持ち込まない。
 - **D15: 外部エージェントの結果は `tz-ai-external/1` の JSON Lines を人手で置く。`variant` は自由な条件名。** 理由: 実測が要る効果（ガイドで最初に書けたか）を同じ表で比べる。却下: 自動収集（鍵とネットワークが要る）。
 
-## 付録
-
 ## 実装と検証（2026-10-23）
 
 - 人間の全 Phase 承認に従い、Phase 1〜3 を同じ隔離 worktree・ブランチで実装しました。Node 20.19.6、外部パッケージ・LLM・ネットワーク呼び出しなしです。`src/`・`std/`・既存テスト・既存レポート helper は変更していません。
@@ -582,5 +580,7 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 - Phase 3 の外部 JSONL の検証・表、10 種の静的成果物の計測・サイズ上限、KB の事前構築・ID 解決・1/2 往復、MCP initialize/tools/list と終了処理を実装しました。G21/G27/G28/G29 自体は実装していません。不在の能力は測定値を捏造せず、明示した不在戦略はエラーです。
 - 文書: README、docs/ai-cost.md、docs/architecture.md、docs/benchmarks.md、付録の現行 API 追補。targets.yml の既存ベンチマーク検証に 1 行を追加しました。言語利用者の挙動は変わらないため、言語リファレンス・docs/language.md の更新と Rust の再ビルドは不要です。main の基準 CI `39954858404`（`41f80bc7`）は成功でした。
 - 主なファイル: benchmarks/ai/run.mjs、lib/{measure,corpus,tasks,derive,strategies,report,external,static,kb,mcp}.mjs、tasks/*.json（6）、corpus/shop/*.tz（6）・corpus/diag/c0*/Main.tz（7）、golden.sh、tests/ai_cost.mjs と上記文書です。
+
+## 付録
 
 [G31-appendix.md](G31-appendix.md): A タスクの一覧（37 件）、B タスクの JSON、C コーパスの全文、D 検証の記録（golden・型ごとの中央値・診断の実出力）、E 出力と検査の書式、F 後続 Phase の戦略、G テスト計画の表、H `docs/ai-cost.md` の骨格。
