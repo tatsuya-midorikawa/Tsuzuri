@@ -30,11 +30,10 @@ export function prepareKb(ctx, task) {
 export function resolveKbId(ctx, task, short, cwd = prepareKb(ctx, task)) {
   if (task.corpus[0] === "std") return short;
   const result = invoke(ctx.compiler, ["kb", "export", "--symbols"], cwd);
-  let ids = [];
-  if (result.status === 0) {
-    try { ids = result.stdout.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line).id); }
-    catch { throw new Error("kb export returned invalid symbols JSON"); }
-  }
+  if (result.status !== 0) return short;
+  let ids;
+  try { ids = result.stdout.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line).id); }
+  catch { throw new Error("kb export returned invalid symbols JSON"); }
   const matches = ids.filter((id) => typeof id === "string" && (id === short || id.endsWith(`::${short}`)));
   if (matches.length !== 1) throw new Error(`kb id '${short}': ${matches.length} matches`);
   return matches[0];

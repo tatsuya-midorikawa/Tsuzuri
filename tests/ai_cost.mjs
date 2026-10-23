@@ -380,6 +380,17 @@ if (a[0] === "mcp") {
   chmodSync(mockCompiler,0o755);
   return mockCompiler;
 }
+function mockVariant(name, source) {
+  const binary=put(join(scratch,`${name}.mjs`),`#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+const a=process.argv.slice(2);
+${source}
+const r=spawnSync(${JSON.stringify(mock())},a,{encoding:"utf8"});
+process.stdout.write(r.stdout ?? ""); process.stderr.write(r.stderr ?? ""); process.exit(r.status ?? 1);
+`);
+  chmodSync(binary,0o755);
+  return binary;
+}
 test("diag_v2_is_skipped_or_reads_related", () => {
   const ctx = context("v2-real"); ctx.caps = detectCapabilities(ctx);
   if (ctx.caps.diagV2) skip(ctx.caps.diagV2);
@@ -399,8 +410,20 @@ test("diag_fix_is_skipped_or_finishes_in_two_calls", () => {
   assert.equal(fallback.complete,true); assert.ok(fallback.agent.calls > 2);
 });
 test("unavailable_strategy_is_an_error", () => {
-  runTwice();
-  const names = ["diag-v2","diag-fix","kb","kb-oriented"].filter((name) => meta.skipped.some((s) => s.strategy === name));
+  const partial=mockVariant("partial-kb",`
+if(a[0]==="kb"&&a[1]==="find") { console.error("unknown subcommand 'find'"); process.exit(1); }
+`);
+  const fixture=context("partial-kb-probe",partial); fixture.caps=detectCapabilities(fixture);
+  assert.ok(fixture.caps.kb["type-search"]);
+  const fixtureTasks=join(scratch,"partial-kb-tasks"), out=join(scratch,"partial-kb-out");
+  put(join(fixtureTasks,"b-callers.json"),JSON.stringify({schema:"tz-ai-task/1",type:"callers",tasks:[task("B-05")]}));
+  ok(cli(["run","--compiler",partial,"--tasks",fixtureTasks,"--out",out,"--strategies","kb,kb-oriented"]));
+  const partialRows=readFileSync(join(out,"results.jsonl"),"utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(partialRows.map((row)=>[row.strategy,row.calls,row.complete]),[["kb",1,true],["kb-oriented",2,true]]);
+  assert.ok(JSON.parse(readFileSync(join(out,"meta.json"))).skipped.some((s)=>s.strategy==="kb"));
+  for(const strategy of STRATEGIES.filter((s)=>s.name.startsWith("kb"))) assert.equal(strategy.probe(fixture),null);
+  const ctx=context("unavailable-real"); ctx.caps=detectCapabilities(ctx);
+  const names=STRATEGIES.filter((strategy)=>strategy.probe?.(ctx)).map((strategy)=>strategy.name);
   if (!names.length) skip("all optional strategies are available");
   for (const name of names) {
     const result = cli(["run","--compiler",compiler,"--out",join(scratch,`unavailable-${name}`),"--strategies",name]);
@@ -452,6 +475,26 @@ test("kb_strategies_are_skipped_or_use_one_call", () => {
   assert.equal(basename([...fixture.kbProjects.values()][0]),"shop");
   assert.equal(resolveKbId(fixture,task("A-05"),"Catalog.Item"),"Shop::Catalog.Item");
   assert.throws(()=>resolveKbId(fixture,task("A-05"),"Missing.x"),/0 matches/);
+  const ambiguous=mockVariant("ambiguous-kb",`
+if(a[0]==="kb"&&a[1]==="export") {
+  for(const id of ["Shop::Orders.order_total","Other::Orders.order_total"]) console.log(JSON.stringify({id}));
+  process.exit(0);
+}
+`);
+  assert.throws(()=>resolveKbId(context("ambiguous-kb-query",ambiguous),task("B-05"),"Orders.order_total"),/2 matches/);
+  const broken=mockVariant("broken-kb",`
+if(a[0]==="kb"&&["build","export"].includes(a[1])) { console.error("error[E2009]: kb_incomplete"); process.exit(1); }
+if(a[0]==="kb"&&a[1]==="callers"&&a.length>2) { console.error("error[E2009]: kb_incomplete"); process.exit(1); }
+`);
+  const failed=context("broken-kb-query",broken);
+  assert.equal(resolveKbId(failed,task("B-05"),"Orders.order_total"),"Orders.order_total");
+  assert.deepEqual([kb(failed,task("B-05")).agent.calls,kb(failed,task("B-05")).complete],[1,false]);
+  const fixtureTasks=join(scratch,"broken-kb-tasks"), out=join(scratch,"broken-kb-out");
+  put(join(fixtureTasks,"b-callers.json"),JSON.stringify({schema:"tz-ai-task/1",type:"callers",tasks:[task("B-05")]}));
+  ok(cli(["run","--compiler",broken,"--tasks",fixtureTasks,"--out",out]));
+  const failedRows=readFileSync(join(out,"results.jsonl"),"utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(failedRows.filter((row)=>row.strategy.startsWith("baseline")&&row.complete).length,3);
+  assert.deepEqual(failedRows.filter((row)=>row.strategy.startsWith("kb")).map((row)=>row.complete),[false,false]);
   runTwice();
   const rows=results.filter((r)=>r.task==="B-05"&&r.strategy.startsWith("kb"));
   if(!rows.length) skip("G27/G28 kb commands unavailable");

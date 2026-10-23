@@ -580,6 +580,7 @@ node benchmarks/ai/run.mjs task ID [--tasks DIR]
 - 公開レポートも 2 回生成して byte 一致を確認しました。変更文書のリンク・アンカー 6 件が成功し、既存の `check-docs.mjs`（検査対象は `_tsuzuri/` のみ）で関連する引数順序のページを検査しました: **1 ページ・41 リンク・3 例・native O0/O3 の 6 実行が成功**。コンパイラを走らせる最終文書検証には隔離した `TSUZURI_CACHE_DIR` を使い、共有キャッシュは変更・削除していません。
 - Phase 3 の外部 JSONL の検証・表、10 種の静的成果物の計測・サイズ上限、KB の事前構築・ID 解決・1/2 往復、MCP initialize/tools/list と終了処理を実装しました。G21/G27/G28/G29 自体は実装していません。不在の能力は測定値を捏造せず、明示した不在戦略はエラーです。
 - PR #43 の Copilot レビューの 7 指摘を修正しました: KB コピーの basename 保持、正しいプロジェクトでの能力検出、falsy な needs の拒否、ファイル欠落時の論理パスによる決定的な理由、制御した文書 fixture、スキップ数に応じた件数検査、CI では drift を許す通常 verify です。各回帰ケースと深い MCP 応答の安全な拒否を追加し、再び **40 passed・0 failed・5 skipped** を確認しました。固定 golden は未変更です。
+- 再レビューの KB 2 件も修正しました。型別の不在を戦略全体の不在と混同しないテストと、build/export 失敗時にも短い ID で照会し、成功した baseline と不完全な KB 行を保存する回帰テストを追加しました。export 成功時の ID 欠落・曖昧性は引き続きエラーです。export 失敗の回帰は修正前に `0 matches` で失敗し、修正後の全体は **40 passed・0 failed・5 skipped** です。
 - 文書: README、docs/ai-cost.md、docs/architecture.md、docs/benchmarks.md、付録の現行 API 追補。targets.yml の既存ベンチマーク検証に 1 行を追加しました。言語利用者の挙動は変わらないため、言語リファレンス・docs/language.md の更新と Rust の再ビルドは不要です。main の基準 CI `39954858404`（`41f80bc7`）は成功でした。
 - 主なファイル: benchmarks/ai/run.mjs、lib/{measure,corpus,tasks,derive,strategies,report,external,static,kb,mcp}.mjs、tasks/*.json（6）、corpus/shop/*.tz（6）・corpus/diag/c0*/Main.tz（7）、golden.sh、tests/ai_cost.mjs と上記文書です。
 
