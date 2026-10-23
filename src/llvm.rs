@@ -1054,6 +1054,24 @@ pub fn emit_bench_runner_with(
     selected: &[usize],
     f16: F16Path,
 ) -> Result<String, Diagnostic> {
+    emit_bench_runner_in(module, selected, f16, Allocator::System)
+}
+
+/// A separate counting runner: allocation instrumentation never disturbs benchmark timings.
+pub fn emit_bench_allocation_runner(
+    module: &CheckedModule,
+    selected: &[usize],
+    f16: F16Path,
+) -> Result<String, Diagnostic> {
+    emit_bench_runner_in(module, selected, f16, Allocator::Counting)
+}
+
+fn emit_bench_runner_in(
+    module: &CheckedModule,
+    selected: &[usize],
+    f16: F16Path,
+    allocator: Allocator,
+) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.benches.len()) {
         return Err(Diagnostic::new(
             "E2000",
@@ -1069,6 +1087,7 @@ pub fn emit_bench_runner_with(
         false,
         Instrumentation {
             f16,
+            allocator,
             ..Instrumentation::default()
         },
     )
@@ -1567,6 +1586,20 @@ fn emit_program_in(
             "define i32 @tsuzuri_bench_count() {{\nentry:\n  ret i32 {}\n}}",
             selected.len()
         );
+        if instrumentation.allocator == Allocator::Counting {
+            output.push_str(
+                "define void @tsuzuri_bench_counts(ptr %out) {\nentry:\n  \
+                 %allocs = call i64 @tz.heap.counter(i64 0)\n  \
+                 store i64 %allocs, ptr %out, align 8\n  \
+                 %reallocs = call i64 @tz.heap.counter(i64 1)\n  \
+                 %second = getelementptr inbounds i64, ptr %out, i64 1\n  \
+                 store i64 %reallocs, ptr %second, align 8\n  \
+                 %bytes = call i64 @tz.heap.counter(i64 3)\n  \
+                 %third = getelementptr inbounds i64, ptr %out, i64 2\n  \
+                 store i64 %bytes, ptr %third, align 8\n  \
+                 ret void\n}\n",
+            );
+        }
         output.push_str("define i64 @tsuzuri_bench_sample(i32 %index, i64 %iterations) {\nentry:\n  switch i32 %index, label %bad [\n");
         for index in 0..selected.len() {
             let _ = writeln!(output, "    i32 {index}, label %bench{index}");

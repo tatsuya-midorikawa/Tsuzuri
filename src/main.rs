@@ -46,7 +46,7 @@ Usage:
     tsuzuri test source.tz|directory --index N -g -o PATH [-O0|-O1|-O2|-O3] [--seed N] [--json]
                              Build test N alone with debug information as PATH without running it;
                              a debugger starts PATH with the printed argument 0
-    tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
+    tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N] [--allocs]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
     tsuzuri watch check|build|test source.tz|directory [options of that command]
                              Run it again each time a source or manifest that it reads changes
@@ -333,6 +333,8 @@ struct Arguments {
     coverage: Option<PathBuf>,
     /// `tsuzuri bench --samples N`.
     bench_samples: Option<usize>,
+    /// Report allocation counts from a separate counting runner.
+    bench_allocs: bool,
     /// `tsuzuri test --seed N`: the property-test seed.
     test_seed: Option<u64>,
     /// `--no-server`: `check` and `build` run in this process even where a build server runs.
@@ -360,6 +362,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             test_indices: Vec::new(),
             coverage: None,
             bench_samples: None,
+            bench_allocs: false,
             test_seed: None,
             no_server: false,
         });
@@ -413,6 +416,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut test_indices = Vec::new();
     let mut coverage = None;
     let mut bench_samples = None;
+    let mut bench_allocs = false;
     let mut test_seed = None;
     let mut debug_output = false;
     let mut trap_info = false;
@@ -526,6 +530,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             .ok_or("test filter must be UTF-8")?
                             .to_owned(),
                     );
+                    continue;
+                }
+                Some("--allocs") => {
+                    if bench_allocs {
+                        return Err("allocs specified more than once".into());
+                    }
+                    bench_allocs = true;
                     continue;
                 }
                 Some("--samples") => {
@@ -956,6 +967,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if bench_samples.is_some() && action != Action::Bench {
         return Err("--samples is only valid with bench".into());
     }
+    if bench_allocs && action != Action::Bench {
+        return Err("--allocs is only valid with bench".into());
+    }
     if test_seed.is_some() && action != Action::Test {
         return Err("--seed is only valid with test".into());
     }
@@ -1091,6 +1105,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         test_indices,
         coverage,
         bench_samples,
+        bench_allocs,
         test_seed,
         no_server,
     })
@@ -1563,6 +1578,7 @@ fn run_bench_action(
         samples: arguments
             .bench_samples
             .unwrap_or(driver::DEFAULT_BENCH_SAMPLES),
+        allocs: arguments.bench_allocs,
         triple: arguments.options.triple,
     };
     if options
@@ -1633,7 +1649,11 @@ fn run_bench_action(
         let qualified = format!("{}.{}", case.module, case.name);
         match (result.statistics(), &result.failure) {
             (Some((median, min, max)), None) => {
+                let counts = result.alloc_calls.zip(result.alloc_bytes);
                 if arguments.json {
+                    let allocations = counts.map_or_else(String::new, |(calls, bytes)| {
+                        format!(",\"alloc_calls\":{calls},\"alloc_bytes\":{bytes}")
+                    });
                     let samples = result
                         .samples_ms
                         .iter()
@@ -1641,7 +1661,7 @@ fn run_bench_action(
                         .collect::<Vec<_>>()
                         .join(",");
                     println!(
-                        "{{\"type\":\"bench\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"passed\",\"workload\":{},\"target\":\"native\",\"opt\":\"O{}\",\"cpu_mode\":\"generic\",\"metric\":\"wall_time\",\"unit\":\"ms\",\"iterations\":{},\"samples\":[{samples}],\"median\":{},\"min\":{},\"max\":{}}}",
+                        "{{\"type\":\"bench\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"passed\",\"workload\":{},\"target\":\"native\",\"opt\":\"O{}\",\"cpu_mode\":\"generic\",\"metric\":\"wall_time\",\"unit\":\"ms\",\"iterations\":{},\"samples\":[{samples}],\"median\":{},\"min\":{},\"max\":{}{allocations}}}",
                         case.index,
                         json_string(&case.module),
                         json_string(&case.name),
@@ -1653,9 +1673,12 @@ fn run_bench_action(
                         number(max)
                     );
                 } else {
+                    let allocations = counts.map_or_else(String::new, |(calls, bytes)| {
+                        format!(", alloc_calls {calls}, alloc_bytes {bytes} per iteration")
+                    });
                     let (scale, unit) = bench_unit(median);
                     println!(
-                        "bench {} {}: median {:.3} {unit} (min {:.3} {unit}, max {:.3} {unit}; {} samples of {} iterations)",
+                        "bench {} {}: median {:.3} {unit} (min {:.3} {unit}, max {:.3} {unit}; {} samples of {} iterations){allocations}",
                         case.index,
                         qualified.escape_debug(),
                         median * scale,
@@ -4589,6 +4612,7 @@ mod tests {
             "Speed.tz",
             "--samples",
             "5",
+            "--allocs",
             "--list",
             "--index",
             "1",
@@ -4598,6 +4622,7 @@ mod tests {
         .unwrap();
         assert_eq!(bench.action, Action::Bench);
         assert_eq!(bench.bench_samples, Some(5));
+        assert!(bench.bench_allocs);
         assert_eq!(bench.options.optimization, OptLevel::O3);
         assert!(bench.test_list && bench.test_filter.as_deref() == Some("total"));
         assert_eq!(bench.test_indices, vec![1]);
@@ -4621,9 +4646,18 @@ mod tests {
         assert_eq!(test.coverage, Some(PathBuf::from("c.info")));
         assert_eq!(test.test_seed, Some(u64::MAX));
         assert_eq!(test.bench_samples, None);
+        assert!(!test.bench_allocs);
         let samples = "bench samples must be an integer between 1 and 1000";
         let seed = "property seed must be an integer between 0 and 18446744073709551615";
         for (values, message) in [
+            (
+                vec!["test", "Main.tz", "--allocs"],
+                "--allocs is only valid with bench",
+            ),
+            (
+                vec!["bench", "Main.tz", "--allocs", "--allocs"],
+                "allocs specified more than once",
+            ),
             (
                 vec!["check", "Main.tz", "--coverage", "c.info"],
                 "--coverage is only valid with test",
