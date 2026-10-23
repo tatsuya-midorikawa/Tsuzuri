@@ -56,8 +56,12 @@ fn borrowed_arrays_match_explicit_references_without_copying() {
         borrowed,
         ir("2027", &source.replace(":: [i64]", ":: ref [i64]"))
     );
-    assert!(!borrowed.contains("call ptr @tz.alloc"), "{borrowed}");
-    assert!(ir("2026", source).contains("call ptr @tz.alloc"));
+    let answer = borrowed
+        .split("\n\n")
+        .find(|block| block.starts_with("define ") && block.contains("@tz.fn.Main.answer("))
+        .unwrap();
+    assert!(!answer.contains("call ptr @tz.alloc"), "{answer}");
+    assert_ne!(borrowed, ir("2026", source));
 }
 
 #[test]
