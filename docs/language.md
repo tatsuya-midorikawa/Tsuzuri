@@ -1529,8 +1529,10 @@ seed は時刻に依存しない固定値 `11400714819323198485` で、`tsuzuri 
 本体の型は `i64 -> i64`（反復回数を受け取り、準備を除いたその回数分の経過ナノ秒を返す関数）で、違えば本体の位置で `E1003` です。`tsuzuri check`／`build` はベンチ本体も型検査しますが、ベンチ本体とベンチ専用の特殊化は通常の成果物にもテスト実行器にも出力されません。
 標準モジュール `Bench`（名前を書いたプログラムだけが読み込む opt-in モジュール）は `Bench.with_input :: (unit -> 'a) -> (ref 'a -> 'b) -> i64 -> i64`（標本ごとに準備を 1 回呼び、その値を借用で `n` 回 `run` に渡す。準備と値の解放は計測しない）と `Bench.of :: (unit -> 'b) -> i64 -> i64` を提供し、`run` の結果は毎回 `Bench.consume` に渡されます。
 組み込みの `Bench.now()`（`fn() -> i64`、単調時計のナノ秒）は `tsuzuri bench` の実行器だけが定義します。ほかの出力では、`Bench.now` に（直接または他の関数を通して）到達する `export` していない関数は、公開でもほかの部分が使わない限り出力に入りません。トップレベルのコード、`export def`、実行するテスト、`Drop` の実装から到達すると、到達の起点と途中の最後の利用者の関数を示し、その関数の中で時計へ向かう式の位置で `E1018` です。`Bench.consume :: 'a -> unit` は値を move で受け取り、スタックに置いた値のアドレスをメモリを読み書きしうる空のインライン asm（`asm sideeffect "", "r,~{memory}"`）に渡してから通常どおり解放します（Rust の `black_box` と同じ障壁で、返り値・副作用・評価順序は変えません。どの出力でも使えます）。
-`tsuzuri bench <file|directory> [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0..-O3] [--target native]` は、ベンチごとに別プロセスで 1 件ずつ（並列にせず、上限 300 秒）、既定 `-O3` で、反復回数を 1 から 1 標本 10 ms（上限 2<sup>30</sup> 回）まで倍にし、予熱の 1 標本を捨てた後、`--samples`（1〜1000、既定 11）個の標本から 1 回あたりの時間の中央値・最小・最大を報告します。`--json` の行は `workload`・`target`・`opt`・`cpu_mode`・`metric`（`wall_time`）・`unit`（`ms`）・`iterations`・`samples`・`median`・`min`・`max` を持ちます。
+`tsuzuri bench <file|directory> [--list] [--filter TEXT] [--index N] [--json] [--samples N] [--allocs] [-O0..-O3] [--target native]` は、ベンチごとに別プロセスで 1 件ずつ（並列にせず、上限 300 秒）、既定 `-O3` で、反復回数を 1 から 1 標本 10 ms（上限 2<sup>30</sup> 回）まで倍にし、予熱の 1 標本を捨てた後、`--samples`（1〜1000、既定 11）個の標本から 1 回あたりの時間の中央値・最小・最大を報告します。`--json` の行は `workload`・`target`・`opt`・`cpu_mode`・`metric`（`wall_time`）・`unit`（`ms`）・`iterations`・`samples`・`median`・`min`・`max` を持ちます。
 速さの合否の閾値はなく、トラップ・時間切れ・負の時間を返したベンチだけが失敗（`E2005`、終了コード 1）です。ネイティブのみで、`--target wasm32`／`wasm64`、ビルド機で動かせない `--target TRIPLE`、不正な `--samples` は `E2000` です。
+
+`--allocs` は時間の実行器を変えず、別の counting 実行器を動かします。予熱の後、1 反復のカウンター増分 A と 2 反復の増分 B を測り、B − A を報告するので `Bench.with_input` の準備と解放が相殺されます。成功した JSON 行だけ `max` の後に `alloc_calls`（確保と再確保の合計）・`alloc_bytes`（要求サイズの累計、再確保は新サイズ全体、ヘッダーを除く）を整数で加えます。text は行末に `, alloc_calls N, alloc_bytes N per iteration` を加えます。指定しない出力と失敗・summary の行は変わりません。計数中の失敗は `allocation run: ...` の `E2005` で、負の差分も拒否します。計数の原子的な更新により、時間用実行器で LLVM が除去した確保も数えます。`--allocs` は `bench` 以外では `E2000`、時間用実行器での `Alloc` は従来どおり `E1018` です。
 
 ## 型とメモリ
 
@@ -4195,7 +4197,7 @@ VS Code 拡張も同じ 5 環境だけです。起動時とツールチェーン
 
 `tsuzuri build` の `--allocator system|host|counting|small` は、Tsuzuri が管理するすべてのヒープ確保（`@tz.alloc`／`@tz.free`／`@tz.realloc`。文字列・配列・Vec・関数値の環境・Task・dyn 値・`tsuzuri_alloc` で確保する所有バッファを含む）の行き先を選びます。
 `system`（既定）はネイティブで C ライブラリの `malloc`／`realloc`／`free`、WASM でモジュール内のヒープ（容量別のリストと小さなブロックのキャッシュ、終端のブロックのその場の拡張）で、指定しない場合と出力が一致します。
-`host` と `counting` は、ホストがリンクまたはインスタンス化する出力（`--emit object`、`llvm`、`header`、WASM）だけで使え、`--emit exe`・`wgsl`・`wgsl-relaxed`・`spirv`・`spirv-relaxed` と `--trap-mode return` との併用は `E2000` です。`build` 以外のコマンドは既定の allocator だけを使います。
+`host` はホストがリンクまたはインスタンス化する出力（`--emit object`、`llvm`、`header`、WASM）で使い、実行ファイルとは併用できません。`counting` は実行ファイルと共有ライブラリにも使えます。どちらもカーネル出力（`wgsl`・`wgsl-relaxed`・`spirv`・`spirv-relaxed`）と `--trap-mode return` との併用は `E2000` です。`run`・`test` も `--allocator counting` だけを受け、ほかの値・コマンドでは `--allocator is only valid with build` の `E2000` です。
 
 `--allocator host` の出力は、ホストがリンク時に定義する次の 3 関数を呼びます（`--emit header --allocator host` のヘッダーの `extern "C"` 区間に入ります）。
 
@@ -4223,6 +4225,13 @@ typedef struct {
 } tsuzuri_allocation_stats;
 void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 ```
+
+`Alloc` は opt-in の標準モジュールで、`Stats { allocs: i64, reallocs: i64, frees: i64, bytes: i64 }`、`snapshot :: unit -> Stats`、`since :: Stats -> Stats`、`measure :: (unit -> 'a) -> Stats * 'a` を提供します。
+`snapshot` は累計、`since` は以前の snapshot との差、`measure` は callback 1 回分の `(差分, 結果)` です。読み取り自体は確保せず、窓は入れ子にできます。`since` の対象 `Stats` は最後の引数です。
+確保は `allocs`、生きたブロックの正のサイズへの再確保は `reallocs`、解放は `frees` を増やします。null からの再確保は確保、サイズ 0 への再確保は解放、null の解放は無視します。`bytes` は確保サイズと再確保の新サイズ全体の累計で、16-byte ヘッダーを含みません。上記のホスト ABI の 32 バイト・4 フィールドは変わりません。
+カウンターはプロセス全体の原子的な 64-bit 符号なし累計を `i64` として読みます。単一スレッドで同じ処理なら決定的ですが、Task などの他スレッドも含み、複数フィールドの同時 snapshot ではありません。
+選んだテストが `Alloc` に到達するときだけ counting heap を自動連結します。普通のコード生成と `run` は明示の `--allocator counting` が必要で、なし・`system` なら `E1018`、`host`・`small` なら `E2000` です。公開の補助関数は、export や入口などから到達しなければ根から除きます。`check`・`doc`・`lsp` は型検査だけです。std の外から `Alloc.__counter` を呼ぶと `E1022` です。
+`measure` の捕捉した所有値は一意でないので、消費して更新する操作は snapshot/since で測ります。詳細と native/wasm32 × `-O0`/`-O3` の 42 契約は [Alloc](../_tsuzuri/language-reference/built-in-types-and-modules/alloc.md) にあります。
 
 `--allocator small` は native の 64-bit の target で使うサイズ区分の allocator です（PM05。既定ではありません）。実行ファイル（`--emit exe`）・`object`・`llvm`・`header`・`shared` に付けられ、WASM（`E2000`: `--allocator small requires a native target; WebAssembly modules keep their own heap`）・`wgsl`・`spirv`・`--trap-mode return`・`--freestanding` とは併用できません。
 0〜512 バイトの確保を、16 バイト刻みの 32 区分（16、32、……、512 バイトのブロック）から返します。それより大きい確保と、区分に属さないポインターは `system` と同じ C ライブラリの `malloc`・`realloc`・`free` です。ブロックにヘッダーはなく、戻り値は 16 バイト境界で、`tsuzuri_alloc`・`tsuzuri_free` の契約は変わりません。ホストへ返した所有バッファは、これまでどおり `tsuzuri_free` で解放します（`small` のブロックを C ライブラリの `free` へ渡すと壊れます）。

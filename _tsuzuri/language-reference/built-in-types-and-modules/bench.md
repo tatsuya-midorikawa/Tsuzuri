@@ -102,7 +102,7 @@ Main.tz:3:17: error[E1018]: Bench.now runs only under tsuzuri bench, but the top
 ## 実行する
 
 ```text
-tsuzuri bench ファイルまたはディレクトリ [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0|-O1|-O2|-O3] [--target native]
+tsuzuri bench ファイルまたはディレクトリ [--list] [--filter TEXT] [--index N] [--json] [--samples N] [--allocs] [-O0|-O1|-O2|-O3] [--target native]
 ```
 
 | オプション | 意味 |
@@ -112,6 +112,7 @@ tsuzuri bench ファイルまたはディレクトリ [--list] [--filter TEXT] [
 | `--list` | 型検査して一覧（`0 Speed.total 1e6` の形）だけ出す。実行しない |
 | `--json` | 結果を 1 行 1 JSON で標準出力へ出す |
 | `--samples N` | 標本の数。1〜1000、既定 11。範囲外は `E2000` |
+| `--allocs` | 別の実行器で 1 反復あたりの確保回数 `alloc_calls` と要求バイト数 `alloc_bytes` も測ります |
 | `-O0` から `-O3` | 最適化。既定は `-O3` |
 | `--target native` | ビルド機の target（`native` か、ビルド機と同じ triple）だけ。`wasm32`／`wasm64` と、ほかの `TRIPLE` は `E2000` |
 
@@ -156,6 +157,26 @@ bench 1 Speed.fixed cost: median 0.312 ns (min 0.311 ns, max 0.315 ns; 11 sample
 {"type":"bench","index":1,"module":"Speed","name":"fixed cost","status":"passed","workload":"Speed.fixed cost","target":"native","opt":"O3","cpu_mode":"generic","metric":"wall_time","unit":"ms","iterations":33554432,"samples":[3.12e-7,3.11e-7,3.15e-7],"median":3.12e-7,"min":3.11e-7,"max":3.15e-7}
 {"type":"summary","benchmarks":2,"failed":0,"ignored":0}
 ```
+
+### 確保数を測る
+
+`tsuzuri bench --allocs` は、時間用の実行器を変えず、計数 allocator の別の実行器を後から動かします。
+予熱の 1 反復の後、1 反復の増分 A と 2 反復の増分 B を読み、B − A を報告します。
+`Bench.with_input` の準備と解放は両方に含まれるので相殺されます。
+`alloc_calls` は確保と再確保の合計、`alloc_bytes` は要求サイズの累計（再確保は新サイズ全体、ヘッダーを除く）です。
+反復ごとに同じ処理なら決定的で、反復をまたいで成長する構造では 2 回目の反復の分になります。
+詳細は [Alloc](alloc.md) を見てください。
+
+成功した JSON 行だけ、`max` の後に `"alloc_calls":1,"alloc_bytes":80` のような整数の 2 キーが付きます。
+text は既存の行末に `, alloc_calls 1, alloc_bytes 80 per iteration` を付けます。
+失敗した bench と summary の行、`--allocs` を付けない text・JSON の書式は変わりません。
+計数中のトラップ・時間切れ・負の時間・負の確保数の差分は `allocation run: ...` の失敗となり、
+時間の結果を捨てて `E2005` を報告します。黙って計数なしの結果に戻しません。
+
+計数 heap の原子的な更新は LLVM に除去されないので、時間用実行器で LLVM が消した確保も数えます。
+計数の値は言語の確保規則を検査するためのものであり、実際の最適化済み実行器の `malloc` 呼び出し数とは限りません。
+計数のために時間用実行器での `Alloc` の読み取りを許可するわけではありません（`E1018`）。
+`--allocator` は `bench` では受けず、`--allocs` はほかのコマンドでは受けません（`E2000`）。
 
 ### 失敗と終了コード
 

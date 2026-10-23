@@ -3234,8 +3234,7 @@ pub(crate) fn reachable_functions(
     program_reach(module, roots, benches).1
 }
 
-/// Pushes the functions that `expression` refers to onto `pending`, and sets `clock` if it reads
-/// the clock `Bench.now`.
+/// Runtime resources whose readers need a dedicated runner or an explicit allocator.
 #[derive(Clone, Copy, Default)]
 struct Restricted {
     clock: bool,

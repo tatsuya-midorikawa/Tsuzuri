@@ -295,3 +295,43 @@ fn cli_test_with_allocator_counting_runs_programs_that_do_not_use_alloc() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn automatic_counting_also_works_in_coverage_and_debug_test_runners() {
+    let root = project("coverage-debug", EVENTS);
+    for optimization in ["-O0", "-O3"] {
+        let report = root.join("coverage.info");
+        let output = cli(
+            &root,
+            &[
+                "test",
+                root.to_str().unwrap(),
+                "--coverage",
+                report.to_str().unwrap(),
+                optimization,
+            ],
+        );
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("3 passed"));
+        assert!(report.is_file());
+
+        let executable = root.join(if cfg!(windows) { "debug.exe" } else { "debug" });
+        let output = cli(
+            &root,
+            &[
+                "test",
+                root.to_str().unwrap(),
+                "--index",
+                "0",
+                "-g",
+                "-o",
+                executable.to_str().unwrap(),
+                optimization,
+            ],
+        );
+        assert!(output.status.success(), "{output:?}");
+        let output = Command::new(executable).arg("0").output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
