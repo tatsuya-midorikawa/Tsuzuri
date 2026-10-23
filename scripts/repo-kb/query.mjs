@@ -77,7 +77,7 @@ export function symbolText(ctx, ticket, source) {
             cached = { source: text, items: publicItems(text) };
             symbolsCache.set(file.path, cached);
         }
-        const priority = item => source.includes(/\b(?:fn|struct|enum|trait|const|static|mod|type)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(item.signature)?.[1] ?? '\0') ? 0 : 1;
+        const priority = item => source.includes(item.name) ? 0 : 1;
         const selected = [...cached.items].sort((a, b) => priority(a) - priority(b) || a.line - b.line).slice(0, 10);
         if (selected.length) symbols.push(`=== PUBLIC SYMBOLS ${file.path} ===\n${selected.map(s => `L${s.line} ${s.signature}`).join('\n')}`);
     }

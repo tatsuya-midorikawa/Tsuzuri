@@ -142,10 +142,10 @@ export function publicItems(text) {
     const result = [];
     let offset = 0;
     for (const [i, line] of scanned.code.split('\n').entries()) {
-        if (/^[ \t]*pub(?:\([^)]*\))?\s+(?:(?:const|async|unsafe|extern)\s+)*(?:fn|struct|enum|trait|type|const|static|mod|union)\s+[A-Za-z_]/.test(line)
-            && !scanned.at(offset).test) {
+        const declaration = /^[ \t]*pub(?:\([^)]*\))?\s+(?:(?:const|async|unsafe|extern)\s+)*(?:fn|struct|enum|trait|type|const|static|mod|union)\s+(?:mut\s+)?((?:r#)?[A-Za-z_][A-Za-z0-9_]*)/.exec(line);
+        if (declaration && !scanned.at(offset).test) {
             const signature = original[i].trim();
-            result.push({ line: i + 1, signature: cp(signature) > 140 ? `${take(signature, 137)}...` : signature });
+            result.push({ line: i + 1, name: declaration[1], signature: cp(signature) > 140 ? `${take(signature, 137)}...` : signature });
         }
         offset += line.length + 1;
     }

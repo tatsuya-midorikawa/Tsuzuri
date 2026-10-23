@@ -85,6 +85,10 @@ test('rust_diag_sites_name_impl_and_fn', () => {
 test('rust_public_items_list_signature_lines', () => {
     assert.deepEqual(publicItems(rust()).map(s => s.line), [8, 13, 24, 30, 44]);
 });
+test('public_symbol_names_skip_declaration_modifiers', () => {
+    const text = 'pub const fn unix() {}\npub static mut SHARED: i32 = 0;\npub unsafe extern "C" fn external() {}\npub async unsafe fn promised() {}\npub union Payload { value: i32 }\n';
+    assert.deepEqual(publicItems(text).map(s => s.name), ['unix', 'SHARED', 'external', 'promised', 'Payload']);
+});
 
 const context = () => {
     const files = listFiles(mini);
@@ -633,6 +637,16 @@ test('interface_recovery_names_each_contributing_section', () => {
     const text = pack(ctx, fixtureKb(), 'A01', { maxChars: 16000 });
     assert.match(text, /section A01 needs/);
     assert.match(text, /section B02 gives/);
+});
+test('cited_const_function_is_prioritized_beyond_the_first_ten_symbols', () => {
+    const ctx = context();
+    const original = readFileSync(resolve(mini, '_features/A01-alpha.md'), 'utf8');
+    const code = Array.from({ length: 12 }, (_, i) => `pub fn early_${i}() {}`).join('\n') + '\npub const fn unix() {}\n';
+    ctx.texts = new Map([['_features/A01-alpha.md', original + '\nPlatform::unix\n'], ['src/check.rs', code]]);
+    const recovered = sectionText(ctx, fixtureKb(), 'A01', 'symbols');
+    assert.match(recovered, /pub const fn unix/);
+    assert.equal((recovered.match(/pub fn early_/g) ?? []).length, 9);
+    assert.match(pack(ctx, fixtureKb(), 'A01'), /pub const fn unix/);
 });
 test('symbol_recovery_reads_every_contributing_source', () => {
     const ctx = context();
