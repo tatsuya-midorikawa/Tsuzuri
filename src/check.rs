@@ -10936,13 +10936,16 @@ impl<'a> Checker<'a> {
         value: TypedExpr,
     ) -> Result<TypedExpr, Diagnostic> {
         // A bare name is a place unless it builds a value: a union case such as
-        // `Light`, or a call of a function without parameters.
+        // `Light`, or a call of a function without parameters. Projections use
+        // their typed value: `s.length`, `s[0]`, and `(f x).name` are not places.
         let place = match &expression.kind {
             ExprKind::Name(_) => !matches!(
                 value.kind,
                 TypedExprKind::Construct { .. } | TypedExprKind::Call(..)
             ),
-            ExprKind::Field(..) | ExprKind::Index(..) | ExprKind::Dereference(..) => true,
+            ExprKind::Field(..) | ExprKind::Index(..) | ExprKind::Dereference(..) => {
+                self.hole_place(&value)
+            }
             _ => false,
         };
         if place {
@@ -10969,6 +10972,26 @@ impl<'a> Checker<'a> {
                 span,
             },
         })
+    }
+
+    /// Keep parts of plain constants borrowed: folding turns them into static places.
+    #[inline(never)]
+    fn hole_place(&self, value: &TypedExpr) -> bool {
+        value.is_place() || self.constant_part(value)
+    }
+
+    #[inline(never)]
+    fn constant_part(&self, value: &TypedExpr) -> bool {
+        match &value.kind {
+            TypedExprKind::Field(base, _) => self.plain_constant(base) || self.constant_part(base),
+            TypedExprKind::Index(base, _) => {
+                matches!(
+                    base.ty,
+                    Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                ) && (self.plain_constant(base) || self.constant_part(base))
+            }
+            _ => false,
+        }
     }
 
     /// Checks the format specs of this body's holes against the final types.

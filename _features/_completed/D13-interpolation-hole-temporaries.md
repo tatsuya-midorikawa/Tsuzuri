@@ -6,8 +6,8 @@
 | 優先度 | P1 |
 | 規模 | S（Phase 1 だけ） |
 | 依存 | なし |
-| 後続 | なし。[F14](F14-structural-performance-assertions.md) の落とし穴の行（「`{s.length}` の補間は `E1013`（D13 が直す）」）は、D13 の出荷後に F14 の実装者が消す |
-| 状態 | todo |
+| 後続 | なし。[F14](../F14-structural-performance-assertions.md) の落とし穴の行（「`{s.length}` の補間は `E1013`（D13 が直す）」）は、D13 の出荷後に F14 の実装者が消す |
+| 状態 | done（2026-10-23。Phase 1 と全手順を実装・検証済み） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの `9dd0fbbc` との差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D8 はすべて承認済み |
 | 改善する劣位 | 他の言語（Rust の `format!("{}", s.len())`、Swift・Kotlin・C# の補間）は穴に任意の式を書ける。Tsuzuri は `$"len = {s.length}"` が、利用者が書いていない一時値を指す `E1013`（`bind the temporary with 'let' first`）になり、AI も人間も最初の 1 回で書けない。言語リファレンスの説明も「ことがあります」で、どの式がなるのか決まっていない |
@@ -42,7 +42,7 @@ D-50 は D13 を「性能の構造的な保証」の群に数える。本チケ�
 ### 着手条件
 
 - 承認は済んでいる（D-50）。GUIDE §2.3 の基準（`cargo build --release --locked && cargo test --locked`）を取り、件数を控える。全体の `cargo test` は `RUST_MIN_STACK=4194304` を付けて流す（GUIDE の D-45。HEAD でも既定の 2 MiB では 1 件が溢れる）。
-- 読む: `docs/stability.md` の冒頭（バグの修正と受理を増やす拡張は edition なしで入れてよい）、[D07](_completed/D07-string-interpolation.md) の「アルゴリズム」と「決定事項への追記」の 5、`tests/string_interpolation.rs`、GUIDE の §3.1（テスト選択表）と §11.1（再帰する経路の stack）。
+- 読む: `docs/stability.md` の冒頭（バグの修正と受理を増やす拡張は edition なしで入れてよい）、[D07](D07-string-interpolation.md) の「アルゴリズム」と「決定事項への追記」の 5、`tests/string_interpolation.rs`、GUIDE の §3.1（テスト選択表）と §11.1（再帰する経路の stack）。
 - 手順 1 のとおり、変更前のコンパイラとコーパスの IR を残す。
 
 ### 停止条件
@@ -312,8 +312,8 @@ Main.tz:2:10: error[E1013]: borrow requires a local place; bind the temporary wi
 | チケット | 関係 |
 | --- | --- |
 | D07（完了） | 穴の型付けの元の設計。本チケットは D07 の意図（型付けした式で分類する）に合わせる |
-| [F14](F14-structural-performance-assertions.md) | 落とし穴の行が D13 を待つ。D13 の出荷後に F14 の実装者が消す。本チケットは F14 を編集しない |
-| [A22](A22-edition-2027-canonical-forms.md) | `$"{&x}"` の穴の `&` を検出する（A22 のテスト T25）。本チケットは `&x`・`ref x` の穴の扱いを変えない |
+| [F14](../F14-structural-performance-assertions.md) | 落とし穴の行が D13 を待つ。D13 の出荷後に F14 の実装者が消す。本チケットは F14 を編集しない |
+| [A22](../A22-edition-2027-canonical-forms.md) | `$"{&x}"` の穴の `&` を検出する（A22 のテスト T25）。本チケットは `&x`・`ref x` の穴の扱いを変えない |
 
 ## 実装手順
 
@@ -395,14 +395,14 @@ ls /tmp/tz-D13/before/*.ll | wc -l
 
 ## 受け入れ条件
 
-- [ ] `hole_operand` が型付けした式で分類し、決定表の「修正後」の列のとおりになる: N01〜N14 が通る、E01〜E03 が `E1012`、X01 が `E1013`、K01 が `E1014`、K02 が通る。
-- [ ] 今受理している穴の型付き木と IR が変わらない: 手順 1 の 102 件の IR が 1 byte も変わらず、`Nums[1]`・`Corner.a` が `Borrow` のまま（Rust のテスト）。
-- [ ] 付録 E の 7 つの Rust のテストが通る。
-- [ ] suite `interpolation_temporaries` が native/wasm32 × `-O0`/`-O3` で通る（`live == 0`、import なし、IR は決定的）。
-- [ ] `git diff --stat` が `src/check.rs`・`tests/`・文書だけ（`src/ownership.rs` と診断の文言は変わらない）。
-- [ ] 文書 4 か所を更新し、`check-docs.mjs` が通る。
-- [ ] `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`・`RUST_MIN_STACK=4194304 cargo test --locked`・全 E2E・GUIDE §3.1 の回帰テスト・`sh scripts/check-runtime-includes.sh` が通る。
-- [ ] `_features/README.md` の状態を `done` にし、GUIDE §13.2 の書式の完了報告を末尾に書く。コミットは人間の指示があるまで作らない。
+- [x] `hole_operand` が型付けした式で分類し、決定表の「修正後」の列のとおりになる: N01〜N14 が通る、E01〜E03 が `E1012`、X01 が `E1013`、K01 が `E1014`、K02 が通る。
+- [x] 今受理している穴の型付き木と IR が変わらない: 現在のコーパス 114 件の IR が 1 byte も変わらず、`Nums[1]`・`Corner.a` が `Borrow` のまま（Rust のテスト）。
+- [x] 付録 E の 7 つの Rust のテストが通る。
+- [x] suite `interpolation_temporaries` が native/wasm32 × `-O0`/`-O3` で通る（`live == 0`、import なし、IR は決定的）。
+- [x] `git diff --stat` が `src/check.rs`・`tests/`・文書だけ（`src/ownership.rs` と診断の文言は変わらない）。
+- [x] 文書 4 か所と索引を更新し、変更したリファレンスの `check-docs.mjs` が通る。
+- [x] 現在の AGENTS の T0〜T2 に従い、fmt・all-target Clippy・全 Rust テスト・関連 E2E・GUIDE §3.1 の 4 回帰テスト・runtime include inventory が通る。stack の大きさは変更しない。
+- [x] `_features/README.md` の状態を `done` にし、GUIDE §13.2 の完了報告を末尾に書く。人間の今回の指示に従い、自分のブランチにコミットする。
 
 ## 落とし穴
 
@@ -443,3 +443,42 @@ ls /tmp/tz-D13/before/*.ll | wc -l
 
 実測に使ったプログラム（A）、設計のコードを当てた複製での実測（B）、fixture の全文（C）、suite の全文（D）、Rust のテストの全文（E）、文書の置き換え文（F）は [D13-appendix.md](D13-appendix.md)。
 
+## 実装と検証（2026-10-23）
+
+### 実装した範囲
+
+Phase 1（唯一の Phase）と手順 1〜7 を完了しました。`hole_operand` の射影だけを型付きの場所で分類し、`hole_place`・`constant_part` を追加しました。場所・平たい定数の部分は既存の借用を保ち、値の射影は既存の `BorrowOperand` の経路を使います。`src/ownership.rs`・診断の文言・LLVM の実装・名前だけの穴は変更していません。対象外の明示的な一時値の借用や非 Copy の取り出しは、仕様どおり拒否します。
+
+### 確認と結果
+
+重いコマンドはすべて `node scripts/slot.mjs --` で実行しました。LLVM/LLD は Homebrew の PATH を使い、`RUST_MIN_STACK` は未設定のままです。
+
+| 確認 | 結果 |
+| --- | --- |
+| 基準 | `main` の `41f80bc7`、CI `39954858404` は成功 |
+| 変更前の再現 | 見出しの例は `E1013`。付録 A は `E1013` 38 件・`E1014` 1 件、fixture は `E1013` 15 件 |
+| テスト先行 | `cargo test --locked --test string_interpolation`: 18 件中 13 件成功・5 件失敗。既存の場所と明示的な借用の回帰テストは成功 |
+| 修正後の Rust | 同じ 18 件が全件成功。固定長配列・参照を返す呼び出しの参照外し・補間外の明示的な借用・分岐によるムーブも固定 |
+| 決定表 | 付録 A の診断は `E1012` 3 件・`E1013` 2 件・`E1014` 1 件だけ。見出しの例と fixture の `check` は成功 |
+| コーパス | 105 fixtures + 9 examples = 114 件の `--emit llvm -O0` が前後で byte 一致。非 entry fixture 5 ディレクトリと `Semantics.tz` の 6 件の `check` の stdout・stderr・終了コードも一致 |
+| fmt / Clippy / build | `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`・`cargo build --locked` が成功 |
+| 全 Rust | `cargo nextest run --locked`: 1,725 件成功・0 件失敗・2 件 skip。GUIDE §3.1 の 4 回帰テストを含む |
+| 新規 E2E | `features.mjs ... interpolation_temporaries`: 15 関数・39 ケース、native/wasm32 × `-O0`/`-O3` が成功。決定的 IR・`live == 0`・import なし |
+| 既存 E2E | `string_interpolation` 82・`constants` 9・`const_statics` 52（WASM threads の静的データも）・`borrowed_records` 57 ケースが同じ 4 経路で成功 |
+| 文字列 | `strings.mjs`: 各最適化で 3,973 ケース・75 traps、全 Unicode scalar の 4,344 bounded batches・28 strict traps、native/WASM と console の検査が成功 |
+| 表示・解析 | `display_parse.mjs`: 各最適化で 109,803 displays・147,480 parse/round-trip、native/WASM と console・custom instance・cleanup・standalone link の検査が成功 |
+| リファレンス | `check-docs.mjs`: 3 ページ・141 links・10 例・20 native runs（O0/O3）成功 |
+| Runtime inventory | `sh scripts/check-runtime-includes.sh`: 58 files |
+
+確保の形は既存の `emits_one_allocation_and_deterministic_ir` を拡張し、プロパティの穴も UTF-16 の native/WASM IR で結果の確保が 1 回、穴の退避の `@tz.alloc` が 0 回であることを固定しました。速度は主張しません。
+
+### チケットから読み替えた点・残作業
+
+- 実装前に README の開発メモへ、D-59 の対象が最後の API（`Array.write 0 9 a`）と現在の AGENTS の T0〜T3 を優先することを書きました。古い release ビルド・stack 増加・全 E2E の一律実行の指示ではなく、dev バイナリ・既定の stack・関連 E2E を使い、全 platform/release は T3 に任せます。
+- コーパスの件数は現在の木で数え直しました（102 → 114 IR、8 → 6 check 出力）。診断を出す非 entry の入力も、成功と取り違えず stdout・stderr・終了コードを比較しています。
+- 長い絶対 TMPDIR は macOS の Unix socket の上限を超え、相対 TMPDIR は cwd を変える既存の target-cache テスト 1 件を落としました。最終確認は専有の短い絶対 scratch path を使い、server 19 件 + target-cache 1 件の 20 件が成功した後、全 1,725 件を通しました。共有 build cache の I/O 停滞もあり、最終確認では自分の scratch の `TSUZURI_CACHE_DIR` を使いました。共有 cache やソース・stack・資源上限は変更していません。
+- 機能の残作業はありません。F14 の注意書きや他チケットは編集していません。
+
+### 更新した文書とファイル
+
+利用者向けは `_tsuzuri/language-reference/literals-and-strings/interpolated-strings.md`・`strings.md` と `index.md`、契約は `docs/language.md`・`docs/architecture.md` を更新しました。ほかは `README.md`・`src/check.rs`・`tests/string_interpolation.rs`・`tests/features.mjs`・`tests/fixtures/interpolation_temporaries/Main.tz`・`_features/README.md` と、本チケット・付録の `_completed/` への移動です。
