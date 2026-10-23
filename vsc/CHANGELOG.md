@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 - 2026-10-23
+
+- Update the bundled compiler, standard library, completions, and offline handbook with the merged `Array`, `List`, and `Vec` API improvements.
+- **Breaking change:** standard-library transformations take their subject last so pipelines and function composition work consistently. Update existing calls to forms such as `Array.get index array`, `Map.insert key value map`, and `String.sub first count text`; resource-handle, numeric, compiler-protocol, and test/benchmark entry points retain their documented ordering.
+- Expand the F#-style `Array` and `List` functions and their borrowing variants, and provide .NET `List<T>`-style `Vec` operations with subject-last arguments.
+- Include the collection sorting and hashing fixes for NaN values and borrowed comparers/keys, with the behavior and limitations documented in the bundled module reference pages.
+
 ## 0.1.3 - 2026-10-22
 
 - Require an Apple Silicon (ARM64) Clang when building and verifying the bundled macOS toolchain, and reject Intel macOS launcher hosts and targets even when a target is specified explicitly.
