@@ -323,8 +323,14 @@ impl Parser<'_> {
                             .tokens
                             .get(self.position + 2)
                             .is_some_and(|token| token.kind == TokenKind::Def))
+                    || (self.tokens.get(self.position + 1).is_some_and(
+                        |token| matches!(&token.kind, TokenKind::Ident(name) if name == "pure"),
+                    ) && self
+                        .tokens
+                        .get(self.position + 2)
+                        .is_some_and(|token| token.kind == TokenKind::Def))
             }
-            _ => false,
+            _ => self.pure_function_ahead(),
         }
     }
 
@@ -358,6 +364,7 @@ impl Parser<'_> {
         let mut definition_group = None;
         // Whether the group of the last `def rec` signature is a `const def rec` (D11).
         let mut constant_group = false;
+        let mut pure_group = false;
         let mut diagnostics = Vec::new();
         let header = |parser: &mut Self, keyword: &str, diagnostics: &mut Vec<Diagnostic>| {
             if !parser.header_ahead(keyword) {
@@ -559,7 +566,7 @@ impl Parser<'_> {
                 defined_names.insert(name.text.clone());
                 definitions.push(Definition { name, recursion, parameters: Vec::new(), body });
                 self.eat(&TokenKind::Semicolon);
-            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) || self.constant_function_ahead() {
+            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) || self.constant_function_ahead() || self.pure_function_ahead() {
                 let export = self.current().span;
                 let exported = self.eat(&TokenKind::Export);
                 if exported && self.at(&TokenKind::Extern) { return Err(Diagnostic::new("E1008", "extern declarations cannot be exported", export)); }
@@ -570,6 +577,10 @@ impl Parser<'_> {
                 let constant = self.eat(&TokenKind::Const);
                 if constant && !self.at(&TokenKind::Def) {
                     return Err(Self::misplaced_const(constant_span));
+                }
+                let pure = self.pure_function_ahead();
+                if pure {
+                    self.position += 1;
                 }
                 let declaration = self.eat(&TokenKind::Def);
                 let continuation = self.eat(&TokenKind::And);
@@ -606,6 +617,8 @@ impl Parser<'_> {
                     signature.visibility = visibility;
                     signature.constant = if continuation { constant_group } else { constant };
                     constant_group = signature.constant;
+                    signature.pure = if continuation { pure_group } else { pure };
+                    pure_group = signature.pure;
                     if signatures.contains_key(&name.text) || program.externs.iter().any(|external| external.name.text == name.text) {
                         return Err(Diagnostic::new(
                             "E1001",
@@ -674,6 +687,7 @@ impl Parser<'_> {
                     visibility: Visibility::Public,
                     exported,
                     constant: false,
+                    pure: false,
                     parameters,
                     result,
                     constraints: Vec::new(),
@@ -714,6 +728,7 @@ impl Parser<'_> {
                 signature_group = None;
                 definition_group = None;
                 constant_group = false;
+                pure_group = false;
             } else if program.entry.is_some() {
                 break;
             } else {
@@ -824,6 +839,9 @@ impl Parser<'_> {
         if !self.eat(&TokenKind::Private) {
             return Ok(Visibility::Public);
         }
+        if self.pure_function_ahead() {
+            return Ok(Visibility::Private);
+        }
         let next = self.current();
         let message = match next.kind {
             TokenKind::Record
@@ -851,6 +869,14 @@ impl Parser<'_> {
     /// `const` directly before `def`: a const function, not a constant (D11).
     fn constant_function_ahead(&self) -> bool {
         self.at(&TokenKind::Const)
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| token.kind == TokenKind::Def)
+    }
+
+    fn pure_function_ahead(&self) -> bool {
+        matches!(&self.current().kind, TokenKind::Ident(name) if name == "pure")
             && self
                 .tokens
                 .get(self.position + 1)
@@ -1655,6 +1681,7 @@ impl Parser<'_> {
             visibility: Visibility::Public,
             exported,
             constant: false,
+            pure: false,
             parameters,
             result,
             constraints,
@@ -1757,6 +1784,7 @@ impl Parser<'_> {
             visibility: signature.visibility,
             exported: signature.exported,
             constant: signature.constant,
+            pure: signature.pure,
             parameters: definition
                 .parameters
                 .into_iter()

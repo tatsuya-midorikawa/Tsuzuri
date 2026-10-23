@@ -1057,3 +1057,21 @@ def main :: unit -> i32 = \() ->
 `Type::Handle`（`extern type` のハンドル）の破棄が何もしないことは確かめていない。保守的に `own` の型から除く（D15）。
 
 平たいデータの値渡しが期待どおりの値を返すことは、付録 B の fixture の `own` の 4 つの関数（`pure` と `own` を外した値渡しの `def`）で、`n = 0..12` の 13 行すべてが独立した JavaScript の計算と一致した。
+
+## 実装と検証（2026-10-23、進行中）
+
+- 基盤は A18 の `594ef574`。`pure` の構文・codec・cache、具体的な署名の読み取り補完、
+  plain-data の `own`、特殊化と closure lowering 後の有界な効果検証、文書・editor・api-diff の印を実装した。
+  式と builtin は wildcard なしで分類し、再帰の途中の関数を純粋と仮定する cache は使わない。
+- 後続項目のうち、補完した引数に限る所有権の案内と、閉じた根からの明示的な Task／Parallel の検証を実装した。
+  関数・Task・dyn を含む入力は拒否し、生成される callback の効果をすべてたどる。
+  Array の自動並列化、呼び出しの消去・並べ替え、memo 化、結果の共有は実装していない。
+- fmt、全 target の clippy（警告をエラー）、検証器 3 件・codec 14 件・api-diff 24 件・pure 16 件は通過。
+  `pure_functions` 162 ケース＋2 trap、`pure_parallel` 12 ケース＋1 trap が native／WASM × O0／O3 で通過。
+  付録 E の 8 プログラムは保存した旧 compiler・現在の通常 def・pure def の計 36 検査が一致した。
+  文書は 6 ページ・254 link・38 例・76 native 実行、runtime include 58 件が通過した。
+- 全 Rust suite と旧 project corpus の byte 単位 IR 比較は未完了。全 Phase 完了ではない。
+  generic pure、pure 関数型、std の契約付与、IO action の構築、CPU／instance、
+  解決後の api-diff、最適化への利用は未実装。チケットは完了ディレクトリへ移さない。
+- F14 との統合時には新しい `Builtin::AllocCounter` を `Category::Debug` に分類する必要がある。
+  現在の base にこの variant はなく、網羅 match によって追加を見落とした統合は compile error になる。

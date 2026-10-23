@@ -148,6 +148,20 @@ fn defs_are_removed_added_or_changed() {
 }
 
 #[test]
+fn adding_a_pure_contract_is_compatible_and_removing_it_is_breaking() {
+    check(
+        "def f :: i64 -> i64 = \\x -> x\n",
+        "pure def f :: i64 -> i64 = \\x -> x\n",
+        &["non-breaking changed def Main.f"],
+    );
+    check(
+        "pure def f :: i64 -> i64 = \\x -> x\n",
+        "def f :: i64 -> i64 = \\x -> x\n",
+        &["breaking changed def Main.f"],
+    );
+}
+
+#[test]
 fn const_def_is_part_of_the_signature() {
     // A `const` initializer of another module may call a const def, so dropping `const` breaks it,
     // while making a def a const def only adds a use. The body is not part of the API.

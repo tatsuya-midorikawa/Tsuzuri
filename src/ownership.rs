@@ -314,6 +314,7 @@ fn default_parameter_hint(
                     error,
                     &parameter.name,
                     &inner.display(&module.types()),
+                    function.origin.pure,
                 );
                 return;
             }

@@ -262,6 +262,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/abi.rs`、`src/llvm_abi.rs` | host ABI の型の対応、公開 wrapper と C header（E05） |
 | `src/cache.rs` | 全ビルドの cache。SHA-256、metadata、writer lock、GC（G11） |
 | `src/constants.rs`、`src/const_machine.rs`、`src/const_rules.rs`、`src/const_static.rs` | 定数の評価と型付きリテラルへの展開（D06）。`const def` の明示スタックの評価器（`Machine`）、署名と本体の規則（`Type`／`TypedExprKind` を `_ =>` なしで振り分ける）、平たいデータの定数の静的データ（D11） |
+| `src/pure_rules.rs` | A19 の署名・平たい所有データ・純粋性の検査。閉じた根からの到達可能性と D-53 の問い合わせ口 |
 | `src/derive.rs` | `deriving` の instance を通常の AST として生成（A07） |
 | `src/docgen.rs` | API 文書の生成（G09） |
 | `src/exhaustiveness.rs` | match の網羅性検査（A03） |
@@ -1717,6 +1718,11 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - **freshness**: `tsuzuri kb verify` は入力の SHA-256 を計算し直して `manifest.json` と比べ、違えば `E2009`（`stale`）。`kb` の照会コマンドは、古ければ自動で作り直す（`--no-refresh` で止める）。
 
 ### D-53 効果の語彙と検査付き属性の共通仕様（A19・A20・A21・A23・E15・F15・G26・B10）
+
+2026-10-23 の A19 後続範囲の実装判断: 明示した Task／Parallel は、入力に不透明な関数・Task・dyn がなく、
+全コールバックを閉じた到達グラフで検査できる根に限って許可する。問い合わせもこの根の条件を検査し、
+不明なら純粋としない。`builtin_impure` は Task のプリミティブ単体を引き続き不純とする（単体には閉じた根の証明がない）。
+自動並列化やトラップを消す最適化には使わず、既存の明示した並行 API の失敗・待機の意味は変えない。
 
 - **効果の名前**（`effects` の値。小文字の ASCII。この 14 個で閉じている）: `io`（コンソール・`IO`・`Async`）、`os`（`File`・`Dir`・`Env`・`Time`・`Random`・`Process`・`Os.__*`）、`net`、`task`（`Task`・`Parallel`、および失敗の領域を作る `Domain.run`（B10）。`Domain.run` は `alloc` も持つ）、`atomic`（`Atomic`・`Mutex`・`Channel`）、
   `rc`（`Rc`・`Arc` の参照カウントの観測）、`extern`、`debug`（`Debug.print`・`Debug.trace`）、`user_drop`（利用者の `Drop` を持つ型の解放）、`gpu`、`alloc`（ヒープの確保をしうる）、`trap`（プログラムの論理によるトラップをしうる）、`copy`（長さに比例する暗黙の複製をしうる）、`diverge`（停止しないかもしれない）。

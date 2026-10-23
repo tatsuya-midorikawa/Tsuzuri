@@ -497,6 +497,7 @@ fn define_declarations(
                     declaration.visibility,
                     declaration.exported,
                     declaration.constant,
+                    declaration.pure,
                     Some(declaration),
                 )
             })
@@ -508,10 +509,11 @@ fn define_declarations(
                     external.visibility,
                     external.exported,
                     false,
+                    false,
                     None,
                 )
             }));
-        for (declared, labels, kind, visibility, exported, constant, declaration) in callables {
+        for (declared, labels, kind, visibility, exported, constant, pure, declaration) in callables {
             let qualified = format!("{name}.{}", declared.text);
             let Some(function) = checked.get(&qualified) else {
                 continue;
@@ -547,7 +549,13 @@ fn define_declarations(
             } else {
                 format!(
                     "{}def {shown}.{} :: {}",
-                    if constant { "const " } else { "" },
+                    if constant {
+                        "const "
+                    } else if pure {
+                        "pure "
+                    } else {
+                        ""
+                    },
                     declared.text,
                     declaration.map_or_else(
                         || function.signature.as_type().display(types),
@@ -724,7 +732,13 @@ pub(super) fn collect(
                     declaration.body.span,
                     format!(
                         "{}def {shown}.{} :: {}",
-                        if declaration.constant { "const " } else { "" },
+                        if declaration.constant {
+                            "const "
+                        } else if declaration.pure {
+                            "pure "
+                        } else {
+                            ""
+                        },
                         function.name,
                         declaration_signature(declaration, function, &types)
                     ),

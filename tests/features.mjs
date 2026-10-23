@@ -434,6 +434,42 @@ const descending = (n) => Array.from({ length: n }, (_, i) => BigInt(n - 1 - i))
 const ascending = (n) => Array.from({ length: n }, (_, i) => BigInt(i));
 
 const suites = {
+  pure_parallel: {
+    cases: [
+      ...[0n, 1n, 4095n, 4096n, 4097n, 8192n].map((n) => ["parallel_sum", [n], n * (n + 1n)]),
+      ...[0n, 1n, 99n].flatMap((n) => [["run_task", [n], n + 1n], ["run_pair", [n], 3n * n + 1n]]),
+    ],
+    traps: [["parallel_trap", [4097n]]],
+  },
+  pure_functions: {
+    cases: (() => {
+      const range = (n) => Array.from({ length: Number(n) }, (_, i) => BigInt(i));
+      const expectations = {
+        square_sum: (n) => range(n).reduce((sum, i) => sum + i * i, 0n),
+        greeting: (n) => 2n * n + 12n,
+        doubled_sum: (n) => n * (n + 1n),
+        local_update: (n) => {
+          const xs = [1n, 2n, 3n, 4n];
+          for (const i of range(n)) xs[Number(i % 4n)] = i * 3n;
+          return xs[0] + 10n * xs[1] + 100n * xs[2] + 1000n * xs[3];
+        },
+        largest_x: (n) => range(n).reduce((max, i) => { const x = (i * 7n) % 11n; return x > max ? x : max; }, 0n),
+        renamed: (n) => 2n * n + 2n,
+        first_or: (n) => n % 2n === 0n ? n : 0n,
+        pick: (n) => (n + 1n) + ((n % 3n) + 1n) * (n + 1n),
+        with_first_own: (n) => 101n * n + 91n,
+        build_list: (n) => range(n + 1n).slice(1).reduce((acc, i) => acc * 3n + i, 0n),
+        shout: (n) => n + 1n,
+        pick_own: (n) => n % 2n === 0n ? n : n + 1n,
+      };
+      return [
+        ...Object.entries(expectations).flatMap(([name, expected]) => range(13n).map((n) => [`t_${name}`, [n], expected(n)])),
+        ...[0n, 1n, 5n, 10n, 20n].map((n) => ["t_fact", [n], range(n + 1n).slice(1).reduce((acc, i) => acc * i, 1n)]),
+        ["t_unused_trap", [0n], 0n],
+      ];
+    })(),
+    traps: [["t_unused_trap", [-1n]], ["t_unused_trap", [2n]]],
+  },
   conventions: {
     cases: [
       ["borrowed_text", [], 2n * BigInt("hello".length)],

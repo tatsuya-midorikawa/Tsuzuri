@@ -140,7 +140,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A16 | [固定長配列と const ジェネリクス](_completed/A16-fixed-arrays.md) | P2 | XL | A01, D06, (F04) | done |
 | A17 | [暗黙の複製の除去（最終使用の move と所有する scrutinee の match 束縛の move）](_completed/A17-last-use-move.md) | P1 | L | A15 | done |
 | A18 | [引数規約: 読み取りを既定にする（`own`、edition 2027）](_completed/A18-parameter-conventions.md) | P2 | XL | A15, G19, (A17) | done（Phase 1〜4、2026-10-24。[PR48](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/48)、未マージ） |
-| A19 | [純粋関数 `pure def`（副作用のない関数を署名で保証。引数は共有借用か `own`）](A19-pure-functions.md) | P2 | L | D11, A15, B07, F10, C10, (A17) | todo（承認済み） |
+| A19 | [純粋関数 `pure def`（副作用のない関数を署名で保証。引数は共有借用か `own`）](A19-pure-functions.md) | P2 | L | D11, A15, B07, F10, C10, (A17) | 実装中（Phase 1 と後続範囲を検証中、全 Phase 未完了） |
 | A20 | [効果の要約と検査付き関数属性（`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`）](A20-effect-summary-and-checked-attributes.md) | P1 | XL | (A19), (G22) | todo（承認済み） |
 | A21 | [契約 `@requires`／`@ensures`（off／check／test／prove）](A21-contracts-requires-ensures.md) | P2 | XL | A19, (A20), (G22) | todo（承認済み） |
 | A22 | [edition 2027 の正準形（`..<`／`..=`・接尾辞・借用の表記・旧ラムダ）と移行](A22-edition-2027-canonical-forms.md) | P1 | L | (G22), (G24) | todo（承認済み） |

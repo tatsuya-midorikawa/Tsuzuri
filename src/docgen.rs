@@ -327,7 +327,13 @@ fn render_declarations(program: &Program) -> String {
         let prefix = format!(
             "{}{}def{}",
             if declaration.exported { "export " } else { "" },
-            if declaration.constant { "const " } else { "" },
+            if declaration.constant {
+                "const "
+            } else if declaration.pure {
+                "pure "
+            } else {
+                ""
+            },
             if declaration.recursion.is_some() {
                 " rec"
             } else {

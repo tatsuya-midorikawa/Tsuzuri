@@ -2677,6 +2677,7 @@ fn instance_function(
         visibility: Visibility::Public,
         exported: false,
         constant: false,
+        pure: false,
         parameters,
         result: type_expression(
             &substitute(

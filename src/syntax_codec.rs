@@ -853,6 +853,7 @@ impl Wire for FunctionDecl {
             visibility,
             exported,
             constant,
+            pure,
             parameters,
             result,
             constraints,
@@ -865,6 +866,7 @@ impl Wire for FunctionDecl {
         visibility.put(out)?;
         exported.put(out)?;
         constant.put(out)?;
+        pure.put(out)?;
         parameters.put(out)?;
         result.put(out)?;
         constraints.put(out)?;
@@ -883,6 +885,7 @@ impl Wire for FunctionDecl {
             visibility: Visibility::get(input)?,
             exported: bool::get(input)?,
             constant: bool::get(input)?,
+            pure: bool::get(input)?,
             parameters: Vec::get(input)?,
             result: TypeExpr::get(input)?,
             constraints: Vec::get(input)?,
@@ -901,6 +904,7 @@ impl Wire for SignatureDecl {
             visibility,
             exported,
             constant,
+            pure,
             parameters,
             result,
             constraints,
@@ -913,6 +917,7 @@ impl Wire for SignatureDecl {
         visibility.put(out)?;
         exported.put(out)?;
         constant.put(out)?;
+        pure.put(out)?;
         parameters.put(out)?;
         result.put(out)?;
         constraints.put(out)?;
@@ -928,6 +933,7 @@ impl Wire for SignatureDecl {
             visibility: Visibility::get(input)?,
             exported: bool::get(input)?,
             constant: bool::get(input)?,
+            pure: bool::get(input)?,
             parameters: Vec::get(input)?,
             result: TypeExpr::get(input)?,
             constraints: Vec::get(input)?,
@@ -2522,6 +2528,13 @@ mod tests {
     const SMALL: &str = "/// A point.\nrecord P { x: i64 }\n\ndef f :: i64 -> i64 = \\x -> x + 1\n\ntest \"f\" = f 1 == 2\n\nf 2\n";
 
     #[test]
+    fn preserves_pure_contracts_and_own_parameters() {
+        let source = "pure def f :: own string -> i64 = \\s -> s.length\npure def g :: i64 -> i64\nfn g n = n + 1\n";
+        assert!(round_trips(source, 0).is_some());
+        assert_ne!(interface(source), interface(&source.replace("pure ", "")));
+    }
+
+    #[test]
     fn rejects_every_truncation() {
         let program = parse_with_source_all(SMALL, 0).unwrap();
         let bytes = encode(&program, 0, Mode::Full).unwrap();
@@ -2664,7 +2677,7 @@ add_one 41
 
     const GOLDEN: &str = concat!(
         "000000000000000101084120706f696e742e000c0100015014150100000001017818190100000369",
-        "36341b1e010000000001000166262701000000000000010178393a010000036936342b2e01000000",
+        "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
         "03693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
         "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000003002245",

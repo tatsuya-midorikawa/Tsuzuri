@@ -26,6 +26,8 @@ mod higher_kinds;
 pub use higher_kinds::{Constructor, Partial};
 #[path = "polymorph.rs"]
 mod polymorph;
+#[path = "pure_rules.rs"]
+pub(crate) mod pure_rules;
 #[path = "recursion.rs"]
 mod recursion;
 #[path = "recursive.rs"]
@@ -3467,6 +3469,7 @@ pub struct FunctionOrigin {
     /// The CPU levels that `@cpu` also compiles the function for, bit `L` for level `L` of
     /// `syntax::CPU_TARGETS` (F08 Phase 3). Generated helpers have none.
     pub cpu: u8,
+    pub pure: bool,
 }
 
 impl FunctionOrigin {
@@ -3479,6 +3482,7 @@ impl FunctionOrigin {
             test: None,
             bench: None,
             cpu: 0,
+            pure: false,
         }
     }
 
@@ -3488,6 +3492,7 @@ impl FunctionOrigin {
             provenance: Provenance::Generated,
             parent: Some(parent),
             cpu: 0,
+            pure: false,
             ..self
         }
     }
@@ -3666,9 +3671,10 @@ pub(crate) fn has_explicit_parameter_regions(ty: &TypeExpr) -> bool {
     regions::has_regions(ty)
 }
 
-pub(crate) fn read_only_hint(error: &mut Diagnostic, name: &str, ty: &str) {
+pub(crate) fn read_only_hint(error: &mut Diagnostic, name: &str, ty: &str, pure: bool) {
+    let context = if pure { "pure def" } else { "edition 2027" };
     error.message.push_str(&format!(
-        "; parameter '{name}' is read-only by default (edition 2027); write 'own {ty}' in the signature to take ownership"
+        "; parameter '{name}' is read-only by default ({context}); write 'own {ty}' in the signature to take ownership"
     ));
 }
 
@@ -4581,6 +4587,7 @@ struct Names {
     constants: BTreeSet<usize>,
     /// The functions declared `const def` (D11), by function id.
     const_functions: BTreeSet<usize>,
+    pure_functions: BTreeSet<usize>,
     /// The values of the `i64` constants with an integer literal value, which can be lengths (A16).
     length_constants: BTreeMap<usize, u64>,
     active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
@@ -4723,6 +4730,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
         visibility: Visibility::Private,
         exported: false,
         constant: false,
+        pure: false,
         parameters: vec![Parameter {
             name: named("$iterations"),
             ty: i64_type(),
@@ -6352,6 +6360,7 @@ fn check_modules_collect(
                     visibility: constant.visibility,
                     exported: false,
                     constant: false,
+                    pure: false,
                     parameters: Vec::new(),
                     result: constant.ty.clone(),
                     constraints: Vec::new(),
@@ -6416,6 +6425,7 @@ fn check_modules_collect(
                     visibility: external.visibility,
                     exported: false,
                     constant: false,
+                    pure: false,
                     parameters: external
                         .parameters
                         .iter()
@@ -6478,6 +6488,7 @@ fn check_modules_collect(
                     visibility: Visibility::Private,
                     exported: false,
                     constant: false,
+                    pure: false,
                     parameters: Vec::new(),
                     result: TypeExpr {
                         kind: TypeExprKind::Named("unit".into()),
@@ -6953,6 +6964,9 @@ fn check_modules_collect(
         if function.constant {
             names.const_functions.insert(id);
         }
+        if function.pure {
+            names.pure_functions.insert(id);
+        }
         if function.name.text == "_"
             || Builtin::ALL
                 .iter()
@@ -7025,6 +7039,7 @@ fn check_modules_collect(
                 .is_some_and(|edition| edition.borrows_parameters())
                 && !external_functions.contains_key(&id)
                 && !names.const_functions.contains(&id)
+                && !function.pure
                 && !function.name.text.starts_with("$instance.")
                 && !(entry_module == Some(module.as_str()) && function.name.text == "main");
             let kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
@@ -7051,14 +7066,19 @@ fn check_modules_collect(
                 };
                 let ty = resolve_type_with_kinds(expression, module, &names, &kinds)?;
                 validate_size(&ty, &types, parameter.ty.span)?;
-                let read = borrow_defaults
+                let owned = matches!(parameter.ty.kind, TypeExprKind::Own(_));
+                if function.pure {
+                    pure_rules::check_parameter(parameter, &ty, owned, &types)?;
+                }
+                let read = (borrow_defaults
                     && !parameter.mutable
                     && !matches!(
                         parameter.ty.kind,
                         TypeExprKind::Own(_) | TypeExprKind::Mut(_)
                     )
                     && !regions::has_regions(&parameter.ty)
-                    && read_by_default(&ty, &types);
+                    && read_by_default(&ty, &types))
+                    || (function.pure && pure_rules::borrow_parameter(&ty, owned, &types));
                 let ty = if read || mutable {
                     Type::Reference(Box::new(ty), mutable)
                 } else {
@@ -7109,6 +7129,13 @@ fn check_modules_collect(
             }
             polymorph::bounded_type(&signature.as_type(), function.name.span)?;
             let variables = polymorph::variables(&signature.as_type());
+            if function.pure && (!variables.is_empty() || !function.constraints.is_empty()) {
+                return Err(Diagnostic::new(
+                    "E1029",
+                    "a pure def must have a concrete signature; remove type variables and constraints",
+                    function.name.span,
+                ));
+            }
             if external_functions.contains_key(&id) {
                 if !variables.is_empty() {
                     return Err(Diagnostic::new(
@@ -7441,9 +7468,10 @@ fn check_modules_collect(
                     if reads.get(parameters.len()) == Some(&true)
                         && let Type::Reference(inner, _) = ty
                     {
-                        checker
-                            .default_reads
-                            .insert(local.id, (local.name.clone(), inner.display(&types)));
+                        checker.default_reads.insert(
+                            local.id,
+                            (local.name.clone(), inner.display(&types), function.pure),
+                        );
                         if types.reaches(inner, |part| {
                             matches!(part, Type::Variable(_) | Type::Function(..))
                         }) {
@@ -7489,6 +7517,7 @@ fn check_modules_collect(
                         test: test_functions.get(&id).copied(),
                         bench: bench_functions.get(&id).copied(),
                         cpu: cpu_levels.get(&id).copied().unwrap_or(0),
+                        pure: function.pure,
                         ..FunctionOrigin::source(names.origin(module))
                     },
                     name: function.name.text.clone(),
@@ -7801,6 +7830,7 @@ fn check_modules_collect(
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);
     }
+    diagnostics.extend(pure_rules::validate(&module));
     if let Err(error) = validate_cpu_functions(&module) {
         diagnostics.push(error);
     }
@@ -9660,7 +9690,7 @@ struct Checker<'a> {
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
-    default_reads: BTreeMap<usize, (String, String)>,
+    default_reads: BTreeMap<usize, (String, String, bool)>,
     read_value_parameters: BTreeSet<usize>,
     read_conventions: bool,
     poisoned: bool,
@@ -9881,9 +9911,9 @@ impl<'a> Checker<'a> {
                     .find_map(|scope| scope.get(&root.text))
                 && let Type::Reference(inner, false) = self.inference.resolve(&local.ty)
                 && *inner == self.inference.resolve(expected)
-                && let Some((name, ty)) = self.default_reads.get(&local.id)
+                && let Some((name, ty, pure)) = self.default_reads.get(&local.id)
             {
-                read_only_hint(&mut error, name, ty);
+                read_only_hint(&mut error, name, ty, *pure);
             }
             error
         });

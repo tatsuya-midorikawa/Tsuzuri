@@ -218,6 +218,7 @@ struct Item {
     constant: bool,
     /// Conservative until API comparison resolves parameter types and aliases.
     borrowing_defaults: Vec<bool>,
+    pure: bool,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
     derives: BTreeSet<&'static str>,
@@ -244,6 +245,7 @@ impl Item {
             exported: false,
             constant: false,
             borrowing_defaults: Vec::new(),
+            pure: false,
             members: Vec::new(),
             derives: BTreeSet::new(),
             doc: None,
@@ -265,6 +267,9 @@ impl Item {
         }
         if self.constant {
             text.push_str("const ");
+        }
+        if self.pure {
+            text.push_str("pure ");
         }
         text.push_str(&self.shown);
         text
@@ -627,6 +632,7 @@ fn add_items(
             Item::new("def", qualified(&name), header).documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
         item.constant = declaration.constant;
+        item.pure = declaration.pure;
         let (parameters, _) = flatten(
             declaration
                 .parameters
@@ -639,7 +645,7 @@ fn add_items(
             .iter()
             .enumerate()
             .map(|(index, parameter)| {
-                edition.borrows_parameters()
+                (edition.borrows_parameters() || declaration.pure)
                     && !declaration.constant
                     && !declaration.parameters.get(index).is_some_and(|p| p.mutable)
                     && match &parameter.kind {
@@ -1063,13 +1069,15 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         || old.exported != new.exported
         || old.constant != new.constant
         || old.borrowing_defaults != new.borrowing_defaults
+        || old.pure != new.pure
     {
-        // Exporting what was not exported, or making a def a const def, adds a symbol or a use
+        // Exporting or adding a const/pure contract adds a symbol or a use
         // and changes nothing else; revoking either breaks the code that relied on it.
         let widened = old.header == new.header
             && old.exported <= new.exported
             && old.constant <= new.constant
-            && old.borrowing_defaults == new.borrowing_defaults;
+            && old.borrowing_defaults == new.borrowing_defaults
+            && old.pure <= new.pure;
         changes.push(Change {
             breaking: !widened,
             action: Action::Changed,

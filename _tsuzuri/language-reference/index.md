@@ -33,6 +33,7 @@
 - [ステートメント](./values-and-functions/statements.md)
 - [特殊文字](./values-and-functions/tokens.md)
 - [関数 / 高階関数 / 再帰関数](./values-and-functions/functions.md)
+- [純粋関数（`pure def`）](./values-and-functions/functions.md#純粋関数pure-def)
 - [ジェネリック関数と型パラメータ制約](./values-and-functions/generics-functions.md)
 - [ラムダ式](./values-and-functions/lambda-expressions.md)
 - [属性](./values-and-functions/attributes.md)
