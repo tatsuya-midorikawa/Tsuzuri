@@ -39,11 +39,11 @@ const CrcTable: [i32u] = [
 ]
 
 // The byte at `index` of the buffer that every variant checksums.
-def byte_at :: i64 -> i32u
+def byte_at :: own i64 -> i32u
 fn byte_at index = ((index * 7 + 3) & 255) as i32u
 
 // The table is read in place: `CrcTable[...]` in the loop.
-export def crc_in_place :: i64 -> i64
+export def crc_in_place :: own i64 -> i64
 fn crc_in_place count =
     let mut crc = ~(0 as i32u)
     for i in 0 .. count - 1 do
@@ -51,7 +51,7 @@ fn crc_in_place count =
     (~crc) as i64
 
 // The table is bound once, so the loop reads a copy of it.
-export def crc_bound :: i64 -> i64
+export def crc_bound :: own i64 -> i64
 fn crc_bound count =
     let table = CrcTable
     let mut crc = ~(0 as i32u)
@@ -60,7 +60,7 @@ fn crc_bound count =
     (~crc) as i64
 
 // The table is bound inside the loop, as each use of a constant was before static data.
-export def crc_copied :: i64 -> i64
+export def crc_copied :: own i64 -> i64
 fn crc_copied count =
     let mut crc = ~(0 as i32u)
     for i in 0 .. count - 1 do

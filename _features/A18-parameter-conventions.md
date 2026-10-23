@@ -7,7 +7,7 @@
 | 規模 | XL（Phase 1 は L） |
 | 依存 | A15（done）、G19（done。edition）、(A17)。A17 は弱い依存: A17 を先に入れると、`own` を付けた Copy コレクションの引数と更新の複製が減る。着手の順は A17 → A18 を推奨する。[A19](A19-pure-functions.md) とは、`own` の構文（`TypeExprKind::Own`）を共有する。A19 は `pure def` の引数だけで先に導入し（A19 の D16）、本チケットは受理する位置を通常の `def` の引数へ広げる。どちらが先でも、後のほうは再実装せず、受理する位置の規則だけを足す（D11） |
 | 後続 | Phase 2（移行ツールと std・fixture の移行、`LATEST` の更新）、Phase 3（ジェネリックな裸の型変数と関数型の引数）、Phase 4（`mut` の引数規約と要素・フィールドの代入） |
-| 状態 | todo |
+| 状態 | Phase 1〜4 実装・全ローカル検証済み。PR48 の最終 CI／review 待ち |
 | 起票 | 2026-10-13（人間の依頼「『次の一手』を進めて、開発チケットを作成して」。推奨案 A（引数規約）の実装チケット。HEAD `2282fd96` で確認） |
 | 承認 | **要承認: D1**（無印の引数を読み取りにする。言語の意味の変更で、edition の方針の改訂を伴う）、**D2**（`own` を導入する）、**D3**（edition `2027` を新設し、`LATEST` は `2026` のままにする）、**D4**（std は `2026` のまま、書き換えない）。承認が記録されるまで、手順 2 以降に着手しない |
 | 改善する劣位 | Rust 比・Mojo 比: 読むだけの関数の引数すべてに `ref` を書かされる。引数の既定が「移動」なので、読むだけの関数を呼ぶと呼び出し側の値が使えなくなり（`E1012`）、Copy の配列は黙って複製される（A15、`W1006`）。Mojo は既定が読み取り専用の参照で呼び出し側に印が要らず、Hylo は `let`、Swift は借用が既定（出典は付録） |
@@ -443,7 +443,7 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - 世代付き参照（Vale）を既定にすること: 誤りが実行時のトラップになり、コンパイル時に拒否する方針と逆になる（`Arena` のハンドルが局所的に採用済み）。
 - 呼び出し先の本体から引数の規約を推論する案（Lean の borrow inference）: 本体の変更が呼び出し側の `E1012` を変え、署名に契約が現れない（API の差分が見えない）。
 
-## 実装と検証（2026-10-23、全 Phase の最終検証中）
+## 実装と検証（2026-10-23、Phase 1〜4）
 
 - **承認と旧案の読み方**: 同日の利用者の指示が D1〜D4 と Phase 1〜4 を承認した。
   上の Phase 1 限定の対象外・D3 の `LATEST = 2026`・D4 の std 非移行・Phase 3/4 の未承認という
@@ -470,5 +470,17 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
   cache／new の検査と api-diff の定数・curry 比較を修正し、関連 62 件は全通過した。
   第 2 review の引数別 mutable binding の api-diff 漏れも回帰テストとともに修正した。
   一時 callback の検査は escape 条件を保つ陽性・陰性の両方を検証した。fmt・strict clippy・dev build も通過。
-- **未完了**: 修正後の全 Rust・T2・全変更文書、
-  final Copilot／CI。これらが終わるまで全 Phase 完了や archive としない。
+- **最終ローカル検証**: 修正後の全 Rust は 1762 通過・2 skip
+  （通常 1750 と、cwd を変更する targets 12 を TMPDIR の形式を分けて実行）。
+  fmt・strict clippy・dev build が通過。`features.mjs` 全体の 19700 ケース、
+  `control.mjs` の 659 ケース、computations（1 億回の定数スタック再帰と移行済み benchmark を含む）、
+  IO、async の利用可能経路、frontend cache、REPL、script が通過した。
+  数値・借用の fixture は native／WASM × O0／O3、IO は ASan／UBSan と zero-live も検査した。
+  Node 20 にない JSPI だけは既存の skip で、対応済みとはしない。
+- **移行と文書の最終確認**: benchmark 23 入力を checked migration で移行し、型検査を通した。
+  明示 2026 の凍結 114 入力と、移行済み 2027 の同 114 入力を最終 compiler で再検証し、
+  それぞれ旧版／現在／再実行の結果・診断・114 本の IR が一致した。
+  変更したリファレンス 51 ページ・1027 リンク・360 例・native O0/O3 の 700 実行・
+  2 test project が通過。runtime include 58 ファイルも確認した。
+- **残作業**: full implementation を PR48 に公開し ready にする。最終 Copilot／CI の指摘や失敗を
+  読んで修正し、すべて通過してから archive する。A19 は別 branch／stacked PR で続ける。

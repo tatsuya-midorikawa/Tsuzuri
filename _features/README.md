@@ -139,7 +139,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A15 | [暗黙の深いコピーの可視化](_completed/A15-copy-cost-visibility.md) | P2 | M | G03, (G12) | done |
 | A16 | [固定長配列と const ジェネリクス](_completed/A16-fixed-arrays.md) | P2 | XL | A01, D06, (F04) | done |
 | A17 | [暗黙の複製の除去（最終使用の move と所有する scrutinee の match 束縛の move）](_completed/A17-last-use-move.md) | P1 | L | A15 | done |
-| A18 | [引数規約: 読み取りを既定にする（`own`、edition 2027）](A18-parameter-conventions.md) | P2 | XL | A15, G19, (A17) | 実装中（D1〜D4・全 Phase 着手を 2026-10-23 承認） |
+| A18 | [引数規約: 読み取りを既定にする（`own`、edition 2027）](A18-parameter-conventions.md) | P2 | XL | A15, G19, (A17) | Phase 1〜4 実装・全ローカル検証済（PR48 最終 CI／review 中） |
 | A19 | [純粋関数 `pure def`（副作用のない関数を署名で保証。引数は共有借用か `own`）](A19-pure-functions.md) | P2 | L | D11, A15, B07, F10, C10, (A17) | todo（承認済み） |
 | A20 | [効果の要約と検査付き関数属性（`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`）](A20-effect-summary-and-checked-attributes.md) | P1 | XL | (A19), (G22) | todo（承認済み） |
 | A21 | [契約 `@requires`／`@ensures`（off／check／test／prove）](A21-contracts-requires-ensures.md) | P2 | XL | A19, (A20), (G22) | todo（承認済み） |
@@ -513,7 +513,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | チケット | 種別 | 概要 | 承認 |
 | --- | --- | --- | --- |
 | [A17](_completed/A17-last-use-move.md) | 性能・機能 | 値をもう読まない位置では、Copy の配列・リストを複製せず移動する。`for` が 1 つあるだけで関数の全局所が複製になる規則、分岐の両腕で最後に読む形、`match` の Copy の束縛（`Result.Ok bytes` が配列全体を複製する）を、型付き IR の逆向きの生存解析で直す。100 万要素の `[i64]` を `for` で `xs = Array.update_at .. xs` する 2 万回が 4.0 秒（1 回 0.2 ms の全複製）、移動を許した試作では 0.02 秒。意味・構文・診断コードは変えず、`W1006` の位置は実際に複製する位置に保つ。Phase 1・2 を実装・検証済み | 不要（言語の意味・構文・診断コードを変えない） |
-| [A18](A18-parameter-conventions.md) | 機能 | 引数の既定を「移動」から「読み取り（借用）」へ替える。無印の引数は読み取り、所有権を受け取る引数は `own T`、呼び出し側は変わらない（実引数の暗黙の借用が既にある）。edition `2027` のパッケージだけに働き、`LATEST` と std は `2026` のまま。std の引数の約 79% が読み取りで、共有 `ref` の 94% は具体的な型 | **要承認**: D1（無印の引数を読み取りにする。`docs/stability.md` の edition の方針の改訂を伴う）、D2（`own`）、D3（edition 2027 を新設し `LATEST` は動かさない）、D4（std は書き換えない）。承認が記録されるまで、手順 2 以降に着手しない |
+| [A18](A18-parameter-conventions.md) | 機能 | edition 2027 の読み取り既定、`own`、checked migration、ジェネリック／関数の引数規約、`mut T` と射影代入。`LATEST` と std は 2027、版なし manifest は 2026 を維持する | D1〜D4 と全 Phase を 2026-10-23 に利用者が承認。Phase 1〜4 の全ローカル検証済、PR48 の最終 CI／review 待ち |
 | [A19](A19-pure-functions.md) | 機能 | `pure def` で、関数が副作用を持たないことを署名で約束し、コンパイラが検査する。引数は共有借用（`ref` を省略でき、既定）か `own`（人間の指示。Copy で drop が要らない型は、`ref i64` が算術に使えない（`E1003`）ので値のまま）。`own` は、値渡しの record が持つ排他借用が呼び出し側の変数を書き換えられ（HEAD で実測）、`Rc` の `strong_count` や利用者の `Drop` として破棄が観測できるので、型を平たいデータ（参照・`Rc`・利用者の `Drop`・`extern` のハンドル・`Task`・`dyn`・関数を持たない型）に限って純粋性を保つ（D15）。`ref mut` と `mut` は書けない。入出力・OS・ネットワーク・タスク・原子操作・`Rc`・`extern`・`Debug`・利用者の `Drop` を、呼び出す関数を通した間接も含めて拒否する（到達可能性の解析。`Builtin` 246 個のうち 90 個が不純）。`pure` は文脈キーワードで予約語を増やさず、`own` の前置きの構文は `pure def` の引数だけで受理し（D16。通常の `def` へ広げるのは A18 の D2）、診断コードは `E1029` を 1 つ足す。生成 IR は変えない。蓄積引数の再帰は `own` で書ける（HEAD では二乗。A17 の後に線形になる見込みで、未測定。D14） | D1・D2・D4 は人間が承認済み（D1・D2: 2026-10-13 の指示。D1 の `own` は「保証されるのであれば」の条件つきで、根拠は A19 の付録 E の実測。D4: 同日「構文を `pure def` にしてよいです」）。承認待ちはなく、手順 1 から着手できる |
 
 ## 追加チケット（2026-10-18）

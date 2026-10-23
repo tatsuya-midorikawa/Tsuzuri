@@ -1,21 +1,21 @@
 // Heap kernels for the WASM allocator (benchmarks/run-heap.mjs); benchmarks/heap/reference.mjs checks them.
 
-def step :: i64u -> i64u
+def step :: own i64u -> i64u
 fn step state = (state ^ (state >>> 13)) * 6364136223846793005 + 1442695040888963407
 
-def block :: i64u -> i64 -> [i64u]
+def block :: own i64u -> own i64 -> [i64u]
 fn block salt count = new [i64u](count, \index -> salt + (index as i64u))
 
 // `slots` arrays of 1 to `spread` elements; then `rounds` times a random slot gets a new array of a random size,
 // so blocks are freed in no order and the live bytes stay about the same while the free blocks fragment.
-export def steady_churn :: i64 -> i64 -> i64 -> i64u -> i64u
+export def steady_churn :: own i64 -> own i64 -> own i64 -> own i64u -> i64u
 fn steady_churn slots rounds spread seed =
     assert (slots > 0 && slots <= 1000000 && rounds >= 0 && rounds <= 100000000 && spread > 0 && spread <= 100000)
     let mut state = seed
     let mut values: Vec<[i64u]> = Vec.with_capacity slots
     for _index in 0 .. (slots - 1) do
         state = step state
-        values = Vec.push (block state (1 + ((state >>> 40) as i64) % spread)) values
+        values = Vec.push_owned (block state (1 + ((state >>> 40) as i64) % spread)) values
     for _round in 0 .. (rounds - 1) do
         state = step state
         let slot = ((state >>> 33) as i64) % slots
@@ -27,12 +27,12 @@ fn steady_churn slots rounds spread seed =
     total
 
 // One Vec that grows to `count` elements by reallocation, which is summed and freed; `rounds` times.
-export def vec_growth :: i64 -> i64 -> i64u -> i64u
+export def vec_growth :: own i64 -> own i64 -> own i64u -> i64u
 fn vec_growth count rounds seed =
     assert (count >= 0 && count <= 100000000 && rounds >= 0 && rounds <= 100000)
     let mut total = 0i64u
     for round in 0 .. (rounds - 1) do
         let mut values: Vec<i64u> = Vec.empty()
-        for index in 0 .. (count - 1) do values = Vec.push (seed + (index as i64u) + (round as i64u)) values
+        for index in 0 .. (count - 1) do values = Vec.push_owned (seed + (index as i64u) + (round as i64u)) values
         for value in values do total = total * 31 + value
     total

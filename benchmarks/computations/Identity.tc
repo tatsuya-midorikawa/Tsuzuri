@@ -1,5 +1,5 @@
-def Return :: 'a -> 'a
+def Return :: own 'a -> 'a
 fn Return value = value
 
-def Bind :: 'a -> ('a -> 'b) -> 'b
+def Bind :: own 'a -> own ('a -> 'b) -> 'b
 fn Bind value next = next value

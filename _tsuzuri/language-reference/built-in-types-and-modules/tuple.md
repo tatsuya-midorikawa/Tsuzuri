@@ -24,7 +24,7 @@ i64 * string * bool
 要素式は左から右へ 1 回ずつ評価されます。型注釈の `*` の両側には型が必要で、`i64 *` のような 1 要素の型は構文エラー `E0002` です。
 
 ```tsuzuri run=42
-def first :: own i64 * string -> i64 = \pair ->
+def first :: own (i64 * string) -> i64 = \pair ->
     match pair with
     | (number, _) -> number
 
@@ -207,4 +207,3 @@ if grouped == 42 && unit_value == () then 42 else 0
 - [型クラス](../types-and-type-inference/type-classes.md)
 - [言語仕様の match と分解](../../../docs/language.md#match-と分解)
 - [言語リファレンスの目次](../index.md)
-

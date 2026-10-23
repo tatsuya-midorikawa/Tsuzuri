@@ -1,4 +1,4 @@
-def rec escape :: f64 -> f64 -> f64 -> f64 -> i64 -> i64
+def rec escape :: own f64 -> own f64 -> own f64 -> own f64 -> own i64 -> i64
 fn rec escape cr ci real imaginary count =
     if count >= 256 || real * real + imaginary * imaginary > 4.0 {
         count
@@ -8,7 +8,7 @@ fn rec escape cr ci real imaginary count =
         escape cr ci next_real next_imaginary (count + 1)
     }
 
-def rec pixels :: i64 -> i64 -> f64 -> f64 -> f64 -> i64 -> i64 -> i64
+def rec pixels :: own i64 -> own i64 -> own f64 -> own f64 -> own f64 -> own i64 -> own i64 -> i64
 fn rec pixels size count dx dy offset index total =
     if index >= count {
         total
@@ -19,7 +19,7 @@ fn rec pixels size count dx dy offset index total =
         pixels size count dx dy offset (index + 1) (total + value)
     }
 
-export def mandelbrot :: i64 -> i64 -> i64
+export def mandelbrot :: own i64 -> own i64 -> i64
 fn mandelbrot size seed = {
     assert (size >= 0 && size <= 4096);
     if size == 0 {
@@ -32,7 +32,7 @@ fn mandelbrot size seed = {
     }
 }
 
-def rec sum :: &[i64] -> i64 -> i64 -> i64
+def rec sum :: &[i64] -> own i64 -> own i64 -> i64
 fn rec sum values index total =
     if index >= values.length {
         total
@@ -40,7 +40,7 @@ fn rec sum values index total =
         sum values (index + 1) (total + values[index])
     }
 
-export def array_sum :: i64 -> i64 -> i64
+export def array_sum :: own i64 -> own i64 -> i64
 fn array_sum count seed = {
     assert (count >= 0 && count <= 100000000);
     let values = new [i64](count, i ->
@@ -48,7 +48,7 @@ fn array_sum count seed = {
     sum (&values) 0 0
 }
 
-def make_text :: i64 -> i64 -> string
+def make_text :: own i64 -> own i64 -> string
 fn make_text count seed =
     assert (count >= 0 && count <= 100000000)
     let mut text =
@@ -66,25 +66,25 @@ fn text_sum text =
     for value in text do total = total + value as i64
     total
 
-export def utf16_scan :: i64 -> i64 -> i64
+export def utf16_scan :: own i64 -> own i64 -> i64
 fn utf16_scan count seed =
     let text = make_text count seed
     text_sum ref text
 
-export def utf16_compare :: i64 -> i64 -> i64
+export def utf16_compare :: own i64 -> own i64 -> i64
 fn utf16_compare count seed =
     let text = make_text count seed
     let left = clone_string ref text + (if (seed & 2) == 0 then "a" else "b")
     let right = text + (if (seed & 4) == 0 then "a" else "b")
     if left == right then 1 elif left < right then 2 else 4
 
-export def utf16_validate :: i64 -> i64 -> i64
+export def utf16_validate :: own i64 -> own i64 -> i64
 fn utf16_validate count seed =
     let text = make_text count seed + (if (seed & 8) == 0 then "" else "\uD800")
     let repaired = String.to_well_formed ref text
     text_sum ref repaired + (if String.is_well_formed ref text then 1 else 0)
 
-export def utf8_roundtrip :: i64 -> i64 -> i64
+export def utf8_roundtrip :: own i64 -> own i64 -> i64
 fn utf8_roundtrip count seed =
     let text = make_text count seed
     let bytes = Utf8String.from_string ref text
@@ -92,7 +92,7 @@ fn utf8_roundtrip count seed =
     assert (text == restored)
     text_sum ref restored + bytes.length
 
-export def format_parse :: i64 -> i64 -> i64
+export def format_parse :: own i64 -> own i64 -> i64
 fn format_parse count seed =
     assert (count >= 0 && count <= 100000000)
     let mut state = seed as i64u
@@ -103,7 +103,7 @@ fn format_parse count seed =
         state = Maybe.get parsed ^ text.length as i64u
     state as i64
 
-export def math_intrinsics :: i64 -> i64 -> i64
+export def math_intrinsics :: own i64 -> own i64 -> i64
 fn math_intrinsics count seed =
     assert (count >= 0 && count <= 100000000)
     let mut state = to_float ((seed & 65535) + 1) / 16.0
@@ -112,14 +112,14 @@ fn math_intrinsics count seed =
         state = floor (state * 16.0) / 16.0 + ceil state / 1024.0
     to_int (state * 1048576.0)
 
-def task_mix :: i64 -> i64u -> i64u
+def task_mix :: own i64 -> own i64u -> i64u
 fn task_mix count seed =
     let mut state = seed
     for index in 0 .. count - 1 do
         state = (state ^ (state >>> 13)) * 6364136223846793005 + 1442695040888963407
     state
 
-export def task_sequence :: i64 -> i64 -> i64
+export def task_sequence :: own i64 -> own i64 -> i64
 fn task_sequence count seed =
     assert (count >= 0 && count <= 100000000)
     let mut state = seed as i64u
@@ -130,14 +130,14 @@ fn task_sequence count seed =
         }
     state as i64
 
-export def task_sequential :: i64 -> i64 -> i64
+export def task_sequential :: own i64 -> own i64 -> i64
 fn task_sequential count seed =
     assert (count >= 0 && count <= 100000000)
     let mut total = 0i64u
     for index in 0 .. 15 do total = total + task_mix count (seed as i64u ^ index as i64u)
     total as i64
 
-export def task_parallel :: i64 -> i64 -> i64
+export def task_parallel :: own i64 -> own i64 -> i64
 fn task_parallel count seed =
     assert (count >= 0 && count <= 100000000)
     let work = new [Task<i64u>](16, \index -> task { task_mix count (seed as i64u ^ index as i64u) })

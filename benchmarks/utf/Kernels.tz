@@ -1,4 +1,4 @@
-def pattern :: i64 -> string
+def pattern :: own i64 -> string
 fn pattern kind =
     if kind == 0 then "Az09-_ \n"
     elif kind == 1 then "A\u00E90\u00FC-\u00F1 \n"
@@ -6,7 +6,7 @@ fn pattern kind =
     elif kind == 3 then "\uD83D\uDE00\uD83D\uDE01\uD83D\uDE02\uD83D\uDE03"
     else "A\0\u03A9\uD83D\uDE00\u4E2Dz\n"
 
-def utf_text :: i64 -> i64 -> string
+def utf_text :: own i64 -> own i64 -> string
 fn utf_text kind size =
     let mut text = pattern kind
     while text.length < size do
@@ -14,7 +14,7 @@ fn utf_text kind size =
         text = copy + text
     text
 
-export def utf_to_utf8 :: i64 -> i64 -> i64 -> i64
+export def utf_to_utf8 :: own i64 -> own i64 -> own i64 -> i64
 fn utf_to_utf8 kind size repeat =
     let text = utf_text kind size
     let mut total = 0
@@ -23,7 +23,7 @@ fn utf_to_utf8 kind size repeat =
         total = total + bytes.length
     total
 
-export def utf_from_utf8 :: i64 -> i64 -> i64 -> i64
+export def utf_from_utf8 :: own i64 -> own i64 -> own i64 -> i64
 fn utf_from_utf8 kind size repeat =
     let text = utf_text kind size
     let bytes = Utf8String.from_string ref text
@@ -33,7 +33,7 @@ fn utf_from_utf8 kind size repeat =
         total = total + decoded.length
     total
 
-export def utf_equal :: i64 -> i64 -> i64 -> i64
+export def utf_equal :: own i64 -> own i64 -> own i64 -> i64
 fn utf_equal kind size repeat =
     let text = utf_text kind size
     let right = clone_string ref text
@@ -42,7 +42,7 @@ fn utf_equal kind size repeat =
         if text == right then total = total + 1
     total
 
-export def utf_compare :: i64 -> i64 -> i64 -> i64
+export def utf_compare :: own i64 -> own i64 -> own i64 -> i64
 fn utf_compare kind size repeat =
     let text = utf_text kind size
     let right = Maybe.get (String.slice 0 (text.length - 1) (ref text)) + "\uFFFF"
@@ -53,7 +53,7 @@ fn utf_compare kind size repeat =
         if text < right then total = total + 1
     total
 
-export def utf_is_well_formed :: i64 -> i64 -> i64 -> i64
+export def utf_is_well_formed :: own i64 -> own i64 -> own i64 -> i64
 fn utf_is_well_formed kind size repeat =
     let text = utf_text kind size + "\uD800"
     let mut total = 0
@@ -61,7 +61,7 @@ fn utf_is_well_formed kind size repeat =
         if not (String.is_well_formed ref text) then total = total + 1
     total
 
-export def utf_to_well_formed :: i64 -> i64 -> i64 -> i64
+export def utf_to_well_formed :: own i64 -> own i64 -> own i64 -> i64
 fn utf_to_well_formed kind size repeat =
     let text = utf_text kind size + "\uD800"
     let mut total = 0

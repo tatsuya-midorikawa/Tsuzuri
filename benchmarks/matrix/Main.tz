@@ -1,7 +1,7 @@
-private def left_value :: i64 -> i64 -> f64
+private def left_value :: own i64 -> own i64 -> f64
 fn left_value i j = ((i * 7 + j * 3) % 13) as f64 * 0.25 - 1.5
 
-private def right_value :: i64 -> i64 -> f64
+private def right_value :: own i64 -> own i64 -> f64
 fn right_value i j = ((i * 5 + j * 11) % 17) as f64 * 0.125 - 1.0
 
 private def checksum :: ref Matrix<f64> -> f64
@@ -15,7 +15,7 @@ fn checksum_int matrix = Matrix.fold (\total x -> total * 31 + x) 7 matrix
 
 // The algorithm Phase 1's Matrix.mul used: i-j-k, one separately rounded sum per output element,
 // written with the public API only.
-private def textbook_element :: ref [f64] -> ref [f64] -> i64 -> i64 -> i64 -> f64
+private def textbook_element :: ref [f64] -> ref [f64] -> own i64 -> own i64 -> own i64 -> f64
 fn textbook_element a b n i j =
     let mut total = 0.0
     let mut k = 0
@@ -33,7 +33,7 @@ fn textbook left right =
 
 // Modes: 0 mul, 1 mul_parallel, 2 mul_fma, 3 mul_fma_parallel, otherwise the i-j-k loop above. The C comparators
 // compute the same inputs and the same per-element order, so the checksums must be bit-equal.
-export def matmul_checksum :: i64 -> i64 -> i64 -> f64
+export def matmul_checksum :: own i64 -> own i64 -> own i64 -> f64
 fn matmul_checksum n repeats mode =
     let left = Matrix.init n n left_value
     let right = Matrix.init n n right_value
@@ -50,7 +50,7 @@ fn matmul_checksum n repeats mode =
     sum
 
 // Modes: 0 mul, 1 mul_parallel.
-export def matmul_checksum32 :: i64 -> i64 -> i64 -> f64
+export def matmul_checksum32 :: own i64 -> own i64 -> own i64 -> f64
 fn matmul_checksum32 n repeats mode =
     let left = Matrix.init n n (\i j -> left_value i j as f32)
     let right = Matrix.init n n (\i j -> right_value i j as f32)
@@ -61,7 +61,7 @@ fn matmul_checksum32 n repeats mode =
     sum
 
 // Modes: 0 mul, 1 mul_parallel. The checksum wraps like i64.
-export def matmul_checksum_int :: i64 -> i64 -> i64 -> i64
+export def matmul_checksum_int :: own i64 -> own i64 -> own i64 -> i64
 fn matmul_checksum_int n repeats mode =
     let left = Matrix.init n n (\i j -> (i * 7 + j * 3) % 13 - 6)
     let right = Matrix.init n n (\i j -> (i * 5 + j * 11) % 17 - 8)

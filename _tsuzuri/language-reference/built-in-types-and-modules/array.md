@@ -846,8 +846,8 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 
 ### Copy 型と非 Copy 型の扱い
 
-- 要素が `Copy`（整数、浮動小数点数、`bool`、全フィールドが `Copy` のレコードなど）なら、`Array.get` や `Array.map` のように要素を複製する関数を使えます。`record Point { x: i64, y: i64 }` は `Copy` です。
-- 文字列、`Vec`、非 `Copy` のフィールドを持つレコードは複製できません。要素を共有借用で受け取る `Array.mapr`、`Array.foldr`、`Array.try_findr` を使います。
+- 要素が `Copy`（整数、浮動小数点数、`bool`、全フィールドが `Copy` のレコードなど）なら、`Array.get` や `Array.map_owned` のように要素を複製する関数を使えます。`record Point { x: i64, y: i64 }` は `Copy` です。
+- 文字列、`Vec`、非 `Copy` のフィールドを持つレコードは複製できません。2027 の `Array.map`・`Array.fold`、または版によらず要素を共有借用で受け取る `Array.mapr`・`Array.foldr`・`Array.try_findr` を使います。2026 の `Array.map` は `Array.map_owned` と同じ値 callback の契約です。
 
 ```tsuzuri run=found_len%3D5%20lengths%3D%5B5%2C%206%5D
 let fruits = ["apple", "banana"]

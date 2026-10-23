@@ -323,7 +323,7 @@ fn rec repeated count =
   let! value = Some count
   if value == 0 then return 42
   else return! repeated (value - 1)
-def echo :: Capture<'a> => IO<Maybe<'a>> -> IO<Maybe<'a>>
+def echo :: Capture<'a> => own IO<Maybe<'a>> -> IO<Maybe<'a>>
 fn echo source =
   let! option = source
   let! value = option
