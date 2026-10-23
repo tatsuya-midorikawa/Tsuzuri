@@ -7,9 +7,9 @@
 | 規模 | XL（Phase 1 は L） |
 | 依存 | A15（done）、G19（done。edition）、(A17)。A17 は弱い依存: A17 を先に入れると、`own` を付けた Copy コレクションの引数と更新の複製が減る。着手の順は A17 → A18 を推奨する。[A19](A19-pure-functions.md) とは、`own` の構文（`TypeExprKind::Own`）を共有する。A19 は `pure def` の引数だけで先に導入し（A19 の D16）、本チケットは受理する位置を通常の `def` の引数へ広げる。どちらが先でも、後のほうは再実装せず、受理する位置の規則だけを足す（D11） |
 | 後続 | Phase 2（移行ツールと std・fixture の移行、`LATEST` の更新）、Phase 3（ジェネリックな裸の型変数と関数型の引数）、Phase 4（`mut` の引数規約と要素・フィールドの代入） |
-| 状態 | Phase 1〜4 実装・全ローカル検証済み。PR48 の最終 CI／review 待ち |
+| 状態 | Phase 1〜4 実装・全ローカル検証済み。未マージの PR48 で CI／review の結果を確認する |
 | 起票 | 2026-10-13（人間の依頼「『次の一手』を進めて、開発チケットを作成して」。推奨案 A（引数規約）の実装チケット。HEAD `2282fd96` で確認） |
-| 承認 | **要承認: D1**（無印の引数を読み取りにする。言語の意味の変更で、edition の方針の改訂を伴う）、**D2**（`own` を導入する）、**D3**（edition `2027` を新設し、`LATEST` は `2026` のままにする）、**D4**（std は `2026` のまま、書き換えない）。承認が記録されるまで、手順 2 以降に着手しない |
+| 承認 | 2026-10-23 に利用者が D1〜D4 と全 Phase を承認した。D3・D4 の初期の Phase 1 限定案は、移行の検証後に `LATEST` と std を 2027 に更新する全 Phase の決定で置き換えた。README.md に実装前の契約の照合を記録した |
 | 改善する劣位 | Rust 比・Mojo 比: 読むだけの関数の引数すべてに `ref` を書かされる。引数の既定が「移動」なので、読むだけの関数を呼ぶと呼び出し側の値が使えなくなり（`E1012`）、Copy の配列は黙って複製される（A15、`W1006`）。Mojo は既定が読み取り専用の参照で呼び出し側に印が要らず、Hylo は `let`、Swift は借用が既定（出典は付録） |
 | 手本にする既存実装 | edition の追加: `src/syntax.rs` の `Edition`（`E2026`・`LATEST`・`MANIFEST_DEFAULT`・`SUPPORTED`）、`docs/stability.md`「edition を追加するとき」、`tests/editions.rs`。型の前置き構文: `src/parser.rs` の `Parser::type_primary`・`reference_type`（`ref`・`ref mut`）、`src/syntax.rs` の `TypeExprKind::Reference`。引数の型の解決: `src/check.rs` の `check_modules` の関数宣言のループ（`for parameter in &function.parameters` の中の `resolve_type_with_kinds`）。呼び出しの暗黙の借用: `src/check.rs` の `Checker::coerce_argument`。参照の外への move: `src/ownership.rs` の `E1012`「cannot move a non-Copy value out of a reference」。位置の誤りの診断: `src/check.rs` の `resolve_type_with_kinds` の `TypeExprKind::ArrayView` の `E1005` |
 | 主な影響ファイル | `src/syntax.rs`（`Edition`、`TypeExprKind::Own`）, `src/parser.rs`（`type_primary`）, `src/syntax_codec.rs`（`TypeExprKind` の tag）, `src/frontend_cache.rs`（`FRONTEND_FORMAT`）, `src/check.rs`（`resolve_type_with_kinds`、関数宣言のループ、`CheckedFunction`）, `src/polymorph.rs`（`type_expression`）, `src/ownership.rs`（`E1012` の文言）, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/regions.rs`・`src/warnings.rs`（`TypeExprKind` を辿る match）, `src/package.rs`（対応する edition の一覧の文言）, `tests/editions.rs`, `tests/parameter_conventions.rs`（新規）, `tests/fixtures/conventions/`（新規）, `tests/features.mjs`, `docs/stability.md`, `docs/language.md`, `docs/architecture.md`, `README.md`, `_tsuzuri/language-reference/` の複数ページ |
@@ -482,5 +482,27 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
   それぞれ旧版／現在／再実行の結果・診断・114 本の IR が一致した。
   変更したリファレンス 51 ページ・1027 リンク・360 例・native O0/O3 の 700 実行・
   2 test project が通過。runtime include 58 ファイルも確認した。
-- **残作業**: full implementation を PR48 に公開し ready にする。最終 Copilot／CI の指摘や失敗を
-  読んで修正し、すべて通過してから archive する。A19 は別 branch／stacked PR で続ける。
+- **公開と CI の確認**: 全 Phase の実装を PR48 に公開し、ready と `ci:full` にした。
+  CI／review の最終結果は PR48 の checks と review に記録する。未マージのチケットとしてここに残し、
+  この依頼では main へ push も merge もしない。A19 は別 branch／stacked PR で続ける。
+
+### 2026-10-24: 全 CI の対象範囲から見つかった移行漏れの修正
+
+- IDE の全 5 環境で、暗黙の Borrow と同じ span を持つ Local の hover が `number: i64` でなく
+  `ref i64` になった。spelling のある Local を synthetic wrapper より優先する共有の選択規則に直し、
+  UTF-8／UTF-16 の session と features の計 4 検査を通した。期待値は変えていない。
+- e2e の C 形式の所有引数、JSON writer の replay、OS／process の遅延 IO を作る helper に `own` を明示した。
+  allocator と衝突 key の生成は `Vec.push_owned` を使い、既存の消費・確保・破棄の意味を保存した。
+  module の配列蓄積、codegen unit の generic 相互再帰と、特殊化の増大の負例も所有引数を明示した。
+  stack、解析上限、テストの期待値は変更していない。
+- 修正後の全 Rust を既定の stack、2 threads、共有 slot で再実行し、1762 通過・2 skip
+  （通常 1750 は 606.761 秒、targets 12 は 5.348 秒）を確認した。fmt／strict clippy も通過した。
+  e2e の 400 ケース・15 トラップ、JSON の 297 入力・2523 検査、LSP の全 4 検査が通過した。
+- codegen unit の native／WASM の tail-call 2 検査、allocator と small allocator の全検査、
+  small allocator の ASan／UBSan／TSan、OS の native／WASM O0／O3 と確保の追跡が通過した。
+- compact strings の raw 4 構成それぞれ 99920 検査、14 probe × 100 pair × 12 build の一致と
+  leak 検査、関連 9 suite の compact／UTF-16 計 18 実行が全通過した。
+  戦略の 1 ページ・49 リンクも確認し、変更したリファレンスの合計は 52 ページ・1076 リンク・
+  360 例・native O0／O3 の 700 実行・2 test project となる。
+- README、言語仕様の package 節、戦略の対応表に残った「2026 だけ」「版が意味を変えない」という
+  旧記述を実装済みの 2027 と承認済み例外に合わせた。新しい型規約・数値演算や LLVM lowering の追加変更ではない。

@@ -1021,7 +1021,7 @@ fn index_function(
             span: expression.span,
             detail,
             target,
-            priority: 1,
+            priority: u8::from(!matches!(expression.kind, TypedExprKind::Local(_))),
         });
         let callee = match &expression.kind {
             TypedExprKind::Function(FunctionRef::User(id))

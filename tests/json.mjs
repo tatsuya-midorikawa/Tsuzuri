@@ -349,7 +349,7 @@ fn pretty_hash index indent =
     | Ok value -> fnv (ref (Json.to_utf8string_pretty indent (ref value)))
     | Error _ -> 0
 
-def replay :: ref utf8string -> ref Json.Event -> Json.Writer -> Result<Json.Writer, Json.Error>
+def replay :: ref utf8string -> ref Json.Event -> own Json.Writer -> Result<Json.Writer, Json.Error>
 fn replay text event writer =
     match event with
     | Json.ObjectStart -> Json.open_object writer

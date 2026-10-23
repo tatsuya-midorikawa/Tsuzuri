@@ -287,7 +287,7 @@ function multipleDiagnosticChecks() {
   for (const [source, code] of [
     ["fn first =\nrecord R { x: i64 }\nfn second =\n", "E0002"],
     ["? ?", "E0001"],
-    ['def consume :: string -> unit\nfn consume s = ()\ndef a :: unit\nfn a = { let s = "a"; consume s; consume s }\ndef b :: unit\nfn b = { let s = "b"; consume s; consume s }', "E1012"],
+    ['def consume :: own string -> unit\nfn consume s = ()\ndef a :: unit\nfn a = { let s = "a"; consume s; consume s }\ndef b :: unit\nfn b = { let s = "b"; consume s; consume s }', "E1012"],
   ]) {
     writeFileSync(main, source);
     const result = cli(["check", directory, "--json"], { success: false });
@@ -562,7 +562,7 @@ fn value(v: Value) -> i64 { v.x + 1 }
 `,
     "Odd.tz": "fn rec accepts(n: i64) -> bool { if n == 0 { false } else { Even.accepts(n - 1) } }",
     "Loop.tz": `
-fn rec sum(n: i64, values: [i64]) -> i64 {
+fn rec sum(n: i64, values: own [i64]) -> i64 {
   let total = values[0];
   if n == 0 { total } else { Loop.sum(n - 1, [total + n, values[1]]) }
 }
@@ -576,7 +576,7 @@ fn main() -> i64 { 999 }
     "Even.tz": "fn rec accepts(n: i64) -> bool { if n == 0 { true } else { Odd.accepts(n - 1) } }",
     "Main.tz": `
 record Callback { distance: fn(Point) -> f64 }
-fn apply(f: fn(Point) -> f64, p: Point) -> f64 { p |> f }
+fn apply(f: own fn(Point) -> f64, p: Point) -> f64 { p |> f }
 export fn module_result() -> f64 {
   let p: Point = Point { x: 3.0, y: 4.0 };
   let functions = [Point.distance];
@@ -825,7 +825,7 @@ try {
   writeFileSync(limitMain, `${doubling.join("\n")}()\n`);
   cli(["check", limitMain]);
   assert.match(limitError(`${doubling.join("\n")}let _ = id true\n()\n`), /^more than 65536 specializations of generic functions;/);
-  assert.match(limitError("def rec f :: 'a -> unit\nfn rec f x = f [x]\nf 1\n"), /^polymorphic recursion grows the types of 'Main\.f' without bound;/);
+  assert.match(limitError("def rec f :: own 'a -> unit\nfn rec f x = f [x]\nf 1\n"), /^polymorphic recursion grows the types of 'Main\.f' without bound;/);
 
   const spaced = join(temporary, "space 日本語");
   mkdirSync(spaced);
