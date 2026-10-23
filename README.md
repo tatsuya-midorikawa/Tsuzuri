@@ -1237,6 +1237,10 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
   通常の mutable borrow と異なり destructor の呼び出しは frame をそのまま渡すため、
   新しい射影代入を無条件に許すと呼び出し元の stack buffer を解放し得ることを tracking allocator で確認しました。
   2026 の IR を変える一律の heap 昇格で隠さず、禁止を共有の ownership 検査で守ります。
+- 既存の型名 `own` は型エイリアスと union payload でも保持します。凍結した 2026 の
+  compiler で、これらの宣言と entry 式を同じ行に書く形も有効だと確認しました。
+  whole-parameter の所有印を許可しないこの文脈では `own` を型名として読み、
+  次の式を印の引数として取り込みません。新しい予約語や 2026 の文の区切りを追加しません。
   通常の可変な所有者の Drop field の置換と、置換後の destructor／field 解放は検証します。
 - Phase 3 の一時 callback の借用も、既存の「一段で完全適用し、結果が借用を持たない」という条件を保ちます。
   callback を受け取って関数値として返す旧 identity のような消費する契約には `own` を明示します。

@@ -1887,6 +1887,7 @@ impl Parser<'_> {
         } else if self.eat(&TokenKind::Mut) {
             TypeExprKind::Mut(Box::new(self.type_primary()?))
         } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "own")
+            && self.type_offside.is_none()
             && self.tokens.get(self.position + 1).is_some_and(|token| {
                 matches!(
                     token.kind,

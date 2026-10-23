@@ -517,3 +517,8 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
   従来形と明示 `own` の 2026／2027 の IR 一致、正の `own fn(...)` の形を含む
   引数規約 30 検査が全通過した。名前を使う例は native／WASM O0／O3 の fixture と
   キーワードの実行可能な説明にも追加した。
+- 続く review の型エイリアス／union payload も、凍結した 2026 の compiler で確認した。
+  entry 式が同じ行にある形も有効なため、改行だけで制限せず、所有印を許可しないこの文脈では
+  `own` を型名として保つ。改行・CRLF・同一行の両構文と、2026／2027 の IR 一致を検査した。
+  規約 31 検査、conventions の 32 ケース（native／WASM O0／O3）、更新した
+  キーワードの 5 例・native 10 実行、fmt／strict clippy が全通過した。

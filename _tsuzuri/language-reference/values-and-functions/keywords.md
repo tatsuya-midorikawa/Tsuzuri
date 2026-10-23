@@ -10,12 +10,14 @@ Tsuzuri にはプログラムの構造を決定する 43 個の「予約語（Re
 予約語ではなく、変数名・関数名・型名に引き続き使えます。
 
 型名が `own` でも、署名と実装を分けられます。次の引数型の最初の `own` は所有の印で、
-2 番目と返却型の `own` はレコードの型名です。
+2 番目と返却型の `own` はレコードの型名です。型エイリアスや union の payload でも
+`own` は型名として使え、後続の entry 式を所有の印の一部として読み込みません。
 
 ```tsuzuri run=42
 record own { n: i64 }
 def identity :: own own -> own
 fn identity value = value
+type OwnAlias = own
 (identity (own { n: 42 })).n
 ```
 

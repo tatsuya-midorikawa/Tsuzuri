@@ -143,6 +143,26 @@ fn own_type_names_do_not_consume_the_next_function_implementation() {
 }
 
 #[test]
+fn own_type_names_remain_nominal_at_alias_and_union_boundaries() {
+    for (declaration, entry) in [
+        ("type Alias = own", "(own { n: 42 }).n"),
+        (
+            "union Choice = Item of own",
+            "(match Item (own { n: 42 }) with | Item value -> value.n)",
+        ),
+    ] {
+        let delimited = format!("record own {{ n: i64 }}\n{declaration};\n{entry}\n");
+        let expected = ir("2026", &delimited);
+        for separator in ["\n", "\r\n", " "] {
+            let source = format!("record own {{ n: i64 }}\n{declaration}{separator}{entry}\n");
+            for edition in ["2026", "2027"] {
+                assert_eq!(expected, ir(edition, &source));
+            }
+        }
+    }
+}
+
+#[test]
 fn explicit_ownership_preserves_generic_and_callable_value_conventions() {
     let source = "record Point { x: i64, y: i64 }\n\
         def get :: Point -> i64 = \\p -> p.x\n\

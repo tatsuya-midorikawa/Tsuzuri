@@ -195,3 +195,6 @@ record own { n: i64 }
 def identity_own :: own own -> own
 fn identity_own value = value
 export def contextual_own_type_name :: i64 = (identity_own (own { n: 42 })).n
+
+type OwnAlias = own
+(contextual_own_type_name)
