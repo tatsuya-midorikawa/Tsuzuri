@@ -693,6 +693,10 @@ bench_allocs: bool,
 - 初回 IDE CI の予約モジュール整合テストが `Alloc` の不足を検出した。
   隔離 worktree の `vsc/src/core.ts` の一覧も同期し、既存の **15 unit tests**・型検査・lint が成功した。
   元の root の release ファイルは変更していない。
+- Linux x64 の compact-string CI は、UTF-16 を前提とする契約が環境設定を継承する不備を検出した。
+  同じ失敗を手元で再現してから、この fixture だけを `TSUZURI_STRINGS=utf16` の子テストプロセスで実行するようにした。
+  環境の unsafe な変更や期待値の変更はない。既定・明示 UTF-16 で各 168 契約が成功し、
+  compact 環境の全 Rust テストも **1739 passed / 2 skipped**、fmt・clippy も成功した。
 - 変更した reference **10 pages / 396 links / 32 examples / 32 native runs / 7 test projects** が成功。
   最後の prose 調整後に Alloc の **1 page / 9 links / 2 examples / 2 test projects** も再検証した。
 - `last_use`・`map_set`・`channel`・`point` の既定 heap の **8 IR が byte-identical**。

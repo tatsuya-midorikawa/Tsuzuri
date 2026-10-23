@@ -1,10 +1,30 @@
 //! Rule-derived structural contracts, independent of time or optimization (F14 Phase 3).
+use std::process::Command;
 use tsuzuri::driver::{self, Target, TestOptions};
 
 const CONTRACTS: &str = include_str!("fixtures/alloc_contracts/Main.tz");
 
 #[test]
 fn std_allocation_contracts_hold_on_native_and_wasm32_at_o0_and_o3() {
+    // The byte contracts specify UTF-16, independent of the surrounding compact-string suite.
+    if std::env::var(tsuzuri::llvm::STRINGS_VARIABLE).as_deref() != Ok("utf16") {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "std_allocation_contracts_hold_on_native_and_wasm32_at_o0_and_o3",
+                "--nocapture",
+            ])
+            .env(tsuzuri::llvm::STRINGS_VARIABLE, "utf16")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     assert_eq!(
         CONTRACTS
             .lines()
