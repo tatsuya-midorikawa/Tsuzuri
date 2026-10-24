@@ -230,6 +230,11 @@ impl FunctionEmitter<'_, '_> {
     }
 
     fn emit_frame_inner(&mut self, expression: &TypedExpr) -> (String, Vec<Frame>) {
+        if let TypedExprKind::Cast(value) = &expression.kind
+            && expression.ty.function_purity().is_some()
+        {
+            return self.frame_inner(value);
+        }
         if let Some(value) = owned_string_identity(expression, self.module) {
             return self.take_operand(value);
         }

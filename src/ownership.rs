@@ -314,6 +314,7 @@ fn default_parameter_hint(
                     error,
                     &parameter.name,
                     &inner.display(&module.types()),
+                    function.origin.pure,
                 );
                 return;
             }
@@ -2801,6 +2802,9 @@ impl<'a> Checker<'a, '_> {
                 if expression.ty.carries_loans(&self.module.types()) {
                     result = self.field_value(expression, value);
                 }
+            }
+            E::Cast(value) if expression.ty.function_purity().is_some() => {
+                result = self.eval(value, Use::Consume, &during)?;
             }
             E::Unary(_, value) | E::Cast(value) => {
                 self.eval(value, Use::Consume, &during)?;

@@ -61,7 +61,7 @@ Usage:
   tsuzuri new directory [--namespace NAME]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
-  tsuzuri api-diff old new [--json]
+  tsuzuri api-diff old new [--effective] [--json]
   tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] input
   tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
                     [--consume F:P]... [--json]
@@ -119,8 +119,11 @@ project in `new` differs from `old` (each a directory, or a file in the root dir
 removed or changed declaration, a record field or union case that was added, and a class method
 added without a default are `breaking`; an added declaration, a documentation change and a new
 `@deprecated` tag are `non-breaking`. It reads the declarations as `tsuzuri doc` shows them,
-runs no type check, and loads no git or registry dependency. Exit status 1 means that a change
-is breaking; with --json each change and the final summary is one JSON object per line.
+runs no type check, and loads no git or registry dependency by default. --effective loads the
+locked dependencies, fully checks both versions, and compares resolved aliases, argument modes,
+callable purity and region contracts; an analysis error never falls back to syntax comparison.
+Exit status 1 means a breaking change or an analysis error; with --json each change and the
+final summary is one JSON object per line.
 `tsuzuri bindgen` writes extern declarations, constants (also from integer #defines),
 records, opaque extern types, and type aliases for the C header's own declarations
 whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it reports each
@@ -2020,11 +2023,12 @@ fn publish_package(arguments: &[OsString]) -> ExitCode {
     }
 }
 
-/// `tsuzuri api-diff old new [--json]`: how the public API of the package or project `new`
+/// `tsuzuri api-diff old new [--effective] [--json]`: how the public API of the package or project `new`
 /// differs from `old`, one line per change on standard output. The exit status is 1 when a
 /// change is breaking, and 2 for a usage error.
 fn api_diff_command(arguments: &[OsString]) -> ExitCode {
     let mut json = false;
+    let mut effective = false;
     let mut paths = Vec::new();
     let mut paths_only = false;
     let mut valid = true;
@@ -2034,6 +2038,10 @@ fn api_diff_command(arguments: &[OsString]) -> ExitCode {
             Some("--json") if !paths_only => {
                 valid &= !json;
                 json = true;
+            }
+            Some("--effective") if !paths_only => {
+                valid &= !effective;
+                effective = true;
             }
             _ if !paths_only && argument.to_string_lossy().starts_with('-') => valid = false,
             _ => paths.push(PathBuf::from(argument)),
@@ -2045,16 +2053,29 @@ fn api_diff_command(arguments: &[OsString]) -> ExitCode {
     if !valid {
         return api_diff_usage(json);
     }
+    if effective && let Some(code) = invalid_thread_setting(&mut io::stderr(), json) {
+        return ExitCode::from(code);
+    }
     let mut apis = Vec::new();
     for input in [old, new] {
-        let project = match Project::load_for_api(input) {
+        let loaded = if effective {
+            Project::load_for_docs(input)
+        } else {
+            Project::load_for_api(input)
+        };
+        let project = match loaded {
             Ok(project) => project,
             Err(error) => {
                 print_diagnostic(&error.diagnostic, &error.path, "", json);
                 return ExitCode::FAILURE;
             }
         };
-        match tsuzuri::api_diff::api(&project) {
+        let api = if effective {
+            tsuzuri::api_diff::effective_api(&project)
+        } else {
+            tsuzuri::api_diff::api(&project)
+        };
+        match api {
             Ok(api) => apis.push(api),
             Err(error) => {
                 let source = project.source_for(&error);
@@ -2083,7 +2104,7 @@ fn api_diff_usage(json: bool) -> ExitCode {
     print_diagnostic(
         &Diagnostic::new(
             "E2000",
-            "usage: tsuzuri api-diff old new [--json]; old and new are two directories or files",
+            "usage: tsuzuri api-diff old new [--effective] [--json]; old and new are two directories or files",
             Span::default(),
         ),
         Path::new("<command line>"),

@@ -1,0 +1,21 @@
+pure def twice_sum :: [i64] -> i64 = \values ->
+    let mapped = Parallel.map (\value -> value * 2) values
+    Array.sum mapped
+
+pure def local_task :: i64 -> i64 = \n ->
+    let job = task { n + 1 }
+    Task.run job
+
+pure def task_pair :: i64 -> i64 = \n ->
+    let jobs = [task { n + 1 }, task { n * 2 }]
+    let values: [i64] = Task.run (Task.parallel jobs)
+    Array.sum values
+
+pure def trap_map :: i64 -> i64 = \n ->
+    let mapped = Parallel.init n (\i -> 100 / (i - 4096))
+    Array.sum mapped
+
+export def parallel_sum :: i64 -> i64 = \n -> twice_sum (Array.init n (\i -> i + 1))
+export def run_task :: i64 -> i64 = \n -> local_task n
+export def run_pair :: i64 -> i64 = \n -> task_pair n
+export def parallel_trap :: i64 -> i64 = \n -> trap_map n

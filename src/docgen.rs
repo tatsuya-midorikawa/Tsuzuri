@@ -140,6 +140,7 @@ pub(crate) fn type_text(ty: &TypeExpr) -> String {
         ),
         TypeExprKind::Own(inner) => format!("own {}", type_text(inner)),
         TypeExprKind::Mut(inner) => format!("mut {}", type_text(inner)),
+        TypeExprKind::Pure(inner) => format!("pure ({})", type_text(inner)),
     }
 }
 
@@ -327,7 +328,13 @@ fn render_declarations(program: &Program) -> String {
         let prefix = format!(
             "{}{}def{}",
             if declaration.exported { "export " } else { "" },
-            if declaration.constant { "const " } else { "" },
+            if declaration.constant {
+                "const "
+            } else if declaration.pure {
+                "pure "
+            } else {
+                ""
+            },
             if declaration.recursion.is_some() {
                 " rec"
             } else {
@@ -496,7 +503,7 @@ fn render_declarations(program: &Program) -> String {
             .iter()
             .map(|method| {
                 signature(
-                    "def",
+                    if method.pure { "pure def" } else { "def" },
                     &method.name.text,
                     &method.regions,
                     &method.constraints,

@@ -2719,7 +2719,9 @@ impl Project {
                 .retain(|source| source.origin == ModuleOrigin::User);
             for source in &mut project.sources {
                 source.origin = ModuleOrigin::Std;
-                source.relative_path = Path::new("std").join(&source.relative_path);
+                // Std analysis inputs use virtual slash-separated paths on every host.
+                source.relative_path =
+                    PathBuf::from(format!("std/{}", source.relative_path.display()));
                 source.namespace.clear();
             }
         }

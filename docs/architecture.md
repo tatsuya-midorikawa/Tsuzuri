@@ -32,7 +32,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/syntax.rs` | トークン定義、構文木（AST）、言語版 `Edition`、説明の `@deprecated` の読み取り（`Documentation::deprecation`）、構文リソース上限の管理 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理（ファイル先頭の `#!` 行も行コメントとして飛ばし、位置はファイル全体のまま。`shebang_length`）、数値リテラルの切り出し、edition ごとの予約語（`EDITION_KEYWORDS`、`reserved_in`。`lex*` は edition を必須の引数に取る） |
 | `src/docgen.rs` | 宣言 AST からの公開 API ドキュメント（Markdown）生成、型・制約・region の描画、決定的なページソート |
-| `src/api_diff.rs` | `tsuzuri api-diff`（G19）。root パッケージの公開宣言を構文解析だけで読み、型変数と region を正規化した署名の表を作って 2 つの版を比べ、breaking と non-breaking の変更を決定的な順で出力（テキストと JSON Lines） |
+| `src/api_diff.rs`・`src/semantic_api.rs` | `tsuzuri api-diff`（G19・A19）。既定は root の公開宣言の構文比較。`--effective` は型検査中の解決済み署名・実際の引数規約・純粋性の段階・region の対応を明示的に収集し、安定した公開名で比較。breaking と non-breaking を決定的な順で出力（テキストと JSON Lines） |
 | `src/parser.rs` | Pratt パーサー、宣言と式、トップレベルのエントリーコード、再帰深度の制限 |
 | `src/parse_control.rs` | インデントによるブロック構文、for／while／match、関数ガード、ラムダ式、パターンおよびアクティブパターン認識器名 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR の構築、メモリレイアウト計算、公開 ABI |
@@ -363,7 +363,7 @@ WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が�
 
 ### 公開 API の差分（G19）
 
-`tsuzuri api-diff`（`src/api_diff.rs`）は、`Project::load_for_api`（依存の git・registry を取得せず、`Tsuzuri.lock` も読まない `load_for_docs` の変種）で 2 つの入力を読み、root パッケージ（`Project::root_package`）のソースを `parse_with_source` だけで構文解析して、公開宣言を「完全名と種類 → 項目」の表にします。署名は `docgen` の描画（`signature`、`type_text` など）を共有し、比較用には、型変数と region を最初に出てきた順の連番に置き換え、制約を並べ替え、定義の結果型の矢印を平らにした正規形（`Renaming`、`flatten`）を使い、報告にはそれぞれの版の書かれたままの形を使います。`add_items` は `Program` のすべての field を名前付きで分解するので、`Program` に宣言の種類を足すとここが compile error になり、API に入れるかどうかを決めることになります。`compare` は変更を breaking 先、名前順に並べるので出力は決定的で、表示は 1000 件までです。型検査もコード生成もしないので、IR には作用しません。
+`tsuzuri api-diff`（`src/api_diff.rs`）は、`Project::load_for_api`（依存の git・registry を取得せず、`Tsuzuri.lock` も読まない `load_for_docs` の変種）で 2 つの入力を読み、root パッケージ（`Project::root_package`）のソースを `parse_with_source` だけで構文解析して、公開宣言を「完全名と種類 → 項目」の表にします。署名は `docgen` の描画（`signature`、`type_text` など）を共有し、比較用には、型変数と region を最初に出てきた順の連番に置き換え、制約を並べ替え、通常の矢印だけを平坦化し、純粋な戻り型と factory の呼び出し段階を保った正規形（`Renaming`、`flatten`）を使い、報告にはそれぞれの版の書かれたままの形を使います。`add_items` は `Program` のすべての field を名前付きで分解するので、`Program` に宣言の種類を足すとここが compile error になり、API に入れるかどうかを決めることになります。`compare` は変更を breaking 先、名前順に並べるので出力は決定的で、表示は 1000 件までです。既定では型検査もコード生成もしないので、IR には作用しません。`--effective` では `Project::load_for_docs` と完全な解析を使い、通常の IDE index では省略する `SemanticIndex.resolved_api` を明示的に要求します。`src/semantic_api.rs` は所有権による Copy 推論と class 制約の固定点伝播が終わった後、`polymorph::specialize` が generic template を消費する直前に明示要求の snapshot を保存します。通常の semantic index と非推奨警告は従来の時点で収集し、API の要求だけをこの完了段階へ遅らせます。保存するのは generic な署名、展開した alias、型・長さパラメーター、checker が持つ region の対応と呼び出し側の制約で、内部 package ID を公開名へ戻します。関数の class 制約は `CheckedFunction.constraints` を既存の instance／superclass 正規化へ通し、inline／alias 経由の要求を含む残余の集合を保存します。具体型ですでに満たされた要求は残さず、モジュール関数は `CheckedFunction.members` の推論・伝播済みの署名を保存します。具体 receiver は `solve_members` が解決済みなので除外し、署名なしの宣言が同じ receiver/name の型付き要求で精密化されていれば型付きの側を使います。公開 alias も既存の alias 展開と inline 制約抽出・class 正規化で独立に要求を保存し、ローカルの使用箇所に依存しません。比較時には型変数の改名後に整列・重複除去します。pure な generic template は特殊化ごとの効果・所有条件の証明義務も checked contract に保存し、ABI が同じでもその新設を保守的に breaking とします。非公開 helper 経由の残余義務も `GenericFunction` の型引数対応に沿って呼び出し側へ伝播します。型パラメーターを頂点にした逆依存グラフの worklist で各頂点を一度だけ処理し、相互再帰を固定点まで解きます。通常の generic 関数内の明示的な純粋 callback も、値の型・capture・実行する本体に現れる型変数を同じグラフの始点にします。実行する本体は既存の純粋性 scanner を共有して求め、実際に実行する task・並列 callback・閉じたローカル callable を含めます。返す通常 callback の本体は後の実行と区別します。通常の効果検査では型変数の収集を要求しません。具体化したパラメーターの義務を別の generic 引数へ混ぜず、公開署名内の型変数の出現位置の mask を保存して改名でも比較を保ちます。class の既定実装と instance のメソッドにも残余義務を保存し、instance の型引数を代入してから比較します。instance 内はメソッド名で整列し、class の宣言順では変わりません。既定実装の新設自体は従来どおり non-breaking です。`--effective` では、未使用 template 内でも完全に具体化した generic 参照、静的に選ばれる class／演算子の呼び出し、具体 instance のメソッドと既定実装を既存の `Specializer` の検証根に追加します。途中の通常 helper も含め、実際の所有条件と選択した class メソッドの効果まで検査してから充足と扱います。不正なら API の一部だけを返さず解析エラーにします。この追加の検証根は明示の API 収集時だけで、通常の型検査・特殊化の根やコード生成は変えません。型変数名や source alias の文字列には依存せず、既定の構文比較と実際の型検査・特殊化は変えません。ソースの表示は置き換えません。標準ライブラリそのものを root とする場合以外は依存の宣言を API に含めません。依存や解析のエラーでは診断を返し、構文比較へフォールバックしません。
 
 ### bindgen
 
@@ -443,6 +443,7 @@ SPIR-V は `src/gpu/spirv.rs` が、`extract_kernel` の結果から決定的に
 ### モジュール
 
 「1 ファイルにつき 1 モジュール」を強制し、モジュール名はファイル名から自動的に導出されます。
+`Project::load_for_docs` で標準ライブラリ自身を読むときも、Std の解析入力には全 OS 共通の仮想名 `std/Name.tz` を渡します。実ファイルのパスは保持し、仮想名の区切りを Windows の `\` に変えません。
 プロジェクトルート配下を再帰的に走査し、`SourceFile.relative_path` を正規化した順序で処理します。例えば `Geometry/Point.tz` のコンパイラ内部名（キー）は `Geometry.Point` となり、ソースコード上では `Geometry::Point` と記述します。
 ファイル単体を指定した入力ではその親ディレクトリがルートとなり、ディレクトリ入力を指定した場合はそのディレクトリ自身がルートとなります。隠しファイル／ディレクトリ（ドット始まり）は無視され、ソースファイルやディレクトリに対するシンボリックリンクは拒否されます。
 ソースファイル数は最大 4096 件、ディレクトリ数は最大 1024 件、モジュールパスは最大 16 階層／255 バイトを上限とし、標準ライブラリの予約名はパスの先頭要素に対して適用されます。
@@ -1280,6 +1281,40 @@ Task 以外のクロージャにおいて捕捉変数が 1 個のみであり、
 各メンバーのリフト先の ID は、どの本体を下ろすより前に予約します。そのメンバーのフレームの `direct` にある名前は、関数適用・`x |> f`・部分適用なら「捕捉 ++ 引数」を渡す `Function(User(id))` の直接呼び出しに、それ以外の使い方なら `Closure(id, 捕捉)` に、借用した捕捉の読み出しは `Dereference` に、明示スタックで書き換えます。書き換えの前に、借用した非 Copy の捕捉をムーブする使い方（`TypedExpr::moving_use`）を `E1012` として検査します。`moving_use` は `consuming_use` と同じ走査で、入れ子のクロージャが捕捉してムーブする場合のエラーをクロージャの位置にし、`match` の対象を、非 Copy の値を取り出す束縛があるときだけ消費として扱います。`consuming_use` は、呼び出しの特殊化（`call_specialization::can_borrow`）と所有する関数の検査も使うので、変えません（変えると、`let rec` を書かないプログラムの IR が変わります）。
 `ownership::eval_lambda` も、`let rec` のラムダの捕捉のうち値で渡せないものを共有借用として評価し、リフトの後と同じ判定にします（グループの関数が 1 つの所有値を捕捉してもムーブにはなりません）。
 `let rec` を書かないプログラムでは ID の予約も書き換えも起きないので、生成される IR は変わりません。
+
+### 純粋性の検査
+
+`src/pure_rules.rs` は generic なテンプレートを特殊化前に検査し、特殊化と `closures::lower` の後でも、
+`FunctionOrigin.pure` の宣言と純粋な関数値の根を検査します。明示した純粋関数値の本体と閉じた callback の捕捉も、
+未使用の generic template が消費される前に同じ走査で検査します。通常の factory 自体の効果と、通常の戻り callback の実行には保証を広げません。
+関数値の証明根は実関数のキャッシュと分け、局所再帰で同じ本体が再び現れたときは走査済みとして扱います。
+生成した補助関数を無条件の純粋な根にはしません。
+引数の `own` と共有借用の補完は署名の収集時に終わり、以降は既存の参照と所有権規則を使います。
+純粋な矢印は `FunctionParameters.pure` に呼び出し段階ごとの契約を持ち、引数の物理的な規約を変えません。
+parser と class の instance／既定実装は同じ正規化を使い、純粋な宣言の段階を超えて戻り lambda を取り込まず、
+段階の全引数を束縛しない実装を `E1029` にします。途中の計算を動かす eta 展開はしません。
+モジュール関数制約の推論と特殊化は、既存の純粋フラグの弱化だけを行って通常の型単一化を使います。
+対象自身の署名と factory の物理的な段階を再構築・平坦化しません。
+通常の矢印へ弱める cast は closure の表現を保ち、一時 callback の借用は cast の外側へ正規化します。
+同じ引数・結果の型と規約を持つ段階の cast は直接呼び出しの特殊化でも透過に扱いますが、arity が変わる factory の境界は透過にしません。
+AST の純粋な矢印・class／instance の印と、括弧で区切る pure factory の解析を保存する frontend の形式は 9 です。
+各関数の局所の効果と関数参照の辺だけをキャッシュし、根ごとに幅優先で到達可能性を求めます。
+探索中の再帰関数を純粋としてキャッシュせず、循環を含む別の根にも効果が伝播します。
+閉じた Task／Parallel は callback と捕捉値を検査し、標準 IO の構築は遅延 callback の実行と区別します。
+class の契約は既定実装と全 instance、generic の特殊化、`@cpu` の版へ引き継ぎます。
+式の走査は明示的なスタック、関数の探索はキューで、関数 4,096 個・式 2,097,152 個の上限を超えると `E1017` です。
+型・組み込み・型付き式の分類は網羅的な match とし、新しい variant は分類を決めなければコンパイルできません。
+D-53 の `what`・`impurity_of_roots`・`reachable_effect`・`builtin_impure` が問い合わせの境界です。
+GPU の抽出も `reachable_effect` を使いますが、既存の scalar・演算・再帰・backend の制限は別にすべて検査します。
+
+`src/llvm_facts.rs` は純粋性とは独立に実際の命令からメモリ効果を証明します。`reuse_pure_calls` は、
+明示の純粋な宣言と出力済みの `memory(none)` の両方がある、値の整数引数・整数結果の関数だけを再利用します。
+同じ基本ブロックで最初に実行した呼び出しを残し、同一の SSA 引数の後続呼び出しだけを置き換えます。
+整数の spill は、関数全体でアドレスが逃げない単純なスロットだけを、ブロック内の store／load に従って正規化します。
+borrow・atomic・volatile・未知のアクセスはこの正規化から除外します。前方参照する loop phi も含めて SSA 使用を置き換え、
+quoted text・コメント・名前の前方一致は書き換えません。数値番号の SSA 定義と quoted な定義も再利用せず、番号や未対応の文法を壊しません。
+関数が 200,000 byte を超える場合は最適化を省略します。参照・浮動小数点・所有結果・CPU multiversion は対象外です。
+純粋性から新しい LLVM 属性や停止性を推定せず、投機実行・永続的 memo cache・所有結果の共有を導入しません。
 
 ### 継続の特殊化
 

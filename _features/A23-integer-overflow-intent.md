@@ -315,7 +315,7 @@ reported(function) =
 | チケット | 使う名前・形 | 未実装のときの代替 |
 | --- | --- | --- |
 | [G22](G22-diagnostic-v2.md)（D-51） | JSON の 1 行のキーの順序 `severity`・`code`・`message`・`path`・`span`（`path`・`span` は足すだけで互換）。`kind` は付けない（G23 の登録簿が決める） | G22 がなくても同じ形で出せる（既存の 5 キーの流儀） |
-| [A19](A19-pure-functions.md)・[A20](A20-effect-summary-and-checked-attributes.md)（D-53）・[G26](G26-facts-model.md) | 機能としては使わない。`trap` 効果にも `trap_sites` にも折り返しは入らない（`Int.wrapping_*` は `alloc`・`trap` を持たない純粋な演算）。ただし分類表（`builtin_effect`・`builtin_facts`）が実装済みなら、手順 3 の「分類表」で 4 つを足す | 表がなければ足すものはない |
+| [A19](_completed/A19-pure-functions.md)・[A20](A20-effect-summary-and-checked-attributes.md)（D-53）・[G26](G26-facts-model.md) | 機能としては使わない。`trap` 効果にも `trap_sites` にも折り返しは入らない（`Int.wrapping_*` は `alloc`・`trap` を持たない純粋な演算）。ただし分類表（`builtin_effect`・`builtin_facts`）が実装済みなら、手順 3 の「分類表」で 4 つを足す | 表がなければ足すものはない |
 | PR02（done） | `RangeFacts::integer_flags`・`Flags`・`RangeFlags` | — |
 
 ## 実装手順

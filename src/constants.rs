@@ -280,11 +280,40 @@ impl Checker<'_> {
         result: &Type,
         span: Span,
     ) -> Result<(), Diagnostic> {
+        // Pure qualification casts do not change the lifetime of the borrowed operand.
+        fn operand_kind(argument: &mut TypedExpr) -> &mut TypedExprKind {
+            let mut kind = &mut argument.kind;
+            while matches!(&*kind, TypedExprKind::Cast(value) if value.ty.function_purity().is_some())
+            {
+                let TypedExprKind::Cast(value) = kind else {
+                    unreachable!("callable cast checked")
+                };
+                kind = &mut value.kind;
+            }
+            kind
+        }
+        fn make_operand(argument: &mut TypedExpr) {
+            argument.kind = match std::mem::replace(&mut argument.kind, TypedExprKind::Error) {
+                TypedExprKind::Borrow(value, false) => TypedExprKind::BorrowOperand(value),
+                TypedExprKind::Cast(mut value) => {
+                    make_operand(&mut value);
+                    let TypedExprKind::BorrowOperand(operand) = value.kind else {
+                        unreachable!("temporary borrow checked")
+                    };
+                    TypedExprKind::BorrowOperand(Box::new(TypedExpr {
+                        kind: TypedExprKind::Cast(operand),
+                        ty: argument.ty.dereferenced().expect("borrowed callable"),
+                        span: argument.span,
+                    }))
+                }
+                _ => unreachable!("temporary shared borrow checked"),
+            };
+        }
         let borrowed: Vec<_> = arguments
-            .iter()
+            .iter_mut()
             .enumerate()
             .filter_map(|(index, argument)| {
-                if let TypedExprKind::Borrow(value, false) = &argument.kind
+                if let TypedExprKind::Borrow(value, false) = operand_kind(argument)
                     && !is_place(value)
                 {
                     Some(index)
@@ -296,15 +325,11 @@ impl Checker<'_> {
         // A constant of plain data is borrowed as static data, which `fold` rewrites, wherever
         // the call is applied and whatever it returns (D11 Phase 2).
         let (plain, borrowed): (Vec<_>, Vec<_>) = borrowed.into_iter().partition(|index| {
-            matches!(&arguments[*index].kind, TypedExprKind::Borrow(value, _)
+            matches!(operand_kind(&mut arguments[*index]), TypedExprKind::Borrow(value, _)
                 if self.plain_constant(value))
         });
         for index in plain {
-            if let TypedExprKind::Borrow(value, _) =
-                std::mem::replace(&mut arguments[index].kind, TypedExprKind::Error)
-            {
-                arguments[index].kind = TypedExprKind::BorrowOperand(value);
-            }
+            make_operand(&mut arguments[index]);
         }
         if borrowed.is_empty() {
             return Ok(());
@@ -321,7 +346,7 @@ impl Checker<'_> {
         };
         if !single_stage || !self.loan_free(result) {
             let constant = borrowed.iter().any(|index| {
-                matches!(&arguments[*index].kind, TypedExprKind::Borrow(value, _)
+                matches!(operand_kind(&mut arguments[*index]), TypedExprKind::Borrow(value, _)
                     if constant_id(value).is_some_and(|id| self.names.constants.contains(&id)))
             });
             if !constant {
@@ -334,11 +359,7 @@ impl Checker<'_> {
             ));
         }
         for index in borrowed {
-            if let TypedExprKind::Borrow(value, _) =
-                std::mem::replace(&mut arguments[index].kind, TypedExprKind::Error)
-            {
-                arguments[index].kind = TypedExprKind::BorrowOperand(value);
-            }
+            make_operand(&mut arguments[index]);
         }
         Ok(())
     }

@@ -257,6 +257,22 @@ pub fn extract_kernel(
             }
         }
     }
+    match crate::check::pure_rules::reachable_effect(module, function) {
+        Ok(None) => {}
+        Ok(Some(effect)) => {
+            return Err(unsupported(
+                &format!("GPU kernel {}", effect.reason()),
+                root.span,
+            ));
+        }
+        Err(_) => {
+            return Err(Diagnostic::new(
+                "E1017",
+                "GPU kernel cannot be proven effect-free within the analysis limits",
+                root.span,
+            ));
+        }
+    }
     Ok(GpuKernel {
         module,
         function,

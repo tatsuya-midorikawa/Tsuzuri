@@ -1,0 +1,152 @@
+record Point { x: i64, y: i64 } deriving (Eq, Ord)
+record Named { name: string, n: i64 }
+
+pure def square_sum :: i64 -> i64 = \n -> Array.sum (Array.init n (\i -> i * i))
+pure def greeting_length :: string -> string -> i64 = \a b -> ($"hello {a} and {b}").length
+pure def doubled_sum :: [i64] -> i64 = \xs -> Array.sum (Array.map (\x -> x * 2) xs)
+
+pure def local_update :: [i64] -> i64 -> i64 = \xs n ->
+    let mut ys = Array.copy xs
+    for i in 0 .. (n - 1) do
+        ys = Array.update_at (i % 4) (i * 3) ys
+    ys[0] + ys[1] * 10 + ys[2] * 100 + ys[3] * 1000
+
+pure def rec fact :: i64 -> i64 = \n -> if n <= 1 then 1 else n * fact (n - 1)
+
+pure def largest_x :: [Point] -> i64 = \points ->
+    let sorted = Array.sort points
+    if sorted.length == 0 then 0 else (Array.at (sorted.length - 1) (ref sorted)).x
+
+pure def renamed :: Named -> string -> Named = \p s -> Named { name: clone_string s, n: p.n }
+
+pure def first_or :: Maybe<[i64]> -> i64 = \m ->
+    match m with
+    | Maybe.Some xs -> xs[0]
+    | Maybe.None -> 0
+
+pure def pick :: [i64] -> [i64] -> i64 = \idx data ->
+    Array.fold (\acc i -> acc + data[i]) 0 idx
+
+pure def with_first_own :: own [i64] -> i64 -> [i64] = \xs v -> Array.update_at 0 v xs
+
+pure def rec build_list :: i64 -> own [|i64|] -> [|i64|] = \n acc ->
+    if n == 0 then acc else build_list (n - 1) (List.cons n acc)
+
+pure def shout :: own string -> string = \s -> $"{s}!"
+pure def pick_own :: own string -> own string -> bool -> string = \a b first -> if first then a else b
+pure def bounds :: [i64] -> i64 -> i64 = \xs index -> xs[index]
+
+export def t_square_sum :: i64 -> i64 = \n -> square_sum n
+export def t_greeting :: i64 -> i64 = \n -> greeting_length (String.repeat n "x") (String.repeat (n + 1) "y")
+export def t_doubled_sum :: i64 -> i64 = \n -> doubled_sum (Array.init n (\i -> i + 1))
+export def t_local_update :: i64 -> i64 = \n -> local_update (Array.init 4 (\i -> i + 1)) n
+export def t_fact :: i64 -> i64 = \n -> fact n
+export def t_largest_x :: i64 -> i64 = \n -> largest_x (Array.init n (\i -> Point { x: (i * 7) % 11, y: i }))
+export def t_renamed :: i64 -> i64 = \n ->
+    let p = Named { name: String.repeat n "p", n: n }
+    let q = renamed p (String.repeat (n + 2) "s")
+    q.name.length + q.n
+export def t_first_or :: i64 -> i64 = \n ->
+    let m: Maybe<[i64]> = if n % 2 == 0 then Maybe.Some (Array.init 3 (\i -> n + i)) else Maybe.None
+    first_or m
+export def t_pick :: i64 -> i64 = \n -> pick [0, n % 3] (Array.init 3 (\i -> (i + 1) * (n + 1)))
+export def t_with_first_own :: i64 -> i64 = \n ->
+    let xs = Array.init 4 (\i -> i + n)
+    let ys = with_first_own xs 9
+    xs[0] * 100 + ys[0] * 10 + ys[1]
+export def t_build_list :: i64 -> i64 = \n ->
+    let empty: [|i64|] = [||]
+    List.fold (\acc x -> acc * 3 + x) 0 (ref (build_list n empty))
+export def t_shout :: i64 -> i64 = \n -> (shout (String.repeat n "z")).length
+export def t_pick_own :: i64 -> i64 = \n ->
+    (pick_own (String.repeat n "a") (String.repeat (n + 1) "b") (n % 2 == 0)).length
+export def t_unused_trap :: i64 -> i64 = \index ->
+    let unused = bounds [1, 2] index
+    0
+
+type Ordinary = i64 -> i64
+pure def factory :: i64 -> Ordinary = \offset -> { \value -> offset + value }
+def invoke_owned :: own (i64 -> i64 -> i64) -> i64 -> i64 = \f n -> f n (n + 1)
+def invoke_borrowed :: (i64 -> i64 -> i64) -> i64 -> i64 = \f n -> f n (n + 1)
+export def t_factory_owned :: i64 -> i64 = \n -> invoke_owned factory n
+export def t_factory_borrowed :: i64 -> i64 = \n -> invoke_borrowed factory n
+export def t_factory_returned :: i64 -> i64 = \n -> { let f = factory n; f (n + 1) }
+
+def member_distance :: 'T -> i64
+    @'T : #distance
+fn member_distance value = 'T.distance value
+
+def annotated_distance :: 'T -> i64
+    @'T : (#distance: 'T -> i64)
+fn annotated_distance value = 'T.distance value
+
+def member_factory :: own 'T -> i64 -> i64
+    @'T : #factory
+fn member_factory item value = 'T.factory item value
+
+def annotated_factory :: own 'T -> (i64 -> i64)
+    @'T : (#factory: 'T -> i64 -> i64)
+fn annotated_factory item = 'T.factory item
+
+export def t_member_distance :: i64 -> i64 = \n -> member_distance (Members.Item { value: n + n + 1 })
+export def t_annotated_distance :: i64 -> i64 = \n -> annotated_distance (Members.Item { value: n + n + 1 })
+export def t_member_factory :: i64 -> i64 = \n -> member_factory (Members.Item { value: n }) (n + 1)
+export def t_annotated_factory :: i64 -> i64 = \n ->
+    let callback = annotated_factory (Members.Item { value: n })
+    callback (n + 1)
+export def t_default_factory :: i64 -> i64 = \n -> Classes.DefaultFactory.make n (n + n + 1)
+
+pure def prefix_factory :: i64 -> pure (i64 -> i64) = \n ->
+    let offset = n + 1
+    \value -> offset + value
+export def t_prefix_factory :: i64 -> i64 = \n -> prefix_factory n n
+
+pure def identity :: own 'a -> 'a = \value -> value
+pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \f value -> f value
+export def t_pure_generic :: i64 -> i64 = \n -> identity (n + n + 1)
+export def t_pure_callback :: i64 -> i64 = \n -> apply (\value -> value + n + 1) n
+
+instance Classes.StageFactory<i64> { fn make offset = \value -> offset + value }
+instance Classes.DefaultFactory<i64> {}
+export def t_factory_class :: i64 -> i64 = \n ->
+    let callback = Classes.StageFactory.make n
+    callback (n + 1)
+
+@cpu ["avx2"] pure def cpu_twice :: i64 -> i64 = \n -> n + n + 1
+export def t_pure_cpu :: i64 -> i64 = \n -> cpu_twice n
+pure def deferred :: i64 -> IO<i64> = \n -> IO.map (\value -> { Debug.print (ref value); value }) (IO.pure n)
+export def t_pure_deferred :: i64 -> i64 = \n -> { let action = deferred n; n + n + 1 }
+
+export def t_pure_std_weaken :: i64 -> i64 = \n ->
+    let lower: char -> char = Char.to_ascii_lower
+    if lower 'A' == 'a' then n + n + 1 else 0
+
+export def t_qualified_factory :: i64 -> i64 = \n ->
+    let factory: i64 -> i64 -> i64 = Classes.StageFactory.make
+    factory n (n + 1)
+
+pure def scalar_formula :: i64 -> i64 = \n -> n + n + 1
+export def t_pure_reuse :: i64 -> i64 = \n ->
+    let first = scalar_formula n
+    let second = scalar_formula n
+    first + second - first
+export def t_pure_reuse_mutated :: i64 -> i64 = \n ->
+    let mut current = n
+    let first = scalar_formula current
+    current = current + 1
+    let second = scalar_formula current
+    first + second - scalar_formula current
+
+pure def unsigned_formula :: i64u -> i64u = \n -> n + n + 1i64u
+export def t_pure_unsigned_reuse :: i64 -> i64 = \n ->
+    let value = n as i64u
+    let first = unsigned_formula value
+    let second = unsigned_formula value
+    (first + second - first) as i64
+
+pure def narrow_formula :: i32 -> i32 = \n -> n + n + 1i32
+export def t_pure_narrow_reuse :: i64 -> i64 = \n ->
+    let value = n as i32
+    let first = narrow_formula value
+    let second = narrow_formula value
+    (first + second - first) as i64

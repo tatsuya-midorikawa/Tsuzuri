@@ -213,6 +213,7 @@ def distance_of :: 'T -> 'U
 
 #### カリー化・演算子・クロージャ
 
+- **純粋性の契約**: `pure def` と関数型 `pure (T -> U)` は、観測できる副作用がないことをコンパイラが検査する契約です。引数は共有借用か平たいデータの `own` で、generic・純粋 callback・class／instance・`@cpu` にも対応します。停止・トラップしないこと・割り当てがないことは保証しません（[純粋関数](_tsuzuri/language-reference/values-and-functions/functions.md)）。
 - **カリー化と静的単相化**: すべての関数は自動的にカリー化されており、部分適用を自然に行えます。型クラスによるメソッド解決はコンパイル時に完全に完了し、動的ディスパッチやランタイム辞書渡しのコストを一切発生させません（明示した [`dyn` 型](_tsuzuri/language-reference/types-and-type-inference/type-classes.md) を除きます）。呼び出しに使われた具体的な型の組み合わせごとに最適化されたコードを生成します。
 - **演算子**: パイプライン演算子 `|>`、関数合成演算子 `>>`（順方向: `\x -> g (f x)`）および `<<`（逆方向: `\x -> f (g x)`）、累乗演算子 `**`（右結合）、組み込みの `not` や `ignore` を提供します。ビット演算には F# と同様の `&&&`、`|||`、`^^^`、`~~~`、`<<<`、`>>>` を使用します（`>>>` は符号付き整数なら算術シフト、符号なし整数なら論理シフト）。詳細は [演算子と式](_tsuzuri/language-reference/values-and-functions/op-and-expressions.md) を参照してください。
 - **クロージャと環境捕捉**: ラムダ式（`\x -> ...`）は外側のスコープの値を安全に捕捉できます。捕捉された所有値は関数値自身が管理し、関数値のコピー時には捕捉環境の独立したスナップショットが作成されます。完全適用された既知の関数呼び出しは、環境オブジェクトの確保を行わず直接呼び出しへと最適化されます。
@@ -756,12 +757,13 @@ tsuzuri doc src/ -o docs/api
 
 ### 公開 API の差分 (`tsuzuri api-diff`)
 
-パッケージやプロジェクトの 2 つの版の公開 API を比べ、互換性のない変更（公開宣言の削除、署名の変更、record の field や union の case の追加など）と、互換性を保つ変更（宣言の追加、説明の変更、`@deprecated` の追加）を 1 行ずつ出します。互換性のない変更があると終了コードは 1 です。型検査はせず、宣言の署名だけを比べます。
+パッケージやプロジェクトの 2 つの版の公開 API を比べ、互換性のない変更（公開宣言の削除、署名の変更、record の field や union の case の追加など）と、互換性を保つ変更（宣言の追加、説明の変更、`@deprecated` の追加）を 1 行ずつ出します。互換性のない変更があると終了コードは 1 です。既定では型検査をせず、宣言の署名だけを比べます。`--effective` は両方を依存込みで検査し、alias の解決後の型・実際の引数規約・`pure` の呼び出し段階・region の契約を比べます。検査や依存の読み込みが失敗した場合は診断で止まり、構文だけの比較へ戻しません。
 
 ```sh
 # 前の版のチェックアウトと、今のパッケージを比べる
 tsuzuri api-diff ../geometry-1.2.0 .
 tsuzuri api-diff ../geometry-1.2.0 . --json
+tsuzuri api-diff ../geometry-1.2.0 . --effective --json
 ```
 
 次は、`Shapes.tz` だけを持つ 2 つのディレクトリを比べたときの出力です（`Tsuzuri.toml` のない入力は、名前空間のない名前で出ます）。
@@ -872,7 +874,7 @@ tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri new directory [--namespace NAME]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
-tsuzuri api-diff old new [--json]
+tsuzuri api-diff old new [--json] [--effective]
 tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]... [--consume F:P]... [--json]
 tsuzuri lsp
 ```
@@ -1195,6 +1197,17 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
 - [ベンチマークの条件と読み方](docs/benchmarks.md) — 各種目における測定環境と性能データ
 # A18 / A19 実装時の契約の照合（2026-10-23）
 
+- A19 の照合: `own` は積み元の A18 で実装済みなので、通常の `def` でも引き続き受理します。
+  D-53 の効果の語彙と純粋性の問い合わせ口を優先し、検査を最適化の属性には変換しません。
+  Phase 2 の並行・メモ化・共通部分式の除去は、純粋性だけではトラップ・停止・一意所有を保存できません。
+  保証のない呼び出し消去や結果共有は実装せず、必要な追加条件と未実装の範囲を区別します。
+- A19 の後続項目のうち診断の強化は A18 と同じ補完マスクを共有します。
+  明示の `ref` の診断は変えず、`pure def` の補完による拒否にだけ `own` の案内を付けます。
+- A19 の明示した `Task`／`Parallel` の許可は、入力から不透明な関数・Task・dyn を受け取らない
+  閉じた根に限定し、生成・参照するコールバックをすべて検査します。外部の問い合わせもこの根の条件を検査します。
+  実行器の内部状態だけを例外とし、利用者の Atomic／Rc や非同期の時計・入出力は引き続き拒否します。
+  通常の Array 呼び出しを並列化する変更ではありません。明示した並行 API の既存のトラップ・待機の意味を保ち、
+  逐次との失敗順の同一性や停止は保証しません。純粋性だけで呼び出しを消す・並べ替える最適化は行いません。
 - 利用者は A18 の D1〜D4 と、両チケットの全 Phase（設計だけの項目も含む）への着手を承認しました。
   A18 と A19 は別ブランチ・別 PR とし、A19 は A18 の上に積みます。
 - D-54 の「edition は意味を変えない」は A18 D1 と衝突します。今回承認された例外は
@@ -1205,14 +1218,14 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
   移行ツールと std・fixture・文書の移行の検証後に限ります。古い manifest の既定は変更しません。
 - 古いチケットの引数例より D-59（41f80bc7）の対象が最後という規則を優先します。
   `Array.update_at 0 value xs` など、現行 API の順序を使用します。
-- `own` は共有構文を一度だけ実装します。純粋性は検査であり、LLVM の属性や呼び出し消去・
-  トラップ消去・結果の共有を許可するものではありません。
+- `own` は共有構文を一度だけ実装します。純粋性だけを理由に LLVM 属性、未使用呼び出しやトラップの消去、
+  所有結果の共有は許可しません。全 Phase の追加実装では、独立した既存のメモリ効果の証明もある整数呼び出しだけを局所的に再利用します。
 - 新しい crate、stack・解析上限の引き上げは行いません。未実装の Phase を完了とは記録しません。
 - A18 の review で明示 region を持つ record 引数の補完が既存の複数 lifetime 契約と衝突したため、
   明示 region の引数は固定署名として補完しません。region 推論や所有権規則は変えません。
   class method の whole-parameter `own` は、固定署名を変えずに印だけを除いて受理します。
-- api-diff は解決後の型を比較する基盤がまだないため、edition による引数の既定の差を保守的な
-  breaking change として報告します（無印の引数がある通常 def が対象）。これは完全な型解決の代替ではありません。
+- api-diff の既定は構文比較のまま保ち、edition による引数の既定の差を保守的な breaking change として報告します。
+  明示した `--effective` では両方を依存込みで検査し、alias 解決後の型と実際の引数規約、純粋性の呼び出し段階、region の対応を比べます。
   editor は `own` と補完前の引数表記を保ち、無関係な型不一致には所有権の修正を勧めません。
 - A18 Phase 2 の移行は、本体から所有権を推測せず、旧署名の値渡しを `own` で保存します。
   型変数・callback も明示し、後続の規約変更から旧 API を守ります。変更後を対象 edition で解析してから、
@@ -1273,6 +1286,8 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
 - Phase 3 の一時 callback の借用も、既存の「一段で完全適用し、結果が借用を持たない」という条件を保ちます。
   callback を受け取って関数値として返す旧 identity のような消費する契約には `own` を明示します。
   関数を返すからといって temporary operand を直接作り、借用の escape 検査を迂回しません。
+- F14 の `Alloc.__counter` は割り当てではなく debug 効果として扱います。独立したブランチを統合するときは
+  `Builtin::AllocCounter` の網羅 match に Debug を足し、counter の観測を pure から許可しません。
 
 ## A18 の完了（2026-10-24）
 
@@ -1285,3 +1300,73 @@ generic／関数の引数別規約、`mut` と射影代入・版別 `Vec.push`�
 CI **14 項目 green**。Copilot は未解決の指摘なしで、人による review は別途必要です。
 固定 Drop protocol の自己置換と const evaluator の射影代入は拒否する安全な制限を残し、
 新しい速度向上は主張しません。A19 の実装・統合は別担当・別 PR です。
+
+## A19 全 Phase の追加設計の照合（2026-10-23、実装前）
+
+- 利用者の全 Phase 承認に従い、旧 D8・D9・D12 の Phase 1 限定をここで更新します。
+  generic、純粋 callback、明示の閉じた並行処理、`@cpu`、class／instance を実装対象とします。
+  `const pure` は別の契約なので引き続き拒否します。D-53 の不明な呼び先を拒否する規則と解析上限は変えません。
+- `pure (T -> U)` は既存の矢印型に呼び出し時の効果の保証だけを加えます。矢印型の物理的な引数規約は変えません。
+  したがって無印の `pure def size :: string -> i64` の実効型は `pure (ref string -> i64)` です。
+  通常の矢印型と同様、型の中に `own` は導入しません。純粋な関数値は通常の関数値に弱められますが、
+  逆向きは閉じた関数／lambda の本体を検証できる場合だけです。未知の通常 callback の格上げは拒否します。
+  関数を返す段階と返された関数を呼ぶ段階の保証を混ぜないため、純粋な戻り値の境界では矢印を平坦化しません。
+- generic の型変数はテンプレートの保留条件として扱います。未使用の本体でも既知の外部効果を拒否し、
+  実際の特殊化では `own` の plain-data 条件と全呼び先を再検証します。特殊化は元の純粋性の証明根を保持します。
+  明示した純粋関数値の本体・捕捉も、未使用の generic template が捨てられる前に検査します。
+  外側の通常 factory の効果を禁止したり、純粋性を付けていない戻り関数の実行まで純粋と要求したりはしません。
+  未解決の型クラス呼び出しをそのままコード生成することや、未知の実行時呼び先を純粋と仮定することはしません。
+- `IO` の構築だけは標準 `IO` の不透明な遅延アクションとして扱い、closure の本体を実行効果と混ぜません。
+  捕捉値の評価・所有・解放は通常どおり検査します。`IO.Run` や取り出した未知の thunk の実行は許可しません。
+  利用者の同名 record、通常の callback、Task の実行までこの例外を広げません。
+- 2026-10-24 のレビュー照合: 純粋な宣言の呼び出し段階と実装の引数数を一致させます。
+  `pure def f :: A -> B -> C` の実装は同じ段階で両引数を束縛し、本体の block から残りの関数を返して
+  段階を短縮する形は `E1029` です。途中の計算を後ろへ移す eta 展開は行いません。
+  途中で計算して関数を返す実装には `A -> (B -> C)`、返る段階も純粋なら `A -> pure (B -> C)` を使います。
+  通常の `def` の途中評価、class の factory の戻り lambda、括弧で指定した段階は保持します。
+- class の純粋メソッドの契約は既定実装とすべての instance に適用します。
+  instance が独自に付ける純粋性も本体を検証します。未知の `dyn` dispatch をこの契約から推測しません。
+- std のうち検証できる読み取り／数値 API に明示した純粋契約を付けます。
+  通常の callback を受け取れる既存 API を一律に純粋 callback 専用へ狭めません。
+- 最適化の共有は、意味上の純粋性と既存の実メモリ効果の証明の両方を使います。
+  同じ基本ブロックで既に実行した、外部メモリに依存しない scalar 呼び出しの局所的な再利用だけを対象にし、
+  最初の呼び出しを残します。これは停止・トラップの証明を省略した未使用呼び出しの削除ではありません。
+  所有コレクションの共有、永続的なグローバル memo cache、投機実行、自動の GPU／並列 offload は行いません。
+  明示した既存 backend の検査で同じ問い合わせを再利用し、未対応 backend のエラーと portable path を保ちます。
+- API 比較は、既定の構文だけの比較を維持し、明示した `api-diff --effective` で
+  解決した型・別名・補完後の引数規約を比較します。既定モードは従来どおり本体の型検査や依存の取得を必要としません。
+  `--effective` は doc と同じ依存解決を使って両側を完全に解析し、解析・依存のエラーを構文比較で隠しません。
+  純粋性の追加が実効 ABI も変えるときは互換な追加と報告しません。ABI が同じでも、generic template に
+  純粋性の特殊化証明を新しく課す追加は保守的に破壊的とします。所有引数の plain-data 条件だけでなく、
+  共有入力の不透明な callback／Task や、結果・呼び先を含む特殊化の効果検査もあるためです。
+  特殊化義務のない、解決済みの共有入力や平たい所有型だけの追加とは区別します。
+  非公開 helper を経由する保留義務も型引数の対応に沿って公開関数・class の既定実装・instance へ伝播し、再帰でも固定点まで求めます。
+  通常の generic 関数内の明示的な純粋 callback についても、値の型・capture・実行する本体の型に由来する保留義務を同じ伝播へ含めます。
+  具体型の呼び出しは、途中の通常 helper も含め既存の特殊化・効果検査で証明してから充足とし、不正な場合は解析エラーを返します。
+  充足した部分を公開側の別の型変数へ誤って転嫁せず、型変数名の変更だけでは差分を出しません。
+  純粋な factory の戻り段階、
+  明示した領域、制約、型変数の対応と class メソッドの純粋契約を保ち、内部の package 識別子を公開しません。
+  制約はソースの明示節だけでなく、型検査済みの inline／alias 経由の class 要求を解決し、
+  呼び出し側に残る要求を集合として比較します。表記・順序・重複や、すでに満たされた本体内の具体型の要求では差分を出しません。
+  モジュール関数の要求は推論・伝播された署名も含め、公開 alias 自体の制約も、ローカルな使用箇所の有無にかかわらず比較します。
+  snapshot は所有権による Copy 推論と class 要求の固定点伝播が完了した後、generic 特殊化の直前に保存します。
+  A18 の診断・移行・2026 の固定契約は保存します。
+  全 Phase の実装とローカル受入を完了しました。初回は Rust 1,816 件（2 skipped）＋targets 12 件、
+  features 20,012 cases（native／WASM × O0／O3）、既存 114 プログラムの IR byte 一致、
+  リファレンス 12 ページ／75 例／134 native 実行を確認しました。
+  PR #50 の 4 指摘を修正後、全 Rust 1,832 件（targets 12 件を含む、2 skipped）、
+  pure 302＋parallel 12 ケース（native／WASM × O0／O3）、関連 E2E・cache・LSP と
+  manual 4 ページ／32 例／58 native 実行を再確認しました。
+  Windows CI で見つかった標準ライブラリ自身の実効 API 入力も、仮想パスを全 OS 共通の `std/Name.tz` に修正し、
+  関連 62 テストと usage の例を確認しました。推論・公開 alias・Copy の要求を含む最終修正後は全 Rust 1,839 件（targets 12 件を含む、2 skipped）、
+  Clippy・fmt・build、pure 302＋parallel 12（native／WASM × O0／O3）、E2E・cache・LSP、usage と docgen を再確認しました。
+  未使用 generic の純粋 callback 検査の修正後は全 Rust 1,841 件（targets 12 件を含む、2 skipped）、
+  Clippy・fmt・build、pure 302＋parallel 12、関連 E2E・cache・LSP・docgen と manual 2 ページ／29 例／52 native 実行を確認しました。
+  AI 測定の字句的な callers／impact では宣言接頭辞を参照から除き、関数名 `pure` と `pure def` の修飾子を区別します。
+  宣言と同じ行の本体にある通常・修飾付きの呼び出しは保持します。
+  generic の純粋性の特殊化義務を実効 API に含めた最終差分で、全 Rust 1,843 件（targets 12 件を含む、2 skipped）、
+  Clippy・fmt・build、pure 302＋parallel 12＋Map/Set 33、cache・LSP・docgen、AI 全 suite の Node20／24 各 44 件を確認しました。
+  usage の 5 例／4 native 実行／1 test project と guide-lite 85 件も成功しました。
+  最終 head の x64／arm64 CI は PR で追跡します。速度向上は未計測です。
+  実装範囲・例外・検証コマンドと変更一覧は [A19 の完了記録](_features/_completed/A19-pure-functions.md)、
+  最終 head の CI・Copilot レビューと 7 件の統合結果は各 PR で追跡します。

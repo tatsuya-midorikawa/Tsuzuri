@@ -240,7 +240,20 @@ pub(super) fn transparent_calls<'a>(
     module: &CheckedModule,
     mut skipped: impl FnMut(usize),
 ) -> &'a TypedExpr {
-    while let TypedExprKind::Call(callee, arguments) = &expression.kind {
+    loop {
+        if let TypedExprKind::Cast(value) = &expression.kind
+            && let (Type::Function(from, from_result), Type::Function(to, to_result)) =
+                (&value.ty, &expression.ty)
+            && from.types == to.types
+            && from_result == to_result
+            && (0..from.len()).all(|index| from.convention(index) == to.convention(index))
+        {
+            expression = value;
+            continue;
+        }
+        let TypedExprKind::Call(callee, arguments) = &expression.kind else {
+            break;
+        };
         let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind else {
             break;
         };

@@ -1884,7 +1884,7 @@ fn emit_program_in(
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
-    Ok((output, globals.traps))
+    Ok((facts::reuse_pure_calls(module, output), globals.traps))
 }
 
 /// The symbol that a `declare` line names, from the first `@` to the next `(`. Other lines and
@@ -6532,6 +6532,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     fn cast(&mut self, expression: &TypedExpr, to: &Type) -> String {
         let value = self.expression(expression);
         if expression.ty == *to {
+            return value;
+        }
+        if expression.ty.function_purity().is_some() && to.function_purity().is_some() {
             return value;
         }
         if let (Type::Integer(from, signed), Type::Integer(bits, _)) = (&expression.ty, to) {

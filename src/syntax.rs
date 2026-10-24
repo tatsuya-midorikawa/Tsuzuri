@@ -314,8 +314,16 @@ pub const CPU_TARGETS: [(&str, u8); 5] = [
 
 /// Words that are keywords only in their own syntax and identifiers elsewhere. A builder alias
 /// (`@alias`) cannot take one of them.
-pub const CONTEXTUAL_KEYWORDS: [&str; 7] =
-    ["finally", "is", "namespace", "of", "try", "using", "where"];
+pub const CONTEXTUAL_KEYWORDS: [&str; 8] = [
+    "finally",
+    "is",
+    "namespace",
+    "of",
+    "pure",
+    "try",
+    "using",
+    "where",
+];
 
 /// `@cpu ["avx2", ...]` before a `def` signature: native builds also compile the function for
 /// these CPU targets and pick one at run time (F08 Phase 3).
@@ -468,6 +476,7 @@ pub struct FunctionDecl {
     /// Declared `const def`: a const initializer may call it, and the compiler evaluates the call
     /// (D11). It is an ordinary function at run time.
     pub constant: bool,
+    pub pure: bool,
     pub parameters: Vec<Parameter>,
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
@@ -484,6 +493,7 @@ pub struct SignatureDecl {
     pub exported: bool,
     /// Written `const def`, or an `and` signature that continues a `const def rec` group (D11).
     pub constant: bool,
+    pub pure: bool,
     pub parameters: Vec<TypeExpr>,
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
@@ -511,6 +521,7 @@ pub struct ExternTypeDecl {
 #[derive(Clone, Debug)]
 pub struct Definition {
     pub name: Ident,
+    pub pure: bool,
     pub recursion: Option<String>,
     pub parameters: Vec<(Ident, bool)>,
     pub body: Expr,
@@ -622,6 +633,7 @@ pub enum TypeExprKind {
     Reference(Box<TypeExpr>, bool),
     Own(Box<TypeExpr>),
     Mut(Box<TypeExpr>),
+    Pure(Box<TypeExpr>),
     /// `dyn Shapes.Shape` or `dyn (Shape, Send)`: an owned value of some type with instances of
     /// the classes, dispatched at run time (A14). Boxed like `Apply` so `TypeExpr` does not grow.
     Dyn(Box<DynTypeExpr>),

@@ -30,18 +30,18 @@ fn bytes count = IO.map (\() -> gather count) (IO.pure ())
 def next_u64 :: own unit -> IO<Result<i64u, Os.Error>>
 fn next_u64 _unit = IO.map (\() -> word (gather 8)) (IO.pure ())
 
-private def advance :: own i64u -> own i64u -> i64u
+private pure def advance :: own i64u -> own i64u -> i64u
 fn advance state increment = state * 6364136223846793005i64u + increment
 
 /// A generator from a seed and a stream number (pcg32_srandom_r of pcg-c-basic).
-def pcg :: own i64u -> own i64u -> Pcg
+pure def pcg :: own i64u -> own i64u -> Pcg
 fn pcg seed sequence =
 	let increment = (sequence <<< 1) | 1i64u
 	let started = advance 0i64u increment
 	Pcg { state: advance (started + seed) increment, increment: increment }
 
 /// The next 32 bits and the following generator (pcg32_random_r).
-def pcg_next_u32 :: own Pcg -> (i32u * Pcg)
+pure def pcg_next_u32 :: own Pcg -> (i32u * Pcg)
 fn pcg_next_u32 generator =
 	let old = generator.state
 	let shifted = (((old >>> 18) ^ old) >>> 27) as i32u
@@ -49,7 +49,7 @@ fn pcg_next_u32 generator =
 	(Int.rotate_right shifted rotation, Pcg { state: advance old generator.increment, increment: generator.increment })
 
 /// 64 bits from two outputs, the first as the high half, and the following generator.
-def pcg_next_u64 :: own Pcg -> (i64u * Pcg)
+pure def pcg_next_u64 :: own Pcg -> (i64u * Pcg)
 fn pcg_next_u64 generator =
 	match pcg_next_u32 generator with
 	| (high, middle) ->
