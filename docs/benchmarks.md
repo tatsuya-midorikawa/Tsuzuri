@@ -2196,6 +2196,9 @@ NaN のビット（符号とペイロード）を言語の仕様から外せば�
 | `set_algebra` | 2 の倍数と 3 の倍数の集合の積・差・和 | 3 つの結果の要素数の合計 |
 
 再現時は、旧実装を stash で入れ替えず、別の worktree のコンパイラに埋め込みます。
+この表は A18 より前の測定なので、benchmark のソースと after コンパイラを測定した `733a33d8`、
+before コンパイラを `41f80bc7` に固定します。現在の benchmark の `Vec.push_owned` は旧コンパイラで
+使えないため、現在のソースやコンパイラへ片側だけ置き換えません。
 以下はリポジトリのルートで実行します（Clang／LLD と Node.js が必要です）。
 
 ```sh
@@ -2203,10 +2206,11 @@ mkdir -p target/scratch/c12-run/tmp
 export TMPDIR="$PWD/target/scratch/c12-run/tmp"
 export TSUZURI_CACHE_DIR="$PWD/target/scratch/c12-run/cache"
 git worktree add --detach target/scratch/c12-base 41f80bc7
+git worktree add --detach target/scratch/c12-after 733a33d8
 node scripts/slot.mjs -- cargo build --release --locked --manifest-path target/scratch/c12-base/Cargo.toml --target-dir target/scratch/c12-base-target
-node scripts/slot.mjs -- cargo build --release --locked
-node scripts/slot.mjs -- target/scratch/c12-base-target/release/tsuzuri build benchmarks/ordered -O3 --no-cache -o target/scratch/ordered-before
-node scripts/slot.mjs -- target/release/tsuzuri build benchmarks/ordered -O3 --no-cache -o target/scratch/ordered-after
+node scripts/slot.mjs -- cargo build --release --locked --manifest-path target/scratch/c12-after/Cargo.toml --target-dir target/scratch/c12-after-target
+node scripts/slot.mjs -- target/scratch/c12-base-target/release/tsuzuri build target/scratch/c12-after/benchmarks/ordered -O3 --no-cache -o target/scratch/ordered-before
+node scripts/slot.mjs -- target/scratch/c12-after-target/release/tsuzuri build target/scratch/c12-after/benchmarks/ordered -O3 --no-cache -o target/scratch/ordered-after
 node scripts/slot.mjs -- sh -c '
   for workload in insert_random lookup_random remove_random insert_ascending update_counter set_algebra; do
     for size in 10000 100000; do
