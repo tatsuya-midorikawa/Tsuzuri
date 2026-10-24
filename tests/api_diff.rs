@@ -90,6 +90,71 @@ fn compare_mode(
 }
 
 #[test]
+fn effective_pure_additions_preserve_generic_specialization_obligations() {
+    let old = "def inspect :: own 'a -> i64 = \\value -> 0\n";
+    let new = format!("pure {old}");
+    tsuzuri::analyze(&format!("{old}inspect (Rc.new 1)\n")).unwrap();
+    assert_eq!(
+        tsuzuri::analyze(&format!("{new}inspect (Rc.new 1)\n"))
+            .unwrap_err()
+            .code,
+        "E1029"
+    );
+    tsuzuri::analyze(&format!("{new}inspect 1\n")).unwrap();
+    let borrowed = old.replace("own 'a", "ref 'a");
+    let callback = "let callback: i64 -> i64 = \\x -> x\ninspect (ref callback)\n";
+    tsuzuri::analyze(&format!("{borrowed}{callback}")).unwrap();
+    assert_eq!(
+        tsuzuri::analyze(&format!("pure {borrowed}{callback}"))
+            .unwrap_err()
+            .code,
+        "E1029"
+    );
+    assert_eq!(
+        compare_mode(old, &new, &[], true),
+        ["breaking changed def Main.inspect"]
+    );
+    assert_eq!(
+        compare(old, &new, &[]),
+        ["non-breaking changed def Main.inspect"]
+    );
+    assert!(compare_mode(&new, &new.replace("'a", "'element"), &[], true).is_empty());
+    for (prefix, parameter, breaking) in [
+        ("", "own ['a]", true),
+        ("record Box<'a> { value: 'a }\n", "own Box<'a>", true),
+        ("type Payload<'a> = ['a]\n", "own Payload<'a>", true),
+        ("", "ref 'a", true),
+        ("record Box<'a> { value: 'a }\n", "ref Box<'a>", true),
+        ("", "ref [i64]", false),
+        ("", "pure ('a -> i64)", true),
+        ("", "own [i64]", false),
+        ("record Box { value: i64 }\n", "own Box", false),
+    ] {
+        let before = format!("{prefix}def inspect :: {parameter} -> i64 = \\value -> 0\n");
+        let after = before.replace("def inspect", "pure def inspect");
+        assert_eq!(
+            compare_mode(&before, &after, &[], true),
+            [format!(
+                "{} changed def Main.inspect",
+                if breaking { "breaking" } else { "non-breaking" }
+            )],
+            "{parameter}",
+        );
+    }
+    let result = "def inspect :: unit -> Maybe<'a> = \\() -> None\n";
+    assert_eq!(
+        compare_mode(result, &format!("pure {result}"), &[], true),
+        ["breaking changed def Main.inspect"]
+    );
+    let prefix = "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\n";
+    let caller = "let result: Maybe<Ticket> = inspect ()\n0\n";
+    tsuzuri::analyze(&format!("{prefix}{result}{caller}")).unwrap();
+    let error = tsuzuri::analyze(&format!("{prefix}pure {result}{caller}"))
+        .expect_err("generic result specialization must retain the purity proof obligation");
+    assert_eq!(error.code, "E1029");
+}
+
+#[test]
 fn effective_inline_and_alias_constraints_are_part_of_the_callers_contract() {
     let old = "def f :: 'a -> bool = \\x -> true\n";
     let new = "def f :: Ord<'a> -> bool = \\x -> true\n";

@@ -127,12 +127,17 @@ pub(in crate::check) fn collect(
                 key(declaration.name.span),
                 signature(&function.signature, types),
             );
-            // Compare the checker's actual provenance, not region labels on unexpanded aliases.
+            let specialization_obligation = function.origin.pure
+                && (!function.type_parameters.is_empty() || !function.constraints.is_empty());
+            // Generic purity adds a specialization proof, even when the resolved ABI is unchanged.
             result.contracts.insert(
                 key(declaration.name.span),
                 format!(
-                    "{:?}:{:?}:{:?}",
-                    function.region_sources, function.region_slots, function.callback_contracts,
+                    "{:?}:{:?}:{:?}:{:?}",
+                    function.region_sources,
+                    function.region_slots,
+                    function.callback_contracts,
+                    specialization_obligation,
                 ),
             );
             result.constraints(&declaration.constraints, name, names, classes, types)?;

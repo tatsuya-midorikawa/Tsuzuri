@@ -1194,6 +1194,23 @@ def main :: unit -> i32 = \() ->
   Rust／std の入力は `50b52943` と同一なので、その全 Rust **1,842／2 skipped** と
   最終 F14 統合の **1,864／2 skipped** の受入を保持し、JS 修正後に再実行した数とは混ぜない。
 
+### generic な純粋性の特殊化義務（2026-10-24）
+
+- `b5114dec` の review `5637560496` は「No open issues」と表示しつつ、overview に
+  `own 'a` への `pure` 追加を誤って non-breaking にする追加指摘を含んでいた。旧実装の比較の失敗と、
+  通常版では受理する `inspect (Rc.new 1)` が純粋版では `E1029` になることを回帰で確認した。
+- 所有引数だけでなく、共有の型変数で通常 callback を受ける呼び出しや、結果だけが generic な
+  `Maybe<'a>` を利用者 Drop の型に特殊化する呼び出しでも、追加した純粋性の証明義務が現れることを確認した。
+  入力の一部だけを記録せず、型検査済みの generic template の純粋性・所有条件の特殊化義務を
+  既存の checked contract に保存する。新しい public 制約クラスや構文は作らない。
+- `--effective` はその義務の新設を、ABI が同じでも保守的に breaking とする。
+  型変数の改名、alias、入れ子の所有データを検査し、特殊化義務のない具体的な共有型・平たい所有型では
+  互換な純粋性の追加を保つ。既定の構文比較、ソース表示、実際の型検査・所有権・特殊化・コード生成は変えない。
+- 最終差分で全 Rust **1,843 passed／2 skipped（targets 12 を含む）**、fmt・全 target Clippy・dev build、
+  pure **302**＋parallel **12**＋map_set_chunks **33**（native／WASM × O0／O3）、frontend cache・LSP 4 件・docgen が成功した。
+  AI 全 suite は Node20／24 それぞれ **44／0 failed／5 capability skips**、usage は
+  **62 links／5 checked examples／4 native runs／1 test project**、guide-lite **85／0** を確認した。
+
 ### 確認コマンド（最終受入）
 
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --locked`。

@@ -1336,7 +1336,11 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
 - API 比較は、既定の構文だけの比較を維持し、明示した `api-diff --effective` で
   解決した型・別名・補完後の引数規約を比較します。既定モードは従来どおり本体の型検査や依存の取得を必要としません。
   `--effective` は doc と同じ依存解決を使って両側を完全に解析し、解析・依存のエラーを構文比較で隠しません。
-  純粋性の追加が実効 ABI も変えるときは互換な追加と報告しません。純粋な factory の戻り段階、
+  純粋性の追加が実効 ABI も変えるときは互換な追加と報告しません。ABI が同じでも、generic template に
+  純粋性の特殊化証明を新しく課す追加は保守的に破壊的とします。所有引数の plain-data 条件だけでなく、
+  共有入力の不透明な callback／Task や、結果・呼び先を含む特殊化の効果検査もあるためです。
+  特殊化義務のない、解決済みの共有入力や平たい所有型だけの追加とは区別します。
+  純粋な factory の戻り段階、
   明示した領域、制約、型変数の対応と class メソッドの純粋契約を保ち、内部の package 識別子を公開しません。
   制約はソースの明示節だけでなく、型検査済みの inline／alias 経由の class 要求を解決し、
   呼び出し側に残る要求を集合として比較します。表記・順序・重複や、すでに満たされた本体内の具体型の要求では差分を出しません。
@@ -1356,6 +1360,9 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   Clippy・fmt・build、pure 302＋parallel 12、関連 E2E・cache・LSP・docgen と manual 2 ページ／29 例／52 native 実行を確認しました。
   AI 測定の字句的な callers／impact では宣言接頭辞を参照から除き、関数名 `pure` と `pure def` の修飾子を区別します。
   宣言と同じ行の本体にある通常・修飾付きの呼び出しは保持します。
+  generic の純粋性の特殊化義務を実効 API に含めた最終差分で、全 Rust 1,843 件（targets 12 件を含む、2 skipped）、
+  Clippy・fmt・build、pure 302＋parallel 12＋Map/Set 33、cache・LSP・docgen、AI 全 suite の Node20／24 各 44 件を確認しました。
+  usage の 5 例／4 native 実行／1 test project と guide-lite 85 件も成功しました。
   最終 head の x64／arm64 CI は PR で追跡します。速度向上は未計測です。
   実装範囲・例外・検証コマンドと変更一覧は [A19 の完了記録](_features/_completed/A19-pure-functions.md)、
   最終 head の CI・Copilot レビューと 7 件の統合結果は各 PR で追跡します。

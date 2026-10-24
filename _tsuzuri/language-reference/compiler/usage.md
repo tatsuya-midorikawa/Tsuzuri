@@ -582,7 +582,7 @@ note: version 1.3.0 is compatible with 1.2.0, so registry dependents that accept
   署名の綴りが同じでも保守的に breaking とします。型や alias は解決しないため、実際には値渡しのままの
   scalar や generic な引数にも出ることがあります。明示の `own`／`ref`、region の契約、
   `const def` のように既定を使わない引数はこの判定の対象にしません。`--effective` では補完後の型を比べるため、edition が変わっても値渡しのままの Copy record や scalar は breaking にせず、実際に借用へ変わる `string` などを区別します。
-- **純粋性**: 通常の関数へ `pure` を加えることは、引数の契約が変わらなければ non-breaking、外すことは breaking です。純粋性が保証される呼び出し段階を変えることも breaking です。たとえば `pure def f :: i64 -> (i64 -> i64)` が保証するのは factory の実行だけで、返った関数の実行は含みません。class メソッドへの純粋性の追加は既存 instance に新しい義務を課すため breaking です。
+- **純粋性**: 通常の関数へ `pure` を加えることは、引数の契約も特殊化の証明義務も変わらなければ non-breaking、外すことは breaking です。`--effective` では generic template への追加を保守的に breaking とします。たとえば `def inspect :: own 'a -> i64 = \value -> 0` に `pure` を加えると、ABI が同じでも `inspect (Rc.new 1)` は plain-data の所有条件で `E1029` になります。共有の型変数も不透明な通常 callback などを受け取れなくなり、generic な結果や呼び先にも特殊化時の効果検査があります。解決済みの scalar・Copy record などへの追加と区別します。純粋性が保証される呼び出し段階を変えることも breaking です。たとえば `pure def f :: i64 -> (i64 -> i64)` が保証するのは factory の実行だけで、返った関数の実行は含みません。class メソッドへの純粋性の追加は既存 instance に新しい義務を課すため breaking です。
 - **名前空間や名前の変更**: モジュールの名前空間とパッケージの `namespace` は宣言の名前の一部です。変えるとすべての宣言が削除と追加になり、`changed namespace` の行が 1 行足されます。モジュールの改名も削除と追加で、改名は検出しません。マニフェストのない入力は、ディレクトリ名で決まる名前空間を持たないものとして比べます。
 
 #### 変更の分類
