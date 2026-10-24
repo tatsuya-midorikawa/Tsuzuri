@@ -69,7 +69,9 @@
 
 ### A18 統合時の互換検証（2026-10-23）
 
-- 積み元を A18 `b3343ed1` に更新した。2027 edition の読み取り既定の下でも消費する内部引数を `own`、
+- 積み元を最終 A18 `8f1df9d5` に更新した。検証した `b3343ed1` からの差は文書のみで、
+  restack 前後の src／std／tests／benchmarks／scripts／vsc と Cargo manifest・lock は byte 同一。
+  2027 edition の読み取り既定の下でも消費する内部引数を `own`、
   読み取りを `ref` とし、現行の `Vec.push_owned` に合わせた。Map・Set のチャンク算法、512／256／384、
   公開 API の実効規約、比較・代表キー・drop の順序は変えない。古い付録の限定的な書き換え制限より、
   承認済み A18 の規約との整合を優先した。付録 A・B・benchmark と付録 2 の fixture は実ファイルと byte 一致する。
