@@ -21,7 +21,7 @@ fn copy values = *values
 
 /// The list of the elements of `items`, in order. The elements move, so they need not be `Copy`; the list is a chain of
 /// chunks, as one built by `List.cons` is.
-private def of_vec :: Vec<'a> -> [|'a|]
+private def of_vec :: own Vec<'a> -> [|'a|]
 fn of_vec items =
     let mut rest = items
     let mut result: [|'a|] = [||]
@@ -42,7 +42,7 @@ fn lists_of arrays = new [|[|'a|]|](arrays.length, index -> Array.to_list (ref a
 
 /// The number of elements that two lists share. The functions that take two lists visit the shared prefix before they
 /// trap on lists of different lengths, as F# does.
-private def common_length :: i64 -> i64 -> i64
+private def common_length :: own i64 -> own i64 -> i64
 fn common_length left right = if left < right then left else right
 
 // ---- Construction ----
@@ -50,13 +50,13 @@ fn common_length left right = if left < right then left else right
 def empty :: [|'a|]
 fn empty = [||]
 
-def singleton :: 'a -> [|'a|]
+def singleton :: own 'a -> [|'a|]
 fn singleton value = [|value|]
 
-def replicate :: Copy<'a> => i64 -> 'a -> [|'a|]
+def replicate :: Copy<'a> => own i64 -> own 'a -> [|'a|]
 fn replicate count value = new [|'a|](count, \_index -> value)
 
-def init :: i64 -> (i64 -> 'a) -> [|'a|]
+def init :: own i64 -> own (i64 -> 'a) -> [|'a|]
 fn init count initializer = new [|'a|](count, initializer)
 
 // ---- Access ----
@@ -69,10 +69,10 @@ fn head values =
 def try_head :: Copy<'a> => ref [|'a|] -> Maybe<'a>
 fn try_head values = if values.length == 0 then Maybe.None else Maybe.Some values[0]
 
-def item :: Copy<'a> => i64 -> ref [|'a|] -> 'a
+def item :: Copy<'a> => own i64 -> ref [|'a|] -> 'a
 fn item index values = values[index]
 
-def try_item :: Copy<'a> => i64 -> ref [|'a|] -> Maybe<'a>
+def try_item :: Copy<'a> => own i64 -> ref [|'a|] -> Maybe<'a>
 fn try_item index values =
     if index < 0 || index >= values.length then Maybe.None else Maybe.Some values[index]
 
@@ -96,38 +96,38 @@ fn try_exactly_one values = if values.length == 1 then Maybe.Some values[0] else
 
 /// The first `count` elements; `count` is in `0 .. values.length`. The walk stops after `count` elements, however long
 /// `values` is.
-private def prefix :: Copy<'a> => i64 -> ref [|'a|] -> [|'a|]
+private def prefix :: Copy<'a> => own i64 -> ref [|'a|] -> [|'a|]
 fn prefix count values =
     let mut taken = Vec.with_capacity count
     let mut index = 0
     for value in values do
         if index == count then break
-        taken = Vec.push value taken
+        taken = Vec.push_owned value taken
         index = index + 1
     Array.to_list (Vec.to_array taken)
 
-def take :: Copy<'a> => i64 -> ref [|'a|] -> [|'a|]
+def take :: Copy<'a> => own i64 -> ref [|'a|] -> [|'a|]
 fn take count values =
     assert (count >= 0 && count <= values.length)
     prefix count values
 
-def skip :: Copy<'a> => i64 -> ref [|'a|] -> [|'a|]
+def skip :: Copy<'a> => own i64 -> ref [|'a|] -> [|'a|]
 fn skip count values =
     assert (count <= values.length)
     Array.to_list (Array.skip count (List.to_array values))
 
-def truncate :: Copy<'a> => i64 -> ref [|'a|] -> [|'a|]
+def truncate :: Copy<'a> => own i64 -> ref [|'a|] -> [|'a|]
 fn truncate count values =
     if count <= 0 then [||] else prefix (if count < values.length then count else values.length) values
 
-def split_at :: Copy<'a> => i64 -> ref [|'a|] -> ([|'a|] * [|'a|])
+def split_at :: Copy<'a> => own i64 -> ref [|'a|] -> ([|'a|] * [|'a|])
 fn split_at index values =
     assert (index >= 0 && index <= values.length)
     (prefix index values, skip index values)
 
 /// The number of leading elements for which `predicate` is true; it is not called after the first one for which it is
 /// false.
-private def leading :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> i64
+private def leading :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> i64
 fn leading predicate values =
     let mut count = 0
     for value in values do
@@ -135,38 +135,38 @@ fn leading predicate values =
         count = count + 1
     count
 
-def take_while :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> [|'a|]
+def take_while :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> [|'a|]
 fn take_while predicate values = prefix (leading predicate values) values
 
-def skip_while :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> [|'a|]
+def skip_while :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> [|'a|]
 fn skip_while predicate values = skip (leading predicate values) values
 
-def where :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> [|'a|]
+def where :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> [|'a|]
 fn where predicate values =
     let mut selected = Vec.empty()
     for value in values do
-        if predicate value then selected = Vec.push value selected
+        if predicate value then selected = Vec.push_owned value selected
     Array.to_list (Vec.to_array selected)
 
-def filter :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> [|'a|]
+def filter :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> [|'a|]
 fn filter predicate values = where predicate values
 
 def transpose :: Copy<'a> => ref [|[|'a|]|] -> [|[|'a|]|]
 fn transpose lists =
     let mut rows = Vec.empty()
-    for row in lists do rows = Vec.push (List.to_array row) rows
+    for row in lists do rows = Vec.push_owned (List.to_array row) rows
     lists_of (Array.transpose (Vec.to_array rows))
 
 // ---- Traversal: iter, map, collect, choose ----
 
-def iter :: Copy<'a> => ('a -> unit) -> ref [|'a|] -> unit
+def iter :: Copy<'a> => own ('a -> unit) -> ref [|'a|] -> unit
 fn iter action values = for value in values do action value
 
 /// Like `iter`, but `action` borrows each element, so the elements need not be `Copy`.
-def iterr :: (ref 'a -> unit) -> ref [|'a|] -> unit
+def iterr :: own (ref 'a -> unit) -> ref [|'a|] -> unit
 fn iterr action values = for value in values do action (ref value)
 
-def iteri :: Copy<'a> => (i64 -> 'a -> unit) -> ref [|'a|] -> unit
+def iteri :: Copy<'a> => own (i64 -> 'a -> unit) -> ref [|'a|] -> unit
 fn iteri action values =
     let mut index = 0
     for value in values do
@@ -174,14 +174,14 @@ fn iteri action values =
         index = index + 1
 
 /// Like `iteri`, but `action` borrows each element, so the elements need not be `Copy`.
-def iterir :: (i64 -> ref 'a -> unit) -> ref [|'a|] -> unit
+def iterir :: own (i64 -> ref 'a -> unit) -> ref [|'a|] -> unit
 fn iterir action values =
     let mut index = 0
     for value in values do
         action index (ref value)
         index = index + 1
 
-def iter2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> unit) -> ref [|'a|] -> ref [|'b|] -> unit
+def iter2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> unit) -> ref [|'a|] -> ref [|'b|] -> unit
 fn iter2 action left right =
     let first = List.to_array left
     let second = List.to_array right
@@ -192,7 +192,7 @@ fn iter2 action left right =
         index = index + 1
     assert (first.length == second.length)
 
-def iteri2 :: (Copy<'a>, Copy<'b>) => (i64 -> 'a -> 'b -> unit) -> ref [|'a|] -> ref [|'b|] -> unit
+def iteri2 :: (Copy<'a>, Copy<'b>) => own (i64 -> 'a -> 'b -> unit) -> ref [|'a|] -> ref [|'b|] -> unit
 fn iteri2 action left right =
     let first = List.to_array left
     let second = List.to_array right
@@ -207,26 +207,26 @@ fn iteri2 action left right =
 /// the other functions do: a callback that is also captured by a closure cannot be specialized, and then every call
 /// copies its environment. The results need not be `Copy`, so they cannot go through an array: `of_vec` builds the
 /// list, a chain of chunks.
-def mapi :: Copy<'a> => (i64 -> 'a -> 'b) -> ref [|'a|] -> [|'b|]
+def mapi :: Copy<'a> => own (i64 -> 'a -> 'b) -> ref [|'a|] -> [|'b|]
 fn mapi transform values =
     let mut mapped = Vec.with_capacity values.length
     let mut index = 0
     for value in values do
-        mapped = Vec.push (transform index value) mapped
+        mapped = Vec.push_owned (transform index value) mapped
         index = index + 1
     of_vec mapped
 
 /// Like `mapi`, but `transform` borrows each element, so the elements need not be `Copy`.
-def mapir :: (i64 -> ref 'a -> 'b) -> ref [|'a|] -> [|'b|]
+def mapir :: own (i64 -> ref 'a -> 'b) -> ref [|'a|] -> [|'b|]
 fn mapir transform values =
     let mut mapped = Vec.with_capacity values.length
     let mut index = 0
     for value in values do
-        mapped = Vec.push (transform index (ref value)) mapped
+        mapped = Vec.push_owned (transform index (ref value)) mapped
         index = index + 1
     of_vec mapped
 
-def map2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref [|'a|] -> ref [|'b|] -> [|'c|]
+def map2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'c) -> ref [|'a|] -> ref [|'b|] -> [|'c|]
 fn map2 transform left right =
     let first = List.to_array left
     let second = List.to_array right
@@ -234,12 +234,12 @@ fn map2 transform left right =
     let mut mapped = Vec.with_capacity count
     let mut index = 0
     while index < count do
-        mapped = Vec.push (transform first[index] second[index]) mapped
+        mapped = Vec.push_owned (transform first[index] second[index]) mapped
         index = index + 1
     assert (first.length == second.length)
     of_vec mapped
 
-def mapi2 :: (Copy<'a>, Copy<'b>) => (i64 -> 'a -> 'b -> 'c) -> ref [|'a|] -> ref [|'b|] -> [|'c|]
+def mapi2 :: (Copy<'a>, Copy<'b>) => own (i64 -> 'a -> 'b -> 'c) -> ref [|'a|] -> ref [|'b|] -> [|'c|]
 fn mapi2 transform left right =
     let first = List.to_array left
     let second = List.to_array right
@@ -247,12 +247,12 @@ fn mapi2 transform left right =
     let mut mapped = Vec.with_capacity count
     let mut index = 0
     while index < count do
-        mapped = Vec.push (transform index first[index] second[index]) mapped
+        mapped = Vec.push_owned (transform index first[index] second[index]) mapped
         index = index + 1
     assert (first.length == second.length)
     of_vec mapped
 
-def map3 :: (Copy<'a>, Copy<'b>, Copy<'c>) => ('a -> 'b -> 'c -> 'd) -> ref [|'a|] -> ref [|'b|] -> ref [|'c|] -> [|'d|]
+def map3 :: (Copy<'a>, Copy<'b>, Copy<'c>) => own ('a -> 'b -> 'c -> 'd) -> ref [|'a|] -> ref [|'b|] -> ref [|'c|] -> [|'d|]
 fn map3 transform first second third =
     let one = List.to_array first
     let two = List.to_array second
@@ -261,23 +261,23 @@ fn map3 transform first second third =
     let mut mapped = Vec.with_capacity count
     let mut index = 0
     while index < count do
-        mapped = Vec.push (transform one[index] two[index] three[index]) mapped
+        mapped = Vec.push_owned (transform one[index] two[index] three[index]) mapped
         index = index + 1
     assert (one.length == two.length && two.length == three.length)
     of_vec mapped
 
-def map_fold :: Copy<'a> => ('state -> 'a -> ('b * 'state)) -> 'state -> ref [|'a|] -> ([|'b|] * 'state)
+def map_fold :: Copy<'a> => own ('state -> 'a -> ('b * 'state)) -> own 'state -> ref [|'a|] -> ([|'b|] * 'state)
 fn map_fold mapping initial values =
     let mut state = initial
     let mut mapped = Vec.empty()
     for value in values do
         match mapping state value with
         | (item, next) ->
-            mapped = Vec.push item mapped
+            mapped = Vec.push_owned item mapped
             state = next
     (of_vec mapped, state)
 
-def map_fold_back :: Copy<'a> => ('a -> 'state -> ('b * 'state)) -> 'state -> ref [|'a|] -> ([|'b|] * 'state)
+def map_fold_back :: Copy<'a> => own ('a -> 'state -> ('b * 'state)) -> own 'state -> ref [|'a|] -> ([|'b|] * 'state)
 fn map_fold_back mapping initial values =
     let source = List.to_array values
     let mut state = initial
@@ -291,32 +291,32 @@ fn map_fold_back mapping initial values =
             state = next
     (mapped, state)
 
-def collect :: (Copy<'a>, Copy<'b>) => ('a -> [|'b|]) -> ref [|'a|] -> [|'b|]
+def collect :: (Copy<'a>, Copy<'b>) => own ('a -> [|'b|]) -> ref [|'a|] -> [|'b|]
 fn collect mapping values =
     let mut items = Vec.empty()
     for value in values do
         let part = mapping value
-        for item in part do items = Vec.push item items
+        for item in part do items = Vec.push_owned item items
     Array.to_list (Vec.to_array items)
 
-def choose :: Copy<'a> => ('a -> Maybe<'b>) -> ref [|'a|] -> [|'b|]
+def choose :: Copy<'a> => own ('a -> Maybe<'b>) -> ref [|'a|] -> [|'b|]
 fn choose chooser values =
     let mut chosen = Vec.empty()
     for value in values do
         match chooser value with
-        | Maybe.Some item -> chosen = Vec.push item chosen
+        | Maybe.Some item -> chosen = Vec.push_owned item chosen
         | Maybe.None -> ()
     of_vec chosen
 
 // ---- Folding ----
 
-def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref [|'a|] -> 'state
+def fold :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> ref [|'a|] -> 'state
 fn fold folder initial values =
     let mut state = initial
     for value in values do state = folder state value
     state
 
-def fold2 :: (Copy<'a>, Copy<'b>) => ('state -> 'a -> 'b -> 'state) -> 'state -> ref [|'a|] -> ref [|'b|] -> 'state
+def fold2 :: (Copy<'a>, Copy<'b>) => own ('state -> 'a -> 'b -> 'state) -> own 'state -> ref [|'a|] -> ref [|'b|] -> 'state
 fn fold2 folder initial left right =
     let first = List.to_array left
     let second = List.to_array right
@@ -329,15 +329,15 @@ fn fold2 folder initial left right =
     assert (first.length == second.length)
     state
 
-def fold_back :: Copy<'a> => ('a -> 'state -> 'state) -> 'state -> ref [|'a|] -> 'state
-fn fold_back folder initial values = Array.fold_back folder initial (List.to_array values)
+def fold_back :: Copy<'a> => own ('a -> 'state -> 'state) -> own 'state -> ref [|'a|] -> 'state
+fn fold_back folder initial values = Array.fold_back_owned folder initial (List.to_array values)
 
 /// References to the elements of `values`, in order.
 private def references :: ref [|'a|] -> Vec<ref 'a>
-fn references values = List.foldr (\collected value -> Vec.push value collected) (Vec.empty()) values
+fn references values = List.foldr (\collected value -> Vec.push_owned value collected) (Vec.empty()) values
 
 /// Like `fold_back`, but `folder` borrows each element, so the elements need not be `Copy`.
-def foldr_back :: (ref 'a -> 'state -> 'state) -> 'state -> ref [|'a|] -> 'state
+def foldr_back :: own (ref 'a -> 'state -> 'state) -> own 'state -> ref [|'a|] -> 'state
 fn foldr_back folder initial values =
     let elements = references values
     let mut state = initial
@@ -347,10 +347,10 @@ fn foldr_back folder initial values =
         state = folder elements[index] state
     state
 
-def fold_back2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'state -> 'state) -> 'state -> ref [|'a|] -> ref [|'b|] -> 'state
+def fold_back2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'state -> 'state) -> own 'state -> ref [|'a|] -> ref [|'b|] -> 'state
 fn fold_back2 folder initial left right = Array.fold_back2 folder initial (List.to_array left) (List.to_array right)
 
-def reduce :: Copy<'a> => ('a -> 'a -> 'a) -> ref [|'a|] -> 'a
+def reduce :: Copy<'a> => own ('a -> 'a -> 'a) -> ref [|'a|] -> 'a
 fn reduce folder values =
     assert (values.length > 0)
     let mut state = values[0]
@@ -360,24 +360,24 @@ fn reduce folder values =
         else state = folder state value
     state
 
-def reduce_back :: Copy<'a> => ('a -> 'a -> 'a) -> ref [|'a|] -> 'a
+def reduce_back :: Copy<'a> => own ('a -> 'a -> 'a) -> ref [|'a|] -> 'a
 fn reduce_back folder values = Array.reduce_back folder (List.to_array values)
 
-def scan :: (Copy<'a>, Copy<'state>) => ('state -> 'a -> 'state) -> 'state -> ref [|'a|] -> [|'state|]
+def scan :: (Copy<'a>, Copy<'state>) => own ('state -> 'a -> 'state) -> own 'state -> ref [|'a|] -> [|'state|]
 fn scan folder initial values =
     let mut state = initial
-    let mut states = Vec.push state (Vec.empty())
+    let mut states = Vec.push_owned state (Vec.empty())
     for value in values do
         state = folder state value
-        states = Vec.push state states
+        states = Vec.push_owned state states
     Array.to_list (Vec.to_array states)
 
-def scan_back :: (Copy<'a>, Copy<'state>) => ('a -> 'state -> 'state) -> 'state -> ref [|'a|] -> [|'state|]
+def scan_back :: (Copy<'a>, Copy<'state>) => own ('a -> 'state -> 'state) -> own 'state -> ref [|'a|] -> [|'state|]
 fn scan_back folder initial values = Array.to_list (Array.scan_back folder initial (List.to_array values))
 
 // ---- Searching ----
 
-def exists :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> bool
+def exists :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> bool
 fn exists predicate values =
     let mut found = false
     for value in values do
@@ -387,7 +387,7 @@ fn exists predicate values =
     found
 
 /// Like `exists`, but `predicate` borrows each element, so the elements need not be `Copy`.
-def existsr :: (ref 'a -> bool) -> ref [|'a|] -> bool
+def existsr :: own (ref 'a -> bool) -> ref [|'a|] -> bool
 fn existsr predicate values =
     let mut found = false
     for value in values do
@@ -396,7 +396,7 @@ fn existsr predicate values =
             break
     found
 
-def exists2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> bool) -> ref [|'a|] -> ref [|'b|] -> bool
+def exists2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> bool) -> ref [|'a|] -> ref [|'b|] -> bool
 fn exists2 predicate left right =
     let first = List.to_array left
     let second = List.to_array right
@@ -406,7 +406,7 @@ fn exists2 predicate left right =
     assert (index < count || first.length == second.length)
     index < count
 
-def forall :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> bool
+def forall :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> bool
 fn forall predicate values =
     let mut all = true
     for value in values do
@@ -416,7 +416,7 @@ fn forall predicate values =
     all
 
 /// Like `forall`, but `predicate` borrows each element, so the elements need not be `Copy`.
-def forallr :: (ref 'a -> bool) -> ref [|'a|] -> bool
+def forallr :: own (ref 'a -> bool) -> ref [|'a|] -> bool
 fn forallr predicate values =
     let mut all = true
     for value in values do
@@ -425,7 +425,7 @@ fn forallr predicate values =
             break
     all
 
-def forall2 :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> bool) -> ref [|'a|] -> ref [|'b|] -> bool
+def forall2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> bool) -> ref [|'a|] -> ref [|'b|] -> bool
 fn forall2 predicate left right =
     let first = List.to_array left
     let second = List.to_array right
@@ -436,7 +436,7 @@ fn forall2 predicate left right =
     index == count
 
 /// The position of the first element for which `predicate` is true, or the length of `values` when there is none.
-private def position :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> i64
+private def position :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> i64
 fn position predicate values =
     let mut found = 0
     for value in values do
@@ -445,7 +445,7 @@ fn position predicate values =
     found
 
 /// Like `position`, but `predicate` borrows each element.
-private def positionr :: (ref 'a -> bool) -> ref [|'a|] -> i64
+private def positionr :: own (ref 'a -> bool) -> ref [|'a|] -> i64
 fn positionr predicate values =
     let mut found = 0
     for value in values do
@@ -453,54 +453,54 @@ fn positionr predicate values =
         found = found + 1
     found
 
-def try_find_index :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> Maybe<i64>
+def try_find_index :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> Maybe<i64>
 fn try_find_index predicate values =
     let found = position predicate values
     if found < values.length then Maybe.Some found else Maybe.None
 
-def find_index :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> i64
+def find_index :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> i64
 fn find_index predicate values =
     let found = position predicate values
     assert (found < values.length)
     found
 
-def try_find_index_back :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> Maybe<i64>
+def try_find_index_back :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> Maybe<i64>
 fn try_find_index_back predicate values = Array.try_find_index_back predicate (List.to_array values)
 
-def find_index_back :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> i64
+def find_index_back :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> i64
 fn find_index_back predicate values = Array.find_index_back predicate (List.to_array values)
 
-def try_find :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> Maybe<'a>
+def try_find :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> Maybe<'a>
 fn try_find predicate values =
     let found = position predicate values
     if found < values.length then Maybe.Some values[found] else Maybe.None
 
-def find :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> 'a
+def find :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> 'a
 fn find predicate values =
     let found = position predicate values
     assert (found < values.length)
     values[found]
 
-def try_find_back :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> Maybe<'a>
+def try_find_back :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> Maybe<'a>
 fn try_find_back predicate values = Array.try_find_back predicate (List.to_array values)
 
-def find_back :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> 'a
+def find_back :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> 'a
 fn find_back predicate values = Array.find_back predicate (List.to_array values)
 
 /// Like `try_find`, but returns a reference to the element, so the elements need not be `Copy`.
-def try_findr :: (ref 'a -> bool) -> ref [|'a|] -> Maybe<ref 'a>
+def try_findr :: own (ref 'a -> bool) -> ref [|'a|] -> Maybe<ref 'a>
 fn try_findr predicate values =
     let found = positionr predicate values
     if found < values.length then Maybe.Some (ref values[found]) else Maybe.None
 
 /// Like `find`, but returns a reference to the element, so the elements need not be `Copy`.
-def findr :: (ref 'a -> bool) -> ref [|'a|] -> ref 'a
+def findr :: own (ref 'a -> bool) -> ref [|'a|] -> ref 'a
 fn findr predicate values =
     let found = positionr predicate values
     assert (found < values.length)
     ref values[found]
 
-def try_pick :: Copy<'a> => ('a -> Maybe<'b>) -> ref [|'a|] -> Maybe<'b>
+def try_pick :: Copy<'a> => own ('a -> Maybe<'b>) -> ref [|'a|] -> Maybe<'b>
 fn try_pick chooser values =
     let mut found: Maybe<'b> = Maybe.None
     for value in values do
@@ -508,29 +508,29 @@ fn try_pick chooser values =
         if Maybe.is_some (ref found) then break
     found
 
-def pick :: Copy<'a> => ('a -> Maybe<'b>) -> ref [|'a|] -> 'b
+def pick :: Copy<'a> => own ('a -> Maybe<'b>) -> ref [|'a|] -> 'b
 fn pick chooser values =
     let found = try_pick chooser values
     assert (Maybe.is_some (ref found))
     Maybe.get found
 
-def partition :: Copy<'a> => ('a -> bool) -> ref [|'a|] -> ([|'a|] * [|'a|])
+def partition :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> ([|'a|] * [|'a|])
 fn partition predicate values =
     let mut accepted = Vec.empty()
     let mut rejected = Vec.empty()
     for value in values do
-        if predicate value then accepted = Vec.push value accepted
-        else rejected = Vec.push value rejected
+        if predicate value then accepted = Vec.push_owned value accepted
+        else rejected = Vec.push_owned value rejected
     (Array.to_list (Vec.to_array accepted), Array.to_list (Vec.to_array rejected))
 
-def partition_with :: Copy<'a> => ('a -> Result<'b, 'c>) -> ref [|'a|] -> ([|'b|] * [|'c|])
+def partition_with :: Copy<'a> => own ('a -> Result<'b, 'c>) -> ref [|'a|] -> ([|'b|] * [|'c|])
 fn partition_with partitioner values =
     let mut left = Vec.empty()
     let mut right = Vec.empty()
     for value in values do
         match partitioner value with
-        | Result.Ok item -> left = Vec.push item left
-        | Result.Error item -> right = Vec.push item right
+        | Result.Ok item -> left = Vec.push_owned item left
+        | Result.Error item -> right = Vec.push_owned item right
     (of_vec left, of_vec right)
 
 // ---- Aggregates ----
@@ -541,7 +541,7 @@ fn sum values =
     for value in values do total = total + value
     total
 
-def sum_by :: (Copy<'a>, Numeric<'b>) => ('a -> 'b) -> ref [|'a|] -> 'b
+def sum_by :: (Copy<'a>, Numeric<'b>) => own ('a -> 'b) -> ref [|'a|] -> 'b
 fn sum_by projection values =
     let mut total = 0i64 as 'b
     for value in values do total = total + projection value
@@ -552,21 +552,21 @@ fn average values =
     assert (values.length > 0)
     sum values / (values.length as 'a)
 
-def average_by :: (Copy<'a>, Float<'b>) => ('a -> 'b) -> ref [|'a|] -> 'b
+def average_by :: (Copy<'a>, Float<'b>) => own ('a -> 'b) -> ref [|'a|] -> 'b
 fn average_by projection values =
     assert (values.length > 0)
     sum_by projection values / (values.length as 'b)
 
 /// `best` or `value`, whichever is smaller; `value` wins only when it is strictly smaller, so the first of equal
 /// elements stays.
-private def lesser :: Ord<'a> => Maybe<ref 'a> -> ref 'a -> Maybe<ref 'a>
+private def lesser :: Ord<'a> => own Maybe<ref 'a> -> ref 'a -> Maybe<ref 'a>
 fn lesser best value =
     match best with
     | Maybe.Some current -> if Ord.lt value current then Maybe.Some value else best
     | Maybe.None -> Maybe.Some value
 
 /// `best` or `value`, whichever is larger; `value` wins only when it is strictly larger.
-private def greater :: Ord<'a> => Maybe<ref 'a> -> ref 'a -> Maybe<ref 'a>
+private def greater :: Ord<'a> => own Maybe<ref 'a> -> ref 'a -> Maybe<ref 'a>
 fn greater best value =
     match best with
     | Maybe.Some current -> if Ord.lt current value then Maybe.Some value else best
@@ -600,7 +600,7 @@ fn maxr values =
     assert (values.length > 0)
     Maybe.get (List.foldr greater Maybe.None values)
 
-def min_by :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref [|'a|] -> 'a
+def min_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref [|'a|] -> 'a
 fn min_by projection values =
     assert (values.length > 0)
     let mut best = values[0]
@@ -615,7 +615,7 @@ fn min_by projection values =
                 best_key = key
     best
 
-def max_by :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref [|'a|] -> 'a
+def max_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref [|'a|] -> 'a
 fn max_by projection values =
     assert (values.length > 0)
     let mut best = values[0]
@@ -630,7 +630,7 @@ fn max_by projection values =
                 best_key = key
     best
 
-def compare_with :: Copy<'a> => ('a -> 'a -> i64) -> ref [|'a|] -> ref [|'a|] -> i64
+def compare_with :: Copy<'a> => own ('a -> 'a -> i64) -> ref [|'a|] -> ref [|'a|] -> i64
 fn compare_with comparer left right = Array.compare_with comparer (List.to_array left) (List.to_array right)
 
 // ---- Comparing and searching by value ----
@@ -645,7 +645,7 @@ fn containsr target values =
             break
     found
 
-def contains :: Eq<'a> => 'a -> ref [|'a|] -> bool
+def contains :: Eq<'a> => own 'a -> ref [|'a|] -> bool
 fn contains target values = containsr (ref target) values
 
 // ---- Combining and reshaping ----
@@ -656,7 +656,7 @@ fn append left right = Array.to_list (Array.append (List.to_array left) (List.to
 def concat :: Copy<'a> => ref [|[|'a|]|] -> [|'a|]
 fn concat lists =
     let mut parts = Vec.empty()
-    for part in lists do parts = Vec.push (List.to_array part) parts
+    for part in lists do parts = Vec.push_owned (List.to_array part) parts
     Array.to_list (Array.concat (Vec.to_array parts))
 
 def zip :: (Copy<'a>, Copy<'b>) => ref [|'a|] -> ref [|'b|] -> [|('a * 'b)|]
@@ -686,48 +686,48 @@ def pairwise :: Copy<'a> => ref [|'a|] -> [|('a * 'a)|]
 fn pairwise values = Array.to_list (Array.pairwise (List.to_array values))
 
 /// The `length` elements of `source` from `start`, as a list.
-private def slice_list :: Copy<'a> => ref ['a] -> i64 -> i64 -> [|'a|]
+private def slice_list :: Copy<'a> => ref ['a] -> own i64 -> own i64 -> [|'a|]
 fn slice_list source start length = new [|'a|](length, offset -> source[start + offset])
 
-private def windows_of :: Copy<'a> => i64 -> ref ['a] -> [|[|'a|]|]
+private def windows_of :: Copy<'a> => own i64 -> ref ['a] -> [|[|'a|]|]
 fn windows_of size source =
     if size > source.length then [||] else new [|[|'a|]|](source.length - size + 1, start -> slice_list source start size)
 
-def windowed :: Copy<'a> => i64 -> ref [|'a|] -> [|[|'a|]|]
+def windowed :: Copy<'a> => own i64 -> ref [|'a|] -> [|[|'a|]|]
 fn windowed size values =
     assert (size > 0)
     windows_of size (List.to_array values)
 
-private def chunk_at :: Copy<'a> => ref ['a] -> i64 -> i64 -> [|'a|]
+private def chunk_at :: Copy<'a> => ref ['a] -> own i64 -> own i64 -> [|'a|]
 fn chunk_at source size index =
     let start = index * size
     slice_list source start (if source.length - start < size then source.length - start else size)
 
-private def chunks_of :: Copy<'a> => i64 -> ref ['a] -> [|[|'a|]|]
+private def chunks_of :: Copy<'a> => own i64 -> ref ['a] -> [|[|'a|]|]
 fn chunks_of size source =
     new [|[|'a|]|](source.length / size + (if source.length % size == 0 then 0 else 1), index -> chunk_at source size index)
 
-def chunk_by_size :: Copy<'a> => i64 -> ref [|'a|] -> [|[|'a|]|]
+def chunk_by_size :: Copy<'a> => own i64 -> ref [|'a|] -> [|[|'a|]|]
 fn chunk_by_size size values =
     assert (size > 0)
     chunks_of size (List.to_array values)
 
-private def part_at :: Copy<'a> => ref ['a] -> i64 -> i64 -> i64 -> [|'a|]
+private def part_at :: Copy<'a> => ref ['a] -> own i64 -> own i64 -> own i64 -> [|'a|]
 fn part_at source base extra index =
     slice_list source (index * base + (if index < extra then index else extra)) (if index < extra then base + 1 else base)
 
-private def parts_of :: Copy<'a> => i64 -> ref ['a] -> [|[|'a|]|]
+private def parts_of :: Copy<'a> => own i64 -> ref ['a] -> [|[|'a|]|]
 fn parts_of count source =
     if source.length == 0 then [||] else
         let parts = if count < source.length then count else source.length
         new [|[|'a|]|](parts, index -> part_at source (source.length / parts) (source.length % parts) index)
 
-def split_into :: Copy<'a> => i64 -> ref [|'a|] -> [|[|'a|]|]
+def split_into :: Copy<'a> => own i64 -> ref [|'a|] -> [|[|'a|]|]
 fn split_into count values =
     assert (count > 0)
     parts_of count (List.to_array values)
 
-def unfold :: ('state -> Maybe<('a * 'state)>) -> 'state -> [|'a|]
+def unfold :: own ('state -> Maybe<('a * 'state)>) -> own 'state -> [|'a|]
 fn unfold generator initial =
     let mut current = Maybe.Some initial
     let mut items = Vec.empty()
@@ -736,31 +736,31 @@ fn unfold generator initial =
         | Maybe.Some state ->
             match generator state with
             | Maybe.Some (item, next) ->
-                items = Vec.push item items
+                items = Vec.push_owned item items
                 current = Maybe.Some next
             | Maybe.None -> current = Maybe.None
         | Maybe.None -> current = Maybe.None
     of_vec items
 
-def permute :: Copy<'a> => (i64 -> i64) -> ref [|'a|] -> [|'a|]
+def permute :: Copy<'a> => own (i64 -> i64) -> ref [|'a|] -> [|'a|]
 fn permute index_map values = Array.to_list (Array.permute index_map (List.to_array values))
 
 // ---- Updating ----
 
-def insert_at :: Copy<'a> => i64 -> 'a -> ref [|'a|] -> [|'a|]
+def insert_at :: Copy<'a> => own i64 -> own 'a -> ref [|'a|] -> [|'a|]
 fn insert_at index value values = Array.to_list (Array.insert_at index value (List.to_array values))
 
-def insert_many_at :: Copy<'a> => i64 -> ref [|'a|] -> ref [|'a|] -> [|'a|]
+def insert_many_at :: Copy<'a> => own i64 -> ref [|'a|] -> ref [|'a|] -> [|'a|]
 fn insert_many_at index items values =
     Array.to_list (Array.insert_many_at index (List.to_array items) (List.to_array values))
 
-def remove_at :: Copy<'a> => i64 -> ref [|'a|] -> [|'a|]
+def remove_at :: Copy<'a> => own i64 -> ref [|'a|] -> [|'a|]
 fn remove_at index values = Array.to_list (Array.remove_at index (List.to_array values))
 
-def remove_many_at :: Copy<'a> => i64 -> i64 -> ref [|'a|] -> [|'a|]
+def remove_many_at :: Copy<'a> => own i64 -> own i64 -> ref [|'a|] -> [|'a|]
 fn remove_many_at index count values = Array.to_list (Array.remove_many_at index count (List.to_array values))
 
-def update_at :: Copy<'a> => i64 -> 'a -> ref [|'a|] -> [|'a|]
+def update_at :: Copy<'a> => own i64 -> own 'a -> ref [|'a|] -> [|'a|]
 fn update_at index value values = Array.to_list (Array.update_at index value (List.to_array values))
 
 // ---- Conversions ----
@@ -768,10 +768,10 @@ fn update_at index value values = Array.to_list (Array.update_at index value (Li
 def of_array :: Copy<'a> => ref ['a] -> [|'a|]
 fn of_array values = Array.to_list values
 
-def of_seq :: Seq<'a> -> [|'a|]
+def of_seq :: own Seq<'a> -> [|'a|]
 fn of_seq source =
     let mut items = Vec.empty()
-    for value in source do items = Vec.push value items
+    for value in source do items = Vec.push_owned value items
     of_vec items
 
 /// Like `to_seq`, but yields references, so the elements need not be `Copy`.
@@ -796,16 +796,16 @@ fn to_seq values =
 def distinct :: (Hash<'a>, Eq<'a>, Copy<'a>) => ref [|'a|] -> [|'a|]
 fn distinct values = Array.to_list (Array.distinct (List.to_array values))
 
-def distinct_by :: (Copy<'a>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref [|'a|] -> [|'a|]
+def distinct_by :: (Copy<'a>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref [|'a|] -> [|'a|]
 fn distinct_by projection values = Array.to_list (Array.distinct_by projection (List.to_array values))
 
 def except :: (Hash<'a>, Eq<'a>, Copy<'a>) => ref [|'a|] -> ref [|'a|] -> [|'a|]
 fn except excluded values = Array.to_list (Array.except (List.to_array excluded) (List.to_array values))
 
-def count_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref [|'a|] -> [|('key * i64)|]
+def count_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref [|'a|] -> [|('key * i64)|]
 fn count_by projection values = Array.to_list (Array.count_by projection (List.to_array values))
 
-def group_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => ('a -> 'key) -> ref [|'a|] -> [|('key * [|'a|])|]
+def group_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref [|'a|] -> [|('key * [|'a|])|]
 fn group_by projection values =
     let groups = Array.group_by projection (List.to_array values)
     new [|('key * [|'a|])|](groups.length, index ->
@@ -820,78 +820,78 @@ fn sort values = Array.to_list (Array.sort (List.to_array values))
 def sort_descending :: (Ord<'a>, Copy<'a>) => ref [|'a|] -> [|'a|]
 fn sort_descending values = Array.to_list (Array.sort_descending (List.to_array values))
 
-def sort_with :: Copy<'a> => ('a -> 'a -> i64) -> ref [|'a|] -> [|'a|]
+def sort_with :: Copy<'a> => own ('a -> 'a -> i64) -> ref [|'a|] -> [|'a|]
 fn sort_with comparer values = Array.to_list (Array.sort_with comparer (List.to_array values))
 
-def sort_by :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref [|'a|] -> [|'a|]
+def sort_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref [|'a|] -> [|'a|]
 fn sort_by projection values = Array.to_list (Array.sort_by projection (List.to_array values))
 
-def sort_by_descending :: (Copy<'a>, Ord<'key>) => ('a -> 'key) -> ref [|'a|] -> [|'a|]
+def sort_by_descending :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref [|'a|] -> [|'a|]
 fn sort_by_descending projection values = Array.to_list (Array.sort_by_descending projection (List.to_array values))
 
 // ---- Randomness: `_by` takes a randomizer, `_with` a `Random.Pcg`, and the plain form seeds one from the OS ----
 
 /// A shuffled copy of `values`. `randomizer` returns numbers in `[0, 1)`; any other number traps.
-def random_shuffle_by :: Copy<'a> => (unit -> f64) -> ref [|'a|] -> [|'a|]
+def random_shuffle_by :: Copy<'a> => own (unit -> f64) -> ref [|'a|] -> [|'a|]
 fn random_shuffle_by randomizer values = Array.to_list (Array.random_shuffle_by randomizer (List.to_array values))
 
 /// Like `random_shuffle_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
-def random_shuffle_with :: Copy<'a> => Random.Pcg -> ref [|'a|] -> ([|'a|] * Random.Pcg)
+def random_shuffle_with :: Copy<'a> => own Random.Pcg -> ref [|'a|] -> ([|'a|] * Random.Pcg)
 fn random_shuffle_with generator values =
     match Array.random_shuffle_with generator (List.to_array values) with
     | (shuffled, next) -> (Array.to_list (ref shuffled), next)
 
 /// A random element. `randomizer` returns numbers in `[0, 1)`; any other number traps, as does an empty `values`.
-def random_choice_by :: Copy<'a> => (unit -> f64) -> ref [|'a|] -> 'a
+def random_choice_by :: Copy<'a> => own (unit -> f64) -> ref [|'a|] -> 'a
 fn random_choice_by randomizer values = Array.random_choice_by randomizer (List.to_array values)
 
 /// Like `random_choice_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
-def random_choice_with :: Copy<'a> => Random.Pcg -> ref [|'a|] -> ('a * Random.Pcg)
+def random_choice_with :: Copy<'a> => own Random.Pcg -> ref [|'a|] -> ('a * Random.Pcg)
 fn random_choice_with generator values = Array.random_choice_with generator (List.to_array values)
 
 /// `count` random elements, each of which can be chosen again. A negative `count`, or a positive one with an empty
 /// `values`, traps.
-def random_choices_by :: Copy<'a> => (unit -> f64) -> i64 -> ref [|'a|] -> [|'a|]
+def random_choices_by :: Copy<'a> => own (unit -> f64) -> own i64 -> ref [|'a|] -> [|'a|]
 fn random_choices_by randomizer count values =
     Array.to_list (Array.random_choices_by randomizer count (List.to_array values))
 
 /// Like `random_choices_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
-def random_choices_with :: Copy<'a> => Random.Pcg -> i64 -> ref [|'a|] -> ([|'a|] * Random.Pcg)
+def random_choices_with :: Copy<'a> => own Random.Pcg -> own i64 -> ref [|'a|] -> ([|'a|] * Random.Pcg)
 fn random_choices_with generator count values =
     match Array.random_choices_with generator count (List.to_array values) with
     | (chosen, next) -> (Array.to_list (ref chosen), next)
 
 /// `count` random elements, each of which is chosen at most once. `count` outside `0 .. values.length` traps.
-def random_sample_by :: Copy<'a> => (unit -> f64) -> i64 -> ref [|'a|] -> [|'a|]
+def random_sample_by :: Copy<'a> => own (unit -> f64) -> own i64 -> ref [|'a|] -> [|'a|]
 fn random_sample_by randomizer count values =
     Array.to_list (Array.random_sample_by randomizer count (List.to_array values))
 
 /// Like `random_sample_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
-def random_sample_with :: Copy<'a> => Random.Pcg -> i64 -> ref [|'a|] -> ([|'a|] * Random.Pcg)
+def random_sample_with :: Copy<'a> => own Random.Pcg -> own i64 -> ref [|'a|] -> ([|'a|] * Random.Pcg)
 fn random_sample_with generator count values =
     match Array.random_sample_with generator count (List.to_array values) with
     | (sampled, next) -> (Array.to_list (ref sampled), next)
 
 /// The list of an action that gives an array.
-private def listed :: Copy<'a> => IO<Result<['a], Os.Error>> -> IO<Result<[|'a|], Os.Error>>
+private def listed :: Copy<'a> => own IO<Result<['a], Os.Error>> -> IO<Result<[|'a|], Os.Error>>
 fn listed action = IO.map (\outcome ->
     match outcome with
     | Result.Ok items -> Result.Ok (Array.to_list (ref items))
     | Result.Error error -> Result.Error error) action
 
 /// A shuffled copy of `values`, from a generator seeded from the operating system when the action runs.
-def random_shuffle :: Copy<'a> => [|'a|] -> IO<Result<[|'a|], Os.Error>>
+def random_shuffle :: Copy<'a> => own [|'a|] -> IO<Result<[|'a|], Os.Error>>
 fn random_shuffle values = listed (Array.random_shuffle (List.to_array values))
 
 /// A random element, from a generator seeded from the operating system when the action runs. An empty `values` traps
 /// then.
-def random_choice :: Copy<'a> => [|'a|] -> IO<Result<'a, Os.Error>>
+def random_choice :: Copy<'a> => own [|'a|] -> IO<Result<'a, Os.Error>>
 fn random_choice values = Array.random_choice (List.to_array values)
 
 /// `count` random elements that can repeat, from a generator seeded from the operating system when the action runs.
-def random_choices :: Copy<'a> => i64 -> [|'a|] -> IO<Result<[|'a|], Os.Error>>
+def random_choices :: Copy<'a> => own i64 -> own [|'a|] -> IO<Result<[|'a|], Os.Error>>
 fn random_choices count values = listed (Array.random_choices count (List.to_array values))
 
 /// `count` distinct random elements, from a generator seeded from the operating system when the action runs.
-def random_sample :: Copy<'a> => i64 -> [|'a|] -> IO<Result<[|'a|], Os.Error>>
+def random_sample :: Copy<'a> => own i64 -> own [|'a|] -> IO<Result<[|'a|], Os.Error>>
 fn random_sample count values = listed (Array.random_sample count (List.to_array values))

@@ -17,7 +17,7 @@ Tsuzuri は、関数型の式と所有権を組み合わせた静的型付き言
 関数は型と実装を一緒に書きます。引数の一部だけ渡すと、残りを受け取る関数になります。パイプ `|>` は、左の値を右の関数へ渡します。
 
 ```tsuzuri run=42
-def add :: Add<'value> -> 'value -> 'value = \left right -> left + right
+def add :: own Add<'value> -> own 'value -> 'value = \left right -> left + right
 
 let add_twenty = add 20
 22 |> add_twenty
@@ -212,7 +212,7 @@ namespace Shop
 
 record Quote { unit_price: i64, count: i64 }
 
-def amount :: Quote -> i64 = \quote -> quote.unit_price * quote.count
+def amount :: own Quote -> i64 = \quote -> quote.unit_price * quote.count
 ```
 
 ```tsuzuri project=shop file=Main.tz run=42

@@ -80,11 +80,11 @@ union Big =
     deriving (Eq, Hash)
 
 // The cases that sit at the edges of the tag widths; every other index gives the first case.
-def narrow_pick :: i64 -> Narrow
+def narrow_pick :: own i64 -> Narrow
 fn narrow_pick k =
     if k == 255 then A255 elif k == 254 then A254 elif k == 128 then A128 elif k == 127 then A127 elif k == 1 then A1 else A0
 
-def narrow_code :: Narrow -> i64
+def narrow_code :: own Narrow -> i64
 fn narrow_code value =
     match value with
     | A255 -> 255
@@ -95,15 +95,15 @@ fn narrow_code value =
     | A0 -> 0
     | _ -> -1
 
-def wide_pick :: i64 -> Wide
+def wide_pick :: own i64 -> Wide
 fn wide_pick k =
     if k == 256 then B256 elif k == 255 then B255 elif k == 128 then B128 elif k == 1 then B1 else B0
 
-def mid_pick :: i64 -> Mid
+def mid_pick :: own i64 -> Mid
 fn mid_pick k =
     if k == 159 then M159 elif k == 128 then M128 elif k == 127 then M127 elif k == 1 then M1 else M0
 
-def wide_code :: Wide -> i64
+def wide_code :: own Wide -> i64
 fn wide_code value =
     match value with
     | B256 -> 256
@@ -113,7 +113,7 @@ fn wide_code value =
     | B0 -> 0
     | _ -> -1
 
-def big_pick :: i64 -> Big
+def big_pick :: own i64 -> Big
 fn big_pick k =
     if k == 0 then G0 41
     elif k == 1 then G1 2.5
@@ -132,50 +132,50 @@ fn big_code value =
     | G255 -> 255
     | _ -> 3
 
-export def narrow :: i64 -> i64
+export def narrow :: own i64 -> i64
 fn narrow k = narrow_code (narrow_pick k)
 
-export def wide :: i64 -> i64
+export def wide :: own i64 -> i64
 fn wide k = wide_code (wide_pick k)
 
-export def big :: i64 -> i64
+export def big :: own i64 -> i64
 fn big k =
     let value = big_pick k
     big_code (ref value)
 
 // Ord compares tags as numbers, never as signed bytes: M159 is greater than M127.
-export def mid_order :: i64 -> i64 -> i64
+export def mid_order :: own i64 -> own i64 -> i64
 fn mid_order a b =
     let x = mid_pick a
     let y = mid_pick b
     (if x < y then 1 else 0) + (if x == y then 2 else 0) + (if x > y then 4 else 0)
 
-export def narrow_equal :: i64 -> i64 -> i64
+export def narrow_equal :: own i64 -> own i64 -> i64
 fn narrow_equal a b = if narrow_pick a == narrow_pick b then 1 else 0
 
-export def wide_equal :: i64 -> i64 -> i64
+export def wide_equal :: own i64 -> own i64 -> i64
 fn wide_equal a b = if wide_pick a == wide_pick b then 1 else 0
 
-export def big_equal :: i64 -> i64 -> i64
+export def big_equal :: own i64 -> own i64 -> i64
 fn big_equal a b = if big_pick a == big_pick b then 1 else 0
 
 // A hash mixes the case index, not the stored tag.
-export def narrow_hash :: i64 -> i64
+export def narrow_hash :: own i64 -> i64
 fn narrow_hash k =
     let value = narrow_pick k
     Hash.hash (ref value) as i64
 
-export def wide_hash :: i64 -> i64
+export def wide_hash :: own i64 -> i64
 fn wide_hash k =
     let value = wide_pick k
     Hash.hash (ref value) as i64
 
-export def big_hash :: i64 -> i64
+export def big_hash :: own i64 -> i64
 fn big_hash k =
     let value = big_pick k
     Hash.hash (ref value) as i64
 
-export def narrow_array :: i64 -> i64
+export def narrow_array :: own i64 -> i64
 fn narrow_array count =
     let items = new [Narrow](count, i -> narrow_pick (i % 256))
     let mut total = 0
@@ -183,7 +183,7 @@ fn narrow_array count =
         total = total + narrow_code item
     total
 
-export def wide_array :: i64 -> i64
+export def wide_array :: own i64 -> i64
 fn wide_array count =
     let items = new [Wide](count, i -> wide_pick (i % 257))
     let mut total = 0
@@ -192,7 +192,7 @@ fn wide_array count =
     total
 
 // Owned payloads next to a two-byte tag: every string is dropped exactly once.
-export def big_array :: i64 -> i64
+export def big_array :: own i64 -> i64
 fn big_array count =
     let items = new [Big](count, i -> big_pick (i % 257))
     let mut total = 0
@@ -215,7 +215,7 @@ union Nested = Inner of Shape | Outer of Small | Void
 
 union Lanes = Four of f32x4 | Eight of f32x8 | Scalar of i8 | Absent
 
-def shape_value :: i64 -> Shape
+def shape_value :: own i64 -> Shape
 fn shape_value i =
     if i % 3 == 0 then Circle ((i + 1) as f64) elif i % 3 == 1 then Rect (i as f64, 2.0) else Blank
 
@@ -226,7 +226,7 @@ fn shape_area shape =
     | Rect (w, h) -> (w * h) as i64
     | Blank -> -1
 
-export def shapes :: i64 -> i64
+export def shapes :: own i64 -> i64
 fn shapes count =
     let items = new [Shape](count, i -> shape_value i)
     let mut total = 0
@@ -234,7 +234,7 @@ fn shapes count =
         total = total + shape_area (ref item)
     total
 
-def small_value :: i64 -> Small
+def small_value :: own i64 -> Small
 fn small_value i =
     if i % 3 == 0 then Flag (i % 2 == 0) elif i % 3 == 1 then Code (i as i8) else Nothing
 
@@ -245,7 +245,7 @@ fn small_code value =
     | Code c -> c as i64
     | Nothing -> 7
 
-export def smalls :: i64 -> i64
+export def smalls :: own i64 -> i64
 fn smalls count =
     let items = new [Small](count, i -> small_value i)
     let mut total = 0
@@ -253,7 +253,7 @@ fn smalls count =
         total = total + small_code (ref item)
     total
 
-def wideness_value :: i64 -> Wideness
+def wideness_value :: own i64 -> Wideness
 fn wideness_value i =
     if i % 3 == 0 then Huge ((i as i128) <<< 72) elif i % 3 == 1 then Little (i as i8) else Missing
 
@@ -264,7 +264,7 @@ fn wideness_code value =
     | Little c -> c as i64
     | Missing -> -5
 
-export def wideness :: i64 -> i64
+export def wideness :: own i64 -> i64
 fn wideness count =
     let items = new [Wideness](count, i -> wideness_value i)
     let mut total = 0
@@ -272,7 +272,7 @@ fn wideness count =
         total = total + wideness_code (ref item)
     total
 
-def rich_value :: i64 -> Rich
+def rich_value :: own i64 -> Rich
 fn rich_value i =
     if i % 4 == 0 then Name ("n" + to_string i) elif i % 4 == 1 then Count i elif i % 4 == 2 then Pair (i, i % 2 == 0) else Nada
 
@@ -284,7 +284,7 @@ fn rich_code value =
     | Pair (n, b) -> if b then n + 1 else n
     | Nada -> -3
 
-export def riches :: i64 -> i64
+export def riches :: own i64 -> i64
 fn riches count =
     let items = new [Rich](count, i -> rich_value i)
     let mut total = 0
@@ -292,7 +292,7 @@ fn riches count =
         total = total + rich_code (ref item)
     total
 
-def nested_value :: i64 -> Nested
+def nested_value :: own i64 -> Nested
 fn nested_value i =
     if i % 3 == 0 then Inner (shape_value i) elif i % 3 == 1 then Outer (small_value i) else Void
 
@@ -303,7 +303,7 @@ fn nested_code value =
     | Outer small -> small_code (ref small)
     | Void -> 11
 
-export def nesteds :: i64 -> i64
+export def nesteds :: own i64 -> i64
 fn nesteds count =
     let items = new [Nested](count, i -> nested_value i)
     let mut total = 0
@@ -311,7 +311,7 @@ fn nesteds count =
         total = total + nested_code (ref item)
     total
 
-def lanes_value :: i64 -> Lanes
+def lanes_value :: own i64 -> Lanes
 fn lanes_value i =
     if i % 4 == 0 then Four (Simd.splat 1.5) elif i % 4 == 1 then Eight (Simd.splat 0.5) elif i % 4 == 2 then Scalar (i as i8) else Absent
 
@@ -325,7 +325,7 @@ fn lanes_code value =
 
 // A 48-byte element is 16-aligned but not 32-aligned, so a vector payload must be accessed with
 // the 16-byte alignment that its slot has.
-export def lanes :: i64 -> i64
+export def lanes :: own i64 -> i64
 fn lanes count =
     let items = new [Lanes](count, i -> lanes_value i)
     let mut total = 0
@@ -342,7 +342,7 @@ union Label = Named of string | Anonymous
 
 record Holder { id: i64, name: Maybe<string>, tags: Maybe<[string]> }
 
-def alias_value :: i64 -> Alias
+def alias_value :: own i64 -> Alias
 fn alias_value i = if i % 3 == 0 then Spelled ("t" + to_string i) else NoAlias
 
 def alias_length :: ref Alias -> i64
@@ -351,7 +351,7 @@ fn alias_length alias =
     | Spelled text -> text.length
     | NoAlias -> -1
 
-export def names :: i64 -> i64
+export def names :: own i64 -> i64
 fn names count =
     let items = new [Alias](count, i -> alias_value i)
     let mut total = 0
@@ -359,7 +359,7 @@ fn names count =
         total = total + alias_length (ref item)
     total
 
-def label_value :: i64 -> Label
+def label_value :: own i64 -> Label
 fn label_value i = if i % 2 == 0 then Named ("L" + to_string i) else Anonymous
 
 def label_length :: ref Label -> i64
@@ -368,7 +368,7 @@ fn label_length label =
     | Named text -> text.length
     | Anonymous -> -1
 
-export def labels :: i64 -> i64
+export def labels :: own i64 -> i64
 fn labels count =
     let items = new [Label](count, i -> label_value i)
     let mut total = 0
@@ -376,7 +376,7 @@ fn labels count =
         total = total + label_length (ref item)
     total
 
-def text_option :: i64 -> Maybe<string>
+def text_option :: own i64 -> Maybe<string>
 fn text_option i = if i % 4 == 0 then Some ("s" + to_string i) else None
 
 def text_option_length :: ref Maybe<string> -> i64
@@ -385,7 +385,7 @@ fn text_option_length option =
     | Some text -> text.length
     | None -> -2
 
-export def text_options :: i64 -> i64
+export def text_options :: own i64 -> i64
 fn text_options count =
     let items = new [Maybe<string>](count, i -> text_option i)
     let mut total = 0
@@ -393,7 +393,7 @@ fn text_options count =
         total = total + text_option_length (ref item)
     total
 
-def numbers_option :: i64 -> Maybe<[i64]>
+def numbers_option :: own i64 -> Maybe<[i64]>
 fn numbers_option i = if i % 3 == 1 then Some (new [i64](i % 5, j -> j + i)) else None
 
 def numbers_code :: ref Maybe<[i64]> -> i64
@@ -402,7 +402,7 @@ fn numbers_code option =
     | Some numbers -> numbers.length * 1000 + (if numbers.length > 0 then numbers[0] else 0)
     | None -> -3
 
-export def number_options :: i64 -> i64
+export def number_options :: own i64 -> i64
 fn number_options count =
     let items = new [Maybe<[i64]>](count, i -> numbers_option i)
     let mut total = 0
@@ -410,7 +410,7 @@ fn number_options count =
         total = total + numbers_code (ref item)
     total
 
-def words_option :: i64 -> Maybe<[string]>
+def words_option :: own i64 -> Maybe<[string]>
 fn words_option i = if i % 2 == 0 then Some (new [string](i % 4, j -> "w" + to_string j)) else None
 
 def words_code :: ref Maybe<[string]> -> i64
@@ -419,7 +419,7 @@ fn words_code option =
     | Some words -> words.length
     | None -> -4
 
-export def word_options :: i64 -> i64
+export def word_options :: own i64 -> i64
 fn word_options count =
     let items = new [Maybe<[string]>](count, i -> words_option i)
     let mut total = 0
@@ -428,7 +428,7 @@ fn word_options count =
     total
 
 // The payload moves out of the option, which is dropped with its storage cleared.
-export def consume :: i64 -> i64
+export def consume :: own i64 -> i64
 fn consume count =
     let mut total = 0
     let mut i = 0
@@ -439,7 +439,7 @@ fn consume count =
         i = i + 1
     total
 
-export def combinators :: i64 -> i64
+export def combinators :: own i64 -> i64
 fn combinators i =
     let first = Maybe.map (\s -> s + "!") (text_option i)
     let second = Maybe.bind (\s -> if s.length > 3 then Some (s + "?") else None) first
@@ -448,7 +448,7 @@ fn combinators i =
     (Maybe.default_value "none" fourth).length
 
 // Each assignment drops the value that it replaces.
-export def reassign :: i64 -> i64
+export def reassign :: own i64 -> i64
 fn reassign count =
     let mut slot: Maybe<string> = None
     let mut total = 0
@@ -459,11 +459,11 @@ fn reassign count =
         i = i + 1
     total
 
-def holder_value :: i64 -> Holder
+def holder_value :: own i64 -> Holder
 fn holder_value i =
     Holder { id: i, name: text_option i, tags: if i % 5 == 0 then Some (new [string](2, _j -> "g")) else None }
 
-export def holders :: i64 -> i64
+export def holders :: own i64 -> i64
 fn holders count =
     let items = new [Holder](count, i -> holder_value i)
     let mut total = 0
@@ -471,7 +471,7 @@ fn holders count =
         total = total + item.id + text_option_length (ref item.name) + words_code (ref item.tags)
     total
 
-def nested_option :: i64 -> Maybe<Maybe<string>>
+def nested_option :: own i64 -> Maybe<Maybe<string>>
 fn nested_option i =
     if i % 3 == 0 then None elif i % 3 == 1 then Some None else Some (Some ("n" + to_string i))
 
@@ -484,7 +484,7 @@ fn nested_length option =
         | None -> -2
         | Some text -> text.length
 
-export def nested_options :: i64 -> i64
+export def nested_options :: own i64 -> i64
 fn nested_options count =
     let items = new [Maybe<Maybe<string>>](count, i -> nested_option i)
     let mut total = 0
@@ -493,7 +493,7 @@ fn nested_options count =
     total
 
 // A finished sequence is `Seq.empty` and an exhausted step is `None`, however the layout encodes them.
-export def sequences :: i64 -> i64
+export def sequences :: own i64 -> i64
 fn sequences n =
     let mapped = Seq.map (\s -> s + "!") (Seq.once ("seq" + to_string n))
     let items = Seq.to_array mapped
@@ -501,20 +501,20 @@ fn sequences n =
     let none_items = Seq.to_array empty
     items.length * 100 + items[0].length + none_items.length
 
-export def captured :: i64 -> i64
+export def captured :: own i64 -> i64
 fn captured i =
     let option = text_option i
     let probe = \() -> text_option_length (ref option)
     probe () + probe ()
 
-export def tasked :: i64 -> i64
+export def tasked :: own i64 -> i64
 fn tasked i =
     let result = Task.run (task { return text_option i })
     text_option_length (ref result)
 
 // An option of a reference is the pointer itself on a native target, with the null pointer for
 // `None`, and a tag and a pointer on WebAssembly. A result does not depend on which.
-export def references :: i64 -> i64
+export def references :: own i64 -> i64
 fn references count =
     let values = new [i64](count, i -> (i * 7) % 11)
     let smallest = if count == 0 then Maybe.None else Maybe.Some (Array.minr (ref values))
@@ -522,7 +522,7 @@ fn references count =
     let missing = Array.try_findr (\x -> deref x > 100) (ref values)
     (match smallest with | Some v -> deref v | None -> -1) + (match found with | Some v -> deref v * 100 | None -> -2) + (match missing with | Some v -> deref v * 10000 | None -> -3)
 
-export def word_references :: i64 -> i64
+export def word_references :: own i64 -> i64
 fn word_references count =
     let words = new [string](count, i -> "w" + to_string i)
     let long = Array.try_findr (\word -> word.length > 3) (ref words)
@@ -534,22 +534,22 @@ fn word_references count =
 // decides the order and the hash, and the payload follows it.
 union Tagline = Hushed | Words of string deriving (Eq, Ord, Hash, Display)
 
-def tagline :: i64 -> Tagline
+def tagline :: own i64 -> Tagline
 fn tagline i = if i % 3 == 0 then Hushed else Words ("t" + to_string i)
 
-def flags :: Ord<'a> => 'a -> 'a -> i64
+def flags :: Ord<'a> => own 'a -> own 'a -> i64
 fn flags left right =
     (if left == right then 1 else 0) + (if left != right then 2 else 0) +
     (if left < right then 4 else 0) + (if left <= right then 8 else 0) +
     (if left > right then 16 else 0) + (if left >= right then 32 else 0)
 
-export def tagline_flags :: i64 -> i64 -> i64
+export def tagline_flags :: own i64 -> own i64 -> i64
 fn tagline_flags left right = flags (tagline left) (tagline right)
 
-export def tagline_hash :: i64 -> i64
+export def tagline_hash :: own i64 -> i64
 fn tagline_hash i = Hash.hash (ref (tagline i)) as i64
 
-export def tagline_display :: i64 -> i64
+export def tagline_display :: own i64 -> i64
 fn tagline_display i =
     let text = Display.display (ref (tagline i))
     Hash.hash (ref text) as i64

@@ -1,4 +1,4 @@
-export def map_insert_lookup :: i64 -> i64
+export def map_insert_lookup :: own i64 -> i64
 fn map_insert_lookup count =
     let mut map: Map<i64, i64> = Map.empty()
     let mut index = 0
@@ -16,7 +16,7 @@ fn map_insert_lookup count =
         index = index + 1
     Map.fold (\total key value -> total * 31 + deref key * 7 + deref value) 0 (&map)
 
-export def map_replace_drop :: i64 -> i64
+export def map_replace_drop :: own i64 -> i64
 fn map_replace_drop count =
     let mut map: Map<string, string> = Map.empty()
     let mut index = 0
@@ -25,7 +25,7 @@ fn map_replace_drop count =
         index = index + 1
     Map.fold (\total key value -> total + key.length + value.length) 0 (&map)
 
-export def map_remove :: i64 -> i64
+export def map_remove :: own i64 -> i64
 fn map_remove count =
     let mut map: Map<i64, i64> = Map.empty()
     let mut index = 0
@@ -39,7 +39,7 @@ fn map_remove count =
     map = Map.remove (-1) map
     Map.fold (\total key value -> total + deref key + deref value) 0 (&map)
 
-export def set_algebra :: i64 -> i64
+export def set_algebra :: own i64 -> i64
 fn set_algebra count =
     let mut left: Set<i64> = Set.empty()
     let mut right: Set<i64> = Set.empty()

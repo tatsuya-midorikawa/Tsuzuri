@@ -1,8 +1,8 @@
-def Return :: 'a -> Maybe<'a>
+def Return :: own 'a -> Maybe<'a>
 fn Return value = Maybe.Some value
 
-def Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
+def Bind :: own Maybe<'a> -> own ('a -> Maybe<'b>) -> Maybe<'b>
 fn Bind value next = Maybe.Bind value next
 
-def MergeSources :: Maybe<'a> -> Maybe<'b> -> Maybe<('a * 'b)>
+def MergeSources :: own Maybe<'a> -> own Maybe<'b> -> Maybe<('a * 'b)>
 fn MergeSources left right = Maybe.MergeSources left right

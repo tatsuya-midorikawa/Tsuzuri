@@ -354,7 +354,7 @@ fn crc_table = new [i32u](256, \i -> crc_entry (i as i32u))
 
 const CrcTable: [i32u] = crc_table()
 
-def crc32 :: string -> i32u
+def crc32 :: own string -> i32u
 fn crc32 text =
     let mut crc = ~(0 as i32u)
     for unit in text do

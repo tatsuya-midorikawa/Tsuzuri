@@ -21,6 +21,7 @@ pub mod coverage;
 pub mod diagnostic;
 pub mod docgen;
 pub mod driver;
+pub mod edition_migration;
 pub mod fetch;
 pub mod formatter;
 pub(crate) mod frontend_cache;
@@ -74,12 +75,31 @@ pub struct SourceInput<'a> {
     pub package: Option<&'a package::PackageId>,
 }
 
+/// Checks a source with the stable 2026 convention. Use [`analyze_with_edition`] to select a
+/// newer convention; CLI projects select their edition independently.
 pub fn analyze(source: &str) -> Result<check::CheckedModule, Diagnostic> {
     analyze_all(source).map_err(first_error)
 }
 
 pub fn analyze_all(source: &str) -> Result<check::CheckedModule, DiagnosticSet> {
     analyze_modules_all(&[("Main", source)])
+}
+
+/// Checks one source in the requested edition with the embedded library.
+pub fn analyze_with_edition(
+    source: &str,
+    edition: syntax::Edition,
+) -> Result<check::CheckedModule, Diagnostic> {
+    analyze_modules_with_edition(&[("Main", source)], edition)
+}
+
+/// Checks source-only modules in the requested edition with the embedded library.
+pub fn analyze_modules_with_edition(
+    sources: &[(&str, &str)],
+    edition: syntax::Edition,
+) -> Result<check::CheckedModule, Diagnostic> {
+    let std_sources = stdlib::sources_for(sources.iter().map(|(_, text)| *text));
+    analyze_modules_in_edition(sources, &std_sources, edition).map_err(first_error)
 }
 
 /// Checks user sources together with the embedded standard library.
@@ -104,11 +124,19 @@ pub fn analyze_modules_with_std(
     analyze_modules_with_std_all(sources, std_sources).map_err(first_error)
 }
 
-/// The entry points without a manifest (`analyze*`) read every source, user and std, with the
-/// latest edition, and no source belongs to a package.
+/// The compatibility entry points without an edition read every source, user and custom std,
+/// with 2026 conventions. No source belongs to a package.
 pub fn analyze_modules_with_std_all(
     sources: &[(&str, &str)],
     std_sources: &[(&str, &str)],
+) -> Result<check::CheckedModule, DiagnosticSet> {
+    analyze_modules_in_edition(sources, std_sources, syntax::Edition::E2026)
+}
+
+fn analyze_modules_in_edition(
+    sources: &[(&str, &str)],
+    std_sources: &[(&str, &str)],
+    edition: syntax::Edition,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
     let inputs: Vec<_> = sources
         .iter()
@@ -117,7 +145,7 @@ pub fn analyze_modules_with_std_all(
             text,
             origin: ModuleOrigin::User,
             namespace: "",
-            edition: syntax::Edition::LATEST,
+            edition,
             package: None,
         })
         .chain(std_sources.iter().map(|(path, text)| SourceInput {
@@ -125,7 +153,7 @@ pub fn analyze_modules_with_std_all(
             text,
             origin: ModuleOrigin::Std,
             namespace: "",
-            edition: syntax::Edition::LATEST,
+            edition,
             package: None,
         }))
         .collect();
@@ -138,7 +166,7 @@ pub(crate) fn first_error(errors: DiagnosticSet) -> Diagnostic {
 
 /// The single parse entry point. Sources are parsed in the given order, so a
 /// diagnostic's `Span::source` indexes `inputs`.
-pub(crate) fn analyze_inputs_all(
+pub fn analyze_inputs_all(
     inputs: &[SourceInput<'_>],
 ) -> Result<check::CheckedModule, DiagnosticSet> {
     analyze_inputs_indexed_all(inputs, None)
@@ -363,6 +391,7 @@ pub(crate) fn analyze_inputs_semantic(
     checked
 }
 
+/// Checks source-only compatibility inputs using 2026 conventions and includes editor data.
 pub fn analyze_modules_with_semantics(
     sources: &[(&str, &str)],
 ) -> Result<(check::CheckedModule, check::semantic::SemanticIndex), DiagnosticSet> {
@@ -373,7 +402,7 @@ pub fn analyze_modules_with_semantics(
             text,
             origin: ModuleOrigin::User,
             namespace: "",
-            edition: syntax::Edition::LATEST,
+            edition: syntax::Edition::E2026,
             package: None,
         })
         .chain(stdlib::SOURCES.iter().map(|(path, text)| SourceInput {
@@ -381,7 +410,7 @@ pub fn analyze_modules_with_semantics(
             text,
             origin: ModuleOrigin::Std,
             namespace: "",
-            edition: syntax::Edition::LATEST,
+            edition: syntax::Edition::E2026,
             package: None,
         }))
         .collect();
@@ -1037,7 +1066,7 @@ mod tests {
         for (main, code) in [
             // F is specialized without end (E1017).
             (
-                "def rec f :: 'a -> unit\nfn rec f x = f [x]\nf 1\n",
+                "def rec f :: own 'a -> unit\nfn rec f x = f [x]\nf 1\n",
                 "E1017",
             ),
             ("record A { b: B }\nrecord B { a: A }\n", "E1010"),

@@ -66,6 +66,44 @@ fn compare(old: &str, new: &str, others: &[(&str, &str, &str)]) -> Vec<String> {
     lines
 }
 
+#[test]
+fn edition_only_changes_warn_about_implicit_parameter_conventions() {
+    let old_manifest = "[package]\nname = \"api\"\nversion = \"0.1.0\"\nedition = \"2026\"\n";
+    let new_manifest = old_manifest.replace("2026", "2027");
+    let source = "def size :: string -> i64 = \\text -> text.length\n\
+        def explicit :: ref string -> i64 = \\text -> text.length\n\
+        def owned :: own string -> i64 = \\text -> text.length\n\
+        const def constant :: string -> i64 = \\text -> text.length\n";
+    let old = root(
+        "edition-old",
+        &[("Main.tz", source), ("Tsuzuri.toml", old_manifest)],
+    );
+    let new = root(
+        "edition-new",
+        &[("Main.tz", source), ("Tsuzuri.toml", &new_manifest)],
+    );
+    let changes = report(&old, &new);
+    assert_eq!(changes.breaking(), 1, "{:?}", changes.changes);
+    let change = &changes.changes[0];
+    assert!(change.name.ends_with(".size"));
+    assert!(change.note.contains("default parameter convention"));
+    std::fs::remove_dir_all(old).unwrap();
+    std::fs::remove_dir_all(new).unwrap();
+}
+
+#[test]
+fn mutable_binding_changes_are_compared_for_each_parameter() {
+    let borrowed =
+        "def f :: string -> string -> i64 = \\left right -> left.length + right.length\n";
+    let mutable = borrowed.replace("\\left", "\\mut left");
+    check(borrowed, &mutable, &["breaking changed def Main.f"]);
+    check(&mutable, borrowed, &["breaking changed def Main.f"]);
+
+    let owned = borrowed.replace(":: string", ":: own string");
+    let mutable_owned = owned.replace("\\left", "\\mut left");
+    check(&owned, &mutable_owned, &[]);
+}
+
 fn check(old: &str, new: &str, expected: &[&str]) {
     assert_eq!(compare(old, new, &[]), expected, "{old}\n=>\n{new}");
 }

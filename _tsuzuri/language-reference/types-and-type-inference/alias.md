@@ -27,7 +27,7 @@ type 別名<'a, 'b, ...> = 元の型
 type UserId = i64
 type Meters = f64
 
-def calculate_fee :: UserId -> Meters -> i64 = \user_id distance ->
+def calculate_fee :: own UserId -> own Meters -> i64 = \user_id distance ->
     if distance > 10.0 then user_id + 2 else user_id
 
 let id: UserId = 40
@@ -62,7 +62,7 @@ flowchart TD
 type Pair<'a> = ('a * 'a)
 type Handler<'a, 'b> = ('a -> 'b)
 
-def apply_pair :: Handler<'a, 'a> -> Pair<'a> -> Pair<'a> = \handler pair ->
+def apply_pair :: own Handler<'a, 'a> -> own Pair<'a> -> Pair<'a> = \handler pair ->
     match pair with
     | (left, right) -> (handler left, handler right)
 
@@ -165,7 +165,7 @@ error[E1024]: cyclic type alias 'Main.A'; remove the recursive alias reference
 ```tsuzuri run=42
 type Addable<'a> = Add<'a>
 
-def twice :: Addable<'a> -> 'a
+def twice :: own Addable<'a> -> 'a
 fn twice value = value + value
 
 twice 21
@@ -200,8 +200,8 @@ type Kilometers = f64
 // 共用体: パターンで取り出さないと f64 として使えない
 union Distance = Miles of f64
 
-def to_m :: Kilometers -> f64 = \km -> km * 1000.0
-def miles_to_km :: Distance -> Kilometers = \d ->
+def to_m :: own Kilometers -> f64 = \km -> km * 1000.0
+def miles_to_km :: own Distance -> Kilometers = \d ->
     match d with
     | Miles v -> v * 1.60934
 

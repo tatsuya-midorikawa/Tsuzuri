@@ -1,7 +1,7 @@
 record Point { x: f64, y: f64 }
 
-def distance :: Point -> f64 = \point ->
+def distance :: own Point -> f64 = \point ->
     sqrt (point.x * point.x + point.y * point.y)
 
-export def hypotenuse :: f64 -> f64 -> f64 = \x y ->
+export def hypotenuse :: own f64 -> own f64 -> f64 = \x y ->
     distance (Point { x: x, y: y })

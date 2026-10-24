@@ -3,14 +3,14 @@
 
 // `values = List.cons i values` in a loop, in its own function. A function that also walks `values` with `for`
 // makes the last-use analysis (A17) copy the list at every cons, which would measure that and not the list.
-def build :: i64 -> [|i64|]
+def build :: own i64 -> [|i64|]
 fn build n =
     let mut values: [|i64|] = [||]
     for i in 0 .. n - 1 do values = List.cons i values
     values
 
 // `new [|i64|](n, f)` and a sum: n (n - 1) / 2.
-export def bulk_new :: i64 -> i64
+export def bulk_new :: own i64 -> i64
 fn bulk_new n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
@@ -19,7 +19,7 @@ fn bulk_new n =
     total
 
 // A list grown by `List.cons`, then a sum: n (n - 1) / 2.
-export def cons_build :: i64 -> i64
+export def cons_build :: own i64 -> i64
 fn cons_build n =
     assert (n >= 0 && n <= 100000000)
     let values = build n
@@ -28,7 +28,7 @@ fn cons_build n =
     total
 
 // A `new` list taken apart by `List.tail` while its head is summed: n (n - 1) / 2.
-export def tail_consume :: i64 -> i64
+export def tail_consume :: own i64 -> i64
 fn tail_consume n =
     assert (n >= 0 && n <= 100000000)
     let mut values = new [|i64|](n, \i -> i)
@@ -39,7 +39,7 @@ fn tail_consume n =
     total
 
 // An explicit copy of a Copy list, and the sum of both: n (n - 1).
-export def clone_list :: i64 -> i64
+export def clone_list :: own i64 -> i64
 fn clone_list n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
@@ -50,7 +50,7 @@ fn clone_list n =
     total
 
 // `values[i]` for every i: n (n - 1) / 2. Indexing a node list walks from the head, so it is quadratic there.
-export def index_walk :: i64 -> i64
+export def index_walk :: own i64 -> i64
 fn index_walk n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
@@ -59,7 +59,7 @@ fn index_walk n =
     total
 
 // A list of n strings that each own a heap buffer, and the sum of their lengths: 3 n.
-export def string_list :: i64 -> i64
+export def string_list :: own i64 -> i64
 fn string_list n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|string|](n, \_i -> "ab" + "c")
@@ -68,7 +68,7 @@ fn string_list n =
     total
 
 // A `new` list summed 16 times by `for`: 16 n (n - 1) / 2. The sums, not the build, take the time: this is the cost per element of a walk.
-export def walk_list :: i64 -> i64
+export def walk_list :: own i64 -> i64
 fn walk_list n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
@@ -78,7 +78,7 @@ fn walk_list n =
     total
 
 // `List.foldr` over a `new` list 16 times: 16 n (n - 1) / 2.
-export def fold_list :: i64 -> i64
+export def fold_list :: own i64 -> i64
 fn fold_list n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
@@ -88,7 +88,7 @@ fn fold_list n =
 
 // A list that `List.cons` built compared 16 times with a `new` list of the same elements: 16. Their chunks differ, so a comparison goes by runs of
 // different lengths.
-export def compare_list :: i64 -> i64
+export def compare_list :: own i64 -> i64
 fn compare_list n =
     assert (n >= 0 && n <= 100000000)
     let consed = build n
@@ -98,7 +98,7 @@ fn compare_list n =
     same
 
 // `List.to_array` of a `new` list, and the sum of the array: n (n - 1) / 2.
-export def list_to_array :: i64 -> i64
+export def list_to_array :: own i64 -> i64
 fn list_to_array n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
@@ -108,7 +108,7 @@ fn list_to_array n =
     total
 
 // `Array.to_list` of a `new` array, and the sum of the list: n (n - 1) / 2.
-export def array_to_list :: i64 -> i64
+export def array_to_list :: own i64 -> i64
 fn array_to_list n =
     assert (n >= 0 && n <= 100000000)
     let values = new [i64](n, \i -> i)
@@ -118,11 +118,11 @@ fn array_to_list n =
     total
 
 // A list literal of 32 elements that leaves its function, so that it moves from the stack to the heap: its elements are i, i + 1, ... i + 31.
-def block :: i64 -> [|i64|]
+def block :: own i64 -> [|i64|]
 fn block i = [|i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15, i + 16, i + 17, i + 18, i + 19, i + 20, i + 21, i + 22, i + 23, i + 24, i + 25, i + 26, i + 27, i + 28, i + 29, i + 30, i + 31|]
 
 // `block i` for each i below n, summed: 16 n (n - 1) + 496 n.
-export def escape_list :: i64 -> i64
+export def escape_list :: own i64 -> i64
 fn escape_list n =
     assert (n >= 0 && n <= 100000000)
     let mut total = 0i64

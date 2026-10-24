@@ -1,4 +1,4 @@
-fn rec mix_loop(remaining: i64, state: i64) -> i64 {
+fn rec mix_loop(remaining: own i64, state: own i64) -> i64 {
     if remaining <= 0 {
         state
     } else {
@@ -7,7 +7,7 @@ fn rec mix_loop(remaining: i64, state: i64) -> i64 {
     }
 }
 
-export fn mix(iterations: i64, seed: i64) -> i64 {
+export fn mix(iterations: own i64, seed: own i64) -> i64 {
     let _ = assert(iterations >= 0);
     mix_loop(iterations, seed)
 }

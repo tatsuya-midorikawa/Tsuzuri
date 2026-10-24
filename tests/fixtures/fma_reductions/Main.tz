@@ -1,4 +1,4 @@
-private def input :: i64 -> i64 -> f64
+private def input :: own i64 -> own i64 -> f64
 fn input index seed =
     match (index * 37 + seed) % 8 with
     | 0 -> 1e16
@@ -10,7 +10,7 @@ fn input index seed =
     | 6 -> -0.25
     | _ -> 1e-38
 
-export def ordered64 :: i64 -> i64 -> i64 -> f64
+export def ordered64 :: own i64 -> own i64 -> own i64 -> f64
 fn ordered64 count seed operation =
     let values = new [f64](count, index -> input index seed)
     let other = new [f64](count, index -> input index (seed + 3))
@@ -20,7 +20,7 @@ fn ordered64 count seed operation =
     | 2 -> Array.sum_kahan (ref values)
     | _ -> Array.dot (ref values) (ref other)
 
-export def ordered32 :: i64 -> i64 -> i64 -> f32
+export def ordered32 :: own i64 -> own i64 -> own i64 -> f32
 fn ordered32 count seed operation =
     let values = new [f32](count, index -> (input index seed) as f32)
     let other = new [f32](count, index -> (input index (seed + 3)) as f32)
@@ -30,7 +30,7 @@ fn ordered32 count seed operation =
     | 2 -> Array.sum_kahan (ref values)
     | _ -> Array.dot (ref values) (ref other)
 
-export def fused_order :: i64 -> bool
+export def fused_order :: own i64 -> bool
 fn fused_order count =
     let left = new [f64](count, index -> input index 0)
     let right = new [f64](count, index -> input index 3)
@@ -38,7 +38,7 @@ fn fused_order count =
     for index in 0i64 .. (count - 1) do expected = Math.fma left[index] right[index] expected
     Array.dot_fma (ref left) (ref right) == expected
 
-private def format_cases :: Float<'a> => 'a -> bool
+private def format_cases :: Float<'a> => own 'a -> bool
 fn format_cases epsilon =
     let zero = 0i64 as 'a
     let one = 1i64 as 'a
@@ -82,7 +82,7 @@ fn evaluation_order =
     assert (result == 10.0 && partial 3.0 4.0 == result)
     order
 
-export def mismatch :: i64 -> f64
+export def mismatch :: own i64 -> f64
 fn mismatch mode =
     let left = [1.0]
     let right: [f64] = []

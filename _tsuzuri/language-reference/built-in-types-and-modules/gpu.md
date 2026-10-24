@@ -53,7 +53,7 @@ flowchart TD
 `Cuda` と `Metal` は、今はすべて `Unavailable` です。`Auto` は常に成功します。デバイスを開く必要がなく、どのバックエンドで動かすかは呼び出しごとに決まるからです（[`Gpu.Auto`](#gpuauto-で呼び出しごとに選ぶ)）。次の例の呼び出しは小さいので、CPU 参照が動かし、結果はどのマシンでも同じです。
 
 ```tsuzuri run=2983000
-def served :: Gpu.Backend -> i32
+def served :: own Gpu.Backend -> i32
 fn served backend = match backend with
     | Gpu.CpuReference -> 0
     | _ -> 1

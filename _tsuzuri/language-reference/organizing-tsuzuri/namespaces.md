@@ -28,7 +28,7 @@ namespace Physics
 
 record Vec2 { x: f64, y: f64 }
 
-def add :: Vec2 -> Vec2 -> Vec2 = \a b -> Vec2 { x: a.x + b.x, y: a.y + b.y }
+def add :: own Vec2 -> own Vec2 -> Vec2 = \a b -> Vec2 { x: a.x + b.x, y: a.y + b.y }
 ```
 
 ```tsuzuri project=ns-basic file=Main.tz run=10
@@ -144,7 +144,7 @@ namespace Geometry
 
 record Line { start: Point, stop: Point }
 
-def length_is_zero :: Line -> bool = \line ->
+def length_is_zero :: own Line -> bool = \line ->
     line.start.x == line.stop.x && line.start.y == line.stop.y
 ```
 
@@ -176,7 +176,7 @@ if Line.length_is_zero line then 1 else 0
 // 自モジュール内で独自の Result 型を宣言
 record Result { value: i64 }
 
-def unwrap_or_zero :: std::Result<i64, string> -> i64 = \res ->
+def unwrap_or_zero :: own std::Result<i64, string> -> i64 = \res ->
     match res with
     | std::Result.Ok v -> v
     | std::Result.Error _ -> 0

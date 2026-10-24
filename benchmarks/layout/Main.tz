@@ -13,25 +13,25 @@ record Tagged { tag: i8, value: i64, ok: bool }
 
 record Point { x: i64, y: i64 }
 
-def code :: Color -> i64 = \c ->
+def code :: own Color -> i64 = \c ->
     match c with
     | Red -> 1
     | Green -> 2
     | Blue -> 3
 
-def area :: Shape -> f64 = \shape ->
+def area :: own Shape -> f64 = \shape ->
     match shape with
     | Circle r -> r * r * 3.0
     | Rect (w, h) -> w * h
     | Empty -> 0.0
 
-def small :: Small -> i64 = \s ->
+def small :: own Small -> i64 = \s ->
     match s with
     | Flag b -> if b then 1 else 0
     | Code c -> if c == 3 then 3 else 0
     | Nothing -> 0
 
-def first_x :: Maybe<ref Point> -> i64 = \o ->
+def first_x :: own Maybe<ref Point> -> i64 = \o ->
     match o with
     | Some q -> q.x
     | None -> 0

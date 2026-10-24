@@ -29,7 +29,7 @@ use crate::syntax::{Edition, Program, SourceKind};
 use crate::syntax_codec::{self, Invalid, Mode};
 
 /// The version of the pack, entry, manifest, codec and hash rules. Bump it whenever any changes.
-pub(crate) const FRONTEND_FORMAT: u32 = 4;
+pub(crate) const FRONTEND_FORMAT: u32 = 6;
 const PACK_MAGIC: &[u8; 8] = b"TZPACK\0\0";
 const PACK_HEADER_BYTES: usize = 84;
 const ENTRY_MAGIC: &[u8; 8] = b"TZFRONT\0";
@@ -1014,18 +1014,19 @@ mod tests {
 
     #[test]
     fn the_same_text_under_another_edition_is_another_entry() {
-        let later = Edition(2027);
+        let earlier = Edition::E2026;
+        let later = Edition::E2027;
         assert_ne!(
-            parse_key(&IDENTITY, Edition::LATEST, SOURCE),
+            parse_key(&IDENTITY, earlier, SOURCE),
             parse_key(&IDENTITY, later, SOURCE)
         );
         let (_temporary, root) = root();
         let mut first = open(&root, IDENTITY);
-        first.parse(SOURCE, 0, Edition::LATEST).unwrap();
+        first.parse(SOURCE, 0, earlier).unwrap();
         first.finish(&[]);
         // The pack holds the text for the edition that parsed it, and no other reuses it.
         let mut second = open(&root, IDENTITY);
-        second.parse(SOURCE, 0, Edition::LATEST).unwrap();
+        second.parse(SOURCE, 0, earlier).unwrap();
         assert_eq!(second.stats, stats(1, 0, 0));
         second.parse(SOURCE, 1, later).unwrap();
         assert_eq!(second.stats, stats(1, 1, 0));

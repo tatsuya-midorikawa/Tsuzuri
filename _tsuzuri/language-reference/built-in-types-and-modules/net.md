@@ -71,14 +71,14 @@ none
 次の例は、1 つのプロセスの中で、listener と、それに接続するクライアントと、`accept` で得たサーバー側の端を作ります。ポートは 0 で、OS に空きを選ばせます。loopback ではカーネルが接続を完了させるので、`accept` の前に `connect` が成功します。
 
 ```tsuzuri run=ping%20-%3E%20pong
-def text_of :: [ubyte] -> string
+def text_of :: own [ubyte] -> string
 fn text_of bytes =
     match Utf8String.from_bytes bytes with
     | Maybe.Some text -> String.from_utf8 (ref text)
     | Maybe.None -> "?"
 
 /// The client asks and the server answers, over two ends of one connection.
-def exchange :: Net.TcpStream -> Net.TcpStream -> IO<string>
+def exchange :: own Net.TcpStream -> own Net.TcpStream -> IO<string>
 fn exchange client server = IO {
     let! sent = Net.write client (Utf8String.to_bytes u8"ping") (Maybe.Some 1000)
     let! request = Net.read server 16 (Maybe.Some 1000)
@@ -141,7 +141,7 @@ sequenceDiagram
 ソケットのハンドルは、中に整数とアドレスを持つ `Copy` の値です。ランタイムの表を指す添字で、開くたびに新しい世代が付きます。
 
 ```tsuzuri run=accept%3A%20TimedOut%2FOther%0Aclose%3A%20ok%0Aclose%20again%3A%20Unclassified%2FInvalidInput%0Aaccept%20after%20close%3A%20Unclassified%2FInvalidInput%0Atimeout%20of%200%3A%20Unclassified%2FInvalidInput
-def kind_text :: Result<'a, Os.Error> -> string
+def kind_text :: own Result<'a, Os.Error> -> string
 fn kind_text result =
     match result with
     | Result.Ok _ -> "ok"
@@ -192,13 +192,13 @@ timeout of 0: Unclassified/InvalidInput
 `bind_udp address` が `UdpSocket` を作ります。`send_to` は 1 つのデータグラムを送り、`recv_from socket count timeout` は 1 つのデータグラムと送り元のアドレスを返します。
 
 ```tsuzuri run=hello%20from%20127.0.0.1%20true
-def text_of :: [ubyte] -> string
+def text_of :: own [ubyte] -> string
 fn text_of bytes =
     match Utf8String.from_bytes bytes with
     | Maybe.Some text -> String.from_utf8 (ref text)
     | Maybe.None -> "?"
 
-def talk :: Net.UdpSocket -> Net.UdpSocket -> IO<string>
+def talk :: own Net.UdpSocket -> own Net.UdpSocket -> IO<string>
 fn talk receiver sender = IO {
     let! sent = Net.send_to sender (Utf8String.to_bytes u8"hello") (Net.udp_local_addr receiver)
     let! got = Net.recv_from receiver 64 (Maybe.Some 1000)
@@ -239,7 +239,7 @@ hello from 127.0.0.1 true
 そのような host は `parse_ip port host` だけで決めます。厳密に読めればシステムを呼ばずにそのアドレス 1 つの配列を返し、読めなければ `InvalidInput`（`code` は 0）です。ゾーン付きのアドレスを返す方法はありません（`Address` にゾーンを持たせないためです）。それ以外の host、つまり ASCII の名前だけがリゾルバーに渡ります。国際化ドメイン名は、`xn--` で始まる ASCII の形（Punycode）で書いてください。ASCII 以外のバイトを含む host はどのターゲットでも `InvalidInput` で、リゾルバーが国際化ドメイン名を変換するかどうかで、結果が OS やホストによって変わることはありません。さらにネイティブのランタイムは、システムが数値のアドレスと読む host（`getaddrinfo` の `AI_NUMERICHOST` が受けるもの）を、名前の問い合わせの前に `InvalidInput` で断ります。上の分類が取りこぼした書き方があっても、システムのアドレス解析がアドレスを決めることはありません。
 
 ```tsuzuri run=127.0.0.1%3A8080%0A%5B%3A%3A1%5D%3A80%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input%0Ainvalid%20input
-def show :: Result<[Net.Address], Os.Error> -> string
+def show :: own Result<[Net.Address], Os.Error> -> string
 fn show result =
     match result with
     | Result.Ok found ->
@@ -306,7 +306,7 @@ host が空、NUL を含む、253 バイトを超える、または port が 0 �
 def bytes_of :: ref string -> [ubyte]
 fn bytes_of text = Utf8String.to_bytes (Utf8String.from_string text)
 
-def echo_one :: Net.TcpStream -> Async<i64>
+def echo_one :: own Net.TcpStream -> Async<i64>
 fn echo_one stream = Async {
     match! Net.read_async stream 100 (Maybe.Some 5000) with
     | Result.Error _ -> return -1
@@ -317,14 +317,14 @@ fn echo_one stream = Async {
         return count
 }
 
-def serve :: Net.TcpListener -> Async<i64>
+def serve :: own Net.TcpListener -> Async<i64>
 fn serve listener = Async {
     match! Net.accept_async listener (Maybe.Some 5000) with
     | Result.Error _ -> return -2
     | Result.Ok stream -> return! echo_one stream
 }
 
-def exchange :: Net.TcpStream -> Async<i64>
+def exchange :: own Net.TcpStream -> Async<i64>
 fn exchange stream = Async {
     let! _written = Net.write_async stream (bytes_of (ref "hello")) (Maybe.Some 5000)
     match! Net.read_async stream 100 (Maybe.Some 5000) with
@@ -334,7 +334,7 @@ fn exchange stream = Async {
         return bytes.length
 }
 
-def client :: Net.Address -> Async<i64>
+def client :: own Net.Address -> Async<i64>
 fn client target = Async {
     match! Net.connect_async target (Maybe.Some 5000) with
     | Result.Error _ -> return -4
@@ -381,21 +381,21 @@ fn failing delay = Async {
     return Result.Error (Os.Error { kind: Os.Other, code: 99i32 })
 }
 
-def idle_read :: Net.TcpStream -> Async<Result<i64, Os.Error>>
+def idle_read :: own Net.TcpStream -> Async<Result<i64, Os.Error>>
 fn idle_read stream = Async {
     match! Net.read_async stream 16 Maybe.None with
     | Result.Error error -> return Result.Error error
     | Result.Ok bytes -> return Result.Ok bytes.length
 }
 
-def timed_read :: Net.TcpStream -> Async<string>
+def timed_read :: own Net.TcpStream -> Async<string>
 fn timed_read stream = Async {
     match! Net.read_async stream 16 (Maybe.Some 30) with
     | Result.Error error -> return to_string (Net.error_kind error)
     | Result.Ok bytes -> return "read:" + to_string bytes.length
 }
 
-def say_outcome :: Result<[i64], Os.Error> -> IO<unit>
+def say_outcome :: own Result<[i64], Os.Error> -> IO<unit>
 fn say_outcome outcome =
     match outcome with
     | Result.Error error -> IO.write_line ("cancelled: error " + to_string error.code)

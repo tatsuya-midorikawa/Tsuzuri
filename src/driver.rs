@@ -3216,13 +3216,13 @@ fn require_regular_source(path: &Path) -> Result<fs::Metadata, Diagnostic> {
     Ok(metadata)
 }
 
-fn replace_source_atomically(
+pub(crate) fn replace_source_atomically(
     path: &Path,
     original: &str,
     formatted: &str,
 ) -> Result<(), Diagnostic> {
     let metadata = require_regular_source(path)?;
-    if read_source(path)? != original {
+    if read_source_text(path)? != original {
         return Err(driver_error(
             "E2003",
             "source changed during formatting; no replacement made",
@@ -3244,7 +3244,7 @@ fn replace_source_atomically(
         .map_err(|error| io_error("flush formatted source", &staged, error))?;
     drop(file);
     require_regular_source(path)?;
-    if read_source(path)? != original {
+    if read_source_text(path)? != original {
         return Err(driver_error(
             "E2003",
             "source changed during formatting; no replacement made",
@@ -8052,7 +8052,7 @@ mod tests {
                 ("Main.tz", "Identity { return 42 }"),
                 (
                     "Identity.tc",
-                    "def Return :: 'a -> 'a\nfn Return value = value",
+                    "def Return :: own 'a -> 'a\nfn Return value = value",
                 ),
                 (
                     "Classes.tt",

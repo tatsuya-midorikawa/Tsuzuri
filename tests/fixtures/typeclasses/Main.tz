@@ -27,7 +27,7 @@ fn optional_values =
     let right = Some (Box { value: "a" + "bc" })
     (if left == right then 20 else 0) + (if left != None then 22 else 0)
 
-def flags :: Ord<'a> => 'a -> 'a -> i64
+def flags :: Ord<'a> => own 'a -> own 'a -> i64
 fn flags left right =
     (if left == right then 1 else 0) +
     (if left != right then 2 else 0) +
@@ -36,11 +36,11 @@ fn flags left right =
     (if left > right then 16 else 0) +
     (if left >= right then 32 else 0)
 
-export def array_mask :: i64 -> i64 -> i64
+export def array_mask :: own i64 -> own i64 -> i64
 fn array_mask left right = flags [1, left] [1, right]
-export def list_mask :: i64 -> i64 -> i64
+export def list_mask :: own i64 -> own i64 -> i64
 fn list_mask left right = flags [|1, left|] [|1, right|]
-export def tuple_mask :: i64 -> i64 -> i64
+export def tuple_mask :: own i64 -> own i64 -> i64
 fn tuple_mask left right = flags (1, Box { value: left }) (1, Box { value: right })
 
 export def prefixes :: i64
@@ -68,14 +68,14 @@ fn noncopy_elements =
 export def nested_collections :: i64
 fn nested_collections = flags [[1, 2], [3]] [[1, 2], [4]] + flags ([|[1]|], [2]) ([|[1]|], [3]) * 100
 
-export def floating_masks :: i64 -> i64
+export def floating_masks :: own i64 -> i64
 fn floating_masks mode =
     let nan = 0.0 / 0.0
     if mode == 0 then flags [nan, -1.0] [nan, 1.0]
     elif mode == 1 then flags [|-0.0|] [|0.0|]
     else flags (nan, -1.0) (nan, 1.0)
 
-export def long_lists :: i64 -> i64
+export def long_lists :: own i64 -> i64
 fn long_lists count =
     let values = Array.init count (index -> index)
     let left = Array.to_list (ref values)

@@ -199,7 +199,7 @@ error[E1013]: async computations cannot keep borrowed values across 'let!', 'do!
 中断より前に終わる借用と、ブロックへ移した所有値は使えます。
 
 ```tsuzuri run=36
-def total :: [i64] -> Async<i64>
+def total :: own [i64] -> Async<i64>
 fn total values = Async {
     let count = Array.length (ref values)
     do! Async.yield ()

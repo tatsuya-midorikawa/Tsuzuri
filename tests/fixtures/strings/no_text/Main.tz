@@ -1,4 +1,4 @@
-def make :: i64 -> (i64 -> i64)
+def make :: own i64 -> (own i64 -> i64)
 fn make offset = value -> offset + value
 
 export def value :: i64

@@ -1,6 +1,6 @@
 record Point { x: i64, label: string }
 
-export def answer :: i64 -> i64
+export def answer :: own i64 -> i64
 fn answer input =
     let point = Point { x: input + 2, label: "point" }
     let values = [point.x]

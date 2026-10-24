@@ -1,6 +1,6 @@
 record Pair { number: i64, text: string }
 
-export def inclusive :: i32 -> i32 -> bool -> i64
+export def inclusive :: own i32 -> own i32 -> own bool -> i64
 fn inclusive first last down =
     let mut total = 0i64
     if down then
@@ -9,13 +9,13 @@ fn inclusive first last down =
         for i = first to last do total = total + i as i64
     total
 
-export def stepped :: i64 -> i64 -> i64 -> i64
+export def stepped :: own i64 -> own i64 -> own i64 -> i64
 fn stepped first step last =
     let mut total = 0
     for i in first .. step .. last do total = total + i
     total
 
-export def unsigned_steps :: i64u -> i64u -> i64u -> i64
+export def unsigned_steps :: own i64u -> own i64u -> own i64u -> i64
 fn unsigned_steps first step last =
     let mut total = 0i64u
     for i in first .. step .. last do total = total + i
@@ -31,7 +31,7 @@ fn integer_boundaries =
     for _ in -170141183460469231731687303715884105727i128 .. -2i128 .. -170141183460469231731687303715884105728i128 do total = total + 1
     total
 
-def bound :: &mut i64 -> i32 -> i32
+def bound :: &mut i64 -> own i32 -> i32
 fn bound state n = { *state = *state * 10 + n as i64; n }
 
 export def bounds_once :: i64
@@ -43,24 +43,24 @@ fn bounds_once =
         state = state * 10 + i as i64
     state
 
-def condition :: &mut i64 -> i64 -> bool
+def condition :: &mut i64 -> own i64 -> bool
 fn condition count last = { *count = *count + 1; *count <= last }
 
-export def while_checks :: i64 -> i64
+export def while_checks :: own i64 -> i64
 fn while_checks n =
     let mut checks = 0
     let mut iterations = 0
     while condition (&mut checks) n do iterations = iterations + 1
     checks * 100 + iterations
 
-export def collection_sum :: i64 -> i64 -> i64
+export def collection_sum :: own i64 -> own i64 -> i64
 fn collection_sum n seed =
     let values = new [i64](n, \i -> (i * 17) ^ seed)
     let mut total = 0
     for value in values do total = total + value
     total + values.length
 
-export def list_sum :: i64 -> i64
+export def list_sum :: own i64 -> i64
 fn list_sum n =
     let mut total = 0
     for value in new [|i64|](n, \i -> i * 3) do total = total + value
@@ -84,7 +84,7 @@ fn utf8_iteration =
         count = count + 1
     total + count * 1000
 
-export def patterns :: i64 -> i64
+export def patterns :: own i64 -> i64
 fn patterns n =
     match n with
     | -3 | -1 -> 17
@@ -117,7 +117,7 @@ fn guard_once =
     | (x, _) | (_, x) when x == 2 -> 999
     | _ -> 42
 
-def guarded :: i64 -> i64 -> i64
+def guarded :: own i64 -> own i64 -> i64
 fn guarded x y
     | x > y -> x
     | otherwise when y > 0 -> y
@@ -145,10 +145,10 @@ export def lambda_nested :: i64 =
     assert ((prefix "cd").length == 8)
     f 2 3 4
 
-def inline_add :: i64 -> i64 -> i64 = \left -> \right -> left + right
+def inline_add :: own i64 -> own i64 -> i64 = \left -> \right -> left + right
 
-def rec inline_even :: i64 -> bool = \value -> if value == 0 then true else inline_odd (value - 1)
-and inline_odd :: i64 -> bool = \value -> if value == 0 then false else inline_even (value - 1)
+def rec inline_even :: own i64 -> bool = \value -> if value == 0 then true else inline_odd (value - 1)
+and inline_odd :: own i64 -> bool = \value -> if value == 0 then false else inline_even (value - 1)
 
 export def inline_forms :: i64 =
     let add_twenty = inline_add 20
@@ -156,14 +156,14 @@ export def inline_forms :: i64 =
     assert (inline_odd 41)
     add_twenty 22
 
-def judge_score :: i32 -> i32 -> string = \left -> \right ->
+def judge_score :: own i32 -> own i32 -> string = \left -> \right ->
     | diff > 10 -> "win"
     | diff > 5 -> "close"
     | otherwise -> "even"
     where
         diff = Int.abs (left - right)
 
-export def lambda_guard_score :: i32 -> i32 -> i64 = \left right ->
+export def lambda_guard_score :: own i32 -> own i32 -> i64 = \left right ->
     let judge = judge_score left
     match judge right with
     | "win" -> 2
@@ -171,11 +171,11 @@ export def lambda_guard_score :: i32 -> i32 -> i64 = \left right ->
     | "even" -> 0
     | _ -> -1
 
-def guard_where_mark :: ref mut i64 -> i64 -> i64 = \log value ->
+def guard_where_mark :: ref mut i64 -> own i64 -> i64 = \log value ->
     deref log = deref log * 10 + value
     value
 
-def guarded_where_order :: ref mut i64 -> i64 -> i64 = \log input ->
+def guarded_where_order :: ref mut i64 -> own i64 -> i64 = \log input ->
     | guard_where_mark log 3 == 0 -> unreachable ()
     | input > 0 -> result
     | otherwise -> -result
@@ -204,19 +204,19 @@ export def lambda_guard_where_owned :: i64 =
     let second = choose 0
     first.length + second.length
 
-def (|GuardEven|GuardOdd|) :: 'number -> 'T
+def (|GuardEven|GuardOdd|) :: own 'number -> 'T
     @'number : Integer = \value ->
     | value % 2 == 0 -> GuardEven
     | otherwise -> GuardOdd
 
-def (|GuardEvenValue|GuardOddValue|) :: 'number -> 'T
+def (|GuardEvenValue|GuardOddValue|) :: own 'number -> 'T
     @'number : Integer, Copy = \value ->
     | remainder == 0 -> GuardEvenValue value
     | otherwise -> GuardOddValue value
     where
         remainder = value % 2
 
-export def active_lambda_guards :: i64 -> i64 = \value ->
+export def active_lambda_guards :: own i64 -> i64 = \value ->
     let parity = match value with
         | GuardEven -> 0
         | GuardOdd -> 1
@@ -240,7 +240,7 @@ fn owned_guard =
     let result = match text with | "wrong" -> "no" | s when s.length == 99 -> s | s -> s
     result.length
 
-export def loop_copies :: i64 -> i64
+export def loop_copies :: own i64 -> i64
 fn loop_copies n =
     let values = [20, 22]
     let callback = \i -> values[0] + values[1] + i
@@ -251,7 +251,7 @@ fn loop_copies n =
         total = total + copy[0] + f i
     total
 
-export def owned_replacements :: i64 -> i64
+export def owned_replacements :: own i64 -> i64
 fn owned_replacements n =
     let mut text = "old"
     let mut count = 0
@@ -261,24 +261,24 @@ fn owned_replacements n =
         count = count + 1
     text.length
 
-def rec tail :: i64 -> i64 -> i64
+def rec tail :: own i64 -> own i64 -> i64
 fn rec tail n result =
     match n with
     | 0 -> result
     | n -> tail (n - 1) (result + 1)
 
-export def tail_match :: i64 -> i64
+export def tail_match :: own i64 -> i64
 fn tail_match n = tail n 0
 
-def rec even :: i64 -> bool
-def and odd :: i64 -> bool
+def rec even :: own i64 -> bool
+def and odd :: own i64 -> bool
 fn rec even n = if n == 0 then true else odd (n - 1)
 and odd n = if n == 0 then false else even (n - 1)
 
-export def mutual :: i64 -> bool
+export def mutual :: own i64 -> bool
 fn mutual n = even n
 
-export def nested_match :: i64 -> i64
+export def nested_match :: own i64 -> i64
 fn nested_match n =
     match n with
     | 0 ->
@@ -287,13 +287,13 @@ fn nested_match n =
         | _ -> 9
     | _ -> 10
 
-def (|Even|_|) :: i64 -> bool
+def (|Even|_|) :: own i64 -> bool
 fn (|Even|_|) n = n % 2 == 0
 
-def (|Divisible|_|) :: i64 -> i64 -> bool
+def (|Divisible|_|) :: own i64 -> own i64 -> bool
 fn (|Divisible|_|) divisor n = n % divisor == 0
 
-def (|Parts|) :: i64 -> (i64 * i64)
+def (|Parts|) :: own i64 -> (i64 * i64)
 fn (|Parts|) n = (n, n + 1)
 
 def (|Length|) :: &string -> i64
@@ -302,7 +302,7 @@ fn (|Length|) text = text.length
 def (|Copy|) :: &string -> string
 fn (|Copy|) text = clone_string text
 
-def (|Mark|_|) :: &mut i64 -> i64 -> bool -> i64 -> bool
+def (|Mark|_|) :: &mut i64 -> own i64 -> own bool -> own i64 -> bool
 fn (|Mark|_|) state digit accepted n = { *state = *state * 10 + digit; accepted }
 
 export def active_patterns :: i64
@@ -325,7 +325,7 @@ fn active_order =
         | _ -> 0
     answer + state * 1000
 
-export def active_owned :: i64 -> i64
+export def active_owned :: own i64 -> i64
 fn active_owned n =
     let text = "owned"
     let mut total = 0
@@ -344,7 +344,7 @@ fn active_short_circuit =
     | 0 & Divisible 0 -> 0
     | _ -> 42
 
-export def dense_i8 :: i8 -> i64
+export def dense_i8 :: own i8 -> i64
 fn dense_i8 n =
     match n with
     | -128 -> 10
@@ -353,7 +353,7 @@ fn dense_i8 n =
     | -125 -> 40
     | _ -> 42
 
-export def dense_holes :: i64 -> i64
+export def dense_holes :: own i64 -> i64
 fn dense_holes n =
     match n as i128 with
     | 1 -> 10
@@ -362,7 +362,7 @@ fn dense_holes n =
     | 5 -> 50
     | _ -> 42
 
-export def numeric_patterns :: f64 -> i64
+export def numeric_patterns :: own f64 -> i64
 fn numeric_patterns n = match n with | 0.0 -> 1 | 1.5 -> 2 | _ -> 3
 
 export def software_patterns :: i64

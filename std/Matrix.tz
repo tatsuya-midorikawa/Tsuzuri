@@ -2,19 +2,19 @@
 /// Invariants: rows >= 0, cols >= 0, rows * cols <= i64::MAX, data.length == rows * cols.
 record Matrix<'a> { rows: i64, cols: i64, data: ['a] }
 
-private def checked_count :: i64 -> i64 -> i64
+private def checked_count :: own i64 -> own i64 -> i64
 fn checked_count rows cols =
     assert (rows >= 0 && cols >= 0 && (cols == 0 || rows <= 9223372036854775807 / cols))
     rows * cols
 
 /// Takes a row-major array without copying; traps unless its length is rows * cols.
-def of_array :: i64 -> i64 -> ['a] -> Matrix<'a>
+def of_array :: own i64 -> own i64 -> own ['a] -> Matrix<'a>
 fn of_array rows cols values =
     assert (values.length == checked_count rows cols)
     Matrix { rows: rows, cols: cols, data: values }
 
 /// Calls `initializer row col` once per element in row-major order.
-def init :: i64 -> i64 -> (i64 -> i64 -> 'a) -> Matrix<'a>
+def init :: own i64 -> own i64 -> own (i64 -> i64 -> 'a) -> Matrix<'a>
 fn init rows cols initializer =
     let count = checked_count rows cols
     Matrix { rows: rows, cols: cols, data: new ['a](count, index -> initializer (index / cols) (index % cols)) }
@@ -28,19 +28,19 @@ def cols :: ref Matrix<'a> -> i64
 fn cols matrix = matrix.cols
 
 /// Borrows one element; traps when the row or the column is out of range.
-def at :: i64 -> i64 -> ref Matrix<'a> -> ref 'a
+def at :: own i64 -> own i64 -> ref Matrix<'a> -> ref 'a
 fn at row col matrix =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     ref matrix.data[row * matrix.cols + col]
 
 /// Copies one element, or `None` when the row or the column is out of range.
-def get :: Copy<'a> => i64 -> i64 -> ref Matrix<'a> -> Maybe<'a>
+def get :: Copy<'a> => own i64 -> own i64 -> ref Matrix<'a> -> Maybe<'a>
 fn get row col matrix =
     if row < 0 || row >= matrix.rows || col < 0 || col >= matrix.cols then Maybe.None
     else Maybe.Some matrix.data[row * matrix.cols + col]
 
 /// Borrows one row as a slice without copying; traps when the row is out of range.
-def row :: i64 -> ref Matrix<'a> -> ref ['a]
+def row :: own i64 -> ref Matrix<'a> -> ref ['a]
 fn row index matrix =
     assert (index >= 0 && index < matrix.rows)
     let start = index * matrix.cols
@@ -51,23 +51,23 @@ def as_array :: ref Matrix<'a> -> ref ['a]
 fn as_array matrix = ref matrix.data
 
 /// Consumes the matrix and returns its row-major buffer without copying.
-def to_array :: Matrix<'a> -> ['a]
+def to_array :: own Matrix<'a> -> ['a]
 fn to_array matrix = matrix.data
 
 /// Consumes the matrix and replaces one element in place; traps when the row or the column is out of range.
-def set :: i64 -> i64 -> 'a -> Matrix<'a> -> Matrix<'a>
+def set :: own i64 -> own i64 -> own 'a -> own Matrix<'a> -> Matrix<'a>
 fn set row col value matrix =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     let index = row * matrix.cols + col
     Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.__set index value matrix.data }
 
 /// Applies `transform` to every element in row-major order.
-def map :: Copy<'a> => ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>
-fn map transform matrix = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map transform (ref matrix.data) }
+def map :: Copy<'a> => own ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>
+fn map transform matrix = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map_owned transform (ref matrix.data) }
 
 /// Folds the elements left to right in row-major order.
-def fold :: Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref Matrix<'a> -> 'state
-fn fold folder initial matrix = Array.fold folder initial (ref matrix.data)
+def fold :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> ref Matrix<'a> -> 'state
+fn fold folder initial matrix = Array.fold_owned folder initial (ref matrix.data)
 
 /// Returns a new cols x rows matrix whose element (j, i) is the input element (i, j).
 def transpose :: Copy<'a> => ref Matrix<'a> -> Matrix<'a>
@@ -89,7 +89,7 @@ fn add left right =
 // independent and the optimizer can vectorize it without reordering any sum. The row of `left` is
 // sliced first: with `left[base + k]` the optimizer guarded the vector loop with an overlap test
 // built from the array lengths, and the out-of-line kernel ran at half speed whenever it failed.
-private def multiply_rows :: Numeric<'a> => ref ['a] -> ref ['a] -> i64 -> i64 -> i64 -> ref mut ['a..] -> unit
+private def multiply_rows :: Numeric<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> ref mut ['a..] -> unit
 fn multiply_rows left right inner cols first out =
     for r in 0i64 .. (out.length / cols - 1) do
         let row = ref mut out[r * cols .. r * cols + cols]
@@ -102,7 +102,7 @@ fn multiply_rows left right inner cols first out =
                 Array.write j value row
 
 // The same loops with one explicit fused multiply-add per step: out = fma(a, b, out).
-private def fma_rows :: Float<'a> => ref ['a] -> ref ['a] -> i64 -> i64 -> i64 -> ref mut ['a..] -> unit
+private def fma_rows :: Float<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> ref mut ['a..] -> unit
 fn fma_rows left right inner cols first out =
     for r in 0i64 .. (out.length / cols - 1) do
         let row = ref mut out[r * cols .. r * cols + cols]
@@ -117,7 +117,7 @@ fn fma_rows left right inner cols first out =
 // A parallel chunk is a run of whole output rows that performs about 2^20 multiply-adds, and at
 // least one row. It depends only on the shape (inner and cols), never on the number of CPUs. A
 // product of at most that many multiply-adds is a single chunk and runs on the calling thread.
-private def rows_per_chunk :: i64 -> i64 -> i64
+private def rows_per_chunk :: own i64 -> own i64 -> i64
 fn rows_per_chunk inner cols =
     let rows = 1048576 / (inner * cols)
     if rows < 1 then 1 else rows

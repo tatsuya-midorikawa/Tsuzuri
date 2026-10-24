@@ -1,9 +1,9 @@
-def accumulate :: ref mut i64 -> ref i64 -> i64 -> i64
+def accumulate :: ref mut i64 -> ref i64 -> own i64 -> i64
 fn accumulate output input count =
     for _index in 0i64 .. (count - 1) do deref output = deref output + deref input
     deref output
 
-export def scalar_loop :: i64 -> i64 -> i64
+export def scalar_loop :: own i64 -> own i64 -> i64
 fn scalar_loop count seed =
     let mut output = 7i64
     accumulate (ref mut output) (ref seed) count
@@ -11,14 +11,14 @@ fn scalar_loop count seed =
 def together :: ref i64 -> ref i64 -> i64
 fn together left right = deref left + deref right
 
-export def shared_alias :: i64 -> i64
+export def shared_alias :: own i64 -> i64
 fn shared_alias seed = together (ref seed) (ref seed)
 
 def copy_elements :: ref mut [i64..] -> ref [i64] -> unit
 fn copy_elements output input =
     for index in 0i64 .. (input.length - 1) do Array.write index (input[index] + 1) output
 
-export def buffer_loop :: i64 -> i64
+export def buffer_loop :: own i64 -> i64
 fn buffer_loop count =
     let input = new [i64](count, \index -> index * 3)
     let mut output = new [i64](count, \_index -> 0)
@@ -48,12 +48,12 @@ fn disjoint_siblings =
     split_copy (ref mut values)
     values[0] * 1000 + values[1] * 100 + values[2] * 10 + values[3]
 
-def atomic_steps :: ref Atomic<i64> -> ref Atomic<i64> -> i64 -> i64
+def atomic_steps :: ref Atomic<i64> -> ref Atomic<i64> -> own i64 -> i64
 fn atomic_steps left right count =
     for _index in 0i64 .. (count - 1) do Atomic.store right (Atomic.load left + 1)
     Atomic.load left
 
-export def interior_alias :: i64 -> i64 -> i64
+export def interior_alias :: own i64 -> own i64 -> i64
 fn interior_alias count seed =
     let cell = Atomic.create seed
     atomic_steps (ref cell) (ref cell) count
@@ -64,7 +64,7 @@ fn mutex_steps left right =
     let _changed = Mutex.with_lock right (\value -> deref value = before + 1)
     Mutex.with_lock left (\value -> deref value)
 
-export def mutex_alias :: i64 -> i64
+export def mutex_alias :: own i64 -> i64
 fn mutex_alias seed =
     let cell = Mutex.create seed
     mutex_steps (ref cell) (ref cell)
@@ -72,33 +72,33 @@ fn mutex_alias seed =
 def identity :: ref i64 -> ref i64
 fn identity value = value
 
-export def returned_reference :: i64 -> i64
+export def returned_reference :: own i64 -> i64
 fn returned_reference seed = together (identity (ref seed)) (ref seed)
 
-def via_callback :: (ref i64 -> i64) -> ref i64 -> i64
+def via_callback :: own (ref i64 -> i64) -> ref i64 -> i64
 fn via_callback callback value = callback value
 
 def read :: ref i64 -> i64
 fn read value = deref value
 
-export def callback_reference :: i64 -> i64
+export def callback_reference :: own i64 -> i64
 fn callback_reference seed = via_callback read (ref seed)
 
 record View {r} { value: ref {r} i64 }
 def save {r s} :: ref {r} i64 -> ref mut {s} View {r} -> unit
 fn save value target = deref target = View { value: value }
 
-export def stored_reference :: i64 -> i64
+export def stored_reference :: own i64 -> i64
 fn stored_reference seed =
     let previous = 7i64
     let mut view = View { value: ref previous }
     save (ref seed) (ref mut view)
     deref view.value
 
-def rec fold :: i64 -> i64 -> i64
+def rec fold :: own i64 -> own i64 -> i64
 fn rec fold count total = if count == 0 then total else fold (count - 1) (total + count)
 
-export def self_tail :: i64 -> i64 -> i64
+export def self_tail :: own i64 -> own i64 -> i64
 fn self_tail count seed = fold count seed
 
 def copy_byte :: ref mut [ubyte..] -> ref [ubyte] -> unit
@@ -123,30 +123,30 @@ fn change_mixed value =
     deref value = Mixed.Real 3.5
     before + read_mixed (ref value)
 
-export def union_overlap :: i64 -> i64
+export def union_overlap :: own i64 -> i64
 fn union_overlap seed =
     let mut value = Mixed.Word seed
     change_mixed (ref mut value)
 
-def checked_step :: i64 -> unit
+def checked_step :: own i64 -> unit
 fn checked_step amount = for _ in 1 .. amount .. 2 do ()
 
 export def trap_step :: unit
 fn trap_step = checked_step 0
 
-def must_assert :: bool -> unit
+def must_assert :: own bool -> unit
 fn must_assert condition = assert condition
 
 export def trap_assert :: unit
 fn trap_assert = must_assert false
 
-def never :: unit -> unit
+def never :: own unit -> unit
 fn never unused = unreachable ()
 
 export def trap_unreachable :: unit
 fn trap_unreachable = never ()
 
-def unused_checked :: i64 -> unit
+def unused_checked :: own i64 -> unit
 fn unused_checked value =
     let _result = @checked (value + 1)
     ()
@@ -154,7 +154,7 @@ fn unused_checked value =
 export def trap_checked :: unit
 fn trap_checked = unused_checked 9223372036854775807
 
-def conditional_failure :: bool -> unit
+def conditional_failure :: own bool -> unit
 fn conditional_failure condition = if condition then assert false else ()
 
 export def trap_discarded :: i64

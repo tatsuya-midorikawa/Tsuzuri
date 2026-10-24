@@ -13,7 +13,7 @@ instance Drop<Token> {
     fn drop token = count_drop token
 }
 
-def send_all :: ref Channel.Sender<i64> -> i64 -> unit
+def send_all :: ref Channel.Sender<i64> -> own i64 -> unit
 fn send_all sender n =
     let mut index = 1
     while index <= n do
@@ -26,7 +26,7 @@ fn take receiver =
     | Maybe.Some value -> value
     | Maybe.None -> -1
 
-def total :: ref Channel.Receiver<i64> -> i64 -> i64
+def total :: ref Channel.Receiver<i64> -> own i64 -> i64
 fn total receiver n =
     let mut sum = 0
     let mut taken = 0
@@ -36,18 +36,18 @@ fn total receiver n =
     sum
 
 // Up to the capacity, a channel needs no second thread: the items come out in the order they went in.
-def run_roundtrip :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64 -> i64
+def run_roundtrip :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> own i64 -> i64
 fn run_roundtrip sender receiver n =
     send_all (ref sender) n
     total (ref receiver) n
 
-export def roundtrip :: i64 -> i64
+export def roundtrip :: own i64 -> i64
 fn roundtrip n =
     match Channel.bounded n with
     | (sender, receiver) -> run_roundtrip sender receiver n
 
 // The ring wraps around: three slots carry six items in order, never more than three at a time.
-def run_fifo :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64
+def run_fifo :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn run_fifo sender receiver =
     send_all (ref sender) 3
     let first = take (ref receiver)
@@ -67,7 +67,7 @@ fn fifo =
     | (sender, receiver) -> run_fifo sender receiver
 
 // A closed channel still hands out what it holds, then says None every time.
-def run_closed :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64
+def run_closed :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn run_closed sender receiver =
     send_all (ref sender) 3
     Owned.drop sender
@@ -84,7 +84,7 @@ fn closed =
     | (sender, receiver) -> run_closed sender receiver
 
 // With no receiver left, a send gives its item back.
-def run_refused :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64
+def run_refused :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn run_refused sender receiver =
     Owned.drop receiver
     match Channel.send (ref sender) 41 with
@@ -97,7 +97,7 @@ fn refused =
     | (sender, receiver) -> run_refused sender receiver
 
 // A clone keeps the channel open after the sender it came from is dropped; the last one closes it.
-def run_cloned :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64
+def run_cloned :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn run_cloned sender receiver =
     let clone = Channel.clone_sender (ref sender)
     Owned.drop sender
@@ -113,7 +113,7 @@ fn cloned =
     | (sender, receiver) -> run_cloned sender receiver
 
 // Items that own memory move through the channel, and the one that is never received is freed.
-def run_text :: Channel.Sender<string> -> Channel.Receiver<string> -> i64
+def run_text :: own Channel.Sender<string> -> own Channel.Receiver<string> -> i64
 fn run_text sender receiver =
     let _first = Channel.send (ref sender) "alpha"
     let _second = Channel.send (ref sender) "beta"
@@ -132,7 +132,7 @@ fn text =
     | (sender, receiver) -> run_text sender receiver
 
 // A send that is refused hands the memory back to the caller.
-def run_returned :: Channel.Sender<string> -> Channel.Receiver<string> -> i64
+def run_returned :: own Channel.Sender<string> -> own Channel.Receiver<string> -> i64
 fn run_returned sender receiver =
     Owned.drop receiver
     match Channel.send (ref sender) "returned" with
@@ -146,14 +146,14 @@ fn returned =
 
 // The tokens that are received, and the ones that are left when both ends are dropped, are each
 // dropped once: n tokens, so n drops, and the Arc is shared by nobody afterwards.
-def send_tokens :: ref Channel.Sender<Token> -> ref Arc<Atomic<i64>> -> i64 -> unit
+def send_tokens :: ref Channel.Sender<Token> -> ref Arc<Atomic<i64>> -> own i64 -> unit
 fn send_tokens sender counter n =
     let mut index = 0
     while index < n do
         let _sent = Channel.send sender (Token { counter: Arc.share counter })
         index = index + 1
 
-def run_tokens :: Channel.Sender<Token> -> Channel.Receiver<Token> -> Arc<Atomic<i64>> -> i64 -> i64
+def run_tokens :: own Channel.Sender<Token> -> own Channel.Receiver<Token> -> own Arc<Atomic<i64>> -> own i64 -> i64
 fn run_tokens sender receiver counter n =
     send_tokens (ref sender) (ref counter) n
     let received = match Channel.recv (ref receiver) with
@@ -163,14 +163,14 @@ fn run_tokens sender receiver counter n =
     Owned.drop receiver
     Atomic.load (Arc.get (ref counter)) * 1000 + Arc.strong_count (ref counter) * 10 + received
 
-export def tokens :: i64 -> i64
+export def tokens :: own i64 -> i64
 fn tokens n =
     let counter = Arc.new (Atomic.create 0i64)
     match Channel.bounded (n + 1) with
     | (sender, receiver) -> run_tokens sender receiver counter n
 
 // Items that are dropped by the end of the scope, not by hand.
-def run_scope_end :: Channel.Sender<Token> -> Channel.Receiver<Token> -> ref Arc<Atomic<i64>> -> i64
+def run_scope_end :: own Channel.Sender<Token> -> own Channel.Receiver<Token> -> ref Arc<Atomic<i64>> -> i64
 fn run_scope_end sender _receiver counter =
     send_tokens (ref sender) counter 3
     Arc.strong_count counter
@@ -183,7 +183,7 @@ fn scope_end =
     held * 100 + Atomic.load (Arc.get (ref counter)) * 10 + Arc.strong_count (ref counter)
 
 // A channel is unit-sized too.
-def run_signals :: Channel.Sender<unit> -> Channel.Receiver<unit> -> i64
+def run_signals :: own Channel.Sender<unit> -> own Channel.Receiver<unit> -> i64
 fn run_signals sender receiver =
     let _a = Channel.send (ref sender) ()
     let _b = Channel.send (ref sender) ()
@@ -207,7 +207,7 @@ fn signals =
 // The ends may share a record, and a record of ends is dropped with its fields.
 record Ends { sender: Channel.Sender<i64>, receiver: Channel.Receiver<i64> }
 
-def run_ends :: Ends -> i64
+def run_ends :: own Ends -> i64
 fn run_ends ends =
     send_all (ref ends.sender) 4
     total (ref ends.receiver) 4
@@ -218,7 +218,7 @@ fn record_ends =
     | (sender, receiver) -> run_ends (Ends { sender: sender, receiver: receiver })
 
 // Nested channels: an item that is a Sender closes its channel when the outer one drops it.
-def run_nested :: Channel.Sender<Channel.Sender<i64>> -> Channel.Receiver<Channel.Sender<i64>> -> Channel.Receiver<i64> -> Channel.Sender<i64> -> i64
+def run_nested :: own Channel.Sender<Channel.Sender<i64>> -> own Channel.Receiver<Channel.Sender<i64>> -> own Channel.Receiver<i64> -> own Channel.Sender<i64> -> i64
 fn run_nested outer inner_receiver_outer inner_receiver inner =
     let _sent = Channel.send (ref outer) inner
     Owned.drop outer
@@ -244,7 +244,7 @@ fn bounded_negative =
     | (_sender, receiver) -> total (ref receiver) 0
 
 // Nobody can ever receive: the second send waits for room that no task can make.
-def run_full :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64
+def run_full :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn run_full sender receiver =
     send_all (ref sender) 2
     total (ref receiver) 0
@@ -255,7 +255,7 @@ fn full_deadlock =
     | (sender, receiver) -> run_full sender receiver
 
 // Nobody can ever send: the sender is alive, so the receive waits.
-def run_empty :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64
+def run_empty :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn run_empty sender receiver =
     let item = take (ref receiver)
     item + (match Channel.send (ref sender) 1 with | Result.Ok _unit -> 0 | Result.Error _item -> 1)
@@ -266,7 +266,7 @@ fn empty_deadlock =
     | (sender, receiver) -> run_empty sender receiver
 
 // A critical section never waits, so a channel operation inside one is refused on every schedule.
-def locked_send :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64
+def locked_send :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn locked_send sender _receiver =
     let lock = Mutex.create 0i64
     let borrowed = ref sender
@@ -277,7 +277,7 @@ fn send_inside_lock =
     match Channel.bounded 2 with
     | (sender, receiver) -> locked_send sender receiver
 
-def locked_recv :: Channel.Sender<i64> -> Channel.Receiver<i64> -> i64
+def locked_recv :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn locked_recv sender receiver =
     let _sent = Channel.send (ref sender) 9
     let lock = Mutex.create 0i64
@@ -291,12 +291,12 @@ fn recv_inside_lock =
 
 // A function is an item too. The sender returns before the receiver calls the function, so the
 // function holds copies, never a borrow (E1013), and the ring carries its environment.
-def offer :: ref Channel.Sender<i64 -> i64> -> i64 -> unit
+def offer :: ref Channel.Sender<i64 -> i64> -> own i64 -> unit
 fn offer sender k =
     let _sent = Channel.send sender (x -> x + k)
     ()
 
-def run_functions :: Channel.Sender<i64 -> i64> -> Channel.Receiver<i64 -> i64> -> i64
+def run_functions :: own Channel.Sender<i64 -> i64> -> own Channel.Receiver<i64 -> i64> -> i64
 fn run_functions sender receiver =
     offer (ref sender) 40
     offer (ref sender) 2
@@ -314,7 +314,7 @@ fn functions =
     | (sender, receiver) -> run_functions sender receiver
 
 // What a received function holds is its own: it goes to another channel, and comes out of that one.
-def run_forwarded :: Channel.Sender<i64 -> i64> -> Channel.Receiver<i64 -> i64> -> Channel.Sender<i64 -> i64> -> Channel.Receiver<i64 -> i64> -> i64
+def run_forwarded :: own Channel.Sender<i64 -> i64> -> own Channel.Receiver<i64 -> i64> -> own Channel.Sender<i64 -> i64> -> own Channel.Receiver<i64 -> i64> -> i64
 fn run_forwarded first_sender first_receiver second_sender second_receiver =
     offer (ref first_sender) 41
     let moved = match Channel.recv (ref first_receiver) with
@@ -333,12 +333,12 @@ fn forwarded =
 
 // The environment of a function that is left in the channel is dropped once with the channel: the
 // two functions in the ring own the Arc, and nobody does afterwards.
-def offer_counting :: ref Channel.Sender<i64 -> i64> -> Arc<Atomic<i64>> -> unit
+def offer_counting :: ref Channel.Sender<i64 -> i64> -> own Arc<Atomic<i64>> -> unit
 fn offer_counting sender counter =
     let _sent = Channel.send sender (x -> x + Atomic.fetch_add (Arc.get (ref counter)) 1)
     ()
 
-def run_function_drop :: Channel.Sender<i64 -> i64> -> Channel.Receiver<i64 -> i64> -> Arc<Atomic<i64>> -> i64
+def run_function_drop :: own Channel.Sender<i64 -> i64> -> own Channel.Receiver<i64 -> i64> -> own Arc<Atomic<i64>> -> i64
 fn run_function_drop sender receiver counter =
     offer_counting (ref sender) (Arc.share (ref counter))
     offer_counting (ref sender) (Arc.share (ref counter))
@@ -361,7 +361,7 @@ instance Cell.Cell<Cased> {
     fn wrap x = Cased { value: x }
 }
 
-def open :: Cell.Cell<'f> => i64 -> (Channel.Sender<'f<i64>> * Channel.Receiver<'f<i64>>)
+def open :: Cell.Cell<'f> => own i64 -> (Channel.Sender<'f<i64>> * Channel.Receiver<'f<i64>>)
 fn open n = Channel.bounded n
 
 export def hkt_channel :: i64

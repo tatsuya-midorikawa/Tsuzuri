@@ -12,6 +12,7 @@
 ## 主な特徴
 
 - **所有権と借用による安全なメモリ管理**: ガベージコレクション（GC）に頼らず、Rust と同様の所有権移動と借用検査（`ref` / `ref mut`）によってコンパイル時にメモリ安全性を保証します。参照カウントは標準ライブラリの `Rc` / `Arc` を明示的に使ったときだけです。
+- **引数規約（edition 2027）**: 通常の所有する引数・裸の型変数・関数引数は既定で読み取り、`own T` は値渡し、`mut T` は排他更新です。可変な所有者・排他参照からの field／要素の代入も検査します。既存 manifest の省略時は 2026 のままで、`fix --edition 2027 --from 2026` が旧契約を保って移行します。
 - **直感的で表現力豊かな関数型構文**: カリー化、強力な型推論、代数的データ型（`union`）、網羅性を検証するパターンマッチ、パイプライン演算子（`|>`）、関数合成（`>>` / `<<`）をサポートしています。
 - **ゼロコストの型クラス**: 型クラスはコンパイル時に静的に単相化（モノモーフィゼーション）され、動的ディスパッチやランタイム辞書のオーバーヘッドを生じさせません。異なる型の値を一つのコレクションへ入れるときだけ、`dyn` 型で実行時のディスパッチを明示できます。
 - **拡張可能なコンピュテーション式**: `.tc` ファイルでビルダーを定義することで、`Result` や `Maybe`、非同期処理などのモナディックな制御フローを言語本来の構文のように扱えます。
@@ -531,7 +532,7 @@ index = "https://example.org/tsuzuri-index.git"
 
 依存パッケージのモジュールは `GeometryCore::Point`（依存先が `namespace` を持てばその名前空間）のように完全修飾名で参照します。git 依存は commit を固定し、registry 依存（`version`）は `[registry]` の git の index から最小版選択で版を決めます。`tsuzuri fetch app` が `git` で取得して内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。index は利用者や組織が置き（Tsuzuri は公開の registry を運営しません）、`tsuzuri publish` が index に足す項目を出力します。ネットワークに触れるのは `fetch` と `publish` だけで、`check`・`build`・`run` などは `Tsuzuri.lock` とキャッシュ内のストアだけを読み、内容の一致を検証します。詳細は [ローカルパッケージの仕様](docs/language.md#ローカルパッケージ) と [パッケージ](_tsuzuri/language-reference/organizing-tsuzuri/packages.md) を参照してください。
 
-`edition` は、そのパッケージのソースを読むときの予約語の版です。対応する値は `"2026"` だけで、省略しても `2026` です。依存パッケージは自分の `Tsuzuri.toml` の `edition` で読まれ、edition の違うパッケージを 1 つのプログラムにまとめられます。edition が変えるのは予約語と警告の既定だけで、生成されるコードは変わりません。何を保証するか、非推奨にした宣言をどう取り除くかは [安定性と互換性の方針](docs/stability.md) にあります。
+`edition` は、そのパッケージのソースを読むときの言語版です。対応する値は `"2026"` と `"2027"` で、既存 manifest の省略時は互換性のため `2026` のままです。新規パッケージ・manifest のない CLI 入力・script・REPL・std は最新の `2027` を使います。依存パッケージは自分の `Tsuzuri.toml` の版で読まれ、異なる edition を 1 つのプログラムにまとめられます。2027 は A18 の明示的な例外として、通常の引数を読み取り既定にし、`own T` と `mut T` で所有・更新を表します。2026 の契約を保存して移行するには `tsuzuri fix --edition 2027 --from 2026 app/` を使います。保証と例外は [安定性と互換性の方針](docs/stability.md) にあります。
 
 ---
 
@@ -622,6 +623,16 @@ tsuzuri fmt src/
 
 # 整形の差分があるか検証（CI 用、変更があれば終了コード 1）
 tsuzuri fmt --check src/
+```
+
+### 言語版の移行 (`tsuzuri fix`)
+
+値渡しの署名と標準 API を `own`・`_owned` で保存し、対象版で全体を再検査してから atomic に書き換えます。
+依存パッケージは変更せず、manifest の edition は最後に更新します（[詳細](_tsuzuri/language-reference/compiler/usage.md#fix)）。
+
+```sh
+tsuzuri fix --edition 2027 --from 2026 --dry-run app/
+tsuzuri fix --edition 2027 --from 2026 app/
 ```
 
 ### 言語サーバー (`tsuzuri lsp`)
@@ -1158,3 +1169,95 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
 - [コンパイラ構成と開発指針](docs/architecture.md) — パイプライン設計、IR 生成、コントリビューション基準
 - [安定性と互換性の方針](docs/stability.md) — 保証すること・しないこと、言語版（edition）、非推奨の手順
 - [ベンチマークの条件と読み方](docs/benchmarks.md) — 各種目における測定環境と性能データ
+# A18 / A19 実装時の契約の照合（2026-10-23）
+
+- 利用者は A18 の D1〜D4 と、両チケットの全 Phase（設計だけの項目も含む）への着手を承認しました。
+  A18 と A19 は別ブランチ・別 PR とし、A19 は A18 の上に積みます。
+- D-54 の「edition は意味を変えない」は A18 D1 と衝突します。今回承認された例外は
+  edition 2027 の読み取り・可変引数規約と、その規約を使う Array／List の callback 入口および
+  `Vec.push` の排他更新・unit 戻り値です。2026 の所有権・借用・診断・生成 IR は保ちます。
+  A22 の正準形の受理・拒否は今回変更しません。
+- Phase 1 では `LATEST`・`MANIFEST_DEFAULT`・std を 2026 に保ちます。Phase 2 の既定版の更新は、
+  移行ツールと std・fixture・文書の移行の検証後に限ります。古い manifest の既定は変更しません。
+- 古いチケットの引数例より D-59（41f80bc7）の対象が最後という規則を優先します。
+  `Array.update_at 0 value xs` など、現行 API の順序を使用します。
+- `own` は共有構文を一度だけ実装します。純粋性は検査であり、LLVM の属性や呼び出し消去・
+  トラップ消去・結果の共有を許可するものではありません。
+- 新しい crate、stack・解析上限の引き上げは行いません。未実装の Phase を完了とは記録しません。
+- A18 の review で明示 region を持つ record 引数の補完が既存の複数 lifetime 契約と衝突したため、
+  明示 region の引数は固定署名として補完しません。region 推論や所有権規則は変えません。
+  class method の whole-parameter `own` は、固定署名を変えずに印だけを除いて受理します。
+- api-diff は解決後の型を比較する基盤がまだないため、edition による引数の既定の差を保守的な
+  breaking change として報告します（無印の引数がある通常 def が対象）。これは完全な型解決の代替ではありません。
+  editor は `own` と補完前の引数表記を保ち、無関係な型不一致には所有権の修正を勧めません。
+- A18 Phase 2 の移行は、本体から所有権を推測せず、旧署名の値渡しを `own` で保存します。
+  型変数・callback も明示し、後続の規約変更から旧 API を守ります。変更後を対象 edition で解析してから、
+  通常ファイル・内容一致の保護付きでソースを書き、manifest は最後に更新します。
+  単一ファイル入力では他のモジュールを無断で edition 移行しないため manifest を変更しません。
+  manifest のない旧入力は `--from 2026` で明示します。G24 の一般の warning fix は今回実装しません。
+  std は埋め込みソースと一致する開発用ツリーだけを移行対象にし、依存パッケージは書き換えません。
+- 後から main に統合された G31 の固定コーパスは 2026 の測定契約を保ちます。
+  コピーした検証用 project にだけ明示 edition の manifest を置き、元の 6 ファイル・行番号・手計算の
+  golden は変更しません。現在の std を探すタスクは実際の `own` 署名へ追従させます。
+  edition 移行だけの `fix` を G31 の一般の診断修正能力として数えません。
+- A18 Phase 3 は型変数そのものを参照型に単一化せず、宣言ごとの読み取り規約を保持して
+  引数 ABI にだけ共有借用を補います。generic／関数引数の本体は読み取り view を使い、
+  値として取り出す場合の Copy 要件は既存の所有権推論に任せます。明示の `own` は従来の値 ABI です。
+  矢印で書いた callback 型と型クラスの契約は既存のまま保ち、所有する callback 引数から
+  読み取り callback へ安全に貸す adapter を挿入します。これにより `Array.map` は読み取り callback も受けられ、
+  `map_ref` は互換 API として残します。adapter は callback の構築を再評価せず、借用結果の escape も既存の検査に通します。
+- 規約は関数の引数リストの metadata として保持し、値の型変数へ押し込みません。
+  関数を変数・戻り値・部分適用経由で渡しても、読み取り callback の lambda 束縛が参照値へ変わらないようにします。
+  関数の引数リストは box に置き、`Type` の大きさを増やしません。LLVM へは従来と同じ物理引数型を渡します。
+  2027 の `Array.map` は読み取り実装を使い、値 callback との変換は Copy と既存の借用検査で検証します。
+  古い ticket の `map_ref`／`fold_ref` は現在の API 名 `mapr`／`foldr` と読み替えます。
+  std 内部の既存の呼び出し規約は保存し、2027 の利用者側だけで読み取り API の入口を選択します。
+- A18 Phase 4 は 2027 の whole-parameter `mut T` を `ref mut T` の ABI と値 view に展開します。
+  明示の `ref mut` と 2026 の規約は保存します。2027 の可変な所有者または排他参照からの
+  field・collection 要素への代入を許可します（文字列の要素は引き続き不変）。
+  RHS、代入先、古い値の drop、store の順を保存し、添字は既存と同じ範囲検査を通します。
+  射影先への書き込みは兄弟の loan を消しません。新旧 loan を保守的に合わせ、移動済みの射影は再初期化しません。
+  要素単位の排他参照を追加するものではありません。`Vec.push` は 2027 では排他借用して unit を返し、
+  従来の消費する操作は `Vec.push_owned` で明示できます。移行ツールは解決済みの builtin 参照だけを変更します。
+- Phase 2 の最終切り替えでは `LATEST = 2027` とし、manifest なしの CLI 入力・新規パッケージ・
+  script・REPL・文書・埋め込み std を新しい版で読みます。既存 manifest の省略時は引き続き 2026 です。
+  Rust の版を受け取らない `analyze*` と単独 checker は既存の利用者の意味を保つ 2026 の互換入口とし、
+  明示版の解析入口も提供します。テスト専用の環境変数や隠れた既定変更は使いません。
+  `SourceInput`／project の明示 edition はそのまま優先します。
+- 読み取り callback と値 callback の入口が異なる Array／List の map・mapi・iter・iteri・fold・
+  fold_back は、2027 では読み取り側を既定に統合します。移行時の契約を保存する `_owned` 入口と、
+  既存の `mapr`／`foldr` などの明示参照入口を残します。移行は解決された std 定義と builtin だけを対象にし、
+  同名の利用者定義は変更しません。`get` と `get_ref` のように返す値の所有権が異なる API は別の契約のままです。
+  std の内部呼び出しも消費する入口を明示してから移行し、2026 と同じ ABI と IR を検証します。
+- D-54 の A22 向けの「2027 を追加しても LATEST は 2026」という記述は、A18 Phase 1 の足場の
+  方針として扱います。全 Phase を承認された今回の既定版切り替えには適用しません。
+  未実装の A22 の正準形拒否・一般の `check/build --edition`・`NEW_PROJECT` 定数は先取りしません。
+  リリースして凍結した edition にあとから非互換な正準形拒否を追加することも許可しません。
+- `Drop.drop` は既存の固定プロトコルを保ち、自己の field・要素への代入も禁止します。
+  通常の mutable borrow と異なり destructor の呼び出しは frame をそのまま渡すため、
+  新しい射影代入を無条件に許すと呼び出し元の stack buffer を解放し得ることを tracking allocator で確認しました。
+  2026 の IR を変える一律の heap 昇格で隠さず、禁止を共有の ownership 検査で守ります。
+  通常の可変な所有者の Drop field の置換と、置換後の destructor／field 解放は検証します。
+- 既存の型名 `own` は型エイリアスと union payload でも保持します。凍結した 2026 の
+  compiler で、これらの宣言と entry 式を同じ行に書く形も有効だと確認しました。
+  whole-parameter の所有印を許可しないこの文脈では `own` を型名として読み、
+  次の式を印の引数として取り込みません。新しい予約語や 2026 の文の区切りを追加しません。
+- extern の返却型 `own` と後続の呼び出しも、2026 では改行の有無によらず有効でした。
+  所有印の先読みは token の種類だけで決めず、既存の型 parser で候補の終端まで試し読みします。
+  entry 式が続けられる宣言では、矢印などで引数と判定できる候補だけを印として扱います。
+  parser の試し読みは token 列を共有し、再字句解析や token 列全体の複製をしません。
+- Phase 3 の一時 callback の借用も、既存の「一段で完全適用し、結果が借用を持たない」という条件を保ちます。
+  callback を受け取って関数値として返す旧 identity のような消費する契約には `own` を明示します。
+  関数を返すからといって temporary operand を直接作り、借用の escape 検査を迂回しません。
+
+## A18 の完了（2026-10-24）
+
+上の照合に基づき、A18 の Phase 1〜4（2027 と `own`、checked migration と既定版の更新、
+generic／関数の引数別規約、`mut` と射影代入・版別 `Vec.push`）をすべて実装・検証しました。
+[チケットと最終の完了報告](_features/_completed/A18-parameter-conventions.md)をアーカイブし、
+[PR48](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/48) は未マージのままにします。
+最終の実装 head `b3343ed1` は Rust **1772 通過・2 skip**、全 features **19740 ケース**、
+旧版と移行後各 **114 入力の byte 同一 IR**、リファレンス **52 頁・702 native 実行**、
+CI **14 項目 green**。Copilot は未解決の指摘なしで、人による review は別途必要です。
+固定 Drop protocol の自己置換と const evaluator の射影代入は拒否する安全な制限を残し、
+新しい速度向上は主張しません。A19 の実装・統合は別担当・別 PR です。

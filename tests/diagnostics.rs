@@ -228,7 +228,7 @@ fn recovery_keeps_stack_depth_bounded() {
 }
 
 const CONSUME: &str = "def consume :: string -> unit\nfn consume s = ()\n";
-const MIXED_ERRORS: &str = "def consume :: string -> unit\nfn consume s = ()\ndef f :: i64\nfn f = { let a = missing_one; let s = \"x\"; consume s; consume s; let b = missing_two; 0 }";
+const MIXED_ERRORS: &str = "def consume :: own string -> unit\nfn consume s = ()\ndef f :: i64\nfn f = { let a = missing_one; let s = \"x\"; consume s; consume s; let b = missing_two; 0 }";
 
 #[test]
 fn recovers_ownership_errors_on_distinct_roots() {
@@ -573,7 +573,7 @@ fn error_type_properties_and_codegen_barrier_are_explicit() {
         Type::Array(Box::new(Type::Error)),
         Type::List(Box::new(Type::Error)),
         Type::Tuple(vec![Type::Error]),
-        Type::Function(vec![Type::Error], Box::new(Type::Unit)),
+        Type::function(vec![Type::Error], Type::Unit),
         Type::Reference(Box::new(Type::Error), false),
         Type::Record(0, vec![Type::Error].into()),
         Type::Union(0, vec![Type::Error].into()),

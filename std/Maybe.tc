@@ -2,16 +2,16 @@ union Maybe<'a> =
     | None
     | Some of 'a
 
-def MergeSources :: Maybe<'a> -> Maybe<'b> -> Maybe<('a * 'b)>
+def MergeSources :: own Maybe<'a> -> own Maybe<'b> -> Maybe<('a * 'b)>
 fn MergeSources left right =
     match left with
     | None -> None
     | Some first -> match right with | None -> None | Some second -> Some (first, second)
 
-def BindReturn :: Maybe<'a> -> ('a -> 'b) -> Maybe<'b>
+def BindReturn :: own Maybe<'a> -> own ('a -> 'b) -> Maybe<'b>
 fn BindReturn value next = map next value
 
-def Bind2 :: Maybe<'a> -> Maybe<'b> -> ('a -> 'b -> 'c) -> Maybe<'c>
+def Bind2 :: own Maybe<'a> -> own Maybe<'b> -> own ('a -> 'b -> 'c) -> Maybe<'c>
 fn Bind2 left right next =
     match MergeSources left right with
     | None -> None
@@ -26,97 +26,97 @@ fn is_some maybe =
 def is_none :: &(Maybe<'a>) -> bool
 fn is_none maybe = ! (is_some maybe)
 
-def get :: Maybe<'a> -> 'a
+def get :: own Maybe<'a> -> 'a
 fn get maybe =
     match maybe with
     | Some value -> value
     | None -> unreachable ()
 
-def default_value :: 'a -> Maybe<'a> -> 'a
+def default_value :: own 'a -> own Maybe<'a> -> 'a
 fn default_value fallback maybe =
     match maybe with
     | Some value -> value
     | None -> fallback
 
-def default_with :: (unit -> 'a) -> Maybe<'a> -> 'a
+def default_with :: own (unit -> 'a) -> own Maybe<'a> -> 'a
 fn default_with fallback maybe =
     match maybe with
     | Some value -> value
     | None -> fallback ()
 
-def map :: ('a -> 'b) -> Maybe<'a> -> Maybe<'b>
+def map :: own ('a -> 'b) -> own Maybe<'a> -> Maybe<'b>
 fn map transform maybe =
     match maybe with
     | Some value -> Some (transform value)
     | None -> None
 
-def map_ref :: (&'a -> 'b) -> &(Maybe<'a>) -> Maybe<'b>
+def map_ref :: own (&'a -> 'b) -> &(Maybe<'a>) -> Maybe<'b>
 fn map_ref transform maybe =
     match maybe with
     | Some value -> Some (transform (&value))
     | None -> None
 
-def bind :: ('a -> Maybe<'b>) -> Maybe<'a> -> Maybe<'b>
+def bind :: own ('a -> Maybe<'b>) -> own Maybe<'a> -> Maybe<'b>
 fn bind next maybe =
     match maybe with
     | Some value -> next value
     | None -> None
 
-def bind_ref :: (&'a -> Maybe<'b>) -> &(Maybe<'a>) -> Maybe<'b>
+def bind_ref :: own (&'a -> Maybe<'b>) -> &(Maybe<'a>) -> Maybe<'b>
 fn bind_ref next maybe =
     match maybe with
     | Some value -> next (&value)
     | None -> None
 
-def filter :: (&'a -> bool) -> Maybe<'a> -> Maybe<'a>
+def filter :: own (&'a -> bool) -> own Maybe<'a> -> Maybe<'a>
 fn filter predicate maybe =
     match maybe with
     | Some value -> if predicate (&value) then Some value else None
     | None -> None
 
-def or_else :: (unit -> Maybe<'a>) -> Maybe<'a> -> Maybe<'a>
+def or_else :: own (unit -> Maybe<'a>) -> own Maybe<'a> -> Maybe<'a>
 fn or_else fallback maybe =
     match maybe with
     | Some value -> Some value
     | None -> fallback ()
 
-def to_result :: 'e -> Maybe<'a> -> Result<'a, 'e>
+def to_result :: own 'e -> own Maybe<'a> -> Result<'a, 'e>
 fn to_result error maybe =
     match maybe with
     | Some value -> Result.Ok value
     | None -> Result.Error error
 
-def of_result :: Result<'a, 'e> -> Maybe<'a>
+def of_result :: own Result<'a, 'e> -> Maybe<'a>
 fn of_result result =
     match result with
     | Result.Ok value -> Some value
     | Result.Error _ -> None
 
-def Return :: 'a -> Maybe<'a>
+def Return :: own 'a -> Maybe<'a>
 fn Return value = Some value
 
-def ReturnFrom :: Maybe<'a> -> Maybe<'a>
+def ReturnFrom :: own Maybe<'a> -> Maybe<'a>
 fn ReturnFrom maybe = maybe
 
-def Bind :: Maybe<'a> -> ('a -> Maybe<'b>) -> Maybe<'b>
+def Bind :: own Maybe<'a> -> own ('a -> Maybe<'b>) -> Maybe<'b>
 fn Bind maybe next = bind next maybe
 
 def Zero :: Maybe<unit>
 fn Zero = Some ()
 
-def Delay :: (unit -> Maybe<'a>) -> (unit -> Maybe<'a>)
+def Delay :: own (unit -> Maybe<'a>) -> (unit -> Maybe<'a>)
 fn Delay body = body
 
-def Run :: (unit -> Maybe<'a>) -> Maybe<'a>
+def Run :: own (unit -> Maybe<'a>) -> Maybe<'a>
 fn Run body = body ()
 
-def Combine :: Maybe<unit> -> (unit -> Maybe<'a>) -> Maybe<'a>
+def Combine :: own Maybe<unit> -> own (unit -> Maybe<'a>) -> Maybe<'a>
 fn Combine first rest =
     match first with
     | Some _ -> rest ()
     | None -> None
 
-def For :: Copy<'a> => ['a] -> ('a -> Maybe<unit>) -> Maybe<unit>
+def For :: Copy<'a> => own ['a] -> own ('a -> Maybe<unit>) -> Maybe<unit>
 fn For values body =
     let mut result = Some ()
     let mut index = 0
@@ -125,7 +125,7 @@ fn For values body =
         index = index + 1
     result
 
-def While :: (unit -> bool) -> (unit -> Maybe<unit>) -> Maybe<unit>
+def While :: own (unit -> bool) -> own (unit -> Maybe<unit>) -> Maybe<unit>
 fn While guard body =
     let mut result = Some ()
     while (match result with | Some _ -> true | None -> false) && guard () do

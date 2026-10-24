@@ -12,40 +12,40 @@ fn literal_concat_stack =
     let text = "hello" + " world"
     text.length + text[0] as i64
 
-export def length_only_concat :: i64 -> i64
+export def length_only_concat :: own i64 -> i64
 fn length_only_concat n =
     let text = if n > 0 then "ab" else "abc"
     (text + "xyz").length
 
-export def buffer_concat :: i64 -> i64
+export def buffer_concat :: own i64 -> i64
 fn buffer_concat n =
     let text = if n > 0 then "ab" else "abc"
     let joined = text + "xyz"
     joined.length * 100 + joined[1] as i64
 
-export def utf8_buffer_concat :: i64 -> i64
+export def utf8_buffer_concat :: own i64 -> i64
 fn utf8_buffer_concat n =
     let text = if n > 0 then u8"ab" else u8"abc"
     let joined = text + u8"xyz"
     joined.length * 100 + joined[1] as i64
 
-def keep_text :: string -> string
+def keep_text :: own string -> string
 fn keep_text text = text
 
-export def buffer_escape :: i64 -> i64
+export def buffer_escape :: own i64 -> i64
 fn buffer_escape n =
     let text = if n > 0 then "ab" else "abc"
     let joined = text + "xyz"
     (keep_text joined).length
 
-export def boundary_concat :: i64 -> i64
+export def boundary_concat :: own i64 -> i64
 fn boundary_concat n =
     let base = "x"
     let text = String.repeat (127 + n) (ref base)
     let joined = text + "y"
     joined.length
 
-export def local_closure :: i64 -> i64
+export def local_closure :: own i64 -> i64
 fn local_closure n =
     let a = n + 1
     let b = n * 2
@@ -76,10 +76,10 @@ fn field_update_reuse =
     let values = Array.__set 0 42 holder.values
     values[0]
 
-def append_text :: string -> string -> string
+def append_text :: own string -> own string -> string
 fn append_text left right = left + right
 
-def append_utf8 :: utf8string -> utf8string -> utf8string
+def append_utf8 :: own utf8string -> own utf8string -> utf8string
 fn append_utf8 left right = left + right
 
 export def string_append_owned :: i64
@@ -224,7 +224,7 @@ fn heap_literals =
     let empty: [i64] = new []
     values[2] + list[1] * 10 + empty.length * 100 + values.length * 1000
 
-def make_array :: i64 -> [i64]
+def make_array :: own i64 -> [i64]
 fn make_array seed =
     let values = [seed, seed + 1, seed + 2]
     values
@@ -234,7 +234,7 @@ fn escape_return =
     let values = make_array 10
     values[0] + values[2] * 100
 
-def keep :: [i64] -> [i64]
+def keep :: own [i64] -> [i64]
 fn keep values = values
 
 export def escape_argument :: i64
@@ -243,7 +243,7 @@ fn escape_argument =
     let kept = keep values
     kept[1] + kept.length * 10
 
-def make_grid :: i64 -> [[i64]]
+def make_grid :: own i64 -> [[i64]]
 fn make_grid seed =
     let grid = [[seed], [seed, seed + 1], []]
     grid
@@ -253,7 +253,7 @@ fn escape_nested =
     let grid = make_grid 3
     grid[0][0] + grid[1][1] * 10 + grid[2].length * 100 + grid.length * 1000
 
-def make_holder :: i64 -> Holder
+def make_holder :: own i64 -> Holder
 fn make_holder seed =
     let holder = Holder { values: [seed, seed * 2], name: "holder" }
     holder
@@ -273,7 +273,7 @@ fn escape_strings =
     let names = make_names()
     names[0].length + names[1].length * 10 + names[2].length * 100 + names.length * 1000
 
-def make_list :: i64 -> [|i64|]
+def make_list :: own i64 -> [|i64|]
 fn make_list seed =
     let values = [|seed, seed + 1, seed + 2|]
     values
@@ -301,13 +301,13 @@ fn assign_stack =
     names = ["bb", "cc"]
     before + values[2] * 10 + values.length * 100 + names[1].length * 1000
 
-def consume :: [i64] -> i64
+def consume :: own [i64] -> i64
 fn consume values = values.length + values[0]
 
-def name_length :: string -> i64
+def name_length :: own string -> i64
 fn name_length name = name.length
 
-def count_names :: [string] -> i64
+def count_names :: own [string] -> i64
 fn count_names names = names.length + names[0].length
 
 export def partial_move :: i64
@@ -318,7 +318,7 @@ fn partial_move =
     let names = count_names named.names
     count + name_length holder.name * 10 + names * 1000 + named.id * 100000
 
-export def match_stack :: bool -> i64
+export def match_stack :: own bool -> i64
 fn match_stack flag =
     let values = [1, 2, 3]
     let first = match values with | [a; b; c] -> a + b * 10 + c * 100 | _ -> 0
@@ -326,14 +326,14 @@ fn match_stack flag =
     let second = match holder with | { values = v } when flag -> consume v | h -> h.name.length
     first + second * 1000
 
-export def branch_stack :: bool -> i64
+export def branch_stack :: own bool -> i64
 fn branch_stack flag =
     let values = if flag then [1, 2] else [3, 4, 5]
     let names = match flag with | true -> ["t"] | false -> ["f", "ff"]
     let mixed = if flag then [7] else make_array 1
     values.length + values[0] * 10 + names.length * 100 + names[0].length * 1000 + mixed[0] * 10000
 
-export def loop_copies :: i64 -> i64
+export def loop_copies :: own i64 -> i64
 fn loop_copies n =
     let mut keep = [0]
     let mut sum = 0
@@ -343,7 +343,7 @@ fn loop_copies n =
         keep = values
     sum + keep[0] * 1000 + keep.length * 100000
 
-export def loop_moves :: i64 -> i64
+export def loop_moves :: own i64 -> i64
 fn loop_moves n =
     let mut names = ["start"]
     for i in 1 .. n do
@@ -351,12 +351,12 @@ fn loop_moves n =
         names = current
     names.length + names[1].length * 10
 
-def rec spin :: i64 -> Holder -> i64
+def rec spin :: own i64 -> own Holder -> i64
 fn rec spin n holder =
     let next = Holder { values: [n], name: "spin" }
     if n == 0 then holder.values.length + next.name.length else spin (n - 1) next
 
-export def tail_frames :: i64 -> i64
+export def tail_frames :: own i64 -> i64
 fn tail_frames n = spin n (Holder { values: [], name: "" })
 
 export def concat_stack :: i64
@@ -425,12 +425,12 @@ fn reborrow_stack =
     forward (&mut values)
     values[0].length + values.length * 10
 
-export def or_moves :: bool -> i64
+export def or_moves :: own bool -> i64
 fn or_moves first =
     let pair = if first then ("abc", "de") else ("x", "yz")
     match pair with | (s, "de") | ("x", s) -> name_length s | _ -> 0
 
-export def delivered_match :: i64 -> i64
+export def delivered_match :: own i64 -> i64
 fn delivered_match n =
     let values = match n with | 0 -> ["zero"] | 1 -> ["one", "uno"] | _ -> []
     values.length * 10 + (if values.length > 0 then values[0].length else 0)
@@ -442,7 +442,7 @@ fn scrutinee_moves =
     let from_binding = match named with | { names = names; id = id } -> count_names names + id
     from_temporary + from_binding * 100
 
-def apply_twice :: (i64 -> i64) -> i64 -> i64
+def apply_twice :: own (i64 -> i64) -> own i64 -> i64
 fn apply_twice f x = f (f x)
 
 export def lent_capture :: i64
@@ -452,16 +452,16 @@ fn lent_capture =
     let generated = new [i64](3, \i -> i + labels[0].length)
     apply_twice (\x -> x + names[1].length) 10 + generated[2] * 100
 
-export def identity_concat_length :: i64 -> i64
+export def identity_concat_length :: own i64 -> i64
 fn identity_concat_length n =
     (to_string (to_string ((if n == 0 then "ab" else "abcd") + "!"))).length
 
-export def identity_concat_local :: i64 -> i64
+export def identity_concat_local :: own i64 -> i64
 fn identity_concat_local n =
     let text = to_string ((if n == 0 then "ab" else "abcd") + "!")
     text.length + text[0] as i64
 
-export def identity_concat_copy :: i64 -> i64
+export def identity_concat_copy :: own i64 -> i64
 fn identity_concat_copy n =
     let original = (if n == 0 then "ab" else "abcd") + "!"
     let copied = to_string (clone_string ref original)

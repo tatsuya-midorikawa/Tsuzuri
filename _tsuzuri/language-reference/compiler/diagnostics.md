@@ -140,7 +140,7 @@ flowchart TD
 | `E0003` | ソースファイルの大きさの上限（4 MiB） |
 | `E1001`–`E1010` | 識別子名、型シグネチャ、型の不一致、演算子・関数呼び出し、レコードフィールド、公開 ABI、リテラル、型レイアウト |
 | `E1011` | モジュール名、予約名、`std`、パッケージのパスと名前（同じ名前の別の取得元、git・registry のパッケージの許されない依存、互換の範囲が違う版の要求を含む）、シンボリックリンクの入力 |
-| `E1012` | ムーブ後の使用、不正な代入、`let rec` の関数が借用している捕捉のムーブ（`cannot move 'text' out of a 'let rec' function, which borrows it`） |
+| `E1012` | ムーブ後の使用、不正な代入、`let rec` の関数が借用している捕捉のムーブ（`cannot move 'text' out of a 'let rec' function, which borrows it`）。2027 の既定の読み取り引数から非 Copy 値を取り出す場合は `own` を案内します |
 | `E1013` | 所有者より長生きする借用（借用して捕捉した値を持つ `let rec` の関数を、その値の持ち主から返す場合を含む）、Task をまたぐ借用、Async の `let!` / `do!` / 開始をまたぐ借用、Task へ持ち込む `Rc` や `Sync` でない値の `Arc`、`Task.scope` で共有する `Sync` でない値、`Task.scope` や `Parallel.*` で共有する、借用を持った一時値、`Mutex.with_lock` の結果に含まれる借用、`Channel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Channel.bounded` の `Send` でない要素（`Channel.bounded` や `Mutex.create` を包んだジェネリック関数を `Send` でない型で使う場合も） |
 | `E1014` | 借用の競合、不変な値への可変アクセス |
 | `E1015` | 曖昧な型変数、無限型、多相の不正 |

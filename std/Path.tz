@@ -16,7 +16,7 @@ fn name_end path =
 	end
 
 /// Where the last name of `path[..end]` starts, or -1 when it has no "/".
-private def name_start :: ref string -> i64 -> i64
+private def name_start :: ref string -> own i64 -> i64
 fn name_start path end =
 	let mut index = end - 1
 	while index >= 0 && path[index] != 47i16u do index = index - 1

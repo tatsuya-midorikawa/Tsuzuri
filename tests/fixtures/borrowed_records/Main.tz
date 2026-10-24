@@ -7,7 +7,7 @@ record PairView { left: ref string, right: ref string }
 private def make_view :: ref [i64] -> Nested
 fn make_view values = Nested { view: View { data: values } }
 
-export def view_sum :: i64 -> i64
+export def view_sum :: own i64 -> i64
 fn view_sum count =
     let values = new [i64](count, \index -> index + 1)
     let nested = make_view (&values)
@@ -28,7 +28,7 @@ fn partial_view =
     let owned = view.owned
     view.text.length + owned.length
 
-export def view_iteration :: i64 -> i64
+export def view_iteration :: own i64 -> i64
 fn view_iteration count =
     let mut total = 0
     let mut index = 0
@@ -107,7 +107,7 @@ fn region_nested =
     let kept = { let short = "xy"; let swapped = RegionSwapped { pair: RegionPair { left: ref long, right: ref short } }; swapped.pair.left }
     kept.length
 
-export def region_loop :: i64 -> i64
+export def region_loop :: own i64 -> i64
 fn region_loop count =
     let long = "abcdefg"
     let short = "xy"
@@ -125,7 +125,7 @@ fn region_apply f text = f text
 private def region_trim {s} :: ref {s} string -> ref {s} string
 fn region_trim text = text
 
-private def region_skip {s} :: i64 -> ref {s} string -> ref {s} string
+private def region_skip {s} :: own i64 -> ref {s} string -> ref {s} string
 fn region_skip count text = text
 
 private def region_first {s t} :: ref {s} string -> ref {t} string -> ref {s} string
@@ -143,7 +143,7 @@ fn region_callback =
     let skipped = { let short = "xy"; region_apply (region_skip 3) (ref long) }
     kept.length + trimmed.length + lambda.length + skipped.length
 
-export def region_callback_loop :: i64 -> i64
+export def region_callback_loop :: own i64 -> i64
 fn region_callback_loop count =
     let long = "abcdefg"
     let mut total = 0
@@ -162,15 +162,15 @@ record Mixed {r s} { value: ref mut {r} i64, name: ref {s} string }
 record Slot<'a> {r} { value: ref mut {r} 'a }
 record Buffer {r} { items: ref mut {r} Vec<i64> }
 
-private def add_to :: ref mut i64 -> i64 -> unit
+private def add_to :: ref mut i64 -> own i64 -> unit
 fn add_to target amount = { deref target = deref target + amount; }
 
-private def append :: Buffer -> i64 -> Buffer
+private def append :: own Buffer -> own i64 -> Buffer
 fn append buffer value =
-    deref buffer.items = Vec.push value (Vec.clone buffer.items)
+    deref buffer.items = Vec.push_owned value (Vec.clone buffer.items)
     buffer
 
-export def exclusive_loop :: i64 -> i64
+export def exclusive_loop :: own i64 -> i64
 fn exclusive_loop count =
     let mut total = 0
     let counter = Counter { value: ref mut total, step: 3 }
@@ -181,7 +181,7 @@ fn exclusive_loop count =
     let step = counter.step
     step + total
 
-export def exclusive_vec :: i64 -> i64
+export def exclusive_vec :: own i64 -> i64
 fn exclusive_vec count =
     let mut items: Vec<i64> = Vec.empty()
     let mut buffer = Buffer { items: ref mut items }
@@ -202,7 +202,7 @@ fn exclusive_1 =
     deref again = deref again + 1
     total
 
-private def advance :: Counter -> Counter
+private def advance :: own Counter -> Counter
 fn advance counter =
     add_to counter.value counter.step
     counter
@@ -368,7 +368,7 @@ fn retarget editor text =
     let edits = editor.edits + 1
     { editor with edits = edits }
 
-private def retag {r s} :: ref mut {r} Tag {s} -> ref {s} string -> i64 -> unit
+private def retag {r s} :: ref mut {r} Tag {s} -> ref {s} string -> own i64 -> unit
 fn retag target text number = { deref target = Tag { text: text, owned: to_string number }; }
 
 export def target_local :: i64
@@ -403,7 +403,7 @@ fn target_kept =
     let kept = { let note = Note { text: ref first }; note_text (ref note) }
     kept.length
 
-export def target_loop :: i64 -> i64
+export def target_loop :: own i64 -> i64
 fn target_loop count =
     let short = "ab"
     let long = "abcdef"
@@ -416,7 +416,7 @@ fn target_loop count =
         index = index + 1
     total
 
-export def target_owned :: i64 -> i64
+export def target_owned :: own i64 -> i64
 fn target_owned count =
     let first = "alpha"
     let second = "beta!!"

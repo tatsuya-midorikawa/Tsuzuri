@@ -1,6 +1,6 @@
 record Point { x: i32, y: i32 }
 
-def add :: 'a -> 'a -> 'a = \x y -> x + y
+def add :: own 'a -> own 'a -> 'a = \x y -> x + y
 
 instance Add<Point> {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }

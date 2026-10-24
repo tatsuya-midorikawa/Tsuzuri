@@ -17,7 +17,7 @@ fn all_code_units =
         count = count + 1
     count
 
-export def scalar_roundtrip :: i32u -> bool
+export def scalar_roundtrip :: own i32u -> bool
 fn scalar_roundtrip number =
     match Utf8Char.of_u32 number with
     | Some value ->

@@ -567,7 +567,7 @@ impl Session {
                 let source = &state.project.sources[source_id];
                 if method.ends_with("documentSymbol") {
                     let symbols: Vec<_> = state.index.iter().flat_map(|index| &index.symbols).filter(|symbol| symbol.selection.source == Some(source_id)).filter_map(|symbol| {
-                        Some(json!({"name": symbol.name, "kind": symbol.kind, "range": state.mappers[source_id].range(&source.text, symbol.span)?, "selectionRange": state.mappers[source_id].range(&source.text, symbol.selection)?}))
+                        Some(json!({"name": symbol.name, "detail": symbol.detail, "kind": symbol.kind, "range": state.mappers[source_id].range(&source.text, symbol.span)?, "selectionRange": state.mappers[source_id].range(&source.text, symbol.selection)?}))
                     }).collect();
                     return Ok(json!(symbols));
                 }

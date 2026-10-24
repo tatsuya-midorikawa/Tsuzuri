@@ -12,7 +12,7 @@ extern def host_point :: ref Point -> Point
 extern def invalid_buffer :: i64 -> [i64]
 extern def unused :: i64
 
-export def effects :: bool -> i64
+export def effects :: own bool -> i64
 fn effects condition =
     let total = combine (mark 1) (mark 2)
     let _discarded = mark 3
@@ -20,7 +20,7 @@ fn effects condition =
     let branch = if condition then mark 4 else mark 5
     total + branch + now ()
 
-private def apply :: (unit -> i64) -> i64
+private def apply :: own (unit -> i64) -> i64
 fn apply callback = callback ()
 
 export def function_value :: i64
@@ -28,7 +28,7 @@ fn function_value =
     let partial = combine 4
     partial 2 + apply now
 
-export def normalized :: i64 -> bool
+export def normalized :: own i64 -> bool
 fn normalized value =
     let narrow = small (value as i8)
     narrow == ((value + 1) as i8) && flag false && !(flag true)
@@ -52,5 +52,5 @@ fn tasks =
     let results = Task.run (Task.parallel jobs)
     Array.sum (&results)
 
-export def bad_buffer :: i64 -> i64
+export def bad_buffer :: own i64 -> i64
 fn bad_buffer mode = (invalid_buffer mode).length

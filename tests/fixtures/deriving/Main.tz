@@ -6,13 +6,13 @@ union Tree = Leaf | Node of Tree * i64 * Tree deriving (Eq, Ord, Default, Hash, 
 record Empty {} deriving (Hash, Display)
 record Quote<'a> { value: 'a } deriving (Display)
 
-def flags :: Ord<'a> => 'a -> 'a -> i64
+def flags :: Ord<'a> => own 'a -> own 'a -> i64
 fn flags left right =
     (if left == right then 1 else 0) + (if left != right then 2 else 0) +
     (if left < right then 4 else 0) + (if left <= right then 8 else 0) +
     (if left > right then 16 else 0) + (if left >= right then 32 else 0)
 
-export def record_flags :: i64 -> i64 -> i64
+export def record_flags :: own i64 -> own i64 -> i64
 fn record_flags left right = flags (Point { x: left, y: 2 }) (Point { x: right, y: 1 })
 
 export def defaults :: i64
@@ -28,7 +28,7 @@ fn defaults =
 export def case_order :: i64
 fn case_order = flags First (Number 0) + flags (Number 2) (Pair (0.0, 0.0)) * 100 + flags (Pair (1.0, 2.0)) (Pair (1.0, 3.0)) * 10000
 
-export def floating :: i64 -> i64
+export def floating :: own i64 -> i64
 fn floating mode =
     let nan = 0.0 / 0.0
     if mode == 0 then flags (FloatBox { value: nan }) (FloatBox { value: nan })
@@ -48,7 +48,7 @@ fn recursive_compare =
     let empty: Tree = Default.default()
     if left < right && left == left && empty == Leaf then 42 else 0
 
-export def hash_integer :: i64 -> i64 -> i64
+export def hash_integer :: own i64 -> own i64 -> i64
 fn hash_integer kind seed =
     match kind with
     | 0 -> { let value = seed as i8; Hash.hash (ref value) as i64 }
@@ -62,7 +62,7 @@ fn hash_integer kind seed =
     | 8 -> { let value = seed as i64u; Hash.hash (ref value) as i64 }
     | _ -> { let value = (seed as i128u) <<< 72; Hash.hash (ref value) as i64 }
 
-export def hash_real :: i64 -> i64 -> i64
+export def hash_real :: own i64 -> own i64 -> i64
 fn hash_real kind which =
     let value = match which with | 0 -> 0.0 | 1 -> -0.0 | 2 -> 1.5 | 3 -> -2.5 | 4 -> 1.0 / 0.0 | 5 -> -1.0 / 0.0 | _ -> 0.0 / 0.0
     match kind with
@@ -71,7 +71,7 @@ fn hash_real kind which =
     | 2 -> Hash.hash (ref value) as i64
     | _ -> { let value = value as f128; Hash.hash (ref value) as i64 }
 
-export def hash_decimal :: i64 -> i64 -> i64
+export def hash_decimal :: own i64 -> own i64 -> i64
 fn hash_decimal kind which =
     match kind with
     | 0 ->
@@ -84,17 +84,17 @@ fn hash_decimal kind which =
         let value = match which with | 0 -> 1.20d128 | 1 -> 12.0d128 / 10.0d128 | 2 -> 0.0d128 | 3 -> -0.0d128 | 4 -> -12.00d128 | 5 -> 0.0d128 / 0.0d128 | 6 -> 1.0d128 / 0.0d128 | _ -> -1.0d128 / 0.0d128
         Hash.hash (ref value) as i64
 
-export def hash_text :: i64 -> i64
+export def hash_text :: own i64 -> i64
 fn hash_text which =
     let text = match which with | 0 -> "hello" | 1 -> "A\n\"\\\0" | 2 -> "\uD800" | _ -> "\u{1F600}"
     Hash.hash (ref text) as i64
 
-export def hash_utf8 :: i64 -> i64
+export def hash_utf8 :: own i64 -> i64
 fn hash_utf8 which =
     let text = match which with | 0 -> u8"hello" | _ -> u8"\u{1F600}"
     Hash.hash (ref text) as i64
 
-export def hash_character :: i64 -> i64
+export def hash_character :: own i64 -> i64
 fn hash_character which =
     match which with
     | 0 -> { let value = '\0'; Hash.hash (ref value) as i64 }
@@ -103,12 +103,12 @@ fn hash_character which =
     | 3 -> { let value = u8'\u{3042}'; Hash.hash (ref value) as i64 }
     | _ -> { let value = u8'\u{1F600}'; Hash.hash (ref value) as i64 }
 
-export def hash_boolean :: bool -> i64
+export def hash_boolean :: own bool -> i64
 fn hash_boolean value = Hash.hash (ref value) as i64
 export def hash_unit :: i64
 fn hash_unit = { let value = (); Hash.hash (ref value) as i64 }
 
-export def hash_structure :: i64 -> i64
+export def hash_structure :: own i64 -> i64
 fn hash_structure which =
     match which with
     | 0 -> { let value = Point { x: 1, y: 2 }; Hash.hash (ref value) as i64 }
@@ -124,25 +124,25 @@ fn hash_structure which =
 export def hash_default_decimal :: i64
 fn hash_default_decimal = { let value: d64 = Default.default(); Hash.hash (ref value) as i64 }
 
-export def display_character :: i64 -> i64
+export def display_character :: own i64 -> i64
 fn display_character unit =
     let value = Quote { value: Char.of_u16 (unit as i16u) }
     let text = Display.display (ref value)
     Hash.hash (ref text) as i64
 
-export def display_utf8_character :: i64 -> i64
+export def display_utf8_character :: own i64 -> i64
 fn display_utf8_character scalar =
     let value = Quote { value: Utf8Char.of_u32_unchecked (scalar as i32u) }
     let text = Display.display (ref value)
     Hash.hash (ref text) as i64
 
-export def display_text :: i64 -> i64
+export def display_text :: own i64 -> i64
 fn display_text which =
     let value = Quote { value: match which with | 0 -> "" | 1 -> "A\n\r\t\"\\\0\u0001\u001F\u007F" | 2 -> "\uD800x\uDC00" | 3 -> "\uD800\uD801\uDC01\uDC02x" | 4 -> "\u{1F600}" | _ -> "'plain'" }
     let text = Display.display (ref value)
     Hash.hash (ref text) as i64
 
-export def display_utf8_text :: i64 -> i64
+export def display_utf8_text :: own i64 -> i64
 fn display_utf8_text which =
     let value = Quote { value: match which with | 0 -> u8"A\n\r\t\"\\\0\u{0001}\u{001F}\u{007F}" | _ -> u8"\u{1F600}" }
     let text = Display.display (ref value)
@@ -154,7 +154,7 @@ fn display_point =
     let text = Display.display (ref value)
     Hash.hash (ref text) as i64
 
-export def display_structure :: i64 -> i64
+export def display_structure :: own i64 -> i64
 fn display_structure which =
     let text = match which with
         | 0 -> { let value = First; Display.display (ref value) }
@@ -168,7 +168,7 @@ fn display_structure which =
         | _ -> { let value = Quote { value: Point { x: 1, y: 2 } }; Display.display (ref value) }
     Hash.hash (ref text) as i64
 
-export def display_large :: i64 -> i64
+export def display_large :: own i64 -> i64
 fn display_large count =
     let values = Array.init count (index -> index)
     let text = Display.display (ref values)

@@ -84,7 +84,7 @@ Task<Result<i32, string>>
 関数型の矢印 `->` は右結合です。関数はすべてカリー化されているので、複数の引数を受け取る関数は「1 つの引数を受け取り、残りの関数を返す」形になります。
 
 ```tsuzuri run=30
-def apply_twice :: (i64 -> i64) -> i64 -> i64 = \f x -> f (f x)
+def apply_twice :: own (i64 -> i64) -> i64 -> i64 = \f x -> f (f x)
 def add5 :: i64 -> i64 = \x -> x + 5
 
 let result = apply_twice add5 20
@@ -115,7 +115,7 @@ i64 * string          // 2 要素のタプル型
 `[T; N]` の `N` は 0 以上 1024 以下です。1025 以上は `E1010`（`fixed array length 1025 exceeds 1024 elements`）になります。大きな列には `[T]` を使います。値としてインラインに置ける大きさの上限は 64 KiB で、これも `E1010` です。配列や文字列のバッファ本体は、この上限に含みません。
 
 ```tsuzuri run=10
-def sum_pair :: (i64 * i64) -> i64 = \pair ->
+def sum_pair :: own (i64 * i64) -> i64 = \pair ->
     match pair with
     | (a, b) -> a + b
 
@@ -137,7 +137,7 @@ sum_pair pair
 record Point { x: i64, y: i64 }
 record Vector2 { x: i64, y: i64 }
 
-def get_x :: Point -> i64 = \p -> p.x
+def get_x :: own Point -> i64 = \p -> p.x
 
 let p = Point { x: 42, y: 10 }
 get_x p

@@ -4901,6 +4901,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Assign(place, value) => {
                 let value = self.expression(value);
                 let slot = self.place(place);
+                if matches!(
+                    place.kind,
+                    TypedExprKind::Field(..) | TypedExprKind::Index(..)
+                ) {
+                    let frames = self.frame_of_store_place(place);
+                    if !frames.is_empty() {
+                        self.frame_slots.insert(slot.clone(), frames);
+                    }
+                }
                 self.drop_slot(&slot, &place.ty);
                 self.instruction(format!("store {} {value}, ptr {slot}", self.ty(&place.ty)));
                 "0".into()

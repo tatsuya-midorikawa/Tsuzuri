@@ -11,6 +11,7 @@ pub struct SemanticEntry {
 #[derive(Clone, Debug)]
 pub struct DocumentSymbol {
     pub name: String,
+    pub detail: String,
     pub kind: u8,
     pub span: Span,
     pub selection: Span,
@@ -101,6 +102,7 @@ pub struct SemanticIndex {
     pub scopes: Vec<LocalScope>,
     /// Record-typed expressions and the definition of their record.
     pub receivers: Vec<(Span, usize)>,
+    pub builtin_references: Vec<(Span, Builtin)>,
 }
 
 impl SemanticIndex {
@@ -145,16 +147,23 @@ impl SemanticIndex {
             .chain(self.references.iter().copied())
     }
 
-    /// Keeps only references whose source text spells their definition's name.
+    /// Keeps only references whose source text spells their definition or its owning alias.
     pub(crate) fn retain_spelled(&mut self, texts: &[&str]) {
         let definitions = &self.definitions;
         self.references.retain(|reference| {
-            reference
+            let spelling = reference
                 .span
                 .source
                 .and_then(|source| texts.get(source))
-                .and_then(|text| text.get(reference.span.start..reference.span.end))
-                == Some(definitions[reference.definition].name.as_str())
+                .and_then(|text| text.get(reference.span.start..reference.span.end));
+            let definition = &definitions[reference.definition];
+            spelling == Some(definition.name.as_str())
+                || (definition.kind == SymbolKind::Function
+                    && BORROWING_APIS.iter().any(|(value, _, owned)| {
+                        value.split_once('.')
+                            == Some((definition.module.as_str(), definition.name.as_str()))
+                            && spelling == owned.rsplit('.').next()
+                    }))
         });
     }
 
@@ -198,6 +207,7 @@ impl SemanticIndex {
     fn symbol(&mut self, name: &Ident, kind: u8, end: Span, detail: String) {
         self.symbols.push(DocumentSymbol {
             name: name.text.clone(),
+            detail: detail.clone(),
             kind,
             span: name.span.through(end),
             selection: name.span,
@@ -276,6 +286,57 @@ fn type_name(shown: &str, key: &str, declared: &str) -> String {
     } else {
         format!("{shown}.{declared}")
     }
+}
+
+fn source_parameter_text(
+    declaration: &FunctionDecl,
+    function: &CheckedFunction,
+    position: usize,
+) -> Option<String> {
+    let parameter = declaration.parameters.get(position)?;
+    (matches!(
+        parameter.ty.kind,
+        TypeExprKind::Own(_) | TypeExprKind::Mut(_)
+    ) || function.read_by_default.get(position) == Some(&true))
+    .then(|| crate::docgen::type_text(&parameter.ty))
+}
+
+fn declaration_signature(
+    declaration: &FunctionDecl,
+    function: &CheckedFunction,
+    types: &TypeContext<'_>,
+) -> String {
+    if !declaration
+        .parameters
+        .iter()
+        .enumerate()
+        .any(|(position, parameter)| {
+            matches!(
+                parameter.ty.kind,
+                TypeExprKind::Own(_) | TypeExprKind::Mut(_)
+            ) || function.read_by_default.get(position) == Some(&true)
+        })
+    {
+        return function.signature.as_type().display(types);
+    }
+    function
+        .signature
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(position, ty)| {
+            source_parameter_text(declaration, function, position).unwrap_or_else(|| {
+                let text = ty.display(types);
+                if matches!(ty, Type::Function(..)) {
+                    format!("({text})")
+                } else {
+                    text
+                }
+            })
+        })
+        .chain(std::iter::once(function.signature.result.display(types)))
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 /// Defines every source declaration; fields and cases follow their container.
@@ -436,6 +497,7 @@ fn define_declarations(
                     declaration.visibility,
                     declaration.exported,
                     declaration.constant,
+                    Some(declaration),
                 )
             })
             .chain(program.externs.iter().map(|external| {
@@ -446,9 +508,10 @@ fn define_declarations(
                     external.visibility,
                     external.exported,
                     false,
+                    None,
                 )
             }));
-        for (declared, labels, kind, visibility, exported, constant) in callables {
+        for (declared, labels, kind, visibility, exported, constant, declaration) in callables {
             let qualified = format!("{name}.{}", declared.text);
             let Some(function) = checked.get(&qualified) else {
                 continue;
@@ -471,7 +534,12 @@ fn define_declarations(
                             || format!("arg{}", position + 1),
                             |label| label.text.clone(),
                         );
-                    format!("{label}: {}", ty.display(types))
+                    let text = declaration
+                        .and_then(|declaration| {
+                            source_parameter_text(declaration, function, position)
+                        })
+                        .unwrap_or_else(|| ty.display(types));
+                    format!("{label}: {text}")
                 })
                 .collect();
             let detail = if kind == SymbolKind::Extern {
@@ -481,7 +549,10 @@ fn define_declarations(
                     "{}def {shown}.{} :: {}",
                     if constant { "const " } else { "" },
                     declared.text,
-                    function.signature.as_type().display(types)
+                    declaration.map_or_else(
+                        || function.signature.as_type().display(types),
+                        |declaration| declaration_signature(declaration, function, types)
+                    )
                 )
             };
             let definition = index.define(Definition {
@@ -655,7 +726,7 @@ pub(super) fn collect(
                         "{}def {shown}.{} :: {}",
                         if declaration.constant { "const " } else { "" },
                         function.name,
-                        function.signature.as_type().display(&types)
+                        declaration_signature(declaration, function, &types)
                     ),
                 );
             }
@@ -779,10 +850,14 @@ pub(super) fn collect(
             });
         }
     }
+    // A developer inspecting std itself needs its bodies, without inflating ordinary user indexes.
+    let std_only = modules
+        .iter()
+        .all(|module| module.origin == ModuleOrigin::Std);
     for (position, function) in functions
         .iter()
         .enumerate()
-        .filter(|(_, function)| function.origin.module == ModuleOrigin::User)
+        .filter(|(_, function)| std_only || function.origin.module == ModuleOrigin::User)
     {
         let uses = name_uses.get(position).map_or(&[][..], Vec::as_slice);
         index_function(&mut index, function, uses, functions, links, &types);
@@ -946,7 +1021,7 @@ fn index_function(
             span: expression.span,
             detail,
             target,
-            priority: 1,
+            priority: u8::from(!matches!(expression.kind, TypedExprKind::Local(_))),
         });
         let callee = match &expression.kind {
             TypedExprKind::Function(FunctionRef::User(id))
@@ -1002,6 +1077,13 @@ fn index_function(
     }
     for &(span, target) in uses {
         let (definition, role) = match target {
+            NameTarget::Function(id) => (
+                links
+                    .callables
+                    .get(&functions[id].qualified_name())
+                    .copied(),
+                Role::Read,
+            ),
             NameTarget::Record(id) => (links.records[id], Role::Read),
             NameTarget::Union(id) => (links.unions[id], Role::Read),
             NameTarget::Field(id, field) => (
@@ -1012,6 +1094,10 @@ fn index_function(
                 (links.unions[id].map(|union| union + 1 + case), Role::Read)
             }
             NameTarget::Local(id) => (definitions.get(&id).copied(), Role::Declaration),
+            NameTarget::Builtin(builtin) => {
+                index.builtin_references.push((span, builtin));
+                continue;
+            }
         };
         if let Some(definition) = definition {
             index.reference(span, definition, role);
@@ -1061,6 +1147,8 @@ fn type_entry(
     match &expression.kind {
         TypeExprKind::Apply(_, arguments) => arguments.iter().for_each(&mut recurse),
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -1074,5 +1162,28 @@ fn type_entry(
             recurse(result);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn std_only_inspections_include_builtin_references_in_unused_bodies() {
+        let source = "def make :: unit -> Vec<i64> = \\() -> Vec.push 1 (Vec.empty())\n";
+        let inputs = [crate::SourceInput {
+            path: "std/Builder.tz",
+            text: source,
+            origin: ModuleOrigin::Std,
+            namespace: "",
+            edition: crate::syntax::Edition::E2026,
+            package: None,
+        }];
+        let mut index = SemanticIndex::default();
+        crate::analyze_inputs_semantic(&inputs, &mut index).unwrap();
+        assert!(index.builtin_references.iter().any(|(span, builtin)| {
+            *builtin == Builtin::VecPush && &source[span.start..span.end] == "Vec.push"
+        }));
     }
 }

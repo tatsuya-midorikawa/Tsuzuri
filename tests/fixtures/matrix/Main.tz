@@ -1,4 +1,4 @@
-private def pool64 :: i64 -> f64
+private def pool64 :: own i64 -> f64
 fn pool64 index =
     match index with
     | 0 -> 1e16
@@ -12,17 +12,17 @@ fn pool64 index =
     | 8 -> 5e-324
     | _ -> -0.0
 
-private def pool32 :: i64 -> f32
+private def pool32 :: own i64 -> f32
 fn pool32 index = if index == 8 then 1e-45 as f32 else (pool64 index) as f32
 
-export def int_mul :: i64 -> i64 -> i64
+export def int_mul :: own i64 -> own i64 -> i64
 fn int_mul n seed =
     let a = Matrix.init n (n + 1) (\i k -> (i * 31 + k * 17 + seed) * 6364136223846793005)
     let b = Matrix.init (n + 1) (n + 2) (\k j -> (k * 31 + j * 17 + seed + 1) * 6364136223846793005)
     let product = Matrix.mul (ref a) (ref b)
     Matrix.fold (\total x -> total * 31 + x) 0 (ref product)
 
-export def f64_entry :: i64 -> i64 -> i64 -> f64
+export def f64_entry :: own i64 -> own i64 -> own i64 -> f64
 fn f64_entry n seed index =
     let a = Matrix.init n (n + 1) (\i k -> pool64 ((i * 37 + k * 11 + seed) % 10))
     let b = Matrix.init (n + 1) (n + 2) (\k j -> pool64 ((k * 13 + j * 29 + seed + 3) % 10))
@@ -30,7 +30,7 @@ fn f64_entry n seed index =
     let flat = Matrix.as_array (ref product)
     flat[index]
 
-export def f32_entry :: i64 -> i64 -> i64 -> f64
+export def f32_entry :: own i64 -> own i64 -> own i64 -> f64
 fn f32_entry n seed index =
     let a = Matrix.init n (n + 1) (\i k -> pool32 ((i * 37 + k * 11 + seed) % 10))
     let b = Matrix.init (n + 1) (n + 2) (\k j -> pool32 ((k * 13 + j * 29 + seed + 3) % 10))
@@ -38,21 +38,21 @@ fn f32_entry n seed index =
     let flat = Matrix.as_array (ref product)
     flat[index] as f64
 
-private def negative :: f64 -> i64
+private def negative :: own f64 -> i64
 fn negative x = if 1.0 / x < 0.0 then 1 else 0
 
 // The input `one` is 1.0; passing it keeps the optimizer from folding the probe's arithmetic at compile time.
 // The two products are different pairs, so the optimizer cannot merge them. a1 * b1 = 1 + 2^-29 is exact,
 // a2 * b2 = -(1 + 2^-29 + 2^-60) rounds to -(1 + 2^-29): separately rounded, the sum is +0, but a fused
 // multiply-add of the second step would leave -2^-60.
-export def contraction_probe64 :: f64 -> f64
+export def contraction_probe64 :: own f64 -> f64
 fn contraction_probe64 one =
     let left = Matrix.of_array 1 2 [one + 0.000000001862645149230957031250, -(one + 0.000000000931322574615478515625)]
     let right = Matrix.of_array 2 1 [one, one + 0.000000000931322574615478515625]
     let product = Matrix.mul (ref left) (ref right)
     deref (Matrix.at 0 0 (ref product))
 
-export def contraction_probe32 :: f64 -> f64
+export def contraction_probe32 :: own f64 -> f64
 fn contraction_probe32 one =
     let unit = one as f32
     let left = Matrix.of_array 1 2 [unit + 0.000244140625f32, -(unit + 0.0001220703125f32)]
@@ -72,7 +72,7 @@ fn zero_signs =
     let transposed = Matrix.transpose (ref minus_zero)
     negative (deref (Matrix.at 0 0 (ref inner_zero))) + 2 * negative (deref (Matrix.at 0 0 (ref product))) + 4 * negative (deref (Matrix.at 0 0 (ref summed))) + 8 * negative (deref (Matrix.at 0 0 (ref transposed)))
 
-private def nan :: f64 -> i64
+private def nan :: own f64 -> i64
 fn nan x = if Math.is_nan x then 1 else 0
 
 export def nan_count :: i64
@@ -88,7 +88,7 @@ fn nan_count =
     let opposite = Matrix.add (ref infinite) (ref negative_infinite)
     nan (deref (Matrix.at 0 0 (ref from_nan))) + nan (deref (Matrix.at 0 0 (ref infinite_times_zero))) + nan (deref (Matrix.at 0 0 (ref opposite)))
 
-export def shapes :: i64 -> i64
+export def shapes :: own i64 -> i64
 fn shapes n =
     let m = Matrix.init n (n + 2) (\i j -> i * 100 + j)
     let t = Matrix.transpose (ref m)
@@ -105,7 +105,7 @@ fn shapes n =
     let rebuilt = Matrix.of_array (Matrix.rows (ref m)) (Matrix.cols (ref m)) (Matrix.to_array m)
     total * 7 + Matrix.rows (ref rebuilt) * 3 + Matrix.cols (ref rebuilt) + Array.length (Matrix.as_array (ref rebuilt))
 
-export def owned_elements :: i64 -> i64
+export def owned_elements :: own i64 -> i64
 fn owned_elements n =
     let m = Matrix.init n n (\i j -> new [i64](i + j, \x -> x * 3 + i))
     let mut total = 0
@@ -141,17 +141,17 @@ fn mul_shape =
     let a = Matrix.init 2 3 (\i j -> i + j)
     Matrix.rows (ref (Matrix.mul (ref a) (ref a)))
 
-export def at_col :: i64 -> i64
+export def at_col :: own i64 -> i64
 fn at_col col =
     let m = Matrix.init 2 3 (\i j -> i * 10 + j)
     deref (Matrix.at 0 col (ref m))
 
-export def at_row :: i64 -> i64
+export def at_row :: own i64 -> i64
 fn at_row row =
     let m = Matrix.init 2 3 (\i j -> i * 10 + j)
     deref (Matrix.at row 0 (ref m))
 
-export def row_index :: i64 -> i64
+export def row_index :: own i64 -> i64
 fn row_index index =
     let m = Matrix.init 2 3 (\i j -> i * 10 + j)
     Array.sum (Matrix.row index (ref m))
@@ -171,7 +171,7 @@ fn mul_count_overflow =
 export def alloc_size :: i64
 fn alloc_size = Matrix.rows (ref (Matrix.init 2147483648 2147483648 (\_i _j -> 0.0)))
 
-private def special64 :: i64 -> f64
+private def special64 :: own i64 -> f64
 fn special64 index =
     match index with
     | 0 -> 1e16
@@ -188,11 +188,11 @@ fn special64 index =
     | 11 -> 1.0 / 0.0
     | _ -> -1.0 / 0.0
 
-private def special32 :: i64 -> f32
+private def special32 :: own i64 -> f32
 fn special32 index = if index == 8 then 1e-45 as f32 else (special64 index) as f32
 
 // The same value, including the sign of a zero; every NaN equals every NaN.
-private def same :: Float<'a> => 'a -> 'a -> bool
+private def same :: Float<'a> => own 'a -> own 'a -> bool
 fn same a b = (a == b && Math.copysign (1i64 as 'a) a == Math.copysign (1i64 as 'a) b) || (Math.is_nan a && Math.is_nan b)
 
 private def differences :: Float<'a> => ref ['a] -> ref ['a] -> i64
@@ -206,7 +206,7 @@ fn differences left right =
     count
 
 // The textbook product: every element sums k = 0, 1, ... from +0 with a separately rounded multiply and add.
-private def oracle_element :: Numeric<'a> => ref ['a] -> ref ['a] -> i64 -> i64 -> i64 -> i64 -> 'a
+private def oracle_element :: Numeric<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> own i64 -> 'a
 fn oracle_element left right inner cols row col =
     let mut total = 0i64 as 'a
     let mut k = 0
@@ -215,10 +215,10 @@ fn oracle_element left right inner cols row col =
         k = k + 1
     total
 
-private def oracle_product :: Numeric<'a> => i64 -> i64 -> i64 -> ref ['a] -> ref ['a] -> ['a]
+private def oracle_product :: Numeric<'a> => own i64 -> own i64 -> own i64 -> ref ['a] -> ref ['a] -> ['a]
 fn oracle_product rows inner cols left right = new ['a](rows * cols, index -> oracle_element left right inner cols (index / cols) (index % cols))
 
-private def fma_element :: Float<'a> => ref ['a] -> ref ['a] -> i64 -> i64 -> i64 -> i64 -> 'a
+private def fma_element :: Float<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> own i64 -> 'a
 fn fma_element left right inner cols row col =
     let mut total = 0i64 as 'a
     let mut k = 0
@@ -227,23 +227,23 @@ fn fma_element left right inner cols row col =
         k = k + 1
     total
 
-private def fma_product :: Float<'a> => i64 -> i64 -> i64 -> ref ['a] -> ref ['a] -> ['a]
+private def fma_product :: Float<'a> => own i64 -> own i64 -> own i64 -> ref ['a] -> ref ['a] -> ['a]
 fn fma_product rows inner cols left right = new ['a](rows * cols, index -> fma_element left right inner cols (index / cols) (index % cols))
 
-private def left64 :: i64 -> i64 -> i64 -> i64 -> Matrix<f64>
+private def left64 :: own i64 -> own i64 -> own i64 -> own i64 -> Matrix<f64>
 fn left64 rows inner seed span = Matrix.init rows inner (\i k -> special64 ((i * 37 + k * 11 + seed) % span))
 
-private def right64 :: i64 -> i64 -> i64 -> i64 -> Matrix<f64>
+private def right64 :: own i64 -> own i64 -> own i64 -> own i64 -> Matrix<f64>
 fn right64 inner cols seed span = Matrix.init inner cols (\k j -> special64 ((k * 13 + j * 29 + seed + 3) % span))
 
-private def left32 :: i64 -> i64 -> i64 -> i64 -> Matrix<f32>
+private def left32 :: own i64 -> own i64 -> own i64 -> own i64 -> Matrix<f32>
 fn left32 rows inner seed span = Matrix.init rows inner (\i k -> special32 ((i * 37 + k * 11 + seed) % span))
 
-private def right32 :: i64 -> i64 -> i64 -> i64 -> Matrix<f32>
+private def right32 :: own i64 -> own i64 -> own i64 -> own i64 -> Matrix<f32>
 fn right32 inner cols seed span = Matrix.init inner cols (\k j -> special32 ((k * 13 + j * 29 + seed + 3) % span))
 
 // The kernels against the textbook sums (`mul`) and against the fused loop (`mul_fma`) for one shape.
-private def oracle_check64 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+private def oracle_check64 :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn oracle_check64 rows inner cols seed span =
     let a = left64 rows inner seed span
     let b = right64 inner cols seed span
@@ -253,7 +253,7 @@ fn oracle_check64 rows inner cols seed span =
     let actual_fused = Matrix.mul_fma (ref a) (ref b)
     differences (ref separate) (Matrix.as_array (ref actual)) + differences (ref fused) (Matrix.as_array (ref actual_fused))
 
-private def oracle_check32 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+private def oracle_check32 :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn oracle_check32 rows inner cols seed span =
     let a = left32 rows inner seed span
     let b = right32 inner cols seed span
@@ -263,7 +263,7 @@ fn oracle_check32 rows inner cols seed span =
     let actual_fused = Matrix.mul_fma (ref a) (ref b)
     differences (ref separate) (Matrix.as_array (ref actual)) + differences (ref fused) (Matrix.as_array (ref actual_fused))
 
-private def oracle_sweep :: (i64 -> i64 -> i64 -> i64 -> i64 -> i64) -> i64 -> i64 -> i64
+private def oracle_sweep :: own (i64 -> i64 -> i64 -> i64 -> i64 -> i64) -> own i64 -> own i64 -> i64
 fn oracle_sweep check seed span =
     let mut total = 0
     let mut rows = 0
@@ -279,14 +279,14 @@ fn oracle_sweep check seed span =
     total
 
 // Zero to seven rows, inner elements and columns, with and without NaN and infinities in the inputs.
-export def oracle_mismatches64 :: i64 -> i64 -> i64
+export def oracle_mismatches64 :: own i64 -> own i64 -> i64
 fn oracle_mismatches64 seed span = oracle_sweep oracle_check64 seed span
 
-export def oracle_mismatches32 :: i64 -> i64 -> i64
+export def oracle_mismatches32 :: own i64 -> own i64 -> i64
 fn oracle_mismatches32 seed span = oracle_sweep oracle_check32 seed span
 
 // The parallel products against the sequential ones (bit for bit), for shapes with one and several chunks.
-export def parallel_mismatches64 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+export def parallel_mismatches64 :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn parallel_mismatches64 rows inner cols seed span =
     let a = left64 rows inner seed span
     let b = right64 inner cols seed span
@@ -296,7 +296,7 @@ fn parallel_mismatches64 rows inner cols seed span =
     let parallel_fused = Matrix.mul_fma_parallel (ref a) (ref b)
     differences (Matrix.as_array (ref separate)) (Matrix.as_array (ref parallel)) + differences (Matrix.as_array (ref fused)) (Matrix.as_array (ref parallel_fused))
 
-export def parallel_mismatches32 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+export def parallel_mismatches32 :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn parallel_mismatches32 rows inner cols seed span =
     let a = left32 rows inner seed span
     let b = right32 inner cols seed span
@@ -307,7 +307,7 @@ fn parallel_mismatches32 rows inner cols seed span =
     differences (Matrix.as_array (ref separate)) (Matrix.as_array (ref parallel)) + differences (Matrix.as_array (ref fused)) (Matrix.as_array (ref parallel_fused))
 
 // One element of a product of the finite inputs: mode 0 mul, 1 mul_parallel, 2 mul_fma, 3 mul_fma_parallel.
-export def kernel_entry64 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> f64
+export def kernel_entry64 :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> f64
 fn kernel_entry64 rows inner cols seed mode index =
     let a = left64 rows inner seed 10
     let b = right64 inner cols seed 10
@@ -320,7 +320,7 @@ fn kernel_entry64 rows inner cols seed mode index =
     let flat = Matrix.as_array (ref product)
     flat[index]
 
-export def kernel_entry32 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> f64
+export def kernel_entry32 :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> f64
 fn kernel_entry32 rows inner cols seed mode index =
     let a = left32 rows inner seed 10
     let b = right32 inner cols seed 10
@@ -335,7 +335,7 @@ fn kernel_entry32 rows inner cols seed mode index =
 
 // The contraction probe's inputs through every kernel: separate roundings give +0 and the fused loops the
 // rounding error -2^-60 (binary32: -2^-26). `one` keeps the optimizer from folding the arithmetic.
-export def kernel_probe64 :: f64 -> i64 -> f64
+export def kernel_probe64 :: own f64 -> own i64 -> f64
 fn kernel_probe64 one mode =
     let left = Matrix.of_array 1 2 [one + 0.000000001862645149230957031250, -(one + 0.000000000931322574615478515625)]
     let right = Matrix.of_array 2 1 [one, one + 0.000000000931322574615478515625]
@@ -347,7 +347,7 @@ fn kernel_probe64 one mode =
         | _ -> Matrix.mul_fma_parallel (ref left) (ref right)
     deref (Matrix.at 0 0 (ref product))
 
-export def kernel_probe32 :: f64 -> i64 -> f64
+export def kernel_probe32 :: own f64 -> own i64 -> f64
 fn kernel_probe32 one mode =
     let unit = one as f32
     let left = Matrix.of_array 1 2 [unit + 0.000244140625f32, -(unit + 0.0001220703125f32)]
@@ -361,7 +361,7 @@ fn kernel_probe32 one mode =
     deref (Matrix.at 0 0 (ref product)) as f64
 
 // Integer products wrap and need no particular order; the parallel one must agree with the sequential one.
-export def integer_parallel :: i64 -> i64 -> i64 -> i64 -> i64
+export def integer_parallel :: own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn integer_parallel rows inner cols seed =
     let left = Matrix.init rows inner (\i k -> (i * 31 + k * 17 + seed) * 6364136223846793005)
     let right = Matrix.init inner cols (\k j -> (k * 31 + j * 17 + seed + 1) * 6364136223846793005)
@@ -376,7 +376,7 @@ fn integer_parallel rows inner cols seed =
         index = index + 1
     count
 
-export def set_checksum :: i64 -> i64
+export def set_checksum :: own i64 -> i64
 fn set_checksum n =
     let mut m = Matrix.init n (n + 1) (\i j -> i * 100 + j)
     let mut step = 0
@@ -385,8 +385,8 @@ fn set_checksum n =
         step = step + 1
     Matrix.fold (\total x -> total * 31 + x) 7 (ref m)
 
-export def set_row :: i64 -> i64
+export def set_row :: own i64 -> i64
 fn set_row row = Matrix.rows (ref (Matrix.set row 0 1 (Matrix.init 2 3 (\i j -> i + j))))
 
-export def set_col :: i64 -> i64
+export def set_col :: own i64 -> i64
 fn set_col col = Matrix.rows (ref (Matrix.set 0 col 1 (Matrix.init 2 3 (\i j -> i + j))))

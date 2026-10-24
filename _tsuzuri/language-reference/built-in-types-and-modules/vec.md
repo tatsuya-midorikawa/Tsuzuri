@@ -24,7 +24,10 @@
 
 ### 生成と要素の蓄積
 
-`Vec.empty()` で空のバッファを作成し、`Vec.add` で末尾に要素を追加します（.NET の `new List<T>()` と `Add` です。同じ働きの組み込み関数 `Vec.push` も使えます）。更新操作は `Vec` の所有権を消費して更新後の `Vec` を返すため、`let mut` で宣言した変数に再束縛するパターンが標準的です。
+`Vec.empty()` で空のバッファを作成し、`Vec.add` で末尾に要素を追加します（.NET の `new List<T>()` と `Add` です）。
+`Vec.add` などの消費する更新は、更新後の Vec を返すので可変変数に再束縛します。
+2027 の組み込み `Vec.push` は対象を排他借用して更新し、unit を返します。
+2026 の `Vec.push` と全版の `Vec.push_owned` は従来の消費する契約です。
 
 ```tsuzuri run=len%3D3%20cap%3D4
 let mut values: Vec<i64> = Vec.empty()
@@ -179,15 +182,35 @@ match Vec.remove 5 values with
 found=true removed=2 left=[1]
 ```
 
+### 排他借用する `Vec.push`（2027）
+
+```tsuzuri run=42
+let mut values: Vec<i64> = Vec.empty()
+Vec.push 20 values
+Vec.push 22 values
+values[0] + values[1]
+```
+
+対象は最後です。`Vec.push (values[0] + 1) values` は値を求めてから対象を貸せますが、
+`values |> Vec.push (values[0] + 1)` は先に対象を貸すので `E1014` です。
+生きた要素の借用と重なる更新も拒否します。借用を持つ要素を格納する push は、
+region の格納契約を保つ直接の完全適用だけを使えます。素の値の push は部分適用や関数値でも使えます。
+消費して Vec を返す操作が必要なら `Vec.push_owned`、従来の .NET 対応 API なら `Vec.add` を使います。
+版を明示的にまたぐ排他更新の入口は `Vec.push_mut` です。全版で
+`Vec.push_mut value (ref mut values)` と書け、2027 の `Vec.push` と同じく unit を返します。
+
+2027 では可変な所有者・排他参照を根とする `values[index] = value` も使えます。
+添字の範囲検査、古い要素の解放、格納する借用の追跡は省略しません。
+
 ### 末尾からの取り出し `Vec.pop`
 
 `Vec.pop` は現在の `Vec` を消費し、更新後の `Vec` と末尾要素 `Maybe<T>` のタプル `(Vec<T>, Maybe<T>)` を返します。
 
 ```tsuzuri run=popped%3D30%20rem_len%3D2
 let mut values: Vec<i64> = Vec.empty()
-values = Vec.push 10 values
-values = Vec.push 20 values
-values = Vec.push 30 values
+values = Vec.push_owned 10 values
+values = Vec.push_owned 20 values
+values = Vec.push_owned 30 values
 
 let popped_val = match Vec.pop values with
 | (remaining, Some value) ->
@@ -218,9 +241,9 @@ popped=30 rem_len=2
 
 ```tsuzuri run=result%3D%5B10%2C%2099%2C%2030%5D
 let mut values: Vec<i64> = Vec.empty()
-values = Vec.push 10 values
-values = Vec.push 20 values
-values = Vec.push 30 values
+values = Vec.push_owned 10 values
+values = Vec.push_owned 20 values
+values = Vec.push_owned 30 values
 values = Vec.set 1 99 values
 let arr = Vec.to_array values
 $"result={arr}"
@@ -282,9 +305,9 @@ after_five=8 after_nine=16 ensured=40 exact=12 trimmed=9
 
 ```tsuzuri run=before%3D3%20after%3D1
 let mut values: Vec<string> = Vec.empty()
-values = Vec.push "a" values
-values = Vec.push "b" values
-values = Vec.push "c" values
+values = Vec.push_owned "a" values
+values = Vec.push_owned "b" values
+values = Vec.push_owned "c" values
 let before_len = Vec.length (ref values)
 values = Vec.truncate 1 values
 let after_len = Vec.length (ref values)
@@ -402,10 +425,10 @@ squares=[1, 4, 9, 16, 25] middle=[2, 3, 4] target=[0, 1, 2, 3, 4, 5, 0]
 
 ```tsuzuri run=at%3Dhello%20get%3D42%20missing%3Dnone
 let mut words: Vec<string> = Vec.empty()
-words = Vec.push "hello" words
+words = Vec.push_owned "hello" words
 
 let mut numbers: Vec<i64> = Vec.empty()
-numbers = Vec.push 42 numbers
+numbers = Vec.push_owned 42 numbers
 
 let word_ref = Vec.at 0 (ref words)
 let num_val = match Vec.get 0 (ref numbers) with
@@ -438,7 +461,7 @@ at=hello get=42 missing=none
 
 ```tsuzuri run=converted%3D%5B1%2C%202%2C%203%2C%204%5D%20sum%3D10
 let mut buffer = Vec.of_array [1, 2, 3]
-buffer = Vec.push 4 buffer
+buffer = Vec.push_owned 4 buffer
 let array = Vec.to_array buffer
 $"converted={array} sum={Array.sum (ref array)}"
 ```
@@ -775,9 +798,9 @@ $n$ は `Vec` の長さ、$k$ は対象にする要素数です。
 
 ```tsuzuri run=total%3D60
 let mut values: Vec<i64> = Vec.empty()
-values = Vec.push 10 values
-values = Vec.push 20 values
-values = Vec.push 30 values
+values = Vec.push_owned 10 values
+values = Vec.push_owned 20 values
+values = Vec.push_owned 30 values
 
 let mut total = 0
 for x in values do
@@ -793,8 +816,8 @@ total=60
 
 ```tsuzuri run=letters%3D3
 let mut words: Vec<string> = Vec.empty()
-words = Vec.push "ab" words
-words = Vec.push "c" words
+words = Vec.push_owned "ab" words
+words = Vec.push_owned "c" words
 let mut letters = 0
 for text in words do
     letters = letters + text.length
@@ -820,8 +843,8 @@ for text in words do
 
 ```tsuzuri run=total%3D2
 let mut letters: Vec<string> = Vec.empty()
-letters = Vec.push "a" letters
-letters = Vec.push "b" letters
+letters = Vec.push_owned "a" letters
+letters = Vec.push_owned "b" letters
 
 let mut total = 0
 for letter in Vec.iter (ref letters) do
@@ -852,4 +875,3 @@ total=2
 - [Seq](./seq.md) — 遅延シーケンス
 - [所有権とムーブ](../ownership-and-memory/ownership.md)
 - [言語リファレンスの目次](../index.md)
-

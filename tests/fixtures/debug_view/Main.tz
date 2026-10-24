@@ -3,7 +3,7 @@ union Color = Red | Green
 union Tree = Leaf | Node of Tree * i64 * Tree
 record Point { x: i64, label: string }
 
-def show :: i64 -> i64
+def show :: own i64 -> i64
 fn show input =
     let text = "h\u{e9}llo"
     let bytes = u8"abc"
@@ -17,12 +17,12 @@ fn show input =
     let outcome: Result<i64, string> = Result.Error "bad"
     let values = [1, 2, 3]
     let chain = [|4, 5|]; let grown = List.cons 1 (List.cons 2 (List.cons 3 (List.cons 4 (List.cons 5 [||]))))
-    let growing = Vec.push 7 (Vec.empty())
+    let growing = Vec.push_owned 7 (Vec.empty())
     let table = Map.singleton 1 10
     let add = \offset -> input + offset
     let total = Array.sum (&values)
     total + add 0 - input
 
-export def view :: i64 -> i64 = \input -> show input
+export def view :: own i64 -> i64 = \input -> show input
 
 show 40

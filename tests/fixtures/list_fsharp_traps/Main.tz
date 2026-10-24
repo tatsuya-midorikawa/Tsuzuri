@@ -1,7 +1,7 @@
 // Every test here must trap: the F# exceptions of `List` (ArgumentException, InvalidOperationException) are traps in
 // Tsuzuri. A test that does not trap passes, so the harness expects every test to fail.
 
-private def sink :: 'a -> unit
+private def sink :: own 'a -> unit
 fn sink _value = ()
 
 private def no_ints :: [|i64|]
@@ -119,22 +119,22 @@ test "random_sample_with more than the length" = sink (List.random_sample_with (
 
 // ---- The actions run: a callback that fails must be reached ----
 
-test "iter reaches the last element" = List.iter (\x -> assert (x < 3)) (ints())
-test "iteri passes the index" = List.iteri (\i x -> assert (x == i)) (ints())
+test "iter reaches the last element" = List.iter_owned (\x -> assert (x < 3)) (ints())
+test "iteri passes the index" = List.iteri_owned (\i x -> assert (x == i)) (ints())
 test "iter2 pairs the elements" = List.iter2 (\a b -> assert (a == b + 1)) (ints()) (ints())
 test "iteri2 passes the index" = List.iteri2 (\i a b -> assert (i == a + b)) (ints()) (ints())
 test "iterr reaches the last element" = List.iterr (\x -> assert (*x < 3)) (ints())
 test "iterir passes the index" = List.iterir (\i x -> assert (i == *x)) (ints())
-test "map reaches every element" = sink (List.map (\x -> { assert (x < 3); x }) (ints()))
+test "map reaches every element" = sink (List.map_owned (\x -> { assert (x < 3); x }) (ints()))
 test "mapr reaches every element" = sink (List.mapr (\x -> { assert (*x < 3); *x }) (ints()))
-test "mapi reaches every element" = sink (List.mapi (\_i x -> { assert (x < 3); x }) (ints()))
+test "mapi reaches every element" = sink (List.mapi_owned (\_i x -> { assert (x < 3); x }) (ints()))
 test "exists reaches every element" = sink (List.exists (\x -> { assert (x < 3); false }) (ints()))
 test "existsr reaches every element" = sink (List.existsr (\x -> { assert (*x < 3); false }) (ints()))
 test "forall reaches every element" = sink (List.forall (\x -> { assert (x < 3); true }) (ints()))
 test "forallr reaches every element" = sink (List.forallr (\x -> { assert (*x < 3); true }) (ints()))
-test "fold reaches every element" = sink (List.fold (\s x -> { assert (x < 3); s + x }) 0 (ints()))
+test "fold reaches every element" = sink (List.fold_owned (\s x -> { assert (x < 3); s + x }) 0 (ints()))
 test "foldr reaches every element" = sink (List.foldr (\s x -> { assert (*x < 3); s + *x }) 0 (ints()))
-test "fold_back reaches the first element" = sink (List.fold_back (\x s -> { assert (x > 1); s + x }) 0 (ints()))
+test "fold_back reaches the first element" = sink (List.fold_back_owned (\x s -> { assert (x > 1); s + x }) 0 (ints()))
 test "foldr_back reaches the first element" = sink (List.foldr_back (\x s -> { assert (*x > 1); s + *x }) 0 (ints()))
 test "filter reaches every element" = sink (List.filter (\x -> { assert (x < 3); true }) (ints()))
 test "choose reaches every element" = sink (List.choose (\x -> { assert (x < 3); Maybe.Some x }) (ints()))
@@ -146,7 +146,7 @@ test "sort_by calls the projection" = sink (List.sort_by (\x -> { assert (x < 3)
 
 // F# visits the pairs the two lists share before it notices that their lengths differ: each of these prints the first
 // element of every pair it is called with, and traps afterwards. The harness reads what they printed.
-private def seen :: i64 -> unit
+private def seen :: own i64 -> unit
 fn seen value = Debug.print (ref $"pair {value}")
 
 test "iter2 calls the action on the shared pairs first" = List.iter2 (\a _b -> seen a) (ints()) (pairs())

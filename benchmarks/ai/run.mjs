@@ -48,6 +48,7 @@ export function parseArguments(argv) {
 }
 export function probe(compiler, args, cwd) {
   const result = invoke(compiler, args, cwd);
+  if (args[0] === "fix" && result.status === 2 && result.stderr.includes("usage: tsuzuri fix --edition")) return false;
   return result.status === 0 || (result.status === 2 && result.stderr.includes("usage:"));
 }
 export function detectCapabilities(ctx) {
@@ -111,9 +112,10 @@ export function verifyTask(task, ctx) {
   }
 }
 function verifyCorpus(root, ctx) {
-  const result = invoke(ctx.compiler, ["check", ".", "--json"], ctx.tree.physical(root));
+  const project = copyProject(ctx.tree.physical(root), join(ctx.work, "verify-corpus", root));
+  const result = invoke(ctx.compiler, ["check", ".", "--json"], project);
   if (result.status !== 0 || result.stderr || result.stdout) throw new Error(`corpus ${root}: check printed diagnostics`);
-  const list = invoke(ctx.compiler, ["test", ".", "--list"], ctx.tree.physical(root));
+  const list = invoke(ctx.compiler, ["test", ".", "--list"], project);
   if (list.status !== 0) throw new Error(`corpus ${root}: test --list failed`);
   const actual = list.stdout.trim().split("\n").filter(Boolean).map((line) => line.replace(/^\d+\s+/, "")).sort();
   const expected = [...new Set(parseItems([root], ctx.tree).filter((item) => item.kind === "test").map((item) => item.id))].sort();

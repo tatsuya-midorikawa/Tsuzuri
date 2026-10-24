@@ -1,7 +1,7 @@
-private def mix :: i64 -> i64 -> i64
+private def mix :: own i64 -> own i64 -> i64
 fn mix total x = total * 31 + x
 
-private def flag :: bool -> i64
+private def flag :: own bool -> i64
 fn flag value = if value then 1 else 0
 
 // The rank, the shape, the layout, whether the window is one run of the buffer, the fold of its elements, and
@@ -30,11 +30,11 @@ fn once view = digest (ref view)
 private def rank_of { r } :: Tensor.View<i64> { r } -> i64
 fn rank_of view = Tensor.rank (ref view)
 
-private def element :: i64 -> i64
+private def element :: own i64 -> i64
 fn element i = i * 7 + 1
 
 // Needs every extent >= 1.
-export def ops :: i64 -> i64 -> i64 -> i64
+export def ops :: own i64 -> own i64 -> own i64 -> i64
 fn ops a b c =
     let t = Tensor.init [a, b, c] element
     let v = Tensor.view (ref t)
@@ -69,7 +69,7 @@ fn ops a b c =
     total
 
 // map and to_tensor produce contiguous tensors whatever the layout of the window.
-export def maps :: i64 -> i64 -> i64 -> i64
+export def maps :: own i64 -> own i64 -> own i64 -> i64
 fn maps a b c =
     let t = Tensor.init [a, b, c] element
     let v = Tensor.view (ref t)
@@ -125,13 +125,13 @@ fn empties =
     mix total (Array.length (Tensor.as_array (ref moved)))
 
 // Tensors with n axes of extent 1; at most 16 axes are allowed.
-export def rank_limit :: i64 -> i64
+export def rank_limit :: own i64 -> i64
 fn rank_limit n =
     let t = Tensor.init (new [i64](n, _ -> 1)) element
     let v = Tensor.view (ref t)
     digest (ref v)
 
-export def matrices :: i64 -> i64 -> i64
+export def matrices :: own i64 -> own i64 -> i64
 fn matrices rows cols =
     let m = Matrix.init rows cols (\i j -> i * 10 + j)
     let t = Tensor.of_matrix m
@@ -157,7 +157,7 @@ fn matrices rows cols =
     mix total (Matrix.fold mix 0 (ref m2))
 
 // Owner conversions: of_array and to_array move the buffer, as_array borrows it, borrow wraps a borrowed array.
-export def owners :: i64 -> i64
+export def owners :: own i64 -> i64
 fn owners n =
     let t = Tensor.of_array [n, 2] (new [i64](n * 2, k -> k * 3))
     let sum = Array.sum (Tensor.as_array (ref t))
@@ -168,7 +168,7 @@ fn owners n =
     mix total (Array.length (ref kept))
 
 // Windows and owners over elements that own memory (strings) borrow them; nothing is copied or leaked.
-export def owned_tensor :: i64 -> i64
+export def owned_tensor :: own i64 -> i64
 fn owned_tensor n =
     let words = Tensor.init [n, 2] (\i -> $"s{i}")
     let flat = Tensor.reshape [2, n] words
@@ -220,17 +220,17 @@ fn huge_empty =
     mix total (Tensor.count (ref mapped_view) + Tensor.count (ref packed_view) + flag (Tensor.is_contiguous (ref tv)))
 
 // A MatrixView window enters a tensor only through the checks of MatrixView.strided.
-export def matrix_window_trap :: i64 -> i64 -> i64 -> i64 -> i64 -> i64
+export def matrix_window_trap :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn matrix_window_trap offset rows cols row_stride col_stride =
     let data = new [i64](10, k -> k)
     rank_of (Tensor.of_matrix_view (MatrixView.strided offset rows cols row_stride col_stride (ref data)))
 
-export def init_trap :: i64 -> i64 -> i64
+export def init_trap :: own i64 -> own i64 -> i64
 fn init_trap a b =
     let t = Tensor.init [a, b] element
     Array.length (Tensor.as_array (ref t))
 
-export def overflow_trap :: i64 -> i64
+export def overflow_trap :: own i64 -> i64
 fn overflow_trap tail =
     let t = Tensor.init [4294967296, 4294967296, tail] element
     Array.length (Tensor.as_array (ref t))
@@ -250,7 +250,7 @@ fn borrow_trap =
     let raw = [1, 2, 3]
     rank_of (Tensor.borrow [2, 2] (ref raw))
 
-export def at_trap :: i64 -> i64 -> i64 -> i64
+export def at_trap :: own i64 -> own i64 -> own i64 -> i64
 fn at_trap i j k =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
@@ -262,7 +262,7 @@ fn at_rank_trap =
     let v = Tensor.view (ref t)
     deref (Tensor.at [1, 1] (ref v))
 
-export def permute_trap :: i64 -> i64 -> i64 -> i64
+export def permute_trap :: own i64 -> own i64 -> own i64 -> i64
 fn permute_trap x y z =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
@@ -274,7 +274,7 @@ fn permute_rank_trap =
     let v = Tensor.view (ref t)
     rank_of (Tensor.permute [0, 1] (ref v))
 
-export def index_axis_trap :: i64 -> i64 -> i64
+export def index_axis_trap :: own i64 -> own i64 -> i64
 fn index_axis_trap axis position =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
@@ -286,13 +286,13 @@ fn index_axis_scalar_trap =
     let v = Tensor.view (ref t)
     rank_of (Tensor.index_axis 0 0 (ref v))
 
-export def narrow_trap :: i64 -> i64 -> i64 -> i64
+export def narrow_trap :: own i64 -> own i64 -> own i64 -> i64
 fn narrow_trap axis start length =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)
     rank_of (Tensor.narrow axis start length (ref v))
 
-export def reshape_view_trap :: i64 -> i64 -> i64
+export def reshape_view_trap :: own i64 -> own i64 -> i64
 fn reshape_view_trap rows cols =
     let t = Tensor.init [2, 3, 4] element
     let v = Tensor.view (ref t)

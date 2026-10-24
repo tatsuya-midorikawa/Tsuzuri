@@ -1,4 +1,4 @@
-export def range_edges :: i64 -> i64 -> bool -> i64
+export def range_edges :: own i64 -> own i64 -> own bool -> i64
 fn range_edges first last down =
     let mut total = 0i64
     if down then
@@ -11,19 +11,19 @@ fn range_edges first last down =
             total = total + i * 3
     total
 
-export def range_edges_u64 :: i64u -> i64u -> i64
+export def range_edges_u64 :: own i64u -> own i64u -> i64
 fn range_edges_u64 first last =
     let mut total = 0i64u
     for i in first .. last do total = total + (i ^ 5i64u) * 7i64u
     total as i64
 
-export def range_edges_u32 :: i32u -> i32u -> i64
+export def range_edges_u32 :: own i32u -> own i32u -> i64
 fn range_edges_u32 first last =
     let mut total = 0i64
     for i in first .. last do total = total + (i as i64) * 3
     total
 
-export def range_edges_i8 :: i8 -> i8 -> bool -> i64
+export def range_edges_i8 :: own i8 -> own i8 -> own bool -> i64
 fn range_edges_i8 first last down =
     let mut total = 0i64
     if down then
@@ -44,7 +44,7 @@ fn range_edges_i128 =
         low = low + (i as i64)
     count * 1000 + low
 
-export def each_break :: i64 -> i64
+export def each_break :: own i64 -> i64
 fn each_break n =
     let values = new [i64](n, \i -> i)
     let mut total = 0i64
@@ -53,7 +53,7 @@ fn each_break n =
         total = total + value
     total
 
-export def each_continue :: i64 -> i64
+export def each_continue :: own i64 -> i64
 fn each_continue n =
     let values = new [i64](n, \i -> i * 7 - 3)
     let mut total = 0i64
@@ -62,7 +62,7 @@ fn each_continue n =
         total = total + value
     total
 
-export def builtin_wrap :: i64 -> i64
+export def builtin_wrap :: own i64 -> i64
 fn builtin_wrap seed =
     let a = Add.add seed 9223372036854775807
     let b = Sub.sub a seed
@@ -72,7 +72,7 @@ fn builtin_wrap seed =
     let f = Sub.sub (seed as i32u) 1i32u
     a + b * 3 + c + (d as i64) + (e as i64) + (f as i64)
 
-def tick :: &mut i64 -> i64 -> i64
+def tick :: &mut i64 -> own i64 -> i64
 fn tick log digit = { *log = *log * 10 + digit; digit }
 
 export def builtin_order :: i64
@@ -83,32 +83,32 @@ fn builtin_order =
 
 // PR02: arithmetic that a range proof covers, next to arithmetic at the edge of the range, where a
 // flag would be wrong. The control suite runs these in the off, audit and proven modes.
-export def affine_sum :: i64 -> i64
+export def affine_sum :: own i64 -> i64
 fn affine_sum n =
     let weight = (n >>> 8) & 255
     let mut total = 0i64
     for i in 0 .. (n & 255) do total = total + (i * 3 + 1) * weight
     total
 
-export def wrap_edges :: i64 -> i64 -> i64
+export def wrap_edges :: own i64 -> own i64 -> i64
 fn wrap_edges x y =
     let a = if x >= 0 then x + 1 else x - 1
     let b = if y > 0 then y - 1 else y + 1
     a * 3 + b
 
-export def narrow_wrap :: i8 -> i8 -> i64
+export def narrow_wrap :: own i8 -> own i8 -> i64
 fn narrow_wrap x y =
     let s = (x & 63) * 2 + 1
     let t = (y & 127) + 1
     ((s + t) as i64) * 1000 + (t as i64)
 
-export def unsigned_sub :: i8u -> i8u -> i64
+export def unsigned_sub :: own i8u -> own i8u -> i64
 fn unsigned_sub x y =
     let a = if x != 0 then x - 1 else 255i8u
     let b = y - 1
     ((a + b) as i64)
 
-export def mixed_width :: i16 -> i64
+export def mixed_width :: own i16 -> i64
 fn mixed_width x =
     let wide = (x as i32) * (x as i32)
     let narrow = ((x & 255) as i8) * 2

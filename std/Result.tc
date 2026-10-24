@@ -2,16 +2,16 @@ union Result<'a, 'e> =
     | Ok of 'a
     | Error of 'e
 
-def MergeSources :: Result<'a, 'e> -> Result<'b, 'e> -> Result<('a * 'b), 'e>
+def MergeSources :: own Result<'a, 'e> -> own Result<'b, 'e> -> Result<('a * 'b), 'e>
 fn MergeSources left right =
     match left with
     | Error error -> Error error
     | Ok first -> match right with | Error error -> Error error | Ok second -> Ok (first, second)
 
-def BindReturn :: Result<'a, 'e> -> ('a -> 'b) -> Result<'b, 'e>
+def BindReturn :: own Result<'a, 'e> -> own ('a -> 'b) -> Result<'b, 'e>
 fn BindReturn value next = map next value
 
-def Bind2 :: Result<'a, 'e> -> Result<'b, 'e> -> ('a -> 'b -> 'c) -> Result<'c, 'e>
+def Bind2 :: own Result<'a, 'e> -> own Result<'b, 'e> -> own ('a -> 'b -> 'c) -> Result<'c, 'e>
 fn Bind2 left right next =
     match MergeSources left right with
     | Error error -> Error error
@@ -26,103 +26,103 @@ fn is_ok result =
 def is_error :: &(Result<'a, 'e>) -> bool
 fn is_error result = ! (is_ok result)
 
-def get :: Result<'a, 'e> -> 'a
+def get :: own Result<'a, 'e> -> 'a
 fn get result =
     match result with
     | Ok value -> value
     | Error _ -> unreachable ()
 
-def get_error :: Result<'a, 'e> -> 'e
+def get_error :: own Result<'a, 'e> -> 'e
 fn get_error result =
     match result with
     | Error error -> error
     | Ok _ -> unreachable ()
 
-def default_value :: 'a -> Result<'a, 'e> -> 'a
+def default_value :: own 'a -> own Result<'a, 'e> -> 'a
 fn default_value fallback result =
     match result with
     | Ok value -> value
     | Error _ -> fallback
 
-def default_with :: (unit -> 'a) -> Result<'a, 'e> -> 'a
+def default_with :: own (unit -> 'a) -> own Result<'a, 'e> -> 'a
 fn default_with fallback result =
     match result with
     | Ok value -> value
     | Error _ -> fallback ()
 
-def map :: ('a -> 'b) -> Result<'a, 'e> -> Result<'b, 'e>
+def map :: own ('a -> 'b) -> own Result<'a, 'e> -> Result<'b, 'e>
 fn map transform result =
     match result with
     | Ok value -> Ok (transform value)
     | Error error -> Error error
 
-def map_ref :: Copy<'e> => (&'a -> 'b) -> &(Result<'a, 'e>) -> Result<'b, 'e>
+def map_ref :: Copy<'e> => own (&'a -> 'b) -> &(Result<'a, 'e>) -> Result<'b, 'e>
 fn map_ref transform result =
     match result with
     | Ok value -> Ok (transform (&value))
     | Error error -> Error error
 
-def map_error :: ('e -> 'f) -> Result<'a, 'e> -> Result<'a, 'f>
+def map_error :: own ('e -> 'f) -> own Result<'a, 'e> -> Result<'a, 'f>
 fn map_error transform result =
     match result with
     | Ok value -> Ok value
     | Error error -> Error (transform error)
 
-def bind :: ('a -> Result<'b, 'e>) -> Result<'a, 'e> -> Result<'b, 'e>
+def bind :: own ('a -> Result<'b, 'e>) -> own Result<'a, 'e> -> Result<'b, 'e>
 fn bind next result =
     match result with
     | Ok value -> next value
     | Error error -> Error error
 
-def bind_ref :: Copy<'e> => (&'a -> Result<'b, 'e>) -> &(Result<'a, 'e>) -> Result<'b, 'e>
+def bind_ref :: Copy<'e> => own (&'a -> Result<'b, 'e>) -> &(Result<'a, 'e>) -> Result<'b, 'e>
 fn bind_ref next result =
     match result with
     | Ok value -> next (&value)
     | Error error -> Error error
 
-def or_else :: (unit -> Result<'a, 'e>) -> Result<'a, 'e> -> Result<'a, 'e>
+def or_else :: own (unit -> Result<'a, 'e>) -> own Result<'a, 'e> -> Result<'a, 'e>
 fn or_else fallback result =
     match result with
     | Ok value -> Ok value
     | Error _ -> fallback ()
 
-def to_maybe :: Result<'a, 'e> -> Maybe<'a>
+def to_maybe :: own Result<'a, 'e> -> Maybe<'a>
 fn to_maybe result =
     match result with
     | Ok value -> Maybe.Some value
     | Error _ -> Maybe.None
 
-def of_maybe :: 'e -> Maybe<'a> -> Result<'a, 'e>
+def of_maybe :: own 'e -> own Maybe<'a> -> Result<'a, 'e>
 fn of_maybe error maybe =
     match maybe with
     | Maybe.Some value -> Ok value
     | Maybe.None -> Error error
 
-def Return :: 'a -> Result<'a, 'e>
+def Return :: own 'a -> Result<'a, 'e>
 fn Return value = Ok value
 
-def ReturnFrom :: Result<'a, 'e> -> Result<'a, 'e>
+def ReturnFrom :: own Result<'a, 'e> -> Result<'a, 'e>
 fn ReturnFrom result = result
 
-def Bind :: Result<'a, 'e> -> ('a -> Result<'b, 'e>) -> Result<'b, 'e>
+def Bind :: own Result<'a, 'e> -> own ('a -> Result<'b, 'e>) -> Result<'b, 'e>
 fn Bind result next = bind next result
 
 def Zero :: Result<unit, 'e>
 fn Zero = Ok ()
 
-def Delay :: (unit -> Result<'a, 'e>) -> (unit -> Result<'a, 'e>)
+def Delay :: own (unit -> Result<'a, 'e>) -> (unit -> Result<'a, 'e>)
 fn Delay body = body
 
-def Run :: (unit -> Result<'a, 'e>) -> Result<'a, 'e>
+def Run :: own (unit -> Result<'a, 'e>) -> Result<'a, 'e>
 fn Run body = body ()
 
-def Combine :: Result<unit, 'e> -> (unit -> Result<'a, 'e>) -> Result<'a, 'e>
+def Combine :: own Result<unit, 'e> -> own (unit -> Result<'a, 'e>) -> Result<'a, 'e>
 fn Combine first rest =
     match first with
     | Ok _ -> rest ()
     | Error error -> Error error
 
-def For :: Copy<'a> => ['a] -> ('a -> Result<unit, 'e>) -> Result<unit, 'e>
+def For :: Copy<'a> => own ['a] -> own ('a -> Result<unit, 'e>) -> Result<unit, 'e>
 fn For values body =
     let mut result = Ok ()
     let mut index = 0
@@ -131,7 +131,7 @@ fn For values body =
         index = index + 1
     result
 
-def While :: (unit -> bool) -> (unit -> Result<unit, 'e>) -> Result<unit, 'e>
+def While :: own (unit -> bool) -> own (unit -> Result<unit, 'e>) -> Result<unit, 'e>
 fn While guard body =
     let mut result = Ok ()
     while is_ok (&result) && guard () do

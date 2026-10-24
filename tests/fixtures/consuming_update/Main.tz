@@ -1,4 +1,4 @@
-export def update_numbers :: i64 -> i64 -> i64 -> i64
+export def update_numbers :: own i64 -> own i64 -> own i64 -> i64
 fn update_numbers count index value =
     let values = new [i64](count, offset -> offset)
     let updated = Array.__set index value values
@@ -20,7 +20,7 @@ fn update_callback =
     let updated = Array.update 0 (text -> text + suffix) values
     updated[0].length + updated[1].length
 
-export def update_owned :: i64 -> i64
+export def update_owned :: own i64 -> i64
 fn update_owned count =
     let mut values = new ["start" + "!", "last" + "!"]
     for index in 1 .. count do

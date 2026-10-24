@@ -3,14 +3,14 @@
 // so the exports trap in TSUZURI_STRINGS=utf16 and compact at the same lengths and return the same values below them.
 // tests/compact_strings.mjs builds this project in both forms.
 
-export def doubled :: i64 -> i64
+export def doubled :: own i64 -> i64
 fn doubled n =
     let first = String.repeat n (ref "a")
     let second = String.repeat n (ref "b")
     let both = first + second
     both.length
 
-export def joined :: i64 -> i64
+export def joined :: own i64 -> i64
 fn joined n =
     let first = String.repeat n (ref "a")
     let second = String.repeat n (ref "b")
@@ -20,7 +20,7 @@ fn joined n =
 
 // One string that grows by pieces of 1,000 units: the heap extends it in place, so a Latin-1 string of 9,000,000 units
 // takes 9 MB and fits the heap, and only the limit on its UTF-16 size makes the forms trap at the same length.
-export def grown :: i64 -> i64
+export def grown :: own i64 -> i64
 fn grown units =
     let piece = String.repeat 1000 (ref "a")
     let mut text = ""

@@ -151,7 +151,7 @@ pub enum Type {
     Task(Box<Type>),
     /// An `extern type`: an opaque host handle named by its qualified name.
     Handle(Box<str>),
-    Function(Vec<Type>, Box<Type>),
+    Function(Box<FunctionParameters>, Box<Type>),
     Reference(Box<Type>, bool),
     /// `dyn C`: an owned value of some type with instances of the classes, stored as
     /// `{ data, vtable }` (A14). A leaf whose box keeps `Type` at four words.
@@ -159,6 +159,42 @@ pub enum Type {
     /// `Rc<T>`, `Rc.Weak<T>`, `Arc<T>`, or `Arc.Weak<T>` (C10 Phase 2): a pointer to a
     /// reference-counted heap block `{ i64 strong, i64 weak, T value }`.
     Shared(Box<Type>, SharedKind),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ParameterConvention {
+    Own,
+    Read,
+    Mut,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FunctionParameters {
+    pub types: Vec<Type>,
+    pub conventions: Box<[ParameterConvention]>,
+}
+
+impl std::ops::Deref for FunctionParameters {
+    type Target = Vec<Type>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.types
+    }
+}
+
+impl std::ops::DerefMut for FunctionParameters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.types
+    }
+}
+
+impl FunctionParameters {
+    pub fn convention(&self, index: usize) -> ParameterConvention {
+        self.conventions
+            .get(index)
+            .copied()
+            .unwrap_or(ParameterConvention::Own)
+    }
 }
 
 /// The pointer kind of `Type::Shared` (C10 Phase 2). Strong pointers own the value together;
@@ -308,17 +344,43 @@ impl Type {
         }
     }
 
-    pub(crate) fn function(mut parameters: Vec<Type>, mut result: Type) -> Self {
+    pub fn function(parameters: Vec<Type>, result: Type) -> Self {
+        Self::function_with_conventions(parameters, result, Vec::new())
+    }
+
+    pub(crate) fn function_with_conventions(
+        mut parameters: Vec<Type>,
+        mut result: Type,
+        mut conventions: Vec<ParameterConvention>,
+    ) -> Self {
+        if conventions
+            .iter()
+            .all(|mode| *mode == ParameterConvention::Own)
+        {
+            conventions.clear();
+        }
         if !parameters.is_empty() {
             while matches!(&result, Self::Function(more, _) if !more.is_empty()) {
                 let Self::Function(more, tail) = result else {
                     unreachable!()
                 };
-                parameters.extend(more);
+                if !more.conventions.is_empty() {
+                    conventions.resize(parameters.len(), ParameterConvention::Own);
+                    conventions.extend_from_slice(&more.conventions);
+                } else if !conventions.is_empty() {
+                    conventions.resize(parameters.len() + more.len(), ParameterConvention::Own);
+                }
+                parameters.extend(more.types);
                 result = *tail;
             }
         }
-        Self::Function(parameters, Box::new(result))
+        Self::Function(
+            Box::new(FunctionParameters {
+                types: parameters,
+                conventions: conventions.into_boxed_slice(),
+            }),
+            Box::new(result),
+        )
     }
 
     pub(crate) fn after_arguments(&self, count: usize) -> Self {
@@ -331,7 +393,11 @@ impl Type {
         if count == parameters.len() {
             (**result).clone()
         } else {
-            Self::function(parameters[count..].to_vec(), (**result).clone())
+            let mut remaining = Self::function(parameters[count..].to_vec(), (**result).clone());
+            if let Self::Function(arguments, _) = &mut remaining {
+                arguments.conventions = parameters.conventions.get(count..).unwrap_or(&[]).into();
+            }
+            remaining
         }
     }
 
@@ -1273,6 +1339,7 @@ pub enum Builtin {
     VecCapacity,
     VecIsEmpty,
     VecPush,
+    VecPushMut,
     VecPop,
     VecReserve,
     VecTruncate,
@@ -1688,6 +1755,7 @@ impl Builtin {
         Self::VecCapacity,
         Self::VecIsEmpty,
         Self::VecPush,
+        Self::VecPushMut,
         Self::VecPop,
         Self::VecReserve,
         Self::VecTruncate,
@@ -1947,6 +2015,7 @@ impl Builtin {
             Self::VecCapacity => "Vec.capacity",
             Self::VecIsEmpty => "Vec.is_empty",
             Self::VecPush => "Vec.push",
+            Self::VecPushMut => "Vec.push_mut",
             Self::VecPop => "Vec.pop",
             Self::VecReserve => "Vec.reserve",
             Self::VecTruncate => "Vec.truncate",
@@ -2417,6 +2486,7 @@ impl Builtin {
             | Self::VecCapacity
             | Self::VecIsEmpty
             | Self::VecPush
+            | Self::VecPushMut
             | Self::VecPop
             | Self::VecReserve
             | Self::VecTruncate
@@ -2447,6 +2517,7 @@ impl Builtin {
                     }
                     Self::VecGet | Self::VecAt => vec![Concrete(Type::I64), borrowed()],
                     Self::VecPush => vec![a(), vector()],
+                    Self::VecPushMut => vec![a(), Reference(Box::new(vector()), true)],
                     Self::VecReserve | Self::VecTruncate | Self::VecSetCapacity => {
                         vec![Concrete(Type::I64), vector()]
                     }
@@ -2467,6 +2538,7 @@ impl Builtin {
                 let result = match self {
                     Self::VecLength | Self::VecCapacity => Concrete(Type::I64),
                     Self::VecIsEmpty => Concrete(Type::Bool),
+                    Self::VecPushMut => Concrete(Type::Unit),
                     Self::VecPop => BuiltinType::Tuple(vec![vector(), option()]),
                     Self::VecGet => option(),
                     Self::VecAt => Reference(Box::new(a()), false),
@@ -3580,9 +3652,30 @@ impl CheckedUnion {
     }
 }
 
+fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
+    !matches!(
+        ty,
+        Type::Reference(..) | Type::Infer(_) | Type::Task(_) | Type::Dyn(_) | Type::Simd(_)
+    ) && (ty.needs_drop(types)
+        || types.reaches(ty, |part| {
+            matches!(part, Type::Variable(_) | Type::Function(..))
+        }))
+}
+
+pub(crate) fn has_explicit_parameter_regions(ty: &TypeExpr) -> bool {
+    regions::has_regions(ty)
+}
+
+pub(crate) fn read_only_hint(error: &mut Diagnostic, name: &str, ty: &str) {
+    error.message.push_str(&format!(
+        "; parameter '{name}' is read-only by default (edition 2027); write 'own {ty}' in the signature to take ownership"
+    ));
+}
+
 #[derive(Clone, Debug)]
 pub struct CheckedFunction {
     pub module: String,
+    pub(crate) read_by_default: Vec<bool>,
     pub(crate) region_sources: Option<RegionSources>,
     /// The parameters with region-quantified function types; such a function is only called directly.
     pub(crate) callback_contracts: Vec<CallbackContract>,
@@ -4390,7 +4483,8 @@ fn visit_match_children_mut<'a>(
     Ok(())
 }
 
-/// Checks one `Main` module without a standard library.
+/// Checks one `Main` module without a standard library, preserving 2026 conventions.
+/// Use [`check_modules`] and an explicit [`ModuleInput::edition`] for newer conventions.
 pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
     let declared = program.namespace.as_ref().map(|namespace| &namespace.path);
     let (name, namespace) = crate::module_identity("Main", declared, "")?;
@@ -4400,7 +4494,7 @@ pub fn check(program: &Program) -> Result<CheckedModule, Diagnostic> {
         origin: ModuleOrigin::User,
         namespace: &namespace,
         entry: true,
-        edition: crate::syntax::Edition::LATEST,
+        edition: crate::syntax::Edition::E2026,
         package: None,
     }])
 }
@@ -4448,6 +4542,7 @@ mod intern;
 #[derive(Default)]
 struct Names {
     warning_options: warnings::WarningOptions,
+    borrowing_modules: BTreeSet<String>,
     modules: BTreeMap<String, ModuleOrigin>,
     /// Module keys by full name (`Namespace.File`), and each module's namespace by key.
     full_modules: BTreeMap<String, String>,
@@ -4681,6 +4776,27 @@ fn module_stem(module: &str) -> &str {
     module.rsplit('.').next().unwrap_or(module)
 }
 
+/// The legacy, default-read and explicitly owning entry points across editions.
+pub(crate) const BORROWING_APIS: &[(&str, &str, &str)] = &[
+    ("Array.map", "Array.mapr", "Array.map_owned"),
+    ("Array.mapi", "Array.mapir", "Array.mapi_owned"),
+    ("Array.iter", "Array.iterr", "Array.iter_owned"),
+    ("Array.iteri", "Array.iterir", "Array.iteri_owned"),
+    ("Array.fold", "Array.foldr", "Array.fold_owned"),
+    (
+        "Array.fold_back",
+        "Array.foldr_back",
+        "Array.fold_back_owned",
+    ),
+    ("List.map", "List.mapr", "List.map_owned"),
+    ("List.mapi", "List.mapir", "List.mapi_owned"),
+    ("List.iter", "List.iterr", "List.iter_owned"),
+    ("List.iteri", "List.iterir", "List.iteri_owned"),
+    ("List.fold", "List.foldr", "List.fold_owned"),
+    ("List.fold_back", "List.foldr_back", "List.fold_back_owned"),
+    ("Vec.push", "Vec.push_mut", "Vec.push_owned"),
+];
+
 /// The builtin module function that `path` names, as `Task.run` or, with the
 /// std namespace, `std::Task.run`.
 fn qualified_builtin(path: &str) -> Option<Builtin> {
@@ -4689,6 +4805,10 @@ fn qualified_builtin(path: &str) -> Option<Builtin> {
         .and_then(|rest| rest.strip_prefix("::"))
         .filter(|member| member.contains('.'))
         .unwrap_or(path);
+    let path = BORROWING_APIS
+        .iter()
+        .find(|(_, _, owned)| *owned == path)
+        .map_or(path, |(value, _, _)| *value);
     Builtin::ALL
         .iter()
         .copied()
@@ -5906,6 +6026,8 @@ fn validate_public_type(
         // Classes have no visibility, so a dyn type leaks nothing (A14).
         TypeExprKind::Variable(_) | TypeExprKind::Length(_) | TypeExprKind::Dyn(_) => Ok(()),
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -5917,7 +6039,7 @@ fn validate_public_type(
             .iter()
             .try_for_each(|element| validate_public_type(element, module, owner, names)),
         TypeExprKind::Function(parameters, result) => {
-            for parameter in parameters {
+            for parameter in parameters.iter() {
                 validate_public_type(parameter, module, owner, names)?;
             }
             validate_public_type(result, module, owner, names)
@@ -5975,6 +6097,15 @@ fn check_modules_collect(
         warning_options,
         ..Names::default()
     };
+    let module_editions: BTreeMap<_, _> = modules
+        .iter()
+        .map(|input| (input.name, input.edition))
+        .collect();
+    names.borrowing_modules = module_editions
+        .iter()
+        .filter(|(_, edition)| edition.borrows_parameters())
+        .map(|(module, _)| (*module).to_owned())
+        .collect();
     let mut sources: BTreeMap<&str, (usize, ModuleOrigin)> = BTreeMap::new();
     for (source, module) in modules.iter().enumerate() {
         if diagnostics.is_full() {
@@ -6801,6 +6932,7 @@ fn check_modules_collect(
     };
     classes.check_superclasses(&types, diagnostics)?;
     let mut signatures = Vec::new();
+    let mut default_reads = BTreeMap::new();
     for (id, (module, function)) in function_declarations.iter().enumerate() {
         if diagnostics.is_full() {
             break;
@@ -6887,14 +7019,53 @@ fn check_modules_collect(
             }
             let mut parameter_names = BTreeSet::new();
             let mut parameters = Vec::new();
+            let mut reads = Vec::new();
+            let borrow_defaults = module_editions
+                .get(module.as_str())
+                .is_some_and(|edition| edition.borrows_parameters())
+                && !external_functions.contains_key(&id)
+                && !names.const_functions.contains(&id)
+                && !function.name.text.starts_with("$instance.")
+                && !(entry_module == Some(module.as_str()) && function.name.text == "main");
             let kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
             for parameter in &function.parameters {
                 if parameter.name.text != "_" && !parameter_names.insert(&parameter.name.text) {
                     return Err(duplicate(&parameter.name));
                 }
-                let ty = resolve_type_with_kinds(&parameter.ty, module, &names, &kinds)?;
+                let mutable = matches!(parameter.ty.kind, TypeExprKind::Mut(_));
+                if mutable
+                    && !function.name.text.starts_with("$instance.")
+                    && !module_editions
+                        .get(module.as_str())
+                        .is_some_and(|edition| edition.borrows_parameters())
+                {
+                    return Err(Diagnostic::new(
+                        "E1005",
+                        "'mut T' parameter conventions require edition 2027",
+                        parameter.ty.span,
+                    ));
+                }
+                let expression = match &parameter.ty.kind {
+                    TypeExprKind::Own(inner) | TypeExprKind::Mut(inner) => inner.as_ref(),
+                    _ => &parameter.ty,
+                };
+                let ty = resolve_type_with_kinds(expression, module, &names, &kinds)?;
                 validate_size(&ty, &types, parameter.ty.span)?;
+                let read = borrow_defaults
+                    && !parameter.mutable
+                    && !matches!(
+                        parameter.ty.kind,
+                        TypeExprKind::Own(_) | TypeExprKind::Mut(_)
+                    )
+                    && !regions::has_regions(&parameter.ty)
+                    && read_by_default(&ty, &types);
+                let ty = if read || mutable {
+                    Type::Reference(Box::new(ty), mutable)
+                } else {
+                    ty
+                };
                 parameters.push(ty);
+                reads.push(read);
             }
             let result = resolve_type_with_kinds(&function.result, module, &names, &kinds)?;
             validate_size(&result, &types, function.result.span)?;
@@ -7058,8 +7229,22 @@ fn check_modules_collect(
             {
                 constraints.extend(classes.inline_constraints(ty, module, &names)?);
             }
+            default_reads.insert(id, reads.clone());
             Ok(Scheme {
                 signature,
+                parameter_conventions: reads
+                    .into_iter()
+                    .zip(&function.parameters)
+                    .map(|(read, parameter)| {
+                        if matches!(parameter.ty.kind, TypeExprKind::Mut(_)) {
+                            ParameterConvention::Mut
+                        } else if read {
+                            ParameterConvention::Read
+                        } else {
+                            ParameterConvention::Own
+                        }
+                    })
+                    .collect(),
                 variables,
                 constraints,
                 members,
@@ -7225,13 +7410,47 @@ fn check_modules_collect(
                 checker.use_active_result(&signature.result, active);
             }
             let checked = (|| {
+                let reads = default_reads.get(&id).cloned().unwrap_or_default();
+                for (index, parameter) in function.parameters.iter_mut().enumerate() {
+                    if let TypeExprKind::Own(inner) = &parameter.ty.kind {
+                        parameter.ty = (**inner).clone();
+                    } else if let TypeExprKind::Mut(inner) = &parameter.ty.kind {
+                        parameter.ty = TypeExpr {
+                            kind: TypeExprKind::Reference(inner.clone(), true),
+                            span: parameter.ty.span,
+                        };
+                    } else if reads.get(index) == Some(&true) {
+                        parameter.ty = TypeExpr {
+                            kind: TypeExprKind::Reference(Box::new(parameter.ty.clone()), false),
+                            span: parameter.ty.span,
+                        };
+                    }
+                }
                 let contracts = regions::contract(function, module, &names, types)?;
                 checker.type_parameters = scheme.variables.clone();
                 checker.kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
                 checker.members = scheme.members.clone();
                 let mut parameters = Vec::new();
                 for (parameter, ty) in function.parameters.iter().zip(&signature.parameters) {
-                    parameters.push(checker.bind(&parameter.name, ty.clone(), parameter.mutable));
+                    let local = checker.bind(&parameter.name, ty.clone(), parameter.mutable);
+                    if scheme.parameter_conventions.get(parameters.len())
+                        == Some(&ParameterConvention::Mut)
+                    {
+                        checker.read_value_parameters.insert(local.id);
+                    }
+                    if reads.get(parameters.len()) == Some(&true)
+                        && let Type::Reference(inner, _) = ty
+                    {
+                        checker
+                            .default_reads
+                            .insert(local.id, (local.name.clone(), inner.display(&types)));
+                        if types.reaches(inner, |part| {
+                            matches!(part, Type::Variable(_) | Type::Function(..))
+                        }) {
+                            checker.read_value_parameters.insert(local.id);
+                        }
+                    }
+                    parameters.push(local);
                 }
                 computation::expand(&mut function.body, &names, module)?;
                 checker.recovering = true;
@@ -7261,6 +7480,7 @@ fn check_modules_collect(
                 };
                 Ok(CheckedFunction {
                     module: module.clone(),
+                    read_by_default: reads,
                     region_sources: contracts.result,
                     callback_contracts: contracts.callbacks,
                     region_slots: contracts.slots,
@@ -7370,6 +7590,7 @@ fn check_modules_collect(
                     ..FunctionOrigin::source(ModuleOrigin::User)
                 },
                 name: "$entry".into(),
+                read_by_default: Vec::new(),
                 visibility: Visibility::Public,
                 exported: false,
                 parameters: Vec::new(),
@@ -7565,6 +7786,15 @@ fn check_modules_collect(
     let module = closures::lower(module);
     drop(closures_time);
     let mut module = module?;
+    if module.functions.iter().any(|function| {
+        function.module == "$builtin"
+            && function
+                .region_slots
+                .as_ref()
+                .is_some_and(|slots| slots.writes)
+    }) {
+        regions::validate_contract_calls(&module)?;
+    }
     let ownership_time = crate::timings::Phase::start("ownership");
     diagnostics.extend(crate::ownership::check_all_with(&module, parallelism));
     drop(ownership_time);
@@ -7803,6 +8033,7 @@ fn recovery_module(
         .iter()
         .map(|(module, declaration)| CheckedFunction {
             module: module.clone(),
+            read_by_default: Vec::new(),
             region_sources: None,
             callback_contracts: Vec::new(),
             region_slots: None,
@@ -8354,6 +8585,20 @@ fn resolve_type_with_kinds(
             }
             _ => Type::Reference(Box::new(resolve(ty)?), *mutable),
         },
+        TypeExprKind::Own(_) => {
+            return Err(Diagnostic::new(
+                "E1005",
+                "'own' is only valid on the type of a parameter in a 'def' signature",
+                expression.span,
+            ));
+        }
+        TypeExprKind::Mut(_) => {
+            return Err(Diagnostic::new(
+                "E1005",
+                "'mut' is only valid on the type of a parameter in a 'def' signature",
+                expression.span,
+            ));
+        }
         TypeExprKind::ArrayView(_) => {
             return Err(Diagnostic::new(
                 "E1005",
@@ -8622,6 +8867,12 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Reference(inner, mutable) => {
                 TypeExprKind::Reference(Box::new(self.expand(inner, module, depth + 1)?), *mutable)
             }
+            TypeExprKind::Own(inner) => {
+                TypeExprKind::Own(Box::new(self.expand(inner, module, depth + 1)?))
+            }
+            TypeExprKind::Mut(inner) => {
+                TypeExprKind::Mut(Box::new(self.expand(inner, module, depth + 1)?))
+            }
             TypeExprKind::Regions(inner, regions) => TypeExprKind::Regions(
                 Box::new(self.expand(inner, module, depth + 1)?),
                 regions.clone(),
@@ -8767,6 +9018,8 @@ impl TypeAliasExpansion<'_> {
         let children: Vec<&mut TypeExpr> = match &mut expression.kind {
             TypeExprKind::Apply(_, args) => args.iter_mut().collect(),
             TypeExprKind::Regions(inner, _)
+            | TypeExprKind::Own(inner)
+            | TypeExprKind::Mut(inner)
             | TypeExprKind::Quantified(_, inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
@@ -8833,6 +9086,8 @@ fn reject_expanded_field_constraints(
             args.iter().collect()
         }
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -9276,7 +9531,7 @@ impl Validation<'_> {
                 }
             }
             Type::Function(parameters, result) => {
-                for parameter in parameters {
+                for parameter in parameters.iter() {
                     self.check(parameter, span)?;
                 }
                 self.check(result, span)?;
@@ -9360,12 +9615,14 @@ struct RecoveryMark {
 /// A source name that the typed tree does not keep, recorded for the semantic index.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum NameTarget {
+    Function(usize),
     Record(usize),
     Union(usize),
     Field(usize, usize),
     Case(usize, usize),
     /// A later OR-pattern alternative binding an earlier alternative's local.
     Local(usize),
+    Builtin(Builtin),
 }
 
 struct Checker<'a> {
@@ -9403,6 +9660,9 @@ struct Checker<'a> {
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
+    default_reads: BTreeMap<usize, (String, String)>,
+    read_value_parameters: BTreeSet<usize>,
+    read_conventions: bool,
     poisoned: bool,
     recovering: bool,
     recovered: Vec<Diagnostic>,
@@ -9447,6 +9707,9 @@ impl<'a> Checker<'a> {
             coverage: Vec::new(),
             shadowing_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
+            default_reads: BTreeMap::new(),
+            read_value_parameters: BTreeSet::new(),
+            read_conventions: names.borrowing_modules.contains(module),
             poisoned: false,
             recovering: false,
             recovered: Vec::new(),
@@ -9607,6 +9870,23 @@ impl<'a> Checker<'a> {
             | ExprKind::Block { .. } => self.composed_expression(expression, expected),
             _ => self.value_expression(expression, expected),
         };
+        let result = result.map_err(|mut error| {
+            if error.code == "E1003"
+                && let Some(expected) = expected
+                && let ExprKind::Name(root) = &expression.kind
+                && let Some(local) = self
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(&root.text))
+                && let Type::Reference(inner, false) = self.inference.resolve(&local.ty)
+                && *inner == self.inference.resolve(expected)
+                && let Some((name, ty)) = self.default_reads.get(&local.id)
+            {
+                read_only_hint(&mut error, name, ty);
+            }
+            error
+        });
         self.finish_recovery(result, mark, expression.span)
     }
 
@@ -9684,6 +9964,15 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Result<TypedExpr, Diagnostic> {
         let mut value = TypedExpr { kind, ty, span };
+        if matches!(value.kind, TypedExprKind::Local(id) if self.read_value_parameters.contains(&id))
+            && let Some(ty) = value.ty.dereferenced()
+        {
+            value = TypedExpr {
+                kind: TypedExprKind::Dereference(Box::new(value)),
+                ty,
+                span,
+            };
+        }
         if self.poisoned
             && (self.inference.resolve(&value.ty).contains_error()
                 || value
@@ -9698,6 +9987,12 @@ impl<'a> Checker<'a> {
             return Ok(TypedExpr::error(span));
         }
         if let Some(expected) = expected {
+            if self.read_conventions
+                && matches!(expected, Type::Function(..) | Type::Infer(_))
+                && let target @ Type::Function(..) = self.inference.resolve(expected)
+            {
+                value = self.callback_adapter(value, &target)?;
+            }
             self.same(&value.ty, expected, span)?;
         }
         value.ty = self.inference.resolve(&value.ty);
@@ -9944,6 +10239,7 @@ impl<'a> Checker<'a> {
             // lambdas' parameters, as in `Array.map (\text -> text.length) (ref texts)`.
             let mut checked = Vec::with_capacity(arguments.len());
             let mut deferred = false;
+            let mut callbacks = Vec::new();
             for (index, (argument, parameter)) in arguments.iter().zip(&parameters).enumerate() {
                 checked.push(match &argument.kind {
                     _ if Self::deferred_lambda(arguments, index) => {
@@ -9953,8 +10249,21 @@ impl<'a> Checker<'a> {
                     ExprKind::Lambda(names, body) if owned && index == 0 => {
                         self.owned_lambda(names, body, argument.span, parameter)?
                     }
+                    _ if self.read_conventions
+                        && Self::callback_parameter(
+                            &self.inference.resolve(parameter),
+                            matches!(&callee.ty, Type::Function(parameters, _)
+                                if parameters.convention(index) != ParameterConvention::Own),
+                        ) =>
+                    {
+                        callbacks.push(index);
+                        TypedExpr::error(argument.span)
+                    }
                     _ => self.argument(argument, parameter)?,
                 });
+            }
+            for index in callbacks {
+                checked[index] = self.argument(&arguments[index], &parameters[index])?;
             }
             if deferred {
                 self.lambda_arguments(arguments, &parameters, &mut checked)?;
@@ -10515,10 +10824,16 @@ impl<'a> Checker<'a> {
                         expression.span,
                     ));
                 }
+                let projection = matches!(place.kind, TypedExprKind::Field(..))
+                    || matches!(&place.kind, TypedExprKind::Index(base, _) if matches!(
+                        base.ty,
+                        Type::Array(_) | Type::List(_) | Type::Vec(_) | Type::FixedArray(..)
+                    ));
                 if !matches!(
                     place.kind,
                     TypedExprKind::Local(_) | TypedExprKind::Dereference(_)
-                ) {
+                ) && !(self.read_conventions && projection)
+                {
                     return Err(Diagnostic::new(
                         "E1012",
                         "assignment replaces a mutable binding; record fields, array elements, and list elements are immutable",
@@ -10585,6 +10900,8 @@ impl<'a> Checker<'a> {
                 self.call_expression(expression, Some(expected), true)
             }
             ExprKind::Name(_)
+            | ExprKind::QualifiedFunction(_)
+            | ExprKind::TypeFunction(..)
             | ExprKind::Field(..)
             | ExprKind::Index(..)
             | ExprKind::Dereference(..)
@@ -10601,6 +10918,24 @@ impl<'a> Checker<'a> {
             | ExprKind::List(_)
             | ExprKind::Tuple(_)
                 if self.shared_reference(expected) =>
+            {
+                self.temporary_argument(expression, expected)
+            }
+            ExprKind::Integer(..)
+            | ExprKind::Float(..)
+            | ExprKind::BigInt(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Unit
+            | ExprKind::Char(_)
+            | ExprKind::Utf8Char(_)
+            | ExprKind::Lambda(..)
+            | ExprKind::Unary(..)
+            | ExprKind::Record { .. }
+            | ExprKind::RecordUpdate { .. }
+            | ExprKind::NewArray(..)
+            | ExprKind::NewList(..)
+            | ExprKind::NewLiteral(_)
+                if self.read_conventions && self.shared_reference(expected) =>
             {
                 self.temporary_argument(expression, expected)
             }
@@ -10740,6 +11075,17 @@ impl<'a> Checker<'a> {
             Ok(converted) => return Ok(converted),
             Err(value) => value,
         };
+        if self.read_conventions {
+            let target = match &expected {
+                Type::Reference(inner, false) if matches!(**inner, Type::Function(..)) => {
+                    inner.as_ref()
+                }
+                _ => &expected,
+            };
+            if matches!(target, Type::Function(..)) {
+                value = self.callback_adapter(value, target)?;
+            }
+        }
         let literal = self.inference.is_numeric_literal(&value.ty);
         if matches!(value.ty, Type::Infer(_)) && !literal {
             self.same(&value.ty, &expected, value.span)?;
@@ -10766,6 +11112,134 @@ impl<'a> Checker<'a> {
             }
         }
         self.finish_expression(value.kind, value.ty, Some(&expected), value.span)
+    }
+
+    fn callback_parameter(ty: &Type, borrowed: bool) -> bool {
+        match ty {
+            Type::Function(parameters, _) => parameters
+                .conventions
+                .iter()
+                .any(|convention| *convention != ParameterConvention::Own),
+            Type::Reference(inner, false) => {
+                (borrowed && matches!(**inner, Type::Function(..)))
+                    || Self::callback_parameter(inner, false)
+            }
+            _ => false,
+        }
+    }
+
+    fn callback_local(&mut self, ty: Type, span: Span) -> Local {
+        let id = self.next_local;
+        self.next_local += 1;
+        Local {
+            id,
+            ty,
+            name: format!("$convention.{id}"),
+            mutable: false,
+            span,
+            provenance: Provenance::Generated,
+        }
+    }
+
+    fn callback_adapter(
+        &mut self,
+        value: TypedExpr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let actual = self.inference.resolve(&value.ty);
+        let Type::Function(actual_parameters, actual_result) = &actual else {
+            return Ok(value);
+        };
+        let Type::Function(expected_parameters, expected_result) = expected else {
+            return Ok(value);
+        };
+        let mut exact = self.inference.clone();
+        if exact
+            .unify(&actual, expected, &self.types, value.span)
+            .is_ok()
+        {
+            self.inference = exact;
+            return Ok(value);
+        }
+        if actual_parameters.len() != expected_parameters.len() {
+            return Ok(value);
+        }
+        let mut trial = self.inference.clone();
+        let mut adapted = false;
+        for (actual, expected) in actual_parameters.iter().zip(expected_parameters.iter()) {
+            let (actual, expected) = match (actual, expected) {
+                (Type::Reference(inner, false), expected)
+                    if !matches!(expected, Type::Reference(..)) =>
+                {
+                    adapted = true;
+                    (inner.as_ref(), expected)
+                }
+                (actual, Type::Reference(inner, false))
+                    if !matches!(actual, Type::Reference(..)) =>
+                {
+                    adapted = true;
+                    (actual, inner.as_ref())
+                }
+                _ => (actual, expected),
+            };
+            if trial
+                .unify(actual, expected, &self.types, value.span)
+                .is_err()
+            {
+                return Ok(value);
+            }
+        }
+        if !adapted
+            || trial
+                .unify(actual_result, expected_result, &self.types, value.span)
+                .is_err()
+        {
+            return Ok(value);
+        }
+        self.inference = trial;
+        let span = value.span;
+        let captured = self.callback_local(self.inference.resolve(&value.ty), span);
+        let mut parameters = Vec::new();
+        let mut arguments = Vec::new();
+        for (parameter, actual) in expected_parameters.iter().zip(actual_parameters.iter()) {
+            let parameter = self.callback_local(self.inference.resolve(parameter), span);
+            let value = TypedExpr {
+                kind: TypedExprKind::Local(parameter.id),
+                ty: parameter.ty.clone(),
+                span,
+            };
+            arguments.push(self.coerce_argument(value, actual)?);
+            parameters.push(parameter);
+        }
+        let result = self.inference.resolve(expected_result);
+        let callback = TypedExpr {
+            kind: TypedExprKind::Local(captured.id),
+            ty: captured.ty.clone(),
+            span,
+        };
+        let lambda = TypedExpr {
+            kind: TypedExprKind::Lambda {
+                parameters,
+                captures: vec![captured.clone()],
+                body: Box::new(TypedExpr {
+                    kind: TypedExprKind::Call(Box::new(callback), arguments),
+                    ty: result,
+                    span,
+                }),
+                owned: false,
+                recursive: Vec::new(),
+            },
+            ty: self.inference.resolve(expected),
+            span,
+        };
+        Ok(TypedExpr {
+            ty: lambda.ty.clone(),
+            kind: TypedExprKind::Block {
+                bindings: vec![(captured, value)],
+                result: Box::new(lambda),
+            },
+            span,
+        })
     }
 
     /// Whether `actual`, open only in number literal types (as `ref {integer}`
@@ -11813,14 +12287,105 @@ impl<'a> Checker<'a> {
             _ => expression.span,
         };
         self.names.check_path(self.module, &path, span)?;
-        if let Some(canonical) = self.names.canonical(self.module, &path)
-            && let Some(id) = self.names.function(self.module, &canonical, span)?
-        {
-            return Ok(Some(self.function(id)));
+        if let Some(canonical) = self.names.canonical(self.module, &path) {
+            let standard = canonical.split_once('.').is_some_and(|(module, _)| {
+                self.names.modules.get(module) == Some(&ModuleOrigin::Std)
+            });
+            let owning = standard
+                .then(|| {
+                    BORROWING_APIS
+                        .iter()
+                        .find(|(_, _, owned)| *owned == canonical)
+                })
+                .flatten();
+            let function_name = owning.map_or(canonical.as_ref(), |(value, _, _)| *value);
+            if let Some(id) = self.names.function(self.module, function_name, span)? {
+                if self.indexing
+                    && standard
+                    && BORROWING_APIS
+                        .iter()
+                        .any(|(value, _, owned)| *value == canonical || *owned == canonical)
+                {
+                    self.name_uses.push((span, NameTarget::Function(id)));
+                }
+                let read_name = (self.read_conventions && standard && owning.is_none())
+                    .then(|| {
+                        BORROWING_APIS
+                            .iter()
+                            .find(|(value, _, _)| *value == canonical)
+                            .map(|(_, read, _)| *read)
+                    })
+                    .flatten();
+                if let Some(read_name) = read_name {
+                    let read =
+                        if let Some(read_id) = self.names.function(self.module, read_name, span)? {
+                            Some(self.function(read_id))
+                        } else {
+                            qualified_builtin(read_name)
+                                .map(|builtin| self.builtin(builtin, expression.span))
+                                .transpose()?
+                        };
+                    if let Some((kind, mut ty)) = read {
+                        Self::read_callback_type(&mut ty);
+                        return Ok(Some((kind, ty)));
+                    }
+                }
+                return Ok(Some(self.function(id)));
+            }
         }
         qualified_builtin(&path)
-            .map(|builtin| self.builtin(builtin, expression.span))
+            .map(|builtin| {
+                if self.indexing {
+                    self.name_uses
+                        .push((expression.span, NameTarget::Builtin(builtin)));
+                }
+                let spelling = path
+                    .strip_prefix(crate::stdlib::NAMESPACE)
+                    .and_then(|rest| rest.strip_prefix("::"))
+                    .unwrap_or(&path);
+                let owning = BORROWING_APIS
+                    .iter()
+                    .any(|(_, _, owned)| *owned == spelling);
+                let read = (self.read_conventions && !owning)
+                    .then(|| {
+                        BORROWING_APIS
+                            .iter()
+                            .find(|(value, _, _)| *value == builtin.name())
+                            .and_then(|(_, read, _)| qualified_builtin(read))
+                    })
+                    .flatten();
+                let builtin = read.unwrap_or(builtin);
+                let borrowed = read.is_some() && builtin != Builtin::VecPushMut;
+                let (kind, mut ty) = self.builtin(builtin, expression.span)?;
+                if borrowed {
+                    Self::read_callback_type(&mut ty);
+                }
+                if builtin == Builtin::VecPushMut
+                    && let Type::Function(parameters, _) = &mut ty
+                {
+                    parameters.conventions =
+                        vec![ParameterConvention::Own, ParameterConvention::Mut].into_boxed_slice();
+                }
+                Ok((kind, ty))
+            })
             .transpose()
+    }
+
+    fn read_callback_type(ty: &mut Type) {
+        if let Type::Function(parameters, _) = ty
+            && let Some(Type::Function(callback, _)) = parameters.types.first_mut()
+        {
+            callback.conventions = callback
+                .iter()
+                .map(|ty| {
+                    if matches!(ty, Type::Reference(_, false)) {
+                        ParameterConvention::Read
+                    } else {
+                        ParameterConvention::Own
+                    }
+                })
+                .collect();
+        }
     }
 
     /// Resolves `Module.Case`, the current module's `Union.Case`, and
@@ -12213,7 +12778,7 @@ mod allocation_tests {
             Type::Infer(0),
             Type::Reference(Box::new(Type::Integer(64, true)), true),
             Type::Shared(Box::new(Type::Integer(64, true)), SharedKind::Arc),
-            Type::Function(vec![], Box::new(Type::Unit)),
+            Type::function(vec![], Type::Unit),
         ] {
             assert!(!ty.is_frozen(&module.types()), "{ty:?}");
         }

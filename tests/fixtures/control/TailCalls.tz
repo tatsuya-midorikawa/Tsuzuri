@@ -1,35 +1,35 @@
 // Guaranteed tail calls between the functions of one recursion (PM09). Every depth here is small; the
 // constant-stack runs are in tests/stack.mjs.
-def rec ca :: i64 -> i64 -> i64
-def and cb :: i64 -> i64 -> i64
-def and cc :: i64 -> i64 -> i64
+def rec ca :: own i64 -> own i64 -> i64
+def and cb :: own i64 -> own i64 -> i64
+def and cc :: own i64 -> own i64 -> i64
 fn rec ca n acc = if n == 0 then acc else cb (n - 1) (acc + 1)
 and cb n acc = if n == 0 then acc else cc (n - 1) (acc + 2)
 and cc n acc = if n == 0 then acc else ca (n - 1) (acc + 3)
 
-export def tail_cycle :: i64 -> i64
+export def tail_cycle :: own i64 -> i64
 fn tail_cycle n = ca n 0
 
 // A list that is built in a frame, moved to the function that is called, and read there.
-def rec ping_list :: i64 -> [|i64|] -> i64 -> i64
-def and pong_list :: i64 -> [|i64|] -> i64 -> i64
+def rec ping_list :: own i64 -> own [|i64|] -> own i64 -> i64
+def and pong_list :: own i64 -> own [|i64|] -> own i64 -> i64
 fn rec ping_list n xs acc =
     if n == 0 then acc + List.length xs
     else
         let next = [|n, n + 1|]
-        pong_list (n - 1) next (acc + List.fold (\s v -> s * 3 + v) 0 xs)
+        pong_list (n - 1) next (acc + List.fold_owned (\s v -> s * 3 + v) 0 xs)
 and pong_list n xs acc =
     if n == 0 then acc + List.length xs
     else
         let next = [|n * 2, n, n + 3|]
-        ping_list (n - 1) next (acc + List.fold (\s v -> s * 5 + v) 0 xs)
+        ping_list (n - 1) next (acc + List.fold_owned (\s v -> s * 5 + v) 0 xs)
 
-export def tail_lists :: i64 -> i64
+export def tail_lists :: own i64 -> i64
 fn tail_lists n = ping_list n [|1, 2|] 0
 
 // A string that the function owns is released before the call, and the callee gets its own.
-def rec text_even :: i64 -> i64 -> i64
-def and text_odd :: i64 -> i64 -> i64
+def rec text_even :: own i64 -> own i64 -> i64
+def and text_odd :: own i64 -> own i64 -> i64
 fn rec text_even n acc =
     let text = (if n % 2 == 0 then "ab" else "abc") + "x"
     if n == 0 then acc + text.length else text_odd (n - 1) (acc + text.length)
@@ -37,40 +37,40 @@ and text_odd n acc =
     let text = (if n % 2 == 0 then "defg" else "h") + "y"
     if n == 0 then acc + text.length else text_even (n - 1) (acc + text.length)
 
-export def tail_texts :: i64 -> i64
+export def tail_texts :: own i64 -> i64
 fn tail_texts n = text_even n 0
 
 // Not covered by the guarantee, and still right: a result that is a string, and a borrowed parameter.
-def rec word_even :: i64 -> string
-def and word_odd :: i64 -> string
+def rec word_even :: own i64 -> string
+def and word_odd :: own i64 -> string
 fn rec word_even n = if n == 0 then "even" else word_odd (n - 1)
 and word_odd n = if n == 0 then "odd" else word_even (n - 1)
 
-export def tail_words :: i64 -> i64
+export def tail_words :: own i64 -> i64
 fn tail_words n = (word_even n).length
 
-def rec lend_even :: &i64 -> i64 -> i64
-def and lend_odd :: &i64 -> i64 -> i64
+def rec lend_even :: &i64 -> own i64 -> i64
+def and lend_odd :: &i64 -> own i64 -> i64
 fn rec lend_even value n = if n == 0 then *value else lend_odd value (n - 1)
 and lend_odd value n = if n == 0 then *value * 2 else lend_even value (n - 1)
 
-export def tail_lend :: i64 -> i64 -> i64
+export def tail_lend :: own i64 -> own i64 -> i64
 fn tail_lend value n = lend_even (&value) n
 
 // A group where a function also calls itself: the self call is a loop, the other call a tail call.
-def rec step_a :: i64 -> i64 -> i64
-def and step_b :: i64 -> i64 -> i64
+def rec step_a :: own i64 -> own i64 -> i64
+def and step_b :: own i64 -> own i64 -> i64
 fn rec step_a n acc = if n == 0 then acc else if n % 2 == 0 then step_a (n - 1) (acc + 1) else step_b (n - 1) (acc + 10)
 and step_b n acc = if n == 0 then acc else step_a (n - 1) (acc + 100)
 
-export def tail_self_and_group :: i64 -> i64
+export def tail_self_and_group :: own i64 -> i64
 fn tail_self_and_group n = step_a n 0
 
 // Values that arrive from a pipe and an `if` inside a block of the tail position.
-def rec pipe_even :: i64 -> bool
-def and pipe_odd :: i64 -> bool
+def rec pipe_even :: own i64 -> bool
+def and pipe_odd :: own i64 -> bool
 fn rec pipe_even n = if n == 0 then true else (n - 1) |> pipe_odd
 and pipe_odd n = if n == 0 then false else (n - 1) |> pipe_even
 
-export def tail_pipe :: i64 -> bool
+export def tail_pipe :: own i64 -> bool
 fn tail_pipe n = pipe_even n

@@ -165,7 +165,7 @@ fn arena_api_programs_emit_for_both_targets() {
 }
 
 /// Two copies of one arena, made by copying a function value that captured it, keep its id.
-const SNAPSHOTS: &str = "def without :: Arena<i64> -> Arena.Handle<i64> -> Arena<i64>
+const SNAPSHOTS: &str = "def without :: own Arena<i64> -> Arena.Handle<i64> -> Arena<i64>
 fn without arena handle =
     match Arena.remove handle arena with
     | (next, _value) -> next
@@ -179,7 +179,7 @@ fn snapshots =
         match Arena.insert ((index + 1) * 10) base with
         | (next, handle) ->
             base = next
-            handles = Vec.push handle handles
+            handles = Vec.push_owned handle handles
         index = index + 1
     let frozen = base
     let snapshot = \\() -> frozen

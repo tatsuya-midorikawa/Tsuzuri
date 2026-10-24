@@ -1,16 +1,16 @@
 // The F# `Array` module in Tsuzuri (std/Array.tz): one test per F# function, the examples of the F# documentation,
 // the `r` forms for elements that are not `Copy`, and the Tsuzuri functions that F# does not have.
 
-private def eq :: Eq<'a> => 'a -> 'a -> unit
+private def eq :: Eq<'a> => own 'a -> own 'a -> unit
 fn eq actual expected = Test.equal (ref actual) (ref expected)
 
-private def some_eq :: Eq<'a> => Maybe<'a> -> 'a -> unit
+private def some_eq :: Eq<'a> => own Maybe<'a> -> own 'a -> unit
 fn some_eq maybe expected =
     match maybe with
     | Maybe.Some value -> eq value expected
     | Maybe.None -> assert false
 
-private def none :: Maybe<'a> -> unit
+private def none :: own Maybe<'a> -> unit
 fn none maybe =
     match maybe with
     | Maybe.None -> ()
@@ -22,55 +22,55 @@ const no_floats: [f64] = []
 
 const no_rows: [[i64]] = []
 
-private def is_nan :: f64 -> bool
+private def is_nan :: own f64 -> bool
 fn is_nan value = value != value
 
-private def count_key_is_nan :: ref [(f64 * i64)] -> i64 -> bool
+private def count_key_is_nan :: ref [(f64 * i64)] -> own i64 -> bool
 fn count_key_is_nan pairs position =
     match pairs[position] with
     | (key, _) -> is_nan key
 
-private def count_of :: ref [(f64 * i64)] -> i64 -> i64
+private def count_of :: ref [(f64 * i64)] -> own i64 -> i64
 fn count_of pairs position =
     match pairs[position] with
     | (_, count) -> count
 
-private def group_key_is_nan :: ref [(f64 * [f64])] -> i64 -> bool
+private def group_key_is_nan :: ref [(f64 * [f64])] -> own i64 -> bool
 fn group_key_is_nan groups position =
     match groups[position] with
     | (key, _) -> is_nan key
 
-private def group_size :: ref [(f64 * [f64])] -> i64 -> i64
+private def group_size :: ref [(f64 * [f64])] -> own i64 -> i64
 fn group_size groups position =
     match groups[position] with
     | (_, members) -> members.length
 
-private def id_at :: ref [(i64 * f64)] -> i64 -> i64
+private def id_at :: ref [(i64 * f64)] -> own i64 -> i64
 fn id_at pairs position =
     match pairs[position] with
     | (id, _) -> id
 
-private def value_at :: ref [(i64 * f64)] -> i64 -> f64
+private def value_at :: ref [(i64 * f64)] -> own i64 -> f64
 fn value_at pairs position =
     match pairs[position] with
     | (_, value) -> value
 
-private def keyed_count :: ref [((i64 * f64) * i64)] -> i64 -> i64
+private def keyed_count :: ref [((i64 * f64) * i64)] -> own i64 -> i64
 fn keyed_count counts position =
     match counts[position] with
     | (_, count) -> count
 
-private def keyed_id :: ref [((i64 * f64) * i64)] -> i64 -> i64
+private def keyed_id :: ref [((i64 * f64) * i64)] -> own i64 -> i64
 fn keyed_id counts position =
     match counts[position] with
     | ((id, _), _) -> id
 
-private def grouped_id :: ref [((i64 * f64) * [(i64 * f64)])] -> i64 -> i64
+private def grouped_id :: ref [((i64 * f64) * [(i64 * f64)])] -> own i64 -> i64
 fn grouped_id groups position =
     match groups[position] with
     | ((id, _), _) -> id
 
-private def grouped_size :: ref [((i64 * f64) * [(i64 * f64)])] -> i64 -> i64
+private def grouped_size :: ref [((i64 * f64) * [(i64 * f64)])] -> own i64 -> i64
 fn grouped_size groups position =
     match groups[position] with
     | (_, members) -> members.length
@@ -223,8 +223,8 @@ test "zip unzip all_pairs indexed pairwise transpose" =
 // ---- Traversal ----
 
 test "iter iteri iter2 iteri2 and the r forms run their actions" =
-    Array.iter (\x -> assert (x > 0)) [1, 2, 3]
-    Array.iteri (\i x -> assert (x == i * 10)) [0, 10, 20]
+    Array.iter_owned (\x -> assert (x > 0)) [1, 2, 3]
+    Array.iteri_owned (\i x -> assert (x == i * 10)) [0, 10, 20]
     Array.iter2 (\a b -> assert (b == a * 2)) [1, 2, 3] [2, 4, 6]
     Array.iteri2 (\i a b -> assert (a + b == i * 3)) [0, 1, 2] [0, 2, 4]
     Array.iterr (\x -> assert (*x > 0)) [1, 2, 3]
@@ -232,16 +232,16 @@ test "iter iteri iter2 iteri2 and the r forms run their actions" =
     let words = ["a", "bb"]
     Array.iterr (\w -> assert (w.length > 0)) words
     Array.iterir (\i w -> assert (w.length == i + 1)) words
-    Array.iter (\_x -> assert false) no_ints
+    Array.iter_owned (\_x -> assert false) no_ints
     Array.iterr (\_x -> assert false) no_ints
 
 test "map mapi map2 mapi2 map3" =
-    eq (Array.map (\x -> x * 2) [1, 2, 3]) [2, 4, 6]
-    eq (Array.mapi (\i x -> i + x) [10, 10, 10]) [10, 11, 12]
+    eq (Array.map_owned (\x -> x * 2) [1, 2, 3]) [2, 4, 6]
+    eq (Array.mapi_owned (\i x -> i + x) [10, 10, 10]) [10, 11, 12]
     eq (Array.map2 (\a b -> a * b) [1, 2, 3] [4, 5, 6]) [4, 10, 18]
     eq (Array.mapi2 (\i a b -> i + a + b) [1, 2] [10, 20]) [11, 23]
     eq (Array.map3 (\a b c -> a + b + c) [1, 2] [10, 20] [100, 200]) [111, 222]
-    eq (Array.map (\x -> x + 1) no_ints) no_ints
+    eq (Array.map_owned (\x -> x + 1) no_ints) no_ints
 
 test "mapr mapir work for elements that are not Copy" =
     let words = ["a", "bbb", "cc"]
@@ -296,13 +296,13 @@ test "partition partition_with" =
 
 test "fold fold_back fold2 fold_back2 and the r forms" =
     let xs = [1, 2, 3, 4]
-    eq (Array.fold (\acc x -> acc * 10 + x) 0 xs) 1234
+    eq (Array.fold_owned (\acc x -> acc * 10 + x) 0 xs) 1234
     eq (Array.foldr (\acc x -> acc * 10 + *x) 0 xs) 1234
-    eq (Array.fold_back (\x acc -> acc * 10 + x) 0 xs) 4321
+    eq (Array.fold_back_owned (\x acc -> acc * 10 + x) 0 xs) 4321
     eq (Array.foldr_back (\x acc -> acc * 10 + *x) 0 xs) 4321
     eq (Array.fold2 (\acc a b -> acc + a * b) 0 [1, 2, 3] [4, 5, 6]) 32
     eq (Array.fold_back2 (\a b acc -> acc * 10 + a + b) 0 [1, 2, 3] [10, 20, 30]) 3531
-    eq (Array.fold (\acc x -> acc + x) 7 no_ints) 7
+    eq (Array.fold_owned (\acc x -> acc + x) 7 no_ints) 7
     let words = ["a", "bcd"]
     eq (Array.foldr (\acc w -> acc + w.length) 0 words) 4
     eq (Array.foldr_back (\w acc -> acc * 10 + w.length) 0 words) 31
@@ -850,17 +850,17 @@ test "ownership: elements that are not Copy" =
     eq sortable ["apple", "fig", "pear"]
 
 test "a pipeline reads like F#" =
-    let squares = [1, 2, 3, 4, 5] |> Array.filter (\x -> x % 2 == 1) |> Array.map (\x -> x * x)
+    let squares = [1, 2, 3, 4, 5] |> Array.filter (\x -> x % 2 == 1) |> Array.map_owned (\x -> x * x)
     eq squares [1, 9, 25]
     eq (squares |> Array.sum) 35
     eq ([3, 1, 2] |> Array.sort |> Array.rev) [3, 2, 1]
-    eq ([1, 2, 3] |> Array.fold (\acc x -> acc + x) 0) 6
-    eq ([[1, 2], [3]] |> Array.concat |> Array.map (\x -> x * 2)) [2, 4, 6]
+    eq ([1, 2, 3] |> Array.fold_owned (\acc x -> acc + x) 0) 6
+    eq ([[1, 2], [3]] |> Array.concat |> Array.map_owned (\x -> x * 2)) [2, 4, 6]
 
 // ---- The array comes last ----
 
 test "the array is the last argument, so pipelines and compositions pass it on" =
-    eq ([1, 2, 3] |> Array.fold_back (\x acc -> acc * 10 + x) 0) 321
+    eq ([1, 2, 3] |> Array.fold_back_owned (\x acc -> acc * 10 + x) 0) 321
     eq ([1, 2, 3] |> Array.foldr_back (\x acc -> acc * 10 + deref x) 0) 321
     eq ([1, 2, 3] |> Array.scan_back (\x acc -> acc + x) 0) [6, 5, 3, 0]
     eq (Array.fold_back2 (\x y acc -> acc + x * y) 0 [1, 2, 3] [4, 5, 6]) 32

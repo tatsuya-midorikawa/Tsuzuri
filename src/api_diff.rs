@@ -216,6 +216,8 @@ struct Item {
     exported: bool,
     /// A `const def`, which a `const` initializer of another module may call.
     constant: bool,
+    /// Conservative until API comparison resolves parameter types and aliases.
+    borrowing_defaults: Vec<bool>,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
     derives: BTreeSet<&'static str>,
@@ -241,6 +243,7 @@ impl Item {
             header,
             exported: false,
             constant: false,
+            borrowing_defaults: Vec::new(),
             members: Vec::new(),
             derives: BTreeSet::new(),
             doc: None,
@@ -428,6 +431,8 @@ impl Renaming {
                 Box::new(self.ty(result)),
             ),
             Reference(inner, mutable) => Reference(Box::new(self.ty(inner)), *mutable),
+            Own(inner) => Own(Box::new(self.ty(inner))),
+            Mut(inner) => Mut(Box::new(self.ty(inner))),
             Dyn(dyn_type) => Dyn(dyn_type.clone()),
         };
         TypeExpr {
@@ -541,7 +546,13 @@ fn parameters(parameters: &[Ident], renaming: &mut Renaming) -> Vec<Ident> {
 
 /// The items that one module declares, under `module`, its full name, in the canonical form
 /// that decides what changed or in the form that `tsuzuri doc` shows.
-fn add_items(module: &str, program: &Program, items: &mut Items, canonical: bool) {
+fn add_items(
+    module: &str,
+    program: &Program,
+    items: &mut Items,
+    canonical: bool,
+    edition: Edition,
+) {
     let fresh = || Renaming::new(canonical);
     // Every field is named so that a new kind of declaration cannot be left out silently.
     let Program {
@@ -616,6 +627,39 @@ fn add_items(module: &str, program: &Program, items: &mut Items, canonical: bool
             Item::new("def", qualified(&name), header).documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
         item.constant = declaration.constant;
+        let (parameters, _) = flatten(
+            declaration
+                .parameters
+                .iter()
+                .map(|p| p.ty.clone())
+                .collect(),
+            declaration.result.clone(),
+        );
+        item.borrowing_defaults = parameters
+            .iter()
+            .enumerate()
+            .map(|(index, parameter)| {
+                edition.borrows_parameters()
+                    && !declaration.constant
+                    && !declaration.parameters.get(index).is_some_and(|p| p.mutable)
+                    && match &parameter.kind {
+                        TypeExprKind::Own(_)
+                        | TypeExprKind::Mut(_)
+                        | TypeExprKind::Reference(..)
+                        | TypeExprKind::Regions(..)
+                        | TypeExprKind::Quantified(..) => false,
+                        TypeExprKind::Named(name) => {
+                            crate::numeric::primitive(name).is_none_or(|ty| {
+                                matches!(
+                                    ty,
+                                    crate::check::Type::String | crate::check::Type::Utf8String
+                                )
+                            })
+                        }
+                        _ => true,
+                    }
+            })
+            .collect();
         add(item);
     }
     for declaration in externs {
@@ -848,8 +892,8 @@ pub fn api(project: &Project) -> Result<Api, Diagnostic> {
             ""
         };
         let module = module_name(source, &program, namespace, id)?;
-        add_items(&module, &program, &mut items, true);
-        add_items(&module, &program, &mut shown, false);
+        add_items(&module, &program, &mut items, true, source.edition);
+        add_items(&module, &program, &mut shown, false, source.edition);
     }
     // Both forms hold the same items and members in the same order.
     for (key, item) in &mut items {
@@ -1015,12 +1059,17 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
 
 /// The changes between two versions of an item with the same name and kind.
 fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
-    if old.header != new.header || old.exported != new.exported || old.constant != new.constant {
+    if old.header != new.header
+        || old.exported != new.exported
+        || old.constant != new.constant
+        || old.borrowing_defaults != new.borrowing_defaults
+    {
         // Exporting what was not exported, or making a def a const def, adds a symbol or a use
         // and changes nothing else; revoking either breaks the code that relied on it.
         let widened = old.header == new.header
             && old.exported <= new.exported
-            && old.constant <= new.constant;
+            && old.constant <= new.constant
+            && old.borrowing_defaults == new.borrowing_defaults;
         changes.push(Change {
             breaking: !widened,
             action: Action::Changed,
@@ -1028,7 +1077,11 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             name: new.name.clone(),
             old: Some(old.text()),
             new: Some(new.text()),
-            note: "",
+            note: if old.borrowing_defaults != new.borrowing_defaults {
+                "default parameter conventions change; effective signatures may differ"
+            } else {
+                ""
+            },
         });
     }
     compare_members(old, new, changes);

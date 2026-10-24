@@ -3,7 +3,7 @@ record HashSet<'key> { map: HashMap<'key, unit> }
 def empty :: HashSet<'key>
 fn empty = HashSet { map: HashMap.empty() }
 
-def with_capacity :: i64 -> HashSet<'key>
+def with_capacity :: own i64 -> HashSet<'key>
 fn with_capacity count = HashSet { map: HashMap.with_capacity count }
 
 def length :: ref HashSet<'key> -> i64
@@ -13,35 +13,35 @@ def is_empty :: ref HashSet<'key> -> bool
 fn is_empty set = HashMap.is_empty (ref set.map)
 
 /// An empty set whose hashes are keyed by `seed`; see `HashMap.with_seed`.
-def with_seed :: i64u -> HashSet<'key>
+def with_seed :: own i64u -> HashSet<'key>
 fn with_seed seed = HashSet { map: HashMap.with_seed seed }
 
-def with_capacity_and_seed :: i64 -> i64u -> HashSet<'key>
+def with_capacity_and_seed :: own i64 -> own i64u -> HashSet<'key>
 fn with_capacity_and_seed count seed = HashSet { map: HashMap.with_capacity_and_seed count seed }
 
 /// An empty set keyed by a seed from the operating system; see `HashMap.try_randomized`.
-def try_randomized :: unit -> IO<Result<HashSet<'key>, Os.Error>>
+def try_randomized :: own unit -> IO<Result<HashSet<'key>, Os.Error>>
 fn try_randomized _unit = IO.map (\made ->
 	match made with
 	| Result.Ok map -> Result.Ok (HashSet { map: map })
 	| Result.Error error -> Result.Error error) (HashMap.try_randomized ())
 
-def randomized :: unit -> IO<HashSet<'key>>
+def randomized :: own unit -> IO<HashSet<'key>>
 fn randomized _unit = IO.map (\made -> Result.get made) (try_randomized ())
 
-def insert :: (Hash<'key>, Eq<'key>) => 'key -> HashSet<'key> -> HashSet<'key>
+def insert :: (Hash<'key>, Eq<'key>) => own 'key -> own HashSet<'key> -> HashSet<'key>
 fn insert key set = HashSet { map: HashMap.insert key () set.map }
 
-def remove_ref :: (Hash<'key>, Eq<'key>) => ref 'key -> HashSet<'key> -> HashSet<'key>
+def remove_ref :: (Hash<'key>, Eq<'key>) => ref 'key -> own HashSet<'key> -> HashSet<'key>
 fn remove_ref key set = HashSet { map: HashMap.remove_ref key set.map }
 
-def remove :: (Hash<'key>, Eq<'key>) => 'key -> HashSet<'key> -> HashSet<'key>
+def remove :: (Hash<'key>, Eq<'key>) => own 'key -> own HashSet<'key> -> HashSet<'key>
 fn remove key set = HashSet { map: HashMap.remove key set.map }
 
 def contains_ref :: (Hash<'key>, Eq<'key>) => ref 'key -> ref HashSet<'key> -> bool
 fn contains_ref key set = HashMap.contains_key_ref key (ref set.map)
 
-def contains :: (Hash<'key>, Eq<'key>) => 'key -> ref HashSet<'key> -> bool
+def contains :: (Hash<'key>, Eq<'key>) => own 'key -> ref HashSet<'key> -> bool
 fn contains key set = HashMap.contains_key key (ref set.map)
 
 /// The longest probe of the underlying table; see `HashMap.longest_probe`.
@@ -51,7 +51,7 @@ fn longest_probe set = HashMap.longest_probe (ref set.map)
 def to_array :: Copy<'key> => ref HashSet<'key> -> ['key]
 fn to_array set = HashMap.keys (ref set.map)
 
-def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref HashSet<'key> -> 'state
+def fold :: own ('state -> ref 'key -> 'state) -> own 'state -> ref HashSet<'key> -> 'state
 fn fold folder initial set = HashMap.fold (\state key _unit -> folder state key) initial (ref set.map)
 
 def iter :: ref HashSet<'key> -> Seq<ref 'key>

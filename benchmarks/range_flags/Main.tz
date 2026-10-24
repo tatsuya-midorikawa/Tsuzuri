@@ -47,7 +47,7 @@ fn k_mask values =
     for i in 0 .. values.length - 1 do total = total + (values[i] & 255) * 1000 + ((values[i] >>> 56) & 15)
     total
 
-export def k_digits :: i64u -> i64u
+export def k_digits :: own i64u -> i64u
 fn k_digits n =
     let mut rest = n
     let mut sum = 0i64u
@@ -57,24 +57,24 @@ fn k_digits n =
     sum
 
 // A condition proves a bound, but only on the then branch.
-export def k_guarded :: i64 -> i64
+export def k_guarded :: own i64 -> i64
 fn k_guarded x = if x >= 0 && x < 1000 then x * 3 + 1 else x - 1
 
 // No proof: the bound of the loop is unknown, the index arithmetic can wrap, and an i32 counter
 // widened to the index type may overflow its product. The assembly must not change.
-export def k_stride_unbounded :: ref [i64] -> i64 -> i64
+export def k_stride_unbounded :: ref [i64] -> own i64 -> i64
 fn k_stride_unbounded values n =
     let mut total = 0i64
     for i in 0 .. n - 1 do total = total + values[i * 4 + 3]
     total
 
-export def k_stride32_free :: ref [i64] -> i32 -> i64
+export def k_stride32_free :: ref [i64] -> own i32 -> i64
 fn k_stride32_free values n =
     let mut total = 0i64
     for i = 0 to n - 1 do total = total + values[(i * 2 + 1) as i64]
     total
 
-export def k_wrap_hash :: i64 -> i64 -> i64
+export def k_wrap_hash :: own i64 -> own i64 -> i64
 fn k_wrap_hash seed count =
     let mut state = seed
     for i in 0 .. count do state = state * 6364136223846793005 + (i + 1442695040888963407)

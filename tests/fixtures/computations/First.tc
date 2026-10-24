@@ -1,14 +1,14 @@
-def Return :: 'a -> 'a
+def Return :: own 'a -> 'a
 fn Return value = value
 
-def Yield :: 'a -> 'a
+def Yield :: own 'a -> 'a
 fn Yield value = value
 
-def Delay :: (unit -> 'a) -> (unit -> 'a)
+def Delay :: own (unit -> 'a) -> (unit -> 'a)
 fn Delay body = body
 
-def Run :: (unit -> 'a) -> 'a
+def Run :: own (unit -> 'a) -> 'a
 fn Run body = body ()
 
-def Combine :: 'a -> (unit -> 'a) -> 'a
+def Combine :: own 'a -> own (unit -> 'a) -> 'a
 fn Combine first rest = first

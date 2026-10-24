@@ -247,6 +247,13 @@ fn check_functions(
                 debug_assert!(recovered.is_empty());
                 debug_assert!(matches!(&checked, Ok(required) if required.is_empty()));
             }
+            for error in &mut recovered {
+                default_parameter_hint(module, function, error);
+            }
+            let checked = checked.map_err(|mut error| {
+                default_parameter_hint(module, function, &mut error);
+                error
+            });
             Some((recovered, checked))
         },
         |_, outcome| {
@@ -269,6 +276,49 @@ fn check_functions(
         Ok(constraints)
     } else {
         Err(diagnostics.into_vec())
+    }
+}
+
+fn default_parameter_hint(
+    module: &CheckedModule,
+    function: &crate::check::CheckedFunction,
+    error: &mut Diagnostic,
+) {
+    if error.code != "E1012"
+        || error.message != "cannot move a non-Copy value out of a reference"
+        || !function.read_by_default.iter().any(|read| *read)
+    {
+        return;
+    }
+    let mut pending = vec![&function.body];
+    while let Some(expression) = pending.pop() {
+        if expression.span == error.span {
+            let mut root = expression;
+            loop {
+                match &root.kind {
+                    E::Field(value, _) | E::Dereference(value) => root = value,
+                    E::RecordUpdate { base, .. } => root = base,
+                    _ => break,
+                }
+            }
+            if let E::Local(id) = root.kind
+                && let Some((index, parameter)) = function
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .find(|(_, parameter)| parameter.id == id)
+                && function.read_by_default.get(index) == Some(&true)
+                && let Type::Reference(inner, _) = &parameter.ty
+            {
+                crate::check::read_only_hint(
+                    error,
+                    &parameter.name,
+                    &inner.display(&module.types()),
+                );
+                return;
+            }
+        }
+        pending.extend(expression.children());
     }
 }
 
@@ -1396,15 +1446,19 @@ impl<'a> Checker<'a, '_> {
                 ),
             );
         }
+        if usage == Use::Write && Some(place.root) == self.drop_root {
+            return Err(error(
+                "E1012",
+                if place.fields.is_empty() {
+                    "cannot replace the whole value inside Drop.drop; read or borrow its fields instead"
+                } else {
+                    "cannot assign to a field or element inside Drop.drop; read or borrow its fields instead"
+                },
+                span,
+            ));
+        }
         // Replacing the value reruns this drop, and a `ref mut` callee could replace it too.
         if place.fields.is_empty() {
-            if usage == Use::Write && Some(place.root) == self.drop_root {
-                return Err(error(
-                    "E1012",
-                    "cannot replace the whole value inside Drop.drop; read or borrow its fields instead",
-                    span,
-                ));
-            }
             // A move of the parameter (`usize::MAX - drop_root`) passes the reference on.
             if (usage == Use::MutBorrow && Some(place.root) == self.drop_root)
                 || (usage == Use::Consume && Some(usize::MAX - place.root) == self.drop_root)
@@ -1433,7 +1487,7 @@ impl<'a> Checker<'a, '_> {
             } else {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
-            if !mutable || !unmarked_fields(place).is_empty() {
+            if !mutable || (usage != Use::Write && !unmarked_fields(place).is_empty()) {
                 return self.report(place, error(
                     "E1014",
                     "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
@@ -2472,11 +2526,16 @@ impl<'a> Checker<'a, '_> {
                 let value = self.eval(value, Use::Consume, &during)?;
                 self.held.push(value.clone());
                 for (place, via) in self.exclusive_places(place, &during)? {
+                    if !unmarked_fields(&place).is_empty() {
+                        self.access(&place, &via, Use::Borrow, expression.span)?;
+                    }
                     self.access(&place, &via, Use::Write, expression.span)?;
-                    if value
-                        .loans
-                        .iter()
-                        .any(|id| self.loans[*id].place.overlaps(&place))
+                    if value.loans.iter().any(|id| {
+                        let source = &self.loans[*id].place;
+                        source.overlaps(&place)
+                            || (!unmarked_fields(&place).is_empty()
+                                && source.root == place.root)
+                    })
                     {
                         return Err(error(
                             "E1013",
@@ -2489,7 +2548,14 @@ impl<'a> Checker<'a, '_> {
                         .generic_moves
                         .retain(|moved, _| !moved.overlaps(&place));
                     if via.is_empty() {
-                        self.state.locals.get_mut(&place.root).unwrap().1 = value.clone();
+                        let stored = &mut self.state.locals.get_mut(&place.root).unwrap().1;
+                        if place.fields.is_empty() {
+                            *stored = value.clone();
+                        } else {
+                            join(stored, value.clone());
+                            stored.regions = None;
+                            stored.closed_result = [false; 2];
+                        }
                     } else if !value.loans.is_empty() {
                         self.store_through(&place, &value, expression.span)?;
                     }

@@ -1,8 +1,8 @@
-def same :: i64 -> i64
+def same :: own i64 -> i64
 fn same x = x
-def add :: i64 -> i64 -> i64
+def add :: own i64 -> own i64 -> i64
 fn add x y = x + y
-def rec count :: i64 -> i64 -> i64
+def rec count :: own i64 -> own i64 -> i64
 fn rec count n acc =
     if n == 0 then
         acc

@@ -3,26 +3,26 @@
 // WebAssembly, with and without `--wasm-feature tail-call`, and runs it.
 
 // Two functions that call each other, returning a bool (an `i1`).
-def rec even :: i64 -> bool
-def and odd :: i64 -> bool
+def rec even :: own i64 -> bool
+def and odd :: own i64 -> bool
 fn rec even n = if n == 0 then true else odd (n - 1)
 and odd n = if n == 0 then false else even (n - 1)
 
 // Three functions in a cycle, each adding 1, so the result is the depth.
-def rec ca :: i64 -> i64 -> i64
-def and cb :: i64 -> i64 -> i64
-def and cc :: i64 -> i64 -> i64
+def rec ca :: own i64 -> own i64 -> i64
+def and cb :: own i64 -> own i64 -> i64
+def and cc :: own i64 -> own i64 -> i64
 fn rec ca n acc = if n == 0 then acc else cb (n - 1) (acc + 1)
 and cb n acc = if n == 0 then acc else cc (n - 1) (acc + 1)
 and cc n acc = if n == 0 then acc else ca (n - 1) (acc + 1)
 
-export def stack_even :: i64 -> i64
+export def stack_even :: own i64 -> i64
 fn stack_even n = if even n then 1 else 0
 
-export def stack_cycle :: i64 -> i64
+export def stack_cycle :: own i64 -> i64
 fn stack_cycle n = ca n 0
 
-def main :: unit -> i32 = \() ->
+def main :: own unit -> i32 = \() ->
     do! IO.write_line (stack_even 10000000)
     do! IO.write_line (stack_cycle 10000000)
     0

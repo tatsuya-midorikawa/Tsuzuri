@@ -1,53 +1,53 @@
-export def vector_i8 :: i64 -> i64 -> i64
+export def vector_i8 :: own i64 -> own i64 -> i64
 fn vector_i8 seed shift =
     let base: i8x16 = Simd.splat (seed as i8)
     let values = Simd.replace base 0 ((seed + 7) as i8)
     let shifts: i8x16 = Simd.splat (shift as i8)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def vector_i8u :: i64 -> i64 -> i64
+export def vector_i8u :: own i64 -> own i64 -> i64
 fn vector_i8u seed shift =
     let base: i8ux16 = Simd.splat (seed as ubyte)
     let values = Simd.replace base 0 ((seed + 7) as ubyte)
     let shifts: i8ux16 = Simd.splat (shift as ubyte)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def vector_i16 :: i64 -> i64 -> i64
+export def vector_i16 :: own i64 -> own i64 -> i64
 fn vector_i16 seed shift =
     let base: i16x8 = Simd.splat (seed as i16)
     let values = Simd.replace base 0 ((seed + 7) as i16)
     let shifts: i16x8 = Simd.splat (shift as i16)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def vector_i16u :: i64 -> i64 -> i64
+export def vector_i16u :: own i64 -> own i64 -> i64
 fn vector_i16u seed shift =
     let base: i16ux8 = Simd.splat (seed as i16u)
     let values = Simd.replace base 0 ((seed + 7) as i16u)
     let shifts: i16ux8 = Simd.splat (shift as i16u)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def vector_i32 :: i64 -> i64 -> i64
+export def vector_i32 :: own i64 -> own i64 -> i64
 fn vector_i32 seed shift =
     let base: i32x4 = Simd.splat (seed as i32)
     let values = Simd.replace base 0 ((seed + 7) as i32)
     let shifts: i32x4 = Simd.splat (shift as i32)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def vector_i32u :: i64 -> i64 -> i64
+export def vector_i32u :: own i64 -> own i64 -> i64
 fn vector_i32u seed shift =
     let base: i32ux4 = Simd.splat (seed as i32u)
     let values = Simd.replace base 0 ((seed + 7) as i32u)
     let shifts: i32ux4 = Simd.splat (shift as i32u)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def vector_i64 :: i64 -> i64 -> i64
+export def vector_i64 :: own i64 -> own i64 -> i64
 fn vector_i64 seed shift =
     let base: i64x2 = Simd.splat seed
     let values = Simd.replace base 0 (seed + 7)
     let shifts: i64x2 = Simd.splat shift
     Simd.sum_lanes ((values * values + values) <<< shifts)
 
-export def vector_i64u :: i64 -> i64 -> i64
+export def vector_i64u :: own i64 -> own i64 -> i64
 fn vector_i64u seed shift =
     let base: i64ux2 = Simd.splat (seed as i64u)
     let values = Simd.replace base 0 ((seed + 7) as i64u)
@@ -96,18 +96,18 @@ fn mask_storage =
     let from_union = match wrapped with | EmptyMask -> Simd.splat false | WithMask (mask, _text) -> mask
     Simd.all values[0].mask && Simd.all from_union && !(Simd.any (~mask))
 
-export def simd_load :: i64 -> i64
+export def simd_load :: own i64 -> i64
 fn simd_load index =
     let data = [1i32, 2i32, 3i32, 4i32, 5i32, 6i32, 7i32, 8i32]
     let vector: i32x4 = Simd.load (ref data[0..8]) index
     (Simd.sum_lanes vector) as i64
 
-export def simd_extract_trap :: i64 -> i64
+export def simd_extract_trap :: own i64 -> i64
 fn simd_extract_trap index =
     let vector: i32x4 = Simd.splat 1i32
     (Simd.extract vector index) as i64
 
-export def operator_method :: i64 -> i64
+export def operator_method :: own i64 -> i64
 fn operator_method value =
     let left: i64x2 = Simd.splat value
     let right: i64x2 = Simd.splat 1
@@ -115,56 +115,56 @@ fn operator_method value =
     assert (Simd.all (Simd.eq sum (left + right)))
     Simd.extract sum 0
 
-export def wide_i8 :: i64 -> i64 -> i64
+export def wide_i8 :: own i64 -> own i64 -> i64
 fn wide_i8 seed shift =
     let base: i8x32 = Simd.splat (seed as i8)
     let values = Simd.replace base 0 ((seed + 7) as i8)
     let shifts: i8x32 = Simd.splat (shift as i8)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def wide_i8u :: i64 -> i64 -> i64
+export def wide_i8u :: own i64 -> own i64 -> i64
 fn wide_i8u seed shift =
     let base: i8ux32 = Simd.splat (seed as ubyte)
     let values = Simd.replace base 0 ((seed + 7) as ubyte)
     let shifts: i8ux32 = Simd.splat (shift as ubyte)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def wide_i16 :: i64 -> i64 -> i64
+export def wide_i16 :: own i64 -> own i64 -> i64
 fn wide_i16 seed shift =
     let base: i16x16 = Simd.splat (seed as i16)
     let values = Simd.replace base 0 ((seed + 7) as i16)
     let shifts: i16x16 = Simd.splat (shift as i16)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def wide_i16u :: i64 -> i64 -> i64
+export def wide_i16u :: own i64 -> own i64 -> i64
 fn wide_i16u seed shift =
     let base: i16ux16 = Simd.splat (seed as i16u)
     let values = Simd.replace base 0 ((seed + 7) as i16u)
     let shifts: i16ux16 = Simd.splat (shift as i16u)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def wide_i32 :: i64 -> i64 -> i64
+export def wide_i32 :: own i64 -> own i64 -> i64
 fn wide_i32 seed shift =
     let base: i32x8 = Simd.splat (seed as i32)
     let values = Simd.replace base 0 ((seed + 7) as i32)
     let shifts: i32x8 = Simd.splat (shift as i32)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def wide_i32u :: i64 -> i64 -> i64
+export def wide_i32u :: own i64 -> own i64 -> i64
 fn wide_i32u seed shift =
     let base: i32ux8 = Simd.splat (seed as i32u)
     let values = Simd.replace base 0 ((seed + 7) as i32u)
     let shifts: i32ux8 = Simd.splat (shift as i32u)
     (Simd.sum_lanes ((values * values + values) <<< shifts)) as i64
 
-export def wide_i64 :: i64 -> i64 -> i64
+export def wide_i64 :: own i64 -> own i64 -> i64
 fn wide_i64 seed shift =
     let base: i64x4 = Simd.splat seed
     let values = Simd.replace base 0 (seed + 7)
     let shifts: i64x4 = Simd.splat shift
     Simd.sum_lanes ((values * values + values) <<< shifts)
 
-export def wide_i64u :: i64 -> i64 -> i64
+export def wide_i64u :: own i64 -> own i64 -> i64
 fn wide_i64u seed shift =
     let base: i64ux4 = Simd.splat (seed as i64u)
     let values = Simd.replace base 0 ((seed + 7) as i64u)
@@ -204,13 +204,13 @@ fn wide_storage =
     let _list = [|vector|]
     (Simd.extract vectors[1] 7) as i64 + 28 + score * 1000
 
-export def wide_load :: i64 -> i64
+export def wide_load :: own i64 -> i64
 fn wide_load index =
     let data = [1, 2, 3, 4, 5, 6, 7, 8]
     let vector: i64x4 = Simd.load (ref data) index
     Simd.sum_lanes vector
 
-export def simd_store :: i64 -> i64
+export def simd_store :: own i64 -> i64
 fn simd_store index =
     let mut data = [0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32]
     let vector: i32x8 = Simd.of_lanes8 1i32 2i32 3i32 4i32 5i32 6i32 7i32 8i32
@@ -219,7 +219,7 @@ fn simd_store index =
     for value in data do total = total * 3 + (value as i64)
     total
 
-export def simd_store_narrow :: i64 -> i64
+export def simd_store_narrow :: own i64 -> i64
 fn simd_store_narrow index =
     let mut data: [f64] = [0.0, 0.0, 0.0, 0.0]
     let vector: f64x2 = Simd.of_lanes2 1.5 2.5

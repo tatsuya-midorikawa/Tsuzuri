@@ -24,7 +24,7 @@ fn mutable_bind_two = Fused { let! mut left: i64 = 20 and! right: i64 = 21; retu
 export def merge_fallback :: i64
 fn merge_fallback = Merged { let! left = 20 and! right = 22; return left + right }
 
-private def stamp :: ref mut i64 -> i64 -> i64
+private def stamp :: ref mut i64 -> own i64 -> i64
 fn stamp state digit =
     deref state = deref state * 10 + digit
     digit
@@ -50,7 +50,7 @@ fn strict_none =
 export def mutable_group :: i64
 fn mutable_group = Merged { let! mut left: i64 = 20 and! right: i64 = 21; left = left + 1; return left + right }
 
-export def owned_match :: i64 -> i64
+export def owned_match :: own i64 -> i64
 fn owned_match count =
     let mut total = 0
     let mut index = 0

@@ -10,5 +10,5 @@ instance Err<Exception> {
 }
 
 /// The exception that a checked operation raised with the runtime code `code`.
-private def of_code :: i32 -> Exception = \_code ->
+private def of_code :: own i32 -> Exception = \_code ->
     Exception { kind: OverflowException, msg: "Arithmetic operation resulted in an overflow." }

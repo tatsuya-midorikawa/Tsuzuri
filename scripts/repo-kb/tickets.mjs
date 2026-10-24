@@ -78,7 +78,7 @@ export function parseTicket(ctx, path, completed) {
     const sizeRaw = meta.get('規模') ?? '';
     const size = /(?<![A-Za-z])(XL|S|M|L)(?![A-Za-z])/.exec(sizeRaw)?.[1] ?? null;
     const stateRaw = meta.get('状態') ?? '';
-    const stateCell = /^(todo|done)/.exec(stateRaw)?.[1] ?? 'unknown';
+    const stateCell = /^(todo|doing|done|blocked)/.exec(stateRaw)?.[1] ?? 'unknown';
     if (table) {
         if (!priority) warn(`ticket_field_invalid ${id}: priority`);
         if (!size) warn(`ticket_field_invalid ${id}: size`);

@@ -10,36 +10,36 @@ record Ledger { open: bool, name: string, level: i8, entries: [i64] }
 record Wide { a: i8, v: f32x8, b: i8 }
 union Slot = Vacant | Held of Gauge | Both of Gauge * Spread
 
-def flags :: Ord<'a> => 'a -> 'a -> i64
+def flags :: Ord<'a> => own 'a -> own 'a -> i64
 fn flags left right =
     (if left == right then 1 else 0) + (if left != right then 2 else 0) +
     (if left < right then 4 else 0) + (if left <= right then 8 else 0) +
     (if left > right then 16 else 0) + (if left >= right then 32 else 0)
 
-def gauge_of :: i64 -> Gauge
+def gauge_of :: own i64 -> Gauge
 fn gauge_of n = Gauge { ratio: (n as f64) / 4.0, tag: (n % 100) as i8, flag: n % 2 == 0, count: n * 1000003 }
 
 def gauge_sum :: ref Gauge -> i64
 fn gauge_sum g = (if g.flag then 1 else 0) + g.count * 3 + (g.tag as i64) * 5 + ((g.ratio * 8.0) as i64) * 7
 
-export def gauges :: i64 -> i64
+export def gauges :: own i64 -> i64
 fn gauges n =
     let g = gauge_of n
     gauge_sum (ref g)
 
-export def updates :: i64 -> i64
+export def updates :: own i64 -> i64
 fn updates n =
     let g = gauge_of n
     let h = { g with count = g.count + 1, tag = 9 }
     gauge_sum (ref h) * 10007 + gauge_sum (ref g)
 
-export def captured :: i64 -> i64
+export def captured :: own i64 -> i64
 fn captured n =
     let g = gauge_of n
     let probe = \() -> gauge_sum (ref g)
     probe () + probe ()
 
-export def tasked :: i64 -> i64
+export def tasked :: own i64 -> i64
 fn tasked n =
     let g = Task.run (task { return gauge_of n })
     gauge_sum (ref g)
@@ -47,35 +47,35 @@ fn tasked n =
 def lend_tag :: ref i8 -> i64
 fn lend_tag t = deref t as i64
 
-export def borrowed :: i64 -> i64
+export def borrowed :: own i64 -> i64
 fn borrowed n =
     let g = gauge_of n
     lend_tag (ref g.tag) * 1000 + (if g.flag then 1 else 0)
 
-export def ordered :: i64 -> i64
+export def ordered :: own i64 -> i64
 fn ordered count =
     let all = new [Keyed](count, i -> keyed ((i * 41) % 5) ((i * 7919) % 101) (i % 3))
     let sorted = Array.sort (ref all)
     if count == 0 then 0 else keyed_code sorted[0] + keyed_code sorted[count - 1] * 100000000
 
-def keyed :: i64 -> i64 -> i64 -> Keyed
+def keyed :: own i64 -> own i64 -> own i64 -> Keyed
 fn keyed a b c = Keyed { a: a as i8, b: b, c: c as i8 }
 
-def keyed_code :: Keyed -> i64
+def keyed_code :: own Keyed -> i64
 fn keyed_code k = (k.a as i64) * 1000000 + k.b * 1000 + (k.c as i64)
 
-export def keyed_flags :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64
+export def keyed_flags :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn keyed_flags a1 b1 c1 a2 b2 c2 = flags (keyed a1 b1 c1) (keyed a2 b2 c2)
 
-export def keyed_hash :: i64 -> i64 -> i64 -> i64
+export def keyed_hash :: own i64 -> own i64 -> own i64 -> i64
 fn keyed_hash a b c = Hash.hash (ref (keyed a b c)) as i64
 
-export def keyed_display :: i64 -> i64 -> i64 -> i64
+export def keyed_display :: own i64 -> own i64 -> own i64 -> i64
 fn keyed_display a b c =
     let text = Display.display (ref (keyed a b c))
     Hash.hash (ref text) as i64
 
-export def keyed_map :: i64 -> i64
+export def keyed_map :: own i64 -> i64
 fn keyed_map count =
     let mut map: HashMap<Keyed, i64> = HashMap.empty()
     let mut step = 0
@@ -85,25 +85,25 @@ fn keyed_map count =
     let probe = keyed 1 4 4
     HashMap.length (ref map) * 1000 + (if HashMap.contains_key probe (ref map) then deref (HashMap.at probe (ref map)) else -1)
 
-def spread_of :: i64 -> Spread
+def spread_of :: own i64 -> Spread
 fn spread_of i = Spread { a: (i % 7) as i8, b: i * 1000 + 17, c: (i % 5) as i8, d: (i * 3) as i32, e: i % 3 == 0 }
 
 def spread_sum :: ref Spread -> i64
 fn spread_sum s = (s.a as i64) + s.b * 2 + (s.c as i64) * 3 + (s.d as i64) * 5 + (if s.e then 7 else 0)
 
-export def spreads :: i64 -> i64
+export def spreads :: own i64 -> i64
 fn spreads count =
     let all = new [Spread](count, i -> spread_of i)
-    let total = Array.fold (sum -> s -> sum + spread_sum (ref s)) 0 (ref all)
+    let total = Array.fold_owned (sum -> s -> sum + spread_sum (ref s)) 0 (ref all)
     if count == 0 then total else total * 100 + all[count - 1].d as i64
 
-export def crates :: i64 -> i64
+export def crates :: own i64 -> i64
 fn crates n =
     let c = Crate { first: n % 2 == 0, inner: gauge_of n, last: (n * 11) as i16 }
     let d = { c with last = (n * 13) as i16 }
     (if c.first then 1 else 0) + gauge_sum (ref c.inner) * 3 + (c.last as i64) * 5 + (d.last as i64) * 7 + (d.inner.tag as i64)
 
-export def cargos :: i64 -> i64
+export def cargos :: own i64 -> i64
 fn cargos n =
     let wide: Cargo<i64> = Cargo { first: n % 2 == 0, value: n * 3, last: n % 3 == 0 }
     let text = Cargo { first: true, value: "cargo" + to_string n, last: false }
@@ -111,19 +111,19 @@ fn cargos n =
     let marks = (if wide.first then 1 else 0) + (if wide.last then 2 else 0) + (if text.first then 4 else 0) + (if text.last then 8 else 0) + (if flag.first then 16 else 0) + (if flag.last then 32 else 0)
     wide.value * 1000 + text.value.length * 100 + (if flag.value then 64 else 0) + marks
 
-def ledger_of :: i64 -> Ledger
+def ledger_of :: own i64 -> Ledger
 fn ledger_of n = Ledger { open: n % 2 == 0, name: "ledger" + to_string n, level: (n % 50) as i8, entries: [n, n + 1, n + 2] }
 
 def ledger_sum :: ref Ledger -> i64
 fn ledger_sum l = (if l.open then 1 else 0) + l.name.length * 10 + (l.level as i64) * 100 + Array.sum (ref l.entries) * 1000
 
-export def ledgers :: i64 -> i64
+export def ledgers :: own i64 -> i64
 fn ledgers n =
     let l = ledger_of n
     ledger_sum (ref l)
 
 // A field moves out of a local record and the other fields stay usable.
-export def moved :: i64 -> i64
+export def moved :: own i64 -> i64
 fn moved n =
     let l = ledger_of n
     let name = l.name
@@ -131,36 +131,36 @@ fn moved n =
     name.length * 1000 + (level as i64) + Array.sum (ref l.entries) * 100000
 
 // A field of a record that is not stored anywhere: the rest of it is dropped.
-export def projected :: i64 -> i64
+export def projected :: own i64 -> i64
 fn projected n = (ledger_of n).name.length * 10 + (ledger_of n).level as i64
 
-export def replaced :: i64 -> i64
+export def replaced :: own i64 -> i64
 fn replaced n =
     let l = ledger_of n
     let m = { l with level = 9, open = true }
     ledger_sum (ref m)
 
-export def ledger_array :: i64 -> i64
+export def ledger_array :: own i64 -> i64
 fn ledger_array count =
     let all = new [Ledger](count, i -> ledger_of i)
     Array.foldr (total -> l -> total + ledger_sum l) 0 (ref all) + Array.length (ref all)
 
 record Rows { open: bool, entries: [i64], level: i8 }
 
-def rows_of :: i64 -> Rows
+def rows_of :: own i64 -> Rows
 fn rows_of n = Rows { open: n % 2 == 0, entries: [n, n + 1, n + 2], level: (n % 50) as i8 }
 
 def rows_sum :: ref Rows -> i64
 fn rows_sum r = (if r.open then 1 else 0) + (r.level as i64) * 100 + Array.sum (ref r.entries) * 1000
 
 // Copying an array of records copies the arrays inside each of them.
-export def row_copies :: i64 -> i64
+export def row_copies :: own i64 -> i64
 fn row_copies count =
     let all = new [Rows](count, i -> rows_of i)
     let copied = Array.copy (ref all)
     Array.foldr (total -> r -> total + rows_sum r) 0 (ref all) + Array.foldr (total -> r -> total + rows_sum r) 0 (ref copied) * 3
 
-def slot_of :: i64 -> Slot
+def slot_of :: own i64 -> Slot
 fn slot_of n = if n % 3 == 0 then Vacant elif n % 3 == 1 then Held (gauge_of n) else Both (gauge_of n, spread_of n)
 
 def slot_sum :: ref Slot -> i64
@@ -170,7 +170,7 @@ fn slot_sum s =
     | Held g -> 2 + gauge_sum (ref g)
     | Both (g, p) -> 3 + gauge_sum (ref g) + spread_sum (ref p)
 
-export def slots :: i64 -> i64
+export def slots :: own i64 -> i64
 fn slots count =
     let all = new [Slot](count, i -> slot_of i)
     let mut total = 0
@@ -178,14 +178,14 @@ fn slots count =
         total = total + slot_sum (ref item)
     total
 
-export def options :: i64 -> i64
+export def options :: own i64 -> i64
 fn options n =
     let some: Maybe<Gauge> = if n % 2 == 0 then Some (gauge_of n) else None
     match some with
     | Some g -> gauge_sum (ref g)
     | None -> -1
 
-export def lanes :: i64 -> i64
+export def lanes :: own i64 -> i64
 fn lanes n =
     let v: f32x8 = Simd.splat (n as f32)
     let w = Wide { a: 3, v: v, b: 5 }
@@ -195,5 +195,5 @@ fn lanes n =
 const Origin: Gauge = Gauge { flag: true, count: 42, tag: 7, ratio: 2.5 }
 const Pins: [Spread] = [Spread { a: 1, b: 2, c: 3, d: 4, e: true }, Spread { a: 5, b: 6, c: 7, d: 8, e: false }]
 
-export def statics :: i64 -> i64
+export def statics :: own i64 -> i64
 fn statics n = gauge_sum (ref Origin) + spread_sum (ref Pins[n % 2]) * 1000 + Origin.count * n

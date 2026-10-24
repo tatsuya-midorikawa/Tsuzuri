@@ -62,7 +62,7 @@ count=100 sum=4950
 `Task.parallel` で作ったタスクのように、借用を持ち込めない場所では、`Arc<Mutex<T>>` を `Arc.share` してタスクごとに渡します。`T` が `Send` なら、`Mutex<T>` は `Sync` なので、`Arc<Mutex<T>>` は `Send` です（`Arc<T>` は `T` が `Send` かつ `Sync` のとき `Send` です）。
 
 ```tsuzuri run=total%3D36%20owners%3D1
-def bump :: Arc<Mutex<i64>> -> i64 -> Task<i64>
+def bump :: own Arc<Mutex<i64>> -> i64 -> Task<i64>
 fn bump shared amount = task {
     return Mutex.with_lock (Arc.get (ref shared)) (value -> { deref value = deref value + amount; amount })
 }

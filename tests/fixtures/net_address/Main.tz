@@ -5,19 +5,19 @@ fn show input =
 	| Maybe.None -> "none"
 
 /// One line for each input: the text of the parsed address, or "none".
-def render :: unit -> string
+def render :: own unit -> string
 fn render _unit =
 	let inputs = Corpus.inputs ()
 	let mut lines: Vec<string> = Vec.with_capacity inputs.length
 	let mut index = 0
 	while index < inputs.length do
-		lines = Vec.push (show (ref inputs[index])) lines
+		lines = Vec.push_owned (show (ref inputs[index])) lines
 		index = index + 1
 	let separator = "\n"
 	String.join (ref separator) (ref (Vec.to_array lines)) + "\n"
 
 /// `parse_ip` and the accessors, which the corpus does not reach.
-def facts :: unit -> string
+def facts :: own unit -> string
 fn facts _unit =
 	let none = "none"
 	let v4 = Net.parse_ip 8080 (ref "192.0.2.7")
@@ -39,7 +39,7 @@ fn facts _unit =
 		| _ -> true
 	described v4 + "\n" + described v6 + "\n" + described bad_port + "\n" + described negative + "\n" + described bracketed + "\n" + described with_port + "\n" + described top + "\n" + to_string same + " " + to_string differs + "\n"
 
-def main :: unit -> i32 = \() ->
+def main :: own unit -> i32 = \() ->
 	do! IO.write (render ())
 	do! IO.write (facts ())
 	0

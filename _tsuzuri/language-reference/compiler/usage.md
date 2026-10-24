@@ -480,6 +480,26 @@ tsuzuri doc demo -o demo-docs
 
 `demo-docs/index.md` がモジュール一覧、`demo-docs/Main.md` が各宣言です。印の `.tsuzuri-docs` も置きます。`Main.tz` がないライブラリディレクトリでも生成できます。
 
+### fix
+
+旧版の値渡しの契約を保って edition を移行します。所有する引数を `own` で明示し、
+Array／List の値 callback と消費する `Vec.push` を `_owned` 入口へ変更します。
+同名の利用者定義や依存パッケージは書き換えません。
+
+```sh
+tsuzuri fix --edition 2027 --from 2026 --dry-run app/
+tsuzuri fix --edition 2027 --from 2026 app/
+```
+
+`--edition YEAR` は移行先、`--from YEAR` は旧版です。既存 manifest の旧版と違う `--from` は拒否し、
+manifest のない旧入力には `--from 2026` を使います。`--dry-run` は書かずに差分を確認し、
+`--json` は決定的な変更一覧を JSON で出します。所有権が不要そうな本体でも、勝手に読み取りへ変更しません。
+全体を対象版で再検査し、誤りがあれば何も書きません。通常ファイルと内容の一致を確認して atomic に置換し、
+manifest の edition は最後に更新します。途中の書き込み失敗は既に置換したファイルを戻します。
+単一ファイルの入力では、そのファイルだけを変え、package の版は変えません。
+埋め込みソースに一致する開発用 std の移行も検査できますが、依存の std コピーを変更する操作ではありません。
+これは一般の警告修正や、非正準形を拒否する A22 の移行ではありません。
+
 ### api-diff
 
 パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で標準出力へ出します。版を上げる前や公開の前に、互換性のない変更を見つけるためのコマンドです。
@@ -509,7 +529,7 @@ union Light = Red | Green
 
 def twice :: i64 -> i64 = \n -> n * 2
 
-def scale :: Ord<'a> => 'a -> 'a -> 'a = \a b -> if a < b then b else a
+def scale :: Ord<'a> => own 'a -> own 'a -> 'a = \a b -> if a < b then b else a
 ```
 
 1.3.0 の `Tsuzuri.toml` は `version = "1.3.0"` だけが違います。
@@ -527,7 +547,7 @@ def twice :: i64 -> i64 = \n -> n * 2
 
 def double :: i64 -> i64 = \n -> n * 2
 
-def scale :: Ord<'t> => 't -> 't -> 't = \a b -> if a < b then b else a
+def scale :: Ord<'t> => own 't -> own 't -> 't = \a b -> if a < b then b else a
 ```
 
 2 つのディレクトリを比べると、次のように出ます。互換性のない変更があるので、終了コードは 1 です。
@@ -550,6 +570,10 @@ note: version 1.3.0 is compatible with 1.2.0, so registry dependents that accept
 - **構文解析だけ**: 型検査はしません。本体に型エラーがあっても、構文が正しければ比べられます。構文エラーは、その場所への診断で終了コード 1 です。git と registry の依存は取得せず、`Tsuzuri.lock` も読みません。
 - **名前**: `名前空間::モジュール.宣言` です（`Geometry::Shapes.area`）。record の field、union の case、class のメソッドは、宣言の名前の後ろに `.名前` を付けます（`Geometry::Shapes.Point.z`）。`instance` も宣言したモジュールで修飾し（`Geometry::Shapes.Show<Box<i64>>`。同じ綴りの instance が別のモジュールにあっても区別するためで、instance を別のモジュールへ移すと削除と追加として報告します）、アクティブパターンは `(|Even|Odd|)` が名前です。
 - **署名**: `tsuzuri doc` が出す形を、型変数と region と、宣言した長さパラメーター（`const N: i64`）の名前を、最初に出てきた順の連番に置き換えて比べます。`'a` と `'t` の違いも、`Grid<const N: i64>` と `Grid<const M: i64>` の違いも変更ではありません。宣言していない名前が長さの位置にあれば定数なので、`[i64; Small]` と `[i64; Large]` は別の型です。制約の順序と、定義のラムダが受け取る引数の個数（`\x y ->` と `\x -> \y ->`）も違いにしません。メッセージには、それぞれの版で書かれたとおりの署名を出します。
+- **引数規約**: 通常の `def` に無印・非可変の引数があり、edition による既定が変わる場合は、
+  署名の綴りが同じでも保守的に breaking とします。型や alias は解決しないため、実際には値渡しのままの
+  scalar や generic な引数にも出ることがあります。明示の `own`／`ref`、region の契約、
+  `const def` のように既定を使わない引数はこの判定の対象にしません。
 - **名前空間や名前の変更**: モジュールの名前空間とパッケージの `namespace` は宣言の名前の一部です。変えるとすべての宣言が削除と追加になり、`changed namespace` の行が 1 行足されます。モジュールの改名も削除と追加で、改名は検出しません。マニフェストのない入力は、ディレクトリ名で決まる名前空間を持たないものとして比べます。
 
 #### 変更の分類

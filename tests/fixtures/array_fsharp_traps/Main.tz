@@ -1,10 +1,10 @@
 // Every test here must trap: the F# exceptions of `Array` (ArgumentException, KeyNotFoundException, IndexOutOfRangeException,
 // InvalidOperationException) are traps in Tsuzuri. A test that does not trap passes, so the harness expects every test to fail.
 
-private def sink :: 'a -> unit
+private def sink :: own 'a -> unit
 fn sink _value = ()
 
-private def zeros :: i64 -> [i64]
+private def zeros :: own i64 -> [i64]
 fn zeros count = Array.zero_create count
 
 const no_ints: [i64] = []
@@ -142,17 +142,17 @@ test "random_sample_with more than the length" = sink (Array.random_sample_with 
 
 // ---- The actions run: a callback that fails must be reached ----
 
-test "iter reaches the last element" = Array.iter (\x -> assert (x < 3)) ints
-test "iteri passes the index" = Array.iteri (\i x -> assert (x == i)) ints
+test "iter reaches the last element" = Array.iter_owned (\x -> assert (x < 3)) ints
+test "iteri passes the index" = Array.iteri_owned (\i x -> assert (x == i)) ints
 test "iter2 pairs the elements" = Array.iter2 (\a b -> assert (a == b + 1)) ints ints
 test "iteri2 passes the index" = Array.iteri2 (\i a b -> assert (i == a + b)) ints ints
 test "iterr reaches the last element" = Array.iterr (\x -> assert (*x < 3)) ints
 test "iterir passes the index" = Array.iterir (\i x -> assert (i == *x)) ints
-test "map reaches every element" = sink (Array.map (\x -> { assert (x < 3); x }) ints)
+test "map reaches every element" = sink (Array.map_owned (\x -> { assert (x < 3); x }) ints)
 test "exists reaches every element" = sink (Array.exists (\x -> { assert (x < 3); false }) ints)
 test "forall reaches every element" = sink (Array.forall (\x -> { assert (x < 3); true }) ints)
-test "fold reaches every element" = sink (Array.fold (\s x -> { assert (x < 3); s + x }) 0 ints)
-test "fold_back reaches the first element" = sink (Array.fold_back (\x s -> { assert (x > 1); s + x }) 0 ints)
+test "fold reaches every element" = sink (Array.fold_owned (\s x -> { assert (x < 3); s + x }) 0 ints)
+test "fold_back reaches the first element" = sink (Array.fold_back_owned (\x s -> { assert (x > 1); s + x }) 0 ints)
 test "filter reaches every element" = sink (Array.filter (\x -> { assert (x < 3); true }) ints)
 test "choose reaches every element" = sink (Array.choose (\x -> { assert (x < 3); Maybe.Some x }) ints)
 test "sort_with calls the comparer" = sink (Array.sort_with (\_a _b -> { assert false; 0 }) ints)

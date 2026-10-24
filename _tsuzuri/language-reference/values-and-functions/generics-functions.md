@@ -17,7 +17,7 @@
 シングルクォートで始まる `'a` や `'value` が型変数です。関数のシグネチャに現れると、その関数は「その変数がどの型でもよい」という全称量化になります。呼び出しのたびに、引数と戻り値から新しい具体化が作られます。
 
 ```tsuzuri run=42
-def identity :: 'a -> 'a = \value -> value
+def identity :: own 'a -> 'a = \value -> value
 
 let number: i64 = identity 42
 number
@@ -29,9 +29,24 @@ number
 42
 ```
 
-同じ `'a` は同一の型を表します。そのため、`'a -> 'a` というシグネチャを持つ関数は、受け取った引数をそのまま返すことしかできません。別の型の値を返したり、型 `'a` のフィールドを勝手に読み取ろうとする関数本体は、たとえ呼び出し側で使われていなくてもコンパイル時に拒否されます。シグネチャを持つ関数は、呼び出しの有無にかかわらず抽象型のまま厳密に静的型検査を受けるためです。
+同じ `'a` は同一の型を表します。そのため、上の `own 'a -> 'a` というシグネチャでは、受け取った値と別の型の値を返せません。型 `'a` のフィールドを勝手に読み取ろうとする関数本体も、たとえ呼び出し側で使われていなくてもコンパイル時に拒否されます。シグネチャを持つ関数は、呼び出しの有無にかかわらず抽象型のまま厳密に静的型検査を受けるためです。
 
 型変数は配列、リスト、参照、関数型、タスクの内部にも自由に使用できます。なお、`'_` のような無名の型変数は字句エラー `E0001` になります。
+
+### edition 2027 の読み取り規約
+
+2027 の通常の `def` では、裸の `'a` も既定で読み取りです。所有値を受け取って返す identity は、
+上の例のように `own 'a` と書きます。読み取りの値を所有する結果として返すには、
+`Copy<'a>` の保証や明示的な複製など、その型に合った操作が必要です。
+型変数のままで検査し、特殊化しても引数の読み取り・所有・排他更新の規約を失いません。
+
+関数型の引数は、関数値そのものを借用して呼び出します。矢印の内側の型は書き換えません。
+要素を借用する callback は `(ref 'a -> 'b)`、値を受け取る callback は `('a -> 'b)` です。
+`Array.map` と `List.map` などの読み取り callback の入口と、
+旧版の値 callback を保つ `_owned` の入口もこの区別に従います。
+`Copy` が必要な演算を、読み取り規約だけを根拠に許可しません。
+具体例と固定署名の例外は[関数の引数の所有権](./functions.md#引数の所有権own-と-edition-2027)を参照してください。
+2026 の無印の型変数・関数型の契約は変わりません。
 
 ## 制約の 3 つの書き方
 
@@ -47,7 +62,7 @@ def add :: 'a -> 'a -> 'a
 `Add<'a> -> 'a -> 'a` の `Add<'a>` は、引数が 1 つ増えたのではありません。`'a` に `Add` を要求する注釈です。右の `'a -> 'a` が実際の関数型です。`=>` 形式は、制約と関数型の境目が矢印の数で見えるので、引数が 2 つ以上のときに読みやすくなります。
 
 ```tsuzuri run=42
-def add :: Add<'a> -> 'a -> 'a = \left right -> left + right
+def add :: own Add<'a> -> own 'a -> 'a = \left right -> left + right
 
 add 20 22
 ```
@@ -61,7 +76,7 @@ add 20 22
 複数の制約は、括弧でまとめて `=>` の左に置くか、`@` 行へ並べます。
 
 ```tsuzuri run=42
-def twice :: (Add<'a>, Copy<'a>) => 'a -> 'a = \value -> value + value
+def twice :: (Add<'a>, Copy<'a>) => own 'a -> 'a = \value -> value + value
 
 twice 21
 ```
@@ -77,7 +92,7 @@ twice 21
 `@` 行は `def` より深くインデントし、複数行にわたる場合は同じ深さに揃えます。型変数、コロン、制約リストは同一行に記述します。
 
 ```tsuzuri run=42
-def increment :: 'a -> 'a
+def increment :: own 'a -> 'a
     @'a : Add, Integer = \value -> value + 1
 
 increment 41
@@ -98,7 +113,7 @@ increment 41
 本体で `+` を使うと `Add` が、複製や配列要素の取り出しで `Copy` が、呼び出している関数の制約も順に推論されます。相互再帰でも、定義順に依存せず伝播します。明示した制約は、推論結果へ追加されます。
 
 ```tsuzuri run=42
-def add :: 'a -> 'a -> 'a = \left right -> left + right
+def add :: own 'a -> own 'a -> 'a = \left right -> left + right
 
 add 20 22
 ```
@@ -133,13 +148,13 @@ flowchart TD
 ```tsuzuri project=priced file=Foo.tz
 record Foo { num: i32 }
 
-def value :: Foo -> i32 = \item -> item.num
+def value :: own Foo -> i32 = \item -> item.num
 ```
 
 `Main.tz`:
 
 ```tsuzuri project=priced file=Main.tz run=30
-def add :: 'T -> 'T -> 'U
+def add :: own 'T -> own 'T -> 'U
     @'T : (#value: 'T -> 'U) = \left right ->
         ('T.value left) + ('T.value right)
 
@@ -170,9 +185,9 @@ def total_of :: 'value -> 'result
 Tsuzuri の多相はランク 1（Rank-1 polymorphism）です。型変数を全称量化できるのは名前付き関数のシグネチャに限定され、高階関数の引数は呼び出し位置ごとに単一の具体的な関数型であることが要求されます。
 
 ```tsuzuri run=42
-def identity :: 'a -> 'a = \value -> value
+def identity :: own 'a -> 'a = \value -> value
 
-def apply :: ('a -> 'b) -> 'a -> 'b = \transform value -> transform value
+def apply :: own ('a -> 'b) -> own 'a -> 'b = \transform value -> transform value
 
 apply identity 42
 ```
@@ -244,4 +259,3 @@ let number: i64 = identity 42
 - [多相関数と型クラス](../../../docs/language.md#多相関数と型クラス)
 - [モジュール関数の制約](../../../docs/language.md#モジュール関数の制約)
 - [言語リファレンスの目次](../index.md)
-

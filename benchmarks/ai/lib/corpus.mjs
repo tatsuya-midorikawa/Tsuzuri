@@ -1,5 +1,5 @@
-import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
+import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -67,5 +67,9 @@ export const isStablePath = (path) => path.startsWith("benchmarks/ai/corpus/");
 export function copyProject(source, target) {
   rmSync(target, { recursive: true, force: true });
   cpSync(source, target, { recursive: true });
+  if (resolve(source).startsWith(resolve(ROOT, "benchmarks/ai/corpus") + sep)) {
+    writeFileSync(resolve(target, "Tsuzuri.toml"),
+      '[package]\nname = "ai-corpus"\nversion = "0.1.0"\nedition = "2026"\n');
+  }
   return target;
 }

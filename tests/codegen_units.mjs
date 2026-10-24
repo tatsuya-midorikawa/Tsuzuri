@@ -809,13 +809,13 @@ const TAIL_FILES = {
   "C.tz": "def rec ca :: i64 -> i64 -> i64\nfn rec ca n acc = if n == 0 then acc else D.cb (n - 1) (acc + 1)\n",
   "D.tz": "def rec cb :: i64 -> i64 -> i64\nfn rec cb n acc = if n == 0 then acc else E.cc (n - 1) (acc + 1)\n",
   "E.tz": "def rec cc :: i64 -> i64 -> i64\nfn rec cc n acc = if n == 0 then acc else C.ca (n - 1) (acc + 1)\n",
-  "Lib.tz": String.raw`def rec hop :: i64 -> 'a -> 'a
-def and skip :: i64 -> 'a -> 'a
+  "Lib.tz": String.raw`def rec hop :: i64 -> own 'a -> 'a
+def and skip :: i64 -> own 'a -> 'a
 fn rec hop n x = if n == 0 then x else skip (n - 1) x
 and skip n x = if n == 0 then x else hop (n - 1) x
 
 def rec tick :: i64 -> i64 -> i64
-def and tock :: i64 -> 'a -> i64
+def and tock :: i64 -> own 'a -> i64
 fn rec tick n acc = if n == 0 then acc else tock (n - 1) (acc + 1)
 and tock n _x = if n == 0 then 100 else tick (n - 1) 5
 `,

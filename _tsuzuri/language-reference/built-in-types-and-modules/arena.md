@@ -22,17 +22,17 @@
 ```tsuzuri run=143
 record Node { value: i64, edges: Vec<Arena.Handle<Node>> }
 
-def link :: Arena.Handle<Node> -> Node -> Node
+def link :: own Arena.Handle<Node> -> own Node -> Node
 fn link target node =
     match node with
-    | Node { value = value, edges = edges } -> Node { value: value, edges: Vec.push target edges }
+    | Node { value = value, edges = edges } -> Node { value: value, edges: Vec.push_owned target edges }
 
 def cycle :: i64
 fn cycle =
     let empty: Arena<Node> = Arena.empty()
     match Arena.insert (Node { value: 1, edges: Vec.empty() }) empty with
     | (with_a, a) ->
-        match Arena.insert (Node { value: 20, edges: Vec.push a (Vec.empty()) }) with_a with
+        match Arena.insert (Node { value: 20, edges: Vec.push_owned a (Vec.empty()) }) with_a with
         | (with_b, b) ->
             let graph = Arena.update a (link b) with_b
             let first = Arena.at a (ref graph)
@@ -124,7 +124,7 @@ for value in 0i64 .. 4 do
     match Arena.insert value arena with
     | (next, handle) ->
         arena = next
-        handles = Vec.push handle handles
+        handles = Vec.push_owned handle handles
 match Arena.remove handles[1] arena with
 | (removed, _one) ->
     match Arena.insert 5 removed with

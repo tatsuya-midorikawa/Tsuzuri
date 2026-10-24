@@ -1266,6 +1266,14 @@ impl Wire for TypeExprKind {
                 out.tag("TypeExprKind", 14);
                 dyn_type.put(out)
             }
+            Own(ty) => {
+                out.tag("TypeExprKind", 15);
+                ty.put(out)
+            }
+            Mut(ty) => {
+                out.tag("TypeExprKind", 16);
+                ty.put(out)
+            }
         }
     }
 
@@ -1299,7 +1307,9 @@ impl Wire for TypeExprKind {
                 Ok(Reference(Box::get(input)?, bool::get(input)?))
             }),
             14 => variant(input, |input| Ok(Dyn(Box::get(input)?))),
-            15..=u8::MAX => Err(Invalid),
+            15 => variant(input, |input| Ok(Own(Box::get(input)?))),
+            16 => variant(input, |input| Ok(Mut(Box::get(input)?))),
+            17..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -2390,6 +2400,8 @@ mod tests {
             def g :: [i64] -> i64 = \\xs ->\n    match xs with\n    | [x; y] -> +x + y\n    | _ -> 0\n\
             def h :: i64 -> bool = \\n ->\n    let rec even = \\m -> if m == 0 then true else odd (m - 1)\n    and odd = \\m -> if m == 0 then false else even (m - 1)\n    even n\n";
         seen.extend(round_trips(patterns, 0).expect("the pattern sample parses"));
+        seen.extend(round_trips("def take :: own string -> i64 = \\s -> s.length\n", 0).unwrap());
+        seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
         // Only the checker, the computation expansion and `Bits.ushr` make these variants.
         let mut program = parse_with_source_all("def f :: i64 = 1\n", 0).unwrap();
         let body = program.functions[0].body.clone();
@@ -2426,7 +2438,7 @@ mod tests {
         for (name, count) in [
             ("ConstraintName", 2),
             ("Kind", 2),
-            ("TypeExprKind", 15),
+            ("TypeExprKind", 17),
             ("StringLiteral", 2),
             ("ExprKind", 46),
             ("PatternKind", 14),

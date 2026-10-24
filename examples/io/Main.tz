@@ -1,4 +1,4 @@
-def main :: unit -> i32 = \() ->
+def main :: own unit -> i32 = \() ->
     do! IO.write "Name: "
     let! line = IO.read_line ()
     let name = Maybe.default_value "world" line

@@ -1,30 +1,30 @@
-def mix :: i64 -> i64 -> i64
+def mix :: own i64 -> own i64 -> i64
 fn mix value salt = (value ^ (Bits.ushr value 13)) * 6364136223846793005 + salt
 
-def bind_step :: i64 -> i64 -> i64
+def bind_step :: own i64 -> own i64 -> i64
 fn bind_step value salt = Identity {
     let! shifted = value ^ (Bits.ushr value 13)
     let! scaled = shifted * 6364136223846793005
     return scaled + salt
 }
 
-def rec bind_loop :: i64 -> i64 -> i64
+def rec bind_loop :: own i64 -> own i64 -> i64
 fn rec bind_loop remaining state =
     if remaining <= 0 { state }
     else { bind_loop (remaining - 1) (bind_step state (1442695040888963407 + remaining)) }
 
-def rec direct_loop :: i64 -> i64 -> i64
+def rec direct_loop :: own i64 -> own i64 -> i64
 fn rec direct_loop remaining state =
     if remaining <= 0 { state }
     else { direct_loop (remaining - 1) (mix state (1442695040888963407 + remaining)) }
 
-export def ce_bind :: i64 -> i64 -> i64
+export def ce_bind :: own i64 -> own i64 -> i64
 fn ce_bind count seed = { assert (count >= 0); bind_loop count seed }
 
-export def direct_bind :: i64 -> i64 -> i64
+export def direct_bind :: own i64 -> own i64 -> i64
 fn direct_bind count seed = { assert (count >= 0); direct_loop count seed }
 
-def checked_step :: i64 -> i64 -> i64
+def checked_step :: own i64 -> own i64 -> i64
 fn checked_step state salt = {
     let result = Checked {
         let! first = Checked.Result { ok: (state & 7) != 0, value: state ^ salt }
@@ -34,7 +34,7 @@ fn checked_step state salt = {
     result.value
 }
 
-def direct_checked_step :: i64 -> i64 -> i64
+def direct_checked_step :: own i64 -> own i64 -> i64
 fn direct_checked_step state salt = {
     let first = state ^ salt;
     if (state & 7) == 0 { first } else {
@@ -43,49 +43,49 @@ fn direct_checked_step state salt = {
     }
 }
 
-def rec checked_loop :: i64 -> i64 -> i64
+def rec checked_loop :: own i64 -> own i64 -> i64
 fn rec checked_loop remaining state =
     if remaining <= 0 { state }
     else { checked_loop (remaining - 1) (checked_step state (1442695040888963407 + remaining)) }
 
-def rec direct_checked_loop :: i64 -> i64 -> i64
+def rec direct_checked_loop :: own i64 -> own i64 -> i64
 fn rec direct_checked_loop remaining state =
     if remaining <= 0 { state }
     else { direct_checked_loop (remaining - 1) (direct_checked_step state (1442695040888963407 + remaining)) }
 
-export def ce_checked :: i64 -> i64 -> i64
+export def ce_checked :: own i64 -> own i64 -> i64
 fn ce_checked count seed = { assert (count >= 0); checked_loop count seed }
 
-export def direct_checked :: i64 -> i64 -> i64
+export def direct_checked :: own i64 -> own i64 -> i64
 fn direct_checked count seed = { assert (count >= 0); direct_checked_loop count seed }
 
-def delayed_step :: i64 -> i64 -> i64
+def delayed_step :: own i64 -> own i64 -> i64
 fn delayed_step state salt = Delayed {
     yield mix state salt
     yield mix (state ^ 71) salt
     return mix (state ^ 113) salt
 }
 
-def direct_delayed_step :: i64 -> i64 -> i64
+def direct_delayed_step :: own i64 -> own i64 -> i64
 fn direct_delayed_step state salt = mix state salt + (mix (state ^ 71) salt + mix (state ^ 113) salt)
 
-def rec delayed_loop :: i64 -> i64 -> i64
+def rec delayed_loop :: own i64 -> own i64 -> i64
 fn rec delayed_loop remaining state =
     if remaining <= 0 { state }
     else { delayed_loop (remaining - 1) (delayed_step state (1442695040888963407 + remaining)) }
 
-def rec direct_delayed_loop :: i64 -> i64 -> i64
+def rec direct_delayed_loop :: own i64 -> own i64 -> i64
 fn rec direct_delayed_loop remaining state =
     if remaining <= 0 { state }
     else { direct_delayed_loop (remaining - 1) (direct_delayed_step state (1442695040888963407 + remaining)) }
 
-export def ce_delayed :: i64 -> i64 -> i64
+export def ce_delayed :: own i64 -> own i64 -> i64
 fn ce_delayed count seed = { assert (count >= 0); delayed_loop count seed }
 
-export def direct_delayed :: i64 -> i64 -> i64
+export def direct_delayed :: own i64 -> own i64 -> i64
 fn direct_delayed count seed = { assert (count >= 0); direct_delayed_loop count seed }
 
-def rec sum :: &[i64] -> i64 -> i64 -> i64 -> i64
+def rec sum :: &[i64] -> own i64 -> own i64 -> own i64 -> i64
 fn rec sum values scale index total =
     if index == values.length { total }
     else {
@@ -93,7 +93,7 @@ fn rec sum values scale index total =
         sum values scale (index + 1) (total + (value ^ (Bits.ushr value 17)) * scale)
     }
 
-export def ce_array_for :: i64 -> i64 -> i64
+export def ce_array_for :: own i64 -> own i64 -> i64
 fn ce_array_for count seed = {
     assert (count >= 0 && count <= 100000000);
     let values = new [i64](count, i -> mix i seed);
@@ -105,14 +105,14 @@ fn ce_array_for count seed = {
     }
 }
 
-export def direct_array_for :: i64 -> i64 -> i64
+export def direct_array_for :: own i64 -> own i64 -> i64
 fn direct_array_for count seed = {
     assert (count >= 0 && count <= 100000000);
     let values = new [i64](count, i -> mix i seed);
     sum (&values) (seed | 1) 0 0
 }
 
-export def ce_array_bind :: i64 -> i64 -> i64
+export def ce_array_bind :: own i64 -> own i64 -> i64
 fn ce_array_bind count seed = {
     assert (count >= 0 && count <= 100000000);
     Identity {
@@ -121,20 +121,20 @@ fn ce_array_bind count seed = {
     }
 }
 
-export def direct_array_bind :: i64 -> i64 -> i64
+export def direct_array_bind :: own i64 -> own i64 -> i64
 fn direct_array_bind count seed = direct_array_for count seed
 
-def rec apply_loop :: i64 -> (i64 -> i64) -> i64 -> i64
+def rec apply_loop :: own i64 -> own (i64 -> i64) -> own i64 -> i64
 fn rec apply_loop remaining next state =
     if remaining <= 0 { state }
     else { apply_loop (remaining - 1) next (next state) }
 
-def rec direct_owned_loop :: i64 -> &[i64] -> i64 -> i64
+def rec direct_owned_loop :: own i64 -> &[i64] -> own i64 -> i64
 fn rec direct_owned_loop remaining values state =
     if remaining <= 0 { state }
     else { direct_owned_loop (remaining - 1) values (mix values[state & 255] state) }
 
-export def ce_owned_capture :: i64 -> i64 -> i64
+export def ce_owned_capture :: own i64 -> own i64 -> i64
 fn ce_owned_capture count seed = {
     assert (count >= 0);
     let values = new [i64](256, i -> mix i seed);
@@ -145,33 +145,33 @@ fn ce_owned_capture count seed = {
     apply_loop count next seed
 }
 
-export def direct_owned_capture :: i64 -> i64 -> i64
+export def direct_owned_capture :: own i64 -> own i64 -> i64
 fn direct_owned_capture count seed = {
     assert (count >= 0);
     let values = new [i64](256, i -> mix i seed);
     direct_owned_loop count (&values) seed
 }
 
-def rec standard_loop :: i64 -> (i64 -> i64 -> i64) -> i64 -> i64
+def rec standard_loop :: own i64 -> own (i64 -> i64 -> i64) -> own i64 -> i64
 fn rec standard_loop remaining next state =
     if remaining <= 0 then state
     else standard_loop (remaining - 1) next (next state (1442695040888963407 + remaining))
 
-def option_step :: i64 -> i64 -> i64
+def option_step :: own i64 -> own i64 -> i64
 fn option_step state salt =
     Maybe.default_value (state ^ salt) (Maybe {
         let! value = if (state & 7) == 0 then None else Some (state ^ salt)
         return mix value salt
     })
 
-def direct_option_step :: i64 -> i64 -> i64
+def direct_option_step :: own i64 -> own i64 -> i64
 fn direct_option_step state salt =
     let value = if (state & 7) == 0 then None else Some (state ^ salt)
     match value with
     | Some value -> mix value salt
     | None -> state ^ salt
 
-def result_step :: i64 -> i64 -> i64
+def result_step :: own i64 -> own i64 -> i64
 fn result_step state salt =
     let result: Result<i64, i64> = Result {
         let! first = if (state & 7) == 0 then Error (state ^ salt) else Ok (state ^ salt)
@@ -180,7 +180,7 @@ fn result_step state salt =
     }
     match result with | Ok value -> value | Error error -> error
 
-def direct_result_step :: i64 -> i64 -> i64
+def direct_result_step :: own i64 -> own i64 -> i64
 fn direct_result_step state salt =
     let first = if (state & 7) == 0 then Error (state ^ salt) else Ok (state ^ salt)
     match first with
@@ -189,7 +189,7 @@ fn direct_result_step state salt =
         let second = if (first & 3) == 0 then Error (mix first salt) else Ok (mix first salt)
         match second with | Error error -> error | Ok second -> second ^ salt
 
-def option_owned_step :: i64 -> i64 -> i64
+def option_owned_step :: own i64 -> own i64 -> i64
 fn option_owned_step state salt =
     let result = Maybe {
         let! text = if (state & 7) == 0 then None else Some ("hello" + " world")
@@ -197,13 +197,13 @@ fn option_owned_step state salt =
     }
     mix state salt ^ Maybe.default_value 0 result
 
-def direct_option_owned_step :: i64 -> i64 -> i64
+def direct_option_owned_step :: own i64 -> own i64 -> i64
 fn direct_option_owned_step state salt =
     let value = if (state & 7) == 0 then None else Some ("hello" + " world")
     let result = match value with | Some text -> (text + "!").length | None -> 0
     mix state salt ^ result
 
-def option_length_step :: i64 -> i64 -> i64
+def option_length_step :: own i64 -> own i64 -> i64
 fn option_length_step state salt =
     let result = Maybe {
         let! length = if (state & 7) == 0 then None else Some 12
@@ -211,26 +211,26 @@ fn option_length_step state salt =
     }
     mix state salt ^ Maybe.default_value 0 result
 
-def direct_option_length_step :: i64 -> i64 -> i64
+def direct_option_length_step :: own i64 -> own i64 -> i64
 fn direct_option_length_step state salt =
     let value = if (state & 7) == 0 then None else Some 12
     let length = match value with | Some length -> length | None -> 0
     mix state salt ^ length
 
-export def ce_std_option :: i64 -> i64 -> i64
+export def ce_std_option :: own i64 -> own i64 -> i64
 fn ce_std_option count seed = { assert (count >= 0); standard_loop count option_step seed }
-export def direct_std_option :: i64 -> i64 -> i64
+export def direct_std_option :: own i64 -> own i64 -> i64
 fn direct_std_option count seed = { assert (count >= 0); standard_loop count direct_option_step seed }
-export def ce_std_result :: i64 -> i64 -> i64
+export def ce_std_result :: own i64 -> own i64 -> i64
 fn ce_std_result count seed = { assert (count >= 0); standard_loop count result_step seed }
-export def direct_std_result :: i64 -> i64 -> i64
+export def direct_std_result :: own i64 -> own i64 -> i64
 fn direct_std_result count seed = { assert (count >= 0); standard_loop count direct_result_step seed }
-export def ce_std_option_owned :: i64 -> i64 -> i64
+export def ce_std_option_owned :: own i64 -> own i64 -> i64
 fn ce_std_option_owned count seed = { assert (count >= 0); standard_loop count option_owned_step seed }
-export def direct_std_option_owned :: i64 -> i64 -> i64
+export def direct_std_option_owned :: own i64 -> own i64 -> i64
 fn direct_std_option_owned count seed = { assert (count >= 0); standard_loop count direct_option_owned_step seed }
 
-export def ce_std_option_length :: i64 -> i64 -> i64
+export def ce_std_option_length :: own i64 -> own i64 -> i64
 fn ce_std_option_length count seed = { assert (count >= 0); standard_loop count option_length_step seed }
-export def direct_std_option_length :: i64 -> i64 -> i64
+export def direct_std_option_length :: own i64 -> own i64 -> i64
 fn direct_std_option_length count seed = { assert (count >= 0); standard_loop count direct_option_length_step seed }

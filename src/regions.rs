@@ -8,6 +8,8 @@ fn children(expression: &TypeExpr) -> Vec<&TypeExpr> {
     match &expression.kind {
         TypeExprKind::Apply(_, arguments) => arguments.iter().collect(),
         TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
         | TypeExprKind::ArrayView(inner)
@@ -23,7 +25,7 @@ fn children(expression: &TypeExpr) -> Vec<&TypeExpr> {
     }
 }
 
-fn has_regions(expression: &TypeExpr) -> bool {
+pub(super) fn has_regions(expression: &TypeExpr) -> bool {
     let mut pending = vec![expression];
     while let Some(expression) = pending.pop() {
         if matches!(

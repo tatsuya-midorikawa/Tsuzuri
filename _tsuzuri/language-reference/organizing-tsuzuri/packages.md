@@ -45,7 +45,7 @@ namespace = "GeometryTools"
 | --- | --- | --- | --- |
 | `name` | 必須 | 文字列 | 小文字の ASCII kebab-case。各要素は英小文字で始まり、続きは英小文字か数字。全体で最大 255 バイト。`app2` は可、`Demo` は `E1011`。 |
 | `version` | 必須 | 文字列 | 空でない版の文字列（例: `"0.1.0"`）。registry に公開するパッケージは `MAJOR.MINOR.PATCH`（先頭の 0 なし）でなければなりません。パス依存と git 依存では版の選択に使いません。 |
-| `edition` | 任意 | 文字列 | 言語版。対応する値は `"2026"` だけです。省略すると `2026` です。ほかの値は `E0002`（`unsupported edition '2030'; supported editions: 2026`）です。 |
+| `edition` | 任意 | 文字列 | 言語版。対応する値は `"2026"` と `"2027"` です。省略すると `2026` です。ほかの値は `E0002`（`unsupported edition '2030'; supported editions: 2026, 2027`）です。 |
 | `namespace` | 任意 | 文字列 | 既定名前空間。`::` でつないだ ASCII 識別子（最大 16 階層、255 バイト）。 |
 
 `namespace` を省略すると、`name` を PascalCase にした名前が既定になります。`geometry-tools` なら `GeometryTools` です。PascalCase は自動変換の形であり、書いた名前が小文字でも、識別子なら受理されます。
@@ -55,7 +55,12 @@ namespace = "GeometryTools"
 
 ### 言語版（edition）
 
-`edition` は、そのパッケージのソースを読むときの予約語の版です。年の名前で、今あるのは `2026` だけなので、`2026` と書いても省略しても読み方は同じです。値を省略したマニフェストの意味は、新しい edition ができても `2026` のままです。
+`edition` は、そのパッケージのソースを読む規則の版です。`2026` と `2027` に対応します。
+値を省略したマニフェストは、新しい edition ができても `2026` のままです。
+2027 は現在の最新で、通常の関数の引数を既定で共有借用にします。manifest のない CLI 入力・script・REPL、
+新規プロジェクトも 2027 です。`own T` は旧版の値渡し、`mut T` は排他借用を明示します。
+旧ソースは [`fix --edition 2027 --from 2026`](../compiler/usage.md#fix) で契約を保って移行できます。
+詳しくは[引数の所有権](../values-and-functions/functions.md#引数の所有権own-と-edition-2027)を参照してください。
 
 ```toml
 [package]
@@ -67,10 +72,14 @@ edition = "2030"
 対応していない値は `E0002` です。ソースは読みません。メッセージが、対応する値を示します。
 
 ```text
-Tsuzuri.toml:1:1: error[E0002]: unsupported edition '2030'; supported editions: 2026
+Tsuzuri.toml:1:1: error[E0002]: unsupported edition '2030'; supported editions: 2026, 2027
 ```
 
-edition はパッケージごとに決まります。依存パッケージ（path、git、registry）は、自分の `Tsuzuri.toml` の `edition` で読まれるので、edition の違うパッケージを 1 つのプログラムにまとめられます。edition が変えるのは予約語と警告の既定だけで、両方の edition が受理するプログラムの意味と生成されるコードは同じです。`Tsuzuri.toml` のないプロジェクトと標準ライブラリは、最新の edition で読みます。`tsuzuri fmt` は、入力のディレクトリ（ファイルなら親）の `Tsuzuri.toml` の `edition` で整形します。上位のディレクトリは探しません。何を保証するか、edition をどう足すかは [安定性と互換性の方針](../../../docs/stability.md#edition) にあります。
+edition はパッケージごとに決まります。依存パッケージ（path、git、registry）は自分の
+`Tsuzuri.toml` の edition で解決した署名を公開します。2027 の呼び出し側でも、2026 の
+依存関数の無印の所有引数は移動のままです。`Tsuzuri.toml` のない入力と std は現在も 2026 です。
+`tsuzuri fmt` は、入力のディレクトリ（ファイルなら親）の manifest の edition で整形し、上位は探しません。
+[安定性と互換性の方針](../../../docs/stability.md#edition)に保証の範囲をまとめています。
 
 ## [dependencies] セクション（ローカルパス依存）
 
@@ -406,7 +415,7 @@ Tsuzuri 0.1.0 には、次の機能はありません（未実装です）。
 
 - `Tsuzuri.toml` はパッケージの定義ファイルです。`[package]` を最初に置きます。
 - パッケージ名は小文字の kebab-case です。`namespace` を省略すると PascalCase の既定名前空間になります。
-- `edition` は予約語の版で、対応する値は `"2026"` だけです。省略した値の意味は、新しい edition ができても変わりません。
+- `edition` はソースを読む規則の版で、`"2026"` と `"2027"` に対応します。省略した値は `2026` のままです。
 - 依存はローカルの相対パス、commit を固定した git リポジトリ、registry の版の要求です。循環と、同じ名前空間の別ルートは拒否されます。
 - 版の要求は、自分で置いた index から最小版選択で解決します。1 つのパッケージ名には 1 つの版です。
 - `tsuzuri fetch` が `git` で依存を取得し、`Tsuzuri.lock` に内容の SHA-256 と選んだ版を記録します。ビルドは lockfile とストアだけを読み、内容の一致を確かめます。
@@ -423,4 +432,3 @@ Tsuzuri 0.1.0 には、次の機能はありません（未実装です）。
 - [ネイティブ連携 (C ABI)](../compiler/native-interop.md)
 - [安定性と互換性の方針](../../../docs/stability.md)
 - [言語リファレンスの目次](../index.md)
-

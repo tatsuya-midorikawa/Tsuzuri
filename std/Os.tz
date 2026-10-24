@@ -25,7 +25,7 @@ fn encode text =
 	else Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
 
 /// Decodes a status the runtime returned: `(kind <<< 32) | code`, with kind 1 to 7 in declaration order.
-def error_of_status :: i64 -> Error
+def error_of_status :: own i64 -> Error
 fn error_of_status status =
 	let kind =
 		match status >>> 32 with
@@ -56,7 +56,7 @@ fn split_names bytes =
 			let from = start
 			let name = new [ubyte](index - from, offset -> bytes[from + offset])
 			match Utf8String.from_bytes name with
-			| Maybe.Some text -> names = Vec.push (String.from_utf8 (ref text)) names
+			| Maybe.Some text -> names = Vec.push_owned (String.from_utf8 (ref text)) names
 			| Maybe.None -> failed = true
 			start = index + 1
 		index = index + 1
@@ -64,14 +64,14 @@ fn split_names bytes =
 	else Result.Ok (Vec.to_array names)
 
 /// Decodes the bytes a system call returned as UTF-8 text. Invalid UTF-8 is `InvalidEncoding`.
-def decode :: [ubyte] -> Result<string, Error>
+def decode :: own [ubyte] -> Result<string, Error>
 fn decode bytes =
 	match Utf8String.from_bytes bytes with
 	| Maybe.Some text -> Result.Ok (String.from_utf8 (ref text))
 	| Maybe.None -> Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
 
 /// Reads eight little-endian bytes at `offset` as a number, as the runtime lays out sizes, times, and codes.
-def decode_i64 :: i64 -> ref [ubyte] -> i64
+def decode_i64 :: own i64 -> ref [ubyte] -> i64
 fn decode_i64 offset bytes =
 	let mut value = 0i64u
 	let mut index = 7

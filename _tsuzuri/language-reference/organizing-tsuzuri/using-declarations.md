@@ -28,7 +28,7 @@ namespace Geometry::Shapes
 
 record Circle { radius: f64 }
 
-def area :: Circle -> f64 = \c -> c.radius * c.radius * 3.141592653589793
+def area :: own Circle -> f64 = \c -> c.radius * c.radius * 3.141592653589793
 ```
 
 ```tsuzuri project=using-basic file=Main.tz run=78

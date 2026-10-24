@@ -6,6 +6,30 @@ Tsuzuri にはプログラムの構造を決定する 43 個の「予約語（Re
 
 ## この記事のポイント
 
+`2027` の予約語も `2026` と同じです。引数型の前の `own` は文脈で読む印で、
+予約語ではなく、変数名・関数名・型名に引き続き使えます。
+
+型名が `own` でも、署名と実装を分けられます。次の引数型の最初の `own` は所有の印で、
+2 番目と返却型の `own` はレコードの型名です。型エイリアスや union の payload でも
+`own` は型名として使え、後続の entry 式を所有の印の一部として読み込みません。
+extern の結果型でも型名のままです。
+
+```tsuzuri run=42
+record own { n: i64 }
+def identity :: own own -> own
+fn identity value = value
+type OwnAlias = own
+(identity (own { n: 42 })).n
+```
+
+次の例の `own` も結果の型名です。`get` の実装は host 側が提供します。
+
+```tsuzuri
+record own { n: i64 }
+extern def get :: own
+get().n
+```
+
 - Tsuzuri には 43 個の予約語があり、原則として変数名や関数名などの識別子に使えません。予約語はソースの言語版（edition）で決まり、今ある edition `2026` の予約語がこの一覧です。
 - `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。
 - 例外として、`union`・`yield`・`new` はドット直後のメンバー名（`Set.union`、`Async.yield`、`Rc.new`）として利用可能です。

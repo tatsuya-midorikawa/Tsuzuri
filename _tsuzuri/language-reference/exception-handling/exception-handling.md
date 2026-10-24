@@ -61,7 +61,7 @@ def line_total :: i64 -> i64 -> Result<i64, string> = \price qty ->
         return price * count
     }
 
-def show :: Result<i64, string> -> string = \result ->
+def show :: own Result<i64, string> -> string = \result ->
     match result with
     | Ok value -> to_string value
     | Error message -> message
@@ -89,7 +89,7 @@ def payable :: i64 -> i64 -> Maybe<i64> = \price code ->
         return price - off
     }
 
-def show :: Maybe<i64> -> string = \value ->
+def show :: own Maybe<i64> -> string = \value ->
     match value with
     | Some amount -> to_string amount
     | None -> "none"

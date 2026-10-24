@@ -1,4 +1,4 @@
-def rows :: i64 -> [string]
+def rows :: own i64 -> [string]
 fn rows count = new [string](count, index -> "caf\u00e9," + to_string index + ",na\u00efve")
 
 def fields :: ref [string] -> Vec<string>
@@ -6,7 +6,7 @@ fn fields lines =
     let mut output: Vec<string> = Vec.empty()
     for line in lines do
         let parts = String.split "," line
-        for part in parts do output = Vec.push (clone_string (ref part)) output
+        for part in parts do output = Vec.push_owned (clone_string (ref part)) output
     output
 
 def total :: ref [string] -> i64

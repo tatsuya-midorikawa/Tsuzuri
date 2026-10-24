@@ -426,6 +426,8 @@ impl TypeReferences<'_> {
             | TypeExprKind::ArrayView(inner)
             | TypeExprKind::List(inner)
             | TypeExprKind::Task(inner)
+            | TypeExprKind::Own(inner)
+            | TypeExprKind::Mut(inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Regions(inner, _)
             | TypeExprKind::Quantified(_, inner) => self.ty(inner),
@@ -446,7 +448,7 @@ impl TypeReferences<'_> {
                 }
             }
             TypeExprKind::Function(parameters, result) => {
-                for parameter in parameters {
+                for parameter in parameters.iter() {
                     self.ty(parameter);
                 }
                 self.ty(result);
@@ -482,7 +484,7 @@ impl TypeReferences<'_> {
                 }
             }
             Type::Function(parameters, result) => {
-                for parameter in parameters {
+                for parameter in parameters.iter() {
                     self.checked_type(parameter);
                 }
                 self.checked_type(result);

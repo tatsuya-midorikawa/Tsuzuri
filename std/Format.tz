@@ -8,16 +8,16 @@ union Kind = KindPlain | KindLowerHex | KindUpperHex | KindOctal | KindBinary | 
 /// is 0 when the spec has none, and `precision` is -1 when it has none.
 record Spec { fill: string, align: Align, plus: bool, width: i64, precision: i64, kind: Kind }
 
-private def is_at :: ref string -> i64 -> char -> bool
+private def is_at :: ref string -> own i64 -> own char -> bool
 fn is_at text index letter = index < text.length && Char.of_u16 text[index] == letter
 
-private def is_align_at :: ref string -> i64 -> bool
+private def is_align_at :: ref string -> own i64 -> bool
 fn is_align_at text index = is_at text index '<' || is_at text index '>' || is_at text index '^'
 
-private def is_high :: ref string -> i64 -> bool
+private def is_high :: ref string -> own i64 -> bool
 fn is_high text index = index < text.length && text[index] >= 55296i16u && text[index] <= 56319i16u
 
-private def is_low :: ref string -> i64 -> bool
+private def is_low :: ref string -> own i64 -> bool
 fn is_low text index = index < text.length && text[index] >= 56320i16u && text[index] <= 57343i16u
 
 private def fill_units :: ref string -> i64
@@ -26,17 +26,17 @@ fn fill_units text =
 
 /// Whether the single unit at `index` can be a fill. The lexer refuses `{`, `}`, `"`, `\`, CR, and LF there, and a
 /// lone surrogate is not a Unicode scalar at all.
-private def is_fill_unit :: ref string -> i64 -> bool
+private def is_fill_unit :: ref string -> own i64 -> bool
 fn is_fill_unit text index =
 	!(is_high text index || is_low text index || is_at text index '{' || is_at text index '}' || is_at text index '"' || is_at text index '\\' || is_at text index '\r' || is_at text index '\n')
 
-private def align_of :: ref string -> i64 -> Align
+private def align_of :: ref string -> own i64 -> Align
 fn align_of text index = if is_at text index '<' then AlignLeft else (if is_at text index '^' then AlignCenter else AlignRight)
 
-private def digit_at :: ref string -> i64 -> i64
+private def digit_at :: ref string -> own i64 -> i64
 fn digit_at text index = if index < text.length && Char.is_ascii_digit (Char.of_u16 text[index]) then (text[index] as i64) - 48 else -1
 
-private def kind_at :: ref string -> i64 -> Kind
+private def kind_at :: ref string -> own i64 -> Kind
 fn kind_at text index =
 	if index >= text.length then KindPlain else
 		match Char.of_u16 text[index] with
@@ -96,7 +96,7 @@ fn scalars text =
 
 /// `text` widened to the width of `spec` with its fill, aligned as it says (`AlignAuto` is left). A text that is
 /// already as wide is returned unchanged.
-def pad :: ref Spec -> string -> string
+def pad :: ref Spec -> own string -> string
 fn pad spec text =
 	let missing = spec.width - scalars (ref text)
 	if missing <= 0 then text else

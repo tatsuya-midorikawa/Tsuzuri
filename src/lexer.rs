@@ -1214,7 +1214,7 @@ mod tests {
             assert_eq!(Edition::parse(text), None, "{text:?}");
         }
         assert_eq!(Edition::E2026.to_string(), "2026");
-        assert_eq!(Edition::supported_names(), "2026");
+        assert_eq!(Edition::supported_names(), "2026, 2027");
         assert!(Edition::SUPPORTED.contains(&Edition::LATEST));
         assert!(Edition::SUPPORTED.contains(&Edition::MANIFEST_DEFAULT));
         let (older, newer, newest) = (Edition(2026), Edition(2027), Edition(2028));

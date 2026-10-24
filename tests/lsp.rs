@@ -716,7 +716,7 @@ fn formatting_matches_the_library_formatter() {
 #[test]
 fn inlay_hints_show_implicit_copies() {
     use serde_json::json;
-    let text = "record Bag { items: [i64] }\ndef total :: Bag -> i64\nfn total bag =\n    let xs = bag.items\n    let ys = bag.items\n    Array.length (ref xs) + Array.length (ref ys)\ndef reuse :: [i64] -> i64\nfn reuse a =\n    let b = a\n    let moved = [1]\n    let n = 2\n    let m = n\n    Array.length (ref a) + Array.length (ref b) + Array.length (ref moved) + m\n";
+    let text = "record Bag { items: [i64] }\ndef total :: own Bag -> i64\nfn total bag =\n    let xs = bag.items\n    let ys = bag.items\n    Array.length (ref xs) + Array.length (ref ys)\ndef reuse :: own [i64] -> i64\nfn reuse a =\n    let b = a\n    let moved = [1]\n    let n = 2\n    let m = n\n    Array.length (ref a) + Array.length (ref b) + Array.length (ref moved) + m\n";
     let broken = format!("{text}fn (");
     let responses = scripted(&[("Main.tz", text)], "utf-16", |uri| {
         let request = |id: u64, range: serde_json::Value| json!({"id": id, "method": "textDocument/inlayHint", "params": {"textDocument": {"uri": uri("Main.tz")}, "range": range}});
@@ -1066,6 +1066,61 @@ fn server_lifecycle_and_protocol_errors_are_framed() {
 
 const N_CIRCLE: &str = "namespace Demo::Shapes\n\ndef radius :: i64 -> i64 = \\x -> x\n";
 const N_REPORT: &str = "namespace Demo\n\nusing Demo::Shapes\n\ndef total :: i64 -> i64 = \\x -> Circle.radius x + Shapes::Circle.radius x\n";
+
+#[test]
+fn own_and_inferred_read_signatures_keep_the_source_convention() {
+    use serde_json::json;
+    let source = "def take :: own string -> string = \\text -> text\n\
+        def size :: string -> i64 = \\text -> text.length\n\
+        def value :: i64 = { let text = take \"abc\"; size text }\n";
+    let manifest = "[package]\nname = \"conventions\"\nversion = \"0.1.0\"\nedition = \"2027\"\n";
+    let responses = scripted(
+        &[("Main.tz", source), ("Tsuzuri.toml", manifest)],
+        "utf-16",
+        |uri| {
+            [
+                ("textDocument/hover", "take ::"),
+                ("textDocument/hover", "size ::"),
+                ("textDocument/signatureHelp", "\"abc\""),
+                ("textDocument/signatureHelp", "text }\n"),
+            ]
+            .iter()
+            .enumerate()
+            .map(|(id, (method, needle))| {
+                json!({"id": id + 1, "method": method, "params": {"textDocument": {"uri": uri("Main.tz")}, "position": position(source, needle, "utf-16")}})
+            })
+            .chain(std::iter::once(json!({"id": 5, "method": "textDocument/documentSymbol", "params": {"textDocument": {"uri": uri("Main.tz")}}})))
+            .collect()
+        },
+    );
+    for (response, signature) in responses
+        .iter()
+        .zip(["take :: own string -> string", "size :: string -> i64"])
+    {
+        let hover = response["result"]["contents"]["value"].as_str().unwrap();
+        assert!(hover.contains(signature), "{hover}");
+    }
+    for (response, parameter) in responses[2..4]
+        .iter()
+        .zip(["text: own string", "text: string"])
+    {
+        let label = &response["result"]["signatures"][0]["parameters"][0]["label"];
+        assert_eq!(label, parameter, "{response}");
+    }
+    let symbols = responses[4]["result"].as_array().unwrap();
+    assert!(
+        symbols[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("own string")
+    );
+    assert!(
+        !symbols[1]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("ref string")
+    );
+}
 
 #[test]
 fn const_def_hovers_show_the_qualifier() {

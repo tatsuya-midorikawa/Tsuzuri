@@ -1,7 +1,7 @@
-def show :: Maybe<i32> -> string
+def show :: own Maybe<i32> -> string
 fn show parsed = if Maybe.is_none (&parsed) then "none" else to_string (Maybe.get parsed)
 
-def main :: unit -> i32 = \() ->
+def main :: own unit -> i32 = \() ->
     for text in ["42", "-7", "+5", "0x2a", "0b101", "1_000", "2147483647", "2147483648", "", "_1", "abc"] do
         let parsed: Maybe<i32> = Parse.parse (&text)
         do! IO.write_line (show parsed)

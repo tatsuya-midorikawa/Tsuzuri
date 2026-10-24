@@ -1,80 +1,80 @@
 // The F# `List` module in Tsuzuri (std/List.tz): one test per F# function, the examples of the F# documentation,
 // the `r` forms for elements that are not `Copy`, and lists of several chunks, which `List.cons` builds.
 
-private def eq :: Eq<'a> => 'a -> 'a -> unit
+private def eq :: Eq<'a> => own 'a -> own 'a -> unit
 fn eq actual expected = Test.equal (ref actual) (ref expected)
 
-private def some_eq :: Eq<'a> => Maybe<'a> -> 'a -> unit
+private def some_eq :: Eq<'a> => own Maybe<'a> -> own 'a -> unit
 fn some_eq maybe expected =
     match maybe with
     | Maybe.Some value -> eq value expected
     | Maybe.None -> assert false
 
-private def none :: Maybe<'a> -> unit
+private def none :: own Maybe<'a> -> unit
 fn none maybe =
     match maybe with
     | Maybe.None -> ()
     | Maybe.Some _ -> assert false
 
-private def is_nan :: f64 -> bool
+private def is_nan :: own f64 -> bool
 fn is_nan value = value != value
 
-private def count_key_is_nan :: ref [|(f64 * i64)|] -> i64 -> bool
+private def count_key_is_nan :: ref [|(f64 * i64)|] -> own i64 -> bool
 fn count_key_is_nan pairs position =
     match pairs[position] with
     | (key, _) -> is_nan key
 
-private def count_of :: ref [|(f64 * i64)|] -> i64 -> i64
+private def count_of :: ref [|(f64 * i64)|] -> own i64 -> i64
 fn count_of pairs position =
     match pairs[position] with
     | (_, count) -> count
 
-private def group_key_is_nan :: ref [|(f64 * [|f64|])|] -> i64 -> bool
+private def group_key_is_nan :: ref [|(f64 * [|f64|])|] -> own i64 -> bool
 fn group_key_is_nan groups position =
     match groups[position] with
     | (key, _) -> is_nan key
 
-private def group_size :: ref [|(f64 * [|f64|])|] -> i64 -> i64
+private def group_size :: ref [|(f64 * [|f64|])|] -> own i64 -> i64
 fn group_size groups position =
     match groups[position] with
     | (_, members) -> members.length
 
-private def id_at :: ref [|(i64 * f64)|] -> i64 -> i64
+private def id_at :: ref [|(i64 * f64)|] -> own i64 -> i64
 fn id_at pairs position =
     match pairs[position] with
     | (id, _) -> id
 
-private def value_at :: ref [|(i64 * f64)|] -> i64 -> f64
+private def value_at :: ref [|(i64 * f64)|] -> own i64 -> f64
 fn value_at pairs position =
     match pairs[position] with
     | (_, value) -> value
 
-private def keyed_count :: ref [|((i64 * f64) * i64)|] -> i64 -> i64
+private def keyed_count :: ref [|((i64 * f64) * i64)|] -> own i64 -> i64
 fn keyed_count counts position =
     match counts[position] with
     | (_, count) -> count
 
-private def keyed_id :: ref [|((i64 * f64) * i64)|] -> i64 -> i64
+private def keyed_id :: ref [|((i64 * f64) * i64)|] -> own i64 -> i64
 fn keyed_id counts position =
     match counts[position] with
     | ((id, _), _) -> id
 
-private def grouped_id :: ref [|((i64 * f64) * [|(i64 * f64)|])|] -> i64 -> i64
+private def grouped_id :: ref [|((i64 * f64) * [|(i64 * f64)|])|] -> own i64 -> i64
 fn grouped_id groups position =
     match groups[position] with
     | ((id, _), _) -> id
 
-private def grouped_size :: ref [|((i64 * f64) * [|(i64 * f64)|])|] -> i64 -> i64
+private def grouped_size :: ref [|((i64 * f64) * [|(i64 * f64)|])|] -> own i64 -> i64
 fn grouped_size groups position =
     match groups[position] with
     | (_, members) -> members.length
 
 /// `0 .. count - 1` in one chunk.
-private def flat :: i64 -> [|i64|]
+private def flat :: own i64 -> [|i64|]
 fn flat count = new [|i64|](count, \i -> i)
 
 /// `0 .. count - 1` in several chunks: `List.cons` adds a chunk each time the first one is full.
-private def chunked :: i64 -> [|i64|]
+private def chunked :: own i64 -> [|i64|]
 fn chunked count =
     let mut values: [|i64|] = [||]
     let mut index = count
@@ -84,7 +84,7 @@ fn chunked count =
     values
 
 /// `value`, after one more call has been counted.
-private def counted :: ref Arc<Atomic<i64>> -> i64 -> i64
+private def counted :: ref Arc<Atomic<i64>> -> own i64 -> i64
 fn counted counter value =
     let _before = Atomic.fetch_add (Arc.get counter) 1
     value
@@ -255,8 +255,8 @@ test "zip unzip all_pairs indexed pairwise transpose" =
 
 test "iter iteri iter2 iteri2 and the r forms run their actions" =
     let no_ints: [|i64|] = [||]
-    List.iter (\x -> assert (x > 0)) [|1, 2, 3|]
-    List.iteri (\i x -> assert (x == i * 10)) [|0, 10, 20|]
+    List.iter_owned (\x -> assert (x > 0)) [|1, 2, 3|]
+    List.iteri_owned (\i x -> assert (x == i * 10)) [|0, 10, 20|]
     List.iter2 (\a b -> assert (b == a * 2)) [|1, 2, 3|] [|2, 4, 6|]
     List.iteri2 (\i a b -> assert (a + b == i * 3)) [|0, 1, 2|] [|0, 2, 4|]
     List.iterr (\x -> assert (*x > 0)) [|1, 2, 3|]
@@ -264,22 +264,22 @@ test "iter iteri iter2 iteri2 and the r forms run their actions" =
     let words = [|"a", "bb"|]
     List.iterr (\w -> assert (w.length > 0)) words
     List.iterir (\i w -> assert (w.length == i + 1)) words
-    List.iter (\_x -> assert false) no_ints
+    List.iter_owned (\_x -> assert false) no_ints
     List.iterr (\_x -> assert false) no_ints
 
 test "map mapi map2 mapi2 map3" =
     let no_ints: [|i64|] = [||]
-    eq (List.map (\x -> x * 2) [|1, 2, 3|]) [|2, 4, 6|]
-    eq (List.mapi (\i x -> i + x) [|10, 10, 10|]) [|10, 11, 12|]
+    eq (List.map_owned (\x -> x * 2) [|1, 2, 3|]) [|2, 4, 6|]
+    eq (List.mapi_owned (\i x -> i + x) [|10, 10, 10|]) [|10, 11, 12|]
     eq (List.map2 (\a b -> a * b) [|1, 2, 3|] [|4, 5, 6|]) [|4, 10, 18|]
     eq (List.mapi2 (\i a b -> i + a + b) [|1, 2|] [|10, 20|]) [|11, 23|]
     eq (List.map3 (\a b c -> a + b + c) [|1, 2|] [|10, 20|] [|100, 200|]) [|111, 222|]
-    eq (List.map (\x -> x + 1) no_ints) no_ints
-    eq (List.mapi (\i x -> i + x) no_ints) no_ints
+    eq (List.map_owned (\x -> x + 1) no_ints) no_ints
+    eq (List.mapi_owned (\i x -> i + x) no_ints) no_ints
 
 test "the results of mapi map2 map3 choose need not be Copy" =
     let numbers = [|1, 2, 3|]
-    let labels = List.mapi (\i x -> $"{i}:{x}") numbers
+    let labels = List.mapi_owned (\i x -> $"{i}:{x}") numbers
     Test.equal (ref labels[2]) (ref "2:3")
     let pairs = List.map2 (\a b -> $"{a}{b}") numbers [|4, 5, 6|]
     Test.equal (ref pairs[1]) (ref "25")
@@ -360,14 +360,14 @@ test "partition partition_with" =
 test "fold fold_back fold2 fold_back2 and the r forms" =
     let no_ints: [|i64|] = [||]
     let xs = [|1, 2, 3, 4|]
-    eq (List.fold (\acc x -> acc * 10 + x) 0 xs) 1234
+    eq (List.fold_owned (\acc x -> acc * 10 + x) 0 xs) 1234
     eq (List.foldr (\acc x -> acc * 10 + *x) 0 xs) 1234
-    eq (List.fold_back (\x acc -> acc * 10 + x) 0 xs) 4321
+    eq (List.fold_back_owned (\x acc -> acc * 10 + x) 0 xs) 4321
     eq (List.foldr_back (\x acc -> acc * 10 + *x) 0 xs) 4321
     eq (List.fold2 (\acc a b -> acc + a * b) 0 [|1, 2, 3|] [|4, 5, 6|]) 32
     eq (List.fold_back2 (\a b acc -> acc * 10 + a + b) 0 [|1, 2, 3|] [|10, 20, 30|]) 3531
-    eq (List.fold (\acc x -> acc + x) 7 no_ints) 7
-    eq (List.fold_back (\x acc -> acc + x) 7 no_ints) 7
+    eq (List.fold_owned (\acc x -> acc + x) 7 no_ints) 7
+    eq (List.fold_back_owned (\x acc -> acc + x) 7 no_ints) 7
     eq (List.foldr_back (\x acc -> acc + *x) 7 no_ints) 7
     let words = [|"a", "bcd"|]
     eq (List.foldr (\acc w -> acc + w.length) 0 words) 4
@@ -678,7 +678,7 @@ test "sort_with works with a comparer that owns a table" =
 test "mapi map2 mapi2 map3 mapir and sort_by work with a callback that owns a table" =
     let table = new [i64](1500, \i -> (i * 7919) % 10007)
     let indices = new [|i64|](1500, \i -> i)
-    let mapped = List.mapi (\i x -> table[x] + i) indices
+    let mapped = List.mapi_owned (\i x -> table[x] + i) indices
     eq mapped.length 1500
     eq (List.item 7 mapped) (table[7] + 7)
     let sums = List.map2 (\a b -> table[a] + b) indices indices
@@ -878,13 +878,13 @@ test "lists of several chunks give the same results as lists of one chunk" =
     eq (List.skip_while (\x -> x < 8000) many) (List.skip_while (\x -> x < 8000) one)
     eq (List.filter (\x -> x % 3 == 0) many) (List.filter (\x -> x % 3 == 0) one)
     eq (List.rev many) (List.rev one)
-    eq (List.map (\x -> x * 2) many) (List.map (\x -> x * 2) one)
-    eq (List.mapi (\i x -> i + x) many) (List.mapi (\i x -> i + x) one)
+    eq (List.map_owned (\x -> x * 2) many) (List.map_owned (\x -> x * 2) one)
+    eq (List.mapi_owned (\i x -> i + x) many) (List.mapi_owned (\i x -> i + x) one)
     eq (List.mapr (\x -> *x + 1) many) (List.mapr (\x -> *x + 1) one)
     eq (List.append many one) (List.append one many)
-    eq (List.fold (\acc x -> acc + x) 0 many) 49995000
+    eq (List.fold_owned (\acc x -> acc + x) 0 many) 49995000
     eq (List.foldr (\acc x -> acc + *x) 0 many) 49995000
-    eq (List.fold_back (\x acc -> acc + x) 0 many) 49995000
+    eq (List.fold_back_owned (\x acc -> acc + x) 0 many) 49995000
     eq (List.foldr_back (\x acc -> acc + *x) 0 many) 49995000
     eq (List.reduce (\a b -> a + b) many) 49995000
     eq (List.reduce_back (\a b -> a + b) many) 49995000
@@ -946,17 +946,17 @@ test "ownership: elements that are not Copy" =
     eq (List.of_seq (Seq.map (\w -> w.length) (List.to_seqr more))) [|4, 4, 3, 5|]
 
 test "a pipeline reads like F#" =
-    let squares = [|1, 2, 3, 4, 5|] |> List.filter (\x -> x % 2 == 1) |> List.map (\x -> x * x)
+    let squares = [|1, 2, 3, 4, 5|] |> List.filter (\x -> x % 2 == 1) |> List.map_owned (\x -> x * x)
     eq squares [|1, 9, 25|]
     eq (squares |> List.sum) 35
     eq ([|3, 1, 2|] |> List.sort |> List.rev) [|3, 2, 1|]
-    eq ([|1, 2, 3|] |> List.fold (\acc x -> acc + x) 0) 6
-    eq ([|[|1, 2|], [|3|]|] |> List.concat |> List.map (\x -> x * 2)) [|2, 4, 6|]
+    eq ([|1, 2, 3|] |> List.fold_owned (\acc x -> acc + x) 0) 6
+    eq ([|[|1, 2|], [|3|]|] |> List.concat |> List.map_owned (\x -> x * 2)) [|2, 4, 6|]
 
 // ---- The list comes last ----
 
 test "the list is the last argument, so pipelines and compositions pass it on" =
-    eq ([|1, 2, 3|] |> List.fold_back (\x acc -> acc * 10 + x) 0) 321
+    eq ([|1, 2, 3|] |> List.fold_back_owned (\x acc -> acc * 10 + x) 0) 321
     eq ([|1, 2, 3|] |> List.foldr_back (\x acc -> acc * 10 + deref x) 0) 321
     eq ([|1, 2, 3|] |> List.scan_back (\x acc -> acc + x) 0) [|6, 5, 3, 0|]
     eq (List.fold_back2 (\x y acc -> acc + x * y) 0 [|1, 2, 3|] [|4, 5, 6|]) 32

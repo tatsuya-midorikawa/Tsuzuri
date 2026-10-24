@@ -185,7 +185,7 @@ u8"é"B     [utf8char]
 `'A'B` は ASCII の符号なしバイト（`byte`）です。`"AB"B` は同じく ASCII バイトの配列（`[byte]`）で、非 ASCII 文字を含むとコンパイルエラー `E0001` です。`u8"é"B` は Unicode スカラーの配列（`[utf8char]`）です。空の `""B` は `[byte]`、`u8""B` は `[utf8char]` です。補間文字列に `B` は付けられません。なお、`u8'A'B` のように文字リテラルに `u8` と `B` を同時に付けることはできず、`E0001` になります（`B` 接尾辞を受け付けるのは `'c'B`、`"text"B`、`u8"text"B` のみです）。
 
 ```tsuzuri run=code%3D65%20ascii%3D%5B65%2C%2066%5D%20scalars%3D%5Bu8%27%C3%A9%27%5D%20empty%3D0
-def byte_len :: [byte] -> i64 = \values -> values.length
+def byte_len :: own [byte] -> i64 = \values -> values.length
 
 let code = 'A'B
 let ascii = "AB"B

@@ -28,7 +28,7 @@ union Measurement =
     | Single of i64
     | Pair of i64 * i64
 
-def total :: Measurement -> i64 = \measurement ->
+def total :: own Measurement -> i64 = \measurement ->
     match measurement with
     | Missing -> 0
     | Single value -> value
@@ -98,7 +98,7 @@ let standard = std::Maybe.Some 22
 ```tsuzuri project=shape file=Shape.tz
 union Shape = Circle of i64 | Rect of i64 * i64 | Empty
 
-def width :: Shape -> i64 = \shape ->
+def width :: own Shape -> i64 = \shape ->
     match shape with
     | Circle radius -> radius
     | Rect (horizontal, _) -> horizontal
@@ -125,7 +125,7 @@ Shape.width wide + (match Shape.Empty with | Shape.Empty -> 2 | _ -> 0)
 ```tsuzuri run=3
 union Color = Red | Green | Blue deriving (Eq, Ord, Display)
 
-def code :: Color -> i64 = \color ->
+def code :: own Color -> i64 = \color ->
     match color with
     | Color.Red -> 1
     | Green -> 2
@@ -153,7 +153,7 @@ union Reply<'a> = Pending | Ready of 'a
 ```tsuzuri run=42
 union Reply<'a> = Pending | Ready of 'a
 
-def ready_or :: 'a -> Reply<'a> -> 'a = \fallback reply ->
+def ready_or :: own 'a -> own Reply<'a> -> 'a = \fallback reply ->
     match reply with
     | Ready value -> value
     | Pending -> fallback
@@ -203,7 +203,7 @@ AArch64 と x86-64 の 64-bit ターゲットでは、大きさは次のよう�
 ```tsuzuri run=42
 union Tree = Empty | Node of Tree * i64 * Tree
 
-def rec sum :: Tree -> i64 = \tree ->
+def rec sum :: own Tree -> i64 = \tree ->
     match tree with
     | Empty -> 0
     | Node (left, value, right) -> sum left + value + sum right

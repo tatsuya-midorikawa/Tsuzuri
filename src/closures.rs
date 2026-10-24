@@ -59,11 +59,26 @@ impl Checker<'_> {
         self.scopes.push(BTreeMap::new());
         let mut seen = BTreeSet::new();
         let mut parameters = Vec::new();
-        for ((name, mutable), ty) in names.iter().zip(parameter_types) {
+        let conventions = expected
+            .map(|ty| self.inference.resolve(ty))
+            .and_then(|ty| match ty {
+                Type::Function(parameters, _) => Some(parameters.conventions),
+                _ => None,
+            })
+            .unwrap_or_default();
+        for (index, ((name, mutable), ty)) in names.iter().zip(parameter_types).enumerate() {
             if name.text != "_" && !seen.insert(name.text.clone()) {
                 return Err(duplicate(name));
             }
-            parameters.push(self.bind(name, ty, *mutable));
+            let local = self.bind(name, ty, *mutable);
+            if matches!(
+                conventions.get(index),
+                Some(ParameterConvention::Read | ParameterConvention::Mut)
+            ) && matches!(local.ty, Type::Reference(..))
+            {
+                self.read_value_parameters.insert(local.id);
+            }
+            parameters.push(local);
         }
         let outer_loop_depth = std::mem::take(&mut self.normal_loop_depth);
         let body = self.expression(body, Some(&result));
@@ -251,6 +266,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
             };
             let arguments = parameters.iter().map(local_value).collect();
             bridges.push(CheckedFunction {
+                read_by_default: Vec::new(),
                 module: "$export".into(),
                 region_sources: None,
                 callback_contracts: Vec::new(),
@@ -261,7 +277,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                 exported: true,
                 parameters,
                 signature: Signature {
-                    parameters: types,
+                    parameters: types.types,
                     result: (*result).clone(),
                 },
                 body: TypedExpr {
@@ -339,6 +355,7 @@ fn lower_expression(
             let mut all_parameters = captures.clone();
             all_parameters.extend(parameters.iter().cloned());
             functions.push(CheckedFunction {
+                read_by_default: Vec::new(),
                 region_sources: None,
                 callback_contracts: Vec::new(),
                 region_slots: None,
@@ -449,11 +466,28 @@ fn lower_expression(
                     lower_expression(&mut body, functions, types, generated, origin)?;
                 }
                 let id = functions.len();
+                let region_slots = if builtin == Builtin::VecPushMut
+                    && signature.parameters[0].carries_loans(types)
+                {
+                    let count = match &signature.parameters[0] {
+                        Type::Record(id, _) => types.records[*id].region_count.max(1),
+                        _ => 1,
+                    };
+                    Some(RegionSlots {
+                        parameters: vec![vec![Some(0); count], vec![Some(1), Some(0)]],
+                        targets: vec![false, true],
+                        result_target: false,
+                        writes: true,
+                    })
+                } else {
+                    None
+                };
                 functions.push(CheckedFunction {
+                    read_by_default: Vec::new(),
                     module: "$builtin".into(),
                     region_sources: None,
                     callback_contracts: Vec::new(),
-                    region_slots: None,
+                    region_slots,
                     origin,
                     // Instances of a polymorphic builtin get distinct symbols.
                     name: if scheme.variables.is_empty() {
@@ -509,6 +543,7 @@ fn lower_expression(
                     format!(".$mono.{id}")
                 };
                 functions.push(CheckedFunction {
+                    read_by_default: Vec::new(),
                     module: "$case".into(),
                     region_sources: None,
                     callback_contracts: Vec::new(),

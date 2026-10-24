@@ -279,15 +279,15 @@ IO {
   assert.equal(JSON.parse(trapped.stderr.trim()).code, "E2005");
 
   writeFileSync(join(root, "Gate.tc"), `union Value<'a> = Stop of string | Next of 'a
-def Return :: 'a -> Value<'a>
+def Return :: own 'a -> Value<'a>
 fn Return value = Next value
-def Bind :: Value<'a> -> ('a -> Value<'b>) -> Value<'b>
+def Bind :: own Value<'a> -> own ('a -> Value<'b>) -> Value<'b>
 fn Bind value next = match value with | Stop message -> Stop message | Next payload -> next payload
 def Zero :: Value<unit>
 fn Zero = Next ()
-def Delay :: (unit -> Value<'a>) -> (unit -> Value<'a>)
+def Delay :: own (unit -> Value<'a>) -> (unit -> Value<'a>)
 fn Delay body = body
-def Run :: (unit -> Value<'a>) -> Value<'a>
+def Run :: own (unit -> Value<'a>) -> Value<'a>
 fn Run body = body ()
 def forwarded :: Maybe<i64> -> Maybe<i64>
 fn forwarded source =
@@ -306,7 +306,7 @@ fn forwarded source =
 fn advance input =
   let! value = Some input
   return value + 1
-def identity :: Capture<'a> => Maybe<'a> -> Maybe<'a>
+def identity :: Capture<'a> => own Maybe<'a> -> Maybe<'a>
 fn identity source =
   let! value = source
   return value
@@ -323,7 +323,7 @@ fn rec repeated count =
   let! value = Some count
   if value == 0 then return 42
   else return! repeated (value - 1)
-def echo :: Capture<'a> => IO<Maybe<'a>> -> IO<Maybe<'a>>
+def echo :: Capture<'a> => own IO<Maybe<'a>> -> IO<Maybe<'a>>
 fn echo source =
   let! option = source
   let! value = option
