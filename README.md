@@ -1354,6 +1354,8 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   Clippy・fmt・build、pure 302＋parallel 12（native／WASM × O0／O3）、E2E・cache・LSP、usage と docgen を再確認しました。
   未使用 generic の純粋 callback 検査の修正後は全 Rust 1,841 件（targets 12 件を含む、2 skipped）、
   Clippy・fmt・build、pure 302＋parallel 12、関連 E2E・cache・LSP・docgen と manual 2 ページ／29 例／52 native 実行を確認しました。
+  AI 測定の字句的な callers／impact では宣言接頭辞を参照から除き、関数名 `pure` と `pure def` の修飾子を区別します。
+  宣言と同じ行の本体にある通常・修飾付きの呼び出しは保持します。
   最終 head の x64／arm64 CI は PR で追跡します。速度向上は未計測です。
   実装範囲・例外・検証コマンドと変更一覧は [A19 の完了記録](_features/_completed/A19-pure-functions.md)、
   最終 head の CI・Copilot レビューと 7 件の統合結果は各 PR で追跡します。

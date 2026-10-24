@@ -39,6 +39,7 @@ export function referenceLines(item, symbol) {
   const bare = new RegExp(`(?<![A-Za-z0-9_.])${name}(?![A-Za-z0-9_])`);
   const hits = [];
   item.lines.forEach((line, i) => {
+    line = line.replace(DECLARATION, "");
     if (qualified.test(line) || (item.module === module && bare.test(line))) hits.push(item.from + i);
   });
   return hits;

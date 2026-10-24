@@ -1181,6 +1181,19 @@ def main :: unit -> i32 = \() ->
   functions／usage の **2 pages／93 links／29 checked examples／52 native runs／1 test project**、
   guide-lite **85／0** も確認した。初回の全 feature・凍結 IR の記録とは再実行範囲を区別する。
 
+### 字句的な caller の文脈キーワード（2026-10-24）
+
+- 統合 head `50b52943` の review `5637515786` で、関数 `pure` の caller に無関係な
+  `pure def` の修飾子を数える指摘 `4366525619` を再現した。`referenceLines` で既存の
+  宣言の正規表現を使って接頭辞だけを除き、callers／impact に共通の根で修正した。
+- 回帰は純粋・private・export 宣言の誤参照を除き、同じ宣言行の本体の `pure x` と `X.pure x`、
+  正しい行範囲と推移的な impact を保持する。コンパイラ・std・Rust／数値の入力は変更しない。
+  ユーザー向け説明は AI 作業コストのページにあるため、言語リファレンスの意味・例には変更がない。
+- 修正前の回帰失敗を確認後、Node **20.19.6** と **24.21.0** で AI 全 suite を実行し、
+  それぞれ **44 passed／0 failed／5 capability skips**、guide-lite **85／0**、fmt・diff check が成功した。
+  Rust／std の入力は `50b52943` と同一なので、その全 Rust **1,842／2 skipped** と
+  最終 F14 統合の **1,864／2 skipped** の受入を保持し、JS 修正後に再実行した数とは混ぜない。
+
 ### 確認コマンド（最終受入）
 
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --locked`。
