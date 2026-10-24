@@ -5,15 +5,14 @@ fn failure(span: Span, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new("E1029", message, span)
 }
 
-fn opaque_input(ty: &Type, types: &TypeContext<'_>) -> bool {
+fn opaque_input(ty: &Type, types: &TypeContext<'_>, shared: bool) -> bool {
+    // A shared view freezes nested exclusive loans too; ownership forbids extracting them.
     types.reaches_closed(
         ty,
         |part| {
             matches!(part, Type::Function(parameters, _) if !parameters.pure)
-                || matches!(
-                    part,
-                    Type::Dyn(_) | Type::Task(_) | Type::Reference(_, true)
-                )
+                || matches!(part, Type::Dyn(_) | Type::Task(_))
+                || (!shared && matches!(part, Type::Reference(_, true)))
         },
         |part| {
             matches!(part, Type::Record(id, _) if types.records[*id].name == "IO.IO"
@@ -31,7 +30,11 @@ pub(super) fn check_function_type(
         unreachable!()
     };
     for parameter in parameters.iter() {
-        if opaque_input(parameter, types) {
+        if opaque_input(
+            parameter,
+            types,
+            matches!(parameter, Type::Reference(_, false)),
+        ) {
             return Err(failure(
                 span,
                 "a pure function type takes only shared data and pure callbacks; mutable references, ordinary callbacks, dyn and task inputs are not supported",
@@ -138,7 +141,7 @@ pub(super) fn check_parameter(
             "an 'own' parameter of a pure def must be plain data; '{}' holds {}; take it with 'ref'",
             ty.display(types), what(&part, types)
         ))
-    } else if opaque_input(ty, types) {
+    } else if opaque_input(ty, types, true) {
         Some(format!(
             "a pure def cannot take a value that holds a function, 'dyn', or a task ('{}'); pass the data it needs instead",
             ty.display(types)
@@ -413,7 +416,7 @@ pub(crate) enum Effect {
 }
 
 impl Effect {
-    fn reason(&self) -> String {
+    pub(crate) fn reason(&self) -> String {
         match self {
             Self::Host(name) => format!("calls the extern function '{name}'"),
             Self::Builtin(name, category) => match category {
@@ -936,7 +939,13 @@ impl<'a> Scanner<'a> {
             } else {
                 0
             })
-            .any(|ty| opaque_input(ty, &self.module.types()))
+            .any(|ty| {
+                opaque_input(
+                    ty,
+                    &self.module.types(),
+                    matches!(ty, Type::Reference(_, false)),
+                )
+            })
         {
             let effect = Effect::Unresolved;
             return Ok(Some((
@@ -1014,7 +1023,6 @@ fn shown(function: &CheckedFunction) -> String {
 }
 
 // D-53's query boundary is shared with B10 and F15, independently of `pure def` roots.
-#[allow(dead_code)]
 pub(crate) fn reachable_effect(
     module: &CheckedModule,
     root: usize,

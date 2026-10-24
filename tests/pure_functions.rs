@@ -59,6 +59,11 @@ fn pure_function_values_keep_effects_and_call_stage_boundaries() {
          def ordinary :: i64 -> i64 = \\value -> value + 2\n\
          export def answer :: i64 = apply increment 20 + apply ordinary 19 + apply (\\value -> value + 3) 18\n",
     );
+    accepted(
+        "pure def plus :: i64 -> i64 -> i64 = \\left right -> left + right\n\
+         pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\callback value -> callback value\n\
+         export def answer :: i64 = { let increment = plus 1; apply increment 41 }\n",
+    );
     rejected(
         "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
          def bad :: i64 = apply (\\value -> { Debug.print (ref value); value }) 1\n",
@@ -346,6 +351,104 @@ fn pure_def_own_parameters_are_values_and_require_plain_data() {
         function.signature.parameters[2],
         Type::Reference(..)
     ));
+}
+
+#[test]
+fn shared_views_freeze_nested_exclusive_references_without_hiding_callable_inputs() {
+    let declaration = "record Counter {r} { value: ref mut {r} i64, step: i64 }\n";
+    for parameter in ["Counter", "ref Counter"] {
+        accepted(&format!(
+            "{declaration}pure def read :: {parameter} -> i64 = \\counter -> deref counter.value + counter.step\n"
+        ));
+        let error = analyze(&format!(
+            "{declaration}pure def write :: {parameter} -> i64 = \\counter -> {{ deref counter.value = 2; counter.step }}\n"
+        ))
+        .unwrap_err();
+        assert_eq!(error.code, "E1014", "{error:?}");
+    }
+    accepted(&format!(
+        "{declaration}pure def apply :: pure (ref Counter -> i64) -> ref Counter -> i64 = \\f counter -> f counter\n"
+    ));
+    rejected(
+        "record Hidden {r} { value: ref mut {r} i64, callback: i64 -> i64 }\n\
+         pure def read :: ref Hidden -> i64 = \\hidden -> 0\n",
+        "holds a function",
+    );
+}
+
+#[test]
+fn qualified_pure_functions_weaken_through_the_common_expression_conversion() {
+    let module = tsuzuri::analyze_modules(&[
+        (
+            "Helpers.tz",
+            "pure def add :: i64 -> i64 -> i64 = \\a b -> a + b\n\
+             pure def factory :: i64 -> (i64 -> i64) = \\a -> { \\b -> a + b }\n",
+        ),
+        (
+            "Main.tz",
+            "def f :: i64 -> i64 = \\x -> {\n\
+             let add: i64 -> i64 -> i64 = Helpers.add;\n\
+             let factory: i64 -> i64 -> i64 = Helpers.factory;\n\
+             add x 1 + factory x 2 }\n",
+        ),
+    ])
+    .unwrap();
+    assert!(llvm::emit(&module, llvm::Entry::Library).is_ok());
+}
+
+#[test]
+fn explicit_standard_library_pure_contracts_are_checked_without_narrowing_callbacks() {
+    let module = accepted(
+        "pure def sample :: own char -> own i64u -> i32u = \\character seed -> {\n\
+         let digit = Char.is_ascii_digit character;\n\
+         let lower = Char.is_ascii_lower character;\n\
+         let upper = Char.is_ascii_upper character;\n\
+         let alphabetic = Char.is_ascii_alphabetic character;\n\
+         let lowered = Char.to_ascii_lower character;\n\
+         let raised = Char.to_ascii_upper character;\n\
+         let wide = Random.pcg_next_u64 (Random.pcg seed 54i64u);\n\
+         match Random.pcg_next_u32 (Random.pcg seed 54i64u) with | (word, _) -> word\n}\n",
+    );
+    for (name, functions) in [
+        (
+            "Char",
+            &[
+                "is_ascii_digit",
+                "is_ascii_lower",
+                "is_ascii_upper",
+                "is_ascii_alphabetic",
+                "to_ascii_lower",
+                "to_ascii_upper",
+            ][..],
+        ),
+        (
+            "Random",
+            &["advance", "pcg", "pcg_next_u32", "pcg_next_u64"][..],
+        ),
+    ] {
+        for function in functions {
+            assert!(
+                module.functions.iter().any(|item| {
+                    item.module == name && item.name == *function && item.origin.pure
+                }),
+                "{name}.{function}"
+            );
+        }
+    }
+    let random = parser::parse(include_str!("../std/Random.tz")).unwrap();
+    for name in ["bytes", "next_u64", "gather"] {
+        assert!(
+            !random
+                .functions
+                .iter()
+                .find(|function| function.name.text == name)
+                .unwrap()
+                .pure
+        );
+    }
+    accepted(
+        "def external :: [i64] = Array.map (\\value -> { Debug.print (ref value); value }) [1, 2]\n",
+    );
 }
 
 #[test]

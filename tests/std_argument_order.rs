@@ -195,7 +195,11 @@ fn functions(source: &str) -> Vec<Function> {
     let headers: HashMap<&str, Vec<&str>> = source.lines().filter_map(header).collect();
     source
         .lines()
-        .filter_map(|line| line.strip_prefix("def "))
+        .filter_map(|line| {
+            line.strip_prefix("pure ")
+                .unwrap_or(line)
+                .strip_prefix("def ")
+        })
         .filter_map(|line| {
             let line = line
                 .strip_prefix("rec ")
@@ -316,6 +320,16 @@ fn misplaced(
 
 const RULE: &str = "The value that a function reads, transforms or updates is its last argument (AGENTS.md, \
                     \"Standard library API conventions\")";
+
+#[test]
+fn pure_definitions_remain_subject_to_argument_order_checks() {
+    let source = "pure def contains :: own i64 -> [i64] -> bool\nfn contains needle values = true\nprivate pure def hidden :: i64 -> i64\nfn hidden value = value\n";
+    let definitions = functions(source);
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].name, "contains");
+    assert_eq!(definitions[0].types, ["i64", "[i64]"]);
+    assert_eq!(definitions[0].names, ["needle", "values"]);
+}
 
 #[test]
 fn every_std_module_is_classified() {

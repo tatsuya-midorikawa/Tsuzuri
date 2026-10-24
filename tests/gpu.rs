@@ -26,6 +26,33 @@ fn extracts_scalar_kernels_with_normal_cpu_lowering() {
 }
 
 #[test]
+fn pure_contracts_share_effect_queries_without_weakening_backend_restrictions() {
+    let source = "def increment :: own i32 -> i32 = \\value -> value + 1i32\nexport def kernel :: own i32 -> i32 = \\value -> increment (value * value)\n";
+    let ordinary = analyze(source).unwrap();
+    let explicit = analyze(&source.replace("def ", "pure def ")).unwrap();
+    assert_eq!(
+        gpu::extract_kernel(&ordinary, kernel_id(&ordinary))
+            .unwrap()
+            .wgsl()
+            .unwrap(),
+        gpu::extract_kernel(&explicit, kernel_id(&explicit))
+            .unwrap()
+            .wgsl()
+            .unwrap()
+    );
+    let looped = analyze("export pure def kernel :: own i32 -> i32 = \\value -> { let mut result = value; while result > 0i32 do result = result - 1i32; result }\n").unwrap();
+    assert!(gpu::extract_kernel(&looped, kernel_id(&looped)).is_err());
+    let floating =
+        analyze("export pure def kernel :: own f32 -> f32 = \\value -> value * value\n").unwrap();
+    assert!(
+        gpu::extract_kernel(&floating, kernel_id(&floating))
+            .unwrap()
+            .wgsl()
+            .is_err()
+    );
+}
+
+#[test]
 fn rejects_kernel_effects_allocations_captures_and_recursion() {
     for source in [
         "export def kernel :: i32 -> i32\nfn kernel value = { let values = new [value]; values[0] }",

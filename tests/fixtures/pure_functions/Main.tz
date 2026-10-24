@@ -86,3 +86,37 @@ export def t_factory_class :: i64 -> i64 = \n ->
 export def t_pure_cpu :: i64 -> i64 = \n -> cpu_twice n
 pure def deferred :: i64 -> IO<i64> = \n -> IO.map (\value -> { Debug.print (ref value); value }) (IO.pure n)
 export def t_pure_deferred :: i64 -> i64 = \n -> { let action = deferred n; n + n + 1 }
+
+export def t_pure_std_weaken :: i64 -> i64 = \n ->
+    let lower: char -> char = Char.to_ascii_lower
+    if lower 'A' == 'a' then n + n + 1 else 0
+
+export def t_qualified_factory :: i64 -> i64 = \n ->
+    let factory: i64 -> i64 -> i64 = Classes.StageFactory.make
+    factory n (n + 1)
+
+pure def scalar_formula :: i64 -> i64 = \n -> n + n + 1
+export def t_pure_reuse :: i64 -> i64 = \n ->
+    let first = scalar_formula n
+    let second = scalar_formula n
+    first + second - first
+export def t_pure_reuse_mutated :: i64 -> i64 = \n ->
+    let mut current = n
+    let first = scalar_formula current
+    current = current + 1
+    let second = scalar_formula current
+    first + second - scalar_formula current
+
+pure def unsigned_formula :: i64u -> i64u = \n -> n + n + 1i64u
+export def t_pure_unsigned_reuse :: i64 -> i64 = \n ->
+    let value = n as i64u
+    let first = unsigned_formula value
+    let second = unsigned_formula value
+    (first + second - first) as i64
+
+pure def narrow_formula :: i32 -> i32 = \n -> n + n + 1i32
+export def t_pure_narrow_reuse :: i64 -> i64 = \n ->
+    let value = n as i32
+    let first = narrow_formula value
+    let second = narrow_formula value
+    (first + second - first) as i64

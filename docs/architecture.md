@@ -32,7 +32,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/syntax.rs` | トークン定義、構文木（AST）、言語版 `Edition`、説明の `@deprecated` の読み取り（`Documentation::deprecation`）、構文リソース上限の管理 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理（ファイル先頭の `#!` 行も行コメントとして飛ばし、位置はファイル全体のまま。`shebang_length`）、数値リテラルの切り出し、edition ごとの予約語（`EDITION_KEYWORDS`、`reserved_in`。`lex*` は edition を必須の引数に取る） |
 | `src/docgen.rs` | 宣言 AST からの公開 API ドキュメント（Markdown）生成、型・制約・region の描画、決定的なページソート |
-| `src/api_diff.rs` | `tsuzuri api-diff`（G19）。root パッケージの公開宣言を構文解析だけで読み、型変数と region を正規化した署名の表を作って 2 つの版を比べ、breaking と non-breaking の変更を決定的な順で出力（テキストと JSON Lines） |
+| `src/api_diff.rs`・`src/semantic_api.rs` | `tsuzuri api-diff`（G19・A19）。既定は root の公開宣言の構文比較。`--effective` は型検査中の解決済み署名・実際の引数規約・純粋性の段階・region の対応を明示的に収集し、安定した公開名で比較。breaking と non-breaking を決定的な順で出力（テキストと JSON Lines） |
 | `src/parser.rs` | Pratt パーサー、宣言と式、トップレベルのエントリーコード、再帰深度の制限 |
 | `src/parse_control.rs` | インデントによるブロック構文、for／while／match、関数ガード、ラムダ式、パターンおよびアクティブパターン認識器名 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR の構築、メモリレイアウト計算、公開 ABI |
@@ -363,7 +363,7 @@ WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が�
 
 ### 公開 API の差分（G19）
 
-`tsuzuri api-diff`（`src/api_diff.rs`）は、`Project::load_for_api`（依存の git・registry を取得せず、`Tsuzuri.lock` も読まない `load_for_docs` の変種）で 2 つの入力を読み、root パッケージ（`Project::root_package`）のソースを `parse_with_source` だけで構文解析して、公開宣言を「完全名と種類 → 項目」の表にします。署名は `docgen` の描画（`signature`、`type_text` など）を共有し、比較用には、型変数と region を最初に出てきた順の連番に置き換え、制約を並べ替え、定義の結果型の矢印を平らにした正規形（`Renaming`、`flatten`）を使い、報告にはそれぞれの版の書かれたままの形を使います。`add_items` は `Program` のすべての field を名前付きで分解するので、`Program` に宣言の種類を足すとここが compile error になり、API に入れるかどうかを決めることになります。`compare` は変更を breaking 先、名前順に並べるので出力は決定的で、表示は 1000 件までです。型検査もコード生成もしないので、IR には作用しません。
+`tsuzuri api-diff`（`src/api_diff.rs`）は、`Project::load_for_api`（依存の git・registry を取得せず、`Tsuzuri.lock` も読まない `load_for_docs` の変種）で 2 つの入力を読み、root パッケージ（`Project::root_package`）のソースを `parse_with_source` だけで構文解析して、公開宣言を「完全名と種類 → 項目」の表にします。署名は `docgen` の描画（`signature`、`type_text` など）を共有し、比較用には、型変数と region を最初に出てきた順の連番に置き換え、制約を並べ替え、通常の矢印だけを平坦化し、純粋な戻り型と factory の呼び出し段階を保った正規形（`Renaming`、`flatten`）を使い、報告にはそれぞれの版の書かれたままの形を使います。`add_items` は `Program` のすべての field を名前付きで分解するので、`Program` に宣言の種類を足すとここが compile error になり、API に入れるかどうかを決めることになります。`compare` は変更を breaking 先、名前順に並べるので出力は決定的で、表示は 1000 件までです。既定では型検査もコード生成もしないので、IR には作用しません。`--effective` では `Project::load_for_docs` と完全な解析を使い、通常の IDE index では省略する `SemanticIndex.resolved_api` を明示的に要求します。`src/semantic_api.rs` は特殊化前の generic な署名、展開した alias、型・長さパラメーター、checker が持つ region の対応を保存し、内部 package ID を公開名へ戻します。標準ライブラリそのものを root とする場合以外は依存の宣言を API に含めません。依存や解析のエラーでは診断を返し、構文比較へフォールバックしません。
 
 ### bindgen
 
@@ -1283,16 +1283,30 @@ Task 以外のクロージャにおいて捕捉変数が 1 個のみであり、
 
 ### 純粋性の検査
 
-`src/pure_rules.rs` は特殊化と `closures::lower` の後、`gpu::validate_calls` の隣で、
-`FunctionOrigin.pure` の利用者宣言を根として検査します。生成した補助関数を根にはしません。
+`src/pure_rules.rs` は generic なテンプレートを特殊化前に検査し、特殊化と `closures::lower` の後でも、
+`FunctionOrigin.pure` の宣言と純粋な関数値の根を検査します。生成した補助関数を無条件の純粋な根にはしません。
 引数の `own` と共有借用の補完は署名の収集時に終わり、以降は既存の参照と所有権規則を使います。
-AST の `pure` フラグを cache に保存するため frontend の形式は 6 です。
+純粋な矢印は `FunctionParameters.pure` に呼び出し段階ごとの契約を持ち、引数の物理的な規約を変えません。
+通常の矢印へ弱める cast は closure の表現を保ち、一時 callback の借用は cast の外側へ正規化します。
+同じ引数・結果の型と規約を持つ段階の cast は直接呼び出しの特殊化でも透過に扱いますが、arity が変わる factory の境界は透過にしません。
+AST の純粋な矢印・class／instance の印と、括弧で区切る pure factory の解析を保存する frontend の形式は 9 です。
 各関数の局所の効果と関数参照の辺だけをキャッシュし、根ごとに幅優先で到達可能性を求めます。
 探索中の再帰関数を純粋としてキャッシュせず、循環を含む別の根にも効果が伝播します。
+閉じた Task／Parallel は callback と捕捉値を検査し、標準 IO の構築は遅延 callback の実行と区別します。
+class の契約は既定実装と全 instance、generic の特殊化、`@cpu` の版へ引き継ぎます。
 式の走査は明示的なスタック、関数の探索はキューで、関数 4,096 個・式 2,097,152 個の上限を超えると `E1017` です。
 型・組み込み・型付き式の分類は網羅的な match とし、新しい variant は分類を決めなければコンパイルできません。
 D-53 の `what`・`impurity_of_roots`・`reachable_effect`・`builtin_impure` が問い合わせの境界です。
-検査は数値の lowering、LLVM の属性、トラップ、所有する結果の一意性を変更しません。
+GPU の抽出も `reachable_effect` を使いますが、既存の scalar・演算・再帰・backend の制限は別にすべて検査します。
+
+`src/llvm_facts.rs` は純粋性とは独立に実際の命令からメモリ効果を証明します。`reuse_pure_calls` は、
+明示の純粋な宣言と出力済みの `memory(none)` の両方がある、値の整数引数・整数結果の関数だけを再利用します。
+同じ基本ブロックで最初に実行した呼び出しを残し、同一の SSA 引数の後続呼び出しだけを置き換えます。
+整数の spill は、関数全体でアドレスが逃げない単純なスロットだけを、ブロック内の store／load に従って正規化します。
+borrow・atomic・volatile・未知のアクセスはこの正規化から除外します。前方参照する loop phi も含めて SSA 使用を置き換え、
+quoted text・コメント・名前の前方一致は書き換えません。数値番号の SSA 定義と quoted な定義も再利用せず、番号や未対応の文法を壊しません。
+関数が 200,000 byte を超える場合は最適化を省略します。参照・浮動小数点・所有結果・CPU multiversion は対象外です。
+純粋性から新しい LLVM 属性や停止性を推定せず、投機実行・永続的 memo cache・所有結果の共有を導入しません。
 
 ### 継続の特殊化
 

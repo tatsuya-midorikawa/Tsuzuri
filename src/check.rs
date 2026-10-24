@@ -10533,14 +10533,7 @@ impl<'a> Checker<'a> {
                 .transpose()?
         };
         if let Some((kind, ty)) = resolved {
-            if let Some(expected) = expected {
-                self.same(&ty, expected, expression.span)?;
-            }
-            return Ok(TypedExpr {
-                kind,
-                ty: self.inference.resolve(&ty),
-                span: expression.span,
-            });
+            return self.finish_expression(kind, ty, expected, expression.span);
         }
         let (kind, ty) = match &expression.kind {
             ExprKind::Integer(value, suffix) => {

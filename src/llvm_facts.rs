@@ -723,9 +723,315 @@ pub(super) fn apply(
     facts
 }
 
+fn local_tokens(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let bytes = text.as_bytes();
+    let mut cursor = 0;
+    std::iter::from_fn(move || {
+        while cursor < bytes.len() {
+            match bytes[cursor] {
+                b';' => {
+                    cursor = bytes.len();
+                    return None;
+                }
+                b'"' => cursor = traps::quoted_end(bytes, cursor).unwrap_or(bytes.len()),
+                b'%' => {
+                    let start = cursor;
+                    cursor += 1;
+                    while bytes.get(cursor).is_some_and(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'$' | b'-')
+                    }) {
+                        cursor += 1;
+                    }
+                    return Some((start, &text[start..cursor]));
+                }
+                _ => cursor += 1,
+            }
+        }
+        None
+    })
+}
+
+fn replace_locals(text: &str, aliases: &BTreeMap<String, String>) -> String {
+    let mut output = String::new();
+    let mut copied = 0;
+    for (start, token) in local_tokens(text) {
+        if let Some(value) = aliases.get(token) {
+            output.push_str(&text[copied..start]);
+            output.push_str(value);
+            copied = start + token.len();
+        }
+    }
+    output.push_str(&text[copied..]);
+    output
+}
+
+fn unquoted_local(value: &str) -> bool {
+    local_tokens(value)
+        .next()
+        .is_some_and(|(start, token)| start == 0 && token == value && token.len() > 1)
+}
+
+fn integer_ir(ty: &str) -> bool {
+    ty.strip_prefix('i').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn private_integer_slots<'a>(lines: &[&'a str]) -> BTreeSet<&'a str> {
+    let mut slots: BTreeSet<_> = lines
+        .iter()
+        .filter_map(|line| {
+            let (value, rhs) = instruction(line);
+            let ty = rhs.strip_prefix("alloca ")?.split([',', ' ']).next()?;
+            integer_ir(ty)
+                .then_some(value?)
+                .filter(|value| unquoted_local(value))
+        })
+        .collect();
+    let mut escaped = BTreeSet::new();
+    for line in lines {
+        let (value, rhs) = instruction(line);
+        for (_, token) in local_tokens(line) {
+            if slots.contains(token)
+                && value != Some(token)
+                && !access(rhs).is_some_and(|(ty, address, _)| integer_ir(ty) && address == token)
+            {
+                escaped.insert(token);
+            }
+        }
+    }
+    slots.retain(|slot| !escaped.contains(slot));
+    slots
+}
+
+fn reuse_in_function(lines: &[&str], eligible: &BTreeSet<&str>) -> String {
+    if lines
+        .iter()
+        .try_fold(BUDGET, |remaining, line| remaining.checked_sub(line.len()))
+        .is_none()
+    {
+        return lines.concat();
+    }
+    let private = private_integer_slots(lines);
+    let mut stored = BTreeMap::new();
+    let mut values = BTreeMap::new();
+    let mut calls = BTreeMap::<String, String>::new();
+    let mut aliases = BTreeMap::new();
+    let mut removed = BTreeSet::new();
+    for (position, line) in lines.iter().enumerate() {
+        let text = line.trim_start();
+        let label = if text.starts_with('"') {
+            traps::quoted_end(text.as_bytes(), 0).is_some_and(|end| text[end..].starts_with(':'))
+        } else {
+            text.split_once(':').is_some_and(|(name, _)| {
+                !name.is_empty()
+                    && name.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'$' | b'-')
+                    })
+            })
+        };
+        if label {
+            calls.clear();
+            stored.clear();
+        }
+        let (value, rhs) = instruction(line);
+        // A source scalar is spilled even at -O0. Only slots whose address never escapes may
+        // supply a known value across calls; borrowed, atomic and volatile slots never do.
+        if let Some((ty, address, storing)) = access(rhs)
+            && integer_ir(ty)
+            && private.contains(address)
+        {
+            if storing {
+                let contents = rhs
+                    .strip_prefix("store ")
+                    .and_then(|text| text.split_once(' '))
+                    .and_then(|(_, text)| text.split_once(", ptr "))
+                    .map(|(value, _)| value);
+                match contents {
+                    Some(value) if !matches!(value, "undef" | "poison") => {
+                        stored.insert(address, replace_locals(value, &values));
+                    }
+                    _ => {
+                        stored.remove(address);
+                    }
+                }
+            } else if let Some(value) = value
+                && let Some(contents) = stored.get(address)
+            {
+                values.insert(value.to_owned(), contents.clone());
+            }
+        }
+        let Some(value) = value else {
+            continue;
+        };
+        if !rhs.starts_with("call ")
+            || !unquoted_local(value)
+            || value.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+        {
+            continue;
+        }
+        let Some(call) = traps::callable(rhs, false) else {
+            continue;
+        };
+        if !eligible.contains(call.name) || call.close + 1 != rhs.len() {
+            continue;
+        }
+        let key = replace_locals(rhs, &values);
+        match calls.get(&key) {
+            Some(previous) => {
+                values.insert(value.to_owned(), previous.clone());
+                aliases.insert(value.to_owned(), previous.clone());
+                removed.insert(position);
+            }
+            None => {
+                calls.insert(key, value.to_owned());
+            }
+        }
+    }
+    if aliases.is_empty() {
+        return lines.concat();
+    }
+    // A loop phi can precede the call that supplies its back edge. Rewrite the whole function
+    // only after collecting aliases; replacing later lines alone leaves an undefined SSA value.
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| !removed.contains(position))
+        .map(|(_, line)| replace_locals(line, &aliases))
+        .collect()
+}
+
+/// Reuse only an already executed integer-scalar call in its own basic block. Source purity
+/// and the independently emitted memory(none) proof are both necessary, never interchangeable.
+pub(super) fn reuse_pure_calls(module: &CheckedModule, ir: String) -> String {
+    let pure: BTreeSet<_> = module
+        .functions
+        .iter()
+        .filter(|function| {
+            function.origin.pure
+                && function.capture_count == 0
+                && !function.is_task
+                && function.origin.cpu == 0
+                && matches!(function.signature.result, Type::Integer(..))
+                && function
+                    .signature
+                    .parameters
+                    .iter()
+                    .all(|ty| matches!(ty, Type::Integer(..)))
+        })
+        .map(|function| format!("@tz.fn.{}", function.qualified_name()))
+        .collect();
+    if pure.is_empty() {
+        return ir;
+    }
+    let eligible: BTreeSet<_> = ir
+        .lines()
+        .filter(|line| line.starts_with("define internal ") && line.contains(" memory(none)"))
+        .filter_map(|line| traps::callable(line, true))
+        .map(|call| call.name)
+        .filter(|name| pure.contains(*name))
+        .collect();
+    if eligible.is_empty() {
+        return ir;
+    }
+    let mut output = String::with_capacity(ir.len());
+    let mut function = Vec::new();
+    for line in ir.split_inclusive('\n') {
+        if line.starts_with("define ") || !function.is_empty() {
+            function.push(line);
+            if line.trim_end() == "}" {
+                output.push_str(&reuse_in_function(&function, &eligible));
+                function.clear();
+            }
+        } else {
+            output.push_str(line);
+        }
+    }
+    for line in function {
+        output.push_str(line);
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_reuse_preserves_first_calls_blocks_and_forward_phis() {
+        let source = "entry:\n  br label %loop\nloop:\n  %p = phi i64 [ 0, %entry ], [ %v1, %loop ]\n  %v0 = call i64 @f(i64 %p)\n  %v1 = call i64 @f(i64 %p), !dbg !12\n  %v10 = add i64 %v1, 1\n  br label %other\nother: ; a label may carry a comment\n  %v2 = call i64 @f(i64 %p)\n  ret i64 %v2\n";
+        let lines: Vec<_> = source.split_inclusive('\n').collect();
+        let actual = reuse_in_function(&lines, &BTreeSet::from(["@f"]));
+        assert_eq!(actual.matches("call i64 @f").count(), 2);
+        assert!(actual.contains("%v0 = call i64 @f(i64 %p)\n"));
+        assert!(actual.contains("[ %v0, %loop ]"));
+        assert!(actual.contains("%v10 = add i64 %v0, 1"));
+        assert!(actual.contains("%v2 = call i64 @f(i64 %p)"));
+    }
+
+    #[test]
+    fn scalar_reuse_tracks_only_non_escaping_integer_spills() {
+        for (middle, count) in [
+            ("call void @unrelated()", 1),
+            ("store i64 2, ptr %slot", 2),
+            ("call void @mutate(ptr %slot)", 2),
+            ("%\"esc=ape\" = call i64 @mutate(ptr %slot)", 2),
+            (
+                "%alias = getelementptr i64, ptr %slot, i64 0\nstore i64 2, ptr %alias",
+                2,
+            ),
+            ("store volatile i64 2, ptr %slot", 2),
+            ("store atomic i64 2, ptr %slot seq_cst, align 8", 2),
+            ("store ptr %slot, ptr %outside", 2),
+        ] {
+            let source = format!(
+                "entry:\n  %slot = alloca i64, align 8\n  store i64 1, ptr %slot\n  %a = load i64, ptr %slot\n  %first = call i64 @f(i64 %a)\n  {middle}\n  %b = load i64, ptr %slot\n  %second = call i64 @f(i64 %b)\n  ret i64 %second\n"
+            );
+            let lines: Vec<_> = source.split_inclusive('\n').collect();
+            let actual = reuse_in_function(&lines, &BTreeSet::from(["@f"]));
+            assert_eq!(actual.matches("call i64 @f").count(), count, "{actual}");
+        }
+    }
+
+    #[test]
+    fn scalar_reuse_rewrites_only_complete_unquoted_ssa_tokens() {
+        let aliases = BTreeMap::from([("%v1".into(), "%v0".into())]);
+        let source = "%v10 = add i64 %v1, %v11 ; %v1 stays in a comment\n";
+        assert_eq!(
+            replace_locals(source, &aliases),
+            "%v10 = add i64 %v0, %v11 ; %v1 stays in a comment\n"
+        );
+        let source = "call void @debug(ptr c\"%v1\\22%v1\", i64 %v1)";
+        assert_eq!(
+            replace_locals(source, &aliases),
+            "call void @debug(ptr c\"%v1\\22%v1\", i64 %v0)"
+        );
+    }
+
+    #[test]
+    fn scalar_reuse_leaves_quoted_and_numbered_local_definitions_unchanged() {
+        let source = "entry:\n  %0 = call i64 @f(i64 1)\n  %1 = call i64 @f(i64 1)\n  %\"left\" = call i64 @f(i64 1)\n  %\"right\" = call i64 @f(i64 1)\n  ret i64 %1\n";
+        let lines: Vec<_> = source.split_inclusive('\n').collect();
+        assert_eq!(reuse_in_function(&lines, &BTreeSet::from(["@f"])), source);
+        let source = "entry:\n  %\"slot\" = alloca i64, align 8\n  store i64 1, ptr %\"slot\"\n  %a = load i64, ptr %\"slot\"\n  %first = call i64 @f(i64 %a)\n  call void @mutate(ptr %\"slot\")\n  %b = load i64, ptr %\"slot\"\n  %second = call i64 @f(i64 %b)\n  ret i64 %second\n";
+        let lines: Vec<_> = source.split_inclusive('\n').collect();
+        assert_eq!(reuse_in_function(&lines, &BTreeSet::from(["@f"])), source);
+    }
+
+    #[test]
+    fn scalar_reuse_normalizes_arguments_but_keeps_different_calls_and_bundles() {
+        let source = "entry:\n  %a = call i64 @f(i64 1)\n  %b = call i64 @f(i64 1)\n  %c = call i64 @f(i64 %a)\n  %d = call i64 @f(i64 %b)\n  %e = call i64 @f(i64 2)\n  %f = call i64 @f(i64 2) [ \"deopt\"(i64 0) ]\n  %g = call i64 @other(i64 2)\n  ret i64 %d\n";
+        let lines: Vec<_> = source.split_inclusive('\n').collect();
+        let actual = reuse_in_function(&lines, &BTreeSet::from(["@f"]));
+        assert_eq!(actual.matches("call i64 @f").count(), 4);
+        assert!(actual.contains("ret i64 %c"));
+        assert!(actual.contains("%f = call i64 @f(i64 2) [ \"deopt\"(i64 0) ]"));
+        assert!(actual.contains("%g = call i64 @other(i64 2)"));
+        assert_eq!(reuse_in_function(&lines, &BTreeSet::new()), source);
+        let large = format!("; {}\n{source}", "x".repeat(BUDGET));
+        let lines: Vec<_> = large.split_inclusive('\n').collect();
+        assert_eq!(reuse_in_function(&lines, &BTreeSet::from(["@f"])), large);
+    }
 
     fn annotate(source: &str, allocas: &[&str], instructions: &[&str]) -> Vec<String> {
         let module = crate::analyze(source).unwrap();

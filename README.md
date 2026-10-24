@@ -1193,14 +1193,14 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
   移行ツールと std・fixture・文書の移行の検証後に限ります。古い manifest の既定は変更しません。
 - 古いチケットの引数例より D-59（41f80bc7）の対象が最後という規則を優先します。
   `Array.update_at 0 value xs` など、現行 API の順序を使用します。
-- `own` は共有構文を一度だけ実装します。純粋性は検査であり、LLVM の属性や呼び出し消去・
-  トラップ消去・結果の共有を許可するものではありません。
+- `own` は共有構文を一度だけ実装します。純粋性だけを理由に LLVM 属性、未使用呼び出しやトラップの消去、
+  所有結果の共有は許可しません。全 Phase の追加実装では、独立した既存のメモリ効果の証明もある整数呼び出しだけを局所的に再利用します。
 - 新しい crate、stack・解析上限の引き上げは行いません。未実装の Phase を完了とは記録しません。
 - A18 の review で明示 region を持つ record 引数の補完が既存の複数 lifetime 契約と衝突したため、
   明示 region の引数は固定署名として補完しません。region 推論や所有権規則は変えません。
   class method の whole-parameter `own` は、固定署名を変えずに印だけを除いて受理します。
-- api-diff は解決後の型を比較する基盤がまだないため、edition による引数の既定の差を保守的な
-  breaking change として報告します（無印の引数がある通常 def が対象）。これは完全な型解決の代替ではありません。
+- api-diff の既定は構文比較のまま保ち、edition による引数の既定の差を保守的な breaking change として報告します。
+  明示した `--effective` では両方を依存込みで検査し、alias 解決後の型と実際の引数規約、純粋性の呼び出し段階、region の対応を比べます。
   editor は `own` と補完前の引数表記を保ち、無関係な型不一致には所有権の修正を勧めません。
 - A18 Phase 2 の移行は、本体から所有権を推測せず、旧署名の値渡しを `own` で保存します。
   型変数・callback も明示し、後続の規約変更から旧 API を守ります。変更後を対象 edition で解析してから、

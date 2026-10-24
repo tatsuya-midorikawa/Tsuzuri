@@ -1884,7 +1884,7 @@ fn emit_program_in(
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
-    Ok((output, globals.traps))
+    Ok((facts::reuse_pure_calls(module, output), globals.traps))
 }
 
 /// The symbol that a `declare` line names, from the first `@` to the next `(`. Other lines and
