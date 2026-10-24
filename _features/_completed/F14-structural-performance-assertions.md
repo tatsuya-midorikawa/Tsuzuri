@@ -711,14 +711,28 @@ bench_allocs: bool,
 
 - D-59 に合わせ fixture の helper の対象 `Stats` を最後にし、
   `String.contains needle text`、現在の `Array.rev`、値を受ける `Array.filter` の述語に合わせた。
+- A18 統合後、edition 2027 の `Vec.push` は排他更新して unit を返す。
+  消費して Vec を返す fixture・bench の呼び出しは、両版共通の `Vec.push_owned` にした。
+  42 契約を edition 2026・2027 の両方で検査するので、native/wasm32 × O0/O3 と合わせ **336 件**になる。
 - `"abcdefghij"` の反復には境界の `"j" + "ab"` に `"jab"` がある。
   JavaScript の独立した検索でも確認し、旧引数順に由来する補助表明 `!found` だけを `found` に直した。
 - bench の差分は unsigned で計算し、引く前の比較で負の結果を拒否する。付録の signed-overflow UB は採用していない。
 - 現在の README の T2 に従い dev build を使用した。速度の主張はしていない。
   共有 cache の metadata/open 停止を避ける専用 `TSUZURI_CACHE_DIR` と、
   UNIX socket 長制約と子の cwd 変更を満たす repo 内の短い絶対 `TMPDIR` を使用した。
-- A19 との統合では `AllocCounter` を `Category::Debug` とし、理由は「確保数を読む」とする。
-  `alloc` 効果ではない（D10）。A19 担当者と確認済み。
+- A19 との統合で `AllocCounter` を `Category::Debug` に分類し、理由を `reads allocation counters` とした。
+  `alloc` 効果ではない（D10）。不純な組み込みは 91 件で、Debug の出力の既存メッセージと private の
+  `E1022`・純粋関数の `E1029` を保つ回帰テストを追加した。serialized syntax は増えず frontend format は 9 のまま。
+
+### A18/A19 統合のローカル検証
+
+A18 `b3343ed1`・A19 core `70f30826` 上で、fmt・clippy・関連 **90 tests**、
+全 Rust **1850 passed / 2 skipped**（`--test-threads 2`）が成功した。
+336 契約と変異体は、外側が compact 環境でも UTF-16 の契約として成功する。
+現在の dev バイナリで allocator・全 features（**20012 cases**）・parallel frontend と runtime includes **58 files** を確認した。
+A19 の JS/docs tail（`584030bd`・`dfe981ea`・`a378d9b7`）への再配置でも Rust・std・fixture が同一であることを比較した。
+Rust の再ビルドは増やさず、変更した **11 reference pages / 434 links / 55 examples / 78 native runs / 7 test projects**、
+GUIDE-LITE の **85 references** と、再構築したリポジトリ KB の鮮度を確認した。
 
 ## 付録
 
