@@ -2178,6 +2178,107 @@ NaN のビット（符号とペイロード）を言語の仕様から外せば�
 
 つまり静的データの利点は、定数を名前で直接読む形で表を作り直さなくなること、`let` で束縛するための書き換えが要らないことです。束縛していた形（`bound`）の速さは変わりません。測ったのは M1 Max の 1 つの負荷（表 256 要素、`i32u`）だけで、x86-64 と Linux、ほかの表の大きさ、wasm32 の実行時間は測っていません。s の速度、`n = 1024` 以上、BLAS とのブロッキングを含む比較は未測定で、行列積の GPU カーネルはありません。
 
+## 順序付きコンテナ（C12）
+
+[`benchmarks/ordered/Main.tz`](../benchmarks/ordered/Main.tz) は、同じ入力・操作・checksum で
+旧実装（1 本の整列 `Vec`）とチャンク化実装を比較します。
+実行形式は `exe <workload> <size>`、出力は `<workload> <size> <checksum> <nanoseconds>` の 1 行です。
+対象を作る時間は検索・削除・集合演算の計時に含めません。挿入自体を測る workload は構築を含めます。
+乱数は固定 seed の整数 LCG で、キー生成も計時外です。
+
+| workload | 計時する操作 | checksum |
+| --- | --- | --- |
+| `insert_random` | ランダムなキーの Map への挿入 | 最終要素数 |
+| `lookup_random` | 全キーを生成順に Map から検索 | 値を `total * 31 + value` で畳み込んだ `i64u` |
+| `remove_random` | 全キーを生成順に Map から削除 | 最終要素数（0） |
+| `insert_ascending` | 昇順の Map 挿入 | 最終要素数 |
+| `update_counter` | 1,024 キーのカウンタを `size` 回検索・更新 | キー順に同じ式で畳み込んだカウント |
+| `set_algebra` | 2 の倍数と 3 の倍数の集合の積・差・和 | 3 つの結果の要素数の合計 |
+
+再現時は、旧実装を stash で入れ替えず、別の worktree のコンパイラに埋め込みます。
+この表は A18 より前の測定なので、benchmark のソースと after コンパイラを測定した `733a33d8`、
+before コンパイラを `41f80bc7` に固定します。現在の benchmark の `Vec.push_owned` は旧コンパイラで
+使えないため、現在のソースやコンパイラへ片側だけ置き換えません。
+以下はリポジトリのルートで実行します（Clang／LLD と Node.js が必要です）。
+
+```sh
+mkdir -p target/scratch/c12-run/tmp
+export TMPDIR="$PWD/target/scratch/c12-run/tmp"
+export TSUZURI_CACHE_DIR="$PWD/target/scratch/c12-run/cache"
+git worktree add --detach target/scratch/c12-base 41f80bc7
+git worktree add --detach target/scratch/c12-after 733a33d8
+node scripts/slot.mjs -- cargo build --release --locked --manifest-path target/scratch/c12-base/Cargo.toml --target-dir target/scratch/c12-base-target
+node scripts/slot.mjs -- cargo build --release --locked --manifest-path target/scratch/c12-after/Cargo.toml --target-dir target/scratch/c12-after-target
+node scripts/slot.mjs -- target/scratch/c12-base-target/release/tsuzuri build target/scratch/c12-after/benchmarks/ordered -O3 --no-cache -o target/scratch/ordered-before
+node scripts/slot.mjs -- target/scratch/c12-after-target/release/tsuzuri build target/scratch/c12-after/benchmarks/ordered -O3 --no-cache -o target/scratch/ordered-after
+node scripts/slot.mjs -- sh -c '
+  for workload in insert_random lookup_random remove_random insert_ascending update_counter set_algebra; do
+    for size in 10000 100000; do
+      for round in 1 2 3 4 5; do
+        if test $((round % 2)) = 1; then versions="before after"; else versions="after before"; fi
+        for version in $versions; do target/scratch/ordered-$version "$workload" "$size"; done
+      done
+    done
+  done'
+```
+
+各組の checksum が一致したことを確認してから、5 回の中央値と最小〜最大を比較します。
+`insert_ascending 1000000`、`update_counter 5000000`、`set_algebra 1000000` も同じ方法で測定します。
+**測定値はこの環境での参考値であり、CI の速度の閾値ではありません。**
+分割・併合時にはチャンク見出しの列の移動もあるため、「更新は常に対数時間」とは主張しません。
+SIMD・並列・GPU を追加した変更でもありません。
+
+### 実測（2026-10-23）
+
+Apple M1 Max、macOS 27.0.1（26A434、Darwin 27.0.0）、Homebrew Clang 23.1.1、
+Rust 1.98.1、Node.js 20.19.6。before は `41f80bc7`、after の Map／Set は
+`733a33d8` の実装で、それぞれ別に release ビルドしたコンパイラを使いました。
+レビューで `Set.select` の比較用キーコピーを除いたため、全 15 組を再測定した結果です。
+同一の `benchmarks/ordered/Main.tz` を native `-O3` でコンパイルし、
+各組で before→after と after→before を交互にして 5 回ずつ実行しました。
+15 組・計 150 回すべてで、各組の checksum が一致しました。
+測定した実行ファイルは、両方とも `--no-cache` で独立に再コンパイルしたものと byte 単位で一致しました。
+生成 IR でも Map／Set の `{ %tz.vec, %tz.vec, i64 }` と型別に特殊化した挿入を確認しています。
+
+測定した実行ファイルの SHA-256:
+
+```text
+before 37d479165a7220495241ba79b79e34e7666054e736384b03bb60de04ec2c0fc7
+after  180e3d5b13ddee6354d195e72fae9fa522a1c7337b0518e087fb2d57e7ac91bc
+```
+
+**単位は ms、中央値（最小〜最大）**です。ほかの worktree のビルド・試験と並行した測定で、
+各実行直前の 1 分ロードアベレージは **10.07〜12.46** でした。
+専用の静穏なホストでの値ではありません。初回の表（修正前の Set、load 124.57〜135.08）
+の標本や倍率はこの表に混ぜず、両実装を同じ回で測り直しました。
+小さい差や汎用的な倍率の根拠にはせず、同じ入力での今回の参考値として読みます。
+
+| workload | size | before ms | after ms | 共通 checksum |
+| --- | ---: | ---: | ---: | ---: |
+| `insert_random` | 10,000 | 17.203 (13.202–23.765) | 2.178 (1.679–4.651) | 10000 |
+| `insert_random` | 100,000 | 1215.374 (1213.965–1293.031) | 22.120 (21.831–22.633) | 100000 |
+| `lookup_random` | 10,000 | 0.389 (0.387–0.397) | 0.621 (0.591–0.642) | 9172639423221651980 |
+| `lookup_random` | 100,000 | 6.039 (5.853–6.074) | 8.363 (8.273–8.874) | 4523595663754926707 |
+| `remove_random` | 10,000 | 6.715 (6.610–6.797) | 1.232 (1.230–1.396) | 0 |
+| `remove_random` | 100,000 | 796.062 (795.818–798.181) | 18.643 (18.144–18.858) | 0 |
+| `insert_ascending` | 10,000 | 0.250 (0.233–0.274) | 0.123 (0.120–0.143) | 10000 |
+| `insert_ascending` | 100,000 | 3.322 (3.317–3.542) | 1.127 (1.069–1.148) | 100000 |
+| `update_counter` | 10,000 | 0.359 (0.357–0.363) | 0.538 (0.520–0.563) | 15655855375024371942 |
+| `update_counter` | 100,000 | 3.428 (3.365–3.579) | 5.171 (5.005–5.322) | 11993924697063202530 |
+| `set_algebra` | 10,000 | 0.134 (0.125–0.141) | 0.162 (0.157–0.166) | 26666 |
+| `set_algebra` | 100,000 | 1.210 (1.154–1.283) | 1.519 (1.507–1.548) | 266666 |
+| `insert_ascending` | 1,000,000 | 40.999 (40.802–41.231) | 10.332 (10.178–10.590) | 1000000 |
+| `update_counter` | 5,000,000 | 171.226 (170.217–175.672) | 259.433 (257.861–287.165) | 12708347969814356200 |
+| `set_algebra` | 1,000,000 | 11.649 (11.487–11.934) | 14.896 (14.658–15.030) | 2666666 |
+
+今回の中央値では、10 万件のランダム挿入は約 54.9 倍、ランダム削除は約 42.7 倍、
+100 万件の昇順挿入は約 3.97 倍でした。
+**一方、検索は所要時間が約 1.38〜1.60 倍、カウンタ更新は約 1.50〜1.52 倍、
+集合演算は約 1.21〜1.28 倍に増えています。**
+2 段の検索やチャンクの読み出しには固定費があり、検索だけ・集合演算だけでも速くなるとは主張しません。
+100 万件のランダム挿入・削除は今回測っておらず、この表から外挿もしません。
+メモリ使用量や SIMD・並列化の効果を測った表でもなく、速度を CI の合否には使いません。
+
 ## 性能指標の記録
 
 PX01 形式は `schema: 1` の JSON Lines です。生の標本、中央値、最小、最大、run_id、commit、
@@ -5548,7 +5649,7 @@ node benchmarks/metrics.mjs report target/perf/PX02-example
 | tokenize | 200,000／1,024 | 語の所有文字列を join・split し、長さを fold |
 | format_join | 100,000／1,024 | 所有の十進文字列を連結・分割・解析し、合計 |
 | csv_aggregate | 100,000／1,024 | 所有の行・field を作り、16 種の集計 |
-| map_count | 200,000／1,024 | 整列 Map／Set、二分探索、隣接交換による挿入 |
+| map_count | 200,000／1,024 | 整列 Map（チャンク化した整列配列）、二分探索、チャンク内の移動による挿入 |
 | record_sort | 200,000／1,024 | 同じ bottom-up merge。等しい key は左を先に取る安定な整列 |
 | tree_transform | 256／2 | 深さ 12 の式の木を左から作り、消費して簡約・評価 |
 | binary_trees | 2,000／4 | 深さ 4〜11 の完全二分木の構築・節の数え上げ・解放 |

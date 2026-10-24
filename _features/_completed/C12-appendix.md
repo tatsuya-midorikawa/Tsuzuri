@@ -1,7 +1,9 @@
 # C12 付録: 検証済みの `std/Map.tz`・`std/Set.tz`・ベンチマーク・実測
 
+2026-10-23: Phase 1・2 完了。A・B の実装は現行 D-59 の公開 API と全文一致し、今回の実測は本体の実装・検証記録を参照。
+
 [C12 本体](C12-ordered-map-set-chunked.md)の付録。ここのコードは、HEAD のリポジトリの複製に置いて `cargo build --release` したコンパイラで、
-`map_set`（26 件）・`map_set_chunks`（29 件）・`json`（165 件）・`iteration_protocol`（26 件）の E2E suite（native と WASM の `-O0`／`-O3`）、
+`map_set`（26 件）・`map_set_chunks`（33 件）・`json`（165 件）・`iteration_protocol`（26 件）の E2E suite（native と WASM の `-O0`／`-O3`）、
 `tsuzuri test tests/fixtures/map_set_chunks`（`-O0`／`-O3` とも 5 件通過）、`tests/user_drop.mjs` を通した**検証済みの全文**である。
 実装者は、**そのまま写し、設計と食い違うと思っても書き換えない**（食い違いは本体「停止条件」に従って報告する）。
 
@@ -9,7 +11,7 @@
 - `std/Map.tz`・`std/Set.tz` のインデントは **TAB 1 文字**（HEAD の `std/Map.tz` と同じ）。空白に直さない。`tsuzuri fmt` を std に掛けない（HEAD の std も `fmt --check` は不一致）。
 - 本文の英語のコメントは、そのまま残す（std のコメントは英語）。
 
-## A. `std/Map.tz`（全文。379 行・16,193 バイト）
+## A. `std/Map.tz`（全文。379 行・16,399 バイト）
 
 <!-- file: std/Map.tz -->
 ```text
@@ -27,29 +29,29 @@ private const MaxChunk: i64 = 512
 private const MergeLimit: i64 = 256
 
 /// Takes the item at `index` out of `items` in constant time, which moves the last item to `index`; `put` with the same `index` undoes that.
-private def take :: Vec<'a> -> i64 -> (Vec<'a> * 'a)
+private def take :: own Vec<'a> -> i64 -> (Vec<'a> * 'a)
 fn take items index =
 	let last = Vec.length (ref items) - 1
 	match Vec.pop (Vec.swap index last items) with
 	| (rest, Maybe.Some item) -> (rest, item)
 	| (_, Maybe.None) -> unreachable ()
 
-private def put :: Vec<'a> -> i64 -> 'a -> Vec<'a>
+private def put :: own Vec<'a> -> i64 -> own 'a -> Vec<'a>
 fn put items index item =
-	let pushed = Vec.push item items
+	let pushed = Vec.push_owned item items
 	let last = Vec.length (ref pushed) - 1
 	Vec.swap index last pushed
 
-private def insert_at :: Vec<'a> -> i64 -> 'a -> Vec<'a>
+private def insert_at :: own Vec<'a> -> i64 -> own 'a -> Vec<'a>
 fn insert_at items index item =
-	let mut result = Vec.push item items
+	let mut result = Vec.push_owned item items
 	let mut position = Vec.length (ref result) - 1
 	while position > index do
 		result = Vec.swap position (position - 1) result
 		position = position - 1
 	result
 
-private def remove_at :: Vec<'a> -> i64 -> (Vec<'a> * 'a)
+private def remove_at :: own Vec<'a> -> i64 -> (Vec<'a> * 'a)
 fn remove_at items index =
 	let mut result = items
 	let last = Vec.length (ref result) - 1
@@ -61,7 +63,7 @@ fn remove_at items index =
 	| (rest, Maybe.Some item) -> (rest, item)
 	| (_, Maybe.None) -> unreachable ()
 
-private def reverse :: Vec<'a> -> Vec<'a>
+private def reverse :: own Vec<'a> -> Vec<'a>
 fn reverse items =
 	let mut result = items
 	let count = Vec.length (ref result)
@@ -72,7 +74,7 @@ fn reverse items =
 	result
 
 /// Moves the items from `at` on into a new `Vec`, in order.
-private def split_off :: Vec<'a> -> i64 -> (Vec<'a> * Vec<'a>)
+private def split_off :: own Vec<'a> -> i64 -> (Vec<'a> * Vec<'a>)
 fn split_off items at =
 	let mut head = items
 	let mut tail = Vec.with_capacity (Vec.length (ref head) - at)
@@ -80,12 +82,12 @@ fn split_off items at =
 		match Vec.pop head with
 		| (rest, Maybe.Some item) ->
 			head = rest
-			tail = Vec.push item tail
+			tail = Vec.push_owned item tail
 		| (rest, Maybe.None) -> head = rest
 	(head, reverse tail)
 
 /// Appends the items of `tail` to `head`, in order.
-private def join :: Vec<'a> -> Vec<'a> -> Vec<'a>
+private def join :: own Vec<'a> -> own Vec<'a> -> Vec<'a>
 fn join head tail =
 	let mut result = head
 	let mut rest = reverse tail
@@ -93,15 +95,15 @@ fn join head tail =
 		match Vec.pop rest with
 		| (remaining, Maybe.Some item) ->
 			rest = remaining
-			result = Vec.push item result
+			result = Vec.push_owned item result
 		| (remaining, Maybe.None) -> rest = remaining
 	result
 
 def empty :: Map<'key, 'value>
 fn empty = Map { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
-def singleton :: 'key -> 'value -> Map<'key, 'value>
-fn singleton key value = Map { head: Vec.push (Entry { key: key, value: value }) (Vec.empty()), rest: Vec.empty(), length: 1 }
+def singleton :: own 'key -> own 'value -> Map<'key, 'value>
+fn singleton key value = Map { head: Vec.push_owned (Entry { key: key, value: value }) (Vec.empty()), rest: Vec.empty(), length: 1 }
 
 def length :: ref Map<'key, 'value> -> i64
 fn length map = map.length
@@ -146,12 +148,12 @@ fn locate map key =
 			if Ord.lt (ref entries[middle].key) key then start = middle + 1 else stop = middle
 		if start < size && !(Ord.lt key (ref entries[start].key)) then (low, start) else (low, -1 - start)
 
-def contains_key :: Ord<'key> => 'key -> ref Map<'key, 'value> -> bool
+def contains_key :: Ord<'key> => own 'key -> ref Map<'key, 'value> -> bool
 fn contains_key key map =
 	match locate map (ref key) with
 	| (_chunk, offset) -> offset >= 0
 
-def get :: (Ord<'key>, Copy<'value>) => 'key -> ref Map<'key, 'value> -> Maybe<'value>
+def get :: (Ord<'key>, Copy<'value>) => own 'key -> ref Map<'key, 'value> -> Maybe<'value>
 fn get key map =
 	match locate map (ref key) with
 	| (chunk, offset) ->
@@ -160,7 +162,7 @@ fn get key map =
 			Maybe.Some entries[offset].value
 		else Maybe.None
 
-def at :: Ord<'key> => 'key -> ref Map<'key, 'value> -> ref 'value
+def at :: Ord<'key> => own 'key -> ref Map<'key, 'value> -> ref 'value
 fn at key map =
 	match locate map (ref key) with
 	| (chunk, offset) ->
@@ -169,20 +171,20 @@ fn at key map =
 		ref entries[offset].value
 
 /// Takes chunk `index` out of the map. The map that comes back has a hole at `index`; `put_chunk` fills it.
-private def take_chunk :: Map<'key, 'value> -> i64 -> (Map<'key, 'value> * Vec<Entry<'key, 'value>>)
+private def take_chunk :: own Map<'key, 'value> -> i64 -> (Map<'key, 'value> * Vec<Entry<'key, 'value>>)
 fn take_chunk map index =
 	if index == 0 then (Map { head: Vec.empty(), rest: map.rest, length: map.length }, map.head)
 	else
 		match take map.rest (index - 1) with
 		| (others, chunk) -> (Map { head: map.head, rest: others, length: map.length }, chunk)
 
-private def put_chunk :: Map<'key, 'value> -> i64 -> Vec<Entry<'key, 'value>> -> i64 -> Map<'key, 'value>
+private def put_chunk :: own Map<'key, 'value> -> i64 -> own Vec<Entry<'key, 'value>> -> i64 -> Map<'key, 'value>
 fn put_chunk map index chunk count =
 	if index == 0 then Map { head: chunk, rest: map.rest, length: count }
 	else Map { head: map.head, rest: put map.rest (index - 1) chunk, length: count }
 
 /// The hot path of a counter update: it keeps the old key and takes the chunk out of the map only when the entry is not in `head`.
-private def replace_value :: Map<'key, 'value> -> i64 -> i64 -> 'value -> Map<'key, 'value>
+private def replace_value :: own Map<'key, 'value> -> i64 -> i64 -> own 'value -> Map<'key, 'value>
 fn replace_value map chunk offset value =
 	let count = map.length
 	if chunk == 0 then
@@ -195,17 +197,17 @@ fn replace_value map chunk offset value =
 			| (remaining, old) -> Map { head: map.head, rest: put others (chunk - 1) (put remaining offset (Entry { key: old.key, value: value })), length: count }
 
 /// Puts `entry` at `offset` of chunk `chunk`. A full chunk splits in two halves first, except at the end of the last chunk, which starts a new chunk.
-private def add_entry :: Map<'key, 'value> -> i64 -> i64 -> Entry<'key, 'value> -> Map<'key, 'value>
+private def add_entry :: own Map<'key, 'value> -> i64 -> i64 -> own Entry<'key, 'value> -> Map<'key, 'value>
 fn add_entry map chunk offset entry =
 	let count = map.length
-	if count == 0 then Map { head: Vec.push entry (Vec.empty()), rest: Vec.empty(), length: 1 }
+	if count == 0 then Map { head: Vec.push_owned entry (Vec.empty()), rest: Vec.empty(), length: 1 }
 	else
 		let total = chunk_total (ref map)
 		let size = Vec.length (chunk_of (ref map) chunk)
 		if size < MaxChunk then
 			match take_chunk map chunk with
 			| (hole, entries) -> put_chunk hole chunk (insert_at entries offset entry) (count + 1)
-		elif chunk == total - 1 && offset == size then Map { head: map.head, rest: Vec.push (Vec.push entry (Vec.empty())) map.rest, length: count + 1 }
+		elif chunk == total - 1 && offset == size then Map { head: map.head, rest: Vec.push_owned (Vec.push_owned entry (Vec.empty())) map.rest, length: count + 1 }
 		else
 			match take_chunk map chunk with
 			| (hole, entries) ->
@@ -230,7 +232,7 @@ fn beyond_last map key =
 		assert (Eq.eq (ref entries[last].key) (ref entries[last].key))
 		Ord.lt (ref entries[last].key) key
 
-def insert :: Ord<'key> => 'key -> 'value -> Map<'key, 'value> -> Map<'key, 'value>
+def insert :: Ord<'key> => own 'key -> own 'value -> own Map<'key, 'value> -> Map<'key, 'value>
 fn insert key value map =
 	if beyond_last (ref map) (ref key) then
 		let chunk = chunk_total (ref map) - 1
@@ -243,7 +245,7 @@ fn insert key value map =
 			else add_entry map chunk (-1 - offset) (Entry { key: key, value: value })
 
 /// Merges chunk `index + 1` into chunk `index`.
-private def merge_next :: Map<'key, 'value> -> i64 -> Map<'key, 'value>
+private def merge_next :: own Map<'key, 'value> -> i64 -> Map<'key, 'value>
 fn merge_next map index =
 	let count = map.length
 	match remove_at map.rest index with
@@ -252,7 +254,7 @@ fn merge_next map index =
 		| (hole, entries) -> put_chunk hole index (join entries tail) count
 
 /// Restores the rule for neighbouring chunks after chunk `index` lost an entry: it merges with the chunk before it or, failing that, after it.
-private def shrink :: Map<'key, 'value> -> i64 -> Map<'key, 'value>
+private def shrink :: own Map<'key, 'value> -> i64 -> Map<'key, 'value>
 fn shrink map index =
 	let size = Vec.length (chunk_of (ref map) index)
 	if index > 0 && Vec.length (chunk_of (ref map) (index - 1)) + size <= MergeLimit then merge_next map (index - 1)
@@ -260,7 +262,7 @@ fn shrink map index =
 	else map
 
 /// Removes chunk `index`, which holds one entry; the next chunk becomes `head` when that is chunk 0.
-private def delete_chunk :: Map<'key, 'value> -> i64 -> Map<'key, 'value>
+private def delete_chunk :: own Map<'key, 'value> -> i64 -> Map<'key, 'value>
 fn delete_chunk map index =
 	let count = map.length - 1
 	if index == 0 then
@@ -272,7 +274,7 @@ fn delete_chunk map index =
 		match remove_at map.rest (index - 1) with
 		| (others, _gone) -> Map { head: map.head, rest: others, length: count }
 
-def remove :: Ord<'key> => 'key -> Map<'key, 'value> -> Map<'key, 'value>
+def remove :: Ord<'key> => own 'key -> own Map<'key, 'value> -> Map<'key, 'value>
 fn remove key map =
 	match locate (ref map) (ref key) with
 	| (chunk, offset) ->
@@ -288,30 +290,30 @@ fn remove key map =
 
 /// The `append_*` functions read the entries through their own parameter, not through a local reference: a key or a value that holds a borrow
 /// would otherwise keep the loan of that reference alive in the `Vec` that is built, and moving that `Vec` would be rejected (`E1014`).
-private def append_pairs :: (Copy<'key>, Copy<'value>) => Vec<('key * 'value)> -> ref Vec<Entry<'key, 'value>> -> Vec<('key * 'value)>
+private def append_pairs :: (Copy<'key>, Copy<'value>) => own Vec<('key * 'value)> -> ref Vec<Entry<'key, 'value>> -> Vec<('key * 'value)>
 fn append_pairs output entries =
 	let mut result = output
 	let mut offset = 0
 	while offset < Vec.length entries do
-		result = Vec.push (entries[offset].key, entries[offset].value) result
+		result = Vec.push_owned (entries[offset].key, entries[offset].value) result
 		offset = offset + 1
 	result
 
-private def append_keys :: Copy<'key> => Vec<'key> -> ref Vec<Entry<'key, 'value>> -> Vec<'key>
+private def append_keys :: Copy<'key> => own Vec<'key> -> ref Vec<Entry<'key, 'value>> -> Vec<'key>
 fn append_keys output entries =
 	let mut result = output
 	let mut offset = 0
 	while offset < Vec.length entries do
-		result = Vec.push entries[offset].key result
+		result = Vec.push_owned entries[offset].key result
 		offset = offset + 1
 	result
 
-private def append_values :: Copy<'value> => Vec<'value> -> ref Vec<Entry<'key, 'value>> -> Vec<'value>
+private def append_values :: Copy<'value> => own Vec<'value> -> ref Vec<Entry<'key, 'value>> -> Vec<'value>
 fn append_values output entries =
 	let mut result = output
 	let mut offset = 0
 	while offset < Vec.length entries do
-		result = Vec.push entries[offset].value result
+		result = Vec.push_owned entries[offset].value result
 		offset = offset + 1
 	result
 
@@ -342,7 +344,7 @@ fn values map =
 		chunk = chunk + 1
 	Vec.to_array output
 
-def fold :: ('state -> ref 'key -> ref 'value -> 'state) -> 'state -> ref Map<'key, 'value> -> 'state
+def fold :: own ('state -> ref 'key -> ref 'value -> 'state) -> own 'state -> ref Map<'key, 'value> -> 'state
 fn fold folder initial map =
 	let mut state = initial
 	let total = chunk_total map
@@ -394,7 +396,7 @@ fn invariants_hold map =
 	valid && sum == map.length
 ```
 
-## B. `std/Set.tz`（全文。446 行・18,255 バイト）
+## B. `std/Set.tz`（全文。447 行・18,526 バイト）
 
 `Set` は `Map` と同じ構造・同じ規則で、`Entry` を持たず `Vec<'key>` を直接持つ。`union`・`intersect`・`difference` が `Set` だけの関数である。
 
@@ -415,29 +417,29 @@ private const MergeLimit: i64 = 256
 private const BulkFill: i64 = 384
 
 /// Takes the item at `index` out of `items` in constant time, which moves the last item to `index`; `put` with the same `index` undoes that.
-private def take :: Vec<'a> -> i64 -> (Vec<'a> * 'a)
+private def take :: own Vec<'a> -> i64 -> (Vec<'a> * 'a)
 fn take items index =
 	let last = Vec.length (ref items) - 1
 	match Vec.pop (Vec.swap index last items) with
 	| (rest, Maybe.Some item) -> (rest, item)
 	| (_, Maybe.None) -> unreachable ()
 
-private def put :: Vec<'a> -> i64 -> 'a -> Vec<'a>
+private def put :: own Vec<'a> -> i64 -> own 'a -> Vec<'a>
 fn put items index item =
-	let pushed = Vec.push item items
+	let pushed = Vec.push_owned item items
 	let last = Vec.length (ref pushed) - 1
 	Vec.swap index last pushed
 
-private def insert_at :: Vec<'a> -> i64 -> 'a -> Vec<'a>
+private def insert_at :: own Vec<'a> -> i64 -> own 'a -> Vec<'a>
 fn insert_at items index item =
-	let mut result = Vec.push item items
+	let mut result = Vec.push_owned item items
 	let mut position = Vec.length (ref result) - 1
 	while position > index do
 		result = Vec.swap position (position - 1) result
 		position = position - 1
 	result
 
-private def remove_at :: Vec<'a> -> i64 -> (Vec<'a> * 'a)
+private def remove_at :: own Vec<'a> -> i64 -> (Vec<'a> * 'a)
 fn remove_at items index =
 	let mut result = items
 	let last = Vec.length (ref result) - 1
@@ -449,7 +451,7 @@ fn remove_at items index =
 	| (rest, Maybe.Some item) -> (rest, item)
 	| (_, Maybe.None) -> unreachable ()
 
-private def reverse :: Vec<'a> -> Vec<'a>
+private def reverse :: own Vec<'a> -> Vec<'a>
 fn reverse items =
 	let mut result = items
 	let count = Vec.length (ref result)
@@ -460,7 +462,7 @@ fn reverse items =
 	result
 
 /// Moves the items from `at` on into a new `Vec`, in order.
-private def split_off :: Vec<'a> -> i64 -> (Vec<'a> * Vec<'a>)
+private def split_off :: own Vec<'a> -> i64 -> (Vec<'a> * Vec<'a>)
 fn split_off items at =
 	let mut head = items
 	let mut tail = Vec.with_capacity (Vec.length (ref head) - at)
@@ -468,12 +470,12 @@ fn split_off items at =
 		match Vec.pop head with
 		| (rest, Maybe.Some item) ->
 			head = rest
-			tail = Vec.push item tail
+			tail = Vec.push_owned item tail
 		| (rest, Maybe.None) -> head = rest
 	(head, reverse tail)
 
 /// Appends the items of `tail` to `head`, in order.
-private def join :: Vec<'a> -> Vec<'a> -> Vec<'a>
+private def join :: own Vec<'a> -> own Vec<'a> -> Vec<'a>
 fn join head tail =
 	let mut result = head
 	let mut rest = reverse tail
@@ -481,15 +483,15 @@ fn join head tail =
 		match Vec.pop rest with
 		| (remaining, Maybe.Some item) ->
 			rest = remaining
-			result = Vec.push item result
+			result = Vec.push_owned item result
 		| (remaining, Maybe.None) -> rest = remaining
 	result
 
 def empty :: Set<'key>
 fn empty = Set { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
-def singleton :: 'key -> Set<'key>
-fn singleton key = Set { head: Vec.push key (Vec.empty()), rest: Vec.empty(), length: 1 }
+def singleton :: own 'key -> Set<'key>
+fn singleton key = Set { head: Vec.push_owned key (Vec.empty()), rest: Vec.empty(), length: 1 }
 
 def length :: ref Set<'key> -> i64
 fn length set = set.length
@@ -534,36 +536,36 @@ fn locate set key =
 			if Ord.lt (ref keys[middle]) key then start = middle + 1 else stop = middle
 		if start < size && !(Ord.lt key (ref keys[start])) then (low, start) else (low, -1 - start)
 
-def contains :: Ord<'key> => 'key -> ref Set<'key> -> bool
+def contains :: Ord<'key> => own 'key -> ref Set<'key> -> bool
 fn contains key set =
 	match locate set (ref key) with
 	| (_chunk, offset) -> offset >= 0
 
 /// Takes chunk `index` out of the set. The set that comes back has a hole at `index`; `put_chunk` fills it.
-private def take_chunk :: Set<'key> -> i64 -> (Set<'key> * Vec<'key>)
+private def take_chunk :: own Set<'key> -> i64 -> (Set<'key> * Vec<'key>)
 fn take_chunk set index =
 	if index == 0 then (Set { head: Vec.empty(), rest: set.rest, length: set.length }, set.head)
 	else
 		match take set.rest (index - 1) with
 		| (others, chunk) -> (Set { head: set.head, rest: others, length: set.length }, chunk)
 
-private def put_chunk :: Set<'key> -> i64 -> Vec<'key> -> i64 -> Set<'key>
+private def put_chunk :: own Set<'key> -> i64 -> own Vec<'key> -> i64 -> Set<'key>
 fn put_chunk set index chunk count =
 	if index == 0 then Set { head: chunk, rest: set.rest, length: count }
 	else Set { head: set.head, rest: put set.rest (index - 1) chunk, length: count }
 
 /// Puts `key` at `offset` of chunk `chunk`. A full chunk splits in two halves first, except at the end of the last chunk, which starts a new chunk.
-private def add_key :: Set<'key> -> i64 -> i64 -> 'key -> Set<'key>
+private def add_key :: own Set<'key> -> i64 -> i64 -> own 'key -> Set<'key>
 fn add_key set chunk offset key =
 	let count = set.length
-	if count == 0 then Set { head: Vec.push key (Vec.empty()), rest: Vec.empty(), length: 1 }
+	if count == 0 then Set { head: Vec.push_owned key (Vec.empty()), rest: Vec.empty(), length: 1 }
 	else
 		let total = chunk_total (ref set)
 		let size = Vec.length (chunk_of (ref set) chunk)
 		if size < MaxChunk then
 			match take_chunk set chunk with
 			| (hole, keys) -> put_chunk hole chunk (insert_at keys offset key) (count + 1)
-		elif chunk == total - 1 && offset == size then Set { head: set.head, rest: Vec.push (Vec.push key (Vec.empty())) set.rest, length: count + 1 }
+		elif chunk == total - 1 && offset == size then Set { head: set.head, rest: Vec.push_owned (Vec.push_owned key (Vec.empty())) set.rest, length: count + 1 }
 		else
 			match take_chunk set chunk with
 			| (hole, keys) ->
@@ -588,7 +590,7 @@ fn beyond_last set key =
 		assert (Eq.eq (ref keys[last]) (ref keys[last]))
 		Ord.lt (ref keys[last]) key
 
-def insert :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+def insert :: Ord<'key> => own 'key -> own Set<'key> -> Set<'key>
 fn insert key set =
 	if beyond_last (ref set) (ref key) then
 		let chunk = chunk_total (ref set) - 1
@@ -599,7 +601,7 @@ fn insert key set =
 		| (chunk, offset) -> if offset >= 0 then set else add_key set chunk (-1 - offset) key
 
 /// Merges chunk `index + 1` into chunk `index`.
-private def merge_next :: Set<'key> -> i64 -> Set<'key>
+private def merge_next :: own Set<'key> -> i64 -> Set<'key>
 fn merge_next set index =
 	let count = set.length
 	match remove_at set.rest index with
@@ -608,7 +610,7 @@ fn merge_next set index =
 		| (hole, keys) -> put_chunk hole index (join keys tail) count
 
 /// Restores the rule for neighbouring chunks after chunk `index` lost a key: it merges with the chunk before it or, failing that, after it.
-private def shrink :: Set<'key> -> i64 -> Set<'key>
+private def shrink :: own Set<'key> -> i64 -> Set<'key>
 fn shrink set index =
 	let size = Vec.length (chunk_of (ref set) index)
 	if index > 0 && Vec.length (chunk_of (ref set) (index - 1)) + size <= MergeLimit then merge_next set (index - 1)
@@ -616,7 +618,7 @@ fn shrink set index =
 	else set
 
 /// Removes chunk `index`, which holds one key; the next chunk becomes `head` when that is chunk 0.
-private def delete_chunk :: Set<'key> -> i64 -> Set<'key>
+private def delete_chunk :: own Set<'key> -> i64 -> Set<'key>
 fn delete_chunk set index =
 	let count = set.length - 1
 	if index == 0 then
@@ -628,7 +630,7 @@ fn delete_chunk set index =
 		match remove_at set.rest (index - 1) with
 		| (others, _gone) -> Set { head: set.head, rest: others, length: count }
 
-def remove :: Ord<'key> => 'key -> Set<'key> -> Set<'key>
+def remove :: Ord<'key> => own 'key -> own Set<'key> -> Set<'key>
 fn remove key set =
 	match locate (ref set) (ref key) with
 	| (chunk, offset) ->
@@ -644,12 +646,12 @@ fn remove key set =
 
 /// Reads the keys through its own parameter, not through a local reference: a key that holds a borrow would otherwise keep the loan of that
 /// reference alive in the `Vec` that is built, and moving that `Vec` would be rejected (`E1014`).
-private def append_keys :: Copy<'key> => Vec<'key> -> ref Vec<'key> -> Vec<'key>
+private def append_keys :: Copy<'key> => own Vec<'key> -> ref Vec<'key> -> Vec<'key>
 fn append_keys output keys =
 	let mut result = output
 	let mut offset = 0
 	while offset < Vec.length keys do
-		result = Vec.push keys[offset] result
+		result = Vec.push_owned keys[offset] result
 		offset = offset + 1
 	result
 
@@ -662,7 +664,7 @@ fn to_array set =
 		chunk = chunk + 1
 	Vec.to_array output
 
-def fold :: ('state -> ref 'key -> 'state) -> 'state -> ref Set<'key> -> 'state
+def fold :: own ('state -> ref 'key -> 'state) -> own 'state -> ref Set<'key> -> 'state
 fn fold folder initial set =
 	let mut state = initial
 	let total = chunk_total set
@@ -683,11 +685,11 @@ fn compare_keys left right =
 	if Ord.lt left right then -1 else if Ord.lt right left then 1 else 0
 
 /// All chunks of `set`, in key order, in one `Vec`.
-private def chunk_list :: Set<'key> -> Vec<Vec<'key>>
+private def chunk_list :: own Set<'key> -> Vec<Vec<'key>>
 fn chunk_list set = if set.length == 0 then Vec.empty() else insert_at set.rest 0 set.head
 
 /// Gives `keys` the last chunk of `chunks` when `keys` has run out.
-private def refill :: Vec<Vec<'a>> -> Vec<'a> -> (Vec<Vec<'a>> * Vec<'a>)
+private def refill :: own Vec<Vec<'a>> -> own Vec<'a> -> (Vec<Vec<'a>> * Vec<'a>)
 fn refill chunks keys =
 	if Vec.length (ref keys) > 0 then (chunks, keys)
 	else
@@ -696,14 +698,14 @@ fn refill chunks keys =
 		| (rest, Maybe.None) -> (rest, keys)
 
 /// The set whose chunks are `chunks`, in key order, with `total` keys.
-private def from_chunks :: Vec<Vec<'key>> -> i64 -> Set<'key>
+private def from_chunks :: own Vec<Vec<'key>> -> i64 -> Set<'key>
 fn from_chunks chunks total =
 	if total == 0 then Set { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 	else
 		match remove_at chunks 0 with
 		| (others, first) -> Set { head: first, rest: others, length: total }
 
-def union :: Ord<'key> => Set<'key> -> Set<'key> -> Set<'key>
+def union :: Ord<'key> => own Set<'key> -> own Set<'key> -> Set<'key>
 fn union left right =
 	let left_count = left.length
 	let right_count = right.length
@@ -736,22 +738,22 @@ fn union left right =
 					left_keys = remaining
 					let key = Maybe.get value
 					assert (Eq.eq (ref key) (ref key))
-					current = Vec.push key current
+					current = Vec.push_owned key current
 			else
 				match Vec.pop right_keys with
 				| (remaining, value) ->
 					right_keys = remaining
 					let key = Maybe.get value
 					assert (Eq.eq (ref key) (ref key))
-					current = Vec.push key current
+					current = Vec.push_owned key current
 			total = total + 1
 			if order == 0 then
 				match Vec.pop right_keys with
 				| (remaining, _duplicate) -> right_keys = remaining
 			if Vec.length (ref current) == BulkFill then
-				finished = Vec.push (reverse current) finished
+				finished = Vec.push_owned (reverse current) finished
 				current = Vec.with_capacity BulkFill
-	if Vec.length (ref current) > 0 then finished = Vec.push (reverse current) finished
+	if Vec.length (ref current) > 0 then finished = Vec.push_owned (reverse current) finished
 	from_chunks (reverse finished) total
 
 /// The key at `offset` of chunk `chunk`, copied. Like `append_keys`, it reads through its own parameter.
@@ -776,19 +778,20 @@ fn select left right include_equal =
 	let mut right_chunk = 0
 	let mut right_offset = 0
 	while left_index < left_count do
-		let key = key_at left left_chunk left_offset
-		assert (Eq.eq (ref key) (ref key))
+		let keys = chunk_of left left_chunk
+		let key = ref keys[left_offset]
+		assert (Eq.eq key key)
 		let order =
 			if right_index >= right_count then -1
 			else
-				let other = key_at right right_chunk right_offset
-				compare_keys (ref key) (ref other)
+				let other = chunk_of right right_chunk
+				compare_keys key (ref other[right_offset])
 		if order <= 0 then
 			if (order == 0) == include_equal then
-				current = Vec.push key current
+				current = Vec.push_owned (key_at left left_chunk left_offset) current
 				total = total + 1
 				if Vec.length (ref current) == BulkFill then
-					finished = Vec.push current finished
+					finished = Vec.push_owned current finished
 					current = Vec.with_capacity BulkFill
 			left_index = left_index + 1
 			if left_offset + 1 < chunk_size left left_chunk then left_offset = left_offset + 1
@@ -802,7 +805,7 @@ fn select left right include_equal =
 				else
 					right_chunk = right_chunk + 1
 					right_offset = 0
-	if Vec.length (ref current) > 0 then finished = Vec.push current finished
+	if Vec.length (ref current) > 0 then finished = Vec.push_owned current finished
 	from_chunks finished total
 
 def intersect :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> Set<'key>
@@ -871,7 +874,7 @@ fn random_keys size =
     let mut state = 88172645463325252
     for _index in 0i64 .. size - 1 do
         state = next_state state
-        keys = Vec.push (state >>> 20) keys
+        keys = Vec.push_owned (state >>> 20) keys
     Vec.to_array keys
 
 def filled :: ref [i64u] -> Map<i64u, i64u>

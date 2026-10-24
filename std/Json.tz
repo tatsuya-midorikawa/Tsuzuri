@@ -907,8 +907,8 @@ fn rec decode_elements value =
 /// `entries` sorted stably by key, so that equal keys are adjacent and in document order, with
 /// the document index of the first entry whose key repeats an earlier key, or -1: the error that
 /// inserting the entries in document order would find. The result is in descending key order,
-/// so `Vec.pop` yields ascending keys and every `Map.insert` or `Set.insert` appends; inserting
-/// in document order would shift the entries after each smaller key (quadratic).
+/// so `Vec.pop` yields ascending keys and every `Map.insert` or `Set.insert` appends to the last chunk;
+/// inserting in document order would move up to 511 entries of the first chunk for each smaller key.
 private def by_key :: Ord<'k> => own Vec<Keyed<'k, 'v>> -> (Vec<Keyed<'k, 'v>> * i64)
 fn by_key entries =
 	let mut sorted = Vec.to_array entries

@@ -17,6 +17,12 @@ fn ordered_containers_are_opaque_noncopy_owned_values() {
         "let map = Map.singleton 1 2\nlet other = { map with entries = Vec.empty() }\nMap.length (&other)",
         "let map = Map.singleton 1 2\nmatch map with | Map { entries = storage } -> Vec.length (&storage)",
         "let set = Set.singleton 1\nmatch set with | { entries = storage } -> Vec.length (&storage)",
+        "let map: Map<i64, i64> = Map { head: Vec.empty(), rest: Vec.empty(), length: 0 }\n0",
+        "let map = Map.singleton 1 2\nmap.head.length",
+        "let map = Map.singleton 1 2\nlet other = { map with length = 5 }\nMap.length (&other)",
+        "let map = Map.singleton 1 2\nmatch map with | Map { rest = storage } -> Vec.length (&storage)",
+        "let set = Set.singleton 1\nmatch set with | { head = storage } -> Vec.length (&storage)",
+        "let set = Set.singleton 1\nset.rest.length",
     ] {
         assert_eq!(analyze(source).unwrap_err().code, "E1022", "{source}");
     }

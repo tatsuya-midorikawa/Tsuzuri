@@ -93,8 +93,8 @@
 - [Array](./built-in-types-and-modules/array.md)
 - [List](./built-in-types-and-modules/list.md)
 - [Vec](./built-in-types-and-modules/vec.md)
-- [Map](./built-in-types-and-modules/map.md)
-- [Set](./built-in-types-and-modules/set.md)
+- [Map](./built-in-types-and-modules/map.md) — キー順のチャンク化マップ、診断用の `chunk_count` / `invariants_hold`
+- [Set](./built-in-types-and-modules/set.md) — キー順のチャンク化集合、診断用の `chunk_count` / `invariants_hold`
 - [HashMap](./built-in-types-and-modules/hashmap.md)
 - [HashSet](./built-in-types-and-modules/hashset.md)
 - [Arena](./built-in-types-and-modules/arena.md)

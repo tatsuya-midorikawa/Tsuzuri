@@ -178,7 +178,7 @@ seed を付けても走査順は変わりません。同じ操作列なら、see
 `randomized ()` と `try_randomized ()` は OS の乱数（`Random.next_u64`）から seed を取る `IO` アクションです。呼び出しは `randomized ()` で、`randomized()` は引数 0 個の適用になり `E1006` です。既定の wasm32 では `E2000` です。Windows 上のコンパイラが、OS API に到達するネイティブビルドを作ると `E2002` です。seed を得られないとき、`randomized` はトラップし、`try_randomized` は `Result.Error`（`Os.Error`）を返します。固定の seed には置き換えません。wasm32 では、ホストが選んだ seed を `with_seed` に渡します。
 
 > [!NOTE]
-> `with_seed` の SipHash-1-3 は、スロットの偏りを和らげます。`Hash.hash`（既定は FNV-1a）の 64 bit 全体が衝突するキーは、seed があっても衝突します。信頼できない入力をキーにするなら、順序付きの [Map](./map.md) も候補です。`Map` は二分探索木ではなく、キー昇順の連続バッファです。
+> `with_seed` の SipHash-1-3 は、スロットの偏りを和らげます。`Hash.hash`（既定は FNV-1a）の 64 bit 全体が衝突するキーは、seed があっても衝突します。信頼できない入力をキーにするなら、順序付きの [Map](./map.md) も候補です。`Map` は二分探索木ではなく、キー昇順に並べたチャンクの列です。
 
 ## API リファレンス
 
@@ -258,4 +258,3 @@ seed を付けても走査順は変わりません。同じ操作列なら、see
 - [Seq](./seq.md) — 遅延シーケンス
 - [型クラス](../types-and-type-inference/type-classes.md) — `Hash` と `Eq`
 - [言語リファレンスの目次](../index.md)
-

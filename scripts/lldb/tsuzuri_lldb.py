@@ -380,22 +380,96 @@ class ListProvider:
 
 
 def is_collection(sbtype, _dict):
-    """The std `Map<K, V>` or `Set<K>`, a record of its sorted `entries`."""
+    """The std `Map<K, V>` or `Set<K>`, a record of its sorted chunks and entry count."""
     name = sbtype.GetName() or ""
-    return name.startswith(("Map<", "Set<")) and field_names(sbtype) == ["entries"]
+    return name.startswith(("Map<", "Set<")) and field_names(sbtype) == ["head", "rest", "length"]
 
 
 @guarded
 def collection_summary(valobj):
-    return f"size={length_of(member(target(valobj), 'entries'))}"
+    return f"size={length_of(target(valobj))}"
 
 
-class CollectionProvider(SequenceProvider):
-    """The entries of a `Map` or the keys of a `Set`."""
+class CollectionProvider:
+    """Entries of `head`, then each chunk of `rest`; read chunk headers only on demand."""
 
-    def __init__(self, valobj, internal_dict):
-        entries = valobj.GetNonSyntheticValue().GetChildMemberWithName("entries")
-        super().__init__(entries, internal_dict)
+    def __init__(self, valobj, _dict):
+        self.valobj = valobj
+        self.update()
+
+    def update(self):
+        self.count = 0
+        self.chunks = 0
+        self.read = 0
+        self.firsts = []
+        self.ends = []
+        try:
+            value = self.valobj.GetNonSyntheticValue()
+            head = member(value, "head")
+            data = member(head, "data")
+            self.element = strip(data.GetType()).GetPointeeType()
+            self.stride = self.element.GetByteSize()
+            rest = member(value, "rest")
+            rest_data = member(rest, "data")
+            self.chunk_type = strip(rest_data.GetType()).GetPointeeType()
+            self.chunk_stride = self.chunk_type.GetByteSize()
+            self.chunk_address = rest_data.GetValueAsUnsigned()
+            self.chunks = length_of(rest)
+            self.firsts.append(data.GetValueAsUnsigned())
+            self.ends.append(length_of(head))
+            if self.element.IsValid() and self.stride > 0 and self.chunk_stride > 0:
+                self.count = length_of(value)
+        except Exception:
+            self.count = 0
+        return False
+
+    def address(self, index):
+        """The address of element `index`, or None when the chunks do not reach it."""
+        while self.ends[-1] <= index:
+            if self.read >= self.chunks:
+                return None
+            chunk = child_at(
+                self.valobj,
+                "chunk",
+                self.chunk_address + self.read * self.chunk_stride,
+                self.chunk_type,
+            )
+            if chunk is None:
+                return None
+            chunk = chunk.GetNonSyntheticValue()
+            self.read += 1
+            self.firsts.append(member(chunk, "data").GetValueAsUnsigned())
+            self.ends.append(self.ends[-1] + length_of(chunk))
+        low, high = 0, len(self.ends) - 1
+        while low < high:
+            middle = (low + high) // 2
+            if self.ends[middle] <= index:
+                low = middle + 1
+            else:
+                high = middle
+        number = low
+        before = self.ends[number - 1] if number else 0
+        return self.firsts[number] + (index - before) * self.stride
+
+    def num_children(self, max_children=LENGTH_LIMIT):
+        return min(self.count, max_children)
+
+    def has_children(self):
+        return self.count > 0
+
+    def get_child_index(self, name):
+        return child_index(name)
+
+    def get_child_at_index(self, index):
+        if not 0 <= index < self.count:
+            return None
+        try:
+            address = self.address(index)
+        except Exception:
+            return None
+        if address is None:
+            return None
+        return child_at(self.valobj, f"[{index}]", address, self.element)
 
 
 def union_node_type(sbtype):
