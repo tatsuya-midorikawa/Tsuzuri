@@ -1141,6 +1141,25 @@ impl Classes {
         Ok(classes)
     }
 
+    pub(super) fn class_name(
+        &self,
+        name: &Ident,
+        module: &str,
+        names: &Names,
+    ) -> Result<&str, Diagnostic> {
+        Ok(&self.declarations[self.resolve(names, module, name)?].name)
+    }
+
+    pub(super) fn method_signature(&self, class: &str, method: &str) -> Option<&Signature> {
+        self.declarations[*self.names.get(class)?]
+            .methods
+            .iter()
+            .find(|candidate| candidate.name == method)?
+            .signature
+            .as_ref()
+            .ok()
+    }
+
     pub(super) fn constraint_kinds(
         &self,
         expressions: &[ConstraintExpr],

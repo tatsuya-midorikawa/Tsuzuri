@@ -1,10 +1,12 @@
 //! `tsuzuri api-diff OLD NEW` (G19 Phase 2): the differences between the public API of two
 //! versions of a package or project, each marked as breaking or not.
 //!
-//! An API is read from the parsed declarations of the root package, the way `tsuzuri doc`
-//! renders them: a signature is the text of its declared types, so neither version is type
-//! checked, git and registry dependencies are not loaded, and a type alias is not resolved
-//! (replacing an alias by its target is reported as a change). The names of type variables
+//! By default an API is read from the parsed declarations of the root package, the way
+//! `tsuzuri doc` renders them: neither version is type checked, dependencies are not loaded,
+//! and a type alias is not resolved. The opt-in `--effective` mode analyzes both projects and
+//! compares resolved types, parameter modes, pure stages and checked region contracts without
+//! including dependency declarations in the report. Analysis errors never fall back to the
+//! syntax-only mode. The names of type variables
 //! and regions do not matter, nor does the number of parameters that a definition's lambda
 //! takes. A declaration is identified by its module's full name and its own name, so a package
 //! whose namespace changes loses every declaration and gains them under the new name.
@@ -13,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::check::ModuleOrigin;
+use crate::check::semantic::{ResolvedApi, SemanticIndex, api_key};
 use crate::diagnostic::{Diagnostic, Span, json_string};
 use crate::docgen::{
     constraints_text, json_text, parameters_text, region_text, signature, type_text,
@@ -220,6 +223,7 @@ struct Item {
     borrowing_defaults: Vec<bool>,
     /// The arity protected by the pure contract, excluding returned callable stages.
     pure: Option<usize>,
+    contract: Option<String>,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
     derives: BTreeSet<&'static str>,
@@ -235,6 +239,7 @@ struct Member {
     /// A class method that has a default.
     default: bool,
     pure: Option<usize>,
+    contract: Option<String>,
 }
 
 impl Item {
@@ -248,6 +253,7 @@ impl Item {
             constant: false,
             borrowing_defaults: Vec::new(),
             pure: None,
+            contract: None,
             members: Vec::new(),
             derives: BTreeSet::new(),
             doc: None,
@@ -287,6 +293,7 @@ impl Member {
             text,
             default: false,
             pure: None,
+            contract: None,
         }
     }
 }
@@ -307,18 +314,20 @@ pub struct Api {
 /// `canonical` leaves every name as written. A name in a length position that no declaration
 /// has declared as a length parameter (`const N: i64`) is a constant, and keeps its name.
 #[derive(Clone)]
-struct Renaming {
+struct Renaming<'a> {
     canonical: bool,
+    resolved: Option<&'a ResolvedApi>,
     variables: BTreeMap<String, String>,
     regions: BTreeMap<String, String>,
     /// The declared length parameters, by the name without its `#`.
     lengths: BTreeMap<String, String>,
 }
 
-impl Renaming {
-    fn new(canonical: bool) -> Self {
+impl<'a> Renaming<'a> {
+    fn new(canonical: bool, resolved: Option<&'a ResolvedApi>) -> Self {
         Self {
             canonical,
+            resolved: resolved.filter(|_| canonical),
             variables: BTreeMap::new(),
             regions: BTreeMap::new(),
             lengths: BTreeMap::new(),
@@ -394,10 +403,36 @@ impl Renaming {
             .collect()
     }
 
+    fn public_name(&self, name: &str) -> String {
+        self.resolved
+            .and_then(|resolved| resolved.public_names.get(name))
+            .cloned()
+            .unwrap_or_else(|| name.to_owned())
+    }
+
+    fn class_name(&self, name: &Ident) -> Ident {
+        let text = self
+            .resolved
+            .and_then(|resolved| resolved.classes.get(&api_key(name.span)))
+            .map_or_else(|| name.text.clone(), |name| self.public_name(name));
+        Ident {
+            text,
+            ..name.clone()
+        }
+    }
+
     fn ty(&mut self, ty: &TypeExpr) -> TypeExpr {
         use TypeExprKind::*;
+        let ty = if ty.span.source.is_some() {
+            self.resolved
+                .and_then(|resolved| resolved.annotations.get(&api_key(ty.span)))
+                .unwrap_or(ty)
+        } else {
+            ty
+        };
         let kind = match &ty.kind {
-            Named(name) => Named(name.clone()),
+            Named(name) => Named(self.public_name(name)),
+            Variable(name) if name.starts_with('#') => Named(self.length(&name[1..])),
             Variable(name) => Variable(self.variable(name)),
             Apply(head, arguments) => {
                 let head = match head.text.strip_prefix('\'') {
@@ -405,7 +440,10 @@ impl Renaming {
                         text: format!("'{}", self.variable(name)),
                         ..(**head).clone()
                     },
-                    None => (**head).clone(),
+                    None => Ident {
+                        text: self.public_name(&head.text),
+                        ..(**head).clone()
+                    },
                 };
                 let arguments = arguments
                     .iter()
@@ -442,7 +480,13 @@ impl Renaming {
             Own(inner) => Own(Box::new(self.ty(inner))),
             Mut(inner) => Mut(Box::new(self.ty(inner))),
             Pure(inner) => Pure(Box::new(self.ty(inner))),
-            Dyn(dyn_type) => Dyn(dyn_type.clone()),
+            Dyn(dyn_type) => {
+                let mut dyn_type = (**dyn_type).clone();
+                for class in &mut dyn_type.classes {
+                    class.text = self.public_name(&class.text);
+                }
+                Dyn(Box::new(dyn_type))
+            }
         };
         TypeExpr {
             kind,
@@ -453,7 +497,7 @@ impl Renaming {
     fn constraint(&mut self, constraint: &ConstraintExpr) -> ConstraintExpr {
         let ty = self.ty(&constraint.ty);
         let name = match &constraint.name {
-            ConstraintName::Class(class) => ConstraintName::Class(class.clone()),
+            ConstraintName::Class(class) => ConstraintName::Class(self.class_name(class)),
             ConstraintName::Function(name, annotation) => ConstraintName::Function(
                 name.clone(),
                 annotation
@@ -516,7 +560,7 @@ fn function_text(
     constraints: &[ConstraintExpr],
     parameters: &[&TypeExpr],
     result: &TypeExpr,
-    mut renaming: Renaming,
+    mut renaming: Renaming<'_>,
 ) -> String {
     let regions = renaming.regions(regions);
     let parameters = parameters
@@ -546,7 +590,7 @@ fn derives(derives: &[(DeriveClass, Span)]) -> BTreeSet<&'static str> {
 }
 
 /// The names of a declaration's type parameters, renamed by `renaming`.
-fn parameters(parameters: &[Ident], renaming: &mut Renaming) -> Vec<Ident> {
+fn parameters(parameters: &[Ident], renaming: &mut Renaming<'_>) -> Vec<Ident> {
     parameters
         .iter()
         .map(|parameter| renaming.parameter(parameter))
@@ -561,8 +605,10 @@ fn add_items(
     items: &mut Items,
     canonical: bool,
     edition: Edition,
+    resolved: Option<&ResolvedApi>,
 ) {
-    let fresh = || Renaming::new(canonical);
+    let fresh = || Renaming::new(canonical, resolved);
+    let effective = resolved.filter(|_| canonical);
     // Every field is named so that a new kind of declaration cannot be left out silently.
     let Program {
         source_kind: _,
@@ -618,18 +664,26 @@ fn add_items(
                 kind: TypeExprKind::Variable("T".into()),
                 span: declaration.result.span,
             });
-        let types: Vec<_> = declaration
-            .parameters
-            .iter()
-            .map(|parameter| &parameter.ty)
-            .collect();
+        let signature =
+            effective.and_then(|resolved| resolved.signatures.get(&api_key(declaration.name.span)));
+        let types: Vec<_> = signature.map_or_else(
+            || {
+                declaration
+                    .parameters
+                    .iter()
+                    .map(|parameter| &parameter.ty)
+                    .collect()
+            },
+            |signature| signature.parameters.iter().collect(),
+        );
+        let result = signature.map_or(&declaration.result, |signature| &signature.result);
         let header = function_text(
             "def",
             &name,
             &declaration.regions,
             &declaration.constraints,
             &types,
-            implicit.as_ref().unwrap_or(&declaration.result),
+            implicit.as_ref().unwrap_or(result),
             fresh(),
         );
         let mut item =
@@ -637,53 +691,63 @@ fn add_items(
         item.exported = declaration.exported;
         item.constant = declaration.constant;
         item.pure = declaration.pure.then_some(declaration.parameters.len());
-        let (parameters, _) = flatten(
-            declaration
-                .parameters
+        item.contract = effective
+            .and_then(|resolved| resolved.contracts.get(&api_key(declaration.name.span)))
+            .cloned();
+        if effective.is_none() {
+            let (parameters, _) = flatten(
+                declaration
+                    .parameters
+                    .iter()
+                    .map(|p| p.ty.clone())
+                    .collect(),
+                declaration.result.clone(),
+            );
+            item.borrowing_defaults = parameters
                 .iter()
-                .map(|p| p.ty.clone())
-                .collect(),
-            declaration.result.clone(),
-        );
-        item.borrowing_defaults = parameters
-            .iter()
-            .enumerate()
-            .map(|(index, parameter)| {
-                (edition.borrows_parameters() || declaration.pure)
-                    && !declaration.constant
-                    && !declaration.parameters.get(index).is_some_and(|p| p.mutable)
-                    && match &parameter.kind {
-                        TypeExprKind::Own(_)
-                        | TypeExprKind::Mut(_)
-                        | TypeExprKind::Reference(..)
-                        | TypeExprKind::Regions(..)
-                        | TypeExprKind::Quantified(..) => false,
-                        TypeExprKind::Named(name) => {
-                            crate::numeric::primitive(name).is_none_or(|ty| {
-                                matches!(
-                                    ty,
-                                    crate::check::Type::String | crate::check::Type::Utf8String
-                                )
-                            })
+                .enumerate()
+                .map(|(index, parameter)| {
+                    (edition.borrows_parameters() || declaration.pure)
+                        && !declaration.constant
+                        && !declaration.parameters.get(index).is_some_and(|p| p.mutable)
+                        && match &parameter.kind {
+                            TypeExprKind::Own(_)
+                            | TypeExprKind::Mut(_)
+                            | TypeExprKind::Reference(..)
+                            | TypeExprKind::Regions(..)
+                            | TypeExprKind::Quantified(..) => false,
+                            TypeExprKind::Named(name) => crate::numeric::primitive(name)
+                                .is_none_or(|ty| {
+                                    matches!(
+                                        ty,
+                                        crate::check::Type::String | crate::check::Type::Utf8String
+                                    )
+                                }),
+                            _ => true,
                         }
-                        _ => true,
-                    }
-            })
-            .collect();
+                })
+                .collect();
+        }
         add(item);
     }
     for declaration in externs {
         if declaration.visibility == Visibility::Private {
             continue;
         }
-        let types: Vec<_> = declaration.parameters.iter().collect();
+        let signature =
+            effective.and_then(|resolved| resolved.signatures.get(&api_key(declaration.name.span)));
+        let types: Vec<_> = signature.map_or_else(
+            || declaration.parameters.iter().collect(),
+            |signature| signature.parameters.iter().collect(),
+        );
+        let result = signature.map_or(&declaration.result, |signature| &signature.result);
         let header = function_text(
             "extern def",
             &declaration.name.text,
             &declaration.regions,
             &declaration.constraints,
             &types,
-            &declaration.result,
+            result,
             fresh(),
         );
         let mut item = Item::new("extern def", qualified(&declaration.name.text), header)
@@ -717,7 +781,7 @@ fn add_items(
         let mut item = Item::new("record", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
         for field in &declaration.fields {
-            item.members.push(Member::new(
+            let mut member = Member::new(
                 "field",
                 field.name.text.clone(),
                 format!(
@@ -727,7 +791,11 @@ fn add_items(
                     field.name.text,
                     type_text(&renaming.ty(&field.ty))
                 ),
-            ));
+            );
+            member.contract = effective
+                .and_then(|resolved| resolved.contracts.get(&api_key(field.name.span)))
+                .cloned();
+            item.members.push(member);
         }
         item.derives = derives(&declaration.derives);
         add(item);
@@ -809,7 +877,13 @@ fn add_items(
             if method.visibility == Visibility::Private {
                 continue;
             }
-            let types: Vec<_> = method.parameters.iter().collect();
+            let signature =
+                effective.and_then(|resolved| resolved.signatures.get(&api_key(method.name.span)));
+            let types: Vec<_> = signature.map_or_else(
+                || method.parameters.iter().collect(),
+                |signature| signature.parameters.iter().collect(),
+            );
+            let result = signature.map_or(&method.result, |signature| &signature.result);
             let mut member = Member::new(
                 "method",
                 method.name.text.clone(),
@@ -819,7 +893,7 @@ fn add_items(
                     &method.regions,
                     &method.constraints,
                     &types,
-                    &method.result,
+                    result,
                     renaming.clone(),
                 ),
             );
@@ -836,8 +910,13 @@ fn add_items(
         let mut renaming = fresh();
         let ty = renaming.ty(&declaration.ty);
         let constraints = renaming.constraints(&declaration.constraints);
-        let name = format!("{}<{}>", declaration.class.text, type_text(&ty));
+        let class = renaming.class_name(&declaration.class);
+        let name = format!("{}<{}>", class.text, type_text(&ty));
         let header = format!("instance {}{name}", constraints_text(&constraints));
+        let mut key = Renaming::new(true, resolved);
+        let ty = key.ty(&declaration.ty);
+        let class = key.class_name(&declaration.class);
+        let name = format!("{}<{}>", class.text, type_text(&ty));
         // Two modules can spell the same instance for their own types, so the module is part of it.
         add(Item::new("instance", qualified(&name), header));
     }
@@ -881,6 +960,27 @@ fn module_name(
 /// The public API of the root package of `project`, or of all its sources when it has no
 /// manifest. A source that does not parse is an error at that source.
 pub fn api(project: &Project) -> Result<Api, Diagnostic> {
+    api_with_resolution(project, None)
+}
+
+/// Fully analyzes the project and compares resolved types, parameter modes and region contracts.
+/// Load it with `Project::load_for_docs` so its locked dependencies are available.
+pub fn effective_api(project: &Project) -> Result<Api, Diagnostic> {
+    let mut index = SemanticIndex {
+        resolved_api: Some(Ok(ResolvedApi::default())),
+        ..SemanticIndex::default()
+    };
+    crate::analyze_inputs_semantic(&project.inputs(), &mut index).map_err(crate::first_error)?;
+    let resolved = index
+        .resolved_api
+        .expect("resolved API collection requested")?;
+    api_with_resolution(project, Some(&resolved))
+}
+
+fn api_with_resolution(
+    project: &Project,
+    resolved: Option<&ResolvedApi>,
+) -> Result<Api, Diagnostic> {
     let root = project.root_package.as_ref();
     let manifest = root
         .and_then(|root| {
@@ -892,8 +992,15 @@ pub fn api(project: &Project) -> Result<Api, Diagnostic> {
         .and_then(|manifest| crate::package::parse_manifest(&manifest.text, 0).ok());
     let mut items = Items::new();
     let mut shown = Items::new();
+    let standard_root = resolved.is_some()
+        && project
+            .sources
+            .iter()
+            .all(|source| source.origin == ModuleOrigin::Std);
     for (id, source) in project.sources.iter().enumerate() {
-        if source.origin != ModuleOrigin::User || source.package.as_ref() != root {
+        if (!standard_root && source.origin != ModuleOrigin::User)
+            || source.package.as_ref() != root
+        {
             continue;
         }
         let program = crate::parser::parse_with_source(&source.text, id, source.edition)?;
@@ -903,8 +1010,22 @@ pub fn api(project: &Project) -> Result<Api, Diagnostic> {
             ""
         };
         let module = module_name(source, &program, namespace, id)?;
-        add_items(&module, &program, &mut items, true, source.edition);
-        add_items(&module, &program, &mut shown, false, source.edition);
+        add_items(
+            &module,
+            &program,
+            &mut items,
+            true,
+            source.edition,
+            resolved,
+        );
+        add_items(
+            &module,
+            &program,
+            &mut shown,
+            false,
+            source.edition,
+            resolved,
+        );
     }
     // Both forms hold the same items and members in the same order.
     for (key, item) in &mut items {
@@ -1020,7 +1141,8 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             continue;
         };
         let (was, now) = (&old.members[index], &new.members[other]);
-        let signature_changed = was.text != now.text || was.pure != now.pure;
+        let signature_changed =
+            was.text != now.text || was.pure != now.pure || was.contract != now.contract;
         let (shown_was, shown_now) = if signature_changed {
             (was.shown.clone(), now.shown.clone())
         } else if was.default != now.default {
@@ -1076,6 +1198,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         || old.constant != new.constant
         || old.borrowing_defaults != new.borrowing_defaults
         || old.pure != new.pure
+        || old.contract != new.contract
     {
         // Exporting or adding a const/pure contract adds a symbol or a use
         // and changes nothing else; revoking either breaks the code that relied on it.
@@ -1083,7 +1206,8 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             && old.exported <= new.exported
             && old.constant <= new.constant
             && old.borrowing_defaults == new.borrowing_defaults
-            && (old.pure.is_none() || old.pure == new.pure);
+            && (old.pure.is_none() || old.pure == new.pure)
+            && old.contract == new.contract;
         changes.push(Change {
             breaking: !widened,
             action: Action::Changed,

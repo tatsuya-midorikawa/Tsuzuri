@@ -1,5 +1,10 @@
 use super::*;
 
+#[path = "semantic_api.rs"]
+mod api;
+pub use api::ResolvedApi;
+pub(crate) use api::key as api_key;
+
 #[derive(Clone, Debug)]
 pub struct SemanticEntry {
     pub span: Span,
@@ -103,6 +108,8 @@ pub struct SemanticIndex {
     /// Record-typed expressions and the definition of their record.
     pub receivers: Vec<(Span, usize)>,
     pub builtin_references: Vec<(Span, Builtin)>,
+    /// Set before analysis to request resolved API facts; ordinary indexing leaves this absent.
+    pub resolved_api: Option<Result<ResolvedApi, Diagnostic>>,
 }
 
 impl SemanticIndex {
@@ -587,7 +594,12 @@ fn define_declarations(
                         &method.name,
                         SymbolKind::Method,
                         name,
-                        format!("def {shown}.{}.{}", class.name.text, method.name.text),
+                        format!(
+                            "{}def {shown}.{}.{}",
+                            if method.pure { "pure " } else { "" },
+                            class.name.text,
+                            method.name.text
+                        ),
                         method.visibility,
                     )
                 });
@@ -609,10 +621,15 @@ pub(super) fn collect(
     name_uses: &[Vec<(Span, NameTarget)>],
     names: &Names,
     types: TypeContext<'_>,
+    classes: &Classes,
+    resolve_api: bool,
 ) -> SemanticIndex {
     #[cfg(test)]
     COLLECTIONS.with(|count| count.set(count.get() + 1));
     let mut index = SemanticIndex::default();
+    if resolve_api {
+        index.resolved_api = Some(api::collect(modules, functions, names, classes, &types));
+    }
     let links = define_declarations(&mut index, modules, functions, names, &types);
     let links = &links;
     for module in modules {
@@ -786,7 +803,12 @@ pub(super) fn collect(
                     &method.name,
                     6,
                     method.result.span,
-                    format!("def {shown}.{}.{}", class.name.text, method.name.text),
+                    format!(
+                        "{}def {shown}.{}.{}",
+                        if method.pure { "pure " } else { "" },
+                        class.name.text,
+                        method.name.text
+                    ),
                 );
             }
         }

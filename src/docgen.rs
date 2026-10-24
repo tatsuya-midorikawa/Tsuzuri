@@ -503,7 +503,7 @@ fn render_declarations(program: &Program) -> String {
             .iter()
             .map(|method| {
                 signature(
-                    "def",
+                    if method.pure { "pure def" } else { "def" },
                     &method.name.text,
                     &method.regions,
                     &method.constraints,

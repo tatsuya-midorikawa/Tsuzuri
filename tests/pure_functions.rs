@@ -229,6 +229,32 @@ fn formats_pure_and_own_and_round_trips_documentation() {
 }
 
 #[test]
+fn pure_class_contracts_survive_formatting_documentation_and_semantic_indexing() {
+    let source = "class Factory<'a>{\n/// Construct.\npure def make::'a->(i64->i64)\n}\n";
+    let formatted = formatter::format_source("Classes.tt", source, SourceKind::TypeClass)
+        .unwrap()
+        .formatted;
+    assert!(formatted.contains("pure def make :: 'a -> (i64 -> i64)"));
+    let program = parser::parse(source).unwrap();
+    assert_eq!(
+        formatter::ast_fingerprint(parser::parse(source).unwrap()),
+        formatter::ast_fingerprint(parser::parse(&formatted).unwrap())
+    );
+    let rendered = tsuzuri::docgen::render_module("Classes", &program);
+    assert_eq!(
+        rendered
+            .matches("pure def make :: 'a -> (i64 -> i64)")
+            .count(),
+        2,
+        "{rendered}"
+    );
+    let (_, index) = tsuzuri::analyze_modules_with_semantics(&[("Classes.tt", source)]).unwrap();
+    assert!(index.definitions.iter().any(|definition| {
+        definition.name == "make" && definition.detail.starts_with("pure def ")
+    }));
+}
+
+#[test]
 fn pure_def_parameters_are_shared_references_but_scalars_remain_values() {
     let module = accepted(
         "record Point { x: i64, y: i64 }\n\

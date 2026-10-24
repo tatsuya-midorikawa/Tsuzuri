@@ -7756,7 +7756,18 @@ fn check_modules_collect(
     );
     diagnostics.check()?;
     if indexing {
-        let index = semantic::collect(modules, &functions, &name_uses, &names, types);
+        let resolve_api = semantic
+            .as_ref()
+            .is_some_and(|index| index.resolved_api.is_some());
+        let index = semantic::collect(
+            modules,
+            &functions,
+            &name_uses,
+            &names,
+            types,
+            &classes,
+            resolve_api,
+        );
         if !deprecations.is_empty() {
             warnings.extend(warnings::deprecated_uses(
                 modules,

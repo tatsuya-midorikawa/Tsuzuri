@@ -756,12 +756,13 @@ tsuzuri doc src/ -o docs/api
 
 ### 公開 API の差分 (`tsuzuri api-diff`)
 
-パッケージやプロジェクトの 2 つの版の公開 API を比べ、互換性のない変更（公開宣言の削除、署名の変更、record の field や union の case の追加など）と、互換性を保つ変更（宣言の追加、説明の変更、`@deprecated` の追加）を 1 行ずつ出します。互換性のない変更があると終了コードは 1 です。型検査はせず、宣言の署名だけを比べます。
+パッケージやプロジェクトの 2 つの版の公開 API を比べ、互換性のない変更（公開宣言の削除、署名の変更、record の field や union の case の追加など）と、互換性を保つ変更（宣言の追加、説明の変更、`@deprecated` の追加）を 1 行ずつ出します。互換性のない変更があると終了コードは 1 です。既定では型検査をせず、宣言の署名だけを比べます。`--effective` は両方を依存込みで検査し、alias の解決後の型・実際の引数規約・`pure` の呼び出し段階・region の契約を比べます。検査や依存の読み込みが失敗した場合は診断で止まり、構文だけの比較へ戻しません。
 
 ```sh
 # 前の版のチェックアウトと、今のパッケージを比べる
 tsuzuri api-diff ../geometry-1.2.0 .
 tsuzuri api-diff ../geometry-1.2.0 . --json
+tsuzuri api-diff ../geometry-1.2.0 . --effective --json
 ```
 
 次は、`Shapes.tz` だけを持つ 2 つのディレクトリを比べたときの出力です（`Tsuzuri.toml` のない入力は、名前空間のない名前で出ます）。

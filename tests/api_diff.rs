@@ -23,9 +23,23 @@ fn root(label: &str, files: &[(&str, &str)]) -> PathBuf {
 }
 
 fn report(old: &Path, new: &Path) -> Report {
+    report_mode(old, new, false)
+}
+
+fn report_mode(old: &Path, new: &Path, effective: bool) -> Report {
     let api = |path: &Path| {
-        let project = Project::load_for_api(path).unwrap();
-        api_diff::api(&project).unwrap_or_else(|error| panic!("{error:?}"))
+        let project = if effective {
+            Project::load_for_docs(path)
+        } else {
+            Project::load_for_api(path)
+        }
+        .unwrap();
+        let api = if effective {
+            api_diff::effective_api(&project)
+        } else {
+            api_diff::api(&project)
+        };
+        api.unwrap_or_else(|error| panic!("{path:?}: {error:?}"))
     };
     api_diff::compare(&api(old), &api(new))
 }
@@ -53,6 +67,15 @@ fn summary(report: &Report) -> Vec<String> {
 
 /// The changes between two versions of the single module `Main` and of the files `others`.
 fn compare(old: &str, new: &str, others: &[(&str, &str, &str)]) -> Vec<String> {
+    compare_mode(old, new, others, false)
+}
+
+fn compare_mode(
+    old: &str,
+    new: &str,
+    others: &[(&str, &str, &str)],
+    effective: bool,
+) -> Vec<String> {
     let mut old_files = vec![("Main.tz", old)];
     let mut new_files = vec![("Main.tz", new)];
     for &(file, before, after) in others {
@@ -60,10 +83,291 @@ fn compare(old: &str, new: &str, others: &[(&str, &str, &str)]) -> Vec<String> {
         new_files.push((file, after));
     }
     let (old, new) = (root("old", &old_files), root("new", &new_files));
-    let lines = summary(&report(&old, &new));
+    let lines = summary(&report_mode(&old, &new, effective));
     std::fs::remove_dir_all(old).unwrap();
     std::fs::remove_dir_all(new).unwrap();
     lines
+}
+
+#[test]
+fn effective_aliases_and_copy_records_do_not_turn_pure_additions_into_breaks() {
+    let old = "record Point { x: i64 }\ntype Alias = Point\ndef size :: Alias -> i64 = \\point -> point.x\n";
+    let new = old.replace("def size :: Alias", "pure def size :: Point");
+    assert_eq!(
+        compare_mode(old, &new, &[], true),
+        ["non-breaking changed def Main.size"]
+    );
+    assert_eq!(compare(old, &new, &[]), ["breaking changed def Main.size"]);
+    assert!(compare_mode(old, &old.replace(":: Alias", ":: Point"), &[], true).is_empty());
+}
+
+#[test]
+fn effective_parameter_modes_distinguish_real_edition_changes_from_copy_values() {
+    let manifest = "[package]\nname = \"api\"\nversion = \"0.1.0\"\nedition = \"2026\"\n";
+    let new_manifest = manifest.replace("2026", "2027").replace("0.1.0", "0.2.0");
+    let source = "record Point { x: i64 }\ndef point :: Point -> i64 = \\p -> p.x\ndef size :: string -> i64 = \\text -> text.length\n";
+    let old = root(
+        "effective-edition-old",
+        &[("Main.tz", source), ("Tsuzuri.toml", manifest)],
+    );
+    let new = root(
+        "effective-edition-new",
+        &[("Main.tz", source), ("Tsuzuri.toml", &new_manifest)],
+    );
+    let changes = report_mode(&old, &new, true);
+    assert_eq!(changes.changes.len(), 1, "{:?}", changes.changes);
+    assert!(changes.changes[0].breaking);
+    assert!(changes.changes[0].name.ends_with(".size"));
+    assert_eq!(report(&old, &new).breaking(), 2);
+    std::fs::remove_dir_all(old).unwrap();
+    std::fs::remove_dir_all(new).unwrap();
+}
+
+#[test]
+fn effective_generic_names_constraints_and_length_schemas_keep_their_meaning() {
+    let old = "record Grid<const N: i64> { cells: [i64; N] }\ntype Row<const N: i64> = [i64; N]\nunion Cell<const N: i64> = Full of [i64; N] | Empty\n\
+        pure def identity :: own 'a -> 'a = \\value -> value\n\
+        def ordered :: Ord<'a> => own 'a -> bool = \\value -> value == value\n";
+    let new = old.replace("N", "Count").replace("'a", "'element");
+    assert!(compare_mode(old, &new, &[], true).is_empty());
+    assert_eq!(
+        compare_mode(
+            "record Pair<const N: i64, const M: i64> { first: [i64; N], second: [i64; M] }\n",
+            "record Pair<const N: i64, const M: i64> { first: [i64; M], second: [i64; N] }\n",
+            &[],
+            true,
+        ),
+        [
+            "breaking changed field Main.Pair.first",
+            "breaking changed field Main.Pair.second"
+        ]
+    );
+}
+
+#[test]
+fn effective_class_method_aliases_and_pure_stages_are_resolved() {
+    let main = "type Word = i64\nrecord Point { x: i64 }\ninstance Traits.Measure<Point> { fn size point = point.x }\n";
+    let old = "class Measure<'a> { pure def size :: 'a -> Main.Word }\n";
+    let new = old.replace("Main.Word", "i64").replace("'a", "'element");
+    assert!(compare_mode(main, main, &[("Traits.tt", old, &new)], true).is_empty());
+    let main = "instance Traits.Factory<i64> { fn make offset = { \\value -> offset + value } }\n";
+    let class = "class Factory<'a> { pure def make :: own 'a -> (i64 -> i64) }\n";
+    assert!(compare_mode(main, main, &[("Traits.tt", class, class)], true).is_empty());
+}
+
+#[test]
+fn effective_higher_kinded_constraints_and_nested_pure_callbacks_are_canonical() {
+    let class = "class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }\n";
+    let main = "def same :: Traits.Functor<'f> => own 'f<'a> -> 'f<'a> = \\value -> value\n";
+    let renamed_class = class
+        .replace("'f", "'constructor")
+        .replace("'a", "'input")
+        .replace("'b", "'output");
+    let renamed_main = main.replace("'f", "'constructor").replace("'a", "'item");
+    assert!(
+        compare_mode(
+            main,
+            &renamed_main,
+            &[("Traits.tt", class, &renamed_class)],
+            true
+        )
+        .is_empty()
+    );
+    let old = "type Transform<'a> = pure ('a -> 'a)\ndef apply :: Transform<'a> -> own 'a -> 'a = \\f value -> f value\n";
+    let new = old
+        .replace("Transform<'a> ->", "pure ('a -> 'a) ->")
+        .replace("'a", "'element");
+    assert!(compare_mode(old, &new, &[], true).is_empty());
+    let old = "def apply :: pure (i64 -> (i64 -> i64)) -> i64 -> i64 = \\f value -> f value (value + 1)\n";
+    let new = old.replace("(i64 -> (i64 -> i64))", "(i64 -> i64 -> i64)");
+    assert_eq!(
+        compare_mode(old, &new, &[], true),
+        ["breaking changed def Main.apply"]
+    );
+}
+
+#[test]
+fn effective_regions_follow_checked_provenance_after_alias_resolution() {
+    let old = "type Text = string\ndef pick {r s} :: ref {r} Text -> ref {s} Text -> ref {r} Text = \\left right -> left\n";
+    let renamed = old
+        .replace("Text ->", "string ->")
+        .replace("{r", "{first")
+        .replace(" s}", " second}")
+        .replace("{s}", "{second}");
+    assert!(compare_mode(old, &renamed, &[], true).is_empty());
+    let new = old
+        .replace("-> ref {r} Text =", "-> ref {s} Text =")
+        .replace("-> left\n", "-> right\n");
+    assert_eq!(
+        compare_mode(old, &new, &[], true),
+        ["breaking changed def Main.pick"]
+    );
+    let old = "record View {r s} { first: ref {r} string, second: ref {s} string }\n";
+    let new = "record View {r s} { first: ref {s} string, second: ref {r} string }\n";
+    assert_eq!(
+        compare_mode(old, new, &[], true),
+        [
+            "breaking changed field Main.View.first",
+            "breaking changed field Main.View.second"
+        ]
+    );
+}
+
+#[test]
+fn effective_standard_library_root_is_not_mistaken_for_dependency_sources() {
+    let standard =
+        Project::load_for_docs(&Path::new(env!("CARGO_MANIFEST_DIR")).join("std")).unwrap();
+    let standard_api = api_diff::effective_api(&standard).unwrap();
+    let empty = root("effective-empty", &[("Main.tz", "0\n")]);
+    let empty_api = api_diff::api(&Project::load_for_api(&empty).unwrap()).unwrap();
+    let additions = api_diff::compare(&empty_api, &standard_api);
+    assert!(
+        additions.non_breaking() > 100,
+        "{}",
+        additions.render_text()
+    );
+    assert_eq!(additions.breaking(), 0);
+    std::fs::remove_dir_all(empty).unwrap();
+}
+
+#[test]
+fn effective_analysis_errors_never_fall_back_to_syntax_only_comparison() {
+    let directory = root(
+        "effective-error",
+        &[("Main.tz", "def broken :: i64 = missing\n")],
+    );
+    let syntax = Project::load_for_api(&directory).unwrap();
+    assert!(api_diff::api(&syntax).is_ok());
+    let checked = Project::load_for_docs(&directory).unwrap();
+    let error = api_diff::effective_api(&checked)
+        .err()
+        .expect("analysis must fail");
+    assert_eq!(error.code, "E1002");
+    assert!(error.message.contains("missing"));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn effective_path_dependencies_resolve_without_becoming_root_api() {
+    let directory = root(
+        "effective-path-dependencies",
+        &[
+            (
+                "old/Tsuzuri.toml",
+                &manifest(
+                    "app",
+                    "0.1.0",
+                    "[dependencies]\nshapes = { path = \"../shapes-old\" }\n",
+                ),
+            ),
+            (
+                "new/Tsuzuri.toml",
+                &manifest(
+                    "app",
+                    "0.2.0",
+                    "[dependencies]\nshapes = { path = \"../shapes-new\" }\n",
+                ),
+            ),
+            ("shapes-old/Tsuzuri.toml", &manifest("shapes", "0.1.0", "")),
+            ("shapes-new/Tsuzuri.toml", &manifest("shapes", "0.2.0", "")),
+            ("shapes-old/Point.tz", "record Point { x: i64 }\n"),
+            (
+                "shapes-new/Point.tz",
+                "record Point { x: i64 }\ndef extra :: i64 = 7\n",
+            ),
+            (
+                "old/Main.tz",
+                "type Local = Shapes::Point\ndef read :: Local -> i64 = \\point -> point.x\n",
+            ),
+            (
+                "new/Main.tz",
+                "type Local = Shapes::Point\npure def read :: Shapes::Point -> i64 = \\point -> point.x\n",
+            ),
+        ],
+    );
+    let checked = report_mode(&directory.join("old"), &directory.join("new"), true);
+    assert_eq!(checked.breaking(), 0, "{}", checked.render_text());
+    assert_eq!(
+        summary(&checked),
+        ["non-breaking changed def App::Main.read"]
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn effective_command_is_opt_in_validates_flags_and_reports_analysis_errors() {
+    let old_source = "type Word = i64\ndef f :: Word -> Word = \\n -> n\n";
+    let new_source = "type Word = i64\ndef f :: i64 -> i64 = \\n -> n\n";
+    let directory = root(
+        "effective-cli",
+        &[("old/Main.tz", old_source), ("new/Main.tz", new_source)],
+    );
+    let old = directory.join("old");
+    let new = directory.join("new");
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tsuzuri"));
+        command.arg("api-diff");
+        command
+    };
+    let ordinary = command().arg(&old).arg(&new).output().unwrap();
+    assert_eq!(ordinary.status.code(), Some(1));
+    let checked = command()
+        .arg("--effective")
+        .arg("--json")
+        .arg(&old)
+        .arg(&new)
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert!(String::from_utf8_lossy(&checked.stdout).contains("\"breaking\":0"));
+    let duplicate = command()
+        .args(["--effective", "--effective", "--json"])
+        .arg(&old)
+        .arg(&new)
+        .output()
+        .unwrap();
+    assert_eq!(duplicate.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("E2000"));
+    let ignored_thread_setting = command()
+        .arg(&old)
+        .arg(&old)
+        .env("TSUZURI_THREADS", "invalid")
+        .output()
+        .unwrap();
+    assert!(ignored_thread_setting.status.success());
+    let invalid_thread_setting = command()
+        .args(["--effective", "missing-old", "missing-new"])
+        .env("TSUZURI_THREADS", "invalid")
+        .output()
+        .unwrap();
+    assert_eq!(invalid_thread_setting.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&invalid_thread_setting.stderr).contains("E2000"));
+    std::fs::write(old.join("Main.tz"), "def f :: i64 = missing\n").unwrap();
+    let invalid = command()
+        .args(["--effective", "--json"])
+        .arg(&old)
+        .arg(&new)
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(invalid.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("E1002"));
+    std::fs::rename(&new, directory.join("--effective")).unwrap();
+    let literal = command()
+        .args(["--effective", "--", "--effective", "--effective"])
+        .current_dir(&directory)
+        .output()
+        .unwrap();
+    assert!(
+        literal.status.success(),
+        "{}",
+        String::from_utf8_lossy(&literal.stderr)
+    );
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -167,6 +471,18 @@ fn pure_call_stage_boundaries_are_not_flattened_away() {
     let factory = "pure def f :: i64 -> (i64 -> i64) = \\x -> { \\y -> x + y }\n";
     check(curried, factory, &["breaking changed def Main.f"]);
     check(factory, curried, &["breaking changed def Main.f"]);
+    assert_eq!(
+        compare_mode(curried, factory, &[], true),
+        ["breaking changed def Main.f"]
+    );
+    assert_eq!(
+        compare_mode(factory, curried, &[], true),
+        ["breaking changed def Main.f"]
+    );
+    assert_eq!(
+        compare_mode(&factory.replacen("pure ", "", 1), factory, &[], true),
+        ["non-breaking changed def Main.f"]
+    );
     check(
         &factory.replacen("pure ", "", 1),
         factory,
@@ -862,6 +1178,8 @@ fn only_the_root_package_counts_and_nothing_is_type_checked_or_fetched() {
     assert!(project.root_package.is_some());
     let api_text = tsuzuri::api_diff::api(&project).is_ok();
     assert!(api_text);
+    // Effective comparison requires the real dependency graph, never the syntax-only fallback.
+    assert!(Project::load_for_docs(&app).is_err());
     // A dependency's declarations are not the package's API.
     let empty = self::root(
         "deps-empty",
@@ -966,7 +1284,7 @@ fn the_command_rejects_bad_usage_inputs_and_sources() {
     let bad = root("cli-bad", &[("Main.tz", "def f :: = \n")]);
     let empty = root("cli-empty", &[]);
     let missing = good.join("missing");
-    let usage = "usage: tsuzuri api-diff old new [--json]";
+    let usage = "usage: tsuzuri api-diff old new [--effective] [--json]";
     for arguments in [
         vec!["api-diff".as_ref()],
         vec!["api-diff".as_ref(), good.as_os_str()],
