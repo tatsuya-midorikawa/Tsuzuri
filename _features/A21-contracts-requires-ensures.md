@@ -5,7 +5,7 @@
 | ID | A21 |
 | 優先度 | P2 |
 | 規模 | XL（全体）。Phase 1: M ／ Phase 2: L ／ Phase 3: L ／ Phase 4: M ／ Phase 5: XL ／ Phase 6: M |
-| 依存 | [A19](A19-pure-functions.md)（**Phase 1 の done が前提**。`pure def` と `src/pure_rules.rs` の効果の源の走査）。A20 Phase 1（任意。`src/effects.rs` があれば純粋性の走査にそれを使う）。G22（任意。`Diagnostic::with_kind`・`related`・`help` があれば使い、なければ付けない。「前提とする他チケットのインターフェース」）。F14（本チケットは機能として使わない。種の依存欄にあるが、使う箇所がない。逸脱として報告済み） |
+| 依存 | [A19](_completed/A19-pure-functions.md)（**Phase 1 の done が前提**。`pure def` と `src/pure_rules.rs` の効果の源の走査）。A20 Phase 1（任意。`src/effects.rs` があれば純粋性の走査にそれを使う）。G22（任意。`Diagnostic::with_kind`・`related`・`help` があれば使い、なければ付けない。「前提とする他チケットのインターフェース」）。F14（本チケットは機能として使わない。種の依存欄にあるが、使う箇所がない。逸脱として報告済み） |
 | 後続 | G26（facts の `contracts` キー。任意）。ほかの第3期チケットで本チケットを前提にするものはない |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認） |
@@ -55,7 +55,7 @@ HEAD での測定（「現状」）: `@requires` は `E0002` で拒否される�
 
 - **依存**: A19 Phase 1 が done（`git ls-files src/pure_rules.rs` が 1 行）。A20 は任意（`src/effects.rs` があれば純粋性の走査にそちらを使う。「前提とする他チケットのインターフェース」）。
 - **ベースライン（GUIDE §2.3）**: `cargo build --release --locked && cargo test --locked` の件数を控え、`target/release/tsuzuri` を `/tmp/tz-A21/tsuzuri-before` に残し、`tests/fixtures` と `examples` の各プロジェクトを `--emit llvm -O0` で `/tmp/tz-A21/before/<名前>.ll` に保存する（手順 1。「IR が変わらない」確認に使う）。
-- **読むもの**: GUIDE §6.2・§6.5・§6.7・§6.8・§6.9、D-51・D-53・D-55、[A19](A19-pure-functions.md) の「本体の規則: 効果の源」と「検証のアルゴリズム」。
+- **読むもの**: GUIDE §6.2・§6.5・§6.7・§6.8・§6.9、D-51・D-53・D-55、[A19](_completed/A19-pure-functions.md) の「本体の規則: 効果の源」と「検証のアルゴリズム」。
 - `z3` は Phase 5 の確認にだけ要る（調査は Z3 5.1.0）。なければ `z3` を使うテストは skip され、偽の solver のテストだけが走る。
 
 ### 停止条件

@@ -46,7 +46,7 @@
 
 - Phase 1・2 に依存はない。Phase 3 は A19 Phase 1 が done であること（`ls src/pure_rules.rs` が存在し、`builtin_effect` がある）。Phase 4 は G26 Phase 3 が done であること（`facts/<Module>.jsonl` を書く `write_facts` がある）。
 - ベースライン（GUIDE §2.3）: `cargo build --release --locked` と `cargo test --locked`。HEAD の実測: `node tests/features.mjs target/release/tsuzuri parallel` が `features: 36 cases passed`。
-- 読むもの: `std/Parallel.tz`（2 行）、`std/Array.tz` の `fold`、`docs/language.md` の節「データ並列 API」と「多相関数と型クラス」、`_tsuzuri/language-reference/built-in-types-and-modules/parallel.md`、`src/stdlib.rs` の `OPT_IN`・`RESERVED_MODULES` と、その下の 3 つの単体テスト、`_features/GUIDE-LITE.md`、`_features/A19-pure-functions.md` の「検証のアルゴリズム」と「組み込み関数の分類」（Phase 3）。
+- 読むもの: `std/Parallel.tz`（2 行）、`std/Array.tz` の `fold`、`docs/language.md` の節「データ並列 API」と「多相関数と型クラス」、`_tsuzuri/language-reference/built-in-types-and-modules/parallel.md`、`src/stdlib.rs` の `OPT_IN`・`RESERVED_MODULES` と、その下の 3 つの単体テスト、`_features/GUIDE-LITE.md`、`_features/_completed/A19-pure-functions.md` の「検証のアルゴリズム」と「組み込み関数の分類」（Phase 3）。
 
 ### 停止条件
 

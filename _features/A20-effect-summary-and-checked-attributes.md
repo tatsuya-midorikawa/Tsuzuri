@@ -5,7 +5,7 @@
 | ID | A20 |
 | 優先度 | P1 |
 | 規模 | XL。Phase 1: L／2: M／3: L／4: L／5: M／6: L／7: M（Phase は上の順に独立して出荷できる） |
-| 依存 | [A19](A19-pure-functions.md)（`done` なら**経路 A**、未実装なら**経路 B**で A19 の `pure` を本チケットの基盤の上に実装する。「実装手順」）。G22（診断 v2 の `kind`・`related`・`help`。Phase 2 以降の診断が使う。未実装なら縮退形。「前提とする他チケットのインターフェース」）。弱い依存: [F12](_completed/F12-bounds-check-elimination.md)（`src/ranges.rs`。done）、[A15](_completed/A15-copy-cost-visibility.md)（`src/copies.rs`。done） |
+| 依存 | [A19](_completed/A19-pure-functions.md)（`done` なら**経路 A**、未実装なら**経路 B**で A19 の `pure` を本チケットの基盤の上に実装する。「実装手順」）。G22（診断 v2 の `kind`・`related`・`help`。Phase 2 以降の診断が使う。未実装なら縮退形。「前提とする他チケットのインターフェース」）。弱い依存: [F12](_completed/F12-bounds-check-elimination.md)（`src/ranges.rs`。done）、[A15](_completed/A15-copy-cost-visibility.md)（`src/copies.rs`。done） |
 | 後続 | A21（契約。`pure` と効果の要約を使う）、E15（`@trusted`・`audit`・権限）、G26 Phase 3・4（facts の `effects`・`effect_sites`・`alloc_sites`・`trap_sites`）、B10（`Domain`）、F15（並列化の純粋性）、F14（確保数の表明） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。確認した HEAD は `main` の `9dd0fbbc`。起票の指示にあった `a2313d19` との差は `docs/benchmarks.md` の 41 行だけ: `git diff --stat 9dd0fbbc a2313d19`） |

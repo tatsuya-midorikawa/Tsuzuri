@@ -804,7 +804,7 @@ D-39 の固定長配列の型 `[T; N]` と長さパラメーター `const N: i64
 dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属性 `@cpu ["avx2", ...]`（F08。`def` シグネチャの前だけ。`cpu` は予約語にしない）。
 D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソースでも先頭（byte 0）の `#!` 行を行コメントとして読む shebang の規則（G13 Phase 2）。
 D-45 の関数の修飾 `const def`（D11。既存の予約語 `const` と `def` の組み合わせで、新しい予約語はない）、manifest の `[package]` のキー `edition`、文書コメントの行 `@deprecated`（G19。字句と構文は変えない）。
-D-48 の関数の修飾 `pure def`（A19。`pure` は `def` の直前だけの文脈キーワードで、予約語にしない）と、引数の型の前置き `own T`（A19 の D16。`own` は文脈キーワードで予約語にしない。受理は `pure def` の引数だけで、通常の `def` の引数へ広げるのは A18 の D2）。いずれも `EDITION_KEYWORDS` は空のまま。
+D-48 の関数の修飾 `pure def` と純粋な関数型 `pure (T -> U)`（A19。`pure` はこれらの位置だけの文脈キーワードで、予約語にしない）、引数の型の前置き `own T`（A18・A19。通常と pure の `def` の引数で受理するが、結果・field・型引数・矢印型の中には導入しない）。`own` も文脈キーワードで、いずれも `EDITION_KEYWORDS` は空のまま。
 G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に足すほかに、予約を始める edition と一緒に `EDITION_KEYWORDS`（`src/lexer.rs`）へ登録する（§6.1。D-45）。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
@@ -1583,6 +1583,10 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   解析は `src/pure_rules.rs`（`closures::lower` の後、`gpu::validate_calls` の隣。到達可能性の幅優先。上限は `E1017`。到達する本体で作られた関数値だけが現れるので、関数値の呼び出しは許し、外から関数値が入る引数を禁じる）。`Builtin` の 246 個を 90（不純）と 156（純粋）に分け、wildcard なしの `match` で保つ。
 - 型の上の表し方（A19 の D3）: Copy で drop が要らない型は値のまま、ほかの無印は `ref T`、`own T` は `T`。HEAD で `ref i64` が算術にも戻り値にも使えず `E1003` になるため。
 - 蓄積引数の再帰（A19 の D14）: `own` で書ける。HEAD では二乗（n = 40,000 で 15〜20 秒）で、A17 の後に線形になる見込み（未測定）。
+
+- **2026-10-23、全 Phase の実装とローカル受入を完了。** A18 の通常 `def` の `own` を維持し、generic、純粋関数型と呼び出し段階、class／instance・CPU variant、遅延 IO の構築、閉じた明示並行処理、Char・PCG の契約、`api-diff --effective`、GPU との効果問い合わせの共有に対応した。旧 Phase 1 の制約と format 4→6 の記録を現行仕様とはしない。現行 frontend format は **9**。
+  最適化は独立に `memory(none)` を証明した整数呼び出しの同一基本ブロック内の再利用だけで、最初の呼び出しを残す。自動 offload・所有結果の共有・永続 memo cache は導入せず、速度向上は未計測。
+  A19 単独で Rust **1,816 passed / 2 skipped**＋targets **12**、features **20,012 cases**（native／WASM × O0／O3）、旧 **114** プログラムの IR byte 一致、付録 E **36** 検査、リファレンス **12 ページ／75 例／134 native runs**が成功。全 Phase の記録は [A19](_completed/A19-pure-functions.md)、最終 head の CI・Copilot レビューは PR で追跡する。
 
 ### D-49 G10（Windows ネイティブ対応）の確定
 

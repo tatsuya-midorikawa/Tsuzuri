@@ -4,14 +4,14 @@
 | --- | --- |
 | ID | A19 |
 | 優先度 | P2 |
-| 規模 | L（Phase 1）。Phase 2 以降は設計方針だけ |
-| 依存 | [D11](_completed/D11-const-evaluation.md)（done。`const def` の修飾子・署名の検査・本体の検査の手本）、[A15](_completed/A15-copy-cost-visibility.md)（done。明示コピー `Array.copy`・`List.copy`、`W1006`）、[B07](_completed/B07-user-drop.md)（done。利用者の `Drop`）、[F10](_completed/F10-concurrency-primitives.md)（done。`Atomic`・`Mutex`・`Channel`）、[C10](_completed/C10-shared-ownership.md)（done。`Rc`・`Arc`）。弱い依存: [A17](_completed/A17-last-use-move.md)（ループの再束縛と、`own` の引数の最後の使用が複製でなくなると、`pure def` の書き方が実用の速さになる）。[A18](_completed/A18-parameter-conventions.md) とは、`own` の構文（A18 の D2）を共有する（D16）。先に着手したほうが `own` の構文を実装し、後のほうは受理する位置の規則だけを足す |
-| 後続 | Phase 2（ジェネリックな `pure def`、`Parallel.*` の許可、関数型の純粋性）、[PR01](../_perfs/_completed/PR01-ownership-facts.md) Phase 2(c)（関数の `memory(...)` に本チケットの解析を再利用）、std の関数への `pure` の付与 |
-| 状態 | todo |
+| 規模 | L（Phase 1 と承認済みの全後続項目） |
+| 依存 | [D11](D11-const-evaluation.md)（done。`const def` の修飾子・署名の検査・本体の検査の手本）、[A15](A15-copy-cost-visibility.md)（done。明示コピー `Array.copy`・`List.copy`、`W1006`）、[B07](B07-user-drop.md)（done。利用者の `Drop`）、[F10](F10-concurrency-primitives.md)（done。`Atomic`・`Mutex`・`Channel`）、[C10](C10-shared-ownership.md)（done。`Rc`・`Arc`）。弱い依存: [A17](A17-last-use-move.md)（ループの再束縛と、`own` の引数の最後の使用が複製でなくなると、`pure def` の書き方が実用の速さになる）。[A18](A18-parameter-conventions.md) とは、`own` の構文（A18 の D2）を共有する（D16）。先に着手したほうが `own` の構文を実装し、後のほうは受理する位置の規則だけを足す |
+| 後続 | Phase 2（ジェネリックな `pure def`、`Parallel.*` の許可、関数型の純粋性）、[PR01](../../_perfs/_completed/PR01-ownership-facts.md) Phase 2(c)（関数の `memory(...)` に本チケットの解析を再利用）、std の関数への `pure` の付与 |
+| 状態 | done（全 Phase。実装・ローカル受入完了、最終 head の CI・レビューは PR で追跡） |
 | 起票 | 2026-10-13（人間の指示「`pure` は純粋関数を維持するために `ref` のみを受け取るようにすること。なお、定義するときは `ref` を省略でき、引数はすべて `ref` 扱いにすること」。同日、「`own` でも純粋性が保たれることが保証されるのであれば、`ref` に加えて `own` も許容する」に改められた。HEAD `cef6c67f` で確認） |
 | 承認 | D1・D2・D4 は人間が承認済み（D1・D2: 2026-10-13 の指示。D4: 同日「構文を `pure def` にしてよいです」）。D1 は同日、「`own` でも純粋性が保たれることが保証されるのであれば、`ref` に加えて `own` も許容する」へ改められた。保証の根拠と、そのために要る型の制限（D15）は「`own` と純粋性」の節にある。承認待ちの決定はなく、手順 1 から着手できる。ほかの決定は既定案 |
-| 改善する劣位 | Rust 比・Haskell 比・D 比: 関数が副作用を持たないことを署名で約束できない。`IO<T>` は I/O を型に出すが、`extern`・`Debug` の出力・直接形式の `do!` は型に出ない（[docs/language.md](../docs/language.md) に「完全なエフェクトシステムではありません」と明記）。`Parallel.*` のコールバックの副作用は検査されず、呼ばれる順序は未規定。D 言語の `pure`（出典は付録 D）に当たる保証がない |
-| 手本にする既存実装 | 修飾子と検査: `const def`（チケット D11）の `src/parser.rs`（`constant_function_ahead`・トップレベルの宣言の分岐・`misplaced_const`）、`src/const_rules.rs`（`check_signature`・`validate_function`・`value_part`。`Type` と `TypedExprKind` を wildcard なしで全部判定し、許す型を列挙する）、`src/check.rs` の `names.const_functions`。呼び出しグラフの検査（既定拒否・上限つき）: `src/gpu.rs` の `extract_kernel`（`E1017`）。引数の型の解決と、署名を見る検査の順序: `src/check.rs` の `check_modules` の関数宣言のループ。関数の由来: `src/check.rs` の `FunctionOrigin`（`generated`・`cpu`）。型の述語: `Type::is_copy`・`needs_drop`・`has_user_drop`（`src/check.rs`）、`TypeContext::stored_all`・`reaches`（`src/recursive.rs`）。文脈キーワードの登録: `src/syntax.rs` の `CONTEXTUAL_KEYWORDS`。`own` の前置き: `src/parser.rs` の `type_primary`・`reference_type`（`ref`・`ref mut` の読み方）、`TypeExprKind::Reference` を辿る全出現（`grep -rn "TypeExprKind::Reference" src/`）、[A18](_completed/A18-parameter-conventions.md) の手順 3。テスト: `tests/constants.rs`、`tests/call_specialization.rs`（IR の関数の切り出し）、suite `const_functions`（`tests/features.mjs`） |
+| 改善する劣位 | Rust 比・Haskell 比・D 比: 関数が副作用を持たないことを署名で約束できない。`IO<T>` は I/O を型に出すが、`extern`・`Debug` の出力・直接形式の `do!` は型に出ない（[docs/language.md](../../docs/language.md) に「完全なエフェクトシステムではありません」と明記）。`Parallel.*` のコールバックの副作用は検査されず、呼ばれる順序は未規定。D 言語の `pure`（出典は付録 D）に当たる保証がない |
+| 手本にする既存実装 | 修飾子と検査: `const def`（チケット D11）の `src/parser.rs`（`constant_function_ahead`・トップレベルの宣言の分岐・`misplaced_const`）、`src/const_rules.rs`（`check_signature`・`validate_function`・`value_part`。`Type` と `TypedExprKind` を wildcard なしで全部判定し、許す型を列挙する）、`src/check.rs` の `names.const_functions`。呼び出しグラフの検査（既定拒否・上限つき）: `src/gpu.rs` の `extract_kernel`（`E1017`）。引数の型の解決と、署名を見る検査の順序: `src/check.rs` の `check_modules` の関数宣言のループ。関数の由来: `src/check.rs` の `FunctionOrigin`（`generated`・`cpu`）。型の述語: `Type::is_copy`・`needs_drop`・`has_user_drop`（`src/check.rs`）、`TypeContext::stored_all`・`reaches`（`src/recursive.rs`）。文脈キーワードの登録: `src/syntax.rs` の `CONTEXTUAL_KEYWORDS`。`own` の前置き: `src/parser.rs` の `type_primary`・`reference_type`（`ref`・`ref mut` の読み方）、`TypeExprKind::Reference` を辿る全出現（`grep -rn "TypeExprKind::Reference" src/`）、[A18](A18-parameter-conventions.md) の手順 3。テスト: `tests/constants.rs`、`tests/call_specialization.rs`（IR の関数の切り出し）、suite `const_functions`（`tests/features.mjs`） |
 | 主な影響ファイル | 新規: `src/pure_rules.rs`, `tests/pure_functions.rs`, `tests/fixtures/pure_functions/Main.tz`。変更: `src/syntax.rs`（`SignatureDecl.pure`・`FunctionDecl.pure`・`TypeExprKind::Own`・`CONTEXTUAL_KEYWORDS`）, `src/parser.rs`, `src/syntax_codec.rs`, `src/frontend_cache.rs`（`FRONTEND_FORMAT` を上げる）, `src/check.rs`（`Names.pure_functions`・`FunctionOrigin.pure`・関数宣言のループ・検証の呼び出し）, `src/polymorph.rs`（`FunctionDecl` の構築箇所と `type_expression`）, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/regions.rs`, `src/warnings.rs`, `src/api_diff.rs`, `tests/features.mjs`, `docs/language.md`, `docs/stability.md`, `docs/architecture.md`, `README.md`, `_features/GUIDE.md`（§4 のコードマップ）, `_tsuzuri/language-reference/` の複数ページ |
 
 ## 目的
@@ -87,7 +87,7 @@ D15 の制限: `own` の引数の型が、保持するすべての型（record�
 
 ### 純粋性の現状
 
-- `IO<T>` は遅延アクションで、作る・合成するだけでは何も実行されない（[docs/language.md](../docs/language.md)「IO と標準入出力」）。ただし同書に「完全なエフェクトシステムではありません」とあり、次は型に現れない: `extern` の呼び出し、`Debug.print` の出力、戻り値型にビルダーのない関数の `do!`・`let!`（直接形式）。付録 B の `r_io`・`r_debug`・`r_extern` は、HEAD で通常の `def` として受理される。
+- `IO<T>` は遅延アクションで、作る・合成するだけでは何も実行されない（[docs/language.md](../../docs/language.md)「IO と標準入出力」）。ただし同書に「完全なエフェクトシステムではありません」とあり、次は型に現れない: `extern` の呼び出し、`Debug.print` の出力、戻り値型にビルダーのない関数の `do!`・`let!`（直接形式）。付録 B の `r_io`・`r_debug`・`r_extern` は、HEAD で通常の `def` として受理される。
 - `Parallel.*` はデータ競合を `Send`・`Sync` と所有権検査で防ぐ。コールバックの副作用は検査せず、「チャンク間における並列処理の開始順序および完了順序は未規定」（同書）。
 - 純粋性の保証がある関数は `const def` だけである。
 
@@ -474,7 +474,13 @@ pub(super) fn own_violation(ty: &Type, types: &TypeContext<'_>) -> Option<Type> 
 - 内容: GUIDE §3 の全体（fmt・clippy・`cargo test --locked`・`node tests/features.mjs target/release/tsuzuri`（全 suite）・e2e の各スクリプト）、§3.1 の回帰テスト 4 本、`sh scripts/check-runtime-includes.sh`。手順 1 の IR と、`pure` と `own` を使わない全プロジェクトの IR（`--emit llvm -O0`）が 1 byte も変わらないこと。同じ入力で 2 回ビルドして IR が一致すること。「ドキュメント」のとおり文書を直し、`node scripts/check-docs.mjs` を変えたページに対して通す。
 - 確認: すべて通る。GUIDE §13.2 の書式の完了報告を、チケット末尾の `## 実装と検証（YYYY-MM-DD）` に書く。
 
-## Phase 2 以降（設計方針のみ。人間が求めた場合だけ着手する）
+## Phase 2 以降（全項目を承認済み。以下は着手前の設計記録）
+
+2026-10-23 の依頼で以下の全項目を実装対象とした。旧 D8・D9・D12・D16 と Phase 1 の拒否例は、
+着手前の範囲を記録したものである。現行の契約は README の「A19 全 Phase の追加設計の照合」と
+言語リファレンスの「関数」を正とする。通常の `def` の `own` は A18 で受理され、
+generic・純粋 callback・閉じた明示並行処理・`@cpu`・class／instance は後続実装に含む。
+自動 offload、所有結果の共有、グローバル memo cache、停止・トラップの保証は対象にしない。
 
 - **`own` を `pure def` 以外の引数にも許すこと。** A18 の D2（要承認）。本チケットは `pure def` の引数に限って `own` を入れる（D16）。
 - **ジェネリックな `pure def`。** 型変数を持つ署名を許し、`'a` の引数を `ref 'a` にする。型クラスのメソッドが値の引数を取る場合（`Add.add`）との整合、`Copy<'a>` 制約の扱いを決める。特殊化した関数が `pure` の契約を引き継ぐ。
@@ -550,17 +556,17 @@ helper は `tests/constants.rs` の `rejected(source)`（`analyze(source).expect
 ## 受け入れ条件
 
 - [x] D1・D2・D4 の承認が記録されている（2026-10-13。D1 の `own` は条件つき: 付録 E を HEAD で再現し、「`own` と純粋性」の根拠が崩れていないこと）。
-- [ ] 手順 1〜8 を実施し、各段の確認が通る。Phase 2 以降は人間が求めた場合だけ（求めなかったときは「未実施」と書く）。
-- [ ] `tests/pure_functions.rs` の名前付きテストと `src/pure_rules.rs` の単体テストがすべて通る。
-- [ ] `node tests/features.mjs target/release/tsuzuri pure_functions` が通り（件数を完了報告に書く）、全 suite も通る。native/WASM × `-O0`/`-O3`、`live == 0`、WASM の import が空。
-- [ ] `pure` と `own` を使わないプログラムの受理・拒否・診断・IR が、手順 1 の記録と 1 byte も変わらない。同じ入力で IR が 2 回とも一致する。`pure`・`own` という名前の識別子が今までどおり使える。
-- [ ] `pure def f :: string -> [i64] -> i64` と `def f :: ref string -> ref [i64] -> i64` の IR が（関数名を除いて）一致する。スカラーの引数は値のまま。`pure def f :: own [i64] -> i64` と `def f :: [i64] -> i64` の IR も一致する。
-- [ ] `own` の引数が平たいデータに限られる（`own Ticket`・`own Rc<string>`・`own Counter`（排他借用の record）が `E1029`）。`plain_part` が `Type` の全 variant を wildcard なしで判定している。`own` を `pure def` 以外の引数に書くと `E1005`。`own` を書いても、所有権検査の規則（消費した `string` の再読は `E1012`）は変わらない。
-- [ ] 付録 B の拒否の表のすべての行が、期待どおりの分類で `E1029` になる。主要な std の関数（停止条件の一覧）が `pure def` から呼べる。
-- [ ] IR の第二の検査（`pure_defs_reach_no_effectful_runtime_symbol`）が通る。
-- [ ] `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`、GUIDE §3.1 の回帰テスト、`sh scripts/check-runtime-includes.sh` が通る。
-- [ ] ドキュメントを更新し、`node scripts/check-docs.mjs` が通る。`_features/README.md` の状態を `done（Phase 1）` にし、チケットを `_completed/` へ移す。
-- [ ] GUIDE §13.2 の書式の完了報告を、チケット末尾の `## 実装と検証（YYYY-MM-DD）` に書く。コミットは人間の指示があるまで作らない。
+- [x] 手順 1〜8 と承認済みの全後続項目を実施し、現行契約に更新した各段の確認が通る。旧 Phase 1 の拒否例は、上記の現行契約で置き換えたものを除く。
+- [x] `tests/pure_functions.rs` の名前付きテストと `src/pure_rules.rs` の単体テストがすべて通る。
+- [x] `node tests/features.mjs target/release/tsuzuri pure_functions` が通り（件数を完了報告に書く）、全 suite も通る。native/WASM × `-O0`/`-O3`、`live == 0`、WASM の import が空。
+- [x] `pure` と `own` を使わないプログラムの受理・拒否・診断・IR が、手順 1 の記録と 1 byte も変わらない。同じ入力で IR が 2 回とも一致する。`pure`・`own` という名前の識別子が今までどおり使える。
+- [x] `pure def f :: string -> [i64] -> i64` と `def f :: ref string -> ref [i64] -> i64` の IR が（関数名を除いて）一致する。スカラーの引数は値のまま。`pure def f :: own [i64] -> i64` と `def f :: [i64] -> i64` の IR も一致する。
+- [x] pure の `own` の引数が平たいデータに限られる（`own Ticket`・`own Rc<string>`・`own Counter`（排他借用の record）が `E1029`）。型の全 variant を wildcard なしで分類する。通常の `def` の引数の `own` は A18 の契約どおり受理し、結果・field・型引数など無効な位置は `E1005`。所有権検査の規則（消費した `string` の再読は `E1012`）は変わらない。
+- [x] 付録 B の拒否の表のすべての行が、期待どおりの分類で `E1029` になる。主要な std の関数（停止条件の一覧）が `pure def` から呼べる。
+- [x] IR の第二の検査（`pure_defs_reach_no_effectful_runtime_symbol`）が通る。
+- [x] `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test --locked`、GUIDE §3.1 の回帰テスト、`sh scripts/check-runtime-includes.sh` が通る。
+- [x] ドキュメントを更新し、`node scripts/check-docs.mjs` が通る。`_features/README.md` の状態を `done（全 Phase）` にし、チケットを `_completed/` へ移す。
+- [ ] GUIDE §13.2 の完了報告を末尾に書き、チケット単位のブランチでコミット・push・PR 作成を行う。依頼どおり Copilot レビューの妥当な指摘を解消し、最終 head の全 CI を確認する。
 
 ## 落とし穴
 
@@ -1058,20 +1064,130 @@ def main :: unit -> i32 = \() ->
 
 平たいデータの値渡しが期待どおりの値を返すことは、付録 B の fixture の `own` の 4 つの関数（`pure` と `own` を外した値渡しの `def`）で、`n = 0..12` の 13 行すべてが独立した JavaScript の計算と一致した。
 
-## 実装と検証（2026-10-23、進行中）
+## 実装と検証（2026-10-23）
 
-- 基盤は A18 の `594ef574`。`pure` の構文・codec・cache、具体的な署名の読み取り補完、
-  plain-data の `own`、特殊化と closure lowering 後の有界な効果検証、文書・editor・api-diff の印を実装した。
-  式と builtin は wildcard なしで分類し、再帰の途中の関数を純粋と仮定する cache は使わない。
-- 後続項目のうち、補完した引数に限る所有権の案内と、閉じた根からの明示的な Task／Parallel の検証を実装した。
-  関数・Task・dyn を含む入力は拒否し、生成される callback の効果をすべてたどる。
-  Array の自動並列化、呼び出しの消去・並べ替え、memo 化、結果の共有は実装していない。
-- fmt、全 target の clippy（警告をエラー）、検証器 3 件・codec 14 件・api-diff 24 件・pure 16 件は通過。
-  `pure_functions` 162 ケース＋2 trap、`pure_parallel` 12 ケース＋1 trap が native／WASM × O0／O3 で通過。
-  付録 E の 8 プログラムは保存した旧 compiler・現在の通常 def・pure def の計 36 検査が一致した。
-  文書は 6 ページ・254 link・38 例・76 native 実行、runtime include 58 件が通過した。
-- 全 Rust suite と旧 project corpus の byte 単位 IR 比較は未完了。全 Phase 完了ではない。
-  generic pure、pure 関数型、std の契約付与、IO action の構築、CPU／instance、
-  解決後の api-diff、最適化への利用は未実装。チケットは完了ディレクトリへ移さない。
-- F14 との統合時には新しい `Builtin::AllocCounter` を `Category::Debug` に分類する必要がある。
-  現在の base にこの variant はなく、網羅 match によって追加を見落とした統合は compile error になる。
+- 基盤は A18 の `b3343ed1`。Phase 1 と全後続項目を実装した。構文・codec・cache、読み取り補完、
+  plain-data の `own`、generic の保留条件と特殊化後の再検証、純粋な関数型と呼び出し段階、
+  class／instance・CPU variant、遅延 IO の構築、閉じた明示 Task／Parallel、std の Char・PCG 契約に対応する。
+  通常の callback API を純粋 callback 専用に狭めず、通常の `def` の `own` は A18 の契約を維持した。
+- `api-diff --effective` は依存込みの解決後の契約を比較し、既定の構文だけの比較は変えない。
+  効果検証は wildcard なしの分類・既定拒否・従来の上限を保ち、GPU の既存検査からも同じ問い合わせを使う。
+  G31 の字句的な callers／impact／item range は pure 宣言を認識し、識別子 `pure` は予約しない。
+- 最適化は、明示 pure と既存の `memory(none)` の両方を満たす整数呼び出しの同一基本ブロック内の再利用だけ。
+  最初の呼び出しを残し、捕捉・外部メモリ・浮動小数・所有結果・CPU multiversion を対象にしない。
+  自動 offload、共有された所有結果、永続的な memo cache、投機実行、停止・トラップの保証は対象外。
+  速度向上は未計測であり主張しない。依存、stack、解析上限、fast-math は変更していない。
+- fmt・全 target Clippy（warnings denied）・build が成功。最終全 Rust は **1,816 passed / 2 skipped**、
+  別途 targets **12 passed**。付録 E は旧 compiler・通常 def・pure def の **8 プログラム／36 検査**が一致した。
+  保存した 2026 の **114 プログラム**は旧・現在・現在の再実行で status／stdout／stderr が一致し、
+  全 LLVM IR が byte 一致した。primitives は native／WASM × O0／O3 が成功。
+- 変更したリファレンス **12 ページ／443 links／75 checked examples／134 native runs（O0/O3）／1 test project** が成功。
+  `node tests/features.mjs target/debug/tsuzuri` は **20,012 cases passed**。pure_functions の **260 ケース**、
+  pure_parallel の **12 ケース**と各 trap、native／WASM × O0／O3、live == 0 と import の検査を含む。
+  `e2e`、`codegen_units`（26 cases）、`frontend_cache`、`lsp_sessions`（4 sessions／features）、`docgen`、`gpu` が成功。
+  GPU は CPU 参照の整数 783・relaxed f32 1,315 検査、WGSL shape 9 と上限外 5 の拒否であり、実 GPU の実行・加速は主張しない。
+  runtime include は **58 files** が成功。frontend format は A19 の型・class の codec を含む **9**。
+  F14 は新しい直列化構文を足さない。7 件の統合検証と最終 head の CI／Copilot レビューは各 PR で追跡する。
+- 受入で見つけた qualified namespace／class method の pure→通常 callable 変換は共通の finish path に統一した。
+  shared view の中の排他参照は読み取りを許し、書き込みは所有権検査の E1014 を保つ。
+  隠れた通常 callback は E1029 のまま。引用符付き SSA 定義に `=` がある spill escape も保守的に拒否する。
+- F14 の新しい `Builtin::AllocCounter` の Debug 分類と拒否回帰は F14 側の互換修正で扱う。
+  この A19 単独の base に存在しない variant の仮置きや、不純効果の見落としを隠す wildcard は足さない。
+
+### 確認コマンド（最終受入）
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --locked`。
+- `cargo nextest run --locked --test-threads 2 -E 'not binary(targets)'` と targets の別実行（短い絶対 TMPDIR）。
+- `node tests/features.mjs target/debug/tsuzuri`（全 suite）、同じ dev バイナリで `e2e`・`primitives`・
+  `codegen_units`・`frontend_cache`・`lsp_sessions`・`docgen`・`gpu`。
+- `node tests/ai_cost.mjs target/debug/tsuzuri pure_items`（新しい字句的 callers／impact／item range の回帰 1 件）。
+- `node scripts/check-docs.mjs <下記の12ページ>`（`TSUZURI_BIN=target/debug/tsuzuri` を絶対パスで指定）。
+- `sh scripts/check-runtime-includes.sh`。旧 compiler と frozen 2026 corpus の比較は一時 runner で行い、
+  出力・診断・IR の hash を比較してから現在の compiler をもう一度実行した。
+- 重いローカル確認は共有 slot 内で実施した。相対 TMPDIR を使って cwd を変える E2E が失敗したため、
+  短い絶対パスに直して全 suite を通した。共有キャッシュ・上限・stack は変更していない。
+
+### 更新した言語リファレンス
+
+- [_tsuzuri/language-reference/built-in-types-and-modules/char.md](../../_tsuzuri/language-reference/built-in-types-and-modules/char.md)
+- [_tsuzuri/language-reference/built-in-types-and-modules/gpu.md](../../_tsuzuri/language-reference/built-in-types-and-modules/gpu.md)
+- [_tsuzuri/language-reference/built-in-types-and-modules/io.md](../../_tsuzuri/language-reference/built-in-types-and-modules/io.md)
+- [_tsuzuri/language-reference/built-in-types-and-modules/random.md](../../_tsuzuri/language-reference/built-in-types-and-modules/random.md)
+- [_tsuzuri/language-reference/compiler/diagnostics.md](../../_tsuzuri/language-reference/compiler/diagnostics.md)
+- [_tsuzuri/language-reference/compiler/option.md](../../_tsuzuri/language-reference/compiler/option.md)
+- [_tsuzuri/language-reference/compiler/usage.md](../../_tsuzuri/language-reference/compiler/usage.md)
+- [_tsuzuri/language-reference/index.md](../../_tsuzuri/language-reference/index.md)
+- [_tsuzuri/language-reference/ownership-and-memory/borrowing.md](../../_tsuzuri/language-reference/ownership-and-memory/borrowing.md)
+- [_tsuzuri/language-reference/ownership-and-memory/ownership.md](../../_tsuzuri/language-reference/ownership-and-memory/ownership.md)
+- [_tsuzuri/language-reference/values-and-functions/functions.md](../../_tsuzuri/language-reference/values-and-functions/functions.md)
+- [_tsuzuri/language-reference/values-and-functions/keywords.md](../../_tsuzuri/language-reference/values-and-functions/keywords.md)
+
+### 変更ファイル
+
+- [README.md](../../README.md)
+- [_features/A18-parameter-conventions.md](A18-parameter-conventions.md)
+- [_features/A20-effect-summary-and-checked-attributes.md](../A20-effect-summary-and-checked-attributes.md)
+- [_features/A21-contracts-requires-ensures.md](../A21-contracts-requires-ensures.md)
+- [_features/A22-edition-2027-canonical-forms.md](../A22-edition-2027-canonical-forms.md)
+- [_features/A23-integer-overflow-intent.md](../A23-integer-overflow-intent.md)
+- [_features/B10-trap-backtrace-and-domains.md](../B10-trap-backtrace-and-domains.md)
+- [_features/E15-trust-boundary-and-capabilities.md](../E15-trust-boundary-and-capabilities.md)
+- [_features/F15-sequential-equivalent-data-parallel.md](../F15-sequential-equivalent-data-parallel.md)
+- [_features/GUIDE.md](../GUIDE.md)
+- [_features/README.md](../README.md)
+- [_features/_completed/A19-pure-functions.md](A19-pure-functions.md)
+- [_perfs/_completed/PR01-ownership-facts.md](../../_perfs/_completed/PR01-ownership-facts.md)
+- [_tsuzuri/language-reference/built-in-types-and-modules/char.md](../../_tsuzuri/language-reference/built-in-types-and-modules/char.md)
+- [_tsuzuri/language-reference/built-in-types-and-modules/gpu.md](../../_tsuzuri/language-reference/built-in-types-and-modules/gpu.md)
+- [_tsuzuri/language-reference/built-in-types-and-modules/io.md](../../_tsuzuri/language-reference/built-in-types-and-modules/io.md)
+- [_tsuzuri/language-reference/built-in-types-and-modules/random.md](../../_tsuzuri/language-reference/built-in-types-and-modules/random.md)
+- [_tsuzuri/language-reference/compiler/diagnostics.md](../../_tsuzuri/language-reference/compiler/diagnostics.md)
+- [_tsuzuri/language-reference/compiler/option.md](../../_tsuzuri/language-reference/compiler/option.md)
+- [_tsuzuri/language-reference/compiler/usage.md](../../_tsuzuri/language-reference/compiler/usage.md)
+- [_tsuzuri/language-reference/index.md](../../_tsuzuri/language-reference/index.md)
+- [_tsuzuri/language-reference/ownership-and-memory/borrowing.md](../../_tsuzuri/language-reference/ownership-and-memory/borrowing.md)
+- [_tsuzuri/language-reference/ownership-and-memory/ownership.md](../../_tsuzuri/language-reference/ownership-and-memory/ownership.md)
+- [_tsuzuri/language-reference/values-and-functions/functions.md](../../_tsuzuri/language-reference/values-and-functions/functions.md)
+- [_tsuzuri/language-reference/values-and-functions/keywords.md](../../_tsuzuri/language-reference/values-and-functions/keywords.md)
+- [benchmarks/ai/lib/derive.mjs](../../benchmarks/ai/lib/derive.mjs)
+- [docs/architecture.md](../../docs/architecture.md)
+- [docs/language.md](../../docs/language.md)
+- [docs/stability.md](../../docs/stability.md)
+- [src/api_diff.rs](../../src/api_diff.rs)
+- [src/call_specialization.rs](../../src/call_specialization.rs)
+- [src/check.rs](../../src/check.rs)
+- [src/closures.rs](../../src/closures.rs)
+- [src/constants.rs](../../src/constants.rs)
+- [src/derive.rs](../../src/derive.rs)
+- [src/docgen.rs](../../src/docgen.rs)
+- [src/formatter.rs](../../src/formatter.rs)
+- [src/frontend_cache.rs](../../src/frontend_cache.rs)
+- [src/gpu.rs](../../src/gpu.rs)
+- [src/llvm.rs](../../src/llvm.rs)
+- [src/llvm_facts.rs](../../src/llvm_facts.rs)
+- [src/llvm_frame.rs](../../src/llvm_frame.rs)
+- [src/llvm_traps.rs](../../src/llvm_traps.rs)
+- [src/main.rs](../../src/main.rs)
+- [src/ownership.rs](../../src/ownership.rs)
+- [src/parser.rs](../../src/parser.rs)
+- [src/polymorph.rs](../../src/polymorph.rs)
+- [src/pure_rules.rs](../../src/pure_rules.rs)
+- [src/recursive.rs](../../src/recursive.rs)
+- [src/regions.rs](../../src/regions.rs)
+- [src/semantic.rs](../../src/semantic.rs)
+- [src/semantic_api.rs](../../src/semantic_api.rs)
+- [src/syntax.rs](../../src/syntax.rs)
+- [src/syntax_codec.rs](../../src/syntax_codec.rs)
+- [src/warnings.rs](../../src/warnings.rs)
+- [std/Char.tz](../../std/Char.tz)
+- [std/Random.tz](../../std/Random.tz)
+- [tests/ai_cost.mjs](../../tests/ai_cost.mjs)
+- [tests/api_diff.rs](../../tests/api_diff.rs)
+- [tests/features.mjs](../../tests/features.mjs)
+- [tests/fixtures/pure_functions/Classes.tt](../../tests/fixtures/pure_functions/Classes.tt)
+- [tests/fixtures/pure_functions/Main.tz](../../tests/fixtures/pure_functions/Main.tz)
+- [tests/fixtures/pure_parallel/Main.tz](../../tests/fixtures/pure_parallel/Main.tz)
+- [tests/gpu.rs](../../tests/gpu.rs)
+- [tests/pure_functions.rs](../../tests/pure_functions.rs)
+- [tests/pure_scalar_reuse.rs](../../tests/pure_scalar_reuse.rs)
+- [tests/std_argument_order.rs](../../tests/std_argument_order.rs)

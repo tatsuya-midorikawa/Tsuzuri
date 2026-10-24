@@ -227,7 +227,7 @@ callback 2
 ```tsuzuri run=42
 pure def deferred :: i64 -> IO<i64> = \n ->
     IO.map (\value -> { Debug.print (ref value); value }) (IO.pure n)
-let action = deferred 42
+let _action = deferred 42
 42
 ```
 

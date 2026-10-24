@@ -5,7 +5,7 @@
 | ID | A18 |
 | 優先度 | P2 |
 | 規模 | XL（Phase 1 は L） |
-| 依存 | A15（done）、G19（done。edition）、(A17)。A17 の最後の使用の移動を利用する。[A19](../A19-pure-functions.md) とは `TypeExprKind::Own` を共有する。A18 が先に共有構文を実装し、A19 は純粋性の制約を追加する |
+| 依存 | A15（done）、G19（done。edition）、(A17)。A17 の最後の使用の移動を利用する。[A19](A19-pure-functions.md) とは `TypeExprKind::Own` を共有する。A18 が先に共有構文を実装し、A19 は純粋性の制約を追加する |
 | 後続 | 本チケットの Phase 1〜4 はすべて完了。A19 は別ブランチ・別 PR |
 | 状態 | done（Phase 1〜4。2026-10-24 に実装・受入検証を完了。PR48 は未マージ） |
 | 起票 | 2026-10-13（人間の依頼「『次の一手』を進めて、開発チケットを作成して」。推奨案 A（引数規約）の実装チケット。HEAD `2282fd96` で確認） |
@@ -43,7 +43,7 @@ HEAD での実測（正規表現による概算。詳細は「現状」）:
 manifest なしの CLI・script・REPL・新規パッケージの既定も 2027 にした（承認済みの Phase 2）。
 起票時は Phase 1 のみを対象としたが、2026-10-23 の利用者の指示に基づき、移行・generic／関数規約・可変規約まで全 Phase を実装した。
 
-**`pure def`（[A19](../A19-pure-functions.md)）との関係。** 純粋性は別チケットの契約であり、A18 の完了には含めない。
+**`pure def`（[A19](A19-pure-functions.md)）との関係。** 純粋性は別チケットの契約であり、A18 の完了には含めない。
 本実装が導入した `own` の共有構文と引数別の規約を A19 が再利用し、純粋性に必要な位置・型・効果の制約を追加する。
 本チケットは、`IO` を使う関数や引数を消費する関数を含む `def` 全般の既定を変える別の決定で、D1 の動機のうち純粋な関数に当たる部分は A19 が先に解消する。優先度の見直しは人間が決める（D11）。
 
@@ -268,7 +268,7 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - 内容: `TypeExprKind::Own` と、`type_primary` の読み方、`resolve_type_with_kinds` の `E1005`、関数宣言のループで `Own` を剥がす処理を足す（この段では印を捨てるだけ）。
   GUIDE §6.9 の手順で、`TypeExprKind` を辿る全出現を grep し、`Own` を足す。整形（`tsuzuri fmt`）で `own T` が往復する。
   符号化を足す: `src/syntax_codec.rs` の `impl Wire for TypeExprKind` に `Own` の tag（15）、同ファイルの単体テストの数 `("TypeExprKind", 15)` を 16 に、`own` を使うソースをテストの `Program` に足す（数だけ上げて例を足さないと `no example writes TypeExprKind tags [15]` で落ち、数を上げ忘れると新しい tag が検査されない）。`FRONTEND_FORMAT`（`src/frontend_cache.rs`）を 1 上げる（上げ忘れると、古いキャッシュの AST が `Own` を持たないまま読まれる）。
-  [A19](../A19-pure-functions.md) とは `TypeExprKind::Own`・読み方・符号化・走査箇所を共有する。今回は A18 が先に実装したので、A19 は構文を再実装せず純粋性の制約を追加する。
+  [A19](A19-pure-functions.md) とは `TypeExprKind::Own`・読み方・符号化・走査箇所を共有する。今回は A18 が先に実装したので、A19 は構文を再実装せず純粋性の制約を追加する。
 - 確認: すべての edition で次が通る。`def f :: own string -> i64` が受理され、`own` を外した版と IR が同じ。`let x: own string = ..`・`def f :: i64 -> own string`・`(own string -> i64)` が `E1005`。
   識別子 `own` を変数名に使うコードが従来どおり通る。`tsuzuri fmt --check`・`tsuzuri doc` が `own` を壊さない。`syntax_codec` の tag の網羅の単体テストと `node tests/frontend_cache.mjs target/release/tsuzuri` が通る。手順 1 の 2026 の IR が 1 byte も変わらない。
 
@@ -385,7 +385,7 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 
 - 決定: 型の前置き `own T`（引数の位置だけ）。予約語にしない。すべての edition で受理する。
 - 理由: 所有権を受け取る引数を明示する印が要る。追加のみで、2026 の意味を変えない。
-- 注: [A19](../A19-pure-functions.md) と構文を共有する。通常の `def` への受理も 2026-10-23 に承認され、
+- 注: [A19](A19-pure-functions.md) と構文を共有する。通常の `def` への受理も 2026-10-23 に承認され、
   A18 が先に実装した。A19 の純粋性の制限は別契約として追加する。
 - 状態: **承認済み・実装済み**（2026-10-23 の承認）
 

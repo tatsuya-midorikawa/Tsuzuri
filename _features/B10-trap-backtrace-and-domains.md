@@ -5,7 +5,7 @@
 | ID | B10 |
 | 優先度 | P2 |
 | 規模 | XL。Phase 1（native のバックトレースとクラッシュレポート、WASM の関数名）L、Phase 2（`Domain`）XL、Phase 3（後始末の表と facts との対応）S |
-| 依存 | [E14](_completed/E14-trap-boundary.md)（done。Phase 2 は E14 の `src/runtime/trap.c` の境界と追跡確保を土台にする）。Phase 2 はさらに [A19](A19-pure-functions.md) の Phase 1（`pure def` と `src/pure_rules.rs`。HEAD では todo）。Phase 1・3 は A19 に依存しない |
+| 依存 | [E14](_completed/E14-trap-boundary.md)（done。Phase 2 は E14 の `src/runtime/trap.c` の境界と追跡確保を土台にする）。Phase 2 はさらに [A19](_completed/A19-pure-functions.md) の Phase 1（`pure def` と `src/pure_rules.rs`。HEAD では todo）。Phase 1・3 は A19 に依存しない |
 | 後続 | A20（`DomainRun` の効果の分類。「前提とする他チケットのインターフェース」）、G22（`Diagnostic` を `Box` にするときの `trap` の置き場）、G23（`E1038` の kind の登録と `explain`）、G26（`trap_sites` と `E2005` の `trap.kind` の対応。Phase 3） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの `9dd0fbbc` との差は `docs/benchmarks.md` の 41 行の削除だけ: `git diff --stat a2313d19 9dd0fbbc`） |
