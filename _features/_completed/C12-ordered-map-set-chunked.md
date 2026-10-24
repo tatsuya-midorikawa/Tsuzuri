@@ -67,6 +67,31 @@
 - 台帳追記候補: 「C12 Phase 1・2 done、bounded chunk Map/Set、実 LLDB と 15 組の matched benchmark 検証済み」。
   `_features/README.md` と GUIDE の台帳は本チケットの指示どおり統括者に委ねる。CI・レビューの結果は PR で追跡する。
 
+### A18 統合時の互換検証（2026-10-23）
+
+- 積み元を A18 `b3343ed1` に更新した。2027 edition の読み取り既定の下でも消費する内部引数を `own`、
+  読み取りを `ref` とし、現行の `Vec.push_owned` に合わせた。Map・Set のチャンク算法、512／256／384、
+  公開 API の実効規約、比較・代表キー・drop の順序は変えない。古い付録の限定的な書き換え制限より、
+  承認済み A18 の規約との整合を優先した。付録 A・B・benchmark と付録 2 の fixture は実ファイルと byte 一致する。
+- rebase の解決で混入した `ref own Map` 2 箇所と型引数の中の `own` を修正した。
+  まず Map／Set／chunk／std／引数順の **32 件**が成功し、その後に全体を再検証した。
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、
+  `cargo nextest run --locked --test-threads 2 -E 'not binary(targets)'` は **1,761 passed / 2 skipped**。
+  別の targets は **12 passed**。`cargo build --locked` で std 埋め込みを更新した。
+- dev バイナリで `tests/features.mjs` の map_set **26**、map_set_chunks **33**、json **165**、
+  iteration_protocol **26** と `tests/user_drop.mjs` が native／WASM × O0／O3 で成功した。
+- `python3 tests/lldb_collections.py` の **7 layouts** と合成 Vec・lazy／対数探索、
+  `tests/debugger_static.mjs` の実 LLDB 型検査が成功。実プロセスの chunk 表示・stepping は、
+  macOS の既知の起動制約を隠さず、最終 head の Linux CI の実 debugger suite を引き続き gate とする。
+- 既存の変更対象リファレンス 6 ページを再検証し、**163 links／53 examples／106 native runs（O0/O3）**が成功。
+  追加の公開動作はないので、A18 が更新済みの所有規約の説明を重複して書き換えていない。
+  runtime include **58 files**、差分の空白検査も成功した。全 heavy 検証は共有 slot を使い、
+  private cache と短い絶対 TMPDIR を使った。依存、stack、解析上限、WASM memory 上限は変更していない。
+- 以前の matched benchmark は記録した版・条件の結果として保持する。今回の互換修正では新しい速度向上を主張しない。
+- 互換修正の変更ファイル: `std/Map.tz`、`std/Set.tz`、`benchmarks/ordered/Main.tz`、
+  `tests/fixtures/map_set_chunks/Main.tz`、`README.md`、本体・付録・付録 2 の 3 文書。
+  最終 head の CI・Copilot レビューは PR #47 で追跡する。
+
 ## 実装者向け早見
 
 1. **最初に読む**: 本ファイルの「仕様」§1〜§5 と、付録 A・B（`std/Map.tz`・`std/Set.tz` の全文。検証済み）。`std` のコードは**付録から写し、書き換えない**（TAB インデントのまま。`///` の行だけは別で、G34 の例・G35 のタグが既にあれば手順 3 のとおり保つ）。設計と食い違うと思ったら、書き換えずに「停止条件」に従う。

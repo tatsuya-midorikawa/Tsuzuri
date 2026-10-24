@@ -6,7 +6,7 @@ E は lazy に作る Vec ヘッダの合成ビューを外す必要があり、H
 F は XML 整形式と PDB 埋め込みを確認済み（Visual Studio の実 UI 表示は未確認）。
 永続的なモック試験は `tests/lldb_collections.py`、実測と検証数は本体の実装・検証記録を参照。
 
-## A. `tests/fixtures/map_set_chunks/Main.tz`（新規。全文。423 行・20,241 バイト）
+## A. `tests/fixtures/map_set_chunks/Main.tz`（新規。全文。412 行・18,131 バイト）
 
 E2E suite `map_set_chunks`（`export def`）と、`tsuzuri test` が走らせる性質テスト（末尾の 5 つの `test`）を 1 つのファイルに持つ。
 インデントは空白 4 つ。コメント中の「ticket」は本チケットを指す。
@@ -15,8 +15,7 @@ E2E suite `map_set_chunks`（`export def`）と、`tsuzuri test` が走らせる
 ```text
 // C12: the chunks of Map and Set. Build with `tsuzuri build` for the E2E suite `map_set_chunks`; run `tsuzuri test` for the property tests at the end.
 
-// ---------------------------------------------------------------------------------------------------------------------
-// Where the chunks split, merge and disappear. Every expected value is worked out by hand in the ticket (C12 "テスト計画").
+// Where the chunks split, merge and disappear. Expected values are worked out by hand in C12.
 
 def sequence :: i64 -> i64 -> i64 -> Map<i64, i64>
 fn sequence first step count =
@@ -24,23 +23,19 @@ fn sequence first step count =
     for index in 0i64 .. count - 1 do map = Map.insert (first + index * step) index map
     map
 
-// The number of chunks, or -1 when the chunks break one of their rules.
 def chunks :: ref Map<i64, i64> -> i64
 fn chunks map = if Map.invariants_hold map then Map.chunk_count map else -1
 
-// Ascending keys fill a chunk to 512 and then start a new one.
 export def ascending :: i64 -> i64
 fn ascending count =
     let map = sequence 0 1 count
     chunks (ref map)
 
-// Descending keys always go to the front of the first chunk, which splits in two halves when it is full.
 export def descending :: i64 -> i64
 fn descending count =
     let map = sequence (count - 1) (-1) count
     chunks (ref map)
 
-// 512 even keys fill one chunk; the odd key 1 goes to the middle of the full chunk and splits it: 1 chunk, then 2.
 export def middle_split :: i64
 fn middle_split =
     let map = sequence 0 2 512
@@ -48,8 +43,7 @@ fn middle_split =
     let after = Map.insert 1 99 map
     before * 1000 + chunks (ref after)
 
-// 513 keys are 2 chunks of 257 and 256. Removing the 256 keys that are 2 mod 4 leaves 257, and one more removal leaves 256, which merges the two:
-// the chunks before the removals, after 256 of them, after the last one, and the keys that are left.
+// 257 + 256 keys become 129 + 128 (no merge), then 128 + 128 (merge).
 export def merge_after_removals :: i64
 fn merge_after_removals =
     let mut map = sequence 0 2 512
@@ -61,8 +55,6 @@ fn merge_after_removals =
     let after = chunks (ref map)
     start * 10000000 + before * 1000000 + after * 1000 + Map.length (ref map)
 
-// 768 ascending keys are chunks of 512 and 256. Removing the first 512 keys leaves the first chunk with 1 key, and removing that one deletes the
-// first chunk: the chunks before and after, and the keys that are left.
 export def head_deleted :: i64
 fn head_deleted =
     let mut map = sequence 0 1 768
@@ -71,7 +63,6 @@ fn head_deleted =
     let after = chunks (ref map)
     before * 100000 + after * 1000 + Map.length (ref map)
 
-// 513 ascending keys are chunks of 512 and 1. Removing key 512 deletes the second chunk.
 export def tail_deleted :: i64
 fn tail_deleted =
     let map = sequence 0 1 513
@@ -79,8 +70,7 @@ fn tail_deleted =
     let map = Map.remove 512 map
     before * 1000 + chunks (ref map)
 
-// The sets A = 0..999 and B = 500..1499 give a union of 1,500 keys and an intersection and a difference of 500 keys. The chunks of what
-// `union`, `intersect` and `difference` build hold 384 keys, except for the first, which holds what is left: 4, 2 and 2 chunks.
+// A = 0..999, B = 500..1499: union 1,500 keys, intersection and difference 500 each.
 export def set_algebra_chunks :: i64
 fn set_algebra_chunks =
     let mut left: Set<i64> = Set.empty()
@@ -93,50 +83,8 @@ fn set_algebra_chunks =
     assert (Set.invariants_hold (ref common) && Set.invariants_hold (ref different) && Set.invariants_hold (ref both))
     Set.chunk_count (ref both) * 10000 + Set.chunk_count (ref common) * 100 + Set.chunk_count (ref different)
 
-// ---------------------------------------------------------------------------------------------------------------------
-// The calls of `Ord.lt`. A key that holds a borrow of an Atomic counts them.
-
 record Probe { value: i64, hits: ref Atomic<i64> }
 
-instance Eq<Probe> {
-    fn eq left right = left.value == right.value
-    fn ne left right = left.value != right.value
-}
-
-instance Ord<Probe> {
-    fn lt left right =
-        let _before = Atomic.fetch_add left.hits 1
-        left.value < right.value
-    fn le left right = !(Ord.lt right left)
-    fn gt left right = Ord.lt right left
-    fn ge left right = !(Ord.lt left right)
-}
-
-def next_state :: i64u -> i64u
-fn next_state state = state * 6364136223846793005 + 1442695040888963407
-
-// floor(log2 n) for n >= 1.
-def log2 :: i64 -> i64
-fn log2 n =
-    let mut value = n
-    let mut result = 0
-    while value > 1 do
-        value = value / 2
-        result = result + 1
-    result
-
-// The most `Ord.lt` calls of one lookup or removal in a map of `count` chunks: the binary search over the first count - 1 chunks makes
-// floor(log2 (count - 1)) + 1 calls (none for one chunk), the binary search in a chunk of at most 512 keys makes 10, and comparing with the key found makes 1.
-def lookup_bound :: i64 -> i64
-fn lookup_bound count = (if count <= 1 then 0 else log2 (count - 1) + 1) + 11
-
-// An insertion compares with the last key first, so it makes 1 call more.
-def insert_bound :: i64 -> i64
-fn insert_bound count = lookup_bound count + 1
-
-// `size` random keys are inserted, looked up and removed. The result is 0 when no operation makes more calls than its bound and no phase makes more than
-// size * (floor(log2 size) + 6) calls; otherwise it is 11, 12 or 13 for the first operation of the phase (insert, lookup, remove) over its bound,
-// and 21, 22 or 23 for the first phase over its total.
 export def array_key_selection :: bool -> i64
 fn array_key_selection intersection =
     let mut left: Set<[i64]> = Set.empty()
@@ -160,6 +108,40 @@ fn large_array_key_selection intersection =
     Set.length (ref left) + Set.length (ref right) +
         Set.fold (\sum key -> sum + Array.length key + key[0] + key[599999]) 0 (ref selected)
 
+instance Eq<Probe> {
+    fn eq left right = left.value == right.value
+    fn ne left right = left.value != right.value
+}
+
+instance Ord<Probe> {
+    fn lt left right =
+        let _before = Atomic.fetch_add left.hits 1
+        left.value < right.value
+    fn le left right = !(Ord.lt right left)
+    fn gt left right = Ord.lt right left
+    fn ge left right = !(Ord.lt left right)
+}
+
+def next_state :: i64u -> i64u
+fn next_state state = state * 6364136223846793005 + 1442695040888963407
+
+def log2 :: i64 -> i64
+fn log2 n =
+    let mut value = n
+    let mut result = 0
+    while value > 1 do
+        value = value / 2
+        result = result + 1
+    result
+
+// Chunk search L(c), at most 10 comparisons inside a chunk, then one equality comparison.
+def lookup_bound :: i64 -> i64
+fn lookup_bound count = (if count <= 1 then 0 else log2 (count - 1) + 1) + 11
+
+def insert_bound :: i64 -> i64
+fn insert_bound count = lookup_bound count + 1
+
+// 0 on success; 11/12/13 identify an operation over its bound, 21/22/23 a phase over its total.
 export def comparison_bounds :: i64 -> i64
 fn comparison_bounds size =
     let hits = Atomic.create 0i64
@@ -196,7 +178,6 @@ fn comparison_bounds size =
     assert (Map.is_empty (ref map))
     failure
 
-// The multiples of 2 and of 3 below 2 * size and 3 * size: two sets of `size` keys that count their comparisons in `hits`.
 def probe_sets :: ref Atomic<i64> -> i64 -> (Set<Probe> * Set<Probe>)
 fn probe_sets hits size =
     let mut left: Set<Probe> = Set.empty()
@@ -206,7 +187,6 @@ fn probe_sets hits size =
         right = Set.insert (Probe { value: index * 3, hits: hits }) right
     (left, right)
 
-// The `Ord.lt` calls of the intersection, the difference and the union (operation 0, 1, 2) of two sets of `size` keys, not counting the check of the result.
 def algebra_calls :: i64 -> i64 -> i64
 fn algebra_calls operation size =
     let hits = Atomic.create 0i64
@@ -229,8 +209,6 @@ fn algebra_calls operation size =
             assert (Set.invariants_hold (ref result))
             calls
 
-// Each of the three operations on two sets of `size` keys makes at most 2 * (size + size) calls (`compare_keys` calls `Ord.lt` up to twice per step).
-// 0 when all three stay within that, else the number (1, 2, 3) of the first that does not.
 export def set_algebra_bounds :: i64 -> i64
 fn set_algebra_bounds size =
     let limit = 2 * (size + size)
@@ -239,9 +217,7 @@ fn set_algebra_bounds size =
     elif algebra_calls 2 size > limit then 3
     else 0
 
-// ---------------------------------------------------------------------------------------------------------------------
-// Keys and values that hold a borrow: every function must accept them, as it did before the chunks.
-
+// Keys and values containing borrows must work in every public operation.
 def use_map :: ref Atomic<i64> -> i64
 fn use_map hits =
     let first = Probe { value: 1, hits: hits }
@@ -283,15 +259,13 @@ fn use_set hits =
     let present = Set.contains first (ref both)
     sizes + total + seen + Set.length (ref both) + (if present then 1 else 0)
 
-// 33 = use_map 20 + use_set 13, both worked out by hand in the ticket.
+// 33 = use_map 20 + use_set 13, derived in the ticket.
 export def borrowed_keys_and_values :: i64
 fn borrowed_keys_and_values =
     let hits = Atomic.create 0i64
     use_map (ref hits) + use_set (ref hits)
 
-// ---------------------------------------------------------------------------------------------------------------------
-// A reference model that shares nothing with the ordered containers: a table indexed by key.
-
+// Independent reference model: a table indexed by key.
 record Table { present: [bool], values: [i64] }
 
 def blank :: i64 -> Table
@@ -308,14 +282,14 @@ def table_keys :: ref Table -> [i64]
 fn table_keys table =
     let mut keys = Vec.empty()
     for key in 0i64 .. table.present.length - 1 do
-        if table.present[key] then keys = Vec.push key keys
+        if table.present[key] then keys = Vec.push_owned key keys
     Vec.to_array keys
 
 def table_values :: ref Table -> [i64]
 fn table_values table =
     let mut values = Vec.empty()
     for key in 0i64 .. table.present.length - 1 do
-        if table.present[key] then values = Vec.push table.values[key] values
+        if table.present[key] then values = Vec.push_owned table.values[key] values
     Vec.to_array values
 
 def same :: ref [i64] -> ref [i64] -> bool
@@ -335,7 +309,6 @@ fn map_agrees table map =
     let expected_values = table_values table
     same (ref keys) (ref expected_keys) && same (ref values) (ref expected_values) && Map.length map == expected_keys.length
 
-// kind 0 inserts, 1 removes, 2 looks up; the key is below `range`.
 def run_map :: i64 -> [(i64 * i64)] -> bool
 fn run_map range operations =
     let mut map: Map<i64, i64> = Map.empty()
@@ -383,7 +356,6 @@ fn run_set range operations =
     match build_set range operations with
     | (set, table) -> Set.invariants_hold (ref set) && set_agrees (ref table) (ref set)
 
-// The union, the intersection and the difference of the two sets that two lists of operations build.
 def run_algebra :: i64 -> ([(i64 * i64)] * [(i64 * i64)]) -> bool
 fn run_algebra range pair =
     match pair with
@@ -402,7 +374,7 @@ fn run_algebra range pair =
             let both_set = Set.union left right
             Set.invariants_hold (ref common_set) && set_agrees (ref common) (ref common_set) && Set.invariants_hold (ref different_set) && set_agrees (ref different) (ref different_set) && Set.invariants_hold (ref both_set) && set_agrees (ref both) (ref both_set)
 
-// The long runs. Profile 0 stays below 300 keys, 1 grows past 1,500, 2 mostly removes, and 3 churns about 3,000 keys.
+// Profile 0 stays below 300 keys, 1 grows past 1,500, 2 mostly removes, 3 churns about 3,000 keys.
 def profile_range :: i64 -> i64
 fn profile_range profile = if profile == 0 then 300 elif profile == 1 then 2500 elif profile == 2 then 2500 else 5000
 
@@ -415,7 +387,6 @@ fn profile_inserts profile = if profile == 0 then 60 elif profile == 1 then 70 e
 def draw :: i64u -> i64 -> i64
 fn draw state bound = ((state >>> 33) % (bound as i64u)) as i64
 
-// The (kind, key) pairs that a generator seeded with `seed` draws for `profile`.
 def profile_operations :: i64 -> i64u -> [(i64 * i64)]
 fn profile_operations profile seed =
     let range = profile_range profile
@@ -428,10 +399,9 @@ fn profile_operations profile seed =
         state = next_state state
         let key = draw state range
         let kind = if choice < inserts then 0 elif choice < inserts + (100 - inserts) * 3 / 4 then 1 else 2
-        operations = Vec.push (kind, key) operations
+        operations = Vec.push_owned (kind, key) operations
     Vec.to_array operations
 
-// 1 when the Map, the Set, or the set operations agree with the model for the run of `profile` that `seed` draws.
 export def model_map :: i64 -> i64 -> i64
 fn model_map profile seed = if run_map (profile_range profile) (profile_operations profile (seed as i64u)) then 1 else 0
 
@@ -443,9 +413,6 @@ fn model_algebra profile seed =
     let first = profile_operations profile (seed as i64u)
     let second = profile_operations profile ((seed as i64u) + 7919i64u)
     if run_algebra (profile_range profile) (first, second) then 1 else 0
-
-// ---------------------------------------------------------------------------------------------------------------------
-// Property tests (`tsuzuri test`).
 
 def short_operations :: Gen<[(i64 * i64)]>
 fn short_operations = Gen.array_up_to 64 (Gen.pair (Gen.range 0 2) (Gen.range 0 49))

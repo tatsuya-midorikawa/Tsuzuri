@@ -13,7 +13,7 @@ fn random_keys size =
     let mut state = 88172645463325252
     for _index in 0i64 .. size - 1 do
         state = next_state state
-        keys = Vec.push (state >>> 20) keys
+        keys = Vec.push_owned (state >>> 20) keys
     Vec.to_array keys
 
 def filled :: ref [i64u] -> Map<i64u, i64u>

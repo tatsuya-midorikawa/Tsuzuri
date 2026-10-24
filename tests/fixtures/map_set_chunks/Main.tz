@@ -267,14 +267,14 @@ def table_keys :: ref Table -> [i64]
 fn table_keys table =
     let mut keys = Vec.empty()
     for key in 0i64 .. table.present.length - 1 do
-        if table.present[key] then keys = Vec.push key keys
+        if table.present[key] then keys = Vec.push_owned key keys
     Vec.to_array keys
 
 def table_values :: ref Table -> [i64]
 fn table_values table =
     let mut values = Vec.empty()
     for key in 0i64 .. table.present.length - 1 do
-        if table.present[key] then values = Vec.push table.values[key] values
+        if table.present[key] then values = Vec.push_owned table.values[key] values
     Vec.to_array values
 
 def same :: ref [i64] -> ref [i64] -> bool
@@ -384,7 +384,7 @@ fn profile_operations profile seed =
         state = next_state state
         let key = draw state range
         let kind = if choice < inserts then 0 elif choice < inserts + (100 - inserts) * 3 / 4 then 1 else 2
-        operations = Vec.push (kind, key) operations
+        operations = Vec.push_owned (kind, key) operations
     Vec.to_array operations
 
 export def model_map :: i64 -> i64 -> i64
