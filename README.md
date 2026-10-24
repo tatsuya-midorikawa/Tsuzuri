@@ -1249,3 +1249,15 @@ node benchmarks/run-f16.mjs BASELINE_COMPILER target/release/tsuzuri   # f16 の
 - Phase 3 の一時 callback の借用も、既存の「一段で完全適用し、結果が借用を持たない」という条件を保ちます。
   callback を受け取って関数値として返す旧 identity のような消費する契約には `own` を明示します。
   関数を返すからといって temporary operand を直接作り、借用の escape 検査を迂回しません。
+
+## A18 の完了（2026-10-24）
+
+上の照合に基づき、A18 の Phase 1〜4（2027 と `own`、checked migration と既定版の更新、
+generic／関数の引数別規約、`mut` と射影代入・版別 `Vec.push`）をすべて実装・検証しました。
+[チケットと最終の完了報告](_features/_completed/A18-parameter-conventions.md)をアーカイブし、
+[PR48](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/48) は未マージのままにします。
+最終の実装 head `b3343ed1` は Rust **1772 通過・2 skip**、全 features **19740 ケース**、
+旧版と移行後各 **114 入力の byte 同一 IR**、リファレンス **52 頁・702 native 実行**、
+CI **14 項目 green**。Copilot は未解決の指摘なしで、人による review は別途必要です。
+固定 Drop protocol の自己置換と const evaluator の射影代入は拒否する安全な制限を残し、
+新しい速度向上は主張しません。A19 の実装・統合は別担当・別 PR です。
