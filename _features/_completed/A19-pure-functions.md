@@ -1121,6 +1121,16 @@ def main :: unit -> i32 = \() ->
   guide-lite は **85 references／0 failures**。初回の全 feature・frozen IR・数値／GPU 参照の記録は上記のとおりで、
   今回の再検証範囲や実 GPU の実行と混同しない。最終 head の CI と再レビューは PR で追跡する。
 
+### Windows の標準ライブラリ入力（2026-10-24）
+
+- 旧 head `559058e8` の Windows x64／arm64 CI は、標準ライブラリ自身の実効 API を読む回帰で
+  `std\Arena.tz` を不正な Std 入力として拒否していた。`load_for_docs` が認識した標準ライブラリに対して、
+  実ファイルのパスは保持し、解析用の仮想名を全 OS 共通の `std/Name.tz` にする。
+  Std 入力の検査を緩めたり、通常の利用者のファイル名の区切りを置換したりしない。
+- 仮想パスの回帰を明示し、API／std／doc 関連 **62 tests passed**、全 target Clippy・fmt が成功した。
+  usage は **62 links／5 checked examples／4 native runs／1 test project** を再検証した。
+  native Windows の成否は、修正後の最終 head の x64／arm64 CI で判定する。
+
 ### 確認コマンド（最終受入）
 
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --locked`。
@@ -1191,6 +1201,7 @@ def main :: unit -> i32 = \() ->
 - [src/constants.rs](../../src/constants.rs)
 - [src/derive.rs](../../src/derive.rs)
 - [src/docgen.rs](../../src/docgen.rs)
+- [src/driver.rs](../../src/driver.rs)
 - [src/formatter.rs](../../src/formatter.rs)
 - [src/frontend_cache.rs](../../src/frontend_cache.rs)
 - [src/gpu.rs](../../src/gpu.rs)

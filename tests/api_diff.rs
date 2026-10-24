@@ -217,6 +217,10 @@ fn effective_regions_follow_checked_provenance_after_alias_resolution() {
 fn effective_standard_library_root_is_not_mistaken_for_dependency_sources() {
     let standard =
         Project::load_for_docs(&Path::new(env!("CARGO_MANIFEST_DIR")).join("std")).unwrap();
+    assert!(standard.sources.iter().all(|source| {
+        let path = source.relative_path.to_str().unwrap();
+        path.starts_with("std/") && !path.contains('\\')
+    }));
     let standard_api = api_diff::effective_api(&standard).unwrap();
     let empty = root("effective-empty", &[("Main.tz", "0\n")]);
     let empty_api = api_diff::api(&Project::load_for_api(&empty).unwrap()).unwrap();

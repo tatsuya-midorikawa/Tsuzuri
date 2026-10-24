@@ -1318,6 +1318,8 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   リファレンス 12 ページ／75 例／134 native 実行を確認しました。
   PR #50 の 4 指摘を修正後、全 Rust 1,832 件（targets 12 件を含む、2 skipped）、
   pure 302＋parallel 12 ケース（native／WASM × O0／O3）、関連 E2E・cache・LSP と
-  manual 4 ページ／32 例／58 native 実行を再確認しました。速度向上は未計測です。
+  manual 4 ページ／32 例／58 native 実行を再確認しました。
+  Windows CI で見つかった標準ライブラリ自身の実効 API 入力も、仮想パスを全 OS 共通の `std/Name.tz` に修正し、
+  関連 62 テストと usage の例を確認しました。最終 head の x64／arm64 CI は PR で追跡します。速度向上は未計測です。
   実装範囲・例外・検証コマンドと変更一覧は [A19 の完了記録](_features/_completed/A19-pure-functions.md)、
   最終 head の CI・Copilot レビューと 7 件の統合結果は各 PR で追跡します。
