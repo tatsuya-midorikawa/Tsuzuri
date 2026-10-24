@@ -32,7 +32,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/syntax.rs` | トークン定義、構文木（AST）、言語版 `Edition`、説明の `@deprecated` の読み取り（`Documentation::deprecation`）、構文リソース上限の管理 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理（ファイル先頭の `#!` 行も行コメントとして飛ばし、位置はファイル全体のまま。`shebang_length`）、数値リテラルの切り出し、edition ごとの予約語（`EDITION_KEYWORDS`、`reserved_in`。`lex*` は edition を必須の引数に取る） |
 | `src/docgen.rs` | 宣言 AST からの公開 API ドキュメント（Markdown）生成、型・制約・region の描画、決定的なページソート |
-| `src/api_diff.rs` | `tsuzuri api-diff`（G19）。root パッケージの公開宣言を構文解析だけで読み、型変数と region を正規化した署名の表を作って 2 つの版を比べ、breaking と non-breaking の変更を決定的な順で出力（テキストと JSON Lines） |
+| `src/api_diff.rs`・`src/semantic_api.rs` | `tsuzuri api-diff`（G19・A19）。既定は root の公開宣言の構文比較。`--effective` は型検査中の解決済み署名・実際の引数規約・純粋性の段階・region の対応を明示的に収集し、安定した公開名で比較。breaking と non-breaking を決定的な順で出力（テキストと JSON Lines） |
 | `src/parser.rs` | Pratt パーサー、宣言と式、トップレベルのエントリーコード、再帰深度の制限 |
 | `src/parse_control.rs` | インデントによるブロック構文、for／while／match、関数ガード、ラムダ式、パターンおよびアクティブパターン認識器名 |
 | `src/check.rs` | 全モジュールのシグネチャ収集、名前解決、型付き IR の構築、メモリレイアウト計算、公開 ABI |
@@ -363,7 +363,7 @@ WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が�
 
 ### 公開 API の差分（G19）
 
-`tsuzuri api-diff`（`src/api_diff.rs`）は、`Project::load_for_api`（依存の git・registry を取得せず、`Tsuzuri.lock` も読まない `load_for_docs` の変種）で 2 つの入力を読み、root パッケージ（`Project::root_package`）のソースを `parse_with_source` だけで構文解析して、公開宣言を「完全名と種類 → 項目」の表にします。署名は `docgen` の描画（`signature`、`type_text` など）を共有し、比較用には、型変数と region を最初に出てきた順の連番に置き換え、制約を並べ替え、定義の結果型の矢印を平らにした正規形（`Renaming`、`flatten`）を使い、報告にはそれぞれの版の書かれたままの形を使います。`add_items` は `Program` のすべての field を名前付きで分解するので、`Program` に宣言の種類を足すとここが compile error になり、API に入れるかどうかを決めることになります。`compare` は変更を breaking 先、名前順に並べるので出力は決定的で、表示は 1000 件までです。型検査もコード生成もしないので、IR には作用しません。
+`tsuzuri api-diff`（`src/api_diff.rs`）は、`Project::load_for_api`（依存の git・registry を取得せず、`Tsuzuri.lock` も読まない `load_for_docs` の変種）で 2 つの入力を読み、root パッケージ（`Project::root_package`）のソースを `parse_with_source` だけで構文解析して、公開宣言を「完全名と種類 → 項目」の表にします。署名は `docgen` の描画（`signature`、`type_text` など）を共有し、比較用には、型変数と region を最初に出てきた順の連番に置き換え、制約を並べ替え、通常の矢印だけを平坦化し、純粋な戻り型と factory の呼び出し段階を保った正規形（`Renaming`、`flatten`）を使い、報告にはそれぞれの版の書かれたままの形を使います。`add_items` は `Program` のすべての field を名前付きで分解するので、`Program` に宣言の種類を足すとここが compile error になり、API に入れるかどうかを決めることになります。`compare` は変更を breaking 先、名前順に並べるので出力は決定的で、表示は 1000 件までです。既定では型検査もコード生成もしないので、IR には作用しません。`--effective` では `Project::load_for_docs` と完全な解析を使い、通常の IDE index では省略する `SemanticIndex.resolved_api` を明示的に要求します。`src/semantic_api.rs` は所有権による Copy 推論と class 制約の固定点伝播が終わった後、`polymorph::specialize` が generic template を消費する直前に明示要求の snapshot を保存します。通常の semantic index と非推奨警告は従来の時点で収集し、API の要求だけをこの完了段階へ遅らせます。保存するのは generic な署名、展開した alias、型・長さパラメーター、checker が持つ region の対応と呼び出し側の制約で、内部 package ID を公開名へ戻します。関数の class 制約は `CheckedFunction.constraints` を既存の instance／superclass 正規化へ通し、inline／alias 経由の要求を含む残余の集合を保存します。具体型ですでに満たされた要求は残さず、モジュール関数は `CheckedFunction.members` の推論・伝播済みの署名を保存します。具体 receiver は `solve_members` が解決済みなので除外し、署名なしの宣言が同じ receiver/name の型付き要求で精密化されていれば型付きの側を使います。公開 alias も既存の alias 展開と inline 制約抽出・class 正規化で独立に要求を保存し、ローカルの使用箇所に依存しません。比較時には型変数の改名後に整列・重複除去します。pure な generic template は特殊化ごとの効果・所有条件の証明義務も checked contract に保存し、ABI が同じでもその新設を保守的に breaking とします。非公開 helper 経由の残余義務も `GenericFunction` の型引数対応に沿って呼び出し側へ伝播します。型パラメーターを頂点にした逆依存グラフの worklist で各頂点を一度だけ処理し、相互再帰を固定点まで解きます。通常の generic 関数内の明示的な純粋 callback も、値の型・capture・実行する本体に現れる型変数を同じグラフの始点にします。実行する本体は既存の純粋性 scanner を共有して求め、実際に実行する task・並列 callback・閉じたローカル callable を含めます。返す通常 callback の本体は後の実行と区別します。通常の効果検査では型変数の収集を要求しません。具体化したパラメーターの義務を別の generic 引数へ混ぜず、公開署名内の型変数の出現位置の mask を保存して改名でも比較を保ちます。class の既定実装と instance のメソッドにも残余義務を保存し、instance の型引数を代入してから比較します。instance 内はメソッド名で整列し、class の宣言順では変わりません。既定実装の新設自体は従来どおり non-breaking です。`--effective` では、未使用 template 内でも完全に具体化した generic 参照、静的に選ばれる class／演算子の呼び出し、具体 instance のメソッドと既定実装を既存の `Specializer` の検証根に追加します。途中の通常 helper も含め、実際の所有条件と選択した class メソッドの効果まで検査してから充足と扱います。不正なら API の一部だけを返さず解析エラーにします。この追加の検証根は明示の API 収集時だけで、通常の型検査・特殊化の根やコード生成は変えません。型変数名や source alias の文字列には依存せず、既定の構文比較と実際の型検査・特殊化は変えません。ソースの表示は置き換えません。標準ライブラリそのものを root とする場合以外は依存の宣言を API に含めません。依存や解析のエラーでは診断を返し、構文比較へフォールバックしません。
 
 ### bindgen
 
@@ -443,6 +443,7 @@ SPIR-V は `src/gpu/spirv.rs` が、`extract_kernel` の結果から決定的に
 ### モジュール
 
 「1 ファイルにつき 1 モジュール」を強制し、モジュール名はファイル名から自動的に導出されます。
+`Project::load_for_docs` で標準ライブラリ自身を読むときも、Std の解析入力には全 OS 共通の仮想名 `std/Name.tz` を渡します。実ファイルのパスは保持し、仮想名の区切りを Windows の `\` に変えません。
 プロジェクトルート配下を再帰的に走査し、`SourceFile.relative_path` を正規化した順序で処理します。例えば `Geometry/Point.tz` のコンパイラ内部名（キー）は `Geometry.Point` となり、ソースコード上では `Geometry::Point` と記述します。
 ファイル単体を指定した入力ではその親ディレクトリがルートとなり、ディレクトリ入力を指定した場合はそのディレクトリ自身がルートとなります。隠しファイル／ディレクトリ（ドット始まり）は無視され、ソースファイルやディレクトリに対するシンボリックリンクは拒否されます。
 ソースファイル数は最大 4096 件、ディレクトリ数は最大 1024 件、モジュールパスは最大 16 階層／255 バイトを上限とし、標準ライブラリの予約名はパスの先頭要素に対して適用されます。
@@ -495,7 +496,7 @@ std の仮想パスは `std/Name.ext` という平坦な形式で管理され、
 無修飾の型名、case、レコード、型クラスの解決においては、まず自モジュール内、次いで完全修飾名（モジュールパスが同一名の型を表す場合を含む）を検索します。その後、参照元がユーザーコードであれば「ユーザー定義モジュール群 → std モジュール群」の順序で各段階ごとに一意な候補を探索し、参照元が std であれば std モジュール群のみを探索します。
 std モジュールにおける `export def` の使用は禁止されており、std の関数を外部から呼び出す際はユーザー定義関数と同様にモジュール名による修飾が必須です。
 std のソースコードは型検査の対象となりますが、`closures::lower` の処理後に到達可能性解析（reachability analysis）が行われ、不要な関数は最終成果物から間引かれます。
-例外は `stdlib::OPT_IN` の opt-in std モジュール（`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`。D-40・D-41・D-42・D-44）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
+例外は `stdlib::OPT_IN` の opt-in std モジュール（`Alloc`、`Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`。D-40・D-41・D-42・D-44・F14）です。ユーザーのモジュールからの無修飾の解決（`Names::choose`）は opt-in std モジュールの宣言を候補にしないので、ユーザーのコードはそれらを修飾した名前でだけ参照します。
 そのため `Project::load` 系（言語サーバーの `load_with_overlays` を除く。REPL の `Project::single_main` を含む）と `analyze_modules_all` は、`stdlib::sources_for` が選んだものだけを読み込めます。`sources_for` はユーザーのソースの ASCII 識別子の並び（先頭の数字を除いた部分も含む）を走査し、`OptIn::names`（モジュール名と、他所の型に instance を与える組み込みクラス。`Json` の `Encode`・`Decode`）か、`OptIn::aliases`（モジュールのビルダーの `@alias`。`Async` の `async`。小文字の語は別名と一致したものだけを数える）のどれかが現れたモジュールと、その `uses` の閉包を加えます。
 `stdlib::tests::opt_in_modules_are_reached_only_through_their_names` が std のソースを字句解析・構文解析して、常に読み込むモジュールが opt-in モジュールを名指ししないこと、instance の組み込みクラスが `names` にあること、`@alias` の宣言が `aliases` と一致すること、`uses` が正しいことを検査します。
 この選択は、opt-in モジュールの名前を書かないプログラムの型検査の時間（空のプログラムの `check` で約 2 倍になっていた）と IR（関数番号のずれ）を、opt-in モジュールの追加前と同じに保ちます。
@@ -707,10 +708,12 @@ C の入口は `-DTSUZURI_COVERAGE` のときだけ、テストが成功した�
 
 ベンチ宣言 `Program.benches`（G18 Phase 1）はテストと同じく通常の名前空間から隔離され、`$bench.<index> ($iterations: i64) -> i64 = { let $case: i64 -> i64 = 本体; $case $iterations }` という生成関数と `CheckedModule.benches` になります（本体の型の不一致は `$case` の注釈により本体の位置の `E1003`）。由来 `FunctionOrigin.bench` は補助関数へ伝播します。
 `polymorph::specialize` はベンチ関数の要求を、ほかのすべての特殊化（Drop の固定点を含む）が終わった後に出すので、通常ビルドとテストビルドの `$mono.N` の番号はベンチの有無で変わりません。この後半で初めて見つかった Drop 型の drop 関数は `CheckedModule.bench_drops` に記録され、`reachable_functions` はベンチ実行器のときだけそれらを根にします（ベンチ専用の型の drop glue は通常の成果物に出ません）。ただし `$lambda.N` や `$instance.N` のように関数の総数から付く生成名は、テストを足したときと同じく、ベンチや `Bench` モジュールの読み込みで番号がずれます。
-`tsuzuri bench` 以外の出力（根を指定しない Console・Library）では、`program_reach` が根の候補（公開の利用者関数、export、入口）からの到達集合を求めるときに `Bench.now` を直接読む関数を記録し、あれば逆向きの到達で時計に届く関数を求めて、export でも入口でもないものを根から外してもう一度到達集合を求めます。外した関数がなお到達されるとき（入口・export・選んだテスト・Drop から）は、`clock_error` が根から時計への最短の経路を幅優先で求め、起点と途中で最後に通る利用者の関数を名前で示し、その関数の中で次へ向かう式の位置に `E1018` を出します。根の候補が時計を読む関数に到達しないプログラムでは、到達の計算と出力は変わりません（到達するプログラムは以前は必ず `E1018` だったので、ビルドできたプログラムの出力も変わりません）。
+`program_reach` は `Restricted { clock, counter }` で `Bench.now` と `Alloc.__counter` を直接読む関数を記録します（G18 D3・F14）。根を指定しない Console・Library では、公開の利用者関数・export・入口からの到達集合と逆向きの到達を求め、制限された資源に届く公開の補助関数を、export でも入口でもなければ根から外して再計算します。入口・export・選んだテスト・Drop からなお到達し、出力がその資源を提供しない場合は、`restricted_error` が資源の種類ごとに根からの最短経路を幅優先探索し、最後の利用者関数の次へ向かう式へ `E1018` を出します。`Bench.now` の文面と位置は変更せず、どちらにも到達しないプログラムの IR も変えません。
 `llvm::emit_bench_runner`（`Entry::BenchRunner`）は選んだベンチ関数を根にして、`@tsuzuri_bench_count` と、index で分岐して `call i64 @tz.fn.<Module>.$bench.N(i64 %iterations)` を返す `@tsuzuri_bench_sample(i32, i64)`（不正な index は -1）を出します。組み込みの `Bench.now` は `call i64 @tsuzuri_bench_now()` に下がり、宣言がベンチ実行器以外の出力に残れば `emit_program` が `E1018` を返します。`Bench.consume` は値を entry block の alloca に store し、その pointer を `asm sideeffect "", "r,~{memory}"` に渡してから `drop_value` します。
 `runtime/bench-runner.c` は `tsuzuri_bench_now`（macOS は `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`、Linux は `_POSIX_C_SOURCE` 付きの `CLOCK_MONOTONIC`、Windows は `QueryPerformanceCounter`）と、引数 `INDEX SAMPLES TARGET_NS` を厳密に検査して（不正なら終了コード 2）反復回数を倍々に較正し、予熱の後に `iterations N` と `sample NS` の行を出す `main` を持ちます（負の時間は終了コード 3）。
 `driver::run_benches` はテストランナーと共有する `compile_native_runner`（C の入口と必要なランタイムをリンク）で実行器を 1 回だけ作り、ベンチを 1 件ずつ別プロセスで順に実行します。標準出力と標準エラーは読み取りスレッドが読み切り（パイプが満杯でも子を止めない）、300 秒で kill と wait をします。出力の形と件数を厳密に検査し、1 回あたりの時間（`ns / n / 1e6` ms）の中央値・最小・最大を報告します。合否の閾値はありません。
+
+`--allocs` のときだけ `emit_bench_allocation_runner` が Counting の別の IR を生成し、`@tsuzuri_bench_counts(ptr)` が counter の 0・1・3 を書きます。`bench-runner.c` の `TSUZURI_BENCH_ALLOCS` 版を別にリンクし、1 反復で予熱した後、1 反復の増分 A と 2 反復の増分 B の差を取ります。unsigned の差の前に B ≥ A を検査して負の差分を終了コード 5 にし、Rust は厳密な 2 行 `alloc_calls N`・`alloc_bytes N` を読みます。失敗は bench の `allocation run: ...` にして時間の結果を捨てます。計数なしの IR と JSON/text は変わりません。
 
 プロパティテスト（G18 Phase 3）は std の opt-in モジュール `Gen` だけで書かれています。`Gen<'a>` は `Source -> ('a * Source)` を持つ不透明なレコードで、`Source` は `(Random.Pcg * [i64u] * bool * Vec<i64u>)`（乱数、再生する選択、再生中か、記録した選択）の組です。生成器はすべての乱択を `choose`（上限 0 の選択は記録しない）で記録し、探索では seed と値の番号を stream にした `Random.pcg` の提案を、再生では記録（尽きたら 0）を上限で切った値を使います。`shrink` は記録を短縮・縮小した候補を再生し、性質が失敗し続けてかつ短長辞書順でより単純な記録だけを採用します。
 seed は std 専用の組み込み `Gen.__seed()` で、`emit_builtin` が `Globals.seed`（`llvm::TestRunnerOptions.seed`、なければ `DEFAULT_PROPERTY_SEED`）の定数を返す関数を出します。`Gen` を書かないプログラムでは読み込まれないので、型検査と IR は変わりません。
@@ -1281,6 +1284,40 @@ Task 以外のクロージャにおいて捕捉変数が 1 個のみであり、
 `ownership::eval_lambda` も、`let rec` のラムダの捕捉のうち値で渡せないものを共有借用として評価し、リフトの後と同じ判定にします（グループの関数が 1 つの所有値を捕捉してもムーブにはなりません）。
 `let rec` を書かないプログラムでは ID の予約も書き換えも起きないので、生成される IR は変わりません。
 
+### 純粋性の検査
+
+`src/pure_rules.rs` は generic なテンプレートを特殊化前に検査し、特殊化と `closures::lower` の後でも、
+`FunctionOrigin.pure` の宣言と純粋な関数値の根を検査します。明示した純粋関数値の本体と閉じた callback の捕捉も、
+未使用の generic template が消費される前に同じ走査で検査します。通常の factory 自体の効果と、通常の戻り callback の実行には保証を広げません。
+関数値の証明根は実関数のキャッシュと分け、局所再帰で同じ本体が再び現れたときは走査済みとして扱います。
+生成した補助関数を無条件の純粋な根にはしません。
+引数の `own` と共有借用の補完は署名の収集時に終わり、以降は既存の参照と所有権規則を使います。
+純粋な矢印は `FunctionParameters.pure` に呼び出し段階ごとの契約を持ち、引数の物理的な規約を変えません。
+parser と class の instance／既定実装は同じ正規化を使い、純粋な宣言の段階を超えて戻り lambda を取り込まず、
+段階の全引数を束縛しない実装を `E1029` にします。途中の計算を動かす eta 展開はしません。
+モジュール関数制約の推論と特殊化は、既存の純粋フラグの弱化だけを行って通常の型単一化を使います。
+対象自身の署名と factory の物理的な段階を再構築・平坦化しません。
+通常の矢印へ弱める cast は closure の表現を保ち、一時 callback の借用は cast の外側へ正規化します。
+同じ引数・結果の型と規約を持つ段階の cast は直接呼び出しの特殊化でも透過に扱いますが、arity が変わる factory の境界は透過にしません。
+AST の純粋な矢印・class／instance の印と、括弧で区切る pure factory の解析を保存する frontend の形式は 9 です。
+各関数の局所の効果と関数参照の辺だけをキャッシュし、根ごとに幅優先で到達可能性を求めます。
+探索中の再帰関数を純粋としてキャッシュせず、循環を含む別の根にも効果が伝播します。
+閉じた Task／Parallel は callback と捕捉値を検査し、標準 IO の構築は遅延 callback の実行と区別します。
+class の契約は既定実装と全 instance、generic の特殊化、`@cpu` の版へ引き継ぎます。
+式の走査は明示的なスタック、関数の探索はキューで、関数 4,096 個・式 2,097,152 個の上限を超えると `E1017` です。
+型・組み込み・型付き式の分類は網羅的な match とし、新しい variant は分類を決めなければコンパイルできません。
+D-53 の `what`・`impurity_of_roots`・`reachable_effect`・`builtin_impure` が問い合わせの境界です。
+GPU の抽出も `reachable_effect` を使いますが、既存の scalar・演算・再帰・backend の制限は別にすべて検査します。
+
+`src/llvm_facts.rs` は純粋性とは独立に実際の命令からメモリ効果を証明します。`reuse_pure_calls` は、
+明示の純粋な宣言と出力済みの `memory(none)` の両方がある、値の整数引数・整数結果の関数だけを再利用します。
+同じ基本ブロックで最初に実行した呼び出しを残し、同一の SSA 引数の後続呼び出しだけを置き換えます。
+整数の spill は、関数全体でアドレスが逃げない単純なスロットだけを、ブロック内の store／load に従って正規化します。
+borrow・atomic・volatile・未知のアクセスはこの正規化から除外します。前方参照する loop phi も含めて SSA 使用を置き換え、
+quoted text・コメント・名前の前方一致は書き換えません。数値番号の SSA 定義と quoted な定義も再利用せず、番号や未対応の文法を壊しません。
+関数が 200,000 byte を超える場合は最適化を省略します。参照・浮動小数点・所有結果・CPU multiversion は対象外です。
+純粋性から新しい LLVM 属性や停止性を推定せず、投機実行・永続的 memo cache・所有結果の共有を導入しません。
+
 ### 継続の特殊化
 
 型検査および所有権検査が完了した通常の関数呼び出しを対象とし、コンピュテーション式の操作関数名などを特別扱いすることはありません。
@@ -1600,11 +1637,14 @@ Tsuzuri の関数内部に外部の C/C++ 関数を直接インポートして�
 POSIX ネイティブ環境のアロケータは、共通のフックテーブルから境界ランタイムの存在を検知し、メモリの確保と解放を安全な追跡経路へとルーティングします。これは拡張 ABI を使用するデフォルトネイティブ IR における内部変更ですが、公開シグネチャそのものには一切影響しません。WASM および Windows におけるデフォルトアロケータは従来の動作を維持します。
 ### allocator の選択（F13）
 
+`Alloc.__counter` は `i64 -> i64` の std 専用組み込みで、`@tz.heap.counter` の読み取りへ下がります（F14）。runtime symbols の収集でこの名前を見つけた場合、Host/Small は `E2000`、System かつ TestRunner 以外は `E1018`、TestRunner は Counting を自動選択します。明示の Counting も受け、counter だけで確保しないプログラムにも heap を連結します。弱いホスト ABI を付ける条件は明示の allocator のままなので、自動計数で WASM import や不要な公開 ABI は増えません。
+`heap-counting.ll` は `[6 x i64]`（allocs, reallocs, frees, requested bytes, live, peak）を持ち、出来事・要求量・現在量・最大量を原子的に更新します。`@tz.heap.counter(index)` は 0〜5 を読み、それ以外をトラップします（資源失敗ではない不正な添字のトラップです）。公開 ABI `tsuzuri_alloc_stats` は 0・2・4・5 を従来どおり 32 バイトへ書きます。
+
 heap runtime は `emit_program` の末尾で一つだけ連結し、`@tz.alloc`／`@tz.free`／`@tz.realloc` を `define internal` で定義します（呼び出し側は allocator を知りません）。`llvm::Allocator::System` は従来の `heap-native.ll`・`heap-wasm.ll`・`heap-wasm64.ll`（threads は lock 版）、`Host` は `heap-host.ll`（WASM では `tsuzuri_heap` からの import）、`Counting` は対象の heap を `counted_base` で `@tz.alloc.base` などへ改名し、その上に `heap-counting.ll` を置きます。`Small` は native だけで、`heap-small.ll` と `heap-small-native.ll` を置きます。WASM・`--trap-mode return`・`--freestanding`・カーネルの出力との組み合わせは `E2000` で、ライブラリ API（`emit_program`）も WASM には `E2000` を返します。
 `Small`（PM05）は native の 64-bit だけです。`heap-small.c`（freestanding な C11）を `generate_heap.py` が target 中立の `heap-small.ll` にし、手書きの `heap-small-native.ll` が `@tz.alloc`・`@tz.free`・`@tz.realloc` を `heap-native.ll` と同じ契約（null でトラップ、新しいサイズ 0 は解放、null のブロックは新規確保）で `tz_small_*` の上に定義します。`heap-small.ll` は属性グループもメタデータも `nsw`・`nuw` も持たないので、`numeric.ll`・`math.ll`・デバッグ情報と番号が衝突せず、チェック付き算術の IR の検査（`bounds_checks`）にも触れません。入口の 3 関数は `internal` です。`tz_small_alloc` と `tz_small_free` は `noinline` で、`noalias`・`allockind`・`alloc-family` を持ち、LLVM は `malloc`・`free` と同じ扱いで、読まれないまま解放される確保を取り除き、戻り値を別のポインターと別名にならないものとして扱います。取り込むと、呼び出し側に fast path が並んで確保が呼び出しに見えなくなり、この最適化を失うので（record_sort は 2 倍の時間がかかりました）、呼び出しのままにします。`tz_small_realloc` は不透明です。外から見える記号は、全体で共有する状態へのポインター `@tz_small_shared`（弱い hidden。実体は各オブジェクトの `internal` な BSS で、リンカーが残した 1 つを全オブジェクトが使います）と、テスト専用の `tz_small_stats`（弱い hidden）だけです。スレッドごとのキャッシュは `internal thread_local` の 1 つで、`task.c` のスレッドにも C のホストのスレッドにも同じ形で付きます。
 0〜512 バイトの確保は 16 バイト刻みの 32 区分で、ブロックにヘッダーはありません。区分は 1 MiB の region（`malloc(2 MiB)` から 1 MiB 境界に切る）ごとに 1 つで、アドレスから 2 段の表（`top[a >> 34]` の葉に region ごとの 1 バイト）で引きます。表に無いアドレス（512 バイトを超える確保、`task.c` などの C のコードが確保したバッファ）は `free` へ渡します。スレッドのキャッシュは区分ごとの後入れ先出しのリストで、空なら中央のスタックから 4096 バイト分の鎖を 1 本取り（無ければ region の未使用部分から鎖を切り）、鎖 2 本分を超えたら直近に解放した 1 本分を中央へ返します。中央のスタックは区分ごとの try-lock で守り、取れなければ待たずに、確保は C ライブラリの `malloc`、解放は手元のキャッシュに残して次の解放でやり直します。待つ処理も、`pthread_*`・`mmap` も使いません。IR が宣言する外部関数は `malloc`・`realloc`・`free` と LLVM の intrinsic だけです。
 Windows の `lld-link` は同じ記号の弱い定義を持つ 2 つのオブジェクトを COMDAT なしでは結合できず（`numeric.ll` の弱い関数も同じです）、Windows では Tsuzuri のオブジェクトを 2 つ以上リンクできません。そのため複数オブジェクトで 1 つの状態を共有する検査は Windows では行いません。
-`Host` と `Counting` は各ブロックの先頭 16 バイトに要求サイズを書き、ホストへ渡すサイズと統計を解放の経路によらず一致させます。トラップの理由は関数名で分類する（`traps::runtime_kind`）ので、確保の失敗の `@llvm.trap` は `@tz.alloc`・`@tz.realloc` とその `.base`（threads では `@tz.heap.alloc.unlocked`・`@tz.heap.realloc.unlocked`）の本体にだけ置き、`@tz.heap.*` の補助関数には置きません。
+`Host` と `Counting` は各ブロックの先頭 16 バイトに要求サイズを書き、ホストへ渡すサイズと統計を解放の経路によらず一致させます。トラップの理由は関数名で分類する（`traps::runtime_kind`）ので、確保の失敗の `@llvm.trap` は `@tz.alloc`・`@tz.realloc` とその `.base`（threads では `@tz.heap.alloc.unlocked`・`@tz.heap.realloc.unlocked`）の本体にだけ置きます。`@tz.heap.counter` の不正な添字は確保の失敗とは異なるトラップです。
 `--freestanding` は `--allocator host` に加えて CPU ディスパッチを使わない経路（`emit_native_build` を通らない）で出力し、IR が C ライブラリを要する runtime（IO・OS・タスク・引数・`write`）を宣言したら `E2000` にします。`--emit header` の出力には IR がないので、同じ build の object が持つ library の IR を別に生成して検査します。
 128-bit 値、ソフトウェア浮動小数点型、任意の所有入力、借用参照の戻り値、およびクロージャ環境の直接的な ABI 公開はサポートされていません。
 外部シンボルのインポートはユーザーが記述した `extern` 宣言からのみ発生し、リンク名、ハンドル型、コールバックを使用しないプログラムにおいては、生成される IR、C ヘッダー、および WASM インポートの構造に変化はありません。

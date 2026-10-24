@@ -360,6 +360,7 @@ impl Build<'_> {
     }
     fn definition(&self, name: &str, parameters: &[&str], body: Expr) -> Definition {
         Definition {
+            pure: false,
             name: self.ident(name),
             recursion: Some(name.into()),
             parameters: parameters

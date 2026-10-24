@@ -18,7 +18,7 @@
 
 ## どのサブコマンドが受け付けるか
 
-`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`watch` は、次の語（`check`・`build`・`test`）の列と同じオプションを受け付けます。`watch` 自体のオプションはなく、それ以外のコマンドは `E2000` です。`serve` はプロジェクトのディレクトリ 1 つと `--idle-timeout SECONDS`（1〜86400）、または `--status` か `--stop` とディレクトリ 1 つだけを受け付けます（`--status` と `--stop` は同時に使えず、`--idle-timeout` とも組み合わせられません）。`api-diff` は古い版と新しい版の入力 2 つと、`--json` だけを受け付けます。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
+`lsp` は引数を取りません。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`watch` は、次の語（`check`・`build`・`test`）の列と同じオプションを受け付けます。`watch` 自体のオプションはなく、それ以外のコマンドは `E2000` です。`serve` はプロジェクトのディレクトリ 1 つと `--idle-timeout SECONDS`（1〜86400）、または `--status` か `--stop` とディレクトリ 1 つだけを受け付けます（`--status` と `--stop` は同時に使えず、`--idle-timeout` とも組み合わせられません）。`api-diff` は古い版と新しい版の入力 2 つと、`--json`・`--effective` だけを受け付けます。`--effective` は依存込みで型検査して解決後の契約を比較します。既定は構文比較です。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
 
 | オプション | check | build | run | test | bench | doc | fmt | repl | script |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -38,7 +38,7 @@
 | `--debug-output` | | ○ | ○ | | | | | | |
 | `--trap-info` | | ○ | ○ | | | | | | |
 | `--trap-mode` | | ○ | | | | | | | |
-| `--allocator` | | ○ | | | | | | | |
+| `--allocator` | | ○ | ○（counting のみ） | ○（counting のみ） | | | | | |
 | `--freestanding` | | ○ | | | | | | | |
 | `--strip` | | ○ | | | | | | | |
 | `--wasm-opt` | | ○ | | | | | | | |
@@ -53,6 +53,7 @@
 | `--seed N` | | | | ○ | | | | | |
 | `--check` | | | | | | | ○ | | |
 | `--samples N` | | | | | ○ | | | | |
+| `--allocs` | | | | | ○ | | | | |
 | `--timeout` | | | | | | | | ○ | |
 
 `--deny-warnings` と `--warn` は、ヘルプでは `check` / `build` / `run` が中心です。実装では警告の表示が `doc` と `test` の前にも走るので、この 2 つでも効きます。`fmt` は明示的に拒否します。
@@ -405,7 +406,8 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--link PATH` | なし | ホストのオブジェクトか静的ライブラリ。繰り返せる |
 | `-l NAME` | なし | システムライブラリ名。例は `-l sqlite3`。`lib` や拡張子は付けない |
 | `-L DIR` | なし | `-l` の探索ディレクトリ |
-| `--allocator system\|host\|counting\|small` | `system` | `object`、`bitcode`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` と `small` まで。`small` は native の 64-bit のサイズ区分で、実行ファイルにも付けられる |
+| `--allocator system\|host\|counting\|small` | `system` | `object`、`bitcode`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` と `small` まで。`counting` と `small` は実行ファイルにも使えます。`run`・`test` は `counting` だけを受けます |
+| `--allocs` | オフ | `bench` の時間測定後、別の counting 実行器で 1 反復あたりの `alloc_calls`・`alloc_bytes` を報告します（[Bench](../built-in-types-and-modules/bench.md#確保数を測る)） |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
 | `--no-cache` | キャッシュ有効 | `build`・`run`・`script` で、成果物・構文解析・ランタイム object のキャッシュを読まない、書かない。同梱 runtime object も使わずソースからビルドする。`repl` では成果物のキャッシュだけ（`repl` は構文解析の結果のキャッシュを使わない）。ほかのコマンドでは `E2000` |
 | `--no-server` | サーバーに尋ねる | `check` と `build` で、`tsuzuri serve` が動いていても、その要求を出さずにこのプロセスで実行する。出力は変わらない。ほかのコマンドでは `E2000`（`--no-server is only valid with check or build`）。2 回書くと `no-server specified more than once`（[serve](usage.md#serve)） |
@@ -416,7 +418,9 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe
 ```
 
-`--allocator host` は、ホストが定義する `tsuzuri_host_alloc`、`tsuzuri_host_free`、`tsuzuri_host_realloc` を呼びます。WASM ではモジュール `tsuzuri_heap` の `alloc`、`free`、`realloc` として import します。`counting` は `tsuzuri_alloc_stats` で回数を読めます。どちらも `--emit exe`、`wgsl`、`spirv`、`--trap-mode return` とは排他です。`host` は `--wasm-feature threads` とも排他です。
+`--allocator host` は、ホストが定義する `tsuzuri_host_alloc`、`tsuzuri_host_free`、`tsuzuri_host_realloc` を呼びます。WASM ではモジュール `tsuzuri_heap` の `alloc`、`free`、`realloc` として import します。`host` は `--emit exe` と `--wasm-feature threads` とも排他です。`host`・`counting` はカーネル出力と `--trap-mode return` とは排他です。
+
+`counting` の値は従来の `tsuzuri_alloc_stats` と、Tsuzuri の [Alloc](../built-in-types-and-modules/alloc.md) から読めます。`test` は選んだテストが `Alloc` に届くときに自動で counting を連結します。`build`・`run` は明示の `--allocator counting` が必要で、指定なしの到達は `E1018`、`host`・`small` との到達は `E2000` です。
 
 `--allocator small` は、native の 64-bit で 0〜512 バイトの確保を 16 バイト刻みの 32 区分から返し、それより大きい確保は C ライブラリの `malloc` に任せます。実行ファイル（`--emit exe`）、`object`、`llvm`、`header`、`shared`、`bitcode` に付けられます。WASM、`wgsl`、`spirv`、`--trap-mode return`、`--freestanding` とは排他です（いずれも `E2000`）。既定ではありません。設計と制限は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。`run`・`check`・`test` は付けられません（`build` だけです）。
 
@@ -464,6 +468,8 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | C ランタイムを使うプログラムの `--emit bitcode` で `llvm-link` が動かない | `E2002`: `cannot execute '<llvm-link>': ...; bitcode with the C runtime requires llvm-link matching Clang; set TSUZURI_LLVM_LINK, or put llvm-link next to Clang` |
 | Clang が `-x ir -flto=thin -c` で bitcode を書かない | `E2002`: `'<clang>' did not write LLVM bitcode for --emit bitcode; compiling LLVM IR with -x ir -flto=thin -c must give bitcode, so set TSUZURI_CLANG to a Clang that does` |
 | `--allocator small` が wasm32 / wasm64 | `--allocator small requires a native target; WebAssembly modules keep their own heap` |
+| `--allocator counting` がカーネル出力 | `--allocator counting requires executable, object, shared library, LLVM IR, header, or WebAssembly output` |
+| `--allocs` が `bench` 以外 | `--allocs is only valid with bench` |
 | `--allocator small` が `wgsl` / `spirv` などのカーネル出力 | `--allocator small requires executable, object, shared library, LLVM IR, or header output` |
 | `--backend` を `check`・`bench`・`doc`・`fmt` などに付ける | `--backend applies only to build, run, and test`（終了コード 2） |
 | `--backend` が `llvm`・`fast` でない、または 2 回 | `backend must be 'llvm' or 'fast'`、`backend specified more than once` |
@@ -571,7 +577,7 @@ flowchart TD
 | 未設定、空 | `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は使える core 数（最大 8）。`repl`・`lsp`・`publish` とライブラリ API は 1 |
 | `1` | 呼び出したスレッドだけで実行する |
 | `2` から `32` | その数まで。仕事の量が少ない段は、これより少ないスレッド（1 を含む）で実行する |
-| それ以外（`0`、`33`、`abc`、`1.5`、`-1`、`+4`、空白だけ） | `E2000`（終了コード 2）。`check`・`build`・`run`・`script`・`test`・`bench`・`doc`・`repl`・`lsp` は、ソースを読む前に失敗する。`fmt`・`new`・`toolchain info`・`api-diff` など、検査しないコマンドは値を読まない |
+| それ以外（`0`、`33`、`abc`、`1.5`、`-1`、`+4`、空白だけ） | `E2000`（終了コード 2）。`check`・`build`・`run`・`script`・`test`・`bench`・`doc`・`repl`・`lsp` と `api-diff --effective` は、ソースを読む前に失敗する。`fmt`・`new`・`toolchain info`・既定の `api-diff` など、検査しないコマンドは値を読まない |
 
 数は 10 進の ASCII 数字で書きます。前後の空白と先頭の 0 は許します。
 

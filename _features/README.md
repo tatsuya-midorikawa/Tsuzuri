@@ -5,7 +5,7 @@ Tsuzuri 0.1 の次に実装すべき言語機能・標準ライブラリ・ツ�
 
 - 調査時点: コミット `19d8cdd`（2026-09-23）
 - 状態: `todo`（未着手）／`doing`（実装中）／`done`（完了）／`blocked`（依存待ち・要判断）
-- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。[2026-10-13](#追加チケット2026-10-13) に A18・A19 を、[2026-10-18](#追加チケット2026-10-18) に第3期の 27 件（A20〜A23、B10、C12、D13、D14、E15、F14、F15、G21〜G36。付録 `<ID>-appendix*.md` を伴う）を `todo` として起票しました。現在の状態と配置は以下の各表を参照してください。A17 は Phase 1・2 の実装・検証を終え、2026-10-15 に `done` として `_completed/` へ移動しました。G10 は 2026-10-13 に `done` になりました。第2期の 38 件は、D10・D11・G15・G19 を 2026-10-11 に実装して、すべて `done` になりました。[2026-10-07 に追加](#追加チケット2026-10-07) した D12 と B09 は 2026-10-12 に `done` になりました。
+- 配置: `done` のチケットは [_completed/](_completed/) に移動し、それ以外はこのディレクトリ直下に置きます。起票時点の一覧や件数ではなく、以下の各表を現在の状態と配置の正とします。
 - 優先度: **P0** 他機能の前提・早期に必要、**P1** 標準ライブラリと実用化に必要、**P2** 中期、**P3** 長期
 - 規模: **S** 1〜2 日、**M** 3〜5 日、**L** 1〜3 週、**XL** 1 か月以上（分割前提）
 - 「依存」は着手前に完了が必要なチケット。括弧付きは一部の機能だけが依存する弱い依存です。
@@ -140,7 +140,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A16 | [固定長配列と const ジェネリクス](_completed/A16-fixed-arrays.md) | P2 | XL | A01, D06, (F04) | done |
 | A17 | [暗黙の複製の除去（最終使用の move と所有する scrutinee の match 束縛の move）](_completed/A17-last-use-move.md) | P1 | L | A15 | done |
 | A18 | [引数規約: 読み取りを既定にする（`own`、edition 2027）](_completed/A18-parameter-conventions.md) | P2 | XL | A15, G19, (A17) | done（Phase 1〜4、2026-10-24。[PR48](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/48)、未マージ） |
-| A19 | [純粋関数 `pure def`（副作用のない関数を署名で保証。引数は共有借用か `own`）](A19-pure-functions.md) | P2 | L | D11, A15, B07, F10, C10, (A17) | todo（承認済み） |
+| A19 | [純粋関数 `pure def`（副作用のない関数を署名で保証。引数は共有借用か `own`）](_completed/A19-pure-functions.md) | P2 | L | D11, A15, B07, F10, C10, (A17) | done（全 Phase） |
 | A20 | [効果の要約と検査付き関数属性（`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`）](A20-effect-summary-and-checked-attributes.md) | P1 | XL | (A19), (G22) | todo（承認済み） |
 | A21 | [契約 `@requires`／`@ensures`（off／check／test／prove）](A21-contracts-requires-ensures.md) | P2 | XL | A19, (A20), (G22) | todo（承認済み） |
 | A22 | [edition 2027 の正準形（`..<`／`..=`・接尾辞・借用の表記・旧ラムダ）と移行](A22-edition-2027-canonical-forms.md) | P1 | L | (G22), (G24) | todo（承認済み） |
@@ -234,7 +234,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | F11 | [WASM メモリ上限の設定と拡張](_completed/F11-wasm-memory-limit.md) | P1 | M | – | done |
 | F12 | [境界検査の除去と検査コストの計測](_completed/F12-bounds-check-elimination.md) | P2 | L | – | done |
 | F13 | [アロケーターの差し替え・確保統計・freestanding 出力](_completed/F13-custom-allocators.md) | P2 | L | (F11), (E12), (E14) | done |
-| F14 | [構造的な性能表明（確保数のテスト用 API と `bench` の確保数）](F14-structural-performance-assertions.md) | P1 | L | F13, G18 | todo（承認済み） |
+| F14 | [構造的な性能表明（確保数のテスト用 API と `bench` の確保数）](_completed/F14-structural-performance-assertions.md) | P1 | L | F13, G18 | done（Phase 1・2・3） |
 | F15 | [逐次と同一の結果を保証するデータ並列（`Monoid` の還元・純粋性・提案だけの自動化）](F15-sequential-equivalent-data-parallel.md) | P3 | L | (A19), (G22), (G26) | todo（承認済み） |
 
 ### G. ツール・開発体験
@@ -294,7 +294,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 7. 第2期・表現力と性能 | 所有権モデルの表現力・性能・エコシステムの差を縮める | A15、A12 → A13 → C08、A14、A16、F12、F13、F08、C10、D08、D09、E11、E13、E10、G16、G18、G17、G13 |
 | 8. 第2期・長期 | 研究開発や外部環境の整備を伴う機能 | B08 → E09、F09、F10、C11、D10、D11、G15、G19（すべて完了） |
 | 9. 追加（2026-10-07） | 言語リファレンスの執筆で見つけた不具合を直し、ローカルな再帰を書けるようにする | D12、B09（すべて完了） |
-| 10. 追加（2026-10-13） | 暗黙の複製のコストを減らし、読むだけの引数に `ref` を書かずに済むようにし、副作用のない関数を署名で保証する | A17 → A18（全 Phase 完了・アーカイブ済み、PR48 は未マージ）。A19（`pure def`。承認済み）は A17・A18 から独立 |
+| 10. 追加（2026-10-13） | 暗黙の複製のコストを減らし、読むだけの引数に `ref` を書かずに済むようにし、副作用のない関数を署名で保証する | A17 → A18（全 Phase 承認・実装済み、PR48 は未マージ）。A19（`pure def`。承認済み）は A17・A18 から独立 |
 | 11. 追加（2026-10-18） | AI と人間が少ない暗黙ルールで堅牢かつ高速に書けるようにする（引く: 知識を決定的に渡す／縛る: 性質を署名と検査で固定する／直す: 診断から機械的に直す） | ① G32・D13・C12・F14・G31 → ② G22 → G23・G24・G21 → ③ G26 → G27 → G28 → G30・G29 → ④ A19（既存）→ A20 → A21・E15、A22、A23 → ⑤ G25・G33〜G36・D14・B10・F15。詳細は [追加チケット（2026-10-18）](#追加チケット2026-10-18) |
 
 ## 依存関係図
@@ -507,14 +507,14 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 検討で測った数（`ref` の使用、暗黙の複製の位置、時間）は各チケットの「現状と計測」にあります。
 
 - 棚卸しの道具 `tests/copy_inventory.rs`（`cargo test --locked --test copy_inventory -- --ignored --nocapture`）と、A17 の回帰用の fixture `tests/fixtures/last_use/Main.tz`・suite `last_use`（`tests/features.mjs`。102 件。HEAD で通る）を、起票と同時に足しました。どちらもコンパイラの動作を変えません。
-- 順序: A17（意味を変えない。Phase 1・2 は 2026-10-15 に完了）→ A18（2026-10-23 に全 Phase を承認、2026-10-24 に Phase 1〜4 完了）。A17 は PM07 の Phase 2（[PM07](../_perfs/_completed/PM07-copy-elision.md)）を置き換えます。
+- 順序: A17（意味を変えない。Phase 1・2 は 2026-10-15 に完了）→ A18（意味を変える。要承認）。A17 は PM07 の Phase 2（[PM07](../_perfs/_completed/PM07-copy-elision.md)）を置き換えます。
   A19（`pure def`）は A17・A18 から独立していて、着手の順を問いません（A17 を先に入れると、`pure def` の中のローカル可変のループと `own` の蓄積引数が実用の速さになります）。A18 とは、`pure def` の引数を A19 の規則で補完し、A18 の補完の対象にしないこと（A18 の D11、A19 の D13）と、`own` の前置きの構文を共有すること（A19 が `pure def` の引数だけで先に導入し、A18 が受理する位置を広げる。A19 の D16、A18 の D2・D11）で整合させました。
 
 | チケット | 種別 | 概要 | 承認 |
 | --- | --- | --- | --- |
 | [A17](_completed/A17-last-use-move.md) | 性能・機能 | 値をもう読まない位置では、Copy の配列・リストを複製せず移動する。`for` が 1 つあるだけで関数の全局所が複製になる規則、分岐の両腕で最後に読む形、`match` の Copy の束縛（`Result.Ok bytes` が配列全体を複製する）を、型付き IR の逆向きの生存解析で直す。100 万要素の `[i64]` を `for` で `xs = Array.update_at .. xs` する 2 万回が 4.0 秒（1 回 0.2 ms の全複製）、移動を許した試作では 0.02 秒。意味・構文・診断コードは変えず、`W1006` の位置は実際に複製する位置に保つ。Phase 1・2 を実装・検証済み | 不要（言語の意味・構文・診断コードを変えない） |
 | [A18](_completed/A18-parameter-conventions.md) | 機能 | edition 2027 の読み取り既定、`own`、checked migration、ジェネリック／関数の引数規約、`mut T` と射影代入。`LATEST` と std は 2027、版なし manifest は 2026 を維持する | D1〜D4 と全 Phase を 2026-10-23 に利用者が承認。2026-10-24 に Phase 1〜4 完了・アーカイブ済み。最終実装 head は Rust 1772 件・features 19740 件・CI 14 項目 green、Copilot の未解決指摘なし。文書移動後の結果は [PR48](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/48) で確認する。未マージ |
-| [A19](A19-pure-functions.md) | 機能 | `pure def` で、関数が副作用を持たないことを署名で約束し、コンパイラが検査する。引数は共有借用（`ref` を省略でき、既定）か `own`（人間の指示。Copy で drop が要らない型は、`ref i64` が算術に使えない（`E1003`）ので値のまま）。`own` は、値渡しの record が持つ排他借用が呼び出し側の変数を書き換えられ（HEAD で実測）、`Rc` の `strong_count` や利用者の `Drop` として破棄が観測できるので、型を平たいデータ（参照・`Rc`・利用者の `Drop`・`extern` のハンドル・`Task`・`dyn`・関数を持たない型）に限って純粋性を保つ（D15）。`ref mut` と `mut` は書けない。入出力・OS・ネットワーク・タスク・原子操作・`Rc`・`extern`・`Debug`・利用者の `Drop` を、呼び出す関数を通した間接も含めて拒否する（到達可能性の解析。`Builtin` 246 個のうち 90 個が不純）。`pure` は文脈キーワードで予約語を増やさず、`own` の前置きの構文は `pure def` の引数だけで受理し（D16。通常の `def` へ広げるのは A18 の D2）、診断コードは `E1029` を 1 つ足す。生成 IR は変えない。蓄積引数の再帰は `own` で書ける（HEAD では二乗。A17 の後に線形になる見込みで、未測定。D14） | D1・D2・D4 は人間が承認済み（D1・D2: 2026-10-13 の指示。D1 の `own` は「保証されるのであれば」の条件つきで、根拠は A19 の付録 E の実測。D4: 同日「構文を `pure def` にしてよいです」）。承認待ちはなく、手順 1 から着手できる |
+| [A19](_completed/A19-pure-functions.md) | 機能 | `pure def` と `pure (T -> U)` の契約を有界な到達可能性解析で検証する。引数は共有借用か平たいデータの `own`。generic、純粋 callback、呼び出し段階、class／instance、`@cpu`、遅延 `IO` の構築、閉じた明示 `Task`／`Parallel`、Char・PCG の明示契約に対応する。不明な効果・外部状態・`ref mut`・利用者の `Drop` は `E1029`。通常の `def` の `own` は A18 の契約を維持する。`api-diff --effective` は解決後の契約を比較し、既定の構文比較は変えない。最適化は別途 `memory(none)` を証明できた同一基本ブロックの整数呼び出しの再利用だけで、最初の呼び出しを残す。自動 offload、所有結果の共有、グローバル memo cache は導入しない。速度向上は未計測 | 2026-10-23 の依頼で全 Phase を承認済み。旧 Phase 1 の制約との差は README とチケットに記録 |
 
 ## 追加チケット（2026-10-18）
 
@@ -524,7 +524,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 - 共通の決定は GUIDE の [D-50〜D-58](GUIDE.md#d-50-第3期計画ai堅牢性性能27-チケットの起票) です。**小さいモデルは [GUIDE-LITE.md](GUIDE-LITE.md) と担当のチケットだけを読めば着手できます**（GUIDE のほかの節は、チケットが指定したときだけ読む）。
 - 各チケットは、着手条件・停止条件・実装者向け早見・段ごとの変更表・名前付きのテスト・決定事項と、検証に使った付録（`<ID>-appendix*.md`。試作で確かめた全文のコード・fixture・期待値）を持ちます。多くは作業ツリーの複製で試作して設計を実測しました（G22 は既存の 1,490 件のテストが通り、D13 は 18 件、A21 は z3 との差分 3,312 件が一致、G29 は公式の MCP の schema で検証）。
 - **全 Phase を設計しました。着手する Phase は人間が指示します（指示がなければ Phase 1 だけ）。** Phase は順に積めて、それぞれ独立に実装・検証・マージできます。
-- 承認: 人間の包括許可（2026-10-18）で、各チケットの決定事項はすべて承認済みです。この時点では A18 の D1〜D4 は含まず、その後 2026-10-23 に全 Phase とともに独立に承認され、2026-10-24 に完了しました。A22 は A18 に依存せず、edition `2027` の足場だけを共有します。
+- 承認: 人間の包括許可（2026-10-18）で、各チケットの決定事項はすべて承認済みです。**A18 の D1〜D4 は含みません**（A18 は独立に判断します。A22 は A18 に依存せず、edition `2027` の足場だけを共有し、先に実装した方が足します）。
 - 守った方針: 「採用しない改善」（GC・例外・`unsafe`・境界検査の無効化・暗黙の fast-math）は変えない。新しい予約語・crate・`unsafe`・既定の WASM の import を足さない。共有 CI に速度の合否の閾値を置かない。native と WASM の `-O0`／`-O3` を保つ。
 
 実装の推奨順（依存を満たす範囲で並行してよい）: ① G32・D13・C12・F14・G31（基準値）→ ② G22 → G23・G24・G21 → ③ G26 → G27 → G28 → G30・G29 → ④ A19（既存）→ A20 → A21・E15、A22、A23 → ⑤ G25・G33〜G36・D14・B10・F15。
@@ -552,7 +552,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | [D13](_completed/D13-interpolation-hole-temporaries.md) | 不具合（修正済み） | 補間の穴を型付けした場所・参照・一時値に分類し、`$"len = {s.length}"`・文字列の添字・呼び出し結果の射影を受理する。明示の不正な借用と所有権の拒否規則は維持し、既存コーパス 114 件の IR は byte 一致 | done（2026-10-23） |
 | [D14](D14-text-class.md) | 標準ライブラリ | 型クラス `Text`（21 メソッド）を `String`／`Utf8String` の instance にして、同名の 20 関数を 1 つの名前で書けるようにする。ジェネリックな関数が両方の型を受けられ、単相化で直接呼び出しになる（ゼロコスト）。opt-in の `RegexText` も足す。既存の `String.*`・`Utf8String.*` は非推奨にしない | 承認済み |
 | [E15](E15-trust-boundary-and-capabilities.md) | 信頼 | `extern` の信頼を人が表明する `@trusted`（`E1037`・`W1010`・`--warn untrusted-extern`）、依存パッケージの権限を `Tsuzuri.toml` の `[capabilities]` で制限して検査する（`E1036`。語彙は `stdio`・`fs`・`env`・`time`・`random`・`process`・`net`・`gpu`・`ffi`）、`tsuzuri audit`。宣言がなければ何も変わらない（opt-in） | 承認済み |
-| [F14](F14-structural-performance-assertions.md) | 性能の保証 | 確保数をテストで確かめる `Alloc`（`snapshot`・`since`・`measure`）、`tsuzuri test` の自動の counting heap、`tsuzuri bench --allocs`、std の確保の契約 42 件。時間でなく構造（確保しない・償却で対数）を表明し、共有 CI に速度の閾値を置かない | 承認済み |
+| [F14](_completed/F14-structural-performance-assertions.md) | 性能の保証 | 確保数をテストで確かめる `Alloc`（`snapshot`・`since`・`measure`）、`tsuzuri test` の自動の counting heap、`tsuzuri bench --allocs`、std の確保の契約 42 件。時間でなく構造（確保しない・償却で対数）を表明し、共有 CI に速度の閾値を置かない。**Phase 1・2・3 完了** | 承認済み |
 | [F15](F15-sequential-equivalent-data-parallel.md) | 性能・安全 | 逐次と同じ結果を保証するデータ並列: 型クラス `Monoid` による還元（浮動小数点の instance は `E1039`）、逐次との等価のテスト、並列化できる箇所を**提案するだけ**の `--report parallel`。黙った自動並列化は採らない | 承認済み |
 | [G33](G33-spec-rule-ids-conformance.md) | 仕様 | 仕様の規則に ID（`OWN-012` の形、15 領域）を付け、規則・文書のマーカー・適合性テストの対応を `scripts/check-spec.mjs` で検査する。適合性スイートは規則ごとのプログラムと期待（`spec/`・`tests/conformance/`）。OWN から始め、全 228 規則を Phase で足す | 承認済み |
 | [G34](G34-doc-tests.md) | 仕様・文書 | `///` の中の `tsuzuri` のフェンスを実行する `tsuzuri test --doc`（記法の誤りは `E2011`）と、例が 1 つもない std の公開関数への例の追加（Phase 3） | 承認済み |

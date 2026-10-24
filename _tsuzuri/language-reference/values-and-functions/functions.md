@@ -127,6 +127,157 @@ answer() + bonus ()
 add (base + 1) (step * 2)
 ```
 
+## 純粋関数（`pure def`）
+
+`pure def` は、外部への副作用がなく、引数の値だけで結果が決まることを検査する関数です。
+全 edition で使えます。`pure` は `def` の直前、instance メソッドの `fn` の前、純粋な関数型の前で読む文脈キーワードなので、変数名や関数名にも使えます。
+`private pure def`、`export pure def`、`pure def rec ... and ...` も書けます。
+
+```tsuzuri run=60
+pure def total :: [i64] -> i64 = \values -> Array.sum values
+let values = [10, 20]
+total values + values[0] + values[1]
+```
+
+無印の解放が必要な引数は共有借用です。上の `[i64]` は `ref [i64]` と同じで、
+呼び出し後も元の値を使えます。数値、`bool`、`unit`、解放不要な Copy record などは値渡しのままです。
+明示の `ref T` はそのままです。引数を書き換える `ref mut` と可変束縛引数は使えません。
+本体の局所変数の変更、配列の生成や複製は許されます。
+借用した値そのものを返すには所有権がないので、文字列は `clone_string`、
+配列は `Array.copy`、リストは `List.copy` で明示的に複製します。
+
+所有権が必要な引数には `own T` を書きます。
+
+```tsuzuri run=6
+pure def shout :: own string -> string = \text -> $"{text}!"
+(shout "hello").length
+```
+
+`own` でも通常の所有権規則を使います。消費した非 Copy の `string` は再使用できず、
+Copy コレクションは必要なら複製されます。`own` の型は、数値・文字列・コレクションと、
+それらからなる record／union／tuple などの**平たいデータ**に限ります。
+参照、`Rc`／`Arc`、外部ハンドル、関数、`dyn`、`Task`、利用者の `Drop` を、
+入れ子のフィールドや要素に持つ `own` も拒否します。
+参照先を書き換えたり、参照カウントや `Drop` の実行を呼び出し側から観測できたりするためです。
+`ref Rc<T>` のように借用する署名は可能ですが、参照カウントを調べる操作などは本体で使えません。
+排他参照を field に持つ record も共有借用して読めます。ただし、この共有 view を通した書き換えや
+排他的な再借用は通常の所有権検査で `E1014` です。
+
+本体と、通常の `def` を含めてそこから到達する関数・コールバックを検査します。
+関数を呼ばずに残しておいても、宣言した `pure def` は検査されます。
+
+| 禁止する効果 | 例 |
+| --- | --- |
+| 外部世界との入出力 | `IO` の実行、ファイル、OS、ネットワーク、extern の呼び出し |
+| デバッグ出力・確保カウンタ・時計・実行時の乱数 | `Debug.print`、`Alloc.snapshot`／`Alloc.since`／`Alloc.measure` によるカウンタの観測、ベンチの時計、OS の乱数。明示的な seed の `Random.pcg` は許可 |
+| 共有可変状態 | `Atomic`、`Mutex`、`Channel`、`Rc`／`Arc` の操作 |
+| 不透明なタスク・非同期実行器 | 入力から受け取る Task、非同期実行器の操作 |
+| GPU・動的ディスパッチ | `Gpu` の操作、`dyn` の構築と呼び出し |
+| 利用者の破棄処理 | 利用者の `Drop` を持つ値の保持・破棄 |
+
+署名や本体が規則に違反すると `E1029`、到達する関数が 4,096 個または式が 2,097,152 個を超えると `E1017` です。
+
+### ジェネリックな純粋関数
+
+型変数と型クラスの制約を使えます。無印の型変数の引数は共有借用で、`own 'a` は所有値です。
+未使用の generic な本体も検査し、特殊化のたびに純粋性と `own` の平たいデータの条件を確かめます。
+型変数だから未知の副作用を許すわけではありません。
+
+```tsuzuri run=42
+pure def identity :: own 'a -> 'a = \value -> value
+identity 42
+```
+
+`@cpu` を付けた純粋関数も使え、すべての版が同じ純粋性の契約を持ちます。
+class のメソッドに `pure def` と書くと、既定の実装とすべての instance にその義務がかかります。
+instance のメソッドだけに `pure fn name ...` と書くこともできます。instance の外の単独の `pure fn` は受け付けません。
+これによって未知の `dyn` dispatch が許可されるわけではありません。
+
+### 純粋な関数型と呼び出しの段階
+
+`pure (T -> U)` は、その関数値の呼び出しが純粋であるという型です。通常の矢印型と物理的な引数規約は同じです。
+たとえば `pure def size :: string -> i64` の実効型は `pure (ref string -> i64)` であり、`pure (string -> i64)` とは違います。
+矢印型の中には `own` を書きません。純粋な関数値を通常の関数値へ弱めることはできます。
+逆向きは、閉じた関数や lambda の本体を検査できる場合だけです。不透明な通常の callback を純粋と仮定しません。
+未使用の generic 関数が `pure (T -> U)` を返す場合も、返る本体と捕捉した閉じた callback の既知の効果を検査します。
+作る関数が通常の `def` であっても、返る純粋な callback に `Debug.print` などがあれば `E1029` です。
+純粋な局所再帰は許可します。一方、通常の戻り callback にまで純粋性を要求したり、通常の factory の途中評価を純粋とみなしたりはしません。
+
+```tsuzuri run=42
+pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \callback value -> callback value
+pure def increment :: i64 -> i64 = \value -> value + 1
+apply increment 41
+```
+
+関数を作る段階と、返った関数を呼ぶ段階は別です。次の `pure` が保証するのは `factory` の実行だけで、
+戻り値の通常の関数型にまで保証を広げません。`pure def f :: A -> B -> C` は両引数の適用までを保証しますが、
+`pure def f :: A -> (B -> C)` は最初の段階だけです。これは class メソッドの署名でも同じです。
+純粋な実装は、宣言した段階の引数をすべて束縛します。たとえば `A -> B -> C` に対し、
+`A` だけを束縛して block から残りの関数を返す形は、宣言と段階が違うため `E1029` です。
+コンパイラが残りの引数を補って途中の計算やトラップを後回しにすることはありません。
+途中で計算して関数を返すときは、factory の戻り段階を明示します。通常の `def` の途中評価は変わりません。
+
+```tsuzuri run=42
+pure def factory :: i64 -> (i64 -> i64) = \offset -> { \value -> offset + value }
+let callback = factory 40
+callback 2
+```
+
+戻った関数の実行も保証したい場合は、結果に `pure (B -> C)` を書きます。
+class の factory の instance／既定実装でも、戻る lambda はメソッド自身の引数に取り込みません。
+
+```tsuzuri run=42
+pure def factory :: i64 -> pure (i64 -> i64) = \offset ->
+    let increment = offset + 1
+    \value -> increment + value
+pure def answer :: i64 = factory 20 21
+answer()
+```
+
+### IO アクションの構築
+
+標準の `IO` の遅延アクションは、実行しなければ構築できます。`IO.map` などへ渡す callback の本体は後で実行されるので、
+構築時の効果には含めません。一方、捕捉値を作るときの入出力や利用者の `Drop` などは、通常どおり検査します。
+同名の利用者 record を特別扱いするものではありません。`IO.Run` や不透明な thunk の実行は許可しません。
+
+```tsuzuri run=42
+pure def deferred :: i64 -> IO<i64> = \n ->
+    IO.map (\value -> { Debug.print (ref value); value }) (IO.pure n)
+let _action = deferred 42
+42
+```
+
+### 明示した並行処理
+
+本体で作る閉じた Task と、明示した `Parallel.*` は使えます。呼び出し側から不透明な
+Task・通常の関数・dyn を受け取らず、参照するコールバック全体の純粋性が検査される場合に限ります。
+利用者の共有可変状態を許すわけではありません。自動並列化は行わず、
+既存の並行 API の待機・トラップの意味はそのままです。失敗の順序や停止が逐次実行と同じだとは保証しません。
+
+```tsuzuri run=42
+pure def answer :: i64 -> i64 = \n ->
+    let job = task { n + 1 }
+    Task.run job
+answer 41
+```
+
+### 保証と局所的な最適化
+
+`pure` は「必ず停止する」「トラップしない」という意味ではありません。
+添字範囲外や 0 除算は通常どおりトラップし、純粋という理由だけで未使用の呼び出しを消しません。
+`pure` だけから LLVM の `memory(none)`、停止性、投機実行の属性を導くこともありません。
+
+局所的な再利用は、**明示の純粋契約**と、独立した既存の **`memory(none)` の証明**が両方ある整数 scalar 関数だけです。
+同じ基本ブロックで、同じ引数ですでに実行した 2 回目以降の呼び出しを再利用します。最初の呼び出しは残し、
+分岐をまたいだ移動や投機実行はしません。引数も結果も値の整数に限り、参照・浮動小数点・所有コレクションは対象外です。
+関数の外へ逃げない整数の局所スロットは、同じブロック内の書き込みを追跡します。借用されるスロット、atomic、volatile は使いません。
+巨大・未対応の IR では再利用を省略するだけで、意味は変わりません。永続的な memo cache は作らず、所有する結果は独立したままです。
+
+[Char の ASCII 関数](../built-in-types-and-modules/char.md)の 6 関数と、[seed を明示する PCG](../built-in-types-and-modules/random.md#種から再現する) の 3 関数は、
+標準 API としても `pure` を宣言しています。既存の通常の callback を取る API を、純粋な callback 専用へ変えたわけではありません。
+GPU の効果検査も純粋性の問い合わせを共有しますが、`pure` は GPU 対応の保証ではなく、既存の型・演算・backend の制限は残ります。
+`const def` は定数初期化式からの評価を許す別の契約であり、`pure` と同時には書けません。
+
 ## 宣言と実装を分ける
 
 型だけを `def` で書き、実装を同じファイルの `fn` または `let` に分ける書き方も受理されます。隣接している必要はありません。`export` は `def` 側に付けます。

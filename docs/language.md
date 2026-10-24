@@ -123,6 +123,7 @@ native と `--wasm-feature simd128` の WebAssembly は Latin-1 の走査・比�
   予約語の集合は、ソースを読む言語版（edition）で決まります。edition `2026` の予約語が上の一覧です。`Tsuzuri.toml` の `[package]` の `edition` でパッケージごとに選び、省略すると `2026`、マニフェストのないプロジェクトと標準ライブラリは最新の edition です（[安定性と互換性の方針](stability.md#edition)）。
   `of` は `union` の case 宣言の内部でのみ予約される文脈キーワードであり、それ以外の場所では通常の識別子として扱われます。
   `where` も関数ガードの後置束縛を開始する位置でのみ認識される文脈キーワードです。`namespace` および `using` はファイル先頭の宣言位置でのみ認識される文脈キーワードです。
+  `pure` は `def` の直前、`own` は引数型全体の前でだけ印として読み、それ以外では識別子に使えます。
   コロン記号の連続 `::` は、`def` の宣言名と型シグネチャの区切り、リストのコンス演算子 `head :: tail`、および名前空間・モジュールのパス（例: `Sample::Features::Shape.area`）として使用されます。
   識別子同士を空白を挟まずに連結し、末尾の要素が大文字で始まる（モジュールを指す）場合、または行頭の `namespace`／`using` 宣言内に現れる `::` がパス区切り文字として認識されます。パターンマッチにおける `x::xs` はリストのコンスとして解釈されます。
   なお、`Set.union` と `Async.yield` のため、`union` と `yield` はモジュール関数の宣言名およびドットに後続するメンバー名としても使用可能です（変数名、型名、モジュール名としては使用できません）。単独の `yield` はコンピュテーション式の文のままです。
@@ -166,13 +167,13 @@ def answer :: i64 = 42
 
 ### 公開 API の差分（api-diff）
 
-`tsuzuri api-diff <old> <new> [--json]` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、変更を 1 行ずつ標準出力へ出します（G19 Phase 2）。`<old>` と `<new>` はそれぞれディレクトリか、そのルートの中のファイルで、`Main.tz` は要りません。引数が 2 つでない場合、`--json` を重複して指定した場合、ほかのオプションを渡した場合は `E2000` で、終了コード 2 です。
+`tsuzuri api-diff <old> <new> [--json] [--effective]` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、変更を 1 行ずつ標準出力へ出します（G19 Phase 2）。`<old>` と `<new>` はそれぞれディレクトリか、そのルートの中のファイルで、`Main.tz` は要りません。引数が 2 つでない場合、`--json`／`--effective` を重複して指定した場合、ほかのオプションを渡した場合は `E2000` で、終了コード 2 です。フラグは入力の前後に置け、`--` 以降はパスです。
 比べるのは、ルートのパッケージ（マニフェストのない入力ではすべてのソース）の、`private` でない `def`、`extern def`、`extern type`、`record`、`union`、`type`、`const`、すべての `class`、`instance`、ビルダーの別名（`@alias`）です。`tsuzuri doc` と同じ宣言の走査で署名の文字列を作ります。型検査はせず、git と registry の依存は取得せず（`Tsuzuri.lock` も読まず）、依存パッケージの宣言は API に入れません。`test`、`bench`、本体、トップレベルの式は見ません。構文エラーは診断として出し、終了コード 1 です。
 宣言は `名前空間::モジュール.宣言` で見分けます。record の field、union の case、class のメソッドは `.名前` を足し、`instance` は宣言したモジュールで修飾した `Module.Class<Type>`、アクティブパターンは `(|Even|Odd|)` が名前です。署名の型変数・region・宣言した長さパラメーター（`const N: i64`）の名前は最初に出てきた順の連番に置き換えて比べるので、名前の違い（`'a` と `'t`、`N` と `M`）は変更になりません。制約の順序と、定義のラムダが受け取る引数の個数も違いにしません。名前空間（パッケージの `namespace` を含む）やモジュール名を変えると、すべての宣言が削除と追加になり、`changed namespace` の行が 1 行足されます。
 breaking は、公開宣言の削除、署名（型、制約、region、型パラメーター、`export`）の変更、record の field の追加・削除・変更・並べ替え（構築式が壊れる）、union の case の追加・削除・変更・並べ替え（網羅的な `match` が壊れる）、既定の実装のない class メソッドの追加、メソッドの削除・署名の変更・既定の実装の削除、superclass の変更、`deriving` と `instance` の削除です。non-breaking は、宣言、`export`、`instance`、`deriving` の追加、既定の実装のある class メソッドの追加、説明の変更、`@deprecated` の追加と削除です。
 出力は、テキストなら `breaking: removed def Main.g` のように `<severity>: <action> <kind> <name>` で始まる行（後ろに宣言の署名が続き、breaking が先で、それぞれ名前順）、`summary: N breaking, M non-breaking`、省略や版の `note:` 行です。`--json` なら JSON Lines で、変更の行のキーは `type`（`change`）、`severity`、`action`、`kind`、`name`、`old`、`new`、`note`、最後の行のキーは `type`（`summary`）、`breaking`、`non_breaking`、`omitted`、`old_version`、`new_version`、`compatible_versions` です。キーは増えることはあっても、消えたり名前が変わったりしません。出す変更は 1000 件までで（breaking を先に）、超えた分は `omitted` と `note: N more changes not shown` に入ります。同じ入力からは同じ出力が出ます。
 終了コードは、互換性のない変更がなければ 0、あれば 1 です。入力が読めない場合、構文エラー、シンボリックリンクの入力（`E1011`）、4 MiB を超えるソース（`E0003`）、ソースの数や依存グラフの上限（`E1017`）は、診断を標準エラー出力へ出して 1 です。両方のマニフェストの `version` が `MAJOR.MINOR.PATCH` で、新しい版が古い版の互換の範囲（1.0.0 以降は同じ `MAJOR`、それより前は同じ `0.MINOR`）に入っているのに breaking な変更があれば、その注記を出します。
-見つけられるのは宣言の署名の変更だけです。関数の本体の挙動、性能、`const` の値の変更は見つけられず、型エイリアスの展開は解決しないので、エイリアスの置き換えは変更として出ます。`tsuzuri publish` は `api-diff` を呼ばないので、公開の前に、前の版のチェックアウトと比べます（[安定性と互換性の方針](stability.md#公開-api-の差分)）。
+既定は上記の構文比較です。`--effective` は `doc` と同じ依存の読み込みで両方を型検査し、alias 解決後の型、実際の値渡し／共有借用／可変借用、型・高階型・長さパラメーター、制約、入れ子の純粋関数型、型検査済みの region の対応を比べます。関数の class 制約は明示節だけでなく inline／alias 経由の型検査済みの要求を含め、既存の instance／superclass 解決で呼び出し側に残る要求を集合として比較します。表記・順序・重複と、すでに満たされた具体型の要求では差分を出しません。モジュール関数は推論・呼び出し先から伝播した必要な署名も比較し、具体型のモジュールで解決済みの要求を除きます。公開 alias 自体の inline 制約も、ローカルな使用箇所に依存せず比較します。所有権による `Copy` 推論と class 要求の固定点伝播が完了した後、generic 特殊化の直前の要求を使います。依存は取得せず、依存の宣言は API に入れません。依存や型検査のエラーは終了コード 1 で、構文比較へ戻したり部分的な結果を出したりしません。`pure` の削除や保証する呼び出し段階の変更は breaking、引数規約も特殊化の証明義務も変わらない関数への `pure` の追加は non-breaking です。`--effective` では generic template への追加を、特殊化ごとの純粋性・所有条件の義務が増すため保守的に breaking とします。たとえば `own 'a` の署名が同じでも、`Rc` を受け取れていた呼び出しは plain-data の条件で拒否されます。非公開 helper の保留義務も、型引数の対応に沿って公開 wrapper へ伝播します。通常の generic 関数内の明示的な純粋 callback の型・capture・実行する本体の型に由来する保留義務も含みます。その場で実行する task・並列 callback・閉じたローカル callable も既存の効果解析と同じ段階で扱い、返す通常 callback の後の実行は純粋な factory の保証に含めません。複数段や相互再帰でも同様で、具体化して充足した義務を無関係な型変数へ転嫁せず、型変数の改名だけでは変更にしません。class の既定実装と instance のメソッドの残余義務も、型引数を代入しメソッド名で整列して比較します。既定実装の追加自体は non-breaking のままです。`--effective` は未使用 template 内の完全に具体化した generic 参照、静的に選ばれる class／演算子の呼び出し、具体 instance のメソッドと既定実装も実際に特殊化して検査します。途中の通常 helper も含め、所有条件や選択した class メソッドの効果が不正なら解析エラーを返します。class メソッドへの追加は既存 instance の義務を増すため breaking です。どちらのモードも本体の挙動、性能、`const` の値の互換性を証明しません。alias の置き換えをそのまま変更とするのは既定の構文比較だけです。`tsuzuri publish` は `api-diff` を呼ばないので、公開の前に、前の版のチェックアウトと比べます（[安定性と互換性の方針](stability.md#公開-api-の差分)）。
 
 ### 1 ファイル = 1 モジュール
 
@@ -632,6 +633,37 @@ Rust 互換の記号記法においても、空白の後に被演算子を隣接
 互換用構文として `fn f(x: i32) -> i32 { x }` や `f(x)`、`fn(i32) -> i32` といった記法も受理されます。旧形式の複数引数呼び出しも内部的にカリー化され、`f(x, y)` は `f x y` と同一の関数適用として処理されます。
 なお旧構文の `fn name :: ...` はエラーとなり、正規の `def name :: ...` への移行が求められます。
 引数を取らない関数値（明示的に呼び出す thunk）の型は `fn() -> i32` として表現されます。
+
+### 純粋関数（`pure def`）
+
+`pure def` は全 edition で使える純粋性の表明です。通常の `def`、クロージャ、特殊化したコールバックも含め、
+到達する処理に外部入出力、時計、共有可変状態、非同期実行器、GPU、dyn、利用者の Drop がないことを検査します。
+`ref mut` 引数と可変引数束縛は `E1029` です。無印の引数は共有借用（解放不要な Copy 値は値渡し）、
+明示の `own T` は所有値です。`own` は再帰的に平たいデータだけを受け取り、参照・Rc／Arc・ハンドル・関数・dyn・Task・利用者の Drop を含みません。
+排他参照を持つ record も共有 view では読み取り専用です。その view を通した書き換え・排他的な再借用は `E1014` です。
+型変数・制約を使え、未使用の generic な本体と、各特殊化の純粋性・所有値の条件を検査します。
+`pure (T -> U)` は関数値の呼び出し契約で、物理的な引数規約は通常の矢印型と同じです。
+純粋な値を通常の関数型へ弱めることはできますが、未知の通常 callback を純粋と仮定しません。
+未使用の generic 関数が明示的に純粋な callback を返す場合も、その本体・閉じた捕捉先の既知の効果を検査します。
+作る側が通常の `def` でもこの義務は変わらず、通常の戻り callback には保証を広げません。
+`pure def f :: A -> (B -> C)` は factory の段階だけを保証し、戻る関数の実行は保証しません。
+入れ子の純粋な結果の境界と、class メソッドの括弧で区切った戻り段階も保持します。
+純粋な実装は宣言した段階の全引数を束縛し、block から残りの関数を返して段階を短縮する形は `E1029` です。
+途中の計算やトラップを後ろへ動かす eta 展開はしません。途中で計算する factory は戻り段階を括弧で宣言し、
+返る関数も純粋なら `A -> pure (B -> C)` とします。通常の `def` の途中評価は変えません。
+型を推論する `#関数` と明示する `(#関数: 型)` のどちらでも純粋な対象は通常の要求へ弱められますが、逆向きは許しません。
+class の純粋なメソッドは既定実装と全 instance を検査し、instance の `pure fn`、`@cpu` の各版も検査します。
+標準 `IO` の遅延アクションの構築は許しますが、捕捉値の即時効果と解放は検査し、`IO.Run` や不透明な thunk の実行は禁止です。
+本体の局所的変更・確保・明示的複製は許されます。閉じた Task と明示した Parallel は callback 全体を検査して許可します。
+不透明な通常の関数・Task・dyn、利用者の共有状態は許可しません。実行器の内部状態だけが例外です。
+自動並列化、逐次との失敗順序・停止の同一性は保証しません。
+`pure` 自体は LLVM のメモリ属性・停止性・無トラップ・投機実行の保証ではありません。
+整数の値引数と整数結果を持つ関数に、独立した既存の `memory(none)` の証明もある場合だけ、
+同じ基本ブロック内の同一引数の後続呼び出しを再利用します。最初の呼び出し、トラップ、評価順序は保ち、
+参照・浮動小数点・所有結果の共有、永続的 memo cache、分岐をまたぐ移動は行いません。
+標準 Char の ASCII 6 関数と Random の明示 seed の PCG 3 関数にも明示の純粋契約があります。
+GPU の効果検査は同じ問い合わせを共有しますが、backend 固有の制限と利用可能性の検査は省略しません。
+具体例と制限は[純粋関数](../_tsuzuri/language-reference/values-and-functions/functions.md#純粋関数pure-def)にあります。
 
 ### 匿名関数と捕捉
 
@@ -1172,6 +1204,7 @@ def main :: Array<string> -> i32 = \args ->
 `IO<T>` は、外部世界に対する副作用を伴う入出力処理を表現するための不透明な遅延アクション型です。`IO.pure`、`IO.bind`、`IO.map` をはじめとする標準的な操作を提供し、通常の `.tc` コンピュテーション式ビルダーを通じて直感的に合成できます。アクションを合成、生成、または破棄するだけの段階では、実際の I/O 処理は一切実行されません。
 内部的には所有権を持つ通常の `unit -> T` クロージャ関数値として表現されています。内部表現や低水準の組み込み関数は標準ライブラリの IO モジュールからのみ参照可能であり、ユーザーコードに対して生のアクションを実行する `IO.run` や並行 Task への暗黙の変換関数が公開されることはありません。
 既存の `Debug` 出力や `extern` 関数の副作用は言語互換性のために維持されています。`IO` 型は標準入出力および標準 OS API（[OS API](#os-api) 参照）を安全に取り扱うための言語境界であり、プログラム全体の数学的純粋性を保証する完全なエフェクトシステム（effect system）ではありません。
+個別の関数に副作用がないことを表明・検査する場合は[純粋関数](#純粋関数pure-def)を使います。
 
 ```text
 IO {
@@ -1496,8 +1529,10 @@ seed は時刻に依存しない固定値 `11400714819323198485` で、`tsuzuri 
 本体の型は `i64 -> i64`（反復回数を受け取り、準備を除いたその回数分の経過ナノ秒を返す関数）で、違えば本体の位置で `E1003` です。`tsuzuri check`／`build` はベンチ本体も型検査しますが、ベンチ本体とベンチ専用の特殊化は通常の成果物にもテスト実行器にも出力されません。
 標準モジュール `Bench`（名前を書いたプログラムだけが読み込む opt-in モジュール）は `Bench.with_input :: (unit -> 'a) -> (ref 'a -> 'b) -> i64 -> i64`（標本ごとに準備を 1 回呼び、その値を借用で `n` 回 `run` に渡す。準備と値の解放は計測しない）と `Bench.of :: (unit -> 'b) -> i64 -> i64` を提供し、`run` の結果は毎回 `Bench.consume` に渡されます。
 組み込みの `Bench.now()`（`fn() -> i64`、単調時計のナノ秒）は `tsuzuri bench` の実行器だけが定義します。ほかの出力では、`Bench.now` に（直接または他の関数を通して）到達する `export` していない関数は、公開でもほかの部分が使わない限り出力に入りません。トップレベルのコード、`export def`、実行するテスト、`Drop` の実装から到達すると、到達の起点と途中の最後の利用者の関数を示し、その関数の中で時計へ向かう式の位置で `E1018` です。`Bench.consume :: 'a -> unit` は値を move で受け取り、スタックに置いた値のアドレスをメモリを読み書きしうる空のインライン asm（`asm sideeffect "", "r,~{memory}"`）に渡してから通常どおり解放します（Rust の `black_box` と同じ障壁で、返り値・副作用・評価順序は変えません。どの出力でも使えます）。
-`tsuzuri bench <file|directory> [--list] [--filter TEXT] [--index N] [--json] [--samples N] [-O0..-O3] [--target native]` は、ベンチごとに別プロセスで 1 件ずつ（並列にせず、上限 300 秒）、既定 `-O3` で、反復回数を 1 から 1 標本 10 ms（上限 2<sup>30</sup> 回）まで倍にし、予熱の 1 標本を捨てた後、`--samples`（1〜1000、既定 11）個の標本から 1 回あたりの時間の中央値・最小・最大を報告します。`--json` の行は `workload`・`target`・`opt`・`cpu_mode`・`metric`（`wall_time`）・`unit`（`ms`）・`iterations`・`samples`・`median`・`min`・`max` を持ちます。
+`tsuzuri bench <file|directory> [--list] [--filter TEXT] [--index N] [--json] [--samples N] [--allocs] [-O0..-O3] [--target native]` は、ベンチごとに別プロセスで 1 件ずつ（並列にせず、上限 300 秒）、既定 `-O3` で、反復回数を 1 から 1 標本 10 ms（上限 2<sup>30</sup> 回）まで倍にし、予熱の 1 標本を捨てた後、`--samples`（1〜1000、既定 11）個の標本から 1 回あたりの時間の中央値・最小・最大を報告します。`--json` の行は `workload`・`target`・`opt`・`cpu_mode`・`metric`（`wall_time`）・`unit`（`ms`）・`iterations`・`samples`・`median`・`min`・`max` を持ちます。
 速さの合否の閾値はなく、トラップ・時間切れ・負の時間を返したベンチだけが失敗（`E2005`、終了コード 1）です。ネイティブのみで、`--target wasm32`／`wasm64`、ビルド機で動かせない `--target TRIPLE`、不正な `--samples` は `E2000` です。
+
+`--allocs` は時間の実行器を変えず、別の counting 実行器を動かします。予熱の後、1 反復のカウンター増分 A と 2 反復の増分 B を測り、B − A を報告するので `Bench.with_input` の準備と解放が相殺されます。成功した JSON 行だけ `max` の後に `alloc_calls`（確保と再確保の合計）・`alloc_bytes`（要求サイズの累計、再確保は新サイズ全体、ヘッダーを除く）を整数で加えます。text は行末に `, alloc_calls N, alloc_bytes N per iteration` を加えます。指定しない出力と失敗・summary の行は変わりません。計数中の失敗は `allocation run: ...` の `E2005` で、負の差分も拒否します。計数の原子的な更新により、時間用実行器で LLVM が除去した確保も数えます。`--allocs` は `bench` 以外では `E2000`、時間用実行器での `Alloc` は従来どおり `E1018` です。
 
 ## 型とメモリ
 
@@ -4162,7 +4197,7 @@ VS Code 拡張も同じ 5 環境だけです。起動時とツールチェーン
 
 `tsuzuri build` の `--allocator system|host|counting|small` は、Tsuzuri が管理するすべてのヒープ確保（`@tz.alloc`／`@tz.free`／`@tz.realloc`。文字列・配列・Vec・関数値の環境・Task・dyn 値・`tsuzuri_alloc` で確保する所有バッファを含む）の行き先を選びます。
 `system`（既定）はネイティブで C ライブラリの `malloc`／`realloc`／`free`、WASM でモジュール内のヒープ（容量別のリストと小さなブロックのキャッシュ、終端のブロックのその場の拡張）で、指定しない場合と出力が一致します。
-`host` と `counting` は、ホストがリンクまたはインスタンス化する出力（`--emit object`、`llvm`、`header`、WASM）だけで使え、`--emit exe`・`wgsl`・`wgsl-relaxed`・`spirv`・`spirv-relaxed` と `--trap-mode return` との併用は `E2000` です。`build` 以外のコマンドは既定の allocator だけを使います。
+`host` はホストがリンクまたはインスタンス化する出力（`--emit object`、`llvm`、`header`、WASM）で使い、実行ファイルとは併用できません。`counting` は実行ファイルと共有ライブラリにも使えます。どちらもカーネル出力（`wgsl`・`wgsl-relaxed`・`spirv`・`spirv-relaxed`）と `--trap-mode return` との併用は `E2000` です。`run`・`test` も `--allocator counting` だけを受け、ほかの値・コマンドでは `--allocator is only valid with build` の `E2000` です。
 
 `--allocator host` の出力は、ホストがリンク時に定義する次の 3 関数を呼びます（`--emit header --allocator host` のヘッダーの `extern "C"` 区間に入ります）。
 
@@ -4190,6 +4225,14 @@ typedef struct {
 } tsuzuri_allocation_stats;
 void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 ```
+
+`Alloc` は opt-in の標準モジュールで、`Stats { allocs: i64, reallocs: i64, frees: i64, bytes: i64 }`、`snapshot :: unit -> Stats`、`since :: Stats -> Stats`、`measure :: (unit -> 'a) -> Stats * 'a` を提供します。
+`snapshot` は累計、`since` は以前の snapshot との差、`measure` は callback 1 回分の `(差分, 結果)` です。読み取り自体は確保せず、窓は入れ子にできます。`since` の対象 `Stats` は最後の引数です。
+確保は `allocs`、生きたブロックの正のサイズへの再確保は `reallocs`、解放は `frees` を増やします。null からの再確保は確保、サイズ 0 への再確保は解放、null の解放は無視します。`bytes` は確保サイズと再確保の新サイズ全体の累計で、16-byte ヘッダーを含みません。上記のホスト ABI の 32 バイト・4 フィールドは変わりません。
+カウンターはプロセス全体の原子的な 64-bit 符号なし累計を `i64` として読みます。単一スレッドで同じ処理なら決定的ですが、Task などの他スレッドも含み、複数フィールドの同時 snapshot ではありません。
+この観測は確保効果ではなくデバッグ効果であり、`pure def` から `snapshot`・`since`・`measure` を呼ぶと `E1029`（`reads allocation counters`）です。読み取り自体は確保しません。
+選んだテストが `Alloc` に到達するときだけ counting heap を自動連結します。普通のコード生成と `run` は明示の `--allocator counting` が必要で、なし・`system` なら `E1018`、`host`・`small` なら `E2000` です。公開の補助関数は、export や入口などから到達しなければ根から除きます。`check`・`doc`・`lsp` は型検査だけです。std の外から `Alloc.__counter` を呼ぶと `E1022` です。
+`measure` の捕捉した所有値は一意でないので、消費して更新する操作は snapshot/since で測ります。詳細と native/wasm32 × `-O0`/`-O3` の 42 契約は [Alloc](../_tsuzuri/language-reference/built-in-types-and-modules/alloc.md) にあります。
 
 `--allocator small` は native の 64-bit の target で使うサイズ区分の allocator です（PM05。既定ではありません）。実行ファイル（`--emit exe`）・`object`・`llvm`・`header`・`shared` に付けられ、WASM（`E2000`: `--allocator small requires a native target; WebAssembly modules keep their own heap`）・`wgsl`・`spirv`・`--trap-mode return`・`--freestanding` とは併用できません。
 0〜512 バイトの確保を、16 バイト刻みの 32 区分（16、32、……、512 バイトのブロック）から返します。それより大きい確保と、区分に属さないポインターは `system` と同じ C ライブラリの `malloc`・`realloc`・`free` です。ブロックにヘッダーはなく、戻り値は 16 バイト境界で、`tsuzuri_alloc`・`tsuzuri_free` の契約は変わりません。ホストへ返した所有バッファは、これまでどおり `tsuzuri_free` で解放します（`small` のブロックを C ライブラリの `free` へ渡すと壊れます）。
@@ -4265,6 +4308,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1024` | 型宣言における型パラメータ・長さパラメーター（`const N: i64`）の重複・未使用・未宣言、union／case／型エイリアスの大文字始まり規則違反、同一 union 内でのバリアント名重複、型エイリアスの循環参照・型引数の個数不一致 |
 | `E1027` | 条件付きインスタンス、スーパークラス、デフォルトメソッドにおけるトレイト制約の不整合 |
 | `E1028` | `dyn` 型にできない型クラス（メソッドがない、第 1 引数以外にクラスの型が現れる、高階型クラス、印のない `Copy`／`Send` スーパークラスなど。理由をメッセージに示す） |
+| `E1029` | `pure def` の署名・到達する処理・`own` の平たいデータの規則に対する違反 |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |

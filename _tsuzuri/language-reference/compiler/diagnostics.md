@@ -157,6 +157,7 @@ flowchart TD
 | `E1026` | コンパイル時定数と `const def` のトラップ、循環、ステップ上限、`const def` の署名（値型でない引数や結果）と本体（使えない式）の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `E1027` | 条件付きインスタンスやスーパークラスの制約 |
 | `E1028` | `dyn` にできない型クラス。理由はメッセージに入る |
+| `E1029` | 純粋な宣言・関数値・class／instance の契約、または到達する処理の純粋性違反。宣言した呼び出し段階の引数を実装が途中までしか束縛しない場合も含む。`own` に参照・共有状態・利用者の `Drop` などを含む型を使った場合や、generic の特殊化で条件を満たさない場合も含む（[純粋関数](../values-and-functions/functions.md#純粋関数pure-def)） |
 | `E2000` | 引数（`tsuzuri api-diff` の入力が 2 つでない場合を含む）、拡張子、組み合わせ、`--target` の名前が一覧にないこと（32-bit と対応する 5 環境以外を含む）、ビルド機で動かせない target の `run`・`test` に `TSUZURI_RUNNER` がないこと、その target の `test --coverage`・`test -g`・`bench`（[対応プラットフォーム](platforms.md#診断)）、`--allocator small` と WASM の target・`--trap-mode return`・`--freestanding` の組み合わせ（native の 64-bit のサイズ区分 allocator です）、`--wasm-feature net` の条件の不備（wasm32 の object・LLVM IR・WASM・bindings-js でない、`jspi` がない、threads や WASI との併用）、`net` なしの既定 wasm32 で OS API や `Net` のソケットに到達したビルド、`Async.block_on` なしで `Net` の非同期操作（`connect_async` など）に到達した native のビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ、`--freestanding` での `Mutex` と `Channel`（タスクのランタイムが要ります）、`--wasm-feature webgpu` の対象外の出力や threads・`--wasm-host`・JavaScript バインディングとの組み合わせ、`--wasm-feature tail-call` の対象外の出力（wasm32 と wasm64 の object・LLVM IR・WASM 以外）や `--backend fast` の wasm32 との組み合わせ、WGSL と SPIR-V の出力（`--emit wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`）と `--target`・`-O`・`--cpu`・デバッグ・WASM 機能・`--allocator` との組み合わせ、環境変数 `TSUZURI_RANGE_FLAGS` が `off`・`proven`・`audit` のどれでもないこと（IR を出すコマンドだけ。`check` と `lsp` は読みません）、環境変数 `TSUZURI_STRINGS` が `utf16`・`compact` のどれでもないこと（同じく IR を出すコマンドだけ）、`tsuzuri watch` にコマンド名（`check`・`build`・`test`）がないこと、`tsuzuri serve` の引数（ディレクトリが 1 つでない、`--idle-timeout` が 1 から 86400 の整数でない、`--status` と `--stop` の同時指定）と設定（`TSUZURI_SERVER_DIR` が相対パスか空、ソケットのパスが長すぎる、Unix 以外）、`--no-server` を `check`・`build` 以外に付けること |
 | `E2001` | ファイルの読み書き。ディレクトリを渡して `Main.tz` が無いときもこれです。`TSUZURI_RUNNER` のプログラムを起動できないときもこれで、メッセージにその名前が入ります。`tsuzuri serve` では、ソケットのディレクトリがほかの利用者に開かれている・シンボリックリンク・他人のものであること、同じプロジェクトのサーバーがすでに動いていること、ソケットの場所にソケットでないものがあること、`--status`・`--stop` の相手のサーバーがないこと、`--stop` の相手が要求を実行中で、終わるまで止まらないこともこれです |
 | `E2002` | LLVM やリンカーの失敗。未解決シンボル、Windows の target で OS API に到達した場合、同梱ツールチェーンが扱わない組み合わせ（Windows 以外のホストからの MSVC のリンク、sysroot）を含む |
@@ -167,6 +168,17 @@ flowchart TD
 | `E2007` | 依存の取得と検証の失敗。`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存や内容が SHA-256 と違う依存、`git` の欠落・失敗、取得したリポジトリのシンボリックリンク・submodule・危険なパス・大文字小文字だけ違うパス、registry の index にない版、index の項目と違うパッケージ、`publish` で commit とディレクトリの内容が違うこと（[パッケージ](../organizing-tsuzuri/packages.md#git-依存と-tsuzurilock)） |
 
 `E1001` から `E1010` は型検査・意味解析の基本的なエラーに割り当てられています。具体的には、`E1001` が識別子名の重複（1 つの `let rec` グループに同じ名前を 2 度書く場合を含む）、`E1002` が型シグネチャの不整合、`E1003` が型の不一致（expected ... found ...）、`E1004` が曖昧な識別子や名前解決エラー（複数のビルダーが宣言する別名の曖昧さを含む）、`E1005` が関数呼び出しや演算子インスタンスの不備（関数値が捕捉できない値の捕捉を含み、型変数 `'a` を含む型の値を捕捉する `let rec` もここです）、`E1006` が関数適用の引数の個数の不一致（アクティブパターンの追加引数や `Owned.function` に渡すラムダの引数の数を含む）、`E1007` がレコードフィールドの不備、`E1008` が公開 ABI や extern の制約違反、`E1009` が数値リテラルの不正、`E1010` が型レイアウトの制限です。詳細な理由は各診断メッセージで示されます。
+
+### 確保数の診断
+
+[Alloc](../built-in-types-and-modules/alloc.md) と [bench --allocs](../built-in-types-and-modules/bench.md#確保数を測る) は既存のコードを使います。
+
+| コード | 条件・修正 |
+| --- | --- |
+| `E1018` | テスト以外のコード生成が `Alloc` に到達し、counting heap がない場合。`build`・`run` では `--allocator counting` を付けます。bench の時間用実行器では `tsuzuri bench --allocs` が助言です |
+| `E1022` | std 以外から `Alloc.__counter` を呼んだ場合。`Alloc.snapshot`・`Alloc.since` を使います |
+| `E2000` | `Alloc` に届く出力と `--allocator host`・`small`、counting とカーネル出力、`bench` 以外の `--allocs`。計数用の設定を選び直します |
+| `E2005` | bench の計数中のトラップ・時間切れ・負の時間・負の確保数の差分、または不正な計数出力。`benchmark 'Main.name' allocation run: ...` と宣言の位置を報告します |
 
 ## 警告
 

@@ -99,7 +99,7 @@ pub(super) fn callable(line: &str, definition: bool) -> Option<Callable<'_>> {
     None
 }
 
-fn quoted_end(bytes: &[u8], start: usize) -> Option<usize> {
+pub(super) fn quoted_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut cursor = start + 1;
     while cursor < bytes.len() {
         match bytes[cursor] {

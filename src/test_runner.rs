@@ -22,6 +22,8 @@ pub struct TestOptions {
     pub triple: Option<Triple>,
     /// Who turns the runner's IR into an object: Clang, or the fast backend (PB05).
     pub backend: Backend,
+    /// Force the counting heap even for tests that do not use `Alloc`.
+    pub allocator: llvm::Allocator,
 }
 
 impl Default for TestOptions {
@@ -37,6 +39,7 @@ impl Default for TestOptions {
             seed: None,
             triple: None,
             backend: Backend::Llvm,
+            allocator: llvm::Allocator::System,
         }
     }
 }
@@ -451,6 +454,7 @@ pub fn build_debug_runner(
             &[index],
             llvm::TestRunnerOptions {
                 seed: options.seed,
+                allocator: options.allocator,
                 debug: Some((sources, options.optimization != 0)),
                 f16: f16_path_for(options.backend, platform, options.target, Cpu::Generic),
                 ..llvm::TestRunnerOptions::default()
@@ -690,6 +694,7 @@ fn build_runner(
         selected,
         llvm::TestRunnerOptions {
             wasm,
+            allocator: options.allocator,
             memory64,
             coverage,
             seed: options.seed,
@@ -971,6 +976,8 @@ pub struct BenchOptions {
     pub indices: Vec<usize>,
     /// Between 1 and 1000.
     pub samples: usize,
+    /// Count per-iteration allocations with a separate runner after timing.
+    pub allocs: bool,
     /// A named native target (`--target TRIPLE`) that this machine runs; a benchmark measures the
     /// machine it runs on, so no runner serves a foreign one.
     pub triple: Option<Triple>,
@@ -984,6 +991,7 @@ impl Default for BenchOptions {
             filter: None,
             indices: Vec::new(),
             samples: DEFAULT_BENCH_SAMPLES,
+            allocs: false,
             triple: None,
         }
     }
@@ -1009,6 +1017,8 @@ pub struct BenchResult {
     pub output: String,
     pub iterations: u64,
     pub samples_ms: Vec<f64>,
+    pub alloc_calls: Option<u64>,
+    pub alloc_bytes: Option<u64>,
 }
 
 impl BenchResult {
@@ -1110,11 +1120,9 @@ pub fn run_benches_linked(
     }
     let temporary = TemporaryDirectory::new(&env::temp_dir())?;
     let _platform_scope = PlatformScope::enter(platform);
-    let text = llvm::emit_bench_runner_with(
-        module,
-        &selected.iter().map(|bench| bench.index).collect::<Vec<_>>(),
-        platform_f16_path(platform, Target::Native, Cpu::Generic),
-    )?;
+    let indices: Vec<_> = selected.iter().map(|bench| bench.index).collect();
+    let f16 = platform_f16_path(platform, Target::Native, Cpu::Generic);
+    let text = llvm::emit_bench_runner_with(module, &indices, f16)?;
     let artifact = compile_native_runner(
         module,
         text,
@@ -1141,6 +1149,8 @@ pub fn run_benches_linked(
                 failure: None,
                 output: String::new(),
                 iterations,
+                alloc_calls: None,
+                alloc_bytes: None,
                 samples_ms: samples
                     .iter()
                     .map(|nanoseconds| *nanoseconds as f64 / iterations as f64 / 1e6)
@@ -1152,8 +1162,48 @@ pub fn run_benches_linked(
                 output,
                 iterations: 0,
                 samples_ms: Vec::new(),
+                alloc_calls: None,
+                alloc_bytes: None,
             },
         });
+    }
+    if options.allocs {
+        let text = llvm::emit_bench_allocation_runner(module, &indices, f16)?;
+        let artifact = compile_native_runner(
+            module,
+            text,
+            &NativeRunner {
+                stem: "bench-allocs",
+                kind: "bench",
+                tools_hint: "benchmarks require LLVM/Clang 17+ or TSUZURI_CLANG",
+                entry: include_str!("runtime/bench-runner.c"),
+                defines: &["-DTSUZURI_BENCH_ALLOCS"],
+                optimization: options.optimization,
+                platform,
+                backend: Backend::Llvm,
+            },
+            links,
+            &temporary.path,
+            &mut messages,
+        )?;
+        for (position, result) in results.iter_mut().enumerate() {
+            if result.failure.is_some() {
+                continue;
+            }
+            let (outcome, output) = execute_bench_allocations(&artifact, position, BENCH_TIMEOUT)?;
+            match outcome {
+                Ok((calls, bytes)) => {
+                    result.alloc_calls = Some(calls);
+                    result.alloc_bytes = Some(bytes);
+                }
+                Err(reason) => {
+                    result.failure = Some(format!("allocation run: {reason}"));
+                    result.output = output;
+                    result.iterations = 0;
+                    result.samples_ms.clear();
+                }
+            }
+        }
     }
     temporary.close()?;
     Ok(BenchReport {
@@ -1165,6 +1215,46 @@ pub fn run_benches_linked(
 
 /// The iteration count and the nanoseconds of each sample, or why the bench failed.
 type BenchOutcome = Result<(u64, Vec<u64>), String>;
+type BenchAllocationOutcome = Result<(u64, u64), String>;
+
+fn execute_bench_allocations(
+    runner: &Path,
+    position: usize,
+    timeout: Duration,
+) -> Result<(BenchAllocationOutcome, String), Diagnostic> {
+    let mut command = Command::new(runner);
+    command.arg(position.to_string());
+    let finished = run_captured(&mut command, timeout, true, "bench", false)?;
+    let outcome = match finished.status {
+        None => Err(format!("timed out after {}ms", timeout.as_millis())),
+        Some(status) if status.code() == Some(3) => Err("returned a negative duration".into()),
+        Some(status) if status.code() == Some(5) => {
+            Err("returned a negative allocation count".into())
+        }
+        Some(status) if !status.success() => Err(termination_reason(&status)),
+        Some(_) => parse_bench_allocations(&finished.stdout),
+    };
+    Ok((outcome, finished.stderr))
+}
+
+fn parse_bench_allocations(output: &str) -> Result<(u64, u64), String> {
+    let malformed = || "malformed allocation output".to_owned();
+    let mut lines = output.lines();
+    let mut number = |prefix| {
+        lines
+            .next()
+            .and_then(|line| line.strip_prefix(prefix))
+            .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|text| text.parse::<u64>().ok())
+            .ok_or_else(malformed)
+    };
+    let calls = number("alloc_calls ")?;
+    let bytes = number("alloc_bytes ")?;
+    if lines.next().is_some() {
+        return Err(malformed());
+    }
+    Ok((calls, bytes))
+}
 
 /// Runs bench `position` of a bench runner; returns its outcome and the end of its stderr.
 fn execute_bench(
@@ -1407,6 +1497,8 @@ mod tests {
             output: String::new(),
             iterations: 1,
             samples_ms,
+            alloc_calls: None,
+            alloc_bytes: None,
         }
     }
 
@@ -1425,6 +1517,32 @@ mod tests {
         failed.failure = Some("timed out after 1ms".into());
         assert_eq!(failed.statistics(), None);
         assert_eq!(bench_result(Vec::new()).statistics(), None);
+    }
+
+    #[test]
+    fn bench_allocation_output_parsing_is_strict() {
+        for output in [
+            "alloc_calls 2\nalloc_bytes 96\n",
+            "alloc_calls 2\r\nalloc_bytes 96\r\n",
+        ] {
+            assert_eq!(parse_bench_allocations(output), Ok((2, 96)));
+        }
+        for output in [
+            "",
+            "alloc_calls 2\n",
+            "alloc_bytes 96\nalloc_calls 2\n",
+            "alloc_calls +2\nalloc_bytes 96\n",
+            "alloc_calls -1\nalloc_bytes 96\n",
+            "alloc_calls 2\nalloc_bytes 96 \n",
+            "alloc_calls 2\nalloc_bytes 96\nextra\n",
+            "alloc_calls 2\nalloc_bytes 18446744073709551616\n",
+        ] {
+            assert_eq!(
+                parse_bench_allocations(output),
+                Err("malformed allocation output".into()),
+                "{output:?}"
+            );
+        }
     }
 
     #[test]

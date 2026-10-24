@@ -1,5 +1,11 @@
 use super::*;
 
+#[path = "semantic_api.rs"]
+mod api;
+pub use api::ResolvedApi;
+pub(super) use api::collect as collect_api;
+pub(crate) use api::key as api_key;
+
 #[derive(Clone, Debug)]
 pub struct SemanticEntry {
     pub span: Span,
@@ -103,6 +109,8 @@ pub struct SemanticIndex {
     /// Record-typed expressions and the definition of their record.
     pub receivers: Vec<(Span, usize)>,
     pub builtin_references: Vec<(Span, Builtin)>,
+    /// Set before analysis to request resolved API facts; ordinary indexing leaves this absent.
+    pub resolved_api: Option<Result<ResolvedApi, Diagnostic>>,
 }
 
 impl SemanticIndex {
@@ -497,6 +505,7 @@ fn define_declarations(
                     declaration.visibility,
                     declaration.exported,
                     declaration.constant,
+                    declaration.pure,
                     Some(declaration),
                 )
             })
@@ -508,10 +517,12 @@ fn define_declarations(
                     external.visibility,
                     external.exported,
                     false,
+                    false,
                     None,
                 )
             }));
-        for (declared, labels, kind, visibility, exported, constant, declaration) in callables {
+        for (declared, labels, kind, visibility, exported, constant, pure, declaration) in callables
+        {
             let qualified = format!("{name}.{}", declared.text);
             let Some(function) = checked.get(&qualified) else {
                 continue;
@@ -547,7 +558,13 @@ fn define_declarations(
             } else {
                 format!(
                     "{}def {shown}.{} :: {}",
-                    if constant { "const " } else { "" },
+                    if constant {
+                        "const "
+                    } else if pure {
+                        "pure "
+                    } else {
+                        ""
+                    },
                     declared.text,
                     declaration.map_or_else(
                         || function.signature.as_type().display(types),
@@ -578,7 +595,12 @@ fn define_declarations(
                         &method.name,
                         SymbolKind::Method,
                         name,
-                        format!("def {shown}.{}.{}", class.name.text, method.name.text),
+                        format!(
+                            "{}def {shown}.{}.{}",
+                            if method.pure { "pure " } else { "" },
+                            class.name.text,
+                            method.name.text
+                        ),
                         method.visibility,
                     )
                 });
@@ -724,7 +746,13 @@ pub(super) fn collect(
                     declaration.body.span,
                     format!(
                         "{}def {shown}.{} :: {}",
-                        if declaration.constant { "const " } else { "" },
+                        if declaration.constant {
+                            "const "
+                        } else if declaration.pure {
+                            "pure "
+                        } else {
+                            ""
+                        },
                         function.name,
                         declaration_signature(declaration, function, &types)
                     ),
@@ -771,7 +799,12 @@ pub(super) fn collect(
                     &method.name,
                     6,
                     method.result.span,
-                    format!("def {shown}.{}.{}", class.name.text, method.name.text),
+                    format!(
+                        "{}def {shown}.{}.{}",
+                        if method.pure { "pure " } else { "" },
+                        class.name.text,
+                        method.name.text
+                    ),
                 );
             }
         }
@@ -1149,6 +1182,7 @@ fn type_entry(
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
         | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)

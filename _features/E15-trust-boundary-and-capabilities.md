@@ -240,7 +240,7 @@ summary: used=<権限を , で並べる | none> denied=<N> untrusted_externs=<N>
 | --- | --- | --- |
 | [G22](G22-diagnostic-v2.md)（D-51） | `Diagnostic::with_kind(&'static str)`・`.related(RelatedRole::ViaCall \| DeclaredHere \| Note, impl Into<String>, Span)`・`.with_help(impl Into<String>)` | 呼ばない。メッセージ・コード・主スパンだけ（付録 C）。G22 が入ったら呼び出しを足すだけ |
 | [A20](A20-effect-summary-and-checked-attributes.md)（D-53）Phase 4 | `effects::summarize`・`Options`（`Options::new(scope, computed)`・`checking`。E15 が `trusted` を足す）・`Effect::Extern`・`forbidden(EffectKind)`・`FunctionEffects`（HostCall の腕が `Extern` を源にする） | Phase 4 を実装しない。`@trusted` の性質は受理して持つだけ |
-| [A19](A19-pure-functions.md) | `pure_rules::validate` が `extern` を不純にする | 同上（A20 の経路 A では A20 が置き換える） |
+| [A19](_completed/A19-pure-functions.md) | `pure_rules::validate` が `extern` を不純にする | 同上（A20 の経路 A では A20 が置き換える） |
 | [G26](G26-facts-model.md) | 使わない | — |
 | D-57 | 権限の名前 9 個（閉じている）・既定（ルートは全権限、依存は空）・実効 = 積 | — |
 

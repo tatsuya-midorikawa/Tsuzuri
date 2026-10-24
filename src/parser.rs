@@ -94,6 +94,28 @@ fn unit_lambda_body(expression: Expr) -> Expr {
     arms.pop().expect("one arm").body
 }
 
+pub(crate) fn normalize_definition(
+    mut definition: Definition,
+    pure: bool,
+    arity: usize,
+) -> Result<Definition, Diagnostic> {
+    while (!pure || definition.parameters.len() < arity)
+        && let ExprKind::Lambda(parameters, body) = definition.body.kind
+    {
+        definition.parameters.extend(parameters);
+        definition.body = *body;
+    }
+    // Eta expansion would move prefix computations and traps to a later application.
+    if pure && !definition.parameters.is_empty() && definition.parameters.len() < arity {
+        return Err(Diagnostic::new(
+            "E1029",
+            "a pure implementation must bind every parameter of its declared call stage; bind the remaining parameters or declare a parenthesized factory result",
+            definition.body.span,
+        ));
+    }
+    Ok(definition)
+}
+
 /// Parses a source that no package owns (a snippet, the REPL, a test) with the latest edition.
 /// A package's source goes through `parse_with_source` with its own edition.
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
@@ -323,8 +345,14 @@ impl Parser<'_> {
                             .tokens
                             .get(self.position + 2)
                             .is_some_and(|token| token.kind == TokenKind::Def))
+                    || (self.tokens.get(self.position + 1).is_some_and(
+                        |token| matches!(&token.kind, TokenKind::Ident(name) if name == "pure"),
+                    ) && self
+                        .tokens
+                        .get(self.position + 2)
+                        .is_some_and(|token| token.kind == TokenKind::Def))
             }
-            _ => false,
+            _ => self.pure_function_ahead(),
         }
     }
 
@@ -358,6 +386,7 @@ impl Parser<'_> {
         let mut definition_group = None;
         // Whether the group of the last `def rec` signature is a `const def rec` (D11).
         let mut constant_group = false;
+        let mut pure_group = false;
         let mut diagnostics = Vec::new();
         let header = |parser: &mut Self, keyword: &str, diagnostics: &mut Vec<Diagnostic>| {
             if !parser.header_ahead(keyword) {
@@ -425,13 +454,18 @@ impl Parser<'_> {
                         "'@cpu' cannot apply to a 'const def'; the compiler evaluates it once, for no CPU level",
                     ));
                 }
+                let cpu_definition = self.position + usize::from(self.at(&TokenKind::Export));
                 if cpu.is_some()
-                    && !self.at(&TokenKind::Def)
-                    && !(self.at(&TokenKind::Export)
-                        && self
-                            .tokens
-                            .get(self.position + 1)
-                            .is_some_and(|token| token.kind == TokenKind::Def))
+                    && !self
+                        .tokens
+                        .get(cpu_definition)
+                        .is_some_and(|token| token.kind == TokenKind::Def)
+                    && !(self.tokens.get(cpu_definition).is_some_and(
+                        |token| matches!(&token.kind, TokenKind::Ident(name) if name == "pure"),
+                    ) && self
+                        .tokens
+                        .get(cpu_definition + 1)
+                        .is_some_and(|token| token.kind == TokenKind::Def))
                 {
                     return Err(
                         self.error("'@cpu' applies to the 'def' signature of a top-level function")
@@ -501,14 +535,16 @@ impl Parser<'_> {
                 while !self.eat(&TokenKind::RightBrace) {
                     let method_doc = self.take_doc();
                     let column = self.column(self.current().span);
+                    let pure = self.pure_function_ahead();
+                    if pure { self.position += 1; }
                     if self.eat(&TokenKind::Def) {
                         let method = self.ident()?;
                         self.type_colon("'::' before the method type")?;
-                        let mut signature = self.signature(method.clone(), false, column)?;
+                        let mut signature = self.signature(method.clone(), false, column, pure)?;
                         signature.doc = method_doc;
                         if self.eat(&TokenKind::Equal) {
                             let body = if self.at(&TokenKind::Backslash) { self.explicit_lambda()? } else { self.body_expression()? };
-                            defaults.push(Definition { name: method, recursion: None, parameters: Vec::new(), body });
+                            defaults.push(Definition { name: method, pure, recursion: None, parameters: Vec::new(), body });
                         }
                         methods.push(signature);
                     } else {
@@ -557,9 +593,9 @@ impl Parser<'_> {
                 let recursion = recursive.then(|| name.text.clone());
                 definition_group = recursion.clone();
                 defined_names.insert(name.text.clone());
-                definitions.push(Definition { name, recursion, parameters: Vec::new(), body });
+                definitions.push(Definition { name, pure: false, recursion, parameters: Vec::new(), body });
                 self.eat(&TokenKind::Semicolon);
-            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) || self.constant_function_ahead() {
+            } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) || self.constant_function_ahead() || self.pure_function_ahead() {
                 let export = self.current().span;
                 let exported = self.eat(&TokenKind::Export);
                 if exported && self.at(&TokenKind::Extern) { return Err(Diagnostic::new("E1008", "extern declarations cannot be exported", export)); }
@@ -570,6 +606,10 @@ impl Parser<'_> {
                 let constant = self.eat(&TokenKind::Const);
                 if constant && !self.at(&TokenKind::Def) {
                     return Err(Self::misplaced_const(constant_span));
+                }
+                let pure = self.pure_function_ahead();
+                if pure {
+                    self.position += 1;
                 }
                 let declaration = self.eat(&TokenKind::Def);
                 let continuation = self.eat(&TokenKind::And);
@@ -599,13 +639,14 @@ impl Parser<'_> {
                 if declaration {
                     let regions = if self.at(&TokenKind::LeftBrace) { self.region_list()? } else { Vec::new() };
                     self.type_colon("'::' after the declaration name")?;
-                    let mut signature = self.signature(name.clone(), exported, column)?;
+                    let mut signature = self.signature(name.clone(), exported, column, if continuation { pure_group } else { pure })?;
                     signature.doc = doc;
                     signature.regions = regions;
                     signature.recursion = recursion.clone();
                     signature.visibility = visibility;
                     signature.constant = if continuation { constant_group } else { constant };
                     constant_group = signature.constant;
+                    pure_group = signature.pure;
                     if signatures.contains_key(&name.text) || program.externs.iter().any(|external| external.name.text == name.text) {
                         return Err(Diagnostic::new(
                             "E1001",
@@ -627,7 +668,7 @@ impl Parser<'_> {
                         };
                         definition_group = recursion.clone();
                         defined_names.insert(name.text.clone());
-                        definitions.push(Definition { name: name.clone(), recursion, parameters: Vec::new(), body });
+                        definitions.push(Definition { name: name.clone(), pure, recursion, parameters: Vec::new(), body });
                     } else if multiple_cases {
                         return Err(self.error("multi-case active patterns require an inline lambda and the implicit result type 'T"));
                     } else if typed_continuation {
@@ -674,6 +715,7 @@ impl Parser<'_> {
                     visibility: Visibility::Public,
                     exported,
                     constant: false,
+                    pure: false,
                     parameters,
                     result,
                     constraints: Vec::new(),
@@ -714,6 +756,7 @@ impl Parser<'_> {
                 signature_group = None;
                 definition_group = None;
                 constant_group = false;
+                pure_group = false;
             } else if program.entry.is_some() {
                 break;
             } else {
@@ -824,6 +867,9 @@ impl Parser<'_> {
         if !self.eat(&TokenKind::Private) {
             return Ok(Visibility::Public);
         }
+        if self.pure_function_ahead() {
+            return Ok(Visibility::Private);
+        }
         let next = self.current();
         let message = match next.kind {
             TokenKind::Record
@@ -851,6 +897,14 @@ impl Parser<'_> {
     /// `const` directly before `def`: a const function, not a constant (D11).
     fn constant_function_ahead(&self) -> bool {
         self.at(&TokenKind::Const)
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| token.kind == TokenKind::Def)
+    }
+
+    fn pure_function_ahead(&self) -> bool {
+        matches!(&self.current().kind, TokenKind::Ident(name) if name == "pure")
             && self
                 .tokens
                 .get(self.position + 1)
@@ -1518,6 +1572,14 @@ impl Parser<'_> {
     }
 
     fn instance_method(&mut self) -> Result<Definition, Diagnostic> {
+        let pure = matches!(&self.current().kind, TokenKind::Ident(name) if name == "pure")
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Fn | TokenKind::Let));
+        if pure {
+            self.position += 1;
+        }
         let anonymous = self.eat(&TokenKind::Let);
         if !anonymous {
             self.expect(&TokenKind::Fn, "a 'fn' or 'let' method definition, or '}'")?;
@@ -1525,6 +1587,7 @@ impl Parser<'_> {
         let recursive = self.eat(&TokenKind::Rec);
         let name = self.ident()?;
         let mut definition = self.definition(name.clone())?;
+        definition.pure = pure;
         definition.recursion = recursive.then_some(name.text);
         if anonymous
             && (!definition.parameters.is_empty()
@@ -1569,6 +1632,7 @@ impl Parser<'_> {
         name: Ident,
         exported: bool,
         column: usize,
+        pure: bool,
     ) -> Result<SignatureDecl, Diagnostic> {
         let mut constraints = self.constraints()?;
         let ty = self.type_expr()?;
@@ -1576,7 +1640,8 @@ impl Parser<'_> {
             TypeExprKind::Function(parameters, result) => (parameters, *result),
             _ => (Vec::new(), ty),
         };
-        while !parameters.is_empty()
+        while !pure
+            && !parameters.is_empty()
             && matches!(&result.kind, TypeExprKind::Function(parameters, _) if !parameters.is_empty())
         {
             let TypeExprKind::Function(more, tail) = result.kind else {
@@ -1655,6 +1720,7 @@ impl Parser<'_> {
             visibility: Visibility::Public,
             exported,
             constant: false,
+            pure,
             parameters,
             result,
             constraints,
@@ -1700,6 +1766,7 @@ impl Parser<'_> {
             self.body_expression()?
         };
         Ok(Definition {
+            pure: false,
             name,
             recursion: None,
             parameters,
@@ -1721,10 +1788,8 @@ impl Parser<'_> {
         if signature.parameters.is_empty() && definition.parameters.is_empty() {
             definition.body = unit_lambda_body(definition.body);
         }
-        while let ExprKind::Lambda(parameters, body) = definition.body.kind {
-            definition.parameters.extend(parameters);
-            definition.body = *body;
-        }
+        let definition =
+            normalize_definition(definition, signature.pure, signature.parameters.len())?;
         if signature.parameters.len() < definition.parameters.len()
             || (definition.parameters.is_empty() && !signature.parameters.is_empty())
         {
@@ -1757,6 +1822,7 @@ impl Parser<'_> {
             visibility: signature.visibility,
             exported: signature.exported,
             constant: signature.constant,
+            pure: signature.pure,
             parameters: definition
                 .parameters
                 .into_iter()
@@ -1932,6 +1998,14 @@ impl Parser<'_> {
         let start = self.current().span;
         let kind = if self.eat(&TokenKind::Ampersand) || self.eat(&TokenKind::Ref) {
             self.reference_type(start)?
+        } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "pure")
+            && self
+                .tokens
+                .get(self.position + 1)
+                .is_some_and(|token| token.kind == TokenKind::LeftParen)
+        {
+            self.position += 1;
+            TypeExprKind::Pure(Box::new(self.type_primary()?))
         } else if self.eat(&TokenKind::Mut) {
             TypeExprKind::Mut(Box::new(self.type_primary()?))
         } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "own")
@@ -3821,7 +3895,7 @@ impl Parser<'_> {
         }
         self.type_colon("'::' after the extern name")?;
         let outer = std::mem::replace(&mut self.extern_signature, true);
-        let signature = self.signature(name, false, column);
+        let signature = self.signature(name, false, column, false);
         self.extern_signature = outer;
         let mut signature = signature?;
         signature.doc = doc;

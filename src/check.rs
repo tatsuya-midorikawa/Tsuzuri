@@ -26,6 +26,8 @@ mod higher_kinds;
 pub use higher_kinds::{Constructor, Partial};
 #[path = "polymorph.rs"]
 mod polymorph;
+#[path = "pure_rules.rs"]
+pub(crate) mod pure_rules;
 #[path = "recursion.rs"]
 mod recursion;
 #[path = "recursive.rs"]
@@ -172,6 +174,7 @@ pub enum ParameterConvention {
 pub struct FunctionParameters {
     pub types: Vec<Type>,
     pub conventions: Box<[ParameterConvention]>,
+    pub pure: bool,
 }
 
 impl std::ops::Deref for FunctionParameters {
@@ -345,13 +348,30 @@ impl Type {
     }
 
     pub fn function(parameters: Vec<Type>, result: Type) -> Self {
-        Self::function_with_conventions(parameters, result, Vec::new())
+        Self::function_with_conventions(parameters, result, Vec::new(), false)
+    }
+
+    pub(crate) fn function_purity(&self) -> Option<bool> {
+        match self {
+            Self::Function(parameters, _) => Some(parameters.pure),
+            Self::Reference(inner, false) => inner.function_purity(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn set_function_purity(&mut self, pure: bool) {
+        match self {
+            Self::Function(parameters, _) => parameters.pure = pure,
+            Self::Reference(inner, false) => inner.set_function_purity(pure),
+            _ => {}
+        }
     }
 
     pub(crate) fn function_with_conventions(
         mut parameters: Vec<Type>,
         mut result: Type,
         mut conventions: Vec<ParameterConvention>,
+        pure: bool,
     ) -> Self {
         if conventions
             .iter()
@@ -359,8 +379,8 @@ impl Type {
         {
             conventions.clear();
         }
-        if !parameters.is_empty() {
-            while matches!(&result, Self::Function(more, _) if !more.is_empty()) {
+        if !pure && !parameters.is_empty() {
+            while matches!(&result, Self::Function(more, _) if !more.is_empty() && !more.pure) {
                 let Self::Function(more, tail) = result else {
                     unreachable!()
                 };
@@ -378,6 +398,7 @@ impl Type {
             Box::new(FunctionParameters {
                 types: parameters,
                 conventions: conventions.into_boxed_slice(),
+                pure,
             }),
             Box::new(result),
         )
@@ -393,11 +414,12 @@ impl Type {
         if count == parameters.len() {
             (**result).clone()
         } else {
-            let mut remaining = Self::function(parameters[count..].to_vec(), (**result).clone());
-            if let Self::Function(arguments, _) = &mut remaining {
-                arguments.conventions = parameters.conventions.get(count..).unwrap_or(&[]).into();
-            }
-            remaining
+            Self::function_with_conventions(
+                parameters[count..].to_vec(),
+                (**result).clone(),
+                parameters.conventions.get(count..).unwrap_or(&[]).to_vec(),
+                parameters.pure,
+            )
         }
     }
 
@@ -486,6 +508,14 @@ impl Type {
             Self::Handle(name) => type_display(name),
             Self::Dyn(dyn_type) => dyn_type.display(),
             Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display(types)),
+            Self::Function(parameters, _) if parameters.pure => {
+                let mut ordinary = self.clone();
+                let Self::Function(parameters, _) = &mut ordinary else {
+                    unreachable!()
+                };
+                parameters.pure = false;
+                format!("pure ({})", ordinary.display(types))
+            }
             Self::Function(parameters, result) if parameters.is_empty() => {
                 format!("fn() -> {}", result.display(types))
             }
@@ -1422,6 +1452,9 @@ pub enum Builtin {
     /// `Bench.consume :: 'a -> unit` drops its argument after an optimization barrier, so the
     /// value and the memory it reaches count as observed (G18 D6).
     BenchConsume,
+    /// `Alloc.__counter :: i64 -> i64` reads a counting-heap counter (F14).
+    /// Only the standard Alloc module may call it.
+    AllocCounter,
     /// `Gen.__seed :: i64u`, called as `Gen.__seed()`: the seed of property tests, from
     /// `tsuzuri test --seed` or `llvm::DEFAULT_PROPERTY_SEED`. Only the std `Gen` module may
     /// call it (G18 Phase 3).
@@ -1817,6 +1850,7 @@ impl Builtin {
         Self::ArenaNextId,
         Self::BenchNow,
         Self::BenchConsume,
+        Self::AllocCounter,
         Self::GenSeed,
         Self::GpuOpen,
         Self::GpuFeatures,
@@ -2106,6 +2140,7 @@ impl Builtin {
             Self::ChannelCloseReceiver => "Channel.__close_receiver",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
+            Self::AllocCounter => "Alloc.__counter",
             Self::GenSeed => "Gen.__seed",
             Self::GpuOpen => "Gpu.__open",
             Self::GpuFeatures => "Gpu.__features",
@@ -3035,6 +3070,7 @@ impl Builtin {
                     (vec![state], Concrete(Type::Unit), Vec::new())
                 }
             }
+            Self::AllocCounter => (vec![Concrete(Type::I64)], Concrete(Type::I64), Vec::new()),
             Self::GenSeed => (Vec::new(), Concrete(Type::Integer(64, false)), Vec::new()),
             Self::GpuOpen => (
                 vec![Concrete(Type::Integer(32, true)); 2],
@@ -3467,6 +3503,8 @@ pub struct FunctionOrigin {
     /// The CPU levels that `@cpu` also compiles the function for, bit `L` for level `L` of
     /// `syntax::CPU_TARGETS` (F08 Phase 3). Generated helpers have none.
     pub cpu: u8,
+    pub pure: bool,
+    pub pure_values: bool,
 }
 
 impl FunctionOrigin {
@@ -3479,6 +3517,8 @@ impl FunctionOrigin {
             test: None,
             bench: None,
             cpu: 0,
+            pure: false,
+            pure_values: false,
         }
     }
 
@@ -3488,6 +3528,7 @@ impl FunctionOrigin {
             provenance: Provenance::Generated,
             parent: Some(parent),
             cpu: 0,
+            pure: false,
             ..self
         }
     }
@@ -3666,9 +3707,10 @@ pub(crate) fn has_explicit_parameter_regions(ty: &TypeExpr) -> bool {
     regions::has_regions(ty)
 }
 
-pub(crate) fn read_only_hint(error: &mut Diagnostic, name: &str, ty: &str) {
+pub(crate) fn read_only_hint(error: &mut Diagnostic, name: &str, ty: &str, pure: bool) {
+    let context = if pure { "pure def" } else { "edition 2027" };
     error.message.push_str(&format!(
-        "; parameter '{name}' is read-only by default (edition 2027); write 'own {ty}' in the signature to take ownership"
+        "; parameter '{name}' is read-only by default ({context}); write 'own {ty}' in the signature to take ownership"
     ));
 }
 
@@ -4581,6 +4623,7 @@ struct Names {
     constants: BTreeSet<usize>,
     /// The functions declared `const def` (D11), by function id.
     const_functions: BTreeSet<usize>,
+    pure_functions: BTreeSet<usize>,
     /// The values of the `i64` constants with an integer literal value, which can be lengths (A16).
     length_constants: BTreeMap<usize, u64>,
     active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
@@ -4723,6 +4766,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
         visibility: Visibility::Private,
         exported: false,
         constant: false,
+        pure: false,
         parameters: vec![Parameter {
             name: named("$iterations"),
             ty: i64_type(),
@@ -6028,6 +6072,7 @@ fn validate_public_type(
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
         | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -6085,7 +6130,7 @@ fn check_modules_collect(
     modules: &[ModuleInput<'_>],
     diagnostics: &mut Diagnostics,
     warning_options: warnings::WarningOptions,
-    semantic: Option<&mut semantic::SemanticIndex>,
+    mut semantic: Option<&mut semantic::SemanticIndex>,
     parallelism: Parallelism,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
@@ -6352,6 +6397,7 @@ fn check_modules_collect(
                     visibility: constant.visibility,
                     exported: false,
                     constant: false,
+                    pure: false,
                     parameters: Vec::new(),
                     result: constant.ty.clone(),
                     constraints: Vec::new(),
@@ -6416,6 +6462,7 @@ fn check_modules_collect(
                     visibility: external.visibility,
                     exported: false,
                     constant: false,
+                    pure: false,
                     parameters: external
                         .parameters
                         .iter()
@@ -6478,6 +6525,7 @@ fn check_modules_collect(
                     visibility: Visibility::Private,
                     exported: false,
                     constant: false,
+                    pure: false,
                     parameters: Vec::new(),
                     result: TypeExpr {
                         kind: TypeExprKind::Named("unit".into()),
@@ -6953,6 +7001,9 @@ fn check_modules_collect(
         if function.constant {
             names.const_functions.insert(id);
         }
+        if function.pure {
+            names.pure_functions.insert(id);
+        }
         if function.name.text == "_"
             || Builtin::ALL
                 .iter()
@@ -7025,6 +7076,7 @@ fn check_modules_collect(
                 .is_some_and(|edition| edition.borrows_parameters())
                 && !external_functions.contains_key(&id)
                 && !names.const_functions.contains(&id)
+                && !function.pure
                 && !function.name.text.starts_with("$instance.")
                 && !(entry_module == Some(module.as_str()) && function.name.text == "main");
             let kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
@@ -7051,21 +7103,26 @@ fn check_modules_collect(
                 };
                 let ty = resolve_type_with_kinds(expression, module, &names, &kinds)?;
                 validate_size(&ty, &types, parameter.ty.span)?;
-                let read = borrow_defaults
+                let owned = matches!(parameter.ty.kind, TypeExprKind::Own(_));
+                if function.pure {
+                    pure_rules::check_parameter(parameter, &ty, owned, &types)?;
+                }
+                let read = (borrow_defaults
                     && !parameter.mutable
                     && !matches!(
                         parameter.ty.kind,
                         TypeExprKind::Own(_) | TypeExprKind::Mut(_)
                     )
                     && !regions::has_regions(&parameter.ty)
-                    && read_by_default(&ty, &types);
+                    && read_by_default(&ty, &types))
+                    || (function.pure && pure_rules::borrow_parameter(&ty, owned, &types));
                 let ty = if read || mutable {
                     Type::Reference(Box::new(ty), mutable)
                 } else {
                     ty
                 };
                 parameters.push(ty);
-                reads.push(read);
+                reads.push(read || classes.reads_parameter(&function.name.text, reads.len()));
             }
             let result = resolve_type_with_kinds(&function.result, module, &names, &kinds)?;
             validate_size(&result, &types, function.result.span)?;
@@ -7231,6 +7288,7 @@ fn check_modules_collect(
             }
             default_reads.insert(id, reads.clone());
             Ok(Scheme {
+                pure: function.pure,
                 signature,
                 parameter_conventions: reads
                     .into_iter()
@@ -7441,9 +7499,10 @@ fn check_modules_collect(
                     if reads.get(parameters.len()) == Some(&true)
                         && let Type::Reference(inner, _) = ty
                     {
-                        checker
-                            .default_reads
-                            .insert(local.id, (local.name.clone(), inner.display(&types)));
+                        checker.default_reads.insert(
+                            local.id,
+                            (local.name.clone(), inner.display(&types), function.pure),
+                        );
                         if types.reaches(inner, |part| {
                             matches!(part, Type::Variable(_) | Type::Function(..))
                         }) {
@@ -7489,6 +7548,8 @@ fn check_modules_collect(
                         test: test_functions.get(&id).copied(),
                         bench: bench_functions.get(&id).copied(),
                         cpu: cpu_levels.get(&id).copied().unwrap_or(0),
+                        pure: function.pure,
+                        pure_values: checker.pure_values,
                         ..FunctionOrigin::source(names.origin(module))
                     },
                     name: function.name.text.clone(),
@@ -7586,6 +7647,7 @@ fn check_modules_collect(
                 callback_contracts: Vec::new(),
                 region_slots: None,
                 origin: FunctionOrigin {
+                    pure_values: checker.pure_values,
                     provenance: Provenance::Generated,
                     ..FunctionOrigin::source(ModuleOrigin::User)
                 },
@@ -7699,6 +7761,9 @@ fn check_modules_collect(
         (0..declaration_count).collect::<Vec<_>>()
     );
     diagnostics.check()?;
+    let resolve_api = semantic
+        .as_ref()
+        .is_some_and(|index| index.resolved_api.is_some());
     if indexing {
         let index = semantic::collect(modules, &functions, &name_uses, &names, types);
         if !deprecations.is_empty() {
@@ -7709,7 +7774,7 @@ fn check_modules_collect(
                 &deprecations,
             ));
         }
-        if let Some(requested) = semantic {
+        if let Some(requested) = semantic.as_deref_mut() {
             *requested = index;
         }
     }
@@ -7757,6 +7822,8 @@ fn check_modules_collect(
         statics,
     };
     validate_callbacks(&module)?;
+    diagnostics.extend(pure_rules::validate_templates(&module));
+    diagnostics.check()?;
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
     crate::gpu_devices::retarget_calls(&mut module);
@@ -7779,6 +7846,12 @@ fn check_modules_collect(
         &names,
         copy_constraints,
         &recursive_functions,
+        |module| {
+            if resolve_api && let Some(index) = semantic {
+                index.resolved_api = Some(semantic::collect_api(modules, module, &names, &classes));
+            }
+            resolve_api
+        },
     );
     drop(specialize_time);
     let module = module?;
@@ -7801,6 +7874,7 @@ fn check_modules_collect(
     if let Err(error) = crate::gpu::validate_calls(&module) {
         diagnostics.push(error);
     }
+    diagnostics.extend(pure_rules::validate(&module));
     if let Err(error) = validate_cpu_functions(&module) {
         diagnostics.push(error);
     }
@@ -8599,6 +8673,27 @@ fn resolve_type_with_kinds(
                 expression.span,
             ));
         }
+        TypeExprKind::Pure(inner) => {
+            let mut ty = if let TypeExprKind::Function(parameters, result) = &inner.kind {
+                Type::function_with_conventions(
+                    parameters.iter().map(resolve).collect::<Result<_, _>>()?,
+                    resolve(result)?,
+                    Vec::new(),
+                    true,
+                )
+            } else {
+                resolve(inner)?
+            };
+            let Type::Function(parameters, _) = &mut ty else {
+                return Err(Diagnostic::new(
+                    "E1029",
+                    "'pure' qualifies a function type; write 'pure (T -> U)'",
+                    expression.span,
+                ));
+            };
+            parameters.pure = true;
+            ty
+        }
         TypeExprKind::ArrayView(_) => {
             return Err(Diagnostic::new(
                 "E1005",
@@ -8873,6 +8968,9 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Mut(inner) => {
                 TypeExprKind::Mut(Box::new(self.expand(inner, module, depth + 1)?))
             }
+            TypeExprKind::Pure(inner) => {
+                TypeExprKind::Pure(Box::new(self.expand(inner, module, depth + 1)?))
+            }
             TypeExprKind::Regions(inner, regions) => TypeExprKind::Regions(
                 Box::new(self.expand(inner, module, depth + 1)?),
                 regions.clone(),
@@ -9020,6 +9118,7 @@ impl TypeAliasExpansion<'_> {
             TypeExprKind::Regions(inner, _)
             | TypeExprKind::Own(inner)
             | TypeExprKind::Mut(inner)
+            | TypeExprKind::Pure(inner)
             | TypeExprKind::Quantified(_, inner)
             | TypeExprKind::Reference(inner, _)
             | TypeExprKind::Array(inner)
@@ -9088,6 +9187,7 @@ fn reject_expanded_field_constraints(
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Own(inner)
         | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Array(inner)
@@ -9531,6 +9631,9 @@ impl Validation<'_> {
                 }
             }
             Type::Function(parameters, result) => {
+                if parameters.pure {
+                    pure_rules::check_function_type(ty, &self.layouts.types, span)?;
+                }
                 for parameter in parameters.iter() {
                     self.check(parameter, span)?;
                 }
@@ -9660,9 +9763,10 @@ struct Checker<'a> {
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
-    default_reads: BTreeMap<usize, (String, String)>,
+    default_reads: BTreeMap<usize, (String, String, bool)>,
     read_value_parameters: BTreeSet<usize>,
     read_conventions: bool,
+    pure_values: bool,
     poisoned: bool,
     recovering: bool,
     recovered: Vec<Diagnostic>,
@@ -9710,6 +9814,7 @@ impl<'a> Checker<'a> {
             default_reads: BTreeMap::new(),
             read_value_parameters: BTreeSet::new(),
             read_conventions: names.borrowing_modules.contains(module),
+            pure_values: false,
             poisoned: false,
             recovering: false,
             recovered: Vec::new(),
@@ -9881,9 +9986,9 @@ impl<'a> Checker<'a> {
                     .find_map(|scope| scope.get(&root.text))
                 && let Type::Reference(inner, false) = self.inference.resolve(&local.ty)
                 && *inner == self.inference.resolve(expected)
-                && let Some((name, ty)) = self.default_reads.get(&local.id)
+                && let Some((name, ty, pure)) = self.default_reads.get(&local.id)
             {
-                read_only_hint(&mut error, name, ty);
+                read_only_hint(&mut error, name, ty, *pure);
             }
             error
         });
@@ -9987,11 +10092,22 @@ impl<'a> Checker<'a> {
             return Ok(TypedExpr::error(span));
         }
         if let Some(expected) = expected {
+            value = self.callable_effect(value, expected)?;
             if self.read_conventions
                 && matches!(expected, Type::Function(..) | Type::Infer(_))
                 && let target @ Type::Function(..) = self.inference.resolve(expected)
             {
                 value = self.callback_adapter(value, &target)?;
+            }
+            if value.ty.function_purity() == Some(true) && expected.function_purity() == Some(false)
+            {
+                let mut ty = value.ty.clone();
+                ty.set_function_purity(false);
+                value = TypedExpr {
+                    span,
+                    kind: TypedExprKind::Cast(Box::new(value)),
+                    ty,
+                };
             }
             self.same(&value.ty, expected, span)?;
         }
@@ -10421,14 +10537,7 @@ impl<'a> Checker<'a> {
                 .transpose()?
         };
         if let Some((kind, ty)) = resolved {
-            if let Some(expected) = expected {
-                self.same(&ty, expected, expression.span)?;
-            }
-            return Ok(TypedExpr {
-                kind,
-                ty: self.inference.resolve(&ty),
-                span: expression.span,
-            });
+            return self.finish_expression(kind, ty, expected, expression.span);
         }
         let (kind, ty) = match &expression.kind {
             ExprKind::Integer(value, suffix) => {
@@ -10921,6 +11030,11 @@ impl<'a> Checker<'a> {
             {
                 self.temporary_argument(expression, expected)
             }
+            ExprKind::Lambda(..)
+                if self.shared_reference(expected) && expected.function_purity() == Some(true) =>
+            {
+                self.temporary_argument(expression, expected)
+            }
             ExprKind::Integer(..)
             | ExprKind::Float(..)
             | ExprKind::BigInt(_)
@@ -11075,6 +11189,7 @@ impl<'a> Checker<'a> {
             Ok(converted) => return Ok(converted),
             Err(value) => value,
         };
+        value = self.callable_effect(value, &expected)?;
         if self.read_conventions {
             let target = match &expected {
                 Type::Reference(inner, false) if matches!(**inner, Type::Function(..)) => {
@@ -11139,6 +11254,43 @@ impl<'a> Checker<'a> {
             span,
             provenance: Provenance::Generated,
         }
+    }
+
+    fn callable_effect(
+        &mut self,
+        mut value: TypedExpr,
+        expected: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let actual = self.inference.resolve(&value.ty);
+        let expected = self.inference.resolve(expected);
+        let (Some(actual), Some(expected)) = (actual.function_purity(), expected.function_purity())
+        else {
+            return Ok(value);
+        };
+        if actual == expected || !expected {
+            return Ok(value);
+        }
+        if expected
+            && !matches!(
+                value.kind,
+                TypedExprKind::Function(_)
+                    | TypedExprKind::GenericFunction(..)
+                    | TypedExprKind::Lambda { .. }
+                    | TypedExprKind::Closure(..)
+                    | TypedExprKind::Method(..)
+                    | TypedExprKind::TypeFunction { .. }
+            )
+        {
+            return Err(Diagnostic::new(
+                "E1029",
+                "an unknown ordinary callback cannot satisfy a pure function contract; pass a pure callback or a closed function",
+                value.span,
+            ));
+        }
+        value.ty = self.inference.resolve(&value.ty);
+        value.ty.set_function_purity(expected);
+        self.pure_values = true;
+        Ok(value)
     }
 
     fn callback_adapter(

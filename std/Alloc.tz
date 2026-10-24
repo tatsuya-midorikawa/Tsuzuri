@@ -1,0 +1,23 @@
+/// The counting allocator's heap events: blocks allocated, live blocks resized, blocks freed,
+/// and requested bytes (each resize counts its new size, without the 16-byte header).
+/// Tests link the counting heap when they reach this module; builds need --allocator counting.
+record Stats { allocs: i64, reallocs: i64, frees: i64, bytes: i64 }
+
+/// The counters of the whole program so far. Subtract two snapshots, or use `since`.
+def snapshot :: unit -> Stats
+fn snapshot _unit =
+    Stats { allocs: Alloc.__counter 0, reallocs: Alloc.__counter 1, frees: Alloc.__counter 2, bytes: Alloc.__counter 3 }
+
+/// The events since `start`, which `snapshot` returned earlier.
+def since :: Stats -> Stats
+fn since start =
+    let now = snapshot ()
+    Stats { allocs: now.allocs - start.allocs, reallocs: now.reallocs - start.reallocs, frees: now.frees - start.frees, bytes: now.bytes - start.bytes }
+
+/// Runs `run` once and returns its events and result. Captured owners are not unique inside
+/// the closure: measure consuming operations with `snapshot` and `since` instead.
+def measure :: (unit -> 'a) -> Stats * 'a
+fn measure run =
+    let start = snapshot ()
+    let result = run ()
+    (since start, result)

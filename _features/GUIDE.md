@@ -262,6 +262,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/abi.rs`、`src/llvm_abi.rs` | host ABI の型の対応、公開 wrapper と C header（E05） |
 | `src/cache.rs` | 全ビルドの cache。SHA-256、metadata、writer lock、GC（G11） |
 | `src/constants.rs`、`src/const_machine.rs`、`src/const_rules.rs`、`src/const_static.rs` | 定数の評価と型付きリテラルへの展開（D06）。`const def` の明示スタックの評価器（`Machine`）、署名と本体の規則（`Type`／`TypedExprKind` を `_ =>` なしで振り分ける）、平たいデータの定数の静的データ（D11） |
+| `src/pure_rules.rs` | A19 の署名・平たい所有データ・純粋性の検査。閉じた根からの到達可能性と D-53 の問い合わせ口 |
 | `src/derive.rs` | `deriving` の instance を通常の AST として生成（A07） |
 | `src/docgen.rs` | API 文書の生成（G09） |
 | `src/exhaustiveness.rs` | match の網羅性検査（A03） |
@@ -803,7 +804,7 @@ D-39 の固定長配列の型 `[T; N]` と長さパラメーター `const N: i64
 dyn 型 `dyn C`・`dyn (C, D, Copy, Send)`・`dyn C {r}`（A14）、関数の属性 `@cpu ["avx2", ...]`（F08。`def` シグネチャの前だけ。`cpu` は予約語にしない）。
 D-41 のトップレベル宣言 `bench "name" = body`（G18）と、どのソースでも先頭（byte 0）の `#!` 行を行コメントとして読む shebang の規則（G13 Phase 2）。
 D-45 の関数の修飾 `const def`（D11。既存の予約語 `const` と `def` の組み合わせで、新しい予約語はない）、manifest の `[package]` のキー `edition`、文書コメントの行 `@deprecated`（G19。字句と構文は変えない）。
-D-48 の関数の修飾 `pure def`（A19。`pure` は `def` の直前だけの文脈キーワードで、予約語にしない）と、引数の型の前置き `own T`（A19 の D16。`own` は文脈キーワードで予約語にしない。受理は `pure def` の引数だけで、通常の `def` の引数へ広げるのは A18 の D2）。いずれも `EDITION_KEYWORDS` は空のまま。
+D-48 の関数の修飾 `pure def` と純粋な関数型 `pure (T -> U)`（A19。`pure` はこれらの位置だけの文脈キーワードで、予約語にしない）、引数の型の前置き `own T`（A18・A19。通常と pure の `def` の引数で受理するが、結果・field・型引数・矢印型の中には導入しない）。`own` も文脈キーワードで、いずれも `EDITION_KEYWORDS` は空のまま。
 G19 以後に予約語を足すときは、`Lexer::identifier` の `match` に足すほかに、予約を始める edition と一緒に `EDITION_KEYWORDS`（`src/lexer.rs`）へ登録する（§6.1。D-45）。
 - **並行作業の注意（2026-09-23 時点、未コミット）:** 作業ツリーで、借用・参照外しの別表記 `ref x`／`ref mut x`／`deref r`
   （予約語 `ref`／`deref`、`ExprKind::Borrow`／`Dereference` に `Notation` を追加。`&`／`*` も残る）が開発中。
@@ -1583,6 +1584,10 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - 型の上の表し方（A19 の D3）: Copy で drop が要らない型は値のまま、ほかの無印は `ref T`、`own T` は `T`。HEAD で `ref i64` が算術にも戻り値にも使えず `E1003` になるため。
 - 蓄積引数の再帰（A19 の D14）: `own` で書ける。HEAD では二乗（n = 40,000 で 15〜20 秒）で、A17 の後に線形になる見込み（未測定）。
 
+- **2026-10-23、全 Phase の実装とローカル受入を完了。** A18 の通常 `def` の `own` を維持し、generic、純粋関数型と呼び出し段階、class／instance・CPU variant、遅延 IO の構築、閉じた明示並行処理、Char・PCG の契約、`api-diff --effective`、GPU との効果問い合わせの共有に対応した。旧 Phase 1 の制約と format 4→6 の記録を現行仕様とはしない。現行 frontend format は **9**。
+  最適化は独立に `memory(none)` を証明した整数呼び出しの同一基本ブロック内の再利用だけで、最初の呼び出しを残す。自動 offload・所有結果の共有・永続 memo cache は導入せず、速度向上は未計測。
+  A19 単独で Rust **1,816 passed / 2 skipped**＋targets **12**、features **20,012 cases**（native／WASM × O0／O3）、旧 **114** プログラムの IR byte 一致、付録 E **36** 検査、リファレンス **12 ページ／75 例／134 native runs**が成功。全 Phase の記録は [A19](_completed/A19-pure-functions.md)、最終 head の CI・Copilot レビューは PR で追跡する。
+
 ### D-49 G10（Windows ネイティブ対応）の確定
 
 - 2026-10-13、利用者の「G10 の実装をすべて完遂して。もし現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して。複数フェーズある場合には、すべてのフェーズを完了させること。…
@@ -1638,7 +1643,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | A22 | edition 2027 の正準形（`..<`／`..=`・接尾辞・借用の表記・旧ラムダ）と移行 | P1 | L | なし（Phase 3 の fix の付与は G22 Phase 1、統合試験は G24 Phase 3 が要る） |
 | C12 | [`Map`／`Set` の更新を対数時間に近づける（チャンク化したソート配列）](_completed/C12-ordered-map-set-chunked.md)。Phase 1・2 完了 | P1 | M | なし |
 | D13 | 補間の穴の一時値（`{s.length}` の `E1013` の解消） | P1 | S | なし |
-| F14 | 構造的な性能表明（確保数のテスト用 API と `bench` の確保数） | P1 | L | F13（done）、G18（done） |
+| [F14](_completed/F14-structural-performance-assertions.md) | 構造的な性能表明（確保数のテスト用 API と `bench` の確保数）。Phase 1・2・3 完了 | P1 | L | F13（done）、G18（done） |
 | G25 | 型つき穴 `?` と `tsuzuri find`（型でのシグネチャ検索）、未解決名の候補 | P2 | L | G22 |
 | G29 | `tsuzuri mcp`（MCP サーバー） | P2 | L | Phase 1 は なし。Phase 2 以降のツールごとに G21・G23・G26〜G28（あるものだけ公開する） |
 | G30 | 図表の生成（Mermaid。モジュール・型・呼び出し・所有権・並行・レイアウト・状態遷移） | P2 | L | G26、G27 |
@@ -1718,16 +1723,21 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 
 ### D-53 効果の語彙と検査付き属性の共通仕様（A19・A20・A21・A23・E15・F15・G26・B10）
 
+2026-10-23 の A19 後続範囲の実装判断: 明示した Task／Parallel は、入力に不透明な関数・Task・dyn がなく、
+全コールバックを閉じた到達グラフで検査できる根に限って許可する。問い合わせもこの根の条件を検査し、
+不明なら純粋としない。`builtin_impure` は Task のプリミティブ単体を引き続き不純とする（単体には閉じた根の証明がない）。
+自動並列化やトラップを消す最適化には使わず、既存の明示した並行 API の失敗・待機の意味は変えない。
+
 - **効果の名前**（`effects` の値。小文字の ASCII。この 14 個で閉じている）: `io`（コンソール・`IO`・`Async`）、`os`（`File`・`Dir`・`Env`・`Time`・`Random`・`Process`・`Os.__*`）、`net`、`task`（`Task`・`Parallel`、および失敗の領域を作る `Domain.run`（B10）。`Domain.run` は `alloc` も持つ）、`atomic`（`Atomic`・`Mutex`・`Channel`）、
   `rc`（`Rc`・`Arc` の参照カウントの観測）、`extern`、`debug`（`Debug.print`・`Debug.trace`）、`user_drop`（利用者の `Drop` を持つ型の解放）、`gpu`、`alloc`（ヒープの確保をしうる）、`trap`（プログラムの論理によるトラップをしうる）、`copy`（長さに比例する暗黙の複製をしうる）、`diverge`（停止しないかもしれない）。
   最初の 10 個は A19 の効果の源（`pure` が禁じる集合）と同じ分類を使い、`alloc`・`trap`・`copy`・`diverge` を A20 が足す。
 - **要約**: 関数ごとの `EffectSet`（上の 14 個のビット集合）を、型付き IR の効果の源の走査と、呼び出しグラフの強連結成分の不動点で求める。組み込み関数は表（`match` に wildcard を置かず、新しい組み込み関数に分類を強制する）、`extern` は `extern` を持つ。
-  関数値の呼び出しは、呼び先が分からなければ「未知の呼び出し」で、検査付き属性の違反になる（A20 の Phase 4 が関数型の引数を条件付きにする）。
-  **純粋性の問い合わせの窓口**（B10・F15 が使う。`check::pure_rules`、`pub(crate)`）: `what(ty, types) -> &'static str`、`Impurity { reason: String, chain: String, span: Span }` と `impurity_of_roots(module, roots: &[usize]) -> BTreeMap<usize, Impurity>`、`reachable_effect(module, root: usize) -> Result<Option<Effect>, LimitExceeded>`、`builtin_impure(builtin: Builtin) -> bool`（組み込み関数を関数値として渡したときの判定）。A19 Phase 1 の走査から作る（B10・F15 の手順が足りない分を足す）。**A20 の経路 A のあとも名前と形を変えず**、`pure_rules.rs` の薄い関数として残し、中身は `effects::summarize`（`Options::new(Scope::Reachable, PURE_FORBIDDEN)`）の `Witness` から作る（`Effect::Builtin` の名前は `Builtin::name()`）。B10・F15 は `builtin_effect`・`Category` を直接は呼ばない。
+  通常の関数値の呼び出しは、呼び先が分からなければ「未知の呼び出し」で、検査付き属性の違反になる（A20 の Phase 4 が関数型の引数を条件付きにする）。A19 の `pure` 関数型は、検証済みの純粋な呼び出し契約を持つ。
+  **純粋性の問い合わせの窓口**（B10・F15 が使う。`check::pure_rules`、`pub(crate)`）: `what(ty, types) -> &'static str`、`Impurity { reason: String, chain: String, span: Span }` と `impurity_of_roots(module, roots: &[usize]) -> BTreeMap<usize, Impurity>`、`reachable_effect(module, root: usize) -> Result<Option<Effect>, LimitExceeded>`、`builtin_impure(builtin: Builtin) -> bool`（組み込み関数を関数値として渡したときの判定）。A19 の有界な閉じた到達検査から作る（B10・F15 の手順が足りない分を足す）。**A20 の経路 A のあとも名前と形を変えず**、`pure_rules.rs` の薄い関数として残し、中身は `effects::summarize`（`Options::new(Scope::Reachable, PURE_FORBIDDEN)`）の `Witness` から作る（`Effect::Builtin` の名前は `Builtin::name()`）。B10・F15 は `builtin_effect`・`Category` を直接は呼ばない。
 - **属性**（`@cpu` と同じ位置の、トップレベル `def` の直前の属性。ユーザー定義の属性はない）: `@no_alloc` は `alloc` を、`@no_copy` は `copy` を、`@no_trap` は `trap` を、`@terminates` は `diverge` を要約に持たないことを表明する。`pure`（A19）は A19 の集合を禁じる。
-  **宣言の前の属性の文法**（A19・A20・E15 の共通。読み込み口は `parser.rs` の `program_all` の 1 か所）: `@cpu(..)`・`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`・`@trusted(..)` を**任意の順序で**書ける（同じ属性の重複は `E1032`。`@trusted` は `E1037`）。`@no_*` と `pure def` は併用できる（`@no_alloc pure def`）。`@cpu` と `pure def` の併用だけが `E0002`（A19 D12）。`@trusted` は `extern` だけ（それ以外は `E1037`）、効果の属性は `def` だけ（`extern` の前は `E1032`）。
+  **宣言の前の属性の文法**（A19・A20・E15 の共通。読み込み口は `parser.rs` の `program_all` の 1 か所）: `@cpu(..)`・`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`・`@trusted(..)` を**任意の順序で**書ける（同じ属性の重複は `E1032`。`@trusted` は `E1037`）。`@no_*` と `pure def` は併用できる（`@no_alloc pure def`）。`@cpu` と `pure def` は併用でき、各 CPU 版の純粋性を検査する（2026-10-23 の全 Phase 承認で旧 A19 D12 を更新）。`@trusted` は `extern` だけ（それ以外は `E1037`）、効果の属性は `def` だけ（`extern` の前は `E1032`）。
   **読み込み口は先に入ったチケットが作り、後のチケットはその口に属性を足す**（置き換えない）: A20 が先なら `attributes()`（`@cpu` と 4 属性）に E15 が `@trusted` を足す。E15 が先なら `cpu_attribute` の次の `trusted_attribute()` を、A20 が `cpu_attribute()` を `attributes()` にするときに取り込む。符号化は `Program` の `cpu_attributes` → `effect_attributes` → `trusted` の順。
-  **属性は表明であり、意味も生成 IR も変えない**（検査だけ。違反は診断 `E1031`、属性の置き場の誤りは `E1032`）。属性は要約の推論を置き換えず、推論した要約が表明を満たすかを検査する。要約は属性がなくても全関数について facts に出る。
+  **A20 の効果属性は表明であり、意味も生成 IR も変えない**（検査だけ。違反は診断 `E1031`、属性の置き場の誤りは `E1032`）。属性は要約の推論を置き換えず、推論した要約が表明を満たすかを検査する。要約は属性がなくても全関数について facts に出る。
 - **`trap` の範囲**: 論理によるトラップ（`assert`、範囲外の添字・スライス、ゼロ除算、符号付きの除算の溢れ、`unreachable`、`range` のステップ 0、負の長さ・負の指数、`Checked`・`Reraise`、契約違反。A20 の T1〜T13 が正）。網羅されない `match` は `E1021` でコンパイル時に拒否されるので、`Match` は `trap` の源ではない。メモリの確保失敗とスタックの枯渇（資源の枯渇）は含めない。
   範囲の証明（`ranges.rs` と F12 の境界検査の省略）で除けるものは除く。
 - **`alloc` の範囲**: 最適化の水準に依らない言語の規則で決める（`-O0` と `-O3` で表明の結果を変えない）。`new`、確保をする std・組み込み関数、環境を持つクロージャの生成、
@@ -1793,11 +1803,11 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | CLI | `--applicability certain\|likely\|maybe`・`--dry-run` | G24 | `fix` の適用範囲と差分の表示 |
 | CLI | `--contracts off\|check\|test\|prove` | A21 | 契約の扱い（既定は `build` が `off`、`run`・`test`・`repl` が `check`。`check`・`doc` は何も生成せず常に型検査だけ。`--prove-timeout`・`--function` は `prove` のときだけ） |
 | CLI | `--overflow-report` | A23 | 折り返しの報告の計装（`test` は既定で有効） |
-| CLI | `--allocator counting` の `test` への対応 | F14 | 確保数の計装 |
+| CLI | `--allocator counting` の `build`・`run`・`test` への対応 | F14 | 確保数の計装（`build`・`run` は明示、`test` は `Alloc` に到達すると自動） |
 | 環境変数 | `TSUZURI_KB`（`0` で作らない）・`TSUZURI_KB_DIR` | G27 | KB |
 | 環境変数 | `TSUZURI_GUIDE_EXAMPLES`（テスト用） | G21 | ガイドの例の検証の対象の切り替え |
 | std | `Text`（型クラスとモジュール） | D14 | 文字列の API の統一 |
-| std | `Alloc` | F14 | 確保数の測定（テスト用） |
+| std | `Alloc` | F14 | 確保数の測定（テストでは自動、通常の `build`・`run` は counting を明示） |
 | std | `Domain` | B10 | 純粋関数の失敗の閉じ込め |
 | std | `Monoid`（クラス）と `Parallel.fold` など | F15 | 還元の保証 |
 | 属性 | `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` | A20 | D-53 |

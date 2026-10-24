@@ -46,7 +46,7 @@ Usage:
     tsuzuri test source.tz|directory --index N -g -o PATH [-O0|-O1|-O2|-O3] [--seed N] [--json]
                              Build test N alone with debug information as PATH without running it;
                              a debugger starts PATH with the printed argument 0
-    tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N]
+    tsuzuri bench source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [--samples N] [--allocs]
                               [-O0|-O1|-O2|-O3] [--target native|TRIPLE]
     tsuzuri watch check|build|test source.tz|directory [options of that command]
                              Run it again each time a source or manifest that it reads changes
@@ -61,7 +61,7 @@ Usage:
   tsuzuri new directory [--namespace NAME]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
-  tsuzuri api-diff old new [--json]
+  tsuzuri api-diff old new [--effective] [--json]
   tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] input
   tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
                     [--consume F:P]... [--json]
@@ -119,8 +119,11 @@ project in `new` differs from `old` (each a directory, or a file in the root dir
 removed or changed declaration, a record field or union case that was added, and a class method
 added without a default are `breaking`; an added declaration, a documentation change and a new
 `@deprecated` tag are `non-breaking`. It reads the declarations as `tsuzuri doc` shows them,
-runs no type check, and loads no git or registry dependency. Exit status 1 means that a change
-is breaking; with --json each change and the final summary is one JSON object per line.
+runs no type check, and loads no git or registry dependency by default. --effective loads the
+locked dependencies, fully checks both versions, and compares resolved aliases, argument modes,
+callable purity and region contracts; an analysis error never falls back to syntax comparison.
+Exit status 1 means a breaking change or an analysis error; with --json each change and the
+final summary is one JSON object per line.
 `tsuzuri bindgen` writes extern declarations, constants (also from integer #defines),
 records, opaque extern types, and type aliases for the C header's own declarations
 whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it reports each
@@ -221,7 +224,7 @@ Build options:
                          tsuzuri_try_<name>, which returns a status and a trap record instead
                          of ending the process (implies --trap-info for object and llvm)
     --allocator system|host|counting|small
-                         Heap of object, llvm, header, or WASM output (default: system).
+                         Heap of native or WASM output (default: system; counting also with run and test).
                          host calls tsuzuri_host_alloc/free/realloc, which the host defines
                          (WASM imports them from tsuzuri_heap); counting adds the counts that
                          tsuzuri_alloc_stats reports; small serves blocks of up to 512 bytes
@@ -330,6 +333,8 @@ struct Arguments {
     coverage: Option<PathBuf>,
     /// `tsuzuri bench --samples N`.
     bench_samples: Option<usize>,
+    /// Report allocation counts from a separate counting runner.
+    bench_allocs: bool,
     /// `tsuzuri test --seed N`: the property-test seed.
     test_seed: Option<u64>,
     /// `--no-server`: `check` and `build` run in this process even where a build server runs.
@@ -357,6 +362,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             test_indices: Vec::new(),
             coverage: None,
             bench_samples: None,
+            bench_allocs: false,
             test_seed: None,
             no_server: false,
         });
@@ -410,6 +416,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut test_indices = Vec::new();
     let mut coverage = None;
     let mut bench_samples = None;
+    let mut bench_allocs = false;
     let mut test_seed = None;
     let mut debug_output = false;
     let mut trap_info = false;
@@ -523,6 +530,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             .ok_or("test filter must be UTF-8")?
                             .to_owned(),
                     );
+                    continue;
+                }
+                Some("--allocs") => {
+                    if bench_allocs {
+                        return Err("allocs specified more than once".into());
+                    }
+                    bench_allocs = true;
                     continue;
                 }
                 Some("--samples") => {
@@ -899,7 +913,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     if trap_return && action != Action::Build {
         return Err("--trap-mode is only valid with build".into());
     }
-    if allocator.is_some() && action != Action::Build {
+    if allocator.is_some()
+        && action != Action::Build
+        && !(matches!(action, Action::Run | Action::Test)
+            && allocator == Some(tsuzuri::llvm::Allocator::Counting))
+    {
         return Err("--allocator is only valid with build".into());
     }
     if freestanding && action != Action::Build {
@@ -948,6 +966,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     }
     if bench_samples.is_some() && action != Action::Bench {
         return Err("--samples is only valid with bench".into());
+    }
+    if bench_allocs && action != Action::Bench {
+        return Err("--allocs is only valid with bench".into());
     }
     if test_seed.is_some() && action != Action::Test {
         return Err("--seed is only valid with test".into());
@@ -1084,6 +1105,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         test_indices,
         coverage,
         bench_samples,
+        bench_allocs,
         test_seed,
         no_server,
     })
@@ -1327,6 +1349,7 @@ fn run_test_action(
         seed: arguments.test_seed,
         triple: arguments.options.triple,
         backend: arguments.options.backend,
+        allocator: arguments.options.allocator,
     };
     if options
         .indices
@@ -1555,6 +1578,7 @@ fn run_bench_action(
         samples: arguments
             .bench_samples
             .unwrap_or(driver::DEFAULT_BENCH_SAMPLES),
+        allocs: arguments.bench_allocs,
         triple: arguments.options.triple,
     };
     if options
@@ -1625,7 +1649,11 @@ fn run_bench_action(
         let qualified = format!("{}.{}", case.module, case.name);
         match (result.statistics(), &result.failure) {
             (Some((median, min, max)), None) => {
+                let counts = result.alloc_calls.zip(result.alloc_bytes);
                 if arguments.json {
+                    let allocations = counts.map_or_else(String::new, |(calls, bytes)| {
+                        format!(",\"alloc_calls\":{calls},\"alloc_bytes\":{bytes}")
+                    });
                     let samples = result
                         .samples_ms
                         .iter()
@@ -1633,7 +1661,7 @@ fn run_bench_action(
                         .collect::<Vec<_>>()
                         .join(",");
                     println!(
-                        "{{\"type\":\"bench\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"passed\",\"workload\":{},\"target\":\"native\",\"opt\":\"O{}\",\"cpu_mode\":\"generic\",\"metric\":\"wall_time\",\"unit\":\"ms\",\"iterations\":{},\"samples\":[{samples}],\"median\":{},\"min\":{},\"max\":{}}}",
+                        "{{\"type\":\"bench\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"passed\",\"workload\":{},\"target\":\"native\",\"opt\":\"O{}\",\"cpu_mode\":\"generic\",\"metric\":\"wall_time\",\"unit\":\"ms\",\"iterations\":{},\"samples\":[{samples}],\"median\":{},\"min\":{},\"max\":{}{allocations}}}",
                         case.index,
                         json_string(&case.module),
                         json_string(&case.name),
@@ -1645,9 +1673,12 @@ fn run_bench_action(
                         number(max)
                     );
                 } else {
+                    let allocations = counts.map_or_else(String::new, |(calls, bytes)| {
+                        format!(", alloc_calls {calls}, alloc_bytes {bytes} per iteration")
+                    });
                     let (scale, unit) = bench_unit(median);
                     println!(
-                        "bench {} {}: median {:.3} {unit} (min {:.3} {unit}, max {:.3} {unit}; {} samples of {} iterations)",
+                        "bench {} {}: median {:.3} {unit} (min {:.3} {unit}, max {:.3} {unit}; {} samples of {} iterations){allocations}",
                         case.index,
                         qualified.escape_debug(),
                         median * scale,
@@ -2020,11 +2051,12 @@ fn publish_package(arguments: &[OsString]) -> ExitCode {
     }
 }
 
-/// `tsuzuri api-diff old new [--json]`: how the public API of the package or project `new`
+/// `tsuzuri api-diff old new [--effective] [--json]`: how the public API of the package or project `new`
 /// differs from `old`, one line per change on standard output. The exit status is 1 when a
 /// change is breaking, and 2 for a usage error.
 fn api_diff_command(arguments: &[OsString]) -> ExitCode {
     let mut json = false;
+    let mut effective = false;
     let mut paths = Vec::new();
     let mut paths_only = false;
     let mut valid = true;
@@ -2034,6 +2066,10 @@ fn api_diff_command(arguments: &[OsString]) -> ExitCode {
             Some("--json") if !paths_only => {
                 valid &= !json;
                 json = true;
+            }
+            Some("--effective") if !paths_only => {
+                valid &= !effective;
+                effective = true;
             }
             _ if !paths_only && argument.to_string_lossy().starts_with('-') => valid = false,
             _ => paths.push(PathBuf::from(argument)),
@@ -2045,16 +2081,29 @@ fn api_diff_command(arguments: &[OsString]) -> ExitCode {
     if !valid {
         return api_diff_usage(json);
     }
+    if effective && let Some(code) = invalid_thread_setting(&mut io::stderr(), json) {
+        return ExitCode::from(code);
+    }
     let mut apis = Vec::new();
     for input in [old, new] {
-        let project = match Project::load_for_api(input) {
+        let loaded = if effective {
+            Project::load_for_docs(input)
+        } else {
+            Project::load_for_api(input)
+        };
+        let project = match loaded {
             Ok(project) => project,
             Err(error) => {
                 print_diagnostic(&error.diagnostic, &error.path, "", json);
                 return ExitCode::FAILURE;
             }
         };
-        match tsuzuri::api_diff::api(&project) {
+        let api = if effective {
+            tsuzuri::api_diff::effective_api(&project)
+        } else {
+            tsuzuri::api_diff::api(&project)
+        };
+        match api {
             Ok(api) => apis.push(api),
             Err(error) => {
                 let source = project.source_for(&error);
@@ -2083,7 +2132,7 @@ fn api_diff_usage(json: bool) -> ExitCode {
     print_diagnostic(
         &Diagnostic::new(
             "E2000",
-            "usage: tsuzuri api-diff old new [--json]; old and new are two directories or files",
+            "usage: tsuzuri api-diff old new [--effective] [--json]; old and new are two directories or files",
             Span::default(),
         ),
         Path::new("<command line>"),
@@ -4563,6 +4612,7 @@ mod tests {
             "Speed.tz",
             "--samples",
             "5",
+            "--allocs",
             "--list",
             "--index",
             "1",
@@ -4572,6 +4622,7 @@ mod tests {
         .unwrap();
         assert_eq!(bench.action, Action::Bench);
         assert_eq!(bench.bench_samples, Some(5));
+        assert!(bench.bench_allocs);
         assert_eq!(bench.options.optimization, OptLevel::O3);
         assert!(bench.test_list && bench.test_filter.as_deref() == Some("total"));
         assert_eq!(bench.test_indices, vec![1]);
@@ -4595,9 +4646,18 @@ mod tests {
         assert_eq!(test.coverage, Some(PathBuf::from("c.info")));
         assert_eq!(test.test_seed, Some(u64::MAX));
         assert_eq!(test.bench_samples, None);
+        assert!(!test.bench_allocs);
         let samples = "bench samples must be an integer between 1 and 1000";
         let seed = "property seed must be an integer between 0 and 18446744073709551615";
         for (values, message) in [
+            (
+                vec!["test", "Main.tz", "--allocs"],
+                "--allocs is only valid with bench",
+            ),
+            (
+                vec!["bench", "Main.tz", "--allocs", "--allocs"],
+                "allocs specified more than once",
+            ),
             (
                 vec!["check", "Main.tz", "--coverage", "c.info"],
                 "--coverage is only valid with test",
@@ -5882,6 +5942,12 @@ mod tests {
     fn parses_allocator_selection() {
         use tsuzuri::llvm::Allocator;
         let allocator = |values: &[&str]| parse(values).unwrap().options.allocator;
+        for action in ["build", "run", "test"] {
+            assert_eq!(
+                allocator(&[action, "Main.tz", "--allocator", "counting"]),
+                Allocator::Counting
+            );
+        }
         for emit in ["object", "llvm", "header"] {
             assert_eq!(
                 allocator(&["build", "Main.tz", "--emit", emit, "--allocator", "host"]),
@@ -5944,8 +6010,15 @@ mod tests {
                 host_output,
             ),
             (
-                vec!["build", "Main.tz", "--allocator", "counting"],
-                "--allocator counting requires object, LLVM IR, header, or WebAssembly output; the host reads the counts with tsuzuri_alloc_stats",
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--emit",
+                    "wgsl",
+                    "--allocator",
+                    "counting",
+                ],
+                "--allocator counting requires executable, object, shared library, LLVM IR, header, or WebAssembly output",
             ),
             (
                 vec![
