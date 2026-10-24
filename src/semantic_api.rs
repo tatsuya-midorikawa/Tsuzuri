@@ -58,14 +58,33 @@ fn purity_obligations(functions: &[CheckedFunction]) -> Vec<BTreeSet<String>> {
     let mut required = vec![false; count];
     let mut pending = Vec::new();
     for (caller, function) in functions.iter().enumerate() {
+        let mut seeds = BTreeSet::new();
         if function.origin.pure {
-            for &id in parameters[caller].values() {
-                required[id] = true;
-                pending.push(id);
-            }
+            seeds.extend(function.type_parameters.iter().cloned());
         }
-        let mut expressions = vec![&function.body];
-        while let Some(expression) = expressions.pop() {
+        let mut expressions = vec![(&function.body, false)];
+        while let Some((expression, pure_body)) = expressions.pop() {
+            let pure_value = expression.ty.function_purity() == Some(true);
+            if pure_value || pure_body {
+                if !matches!(expression.kind, TypedExprKind::Lambda { .. }) || pure_value {
+                    seeds.extend(polymorph::variables(&expression.ty));
+                }
+                match &expression.kind {
+                    TypedExprKind::Lambda { captures, .. } => seeds.extend(
+                        captures
+                            .iter()
+                            .flat_map(|capture| polymorph::variables(&capture.ty)),
+                    ),
+                    TypedExprKind::GenericFunction(_, arguments) => {
+                        seeds.extend(arguments.iter().flat_map(polymorph::variables))
+                    }
+                    TypedExprKind::Method(_, _, receiver)
+                    | TypedExprKind::TypeFunction { receiver, .. } => {
+                        seeds.extend(polymorph::variables(receiver));
+                    }
+                    _ => {}
+                }
+            }
             if let TypedExprKind::GenericFunction(callee, arguments) = &expression.kind {
                 for (parameter, argument) in
                     functions[*callee].type_parameters.iter().zip(arguments)
@@ -78,7 +97,23 @@ fn purity_obligations(functions: &[CheckedFunction]) -> Vec<BTreeSet<String>> {
                     }
                 }
             }
-            expressions.extend(expression.children());
+            let child_pure = if matches!(expression.kind, TypedExprKind::Lambda { .. }) {
+                pure_value
+            } else {
+                pure_body
+            };
+            expressions.extend(
+                expression
+                    .children()
+                    .into_iter()
+                    .map(|child| (child, child_pure)),
+            );
+        }
+        for variable in seeds {
+            if let Some(&id) = parameters[caller].get(variable.as_str()) {
+                required[id] = true;
+                pending.push(id);
+            }
         }
     }
     // Each parameter enters the worklist once, including through mutually recursive helpers.

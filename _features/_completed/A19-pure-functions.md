@@ -1232,11 +1232,28 @@ def main :: unit -> i32 = \() ->
 - 回帰は直接・複数段・相互再帰・入れ子の型・local lambda・共有入力・generic な結果、宣言順、改名、
   一部だけ具体化する多段の呼び出し、義務を負う公開型変数の入れ替え、既知の concrete な所有条件と class 効果を含む。
   解決済みの純粋な具体型／class 呼び出しでは差分を出さず、構文だけの既定比較も変えない。
-- 最終差分で fmt・全 target Clippy・dev build と、全 Rust **1,848 passed／2 skipped（targets 12 を含む）** が成功した。
+- `467006ab` 時点（次の callback 修正前）で fmt・全 target Clippy・dev build と、全 Rust **1,848 passed／2 skipped（targets 12 を含む）** が成功した。
   pure **302**＋parallel **12**＋map_set_chunks **33**（native／WASM × O0／O3）、frontend cache・LSP 4 件・docgen、
   AI 全 suite の Node20／24 各 **44 passed／0 failed／5 capability skips**、usage の
   **62 links／5 checked examples／4 native runs／1 test project**、guide-lite **85／0** を新しく確認した。
   前段階の 1,843／1,847 や F14 統合前の受入数は、この差分の最終受入として流用していない。
+
+### 通常 generic 関数内の純粋 callback の保留義務
+
+- `467006ab` の実際の review `5638057304`、指摘 `4366964152` に対し、ローカルな
+  `'a -> i64` を `pure ('a -> i64)` に変えると `Rc` が新しく拒否されるのに差分が空になる失敗を確認した。
+- 既存の型パラメーター単位のグラフへ、明示的な純粋値の型・lambda capture・純粋な実行段階にある
+  本体の型変数も始点として加える。後者は callback の署名や capture に変数がなくても、
+  本体の `None: Maybe<'a>` を利用者 Drop の型へ特殊化したときに新しく拒否する反例を含む。
+- 返す通常 callback の本体へ純粋な実行段階を引き継がない。無関係な具体 callback への追加、
+  後で実行する通常 callback、改名を変更にせず、義務を持つ型変数の入れ替えは検出する。
+  既存グラフを共有するため private wrapper／class 既定実装／instance への伝播方式は変えない。
+- この修正後に fmt・全 target Clippy・dev build、全 Rust **1,849 passed／2 skipped（targets 12 を含む）**、
+  対象 **53 API＋35 polymorphism＋32 purity**、pure **302**＋parallel **12**＋map_set_chunks **33**
+  （native／WASM × O0／O3）、frontend cache・LSP 4 件・docgen が成功した。
+  AI 全 suite は Node20／24 各 **44 passed／0 failed／5 capability skips**、usage は
+  **62 links／5 checked examples／4 native runs／1 test project**、guide-lite は **85／0**。
+  `467006ab` の 1,848 件はこの Rust 差分の最終受入として流用していない。
 
 ### 確認コマンド（最終受入）
 

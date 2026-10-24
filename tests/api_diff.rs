@@ -155,6 +155,69 @@ fn effective_pure_additions_preserve_generic_specialization_obligations() {
 }
 
 #[test]
+fn effective_pure_callback_obligations_reach_ordinary_generic_functions() {
+    for (before, caller) in [
+        (
+            "def f :: own 'a -> i64 = \\x -> { let k: 'a -> i64 = \\_ -> 0; k x }\n",
+            "f (Rc.new 1)\n",
+        ),
+        (
+            "private def helper :: own 'a -> i64 = \\x -> { let k: 'a -> i64 = \\_ -> 0; k x }\ndef f :: own 'a -> i64 = \\x -> helper x\n",
+            "f (Rc.new 1)\n",
+        ),
+        (
+            "def f :: ref 'a -> i64 = \\x -> { let k: unit -> i64 = \\() -> { x; 0 }; k () }\n",
+            "let callback: i64 -> i64 = \\x -> x\nf (ref callback)\n",
+        ),
+        (
+            "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\ndef f :: own 'a -> i64 = \\_ -> { let k: unit -> i64 = \\() -> { let value: Maybe<'a> = None; 0 }; k () }\n",
+            "f (Ticket { id: 1 })\n",
+        ),
+    ] {
+        let after = before
+            .replace("let k: 'a -> i64", "let k: pure ('a -> i64)")
+            .replace("let k: unit -> i64", "let k: pure (unit -> i64)");
+        tsuzuri::analyze(&format!("{before}{caller}")).unwrap();
+        assert_eq!(
+            tsuzuri::analyze(&format!("{after}{caller}"))
+                .unwrap_err()
+                .code,
+            "E1029",
+            "{after}"
+        );
+        let changes = compare_mode(before, &after, &[], true);
+        assert!(
+            changes.contains(&"breaking changed def Main.f".to_owned()),
+            "{changes:?}: {after}"
+        );
+        assert!(compare(before, &after, &[]).is_empty());
+    }
+    for before in [
+        "def f :: own 'a -> i64 = \\_ -> { let k: i64 -> i64 = \\x -> x; k 1 }\n",
+        "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\ndef f :: own 'a -> i64 = \\_ -> { let k: unit -> (unit -> i64) = \\() -> \\() -> { let value: Maybe<'a> = None; 0 }; let ordinary = k (); ordinary () }\n",
+    ] {
+        let after = before
+            .replace("let k: i64 -> i64", "let k: pure (i64 -> i64)")
+            .replace(
+                "let k: unit -> (unit -> i64)",
+                "let k: pure (unit -> (unit -> i64))",
+            );
+        assert!(compare_mode(before, &after, &[], true).is_empty());
+        if before.starts_with("record") {
+            tsuzuri::analyze(&format!("{after}f (Ticket {{ id: 1 }})\n")).unwrap();
+        }
+    }
+    let first =
+        "def f :: own 'a -> own 'b -> i64 = \\x y -> { let k: pure ('a -> i64) = \\_ -> 0; k x }\n";
+    let second = first.replace("pure ('a", "pure ('b").replace("k x", "k y");
+    assert_eq!(
+        compare_mode(first, &second, &[], true),
+        ["breaking changed def Main.f"]
+    );
+    assert!(compare_mode(first, &first.replace("'a", "'z"), &[], true).is_empty());
+}
+
+#[test]
 fn effective_private_helper_purity_obligations_reach_public_wrappers() {
     let helper = "private def helper :: own 'a -> i64 = \\value -> 0\n";
     for wrapper in [
