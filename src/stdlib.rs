@@ -3,6 +3,7 @@
 /// Embedded std sources as `(virtual path, text)` in load order. Programs
 /// always see them after the user sources.
 pub const SOURCES: &[(&str, &str)] = &[
+    ("std/Alloc.tz", include_str!("../std/Alloc.tz")),
     ("std/Arena.tz", include_str!("../std/Arena.tz")),
     ("std/Array.tz", include_str!("../std/Array.tz")),
     ("std/Async.tc", include_str!("../std/Async.tc")),
@@ -55,6 +56,7 @@ pub const SOURCES: &[(&str, &str)] = &[
 /// Module names reserved for the standard library, whether or not a source
 /// ships yet; user files cannot use them as module stems.
 pub const RESERVED_MODULES: &[&str] = &[
+    "Alloc",
     "Maybe",
     "Result",
     "Array",
@@ -188,6 +190,12 @@ pub(crate) struct OptIn {
 }
 
 pub(crate) const OPT_IN: &[OptIn] = &[
+    OptIn {
+        module: "Alloc",
+        names: &["Alloc"],
+        aliases: &[],
+        uses: &[],
+    },
     OptIn {
         module: "Arena",
         names: &["Arena"],
@@ -614,7 +622,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 53);
+        assert_eq!(RESERVED_MODULES.len(), 54);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

@@ -1452,6 +1452,9 @@ pub enum Builtin {
     /// `Bench.consume :: 'a -> unit` drops its argument after an optimization barrier, so the
     /// value and the memory it reaches count as observed (G18 D6).
     BenchConsume,
+    /// `Alloc.__counter :: i64 -> i64` reads a counting-heap counter (F14).
+    /// Only the standard Alloc module may call it.
+    AllocCounter,
     /// `Gen.__seed :: i64u`, called as `Gen.__seed()`: the seed of property tests, from
     /// `tsuzuri test --seed` or `llvm::DEFAULT_PROPERTY_SEED`. Only the std `Gen` module may
     /// call it (G18 Phase 3).
@@ -1847,6 +1850,7 @@ impl Builtin {
         Self::ArenaNextId,
         Self::BenchNow,
         Self::BenchConsume,
+        Self::AllocCounter,
         Self::GenSeed,
         Self::GpuOpen,
         Self::GpuFeatures,
@@ -2136,6 +2140,7 @@ impl Builtin {
             Self::ChannelCloseReceiver => "Channel.__close_receiver",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
+            Self::AllocCounter => "Alloc.__counter",
             Self::GenSeed => "Gen.__seed",
             Self::GpuOpen => "Gpu.__open",
             Self::GpuFeatures => "Gpu.__features",
@@ -3065,6 +3070,7 @@ impl Builtin {
                     (vec![state], Concrete(Type::Unit), Vec::new())
                 }
             }
+            Self::AllocCounter => (vec![Concrete(Type::I64)], Concrete(Type::I64), Vec::new()),
             Self::GenSeed => (Vec::new(), Concrete(Type::Integer(64, false)), Vec::new()),
             Self::GpuOpen => (
                 vec![Concrete(Type::Integer(32, true)); 2],

@@ -14,6 +14,20 @@ const TRAPPED: &str = if cfg!(windows) {
 };
 
 const TOTAL: &str = "def total :: ref [i64] -> i64\nfn total values =\n    let mut sum = 0\n    let mut index = 0\n    while index < values.length do\n        sum = sum + values[index]\n        index = index + 1\n    sum\n";
+const ALLOCATION_BENCHES: &str = r#"
+def push_five :: unit -> i64
+fn push_five _unit =
+    let mut v: Vec<i64> = Vec.empty()
+    for i in 1i64 .. 5i64 do v = Vec.push_owned i v
+    Vec.length (ref v)
+def sum_all :: ref [i64] -> i64
+fn sum_all values = Array.sum values
+bench "nothing allocated" = Bench.of (\_ -> 42)
+bench "one array of ten" = Bench.of (\_ -> new [i64](10, \i -> i))
+bench "map over a shared input" = Bench.with_input (\_ -> new [i64](10, \i -> i)) (\values -> Array.map (\x -> x + 1) values)
+bench "sum over a shared input" = Bench.with_input (\_ -> new [i64](100, \i -> i)) (\values -> sum_all values)
+bench "five pushes" = Bench.of (\_ -> push_five ())
+"#;
 
 fn project(test: &str, files: &[(&str, &str)]) -> PathBuf {
     let root = std::env::temp_dir().join(format!("tsuzuri-bench-{}-{test}", std::process::id()));
@@ -36,6 +50,228 @@ fn tsuzuri(arguments: &[&str], root: &Path) -> Output {
 fn clean(root: &Path) {
     let _ = fs::remove_dir_all(root.with_extension("cache"));
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn bench_allocation_runner_ir_has_the_counts_function_and_the_default_runner_is_unchanged() {
+    use tsuzuri::llvm::{self, Allocator, EmitOptions, Entry, F16Path};
+    let module = tsuzuri::analyze(ALLOCATION_BENCHES).unwrap();
+    let counted = llvm::emit_with_options(
+        &module,
+        EmitOptions {
+            entry: Entry::BenchRunner,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::Counting,
+            f16: F16Path::Soft,
+        },
+    )
+    .unwrap();
+    assert!(counted.contains("define void @tsuzuri_bench_counts(ptr %out)"));
+    assert!(counted.contains(include_str!("../src/runtime/heap-counting.ll")));
+    assert_eq!(
+        counted,
+        llvm::emit_bench_allocation_runner(&module, &[0, 1, 2, 3, 4], F16Path::Soft).unwrap()
+    );
+    let counters =
+        tsuzuri::analyze("bench \"reads\" = \\n -> (Alloc.snapshot ()).allocs + n").unwrap();
+    llvm::emit_bench_allocation_runner(&counters, &[0], F16Path::Soft).unwrap();
+    let timed = llvm::emit_bench_runner(&module, &[0, 1, 2, 3, 4]).unwrap();
+    assert!(!timed.contains("tsuzuri_bench_counts") && !timed.contains("tz.heap."));
+}
+
+#[test]
+fn bench_allocation_runner_counts_through_the_driver() {
+    let module = tsuzuri::analyze(ALLOCATION_BENCHES).unwrap();
+    let report = tsuzuri::driver::run_benches(
+        &module,
+        &tsuzuri::driver::BenchOptions {
+            allocs: true,
+            samples: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let counts: Vec<_> = report
+        .results
+        .iter()
+        .map(|result| {
+            assert!(result.failure.is_none(), "{result:?}");
+            (result.alloc_calls.unwrap(), result.alloc_bytes.unwrap())
+        })
+        .collect();
+    assert_eq!(counts, [(0, 0), (1, 80), (1, 80), (0, 0), (2, 96)]);
+}
+
+#[test]
+fn bench_allocs_reports_deterministic_per_iteration_counts() {
+    let root = project("alloc-counts", &[("Main.tz", ALLOCATION_BENCHES)]);
+    let mut previous = None;
+    for _ in 0..2 {
+        let output = tsuzuri(
+            &[
+                "bench",
+                root.to_str().unwrap(),
+                "--allocs",
+                "--json",
+                "--samples",
+                "3",
+            ],
+            &root,
+        );
+        assert!(output.status.success(), "{output:?}");
+        let rows = json_lines(&output);
+        let counts: Vec<_> = rows
+            .iter()
+            .filter(|row| row["type"] == "bench")
+            .map(|row| {
+                assert_eq!(row["status"], "passed");
+                (
+                    row["alloc_calls"].as_u64().unwrap(),
+                    row["alloc_bytes"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(counts, [(0, 0), (1, 80), (1, 80), (0, 0), (2, 96)]);
+        if let Some(previous) = previous.as_ref() {
+            assert_eq!(&counts, previous);
+        }
+        previous = Some(counts);
+        assert!(rows.last().unwrap().get("alloc_calls").is_none());
+    }
+    let output = tsuzuri(
+        &[
+            "bench",
+            root.to_str().unwrap(),
+            "--allocs",
+            "--samples",
+            "1",
+        ],
+        &root,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains(", alloc_calls 1, alloc_bytes 80 per iteration")
+    );
+    clean(&root);
+}
+
+#[test]
+fn bench_allocs_is_opt_in_and_keeps_the_json_keys() {
+    let root = project("alloc-opt-in", &[("Main.tz", ALLOCATION_BENCHES)]);
+    let output = tsuzuri(
+        &["bench", root.to_str().unwrap(), "--json", "--samples", "1"],
+        &root,
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("alloc_"));
+    for line in stdout
+        .lines()
+        .filter(|line| line.contains("\"type\":\"bench\""))
+    {
+        let positions: Vec<_> = [
+            "type",
+            "index",
+            "module",
+            "name",
+            "status",
+            "workload",
+            "target",
+            "opt",
+            "cpu_mode",
+            "metric",
+            "unit",
+            "iterations",
+            "samples",
+            "median",
+            "min",
+            "max",
+        ]
+        .iter()
+        .map(|key| line.find(&format!("\"{key}\":")).unwrap())
+        .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{line}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            positions.len()
+        );
+    }
+    let output = tsuzuri(&["bench", root.to_str().unwrap(), "--samples", "1"], &root);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("alloc_calls"));
+    clean(&root);
+}
+
+#[test]
+fn bench_allocs_rejects_other_commands_and_reports_failures() {
+    let root = project(
+        "alloc-failures",
+        &[("Main.tz", "bench \"trap\" = Bench.of (\\_ -> assert false)")],
+    );
+    for action in ["run", "test", "check", "build"] {
+        let output = tsuzuri(&[action, root.to_str().unwrap(), "--allocs"], &root);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("--allocs is only valid with bench")
+        );
+    }
+    let output = tsuzuri(
+        &[
+            "bench",
+            root.to_str().unwrap(),
+            "--allocs",
+            "--json",
+            "--samples",
+            "1",
+        ],
+        &root,
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let rows = json_lines(&output);
+    assert_eq!(rows[0]["status"], "failed");
+    assert!(rows[0].get("alloc_calls").is_none());
+    fs::write(
+        root.join("Main.tz"),
+        r#"
+bench "negative allocation delta" = \n ->
+    if n == 1 then
+        let xs = new [i64](10, \i -> i)
+        Bench.consume (ref xs)
+    else ()
+    0
+"#,
+    )
+    .unwrap();
+    let output = tsuzuri(
+        &[
+            "bench",
+            root.to_str().unwrap(),
+            "--allocs",
+            "--json",
+            "--samples",
+            "1",
+        ],
+        &root,
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let rows = json_lines(&output);
+    assert_eq!(rows[0]["status"], "failed");
+    assert!(
+        rows[0]["failure"]
+            .as_str()
+            .unwrap()
+            .contains("allocation run: returned a negative allocation count")
+    );
+    assert!(rows[0].get("alloc_calls").is_none());
+    clean(&root);
 }
 
 #[test]

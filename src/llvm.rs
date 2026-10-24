@@ -1007,6 +1007,8 @@ pub struct TestRunnerOptions<'a> {
     pub debug: Option<(&'a [TrapSource<'a>], bool)>,
     /// How a native runner computes f16 values (D10).
     pub f16: F16Path,
+    /// Link the counting heap even when no selected test reads its counters.
+    pub allocator: Allocator,
 }
 
 pub fn emit_test_runner_with(
@@ -1033,6 +1035,7 @@ pub fn emit_test_runner_with(
             coverage: options.coverage.filter(|_| !options.wasm),
             seed: options.seed,
             f16: options.f16,
+            allocator: options.allocator,
             ..Instrumentation::default()
         },
     )
@@ -1051,6 +1054,24 @@ pub fn emit_bench_runner_with(
     selected: &[usize],
     f16: F16Path,
 ) -> Result<String, Diagnostic> {
+    emit_bench_runner_in(module, selected, f16, Allocator::System)
+}
+
+/// A separate counting runner: allocation instrumentation never disturbs benchmark timings.
+pub fn emit_bench_allocation_runner(
+    module: &CheckedModule,
+    selected: &[usize],
+    f16: F16Path,
+) -> Result<String, Diagnostic> {
+    emit_bench_runner_in(module, selected, f16, Allocator::Counting)
+}
+
+fn emit_bench_runner_in(
+    module: &CheckedModule,
+    selected: &[usize],
+    f16: F16Path,
+    allocator: Allocator,
+) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.benches.len()) {
         return Err(Diagnostic::new(
             "E2000",
@@ -1066,6 +1087,7 @@ pub fn emit_bench_runner_with(
         false,
         Instrumentation {
             f16,
+            allocator,
             ..Instrumentation::default()
         },
     )
@@ -1521,7 +1543,12 @@ fn emit_program_in(
     // Only a program that reads `Env.args` receives argc and argv; other entries keep `@main()`.
     let uses_args = intrinsics.contains("declare void @tsuzuri_os_set_args(i32, ptr)");
     if entry != Entry::BenchRunner && intrinsics.contains("declare i64 @tsuzuri_bench_now()") {
-        return Err(clock_error(module, &roots));
+        return Err(restricted_error(
+            module,
+            &roots,
+            RestrictedKind::Clock,
+            entry,
+        ));
     }
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
@@ -1559,6 +1586,20 @@ fn emit_program_in(
             "define i32 @tsuzuri_bench_count() {{\nentry:\n  ret i32 {}\n}}",
             selected.len()
         );
+        if instrumentation.allocator == Allocator::Counting {
+            output.push_str(
+                "define void @tsuzuri_bench_counts(ptr %out) {\nentry:\n  \
+                 %allocs = call i64 @tz.heap.counter(i64 0)\n  \
+                 store i64 %allocs, ptr %out, align 8\n  \
+                 %reallocs = call i64 @tz.heap.counter(i64 1)\n  \
+                 %second = getelementptr inbounds i64, ptr %out, i64 1\n  \
+                 store i64 %reallocs, ptr %second, align 8\n  \
+                 %bytes = call i64 @tz.heap.counter(i64 3)\n  \
+                 %third = getelementptr inbounds i64, ptr %out, i64 2\n  \
+                 store i64 %bytes, ptr %third, align 8\n  \
+                 ret void\n}\n",
+            );
+        }
         output.push_str("define i64 @tsuzuri_bench_sample(i32 %index, i64 %iterations) {\nentry:\n  switch i32 %index, label %bad [\n");
         for index in 0..selected.len() {
             let _ = writeln!(output, "    i32 {index}, label %bench{index}");
@@ -1620,6 +1661,27 @@ fn emit_program_in(
         output.push('\n');
     }
     let mut runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&output);
+    let reads_counters = runtime_symbols.contains("tz.heap.counter");
+    if reads_counters && matches!(allocator, Allocator::Host | Allocator::Small) {
+        return Err(Diagnostic::new(
+            "E2000",
+            "Alloc needs the counting allocator; remove --allocator host or --allocator small, or build with --allocator counting",
+            Span::default(),
+        ));
+    }
+    if reads_counters && allocator == Allocator::System && entry != Entry::TestRunner {
+        return Err(restricted_error(
+            module,
+            &roots,
+            RestrictedKind::Counter,
+            entry,
+        ));
+    }
+    let allocator = if reads_counters {
+        Allocator::Counting
+    } else {
+        allocator
+    };
     if runtime_symbols.prefix("tz.rec.") {
         runtime_symbols.append(&mut output, include_str!("runtime/recursive.ll"));
     }
@@ -1795,6 +1857,7 @@ fn emit_program_in(
         }
     }
     if runtime_symbols.prefix("tz.string.")
+        || reads_counters
         || runtime_symbols.prefix("tz.utf8string.")
         || runtime_symbols.prefix("tz.free")
         || runtime_symbols.prefix("tz.alloc")
@@ -3171,17 +3234,41 @@ pub(crate) fn reachable_functions(
     program_reach(module, roots, benches).1
 }
 
-/// Pushes the functions that `expression` refers to onto `pending`, and sets `clock` if it reads
-/// the clock `Bench.now`.
+/// Runtime resources whose readers need a dedicated runner or an explicit allocator.
+#[derive(Clone, Copy, Default)]
+struct Restricted {
+    clock: bool,
+    counter: bool,
+}
+
+#[derive(Clone, Copy)]
+enum RestrictedKind {
+    Clock,
+    Counter,
+}
+
+impl Restricted {
+    fn any(self) -> bool {
+        self.clock || self.counter
+    }
+
+    fn has(self, kind: RestrictedKind) -> bool {
+        match kind {
+            RestrictedKind::Clock => self.clock,
+            RestrictedKind::Counter => self.counter,
+        }
+    }
+}
+
 fn references(
     expression: &TypedExpr,
     module: &CheckedModule,
     pending: &mut Vec<usize>,
-    clock: &mut bool,
+    restricted: &mut Restricted,
 ) {
-    direct_references(expression, module, pending, clock);
+    direct_references(expression, module, pending, restricted);
     for child in expression.children() {
-        references(child, module, pending, clock);
+        references(child, module, pending, restricted);
     }
 }
 
@@ -3190,7 +3277,7 @@ fn direct_references(
     expression: &TypedExpr,
     module: &CheckedModule,
     pending: &mut Vec<usize>,
-    clock: &mut bool,
+    restricted: &mut Restricted,
 ) {
     match &expression.kind {
         TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::Closure(id, _) => {
@@ -3209,32 +3296,42 @@ fn direct_references(
         TypedExprKind::Function(FunctionRef::Builtin(instance))
             if instance.builtin == Builtin::BenchNow =>
         {
-            *clock = true;
+            restricted.clock = true;
+        }
+        TypedExprKind::Function(FunctionRef::Builtin(instance))
+            if instance.builtin == Builtin::AllocCounter =>
+        {
+            restricted.counter = true;
         }
         _ => {}
     }
 }
 
-/// The functions reachable from `pending`, and those of them that read the clock themselves.
+/// Reachable functions, and those that directly read runner-only resources.
 fn close(module: &CheckedModule, mut pending: Vec<usize>) -> (BTreeSet<usize>, BTreeSet<usize>) {
     let mut reachable = BTreeSet::new();
-    let mut clocks = BTreeSet::new();
+    let mut restricted_functions = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if reachable.insert(id) {
-            let mut clock = false;
-            references(&module.functions[id].body, module, &mut pending, &mut clock);
-            if clock {
-                clocks.insert(id);
+            let mut restricted = Restricted::default();
+            references(
+                &module.functions[id].body,
+                module,
+                &mut pending,
+                &mut restricted,
+            );
+            if restricted.any() {
+                restricted_functions.insert(id);
             }
         }
     }
-    (reachable, clocks)
+    (reachable, restricted_functions)
 }
 
 /// `reachable_functions` with its roots. Without explicit roots, the roots are the public user
-/// functions, the exports, and the entry, but a public function that reaches the clock
-/// `Bench.now`, which only the bench runner defines, is a root only if it is exported or the
-/// entry: helpers of `bench` declarations do not make other builds fail (G18 D3). Such a program
+/// functions, the exports, and the entry, but a public function that reaches `Bench.now` or
+/// `Alloc.__counter` is a root only if exported or the entry: test and benchmark helpers do not
+/// make other builds fail (G18 D3, F14). Such a program
 /// would otherwise be rejected, so the output of every program that builds stays the same.
 fn program_reach(
     module: &CheckedModule,
@@ -3268,11 +3365,11 @@ fn program_reach(
         .map(|(id, _)| id)
         .collect();
     let roots: Vec<usize> = candidates.iter().chain(&drops).copied().collect();
-    let (reachable, clocks) = close(module, roots.clone());
-    if clocks.is_empty() {
+    let (reachable, restricted_functions) = close(module, roots.clone());
+    if restricted_functions.is_empty() {
         return (roots, reachable);
     }
-    let reaching = reaching(module, &reachable, &clocks);
+    let reaching = reaching(module, &reachable, &restricted_functions);
     let roots: Vec<usize> = candidates
         .into_iter()
         .filter(|id| {
@@ -3292,7 +3389,12 @@ fn reaching(
     let mut callers: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for &id in reachable {
         let mut callees = Vec::new();
-        references(&module.functions[id].body, module, &mut callees, &mut false);
+        references(
+            &module.functions[id].body,
+            module,
+            &mut callees,
+            &mut Restricted::default(),
+        );
         for callee in callees {
             callers.entry(callee).or_default().push(id);
         }
@@ -3309,14 +3411,29 @@ fn reaching(
     reaching
 }
 
-/// The `E1018` of an output other than the bench runner's that reaches `Bench.now`. It names the
-/// root that reaches the clock and the last function written in user code on the shortest path
+/// An `E1018` names the root and last user function on the shortest path
 /// from the roots (in order) to a body that reads it, at the expression of that function that
 /// leads there.
-fn clock_error(module: &CheckedModule, roots: &[usize]) -> Diagnostic {
-    const RULE: &str = "Bench.now runs only under tsuzuri bench";
-    const ADVICE: &str =
-        "call it only from bench declarations and from functions that only benchmarks use";
+fn restricted_error(
+    module: &CheckedModule,
+    roots: &[usize],
+    kind: RestrictedKind,
+    entry: Entry,
+) -> Diagnostic {
+    let (rule, advice) = match kind {
+        RestrictedKind::Clock => (
+            "Bench.now runs only under tsuzuri bench",
+            "call it only from bench declarations and from functions that only benchmarks use",
+        ),
+        RestrictedKind::Counter => (
+            "Alloc reads the counters of the counting allocator, which only tsuzuri test and builds with --allocator counting link",
+            if entry == Entry::BenchRunner {
+                "count the allocations of a bench with tsuzuri bench --allocs instead"
+            } else {
+                "build with --allocator counting, or call it only from tests and from functions that only tests use"
+            },
+        ),
+    };
     let mut previous: BTreeMap<usize, Option<usize>> = BTreeMap::new();
     let mut queue = std::collections::VecDeque::new();
     let mut visit = |id: usize, from: Option<usize>, queue: &mut std::collections::VecDeque<_>| {
@@ -3331,9 +3448,14 @@ fn clock_error(module: &CheckedModule, roots: &[usize]) -> Diagnostic {
     let mut found = None;
     while let Some(id) = queue.pop_front() {
         let mut callees = Vec::new();
-        let mut clock = false;
-        references(&module.functions[id].body, module, &mut callees, &mut clock);
-        if clock {
+        let mut restricted = Restricted::default();
+        references(
+            &module.functions[id].body,
+            module,
+            &mut callees,
+            &mut restricted,
+        );
+        if restricted.has(kind) {
             found = Some(id);
             break;
         }
@@ -3342,7 +3464,7 @@ fn clock_error(module: &CheckedModule, roots: &[usize]) -> Diagnostic {
         }
     }
     let Some(found) = found else {
-        return Diagnostic::new("E1018", format!("{RULE}; {ADVICE}"), Span::default());
+        return Diagnostic::new("E1018", format!("{rule}; {advice}"), Span::default());
     };
     let mut path = vec![found];
     while let Some(Some(id)) = previous.get(path.last().unwrap()) {
@@ -3372,14 +3494,14 @@ fn clock_error(module: &CheckedModule, roots: &[usize]) -> Diagnostic {
         .unwrap_or(0);
     let next = path.get(named + 1).copied();
     let function = &module.functions[path[named]];
-    let span = clock_use(&function.body, module, next)
+    let span = restricted_use(&function.body, module, next, kind)
         .filter(|span| *span != Span::default())
         .unwrap_or(function.span);
     let message = match source_function_name(function) {
         Some(name) if named > 0 => {
-            format!("{RULE}, but {root_name} reaches it through `{name}`; {ADVICE}")
+            format!("{rule}, but {root_name} reaches it through `{name}`; {advice}")
         }
-        _ => format!("{RULE}, but {root_name} reads it; {ADVICE}"),
+        _ => format!("{rule}, but {root_name} reads it; {advice}"),
     };
     Diagnostic::new("E1018", message, span)
 }
@@ -3400,18 +3522,19 @@ fn source_function_name(function: &CheckedFunction) -> Option<String> {
 }
 
 /// The span of the first expression of `expression`, in tree order, that refers to function
-/// `target`, or that reads the clock if `target` is `None`.
-fn clock_use(
+/// `target`, or that reads the restricted resource if `target` is `None`.
+fn restricted_use(
     expression: &TypedExpr,
     module: &CheckedModule,
     target: Option<usize>,
+    kind: RestrictedKind,
 ) -> Option<Span> {
     let mut callees = Vec::new();
-    let mut clock = false;
-    direct_references(expression, module, &mut callees, &mut clock);
+    let mut restricted = Restricted::default();
+    direct_references(expression, module, &mut callees, &mut restricted);
     let refers = match target {
         Some(target) => callees.contains(&target),
-        None => clock,
+        None => restricted.has(kind),
     };
     if refers {
         return Some(expression.span);
@@ -3419,7 +3542,7 @@ fn clock_use(
     expression
         .children()
         .into_iter()
-        .find_map(|child| clock_use(child, module, target))
+        .find_map(|child| restricted_use(child, module, target, kind))
 }
 
 /// Record and union types, generic instances included, reachable from
@@ -7062,6 +7185,9 @@ fn emit_builtin(
                 "define internal i64 {symbol}() nounwind {{\nentry:\n  %now = call i64 @tsuzuri_bench_now()\n  ret i64 %now\n}}\n\n"
             )
         }
+        Builtin::AllocCounter => format!(
+            "define internal i64 {symbol}(i64 %index) nounwind {{\nentry:\n  %count = call i64 @tz.heap.counter(i64 %index)\n  ret i64 %count\n}}\n\n"
+        ),
         Builtin::GenSeed => format!(
             "define internal i64 {symbol}() nounwind {{\nentry:\n  ret i64 {}\n}}\n\n",
             globals.seed.unwrap_or(DEFAULT_PROPERTY_SEED) as i64

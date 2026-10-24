@@ -169,7 +169,7 @@ Copy コレクションは必要なら複製されます。`own` の型は、数
 | 禁止する効果 | 例 |
 | --- | --- |
 | 外部世界との入出力 | `IO` の実行、ファイル、OS、ネットワーク、extern の呼び出し |
-| デバッグ出力・時計・実行時の乱数 | `Debug.print`、ベンチの時計、OS の乱数。明示的な seed の `Random.pcg` は許可 |
+| デバッグ出力・確保カウンタ・時計・実行時の乱数 | `Debug.print`、`Alloc.snapshot`／`Alloc.since`／`Alloc.measure` によるカウンタの観測、ベンチの時計、OS の乱数。明示的な seed の `Random.pcg` は許可 |
 | 共有可変状態 | `Atomic`、`Mutex`、`Channel`、`Rc`／`Arc` の操作 |
 | 不透明なタスク・非同期実行器 | 入力から受け取る Task、非同期実行器の操作 |
 | GPU・動的ディスパッチ | `Gpu` の操作、`dyn` の構築と呼び出し |

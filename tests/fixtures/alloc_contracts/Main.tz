@@ -1,0 +1,471 @@
+// Structural allocation contracts of the standard library (F14).
+// Expectations follow the rules above each test, not the compiler's output.
+// Windows contain only the measured operation; diagnostics and borrows stay outside.
+// Pointer-dependent layouts check events only, not bytes.
+
+record Point { x: i64, y: i64 }
+union Shape = Circle of i64 | Rect of Point
+union Tree = Leaf | Node of Tree * i64 * Tree
+
+def expect :: string -> i64 -> i64 -> i64 -> i64 -> Alloc.Stats -> unit
+fn expect label allocs reallocs frees bytes stats =
+    let same = stats.allocs == allocs && stats.reallocs == reallocs && stats.frees == frees && stats.bytes == bytes
+    if !same then Debug.print $"{label}: allocs {stats.allocs}/{allocs} reallocs {stats.reallocs}/{reallocs} frees {stats.frees}/{frees} bytes {stats.bytes}/{bytes} (got/want)" else ()
+    assert same
+
+def expect_events :: string -> i64 -> i64 -> i64 -> Alloc.Stats -> unit
+fn expect_events label allocs reallocs frees stats =
+    let same = stats.allocs == allocs && stats.reallocs == reallocs && stats.frees == frees
+    if !same then Debug.print $"{label}: allocs {stats.allocs}/{allocs} reallocs {stats.reallocs}/{reallocs} frees {stats.frees}/{frees} (got/want)" else ()
+    assert same
+
+def area :: ref Shape -> i64
+fn area shape =
+    match shape with
+    | Circle r -> 3 * r * r
+    | Rect p -> p.x * p.y
+
+def rec count_nodes :: ref Tree -> i64
+fn rec count_nodes tree =
+    match tree with
+    | Leaf -> 0
+    | Node (left, _, right) -> 1 + count_nodes left + count_nodes right
+
+def make_and_drop :: unit -> i64
+fn make_and_drop _unit =
+    let xs = new [i64](10, \i -> i)
+    Array.length (ref xs)
+
+def build_and_drop_tree :: unit -> i64
+fn build_and_drop_tree _unit =
+    let tree = Node (Node (Leaf, 2, Leaf), 1, Node (Leaf, 3, Leaf))
+    count_nodes (ref tree)
+
+// --- Array ---
+
+// Rule: new [T](n, f) takes one block of n elements (array.md). 10 x 8 bytes.
+test "new array: one block of n elements" =
+    let start = Alloc.snapshot ()
+    let xs = new [i64](10, \i -> i)
+    let used = Alloc.since start
+    expect "new [i64](10)" 1 0 0 80 used
+    assert (Array.length (ref xs) == 10)
+
+// Rule: allocate_array requests one byte even for length zero.
+test "new array of length 0: one block of one byte" =
+    let start = Alloc.snapshot ()
+    let xs = new [i64](0, \i -> i)
+    let used = Alloc.since start
+    expect "new [i64](0)" 1 0 0 1 used
+    assert (Array.length (ref xs) == 0)
+
+// Rule: a literal without new lives on the stack (stack-and-heap.md).
+test "array literal without new: nothing on the heap" =
+    let start = Alloc.snapshot ()
+    let xs = [1i64, 2i64, 3i64]
+    let total = xs[0] + xs[1] + xs[2]
+    let used = Alloc.since start
+    expect "[1, 2, 3]" 0 0 0 0 used
+    assert (total == 6)
+
+// Rule: new [..] puts the elements in one heap block. 3 x 8 bytes.
+test "array literal with new: one block" =
+    let start = Alloc.snapshot ()
+    let xs = new [1i64, 2i64, 3i64]
+    let used = Alloc.since start
+    expect "new [1, 2, 3]" 1 0 0 24 used
+    assert (Array.length (ref xs) == 3)
+
+// Rule: [] is null with length zero; new [] allocates one byte (stack-and-heap.md).
+test "empty array: [] has no block, new [] has one byte" =
+    let before_empty = Alloc.snapshot ()
+    let empty: [i64] = []
+    let used_empty = Alloc.since before_empty
+    expect "[]" 0 0 0 0 used_empty
+    let before_new = Alloc.snapshot ()
+    let heap_empty: [i64] = new []
+    let used_new = Alloc.since before_new
+    expect "new []" 1 0 0 1 used_new
+    assert (Array.length (ref empty) == 0 && Array.length (ref heap_empty) == 0)
+
+// Rule: Array.map returns one new array of the result. 10 x 8 bytes.
+test "Array.map: one result block" =
+    let xs = new [i64](10, \i -> i)
+    let start = Alloc.snapshot ()
+    let ys = Array.map (\x -> x * 3) (ref xs)
+    let used = Alloc.since start
+    expect "Array.map" 1 0 0 80 used
+    assert (ys[9] == 27)
+
+// Rule: Array.copy returns one new array of the same length. 10 x 8 bytes.
+test "Array.copy: one block of the same size" =
+    let xs = new [i64](10, \i -> i)
+    let start = Alloc.snapshot ()
+    let ys = Array.copy (ref xs)
+    let used = Alloc.since start
+    expect "Array.copy" 1 0 0 80 used
+    assert (ys[9] == 9)
+
+// Rule: Array.append returns one new array of both lengths. (10 + 5) x 8 bytes.
+test "Array.append: one block of both lengths" =
+    let a = new [i64](10, \i -> i)
+    let b = new [i64](5, \i -> i)
+    let start = Alloc.snapshot ()
+    let c = Array.append (ref a) (ref b)
+    let used = Alloc.since start
+    expect "Array.append" 1 0 0 120 used
+    assert (Array.length (ref c) == 15)
+
+// Rule: Array.rev returns one new array of the same length. 50 x 8 bytes.
+test "Array.rev: one block of the same size" =
+    let xs = new [i64](50, \i -> i)
+    let start = Alloc.snapshot ()
+    let ys = Array.rev (ref xs)
+    let used = Alloc.since start
+    expect "Array.rev" 1 0 0 400 used
+    assert (ys[0] == 49)
+
+// Rule: shared borrows, indexing, length and for read in place (stack-and-heap.md).
+test "reading an array allocates nothing" =
+    let xs = new [i64](100, \i -> i)
+    let start = Alloc.snapshot ()
+    let total = Array.sum (ref xs)
+    let folded = Array.fold (\acc x -> acc + x) 0 (ref xs)
+    let first = xs[0] + Array.length (ref xs)
+    let mut looped = 0
+    for i in 0i64 .. 99i64 do looped = looped + xs[i]
+    let used = Alloc.since start
+    expect "reads" 0 0 0 0 used
+    assert (total == 4950 && folded == 4950 && first == 100 && looped == 4950)
+
+// Rule: ref xs[a..b] borrows a range without copying (array.md).
+test "a slice borrows: no allocation" =
+    let xs = new [i64](100, \i -> i)
+    let start = Alloc.snapshot ()
+    let part = ref xs[10..20]
+    let total = Array.sum part
+    let used = Alloc.since start
+    expect "slice" 0 0 0 0 used
+    assert (total == 145)
+
+// Rule: an owner frees its block at scope exit (ownership.md).
+test "dropping an array frees its block" =
+    let start = Alloc.snapshot ()
+    let length = make_and_drop ()
+    let used = Alloc.since start
+    expect "make and drop" 1 0 1 80 used
+    assert (length == 10)
+
+// Rule: Array.update_at reuses an owned array at its last use (array.md, ownership.md).
+test "Array.update_at on a uniquely owned array: in place" =
+    let xs = new [i64](4, \i -> i)
+    let start = Alloc.snapshot ()
+    let ys = Array.update_at 0 5 xs
+    let used = Alloc.since start
+    expect "Array.update_at" 0 0 0 0 used
+    assert (ys[0] == 5)
+
+// Rule: rebinding xs = Array.update_at i v xs in a loop is also a last use.
+test "Array.update_at in a loop that rebinds the array: in place" =
+    let mut xs = new [i64](100, \_i -> 0)
+    let start = Alloc.snapshot ()
+    for i in 0i64 .. 99i64 do
+        xs = Array.update_at i (i * 2) xs
+    let used = Alloc.since start
+    expect "Array.update_at loop" 0 0 0 0 used
+    let last = xs[99]
+    assert (last == 198)
+
+// Rule: a local borrowed anywhere in the function is excluded from last-use move
+// (ownership.md). Ten updates each copy 100 x 8 bytes and free the previous array.
+test "Array.update_at in a loop on an array that is borrowed elsewhere: one copy per update" =
+    let mut xs = new [i64](100, \_i -> 0)
+    let start = Alloc.snapshot ()
+    for i in 0i64 .. 9i64 do
+        xs = Array.update_at i 1 xs
+    let used = Alloc.since start
+    expect "Array.update_at loop with a borrow" 10 0 10 8000 used
+    assert (Array.length (ref xs) == 100)
+
+// Rule: binding an array to another name while using both copies it (ownership.md).
+test "using an array after binding it elsewhere: one implicit copy" =
+    let xs = new [i64](10, \i -> i)
+    let start = Alloc.snapshot ()
+    let ys = xs
+    let total = Array.sum (ref xs) + Array.sum (ref ys)
+    let used = Alloc.since start
+    expect "implicit copy" 1 0 0 80 used
+    assert (total == 90)
+
+// Rule: Array.copy returns a unique temporary that update_at can update in place.
+test "Array.update_at on a fresh copy: the copy only" =
+    let xs = new [i64](10, \i -> i)
+    let start = Alloc.snapshot ()
+    let ys = Array.update_at 0 9 (Array.copy (ref xs))
+    let used = Alloc.since start
+    expect "Array.update_at on copy" 1 0 0 80 used
+    assert (ys[0] == 9 && xs[0] == 0)
+
+// Rule: Array.filter collects in Vec and moves its buffer to an array. For 25 kept elements,
+// capacities 4,8,16,32 request 32+64+128+256=480 bytes: one allocation, three resizes.
+test "Array.filter: collects through a Vec that doubles from 4" =
+    let xs = new [i64](50, \i -> i)
+    let start = Alloc.snapshot ()
+    let ys = Array.filter (\x -> x % 2 == 0) (ref xs)
+    let used = Alloc.since start
+    expect "Array.filter" 1 3 0 480 used
+    assert (Array.length (ref ys) == 25)
+
+// Rule: Array.sort_in_place promises no allocation (array.md and its doc comment).
+test "Array.sort_in_place: no allocation" =
+    let mut xs = new [i64](100, \i -> 100 - i)
+    let start = Alloc.snapshot ()
+    Array.sort_in_place (ref mut xs)
+    let used = Alloc.since start
+    expect "Array.sort_in_place" 0 0 0 0 used
+    assert (xs[0] == 1 && xs[99] == 100)
+
+// --- Vec ---
+
+// Rule: Vec.empty has no buffer (vec.md).
+test "Vec.empty: no block" =
+    let start = Alloc.snapshot ()
+    let v: Vec<i64> = Vec.empty()
+    let used = Alloc.since start
+    expect "Vec.empty" 0 0 0 0 used
+    assert (Vec.length (ref v) == 0)
+
+// Rule: initial Vec capacity is four (vec.md). 4 x 8 bytes.
+test "Vec.push_owned: the first push allocates four elements" =
+    let start = Alloc.snapshot ()
+    let mut v: Vec<i64> = Vec.empty()
+    for i in 1i64 .. 4i64 do v = Vec.push_owned i v
+    let used = Alloc.since start
+    expect "4 pushes" 1 0 0 32 used
+    assert (Vec.length (ref v) == 4)
+
+// Rule: a full Vec doubles capacity (vec.md). The fifth push resizes 32 to 64 bytes.
+test "Vec.push_owned: the fifth push doubles the capacity by realloc" =
+    let start = Alloc.snapshot ()
+    let mut v: Vec<i64> = Vec.empty()
+    for i in 1i64 .. 5i64 do v = Vec.push_owned i v
+    let used = Alloc.since start
+    expect "5 pushes" 1 1 0 96 used
+    assert (Vec.capacity (ref v) == 8)
+
+// Rule: capacities 4,8,16,32,64,128 mean one allocation, five resizes,
+// and 8 x (4+8+16+32+64+128) = 2016 requested bytes.
+test "Vec.push_owned: 100 pushes realloc five times" =
+    let start = Alloc.snapshot ()
+    let mut v: Vec<i64> = Vec.empty()
+    for i in 1i64 .. 100i64 do v = Vec.push_owned i v
+    let used = Alloc.since start
+    expect "100 pushes" 1 5 0 2016 used
+    assert (Vec.capacity (ref v) == 128)
+
+// Rule: with_capacity n reserves all n elements (vec.md). 100 x 8 bytes.
+test "Vec.with_capacity: no realloc while the capacity lasts" =
+    let start = Alloc.snapshot ()
+    let mut v: Vec<i64> = Vec.with_capacity 100
+    for i in 1i64 .. 100i64 do v = Vec.push_owned i v
+    let used = Alloc.since start
+    expect "with_capacity 100" 1 0 0 800 used
+    assert (Vec.length (ref v) == 100)
+
+// Rule: Vec.to_array moves its buffer, as Array.filter relies on.
+test "Vec.to_array: moves the buffer" =
+    let mut v: Vec<i64> = Vec.empty()
+    for i in 1i64 .. 100i64 do v = Vec.push_owned i v
+    let start = Alloc.snapshot ()
+    let xs = Vec.to_array v
+    let used = Alloc.since start
+    expect "Vec.to_array" 0 0 0 0 used
+    assert (Array.length (ref xs) == 100)
+
+// Rule: length and capacity only read metadata (vec.md).
+test "Vec.length and Vec.capacity: no allocation" =
+    let mut v: Vec<i64> = Vec.empty()
+    for i in 1i64 .. 10i64 do v = Vec.push_owned i v
+    let start = Alloc.snapshot ()
+    let length = Vec.length (ref v)
+    let capacity = Vec.capacity (ref v)
+    let used = Alloc.since start
+    expect "Vec.length" 0 0 0 0 used
+    assert (length == 10 && capacity == 16)
+
+// Rule: three element arrays plus one Vec buffer (capacity four) are four blocks.
+// An array descriptor's byte size depends on the target pointer size.
+test "Vec of arrays: one block per array and one for the Vec" =
+    let start = Alloc.snapshot ()
+    let mut v: Vec<[i64]> = Vec.empty()
+    for _i in 1i64 .. 3i64 do v = Vec.push_owned (new [i64](2, \k -> k)) v
+    let used = Alloc.since start
+    expect_events "3 arrays in a Vec" 4 0 0 used
+    assert (Vec.length (ref v) == 3)
+
+// --- string ---
+
+// Rule: literals are static; length, equality and search borrow (stack-and-heap.md, string.md).
+test "string literal, length, equality, search: no allocation" =
+    let unit_text = "abcdefghij"
+    let needle = "jab"
+    let a = String.repeat 40 (ref unit_text)
+    let b = String.repeat 40 (ref unit_text)
+    let start = Alloc.snapshot ()
+    let literal = "hello"
+    let length = String.length (ref a) + String.length (ref literal)
+    let same = a == b
+    let found = String.contains (ref needle) (ref a)
+    let used = Alloc.since start
+    expect "string reads" 0 0 0 0 used
+    assert (length == 405 && same && found)
+
+// Rule: to_string returns a new UTF-16 string: five digits x two bytes.
+test "to_string: one block of two bytes per digit" =
+    let start = Alloc.snapshot ()
+    let text = to_string 12345
+    let used = Alloc.since start
+    expect "to_string 12345" 1 0 0 10 used
+    assert (String.length (ref text) == 5)
+
+// Rule: repeat returns a new UTF-16 string: 10 x 40 code units x two bytes.
+test "String.repeat: one block of two bytes per character" =
+    let unit_text = "abcdefghij"
+    let start = Alloc.snapshot ()
+    let text = String.repeat 40 (ref unit_text)
+    let used = Alloc.since start
+    expect "String.repeat" 1 0 0 800 used
+    assert (String.length (ref text) == 400)
+
+// Rule: interpolation allocates one result: (400+1+400) UTF-16 code units x two bytes.
+test "string interpolation: one block for the whole result" =
+    let unit_text = "abcdefghij"
+    let a = String.repeat 40 (ref unit_text)
+    let start = Alloc.snapshot ()
+    let text = $"{a}-{a}"
+    let used = Alloc.since start
+    expect "interpolation" 1 0 0 1602 used
+    assert (String.length (ref text) == 801)
+
+// Rule: a consumed owned heap string on the left of + extends through realloc.
+// The three requests are 2 x (401+402+403) = 2412 bytes (stack-and-heap.md).
+test "s = s + text on an owned string: realloc in place, no new block" =
+    let unit_text = "abcdefghij"
+    let mut s = String.repeat 40 (ref unit_text)
+    let start = Alloc.snapshot ()
+    s = s + "x"
+    s = s + "y"
+    s = s + "z"
+    let used = Alloc.since start
+    expect "3 appends" 0 3 0 2412 used
+    assert (String.length (ref s) == 403)
+
+// Rule: trim returns a new UTF-16 string. 40 x 14 minus four outer spaces = 556 units.
+test "String.trim: one block for the trimmed text" =
+    let unit_text = "  abcdefghij  "
+    let a = String.repeat 40 (ref unit_text)
+    let start = Alloc.snapshot ()
+    let text = String.trim (ref a)
+    let used = Alloc.since start
+    expect "String.trim" 1 0 0 1112 used
+    assert (String.length (ref text) == 556)
+
+// --- records, unions, Rc, closures ---
+
+// Rule: records, tuples, Maybe and non-recursive unions are values (stack-and-heap.md).
+test "records, tuples, Maybe, unions with payloads: nothing on the heap" =
+    let start = Alloc.snapshot ()
+    let p = Point { x: 3, y: 4 }
+    let pair = (p.x, p.y)
+    let found: Maybe<i64> = Maybe.Some 7
+    let shape = Rect p
+    let size = area (ref shape)
+    let used = Alloc.since start
+    expect "values" 0 0 0 0 used
+    match found with
+    | Maybe.Some n -> assert (n == 7)
+    | Maybe.None -> assert false
+    match pair with
+    | (a, b) -> assert (size == 12 && a + b == 7)
+
+// Rule: each recursive constructor with children allocates a node (three here).
+// Owned nodes are freed at scope exit; node byte size depends on pointer size.
+test "recursive union: one block per node, freed with the tree" =
+    let start = Alloc.snapshot ()
+    let tree = Node (Node (Leaf, 2, Leaf), 1, Node (Leaf, 3, Leaf))
+    let built = Alloc.since start
+    expect_events "tree built" 3 0 0 built
+    assert (count_nodes (ref tree) == 3)
+    let before_drop = Alloc.snapshot ()
+    let nodes = build_and_drop_tree ()
+    let used = Alloc.since before_drop
+    expect_events "tree built and dropped" 3 0 3 used
+    assert (nodes == 3)
+
+// Rule: Maybe itself is a value; only its array allocates. 4 x 8 bytes.
+test "Maybe holding an array: the array only" =
+    let start = Alloc.snapshot ()
+    let found = Maybe.Some (new [i64](4, \i -> i))
+    let used = Alloc.since start
+    expect "Maybe.Some array" 1 0 0 32 used
+    match found with
+    | Maybe.Some xs -> assert (Array.length (ref xs) == 4)
+    | Maybe.None -> assert false
+
+// Rule: Rc.new allocates count+value; its owned array has a block too. Rc.share only counts.
+test "Rc.new allocates one block, Rc.share none" =
+    let start = Alloc.snapshot ()
+    let a = Rc.new (new [i64](4, \i -> i))
+    let built = Alloc.since start
+    expect_events "Rc.new" 2 0 0 built
+    let before_share = Alloc.snapshot ()
+    let b = Rc.share (ref a)
+    let shared = Alloc.since before_share
+    expect "Rc.share" 0 0 0 0 shared
+    assert (Array.length (ref (Rc.get (ref b))) == 4)
+
+// Rule: a non-escaping closure keeps its environment on the stack (stack-and-heap.md).
+// Passing captured closures to library functions can allocate on wasm32 and is not covered.
+test "a closure that stays in its function: no allocation" =
+    let base = 10
+    let start = Alloc.snapshot ()
+    let add = \x -> x + base
+    let total = add 5 + add 6
+    let used = Alloc.since start
+    expect "local closure" 0 0 0 0 used
+    assert (total == 31)
+
+// --- Alloc itself ---
+
+// Rule: reading counters does not allocate.
+test "Alloc.since right after Alloc.snapshot: all zero" =
+    let start = Alloc.snapshot ()
+    let used = Alloc.since start
+    expect "empty window" 0 0 0 0 used
+
+// Rule: measure counts only its callback; its environment is built before the window.
+test "Alloc.measure: the events of the closure and its result" =
+    let xs = new [i64](10, \i -> i)
+    match Alloc.measure (\() -> Array.map (\x -> x + 1) (ref xs)) with
+    | (used, ys) ->
+        expect "measure" 1 0 0 80 used
+        assert (ys[9] == 10)
+
+// Rule: measure itself does not allocate.
+test "Alloc.measure of code that allocates nothing" =
+    match Alloc.measure (\() -> 1 + 2) with
+    | (used, total) ->
+        expect "measure nothing" 0 0 0 0 used
+        assert (total == 3)
+
+// Rule: cumulative counters let an outer window contain all inner windows.
+test "an outer window contains the windows inside it" =
+    let outer = Alloc.snapshot ()
+    let a = new [i64](4, \i -> i)
+    let inner = Alloc.snapshot ()
+    let b = new [i64](4, \i -> i)
+    let inner_used = Alloc.since inner
+    let outer_used = Alloc.since outer
+    expect "inner" 1 0 0 32 inner_used
+    expect "outer" 2 0 0 64 outer_used
+    assert (Array.length (ref a) + Array.length (ref b) == 8)

@@ -223,7 +223,7 @@ native の `system` は C 標準ライブラリのアロケータで、このヒ
 
 ## ホスト提供のアロケータ（--allocator）
 
-ヒープの確保先は `tsuzuri build` の `--allocator` で選びます。`check` や `run` には付けられません。
+ヒープの確保先は `tsuzuri build` の `--allocator` で選びます。`run` と `test` は `counting` だけを受けます。`check` には付けられません。
 
 ```sh
 tsuzuri build --emit object --allocator host Main.tz
@@ -236,7 +236,9 @@ tsuzuri build --emit object --allocator host Main.tz
 | `counting` | `system` を包み、確保回数、解放回数、使用中バイト、ピークバイトを数える。`tsuzuri_alloc_stats` で読む |
 | `small` | native の 64-bit だけ。512 バイト以下をサイズ区分から返し、それより大きいものは C 標準ライブラリ（[ネイティブのサイズ区分 allocator](#ネイティブのサイズ区分-allocator)） |
 
-`host` と `counting` は、`--emit object`、`llvm`、`header`、または WASM だけで使えます。`--emit exe`、`wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`、`--trap-mode return` と一緒だと `E2000` です。`host` は `--wasm-feature threads` とも同時には指定できません。実行ファイルの既定ヒープは `system` のままです。
+`host` は `--emit object`、`llvm`、`header`、または WASM で使え、実行ファイルとは排他です。`counting` は実行ファイルや共有ライブラリでも使えます。どちらもカーネル出力（`wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`）と `--trap-mode return` との組み合わせは `E2000` です。`host` は `--wasm-feature threads` とも同時には指定できません。実行ファイルの既定ヒープは `system` のままです。
+
+[Alloc](../built-in-types-and-modules/alloc.md) は確保・再確保・解放の回数と要求バイト数を読みます。選んだテストが使うときだけ `tsuzuri test` が counting を自動で連結し、普通のビルドと `run` には明示の `--allocator counting` が必要です。通常のコードが黙って遅い計数 heap に変わることはありません。ホスト向けの `tsuzuri_alloc_stats` の 32 バイト・4 フィールドは変わりません。
 
 `--freestanding` は、C 標準ライブラリに依存しない native の `object` / `llvm` / `header` を出します。`--allocator host` が必須です。残ってよい外部は、ホストの allocator、自分で宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Debug`、プログラム引数は `E2000` で拒否されます。
 

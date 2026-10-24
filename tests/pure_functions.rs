@@ -883,3 +883,21 @@ fn pure_defs_reach_no_effectful_runtime_symbol() {
         }
     }
 }
+
+#[test]
+fn allocation_counters_are_debug_effects_without_changing_print_diagnostics() {
+    rejected(
+        "pure def snapshot :: unit -> i64 = \\() -> (Alloc.snapshot ()).allocs\n",
+        "reads allocation counters",
+    );
+    rejected(
+        "pure def print :: i64 -> unit = \\value -> Debug.print (ref value)\n",
+        "prints debug output",
+    );
+    let error = analyze("Alloc.__counter 0").unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("private to the standard Alloc module")
+    );
+}

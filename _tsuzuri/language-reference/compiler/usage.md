@@ -429,6 +429,8 @@ native の `exe` と `object`、wasm32 の module だけで、Windows と別の�
 
 ### test
 
+確保数の表明には [Alloc](../built-in-types-and-modules/alloc.md) を使えます。選んだテストが読むときだけ counting heap が自動で連結されます。`--allocator counting` を明示すると、`Alloc` を使わないテストも counting で動きます。ほかの `--allocator` の値は `test` では `E2000` です。
+
 `test "名前" = 式` を、別プロセスで実行します。通常の実行ファイルにはテストは入りません。既定の最適化は `-O0` です。1 件の上限は 30 秒で、並列度は論理 CPU 数と 32 の小さい方までです。`--backend fast` を付けると、テストの runner の IR を Clang に渡さずコンパイラの中で機械語にします（結果、失敗の本文、property テストの反例、`--coverage` の報告は `llvm` と同じです。[コード生成器](option.md#コード生成器)）。
 
 ```text
@@ -455,6 +457,8 @@ WASM のテストは PATH の `node` を使います。配布物の `bin/` か�
 `--coverage PATH` は、成功したテストが通った利用者のコードの行と関数を、lcov 形式で `PATH` に書きます。テストの要約の後に `coverage: 3/4 lines (75.0%), 1/2 functions` のような 1 行が出ます。ネイティブだけで、`--list` や `-g` とは組み合わせられません。数え方は [Test のカバレッジ](../built-in-types-and-modules/test.md#カバレッジ) にあります。
 
 ### bench
+
+`--allocs` は、時間測定とは別の counting 実行器で 1 反復あたりの確保・再確保の合計 `alloc_calls` と要求バイト数 `alloc_bytes` を報告します。JSON では `max` の後にこの 2 キーが付きます。指定しない既定の出力は変わりません。計数の失敗も `E2005` です。
 
 `bench "名前" = 本体` を、bench ごとに別プロセスで 1 件ずつ計測します。既定の最適化は `-O3`、標本は 11 個（`--samples N` で 1〜1000）です。1 標本が 10 ms になるまで反復回数を倍にし、予熱の 1 標本の後に測った 1 回あたりの中央値・最小・最大を出します。速さの合否はありません。
 
