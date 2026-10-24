@@ -6124,7 +6124,7 @@ fn check_modules_collect(
     modules: &[ModuleInput<'_>],
     diagnostics: &mut Diagnostics,
     warning_options: warnings::WarningOptions,
-    semantic: Option<&mut semantic::SemanticIndex>,
+    mut semantic: Option<&mut semantic::SemanticIndex>,
     parallelism: Parallelism,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
@@ -7755,19 +7755,11 @@ fn check_modules_collect(
         (0..declaration_count).collect::<Vec<_>>()
     );
     diagnostics.check()?;
+    let resolve_api = semantic
+        .as_ref()
+        .is_some_and(|index| index.resolved_api.is_some());
     if indexing {
-        let resolve_api = semantic
-            .as_ref()
-            .is_some_and(|index| index.resolved_api.is_some());
-        let index = semantic::collect(
-            modules,
-            &functions,
-            &name_uses,
-            &names,
-            types,
-            &classes,
-            resolve_api,
-        );
+        let index = semantic::collect(modules, &functions, &name_uses, &names, types);
         if !deprecations.is_empty() {
             warnings.extend(warnings::deprecated_uses(
                 modules,
@@ -7776,7 +7768,7 @@ fn check_modules_collect(
                 &deprecations,
             ));
         }
-        if let Some(requested) = semantic {
+        if let Some(requested) = semantic.as_deref_mut() {
             *requested = index;
         }
     }
@@ -7848,6 +7840,17 @@ fn check_modules_collect(
         &names,
         copy_constraints,
         &recursive_functions,
+        |module| {
+            if resolve_api && let Some(index) = semantic {
+                index.resolved_api = Some(semantic::collect_api(
+                    modules,
+                    &module.functions,
+                    &names,
+                    &classes,
+                    &module.types(),
+                ));
+            }
+        },
     );
     drop(specialize_time);
     let module = module?;

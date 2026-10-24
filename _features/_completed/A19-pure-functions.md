@@ -1147,6 +1147,24 @@ def main :: unit -> i32 = \() ->
   最終差分で全 Rust **1,835 passed／2 skipped（targets 12 を含む）**、dev build、
   usage **62 links／5 checked examples／4 native runs／1 test project**、docgen、guide-lite **85／0** を再確認した。
 
+### 推論・公開 alias の要求（2026-10-24）
+
+- `ce9ec39f` の再レビューは前項の inline 制約修正を解決済みと確認したが、overview に
+  推論された `#distance` の署名と、単独の公開 alias の制約という 2 件の追加指摘があった。
+  表示の「No open issues」だけで完了扱いせず、両方が旧実装で失敗する回帰を確認した。
+- モジュール関数の要求は `CheckedFunction.members` の推論・伝播済みの署名を保存する。
+  型付きの使用で精密化された署名なしの宣言は重ねず、具体 receiver で解決済みの要求は除く。
+  公開 alias 自体も既存の alias 展開と inline 制約抽出を使って要求を保存し、使用箇所に依存させない。
+- 同じ snapshot 境界で、所有権が推論する Copy 要求も欠落していたことを回帰で確認した。
+  API の収集を Copy 推論と class 要求の固定点伝播の完了後、generic template の消費直前へ移す。
+  通常の semantic index・非推奨警告の収集時点、制約ソルバー、所有権・特殊化の動作は変えない。
+- 推論された arity 変更、明示／推論の同値性、alpha-renaming、private helper 経由の伝播、
+  具体 receiver の要求を漏らさないこと、単独／連鎖 alias、Copy の直接／間接要求を確認した。
+  API 46＋docs 8＋std 7 の **61 tests passed**、全 target Clippy・fmt が成功した。
+  最終差分で全 Rust **1,839 passed／2 skipped（targets 12 を含む）**、dev build、
+  pure **302**＋parallel **12**（native／WASM × O0／O3）、E2E・frontend cache・LSP 4 件・docgen、
+  usage **62 links／5 checked examples／4 native runs／1 test project**、guide-lite **85／0** を確認した。
+
 ### 確認コマンド（最終受入）
 
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --locked`。

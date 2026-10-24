@@ -4061,6 +4061,7 @@ pub(super) fn specialize(
     names: &Names,
     copy_constraints: Vec<BTreeSet<String>>,
     recursive_functions: &BTreeSet<usize>,
+    before_specialization: impl FnOnce(&CheckedModule),
 ) -> Result<CheckedModule, Diagnostic> {
     for (id, (function, copy_variables)) in module
         .functions
@@ -4258,6 +4259,7 @@ pub(super) fn specialize(
             ));
         }
     }
+    before_specialization(&module);
     let templates = std::mem::take(&mut module.functions);
     let original_count = templates.len();
     let base_count = templates

@@ -685,11 +685,7 @@ fn add_items(
         );
         let result = signature.map_or(&declaration.result, |signature| &signature.result);
         let constraints = effective
-            .and_then(|resolved| {
-                resolved
-                    .function_constraints
-                    .get(&api_key(declaration.name.span))
-            })
+            .and_then(|resolved| resolved.requirements.get(&api_key(declaration.name.span)))
             .map_or(declaration.constraints.as_slice(), Vec::as_slice);
         let header = function_text(
             "def",
@@ -848,11 +844,17 @@ fn add_items(
         }
         let mut renaming = fresh();
         let names = parameters(&declaration.parameters, &mut renaming);
+        let target = renaming.ty(&declaration.target);
+        let constraints = effective
+            .and_then(|resolved| resolved.requirements.get(&api_key(declaration.name.span)))
+            .map(|constraints| renaming.constraints(constraints))
+            .unwrap_or_default();
         let header = format!(
-            "type {}{} = {}",
+            "type {}{} = {}{}",
             declaration.name.text,
             parameters_text(&names),
-            type_text(&renaming.ty(&declaration.target))
+            type_text(&target),
+            constraints_text(&constraints),
         );
         add(Item::new("type", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref()));

@@ -136,6 +136,86 @@ fn effective_class_constraints_are_a_canonical_set_without_losing_members() {
 }
 
 #[test]
+fn effective_member_requirements_include_inferred_and_inherited_signatures() {
+    let old = "def f :: 'T -> i64\n  @'T : #distance\nfn f value = 'T.distance value\n";
+    let new = old.replace("'T.distance value", "'T.distance value 0i64");
+    assert_eq!(
+        compare_mode(old, &new, &[], true),
+        ["breaking changed def Main.f"]
+    );
+    let annotated = old.replace("#distance", "(#distance: 'T -> i64)");
+    assert!(compare_mode(old, &annotated, &[], true).is_empty());
+    let annotated_two = new.replace("#distance", "(#distance: 'T -> i64 -> i64)");
+    assert!(compare_mode(&new, &annotated_two, &[], true).is_empty());
+    assert!(compare_mode(old, &old.replace("'T", "'element"), &[], true).is_empty());
+    let inherited = old
+        .replace("def f", "private def helper")
+        .replace("fn f", "fn helper")
+        + "def f :: 'T -> i64 = \\value -> helper value\n";
+    assert_eq!(
+        compare_mode(
+            &inherited,
+            &inherited.replace("'T.distance value", "'T.distance value 0i64"),
+            &[],
+            true,
+        ),
+        ["breaking changed def Main.f"]
+    );
+}
+
+#[test]
+fn effective_concrete_member_requirements_do_not_escape_into_the_api() {
+    let old = "record Item { value: i64 }\ndef distance :: Item -> i64 = \\value -> value.value\n\
+        private def helper :: 'T -> i64\n  @'T : #distance\nfn helper value = 'T.distance value\n\
+        def f :: Item -> i64 = \\value -> 0\n";
+    let new = old.replace("\\value -> 0", "\\value -> helper value");
+    assert!(compare_mode(old, &new, &[], true).is_empty());
+}
+
+#[test]
+fn effective_unreferenced_public_aliases_preserve_their_constraints() {
+    let old = "type Argument<'a> = 'a\n";
+    let new = "type Argument<'a> = Add<'a>\n";
+    for (before, after) in [(old, new), (new, old)] {
+        assert_eq!(
+            compare_mode(before, after, &[], true),
+            ["breaking changed type Main.Argument"]
+        );
+    }
+    assert!(compare_mode(new, &new.replace("'a", "'element"), &[], true).is_empty());
+    let ordered = "type Argument<'a> = Ord<'a>\n";
+    let repeated = "type Argument<'a> = Ord<Ord<'a>>\n";
+    assert!(compare_mode(ordered, repeated, &[], true).is_empty());
+    let old = "type Inner<'a> = 'a\ntype Argument<'a> = Inner<'a>\n";
+    let new = old.replace("= 'a", "= Add<'a>");
+    assert_eq!(
+        compare_mode(old, &new, &[], true),
+        [
+            "breaking changed type Main.Argument",
+            "breaking changed type Main.Inner",
+        ]
+    );
+}
+
+#[test]
+fn effective_inferred_copy_requirements_are_part_of_the_callers_contract() {
+    let old = "def f :: own 'a -> 'a = \\value -> value\n";
+    let new = "def f :: own 'a -> 'a = \\value -> { let copy = value; value }\n";
+    assert_eq!(
+        compare_mode(old, new, &[], true),
+        ["breaking changed def Main.f"]
+    );
+    let inherited = |source: &str| {
+        source.replace("def f", "private def helper")
+            + "def f :: own 'a -> 'a = \\value -> helper value\n"
+    };
+    assert_eq!(
+        compare_mode(&inherited(old), &inherited(new), &[], true),
+        ["breaking changed def Main.f"]
+    );
+}
+
+#[test]
 fn effective_satisfied_body_constraints_do_not_change_the_api() {
     assert!(
         compare_mode(

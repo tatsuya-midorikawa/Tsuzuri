@@ -3,6 +3,7 @@ use super::*;
 #[path = "semantic_api.rs"]
 mod api;
 pub use api::ResolvedApi;
+pub(super) use api::collect as collect_api;
 pub(crate) use api::key as api_key;
 
 #[derive(Clone, Debug)]
@@ -621,15 +622,10 @@ pub(super) fn collect(
     name_uses: &[Vec<(Span, NameTarget)>],
     names: &Names,
     types: TypeContext<'_>,
-    classes: &Classes,
-    resolve_api: bool,
 ) -> SemanticIndex {
     #[cfg(test)]
     COLLECTIONS.with(|count| count.set(count.get() + 1));
     let mut index = SemanticIndex::default();
-    if resolve_api {
-        index.resolved_api = Some(api::collect(modules, functions, names, classes, &types));
-    }
     let links = define_declarations(&mut index, modules, functions, names, &types);
     let links = &links;
     for module in modules {

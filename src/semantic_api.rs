@@ -16,7 +16,7 @@ pub(crate) struct ApiSignature {
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedApi {
     pub(crate) signatures: BTreeMap<Key, ApiSignature>,
-    pub(crate) function_constraints: BTreeMap<Key, Vec<ConstraintExpr>>,
+    pub(crate) requirements: BTreeMap<Key, Vec<ConstraintExpr>>,
     pub(crate) annotations: BTreeMap<Key, TypeExpr>,
     pub(crate) public_names: BTreeMap<String, String>,
     pub(crate) classes: BTreeMap<Key, String>,
@@ -71,7 +71,7 @@ impl ResolvedApi {
     }
 }
 
-pub(super) fn collect(
+pub(in crate::check) fn collect(
     modules: &[ModuleInput<'_>],
     functions: &[CheckedFunction],
     names: &Names,
@@ -137,15 +137,37 @@ pub(super) fn collect(
             );
             result.constraints(&declaration.constraints, name, names, classes, types)?;
             let mut constraints = classes.constraint_expressions(&function.constraints, types)?;
-            constraints.extend(
-                declaration
-                    .constraints
-                    .iter()
-                    .filter(|constraint| matches!(constraint.name, ConstraintName::Function(..)))
-                    .cloned(),
-            );
+            // Typed uses refine bare declarations; concrete receivers have already been solved.
+            let typed_members: BTreeSet<_> = function
+                .members
+                .iter()
+                .filter(|member| member.signature.is_some())
+                .map(|member| (&member.receiver, member.name.as_str()))
+                .collect();
+            for member in &function.members {
+                if !polymorph::is_unknown(&member.receiver)
+                    || (member.signature.is_none()
+                        && typed_members.contains(&(&member.receiver, member.name.as_str())))
+                {
+                    continue;
+                }
+                constraints.push(ConstraintExpr {
+                    name: ConstraintName::Function(
+                        Ident {
+                            text: member.name.clone(),
+                            span: Span::default(),
+                            provenance: Provenance::Generated,
+                        },
+                        member
+                            .signature
+                            .as_ref()
+                            .map(|ty| Box::new(expression(ty, types))),
+                    ),
+                    ty: expression(&member.receiver, types),
+                });
+            }
             result
-                .function_constraints
+                .requirements
                 .insert(key(declaration.name.span), constraints);
         }
         for declaration in &program.externs {
@@ -219,6 +241,11 @@ pub(super) fn collect(
             result
                 .annotations
                 .insert(key(declaration.target.span), expression(&ty, types));
+            let constraints = classes.inline_constraints(&declaration.target, name, names)?;
+            result.requirements.insert(
+                key(declaration.name.span),
+                classes.constraint_expressions(&constraints, types)?,
+            );
         }
         for declaration in &program.constants {
             let ty = resolve_type(&declaration.ty, name, names)?;
