@@ -158,6 +158,22 @@ test("items_follow_the_keyword_rule", () => {
   assert.equal(stripComment('"a \\" // b" // c'), '"a \\" // b" ');
   assert.deepEqual(itemRange(new Tree(dir).lines("X.tz"), 6), [5,6]);
 });
+test("pure_items_preserve_callers_impact_and_contextual_identifiers", () => {
+  const dir = join(scratch, "pure-items");
+  put(join(dir, "X.tz"), [
+    "pure def leaf :: i64 -> i64 = \\x -> x",
+    "private pure def wrapper :: i64 -> i64 = \\x -> leaf x",
+    "export pure def exposed :: i64 -> i64 = \\x -> wrapper x",
+    "def pure :: i64 -> i64 = \\x -> x",
+    'test "chain" = Test.equal 1 (exposed 1)',
+  ].join("\n"));
+  const tree = new Tree(dir);
+  assert.deepEqual(parseItems(["."], tree).map(item => item.id), ["X.leaf", "X.wrapper", "X.exposed", "X.pure", "X.chain"]);
+  assert.deepEqual(deriveCallers({ corpus: ["."], symbol: "X.leaf" }, tree).callers, ["X.wrapper"]);
+  assert.deepEqual(deriveImpact({ corpus: ["."], change: "X.leaf" }, tree).tests, ["X.chain"]);
+  assert.deepEqual(itemRange(tree.lines("X.tz"), 1), [1, 1]);
+  assert.deepEqual(itemRange(["def pure :: i64 -> i64 = \\x -> x", "pure 1"], 2), [1, 2]);
+});
 test("callers_and_impact_match_expect_on_shop", () => {
   for (const t of tasks.filter((t) => t.expect && t.corpus?.includes(shop))) {
     assert.deepEqual(t.type === "callers" ? deriveCallers(t, tree).callers : deriveImpact(t, tree).tests, t.expect);

@@ -1,7 +1,7 @@
 import { basename, extname } from "node:path";
 
-const KEYWORD = /^(?:def|fn|and|private|export|const|record|union|class|instance|type|test|bench|extern|namespace|using)\b/;
-const DECLARATION = /^(?:(?:private|export|const)\s+)*(def|fn|and)\s+(?:rec\s+)?([A-Za-z_][A-Za-z0-9_]*)/;
+const KEYWORD = /^(?:def|fn|and|private|export|const|pure(?=\s+def\b)|record|union|class|instance|type|test|bench|extern|namespace|using)\b/;
+const DECLARATION = /^(?:(?:private|export|const|pure)\s+)*(def|fn|and)\s+(?:rec\s+)?([A-Za-z_][A-Za-z0-9_]*)/;
 const TEST_HEAD = /^test\s+"((?:[^"\\]|\\.)*)"/;
 
 export function stripComment(line) {
