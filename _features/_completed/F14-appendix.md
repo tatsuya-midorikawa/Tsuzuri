@@ -1,5 +1,10 @@
 # F14 付録: 確保の契約の fixture・std の `Alloc`・計数 heap の全文と、HEAD での実測
 
+出荷版の差分・全 3 Phase の検証は、本文の「実装・検証記録」に記録した。
+以下は起票時の付録である。現在の D-59 と `Array.rev`・値引数の `Array.filter`・
+`String.contains needle text` を優先する。A18 統合後の消費する Vec 更新は、edition 2026・2027 で同じ契約の
+`Vec.push_owned` を使う。数える出来事と確保数の期待値は変更していない。
+
 本文は [F14-structural-performance-assertions.md](F14-structural-performance-assertions.md)。この付録の A〜C は、**そのまま写して使う**全文（実装者は文面を発明しない）。
 D〜G は測定と出典。測定はすべて 2026-10-18、Apple M1 Max（macOS）、HEAD `a2313d19`（作業ツリーは `main` の `9dd0fbbc`。差は `docs/benchmarks.md` だけ）の
 `target/release/tsuzuri` と、試作（付録 G）で行った。

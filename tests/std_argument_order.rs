@@ -60,6 +60,8 @@ const HARNESS: &str = "a test or benchmark entry point: the generator or setup c
 /// Every file of `std/`, by module name. See AGENTS.md ("Standard library API conventions") for the rule and for
 /// when a module may be exempt.
 const MODULES: &[(&str, Kind)] = &[
+    // `since` reads a Stats subject; snapshot and measure have no Stats input.
+    ("Alloc", subject(&["Stats"])),
     ("Arena", subject(&["Arena"])),
     ("Array", subject(&["[]"])),
     ("Async", SingleArgument),

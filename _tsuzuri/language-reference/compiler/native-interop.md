@@ -509,6 +509,8 @@ void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint
 
 `--allocator counting` は system allocator を同じ 16 バイトヘッダーで包み、確保回数、解放回数、現在の要求バイト、その最大を数えます。`tsuzuri_alloc_stats` で読みます。
 
+Tsuzuri のコードからは [Alloc](../built-in-types-and-modules/alloc.md) で、確保・再確保・解放の回数と要求バイト数の累計・差分を読みます。`bytes` は確保サイズと再確保の新サイズの合計で、ヘッダーの 16 バイトを含みません。`tsuzuri_alloc_stats` の ABI は従来の 32 バイト・4 フィールドのままです。counting は実行ファイル・`run`・`test` でも使えます。
+
 `--allocator small` は、native の 64-bit のサイズ区分 allocator です（`--emit exe`、`object`、`llvm`、`header`、`shared`。WASM、`--trap-mode return`、`--freestanding` とは排他で、`E2000` です）。512 バイト以下を区分から、それより大きいブロックを C ライブラリの `malloc` から取ります。`tsuzuri_alloc` が返すバッファも同じなので、ホストへ返した所有バッファは、これまでどおり `tsuzuri_free` で解放し、C の `free` へは渡さないでください。区分の状態は、1 つのプログラムにリンクした Tsuzuri のオブジェクトで共有されます（macOS と Linux）。`--allocator` はオブジェクトごとに混ぜないでください。設計は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。
 
 `--freestanding` は、C ライブラリ無しの native object / LLVM IR / header です。`--allocator host` が必須で、参照してよい外部はホストの allocator、宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Mutex`、`Channel`、`Debug`、プログラム引数は `E2000` です。トラップは `llvm.trap` だけで、`--trap-info` や `--debug-output` は使えません。

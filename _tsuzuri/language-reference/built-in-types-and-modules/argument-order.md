@@ -26,6 +26,7 @@
 | [Maybe](./maybe.md)、[Result](./result.md)、[IO](./io.md) | `Maybe`、`Result`、`IO` の値 | `Maybe.bind f maybe`、`IO.bind f action` |
 | [Json](./json.md) | 値、書き込み器、読み取り器 | `Json.write_bool flag writer`、`Json.to_utf8string_pretty indent value` |
 | [Seq](./seq.md)、[Gen](./gen.md) | シーケンス、生成器 | `Seq.map f seq`、`Gen.map f gen` |
+| [Alloc](./alloc.md) | 確保数の snapshot (`Stats`) | `start |> Alloc.since`。`snapshot` と `measure` には Stats の入力はありません |
 
 ## パイプと合成
 

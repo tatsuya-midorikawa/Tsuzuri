@@ -503,6 +503,7 @@ def main :: unit -> i32 = \() ->
 | `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
 | `Debug`, `Test` | デバッグ出力およびテストフレームワーク |
 | `Bench`, `Gen` | ベンチマーク（`tsuzuri bench`）とプロパティテストの生成器 |
+| `Alloc` | 確保・再確保・解放と要求バイト数の snapshot・差分。テストは counting heap を必要なときだけ自動で連結します |
 | `Parallel`, `Simd`, `Gpu` | データ並列処理、128-bit・256-bit SIMD 演算、GPU カーネル連携 |
 | `Async` | 協調的な非同期計算、仮想時刻、native reactor、ホストの再開 |
 | `File`, `Dir`, `Path`, `Env`, `Time`, `Random`, `Os`, `Process` | ファイル、環境変数、システム時刻、プロセス管理などの OS API |
@@ -740,9 +741,15 @@ tsuzuri bench benches/
 
 # 標本数と JSON Lines 出力（PX01 の欄名: workload, target, opt, metric, unit, samples, median, min, max）
 tsuzuri bench benches/ --samples 21 --json
+
+# 時間とは別の counting 実行器で、1 反復あたりの確保回数と要求バイト数も出す
+tsuzuri bench benches/ --allocs --json
 ```
 
-各ベンチは別プロセスで 1 件ずつ計測されます（ネイティブのみ）。速さの合否の閾値はなく、失敗はトラップ・時間切れ・負の時間だけです。`bench` は予約語です。
+各ベンチは別プロセスで 1 件ずつ計測されます（ネイティブのみ）。速さの合否の閾値はありません。
+`--allocs` は成功行の末尾に `alloc_calls`（確保と再確保の合計）・`alloc_bytes` を加えます。
+計数は 2 反復の増分から 1 反復の増分を引くので準備と解放を相殺し、時間の実行器を変えません。
+トラップ・時間切れ・負の時間・負の計数の差分は失敗です。`bench` は予約語です。
 
 ### ドキュメント生成 (`tsuzuri doc`)
 
@@ -896,10 +903,11 @@ tsuzuri lsp
 | `--wasm-stack-size SIZE` | WASM のスタックサイズ（既定: 1MiB、例: `4MiB`）。 |
 | `--coverage PATH` | `tsuzuri test` で、成功したテストの行と関数のカバレッジを lcov 形式で `PATH` に書きます（ネイティブだけ）。 |
 | `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
+| `--allocs` | `tsuzuri bench` の時間測定後、別の counting 実行器で `alloc_calls`・`alloc_bytes` を報告します。指定しない出力は変わりません。 |
 | `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
 | `--wasm-feature simd128\|threads\|jspi\|webgpu\|net\|tail-call` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`、同じ再帰グループへの保証された末尾呼び出しを `return_call` にする `tail-call`。`net` には `jspi` が必要）を有効化します。 |
-| `--allocator system\|host\|counting\|small` | ヒープ確保の行き先（既定: `system`）。`host` はホストが定義する `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼び、`counting` は確保の数を `tsuzuri_alloc_stats` で返します（object・LLVM IR・header・WASM 出力のみ）。`small`（PM05）は native の 64-bit のサイズ区分 allocator で、512 バイト以下を 16 バイト刻みの 32 区分から返し、それより大きい確保は C ライブラリに任せます（実行ファイル・object・共有ライブラリ・LLVM IR・header。WASM・`--trap-mode return`・`--freestanding` とは排他）。 |
+| `--allocator system\|host\|counting\|small` | ヒープ確保の行き先（既定: `system`）。`host` はホストの `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼びます。`counting` は実行ファイル・object・共有ライブラリ・LLVM IR・header・WASM に使え、`Alloc` と従来の 32-byte ABI `tsuzuri_alloc_stats` で読めます。`run` と `test` も `counting` だけを受けます。`small` は native 64-bit のサイズ区分 allocator（512 バイト以下を区分から、それ以上を C ライブラリから確保）で、WASM・`--trap-mode return`・`--freestanding` とは排他です。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
 | `--backend llvm\|fast` | コード生成器（既定: `llvm`）。`fast` は `-O0` の `build`・`run`・`test` で、Tsuzuri の出した LLVM IR を Clang に渡さずにコンパイラ自身が機械語にします（native は Cranelift、wasm32 は WebAssembly の命令を直接書きます。`run` と `test` は native だけです）。`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要り、`-O1` 以上、`--cpu native`、`--emit exe\|object`（wasm32 は `wasm\|object`）以外、`--profile-*`、`--target TRIPLE`、Windows のホストは `E2000` です（[コード生成器](_tsuzuri/language-reference/compiler/option.md#コード生成器)）。 |
 | `--strip` | native の実行ファイルのリンクでローカルシンボルを除きます（`build` の `--emit exe` だけ。`-g`・WASM とは組み合わせられず、Windows のリンクは変わりません）。 |
@@ -950,6 +958,25 @@ A18 上の統合では、2027 edition の読み取り既定に合わせ、消費
 公開 API は積み元 A18 の実効規約を維持し、チャンクのアルゴリズム・定数・比較／drop の順序は変えません。
 付録の std・fixture・benchmark の全文も同じ所有規約へ同期します。従来の性能表は記録した版の測定であり、
 この所有規約の互換修正について新しい速度向上を主張しません。
+
+### F14 の実装前の整合確認
+
+F14 の確保数の契約は、古い付録より現在の API と D-59（対象は最後）を優先します。
+`Alloc.since` の対象は `Stats`（最後の唯一の引数）で、`snapshot` と `measure` には
+`Stats` の入力はありません。`std_argument_order` では `Alloc` を `Stats` の対象モジュールとして検査します。
+契約 fixture の文字列検索も `String.contains needle text` の順に揃え、期待する確保数は変えません。
+付録の `Array.reverse` は現在の `Array.rev` に、`Array.filter` の述語は現在の値引数
+（`deref` なし）に読み替えます。42 契約の操作と期待値は維持します。
+検索結果の補助表明だけは、現在の順序で `"jab"` が反復境界の `"j" + "ab"` に見つかることを
+確認します（旧順の検索を前提にした `!found` は使いません）。確保数の期待値は変更しません。
+既存の `tsuzuri_allocation_stats`（32 bytes、4 fields）、`Alloc` を使わない既定の heap の出力、
+`--allocs` のない bench 出力を保持し、新しい Builtin は HEAD の一覧へ追加します（古い件数を使いません）。
+検証は以下の dev バイナリと共有スロットを使い、性能の主張をしない変更に release ビルドは要求しません。
+
+```sh
+cargo test --locked --test alloc --test allocator --test bench --test alloc_contracts
+# alloc_contracts は 42 契約を native/wasm32 × O0/O3 で検証し、期待値を壊した変異体が失敗することも確かめます。
+```
 
 Tsuzuri は言語仕様の正しさとパフォーマンスを保証するため、網羅的なテストスイートとマルチ言語ベンチマークを備えています。
 

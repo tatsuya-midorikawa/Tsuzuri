@@ -1069,12 +1069,10 @@ impl BuildOptions {
                 "--allocator host requires object, LLVM IR, header, or WebAssembly output; link the object into a host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc",
             ));
         }
-        if self.allocator == llvm::Allocator::Counting
-            && (self.emit.is_kernel() || self.emit == Emit::Executable)
-        {
+        if self.allocator == llvm::Allocator::Counting && self.emit.is_kernel() {
             return Err(driver_error(
                 "E2000",
-                "--allocator counting requires object, LLVM IR, header, or WebAssembly output; the host reads the counts with tsuzuri_alloc_stats",
+                "--allocator counting requires executable, object, shared library, LLVM IR, header, or WebAssembly output",
             ));
         }
         if self.allocator != llvm::Allocator::System && self.trap_return {

@@ -5,7 +5,7 @@
 | ID | G36 |
 | 優先度 | P2 |
 | 規模 | L（Phase 1: L、Phase 2: M、Phase 3: M）。Phase は順に積む（Phase 2 は 1、Phase 3 は 2 の上に足す） |
-| 依存 | [D11](_completed/D11-const-evaluation.md)（done。`const def` とコンパイル時評価 `src/const_machine.rs`）。Phase 3 の native の漏れの検査だけが、任意で [F14](F14-structural-performance-assertions.md)（todo。`Alloc.snapshot`／`Alloc.since`、`run`・実行ファイルでの `--allocator counting`）を使う。F14 が無くても Phase 3 は完成する |
+| 依存 | [D11](_completed/D11-const-evaluation.md)（done。`const def` とコンパイル時評価 `src/const_machine.rs`）。Phase 3 の native の漏れの検査だけが、任意で [F14](_completed/F14-structural-performance-assertions.md)（done、Phase 1・2・3。`Alloc.snapshot`／`Alloc.since`、`run`・実行ファイルでの `--allocator counting`）を使う。F14 が無くても Phase 3 は完成する |
 | 後続 | なし。型検査・コード生成・最適化を変える全チケットの回帰検出に使う |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `main` の `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |

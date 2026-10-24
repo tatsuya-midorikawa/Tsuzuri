@@ -51,7 +51,7 @@ fn grow count =
   rejects(["build", abi, "--emit", "object", "--allocator", "pool", "-o", join(work, "x.o")], "allocator must be 'system', 'host', 'counting', or 'small'");
   rejects(["build", abi, "--target", "wasm32", "--wasm-feature", "threads", "--allocator", "host", "-o", join(work, "x.wasm")], "--allocator host cannot be combined with --wasm-feature threads");
   rejects(["run", abi, "--allocator", "system"], "--allocator is only valid with build");
-  rejects(["build", abi, "--allocator", "counting", "-o", join(work, "x")], "--allocator counting requires object, LLVM IR, header, or WebAssembly output");
+  rejects(["build", abi, "--emit", "wgsl", "--allocator", "counting", "-o", join(work, "x")], "--allocator counting requires executable, object, shared library, LLVM IR, header, or WebAssembly output");
   rejects(["build", abi, "--emit", "object", "--freestanding", "-o", join(work, "x.o")], "--freestanding requires --allocator host");
   rejects(["build", abi, "--target", "wasm32", "--allocator", "host", "--freestanding", "-o", join(work, "x.wasm")], "--freestanding requires a native target");
 
