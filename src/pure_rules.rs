@@ -87,10 +87,6 @@ fn plain_part(ty: &Type, types: &TypeContext<'_>) -> bool {
     }
 }
 
-pub(super) fn own_violation(ty: &Type, types: &TypeContext<'_>) -> Option<Type> {
-    own_violation_with(ty, types, false)
-}
-
 fn own_violation_with(ty: &Type, types: &TypeContext<'_>, template: bool) -> Option<Type> {
     let found = std::cell::RefCell::new(None);
     types.stored_all(ty, |part| {
@@ -547,7 +543,20 @@ fn closed_callable<'a>(
                 direct,
                 staged,
             }),
-            K::Lambda { body, .. } if templates => active.push(body),
+            K::Lambda { body, captures, .. } if templates => {
+                active.push(body);
+                for capture in captures.iter().filter(|capture| {
+                    capture.ty.function_purity() == Some(false) && !trusted.contains(&capture.id)
+                }) {
+                    if !locals.insert(capture.id) {
+                        continue;
+                    }
+                    let Some(value) = aliases.get(&capture.id) else {
+                        return Ok(None);
+                    };
+                    pending.push((value, false, false));
+                }
+            }
             K::Method(..) | K::TypeFunction { .. } if templates => {}
             K::Local(id) if trusted.contains(id) || value.ty.function_purity() == Some(true) => {}
             K::Local(id) if locals.insert(*id) => {
@@ -686,9 +695,6 @@ impl<'a> Scanner<'a> {
                 ));
             }
         }
-        let mut edges = Vec::new();
-        let mut aliases = BTreeMap::new();
-        let mut read_places = BTreeSet::new();
         let trusted = function
             .parameters
             .iter()
@@ -699,9 +705,27 @@ impl<'a> Scanner<'a> {
             })
             .map(|parameter| parameter.id)
             .collect();
+        let scanned = self.scan_body(vec![&function.body], BTreeMap::new(), trusted, effect)?;
+        self.scanned.insert(id, scanned);
+        Ok(())
+    }
+
+    fn scan_body(
+        &mut self,
+        mut pending: Vec<&'a TypedExpr>,
+        mut aliases: BTreeMap<usize, &'a TypedExpr>,
+        trusted: BTreeSet<usize>,
+        mut effect: Option<(Effect, Span)>,
+    ) -> Result<Scanned, LimitExceeded> {
+        let mut edges = Vec::new();
+        let mut read_places = BTreeSet::new();
+        let mut visited = BTreeSet::new();
         let types = self.module.types();
-        let mut pending = vec![&self.module.functions[id].body];
         while let Some(expression) = pending.pop() {
+            // Closed local recursion can enqueue the same callable body again.
+            if self.templates && !visited.insert(std::ptr::from_ref(expression)) {
+                continue;
+            }
             self.nodes += 1;
             if self.nodes > self.limits.nodes {
                 return Err(LimitExceeded);
@@ -924,8 +948,60 @@ impl<'a> Scanner<'a> {
         }
         edges.sort_by_key(|(id, span)| (position(*span), *id));
         edges.dedup();
-        self.scanned.insert(id, Scanned { effect, edges });
-        Ok(())
+        Ok(Scanned { effect, edges })
+    }
+
+    fn value_witness(
+        &mut self,
+        expression: &'a TypedExpr,
+        aliases: &BTreeMap<usize, &'a TypedExpr>,
+    ) -> Result<Option<(Effect, Impurity)>, LimitExceeded> {
+        let TypedExprKind::Lambda {
+            parameters,
+            captures,
+            ..
+        } = &expression.kind
+        else {
+            unreachable!("template value roots are lambdas")
+        };
+        let types = self.module.types();
+        let invalid = parameters.iter().any(|parameter| {
+            opaque_input(
+                &parameter.ty,
+                &types,
+                matches!(parameter.ty, Type::Reference(_, false)),
+            ) || (!matches!(parameter.ty, Type::Reference(..))
+                && own_violation_with(&parameter.ty, &types, true).is_some())
+        }) || captures.iter().any(|capture| {
+            !types.stored_all(&capture.ty, |part| !part.has_user_drop(&types))
+                || (!matches!(capture.ty, Type::Reference(..))
+                    && capture.ty.function_purity().is_none()
+                    && own_violation_with(&capture.ty, &types, true).is_some())
+        });
+        let mut effect = invalid.then_some((Effect::Unresolved, expression.span));
+        let mut pending = Vec::new();
+        let targets = closed_callable(
+            expression,
+            aliases,
+            &BTreeSet::new(),
+            true,
+            &mut self.nodes,
+            self.limits.nodes,
+            &mut pending,
+        )?;
+        let mut edges = Vec::new();
+        if !targets.is_some_and(|targets| self.targets(targets, None, &mut edges, expression.span))
+        {
+            effect = Some((Effect::Unresolved, expression.span));
+        }
+        self.nodes += aliases.len();
+        if self.nodes > self.limits.nodes {
+            return Err(LimitExceeded);
+        }
+        let mut scanned = self.scan_body(pending, aliases.clone(), BTreeSet::new(), effect)?;
+        scanned.edges.extend(edges);
+        // An isolated value root must not replace its enclosing function in the call-graph cache.
+        self.witness_from(self.module.functions.len(), Some(scanned))
     }
 
     fn witness(&mut self, root: usize) -> Result<Option<(Effect, Impurity)>, LimitExceeded> {
@@ -957,11 +1033,25 @@ impl<'a> Scanner<'a> {
                 },
             )));
         }
+        self.witness_from(root, None)
+    }
+
+    fn witness_from(
+        &mut self,
+        root: usize,
+        initial: Option<Scanned>,
+    ) -> Result<Option<(Effect, Impurity)>, LimitExceeded> {
         let mut pending = VecDeque::from([root]);
         let mut parents = BTreeMap::from([(root, None)]);
         while let Some(id) = pending.pop_front() {
-            self.scan(id)?;
-            let scanned = &self.scanned[&id];
+            let scanned = if id == root
+                && let Some(scanned) = &initial
+            {
+                scanned
+            } else {
+                self.scan(id)?;
+                &self.scanned[&id]
+            };
             if let Some((effect, span)) = &scanned.effect {
                 let mut path = Vec::new();
                 let mut current = id;
@@ -1083,13 +1173,14 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
         })
         .map(|(id, function)| (id, function.span))
         .collect();
-    if !templates {
+    {
         let mut nodes = 0;
-        for function in module
-            .functions
-            .iter()
-            .filter(|function| function.origin.pure_values)
-        {
+        for function in module.functions.iter().filter(|function| {
+            function.origin.pure_values
+                && (!templates
+                    || !function.type_parameters.is_empty()
+                    || !function.constraints.is_empty())
+        }) {
             let mut pending = vec![&function.body];
             let mut aliases = BTreeMap::new();
             while let Some(expression) = pending.pop() {
@@ -1109,7 +1200,8 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                 if expression.ty.function_purity() == Some(true) {
                     match &expression.kind {
                         TypedExprKind::Function(FunctionRef::User(id))
-                        | TypedExprKind::Closure(id, _) => {
+                        | TypedExprKind::Closure(id, _)
+                        | TypedExprKind::GenericFunction(id, _) => {
                             let captures = match &expression.kind {
                                 TypedExprKind::Closure(_, captures) => captures.len(),
                                 _ => 0,
@@ -1127,7 +1219,7 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                                 expression,
                                 &aliases,
                                 &BTreeSet::new(),
-                                false,
+                                templates,
                                 &mut nodes,
                                 limits.nodes,
                                 &mut pending,
@@ -1144,6 +1236,19 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                                 continue;
                             }
                             roots.entry(*id).or_insert(expression.span);
+                        }
+                        TypedExprKind::Lambda { .. } if templates => {
+                            match scanner.value_witness(expression, &aliases) {
+                                Ok(None) => {}
+                                Ok(Some((_, impurity))) => diagnostics.push(failure(
+                                    impurity.span,
+                                    format!("this pure function value is not pure: it {}", impurity.reason),
+                                )),
+                                Err(_) => diagnostics.push(failure(
+                                    expression.span,
+                                    "this pure function value cannot be proven pure within the analysis limits",
+                                )),
+                            }
                         }
                         TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
                             if let Some(category) = builtin_effect(instance.builtin) {
@@ -1165,19 +1270,18 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
     }
     for (id, span) in roots {
         let function = &module.functions[id];
-        if !templates
-            && let Some((index, part)) = function
-                .signature
-                .parameters
-                .iter()
-                .enumerate()
-                .filter(|(index, ty)| {
-                    !matches!(ty, Type::Reference(..))
-                        && !(*index < function.capture_count && ty.function_purity().is_some())
-                })
-                .find_map(|(index, ty)| {
-                    own_violation(ty, &module.types()).map(|part| (index, part))
-                })
+        if let Some((index, part)) = function
+            .signature
+            .parameters
+            .iter()
+            .enumerate()
+            .filter(|(index, ty)| {
+                !matches!(ty, Type::Reference(..))
+                    && !(*index < function.capture_count && ty.function_purity().is_some())
+            })
+            .find_map(|(index, ty)| {
+                own_violation_with(ty, &module.types(), templates).map(|part| (index, part))
+            })
         {
             diagnostics.push(failure(
                 function.parameters[index].span,

@@ -1165,6 +1165,22 @@ def main :: unit -> i32 = \() ->
   pure **302**＋parallel **12**（native／WASM × O0／O3）、E2E・frontend cache・LSP 4 件・docgen、
   usage **62 links／5 checked examples／4 native runs／1 test project**、guide-lite **85／0** を確認した。
 
+### 未使用 generic の純粋関数値（2026-10-24）
+
+- `c0318d9c` の Copilot review `5637157267` で、未使用の generic template が返す明示的な
+  純粋 lambda の `Debug.print` が検査を逃れる指摘 `4366251465` を確認した。
+  factory の実行と戻る callback の実行を区別する規則は保ち、明示した純粋関数値自体の検査を特殊化前にも行う。
+- 既存の本体走査と幅優先探索を共有し、lambda・通常／generic の関数参照・builtin・捕捉先を検査する。
+  関数値の証明根は実関数のキャッシュと分離するため、callback が外側の effectful factory に戻っても効果を見落とさない。
+  閉じた局所再帰・相互再帰は alias と本体の重複走査を防いで扱い、副作用を含む循環は拒否する。
+- 回帰は通常／純粋な factory、入れ子の純粋 lambda、既知／不透明な捕捉先、純粋／副作用を持つ
+  局所再帰・相互再帰、外側の factory への再入を含む。通常の戻り callback の副作用と、
+  通常 factory 自身の途中の副作用は引き続き許す。解析上限・評価順序・実行時の表現は変えない。
+- 最終差分で全 Rust **1,841 passed／2 skipped（targets 12 を含む）**、fmt・全 target Clippy・dev build、
+  pure **302**＋parallel **12**（native／WASM × O0／O3）、E2E・frontend cache・LSP 4 件・docgen が成功した。
+  functions／usage の **2 pages／93 links／29 checked examples／52 native runs／1 test project**、
+  guide-lite **85／0** も確認した。初回の全 feature・凍結 IR の記録とは再実行範囲を区別する。
+
 ### 確認コマンド（最終受入）
 
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --locked`。

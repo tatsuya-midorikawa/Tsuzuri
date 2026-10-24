@@ -40,6 +40,88 @@ fn parses_pure_def_as_a_modifier_and_keeps_pure_as_an_identifier() {
 }
 
 #[test]
+fn unused_generic_templates_validate_explicit_pure_callback_bodies() {
+    for prefix in ["pure def", "def"] {
+        rejected(
+            &format!(
+                "{prefix} unused :: own 'a -> pure (i64 -> i64) = \\_ -> {{ \\n -> {{ Debug.print (ref n); n }} }}\n"
+            ),
+            "debug",
+        );
+        rejected(
+            &format!(
+                "def effectful :: i64 -> i64 = \\n -> {{ Debug.print (ref n); n }}\n\
+                 {prefix} unused :: own 'a -> pure (i64 -> i64) = \\_ -> effectful\n"
+            ),
+            "debug",
+        );
+        rejected(
+            &format!(
+                "def effectful :: own 'T -> i64 = \\_ -> {{ let n = 1; Debug.print (ref n); n }}\n\
+                 {prefix} unused :: own 'a -> pure (i64 -> i64) = \\_ -> effectful\n"
+            ),
+            "debug",
+        );
+        rejected(
+            &format!("{prefix} unused :: own 'a -> pure (ref i64 -> unit) = \\_ -> Debug.print\n"),
+            "debug",
+        );
+        rejected(
+            &format!(
+                "{prefix} unused :: own 'a -> pure (i64 -> pure (i64 -> i64)) = \\_ -> {{ \\x -> {{ \\n -> {{ Debug.print (ref n); n + x }} }} }}\n"
+            ),
+            "debug",
+        );
+        accepted(&format!(
+            "{prefix} unused :: own 'a -> pure (i64 -> i64) = \\_ -> {{ \\n -> n + 1 }}\n"
+        ));
+        accepted(&format!(
+            "{prefix} unused :: own 'a -> (i64 -> i64) = \\_ -> {{ \\n -> {{ Debug.print (ref n); n }} }}\n"
+        ));
+    }
+    accepted(
+        "def factory :: own 'a -> pure (i64 -> i64) = \\_ -> { let n = 1; Debug.print (ref n); \\x -> x + 1 }\n",
+    );
+}
+
+#[test]
+fn unused_generic_pure_callbacks_validate_closed_captures() {
+    rejected(
+        "def unused :: own 'a -> pure (i64 -> i64) = \\_ -> { let callback = \\n -> { Debug.print (ref n); n }; \\n -> callback n }\n",
+        "debug",
+    );
+    accepted(
+        "def unused :: own 'a -> pure (i64 -> i64) = \\_ -> { let callback = \\n -> n + 1; \\n -> callback n }\n",
+    );
+    let recursive = "def unused :: own 'a -> pure (i64 -> i64) = \\_ -> { let rec callback: pure (i64 -> i64) = \\n -> if n == 0 then 0 else callback (n - 1); callback }\n";
+    accepted(recursive);
+    let captured_recursive = "def unused :: own 'a -> pure (i64 -> i64) = \\_ -> { let rec callback = \\n -> if n == 0 then 0 else callback (n - 1); \\n -> callback n }\n";
+    accepted(captured_recursive);
+    let mutual = "def unused :: own 'a -> pure (i64 -> bool) = \\_ -> { let rec even = \\n -> if n == 0 then true else odd (n - 1); and odd = \\n -> if n == 0 then false else even (n - 1); \\n -> even n }\n";
+    accepted(mutual);
+    rejected(
+        &mutual.replace("then false", "then { Debug.print (ref n); false }"),
+        "debug",
+    );
+    rejected(
+        "def unused :: own 'a -> (i64 -> i64) -> pure (i64 -> i64) = \\_ callback -> { \\n -> callback n }\n",
+        "cannot be proven pure",
+    );
+    rejected(
+        &captured_recursive.replace("then 0", "then { Debug.print (ref n); 0 }"),
+        "debug",
+    );
+    rejected(
+        &recursive.replace("then 0", "then { Debug.print (ref n); 0 }"),
+        "debug",
+    );
+    rejected(
+        "def rec factory :: own 'a -> pure (i64 -> i64) = \\_ -> { let n = 1; Debug.print (ref n); \\value -> factory value value }\n",
+        "debug",
+    );
+}
+
+#[test]
 fn rejects_misplaced_pure() {
     for source in [
         "pure fn f x = x",

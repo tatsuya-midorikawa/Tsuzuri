@@ -199,6 +199,9 @@ instance のメソッドだけに `pure fn name ...` と書くこともできま
 たとえば `pure def size :: string -> i64` の実効型は `pure (ref string -> i64)` であり、`pure (string -> i64)` とは違います。
 矢印型の中には `own` を書きません。純粋な関数値を通常の関数値へ弱めることはできます。
 逆向きは、閉じた関数や lambda の本体を検査できる場合だけです。不透明な通常の callback を純粋と仮定しません。
+未使用の generic 関数が `pure (T -> U)` を返す場合も、返る本体と捕捉した閉じた callback の既知の効果を検査します。
+作る関数が通常の `def` であっても、返る純粋な callback に `Debug.print` などがあれば `E1029` です。
+純粋な局所再帰は許可します。一方、通常の戻り callback にまで純粋性を要求したり、通常の factory の途中評価を純粋とみなしたりはしません。
 
 ```tsuzuri run=42
 pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \callback value -> callback value

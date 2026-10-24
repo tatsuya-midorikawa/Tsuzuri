@@ -1289,6 +1289,8 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   関数を返す段階と返された関数を呼ぶ段階の保証を混ぜないため、純粋な戻り値の境界では矢印を平坦化しません。
 - generic の型変数はテンプレートの保留条件として扱います。未使用の本体でも既知の外部効果を拒否し、
   実際の特殊化では `own` の plain-data 条件と全呼び先を再検証します。特殊化は元の純粋性の証明根を保持します。
+  明示した純粋関数値の本体・捕捉も、未使用の generic template が捨てられる前に検査します。
+  外側の通常 factory の効果を禁止したり、純粋性を付けていない戻り関数の実行まで純粋と要求したりはしません。
   未解決の型クラス呼び出しをそのままコード生成することや、未知の実行時呼び先を純粋と仮定することはしません。
 - `IO` の構築だけは標準 `IO` の不透明な遅延アクションとして扱い、closure の本体を実行効果と混ぜません。
   捕捉値の評価・所有・解放は通常どおり検査します。`IO.Run` や取り出した未知の thunk の実行は許可しません。
@@ -1326,6 +1328,8 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   Windows CI で見つかった標準ライブラリ自身の実効 API 入力も、仮想パスを全 OS 共通の `std/Name.tz` に修正し、
   関連 62 テストと usage の例を確認しました。推論・公開 alias・Copy の要求を含む最終修正後は全 Rust 1,839 件（targets 12 件を含む、2 skipped）、
   Clippy・fmt・build、pure 302＋parallel 12（native／WASM × O0／O3）、E2E・cache・LSP、usage と docgen を再確認しました。
+  未使用 generic の純粋 callback 検査の修正後は全 Rust 1,841 件（targets 12 件を含む、2 skipped）、
+  Clippy・fmt・build、pure 302＋parallel 12、関連 E2E・cache・LSP・docgen と manual 2 ページ／29 例／52 native 実行を確認しました。
   最終 head の x64／arm64 CI は PR で追跡します。速度向上は未計測です。
   実装範囲・例外・検証コマンドと変更一覧は [A19 の完了記録](_features/_completed/A19-pure-functions.md)、
   最終 head の CI・Copilot レビューと 7 件の統合結果は各 PR で追跡します。
