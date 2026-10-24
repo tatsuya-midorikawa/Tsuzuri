@@ -38,7 +38,8 @@ fn signature(signature: &Signature, types: &TypeContext<'_>) -> ApiSignature {
     }
 }
 
-fn purity_obligations(functions: &[CheckedFunction]) -> Vec<BTreeSet<String>> {
+fn purity_obligations(module: &CheckedModule) -> Result<Vec<BTreeSet<String>>, Diagnostic> {
+    let functions = &module.functions;
     let mut count = 0;
     let parameters: Vec<BTreeMap<_, _>> = functions
         .iter()
@@ -62,19 +63,29 @@ fn purity_obligations(functions: &[CheckedFunction]) -> Vec<BTreeSet<String>> {
         if function.origin.pure {
             seeds.extend(function.type_parameters.iter().cloned());
         }
-        let mut expressions = vec![(&function.body, false)];
-        while let Some((expression, pure_body)) = expressions.pop() {
-            let pure_value = expression.ty.function_purity() == Some(true);
-            if pure_value || pure_body {
-                if !matches!(expression.kind, TypedExprKind::Lambda { .. }) || pure_value {
-                    seeds.extend(polymorph::variables(&expression.ty));
-                }
+        let mut callback_values = Vec::new();
+        let mut aliases = BTreeMap::new();
+        let mut expressions = vec![&function.body];
+        while let Some(expression) = expressions.pop() {
+            if let TypedExprKind::Block { bindings, .. } = &expression.kind {
+                aliases.extend(
+                    bindings
+                        .iter()
+                        .filter(|(local, _)| !local.mutable)
+                        .map(|(local, value)| (local.id, value)),
+                );
+            }
+            if expression.ty.function_purity() == Some(true) {
+                seeds.extend(polymorph::variables(&expression.ty));
                 match &expression.kind {
-                    TypedExprKind::Lambda { captures, .. } => seeds.extend(
-                        captures
-                            .iter()
-                            .flat_map(|capture| polymorph::variables(&capture.ty)),
-                    ),
+                    TypedExprKind::Lambda { captures, .. } => {
+                        seeds.extend(
+                            captures
+                                .iter()
+                                .flat_map(|capture| polymorph::variables(&capture.ty)),
+                        );
+                        callback_values.push(expression);
+                    }
                     TypedExprKind::GenericFunction(_, arguments) => {
                         seeds.extend(arguments.iter().flat_map(polymorph::variables))
                     }
@@ -97,17 +108,14 @@ fn purity_obligations(functions: &[CheckedFunction]) -> Vec<BTreeSet<String>> {
                     }
                 }
             }
-            let child_pure = if matches!(expression.kind, TypedExprKind::Lambda { .. }) {
-                pure_value
-            } else {
-                pure_body
-            };
-            expressions.extend(
-                expression
-                    .children()
-                    .into_iter()
-                    .map(|child| (child, child_pure)),
-            );
+            expressions.extend(expression.children());
+        }
+        if !function.origin.pure {
+            seeds.extend(pure_rules::callback_variables(
+                module,
+                callback_values,
+                aliases,
+            )?);
         }
         for variable in seeds {
             if let Some(&id) = parameters[caller].get(variable.as_str()) {
@@ -125,7 +133,7 @@ fn purity_obligations(functions: &[CheckedFunction]) -> Vec<BTreeSet<String>> {
             }
         }
     }
-    functions
+    Ok(functions
         .iter()
         .enumerate()
         .map(|(id, function)| {
@@ -136,7 +144,7 @@ fn purity_obligations(functions: &[CheckedFunction]) -> Vec<BTreeSet<String>> {
                 .cloned()
                 .collect()
         })
-        .collect()
+        .collect())
 }
 
 fn obligation_mask<'a>(
@@ -191,11 +199,12 @@ impl ResolvedApi {
 
 pub(in crate::check) fn collect(
     modules: &[ModuleInput<'_>],
-    functions: &[CheckedFunction],
+    checked: &CheckedModule,
     names: &Names,
     classes: &Classes,
-    types: &TypeContext<'_>,
 ) -> Result<ResolvedApi, Diagnostic> {
+    let functions = &checked.functions;
+    let types = &checked.types();
     let mut result = ResolvedApi::default();
     for name in names
         .records
@@ -210,7 +219,7 @@ pub(in crate::check) fn collect(
         );
         result.public_names.insert(key_path(name), shown);
     }
-    let obligations = purity_obligations(functions);
+    let obligations = purity_obligations(checked)?;
     let indexed_functions = functions;
     let mut instance_functions: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
     for (span, head, name, id, arguments) in classes.instance_functions() {

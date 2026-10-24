@@ -7842,13 +7842,7 @@ fn check_modules_collect(
         &recursive_functions,
         |module| {
             if resolve_api && let Some(index) = semantic {
-                index.resolved_api = Some(semantic::collect_api(
-                    modules,
-                    &module.functions,
-                    &names,
-                    &classes,
-                    &module.types(),
-                ));
+                index.resolved_api = Some(semantic::collect_api(modules, module, &names, &classes));
             }
             resolve_api
         },

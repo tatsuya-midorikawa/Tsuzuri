@@ -1248,12 +1248,32 @@ def main :: unit -> i32 = \() ->
 - 返す通常 callback の本体へ純粋な実行段階を引き継がない。無関係な具体 callback への追加、
   後で実行する通常 callback、改名を変更にせず、義務を持つ型変数の入れ替えは検出する。
   既存グラフを共有するため private wrapper／class 既定実装／instance への伝播方式は変えない。
-- この修正後に fmt・全 target Clippy・dev build、全 Rust **1,849 passed／2 skipped（targets 12 を含む）**、
+- `6805b411` 時点（次の実行段階共有前）に fmt・全 target Clippy・dev build、全 Rust **1,849 passed／2 skipped（targets 12 を含む）**、
   対象 **53 API＋35 polymorphism＋32 purity**、pure **302**＋parallel **12**＋map_set_chunks **33**
   （native／WASM × O0／O3）、frontend cache・LSP 4 件・docgen が成功した。
   AI 全 suite は Node20／24 各 **44 passed／0 failed／5 capability skips**、usage は
   **62 links／5 checked examples／4 native runs／1 test project**、guide-lite は **85／0**。
   `467006ab` の 1,848 件はこの Rust 差分の最終受入として流用していない。
+
+### 実行する callback の解析を既存 scanner と共有
+
+- callback の本体に `task` や `Parallel.map` の通常 lambda がある場合も、その場で実行すれば純粋性の
+  保証に含まれる。`6805b411` では通常 lambda を一律に後の段階として除外したため、その本体内だけにある
+  `None: Maybe<'a>` の利用者 Drop の保留義務を見落とす失敗を確認した。
+- API 独自の実行段階の判定を削除し、既存 `Scanner::scan_body` に明示要求時だけ型変数を収集する observer を加えた。
+  既存の閉じた callable／alias・task・並列 callback の追跡と解析上限をそのまま使い、通常の効果検査は observer を要求しない。
+  純粋値の型・capture と集めた型変数を既存グラフへ投入する方式は維持する。
+- その場で実行する task・並列 callback・閉じたローカル callable の反例と、返した通常 callback の
+  後の実行を許す回帰を同じテストに含めた。`closed_callable` による既存の閉じた capture の追跡も共有する。
+- `6805b411` の実際の review `5638154828`、指摘 `4367045499` が求めた、callback の外に定義した
+  helper と複数段の alias を通る保留義務も同じ収集で比較する。API は特殊化前の保留証明を保守的に比較するため、
+  特定の具体化が後段の検証を通ることだけでは、その generic な保留義務を消さない。
+- 実行段階の共有と上記 helper／alias の回帰を含む最終入力で、fmt・全 target Clippy・dev build と
+  全 Rust **1,849 passed／2 skipped（targets 12 を含む）** が新しく成功した。pure **302**＋parallel **12**＋
+  map_set_chunks **33**（native／WASM × O0／O3）、frontend cache・LSP 4 件・docgen、AI 全 suite の
+  Node20／24 各 **44 passed／0 failed／5 capability skips**、usage の **62 links／5 checked examples／
+  4 native runs／1 test project**、guide-lite **85／0** も成功した。`6805b411` と同じ件数でも入力は異なるため、
+  以前のログを最終受入として流用していない。
 
 ### 確認コマンド（最終受入）
 

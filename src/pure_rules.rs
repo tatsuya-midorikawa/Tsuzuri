@@ -705,7 +705,8 @@ impl<'a> Scanner<'a> {
             })
             .map(|parameter| parameter.id)
             .collect();
-        let scanned = self.scan_body(vec![&function.body], BTreeMap::new(), trusted, effect)?;
+        let scanned =
+            self.scan_body(vec![&function.body], BTreeMap::new(), trusted, effect, None)?;
         self.scanned.insert(id, scanned);
         Ok(())
     }
@@ -716,6 +717,7 @@ impl<'a> Scanner<'a> {
         mut aliases: BTreeMap<usize, &'a TypedExpr>,
         trusted: BTreeSet<usize>,
         mut effect: Option<(Effect, Span)>,
+        mut variables: Option<&mut BTreeSet<String>>,
     ) -> Result<Scanned, LimitExceeded> {
         let mut edges = Vec::new();
         let mut read_places = BTreeSet::new();
@@ -729,6 +731,26 @@ impl<'a> Scanner<'a> {
             self.nodes += 1;
             if self.nodes > self.limits.nodes {
                 return Err(LimitExceeded);
+            }
+            if let Some(variables) = &mut variables {
+                if !matches!(expression.kind, TypedExprKind::Lambda { .. }) {
+                    variables.extend(polymorph::variables(&expression.ty));
+                }
+                match &expression.kind {
+                    TypedExprKind::Lambda { captures, .. } => variables.extend(
+                        captures
+                            .iter()
+                            .flat_map(|capture| polymorph::variables(&capture.ty)),
+                    ),
+                    TypedExprKind::GenericFunction(_, arguments) => {
+                        variables.extend(arguments.iter().flat_map(polymorph::variables))
+                    }
+                    TypedExprKind::Method(_, _, receiver)
+                    | TypedExprKind::TypeFunction { receiver, .. } => {
+                        variables.extend(polymorph::variables(receiver));
+                    }
+                    _ => {}
+                }
             }
             if let TypedExprKind::Block { bindings, .. } = &expression.kind {
                 for (local, value) in bindings {
@@ -998,7 +1020,8 @@ impl<'a> Scanner<'a> {
         if self.nodes > self.limits.nodes {
             return Err(LimitExceeded);
         }
-        let mut scanned = self.scan_body(pending, aliases.clone(), BTreeSet::new(), effect)?;
+        let mut scanned =
+            self.scan_body(pending, aliases.clone(), BTreeSet::new(), effect, None)?;
         scanned.edges.extend(edges);
         // An isolated value root must not replace its enclosing function in the call-graph cache.
         self.witness_from(self.module.functions.len(), Some(scanned))
@@ -1147,6 +1170,49 @@ pub(crate) fn impurity_of_roots(
 
 pub(super) fn validate(module: &CheckedModule) -> Vec<Diagnostic> {
     validate_with(module, LIMITS)
+}
+
+pub(super) fn callback_variables<'a>(
+    module: &'a CheckedModule,
+    values: Vec<&'a TypedExpr>,
+    aliases: BTreeMap<usize, &'a TypedExpr>,
+) -> Result<BTreeSet<String>, Diagnostic> {
+    let mut variables = BTreeSet::new();
+    let Some(value) = values.first() else {
+        return Ok(variables);
+    };
+    let span = value.span;
+    let mut scanner = Scanner::new(module, LIMITS);
+    scanner.templates = true;
+    let mut bodies = Vec::new();
+    for value in values {
+        closed_callable(
+            value,
+            &aliases,
+            &BTreeSet::new(),
+            true,
+            &mut scanner.nodes,
+            LIMITS.nodes,
+            &mut bodies,
+        )
+        .map_err(|_| {
+            Diagnostic::new(
+                "E1017",
+                "pure callback API proof exceeds the expression analysis limit; split the program",
+                value.span,
+            )
+        })?;
+    }
+    scanner
+        .scan_body(bodies, aliases, BTreeSet::new(), None, Some(&mut variables))
+        .map_err(|_| {
+            Diagnostic::new(
+                "E1017",
+                "pure callback API proof exceeds the expression analysis limit; split the program",
+                span,
+            )
+        })?;
+    Ok(variables)
 }
 
 pub(super) fn validate_templates(module: &CheckedModule) -> Vec<Diagnostic> {

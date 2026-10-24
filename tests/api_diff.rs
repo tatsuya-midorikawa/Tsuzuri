@@ -173,24 +173,44 @@ fn effective_pure_callback_obligations_reach_ordinary_generic_functions() {
             "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\ndef f :: own 'a -> i64 = \\_ -> { let k: unit -> i64 = \\() -> { let value: Maybe<'a> = None; 0 }; k () }\n",
             "f (Ticket { id: 1 })\n",
         ),
+        (
+            "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\ndef f :: own 'a -> i64 = \\_ -> { let k: unit -> i64 = \\() -> { let t = task { let value: Maybe<'a> = None; 0 }; Task.run t }; k () }\n",
+            "f (Ticket { id: 1 })\n",
+        ),
+        (
+            "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\ndef f :: own 'a -> i64 = \\_ -> { let k: unit -> i64 = \\() -> { let values = Parallel.map (\\x -> { let value: Maybe<'a> = None; x }) [1]; values.length }; k () }\n",
+            "f (Ticket { id: 1 })\n",
+        ),
+        (
+            "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\ndef f :: own 'a -> i64 = \\_ -> { let k: unit -> i64 = \\() -> { let run = \\() -> { let value: Maybe<'a> = None; 0 }; run () }; k () }\n",
+            "f (Ticket { id: 1 })\n",
+        ),
     ] {
         let after = before
             .replace("let k: 'a -> i64", "let k: pure ('a -> i64)")
             .replace("let k: unit -> i64", "let k: pure (unit -> i64)");
         tsuzuri::analyze(&format!("{before}{caller}")).unwrap();
-        assert_eq!(
-            tsuzuri::analyze(&format!("{after}{caller}"))
-                .unwrap_err()
-                .code,
-            "E1029",
-            "{after}"
-        );
+        let Err(error) = tsuzuri::analyze(&format!("{after}{caller}")) else {
+            panic!("expected a new purity restriction: {after}");
+        };
+        assert_eq!(error.code, "E1029", "{after}");
         let changes = compare_mode(before, &after, &[], true);
         assert!(
             changes.contains(&"breaking changed def Main.f".to_owned()),
             "{changes:?}: {after}"
         );
         assert!(compare(before, &after, &[]).is_empty());
+    }
+    for call in ["helper ()", "alias ()"] {
+        let before = format!(
+            "record Ticket {{ id: i64 }}\ninstance Drop<Ticket> {{ fn drop value = () }}\ndef f :: own 'a -> i64 = \\_ -> {{ let helper: unit -> i64 = \\() -> {{ let value: Maybe<'a> = None; 0 }}; let middle = helper; let alias = middle; let k: unit -> i64 = \\() -> {call}; k () }}\n"
+        );
+        let after = before.replace("let k: unit -> i64", "let k: pure (unit -> i64)");
+        let changes = compare_mode(&before, &after, &[], true);
+        assert!(
+            changes.contains(&"breaking changed def Main.f".to_owned()),
+            "{changes:?}: {after}"
+        );
     }
     for before in [
         "def f :: own 'a -> i64 = \\_ -> { let k: i64 -> i64 = \\x -> x; k 1 }\n",
