@@ -236,29 +236,29 @@ test "Vec.empty: no block" =
     assert (Vec.length (ref v) == 0)
 
 // Rule: initial Vec capacity is four (vec.md). 4 x 8 bytes.
-test "Vec.push: the first push allocates four elements" =
+test "Vec.push_owned: the first push allocates four elements" =
     let start = Alloc.snapshot ()
     let mut v: Vec<i64> = Vec.empty()
-    for i in 1i64 .. 4i64 do v = Vec.push i v
+    for i in 1i64 .. 4i64 do v = Vec.push_owned i v
     let used = Alloc.since start
     expect "4 pushes" 1 0 0 32 used
     assert (Vec.length (ref v) == 4)
 
 // Rule: a full Vec doubles capacity (vec.md). The fifth push resizes 32 to 64 bytes.
-test "Vec.push: the fifth push doubles the capacity by realloc" =
+test "Vec.push_owned: the fifth push doubles the capacity by realloc" =
     let start = Alloc.snapshot ()
     let mut v: Vec<i64> = Vec.empty()
-    for i in 1i64 .. 5i64 do v = Vec.push i v
+    for i in 1i64 .. 5i64 do v = Vec.push_owned i v
     let used = Alloc.since start
     expect "5 pushes" 1 1 0 96 used
     assert (Vec.capacity (ref v) == 8)
 
 // Rule: capacities 4,8,16,32,64,128 mean one allocation, five resizes,
 // and 8 x (4+8+16+32+64+128) = 2016 requested bytes.
-test "Vec.push: 100 pushes realloc five times" =
+test "Vec.push_owned: 100 pushes realloc five times" =
     let start = Alloc.snapshot ()
     let mut v: Vec<i64> = Vec.empty()
-    for i in 1i64 .. 100i64 do v = Vec.push i v
+    for i in 1i64 .. 100i64 do v = Vec.push_owned i v
     let used = Alloc.since start
     expect "100 pushes" 1 5 0 2016 used
     assert (Vec.capacity (ref v) == 128)
@@ -267,7 +267,7 @@ test "Vec.push: 100 pushes realloc five times" =
 test "Vec.with_capacity: no realloc while the capacity lasts" =
     let start = Alloc.snapshot ()
     let mut v: Vec<i64> = Vec.with_capacity 100
-    for i in 1i64 .. 100i64 do v = Vec.push i v
+    for i in 1i64 .. 100i64 do v = Vec.push_owned i v
     let used = Alloc.since start
     expect "with_capacity 100" 1 0 0 800 used
     assert (Vec.length (ref v) == 100)
@@ -275,7 +275,7 @@ test "Vec.with_capacity: no realloc while the capacity lasts" =
 // Rule: Vec.to_array moves its buffer, as Array.filter relies on.
 test "Vec.to_array: moves the buffer" =
     let mut v: Vec<i64> = Vec.empty()
-    for i in 1i64 .. 100i64 do v = Vec.push i v
+    for i in 1i64 .. 100i64 do v = Vec.push_owned i v
     let start = Alloc.snapshot ()
     let xs = Vec.to_array v
     let used = Alloc.since start
@@ -285,7 +285,7 @@ test "Vec.to_array: moves the buffer" =
 // Rule: length and capacity only read metadata (vec.md).
 test "Vec.length and Vec.capacity: no allocation" =
     let mut v: Vec<i64> = Vec.empty()
-    for i in 1i64 .. 10i64 do v = Vec.push i v
+    for i in 1i64 .. 10i64 do v = Vec.push_owned i v
     let start = Alloc.snapshot ()
     let length = Vec.length (ref v)
     let capacity = Vec.capacity (ref v)
@@ -298,7 +298,7 @@ test "Vec.length and Vec.capacity: no allocation" =
 test "Vec of arrays: one block per array and one for the Vec" =
     let start = Alloc.snapshot ()
     let mut v: Vec<[i64]> = Vec.empty()
-    for _i in 1i64 .. 3i64 do v = Vec.push (new [i64](2, \k -> k)) v
+    for _i in 1i64 .. 3i64 do v = Vec.push_owned (new [i64](2, \k -> k)) v
     let used = Alloc.since start
     expect_events "3 arrays in a Vec" 4 0 0 used
     assert (Vec.length (ref v) == 3)

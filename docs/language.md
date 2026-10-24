@@ -4230,6 +4230,7 @@ void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 `snapshot` は累計、`since` は以前の snapshot との差、`measure` は callback 1 回分の `(差分, 結果)` です。読み取り自体は確保せず、窓は入れ子にできます。`since` の対象 `Stats` は最後の引数です。
 確保は `allocs`、生きたブロックの正のサイズへの再確保は `reallocs`、解放は `frees` を増やします。null からの再確保は確保、サイズ 0 への再確保は解放、null の解放は無視します。`bytes` は確保サイズと再確保の新サイズ全体の累計で、16-byte ヘッダーを含みません。上記のホスト ABI の 32 バイト・4 フィールドは変わりません。
 カウンターはプロセス全体の原子的な 64-bit 符号なし累計を `i64` として読みます。単一スレッドで同じ処理なら決定的ですが、Task などの他スレッドも含み、複数フィールドの同時 snapshot ではありません。
+この観測は確保効果ではなくデバッグ効果であり、`pure def` から `snapshot`・`since`・`measure` を呼ぶと `E1029`（`reads allocation counters`）です。読み取り自体は確保しません。
 選んだテストが `Alloc` に到達するときだけ counting heap を自動連結します。普通のコード生成と `run` は明示の `--allocator counting` が必要で、なし・`system` なら `E1018`、`host`・`small` なら `E2000` です。公開の補助関数は、export や入口などから到達しなければ根から除きます。`check`・`doc`・`lsp` は型検査だけです。std の外から `Alloc.__counter` を呼ぶと `E1022` です。
 `measure` の捕捉した所有値は一意でないので、消費して更新する操作は snapshot/since で測ります。詳細と native/wasm32 × `-O0`/`-O3` の 42 契約は [Alloc](../_tsuzuri/language-reference/built-in-types-and-modules/alloc.md) にあります。
 

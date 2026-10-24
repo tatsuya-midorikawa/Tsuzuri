@@ -18,7 +18,7 @@ const ALLOCATION_BENCHES: &str = r#"
 def push_five :: unit -> i64
 fn push_five _unit =
     let mut v: Vec<i64> = Vec.empty()
-    for i in 1i64 .. 5i64 do v = Vec.push i v
+    for i in 1i64 .. 5i64 do v = Vec.push_owned i v
     Vec.length (ref v)
 def sum_all :: ref [i64] -> i64
 fn sum_all values = Array.sum values

@@ -167,7 +167,7 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
     use Builtin::*;
     use Category::*;
     match builtin {
-        DebugPrintString => Some(Debug),
+        DebugPrintString | AllocCounter => Some(Debug),
         IOReadLine | IOWrite | OsRead | OsArgs | OsWrite | OsRandom | OsClock | OsSleep
         | OsOpen | OsHandle | OsClose | OsSpawn | NetResolve | NetOpen | NetAccept | NetRead
         | NetWrite | NetClose | NetClassify | NetWatch | NetUnwatch | NetConnect | NetNames
@@ -402,7 +402,7 @@ fn closed_task_operation(builtin: Builtin) -> bool {
 #[derive(Clone, Debug)]
 pub(crate) enum Effect {
     Host(String),
-    Builtin(&'static str, Category),
+    Builtin(Builtin, Category),
     #[allow(dead_code)]
     Concurrency,
     Dyn,
@@ -415,19 +415,27 @@ impl Effect {
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::Host(name) => format!("calls the extern function '{name}'"),
-            Self::Builtin(name, category) => match category {
-                Category::Outside => format!("reads or writes the outside world ('{name}')"),
-                Category::Debug => "prints debug output".into(),
-                Category::Clock => {
-                    format!("reads the clock, a random source, or a benchmark counter ('{name}')")
+            Self::Builtin(Builtin::AllocCounter, Category::Debug) => {
+                "reads allocation counters".into()
+            }
+            Self::Builtin(builtin, category) => {
+                let name = builtin.name();
+                match category {
+                    Category::Outside => format!("reads or writes the outside world ('{name}')"),
+                    Category::Debug => "prints debug output".into(),
+                    Category::Clock => {
+                        format!(
+                            "reads the clock, a random source, or a benchmark counter ('{name}')"
+                        )
+                    }
+                    Category::Task => {
+                        format!("starts or waits for a task or a parallel operation ('{name}')")
+                    }
+                    Category::State => format!("uses shared mutable state ('{name}')"),
+                    Category::Gpu => format!("uses the GPU ('{name}')"),
+                    Category::Dyn => "uses dyn dispatch".into(),
                 }
-                Category::Task => {
-                    format!("starts or waits for a task or a parallel operation ('{name}')")
-                }
-                Category::State => format!("uses shared mutable state ('{name}')"),
-                Category::Gpu => format!("uses the GPU ('{name}')"),
-                Category::Dyn => "uses dyn dispatch".into(),
-            },
+            }
             Self::Concurrency => "starts or waits for a task or a parallel operation".into(),
             Self::Dyn => "uses dyn dispatch".into(),
             Self::UserDrop(ty) => format!("holds a value whose type has a user Drop ('{ty}')"),
@@ -833,7 +841,7 @@ impl<'a> Scanner<'a> {
                                         builtin_effect(instance.builtin)
                                             .filter(|_| !closed_task_operation(instance.builtin))
                                             .map(|category| {
-                                                Effect::Builtin(instance.builtin.name(), category)
+                                                Effect::Builtin(instance.builtin, category)
                                             })
                                     } else {
                                         None
@@ -1322,7 +1330,7 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                                 expression.span,
                                 format!(
                                     "this builtin cannot satisfy a pure function contract: it {}",
-                                    Effect::Builtin(instance.builtin.name(), category).reason()
+                                    Effect::Builtin(instance.builtin, category).reason()
                                 ),
                             ));
                             }
@@ -1398,7 +1406,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            90
+            91
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

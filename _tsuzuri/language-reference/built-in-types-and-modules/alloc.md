@@ -55,6 +55,8 @@ test "a mapped array takes one block" =
 C ライブラリ自身の `malloc` など、この heap を通らない確保は数えません。
 並行処理の独立した窓や、4 フィールドを同時に読む原子的 snapshot は提供しません。
 内部の `Alloc.__counter` は std 専用で、利用者から呼ぶと `E1022` です。
+カウンターの観測は確保効果ではなくデバッグ効果です。`pure def` から `snapshot`・`since`・`measure` を
+呼ぶと、`E1029`（`reads allocation counters`）で拒否します。読み取り自体が確保しないこととは別の制限です。
 
 ## 使える出力
 
@@ -114,10 +116,11 @@ test "measure returns the callback result" =
 
 ## 標準ライブラリの確保の契約
 
-`tests/fixtures/alloc_contracts/Main.tz` の 42 テストは native と wasm32 の `-O0`・`-O3` で検証します。
+`tests/fixtures/alloc_contracts/Main.tz` の 42 テストは edition 2026・2027 それぞれで、native と wasm32 の `-O0`・`-O3` を検証します。
 値の順は **allocs, reallocs, frees, bytes** です。ポインター依存の配置は出来事だけを検査します。
 UTF-16 の既定の文字列表現を対象とし、opt-in の compact 表現のバイト数を約束する表ではありません。
 期待値は規則から導き、時間や実行結果を写した値を合否に使いません。
+Vec の消費する更新には、両版で同じ契約の `Vec.push_owned` を使います。
 
 | # | 操作・規則 | 値 |
 | --- | --- | --- |

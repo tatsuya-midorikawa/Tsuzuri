@@ -1,6 +1,7 @@
 //! Rule-derived structural contracts, independent of time or optimization (F14 Phase 3).
 use std::process::Command;
 use tsuzuri::driver::{self, Target, TestOptions};
+use tsuzuri::syntax::Edition;
 
 const CONTRACTS: &str = include_str!("fixtures/alloc_contracts/Main.tz");
 
@@ -32,33 +33,35 @@ fn std_allocation_contracts_hold_on_native_and_wasm32_at_o0_and_o3() {
             .count(),
         42
     );
-    let module = tsuzuri::analyze(CONTRACTS).unwrap();
-    for target in [Target::Native, Target::Wasm32] {
-        for optimization in [0, 3] {
-            let report = driver::run_tests(
-                &module,
-                &TestOptions {
-                    target,
-                    optimization,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(report.results.len(), 42);
-            let failures: Vec<_> = report
-                .results
-                .iter()
-                .filter_map(|result| {
-                    result.failure.as_ref().map(|failure| {
-                        format!("{}: {failure}\n{}", result.case.name, result.output)
+    for edition in [Edition::E2026, Edition::E2027] {
+        let module = tsuzuri::analyze_with_edition(CONTRACTS, edition).unwrap();
+        for target in [Target::Native, Target::Wasm32] {
+            for optimization in [0, 3] {
+                let report = driver::run_tests(
+                    &module,
+                    &TestOptions {
+                        target,
+                        optimization,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(report.results.len(), 42);
+                let failures: Vec<_> = report
+                    .results
+                    .iter()
+                    .filter_map(|result| {
+                        result.failure.as_ref().map(|failure| {
+                            format!("{}: {failure}\n{}", result.case.name, result.output)
+                        })
                     })
-                })
-                .collect();
-            assert!(
-                failures.is_empty(),
-                "{target:?} -O{optimization}:\n{}",
-                failures.join("\n")
-            );
+                    .collect();
+                assert!(
+                    failures.is_empty(),
+                    "{edition:?} {target:?} -O{optimization}:\n{}",
+                    failures.join("\n")
+                );
+            }
         }
     }
 }
@@ -67,7 +70,7 @@ fn std_allocation_contracts_hold_on_native_and_wasm32_at_o0_and_o3() {
 fn a_changed_expectation_fails_the_contract() {
     let header = CONTRACTS.split("// --- Array ---").next().unwrap();
     let test = CONTRACTS
-        .split_once("test \"Vec.push: 100 pushes realloc five times\"")
+        .split_once("test \"Vec.push_owned: 100 pushes realloc five times\"")
         .unwrap()
         .1;
     let test = test.split("// Rule:").next().unwrap();
