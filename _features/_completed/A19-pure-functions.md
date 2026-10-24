@@ -1070,9 +1070,11 @@ def main :: unit -> i32 = \() ->
 
 平たいデータの値渡しが期待どおりの値を返すことは、付録 B の fixture の `own` の 4 つの関数（`pure` と `own` を外した値渡しの `def`）で、`n = 0..12` の 13 行すべてが独立した JavaScript の計算と一致した。
 
-## 実装と検証（2026-10-23）
+## 実装と検証（2026-10-24）
 
-- 基盤は A18 の `b3343ed1`。Phase 1 と全後続項目を実装した。構文・codec・cache、読み取り補完、
+- 基盤は最終 A18 の `8f1df9d5`。検証した `b3343ed1` からの差は文書のみで、restack 前後の
+  src／std／tests／benchmarks／scripts／vsc と Cargo manifest・lock は byte 同一である。
+  Phase 1 と全後続項目を実装した。構文・codec・cache、読み取り補完、
   plain-data の `own`、generic の保留条件と特殊化後の再検証、純粋な関数型と呼び出し段階、
   class／instance・CPU variant、遅延 IO の構築、閉じた明示 Task／Parallel、std の Char・PCG 契約に対応する。
   通常の callback API を純粋 callback 専用に狭めず、通常の `def` の `own` は A18 の契約を維持した。
@@ -1134,16 +1136,15 @@ def main :: unit -> i32 = \() ->
 ### 変更ファイル
 
 - [README.md](../../README.md)
-- [_features/A18-parameter-conventions.md](A18-parameter-conventions.md)
 - [_features/A20-effect-summary-and-checked-attributes.md](../A20-effect-summary-and-checked-attributes.md)
 - [_features/A21-contracts-requires-ensures.md](../A21-contracts-requires-ensures.md)
-- [_features/A22-edition-2027-canonical-forms.md](../A22-edition-2027-canonical-forms.md)
 - [_features/A23-integer-overflow-intent.md](../A23-integer-overflow-intent.md)
 - [_features/B10-trap-backtrace-and-domains.md](../B10-trap-backtrace-and-domains.md)
 - [_features/E15-trust-boundary-and-capabilities.md](../E15-trust-boundary-and-capabilities.md)
 - [_features/F15-sequential-equivalent-data-parallel.md](../F15-sequential-equivalent-data-parallel.md)
 - [_features/GUIDE.md](../GUIDE.md)
 - [_features/README.md](../README.md)
+- [_features/_completed/A18-parameter-conventions.md](A18-parameter-conventions.md)
 - [_features/_completed/A19-pure-functions.md](A19-pure-functions.md)
 - [_perfs/_completed/PR01-ownership-facts.md](../../_perfs/_completed/PR01-ownership-facts.md)
 - [_tsuzuri/language-reference/built-in-types-and-modules/char.md](../../_tsuzuri/language-reference/built-in-types-and-modules/char.md)
