@@ -14,6 +14,12 @@
 | 手本にする既存実装 | 修飾子と検査: `const def`（チケット D11）の `src/parser.rs`（`constant_function_ahead`・トップレベルの宣言の分岐・`misplaced_const`）、`src/const_rules.rs`（`check_signature`・`validate_function`・`value_part`。`Type` と `TypedExprKind` を wildcard なしで全部判定し、許す型を列挙する）、`src/check.rs` の `names.const_functions`。呼び出しグラフの検査（既定拒否・上限つき）: `src/gpu.rs` の `extract_kernel`（`E1017`）。引数の型の解決と、署名を見る検査の順序: `src/check.rs` の `check_modules` の関数宣言のループ。関数の由来: `src/check.rs` の `FunctionOrigin`（`generated`・`cpu`）。型の述語: `Type::is_copy`・`needs_drop`・`has_user_drop`（`src/check.rs`）、`TypeContext::stored_all`・`reaches`（`src/recursive.rs`）。文脈キーワードの登録: `src/syntax.rs` の `CONTEXTUAL_KEYWORDS`。`own` の前置き: `src/parser.rs` の `type_primary`・`reference_type`（`ref`・`ref mut` の読み方）、`TypeExprKind::Reference` を辿る全出現（`grep -rn "TypeExprKind::Reference" src/`）、[A18](A18-parameter-conventions.md) の手順 3。テスト: `tests/constants.rs`、`tests/call_specialization.rs`（IR の関数の切り出し）、suite `const_functions`（`tests/features.mjs`） |
 | 主な影響ファイル | 新規: `src/pure_rules.rs`, `tests/pure_functions.rs`, `tests/fixtures/pure_functions/Main.tz`。変更: `src/syntax.rs`（`SignatureDecl.pure`・`FunctionDecl.pure`・`TypeExprKind::Own`・`CONTEXTUAL_KEYWORDS`）, `src/parser.rs`, `src/syntax_codec.rs`, `src/frontend_cache.rs`（`FRONTEND_FORMAT` を上げる）, `src/check.rs`（`Names.pure_functions`・`FunctionOrigin.pure`・関数宣言のループ・検証の呼び出し）, `src/polymorph.rs`（`FunctionDecl` の構築箇所と `type_expression`）, `src/formatter.rs`, `src/docgen.rs`, `src/semantic.rs`, `src/regions.rs`, `src/warnings.rs`, `src/api_diff.rs`, `tests/features.mjs`, `docs/language.md`, `docs/stability.md`, `docs/architecture.md`, `README.md`, `_features/GUIDE.md`（§4 のコードマップ）, `_tsuzuri/language-reference/` の複数ページ |
 
+> **現行仕様と設計記録:** この本文には着手前の Phase 1 の制限を歴史として残している。
+> 全 Phase 承認後は、通常の `def` の `own`、generic・純粋 callback・class／instance・`@cpu`、
+> 閉じた明示並行処理を受理するため、旧 D8・D9・D12・D16 とそれに対応する拒否例を現行の制限とはしない。
+> 現行契約は [関数のリファレンス](../../_tsuzuri/language-reference/values-and-functions/functions.md)、
+> 実装範囲と検証結果は末尾の「実装と検証」を参照する。
+
 ## 目的
 
 関数が副作用を持たないことを、署名に書き、コンパイラが検査する。
@@ -1101,6 +1107,9 @@ def main :: unit -> i32 = \() ->
 - `node tests/features.mjs target/debug/tsuzuri`（全 suite）、同じ dev バイナリで `e2e`・`primitives`・
   `codegen_units`・`frontend_cache`・`lsp_sessions`・`docgen`・`gpu`。
 - `node tests/ai_cost.mjs target/debug/tsuzuri pure_items`（新しい字句的 callers／impact／item range の回帰 1 件）。
+  続けて全 `tests/ai_cost.mjs` を Node 20 と Node 24 で実行し、両方 **43 passed / 0 failed / 5 skipped**。
+  未実装の related spans・fix・G21/G27/G28 artifacts・kb commands・G29 MCP tools/list の能力検査を skip として明記し、
+  実行できたものとして数えていない。
 - `node scripts/check-docs.mjs <下記の12ページ>`（`TSUZURI_BIN=target/debug/tsuzuri` を絶対パスで指定）。
 - `sh scripts/check-runtime-includes.sh`。旧 compiler と frozen 2026 corpus の比較は一時 runner で行い、
   出力・診断・IR の hash を比較してから現在の compiler をもう一度実行した。
