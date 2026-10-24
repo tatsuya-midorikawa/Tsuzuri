@@ -1085,7 +1085,7 @@ def main :: unit -> i32 = \() ->
   最初の呼び出しを残し、捕捉・外部メモリ・浮動小数・所有結果・CPU multiversion を対象にしない。
   自動 offload、共有された所有結果、永続的な memo cache、投機実行、停止・トラップの保証は対象外。
   速度向上は未計測であり主張しない。依存、stack、解析上限、fast-math は変更していない。
-- fmt・全 target Clippy（warnings denied）・build が成功。最終全 Rust は **1,816 passed / 2 skipped**、
+- fmt・全 target Clippy（warnings denied）・build が成功。初回の全 Rust は **1,816 passed / 2 skipped**、
   別途 targets **12 passed**。付録 E は旧 compiler・通常 def・pure def の **8 プログラム／36 検査**が一致した。
   保存した 2026 の **114 プログラム**は旧・現在・現在の再実行で status／stdout／stderr が一致し、
   全 LLVM IR が byte 一致した。primitives は native／WASM × O0／O3 が成功。
@@ -1101,6 +1101,25 @@ def main :: unit -> i32 = \() ->
   隠れた通常 callback は E1029 のまま。引用符付き SSA 定義に `=` がある spill escape も保守的に拒否する。
 - F14 の新しい `Builtin::AllocCounter` の Debug 分類と拒否回帰は F14 側の互換修正で扱う。
   この A19 単独の base に存在しない variant の仮置きや、不純効果の見落としを隠す wildcard は足さない。
+
+### PR #50 のレビュー修正と再受入（2026-10-24）
+
+- Copilot の 4 件を修正前に失敗する回帰で再現した。parser と class の instance／既定実装で
+  正規化を共有し、宣言した pure の段階で全引数を束縛しない実装を `E1029` とする。
+  eta 展開で途中の計算・トラップを遅らせず、通常の `def` の途中評価は変えない。
+  途中評価が必要なら factory の戻り段階を括弧で宣言し、返る関数も純粋なら結果に `pure` を書く。
+  本物の factory の戻り lambda は、brace の有無にかかわらず余分なメソッド引数に取り込まない。
+- 推論する `#function` と明示した `(#function: Type)` の両方で、対象の純粋性だけを通常の要求へ弱める。
+  対象自身の署名・引数規約・factory の物理的段階を平坦化せず、逆向きは拒否する。
+  `--effective` の extern 引数は全体の `own` だけを外し、入れ子・結果の不正な所有指定は拒否する。
+- focused 104 件、fmt・全 target Clippy・build が成功。新しい fixture モジュールを Rust 側にも登録した後、
+  clean な全 Rust **1,832 passed / 2 skipped（targets 12 件を含む）** が成功した。
+  pure_functions **302 ケース**と pure_parallel **12 ケース**、trap・live/import 検査が native／WASM × O0／O3 で成功した。
+  新規 42 ケースは未括弧の class instance／既定 factory、純粋な戻り段階、推論／明示したモジュール関数制約と factory の実行を含む。
+  `e2e`、`frontend_cache`、`lsp_sessions` の再実行も成功した。
+- 変更した manual 4 ページは **126 links／32 checked examples／58 native runs／1 test project** が成功した。
+  guide-lite は **85 references／0 failures**。初回の全 feature・frozen IR・数値／GPU 参照の記録は上記のとおりで、
+  今回の再検証範囲や実 GPU の実行と混同しない。最終 head の CI と再レビューは PR で追跡する。
 
 ### 確認コマンド（最終受入）
 
@@ -1132,6 +1151,7 @@ def main :: unit -> i32 = \() ->
 - [_tsuzuri/language-reference/ownership-and-memory/ownership.md](../../_tsuzuri/language-reference/ownership-and-memory/ownership.md)
 - [_tsuzuri/language-reference/values-and-functions/functions.md](../../_tsuzuri/language-reference/values-and-functions/functions.md)
 - [_tsuzuri/language-reference/values-and-functions/keywords.md](../../_tsuzuri/language-reference/values-and-functions/keywords.md)
+- [_tsuzuri/language-reference/types-and-type-inference/constraints.md](../../_tsuzuri/language-reference/types-and-type-inference/constraints.md)
 
 ### 変更ファイル
 
@@ -1159,6 +1179,7 @@ def main :: unit -> i32 = \() ->
 - [_tsuzuri/language-reference/ownership-and-memory/ownership.md](../../_tsuzuri/language-reference/ownership-and-memory/ownership.md)
 - [_tsuzuri/language-reference/values-and-functions/functions.md](../../_tsuzuri/language-reference/values-and-functions/functions.md)
 - [_tsuzuri/language-reference/values-and-functions/keywords.md](../../_tsuzuri/language-reference/values-and-functions/keywords.md)
+- [_tsuzuri/language-reference/types-and-type-inference/constraints.md](../../_tsuzuri/language-reference/types-and-type-inference/constraints.md)
 - [benchmarks/ai/lib/derive.mjs](../../benchmarks/ai/lib/derive.mjs)
 - [docs/architecture.md](../../docs/architecture.md)
 - [docs/language.md](../../docs/language.md)
@@ -1196,8 +1217,10 @@ def main :: unit -> i32 = \() ->
 - [tests/features.mjs](../../tests/features.mjs)
 - [tests/fixtures/pure_functions/Classes.tt](../../tests/fixtures/pure_functions/Classes.tt)
 - [tests/fixtures/pure_functions/Main.tz](../../tests/fixtures/pure_functions/Main.tz)
+- [tests/fixtures/pure_functions/Members.tz](../../tests/fixtures/pure_functions/Members.tz)
 - [tests/fixtures/pure_parallel/Main.tz](../../tests/fixtures/pure_parallel/Main.tz)
 - [tests/gpu.rs](../../tests/gpu.rs)
+- [tests/polymorphism.rs](../../tests/polymorphism.rs)
 - [tests/pure_functions.rs](../../tests/pure_functions.rs)
 - [tests/pure_scalar_reuse.rs](../../tests/pure_scalar_reuse.rs)
 - [tests/std_argument_order.rs](../../tests/std_argument_order.rs)

@@ -1,1 +1,5 @@
 class StageFactory<'a> { pure def make :: own 'a -> (i64 -> i64) }
+class DefaultFactory<'a> {
+    pure def make :: own 'a -> (i64 -> i64)
+    fn make offset = \value -> value
+}

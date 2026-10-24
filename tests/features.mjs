@@ -464,7 +464,7 @@ const suites = {
       };
       return [
         ...Object.entries(expectations).flatMap(([name, expected]) => range(13n).map((n) => [`t_${name}`, [n], expected(n)])),
-        ...["t_factory_owned", "t_factory_borrowed", "t_factory_returned", "t_factory_class", "t_pure_generic", "t_pure_callback", "t_pure_cpu", "t_pure_deferred", "t_pure_std_weaken", "t_qualified_factory", "t_pure_reuse", "t_pure_reuse_mutated", "t_pure_unsigned_reuse"].flatMap(name =>
+        ...["t_factory_owned", "t_factory_borrowed", "t_factory_returned", "t_factory_class", "t_default_factory", "t_prefix_factory", "t_member_distance", "t_annotated_distance", "t_member_factory", "t_annotated_factory", "t_pure_generic", "t_pure_callback", "t_pure_cpu", "t_pure_deferred", "t_pure_std_weaken", "t_qualified_factory", "t_pure_reuse", "t_pure_reuse_mutated", "t_pure_unsigned_reuse"].flatMap(name =>
           [-3n, 0n, 1n, 20n, 1024n, -(1n << 63n), (1n << 63n) - 1n].map(n => [name, [n], BigInt.asIntN(64, 2n * n + 1n)])),
         ...[-(1n << 31n), (1n << 31n) - 1n, -1n, 0n, 1024n, -(1n << 63n), (1n << 63n) - 1n].map(n =>
           ["t_pure_narrow_reuse", [n], BigInt.asIntN(32, 2n * n + 1n)]),

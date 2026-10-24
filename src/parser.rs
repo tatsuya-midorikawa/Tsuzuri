@@ -94,6 +94,28 @@ fn unit_lambda_body(expression: Expr) -> Expr {
     arms.pop().expect("one arm").body
 }
 
+pub(crate) fn normalize_definition(
+    mut definition: Definition,
+    pure: bool,
+    arity: usize,
+) -> Result<Definition, Diagnostic> {
+    while (!pure || definition.parameters.len() < arity)
+        && let ExprKind::Lambda(parameters, body) = definition.body.kind
+    {
+        definition.parameters.extend(parameters);
+        definition.body = *body;
+    }
+    // Eta expansion would move prefix computations and traps to a later application.
+    if pure && !definition.parameters.is_empty() && definition.parameters.len() < arity {
+        return Err(Diagnostic::new(
+            "E1029",
+            "a pure implementation must bind every parameter of its declared call stage; bind the remaining parameters or declare a parenthesized factory result",
+            definition.body.span,
+        ));
+    }
+    Ok(definition)
+}
+
 /// Parses a source that no package owns (a snippet, the REPL, a test) with the latest edition.
 /// A package's source goes through `parse_with_source` with its own edition.
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
@@ -1766,10 +1788,8 @@ impl Parser<'_> {
         if signature.parameters.is_empty() && definition.parameters.is_empty() {
             definition.body = unit_lambda_body(definition.body);
         }
-        while let ExprKind::Lambda(parameters, body) = definition.body.kind {
-            definition.parameters.extend(parameters);
-            definition.body = *body;
-        }
+        let definition =
+            normalize_definition(definition, signature.pure, signature.parameters.len())?;
         if signature.parameters.len() < definition.parameters.len()
             || (definition.parameters.is_empty() && !signature.parameters.is_empty())
         {

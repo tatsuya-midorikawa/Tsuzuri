@@ -72,12 +72,42 @@ export def t_factory_owned :: i64 -> i64 = \n -> invoke_owned factory n
 export def t_factory_borrowed :: i64 -> i64 = \n -> invoke_borrowed factory n
 export def t_factory_returned :: i64 -> i64 = \n -> { let f = factory n; f (n + 1) }
 
+def member_distance :: 'T -> i64
+    @'T : #distance
+fn member_distance value = 'T.distance value
+
+def annotated_distance :: 'T -> i64
+    @'T : (#distance: 'T -> i64)
+fn annotated_distance value = 'T.distance value
+
+def member_factory :: own 'T -> i64 -> i64
+    @'T : #factory
+fn member_factory item value = 'T.factory item value
+
+def annotated_factory :: own 'T -> (i64 -> i64)
+    @'T : (#factory: 'T -> i64 -> i64)
+fn annotated_factory item = 'T.factory item
+
+export def t_member_distance :: i64 -> i64 = \n -> member_distance (Members.Item { value: n + n + 1 })
+export def t_annotated_distance :: i64 -> i64 = \n -> annotated_distance (Members.Item { value: n + n + 1 })
+export def t_member_factory :: i64 -> i64 = \n -> member_factory (Members.Item { value: n }) (n + 1)
+export def t_annotated_factory :: i64 -> i64 = \n ->
+    let callback = annotated_factory (Members.Item { value: n })
+    callback (n + 1)
+export def t_default_factory :: i64 -> i64 = \n -> Classes.DefaultFactory.make n (n + n + 1)
+
+pure def prefix_factory :: i64 -> pure (i64 -> i64) = \n ->
+    let offset = n + 1
+    \value -> offset + value
+export def t_prefix_factory :: i64 -> i64 = \n -> prefix_factory n n
+
 pure def identity :: own 'a -> 'a = \value -> value
 pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \f value -> f value
 export def t_pure_generic :: i64 -> i64 = \n -> identity (n + n + 1)
 export def t_pure_callback :: i64 -> i64 = \n -> apply (\value -> value + n + 1) n
 
-instance Classes.StageFactory<i64> { fn make offset = { \value -> offset + value } }
+instance Classes.StageFactory<i64> { fn make offset = \value -> offset + value }
+instance Classes.DefaultFactory<i64> {}
 export def t_factory_class :: i64 -> i64 = \n ->
     let callback = Classes.StageFactory.make n
     callback (n + 1)

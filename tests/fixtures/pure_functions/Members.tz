@@ -1,0 +1,4 @@
+record Item { value: i64 }
+
+pure def distance :: Item -> i64 = \item -> item.value
+pure def factory :: own Item -> (i64 -> i64) = \item -> \value -> item.value + value

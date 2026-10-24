@@ -156,6 +156,70 @@ fn class_and_instance_purity_are_contracts_even_when_unused() {
 }
 
 #[test]
+fn declared_pure_stages_include_lambdas_returned_by_prefix_implementations() {
+    rejected(
+        "pure def f :: i64 -> i64 -> i64 = \\x -> { \\y -> { Debug.print (ref y); x + y } }",
+        "declared call stage",
+    );
+    rejected(
+        "pure def f :: i64 -> i64 -> i64 = \\x -> { let offset = x + 1; \\y -> offset + y }",
+        "declared call stage",
+    );
+    for implementation in [
+        "instance Combine<i64> { fn combine left = { \\right -> { Debug.print (ref right); right } } }",
+        "",
+    ] {
+        let default = if implementation.is_empty() {
+            "fn combine left = { \\right -> { Debug.print (ref right); right } }"
+        } else {
+            ""
+        };
+        rejected(
+            &format!(
+                "class Combine<'a> {{ pure def combine :: own 'a -> i64 -> i64 {default} }}\n{implementation}"
+            ),
+            "declared call stage",
+        );
+    }
+    for declaration in [
+        "def f :: i64 -> i64 -> i64",
+        "pure def f :: i64 -> pure (i64 -> i64)",
+    ] {
+        let module = accepted(&format!(
+            "{declaration} = \\x -> {{ let offset = x + 1; \\y -> offset + y }}\n\
+             export def answer :: i64 = f 20 21"
+        ));
+        assert_eq!(module.functions[0].signature.parameters.len(), 1);
+        llvm::emit(&module, llvm::Entry::Library).unwrap();
+    }
+    accepted("pure def f :: i64 -> i64 -> i64 = \\x -> \\y -> x + y");
+}
+
+#[test]
+fn pure_class_factory_implementations_keep_unbraced_returned_lambdas() {
+    for source in [
+        "class Factory<'a> { pure def make :: own 'a -> (i64 -> i64) }\n\
+         instance Factory<i64> { fn make offset = \\value -> offset + value }\n\
+         export def answer :: i64 = Factory.make 20i64 22",
+        "class Factory<'a> { pure def make :: own 'a -> (i64 -> i64)\n\
+         fn make offset = \\value -> { Debug.print (ref value); value } }\n\
+         instance Factory<i64> {}\n\
+         export def answer :: i64 = Factory.make 20i64 42",
+    ] {
+        let module = accepted(source);
+        llvm::emit(&module, llvm::Entry::Library).unwrap();
+        let formatted = formatter::format_source("Main.tz", source, SourceKind::Code)
+            .unwrap()
+            .formatted;
+        accepted(&formatted);
+        assert_eq!(
+            formatter::ast_fingerprint(parser::parse(source).unwrap()),
+            formatter::ast_fingerprint(parser::parse(&formatted).unwrap())
+        );
+    }
+}
+
+#[test]
 fn pure_class_factories_prove_construction_not_returned_callback_execution() {
     let source = "class Factory<'a> { pure def make :: own 'a -> (i64 -> i64) }\n\
          instance Factory<i64> { fn make offset = { \\value -> { Debug.print (ref value); offset + value } } }\n\
@@ -663,6 +727,10 @@ fn pure_defs_reach_no_effectful_runtime_symbol() {
             include_str!("fixtures/pure_functions/Classes.tt"),
         ),
         ("Main", include_str!("fixtures/pure_functions/Main.tz")),
+        (
+            "Members",
+            include_str!("fixtures/pure_functions/Members.tz"),
+        ),
     ])
     .unwrap();
     for wasm in [false, true] {

@@ -2696,12 +2696,9 @@ fn instance_function(
     constraints: Vec<ConstraintExpr>,
     types: &TypeContext<'_>,
 ) -> Result<FunctionDecl, Diagnostic> {
-    let mut definition = definition.clone();
     let pure = definition.pure || conventions.is_some_and(|conventions| conventions.pure);
-    while let ExprKind::Lambda(parameters, body) = definition.body.kind {
-        definition.parameters.extend(parameters);
-        definition.body = *body;
-    }
+    let definition =
+        crate::parser::normalize_definition(definition.clone(), pure, signature.parameters.len())?;
     if definition.parameters.len() > signature.parameters.len()
         || (definition.parameters.is_empty() && !signature.parameters.is_empty())
     {
@@ -3805,7 +3802,12 @@ pub(super) fn solve_members(
                         member.span,
                     )?;
                     if let Some(signature) = &member.signature {
-                        let (kind, actual) = checker.function(callee);
+                        let (kind, mut actual) = checker.function(callee);
+                        if actual.function_purity() == Some(true)
+                            && signature.function_purity() == Some(false)
+                        {
+                            actual.set_function_purity(false);
+                        }
                         checker.same(&actual, signature, member.span)?;
                         let types = match kind {
                             TypedExprKind::GenericFunction(_, types) => types,
@@ -4684,20 +4686,19 @@ impl Specializer<'_> {
             .cloned()
             .zip(types.clone())
             .collect();
-        inference.unify(
-            &substitute(
-                &Type::function_with_conventions(
-                    target.signature.parameters.clone(),
-                    target.signature.result.clone(),
-                    Vec::new(),
-                    target.origin.pure,
-                ),
-                &substitutions,
+        let mut actual = substitute(
+            &Type::function_with_conventions(
+                target.signature.parameters.clone(),
+                target.signature.result.clone(),
+                Vec::new(),
+                target.origin.pure,
             ),
-            expected,
-            &self.types,
-            member.span,
-        )?;
+            &substitutions,
+        );
+        if actual.function_purity() == Some(true) && expected.function_purity() == Some(false) {
+            actual.set_function_purity(false);
+        }
+        inference.unify(&actual, expected, &self.types, member.span)?;
         let types: Vec<_> = types.iter().map(|ty| inference.resolve(ty)).collect();
         for ty in &types {
             require_concrete(ty, member.span)?;

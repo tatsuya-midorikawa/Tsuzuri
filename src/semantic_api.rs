@@ -140,7 +140,13 @@ pub(super) fn collect(
             let parameters = declaration
                 .parameters
                 .iter()
-                .map(|ty| resolve_type(ty, name, names))
+                .map(|ty| {
+                    let ty = match &ty.kind {
+                        TypeExprKind::Own(inner) => inner.as_ref(),
+                        _ => ty,
+                    };
+                    resolve_type(ty, name, names)
+                })
                 .collect::<Result<_, _>>()?;
             let resolved = Signature {
                 parameters,

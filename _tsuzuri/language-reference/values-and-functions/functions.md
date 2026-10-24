@@ -209,6 +209,10 @@ apply increment 41
 関数を作る段階と、返った関数を呼ぶ段階は別です。次の `pure` が保証するのは `factory` の実行だけで、
 戻り値の通常の関数型にまで保証を広げません。`pure def f :: A -> B -> C` は両引数の適用までを保証しますが、
 `pure def f :: A -> (B -> C)` は最初の段階だけです。これは class メソッドの署名でも同じです。
+純粋な実装は、宣言した段階の引数をすべて束縛します。たとえば `A -> B -> C` に対し、
+`A` だけを束縛して block から残りの関数を返す形は、宣言と段階が違うため `E1029` です。
+コンパイラが残りの引数を補って途中の計算やトラップを後回しにすることはありません。
+途中で計算して関数を返すときは、factory の戻り段階を明示します。通常の `def` の途中評価は変わりません。
 
 ```tsuzuri run=42
 pure def factory :: i64 -> (i64 -> i64) = \offset -> { \value -> offset + value }
@@ -217,6 +221,15 @@ callback 2
 ```
 
 戻った関数の実行も保証したい場合は、結果に `pure (B -> C)` を書きます。
+class の factory の instance／既定実装でも、戻る lambda はメソッド自身の引数に取り込みません。
+
+```tsuzuri run=42
+pure def factory :: i64 -> pure (i64 -> i64) = \offset ->
+    let increment = offset + 1
+    \value -> increment + value
+pure def answer :: i64 = factory 20 21
+answer()
+```
 
 ### IO アクションの構築
 

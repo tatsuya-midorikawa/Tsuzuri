@@ -491,6 +491,43 @@ fn resolves_module_function_constraints_and_infers_results() {
 }
 
 #[test]
+fn pure_module_targets_satisfy_ordinary_function_constraints() {
+    for constraint in ["#distance", "(#distance: 'T -> i64)"] {
+        let main = format!(
+            "def measure :: 'T -> i64\n  @'T : {constraint}\n\
+             fn measure value = 'T.distance value\n\
+             export def answer :: i64 = measure (Point {{ value: 42 }})"
+        );
+        let module = analyze_modules(&[
+            ("Main.tz", &main),
+            (
+                "Point.tz",
+                "record Point { value: i64 }\n\
+                 pure def distance :: Point -> i64 = \\point -> point.value",
+            ),
+        ])
+        .unwrap();
+        let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+        assert!(ir.contains("@tz.fn.Point.distance"));
+        assert_eq!(ir, llvm::emit(&module, llvm::Entry::Library).unwrap());
+    }
+    let error = analyze_modules(&[
+        (
+            "Main.tz",
+            "def measure :: 'T -> i64\n  @'T : (#distance: pure ('T -> i64))\n\
+             fn measure value = 'T.distance value\nmeasure (Point { value: 42 })",
+        ),
+        (
+            "Point.tz",
+            "record Point { value: i64 }\n\
+             def distance :: Point -> i64 = \\point -> point.value",
+        ),
+    ])
+    .unwrap_err();
+    assert_eq!(error.code, "E1003");
+}
+
+#[test]
 fn propagates_function_constraints_and_supports_function_values() {
     let sources = [
         (

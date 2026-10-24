@@ -452,6 +452,21 @@ fn defs_are_removed_added_or_changed() {
 }
 
 #[test]
+fn effective_extern_signatures_accept_whole_parameter_ownership() {
+    let source = "extern def host_len :: own ref string -> i64\n";
+    assert!(compare_mode(source, source, &[], true).is_empty());
+    for source in [
+        "extern def host_len :: own ref own string -> i64\n",
+        "extern def host_len :: ref string -> own i64\n",
+    ] {
+        let directory = root("invalid-extern-own", &[("Main.tz", source)]);
+        let project = Project::load_for_docs(&directory).unwrap();
+        assert!(api_diff::effective_api(&project).is_err(), "{source}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
 fn adding_a_pure_contract_is_compatible_and_removing_it_is_breaking() {
     check(
         "def f :: i64 -> i64 = \\x -> x\n",
