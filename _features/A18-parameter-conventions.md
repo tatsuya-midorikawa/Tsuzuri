@@ -522,3 +522,11 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
   `own` を型名として保つ。改行・CRLF・同一行の両構文と、2026／2027 の IR 一致を検査した。
   規約 31 検査、conventions の 32 ケース（native／WASM O0／O3）、更新した
   キーワードの 5 例・native 10 実行、fmt／strict clippy が全通過した。
+- extern の返却型 `own` が続く entry を取り込む指摘も、旧 compiler で改行・同一行の有効性を
+  確認して修正した。型候補を共有の parser で完了まで試し読みし、矢印などの区切りで所有引数と
+  判定する。lexer の token 列は複製せず共有し、`>>`／`>>>`／`>=` の未消費部分は cursor に保持する。
+  引数規約 32 検査、conventions 32 ケースの native／WASM O0／O3、
+  キーワード 6 例・native 10 実行、fmt／strict clippy が通過した。
+- 全 5 IDE 環境で旧 inlay fixture が暗黙の read になり copy hint を出さなくなったため、
+  検証対象の消費引数に `own` を明示した。期待する位置とラベルは変更していない。
+  extension の型検査・lint・15 unit 検査が通過した。実 GUI と全プラットフォームは更新後の CI で確認する。

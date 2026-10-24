@@ -163,6 +163,29 @@ fn own_type_names_remain_nominal_at_alias_and_union_boundaries() {
 }
 
 #[test]
+fn own_type_names_do_not_capture_extern_entry_expressions() {
+    for (declaration, entry) in [
+        ("extern def get :: own", "get().n"),
+        ("extern def get :: i64 -> own", "(get 7).n"),
+    ] {
+        let explicit = format!(
+            "record own {{ n: i64 }}\ntype Return = own\n{}\n{entry}\n",
+            declaration.replace("own", "Return")
+        );
+        let expected = ir("2026", &explicit);
+        for separator in ["\n", "\r\n", " "] {
+            let source = format!("record own {{ n: i64 }}\n{declaration}{separator}{entry}\n");
+            for edition in ["2026", "2027"] {
+                assert_eq!(expected, ir(edition, &source));
+            }
+        }
+    }
+    let source = "extern def host_len :: own ref string -> i64\n";
+    assert_eq!(ir("2026", source), ir("2027", source));
+    assert_eq!(ir("2026", source), ir("2026", &source.replace("own ", "")));
+}
+
+#[test]
 fn explicit_ownership_preserves_generic_and_callable_value_conventions() {
     let source = "record Point { x: i64, y: i64 }\n\
         def get :: Point -> i64 = \\p -> p.x\n\
@@ -646,6 +669,9 @@ fn own_accepts_every_type_primary_starter() {
         "own &&string",
         "own (&&string)",
         "(own &&string)",
+        "own Vec<Vec<i64>>",
+        "own Vec<Vec<Vec<i64>>>",
+        "own (Vec<Vec<i64>>)",
     ] {
         let source = format!("def accept :: {ty} -> i64 = \\_value -> 0\n");
         for edition in ["2026", "2027"] {

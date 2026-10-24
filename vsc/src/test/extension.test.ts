@@ -69,7 +69,7 @@ export async function run(): Promise<void> {
 	await waitFor('diagnostics cleared', () => !vscode.languages.getDiagnostics(uri).length ? true : undefined);
 	console.log('VS Code: unsaved Unicode errors, warnings, clearing, multi-root isolation passed.');
 
-	await replace('def reuse :: [i64] -> i64\nfn reuse a =\n    let b = a\n    Array.length (ref a) + Array.length (ref b)\n');
+	await replace('def reuse :: own [i64] -> i64\nfn reuse a =\n    let b = a\n    Array.length (ref a) + Array.length (ref b)\n');
 	const hints = await waitFor('implicit copy inlay hint', async () => {
 		const values = await vscode.commands.executeCommand<vscode.InlayHint[]>('vscode.executeInlayHintProvider', uri, new vscode.Range(0, 0, 4, 0));
 		return values?.length ? values : undefined;

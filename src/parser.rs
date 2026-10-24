@@ -123,7 +123,7 @@ pub fn parse_with_source_all(
     for token in &mut tokens {
         token.span.source = Some(source_id);
     }
-    Parser::new(source, tokens).program_all(true)
+    Parser::new(source, &tokens).program_all(true)
 }
 
 fn parse_source(
@@ -138,12 +138,15 @@ fn parse_source(
     for token in &mut tokens {
         token.span.source = source_id;
     }
-    Parser::new(source, tokens).program()
+    Parser::new(source, &tokens).program()
 }
 
+#[derive(Clone)]
 struct Parser<'a> {
     source: &'a str,
-    tokens: Vec<Token>,
+    tokens: &'a [Token],
+    /// The unconsumed suffix of a compound type closer; lexer tokens stay shared.
+    type_remainder: Option<Token>,
     position: usize,
     previous_end: usize,
     nesting: usize,
@@ -153,6 +156,8 @@ struct Parser<'a> {
     active_patterns: BTreeMap<String, ActivePattern>,
     pattern_type_arrow: bool,
     type_offside: Option<usize>,
+    extern_signature: bool,
+    probing_own: bool,
     /// The borrow directly around the term being parsed: `Some(false)` for `ref`/`&`,
     /// `Some(true)` for `ref mut`/`&mut`, and `None` elsewhere; a range index needs one.
     slice_context: Option<bool>,
@@ -169,10 +174,11 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str, tokens: Vec<Token>) -> Self {
+    fn new(source: &'a str, tokens: &'a [Token]) -> Self {
         Self {
             source,
             tokens,
+            type_remainder: None,
             position: 0,
             previous_end: 0,
             nesting: 0,
@@ -182,6 +188,8 @@ impl<'a> Parser<'a> {
             active_patterns: BTreeMap::new(),
             pattern_type_arrow: false,
             type_offside: None,
+            extern_signature: false,
+            probing_own: false,
             slice_context: None,
             stop_at_slice_dotdot: false,
             region_suffix: true,
@@ -195,7 +203,13 @@ impl<'a> Parser<'a> {
 
 impl Parser<'_> {
     fn current(&self) -> &Token {
-        &self.tokens[self.position]
+        self.type_remainder
+            .as_ref()
+            .unwrap_or(&self.tokens[self.position])
+    }
+
+    fn remaining_tokens(&self) -> impl Iterator<Item = &Token> {
+        std::iter::once(self.current()).chain(self.tokens[self.position + 1..].iter())
     }
 
     fn at(&self, kind: &TokenKind) -> bool {
@@ -207,6 +221,7 @@ impl Parser<'_> {
         self.previous_end = token.span.end;
         if !self.at(&TokenKind::End) {
             self.position += 1;
+            self.type_remainder = None;
         }
         token
     }
@@ -763,6 +778,7 @@ impl Parser<'_> {
 
     fn recover_top_level_boundary(&mut self, start: usize, resume: usize) {
         let mut delimiters = Vec::new();
+        self.type_remainder = None;
         self.position = self.tokens.len() - 1;
         for index in start..self.tokens.len() {
             let token = &self.tokens[index];
@@ -1493,10 +1509,11 @@ impl Parser<'_> {
             _ => return Err(self.error("expected '>' after type parameters or arguments")),
         };
         // Consume one '>' without inserting tokens or changing expression operators.
-        let token = &mut self.tokens[self.position];
+        let mut token = self.current().clone();
         token.kind = remainder;
         token.span.start += 1;
         self.previous_end = token.span.start;
+        self.type_remainder = Some(token);
         Ok(())
     }
 
@@ -1646,7 +1663,7 @@ impl Parser<'_> {
     }
 
     fn constraint_prefix(&self) -> bool {
-        for (offset, token) in self.tokens[self.position..].iter().enumerate() {
+        for (offset, token) in self.remaining_tokens().enumerate() {
             match token.kind {
                 TokenKind::FatArrow => return true,
                 TokenKind::Fn
@@ -1879,6 +1896,37 @@ impl Parser<'_> {
         })
     }
 
+    fn own_type_ahead(&self) -> bool {
+        if self.probing_own {
+            return true;
+        }
+        let mut probe = self.clone();
+        probe.probing_own = true;
+        // The caller already entered this primary; the probe enters it again.
+        probe.nesting -= 1;
+        if !probe
+            .type_primary()
+            .is_ok_and(|ty| matches!(ty.kind, TypeExprKind::Own(_)))
+        {
+            return false;
+        }
+        if self.extern_signature || self.type_offside.is_some() {
+            probe.at(&TokenKind::Arrow) || (!self.extern_signature && probe.at(&TokenKind::Pipe))
+        } else {
+            matches!(
+                probe.current().kind,
+                TokenKind::Arrow
+                    | TokenKind::Equal
+                    | TokenKind::Comma
+                    | TokenKind::RightParen
+                    | TokenKind::RightBracket
+                    | TokenKind::RightList
+                    | TokenKind::RightBrace
+                    | TokenKind::Greater
+            )
+        }
+    }
+
     fn type_primary(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.enter()?;
         let start = self.current().span;
@@ -1887,7 +1935,6 @@ impl Parser<'_> {
         } else if self.eat(&TokenKind::Mut) {
             TypeExprKind::Mut(Box::new(self.type_primary()?))
         } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "own")
-            && self.type_offside.is_none()
             && self.tokens.get(self.position + 1).is_some_and(|token| {
                 matches!(
                     token.kind,
@@ -1908,6 +1955,7 @@ impl Parser<'_> {
                         .get(self.position + 2)
                         .is_some_and(|token| token.kind == TokenKind::LeftParen))
             })
+            && self.own_type_ahead()
         {
             self.position += 1;
             TypeExprKind::Own(Box::new(self.type_primary()?))
@@ -2508,7 +2556,13 @@ impl Parser<'_> {
     }
 
     fn use_binding_at(&self, index: usize) -> bool {
-        let kind = |index: usize| self.tokens.get(index).map(|token| &token.kind);
+        let kind = |index: usize| {
+            if index == self.position {
+                Some(&self.current().kind)
+            } else {
+                self.tokens.get(index).map(|token| &token.kind)
+            }
+        };
         if !matches!(kind(index), Some(TokenKind::Ident(name)) if name == "use") {
             return false;
         }
@@ -2603,7 +2657,7 @@ impl Parser<'_> {
         let mut depth = 0usize;
         let mut statement = true;
         let mut previous_end = self.previous_end;
-        for (offset, token) in self.tokens[self.position..].iter().enumerate() {
+        for (offset, token) in self.remaining_tokens().enumerate() {
             let newline = self.source[previous_end..token.span.start].contains(['\n', '\r']);
             if depth == 0 {
                 statement |=
@@ -3606,7 +3660,7 @@ impl Parser<'_> {
     /// `new [T](...)` puts '(' directly after the closing delimiter; `new [values]` does not.
     fn sized_collection(&self) -> bool {
         let mut depth = 0usize;
-        for (offset, token) in self.tokens[self.position..].iter().enumerate() {
+        for (offset, token) in self.remaining_tokens().enumerate() {
             match token.kind {
                 TokenKind::LeftBracket
                 | TokenKind::LeftList
@@ -3765,7 +3819,10 @@ impl Parser<'_> {
             ));
         }
         self.type_colon("'::' after the extern name")?;
-        let mut signature = self.signature(name, false, column)?;
+        let outer = std::mem::replace(&mut self.extern_signature, true);
+        let signature = self.signature(name, false, column);
+        self.extern_signature = outer;
+        let mut signature = signature?;
         signature.doc = doc;
         signature.visibility = visibility;
         signature.link = link;
