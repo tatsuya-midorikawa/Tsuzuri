@@ -914,6 +914,9 @@ fn add_items(
                 ),
             );
             member.pure = method.pure.then_some(method.parameters.len());
+            member.contract = effective
+                .and_then(|resolved| resolved.contracts.get(&api_key(method.name.span)))
+                .cloned();
             member.default = declaration
                 .defaults
                 .iter()
@@ -934,7 +937,11 @@ fn add_items(
         let class = key.class_name(&declaration.class);
         let name = format!("{}<{}>", class.text, type_text(&ty));
         // Two modules can spell the same instance for their own types, so the module is part of it.
-        add(Item::new("instance", qualified(&name), header));
+        let mut item = Item::new("instance", qualified(&name), header);
+        item.contract = effective
+            .and_then(|resolved| resolved.contracts.get(&api_key(declaration.class.span)))
+            .cloned();
+        add(item);
     }
     for alias in aliases {
         add(Item::new(
@@ -1157,8 +1164,10 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             continue;
         };
         let (was, now) = (&old.members[index], &new.members[other]);
-        let signature_changed =
-            was.text != now.text || was.pure != now.pure || was.contract != now.contract;
+        let added_default = !was.default && now.default;
+        let signature_changed = was.text != now.text
+            || was.pure != now.pure
+            || (was.contract != now.contract && !added_default);
         let (shown_was, shown_now) = if signature_changed {
             (was.shown.clone(), now.shown.clone())
         } else if was.default != now.default {

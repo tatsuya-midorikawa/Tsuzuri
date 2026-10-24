@@ -204,7 +204,7 @@ pub(super) fn is_unknown(ty: &Type) -> bool {
     matches!(ty, Type::Variable(_) | Type::Infer(_))
 }
 
-fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
+pub(super) fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
     match ty {
         Type::Partial(partial) => Type::Partial(Box::new(Partial {
             constructor: partial.constructor.clone(),
@@ -1158,6 +1158,36 @@ impl Classes {
             .signature
             .as_ref()
             .ok()
+    }
+
+    pub(super) fn default_function(&self, class: &str, method: &str) -> Option<usize> {
+        self.declarations[*self.names.get(class)?]
+            .methods
+            .iter()
+            .find(|candidate| candidate.name == method)?
+            .default
+    }
+
+    pub(super) fn instance_functions(
+        &self,
+    ) -> impl Iterator<Item = (Span, &Type, &str, usize, &[Type])> {
+        self.instances.iter().flat_map(move |instance| {
+            instance
+                .methods
+                .iter()
+                .enumerate()
+                .map(move |(index, (id, arguments))| {
+                    (
+                        instance.span,
+                        &instance.head,
+                        self.declarations[instance.class].methods[index]
+                            .name
+                            .as_str(),
+                        *id,
+                        arguments.as_slice(),
+                    )
+                })
+        })
     }
 
     pub(super) fn constraint_kinds(
@@ -2317,13 +2347,8 @@ impl Classes {
         Ok(Some((class, index)))
     }
 
-    pub(super) fn recursion_targets(
-        &self,
-        expression: &TypedExpr,
-        types: &TypeContext<'_>,
-        caller: usize,
-    ) -> Vec<usize> {
-        let (class, method, ty) = match &expression.kind {
+    fn call_method<'a>(&self, expression: &'a TypedExpr) -> Option<(usize, usize, &'a Type)> {
+        Some(match &expression.kind {
             TypedExprKind::Method(class, method, ty) => (*class, *method, ty),
             TypedExprKind::Function(FunctionRef::Builtin(instance))
                 if instance.builtin == Builtin::ToString =>
@@ -2340,7 +2365,18 @@ impl Classes {
                 let (class, method) = self.operation(Operation::Unary(*operator));
                 (class, method, &operand.ty)
             }
-            _ => return Vec::new(),
+            _ => return None,
+        })
+    }
+
+    pub(super) fn recursion_targets(
+        &self,
+        expression: &TypedExpr,
+        types: &TypeContext<'_>,
+        caller: usize,
+    ) -> Vec<usize> {
+        let Some((class, method, ty)) = self.call_method(expression) else {
+            return Vec::new();
         };
         if let Some((function, _)) = self.resolved_method(class, method, ty, types) {
             return vec![function];
@@ -4061,7 +4097,7 @@ pub(super) fn specialize(
     names: &Names,
     copy_constraints: Vec<BTreeSet<String>>,
     recursive_functions: &BTreeSet<usize>,
-    before_specialization: impl FnOnce(&CheckedModule),
+    before_specialization: impl FnOnce(&CheckedModule) -> bool,
 ) -> Result<CheckedModule, Diagnostic> {
     for (id, (function, copy_variables)) in module
         .functions
@@ -4259,8 +4295,42 @@ pub(super) fn specialize(
             ));
         }
     }
-    before_specialization(&module);
+    let validate_concrete_purity = before_specialization(&module);
     let templates = std::mem::take(&mut module.functions);
+    let mut concrete_api_calls = Vec::new();
+    if validate_concrete_purity {
+        for function in &templates {
+            let mut pending = vec![&function.body];
+            while let Some(expression) = pending.pop() {
+                let target = match &expression.kind {
+                    TypedExprKind::GenericFunction(id, arguments) => Some((*id, arguments.clone())),
+                    _ => classes
+                        .call_method(expression)
+                        .and_then(|(class, method, ty)| {
+                            classes.resolved_method(class, method, ty, &module.types())
+                        }),
+                };
+                if let Some((id, arguments)) = target
+                    && arguments.len() == templates[id].type_parameters.len()
+                    && arguments
+                        .iter()
+                        .all(|ty| require_concrete(ty, expression.span).is_ok())
+                {
+                    concrete_api_calls.push((id, arguments, expression.span));
+                }
+                pending.extend(expression.children());
+            }
+        }
+        for (span, _, _, id, arguments) in classes.instance_functions() {
+            if arguments.len() == templates[id].type_parameters.len()
+                && arguments
+                    .iter()
+                    .all(|ty| require_concrete(ty, span).is_ok())
+            {
+                concrete_api_calls.push((id, arguments.to_vec(), span));
+            }
+        }
+    }
     let original_count = templates.len();
     let base_count = templates
         .iter()
@@ -4303,6 +4373,10 @@ pub(super) fn specialize(
         } else {
             specializer.request(id, Vec::new(), span)?;
         }
+    }
+    // Effective API inspection must prove concrete calls even inside otherwise unused templates.
+    for (id, arguments, span) in concrete_api_calls {
+        specializer.request(id, arguments, span)?;
     }
     let entry = module.entry.map(|id| specializer.keys[&(id, Vec::new())]);
     let tests = module

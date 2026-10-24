@@ -7850,6 +7850,7 @@ fn check_modules_collect(
                     &module.types(),
                 ));
             }
+            resolve_api
         },
     );
     drop(specialize_time);

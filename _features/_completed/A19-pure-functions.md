@@ -1211,6 +1211,33 @@ def main :: unit -> i32 = \() ->
   AI 全 suite は Node20／24 それぞれ **44／0 failed／5 capability skips**、usage は
   **62 links／5 checked examples／4 native runs／1 test project**、guide-lite **85／0** を確認した。
 
+### 非公開 helper の保留義務の伝播（2026-10-24）
+
+- `19288464` の実際の review `5637736574` は inline 指摘がなくても overview に、非公開 generic helper の
+  `pure` 追加で公開 wrapper の `Rc` 呼び出しが拒否されるのに API の変更が出ない問題を含んでいた。
+  修正前の API 比較が空になる失敗を確認し、既存 checked contract に残余義務の伝播を追加した。
+- 型パラメーターごとの逆依存グラフで、`GenericFunction` の実際の型引数に現れる呼び出し側の変数へ義務を伝播する。
+  worklist は各頂点を一度だけ処理して相互再帰を解く。関数全体を一つの boolean にすると、すでに具体化した
+  別のパラメーターの義務まで公開側へ漏れるため、その方式にはしない。公開署名の変数の出現位置の mask は
+  private な関数名や変数の綴りを含まず、型変数を辞書順が変わるように改名しても同じになる。
+- class の既定実装と instance のメソッドも義務の担い手として保存する。instance の型引数を代入し、
+  未供給のメソッド固有型変数は残す。instance head と class receiver の文脈を含む変数出現 mask を用い、
+  メソッド名で整列するため宣言順の変更で差分は出ない。既定実装の追加自体は non-breaking のままとする。
+- 具体型に決まった呼び出しを無条件に充足したことにはしない。`--effective` の収集時だけ、未使用 template 内の
+  完全に具体化した generic 参照、既知の class／演算子の呼び出し、具体 instance のメソッドと既定実装を既存の
+  Specializer の検証根に加える。途中の通常 helper も対象とし、型引数の個数と具体性を確認する。
+  非 plain-data の `Rc`、不透明な通常 callback、具体 receiver が選んだ effectful な class メソッドを
+  通常の特殊化・純粋性検査で拒否し、API の部分結果は返さない。通常コンパイルの未使用 template の
+  特殊化・コード生成は増やさない。
+- 回帰は直接・複数段・相互再帰・入れ子の型・local lambda・共有入力・generic な結果、宣言順、改名、
+  一部だけ具体化する多段の呼び出し、義務を負う公開型変数の入れ替え、既知の concrete な所有条件と class 効果を含む。
+  解決済みの純粋な具体型／class 呼び出しでは差分を出さず、構文だけの既定比較も変えない。
+- 最終差分で fmt・全 target Clippy・dev build と、全 Rust **1,848 passed／2 skipped（targets 12 を含む）** が成功した。
+  pure **302**＋parallel **12**＋map_set_chunks **33**（native／WASM × O0／O3）、frontend cache・LSP 4 件・docgen、
+  AI 全 suite の Node20／24 各 **44 passed／0 failed／5 capability skips**、usage の
+  **62 links／5 checked examples／4 native runs／1 test project**、guide-lite **85／0** を新しく確認した。
+  前段階の 1,843／1,847 や F14 統合前の受入数は、この差分の最終受入として流用していない。
+
 ### 確認コマンド（最終受入）
 
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --locked`。

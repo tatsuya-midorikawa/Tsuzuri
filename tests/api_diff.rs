@@ -155,6 +155,219 @@ fn effective_pure_additions_preserve_generic_specialization_obligations() {
 }
 
 #[test]
+fn effective_private_helper_purity_obligations_reach_public_wrappers() {
+    let helper = "private def helper :: own 'a -> i64 = \\value -> 0\n";
+    for wrapper in [
+        "def f :: own 'a -> i64 = \\value -> helper value\n",
+        "def f :: own 'a -> i64 = \\value -> helper (Some value)\n",
+        "def f :: own 'a -> i64 = \\value -> { let run = \\item -> helper item; run value }\n",
+        "private def middle :: own 'a -> i64 = \\value -> helper value\ndef f :: own 'a -> i64 = \\value -> middle value\n",
+        "private def rec left :: i64 -> own 'a -> i64 = \\n value -> if n == 0 then helper value else right (n - 1) value\nprivate def rec right :: i64 -> own 'a -> i64 = \\n value -> left n value\ndef f :: own 'a -> i64 = \\value -> right 0 value\n",
+    ] {
+        let before = format!("{helper}{wrapper}");
+        let after = before.replace("private def helper", "private pure def helper");
+        tsuzuri::analyze(&format!("{before}f (Rc.new 1)\n")).unwrap();
+        assert_eq!(
+            tsuzuri::analyze(&format!("{after}f (Rc.new 1)\n"))
+                .unwrap_err()
+                .code,
+            "E1029"
+        );
+        assert_eq!(
+            compare_mode(&before, &after, &[], true),
+            ["breaking changed def Main.f"],
+            "{wrapper}"
+        );
+        assert!(compare(&before, &after, &[]).is_empty());
+        assert!(compare_mode(&after, &after.replace("'a", "'element"), &[], true).is_empty());
+        let reordered = format!(
+            "{wrapper}{}",
+            helper.replace("private def", "private pure def")
+        );
+        assert!(compare_mode(&after, &reordered, &[], true).is_empty());
+        tsuzuri::analyze(&format!("{after}f 1\n")).unwrap();
+    }
+}
+
+#[test]
+fn effective_private_helper_purity_includes_shared_inputs_and_generic_results() {
+    for (before, caller) in [
+        (
+            "private def helper :: ref 'a -> i64 = \\value -> 0\ndef f :: ref 'a -> i64 = \\value -> helper value\n",
+            "let callback: i64 -> i64 = \\x -> x\nf (ref callback)\n",
+        ),
+        (
+            "record Ticket { id: i64 }\ninstance Drop<Ticket> { fn drop value = () }\nprivate def helper :: unit -> Maybe<'a> = \\() -> None\ndef f :: unit -> Maybe<'a> = \\() -> helper ()\n",
+            "let value: Maybe<Ticket> = f ()\n0\n",
+        ),
+    ] {
+        let after = before.replace("private def helper", "private pure def helper");
+        tsuzuri::analyze(&format!("{before}{caller}")).unwrap();
+        assert_eq!(
+            tsuzuri::analyze(&format!("{after}{caller}"))
+                .unwrap_err()
+                .code,
+            "E1029"
+        );
+        assert_eq!(
+            compare_mode(before, &after, &[], true),
+            ["breaking changed def Main.f"]
+        );
+    }
+}
+
+#[test]
+fn effective_helper_purity_tracks_substitutions_not_unrelated_parameters() {
+    for before in [
+        "private def helper :: own 'a -> i64 = \\value -> 0\nprivate def middle :: own 'a -> i64 = \\value -> helper 1\ndef f :: own 'a -> i64 = \\value -> middle value\n",
+        "private def helper :: own 'a -> ref 'b -> i64 = \\x y -> 0\nprivate def middle :: own 'a -> ref 'b -> i64 = \\x y -> helper 1 y\ndef f :: own 'a -> i64 = \\value -> { let y = 1; middle value (ref y) }\n",
+    ] {
+        let after = before.replace("private def helper", "private pure def helper");
+        tsuzuri::analyze(&format!("{after}f (Rc.new 1)\n")).unwrap();
+        assert!(compare_mode(before, &after, &[], true).is_empty());
+    }
+    let before = "private pure def helper :: own 'a -> i64 = \\value -> 0\ndef f :: own 'a -> own 'b -> i64 = \\first second -> helper first\n";
+    let after = before.replace("helper first", "helper second");
+    assert_eq!(
+        compare_mode(before, &after, &[], true),
+        ["breaking changed def Main.f"]
+    );
+    let renamed = before.replace("'a", "'z").replace("'b", "'m");
+    assert!(compare_mode(before, &renamed, &[], true).is_empty());
+    assert!(compare(before, &after, &[]).is_empty());
+}
+
+#[test]
+fn effective_concrete_pure_helper_calls_are_proved_before_discharge() {
+    let class = "class C<'a> { def value :: ref 'a -> i64 }\nclass D<'a> { def consume :: own 'a -> i64 }\n";
+    for (helper, body) in [
+        (
+            "private pure def enforce :: own 'a -> i64 = \\value -> 0\nprivate def helper :: own 'a -> i64 = \\value -> enforce value\n",
+            "helper (Rc.new 1)",
+        ),
+        (
+            "record Box<'a> { value: 'a }\nprivate pure def enforce :: own 'a -> i64 = \\value -> 0\ninstance Traits.D<Box<'a>> { fn consume box = enforce box.value }\n",
+            "Traits.D.consume (Box { value: Rc.new 1 })",
+        ),
+        (
+            "private pure def helper :: own 'a -> i64 = \\value -> 0\n",
+            "helper (Rc.new 1)",
+        ),
+        (
+            "private pure def helper :: ref 'a -> i64 = \\value -> 0\n",
+            "{ let callback: i64 -> i64 = \\x -> x; helper (ref callback) }",
+        ),
+        (
+            "instance Traits.C<i64> { fn value _item = { Debug.print (ref 1); 0 } }\nprivate pure def helper :: ref 'a -> i64\n  @'a : Traits.C\nfn helper value = Traits.C.value value\n",
+            "{ let value = 1i64; helper (ref value) }",
+        ),
+    ] {
+        let source = format!("{helper}def f :: own 'a -> i64 = \\_ -> {body}\n");
+        // Ordinary compilation still defers an unused generic wrapper, unlike explicit API inspection.
+        tsuzuri::analyze(&format!("{class}{}", source.replace("Traits.", ""))).unwrap();
+        let directory = root(
+            "concrete-pure-proof",
+            &[("Main.tz", &source), ("Traits.tt", class)],
+        );
+        let project = Project::load_for_docs(&directory).unwrap();
+        let Err(error) = api_diff::effective_api(&project) else {
+            panic!("concrete helper specialization must be proved: {source}");
+        };
+        assert_eq!(error.code, "E1029", "{error:?}\n{source}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    let before = "instance Traits.C<i64> { fn value _item = 0 }\nprivate def helper :: ref 'a -> i64\n  @'a : Traits.C\nfn helper value = Traits.C.value value\ndef f :: own 'a -> i64 = \\_ -> { let value = 1i64; helper (ref value) }\n";
+    let after = before.replace("private def helper", "private pure def helper");
+    assert!(compare_mode(before, &after, &[("Traits.tt", class, class)], true).is_empty());
+}
+
+#[test]
+fn effective_class_defaults_and_instances_retain_helper_obligations() {
+    let class = "class C<'a> { def value :: own 'a -> i64 }\n";
+    let before = "record Box<'a> { value: 'a }\nprivate def helper :: own 'a -> i64 = \\value -> 0\ninstance Traits.C<Box<'a>> { fn value box = helper box.value }\ndef f :: own Box<'a> -> i64 = \\box -> Traits.C.value box\n";
+    let after = before.replace("private def helper", "private pure def helper");
+    let caller = "f (Box { value: Rc.new 1 })\n";
+    tsuzuri::analyze(&format!("{class}{}{caller}", before.replace("Traits.", ""))).unwrap();
+    assert_eq!(
+        tsuzuri::analyze(&format!("{class}{}{caller}", after.replace("Traits.", "")))
+            .unwrap_err()
+            .code,
+        "E1029"
+    );
+    let changes = compare_mode(before, &after, &[("Traits.tt", class, class)], true);
+    assert!(
+        changes
+            .iter()
+            .any(|line| line.starts_with("breaking changed instance ")),
+        "{changes:?}"
+    );
+    assert!(compare(before, &after, &[("Traits.tt", class, class)]).is_empty());
+    assert!(
+        compare_mode(
+            &after,
+            &after.replace("'a", "'element"),
+            &[("Traits.tt", class, class)],
+            true
+        )
+        .is_empty()
+    );
+
+    let two_methods = "class C<'a> { def value :: own 'a -> i64; def stable :: own 'a -> i64 }\n";
+    let reordered = "class C<'a> { def stable :: own 'a -> i64; def value :: own 'a -> i64 }\n";
+    let with_stable = after.replace(
+        "helper box.value }",
+        "helper box.value; fn stable box = 0 }",
+    );
+    assert!(
+        compare_mode(
+            &with_stable,
+            &with_stable,
+            &[("Traits.tt", two_methods, reordered)],
+            true
+        )
+        .is_empty()
+    );
+
+    let helper = "def helper :: own 'a -> i64 = \\value -> 0\n";
+    let pure_helper = format!("pure {helper}");
+    let default =
+        "class C<'a> { def value :: own 'a -> i64; fn value value = Main.helper value }\n";
+    let changes = compare_mode(
+        helper,
+        &pure_helper,
+        &[("Traits.tt", default, default)],
+        true,
+    );
+    assert!(
+        changes.contains(&"breaking changed method Traits.C.value".to_owned()),
+        "{changes:?}"
+    );
+    assert_eq!(
+        compare_mode(
+            &pure_helper,
+            &pure_helper,
+            &[("Traits.tt", class, default)],
+            true
+        ),
+        ["non-breaking changed method Traits.C.value"]
+    );
+    let instances = "instance Traits.C<i64> {}\ninstance Traits.C<'a> => Traits.C<Maybe<'a>> { fn value item = 0 }\n";
+    let with_instances = format!("{helper}{instances}");
+    let changes = compare_mode(
+        &with_instances,
+        &with_instances.replace("def helper", "pure def helper"),
+        &[("Traits.tt", default, default)],
+        true,
+    );
+    assert!(
+        !changes
+            .iter()
+            .any(|line| line.starts_with("breaking changed instance ")),
+        "{changes:?}"
+    );
+}
+
+#[test]
 fn effective_inline_and_alias_constraints_are_part_of_the_callers_contract() {
     let old = "def f :: 'a -> bool = \\x -> true\n";
     let new = "def f :: Ord<'a> -> bool = \\x -> true\n";

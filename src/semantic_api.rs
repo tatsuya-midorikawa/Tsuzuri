@@ -38,6 +38,89 @@ fn signature(signature: &Signature, types: &TypeContext<'_>) -> ApiSignature {
     }
 }
 
+fn purity_obligations(functions: &[CheckedFunction]) -> Vec<BTreeSet<String>> {
+    let mut count = 0;
+    let parameters: Vec<BTreeMap<_, _>> = functions
+        .iter()
+        .map(|function| {
+            function
+                .type_parameters
+                .iter()
+                .map(|name| {
+                    let id = count;
+                    count += 1;
+                    (name.as_str(), id)
+                })
+                .collect()
+        })
+        .collect();
+    let mut dependents = vec![Vec::new(); count];
+    let mut required = vec![false; count];
+    let mut pending = Vec::new();
+    for (caller, function) in functions.iter().enumerate() {
+        if function.origin.pure {
+            for &id in parameters[caller].values() {
+                required[id] = true;
+                pending.push(id);
+            }
+        }
+        let mut expressions = vec![&function.body];
+        while let Some(expression) = expressions.pop() {
+            if let TypedExprKind::GenericFunction(callee, arguments) = &expression.kind {
+                for (parameter, argument) in
+                    functions[*callee].type_parameters.iter().zip(arguments)
+                {
+                    let callee = parameters[*callee][parameter.as_str()];
+                    for variable in polymorph::variables(argument) {
+                        if let Some(&caller) = parameters[caller].get(variable.as_str()) {
+                            dependents[callee].push(caller);
+                        }
+                    }
+                }
+            }
+            expressions.extend(expression.children());
+        }
+    }
+    // Each parameter enters the worklist once, including through mutually recursive helpers.
+    while let Some(callee) = pending.pop() {
+        for &caller in &dependents[callee] {
+            if !required[caller] {
+                required[caller] = true;
+                pending.push(caller);
+            }
+        }
+    }
+    functions
+        .iter()
+        .enumerate()
+        .map(|(id, function)| {
+            function
+                .type_parameters
+                .iter()
+                .filter(|name| required[parameters[id][name.as_str()]])
+                .cloned()
+                .collect()
+        })
+        .collect()
+}
+
+fn obligation_mask<'a>(
+    types: impl IntoIterator<Item = &'a Type>,
+    required: &BTreeSet<String>,
+) -> Vec<bool> {
+    // Signature occurrence order keeps the proof independent of type-parameter spelling.
+    let mut mask = Vec::new();
+    for ty in types {
+        polymorph::map_type(ty, &mut |ty| {
+            if let Type::Variable(name) = ty {
+                mask.push(required.contains(name));
+            }
+            ty.clone()
+        });
+    }
+    mask
+}
+
 impl ResolvedApi {
     fn constraints(
         &mut self,
@@ -92,9 +175,19 @@ pub(in crate::check) fn collect(
         );
         result.public_names.insert(key_path(name), shown);
     }
+    let obligations = purity_obligations(functions);
+    let indexed_functions = functions;
+    let mut instance_functions: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
+    for (span, head, name, id, arguments) in classes.instance_functions() {
+        instance_functions
+            .entry(key(span))
+            .or_default()
+            .insert(name, (id, arguments, head));
+    }
     let functions: BTreeMap<_, _> = functions
         .iter()
-        .map(|function| (function.qualified_name(), function))
+        .enumerate()
+        .map(|(id, function)| (function.qualified_name(), (id, function)))
         .collect();
     let records: BTreeMap<_, _> = types
         .records
@@ -116,7 +209,8 @@ pub(in crate::check) fn collect(
         let program = module.program;
         let name = module.name;
         for declaration in &program.functions {
-            let Some(function) = functions.get(&format!("{name}.{}", declaration.name.text)) else {
+            let Some((id, function)) = functions.get(&format!("{name}.{}", declaration.name.text))
+            else {
                 return Err(Diagnostic::new(
                     "E1016",
                     "effective API signature is unavailable",
@@ -133,11 +227,19 @@ pub(in crate::check) fn collect(
             result.contracts.insert(
                 key(declaration.name.span),
                 format!(
-                    "{:?}:{:?}:{:?}:{:?}",
+                    "{:?}:{:?}:{:?}:{:?}:{:?}",
                     function.region_sources,
                     function.region_slots,
                     function.callback_contracts,
                     specialization_obligation,
+                    obligation_mask(
+                        function
+                            .signature
+                            .parameters
+                            .iter()
+                            .chain([&function.signature.result]),
+                        &obligations[*id]
+                    ),
                 ),
             );
             result.constraints(&declaration.constraints, name, names, classes, types)?;
@@ -274,9 +376,62 @@ pub(in crate::check) fn collect(
                 result
                     .signatures
                     .insert(key(method.name.span), signature(resolved, types));
+                if let Some(id) = classes.default_function(
+                    &format!("{name}.{}", declaration.name.text),
+                    &method.name.text,
+                ) {
+                    let function = &indexed_functions[id];
+                    let receiver = Type::Variable(declaration.variable.text.clone());
+                    let mask = obligation_mask(
+                        [&receiver].into_iter().chain(
+                            function
+                                .signature
+                                .parameters
+                                .iter()
+                                .chain([&function.signature.result]),
+                        ),
+                        &obligations[id],
+                    );
+                    if mask.contains(&true) {
+                        result
+                            .contracts
+                            .insert(key(method.name.span), format!("{mask:?}"));
+                    }
+                }
             }
         }
         for declaration in &program.instances {
+            if let Some(methods) = instance_functions.get(&key(declaration.class.span)) {
+                let mut masks = BTreeMap::new();
+                for (name, (id, arguments, head)) in methods {
+                    let function = &indexed_functions[*id];
+                    let substitutions: BTreeMap<_, _> = function
+                        .type_parameters
+                        .iter()
+                        .cloned()
+                        .zip(arguments.iter().cloned())
+                        .collect();
+                    let required = obligations[*id]
+                        .iter()
+                        .flat_map(|name| {
+                            substitutions
+                                .get(name)
+                                .map_or_else(|| vec![name.clone()], polymorph::variables)
+                        })
+                        .collect();
+                    let signature =
+                        polymorph::substitute(&function.signature.as_type(), &substitutions);
+                    let mask = obligation_mask([*head, &signature], &required);
+                    if mask.contains(&true) {
+                        masks.insert(*name, mask);
+                    }
+                }
+                if !masks.is_empty() {
+                    result
+                        .contracts
+                        .insert(key(declaration.class.span), format!("{masks:?}"));
+                }
+            }
             let head = ConstraintExpr {
                 name: ConstraintName::Class(declaration.class.clone()),
                 ty: declaration.ty.clone(),
