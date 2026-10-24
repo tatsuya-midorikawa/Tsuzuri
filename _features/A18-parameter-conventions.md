@@ -534,3 +534,6 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
   一般検証の「非固定コーパスの drift」として許容されていた。現在の `own` 署名へ正解・
   型指定・行 selector を揃え、全 std 定義行を照合する red／green 回帰を追加した。
   凍結コーパスと手計算の golden は変更しない。focused 回帰は 1 通過、全 AI suite は最終実行に含める。
+- 最終の候補試し読みでも、型エイリアス／union で所有印を許可しない条件を維持する。
+  後続の entry に `|` がある場合も `own` の型名を消費せず、従来の型検査まで進める。
+  不正な bit 演算の `E1005` を parser の `E0002` に変えないことも、両版・3 種の区切りで検査する。

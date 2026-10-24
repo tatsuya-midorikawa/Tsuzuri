@@ -159,6 +159,18 @@ fn own_type_names_remain_nominal_at_alias_and_union_boundaries() {
                 assert_eq!(expected, ir(edition, &source));
             }
         }
+        let prefix = "record own { n: i64 }\ndef left :: i64 = 40\ndef right :: i64 = 2\n";
+        let expected =
+            check("2026", &format!("{prefix}{declaration};\nleft | right\n")).unwrap_err();
+        assert_eq!(expected.code, "E1005");
+        for separator in ["\n", "\r\n", " "] {
+            let source = format!("{prefix}{declaration}{separator}left | right\n");
+            for edition in ["2026", "2027"] {
+                let actual = check(edition, &source).unwrap_err();
+                assert_eq!(actual.code, expected.code);
+                assert_eq!(actual.message, expected.message);
+            }
+        }
     }
 }
 
