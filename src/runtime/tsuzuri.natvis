@@ -50,21 +50,47 @@
     </Expand>
   </Type>
   <Type Name="Map&lt;*,*&gt;">
-    <DisplayString>{{ size={entries.length} }}</DisplayString>
+    <DisplayString>{{ size={length} }}</DisplayString>
     <Expand>
-      <ArrayItems>
-        <Size>entries.length</Size>
-        <ValuePointer>entries.data</ValuePointer>
-      </ArrayItems>
+      <CustomListItems MaxItemsPerView="10000">
+        <Variable Name="chunk" InitialValue="-1" />
+        <Variable Name="offset" InitialValue="0" />
+        <Variable Name="size" InitialValue="head.length" />
+        <Size>length</Size>
+        <Loop>
+          <If Condition="offset &gt;= size">
+            <Exec>chunk = chunk + 1</Exec>
+            <Exec>offset = 0</Exec>
+            <Break Condition="chunk &gt;= rest.length" />
+            <Exec>size = rest.data[chunk].length</Exec>
+          </If>
+          <Item Condition="chunk &lt; 0">head.data[offset]</Item>
+          <Item Condition="chunk &gt;= 0">rest.data[chunk].data[offset]</Item>
+          <Exec>offset = offset + 1</Exec>
+        </Loop>
+      </CustomListItems>
     </Expand>
   </Type>
   <Type Name="Set&lt;*&gt;">
-    <DisplayString>{{ size={entries.length} }}</DisplayString>
+    <DisplayString>{{ size={length} }}</DisplayString>
     <Expand>
-      <ArrayItems>
-        <Size>entries.length</Size>
-        <ValuePointer>entries.data</ValuePointer>
-      </ArrayItems>
+      <CustomListItems MaxItemsPerView="10000">
+        <Variable Name="chunk" InitialValue="-1" />
+        <Variable Name="offset" InitialValue="0" />
+        <Variable Name="size" InitialValue="head.length" />
+        <Size>length</Size>
+        <Loop>
+          <If Condition="offset &gt;= size">
+            <Exec>chunk = chunk + 1</Exec>
+            <Exec>offset = 0</Exec>
+            <Break Condition="chunk &gt;= rest.length" />
+            <Exec>size = rest.data[chunk].length</Exec>
+          </If>
+          <Item Condition="chunk &lt; 0">head.data[offset]</Item>
+          <Item Condition="chunk &gt;= 0">rest.data[chunk].data[offset]</Item>
+          <Exec>offset = offset + 1</Exec>
+        </Loop>
+      </CustomListItems>
     </Expand>
   </Type>
   <!-- A Maybe of a string stores no `$tag`: `$niche` is -1 for None (PM01). These entries come

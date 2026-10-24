@@ -1,0 +1,106 @@
+// Measures the ordered containers: `exe <workload> <size>` prints "<workload> <size> <checksum> <nanoseconds>".
+// Only the operation is timed; building the container that it works on is not.
+
+def next_state :: i64u -> i64u
+fn next_state state = state * 6364136223846793005 + 1442695040888963407
+
+def fold :: i64u -> i64u -> i64u
+fn fold total value = total * 31 + value
+
+def random_keys :: i64 -> [i64u]
+fn random_keys size =
+    let mut keys = Vec.with_capacity size
+    let mut state = 88172645463325252
+    for _index in 0i64 .. size - 1 do
+        state = next_state state
+        keys = Vec.push_owned (state >>> 20) keys
+    Vec.to_array keys
+
+def filled :: ref [i64u] -> Map<i64u, i64u>
+fn filled keys =
+    let mut map: Map<i64u, i64u> = Map.empty()
+    for index in 0i64 .. keys.length - 1 do map = Map.insert keys[index] (keys[index] & 1023) map
+    map
+
+def ascending_set :: i64 -> i64 -> Set<i64>
+fn ascending_set size step =
+    let mut set: Set<i64> = Set.empty()
+    for index in 0i64 .. size - 1 do set = Set.insert (index * step) set
+    set
+
+def insert_random :: i64 -> (i64u * i64)
+fn insert_random size =
+    let keys = random_keys size
+    let! first = Time.monotonic_ns ()
+    let map = filled (ref keys)
+    let! second = Time.monotonic_ns ()
+    (Map.length (ref map) as i64u, Result.get second - Result.get first)
+
+def lookup_random :: i64 -> (i64u * i64)
+fn lookup_random size =
+    let keys = random_keys size
+    let map = filled (ref keys)
+    let! first = Time.monotonic_ns ()
+    let mut total = 0i64u
+    for index in 0i64 .. size - 1 do total = fold total (Maybe.default_value 0 (Map.get keys[index] (ref map)))
+    let! second = Time.monotonic_ns ()
+    (total, Result.get second - Result.get first)
+
+def remove_random :: i64 -> (i64u * i64)
+fn remove_random size =
+    let keys = random_keys size
+    let mut map = filled (ref keys)
+    let! first = Time.monotonic_ns ()
+    for index in 0i64 .. size - 1 do map = Map.remove keys[index] map
+    let! second = Time.monotonic_ns ()
+    (Map.length (ref map) as i64u, Result.get second - Result.get first)
+
+def insert_ascending :: i64 -> (i64u * i64)
+fn insert_ascending size =
+    let! first = Time.monotonic_ns ()
+    let mut map: Map<i64, i64> = Map.empty()
+    for index in 0i64 .. size - 1 do map = Map.insert index 1 map
+    let! second = Time.monotonic_ns ()
+    (Map.length (ref map) as i64u, Result.get second - Result.get first)
+
+// The map_count kernel of benchmarks/apps: `size` updates of the counters of 1,024 keys.
+def update_counter :: i64 -> (i64u * i64)
+fn update_counter size =
+    let mut counts: Map<i64u, i64u> = Map.empty()
+    for key in 0i64u .. 1023i64u do counts = Map.insert key 0 counts
+    let! first = Time.monotonic_ns ()
+    let mut state = 1i64u
+    for _index in 0i64 .. size - 1 do
+        state = next_state state
+        let key = (state >>> 33) & 1023
+        let count = Maybe.default_value 0 (Map.get key (ref counts))
+        counts = Map.insert key (count + 1) counts
+    let! second = Time.monotonic_ns ()
+    let mut total = 0i64u
+    for key in 0i64u .. 1023i64u do total = fold total (Maybe.default_value 0 (Map.get key (ref counts)))
+    (total, Result.get second - Result.get first)
+
+def set_algebra :: i64 -> (i64u * i64)
+fn set_algebra size =
+    let left = ascending_set size 2
+    let right = ascending_set size 3
+    let! first = Time.monotonic_ns ()
+    let common = Set.intersect (ref left) (ref right)
+    let different = Set.difference (ref left) (ref right)
+    let both = Set.union left right
+    let! second = Time.monotonic_ns ()
+    ((Set.length (ref common) + Set.length (ref different) + Set.length (ref both)) as i64u, Result.get second - Result.get first)
+
+def main :: Array<string> -> i32 = \args ->
+    let size: i64 = Maybe.get (Parse.parse (ref args[1]))
+    let name = clone_string (ref args[0])
+    let outcome =
+        if name == "insert_random" then insert_random size
+        elif name == "lookup_random" then lookup_random size
+        elif name == "remove_random" then remove_random size
+        elif name == "insert_ascending" then insert_ascending size
+        elif name == "update_counter" then update_counter size
+        else set_algebra size
+    match outcome with
+    | (checksum, elapsed) -> do! IO.writeln $"{name} {size} {checksum} {elapsed}"
+    0

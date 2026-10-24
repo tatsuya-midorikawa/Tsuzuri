@@ -32,7 +32,8 @@ function session(project, commands) {
 /** Runs one LLDB batch of `commands` on the `-g` executable `app`, started with `args`. */
 function debug(app, args, commands) {
   // macOS keeps the DWARF in the `.dwarf` file beside the executable; Linux keeps it inside.
-  const options = ["-b", "-o", `command script import ${JSON.stringify(formatter)}`];
+  const options = ["--no-lldbinit", "-b", "-o", "settings set target.disable-aslr false",
+    "-o", `command script import ${JSON.stringify(formatter)}`];
   if (process.platform === "darwin") options.push("-o", `target symbols add ${JSON.stringify(`${app}.dwarf`)}`);
   for (const command of commands) options.push("-o", command);
   const output = execute(lldb, [...options, "--", app, ...args]);
@@ -55,6 +56,7 @@ try {
   execute("python3", ["tests/lldb_strings.py"]);
   // PM04: the walk over the chunks of a list, in the same way.
   execute("python3", ["tests/lldb_lists.py"]);
+  execute("python3", ["tests/lldb_collections.py"]);
   execute(lldb, ["--version"]);
   const output = session(fixture, [
     "type category list tsuzuri",
@@ -120,11 +122,26 @@ try {
 
   // Stepping from line 18 enters std functions and the lambda, which have source, but not the
   // runtime (`Array.sum` calls a C kernel) or the builtin wrappers of `Vec.empty`, `Vec.push`.
-  const steps = sections(session(fixture, ["breakpoint set -f Main.tz -l 18", "run", ...Array(16).fill("thread step-in"), "kill"]))
-    .filter(part => part.command === "thread step-in")
-    .map(part => /frame #0: 0x[0-9a-f]+ app\d+`(.+?)(?:\(.*\))? at ([^:\s]+):(\d+)/.exec(part.text));
-  assert.ok(steps.every(Boolean), "every step stops in a frame with a source line");
-  const frames = steps.map(([, name, file, line]) => ({ name, file, line: Number(line) }));
+  // Stop once the three intended calls have been visited: a fixed number of steps can
+  // overshoot into process teardown on another architecture. Read source data, not UI formatting.
+  const stepScript = [
+    "import json",
+    "lldb.debugger.SetAsync(False)",
+    "step_frames = []",
+    "required = {'Map.singleton', 'Array.sum', 'Main.show.lambda@22:15'}",
+    "for _ in range(16):",
+    "    lldb.process.GetSelectedThread().StepInto()",
+    "    frame = lldb.process.GetSelectedThread().GetFrameAtIndex(0)",
+    "    entry = frame.GetLineEntry()",
+    "    step_frames.append({'name': frame.GetFunctionName(), 'file': entry.GetFileSpec().GetFilename(), 'line': entry.GetLine()})",
+    "    if required <= {item['name'] for item in step_frames}: break",
+    "print('steps=' + json.dumps(step_frames))",
+  ].join("\n");
+  const stepped = session(fixture, ["breakpoint set -f Main.tz -l 18", "run",
+    `script exec(${JSON.stringify(stepScript)})`, "kill"]);
+  const frames = JSON.parse(/^steps=(.+)$/m.exec(stepped)?.[1] ?? "null");
+  assert.ok(frames?.length && frames.every(frame => frame.name && frame.file && frame.line > 0),
+    `every step stops in a frame with a source line\n${JSON.stringify(frames)}\n${stepped}`);
   for (const frame of frames) {
     assert.match(frame.file, /\.tz$/, JSON.stringify(frame));
     assert.doesNotMatch(frame.name, /^(tz\.|tsuzuri_|\$)/, JSON.stringify(frame));
@@ -185,6 +202,31 @@ try {
   // names (code, environment, clone, drop) and the current ones (descriptor, environment) alike.
   assert.match(edge, /^\(Main\.Lookalike\) lookalike = (?:\(code = 1, environment = 2, clone = 3, drop = 4\)|\{\n  code = 1\n  environment = 2\n  clone = 3\n  drop = 4\n\})$/m);
   assert.match(edge, /^\(Main\.Descriptive\) descriptive = (?:\(descriptor = 5, environment = 6\)|\{\n  descriptor = 5\n  environment = 6\n\})$/m);
+
+  // C12: cross from the 512-entry head to the next chunk, without eagerly reading every chunk.
+  const chunked = join(root, "chunked");
+  mkdirSync(chunked);
+  writeFileSync(join(chunked, "Main.tz"), [
+    "def build :: i64 -> Set<i64>",
+    "fn build count =",
+    "    let mut set: Set<i64> = Set.empty()",
+    "    for key in 0i64 .. count - 1 do set = Set.insert key set",
+    "    set",
+    "",
+    "def inspect :: i64 -> i64",
+    "fn inspect count =",
+    "    let many = build count",
+    "    Set.length (ref many)",
+    "",
+    "inspect 513",
+    "",
+  ].join("\n"));
+  const crossing = sections(session(chunked, ["breakpoint set -f Main.tz -l 10", "run", "frame variable many", "frame variable many[0] many[511] many[512]", "kill"]));
+  const summary = crossing.find(part => part.command === "frame variable many").text;
+  assert.match(summary, /^\(Set<i64>\) many = size=513 \{$/m, summary);
+  assert.match(summary, /^ {2}\[0\] = 0$/m, summary);
+  const picked = crossing.find(part => part.command === "frame variable many[0] many[511] many[512]").text;
+  for (const index of [0, 511, 512]) assert.match(picked, new RegExp(`^\\(i64\\) many\\[${index}\\] = ${index}$`, "m"), picked);
 
   // PM01: a union of a nullary case and a string or array payload stores no tag. `$niche` holds
   // the length -1 for the nullary case, and the formatter reads the case from it, whichever case
@@ -316,8 +358,9 @@ try {
   for (const line of [12, 13]) {
     assert.match(stops(`breakpoint set -f Main.tz -l ${line}`)[0], new RegExp(`Main\\.test@11:6(?: \\+ \\d+)? at Main\\.tz:${line}:`));
   }
-  assert.match(stops("run")[0], /stop reason = breakpoint 1\.1\n.*`Main\.test@11:6 at Main\.tz:12:\d+ \[opt\]/);
-  assert.match(stops("continue")[0], /stop reason = breakpoint 2\.1\n.*`Main\.test@11:6 at Main\.tz:13:\d+ \[opt\]/);
+  // Apple LLDB prints [opt]; LLVM LLDB prints [inlined] for the same optimized inline frame.
+  assert.match(stops("run")[0], /stop reason = breakpoint 1\.1\n.*`Main\.test@11:6 at Main\.tz:12:\d+ \[(?:opt|inlined)\]/);
+  assert.match(stops("continue")[0], /stop reason = breakpoint 2\.1\n.*`Main\.test@11:6 at Main\.tz:13:\d+ \[(?:opt|inlined)\]/);
   assert.match(stops("continue")[1], /exited with status = 0/);
   console.log("debugger: LLDB formatters, names and stepping verified");
 } finally { rmSync(root, { recursive: true, force: true }); }

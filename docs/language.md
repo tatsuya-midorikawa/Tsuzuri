@@ -3279,19 +3279,21 @@ let map = Map.remove 2 map
 
 `Map` モジュールが提供する主な API は以下のとおりです:
 `empty()`、`singleton key value`、`length (&map)`、`is_empty (&map)`、`insert key value map`、`remove key map`、
-`contains_key key (&map)`、`get key (&map)`、`at key (&map)`、`to_array (&map)`、`keys (&map)`、`values (&map)`、`fold folder initial (&map)`。
+`contains_key key (&map)`、`get key (&map)`、`at key (&map)`、`to_array (&map)`、`keys (&map)`、`values (&map)`、`fold folder initial (&map)`、診断用の `chunk_count (&map)`（エントリを持つチャンクの個数。空なら 0）と `invariants_hold (&map)`（チャンクの規則を満たすか）。
 `get` は Copy 型の値に対して `Maybe<V>` を返し、`at` はキーが存在しない場合に安全にトラップする共有借用参照 `ref V` を返します。検索キーは通常の値渡しで渡され、関数呼び出し完了時に安全に解放されます。
 既存のキーと同一のキーに対して `insert` を行った場合は、最初に格納されていたキーの代表値がそのまま維持され、新しく渡されたキーと古い値が解放されて値のみが新しい値へと置換されます（キーが存在しない `remove` はマップを変更せずにそのまま返却します）。
 `to_array` はキーと値の双方に Copy 制約を要求し、`keys` はキーのみ、`values` は値のみに Copy 制約を要求します。`fold` のコールバックシグネチャは `state -> ref K -> ref V -> state` です。
 
 `Set` モジュールが提供する主な API は以下のとおりです:
 `empty()`、`singleton key`、`length`、`is_empty`、`insert key set`、`remove key set`、`contains key (&set)`、
-`to_array (&set)`、`fold folder initial (&set)`、`union left right`、`intersect (&left) (&right)`、`difference (&left) (&right)`。
+`to_array (&set)`、`fold folder initial (&set)`、`union left right`、`intersect (&left) (&right)`、`difference (&left) (&right)`、診断用の `chunk_count (&set)` と `invariants_hold (&set)`。
 `union` は両方の Set の所有権を消費して統合し、重複キーが存在した場合は左辺側のキー代表値が維持されます。`intersect`、`difference`、および `to_array` は返却配列を構築するためキー型に `Copy` 制約を要求します。
 `fold` のコールバックシグネチャは `state -> ref K -> state` であり、非 Copy なキーに対しても安全に適用可能です。
 
-各操作の計算量は、検索が $O(\log n)$、挿入および削除が $O(n)$、スナップショット生成および `fold` が $O(n)$、集合演算が $O(n + m)$ です。要素の挿入や削除は内部の連続バッファ領域を最大限再利用し、容量不足時のみ再割り当てが行われます。
-`union` は片方の出力領域を再利用して要素を移動し、`intersect` や `difference` は借用入力から要素をコピーして構築します。すべての走査および `fold` 処理は、キーの昇順に従って決定論的に実行されます。
+内部は、キーの昇順に並べた 1〜512 エントリのチャンクの列です（先頭のチャンクが `head`、残りが `rest`）。隣り合う 2 つのチャンクのエントリ数の合計は常に 256 を超え、チャンクの個数 $c$ は $2n/257 + 1$ 以下です。診断用の個数は実装の詳細で、将来の版で変わりえます。
+各操作の計算量は、検索（`contains_key`・`get`・`at`・`contains`）が $O(\log n)$ 回の比較で確保なし、挿入および削除が $O(\log n)$ 回の比較と 1 チャンク内の移動（最大 511 エントリ）、チャンクの分割・併合を伴う更新がさらに $O(c)$ のチャンクの移動、スナップショット生成および `fold` が $O(n)$、集合演算が $O(n + m)$ です。キーが最大のキーより大きい挿入（昇順の挿入）は最後のチャンクへの追加で、チャンクが 512 エントリで満ちたら次のチャンクを始めます。`invariants_hold` はチャンクの規則を $O(n)$ で検査します。
+検索の「確保なし」は探索自体についての性質です。`Map.get` が返す値のコピーの費用と確保（値が配列ならその複製など）は別に加わります。
+`union` は両辺のチャンクから要素を移動して 384 エントリずつの新しいチャンクを作り、`intersect` や `difference` は借用で比較し、結果に選ばれた左辺のキーだけをコピーして同じ形のチャンクを作ります（比較用には配列キーも複製しません）。すべての走査および `fold` 処理は、キーの昇順に従って決定論的に実行されます。
 コンテナ内に共有借用参照を格納した場合は元の所有者の生存期間情報が厳密に引き継がれ、排他借用参照を格納することは禁止されています。また、`Map.at` によって取得された値の借用参照が生存している期間中は、マップ自身を移動したり置換したりすることはできません。
 なお、クロージャ環境にキャプチャされたコンテナの複製は独立した内部ストレージを安全に複製します（二分探索木の実装、ミュータブルなイテレータ、および C 言語 ABI エクスポートは本型の対象外です。ハッシュテーブルに基づく連想配列が必要な場合は、次節の [HashMap / HashSet](#hashmap--hashset) を使用してください）。
 

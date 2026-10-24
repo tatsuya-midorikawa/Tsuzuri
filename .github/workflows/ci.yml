@@ -68,7 +68,7 @@ jobs:
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo -n tee /usr/share/keyrings/llvm.gpg >/dev/null
           printf 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main\n' | sudo -n tee /etc/apt/sources.list.d/llvm21.list >/dev/null
           sudo -n apt-get update
-          sudo -n apt-get install -y clang-21 lld-21 llvm-21 libclang-rt-21-dev
+          sudo -n apt-get install -y clang-21 lld-21 lldb-21 llvm-21 libclang-rt-21-dev
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -98,9 +98,28 @@ jobs:
       - name: Slot script
         if: ${{ !cancelled() }}
         run: node tests/slot.mjs
+      - name: LLDB collection views and stepping
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          TSUZURI_LLDB: /usr/lib/llvm-21/bin/lldb
+          TMPDIR: ${{ github.workspace }}/target/scratch/debugger/tmp
+          TSUZURI_SLOT_DIR: ${{ github.workspace }}/target/scratch/debugger/slots
+          TSUZURI_CACHE_DIR: ${{ github.workspace }}/target/scratch/debugger/cache
+        run: |
+          mkdir -p "$TMPDIR"
+          node scripts/slot.mjs -- node tests/debugger.mjs target/debug/tsuzuri
       - name: End-to-end compiler tests (e2e)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/e2e.mjs target/debug/tsuzuri
+      - name: Ordered containers
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          TMPDIR: ${{ github.workspace }}/target/scratch/debugger/tmp
+          TSUZURI_CACHE_DIR: ${{ github.workspace }}/target/scratch/debugger/cache
+        run: |
+          mkdir -p "$TMPDIR"
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri map_set
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri map_set_chunks
       - name: Primitive types
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/primitives.mjs target/debug/tsuzuri
