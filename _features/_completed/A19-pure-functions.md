@@ -1131,6 +1131,22 @@ def main :: unit -> i32 = \() ->
   usage は **62 links／5 checked examples／4 native runs／1 test project** を再検証した。
   native Windows の成否は、修正後の最終 head の x64／arm64 CI で判定する。
 
+### 実効 API の inline 制約（2026-10-24）
+
+- 追加 Copilot 指摘で、`'a -> bool` と `Ord<'a> -> bool` が同じ解決後の型になり、
+  明示節だけの snapshot が inline／alias 経由の呼び出し側の要求を落としていた。
+  先に追加した回帰のうち、要求変更と表記の同値性の 2 件が旧実装で失敗することを確認した。
+- `CheckedFunction.constraints` を既存の instance／superclass 正規化に通し、残余の class 要求を保存する。
+  ソースをもう一度解釈する独立した検査器は作らず、具体型で満たされた本体内の要求を API へ漏らさない。
+  モジュール関数の明示制約を残し、公開名への変換・型変数の改名後に集合として整列・重複除去する。
+  報告に使うソース表記と既存の制約変更の保守的な分類は維持する。
+  重複除去は実効比較だけに限定し、既定の構文比較が重複を差分とする従来動作も回帰で固定する。
+- 要求の追加／除去、alias の内部変更、inline／明示節／重複の同値性、alpha-renaming と順序、
+  superclass と本体の要求、ユーザー定義 class、モジュール関数の要求保持を回帰で確認した。
+  API 42＋docs 8＋std 7 の **57 tests passed**、全 target Clippy・fmt が成功した。
+  最終差分で全 Rust **1,835 passed／2 skipped（targets 12 を含む）**、dev build、
+  usage **62 links／5 checked examples／4 native runs／1 test project**、docgen、guide-lite **85／0** を再確認した。
+
 ### 確認コマンド（最終受入）
 
 - `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo build --locked`。

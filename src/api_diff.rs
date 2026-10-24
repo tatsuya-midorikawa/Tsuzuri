@@ -414,7 +414,10 @@ impl<'a> Renaming<'a> {
         let text = self
             .resolved
             .and_then(|resolved| resolved.classes.get(&api_key(name.span)))
-            .map_or_else(|| name.text.clone(), |name| self.public_name(name));
+            .map_or_else(
+                || self.public_name(&name.text),
+                |name| self.public_name(name),
+            );
         Ident {
             text,
             ..name.clone()
@@ -516,7 +519,7 @@ impl<'a> Renaming<'a> {
             .map(|constraint| self.constraint(constraint))
             .collect();
         if self.canonical {
-            constraints.sort_by_cached_key(|constraint| {
+            let key = |constraint: &ConstraintExpr| {
                 let head = match &constraint.name {
                     ConstraintName::Class(class) => class.text.clone(),
                     ConstraintName::Function(name, annotation) => format!(
@@ -526,7 +529,11 @@ impl<'a> Renaming<'a> {
                     ),
                 };
                 format!("{head}<{}>", type_text(&constraint.ty))
-            });
+            };
+            constraints.sort_by_cached_key(key);
+            if self.resolved.is_some() {
+                constraints.dedup_by(|left, right| key(left) == key(right));
+            }
         }
         constraints
     }
@@ -677,11 +684,18 @@ fn add_items(
             |signature| signature.parameters.iter().collect(),
         );
         let result = signature.map_or(&declaration.result, |signature| &signature.result);
+        let constraints = effective
+            .and_then(|resolved| {
+                resolved
+                    .function_constraints
+                    .get(&api_key(declaration.name.span))
+            })
+            .map_or(declaration.constraints.as_slice(), Vec::as_slice);
         let header = function_text(
             "def",
             &name,
             &declaration.regions,
-            &declaration.constraints,
+            constraints,
             &types,
             implicit.as_ref().unwrap_or(result),
             fresh(),

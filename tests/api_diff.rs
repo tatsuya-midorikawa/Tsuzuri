@@ -90,6 +90,65 @@ fn compare_mode(
 }
 
 #[test]
+fn effective_inline_and_alias_constraints_are_part_of_the_callers_contract() {
+    let old = "def f :: 'a -> bool = \\x -> true\n";
+    let new = "def f :: Ord<'a> -> bool = \\x -> true\n";
+    for (before, after) in [(old, new), (new, old)] {
+        assert_eq!(
+            compare_mode(before, after, &[], true),
+            ["breaking changed def Main.f"]
+        );
+    }
+    let alias = "type Argument<'a> = 'a\ndef f :: Argument<'a> -> bool = \\x -> true\n";
+    let constrained_alias = alias.replace("= 'a", "= Ord<'a>");
+    assert!(
+        compare_mode(alias, &constrained_alias, &[], true)
+            .contains(&"breaking changed def Main.f".to_owned())
+    );
+}
+
+#[test]
+fn effective_class_constraints_are_a_canonical_set_without_losing_members() {
+    let inline = "def f :: Ord<'a> -> bool = \\x -> true\n";
+    let explicit = "def f :: 'element -> bool\n  @'element : Ord\nfn f x = true\n";
+    let duplicate = "def f :: Ord<'value> -> bool\n  @'value : Ord, Ord\nfn f x = true\n";
+    assert!(compare_mode(inline, explicit, &[], true).is_empty());
+    assert!(compare_mode(explicit, duplicate, &[], true).is_empty());
+    let repeated = explicit.replace(": Ord", ": Ord, Ord");
+    assert!(compare_mode(explicit, &repeated, &[], true).is_empty());
+    assert_eq!(
+        compare(explicit, &repeated, &[]),
+        ["breaking changed def Main.f"]
+    );
+    assert!(compare_mode(inline, &inline.replace("true", "x == x"), &[], true).is_empty());
+    let two = "def f :: Ord<'a> -> Eq<'b> -> bool = \\x y -> true\n";
+    let reordered = "def f :: 'first -> 'second -> bool\n  @'second : Eq\n  @'first : Ord, Eq\nfn f x y = true\n";
+    assert!(compare_mode(two, reordered, &[], true).is_empty());
+    let class = "class Label<'a> { def label :: 'a -> bool }\n";
+    let local = "def f :: Traits.Label<'a> -> bool = \\x -> true\n";
+    let local_explicit = "def f :: 'item -> bool\n  @'item : Traits.Label\nfn f x = true\n";
+    assert!(compare_mode(local, local_explicit, &[("Traits.tt", class, class)], true).is_empty());
+    let member = "def f :: Ord<'a> -> bool\n  @'a : #distance\nfn f x = true\n";
+    assert_eq!(
+        compare_mode(inline, member, &[], true),
+        ["breaking changed def Main.f"]
+    );
+}
+
+#[test]
+fn effective_satisfied_body_constraints_do_not_change_the_api() {
+    assert!(
+        compare_mode(
+            "def f :: i64 -> i64 = \\x -> x\n",
+            "def f :: i64 -> i64 = \\x -> x + 0\n",
+            &[],
+            true,
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn effective_aliases_and_copy_records_do_not_turn_pure_additions_into_breaks() {
     let old = "record Point { x: i64 }\ntype Alias = Point\ndef size :: Alias -> i64 = \\point -> point.x\n";
     let new = old.replace("def size :: Alias", "pure def size :: Point");

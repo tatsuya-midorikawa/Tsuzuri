@@ -874,7 +874,7 @@ tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
 tsuzuri new directory [--namespace NAME]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
-tsuzuri api-diff old new [--json]
+tsuzuri api-diff old new [--json] [--effective]
 tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]... [--consume F:P]... [--json]
 tsuzuri lsp
 ```
@@ -1312,6 +1312,8 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   `--effective` は doc と同じ依存解決を使って両側を完全に解析し、解析・依存のエラーを構文比較で隠しません。
   純粋性の追加が実効 ABI も変えるときは互換な追加と報告しません。純粋な factory の戻り段階、
   明示した領域、制約、型変数の対応と class メソッドの純粋契約を保ち、内部の package 識別子を公開しません。
+  制約はソースの明示節だけでなく、型検査済みの inline／alias 経由の class 要求を解決し、
+  呼び出し側に残る要求を集合として比較します。表記・順序・重複や、すでに満たされた本体内の具体型の要求では差分を出しません。
   A18 の診断・移行・2026 の固定契約は保存します。
   全 Phase の実装とローカル受入を完了しました。初回は Rust 1,816 件（2 skipped）＋targets 12 件、
   features 20,012 cases（native／WASM × O0／O3）、既存 114 プログラムの IR byte 一致、
@@ -1320,6 +1322,7 @@ CI **14 項目 green**。Copilot は未解決の指摘なしで、人による r
   pure 302＋parallel 12 ケース（native／WASM × O0／O3）、関連 E2E・cache・LSP と
   manual 4 ページ／32 例／58 native 実行を再確認しました。
   Windows CI で見つかった標準ライブラリ自身の実効 API 入力も、仮想パスを全 OS 共通の `std/Name.tz` に修正し、
-  関連 62 テストと usage の例を確認しました。最終 head の x64／arm64 CI は PR で追跡します。速度向上は未計測です。
+  関連 62 テストと usage の例を確認しました。inline／alias の制約修正後は全 Rust 1,835 件（targets 12 件を含む、2 skipped）、
+  Clippy・fmt・build、usage と docgen を再確認しました。最終 head の x64／arm64 CI は PR で追跡します。速度向上は未計測です。
   実装範囲・例外・検証コマンドと変更一覧は [A19 の完了記録](_features/_completed/A19-pure-functions.md)、
   最終 head の CI・Copilot レビューと 7 件の統合結果は各 PR で追跡します。

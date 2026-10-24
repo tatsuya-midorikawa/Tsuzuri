@@ -2097,6 +2097,27 @@ impl Classes {
             .is_ok_and(|residual| residual.is_empty())
     }
 
+    pub(super) fn constraint_expressions(
+        &self,
+        constraints: &[Constraint],
+        types: &TypeContext<'_>,
+    ) -> Result<Vec<ConstraintExpr>, Diagnostic> {
+        let mut expressions = Vec::new();
+        for constraint in constraints {
+            for required in self.normalize(constraint, types)? {
+                expressions.push(ConstraintExpr {
+                    name: ConstraintName::Class(Ident {
+                        text: key_path(&self.declarations[required.class].name),
+                        span: Span::default(),
+                        provenance: Provenance::Generated,
+                    }),
+                    ty: type_expression(&required.ty, types, Span::default()),
+                });
+            }
+        }
+        Ok(expressions)
+    }
+
     fn resolved_method(
         &self,
         class: usize,

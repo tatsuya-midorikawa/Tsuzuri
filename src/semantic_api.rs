@@ -16,6 +16,7 @@ pub(crate) struct ApiSignature {
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedApi {
     pub(crate) signatures: BTreeMap<Key, ApiSignature>,
+    pub(crate) function_constraints: BTreeMap<Key, Vec<ConstraintExpr>>,
     pub(crate) annotations: BTreeMap<Key, TypeExpr>,
     pub(crate) public_names: BTreeMap<String, String>,
     pub(crate) classes: BTreeMap<Key, String>,
@@ -135,6 +136,17 @@ pub(super) fn collect(
                 ),
             );
             result.constraints(&declaration.constraints, name, names, classes, types)?;
+            let mut constraints = classes.constraint_expressions(&function.constraints, types)?;
+            constraints.extend(
+                declaration
+                    .constraints
+                    .iter()
+                    .filter(|constraint| matches!(constraint.name, ConstraintName::Function(..)))
+                    .cloned(),
+            );
+            result
+                .function_constraints
+                .insert(key(declaration.name.span), constraints);
         }
         for declaration in &program.externs {
             let parameters = declaration
