@@ -530,3 +530,7 @@ fn read_by_default(ty: &Type, types: &TypeContext<'_>) -> bool {
 - 全 5 IDE 環境で旧 inlay fixture が暗黙の read になり copy hint を出さなくなったため、
   検証対象の消費引数に `own` を明示した。期待する位置とラベルは変更していない。
   extension の型検査・lint・15 unit 検査が通過した。実 GUI と全プラットフォームは更新後の CI で確認する。
+- review の std 正解の指摘を個別に照合すると、A-02／A-03 と D-02／D-04〜D-06 が
+  一般検証の「非固定コーパスの drift」として許容されていた。現在の `own` 署名へ正解・
+  型指定・行 selector を揃え、全 std 定義行を照合する red／green 回帰を追加した。
+  凍結コーパスと手計算の golden は変更しない。focused 回帰は 1 通過、全 AI suite は最終実行に含める。

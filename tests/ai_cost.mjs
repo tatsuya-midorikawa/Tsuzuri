@@ -262,6 +262,12 @@ test("task_command_hides_the_answer", () => {
 test("verify_passes_on_the_repository_tasks", () => {
   assert.match(ok(cli(["verify","--compiler",compiler])),/verified 37 tasks: 0 failures, [0-9]+ drift\n$/);
 });
+test("current_std_signature_answers_match_migrated_conventions", () => {
+  const ctx = context("std-signatures");
+  for (const t of tasks.filter((t) => t.corpus?.includes("std") && t.answer?.some((answer) => answer.startsWith("def ")))) {
+    verifyTask(t, ctx);
+  }
+});
 test("verify_fails_on_a_broken_stable_task", () => {
   const dir = mutation("broken", () => {});
   const file = join(dir,"b-callers.json"), json = JSON.parse(readFileSync(file));
