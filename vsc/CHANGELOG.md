@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5 - 2026-10-25
+
+- Refresh the bundled compiler, standard library, completions, and offline handbook with the merged language and tooling updates.
+- **Compatibility:** new projects and inputs without a manifest now use edition 2027, with shared-borrowed read parameters and explicit `own T` / `mut T` conventions. Existing manifests without an edition remain on 2026. Use `tsuzuri fix --edition 2027 --from 2026` to migrate while preserving ownership and callback contracts.
+- Add checked `pure def` contracts, including generic functions and staged callbacks. `tsuzuri api-diff --effective` compares resolved ownership, purity, and region contracts; the default comparison remains syntax-only.
+- Include the chunked ordered `Map` and `Set` implementations and matching debugger collection views, while preserving key order and ownership rules.
+- Add the `Alloc` module and isolated per-iteration allocation counts through `tsuzuri bench --allocs`. New Project now reserves the `Alloc` namespace consistently with the compiler.
+- Fix interpolation of borrowed places and temporary values, including the corresponding ownership and lifetime handling.
+
 ## 0.1.4 - 2026-10-23
 
 - Update the bundled compiler, standard library, completions, and offline handbook with the merged `Array`, `List`, and `Vec` API improvements.
