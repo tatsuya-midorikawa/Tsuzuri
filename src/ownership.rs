@@ -3320,7 +3320,8 @@ fn find_later_use(
     if holders.is_empty() {
         return None;
     }
-    let (mut uses, mut replaced, mut jumps) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut uses, mut jumps) = (Vec::new(), Vec::new());
+    let mut replaced: BTreeMap<usize, Vec<Seen>> = BTreeMap::new();
     let mut access: Option<(usize, Path)> = None;
     let mut at = 0;
     let mut pending = vec![Step::Enter(body, None)];
@@ -3333,7 +3334,7 @@ fn find_later_use(
                     && let E::Local(holder) = place.kind
                     && holders.contains(&holder)
                 {
-                    replaced.push(Seen {
+                    replaced.entry(holder).or_default().push(Seen {
                         holder,
                         span: expression.span,
                         at,
@@ -3470,39 +3471,61 @@ fn find_later_use(
         );
     }
     let (start, access) = access?;
-    // A jump that always runs after the access, and what it skips.
-    let mut skips: Vec<(Jump, usize, Option<usize>)> = Vec::new();
+    // Whether a jump at `position` with `path` skips what is at `seen`: a re-raise skips all
+    // after it, and a `break` or `continue` the rest of its loop.
+    let skips_over = |jump: Jump, position: usize, path: &Path, seen: &Seen| {
+        seen.at > position
+            && match jump {
+                Jump::Reraise => true,
+                Jump::Break | Jump::Continue => {
+                    innermost_loop(path).is_some_and(|node| repeats(&seen.path, node))
+                }
+            }
+    };
+    // Dead code: a jump always runs before it, in every iteration.
+    let dead = |seen: &Seen, budget: &mut usize| -> Option<bool> {
+        for (jump, position, path) in &jumps {
+            spend(budget, 1)?;
+            if skips_over(*jump, *position, path, seen) && always_before(path, &seen.path, budget)?
+            {
+                return Some(true);
+            }
+        }
+        Some(false)
+    };
+    // The jumps that always run after the access.
+    let mut after_access: Vec<(Jump, usize, &Path)> = Vec::new();
     for (jump, position, path) in &jumps {
         spend(budget, 1)?;
-        if *position > start && always_before(path, &access, budget)? {
-            skips.push((*jump, *position, innermost_loop(path)));
+        if *position > start && always_between(path, &access, &access, budget)? {
+            after_access.push((*jump, *position, path));
         }
     }
-    let skipped = |seen: &Seen| {
-        skips.iter().any(|(jump, position, target)| {
-            seen.at > *position
-                && match jump {
-                    Jump::Reraise => true,
-                    Jump::Break | Jump::Continue => {
-                        target.is_some_and(|node| repeats(&seen.path, node))
-                    }
-                }
-        })
+    let skipped = |seen: &Seen, budget: &mut usize| -> Option<bool> {
+        for (jump, position, path) in &after_access {
+            spend(budget, 1)?;
+            if skips_over(*jump, *position, path, seen) {
+                return Some(true);
+            }
+        }
+        Some(false)
     };
+    let no_replacements = Vec::new();
+    let replacements = |holder: usize| replaced.get(&holder).unwrap_or(&no_replacements);
     uses.sort_by_key(|seen| seen.at);
     for seen in uses.iter().filter(|seen| seen.at > start) {
-        spend(budget, 1 + skips.len())?;
-        if skipped(seen) || exclusive(&seen.path, &access, budget)? {
+        if skipped(seen, budget)? || dead(seen, budget)? || exclusive(&seen.path, &access, budget)?
+        {
             continue;
         }
         let mut cut = false;
-        for replacement in replaced
-            .iter()
-            .filter(|replacement| replacement.holder == seen.holder)
-        {
+        for replacement in replacements(seen.holder) {
             spend(budget, 1)?;
+            // A replacement that the path from the access skips never runs on it.
             if replacement.at > start
                 && replacement.at < seen.at
+                && !skipped(replacement, budget)?
+                && !dead(replacement, budget)?
                 && always_between(&replacement.path, &access, &seen.path, budget)?
             {
                 cut = true;
@@ -3513,27 +3536,38 @@ fn find_later_use(
             return Some((seen.span, false, seen.holder));
         }
     }
-    if held || skips.iter().any(|(jump, _, _)| *jump == Jump::Reraise) {
+    if held
+        || after_access
+            .iter()
+            .any(|(jump, _, _)| *jump == Jump::Reraise)
+    {
         return None;
     }
-    // The loops around the access, innermost first; a `break` that always runs ends them.
+    // The loops around the access, innermost first.
     let loops: Vec<usize> = choices(&access)
         .filter(|choice| choice.part == Part::Repeat)
         .map(|choice| choice.node)
         .collect();
     for node in loops {
         // A `break` ends only its own loop; the loops around it run again.
-        if skips
+        if after_access
             .iter()
-            .any(|(jump, _, target)| *jump == Jump::Break && *target == Some(node))
+            .any(|(jump, _, path)| *jump == Jump::Break && innermost_loop(path) == Some(node))
         {
             continue;
         }
         for seen in uses.iter().filter(|seen| repeats(&seen.path, node)) {
-            spend(budget, 1 + replaced.len())?;
-            let replaced_here = replaced.iter().any(|replacement| {
-                replacement.holder == seen.holder && repeats(&replacement.path, node)
-            });
+            if dead(seen, budget)? {
+                continue;
+            }
+            let mut replaced_here = false;
+            for replacement in replacements(seen.holder) {
+                spend(budget, 1)?;
+                if repeats(&replacement.path, node) && !dead(replacement, budget)? {
+                    replaced_here = true;
+                    break;
+                }
+            }
             // The arms inside the loop may change in the next iteration; the ones around it stay.
             if !replaced_here
                 && !exclusive(outside(&seen.path, node), outside(&access, node), budget)?

@@ -1354,6 +1354,12 @@ fn jumps_and_iterations_decide_what_runs_again() {
     // The arm of the access replaces the holder before the read after the `if`.
     let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\ndef f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    if flag then\n        both r (ref mut n)\n        r = ref m\n    else\n        ()\n    deref r\n\n0\n";
     assert_eq!(used(source), None);
+    // The `break` after the conflict skips the replacement: the read after the loop reads `n`.
+    let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\ndef f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    for i in 0 .. 2 do\n        if flag then\n            both r (ref mut n)\n            break\n        else\n            ()\n        r = ref m\n    deref r\n\n0\n";
+    assert_eq!(used(source), Some((14, false)));
+    // A read after an unconditional `break` never runs, in any iteration.
+    let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    for j in 0 .. 2 do\n        n = 1\n        break\n        let _x = deref r\n        ()\n0\n";
+    assert_eq!(used(source), None);
     // A conflict in the condition of a `while`, which runs again.
     let source =
         "let mut n = 0\nlet r = ref n\nwhile { let x = deref r; n = x + 1; x < 2 } do\n    ()\n0\n";
