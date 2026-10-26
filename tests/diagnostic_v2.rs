@@ -1440,6 +1440,9 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     // A slice reaches its source before its bounds: a bound that reads the holder uses the borrow.
     let source = "def f :: unit -> i64 = \\_ ->\n    let mut values = [1, 2]\n    let r = ref mut values\n    let _s = ref values[0..r.length]\n    0\n\n0\n";
     assert_eq!(used(source), Some((4, false)));
+    // The inner loop's back edge only leaves it: the read after it is in the same outer iteration.
+    let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    let mut gate = true\n    while gate do\n        n = 1\n        gate = false\n        continue\n    let _x = deref r\n    ()\n0\n";
+    assert_eq!(used(source), Some((9, false)));
     // A read after the loop runs when the loop ends, not in its next iteration.
     let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    n = 1\nderef r\n";
     assert_eq!(used(source), Some((5, false)));

@@ -3168,8 +3168,9 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
 /// next arm), `&&` and `||`, loops (an edge back to the loop's head is a back edge), `break`,
 /// `continue`, re-raises, and the exceptions that a `try` body may raise to its handler.
 struct Flow {
-    /// The successors of each node, and whether the edge goes back to a loop's head.
-    edges: Vec<Vec<(usize, bool)>>,
+    /// The successors of each node, and the loop (an index of `loops`) whose head an edge goes
+    /// back to.
+    edges: Vec<Vec<(usize, Option<usize>)>>,
     /// The holder that each node replaces (the exit of `holder = ...`).
     replaces: Vec<Option<usize>>,
     /// The nodes that read each holder: the exit of the holder, or of a lambda that captures it.
@@ -3194,7 +3195,8 @@ type SpanKey = (Option<usize>, usize, usize);
 #[derive(Clone, Copy, Default)]
 struct Targets {
     break_to: Option<usize>,
-    continue_to: Option<usize>,
+    /// The head of the loop that `continue` repeats, and the loop.
+    continue_to: Option<(usize, usize)>,
     handler: Option<usize>,
 }
 
@@ -3213,7 +3215,7 @@ impl Flow {
     }
 
     fn edge(&mut self, from: usize, to: usize) {
-        self.edges[from].push((to, false));
+        self.edges[from].push((to, None));
     }
 
     /// Entries and exits for `parts`, run one after another from `from` to `to`.
@@ -3304,8 +3306,8 @@ impl Flow {
                     }
                 }
                 E::Continue => {
-                    if let Some(to) = targets.continue_to {
-                        flow.edges[entry].push((to, true));
+                    if let Some((to, repeated)) = targets.continue_to {
+                        flow.edges[entry].push((to, Some(repeated)));
                     }
                 }
                 E::Reraise => {
@@ -3418,15 +3420,16 @@ impl Flow {
                 }
                 E::While { condition, body } => {
                     flow.loops.push(span);
+                    let repeated = flow.loops.len() - 1;
                     let (c_entry, c_exit) = child(&mut flow, condition);
                     let (b_entry, b_exit) = child(&mut flow, body);
                     flow.edge(entry, c_entry);
                     flow.edge(c_exit, b_entry);
                     flow.edge(c_exit, exit);
-                    flow.edges[b_exit].push((c_entry, true));
+                    flow.edges[b_exit].push((c_entry, Some(repeated)));
                     let inner = Targets {
                         break_to: Some(exit),
-                        continue_to: Some(c_entry),
+                        continue_to: Some((c_entry, repeated)),
                         handler: targets.handler,
                     };
                     // A `break` or `continue` in the condition belongs to the loop around this one.
@@ -3443,6 +3446,7 @@ impl Flow {
                     ..
                 } => {
                     flow.loops.push(span);
+                    let repeated = flow.loops.len() - 1;
                     let head = flow.node(body.span);
                     for (part, part_entry, part_exit) in
                         sequence(&mut flow, vec![start, step, finish], entry, head)
@@ -3452,16 +3456,17 @@ impl Flow {
                     let (b_entry, b_exit) = child(&mut flow, body);
                     flow.edge(head, b_entry);
                     flow.edge(head, exit);
-                    flow.edges[b_exit].push((head, true));
+                    flow.edges[b_exit].push((head, Some(repeated)));
                     let inner = Targets {
                         break_to: Some(exit),
-                        continue_to: Some(head),
+                        continue_to: Some((head, repeated)),
                         handler: targets.handler,
                     };
                     items.push((&**body, b_entry, b_exit, inner));
                 }
                 E::ForEach { source, body, .. } => {
                     flow.loops.push(span);
+                    let repeated = flow.loops.len() - 1;
                     let head = flow.node(body.span);
                     for (part, part_entry, part_exit) in
                         sequence(&mut flow, vec![source], entry, head)
@@ -3471,10 +3476,10 @@ impl Flow {
                     let (b_entry, b_exit) = child(&mut flow, body);
                     flow.edge(head, b_entry);
                     flow.edge(head, exit);
-                    flow.edges[b_exit].push((head, true));
+                    flow.edges[b_exit].push((head, Some(repeated)));
                     let inner = Targets {
                         break_to: Some(exit),
-                        continue_to: Some(head),
+                        continue_to: Some((head, repeated)),
                         handler: targets.handler,
                     };
                     items.push((&**body, b_entry, b_exit, inner));
@@ -3544,12 +3549,14 @@ impl Flow {
         Some(flow)
     }
 
-    /// The nodes reachable from `from`, each with whether a path to it crosses no back edge and
-    /// whether one crosses a back edge; a path stops at a replacement of `stop`.
+    /// The nodes reachable from `from`, each with whether a path to it crosses no back edge of
+    /// the loops in `counting` and whether one crosses such a back edge; a path stops at a
+    /// replacement of `stop`. The back edges of the other loops are ordinary edges.
     fn reach(
         &self,
         from: &[usize],
         stop: Option<usize>,
+        counting: &[bool],
         budget: &mut usize,
     ) -> Option<Vec<[bool; 2]>> {
         // The tables of the visited nodes and of the starting ones.
@@ -3568,7 +3575,7 @@ impl Flow {
                 continue;
             }
             for &(next, back) in &self.edges[node] {
-                let crossed = crossed || back;
+                let crossed = crossed || back.is_some_and(|repeated| counting[repeated]);
                 if !seen[next][usize::from(crossed)] {
                     seen[next][usize::from(crossed)] = true;
                     pending.push_back((next, crossed));
@@ -3578,22 +3585,26 @@ impl Flow {
         Some(seen)
     }
 
-    /// Whether one loop holds both spans: a use reached across a back edge runs in the loop's next
-    /// iteration only then, and after the loop otherwise.
-    fn in_one_loop(&self, a: Span, b: Span) -> bool {
+    /// Which loops hold both spans: only their back edges lead to a next iteration in which the
+    /// second runs after the first (the back edges of a loop that holds one of them only leave it).
+    fn around_both(&self, a: Span, b: Span, budget: &mut usize) -> Option<Vec<bool>> {
+        spend(budget, self.loops.len())?;
         let within = |outer: &Span, inner: Span| {
             outer.source == inner.source && outer.start <= inner.start && inner.end <= outer.end
         };
-        self.loops
-            .iter()
-            .any(|outer| within(outer, a) && within(outer, b))
+        Some(
+            self.loops
+                .iter()
+                .map(|outer| within(outer, a) && within(outer, b))
+                .collect(),
+        )
     }
 
     /// The nodes of `nodes` that control can reach from the start of the body: a copy of a
     /// `finally` that no exception reaches never runs.
     fn live(&self, nodes: Vec<usize>, budget: &mut usize) -> Option<Vec<usize>> {
         // The entry of the body is the first node.
-        let reached = self.reach(&[0], None, budget)?;
+        let reached = self.reach(&[0], None, &vec![false; self.loops.len()], budget)?;
         Some(
             nodes
                 .into_iter()
@@ -3645,6 +3656,7 @@ fn find_later_use(
         .by_span
         .get(&(created.source, created.start, created.end))
         .map(|copies| copies.iter().map(|(_, exit)| *exit).collect());
+    let none = vec![false; flow.loops.len()];
     let mut best: Option<(bool, usize, usize, Span)> = None;
     for &holder in holders {
         // The copies of the access where the holder still holds the loan.
@@ -3663,7 +3675,7 @@ fn find_later_use(
                         from.push(node);
                     }
                 }
-                let holds = flow.reach(&from, Some(holder), budget)?;
+                let holds = flow.reach(&from, Some(holder), &none, budget)?;
                 access
                     .iter()
                     .copied()
@@ -3675,20 +3687,26 @@ fn find_later_use(
         if seeds.is_empty() {
             continue;
         }
-        let reached = flow.reach(&seeds, Some(holder), budget)?;
+        // One search per set of loops that hold both the access and a use (a chain of the loops
+        // around the access, so no more searches than its depth).
+        let mut searches: BTreeMap<Vec<bool>, Vec<[bool; 2]>> = BTreeMap::new();
         for &node in flow.readers.get(&holder).into_iter().flatten() {
             spend(budget, 1)?;
             let span = flow.spans[node];
             if span.source != after.source || span.end <= span.start {
                 continue;
             }
-            let [direct, crossed] = reached[node];
-            if !direct && !crossed {
+            let counting = flow.around_both(after, span, budget)?;
+            if !searches.contains_key(&counting) {
+                let reached = flow.reach(&seeds, Some(holder), &counting, budget)?;
+                searches.insert(counting.clone(), reached);
+            }
+            // Only across a back edge of a loop around both is the use in its next iteration.
+            let [direct, repeated] = searches[&counting][node];
+            if !direct && !repeated {
                 continue;
             }
-            // Across a back edge, a use in a loop around the access runs in its next iteration;
-            // one after the loop runs when the loop ends.
-            let repeated = !direct && flow.in_one_loop(span, after);
+            let repeated = !direct;
             if repeated && held {
                 continue;
             }
@@ -3718,14 +3736,15 @@ fn moved_in_previous_iteration(
         .map(|(_, exit)| *exit)
         .collect();
     let from = flow.live(from, budget)?;
-    let reached = flow.reach(&from, None, budget)?;
+    // Only the back edges of a loop that holds both lead to the use in a next iteration.
+    let counting = flow.around_both(moved, used, budget)?;
+    let reached = flow.reach(&from, None, &counting, budget)?;
     let (mut direct, mut crossed) = (false, false);
     for (entry, _) in flow.by_span.get(&(used.source, used.start, used.end))? {
         direct |= reached[*entry][0];
         crossed |= reached[*entry][1];
     }
-    // Across a back edge, the use is in the next iteration only inside a loop that holds both.
-    (direct || crossed).then_some(!direct && flow.in_one_loop(moved, used))
+    (direct || crossed).then_some(!direct)
 }
 
 fn uses(expression: &TypedExpr, ids: &mut BTreeSet<usize>) {
