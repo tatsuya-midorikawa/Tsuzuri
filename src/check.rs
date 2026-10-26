@@ -10179,12 +10179,21 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// An `E1003` for a call whose value is a function because it left out trailing arguments.
+    /// An `E1003` for a call whose value is a function because it left out trailing arguments:
+    /// it passes fewer arguments than `callee` takes. A call that passes them all and returns a
+    /// function, or a function without parameters (`fn() -> T`), needs the result called instead.
     #[cold]
     #[inline(never)]
-    fn partial_application(&self, mut error: Diagnostic, result: &Type, hint: &Type) -> Diagnostic {
-        // A function without parameters (`fn() -> T`) is not missing arguments: it is called.
+    fn partial_application(
+        &self,
+        mut error: Diagnostic,
+        callee: &Type,
+        passed: usize,
+        result: &Type,
+        hint: &Type,
+    ) -> Diagnostic {
         if error.code == "E1003"
+            && matches!(self.inference.resolve(callee), Type::Function(declared, _) if declared.len() > passed)
             && let Type::Function(missing, _) = self.inference.resolve(result)
             && !missing.is_empty()
             && !matches!(
@@ -10644,7 +10653,9 @@ impl<'a> Checker<'a> {
                 expected.clone()
             };
             self.same(&result, &hint, expression.span)
-                .map_err(|error| self.partial_application(error, &result, &hint))?;
+                .map_err(|error| {
+                    self.partial_application(error, &callee.ty, arguments.len(), &result, &hint)
+                })?;
         }
         if self.recovering && expected.is_some_and(|ty| matches!(ty, Type::Error)) {
             self.unknown_parameters(&mut parameters);

@@ -895,8 +895,11 @@ fn partial_application_gets_a_help() {
     assert_eq!(diagnostic.detail.found.as_deref(), Some("i64 -> i64"));
     // A mismatch that is not a partial application has no such help.
     assert!(at_line(CALL1, "E1003", 7).help.is_none());
-    // Nor does a fully applied call that returns a function without parameters.
+    // Nor does a fully applied call that returns a function without parameters, or a call that
+    // passes all the arguments of a function without parameters that returns a function.
     let source = "def answer :: i64 = 42i64\n\ndef make :: unit -> fn() -> i64 = \\_ -> answer\n\nlet x: i64 = make ()\nx\n";
+    assert!(first(source, "E1003").help.is_none());
+    let source = "def build :: fn() -> (i64 -> i64)\nfn build = { let k = 1; n -> n + k }\n\nlet x: i64 = build()\nx\n";
     assert!(first(source, "E1003").help.is_none());
 }
 
@@ -1446,6 +1449,10 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     // The inner loop's back edge only leaves it: the read after it is in the same outer iteration.
     let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    let mut gate = true\n    while gate do\n        n = 1\n        gate = false\n        continue\n    let _x = deref r\n    ()\n0\n";
     assert_eq!(used(source), Some((9, false)));
+    // `r = a` carries the loan of `a` over to `r`, which the read after the conflict uses.
+    let source =
+        "let mut n = 0\nlet m = 1\nlet a = ref n\nlet mut r = ref m\nr = a\nn = 2\nderef r\n";
+    assert_eq!(used(source), Some((7, false)));
     // A read after the loop runs when the loop ends, not in its next iteration.
     let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    n = 1\nderef r\n";
     assert_eq!(used(source), Some((5, false)));

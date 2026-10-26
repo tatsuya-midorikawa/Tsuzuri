@@ -3237,9 +3237,15 @@ impl Flow {
         items
     }
 
-    /// Builds the flow of `body`; `holders` are the locals whose reads and replacements count.
+    /// Builds the flow of `body`; `holders` are the locals whose reads and replacements count, and
+    /// an assignment from one of `carriers` (locals that may hold the same loan) carries it over.
     /// `None` when it would take more than `*budget` steps.
-    fn build(body: &TypedExpr, holders: &BTreeSet<usize>, budget: &mut usize) -> Option<Self> {
+    fn build(
+        body: &TypedExpr,
+        holders: &BTreeSet<usize>,
+        carriers: &BTreeSet<usize>,
+        budget: &mut usize,
+    ) -> Option<Self> {
         let mut flow = Flow {
             edges: Vec::new(),
             replaces: Vec::new(),
@@ -3316,8 +3322,11 @@ impl Flow {
                     }
                 }
                 E::Assign(place, value) => {
+                    // `holder = other`, with a local that may hold the loan, carries it over.
+                    let transfer = matches!(value.kind, E::Local(id) if carriers.contains(&id));
                     if let E::Local(holder) = place.kind
                         && holders.contains(&holder)
+                        && !transfer
                     {
                         // The value is evaluated, then the holder is replaced.
                         for (part, part_entry, part_exit) in
@@ -3636,7 +3645,8 @@ fn find_later_use(
     if holders.is_empty() {
         return None;
     }
-    let flow = Flow::build(body, holders, budget)?;
+    let carriers = carriers(body, holders, budget)?;
+    let flow = Flow::build(body, holders, &carriers, budget)?;
     let key = (after.source, after.start, after.end);
     // Every copy of the access (a `finally` has two), where the access happens in it.
     let access: Vec<usize> = match flow.accesses.get(&key) {
@@ -3719,6 +3729,54 @@ fn find_later_use(
     best.map(|(repeated, _, holder, span)| (span, repeated, holder))
 }
 
+/// The locals that may hold the loan of `holders`: the holders, and the locals that one of them
+/// was assigned or bound from (`holder = other`, `let holder = other`), transitively.
+fn carriers(
+    body: &TypedExpr,
+    holders: &BTreeSet<usize>,
+    budget: &mut usize,
+) -> Option<BTreeSet<usize>> {
+    let mut copies: Vec<(usize, usize)> = Vec::new();
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        spend(budget, 1)?;
+        match &expression.kind {
+            E::Assign(place, value) => {
+                if let (E::Local(to), E::Local(from)) = (&place.kind, &value.kind) {
+                    copies.push((*to, *from));
+                }
+            }
+            E::Block { bindings, .. } => {
+                for (local, value) in bindings {
+                    if let E::Local(from) = value.kind {
+                        copies.push((local.id, from));
+                    }
+                }
+            }
+            _ => {}
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("collecting copies cannot fail");
+    }
+    let mut carriers = holders.clone();
+    loop {
+        spend(budget, copies.len())?;
+        let before = carriers.len();
+        for (to, from) in &copies {
+            if carriers.contains(to) {
+                carriers.insert(*from);
+            }
+        }
+        if carriers.len() == before {
+            return Some(carriers);
+        }
+    }
+}
+
 /// Whether the use at `used` reads a value that the move at `moved` took in the previous
 /// iteration of a loop: the use is reachable from the move only across a back edge. `None` when
 /// it is not reachable, or the search runs out of `*budget`.
@@ -3728,7 +3786,7 @@ fn moved_in_previous_iteration(
     used: Span,
     budget: &mut usize,
 ) -> Option<bool> {
-    let flow = Flow::build(body, &BTreeSet::new(), budget)?;
+    let flow = Flow::build(body, &BTreeSet::new(), &BTreeSet::new(), budget)?;
     let from: Vec<usize> = flow
         .by_span
         .get(&(moved.source, moved.start, moved.end))?
