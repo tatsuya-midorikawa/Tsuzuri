@@ -382,6 +382,97 @@ fn generic_read_views_accept_borrowed_scalar_and_callable_temporaries() {
 }
 
 #[test]
+fn value_expressions_are_lent_like_operator_temporaries() {
+    // A cast, `@checked`, a unary operator, `if`, `match` and a block are lent to a `ref T`
+    // parameter, and in 2027 to a type parameter, as `m + 1` is; a branch that gives a
+    // reference is reborrowed instead.
+    let forms = [
+        "k (n as i64)",
+        "k (@checked (m + 1))",
+        "k (-m)",
+        "k (if c then 1 else 2)",
+        "k (if c then ref m else ref m)",
+        "k (match n with | 1 -> 2 | _ -> 3)",
+        "k ({ let x = m; x })",
+    ];
+    let headers = [
+        ("2026", "def k :: ref i64 -> i64 = \\a -> deref a\n"),
+        ("2027", "def k :: ref i64 -> i64 = \\a -> deref a\n"),
+        ("2027", "def k :: 'n -> i64 = \\a -> 1\n"),
+    ];
+    for (edition, header) in headers {
+        for form in forms {
+            let source = format!(
+                "{header}export def answer :: i32 -> i64 = \\n ->\n    let m = n as i64\n    let c = n > 0\n    {form}\n"
+            );
+            ir(edition, &source);
+        }
+    }
+    // A cast argument followed by a symbol borrow (`at (n as i16) &xs`) is two arguments.
+    ir(
+        "2027",
+        "def at :: Integer<'n> => 'n -> ref [i64] -> i64 = \\i xs -> xs[i as i64]\n\
+         export def answer :: i32 -> i64 = \\n ->\n    let xs = [10i64, 20]\n    at (n as i16) &xs + at (n as i64) (&xs)\n",
+    );
+    // A value of another type is still a mismatch.
+    let source = "def k :: ref i64 -> i64 = \\a -> deref a\nexport def answer :: i32 -> i64 = \\n -> k (n as i16)\n";
+    assert_eq!(check("2027", source).unwrap_err().code, "E1003");
+}
+
+#[test]
+fn value_expression_temporaries_keep_their_boundaries() {
+    for edition in ["2026", "2027"] {
+        // `try` lends its `Result`.
+        ir(
+            edition,
+            "def ok :: ref Result<i64, Exception> -> i64 = \\r -> 1\n\
+             export def answer :: i64 -> i64 = \\m -> ok (try @checked m + 1 with | e -> e)\n",
+        );
+        // A literal in a branch takes the referenced type and keeps its range check.
+        let narrow = "def k :: ref i8 -> i64 = \\a -> 1\n\
+                      export def answer :: bool -> i64 = \\c -> k (if c then 100 else -100)\n";
+        ir(edition, narrow);
+        let wide = narrow.replace("100 else", "300 else");
+        assert_eq!(check(edition, &wide).unwrap_err().code, "E1009");
+        // A branch that gives a non-Copy local moves it into the temporary; `ref` keeps it.
+        let moved = "def size :: ref string -> i64 = \\t -> t.length\n\
+                     export def answer :: bool -> i64 = \\c ->\n    let s = \"abc\"\n    size (if c then s else \"x\") + s.length\n";
+        assert_eq!(check(edition, moved).unwrap_err().code, "E1012");
+        ir(
+            edition,
+            &moved.replace("then s else \"x\"", "then ref s else ref s"),
+        );
+        // The borrow of a temporary ends with the call: a partial application and a reference
+        // to a block's local are rejected as they are for `m + 1`.
+        for form in [
+            "{ let f = add (n as i64); f 1 }",
+            "{ let f = add (if c then 1 else 2); f 1 }",
+            "add ({ let x = 5; ref x }) 1",
+        ] {
+            let source = format!(
+                "def add :: ref i64 -> i64 -> i64 = \\a b -> deref a + b\n\
+                 export def answer :: i32 -> i64 = \\n ->\n    let c = n > 0\n    {form}\n"
+            );
+            assert_eq!(
+                check(edition, &source).unwrap_err().code,
+                "E1013",
+                "{edition}: {form}"
+            );
+        }
+    }
+    // A branch is typed without the parameter's type, so a lambda in it names its parameter's
+    // type, or the branch is bound with a type first.
+    ir(
+        "2027",
+        "record Point { x: i64, y: i64 }\n\
+         def apply :: (Point -> i64) -> Point -> i64 = \\f p -> f p\n\
+         export def answer :: bool -> i64 = \\c ->\n    let pt = Point { x: 3, y: 4 }\n    \
+         let pick: Point -> i64 = if c then \\p -> p.x else \\p -> p.y\n    \
+         apply pick pt + apply (if c then \\(p: Point) -> p.x else \\(p: Point) -> p.y) pt\n",
+    );
+}
+
+#[test]
 fn shared_callable_temporaries_keep_the_no_escape_rule() {
     let source = "def apply :: (i64 -> i64) -> i64 -> i64 = \\f n -> f n\n\
          def increment :: i64 -> i64 = \\n -> n + 1\n\

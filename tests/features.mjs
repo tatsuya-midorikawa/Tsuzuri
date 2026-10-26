@@ -482,6 +482,18 @@ const suites = {
       ["owned_text", [], BigInt("hello!".length + "hello".length)],
       ["generic_read", [], 18n],
       ["generic_scalar", [], 42n],
+      ...[-3, 0, 1, 5].map((n) => {
+        const wide = BigInt(n), flag = n > 0;
+        const a = wide + wide + wide;
+        const b = (wide + 1n) + wide * 2n - wide;
+        const c = (flag ? wide : 7n) + (flag ? 100n : 200n);
+        const d = (n === 1 ? 1000n : 2000n) + wide + 10000n;
+        const e = wide * 100000n;
+        const f = BigInt((flag ? "long text" : "s").length + (n === 1 ? "one" : "other").length);
+        // `n + 2147483647` overflows i32 for a positive n, and the handler's `Error` reads as -1.
+        const g = (wide + 1n) + (flag ? -1n : wide + 2147483647n);
+        return ["value_temporaries", [n], a + b + c + d + e + f + g];
+      }),
       ["read_map", [], 5n],
       ["read_map_alias", [], 5n],
       ["read_mapi", [], 4n],
