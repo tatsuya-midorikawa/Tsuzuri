@@ -11360,6 +11360,9 @@ impl<'a> Checker<'a> {
             // A temporary is borrowed like a call's result:
             // `xs |> Array.map f |> Array.sum`, `String.length "text"` and `List.length [|1, 2|]`.
             ExprKind::Binary(..)
+            | ExprKind::Unary(..)
+            | ExprKind::Cast(..)
+            | ExprKind::Checked(_)
             | ExprKind::String(_)
             | ExprKind::Interpolated(_)
             | ExprKind::Array(_)
@@ -11374,6 +11377,16 @@ impl<'a> Checker<'a> {
             {
                 self.temporary_argument(expression, expected)
             }
+            // A branch gives a value or a reference, so the argument is checked by itself first: a
+            // value is borrowed as a temporary, and a reference is reborrowed as a place's is.
+            ExprKind::If { .. }
+            | ExprKind::Match { .. }
+            | ExprKind::Try(_)
+            | ExprKind::Block { .. }
+                if self.shared_reference(expected) =>
+            {
+                self.place_argument(expression, expected)
+            }
             ExprKind::Integer(..)
             | ExprKind::Float(..)
             | ExprKind::BigInt(_)
@@ -11382,7 +11395,6 @@ impl<'a> Checker<'a> {
             | ExprKind::Char(_)
             | ExprKind::Utf8Char(_)
             | ExprKind::Lambda(..)
-            | ExprKind::Unary(..)
             | ExprKind::Record { .. }
             | ExprKind::RecordUpdate { .. }
             | ExprKind::NewArray(..)

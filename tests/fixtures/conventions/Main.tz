@@ -37,6 +37,28 @@ export def generic_read :: i64 =
 
 export def generic_scalar :: i64 = generic_identity 42
 
+def read_i64 :: ref i64 -> i64 = \value -> deref value
+def read_text :: ref string -> i64 = \text -> text.length
+def read_result :: ref Result<i32, Exception> -> i64 = \result ->
+    match result with
+    | Ok value -> value as i64
+    | Error _ -> -1
+
+// A value expression that is not a call or an operator is lent as a temporary too: a cast,
+// `@checked`, a unary operator, `if`, `match`, `try` and a block, to a type parameter and to
+// `ref T`. A branch that gives a reference is reborrowed.
+export def value_temporaries :: i32 -> i64 = \n ->
+    let wide = n as i64
+    let flag = n > 0
+    let a = generic_identity (n as i64) + read_i64 (n as i64) + (generic_identity (n as i16) as i64)
+    let b = generic_identity (@checked (wide + 1)) + read_i64 (@checked (wide * 2)) + read_i64 (-wide)
+    let c = generic_identity (if flag then wide else 7) + read_i64 (if flag then 100 else 200)
+    let d = read_i64 (match n with | 1 -> 1000 | _ -> 2000) + read_i64 ({ let x = wide; x + 10000 })
+    let e = read_i64 (if flag then ref wide else ref wide) * 100000
+    let f = read_text (if flag then "long text" else "s") + read_text (match n with | 1 -> "one" | _ -> "other")
+    let g = read_result (try @checked n + 1 with | e -> e) + read_result (try @checked n + 2147483647 with | e -> e)
+    a + b + c + d + e + f + g
+
 export def read_map :: i64 =
     let texts = ["a", "bc"]
     Array.sum (Array.map length_of texts) + texts.length
