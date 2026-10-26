@@ -895,6 +895,9 @@ fn partial_application_gets_a_help() {
     assert_eq!(diagnostic.detail.found.as_deref(), Some("i64 -> i64"));
     // A mismatch that is not a partial application has no such help.
     assert!(at_line(CALL1, "E1003", 7).help.is_none());
+    // Nor does a fully applied call that returns a function without parameters.
+    let source = "def answer :: i64 = 42i64\n\ndef make :: unit -> fn() -> i64 = \\_ -> answer\n\nlet x: i64 = make ()\nx\n";
+    assert!(first(source, "E1003").help.is_none());
 }
 
 #[test]

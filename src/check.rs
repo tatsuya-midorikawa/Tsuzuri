@@ -10183,8 +10183,10 @@ impl<'a> Checker<'a> {
     #[cold]
     #[inline(never)]
     fn partial_application(&self, mut error: Diagnostic, result: &Type, hint: &Type) -> Diagnostic {
+        // A function without parameters (`fn() -> T`) is not missing arguments: it is called.
         if error.code == "E1003"
             && let Type::Function(missing, _) = self.inference.resolve(result)
+            && !missing.is_empty()
             && !matches!(
                 self.inference.resolve(hint),
                 Type::Function(..) | Type::Infer(_) | Type::Error
