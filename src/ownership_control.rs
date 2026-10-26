@@ -204,6 +204,7 @@ impl<'a> Checker<'a, '_> {
                 mutable: false,
                 parents: via,
                 view: Some(local.ty.clone()),
+                span: projection.span,
             });
         }
         let root = Place {
@@ -217,7 +218,7 @@ impl<'a> Checker<'a, '_> {
         self.state
             .locals
             .insert(local.id, (self.declarations[&local.id], value));
-        self.state.moved.retain(|place| place.root != local.id);
+        self.state.moved.retain(|place, _| place.root != local.id);
         self.state
             .generic_moves
             .retain(|place, _| place.root != local.id);
@@ -233,7 +234,9 @@ impl<'a> Checker<'a, '_> {
         let mut protected = Value::default();
         for (place, via) in self.place(&expression, live)? {
             self.access(&place, &via, Use::Borrow, local.span)?;
-            protected.loans.insert(self.loan(place, false, via));
+            protected
+                .loans
+                .insert(self.loan(place, false, via, local.span));
         }
         Ok(protected)
     }
@@ -244,29 +247,41 @@ impl<'a> Checker<'a, '_> {
         value: &Value,
         span: Span,
     ) -> Result<(), Diagnostic> {
-        if value
+        let escaping = value
             .loans
             .iter()
-            .any(|id| ids.contains(&self.loans[*id].place.root))
-            || self.state.locals.iter().any(|(id, (_, value))| {
-                !ids.contains(id)
-                    && value
-                        .loans
-                        .iter()
-                        .any(|loan| ids.contains(&self.loans[*loan].place.root))
-            })
-        {
-            return Err(error(
-                "E1013",
-                "a borrowed value cannot outlive its pattern or iteration binding",
-                span,
-            ));
+            .find(|id| ids.contains(&self.loans[**id].place.root))
+            .or_else(|| {
+                self.state
+                    .locals
+                    .iter()
+                    .filter(|(id, _)| !ids.contains(id))
+                    .flat_map(|(_, (_, value))| value.loans.iter())
+                    .find(|loan| ids.contains(&self.loans[**loan].place.root))
+            });
+        if let Some(loan) = escaping {
+            return Err(self
+                .escape(
+                    *loan,
+                    span,
+                    "'{name}' is bound here and ends with this arm or iteration",
+                    error(
+                        "E1013",
+                        "a borrowed value cannot outlive its pattern or iteration binding",
+                        span,
+                    ),
+                )
+                .with_help(
+                    "move or copy the value out of the pattern or loop instead of keeping a reference to it",
+                ));
         }
         for id in ids {
             self.state.locals.remove(id);
             self.state.aliases.remove(id);
         }
-        self.state.moved.retain(|place| !ids.contains(&place.root));
+        self.state
+            .moved
+            .retain(|place, _| !ids.contains(&place.root));
         self.state
             .generic_moves
             .retain(|place, _| !ids.contains(&place.root));
@@ -292,7 +307,12 @@ impl<'a> Checker<'a, '_> {
                 )
             })
             .collect();
-        (self.state.moved.clone(), loans, self.copy_variables.clone())
+        // The places only: the spans of the moves would keep the fixpoint from converging.
+        (
+            self.state.moved.keys().cloned().collect(),
+            loans,
+            self.copy_variables.clone(),
+        )
     }
 
     fn check_loop(
@@ -321,7 +341,9 @@ impl<'a> Checker<'a, '_> {
             self.eval(body, Use::Consume, &live)?;
             let mut flow = self.loop_flows.pop().unwrap();
             if self.reachable {
-                self.state.moved.retain(|place| ids.contains(&place.root));
+                self.state
+                    .moved
+                    .retain(|place, _| ids.contains(&place.root));
                 self.state
                     .generic_moves
                     .retain(|place, _| ids.contains(&place.root));
@@ -458,7 +480,7 @@ impl<'a> Checker<'a, '_> {
                             self.state
                                 .locals
                                 .insert(local.id, (self.declarations[&local.id], value));
-                            self.state.moved.retain(|place| place.root != local.id);
+                            self.state.moved.retain(|place, _| place.root != local.id);
                             self.state
                                 .generic_moves
                                 .retain(|place, _| place.root != local.id);
@@ -525,7 +547,7 @@ impl<'a> Checker<'a, '_> {
                     self.state
                         .locals
                         .insert(local.id, (self.declarations[&local.id], value));
-                    self.state.moved.retain(|place| place.root != local.id);
+                    self.state.moved.retain(|place, _| place.root != local.id);
                     self.state
                         .generic_moves
                         .retain(|place, _| place.root != local.id);

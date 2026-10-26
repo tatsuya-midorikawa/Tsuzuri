@@ -6,7 +6,7 @@ use crate::check::{
     RegionSources, Type, TypedExpr, TypedExprKind as E,
 };
 use crate::copies::{CopyKind, CopyRead};
-use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, RelatedRole, Span};
 use crate::parallel::{Parallelism, ordered_for_each};
 use crate::syntax::BinaryOp;
 
@@ -117,13 +117,16 @@ struct Loan {
     /// a copy if the type were Copy, so while inferring constraints a conflict
     /// with the loan requires Copy instead of rejecting the access.
     view: Option<Type>,
+    /// The expression that created the loan, for the diagnostics that name it.
+    span: Span,
 }
 
 #[derive(Clone, Default)]
 struct State<'a> {
     locals: BTreeMap<usize, (&'a Local, Value)>,
     aliases: BTreeMap<usize, Vec<(Place, BTreeSet<usize>)>>,
-    moved: BTreeSet<Place>,
+    /// The places that were moved, with the span of the move that the diagnostics point at.
+    moved: BTreeMap<Place, Span>,
     generic_moves: BTreeMap<Place, Type>,
 }
 
@@ -412,6 +415,7 @@ fn check_body<'a>(
     collect_declarations(body, &mut declarations);
     let mut checker = Checker {
         module,
+        body,
         declarations,
         state: State::default(),
         loans: Vec::new(),
@@ -440,6 +444,7 @@ fn check_body<'a>(
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         placeholders: BTreeSet::new(),
+        later_use_budget: LATER_USE_NODES,
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -627,6 +632,8 @@ fn owned_dyn_of(callee: &TypedExpr) -> bool {
 
 struct Checker<'a, 'run> {
     module: &'a CheckedModule,
+    /// The body that is checked, searched for the later uses of a borrow when a diagnostic names them.
+    body: &'a TypedExpr,
     declarations: BTreeMap<usize, &'a Local>,
     state: State<'a>,
     loans: Vec<Loan>,
@@ -651,7 +658,13 @@ struct Checker<'a, 'run> {
     /// The external roots of parameters that store no reference: their loans only stand for
     /// whatever a function or async argument captured, which the caller checks (B08 D6).
     placeholders: BTreeSet<usize>,
+    /// How many more expressions `later_use` may look at in this function.
+    later_use_budget: usize,
 }
+
+/// How many expressions the diagnostics of one function may look at, in all, to find where a
+/// borrow is used later; past it they leave `BorrowUsedHere` out.
+const LATER_USE_NODES: usize = 1 << 20;
 
 /// Whether each result slot of `actual` borrows only from inputs that `required` allows, once
 /// the caller has bound the first `offset` inputs (A12 Phase 2).
@@ -999,7 +1012,13 @@ impl<'a> Checker<'a, '_> {
         }
     }
 
-    fn loan(&mut self, place: Place, mutable: bool, mut parents: BTreeSet<usize>) -> usize {
+    fn loan(
+        &mut self,
+        place: Place,
+        mutable: bool,
+        mut parents: BTreeSet<usize>,
+        span: Span,
+    ) -> usize {
         if let Some((_, value)) = self.state.locals.get(&place.root) {
             parents.extend(&value.loans);
         }
@@ -1009,6 +1028,7 @@ impl<'a> Checker<'a, '_> {
             mutable,
             parents,
             view: None,
+            span,
         });
         id
     }
@@ -1057,7 +1077,7 @@ impl<'a> Checker<'a, '_> {
                 through_drop: false,
             };
             let mutable = exclusive & (1 << slot) != 0;
-            loans.push(self.loan(place, mutable, BTreeSet::new()));
+            loans.push(self.loan(place, mutable, BTreeSet::new(), parameter.span));
         }
         if target {
             value.loans = BTreeSet::from([loans[0]]);
@@ -1113,7 +1133,7 @@ impl<'a> Checker<'a, '_> {
                 continue;
             }
             if task || !self.external.contains(&place.root) {
-                return Err(error(
+                let diagnostic = error(
                     "E1013",
                     if task {
                         "task results cannot retain borrowed values"
@@ -1121,7 +1141,20 @@ impl<'a> Checker<'a, '_> {
                         "cannot return a reference to a local value"
                     },
                     body.span,
-                ));
+                );
+                return Err(if task {
+                    diagnostic
+                } else {
+                    self.escape(
+                        *id,
+                        body.span,
+                        "'{name}' is declared here and is dropped when the function returns",
+                        diagnostic,
+                    )
+                    .with_help(
+                        "return the value itself, or return a reference that comes from a reference parameter",
+                    )
+                });
             }
             let Some(sources) = region_sources else {
                 continue;
@@ -1433,20 +1466,48 @@ impl<'a> Checker<'a, '_> {
         if usage != Use::Write {
             self.revive_generic_moves(place);
         }
-        if usage != Use::Write && self.state.moved.iter().any(|moved| moved.overlaps(place)) {
+        if usage != Use::Write
+            && let Some((moved, origin)) = self
+                .state
+                .moved
+                .iter()
+                .filter(|(moved, _)| moved.overlaps(place))
+                .max_by_key(|(_, origin)| (origin.start, origin.end))
+                .map(|(moved, origin)| (moved.clone(), *origin))
+        {
             let name = self
                 .state
                 .locals
                 .get(&place.root)
-                .map_or("value", |(local, _)| local.name.as_str());
-            return self.report(
-                place,
-                error(
-                    "E1012",
-                    format!("use of moved or partially moved value '{name}'"),
-                    span,
-                ),
-            );
+                .map_or("value", |(local, _)| local.name.as_str())
+                .to_owned();
+            let message = match (
+                moved.fields.is_empty(),
+                (origin.start, origin.end) >= (span.start, span.end),
+            ) {
+                (true, false) => "value moved here",
+                (false, false) => "part of the value moved here",
+                (true, true) => "value moved here, in the previous iteration of the loop",
+                (false, true) => {
+                    "part of the value moved here, in the previous iteration of the loop"
+                }
+            };
+            let mut diagnostic = error(
+                "E1012",
+                format!("use of moved or partially moved value '{name}'"),
+                span,
+            )
+            .with_help(if moved.fields.is_empty() {
+                format!("borrow the value with 'ref {name}' or move it last")
+            } else {
+                format!(
+                    "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
+                )
+            });
+            if origin.end > origin.start {
+                diagnostic = diagnostic.related(RelatedRole::MovedHere, message, origin);
+            }
+            return self.report(place, diagnostic);
         }
         if usage == Use::Write && Some(place.root) == self.drop_root {
             return Err(error(
@@ -1490,11 +1551,39 @@ impl<'a> Checker<'a, '_> {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
             if !mutable || (usage != Use::Write && !unmarked_fields(place).is_empty()) {
-                return self.report(place, error(
+                let diagnostic = error(
                     "E1014",
                     "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
                     span,
-                ));
+                );
+                let declared = self
+                    .state
+                    .locals
+                    .get(&place.root)
+                    .map(|(local, _)| *local)
+                    .filter(|local| {
+                        via.is_empty()
+                            && !local.mutable
+                            && unmarked_fields(place).is_empty()
+                            && local.span.end > local.span.start
+                            && !local.name.starts_with('$')
+                    });
+                let diagnostic = match declared {
+                    Some(local) => diagnostic
+                        .related(
+                            RelatedRole::DeclaredHere,
+                            format!("'{}' is declared here without 'mut'", local.name),
+                            local.span,
+                        )
+                        .with_help(format!(
+                            "declare '{}' with 'let mut', or take it by 'ref mut'",
+                            local.name
+                        )),
+                    None => diagnostic.with_help(
+                        "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
+                    ),
+                };
+                return self.report(place, diagnostic);
             }
         }
         for id in self.active() {
@@ -1509,14 +1598,121 @@ impl<'a> Checker<'a, '_> {
                         continue;
                     }
                 }
-                return self.report(place, error(
-                    "E1014",
-                    "access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively",
-                    span,
-                ));
+                // `conflict` searches the body, so a root that is reported already is not searched again.
+                if self.reported.contains(&place.root) {
+                    return Ok(());
+                }
+                let diagnostic = self.conflict(id, span);
+                return self.report(place, diagnostic);
             }
         }
         Ok(())
+    }
+
+    /// Names where the owner of `loan` is declared (`owner_message`, with `{name}` for its name)
+    /// and where the loan was taken, in an `E1013` that says the borrow outlives its owner.
+    #[cold]
+    #[inline(never)]
+    fn escape(
+        &self,
+        loan: usize,
+        primary: Span,
+        owner_message: &str,
+        mut diagnostic: Diagnostic,
+    ) -> Diagnostic {
+        let loan = &self.loans[loan];
+        if let Some(owner) = self.declarations.get(&loan.place.root)
+            && owner.span.end > owner.span.start
+            && !owner.name.starts_with('$')
+        {
+            diagnostic.add_related(
+                RelatedRole::DeclaredHere,
+                owner_message.replace("{name}", &owner.name),
+                owner.span,
+            );
+        }
+        if loan.span.end > loan.span.start && loan.span != primary {
+            diagnostic.add_related(RelatedRole::BorrowedHere, "value borrowed here", loan.span);
+        }
+        diagnostic
+    }
+
+    /// The `E1014` of an access at `span` that conflicts with the live loan `loan`: where the loan
+    /// was taken, and where the reference that keeps it alive is used later.
+    #[cold]
+    #[inline(never)]
+    fn conflict(&mut self, loan: usize, span: Span) -> Diagnostic {
+        let mut diagnostic = error(
+            "E1014",
+            "access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively",
+            span,
+        );
+        let created = &self.loans[loan];
+        if !self.external.contains(&created.place.root)
+            && created.span.end > created.span.start
+            && created.span != span
+        {
+            diagnostic = diagnostic.related(
+                RelatedRole::BorrowedHere,
+                if created.mutable {
+                    "value mutably borrowed here"
+                } else {
+                    "value borrowed here"
+                },
+                created.span,
+            );
+        }
+        let holders = self.holders(loan);
+        let holder = holders
+            .iter()
+            .filter_map(|id| self.state.locals.get(id))
+            .map(|(local, _)| local.name.as_str())
+            .find(|name| !name.starts_with('$'))
+            .map(str::to_owned);
+        if let Some((used, repeated)) = self.later_use(&holders, span) {
+            diagnostic = diagnostic.related(
+                RelatedRole::BorrowUsedHere,
+                if repeated {
+                    "the borrow is used here, in the next iteration of the loop, so it is still alive"
+                } else {
+                    "the borrow is used here, so it is still alive"
+                },
+                used,
+            );
+        }
+        match holder {
+            Some(name) => diagnostic.with_help(format!(
+                "end the borrow before this access: stop using '{name}' first, or move this access after its last use"
+            )),
+            None => diagnostic.with_help(
+                "end the borrow before this access: evaluate this access before the borrow is taken, or borrow a copy",
+            ),
+        }
+    }
+
+    /// The locals whose values keep `loan` alive, directly or through the parents of a loan they hold.
+    fn holders(&self, loan: usize) -> BTreeSet<usize> {
+        let mut holders = BTreeSet::new();
+        for (id, (_, value)) in &self.state.locals {
+            let mut pending: Vec<usize> = value.loans.iter().copied().collect();
+            let mut seen = BTreeSet::new();
+            while let Some(current) = pending.pop() {
+                if !seen.insert(current) {
+                    continue;
+                }
+                if current == loan {
+                    holders.insert(*id);
+                    break;
+                }
+                pending.extend(&self.loans[current].parents);
+            }
+        }
+        holders
+    }
+
+    /// The first use of a holder after `after` in source order, else (`true`) the first use before it.
+    fn later_use(&mut self, holders: &BTreeSet<usize>, after: Span) -> Option<(Span, bool)> {
+        find_later_use(self.body, holders, after, &mut self.later_use_budget)
     }
 
     fn place(
@@ -1581,7 +1777,7 @@ impl<'a> Checker<'a, '_> {
                     self.access(place, via, Use::Borrow, value.span)?;
                     guard
                         .loans
-                        .insert(self.loan(place.clone(), false, via.clone()));
+                        .insert(self.loan(place.clone(), false, via.clone(), value.span));
                 }
                 self.held.push(guard);
                 self.eval(index, Use::Consume, live)?;
@@ -1669,7 +1865,7 @@ impl<'a> Checker<'a, '_> {
             self.access(place, via, Use::Borrow, span)?;
             guard
                 .loans
-                .insert(self.loan(place.clone(), false, via.clone()));
+                .insert(self.loan(place.clone(), false, via.clone(), span));
         }
         self.held.push(guard);
         for bound in start.iter().chain(end) {
@@ -1679,7 +1875,7 @@ impl<'a> Checker<'a, '_> {
         let mut result = Value::default();
         for (place, via) in places {
             self.access(&place, &via, Use::MutBorrow, span)?;
-            result.loans.insert(self.loan(place, true, via));
+            result.loans.insert(self.loan(place, true, via, span));
         }
         Ok(result)
     }
@@ -2061,10 +2257,12 @@ impl<'a> Checker<'a, '_> {
                     ));
                 }
             } else if usage == Use::Read {
-                value.loans.insert(self.loan(place.clone(), false, via));
+                value
+                    .loans
+                    .insert(self.loan(place.clone(), false, via, expression.span));
             }
             if moving {
-                self.state.moved.insert(place.clone());
+                self.state.moved.insert(place.clone(), expression.span);
                 if self.infer {
                     self.state
                         .generic_moves
@@ -2144,7 +2342,7 @@ impl<'a> Checker<'a, '_> {
             self.state
                 .locals
                 .insert(local.id, (self.declarations[&local.id], value_result));
-            self.state.moved.retain(|place| place.root != local.id);
+            self.state.moved.retain(|place, _| place.root != local.id);
             self.state
                 .generic_moves
                 .retain(|place, _| place.root != local.id);
@@ -2158,25 +2356,43 @@ impl<'a> Checker<'a, '_> {
             if ids.contains(&self.loans[*id].place.root)
                 && !self.reported.contains(&self.loans[*id].place.root)
             {
-                return Err(error(
-                    "E1013",
-                    "borrowed value does not live long enough to leave this block",
-                    tail.span,
-                ));
+                return Err(self
+                    .escape(
+                        *id,
+                        tail.span,
+                        "'{name}' is declared here and dropped at the end of this block",
+                        error(
+                            "E1013",
+                            "borrowed value does not live long enough to leave this block",
+                            tail.span,
+                        ),
+                    )
+                    .with_help(
+                        "return the value itself instead of a reference to it, or declare it in an outer scope",
+                    ));
             }
         }
         for (id, (_, value)) in &self.state.locals {
             if !ids.contains(id)
-                && value.loans.iter().any(|loan| {
-                    ids.contains(&self.loans[*loan].place.root)
-                        && !self.reported.contains(&self.loans[*loan].place.root)
+                && let Some(loan) = value.loans.iter().find(|loan| {
+                    ids.contains(&self.loans[**loan].place.root)
+                        && !self.reported.contains(&self.loans[**loan].place.root)
                 })
             {
-                return Err(error(
-                    "E1013",
-                    "assignment lets a reference outlive its owner",
-                    expression.span,
-                ));
+                return Err(self
+                    .escape(
+                        *loan,
+                        expression.span,
+                        "'{name}' is declared here and dropped at the end of this block",
+                        error(
+                            "E1013",
+                            "assignment lets a reference outlive its owner",
+                            expression.span,
+                        ),
+                    )
+                    .with_help(
+                        "declare the owner before the variable that keeps the reference, in the same block or an outer one",
+                    ));
             }
         }
         for id in ids {
@@ -2309,6 +2525,7 @@ impl<'a> Checker<'a, '_> {
                     },
                     false,
                     BTreeSet::new(),
+                    expression.span,
                 );
                 result.loans.insert(loan);
                 for slot in result.regions.iter_mut().flat_map(|slots| slots.iter_mut()) {
@@ -2494,7 +2711,9 @@ impl<'a> Checker<'a, '_> {
             E::Slice { value, start, end } => {
                 for (place, via) in self.place(value, &during)? {
                     self.access(&place, &via, Use::Borrow, expression.span)?;
-                    result.loans.insert(self.loan(place, false, via));
+                    result
+                        .loans
+                        .insert(self.loan(place, false, via, expression.span));
                 }
                 self.held.push(result.clone());
                 for bound in start.iter().chain(end) {
@@ -2520,7 +2739,9 @@ impl<'a> Checker<'a, '_> {
                         },
                         expression.span,
                     )?;
-                    result.loans.insert(self.loan(place, *mutable, via));
+                    result
+                        .loans
+                        .insert(self.loan(place, *mutable, via, expression.span));
                 }
             }
             E::Assign(place, value) => {
@@ -2545,7 +2766,7 @@ impl<'a> Checker<'a, '_> {
                             expression.span,
                         ));
                     }
-                    self.state.moved.retain(|moved| !moved.overlaps(&place));
+                    self.state.moved.retain(|moved, _| !moved.overlaps(&place));
                     self.state
                         .generic_moves
                         .retain(|moved, _| !moved.overlaps(&place));
@@ -2837,7 +3058,19 @@ impl<'a> Checker<'a, '_> {
     }
 
     fn merge(&mut self, other: &State<'a>) {
-        self.state.moved.extend(other.moved.iter().cloned());
+        // The latest move of a place is kept, so the result does not depend on the order of the
+        // merged branches.
+        for (place, span) in &other.moved {
+            self.state
+                .moved
+                .entry(place.clone())
+                .and_modify(|kept| {
+                    if (span.start, span.end) > (kept.start, kept.end) {
+                        *kept = *span;
+                    }
+                })
+                .or_insert(*span);
+        }
         self.state.generic_moves.extend(other.generic_moves.clone());
         for (id, (_, value)) in &mut self.state.locals {
             if let Some((_, other_value)) = other.locals.get(id) {
@@ -2880,6 +3113,56 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
                 .expect("counting uses cannot fail");
         }
     }
+}
+
+/// The first use of one of `holders` after `after` in source order, else (`true`) the first use
+/// before it. Looks at no more than `*budget` expressions, and `None` once it runs out.
+fn find_later_use(
+    body: &TypedExpr,
+    holders: &BTreeSet<usize>,
+    after: Span,
+    budget: &mut usize,
+) -> Option<(Span, bool)> {
+    if holders.is_empty() {
+        return None;
+    }
+    let (mut later, mut earlier): (Option<Span>, Option<Span>) = (None, None);
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        if *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        let used = match &expression.kind {
+            E::Local(id) => holders.contains(id),
+            E::Lambda { captures, .. } => captures.iter().any(|local| holders.contains(&local.id)),
+            _ => false,
+        };
+        let span = expression.span;
+        if used && span.source == after.source && span.end > span.start {
+            let slot = if span.start >= after.end {
+                &mut later
+            } else if span.end <= after.start {
+                &mut earlier
+            } else {
+                &mut None
+            };
+            if slot.is_none_or(|kept| span.start < kept.start) {
+                *slot = Some(span);
+            }
+        }
+        if !used {
+            expression
+                .try_for_each_child(&mut |child| {
+                    pending.push(child);
+                    Ok(())
+                })
+                .expect("searching uses cannot fail");
+        }
+    }
+    later
+        .map(|span| (span, false))
+        .or(earlier.map(|span| (span, true)))
 }
 
 fn uses(expression: &TypedExpr, ids: &mut BTreeSet<usize>) {
@@ -2925,5 +3208,39 @@ mod allocation_tests {
                 .unwrap();
             assert_eq!(super::ownership_free(&function.body), expected, "{name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod later_use_tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_use_after_and_before_a_span_and_honors_the_budget() {
+        let source = "def f :: i64 -> i64 = \\x -> x + x";
+        let module = crate::analyze(source).unwrap();
+        let function = module
+            .functions
+            .iter()
+            .find(|function| function.name == "f")
+            .unwrap();
+        let mut holders = BTreeSet::new();
+        uses(&function.body, &mut holders);
+        let at = |start: usize, end: usize| Span::new(start, end).in_source(0);
+        let first = source.find("x + x").unwrap();
+        let find = |after: Span, holders: &BTreeSet<usize>, mut budget: usize| {
+            find_later_use(&function.body, holders, after, &mut budget)
+        };
+        let end = source.len();
+        assert_eq!(
+            find(at(0, 0), &holders, LATER_USE_NODES),
+            Some((at(first, first + 1), false))
+        );
+        assert_eq!(
+            find(at(end, end), &holders, LATER_USE_NODES),
+            Some((at(first, first + 1), true))
+        );
+        assert_eq!(find(at(0, 0), &holders, 0), None);
+        assert_eq!(find(at(0, 0), &BTreeSet::new(), LATER_USE_NODES), None);
     }
 }
