@@ -25,7 +25,7 @@ JavaScript のような `String` オブジェクト、暗黙の型強制、プ�
 | リテラル | `"あ"` | `u8"あ"` |
 | `.length` | コード単位数。`"😀".length` は 2 | バイト数。`u8"😀".length` は 4 |
 | 長さ関数 | `String.length : ref string -> i64` | `Utf8String.length : ref utf8string -> i64` |
-| 添字 `text[index]` | `i16u`。index は `i64` | `ubyte`。index は `i64` |
+| 添字 `text[index]` | `i16u`。index はどの整数型でも可 | `ubyte`。index はどの整数型でも可 |
 | `for value in text` | コード単位を `i16u` で列挙 | バイトを `ubyte` で列挙 |
 | `+` | コード単位列の連結 | バイト列の連結 |
 | `==` / `<` など | コード単位の数値順 | バイトの数値順 |
@@ -53,7 +53,7 @@ units=3 bytes=5 unit0=65 byte0=65 len=3/5
 
 `A` はどちらの長さにも 1 を足します。`😀` は UTF-16 では 2、UTF-8 では 4 です。反復の単位は添字と同じで、コードポイント単位でも書記素単位でもありません。`string` の反復変数は文字列の中の場所ではなく反復ごとの値なので、`ref _unit` を反復のあとまで持ち越すと `E1013` です（[for ... in](../loops-and-conditionals/for-in.md#所有権と借用ルール)）。
 
-範囲外や負の添字はトラップします。`Maybe` にはなりません。添字や `.length` は、補間の穴へそのまま書けます（一時値として評価されます。[補間文字列](interpolated-strings.md#穴の評価と所有権)）。
+範囲外や負の添字、`i64` に収まらない添字はトラップします。`Maybe` にはなりません。添字や `.length` は、補間の穴へそのまま書けます（一時値として評価されます。[補間文字列](interpolated-strings.md#穴の評価と所有権)）。
 
 ## 文字型
 

@@ -419,7 +419,7 @@ squares=[1, 4, 9, 16, 25] middle=[2, 3, 4] target=[0, 1, 2, 3, 4, 5, 0]
 
 ### 添字アクセスと借用関数
 
-- `values[i]`: 読み取り専用の要素そのものです。`ref` 型ではありません。範囲外はトラップします。非 `Copy` はムーブできず、共有借用は `ref values[i]` で取ります。
+- `values[i]`: 読み取り専用の要素そのものです。`ref` 型ではありません。範囲外はトラップします。非 `Copy` はムーブできず、共有借用は `ref values[i]` で取ります。`i` は [配列の添字](./array.md#要素へのアクセスと境界検査) と同じく、`i8`〜`i128` と `i8u`〜`i128u` のどの整数型でも書けます。`i64` に収まらない値もトラップします。
 - `Vec.at index (ref values)`: `ref T` を返します。範囲外はトラップします。こちらは参照なので `deref` できます。
 - `Vec.get index (ref values)`: 要素を `Maybe<T>` で返します。**`Copy<T>` 制約が必要**です。範囲外は `None` を返します。
 
@@ -478,7 +478,7 @@ converted=[1, 2, 3, 4] sum=10
 
 ## .NET の List<T> との対応
 
-[.NET の `List<T>`](https://learn.microsoft.com/ja-jp/dotnet/api/system.collections.generic.list-1?view=net-10.0) の公開メンバーは、`AsReadOnly` を除いてすべて、同じ名前（PascalCase を snake_case にしたもの。`FindLastIndex` は `find_last_index`）の関数があります。引数は .NET の順で、受け取る `Vec` は最後です。添字・個数・容量はすべて `i64` です。
+[.NET の `List<T>`](https://learn.microsoft.com/ja-jp/dotnet/api/system.collections.generic.list-1?view=net-10.0) の公開メンバーは、`AsReadOnly` を除いてすべて、同じ名前（PascalCase を snake_case にしたもの。`FindLastIndex` は `find_last_index`）の関数があります。引数は .NET の順で、受け取る `Vec` は最後です。関数の添字・個数・容量はすべて `i64` です（添字式 `values[i]` だけは、どの整数型でも書けます）。
 
 ### 引数の順序
 

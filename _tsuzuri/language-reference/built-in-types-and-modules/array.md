@@ -1,6 +1,6 @@
 # Array
 
-`Array` は、要素を連続したメモリに置く配列です。型は `[T]` で、`Array<T>` とも書けます。作ったあとの長さは変わりません。添字は `i64` で、読み取りは $O(1)$ です。
+`Array` は、要素を連続したメモリに置く配列です。型は `[T]` で、`Array<T>` とも書けます。作ったあとの長さは変わりません。添字 `xs[i]` にはどの整数型の値も書け、読み取りは $O(1)$ です。
 
 `Array` モジュールは、F# の `Array` モジュールと同じ関数を、同じ名前（snake_case）で提供します。配列はどの関数でも最後の引数なので、`Array.map f xs` や `xs |> Array.filter p` のように F# の書き方がそのまま使え、`Array.sort >> Array.rev` のような関数合成もできます。F# で配列が最後にない 9 つの関数だけは、同じ理由で配列を最後に移しました（[引数の順序](#引数の順序)）。所有権のために F# と違う点（失敗の扱い、`Copy`、`r` を付けた関数）は [F# の Array モジュールとの対応](#f-の-array-モジュールとの対応) にまとめました。
 
@@ -13,7 +13,8 @@
 - F# が例外を投げる場面（空配列、範囲外、長さの不一致、見つからない `find`）はトラップです。`try_item` や `try_find` のように `try_` が付く関数は `Maybe` を返します。
 - 2027 の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は要素の読み取り view を callback へ渡し、非 Copy の要素も扱えます。値 callback の `filter`・`exists` などや旧版を保つ `_owned` 入口は Copy を要求します。明示参照の `mapr`・`foldr` なども残ります。
 - 固定長配列 `[T; N]` は `FixedArray.init` か、期待型のあるリテラルで作ります。名前付きの値は `Array.sum xs` のように、`ref [T]` を取る関数へそのまま渡せます。
-- 範囲外の添字とスライスはトラップします。範囲内だと証明できた添字だけ、境界検査を省きます。
+- 添字 `xs[i]`、スライスの端、`new [T](length, f)` の長さには、`i8`〜`i128` と `i8u`〜`i128u` のどの整数型の値も書けます。モジュール関数の添字や個数は `i64` です。
+- 範囲外の添字とスライスはトラップします。`i64` に収まらない値も、折り返さずにトラップします。範囲内だと証明できた添字だけ、境界検査を省きます。
 - 部分の共有参照は `ref xs[a..b]`、その場の更新は `ref mut xs[a..b]` と `Array.set`（`Array.write` と同じ）です。2027 は可変な所有者・排他参照を根とする添字代入も使えます。
 - 整数 8 型の `Array.sum` / `min` / `max` は、native の実行ファイルとオブジェクトファイルで CPU に応じた kernel を選びます。結果の契約はスカラー版と同じです。
 
@@ -66,7 +67,7 @@ $"first={numbers[0]} squares={squares}"
 first=10 squares=[0, 1, 4, 9]
 ```
 
-`new [T](length, initializer)` は指定された要素数をヒープに一括確保し、インデックス `0` から `length - 1` まで昇順に初期化関数を呼び出します。負の長さやメモリ確保失敗は安全にトラップします。
+`new [T](length, initializer)` は指定された要素数をヒープに一括確保し、インデックス `0` から `length - 1` まで昇順に初期化関数を呼び出します。`length` はどの整数型でも書けます。初期化関数が受け取るインデックスは `i64` です。負の長さ、`i64` に収まらない長さ、メモリ確保失敗は安全にトラップします。
 
 空配列リテラル `[]` は、周囲の型注釈や関数の引数型から要素型が一意に推論できる場合に記述できます。
 
@@ -110,7 +111,7 @@ sum=160
 
 ## 要素へのアクセスと境界検査
 
-配列の要素にはインデックス添字 `xs[i]` でアクセスできます。インデックスは `i64` 型で、`0` から `.length - 1` の範囲です。
+配列の要素にはインデックス添字 `xs[i]` でアクセスできます。インデックスは `0` から `.length - 1` の範囲です。
 
 ```tsuzuri run=value%3D20%20opt%3D20%20missing%3Dnone
 let values = [10, 20, 30]
@@ -130,6 +131,24 @@ $"value={second} opt={safe_second} missing={safe_missing}"
 value=20 opt=20 missing=none
 ```
 
+インデックスには、`i8`・`i16`・`i32`・`i64`・`i128` と `i8u`・`i16u`・`i32u`・`i64u`・`i128u` のどの整数型の値も書けます。`as i64` で変換する必要はありません。接尾辞のない整数リテラルは `i64` です。整数でない型（`f64`、`bool`、`char` など）は `E1003`（`an index must have an integer type (i8 to i128 or i8u to i128u), found f64`）です。
+
+```tsuzuri run=20%2030%2040%2010
+let values = [10, 20, 30, 40]
+let small = 1i8
+let unsigned = 2i32u
+let wide = 3i128
+$"{values[small]} {values[unsigned]} {values[wide]} {values[0]}"
+```
+
+実行結果:
+
+```text
+20 30 40 10
+```
+
+64 ビット以下の型の添字は、`xs[i as i64]` と同じコードになります。`i128` と `i128u` の添字は、`i64` の範囲に飽和させてから検査します。
+
 要素を取り出す関数は、F# と同じ組み合わせです。範囲外や空配列では、前者はトラップ、`try_` 付きは `None` を返します。
 
 | トラップする | `Maybe` を返す | 取り出すもの |
@@ -145,6 +164,8 @@ value=20 opt=20 missing=none
 
 添字アクセス `xs[i]` や `Array.at i xs` に範囲外のインデックス（負数または `.length` 以上）を指定すると、プログラムは安全にトラップして即座に停止します。安全に失敗をハンドリングしたい場合は、`Maybe<'a>` を返す `Array.try_item` を使用します。
 
+`i64` に収まらないインデックス（`i64u` の `9223372036854775808` 以上、`i128` と `i128u` の `i64` の範囲外）も範囲外です。下位 64 ビットへ折り返して別の要素を読むことはなく、必ずトラップします。たとえば `xs[18446744073709551617i128]`（$2^{64} + 1$）は、`xs[1]` ではなくトラップです。
+
 ### コンパイラによる境界検査の除去
 
 Tsuzuri コンパイラ（LLVM バックエンド）は、ループ条件やガード条件からインデックスが確実に範囲内であると証明できる場合、実行時の境界検査コードを自動的に除去します。
@@ -155,7 +176,11 @@ Tsuzuri コンパイラ（LLVM バックエンド）は、ループ条件やガ�
 let mut total = 0
 for i in 0 .. values.length - 1 do
     total = total + values[i]
+for i = values.length - 1 downto 0 do
+    total = total + values[i]
 ```
+
+除去の対象は、`i64` のループ変数とガードされた `i64` のローカル変数、整数リテラルの添字です。`for i = 0 to values.length - 1` のループ変数は終了値と同じ `i64` なので対象です。ほかの整数型の添字は、範囲内でも境界検査が残ります。
 
 ## 変換・畳み込み・探索
 
@@ -298,7 +323,7 @@ $"sliced={copied} sum={Array.sum middle}"
 sliced=[20, 30] sum=50
 ```
 
-スライスの型は配列の共有参照と同じ `ref [T]` です。スライスが生きている間、元の配列の移動や排他借用は拒否されます。裸の `xs[start..end]` と、両端を省略した `ref xs[..]` は `E0002` です。配列全体は `ref xs` と書きます。
+`start` と `end` には、添字と同じくどの整数型の値も書けます。スライスの型は配列の共有参照と同じ `ref [T]` です。スライスが生きている間、元の配列の移動や排他借用は拒否されます。裸の `xs[start..end]` と、両端を省略した `ref xs[..]` は `E0002` です。配列全体は `ref xs` と書きます。
 
 コピーして取り出す F# の関数は、`Array.sub start count xs`、`Array.take n xs`、`Array.skip n xs`、`Array.truncate n xs`、`Array.tail xs`、`Array.split_at i xs` です。`take`、`skip`、`split_at` は、長さを超える個数や位置でトラップします（`skip` の負の個数は 0 として扱います。`truncate` は超えても短い配列を返します）。
 
@@ -546,7 +571,7 @@ length=5 sum=15
 
 | F# | Tsuzuri |
 | --- | --- |
-| `int`（添字、個数、位置） | `i64`。比較関数（`sort_with`、`compare_with`）の戻り値も `i64` |
+| `int`（添字、個数、位置） | `i64`。比較関数（`sort_with`、`compare_with`）の戻り値も `i64`。添字式 `xs[i]` とスライスの端は、どの整数型でも書けます |
 | 例外（`ArgumentException`、`KeyNotFoundException`、`IndexOutOfRangeException`、`InvalidOperationException`） | トラップ。`try_` 付きの関数は `Maybe` を返します |
 | `option` | `Maybe` |
 | `Choice<'T1, 'T2>`（`partition_with` の分け先） | `Result<'b, 'c>`。`Ok` が前の配列、`Error` が後ろの配列になります |
