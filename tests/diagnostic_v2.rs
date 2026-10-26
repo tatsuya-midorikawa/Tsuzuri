@@ -1433,6 +1433,16 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     // The value of the assignment reads the borrow again in the next iteration.
     let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    n = deref r + 1\nn\n";
     assert_eq!(used(source), Some((4, true)));
+    // The handler replaces the holder before it raises: the exceptional cleanup's conflict is
+    // not with the borrow that the outer handler reads.
+    let source = "def f :: i32 -> i64 = \\k ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    let _o: Result<i32, Exception> =\n        try\n            let _i: Result<i32, Exception> =\n                try\n                    @checked k + 1\n                with\n                | e ->\n                    r = ref m\n                    let _y = @checked k * 2\n                    e\n                finally\n                    n = 2\n            0\n        with\n        | e ->\n            let _z = deref r\n            e\n    0\n\n0\n";
+    assert_eq!(used(source), None);
+    // A slice reaches its source before its bounds: a bound that reads the holder uses the borrow.
+    let source = "def f :: unit -> i64 = \\_ ->\n    let mut values = [1, 2]\n    let r = ref mut values\n    let _s = ref values[0..r.length]\n    0\n\n0\n";
+    assert_eq!(used(source), Some((4, false)));
+    // A read after the loop runs when the loop ends, not in its next iteration.
+    let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    n = 1\nderef r\n";
+    assert_eq!(used(source), Some((5, false)));
     // A slice reaches its source before its bounds, which replace the holder.
     let source = "def f :: unit -> i64 = \\_ ->\n    let mut values = [1, 2]\n    let mut other = [3]\n    let mut r = ref mut values\n    let _s = ref values[{ r = ref mut other; 0 }..1]\n    r.length\n\n0\n";
     assert_eq!(used(source), None);

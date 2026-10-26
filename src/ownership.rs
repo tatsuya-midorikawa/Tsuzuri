@@ -1751,7 +1751,15 @@ impl<'a> Checker<'a, '_> {
         after: Span,
     ) -> Option<(Span, bool, usize)> {
         let held = self.held_keeps(loan);
-        find_later_use(self.body, holders, after, held, &mut self.later_use_budget)
+        let created = (self.loans[loan].span, self.loans[loan].mutable);
+        find_later_use(
+            self.body,
+            holders,
+            after,
+            created,
+            held,
+            &mut self.later_use_budget,
+        )
     }
 
     fn place(
@@ -3171,9 +3179,11 @@ struct Flow {
     /// The entries and exits of the expressions with each span: one per copy (a `finally` has
     /// two) and per expression that shares the span.
     by_span: BTreeMap<SpanKey, Vec<(usize, usize)>>,
-    /// Where an access reported at a span happens, when that is not the end of the expression:
-    /// a slice reaches its source before it evaluates its bounds.
-    accesses: BTreeMap<SpanKey, Vec<usize>>,
+    /// Where a slice reported at a span reaches its source: before its bounds, and (for an
+    /// exclusive slice, `true`) again after them.
+    accesses: BTreeMap<SpanKey, Vec<(usize, usize, bool)>>,
+    /// The spans of the loops.
+    loops: Vec<Span>,
 }
 
 /// A span as a map key: its source, start, and end.
@@ -3235,6 +3245,7 @@ impl Flow {
             spans: Vec::new(),
             by_span: BTreeMap::new(),
             accesses: BTreeMap::new(),
+            loops: Vec::new(),
         };
         let (entry, exit) = (flow.node(body.span), flow.node(body.span));
         let mut pending = vec![(body, entry, exit, Targets::default())];
@@ -3271,7 +3282,7 @@ impl Flow {
                     flow.accesses
                         .entry((span.source, span.start, span.end))
                         .or_default()
-                        .push(parts[0].2);
+                        .push((parts[0].2, exit, expression.ty.is_view()));
                     for (part, part_entry, part_exit) in parts {
                         items.push((part, part_entry, part_exit, targets));
                     }
@@ -3406,6 +3417,7 @@ impl Flow {
                     }
                 }
                 E::While { condition, body } => {
+                    flow.loops.push(span);
                     let (c_entry, c_exit) = child(&mut flow, condition);
                     let (b_entry, b_exit) = child(&mut flow, body);
                     flow.edge(entry, c_entry);
@@ -3430,6 +3442,7 @@ impl Flow {
                     body,
                     ..
                 } => {
+                    flow.loops.push(span);
                     let head = flow.node(body.span);
                     for (part, part_entry, part_exit) in
                         sequence(&mut flow, vec![start, step, finish], entry, head)
@@ -3448,6 +3461,7 @@ impl Flow {
                     items.push((&**body, b_entry, b_exit, inner));
                 }
                 E::ForEach { source, body, .. } => {
+                    flow.loops.push(span);
                     let head = flow.node(body.span);
                     for (part, part_entry, part_exit) in
                         sequence(&mut flow, vec![source], entry, head)
@@ -3564,6 +3578,17 @@ impl Flow {
         Some(seen)
     }
 
+    /// Whether one loop holds both spans: a use reached across a back edge runs in the loop's next
+    /// iteration only then, and after the loop otherwise.
+    fn in_one_loop(&self, a: Span, b: Span) -> bool {
+        let within = |outer: &Span, inner: Span| {
+            outer.source == inner.source && outer.start <= inner.start && inner.end <= outer.end
+        };
+        self.loops
+            .iter()
+            .any(|outer| within(outer, a) && within(outer, b))
+    }
+
     /// The nodes of `nodes` that control can reach from the start of the body: a copy of a
     /// `finally` that no exception reaches never runs.
     fn live(&self, nodes: Vec<usize>, budget: &mut usize) -> Option<Vec<usize>> {
@@ -3579,16 +3604,21 @@ impl Flow {
 }
 
 /// Where a holder of a borrow is used after an access at `after`, so that the borrow is still
-/// alive there, and the holder: a read of the holder that control can reach from the end of the
-/// access without replacing the holder first. It is in the next iteration of a loop (`true`) when
-/// every such path goes back to a loop's head; such a use is not named when `held` (an argument
-/// held by a call keeps the borrow alive instead). Among the uses, one reached without a back edge
-/// is preferred, then the first in the source. Looks at no more than `*budget` steps, and `None`
-/// once it runs out or does not find the access.
+/// alive there, and the holder: a read of the holder that control can reach from the access
+/// without replacing the holder first. The access is searched from where the ownership check
+/// makes it: the end of the expression, except that a slice reaches its source before its bounds
+/// (an exclusive slice also after them, which is where a shared `loan` conflicts), and only from
+/// the copies (of a `finally`) that the loan reaches in the holder, from the span where it was
+/// `created`. A use is in the next iteration of a loop (`true`) when every such path goes back to
+/// the head of a loop that holds both; such a use is not named when `held` (an argument held by a
+/// call keeps the borrow alive instead). One reached without a back edge is preferred, then the
+/// first in the source. Looks at no more than `*budget` steps, and `None` once it runs out or does
+/// not find the access.
 fn find_later_use(
     body: &TypedExpr,
     holders: &BTreeSet<usize>,
     after: Span,
+    (created, mutable): (Span, bool),
     held: bool,
     budget: &mut usize,
 ) -> Option<(Span, bool, usize)> {
@@ -3599,7 +3629,10 @@ fn find_later_use(
     let key = (after.source, after.start, after.end);
     // Every copy of the access (a `finally` has two), where the access happens in it.
     let access: Vec<usize> = match flow.accesses.get(&key) {
-        Some(points) => points.clone(),
+        Some(points) => points
+            .iter()
+            .map(|&(before, end, exclusive)| if exclusive && !mutable { end } else { before })
+            .collect(),
         None => flow
             .by_span
             .get(&key)?
@@ -3608,22 +3641,55 @@ fn find_later_use(
             .collect(),
     };
     let access = flow.live(access, budget)?;
+    let creation: Option<Vec<usize>> = flow
+        .by_span
+        .get(&(created.source, created.start, created.end))
+        .map(|copies| copies.iter().map(|(_, exit)| *exit).collect());
     let mut best: Option<(bool, usize, usize, Span)> = None;
     for &holder in holders {
-        let reached = flow.reach(&access, Some(holder), budget)?;
+        // The copies of the access where the holder still holds the loan.
+        let seeds: Vec<usize> = match &creation {
+            Some(creation) => {
+                // The assignment that stores the loan in the holder does not replace it.
+                let mut from = creation.clone();
+                for (node, replaced) in flow.replaces.iter().enumerate() {
+                    spend(budget, 1)?;
+                    let span = flow.spans[node];
+                    if *replaced == Some(holder)
+                        && span.source == created.source
+                        && span.start <= created.start
+                        && created.end <= span.end
+                    {
+                        from.push(node);
+                    }
+                }
+                let holds = flow.reach(&from, Some(holder), budget)?;
+                access
+                    .iter()
+                    .copied()
+                    .filter(|node| holds[*node] != [false; 2])
+                    .collect()
+            }
+            None => access.clone(),
+        };
+        if seeds.is_empty() {
+            continue;
+        }
+        let reached = flow.reach(&seeds, Some(holder), budget)?;
         for &node in flow.readers.get(&holder).into_iter().flatten() {
             spend(budget, 1)?;
             let span = flow.spans[node];
             if span.source != after.source || span.end <= span.start {
                 continue;
             }
-            // A read inside the accessing expression is part of it in this iteration, but the
-            // next iteration of a loop around it reads the borrow again.
-            let inside = after.start <= span.start && span.end <= after.end;
             let [direct, crossed] = reached[node];
-            let direct = direct && !inside;
-            let repeated = !direct;
-            if !direct && (!crossed || held) {
+            if !direct && !crossed {
+                continue;
+            }
+            // Across a back edge, a use in a loop around the access runs in its next iteration;
+            // one after the loop runs when the loop ends.
+            let repeated = !direct && flow.in_one_loop(span, after);
+            if repeated && held {
                 continue;
             }
             let key = (repeated, span.start, holder, span);
@@ -3658,7 +3724,8 @@ fn moved_in_previous_iteration(
         direct |= reached[*entry][0];
         crossed |= reached[*entry][1];
     }
-    (direct || crossed).then_some(!direct)
+    // Across a back edge, the use is in the next iteration only inside a loop that holds both.
+    (direct || crossed).then_some(!direct && flow.in_one_loop(moved, used))
 }
 
 fn uses(expression: &TypedExpr, ids: &mut BTreeSet<usize>) {
@@ -3730,7 +3797,14 @@ mod later_use_tests {
         };
         let find = |name: &str, after: Span, held: bool, mut budget: usize| {
             let holders = BTreeSet::from([x(name)]);
-            find_later_use(&function(name).body, &holders, after, held, &mut budget)
+            find_later_use(
+                &function(name).body,
+                &holders,
+                after,
+                (Span::default(), false),
+                held,
+                &mut budget,
+            )
         };
         let used = |text: &str| {
             let start = source.find(text).unwrap();
@@ -3756,6 +3830,7 @@ mod later_use_tests {
                 &function("f").body,
                 &BTreeSet::new(),
                 at("1 +"),
+                (Span::default(), false),
                 false,
                 &mut LATER_USE_NODES.clone()
             ),
