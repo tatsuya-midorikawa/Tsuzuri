@@ -3538,16 +3538,19 @@ impl Flow {
         stop: Option<usize>,
         budget: &mut usize,
     ) -> Option<Vec<[bool; 2]>> {
-        spend(budget, self.edges.len())?;
+        // The tables of the visited nodes and of the starting ones.
+        spend(budget, 2 * self.edges.len() + from.len())?;
         let mut seen = vec![[false; 2]; self.edges.len()];
+        let mut start = vec![false; self.edges.len()];
         let mut pending = std::collections::VecDeque::new();
         for &node in from {
             seen[node][0] = true;
+            start[node] = true;
             pending.push_back((node, false));
         }
         while let Some((node, crossed)) = pending.pop_front() {
             spend(budget, 1 + self.edges[node].len())?;
-            if !from.contains(&node) && stop.is_some() && self.replaces[node] == stop {
+            if stop.is_some() && self.replaces[node] == stop && !start[node] {
                 continue;
             }
             for &(next, back) in &self.edges[node] {
@@ -3559,6 +3562,19 @@ impl Flow {
             }
         }
         Some(seen)
+    }
+
+    /// The nodes of `nodes` that control can reach from the start of the body: a copy of a
+    /// `finally` that no exception reaches never runs.
+    fn live(&self, nodes: Vec<usize>, budget: &mut usize) -> Option<Vec<usize>> {
+        // The entry of the body is the first node.
+        let reached = self.reach(&[0], None, budget)?;
+        Some(
+            nodes
+                .into_iter()
+                .filter(|node| reached[*node] != [false; 2])
+                .collect(),
+        )
     }
 }
 
@@ -3591,18 +3607,21 @@ fn find_later_use(
             .map(|(_, exit)| *exit)
             .collect(),
     };
+    let access = flow.live(access, budget)?;
     let mut best: Option<(bool, usize, usize, Span)> = None;
     for &holder in holders {
         let reached = flow.reach(&access, Some(holder), budget)?;
         for &node in flow.readers.get(&holder).into_iter().flatten() {
             spend(budget, 1)?;
             let span = flow.spans[node];
-            // A read inside the accessing expression is part of it, not a later use.
-            let inside = after.start <= span.start && span.end <= after.end;
-            if span.source != after.source || span.end <= span.start || inside {
+            if span.source != after.source || span.end <= span.start {
                 continue;
             }
+            // A read inside the accessing expression is part of it in this iteration, but the
+            // next iteration of a loop around it reads the borrow again.
+            let inside = after.start <= span.start && span.end <= after.end;
             let [direct, crossed] = reached[node];
+            let direct = direct && !inside;
             let repeated = !direct;
             if !direct && (!crossed || held) {
                 continue;
@@ -3632,6 +3651,7 @@ fn moved_in_previous_iteration(
         .iter()
         .map(|(_, exit)| *exit)
         .collect();
+    let from = flow.live(from, budget)?;
     let reached = flow.reach(&from, None, budget)?;
     let (mut direct, mut crossed) = (false, false);
     for (entry, _) in flow.by_span.get(&(used.source, used.start, used.end))? {

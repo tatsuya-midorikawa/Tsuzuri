@@ -1427,6 +1427,12 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     // A conflict in the cleanup that an exception runs: the outer handler reads the borrow.
     let source = "def f :: i32 -> i64 = \\k ->\n    let mut n = 0\n    let r = ref n\n    let _o: Result<i32, Exception> =\n        try\n            let _i: Result<i32, Exception> =\n                try\n                    @checked k + 1\n                with\n                | e ->\n                    let _y = @checked k * 2\n                    e\n                finally\n                    n = 2\n            0\n        with\n        | e ->\n            let _z = deref r\n            e\n    0\n\n0\n";
     assert_eq!(used(source), Some((18, false)));
+    // A handler that does not raise never runs the exceptional copy of the cleanup.
+    let source = "def f :: i32 -> i64 = \\k ->\n    let mut n = 0\n    let r = ref n\n    let _o: Result<i32, Exception> =\n        try\n            let _i: Result<i32, Exception> =\n                try\n                    @checked k + 1\n                with\n                | e -> e\n                finally\n                    n = 2\n            0\n        with\n        | e ->\n            let _z = deref r\n            e\n    0\n\n0\n";
+    assert_eq!(used(source), None);
+    // The value of the assignment reads the borrow again in the next iteration.
+    let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    n = deref r + 1\nn\n";
+    assert_eq!(used(source), Some((4, true)));
     // A slice reaches its source before its bounds, which replace the holder.
     let source = "def f :: unit -> i64 = \\_ ->\n    let mut values = [1, 2]\n    let mut other = [3]\n    let mut r = ref mut values\n    let _s = ref values[{ r = ref mut other; 0 }..1]\n    r.length\n\n0\n";
     assert_eq!(used(source), None);
