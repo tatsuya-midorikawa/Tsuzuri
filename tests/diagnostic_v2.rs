@@ -1282,6 +1282,9 @@ fn borrow_uses_follow_the_control_flow() {
     // A replacement in one branch only does not end the borrow for the other.
     let source = "def f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    if flag then r = ref m else ()\n    deref r\n\n0\n";
     assert_eq!(used(source), Some((7, false)));
+    // A false guard falls through to the later arms, which may still use the borrow.
+    let source = "def set :: ref mut i64 -> bool = \\p -> false\n\ndef f :: i64 -> i64 = \\k ->\n    let mut n = 0\n    let r = ref n\n    match k with\n    | 0 when set (ref mut n) -> 0\n    | _ -> deref r\n\n0\n";
+    assert_eq!(used(source), Some((8, false)));
     // The other branch of the `if` does not run after the access.
     let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\ndef discard :: i64 -> unit = \\a -> ()\n\ndef f :: bool -> unit = \\flag ->\n    let mut n = 0\n    let r = ref n\n    if flag then both r (ref mut n) else discard (deref r)\n\n0\n";
     assert_eq!(used(source), None);
