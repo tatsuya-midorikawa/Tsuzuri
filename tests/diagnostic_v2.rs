@@ -2,7 +2,7 @@
 //! the output of diagnostics that have none, which stays what it was before them.
 
 use tsuzuri::analyze_all;
-use tsuzuri::diagnostic::{Diagnostic, json_string, location};
+use tsuzuri::diagnostic::{Detail, Diagnostic, json_string, location};
 
 const TYPE1: &str = r#"def add :: i64 -> i64 = \n -> n + true
 
@@ -134,12 +134,15 @@ fn errors(source: &str) -> Vec<Diagnostic> {
     analyze_all(source).expect_err(source).diagnostics
 }
 
-fn has_extras(_: &Diagnostic) -> bool {
-    false
+fn has_extras(diagnostic: &Diagnostic) -> bool {
+    diagnostic.kind.is_some()
+        || has_text_extras(diagnostic)
+        || diagnostic.detail != Detail::default()
 }
 
-fn has_text_extras(_: &Diagnostic) -> bool {
-    false
+/// The extras that the text form prints: `expected` and `found` are in the JSON only.
+fn has_text_extras(diagnostic: &Diagnostic) -> bool {
+    !diagnostic.related.is_empty() || diagnostic.help.is_some() || !diagnostic.fixes.is_empty()
 }
 
 /// The text form that HEAD printed, written out here as the reference.

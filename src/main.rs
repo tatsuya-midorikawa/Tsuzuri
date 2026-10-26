@@ -1199,12 +1199,31 @@ fn write_diagnostics(
     project: &Project,
     json: bool,
 ) {
+    // The related locations and the edits of a diagnostic may be in other sources of the
+    // project; the numbers are those of `Project::source_for`.
+    let files: Vec<(String, &str)> = project
+        .sources
+        .iter()
+        .chain(&project.manifests)
+        .map(|file| (file.path.to_string_lossy().into_owned(), file.text.as_str()))
+        .collect();
+    let lookup = |index: usize| files.get(index).map(|(path, text)| (path.as_str(), *text));
     for (index, error) in errors.diagnostics.iter().enumerate() {
         if index != 0 && !json {
             errln!(err);
         }
         let source = project.source_for(error);
-        write_diagnostic(err, error, &source.path, &source.text, json);
+        let path = source.path.to_string_lossy();
+        let severity = error.severity.as_str();
+        errln!(
+            err,
+            "{}",
+            if json {
+                error.json_with(severity, &path, &source.text, &lookup)
+            } else {
+                error.render_with(severity, &path, &source.text, &lookup)
+            }
+        );
     }
     if let Some(note) = errors.omission_note() {
         if json {

@@ -1327,6 +1327,9 @@ impl Repl {
                     generated.locate(diagnostic.span, project, input, &listing);
                 let mut located = diagnostic.clone();
                 located.span = Span::new(offset, offset);
+                // The other locations are in the generated program, not in the input (G22 D8).
+                located.related.clear();
+                located.fixes.clear();
                 (located, path, text)
             })
             .collect();
