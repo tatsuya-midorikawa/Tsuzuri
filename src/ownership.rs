@@ -3170,8 +3170,10 @@ enum Part {
     /// The pattern tests and the guard of an arm of a `match`: they run before the arm's body
     /// and, when they fail, before the later arms.
     Test(usize),
-    /// The condition and the body of a `while`, or the body of a `for`: they run again.
-    Repeat,
+    /// The condition of a `while`: it runs again, and at least once whenever the loop runs.
+    RepeatCondition,
+    /// The body of a `while` or a `for`: it runs again, or not at all.
+    RepeatBody,
     /// The right side of `&&` or `||`, or the handler of a `try`.
     Optional,
 }
@@ -3191,11 +3193,16 @@ fn choices(path: &Path) -> impl Iterator<Item = &Choice> {
     std::iter::successors(path.as_deref(), |choice| choice.outer.as_deref())
 }
 
+/// Whether a part runs again in the next iteration of its loop.
+fn repeating(part: Part) -> bool {
+    matches!(part, Part::RepeatCondition | Part::RepeatBody)
+}
+
 /// The part of `path` outside the loop at `node`: the choices that the next iteration keeps.
 fn outside(path: &Path, node: usize) -> &Path {
     let mut current = path;
     while let Some(choice) = current.as_deref() {
-        if choice.node == node && choice.part == Part::Repeat {
+        if choice.node == node && repeating(choice.part) {
             return &choice.outer;
         }
         current = &choice.outer;
@@ -3241,7 +3248,8 @@ fn always_before(from: &Path, to: &Path, budget: &mut usize) -> Option<bool> {
 /// at `to` runs the one at `from`, as far as the parts go: each part that `from` is in holds
 /// `start` or `to` (a part around the access is still running after it).
 fn always_between(from: &Path, start: &Path, to: &Path, budget: &mut usize) -> Option<bool> {
-    for step in choices(from) {
+    // A `while` condition runs whenever its loop is reached, so it adds no condition of its own.
+    for step in choices(from).filter(|step| step.part != Part::RepeatCondition) {
         let mut held = false;
         for other in choices(to).chain(choices(start)) {
             spend(budget, 1)?;
@@ -3262,13 +3270,13 @@ fn always_between(from: &Path, start: &Path, to: &Path, budget: &mut usize) -> O
 
 /// Whether the loop at `node` holds the expression at `path`.
 fn repeats(path: &Path, node: usize) -> bool {
-    choices(path).any(|choice| choice.node == node && choice.part == Part::Repeat)
+    choices(path).any(|choice| choice.node == node && repeating(choice.part))
 }
 
 /// The innermost loop that holds the expression at `path`.
 fn innermost_loop(path: &Path) -> Option<usize> {
     choices(path)
-        .find(|choice| choice.part == Part::Repeat)
+        .find(|choice| repeating(choice.part))
         .map(|choice| choice.node)
 }
 
@@ -3424,9 +3432,8 @@ fn find_later_use(
                 }
             }
             E::While { condition, body } => {
-                let repeat = choose(&path, expression, Part::Repeat);
-                parts.push((condition, repeat.clone()));
-                parts.push((body, repeat));
+                parts.push((condition, choose(&path, expression, Part::RepeatCondition)));
+                parts.push((body, choose(&path, expression, Part::RepeatBody)));
             }
             E::ForRange {
                 start,
@@ -3438,11 +3445,11 @@ fn find_later_use(
                 for bound in [start, step, finish] {
                     parts.push((bound, path.clone()));
                 }
-                parts.push((body, choose(&path, expression, Part::Repeat)));
+                parts.push((body, choose(&path, expression, Part::RepeatBody)));
             }
             E::ForEach { source, body, .. } => {
                 parts.push((source, path.clone()));
-                parts.push((body, choose(&path, expression, Part::Repeat)));
+                parts.push((body, choose(&path, expression, Part::RepeatBody)));
             }
             E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
                 parts.push((left, path.clone()));
@@ -3473,38 +3480,43 @@ fn find_later_use(
     let (start, access) = access?;
     // Whether a jump at `position` with `path` skips what is at `seen`: a re-raise skips all
     // after it, and a `break` or `continue` the rest of its loop.
-    let skips_over = |jump: Jump, position: usize, path: &Path, seen: &Seen| {
-        seen.at > position
+    // Whether a jump at `position` with `path` skips what is at `at` with `seen`: a re-raise
+    // skips all after it, and a `break` or `continue` the rest of its loop.
+    let skips_over = |jump: Jump, position: usize, path: &Path, at: usize, seen: &Path| {
+        at > position
             && match jump {
                 Jump::Reraise => true,
                 Jump::Break | Jump::Continue => {
-                    innermost_loop(path).is_some_and(|node| repeats(&seen.path, node))
+                    innermost_loop(path).is_some_and(|node| repeats(seen, node))
                 }
             }
     };
     // Dead code: a jump always runs before it, in every iteration.
-    let dead = |seen: &Seen, budget: &mut usize| -> Option<bool> {
+    let dead_at = |at: usize, seen: &Path, budget: &mut usize| -> Option<bool> {
         for (jump, position, path) in &jumps {
             spend(budget, 1)?;
-            if skips_over(*jump, *position, path, seen) && always_before(path, &seen.path, budget)?
-            {
+            if skips_over(*jump, *position, path, at, seen) && always_before(path, seen, budget)? {
                 return Some(true);
             }
         }
         Some(false)
     };
-    // The jumps that always run after the access.
+    let dead = |seen: &Seen, budget: &mut usize| dead_at(seen.at, &seen.path, budget);
+    // The jumps that always run after the access, and are not dead code themselves.
     let mut after_access: Vec<(Jump, usize, &Path)> = Vec::new();
     for (jump, position, path) in &jumps {
         spend(budget, 1)?;
-        if *position > start && always_between(path, &access, &access, budget)? {
+        if *position > start
+            && always_between(path, &access, &access, budget)?
+            && !dead_at(*position, path, budget)?
+        {
             after_access.push((*jump, *position, path));
         }
     }
     let skipped = |seen: &Seen, budget: &mut usize| -> Option<bool> {
         for (jump, position, path) in &after_access {
             spend(budget, 1)?;
-            if skips_over(*jump, *position, path, seen) {
+            if skips_over(*jump, *position, path, seen.at, &seen.path) {
                 return Some(true);
             }
         }
@@ -3545,7 +3557,7 @@ fn find_later_use(
     }
     // The loops around the access, innermost first.
     let loops: Vec<usize> = choices(&access)
-        .filter(|choice| choice.part == Part::Repeat)
+        .filter(|choice| repeating(choice.part))
         .map(|choice| choice.node)
         .collect();
     for node in loops {

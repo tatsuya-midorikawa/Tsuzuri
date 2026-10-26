@@ -1360,6 +1360,15 @@ fn jumps_and_iterations_decide_what_runs_again() {
     // A read after an unconditional `break` never runs, in any iteration.
     let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    for j in 0 .. 2 do\n        n = 1\n        break\n        let _x = deref r\n        ()\n0\n";
     assert_eq!(used(source), None);
+    // A `while` condition always runs: its replacement ends the borrow for the read after it.
+    let source = "def f :: unit -> i64 = \\_ ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    let mut k = 0\n    n = 2\n    while { r = ref m; k < 1 } do\n        k = k + 1\n    deref r\n\n0\n";
+    assert_eq!(used(source), None);
+    // A `while` body may not run: its replacement does not.
+    let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\ndef f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    while { both r (ref mut n); flag } do\n        r = ref m\n    deref r\n\n0\n";
+    assert_eq!(used(source), Some((9, false)));
+    // The `break` after `continue` never runs, so the loop goes on.
+    let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    let x = deref r\n    n = x + 1\n    continue\n    break\n0\n";
+    assert_eq!(used(source), Some((4, true)));
     // A conflict in the condition of a `while`, which runs again.
     let source =
         "let mut n = 0\nlet r = ref n\nwhile { let x = deref r; n = x + 1; x < 2 } do\n    ()\n0\n";
