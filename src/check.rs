@@ -7594,7 +7594,11 @@ fn check_modules_collect(
                 } else {
                     let from = checker.recovered.len();
                     let mut body = checker.expression(&function.body, Some(&signature.result));
-                    if body.is_err() || checker.recovered.len() > from {
+                    // Generated functions (tests, benchmarks) have no written result type.
+                    if (body.is_err() || checker.recovered.len() > from)
+                        && function.name.provenance == Provenance::User
+                        && !function.name.text.starts_with('$')
+                    {
                         checker.expected_because(
                             body.as_mut().err(),
                             from,
@@ -10089,7 +10093,11 @@ impl<'a> Checker<'a> {
         from: usize,
         error: Option<&mut Diagnostic>,
     ) {
-        if let Some(written) = &binding.annotation {
+        // A generated binding's annotation is not written in the source.
+        if let Some(written) = &binding.annotation
+            && binding.name.provenance == Provenance::User
+            && !binding.name.text.starts_with('$')
+        {
             self.expected_because(
                 error,
                 from,
@@ -10166,6 +10174,9 @@ impl<'a> Checker<'a> {
         let mut entries = Vec::new();
         for scope in self.scopes.iter().rev() {
             for (name, local) in scope {
+                if entries.len() == crate::diagnostic::MAX_SCOPE {
+                    return entries;
+                }
                 if name == "_"
                     || name.starts_with('$')
                     || local.provenance != Provenance::User

@@ -3142,7 +3142,10 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
 }
 
 /// The first use of one of `holders` after `after` in source order, else (`true`) the first use
-/// before it. Looks at no more than `*budget` expressions, and `None` once it runs out.
+/// before it. An assignment of a whole holder ends the borrow that it held: a use after it reads
+/// the new value, so a later use counts only before the first such assignment, and an earlier use
+/// only when the body assigns no holder. Looks at no more than `*budget` expressions, and `None`
+/// once it runs out.
 fn find_later_use(
     body: &TypedExpr,
     holders: &BTreeSet<usize>,
@@ -3153,12 +3156,30 @@ fn find_later_use(
         return None;
     }
     let (mut later, mut earlier): (Option<Span>, Option<Span>) = (None, None);
+    // The end of the first assignment of a holder after `after`, and whether there is any.
+    let (mut overwritten, mut assigned): (Option<usize>, bool) = (None, false);
     let mut pending = vec![body];
     while let Some(expression) = pending.pop() {
         if *budget == 0 {
             return None;
         }
         *budget -= 1;
+        if let E::Assign(place, value) = &expression.kind
+            && let E::Local(id) = place.kind
+            && holders.contains(&id)
+        {
+            // The value is evaluated before the holder is replaced.
+            assigned = true;
+            let end = expression.span.end;
+            if expression.span.source == after.source
+                && end > after.end
+                && overwritten.is_none_or(|kept| end < kept)
+            {
+                overwritten = Some(end);
+            }
+            pending.push(value);
+            continue;
+        }
         let used = match &expression.kind {
             E::Local(id) => holders.contains(id),
             E::Lambda { captures, .. } => captures.iter().any(|local| holders.contains(&local.id)),
@@ -3186,6 +3207,8 @@ fn find_later_use(
                 .expect("searching uses cannot fail");
         }
     }
+    let later = later.filter(|span| overwritten.is_none_or(|end| span.start < end));
+    let earlier = earlier.filter(|_| !assigned);
     later
         .map(|span| (span, false))
         .or(earlier.map(|span| (span, true)))

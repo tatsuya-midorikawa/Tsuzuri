@@ -1150,3 +1150,45 @@ fn reserved_fields_have_no_first_definition() {
     assert_eq!(diagnostic.span.start, source.find('_').unwrap());
     assert!(diagnostic.related.is_empty(), "{:?}", diagnostic.related);
 }
+
+#[test]
+fn generated_declarations_have_no_because() {
+    // A test's implicit `unit` result and a bench's generated binding are not written anywhere.
+    for source in ["test \"bad\" = true\n", "bench \"a\" = 1\n"] {
+        let diagnostic = first(source, "E1003");
+        assert!(
+            diagnostic.related.is_empty(),
+            "{source}{:?}",
+            diagnostic.related
+        );
+        assert!(diagnostic.detail.expected.is_some(), "{source}");
+    }
+}
+
+#[test]
+fn a_reassigned_holder_is_not_a_later_use() {
+    // `r = ref m` ends the borrow of `n` that `r` held, and `deref r` reads the new one.
+    let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\nlet mut n = 0\nlet m = 1\nlet mut r = ref n\nboth r (ref mut n)\nr = ref m\nderef r\n";
+    let diagnostic = first(source, "E1014");
+    let roles: Vec<_> = diagnostic
+        .related
+        .iter()
+        .map(|related| related.role)
+        .collect();
+    assert_eq!(roles, [RelatedRole::BorrowedHere]);
+    // Read before it is replaced, the holder still keeps the borrow alive.
+    let source =
+        "let mut n = 0\nlet m = 1\nlet mut r = ref n\nn = 2\nr = ref (deref r + m)\nderef r\n";
+    let diagnostic = first(source, "E1014");
+    let used = diagnostic
+        .related
+        .iter()
+        .find(|related| related.role == RelatedRole::BorrowUsedHere)
+        .unwrap_or_else(|| panic!("{:?}", diagnostic.related));
+    assert_eq!(
+        used.message,
+        "the borrow is used here, so it is still alive"
+    );
+    assert_eq!(line_of(source, used.span), 5);
+    assert_eq!(text_at(source, used.span), "r");
+}
