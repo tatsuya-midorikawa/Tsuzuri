@@ -28,7 +28,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 
 | ファイル | 責務 |
 |---|---|
-| `src/diagnostic.rs` | ソース ID とファイル内位置、診断の順序・重複除去・表示／収集上限、human／JSON lines の出力制御 |
+| `src/diagnostic.rs` | ソース ID とファイル内位置、診断の順序・重複除去・表示／収集上限、human／JSON lines の出力制御。診断は `Diagnostic(Box<DiagnosticData>)` で 1 ポインター幅（再帰する検査の `Result<_, Diagnostic>` の一時値で stack を増やさないため。フィールドは `Deref` で読み書きし、move は `into_data`）。主の位置のほかに、関連する位置（`related`。`RelatedRole` の閉じた語彙）・`help`・修正案（`fixes`。`Fix` と `Edit`、`Applicability`）・`detail`（`expected`・`found`・`candidates`・`scope`）を持ち、ビルダーが上限（16・8・1 修正案あたり 64 の edit・10・32）を適用する（edit が 0 件か上限超えの修正案は丸ごと捨てる）。`render_with`・`json_with` は別のソースの位置を `SourceLookup` で引き、引けない `related` と、edit を 1 つでも引けない修正案は出さない。追加の情報が無い診断の出力は従来と同じバイト列。`apply_edits` は修正案の edit を重なりと文字境界を検査して適用する（LSP の検証が使う） |
 | `src/syntax.rs` | トークン定義、構文木（AST）、言語版 `Edition`、説明の `@deprecated` の読み取り（`Documentation::deprecation`）、構文リソース上限の管理 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理（ファイル先頭の `#!` 行も行コメントとして飛ばし、位置はファイル全体のまま。`shebang_length`）、数値リテラルの切り出し、edition ごとの予約語（`EDITION_KEYWORDS`、`reserved_in`。`lex*` は edition を必須の引数に取る） |
 | `src/docgen.rs` | 宣言 AST からの公開 API ドキュメント（Markdown）生成、型・制約・region の描画、決定的なページソート |
@@ -109,7 +109,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML（`[package]` の `edition` を含む）、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
 | `src/copies.rs` | 単一使用と `LastUses` の証明を生成と共有した暗黙の複製箇所の列挙（`copies::sites`）、`W1006` とインレイヒントの基となる配列・リストの複製検出（`costly_sites`） |
-| `src/lsp.rs` / `src/semantic.rs` | stdio 経由の言語サーバー、Unicode 位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカル変数の有効範囲・record 型の式をインデックス化し、型付き木で脱落するフィールド名・record 名・case 名は checker の `name_uses` から収集。リネームとクイックフィックスは編集後の再解析により診断と名前の結び付きの不変性を検証。入力中の補完・シグネチャヘルプ・セマンティックトークン・複製のインレイヒントは、直前の成功インデックスを共通の接頭辞・接尾辞に基づいて写像して再利用 |
+| `src/lsp.rs` / `src/semantic.rs` | stdio 経由の言語サーバー、Unicode 位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカル変数の有効範囲・record 型の式をインデックス化し、型付き木で脱落するフィールド名・record 名・case 名は checker の `name_uses` から収集。リネームとクイックフィックスは編集後の再解析により診断と名前の結び付きの不変性を検証。診断の修正案のクイックフィックスは、適用後の再解析でその診断のコードの件数が減り、どのコードも増えないものだけを出す（`fix_removes`。エラーの修正案は警告を数えない）。`publishDiagnostics` は利用者のファイルにある `related` を `relatedInformation`、`kind` と修正案を `data` にする。入力中の補完・シグネチャヘルプ・セマンティックトークン・複製のインレイヒントは、直前の成功インデックスを共通の接頭辞・接尾辞に基づいて写像して再利用 |
 | `src/repl.rs` | `tsuzuri repl`（G13）。入力の読み取り（1 行目が末尾で未完なら空行まで継続）、宣言の塊（parser が各トップレベル宣言を始めた位置 `Program::declaration_starts` で区切る。列は問わず、文書コメントと属性はその宣言に入り、同じ行の前の空白とコメントも付く。`and` の再帰群と、別に書いたシグネチャと定義は一つの項目）とトップレベルの文（`;` で終わる文は `;` ごと残す）への分類、アクションの行をまとめて左へ寄せること、同じ名前の項目の置き換え、生成した `Main.tz` の解析と `SemanticIndex` からの型の取得、`driver::run_captured` による実行、診断の位置の `input`／`session` への写像 |
 
 ドキュメントコメント（doc comment）は、字句解析器（lexer）において `DocComment` トークンとして保持され、構文解析器（parser）によって対応する宣言の `Documentation(text, span)` に付与されます。

@@ -30,6 +30,21 @@ def invalid_ref :: unit -> ref string = \() ->
 error[E1013]: borrowed value does not live long enough to leave this block
 ```
 
+`tsuzuri check` は、所有者の宣言と、それがいつ破棄されるかも示します。
+
+```text
+./Main.tz:3:5: error[E1013]: borrowed value does not live long enough to leave this block
+  3 |     ref local
+    |     ^
+  note: 'local' is declared here and dropped at the end of this block
+    --> ./Main.tz:2:9
+  2 |     let local = "temporary"
+    |         ^
+  help: return the value itself instead of a reference to it, or declare it in an outer scope
+```
+
+借用が主の位置と別の場所で作られたとき（代入やパターンの束縛）は、`note: value borrowed here` も続きます。関数の戻り値・代入・パターンと反復の束縛では、所有者の説明がそれぞれ `is dropped when the function returns`・`dropped at the end of this block`・`ends with this arm or iteration` になります。
+
 `local` のメモリは関数が終了した瞬間に解放されるため、その参照を返すことはコンパイラによって拒絶されます。参照を返却できるのは、呼び出し元から受け取った引数の参照に由来する場合だけです。
 
 ## なぜ名前付き region が必要なのか

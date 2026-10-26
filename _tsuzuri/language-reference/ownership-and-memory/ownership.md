@@ -106,6 +106,21 @@ first.length
 error[E1012]: use of moved or partially moved value 'first'
 ```
 
+`tsuzuri check` の出力は、2 回目の使用の位置に続けて、どこでムーブしたか（`note: value moved here`）と直し方（`help:`）を示します。
+
+```text
+./Main.tz:3:1: error[E1012]: use of moved or partially moved value 'first'
+  3 | first.length
+    | ^
+  note: value moved here
+    --> ./Main.tz:2:14
+  2 | let second = first
+    |              ^
+  help: borrow the value with 'ref first' or move it last
+```
+
+ムーブがループの前の反復で起きたときは `value moved here, in the previous iteration of the loop`、フィールドだけをムーブしたときは `part of the value moved here` です。分岐の両方でムーブしたときは、ソース上で後ろのムーブを示します。`--json` では `related` の `moved_here` になります（[診断](../compiler/diagnostics.md#関連する位置help修正案)）。
+
 条件分岐の一方でのみムーブした場合でも、合流後にその変数を使うことはできません。
 
 ```text

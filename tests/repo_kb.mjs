@@ -105,7 +105,7 @@ test('ticket_classification_by_file_name', () => {
 test('ticket_meta_table_both_separator_forms', () => {
     assert.equal(ticket('A01-alpha.md').priority, 'P1');
     assert.equal(ticket('_completed/B02-beta.md').priority, 'P2');
-    assert.match(readFileSync(resolve(root, '_features/G22-diagnostic-v2.md'), 'utf8'), /\| 優先度 \| P0（/);
+    assert.match(readFileSync(resolve(root, '_features/_completed/G22-diagnostic-v2.md'), 'utf8'), /\| 優先度 \| P0（/);
 });
 test('ticket_meta_table_without_blank_line_after_title', () => {
     assert.equal(ticket('_completed/B02-beta.md').files[0].path, 'src/check.rs');

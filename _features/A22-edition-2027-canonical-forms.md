@@ -5,7 +5,7 @@
 | ID | A22 |
 | 優先度 | P1 |
 | 規模 | L（全体）。Phase 1 = S、Phase 2 = M、Phase 3 = M、Phase 4 = S、Phase 5 = M |
-| 依存 | **Phase 1・2・4: なし**。Phase 3 の fix の付与（手順 12）は [G22](G22-diagnostic-v2.md) Phase 1（`Diagnostic::fix`・`with_kind`・`with_help`）、Phase 5 の統合試験（手順 19）は [G24](G24-tsuzuri-fix.md) Phase 3 が要る。未実装ならその手順だけを飛ばして残りを出荷できる（「前提とする他チケットのインターフェース」）。[A18](_completed/A18-parameter-conventions.md) とは edition `2027` の足場（`Edition::E2027`・`SUPPORTED`・`docs/stability.md` の表・`tests/editions.rs`）だけを共有する（先に実装した方が足す。D-54） |
+| 依存 | **Phase 1・2・4: なし**。Phase 3 の fix の付与（手順 12）は [G22](_completed/G22-diagnostic-v2.md) Phase 1（`Diagnostic::fix`・`with_kind`・`with_help`）、Phase 5 の統合試験（手順 19）は [G24](G24-tsuzuri-fix.md) Phase 3 が要る。未実装ならその手順だけを飛ばして残りを出荷できる（「前提とする他チケットのインターフェース」）。[A18](_completed/A18-parameter-conventions.md) とは edition `2027` の足場（`Edition::E2027`・`SUPPORTED`・`docs/stability.md` の表・`tests/editions.rs`）だけを共有する（先に実装した方が足す。D-54） |
 | 後続 | G24 Phase 3（`fix::canonical_warnings` の本体を本チケットの `canonical::warnings` に差し替える）、G21（ガイドは正準形だけを教える）、A18（同じ edition `2027` に差を足す） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの `9dd0fbbc` との差は `docs/benchmarks.md` だけ） |

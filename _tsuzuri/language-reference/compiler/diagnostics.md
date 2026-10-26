@@ -6,8 +6,8 @@
 
 ## この記事のポイント
 
-- 人間向けの 1 件は `パス:行:列: 重要度[コード]: メッセージ` です。
-- `--json` は stderr の 1 行 1 JSON です。配列にはまとめません。
+- 人間向けの 1 件は `パス:行:列: 重要度[コード]: メッセージ` です。直す手がかりがある診断は、続けて関連する位置（`note:`）、直し方（`help:`）、機械的な修正案（`fix`）を出します。
+- `--json` は stderr の 1 行 1 JSON です。配列にはまとめません。追加の情報は、値があるときだけキーが付きます。
 - 画面に出すのは 50 件まで、内部では重複を除いて 1000 件まで集めます。
 - 字句エラーがあると構文解析へ進まず、構文エラーがあると型検査へ進みません。
 - コードの千の位が、構文、意味、ツールのどれかを大まかに分けます。
@@ -46,6 +46,53 @@
     |         ^
 ```
 
+### 関連する位置・help・修正案
+
+所有権、型の不一致、名前、呼び出し、網羅性、重複の診断の一部は、主の位置に続けて、原因になった別の位置と直し方を出します。ムーブした値を使うと、どこでムーブしたかを示します。
+
+```text
+def consume :: own string -> i64 = \s -> s.length
+
+def main_value :: unit -> i64 = \_ ->
+    let text = "hello"
+    let a = consume text
+    let b = consume text
+    a + b
+
+main_value ()
+```
+
+`check` の出力は次のとおりで、終了コードは 1 です。
+
+```text
+./Main.tz:6:21: error[E1012]: use of moved or partially moved value 'text'
+  6 |     let b = consume text
+    |                     ^
+  note: value moved here
+    --> ./Main.tz:5:21
+  5 |     let a = consume text
+    |                     ^
+  help: borrow the value with 'ref text' or move it last
+```
+
+| 行 | 意味 |
+| --- | --- |
+| `  note: <説明>` と `    --> パス:行:列`、その行の引用 | 関連する位置。1 件の診断に 16 件まで。別のファイル（std を含む）の位置は、そのファイルの行と列で出します |
+| `  help: <直し方>` | 1 行の直し方 |
+| `  fix (<certain\|likely\|maybe>): <題>` | 機械的な修正案。8 件まで。`maybe` は提案で、そのまま正しいとは限りません |
+
+網羅していない `match` は、足りない腕を足す修正案を持ちます。足す腕の本体は `unreachable ()` で、実際の処理に書き換える前提の `maybe` です。字下げはしないので、`match` の最後の行の末尾に ` | Triangle _ -> unreachable ()` が付きます。
+
+```text
+./Main.tz:4:5: error[E1021]: match is not exhaustive; missing: Triangle _
+  4 |     match s with
+    |     ^
+  help: add an arm for 'Triangle _', or end the match with a wildcard arm '| _ -> ...'
+  fix (maybe): Add the arm '| Triangle _ -> unreachable ()'
+```
+
+追加の情報を持たない診断の出力は、主の位置の 3 行だけで、以前と同じです。どの診断が何を持つかは「エラーコード」の表にあります。`tsuzuri repl` は `note:` と `fix` を出しません（位置が REPL の生成するプログラムのものだからです）。
+
 ソースコードの引用行は、エラー位置の列の前後を最大 120 文字に切り詰めて表示します。表示されるパスは、渡した入力からの相対パスであり、実際に問題が発生したモジュールのファイルパスを正確に示します。すべてのエラーを先頭の入力ファイル名にまとめてしまうことはありません。
 
 引数のエラーは、ソースが無いのでパスが `<command line>` で、行と列は 1 です。
@@ -73,6 +120,26 @@
 | `span.start` / `span.end` | UTF-8 バイトオフセット。`end` は排他 |
 | `span.line` / `span.column` | 始まり。1 始まりの行と、Unicode スカラー値の列 |
 | `span.end_line` / `span.end_column` | 終わりの行と列 |
+
+追加の情報は、5 つのキーの後ろに、次の順で、値があるときだけ付きます。どれも持たない診断の行は、上の 5 キーの形のままです。
+
+| フィールド | 意味 |
+| --- | --- |
+| `kind` | 診断の原因を表す識別子。現在の診断には付きません |
+| `related` | 関連する位置の配列。要素は `role`、`message`、`path`、`span`（主と同じ 6 キー）。位置を解決できない要素は省きます |
+| `help` | 1 行の直し方 |
+| `expected` / `found` | 型の不一致（`E1003`）の期待した型と実際の型。メッセージと同じ表示です |
+| `candidates` | 候補の配列（`name`、`signature`、`how`）。現在の診断には付きません |
+| `scope` | 見えるローカル変数の配列（`name`、`type`）。内側のスコープから、32 件まで |
+| `fixes` | 修正案の配列。要素は `title`、`applicability`（`certain`・`likely`・`maybe`）、`edits`。`edits` の要素は `path`、`span`、`text` で、`span` の範囲（UTF-8 バイト、`end` は排他）を `text` に置き換えます。`start` と `end` が同じなら挿入です |
+
+`role` は `moved_here`（ムーブした位置）、`borrowed_here`（借用を作った位置）、`borrow_used_here`（借用がまだ生きている理由になる使用）、`declared_here`（宣言）、`expected_because`（期待する型を決めた宣言）、`first_defined_here`（最初の定義）、`via_call`、`required_by`、`note` のどれかです。先のムーブの診断は、次の 1 行です。
+
+```text
+{"severity":"error","code":"E1012","message":"use of moved or partially moved value 'text'","path":"./Main.tz","span":{"start":157,"end":161,"line":6,"column":21,"end_line":6,"end_column":25},"related":[{"role":"moved_here","message":"value moved here","path":"./Main.tz","span":{"start":132,"end":136,"line":5,"column":21,"end_line":5,"end_column":25}}],"help":"borrow the value with 'ref text' or move it last"}
+```
+
+キーの名前と順序、`role` と `applicability` の値は安定しています。`related` の `message`、`help`、修正案の `title` と `text` の文言は変わることがあります（[安定性と互換性の方針](../../../docs/stability.md#安定として保たないもの)）。
 
 `fmt --check --json` だけ、形が少し違います。スパンは無く、パスと「整形されていない」ことだけです。終了コードは 1 でした。
 
@@ -138,21 +205,21 @@ flowchart TD
 | `E0001` | 字句解析 |
 | `E0002` | 構文、AST の深さの上限、不正なビルダーの別名宣言（`@alias`）、`const` の置き場所の誤り（`const fn`・`const let`・`const and`・`const export def`、`@cpu` との併用）、ローカルな `let rec` の誤り（右辺がラムダ式でない、`let rec mut`、`let! rec`・`and! rec`、`@checked` を付けた `let rec`、`where` の `rec`、`use rec`）、マニフェストの `edition` が対応する値でないこと（`unsupported edition '2030'; supported editions: 2026`）。行頭の `#if` もここに落ちます |
 | `E0003` | ソースファイルの大きさの上限（4 MiB） |
-| `E1001`–`E1010` | 識別子名、型シグネチャ、型の不一致、演算子・関数呼び出し、レコードフィールド、公開 ABI、リテラル、型レイアウト |
+| `E1001`–`E1010` | 識別子名、名前の解決、型の不一致、演算子・関数呼び出し、レコードフィールド、公開 ABI、リテラル、型レイアウト |
 | `E1011` | モジュール名、予約名、`std`、パッケージのパスと名前（同じ名前の別の取得元、git・registry のパッケージの許されない依存、互換の範囲が違う版の要求を含む）、シンボリックリンクの入力 |
-| `E1012` | ムーブ後の使用、不正な代入、`let rec` の関数が借用している捕捉のムーブ（`cannot move 'text' out of a 'let rec' function, which borrows it`）。2027 の既定の読み取り引数から非 Copy 値を取り出す場合は `own` を案内します |
-| `E1013` | 所有者より長生きする借用（借用して捕捉した値を持つ `let rec` の関数を、その値の持ち主から返す場合を含む）、Task をまたぐ借用、Async の `let!` / `do!` / 開始をまたぐ借用、Task へ持ち込む `Rc` や `Sync` でない値の `Arc`、`Task.scope` で共有する `Sync` でない値、`Task.scope` や `Parallel.*` で共有する、借用を持った一時値、`Mutex.with_lock` の結果に含まれる借用、`Channel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Channel.bounded` の `Send` でない要素（`Channel.bounded` や `Mutex.create` を包んだジェネリック関数を `Send` でない型で使う場合も） |
-| `E1014` | 借用の競合、不変な値への可変アクセス |
+| `E1012` | ムーブ後の使用、不正な代入、`let rec` の関数が借用している捕捉のムーブ（`cannot move 'text' out of a 'let rec' function, which borrows it`）。2027 の既定の読み取り引数から非 Copy 値を取り出す場合は `own` を案内します。ムーブ後の使用は、ムーブした位置（`moved_here`。ループの前の反復なら `in the previous iteration of the loop`）と `help` を持ちます |
+| `E1013` | 所有者より長生きする借用（借用して捕捉した値を持つ `let rec` の関数を、その値の持ち主から返す場合を含む）、Task をまたぐ借用、Async の `let!` / `do!` / 開始をまたぐ借用、Task へ持ち込む `Rc` や `Sync` でない値の `Arc`、`Task.scope` で共有する `Sync` でない値、`Task.scope` や `Parallel.*` で共有する、借用を持った一時値、`Mutex.with_lock` の結果に含まれる借用、`Channel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Channel.bounded` の `Send` でない要素（`Channel.bounded` や `Mutex.create` を包んだジェネリック関数を `Send` でない型で使う場合も）。所有者より長生きする借用（ブロックの結果、代入、関数の戻り値、パターンと反復の束縛）は、所有者の宣言（`declared_here`）、借用した位置（`borrowed_here`）と `help` を持ちます |
+| `E1014` | 借用の競合、不変な値への可変アクセス。借用の競合は、借用した位置（`borrowed_here`）、借用を生かしている後の使用（`borrow_used_here`）と `help` を持ちます。`let` で宣言した変数への可変アクセスは、その宣言（`declared_here`）と `help` を持ちます |
 | `E1015` | 曖昧な型変数、無限型、多相の不正 |
 | `E1016` | 型クラスとインスタンス。`Drop` を含む（std の型への利用者の `Drop` の instance は `E1016`。std のモジュールが自分で宣言した型には、std が書く） |
 | `E1017` | コンパイラの資源上限 |
 | `E1018` | ファイル種別の規則違反（`.tc` 以外の `@alias` を含む）、未知のビルダー、必要なビルダー操作の未定義、ビルダー候補の曖昧・不在、GPU カーネルにできない構文（厳密な WGSL の `f32`・`f16`・64 bit の要素、緩い WGSL（`Gpu.init_relaxed`・`Gpu.map_relaxed`・`--emit wgsl-relaxed`）の `f64`・64 bit 整数・`bool` の要素・`f32`・`f16` から整数と `f32` と `f64` の間のキャスト、整数の除算と剰余を含む）、Vulkan 用の厳密な SPIR-V（`Gpu.map`・`--emit spirv`）の `f32` の `/`・`f64`・`f16`・`bool` の要素・整数の除算と剰余と `**`、緩い SPIR-V（`--emit spirv-relaxed`）の 64 bit 整数の要素と `f32` から整数へのキャスト、標準ライブラリからの不正な `export`、`.tt` と標準ライブラリの `bench` 宣言、`tsuzuri bench` 以外の出力でトップレベルのコード・`export def`・実行するテスト・`Drop` の実装から到達する `Bench.now` |
 | `E1019` | `rec` の過不足、単独の `and` |
 | `E1020` | パターンの形、OR パターンの束縛、共用体のペイロード |
-| `E1021` | `match` と関数ガードの網羅性。足りないケースを示す |
+| `E1021` | `match` と関数ガードの網羅性。足りないケースを示し、`help` を持ちます。`match ... with` の足りないケースが腕として書ける形（`_`、`true`・`false`、`()`、共用体のケース、それらのタプル）なら、末尾にその腕を足す `maybe` の修正案も持ちます |
 | `E1022` | 他モジュールの `private`、公開 API からの private 型、不透明な標準ライブラリ型（`Map`、`Arena`、`Arena.Handle`、`Net.Address`、`Atomic`、`Mutex`、`Channel.Sender`、`Channel.Receiver` など）の直接構築・フィールド参照、std 専用の組み込み関数（`Os.__read`、`Net.__open`、`Arena.__next_id`、`Gpu.__open`、`Channel.__close_sender` など）の呼び出し |
 | `E1023` | ループ外の `break` / `continue`、`finally` を越える脱出 |
-| `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス |
+| `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス。共用体の重複したケースは、最初の定義（`first_defined_here`）を持ちます |
 | `E1025` | `deriving` できない型クラスや要素、止まらない `Default`、`Encode`／`Decode` を導出しない型の `@json`、重なった `@json` の名前 |
 | `E1026` | コンパイル時定数と `const def` のトラップ、循環、ステップ上限、`const def` の署名（値型でない引数や結果）と本体（使えない式）の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `E1027` | 条件付きインスタンスやスーパークラスの制約 |
@@ -167,7 +234,7 @@ flowchart TD
 | `E2006` | 言語内テストの失敗 |
 | `E2007` | 依存の取得と検証の失敗。`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存や内容が SHA-256 と違う依存、`git` の欠落・失敗、取得したリポジトリのシンボリックリンク・submodule・危険なパス・大文字小文字だけ違うパス、registry の index にない版、index の項目と違うパッケージ、`publish` で commit とディレクトリの内容が違うこと（[パッケージ](../organizing-tsuzuri/packages.md#git-依存と-tsuzurilock)） |
 
-`E1001` から `E1010` は型検査・意味解析の基本的なエラーに割り当てられています。具体的には、`E1001` が識別子名の重複（1 つの `let rec` グループに同じ名前を 2 度書く場合を含む）、`E1002` が型シグネチャの不整合、`E1003` が型の不一致（expected ... found ...）、`E1004` が曖昧な識別子や名前解決エラー（複数のビルダーが宣言する別名の曖昧さを含む）、`E1005` が関数呼び出しや演算子インスタンスの不備（関数値が捕捉できない値の捕捉を含み、型変数 `'a` を含む型の値を捕捉する `let rec` もここです）、`E1006` が関数適用の引数の個数の不一致（アクティブパターンの追加引数や `Owned.function` に渡すラムダの引数の数を含む）、`E1007` がレコードフィールドの不備、`E1008` が公開 ABI や extern の制約違反、`E1009` が数値リテラルの不正、`E1010` が型レイアウトの制限です。詳細な理由は各診断メッセージで示されます。
+`E1001` から `E1010` は型検査・意味解析の基本的なエラーに割り当てられています。具体的には、`E1001` が識別子名の重複（1 つの `let rec` グループに同じ名前を 2 度書く場合を含む。関数のシグネチャと定義、レコード、レコードのフィールド、引数の重複は最初の定義 `first_defined_here` を持ちます）、`E1002` が未知の値・関数・定数・ケースの名前（未知の値は、見えるローカル変数の `scope` と `help` を持ちます）、`E1003` が型の不一致（expected ... found ...。`expected`・`found` を持ち、`let` の型注釈・関数の結果の型・名前付きの関数の引数の型が期待を決めたときは、その宣言 `expected_because` を持ちます。引数が足りない呼び出しには `help` が付きます）、`E1004` が曖昧な識別子や名前解決エラー（複数のビルダーが宣言する別名の曖昧さを含む）、`E1005` が関数呼び出しや演算子インスタンスの不備（関数値が捕捉できない値の捕捉を含み、型変数 `'a` を含む型の値を捕捉する `let rec` もここです。関数でない値の呼び出しには `help` が付きます）、`E1006` が関数適用の引数の個数の不一致（アクティブパターンの追加引数や `Owned.function` に渡すラムダの引数の数を含む。引数が多すぎるときは `help` が付きます）、`E1007` がレコードフィールドの不備（未知のフィールドは、レコードのフィールドを並べた `help` を持ちます）、`E1008` が公開 ABI や extern の制約違反、`E1009` が数値リテラルの不正、`E1010` が型レイアウトの制限です。詳細な理由は各診断メッセージで示されます。
 
 ### 確保数の診断
 
@@ -215,17 +282,19 @@ copywarn/Main.tz:2:9: warning[W1006]: implicit copy of an array allocates and co
 
 各要素は `range`、`severity`、`code`、`source`、`message` です。`source` は `tsuzuri` です。`severity` はエラーが 1、警告が 2 で、LSP の数値です。`range` は UTF-16 の行と桁で、0 始まりです。CLI の `--json` が 1 始まりの Unicode スカラー値なのと、ここが違います。
 
+関連する位置のうちプロジェクトのファイルにあるものは `relatedInformation`（`location` と `message`）になります。std の中の位置は、エディターが開けないので入れません。修正案を持つ診断は `data.fixes`（`title` と `applicability`）を持ちます。どちらも無ければ、そのキーは付きません。
+
 未保存のバッファも、開いているテキストで検査します。入力を読めないときも、同じオブジェクトを 1 件出します。閉じた文書に新しい診断を送り続けることはしません。
 
-VS Code 拡張は、これを波線と問題パネルに出します。未使用ローカルへ `_` を付けるクイックフィックスは `W1001` 向けです。ほかの警告の自動修正は、0.1.0 の拡張にはありません。
+VS Code 拡張は、これを波線と問題パネルに出します。`textDocument/codeAction` のクイックフィックスは 2 種類です。未使用ローカル（`W1001`）へ `_` を付けるものと、診断の修正案です。修正案は、適用したテキストをもう一度検査し、その診断のコードの件数が減り、どのコードのエラーも増えないときだけ出します（警告の修正案なら警告も数えます）。現在、修正案を持つのは `E1021` の足りない腕だけで、`maybe` なので優先のクイックフィックス（`isPreferred`）にはしません。
 
 ## まとめ
 
-- テキストは `パス:行:列: error[E1003]: ...`、JSON は 1 行に `severity`、`code`、`message`、`path`、`span` です。
+- テキストは `パス:行:列: error[E1003]: ...`、JSON は 1 行に `severity`、`code`、`message`、`path`、`span` です。関連する位置、`help`、修正案は、値があるときだけ続きます。
 - 50 件を超えると件数だけを足し、1000 件で収集を止めます。重複は最初から 1 件です。
 - 字句、構文、型の順に段階を分け、壊れた木から二次エラーを量産しないようにしています。
 - `E0` は構文、`E1` は意味、`E2` はツールと実行、`W` は警告です。
-- LSP は同じコードを、UTF-16 で 0 始まりの range として出します。
+- LSP は同じコードを、UTF-16 で 0 始まりの range として出します。関連する位置は `relatedInformation`、検証を通った修正案はクイックフィックスになります。
 
 ## 関連項目
 

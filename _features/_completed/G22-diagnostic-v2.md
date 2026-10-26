@@ -5,9 +5,9 @@
 | ID | G22 |
 | 優先度 | P0（D-50 の表） |
 | 規模 | L（全体）。Phase 1: M（3〜5 日）、Phase 2: M、Phase 3: M、Phase 4: S（1〜2 日） |
-| 依存 | [G20](_completed/G20-error-recovery.md)（done。診断を 1 回の実行で集める経路。`Diagnostics`・`DiagnosticSet`・`recovered`）、[G12](_completed/G12-lsp-extensions.md)（done。LSP の `publishDiagnostics`・`codeAction`・`verify_edits`）。Phase 2・3・4 は Phase 1 に依存する。未実装の他チケットへの依存はない |
-| 後続 | [G23](G23-diagnostic-kinds-explain-hints.md)（`kind`・`explain`・ヒント DB）、[G24](G24-tsuzuri-fix.md)（`tsuzuri fix`。`Fix`・`Edit`・`apply_edits` を使う）、[G25](G25-typed-holes-and-find.md)（`scope`・`candidates`）、[G26](G26-facts-model.md) Phase 5（`State.moved` の起点と `Loan.span` を facts と共有する）、[G29](G29-mcp-server.md)（`tz_check` が診断 v2 の JSON を返す）、A20・A21・A22・A23（新しい診断が `related`・`fixes` を最初から持つ）、[B10](B10-trap-backtrace-and-domains.md)（`E2005` の `trap`。B10 が先に入っていれば `Diagnostic.trap` を `DiagnosticData` へ移して `render_with`・`json_with` に通す。D-51） |
-| 状態 | todo |
+| 依存 | [G20](G20-error-recovery.md)（done。診断を 1 回の実行で集める経路。`Diagnostics`・`DiagnosticSet`・`recovered`）、[G12](G12-lsp-extensions.md)（done。LSP の `publishDiagnostics`・`codeAction`・`verify_edits`）。Phase 2・3・4 は Phase 1 に依存する。未実装の他チケットへの依存はない |
+| 後続 | [G23](../G23-diagnostic-kinds-explain-hints.md)（`kind`・`explain`・ヒント DB）、[G24](../G24-tsuzuri-fix.md)（`tsuzuri fix`。`Fix`・`Edit`・`apply_edits` を使う）、[G25](../G25-typed-holes-and-find.md)（`scope`・`candidates`）、[G26](../G26-facts-model.md) Phase 5（`State.moved` の起点と `Loan.span` を facts と共有する）、[G29](../G29-mcp-server.md)（`tz_check` が診断 v2 の JSON を返す）、A20・A21・A22・A23（新しい診断が `related`・`fixes` を最初から持つ）、[B10](../B10-trap-backtrace-and-domains.md)（`E2005` の `trap`。B10 が先に入っていれば `Diagnostic.trap` を `DiagnosticData` へ移して `render_with`・`json_with` に通す。D-51） |
+| 状態 | done（Phase 1〜4、2026-10-26） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの `main` は `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D14 はすべて承認済み。**D1 は D-51 の「Rust の型」の置き場所（`Diagnostic` のフィールドを `Box` に入れる）を変える**ので、D-51 への注記が要る（統括者が台帳へ追記する。根拠は測定値） |
 | 改善する劣位 | D-50 の調査結論 (1): コンパイラは移動・借用の事実を内部で持つのに、診断は主スパン 1 個で、移動元も借用元も示さない（HEAD の `use of moved or partially moved value 'text'` は 2 回目の使用だけを指す）。rustc・C# コンパイラの診断（関連位置・help・修正案）に対する劣位。AI が診断 1 件から直せず、ファイルを探索し直す |
@@ -16,7 +16,7 @@
 
 ## 実装者向け早見
 
-- **最初に読む**: `src/diagnostic.rs`（全部）、`src/main.rs` の `print_diagnostics`、`src/ownership.rs` の `Checker::access`・`read_places`・`merge`・`eval_block`、D-51（[GUIDE.md](GUIDE.md#d-51-診断-v2-の共通仕様g22g23g24g25-と診断を出すすべてのチケット)）。手元に付録 A（HEAD の実出力）と付録 B（試作の出力）を置く。
+- **最初に読む**: `src/diagnostic.rs`（全部）、`src/main.rs` の `print_diagnostics`、`src/ownership.rs` の `Checker::access`・`read_places`・`merge`・`eval_block`、D-51（[GUIDE.md](../GUIDE.md#d-51-診断-v2-の共通仕様g22g23g24g25-と診断を出すすべてのチケット)）。手元に付録 A（HEAD の実出力）と付録 B（試作の出力）を置く。
 - **付録 F はコード、付録 G はテストの全文**。`main` の複製に Phase 1〜4 を実装し、`cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`・全テストが通ったもの。名前・メッセージ・型はそのとおりにし、F のコードは写してよい。**G のテストは実装より先に書く**（手順 2・8・14）。
 - **最初に書くテスト**: 付録 G-1（手順 2。HEAD で通る）。
 - **D1（最重要）**: D-51 のとおりフィールドを `Diagnostic` に直接置くと、`size_of::<Diagnostic>()` が 80 から 264 bytes になり、GUIDE §3.1 の stack の回帰テスト 3 つがすべて stack overflow した（実測）。**`pub struct Diagnostic(Box<DiagnosticData>)` にして `Deref`・`DerefMut` を実装する**（8 bytes。必要 stack が 10〜26% 減る）。`diagnostic.related` のように読み書きでき、書き換えが要るのは構造体リテラルとフィールドの move の 18 か所だけ（手順 3）。
@@ -495,3 +495,21 @@ move1/Main.tz:6:21: error[E1012]: use of moved or partially moved value 'text'
 | E | stack の測定の手順と値、試作で通ったテスト |
 | F-1〜F-8 | 試作のコード（型・出力・所有権・型と名前・`E1021` と重複・LSP） |
 | G-1〜G-5 | テストの全文（`tests/diagnostic_v2.rs` の段階ごと、`src/diagnostic.rs` の単体テスト） |
+
+## 実装と検証（2026-10-26）
+
+- 基盤は `main` の `62939ba5`（起票時の `a2313d19` から 462 コミット）。Phase 1〜4 の手順 1〜22 を順に実装し、Phase ごとにコミットした。名前・型・メッセージ・JSON のキーと順序・上限は本文と付録 F のとおり。
+- **HEAD との食い違いと最新化**（付録 A・B・F-8・G-4 を更新済み）:
+  - edition 2027 が manifest のない CLI 入力の既定になり、通常の `def` の非 Copy 引数は既定で読み取り（A18）になった。`move1`・`loop1`・`loop2`・`branch1`・`branch2`・`partial1`・`life3` と LSP の `MOVE_TWICE` は所有権を受け取る引数を `own` で書く（どの edition でも同じ意味）。`own` がないと CLI では移動が起きず、HEAD でも診断が出なかった。
+  - `std2` は、`std/Array.tz` の `def length` が 9 行目にあり、メッセージが `expected [an undetermined type], found i32`（`ref` なし）。`std_parameter_note_points_into_std` は行を std のファイルから数える。CLI（2027）の `nofn` の 3 件目は、読み取り引数の型どおり `a value of type ref string ...`（`analyze_all` の 2026 では `string`。テストは 2026 で照合）。
+  - D1 の書き換えは 18 か所ではなく 23 か所（`src/profile.rs` 1・`src/resident.rs` の単体テスト 2・`src/main.rs` の引数解析 5 を含む）。`print_diagnostics` は `write_diagnostics(err, ..)` を通す形に変わっていたので、`lookup` をそこで作る（直接実行とサーバー経由の `check` の両方が通る）。
+  - `E1012` の可変性の条件は HEAD で `usage != Use::Write && ..` に変わっていた。`DeclaredHere` の条件（付録 F-3）はそのまま使えた。
+- **stack**（GUIDE §3.1。`RUST_MIN_STACK` の 16 KiB 刻みの二分探索。debug、opt-level 1）: HEAD 約 325,632 / 357,376 / 595,456 → 完了時 約 325,632 / 357,376 / 563,712（lib / polymorphism / computations）。dev profile が opt-level 1 になったため、起票時の値（約 2 MB）より大幅に小さい。付録 F-6 の形のまま `expected_because` を `Result<T, _>` に通すと computations が 659 KB に増えた（`let` の注釈の経路で `TypedExpr` の一時値が frame に残る）ので、**`expected_because` は `Option<&mut Diagnostic>` だけを受け取り、`#[cold] #[inline(never)]` の `annotation_because`・`argument_because` から、検査が誤りを出したとき（`Err` か `recovered` が増えたとき）だけ呼ぶ**形にした。成功する検査は `tail_spans` の割り当ても `format!` もしない。`E1002` の構築も `#[cold] #[inline(never)]` の `unknown_value` に出した。付ける条件と結果は付録 F-6 と同じ。
+- **互換**（付録 C）: Phase 1 の完了時、付録 A の 43 本と `tests/fixtures/*`・`examples/*` の 163 プロジェクト・489 ファイル（JSON・テキスト・終了コード）が変更前と 1 byte も同じ。Phase 2・3 の完了時、追加の情報を取り除くと 489 ファイルすべて同じで、増えたのは付録 A のソース（70 ファイル）だけ（`tests/fixtures`・`examples` は 1 byte も変わらない）。`TSUZURI_THREADS=1` と `8` の出力は同じ。付録 B の全出力を照合し、`life3`（`own` の 4 列）・`std2`・`nofn`（上記）以外は一字一句同じ。
+- **テスト**: `tests/diagnostic_v2.rs` 28 件（手順 2・8・14 で先に書き、手順の予告どおりの件数が失敗してから実装した）、`src/diagnostic.rs` の単体テスト 8 件、`ownership::later_use_tests` 1 件、`lsp::tests::a_fix_must_remove_its_diagnostic_and_add_nothing` 1 件、`tests/lsp.rs` 3 件。既存のテストの期待値は 1 つも変えていない（D1 の書き換えの 8 ファイルの `rejects` の `into_data()` を除く）。`codeAction` の検証つき quickfix は release の 1 セッション全体で 0.53 秒（停止条件 9 の 1 秒未満）。
+- **実行したコマンド**: `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings`、`RUST_MIN_STACK=4194304 cargo nextest run --locked`（各 Phase の最後。最終は「最終確認」の行）、`node tests/parallel_frontend.mjs`・`node tests/examples.mjs`（release）、`node tests/{lsp_sessions,repl,frontend_cache,server,watch,control}.mjs`・`node tests/features.mjs .. borrowed_records`（dev）、`node scripts/check-docs.mjs`（変更した 4 ページ: 57 links、23 checked examples、46 native runs）。
+- **最終確認**（手順 22）: `cargo fmt --all -- --check`・`cargo clippy --all-targets --locked -- -D warnings` が緑。`RUST_MIN_STACK=4194304 TSUZURI_THREADS=8 cargo nextest run --locked` が **1,914 件すべて通過**（2 件は既存の skip。HEAD の 1,873 件 + 本チケットの 41 件）。GUIDE §3.1 の 3 つは既定の stack で通過。`node tests/ai_cost.mjs`（G31。`diag-v2` の測定は、計測用のコーパスの最初の診断が `related` を持たないので、今の基準値のまま無効）、`node tests/repo_kb.mjs`（78 件）、`node scripts/check-guide-lite.mjs`（85 件）が通る。
+- **チケットから外れた判断**: 上記の stack のための構造（結果は同じ）。`E1002` の説明が `compiler/diagnostics.md` で「型シグネチャの不整合」になっていたのを、HEAD の実際（未知の値・関数・定数・ケースの名前）に直した。所有権・非同期・`Owned` のページの出力例は、最初の 1 行だけを引用する形（`error[E1012]: ...`）で、その形のままでも正しいので変えず、`ownership.md`・`borrowing.md`・`lifetimes.md` の最初の例に完全な出力（`note`・`help`）と各 role の説明を足した。
+- **更新した文書**: `_tsuzuri/language-reference/compiler/diagnostics.md`（表示形式に「関連する位置・help・修正案」、JSON の追加キーと `role`、エラーコードの表、LSP）、`ownership-and-memory/{ownership,borrowing,lifetimes}.md`、`docs/language.md`（診断）、`docs/stability.md`（安定として保つもの・保たないもの）、`docs/architecture.md`（`src/diagnostic.rs`・`src/lsp.rs` の行）、`README.md`（開発・AI 支援、LSP の主要機能）、`vsc/README.md`（機能と制限。拡張のコードは変えない）。
+- **変更したファイル**: `src/{diagnostic,main,repl,docgen,cache,profile,resident,driver,polymorph,ownership,ownership_control,check,control,exceptions,exhaustiveness,parser,lsp}.rs`、`tests/diagnostic_v2.rs`（新規）、`tests/lsp.rs`、`tests/{arena,concurrency,json,matrix,matrix_views,rc,specs,tensor}.rs`、`tests/repo_kb.mjs`（このチケットのパス）、上記の文書、`_features/`（本チケットと付録の移動と更新、`README.md` の状態、他チケットからのリンク）。
+
