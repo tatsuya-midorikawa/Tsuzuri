@@ -3909,6 +3909,10 @@ pub enum TypedExprKind {
         step: Box<TypedExpr>,
         finish: Box<TypedExpr>,
         body: Box<TypedExpr>,
+        /// `for i = start downto finish`: the counter moves down by `step`, which is the literal
+        /// `1`, so that an unsigned counter can count down too. A range `start .. step .. finish`
+        /// is never descending; a negative step moves its counter down.
+        descending: bool,
     },
     ForEach {
         owner: Local,
@@ -3952,6 +3956,10 @@ pub enum TypedExprKind {
     Dereference(Box<TypedExpr>),
     Assign(Box<TypedExpr>, Box<TypedExpr>),
     Cast(Box<TypedExpr>),
+    /// An index, a slice bound or an array length of a 128-bit integer type or a type parameter,
+    /// saturated to the `i64` range: a value that `i64` cannot hold becomes `i64::MIN` or
+    /// `i64::MAX`, which no collection reaches (`Checker::index_operand`). Its type is `i64`.
+    SaturatingIndex(Box<TypedExpr>),
     /// A case used as a function value, `Some : 'a -> Maybe<'a>`. After
     /// specialization `closures::lower` replaces it with a generated function.
     CaseConstructor {
@@ -4148,6 +4156,7 @@ impl TypedExpr {
             | BorrowOperand(value)
             | Dereference(value)
             | Cast(value)
+            | SaturatingIndex(value)
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -4249,6 +4258,7 @@ impl TypedExpr {
             | BorrowOperand(value)
             | Dereference(value)
             | Cast(value)
+            | SaturatingIndex(value)
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -4402,6 +4412,7 @@ impl TypedExpr {
             | BorrowOperand(value)
             | Dereference(value)
             | Cast(value)
+            | SaturatingIndex(value)
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -10794,7 +10805,7 @@ impl<'a> Checker<'a> {
                 let (Type::Array(element) | Type::List(element)) = &ty else {
                     unreachable!("the parser requires a collection type after 'new'")
                 };
-                let length = self.expression(length, Some(&Type::I64))?;
+                let length = self.index_operand(length)?;
                 let initializer_type = Type::function(vec![Type::I64], (**element).clone());
                 let initializer = self.expression(initializer, Some(&initializer_type))?;
                 let kind = if matches!(ty, Type::List(_)) {
@@ -10869,7 +10880,7 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 };
-                let index = self.expression(index, Some(&Type::I64))?;
+                let index = self.index_operand(index)?;
                 (TypedExprKind::Index(Box::new(value), Box::new(index)), ty)
             }
             ExprKind::Borrow(value, mutable, notation) => {
@@ -11735,6 +11746,48 @@ impl<'a> Checker<'a> {
         Ok((TypedExprKind::Record(values), ty))
     }
 
+    /// An index, a slice bound or an array length (`new [T](length, f)`) in any integer type, as
+    /// the `i64` that addresses the collection. An `i64` stays as it is, and an unsuffixed literal
+    /// or an undecided type becomes one. A narrower type widens; `i64u` keeps its bits, so a value
+    /// above `i64.max` reads as negative; a 128-bit type or a type parameter saturates to `i64`
+    /// (`SaturatingIndex`). A value that `i64` cannot hold therefore becomes one that no collection
+    /// reaches, and it traps where an `i64` index would. Up to 64 bits the conversion is `as i64`,
+    /// so `xs[i]` and `xs[i as i64]` compile to the same code.
+    fn index_operand(&mut self, index: &Expr) -> Result<TypedExpr, Diagnostic> {
+        let index = self.expression(index, None)?;
+        let span = index.span;
+        let cast = |value: TypedExpr, ty: Type| TypedExpr {
+            kind: TypedExprKind::Cast(Box::new(value)),
+            ty,
+            span,
+        };
+        match self.inference.resolve(&index.ty) {
+            ty if ty.contains_error() => Ok(TypedExpr::error(span)),
+            Type::I64 => Ok(index),
+            Type::Integer(bits, _) if bits <= 64 => Ok(cast(index, Type::I64)),
+            ty @ Type::Infer(_) => {
+                self.same(&ty, &Type::I64, span)?;
+                Ok(index)
+            }
+            ty @ (Type::Integer(..) | Type::Variable(_)) => {
+                self.require("Integer", ty, span)?;
+                Ok(TypedExpr {
+                    kind: TypedExprKind::SaturatingIndex(Box::new(index)),
+                    ty: Type::I64,
+                    span,
+                })
+            }
+            ty => Err(Diagnostic::new(
+                "E1003",
+                format!(
+                    "an index must have an integer type (i8 to i128 or i8u to i128u), found {}",
+                    ty.display(&self.types)
+                ),
+                span,
+            )),
+        }
+    }
+
     fn slice(
         &mut self,
         source: &Expr,
@@ -11776,10 +11829,10 @@ impl<'a> Checker<'a> {
             Self::named_slice_source(&source, span)?;
         }
         let start = start
-            .map(|value| self.expression(value, Some(&Type::I64)).map(Box::new))
+            .map(|value| self.index_operand(value).map(Box::new))
             .transpose()?;
         let end = end
-            .map(|value| self.expression(value, Some(&Type::I64)).map(Box::new))
+            .map(|value| self.index_operand(value).map(Box::new))
             .transpose()?;
         let ty = if mutable {
             Type::Reference(Box::new(Type::ArrayView(element)), true)

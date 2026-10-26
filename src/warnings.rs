@@ -193,6 +193,7 @@ fn collect_locals<'a>(
         | Dereference(_)
         | Assign(..)
         | Cast(_)
+        | SaturatingIndex(_)
         | CaseConstructor { .. }
         | Construct { .. }
         | UnionTag(_)

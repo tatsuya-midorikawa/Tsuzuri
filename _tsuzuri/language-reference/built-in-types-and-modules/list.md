@@ -62,7 +62,7 @@ new_len=4 head=5
 
 ### 動的初期化 `new [|T|](count, initializer)`
 
-要素数を指定して関数からリストを生成するには `new [|T|](count, initializer)` を使用します。
+要素数を指定して関数からリストを生成するには `new [|T|](count, initializer)` を使用します。`count` はどの整数型でも書けます。初期化関数が受け取るインデックスは `i64` です。
 
 ```tsuzuri run=generated%3D%5B%7C0%2C%202%2C%204%2C%206%7C%5D
 let evens = new [|i64|](4, \i -> i * 2)
@@ -125,7 +125,7 @@ sum=60
 
 ## 添字アクセスと計算量上の注意
 
-添字 `xs[i]` や `List.item i xs` で要素を読めます。
+添字 `xs[i]` や `List.item i xs` で要素を読めます。添字式 `xs[i]` の `i` は、[配列の添字](./array.md#要素へのアクセスと境界検査) と同じく、`i8`〜`i128` と `i8u`〜`i128u` のどの整数型でも書けます（`List.item` などの関数の添字は `i64` です）。範囲外と、`i64` に収まらない値はトラップします。
 
 ```tsuzuri run=third%3D30
 let values = [|10, 20, 30, 40|]

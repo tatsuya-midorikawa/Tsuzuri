@@ -364,6 +364,7 @@ impl<'a> Checker<'a, '_> {
                 step,
                 finish,
                 body,
+                ..
             } => {
                 self.eval(start, Use::Consume, &during)?;
                 self.eval(step, Use::Consume, &during)?;

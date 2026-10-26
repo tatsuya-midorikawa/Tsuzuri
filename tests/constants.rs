@@ -606,6 +606,25 @@ fn const_def_ranges_follow_the_loop_semantics() {
         let expected = sum(start, step, finish, bits, signed);
         assert_eq!(integer_of(&source), expected, "{source}");
     }
+    // `for i = a to b` and `downto` count in the type of their ends, up to and including both
+    // extremes; an unsigned counter counts down to 0 without wrapping.
+    for (ty, start, finish, down, expected) in [
+        ("i8u", 3i128, 0i128, true, 3210),
+        ("i8u", 255, 253, true, 255 * 100 + 254 * 10 + 253),
+        ("i8u", 0, 0, true, 0),
+        ("i8u", 1, 2, true, -1),
+        ("i8", -126, -128, true, -126 * 100 - 127 * 10 - 128),
+        ("i8", 125, 127, false, 125 * 100 + 126 * 10 + 127),
+        ("i64u", 1, 0, true, 10),
+        ("i128u", 2, 0, true, 200 + 10),
+        ("i128", 1, -1, true, 100 - 1),
+    ] {
+        let direction = if down { "downto" } else { "to" };
+        let source = format!(
+            "const def digits :: {ty} -> {ty} -> i128\nfn digits start finish =\n    let mut sum = 0i128\n    let mut seen = false\n    for i = start {direction} finish do\n        seen = true\n        sum = sum * 10 + (i as i128)\n    if seen then sum else -1\nconst Value: i128 = digits ({start}{ty}) ({finish}{ty})\nValue"
+        );
+        assert_eq!(integer_of(&source), expected as u128, "{source}");
+    }
 }
 
 #[test]
@@ -747,6 +766,15 @@ fn const_dependencies_flow_through_const_defs() {
 }
 
 #[test]
+fn const_def_indexes_and_lengths_take_every_integer_type() {
+    let source = "const def pick :: [i64] -> i128 -> i128u -> i8u -> i64\n\
+        fn pick xs a b c =\n    let made = new [i64](b, \\i -> i * 7)\n    \
+        xs[a] * 10000 + made[c] * 100 + made.length\n\
+        const Value: i64 = pick [1, 2, 3] 2i128 3i128u 1i8u\nValue";
+    assert_eq!(integer_of(source), 3 * 10000 + 7 * 100 + 3);
+}
+
+#[test]
 fn const_def_traps_report_the_trap_kind() {
     for (definitions, expression, ty, expected) in [
         (
@@ -788,6 +816,37 @@ fn const_def_traps_report_the_trap_kind() {
         (
             "const def make :: i64 -> [i64]\nfn make n = new [i64](n, \\i -> i)",
             "make (0 - 1)",
+            "[i64]",
+            "negative array length",
+        ),
+        // An index or a length that `i64` cannot hold traps; it does not wrap onto an element.
+        (
+            "const def pick :: [i64] -> i128 -> i64\nfn pick xs at = xs[at]",
+            "pick [1, 2] 18446744073709551617i128",
+            "i64",
+            "index out of bounds",
+        ),
+        (
+            "const def pick :: [i64] -> i128 -> i64\nfn pick xs at = xs[at]",
+            "pick [1, 2] (0i128 - 18446744073709551615i128)",
+            "i64",
+            "index out of bounds",
+        ),
+        (
+            "const def pick :: string -> i128u -> i64\nfn pick text at = text[at] as i64",
+            "pick \"abc\" 18446744073709551618i128u",
+            "i64",
+            "index out of bounds",
+        ),
+        (
+            "const def pick :: [i64] -> i64u -> i64\nfn pick xs at = xs[at]",
+            "pick [1, 2] 9223372036854775808i64u",
+            "i64",
+            "index out of bounds",
+        ),
+        (
+            "const def make :: i128 -> [i64]\nfn make n = new [i64](n, \\i -> i)",
+            "make (0i128 - 18446744073709551615i128)",
             "[i64]",
             "negative array length",
         ),

@@ -85,28 +85,25 @@ impl Checker<'_> {
                     start,
                     step,
                     finish,
-                    counted,
+                    counted: _,
                     descending,
                 } = &source.kind
                 {
-                    let ty = if *counted {
-                        Type::Integer(32, true)
-                    } else {
-                        self.inference.fresh()
-                    };
+                    // Both forms count in any integer type; an unsuffixed literal counter is `i32`.
+                    let ty = self.inference.fresh();
                     let start = self.expression(start, Some(&ty))?;
                     let step = if let Some(step) = step {
                         self.expression(step, Some(&ty))?
                     } else {
-                        let (kind, ty) =
-                            self.integer(1, None, Some(&ty), *descending, source.span)?;
+                        // `downto` steps down by `1` (`descending`), so its step fits an unsigned type.
+                        let (kind, ty) = self.integer(1, None, Some(&ty), false, source.span)?;
                         value(kind, ty, source.span)
                     };
                     let finish = self.expression(finish, Some(&ty))?;
                     self.require("Integer", ty.clone(), source.span)?;
                     (
                         None,
-                        Some((start, step, finish)),
+                        Some((start, step, finish, *descending)),
                         self.inference.resolve(&ty),
                     )
                 } else {
@@ -179,13 +176,14 @@ impl Checker<'_> {
                 };
                 self.normal_loop_depth -= 1;
                 self.scopes.pop();
-                if let Some((start, step, finish)) = range {
+                if let Some((start, step, finish, descending)) = range {
                     TypedExprKind::ForRange {
                         local,
                         start: Box::new(start),
                         step: Box::new(step),
                         finish: Box::new(finish),
                         body: Box::new(body),
+                        descending,
                     }
                 } else {
                     let source = source.unwrap();

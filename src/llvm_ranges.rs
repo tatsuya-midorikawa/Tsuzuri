@@ -99,10 +99,23 @@ impl FunctionEmitter<'_, '_> {
         stride: &str,
         flags: Flags,
     ) {
+        self.audit_step(step, "add", bits, current, stride, flags);
+    }
+
+    /// `audit_increment` for a counter that moves by `current operation stride`.
+    pub(super) fn audit_step(
+        &mut self,
+        step: &str,
+        operation: &str,
+        bits: u16,
+        current: &str,
+        stride: &str,
+        flags: Flags,
+    ) {
         if self.globals.range_flags != RangeFlags::Audit {
             return;
         }
-        self.audit("add", bits, current, stride, flags);
+        self.audit(operation, bits, current, stride, flags);
         self.jump(step);
         self.begin(step);
     }

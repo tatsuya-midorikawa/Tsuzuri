@@ -105,7 +105,8 @@ impl RangeFacts {
     }
 
     /// Records the values of the counter of a `for` range loop whose bounds and step are given: it
-    /// starts at `start`, moves in the direction of the step and stops at `finish`.
+    /// starts at `start`, moves in the direction of the step, or down for `downto` (`descending`),
+    /// and stops at `finish`.
     pub(crate) fn enter_counter(
         &mut self,
         module: &CheckedModule,
@@ -113,6 +114,7 @@ impl RangeFacts {
         start: &TypedExpr,
         step: &TypedExpr,
         finish: &TypedExpr,
+        descending: bool,
     ) {
         if self.steps == 0 {
             return;
@@ -123,7 +125,9 @@ impl RangeFacts {
         let first = self.value(module, start, ty, 0);
         let last = self.value(module, finish, ty, 0);
         let step = self.value(module, step, ty, 0);
-        let (low, high) = if !ty.signed || step.low > 0 {
+        let (low, high) = if descending {
+            (last.low, first.high)
+        } else if !ty.signed || step.low > 0 {
             (first.low, last.high)
         } else if step.high < 0 {
             (last.low, first.high)

@@ -221,6 +221,59 @@ for (const [first, last, down] of [
   for (let n = i128min + 3n; n >= i128min; n--) { count++; low += BigInt.asIntN(64, n); }
   cases.push(["range_edges_i128", [], wrap(count * 1000n + low)]);
 }
+// Counted loops in every integer type (`downto` included for unsigned counters, which cannot step by -1) and indexes
+// of every integer type. IndexTypes.tz.
+for (const [first, last, down] of [
+  [umax - 3n, umax, 0], [umax, umax - 3n, 1], [3n, 0n, 1], [0n, 0n, 1], [0n, 0n, 0], [1n, 3n, 1], [umax, umax, 1],
+  [(1n << 63n) + 1n, (1n << 63n) - 2n, 1], [(1n << 63n) - 2n, (1n << 63n) + 1n, 0], [2n, 0n, 0],
+]) {
+  cases.push(["counted_u64", [first, last, down], BigInt.asIntN(64, edgeReference(first, last, down === 1,
+    (total, n) => BigInt.asUintN(64, total * 31n + (n ^ 5n))))]);
+}
+for (const [first, last, down] of [
+  [252, 255, 0], [255, 252, 1], [3, 0, 1], [0, 0, 1], [129, 126, 1], [1, 3, 1], [0, 255, 0], [255, 0, 1], [255, 255, 1],
+]) {
+  cases.push(["counted_u8", [first, last, down], edgeReference(BigInt(first), BigInt(last), down === 1,
+    (total, n) => wrap(total * 31n + n))]);
+}
+for (const [first, last, down] of [
+  [32765, 32767, 0], [-32766, -32768, 1], [2, -2, 1], [-2, 2, 0], [1, 3, 1], [32767, 32767, 1], [-32768, -32768, 1],
+]) {
+  cases.push(["counted_i16", [first, last, down], edgeReference(BigInt(first), BigInt(last), down === 1,
+    (total, n) => wrap(total * 31n + n))]);
+}
+for (const [first, last] of [[5, 0], [4294967295, 4294967290], [0, 0], [1, 0], [2, 3], [2147483649, 2147483646]]) {
+  cases.push(["counted_u32_continue", [first, last], edgeReference(BigInt(first), BigInt(last), true,
+    (total, n) => n % 2n === 0n ? total : wrap(total * 7n + n))]);
+}
+{
+  const u128max = (1n << 128n) - 1n, i128max = (1n << 127n) - 1n, i128min = -(1n << 127n);
+  let count = 0n, low = 0n;
+  const visit = (first, last, down, mask) => {
+    for (let n = first; down ? n >= last : n <= last; n += down ? -1n : 1n) { count++; low = wrap(low * 7n + (n & mask)); }
+  };
+  visit(u128max, u128max - 2n, true, 255n);
+  visit(2n, 0n, true, -1n);
+  visit(i128min + 2n, i128min, true, 255n);
+  visit((1n << 64n) + 1n, (1n << 64n) - 1n, true, 3n);
+  visit(i128max - 2n, i128max, false, 255n);
+  cases.push(["counted_wide", [], wrap(count * 1000000n + low)]);
+}
+for (const n of [0n, 1n, 2n, 5n, 10n]) {
+  let total = 0n;
+  for (let i = 0n; i < n; i++) total += i * 3n + 1n;
+  for (let i = n - 1n; i >= 0n; i--) total = total * 2n + i * 3n + 1n;
+  cases.push(["counted_inferred", [n], total]);
+}
+for (const n of [0, 1, 2, 3]) {
+  const i = BigInt(n), xs = 10n * (i + 1n), list = i + 1n, v = i + 5n, fixed = 100n * (i + 1n);
+  let total = 2n * xs + 2n * list;
+  total = total * 3n + 2n * v + 97n + i;
+  total = total * 3n + 119n + i + 2n * fixed;
+  total = total * 3n + 4n;
+  total = total * 3n + i + 3n * xs;
+  cases.push(["index_types", [n], total]);
+}
 // PR02 D10: the builtin forms `Add.add`, `Sub.sub` and `Mul.mul` wrap like the operators and keep the order of evaluation.
 for (const seed of [0n, 1n, -1n, max, min, 123456789n, -987654321n, 65535n, 4294967295n]) {
   const a = wrap(seed + max), b = wrap(a - seed), c = wrap(seed * seed);
@@ -365,7 +418,11 @@ for (const n of [0n, 1n, 2n, 3n, 4n, 5n, 7n, 100n, 999n, 1000n]) {
   cases.push(["tail_pipe", [n], n % 2n === 0n ? 1 : 0]);
   for (const value of [0n, 21n, -7n]) cases.push(["tail_lend", [value, n], n % 2n === 0n ? value : value * 2n]);
 }
-const traps = ["trap_step", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active", "recursion_trap_checked", "break_traps_without_jump"];
+const traps = ["trap_step", "trap_pattern", "trap_lambda", "trap_for_active", "trap_fx_active", "recursion_trap_checked", "break_traps_without_jump",
+  // An index that `i64` cannot hold traps instead of wrapping onto an element (IndexTypes.tz).
+  "trap_index_i8_negative", "trap_index_u64_high", "trap_index_u64_max", "trap_index_i128_wrap",
+  "trap_index_i128_negative_wrap", "trap_list_u128_wrap", "trap_vec_u128_sign", "trap_string_i128_wrap",
+  "trap_fixed_i128_wrap", "trap_slice_i128_wrap", "trap_new_length_u128_wrap", "trap_generic_i128_wrap"];
 const cValue = (n) => typeof n !== "bigint" ? Number.isNaN(n) ? "NAN"
   : n === Infinity ? "INFINITY" : n === -Infinity ? "-INFINITY" : Object.is(n, -0) ? "-0.0" : String(n)
   : n === min ? "INT64_MIN" : n < 0n ? `(-INT64_C(${-n}))`

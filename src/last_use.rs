@@ -238,6 +238,7 @@ impl Analysis<'_> {
             }
             Unary(_, value)
             | Cast(value)
+            | SaturatingIndex(value)
             | Checked(value)
             | Construct {
                 payload: Some(value),
@@ -314,6 +315,7 @@ impl Analysis<'_> {
                 step,
                 finish,
                 body,
+                ..
             } => {
                 self.loop_expression(None, body, &[local.id], live, depth);
                 for value in [finish, step, start] {

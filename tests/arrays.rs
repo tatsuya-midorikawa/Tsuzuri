@@ -27,6 +27,12 @@ fn array_types_do_not_depend_on_length() {
         "def size :: [i64] -> i64\nfn size xs = xs.length\nsize new [i64](3, i -> i)",
         "def f :: i64\nfn f = { let mut a = [1]; let b = a; a = [2, 3]; b[0] + a.length }",
         "def f :: &[i64] -> i64\nfn f xs = xs[0] + xs.length",
+        // A length and an index take any integer type.
+        "def f :: i32 -> [i64]\nfn f n = new [i64](n, i -> i)",
+        "def f :: i8u -> [i64]\nfn f n = new [i64](n, i -> i)",
+        "def f :: i128 -> [i64]\nfn f n = new [i64](n, i -> i)",
+        "def f :: &[i64] -> i8 -> i16u -> i128u -> i64\nfn f xs a b c = xs[a] + xs[b] + xs[c]",
+        "def f :: &[i64] -> i32 -> i64u -> i64\nfn f xs a b = (ref xs[a..b]).length",
     ] {
         accepts(source);
     }
@@ -40,8 +46,12 @@ fn array_constructors_require_a_length_and_typed_initializer() {
         ("new i64(3, i -> i)", "E0002"),
         ("new [i64](3)", "E0002"),
         ("new [i64](3, i -> i, 4)", "E0002"),
-        ("new [i64](3i32, i -> i)", "E1003"),
         ("new [i64](true, i -> i)", "E1003"),
+        ("new [i64](3.0, i -> i)", "E1003"),
+        ("let xs = [1i64]\nxs[1.5]", "E1003"),
+        ("let xs = [1i64]\nxs[true]", "E1003"),
+        ("let xs = [1i64]\nxs['a']", "E1003"),
+        ("let xs = [1i64]\n(ref xs[0..1.0]).length", "E1003"),
         ("new [i32](3, i -> i)", "E1003"),
         ("new [i64](3, 0)", "E1003"),
         ("new [i64](3, i -> true)", "E1003"),

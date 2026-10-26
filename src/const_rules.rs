@@ -155,6 +155,7 @@ pub(super) fn validate_function(
                 }
                 pending.push((value, Position::Value));
             }
+            K::SaturatingIndex(value) => pending.push((value, Position::Value)),
             K::Cast(value) => {
                 let numeric = |ty: &Type| matches!(ty, Type::Integer(..) | Type::Binary(_));
                 if value.ty != expression.ty && !(numeric(&value.ty) && numeric(&expression.ty)) {

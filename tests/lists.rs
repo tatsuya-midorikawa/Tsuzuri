@@ -47,6 +47,8 @@ fn lists_support_inference_nesting_and_construction() {
         "def first :: &[|'a|] -> 'a\nfn first xs = xs[0]\nlet a = [|42|]\nfirst (&a)",
         "def f :: i64\nfn f = { let mut a = [|1|]; let b = a; a = [|2, 3|]; b[0] + a.length }",
         "def f :: &[|i64|] -> i64\nfn f xs = xs[0] + xs.length",
+        "def f :: &[|i64|] -> i16 -> i64u -> i64\nfn f xs a b = xs[a] + xs[b]",
+        "def f :: i32 -> [|i64|]\nfn f n = new [|i64|](n, i -> i)",
         "def f :: [|&mut i64 -> unit|]\nfn f = [|x -> { *x = 1; }|]",
     ] {
         accepts(source);
@@ -75,7 +77,7 @@ fn lists_are_distinct_from_arrays_and_reject_invalid_types() {
         ("def f :: [|i64; 4|]\nfn f = [|1|]", "E0002"),
         ("new [|i64|](3)", "E0002"),
         ("new [|i64|](3, i -> i, 4)", "E0002"),
-        ("new [|i64|](3i32, i -> i)", "E1003"),
+        ("new [|i64|](3.0, i -> i)", "E1003"),
         ("new [|i32|](3, i -> i)", "E1003"),
         ("new [|i64|](3, true)", "E1003"),
         ("new [|Missing|](3, i -> i)", "E1004"),
