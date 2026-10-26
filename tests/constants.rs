@@ -766,6 +766,15 @@ fn const_dependencies_flow_through_const_defs() {
 }
 
 #[test]
+fn const_def_indexes_and_lengths_take_every_integer_type() {
+    let source = "const def pick :: [i64] -> i128 -> i128u -> i8u -> i64\n\
+        fn pick xs a b c =\n    let made = new [i64](b, \\i -> i * 7)\n    \
+        xs[a] * 10000 + made[c] * 100 + made.length\n\
+        const Value: i64 = pick [1, 2, 3] 2i128 3i128u 1i8u\nValue";
+    assert_eq!(integer_of(source), 3 * 10000 + 7 * 100 + 3);
+}
+
+#[test]
 fn const_def_traps_report_the_trap_kind() {
     for (definitions, expression, ty, expected) in [
         (
@@ -807,6 +816,37 @@ fn const_def_traps_report_the_trap_kind() {
         (
             "const def make :: i64 -> [i64]\nfn make n = new [i64](n, \\i -> i)",
             "make (0 - 1)",
+            "[i64]",
+            "negative array length",
+        ),
+        // An index or a length that `i64` cannot hold traps; it does not wrap onto an element.
+        (
+            "const def pick :: [i64] -> i128 -> i64\nfn pick xs at = xs[at]",
+            "pick [1, 2] 18446744073709551617i128",
+            "i64",
+            "index out of bounds",
+        ),
+        (
+            "const def pick :: [i64] -> i128 -> i64\nfn pick xs at = xs[at]",
+            "pick [1, 2] (0i128 - 18446744073709551615i128)",
+            "i64",
+            "index out of bounds",
+        ),
+        (
+            "const def pick :: string -> i128u -> i64\nfn pick text at = text[at] as i64",
+            "pick \"abc\" 18446744073709551618i128u",
+            "i64",
+            "index out of bounds",
+        ),
+        (
+            "const def pick :: [i64] -> i64u -> i64\nfn pick xs at = xs[at]",
+            "pick [1, 2] 9223372036854775808i64u",
+            "i64",
+            "index out of bounds",
+        ),
+        (
+            "const def make :: i128 -> [i64]\nfn make n = new [i64](n, \\i -> i)",
+            "make (0i128 - 18446744073709551615i128)",
             "[i64]",
             "negative array length",
         ),

@@ -330,7 +330,10 @@ impl<'a> Run<'a, '_> {
                 let value = self.frame().locals[id].clone();
                 self.stack.push(value.relabel(expression));
             }
-            K::Unary(_, operand) | K::Cast(operand) | K::NewLiteral(operand) => {
+            K::Unary(_, operand)
+            | K::Cast(operand)
+            | K::SaturatingIndex(operand)
+            | K::NewLiteral(operand) => {
                 self.tasks.push(Task::Finish(expression));
                 self.tasks.push(Task::Eval(operand));
             }
@@ -499,6 +502,22 @@ impl<'a> Run<'a, '_> {
             K::Cast(_) => {
                 let operand = self.pop(span)?;
                 let kind = cast(&operand.expr, &expression.ty, span)?;
+                self.stack.push(Value::leaf(kind, expression));
+            }
+            K::SaturatingIndex(_) => {
+                let operand = self.pop(span)?;
+                let (TypedExprKind::Int(value), Type::Integer(bits, signed_type)) =
+                    (&operand.expr.kind, &operand.expr.ty)
+                else {
+                    return Err(unsupported(span));
+                };
+                let wide = if *signed_type {
+                    signed(*value, *bits)
+                } else {
+                    i128::try_from(*value).unwrap_or(i128::MAX)
+                };
+                let index = wide.clamp(i128::from(i64::MIN), i128::from(i64::MAX));
+                let kind = TypedExprKind::Int(index as u128 & mask(64));
                 self.stack.push(Value::leaf(kind, expression));
             }
             K::Binary(operator, ..) => {

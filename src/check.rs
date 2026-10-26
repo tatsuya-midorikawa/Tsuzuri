@@ -3956,6 +3956,10 @@ pub enum TypedExprKind {
     Dereference(Box<TypedExpr>),
     Assign(Box<TypedExpr>, Box<TypedExpr>),
     Cast(Box<TypedExpr>),
+    /// An index, a slice bound or an array length of a 128-bit integer type or a type parameter,
+    /// saturated to the `i64` range: a value that `i64` cannot hold becomes `i64::MIN` or
+    /// `i64::MAX`, which no collection reaches (`Checker::index_operand`). Its type is `i64`.
+    SaturatingIndex(Box<TypedExpr>),
     /// A case used as a function value, `Some : 'a -> Maybe<'a>`. After
     /// specialization `closures::lower` replaces it with a generated function.
     CaseConstructor {
@@ -4152,6 +4156,7 @@ impl TypedExpr {
             | BorrowOperand(value)
             | Dereference(value)
             | Cast(value)
+            | SaturatingIndex(value)
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -4253,6 +4258,7 @@ impl TypedExpr {
             | BorrowOperand(value)
             | Dereference(value)
             | Cast(value)
+            | SaturatingIndex(value)
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -4406,6 +4412,7 @@ impl TypedExpr {
             | BorrowOperand(value)
             | Dereference(value)
             | Cast(value)
+            | SaturatingIndex(value)
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -11743,7 +11750,7 @@ impl<'a> Checker<'a> {
     /// the `i64` that addresses the collection. An `i64` stays as it is, and an unsuffixed literal
     /// or an undecided type becomes one. A narrower type widens; `i64u` keeps its bits, so a value
     /// above `i64.max` reads as negative; a 128-bit type or a type parameter saturates to `i64`
-    /// through `i128`. A value that `i64` cannot hold therefore becomes one that no collection
+    /// (`SaturatingIndex`). A value that `i64` cannot hold therefore becomes one that no collection
     /// reaches, and it traps where an `i64` index would. Up to 64 bits the conversion is `as i64`,
     /// so `xs[i]` and `xs[i as i64]` compile to the same code.
     fn index_operand(&mut self, index: &Expr) -> Result<TypedExpr, Diagnostic> {
@@ -11763,35 +11770,12 @@ impl<'a> Checker<'a> {
                 Ok(index)
             }
             ty @ (Type::Integer(..) | Type::Variable(_)) => {
-                self.require("Integer", ty.clone(), span)?;
-                let wide = Type::Integer(128, true);
-                let index = if ty == wide {
-                    index
-                } else {
-                    cast(index, wide.clone())
-                };
-                let bound = |value: i64| TypedExpr {
-                    kind: TypedExprKind::Int(i128::from(value) as u128),
-                    ty: wide.clone(),
+                self.require("Integer", ty, span)?;
+                Ok(TypedExpr {
+                    kind: TypedExprKind::SaturatingIndex(Box::new(index)),
+                    ty: Type::I64,
                     span,
-                };
-                let callee = TypedExpr {
-                    kind: TypedExprKind::Function(FunctionRef::Builtin(BuiltinInstance {
-                        builtin: Builtin::IntClamp,
-                        types: vec![wide.clone()],
-                    })),
-                    ty: Type::function(vec![wide.clone(); 3], wide.clone()),
-                    span,
-                };
-                let clamped = TypedExpr {
-                    kind: TypedExprKind::Call(
-                        Box::new(callee),
-                        vec![index, bound(i64::MIN), bound(i64::MAX)],
-                    ),
-                    ty: wide,
-                    span,
-                };
-                Ok(cast(clamped, Type::I64))
+                })
             }
             ty => Err(Diagnostic::new(
                 "E1003",

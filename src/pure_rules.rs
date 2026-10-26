@@ -574,6 +574,7 @@ fn closed_callable<'a>(
                 pending.push((value, direct, staged));
             }
             K::Cast(value)
+            | K::SaturatingIndex(value)
             | K::Borrow(value, _)
             | K::BorrowOperand(value)
             | K::Dereference(value) => pending.push((value, direct, staged)),
@@ -952,6 +953,7 @@ impl<'a> Scanner<'a> {
                     | K::Dereference(_)
                     | K::Assign(..)
                     | K::Cast(_)
+                    | K::SaturatingIndex(_)
                     | K::Construct { .. }
                     | K::UnionTag(_)
                     | K::UnionPayload { .. }

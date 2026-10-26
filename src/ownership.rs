@@ -347,6 +347,7 @@ fn ownership_free(body: &TypedExpr) -> bool {
                 | E::Local(_)
                 | E::Unary(..)
                 | E::Cast(_)
+                | E::SaturatingIndex(_)
                 | E::Binary(..)
                 | E::If { .. }
         ) {
@@ -2806,7 +2807,7 @@ impl<'a> Checker<'a, '_> {
             E::Cast(value) if expression.ty.function_purity().is_some() => {
                 result = self.eval(value, Use::Consume, &during)?;
             }
-            E::Unary(_, value) | E::Cast(value) => {
+            E::Unary(_, value) | E::Cast(value) | E::SaturatingIndex(value) => {
                 self.eval(value, Use::Consume, &during)?;
             }
             E::Int(_)

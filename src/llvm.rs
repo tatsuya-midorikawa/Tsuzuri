@@ -5039,6 +5039,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 "0".into()
             }
             TypedExprKind::Cast(value) => self.cast(value, &expression.ty),
+            TypedExprKind::SaturatingIndex(value) => self.saturating_index(value),
             TypedExprKind::Function(reference) => match reference {
                 FunctionRef::User(id) => self.make_closure(*id, &[]),
                 FunctionRef::Builtin(_) => unreachable!("builtin values are lifted before LLVM"),
@@ -6651,6 +6652,41 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         let slot = self.slot(ty);
         self.instruction(format!("store {} {value}, ptr {slot}", self.ty(ty)));
         slot
+    }
+
+    /// `SaturatingIndex`: the integer `expression` as an `i64`, `i64::MIN` or `i64::MAX` when
+    /// `i64` cannot hold it, so that it fails the bounds check instead of wrapping onto an element.
+    fn saturating_index(&mut self, expression: &TypedExpr) -> String {
+        let value = self.expression(expression);
+        let Type::Integer(bits, signed) = expression.ty else {
+            unreachable!("an index has an integer type")
+        };
+        let ty = self.ty(&expression.ty);
+        if bits < 64 {
+            let extension = if signed { "sext" } else { "zext" };
+            return self.value(format!("{extension} {ty} {value} to i64"));
+        }
+        if bits == 64 && signed {
+            return value;
+        }
+        let order = if signed { "s" } else { "u" };
+        let above = self.value(format!("icmp {order}gt {ty} {value}, {}", i64::MAX));
+        let mut clamped = self.value(format!(
+            "select i1 {above}, {ty} {}, {ty} {value}",
+            i64::MAX
+        ));
+        if signed {
+            let below = self.value(format!("icmp slt {ty} {clamped}, {}", i64::MIN));
+            clamped = self.value(format!(
+                "select i1 {below}, {ty} {}, {ty} {clamped}",
+                i64::MIN
+            ));
+        }
+        if bits == 64 {
+            clamped
+        } else {
+            self.value(format!("trunc {ty} {clamped} to i64"))
+        }
     }
 
     fn cast(&mut self, expression: &TypedExpr, to: &Type) -> String {

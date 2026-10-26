@@ -955,12 +955,15 @@ fn semantic_docs_follow_function_and_type_definition_targets() {
 #[test]
 fn an_index_shows_its_own_type_not_the_i64_it_converts_to() {
     let main = "def read :: ref [i64] -> i32 -> i64\nfn read values n = values[n - 1]\n\
-        def wide :: ref [i64] -> i128 -> i64\nfn wide values n = values[n * 2]";
+        def wide :: ref [i64] -> i128u -> i64\nfn wide values n = values[n * 2]\n\
+        def generic :: Integer<'n> => ref [i64] -> 'n -> i64\nfn generic values n = values[n + n]";
     let (_, index) = analyze_modules_with_semantics(&[("Main.tz", main)]).unwrap();
     let narrow = index.at(0, main.find("- 1").unwrap()).unwrap();
     assert_eq!(narrow.detail, "i32");
     let wide = index.at(0, main.find("* 2").unwrap()).unwrap();
-    assert_eq!(wide.detail, "i128");
+    assert_eq!(wide.detail, "i128u");
+    let generic = index.at(0, main.find("+ n]").unwrap()).unwrap();
+    assert_eq!(generic.detail, "'n");
     let element = index.at(0, main.find("values[n - 1]").unwrap()).unwrap();
     assert!(element.detail.contains("values"), "{}", element.detail);
 }
