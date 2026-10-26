@@ -1459,6 +1459,17 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     // A pattern binds the subject's reference: the read of `x` uses the borrow.
     let source = "let mut n = 0\nlet r = ref n\nmatch r with\n| x ->\n    n = 2\n    deref x\n";
     assert_eq!(used(source), Some((6, false)));
+    // A reborrow keeps the original borrow as its parent; a copied value (`deref r`) does not.
+    let source = "let mut n = 0\nlet r = ref n\nlet keep = ref (deref r)\nn = 2\nderef keep\n";
+    assert_eq!(used(source), Some((5, false)));
+    let source = "let mut n = 0\nlet r = ref n\nlet v = deref r\nn = 2\nderef r + v\n";
+    let diagnostic = first(source, "E1014");
+    let used_at = diagnostic
+        .related
+        .iter()
+        .find(|related| related.role == RelatedRole::BorrowUsedHere)
+        .map(|related| text_at(source, related.span));
+    assert_eq!(used_at, Some("r"));
     // `r = r` keeps the borrow.
     let source = "let mut n = 0\nlet mut r = ref n\nr = r\nn = 2\nderef r\n";
     assert_eq!(used(source), Some((5, false)));

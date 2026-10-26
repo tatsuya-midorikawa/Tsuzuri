@@ -3809,17 +3809,34 @@ fn find_later_use(
     best.map(|(repeated, _, local, span)| (span, repeated, local))
 }
 
-/// The local that a value copies when the value is just one of the `tracked` locals.
+/// The `tracked` local whose loan a value carries on (`source_local`).
 fn copied(value: &TypedExpr, tracked: &BTreeSet<usize>) -> Option<usize> {
-    match value.kind {
-        E::Local(id) if tracked.contains(&id) => Some(id),
-        _ => None,
+    source_local(value).filter(|id| tracked.contains(id))
+}
+
+/// The local whose loan a value carries on: the local itself, or a borrow of a place in it (a
+/// reborrow such as `ref (deref r)`, whose loan has the local's loan as its parent). A value read
+/// out of a place (`deref r`) is a copy that carries no loan.
+fn source_local(value: &TypedExpr) -> Option<usize> {
+    let mut place = match &value.kind {
+        E::Local(id) => return Some(*id),
+        E::Borrow(place, _) | E::BorrowOperand(place) => place,
+        _ => return None,
+    };
+    loop {
+        match &place.kind {
+            E::Local(id) => return Some(*id),
+            E::Dereference(inner) | E::Field(inner, _) | E::Index(inner, _) | E::Cast(inner) => {
+                place = inner;
+            }
+            _ => return None,
+        }
     }
 }
 
 /// The locals that may hold the loan of `holders`: the holders, and the locals that one of them
 /// was assigned or bound from (`holder = other`, `let holder = other`, a `match` subject or a
-/// pattern variable bound from a local), transitively.
+/// pattern variable bound from a local, or a reborrow of a place in a local), transitively.
 fn carriers(
     body: &TypedExpr,
     holders: &BTreeSet<usize>,
@@ -3831,20 +3848,22 @@ fn carriers(
         spend(budget, 1)?;
         match &expression.kind {
             E::Assign(place, value) => {
-                if let (E::Local(to), E::Local(from)) = (&place.kind, &value.kind) {
-                    copies.push((*to, *from));
+                if let E::Local(to) = place.kind
+                    && let Some(from) = source_local(value)
+                {
+                    copies.push((to, from));
                 }
             }
             E::Block { bindings, .. } => {
                 for (local, value) in bindings {
-                    if let E::Local(from) = value.kind {
+                    if let Some(from) = source_local(value) {
                         copies.push((local.id, from));
                     }
                 }
             }
             // The subject of a `match` is copied into its local, and a pattern binds projections.
             E::Match { local, value, arms } => {
-                if let E::Local(from) = value.kind {
+                if let Some(from) = source_local(value) {
                     copies.push((local.id, from));
                 }
                 for alternative in arms.iter().flat_map(|arm| &arm.alternatives) {
@@ -3857,7 +3876,7 @@ fn carriers(
                         .iter()
                         .map(|(local, value)| (local, value));
                     for (local, value) in steps.chain(bindings) {
-                        if let E::Local(from) = value.kind {
+                        if let Some(from) = source_local(value) {
                             copies.push((local.id, from));
                         }
                     }
