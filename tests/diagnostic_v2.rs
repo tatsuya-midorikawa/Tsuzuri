@@ -1456,6 +1456,12 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     // `r = a` with an `a` that holds another loan replaces the borrow; the target is not a read.
     let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\nlet mut n = 0\nlet m = 1\nlet a = ref m\nlet mut r = ref n\nboth r (ref mut n)\nr = a\nderef r\n";
     assert_eq!(used(source), None);
+    // A pattern binds the subject's reference: the read of `x` uses the borrow.
+    let source = "let mut n = 0\nlet r = ref n\nmatch r with\n| x ->\n    n = 2\n    deref x\n";
+    assert_eq!(used(source), Some((6, false)));
+    // `r = r` keeps the borrow.
+    let source = "let mut n = 0\nlet mut r = ref n\nr = r\nn = 2\nderef r\n";
+    assert_eq!(used(source), Some((5, false)));
     // A read after the loop runs when the loop ends, not in its next iteration.
     let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    n = 1\nderef r\n";
     assert_eq!(used(source), Some((5, false)));

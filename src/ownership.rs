@@ -3354,12 +3354,18 @@ impl Flow {
                         (&**else_branch, e_entry, e_exit, targets),
                     ]);
                 }
-                E::Match { value, arms, .. } => {
+                E::Match { local, value, arms } => {
                     let (v_entry, v_exit) = child(&mut flow, value);
                     flow.edge(entry, v_entry);
                     items.push((&**value, v_entry, v_exit, targets));
+                    // The subject is stored in the match's local.
+                    let subject = flow.node(value.span);
+                    flow.edge(v_exit, subject);
+                    if tracked.contains(&local.id) {
+                        flow.stores[subject] = Some((local.id, copied(value, tracked)));
+                    }
                     // Where control goes when the previous arm does not match.
-                    let mut failing = vec![v_exit];
+                    let mut failing = vec![subject];
                     for arm in arms {
                         let arm_entry = flow.node(arm.body.span);
                         for from in failing {
@@ -3379,19 +3385,23 @@ impl Flow {
                             let next = (index + 1 < arm.alternatives.len())
                                 .then(|| flow.node(arm.body.span));
                             let mut at = start;
+                            // A test may fail; a binding stores its projection in its local.
                             let parts = alternative
                                 .steps
                                 .iter()
-                                .map(|step| {
-                                    (
-                                        step.expression(),
-                                        matches!(step, crate::check::PatternStep::Test(_)),
-                                    )
+                                .map(|step| match step {
+                                    crate::check::PatternStep::Test(test) => (test, true, None),
+                                    crate::check::PatternStep::Bind(local, value) => {
+                                        (value, false, Some(local.id))
+                                    }
                                 })
                                 .chain(
-                                    alternative.bindings.iter().map(|(_, value)| (value, false)),
+                                    alternative
+                                        .bindings
+                                        .iter()
+                                        .map(|(local, value)| (value, false, Some(local.id))),
                                 );
-                            for (part, fallible) in parts {
+                            for (part, fallible, bound) in parts {
                                 let (part_entry, part_exit) = child(&mut flow, part);
                                 flow.edge(at, part_entry);
                                 if fallible {
@@ -3402,6 +3412,12 @@ impl Flow {
                                 }
                                 items.push((part, part_entry, part_exit, targets));
                                 at = part_exit;
+                                if let Some(bound) = bound.filter(|bound| tracked.contains(bound)) {
+                                    let store = flow.node(part.span);
+                                    flow.edge(at, store);
+                                    flow.stores[store] = Some((bound, copied(part, tracked)));
+                                    at = store;
+                                }
                             }
                             flow.edge(at, success);
                             match next {
@@ -3629,12 +3645,8 @@ impl Flow {
     ) -> Option<Vec<[bool; 2]>> {
         let width = locals.len() + 1;
         spend(budget, self.edges.len() * width + start.len())?;
-        let slot = |local: usize| {
-            locals
-                .iter()
-                .position(|other| *other == local)
-                .map(|i| i + 1)
-        };
+        // `locals` is sorted.
+        let slot = |local: usize| locals.binary_search(&local).ok().map(|i| i + 1);
         let contains = |outer: Span| {
             outer.source == created.source
                 && outer.start <= created.start
@@ -3653,13 +3665,14 @@ impl Flow {
                 // What the loan's holder is after `next` runs, and the local it hands it to.
                 let (kept, handed) = match self.stores[next] {
                     Some((stored, from)) => {
-                        let target = slot(stored);
+                        let (target, source) = (slot(stored), from.and_then(slot));
                         if at == 0 && contains(self.spans[next]) {
                             (target, None)
                         } else if target == Some(at) {
-                            (None, None)
+                            // `x = x` keeps what `x` holds; any other store replaces it.
+                            (source.filter(|source| *source == at), None)
                         } else {
-                            let handed = from.and_then(slot).filter(|from| *from == at);
+                            let handed = source.filter(|source| *source == at);
                             (Some(at), handed.and(target))
                         }
                     }
@@ -3805,7 +3818,8 @@ fn copied(value: &TypedExpr, tracked: &BTreeSet<usize>) -> Option<usize> {
 }
 
 /// The locals that may hold the loan of `holders`: the holders, and the locals that one of them
-/// was assigned or bound from (`holder = other`, `let holder = other`), transitively.
+/// was assigned or bound from (`holder = other`, `let holder = other`, a `match` subject or a
+/// pattern variable bound from a local), transitively.
 fn carriers(
     body: &TypedExpr,
     holders: &BTreeSet<usize>,
@@ -3825,6 +3839,27 @@ fn carriers(
                 for (local, value) in bindings {
                     if let E::Local(from) = value.kind {
                         copies.push((local.id, from));
+                    }
+                }
+            }
+            // The subject of a `match` is copied into its local, and a pattern binds projections.
+            E::Match { local, value, arms } => {
+                if let E::Local(from) = value.kind {
+                    copies.push((local.id, from));
+                }
+                for alternative in arms.iter().flat_map(|arm| &arm.alternatives) {
+                    let steps = alternative.steps.iter().filter_map(|step| match step {
+                        crate::check::PatternStep::Bind(local, value) => Some((local, value)),
+                        crate::check::PatternStep::Test(_) => None,
+                    });
+                    let bindings = alternative
+                        .bindings
+                        .iter()
+                        .map(|(local, value)| (local, value));
+                    for (local, value) in steps.chain(bindings) {
+                        if let E::Local(from) = value.kind {
+                            copies.push((local.id, from));
+                        }
                     }
                 }
             }
