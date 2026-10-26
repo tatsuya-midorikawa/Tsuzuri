@@ -1,0 +1,138 @@
+// Counted loops, indexes, slice bounds and array lengths in every integer type: the counter of
+// `for i = a to b` / `downto` takes the type of its ends, and an index converts to `i64` without
+// wrapping, so a value that `i64` cannot hold traps instead of reaching another element.
+
+export def counted_u64 :: own i64u -> own i64u -> own bool -> i64
+fn counted_u64 first last down =
+    let mut total = 0i64u
+    if down then
+        for i = first downto last do total = total * 31i64u + (i ^ 5i64u)
+    else
+        for i = first to last do total = total * 31i64u + (i ^ 5i64u)
+    total as i64
+
+export def counted_u8 :: own i8u -> own i8u -> own bool -> i64
+fn counted_u8 first last down =
+    let mut total = 0i64
+    if down then
+        for i = first downto last do total = total * 31 + (i as i64)
+    else
+        for i = first to last do total = total * 31 + (i as i64)
+    total
+
+export def counted_i16 :: own i16 -> own i16 -> own bool -> i64
+fn counted_i16 first last down =
+    let mut total = 0i64
+    if down then
+        for i = first downto last do total = total * 31 + (i as i64)
+    else
+        for i = first to last do total = total * 31 + (i as i64)
+    total
+
+export def counted_u32_continue :: own i32u -> own i32u -> i64
+fn counted_u32_continue first last =
+    let mut total = 0i64
+    for i = first downto last do
+        if i % 2i32u == 0i32u then continue
+        total = total * 7 + (i as i64)
+    total
+
+export def counted_wide :: i64
+fn counted_wide =
+    let mut count = 0i64
+    let mut low = 0i64
+    for i = 340282366920938463463374607431768211455i128u downto 340282366920938463463374607431768211453i128u do
+        count = count + 1
+        low = low * 7 + ((i & 255i128u) as i64)
+    for i = 2i128u downto 0i128u do
+        count = count + 1
+        low = low * 7 + (i as i64)
+    for i = -170141183460469231731687303715884105726i128 downto -170141183460469231731687303715884105728i128 do
+        count = count + 1
+        low = low * 7 + ((i & 255i128) as i64)
+    for i = 18446744073709551617i128u downto 18446744073709551615i128u do
+        count = count + 1
+        low = low * 7 + ((i & 3i128u) as i64)
+    for i = 170141183460469231731687303715884105725i128 to 170141183460469231731687303715884105727i128 do
+        count = count + 1
+        low = low * 7 + ((i & 255i128) as i64)
+    count * 1000000 + low
+
+// The counter of `for i = 0 to xs.length - 1` is `i64` because its end is.
+export def counted_inferred :: own i64 -> i64
+fn counted_inferred n =
+    let xs = new [i64](n, \i -> i * 3 + 1)
+    let mut total = 0
+    for i = 0 to xs.length - 1 do total = total + xs[i]
+    for i = xs.length - 1 downto 0 do total = total * 2 + xs[i]
+    total
+
+def at :: Integer<'n> => 'n -> ref [i64] -> i64 = \index values -> values[index]
+
+export def index_types :: own i32 -> i64
+fn index_types n =
+    let xs = [10i64, 20, 30, 40]
+    let list = [|1i64, 2, 3, 4|]
+    let v: Vec<i64> = Vec.of_array [5i64, 6, 7, 8]
+    let text = "abcd"
+    let bytes = u8"wxyz"
+    let fixed: [i64; 4] = [100, 200, 300, 400]
+    let made = new [i64](n as i8u, \i -> i + 1)
+    let mut total = xs[n as i8] + xs[n as i8u] + list[n as i16] + list[n as i16u]
+    total = total * 3 + v[n as i32u] + v[n as i64u] + (text[n as i128] as i64)
+    total = total * 3 + (bytes[n as i128u] as i64) + fixed[n as i8] + fixed[n as i64u]
+    total = total * 3 + (ref xs[n as i8u..4i128]).length + (ref xs[..n as i16]).length
+    let wide_index = n as i128u
+    let unsigned_index = n as i64u
+    total = total * 3 + made.length + at n (ref xs) + at wide_index (ref xs) + at unsigned_index (ref xs)
+    total
+
+def wide :: own i128 -> i128 = \value -> value
+def wide_unsigned :: own i128u -> i128u = \value -> value
+def unsigned :: own i64u -> i64u = \value -> value
+def narrow :: own i8 -> i8 = \value -> value
+
+export def trap_index_i8_negative :: i64
+fn trap_index_i8_negative = [10i64, 20][narrow (-1i8)]
+
+export def trap_index_u64_high :: i64
+fn trap_index_u64_high = [10i64, 20][unsigned 9223372036854775808i64u]
+
+export def trap_index_u64_max :: i64
+fn trap_index_u64_max = [10i64, 20][unsigned 18446744073709551615i64u]
+
+// Truncating 2^64 + 1 to `i64` would read element 1.
+export def trap_index_i128_wrap :: i64
+fn trap_index_i128_wrap = [10i64, 20][wide 18446744073709551617i128]
+
+export def trap_index_i128_negative_wrap :: i64
+fn trap_index_i128_negative_wrap = [10i64, 20][wide (-18446744073709551615i128)]
+
+export def trap_list_u128_wrap :: i64
+fn trap_list_u128_wrap = [|10i64, 20, 30|][wide_unsigned 18446744073709551618i128u]
+
+export def trap_vec_u128_sign :: i64
+fn trap_vec_u128_sign =
+    let v: Vec<i64> = Vec.of_array [10i64, 20]
+    v[wide_unsigned 170141183460469231731687303715884105729i128u]
+
+export def trap_string_i128_wrap :: i64
+fn trap_string_i128_wrap = "abc"[wide 18446744073709551617i128] as i64
+
+export def trap_fixed_i128_wrap :: i64
+fn trap_fixed_i128_wrap =
+    let fixed: [i64; 2] = [10, 20]
+    fixed[wide 18446744073709551617i128]
+
+export def trap_slice_i128_wrap :: i64
+fn trap_slice_i128_wrap =
+    let xs = [10i64, 20]
+    (ref xs[0i8..wide 18446744073709551617i128]).length
+
+export def trap_new_length_u128_wrap :: i64
+fn trap_new_length_u128_wrap = (new [i64](wide_unsigned 18446744073709551617i128u, \i -> i)).length
+
+export def trap_generic_i128_wrap :: i64
+fn trap_generic_i128_wrap =
+    let index = wide 18446744073709551617i128
+    at index (ref [10i64, 20])

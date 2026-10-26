@@ -76,20 +76,27 @@ impl FunctionEmitter<'_, '_> {
         step: &TypedExpr,
         finish: &TypedExpr,
         body: &TypedExpr,
+        descending: bool,
     ) {
         let first = self.expression(start);
         let stride = self.expression(step);
         // ranges.rs (R1, R2) relies on start, step and finish being evaluated once, before the loop.
         let last = self.expression(finish);
         self.ranges
-            .enter_counter(self.module, local, start, step, finish);
+            .enter_counter(self.module, local, start, step, finish, descending);
         let Type::Integer(bits, signed) = local.ty else {
             unreachable!("integer range checked")
         };
+        debug_assert!(
+            !descending || matches!(step.kind, TypedExprKind::Int(1)),
+            "downto steps by the literal 1"
+        );
         let ty = self.ty(&local.ty);
-        let one = matches!(step.kind, TypedExprKind::Int(1));
-        let minus_one =
-            signed && matches!(step.kind, TypedExprKind::Int(n) if n == u128::MAX >> (128 - bits));
+        let one = !descending && matches!(step.kind, TypedExprKind::Int(1));
+        // Counts down by one: `downto` in any integer type, or a signed range with the step `-1`.
+        let minus_one = descending
+            || signed
+                && matches!(step.kind, TypedExprKind::Int(n) if n == u128::MAX >> (128 - bits));
         let test = self.label();
         let work = self.label();
         let advance = self.label();
@@ -107,7 +114,8 @@ impl FunctionEmitter<'_, '_> {
             let order = match (signed, minus_one) {
                 (true, false) => "sle",
                 (true, true) => "sge",
-                (false, _) => "ule",
+                (false, false) => "ule",
+                (false, true) => "uge",
             };
             let nonempty = self.value(format!("icmp {order} {ty} {first}, {last}"));
             let entry = self.block.clone();
@@ -130,14 +138,21 @@ impl FunctionEmitter<'_, '_> {
             self.begin(&advance);
             // `first` is on the right side of `last` (`nonempty`) and `current` has not reached
             // `last`, so the step stays between them: the signed view cannot overflow, and an
-            // unsigned loop only counts up (R1).
+            // unsigned counter cannot pass 0 or its maximum (R1).
             let flags = Flags {
                 nsw: signed,
                 nuw: !signed,
             };
-            self.audit_increment(&step, bits, &current, &stride, flags);
+            let (operation, stride) = match (signed, descending) {
+                (false, true) => ("sub", "1"),
+                (true, true) => ("add", "-1"),
+                (_, false) => ("add", stride.as_str()),
+            };
+            self.audit_step(&step, operation, bits, &current, stride, flags);
             let words = self.flag_text(flags);
-            self.instruction(format!("{next} = add {words}{ty} {current}, {stride}"));
+            self.instruction(format!(
+                "{next} = {operation} {words}{ty} {current}, {stride}"
+            ));
             self.jump(&work);
             self.hint_loop(body, reads);
         } else {
@@ -242,11 +257,12 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&advance);
         // A narrow range's first out-of-range value still fits i64, including signed/unsigned extrema.
         // `current` is between the two extended endpoints, so the i64 step cannot overflow when read
-        // as signed, and it cannot when read as unsigned either while the type is unsigned (R2).
+        // as signed, and it cannot when read as unsigned either while an unsigned counter counts up;
+        // counting down past 0 reaches -1, which wraps when read as unsigned (R2).
         let stride = if descending { "-1" } else { "1" };
         let flags = Flags {
             nsw: true,
-            nuw: !signed,
+            nuw: !signed && !descending,
         };
         self.audit_increment(&step, 64, &current, stride, flags);
         let words = self.flag_text(flags);

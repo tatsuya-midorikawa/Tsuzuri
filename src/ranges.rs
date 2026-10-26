@@ -228,10 +228,11 @@ impl Scan {
                 start,
                 step,
                 finish,
+                descending,
                 ..
             } => {
                 self.declare_local(local);
-                if let Some(kind) = loop_kind(module, local, start, step, finish) {
+                if let Some(kind) = loop_kind(module, local, start, step, finish, *descending) {
                     self.loops.push((local.id, kind));
                 }
             }
@@ -371,17 +372,23 @@ fn loop_kind(
     start: &TypedExpr,
     step: &TypedExpr,
     finish: &TypedExpr,
+    descending: bool,
 ) -> Option<Loop> {
     use TypedExprKind::Int;
     if local.ty != Type::I64 {
         return None;
     }
-    if matches!((&start.kind, &step.kind), (Int(0), Int(1)))
+    // `downto` counts down by its step `1`; a range counts down by the step `-1`.
+    let up = !descending && matches!(step.kind, Int(1));
+    let down = matches!(step.kind, Int(MINUS_ONE)) || descending && matches!(step.kind, Int(1));
+    if up
+        && matches!(start.kind, Int(0))
         && let Some(array) = last_index_root(module, finish)
     {
         return Some(Loop::BelowLength(array));
     }
-    if matches!((&step.kind, &finish.kind), (Int(MINUS_ONE), Int(0)))
+    if down
+        && matches!(finish.kind, Int(0))
         && let Some(array) = last_index_root(module, start)
     {
         return Some(Loop::BelowLength(array));
@@ -389,7 +396,7 @@ fn loop_kind(
     if let (Int(first), Int(last)) = (&start.kind, &finish.kind)
         && *first < SIGNED_LIMIT
         && *last < SIGNED_LIMIT
-        && matches!(step.kind, Int(1) | Int(MINUS_ONE))
+        && (up || down)
     {
         return Some(Loop::Constant(
             (*first).min(*last) as u64,
@@ -504,8 +511,19 @@ mod tests {
             def standard :: ref [i64] -> i64\n\
             fn standard values =\n    let mut total = 0\n    for i in 0 .. Array.length values - 1 do\n        total = total + values[i]\n    total\n\
             def owned :: i64 -> i64\n\
-            fn owned count =\n    let values = new [i64](count, \\i -> i)\n    let mut total = 0\n    for i in 0 .. values.length - 1 do\n        total = total + values[i]\n    total";
-        for name in ["forward", "backward", "standard", "owned"] {
+            fn owned count =\n    let values = new [i64](count, \\i -> i)\n    let mut total = 0\n    for i in 0 .. values.length - 1 do\n        total = total + values[i]\n    total\n\
+            def counted :: ref [i64] -> i64\n\
+            fn counted values =\n    let mut total = 0\n    for i = 0 to values.length - 1 do\n        total = total + values[i]\n    total\n\
+            def counted_down :: ref [i64] -> i64\n\
+            fn counted_down values =\n    let mut total = 0\n    for i = values.length - 1 downto 0 do\n        total = total + values[i]\n    total";
+        for name in [
+            "forward",
+            "backward",
+            "standard",
+            "owned",
+            "counted",
+            "counted_down",
+        ] {
             assert_eq!(verdicts(source, name), [true], "{name}");
         }
     }
@@ -527,7 +545,11 @@ mod tests {
             def down :: i64 -> i64\n\
             fn down seed =\n    let values = [10, 20, 30]\n    let mut total = seed\n    for i in 2 .. -1 .. 0 do\n        total = total + values[i]\n    total\n\
             def beyond :: i64 -> i64\n\
-            fn beyond seed =\n    let values = [10, 20, 30]\n    let mut total = seed\n    for i in 0 .. 3 do\n        total = total + values[i]\n    total";
+            fn beyond seed =\n    let values = [10, 20, 30]\n    let mut total = seed\n    for i in 0 .. 3 do\n        total = total + values[i]\n    total\n\
+            def counted_down :: i64 -> i64\n\
+            fn counted_down seed =\n    let values = [10, 20, 30]\n    let mut total = seed\n    for i = 2 downto 0 do\n        total = total + values[i]\n    total\n\
+            def counted_beyond :: i64 -> i64\n\
+            fn counted_beyond seed =\n    let values = [10, 20, 30]\n    let mut total = seed\n    for i = 3 downto 0 do\n        total = total + values[i]\n    total";
         assert_eq!(verdicts(source, "literal"), [true, true]);
         assert_eq!(verdicts(source, "past"), [false]);
         assert_eq!(verdicts(source, "negative"), [false]);
@@ -536,6 +558,8 @@ mod tests {
         assert_eq!(verdicts(source, "up"), [true]);
         assert_eq!(verdicts(source, "down"), [true]);
         assert_eq!(verdicts(source, "beyond"), [false]);
+        assert_eq!(verdicts(source, "counted_down"), [true]);
+        assert_eq!(verdicts(source, "counted_beyond"), [false]);
     }
 
     #[test]
@@ -664,11 +688,12 @@ mod tests {
                 step,
                 finish,
                 body,
+                descending,
             } => {
                 for part in [start, step, finish] {
                     flag_walk(module, facts, part, flags);
                 }
-                facts.enter_counter(module, local, start, step, finish);
+                facts.enter_counter(module, local, start, step, finish, *descending);
                 flag_walk(module, facts, body, flags);
             }
             TypedExprKind::If {
@@ -824,6 +849,15 @@ mod tests {
             (
                 "i8u -> i64\nfn f n =\n    let mut total = 0\n    for i in 0i8u .. n do total = total + ((i as i64) + 1)\n    total",
                 &["+ nuw nsw", "+"],
+            ),
+            // `downto` counts down, an unsigned counter too: it stays between the end and the start.
+            (
+                "i64 -> i64\nfn f n =\n    let mut total = 0\n    for i = 100 downto 1 do total = total + (i - 1)\n    total",
+                &["- nuw nsw", "+"],
+            ),
+            (
+                "i64u -> i64u\nfn f n =\n    let mut total = 0i64u\n    for i = n downto 1i64u do total = total + (i - 1i64u)\n    total",
+                &["- nuw", "+"],
             ),
             (
                 "ref [i64] -> i64\nfn f values =\n    let mut total = 0\n    for i in 0 .. values.length - 1 do total = total + (i + 1)\n    total",

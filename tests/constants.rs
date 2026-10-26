@@ -606,6 +606,25 @@ fn const_def_ranges_follow_the_loop_semantics() {
         let expected = sum(start, step, finish, bits, signed);
         assert_eq!(integer_of(&source), expected, "{source}");
     }
+    // `for i = a to b` and `downto` count in the type of their ends, up to and including both
+    // extremes; an unsigned counter counts down to 0 without wrapping.
+    for (ty, start, finish, down, expected) in [
+        ("i8u", 3i128, 0i128, true, 3210),
+        ("i8u", 255, 253, true, 255 * 100 + 254 * 10 + 253),
+        ("i8u", 0, 0, true, 0),
+        ("i8u", 1, 2, true, -1),
+        ("i8", -126, -128, true, -126 * 100 - 127 * 10 - 128),
+        ("i8", 125, 127, false, 125 * 100 + 126 * 10 + 127),
+        ("i64u", 1, 0, true, 10),
+        ("i128u", 2, 0, true, 200 + 10),
+        ("i128", 1, -1, true, 100 - 1),
+    ] {
+        let direction = if down { "downto" } else { "to" };
+        let source = format!(
+            "const def digits :: {ty} -> {ty} -> i128\nfn digits start finish =\n    let mut sum = 0i128\n    let mut seen = false\n    for i = start {direction} finish do\n        seen = true\n        sum = sum * 10 + (i as i128)\n    if seen then sum else -1\nconst Value: i128 = digits ({start}{ty}) ({finish}{ty})\nValue"
+        );
+        assert_eq!(integer_of(&source), expected as u128, "{source}");
+    }
 }
 
 #[test]

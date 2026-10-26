@@ -717,7 +717,13 @@ impl<'a> Run<'a, '_> {
                 finish,
                 active,
             } => {
-                let TypedExprKind::ForRange { local, body, .. } = &expression.kind else {
+                let TypedExprKind::ForRange {
+                    local,
+                    body,
+                    descending,
+                    ..
+                } = &expression.kind
+                else {
                     return Err(unsupported(expression.span));
                 };
                 let Type::Integer(bits, signed) = local.ty else {
@@ -738,7 +744,7 @@ impl<'a> Run<'a, '_> {
                         },
                     ),
                 );
-                let (next, active) = advance(current, step, finish, bits, signed);
+                let (next, active) = advance(current, step, finish, bits, signed, *descending);
                 self.tasks.push(Task::Loop(
                     Loop::Range {
                         expression,
@@ -809,7 +815,10 @@ impl<'a> Run<'a, '_> {
     }
 
     fn range_start(&mut self, expression: &'a TypedExpr) -> Result<(), Diagnostic> {
-        let TypedExprKind::ForRange { local, .. } = &expression.kind else {
+        let TypedExprKind::ForRange {
+            local, descending, ..
+        } = &expression.kind
+        else {
             return Err(unsupported(expression.span));
         };
         let Type::Integer(bits, signed) = local.ty else {
@@ -835,7 +844,7 @@ impl<'a> Run<'a, '_> {
                 current: start,
                 step,
                 finish,
-                active: within(start, step, finish, bits, signed),
+                active: within(start, step, finish, bits, signed, *descending),
             },
             height,
         ));
@@ -1337,9 +1346,25 @@ fn string_unit(
 
 /// Whether `current` is still in the range that runs to `finish` by `step`: an unsigned range
 /// goes up; a signed range goes up or down with the sign of the step.
-fn within(current: u128, step: u128, finish: u128, bits: u16, signed_type: bool) -> bool {
+/// Whether `current` is still in the range that ends at `finish`; a `downto` range is
+/// `descending`, and its step `1` moves down.
+fn within(
+    current: u128,
+    step: u128,
+    finish: u128,
+    bits: u16,
+    signed_type: bool,
+    descending: bool,
+) -> bool {
     if !signed_type {
-        return current <= finish;
+        return if descending {
+            current >= finish
+        } else {
+            current <= finish
+        };
+    }
+    if descending {
+        return signed(current, bits) >= signed(finish, bits);
     }
     if signed(step, bits) > 0 {
         signed(current, bits) <= signed(finish, bits)
@@ -1350,8 +1375,29 @@ fn within(current: u128, step: u128, finish: u128, bits: u16, signed_type: bool)
 
 /// The value after `current` and whether it is still in the range. A step that overflows the
 /// type ends the range, as it does in the compiled loop.
-fn advance(current: u128, step: u128, finish: u128, bits: u16, signed_type: bool) -> (u128, bool) {
-    let next = if signed_type {
+fn advance(
+    current: u128,
+    step: u128,
+    finish: u128,
+    bits: u16,
+    signed_type: bool,
+    descending: bool,
+) -> (u128, bool) {
+    let next = if descending {
+        if signed_type {
+            let low = if bits == 128 {
+                i128::MIN
+            } else {
+                -(1i128 << (bits - 1))
+            };
+            signed(current, bits)
+                .checked_sub(signed(step, bits))
+                .filter(|difference| *difference >= low)
+                .map(|difference| difference as u128 & mask(bits))
+        } else {
+            current.checked_sub(step)
+        }
+    } else if signed_type {
         let sum = signed(current, bits).checked_add(signed(step, bits));
         sum.filter(|sum| bits == 128 || (-(1i128 << (bits - 1))..1i128 << (bits - 1)).contains(sum))
             .map(|sum| sum as u128 & mask(bits))
@@ -1359,7 +1405,10 @@ fn advance(current: u128, step: u128, finish: u128, bits: u16, signed_type: bool
         current.checked_add(step).filter(|sum| *sum <= mask(bits))
     };
     match next {
-        Some(next) => (next, within(next, step, finish, bits, signed_type)),
+        Some(next) => (
+            next,
+            within(next, step, finish, bits, signed_type, descending),
+        ),
         None => (current, false),
     }
 }

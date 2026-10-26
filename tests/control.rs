@@ -164,11 +164,19 @@ fn typed_loops_and_layout_sequences() {
         "let mut n = 0\nfor s in [\"abc\", \"def\"] do n = n + s.length\nn",
         "def f :: i64\nfn f =\n    let mut total = 0\n    for i = 1 to 4 do\n        for j = 1 to i do\n            total = total + j as i64\n    total",
         "def f :: unit\nfn f = { for _ in [1, 2] do (); while false do (); }",
+        // The counter takes the type of the ends, in any integer type; `downto` counts an unsigned one down.
+        "for i = 1i64 to 2i64 do ()",
+        "for i = 3i8u downto 0i8u do ()",
+        "for i = 3i128u downto 0 do ()",
+        "let xs = [1i64, 2]\nlet mut n = 0\nfor i = 0 to xs.length - 1 do n = n + xs[i]\nn",
+        "let xs = [1i64, 2]\nlet mut n = 0\nfor i = 1 downto 0 do n = n + xs[i] + i\nn",
+        "def f :: Integer<'n> => 'n -> 'n -> i64\nfn f a b =\n    let mut n = 0\n    for i = a downto b do n = n + 1 + (i - i) as i64\n    n",
     ] {
         accepts(source);
     }
     for source in [
-        "for i = 1i64 to 2i64 do ()",
+        "for i = 1i8 to 2i16 do ()",
+        "for i = 1 to 2i64u do { let x: i32 = i; () }",
         "for i = 1 to 2 do i",
         "for i in [1, 2] do i",
         "while 1 do ()",
@@ -177,6 +185,8 @@ fn typed_loops_and_layout_sequences() {
         rejects(source, "E1003");
     }
     rejects("for i in 2 do ()", "E1005");
+    rejects("for i = 1.0 to 2.0 do ()", "E1003");
+    rejects("for i = true to false do ()", "E1005");
     rejects("for i in 1..3 do i = 2", "E1014");
     rejects("for i = 1 to 3 do ()\ni", "E1002");
 }

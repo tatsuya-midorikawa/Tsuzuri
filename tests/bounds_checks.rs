@@ -24,6 +24,27 @@ fn shape count =
     total
 ";
 
+// `for i = a to b` and `downto` count in the type of their ends: here `i64`, the type of the length.
+const COUNTED_FORWARD: &str = r"export def shape :: i64 -> i64
+fn shape count =
+    assert (count >= 0)
+    let values = new [i64](count, \i -> i * 3 + 1)
+    let mut total = 0
+    for i = 0 to values.length - 1 do
+        total = total + values[i]
+    total
+";
+
+const COUNTED_BACKWARD: &str = r"export def shape :: i64 -> i64
+fn shape count =
+    assert (count >= 0)
+    let values = new [i64](count, \i -> i * 3 + 1)
+    let mut total = 0
+    for i = values.length - 1 downto 0 do
+        total = total + values[i]
+    total
+";
+
 const STANDARD_LENGTH: &str = r"def sum_all :: ref [i64] -> i64
 fn sum_all values =
     let mut total = 0
@@ -126,7 +147,7 @@ fn shape seed =
     values[3] + seed
 ";
 
-const PROVEN: [(&str, &str); 7] = [
+const PROVEN: [(&str, &str); 9] = [
     ("forward", FORWARD),
     ("backward", BACKWARD),
     ("standard length", STANDARD_LENGTH),
@@ -134,6 +155,8 @@ const PROVEN: [(&str, &str); 7] = [
     ("constant loop", CONSTANT_LOOP),
     ("guarded", GUARDED),
     ("tail guard", TAIL_GUARD),
+    ("counted forward", COUNTED_FORWARD),
+    ("counted backward", COUNTED_BACKWARD),
 ];
 
 const RETAINED: [(&str, &str); 6] = [
@@ -215,7 +238,7 @@ fn unproven_indices_keep_bounds_guards_and_sites() {
 fn other_trap_kinds_are_unchanged() {
     const CREATE: &str = "new [i64](count, \\i -> i * 3 + 1)";
     // (allocation size sites, assertion sites) recorded with the compiler before F12.
-    let expected: [(&[&str], &[&str]); 7] = [
+    let expected: [(&[&str], &[&str]); 9] = [
         (&[CREATE, "shape"], &["assert (count >= 0)", "shape"]),
         (&[CREATE, "shape"], &["assert (count >= 0)", "shape"]),
         (&[CREATE, "shape"], &["assert (count >= 0)", "shape"]),
@@ -223,6 +246,8 @@ fn other_trap_kinds_are_unchanged() {
         (&[], &["assert (seed >= 0)", "shape"]),
         (&[], &["assert (index != 7)", "shape"]),
         (&[], &["assert (start != 7)", "shape"]),
+        (&[CREATE, "shape"], &["assert (count >= 0)", "shape"]),
+        (&[CREATE, "shape"], &["assert (count >= 0)", "shape"]),
     ];
     for ((name, source), (allocation, assertion)) in PROVEN.into_iter().zip(expected) {
         assert_eq!(
