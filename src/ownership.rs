@@ -3273,10 +3273,11 @@ fn repeats(path: &Path, node: usize) -> bool {
     choices(path).any(|choice| choice.node == node && repeating(choice.part))
 }
 
-/// The innermost loop that holds the expression at `path`.
-fn innermost_loop(path: &Path) -> Option<usize> {
+/// The loop that a `break` or `continue` at `path` leaves or repeats: the innermost one whose
+/// body holds it (one in a `while` condition belongs to the loop around that `while`).
+fn jump_target(path: &Path) -> Option<usize> {
     choices(path)
-        .find(|choice| repeating(choice.part))
+        .find(|choice| choice.part == Part::RepeatBody)
         .map(|choice| choice.node)
 }
 
@@ -3487,7 +3488,7 @@ fn find_later_use(
             && match jump {
                 Jump::Reraise => true,
                 Jump::Break | Jump::Continue => {
-                    innermost_loop(path).is_some_and(|node| repeats(seen, node))
+                    jump_target(path).is_some_and(|node| repeats(seen, node))
                 }
             }
     };
@@ -3560,14 +3561,17 @@ fn find_later_use(
         .filter(|choice| repeating(choice.part))
         .map(|choice| choice.node)
         .collect();
-    for node in loops {
-        // A `break` ends only its own loop; the loops around it run again.
-        if after_access
-            .iter()
-            .any(|(jump, _, path)| *jump == Jump::Break && innermost_loop(path) == Some(node))
+    // A jump after the access leaves the loops inside its target, and a `break` its target too;
+    // the loops around the target run again.
+    let mut exited = 0;
+    for (jump, _, path) in &after_access {
+        if let Some(target) = jump_target(path)
+            && let Some(index) = loops.iter().position(|node| *node == target)
         {
-            continue;
+            exited = exited.max(index + usize::from(*jump == Jump::Break));
         }
+    }
+    for &node in &loops[exited.min(loops.len())..] {
         for seen in uses.iter().filter(|seen| repeats(&seen.path, node)) {
             if dead(seen, budget)? {
                 continue;

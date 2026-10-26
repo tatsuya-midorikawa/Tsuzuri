@@ -1369,6 +1369,9 @@ fn jumps_and_iterations_decide_what_runs_again() {
     // The `break` after `continue` never runs, so the loop goes on.
     let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    let x = deref r\n    n = x + 1\n    continue\n    break\n0\n";
     assert_eq!(used(source), Some((4, true)));
+    // A `break` in a nested `while` condition leaves the loop around that `while`.
+    let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    while { n = 1; break; true } do\n        ()\n    let _x = deref r\n    ()\n0\n";
+    assert_eq!(used(source), None);
     // A conflict in the condition of a `while`, which runs again.
     let source =
         "let mut n = 0\nlet r = ref n\nwhile { let x = deref r; n = x + 1; x < 2 } do\n    ()\n0\n";
