@@ -87,8 +87,10 @@ pub(super) enum LiteralKey {
 pub(super) struct MatchCoverage {
     pub(super) span: Span,
     pub(super) arms: Vec<CoverageArm>,
-    /// An explicit `match ... with`, whose end can take one more arm.
-    pub(super) explicit: bool,
+    /// The end of the last arm of an explicit `match ... with`, where one more arm can be
+    /// written; `None` for a function guard. The span of a parenthesized match includes the
+    /// parentheses, so it does not end there.
+    pub(super) append_at: Option<usize>,
 }
 
 pub(super) struct CoverageArm {
@@ -245,9 +247,12 @@ impl Checker<'_> {
                     "add an arm for '{missing}', or end the match with a wildcard arm '| _ -> ...'"
                 ));
                 // The arm has no indentation: the checker does not have the text of the source.
-                if coverage.explicit && Self::writable(&witness) {
+                if let Some(end) = coverage.append_at
+                    && Self::writable(&witness)
+                {
                     let end = Span {
-                        start: coverage.span.end,
+                        start: end,
+                        end,
                         ..coverage.span
                     };
                     error = error.fix(

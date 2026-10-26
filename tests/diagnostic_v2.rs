@@ -1104,3 +1104,49 @@ fn cli_json_of_a_fix_has_edits_with_spans() {
         .collect();
     assert!(keys.contains(&"help") && keys.contains(&"fixes"));
 }
+
+#[test]
+fn parenthesized_match_fix_goes_inside_the_parentheses() {
+    let source = "def f :: bool -> i64 = \\b -> (match b with | true -> 1)\n\n0\n";
+    let diagnostic = first(source, "E1021");
+    let edit = &diagnostic.fixes[0].edits[0];
+    // The match's span includes the parentheses; the arm goes after the last arm's body.
+    assert_eq!(edit.span.start, source.find("1)").unwrap() + 1);
+    assert_eq!(&source[edit.span.start..], ")\n\n0\n");
+    let fixed = apply_first_fixes(source);
+    analyze_all(&fixed).unwrap_or_else(|set| panic!("{fixed}\n{:?}", set.diagnostics));
+}
+
+const HELD: &str = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\nlet mut n = 0\nlet r = ref n\nboth r (ref mut n)\n";
+const NEXT_ITERATION: &str =
+    "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    let x = deref r\n    n = x + 1\nn\n";
+
+#[test]
+fn an_earlier_use_is_named_only_when_a_loop_repeats_it() {
+    // The argument 'r' holds the borrow while the call evaluates 'ref mut n': there is no loop.
+    let diagnostic = first(HELD, "E1014");
+    let roles: Vec<_> = diagnostic
+        .related
+        .iter()
+        .map(|related| related.role)
+        .collect();
+    assert_eq!(roles, [RelatedRole::BorrowedHere]);
+    let diagnostic = first(NEXT_ITERATION, "E1014");
+    assert_eq!(diagnostic.related.len(), 2);
+    let used = &diagnostic.related[1];
+    assert_eq!(used.role, RelatedRole::BorrowUsedHere);
+    assert_eq!(
+        used.message,
+        "the borrow is used here, in the next iteration of the loop, so it is still alive"
+    );
+    assert_eq!(text_at(NEXT_ITERATION, used.span), "r");
+    assert_eq!(line_of(NEXT_ITERATION, used.span), 4);
+}
+
+#[test]
+fn reserved_fields_have_no_first_definition() {
+    let source = "record R { _: i64, _: i64 }\n\n0\n";
+    let diagnostic = first(source, "E1001");
+    assert_eq!(diagnostic.span.start, source.find('_').unwrap());
+    assert!(diagnostic.related.is_empty(), "{:?}", diagnostic.related);
+}

@@ -1669,7 +1669,9 @@ impl<'a> Checker<'a, '_> {
             .map(|(local, _)| local.name.as_str())
             .find(|name| !name.starts_with('$'))
             .map(str::to_owned);
-        if let Some((used, repeated)) = self.later_use(&holders, span) {
+        if let Some((used, repeated)) = self.later_use(&holders, span)
+            && (!repeated || self.repeated_use(loan, used, span))
+        {
             diagnostic = diagnostic.related(
                 RelatedRole::BorrowUsedHere,
                 if repeated {
@@ -1688,6 +1690,30 @@ impl<'a> Checker<'a, '_> {
                 "end the borrow before this access: evaluate this access before the borrow is taken, or borrow a copy",
             ),
         }
+    }
+
+    /// Whether a use of `loan` at `used`, before an access at `span`, runs again after the access:
+    /// both are in the body of a loop, and no argument held by a call keeps the loan alive instead.
+    fn repeated_use(&self, loan: usize, used: Span, span: Span) -> bool {
+        let within =
+            |outer: Span, inner: Span| outer.start <= inner.start && inner.end <= outer.end;
+        let mut pending: Vec<usize> = self
+            .held
+            .iter()
+            .flat_map(|value| value.loans.iter().copied())
+            .collect();
+        let mut seen = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if current == loan {
+                return false;
+            }
+            if seen.insert(current) {
+                pending.extend(&self.loans[current].parents);
+            }
+        }
+        self.loop_flows.iter().any(|flow| {
+            flow.span.source == used.source && within(flow.span, used) && within(flow.span, span)
+        })
     }
 
     /// The locals whose values keep `loan` alive, directly or through the parents of a loan they hold.

@@ -388,7 +388,10 @@ impl Checker<'_> {
             self.coverage.push(MatchCoverage {
                 span,
                 arms: Vec::new(),
-                explicit: origin == MatchOrigin::Explicit,
+                append_at: arms
+                    .last()
+                    .filter(|_| origin == MatchOrigin::Explicit)
+                    .map(|arm| arm.body.span.end),
             });
             self.coverage.len() - 1
         });

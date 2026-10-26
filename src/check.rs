@@ -6602,6 +6602,7 @@ fn check_modules_collect(
         {
             let first = record_declarations[..id]
                 .iter()
+                .filter(|_| !reserved_type_name(&record.name.text))
                 .find(|(other_module, other)| {
                     other_module == module && other.name.text == record.name.text
                 })
@@ -6815,9 +6816,13 @@ fn check_modules_collect(
             let mut fields = Vec::new();
             for field in &record.fields {
                 if !field_names.insert(&field.name.text) || field.name.text == "_" {
-                    let first = record.fields.iter().find(|other| {
-                        other.name.text == field.name.text && other.name.span != field.name.span
-                    });
+                    // The earlier fields only; `_` is reserved and has no first definition.
+                    let first = record
+                        .fields
+                        .iter()
+                        .take_while(|other| other.name.span != field.name.span)
+                        .filter(|_| field.name.text != "_")
+                        .find(|other| other.name.text == field.name.text);
                     return Err(duplicate_of(
                         &field.name,
                         first.map(|other| other.name.span),
