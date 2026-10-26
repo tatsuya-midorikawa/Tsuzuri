@@ -7500,7 +7500,7 @@ mod tests {
                         .map(|argument| argument.to_str().unwrap().to_owned())
                         .collect::<Vec<_>>()
                 })
-                .map_err(|error| error.message)
+                .map_err(|error| error.into_data().message)
         };
         assert_eq!(args(X86_64LinuxGnu, None), Ok(vec![]));
         assert_eq!(
@@ -7538,7 +7538,7 @@ mod tests {
         }
         // The machine's own target, and WebAssembly, never read it.
         assert_eq!(
-            sdk_args_for(Platform::HOST, sysroot()).map_err(|error| error.message),
+            sdk_args_for(Platform::HOST, sysroot()).map_err(|error| error.into_data().message),
             Ok(vec![])
         );
     }
@@ -7718,7 +7718,8 @@ mod tests {
             ..options(Emit::Executable, foreign)
         }
         .validate()
-        .unwrap_err();
+        .unwrap_err()
+        .into_data();
         assert_eq!(
             (error.code, error.message),
             (

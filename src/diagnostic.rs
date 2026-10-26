@@ -184,8 +184,14 @@ impl Span {
     }
 }
 
+/// A diagnostic. The data is boxed so that the many `Result<_, Diagnostic>` temporaries on the
+/// checker's recursive paths stay one pointer wide; the fields are read and written through
+/// `Deref`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Diagnostic {
+pub struct Diagnostic(Box<DiagnosticData>);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticData {
     pub severity: Severity,
     pub code: &'static str,
     pub message: String,
@@ -193,22 +199,39 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    /// The data of the diagnostic, to move fields out of it.
+    pub fn into_data(self) -> DiagnosticData {
+        *self.0
+    }
+}
+
+impl std::ops::Deref for Diagnostic {
+    type Target = DiagnosticData;
+    fn deref(&self) -> &DiagnosticData {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Diagnostic {
+    fn deref_mut(&mut self) -> &mut DiagnosticData {
+        &mut self.0
+    }
+}
+
+impl Diagnostic {
     pub fn new(code: &'static str, message: impl Into<String>, span: Span) -> Self {
-        Self {
+        Self(Box::new(DiagnosticData {
             severity: Severity::Error,
             code,
             message: message.into(),
             span,
-        }
+        }))
     }
 
     pub fn warning(code: &'static str, message: impl Into<String>, span: Span) -> Self {
-        Self {
-            severity: Severity::Warning,
-            code,
-            message: message.into(),
-            span,
-        }
+        let mut diagnostic = Self::new(code, message, span);
+        diagnostic.severity = Severity::Warning;
+        diagnostic
     }
 
     pub fn render(&self, path: &str, source: &str) -> String {
@@ -314,5 +337,13 @@ mod tests {
         assert!(json.starts_with("{\"severity\":\"warning\",\"code\":\"W1003\""));
         assert!(json.contains("\"path\":\"M.tz\""));
         assert!(json.contains("\"line\":2,\"column\":3"));
+    }
+
+    #[test]
+    fn diagnostic_is_one_pointer_wide() {
+        let word = std::mem::size_of::<usize>();
+        assert_eq!(std::mem::size_of::<Diagnostic>(), word);
+        assert_eq!(std::mem::size_of::<Result<(), Diagnostic>>(), word);
+        assert_eq!(std::mem::size_of::<Option<Diagnostic>>(), word);
     }
 }

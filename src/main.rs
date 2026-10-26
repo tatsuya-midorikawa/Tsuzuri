@@ -1064,7 +1064,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         wasm_opt,
         triple,
     };
-    options.validate().map_err(|error| error.message)?;
+    options
+        .validate()
+        .map_err(|error| error.into_data().message)?;
     let profile = match (profile_generate, profile_use) {
         (Some(_), Some(_)) => {
             return Err(
@@ -1073,19 +1075,23 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
             );
         }
         (Some(directory), None) => {
-            driver::Profile::generate(&directory).map_err(|error| error.message)?
+            driver::Profile::generate(&directory).map_err(|error| error.into_data().message)?
         }
         (None, Some(path)) => driver::Profile::Use(path),
         (None, None) => driver::Profile::None,
     };
-    profile.validate(options).map_err(|error| error.message)?;
+    profile
+        .validate(options)
+        .map_err(|error| error.into_data().message)?;
     if let Some(error) = output
         .as_deref()
         .and_then(|output| driver::bindings_output_error(options.emit, output))
     {
-        return Err(error.message);
+        return Err(error.into_data().message);
     }
-    links.check_shape().map_err(|error| error.message)?;
+    links
+        .check_shape()
+        .map_err(|error| error.into_data().message)?;
     if !links.is_empty() && !links_apply(action, &options) {
         return Err("link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe".into());
     }

@@ -607,11 +607,11 @@ mod tests {
             assert_eq!(read_source_text(&path).unwrap(), "rewrit\n");
             // Errors are those of a real read, every time.
             let missing = path.with_file_name("Missing.tz");
-            let first = read_source_text(&missing).unwrap_err().message;
+            let first = read_source_text(&missing).unwrap_err().into_data().message;
             assert_eq!(read_source_text(&missing).unwrap_err().message, first);
             let invalid = path.with_file_name("Invalid.tz");
             fs::write(&invalid, [0xff, 0xfe, b'\n']).unwrap();
-            let first = read_source_text(&invalid).unwrap_err().message;
+            let first = read_source_text(&invalid).unwrap_err().into_data().message;
             assert!(first.contains("UTF-8"), "{first}");
             assert_eq!(read_source_text(&invalid).unwrap_err().message, first);
         }

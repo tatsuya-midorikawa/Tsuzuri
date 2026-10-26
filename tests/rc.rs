@@ -5,7 +5,7 @@ use tsuzuri::{analyze, analyze_modules, analyze_modules_with_semantics, llvm, pa
 fn rejects(source: &str, code: &str) -> String {
     let error = analyze(source).expect_err(source);
     assert_eq!(error.code, code, "{source}\n{}", error.message);
-    error.message
+    error.into_data().message
 }
 
 fn emits(source: &str) -> [String; 2] {

@@ -5348,9 +5348,10 @@ mod tests {
         TEST_LIMITS.set(Some(SMALL));
         let result = crate::analyze_modules(sources);
         TEST_LIMITS.set(None);
-        result
-            .map(|_| ())
-            .map_err(|error| (error.code, error.message))
+        result.map(|_| ()).map_err(|error| {
+            let data = error.into_data();
+            (data.code, data.message)
+        })
     }
 
     /// A program with exactly the limit of specializations, then one more. The std modules,
