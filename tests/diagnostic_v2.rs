@@ -5,7 +5,9 @@ use std::fs;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tsuzuri::analyze_all;
-use tsuzuri::diagnostic::{Detail, Diagnostic, RelatedRole, Span, json_string, location};
+use tsuzuri::diagnostic::{
+    Detail, Diagnostic, Edit, RelatedRole, ScopeEntry, Span, apply_edits, json_string, location,
+};
 
 const TYPE1: &str = r#"def add :: i64 -> i64 = \n -> n + true
 
@@ -237,6 +239,131 @@ const DUP12: &str = r#"record Array { x: i64 }
 0
 "#;
 
+const FIELD1: &str = r#"record Point { x: i64, y: i64 }
+
+def f :: Point -> i64 = \p -> p.z
+
+def g :: unit -> Point = \_ -> Point { x: 1, z: 2 }
+
+0
+"#;
+const NOFN: &str = r#"def f :: i64 = 1 2
+
+def g :: i64 -> i64 = \n -> n 3
+
+def h :: string -> i64 = \s -> s "x"
+
+0
+"#;
+const STD2: &str = r#"def f :: i64 = Array.length 5
+
+0
+"#;
+const MISMATCH1: &str = r#"def f :: [i64; 2] -> i64 = \a -> 0
+
+def g :: [i64; 3] -> i64 = \a -> f a
+
+0
+"#;
+const MISMATCH2: &str = r#"def f :: Maybe<i64> -> i64 = \m -> 0
+
+def g :: Maybe<string> -> i64 = \m -> f m
+
+0
+"#;
+const FIX2: &str = r#"def f :: bool -> i64 = \b ->
+    match b with
+    | true -> 1
+
+def g :: bool -> bool -> i64 = \a b ->
+    match (a, b) with
+    | (true, true) -> 1
+    | (false, _) -> 2
+
+0
+"#;
+const FIX3: &str = r#"record P { x: i64, y: i64 }
+
+def f :: P -> i64 = \p ->
+    match p with
+    | P { x = 0, y = n } -> n
+
+def g :: [i64] -> i64 = \xs ->
+    match xs with
+    | [] -> 0
+
+def h :: [|i64|] -> i64 = \ls ->
+    match ls with
+    | [||] -> 0
+
+0
+"#;
+const FIX4: &str = r#"def classify :: bool -> i64
+fn classify flag
+    | true -> 1
+
+0
+"#;
+const ARMS5: &str = r#"union Shape = Circle of f64 | Square of f64 | Triangle of f64
+
+def area :: Shape -> Shape -> f64 = \s t ->
+    match s with
+    | Circle r -> r
+    | Square w -> match t with | Circle q -> q | Square z -> z | Triangle _ -> unreachable ()
+
+0
+"#;
+const ARMS6: &str = r#"union Shape = Circle of f64 | Square of f64 | Triangle of f64
+
+def area :: Shape -> f64 = \s ->
+    match s with
+    | Circle r -> r * r * 3.0
+    | Square w ->
+        let a = w * w
+        a
+
+def area2 :: Shape -> f64 = \s ->
+    match s with
+    | Circle r -> r * r * 3.0
+    | Square w ->
+        if w > 1.0 then
+            w
+        else
+            2.0
+
+0
+"#;
+const DUP2: &str = r#"record Point { x: i64, y: i64 }
+
+record Point { a: i64 }
+
+0
+"#;
+const DUP6: &str = r#"def add :: i64 -> i64 -> i64 = \a a -> a + a
+
+record Pair { left: i64, left: i64 }
+
+0
+"#;
+const DUP7: &str = r#"def add :: i64 -> i64 -> i64 = \a a -> a + a
+
+0
+"#;
+const DUP8: &str = r#"def twice :: i64 -> i64
+
+fn twice n = n * 2
+
+fn twice n = n + n
+
+0
+"#;
+const DUP9: &str = r#"fn twice n = n * 2
+
+def twice :: i64 -> i64 = \n -> n + n
+
+0
+"#;
+
 fn errors(source: &str) -> Vec<Diagnostic> {
     analyze_all(source).expect_err(source).diagnostics
 }
@@ -327,6 +454,14 @@ fn first(source: &str, code: &str) -> Diagnostic {
         .into_iter()
         .find(|diagnostic| diagnostic.code == code)
         .unwrap_or_else(|| panic!("no {code} in {source}"))
+}
+
+/// The diagnostic with `code` whose primary span starts on `line`.
+fn at_line(source: &str, code: &str, line: usize) -> Diagnostic {
+    errors(source)
+        .into_iter()
+        .find(|diagnostic| diagnostic.code == code && line_of(source, diagnostic.span) == line)
+        .unwrap_or_else(|| panic!("no {code} on line {line} in {source}"))
 }
 
 fn text_at(source: &str, span: Span) -> &str {
@@ -610,4 +745,362 @@ fn ownership_without_related_is_unchanged() {
         assert!(diagnostic.related.is_empty(), "{source}");
         assert!(diagnostic.help.is_none(), "{source}");
     }
+}
+
+#[test]
+fn related_in_another_file_is_rendered() {
+    let lib = "def add :: i64 -> i64 -> i64 = \\a b -> a + b\n";
+    let main = "def total :: unit -> i64 = \\_ -> Lib.add 1 \"two\"\n\n0\n";
+    let files = [("Lib.tz", lib), ("Main.tz", main)];
+    let (_, text) = check_cli(&files, false);
+    assert!(
+        text.contains("Main.tz:1:44: error[E1003]: expected i64, found string"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  note: parameter 2 of 'add' is declared here\n    --> "),
+        "{text}"
+    );
+    assert!(text.contains("Lib.tz:1:19\n  1 | def add :: i64 -> i64 -> i64 = \\a b -> a + b\n    |                   ^"), "{text}");
+    let (_, stderr) = check_cli(&files, true);
+    let diagnostic = &json_lines(&stderr)[0];
+    assert!(diagnostic["path"].as_str().unwrap().ends_with("Main.tz"));
+    let related = &diagnostic["related"][0];
+    assert_eq!(related["role"], "expected_because");
+    assert!(related["path"].as_str().unwrap().ends_with("Lib.tz"));
+    assert_eq!(related["span"]["line"], 1);
+    assert_eq!(related["span"]["column"], 19);
+}
+
+#[test]
+fn mismatch_has_expected_and_found() {
+    let diagnostic = at_line(TYPE1, "E1003", 1);
+    assert_eq!(diagnostic.detail.expected.as_deref(), Some("i64"));
+    assert_eq!(diagnostic.detail.found.as_deref(), Some("bool"));
+    assert!(diagnostic.related.is_empty());
+    let diagnostic = first(MISMATCH1, "E1003");
+    assert_eq!(diagnostic.detail.expected.as_deref(), Some("[i64; 2]"));
+    assert_eq!(diagnostic.detail.found.as_deref(), Some("[i64; 3]"));
+    let diagnostic = first(MISMATCH2, "E1003");
+    assert_eq!(diagnostic.detail.expected.as_deref(), Some("Maybe<i64>"));
+    assert_eq!(diagnostic.detail.found.as_deref(), Some("Maybe<string>"));
+    // The message is the same text as before.
+    assert_eq!(
+        diagnostic.message,
+        "expected Maybe<i64>, found Maybe<string>"
+    );
+}
+
+#[test]
+fn annotation_mismatch_names_the_annotation() {
+    let diagnostic = at_line(TYPE1, "E1003", 5);
+    assert_eq!(diagnostic.related.len(), 1);
+    assert_eq!(diagnostic.related[0].role, RelatedRole::ExpectedBecause);
+    assert_eq!(
+        diagnostic.related[0].message,
+        "the type annotation declares this type"
+    );
+    assert_eq!(text_at(TYPE1, diagnostic.related[0].span), "i64");
+    assert_eq!(line_of(TYPE1, diagnostic.related[0].span), 5);
+}
+
+#[test]
+fn result_mismatch_names_the_result_type() {
+    let diagnostic = at_line(TYPE1, "E1003", 3);
+    assert_eq!(
+        diagnostic.related[0].message,
+        "the result type of 'pick' is declared here"
+    );
+    assert_eq!(text_at(TYPE1, diagnostic.related[0].span), "i64");
+    assert_eq!(line_of(TYPE1, diagnostic.related[0].span), 3);
+    let diagnostic = at_line(CALL1, "E1003", 3);
+    assert_eq!(
+        diagnostic.related[0].message,
+        "the result type of 'f' is declared here"
+    );
+    assert_eq!(text_at(CALL1, diagnostic.related[0].span), "i64");
+}
+
+#[test]
+fn argument_mismatch_names_the_parameter() {
+    let diagnostic = at_line(CALL1, "E1003", 7);
+    assert_eq!(diagnostic.related[0].role, RelatedRole::ExpectedBecause);
+    assert_eq!(
+        diagnostic.related[0].message,
+        "parameter 2 of 'add' is declared here"
+    );
+    assert_eq!(text_at(CALL1, diagnostic.related[0].span), "i64");
+    assert_eq!(line_of(CALL1, diagnostic.related[0].span), 1);
+    let diagnostic = at_line(CALL1, "E1003", 9);
+    assert_eq!(
+        diagnostic.related[0].message,
+        "parameter 1 of 'add' is declared here"
+    );
+    assert_eq!(
+        diagnostic.related[0].span.start,
+        CALL1.find("i64 -> i64 -> i64").unwrap()
+    );
+}
+
+#[test]
+fn inner_mismatch_has_no_because() {
+    assert!(at_line(TYPE1, "E1003", 1).related.is_empty());
+}
+
+#[test]
+fn std_parameter_note_points_into_std() {
+    let (code, stderr) = check_cli(&[("Main.tz", STD2)], true);
+    assert_eq!(code, 1);
+    let diagnostic = &json_lines(&stderr)[0];
+    assert_eq!(diagnostic["code"], "E1003");
+    let related = &diagnostic["related"][0];
+    assert_eq!(related["role"], "expected_because");
+    assert_eq!(
+        related["message"],
+        "parameter 1 of 'length' is declared here"
+    );
+    assert_eq!(
+        related["path"].as_str().unwrap().replace('\\', "/"),
+        "std/Array.tz"
+    );
+    let std = include_str!("../std/Array.tz");
+    let declared = std[..std.find("def length ::").unwrap()]
+        .matches('\n')
+        .count()
+        + 1;
+    assert_eq!(related["span"]["line"], declared);
+}
+
+#[test]
+fn partial_application_gets_a_help() {
+    let diagnostic = at_line(CALL1, "E1003", 3);
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "a call with too few arguments evaluates to a function; add the missing argument(s) (1 more needed)"
+        )
+    );
+    assert_eq!(diagnostic.detail.found.as_deref(), Some("i64 -> i64"));
+    // A mismatch that is not a partial application has no such help.
+    assert!(at_line(CALL1, "E1003", 7).help.is_none());
+}
+
+#[test]
+fn unknown_value_lists_the_scope() {
+    let diagnostic = first(NAME1, "E1002");
+    assert_eq!(text_at(NAME1, diagnostic.span), "countt");
+    assert_eq!(
+        diagnostic.detail.scope,
+        [ScopeEntry {
+            name: "count".into(),
+            ty: "i64".into()
+        }]
+    );
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("check the spelling, or define the name with 'let' or 'def'; names in scope: count")
+    );
+    let diagnostic = errors(NAME1)
+        .into_iter()
+        .find(|diagnostic| diagnostic.message == "unknown value 'length_off'")
+        .unwrap();
+    assert!(diagnostic.detail.scope.is_empty());
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("check the spelling, or define the name with 'let' or 'def'")
+    );
+    // The unknown type and the unknown module function are not changed.
+    for diagnostic in errors(NAME1) {
+        if diagnostic.code == "E1004" || diagnostic.message.starts_with("module 'Array'") {
+            assert!(!has_extras(&diagnostic), "{}", diagnostic.message);
+        }
+    }
+}
+
+#[test]
+fn unknown_field_lists_the_fields() {
+    for diagnostic in errors(FIELD1) {
+        assert_eq!(diagnostic.code, "E1007");
+        assert_eq!(
+            diagnostic.help.as_deref(),
+            Some("the fields of 'Main.Point' are: x, y")
+        );
+    }
+    assert_eq!(errors(FIELD1).len(), 2);
+}
+
+#[test]
+fn call_helps() {
+    let diagnostic = first(CALL1, "E1006");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("remove the 1 extra argument(s)")
+    );
+    let helps: Vec<_> = errors(NOFN)
+        .into_iter()
+        .map(|diagnostic| diagnostic.into_data().help.unwrap())
+        .collect();
+    assert_eq!(
+        helps,
+        [
+            "a number is not a function; remove the argument(s) or call a function",
+            "a value of type i64 is not a function; remove the argument(s) or call a function",
+            "a value of type string is not a function; remove the argument(s) or call a function",
+        ]
+    );
+}
+
+/// Applies the first fix of every diagnostic in `source` at once.
+fn apply_first_fixes(source: &str) -> String {
+    let diagnostics = errors(source);
+    let edits: Vec<&Edit> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == "E1021")
+        .flat_map(|diagnostic| &diagnostic.fixes[0].edits)
+        .collect();
+    apply_edits(source, &edits).unwrap()
+}
+
+#[test]
+fn non_exhaustive_match_offers_a_fix_that_compiles() {
+    for (source, count) in [(MATCH1, 2), (FIX2, 2), (ARMS6, 2)] {
+        let diagnostics: Vec<_> = errors(source)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == "E1021")
+            .collect();
+        assert_eq!(diagnostics.len(), count, "{source}");
+        for diagnostic in &diagnostics {
+            assert!(
+                diagnostic
+                    .help
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("add an arm for '")
+            );
+            assert_eq!(diagnostic.fixes.len(), 1);
+            let fix = &diagnostic.fixes[0];
+            assert_eq!(fix.applicability.as_str(), "maybe");
+            assert_eq!(fix.edits.len(), 1);
+            let edit = &fix.edits[0];
+            assert_eq!(edit.span.start, edit.span.end);
+            assert_eq!(edit.span.start, diagnostic.span.end);
+            assert!(edit.text.starts_with(" | ") && edit.text.ends_with(" -> unreachable ()"));
+            assert_eq!(
+                fix.title,
+                format!("Add the arm '{}'", edit.text.trim_start())
+            );
+        }
+        let fixed = apply_first_fixes(source);
+        analyze_all(&fixed).unwrap_or_else(|set| panic!("{fixed}\n{:?}", set.diagnostics));
+    }
+    // The titles and the inserted arms.
+    let titles: Vec<_> = errors(FIX2)
+        .iter()
+        .map(|diagnostic| diagnostic.fixes[0].title.clone())
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "Add the arm '| false -> unreachable ()'",
+            "Add the arm '| (true, false) -> unreachable ()'"
+        ]
+    );
+    assert_eq!(
+        apply_first_fixes(ARMS6),
+        ARMS6
+            .replace("        a\n", "        a | Triangle _ -> unreachable ()\n")
+            .replace(
+                "            2.0\n",
+                "            2.0 | Triangle _ -> unreachable ()\n"
+            )
+    );
+}
+
+#[test]
+fn no_fix_for_unwritable_witnesses() {
+    let diagnostics = errors(FIX3);
+    assert_eq!(diagnostics.len(), 3);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.help.is_some())
+    );
+    let fixes: Vec<usize> = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.fixes.len())
+        .collect();
+    assert_eq!(fixes, [0, 1, 0]);
+    assert_eq!(
+        diagnostics[1].fixes[0].title,
+        "Add the arm '| _ -> unreachable ()'"
+    );
+    let diagnostic = first(FIX4, "E1021");
+    assert!(diagnostic.fixes.is_empty());
+    assert!(diagnostic.help.is_some());
+}
+
+#[test]
+fn nested_inline_match_fix_is_not_verified_here() {
+    let diagnostic = first(ARMS5, "E1021");
+    assert_eq!(diagnostic.fixes.len(), 1);
+    let fixed = apply_first_fixes(ARMS5);
+    // The new arm attaches to the nested match, so the outer match is still not exhaustive.
+    let remaining = analyze_all(&fixed).expect_err(&fixed).diagnostics;
+    assert!(
+        remaining
+            .iter()
+            .any(|diagnostic| diagnostic.code == "E1021"),
+        "{fixed}"
+    );
+}
+
+#[test]
+fn duplicates_name_the_first_declaration() {
+    let cases = [
+        (DUP2, "E1001", "Point", 1),
+        (DUP3, "E1024", "Circle", 1),
+        (DUP5, "E1001", "twice", 1),
+        (DUP6, "E1001", "left", 3),
+        (DUP7, "E1001", "a", 1),
+        (DUP8, "E1001", "twice", 3),
+        (DUP9, "E1001", "twice", 1),
+    ];
+    for (source, code, name, line) in cases {
+        let diagnostic = first(source, code);
+        assert_eq!(diagnostic.related.len(), 1, "{source}");
+        let related = &diagnostic.related[0];
+        assert_eq!(related.role, RelatedRole::FirstDefinedHere);
+        assert_eq!(related.message, "first defined here");
+        assert_eq!(text_at(source, related.span), name, "{source}");
+        assert_eq!(line_of(source, related.span), line, "{source}");
+        assert!(related.span.start < diagnostic.span.start, "{source}");
+    }
+}
+
+#[test]
+fn reserved_names_have_no_first_definition() {
+    let diagnostic = first(DUP12, "E1001");
+    assert_eq!(diagnostic.message, "duplicate or reserved name 'Array'");
+    assert!(diagnostic.related.is_empty());
+}
+
+#[test]
+fn cli_json_of_a_fix_has_edits_with_spans() {
+    let (_, stderr) = check_cli(&[("Main.tz", FIX2)], true);
+    let diagnostic = &json_lines(&stderr)[0];
+    assert_eq!(diagnostic["code"], "E1021");
+    let fix = &diagnostic["fixes"][0];
+    assert_eq!(fix["applicability"], "maybe");
+    assert_eq!(fix["title"], "Add the arm '| false -> unreachable ()'");
+    let edit = &fix["edits"][0];
+    assert_eq!(edit["text"], " | false -> unreachable ()");
+    assert_eq!(edit["span"]["start"], edit["span"]["end"]);
+    assert!(edit["path"].as_str().unwrap().ends_with("Main.tz"));
+    let keys: Vec<&str> = diagnostic
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert!(keys.contains(&"help") && keys.contains(&"fixes"));
 }

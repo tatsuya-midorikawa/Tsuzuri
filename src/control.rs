@@ -171,7 +171,7 @@ impl Checker<'_> {
                         }],
                         Some(&Type::Unit),
                         expression.span,
-                        false,
+                        None,
                     )?
                 };
                 self.normal_loop_depth -= 1;
@@ -215,7 +215,7 @@ impl Checker<'_> {
                     arms,
                     expected,
                     expression.span,
-                    origin.checks_coverage(),
+                    origin.checks_coverage().then_some(*origin),
                 );
             }
             _ => unreachable!("control expression kinds checked by expression"),
@@ -370,7 +370,7 @@ impl Checker<'_> {
         }
     }
 
-    /// Checks the arms of a match. With `checked`, the arms' coverage is
+    /// Checks the arms of a match. With `coverage`, the arms' coverage is
     /// recorded so that `check_coverage` can reject a non-exhaustive match and
     /// warn about unreachable arms; destructuring keeps its runtime trap.
     pub(super) fn match_value(
@@ -379,15 +379,16 @@ impl Checker<'_> {
         arms: &[MatchArm],
         expected: Option<&Type>,
         span: Span,
-        checked: bool,
+        coverage: Option<MatchOrigin>,
     ) -> Result<TypedExpr, Diagnostic> {
         if matched.ty.contains_error() {
             return Ok(TypedExpr::error(span));
         }
-        let slot = checked.then(|| {
+        let slot = coverage.map(|origin| {
             self.coverage.push(MatchCoverage {
                 span,
                 arms: Vec::new(),
+                explicit: origin == MatchOrigin::Explicit,
             });
             self.coverage.len() - 1
         });

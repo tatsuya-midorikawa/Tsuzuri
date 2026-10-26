@@ -87,6 +87,8 @@ pub(super) enum LiteralKey {
 pub(super) struct MatchCoverage {
     pub(super) span: Span,
     pub(super) arms: Vec<CoverageArm>,
+    /// An explicit `match ... with`, whose end can take one more arm.
+    pub(super) explicit: bool,
 }
 
 pub(super) struct CoverageArm {
@@ -233,17 +235,54 @@ impl Checker<'_> {
             }
             let wild = search.wild.clone();
             if let Some(witness) = search.run(rows, push(wild, None), true)? {
-                return Err(Diagnostic::new(
+                let missing = self.witness(&witness, coverage.span);
+                let mut error = Diagnostic::new(
                     "E1021",
-                    format!(
-                        "match is not exhaustive; missing: {}",
-                        self.witness(&witness, coverage.span)
-                    ),
+                    format!("match is not exhaustive; missing: {missing}"),
                     coverage.span,
+                )
+                .with_help(format!(
+                    "add an arm for '{missing}', or end the match with a wildcard arm '| _ -> ...'"
                 ));
+                // The arm has no indentation: the checker does not have the text of the source.
+                if coverage.explicit && Self::writable(&witness) {
+                    let end = Span {
+                        start: coverage.span.end,
+                        ..coverage.span
+                    };
+                    error = error.fix(
+                        format!("Add the arm '| {missing} -> unreachable ()'"),
+                        Applicability::Maybe,
+                        vec![Edit {
+                            span: end,
+                            text: format!(" | {missing} -> unreachable ()"),
+                        }],
+                    );
+                }
+                return Err(error);
             }
         }
         Ok(warnings)
+    }
+
+    /// Whether a witness is printed as a pattern that an arm accepts as written: wildcards,
+    /// booleans, `()`, union cases, and tuples of those.
+    fn writable(witness: &Witness) -> bool {
+        match witness {
+            Witness::Wild => true,
+            Witness::Ctor(Constructor::Bool(_) | Constructor::Unit, _) => true,
+            Witness::Ctor(Constructor::Union { .. } | Constructor::Tuple(_), arguments) => {
+                arguments.iter().all(Self::writable)
+            }
+            Witness::Ctor(
+                Constructor::Record { .. }
+                | Constructor::ArrayLen(_)
+                | Constructor::ListNil
+                | Constructor::ListCons
+                | Constructor::Literal(_),
+                _,
+            ) => false,
+        }
     }
 
     fn witness(&self, witness: &Witness, span: Span) -> String {
