@@ -3171,9 +3171,10 @@ struct Flow {
     /// The successors of each node, and the loop (an index of `loops`) whose head an edge goes
     /// back to.
     edges: Vec<Vec<(usize, Option<usize>)>>,
-    /// The holder that each node replaces (the exit of `holder = ...`).
-    replaces: Vec<Option<usize>>,
-    /// The nodes that read each holder: the exit of the holder, or of a lambda that captures it.
+    /// The local that each node stores a value in (`local = ...`, `let local = ...`), and the
+    /// local whose value it copies, when the value is just a local.
+    stores: Vec<Option<(usize, Option<usize>)>>,
+    /// The nodes that read each local: the exit of the local, or of a lambda that captures it.
     readers: BTreeMap<usize, Vec<usize>>,
     /// The spans of the nodes that read, for the diagnostics.
     spans: Vec<Span>,
@@ -3209,7 +3210,7 @@ fn spend(budget: &mut usize, cost: usize) -> Option<()> {
 impl Flow {
     fn node(&mut self, span: Span) -> usize {
         self.edges.push(Vec::new());
-        self.replaces.push(None);
+        self.stores.push(None);
         self.spans.push(span);
         self.edges.len() - 1
     }
@@ -3237,18 +3238,12 @@ impl Flow {
         items
     }
 
-    /// Builds the flow of `body`; `holders` are the locals whose reads and replacements count, and
-    /// an assignment from one of `carriers` (locals that may hold the same loan) carries it over.
+    /// Builds the flow of `body`; the reads and stores of the `tracked` locals are recorded.
     /// `None` when it would take more than `*budget` steps.
-    fn build(
-        body: &TypedExpr,
-        holders: &BTreeSet<usize>,
-        carriers: &BTreeSet<usize>,
-        budget: &mut usize,
-    ) -> Option<Self> {
+    fn build(body: &TypedExpr, tracked: &BTreeSet<usize>, budget: &mut usize) -> Option<Self> {
         let mut flow = Flow {
             edges: Vec::new(),
-            replaces: Vec::new(),
+            stores: Vec::new(),
             readers: BTreeMap::new(),
             spans: Vec::new(),
             by_span: BTreeMap::new(),
@@ -3270,14 +3265,14 @@ impl Flow {
             let sequence = Flow::sequence;
             let mut items: Vec<(&TypedExpr, usize, usize, Targets)> = Vec::new();
             match &expression.kind {
-                E::Local(id) if holders.contains(id) => {
+                E::Local(id) if tracked.contains(id) => {
                     flow.edge(entry, exit);
                     flow.readers.entry(*id).or_default().push(exit);
                 }
                 E::Lambda { captures, .. } => {
                     // The body runs when the function is called; only the captures are read here.
                     flow.edge(entry, exit);
-                    for local in captures.iter().filter(|local| holders.contains(&local.id)) {
+                    for local in captures.iter().filter(|local| tracked.contains(&local.id)) {
                         flow.readers.entry(local.id).or_default().push(exit);
                     }
                 }
@@ -3322,19 +3317,16 @@ impl Flow {
                     }
                 }
                 E::Assign(place, value) => {
-                    // `holder = other`, with a local that may hold the loan, carries it over.
-                    let transfer = matches!(value.kind, E::Local(id) if carriers.contains(&id));
-                    if let E::Local(holder) = place.kind
-                        && holders.contains(&holder)
-                        && !transfer
+                    if let E::Local(stored) = place.kind
+                        && tracked.contains(&stored)
                     {
-                        // The value is evaluated, then the holder is replaced.
+                        // The value is evaluated, then stored; the target is not read.
                         for (part, part_entry, part_exit) in
                             sequence(&mut flow, vec![value], entry, exit)
                         {
                             items.push((part, part_entry, part_exit, targets));
                         }
-                        flow.replaces[exit] = Some(holder);
+                        flow.stores[exit] = Some((stored, copied(value, tracked)));
                     } else {
                         for (part, part_entry, part_exit) in
                             sequence(&mut flow, vec![value, place], entry, exit)
@@ -3540,6 +3532,25 @@ impl Flow {
                     ));
                     items.push((&handled.handler, h_entry, h_exit, handler_targets));
                 }
+                E::Block { bindings, result } => {
+                    // Each binding stores its value in its local after evaluating it.
+                    let mut at = entry;
+                    for (local, value) in bindings {
+                        let (v_entry, v_exit) = child(&mut flow, value);
+                        flow.edge(at, v_entry);
+                        let bind = flow.node(value.span);
+                        flow.edge(v_exit, bind);
+                        if tracked.contains(&local.id) {
+                            flow.stores[bind] = Some((local.id, copied(value, tracked)));
+                        }
+                        items.push((value, v_entry, v_exit, targets));
+                        at = bind;
+                    }
+                    let (r_entry, r_exit) = child(&mut flow, result);
+                    flow.edge(at, r_entry);
+                    flow.edge(r_exit, exit);
+                    items.push((&**result, r_entry, r_exit, targets));
+                }
                 _ => {
                     let mut parts = Vec::new();
                     expression
@@ -3559,30 +3570,23 @@ impl Flow {
     }
 
     /// The nodes reachable from `from`, each with whether a path to it crosses no back edge of
-    /// the loops in `counting` and whether one crosses such a back edge; a path stops at a
-    /// replacement of `stop`. The back edges of the other loops are ordinary edges.
+    /// the loops in `counting` and whether one crosses such a back edge. The back edges of the
+    /// other loops are ordinary edges.
     fn reach(
         &self,
         from: &[usize],
-        stop: Option<usize>,
         counting: &[bool],
         budget: &mut usize,
     ) -> Option<Vec<[bool; 2]>> {
-        // The tables of the visited nodes and of the starting ones.
-        spend(budget, 2 * self.edges.len() + from.len())?;
+        spend(budget, self.edges.len() + from.len())?;
         let mut seen = vec![[false; 2]; self.edges.len()];
-        let mut start = vec![false; self.edges.len()];
         let mut pending = std::collections::VecDeque::new();
         for &node in from {
             seen[node][0] = true;
-            start[node] = true;
             pending.push_back((node, false));
         }
         while let Some((node, crossed)) = pending.pop_front() {
             spend(budget, 1 + self.edges[node].len())?;
-            if stop.is_some() && self.replaces[node] == stop && !start[node] {
-                continue;
-            }
             for &(next, back) in &self.edges[node] {
                 let crossed = crossed || back.is_some_and(|repeated| counting[repeated]);
                 if !seen[next][usize::from(crossed)] {
@@ -3609,11 +3613,75 @@ impl Flow {
         )
     }
 
+    /// Where the loan holds a value: the states `(node, slot)` reachable from `start`, each with
+    /// whether a path crosses no back edge of the loops in `counting` and whether one does. Slot 0
+    /// is the value of the loan before a local holds it, created at `created`: the store whose
+    /// value holds that span puts it in a local. Slot `i + 1` is the local `locals[i]`: a store
+    /// into the local replaces the loan, unless it copies a local that holds the loan here, which
+    /// hands it over (`x = y`). The result is indexed by `node * (locals.len() + 1) + slot`.
+    fn holds(
+        &self,
+        start: &[(usize, usize)],
+        locals: &[usize],
+        created: Span,
+        counting: &[bool],
+        budget: &mut usize,
+    ) -> Option<Vec<[bool; 2]>> {
+        let width = locals.len() + 1;
+        spend(budget, self.edges.len() * width + start.len())?;
+        let slot = |local: usize| {
+            locals
+                .iter()
+                .position(|other| *other == local)
+                .map(|i| i + 1)
+        };
+        let contains = |outer: Span| {
+            outer.source == created.source
+                && outer.start <= created.start
+                && created.end <= outer.end
+        };
+        let mut seen = vec![[false; 2]; self.edges.len() * width];
+        let mut pending = std::collections::VecDeque::new();
+        for &(node, at) in start {
+            seen[node * width + at][0] = true;
+            pending.push_back((node, at, false));
+        }
+        while let Some((node, at, crossed)) = pending.pop_front() {
+            spend(budget, 1 + self.edges[node].len())?;
+            for &(next, back) in &self.edges[node] {
+                let crossed = crossed || back.is_some_and(|repeated| counting[repeated]);
+                // What the loan's holder is after `next` runs, and the local it hands it to.
+                let (kept, handed) = match self.stores[next] {
+                    Some((stored, from)) => {
+                        let target = slot(stored);
+                        if at == 0 && contains(self.spans[next]) {
+                            (target, None)
+                        } else if target == Some(at) {
+                            (None, None)
+                        } else {
+                            let handed = from.and_then(slot).filter(|from| *from == at);
+                            (Some(at), handed.and(target))
+                        }
+                    }
+                    None => (Some(at), None),
+                };
+                for at in kept.into_iter().chain(handed) {
+                    let index = next * width + at;
+                    if !seen[index][usize::from(crossed)] {
+                        seen[index][usize::from(crossed)] = true;
+                        pending.push_back((next, at, crossed));
+                    }
+                }
+            }
+        }
+        Some(seen)
+    }
+
     /// The nodes of `nodes` that control can reach from the start of the body: a copy of a
     /// `finally` that no exception reaches never runs.
     fn live(&self, nodes: Vec<usize>, budget: &mut usize) -> Option<Vec<usize>> {
         // The entry of the body is the first node.
-        let reached = self.reach(&[0], None, &vec![false; self.loops.len()], budget)?;
+        let reached = self.reach(&[0], &vec![false; self.loops.len()], budget)?;
         Some(
             nodes
                 .into_iter()
@@ -3623,17 +3691,18 @@ impl Flow {
     }
 }
 
-/// Where a holder of a borrow is used after an access at `after`, so that the borrow is still
-/// alive there, and the holder: a read of the holder that control can reach from the access
-/// without replacing the holder first. The access is searched from where the ownership check
-/// makes it: the end of the expression, except that a slice reaches its source before its bounds
-/// (an exclusive slice also after them, which is where a shared `loan` conflicts), and only from
-/// the copies (of a `finally`) that the loan reaches in the holder, from the span where it was
-/// `created`. A use is in the next iteration of a loop (`true`) when every such path goes back to
-/// the head of a loop that holds both; such a use is not named when `held` (an argument held by a
-/// call keeps the borrow alive instead). One reached without a back edge is preferred, then the
-/// first in the source. Looks at no more than `*budget` steps, and `None` once it runs out or does
-/// not find the access.
+/// Where a local that holds a borrow uses it after an access at `after`, so that the borrow is
+/// still alive there, and the local: a read of a local that holds the loan at that point, which
+/// control reaches from the access. Which locals hold the loan where follows its value from the
+/// span where it was `created`, through stores and copies (`Flow::holds`), over the `holders` and
+/// the locals they were copied from. The access is searched from where the ownership check makes
+/// it: the end of the expression, except that a slice reaches its source before its bounds (an
+/// exclusive slice also after them, which is where a shared loan conflicts, when not `mutable`),
+/// in the copies (of a `finally`) where a holder holds the loan. A use is in the next iteration
+/// of a loop (`true`) when every path to it goes back to the head of a loop that holds both; such
+/// a use is not named when `held` (an argument held by a call keeps the borrow alive instead).
+/// One reached without a back edge is preferred, then the first in the source. Looks at no more
+/// than `*budget` steps, and `None` once it runs out or does not find the access.
 fn find_later_use(
     body: &TypedExpr,
     holders: &BTreeSet<usize>,
@@ -3645,8 +3714,8 @@ fn find_later_use(
     if holders.is_empty() {
         return None;
     }
-    let carriers = carriers(body, holders, budget)?;
-    let flow = Flow::build(body, holders, &carriers, budget)?;
+    let tracked = carriers(body, holders, budget)?;
+    let flow = Flow::build(body, &tracked, budget)?;
     let key = (after.source, after.start, after.end);
     // Every copy of the access (a `finally` has two), where the access happens in it.
     let access: Vec<usize> = match flow.accesses.get(&key) {
@@ -3662,45 +3731,43 @@ fn find_later_use(
             .collect(),
     };
     let access = flow.live(access, budget)?;
-    let creation: Option<Vec<usize>> = flow
+    let locals: Vec<usize> = tracked.iter().copied().collect();
+    let width = locals.len() + 1;
+    let none = vec![false; flow.loops.len()];
+    // Where the holders hold the loan at the access: from where it was created, or (for a loan
+    // that a parameter brings, created outside the body) at every copy of the access.
+    let holding = match flow
         .by_span
         .get(&(created.source, created.start, created.end))
-        .map(|copies| copies.iter().map(|(_, exit)| *exit).collect());
-    let none = vec![false; flow.loops.len()];
-    let mut best: Option<(bool, usize, usize, Span)> = None;
-    for &holder in holders {
-        // The copies of the access where the holder still holds the loan.
-        let seeds: Vec<usize> = match &creation {
-            Some(creation) => {
-                // The assignment that stores the loan in the holder does not replace it.
-                let mut from = creation.clone();
-                for (node, replaced) in flow.replaces.iter().enumerate() {
-                    spend(budget, 1)?;
-                    let span = flow.spans[node];
-                    if *replaced == Some(holder)
-                        && span.source == created.source
-                        && span.start <= created.start
-                        && created.end <= span.end
-                    {
-                        from.push(node);
-                    }
-                }
-                let holds = flow.reach(&from, Some(holder), &none, budget)?;
-                access
-                    .iter()
-                    .copied()
-                    .filter(|node| holds[*node] != [false; 2])
-                    .collect()
-            }
-            None => access.clone(),
-        };
-        if seeds.is_empty() {
-            continue;
+    {
+        Some(copies) => {
+            let creation: Vec<(usize, usize)> = copies.iter().map(|(_, exit)| (*exit, 0)).collect();
+            Some(flow.holds(&creation, &locals, created, &none, budget)?)
         }
-        // One search per set of loops that hold both the access and a use (a chain of the loops
-        // around the access, so no more searches than its depth).
-        let mut searches: BTreeMap<Vec<bool>, Vec<[bool; 2]>> = BTreeMap::new();
-        for &node in flow.readers.get(&holder).into_iter().flatten() {
+        None => None,
+    };
+    let mut seeds = Vec::new();
+    for &node in &access {
+        for (index, local) in locals.iter().enumerate() {
+            spend(budget, 1)?;
+            if holders.contains(local)
+                && holding
+                    .as_ref()
+                    .is_none_or(|holding| holding[node * width + index + 1] != [false; 2])
+            {
+                seeds.push((node, index + 1));
+            }
+        }
+    }
+    if seeds.is_empty() {
+        return None;
+    }
+    // One search per set of loops that hold both the access and a use (a chain of the loops
+    // around the access, so no more searches than its depth).
+    let mut searches: BTreeMap<Vec<bool>, Vec<[bool; 2]>> = BTreeMap::new();
+    let mut best: Option<(bool, usize, usize, Span)> = None;
+    for (index, local) in locals.iter().enumerate() {
+        for &node in flow.readers.get(local).into_iter().flatten() {
             spend(budget, 1)?;
             let span = flow.spans[node];
             if span.source != after.source || span.end <= span.start {
@@ -3708,11 +3775,11 @@ fn find_later_use(
             }
             let counting = flow.around_both(after, span, budget)?;
             if !searches.contains_key(&counting) {
-                let reached = flow.reach(&seeds, Some(holder), &counting, budget)?;
+                let reached = flow.holds(&seeds, &locals, created, &counting, budget)?;
                 searches.insert(counting.clone(), reached);
             }
             // Only across a back edge of a loop around both is the use in its next iteration.
-            let [direct, repeated] = searches[&counting][node];
+            let [direct, repeated] = searches[&counting][node * width + index + 1];
             if !direct && !repeated {
                 continue;
             }
@@ -3720,13 +3787,21 @@ fn find_later_use(
             if repeated && held {
                 continue;
             }
-            let key = (repeated, span.start, holder, span);
+            let key = (repeated, span.start, *local, span);
             if best.is_none_or(|kept| (key.0, key.1, key.2) < (kept.0, kept.1, kept.2)) {
                 best = Some(key);
             }
         }
     }
-    best.map(|(repeated, _, holder, span)| (span, repeated, holder))
+    best.map(|(repeated, _, local, span)| (span, repeated, local))
+}
+
+/// The local that a value copies when the value is just one of the `tracked` locals.
+fn copied(value: &TypedExpr, tracked: &BTreeSet<usize>) -> Option<usize> {
+    match value.kind {
+        E::Local(id) if tracked.contains(&id) => Some(id),
+        _ => None,
+    }
 }
 
 /// The locals that may hold the loan of `holders`: the holders, and the locals that one of them
@@ -3786,7 +3861,7 @@ fn moved_in_previous_iteration(
     used: Span,
     budget: &mut usize,
 ) -> Option<bool> {
-    let flow = Flow::build(body, &BTreeSet::new(), &BTreeSet::new(), budget)?;
+    let flow = Flow::build(body, &BTreeSet::new(), budget)?;
     let from: Vec<usize> = flow
         .by_span
         .get(&(moved.source, moved.start, moved.end))?
@@ -3796,7 +3871,7 @@ fn moved_in_previous_iteration(
     let from = flow.live(from, budget)?;
     // Only the back edges of a loop that holds both lead to the use in a next iteration.
     let counting = flow.around_both(moved, used, budget)?;
-    let reached = flow.reach(&from, None, &counting, budget)?;
+    let reached = flow.reach(&from, &counting, budget)?;
     let (mut direct, mut crossed) = (false, false);
     for (entry, _) in flow.by_span.get(&(used.source, used.start, used.end))? {
         direct |= reached[*entry][0];

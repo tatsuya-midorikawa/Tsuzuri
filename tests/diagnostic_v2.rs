@@ -1453,6 +1453,9 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     let source =
         "let mut n = 0\nlet m = 1\nlet a = ref n\nlet mut r = ref m\nr = a\nn = 2\nderef r\n";
     assert_eq!(used(source), Some((7, false)));
+    // `r = a` with an `a` that holds another loan replaces the borrow; the target is not a read.
+    let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\nlet mut n = 0\nlet m = 1\nlet a = ref m\nlet mut r = ref n\nboth r (ref mut n)\nr = a\nderef r\n";
+    assert_eq!(used(source), None);
     // A read after the loop runs when the loop ends, not in its next iteration.
     let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    n = 1\nderef r\n";
     assert_eq!(used(source), Some((5, false)));
