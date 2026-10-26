@@ -276,6 +276,8 @@ struct ProjectState {
     index: Option<SemanticIndex>,
     mappers: Vec<PositionMapper>,
     diagnostics: Vec<Diagnostic>,
+    /// The counts of all reported diagnostics, which a fix is verified against.
+    counts: DiagnosticCounts,
     /// The implicit array and list copies that inlay hints show (A15).
     copies: Vec<CopySite>,
     modules: ModuleNames,
@@ -374,7 +376,7 @@ impl Session {
                 return Ok(());
             }
         };
-        let (analyzed, diagnostics) = analyze(&project);
+        let (analyzed, diagnostics, counts) = analyze(&project);
         let (index, copies) = analyzed.map_or((None, Vec::new()), |(index, module)| {
             (Some(index), crate::copies::costly_sites(&module))
         });
@@ -407,6 +409,7 @@ impl Session {
                 index,
                 mappers,
                 diagnostics,
+                counts,
                 copies,
                 modules,
             },
@@ -941,7 +944,7 @@ impl Session {
         }
         let project = Project::load_with_overlays(directory, &overlays)
             .map_err(|error| format!("{}: {}", error.diagnostic.code, error.diagnostic.message))?;
-        let (renamed, diagnostics) = analyze(&project);
+        let (renamed, diagnostics, _) = analyze(&project);
         let describe =
             |diagnostic: &Diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message);
         let Some((renamed, _)) = renamed else {
@@ -1205,8 +1208,11 @@ impl Session {
         }
         let project = Project::load_with_overlays(directory, &overlays)
             .map_err(|error| format!("{}: {}", error.diagnostic.code, error.diagnostic.message))?;
-        let (_, after) = analyze(&project);
-        fix_removes(diagnostic, &state.diagnostics, &after)?;
+        let (_, _, after) = analyze(&project);
+        let (Some(before), Some(after)) = (&state.counts, &after) else {
+            return Err("too many diagnostics to verify the fix".into());
+        };
+        fix_removes(diagnostic, before, after)?;
         let mut changes = serde_json::Map::new();
         for (id, edits) in &edited {
             let file = &state.project.sources[*id];
@@ -1277,15 +1283,15 @@ fn diagnostic_data(diagnostic: &Diagnostic) -> Option<Value> {
 /// that were not reached before.
 fn fix_removes(
     diagnostic: &Diagnostic,
-    before: &[Diagnostic],
-    after: &[Diagnostic],
+    before: &BTreeMap<(Severity, &'static str), usize>,
+    after: &BTreeMap<(Severity, &'static str), usize>,
 ) -> Result<(), String> {
-    let counts = |list: &[Diagnostic]| {
+    let counts = |all: &BTreeMap<(Severity, &'static str), usize>| {
         let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
-        for item in list.iter().filter(|item| {
-            item.severity == Severity::Error || diagnostic.severity == Severity::Warning
-        }) {
-            *counts.entry(item.code).or_default() += 1;
+        for ((severity, code), count) in all {
+            if *severity == Severity::Error || diagnostic.severity == Severity::Warning {
+                *counts.entry(*code).or_default() += count;
+            }
         }
         counts
     };
@@ -1307,8 +1313,28 @@ fn is_user(project: &Project, span: Span) -> bool {
         .is_some_and(|source| source.origin == ModuleOrigin::User)
 }
 
+/// How many diagnostics of each severity and code an analysis reported, those past the display
+/// limit included; `None` when it reached the collection limit, past which nothing is counted.
+type DiagnosticCounts = Option<BTreeMap<(Severity, &'static str), usize>>;
+
+fn diagnostic_counts(diagnostics: &[Diagnostic]) -> BTreeMap<(Severity, &'static str), usize> {
+    let mut counts = BTreeMap::new();
+    for diagnostic in diagnostics {
+        *counts
+            .entry((diagnostic.severity, diagnostic.code))
+            .or_insert(0) += 1;
+    }
+    counts
+}
+
 /// Analyzes a project; a successful index also records `def` and `fn` heads.
-fn analyze(project: &Project) -> (Option<(SemanticIndex, CheckedModule)>, Vec<Diagnostic>) {
+fn analyze(
+    project: &Project,
+) -> (
+    Option<(SemanticIndex, CheckedModule)>,
+    Vec<Diagnostic>,
+    DiagnosticCounts,
+) {
     let inputs: Vec<_> = project
         .sources
         .iter()
@@ -1330,9 +1356,14 @@ fn analyze(project: &Project) -> (Option<(SemanticIndex, CheckedModule)>, Vec<Di
         Ok(mut module) => {
             add_function_heads(&mut semantic, project);
             let warnings = std::mem::take(&mut module.warnings);
-            (Some((semantic, module)), warnings)
+            let counts = Some(diagnostic_counts(&warnings));
+            (Some((semantic, module)), warnings, counts)
         }
-        Err(errors) => (None, errors.diagnostics),
+        Err(errors) => (
+            None,
+            errors.diagnostics,
+            (!errors.omitted_is_lower_bound).then_some(errors.counts),
+        ),
     }
 }
 
@@ -2758,14 +2789,25 @@ mod tests {
     fn a_fix_must_remove_its_diagnostic_and_add_nothing() {
         let error = |code: &'static str| Diagnostic::new(code, "m", Span::new(0, 0));
         let warning = |code: &'static str| Diagnostic::warning(code, "m", Span::new(0, 0));
+        let removes = |diagnostic: &Diagnostic, before: &[Diagnostic], after: &[Diagnostic]| {
+            fix_removes(
+                diagnostic,
+                &diagnostic_counts(before),
+                &diagnostic_counts(after),
+            )
+        };
         // A fixed error may uncover warnings of later passes.
-        assert!(fix_removes(&error("E1021"), &[error("E1021")], &[warning("W1001")]).is_ok());
-        assert!(fix_removes(&error("E1021"), &[error("E1021")], &[error("E1021")]).is_err());
-        assert!(fix_removes(&error("E1021"), &[error("E1021")], &[error("E1003")]).is_err());
-        assert!(fix_removes(&warning("W1001"), &[warning("W1001")], &[]).is_ok());
-        assert!(fix_removes(&warning("W1001"), &[warning("W1001")], &[warning("W1001")]).is_err());
-        assert!(fix_removes(&warning("W1001"), &[warning("W1001")], &[warning("W1005")]).is_err());
-        assert!(fix_removes(&warning("W1001"), &[warning("W1001")], &[error("E1003")]).is_err());
+        assert!(removes(&error("E1021"), &[error("E1021")], &[warning("W1001")]).is_ok());
+        assert!(removes(&error("E1021"), &[error("E1021")], &[error("E1021")]).is_err());
+        assert!(removes(&error("E1021"), &[error("E1021")], &[error("E1003")]).is_err());
+        assert!(removes(&warning("W1001"), &[warning("W1001")], &[]).is_ok());
+        assert!(removes(&warning("W1001"), &[warning("W1001")], &[warning("W1001")]).is_err());
+        assert!(removes(&warning("W1001"), &[warning("W1001")], &[warning("W1005")]).is_err());
+        assert!(removes(&warning("W1001"), &[warning("W1001")], &[error("E1003")]).is_err());
+        // The counts include the diagnostics past the display limit: 51 to 50 is one fewer.
+        let many = |count: usize| vec![error("E1021"); count];
+        assert!(removes(&error("E1021"), &many(51), &many(50)).is_ok());
+        assert!(removes(&error("E1021"), &many(51), &many(51)).is_err());
     }
 
     #[test]

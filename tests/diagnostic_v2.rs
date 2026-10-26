@@ -1252,3 +1252,37 @@ fn a_fix_adds_every_missing_case_or_none() {
     assert!(diagnostic.fixes.is_empty());
     assert!(diagnostic.help.is_some());
 }
+
+#[test]
+fn an_operand_type_is_not_explained_by_the_declaration() {
+    // `&&` needs bool operands whatever the annotation says, even when it says bool too.
+    let source = "let x: bool = 1i64 && 2i64\nx\n";
+    let diagnostic = first(source, "E1003");
+    assert!(diagnostic.related.is_empty(), "{:?}", diagnostic.related);
+}
+
+#[test]
+fn borrow_uses_follow_the_control_flow() {
+    let used = |source: &str| {
+        let diagnostic = first(source, "E1014");
+        diagnostic
+            .related
+            .iter()
+            .find(|related| related.role == RelatedRole::BorrowUsedHere)
+            .map(|related| {
+                (
+                    line_of(source, related.span),
+                    related.message.contains("next iteration"),
+                )
+            })
+    };
+    // A use before the loop does not hide the one that the next iteration runs.
+    let source = "let mut n = 0\nlet r = ref n\nlet _before = deref r\nfor i in 0 .. 2 do\n    let x = deref r\n    n = x + 1\nn\n";
+    assert_eq!(used(source), Some((5, true)));
+    // A replacement in one branch only does not end the borrow for the other.
+    let source = "def f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    if flag then r = ref m else ()\n    deref r\n\n0\n";
+    assert_eq!(used(source), Some((7, false)));
+    // The other branch of the `if` does not run after the access.
+    let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\ndef discard :: i64 -> unit = \\a -> ()\n\ndef f :: bool -> unit = \\flag ->\n    let mut n = 0\n    let r = ref n\n    if flag then both r (ref mut n) else discard (deref r)\n\n0\n";
+    assert_eq!(used(source), None);
+}

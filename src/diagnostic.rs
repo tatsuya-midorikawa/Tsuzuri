@@ -23,6 +23,9 @@ pub struct DiagnosticSet {
     pub diagnostics: Vec<Diagnostic>,
     pub omitted: usize,
     pub omitted_is_lower_bound: bool,
+    /// How many diagnostics of each severity and code were collected, the omitted ones included
+    /// (up to the collection limit; `omitted_is_lower_bound` says whether it was reached).
+    pub counts: BTreeMap<(Severity, &'static str), usize>,
 }
 
 impl DiagnosticSet {
@@ -137,7 +140,14 @@ impl Diagnostics {
 
     pub fn finish(self) -> DiagnosticSet {
         let omitted_is_lower_bound = self.is_full();
+        let mut counts = BTreeMap::new();
+        for diagnostic in self.entries.values() {
+            *counts
+                .entry((diagnostic.severity, diagnostic.code))
+                .or_insert(0) += 1;
+        }
         DiagnosticSet {
+            counts,
             omitted: self.entries.len().saturating_sub(MAX_REPORTED_ERRORS),
             omitted_is_lower_bound,
             diagnostics: self

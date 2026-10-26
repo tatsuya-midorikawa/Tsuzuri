@@ -1728,3 +1728,25 @@ fn code_action_omits_a_fix_that_does_not_verify() {
     });
     assert_eq!(responses[0]["result"], json!([]));
 }
+
+#[test]
+fn code_action_verifies_a_fix_past_the_display_limit() {
+    use serde_json::json;
+    // 51 non-exhaustive matches: only 50 are published, but a fix removes one of all 51.
+    let source: String = (0..51)
+        .map(|index| {
+            format!("def f{index} :: bool -> i64 = \\b ->\n    match b with\n    | true -> 1\n\n")
+        })
+        .collect();
+    let responses = scripted(&[("Main.tz", source.as_str())], "utf-16", |uri| {
+        vec![
+            json!({"id": 1, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": uri("Main.tz")}, "range": range(1, 4, 5), "context": {"diagnostics": [], "only": ["quickfix"]}}}),
+        ]
+    });
+    let actions = responses[0]["result"].as_array().unwrap();
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(
+        actions[0]["title"],
+        "Add the arm '| false -> unreachable ()'"
+    );
+}

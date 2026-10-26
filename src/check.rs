@@ -8280,12 +8280,24 @@ fn infer_active_result(
 }
 
 /// The spans of the positions that an expected type is passed down to: the expression, and the
-/// result of a block, the branches of an `if`, and the arms of a `match` in it, recursively.
+/// result of a block, the branches of an `if`, and the arms of a `match` in it, recursively. An
+/// operator is left out: it checks its operands against types of its own and reports them at its
+/// own span (`!`, `&&`), so a mismatch there is not explained by the declaration.
 fn tail_spans(expression: &Expr) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut pending = vec![expression];
     while let Some(expression) = pending.pop() {
-        spans.push(expression.span);
+        if !matches!(
+            expression.kind,
+            ExprKind::Unary(..)
+                | ExprKind::Binary(..)
+                | ExprKind::Range { .. }
+                | ExprKind::Cast(..)
+                | ExprKind::Interpolated(_)
+                | ExprKind::Assign(..)
+        ) {
+            spans.push(expression.span);
+        }
         match &expression.kind {
             ExprKind::Block { result, .. } => pending.push(result),
             ExprKind::If {
