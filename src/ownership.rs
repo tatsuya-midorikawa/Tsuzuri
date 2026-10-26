@@ -3234,9 +3234,16 @@ fn exclusive(a: &Path, b: &Path, budget: &mut usize) -> Option<bool> {
 /// Whether every path to the expression at `to` runs the one at `from` first, as far as the
 /// parts go: each part that `from` is in holds `to` too (the tests of an arm precede its body).
 fn always_before(from: &Path, to: &Path, budget: &mut usize) -> Option<bool> {
+    always_between(from, &None, to, budget)
+}
+
+/// Whether every path from the expression at `start` (or from the body, for `None`) to the one
+/// at `to` runs the one at `from`, as far as the parts go: each part that `from` is in holds
+/// `start` or `to` (a part around the access is still running after it).
+fn always_between(from: &Path, start: &Path, to: &Path, budget: &mut usize) -> Option<bool> {
     for step in choices(from) {
         let mut held = false;
-        for other in choices(to) {
+        for other in choices(to).chain(choices(start)) {
             spend(budget, 1)?;
             if other.node == step.node
                 && (other.part == step.part
@@ -3296,7 +3303,7 @@ enum Jump {
 /// them always precedes, and that no `break`, `continue`, or re-raise that always runs after the
 /// access skips. Else (`true`) a use that the next iteration of a loop around the access runs:
 /// in the loop's condition or body, in any arm inside the loop, of a holder that the loop never
-/// replaces, unless a `break` or a re-raise always runs after the access, or `held` (an argument
+/// replaces, unless a `break` of that loop or a re-raise always runs after the access, or `held` (an argument
 /// held by a call keeps the borrow alive instead). Looks at no more than `*budget` expressions
 /// and comparisons, and `None` once it runs out or does not find the access.
 fn find_later_use(
@@ -3496,7 +3503,7 @@ fn find_later_use(
             spend(budget, 1)?;
             if replacement.at > start
                 && replacement.at < seen.at
-                && always_before(&replacement.path, &seen.path, budget)?
+                && always_between(&replacement.path, &access, &seen.path, budget)?
             {
                 cut = true;
                 break;
@@ -3515,11 +3522,12 @@ fn find_later_use(
         .map(|choice| choice.node)
         .collect();
     for node in loops {
+        // A `break` ends only its own loop; the loops around it run again.
         if skips
             .iter()
             .any(|(jump, _, target)| *jump == Jump::Break && *target == Some(node))
         {
-            return None;
+            continue;
         }
         for seen in uses.iter().filter(|seen| repeats(&seen.path, node)) {
             spend(budget, 1 + replaced.len())?;
