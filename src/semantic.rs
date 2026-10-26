@@ -987,7 +987,12 @@ fn index_function(
             }
             _ => {}
         }
-        expressions.push(expression);
+        // A conversion that the checker inserts (an index to `i64`, a pure function passed as an
+        // effectful one) has the span of its operand, so a hover there shows the operand's type.
+        if !matches!(&expression.kind, TypedExprKind::Cast(operand) if operand.span == expression.span)
+        {
+            expressions.push(expression);
+        }
         pending.extend(expression.children());
     }
     let mut definitions = BTreeMap::new();
