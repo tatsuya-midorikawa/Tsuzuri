@@ -81,7 +81,7 @@ main_value ()
 | `  help: <直し方>` | 1 行の直し方 |
 | `  fix (<certain\|likely\|maybe>): <題>` | 機械的な修正案。8 件まで。`maybe` は提案で、そのまま正しいとは限りません |
 
-網羅していない `match` は、足りない腕を足す修正案を持ちます。足す腕の本体は `unreachable ()` で、実際の処理に書き換える前提の `maybe` です。字下げはしないので、`match` の最後の行の末尾に ` | Triangle _ -> unreachable ()` が付きます。
+網羅していない `match` は、足りない腕を足す修正案を持ちます。足す腕の本体は `unreachable ()` で、実際の処理に書き換える前提の `maybe` です。字下げはしないので、`match` の最後の腕の末尾に ` | Triangle _ -> unreachable ()` が付きます。足りない腕が複数あるときは、8 個までならまとめて 1 つの修正案にします（`Add the arms '| B -> unreachable () | C -> unreachable ()'`）。それより多いときや、腕として書けない形（レコード、配列の長さ、リスト、リテラル）が足りないときは、`help` だけです。
 
 ```text
 ./Main.tz:4:5: error[E1021]: match is not exhaustive; missing: Triangle _
@@ -216,7 +216,7 @@ flowchart TD
 | `E1018` | ファイル種別の規則違反（`.tc` 以外の `@alias` を含む）、未知のビルダー、必要なビルダー操作の未定義、ビルダー候補の曖昧・不在、GPU カーネルにできない構文（厳密な WGSL の `f32`・`f16`・64 bit の要素、緩い WGSL（`Gpu.init_relaxed`・`Gpu.map_relaxed`・`--emit wgsl-relaxed`）の `f64`・64 bit 整数・`bool` の要素・`f32`・`f16` から整数と `f32` と `f64` の間のキャスト、整数の除算と剰余を含む）、Vulkan 用の厳密な SPIR-V（`Gpu.map`・`--emit spirv`）の `f32` の `/`・`f64`・`f16`・`bool` の要素・整数の除算と剰余と `**`、緩い SPIR-V（`--emit spirv-relaxed`）の 64 bit 整数の要素と `f32` から整数へのキャスト、標準ライブラリからの不正な `export`、`.tt` と標準ライブラリの `bench` 宣言、`tsuzuri bench` 以外の出力でトップレベルのコード・`export def`・実行するテスト・`Drop` の実装から到達する `Bench.now` |
 | `E1019` | `rec` の過不足、単独の `and` |
 | `E1020` | パターンの形、OR パターンの束縛、共用体のペイロード |
-| `E1021` | `match` と関数ガードの網羅性。足りないケースを示し、`help` を持ちます。`match ... with` の足りないケースが腕として書ける形（`_`、`true`・`false`、`()`、共用体のケース、それらのタプル）なら、末尾にその腕を足す `maybe` の修正案も持ちます |
+| `E1021` | `match` と関数ガードの網羅性。足りないケースを示し、`help` を持ちます。`match ... with` の足りないケースが腕として書ける形（`_`、`true`・`false`、`()`、共用体のケース、それらのタプル）で 8 個以下なら、末尾にそれらの腕を足す `maybe` の修正案も持ちます |
 | `E1022` | 他モジュールの `private`、公開 API からの private 型、不透明な標準ライブラリ型（`Map`、`Arena`、`Arena.Handle`、`Net.Address`、`Atomic`、`Mutex`、`Channel.Sender`、`Channel.Receiver` など）の直接構築・フィールド参照、std 専用の組み込み関数（`Os.__read`、`Net.__open`、`Arena.__next_id`、`Gpu.__open`、`Channel.__close_sender` など）の呼び出し |
 | `E1023` | ループ外の `break` / `continue`、`finally` を越える脱出 |
 | `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス。共用体の重複したケースは、最初の定義（`first_defined_here`）を持ちます |

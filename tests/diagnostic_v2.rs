@@ -1192,3 +1192,63 @@ fn a_reassigned_holder_is_not_a_later_use() {
     assert_eq!(line_of(source, used.span), 5);
     assert_eq!(text_at(source, used.span), "r");
 }
+
+#[test]
+fn each_holder_keeps_its_own_later_use() {
+    // Replacing `r` does not end the borrow that `keep` holds.
+    let source = "let mut n = 0\nlet m = 1\nlet mut r = ref n\nlet keep = r\nn = 2\nr = ref m\nderef keep + deref r\n";
+    let diagnostic = first(source, "E1014");
+    let used = diagnostic
+        .related
+        .iter()
+        .find(|related| related.role == RelatedRole::BorrowUsedHere)
+        .unwrap_or_else(|| panic!("{:?}", diagnostic.related));
+    assert_eq!(text_at(source, used.span), "keep");
+    assert_eq!(line_of(source, used.span), 7);
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "end the borrow before this access: stop using 'keep' first, or move this access after its last use"
+        )
+    );
+}
+
+#[test]
+fn a_reborrow_of_a_parameter_names_where_it_was_taken() {
+    let source = "def f :: ref mut i64 -> i64 = \\p ->\n    let q = ref (deref p)\n    deref p = 1\n    deref q\n\n0\n";
+    let diagnostic = first(source, "E1014");
+    assert_eq!(diagnostic.related[0].role, RelatedRole::BorrowedHere);
+    assert_eq!(text_at(source, diagnostic.related[0].span), "ref (deref p)");
+}
+
+#[test]
+fn an_operator_in_the_tail_is_not_explained_by_the_declaration() {
+    // `!` expects a bool; the annotation declares the result, `i64`.
+    let source = "let x: i64 = !1i64\nx\n";
+    let diagnostic = first(source, "E1003");
+    assert_eq!(diagnostic.detail.expected.as_deref(), Some("bool"));
+    assert!(diagnostic.related.is_empty(), "{:?}", diagnostic.related);
+}
+
+#[test]
+fn a_fix_adds_every_missing_case_or_none() {
+    let source =
+        "union U = A | B | C\n\ndef f :: U -> i64 = \\u ->\n    match u with\n    | A -> 1\n\n0\n";
+    let diagnostic = first(source, "E1021");
+    assert_eq!(diagnostic.fixes.len(), 1);
+    assert_eq!(
+        diagnostic.fixes[0].title,
+        "Add the arms '| B -> unreachable () | C -> unreachable ()'"
+    );
+    let fixed = apply_first_fixes(source);
+    analyze_all(&fixed).unwrap_or_else(|set| panic!("{fixed}\n{:?}", set.diagnostics));
+    // Nine missing cases are more arms than a fix adds.
+    let cases: Vec<String> = (0..10).map(|index| format!("K{index}")).collect();
+    let source = format!(
+        "union U = {}\n\ndef f :: U -> i64 = \\u ->\n    match u with\n    | K0 -> 1\n\n0\n",
+        cases.join(" | ")
+    );
+    let diagnostic = first(&source, "E1021");
+    assert!(diagnostic.fixes.is_empty());
+    assert!(diagnostic.help.is_some());
+}

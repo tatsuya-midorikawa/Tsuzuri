@@ -7603,6 +7603,7 @@ fn check_modules_collect(
                             body.as_mut().err(),
                             from,
                             &tail_spans(&function.body),
+                            &signature.result,
                             &format!(
                                 "the result type of '{}' is declared here",
                                 function.name.text
@@ -10063,12 +10064,25 @@ impl<'a> Checker<'a> {
         error: Option<&mut Diagnostic>,
         from: usize,
         tails: &[Span],
+        declared: &Type,
         message: &str,
         because: Span,
     ) {
+        // The declaration supplied the expected type only when the mismatch expects that type
+        // (or, for a reference, its target, which an argument is borrowed for): an operator in
+        // the tail position expects its own operand types, as `!` does in `let x: i64 = !1i64`.
+        let declared = self.inference.resolve(declared);
+        let mut types = vec![declared.display(&self.types)];
+        if let Type::Reference(target, _) | Type::Shared(target, _) = &declared {
+            types.push(self.inference.resolve(target).display(&self.types));
+        }
         let note = |diagnostic: &mut Diagnostic| {
             if diagnostic.code == "E1003"
-                && diagnostic.detail.expected.is_some()
+                && diagnostic
+                    .detail
+                    .expected
+                    .as_ref()
+                    .is_some_and(|expected| types.contains(expected))
                 && diagnostic.related.is_empty()
                 && because.end > because.start
                 && tails.contains(&diagnostic.span)
@@ -10090,11 +10104,12 @@ impl<'a> Checker<'a> {
     fn annotation_because(
         &mut self,
         binding: &Binding,
+        annotation: Option<&Type>,
         from: usize,
         error: Option<&mut Diagnostic>,
     ) {
         // A generated binding's annotation is not written in the source.
-        if let Some(written) = &binding.annotation
+        if let (Some(written), Some(annotation)) = (&binding.annotation, annotation)
             && binding.name.provenance == Provenance::User
             && !binding.name.text.starts_with('$')
         {
@@ -10102,6 +10117,7 @@ impl<'a> Checker<'a> {
                 error,
                 from,
                 &tail_spans(&binding.value),
+                annotation,
                 "the type annotation declares this type",
                 written.span,
             );
@@ -10117,6 +10133,7 @@ impl<'a> Checker<'a> {
         callee: &TypedExpr,
         index: usize,
         argument: &Expr,
+        parameter: &Type,
         from: usize,
         error: Option<&mut Diagnostic>,
     ) {
@@ -10125,6 +10142,7 @@ impl<'a> Checker<'a> {
                 error,
                 from,
                 &tail_spans(argument),
+                parameter,
                 &format!("{message} is declared here"),
                 span,
             );
@@ -10464,12 +10482,12 @@ impl<'a> Checker<'a> {
             let value = match self.expression(&binding.value, annotation.as_ref()) {
                 Ok(value) => value,
                 Err(mut error) => {
-                    self.annotation_because(binding, from, Some(&mut error));
+                    self.annotation_because(binding, annotation.as_ref(), from, Some(&mut error));
                     return Err(error);
                 }
             };
             if self.recovered.len() > from {
-                self.annotation_because(binding, from, None);
+                self.annotation_because(binding, annotation.as_ref(), from, None);
             }
             let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
                 Type::Error
@@ -10659,6 +10677,7 @@ impl<'a> Checker<'a> {
                                     &callee,
                                     index,
                                     argument,
+                                    parameter,
                                     from,
                                     Some(&mut error),
                                 );
@@ -10666,7 +10685,7 @@ impl<'a> Checker<'a> {
                             }
                         };
                         if self.recovered.len() > from {
-                            self.argument_because(&callee, index, argument, from, None);
+                            self.argument_because(&callee, index, argument, parameter, from, None);
                         }
                         checked
                     }

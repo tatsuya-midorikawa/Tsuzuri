@@ -131,6 +131,17 @@ impl Drop for Cell {
     }
 }
 
+/// The pattern that covers exactly the values a witness stands for.
+fn witness_pattern(witness: &Witness) -> Pat {
+    match witness {
+        Witness::Wild => Rc::new(Node::Wild),
+        Witness::Ctor(constructor, arguments) => Rc::new(Node::Ctor(
+            constructor.clone(),
+            arguments.iter().map(witness_pattern).collect(),
+        )),
+    }
+}
+
 fn push(head: Pat, tail: Row) -> Row {
     let concrete = usize::from(matches!(*head, Node::Ctor(..))) + concrete(&tail);
     Some(Rc::new(Cell {
@@ -236,7 +247,7 @@ impl Checker<'_> {
                 }
             }
             let wild = search.wild.clone();
-            if let Some(witness) = search.run(rows, push(wild, None), true)? {
+            if let Some(witness) = search.run(rows.clone(), push(wild, None), true)? {
                 let missing = self.witness(&witness, coverage.span);
                 let mut error = Diagnostic::new(
                     "E1021",
@@ -248,26 +259,55 @@ impl Checker<'_> {
                 ));
                 // The arm has no indentation: the checker does not have the text of the source.
                 if let Some(end) = coverage.append_at
-                    && Self::writable(&witness)
+                    && let Some(arms) = self.missing_arms(&mut search, rows, witness)
                 {
                     let end = Span {
                         start: end,
                         end,
                         ..coverage.span
                     };
-                    error = error.fix(
-                        format!("Add the arm '| {missing} -> unreachable ()'"),
-                        Applicability::Maybe,
-                        vec![Edit {
-                            span: end,
-                            text: format!(" | {missing} -> unreachable ()"),
-                        }],
-                    );
+                    let title = if arms.len() == 1 {
+                        format!("Add the arm '{}'", arms[0])
+                    } else {
+                        format!("Add the arms '{}'", arms.join(" "))
+                    };
+                    let text: String = arms.iter().map(|arm| format!(" {arm}")).collect();
+                    error = error.fix(title, Applicability::Maybe, vec![Edit { span: end, text }]);
                 }
                 return Err(error);
             }
         }
         Ok(warnings)
+    }
+
+    /// The arms `| <pattern> -> unreachable ()` that make the match exhaustive, starting with
+    /// `witness` and adding the next witness until none is left: at most `MAX_ADDED_ARMS`, and
+    /// only patterns that an arm accepts as written. `None` when there are more, when one is not
+    /// writable, or when the search reaches its limit.
+    #[cold]
+    #[inline(never)]
+    fn missing_arms(
+        &self,
+        search: &mut Search<'_, '_>,
+        mut rows: Vec<Row>,
+        witness: Witness,
+    ) -> Option<Vec<String>> {
+        const MAX_ADDED_ARMS: usize = 8;
+        let mut arms = Vec::new();
+        let mut next = Some(witness);
+        while let Some(witness) = next {
+            if arms.len() == MAX_ADDED_ARMS || !Self::writable(&witness) {
+                return None;
+            }
+            arms.push(format!(
+                "| {} -> unreachable ()",
+                self.witness(&witness, search.span)
+            ));
+            rows.push(push(witness_pattern(&witness), None));
+            let wild = search.wild.clone();
+            next = search.run(rows.clone(), push(wild, None), true).ok()?;
+        }
+        Some(arms)
     }
 
     /// Whether a witness is printed as a pattern that an arm accepts as written: wildcards,

@@ -1648,7 +1648,8 @@ impl<'a> Checker<'a, '_> {
             span,
         );
         let created = &self.loans[loan];
-        if !self.external.contains(&created.place.root)
+        // A parameter's own loan was taken by the caller; a reborrow of it has parents.
+        if !(self.external.contains(&created.place.root) && created.parents.is_empty())
             && created.span.end > created.span.start
             && created.span != span
         {
@@ -1663,15 +1664,22 @@ impl<'a> Checker<'a, '_> {
             );
         }
         let holders = self.holders(loan);
-        let holder = holders
-            .iter()
-            .filter_map(|id| self.state.locals.get(id))
-            .map(|(local, _)| local.name.as_str())
-            .find(|name| !name.starts_with('$'))
+        let use_of = self
+            .later_use(&holders, span)
+            .filter(|(used, repeated, _)| !repeated || self.repeated_use(loan, *used, span));
+        // The help names the holder whose use is shown, else the first one.
+        let named = |id: &usize| {
+            self.state
+                .locals
+                .get(id)
+                .map(|(local, _)| local.name.as_str())
+                .filter(|name| !name.starts_with('$'))
+        };
+        let holder = use_of
+            .and_then(|(_, _, id)| named(&id))
+            .or_else(|| holders.iter().find_map(named))
             .map(str::to_owned);
-        if let Some((used, repeated)) = self.later_use(&holders, span)
-            && (!repeated || self.repeated_use(loan, used, span))
-        {
+        if let Some((used, repeated, _)) = use_of {
             diagnostic = diagnostic.related(
                 RelatedRole::BorrowUsedHere,
                 if repeated {
@@ -1736,8 +1744,9 @@ impl<'a> Checker<'a, '_> {
         holders
     }
 
-    /// The first use of a holder after `after` in source order, else (`true`) the first use before it.
-    fn later_use(&mut self, holders: &BTreeSet<usize>, after: Span) -> Option<(Span, bool)> {
+    /// The first use of a holder after `after` in source order, else (`true`) the first use before
+    /// it, and the holder.
+    fn later_use(&mut self, holders: &BTreeSet<usize>, after: Span) -> Option<(Span, bool, usize)> {
         find_later_use(self.body, holders, after, &mut self.later_use_budget)
     }
 
@@ -3141,63 +3150,85 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
     }
 }
 
+/// What `find_later_use` found for one holder.
+#[derive(Default)]
+struct HolderUses {
+    later: Option<Span>,
+    earlier: Option<Span>,
+    /// The end of the first assignment of the holder after the access.
+    overwritten: Option<usize>,
+    assigned: bool,
+}
+
 /// The first use of one of `holders` after `after` in source order, else (`true`) the first use
-/// before it. An assignment of a whole holder ends the borrow that it held: a use after it reads
-/// the new value, so a later use counts only before the first such assignment, and an earlier use
-/// only when the body assigns no holder. Looks at no more than `*budget` expressions, and `None`
-/// once it runs out.
+/// before it, and the holder that it uses. An assignment of a whole holder ends the borrow that
+/// it held: a use after it reads the new value, so a later use of a holder counts only before
+/// its first such assignment, and an earlier use only when the body never assigns that holder.
+/// Looks at no more than `*budget` expressions, and `None` once it runs out.
 fn find_later_use(
     body: &TypedExpr,
     holders: &BTreeSet<usize>,
     after: Span,
     budget: &mut usize,
-) -> Option<(Span, bool)> {
+) -> Option<(Span, bool, usize)> {
     if holders.is_empty() {
         return None;
     }
-    let (mut later, mut earlier): (Option<Span>, Option<Span>) = (None, None);
-    // The end of the first assignment of a holder after `after`, and whether there is any.
-    let (mut overwritten, mut assigned): (Option<usize>, bool) = (None, false);
+    let mut found: BTreeMap<usize, HolderUses> = BTreeMap::new();
     let mut pending = vec![body];
     while let Some(expression) = pending.pop() {
         if *budget == 0 {
             return None;
         }
         *budget -= 1;
+        let span = expression.span;
         if let E::Assign(place, value) = &expression.kind
             && let E::Local(id) = place.kind
             && holders.contains(&id)
         {
             // The value is evaluated before the holder is replaced.
-            assigned = true;
-            let end = expression.span.end;
-            if expression.span.source == after.source
-                && end > after.end
-                && overwritten.is_none_or(|kept| end < kept)
+            let uses = found.entry(id).or_default();
+            uses.assigned = true;
+            if span.source == after.source
+                && span.end > after.end
+                && uses.overwritten.is_none_or(|kept| span.end < kept)
             {
-                overwritten = Some(end);
+                uses.overwritten = Some(span.end);
             }
             pending.push(value);
             continue;
         }
-        let used = match &expression.kind {
-            E::Local(id) => holders.contains(id),
-            E::Lambda { captures, .. } => captures.iter().any(|local| holders.contains(&local.id)),
-            _ => false,
-        };
-        let span = expression.span;
-        if used && span.source == after.source && span.end > span.start {
+        let mut note = |id: usize| {
+            if span.source != after.source || span.end <= span.start {
+                return;
+            }
+            let uses = found.entry(id).or_default();
             let slot = if span.start >= after.end {
-                &mut later
+                &mut uses.later
             } else if span.end <= after.start {
-                &mut earlier
+                &mut uses.earlier
             } else {
-                &mut None
+                return;
             };
             if slot.is_none_or(|kept| span.start < kept.start) {
                 *slot = Some(span);
             }
-        }
+        };
+        let used = match &expression.kind {
+            E::Local(id) if holders.contains(id) => {
+                note(*id);
+                true
+            }
+            E::Lambda { captures, .. } => {
+                let mut used = false;
+                for local in captures.iter().filter(|local| holders.contains(&local.id)) {
+                    note(local.id);
+                    used = true;
+                }
+                used
+            }
+            _ => false,
+        };
         if !used {
             expression
                 .try_for_each_child(&mut |child| {
@@ -3207,11 +3238,28 @@ fn find_later_use(
                 .expect("searching uses cannot fail");
         }
     }
-    let later = later.filter(|span| overwritten.is_none_or(|end| span.start < end));
-    let earlier = earlier.filter(|_| !assigned);
-    later
-        .map(|span| (span, false))
-        .or(earlier.map(|span| (span, true)))
+    let first = |uses: Vec<(Span, usize)>| uses.into_iter().min_by_key(|(span, _)| span.start);
+    let later = first(
+        found
+            .iter()
+            .filter_map(|(id, uses)| {
+                uses.later
+                    .filter(|span| uses.overwritten.is_none_or(|end| span.start < end))
+                    .map(|span| (span, *id))
+            })
+            .collect(),
+    );
+    if let Some((span, id)) = later {
+        return Some((span, false, id));
+    }
+    first(
+        found
+            .iter()
+            .filter(|(_, uses)| !uses.assigned)
+            .filter_map(|(id, uses)| uses.earlier.map(|span| (span, *id)))
+            .collect(),
+    )
+    .map(|(span, id)| (span, true, id))
 }
 
 fn uses(expression: &TypedExpr, ids: &mut BTreeSet<usize>) {
@@ -3277,17 +3325,18 @@ mod later_use_tests {
         uses(&function.body, &mut holders);
         let at = |start: usize, end: usize| Span::new(start, end).in_source(0);
         let first = source.find("x + x").unwrap();
+        let x = *holders.iter().next().unwrap();
         let find = |after: Span, holders: &BTreeSet<usize>, mut budget: usize| {
             find_later_use(&function.body, holders, after, &mut budget)
         };
         let end = source.len();
         assert_eq!(
             find(at(0, 0), &holders, LATER_USE_NODES),
-            Some((at(first, first + 1), false))
+            Some((at(first, first + 1), false, x))
         );
         assert_eq!(
             find(at(end, end), &holders, LATER_USE_NODES),
-            Some((at(first, first + 1), true))
+            Some((at(first, first + 1), true, x))
         );
         assert_eq!(find(at(0, 0), &holders, 0), None);
         assert_eq!(find(at(0, 0), &BTreeSet::new(), LATER_USE_NODES), None);
