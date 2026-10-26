@@ -325,13 +325,6 @@ impl<'a> Checker<'a, '_> {
         let entry_reachable = self.reachable;
         let ids: BTreeSet<_> = entry.locals.keys().copied().collect();
         let live: BTreeSet<_> = live.intersection(&ids).copied().collect();
-        // An error ends the check of the function, so only the normal exit pops it.
-        self.repeating
-            .push(condition.map_or(body.span, |condition| Span {
-                start: condition.span.start.min(body.span.start),
-                end: condition.span.end.max(body.span.end),
-                ..body.span
-            }));
         for _ in 0..=crate::syntax::MAX_NESTING {
             let before = self.loop_summary();
             self.reachable = entry_reachable;
@@ -366,7 +359,6 @@ impl<'a> Checker<'a, '_> {
                 for edge in flow.breaks {
                     self.merge_reachable(&edge, true);
                 }
-                self.repeating.pop();
                 return Ok(());
             }
         }

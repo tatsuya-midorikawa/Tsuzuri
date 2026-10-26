@@ -1390,3 +1390,34 @@ fn a_parenthesized_function_is_a_first_definition() {
         assert_eq!(text_at(source, diagnostic.related[0].span), "f");
     }
 }
+
+#[test]
+fn the_control_flow_decides_borrow_and_move_notes() {
+    let used = |source: &str| {
+        let diagnostic = first(source, "E1014");
+        diagnostic
+            .related
+            .iter()
+            .find(|related| related.role == RelatedRole::BorrowUsedHere)
+            .map(|related| {
+                (
+                    line_of(source, related.span),
+                    related.message.contains("next iteration"),
+                )
+            })
+    };
+    // The body always breaks, so the condition never runs a second time.
+    let source = "let mut n = 0\nlet r = ref n\nwhile { let x = deref r; n = x + 1; x < 2 } do\n    break\n0\n";
+    assert_eq!(used(source), None);
+    // An exception before the replacement skips it: the read after the `try` may read `n`.
+    let source = "def f :: i32 -> i64 = \\k ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    let _t: Result<i32, Exception> =\n        try\n            let x = @checked k + 1\n            r = ref m\n            x\n        with\n        | e -> e\n    deref r\n\n0\n";
+    assert_eq!(used(source), Some((13, false)));
+    // Both branches replace the holder: the read after them never reads `n`.
+    let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\ndef f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let k = 2\n    let mut r = ref n\n    both r (ref mut n)\n    if flag then r = ref m else r = ref k\n    deref r\n\n0\n";
+    assert_eq!(used(source), None);
+    // The value of an assignment is evaluated before its place, in the same iteration.
+    let source = "def consume :: own string -> i64 = \\s -> s.length\n\ndef f :: unit -> i64 = \\_ ->\n    let text = \"a\"\n    let mut n = 0\n    for i in 0 .. 1 do\n        deref { let _ = consume text; ref mut n } = consume text\n    n\n\n0\n";
+    let diagnostic = first(source, "E1012");
+    assert_eq!(diagnostic.related[0].message, "value moved here");
+    assert!(diagnostic.related[0].span.start > diagnostic.span.start);
+}

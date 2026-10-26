@@ -445,7 +445,6 @@ fn check_body<'a>(
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         placeholders: BTreeSet::new(),
         later_use_budget: LATER_USE_NODES,
-        repeating: Vec::new(),
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -659,12 +658,9 @@ struct Checker<'a, 'run> {
     /// The external roots of parameters that store no reference: their loans only stand for
     /// whatever a function or async argument captured, which the caller checks (B08 D6).
     placeholders: BTreeSet<usize>,
-    /// How many more expressions `later_use` may look at in this function.
+    /// How many more steps the diagnostics may take in this function to find where a moved value
+    /// or a borrow came from (`Flow`).
     later_use_budget: usize,
-    /// The parts of the loops around the checked expression that run again (the condition and
-    /// the body), outermost first; a move named in a diagnostic may come from their previous
-    /// iteration.
-    repeating: Vec<Span>,
 }
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
@@ -1486,16 +1482,12 @@ impl<'a> Checker<'a, '_> {
                 .get(&place.root)
                 .map_or("value", |(local, _)| local.name.as_str())
                 .to_owned();
-            // A move at or after the use in the source reached it through a loop only when a loop
-            // holds both; the `where` bindings of a guarded function run before its arms.
-            let within = |outer: Span, inner: Span| {
-                outer.source == inner.source && outer.start <= inner.start && inner.end <= outer.end
-            };
-            let previous_iteration = (origin.start, origin.end) >= (span.start, span.end)
-                && self
-                    .repeating
-                    .iter()
-                    .any(|part| within(*part, origin) && within(*part, span));
+            // Only the control flow tells whether the move reached the use through a loop: the
+            // `where` bindings of a guarded function run before its arms, and an assignment's value
+            // before its place.
+            let previous_iteration = origin.end > origin.start
+                && moved_in_previous_iteration(self.body, origin, span, &mut self.later_use_budget)
+                    == Some(true);
             let message = match (moved.fields.is_empty(), previous_iteration) {
                 (true, false) => "value moved here",
                 (false, false) => "part of the value moved here",
@@ -3162,52 +3154,31 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
     }
 }
 
-/// What part of an expression a `Choice` steps into.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Part {
-    /// A branch of an `if` (arm 0 or 1), or the body of an arm of a `match`.
-    Arm(usize),
-    /// The pattern tests and the guard of an arm of a `match`: they run before the arm's body
-    /// and, when they fail, before the later arms.
-    Test(usize),
-    /// The condition of a `while`: it runs again, and at least once whenever the loop runs.
-    RepeatCondition,
-    /// The body of a `while` or a `for`: it runs again, or not at all.
-    RepeatBody,
-    /// The right side of `&&` or `||`, or the handler of a `try`.
-    Optional,
+/// The control flow of a function body, built when a diagnostic explains where a moved value or
+/// a borrow came from. Every expression has an entry and an exit node; the edges follow the
+/// evaluation order, the arms of `if` and `match` (a failing pattern or guard falls through to the
+/// next arm), `&&` and `||`, loops (an edge back to the loop's head is a back edge), `break`,
+/// `continue`, re-raises, and the exceptions that a `try` body may raise to its handler.
+struct Flow {
+    /// The successors of each node, and whether the edge goes back to a loop's head.
+    edges: Vec<Vec<(usize, bool)>>,
+    /// The holder that each node replaces (the exit of `holder = ...`).
+    replaces: Vec<Option<usize>>,
+    /// The holders that each node reads (the exit of a holder, or of a lambda that captures it).
+    reads: Vec<Vec<usize>>,
+    /// The spans of the nodes that read, for the diagnostics.
+    spans: Vec<Span>,
+    /// The entry and exit of the first (outermost) expression with each span.
+    by_span: BTreeMap<(Option<usize>, usize, usize), (usize, usize)>,
 }
 
-/// One step into a part of an expression that may not run. `node` is the expression's
-/// address, compared only for equality.
-struct Choice {
-    node: usize,
-    part: Part,
-    outer: Path,
-}
-
-/// The choices from the body down to an expression, innermost first.
-type Path = Option<std::rc::Rc<Choice>>;
-
-fn choices(path: &Path) -> impl Iterator<Item = &Choice> {
-    std::iter::successors(path.as_deref(), |choice| choice.outer.as_deref())
-}
-
-/// Whether a part runs again in the next iteration of its loop.
-fn repeating(part: Part) -> bool {
-    matches!(part, Part::RepeatCondition | Part::RepeatBody)
-}
-
-/// The part of `path` outside the loop at `node`: the choices that the next iteration keeps.
-fn outside(path: &Path, node: usize) -> &Path {
-    let mut current = path;
-    while let Some(choice) = current.as_deref() {
-        if choice.node == node && repeating(choice.part) {
-            return &choice.outer;
-        }
-        current = &choice.outer;
-    }
-    current
+/// Where control goes from inside an expression: the targets of `break` and `continue`, and the
+/// handler that an exception reaches.
+#[derive(Clone, Copy, Default)]
+struct Targets {
+    break_to: Option<usize>,
+    continue_to: Option<usize>,
+    handler: Option<usize>,
 }
 
 /// Takes `cost` from `budget`; `None` once it runs out.
@@ -3216,105 +3187,310 @@ fn spend(budget: &mut usize, cost: usize) -> Option<()> {
     Some(())
 }
 
-/// Whether the expressions at `a` and `b` cannot both run: they are in different arms of one
-/// `if` or `match`, or one is in the body of an arm and the other in the tests of a later arm.
-fn exclusive(a: &Path, b: &Path, budget: &mut usize) -> Option<bool> {
-    for x in choices(a) {
-        for y in choices(b) {
+impl Flow {
+    fn node(&mut self, span: Span) -> usize {
+        self.edges.push(Vec::new());
+        self.replaces.push(None);
+        self.reads.push(Vec::new());
+        self.spans.push(span);
+        self.edges.len() - 1
+    }
+
+    fn edge(&mut self, from: usize, to: usize) {
+        self.edges[from].push((to, false));
+    }
+
+    /// Entries and exits for `parts`, run one after another from `from` to `to`.
+    fn sequence<'e>(
+        &mut self,
+        parts: Vec<&'e TypedExpr>,
+        from: usize,
+        to: usize,
+    ) -> Vec<(&'e TypedExpr, usize, usize)> {
+        let mut at = from;
+        let mut items = Vec::new();
+        for part in parts {
+            let (part_entry, part_exit) = (self.node(part.span), self.node(part.span));
+            self.edge(at, part_entry);
+            items.push((part, part_entry, part_exit));
+            at = part_exit;
+        }
+        self.edge(at, to);
+        items
+    }
+
+    /// Builds the flow of `body`; `holders` are the locals whose reads and replacements count.
+    /// `None` when it would take more than `*budget` steps.
+    fn build(body: &TypedExpr, holders: &BTreeSet<usize>, budget: &mut usize) -> Option<Self> {
+        let mut flow = Flow {
+            edges: Vec::new(),
+            replaces: Vec::new(),
+            reads: Vec::new(),
+            spans: Vec::new(),
+            by_span: BTreeMap::new(),
+        };
+        let (entry, exit) = (flow.node(body.span), flow.node(body.span));
+        let mut pending = vec![(body, entry, exit, Targets::default())];
+        while let Some((expression, entry, exit, targets)) = pending.pop() {
             spend(budget, 1)?;
-            if x.node != y.node {
+            let span = expression.span;
+            flow.by_span
+                .entry((span.source, span.start, span.end))
+                .or_insert((entry, exit));
+            // An exception in a `try` body can leave from any point of it.
+            if let Some(handler) = targets.handler {
+                flow.edge(entry, handler);
+            }
+            // Children are added in evaluation order: each gets an entry and an exit first.
+            let child =
+                |flow: &mut Flow, part: &TypedExpr| (flow.node(part.span), flow.node(part.span));
+            let sequence = Flow::sequence;
+            let mut items: Vec<(&TypedExpr, usize, usize, Targets)> = Vec::new();
+            match &expression.kind {
+                E::Local(id) if holders.contains(id) => {
+                    flow.edge(entry, exit);
+                    flow.reads[exit].push(*id);
+                }
+                E::Lambda { captures, .. } => {
+                    // The body runs when the function is called; only the captures are read here.
+                    flow.edge(entry, exit);
+                    for local in captures.iter().filter(|local| holders.contains(&local.id)) {
+                        flow.reads[exit].push(local.id);
+                    }
+                }
+                E::Break => {
+                    if let Some(to) = targets.break_to {
+                        flow.edge(entry, to);
+                    }
+                }
+                E::Continue => {
+                    if let Some(to) = targets.continue_to {
+                        flow.edges[entry].push((to, true));
+                    }
+                }
+                E::Reraise => {
+                    if let Some(to) = targets.handler {
+                        flow.edge(entry, to);
+                    }
+                }
+                E::Assign(place, value) => {
+                    if let E::Local(holder) = place.kind
+                        && holders.contains(&holder)
+                    {
+                        // The value is evaluated, then the holder is replaced.
+                        for (part, part_entry, part_exit) in
+                            sequence(&mut flow, vec![value], entry, exit)
+                        {
+                            items.push((part, part_entry, part_exit, targets));
+                        }
+                        flow.replaces[exit] = Some(holder);
+                    } else {
+                        for (part, part_entry, part_exit) in
+                            sequence(&mut flow, vec![value, place], entry, exit)
+                        {
+                            items.push((part, part_entry, part_exit, targets));
+                        }
+                    }
+                }
+                E::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                } => {
+                    let (c_entry, c_exit) = child(&mut flow, condition);
+                    let (t_entry, t_exit) = child(&mut flow, then_branch);
+                    let (e_entry, e_exit) = child(&mut flow, else_branch);
+                    flow.edge(entry, c_entry);
+                    flow.edge(c_exit, t_entry);
+                    flow.edge(c_exit, e_entry);
+                    flow.edge(t_exit, exit);
+                    flow.edge(e_exit, exit);
+                    items.extend([
+                        (&**condition, c_entry, c_exit, targets),
+                        (&**then_branch, t_entry, t_exit, targets),
+                        (&**else_branch, e_entry, e_exit, targets),
+                    ]);
+                }
+                E::Match { value, arms, .. } => {
+                    let (v_entry, v_exit) = child(&mut flow, value);
+                    flow.edge(entry, v_entry);
+                    items.push((&**value, v_entry, v_exit, targets));
+                    let mut tests_from = vec![v_exit];
+                    for arm in arms {
+                        let arm_entry = flow.node(arm.body.span);
+                        for from in tests_from {
+                            flow.edge(from, arm_entry);
+                        }
+                        let mut tests: Vec<&TypedExpr> = Vec::new();
+                        for alternative in &arm.alternatives {
+                            tests.extend(alternative.steps.iter().map(|step| step.expression()));
+                            tests.extend(alternative.bindings.iter().map(|(_, value)| value));
+                        }
+                        tests.extend(&arm.guard);
+                        let (b_entry, b_exit) = child(&mut flow, &arm.body);
+                        // A test may fail after any step and fall through to the next arm.
+                        tests_from = vec![arm_entry];
+                        for (part, part_entry, part_exit) in
+                            sequence(&mut flow, tests, arm_entry, b_entry)
+                        {
+                            tests_from.push(part_exit);
+                            items.push((part, part_entry, part_exit, targets));
+                        }
+                        flow.edge(b_exit, exit);
+                        items.push((&arm.body, b_entry, b_exit, targets));
+                    }
+                }
+                E::While { condition, body } => {
+                    let (c_entry, c_exit) = child(&mut flow, condition);
+                    let (b_entry, b_exit) = child(&mut flow, body);
+                    flow.edge(entry, c_entry);
+                    flow.edge(c_exit, b_entry);
+                    flow.edge(c_exit, exit);
+                    flow.edges[b_exit].push((c_entry, true));
+                    let inner = Targets {
+                        break_to: Some(exit),
+                        continue_to: Some(c_entry),
+                        handler: targets.handler,
+                    };
+                    // A `break` or `continue` in the condition belongs to the loop around this one.
+                    items.extend([
+                        (&**condition, c_entry, c_exit, targets),
+                        (&**body, b_entry, b_exit, inner),
+                    ]);
+                }
+                E::ForRange {
+                    start,
+                    step,
+                    finish,
+                    body,
+                    ..
+                } => {
+                    let head = flow.node(body.span);
+                    for (part, part_entry, part_exit) in
+                        sequence(&mut flow, vec![start, step, finish], entry, head)
+                    {
+                        items.push((part, part_entry, part_exit, targets));
+                    }
+                    let (b_entry, b_exit) = child(&mut flow, body);
+                    flow.edge(head, b_entry);
+                    flow.edge(head, exit);
+                    flow.edges[b_exit].push((head, true));
+                    let inner = Targets {
+                        break_to: Some(exit),
+                        continue_to: Some(head),
+                        handler: targets.handler,
+                    };
+                    items.push((&**body, b_entry, b_exit, inner));
+                }
+                E::ForEach { source, body, .. } => {
+                    let head = flow.node(body.span);
+                    for (part, part_entry, part_exit) in
+                        sequence(&mut flow, vec![source], entry, head)
+                    {
+                        items.push((part, part_entry, part_exit, targets));
+                    }
+                    let (b_entry, b_exit) = child(&mut flow, body);
+                    flow.edge(head, b_entry);
+                    flow.edge(head, exit);
+                    flow.edges[b_exit].push((head, true));
+                    let inner = Targets {
+                        break_to: Some(exit),
+                        continue_to: Some(head),
+                        handler: targets.handler,
+                    };
+                    items.push((&**body, b_entry, b_exit, inner));
+                }
+                E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
+                    let (l_entry, l_exit) = child(&mut flow, left);
+                    let (r_entry, r_exit) = child(&mut flow, right);
+                    flow.edge(entry, l_entry);
+                    flow.edge(l_exit, r_entry);
+                    flow.edge(l_exit, exit);
+                    flow.edge(r_exit, exit);
+                    items.extend([
+                        (&**left, l_entry, l_exit, targets),
+                        (&**right, r_entry, r_exit, targets),
+                    ]);
+                }
+                E::Try(handled) => {
+                    let (b_entry, b_exit) = child(&mut flow, &handled.body);
+                    let (h_entry, h_exit) = child(&mut flow, &handled.handler);
+                    flow.edge(entry, b_entry);
+                    let after = match &handled.finally {
+                        Some(finally) => {
+                            let (f_entry, f_exit) = child(&mut flow, finally);
+                            flow.edge(f_exit, exit);
+                            items.push((finally, f_entry, f_exit, targets));
+                            f_entry
+                        }
+                        None => exit,
+                    };
+                    flow.edge(b_exit, after);
+                    flow.edge(h_exit, after);
+                    items.push((
+                        &handled.body,
+                        b_entry,
+                        b_exit,
+                        Targets {
+                            handler: Some(h_entry),
+                            ..targets
+                        },
+                    ));
+                    items.push((&handled.handler, h_entry, h_exit, targets));
+                }
+                _ => {
+                    let mut parts = Vec::new();
+                    expression
+                        .try_for_each_child(&mut |part| {
+                            parts.push(part);
+                            Ok(())
+                        })
+                        .expect("collecting parts cannot fail");
+                    for (part, part_entry, part_exit) in sequence(&mut flow, parts, entry, exit) {
+                        items.push((part, part_entry, part_exit, targets));
+                    }
+                }
+            }
+            pending.extend(items.into_iter().rev());
+        }
+        Some(flow)
+    }
+
+    /// The nodes reachable from `from`, each with whether some path to it crosses a back edge
+    /// and whether one does not; a path stops at a replacement of `stop`.
+    fn reach(
+        &self,
+        from: usize,
+        stop: Option<usize>,
+        budget: &mut usize,
+    ) -> Option<Vec<[bool; 2]>> {
+        let mut seen = vec![[false; 2]; self.edges.len()];
+        let mut pending = std::collections::VecDeque::from([(from, false)]);
+        seen[from][0] = true;
+        while let Some((node, crossed)) = pending.pop_front() {
+            spend(budget, 1 + self.edges[node].len())?;
+            if node != from && stop.is_some() && self.replaces[node] == stop {
                 continue;
             }
-            let apart = match (x.part, y.part) {
-                (Part::Arm(i), Part::Arm(j)) => i != j,
-                (Part::Arm(i), Part::Test(j)) | (Part::Test(j), Part::Arm(i)) => j > i,
-                _ => false,
-            };
-            if apart {
-                return Some(true);
+            for &(next, back) in &self.edges[node] {
+                let crossed = crossed || back;
+                if !seen[next][usize::from(crossed)] {
+                    seen[next][usize::from(crossed)] = true;
+                    pending.push_back((next, crossed));
+                }
             }
         }
+        Some(seen)
     }
-    Some(false)
-}
-
-/// Whether every path to the expression at `to` runs the one at `from` first, as far as the
-/// parts go: each part that `from` is in holds `to` too (the tests of an arm precede its body).
-fn always_before(from: &Path, to: &Path, budget: &mut usize) -> Option<bool> {
-    always_between(from, &None, to, budget)
-}
-
-/// Whether every path from the expression at `start` (or from the body, for `None`) to the one
-/// at `to` runs the one at `from`, as far as the parts go: each part that `from` is in holds
-/// `start` or `to` (a part around the access is still running after it).
-fn always_between(from: &Path, start: &Path, to: &Path, budget: &mut usize) -> Option<bool> {
-    // A `while` condition runs whenever its loop is reached, so it adds no condition of its own.
-    for step in choices(from).filter(|step| step.part != Part::RepeatCondition) {
-        let mut held = false;
-        for other in choices(to).chain(choices(start)) {
-            spend(budget, 1)?;
-            if other.node == step.node
-                && (other.part == step.part
-                    || matches!((step.part, other.part), (Part::Test(i), Part::Arm(j)) if i == j))
-            {
-                held = true;
-                break;
-            }
-        }
-        if !held {
-            return Some(false);
-        }
-    }
-    Some(true)
-}
-
-/// Whether the loop at `node` holds the expression at `path`.
-fn repeats(path: &Path, node: usize) -> bool {
-    choices(path).any(|choice| choice.node == node && repeating(choice.part))
-}
-
-/// The loop that a `break` or `continue` at `path` leaves or repeats: the innermost one whose
-/// body holds it (one in a `while` condition belongs to the loop around that `while`).
-fn jump_target(path: &Path) -> Option<usize> {
-    choices(path)
-        .find(|choice| choice.part == Part::RepeatBody)
-        .map(|choice| choice.node)
-}
-
-fn choose(path: &Path, node: &TypedExpr, part: Part) -> Path {
-    Some(std::rc::Rc::new(Choice {
-        node: std::ptr::from_ref(node) as usize,
-        part,
-        outer: path.clone(),
-    }))
-}
-
-/// A use or a replacement of a holder, or a jump, that `find_later_use` saw. `at` is the
-/// position in evaluation order, after the expression's parts.
-struct Seen {
-    holder: usize,
-    span: Span,
-    at: usize,
-    path: Path,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Jump {
-    Break,
-    Continue,
-    Reraise,
 }
 
 /// Where a holder of a borrow is used after an access at `after`, so that the borrow is still
-/// alive there, and the holder. The search follows the evaluation order, not the source order
-/// (the `where` bindings of a guarded function run before its arms): the first use after the
-/// access that can run with it (`exclusive`), that no replacement of the whole holder between
-/// them always precedes, and that no `break`, `continue`, or re-raise that always runs after the
-/// access skips. Else (`true`) a use that the next iteration of a loop around the access runs:
-/// in the loop's condition or body, in any arm inside the loop, of a holder that the loop never
-/// replaces, unless a `break` of that loop or a re-raise always runs after the access, or `held` (an argument
-/// held by a call keeps the borrow alive instead). Looks at no more than `*budget` expressions
-/// and comparisons, and `None` once it runs out or does not find the access.
+/// alive there, and the holder: a read of the holder that control can reach from the end of the
+/// access without replacing the holder first. It is in the next iteration of a loop (`true`) when
+/// every such path goes back to a loop's head; such a use is not named when `held` (an argument
+/// held by a call keeps the borrow alive instead). Among the uses, one reached without a back edge
+/// is preferred, then the first in the source. Looks at no more than `*budget` steps, and `None`
+/// once it runs out or does not find the access.
 fn find_later_use(
     body: &TypedExpr,
     holders: &BTreeSet<usize>,
@@ -3322,277 +3498,47 @@ fn find_later_use(
     held: bool,
     budget: &mut usize,
 ) -> Option<(Span, bool, usize)> {
-    enum Step<'a> {
-        Enter(&'a TypedExpr, Path),
-        Exit(&'a TypedExpr, Path),
-    }
     if holders.is_empty() {
         return None;
     }
-    let (mut uses, mut jumps) = (Vec::new(), Vec::new());
-    let mut replaced: BTreeMap<usize, Vec<Seen>> = BTreeMap::new();
-    let mut access: Option<(usize, Path)> = None;
-    let mut at = 0;
-    let mut pending = vec![Step::Enter(body, None)];
-    while let Some(step) = pending.pop() {
-        spend(budget, 1)?;
-        let (expression, path) = match step {
-            Step::Exit(expression, path) => {
-                at += 1;
-                if let E::Assign(place, _) = &expression.kind
-                    && let E::Local(holder) = place.kind
-                    && holders.contains(&holder)
-                {
-                    replaced.entry(holder).or_default().push(Seen {
-                        holder,
-                        span: expression.span,
-                        at,
-                        path: path.clone(),
-                    });
-                }
-                if expression.span == after && access.is_none() {
-                    access = Some((at, path));
-                }
+    let flow = Flow::build(body, holders, budget)?;
+    let (_, access) = *flow.by_span.get(&(after.source, after.start, after.end))?;
+    let mut best: Option<(bool, usize, usize, Span)> = None;
+    for &holder in holders {
+        let reached = flow.reach(access, Some(holder), budget)?;
+        for (node, reads) in flow.reads.iter().enumerate() {
+            let span = flow.spans[node];
+            if !reads.contains(&holder) || span.source != after.source || span.end <= span.start {
                 continue;
             }
-            Step::Enter(expression, path) => (expression, path),
-        };
-        // The parts in evaluation order; pushed in reverse, so that they are taken in order.
-        let mut parts: Vec<(&TypedExpr, Path)> = Vec::new();
-        match &expression.kind {
-            E::Local(id) if holders.contains(id) => {
-                at += 1;
-                if expression.span.source == after.source
-                    && expression.span.end > expression.span.start
-                {
-                    uses.push(Seen {
-                        holder: *id,
-                        span: expression.span,
-                        at,
-                        path,
-                    });
-                }
+            let [direct, crossed] = reached[node];
+            let repeated = !direct;
+            if !direct && (!crossed || held) {
                 continue;
             }
-            E::Lambda { captures, .. }
-                if captures.iter().any(|local| holders.contains(&local.id)) =>
-            {
-                at += 1;
-                for local in captures.iter().filter(|local| holders.contains(&local.id)) {
-                    uses.push(Seen {
-                        holder: local.id,
-                        span: expression.span,
-                        at,
-                        path: path.clone(),
-                    });
-                }
-                continue;
-            }
-            E::Break | E::Continue | E::Reraise => {
-                at += 1;
-                let jump = match expression.kind {
-                    E::Break => Jump::Break,
-                    E::Continue => Jump::Continue,
-                    _ => Jump::Reraise,
-                };
-                jumps.push((jump, at, path));
-                continue;
-            }
-            E::Assign(place, value) => {
-                // The value is evaluated before the place is written.
-                parts.push((value, path.clone()));
-                if !matches!(place.kind, E::Local(id) if holders.contains(&id)) {
-                    parts.push((place, path.clone()));
-                }
-            }
-            E::If {
-                condition,
-                then_branch,
-                else_branch,
-            } => {
-                parts.push((condition, path.clone()));
-                parts.push((then_branch, choose(&path, expression, Part::Arm(0))));
-                parts.push((else_branch, choose(&path, expression, Part::Arm(1))));
-            }
-            E::Match { value, arms, .. } => {
-                parts.push((value, path.clone()));
-                for (index, arm) in arms.iter().enumerate() {
-                    let test = choose(&path, expression, Part::Test(index));
-                    for alternative in &arm.alternatives {
-                        for step in &alternative.steps {
-                            parts.push((step.expression(), test.clone()));
-                        }
-                        for (_, value) in &alternative.bindings {
-                            parts.push((value, test.clone()));
-                        }
-                    }
-                    if let Some(guard) = &arm.guard {
-                        parts.push((guard, test));
-                    }
-                    parts.push((&arm.body, choose(&path, expression, Part::Arm(index))));
-                }
-            }
-            E::While { condition, body } => {
-                parts.push((condition, choose(&path, expression, Part::RepeatCondition)));
-                parts.push((body, choose(&path, expression, Part::RepeatBody)));
-            }
-            E::ForRange {
-                start,
-                step,
-                finish,
-                body,
-                ..
-            } => {
-                for bound in [start, step, finish] {
-                    parts.push((bound, path.clone()));
-                }
-                parts.push((body, choose(&path, expression, Part::RepeatBody)));
-            }
-            E::ForEach { source, body, .. } => {
-                parts.push((source, path.clone()));
-                parts.push((body, choose(&path, expression, Part::RepeatBody)));
-            }
-            E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
-                parts.push((left, path.clone()));
-                parts.push((right, choose(&path, expression, Part::Optional)));
-            }
-            E::Try(handled) => {
-                parts.push((&handled.body, path.clone()));
-                parts.push((&handled.handler, choose(&path, expression, Part::Optional)));
-                if let Some(finally) = &handled.finally {
-                    parts.push((finally, path.clone()));
-                }
-            }
-            _ => expression
-                .try_for_each_child(&mut |child| {
-                    parts.push((child, path.clone()));
-                    Ok(())
-                })
-                .expect("searching uses cannot fail"),
-        }
-        pending.push(Step::Exit(expression, path));
-        pending.extend(
-            parts
-                .into_iter()
-                .rev()
-                .map(|(part, path)| Step::Enter(part, path)),
-        );
-    }
-    let (start, access) = access?;
-    // Whether a jump at `position` with `path` skips what is at `seen`: a re-raise skips all
-    // after it, and a `break` or `continue` the rest of its loop.
-    // Whether a jump at `position` with `path` skips what is at `at` with `seen`: a re-raise
-    // skips all after it, and a `break` or `continue` the rest of its loop.
-    let skips_over = |jump: Jump, position: usize, path: &Path, at: usize, seen: &Path| {
-        at > position
-            && match jump {
-                Jump::Reraise => true,
-                Jump::Break | Jump::Continue => {
-                    jump_target(path).is_some_and(|node| repeats(seen, node))
-                }
-            }
-    };
-    // Dead code: a jump always runs before it, in every iteration.
-    let dead_at = |at: usize, seen: &Path, budget: &mut usize| -> Option<bool> {
-        for (jump, position, path) in &jumps {
-            spend(budget, 1)?;
-            if skips_over(*jump, *position, path, at, seen) && always_before(path, seen, budget)? {
-                return Some(true);
-            }
-        }
-        Some(false)
-    };
-    let dead = |seen: &Seen, budget: &mut usize| dead_at(seen.at, &seen.path, budget);
-    // The jumps that always run after the access, and are not dead code themselves.
-    let mut after_access: Vec<(Jump, usize, &Path)> = Vec::new();
-    for (jump, position, path) in &jumps {
-        spend(budget, 1)?;
-        if *position > start
-            && always_between(path, &access, &access, budget)?
-            && !dead_at(*position, path, budget)?
-        {
-            after_access.push((*jump, *position, path));
-        }
-    }
-    let skipped = |seen: &Seen, budget: &mut usize| -> Option<bool> {
-        for (jump, position, path) in &after_access {
-            spend(budget, 1)?;
-            if skips_over(*jump, *position, path, seen.at, &seen.path) {
-                return Some(true);
-            }
-        }
-        Some(false)
-    };
-    let no_replacements = Vec::new();
-    let replacements = |holder: usize| replaced.get(&holder).unwrap_or(&no_replacements);
-    uses.sort_by_key(|seen| seen.at);
-    for seen in uses.iter().filter(|seen| seen.at > start) {
-        if skipped(seen, budget)? || dead(seen, budget)? || exclusive(&seen.path, &access, budget)?
-        {
-            continue;
-        }
-        let mut cut = false;
-        for replacement in replacements(seen.holder) {
-            spend(budget, 1)?;
-            // A replacement that the path from the access skips never runs on it.
-            if replacement.at > start
-                && replacement.at < seen.at
-                && !skipped(replacement, budget)?
-                && !dead(replacement, budget)?
-                && always_between(&replacement.path, &access, &seen.path, budget)?
-            {
-                cut = true;
-                break;
-            }
-        }
-        if !cut {
-            return Some((seen.span, false, seen.holder));
-        }
-    }
-    if held
-        || after_access
-            .iter()
-            .any(|(jump, _, _)| *jump == Jump::Reraise)
-    {
-        return None;
-    }
-    // The loops around the access, innermost first.
-    let loops: Vec<usize> = choices(&access)
-        .filter(|choice| repeating(choice.part))
-        .map(|choice| choice.node)
-        .collect();
-    // A jump after the access leaves the loops inside its target, and a `break` its target too;
-    // the loops around the target run again.
-    let mut exited = 0;
-    for (jump, _, path) in &after_access {
-        if let Some(target) = jump_target(path)
-            && let Some(index) = loops.iter().position(|node| *node == target)
-        {
-            exited = exited.max(index + usize::from(*jump == Jump::Break));
-        }
-    }
-    for &node in &loops[exited.min(loops.len())..] {
-        for seen in uses.iter().filter(|seen| repeats(&seen.path, node)) {
-            if dead(seen, budget)? {
-                continue;
-            }
-            let mut replaced_here = false;
-            for replacement in replacements(seen.holder) {
-                spend(budget, 1)?;
-                if repeats(&replacement.path, node) && !dead(replacement, budget)? {
-                    replaced_here = true;
-                    break;
-                }
-            }
-            // The arms inside the loop may change in the next iteration; the ones around it stay.
-            if !replaced_here
-                && !exclusive(outside(&seen.path, node), outside(&access, node), budget)?
-            {
-                return Some((seen.span, true, seen.holder));
+            let key = (repeated, span.start, holder, span);
+            if best.is_none_or(|kept| (key.0, key.1, key.2) < (kept.0, kept.1, kept.2)) {
+                best = Some(key);
             }
         }
     }
-    None
+    best.map(|(repeated, _, holder, span)| (span, repeated, holder))
+}
+
+/// Whether the use at `used` reads a value that the move at `moved` took in the previous
+/// iteration of a loop: the use is reachable from the move only across a back edge. `None` when
+/// it is not reachable, or the search runs out of `*budget`.
+fn moved_in_previous_iteration(
+    body: &TypedExpr,
+    moved: Span,
+    used: Span,
+    budget: &mut usize,
+) -> Option<bool> {
+    let flow = Flow::build(body, &BTreeSet::new(), budget)?;
+    let (_, from) = *flow.by_span.get(&(moved.source, moved.start, moved.end))?;
+    let (to, _) = *flow.by_span.get(&(used.source, used.start, used.end))?;
+    let [direct, crossed] = flow.reach(from, None, budget)?[to];
+    (direct || crossed).then_some(!direct)
 }
 
 fn uses(expression: &TypedExpr, ids: &mut BTreeSet<usize>) {
