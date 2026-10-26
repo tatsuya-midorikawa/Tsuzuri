@@ -4,7 +4,8 @@ use crate::check::PatternStep;
 type LoanSummary = BTreeMap<usize, BTreeSet<(Place, bool)>>;
 
 pub(super) struct LoopFlow<'a> {
-    /// The loop's body, which the diagnostics of a borrow used in the next iteration name.
+    /// The part of the loop that runs again in the next iteration (the condition and the body),
+    /// where the diagnostics find a borrow used in the next iteration.
     pub(super) span: Span,
     locals: BTreeSet<usize>,
     breaks: Vec<State<'a>>,
@@ -336,7 +337,11 @@ impl<'a> Checker<'a, '_> {
             let exit = self.state.clone();
             let exit_reachable = self.reachable;
             self.loop_flows.push(LoopFlow {
-                span: body.span,
+                span: condition.map_or(body.span, |condition| Span {
+                    start: condition.span.start.min(body.span.start),
+                    end: condition.span.end.max(body.span.end),
+                    ..body.span
+                }),
                 locals: ids.clone(),
                 breaks: Vec::new(),
                 continues: Vec::new(),

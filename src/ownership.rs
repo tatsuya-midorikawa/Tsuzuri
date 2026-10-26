@@ -3189,9 +3189,16 @@ fn spend(budget: &mut usize, cost: usize) -> Option<()> {
 /// Whether the expressions at `a` and `b` cannot both run: they are in different arms of one
 /// `if` or `match`, or one is in the body of an arm and the other in the guard of a later arm.
 fn exclusive(a: &Path, b: &Path, budget: &mut usize) -> Option<bool> {
-    for x in choices(a).filter(|choice| choice.exclusive) {
-        for y in choices(b).filter(|choice| choice.exclusive && choice.node == x.node) {
+    for x in choices(a) {
+        spend(budget, 1)?;
+        if !x.exclusive {
+            continue;
+        }
+        for y in choices(b) {
             spend(budget, 1)?;
+            if !y.exclusive || y.node != x.node {
+                continue;
+            }
             let apart = match (x.guard, y.guard) {
                 (false, false) => x.arm != y.arm,
                 (false, true) => y.arm > x.arm,
@@ -3245,8 +3252,9 @@ struct Seen {
 /// Where a holder of a borrow is used after an access at `after`, so that the borrow is still
 /// alive there: the first use in source order that can run after the access (`exclusive`) and
 /// that no replacement of the whole holder between them always precedes, and the holder. Else
-/// (`true`) the first use before the access that a loop runs again after it: one in a body of
-/// `loops` that holds the access too, of a holder that the body never replaces. Looks at no more
+/// (`true`) the first use before the access that a loop runs again after it: one in the part of
+/// `loops` that repeats (the condition and the body) that holds the access too, of a holder that
+/// this part does not replace. Looks at no more
 /// than `*budget` expressions and path steps, and `None` once it runs out or does not find the
 /// access.
 fn find_later_use(
@@ -3391,12 +3399,17 @@ fn find_later_use(
     };
     for seen in uses.iter().filter(|seen| seen.span.end <= after.start) {
         spend(budget, 1)?;
-        if !replaced.contains_key(&seen.holder)
-            && loops
-                .iter()
-                .any(|body| within(*body, seen.span) && within(*body, after))
-            && !exclusive(&seen.path, &access, budget)?
-        {
+        let replacements = replaced.get(&seen.holder).map_or(&[][..], Vec::as_slice);
+        // A loop that runs the use again and does not replace the holder in between.
+        let repeats = loops.iter().any(|body| {
+            within(*body, seen.span)
+                && within(*body, after)
+                && !replacements
+                    .iter()
+                    .any(|replacement| within(*body, replacement.span))
+        });
+        spend(budget, loops.len() * (1 + replacements.len()))?;
+        if repeats && !exclusive(&seen.path, &access, budget)? {
             return Some((seen.span, true, seen.holder));
         }
     }

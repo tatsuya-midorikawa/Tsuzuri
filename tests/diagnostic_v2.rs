@@ -1279,6 +1279,12 @@ fn borrow_uses_follow_the_control_flow() {
     // A use before the loop does not hide the one that the next iteration runs.
     let source = "let mut n = 0\nlet r = ref n\nlet _before = deref r\nfor i in 0 .. 2 do\n    let x = deref r\n    n = x + 1\nn\n";
     assert_eq!(used(source), Some((5, true)));
+    // The condition of a `while` runs again too.
+    let source = "let mut n = 0\nlet r = ref n\nwhile deref r < 2 do\n    n = n + 1\n0\n";
+    assert_eq!(used(source), Some((3, true)));
+    // A replacement before the loop does not stop the loop from using the borrow again.
+    let source = "let mut n = 0\nlet mut m = 5\nlet mut r = ref m\nr = ref n\nfor i in 0 .. 2 do\n    let x = deref r\n    n = x + 1\nn\n";
+    assert_eq!(used(source), Some((6, true)));
     // A replacement in one branch only does not end the borrow for the other.
     let source = "def f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    if flag then r = ref m else ()\n    deref r\n\n0\n";
     assert_eq!(used(source), Some((7, false)));
