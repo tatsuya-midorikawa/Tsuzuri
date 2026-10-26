@@ -572,6 +572,18 @@ fn moved_in_a_loop_says_previous_iteration() {
 }
 
 #[test]
+fn moved_in_a_while_condition_says_previous_iteration() {
+    // The condition is checked before the loop's body; it runs again too.
+    let source = "def consume :: own string -> bool = \\s -> s.length > 0\n\ndef f :: unit -> i64 = \\_ ->\n    let text = \"a\"\n    while consume text do\n        ()\n    0\n\n0\n";
+    let diagnostic = first(source, "E1012");
+    assert_eq!(
+        diagnostic.related[0].message,
+        "value moved here, in the previous iteration of the loop"
+    );
+    assert_eq!(diagnostic.related[0].span, diagnostic.span);
+}
+
+#[test]
 fn moved_in_branches_names_the_later_move() {
     let diagnostic = first(BRANCH1, "E1012");
     assert_eq!(text_at(BRANCH1, diagnostic.related[0].span), "text");

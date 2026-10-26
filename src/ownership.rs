@@ -445,6 +445,7 @@ fn check_body<'a>(
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         placeholders: BTreeSet::new(),
         later_use_budget: LATER_USE_NODES,
+        repeating: Vec::new(),
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -660,6 +661,10 @@ struct Checker<'a, 'run> {
     placeholders: BTreeSet<usize>,
     /// How many more expressions `later_use` may look at in this function.
     later_use_budget: usize,
+    /// The parts of the loops around the checked expression that run again (the condition and
+    /// the body), outermost first; a move named in a diagnostic may come from their previous
+    /// iteration.
+    repeating: Vec<Span>,
 }
 
 /// How many expressions the diagnostics of one function may look at, in all, to find where a
@@ -1488,9 +1493,9 @@ impl<'a> Checker<'a, '_> {
             };
             let previous_iteration = (origin.start, origin.end) >= (span.start, span.end)
                 && self
-                    .loop_flows
+                    .repeating
                     .iter()
-                    .any(|flow| within(flow.span, origin) && within(flow.span, span));
+                    .any(|part| within(*part, origin) && within(*part, span));
             let message = match (moved.fields.is_empty(), previous_iteration) {
                 (true, false) => "value moved here",
                 (false, false) => "part of the value moved here",
