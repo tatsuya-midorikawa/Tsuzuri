@@ -1,4 +1,4 @@
-use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, RelatedRole, Span};
 use crate::lexer::{lex, lex_all};
 use crate::syntax::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,6 +37,37 @@ fn duplicate_active_case(case: &Ident) -> Diagnostic {
         format!("duplicate active pattern case '{}'", case.text),
         case.span,
     )
+}
+
+/// `E1001` for a second definition or signature of a function, with the first one when the
+/// parser has seen it.
+fn duplicate_function(message: &str, name: &Ident, first: Option<Span>) -> Diagnostic {
+    let error = Diagnostic::new("E1001", message, name.span);
+    match first {
+        Some(first) => error.related(RelatedRole::FirstDefinedHere, "first defined here", first),
+        None => error,
+    }
+}
+
+/// The name of the earlier definition of `name`: an implementation (`fn f x = ..`, `def f = ..`)
+/// or a function with its signature in parentheses (`fn f() -> T { .. }`), whichever is first.
+fn first_definition(
+    definitions: &[Definition],
+    functions: &[FunctionDecl],
+    name: &Ident,
+) -> Option<Span> {
+    let implementation = definitions
+        .iter()
+        .find(|definition| definition.name.text == name.text)
+        .map(|definition| definition.name.span);
+    let function = functions
+        .iter()
+        .find(|function| function.name.text == name.text)
+        .map(|function| function.name.span);
+    implementation
+        .into_iter()
+        .chain(function)
+        .min_by_key(|span| span.start)
 }
 
 fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
@@ -380,7 +411,7 @@ impl Parser<'_> {
             declaration_starts: Vec::new(),
         };
         let mut signatures = BTreeMap::new();
-        let mut definitions = Vec::new();
+        let mut definitions: Vec<Definition> = Vec::new();
         let mut defined_names = BTreeSet::new();
         let mut signature_group = None;
         let mut definition_group = None;
@@ -648,18 +679,19 @@ impl Parser<'_> {
                     constant_group = signature.constant;
                     pure_group = signature.pure;
                     if signatures.contains_key(&name.text) || program.externs.iter().any(|external| external.name.text == name.text) {
-                        return Err(Diagnostic::new(
-                            "E1001",
-                            "duplicate function signature",
-                            name.span,
-                        ));
+                        let first = signatures
+                            .get(&name.text)
+                            .or_else(|| program.externs.iter().find(|external| external.name.text == name.text))
+                            .map(|signature| signature.name.span);
+                        return Err(duplicate_function("duplicate function signature", &name, first));
                     }
                     if self.at(&TokenKind::DoubleColon) {
                         return Err(self.error("use 'def name :: ...' for a signature; 'fn' introduces its implementation"));
                     }
                     if self.eat(&TokenKind::Equal) {
                         if defined_names.contains(&name.text) {
-                            return Err(Diagnostic::new("E1001", "duplicate function definition", name.span));
+                            let first = first_definition(&definitions, &program.functions, &name);
+                            return Err(duplicate_function("duplicate function definition", &name, first));
                         }
                         let body = if self.at(&TokenKind::Backslash) {
                             self.explicit_lambda()?
@@ -682,11 +714,8 @@ impl Parser<'_> {
                     return Ok(());
                 }
                 if defined_names.contains(&name.text) {
-                    return Err(Diagnostic::new(
-                        "E1001",
-                        "duplicate function definition",
-                        name.span,
-                    ));
+                    let first = first_definition(&definitions, &program.functions, &name);
+                    return Err(duplicate_function("duplicate function definition", &name, first));
                 }
                 if !self.at(&TokenKind::LeftParen) {
                     if exported {

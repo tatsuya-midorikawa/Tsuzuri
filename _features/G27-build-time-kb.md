@@ -5,7 +5,7 @@
 | ID | G27 |
 | 優先度 | P1（D-50 の表） |
 | 規模 | L。Phase 1 M（書き込み・manifest・鮮度・フラグ）、Phase 2 M（brief カードと `kb build`／`verify`／`clean`／`export`）、Phase 3 M（増分）、Phase 4 M（std の KB と `KbView` の std）、Phase 5 S（計測の記録と台帳） |
-| 依存 | [G26](G26-facts-model.md) Phase 1（`src/kb/`・ID 規則・`KbModel::build`・`write_symbols`・`analyze_inputs_core`・`check_modules_captured`）。graph・tests・facts・layout の書き手（G26 Phase 2〜6）は**あれば使い、なければそのファイルとカードの該当行を出さない**（縮退。「前提とする他チケットのインターフェース」）。弱い依存: [G22](G22-diagnostic-v2.md)（`E2009` に kind を付ける。未実装なら付けない） |
+| 依存 | [G26](G26-facts-model.md) Phase 1（`src/kb/`・ID 規則・`KbModel::build`・`write_symbols`・`analyze_inputs_core`・`check_modules_captured`）。graph・tests・facts・layout の書き手（G26 Phase 2〜6）は**あれば使い、なければそのファイルとカードの該当行を出さない**（縮退。「前提とする他チケットのインターフェース」）。弱い依存: [G22](_completed/G22-diagnostic-v2.md)（`E2009` に kind を付ける。未実装なら付けない） |
 | 後続 | G28（照会と `impact`）、G29（MCP）、G30（図表）、G31（AI 作業コスト指標の KB 方式）、G35（生成物による文書） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。確認に使った作業ツリーは `9dd0fbbc`（main）で、`git diff --stat 9dd0fbbc a2313d19` は `docs/benchmarks.md` の 41 行だけ。ソースは同じ） |

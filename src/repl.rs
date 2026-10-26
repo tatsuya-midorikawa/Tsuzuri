@@ -1325,14 +1325,12 @@ impl Repl {
             .map(|diagnostic| {
                 let (path, text, offset) =
                     generated.locate(diagnostic.span, project, input, &listing);
-                (
-                    Diagnostic {
-                        span: Span::new(offset, offset),
-                        ..diagnostic.clone()
-                    },
-                    path,
-                    text,
-                )
+                let mut located = diagnostic.clone();
+                located.span = Span::new(offset, offset);
+                // The other locations are in the generated program, not in the input (G22 D8).
+                located.related.clear();
+                located.fixes.clear();
+                (located, path, text)
             })
             .collect();
         render(

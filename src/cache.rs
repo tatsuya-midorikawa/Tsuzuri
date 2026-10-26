@@ -385,7 +385,7 @@ fn invalid(message: &str) -> io::Error {
 }
 
 fn stage(root: &Path) -> io::Result<TemporaryDirectory> {
-    TemporaryDirectory::new(root).map_err(|error| io::Error::other(error.message))
+    TemporaryDirectory::new(root).map_err(|error| io::Error::other(error.into_data().message))
 }
 
 fn key_name(name: &str) -> bool {

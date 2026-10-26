@@ -6,7 +6,7 @@ use crate::check::{
     RegionSources, Type, TypedExpr, TypedExprKind as E,
 };
 use crate::copies::{CopyKind, CopyRead};
-use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, RelatedRole, Span};
 use crate::parallel::{Parallelism, ordered_for_each};
 use crate::syntax::BinaryOp;
 
@@ -117,13 +117,16 @@ struct Loan {
     /// a copy if the type were Copy, so while inferring constraints a conflict
     /// with the loan requires Copy instead of rejecting the access.
     view: Option<Type>,
+    /// The expression that created the loan, for the diagnostics that name it.
+    span: Span,
 }
 
 #[derive(Clone, Default)]
 struct State<'a> {
     locals: BTreeMap<usize, (&'a Local, Value)>,
     aliases: BTreeMap<usize, Vec<(Place, BTreeSet<usize>)>>,
-    moved: BTreeSet<Place>,
+    /// The places that were moved, with the span of the move that the diagnostics point at.
+    moved: BTreeMap<Place, Span>,
     generic_moves: BTreeMap<Place, Type>,
 }
 
@@ -412,6 +415,7 @@ fn check_body<'a>(
     collect_declarations(body, &mut declarations);
     let mut checker = Checker {
         module,
+        body,
         declarations,
         state: State::default(),
         loans: Vec::new(),
@@ -440,6 +444,7 @@ fn check_body<'a>(
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         placeholders: BTreeSet::new(),
+        later_use_budget: LATER_USE_NODES,
     };
     for (index, parameter) in parameters.clone().enumerate() {
         let mut value = Value::default();
@@ -627,6 +632,8 @@ fn owned_dyn_of(callee: &TypedExpr) -> bool {
 
 struct Checker<'a, 'run> {
     module: &'a CheckedModule,
+    /// The body that is checked, searched for the later uses of a borrow when a diagnostic names them.
+    body: &'a TypedExpr,
     declarations: BTreeMap<usize, &'a Local>,
     state: State<'a>,
     loans: Vec<Loan>,
@@ -651,7 +658,14 @@ struct Checker<'a, 'run> {
     /// The external roots of parameters that store no reference: their loans only stand for
     /// whatever a function or async argument captured, which the caller checks (B08 D6).
     placeholders: BTreeSet<usize>,
+    /// How many more steps the diagnostics may take in this function to find where a moved value
+    /// or a borrow came from (`Flow`).
+    later_use_budget: usize,
 }
+
+/// How many expressions the diagnostics of one function may look at, in all, to find where a
+/// borrow is used later; past it they leave `BorrowUsedHere` out.
+const LATER_USE_NODES: usize = 1 << 20;
 
 /// Whether each result slot of `actual` borrows only from inputs that `required` allows, once
 /// the caller has bound the first `offset` inputs (A12 Phase 2).
@@ -999,7 +1013,13 @@ impl<'a> Checker<'a, '_> {
         }
     }
 
-    fn loan(&mut self, place: Place, mutable: bool, mut parents: BTreeSet<usize>) -> usize {
+    fn loan(
+        &mut self,
+        place: Place,
+        mutable: bool,
+        mut parents: BTreeSet<usize>,
+        span: Span,
+    ) -> usize {
         if let Some((_, value)) = self.state.locals.get(&place.root) {
             parents.extend(&value.loans);
         }
@@ -1009,6 +1029,7 @@ impl<'a> Checker<'a, '_> {
             mutable,
             parents,
             view: None,
+            span,
         });
         id
     }
@@ -1057,7 +1078,7 @@ impl<'a> Checker<'a, '_> {
                 through_drop: false,
             };
             let mutable = exclusive & (1 << slot) != 0;
-            loans.push(self.loan(place, mutable, BTreeSet::new()));
+            loans.push(self.loan(place, mutable, BTreeSet::new(), parameter.span));
         }
         if target {
             value.loans = BTreeSet::from([loans[0]]);
@@ -1113,7 +1134,7 @@ impl<'a> Checker<'a, '_> {
                 continue;
             }
             if task || !self.external.contains(&place.root) {
-                return Err(error(
+                let diagnostic = error(
                     "E1013",
                     if task {
                         "task results cannot retain borrowed values"
@@ -1121,7 +1142,20 @@ impl<'a> Checker<'a, '_> {
                         "cannot return a reference to a local value"
                     },
                     body.span,
-                ));
+                );
+                return Err(if task {
+                    diagnostic
+                } else {
+                    self.escape(
+                        *id,
+                        body.span,
+                        "'{name}' is declared here and is dropped when the function returns",
+                        diagnostic,
+                    )
+                    .with_help(
+                        "return the value itself, or return a reference that comes from a reference parameter",
+                    )
+                });
             }
             let Some(sources) = region_sources else {
                 continue;
@@ -1433,20 +1467,51 @@ impl<'a> Checker<'a, '_> {
         if usage != Use::Write {
             self.revive_generic_moves(place);
         }
-        if usage != Use::Write && self.state.moved.iter().any(|moved| moved.overlaps(place)) {
+        if usage != Use::Write
+            && let Some((moved, origin)) = self
+                .state
+                .moved
+                .iter()
+                .filter(|(moved, _)| moved.overlaps(place))
+                .max_by_key(|(_, origin)| (origin.start, origin.end))
+                .map(|(moved, origin)| (moved.clone(), *origin))
+        {
             let name = self
                 .state
                 .locals
                 .get(&place.root)
-                .map_or("value", |(local, _)| local.name.as_str());
-            return self.report(
-                place,
-                error(
-                    "E1012",
-                    format!("use of moved or partially moved value '{name}'"),
-                    span,
-                ),
-            );
+                .map_or("value", |(local, _)| local.name.as_str())
+                .to_owned();
+            // Only the control flow tells whether the move reached the use through a loop: the
+            // `where` bindings of a guarded function run before its arms, and an assignment's value
+            // before its place.
+            let previous_iteration = origin.end > origin.start
+                && moved_in_previous_iteration(self.body, origin, span, &mut self.later_use_budget)
+                    == Some(true);
+            let message = match (moved.fields.is_empty(), previous_iteration) {
+                (true, false) => "value moved here",
+                (false, false) => "part of the value moved here",
+                (true, true) => "value moved here, in the previous iteration of the loop",
+                (false, true) => {
+                    "part of the value moved here, in the previous iteration of the loop"
+                }
+            };
+            let mut diagnostic = error(
+                "E1012",
+                format!("use of moved or partially moved value '{name}'"),
+                span,
+            )
+            .with_help(if moved.fields.is_empty() {
+                format!("borrow the value with 'ref {name}' or move it last")
+            } else {
+                format!(
+                    "borrow the field with 'ref' instead of moving it out of '{name}', or move it last"
+                )
+            });
+            if origin.end > origin.start {
+                diagnostic = diagnostic.related(RelatedRole::MovedHere, message, origin);
+            }
+            return self.report(place, diagnostic);
         }
         if usage == Use::Write && Some(place.root) == self.drop_root {
             return Err(error(
@@ -1490,11 +1555,39 @@ impl<'a> Checker<'a, '_> {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
             if !mutable || (usage != Use::Write && !unmarked_fields(place).is_empty()) {
-                return self.report(place, error(
+                let diagnostic = error(
                     "E1014",
                     "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
                     span,
-                ));
+                );
+                let declared = self
+                    .state
+                    .locals
+                    .get(&place.root)
+                    .map(|(local, _)| *local)
+                    .filter(|local| {
+                        via.is_empty()
+                            && !local.mutable
+                            && unmarked_fields(place).is_empty()
+                            && local.span.end > local.span.start
+                            && !local.name.starts_with('$')
+                    });
+                let diagnostic = match declared {
+                    Some(local) => diagnostic
+                        .related(
+                            RelatedRole::DeclaredHere,
+                            format!("'{}' is declared here without 'mut'", local.name),
+                            local.span,
+                        )
+                        .with_help(format!(
+                            "declare '{}' with 'let mut', or take it by 'ref mut'",
+                            local.name
+                        )),
+                    None => diagnostic.with_help(
+                        "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
+                    ),
+                };
+                return self.report(place, diagnostic);
             }
         }
         for id in self.active() {
@@ -1509,14 +1602,164 @@ impl<'a> Checker<'a, '_> {
                         continue;
                     }
                 }
-                return self.report(place, error(
-                    "E1014",
-                    "access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively",
-                    span,
-                ));
+                // `conflict` searches the body, so a root that is reported already is not searched again.
+                if self.reported.contains(&place.root) {
+                    return Ok(());
+                }
+                let diagnostic = self.conflict(id, span);
+                return self.report(place, diagnostic);
             }
         }
         Ok(())
+    }
+
+    /// Names where the owner of `loan` is declared (`owner_message`, with `{name}` for its name)
+    /// and where the loan was taken, in an `E1013` that says the borrow outlives its owner.
+    #[cold]
+    #[inline(never)]
+    fn escape(
+        &self,
+        loan: usize,
+        primary: Span,
+        owner_message: &str,
+        mut diagnostic: Diagnostic,
+    ) -> Diagnostic {
+        let loan = &self.loans[loan];
+        if let Some(owner) = self.declarations.get(&loan.place.root)
+            && owner.span.end > owner.span.start
+            && !owner.name.starts_with('$')
+        {
+            diagnostic.add_related(
+                RelatedRole::DeclaredHere,
+                owner_message.replace("{name}", &owner.name),
+                owner.span,
+            );
+        }
+        if loan.span.end > loan.span.start && loan.span != primary {
+            diagnostic.add_related(RelatedRole::BorrowedHere, "value borrowed here", loan.span);
+        }
+        diagnostic
+    }
+
+    /// The `E1014` of an access at `span` that conflicts with the live loan `loan`: where the loan
+    /// was taken, and where the reference that keeps it alive is used later.
+    #[cold]
+    #[inline(never)]
+    fn conflict(&mut self, loan: usize, span: Span) -> Diagnostic {
+        let mut diagnostic = error(
+            "E1014",
+            "access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively",
+            span,
+        );
+        let created = &self.loans[loan];
+        // A parameter's own loan was taken by the caller; a reborrow of it has parents.
+        if !(self.external.contains(&created.place.root) && created.parents.is_empty())
+            && created.span.end > created.span.start
+            && created.span != span
+        {
+            diagnostic = diagnostic.related(
+                RelatedRole::BorrowedHere,
+                if created.mutable {
+                    "value mutably borrowed here"
+                } else {
+                    "value borrowed here"
+                },
+                created.span,
+            );
+        }
+        let holders = self.holders(loan);
+        let use_of = self.later_use(loan, &holders, span);
+        // The help names the holder whose use is shown, else the first one.
+        let named = |id: &usize| {
+            self.state
+                .locals
+                .get(id)
+                .map(|(local, _)| local.name.as_str())
+                .filter(|name| !name.starts_with('$'))
+        };
+        let holder = use_of
+            .and_then(|(_, _, id)| named(&id))
+            .or_else(|| holders.iter().find_map(named))
+            .map(str::to_owned);
+        if let Some((used, repeated, _)) = use_of {
+            diagnostic = diagnostic.related(
+                RelatedRole::BorrowUsedHere,
+                if repeated {
+                    "the borrow is used here, in the next iteration of the loop, so it is still alive"
+                } else {
+                    "the borrow is used here, so it is still alive"
+                },
+                used,
+            );
+        }
+        match holder {
+            Some(name) => diagnostic.with_help(format!(
+                "end the borrow before this access: stop using '{name}' first, or move this access after its last use"
+            )),
+            None => diagnostic.with_help(
+                "end the borrow before this access: evaluate this access before the borrow is taken, or borrow a copy",
+            ),
+        }
+    }
+
+    /// Whether an argument held by a call that is being evaluated keeps `loan` alive.
+    fn held_keeps(&self, loan: usize) -> bool {
+        let mut pending: Vec<usize> = self
+            .held
+            .iter()
+            .flat_map(|value| value.loans.iter().copied())
+            .collect();
+        let mut seen = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if current == loan {
+                return true;
+            }
+            if seen.insert(current) {
+                pending.extend(&self.loans[current].parents);
+            }
+        }
+        false
+    }
+
+    /// The locals whose values keep `loan` alive, directly or through the parents of a loan they hold.
+    fn holders(&self, loan: usize) -> BTreeSet<usize> {
+        let mut holders = BTreeSet::new();
+        for (id, (_, value)) in &self.state.locals {
+            let mut pending: Vec<usize> = value.loans.iter().copied().collect();
+            let mut seen = BTreeSet::new();
+            while let Some(current) = pending.pop() {
+                if !seen.insert(current) {
+                    continue;
+                }
+                if current == loan {
+                    holders.insert(*id);
+                    break;
+                }
+                pending.extend(&self.loans[current].parents);
+            }
+        }
+        holders
+    }
+
+    /// Where a holder keeps `loan` alive after an access at `after` (`find_later_use`): a later
+    /// use, else (`true`) an earlier use in a loop that holds the access too, unless an argument
+    /// held by a call keeps the loan alive instead.
+    fn later_use(
+        &mut self,
+        loan: usize,
+        holders: &BTreeSet<usize>,
+        after: Span,
+    ) -> Option<(Span, bool, usize)> {
+        let held = self.held_keeps(loan);
+        let created = (self.loans[loan].span, self.loans[loan].mutable);
+        find_later_use(
+            self.body,
+            holders,
+            after,
+            created,
+            held,
+            &mut self.later_use_budget,
+        )
     }
 
     fn place(
@@ -1581,7 +1824,7 @@ impl<'a> Checker<'a, '_> {
                     self.access(place, via, Use::Borrow, value.span)?;
                     guard
                         .loans
-                        .insert(self.loan(place.clone(), false, via.clone()));
+                        .insert(self.loan(place.clone(), false, via.clone(), value.span));
                 }
                 self.held.push(guard);
                 self.eval(index, Use::Consume, live)?;
@@ -1669,7 +1912,7 @@ impl<'a> Checker<'a, '_> {
             self.access(place, via, Use::Borrow, span)?;
             guard
                 .loans
-                .insert(self.loan(place.clone(), false, via.clone()));
+                .insert(self.loan(place.clone(), false, via.clone(), span));
         }
         self.held.push(guard);
         for bound in start.iter().chain(end) {
@@ -1679,7 +1922,7 @@ impl<'a> Checker<'a, '_> {
         let mut result = Value::default();
         for (place, via) in places {
             self.access(&place, &via, Use::MutBorrow, span)?;
-            result.loans.insert(self.loan(place, true, via));
+            result.loans.insert(self.loan(place, true, via, span));
         }
         Ok(result)
     }
@@ -2061,10 +2304,12 @@ impl<'a> Checker<'a, '_> {
                     ));
                 }
             } else if usage == Use::Read {
-                value.loans.insert(self.loan(place.clone(), false, via));
+                value
+                    .loans
+                    .insert(self.loan(place.clone(), false, via, expression.span));
             }
             if moving {
-                self.state.moved.insert(place.clone());
+                self.state.moved.insert(place.clone(), expression.span);
                 if self.infer {
                     self.state
                         .generic_moves
@@ -2144,7 +2389,7 @@ impl<'a> Checker<'a, '_> {
             self.state
                 .locals
                 .insert(local.id, (self.declarations[&local.id], value_result));
-            self.state.moved.retain(|place| place.root != local.id);
+            self.state.moved.retain(|place, _| place.root != local.id);
             self.state
                 .generic_moves
                 .retain(|place, _| place.root != local.id);
@@ -2158,25 +2403,43 @@ impl<'a> Checker<'a, '_> {
             if ids.contains(&self.loans[*id].place.root)
                 && !self.reported.contains(&self.loans[*id].place.root)
             {
-                return Err(error(
-                    "E1013",
-                    "borrowed value does not live long enough to leave this block",
-                    tail.span,
-                ));
+                return Err(self
+                    .escape(
+                        *id,
+                        tail.span,
+                        "'{name}' is declared here and dropped at the end of this block",
+                        error(
+                            "E1013",
+                            "borrowed value does not live long enough to leave this block",
+                            tail.span,
+                        ),
+                    )
+                    .with_help(
+                        "return the value itself instead of a reference to it, or declare it in an outer scope",
+                    ));
             }
         }
         for (id, (_, value)) in &self.state.locals {
             if !ids.contains(id)
-                && value.loans.iter().any(|loan| {
-                    ids.contains(&self.loans[*loan].place.root)
-                        && !self.reported.contains(&self.loans[*loan].place.root)
+                && let Some(loan) = value.loans.iter().find(|loan| {
+                    ids.contains(&self.loans[**loan].place.root)
+                        && !self.reported.contains(&self.loans[**loan].place.root)
                 })
             {
-                return Err(error(
-                    "E1013",
-                    "assignment lets a reference outlive its owner",
-                    expression.span,
-                ));
+                return Err(self
+                    .escape(
+                        *loan,
+                        expression.span,
+                        "'{name}' is declared here and dropped at the end of this block",
+                        error(
+                            "E1013",
+                            "assignment lets a reference outlive its owner",
+                            expression.span,
+                        ),
+                    )
+                    .with_help(
+                        "declare the owner before the variable that keeps the reference, in the same block or an outer one",
+                    ));
             }
         }
         for id in ids {
@@ -2309,6 +2572,7 @@ impl<'a> Checker<'a, '_> {
                     },
                     false,
                     BTreeSet::new(),
+                    expression.span,
                 );
                 result.loans.insert(loan);
                 for slot in result.regions.iter_mut().flat_map(|slots| slots.iter_mut()) {
@@ -2494,7 +2758,9 @@ impl<'a> Checker<'a, '_> {
             E::Slice { value, start, end } => {
                 for (place, via) in self.place(value, &during)? {
                     self.access(&place, &via, Use::Borrow, expression.span)?;
-                    result.loans.insert(self.loan(place, false, via));
+                    result
+                        .loans
+                        .insert(self.loan(place, false, via, expression.span));
                 }
                 self.held.push(result.clone());
                 for bound in start.iter().chain(end) {
@@ -2520,7 +2786,9 @@ impl<'a> Checker<'a, '_> {
                         },
                         expression.span,
                     )?;
-                    result.loans.insert(self.loan(place, *mutable, via));
+                    result
+                        .loans
+                        .insert(self.loan(place, *mutable, via, expression.span));
                 }
             }
             E::Assign(place, value) => {
@@ -2545,7 +2813,7 @@ impl<'a> Checker<'a, '_> {
                             expression.span,
                         ));
                     }
-                    self.state.moved.retain(|moved| !moved.overlaps(&place));
+                    self.state.moved.retain(|moved, _| !moved.overlaps(&place));
                     self.state
                         .generic_moves
                         .retain(|moved, _| !moved.overlaps(&place));
@@ -2837,7 +3105,19 @@ impl<'a> Checker<'a, '_> {
     }
 
     fn merge(&mut self, other: &State<'a>) {
-        self.state.moved.extend(other.moved.iter().cloned());
+        // The latest move of a place is kept, so the result does not depend on the order of the
+        // merged branches.
+        for (place, span) in &other.moved {
+            self.state
+                .moved
+                .entry(place.clone())
+                .and_modify(|kept| {
+                    if (span.start, span.end) > (kept.start, kept.end) {
+                        *kept = *span;
+                    }
+                })
+                .or_insert(*span);
+        }
         self.state.generic_moves.extend(other.generic_moves.clone());
         for (id, (_, value)) in &mut self.state.locals {
             if let Some((_, other_value)) = other.locals.get(id) {
@@ -2880,6 +3160,778 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
                 .expect("counting uses cannot fail");
         }
     }
+}
+
+/// The control flow of a function body, built when a diagnostic explains where a moved value or
+/// a borrow came from. Every expression has an entry and an exit node; the edges follow the
+/// evaluation order, the arms of `if` and `match` (a failing pattern or guard falls through to the
+/// next arm), `&&` and `||`, loops (an edge back to the loop's head is a back edge), `break`,
+/// `continue`, re-raises, and the exceptions that a `try` body may raise to its handler.
+struct Flow {
+    /// The successors of each node, and the loop (an index of `loops`) whose head an edge goes
+    /// back to.
+    edges: Vec<Vec<(usize, Option<usize>)>>,
+    /// The local that each node stores a value in (`local = ...`, `let local = ...`), and the
+    /// local whose value it copies, when the value is just a local.
+    stores: Vec<Option<(usize, Option<usize>)>>,
+    /// The nodes that read each local: the exit of the local, or of a lambda that captures it.
+    readers: BTreeMap<usize, Vec<usize>>,
+    /// The spans of the nodes that read, for the diagnostics.
+    spans: Vec<Span>,
+    /// The entries and exits of the expressions with each span: one per copy (a `finally` has
+    /// two) and per expression that shares the span.
+    by_span: BTreeMap<SpanKey, Vec<(usize, usize)>>,
+    /// Where a slice reported at a span reaches its source: before its bounds, and (for an
+    /// exclusive slice, `true`) again after them.
+    accesses: BTreeMap<SpanKey, Vec<(usize, usize, bool)>>,
+    /// The spans of the loops.
+    loops: Vec<Span>,
+}
+
+/// A span as a map key: its source, start, and end.
+type SpanKey = (Option<usize>, usize, usize);
+
+/// Where control goes from inside an expression: the targets of `break` and `continue`, and the
+/// handler that an exception reaches.
+#[derive(Clone, Copy, Default)]
+struct Targets {
+    break_to: Option<usize>,
+    /// The head of the loop that `continue` repeats, and the loop.
+    continue_to: Option<(usize, usize)>,
+    handler: Option<usize>,
+}
+
+/// Takes `cost` from `budget`; `None` once it runs out.
+fn spend(budget: &mut usize, cost: usize) -> Option<()> {
+    *budget = budget.checked_sub(cost)?;
+    Some(())
+}
+
+impl Flow {
+    fn node(&mut self, span: Span) -> usize {
+        self.edges.push(Vec::new());
+        self.stores.push(None);
+        self.spans.push(span);
+        self.edges.len() - 1
+    }
+
+    fn edge(&mut self, from: usize, to: usize) {
+        self.edges[from].push((to, None));
+    }
+
+    /// Entries and exits for `parts`, run one after another from `from` to `to`.
+    fn sequence<'e>(
+        &mut self,
+        parts: Vec<&'e TypedExpr>,
+        from: usize,
+        to: usize,
+    ) -> Vec<(&'e TypedExpr, usize, usize)> {
+        let mut at = from;
+        let mut items = Vec::new();
+        for part in parts {
+            let (part_entry, part_exit) = (self.node(part.span), self.node(part.span));
+            self.edge(at, part_entry);
+            items.push((part, part_entry, part_exit));
+            at = part_exit;
+        }
+        self.edge(at, to);
+        items
+    }
+
+    /// Builds the flow of `body`; the reads and stores of the `tracked` locals are recorded.
+    /// `None` when it would take more than `*budget` steps.
+    fn build(body: &TypedExpr, tracked: &BTreeSet<usize>, budget: &mut usize) -> Option<Self> {
+        let mut flow = Flow {
+            edges: Vec::new(),
+            stores: Vec::new(),
+            readers: BTreeMap::new(),
+            spans: Vec::new(),
+            by_span: BTreeMap::new(),
+            accesses: BTreeMap::new(),
+            loops: Vec::new(),
+        };
+        let (entry, exit) = (flow.node(body.span), flow.node(body.span));
+        let mut pending = vec![(body, entry, exit, Targets::default())];
+        while let Some((expression, entry, exit, targets)) = pending.pop() {
+            spend(budget, 1)?;
+            let span = expression.span;
+            flow.by_span
+                .entry((span.source, span.start, span.end))
+                .or_default()
+                .push((entry, exit));
+            // Children are added in evaluation order: each gets an entry and an exit first.
+            let child =
+                |flow: &mut Flow, part: &TypedExpr| (flow.node(part.span), flow.node(part.span));
+            let sequence = Flow::sequence;
+            let mut items: Vec<(&TypedExpr, usize, usize, Targets)> = Vec::new();
+            match &expression.kind {
+                E::Local(id) if tracked.contains(id) => {
+                    flow.edge(entry, exit);
+                    flow.readers.entry(*id).or_default().push(exit);
+                }
+                E::Lambda { captures, .. } => {
+                    // The body runs when the function is called; only the captures are read here.
+                    flow.edge(entry, exit);
+                    for local in captures.iter().filter(|local| tracked.contains(&local.id)) {
+                        flow.readers.entry(local.id).or_default().push(exit);
+                    }
+                }
+                E::Slice { value, start, end } => {
+                    let parts = std::iter::once(&**value)
+                        .chain(start.as_deref())
+                        .chain(end.as_deref())
+                        .collect();
+                    let parts = sequence(&mut flow, parts, entry, exit);
+                    flow.accesses
+                        .entry((span.source, span.start, span.end))
+                        .or_default()
+                        .push((parts[0].2, exit, expression.ty.is_view()));
+                    for (part, part_entry, part_exit) in parts {
+                        items.push((part, part_entry, part_exit, targets));
+                    }
+                }
+                E::Checked(value) => {
+                    // Checked arithmetic raises after its operands, to the `try` around it.
+                    for (part, part_entry, part_exit) in
+                        sequence(&mut flow, vec![value], entry, exit)
+                    {
+                        if let Some(handler) = targets.handler {
+                            flow.edge(part_exit, handler);
+                        }
+                        items.push((part, part_entry, part_exit, targets));
+                    }
+                }
+                E::Break => {
+                    if let Some(to) = targets.break_to {
+                        flow.edge(entry, to);
+                    }
+                }
+                E::Continue => {
+                    if let Some((to, repeated)) = targets.continue_to {
+                        flow.edges[entry].push((to, Some(repeated)));
+                    }
+                }
+                E::Reraise => {
+                    if let Some(to) = targets.handler {
+                        flow.edge(entry, to);
+                    }
+                }
+                E::Assign(place, value) => {
+                    if let E::Local(stored) = place.kind
+                        && tracked.contains(&stored)
+                    {
+                        // The value is evaluated, then stored; the target is not read.
+                        for (part, part_entry, part_exit) in
+                            sequence(&mut flow, vec![value], entry, exit)
+                        {
+                            items.push((part, part_entry, part_exit, targets));
+                        }
+                        flow.stores[exit] = Some((stored, copied(value, tracked)));
+                    } else {
+                        for (part, part_entry, part_exit) in
+                            sequence(&mut flow, vec![value, place], entry, exit)
+                        {
+                            items.push((part, part_entry, part_exit, targets));
+                        }
+                    }
+                }
+                E::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                } => {
+                    let (c_entry, c_exit) = child(&mut flow, condition);
+                    let (t_entry, t_exit) = child(&mut flow, then_branch);
+                    let (e_entry, e_exit) = child(&mut flow, else_branch);
+                    flow.edge(entry, c_entry);
+                    flow.edge(c_exit, t_entry);
+                    flow.edge(c_exit, e_entry);
+                    flow.edge(t_exit, exit);
+                    flow.edge(e_exit, exit);
+                    items.extend([
+                        (&**condition, c_entry, c_exit, targets),
+                        (&**then_branch, t_entry, t_exit, targets),
+                        (&**else_branch, e_entry, e_exit, targets),
+                    ]);
+                }
+                E::Match { local, value, arms } => {
+                    let (v_entry, v_exit) = child(&mut flow, value);
+                    flow.edge(entry, v_entry);
+                    items.push((&**value, v_entry, v_exit, targets));
+                    // The subject is stored in the match's local.
+                    let subject = flow.node(value.span);
+                    flow.edge(v_exit, subject);
+                    if tracked.contains(&local.id) {
+                        flow.stores[subject] = Some((local.id, copied(value, tracked)));
+                    }
+                    // Where control goes when the previous arm does not match.
+                    let mut failing = vec![subject];
+                    for arm in arms {
+                        let arm_entry = flow.node(arm.body.span);
+                        for from in failing {
+                            flow.edge(from, arm_entry);
+                        }
+                        failing = Vec::new();
+                        let (b_entry, b_exit) = child(&mut flow, &arm.body);
+                        let guard = arm
+                            .guard
+                            .as_ref()
+                            .map(|guard| (guard, child(&mut flow, guard)));
+                        let success = guard.map_or(b_entry, |(_, (g_entry, _))| g_entry);
+                        // Each alternative starts where the previous one failed; a test that fails
+                        // goes on to the next alternative, or to the next arm after the last one.
+                        let mut start = arm_entry;
+                        for (index, alternative) in arm.alternatives.iter().enumerate() {
+                            let next = (index + 1 < arm.alternatives.len())
+                                .then(|| flow.node(arm.body.span));
+                            let mut at = start;
+                            // A test may fail; a binding stores its projection in its local.
+                            let parts = alternative
+                                .steps
+                                .iter()
+                                .map(|step| match step {
+                                    crate::check::PatternStep::Test(test) => (test, true, None),
+                                    crate::check::PatternStep::Bind(local, value) => {
+                                        (value, false, Some(local.id))
+                                    }
+                                })
+                                .chain(
+                                    alternative
+                                        .bindings
+                                        .iter()
+                                        .map(|(local, value)| (value, false, Some(local.id))),
+                                );
+                            for (part, fallible, bound) in parts {
+                                let (part_entry, part_exit) = child(&mut flow, part);
+                                flow.edge(at, part_entry);
+                                if fallible {
+                                    match next {
+                                        Some(next) => flow.edge(part_exit, next),
+                                        None => failing.push(part_exit),
+                                    }
+                                }
+                                items.push((part, part_entry, part_exit, targets));
+                                at = part_exit;
+                                if let Some(bound) = bound.filter(|bound| tracked.contains(bound)) {
+                                    let store = flow.node(part.span);
+                                    flow.edge(at, store);
+                                    flow.stores[store] = Some((bound, copied(part, tracked)));
+                                    at = store;
+                                }
+                            }
+                            flow.edge(at, success);
+                            match next {
+                                Some(next) => start = next,
+                                None => break,
+                            }
+                        }
+                        // A false guard goes on to the next arm.
+                        if let Some((guard, (g_entry, g_exit))) = guard {
+                            flow.edge(g_exit, b_entry);
+                            failing.push(g_exit);
+                            items.push((guard, g_entry, g_exit, targets));
+                        }
+                        flow.edge(b_exit, exit);
+                        items.push((&arm.body, b_entry, b_exit, targets));
+                    }
+                }
+                E::While { condition, body } => {
+                    flow.loops.push(span);
+                    let repeated = flow.loops.len() - 1;
+                    let (c_entry, c_exit) = child(&mut flow, condition);
+                    let (b_entry, b_exit) = child(&mut flow, body);
+                    flow.edge(entry, c_entry);
+                    flow.edge(c_exit, b_entry);
+                    flow.edge(c_exit, exit);
+                    flow.edges[b_exit].push((c_entry, Some(repeated)));
+                    let inner = Targets {
+                        break_to: Some(exit),
+                        continue_to: Some((c_entry, repeated)),
+                        handler: targets.handler,
+                    };
+                    // A `break` or `continue` in the condition belongs to the loop around this one.
+                    items.extend([
+                        (&**condition, c_entry, c_exit, targets),
+                        (&**body, b_entry, b_exit, inner),
+                    ]);
+                }
+                E::ForRange {
+                    start,
+                    step,
+                    finish,
+                    body,
+                    ..
+                } => {
+                    flow.loops.push(span);
+                    let repeated = flow.loops.len() - 1;
+                    let head = flow.node(body.span);
+                    for (part, part_entry, part_exit) in
+                        sequence(&mut flow, vec![start, step, finish], entry, head)
+                    {
+                        items.push((part, part_entry, part_exit, targets));
+                    }
+                    let (b_entry, b_exit) = child(&mut flow, body);
+                    flow.edge(head, b_entry);
+                    flow.edge(head, exit);
+                    flow.edges[b_exit].push((head, Some(repeated)));
+                    let inner = Targets {
+                        break_to: Some(exit),
+                        continue_to: Some((head, repeated)),
+                        handler: targets.handler,
+                    };
+                    items.push((&**body, b_entry, b_exit, inner));
+                }
+                E::ForEach { source, body, .. } => {
+                    flow.loops.push(span);
+                    let repeated = flow.loops.len() - 1;
+                    let head = flow.node(body.span);
+                    for (part, part_entry, part_exit) in
+                        sequence(&mut flow, vec![source], entry, head)
+                    {
+                        items.push((part, part_entry, part_exit, targets));
+                    }
+                    let (b_entry, b_exit) = child(&mut flow, body);
+                    flow.edge(head, b_entry);
+                    flow.edge(head, exit);
+                    flow.edges[b_exit].push((head, Some(repeated)));
+                    let inner = Targets {
+                        break_to: Some(exit),
+                        continue_to: Some((head, repeated)),
+                        handler: targets.handler,
+                    };
+                    items.push((&**body, b_entry, b_exit, inner));
+                }
+                E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
+                    let (l_entry, l_exit) = child(&mut flow, left);
+                    let (r_entry, r_exit) = child(&mut flow, right);
+                    flow.edge(entry, l_entry);
+                    flow.edge(l_exit, r_entry);
+                    flow.edge(l_exit, exit);
+                    flow.edge(r_exit, exit);
+                    items.extend([
+                        (&**left, l_entry, l_exit, targets),
+                        (&**right, r_entry, r_exit, targets),
+                    ]);
+                }
+                E::Try(handled) => {
+                    let (b_entry, b_exit) = child(&mut flow, &handled.body);
+                    let (h_entry, h_exit) = child(&mut flow, &handled.handler);
+                    flow.edge(entry, b_entry);
+                    let mut handler_targets = targets;
+                    let after = match &handled.finally {
+                        Some(finally) => {
+                            // `finally` runs on the normal exit, and before an exception that
+                            // leaves the handler reaches the next `try`: two copies of its flow.
+                            let (f_entry, f_exit) = child(&mut flow, finally);
+                            flow.edge(f_exit, exit);
+                            items.push((finally, f_entry, f_exit, targets));
+                            let (e_entry, e_exit) = child(&mut flow, finally);
+                            if let Some(outer) = targets.handler {
+                                flow.edge(e_exit, outer);
+                            }
+                            items.push((finally, e_entry, e_exit, targets));
+                            handler_targets.handler = Some(e_entry);
+                            f_entry
+                        }
+                        None => exit,
+                    };
+                    flow.edge(b_exit, after);
+                    flow.edge(h_exit, after);
+                    items.push((
+                        &handled.body,
+                        b_entry,
+                        b_exit,
+                        Targets {
+                            handler: Some(h_entry),
+                            ..targets
+                        },
+                    ));
+                    items.push((&handled.handler, h_entry, h_exit, handler_targets));
+                }
+                E::Block { bindings, result } => {
+                    // Each binding stores its value in its local after evaluating it.
+                    let mut at = entry;
+                    for (local, value) in bindings {
+                        let (v_entry, v_exit) = child(&mut flow, value);
+                        flow.edge(at, v_entry);
+                        let bind = flow.node(value.span);
+                        flow.edge(v_exit, bind);
+                        if tracked.contains(&local.id) {
+                            flow.stores[bind] = Some((local.id, copied(value, tracked)));
+                        }
+                        items.push((value, v_entry, v_exit, targets));
+                        at = bind;
+                    }
+                    let (r_entry, r_exit) = child(&mut flow, result);
+                    flow.edge(at, r_entry);
+                    flow.edge(r_exit, exit);
+                    items.push((&**result, r_entry, r_exit, targets));
+                }
+                _ => {
+                    let mut parts = Vec::new();
+                    expression
+                        .try_for_each_child(&mut |part| {
+                            parts.push(part);
+                            Ok(())
+                        })
+                        .expect("collecting parts cannot fail");
+                    for (part, part_entry, part_exit) in sequence(&mut flow, parts, entry, exit) {
+                        items.push((part, part_entry, part_exit, targets));
+                    }
+                }
+            }
+            pending.extend(items.into_iter().rev());
+        }
+        Some(flow)
+    }
+
+    /// The nodes reachable from `from`, each with whether a path to it crosses no back edge of
+    /// the loops in `counting` and whether one crosses such a back edge. The back edges of the
+    /// other loops are ordinary edges.
+    fn reach(
+        &self,
+        from: &[usize],
+        counting: &[bool],
+        budget: &mut usize,
+    ) -> Option<Vec<[bool; 2]>> {
+        spend(budget, self.edges.len() + from.len())?;
+        let mut seen = vec![[false; 2]; self.edges.len()];
+        let mut pending = std::collections::VecDeque::new();
+        for &node in from {
+            seen[node][0] = true;
+            pending.push_back((node, false));
+        }
+        while let Some((node, crossed)) = pending.pop_front() {
+            spend(budget, 1 + self.edges[node].len())?;
+            for &(next, back) in &self.edges[node] {
+                let crossed = crossed || back.is_some_and(|repeated| counting[repeated]);
+                if !seen[next][usize::from(crossed)] {
+                    seen[next][usize::from(crossed)] = true;
+                    pending.push_back((next, crossed));
+                }
+            }
+        }
+        Some(seen)
+    }
+
+    /// Which loops hold both spans: only their back edges lead to a next iteration in which the
+    /// second runs after the first (the back edges of a loop that holds one of them only leave it).
+    fn around_both(&self, a: Span, b: Span, budget: &mut usize) -> Option<Vec<bool>> {
+        spend(budget, self.loops.len())?;
+        let within = |outer: &Span, inner: Span| {
+            outer.source == inner.source && outer.start <= inner.start && inner.end <= outer.end
+        };
+        Some(
+            self.loops
+                .iter()
+                .map(|outer| within(outer, a) && within(outer, b))
+                .collect(),
+        )
+    }
+
+    /// Where the loan holds a value: the states `(node, slot)` reachable from `start`, each with
+    /// whether a path crosses no back edge of the loops in `counting` and whether one does. Slot 0
+    /// is the value of the loan before a local holds it, created at `created`: the store whose
+    /// value holds that span puts it in a local. Slot `i + 1` is the local `locals[i]`: a store
+    /// into the local replaces the loan, unless it copies a local that holds the loan here, which
+    /// hands it over (`x = y`). The result is indexed by `node * (locals.len() + 1) + slot`.
+    fn holds(
+        &self,
+        start: &[(usize, usize)],
+        locals: &[usize],
+        created: Span,
+        counting: &[bool],
+        budget: &mut usize,
+    ) -> Option<Vec<[bool; 2]>> {
+        let width = locals.len() + 1;
+        spend(budget, self.edges.len() * width + start.len())?;
+        // `locals` is sorted.
+        let slot = |local: usize| locals.binary_search(&local).ok().map(|i| i + 1);
+        let contains = |outer: Span| {
+            outer.source == created.source
+                && outer.start <= created.start
+                && created.end <= outer.end
+        };
+        let mut seen = vec![[false; 2]; self.edges.len() * width];
+        let mut pending = std::collections::VecDeque::new();
+        for &(node, at) in start {
+            seen[node * width + at][0] = true;
+            pending.push_back((node, at, false));
+        }
+        while let Some((node, at, crossed)) = pending.pop_front() {
+            spend(budget, 1 + self.edges[node].len())?;
+            for &(next, back) in &self.edges[node] {
+                let crossed = crossed || back.is_some_and(|repeated| counting[repeated]);
+                // What the loan's holder is after `next` runs, and the local it hands it to.
+                let (kept, handed) = match self.stores[next] {
+                    Some((stored, from)) => {
+                        let (target, source) = (slot(stored), from.and_then(slot));
+                        if at == 0 && contains(self.spans[next]) {
+                            (target, None)
+                        } else if target == Some(at) {
+                            // `x = x` keeps what `x` holds; any other store replaces it.
+                            (source.filter(|source| *source == at), None)
+                        } else {
+                            let handed = source.filter(|source| *source == at);
+                            (Some(at), handed.and(target))
+                        }
+                    }
+                    None => (Some(at), None),
+                };
+                for at in kept.into_iter().chain(handed) {
+                    let index = next * width + at;
+                    if !seen[index][usize::from(crossed)] {
+                        seen[index][usize::from(crossed)] = true;
+                        pending.push_back((next, at, crossed));
+                    }
+                }
+            }
+        }
+        Some(seen)
+    }
+
+    /// The nodes of `nodes` that control can reach from the start of the body: a copy of a
+    /// `finally` that no exception reaches never runs.
+    fn live(&self, nodes: Vec<usize>, budget: &mut usize) -> Option<Vec<usize>> {
+        // The entry of the body is the first node.
+        let reached = self.reach(&[0], &vec![false; self.loops.len()], budget)?;
+        Some(
+            nodes
+                .into_iter()
+                .filter(|node| reached[*node] != [false; 2])
+                .collect(),
+        )
+    }
+}
+
+/// Where a local that holds a borrow uses it after an access at `after`, so that the borrow is
+/// still alive there, and the local: a read of a local that holds the loan at that point, which
+/// control reaches from the access. Which locals hold the loan where follows its value from the
+/// span where it was `created`, through stores and copies (`Flow::holds`), over the `holders` and
+/// the locals they were copied from. The access is searched from where the ownership check makes
+/// it: the end of the expression, except that a slice reaches its source before its bounds (an
+/// exclusive slice also after them, which is where a shared loan conflicts, when not `mutable`),
+/// in the copies (of a `finally`) where a holder holds the loan. A use is in the next iteration
+/// of a loop (`true`) when every path to it goes back to the head of a loop that holds both; such
+/// a use is not named when `held` (an argument held by a call keeps the borrow alive instead).
+/// One reached without a back edge is preferred, then the first in the source. Looks at no more
+/// than `*budget` steps, and `None` once it runs out or does not find the access.
+fn find_later_use(
+    body: &TypedExpr,
+    holders: &BTreeSet<usize>,
+    after: Span,
+    (created, mutable): (Span, bool),
+    held: bool,
+    budget: &mut usize,
+) -> Option<(Span, bool, usize)> {
+    if holders.is_empty() {
+        return None;
+    }
+    let tracked = carriers(body, holders, budget)?;
+    let flow = Flow::build(body, &tracked, budget)?;
+    let key = (after.source, after.start, after.end);
+    // Every copy of the access (a `finally` has two), where the access happens in it.
+    let access: Vec<usize> = match flow.accesses.get(&key) {
+        Some(points) => points
+            .iter()
+            .map(|&(before, end, exclusive)| if exclusive && !mutable { end } else { before })
+            .collect(),
+        None => flow
+            .by_span
+            .get(&key)?
+            .iter()
+            .map(|(_, exit)| *exit)
+            .collect(),
+    };
+    let access = flow.live(access, budget)?;
+    let locals: Vec<usize> = tracked.iter().copied().collect();
+    let width = locals.len() + 1;
+    let none = vec![false; flow.loops.len()];
+    // Where the holders hold the loan at the access: from where it was created, or (for a loan
+    // that a parameter brings, created outside the body) at every copy of the access.
+    let holding = match flow
+        .by_span
+        .get(&(created.source, created.start, created.end))
+    {
+        Some(copies) => {
+            let creation: Vec<(usize, usize)> = copies.iter().map(|(_, exit)| (*exit, 0)).collect();
+            Some(flow.holds(&creation, &locals, created, &none, budget)?)
+        }
+        None => None,
+    };
+    let mut seeds = Vec::new();
+    for &node in &access {
+        for (index, local) in locals.iter().enumerate() {
+            spend(budget, 1)?;
+            if holders.contains(local)
+                && holding
+                    .as_ref()
+                    .is_none_or(|holding| holding[node * width + index + 1] != [false; 2])
+            {
+                seeds.push((node, index + 1));
+            }
+        }
+    }
+    if seeds.is_empty() {
+        return None;
+    }
+    // One search per set of loops that hold both the access and a use (a chain of the loops
+    // around the access, so no more searches than its depth).
+    let mut searches: BTreeMap<Vec<bool>, Vec<[bool; 2]>> = BTreeMap::new();
+    let mut best: Option<(bool, usize, usize, Span)> = None;
+    for (index, local) in locals.iter().enumerate() {
+        for &node in flow.readers.get(local).into_iter().flatten() {
+            spend(budget, 1)?;
+            let span = flow.spans[node];
+            if span.source != after.source || span.end <= span.start {
+                continue;
+            }
+            let counting = flow.around_both(after, span, budget)?;
+            if !searches.contains_key(&counting) {
+                let reached = flow.holds(&seeds, &locals, created, &counting, budget)?;
+                searches.insert(counting.clone(), reached);
+            }
+            // Only across a back edge of a loop around both is the use in its next iteration.
+            let [direct, repeated] = searches[&counting][node * width + index + 1];
+            if !direct && !repeated {
+                continue;
+            }
+            let repeated = !direct;
+            if repeated && held {
+                continue;
+            }
+            let key = (repeated, span.start, *local, span);
+            if best.is_none_or(|kept| (key.0, key.1, key.2) < (kept.0, kept.1, kept.2)) {
+                best = Some(key);
+            }
+        }
+    }
+    best.map(|(repeated, _, local, span)| (span, repeated, local))
+}
+
+/// The `tracked` local whose loan a value carries on (`source_local`).
+fn copied(value: &TypedExpr, tracked: &BTreeSet<usize>) -> Option<usize> {
+    source_local(value).filter(|id| tracked.contains(id))
+}
+
+/// The local whose loan a value carries on: the local itself, or a borrow of a place in it (a
+/// reborrow such as `ref (deref r)`, whose loan has the local's loan as its parent). A value read
+/// out of a place (`deref r`) is a copy that carries no loan.
+fn source_local(value: &TypedExpr) -> Option<usize> {
+    let mut place = match &value.kind {
+        E::Local(id) => return Some(*id),
+        E::Borrow(place, _) | E::BorrowOperand(place) => place,
+        _ => return None,
+    };
+    loop {
+        match &place.kind {
+            E::Local(id) => return Some(*id),
+            E::Dereference(inner) | E::Field(inner, _) | E::Index(inner, _) | E::Cast(inner) => {
+                place = inner;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// The locals that may hold the loan of `holders`: the holders, and the locals that one of them
+/// was assigned or bound from (`holder = other`, `let holder = other`, a `match` subject or a
+/// pattern variable bound from a local, or a reborrow of a place in a local), transitively.
+fn carriers(
+    body: &TypedExpr,
+    holders: &BTreeSet<usize>,
+    budget: &mut usize,
+) -> Option<BTreeSet<usize>> {
+    let mut copies: Vec<(usize, usize)> = Vec::new();
+    let mut pending = vec![body];
+    while let Some(expression) = pending.pop() {
+        spend(budget, 1)?;
+        match &expression.kind {
+            E::Assign(place, value) => {
+                if let E::Local(to) = place.kind
+                    && let Some(from) = source_local(value)
+                {
+                    copies.push((to, from));
+                }
+            }
+            E::Block { bindings, .. } => {
+                for (local, value) in bindings {
+                    if let Some(from) = source_local(value) {
+                        copies.push((local.id, from));
+                    }
+                }
+            }
+            // The subject of a `match` is copied into its local, and a pattern binds projections.
+            E::Match { local, value, arms } => {
+                if let Some(from) = source_local(value) {
+                    copies.push((local.id, from));
+                }
+                for alternative in arms.iter().flat_map(|arm| &arm.alternatives) {
+                    let steps = alternative.steps.iter().filter_map(|step| match step {
+                        crate::check::PatternStep::Bind(local, value) => Some((local, value)),
+                        crate::check::PatternStep::Test(_) => None,
+                    });
+                    let bindings = alternative
+                        .bindings
+                        .iter()
+                        .map(|(local, value)| (local, value));
+                    for (local, value) in steps.chain(bindings) {
+                        if let Some(from) = source_local(value) {
+                            copies.push((local.id, from));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        expression
+            .try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })
+            .expect("collecting copies cannot fail");
+    }
+    let mut carriers = holders.clone();
+    loop {
+        spend(budget, copies.len())?;
+        let before = carriers.len();
+        for (to, from) in &copies {
+            if carriers.contains(to) {
+                carriers.insert(*from);
+            }
+        }
+        if carriers.len() == before {
+            return Some(carriers);
+        }
+    }
+}
+
+/// Whether the use at `used` reads a value that the move at `moved` took in the previous
+/// iteration of a loop: the use is reachable from the move only across a back edge. `None` when
+/// it is not reachable, or the search runs out of `*budget`.
+fn moved_in_previous_iteration(
+    body: &TypedExpr,
+    moved: Span,
+    used: Span,
+    budget: &mut usize,
+) -> Option<bool> {
+    let flow = Flow::build(body, &BTreeSet::new(), budget)?;
+    let from: Vec<usize> = flow
+        .by_span
+        .get(&(moved.source, moved.start, moved.end))?
+        .iter()
+        .map(|(_, exit)| *exit)
+        .collect();
+    let from = flow.live(from, budget)?;
+    // Only the back edges of a loop that holds both lead to the use in a next iteration.
+    let counting = flow.around_both(moved, used, budget)?;
+    let reached = flow.reach(&from, &counting, budget)?;
+    let (mut direct, mut crossed) = (false, false);
+    for (entry, _) in flow.by_span.get(&(used.source, used.start, used.end))? {
+        direct |= reached[*entry][0];
+        crossed |= reached[*entry][1];
+    }
+    (direct || crossed).then_some(!direct)
 }
 
 fn uses(expression: &TypedExpr, ids: &mut BTreeSet<usize>) {
@@ -2925,5 +3977,70 @@ mod allocation_tests {
                 .unwrap();
             assert_eq!(super::ownership_free(&function.body), expected, "{name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod later_use_tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_use_after_and_before_a_span_and_honors_the_budget() {
+        let source = "def f :: i64 -> i64 = \\x -> 1 + x + 2\n\ndef g :: bool -> i64 -> i64 = \\c x -> if c then 3 else x\n\ndef h :: i64 -> i64 = \\x ->\n    let mut total = 0\n    for i in 0 .. 2 do\n        total = total + x + 4\n    total\n";
+        let module = crate::analyze(source).unwrap();
+        let function = |name: &str| {
+            module
+                .functions
+                .iter()
+                .find(|function| function.name == name)
+                .unwrap()
+        };
+        // The holder is the last parameter, `x`.
+        let x = |name: &str| function(name).parameters.last().unwrap().id;
+        let at = |text: &str| {
+            let start = source.find(text).unwrap();
+            Span::new(start, start + 1).in_source(0)
+        };
+        let find = |name: &str, after: Span, held: bool, mut budget: usize| {
+            let holders = BTreeSet::from([x(name)]);
+            find_later_use(
+                &function(name).body,
+                &holders,
+                after,
+                (Span::default(), false),
+                held,
+                &mut budget,
+            )
+        };
+        let used = |text: &str| {
+            let start = source.find(text).unwrap();
+            Span::new(start, start + 1).in_source(0)
+        };
+        assert_eq!(
+            find("f", at("1 +"), false, LATER_USE_NODES),
+            Some((used("x + 2"), false, x("f")))
+        );
+        // Before the access and with no loop around it, no use keeps the borrow alive.
+        assert_eq!(find("f", at("2\n"), false, LATER_USE_NODES), None);
+        // The other arm of an `if` does not run after this one.
+        assert_eq!(find("g", at("3 else"), false, LATER_USE_NODES), None);
+        // The next iteration of the loop runs the use again, unless a held argument keeps it.
+        assert_eq!(
+            find("h", at("4\n"), false, LATER_USE_NODES),
+            Some((used("x + 4"), true, x("h")))
+        );
+        assert_eq!(find("h", at("4\n"), true, LATER_USE_NODES), None);
+        assert_eq!(find("f", at("1 +"), false, 0), None);
+        assert_eq!(
+            find_later_use(
+                &function("f").body,
+                &BTreeSet::new(),
+                at("1 +"),
+                (Span::default(), false),
+                false,
+                &mut LATER_USE_NODES.clone()
+            ),
+            None
+        );
     }
 }

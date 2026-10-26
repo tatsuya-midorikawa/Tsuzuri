@@ -5,7 +5,7 @@
 | ID | G23 |
 | 優先度 | P1（D-50 の表） |
 | 規模 | L。Phase 1 = M（3〜5 日）、Phase 2 = L（1〜3 週。機械的な移行）、Phase 3 = M、Phase 4 = S |
-| 依存 | [G22](G22-diagnostic-v2.md) Phase 1（`Diagnostic` の `kind`・`help`・`fixes` と JSON の形。D-51）。Phase 1・2 が使うのは `kind` だけで、G22 が未完了なら手順 1.1 が足す。**Phase 3 は G22 Phase 1 が済んでいなければ着手しない** |
+| 依存 | [G22](_completed/G22-diagnostic-v2.md) Phase 1（`Diagnostic` の `kind`・`help`・`fixes` と JSON の形。D-51）。Phase 1・2 が使うのは `kind` だけで、G22 が未完了なら手順 1.1 が足す。**Phase 3 は G22 Phase 1 が済んでいなければ着手しない** |
 | 後続 | G21（Phase 3 の `hints::TABLE` からガイドの「よくある誤り」を作る）、G29（`tz_explain`）、G35（kind の一覧を文書へ流し込む）、A22（`E0004` の kind を登録する）。第3期の新しい診断は、すべて kind を登録する（D5） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。`src/`・`tests/` は `a2313d19` と同一の HEAD `9dd0fbbc` で確認。両者の差は `docs/benchmarks.md` だけ） |
@@ -45,7 +45,7 @@
 
 ### 着手条件
 
-- [G22](G22-diagnostic-v2.md) Phase 1 が済んでいるか確かめる: `grep -n "pub kind: Option<&'static str>" src/diagnostic.rs`。1 件なら G22 の形（D-51）で `kind`・`help`・`fixes` がある。0 件なら Phase 1・2 は手順 1.1 で `kind` だけを足して進める。**Phase 3 は `help`・`fixes`・`Applicability`・`Edit` が要るので、0 件のまま着手しない**。
+- [G22](_completed/G22-diagnostic-v2.md) Phase 1 が済んでいるか確かめる: `grep -n "pub kind: Option<&'static str>" src/diagnostic.rs`。1 件なら G22 の形（D-51）で `kind`・`help`・`fixes` がある。0 件なら Phase 1・2 は手順 1.1 で `kind` だけを足して進める。**Phase 3 は `help`・`fixes`・`Applicability`・`Edit` が要るので、0 件のまま着手しない**。
 - ベースライン: `cargo build --release --locked && cargo test --locked` の通過件数を控える（手順 1.1。失敗があれば本チケットと無関係であることを記録する）。
 - 読む: [GUIDE-LITE](GUIDE-LITE.md)、GUIDE の D-51・D-55・D-56、`docs/stability.md` の「診断のコード・重要度・JSON のキー」、本ファイルの「仕様」と付録 C の冒頭の表。
 - 承認: 不要（新しい crate・`unsafe`・予約語・既定の WASM の import を足さない）。

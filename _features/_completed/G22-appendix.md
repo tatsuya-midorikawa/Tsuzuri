@@ -17,6 +17,8 @@
 
 ## 付録 A: 再現ソースと HEAD の出力
 
+> 2026-10-26 の更新（実装時の HEAD `62939ba5`）: edition 2027 が manifest のない CLI 入力の既定になり、通常の `def` の非 Copy 引数は既定で読み取り（A18）になった。所有権のソースのうち `move1`・`loop1`・`loop2`・`branch1`・`branch2`・`partial1`・`life3` は、所有権を受け取る引数を `own` で書く（`own` はどの edition でも同じ意味なので、`analyze_all`（2026）と CLI（2027）の両方で同じ診断になる）。`own` を書かないと、CLI では移動が起きず診断が出ない。`life3` の列は `own ` の 4 文字だけずれる。
+
 各ソースを `/tmp/tz-G22/<名前>/Main.tz` に置き（**1 つのブロックが 1 つのファイル。太字の名前はファイルに含めない**）、`target/release/tsuzuri check /tmp/tz-G22/<名前>` を実行する。**付録 B の各出力の最初の 3 行（主の位置の引用まで）が HEAD の出力と同じ**（55 本のソースで、診断ごとの先頭 3 行が試作と HEAD で一致することを確かめた）。HEAD の `E1012`・`E1014`・`E1013` は 1 診断 3 行だけで、`note`・`help` の行がない（Phase 3 の対象の `E1021`・`E1003` も、主の位置の 3 行だけ）。
 
 ### 所有権
@@ -24,7 +26,7 @@
 **move1**
 
 ```text
-def consume :: string -> i64 = \s -> s.length
+def consume :: own string -> i64 = \s -> s.length
 
 def main_value :: unit -> i64 = \_ ->
     let text = "hello"
@@ -38,7 +40,7 @@ main_value ()
 **loop1**
 
 ```text
-def consume :: string -> i64 = \s -> s.length
+def consume :: own string -> i64 = \s -> s.length
 
 def total :: unit -> i64 = \_ ->
     let text = "hello"
@@ -53,7 +55,7 @@ def total :: unit -> i64 = \_ ->
 **loop2**
 
 ```text
-def consume :: string -> i64 = \s -> s.length
+def consume :: own string -> i64 = \s -> s.length
 
 def f :: bool -> i64 =
     \c ->
@@ -72,7 +74,7 @@ def f :: bool -> i64 =
 **branch1**
 
 ```text
-def consume :: string -> i64 = \s -> s.length
+def consume :: own string -> i64 = \s -> s.length
 
 def total :: bool -> i64 = \flag ->
     let text = "sample"
@@ -89,7 +91,7 @@ def total :: bool -> i64 = \flag ->
 **branch2**
 
 ```text
-def consume :: string -> i64 = \s -> s.length
+def consume :: own string -> i64 = \s -> s.length
 
 def total :: bool -> i64 = \flag ->
     let text = "sample"
@@ -104,9 +106,9 @@ def total :: bool -> i64 = \flag ->
 ```text
 record Package { title: string, body: string, count: i64 }
 
-def take :: string -> i64 = \s -> s.length
+def take :: own string -> i64 = \s -> s.length
 
-def size :: Package -> i64 = \pkg ->
+def size :: own Package -> i64 = \pkg ->
     let t = pkg.title
     let n = take pkg.body
     pkg.count + take pkg.title + t.length + n
@@ -158,7 +160,7 @@ def invalid_ref :: unit -> ref string = \_ ->
 **life3**
 
 ```text
-def f :: string -> ref string = \s -> ref s
+def f :: own string -> ref string = \s -> ref s
 
 0
 ```
@@ -726,13 +728,13 @@ life1/Main.tz:3:5: error[E1013]: borrowed value does not live long enough to lea
     |         ^
   help: return the value itself instead of a reference to it, or declare it in an outer scope
 ##### life3
-life3/Main.tz:1:39: error[E1013]: cannot return a reference to a local value
-  1 | def f :: string -> ref string = \s -> ref s
-    |                                       ^
+life3/Main.tz:1:43: error[E1013]: cannot return a reference to a local value
+  1 | f f :: own string -> ref string = \s -> ref s
+    |                                         ^
   note: 's' is declared here and is dropped when the function returns
-    --> life3/Main.tz:1:34
-  1 | def f :: string -> ref string = \s -> ref s
-    |                                  ^
+    --> life3/Main.tz:1:38
+  1 | def f :: own string -> ref string = \s -> ref s
+    |                                      ^
   help: return the value itself, or return a reference that comes from a reference parameter
 ##### esc1
 esc1/Main.tz:6:13: error[E1013]: assignment lets a reference outlive its owner
@@ -850,7 +852,7 @@ nofn/Main.tz:3:29: error[E1005]: only a function value can be called
 nofn/Main.tz:5:32: error[E1005]: only a function value can be called
   5 | def h :: string -> i64 = \s -> s "x"
     |                                ^
-  help: a value of type string is not a function; remove the argument(s) or call a function
+  help: a value of type ref string is not a function; remove the argument(s) or call a function
 ##### mismatch1
 mismatch1/Main.tz:3:36: error[E1003]: expected [i64; 2], found [i64; 3]
   3 | def g :: [i64; 3] -> i64 = \a -> f a
@@ -992,13 +994,13 @@ dup9/Main.tz:3:5: error[E1001]: duplicate function definition
 dup12/Main.tz:1:8: error[E1001]: duplicate or reserved name 'Array'
   1 | record Array { x: i64 }
     |        ^
-##### std2（note が別のソース std/Array.tz を指す。--json の path は std/Array.tz）
-std2/Main.tz:1:29: error[E1003]: expected ref [an undetermined type], found i32
+##### std2（note が別のソース std/Array.tz を指す。--json の path は std/Array.tz。2026-10-26 の HEAD では宣言が 9 行目にあり、期待の型の表示に `ref` が付かない）
+std2/Main.tz:1:29: error[E1003]: expected [an undetermined type], found i32
   1 | def f :: i64 = Array.length 5
     |                             ^
   note: parameter 1 of 'length' is declared here
-    --> std/Array.tz:1:15
-  1 | def length :: ref ['a] -> i64
+    --> std/Array.tz:9:15
+  9 | def length :: ref ['a] -> i64
     |               ^
 ```
 
@@ -1006,11 +1008,11 @@ std2/Main.tz:1:29: error[E1003]: expected ref [an undetermined type], found i32
 JSON（`check --json`。実際は 1 診断が 1 行）:
 
 ```text
-{"severity":"error","code":"E1012","message":"use of moved or partially moved value 'text'","path":"move1/Main.tz","span":{"start":153,"end":157,"line":6,"column":21,"end_line":6,"end_column":25},"related":[{"role":"moved_here","message":"value moved here","path":"move1/Main.tz","span":{"start":128,"end":132,"line":5,"column":21,"end_line":5,"end_column":25}}],"help":"borrow the value with 'ref text' or move it last"}
+{"severity":"error","code":"E1012","message":"use of moved or partially moved value 'text'","path":"move1/Main.tz","span":{"start":157,"end":161,"line":6,"column":21,"end_line":6,"end_column":25},"related":[{"role":"moved_here","message":"value moved here","path":"move1/Main.tz","span":{"start":132,"end":136,"line":5,"column":21,"end_line":5,"end_column":25}}],"help":"borrow the value with 'ref text' or move it last"}
 {"severity":"error","code":"E1014","message":"access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively","path":"borrow2/Main.tz","span":{"start":147,"end":156,"line":6,"column":5,"end_line":6,"end_column":14},"related":[{"role":"borrowed_here","message":"value borrowed here","path":"borrow2/Main.tz","span":{"start":133,"end":142,"line":5,"column":16,"end_line":5,"end_column":25}},{"role":"borrow_used_here","message":"the borrow is used here, so it is still alive","path":"borrow2/Main.tz","span":{"start":167,"end":171,"line":7,"column":11,"end_line":7,"end_column":15}}],"help":"end the borrow before this access: stop using 'view' first, or move this access after its last use"}
 {"severity":"error","code":"E1021","message":"match is not exhaustive; missing: Triangle _","path":"match1/Main.tz","span":{"start":100,"end":166,"line":4,"column":5,"end_line":6,"end_column":24},"help":"add an arm for 'Triangle _', or end the match with a wildcard arm '| _ -> ...'","fixes":[{"title":"Add the arm '| Triangle _ -> unreachable ()'","applicability":"maybe","edits":[{"path":"match1/Main.tz","span":{"start":166,"end":166,"line":6,"column":24,"end_line":6,"end_column":24},"text":" | Triangle _ -> unreachable ()"}]}]}
 {"severity":"error","code":"E1002","message":"unknown value 'countt'","path":"name1/Main.tz","span":{"start":114,"end":120,"line":5,"column":33,"end_line":5,"end_column":39},"help":"check the spelling, or define the name with 'let' or 'def'; names in scope: count","scope":[{"name":"count","type":"i64"}]}
-{"severity":"error","code":"E1003","message":"expected ref [an undetermined type], found i32","path":"std2/Main.tz","span":{"start":28,"end":29,"line":1,"column":29,"end_line":1,"end_column":30},"related":[{"role":"expected_because","message":"parameter 1 of 'length' is declared here","path":"std/Array.tz","span":{"start":14,"end":22,"line":1,"column":15,"end_line":1,"end_column":23}}],"expected":"ref [an undetermined type]","found":"i32"}
+{"severity":"error","code":"E1003","message":"expected [an undetermined type], found i32","path":"std2/Main.tz","span":{"start":28,"end":29,"line":1,"column":29,"end_line":1,"end_column":30},"related":[{"role":"expected_because","message":"parameter 1 of 'length' is declared here","path":"std/Array.tz","span":{"start":740,"end":748,"line":9,"column":15,"end_line":9,"end_column":23}}],"expected":"[an undetermined type]","found":"i32"}
 ```
 
 `match1` の fix の edit を適用した結果（Python で `start`・`end`・`text` を後ろから適用して `check`）は終了コード 0: 最後の腕が `| Square w -> w * w | Triangle _ -> unreachable ()` と `| 1 -> "one" | _ -> unreachable ()` になる。
@@ -2944,7 +2946,7 @@ fn fix_removes(
 LSP の新しいテスト 3 件（`tests/lsp.rs` の末尾。`session`・`scripted`・`range` は同じファイルの既存の補助）:
 
 ```rust
-const MOVE_TWICE: &str = "def consume :: string -> i64 = \\s -> s.length\n\ndef main_value :: unit -> i64 = \\_ ->\n    let text = \"hello\"\n    let a = consume text\n    let b = consume text\n    a + b\n";
+const MOVE_TWICE: &str = "def consume :: own string -> i64 = \\s -> s.length\n\ndef main_value :: unit -> i64 = \\_ ->\n    let text = \"hello\"\n    let a = consume text\n    let b = consume text\n    a + b\n";
 const MISSING_ARM: &str = "union Shape = Circle of f64 | Square of f64 | Triangle of f64\n\ndef area :: Shape -> f64 = \\s ->\n    match s with\n    | Circle r -> r\n    | Square w -> w\n";
 const NESTED_MISSING_ARM: &str = "union Shape = Circle of f64 | Square of f64 | Triangle of f64\n\ndef area :: Shape -> Shape -> f64 = \\s t ->\n    match s with\n    | Circle r -> r\n    | Square w -> match t with | Circle q -> q | Square z -> z | Triangle _ -> unreachable ()\n";
 
@@ -3555,7 +3557,9 @@ fn std_parameter_note_points_into_std() {
         related["path"].as_str().unwrap().replace('\\', "/"),
         "std/Array.tz"
     );
-    assert_eq!(related["span"]["line"], 1);
+    let std = include_str!("../std/Array.tz");
+    let declared = std[..std.find("def length ::").unwrap()].matches('\n').count() + 1;
+    assert_eq!(related["span"]["line"], declared);
 }
 
 #[test]

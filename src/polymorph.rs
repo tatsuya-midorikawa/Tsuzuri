@@ -332,6 +332,12 @@ pub(super) struct Inference {
     defaults: BTreeMap<usize, Type>,
 }
 
+/// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
+fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
+    Diagnostic::new("E1003", format!("expected {expected}, found {found}"), span)
+        .expected_found(expected, found)
+}
+
 impl Inference {
     pub(super) fn fresh(&mut self) -> Type {
         let id = self.solutions.len();
@@ -472,12 +478,12 @@ impl Inference {
             }
             // Lengths first, so a mismatch reports both array types (A16).
             (Type::FixedArray(a, n), Type::FixedArray(b, m)) => {
-                self.unify(n, m, types, span).map_err(|mut error| {
+                self.unify(n, m, types, span).map_err(|error| {
                     if error.code == "E1003" {
-                        error.message = format!(
-                            "expected {}, found {}",
+                        return mismatch(
                             self.resolve(&expected).display(types),
-                            self.resolve(&actual).display(types)
+                            self.resolve(&actual).display(types),
+                            error.span,
                         );
                     }
                     error
@@ -503,14 +509,14 @@ impl Inference {
                     inferred
                 };
                 for (a, b) in a.iter().zip(b) {
-                    self.unify(a, b, types, span).map_err(|mut error| {
+                    self.unify(a, b, types, span).map_err(|error| {
                         // Report the whole type when both sides were known before unification;
                         // partially inferred arguments would otherwise show intermediate bindings.
                         if error.code == "E1003" && !inferred(&actual) && !inferred(&expected) {
-                            error.message = format!(
-                                "expected {}, found {}",
+                            return mismatch(
                                 expected.display(types),
-                                actual.display(types)
+                                actual.display(types),
+                                error.span,
                             );
                         }
                         error
@@ -538,13 +544,9 @@ impl Inference {
             }
             _ => {}
         }
-        Err(Diagnostic::new(
-            "E1003",
-            format!(
-                "expected {}, found {}",
-                expected.display(types),
-                actual.display(types)
-            ),
+        Err(mismatch(
+            expected.display(types),
+            actual.display(types),
             span,
         ))
     }
@@ -3651,11 +3653,11 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<(Vec<Type>, Type), Diagnostic> {
         if self.inference.is_numeric_literal(ty) {
-            return Err(Diagnostic::new(
-                "E1005",
-                "only a function value can be called",
-                span,
-            ));
+            return Err(
+                Diagnostic::new("E1005", "only a function value can be called", span).with_help(
+                    "a number is not a function; remove the argument(s) or call a function",
+                ),
+            );
         }
         match self.inference.resolve(ty) {
             Type::Error => Ok((vec![Type::Error; count], Type::Error)),
@@ -3701,14 +3703,25 @@ impl Checker<'_> {
                 parameters.extend(extra);
                 Ok((parameters, output))
             }
-            Type::Function(parameters, _) => Err(Diagnostic::new(
-                "E1006",
-                format!(
-                    "cannot apply {count} arguments to a function accepting {} arguments",
-                    parameters.len()
-                ),
-                span,
-            )),
+            Type::Function(parameters, _) => {
+                let error = Diagnostic::new(
+                    "E1006",
+                    format!(
+                        "cannot apply {count} arguments to a function accepting {} arguments",
+                        parameters.len()
+                    ),
+                    span,
+                );
+                // A call with no arguments reaches here too, and has nothing to remove.
+                Err(if count > parameters.len() {
+                    error.with_help(format!(
+                        "remove the {} extra argument(s)",
+                        count - parameters.len()
+                    ))
+                } else {
+                    error
+                })
+            }
             Type::Infer(id) => {
                 let parameters: Vec<_> = (0..count).map(|_| self.inference.fresh()).collect();
                 let result = self.inference.fresh();
@@ -3719,11 +3732,15 @@ impl Checker<'_> {
                 )?;
                 Ok((parameters, result))
             }
-            _ => Err(Diagnostic::new(
+            other => Err(Diagnostic::new(
                 "E1005",
                 "only a function value can be called",
                 span,
-            )),
+            )
+            .with_help(format!(
+                "a value of type {} is not a function; remove the argument(s) or call a function",
+                other.display(&self.types)
+            ))),
         }
     }
 
@@ -5348,9 +5365,10 @@ mod tests {
         TEST_LIMITS.set(Some(SMALL));
         let result = crate::analyze_modules(sources);
         TEST_LIMITS.set(None);
-        result
-            .map(|_| ())
-            .map_err(|error| (error.code, error.message))
+        result.map(|_| ()).map_err(|error| {
+            let data = error.into_data();
+            (data.code, data.message)
+        })
     }
 
     /// A program with exactly the limit of specializations, then one more. The std modules,

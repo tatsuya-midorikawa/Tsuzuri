@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 
-use crate::diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::diagnostic::{
+    Applicability, Diagnostic, DiagnosticSet, Diagnostics, Edit, MAX_UNIQUE_DIAGNOSTICS,
+    RelatedRole, ScopeEntry, Span,
+};
 use crate::parallel::{Parallelism, ordered_for_each_owned};
 pub use crate::syntax::Provenance;
 use crate::syntax::*;
@@ -4592,8 +4595,18 @@ impl NameInfo {
 #[path = "intern.rs"]
 mod intern;
 
+/// Where a function is declared: its name and the spans of its parameters' types, for the
+/// notes of diagnostics that point at the signature.
+#[derive(Clone, Default)]
+struct DeclaredFunction {
+    name: String,
+    parameters: Vec<Span>,
+}
+
 #[derive(Default)]
 struct Names {
+    /// By function id; the declarations of tests and benches stay empty.
+    declared: Vec<DeclaredFunction>,
     warning_options: warnings::WarningOptions,
     borrowing_modules: BTreeSet<String>,
     modules: BTreeMap<String, ModuleOrigin>,
@@ -6587,7 +6600,14 @@ fn check_modules_collect(
         if reserved_type_name(&record.name.text)
             || names.records.insert(qualified.clone(), info).is_some()
         {
-            diagnostics.push(duplicate(&record.name));
+            let first = record_declarations[..id]
+                .iter()
+                .filter(|_| !reserved_type_name(&record.name.text))
+                .find(|(other_module, other)| {
+                    other_module == module && other.name.text == record.name.text
+                })
+                .map(|(_, other)| other.name.span);
+            diagnostics.push(duplicate_of(&record.name, first));
             continue;
         }
         names
@@ -6796,7 +6816,17 @@ fn check_modules_collect(
             let mut fields = Vec::new();
             for field in &record.fields {
                 if !field_names.insert(&field.name.text) || field.name.text == "_" {
-                    return Err(duplicate(&field.name));
+                    // The earlier fields only; `_` is reserved and has no first definition.
+                    let first = record
+                        .fields
+                        .iter()
+                        .take_while(|other| other.name.span != field.name.span)
+                        .filter(|_| field.name.text != "_")
+                        .find(|other| other.name.text == field.name.text);
+                    return Err(duplicate_of(
+                        &field.name,
+                        first.map(|other| other.name.span),
+                    ));
                 }
                 reject_field_constraints(&field.ty, module, &names, "record")?;
                 let ty = resolve_type(&field.ty, module, &names)?;
@@ -6991,6 +7021,7 @@ fn check_modules_collect(
     };
     classes.check_superclasses(&types, diagnostics)?;
     let mut signatures = Vec::new();
+    names.declared = vec![DeclaredFunction::default(); function_declarations.len()];
     let mut default_reads = BTreeMap::new();
     for (id, (module, function)) in function_declarations.iter().enumerate() {
         if diagnostics.is_full() {
@@ -6999,6 +7030,14 @@ fn check_modules_collect(
         if test_functions.contains_key(&id) || bench_functions.contains_key(&id) {
             continue;
         }
+        names.declared[id] = DeclaredFunction {
+            name: function.name.text.clone(),
+            parameters: function
+                .parameters
+                .iter()
+                .map(|parameter| parameter.ty.span)
+                .collect(),
+        };
         let qualified = format!("{module}.{}", function.name.text);
         let module_symbol = names.symbols.intern(module);
         let name_symbol = names.symbols.intern(&function.name.text);
@@ -7093,7 +7132,14 @@ fn check_modules_collect(
             let kinds = classes.constraint_kinds(&function.constraints, module, &names)?;
             for parameter in &function.parameters {
                 if parameter.name.text != "_" && !parameter_names.insert(&parameter.name.text) {
-                    return Err(duplicate(&parameter.name));
+                    let first = function
+                        .parameters
+                        .iter()
+                        .find(|other| other.name.text == parameter.name.text);
+                    return Err(duplicate_of(
+                        &parameter.name,
+                        first.map(|other| other.name.span),
+                    ));
                 }
                 let mutable = matches!(parameter.ty.kind, TypeExprKind::Mut(_));
                 if mutable
@@ -7546,7 +7592,26 @@ fn check_modules_collect(
                         span: function.name.span,
                     }
                 } else {
-                    checker.expression(&function.body, Some(&signature.result))?
+                    let from = checker.recovered.len();
+                    let mut body = checker.expression(&function.body, Some(&signature.result));
+                    // Generated functions (tests, benchmarks) have no written result type.
+                    if (body.is_err() || checker.recovered.len() > from)
+                        && function.name.provenance == Provenance::User
+                        && !function.name.text.starts_with('$')
+                    {
+                        checker.expected_because(
+                            body.as_mut().err(),
+                            from,
+                            &tail_spans(&function.body),
+                            &signature.result,
+                            &format!(
+                                "the result type of '{}' is declared here",
+                                function.name.text
+                            ),
+                            function.result.span,
+                        );
+                    }
+                    body?
                 };
                 Ok(CheckedFunction {
                     module: module.clone(),
@@ -8214,6 +8279,59 @@ fn infer_active_result(
     Ok(Some(result))
 }
 
+/// The spans of the positions that an expected type is passed down to: the expression, and the
+/// result of a block, the branches of an `if`, and the arms of a `match` in it, recursively. An
+/// operator is left out: it checks its operands against types of its own and reports them at its
+/// own span (`!`, `&&`), so a mismatch there is not explained by the declaration.
+fn tail_spans(expression: &Expr) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        if !matches!(
+            expression.kind,
+            ExprKind::Unary(..)
+                | ExprKind::Binary(..)
+                | ExprKind::Range { .. }
+                | ExprKind::Cast(..)
+                | ExprKind::Interpolated(_)
+                | ExprKind::Assign(..)
+        ) {
+            spans.push(expression.span);
+        }
+        match &expression.kind {
+            ExprKind::Block { result, .. } => pending.push(result),
+            ExprKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => pending.extend([&**then_branch, &**else_branch]),
+            ExprKind::Match { arms, .. } => pending.extend(arms.iter().map(|arm| &arm.body)),
+            _ => {}
+        }
+    }
+    spans
+}
+
+/// `duplicate` with the first declaration of the name, when it is known.
+fn duplicate_of(name: &Ident, first: Option<Span>) -> Diagnostic {
+    let error = duplicate(name);
+    match first {
+        Some(first) => error.related(RelatedRole::FirstDefinedHere, "first defined here", first),
+        None => error,
+    }
+}
+
+/// `help` of an unknown field: the fields that the record has, at most 16.
+fn field_names_help(record: &str, fields: &[(String, Type)]) -> String {
+    let shown: Vec<&str> = fields
+        .iter()
+        .take(16)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let more = if fields.len() > 16 { ", ..." } else { "" };
+    format!("the fields of '{record}' are: {}{more}", shown.join(", "))
+}
+
 fn duplicate(name: &Ident) -> Diagnostic {
     Diagnostic::new(
         "E1001",
@@ -8372,9 +8490,9 @@ fn collect_unions(
                         name.span,
                     ));
                 }
-                if union.cases[..case]
+                if let Some(first) = union.cases[..case]
                     .iter()
-                    .any(|other| other.name.text == name.text)
+                    .find(|other| other.name.text == name.text)
                 {
                     return Err(Diagnostic::new(
                         "E1024",
@@ -8383,6 +8501,11 @@ fn collect_unions(
                             name.text, union.name.text
                         ),
                         name.span,
+                    )
+                    .related(
+                        RelatedRole::FirstDefinedHere,
+                        "first defined here",
+                        first.name.span,
                     ));
                 }
                 let qualified = format!("{module}.{}", name.text);
@@ -9941,6 +10064,177 @@ impl<'a> Checker<'a> {
         local
     }
 
+    /// Adds `ExpectedBecause` to the `E1003` mismatches that checking one expression reported, in
+    /// `error` and in `self.recovered[from..]`, when they are at one of `tails`: the expression
+    /// itself or a position that its expected type is passed down to. The callers call it only
+    /// when the check reported an error, and keep the checked expression out of it, so that the
+    /// recursive checks keep their frames.
+    #[cold]
+    #[inline(never)]
+    fn expected_because(
+        &mut self,
+        error: Option<&mut Diagnostic>,
+        from: usize,
+        tails: &[Span],
+        declared: &Type,
+        message: &str,
+        because: Span,
+    ) {
+        // The declaration supplied the expected type only when the mismatch expects that type
+        // (or, for a reference, its target, which an argument is borrowed for): an operator in
+        // the tail position expects its own operand types, as `!` does in `let x: i64 = !1i64`.
+        let declared = self.inference.resolve(declared);
+        let mut types = vec![declared.display(&self.types)];
+        if let Type::Reference(target, _) | Type::Shared(target, _) = &declared {
+            types.push(self.inference.resolve(target).display(&self.types));
+        }
+        let note = |diagnostic: &mut Diagnostic| {
+            if diagnostic.code == "E1003"
+                && diagnostic
+                    .detail
+                    .expected
+                    .as_ref()
+                    .is_some_and(|expected| types.contains(expected))
+                && diagnostic.related.is_empty()
+                && because.end > because.start
+                && tails.contains(&diagnostic.span)
+            {
+                diagnostic.add_related(RelatedRole::ExpectedBecause, message, because);
+            }
+        };
+        for diagnostic in self.recovered.iter_mut().skip(from) {
+            note(diagnostic);
+        }
+        if let Some(diagnostic) = error {
+            note(diagnostic);
+        }
+    }
+
+    /// `expected_because` for the value of a `let` with a type annotation.
+    #[cold]
+    #[inline(never)]
+    fn annotation_because(
+        &mut self,
+        binding: &Binding,
+        annotation: Option<&Type>,
+        from: usize,
+        error: Option<&mut Diagnostic>,
+    ) {
+        // A generated binding's annotation is not written in the source.
+        if let (Some(written), Some(annotation)) = (&binding.annotation, annotation)
+            && binding.name.provenance == Provenance::User
+            && !binding.name.text.starts_with('$')
+        {
+            self.expected_because(
+                error,
+                from,
+                &tail_spans(&binding.value),
+                annotation,
+                "the type annotation declares this type",
+                written.span,
+            );
+        }
+    }
+
+    /// `expected_because` for an argument of a call: the declared type of the parameter of a
+    /// named function.
+    #[cold]
+    #[inline(never)]
+    fn argument_because(
+        &mut self,
+        callee: &TypedExpr,
+        index: usize,
+        argument: &Expr,
+        parameter: &Type,
+        from: usize,
+        error: Option<&mut Diagnostic>,
+    ) {
+        if let Some((message, span)) = self.declared_parameter(callee, index) {
+            self.expected_because(
+                error,
+                from,
+                &tail_spans(argument),
+                parameter,
+                &format!("{message} is declared here"),
+                span,
+            );
+        }
+    }
+
+    /// `parameter {n} of '{name}'` and the span of that parameter's declared type, when `callee`
+    /// is a named function.
+    fn declared_parameter(&self, callee: &TypedExpr, index: usize) -> Option<(String, Span)> {
+        let (TypedExprKind::Function(FunctionRef::User(id))
+        | TypedExprKind::GenericFunction(id, _)) = &callee.kind
+        else {
+            return None;
+        };
+        let declared = self.names.declared.get(*id)?;
+        let span = *declared.parameters.get(index)?;
+        (!declared.name.starts_with('$')).then(|| {
+            (
+                format!("parameter {} of '{}'", index + 1, declared.name),
+                span,
+            )
+        })
+    }
+
+    /// An `E1003` for a call whose value is a function because it left out trailing arguments:
+    /// it passes fewer arguments than `callee` takes. A call that passes them all and returns a
+    /// function, or a function without parameters (`fn() -> T`), needs the result called instead.
+    #[cold]
+    #[inline(never)]
+    fn partial_application(
+        &self,
+        mut error: Diagnostic,
+        callee: &Type,
+        passed: usize,
+        result: &Type,
+        hint: &Type,
+    ) -> Diagnostic {
+        if error.code == "E1003"
+            && matches!(self.inference.resolve(callee), Type::Function(declared, _) if declared.len() > passed)
+            && let Type::Function(missing, _) = self.inference.resolve(result)
+            && !missing.is_empty()
+            && !matches!(
+                self.inference.resolve(hint),
+                Type::Function(..) | Type::Infer(_) | Type::Error
+            )
+        {
+            error.help = Some(format!(
+                "a call with too few arguments evaluates to a function; add the missing argument(s) ({} more needed)",
+                missing.len()
+            ));
+        }
+        error
+    }
+
+    /// The locals in scope, innermost first, at most `MAX_SCOPE`.
+    fn scope_entries(&self) -> Vec<ScopeEntry> {
+        let mut seen = BTreeSet::new();
+        let mut entries = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            for (name, local) in scope {
+                if entries.len() == crate::diagnostic::MAX_SCOPE {
+                    return entries;
+                }
+                if name == "_"
+                    || name.starts_with('$')
+                    || local.provenance != Provenance::User
+                    || !seen.insert(name.clone())
+                {
+                    continue;
+                }
+                entries.push(ScopeEntry {
+                    name: name.clone(),
+                    ty: self.inference.resolve(&local.ty).display(&self.types),
+                });
+            }
+        }
+        entries.truncate(crate::diagnostic::MAX_SCOPE);
+        entries
+    }
+
     fn same(&mut self, actual: &Type, expected: &Type, span: Span) -> Result<(), Diagnostic> {
         self.inference.unify(actual, expected, &self.types, span)
     }
@@ -10207,7 +10501,17 @@ impl<'a> Checker<'a> {
             }
             index += 1;
             let annotation = self.binding_annotation(binding)?;
-            let value = self.expression(&binding.value, annotation.as_ref())?;
+            let from = self.recovered.len();
+            let value = match self.expression(&binding.value, annotation.as_ref()) {
+                Ok(value) => value,
+                Err(mut error) => {
+                    self.annotation_because(binding, annotation.as_ref(), from, Some(&mut error));
+                    return Err(error);
+                }
+            };
+            if self.recovered.len() > from {
+                self.annotation_because(binding, annotation.as_ref(), from, None);
+            }
             let ty = if annotation.as_ref().is_some_and(Type::contains_error) {
                 Type::Error
             } else {
@@ -10348,7 +10652,10 @@ impl<'a> Checker<'a> {
             } else {
                 expected.clone()
             };
-            self.same(&result, &hint, expression.span)?;
+            self.same(&result, &hint, expression.span)
+                .map_err(|error| {
+                    self.partial_application(error, &callee.ty, arguments.len(), &result, &hint)
+                })?;
         }
         if self.recovering && expected.is_some_and(|ty| matches!(ty, Type::Error)) {
             self.unknown_parameters(&mut parameters);
@@ -10386,14 +10693,35 @@ impl<'a> Checker<'a> {
                         callbacks.push(index);
                         TypedExpr::error(argument.span)
                     }
-                    _ => self.argument(argument, parameter)?,
+                    _ => {
+                        let from = self.recovered.len();
+                        let checked = match self.argument(argument, parameter) {
+                            Ok(checked) => checked,
+                            Err(mut error) => {
+                                self.argument_because(
+                                    &callee,
+                                    index,
+                                    argument,
+                                    parameter,
+                                    from,
+                                    Some(&mut error),
+                                );
+                                return Err(error);
+                            }
+                        };
+                        if self.recovered.len() > from {
+                            self.argument_because(&callee, index, argument, parameter, from, None);
+                        }
+                        checked
+                    }
                 });
             }
             for index in callbacks {
-                checked[index] = self.argument(&arguments[index], &parameters[index])?;
+                checked[index] =
+                    self.noted_argument(&callee, index, &arguments[index], &parameters[index])?;
             }
             if deferred {
-                self.lambda_arguments(arguments, &parameters, &mut checked)?;
+                self.lambda_arguments(&callee, arguments, &parameters, &mut checked)?;
             }
             checked
         };
@@ -11094,16 +11422,41 @@ impl<'a> Checker<'a> {
     #[inline(never)]
     fn lambda_arguments(
         &mut self,
+        callee: &TypedExpr,
         arguments: &[Expr],
         parameters: &[Type],
         checked: &mut [TypedExpr],
     ) -> Result<(), Diagnostic> {
         for (index, (argument, parameter)) in arguments.iter().zip(parameters).enumerate() {
             if Self::deferred_lambda(arguments, index) {
-                checked[index] = self.argument(argument, parameter)?;
+                checked[index] = self.noted_argument(callee, index, argument, parameter)?;
             }
         }
         Ok(())
+    }
+
+    /// `argument` for an argument that is checked after the others, with the declared parameter
+    /// type in its mismatches (`argument_because`).
+    #[inline(never)]
+    fn noted_argument(
+        &mut self,
+        callee: &TypedExpr,
+        index: usize,
+        argument: &Expr,
+        parameter: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let from = self.recovered.len();
+        let checked = match self.argument(argument, parameter) {
+            Ok(checked) => checked,
+            Err(mut error) => {
+                self.argument_because(callee, index, argument, parameter, from, Some(&mut error));
+                return Err(error);
+            }
+        };
+        if self.recovered.len() > from {
+            self.argument_because(callee, index, argument, parameter, from, None);
+        }
+        Ok(checked)
     }
 
     /// `xs |> f a` fixes the next parameter of `f a` to the type of `xs`.
@@ -11724,6 +12077,7 @@ impl<'a> Checker<'a> {
                         format!("record '{}' has no field '{}'", record.name, field.text),
                         field.span,
                     )
+                    .with_help(field_names_help(&record.name, &record.fields))
                 })?;
             self.note_name(field, NameTarget::Field(id, index));
             values.push((index, self.expression(value, Some(&field_types[index]))?));
@@ -12093,6 +12447,7 @@ impl<'a> Checker<'a> {
                         format!("record '{}' has no field '{}'", record.name, field.text),
                         field.span,
                     )
+                    .with_help(field_names_help(&record.name, &record.fields))
                 })?;
             self.note_name(field, NameTarget::Field(id, index));
             values.push((index, self.expression(value, Some(&field_types[index]))?));
@@ -12128,6 +12483,10 @@ impl<'a> Checker<'a> {
                             format!("unknown field '{}'", field.text),
                             field.span,
                         )
+                        .with_help(field_names_help(
+                            &self.types.records[*id].name,
+                            &self.types.records[*id].fields,
+                        ))
                     })?;
                 let ty = self.types.record_field(*id, args, index);
                 let id = *id;
@@ -12396,11 +12755,30 @@ impl<'a> Checker<'a> {
             self.note_name(name, NameTarget::Case(union_id, case_id));
             return Ok(self.case_value(union_id, case_id));
         }
-        Err(Diagnostic::new(
-            "E1002",
-            format!("unknown value '{}'", name.text),
-            name.span,
-        ))
+        Err(self.unknown_value(name))
+    }
+
+    /// The `E1002` of an unknown value, with the locals in scope.
+    #[cold]
+    #[inline(never)]
+    fn unknown_value(&self, name: &Ident) -> Diagnostic {
+        let scope = self.scope_entries();
+        let names: Vec<&str> = scope
+            .iter()
+            .take(8)
+            .map(|entry| entry.name.as_str())
+            .collect();
+        let help = if names.is_empty() {
+            "check the spelling, or define the name with 'let' or 'def'".to_owned()
+        } else {
+            format!(
+                "check the spelling, or define the name with 'let' or 'def'; names in scope: {}",
+                names.join(", ")
+            )
+        };
+        Diagnostic::new("E1002", format!("unknown value '{}'", name.text), name.span)
+            .with_help(help)
+            .with_scope(scope)
     }
 
     /// A case used as a value: a nullary case is a union value, and a case

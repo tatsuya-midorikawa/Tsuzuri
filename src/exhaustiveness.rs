@@ -87,6 +87,10 @@ pub(super) enum LiteralKey {
 pub(super) struct MatchCoverage {
     pub(super) span: Span,
     pub(super) arms: Vec<CoverageArm>,
+    /// The end of the last arm of an explicit `match ... with`, where one more arm can be
+    /// written; `None` for a function guard. The span of a parenthesized match includes the
+    /// parentheses, so it does not end there.
+    pub(super) append_at: Option<usize>,
 }
 
 pub(super) struct CoverageArm {
@@ -124,6 +128,17 @@ impl Drop for Cell {
                 Err(_) => None,
             };
         }
+    }
+}
+
+/// The pattern that covers exactly the values a witness stands for.
+fn witness_pattern(witness: &Witness) -> Pat {
+    match witness {
+        Witness::Wild => Rc::new(Node::Wild),
+        Witness::Ctor(constructor, arguments) => Rc::new(Node::Ctor(
+            constructor.clone(),
+            arguments.iter().map(witness_pattern).collect(),
+        )),
     }
 }
 
@@ -232,18 +247,87 @@ impl Checker<'_> {
                 }
             }
             let wild = search.wild.clone();
-            if let Some(witness) = search.run(rows, push(wild, None), true)? {
-                return Err(Diagnostic::new(
+            if let Some(witness) = search.run(rows.clone(), push(wild, None), true)? {
+                let missing = self.witness(&witness, coverage.span);
+                let mut error = Diagnostic::new(
                     "E1021",
-                    format!(
-                        "match is not exhaustive; missing: {}",
-                        self.witness(&witness, coverage.span)
-                    ),
+                    format!("match is not exhaustive; missing: {missing}"),
                     coverage.span,
+                )
+                .with_help(format!(
+                    "add an arm for '{missing}', or end the match with a wildcard arm '| _ -> ...'"
                 ));
+                // The arm has no indentation: the checker does not have the text of the source.
+                if let Some(end) = coverage.append_at
+                    && let Some(arms) = self.missing_arms(&mut search, rows, witness)
+                {
+                    let end = Span {
+                        start: end,
+                        end,
+                        ..coverage.span
+                    };
+                    let title = if arms.len() == 1 {
+                        format!("Add the arm '{}'", arms[0])
+                    } else {
+                        format!("Add the arms '{}'", arms.join(" "))
+                    };
+                    let text: String = arms.iter().map(|arm| format!(" {arm}")).collect();
+                    error = error.fix(title, Applicability::Maybe, vec![Edit { span: end, text }]);
+                }
+                return Err(error);
             }
         }
         Ok(warnings)
+    }
+
+    /// The arms `| <pattern> -> unreachable ()` that make the match exhaustive, starting with
+    /// `witness` and adding the next witness until none is left: at most `MAX_ADDED_ARMS`, and
+    /// only patterns that an arm accepts as written. `None` when there are more, when one is not
+    /// writable, or when the search reaches its limit.
+    #[cold]
+    #[inline(never)]
+    fn missing_arms(
+        &self,
+        search: &mut Search<'_, '_>,
+        mut rows: Vec<Row>,
+        witness: Witness,
+    ) -> Option<Vec<String>> {
+        const MAX_ADDED_ARMS: usize = 8;
+        let mut arms = Vec::new();
+        let mut next = Some(witness);
+        while let Some(witness) = next {
+            if arms.len() == MAX_ADDED_ARMS || !Self::writable(&witness) {
+                return None;
+            }
+            arms.push(format!(
+                "| {} -> unreachable ()",
+                self.witness(&witness, search.span)
+            ));
+            rows.push(push(witness_pattern(&witness), None));
+            let wild = search.wild.clone();
+            next = search.run(rows.clone(), push(wild, None), true).ok()?;
+        }
+        Some(arms)
+    }
+
+    /// Whether a witness is printed as a pattern that an arm accepts as written: wildcards,
+    /// booleans, `()`, union cases, and tuples of those.
+    fn writable(witness: &Witness) -> bool {
+        match witness {
+            Witness::Wild => true,
+            Witness::Ctor(Constructor::Bool(_) | Constructor::Unit, _) => true,
+            Witness::Ctor(Constructor::Union { .. } | Constructor::Tuple(_), arguments) => {
+                arguments.iter().all(Self::writable)
+            }
+            Witness::Ctor(
+                Constructor::Record { .. }
+                | Constructor::ArrayLen(_)
+                | Constructor::ListNil
+                | Constructor::ListCons
+                | Constructor::Literal(_),
+                _,
+            ) => false,
+        }
     }
 
     fn witness(&self, witness: &Witness, span: Span) -> String {

@@ -149,7 +149,24 @@ deref r1
 error[E1014]: access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively
 ```
 
-エラーになるのは 3 行目の `ref score` です。`r1` がまだ生きているためです。
+エラーになるのは 3 行目の `ref score` です。`r1` がまだ生きているためです。`tsuzuri check` は、借用を作った位置と、その借用を生かしている後の使用も示します。
+
+```text
+./Main.tz:3:10: error[E1014]: access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively
+  3 | let r2 = ref score
+    |          ^
+  note: value mutably borrowed here
+    --> ./Main.tz:2:10
+  2 | let r1 = ref mut score
+    |          ^
+  note: the borrow is used here, so it is still alive
+    --> ./Main.tz:4:7
+  4 | deref r1
+    |       ^
+  help: end the borrow before this access: stop using 'r1' first, or move this access after its last use
+```
+
+示す後の使用は、評価の順でこの位置のあとに実行されうるものです（関数ガードの `where` の束縛は腕より先に評価されます。`if` や `match` の別の枝の使用、必ず通る `break` で飛ばされる使用、どの経路でも変数全体に別の参照を代入したあとの使用は示しません）。その使用へループの先頭へ戻る経路でしか届かないとき（同じループの条件か本体の使用で、別の枝のものも含みます）は `in the next iteration of the loop` が付きます。呼び出しの前の引数が借用を保持したまま後の引数を評価するとき（`both r (ref mut n)`）や、借用を持っている変数がないときは、借用を作った位置だけを示します。`let` で宣言した変数に排他借用や代入をしようとした `E1014` は、その宣言（`'score' is declared here without 'mut'`）を示します。
 
 不変変数から排他借用を取ろうとしたときも `E1014` です。
 

@@ -24,9 +24,9 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
                     Some(&declared.path),
                     &source.namespace,
                 )
-                .map_err(|error| Diagnostic {
-                    span: error.span.in_source(id),
-                    ..error
+                .map_err(|mut error| {
+                    error.span = error.span.in_source(id);
+                    error
                 })?
                 .0
             }

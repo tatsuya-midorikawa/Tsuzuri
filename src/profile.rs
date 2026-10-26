@@ -444,7 +444,7 @@ impl PreparedProfile {
 
     /// The failure of a Clang run, with the profile named as the user gave it.
     pub(crate) fn clang_error(&self, mut error: Diagnostic) -> Diagnostic {
-        error.message = self.shown(error.message);
+        error.message = self.shown(std::mem::take(&mut error.message));
         error
     }
 

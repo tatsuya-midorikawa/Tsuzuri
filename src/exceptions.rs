@@ -161,7 +161,7 @@ impl Checker<'_> {
             ty: exception,
             span,
         };
-        let mut handler = self.match_value(caught, &handled.arms, error_hint, span, false)?;
+        let mut handler = self.match_value(caught, &handled.arms, error_hint, span, None)?;
         // An exception that no arm matches goes on to the next `try`.
         if let TypedExprKind::Match { arms, .. } = &mut handler.kind {
             arms.push(TypedMatchArm {

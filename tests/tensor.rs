@@ -3,7 +3,7 @@ use tsuzuri::{analyze, llvm};
 fn rejects(source: &str, code: &str) -> String {
     let error = analyze(source).expect_err(source);
     assert_eq!(error.code, code, "{source}\n{}", error.message);
-    error.message
+    error.into_data().message
 }
 
 fn emits(source: &str) -> [String; 2] {
