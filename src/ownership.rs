@@ -3164,8 +3164,8 @@ struct Flow {
     edges: Vec<Vec<(usize, bool)>>,
     /// The holder that each node replaces (the exit of `holder = ...`).
     replaces: Vec<Option<usize>>,
-    /// The holders that each node reads (the exit of a holder, or of a lambda that captures it).
-    reads: Vec<Vec<usize>>,
+    /// The nodes that read each holder: the exit of the holder, or of a lambda that captures it.
+    readers: BTreeMap<usize, Vec<usize>>,
     /// The spans of the nodes that read, for the diagnostics.
     spans: Vec<Span>,
     /// The entry and exit of the first (outermost) expression with each span.
@@ -3191,7 +3191,6 @@ impl Flow {
     fn node(&mut self, span: Span) -> usize {
         self.edges.push(Vec::new());
         self.replaces.push(None);
-        self.reads.push(Vec::new());
         self.spans.push(span);
         self.edges.len() - 1
     }
@@ -3225,7 +3224,7 @@ impl Flow {
         let mut flow = Flow {
             edges: Vec::new(),
             replaces: Vec::new(),
-            reads: Vec::new(),
+            readers: BTreeMap::new(),
             spans: Vec::new(),
             by_span: BTreeMap::new(),
         };
@@ -3237,10 +3236,6 @@ impl Flow {
             flow.by_span
                 .entry((span.source, span.start, span.end))
                 .or_insert((entry, exit));
-            // An exception in a `try` body can leave from any point of it.
-            if let Some(handler) = targets.handler {
-                flow.edge(entry, handler);
-            }
             // Children are added in evaluation order: each gets an entry and an exit first.
             let child =
                 |flow: &mut Flow, part: &TypedExpr| (flow.node(part.span), flow.node(part.span));
@@ -3249,13 +3244,24 @@ impl Flow {
             match &expression.kind {
                 E::Local(id) if holders.contains(id) => {
                     flow.edge(entry, exit);
-                    flow.reads[exit].push(*id);
+                    flow.readers.entry(*id).or_default().push(exit);
                 }
                 E::Lambda { captures, .. } => {
                     // The body runs when the function is called; only the captures are read here.
                     flow.edge(entry, exit);
                     for local in captures.iter().filter(|local| holders.contains(&local.id)) {
-                        flow.reads[exit].push(local.id);
+                        flow.readers.entry(local.id).or_default().push(exit);
+                    }
+                }
+                E::Checked(value) => {
+                    // Checked arithmetic raises after its operands, to the `try` around it.
+                    for (part, part_entry, part_exit) in
+                        sequence(&mut flow, vec![value], entry, exit)
+                    {
+                        if let Some(handler) = targets.handler {
+                            flow.edge(part_exit, handler);
+                        }
+                        items.push((part, part_entry, part_exit, targets));
                     }
                 }
                 E::Break => {
@@ -3315,26 +3321,62 @@ impl Flow {
                     let (v_entry, v_exit) = child(&mut flow, value);
                     flow.edge(entry, v_entry);
                     items.push((&**value, v_entry, v_exit, targets));
-                    let mut tests_from = vec![v_exit];
+                    // Where control goes when the previous arm does not match.
+                    let mut failing = vec![v_exit];
                     for arm in arms {
                         let arm_entry = flow.node(arm.body.span);
-                        for from in tests_from {
+                        for from in failing {
                             flow.edge(from, arm_entry);
                         }
-                        let mut tests: Vec<&TypedExpr> = Vec::new();
-                        for alternative in &arm.alternatives {
-                            tests.extend(alternative.steps.iter().map(|step| step.expression()));
-                            tests.extend(alternative.bindings.iter().map(|(_, value)| value));
-                        }
-                        tests.extend(&arm.guard);
+                        failing = Vec::new();
                         let (b_entry, b_exit) = child(&mut flow, &arm.body);
-                        // A test may fail after any step and fall through to the next arm.
-                        tests_from = vec![arm_entry];
-                        for (part, part_entry, part_exit) in
-                            sequence(&mut flow, tests, arm_entry, b_entry)
-                        {
-                            tests_from.push(part_exit);
-                            items.push((part, part_entry, part_exit, targets));
+                        let guard = arm
+                            .guard
+                            .as_ref()
+                            .map(|guard| (guard, child(&mut flow, guard)));
+                        let success = guard.map_or(b_entry, |(_, (g_entry, _))| g_entry);
+                        // Each alternative starts where the previous one failed; a test that fails
+                        // goes on to the next alternative, or to the next arm after the last one.
+                        let mut start = arm_entry;
+                        for (index, alternative) in arm.alternatives.iter().enumerate() {
+                            let next = (index + 1 < arm.alternatives.len())
+                                .then(|| flow.node(arm.body.span));
+                            let mut at = start;
+                            let parts = alternative
+                                .steps
+                                .iter()
+                                .map(|step| {
+                                    (
+                                        step.expression(),
+                                        matches!(step, crate::check::PatternStep::Test(_)),
+                                    )
+                                })
+                                .chain(
+                                    alternative.bindings.iter().map(|(_, value)| (value, false)),
+                                );
+                            for (part, fallible) in parts {
+                                let (part_entry, part_exit) = child(&mut flow, part);
+                                flow.edge(at, part_entry);
+                                if fallible {
+                                    match next {
+                                        Some(next) => flow.edge(part_exit, next),
+                                        None => failing.push(part_exit),
+                                    }
+                                }
+                                items.push((part, part_entry, part_exit, targets));
+                                at = part_exit;
+                            }
+                            flow.edge(at, success);
+                            match next {
+                                Some(next) => start = next,
+                                None => break,
+                            }
+                        }
+                        // A false guard goes on to the next arm.
+                        if let Some((guard, (g_entry, g_exit))) = guard {
+                            flow.edge(g_exit, b_entry);
+                            failing.push(g_exit);
+                            items.push((guard, g_entry, g_exit, targets));
                         }
                         flow.edge(b_exit, exit);
                         items.push((&arm.body, b_entry, b_exit, targets));
@@ -3416,11 +3458,20 @@ impl Flow {
                     let (b_entry, b_exit) = child(&mut flow, &handled.body);
                     let (h_entry, h_exit) = child(&mut flow, &handled.handler);
                     flow.edge(entry, b_entry);
+                    let mut handler_targets = targets;
                     let after = match &handled.finally {
                         Some(finally) => {
+                            // `finally` runs on the normal exit, and before an exception that
+                            // leaves the handler reaches the next `try`: two copies of its flow.
                             let (f_entry, f_exit) = child(&mut flow, finally);
                             flow.edge(f_exit, exit);
                             items.push((finally, f_entry, f_exit, targets));
+                            let (e_entry, e_exit) = child(&mut flow, finally);
+                            if let Some(outer) = targets.handler {
+                                flow.edge(e_exit, outer);
+                            }
+                            items.push((finally, e_entry, e_exit, targets));
+                            handler_targets.handler = Some(e_entry);
                             f_entry
                         }
                         None => exit,
@@ -3436,7 +3487,7 @@ impl Flow {
                             ..targets
                         },
                     ));
-                    items.push((&handled.handler, h_entry, h_exit, targets));
+                    items.push((&handled.handler, h_entry, h_exit, handler_targets));
                 }
                 _ => {
                     let mut parts = Vec::new();
@@ -3506,9 +3557,10 @@ fn find_later_use(
     let mut best: Option<(bool, usize, usize, Span)> = None;
     for &holder in holders {
         let reached = flow.reach(access, Some(holder), budget)?;
-        for (node, reads) in flow.reads.iter().enumerate() {
+        for &node in flow.readers.get(&holder).into_iter().flatten() {
+            spend(budget, 1)?;
             let span = flow.spans[node];
-            if !reads.contains(&holder) || span.source != after.source || span.end <= span.start {
+            if span.source != after.source || span.end <= span.start {
                 continue;
             }
             let [direct, crossed] = reached[node];

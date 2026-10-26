@@ -1412,6 +1412,18 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     // An exception before the replacement skips it: the read after the `try` may read `n`.
     let source = "def f :: i32 -> i64 = \\k ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    let _t: Result<i32, Exception> =\n        try\n            let x = @checked k + 1\n            r = ref m\n            x\n        with\n        | e -> e\n    deref r\n\n0\n";
     assert_eq!(used(source), Some((13, false)));
+    // Only checked arithmetic raises: a replacement before it always runs.
+    let source = "def f :: i32 -> i64 = \\k ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    let _t: Result<i32, Exception> =\n        try\n            r = ref m\n            let x = @checked k + 1\n            x\n        with\n        | e -> e\n    deref r\n\n0\n";
+    assert_eq!(used(source), None);
+    // An exception that leaves a handler runs `finally` first, which replaces the holder.
+    let source = "def f :: i32 -> i64 = \\k ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    let _outer: Result<i32, Exception> =\n        try\n            let _inner: Result<i32, Exception> =\n                try\n                    @checked k + 1\n                with\n                | e ->\n                    n = 2\n                    let _y = @checked k * 2\n                    e\n                finally\n                    r = ref m\n            0\n        with\n        | e -> e\n    deref r\n\n0\n";
+    assert_eq!(used(source), None);
+    // The guard of an irrefutable arm always runs.
+    let source = "def f :: i64 -> i64 = \\k ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    match k with\n    | _ when { r = ref m; false } -> ()\n    | _ -> ()\n    deref r\n\n0\n";
+    assert_eq!(used(source), None);
+    // The first alternative of an OR pattern can match without the second one's replacement.
+    let source = "def (|Check|_|) :: i64 -> i64 -> bool = \\d value -> value > d\n\ndef f :: i64 -> i64 = \\k ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    match k with\n    | Check 0 | Check ({ r = ref m; 1 }) -> deref r\n    | _ -> 0\n\n0\n";
+    assert_eq!(used(source), Some((9, false)));
     // Both branches replace the holder: the read after them never reads `n`.
     let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\ndef f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let k = 2\n    let mut r = ref n\n    both r (ref mut n)\n    if flag then r = ref m else r = ref k\n    deref r\n\n0\n";
     assert_eq!(used(source), None);
