@@ -3168,9 +3168,16 @@ struct Flow {
     readers: BTreeMap<usize, Vec<usize>>,
     /// The spans of the nodes that read, for the diagnostics.
     spans: Vec<Span>,
-    /// The entry and exit of the first (outermost) expression with each span.
-    by_span: BTreeMap<(Option<usize>, usize, usize), (usize, usize)>,
+    /// The entries and exits of the expressions with each span: one per copy (a `finally` has
+    /// two) and per expression that shares the span.
+    by_span: BTreeMap<SpanKey, Vec<(usize, usize)>>,
+    /// Where an access reported at a span happens, when that is not the end of the expression:
+    /// a slice reaches its source before it evaluates its bounds.
+    accesses: BTreeMap<SpanKey, Vec<usize>>,
 }
+
+/// A span as a map key: its source, start, and end.
+type SpanKey = (Option<usize>, usize, usize);
 
 /// Where control goes from inside an expression: the targets of `break` and `continue`, and the
 /// handler that an exception reaches.
@@ -3227,6 +3234,7 @@ impl Flow {
             readers: BTreeMap::new(),
             spans: Vec::new(),
             by_span: BTreeMap::new(),
+            accesses: BTreeMap::new(),
         };
         let (entry, exit) = (flow.node(body.span), flow.node(body.span));
         let mut pending = vec![(body, entry, exit, Targets::default())];
@@ -3235,7 +3243,8 @@ impl Flow {
             let span = expression.span;
             flow.by_span
                 .entry((span.source, span.start, span.end))
-                .or_insert((entry, exit));
+                .or_default()
+                .push((entry, exit));
             // Children are added in evaluation order: each gets an entry and an exit first.
             let child =
                 |flow: &mut Flow, part: &TypedExpr| (flow.node(part.span), flow.node(part.span));
@@ -3251,6 +3260,20 @@ impl Flow {
                     flow.edge(entry, exit);
                     for local in captures.iter().filter(|local| holders.contains(&local.id)) {
                         flow.readers.entry(local.id).or_default().push(exit);
+                    }
+                }
+                E::Slice { value, start, end } => {
+                    let parts = std::iter::once(&**value)
+                        .chain(start.as_deref())
+                        .chain(end.as_deref())
+                        .collect();
+                    let parts = sequence(&mut flow, parts, entry, exit);
+                    flow.accesses
+                        .entry((span.source, span.start, span.end))
+                        .or_default()
+                        .push(parts[0].2);
+                    for (part, part_entry, part_exit) in parts {
+                        items.push((part, part_entry, part_exit, targets));
                     }
                 }
                 E::Checked(value) => {
@@ -3507,20 +3530,24 @@ impl Flow {
         Some(flow)
     }
 
-    /// The nodes reachable from `from`, each with whether some path to it crosses a back edge
-    /// and whether one does not; a path stops at a replacement of `stop`.
+    /// The nodes reachable from `from`, each with whether a path to it crosses no back edge and
+    /// whether one crosses a back edge; a path stops at a replacement of `stop`.
     fn reach(
         &self,
-        from: usize,
+        from: &[usize],
         stop: Option<usize>,
         budget: &mut usize,
     ) -> Option<Vec<[bool; 2]>> {
+        spend(budget, self.edges.len())?;
         let mut seen = vec![[false; 2]; self.edges.len()];
-        let mut pending = std::collections::VecDeque::from([(from, false)]);
-        seen[from][0] = true;
+        let mut pending = std::collections::VecDeque::new();
+        for &node in from {
+            seen[node][0] = true;
+            pending.push_back((node, false));
+        }
         while let Some((node, crossed)) = pending.pop_front() {
             spend(budget, 1 + self.edges[node].len())?;
-            if node != from && stop.is_some() && self.replaces[node] == stop {
+            if !from.contains(&node) && stop.is_some() && self.replaces[node] == stop {
                 continue;
             }
             for &(next, back) in &self.edges[node] {
@@ -3553,14 +3580,26 @@ fn find_later_use(
         return None;
     }
     let flow = Flow::build(body, holders, budget)?;
-    let (_, access) = *flow.by_span.get(&(after.source, after.start, after.end))?;
+    let key = (after.source, after.start, after.end);
+    // Every copy of the access (a `finally` has two), where the access happens in it.
+    let access: Vec<usize> = match flow.accesses.get(&key) {
+        Some(points) => points.clone(),
+        None => flow
+            .by_span
+            .get(&key)?
+            .iter()
+            .map(|(_, exit)| *exit)
+            .collect(),
+    };
     let mut best: Option<(bool, usize, usize, Span)> = None;
     for &holder in holders {
-        let reached = flow.reach(access, Some(holder), budget)?;
+        let reached = flow.reach(&access, Some(holder), budget)?;
         for &node in flow.readers.get(&holder).into_iter().flatten() {
             spend(budget, 1)?;
             let span = flow.spans[node];
-            if span.source != after.source || span.end <= span.start {
+            // A read inside the accessing expression is part of it, not a later use.
+            let inside = after.start <= span.start && span.end <= after.end;
+            if span.source != after.source || span.end <= span.start || inside {
                 continue;
             }
             let [direct, crossed] = reached[node];
@@ -3587,9 +3626,18 @@ fn moved_in_previous_iteration(
     budget: &mut usize,
 ) -> Option<bool> {
     let flow = Flow::build(body, &BTreeSet::new(), budget)?;
-    let (_, from) = *flow.by_span.get(&(moved.source, moved.start, moved.end))?;
-    let (to, _) = *flow.by_span.get(&(used.source, used.start, used.end))?;
-    let [direct, crossed] = flow.reach(from, None, budget)?[to];
+    let from: Vec<usize> = flow
+        .by_span
+        .get(&(moved.source, moved.start, moved.end))?
+        .iter()
+        .map(|(_, exit)| *exit)
+        .collect();
+    let reached = flow.reach(&from, None, budget)?;
+    let (mut direct, mut crossed) = (false, false);
+    for (entry, _) in flow.by_span.get(&(used.source, used.start, used.end))? {
+        direct |= reached[*entry][0];
+        crossed |= reached[*entry][1];
+    }
     (direct || crossed).then_some(!direct)
 }
 

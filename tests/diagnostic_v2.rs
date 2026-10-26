@@ -1424,6 +1424,12 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     // The first alternative of an OR pattern can match without the second one's replacement.
     let source = "def (|Check|_|) :: i64 -> i64 -> bool = \\d value -> value > d\n\ndef f :: i64 -> i64 = \\k ->\n    let mut n = 0\n    let m = 1\n    let mut r = ref n\n    n = 2\n    match k with\n    | Check 0 | Check ({ r = ref m; 1 }) -> deref r\n    | _ -> 0\n\n0\n";
     assert_eq!(used(source), Some((9, false)));
+    // A conflict in the cleanup that an exception runs: the outer handler reads the borrow.
+    let source = "def f :: i32 -> i64 = \\k ->\n    let mut n = 0\n    let r = ref n\n    let _o: Result<i32, Exception> =\n        try\n            let _i: Result<i32, Exception> =\n                try\n                    @checked k + 1\n                with\n                | e ->\n                    let _y = @checked k * 2\n                    e\n                finally\n                    n = 2\n            0\n        with\n        | e ->\n            let _z = deref r\n            e\n    0\n\n0\n";
+    assert_eq!(used(source), Some((18, false)));
+    // A slice reaches its source before its bounds, which replace the holder.
+    let source = "def f :: unit -> i64 = \\_ ->\n    let mut values = [1, 2]\n    let mut other = [3]\n    let mut r = ref mut values\n    let _s = ref values[{ r = ref mut other; 0 }..1]\n    r.length\n\n0\n";
+    assert_eq!(used(source), None);
     // Both branches replace the holder: the read after them never reads `n`.
     let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\ndef f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let m = 1\n    let k = 2\n    let mut r = ref n\n    both r (ref mut n)\n    if flag then r = ref m else r = ref k\n    deref r\n\n0\n";
     assert_eq!(used(source), None);
@@ -1432,4 +1438,19 @@ fn the_control_flow_decides_borrow_and_move_notes() {
     let diagnostic = first(source, "E1012");
     assert_eq!(diagnostic.related[0].message, "value moved here");
     assert!(diagnostic.related[0].span.start > diagnostic.span.start);
+}
+
+#[test]
+fn a_deferred_callback_argument_names_its_parameter() {
+    // Edition 2027 (the CLI's default) checks a callback argument after the others.
+    let main = "def apply :: (i64 -> i64) -> i64 -> i64 = \\f x -> f x\n\ndef g :: unit -> i64 = \\_ -> apply true 1\n\n0\n";
+    let (_, stderr) = check_cli(&[("Main.tz", main)], true);
+    let diagnostic = &json_lines(&stderr)[0];
+    assert_eq!(diagnostic["code"], "E1003");
+    assert_eq!(diagnostic["related"][0]["role"], "expected_because");
+    assert_eq!(
+        diagnostic["related"][0]["message"],
+        "parameter 1 of 'apply' is declared here"
+    );
+    assert_eq!(diagnostic["related"][0]["span"]["column"], 14);
 }

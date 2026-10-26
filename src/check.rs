@@ -10704,10 +10704,11 @@ impl<'a> Checker<'a> {
                 });
             }
             for index in callbacks {
-                checked[index] = self.argument(&arguments[index], &parameters[index])?;
+                checked[index] =
+                    self.noted_argument(&callee, index, &arguments[index], &parameters[index])?;
             }
             if deferred {
-                self.lambda_arguments(arguments, &parameters, &mut checked)?;
+                self.lambda_arguments(&callee, arguments, &parameters, &mut checked)?;
             }
             checked
         };
@@ -11408,16 +11409,41 @@ impl<'a> Checker<'a> {
     #[inline(never)]
     fn lambda_arguments(
         &mut self,
+        callee: &TypedExpr,
         arguments: &[Expr],
         parameters: &[Type],
         checked: &mut [TypedExpr],
     ) -> Result<(), Diagnostic> {
         for (index, (argument, parameter)) in arguments.iter().zip(parameters).enumerate() {
             if Self::deferred_lambda(arguments, index) {
-                checked[index] = self.argument(argument, parameter)?;
+                checked[index] = self.noted_argument(callee, index, argument, parameter)?;
             }
         }
         Ok(())
+    }
+
+    /// `argument` for an argument that is checked after the others, with the declared parameter
+    /// type in its mismatches (`argument_because`).
+    #[inline(never)]
+    fn noted_argument(
+        &mut self,
+        callee: &TypedExpr,
+        index: usize,
+        argument: &Expr,
+        parameter: &Type,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let from = self.recovered.len();
+        let checked = match self.argument(argument, parameter) {
+            Ok(checked) => checked,
+            Err(mut error) => {
+                self.argument_because(callee, index, argument, parameter, from, Some(&mut error));
+                return Err(error);
+            }
+        };
+        if self.recovered.len() > from {
+            self.argument_because(callee, index, argument, parameter, from, None);
+        }
+        Ok(checked)
     }
 
     /// `xs |> f a` fixes the next parameter of `f a` to the type of `xs`.
