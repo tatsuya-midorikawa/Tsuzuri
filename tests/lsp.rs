@@ -1657,3 +1657,74 @@ fn deprecated_uses_from_other_packages_are_published_as_warnings() {
     // A use inside the package that declares it is not reported.
     assert_eq!(published("/Old.tz"), json!([]));
 }
+
+const MOVE_TWICE: &str = "def consume :: own string -> i64 = \\s -> s.length\n\ndef main_value :: unit -> i64 = \\_ ->\n    let text = \"hello\"\n    let a = consume text\n    let b = consume text\n    a + b\n";
+const MISSING_ARM: &str = "union Shape = Circle of f64 | Square of f64 | Triangle of f64\n\ndef area :: Shape -> f64 = \\s ->\n    match s with\n    | Circle r -> r\n    | Square w -> w\n";
+const NESTED_MISSING_ARM: &str = "union Shape = Circle of f64 | Square of f64 | Triangle of f64\n\ndef area :: Shape -> Shape -> f64 = \\s t ->\n    match s with\n    | Circle r -> r\n    | Square w -> match t with | Circle q -> q | Square z -> z | Triangle _ -> unreachable ()\n";
+
+#[test]
+fn publishes_related_information_and_data() {
+    use serde_json::json;
+    let (messages, _) = session(&[("Main.tz", MOVE_TWICE)], "utf-16", |uri| {
+        vec![
+            json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": {"line": 0, "character": 4}}}),
+        ]
+    });
+    let published = messages
+        .iter()
+        .rfind(|message| message["method"] == "textDocument/publishDiagnostics")
+        .unwrap();
+    let diagnostics = published["params"]["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic["code"], "E1012");
+    assert_eq!(diagnostic["range"], range(5, 20, 24));
+    let related = diagnostic["relatedInformation"].as_array().unwrap();
+    assert_eq!(related.len(), 1);
+    assert_eq!(related[0]["message"], "value moved here");
+    assert_eq!(related[0]["location"]["uri"], published["params"]["uri"]);
+    assert_eq!(related[0]["location"]["range"], range(4, 20, 24));
+    assert!(diagnostic.get("data").is_none(), "{diagnostic}");
+}
+
+#[test]
+fn code_action_offers_a_verified_fix() {
+    use serde_json::json;
+    let responses = scripted(&[("Main.tz", MISSING_ARM)], "utf-16", |uri| {
+        vec![
+            json!({"id": 1, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": uri("Main.tz")}, "range": range(3, 4, 5), "context": {"diagnostics": [], "only": ["quickfix"]}}}),
+        ]
+    });
+    let actions = responses[0]["result"].as_array().unwrap();
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(
+        actions[0]["title"],
+        "Add the arm '| Triangle _ -> unreachable ()'"
+    );
+    assert_eq!(actions[0]["kind"], "quickfix");
+    assert_eq!(actions[0]["isPreferred"], false);
+    let changes = actions[0]["edit"]["changes"].as_object().unwrap();
+    assert_eq!(changes.len(), 1);
+    let edits = changes.values().next().unwrap().as_array().unwrap();
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0]["newText"], " | Triangle _ -> unreachable ()");
+    assert_eq!(
+        edits[0]["range"],
+        json!({"start": {"line": 5, "character": 19}, "end": {"line": 5, "character": 19}})
+    );
+    assert_eq!(
+        actions[0]["diagnostics"][0]["data"]["fixes"][0]["applicability"],
+        "maybe"
+    );
+}
+
+#[test]
+fn code_action_omits_a_fix_that_does_not_verify() {
+    use serde_json::json;
+    let responses = scripted(&[("Main.tz", NESTED_MISSING_ARM)], "utf-16", |uri| {
+        vec![
+            json!({"id": 1, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": uri("Main.tz")}, "range": range(3, 4, 5), "context": {"diagnostics": [], "only": ["quickfix"]}}}),
+        ]
+    });
+    assert_eq!(responses[0]["result"], json!([]));
+}

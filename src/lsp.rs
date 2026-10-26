@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::check::semantic::{Reference, Role, SemanticIndex, SymbolKind};
 use crate::check::{CheckedModule, ModuleOrigin, semantic};
 use crate::copies::{CopyKind, CopySite};
-use crate::diagnostic::{Diagnostic, Severity, Span};
+use crate::diagnostic::{Applicability, Diagnostic, Edit, Fix, Severity, Span, apply_edits};
 use crate::driver::Project;
 use crate::syntax::{CONTEXTUAL_KEYWORDS, Token, TokenKind};
 use serde_json::{Value, json};
@@ -392,7 +392,7 @@ impl Session {
             let messages = diagnostics
                 .iter()
                 .filter(|diagnostic| diagnostic.span.source.unwrap_or(project.root) == id)
-                .filter_map(|diagnostic| diagnostic_json(&mappers[id], &source.text, diagnostic))
+                .filter_map(|diagnostic| self.diagnostic_value(&project, &mappers, id, diagnostic))
                 .collect();
             self.publish(output, &source.path, messages)?;
         }
@@ -1106,7 +1106,124 @@ impl Session {
                 "edit": edit,
             }));
         }
+        // The fixes of diagnostics, each offered only when applying it removes its diagnostic.
+        for diagnostic in &state.diagnostics {
+            let span = diagnostic.span;
+            if diagnostic.fixes.is_empty()
+                || span.source != Some(source_id)
+                || span.start > end
+                || start > span.end
+            {
+                continue;
+            }
+            for fix in &diagnostic.fixes {
+                let Ok(edit) = self.fix_edit(directory, state, diagnostic, fix) else {
+                    continue;
+                };
+                actions.push(json!({
+                    "title": fix.title,
+                    "kind": "quickfix",
+                    "diagnostics": [self.diagnostic_value(&state.project, &state.mappers, source_id, diagnostic)],
+                    "isPreferred": fix.applicability == Applicability::Certain,
+                    "edit": edit,
+                }));
+            }
+        }
         Ok(json!(actions))
+    }
+
+    /// `diagnostic_json` plus `relatedInformation` (the related locations in the project's own
+    /// files) and `data` (the kind and the fixes), each only when there is something to say.
+    fn diagnostic_value(
+        &self,
+        project: &Project,
+        mappers: &[PositionMapper],
+        source_id: usize,
+        diagnostic: &Diagnostic,
+    ) -> Option<Value> {
+        let source = &project.sources[source_id];
+        let mut value = diagnostic_json(&mappers[source_id], &source.text, diagnostic)?;
+        let related: Vec<Value> = diagnostic
+            .related
+            .iter()
+            .filter_map(|related| {
+                let id = related.span.source.unwrap_or(project.root);
+                let file = project
+                    .sources
+                    .get(id)
+                    .filter(|file| file.origin == ModuleOrigin::User)?;
+                Some(json!({
+                    "location": {
+                        "uri": self.uri(&file.path)?,
+                        "range": mappers[id].range(&file.text, related.span)?,
+                    },
+                    "message": related.message,
+                }))
+            })
+            .collect();
+        if !related.is_empty() {
+            value["relatedInformation"] = json!(related);
+        }
+        if let Some(data) = diagnostic_data(diagnostic) {
+            value["data"] = data;
+        }
+        Some(value)
+    }
+
+    /// The workspace edit of `fix`, when applying it to the project's files and analyzing again
+    /// removes `diagnostic` (see `fix_removes`).
+    fn fix_edit(
+        &self,
+        directory: &Path,
+        state: &ProjectState,
+        diagnostic: &Diagnostic,
+        fix: &Fix,
+    ) -> Result<Value, String> {
+        let mut edited: BTreeMap<usize, Vec<&Edit>> = BTreeMap::new();
+        for edit in &fix.edits {
+            let id = edit.span.source.unwrap_or(state.project.root);
+            if state
+                .project
+                .sources
+                .get(id)
+                .is_none_or(|file| file.origin != ModuleOrigin::User)
+            {
+                return Err("an edit is outside the project's own files".into());
+            }
+            edited.entry(id).or_default().push(edit);
+        }
+        let mut overlays: BTreeMap<PathBuf, String> = self
+            .buffers
+            .iter()
+            .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
+            .collect();
+        for (id, edits) in &edited {
+            let file = &state.project.sources[*id];
+            let text =
+                apply_edits(&file.text, edits).ok_or("the edits overlap or are out of range")?;
+            overlays.insert(file.path.clone(), text);
+        }
+        let project = Project::load_with_overlays(directory, &overlays)
+            .map_err(|error| format!("{}: {}", error.diagnostic.code, error.diagnostic.message))?;
+        let (_, after) = analyze(&project);
+        fix_removes(diagnostic, &state.diagnostics, &after)?;
+        let mut changes = serde_json::Map::new();
+        for (id, edits) in &edited {
+            let file = &state.project.sources[*id];
+            let uri = self
+                .uri(&file.path)
+                .ok_or("cannot address an edited file")?;
+            let list: Option<Vec<Value>> = edits
+                .iter()
+                .map(|edit| {
+                    state.mappers[*id]
+                        .range(&file.text, edit.span)
+                        .map(|range| json!({"range": range, "newText": edit.text}))
+                })
+                .collect();
+            changes.insert(uri, json!(list.ok_or("cannot address an edit")?));
+        }
+        Ok(json!({"changes": changes}))
     }
 }
 
@@ -1135,6 +1252,53 @@ fn diagnostic_json(mapper: &PositionMapper, text: &str, diagnostic: &Diagnostic)
         "source": "tsuzuri",
         "message": diagnostic.message,
     }))
+}
+
+/// The `data` of a published diagnostic: its kind and the titles of its fixes.
+fn diagnostic_data(diagnostic: &Diagnostic) -> Option<Value> {
+    let mut data = serde_json::Map::new();
+    if let Some(kind) = diagnostic.kind {
+        data.insert("kind".into(), json!(kind));
+    }
+    if !diagnostic.fixes.is_empty() {
+        let fixes: Vec<Value> = diagnostic
+            .fixes
+            .iter()
+            .map(|fix| json!({"title": fix.title, "applicability": fix.applicability.as_str()}))
+            .collect();
+        data.insert("fixes".into(), json!(fixes));
+    }
+    (!data.is_empty()).then_some(Value::Object(data))
+}
+
+/// Whether the diagnostics `after` a fix of `diagnostic` have one fewer with its code than
+/// `before` and none more of any code. Errors always count; warnings count only when
+/// `diagnostic` is a warning, because the passes that follow a fixed error may report warnings
+/// that were not reached before.
+fn fix_removes(
+    diagnostic: &Diagnostic,
+    before: &[Diagnostic],
+    after: &[Diagnostic],
+) -> Result<(), String> {
+    let counts = |list: &[Diagnostic]| {
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for item in list.iter().filter(|item| {
+            item.severity == Severity::Error || diagnostic.severity == Severity::Warning
+        }) {
+            *counts.entry(item.code).or_default() += 1;
+        }
+        counts
+    };
+    let (before, after) = (counts(before), counts(after));
+    let count =
+        |counts: &BTreeMap<&'static str, usize>, code| counts.get(code).copied().unwrap_or(0);
+    if count(&after, diagnostic.code) >= count(&before, diagnostic.code) {
+        return Err("the diagnostic would remain".into());
+    }
+    if let Some((code, _)) = after.iter().find(|(code, n)| **n > count(&before, code)) {
+        return Err(format!("{code} would appear"));
+    }
+    Ok(())
 }
 
 fn is_user(project: &Project, span: Span) -> bool {
@@ -2588,6 +2752,20 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_fix_must_remove_its_diagnostic_and_add_nothing() {
+        let error = |code: &'static str| Diagnostic::new(code, "m", Span::new(0, 0));
+        let warning = |code: &'static str| Diagnostic::warning(code, "m", Span::new(0, 0));
+        // A fixed error may uncover warnings of later passes.
+        assert!(fix_removes(&error("E1021"), &[error("E1021")], &[warning("W1001")]).is_ok());
+        assert!(fix_removes(&error("E1021"), &[error("E1021")], &[error("E1021")]).is_err());
+        assert!(fix_removes(&error("E1021"), &[error("E1021")], &[error("E1003")]).is_err());
+        assert!(fix_removes(&warning("W1001"), &[warning("W1001")], &[]).is_ok());
+        assert!(fix_removes(&warning("W1001"), &[warning("W1001")], &[warning("W1001")]).is_err());
+        assert!(fix_removes(&warning("W1001"), &[warning("W1001")], &[warning("W1005")]).is_err());
+        assert!(fix_removes(&warning("W1001"), &[warning("W1001")], &[error("E1003")]).is_err());
     }
 
     #[test]
