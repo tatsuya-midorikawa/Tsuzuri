@@ -1295,3 +1295,62 @@ fn borrow_uses_follow_the_control_flow() {
     let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\ndef discard :: i64 -> unit = \\a -> ()\n\ndef f :: bool -> unit = \\flag ->\n    let mut n = 0\n    let r = ref n\n    if flag then both r (ref mut n) else discard (deref r)\n\n0\n";
     assert_eq!(used(source), None);
 }
+
+#[test]
+fn evaluation_order_decides_what_runs_later() {
+    // The `where` bindings of a guarded function run before its arms: no loop is involved.
+    let source = "def take :: own string -> i64 = \\s -> s.length\n\ndef f :: own string -> i64\nfn f text\n    | otherwise -> take text + n\n    where\n        n = take text\n\n0\n";
+    let diagnostic = first(source, "E1012");
+    assert_eq!(diagnostic.related[0].message, "value moved here");
+    assert_eq!(line_of(source, diagnostic.related[0].span), 7);
+    // The arm uses the borrow after the `where` binding that conflicts with it.
+    let source = "def f :: ref mut i64 -> i64\nfn f p\n    | otherwise -> deref q\n    where\n        q = ref (deref p)\n        changed = { deref p = 1; 0 }\n\n0\n";
+    let diagnostic = first(source, "E1014");
+    let used = diagnostic
+        .related
+        .iter()
+        .find(|related| related.role == RelatedRole::BorrowUsedHere)
+        .unwrap_or_else(|| panic!("{:?}", diagnostic.related));
+    assert_eq!(line_of(source, used.span), 3);
+    assert_eq!(text_at(source, used.span), "q");
+}
+
+#[test]
+fn jumps_and_iterations_decide_what_runs_again() {
+    let used = |source: &str| {
+        let diagnostic = first(source, "E1014");
+        diagnostic
+            .related
+            .iter()
+            .find(|related| related.role == RelatedRole::BorrowUsedHere)
+            .map(|related| {
+                (
+                    line_of(source, related.span),
+                    related.message.contains("next iteration"),
+                )
+            })
+    };
+    // `break` leaves the loop: the read after the `if` does not run after the access.
+    let source = "def both :: ref i64 -> ref mut i64 -> unit = \\a b -> ()\n\ndef f :: bool -> i64 = \\flag ->\n    let mut n = 0\n    let r = ref n\n    for i in 0 .. 2 do\n        if flag then\n            both r (ref mut n)\n            break\n        else\n            ()\n        let _use = deref r\n        ()\n    0\n\n0\n";
+    assert_eq!(used(source), None);
+    // The next iteration may take the other branch.
+    let source = "let mut n = 0\nlet r = ref n\nfor i in 0 .. 2 do\n    if i == 0 then\n        n = 1\n    else\n        let _x = deref r\n        ()\n0\n";
+    assert_eq!(used(source), Some((7, true)));
+    // A conflict in the condition of a `while`, which runs again.
+    let source =
+        "let mut n = 0\nlet r = ref n\nwhile { let x = deref r; n = x + 1; x < 2 } do\n    ()\n0\n";
+    assert_eq!(used(source), Some((3, true)));
+}
+
+#[test]
+fn a_parenthesized_function_is_a_first_definition() {
+    for source in [
+        "fn f() -> i64 { 1 }\n\nfn f() -> i64 { 2 }\n\n0\n",
+        "fn f() -> i64 { 1 }\n\ndef f :: unit -> i64 = \\_ -> 2\n\n0\n",
+    ] {
+        let diagnostic = first(source, "E1001");
+        assert_eq!(diagnostic.related.len(), 1, "{source}");
+        assert_eq!(line_of(source, diagnostic.related[0].span), 1);
+        assert_eq!(text_at(source, diagnostic.related[0].span), "f");
+    }
+}

@@ -166,7 +166,7 @@ error[E1014]: access conflicts with a live borrow; use the reference or end its 
   help: end the borrow before this access: stop using 'r1' first, or move this access after its last use
 ```
 
-示す後の使用は、この位置のあとに実行されうるものです（`if` や `match` の別の枝の使用や、変数全体に別の参照を代入したあとの使用は示しません）。後の使用がループの次の反復にあるとき（同じループの本体で、この位置より前に使っているとき）は `in the next iteration of the loop` が付きます。呼び出しの前の引数が借用を保持したまま後の引数を評価するとき（`both r (ref mut n)`）や、借用を持っている変数がないときは、借用を作った位置だけを示します。`let` で宣言した変数に排他借用や代入をしようとした `E1014` は、その宣言（`'score' is declared here without 'mut'`）を示します。
+示す後の使用は、評価の順でこの位置のあとに実行されうるものです（関数ガードの `where` の束縛は腕より先に評価されます。`if` や `match` の別の枝の使用、必ず通る `break` で飛ばされる使用、変数全体に別の参照を代入したあとの使用は示しません）。後の使用がループの次の反復にあるとき（同じループの条件か本体の使用で、別の枝のものも含みます）は `in the next iteration of the loop` が付きます。呼び出しの前の引数が借用を保持したまま後の引数を評価するとき（`both r (ref mut n)`）や、借用を持っている変数がないときは、借用を作った位置だけを示します。`let` で宣言した変数に排他借用や代入をしようとした `E1014` は、その宣言（`'score' is declared here without 'mut'`）を示します。
 
 不変変数から排他借用を取ろうとしたときも `E1014` です。
 

@@ -5,7 +5,7 @@ type LoanSummary = BTreeMap<usize, BTreeSet<(Place, bool)>>;
 
 pub(super) struct LoopFlow<'a> {
     /// The part of the loop that runs again in the next iteration (the condition and the body),
-    /// where the diagnostics find a borrow used in the next iteration.
+    /// where a move that a diagnostic names may come from the previous iteration.
     pub(super) span: Span,
     locals: BTreeSet<usize>,
     breaks: Vec<State<'a>>,

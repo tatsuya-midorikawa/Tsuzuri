@@ -1481,10 +1481,17 @@ impl<'a> Checker<'a, '_> {
                 .get(&place.root)
                 .map_or("value", |(local, _)| local.name.as_str())
                 .to_owned();
-            let message = match (
-                moved.fields.is_empty(),
-                (origin.start, origin.end) >= (span.start, span.end),
-            ) {
+            // A move at or after the use in the source reached it through a loop only when a loop
+            // holds both; the `where` bindings of a guarded function run before its arms.
+            let within = |outer: Span, inner: Span| {
+                outer.source == inner.source && outer.start <= inner.start && inner.end <= outer.end
+            };
+            let previous_iteration = (origin.start, origin.end) >= (span.start, span.end)
+                && self
+                    .loop_flows
+                    .iter()
+                    .any(|flow| within(flow.span, origin) && within(flow.span, span));
+            let message = match (moved.fields.is_empty(), previous_iteration) {
                 (true, false) => "value moved here",
                 (false, false) => "part of the value moved here",
                 (true, true) => "value moved here, in the previous iteration of the loop",
@@ -1746,18 +1753,8 @@ impl<'a> Checker<'a, '_> {
         holders: &BTreeSet<usize>,
         after: Span,
     ) -> Option<(Span, bool, usize)> {
-        let loops: Vec<Span> = if self.held_keeps(loan) {
-            Vec::new()
-        } else {
-            self.loop_flows.iter().map(|flow| flow.span).collect()
-        };
-        find_later_use(
-            self.body,
-            holders,
-            after,
-            &loops,
-            &mut self.later_use_budget,
-        )
+        let held = self.held_keeps(loan);
+        find_later_use(self.body, holders, after, held, &mut self.later_use_budget)
     }
 
     fn place(
@@ -3160,16 +3157,25 @@ fn count_uses(expression: &TypedExpr, counts: &mut BTreeMap<usize, usize>) {
     }
 }
 
-/// One step into a part of an expression that may not run: the guard or the body of arm `arm`
-/// of the `match` at `node`, a branch of the `if` at `node` (a body of arm 0 or 1), or
-/// (`exclusive` false) the body of a loop, the right side of `&&` or `||`, or the handler of a
-/// `try`. `node` is the expression's address, compared only for equality.
+/// What part of an expression a `Choice` steps into.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    /// A branch of an `if` (arm 0 or 1), or the body of an arm of a `match`.
+    Arm(usize),
+    /// The pattern tests and the guard of an arm of a `match`: they run before the arm's body
+    /// and, when they fail, before the later arms.
+    Test(usize),
+    /// The condition and the body of a `while`, or the body of a `for`: they run again.
+    Repeat,
+    /// The right side of `&&` or `||`, or the handler of a `try`.
+    Optional,
+}
+
+/// One step into a part of an expression that may not run. `node` is the expression's
+/// address, compared only for equality.
 struct Choice {
     node: usize,
-    arm: usize,
-    /// A guard runs before its arm's body and, when it is false, before the later arms.
-    guard: bool,
-    exclusive: bool,
+    part: Part,
     outer: Path,
 }
 
@@ -3180,6 +3186,18 @@ fn choices(path: &Path) -> impl Iterator<Item = &Choice> {
     std::iter::successors(path.as_deref(), |choice| choice.outer.as_deref())
 }
 
+/// The part of `path` outside the loop at `node`: the choices that the next iteration keeps.
+fn outside(path: &Path, node: usize) -> &Path {
+    let mut current = path;
+    while let Some(choice) = current.as_deref() {
+        if choice.node == node && choice.part == Part::Repeat {
+            return &choice.outer;
+        }
+        current = &choice.outer;
+    }
+    current
+}
+
 /// Takes `cost` from `budget`; `None` once it runs out.
 fn spend(budget: &mut usize, cost: usize) -> Option<()> {
     *budget = budget.checked_sub(cost)?;
@@ -3187,23 +3205,18 @@ fn spend(budget: &mut usize, cost: usize) -> Option<()> {
 }
 
 /// Whether the expressions at `a` and `b` cannot both run: they are in different arms of one
-/// `if` or `match`, or one is in the body of an arm and the other in the guard of a later arm.
+/// `if` or `match`, or one is in the body of an arm and the other in the tests of a later arm.
 fn exclusive(a: &Path, b: &Path, budget: &mut usize) -> Option<bool> {
     for x in choices(a) {
-        spend(budget, 1)?;
-        if !x.exclusive {
-            continue;
-        }
         for y in choices(b) {
             spend(budget, 1)?;
-            if !y.exclusive || y.node != x.node {
+            if x.node != y.node {
                 continue;
             }
-            let apart = match (x.guard, y.guard) {
-                (false, false) => x.arm != y.arm,
-                (false, true) => y.arm > x.arm,
-                (true, false) => x.arm > y.arm,
-                (true, true) => false,
+            let apart = match (x.part, y.part) {
+                (Part::Arm(i), Part::Arm(j)) => i != j,
+                (Part::Arm(i), Part::Test(j)) | (Part::Test(j), Part::Arm(i)) => j > i,
+                _ => false,
             };
             if apart {
                 return Some(true);
@@ -3213,14 +3226,17 @@ fn exclusive(a: &Path, b: &Path, budget: &mut usize) -> Option<bool> {
     Some(false)
 }
 
-/// Whether every path to the expression at `to` runs the one at `from` first: each part that
-/// `from` is in holds `to` too (the guard of an arm precedes its body).
+/// Whether every path to the expression at `to` runs the one at `from` first, as far as the
+/// parts go: each part that `from` is in holds `to` too (the tests of an arm precede its body).
 fn always_before(from: &Path, to: &Path, budget: &mut usize) -> Option<bool> {
     for step in choices(from) {
         let mut held = false;
         for other in choices(to) {
             spend(budget, 1)?;
-            if other.node == step.node && other.arm == step.arm && (step.guard || !other.guard) {
+            if other.node == step.node
+                && (other.part == step.part
+                    || matches!((step.part, other.part), (Part::Test(i), Part::Arm(j)) if i == j))
+            {
                 held = true;
                 break;
             }
@@ -3232,71 +3248,105 @@ fn always_before(from: &Path, to: &Path, budget: &mut usize) -> Option<bool> {
     Some(true)
 }
 
-fn choose(path: &Path, node: &TypedExpr, arm: usize, guard: bool, exclusive: bool) -> Path {
+/// Whether the loop at `node` holds the expression at `path`.
+fn repeats(path: &Path, node: usize) -> bool {
+    choices(path).any(|choice| choice.node == node && choice.part == Part::Repeat)
+}
+
+/// The innermost loop that holds the expression at `path`.
+fn innermost_loop(path: &Path) -> Option<usize> {
+    choices(path)
+        .find(|choice| choice.part == Part::Repeat)
+        .map(|choice| choice.node)
+}
+
+fn choose(path: &Path, node: &TypedExpr, part: Part) -> Path {
     Some(std::rc::Rc::new(Choice {
         node: std::ptr::from_ref(node) as usize,
-        arm,
-        guard,
-        exclusive,
+        part,
         outer: path.clone(),
     }))
 }
 
-/// A use or a replacement of a holder that `find_later_use` saw.
+/// A use or a replacement of a holder, or a jump, that `find_later_use` saw. `at` is the
+/// position in evaluation order, after the expression's parts.
 struct Seen {
     holder: usize,
     span: Span,
+    at: usize,
     path: Path,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Jump {
+    Break,
+    Continue,
+    Reraise,
+}
+
 /// Where a holder of a borrow is used after an access at `after`, so that the borrow is still
-/// alive there: the first use in source order that can run after the access (`exclusive`) and
-/// that no replacement of the whole holder between them always precedes, and the holder. Else
-/// (`true`) the first use before the access that a loop runs again after it: one in the part of
-/// `loops` that repeats (the condition and the body) that holds the access too, of a holder that
-/// this part does not replace. Looks at no more
-/// than `*budget` expressions and path steps, and `None` once it runs out or does not find the
-/// access.
+/// alive there, and the holder. The search follows the evaluation order, not the source order
+/// (the `where` bindings of a guarded function run before its arms): the first use after the
+/// access that can run with it (`exclusive`), that no replacement of the whole holder between
+/// them always precedes, and that no `break`, `continue`, or re-raise that always runs after the
+/// access skips. Else (`true`) a use that the next iteration of a loop around the access runs:
+/// in the loop's condition or body, in any arm inside the loop, of a holder that the loop never
+/// replaces, unless a `break` or a re-raise always runs after the access, or `held` (an argument
+/// held by a call keeps the borrow alive instead). Looks at no more than `*budget` expressions
+/// and comparisons, and `None` once it runs out or does not find the access.
 fn find_later_use(
     body: &TypedExpr,
     holders: &BTreeSet<usize>,
     after: Span,
-    loops: &[Span],
+    held: bool,
     budget: &mut usize,
 ) -> Option<(Span, bool, usize)> {
+    enum Step<'a> {
+        Enter(&'a TypedExpr, Path),
+        Exit(&'a TypedExpr, Path),
+    }
     if holders.is_empty() {
         return None;
     }
-    let mut uses = Vec::new();
-    let mut replaced: BTreeMap<usize, Vec<Seen>> = BTreeMap::new();
-    let mut access: Option<Path> = None;
-    let mut pending: Vec<(&TypedExpr, Path)> = vec![(body, None)];
-    while let Some((expression, path)) = pending.pop() {
+    let (mut uses, mut replaced, mut jumps) = (Vec::new(), Vec::new(), Vec::new());
+    let mut access: Option<(usize, Path)> = None;
+    let mut at = 0;
+    let mut pending = vec![Step::Enter(body, None)];
+    while let Some(step) = pending.pop() {
         spend(budget, 1)?;
-        let span = expression.span;
-        if span == after && access.is_none() {
-            access = Some(path.clone());
-        }
-        let here = span.source == after.source && span.end > span.start;
-        match &expression.kind {
-            E::Assign(place, value) if matches!(place.kind, E::Local(id) if holders.contains(&id)) =>
-            {
-                // The value is evaluated before the holder is replaced.
-                if let E::Local(holder) = place.kind {
-                    replaced.entry(holder).or_default().push(Seen {
+        let (expression, path) = match step {
+            Step::Exit(expression, path) => {
+                at += 1;
+                if let E::Assign(place, _) = &expression.kind
+                    && let E::Local(holder) = place.kind
+                    && holders.contains(&holder)
+                {
+                    replaced.push(Seen {
                         holder,
-                        span,
+                        span: expression.span,
+                        at,
                         path: path.clone(),
                     });
                 }
-                pending.push((value, path));
+                if expression.span == after && access.is_none() {
+                    access = Some((at, path));
+                }
                 continue;
             }
+            Step::Enter(expression, path) => (expression, path),
+        };
+        // The parts in evaluation order; pushed in reverse, so that they are taken in order.
+        let mut parts: Vec<(&TypedExpr, Path)> = Vec::new();
+        match &expression.kind {
             E::Local(id) if holders.contains(id) => {
-                if here {
+                at += 1;
+                if expression.span.source == after.source
+                    && expression.span.end > expression.span.start
+                {
                     uses.push(Seen {
                         holder: *id,
-                        span,
+                        span: expression.span,
+                        at,
                         path,
                     });
                 }
@@ -3305,38 +3355,65 @@ fn find_later_use(
             E::Lambda { captures, .. }
                 if captures.iter().any(|local| holders.contains(&local.id)) =>
             {
-                if here {
-                    for local in captures.iter().filter(|local| holders.contains(&local.id)) {
-                        uses.push(Seen {
-                            holder: local.id,
-                            span,
-                            path: path.clone(),
-                        });
-                    }
+                at += 1;
+                for local in captures.iter().filter(|local| holders.contains(&local.id)) {
+                    uses.push(Seen {
+                        holder: local.id,
+                        span: expression.span,
+                        at,
+                        path: path.clone(),
+                    });
                 }
                 continue;
+            }
+            E::Break | E::Continue | E::Reraise => {
+                at += 1;
+                let jump = match expression.kind {
+                    E::Break => Jump::Break,
+                    E::Continue => Jump::Continue,
+                    _ => Jump::Reraise,
+                };
+                jumps.push((jump, at, path));
+                continue;
+            }
+            E::Assign(place, value) => {
+                // The value is evaluated before the place is written.
+                parts.push((value, path.clone()));
+                if !matches!(place.kind, E::Local(id) if holders.contains(&id)) {
+                    parts.push((place, path.clone()));
+                }
             }
             E::If {
                 condition,
                 then_branch,
                 else_branch,
             } => {
-                pending.push((condition, path.clone()));
-                pending.push((then_branch, choose(&path, expression, 0, false, true)));
-                pending.push((else_branch, choose(&path, expression, 1, false, true)));
+                parts.push((condition, path.clone()));
+                parts.push((then_branch, choose(&path, expression, Part::Arm(0))));
+                parts.push((else_branch, choose(&path, expression, Part::Arm(1))));
             }
             E::Match { value, arms, .. } => {
-                pending.push((value, path.clone()));
+                parts.push((value, path.clone()));
                 for (index, arm) in arms.iter().enumerate() {
-                    if let Some(guard) = &arm.guard {
-                        pending.push((guard, choose(&path, expression, index, true, true)));
+                    let test = choose(&path, expression, Part::Test(index));
+                    for alternative in &arm.alternatives {
+                        for step in &alternative.steps {
+                            parts.push((step.expression(), test.clone()));
+                        }
+                        for (_, value) in &alternative.bindings {
+                            parts.push((value, test.clone()));
+                        }
                     }
-                    pending.push((&arm.body, choose(&path, expression, index, false, true)));
+                    if let Some(guard) = &arm.guard {
+                        parts.push((guard, test));
+                    }
+                    parts.push((&arm.body, choose(&path, expression, Part::Arm(index))));
                 }
             }
             E::While { condition, body } => {
-                pending.push((condition, path.clone()));
-                pending.push((body, choose(&path, expression, 0, false, false)));
+                let repeat = choose(&path, expression, Part::Repeat);
+                parts.push((condition, repeat.clone()));
+                parts.push((body, repeat));
             }
             E::ForRange {
                 start,
@@ -3346,44 +3423,74 @@ fn find_later_use(
                 ..
             } => {
                 for bound in [start, step, finish] {
-                    pending.push((bound, path.clone()));
+                    parts.push((bound, path.clone()));
                 }
-                pending.push((body, choose(&path, expression, 0, false, false)));
+                parts.push((body, choose(&path, expression, Part::Repeat)));
             }
             E::ForEach { source, body, .. } => {
-                pending.push((source, path.clone()));
-                pending.push((body, choose(&path, expression, 0, false, false)));
+                parts.push((source, path.clone()));
+                parts.push((body, choose(&path, expression, Part::Repeat)));
             }
             E::Binary(BinaryOp::And | BinaryOp::Or, left, right) => {
-                pending.push((left, path.clone()));
-                pending.push((right, choose(&path, expression, 0, false, false)));
+                parts.push((left, path.clone()));
+                parts.push((right, choose(&path, expression, Part::Optional)));
             }
             E::Try(handled) => {
-                pending.push((&handled.body, path.clone()));
-                pending.push((&handled.handler, choose(&path, expression, 0, false, false)));
+                parts.push((&handled.body, path.clone()));
+                parts.push((&handled.handler, choose(&path, expression, Part::Optional)));
                 if let Some(finally) = &handled.finally {
-                    pending.push((finally, path.clone()));
+                    parts.push((finally, path.clone()));
                 }
             }
             _ => expression
                 .try_for_each_child(&mut |child| {
-                    pending.push((child, path.clone()));
+                    parts.push((child, path.clone()));
                     Ok(())
                 })
                 .expect("searching uses cannot fail"),
         }
+        pending.push(Step::Exit(expression, path));
+        pending.extend(
+            parts
+                .into_iter()
+                .rev()
+                .map(|(part, path)| Step::Enter(part, path)),
+        );
     }
-    let access = access?;
-    uses.sort_by_key(|seen| (seen.span.start, seen.holder));
-    for seen in uses.iter().filter(|seen| seen.span.start >= after.end) {
-        if exclusive(&seen.path, &access, budget)? {
+    let (start, access) = access?;
+    // A jump that always runs after the access, and what it skips.
+    let mut skips: Vec<(Jump, usize, Option<usize>)> = Vec::new();
+    for (jump, position, path) in &jumps {
+        spend(budget, 1)?;
+        if *position > start && always_before(path, &access, budget)? {
+            skips.push((*jump, *position, innermost_loop(path)));
+        }
+    }
+    let skipped = |seen: &Seen| {
+        skips.iter().any(|(jump, position, target)| {
+            seen.at > *position
+                && match jump {
+                    Jump::Reraise => true,
+                    Jump::Break | Jump::Continue => {
+                        target.is_some_and(|node| repeats(&seen.path, node))
+                    }
+                }
+        })
+    };
+    uses.sort_by_key(|seen| seen.at);
+    for seen in uses.iter().filter(|seen| seen.at > start) {
+        spend(budget, 1 + skips.len())?;
+        if skipped(seen) || exclusive(&seen.path, &access, budget)? {
             continue;
         }
         let mut cut = false;
-        for replacement in replaced.get(&seen.holder).into_iter().flatten() {
+        for replacement in replaced
+            .iter()
+            .filter(|replacement| replacement.holder == seen.holder)
+        {
             spend(budget, 1)?;
-            if replacement.span.end > after.end
-                && replacement.span.end <= seen.span.start
+            if replacement.at > start
+                && replacement.at < seen.at
                 && always_before(&replacement.path, &seen.path, budget)?
             {
                 cut = true;
@@ -3394,23 +3501,32 @@ fn find_later_use(
             return Some((seen.span, false, seen.holder));
         }
     }
-    let within = |outer: Span, inner: Span| {
-        outer.source == inner.source && outer.start <= inner.start && inner.end <= outer.end
-    };
-    for seen in uses.iter().filter(|seen| seen.span.end <= after.start) {
-        spend(budget, 1)?;
-        let replacements = replaced.get(&seen.holder).map_or(&[][..], Vec::as_slice);
-        // A loop that runs the use again and does not replace the holder in between.
-        let repeats = loops.iter().any(|body| {
-            within(*body, seen.span)
-                && within(*body, after)
-                && !replacements
-                    .iter()
-                    .any(|replacement| within(*body, replacement.span))
-        });
-        spend(budget, loops.len() * (1 + replacements.len()))?;
-        if repeats && !exclusive(&seen.path, &access, budget)? {
-            return Some((seen.span, true, seen.holder));
+    if held || skips.iter().any(|(jump, _, _)| *jump == Jump::Reraise) {
+        return None;
+    }
+    // The loops around the access, innermost first; a `break` that always runs ends them.
+    let loops: Vec<usize> = choices(&access)
+        .filter(|choice| choice.part == Part::Repeat)
+        .map(|choice| choice.node)
+        .collect();
+    for node in loops {
+        if skips
+            .iter()
+            .any(|(jump, _, target)| *jump == Jump::Break && *target == Some(node))
+        {
+            return None;
+        }
+        for seen in uses.iter().filter(|seen| repeats(&seen.path, node)) {
+            spend(budget, 1 + replaced.len())?;
+            let replaced_here = replaced.iter().any(|replacement| {
+                replacement.holder == seen.holder && repeats(&replacement.path, node)
+            });
+            // The arms inside the loop may change in the next iteration; the ones around it stay.
+            if !replaced_here
+                && !exclusive(outside(&seen.path, node), outside(&access, node), budget)?
+            {
+                return Some((seen.span, true, seen.holder));
+            }
         }
     }
     None
@@ -3468,50 +3584,50 @@ mod later_use_tests {
 
     #[test]
     fn finds_the_use_after_and_before_a_span_and_honors_the_budget() {
-        let source = "def f :: i64 -> i64 = \\x -> 1 + x + 2\n\ndef g :: bool -> i64 -> i64 = \\c x -> if c then 3 else x\n";
+        let source = "def f :: i64 -> i64 = \\x -> 1 + x + 2\n\ndef g :: bool -> i64 -> i64 = \\c x -> if c then 3 else x\n\ndef h :: i64 -> i64 = \\x ->\n    let mut total = 0\n    for i in 0 .. 2 do\n        total = total + x + 4\n    total\n";
         let module = crate::analyze(source).unwrap();
-        let body = |name: &str| {
-            &module
+        let function = |name: &str| {
+            module
                 .functions
                 .iter()
                 .find(|function| function.name == name)
                 .unwrap()
-                .body
         };
-        let holders = |body: &TypedExpr| {
-            let mut holders = BTreeSet::new();
-            uses(body, &mut holders);
-            holders
-        };
+        // The holder is the last parameter, `x`.
+        let x = |name: &str| function(name).parameters.last().unwrap().id;
         let at = |text: &str| {
             let start = source.find(text).unwrap();
             Span::new(start, start + 1).in_source(0)
         };
-        let (f, g) = (body("f"), body("g"));
-        let x = |body: &TypedExpr| *holders(body).iter().last().unwrap();
-        let find = |body: &TypedExpr, after: Span, loops: &[Span], mut budget: usize| {
-            find_later_use(body, &holders(body), after, loops, &mut budget)
+        let find = |name: &str, after: Span, held: bool, mut budget: usize| {
+            let holders = BTreeSet::from([x(name)]);
+            find_later_use(&function(name).body, &holders, after, held, &mut budget)
         };
-        let used = at("x + 2");
+        let used = |text: &str| {
+            let start = source.find(text).unwrap();
+            Span::new(start, start + 1).in_source(0)
+        };
         assert_eq!(
-            find(f, at("1 +"), &[], LATER_USE_NODES),
-            Some((used, false, x(f)))
+            find("f", at("1 +"), false, LATER_USE_NODES),
+            Some((used("x + 2"), false, x("f")))
         );
-        // Before the access, only a loop that holds both runs the use again.
-        assert_eq!(find(f, at("2\n"), &[], LATER_USE_NODES), None);
-        assert_eq!(
-            find(f, at("2\n"), &[f.span], LATER_USE_NODES),
-            Some((used, true, x(f)))
-        );
+        // Before the access and with no loop around it, no use keeps the borrow alive.
+        assert_eq!(find("f", at("2\n"), false, LATER_USE_NODES), None);
         // The other arm of an `if` does not run after this one.
-        assert_eq!(find(g, at("3 else"), &[], LATER_USE_NODES), None);
-        assert_eq!(find(f, at("1 +"), &[], 0), None);
+        assert_eq!(find("g", at("3 else"), false, LATER_USE_NODES), None);
+        // The next iteration of the loop runs the use again, unless a held argument keeps it.
+        assert_eq!(
+            find("h", at("4\n"), false, LATER_USE_NODES),
+            Some((used("x + 4"), true, x("h")))
+        );
+        assert_eq!(find("h", at("4\n"), true, LATER_USE_NODES), None);
+        assert_eq!(find("f", at("1 +"), false, 0), None);
         assert_eq!(
             find_later_use(
-                f,
+                &function("f").body,
                 &BTreeSet::new(),
                 at("1 +"),
-                &[],
+                false,
                 &mut LATER_USE_NODES.clone()
             ),
             None

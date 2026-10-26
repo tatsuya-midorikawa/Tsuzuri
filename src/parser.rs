@@ -49,6 +49,27 @@ fn duplicate_function(message: &str, name: &Ident, first: Option<Span>) -> Diagn
     }
 }
 
+/// The name of the earlier definition of `name`: an implementation (`fn f x = ..`, `def f = ..`)
+/// or a function with its signature in parentheses (`fn f() -> T { .. }`), whichever is first.
+fn first_definition(
+    definitions: &[Definition],
+    functions: &[FunctionDecl],
+    name: &Ident,
+) -> Option<Span> {
+    let implementation = definitions
+        .iter()
+        .find(|definition| definition.name.text == name.text)
+        .map(|definition| definition.name.span);
+    let function = functions
+        .iter()
+        .find(|function| function.name.text == name.text)
+        .map(|function| function.name.span);
+    implementation
+        .into_iter()
+        .chain(function)
+        .min_by_key(|span| span.start)
+}
+
 fn is_top_level_declaration_start(kind: &TokenKind) -> bool {
     matches!(
         kind,
@@ -669,8 +690,8 @@ impl Parser<'_> {
                     }
                     if self.eat(&TokenKind::Equal) {
                         if defined_names.contains(&name.text) {
-                            let first = definitions.iter().find(|definition| definition.name.text == name.text);
-                            return Err(duplicate_function("duplicate function definition", &name, first.map(|definition| definition.name.span)));
+                            let first = first_definition(&definitions, &program.functions, &name);
+                            return Err(duplicate_function("duplicate function definition", &name, first));
                         }
                         let body = if self.at(&TokenKind::Backslash) {
                             self.explicit_lambda()?
@@ -693,12 +714,8 @@ impl Parser<'_> {
                     return Ok(());
                 }
                 if defined_names.contains(&name.text) {
-                    let first = definitions.iter().find(|definition| definition.name.text == name.text);
-                    return Err(duplicate_function(
-                        "duplicate function definition",
-                        &name,
-                        first.map(|definition| definition.name.span),
-                    ));
+                    let first = first_definition(&definitions, &program.functions, &name);
+                    return Err(duplicate_function("duplicate function definition", &name, first));
                 }
                 if !self.at(&TokenKind::LeftParen) {
                     if exported {
