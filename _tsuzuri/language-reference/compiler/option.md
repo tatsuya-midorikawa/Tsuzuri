@@ -361,10 +361,10 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 
 `--trap-mode return` は、`object`、`llvm`、`shared`、`bitcode` では `--trap-info` も有効にします。`header` では位置表を出さないので、`--trap-info` とは組み合わせません。戻り値は 0 が成功、1 がトラップ、2 が同じスレッドでの再入です。詳しくは [言語仕様のトラップ位置](../../../docs/language.md#トラップ位置) を見てください。
 
-`--json` のフィールドは [診断メッセージとエラーコード](diagnostics.md) にあります。引数エラーも同じコードで、パスは `<command line>` です。
+`--json` のフィールドは [診断メッセージとエラーコード](diagnostics.md) にあります。引数エラーも同じコードで、パスは `<command line>` です。`kind` は誤りの種類（`missing_input`、`unknown_option`、`duplicate_option` など）で、`tsuzuri explain <kind>` で説明を読めます。
 
 ```text
-{"severity":"error","code":"E2000","message":"missing .tz, .tt, or .tc input or project directory; use --help","path":"<command line>","span":{"start":0,"end":0,"line":1,"column":1,"end_line":1,"end_column":1}}
+{"severity":"error","code":"E2000","message":"missing .tz, .tt, or .tc input or project directory; use --help","path":"<command line>","span":{"start":0,"end":0,"line":1,"column":1,"end_line":1,"end_column":1},"kind":"missing_input"}
 ```
 
 このときの終了コードは 2 でした。

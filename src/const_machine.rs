@@ -173,11 +173,16 @@ struct Run<'a, 'm> {
 }
 
 fn trapped(span: Span, message: &str) -> Diagnostic {
-    failure(span, format!("const evaluation trapped: {message}"))
+    failure(
+        DiagnosticKind::ConstEvaluationTrapped,
+        span,
+        format!("const evaluation trapped: {message}"),
+    )
 }
 
 fn unsupported(span: Span) -> Diagnostic {
     failure(
+        DiagnosticKind::ConstOperationNotAllowed,
         span,
         "this operation is not allowed in a const def; move it to a runtime def",
     )
@@ -478,6 +483,7 @@ impl<'a> Run<'a, '_> {
     fn constant(&mut self, id: usize, span: Span) -> Result<(), Diagnostic> {
         let Some(value) = self.machine.values.get(&id) else {
             return Err(failure(
+                DiagnosticKind::ConstCycle,
                 span,
                 "cyclic const definition; break the cycle or make one value a function",
             ));
@@ -624,7 +630,11 @@ impl<'a> Run<'a, '_> {
     fn truth(&mut self, span: Span) -> Result<bool, Diagnostic> {
         match self.pop(span)?.expr.kind {
             TypedExprKind::Bool(value) => Ok(value),
-            _ => Err(failure(span, "a const condition must be bool")),
+            _ => Err(failure(
+                DiagnosticKind::ConstConditionNotBool,
+                span,
+                "a const condition must be bool",
+            )),
         }
     }
 
@@ -679,6 +689,7 @@ impl<'a> Run<'a, '_> {
     fn call(&mut self, id: usize, arguments: Vec<Value>, span: Span) -> Result<(), Diagnostic> {
         if self.frames.len() > MAX_NESTING {
             return Err(failure(
+                DiagnosticKind::ConstCallDepthLimit,
                 span,
                 format!(
                     "const evaluation exceeds the compiler limit of {MAX_NESTING} nested const def calls; reduce the recursion depth or compute the value at runtime"

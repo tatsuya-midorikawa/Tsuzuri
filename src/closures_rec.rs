@@ -203,8 +203,8 @@ fn group_len(bindings: &[(Local, TypedExpr)]) -> Result<usize, Diagnostic> {
     });
     match members {
         Some(members) => Ok(members.len()),
-        None => Err(Diagnostic::new(
-            "E1015",
+        None => Err(Diagnostic::of(
+            DiagnosticKind::InternalRecGroupUnbound,
             "internal compiler error: the members of a 'let rec' group are not bound together",
             bindings[0].1.span,
         )),
@@ -248,8 +248,8 @@ pub(super) fn lower(
         TypedExprKind::Block { bindings, result } => {
             lower_block(bindings, result, functions, types, generated, origin)
         }
-        _ => Err(Diagnostic::new(
-            "E1015",
+        _ => Err(Diagnostic::of(
+            DiagnosticKind::InternalRecNotBoundByBlock,
             "internal compiler error: a 'let rec' function is not bound by a block",
             span,
         )),
@@ -415,8 +415,8 @@ fn lower_group(
                 continue;
             }
             if let Some(span) = body.moving_use(capture.local.id, types) {
-                return Err(Diagnostic::new(
-                    "E1012",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::MoveOutOfRecFunction,
                     format!(
                         "cannot move '{}' out of a 'let rec' function, which borrows it; borrow it with 'ref' instead",
                         capture.local.name

@@ -234,6 +234,7 @@ pub(super) fn collect(
 /// The error for a constant whose static data is over the limit.
 pub(super) fn too_big(span: Span) -> Diagnostic {
     failure(
+        DiagnosticKind::ConstStaticDataTooLarge,
         span,
         format!(
             "the constants that the program reads in place or borrows hold more than {MAX_STATIC_BYTES} bytes of static data; make them smaller or read this one through a 'let' binding of its value"

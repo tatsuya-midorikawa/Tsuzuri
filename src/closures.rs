@@ -28,8 +28,8 @@ impl Checker<'_> {
         recursive: &[Local],
     ) -> Result<TypedExpr, Diagnostic> {
         if kind == LambdaKind::Owned && names.len() != 1 {
-            return Err(Diagnostic::new(
-                "E1006",
+            return Err(Diagnostic::of(
+                DiagnosticKind::OwnedFunctionParameterCount,
                 "Owned.function takes a lambda with one parameter; take a tuple or return another function",
                 span,
             ));
@@ -138,8 +138,7 @@ impl Checker<'_> {
                         {
                             return error;
                         }
-                        Diagnostic::new(
-                            "E1013",
+                        Diagnostic::of(DiagnosticKind::OwnedFunctionCapturesReference,
                             format!(
                                 "an owned function captures only owned values; {} contains a reference",
                                 capture.ty.display(&self.types)
@@ -344,8 +343,8 @@ fn lower_expression(
                         continue;
                     }
                     if let Some(span) = body.consuming_use(capture.id, types) {
-                        return Err(Diagnostic::new(
-                            "E1012",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::MoveOutOfOwnedFunction,
                             format!(
                                 "cannot move '{}' out of an owned function; borrow it with 'ref' instead",
                                 capture.name

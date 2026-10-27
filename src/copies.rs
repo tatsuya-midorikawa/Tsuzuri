@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use crate::check::{CheckedModule, ModuleOrigin, Type};
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 
 /// One implicit copy in a specialized function.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,7 +121,13 @@ pub fn costly_sites(module: &CheckedModule) -> Vec<CopySite> {
 pub fn warnings(module: &CheckedModule) -> Vec<Diagnostic> {
     costly_sites(module)
         .into_iter()
-        .map(|site| Diagnostic::warning("W1006", message(&site.ty), site.span))
+        .map(|site| {
+            Diagnostic::of(
+                DiagnosticKind::ImplicitCopyOfLargeValue,
+                message(&site.ty),
+                site.span,
+            )
+        })
         .collect()
 }
 

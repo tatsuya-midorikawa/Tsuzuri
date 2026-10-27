@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::syntax::*;
 
 #[derive(Debug)]
@@ -30,8 +30,8 @@ pub fn format_source_with_edition(
     let (before, mut hints) = canonicalize(before);
     let formatted = print_tokens(source, &mut hints, edition)?;
     let mut after = crate::parser::parse_with_source(&formatted, 0, edition).map_err(|error| {
-        Diagnostic::new(
-            "E2000",
+        Diagnostic::of(
+            DiagnosticKind::FormatterInvalidOutput,
             format!(
                 "formatter produced invalid syntax: {}; please report a bug",
                 error.message
@@ -41,8 +41,8 @@ pub fn format_source_with_edition(
     })?;
     after.source_kind = Some(kind);
     if before != ast_fingerprint(after) {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::FormatterChangedSemantics,
             "formatter would change program semantics; please report a bug",
             Span::default(),
         ));

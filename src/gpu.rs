@@ -6,7 +6,7 @@ use rustc_apfloat::{Float, FloatConvert};
 
 use crate::{
     check::{CheckedModule, FunctionRef, Type, TypedExpr, TypedExprKind},
-    diagnostic::{Diagnostic, Span},
+    diagnostic::{Diagnostic, DiagnosticKind, Span},
     llvm,
     syntax::{BinaryOp, UnaryOp},
 };
@@ -28,8 +28,8 @@ fn scalar(ty: &Type) -> bool {
     )
 }
 
-fn unsupported(message: &str, span: Span) -> Diagnostic {
-    Diagnostic::new("E1018", message, span)
+fn unsupported(kind: DiagnosticKind, message: &str, span: Span) -> Diagnostic {
+    Diagnostic::of(kind, message, span)
 }
 
 pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
@@ -69,6 +69,7 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
                 && !direct_callee
             {
                 return Err(unsupported(
+                    DiagnosticKind::GpuOperationNotDirect,
                     "GPU operations cannot escape as function values; use direct full application",
                     expression.span,
                 ));
@@ -79,12 +80,14 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
             {
                 if arguments.len() != module.functions[*id].signature.parameters.len() {
                     return Err(unsupported(
+                        DiagnosticKind::GpuOperationNotDirect,
                         "GPU operations require direct full application",
                         expression.span,
                     ));
                 }
                 let Type::Record(_, types) = &expression.ty else {
                     return Err(unsupported(
+                        DiagnosticKind::GpuBufferElementType,
                         "GPU operations require a concrete buffer result",
                         expression.span,
                     ));
@@ -94,6 +97,7 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
                     .is_some_and(|ty| scalar(ty) && *ty != Type::Bool)
                 {
                     return Err(unsupported(
+                        DiagnosticKind::GpuBufferElementType,
                         "GPU buffers require 32/64-bit integer or binary floating-point scalar elements",
                         expression.span,
                     ));
@@ -105,6 +109,7 @@ pub(crate) fn validate_calls(module: &CheckedModule) -> Result<(), Diagnostic> {
                         TypedExprKind::Closure(id, captures) if captures.is_empty() => *id,
                         _ => {
                             return Err(unsupported(
+                                DiagnosticKind::GpuCallbackNotKnown,
                                 "GPU init/map operations require a known function or capture-free lambda",
                                 callback.span,
                             ));
@@ -142,15 +147,19 @@ pub fn extract_kernel(
     module: &CheckedModule,
     function: usize,
 ) -> Result<GpuKernel<'_>, Diagnostic> {
-    let root = module
-        .functions
-        .get(function)
-        .ok_or_else(|| unsupported("GPU kernel function does not exist", Span::default()))?;
+    let root = module.functions.get(function).ok_or_else(|| {
+        unsupported(
+            DiagnosticKind::GpuKernelMissing,
+            "GPU kernel function does not exist",
+            Span::default(),
+        )
+    })?;
     if root.signature.parameters.len() != 1
         || !scalar(&root.signature.parameters[0])
         || !scalar(&root.signature.result)
     {
         return Err(unsupported(
+            DiagnosticKind::GpuKernelSignature,
             "GPU kernels require one scalar parameter and a scalar result",
             root.span,
         ));
@@ -168,6 +177,7 @@ pub fn extract_kernel(
         let function = &module.functions[id];
         if active.contains(&id) {
             return Err(unsupported(
+                DiagnosticKind::GpuKernelRecursion,
                 "GPU kernels cannot call recursive functions",
                 function.span,
             ));
@@ -176,8 +186,8 @@ pub fn extract_kernel(
             continue;
         }
         if depth >= 128 || functions.len() + active.len() >= 1024 {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::GpuKernelLimit,
                 "GPU kernel exceeds 128 call levels or 1024 functions",
                 function.span,
             ));
@@ -188,6 +198,7 @@ pub fn extract_kernel(
             || !function.signature.parameters.iter().all(scalar)
         {
             return Err(unsupported(
+                DiagnosticKind::GpuKernelSignature,
                 "GPU kernel calls must have scalar signatures and no captures",
                 function.span,
             ));
@@ -198,14 +209,15 @@ pub fn extract_kernel(
         while let Some(expression) = expressions.pop() {
             nodes += 1;
             if nodes > 65536 {
-                return Err(Diagnostic::new(
-                    "E1017",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::GpuKernelLimit,
                     "GPU kernel exceeds 65536 expression nodes",
                     expression.span,
                 ));
             }
             if !scalar(&expression.ty) && expression.ty != Type::Unit {
                 return Err(unsupported(
+                    DiagnosticKind::GpuUnsupportedType,
                     "GPU kernels cannot allocate or carry nonscalar values",
                     expression.span,
                 ));
@@ -234,6 +246,7 @@ pub fn extract_kernel(
                         TypedExprKind::Closure(called, captures) if captures.is_empty() => *called,
                         _ => {
                             return Err(unsupported(
+                                DiagnosticKind::GpuCallbackNotKnown,
                                 "GPU kernels require direct known calls without captures",
                                 callee.span,
                             ));
@@ -241,6 +254,7 @@ pub fn extract_kernel(
                     };
                     if arguments.len() != module.functions[called].signature.parameters.len() {
                         return Err(unsupported(
+                            DiagnosticKind::GpuOperationNotDirect,
                             "GPU kernel calls must be fully applied",
                             callee.span,
                         ));
@@ -250,6 +264,7 @@ pub fn extract_kernel(
                 }
                 _ => {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedConstruct,
                         "GPU kernels do not support allocation, borrows, host calls, loops, tasks, or assertions",
                         expression.span,
                     ));
@@ -261,13 +276,14 @@ pub fn extract_kernel(
         Ok(None) => {}
         Ok(Some(effect)) => {
             return Err(unsupported(
+                DiagnosticKind::GpuKernelEffect,
                 &format!("GPU kernel {}", effect.reason()),
                 root.span,
             ));
         }
         Err(_) => {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::GpuEffectAnalysisLimit,
                 "GPU kernel cannot be proven effect-free within the analysis limits",
                 root.span,
             ));
@@ -311,6 +327,7 @@ impl GpuKernel<'_> {
                 || !matches!(root.signature.result, Type::Integer(32, _)))
         {
             return Err(unsupported(
+                DiagnosticKind::GpuUnsupportedType,
                 "strict WebGPU kernels require i32 or i32u buffer lanes; 64-bit lanes are unavailable and f32 or f16 lanes need --emit wgsl-relaxed",
                 root.span,
             ));
@@ -320,7 +337,11 @@ impl GpuKernel<'_> {
         let mut text = String::new();
         if relaxed {
             if input == "bool" || output == "bool" {
-                return Err(unsupported(RELAXED_BOOL_LANE, root.span));
+                return Err(unsupported(
+                    DiagnosticKind::GpuUnsupportedType,
+                    RELAXED_BOOL_LANE,
+                    root.span,
+                ));
             }
             let _ = writeln!(
                 text,
@@ -390,8 +411,13 @@ fn wgsl_type(ty: &Type, relaxed: bool, span: Span) -> Result<&'static str, Diagn
         Type::Bool => Ok("bool"),
         Type::Binary(32) if relaxed => Ok("f32"),
         Type::Binary(16) if relaxed => Ok("f16"),
-        _ if relaxed => Err(unsupported(RELAXED_TYPES, span)),
+        _ if relaxed => Err(unsupported(
+            DiagnosticKind::GpuUnsupportedType,
+            RELAXED_TYPES,
+            span,
+        )),
         _ => Err(unsupported(
+            DiagnosticKind::GpuUnsupportedType,
             "WGSL cannot preserve this scalar type; use the explicit CPU reference path",
             span,
         )),
@@ -428,8 +454,8 @@ fn half_or_single(ty: &Type) -> bool {
 const MAX_STATEMENT_DEPTH: usize = 127;
 
 fn too_deep(span: Span) -> Diagnostic {
-    Diagnostic::new(
-        "E1017",
+    Diagnostic::of(
+        DiagnosticKind::GpuKernelLimit,
         format!(
             "GPU kernel exceeds {MAX_STATEMENT_DEPTH} levels of WGSL statement nesting; each nested if, else-if arm, and right operand of && or || takes two levels, so move the rest of a long chain into a function"
         ),
@@ -558,12 +584,14 @@ impl Wgsl {
                         BinaryOp::ShiftRight | BinaryOp::ShiftRightUnsigned => ">>",
                         BinaryOp::Power => {
                             return Err(unsupported(
+                                DiagnosticKind::GpuUnsupportedOperator,
                                 "WGSL kernels do not support '**'; multiply explicitly",
                                 span,
                             ));
                         }
                         _ => {
                             return Err(unsupported(
+                                DiagnosticKind::GpuUnsupportedOperator,
                                 "WGSL kernel division/remainder may trap on the CPU and are not supported",
                                 span,
                             ));
@@ -616,10 +644,15 @@ impl Wgsl {
                         format!("f16({value})")
                     }
                     (Type::Binary(_), _) | (_, Type::Binary(_)) if self.relaxed => {
-                        return Err(unsupported(RELAXED_CASTS, span));
+                        return Err(unsupported(
+                            DiagnosticKind::GpuUnsupportedOperator,
+                            RELAXED_CASTS,
+                            span,
+                        ));
                     }
                     _ => {
                         return Err(unsupported(
+                            DiagnosticKind::GpuUnsupportedOperator,
                             "WGSL kernel casts require 32-bit integer operands",
                             span,
                         ));
@@ -643,7 +676,11 @@ impl Wgsl {
             }
             TypedExprKind::Assign(place, value) => {
                 let TypedExprKind::Local(id) = &place.kind else {
-                    return Err(unsupported("GPU assignment requires a scalar local", span));
+                    return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedConstruct,
+                        "GPU assignment requires a scalar local",
+                        span,
+                    ));
                 };
                 let value = self.expression(value)?;
                 self.emit(span, &format!("local_{id} = {value};"))?;
@@ -682,7 +719,13 @@ impl Wgsl {
                 let id = match &callee.kind {
                     TypedExprKind::Function(FunctionRef::User(id))
                     | TypedExprKind::Closure(id, _) => id,
-                    _ => return Err(unsupported("GPU calls require known functions", span)),
+                    _ => {
+                        return Err(unsupported(
+                            DiagnosticKind::GpuCallbackNotKnown,
+                            "GPU calls require known functions",
+                            span,
+                        ));
+                    }
                 };
                 let arguments = arguments
                     .iter()
@@ -692,6 +735,7 @@ impl Wgsl {
             }
             _ => {
                 return Err(unsupported(
+                    DiagnosticKind::GpuUnsupportedConstruct,
                     if self.relaxed {
                         "expression is not supported by relaxed WGSL generation"
                     } else {

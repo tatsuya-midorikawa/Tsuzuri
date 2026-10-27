@@ -58,6 +58,7 @@ pub(in super::super) fn check_signature(
 ) -> Result<(), Diagnostic> {
     if !variables.is_empty() || !function.constraints.is_empty() {
         return Err(failure(
+            DiagnosticKind::ConstSignatureInvalid,
             function.name.span,
             "a const def must have a concrete signature; remove type variables and constraints",
         ));
@@ -69,6 +70,7 @@ pub(in super::super) fn check_signature(
         .find(|ty| !value_type(ty, types))
     {
         return Err(failure(
+            DiagnosticKind::ConstSignatureInvalid,
             function.name.span,
             format!(
                 "const def parameters and results must be plain values; '{}' is not one, so remove functions, references, tasks, lists, and std collections",
@@ -90,6 +92,7 @@ enum Position {
 
 fn rejected(span: Span) -> Diagnostic {
     failure(
+        DiagnosticKind::ConstOperationNotAllowed,
         span,
         "this operation is not allowed in a const def; move it to a runtime def",
     )
@@ -97,6 +100,7 @@ fn rejected(span: Span) -> Diagnostic {
 
 fn not_const_def(span: Span, name: &str) -> Diagnostic {
     failure(
+        DiagnosticKind::ConstCalleeNotConst,
         span,
         format!("'{name}' is not a const def; mark it 'const def' or compute the value at runtime"),
     )
@@ -104,6 +108,7 @@ fn not_const_def(span: Span, name: &str) -> Diagnostic {
 
 fn partial(span: Span) -> Diagnostic {
     failure(
+        DiagnosticKind::ConstPartialApplication,
         span,
         "a const def must be fully applied in const evaluation; pass all arguments",
     )
@@ -111,6 +116,7 @@ fn partial(span: Span) -> Diagnostic {
 
 fn operator_on_aggregate(span: Span) -> Diagnostic {
     failure(
+        DiagnosticKind::ConstAggregateOperator,
         span,
         "an operator on a record, tuple, array, or union is not allowed in a const def; apply it to their fields",
     )
@@ -160,6 +166,7 @@ pub(super) fn validate_function(
                 let numeric = |ty: &Type| matches!(ty, Type::Integer(..) | Type::Binary(_));
                 if value.ty != expression.ty && !(numeric(&value.ty) && numeric(&expression.ty)) {
                     return Err(failure(
+                        DiagnosticKind::ConstUnsupportedOperation,
                         span,
                         "this const cast is unsupported; keep the conversion in runtime code",
                     ));
@@ -175,6 +182,7 @@ pub(super) fn validate_function(
             K::Borrow(value, false) | K::BorrowOperand(value) | K::Dereference(value) => {
                 if !reading {
                     return Err(failure(
+                        DiagnosticKind::ConstBorrowNotAllowed,
                         span,
                         "a borrow is not allowed in a const def; read the value directly",
                     ));
@@ -187,6 +195,7 @@ pub(super) fn validate_function(
             }
             K::Binary(BinaryOp::Pipe, ..) => {
                 return Err(failure(
+                    DiagnosticKind::ConstPipeNotAllowed,
                     span,
                     "the pipe operator is not allowed in a const def; write the call",
                 ));
@@ -195,6 +204,7 @@ pub(super) fn validate_function(
                 match left.ty {
                     Type::Decimal(_) => {
                         return Err(failure(
+                            DiagnosticKind::ConstUnsupportedOperation,
                             span,
                             "this const arithmetic is unsupported; keep decimal arithmetic and overloaded operations in runtime code",
                         ));
@@ -238,6 +248,7 @@ pub(super) fn validate_function(
             K::ForEach { source, body, .. } => {
                 if !matches!(source.ty, Type::Array(_) | Type::String | Type::Utf8String) {
                     return Err(failure(
+                        DiagnosticKind::ConstForLoopForm,
                         source.span,
                         "a for loop in a const def enumerates an array, a string, or a utf8string, or counts a range; move other loops to a runtime def",
                     ));
@@ -248,6 +259,7 @@ pub(super) fn validate_function(
             K::Assign(target, value) => {
                 if !matches!(target.kind, K::Local(_)) {
                     return Err(failure(
+                        DiagnosticKind::ConstAssignmentTarget,
                         target.span,
                         "a const def assigns only to a 'let mut' variable, not to a field or an element",
                     ));
@@ -274,6 +286,7 @@ pub(super) fn validate_function(
                     }
                     _ => {
                         return Err(failure(
+                            DiagnosticKind::ConstNewCollectionForm,
                             initializer.span,
                             "new [T](n, f) in a const def takes a lambda or a const def of one parameter",
                         ));
@@ -301,6 +314,7 @@ pub(super) fn validate_function(
                 }
                 _ => {
                     return Err(failure(
+                        DiagnosticKind::ConstCalleeNotConst,
                         span,
                         "only a const def can be called in a const def; mark the callee 'const def' or compute the value at runtime",
                     ));
@@ -309,18 +323,21 @@ pub(super) fn validate_function(
             K::Function(_) => return Err(partial(span)),
             K::Lambda { .. } | K::Closure(..) => {
                 return Err(failure(
+                    DiagnosticKind::ConstFunctionValue,
                     span,
                     "a function value is not allowed in a const def; only new [T](n, f) takes one",
                 ));
             }
             K::Checked(_) => {
                 return Err(failure(
+                    DiagnosticKind::ConstCheckedOperation,
                     span,
                     "an '@checked' operation raises an exception that has no compile-time form; use wrapping arithmetic in a const def",
                 ));
             }
             K::StructuralCompare(..) => {
                 return Err(failure(
+                    DiagnosticKind::ConstAggregateOperator,
                     span,
                     "comparing records, tuples, and arrays as a whole is not allowed in a const def; compare their fields",
                 ));
@@ -361,6 +378,7 @@ pub(super) fn validate_function(
                 .or_insert_with(|| value_type(&expression.ty, types))
         {
             return Err(failure(
+                DiagnosticKind::ConstUnbuildableType,
                 span,
                 format!(
                     "a value of type '{}' cannot be built in a const def; use plain values",

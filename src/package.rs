@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::syntax::Edition;
 
 /// The largest `Tsuzuri.toml`, `Tsuzuri.lock` and registry index file. Sources have their own
@@ -194,11 +194,15 @@ pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockE
     use serde_json::Value;
     let span = Span::new(0, 0).in_source(source_id);
     if text.len() > MAX_PACKAGE_FILE_BYTES {
-        return Err(Diagnostic::new("E1017", "Tsuzuri.lock exceeds 1 MiB", span));
+        return Err(Diagnostic::of(
+            DiagnosticKind::LockfileTooLarge,
+            "Tsuzuri.lock exceeds 1 MiB",
+            span,
+        ));
     }
     let invalid = |detail: String| {
-        Diagnostic::new(
-            "E2007",
+        Diagnostic::of(
+            DiagnosticKind::InvalidLockfile,
             format!(
                 "Tsuzuri.lock is not a valid lockfile ({detail}); restore it from version control or delete it and run tsuzuri fetch"
             ),
@@ -498,8 +502,8 @@ pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
         })
     {
-        return Err(Diagnostic::new(
-            "E1011",
+        return Err(Diagnostic::of(
+            DiagnosticKind::InvalidPackageName,
             "package names must be lowercase ASCII kebab-case (at most 255 bytes)",
             span,
         ));
@@ -546,7 +550,8 @@ pub fn create_project(
     directory: &Path,
     namespace: Option<&str>,
 ) -> Result<Vec<PathBuf>, Diagnostic> {
-    let error = |message: String| Diagnostic::new("E2000", message, Span::default());
+    let error =
+        |kind: DiagnosticKind, message: String| Diagnostic::of(kind, message, Span::default());
     let edition = Edition::LATEST;
     let resolved = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_owned());
     let folder = resolved
@@ -557,7 +562,7 @@ pub fn create_project(
     let namespace = match namespace {
         Some(namespace) if valid_namespace(namespace, edition) => namespace.to_owned(),
         Some(namespace) => {
-            return Err(error(format!(
+            return Err(error(DiagnosticKind::InvalidNamespaceArgument, format!(
                 "invalid namespace '{namespace}'; use identifiers joined by '::' such as Acme::Tools, at most 16 segments and 255 bytes, that do not start with 'std' or a standard library module name"
             )));
         }
@@ -565,21 +570,27 @@ pub fn create_project(
             .ok()
             .filter(|namespace| valid_namespace(namespace, edition))
             .ok_or_else(|| {
-                error(format!(
+                error(DiagnosticKind::CannotDeriveNamespace, format!(
                     "cannot derive a namespace from the folder name '{folder}'; pass --namespace"
                 ))
             })?,
     };
     let io = |action: &str, path: &Path, cause: std::io::Error| {
-        error(format!("cannot {action} '{}': {cause}", path.display()))
+        error(
+            DiagnosticKind::NewProjectIoFailure,
+            format!("cannot {action} '{}': {cause}", path.display()),
+        )
     };
     match std::fs::read_dir(directory) {
         Ok(mut entries) => {
             if entries.next().is_some() {
-                return Err(error(format!(
-                    "'{}' is not empty; choose a new or empty folder so that no file is overwritten",
-                    directory.display()
-                )));
+                return Err(error(
+                    DiagnosticKind::NewProjectFolderNotEmpty,
+                    format!(
+                        "'{}' is not empty; choose a new or empty folder so that no file is overwritten",
+                        directory.display()
+                    ),
+                ));
             }
         }
         Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {
@@ -649,8 +660,8 @@ fn package_name(folder: &str) -> String {
 pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagnostic> {
     let whole = Span::new(0, source.len()).in_source(source_id);
     if source.len() > MAX_PACKAGE_FILE_BYTES {
-        return Err(Diagnostic::new(
-            "E1017",
+        return Err(Diagnostic::of(
+            DiagnosticKind::ManifestTooLarge,
             "package manifest exceeds 1 MiB",
             whole,
         ));
@@ -690,7 +701,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             match next {
                 Some(next) if sections.insert(next) => section = next,
                 _ => {
-                    return Err(cursor.error(
+                    return Err(cursor.error(DiagnosticKind::ManifestSectionOrder,
                         "expected [package] followed by optional [dependencies], [wasm], [native] and [registry], each once",
                     ));
                 }
@@ -710,14 +721,16 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             "package" => {
                 if !matches!(key.as_str(), "name" | "version" | "namespace" | "edition") {
                     return Err(cursor.error(
+                        DiagnosticKind::UnknownManifestKey,
                         "unknown package key; expected name, version, namespace, or edition",
                     ));
                 }
                 let value = cursor.string()?;
                 if value.is_empty() || fields.insert(key, (value, span)).is_some() {
-                    return Err(
-                        cursor.error("package fields must be nonempty and occur exactly once")
-                    );
+                    return Err(cursor.error(
+                        DiagnosticKind::InvalidPackageField,
+                        "package fields must be nonempty and occur exactly once",
+                    ));
                 }
             }
             "dependencies" => {
@@ -727,8 +740,15 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     "path" => cursor.path_dependency()?,
                     "git" => (cursor.git_dependency()?, false),
                     "version" => (cursor.registry_dependency()?, false),
-                    "rev" | "branch" | "tag" => return Err(cursor.error(GIT_FORM)),
-                    _ => return Err(cursor.error("expected a path, git, or version dependency")),
+                    "rev" | "branch" | "tag" => {
+                        return Err(cursor.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
+                    }
+                    _ => {
+                        return Err(cursor.error(
+                            DiagnosticKind::InvalidDependencyForm,
+                            "expected a path, git, or version dependency",
+                        ));
+                    }
                 };
                 if dependencies
                     .insert(
@@ -741,15 +761,15 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     )
                     .is_some()
                 {
-                    return Err(Diagnostic::new(
-                        "E1011",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::DuplicateDependency,
                         "duplicate package dependency",
                         span,
                     ));
                 }
                 if dependencies.len() > 1024 {
-                    return Err(Diagnostic::new(
-                        "E1017",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::TooManyDependencies,
                         "a package may have at most 1024 dependencies",
                         span,
                     ));
@@ -760,17 +780,21 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     "max-memory" => &mut wasm.max_memory,
                     "stack-size" => &mut wasm.stack_size,
                     _ => {
-                        return Err(
-                            cursor.error("unknown wasm key; expected max-memory or stack-size")
-                        );
+                        return Err(cursor.error(
+                            DiagnosticKind::UnknownManifestKey,
+                            "unknown wasm key; expected max-memory or stack-size",
+                        ));
                     }
                 };
                 let text = cursor.string()?;
                 let size = parse_size(&text).ok_or_else(|| {
-                    cursor.error("WASM sizes must be a quoted byte count or a number followed by KiB, MiB, or GiB, such as \"64MiB\"")
+                    cursor.error(DiagnosticKind::InvalidWasmSize, "WASM sizes must be a quoted byte count or a number followed by KiB, MiB, or GiB, such as \"64MiB\"")
                 })?;
                 if slot.replace(size).is_some() {
-                    return Err(cursor.error("wasm keys must occur at most once"));
+                    return Err(cursor.error(
+                        DiagnosticKind::DuplicateManifestKey,
+                        "wasm keys must occur at most once",
+                    ));
                 }
             }
             "registry" => {
@@ -781,13 +805,21 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 let (slot, valid, rule) = match key.as_str() {
                     "index" => (index, valid_git_url(&value), GIT_URL_RULE),
                     "rev" => (rev, valid_rev(&value), GIT_REV_RULE),
-                    _ => return Err(cursor.error("unknown registry key; expected index or rev")),
+                    _ => {
+                        return Err(cursor.error(
+                            DiagnosticKind::UnknownManifestKey,
+                            "unknown registry key; expected index or rev",
+                        ));
+                    }
                 };
                 if !valid {
-                    return Err(cursor.error(rule));
+                    return Err(cursor.error(DiagnosticKind::InvalidRegistrySetting, rule));
                 }
                 if slot.replace(value).is_some() {
-                    return Err(cursor.error("registry keys must occur at most once"));
+                    return Err(cursor.error(
+                        DiagnosticKind::DuplicateManifestKey,
+                        "registry keys must occur at most once",
+                    ));
                 }
             }
             "native" => {
@@ -795,7 +827,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 if !matches!(key.as_str(), "link" | "libraries" | "search")
                     || !native_keys.insert(key.clone())
                 {
-                    return Err(cursor.error(FORM));
+                    return Err(cursor.error(DiagnosticKind::InvalidNativeSection, FORM));
                 }
                 let values = cursor.string_array(FORM)?;
                 let inputs = &mut native
@@ -808,7 +840,9 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                             .iter()
                             .find_map(|name| crate::driver::library_name_error(name))
                         {
-                            return Err(cursor.error(&message));
+                            return Err(
+                                cursor.error(DiagnosticKind::InvalidNativeLibraryName, &message)
+                            );
                         }
                         inputs.libraries = values;
                     }
@@ -818,6 +852,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                             .map(|value| {
                                 relative_path(value).ok_or_else(|| {
                                     cursor.error(
+                                        DiagnosticKind::InvalidNativePath,
                                         "link and search paths must be nonempty relative paths",
                                     )
                                 })
@@ -831,17 +866,28 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     }
                 }
             }
-            _ => return Err(cursor.error("expected [package] before fields")),
+            _ => {
+                return Err(cursor.error(
+                    DiagnosticKind::ManifestSectionOrder,
+                    "expected [package] before fields",
+                ));
+            }
         }
         cursor.finish()?;
     }
-    let missing = || Diagnostic::new("E0002", "[package] requires name and version", whole);
+    let missing = || {
+        Diagnostic::of(
+            DiagnosticKind::MissingPackageField,
+            "[package] requires name and version",
+            whole,
+        )
+    };
     let registry = match registry {
         None => None,
         Some((Some(index), rev, span)) => Some(Registry { index, rev, span }),
         Some((None, _, span)) => {
-            return Err(Diagnostic::new(
-                "E0002",
+            return Err(Diagnostic::of(
+                DiagnosticKind::MissingRegistryIndex,
                 "[registry] requires index = \"https://...\"",
                 span,
             ));
@@ -852,8 +898,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let edition = match fields.remove("edition") {
         None => Edition::MANIFEST_DEFAULT,
         Some((value, span)) => Edition::parse(&value).ok_or_else(|| {
-            Diagnostic::new(
-                "E0002",
+            Diagnostic::of(
+                DiagnosticKind::UnsupportedEdition,
                 format!(
                     "unsupported edition '{value}'; supported editions: {}",
                     Edition::supported_names()
@@ -865,8 +911,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let derived = namespace(&name, span)?;
     let namespace = match fields.remove("namespace") {
         Some((namespace, span)) if !valid_namespace(&namespace, edition) => {
-            return Err(Diagnostic::new(
-                "E1011",
+            return Err(Diagnostic::of(
+                DiagnosticKind::InvalidPackageNamespace,
                 "package namespace must be identifiers joined by '::' such as \"Acme::Tools\", at most 16 segments and 255 bytes, that do not start with 'std' or a standard library module name",
                 span,
             ));
@@ -904,8 +950,8 @@ struct Line<'a> {
 }
 
 impl Line<'_> {
-    fn error(&self, message: &str) -> Diagnostic {
-        Diagnostic::new("E0002", message, self.span)
+    fn error(&self, kind: DiagnosticKind, message: &str) -> Diagnostic {
+        Diagnostic::of(kind, message, self.span)
     }
 
     fn space(&mut self) {
@@ -926,7 +972,10 @@ impl Line<'_> {
         if self.take(token) {
             Ok(())
         } else {
-            Err(self.error(&format!("expected '{token}'")))
+            Err(self.error(
+                DiagnosticKind::ManifestSyntaxError,
+                &format!("expected '{token}'"),
+            ))
         }
     }
 
@@ -938,7 +987,7 @@ impl Line<'_> {
             .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
             .count();
         if end == 0 {
-            return Err(self.error("expected a bare key"));
+            return Err(self.error(DiagnosticKind::ManifestSyntaxError, "expected a bare key"));
         }
         let key = self.rest[..end].to_owned();
         self.rest = &self.rest[end..];
@@ -954,7 +1003,10 @@ impl Line<'_> {
                 '"' => return Ok(value),
                 '\\' => {
                     let Some(escaped) = self.rest.chars().next() else {
-                        return Err(self.error("unterminated string escape"));
+                        return Err(self.error(
+                            DiagnosticKind::ManifestSyntaxError,
+                            "unterminated string escape",
+                        ));
                     };
                     self.rest = &self.rest[escaped.len_utf8()..];
                     value.push(match escaped {
@@ -963,30 +1015,38 @@ impl Line<'_> {
                         'r' => '\r',
                         't' => '\t',
                         _ => {
-                            return Err(self
-                                .error("unsupported string escape; use \\\" \\\\ \\n \\r or \\t"));
+                            return Err(self.error(
+                                DiagnosticKind::ManifestSyntaxError,
+                                "unsupported string escape; use \\\" \\\\ \\n \\r or \\t",
+                            ));
                         }
                     });
                 }
                 character if character.is_control() => {
-                    return Err(self.error("unescaped control character in string"));
+                    return Err(self.error(
+                        DiagnosticKind::ManifestSyntaxError,
+                        "unescaped control character in string",
+                    ));
                 }
                 character => value.push(character),
             }
         }
-        Err(self.error("unterminated quoted string"))
+        Err(self.error(
+            DiagnosticKind::ManifestSyntaxError,
+            "unterminated quoted string",
+        ))
     }
 
     /// A one-line array of strings; `form` is the error for anything else.
     fn string_array(&mut self, form: &str) -> Result<Vec<String>, Diagnostic> {
         if !self.take("[") {
-            return Err(self.error(form));
+            return Err(self.error(DiagnosticKind::InvalidNativeSection, form));
         }
         let mut values = Vec::new();
         while !self.take("]") {
             values.push(self.string()?);
             if !self.take(",") && !self.rest.trim_start().starts_with(']') {
-                return Err(self.error(form));
+                return Err(self.error(DiagnosticKind::InvalidNativeSection, form));
             }
         }
         Ok(values)
@@ -997,7 +1057,10 @@ impl Line<'_> {
         if self.rest.is_empty() || self.rest.starts_with('#') {
             Ok(())
         } else {
-            Err(self.error("unexpected content after manifest field"))
+            Err(self.error(
+                DiagnosticKind::ManifestSyntaxError,
+                "unexpected content after manifest field",
+            ))
         }
     }
 
@@ -1012,14 +1075,18 @@ impl Line<'_> {
                 Some(Component::Prefix(_))
             );
         if path.is_empty() || path.contains('\0') || rooted {
-            return Err(self.error("dependency path must be a nonempty relative path"));
+            return Err(self.error(
+                DiagnosticKind::InvalidDependencyPath,
+                "dependency path must be a nonempty relative path",
+            ));
         }
         let mut native = false;
         if self.take(",") {
             if self.key()? != "native" {
-                return Err(
-                    self.error("only the path and native keys are supported in a dependency")
-                );
+                return Err(self.error(
+                    DiagnosticKind::UnknownManifestKey,
+                    "only the path and native keys are supported in a dependency",
+                ));
             }
             self.expect("=")?;
             native = if self.take("true") {
@@ -1027,7 +1094,10 @@ impl Line<'_> {
             } else if self.take("false") {
                 false
             } else {
-                return Err(self.error("native must be true or false"));
+                return Err(self.error(
+                    DiagnosticKind::InvalidDependencyNativeFlag,
+                    "native must be true or false",
+                ));
             };
         }
         self.expect("}")?;
@@ -1037,11 +1107,12 @@ impl Line<'_> {
     /// The rest of `{ version = "1.2.3" }` after `version`, through `}`.
     fn registry_dependency(&mut self) -> Result<DependencySource, Diagnostic> {
         if !self.take("=") {
-            return Err(self.error(VERSION_FORM));
+            return Err(self.error(DiagnosticKind::InvalidRegistryDependency, VERSION_FORM));
         }
-        let version = Version::parse(&self.string()?).ok_or_else(|| self.error(VERSION_RULE))?;
+        let version = Version::parse(&self.string()?)
+            .ok_or_else(|| self.error(DiagnosticKind::InvalidRegistryDependency, VERSION_RULE))?;
         if !self.take("}") {
-            return Err(self.error(VERSION_FORM));
+            return Err(self.error(DiagnosticKind::InvalidRegistryDependency, VERSION_FORM));
         }
         Ok(DependencySource::Registry(version))
     }
@@ -1049,21 +1120,21 @@ impl Line<'_> {
     /// The rest of `{ git = "<url>", rev = "<commit>" }` after `git`, through `}`.
     fn git_dependency(&mut self) -> Result<DependencySource, Diagnostic> {
         if !self.take("=") {
-            return Err(self.error(GIT_FORM));
+            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
         }
         let url = self.string()?;
         if !valid_git_url(&url) {
-            return Err(self.error(GIT_URL_RULE));
+            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_URL_RULE));
         }
         if !self.take(",") || self.key().ok().as_deref() != Some("rev") || !self.take("=") {
-            return Err(self.error(GIT_FORM));
+            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
         }
         let rev = self.string()?;
         if !valid_rev(&rev) {
-            return Err(self.error(GIT_REV_RULE));
+            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_REV_RULE));
         }
         if !self.take("}") {
-            return Err(self.error(GIT_FORM));
+            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
         }
         Ok(DependencySource::Git { url, rev })
     }

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::check::CheckedModule;
 use crate::check::semantic::SemanticIndex;
-use crate::diagnostic::{Diagnostic, DiagnosticSet, Severity, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, DiagnosticSet, Severity, Span};
 use crate::driver::{self, BuildOptions, OptLevel, Project};
 use crate::syntax::{
     Expr, ExprKind, Ident, MAX_SOURCE_BYTES, Program, Provenance, Recursion, Token, TokenKind,
@@ -227,27 +227,32 @@ impl<R: BufRead> Reader<R> {
 }
 
 fn too_large() -> Entered {
-    Entered::Rejected(Diagnostic::new(
-        "E0003",
+    Entered::Rejected(Diagnostic::of(
+        DiagnosticKind::SourceTooLarge,
         format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit; split the program"),
         Span::default(),
     ))
 }
 
 fn invalid_utf8() -> Entered {
-    Entered::Rejected(Diagnostic::new(
-        "E2001",
+    Entered::Rejected(Diagnostic::of(
+        DiagnosticKind::InputNotUtf8,
         "cannot read the input: it is not valid UTF-8",
         Span::default(),
     ))
 }
 
 /// Reports a command's own error at `input:1:1`.
-fn command_error(errors: &mut impl Write, line: &str, message: &str) -> io::Result<()> {
+fn command_error(
+    errors: &mut impl Write,
+    line: &str,
+    kind: DiagnosticKind,
+    message: &str,
+) -> io::Result<()> {
     render(
         errors,
         [(
-            &Diagnostic::new("E2000", message, Span::default()),
+            &Diagnostic::of(kind, message, Span::default()),
             "input",
             line,
         )],
@@ -488,7 +493,11 @@ fn classify(path: &str, text: String, program: &Program) -> Result<Input, Diagno
             .map(|function| (function.name.span, MAIN)),
     );
     if let Some((span, message)) = rejected.into_iter().min_by_key(|(span, _)| span.start) {
-        return Err(Diagnostic::new("E2000", message, span));
+        return Err(Diagnostic::of(
+            DiagnosticKind::ReplDeclarationNotAllowed,
+            message,
+            span,
+        ));
     }
     let end = program
         .entry
@@ -1043,21 +1052,29 @@ impl Repl {
         let argument = rest.trim();
         match name {
             "quit" | "list" | "reset" if !argument.is_empty() => {
-                command_error(errors, line, NO_ARGUMENTS)?
+                command_error(errors, line, DiagnosticKind::ReplCommandUsage, NO_ARGUMENTS)?
             }
             "quit" => return Ok(true),
             "list" => output.write_all(self.session.listing().as_bytes())?,
             "reset" => self.session = Session::default(),
-            "type" if argument.is_empty() => {
-                command_error(errors, line, ":type requires an expression")?
-            }
+            "type" if argument.is_empty() => command_error(
+                errors,
+                line,
+                DiagnosticKind::ReplCommandUsage,
+                ":type requires an expression",
+            )?,
             "type" => self.type_of(line, offset, output, errors)?,
             "load"
                 if Path::new(argument)
                     .extension()
                     .is_none_or(|extension| extension != "tz") =>
             {
-                command_error(errors, line, ":load requires one .tz file path")?
+                command_error(
+                    errors,
+                    line,
+                    DiagnosticKind::ReplCommandUsage,
+                    ":load requires one .tz file path",
+                )?
             }
             "load" => match driver::read_source(Path::new(argument)) {
                 Ok(text) => self.source(argument, text.replace("\r\n", "\n"), output, errors)?,
@@ -1066,6 +1083,7 @@ impl Repl {
             _ => command_error(
                 errors,
                 line,
+                DiagnosticKind::ReplUnknownCommand,
                 &format!("unknown command ':{name}'; {COMMANDS}"),
             )?,
         }
@@ -1090,7 +1108,11 @@ impl Repl {
                         && matches!(input.body, Body::Expression(..))
                 })
                 .ok_or_else(|| {
-                    Diagnostic::new("E2000", ":type requires an expression", Span::default())
+                    Diagnostic::of(
+                        DiagnosticKind::ReplCommandUsage,
+                        ":type requires an expression",
+                        Span::default(),
+                    )
                 })
         });
         if let Err(mut error) = parsed {
@@ -1262,8 +1284,8 @@ impl Repl {
         index: bool,
     ) -> io::Result<Option<Checked>> {
         if generated.text.len() > MAX_SOURCE_BYTES {
-            let error = Diagnostic::new(
-                "E0003",
+            let error = Diagnostic::of(
+                DiagnosticKind::SourceTooLarge,
                 format!(
                     "source exceeds the {MAX_SOURCE_BYTES}-byte limit; split the program or use :reset"
                 ),

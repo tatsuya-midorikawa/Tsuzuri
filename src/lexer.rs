@@ -1,4 +1,4 @@
-use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, MAX_UNIQUE_DIAGNOSTICS, Span};
 use crate::syntax::{
     Edition, FormatAlign, FormatKind, FormatSpec, InterpolationPiece, MAX_FORMAT_FIELD,
     MAX_SOURCE_BYTES, StringLiteral, Token, TokenKind,
@@ -135,8 +135,8 @@ fn tokenize(
     if source.len() > MAX_SOURCE_BYTES {
         return (
             Vec::new(),
-            vec![Diagnostic::new(
-                "E0003",
+            vec![Diagnostic::of(
+                DiagnosticKind::SourceTooLarge,
                 format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit; split the program"),
                 Span::default(),
             )],
@@ -245,8 +245,8 @@ impl Lexer<'_> {
             }
         }
         if let Some(hole) = self.holes.last() {
-            diagnostics.push(Diagnostic::new(
-                "E0001",
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::UnterminatedInterpolationHole,
                 "unterminated interpolation hole; close it with '}'",
                 Span::new(hole.start, self.position),
             ));
@@ -295,8 +295,8 @@ impl Lexer<'_> {
             if let Some(hole) = self.holes.last()
                 && matches!(byte, b'\n' | b'\r')
             {
-                return Err(Diagnostic::new(
-                    "E0001",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InterpolationHoleSpansLines,
                     "an interpolation hole must stay on one line; bind the value with 'let' first",
                     Span::new(hole.start, start + 1),
                 ));
@@ -307,8 +307,8 @@ impl Lexer<'_> {
         if !self.holes.is_empty()
             && (self.rest().starts_with("//") || self.rest().starts_with("/*"))
         {
-            return Err(Diagnostic::new(
-                "E0001",
+            return Err(Diagnostic::of(
+                DiagnosticKind::CommentInInterpolationHole,
                 "comments are not allowed inside an interpolation hole",
                 Span::new(start, start + 2),
             ));
@@ -424,8 +424,8 @@ impl Lexer<'_> {
             return Ok(kind);
         }
         self.position += 1;
-        let error = |message: &str| {
-            Diagnostic::new("E0001", message.to_owned(), Span::new(start, self.position))
+        let error = |kind: DiagnosticKind, message: &str| {
+            Diagnostic::of(kind, message.to_owned(), Span::new(start, self.position))
         };
         let ascii = "a 'B' literal holds only ASCII characters (U+0000 to U+007F)";
         match kind {
@@ -436,14 +436,15 @@ impl Lexer<'_> {
                         units.iter().map(|unit| *unit as u8).collect(),
                     ))
                 } else {
-                    Err(error(ascii))
+                    Err(error(DiagnosticKind::ByteLiteralNotAscii, ascii))
                 }
             }
             TokenKind::String(StringLiteral::Utf8(text)) => Ok(TokenKind::ScalarString(
                 text.chars().map(u32::from).collect(),
             )),
-            TokenKind::Char(_) => Err(error(ascii)),
+            TokenKind::Char(_) => Err(error(DiagnosticKind::ByteLiteralNotAscii, ascii)),
             _ => Err(error(
+                DiagnosticKind::ByteSuffixOnUnsupportedLiteral,
                 "only 'c'B, \"text\"B, and u8\"text\"B take the 'B' suffix",
             )),
         }
@@ -452,8 +453,8 @@ impl Lexer<'_> {
     fn no_byte_suffix(&mut self, kind: TokenKind, start: usize) -> Result<TokenKind, Diagnostic> {
         if self.at_byte_suffix() {
             self.position += 1;
-            return Err(Diagnostic::new(
-                "E0001",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ByteSuffixOnInterpolatedString,
                 "an interpolated string does not take the 'B' suffix",
                 Span::new(start, self.position),
             ));
@@ -467,8 +468,8 @@ impl Lexer<'_> {
             && self.source.as_bytes().get(start + 2) != Some(&b'\'')
         {
             self.position += 1;
-            return Err(Diagnostic::new(
-                "E0001",
+            return Err(Diagnostic::of(
+                DiagnosticKind::InvalidTypeVariableStart,
                 "a type variable starts with an apostrophe and an ASCII letter",
                 Span::new(start, self.position),
             ));
@@ -488,8 +489,8 @@ impl Lexer<'_> {
             }
             if self.position - start != 2 {
                 self.position += 1;
-                return Err(Diagnostic::new(
-                    "E0001",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::CharLiteralNotOneUnit,
                     "a char literal contains exactly one UTF-16 code unit",
                     Span::new(start, self.position),
                 ));
@@ -503,8 +504,8 @@ impl Lexer<'_> {
         let start = self.position;
         self.position += 1;
         let error = |end| {
-            Diagnostic::new(
-                "E0001",
+            Diagnostic::of(
+                DiagnosticKind::Utf8charNotOneScalar,
                 if utf8 {
                     "a utf8char literal contains exactly one Unicode scalar"
                 } else {
@@ -576,8 +577,8 @@ impl Lexer<'_> {
                 self.position += self.rest().chars().next().unwrap().len_utf8();
             }
         }
-        Err(Diagnostic::new(
-            "E0001",
+        Err(Diagnostic::of(
+            DiagnosticKind::UnterminatedBlockComment,
             "unterminated block comment",
             Span::new(start, self.position),
         ))
@@ -659,8 +660,8 @@ impl Lexer<'_> {
                     .get(self.position + 1)
                     .is_some_and(|next| (*next as char).is_digit(radix));
                 if !previous_digit || !next_digit {
-                    return Err(Diagnostic::new(
-                        "E0001",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::NumericSeparatorMisplaced,
                         "numeric separators must occur between digits",
                         Span::new(self.position, self.position + 1),
                     ));
@@ -672,8 +673,8 @@ impl Lexer<'_> {
             }
         }
         if self.position == start {
-            return Err(Diagnostic::new(
-                "E0001",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExpectedDigit,
                 "expected a digit",
                 Span::new(start, start),
             ));
@@ -729,8 +730,8 @@ impl Lexer<'_> {
         let digits = self.source[start..suffix_start].replace('_', "");
         if suffix == "I" {
             if float {
-                return Err(Diagnostic::new(
-                    "E0001",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::BigintSuffixWithFraction,
                     "the 'I' suffix makes a bigint, which has no fraction or exponent",
                     Span::new(start, self.position),
                 ));
@@ -741,8 +742,8 @@ impl Lexer<'_> {
             ""
         } else {
             crate::numeric::suffix_type(suffix).ok_or_else(|| {
-                Diagnostic::new(
-                    "E0001",
+                Diagnostic::of(
+                    DiagnosticKind::InvalidNumericLiteral,
                     "invalid numeric literal or type suffix",
                     Span::new(start, self.position),
                 )
@@ -750,8 +751,8 @@ impl Lexer<'_> {
         };
         let float_suffix = name.starts_with(['f', 'd']);
         if radix != 10 && float_suffix {
-            return Err(Diagnostic::new(
-                "E0001",
+            return Err(Diagnostic::of(
+                DiagnosticKind::FloatSuffixOnHexOrBinaryLiteral,
                 "a hexadecimal or binary literal takes an integer suffix, not a floating-point one",
                 Span::new(start, self.position),
             ));
@@ -781,8 +782,8 @@ impl Lexer<'_> {
             };
             Self::push_codepoint(&mut text, codepoint);
         }
-        Err(Diagnostic::new(
-            "E0001",
+        Err(Diagnostic::of(
+            DiagnosticKind::UnterminatedStringLiteral,
             "unterminated string literal",
             Span::new(start, self.position),
         ))
@@ -835,16 +836,16 @@ impl Lexer<'_> {
                     '0' => 0,
                     'u' if !utf8 || self.rest().starts_with('{') => self.unicode_escape(utf8)?,
                     _ => {
-                        return Err(Diagnostic::new(
-                            "E0001",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::InvalidStringEscape,
                             "invalid string escape",
                             Span::new(self.position - escape.len_utf8() - 1, self.position),
                         ));
                     }
                 }))
             }
-            '\n' | '\r' => Err(Diagnostic::new(
-                "E0001",
+            '\n' | '\r' => Err(Diagnostic::of(
+                DiagnosticKind::RawNewlineInString,
                 "use '\\n' for a newline inside a string",
                 Span::new(start, self.position),
             )),
@@ -893,8 +894,8 @@ impl Lexer<'_> {
                     u32::from('}')
                 }
                 '}' => {
-                    return Err(Diagnostic::new(
-                        "E0001",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::SingleClosingBraceInInterpolation,
                         "a single '}' in an interpolated string must be written '}}'",
                         Span::new(self.position - 1, self.position),
                     ));
@@ -906,8 +907,8 @@ impl Lexer<'_> {
             };
             Self::push_codepoint(&mut text, codepoint);
         }
-        Err(Diagnostic::new(
-            "E0001",
+        Err(Diagnostic::of(
+            DiagnosticKind::UnterminatedStringLiteral,
             "unterminated string literal",
             Span::new(start, self.position),
         ))
@@ -951,8 +952,8 @@ impl Lexer<'_> {
             .find(['}', '\n', '\r', '"'])
             .filter(|index| tail.as_bytes()[*index] == b'}')
         else {
-            return Err(Diagnostic::new(
-                "E0001",
+            return Err(Diagnostic::of(
+                DiagnosticKind::UnterminatedInterpolationHole,
                 "unterminated interpolation hole; close it with '}'",
                 Span::new(opened, self.position + 1),
             ));
@@ -988,8 +989,8 @@ impl Lexer<'_> {
             text.len() == 4
         };
         if !valid_length || (braced && !self.rest().starts_with('}')) || value.is_none() {
-            return Err(Diagnostic::new(
-                "E0001",
+            return Err(Diagnostic::of(
+                DiagnosticKind::InvalidUnicodeScalarEscape,
                 if utf8 {
                     "invalid Unicode scalar escape"
                 } else {
@@ -1069,8 +1070,8 @@ impl Lexer<'_> {
             '|' => Pipe,
             '^' => Caret,
             _ => {
-                return Err(Diagnostic::new(
-                    "E0001",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UnexpectedCharacter,
                     format!("unexpected character {character:?}; identifiers use ASCII"),
                     Span::new(self.position, self.position + character.len_utf8()),
                 ));
@@ -1086,16 +1087,22 @@ fn parse_format_spec(text: &str, span: Span) -> Result<Option<FormatSpec>, Diagn
     if text.is_empty() {
         return Ok(None);
     }
-    let invalid = |message: String| Diagnostic::new("E0001", message, span);
+    let invalid = |kind: DiagnosticKind, message: String| Diagnostic::of(kind, message, span);
     let malformed = || {
-        invalid(format!(
-            "invalid format spec '{text}'; expected [[fill]align][+][width][.precision][type]"
-        ))
+        invalid(
+            DiagnosticKind::InvalidFormatSpec,
+            format!(
+                "invalid format spec '{text}'; expected [[fill]align][+][width][.precision][type]"
+            ),
+        )
     };
     let out_of_range = || {
-        invalid(format!(
-            "format width and precision are at most {MAX_FORMAT_FIELD} and have no leading zeros; write '0>' to pad with zeros"
-        ))
+        invalid(
+            DiagnosticKind::FormatFieldOutOfRange,
+            format!(
+                "format width and precision are at most {MAX_FORMAT_FIELD} and have no leading zeros; write '0>' to pad with zeros"
+            ),
+        )
     };
     let chars: Vec<char> = text.chars().collect();
     let align_of = |ch: char| match ch {
@@ -1168,14 +1175,18 @@ fn parse_format_spec(text: &str, span: Span) -> Result<Option<FormatSpec>, Diagn
             ),
             Some(precision),
         ) => {
-            return Err(invalid(format!(
-                "precision does not apply to integer format '{type_char}'; remove '.{precision}'"
-            )));
+            return Err(invalid(
+                DiagnosticKind::FormatPrecisionOnInteger,
+                format!(
+                    "precision does not apply to integer format '{type_char}'; remove '.{precision}'"
+                ),
+            ));
         }
         (Some(FormatKind::Exponent | FormatKind::Fixed), None) => {
-            return Err(invalid(format!(
-                "format type '{type_char}' needs a precision such as '.2{type_char}'"
-            )));
+            return Err(invalid(
+                DiagnosticKind::FormatTypeNeedsPrecision,
+                format!("format type '{type_char}' needs a precision such as '.2{type_char}'"),
+            ));
         }
         _ => {}
     }

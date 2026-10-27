@@ -1,0 +1,1 @@
+def first :: (i64 * i64) -> i64 = \pair -> pair.0

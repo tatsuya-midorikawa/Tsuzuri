@@ -1,0 +1,4 @@
+def total :: unit -> i64 = \_ ->
+    let text = "hello"
+    let copy = to_string text
+    text.length + copy.length

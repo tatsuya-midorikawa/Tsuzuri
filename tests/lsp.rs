@@ -683,7 +683,7 @@ fn code_action_prefixes_unused_locals() {
     assert_eq!(actions[0]["isPreferred"], true);
     assert_eq!(
         actions[0]["diagnostics"],
-        json!([{"range": range(0, 23, 28), "severity": 2, "code": "W1001", "source": "tsuzuri", "message": "unused local 'spare'; prefix it with '_' to silence this warning"}])
+        json!([{"range": range(0, 23, 28), "severity": 2, "code": "W1001", "source": "tsuzuri", "message": "unused local 'spare'; prefix it with '_' to silence this warning", "data": {"kind": "unused_local"}}])
     );
     assert_eq!(
         actions[0]["edit"],
@@ -1649,9 +1649,10 @@ fn deprecated_uses_from_other_packages_are_published_as_warnings() {
         published("/Main.tz"),
         json!([
             {"range": range(0, 28, 31), "severity": 2, "code": "W1005", "source": "tsuzuri",
-             "message": "'LegacyLib::Old.Light' is deprecated; see its documentation for a replacement"},
+             "message": "'LegacyLib::Old.Light' is deprecated; see its documentation for a replacement",
+             "data": {"kind": "deprecated_use"}},
             {"range": range(1, 15, 18), "severity": 2, "code": "W1005", "source": "tsuzuri",
-             "message": "'LegacyLib::Old.old' is deprecated: use next"},
+             "message": "'LegacyLib::Old.old' is deprecated: use next", "data": {"kind": "deprecated_use"}},
         ])
     );
     // A use inside the package that declares it is not reported.
@@ -1684,7 +1685,12 @@ fn publishes_related_information_and_data() {
     assert_eq!(related[0]["message"], "value moved here");
     assert_eq!(related[0]["location"]["uri"], published["params"]["uri"]);
     assert_eq!(related[0]["location"]["range"], range(4, 20, 24));
-    assert!(diagnostic.get("data").is_none(), "{diagnostic}");
+    // Every diagnostic has a kind (G23); this one has no fixes.
+    assert_eq!(
+        diagnostic["data"],
+        json!({"kind": "use_after_move"}),
+        "{diagnostic}"
+    );
 }
 
 #[test]

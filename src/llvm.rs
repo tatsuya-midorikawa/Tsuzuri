@@ -5,7 +5,7 @@ use crate::check::{
     Builtin, BuiltinInstance, CheckedFunction, CheckedModule, FunctionRef, Local, ModuleOrigin,
     SharedKind, Type, TypedExpr, TypedExprKind,
 };
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::interval::Flags;
 use crate::syntax::{BinaryOp, StringLiteral, UnaryOp};
 use crate::trap::{TrapKind, TrapSource};
@@ -153,8 +153,8 @@ pub fn emit_with_export_style(
     style: ExportStyle,
 ) -> Result<String, Diagnostic> {
     if options.wasm && style == ExportStyle::Dllexport {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionRequiresBuild,
             "dllexport requires a native target",
             Span::default(),
         ));
@@ -583,8 +583,8 @@ pub fn emit_with_debug_info_numbered(
     numbering: &dyn Fn(usize) -> TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     if sources.is_empty() {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::DebugInfoWithoutSourceMap,
             "debug information requires a source map",
             Span::default(),
         ));
@@ -690,8 +690,8 @@ fn emit_native(
     numbering: &dyn Fn(usize) -> TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     if options.wasm {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionRequiresBuild,
             "CPU dispatch is native-only",
             Span::default(),
         ));
@@ -742,8 +742,8 @@ pub fn emit_trap_return(
     cpu_dispatch: bool,
 ) -> Result<EmitOutput, Diagnostic> {
     if options.wasm {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionRequiresBuild,
             "--trap-mode return is native-only",
             Span::default(),
         ));
@@ -1017,8 +1017,8 @@ pub fn emit_test_runner_with(
     options: TestRunnerOptions<'_>,
 ) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.tests.len()) {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::IndexOutOfRange,
             "invalid test index",
             Span::default(),
         ));
@@ -1073,8 +1073,8 @@ fn emit_bench_runner_in(
     allocator: Allocator,
 ) -> Result<String, Diagnostic> {
     if selected.iter().any(|index| *index >= module.benches.len()) {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::IndexOutOfRange,
             "invalid bench index",
             Span::default(),
         ));
@@ -1192,8 +1192,8 @@ fn emit_program_in(
             || instrumentation.memory64
             || instrumentation.trap_return)
     {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionConflict,
             "external runtime objects cannot be combined with trap, debug, thread or memory64 instrumentation",
             Span::default(),
         ));
@@ -1212,22 +1212,22 @@ fn emit_program_in(
     };
     let allocator = instrumentation.allocator;
     if allocator == Allocator::Host && instrumentation.wasm_threads {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionConflict,
             "the host allocator cannot be combined with WASM threads",
             Span::default(),
         ));
     }
     if allocator != Allocator::System && instrumentation.trap_return {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionConflict,
             "--trap-mode return keeps its own tracked allocator",
             Span::default(),
         ));
     }
     if allocator == Allocator::Small && wasm {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionRequiresBuild,
             "the small allocator is for native targets; WebAssembly keeps its own heap",
             Span::default(),
         ));
@@ -1663,8 +1663,8 @@ fn emit_program_in(
     let mut runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&output);
     let reads_counters = runtime_symbols.contains("tz.heap.counter");
     if reads_counters && matches!(allocator, Allocator::Host | Allocator::Small) {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::AllocNeedsCountingAllocator,
             "Alloc needs the counting allocator; remove --allocator host or --allocator small, or build with --allocator counting",
             Span::default(),
         ));
@@ -2036,8 +2036,8 @@ fn check_copy_inventory(
 fn validate_lowering(module: &CheckedModule) -> Result<(), Diagnostic> {
     let check = |ty: &Type, span| {
         if ty.contains_error() || ty.contains_constructor() {
-            Err(Diagnostic::new(
-                "E1015",
+            Err(Diagnostic::of(
+                DiagnosticKind::InternalUnlowerableIr,
                 "internal compiler error: erroneous or unsaturated typed IR cannot be lowered",
                 span,
             ))
@@ -3464,7 +3464,11 @@ fn restricted_error(
         }
     }
     let Some(found) = found else {
-        return Diagnostic::new("E1018", format!("{rule}; {advice}"), Span::default());
+        return Diagnostic::of(
+            DiagnosticKind::BenchClockOutsideBench,
+            format!("{rule}; {advice}"),
+            Span::default(),
+        );
     };
     let mut path = vec![found];
     while let Some(Some(id)) = previous.get(path.last().unwrap()) {
@@ -3503,7 +3507,7 @@ fn restricted_error(
         }
         _ => format!("{rule}, but {root_name} reads it; {advice}"),
     };
-    Diagnostic::new("E1018", message, span)
+    Diagnostic::of(DiagnosticKind::BenchClockOutsideBench, message, span)
 }
 
 /// `Module.name` of a function written in user code, for diagnostics; `None` for tests, lambdas,
@@ -3818,8 +3822,7 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
         .entry
         .map(|id| &module.functions[id])
         .ok_or_else(|| {
-            Diagnostic::new(
-                "E2004",
+            Diagnostic::of(DiagnosticKind::EntryPointMissing,
                 "an executable requires top-level entry-point code or 'def main' in Main.tz; use '--emit object' for a library",
                 Span::default(),
             )
@@ -3832,8 +3835,8 @@ fn validate_main(module: &CheckedModule) -> Result<(), Diagnostic> {
             Type::Unit | Type::String | Type::Utf8String
         )
     {
-        return Err(Diagnostic::new(
-            "E2004",
+        return Err(Diagnostic::of(
+            DiagnosticKind::EntryPointResultType,
             "top-level entry-point code must end with IO<T>, a number, bool, char, utf8char, unit, string, or utf8string",
             main.span,
         ));

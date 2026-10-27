@@ -80,8 +80,8 @@ fn wraps_own_parameters(parameters: &[String], arguments: &[Type]) -> bool {
 }
 
 fn growth_error(name: &str, span: Span) -> Diagnostic {
-    Diagnostic::new(
-        "E1017",
+    Diagnostic::of(
+        DiagnosticKind::PolymorphicRecursionGrowth,
         format!(
             "polymorphic recursion grows the types of '{name}' without bound; make the recursive call use the same types"
         ),
@@ -256,8 +256,8 @@ pub(super) fn bounded_type(ty: &Type, span: Span) -> Result<(), Diagnostic> {
     if ty.contains_error() || type_size(ty).is_some() {
         Ok(())
     } else {
-        Err(Diagnostic::new(
-            "E1017",
+        Err(Diagnostic::of(
+            DiagnosticKind::PolymorphicTypeExpansionLimit,
             "polymorphic type expansion exceeds the compiler limit; simplify the type or recursion",
             span,
         ))
@@ -316,8 +316,8 @@ pub(super) fn require_concrete(ty: &Type, span: Span) -> Result<(), Diagnostic> 
         ty.clone()
     });
     if unknown {
-        Err(Diagnostic::new(
-            "E1015",
+        Err(Diagnostic::of(
+            DiagnosticKind::ConcreteTypeRequired,
             "a concrete type is required here; add a type annotation",
             span,
         ))
@@ -334,8 +334,12 @@ pub(super) struct Inference {
 
 /// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
 fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
-    Diagnostic::new("E1003", format!("expected {expected}, found {found}"), span)
-        .expected_found(expected, found)
+    Diagnostic::of(
+        DiagnosticKind::TypeMismatch,
+        format!("expected {expected}, found {found}"),
+        span,
+    )
+    .expected_found(expected, found)
 }
 
 impl Inference {
@@ -442,8 +446,8 @@ impl Inference {
                     }
                     return Ok(());
                 }
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ConstructorKindMismatch,
                     "type constructor application has an incompatible kind",
                     span,
                 ));
@@ -457,7 +461,11 @@ impl Inference {
                     ty.clone()
                 });
                 if occurs {
-                    return Err(Diagnostic::new("E1015", "infinite inferred type", span));
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::InfiniteInferredType,
+                        "infinite inferred type",
+                        span,
+                    ));
                 }
                 bounded_type(ty, span)?;
                 self.solutions[*id] = Some(ty.clone());
@@ -807,8 +815,8 @@ impl Classes {
                         return Ok(ty);
                     }
                 }
-                Err(Diagnostic::new(
-                    "E1004",
+                Err(Diagnostic::of(
+                    DiagnosticKind::StdItemMissing,
                     "Parse needs the standard union Maybe<'a> = None | Some of 'a",
                     Span::default(),
                 ))
@@ -911,8 +919,8 @@ impl Classes {
             let value = names.std_type("Json", "Value", Box::default(), span);
             let error = names.std_type("Json", "Error", Box::default(), span);
             value.and_then(|value| Ok((value, error?))).map_err(|_| {
-                Diagnostic::new(
-                    "E1004",
+                Diagnostic::of(
+                    DiagnosticKind::StdItemMissing,
                     format!("{class} needs the standard module Json"),
                     span,
                 )
@@ -922,8 +930,8 @@ impl Classes {
             names
                 .std_type("Result", "Result", vec![ok, error].into(), Span::default())
                 .map_err(|_| {
-                    Diagnostic::new(
-                        "E1004",
+                    Diagnostic::of(
+                        DiagnosticKind::StdItemMissing,
                         "Encode and Decode need the standard union Result<'a, 'e>",
                         Span::default(),
                     )
@@ -985,8 +993,8 @@ impl Classes {
                             return Err(duplicate(&method.name));
                         }
                         if !method.constraints.is_empty() {
-                            return Err(Diagnostic::new(
-                                "E1016",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ClassMethodConstraint,
                                 "class methods use the class parameter; method-specific constraints are not supported",
                                 method.name.span,
                             ));
@@ -997,8 +1005,8 @@ impl Classes {
                             .chain(std::iter::once(&method.result))
                         {
                             if !classes.inline_constraints(ty, module, names)?.is_empty() {
-                                return Err(Diagnostic::new(
-                                    "E1016",
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::ClassMethodConstraint,
                                     "class methods cannot add constraints to the class parameter",
                                     method.name.span,
                                 ));
@@ -1013,11 +1021,10 @@ impl Classes {
                                     if let TypeExprKind::Mut(inner) = &ty.kind {
                                         reads.push(false);
                                         if method.pure {
-                                            return Err(Diagnostic::new("E1029", "a pure class method cannot take a mutable reference", ty.span));
+                                            return Err(Diagnostic::of(DiagnosticKind::PureMethodMutableReference, "a pure class method cannot take a mutable reference", ty.span));
                                         }
                                         if !names.borrowing_modules.contains(module) {
-                                            return Err(Diagnostic::new(
-                                                "E1005",
+                                            return Err(Diagnostic::of(DiagnosticKind::MutParameterNeedsEdition2027,
                                                 "'mut T' parameter conventions require edition 2027",
                                                 ty.span,
                                             ));
@@ -1057,8 +1064,8 @@ impl Classes {
                             || (arity == 0
                                 && signature_variables != [declaration.variable.text.clone()])
                         {
-                            return Err(Diagnostic::new(
-                                "E1016",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ClassMethodTypeVariable,
                                 "each class method must mention exactly the declared class type variable",
                                 method.name.span,
                             ));
@@ -1080,8 +1087,8 @@ impl Classes {
                         });
                     }
                     if methods.is_empty() {
-                        return Err(Diagnostic::new(
-                            "E1016",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ClassWithoutMethods,
                             "a class needs at least one method",
                             declaration.name.span,
                         ));
@@ -1112,15 +1119,15 @@ impl Classes {
                 let constraints =
                     classes.resolve_constraints(&declaration.superclasses, input.name, names)?;
                 if constraints.iter().any(|constraint| matches!(&constraint.ty, Type::Variable(name) if name == &declaration.variable.text) && classes.declarations[constraint.class].arity != classes.declarations[id].arity) {
-                    return Err(Diagnostic::new("E1015", "superclass parameter kind does not match the class parameter", declaration.variable.span));
+                    return Err(Diagnostic::of(DiagnosticKind::SuperclassKindMismatch, "superclass parameter kind does not match the class parameter", declaration.variable.span));
                 }
                 if constraints.iter().any(|constraint| {
                     variables(&constraint.ty)
                         .iter()
                         .any(|variable| variable != &declaration.variable.text)
                 }) {
-                    return Err(Diagnostic::new(
-                        "E1027",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::SuperclassTypeVariable,
                         "superclasses may mention only the class type variable",
                         declaration.name.span,
                     ));
@@ -1209,8 +1216,8 @@ impl Classes {
                     .insert(variable.clone(), arity)
                     .is_some_and(|previous| previous != arity)
                 {
-                    return Err(Diagnostic::new(
-                        "E1015",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::TypeVariableKindConflict,
                         "type variable is constrained at incompatible kinds",
                         expression.ty.span,
                     ));
@@ -1248,8 +1255,8 @@ impl Classes {
         names: &Names,
     ) -> Result<Vec<Constraint>, Diagnostic> {
         if expressions.len() > MAX_CONSTRAINTS {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ClassConstraintLimit,
                 "too many class constraints",
                 expressions[MAX_CONSTRAINTS].ty.span,
             ));
@@ -1258,16 +1265,15 @@ impl Classes {
             .iter()
             .map(|expression| {
                 let ConstraintName::Class(name) = &expression.name else {
-                    return Err(Diagnostic::new(
-                        "E1027",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ClassContextNotAClass,
                         "class contexts require type class constraints",
                         expression.ty.span,
                     ));
                 };
-                let class = self.resolve(names, module, name).map_err(|mut error| {
-                    error.code = "E1027";
-                    error
-                })?;
+                let class = self
+                    .resolve(names, module, name)
+                    .map_err(|error| error.recode(DiagnosticKind::UnknownClassInContext))?;
                 let ty = higher_kinds::resolve_constructor(
                     &expression.ty,
                     self.declarations[class].arity,
@@ -1297,15 +1303,15 @@ impl Classes {
                     continue;
                 }
                 if states[class] == 1 {
-                    return Err(Diagnostic::new(
-                        "E1027",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::SuperclassCycle,
                         "superclass constraints form a cycle",
                         span,
                     ));
                 }
                 if depth >= 64 {
-                    return Err(Diagnostic::new(
-                        "E1017",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::SuperclassResolutionLimit,
                         "superclass resolution exceeds depth 64",
                         span,
                     ));
@@ -1330,8 +1336,8 @@ impl Classes {
         let mut seen = BTreeSet::new();
         while let Some((current, depth)) = pending.pop() {
             if depth >= 64 || result.len() >= MAX_CONSTRAINTS {
-                return Err(Diagnostic::new(
-                    "E1017",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::SuperclassResolutionLimit,
                     "superclass constraint expansion exceeds the compiler limit",
                     constraint.span,
                 ));
@@ -1508,8 +1514,8 @@ impl Classes {
             [class] => format!("a {class} constraint"),
             _ => format!("{} constraints", classes.join(" and ")),
         };
-        Diagnostic::new(
-            "E1028",
+        Diagnostic::of(
+            DiagnosticKind::DynIncompatibleClass,
             format!(
                 "{} is not allowed: {reason}; use a generic function with {constraint} instead",
                 dyn_type.display()
@@ -1535,8 +1541,8 @@ impl Classes {
     pub fn resolve(&self, names: &Names, module: &str, name: &Ident) -> Result<usize, Diagnostic> {
         self.find(names, module, &name.text, name.span)?
             .ok_or_else(|| {
-                Diagnostic::new(
-                    "E1016",
+                Diagnostic::of(
+                    DiagnosticKind::UnknownTypeClass,
                     format!("unknown type class '{}'", name.text),
                     name.span,
                 )
@@ -1633,8 +1639,8 @@ impl Classes {
                         .enumerate()
                         .find(|(_, method)| method.name == definition.name.text)
                         .ok_or_else(|| {
-                            Diagnostic::new(
-                                "E1016",
+                            Diagnostic::of(
+                                DiagnosticKind::DefaultBodyUnknownMethod,
                                 "a default body must name a declared class method",
                                 definition.name.span,
                             )
@@ -1720,8 +1726,8 @@ impl Classes {
                         names,
                     )?;
                     if class.arity > 0 && matches!(ty, Type::Variable(_)) {
-                        return Err(Diagnostic::new(
-                            "E1015",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::InstanceHeadNotConstructor,
                             "higher-kinded instances require a named constructor head",
                             instance.ty.span,
                         ));
@@ -1734,8 +1740,8 @@ impl Classes {
                             .iter()
                             .any(|variable| !type_parameters.contains(variable))
                     }) {
-                        return Err(Diagnostic::new(
-                            "E1027",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::InstanceContextVariable,
                             "instance context mentions a type variable absent from its head",
                             instance.class.span,
                         ));
@@ -1746,8 +1752,8 @@ impl Classes {
                             || self.intrinsic(id, &ty, types)
                             || self.structural(id, &ty))
                     {
-                        return Err(Diagnostic::new(
-                            "E1016",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::BuiltinInstanceOverride,
                             "built-in instances and marker classes cannot be overridden",
                             instance.class.span,
                         ));
@@ -1782,8 +1788,8 @@ impl Classes {
                     for previous in candidates.iter().map(|&index| &self.instances[index]) {
                         overlap_pairs += 1;
                         if overlap_pairs > 1024 {
-                            return Err(Diagnostic::new(
-                                "E1017",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::InstanceOverlapLimit,
                                 "instance overlap checking exceeds 1024 pairs",
                                 instance.class.span,
                             ));
@@ -1802,8 +1808,8 @@ impl Classes {
                             .unify(&left, &right, types, instance.class.span)
                             .is_ok()
                         {
-                            return Err(Diagnostic::new(
-                                "E1016",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::OverlappingInstance,
                                 format!(
                                     "overlapping instance for {}<{}>",
                                     class.name,
@@ -1820,8 +1826,8 @@ impl Classes {
                             .iter()
                             .any(|method| method.name == definition.name.text)
                         {
-                            return Err(Diagnostic::new(
-                                "E1016",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::InstanceUnknownMethod,
                                 format!(
                                     "unknown method '{}' for {}",
                                     definition.name.text, class.name
@@ -1855,8 +1861,8 @@ impl Classes {
                                 implementations.push((function, arguments));
                                 continue;
                             }
-                            return Err(Diagnostic::new(
-                                "E1016",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::InstanceMissingMethod,
                                 format!("missing method '{}.{}'", class.name, method.name),
                                 instance.class.span,
                             ));
@@ -2046,14 +2052,18 @@ impl Classes {
                 let checked = self.normalize(&superclass, types).and_then(|required| {
                     for obligation in required {
                         if !self.entails(&instance.constraints, &obligation, types)? {
-                            return Err(Diagnostic::new("E1027", "instance context does not entail its superclass; add the required constraint or instance", instance.span));
+                            return Err(Diagnostic::of(DiagnosticKind::InstanceMissingSuperclass, "instance context does not entail its superclass; add the required constraint or instance", instance.span));
                         }
                     }
                     Ok(())
                 });
                 if let Err(mut error) = checked {
                     if error.code != "E1017" {
-                        error.code = if instance.derived { "E1025" } else { "E1027" };
+                        error = error.recode(if instance.derived {
+                            DiagnosticKind::DerivedInstanceInvalid
+                        } else {
+                            DiagnosticKind::InstanceCheckFailed
+                        });
                     }
                     diagnostics.push(error);
                 }
@@ -2111,7 +2121,7 @@ impl Classes {
                         .iter()
                         .any(|(method, _)| *method == function)
             }) {
-                error.code = "E1025";
+                error = error.recode(DiagnosticKind::DerivedInstanceInvalid);
                 error.span = instance.span;
             }
         }
@@ -2199,8 +2209,8 @@ impl Classes {
                     .collect();
                 let structural = cycle.iter().any(|(_, (_, derived))| *derived);
                 if structural && self.declarations[current.class].name == "Default" {
-                    return Err(Diagnostic::new(
-                        "E1025",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::DefaultDeriveRecursive,
                         "derived Default follows a recursive first case; implement a terminating Default manually",
                         current.span,
                     ));
@@ -2208,8 +2218,8 @@ impl Classes {
                 if structural && cycle.iter().all(|((class, _), _)| *class == current.class) {
                     continue;
                 }
-                return Err(Diagnostic::new(
-                    "E1017",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InstanceResolutionCycle,
                     "instance constraint resolution forms a cycle",
                     current.span,
                 ));
@@ -2220,8 +2230,8 @@ impl Classes {
             active.insert(key, (depth, derived));
             work += 1;
             if depth >= 64 || work > MAX_CONSTRAINTS {
-                return Err(Diagnostic::new(
-                    "E1017",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InstanceResolutionLimit,
                     "instance constraint resolution exceeds depth 64 or 128 obligations",
                     current.span,
                 ));
@@ -2333,15 +2343,15 @@ impl Classes {
             .iter()
             .position(|candidate| candidate.name == method.text)
             .ok_or_else(|| {
-                Diagnostic::new(
-                    "E1002",
+                Diagnostic::of(
+                    DiagnosticKind::ClassHasNoMethod,
                     format!("type class '{class_name}' has no method '{}'", method.text),
                     method.span,
                 )
             })?;
         if self.declarations[class].builtin && self.declarations[class].name == "Drop" {
-            return Err(Diagnostic::new(
-                "E1016",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExplicitDropCall,
                 "'Drop.drop' runs automatically when a value is dropped; let the value go out of scope or pass it to a function that consumes it",
                 method.span,
             ));
@@ -2504,8 +2514,8 @@ impl Classes {
             let class = self.declarations[constraint.class].name.as_str();
             if matches!(class, "Capture" | "Send") && constraint.ty.holds_rc(types) {
                 return Err(if class == "Capture" {
-                    Diagnostic::new(
-                        "E1005",
+                    Diagnostic::of(
+                        DiagnosticKind::CaptureRcInFunctionValue,
                         format!(
                             "cannot capture {} in a function value; function values may move to other tasks, and Rc counts its owners without atomic operations; capture an Arc, or pass the Rc as an argument",
                             constraint.ty.display(types)
@@ -2513,8 +2523,8 @@ impl Classes {
                         constraint.span,
                     )
                 } else {
-                    Diagnostic::new(
-                        "E1013",
+                    Diagnostic::of(
+                        DiagnosticKind::TaskRequiresSend,
                         format!(
                             "tasks require Send values; {} holds an Rc or Rc.Weak, whose counts are not atomic; share values across tasks with Arc",
                             constraint.ty.display(types)
@@ -2535,16 +2545,16 @@ impl Classes {
                     )
                 };
                 return Err(if class == "Capture" {
-                    Diagnostic::new(
-                        "E1005",
+                    Diagnostic::of(
+                        DiagnosticKind::CaptureUnsendableInFunctionValue,
                         format!(
                             "cannot capture {ty} in a function value; function values may move to other tasks, and {reason}; pass it as an argument"
                         ),
                         constraint.span,
                     )
                 } else {
-                    Diagnostic::new(
-                        "E1013",
+                    Diagnostic::of(
+                        DiagnosticKind::TaskRequiresSend,
                         format!(
                             "tasks require Send values; {reason}; give the value to one task instead"
                         ),
@@ -2553,8 +2563,8 @@ impl Classes {
                 });
             }
             if class == "Capture" && constraint.ty.holds_cell(types) {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::CaptureSyncPrimitiveInFunctionValue,
                     format!(
                         "cannot capture {} in a function value; a function value may be copied, and a copy of an Atomic or Mutex would be a separate cell; capture a borrow of it, share it through an Arc, or pass it as an argument",
                         constraint.ty.display(types)
@@ -2563,8 +2573,8 @@ impl Classes {
                 ));
             }
             if class == "Sync" {
-                return Err(Diagnostic::new(
-                    "E1013",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TaskRequiresSync,
                     format!(
                         "tasks can share only Sync values; {} is not Sync (an Rc, an extern handle, a dyn value that is not Copy, an Owned.Function, a task, an exclusive reference, a lazy sequence, an Async computation or a GPU handle cannot be shared between tasks); move the value into one task, or share an Arc of a Sync value",
                         constraint.ty.display(types)
@@ -2573,8 +2583,8 @@ impl Classes {
                 ));
             }
             if class == "AtomicValue" {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::AtomicElementType,
                     format!(
                         "atomic values must be i8, i16, i32, i64, i8u, i16u, i32u, i64u or bool; use Mutex for {}",
                         constraint.ty.display(types)
@@ -2583,8 +2593,8 @@ impl Classes {
                 ));
             }
             if self.declarations[constraint.class].name == "Capture" {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::CaptureExclusiveInReusableFunction,
                     format!(
                         "cannot capture {} in a reusable function; fully apply exclusive borrows and keep single-use tasks in task blocks",
                         constraint.ty.display(types)
@@ -2593,8 +2603,8 @@ impl Classes {
                 ));
             }
             if self.declarations[constraint.class].name == "Send" {
-                return Err(Diagnostic::new(
-                    "E1013",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TaskRequiresOwnedValue,
                     format!(
                         "tasks require owned values; {} contains a reference",
                         constraint.ty.display(types)
@@ -2602,8 +2612,8 @@ impl Classes {
                     constraint.span,
                 ));
             }
-            Err(Diagnostic::new(
-                "E1005",
+            Err(Diagnostic::of(
+                DiagnosticKind::NoInstance,
                 format!(
                     "no instance for {}<{}>; define an instance or use a supported type",
                     self.declarations[constraint.class].name,
@@ -2692,8 +2702,8 @@ fn validate_drop_instance(
             .strip_prefix(instance_module)
             .is_some_and(|rest| rest.starts_with('.'));
     if origin != ModuleOrigin::User && !own_std_type {
-        return Err(Diagnostic::new(
-            "E1016",
+        return Err(Diagnostic::of(
+            DiagnosticKind::DropInstanceTarget,
             "only records and unions declared in this program can implement Drop",
             span,
         ));
@@ -2706,15 +2716,15 @@ fn validate_drop_instance(
         })
         .collect();
     if variables.len() != arguments.len() {
-        return Err(Diagnostic::new(
-            "E1016",
+        return Err(Diagnostic::of(
+            DiagnosticKind::DropInstanceGeneric,
             "a Drop instance must cover every instantiation; write every type parameter as a distinct type variable",
             span,
         ));
     }
     if constrained {
-        return Err(Diagnostic::new(
-            "E1016",
+        return Err(Diagnostic::of(
+            DiagnosticKind::DropInstanceConstraint,
             "Drop instances cannot have constraints; drop must work for every instantiation",
             span,
         ));
@@ -2738,8 +2748,8 @@ fn validate_format_instance(
     if origin == Some(ModuleOrigin::User) {
         Ok(())
     } else {
-        Err(Diagnostic::new(
-            "E1016",
+        Err(Diagnostic::of(
+            DiagnosticKind::FormatInstanceTarget,
             "only records and unions declared in this program can implement Format",
             span,
         ))
@@ -2761,8 +2771,8 @@ fn instance_function(
     if definition.parameters.len() > signature.parameters.len()
         || (definition.parameters.is_empty() && !signature.parameters.is_empty())
     {
-        return Err(Diagnostic::new(
-            "E1006",
+        return Err(Diagnostic::of(
+            DiagnosticKind::InstanceMethodParameterCount,
             format!(
                 "method '{}' expects {} parameters",
                 definition.name.text,
@@ -2992,8 +3002,8 @@ impl Checker<'_> {
         if matches!(builtin, Builtin::IOReadLine | Builtin::IOWrite)
             && !(self.module == "IO" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "IO primitives are private to the standard IO module; compose IO actions instead",
                 span,
             ));
@@ -3015,8 +3025,8 @@ impl Checker<'_> {
             "File" | "Dir" | "Env" | "Time" | "Random" | "Process" | "Os"
         ) && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "operating-system primitives are private to the standard File, Dir, Env, Time, Random, Process, and Os modules; use those APIs instead",
                 span,
             ));
@@ -3037,8 +3047,8 @@ impl Checker<'_> {
                 | Builtin::NetSend
         ) && !(self.module == "Net" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "network primitives are private to the standard Net module; use the Net API instead",
                 span,
             ));
@@ -3046,8 +3056,8 @@ impl Checker<'_> {
         if builtin == Builtin::DebugPrintString
             && !(self.module == "Debug" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "Debug.__print_string is private to the standard Debug module; use Debug.print or Debug.trace",
                 span,
             ));
@@ -3055,8 +3065,8 @@ impl Checker<'_> {
         if builtin == Builtin::AllocCounter
             && !(self.module == "Alloc" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "the allocation counters are private to the standard Alloc module; read them with Alloc.snapshot or Alloc.since",
                 span,
             ));
@@ -3064,8 +3074,8 @@ impl Checker<'_> {
         if builtin == Builtin::GenSeed
             && !(self.module == "Gen" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "the property seed is private to the standard Gen module; set it with tsuzuri test --seed",
                 span,
             ));
@@ -3079,8 +3089,8 @@ impl Checker<'_> {
                 | Builtin::GpuLast
         ) && !(self.module == "Gpu" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "the GPU runtime primitives are private to the standard Gpu module; request a device with Gpu.request",
                 span,
             ));
@@ -3097,8 +3107,8 @@ impl Checker<'_> {
                 | Builtin::AsyncRetire
         ) && !(self.module == "Async" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "the continuation primitive is private to the standard Async module; compose computations with the Async builder",
                 span,
             ));
@@ -3106,8 +3116,8 @@ impl Checker<'_> {
         if builtin == Builtin::ArenaNextId
             && !(self.module == "Arena" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "the arena id primitive is private to the standard Arena module; create arenas with Arena.empty or Arena.with_capacity",
                 span,
             ));
@@ -3117,8 +3127,8 @@ impl Checker<'_> {
             Builtin::ChannelCloseSender | Builtin::ChannelCloseReceiver
         ) && !(self.module == "Channel" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "the channel close primitive is private to the standard Channel module; a Sender or Receiver closes when it is dropped",
                 span,
             ));
@@ -3129,8 +3139,8 @@ impl Checker<'_> {
         ) && !(matches!(self.module, "Unicode" | "Regex")
             && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "Unicode tables are private to the standard Unicode and Regex modules; use the Unicode and Regex APIs instead",
                 span,
             ));
@@ -3140,16 +3150,16 @@ impl Checker<'_> {
             Builtin::VecView | Builtin::VecSetCapacity | Builtin::VecInsert | Builtin::VecSplice
         ) && !(self.module == "Vec" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
                 "the Vec primitives are private to the standard Vec module; use its API instead (Vec.insert, Vec.remove_range, Vec.set_capacity, Vec.sort, ...)",
                 span,
             ));
         }
         // A dyn value is built only where its type is known, so `Dyn.of` is never a value (A14 D9).
         if builtin == Builtin::DynOf && !std::mem::take(&mut self.dyn_callee) {
-            return Err(Diagnostic::new(
-                "E1015",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DynOfArity,
                 "Dyn.of must be applied to exactly one argument where a dyn type is expected",
                 span,
             ));
@@ -3174,8 +3184,8 @@ impl Checker<'_> {
         let result = self.builtin_type(&scheme.result, &bindings, span)?;
         if builtin == Builtin::SeqNext {
             let Type::Record(id, arguments) = &parameters[0] else {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StdRepresentationMismatch,
                     "Seq.next requires the standard Seq record",
                     span,
                 ));
@@ -3188,15 +3198,15 @@ impl Checker<'_> {
                 .names
                 .std_type("Maybe", "Maybe", vec![callback].into(), span)?;
             if self.types.record_fields(*id, arguments) != vec![results[1].clone(), step] {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StdRepresentationMismatch,
                     "Seq.next requires the standard head and step representation",
                     span,
                 ));
             }
             let Type::Union(option, option_arguments) = &results[1] else {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StdRepresentationMismatch,
                     "Seq.next requires the standard Maybe union",
                     span,
                 ));
@@ -3209,8 +3219,8 @@ impl Checker<'_> {
                 || cases[1].1.is_none()
                 || self.types.union_payload(*option, option_arguments, 1) != Some(types[0].clone())
             {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StdRepresentationMismatch,
                     "Seq.next requires Maybe.None and Maybe.Some in standard order",
                     span,
                 ));
@@ -3220,8 +3230,8 @@ impl Checker<'_> {
             let run = Type::function(vec![types[0].clone()], types[1].clone());
             if !matches!(&parameters[0], Type::Record(id, arguments) if self.types.record_fields(*id, arguments) == [run])
             {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StdRepresentationMismatch,
                     "Async.__resume requires the standard Async.Next record",
                     span,
                 ));
@@ -3235,8 +3245,8 @@ impl Checker<'_> {
             let run = Type::function(vec![types[0].clone()], types[1].clone());
             if !matches!(owned, Type::Record(id, arguments) if self.types.record_fields(*id, arguments) == [run])
             {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StdRepresentationMismatch,
                     format!(
                         "{} requires the standard Owned.Function record",
                         builtin.name()
@@ -3345,15 +3355,15 @@ impl Checker<'_> {
                     ty if ty.contains_error() => {}
                     Type::Infer(_) if !last => self.families.push(family),
                     Type::Infer(_) => {
-                        return Err(Diagnostic::new(
-                            "E1015",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::FixedArrayLengthUnknown,
                             "cannot determine the length of 'FixedArray.init'; annotate the result type, for example '[i64; 4]'",
                             family.span,
                         ));
                     }
                     _ => {
-                        return Err(Diagnostic::new(
-                            "E1005",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::FixedArrayInitAnnotation,
                             "'FixedArray.init' creates a fixed-length array; annotate a type such as '[i64; 4]'",
                             family.span,
                         ));
@@ -3368,8 +3378,12 @@ impl Checker<'_> {
                         self.families.push(family);
                         continue;
                     }
-                    return Err(Diagnostic::new(
-                        if is_unknown(&input) { "E1015" } else { "E1005" },
+                    return Err(Diagnostic::of(
+                        if is_unknown(&input) {
+                            DiagnosticKind::SimdVectorTypeUnknown
+                        } else {
+                            DiagnosticKind::SimdOperationVectorType
+                        },
                         "this SIMD operation needs a concrete vector type; add a vector type annotation",
                         family.span,
                     ));
@@ -3377,8 +3391,8 @@ impl Checker<'_> {
                 let output = match family.kind {
                     FamilyKind::SimdLane(lanes) => {
                         if lanes.is_some_and(|lanes| lanes != vector.lanes()) {
-                            return Err(Diagnostic::new(
-                                "E1005",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::SimdLaneCountMismatch,
                                 "of_lanes count does not match the vector type",
                                 family.span,
                             ));
@@ -3397,8 +3411,8 @@ impl Checker<'_> {
                     Type::Integer(bits * 2, signed)
                 }
                 Type::Integer(128, _) if matches!(family.kind, FamilyKind::Widen) => {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::NoWiderInteger,
                         "128-bit integers have no wider integer type",
                         family.span,
                     ));
@@ -3423,8 +3437,8 @@ impl Checker<'_> {
                         };
                         self.classes.validate(&constraint, &self.types)?;
                     }
-                    return Err(Diagnostic::new(
-                        "E1015",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ConcreteIntegerRequired,
                         "this builtin needs a concrete integer argument type at its call site; generic code cannot use it",
                         family.span,
                     ));
@@ -3558,8 +3572,8 @@ impl Checker<'_> {
         name: &Ident,
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         if !self.type_parameters.contains(&variable.text) {
-            return Err(Diagnostic::new(
-                "E1015",
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeVariableAbsentFromSignature,
                 format!(
                     "type variable '{}' is absent from this function's signature",
                     variable.text
@@ -3571,8 +3585,8 @@ impl Checker<'_> {
         let Some(declared) = self.members.iter().find(|member| {
             member.declared && member.receiver == receiver && member.name == name.text
         }) else {
-            return Err(Diagnostic::new(
-                "E1016",
+            return Err(Diagnostic::of(
+                DiagnosticKind::MissingExplicitConstraint,
                 format!(
                     "'{}.{} requires an explicit @'{} : #{} constraint",
                     variable.text, name.text, variable.text, name.text
@@ -3637,8 +3651,8 @@ impl Checker<'_> {
             .iter()
             .any(|name| !self.type_parameters.contains(name))
         {
-            return Err(Diagnostic::new(
-                "E1015",
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeVariableAbsentFromSignature,
                 "type annotation mentions a variable absent from this function's signature",
                 expression.span,
             ));
@@ -3653,11 +3667,12 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<(Vec<Type>, Type), Diagnostic> {
         if self.inference.is_numeric_literal(ty) {
-            return Err(
-                Diagnostic::new("E1005", "only a function value can be called", span).with_help(
-                    "a number is not a function; remove the argument(s) or call a function",
-                ),
-            );
+            return Err(Diagnostic::of(
+                DiagnosticKind::CallNonFunction,
+                "only a function value can be called",
+                span,
+            )
+            .with_help("a number is not a function; remove the argument(s) or call a function"));
         }
         match self.inference.resolve(ty) {
             Type::Error => Ok((vec![Type::Error; count], Type::Error)),
@@ -3704,8 +3719,8 @@ impl Checker<'_> {
                 Ok((parameters, output))
             }
             Type::Function(parameters, _) => {
-                let error = Diagnostic::new(
-                    "E1006",
+                let error = Diagnostic::of(
+                    DiagnosticKind::TooManyArgumentsApplied,
                     format!(
                         "cannot apply {count} arguments to a function accepting {} arguments",
                         parameters.len()
@@ -3732,8 +3747,8 @@ impl Checker<'_> {
                 )?;
                 Ok((parameters, result))
             }
-            other => Err(Diagnostic::new(
-                "E1005",
+            other => Err(Diagnostic::of(
+                DiagnosticKind::CallNonFunction,
                 "only a function value can be called",
                 span,
             )
@@ -3750,8 +3765,8 @@ impl Checker<'_> {
         self.check_format_specs()?;
         for (ty, span) in &self.undecided_borrows {
             if matches!(self.inference.resolve(ty), Type::Reference(..)) {
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RefOperandInferredLate,
                     "'ref' must know whether its operand is a reference when it is checked; this operand is inferred later to be one, so annotate its type, or write '&x' to borrow the reference itself or '&*x' to reborrow",
                     *span,
                 ));
@@ -3765,8 +3780,8 @@ impl Checker<'_> {
                 ty.clone()
             });
             if ambiguous {
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::AmbiguousPolymorphicUse,
                     "ambiguous polymorphic use; add a concrete type annotation or supply determining arguments",
                     span,
                 ));
@@ -3797,8 +3812,8 @@ impl Checker<'_> {
                         "Integer" | "SignedInteger"
                     )
                 {
-                    Diagnostic::new(
-                        "E1003",
+                    Diagnostic::of(
+                        DiagnosticKind::TypeMismatch,
                         format!(
                             "expected an integer, found {}",
                             constraint.ty.display(&self.types)
@@ -3835,8 +3850,8 @@ pub(super) fn solve_members(
             .filter(|member| seen.insert(member.key()))
             .collect();
         if checker.members.len() > MAX_CONSTRAINTS {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::FunctionConstraintLimit,
                 "too many distinct function constraints in one function",
                 checker.members[MAX_CONSTRAINTS].span,
             ));
@@ -3932,8 +3947,8 @@ pub(super) fn solve_members(
                             bounded_type(ty, member.span)?;
                         }
                         if checker.members.len() >= MAX_CONSTRAINTS {
-                            return Err(Diagnostic::new(
-                                "E1017",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::FunctionConstraintLimit,
                                 "too many distinct function constraints; polymorphic recursion must not grow types",
                                 member.span,
                             ));
@@ -4019,8 +4034,8 @@ fn captures(
                     .filter(|capture| !matches!(capture.ty, Type::Function(..)))
                     .find(|capture| !variables(&capture.ty).is_empty())
                 {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::RecFunctionCapturesGeneric,
                         format!(
                             "a 'let rec' function cannot capture '{}', whose type {} has a type variable; pass it as an argument",
                             capture.name,
@@ -4155,8 +4170,8 @@ pub(super) fn specialize(
                     continue;
                 }
                 if constraints.len() == MAX_CONSTRAINTS {
-                    return Err(Diagnostic::new(
-                        "E1017",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::PolymorphicConstraintLimit,
                         "too many distinct polymorphic constraints in one function",
                         constraint.span,
                     ));
@@ -4238,8 +4253,8 @@ pub(super) fn specialize(
                         existing.class == constraint.class && existing.ty == constraint.ty
                     }) {
                         if function.constraints.len() >= MAX_CONSTRAINTS {
-                            return Err(Diagnostic::new(
-                                "E1017",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::PolymorphicConstraintLimit,
                                 "constraint expansion exceeds the compiler limit; polymorphic recursion must not grow types",
                                 constraint.span,
                             ));
@@ -4275,8 +4290,8 @@ pub(super) fn specialize(
                 }];
                 for required in &module.functions[function].constraints {
                     if !classes.entails(&context, required, &module.types())? {
-                        return Err(Diagnostic::new(
-                            "E1027",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::UndeclaredDefaultConstraint,
                             "default method requires an undeclared constraint; add it as a superclass",
                             required.span,
                         ));
@@ -4302,8 +4317,8 @@ pub(super) fn specialize(
                 };
                 for required in classes.normalize(&required, &module.types())? {
                     if !classes.entails(&instance.constraints, &required, &module.types())? {
-                        return Err(Diagnostic::new(
-                            "E1027",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::UndeclaredInstanceConstraint,
                             "instance method requires an undeclared constraint; add it to the instance context",
                             instance.span,
                         ));
@@ -4314,8 +4329,8 @@ pub(super) fn specialize(
     }
     if let Some(entry) = module.entry {
         if !module.functions[entry].type_parameters.is_empty() {
-            return Err(Diagnostic::new(
-                "E1015",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PolymorphicEntryPoint,
                 "the application entry point cannot be polymorphic",
                 module.functions[entry].span,
             ));
@@ -4663,8 +4678,8 @@ impl Specializer<'_> {
                 "call them at fewer distinct types, or use 'dyn' for values of many types"
                     .to_owned()
             };
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::SpecializationLimit,
                 format!(
                     "more than {} specializations of generic functions; {advice}",
                     self.limits.total
@@ -4981,8 +4996,8 @@ impl Specializer<'_> {
         let key = target.vtable_key();
         // Generic code can store a type that only now turns out to hold borrows.
         if !target.borrowed && value.carries_loans(&self.types) {
-            return Err(Diagnostic::new(
-                "E1013",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DynHoldsBorrowWithoutRegion,
                 format!(
                     "a dyn value without a region cannot hold borrowed data, and {} holds borrows; store an owned value, or name a region, as in 'dyn Shapes.Shape {{r}}'",
                     value.display(&self.types)
@@ -5000,8 +5015,8 @@ impl Specializer<'_> {
             return Ok(());
         }
         if value.reaches_exclusive(&self.types) {
-            return Err(Diagnostic::new(
-                "E1013",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DynHoldsExclusiveBorrow,
                 format!(
                     "a dyn value cannot hold exclusive borrows, and {} holds one; store an owned value",
                     value.display(&self.types)
@@ -5031,8 +5046,8 @@ impl Specializer<'_> {
                     self.intrinsic_function(class, method, value, span)?
                 }
                 None => {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::NoInstance,
                         format!(
                             "no instance for {}<{}>; define an instance or use a supported type",
                             type_display(&self.classes.declarations[class].name),
@@ -5067,7 +5082,13 @@ impl Specializer<'_> {
             let (function, types) = self
                 .classes
                 .resolved_method(class, method, ty, &self.types)
-                .ok_or_else(|| Diagnostic::new("E1005", "no instance for this operator", span))?;
+                .ok_or_else(|| {
+                    Diagnostic::of(
+                        DiagnosticKind::NoInstanceForOperator,
+                        "no instance for this operator",
+                        span,
+                    )
+                })?;
             self.request(function, types, span)?
         };
         let arguments = if matches!(self.classes.declarations[class].name.as_str(), "Eq" | "Ord") {

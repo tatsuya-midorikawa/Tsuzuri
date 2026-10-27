@@ -368,10 +368,9 @@ fn errors(source: &str) -> Vec<Diagnostic> {
     analyze_all(source).expect_err(source).diagnostics
 }
 
+/// The keys after `kind`, which every diagnostic has since G23.
 fn has_extras(diagnostic: &Diagnostic) -> bool {
-    diagnostic.kind.is_some()
-        || has_text_extras(diagnostic)
-        || diagnostic.detail != Detail::default()
+    has_text_extras(diagnostic) || diagnostic.detail != Detail::default()
 }
 
 /// The extras that the text form prints: `expected` and `found` are in the JSON only.
@@ -424,9 +423,14 @@ fn json_without_extras_is_byte_identical() {
     let mut plain = 0;
     for source in sources {
         for diagnostic in errors(source) {
+            let old_json = old_json(&diagnostic, "Main.tz", source);
+            // Every diagnostic has a kind (G23), the key right after the five old ones.
+            let kind = diagnostic.kind.map_or_else(String::new, |kind| {
+                format!(",\"kind\":{}", json_string(kind))
+            });
             let (old_text, old_json) = (
                 old_text(&diagnostic, "Main.tz", source),
-                old_json(&diagnostic, "Main.tz", source),
+                format!("{}{kind}}}", &old_json[..old_json.len() - 1]),
             );
             let (text, json) = (
                 diagnostic.render("Main.tz", source),
@@ -527,7 +531,7 @@ fn cli_json_keeps_old_keys_first() {
     assert_eq!(
         sorted,
         [
-            "code", "help", "message", "path", "related", "severity", "span"
+            "code", "help", "kind", "message", "path", "related", "severity", "span"
         ]
     );
     assert_eq!(lines[0]["related"][0]["role"], "moved_here");

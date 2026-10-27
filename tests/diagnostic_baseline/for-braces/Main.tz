@@ -1,0 +1,4 @@
+def f :: i64 -> i64 = \n ->
+    let mut t = 0
+    for i in 0 .. n { t = t + i }
+    t

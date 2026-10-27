@@ -119,8 +119,8 @@ impl StringForm {
     /// value is an error: a form that was asked for and does not exist must not fall back silently.
     pub fn from_environment() -> Result<Self, Diagnostic> {
         let invalid = |value: &str| {
-            Diagnostic::new(
-                "E2000",
+            Diagnostic::of(
+                DiagnosticKind::EnvironmentSettingInvalid,
                 format!("{ENVIRONMENT_VARIABLE} must be utf16 or compact, not '{value}'"),
                 Span::default(),
             )
@@ -409,8 +409,8 @@ impl FunctionEmitter<'_, '_> {
 }
 
 fn mismatch(name: &str, found: usize) -> Diagnostic {
-    Diagnostic::new(
-        "E1015",
+    Diagnostic::of(
+        DiagnosticKind::InternalCompactStringRuntime,
         format!(
             "internal compiler error: the compact string runtime found {found} definitions of '{name}' to take over, not 1"
         ),

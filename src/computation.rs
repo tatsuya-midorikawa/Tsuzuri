@@ -40,8 +40,8 @@ pub(super) fn collect_all(
             if kind != SourceKind::Computation
                 && let Some(alias) = program.aliases.first()
             {
-                return Err(Diagnostic::new(
-                    "E1018",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::AliasOutsideBuilderFile,
                     format!(
                         "'@alias {}' names a computation builder, so it belongs in a .tc file; move it to the builder's .tc file or remove it",
                         alias.text
@@ -51,8 +51,8 @@ pub(super) fn collect_all(
             }
             if kind != SourceKind::TypeClass {
                 if let Some(class) = program.classes.first() {
-                    return Err(Diagnostic::new(
-                        "E1018",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ClassOutsideClassFile,
                         "type class declarations belong in a .tt file; a .tt file may declare multiple classes",
                         class.name.span,
                     ));
@@ -77,8 +77,8 @@ pub(super) fn collect_all(
                     })
                     .or_else(|| program.entry.as_ref().map(|entry| entry.span));
                 if let Some(span) = invalid {
-                    return Err(Diagnostic::new(
-                        "E1018",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::DeclarationInClassFile,
                         "a .tt file contains only type class declarations; put records, unions, type aliases, functions, and instances in .tz or .tc files",
                         span,
                     ));
@@ -86,8 +86,8 @@ pub(super) fn collect_all(
             }
             if kind == SourceKind::Computation {
                 if let Some(entry) = &program.entry {
-                    return Err(Diagnostic::new(
-                        "E2004",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::BuilderFileToplevelCode,
                         "a .tc file implements one builder named after the file; top-level execution belongs in Main.tz",
                         entry.span,
                     ));
@@ -96,8 +96,8 @@ pub(super) fn collect_all(
                     function.visibility == Visibility::Private
                         && OPERATIONS.contains(&function.name.text.as_str())
                 }) {
-                    return Err(Diagnostic::new(
-                        "E1022",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::PrivateBuilderOperation,
                         format!(
                             "builder operation '{}' cannot be private; make the operation public and keep helpers private",
                             function.name.text
@@ -115,8 +115,8 @@ pub(super) fn collect_all(
                     .iter()
                     .any(|operation| methods.contains(*operation))
                 {
-                    return Err(Diagnostic::new(
-                        "E1018",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::BuilderWithoutOperations,
                         "a .tc builder needs at least one computation operation, such as Bind, Return, Yield, or Zero",
                         program
                             .functions
@@ -427,7 +427,7 @@ fn lower(builder: &Ident, body: &ComputationBlock, names: &Names) -> Result<Expr
                 builder.text, builder.text
             )
         };
-        Diagnostic::new("E1018", message, builder.span)
+        Diagnostic::of(DiagnosticKind::UnknownComputationBuilder, message, builder.span)
     })?;
     let lowering = Lowering {
         builder,
@@ -890,8 +890,8 @@ impl Lowering<'_> {
 
     fn call(&self, operation: &str, arguments: Vec<Expr>, span: Span) -> Result<Expr, Diagnostic> {
         if !self.methods.contains(operation) {
-            return Err(Diagnostic::new(
-                "E1018",
+            return Err(Diagnostic::of(
+                DiagnosticKind::BuilderMissingOperation,
                 format!(
                     "computation builder '{}' does not define '{operation}'",
                     self.builder.text
@@ -975,8 +975,8 @@ fn make(kind: ExprKind, span: Span, depth: usize) -> Result<Expr, Diagnostic> {
 
 fn bounded_depth(depth: usize, span: Span) -> Result<(), Diagnostic> {
     if depth > MAX_NESTING {
-        return Err(Diagnostic::new(
-            "E0002",
+        return Err(Diagnostic::of(
+            DiagnosticKind::ComputationNestingTooDeep,
             format!("computation expansion exceeds depth {MAX_NESTING}; split the computation"),
             span,
         ));
@@ -1044,8 +1044,8 @@ fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
         )
     };
     let unsupported = |span: Span, what: &str| {
-        Diagnostic::new(
-            "E1018",
+        Diagnostic::of(
+            DiagnosticKind::ComputationWithoutBuilder,
             format!(
                 "{what} needs a computation builder, but this body runs IO directly because its result type has none; use an explicit Builder {{ ... }}"
             ),
@@ -1291,8 +1291,8 @@ impl Checker<'_> {
         if let [builder] = candidates.as_slice() {
             return Ok(builder.clone());
         }
-        Err(Diagnostic::new(
-            "E1018",
+        Err(Diagnostic::of(
+            DiagnosticKind::NoBuilderForValue,
             if candidates.is_empty() {
                 "no computation builder has a Bind operation for this value; use an explicit builder or a type annotation".into()
             } else {
@@ -1441,8 +1441,8 @@ impl Checker<'_> {
                     },
                 ] => self.expression(value, expected)?,
                 _ => {
-                    return Err(Diagnostic::new(
-                        "E1018",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::CannotInferBuilder,
                         "cannot infer the computation builder; add a result type annotation or use Builder { ... }",
                         body.span,
                     ));
@@ -2117,8 +2117,8 @@ impl Checker<'_> {
                 }
             }
             _ => {
-                return Err(Diagnostic::new(
-                    "E1018",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ImplicitTaskNeedsBuilder,
                     "this implicit task operation requires an explicit computation builder",
                     first.span,
                 ));

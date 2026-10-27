@@ -5,9 +5,9 @@
 | ID | G23 |
 | 優先度 | P1（D-50 の表） |
 | 規模 | L。Phase 1 = M（3〜5 日）、Phase 2 = L（1〜3 週。機械的な移行）、Phase 3 = M、Phase 4 = S |
-| 依存 | [G22](_completed/G22-diagnostic-v2.md) Phase 1（`Diagnostic` の `kind`・`help`・`fixes` と JSON の形。D-51）。Phase 1・2 が使うのは `kind` だけで、G22 が未完了なら手順 1.1 が足す。**Phase 3 は G22 Phase 1 が済んでいなければ着手しない** |
+| 依存 | [G22](G22-diagnostic-v2.md) Phase 1（`Diagnostic` の `kind`・`help`・`fixes` と JSON の形。D-51）。Phase 1・2 が使うのは `kind` だけで、G22 が未完了なら手順 1.1 が足す。**Phase 3 は G22 Phase 1 が済んでいなければ着手しない** |
 | 後続 | G21（Phase 3 の `hints::TABLE` からガイドの「よくある誤り」を作る）、G29（`tz_explain`）、G35（kind の一覧を文書へ流し込む）、A22（`E0004` の kind を登録する）。第3期の新しい診断は、すべて kind を登録する（D5） |
-| 状態 | todo |
+| 状態 | done（Phase 1〜4、2026-10-27） |
 | 起票 | 2026-10-18（D-50。`src/`・`tests/` は `a2313d19` と同一の HEAD `9dd0fbbc` で確認。両者の差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D16 はすべて承認済み |
 | 改善する劣位 | Rust 比（`rustc --explain`・lint 名）・C#/F# 比（診断 ID と説明）: Tsuzuri の診断は粗いコード 47 種だけで、同じ `E1002` が「未定義の名前」「モジュールにない関数」「型クラスにないメソッド」を表す。原因を引く鍵（kind）も説明（`explain`）もなく、AI は同じ誤り（`pair.0`・`Display.to_string`・`let new = 1`）を繰り返し、診断は「何が違うか」だけを言い「どう書くか」を言わない（D-50 の調査結論 (1)） |
@@ -45,9 +45,9 @@
 
 ### 着手条件
 
-- [G22](_completed/G22-diagnostic-v2.md) Phase 1 が済んでいるか確かめる: `grep -n "pub kind: Option<&'static str>" src/diagnostic.rs`。1 件なら G22 の形（D-51）で `kind`・`help`・`fixes` がある。0 件なら Phase 1・2 は手順 1.1 で `kind` だけを足して進める。**Phase 3 は `help`・`fixes`・`Applicability`・`Edit` が要るので、0 件のまま着手しない**。
+- [G22](G22-diagnostic-v2.md) Phase 1 が済んでいるか確かめる: `grep -n "pub kind: Option<&'static str>" src/diagnostic.rs`。1 件なら G22 の形（D-51）で `kind`・`help`・`fixes` がある。0 件なら Phase 1・2 は手順 1.1 で `kind` だけを足して進める。**Phase 3 は `help`・`fixes`・`Applicability`・`Edit` が要るので、0 件のまま着手しない**。
 - ベースライン: `cargo build --release --locked && cargo test --locked` の通過件数を控える（手順 1.1。失敗があれば本チケットと無関係であることを記録する）。
-- 読む: [GUIDE-LITE](GUIDE-LITE.md)、GUIDE の D-51・D-55・D-56、`docs/stability.md` の「診断のコード・重要度・JSON のキー」、本ファイルの「仕様」と付録 C の冒頭の表。
+- 読む: [GUIDE-LITE](../GUIDE-LITE.md)、GUIDE の D-51・D-55・D-56、`docs/stability.md` の「診断のコード・重要度・JSON のキー」、本ファイルの「仕様」と付録 C の冒頭の表。
 - 承認: 不要（新しい crate・`unsafe`・予約語・既定の WASM の import を足さない）。
 
 ### 停止条件
@@ -591,3 +591,42 @@ $ tsuzuri explain --catalog use_after_move
 | D | [G23-appendix-hints.md](G23-appendix-hints.md) | ヒントの表 40 件（実測済み） |
 | E | [G23-appendix.md](G23-appendix.md) | E.1 補助関数、E.2 特別な箇所、E.3 数え方、E.5 厳選 kind、E.6 試作の結果、E.7 Phase 2 の手順の割り当て。E.4 は [G23-appendix-probes.md](G23-appendix-probes.md)（誤りの形 89 件） |
 | F | [G23-appendix-procedures.md](G23-appendix-procedures.md) | F.1 擬似コード、F.2 Phase 3 の手順、F.3 Phase 4 の手順 |
+
+## 実装と検証（2026-10-27）
+
+Phase 1〜4 をブランチ `feat/g23-diagnostic-kinds` に実装した（基準: `main` の `59abd037`。`ci.yml` は緑）。
+
+### HEAD との食い違いと、その扱い
+
+チケットは HEAD `9dd0fbbc` で書かれ、着手時の `main` は G22 の全 Phase と A18・A19 などが入って進んでいた。方針を次のとおり最新化してから実装した。
+
+| 食い違い | 扱い |
+| --- | --- |
+| 発行箇所が増えた（`Diagnostic::new` 475 → 512、`driver_error` 182 → 217、新しいファイル `pure_rules.rs`・`profile.rs`・`edition_migration.rs`・`semantic_api.rs`・`llvm_strings.rs`・`backend/error.rs`・`driver/lto.rs`・`driver/units.rs`、新しいコード `E1029`・`E2008`） | 付録 C の行と HEAD の発行箇所を、コードとメッセージの先頭で自動で整列させた（一致 931 箇所。名前が変数の弱い一致も目視で確認し、`repl.rs` の 1 件の誤りを直した）。付録 C にない 79 箇所は決定表 S1 で kind を決め、40 kind を登録簿に足した（`E1029` の純粋性 13、`E2008` の移行 6、fast backend・PGO・LTO・`E1017` の上限など）。登録簿は **693 kind**、コードは **49**（`E1029`・`E2008` を含む） |
+| 移行の足場（`#[deprecated]`・モジュールごとの `deny`・`UNEMITTED`） | 1 つのブランチで全発行箇所を移したので、足場は残さなかった。最終状態は同じ: `Diagnostic::new`・`warning` は削除済み（コンパイラが使い残しを止める）、`every_kind_has_an_emission_site` は例外の一覧を持たず、全 kind が `src/` で発行されることを検査する |
+| 基準の fixture の置き場所 | `tests/fixtures/` の下は `tests/formatter.rs` の corpus（構文エラーを許さない）などが走査するので、`tests/diagnostic_baseline/` に置いた（48 件と `baseline.jsonl`。変更前のバイナリで作成） |
+| `baseline_diagnostics_are_unchanged` の比べ方 | G22 の `related`・`expected` などが既にあり、`kind` は `span` の直後に入る（行末ではない）。JSON として読み、`kind`（足された）・`help`（基準にあれば残ること）・`fixes`（基準の列が先頭にあること）以外の値が同じで、キーの順が D-51 のとおりであることを検査する |
+| G22 が `unknown value` に一般の `help` を付けている | 「既存の `help` は上書きしない」のままでは付録 D の `unknown_value` のヒント 8 件が付かない。**字句の条件（`patterns`）で合ったヒントは発行箇所の `help` を置き換え、条件のないヒントは空の `help` だけを埋める**に改めた（`an_existing_help_is_kept` は両方を検査する）。40 件すべてが `bad` で付く |
+| ヒントの文体の検査 | `help` が引用符で始まるもの（`'new' is a reserved word…`）と、題が識別子で始まるもの（`to_string and Display.display`）を許した（表の文言は付録 D のまま） |
+| G22 のテストが「`kind` を持たない JSON」を前提にしていた | `kind` は全診断に付くので、`tests/diagnostic_v2.rs` の 3 件（キーの集合、5 キー＋`kind` の行、`has_extras` から `kind` を除く）と `tests/lsp.rs` の 3 件（`data.kind`）の期待値を直した。LSP の `W1001` の quickfix は、公開した診断と同じ `diagnostic_value`（`data.kind` つき）を返すようにした（`lsp_sessions.mjs` が両者の一致を検査していた） |
+| `src/server.rs` の出力の監査 | ヒントの例のプログラムが `println!(` を含むので、`hints.rs` を 1 行の例外として記録した（書き込みではない） |
+| hover | 診断の範囲にカーソルがあるときだけブロックを足す（S7）。`tests/lsp_sessions.mjs` の `stale` の位置を `bad` に変え、`true`（`E1003`）の位置で `type_mismatch` のブロックを検査するケースを足した |
+
+### ページ
+
+kind のページ 84 本（付録 A の 8 本と E.5 の 76 本）とコードのページ 49 本。例は `tests/explain.rs::every_page_example_behaves`（`analyze_modules_all`、edition 2026）で検査し、CLI（既定の 2027）でも確かめた。`text` の例にしたのは 17 本: 資源上限・CLI・複数ファイルの条件（`source_too_large`、`invalid_module_name`、`duplicate_module`、`deprecated_use`、`shadowed_local`、`implicit_copy_of_large_value`、`entry_point_missing` と CLI の 6 kind）、1 ファイルの例では出せない `unterminated_string_literal`、利用者のプログラムからは届かない `unknown_function`（生成した呼び出しだけ）・`concrete_type_required`（先に `ambiguous_polymorphic_use` になる）・`reference_without_owner`（先に `borrow_outlives_block` になる）。理由は各ページの `Why` にある。
+
+### 実行したコマンドと結果
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 通過。
+- `cargo nextest run --locked`: 1,974 件すべて通過（2 件 skip。基準の `main` から、`diagnostic_kinds` 7・`explain` 16・`hints` 10・`hints::tests` 6・`main` の 1 件などを足した）。
+- `node tests/<suite>.mjs target/debug/tsuzuri`: `lsp_sessions`・`repl`・`script`・`parallel_frontend`・`frontend_cache`・`cache`・`server`・`ai_cost`・`examples` が通過。
+- `node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/{diagnostics,usage,option}.md`: 通過。
+
+### 更新した文書
+
+`_tsuzuri/language-reference/compiler/diagnostics.md`（`kind` の行と例、「kind と explain」「ヒント」「kind の一覧」（生成ブロック）、`E2008`、LSP の `data.kind`・hover・クイックフィックス）、`compiler/usage.md`（`### explain`、ポイント、終了コード）、`compiler/option.md`（`E2000` の例）、`docs/language.md`、`docs/stability.md`、`docs/architecture.md`、`README.md`。
+
+### 変更したファイル
+
+新規: `src/diagnostic_kinds.rs`、`src/explain.rs`、`src/explain/*.md`（84）、`src/explain/codes/*.md`（49）、`src/hints.rs`、`tests/diagnostic_kinds.rs`、`tests/explain.rs`、`tests/hints.rs`、`tests/diagnostic_baseline/`。変更: `src/diagnostic.rs`（`of`・`recode`・`kind_of`、`new`・`warning` の削除）と発行箇所を持つ全ファイル、`src/lib.rs`（`analyze_inputs_with` のヒント）、`src/lsp.rs`（hover、`W1001` の quickfix の診断）、`src/main.rs`（`explain`、CLI の解析の `Result<_, Diagnostic>`）、`src/driver.rs`（`source_for_span`）、`src/server.rs`（監査の例外）、`tests/diagnostics.rs`・`tests/warnings.rs`・`tests/diagnostic_v2.rs`・`tests/lsp.rs`・`tests/lsp_sessions.mjs`。

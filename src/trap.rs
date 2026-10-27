@@ -1,4 +1,4 @@
-use crate::diagnostic::{Diagnostic, Span, json_string, location};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span, json_string, location};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -100,8 +100,8 @@ impl TrapSite {
                     && source.text.is_char_boundary(self.span.end)
             })
             .ok_or_else(|| {
-                Diagnostic::new(
-                    "E2000",
+                Diagnostic::of(
+                    DiagnosticKind::InvalidTrapSourceMap,
                     "trap information requires a valid source map",
                     self.span,
                 )

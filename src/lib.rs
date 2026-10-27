@@ -19,14 +19,17 @@ pub mod check;
 pub mod copies;
 pub mod coverage;
 pub mod diagnostic;
+pub mod diagnostic_kinds;
 pub mod docgen;
 pub mod driver;
 pub mod edition_migration;
+pub mod explain;
 pub mod fetch;
 pub mod formatter;
 pub(crate) mod frontend_cache;
 pub mod gpu;
 pub mod gpu_devices;
+pub mod hints;
 mod interval;
 pub mod lexer;
 pub mod llvm;
@@ -51,7 +54,7 @@ pub mod trap;
 pub mod watch;
 
 use check::{ModuleInput, ModuleOrigin};
-use diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, Span};
+use diagnostic::{Diagnostic, DiagnosticKind, DiagnosticSet, Diagnostics, Span};
 use std::ops::ControlFlow;
 
 /// One program source: a user file named `Name` or `Name.ext`, or a standard
@@ -215,8 +218,8 @@ fn parse_input(
             }),
         ModuleOrigin::Std => {
             let Some(name) = stdlib::module_name(input.path) else {
-                let error = Diagnostic::new(
-                    "E1011",
+                let error = Diagnostic::of(
+                    DiagnosticKind::InvalidStdPath,
                     format!(
                         "invalid standard library path '{}'; std sources are flat files such as 'std/Math.tz'",
                         input.path
@@ -299,6 +302,19 @@ fn parse_plan(
 /// `parallelism` bounds the threads of the stages that run in parallel; it changes neither the
 /// result nor the order and content of the diagnostics.
 pub(crate) fn analyze_inputs_with(
+    inputs: &[SourceInput<'_>],
+    semantic: Option<&mut check::semantic::SemanticIndex>,
+    cache: Option<&mut frontend_cache::FrontendCache>,
+    parallelism: parallel::Parallelism,
+) -> Result<check::CheckedModule, DiagnosticSet> {
+    analyze_inputs_unannotated(inputs, semantic, cache, parallelism).map_err(|mut set| {
+        hints::annotate(&mut set, inputs);
+        set
+    })
+}
+
+/// `analyze_inputs_with` without the hints of the failed analysis.
+fn analyze_inputs_unannotated(
     inputs: &[SourceInput<'_>],
     semantic: Option<&mut check::semantic::SemanticIndex>,
     mut cache: Option<&mut frontend_cache::FrontendCache>,
@@ -422,8 +438,8 @@ pub fn analyze_modules_with_semantics(
 pub(crate) fn module_name_from_relative(path: &std::path::Path) -> Result<String, Diagnostic> {
     use std::path::Component;
     let invalid = || {
-        Diagnostic::new(
-            "E1011",
+        Diagnostic::of(
+            DiagnosticKind::InvalidSourcePath,
             "source paths must be relative ASCII module segments without traversal or dots",
             Span::default(),
         )

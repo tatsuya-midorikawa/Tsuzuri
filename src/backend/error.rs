@@ -2,7 +2,7 @@
 
 use std::hash::{BuildHasherDefault, Hasher};
 
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 
 /// A construct the translator does not lower. It becomes E2002; the translator never turns it into
 /// code with another meaning.
@@ -35,8 +35,8 @@ impl Failure {
             .function
             .map(|name| format!(" in @{name}"))
             .unwrap_or_default();
-        Diagnostic::new(
-            "E2002",
+        Diagnostic::of(
+            DiagnosticKind::FastBackendUnsupportedConstruct,
             format!(
                 "the fast backend cannot translate {}{place}; build with --backend llvm and report this program",
                 self.construct

@@ -2,7 +2,7 @@ use rustc_apfloat::ieee::{Double, Half, Quad, Single};
 use rustc_apfloat::{Float, Round, Status};
 
 use crate::check::Type;
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 
 pub const NUMERIC_NAMES: [&str; 20] = [
     "i8", "i16", "i32", "i64", "i128", "i8u", "i16u", "i32u", "i64u", "i128u", "f16", "f32", "f64",
@@ -83,11 +83,16 @@ pub fn literal_parts(text: &str) -> (&str, Option<&str>) {
 }
 
 fn binary_bits<F: Float>(text: &str, span: Span) -> Result<u128, Diagnostic> {
-    let value = F::from_str_r(text, Round::NearestTiesToEven)
-        .map_err(|_| Diagnostic::new("E1009", "invalid floating-point literal", span))?;
+    let value = F::from_str_r(text, Round::NearestTiesToEven).map_err(|_| {
+        Diagnostic::of(
+            DiagnosticKind::InvalidFloatLiteral,
+            "invalid floating-point literal",
+            span,
+        )
+    })?;
     if value.status.contains(Status::OVERFLOW) || !value.value.is_finite() {
-        return Err(Diagnostic::new(
-            "E1009",
+        return Err(Diagnostic::of(
+            DiagnosticKind::FloatLiteralOutOfRange,
             "floating-point literal is out of range",
             span,
         ));
@@ -119,7 +124,13 @@ pub fn decimal_format(bits: u16) -> (usize, i32, i32, u32) {
 }
 
 fn decimal_literal(text: &str, bits: u16, span: Span) -> Result<u128, Diagnostic> {
-    let error = || Diagnostic::new("E1009", "decimal literal is out of range", span);
+    let error = || {
+        Diagnostic::of(
+            DiagnosticKind::DecimalLiteralOutOfRange,
+            "decimal literal is out of range",
+            span,
+        )
+    };
     let (precision, minimum, maximum, coefficient_bits) = decimal_format(bits);
     let (mantissa, exponent) = match text.split_once(['e', 'E']) {
         Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().map_err(|_| error())?),

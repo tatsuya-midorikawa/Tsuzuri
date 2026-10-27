@@ -8,6 +8,8 @@
 
 - 人間向けの 1 件は `パス:行:列: 重要度[コード]: メッセージ` です。直す手がかりがある診断は、続けて関連する位置（`note:`）、直し方（`help:`）、機械的な修正案（`fix`）を出します。
 - `--json` は stderr の 1 行 1 JSON です。配列にはまとめません。追加の情報は、値があるときだけキーが付きます。
+- どの診断も、原因を表す安定した識別子 kind（`use_after_move` など）を持ちます。`tsuzuri explain <kind>` が原因と、誤りの例・直した例を出します。
+- よくある誤りの形（`pair.0`、`=>` の腕、`println!` など）には、ヒントの表から `help` と修正案が付きます。
 - 画面に出すのは 50 件まで、内部では重複を除いて 1000 件まで集めます。
 - 字句エラーがあると構文解析へ進まず、構文エラーがあると型検査へ進みません。
 - コードの千の位が、構文、意味、ツールのどれかを大まかに分けます。
@@ -108,7 +110,7 @@ main_value ()
 先の型エラーは、次の 1 行でした。
 
 ```text
-{"severity":"error","code":"E1003","message":"expected i64, found bool","path":"./Main.tz","span":{"start":34,"end":38,"line":1,"column":35,"end_line":1,"end_column":39}}
+{"severity":"error","code":"E1003","message":"expected i64, found bool","path":"./Main.tz","span":{"start":34,"end":38,"line":1,"column":35,"end_line":1,"end_column":39},"kind":"type_mismatch","expected":"i64","found":"bool"}
 ```
 
 | フィールド | 意味 |
@@ -121,11 +123,11 @@ main_value ()
 | `span.line` / `span.column` | 始まり。1 始まりの行と、Unicode スカラー値の列 |
 | `span.end_line` / `span.end_column` | 終わりの行と列 |
 
-追加の情報は、5 つのキーの後ろに、次の順で、値があるときだけ付きます。どれも持たない診断の行は、上の 5 キーの形のままです。
+追加の情報は、5 つのキーの後ろに、次の順で、値があるときだけ付きます。`kind` はすべての診断が持ちます。
 
 | フィールド | 意味 |
 | --- | --- |
-| `kind` | 診断の原因を表す識別子。現在の診断には付きません |
+| `kind` | 診断の原因を表す安定した識別子（[kind と explain](#kind-と-explain)） |
 | `related` | 関連する位置の配列。要素は `role`、`message`、`path`、`span`（主と同じ 6 キー）。位置を解決できない要素は省きます |
 | `help` | 1 行の直し方 |
 | `expected` / `found` | 型の不一致（`E1003`）の期待した型と実際の型。メッセージと同じ表示です |
@@ -136,18 +138,18 @@ main_value ()
 `role` は `moved_here`（ムーブした位置）、`borrowed_here`（借用を作った位置）、`borrow_used_here`（借用がまだ生きている理由になる使用）、`declared_here`（宣言）、`expected_because`（期待する型を決めた宣言）、`first_defined_here`（最初の定義）、`via_call`、`required_by`、`note` のどれかです。先のムーブの診断は、次の 1 行です。
 
 ```text
-{"severity":"error","code":"E1012","message":"use of moved or partially moved value 'text'","path":"./Main.tz","span":{"start":157,"end":161,"line":6,"column":21,"end_line":6,"end_column":25},"related":[{"role":"moved_here","message":"value moved here","path":"./Main.tz","span":{"start":132,"end":136,"line":5,"column":21,"end_line":5,"end_column":25}}],"help":"borrow the value with 'ref text' or move it last"}
+{"severity":"error","code":"E1012","message":"use of moved or partially moved value 'text'","path":"./Main.tz","span":{"start":157,"end":161,"line":6,"column":21,"end_line":6,"end_column":25},"kind":"use_after_move","related":[{"role":"moved_here","message":"value moved here","path":"./Main.tz","span":{"start":132,"end":136,"line":5,"column":21,"end_line":5,"end_column":25}}],"help":"borrow the value with 'ref text' or move it last"}
 ```
 
-キーの名前と順序、`role` と `applicability` の値は安定しています。`related` の `message`、`help`、修正案の `title` と `text` の文言は変わることがあります（[安定性と互換性の方針](../../../docs/stability.md#安定として保たないもの)）。
+キーの名前と順序、`kind` と `role` と `applicability` の値は安定しています。`related` の `message`、`help`、修正案の `title` と `text` の文言は変わることがあります（[安定性と互換性の方針](../../../docs/stability.md#安定として保たないもの)）。
 
 `fmt --check --json` だけ、形が少し違います。スパンは無く、パスと「整形されていない」ことだけです。終了コードは 1 でした。
 
 ```text
-{"severity":"error","code":"E2000","message":"file is not formatted","path":"unformatted.tz"}
+{"severity":"error","code":"E2000","message":"file is not formatted","path":"unformatted.tz","kind":"file_not_formatted"}
 ```
 
-ツールがビルドのついでに出す警告、たとえばキャッシュを使えなかった通知は、`code` が `W2001` で、スパンを持たない行になることがあります。最後の一時ディレクトリを消せなかった、といった後始末の注意は、JSON モードでもプレーンテキストのままです。
+ツールがビルドのついでに出す警告、たとえばキャッシュを使えなかった通知は、`code` が `W2001`、`kind` が `tool_notice` で、スパンを持たない行になることがあります。最後の一時ディレクトリを消せなかった、といった後始末の注意は、JSON モードでもプレーンテキストのままです。
 
 `test --json` の結果は stderr ではなく stdout で、診断とは別のオブジェクトです。1 件は `type` が `test`、最後に `type` が `summary` の行が続きます。
 
@@ -157,6 +159,48 @@ main_value ()
 ```
 
 失敗した件には `failure` が足されます。`--list --json` は実行せず、`type`、`index`、`module`、`name`、`path`、UTF-16 の `range` を出します。
+
+## kind と explain
+
+コードは原因の大まかな分類で、同じ `E1002` が「未知の値」「モジュールにない関数」「型クラスにないメソッド」を表します。kind は、その中の 1 つの規則を表す識別子です。小文字と数字と `_` の 48 文字以内で、1 つの kind は 1 つのコードに属します。診断の `code` と重要度は kind から決まります。
+
+| 例 | kind | コード |
+| --- | --- | --- |
+| ムーブした値の使用 | `use_after_move` | `E1012` |
+| 生きている借用と競合するアクセス | `borrow_conflict` | `E1014` |
+| 型の不一致 | `type_mismatch` | `E1003` |
+| 未知の値 | `unknown_value` | `E1002` |
+| モジュールにない関数 | `unknown_module_member` | `E1002` |
+
+kind は `--json` の `kind` キーと、LSP の診断の `data.kind` に出ます。人間向けのテキスト出力には出しません。`tsuzuri explain <kind>` は原因（`## Why`）と、誤りの例（`## Bad`）・直した例（`## Good`）を出し、`tsuzuri explain <コード>` はそのコードの kind の一覧と直し方を出します（[コンパイラの使い方](usage.md#explain)）。全 kind は `tsuzuri explain --catalog` と、この記事の [kind の一覧](#kind-の一覧) にあります。
+
+```text
+$ tsuzuri explain use_after_move
+use_after_move  E1012  error  since 0.1.0
+Use of a moved value
+
+## Why
+Passing a value to a function that takes ownership, ...
+```
+
+kind は足すことはあっても、消したり、名前を変えたり、別のコードへ移したりしません。1 つの kind を 2 つに分けることはあります（元の kind は残りの条件に使い続けます）。説明の文言は保証しません（[安定性と互換性の方針](../../../docs/stability.md)）。
+
+### ヒント
+
+よくある誤りの形には、コンパイラのヒントの表から、直し方の `help` が付きます。ヒントは、診断の kind、メッセージの断片、診断の位置の前後の字句で選びます。たとえばタプルを `pair.0` で読むと、`E0002` の `expected an identifier` に次の `help` が付きます。
+
+```text
+./Main.tz:1:49: error[E0002]: expected an identifier
+  1 | t :: (i64 * i64) -> i64 = \pair -> pair.0
+    |                                         ^
+  help: read a tuple element by pattern matching, as in 'match pair with | (first, _) -> first'
+```
+
+表は 40 件で、ほかに `(5: i64)` の型注釈、`Display.to_string`、`let new`、整数の `abs`、`return`、`fn f()`、`{` で始まる `union`・`for`・`while`、`println!`、`+=`、`::` での呼び出し、メソッド呼び出し、`struct`、`null`、`?`、`let ... in`、`and`、`pub`、`use`、`<T>`、`Option`、`int`・`float`・`str`、`=>` の腕、`|` のない腕、`True`・`False`、`void`、文字と文字列の引用符、`|x|` や `x =>` のラムダを扱います。
+
+- ヒントは、検査に失敗した利用者のソースの診断にだけ付きます。標準ライブラリの診断と、成功した検査の警告には付きません。
+- 位置の前後の字句で選ぶヒントは、診断が元から持つ一般的な `help`（たとえば未知の値の `check the spelling, ...`）を置き換えます。字句の条件がないヒントは、`help` のない診断にだけ付きます。
+- 7 件のヒント（`Option`→`Maybe`、`float`→`f64`、`str`→`string`、`=>`→`->`、`True`→`true`、`False`→`false`、`void`→`()`）は、その字句を置き換える修正案も持ちます。修正案は `likely` か `maybe` で、`certain` にはしません。経験則なので、そのまま正しいとは限りません。
 
 ## 複数エラーと二次エラー
 
@@ -198,7 +242,7 @@ flowchart TD
 
 ## エラーコード
 
-エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0003`）は字句解析と構文解析、`E1`（`E1001`〜`E1028`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2007`）は CLI 引数・I/O・リンカー・実行時・依存の取得などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1006`）およびツールの警告 `W2001`・`W2002` です。
+エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0003`）は字句解析と構文解析、`E1`（`E1001`〜`E1029`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2008`）は CLI 引数・I/O・リンカー・実行時・依存の取得・edition の移行などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1006`）およびツールの警告 `W2001`・`W2002` です。
 
 | コード | 何を報告するか |
 | --- | --- |
@@ -233,8 +277,67 @@ flowchart TD
 | `E2005` | 実行時の異常終了。トラップ位置、0 以外の `def main`、スタック枯渇の推定、`tsuzuri bench` の失敗（トラップ、時間切れ、負の時間）を含む |
 | `E2006` | 言語内テストの失敗 |
 | `E2007` | 依存の取得と検証の失敗。`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存や内容が SHA-256 と違う依存、`git` の欠落・失敗、取得したリポジトリのシンボリックリンク・submodule・危険なパス・大文字小文字だけ違うパス、registry の index にない版、index の項目と違うパッケージ、`publish` で commit とディレクトリの内容が違うこと（[パッケージ](../organizing-tsuzuri/packages.md#git-依存と-tsuzurilock)） |
+| `E2008` | `tsuzuri fix --edition` による edition の移行の失敗。`--from` とマニフェストの版の食い違い、古い版への移行、移行後のソースが大きすぎること、マニフェストの更新や置き換えの失敗（[コンパイラの使い方](usage.md#fix)） |
 
 `E1001` から `E1010` は型検査・意味解析の基本的なエラーに割り当てられています。具体的には、`E1001` が識別子名の重複（1 つの `let rec` グループに同じ名前を 2 度書く場合を含む。関数のシグネチャと定義、レコード、レコードのフィールド、引数の重複は最初の定義 `first_defined_here` を持ちます）、`E1002` が未知の値・関数・定数・ケースの名前（未知の値は、見えるローカル変数の `scope` と `help` を持ちます）、`E1003` が型の不一致（expected ... found ...。`expected`・`found` を持ち、`let` の型注釈・関数の結果の型・名前付きの関数の引数の型が期待を決めたときは、その宣言 `expected_because` を持ちます。引数が足りない呼び出しには `help` が付きます）、`E1004` が曖昧な識別子や名前解決エラー（複数のビルダーが宣言する別名の曖昧さを含む）、`E1005` が関数呼び出しや演算子インスタンスの不備（関数値が捕捉できない値の捕捉を含み、型変数 `'a` を含む型の値を捕捉する `let rec` もここです。関数でない値の呼び出しには `help` が付きます）、`E1006` が関数適用の引数の個数の不一致（アクティブパターンの追加引数や `Owned.function` に渡すラムダの引数の数を含む。引数が多すぎるときは `help` が付きます）、`E1007` がレコードフィールドの不備（未知のフィールドは、レコードのフィールドを並べた `help` を持ちます）、`E1008` が公開 ABI や extern の制約違反、`E1009` が数値リテラルの不正、`E1010` が型レイアウトの制限です。詳細な理由は各診断メッセージで示されます。
+
+### kind の一覧
+
+コードごとの全 kind です。`tsuzuri explain --catalog` と同じ内容で、`tests/explain.rs` の `the_docs_list_every_kind` が登録簿との一致を検査します。kind を足したら、そのテストの失敗メッセージにある表を、次の 2 つのマーカーの間に貼ります。
+
+<!-- generated:diagnostic-kinds -->
+| コード | kind |
+| --- | --- |
+| `E0001` | `bigint_suffix_with_fraction`, `byte_literal_not_ascii`, `byte_suffix_on_interpolated_string`, `byte_suffix_on_unsupported_literal`, `char_literal_not_one_unit`, `comment_in_interpolation_hole`, `expected_digit`, `float_suffix_on_hex_or_binary_literal`, `format_field_out_of_range`, `format_precision_on_integer`, `format_type_needs_precision`, `interpolation_hole_spans_lines`, `invalid_format_spec`, `invalid_numeric_literal`, `invalid_string_escape`, `invalid_type_variable_start`, `invalid_unicode_scalar_escape`, `numeric_separator_misplaced`, `raw_newline_in_string`, `single_closing_brace_in_interpolation`, `unexpected_character`, `unterminated_block_comment`, `unterminated_interpolation_hole`, `unterminated_string_literal`, `utf8char_not_one_scalar` |
+| `E0002` | `alias_name_on_same_line`, `angle_bracket_spacing`, `builder_alias_is_contextual_keyword`, `builder_alias_name_case`, `checked_let_rec`, `class_needs_one_type_parameter`, `computation_match_without_arms`, `computation_nesting_too_deep`, `const_export_order`, `constraint_line_indentation`, `cpu_attribute_on_const_def`, `definition_without_signature`, `do_bang_outside_task`, `duplicate_builder_alias`, `duplicate_cpu_target`, `duplicate_json_attribute`, `duplicate_manifest_key`, `dyn_with_type_arguments`, `empty_interpolation_hole`, `empty_region_list`, `expected_binding_end`, `expected_body_expression`, `expected_builder_alias`, `expected_computation_body`, `expected_cpu_target`, `expected_dyn_class`, `expected_expression`, `expected_expression_after_attribute`, `expected_identifier`, `expected_interpolation_close`, `expected_kind`, `expected_line_break`, `expected_link_name_string`, `expected_pattern`, `expected_single_type_argument`, `expected_token`, `expected_type_close`, `expected_union_case_name`, `expected_where_bindings`, `export_on_implementation`, `expression_nesting_too_deep`, `extern_type_with_body`, `extern_type_with_link_name`, `for_loop_needs_identifier`, `header_path_on_same_line`, `header_path_spacing`, `integer_literal_too_large`, `invalid_dependency_form`, `invalid_dependency_native_flag`, `invalid_dependency_path`, `invalid_fixed_array_length`, `invalid_git_dependency`, `invalid_json_attribute`, `invalid_link_name_text`, `invalid_native_library_name`, `invalid_native_path`, `invalid_native_section`, `invalid_package_field`, `invalid_registry_dependency`, `invalid_registry_setting`, `invalid_wasm_size`, `lambda_without_parameters`, `length_parameter_type`, `let_function_needs_lambda`, `let_rec_needs_lambda`, `list_type_with_length`, `malformed_constraint_line`, `malformed_multi_case_active_pattern`, `malformed_new_collection`, `manifest_section_order`, `manifest_syntax_error`, `match_without_arms`, `misplaced_checked_attribute`, `misplaced_const_modifier`, `misplaced_cpu_attribute`, `misplaced_doc_comment`, `misplaced_json_attribute`, `misplaced_namespace_declaration`, `misplaced_region_list`, `misplaced_using_declaration`, `missing_package_field`, `missing_registry_index`, `module_declaration_unsupported`, `mut_as_expression`, `mutable_let_rec`, `mutable_use_binding`, `negative_pattern_needs_number`, `pattern_nesting_too_deep`, `prefix_keyword_operand`, `recursive_let_bang`, `recursive_where_binding`, `return_not_last_in_computation`, `return_outside_task_end`, `signature_uses_def`, `signature_uses_double_colon`, `signature_without_definition`, `slice_must_be_borrowed`, `slice_without_bounds`, `stray_and_member`, `syntax_nesting_too_deep`, `too_many_active_pattern_cases`, `too_many_dyn_classes`, `too_many_extern_link_names`, `too_many_function_parameters`, `too_many_interpolation_holes`, `too_many_lambda_parameters`, `too_many_tuple_elements`, `too_many_type_arguments`, `type_parameters_need_angle_brackets`, `typed_and_needs_body`, `unknown_cpu_target`, `unknown_manifest_key`, `unsupported_edition`, `use_bang_in_and_group`, `use_bang_outside_computation`, `where_binding_indentation` |
+| `E0003` | `source_too_large` |
+| `E1001` | `duplicate_and_binding`, `duplicate_derived_class`, `duplicate_export_name`, `duplicate_extern_declaration`, `duplicate_function_definition`, `duplicate_function_signature`, `duplicate_name` |
+| `E1002` | `class_has_no_method`, `unknown_function`, `unknown_length_constant`, `unknown_module_member`, `unknown_union_case`, `unknown_value` |
+| `E1003` | `active_recognizer_result`, `fixed_array_literal_length`, `format_spec_type_mismatch`, `format_spec_type_unknown`, `index_not_integer`, `type_mismatch` |
+| `E1004` | `ambiguous_builder_alias`, `ambiguous_name`, `ambiguous_pattern_name`, `dyn_needs_type_class`, `empty_list_needs_annotation`, `expected_length`, `length_used_as_type`, `not_a_record_type`, `repeated_module_name`, `std_item_missing`, `type_argument_count`, `type_used_as_length`, `unknown_type_name` |
+| `E1005` | `atomic_element_type`, `call_non_function`, `capture_exclusive_in_reusable_function`, `capture_rc_in_function_value`, `capture_sync_primitive_in_function_value`, `capture_unsendable_in_function_value`, `collection_element_exclusive_borrow`, `cpu_function_wide_vector_boundary`, `deref_non_reference`, `exclusive_slice_whole_array_parameter`, `fixed_array_init_annotation`, `fixed_slice_source`, `for_over_fixed_array`, `for_source_not_iterable`, `function_constraint_unresolvable`, `function_constraint_unsatisfied`, `index_non_indexable`, `invalid_length_constant`, `misplaced_mut_convention`, `misplaced_own_convention`, `mut_parameter_needs_edition_2027`, `new_on_fixed_array`, `no_instance`, `no_instance_for_operator`, `no_wider_integer`, `range_as_value`, `rec_function_captures_generic`, `record_update_non_record`, `shared_container_exclusive_borrow`, `simd_lane_count_mismatch`, `simd_operation_vector_type`, `slice_non_array`, `slice_of_fixed_array`, `std_representation_mismatch`, `unsized_slice_type_position`, `use_requires_drop` |
+| `E1006` | `active_pattern_argument_count`, `active_recognizer_parameters`, `definition_parameter_count_mismatch`, `instance_method_parameter_count`, `owned_function_parameter_count`, `too_many_arguments_applied` |
+| `E1007` | `field_access_non_record`, `missing_record_fields`, `record_has_no_field`, `unknown_field` |
+| `E1008` | `conflicting_extern_declaration`, `export_active_recognizer`, `export_on_extern_declaration`, `extern_callback_argument`, `extern_callback_call_form`, `extern_declaration_constraints`, `invalid_extern_symbol`, `invalid_wasm_import_module`, `reserved_extern_symbol`, `unsupported_export_signature`, `unsupported_extern_signature` |
+| `E1009` | `decimal_literal_out_of_range`, `float_literal_out_of_range`, `float_literal_type`, `integer_literal_out_of_range`, `integer_literal_type`, `invalid_bigint_digit`, `invalid_float_literal` |
+| `E1010` | `fixed_array_too_long`, `infinite_recursive_layout`, `layout_nesting_limit`, `recursive_union_without_base_case`, `value_layout_too_large` |
+| `E1011` | `ambiguous_package_root`, `conflicting_dependency_source`, `cyclic_package_dependency`, `dependency_kind_not_allowed`, `dependency_name_mismatch`, `dependency_path_not_relative`, `duplicate_dependency`, `duplicate_module`, `incompatible_dependency_versions`, `invalid_module_filename`, `invalid_module_name`, `invalid_package_name`, `invalid_package_namespace`, `invalid_publish_version`, `invalid_source_path`, `invalid_std_path`, `invalid_using_declaration`, `manifest_not_regular_file`, `module_namespace_collision`, `module_source_not_regular_file`, `publish_non_registry_dependency`, `reserved_package_namespace`, `reserved_std_namespace`, `source_filename_case_mismatch`, `source_outside_package_root`, `source_without_filename`, `symlink_not_followed` |
+| `E1012` | `assign_to_immutable_place`, `drop_pass_exclusive_value`, `drop_replace_whole_value`, `move_out_of_collection_element`, `move_out_of_drop_type`, `move_out_of_owned_function`, `move_out_of_rec_function`, `move_out_of_reference_binding`, `update_drop_type_value`, `use_after_move` |
+| `E1013` | `assignment_extends_borrow`, `borrow_across_async_boundary`, `borrow_field_without_region`, `borrow_of_temporary`, `borrow_outlives_binding`, `borrow_outlives_block`, `borrowed_union_payload`, `callback_contract_unsatisfied`, `channel_item_holds_borrow`, `const_temporary_borrow_escapes`, `dyn_holds_borrow_without_region`, `dyn_holds_exclusive_borrow`, `exclusive_borrow_behind_region`, `exclusive_borrow_field_shape`, `exclusive_field_regions_missing`, `exclusive_field_without_region`, `exclusive_region_reused`, `field_mixes_regions`, `invalid_region_names`, `misplaced_region_quantifier`, `multiple_regions_on_value`, `must_apply_directly`, `mutable_record_field`, `mutable_region_quantified_parameter`, `mutex_result_retains_borrow`, `named_region_in_function_type`, `named_region_in_local`, `nested_borrow_unsupported`, `owned_function_captures_reference`, `parallel_callback_borrows_environment`, `parallel_input_borrows_environment`, `parallel_result_retains_borrow`, `reference_region_count`, `reference_without_owner`, `region_already_declared`, `region_belongs_to_function`, `region_callback_stores_exclusive_input`, `region_count_mismatch`, `region_on_non_borrow`, `region_quantifier_target`, `result_region_mismatch`, `result_region_missing`, `result_region_without_input`, `self_referential_store`, `store_local_borrow_through_reference`, `store_region_mismatch`, `store_region_unnamed`, `task_capture_retains_borrow`, `task_requires_owned_value`, `task_requires_send`, `task_requires_sync`, `task_result_is_reference`, `task_result_retains_borrow`, `task_scope_shares_borrowed_environment`, `undeclared_region`, `union_payload_exclusive_borrow`, `unused_region` |
+| `E1014` | `active_pattern_mutates_input`, `borrow_conflict`, `exclusive_slice_source`, `move_reborrowed_exclusive_reference`, `mutate_immutable_value`, `mutate_through_shared_reference`, `replace_exclusive_slice` |
+| `E1015` | `ambiguous_polymorphic_use`, `concrete_integer_required`, `concrete_type_required`, `constructor_kind_mismatch`, `constructor_variable_kind_annotation`, `dyn_dispatch_result_type`, `dyn_of_arity`, `dyn_of_needs_expected_type`, `expected_type_constructor`, `extern_signature_not_concrete`, `extern_type_as_constructor`, `fixed_array_length_unknown`, `higher_kinded_alias`, `higher_order_kind_argument`, `infinite_inferred_type`, `instance_head_not_constructor`, `internal_compact_string_runtime`, `internal_rec_binding_not_lambda`, `internal_rec_group_unbound`, `internal_rec_not_bound_by_block`, `internal_unlowerable_ir`, `missing_type_arguments`, `polymorphic_entry_point`, `ref_operand_inferred_late`, `scalar_as_type_constructor`, `simd_vector_type_unknown`, `superclass_kind_mismatch`, `type_constructor_not_applied`, `type_variable_absent_from_signature`, `type_variable_kind_conflict` |
+| `E1016` | `builtin_instance_override`, `class_constraint_arity`, `class_method_constraint`, `class_method_type_variable`, `class_without_methods`, `default_body_unknown_method`, `drop_instance_constraint`, `drop_instance_generic`, `drop_instance_target`, `explicit_drop_call`, `field_type_constraint`, `format_instance_target`, `instance_missing_method`, `instance_unknown_method`, `internal_effective_api_unavailable`, `missing_explicit_constraint`, `overlapping_instance`, `unknown_type_class` |
+| `E1017` | `and_group_too_large`, `class_constraint_limit`, `deriving_expression_limit`, `deriving_instance_limit`, `exhaustiveness_search_limit`, `function_constraint_limit`, `git_dependency_too_large`, `gpu_effect_analysis_limit`, `gpu_kernel_limit`, `header_path_too_long`, `instance_overlap_limit`, `instance_resolution_cycle`, `instance_resolution_limit`, `lockfile_too_large`, `loop_ownership_limit`, `manifest_too_large`, `module_discovery_limit`, `module_path_limit`, `namespace_path_too_long`, `or_pattern_alternatives_limit`, `package_graph_limit`, `pattern_alternatives_limit`, `polymorphic_constraint_limit`, `polymorphic_recursion_growth`, `polymorphic_type_expansion_limit`, `pure_callback_proof_limit`, `pure_definition_reach_limit`, `pure_value_validation_limit`, `qualified_name_too_long`, `recursive_type_changes_arguments`, `recursive_type_expansion_limit`, `registry_index_too_large`, `registry_resolution_limit`, `sequence_loop_depth_limit`, `specialization_limit`, `superclass_resolution_limit`, `too_many_dependencies`, `too_many_loop_exits`, `too_many_raise_points`, `too_many_record_regions`, `too_many_region_parameters`, `too_many_trap_locations`, `type_alias_expansion_limit` |
+| `E1018` | `alias_outside_builder_file`, `bench_clock_outside_bench`, `builder_missing_operation`, `builder_without_operations`, `cannot_infer_builder`, `class_outside_class_file`, `computation_without_builder`, `declaration_in_class_file`, `gpu_buffer_element_type`, `gpu_callback_not_known`, `gpu_kernel_effect`, `gpu_kernel_missing`, `gpu_kernel_recursion`, `gpu_kernel_signature`, `gpu_operation_not_direct`, `gpu_unsupported_construct`, `gpu_unsupported_operator`, `gpu_unsupported_type`, `implicit_task_needs_builder`, `no_builder_for_value`, `std_declares_test`, `std_exports_function`, `unknown_computation_builder` |
+| `E1019` | `and_without_recursive_group`, `mismatched_recursive_group`, `missing_rec_marker` |
+| `E1020` | `active_argument_not_value`, `active_pattern_case_count`, `active_pattern_case_name`, `array_pattern_on_fixed_array`, `case_pattern_missing_payload`, `case_pattern_payload_shape`, `case_pattern_unexpected_payload`, `duplicate_active_pattern_case`, `expression_in_pattern`, `multi_case_active_pattern_result_type`, `null_pattern`, `or_pattern_binding_mismatch`, `partial_active_pattern_case_count`, `qualified_pattern_binding`, `record_pattern_unknown_type`, `reserved_active_result_variable`, `unknown_case_or_active_pattern` |
+| `E1021` | `non_exhaustive_match` |
+| `E1022` | `opaque_type_representation`, `private_builder_operation`, `private_export`, `private_name_access`, `private_on_unsupported_declaration`, `private_std_primitive`, `private_type_in_public_api` |
+| `E1023` | `jump_outside_loop` |
+| `E1024` | `alias_argument_count`, `cyclic_type_alias`, `duplicate_type_parameter`, `duplicate_union_case`, `invalid_type_parameter_name`, `type_name_case`, `undeclared_length_parameter`, `undeclared_type_variable`, `union_case_name_case`, `unused_type_parameter` |
+| `E1025` | `default_derive_recursive`, `derived_instance_invalid`, `deriving_unavailable`, `duplicate_json_name`, `json_name_without_deriving`, `underivable_class` |
+| `E1026` | `const_aggregate_operator`, `const_assignment_target`, `const_borrow_not_allowed`, `const_call_depth_limit`, `const_callee_not_const`, `const_checked_operation`, `const_condition_not_bool`, `const_cycle`, `const_evaluation_trapped`, `const_expression_not_allowed`, `const_for_loop_form`, `const_function_value`, `const_limit_exceeded`, `const_new_collection_form`, `const_operation_not_allowed`, `const_partial_application`, `const_pipe_not_allowed`, `const_signature_invalid`, `const_static_data_too_large`, `const_unbuildable_type`, `const_unsupported_operation`, `constant_type_not_concrete` |
+| `E1027` | `class_context_not_a_class`, `instance_check_failed`, `instance_context_variable`, `instance_missing_superclass`, `superclass_cycle`, `superclass_type_variable`, `undeclared_default_constraint`, `undeclared_instance_constraint`, `unknown_class_in_context` |
+| `E1028` | `dyn_incompatible_class` |
+| `E1029` | `impure_builtin_for_pure_contract`, `impure_callback_for_pure_contract`, `impure_operation_in_pure_def`, `impure_pure_function_value`, `pure_function_type_parameter_not_allowed`, `pure_implementation_partial_parameters`, `pure_method_mutable_reference`, `pure_on_non_function_type`, `pure_parameter_not_allowed`, `pure_returned_function_contract`, `pure_specialization_own_parameter`, `pure_value_captures_unknown_callback`, `pure_value_unprovable` |
+| `E2000` | `alloc_needs_counting_allocator`, `bindgen_annotation_error`, `bindgen_argument_error`, `cannot_derive_namespace`, `debug_info_without_source_map`, `duplicate_link_input`, `duplicate_option`, `environment_setting_invalid`, `fast_backend_unavailable`, `fast_backend_unsupported_option`, `file_not_formatted`, `foreign_target_not_runnable`, `formatter_changed_semantics`, `formatter_invalid_output`, `index_out_of_range`, `input_count_invalid`, `input_extension_invalid`, `invalid_library_name`, `invalid_namespace_argument`, `invalid_publish_git_rev`, `invalid_publish_git_url`, `invalid_range_flag_setting`, `invalid_thread_setting`, `invalid_trap_source_map`, `link_input_limit`, `missing_input`, `native_link_setting_not_allowed`, `net_async_needs_block_on`, `new_project_folder_not_empty`, `new_project_io_failure`, `no_sources_found`, `option_conflict`, `option_invalid_for_command`, `option_invalid_value`, `option_missing_value`, `option_requires_build`, `option_requires_option`, `option_unsupported_platform`, `output_extension_invalid`, `project_manifest_missing`, `repl_command_usage`, `repl_declaration_not_allowed`, `repl_unknown_command`, `script_wrong_file_kind`, `trap_info_without_source_map`, `unknown_explain_target`, `unknown_option`, `unknown_target`, `usage_error`, `wasm_net_needs_opt_in`, `wasm_os_api_needs_opt_in`, `wasm_test_runner_async` |
+| `E2001` | `build_server_control_failed`, `build_server_start_failed`, `foreign_runner_not_startable`, `input_not_regular_file`, `input_not_utf8`, `input_path_not_utf8`, `input_too_large`, `io_failure`, `link_input_unreadable`, `repl_stream_failure`, `temp_directory_failed` |
+| `E2002` | `bindgen_unreadable_ast`, `bindgen_unsupported_target`, `bitcode_symbol_not_kept`, `external_tool_failed`, `external_tool_not_runnable`, `external_tool_output_too_large`, `external_tool_read_failed`, `external_tool_wait_failed`, `fast_backend_unsupported_construct`, `invalid_coverage_counters`, `platform_unsupported_api`, `target_attributes_not_applicable`, `target_attributes_unreadable`, `toolchain_missing_feature` |
+| `E2003` | `bindgen_output_not_generated`, `doc_filename_collision`, `doc_output_changed`, `doc_output_contains_sources`, `doc_output_invalid`, `doc_output_not_owned`, `doc_publication_failed`, `format_target_not_regular_file`, `output_has_source_extension`, `output_not_regular_file`, `output_overwrites_input`, `output_overwrites_link_input`, `output_publication_failed`, `source_changed_during_formatting` |
+| `E2004` | `ambiguous_entry_point`, `builder_file_toplevel_code`, `entry_point_missing`, `entry_point_result_type`, `invalid_main_signature`, `spirv_kernel_count`, `toplevel_code_outside_main` |
+| `E2005` | `benchmark_failed`, `program_exited_nonzero`, `program_terminated`, `program_time_limit_exceeded` |
+| `E2006` | `tests_failed` |
+| `E2007` | `file_url_after_https`, `git_case_collision`, `git_command_failed`, `git_missing_manifest`, `git_non_regular_entry`, `git_source_not_utf8`, `git_tree_unreadable`, `git_unsafe_path`, `git_version_unsupported`, `invalid_lockfile`, `lockfile_checksum_mismatch`, `lockfile_entry_missing`, `lockfile_missing`, `lockfile_not_regular_file`, `lockfile_version_mismatch`, `package_files_unreadable`, `package_not_downloaded`, `package_store_unavailable`, `package_store_unusable`, `published_package_mismatch`, `registry_checksum_mismatch`, `registry_dependency_not_selected`, `registry_entry_mismatch`, `registry_index_invalid`, `registry_index_missing`, `registry_package_missing`, `registry_version_missing` |
+| `E2008` | `migration_edition_backwards`, `migration_edition_mismatch`, `migration_invalid_edit`, `migration_manifest_update_failed`, `migration_source_too_large`, `migration_write_failed` |
+| `W1001` | `unused_local` |
+| `W1002` | `unused_private_function`, `unused_private_type` |
+| `W1003` | `unreachable_match_arm` |
+| `W1004` | `shadowed_local` |
+| `W1005` | `deprecated_use` |
+| `W1006` | `implicit_copy_of_large_value` |
+| `W2001` | `tool_notice` |
+| `W2002` | `bindgen_skipped_declaration` |
+<!-- /generated:diagnostic-kinds -->
 
 ### 確保数の診断
 
@@ -282,15 +385,24 @@ copywarn/Main.tz:2:9: warning[W1006]: implicit copy of an array allocates and co
 
 各要素は `range`、`severity`、`code`、`source`、`message` です。`source` は `tsuzuri` です。`severity` はエラーが 1、警告が 2 で、LSP の数値です。`range` は UTF-16 の行と桁で、0 始まりです。CLI の `--json` が 1 始まりの Unicode スカラー値なのと、ここが違います。
 
-関連する位置のうちプロジェクトのファイルにあるものは `relatedInformation`（`location` と `message`）になります。std の中の位置は、エディターが開けないので入れません。修正案を持つ診断は `data.fixes`（`title` と `applicability`）を持ちます。どちらも無ければ、そのキーは付きません。
+関連する位置のうちプロジェクトのファイルにあるものは `relatedInformation`（`location` と `message`）になります。std の中の位置は、エディターが開けないので入れません。`data.kind` は診断の kind、修正案を持つ診断は `data.fixes`（`title` と `applicability`）も持ちます。値のないキーは付きません。
+
+診断の範囲にカーソルを置いた hover は、その診断（3 件まで）の重要度・コード・kind・メッセージと、`tsuzuri explain <kind>` の案内を出します。型や doc コメントの hover があるときは、その前に置き、`---` で区切ります。エラーのあるプログラムには型の hover がないので、診断の範囲の外では従来どおり何も出しません。
+
+```text
+**error[E1012]** `use_after_move`
+use of moved or partially moved value 'text'
+Run `tsuzuri explain use_after_move` for an explanation.
+```
 
 未保存のバッファも、開いているテキストで検査します。入力を読めないときも、同じオブジェクトを 1 件出します。閉じた文書に新しい診断を送り続けることはしません。
 
-VS Code 拡張は、これを波線と問題パネルに出します。`textDocument/codeAction` のクイックフィックスは 2 種類です。未使用ローカル（`W1001`）へ `_` を付けるものと、診断の修正案です。修正案は、適用したテキストをもう一度検査し、その診断のコードの件数が減り、どのコードのエラーも増えないときだけ出します。ほかのエラーは残っていてもよく、適用後に検査が通ることまでは保証しません（警告の修正案なら警告も数えます。表示の上限の 50 件を超えた診断も数え、収集の上限の 1000 件に達したときは出しません）。現在、修正案を持つのは `E1021` の足りない腕だけで、`maybe` なので優先のクイックフィックス（`isPreferred`）にはしません。
+VS Code 拡張は、これを波線と問題パネルに出します。`textDocument/codeAction` のクイックフィックスは 2 種類です。未使用ローカル（`W1001`）へ `_` を付けるものと、診断の修正案です。修正案は、適用したテキストをもう一度検査し、その診断のコードの件数が減り、どのコードのエラーも増えないときだけ出します。ほかのエラーは残っていてもよく、適用後に検査が通ることまでは保証しません（警告の修正案なら警告も数えます。表示の上限の 50 件を超えた診断も数え、収集の上限の 1000 件に達したときは出しません）。現在、修正案を持つのは `E1021` の足りない腕と、[ヒント](#ヒント) の 7 件で、どれも `certain` ではないので優先のクイックフィックス（`isPreferred`）にはしません。
 
 ## まとめ
 
-- テキストは `パス:行:列: error[E1003]: ...`、JSON は 1 行に `severity`、`code`、`message`、`path`、`span` です。関連する位置、`help`、修正案は、値があるときだけ続きます。
+- テキストは `パス:行:列: error[E1003]: ...`、JSON は 1 行に `severity`、`code`、`message`、`path`、`span`、`kind` です。関連する位置、`help`、修正案は、値があるときだけ続きます。
+- kind は原因の安定した識別子で、`tsuzuri explain` で説明を読めます。よくある誤りの形には、ヒントの `help` が付きます。
 - 50 件を超えると件数だけを足し、1000 件で収集を止めます。重複は最初から 1 件です。
 - 字句、構文、型の順に段階を分け、壊れた木から二次エラーを量産しないようにしています。
 - `E0` は構文、`E1` は意味、`E2` はツールと実行、`W` は警告です。

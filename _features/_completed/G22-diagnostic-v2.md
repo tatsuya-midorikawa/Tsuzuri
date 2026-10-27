@@ -6,7 +6,7 @@
 | 優先度 | P0（D-50 の表） |
 | 規模 | L（全体）。Phase 1: M（3〜5 日）、Phase 2: M、Phase 3: M、Phase 4: S（1〜2 日） |
 | 依存 | [G20](G20-error-recovery.md)（done。診断を 1 回の実行で集める経路。`Diagnostics`・`DiagnosticSet`・`recovered`）、[G12](G12-lsp-extensions.md)（done。LSP の `publishDiagnostics`・`codeAction`・`verify_edits`）。Phase 2・3・4 は Phase 1 に依存する。未実装の他チケットへの依存はない |
-| 後続 | [G23](../G23-diagnostic-kinds-explain-hints.md)（`kind`・`explain`・ヒント DB）、[G24](../G24-tsuzuri-fix.md)（`tsuzuri fix`。`Fix`・`Edit`・`apply_edits` を使う）、[G25](../G25-typed-holes-and-find.md)（`scope`・`candidates`）、[G26](../G26-facts-model.md) Phase 5（`State.moved` の起点と `Loan.span` を facts と共有する）、[G29](../G29-mcp-server.md)（`tz_check` が診断 v2 の JSON を返す）、A20・A21・A22・A23（新しい診断が `related`・`fixes` を最初から持つ）、[B10](../B10-trap-backtrace-and-domains.md)（`E2005` の `trap`。B10 が先に入っていれば `Diagnostic.trap` を `DiagnosticData` へ移して `render_with`・`json_with` に通す。D-51） |
+| 後続 | [G23](G23-diagnostic-kinds-explain-hints.md)（`kind`・`explain`・ヒント DB）、[G24](../G24-tsuzuri-fix.md)（`tsuzuri fix`。`Fix`・`Edit`・`apply_edits` を使う）、[G25](../G25-typed-holes-and-find.md)（`scope`・`candidates`）、[G26](../G26-facts-model.md) Phase 5（`State.moved` の起点と `Loan.span` を facts と共有する）、[G29](../G29-mcp-server.md)（`tz_check` が診断 v2 の JSON を返す）、A20・A21・A22・A23（新しい診断が `related`・`fixes` を最初から持つ）、[B10](../B10-trap-backtrace-and-domains.md)（`E2005` の `trap`。B10 が先に入っていれば `Diagnostic.trap` を `DiagnosticData` へ移して `render_with`・`json_with` に通す。D-51） |
 | 状態 | done（Phase 1〜4、2026-10-26） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの `main` は `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D14 はすべて承認済み。**D1 は D-51 の「Rust の型」の置き場所（`Diagnostic` のフィールドを `Box` に入れる）を変える**ので、D-51 への注記が要る（統括者が台帳へ追記する。根拠は測定値） |

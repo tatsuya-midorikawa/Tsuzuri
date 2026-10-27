@@ -1,0 +1,1 @@
+def f :: Option<i64> -> i64 = \o -> 0

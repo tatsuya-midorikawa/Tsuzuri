@@ -18,8 +18,8 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
     let metadata = fs::metadata(header)
         .map_err(|error| at_header(io_error("inspect header", header, error)))?;
     if !metadata.is_file() {
-        return Err(at_header(driver_error(
-            "E2001",
+        return Err(at_header(driver_error_of(
+            DiagnosticKind::InputNotRegularFile,
             "the header must be a regular file",
         )));
     }
@@ -28,16 +28,19 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
         .and_then(|file| file.take(MAX_AST_BYTES as u64 + 1).read_to_end(&mut bytes))
         .map_err(|error| at_header(io_error("read header", header, error)))?;
     if bytes.len() > MAX_AST_BYTES {
-        return Err(at_header(driver_error(
-            "E2001",
+        return Err(at_header(driver_error_of(
+            DiagnosticKind::InputTooLarge,
             format!("the header exceeds {MAX_AST_BYTES} bytes"),
         )));
     }
     let path = crate::cache::real_path(header)
         .map_err(|error| at_header(io_error("resolve header", header, error)))?;
-    let path_text = path
-        .to_str()
-        .ok_or_else(|| at_header(driver_error("E2001", "the header path must be valid UTF-8")))?;
+    let path_text = path.to_str().ok_or_else(|| {
+        at_header(driver_error_of(
+            DiagnosticKind::InputPathNotUtf8,
+            "the header path must be valid UTF-8",
+        ))
+    })?;
     let mut hash = Sha256::new();
     hash.update(&bytes);
     let sha256 = hash.hex();
@@ -50,8 +53,8 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
         .trim()
         .to_owned();
     if !crate::bindgen::lp64_target(&target) {
-        return Err(at_header(driver_error(
-            "E2002",
+        return Err(at_header(driver_error_of(
+            DiagnosticKind::BindgenUnsupportedTarget,
             format!(
                 "bindgen supports only 64-bit LP64 targets (Linux x64/ARM64 and macOS ARM64); '{target}' is not supported"
             ),
@@ -86,8 +89,8 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
         macros.push(String::from_utf8_lossy(&output).into_owned());
     }
     let unreadable = |error: &dyn std::fmt::Display| {
-        at_header(driver_error(
-            "E2002",
+        at_header(driver_error_of(
+            DiagnosticKind::BindgenUnreadableAst,
             format!(
                 "clang produced an unreadable AST ({error}); use LLVM/Clang 17+ or bind a simpler header"
             ),
@@ -118,9 +121,10 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
     )
     .map_err(|failure| match failure {
         Failure::Ast(error) => unreadable(&error),
-        Failure::Annotation(message) => {
-            SourceError::new(Path::new("<command line>"), driver_error("E2000", message))
-        }
+        Failure::Annotation(message) => SourceError::new(
+            Path::new("<command line>"),
+            driver_error_of(DiagnosticKind::BindgenAnnotationError, message),
+        ),
     })?;
     publish(&path, &arguments.output, &generated.text)
         .map_err(|error| SourceError::new(&arguments.output, error))?;
@@ -128,8 +132,7 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
         .skipped
         .iter()
         .map(|skipped| {
-            Diagnostic::warning(
-                "W2002",
+            Diagnostic::of(DiagnosticKind::BindgenSkippedDeclaration,
                 format!(
                     "skipped C declaration '{}': {}; declare it by hand or wrap it in a C function with a supported signature",
                     skipped.name, skipped.reason
@@ -151,8 +154,8 @@ fn capture(command: &mut Command, what: &str, failure_hint: &str) -> Result<Vec<
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
-            driver_error(
-                "E2002",
+            driver_error_of(
+                DiagnosticKind::ExternalToolNotRunnable,
                 format!("cannot execute '{name}': {error}; {CLANG_HINT}"),
             )
         })?;
@@ -173,21 +176,29 @@ fn capture(command: &mut Command, what: &str, failure_hint: &str) -> Result<Vec<
         let _ = child.kill();
         let _ = child.wait();
         let _ = errors.join();
-        return Err(driver_error(
-            "E2002",
+        return Err(driver_error_of(
+            DiagnosticKind::ExternalToolOutputTooLarge,
             format!(
                 "{what} exceeds {MAX_AST_BYTES} bytes; bind a smaller header that includes only the declarations you need"
             ),
         ));
     }
-    let status = child
-        .wait()
-        .map_err(|error| driver_error("E2002", format!("cannot wait for '{name}': {error}")))?;
+    let status = child.wait().map_err(|error| {
+        driver_error_of(
+            DiagnosticKind::ExternalToolWaitFailed,
+            format!("cannot wait for '{name}': {error}"),
+        )
+    })?;
     let errors = errors.join().unwrap_or_default();
-    read.map_err(|error| driver_error("E2002", format!("cannot read from '{name}': {error}")))?;
+    read.map_err(|error| {
+        driver_error_of(
+            DiagnosticKind::ExternalToolReadFailed,
+            format!("cannot read from '{name}': {error}"),
+        )
+    })?;
     if !status.success() {
-        return Err(driver_error(
-            "E2002",
+        return Err(driver_error_of(
+            DiagnosticKind::ExternalToolFailed,
             format!(
                 "'{name}' failed ({status}):\n{}\n{failure_hint}",
                 String::from_utf8_lossy(&errors).trim()
@@ -218,8 +229,8 @@ fn publish(header: &Path, output: &Path, text: &str) -> Result<(), Diagnostic> {
 /// regular file whose first line is [`MARKER`], so it never replaces hand-written code.
 fn protect_bindgen_output(header: &Path, output: &Path) -> Result<(), Diagnostic> {
     if output.extension() != Some(OsStr::new("tz")) {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OutputExtensionInvalid,
             "bindgen output must have the .tz extension",
         ));
     }
@@ -229,8 +240,8 @@ fn protect_bindgen_output(header: &Path, output: &Path) -> Result<(), Diagnostic
         Err(error) => return Err(io_error("inspect output", output, error)),
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::OutputNotRegularFile,
             "the output must not be a symlink, directory, or special file",
         ));
     }
@@ -239,8 +250,8 @@ fn protect_bindgen_output(header: &Path, output: &Path) -> Result<(), Diagnostic
     let destination =
         fs::canonicalize(output).map_err(|error| io_error("resolve output", output, error))?;
     if header_path == destination || same_file(header, output, &metadata)? {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::OutputOverwritesInput,
             "bindgen output must not overwrite the header",
         ));
     }
@@ -252,8 +263,8 @@ fn protect_bindgen_output(header: &Path, output: &Path) -> Result<(), Diagnostic
         rest.is_empty() || rest.starts_with(b"\n") || rest.starts_with(b"\r\n")
     });
     if !marked {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::BindgenOutputNotGenerated,
             format!(
                 "refusing to overwrite '{}': it does not start with the tsuzuri bindgen marker; delete it or choose another output",
                 output.display()

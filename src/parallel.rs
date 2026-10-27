@@ -10,7 +10,7 @@
 //! The workers never touch the timings of `TSUZURI_TIME_PASSES`: a stage is measured on the
 //! calling thread, so a phase is wall-clock time and the phases still add up to at most the total.
 
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use std::ffi::OsStr;
 use std::ops::ControlFlow;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -121,8 +121,7 @@ pub(crate) fn thread_setting(value: Option<&OsStr>) -> Result<Option<usize>, Dia
         .filter(|threads| (1..=MAX_THREADS).contains(threads))
         .map(Some)
         .ok_or_else(|| {
-            Diagnostic::new(
-                "E2000",
+            Diagnostic::of(DiagnosticKind::InvalidThreadSetting,
                 format!(
                     "{THREADS_VARIABLE} must be an integer from 1 to {MAX_THREADS}; unset it to use the available cores"
                 ),

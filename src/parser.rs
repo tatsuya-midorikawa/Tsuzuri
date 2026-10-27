@@ -1,4 +1,4 @@
-use crate::diagnostic::{Diagnostic, MAX_UNIQUE_DIAGNOSTICS, RelatedRole, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, MAX_UNIQUE_DIAGNOSTICS, RelatedRole, Span};
 use crate::lexer::{lex, lex_all};
 use crate::syntax::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,8 +32,8 @@ fn ends_recursive_group(statements: &[ComputationStatement]) -> bool {
 }
 
 fn duplicate_active_case(case: &Ident) -> Diagnostic {
-    Diagnostic::new(
-        "E1020",
+    Diagnostic::of(
+        DiagnosticKind::DuplicateActivePatternCase,
         format!("duplicate active pattern case '{}'", case.text),
         case.span,
     )
@@ -41,8 +41,13 @@ fn duplicate_active_case(case: &Ident) -> Diagnostic {
 
 /// `E1001` for a second definition or signature of a function, with the first one when the
 /// parser has seen it.
-fn duplicate_function(message: &str, name: &Ident, first: Option<Span>) -> Diagnostic {
-    let error = Diagnostic::new("E1001", message, name.span);
+fn duplicate_function(
+    kind: DiagnosticKind,
+    message: &str,
+    name: &Ident,
+    first: Option<Span>,
+) -> Diagnostic {
+    let error = Diagnostic::of(kind, message, name.span);
     match first {
         Some(first) => error.related(RelatedRole::FirstDefinedHere, "first defined here", first),
         None => error,
@@ -138,8 +143,8 @@ pub(crate) fn normalize_definition(
     }
     // Eta expansion would move prefix computations and traps to a later application.
     if pure && !definition.parameters.is_empty() && definition.parameters.len() < arity {
-        return Err(Diagnostic::new(
-            "E1029",
+        return Err(Diagnostic::of(
+            DiagnosticKind::PureImplementationPartialParameters,
             "a pure implementation must bind every parameter of its declared call stage; bind the remaining parameters or declare a parenthesized factory result",
             definition.body.span,
         ));
@@ -292,18 +297,24 @@ impl Parser<'_> {
         if self.at(kind) {
             Ok(self.take())
         } else {
-            Err(self.error(format!("expected {description}")))
+            Err(self.error_of(
+                DiagnosticKind::ExpectedToken,
+                format!("expected {description}"),
+            ))
         }
     }
 
-    fn error(&self, message: impl Into<String>) -> Diagnostic {
-        Diagnostic::new("E0002", message, self.current().span)
+    fn error_of(&self, kind: DiagnosticKind, message: impl Into<String>) -> Diagnostic {
+        Diagnostic::of(kind, message, self.current().span)
     }
 
     fn enter(&mut self) -> Result<(), Diagnostic> {
         self.nesting += 1;
         if self.nesting > MAX_NESTING {
-            Err(self.error(format!("syntax nesting exceeds {MAX_NESTING}")))
+            Err(self.error_of(
+                DiagnosticKind::SyntaxNestingTooDeep,
+                format!("syntax nesting exceeds {MAX_NESTING}"),
+            ))
         } else {
             Ok(())
         }
@@ -319,7 +330,7 @@ impl Parser<'_> {
             self.take();
             Ok(result)
         } else {
-            Err(self.error("expected an identifier"))
+            Err(self.error_of(DiagnosticKind::ExpectedIdentifier, "expected an identifier"))
         }
     }
 
@@ -451,8 +462,8 @@ impl Parser<'_> {
                 let doc = self.take_doc();
                 if self.alias_ahead() {
                     if let Some(documentation) = &doc {
-                        return Err(Diagnostic::new(
-                            "E0002",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::MisplacedDocComment,
                             "doc comments attach to API declarations such as 'def', not to a builder alias",
                             documentation.span,
                         ));
@@ -466,8 +477,8 @@ impl Parser<'_> {
                 let visibility = self.visibility()?;
                 if let Some(documentation) = &doc {
                     if !self.doc_target() {
-                        return Err(Diagnostic::new(
-                            "E0002",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::MisplacedDocComment,
                             "doc comments attach to API declarations such as 'def', not to implementations or expressions",
                             documentation.span,
                         ));
@@ -481,7 +492,7 @@ impl Parser<'_> {
                                 .get(self.position + 1)
                                 .is_some_and(|token| token.kind == TokenKind::Const)))
                 {
-                    return Err(self.error(
+                    return Err(self.error_of(DiagnosticKind::CpuAttributeOnConstDef,
                         "'@cpu' cannot apply to a 'const def'; the compiler evaluates it once, for no CPU level",
                     ));
                 }
@@ -498,9 +509,10 @@ impl Parser<'_> {
                         .get(cpu_definition + 1)
                         .is_some_and(|token| token.kind == TokenKind::Def))
                 {
-                    return Err(
-                        self.error("'@cpu' applies to the 'def' signature of a top-level function")
-                    );
+                    return Err(self.error_of(
+                        DiagnosticKind::MisplacedCpuAttribute,
+                        "'@cpu' applies to the 'def' signature of a top-level function",
+                    ));
                 }
                 if self.literal_attribute_ahead() {
                     let mut declaration = self.literal_declaration(visibility)?;
@@ -557,7 +569,7 @@ impl Parser<'_> {
                 let name = self.ident()?;
                 let mut parameters = self.angle_list(Self::class_parameter)?;
                 if parameters.len() != 1 {
-                    return Err(self.error("a type class requires exactly one type parameter, as in class C<'a>"));
+                    return Err(self.error_of(DiagnosticKind::ClassNeedsOneTypeParameter, "a type class requires exactly one type parameter, as in class C<'a>"));
                 }
                 let (variable, kind) = parameters.remove(0);
                 self.expect(&TokenKind::LeftBrace, "'{' after the class parameter")?;
@@ -580,7 +592,7 @@ impl Parser<'_> {
                         methods.push(signature);
                     } else {
                         if let Some(documentation) = method_doc {
-                            return Err(Diagnostic::new("E0002", "doc comments attach to a class method's 'def', not its implementation", documentation.span));
+                            return Err(Diagnostic::of(DiagnosticKind::MisplacedDocComment, "doc comments attach to a class method's 'def', not its implementation", documentation.span));
                         }
                         defaults.push(self.instance_method()?);
                     }
@@ -614,12 +626,12 @@ impl Parser<'_> {
                 let recursive = self.eat(&TokenKind::Rec);
                 let name = self.ident()?;
                 if defined_names.contains(&name.text) {
-                    return Err(Diagnostic::new("E1001", "duplicate function definition", name.span));
+                    return Err(Diagnostic::of(DiagnosticKind::DuplicateFunctionDefinition, "duplicate function definition", name.span));
                 }
                 self.expect(&TokenKind::Equal, "'=' before the anonymous function")?;
                 let body = self.body_expression()?;
                 if !matches!(body.kind, ExprKind::Lambda(..)) {
-                    return Err(Diagnostic::new("E0002", "a declared top-level 'let' function needs a lambda such as '\\x -> \\y -> x + y'", body.span));
+                    return Err(Diagnostic::of(DiagnosticKind::LetFunctionNeedsLambda, "a declared top-level 'let' function needs a lambda such as '\\x -> \\y -> x + y'", body.span));
                 }
                 let recursion = recursive.then(|| name.text.clone());
                 definition_group = recursion.clone();
@@ -629,7 +641,7 @@ impl Parser<'_> {
             } else if self.at(&TokenKind::Fn) || self.at(&TokenKind::Def) || self.at(&TokenKind::Export) || self.at(&TokenKind::And) || self.constant_function_ahead() || self.pure_function_ahead() {
                 let export = self.current().span;
                 let exported = self.eat(&TokenKind::Export);
-                if exported && self.at(&TokenKind::Extern) { return Err(Diagnostic::new("E1008", "extern declarations cannot be exported", export)); }
+                if exported && self.at(&TokenKind::Extern) { return Err(Diagnostic::of(DiagnosticKind::ExportOnExternDeclaration, "extern declarations cannot be exported", export)); }
                 if exported && self.at(&TokenKind::Private) {
                     return Err(Self::private_export(export.through(self.current().span)));
                 }
@@ -652,16 +664,15 @@ impl Parser<'_> {
                 let typed_continuation = !declaration && continuation && (self.at(&TokenKind::DoubleColon) || self.at(&TokenKind::Colon) || self.region_list_ahead());
                 let declaration = declaration || typed_continuation;
                 if doc.is_some() && !declaration {
-                    return Err(self.error("doc comments attach to typed declarations, not to implementations"));
+                    return Err(self.error_of(DiagnosticKind::MisplacedDocComment, "doc comments attach to typed declarations, not to implementations"));
                 }
                 let multiple_cases = self.active_patterns.get(&name.text).is_some_and(|active| active.cases.len() > 1);
                 if multiple_cases && !declaration {
-                    return Err(self.error("multi-case active patterns use 'def (|First|Second|) :: Input -> 'T = \\value -> ...'"));
+                    return Err(self.error_of(DiagnosticKind::MalformedMultiCaseActivePattern, "multi-case active patterns use 'def (|First|Second|) :: Input -> 'T = \\value -> ...'"));
                 }
                 let group = if declaration { &mut signature_group } else { &mut definition_group };
                 let recursion = if continuation {
-                    Some(group.clone().ok_or_else(|| Diagnostic::new(
-                        "E1019", "'and' requires a preceding recursive declaration or definition", name.span,
+                    Some(group.clone().ok_or_else(|| Diagnostic::of(DiagnosticKind::AndWithoutRecursiveGroup, "'and' requires a preceding recursive declaration or definition", name.span,
                     ))?)
                 } else {
                     recursive.then(|| name.text.clone())
@@ -683,15 +694,25 @@ impl Parser<'_> {
                             .get(&name.text)
                             .or_else(|| program.externs.iter().find(|external| external.name.text == name.text))
                             .map(|signature| signature.name.span);
-                        return Err(duplicate_function("duplicate function signature", &name, first));
+                        return Err(duplicate_function(
+                            DiagnosticKind::DuplicateFunctionSignature,
+                            "duplicate function signature",
+                            &name,
+                            first,
+                        ));
                     }
                     if self.at(&TokenKind::DoubleColon) {
-                        return Err(self.error("use 'def name :: ...' for a signature; 'fn' introduces its implementation"));
+                        return Err(self.error_of(DiagnosticKind::SignatureUsesDef, "use 'def name :: ...' for a signature; 'fn' introduces its implementation"));
                     }
                     if self.eat(&TokenKind::Equal) {
                         if defined_names.contains(&name.text) {
                             let first = first_definition(&definitions, &program.functions, &name);
-                            return Err(duplicate_function("duplicate function definition", &name, first));
+                            return Err(duplicate_function(
+                            DiagnosticKind::DuplicateFunctionDefinition,
+                            "duplicate function definition",
+                            &name,
+                            first,
+                        ));
                         }
                         let body = if self.at(&TokenKind::Backslash) {
                             self.explicit_lambda()?
@@ -702,9 +723,9 @@ impl Parser<'_> {
                         defined_names.insert(name.text.clone());
                         definitions.push(Definition { name: name.clone(), pure, recursion, parameters: Vec::new(), body });
                     } else if multiple_cases {
-                        return Err(self.error("multi-case active patterns require an inline lambda and the implicit result type 'T"));
+                        return Err(self.error_of(DiagnosticKind::MalformedMultiCaseActivePattern, "multi-case active patterns require an inline lambda and the implicit result type 'T"));
                     } else if typed_continuation {
-                        return Err(self.error("a typed 'and' declaration requires '= ...'"));
+                        return Err(self.error_of(DiagnosticKind::TypedAndNeedsBody, "a typed 'and' declaration requires '= ...'"));
                     }
                     if let Some(levels) = cpu {
                         program.cpu_attributes.push(CpuAttribute { function: name.clone(), levels });
@@ -715,11 +736,16 @@ impl Parser<'_> {
                 }
                 if defined_names.contains(&name.text) {
                     let first = first_definition(&definitions, &program.functions, &name);
-                    return Err(duplicate_function("duplicate function definition", &name, first));
+                    return Err(duplicate_function(
+                            DiagnosticKind::DuplicateFunctionDefinition,
+                            "duplicate function definition",
+                            &name,
+                            first,
+                        ));
                 }
                 if !self.at(&TokenKind::LeftParen) {
                     if exported {
-                        return Err(self.error("put 'export' on the function signature"));
+                        return Err(self.error_of(DiagnosticKind::ExportOnImplementation, "put 'export' on the function signature"));
                     }
                     let mut definition = self.definition(name)?;
                     definition.recursion = recursion;
@@ -752,12 +778,12 @@ impl Parser<'_> {
                 });
             } else {
                 if self.header_ahead("namespace") {
-                    return Err(self.error(
+                    return Err(self.error_of(DiagnosticKind::MisplacedNamespaceDeclaration,
                         "a namespace declaration must be the first declaration of the file, on its own line",
                     ));
                 }
                 if self.header_ahead("using") {
-                    return Err(self.error(
+                    return Err(self.error_of(DiagnosticKind::MisplacedUsingDeclaration,
                         "using declarations belong at the top of the file, after the namespace declaration and before other declarations",
                     ));
                 }
@@ -767,7 +793,7 @@ impl Parser<'_> {
                         Some(TokenKind::Ident(_))
                     )
                 {
-                    return Err(self.error(
+                    return Err(self.error_of(DiagnosticKind::ModuleDeclarationUnsupported,
                         "module declarations are not supported; each .tz, .tt, or .tc file is one module named after its filename, and 'namespace' chooses its namespace",
                     ));
                 }
@@ -809,8 +835,7 @@ impl Parser<'_> {
                     } else {
                         ""
                     };
-                    Diagnostic::new(
-                        "E0002",
+                    Diagnostic::of(DiagnosticKind::DefinitionWithoutSignature,
                         format!("function definition needs a 'def name :: ...' signature{hint}"),
                         definition.name.span,
                     )
@@ -831,8 +856,8 @@ impl Parser<'_> {
             if diagnostics.len() == MAX_UNIQUE_DIAGNOSTICS {
                 break;
             }
-            diagnostics.push(Diagnostic::new(
-                "E0002",
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::SignatureWithoutDefinition,
                 "function signature has no definition",
                 signature.name.span,
             ));
@@ -920,7 +945,11 @@ impl Parser<'_> {
             }
             _ => "'private' must be followed by 'def', 'record', 'union', 'type', or 'const'",
         };
-        Err(Diagnostic::new("E1022", message, private))
+        Err(Diagnostic::of(
+            DiagnosticKind::PrivateOnUnsupportedDeclaration,
+            message,
+            private,
+        ))
     }
 
     /// `const` directly before `def`: a const function, not a constant (D11).
@@ -941,8 +970,8 @@ impl Parser<'_> {
     }
 
     fn misplaced_const(span: Span) -> Diagnostic {
-        Diagnostic::new(
-            "E0002",
+        Diagnostic::of(
+            DiagnosticKind::MisplacedConstModifier,
             "put 'const' on the 'def' signature; its 'fn', 'and', or 'let' implementation inherits it",
             span,
         )
@@ -955,8 +984,8 @@ impl Parser<'_> {
                 return Err(Self::misplaced_const(keyword));
             }
             TokenKind::Export => {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ConstExportOrder,
                     "write 'export const def' to export a const function",
                     keyword.through(self.current().span),
                 ));
@@ -981,9 +1010,10 @@ impl Parser<'_> {
     /// `::` between a `def` name and its type.
     fn type_colon(&mut self, description: &str) -> Result<(), Diagnostic> {
         if self.at(&TokenKind::Colon) {
-            return Err(
-                self.error("use '::' between a 'def' name and its type, as in 'def name :: Type'")
-            );
+            return Err(self.error_of(
+                DiagnosticKind::SignatureUsesDoubleColon,
+                "use '::' between a 'def' name and its type, as in 'def name :: Type'",
+            ));
         }
         self.expect(&TokenKind::DoubleColon, description)?;
         Ok(())
@@ -1012,11 +1042,16 @@ impl Parser<'_> {
             let name = match &self.current().kind {
                 TokenKind::String(StringLiteral::Utf16(units)) => String::from_utf16_lossy(units),
                 TokenKind::String(StringLiteral::Utf8(text)) => text.clone(),
-                _ => return Err(self.error("expected a CPU target such as \"avx2\"")),
+                _ => {
+                    return Err(self.error_of(
+                        DiagnosticKind::ExpectedCpuTarget,
+                        "expected a CPU target such as \"avx2\"",
+                    ));
+                }
             };
             let Some(&(_, level)) = CPU_TARGETS.iter().find(|(target, _)| *target == name) else {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UnknownCpuTarget,
                     format!(
                         "unknown CPU target '{name}'; use \"sse4.2\", \"avx2\", \"avx512\", \"sve\", or \"sve2\""
                     ),
@@ -1024,8 +1059,8 @@ impl Parser<'_> {
                 ));
             };
             if levels & (1 << level) != 0 {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DuplicateCpuTarget,
                     format!("CPU target '{name}' is listed twice"),
                     span,
                 ));
@@ -1057,14 +1092,14 @@ impl Parser<'_> {
         self.take();
         let keyword = self.take();
         if self.at(&TokenKind::End) || self.newline_before_current() {
-            return Err(Diagnostic::new(
-                "E0002",
+            return Err(Diagnostic::of(
+                DiagnosticKind::AliasNameOnSameLine,
                 "write the alias name on the same line as '@alias', as in '@alias async'",
                 keyword.span,
             ));
         }
         if !matches!(self.current().kind, TokenKind::Ident(_)) {
-            return Err(self.error(
+            return Err(self.error_of(DiagnosticKind::ExpectedBuilderAlias,
                 "'@alias' takes a builder alias such as 'async': an identifier that is not a reserved word",
             ));
         }
@@ -1082,25 +1117,34 @@ impl Parser<'_> {
             {
                 message += &format!("; '{}' would collide with module and type names", name.text);
             }
-            Some(message)
+            Some((DiagnosticKind::BuilderAliasNameCase, message))
         } else if CONTEXTUAL_KEYWORDS.contains(&name.text.as_str()) {
-            Some(format!(
-                "'{}' is a contextual keyword and cannot be a builder alias",
-                name.text
+            Some((
+                DiagnosticKind::BuilderAliasIsContextualKeyword,
+                format!(
+                    "'{}' is a contextual keyword and cannot be a builder alias",
+                    name.text
+                ),
             ))
         } else if declared.iter().any(|alias| alias.text == name.text) {
-            Some(format!(
-                "builder alias '{}' is declared twice in this file",
-                name.text
+            Some((
+                DiagnosticKind::DuplicateBuilderAlias,
+                format!(
+                    "builder alias '{}' is declared twice in this file",
+                    name.text
+                ),
             ))
         } else {
             None
         };
-        if let Some(message) = message {
-            return Err(Diagnostic::new("E0002", message, name.span));
+        if let Some((kind, message)) = message {
+            return Err(Diagnostic::of(kind, message, name.span));
         }
         if !self.at(&TokenKind::End) && !self.newline_before_current() {
-            return Err(self.error("expected a line break after the builder alias"));
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedLineBreak,
+                "expected a line break after the builder alias",
+            ));
         }
         Ok(name)
     }
@@ -1178,7 +1222,10 @@ impl Parser<'_> {
         loop {
             let json = self.json_attribute("union case")?;
             if !matches!(self.current().kind, TokenKind::Ident(_)) {
-                return Err(self.error("expected a union case name"));
+                return Err(self.error_of(
+                    DiagnosticKind::ExpectedUnionCaseName,
+                    "expected a union case name",
+                ));
             }
             let name = self.ident()?;
             let payload = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "of")
@@ -1228,16 +1275,16 @@ impl Parser<'_> {
                 "Encode" => DeriveClass::Encode,
                 "Decode" => DeriveClass::Decode,
                 _ => {
-                    return Err(Diagnostic::new(
-                        "E1025",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::UnderivableClass,
                         "only Eq, Ord, Display, Hash, Default, Encode and Decode can be derived",
                         name.span,
                     ));
                 }
             };
             if derives.iter().any(|(previous, _)| *previous == class) {
-                return Err(Diagnostic::new(
-                    "E1001",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DuplicateDerivedClass,
                     "duplicate derived class",
                     name.span,
                 ));
@@ -1260,8 +1307,8 @@ impl Parser<'_> {
     }
 
     fn private_export(span: Span) -> Diagnostic {
-        Diagnostic::new(
-            "E1022",
+        Diagnostic::of(
+            DiagnosticKind::PrivateExport,
             "'private export' is not allowed; remove 'private' or remove 'export'",
             span,
         )
@@ -1296,15 +1343,15 @@ impl Parser<'_> {
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
                 || !used.insert(region.text.clone())
             {
-                return Err(Diagnostic::new(
-                    "E1013",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InvalidRegionNames,
                     "region names must be distinct lowercase identifiers",
                     region.span,
                 ));
             }
             if regions.len() >= MAX_NESTING {
-                return Err(Diagnostic::new(
-                    "E1017",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TooManyRegionParameters,
                     "too many region parameters",
                     region.span,
                 ));
@@ -1313,7 +1360,10 @@ impl Parser<'_> {
             self.eat(&TokenKind::Comma);
         }
         if regions.is_empty() {
-            return Err(self.error("a region list must not be empty"));
+            return Err(self.error_of(
+                DiagnosticKind::EmptyRegionList,
+                "a region list must not be empty",
+            ));
         }
         Ok(regions)
     }
@@ -1365,9 +1415,10 @@ impl Parser<'_> {
     fn header_declaration(&mut self, keyword: &str) -> Result<NamespaceDecl, Diagnostic> {
         let start = self.take().span;
         if self.newline_before_current() {
-            return Err(self.error(format!(
-                "write the {keyword} path on the same line as '{keyword}'"
-            )));
+            return Err(self.error_of(
+                DiagnosticKind::HeaderPathOnSameLine,
+                format!("write the {keyword} path on the same line as '{keyword}'"),
+            ));
         }
         let mut path = self.ident()?;
         let mut segments = 1;
@@ -1375,7 +1426,7 @@ impl Parser<'_> {
             if (self.at(&TokenKind::Dot) || self.at(&TokenKind::DoubleColon))
                 && !self.newline_before_current()
             {
-                return Err(self.error(format!(
+                return Err(self.error_of(DiagnosticKind::HeaderPathSpacing, format!(
                     "join {keyword} path segments with '::' and no spaces, as in 'Sample::Features'"
                 )));
             }
@@ -1385,8 +1436,8 @@ impl Parser<'_> {
             let segment = self.ident()?;
             segments += 1;
             if segments > 16 {
-                return Err(Diagnostic::new(
-                    "E1017",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::HeaderPathTooLong,
                     format!("{keyword} paths are limited to 16 segments"),
                     segment.span,
                 ));
@@ -1396,7 +1447,10 @@ impl Parser<'_> {
             path.span = path.span.through(segment.span);
         }
         if !self.at(&TokenKind::End) && !self.newline_before_current() {
-            return Err(self.error(format!("expected a line break after the {keyword} path")));
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedLineBreak,
+                format!("expected a line break after the {keyword} path"),
+            ));
         }
         Ok(NamespaceDecl {
             span: start.through(path.span),
@@ -1411,8 +1465,8 @@ impl Parser<'_> {
             let segment = self.ident()?;
             segments += 1;
             if segments > 17 {
-                return Err(Diagnostic::new(
-                    "E1017",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::NamespacePathTooLong,
                     "namespace paths are limited to 16 segments before the module name",
                     segment.span,
                 ));
@@ -1439,8 +1493,8 @@ impl Parser<'_> {
             name.span = name.span.through(member.span);
         }
         if self.at(&TokenKind::Dot) {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::QualifiedNameTooLong,
                 "qualified names exceed the 18-segment compiler limit",
                 name.span,
             ));
@@ -1482,7 +1536,10 @@ impl Parser<'_> {
             self.expect(&TokenKind::RightParen, "')' after kind")?;
             kind
         } else {
-            return Err(self.error("expected '*' or a parenthesized kind"));
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedKind,
+                "expected '*' or a parenthesized kind",
+            ));
         };
         let result = if self.eat(&TokenKind::Arrow) {
             Kind::Arrow(Box::new(left), Box::new(self.kind_expression()?))
@@ -1510,7 +1567,10 @@ impl Parser<'_> {
         if self.at(&TokenKind::Less) {
             self.angle_list(Self::type_parameter)
         } else if self.at(&TokenKind::TypeVariable(String::new())) {
-            Err(self.error("enclose type parameters in '<...>', as in Name<'a, 'b>"))
+            Err(self.error_of(
+                DiagnosticKind::TypeParametersNeedAngleBrackets,
+                "enclose type parameters in '<...>', as in Name<'a, 'b>",
+            ))
         } else {
             Ok(Vec::new())
         }
@@ -1530,8 +1590,8 @@ impl Parser<'_> {
         )?;
         let ty = self.ident()?;
         if ty.text != "i64" {
-            return Err(Diagnostic::new(
-                "E0002",
+            return Err(Diagnostic::of(
+                DiagnosticKind::LengthParameterType,
                 "a length parameter has type 'i64', as in 'const N: i64'",
                 ty.span,
             ));
@@ -1545,13 +1605,19 @@ impl Parser<'_> {
         element: fn(&mut Self) -> Result<T, Diagnostic>,
     ) -> Result<Vec<T>, Diagnostic> {
         if self.at(&TokenKind::Less) && self.current().span.start != self.previous_end {
-            return Err(self.error("'<' must immediately follow the name"));
+            return Err(self.error_of(
+                DiagnosticKind::AngleBracketSpacing,
+                "'<' must immediately follow the name",
+            ));
         }
         self.expect(&TokenKind::Less, "'<' before type parameters or arguments")?;
         let mut elements = Vec::new();
         loop {
             if elements.len() >= MAX_NESTING {
-                return Err(self.error("too many type parameters or arguments"));
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyTypeArguments,
+                    "too many type parameters or arguments",
+                ));
             }
             elements.push(element(self)?);
             if !self.eat(&TokenKind::Comma) || self.at_type_close() {
@@ -1565,7 +1631,10 @@ impl Parser<'_> {
     fn single_type_argument(&mut self) -> Result<TypeExpr, Diagnostic> {
         let mut arguments = self.angle_list(Self::type_expr)?;
         if arguments.len() != 1 {
-            return Err(self.error("expected exactly one type argument"));
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedSingleTypeArgument,
+                "expected exactly one type argument",
+            ));
         }
         Ok(arguments.remove(0))
     }
@@ -1589,7 +1658,12 @@ impl Parser<'_> {
             TokenKind::GreaterEqual => TokenKind::Equal,
             TokenKind::DoubleGreater => TokenKind::Greater,
             TokenKind::TripleGreater => TokenKind::DoubleGreater,
-            _ => return Err(self.error("expected '>' after type parameters or arguments")),
+            _ => {
+                return Err(self.error_of(
+                    DiagnosticKind::ExpectedTypeClose,
+                    "expected '>' after type parameters or arguments",
+                ));
+            }
         };
         // Consume one '>' without inserting tokens or changing expression operators.
         let mut token = self.current().clone();
@@ -1622,8 +1696,8 @@ impl Parser<'_> {
             && (!definition.parameters.is_empty()
                 || !matches!(definition.body.kind, ExprKind::Lambda(..)))
         {
-            return Err(Diagnostic::new(
-                "E0002",
+            return Err(Diagnostic::of(
+                DiagnosticKind::LetFunctionNeedsLambda,
                 "a 'let' method implementation needs a lambda",
                 definition.name.span,
             ));
@@ -1685,13 +1759,17 @@ impl Parser<'_> {
                 || constraint_column <= column
                 || self.column(self.current().span) != constraint_column
             {
-                return Err(
-                    self.error("constraint lines must be indented after the 'def' signature")
-                );
+                return Err(self.error_of(
+                    DiagnosticKind::ConstraintLineIndentation,
+                    "constraint lines must be indented after the 'def' signature",
+                ));
             }
             self.take();
             if self.newline_before_current() {
-                return Err(self.error("expected a type variable after '@' on the same line"));
+                return Err(self.error_of(
+                    DiagnosticKind::MalformedConstraintLine,
+                    "expected a type variable after '@' on the same line",
+                ));
             }
             let variable = self.type_variable()?;
             let ty = TypeExpr {
@@ -1699,14 +1777,18 @@ impl Parser<'_> {
                 span: variable.span,
             };
             if self.newline_before_current() {
-                return Err(self.error("expected ':' on the constraint line"));
+                return Err(self.error_of(
+                    DiagnosticKind::MalformedConstraintLine,
+                    "expected ':' on the constraint line",
+                ));
             }
             self.expect(&TokenKind::Colon, "':' before the constraint list")?;
             loop {
                 if self.newline_before_current() {
-                    return Err(
-                        self.error("expected a type class or '#function' on the constraint line")
-                    );
+                    return Err(self.error_of(
+                        DiagnosticKind::MalformedConstraintLine,
+                        "expected a type class or '#function' on the constraint line",
+                    ));
                 }
                 let name = if self.at(&TokenKind::LeftParen)
                     && self
@@ -1724,9 +1806,10 @@ impl Parser<'_> {
                     ConstraintName::Function(function, Some(Box::new(ty)))
                 } else if self.eat(&TokenKind::Hash) {
                     if self.newline_before_current() {
-                        return Err(
-                            self.error("expected a function name after '#' on the same line")
-                        );
+                        return Err(self.error_of(
+                            DiagnosticKind::MalformedConstraintLine,
+                            "expected a function name after '#' on the same line",
+                        ));
                     }
                     ConstraintName::Function(self.ident()?, None)
                 } else {
@@ -1808,8 +1891,8 @@ impl Parser<'_> {
         mut definition: Definition,
     ) -> Result<FunctionDecl, Diagnostic> {
         if signature.recursion != definition.recursion {
-            return Err(Diagnostic::new(
-                "E1019",
+            return Err(Diagnostic::of(
+                DiagnosticKind::MismatchedRecursiveGroup,
                 "'def' and its implementation must have matching 'rec'/'and' groups",
                 definition.name.span,
             ));
@@ -1822,8 +1905,8 @@ impl Parser<'_> {
         if signature.parameters.len() < definition.parameters.len()
             || (definition.parameters.is_empty() && !signature.parameters.is_empty())
         {
-            return Err(Diagnostic::new(
-                "E1006",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DefinitionParameterCountMismatch,
                 format!(
                     "signature expects {} parameters, definition has {}",
                     signature.parameters.len(),
@@ -1906,12 +1989,16 @@ impl Parser<'_> {
             self.tokens.get(self.position + 1).map(|token| &token.kind),
             Some(TokenKind::Ident(name)) if name == "json"
         ) {
-            return Err(self.error(format!("only '@json \"name\"' can come before a {place}")));
+            return Err(self.error_of(
+                DiagnosticKind::MisplacedJsonAttribute,
+                format!("only '@json \"name\"' can come before a {place}"),
+            ));
         }
         self.take();
         self.take();
         let TokenKind::String(StringLiteral::Utf16(units)) = &self.current().kind else {
-            return Err(self.error(
+            return Err(self.error_of(
+                DiagnosticKind::InvalidJsonAttribute,
                 "expected the JSON name as a string literal after '@json', as in '@json \"name\"'",
             ));
         };
@@ -1921,7 +2008,10 @@ impl Parser<'_> {
         };
         self.take();
         if self.at(&TokenKind::At) {
-            return Err(self.error(format!("a {place} takes one '@json' attribute")));
+            return Err(self.error_of(
+                DiagnosticKind::DuplicateJsonAttribute,
+                format!("a {place} takes one '@json' attribute"),
+            ));
         }
         Ok(Some(json))
     }
@@ -1964,7 +2054,10 @@ impl Parser<'_> {
                 break next;
             }
             if parameters.len() >= MAX_NESTING {
-                return Err(self.error("too many function parameters"));
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyFunctionParameters,
+                    "too many function parameters",
+                ));
             }
             parameters.push(next);
         };
@@ -1981,7 +2074,10 @@ impl Parser<'_> {
         let start = self.current().span;
         let regions = self.region_list()?;
         if self.region_list_ahead() {
-            return Err(self.error("write one region list before a function type"));
+            return Err(self.error_of(
+                DiagnosticKind::MisplacedRegionList,
+                "write one region list before a function type",
+            ));
         }
         let inner = self.type_expr()?;
         self.nesting -= 1;
@@ -2145,7 +2241,7 @@ impl Parser<'_> {
         let element = Box::new(element);
         if self.at(&TokenKind::Semicolon) {
             if list {
-                return Err(self.error(
+                return Err(self.error_of(DiagnosticKind::ListTypeWithLength,
                     "list types use '[|T|]', without a length; use '[T; N]' for a fixed-length array",
                 ));
             }
@@ -2173,7 +2269,7 @@ impl Parser<'_> {
             return Ok(length);
         }
         if !matches!(self.current().kind, TokenKind::Ident(_)) {
-            return Err(self.error(
+            return Err(self.error_of(DiagnosticKind::InvalidFixedArrayLength,
                 "a fixed array length must be an integer literal without a suffix, for example '[f64; 3]'",
             ));
         }
@@ -2202,13 +2298,19 @@ impl Parser<'_> {
     /// loop of `angle_list` without another frame between `type_primary` and `type_expr`.
     fn type_arguments(&mut self) -> Result<Vec<TypeExpr>, Diagnostic> {
         if self.at(&TokenKind::Less) && self.current().span.start != self.previous_end {
-            return Err(self.error("'<' must immediately follow the name"));
+            return Err(self.error_of(
+                DiagnosticKind::AngleBracketSpacing,
+                "'<' must immediately follow the name",
+            ));
         }
         self.expect(&TokenKind::Less, "'<' before type parameters or arguments")?;
         let mut elements = Vec::new();
         loop {
             if elements.len() >= MAX_NESTING {
-                return Err(self.error("too many type parameters or arguments"));
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyTypeArguments,
+                    "too many type parameters or arguments",
+                ));
             }
             let element = match self.length_literal() {
                 Some(length) => length,
@@ -2231,11 +2333,15 @@ impl Parser<'_> {
         let mut classes = Vec::new();
         loop {
             if !matches!(self.current().kind, TokenKind::Ident(_)) {
-                return Err(self.error("expected a type class name after dyn"));
+                return Err(self.error_of(
+                    DiagnosticKind::ExpectedDynClass,
+                    "expected a type class name after dyn",
+                ));
             }
             classes.push(self.qualified_ident()?);
             if self.at(&TokenKind::Less) {
-                return Err(self.error(
+                return Err(self.error_of(
+                    DiagnosticKind::DynWithTypeArguments,
                     "dyn takes a class name without type arguments; write dyn Shapes.Shape",
                 ));
             }
@@ -2243,7 +2349,10 @@ impl Parser<'_> {
                 break;
             }
             if classes.len() >= MAX_NESTING {
-                return Err(self.error("too many classes after dyn"));
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyDynClasses,
+                    "too many classes after dyn",
+                ));
             }
         }
         if parenthesized {
@@ -2269,8 +2378,8 @@ impl Parser<'_> {
             return Ok(reference);
         }
         if regions.len() != 1 {
-            return Err(Diagnostic::new(
-                "E1013",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ReferenceRegionCount,
                 "a reference has exactly one region",
                 span,
             ));
@@ -2319,8 +2428,8 @@ impl Parser<'_> {
 
     fn make(&self, kind: ExprKind, span: Span, depth: usize) -> Result<Expr, Diagnostic> {
         if depth > MAX_NESTING {
-            Err(Diagnostic::new(
-                "E0002",
+            Err(Diagnostic::of(
+                DiagnosticKind::ExpressionNestingTooDeep,
                 format!("expression depth exceeds {MAX_NESTING}; introduce let bindings"),
                 span,
             ))
@@ -2389,9 +2498,10 @@ impl Parser<'_> {
                 depth = depth.max(binding.value.depth);
                 bindings.push(binding);
             } else if checked && matches!(self.current().kind, TokenKind::Return | TokenKind::Do) {
-                return Err(
-                    self.error("@checked applies to a let or expression statement in a block")
-                );
+                return Err(self.error_of(
+                    DiagnosticKind::MisplacedCheckedAttribute,
+                    "@checked applies to a let or expression statement in a block",
+                ));
             } else if first.is_none() && self.at(&TokenKind::Return) {
                 break self.task_return()?;
             } else if first.is_none() && self.at(&TokenKind::Do) {
@@ -2482,7 +2592,10 @@ impl Parser<'_> {
 
     fn task_return(&mut self) -> Result<Expr, Diagnostic> {
         if !self.in_task {
-            return Err(self.error("'return' is only allowed at the end of a task block"));
+            return Err(self.error_of(
+                DiagnosticKind::ReturnOutsideTaskEnd,
+                "'return' is only allowed at the end of a task block",
+            ));
         }
         let start = self.take().span;
         let run = self.eat(&TokenKind::Bang);
@@ -2500,7 +2613,10 @@ impl Parser<'_> {
 
     fn task_do(&mut self) -> Result<Binding, Diagnostic> {
         if !self.in_task {
-            return Err(self.error("'do!' is only allowed inside a task block"));
+            return Err(self.error_of(
+                DiagnosticKind::DoBangOutsideTask,
+                "'do!' is only allowed inside a task block",
+            ));
         }
         let start = self.take().span;
         self.expect(&TokenKind::Bang, "'!' after 'do'")?;
@@ -2527,12 +2643,17 @@ impl Parser<'_> {
     }
 
     /// A syntax error of `let rec` (B09) at the current token, or at `span`. The parser functions
-    /// that recurse per expression return it as it is (`return self.rec_error(..)`), so that their
+    /// that recurse per expression return it as it is (`return self.rec_error_of(..)`), so that their
     /// frames, which every level of an expression pays for, hold no error value.
-    fn rec_error<T>(&self, message: &str, span: Option<Span>) -> Result<T, Diagnostic> {
+    fn rec_error_of<T>(
+        &self,
+        kind: DiagnosticKind,
+        message: &str,
+        span: Option<Span>,
+    ) -> Result<T, Diagnostic> {
         Err(match span {
-            Some(span) => Diagnostic::new("E0002", message, span),
-            None => self.error(message),
+            Some(span) => Diagnostic::of(kind, message, span),
+            None => self.error_of(kind, message),
         })
     }
 
@@ -2550,14 +2671,17 @@ impl Parser<'_> {
         }
         let run = self.eat(&TokenKind::Bang);
         if run && !self.in_task {
-            return Err(self.error(if using {
-                "'use!' is only allowed inside a task block or a computation expression"
-            } else {
-                "'let!' is only allowed inside a task block"
-            }));
+            return Err(self.error_of(
+                DiagnosticKind::UseBangOutsideComputation,
+                if using {
+                    "'use!' is only allowed inside a task block or a computation expression"
+                } else {
+                    "'let!' is only allowed inside a task block"
+                },
+            ));
         }
         if run && self.at(&TokenKind::Rec) {
-            return self.rec_error(LET_BANG_REC, None);
+            return self.rec_error_of(DiagnosticKind::RecursiveLetBang, LET_BANG_REC, None);
         }
         let mut binding = if using {
             self.use_binding_value(top_level)?
@@ -2565,7 +2689,11 @@ impl Parser<'_> {
             self.binding_value(top_level)?
         };
         if checked && binding.recursion != Recursion::None {
-            return self.rec_error(CHECKED_LET_REC, Some(binding.name.span));
+            return self.rec_error_of(
+                DiagnosticKind::CheckedLetRec,
+                CHECKED_LET_REC,
+                Some(binding.name.span),
+            );
         }
         if run {
             let span = binding.value.span;
@@ -2593,7 +2721,7 @@ impl Parser<'_> {
         recursion: Recursion,
     ) -> Result<Binding, Diagnostic> {
         if recursion != Recursion::None && self.at(&TokenKind::Mut) {
-            return self.rec_error(REC_MUTABLE, None);
+            return self.rec_error_of(DiagnosticKind::MutableLetRec, REC_MUTABLE, None);
         }
         let mutable = self.eat(&TokenKind::Mut);
         let name = self.ident()?;
@@ -2605,7 +2733,11 @@ impl Parser<'_> {
         self.expect(&TokenKind::Equal, "'=' in the binding")?;
         let value = self.expression_inner(0, true, stop_at_newline)?;
         if recursion != Recursion::None && !matches!(value.kind, ExprKind::Lambda(..)) {
-            return self.rec_error(REC_NEEDS_LAMBDA, Some(value.span));
+            return self.rec_error_of(
+                DiagnosticKind::LetRecNeedsLambda,
+                REC_NEEDS_LAMBDA,
+                Some(value.span),
+            );
         }
         Ok(Binding {
             name,
@@ -2620,7 +2752,7 @@ impl Parser<'_> {
     /// `and name = \x -> ...`, a member of the `let rec` group before it (B09).
     fn recursive_member(&mut self, top_level: bool, checked: bool) -> Result<Binding, Diagnostic> {
         if checked {
-            return self.rec_error(CHECKED_LET_REC, None);
+            return self.rec_error_of(DiagnosticKind::CheckedLetRec, CHECKED_LET_REC, None);
         }
         self.expect(&TokenKind::And, "'and'")?;
         let binding = self.binding_rest(top_level, Recursion::And)?;
@@ -2646,8 +2778,10 @@ impl Parser<'_> {
     /// A `let` binding after `use`, which cannot be mutable.
     fn use_binding_value(&mut self, stop_at_newline: bool) -> Result<Binding, Diagnostic> {
         if self.at(&TokenKind::Mut) {
-            return Err(self
-                .error("a use binding cannot be mutable; bind the value with 'let mut' instead"));
+            return Err(self.error_of(
+                DiagnosticKind::MutableUseBinding,
+                "a use binding cannot be mutable; bind the value with 'let mut' instead",
+            ));
         }
         let mut binding = self.binding_value(stop_at_newline)?;
         binding.using = true;
@@ -2686,11 +2820,14 @@ impl Parser<'_> {
             && !(newline_allowed
                 && (self.at(&TokenKind::End) || newline || self.at(&TokenKind::RightBrace)))
         {
-            return Err(self.error(if newline_allowed {
-                "expected ';' or a newline after the binding"
-            } else {
-                "expected ';' after the let binding"
-            }));
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedBindingEnd,
+                if newline_allowed {
+                    "expected ';' or a newline after the binding"
+                } else {
+                    "expected ';' after the let binding"
+                },
+            ));
         }
         Ok(())
     }
@@ -2866,7 +3003,10 @@ impl Parser<'_> {
         let body = self.computation_sequence(Some(self.column(self.current().span)), single)?;
         self.nesting -= 1;
         if body.statements.is_empty() {
-            return Err(self.error("expected a computation body"));
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedComputationBody,
+                "expected a computation body",
+            ));
         }
         Ok(body)
     }
@@ -2918,7 +3058,10 @@ impl Parser<'_> {
             ) && !single
                 && !self.computation_end(indent)
             {
-                return Err(self.error("'return' and 'return!' must end a computation block"));
+                return Err(self.error_of(
+                    DiagnosticKind::ReturnNotLastInComputation,
+                    "'return' and 'return!' must end a computation block",
+                ));
             }
             depth = depth.max(statement.depth());
             statements.push(statement);
@@ -2981,7 +3124,11 @@ impl Parser<'_> {
     fn checked_statement(&self, statement: &mut ComputationStatement) -> Result<(), Diagnostic> {
         if matches!(&statement.kind, ComputationStatementKind::Let(binding, _) if binding.recursion != Recursion::None)
         {
-            return self.rec_error(CHECKED_LET_REC, Some(statement.span));
+            return self.rec_error_of(
+                DiagnosticKind::CheckedLetRec,
+                CHECKED_LET_REC,
+                Some(statement.span),
+            );
         }
         let mut values: Vec<&mut Expr> = match &mut statement.kind {
             ComputationStatementKind::Let(binding, _) => vec![&mut binding.value],
@@ -2993,8 +3140,8 @@ impl Parser<'_> {
             | ComputationStatementKind::Operation(_, value)
             | ComputationStatementKind::Expression(value) => vec![value],
             _ => {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::MisplacedCheckedAttribute,
                     "@checked applies to a let, let!, do!, return, or expression statement; put it on the statements inside the block",
                     statement.span,
                 ));
@@ -3065,7 +3212,7 @@ impl Parser<'_> {
         after_rec: bool,
     ) -> Result<ComputationStatement, Diagnostic> {
         if !after_rec {
-            return self.rec_error(STRAY_MEMBER, None);
+            return self.rec_error_of(DiagnosticKind::StrayAndMember, STRAY_MEMBER, None);
         }
         self.take();
         let binding = self.binding_rest(true, Recursion::And)?;
@@ -3090,7 +3237,7 @@ impl Parser<'_> {
             let bind = self.eat(&TokenKind::Bang);
             let binding = self.use_binding_value(true)?;
             if bind && self.at(&TokenKind::And) {
-                return Err(self.error(
+                return Err(self.error_of(DiagnosticKind::UseBangInAndGroup,
                     "'use!' cannot start an and! group; bind the sources with let! and use them afterwards",
                 ));
             }
@@ -3161,7 +3308,7 @@ impl Parser<'_> {
     fn computation_binding(&mut self) -> Result<ComputationStatementKind, Diagnostic> {
         let bind = self.eat(&TokenKind::Bang);
         if bind && self.at(&TokenKind::Rec) {
-            return self.rec_error(LET_BANG_REC, None);
+            return self.rec_error_of(DiagnosticKind::RecursiveLetBang, LET_BANG_REC, None);
         }
         let binding = self.binding_value(true)?;
         if !bind || !self.at(&TokenKind::And) {
@@ -3172,19 +3319,19 @@ impl Parser<'_> {
         while self.eat(&TokenKind::And) {
             self.expect(&TokenKind::Bang, "'!' after and in a binding group")?;
             if self.at(&TokenKind::Rec) {
-                return self.rec_error(LET_BANG_REC, None);
+                return self.rec_error_of(DiagnosticKind::RecursiveLetBang, LET_BANG_REC, None);
             }
             let binding = self.binding_value(true)?;
             if binding.name.text != "_" && !names.insert(binding.name.text.clone()) {
-                return Err(Diagnostic::new(
-                    "E1001",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DuplicateAndBinding,
                     "duplicate and! binding name",
                     binding.name.span,
                 ));
             }
             if bindings.len() >= MAX_NESTING {
-                return Err(Diagnostic::new(
-                    "E1017",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::AndGroupTooLarge,
                     "and! group exceeds the compiler binding limit",
                     binding.name.span,
                 ));
@@ -3289,7 +3436,10 @@ impl Parser<'_> {
         self.stop_at_arrow = outer_arrow;
         self.nesting -= 1;
         if arms.is_empty() {
-            return Err(self.error("match! requires at least one '| pattern -> computation' arm"));
+            return Err(self.error_of(
+                DiagnosticKind::ComputationMatchWithoutArms,
+                "match! requires at least one '| pattern -> computation' arm",
+            ));
         }
         let span = start.through(arms.last().unwrap().span);
         Ok(ComputationStatement {
@@ -3656,15 +3806,15 @@ impl Parser<'_> {
             + 1;
         let kind = if slice {
             let Some(mutable) = borrowed else {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::SliceMustBeBorrowed,
                     "array slices must be borrows; write 'ref xs[start..end]' for a shared slice or 'ref mut xs[start..end]' for an exclusive slice",
                     span,
                 ));
             };
             if first.is_none() && last.is_none() {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::SliceWithoutBounds,
                     if mutable {
                         "a slice needs at least one bound; write 'ref mut xs[0..]' for an exclusive slice of the whole array"
                     } else {
@@ -3712,7 +3862,7 @@ impl Parser<'_> {
         let start = self.take().span;
         let list = self.at(&TokenKind::LeftList);
         if !list && !self.at(&TokenKind::LeftBracket) {
-            return Err(self.error(
+            return Err(self.error_of(DiagnosticKind::MalformedNewCollection,
                 "expected an array or list after 'new': 'new [T](length, initializer)', 'new [values]', or 'new [|values|]'",
             ));
         }
@@ -3727,8 +3877,8 @@ impl Parser<'_> {
                 ] = values.as_slice()
                 {
                     if crate::numeric::primitive(&name.text).is_some() {
-                        return Err(Diagnostic::new(
-                            "E0002",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::MalformedNewCollection,
                             format!(
                                 "expected '(' after the collection type; use 'new [{}](length, initializer)'",
                                 name.text
@@ -3838,7 +3988,7 @@ impl Parser<'_> {
                 return self.keyword_prefix(allow_record, stop_at_newline);
             }
             TokenKind::Mut => {
-                return Err(self.error(
+                return Err(self.error_of(DiagnosticKind::MutAsExpression,
                     "'mut' is not an expression; write 'ref mut x' to borrow exclusively, or 'let mut x = ...' for a mutable binding",
                 ));
             }
@@ -3866,7 +4016,11 @@ impl Parser<'_> {
             TokenKind::LeftBracket | TokenKind::LeftList => return self.collection_literal(),
             TokenKind::LeftBrace => return self.block(),
             TokenKind::If => return self.conditional(),
-            _ => return Err(self.error("expected an expression")),
+            _ => {
+                return Err(
+                    self.error_of(DiagnosticKind::ExpectedExpression, "expected an expression")
+                );
+            }
         };
         let end = self.tokens[self.position - 1].span;
         self.make(kind, start.through(end), 1)
@@ -3886,16 +4040,16 @@ impl Parser<'_> {
         if self.eat(&TokenKind::Type) {
             if let Some(link) = &link {
                 let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExternTypeWithLinkName,
                     "extern type declarations take no link name; remove the string",
                     first,
                 ));
             }
             let name = self.ident()?;
             if self.at(&TokenKind::Less) || self.at(&TokenKind::Equal) {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExternTypeWithBody,
                     "extern type declarations have no type parameters or definition",
                     self.current().span,
                 ));
@@ -3907,8 +4061,8 @@ impl Parser<'_> {
             }));
         }
         if self.eat(&TokenKind::Export) {
-            return Err(Diagnostic::new(
-                "E1008",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExportOnExternDeclaration,
                 "extern declarations cannot be exported",
                 self.current().span,
             ));
@@ -3916,8 +4070,8 @@ impl Parser<'_> {
         self.expect(&TokenKind::Def, "'def' after extern")?;
         let name = self.ident()?;
         if taken(&name.text) {
-            return Err(Diagnostic::new(
-                "E1001",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DuplicateExternDeclaration,
                 "duplicate extern or function declaration",
                 name.span,
             ));
@@ -3939,8 +4093,8 @@ impl Parser<'_> {
         while matches!(self.current().kind, TokenKind::String(_)) {
             let token = self.take();
             if strings.len() == 2 {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TooManyExternLinkNames,
                     "extern takes at most two link name strings; write extern \"symbol\" def or extern \"module\" \"symbol\" def",
                     token.span,
                 ));
@@ -3948,8 +4102,8 @@ impl Parser<'_> {
             let text = match token.kind {
                 TokenKind::String(StringLiteral::Utf16(units)) => String::from_utf16(&units)
                     .map_err(|_| {
-                        Diagnostic::new(
-                            "E0002",
+                        Diagnostic::of(
+                            DiagnosticKind::InvalidLinkNameText,
                             "extern link names must contain valid Unicode scalars",
                             token.span,
                         )
@@ -3998,8 +4152,8 @@ impl Parser<'_> {
         let name = match token.kind {
             TokenKind::String(StringLiteral::Utf16(units)) => {
                 String::from_utf16(&units).map_err(|_| {
-                    Diagnostic::new(
-                        "E0002",
+                    Diagnostic::of(
+                        DiagnosticKind::InvalidLinkNameText,
                         format!("{kind} names must contain valid Unicode scalars"),
                         token.span,
                     )
@@ -4007,8 +4161,8 @@ impl Parser<'_> {
             }
             TokenKind::String(StringLiteral::Utf8(name)) => name,
             _ => {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExpectedLinkNameString,
                     format!("expected a string literal {kind} name"),
                     token.span,
                 ));
@@ -4051,8 +4205,8 @@ impl Parser<'_> {
                         || !self.source[name.span.end..token.span.start].contains(['\n', '\r']))
             }) {
                 if end - self.position > 34 {
-                    return Err(Diagnostic::new(
-                        "E1017",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::QualifiedNameTooLong,
                         "qualified names exceed the 18-segment compiler limit",
                         name.span,
                     ));
@@ -4295,7 +4449,7 @@ impl Parser<'_> {
             } else {
                 format!("{keyword} ...")
             };
-            return Err(self.error(format!(
+            return Err(self.error_of(DiagnosticKind::PrefixKeywordOperand, format!(
                 "'{keyword}' takes exactly one operand; write '({form})' when more arguments follow, or parenthesize an application operand"
             )));
         }
@@ -4414,7 +4568,13 @@ fn integer(token: &Token) -> Result<u128, Diagnostic> {
     } else {
         text.parse()
     };
-    result.map_err(|_| Diagnostic::new("E0002", "integer literal is too large", token.span))
+    result.map_err(|_| {
+        Diagnostic::of(
+            DiagnosticKind::IntegerLiteralTooLarge,
+            "integer literal is too large",
+            token.span,
+        )
+    })
 }
 
 /// What a binary operator token builds: an ordinary binary expression, or a

@@ -71,8 +71,8 @@ impl Profile {
         }
         // Instrumentation and the use of a profile are Clang's work on the IR (PB05 does not make them).
         if options.backend == Backend::Fast {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::FastBackendUnsupportedOption,
                 "--backend fast cannot instrument or optimize with a profile; use --backend llvm with --profile-generate and --profile-use",
             ));
         }
@@ -80,21 +80,21 @@ impl Profile {
             return self.validate_wasm(options);
         }
         if !matches!(options.emit, Emit::Executable | Emit::Object) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "profile-guided optimization needs --emit exe or object; remove the profile option for other output kinds",
             ));
         }
         let platform = options.platform();
         if platform.windows() {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
                 "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux",
             ));
         }
         if let Some(triple) = options.triple.filter(|_| platform.cross()) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 format!(
                     "--profile-generate and --profile-use apply to the machine that builds; remove --target {} for another machine",
                     triple.name()
@@ -103,14 +103,14 @@ impl Profile {
         }
         if let Self::Generate(directory) = self {
             if options.freestanding {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionConflict,
                     "--profile-generate cannot be combined with --freestanding: the profile runtime needs the C library",
                 ));
             }
             if directory.to_string_lossy().contains('%') {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionInvalidValue,
                     "--profile-generate directory must not contain '%'; choose another directory",
                 ));
             }
@@ -121,30 +121,35 @@ impl Profile {
     /// A `wasm32` module has no profile runtime: its host writes the counters (`profile-wasm.mjs`),
     /// so only a single-threaded module of `--emit wasm` is instrumented.
     fn validate_wasm(&self, options: BuildOptions) -> Result<(), Diagnostic> {
-        let refuse = |message: &str| Err(driver_error("E2000", message));
+        let refuse = |kind, message: &str| Err(driver_error_of(kind, message));
         if options.target != Target::Wasm32 {
             return refuse(
+                DiagnosticKind::OptionRequiresBuild,
                 "profile-guided optimization supports --target wasm32 only; remove --target wasm64 or the profile option",
             );
         }
         if options.emit != Emit::Wasm {
             return refuse(
+                DiagnosticKind::OptionRequiresBuild,
                 "profile-guided optimization needs --emit wasm for WebAssembly; remove the profile option for other output kinds",
             );
         }
         if options.wasm_threads {
             return refuse(
+                DiagnosticKind::OptionConflict,
                 "--profile-generate and --profile-use cannot be combined with --wasm-feature threads: the counters are not atomic",
             );
         }
         if matches!(self, Self::Generate(_)) && options.wasm_opt {
             return refuse(
+                DiagnosticKind::OptionConflict,
                 "--profile-generate cannot be combined with --wasm-opt: Binaryen may drop what the profile writer reads",
             );
         }
         // The toolchain that builds and trains a module is only verified on macOS and Linux.
         if cfg!(windows) {
             return refuse(
+                DiagnosticKind::OptionUnsupportedPlatform,
                 "--profile-generate and --profile-use are not supported on Windows yet; build on macOS or Linux",
             );
         }
@@ -159,8 +164,8 @@ impl Profile {
 
     fn reject_launcher(&self, clang: &OsStr) -> Result<(), Diagnostic> {
         if !self.is_none() && bundled_launcher(clang) {
-            return Err(driver_error(
-                "E2002",
+            return Err(driver_error_of(
+                DiagnosticKind::ToolchainMissingFeature,
                 "profile options need an LLVM Clang: the bundled Clang launcher (tsuzuri-clang) passes no profile options to LLVM Clang and has no profile runtime or llvm-profdata; set TSUZURI_CLANG to an LLVM 21 Clang",
             ));
         }
@@ -252,8 +257,8 @@ fn input_list(files: &[PathBuf]) -> Result<Vec<u8>, Diagnostic> {
     for file in files {
         let bytes = file.as_os_str().as_encoded_bytes();
         if bytes.contains(&b'\n') {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionInvalidValue,
                 format!(
                     "--profile-use cannot merge {file:?}: the name of a file has a line break; rename it"
                 ),
@@ -290,8 +295,8 @@ fn merge_directory(
         }
     }
     if files.is_empty() {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionInvalidValue,
             format!(
                 "--profile-use directory '{}' has no .profraw files; run the program built with --profile-generate first",
                 directory.display()
@@ -321,16 +326,16 @@ fn check_indexed(path: &Path, staged: &Path) -> Result<(), Diagnostic> {
         return Ok(());
     }
     if read && RAW_MAGICS.contains(&magic) {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionInvalidValue,
             format!(
                 "'{}' is a raw profile; pass its directory to --profile-use or merge it with llvm-profdata",
                 path.display()
             ),
         ));
     }
-    Err(driver_error(
-        "E2000",
+    Err(driver_error_of(
+        DiagnosticKind::OptionInvalidValue,
         format!(
             "--profile-use expects an indexed .profdata file or a directory of .profraw files; '{}' is neither",
             path.display()
@@ -367,8 +372,7 @@ fn locate_profdata(variable: Option<OsString>, clang: &OsStr) -> Result<OsString
         .filter(|candidate| candidate.is_file())
         .map(PathBuf::into_os_string)
         .ok_or_else(|| {
-            driver_error(
-                "E2002",
+            driver_error_of(DiagnosticKind::ToolchainMissingFeature,
                 "cannot find llvm-profdata; set TSUZURI_LLVM_PROFDATA to the llvm-profdata that belongs to the Clang in TSUZURI_CLANG",
             )
         })
@@ -1295,8 +1299,8 @@ mod tests {
         );
         // The staged copy is gone when the build ends, so a failure names the profile that the user gave.
         let staged = directory.path.join(STAGED);
-        let failure = driver_error(
-            "E2002",
+        let failure = driver_error_of(
+            DiagnosticKind::ExternalToolFailed,
             format!("Error in reading profile {}: bad", staged.display()),
         );
         assert_eq!(
@@ -1306,7 +1310,7 @@ mod tests {
                 directory.path.join("p.profdata").display()
             )
         );
-        let failure = driver_error("E2002", "not about a profile");
+        let failure = driver_error_of(DiagnosticKind::ExternalToolFailed, "not about a profile");
         assert_eq!(generate.clang_error(failure).message, "not about a profile");
     }
 

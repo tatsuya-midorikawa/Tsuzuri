@@ -1,0 +1,4 @@
+def f :: i64 -> i64 = \x ->
+    match x with
+    1 -> 2
+    _ -> 3

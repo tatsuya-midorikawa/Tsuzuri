@@ -1,0 +1,1 @@
+def f :: unit -> string = \_ -> 'abc'

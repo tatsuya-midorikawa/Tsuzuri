@@ -134,8 +134,8 @@ pub(super) fn multiversion(
                     continue;
                 }
                 if !bodies.contains_key(call.name) {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::CpuFunctionWideVectorBoundary,
                         "a '@cpu' function cannot pass a SIMD vector wider than 128 bits through a function value or an extern: its versions pass such vectors in different registers; call a named Tsuzuri function",
                         module.functions[id].span,
                     ));

@@ -1,0 +1,2 @@
+def f :: unit -> i64
+fn f () = 1

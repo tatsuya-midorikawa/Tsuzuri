@@ -1,6 +1,6 @@
 use tsuzuri::check::{Type, TypeContext, TypedExprKind};
 use tsuzuri::diagnostic::{
-    Diagnostic, DiagnosticSet, MAX_REPORTED_ERRORS, MAX_UNIQUE_DIAGNOSTICS, Span,
+    Diagnostic, DiagnosticKind, DiagnosticSet, MAX_REPORTED_ERRORS, MAX_UNIQUE_DIAGNOSTICS, Span,
 };
 use tsuzuri::{
     analyze, analyze_all, analyze_modules, analyze_modules_all, analyze_modules_with_std_all,
@@ -515,9 +515,17 @@ fn sorts_sources_and_preserves_std_origins() {
     assert_eq!(set.diagnostics.len(), 2);
     assert_eq!(set.diagnostics[0].span.source, Some(0));
     assert_eq!(set.diagnostics[1].span.source, Some(1));
-    let a = Diagnostic::new("E1003", "a", Span::new(5, 8).in_source(1));
-    let b = Diagnostic::new("E1002", "b", Span::new(5, 8).in_source(1));
-    let c = Diagnostic::new("E1003", "c", Span::new(0, 0));
+    let a = Diagnostic::of(
+        DiagnosticKind::TypeMismatch,
+        "a",
+        Span::new(5, 8).in_source(1),
+    );
+    let b = Diagnostic::of(
+        DiagnosticKind::UnknownValue,
+        "b",
+        Span::new(5, 8).in_source(1),
+    );
+    let c = Diagnostic::of(DiagnosticKind::TypeMismatch, "c", Span::new(0, 0));
     let set = DiagnosticSet::from_diagnostics([a.clone(), c.clone(), b.clone(), a.clone()], 2);
     assert_eq!(set.diagnostics, [b, a, c]);
 }
@@ -548,7 +556,7 @@ fn display_cap_counts_all_unique_errors_until_the_separate_hard_limit() {
     );
     let set = errors(&"?\n".repeat(MAX_UNIQUE_DIAGNOSTICS + 3));
     assert!(set.omitted_is_lower_bound);
-    let duplicate = Diagnostic::new("E1003", "same", Span::default());
+    let duplicate = Diagnostic::of(DiagnosticKind::TypeMismatch, "same", Span::default());
     let set = DiagnosticSet::from_diagnostics(
         std::iter::repeat_n(duplicate, MAX_UNIQUE_DIAGNOSTICS + 3),
         0,

@@ -143,8 +143,8 @@ impl Checker<'_> {
             .get("Exception.of_code")
             .map(|info| info.id)
             .ok_or_else(|| {
-                Diagnostic::new(
-                    "E1004",
+                Diagnostic::of(
+                    DiagnosticKind::StdItemMissing,
                     "try needs the standard library function Exception.of_code",
                     span,
                 )
@@ -199,7 +199,11 @@ impl Checker<'_> {
         let mut limbs: Vec<u64> = Vec::new();
         for character in text.chars() {
             let mut carry = u64::from(character.to_digit(radix).ok_or_else(|| {
-                Diagnostic::new("E1009", "invalid digit in a bigint literal", span)
+                Diagnostic::of(
+                    DiagnosticKind::InvalidBigintDigit,
+                    "invalid digit in a bigint literal",
+                    span,
+                )
             })?);
             for limb in &mut limbs {
                 let value = *limb * u64::from(radix) + carry;
@@ -217,8 +221,8 @@ impl Checker<'_> {
             .get("BigInt.make")
             .map(|info| info.id)
             .ok_or_else(|| {
-                Diagnostic::new(
-                    "E1004",
+                Diagnostic::of(
+                    DiagnosticKind::StdItemMissing,
                     "bigint literals need the standard library function BigInt.make",
                     span,
                 )

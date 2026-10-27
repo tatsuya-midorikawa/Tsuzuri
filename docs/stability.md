@@ -14,6 +14,8 @@
 | std の公開 API | 公開した宣言を削除せず、シグネチャも変えません。例外は [既知の例外](#既知の例外) です |
 | 公開 ABI | `export def` の `tz_<name>` シンボル、`--emit header` が出す C ヘッダー、`tsuzuri_` で始まるシンボル、`extern` のリンク名と WebAssembly の import 名 |
 | 診断のコード・重要度・JSON のキー | コードの意味を変えず、別の条件へ再利用しません。`--json` の既存のキーを消したり改名したりしません（キーが増えることはあります）。追加の情報のキー（`kind`・`related`・`help`・`expected`・`found`・`candidates`・`scope`・`fixes`）は値があるときだけ出し、名前と順序、`related` の `role` と修正案の `applicability` の値を変えません（[診断](../_tsuzuri/language-reference/compiler/diagnostics.md#json-の-1-行-1-オブジェクト)） |
+| 診断の kind | すべての診断が持つ `kind` の値（`use_after_move` など）。kind は足すことはあっても、消したり、名前を変えたり、別のコードへ移したりしません。1 つの kind を 2 つに分けるのは互換の変更で、元の kind は残りの条件に使い続けます。edition は kind を変えません（[kind と explain](../_tsuzuri/language-reference/compiler/diagnostics.md#kind-と-explain)） |
+| `tsuzuri explain` の JSON | `--json` と `--catalog --json` のキーの名前と順序を変えません（キーが増えることはあります）。終了コードは成功 0、引数の誤りと不明な対象 2 です |
 | `tsuzuri api-diff` の出力形式 | テキストの行の形と `--json` のキー（キーが増えることはあります） |
 
 ### 安定として保たないもの
@@ -22,7 +24,8 @@
 | --- | --- |
 | LLVM IR の形、内部のシンボル名、内部の型の配置 | 最適化と実装のために変わります。`@deprecated` の有無では変わりません。edition による引数規約の違いは下記の例外です |
 | ビルドキャッシュと構文解析キャッシュの形式 | コンパイラが変われば読み捨てます |
-| 診断のメッセージの文言 | 読みやすくするために直します。コードと位置の意味は保ちます。`related` の `message`、`help`、修正案の `title` と `text` も同じです。どの診断が関連する位置や修正案を持つかも増えることがあります |
+| 診断のメッセージの文言 | 読みやすくするために直します。コードと位置の意味は保ちます。`related` の `message`、`help`、修正案の `title` と `text` も同じです。どの診断が関連する位置や修正案を持つかも増えることがあります。ヒントの表（`help` とヒントの修正案を付ける規則）も増減します |
+| `tsuzuri explain` の説明 | 題と本文の文言、例、専用の説明を持つ kind の範囲は直します |
 | 警告が出るかどうか | 新しい警告が増えることがあります。`--deny-warnings` を付けたビルドは、コンパイラの更新や、依存パッケージが宣言を非推奨にしたことで失敗することがあります。警告を出す・出さないと `--deny-warnings` の結果は、保証の対象外です |
 | 実験的と書いた機能（GPU カーネルなど） | 仕様が固まるまで変わります |
 | `tsuzuri api-diff` が見つける変更の範囲 | 宣言の署名だけを読むので、見つけられない変更があります（[公開 API の差分](#公開-api-の差分)） |

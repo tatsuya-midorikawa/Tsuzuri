@@ -79,7 +79,7 @@ fn rejects(source: &str, code: &str) {
 - メッセージは英語・小文字始まり・末尾にピリオドなし・修正方法を含める（例: `an empty array needs a type annotation, for example '[i64]'`）。位置は問題の本体（名前・式）の `Span`。別ファイルのモジュールでも元ファイルの位置を保つ（`Span::in_source`）。
 - 診断 v2 の追加キー（`kind`・`related`・`help`・`fixes`・`expected`／`found`・`candidates`・`scope`）は D-51 の形に従う。値のない診断の JSON は 1 byte も変えない。
 - **診断を作る API は、実装する時点の HEAD で決まる。** `grep -n "pub fn of" src/diagnostic.rs` が 1 件なら G23 は済んでいて、`Diagnostic::new`・`warning` はもうない: 新しい診断は `Diagnostic::of(DiagnosticKind::…, …)` で作り、kind を先に G23 の登録簿（`diagnostic_kinds` モジュール）へ足す
-  （手順は [G23](G23-diagnostic-kinds-explain-hints.md) の仕様 S1「新しい kind を足す手順」。**kind は診断を足すチケット自身が足す**）。0 件で `grep -n "pub fn with_kind" src/diagnostic.rs` が 1 件（G22 だけ）なら、チケットのとおり `Diagnostic::new(…).with_kind("…")` と書く（G23 があとで登録簿へ移す）。どちらもなければ kind を付けない（コード・位置・メッセージは同じ。D-51）。kind の文字列はどの場合も同じ。チケットが `with_kind` の形で書いていても、G23 のあとなら `of` の形に読み替える。
+  （手順は [G23](_completed/G23-diagnostic-kinds-explain-hints.md) の仕様 S1「新しい kind を足す手順」。**kind は診断を足すチケット自身が足す**）。0 件で `grep -n "pub fn with_kind" src/diagnostic.rs` が 1 件（G22 だけ）なら、チケットのとおり `Diagnostic::new(…).with_kind("…")` と書く（G23 があとで登録簿へ移す）。どちらもなければ kind を付けない（コード・位置・メッセージは同じ。D-51）。kind の文字列はどの場合も同じ。チケットが `with_kind` の形で書いていても、G23 のあとなら `of` の形に読み替える。
 - `_tsuzuri/language-reference/compiler/diagnostics.md` と `docs/language.md` の「診断」の表を更新する。
 
 ## 7. 新しい構文・型・組み込み関数を足すとき

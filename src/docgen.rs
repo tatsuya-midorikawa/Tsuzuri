@@ -1,5 +1,5 @@
 use crate::check::ModuleOrigin;
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::driver::Project;
 use crate::syntax::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,8 +34,8 @@ pub(crate) fn render_project(project: &Project) -> Result<BTreeMap<String, Strin
         };
         let filename = format!("{name}.md");
         if !pages.contains_key(&filename) && !filenames.insert(filename.to_ascii_lowercase()) {
-            return Err(Diagnostic::new(
-                "E2003",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DocFilenameCollision,
                 "documentation filenames collide, including the reserved index.md name",
                 Span::default().in_source(id),
             ));
