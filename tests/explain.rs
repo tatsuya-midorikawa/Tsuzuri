@@ -262,8 +262,9 @@ fn cli_explains_a_code() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.starts_with("E1012  error\n"), "{stdout}");
+    assert!(stdout.contains("\nkinds:\n"), "{stdout}");
     assert!(
-        stdout.contains("\nkinds:\n  use_after_move  Use of a moved value\n"),
+        stdout.contains("\n  use_after_move  Use of a moved value\n"),
         "{stdout}"
     );
     if let Some(page) = explain::code_page("E1012") {
@@ -290,7 +291,7 @@ fn cli_json_has_the_documented_keys() {
     );
     assert!(
         stdout.contains(
-            ",\"kinds\":[{\"kind\":\"use_after_move\",\"title\":\"Use of a moved value\",\"page\":true}"
+            "{\"kind\":\"use_after_move\",\"title\":\"Use of a moved value\",\"page\":true}"
         ),
         "{stdout}"
     );
@@ -373,4 +374,182 @@ fn cli_rejects_bad_usage() {
 #[test]
 fn code_pages_are_sorted() {
     assert_sorted_unique(CODE_PAGES);
+}
+
+const CODE_PAGE_LIMIT: usize = 1500;
+
+#[test]
+fn every_code_has_a_page() {
+    let pages: Vec<&str> = CODE_PAGES.iter().map(|(code, _)| *code).collect();
+    assert_eq!(pages, DiagnosticKind::codes());
+    for (code, page) in CODE_PAGES {
+        assert!(
+            page.chars().count() <= CODE_PAGE_LIMIT,
+            "{code}: {} characters",
+            page.chars().count()
+        );
+        let title = explain::page_title(page).unwrap_or_else(|| panic!("{code}: no title"));
+        assert!(
+            title.len() <= 60
+                && title.starts_with(|c: char| c.is_ascii_uppercase())
+                && !title.ends_with('.'),
+            "{code}: {title}"
+        );
+        let sections = explain::sections(page);
+        let headings: Vec<&str> = sections.iter().map(|(heading, _)| *heading).collect();
+        assert!(
+            headings == ["What it covers", "Fixes"]
+                || headings == ["What it covers", "Fixes", "See also"],
+            "{code}: {headings:?}"
+        );
+        for (heading, section) in sections {
+            assert!(explain::examples(section).is_empty(), "{code}: {heading}");
+            if heading == "Fixes" {
+                let fixes = section
+                    .lines()
+                    .filter(|line| line.starts_with("- "))
+                    .count();
+                assert!((2..=6).contains(&fixes), "{code}: {fixes} fixes");
+            }
+            if heading == "See also" {
+                for kind in see_also(section) {
+                    assert_eq!(
+                        DiagnosticKind::from_id(kind).map(DiagnosticKind::code),
+                        Some(*code),
+                        "{code}: {kind}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The kinds that have pages of their own (appendix E.5 of G23), the 8 of Phase 1 included.
+const CURATED: &[&str] = &[
+    "expected_token",
+    "expected_identifier",
+    "expected_expression",
+    "expected_pattern",
+    "expected_binding_end",
+    "expected_line_break",
+    "unexpected_character",
+    "unterminated_string_literal",
+    "invalid_string_escape",
+    "char_literal_not_one_unit",
+    "invalid_numeric_literal",
+    "source_too_large",
+    "syntax_nesting_too_deep",
+    "match_without_arms",
+    "definition_without_signature",
+    "signature_without_definition",
+    "let_function_needs_lambda",
+    "misplaced_doc_comment",
+    "signature_uses_def",
+    "signature_uses_double_colon",
+    "mut_as_expression",
+    "slice_must_be_borrowed",
+    "duplicate_name",
+    "duplicate_function_definition",
+    "unknown_value",
+    "unknown_function",
+    "unknown_module_member",
+    "unknown_type_name",
+    "unknown_field",
+    "unknown_union_case",
+    "ambiguous_name",
+    "type_mismatch",
+    "call_non_function",
+    "too_many_arguments_applied",
+    "definition_parameter_count_mismatch",
+    "record_has_no_field",
+    "missing_record_fields",
+    "field_access_non_record",
+    "integer_literal_out_of_range",
+    "ambiguous_polymorphic_use",
+    "concrete_type_required",
+    "infinite_inferred_type",
+    "no_instance",
+    "instance_missing_method",
+    "overlapping_instance",
+    "class_has_no_method",
+    "index_non_indexable",
+    "deref_non_reference",
+    "type_argument_count",
+    "empty_list_needs_annotation",
+    "use_after_move",
+    "move_out_of_collection_element",
+    "assign_to_immutable_place",
+    "borrow_conflict",
+    "mutate_immutable_value",
+    "mutate_through_shared_reference",
+    "borrow_outlives_block",
+    "borrow_of_temporary",
+    "task_capture_retains_borrow",
+    "reference_without_owner",
+    "update_drop_type_value",
+    "non_exhaustive_match",
+    "or_pattern_binding_mismatch",
+    "case_pattern_missing_payload",
+    "and_without_recursive_group",
+    "missing_rec_marker",
+    "private_name_access",
+    "invalid_module_name",
+    "duplicate_module",
+    "reserved_std_namespace",
+    "private_type_in_public_api",
+    "unused_local",
+    "unused_private_function",
+    "unreachable_match_arm",
+    "shadowed_local",
+    "deprecated_use",
+    "implicit_copy_of_large_value",
+    "option_requires_build",
+    "option_conflict",
+    "unknown_option",
+    "duplicate_option",
+    "missing_input",
+    "entry_point_missing",
+    "input_extension_invalid",
+];
+
+#[test]
+fn curated_kinds_have_pages() {
+    assert_eq!(CURATED.len(), 84);
+    for id in CURATED {
+        let kind = DiagnosticKind::from_id(id).unwrap_or_else(|| panic!("{id} is not a kind"));
+        assert!(explain::kind_page(kind).is_some(), "{id} has no page");
+    }
+}
+
+/// The table of every kind by code that `compiler/diagnostics.md` holds between its markers.
+fn kind_table() -> String {
+    let mut table = String::from("| コード | kind |\n| --- | --- |\n");
+    for code in DiagnosticKind::codes() {
+        let kinds: Vec<String> = DiagnosticKind::kinds_with_code(code)
+            .iter()
+            .map(|kind| format!("`{}`", kind.id()))
+            .collect();
+        table.push_str(&format!("| `{code}` | {} |\n", kinds.join(", ")));
+    }
+    table
+}
+
+#[test]
+fn the_docs_list_every_kind() {
+    let page = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/_tsuzuri/language-reference/compiler/diagnostics.md"
+    ))
+    .unwrap();
+    let (start, end) = (
+        "<!-- generated:diagnostic-kinds -->\n",
+        "<!-- /generated:diagnostic-kinds -->",
+    );
+    let begin = page.find(start).expect("the start marker") + start.len();
+    let finish = page[begin..].find(end).expect("the end marker") + begin;
+    let expected = kind_table();
+    assert!(
+        page[begin..finish] == expected,
+        "replace the block between the markers of compiler/diagnostics.md with:\n{expected}"
+    );
 }

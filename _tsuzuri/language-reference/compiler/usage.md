@@ -19,6 +19,7 @@
 - コンパイラ自身は、使える core 数（最大 8）のスレッドで、構文解析・関数ごとの型検査・所有権の検査を並列に実行します（ソースや関数が少ない入力は 1 スレッドです）。`TSUZURI_THREADS` で上限を変えられ、`1` なら 1 スレッドです。出力はスレッド数で変わりません（[コンパイラのスレッド数](option.md#コンパイラのスレッド数)）。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
 - `api-diff` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると終了コード 1 です。
+- `explain` は、診断の kind（`use_after_move` など）やコード（`E1012`）の原因と、誤りの例・直した例を出します。`--catalog` は全 kind の一覧です。
 - 引数の誤りは終了コード 2、ソースや実行の失敗は 1、成功は 0 です。
 
 ## コマンドの流れ
@@ -628,6 +629,40 @@ record の field の追加は、構築式を壊すので breaking です。union
 
 `tsuzuri publish` は `api-diff` を実行しません。公開の前に、前の版のチェックアウトと比べてください（[公開前の互換性の確認](../organizing-tsuzuri/packages.md#公開前の互換性の確認)）。保証の考え方は [安定性と互換性の方針](../../../docs/stability.md) にあります。
 
+### explain
+
+診断の kind（`use_after_move` のような原因の識別子）かコード（`E1012`）を 1 つ受け取り、その説明を標準出力へ出します。説明はコンパイラに埋め込まれていて、ファイルもネットワークも読みません。説明の文は英語です。
+
+```sh
+tsuzuri explain use_after_move
+tsuzuri explain E1012
+tsuzuri explain use_after_move --json
+tsuzuri explain --catalog
+tsuzuri explain --catalog --json
+```
+
+kind の説明は、1 行目が `kind  コード  重要度  since 版`、2 行目が題で、空行の後に原因（`## Why`）、誤りの例（`## Bad`）、直した例（`## Good`）が続きます。例は、どちらもテストで検査しています。専用の説明がない kind は、そのコードの説明を出します。
+
+```text
+use_after_move  E1012  error  since 0.1.0
+Use of a moved value
+
+## Why
+Passing a value to a function that takes ownership, ...
+```
+
+コードの説明は、1 行目が `コード  重要度`、2 行目が題で、続けてそのコードの kind の一覧（`kinds:` の後に 1 行 1 kind）と、コードの説明（何を報告するか・直し方）です。`--catalog` は、全 kind を `コード  kind  題` の 1 行ずつ、コードの昇順・同じコードの中は kind の昇順で出します。
+
+`--json` は 1 行の JSON です。kind は `kind`・`code`・`severity`・`since`・`title`・`page`（説明の本文。ないときは `null`）・`code_page`（コードの説明の本文か `null`）・`siblings`（同じコードの別の kind）、コードは `code`・`severity`・`title`・`page`・`kinds`（`kind`・`title`・`page` の真偽値）、`--catalog --json` は 1 行 1 kind の `kind`・`code`・`severity`・`since`・`title`・`page`（専用の説明があるか）です。キーは増えることがあっても、消えたり名前や順序が変わったりしません。説明の文言は保証しません。
+
+コードは大文字だけを受け付けます（`e1012` は不明な対象です）。不明な対象は、近い kind やコードを最大 5 つ添えて `E2000` を出し、終了コードは 2 です。対象が 0 個や 2 個以上、`--catalog` と対象の同時指定、知らないオプションも、同じく `E2000` と終了コード 2 です。
+
+```text
+<command line>:1:1: error[E2000]: unknown diagnostic 'use_after_mov'; did you mean 'use_after_move'? run 'tsuzuri explain --catalog' to list every kind
+```
+
+kind の考え方と JSON の `kind` キーは [診断メッセージとエラーコード](diagnostics.md#kind-と-explain) にあります。
+
 ### bindgen
 
 C のヘッダーから、リンク名付きの `extern "シンボル" def`、定数（整数の `#define` を含む）、レコード、`extern type`、型エイリアスを 1 つのモジュールとして書き出します。ヘッダーはちょうど 1 つで、`-o` は必須です。モジュール名は出力のファイル名で決まるので、`Zlib.tz` のように英大文字で始めます。
@@ -826,7 +861,7 @@ macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sec
 | --- | --- |
 | 0 | 成功。警告だけでも、`--deny-warnings` が無ければ 0 |
 | 1 | ソースの診断、読み書き、リンカー、実行時の失敗、テスト失敗、`fmt --check` の差分、`--deny-warnings`、`api-diff` の互換性のない変更 |
-| 2 | 引数の不足や組み合わせ。引数なしでヘルプを出したときも 2 |
+| 2 | 引数の不足や組み合わせ。引数なしでヘルプを出したときも 2。`explain` の不明な kind やコードも 2 |
 
 `def main` が 0 以外を返した場合は、コンパイラから見ると実行の失敗 `E2005` になり、`tsuzuri run` 自体の終了コードは 1 になります。プログラム自身の戻り値がそのまま `tsuzuri run` の終了コードになるわけではありません（`tsuzuri build` で生成したバイナリを直接実行した場合は、`def main` の戻り値がプロセスの終了コードになります）。
 

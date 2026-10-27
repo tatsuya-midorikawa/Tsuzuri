@@ -8,6 +8,8 @@
 
 - 人間向けの 1 件は `パス:行:列: 重要度[コード]: メッセージ` です。直す手がかりがある診断は、続けて関連する位置（`note:`）、直し方（`help:`）、機械的な修正案（`fix`）を出します。
 - `--json` は stderr の 1 行 1 JSON です。配列にはまとめません。追加の情報は、値があるときだけキーが付きます。
+- どの診断も、原因を表す安定した識別子 kind（`use_after_move` など）を持ちます。`tsuzuri explain <kind>` が原因と、誤りの例・直した例を出します。
+- よくある誤りの形（`pair.0`、`=>` の腕、`println!` など）には、ヒントの表から `help` と修正案が付きます。
 - 画面に出すのは 50 件まで、内部では重複を除いて 1000 件まで集めます。
 - 字句エラーがあると構文解析へ進まず、構文エラーがあると型検査へ進みません。
 - コードの千の位が、構文、意味、ツールのどれかを大まかに分けます。
@@ -108,7 +110,7 @@ main_value ()
 先の型エラーは、次の 1 行でした。
 
 ```text
-{"severity":"error","code":"E1003","message":"expected i64, found bool","path":"./Main.tz","span":{"start":34,"end":38,"line":1,"column":35,"end_line":1,"end_column":39}}
+{"severity":"error","code":"E1003","message":"expected i64, found bool","path":"./Main.tz","span":{"start":34,"end":38,"line":1,"column":35,"end_line":1,"end_column":39},"kind":"type_mismatch","expected":"i64","found":"bool"}
 ```
 
 | フィールド | 意味 |
@@ -121,11 +123,11 @@ main_value ()
 | `span.line` / `span.column` | 始まり。1 始まりの行と、Unicode スカラー値の列 |
 | `span.end_line` / `span.end_column` | 終わりの行と列 |
 
-追加の情報は、5 つのキーの後ろに、次の順で、値があるときだけ付きます。どれも持たない診断の行は、上の 5 キーの形のままです。
+追加の情報は、5 つのキーの後ろに、次の順で、値があるときだけ付きます。`kind` はすべての診断が持ちます。
 
 | フィールド | 意味 |
 | --- | --- |
-| `kind` | 診断の原因を表す識別子。現在の診断には付きません |
+| `kind` | 診断の原因を表す安定した識別子（[kind と explain](#kind-と-explain)） |
 | `related` | 関連する位置の配列。要素は `role`、`message`、`path`、`span`（主と同じ 6 キー）。位置を解決できない要素は省きます |
 | `help` | 1 行の直し方 |
 | `expected` / `found` | 型の不一致（`E1003`）の期待した型と実際の型。メッセージと同じ表示です |
@@ -136,18 +138,18 @@ main_value ()
 `role` は `moved_here`（ムーブした位置）、`borrowed_here`（借用を作った位置）、`borrow_used_here`（借用がまだ生きている理由になる使用）、`declared_here`（宣言）、`expected_because`（期待する型を決めた宣言）、`first_defined_here`（最初の定義）、`via_call`、`required_by`、`note` のどれかです。先のムーブの診断は、次の 1 行です。
 
 ```text
-{"severity":"error","code":"E1012","message":"use of moved or partially moved value 'text'","path":"./Main.tz","span":{"start":157,"end":161,"line":6,"column":21,"end_line":6,"end_column":25},"related":[{"role":"moved_here","message":"value moved here","path":"./Main.tz","span":{"start":132,"end":136,"line":5,"column":21,"end_line":5,"end_column":25}}],"help":"borrow the value with 'ref text' or move it last"}
+{"severity":"error","code":"E1012","message":"use of moved or partially moved value 'text'","path":"./Main.tz","span":{"start":157,"end":161,"line":6,"column":21,"end_line":6,"end_column":25},"kind":"use_after_move","related":[{"role":"moved_here","message":"value moved here","path":"./Main.tz","span":{"start":132,"end":136,"line":5,"column":21,"end_line":5,"end_column":25}}],"help":"borrow the value with 'ref text' or move it last"}
 ```
 
-キーの名前と順序、`role` と `applicability` の値は安定しています。`related` の `message`、`help`、修正案の `title` と `text` の文言は変わることがあります（[安定性と互換性の方針](../../../docs/stability.md#安定として保たないもの)）。
+キーの名前と順序、`kind` と `role` と `applicability` の値は安定しています。`related` の `message`、`help`、修正案の `title` と `text` の文言は変わることがあります（[安定性と互換性の方針](../../../docs/stability.md#安定として保たないもの)）。
 
 `fmt --check --json` だけ、形が少し違います。スパンは無く、パスと「整形されていない」ことだけです。終了コードは 1 でした。
 
 ```text
-{"severity":"error","code":"E2000","message":"file is not formatted","path":"unformatted.tz"}
+{"severity":"error","code":"E2000","message":"file is not formatted","path":"unformatted.tz","kind":"file_not_formatted"}
 ```
 
-ツールがビルドのついでに出す警告、たとえばキャッシュを使えなかった通知は、`code` が `W2001` で、スパンを持たない行になることがあります。最後の一時ディレクトリを消せなかった、といった後始末の注意は、JSON モードでもプレーンテキストのままです。
+ツールがビルドのついでに出す警告、たとえばキャッシュを使えなかった通知は、`code` が `W2001`、`kind` が `tool_notice` で、スパンを持たない行になることがあります。最後の一時ディレクトリを消せなかった、といった後始末の注意は、JSON モードでもプレーンテキストのままです。
 
 `test --json` の結果は stderr ではなく stdout で、診断とは別のオブジェクトです。1 件は `type` が `test`、最後に `type` が `summary` の行が続きます。
 
@@ -157,6 +159,48 @@ main_value ()
 ```
 
 失敗した件には `failure` が足されます。`--list --json` は実行せず、`type`、`index`、`module`、`name`、`path`、UTF-16 の `range` を出します。
+
+## kind と explain
+
+コードは原因の大まかな分類で、同じ `E1002` が「未知の値」「モジュールにない関数」「型クラスにないメソッド」を表します。kind は、その中の 1 つの規則を表す識別子です。小文字と数字と `_` の 48 文字以内で、1 つの kind は 1 つのコードに属します。診断の `code` と重要度は kind から決まります。
+
+| 例 | kind | コード |
+| --- | --- | --- |
+| ムーブした値の使用 | `use_after_move` | `E1012` |
+| 生きている借用と競合するアクセス | `borrow_conflict` | `E1014` |
+| 型の不一致 | `type_mismatch` | `E1003` |
+| 未知の値 | `unknown_value` | `E1002` |
+| モジュールにない関数 | `unknown_module_member` | `E1002` |
+
+kind は `--json` の `kind` キーと、LSP の診断の `data.kind` に出ます。人間向けのテキスト出力には出しません。`tsuzuri explain <kind>` は原因（`## Why`）と、誤りの例（`## Bad`）・直した例（`## Good`）を出し、`tsuzuri explain <コード>` はそのコードの kind の一覧と直し方を出します（[コンパイラの使い方](usage.md#explain)）。全 kind は `tsuzuri explain --catalog` と、この記事の [kind の一覧](#kind-の一覧) にあります。
+
+```text
+$ tsuzuri explain use_after_move
+use_after_move  E1012  error  since 0.1.0
+Use of a moved value
+
+## Why
+Passing a value to a function that takes ownership, ...
+```
+
+kind は足すことはあっても、消したり、名前を変えたり、別のコードへ移したりしません。1 つの kind を 2 つに分けることはあります（元の kind は残りの条件に使い続けます）。説明の文言は保証しません（[安定性と互換性の方針](../../../docs/stability.md)）。
+
+### ヒント
+
+よくある誤りの形には、コンパイラのヒントの表から、直し方の `help` が付きます。ヒントは、診断の kind、メッセージの断片、診断の位置の前後の字句で選びます。たとえばタプルを `pair.0` で読むと、`E0002` の `expected an identifier` に次の `help` が付きます。
+
+```text
+./Main.tz:1:49: error[E0002]: expected an identifier
+  1 | t :: (i64 * i64) -> i64 = \pair -> pair.0
+    |                                         ^
+  help: read a tuple element by pattern matching, as in 'match pair with | (first, _) -> first'
+```
+
+表は 40 件で、ほかに `(5: i64)` の型注釈、`Display.to_string`、`let new`、整数の `abs`、`return`、`fn f()`、`{` で始まる `union`・`for`・`while`、`println!`、`+=`、`::` での呼び出し、メソッド呼び出し、`struct`、`null`、`?`、`let ... in`、`and`、`pub`、`use`、`<T>`、`Option`、`int`・`float`・`str`、`=>` の腕、`|` のない腕、`True`・`False`、`void`、文字と文字列の引用符、`|x|` や `x =>` のラムダを扱います。
+
+- ヒントは、検査に失敗した利用者のソースの診断にだけ付きます。標準ライブラリの診断と、成功した検査の警告には付きません。
+- 位置の前後の字句で選ぶヒントは、診断が元から持つ一般的な `help`（たとえば未知の値の `check the spelling, ...`）を置き換えます。字句の条件がないヒントは、`help` のない診断にだけ付きます。
+- 7 件のヒント（`Option`→`Maybe`、`float`→`f64`、`str`→`string`、`=>`→`->`、`True`→`true`、`False`→`false`、`void`→`()`）は、その字句を置き換える修正案も持ちます。修正案は `likely` か `maybe` で、`certain` にはしません。経験則なので、そのまま正しいとは限りません。
 
 ## 複数エラーと二次エラー
 
@@ -198,7 +242,7 @@ flowchart TD
 
 ## エラーコード
 
-エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0003`）は字句解析と構文解析、`E1`（`E1001`〜`E1028`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2007`）は CLI 引数・I/O・リンカー・実行時・依存の取得などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1006`）およびツールの警告 `W2001`・`W2002` です。
+エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0003`）は字句解析と構文解析、`E1`（`E1001`〜`E1029`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2008`）は CLI 引数・I/O・リンカー・実行時・依存の取得・edition の移行などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1006`）およびツールの警告 `W2001`・`W2002` です。
 
 | コード | 何を報告するか |
 | --- | --- |
@@ -233,6 +277,7 @@ flowchart TD
 | `E2005` | 実行時の異常終了。トラップ位置、0 以外の `def main`、スタック枯渇の推定、`tsuzuri bench` の失敗（トラップ、時間切れ、負の時間）を含む |
 | `E2006` | 言語内テストの失敗 |
 | `E2007` | 依存の取得と検証の失敗。`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存や内容が SHA-256 と違う依存、`git` の欠落・失敗、取得したリポジトリのシンボリックリンク・submodule・危険なパス・大文字小文字だけ違うパス、registry の index にない版、index の項目と違うパッケージ、`publish` で commit とディレクトリの内容が違うこと（[パッケージ](../organizing-tsuzuri/packages.md#git-依存と-tsuzurilock)） |
+| `E2008` | `tsuzuri fix --edition` による edition の移行の失敗。`--from` とマニフェストの版の食い違い、古い版への移行、移行後のソースが大きすぎること、マニフェストの更新や置き換えの失敗（[コンパイラの使い方](usage.md#fix)） |
 
 `E1001` から `E1010` は型検査・意味解析の基本的なエラーに割り当てられています。具体的には、`E1001` が識別子名の重複（1 つの `let rec` グループに同じ名前を 2 度書く場合を含む。関数のシグネチャと定義、レコード、レコードのフィールド、引数の重複は最初の定義 `first_defined_here` を持ちます）、`E1002` が未知の値・関数・定数・ケースの名前（未知の値は、見えるローカル変数の `scope` と `help` を持ちます）、`E1003` が型の不一致（expected ... found ...。`expected`・`found` を持ち、`let` の型注釈・関数の結果の型・名前付きの関数の引数の型が期待を決めたときは、その宣言 `expected_because` を持ちます。引数が足りない呼び出しには `help` が付きます）、`E1004` が曖昧な識別子や名前解決エラー（複数のビルダーが宣言する別名の曖昧さを含む）、`E1005` が関数呼び出しや演算子インスタンスの不備（関数値が捕捉できない値の捕捉を含み、型変数 `'a` を含む型の値を捕捉する `let rec` もここです。関数でない値の呼び出しには `help` が付きます）、`E1006` が関数適用の引数の個数の不一致（アクティブパターンの追加引数や `Owned.function` に渡すラムダの引数の数を含む。引数が多すぎるときは `help` が付きます）、`E1007` がレコードフィールドの不備（未知のフィールドは、レコードのフィールドを並べた `help` を持ちます）、`E1008` が公開 ABI や extern の制約違反、`E1009` が数値リテラルの不正、`E1010` が型レイアウトの制限です。詳細な理由は各診断メッセージで示されます。
 
@@ -282,15 +327,24 @@ copywarn/Main.tz:2:9: warning[W1006]: implicit copy of an array allocates and co
 
 各要素は `range`、`severity`、`code`、`source`、`message` です。`source` は `tsuzuri` です。`severity` はエラーが 1、警告が 2 で、LSP の数値です。`range` は UTF-16 の行と桁で、0 始まりです。CLI の `--json` が 1 始まりの Unicode スカラー値なのと、ここが違います。
 
-関連する位置のうちプロジェクトのファイルにあるものは `relatedInformation`（`location` と `message`）になります。std の中の位置は、エディターが開けないので入れません。修正案を持つ診断は `data.fixes`（`title` と `applicability`）を持ちます。どちらも無ければ、そのキーは付きません。
+関連する位置のうちプロジェクトのファイルにあるものは `relatedInformation`（`location` と `message`）になります。std の中の位置は、エディターが開けないので入れません。`data.kind` は診断の kind、修正案を持つ診断は `data.fixes`（`title` と `applicability`）も持ちます。値のないキーは付きません。
+
+診断の範囲にカーソルを置いた hover は、その診断（3 件まで）の重要度・コード・kind・メッセージと、`tsuzuri explain <kind>` の案内を出します。型や doc コメントの hover があるときは、その前に置き、`---` で区切ります。エラーのあるプログラムには型の hover がないので、診断の範囲の外では従来どおり何も出しません。
+
+```text
+**error[E1012]** `use_after_move`
+use of moved or partially moved value 'text'
+Run `tsuzuri explain use_after_move` for an explanation.
+```
 
 未保存のバッファも、開いているテキストで検査します。入力を読めないときも、同じオブジェクトを 1 件出します。閉じた文書に新しい診断を送り続けることはしません。
 
-VS Code 拡張は、これを波線と問題パネルに出します。`textDocument/codeAction` のクイックフィックスは 2 種類です。未使用ローカル（`W1001`）へ `_` を付けるものと、診断の修正案です。修正案は、適用したテキストをもう一度検査し、その診断のコードの件数が減り、どのコードのエラーも増えないときだけ出します。ほかのエラーは残っていてもよく、適用後に検査が通ることまでは保証しません（警告の修正案なら警告も数えます。表示の上限の 50 件を超えた診断も数え、収集の上限の 1000 件に達したときは出しません）。現在、修正案を持つのは `E1021` の足りない腕だけで、`maybe` なので優先のクイックフィックス（`isPreferred`）にはしません。
+VS Code 拡張は、これを波線と問題パネルに出します。`textDocument/codeAction` のクイックフィックスは 2 種類です。未使用ローカル（`W1001`）へ `_` を付けるものと、診断の修正案です。修正案は、適用したテキストをもう一度検査し、その診断のコードの件数が減り、どのコードのエラーも増えないときだけ出します。ほかのエラーは残っていてもよく、適用後に検査が通ることまでは保証しません（警告の修正案なら警告も数えます。表示の上限の 50 件を超えた診断も数え、収集の上限の 1000 件に達したときは出しません）。現在、修正案を持つのは `E1021` の足りない腕と、[ヒント](#ヒント) の 7 件で、どれも `certain` ではないので優先のクイックフィックス（`isPreferred`）にはしません。
 
 ## まとめ
 
-- テキストは `パス:行:列: error[E1003]: ...`、JSON は 1 行に `severity`、`code`、`message`、`path`、`span` です。関連する位置、`help`、修正案は、値があるときだけ続きます。
+- テキストは `パス:行:列: error[E1003]: ...`、JSON は 1 行に `severity`、`code`、`message`、`path`、`span`、`kind` です。関連する位置、`help`、修正案は、値があるときだけ続きます。
+- kind は原因の安定した識別子で、`tsuzuri explain` で説明を読めます。よくある誤りの形には、ヒントの `help` が付きます。
 - 50 件を超えると件数だけを足し、1000 件で収集を止めます。重複は最初から 1 件です。
 - 字句、構文、型の順に段階を分け、壊れた木から二次エラーを量産しないようにしています。
 - `E0` は構文、`E1` は意味、`E2` はツールと実行、`W` は警告です。

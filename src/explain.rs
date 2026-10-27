@@ -8,33 +8,357 @@ use crate::diagnostic_kinds::DiagnosticKind;
 
 /// The pages of single kinds, by id.
 pub const KIND_PAGES: &[(&str, &str)] = &[
+    ("ambiguous_name", include_str!("explain/ambiguous_name.md")),
+    (
+        "ambiguous_polymorphic_use",
+        include_str!("explain/ambiguous_polymorphic_use.md"),
+    ),
+    (
+        "and_without_recursive_group",
+        include_str!("explain/and_without_recursive_group.md"),
+    ),
+    (
+        "assign_to_immutable_place",
+        include_str!("explain/assign_to_immutable_place.md"),
+    ),
     (
         "borrow_conflict",
         include_str!("explain/borrow_conflict.md"),
+    ),
+    (
+        "borrow_of_temporary",
+        include_str!("explain/borrow_of_temporary.md"),
     ),
     (
         "borrow_outlives_block",
         include_str!("explain/borrow_outlives_block.md"),
     ),
     (
+        "call_non_function",
+        include_str!("explain/call_non_function.md"),
+    ),
+    (
+        "case_pattern_missing_payload",
+        include_str!("explain/case_pattern_missing_payload.md"),
+    ),
+    (
+        "char_literal_not_one_unit",
+        include_str!("explain/char_literal_not_one_unit.md"),
+    ),
+    (
+        "class_has_no_method",
+        include_str!("explain/class_has_no_method.md"),
+    ),
+    (
+        "concrete_type_required",
+        include_str!("explain/concrete_type_required.md"),
+    ),
+    (
+        "definition_parameter_count_mismatch",
+        include_str!("explain/definition_parameter_count_mismatch.md"),
+    ),
+    (
+        "definition_without_signature",
+        include_str!("explain/definition_without_signature.md"),
+    ),
+    ("deprecated_use", include_str!("explain/deprecated_use.md")),
+    (
+        "deref_non_reference",
+        include_str!("explain/deref_non_reference.md"),
+    ),
+    (
+        "duplicate_function_definition",
+        include_str!("explain/duplicate_function_definition.md"),
+    ),
+    (
+        "duplicate_module",
+        include_str!("explain/duplicate_module.md"),
+    ),
+    ("duplicate_name", include_str!("explain/duplicate_name.md")),
+    (
+        "duplicate_option",
+        include_str!("explain/duplicate_option.md"),
+    ),
+    (
+        "empty_list_needs_annotation",
+        include_str!("explain/empty_list_needs_annotation.md"),
+    ),
+    (
+        "entry_point_missing",
+        include_str!("explain/entry_point_missing.md"),
+    ),
+    (
+        "expected_binding_end",
+        include_str!("explain/expected_binding_end.md"),
+    ),
+    (
+        "expected_expression",
+        include_str!("explain/expected_expression.md"),
+    ),
+    (
+        "expected_identifier",
+        include_str!("explain/expected_identifier.md"),
+    ),
+    (
+        "expected_line_break",
+        include_str!("explain/expected_line_break.md"),
+    ),
+    (
+        "expected_pattern",
+        include_str!("explain/expected_pattern.md"),
+    ),
+    ("expected_token", include_str!("explain/expected_token.md")),
+    (
+        "field_access_non_record",
+        include_str!("explain/field_access_non_record.md"),
+    ),
+    (
+        "implicit_copy_of_large_value",
+        include_str!("explain/implicit_copy_of_large_value.md"),
+    ),
+    (
+        "index_non_indexable",
+        include_str!("explain/index_non_indexable.md"),
+    ),
+    (
+        "infinite_inferred_type",
+        include_str!("explain/infinite_inferred_type.md"),
+    ),
+    (
+        "input_extension_invalid",
+        include_str!("explain/input_extension_invalid.md"),
+    ),
+    (
+        "instance_missing_method",
+        include_str!("explain/instance_missing_method.md"),
+    ),
+    (
+        "integer_literal_out_of_range",
+        include_str!("explain/integer_literal_out_of_range.md"),
+    ),
+    (
+        "invalid_module_name",
+        include_str!("explain/invalid_module_name.md"),
+    ),
+    (
+        "invalid_numeric_literal",
+        include_str!("explain/invalid_numeric_literal.md"),
+    ),
+    (
+        "invalid_string_escape",
+        include_str!("explain/invalid_string_escape.md"),
+    ),
+    (
+        "let_function_needs_lambda",
+        include_str!("explain/let_function_needs_lambda.md"),
+    ),
+    (
+        "match_without_arms",
+        include_str!("explain/match_without_arms.md"),
+    ),
+    (
+        "misplaced_doc_comment",
+        include_str!("explain/misplaced_doc_comment.md"),
+    ),
+    ("missing_input", include_str!("explain/missing_input.md")),
+    (
+        "missing_rec_marker",
+        include_str!("explain/missing_rec_marker.md"),
+    ),
+    (
+        "missing_record_fields",
+        include_str!("explain/missing_record_fields.md"),
+    ),
+    (
+        "move_out_of_collection_element",
+        include_str!("explain/move_out_of_collection_element.md"),
+    ),
+    (
+        "mut_as_expression",
+        include_str!("explain/mut_as_expression.md"),
+    ),
+    (
         "mutate_immutable_value",
         include_str!("explain/mutate_immutable_value.md"),
     ),
     (
+        "mutate_through_shared_reference",
+        include_str!("explain/mutate_through_shared_reference.md"),
+    ),
+    ("no_instance", include_str!("explain/no_instance.md")),
+    (
         "non_exhaustive_match",
         include_str!("explain/non_exhaustive_match.md"),
     ),
+    (
+        "option_conflict",
+        include_str!("explain/option_conflict.md"),
+    ),
+    (
+        "option_requires_build",
+        include_str!("explain/option_requires_build.md"),
+    ),
+    (
+        "or_pattern_binding_mismatch",
+        include_str!("explain/or_pattern_binding_mismatch.md"),
+    ),
+    (
+        "overlapping_instance",
+        include_str!("explain/overlapping_instance.md"),
+    ),
+    (
+        "private_name_access",
+        include_str!("explain/private_name_access.md"),
+    ),
+    (
+        "private_type_in_public_api",
+        include_str!("explain/private_type_in_public_api.md"),
+    ),
+    (
+        "record_has_no_field",
+        include_str!("explain/record_has_no_field.md"),
+    ),
+    (
+        "reference_without_owner",
+        include_str!("explain/reference_without_owner.md"),
+    ),
+    (
+        "reserved_std_namespace",
+        include_str!("explain/reserved_std_namespace.md"),
+    ),
+    ("shadowed_local", include_str!("explain/shadowed_local.md")),
+    (
+        "signature_uses_def",
+        include_str!("explain/signature_uses_def.md"),
+    ),
+    (
+        "signature_uses_double_colon",
+        include_str!("explain/signature_uses_double_colon.md"),
+    ),
+    (
+        "signature_without_definition",
+        include_str!("explain/signature_without_definition.md"),
+    ),
+    (
+        "slice_must_be_borrowed",
+        include_str!("explain/slice_must_be_borrowed.md"),
+    ),
+    (
+        "source_too_large",
+        include_str!("explain/source_too_large.md"),
+    ),
+    (
+        "syntax_nesting_too_deep",
+        include_str!("explain/syntax_nesting_too_deep.md"),
+    ),
+    (
+        "task_capture_retains_borrow",
+        include_str!("explain/task_capture_retains_borrow.md"),
+    ),
+    (
+        "too_many_arguments_applied",
+        include_str!("explain/too_many_arguments_applied.md"),
+    ),
+    (
+        "type_argument_count",
+        include_str!("explain/type_argument_count.md"),
+    ),
     ("type_mismatch", include_str!("explain/type_mismatch.md")),
+    (
+        "unexpected_character",
+        include_str!("explain/unexpected_character.md"),
+    ),
+    ("unknown_field", include_str!("explain/unknown_field.md")),
+    (
+        "unknown_function",
+        include_str!("explain/unknown_function.md"),
+    ),
     (
         "unknown_module_member",
         include_str!("explain/unknown_module_member.md"),
     ),
+    ("unknown_option", include_str!("explain/unknown_option.md")),
+    (
+        "unknown_type_name",
+        include_str!("explain/unknown_type_name.md"),
+    ),
+    (
+        "unknown_union_case",
+        include_str!("explain/unknown_union_case.md"),
+    ),
     ("unknown_value", include_str!("explain/unknown_value.md")),
+    (
+        "unreachable_match_arm",
+        include_str!("explain/unreachable_match_arm.md"),
+    ),
+    (
+        "unterminated_string_literal",
+        include_str!("explain/unterminated_string_literal.md"),
+    ),
+    ("unused_local", include_str!("explain/unused_local.md")),
+    (
+        "unused_private_function",
+        include_str!("explain/unused_private_function.md"),
+    ),
+    (
+        "update_drop_type_value",
+        include_str!("explain/update_drop_type_value.md"),
+    ),
     ("use_after_move", include_str!("explain/use_after_move.md")),
 ];
 
 /// The pages of codes, by code.
-pub const CODE_PAGES: &[(&str, &str)] = &[];
+pub const CODE_PAGES: &[(&str, &str)] = &[
+    ("E0001", include_str!("explain/codes/E0001.md")),
+    ("E0002", include_str!("explain/codes/E0002.md")),
+    ("E0003", include_str!("explain/codes/E0003.md")),
+    ("E1001", include_str!("explain/codes/E1001.md")),
+    ("E1002", include_str!("explain/codes/E1002.md")),
+    ("E1003", include_str!("explain/codes/E1003.md")),
+    ("E1004", include_str!("explain/codes/E1004.md")),
+    ("E1005", include_str!("explain/codes/E1005.md")),
+    ("E1006", include_str!("explain/codes/E1006.md")),
+    ("E1007", include_str!("explain/codes/E1007.md")),
+    ("E1008", include_str!("explain/codes/E1008.md")),
+    ("E1009", include_str!("explain/codes/E1009.md")),
+    ("E1010", include_str!("explain/codes/E1010.md")),
+    ("E1011", include_str!("explain/codes/E1011.md")),
+    ("E1012", include_str!("explain/codes/E1012.md")),
+    ("E1013", include_str!("explain/codes/E1013.md")),
+    ("E1014", include_str!("explain/codes/E1014.md")),
+    ("E1015", include_str!("explain/codes/E1015.md")),
+    ("E1016", include_str!("explain/codes/E1016.md")),
+    ("E1017", include_str!("explain/codes/E1017.md")),
+    ("E1018", include_str!("explain/codes/E1018.md")),
+    ("E1019", include_str!("explain/codes/E1019.md")),
+    ("E1020", include_str!("explain/codes/E1020.md")),
+    ("E1021", include_str!("explain/codes/E1021.md")),
+    ("E1022", include_str!("explain/codes/E1022.md")),
+    ("E1023", include_str!("explain/codes/E1023.md")),
+    ("E1024", include_str!("explain/codes/E1024.md")),
+    ("E1025", include_str!("explain/codes/E1025.md")),
+    ("E1026", include_str!("explain/codes/E1026.md")),
+    ("E1027", include_str!("explain/codes/E1027.md")),
+    ("E1028", include_str!("explain/codes/E1028.md")),
+    ("E1029", include_str!("explain/codes/E1029.md")),
+    ("E2000", include_str!("explain/codes/E2000.md")),
+    ("E2001", include_str!("explain/codes/E2001.md")),
+    ("E2002", include_str!("explain/codes/E2002.md")),
+    ("E2003", include_str!("explain/codes/E2003.md")),
+    ("E2004", include_str!("explain/codes/E2004.md")),
+    ("E2005", include_str!("explain/codes/E2005.md")),
+    ("E2006", include_str!("explain/codes/E2006.md")),
+    ("E2007", include_str!("explain/codes/E2007.md")),
+    ("E2008", include_str!("explain/codes/E2008.md")),
+    ("W1001", include_str!("explain/codes/W1001.md")),
+    ("W1002", include_str!("explain/codes/W1002.md")),
+    ("W1003", include_str!("explain/codes/W1003.md")),
+    ("W1004", include_str!("explain/codes/W1004.md")),
+    ("W1005", include_str!("explain/codes/W1005.md")),
+    ("W1006", include_str!("explain/codes/W1006.md")),
+    ("W2001", include_str!("explain/codes/W2001.md")),
+    ("W2002", include_str!("explain/codes/W2002.md")),
+];
 
 /// The most candidates that an unknown target lists.
 pub const MAX_SUGGESTIONS: usize = 5;
