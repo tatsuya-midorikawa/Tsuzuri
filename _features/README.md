@@ -268,7 +268,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G25 | [型つき穴 `?` と `tsuzuri find`（型でのシグネチャ検索）、未解決名の候補](G25-typed-holes-and-find.md) | P2 | L | G22, (G24) | todo（承認済み） |
 | G26 | [Facts モデル（コンパイラの事実の機械可読な定義と exporter）](_completed/G26-facts-model.md) | P1 | XL | (G22), (A20) | done（Phase 1〜6。D-60 の KG） |
 | G27 | [ビルド時の KB（`target/tz/kb`、brief カード、増分、鮮度）](_completed/G27-build-time-kb.md) | P1 | L | G26 | done（Phase 1〜5。D-60 の KG） |
-| G28 | [`tsuzuri kb` の照会と `impact`（facts の差分）](G28-kb-query-and-impact.md) | P1 | L | G27, G26, (G25) | todo（承認済み） |
+| G28 | [`tsuzuri kb` の照会と `impact`（facts の差分）](_completed/G28-kb-query-and-impact.md) | P1 | L | G27, G26, (G25) | done（Phase 1〜4。D-60 の KG） |
 | G29 | [`tsuzuri mcp`（MCP サーバー）](G29-mcp-server.md) | P2 | L | (G21), (G23), (G26), (G27), (G28) | todo（承認済み） |
 | G30 | [図表の生成（Mermaid。モジュール・型・呼び出し・所有権・並行・レイアウト・状態遷移）](G30-diagrams.md) | P2 | L | G26, G27 | todo（承認済み） |
 | G31 | [AI 作業コスト指標（入力量と往復数を決定的に測る）](_completed/G31-ai-cost-metrics.md) | P1 | M | (G21), (G22), (G24), (G27), (G28), (G29) | done（Phase 1〜3） |
@@ -539,7 +539,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | [G25](G25-typed-holes-and-find.md) | 診断・検索 | 型つき穴 `?`（`E1030`: 期待する型と、スコープの束縛・その型を作れる候補を出す）、`tsuzuri find 'ref [i64] -> i64'`（型でのシグネチャ検索。`kb find` と同じ実装）、未解決名の候補（`unknown value 'length'` に近い名前） | 承認済み |
 | [G26](_completed/G26-facts-model.md) | 知識（事実） | コンパイラが内部に持つ事実（シンボル・呼び出し・効果・複製・確保・トラップ・所有権の出来事・再帰・ループ・特殊化・型のレイアウト）を `tz-facts/1` の JSON Lines として定義し、`check` の解析だけから決定的に書き出す exporter。Phase 1〜6 は独立に出荷でき、A20 が揃うまで `effects_complete`・`alloc_complete` は `false` | 承認済み |
 | [G27](_completed/G27-build-time-kb.md) | 知識（KB） | `check`・`build`・`run`・`test` が `target/tz/kb/`（`tz-kb/1`。シンボル・グラフ・facts・brief カード・図）を既定で書く。入力の SHA-256 で増分と鮮度（`E2009`）を判定し、`--no-kb`・`TSUZURI_KB=0` で止められる。brief カードは L0 2,400 字・L1 1,600 字・L2 700 字。`tsuzuri new` の `.gitignore` に `target/` を足す | 承認済み |
-| [G28](G28-kb-query-and-impact.md) | 知識（照会） | `tsuzuri kb`（`show`・`brief`・`callers`・`callees`・`uses`・`search`・`tests-for`・`find`。1 項目 1〜3 行で、`--budget` で字数を抑える）と `kb impact`（2 つの KB・git の版の差を、署名・所有権の渡し方・効果・テストで分類し、回すべきテストを出す） | 承認済み |
+| [G28](_completed/G28-kb-query-and-impact.md) | 知識（照会） | `tsuzuri kb`（`show`・`brief`・`callers`・`callees`・`uses`・`search`・`tests-for`・`find`。1 項目 1〜3 行で、`--budget` で字数を抑える）と `kb impact`（2 つの KB・git の版の差を、署名・所有権の渡し方・効果・テストで分類し、回すべきテストを出す） | 承認済み |
 | [G29](G29-mcp-server.md) | 知識（接続口） | `tsuzuri mcp`: stdio の MCP サーバー（プロトコルは 2025-06-18 だけ）。読み取り専用で型つきの 11 ツール（`tz_check`・`tz_guide`・`tz_explain`・`tz_symbol`・`tz_brief`・`tz_search`・`tz_callers`・`tz_find`・`tz_impact`・`tz_fix_plan`・`tz_diagram`）。ファイルは書き換えず、`tz_fix_plan` は計画だけを返す | 承認済み |
 | [G30](G30-diagrams.md) | 知識（図） | `tsuzuri kb diagram KIND`: モジュールの依存・型・呼び出し・所有権・並行・メモリのレイアウト・状態遷移を、facts から決定的に Mermaid（と DOT）で出す（`views/*.mmd` も KB に置く）。ノード数の上限（`--max-nodes`）と、文書の Mermaid を検査する harness | 承認済み |
 | [G31](_completed/G31-ai-cost-metrics.md) | 計測 | **Phase 1〜3 実装済み**。`node benchmarks/ai/run.mjs` が LLM・ネットワークなしで字数・往復数・推定トークンを決定的に数える（6 型 37 件）。grep・chunk・window・docs・診断 v1、外部実測の取り込み、静的サイズ上限と能力別アダプターを実装し、[基準値 104 行](../docs/ai-cost.md)を公開済み。G21・G27・G28・G29 本体は未実装で、ガイド・KB・MCP の実測行はない。診断 v2・`fix` もコンパイラの能力がなければ理由つきで省略し、改善値を捏造しない | 承認済み・実装済み（Phase 1〜3） |

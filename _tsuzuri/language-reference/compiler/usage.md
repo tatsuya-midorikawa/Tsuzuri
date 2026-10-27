@@ -239,9 +239,14 @@ Hello, Tsuzuri!
 tsuzuri check .
 tsuzuri kg verify
 tsuzuri kg export --nodes
+tsuzuri kg show Cart.total
+tsuzuri kg callers line_total --depth 2
+tsuzuri kg path main line_total
+tsuzuri kg find 'ref [Line] -> i64'
+tsuzuri kg impact --git HEAD
 ```
 
-`tsuzuri kg build|verify|clean|export` は、知識グラフを作る・確かめる・消す・出力するコマンドです。詳しくは [知識グラフ](kg.md) にあります。ファイルの形は [知識グラフの形式](kg-format.md) にあります。
+`tsuzuri kg build|verify|clean|export` は、知識グラフを作る・確かめる・消す・出力するコマンドです。`kg brief`・`show`・`callers`・`callees`・`uses`・`tests-for`・`search`・`find`・`path` は、ソースを読まずにグラフから宣言・呼び出し・型の使用・テスト・最短の関係の鎖を答え（`--budget N` で文字数を抑えます）、`kg impact` は 2 つの版の差と、その差に届くテストを出します。詳しくは [知識グラフ](kg.md) にあります。ファイルの形は [知識グラフの形式](kg-format.md) にあります。
 
 ### fetch
 
@@ -467,6 +472,8 @@ not ok 1 - Main two plus two
 ```
 
 WASM のテストは PATH の `node` を使います。配布物の `bin/` からは探しません。ビルド機で動かせない native の target（`--target TRIPLE`）のテストは、`TSUZURI_RUNNER` を通して各テストを起動します。指定がなければ `E2000` です。
+
+`--affected BASE` は、`BASE`（知識グラフのディレクトリ、プロジェクト、または git のリビジョン）からの変更に届くテストだけを実行します。実行の前に `affected: 1 of 3 tests (BASE)` を出し、0 件なら何も実行せず終了コード 0 です。選び方は [変更の影響](kg.md#変更の影響kg-impact) にあります。`--filter`・`--index`・`--no-kg` とは組み合わせられません。
 
 `--index N -g -o PATH` は、テスト N だけをデバッグ情報付きのランナーとして `PATH` にビルドし、実行しません。デバッガーでランナーを引数 `0` で起動します（[テストをデバッグする](debugging.md#テストをデバッグする)）。`-O1` から `-O3` を付けると最適化したランナーになり、テストの行とブレークポイントは残ります（変数は消えることがあります）。
 

@@ -1,0 +1,17 @@
+Acme::Shop::Cart.Line
+record | public | Cart.tz:4:8
+signature: record Line
+doc: One line of a cart: a product, how many, and its price in cents.
+fields:
+  sku: string
+  quantity: i64
+  unit_price: i64
+used by (8):
+  Acme::Shop::Cart.line_total  uses_type  Cart.tz:7:23
+  Acme::Shop::Cart.total  uses_type  Cart.tz:10:19
+  Acme::Shop::Main.main  uses_type  Main.tz:4:18
+  Acme::Shop::Report.print_total  uses_type  Report.tz:5:25
+  test:Acme::Shop::Cart.empty cart  uses_type  Cart.tz:19:45
+  test:Acme::Shop::Cart.empty cart  uses_type  Cart.tz:19:59
+  test:Acme::Shop::Cart.line total  uses_type  Cart.tz:18:45
+  test:Acme::Shop::Main.main runs  uses_type  Main.tz:8:45

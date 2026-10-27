@@ -1,0 +1,10 @@
+Acme::Shop::Main.main
+def | public | Main.tz:3:5
+signature: def main :: unit -> i32
+params:
+  arg1  copy  unit
+result: i32
+effects: io
+sites: trap 0, alloc 0, copy 0
+callees (1):
+  Acme::Shop::Report.print_total  Main.tz:5:5  args ref

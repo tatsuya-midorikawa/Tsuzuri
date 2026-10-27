@@ -3019,7 +3019,7 @@ impl Project {
     }
 
     /// The directory that the root source's relative path starts from.
-    pub(crate) fn root_directory(&self) -> Option<PathBuf> {
+    pub fn root_directory(&self) -> Option<PathBuf> {
         let source = self.sources.get(self.root)?;
         let directory = source
             .path

@@ -52,6 +52,7 @@
 | `--list` / `--filter` / `--index` | | | | ○ | ○ | | | | |
 | `--coverage PATH` | | | | ○ | | | | | |
 | `--seed N` | | | | ○ | | | | | |
+| `--affected BASE` | | | | ○ | | | | | |
 | `--check` | | | | | | | ○ | | |
 | `--samples N` | | | | | ○ | | | | |
 | `--allocs` | | | | | ○ | | | | |
@@ -417,6 +418,7 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--kg` | プロジェクトなら書く | `check`・`build`・`run`・`test` で、プロジェクト（`Tsuzuri.toml` か `Main.tz` のある根）でない単独のファイルでも、知識グラフを書く（[知識グラフ](kg.md)） |
 | `--no-kg` | プロジェクトなら書く | 知識グラフを書かない。`--kg` と同時は `E2000`（`--kg and --no-kg cannot be used together`） |
 | `--kg-dir DIR` | `<根>/target/tz/kg` | 知識グラフの置き場。相対パスはカレントディレクトリから。空は `E2000`。`--kg` を含意しない |
+| `--affected BASE` | すべてのテスト | `test` で、`BASE`（知識グラフのディレクトリ、プロジェクト、git のリビジョンの順に読む）からの変更に届くテストだけを実行する（[変更の影響](kg.md#変更の影響kg-impact)） |
 
 `[native]` の `link`、`libraries`、`search` が先で、コマンドラインがそのあとに続きます。実行ファイルと `--emit shared` 以外、たとえば `--emit object` や WASM にリンク入力を付けると拒否されます。
 
@@ -442,6 +444,9 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--no-server` を `check`・`build` 以外に付ける | `--no-server is only valid with check or build` |
 | `--kg`・`--no-kg`・`--kg-dir` を `check`・`build`・`run`・`test` 以外に付ける | `--kg, --no-kg, and --kg-dir are only valid with check, build, run, or test` |
 | `--kg` と `--no-kg` を両方付ける | `--kg and --no-kg cannot be used together` |
+| `--affected` を `test` 以外に付ける | `--affected is only valid with test` |
+| `--affected` と `--filter`・`--index` | `--affected cannot be combined with --filter or --index` |
+| `--affected` と `--no-kg`・`TSUZURI_KG=0` | `--affected needs the KG; remove --no-kg or TSUZURI_KG=0` |
 | `--wasm-feature` を `build` 以外に付ける | `--wasm-feature is only valid with build` |
 | `threads` なのに wasm32 の object / wasm でない | `--wasm-feature threads requires wasm32 object or WASM output` |
 | `jspi` なのに WASM の object / llvm / wasm / bindings-js でない | `--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output` |

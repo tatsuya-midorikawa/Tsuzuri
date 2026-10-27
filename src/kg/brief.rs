@@ -472,10 +472,12 @@ fn l0_of(kg: &Kg<'_>, limit: usize) -> String {
         true,
     );
     if let Some(facts) = &data.facts {
+        let facts: BTreeMap<&str, &super::store::Fact> =
+            facts.all().map(|fact| (fact.id.as_str(), fact)).collect();
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for node in &data.nodes {
             if matches!(node.kind.as_str(), "def" | "method")
-                && let Some(fact) = facts.get(&node.id)
+                && let Some(fact) = facts.get(node.id.as_str())
             {
                 for effect in &fact.effects {
                     *counts.entry(effect.as_str()).or_default() += 1;

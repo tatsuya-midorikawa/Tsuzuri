@@ -5,9 +5,9 @@
 | ID | G28 |
 | 優先度 | P1（D-50 の表） |
 | 規模 | L。Phase 1 M（照会 7 コマンドと ID の解決）、Phase 2 S（`kb find`）、Phase 3 L（`kb impact`）、Phase 4 S（`test --affected`） |
-| 依存 | [G27](_completed/G27-build-time-kb.md) Phase 2（`KbData`・`KbView`・`open`・`Card`・`kb` の分岐）。[G26](_completed/G26-facts-model.md)（行のキー）。Phase 2 は [G25](G25-typed-holes-and-find.md) の Phase 3（`tsuzuri find`）。graph・facts が無い KB には縮退する（「前提とする他チケットのインターフェース」） |
-| 後続 | [G29](G29-mcp-server.md)（照会の関数と `impact` を MCP が呼ぶ）、G31（AI 作業コスト指標の KB 方式） |
-| 状態 | todo |
+| 依存 | [G27](G27-build-time-kb.md) Phase 2（`KbData`・`KbView`・`open`・`Card`・`kb` の分岐）。[G26](G26-facts-model.md)（行のキー）。Phase 2 は [G25](../G25-typed-holes-and-find.md) の Phase 3（`tsuzuri find`）。graph・facts が無い KB には縮退する（「前提とする他チケットのインターフェース」） |
+| 後続 | [G29](../G29-mcp-server.md)（照会の関数と `impact` を MCP が呼ぶ）、G31（AI 作業コスト指標の KB 方式） |
+| 状態 | done（Phase 1〜4。D-60 の KG。2026-10-28） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。確認に使った作業ツリーは `9dd0fbbc`（main）で、`git diff --stat 9dd0fbbc a2313d19` は `docs/benchmarks.md` の 41 行だけ。ソースは同じ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D12 はすべて承認済み |
 | 改善する劣位 | AI が「この関数は誰に呼ばれるか」「この変更でどのテストを回すか」を知るには、`grep` で探してファイルを全文読むしかない。変更の影響（署名・所有権の渡し方・効果・テスト）は `api-diff` が公開 API の署名しか見ないので、効果の追加や非公開の変更は人が読み解く。KB の行を、決定的な 1 項目 1〜3 行の出力で引けるようにし、2 つの KB の差を分類して出す（D-50 の調査結論 (1)・(3)） |
@@ -18,19 +18,43 @@
 
 ## KG への更新（D-60、2026-10-28）
 
-本チケットは [D-60](GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。コマンドは `tsuzuri kg …`、テストは `tests/kg_query.rs`・`tests/kg_impact.rs`、fixture は `kg_shop_head`。照会はすべて `KgIndex` の上のグラフの探索で、アルゴリズムは `src/kg/algo.rs` の 1 か所にある。
+本チケットは [D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。コマンドは `tsuzuri kg …`、テストは `tests/kg_query.rs`・`tests/kg_impact.rs`、fixture は `kg_shop_head`。照会はすべて `KgIndex` の上のグラフの探索で、アルゴリズムは `src/kg/algo.rs` の 1 か所にある。
 
 | 本文 | KG での実装 |
 | --- | --- |
 | `callers`・`callees`（幅優先） | `algo::bfs`（有界・親つき）。出力の規則（§3）は同じ |
 | `impact` の影響を受けるテスト（逆引き・深さ 8・クラスのメソッドの辺） | `algo::reverse_reach`（深さつき。`calls` と、`instance_of` から作る仮想の辺）。`--json` の `tests` の行に、選んだテストごとの最短の根拠の鎖 `paths`（`[{"test","via":[ID…]}]`。変更したノードからテストまで）を足す（キーの追加。テキストの出力は同じ） |
-| Phase 2 `kb find`（G25 を待つ） | **G25 を待たない**。`kg find TYPE` は、KG の関数のノード（プロジェクトと std の KG）の `params`・`result` の型の文字列を解析し、問い合わせの型と型変数の付け替えで照合する（`exact`・`generalizes`・`specializes`）。G25 の `tsuzuri find` は後でこの実装を呼ぶ |
+| Phase 2 `kb find`（G25 を待つ） | **G25 を待たない**。`kg find TYPE` は、KG の関数のノード（プロジェクトと std の KG）の `params`・`result` の型の文字列を解析し、問い合わせの型と単一化で照合する。段・出力・`--result`・`--takes`・`--module`・`--limit` は G25 の §「`tsuzuri find`」と同じ（`exact`・`borrow`・`partial`）。制約（`=>`）は、型変数が基本の型に決まったものだけを checker の組み込みの class の規則（`polymorph::builtin_instance_by_type`）で確かめ、ほかは表示だけ（KG はすべての instance を持たない）。G25 の `tsuzuri find` は後でこの実装を呼ぶ |
 | 新しい照会 | `kg path FROM TO [--rel R[,R…]] [--depth N]`（最短路。D-60） |
 | `kb` の分岐の `COMMANDS` | `build, verify, clean, export, brief, show, callers, callees, uses, tests-for, search, find, impact, path, diagram` |
 
+## 実装と検証（2026-10-28）
+
+[D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) の KG の名前で Phase 1〜4 を完了した（ブランチ `feat/g28-kg-query-and-impact`）。Phase 2 は G25 を待たず、KG の型の検索として実装した（D-60）。
+
+**実装したもの**: `src/kg/{query,suggest,find,impact,git}.rs`、`src/main_kg.rs`（`kg brief|show|callers|callees|uses|tests-for|search|find|path|impact` と引数の検査）、`src/main.rs`（`test --affected`・`select_affected`・`HELP`）、`src/kg/store.rs`（`facts/`・`layout/` を遅延して読む `Tables`）、`src/kg/manifest.rs`（`E2009` のメッセージ）、`src/fetch.rs`（`git_command`・`failure_line` の可視性）、`src/diagnostic_kinds.rs`（`E2000` の kind `kg_ambiguous_id`・`kg_unknown_id`・`unknown_git_revision`）。fixture `tests/fixtures/kg_shop_head/`、golden `tests/golden/kg/queries/`（11 ファイル）、テスト `tests/kg_query.rs`（13 件）・`tests/kg_impact.rs`（16 件）、`tests/kg_build.rs` の `every_facts_row_is_found_through_its_node`、`src/kg/impact.rs` の付録 F-1〜F-3 の表（`each_row_of_the_symbols_table` 31 行・`effects_added_to_a_public_function_are_breaking` 11 行・`tests_table_rows` 7 行・`dispatch_reaches_instance_methods` T7〜T12）、`suggest.rs`・`find.rs` の単体テスト、`src/main.rs` の `accepts_affected_only_with_test`。
+
+**実行したコマンドと結果**: `cargo nextest run --locked` の全件（2,198 件）を回し、落ちた 1 件（`only_functions_that_a_server_never_runs_print_directly`: `select_affected` は `test` だけが通り、サーバーは実行しないので、直接出力してよい関数の一覧に足した）を直して、全件をもう一度回して 2,198 件すべてが通過。`cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` が通過。`node scripts/check-docs.mjs` で変更した 4 ページ（`kg.md`・`usage.md`・`option.md`・`diagnostics.md`）が通過。
+
+**期待値の出どころ**: 照会の golden（`tests/golden/kg/queries/`）と `impact` の出力は、付録 D の参照実装（`kbload.py`・`query_ref.py`・`impact_ref.py`。D-60 の名前と文言に直したもの）を `kg_shop`・`kg_shop_head` の KG の行に当てて作り、CLI の出力と byte 単位で比べた。`impact` の出力は付録 C-1 と一致した。付録 F-1〜F-3 の表は、表の期待の行をそのままテストに写した。F-6 の編集 E1〜E5 の選ばれるテストの数（3・1・3・0・1）は付録 C-3 の表で、落ちたテストは実行して数える。
+
+**チケットから外れた判断**:
+
+1. D-60 の名前（`tsuzuri kg …`、`kg_shop_head`、`tests/kg_query.rs`・`tests/kg_impact.rs`。Phase 4 のテストは `tests/kg_impact.rs` に置いた）と文言（`note: this KG has no edges.jsonl`、`symbol: not in this KG`、`tests: all N (the KG has no graph)`、`the two KGs were built by different compilers or one has no facts`）。
+2. `kg path FROM TO [--rel R[,R...]] [--depth N]`（D-60。深さは 1〜16、既定 8。見出しは `path from A to B (by calls or tested_by, depth 8)`、辺ごとに `A --rel--> B  位置`、最後に `summary: N steps` か `summary: no path within depth N`）。`--depth` の誤用のメッセージは `--depth is only valid with kg callers, kg callees, or kg path`、`--module` は `--module is only valid with kg brief or kg find`。サブコマンド名の誤りが並べるのは出荷済みの `…, search, find, impact, or path`。
+3. `impact --json` の `tests` の行に `paths`（テストごとの最短の根拠の鎖。D-60）。テキストは同じ。
+4. Phase 2 `kg find`: G25 の段（`exact`・`borrow`・`partial`）・出力（`{tier:<7} {name} :: {text}`、`(+n)`、`... N more; raise --limit (at most 100)`、JSON の `event` の行）・`--result`・`--takes`・`--module`・`--limit` に合わせ、KG のノード（プロジェクトと std）の型の文字列を解析して単一化で照合する。制約（`=>`）は、型変数が基本の型に決まったとき、checker の組み込みの class の規則を `polymorph::builtin_instance_by_type` に切り出して共有して確かめる（`Classes::intrinsic` の振る舞いは同じ。`ref [i64] -> i64` に `Array.average :: Float<'a> => …` は出ない）。record の型への制約と、型の文脈の要る `Copy`・`Capture`・`Send`・`Sync` は確かめない（KG はすべての instance を持たない）。閉じ括弧のない問い合わせは `E2000`（`cannot parse the type query: …`、終了コード 2）。ノードの署名は 1,114 件すべてが解析できる。G25 の `tsuzuri find` は出荷するときにこの実装を呼ぶ。
+5. 照会の `E2000` に kind を 3 つ足した（kind の登録簿は 1 つの規則に 1 つの kind を求める）: 曖昧な ID `kg_ambiguous_id`、未知の ID `kg_unknown_id`、未知の git のリビジョン `unknown_git_revision`。
+6. 性能（§「テスト計画」の性能）: 最初の実装は、KG を開くときにモジュールごとの `facts/`・`layout/` をすべて読み、1,000 モジュールで `kg show` が 609 ms、`kg impact` が 1,190 ms かかった（時間の約 3 分の 2 が `open(2)`）。`KgData` の `facts`・`layouts` を `Tables`（モジュールのファイルを初めて使うときに読む）にし、`impact` は 2 つの manifest で SHA-256 が同じ facts のファイルを読まない。`kg show` は 232 ms、`kg impact` は 518 ms になった（`docs/benchmarks.md` の「知識グラフの照会と impact（G28、2026-10-28）」）。
+7. G27 の `E2009` の診断は、付録 I-1 の文言（指示を含むメッセージ）に加えて同じ指示の `help` を付けていた。I-1 の JSON に `help` はないので、`help` を外した。
+8. `test --affected` のラベルは与えた値（`affected: 1 of 3 tests (HEAD~1)`）。VALUE はマーカーのあるディレクトリ・ディレクトリ・git のリビジョンの順に読む（`./name` はパス、`refs/heads/name` はリビジョン）。
+9. 付録 F-4 の `--json` を 2 回付ける行は、`--json` が効いて誤りも JSON の行で出る（`"code":"E2000"`）。
+
+**更新した文書**: `_tsuzuri/language-reference/compiler/kg.md`（「照会」「ID の解決」「`--json`」「型で探す（`kg find`）」「変更の影響（`kg impact`）」「影響のあるテストだけを実行する」）・`usage.md`（`### kg`・`### test`）・`option.md`（`--affected` と組み合わせの誤り）・`diagnostics.md`（`E2000` と kind の一覧）、`README.md`（CLI と「知識グラフ」の節）、`docs/language.md`、`docs/architecture.md`（ファイル表と「知識グラフの照会と変更の影響（G28、D-60）」）、`docs/stability.md`、`docs/benchmarks.md`。
+
 ## 実装者向け早見
 
-- **最初に読む**: [GUIDE-LITE.md](GUIDE-LITE.md)、`GUIDE.md` の D-52、G27 の §7（`Card`）と「設計」、G26 の「仕様」（行のキー）、このチケットの「仕様」。例は付録 B（照会）・C（`impact`）。
+- **最初に読む**: [GUIDE-LITE.md](../GUIDE-LITE.md)、`GUIDE.md` の D-52、G27 の §7（`Card`）と「設計」、G26 の「仕様」（行のキー）、このチケットの「仕様」。例は付録 B（照会）・C（`impact`）。
 - **最初に書くテスト**: Phase 1 は手順 2 の `tests/kb_query.rs::show_matches_the_appendix_output`。Phase 3 は手順 10 の `tests/kb_impact.rs::public_changes_equal_api_diff`。
 - **触ってはいけないもの**: 既存のコマンドの出力・終了コード（`api-diff` を含む）、KB のファイルの形（G26・G27）、`tsuzuri test` の既定の動き（`--affected` を付けなければ変わらない）、`test_runner` の実行の意味。
 - **D-55 に足す名前**: `kb` のサブコマンド `brief`・`show`・`callers`・`callees`・`uses`・`tests-for`・`search`・`find`・`impact`、オプション `--path`・`--budget`・`--depth`・`--module`・`--project`・`--std`（`search`）・`--git`・`--from`・`--to`、`test --affected`。`E2009` の kind は増やさない。
@@ -530,14 +554,14 @@ G27 の `store.rs` に足す読み取り口（G29 も使う）: `KbData::symbol(
 
 **Phase 1**
 
-- [ ] 7 コマンドの出力が付録 B と byte 一致し、2 回・別ルートで同じ。`--budget` で項目が後ろから落ち、見出しと `summary` が残る。`--json` が付録 B の行と一致する。
-- [ ] ID の解決が §2 の表のとおり（曖昧は選ばず 10 件まで、未知は 5 件までの候補）。KB が古ければ作り直し、`--no-refresh` では `E2009`。
-- [ ] 既存のテストの件数と結果が変わらない。`cargo fmt`・`clippy -D warnings`。文書と `check-docs.mjs`。
+- [x] 7 コマンドの出力が付録 B と byte 一致し、2 回・別ルートで同じ。`--budget` で項目が後ろから落ち、見出しと `summary` が残る。`--json` が付録 B の行と一致する。
+- [x] ID の解決が §2 の表のとおり（曖昧は選ばず 10 件まで、未知は 5 件までの候補）。KB が古ければ作り直し、`--no-refresh` では `E2009`。
+- [x] 既存のテストの件数と結果が変わらない。`cargo fmt`・`clippy -D warnings`。文書と `check-docs.mjs`。
 
 **Phase 2**: `kb find` が `find` と同じ出力と終了コード（G25 が `done` のとき）。**Phase 3**
 
-- [ ] `impact` の出力が付録 C と byte 一致。公開 API の行が `api-diff` と同じ文字列（`public_changes_equal_api_diff`）。終了コードが 0。
-- [ ] `--git` が作業ツリー・index・stash を変えず、終了後に worktree が残らない（成功・失敗とも）。
+- [x] `impact` の出力が付録 C と byte 一致。公開 API の行が `api-diff` と同じ文字列（`public_changes_equal_api_diff`）。終了コードが 0。
+- [x] `--git` が作業ツリー・index・stash を変えず、終了後に worktree が残らない（成功・失敗とも）。
 
 **Phase 4**: `test --affected` が差分テストで見逃さず、0 件なら何も実行しない。`docs/benchmarks.md` の節と台帳。
 

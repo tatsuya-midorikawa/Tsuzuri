@@ -11,7 +11,22 @@ use tsuzuri::kg::open::{self, Refresh};
 use tsuzuri::kg::store::KgData;
 
 /// The commands of `tsuzuri kg` that this compiler has, in the order of the usage message.
-const COMMANDS: &[&str] = &["build", "verify", "clean", "export"];
+const COMMANDS: &[&str] = &[
+    "build",
+    "verify",
+    "clean",
+    "export",
+    "brief",
+    "show",
+    "callers",
+    "callees",
+    "uses",
+    "tests-for",
+    "search",
+    "find",
+    "impact",
+    "path",
+];
 
 /// Whether an option takes a value.
 const OPTIONS: &[(&str, bool)] = &[
@@ -23,13 +38,30 @@ const OPTIONS: &[(&str, bool)] = &[
     ("--nodes", false),
     ("--edges", false),
     ("--facts", false),
+    ("--path", true),
+    ("--budget", true),
+    ("--depth", true),
+    ("--module", true),
+    ("--project", false),
+    ("--git", true),
+    ("--from", true),
+    ("--to", true),
+    ("--rel", true),
+    ("--result", true),
+    ("--takes", true),
+    ("--limit", true),
 ];
+
+/// The options that may be written more than once (each value is kept).
+const REPEATED: &[&str] = &["--takes"];
 
 /// The command line of one `tsuzuri kg` command.
 pub(crate) struct KgArguments {
     pub(crate) command: String,
     pub(crate) positionals: Vec<OsString>,
     pub(crate) options: BTreeMap<&'static str, Option<OsString>>,
+    /// The values of the options of `REPEATED`, in order.
+    pub(crate) repeated: Vec<(&'static str, OsString)>,
 }
 
 impl KgArguments {
@@ -73,6 +105,7 @@ pub(crate) fn parse_kg_arguments(
         command,
         positionals: Vec::new(),
         options: BTreeMap::new(),
+        repeated: Vec::new(),
     };
     let mut position = 1;
     let mut paths_only = false;
@@ -94,6 +127,12 @@ pub(crate) fn parse_kg_arguments(
                 format!("unknown option '{text}'; use --help"),
             ));
         };
+        if REPEATED.contains(&name) {
+            let value = next_value(arguments, &mut position, name)?.clone();
+            parsed.repeated.push((name, value));
+            parsed.options.insert(name, None);
+            continue;
+        }
         if parsed.options.contains_key(name) {
             return Err(command_line_error(
                 DiagnosticKind::DuplicateOption,
@@ -168,6 +207,9 @@ pub(crate) fn kg_command(arguments: &[OsString]) -> ExitCode {
         "verify" => kg_verify(&parsed),
         "clean" => kg_clean(&parsed),
         "export" => kg_export(&parsed),
+        "brief" | "show" | "callers" | "callees" | "uses" | "tests-for" | "search" | "find"
+        | "path" => kg_query(&parsed),
+        "impact" => kg_impact(&parsed),
         other => Err(usage_error(format!(
             "unknown kg command '{other}'; use {}",
             commands_list()
@@ -182,8 +224,58 @@ pub(crate) fn kg_command(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// The options that belong to some commands only, with the message for the others (G28 §1).
+fn misplaced(arguments: &KgArguments) -> Option<&'static str> {
+    let command = arguments.command.as_str();
+    let rules: [(&str, &[&str], &str); 12] = [
+        (
+            "--depth",
+            &["callers", "callees", "path"],
+            "--depth is only valid with kg callers, kg callees, or kg path",
+        ),
+        (
+            "--std",
+            &["search", "build", "clean"],
+            "--std is only valid with kg search, kg build, or kg clean",
+        ),
+        (
+            "--module",
+            &["brief", "find"],
+            "--module is only valid with kg brief or kg find",
+        ),
+        (
+            "--project",
+            &["brief"],
+            "--project is only valid with kg brief",
+        ),
+        ("--git", &["impact"], "--git is only valid with kg impact"),
+        ("--from", &["impact"], "--from is only valid with kg impact"),
+        ("--to", &["impact"], "--to is only valid with kg impact"),
+        ("--rel", &["path"], "--rel is only valid with kg path"),
+        ("--result", &["find"], "--result is only valid with kg find"),
+        ("--takes", &["find"], "--takes is only valid with kg find"),
+        ("--limit", &["find"], "--limit is only valid with kg find"),
+        ("--force", &["build"], "--force is only valid with kg build"),
+    ];
+    for (option, commands, message) in rules {
+        if arguments.has(option) && !commands.contains(&command) {
+            return Some(message);
+        }
+    }
+    if command == "impact" && arguments.has("--budget") {
+        return Some("--budget is not valid with kg impact");
+    }
+    None
+}
+
 /// Rejects the options of `allowed`'s complement for `command`.
 fn only(arguments: &KgArguments, allowed: &[&str], usage: &str) -> Result<(), Diagnostic> {
+    if let Some(message) = misplaced(arguments) {
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            message,
+        ));
+    }
     match arguments
         .options
         .keys()
@@ -448,6 +540,359 @@ fn kg_export(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         let bytes = std::fs::read(dir.join(file))
             .map_err(|_| manifest::broken(&dir, &format!("{file} is missing")))?;
         let _ = out.write_all(&bytes);
+    }
+    Ok(EXIT_SUCCESS)
+}
+
+/// An integer option within its bounds, or the error message of its range.
+fn bounded(
+    arguments: &KgArguments,
+    option: &str,
+    (low, high): (usize, usize),
+    message: &str,
+) -> Result<Option<usize>, Diagnostic> {
+    match arguments.value(option) {
+        None => Ok(None),
+        Some(value) => value
+            .to_str()
+            .and_then(|text| text.trim().parse::<usize>().ok())
+            .filter(|value| (low..=high).contains(value))
+            .map(Some)
+            .ok_or_else(|| command_line_error(DiagnosticKind::OptionInvalidValue, message)),
+    }
+}
+
+/// The project path of a query: `--path`, or `.`.
+fn query_path(arguments: &KgArguments) -> PathBuf {
+    arguments
+        .value("--path")
+        .map_or_else(|| PathBuf::from("."), PathBuf::from)
+}
+
+fn refresh_of(arguments: &KgArguments) -> Refresh {
+    if arguments.has("--no-refresh") {
+        Refresh::Never
+    } else {
+        Refresh::Auto
+    }
+}
+
+/// The graph of the project of a query, rebuilt unless `--no-refresh`, as a view with std behind it.
+fn query_view(arguments: &KgArguments) -> Result<tsuzuri::kg::store::KgView, Diagnostic> {
+    let project = load_project(&query_path(arguments))?;
+    let dir = open::directory(&project, kg_dir_of(arguments).as_deref());
+    let json = arguments.json();
+    let data = open::open_project(
+        &project,
+        &dir,
+        refresh_of(arguments),
+        &mut |set, project| print_diagnostics(set, project, json),
+    )?;
+    let std = if arguments.has("--no-refresh") {
+        tsuzuri::kg::store::StdSource::None
+    } else {
+        tsuzuri::kg::store::StdSource::Cache
+    };
+    Ok(tsuzuri::kg::store::KgView::new(
+        Some(std::sync::Arc::new(data)),
+        std,
+    ))
+}
+
+fn print_output(output: &tsuzuri::kg::query::Output, json: bool) {
+    let mut out = io::stdout().lock();
+    if json {
+        for row in &output.rows {
+            let _ = writeln!(out, "{row}");
+        }
+    } else {
+        let _ = out.write_all(output.text.as_bytes());
+    }
+}
+
+/// `kg brief|show|callers|callees|uses|tests-for|search|find|path` (G28 Phase 1 and 2, D-60).
+fn kg_query(arguments: &KgArguments) -> Result<u8, Diagnostic> {
+    use tsuzuri::kg::query::{self, BriefTarget, Options};
+    let command = arguments.command.as_str();
+    let usage = match command {
+        "brief" => {
+            "usage: tsuzuri kg brief [ID | --project | --module M] [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+        "show" => {
+            "usage: tsuzuri kg show ID [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+        "callers" => {
+            "usage: tsuzuri kg callers ID [--depth N] [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+        "callees" => {
+            "usage: tsuzuri kg callees ID [--depth N] [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+        "uses" => {
+            "usage: tsuzuri kg uses TYPE [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+        "tests-for" => {
+            "usage: tsuzuri kg tests-for ID [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+        "search" => {
+            "usage: tsuzuri kg search TEXT [--std] [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+        "find" => {
+            "usage: tsuzuri kg find TYPE | --result TYPE [--takes TYPE]... [--module M] [--limit N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+        _ => {
+            "usage: tsuzuri kg path FROM TO [--rel R[,R...]] [--depth N] [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]"
+        }
+    };
+    let common = ["--path", "--kg-dir", "--no-refresh", "--json", "--budget"];
+    let extra: &[&str] = match command {
+        "brief" => &["--project", "--module"],
+        "callers" | "callees" => &["--depth"],
+        "search" => &["--std"],
+        "find" => &["--result", "--takes", "--module", "--limit"],
+        "path" => &["--rel", "--depth"],
+        _ => &[],
+    };
+    let allowed: Vec<&str> = common.iter().chain(extra).copied().collect();
+    only(arguments, &allowed, usage)?;
+    let budget = bounded(
+        arguments,
+        "--budget",
+        query::BUDGET_RANGE,
+        "--budget must be an integer from 100 to 100000",
+    )?;
+    let positional: Vec<String> = arguments
+        .positionals
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    let json = arguments.json();
+    if command == "brief" {
+        let chosen = usize::from(!positional.is_empty())
+            + usize::from(arguments.has("--project"))
+            + usize::from(arguments.has("--module"));
+        if chosen > 1 || positional.len() > 1 {
+            return Err(usage_error(
+                "kg brief takes one of ID, --project, or --module",
+            ));
+        }
+        let target = match (positional.first(), arguments.value("--module")) {
+            (Some(id), _) => BriefTarget::Id(id.clone()),
+            (None, Some(module)) => BriefTarget::Module(module.to_string_lossy().into_owned()),
+            (None, None) => BriefTarget::Project,
+        };
+        let view = query_view(arguments)?;
+        let output = query::brief(&view, &target, &Options { budget, depth: 1 })
+            .map_err(|error| error.diagnostic())?;
+        print_output(&output, json);
+        return Ok(EXIT_SUCCESS);
+    }
+    if command == "find" {
+        return kg_find(arguments, &positional, usage);
+    }
+    let wanted = if command == "path" { 2 } else { 1 };
+    if positional.len() != wanted {
+        return Err(usage_error(usage));
+    }
+    let depth = if command == "path" {
+        bounded(
+            arguments,
+            "--depth",
+            query::PATH_DEPTH_RANGE,
+            "--depth must be an integer from 1 to 16",
+        )?
+        .unwrap_or(query::PATH_DEPTH)
+    } else {
+        bounded(
+            arguments,
+            "--depth",
+            query::DEPTH_RANGE,
+            "--depth must be an integer from 1 to 8",
+        )?
+        .unwrap_or(1)
+    };
+    let relations: Vec<String> = match arguments.value("--rel") {
+        Some(value) => value
+            .to_string_lossy()
+            .split(',')
+            .map(|rel| rel.trim().to_owned())
+            .collect(),
+        None => vec!["calls".to_owned()],
+    };
+    if let Some(bad) = relations
+        .iter()
+        .find(|rel| !query::RELATIONS.contains(&rel.as_str()))
+    {
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidValue,
+            format!(
+                "unknown relation '{bad}' for --rel; use {}",
+                query::RELATIONS.join(", ")
+            ),
+        ));
+    }
+    let view = query_view(arguments)?;
+    let options = Options { budget, depth };
+    let target = positional[0].as_str();
+    let output = match command {
+        "show" => query::show(&view, target, &options),
+        "callers" => query::calls(&view, target, &options, false),
+        "callees" => query::calls(&view, target, &options, true),
+        "uses" => query::uses(&view, target, &options),
+        "tests-for" => query::tests_for(&view, target, &options),
+        "search" => query::search(&view, target, arguments.has("--std"), &options),
+        _ => {
+            let relations: Vec<&str> = relations.iter().map(String::as_str).collect();
+            query::path(&view, target, &positional[1], &relations, depth, &options)
+        }
+    }
+    .map_err(|error| error.diagnostic())?;
+    print_output(&output, json);
+    Ok(EXIT_SUCCESS)
+}
+
+/// `kg find` (D-60: the type search of the knowledge graph).
+fn kg_find(arguments: &KgArguments, positional: &[String], usage: &str) -> Result<u8, Diagnostic> {
+    use tsuzuri::kg::find;
+    let takes: Vec<String> = arguments
+        .repeated
+        .iter()
+        .filter(|(option, _)| *option == "--takes")
+        .map(|(_, value)| value.to_string_lossy().into_owned())
+        .collect();
+    let result = arguments
+        .value("--result")
+        .map(|value| value.to_string_lossy().into_owned());
+    let parts = result.is_some() || !takes.is_empty();
+    if positional.len() > 1 || (positional.len() == 1) == parts {
+        return Err(usage_error(usage));
+    }
+    let limit = bounded(
+        arguments,
+        "--limit",
+        find::LIMIT_RANGE,
+        "--limit must be an integer from 1 to 100",
+    )?
+    .unwrap_or(find::DEFAULT_LIMIT);
+    let query = find::Query {
+        text: positional.first().cloned(),
+        result: result.clone(),
+        takes: takes.clone(),
+        module: arguments
+            .value("--module")
+            .map(|value| value.to_string_lossy().into_owned()),
+        limit,
+    };
+    let query_text = match &query.text {
+        Some(text) => text.clone(),
+        None => {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(result) = &result {
+                parts.push(format!("--result {result}"));
+            }
+            parts.extend(takes.iter().map(|take| format!("--takes {take}")));
+            parts.join(" ")
+        }
+    };
+    let view = query_view(arguments)?;
+    let (found, searched) = find::search(&view, &query).map_err(|error| {
+        command_line_error(
+            DiagnosticKind::OptionInvalidValue,
+            format!("cannot parse the type query: {}", error.0),
+        )
+    })?;
+    let (text, rows) = find::render(&query_text, &query, &found, searched);
+    let output = tsuzuri::kg::query::Output { text, rows };
+    print_output(&output, arguments.json());
+    Ok(EXIT_SUCCESS)
+}
+
+/// The graph at `path` for `impact`: a graph directory as it is, or a project's graph.
+fn impact_graph(
+    path: &Path,
+    kg_dir: Option<&Path>,
+    refresh: Refresh,
+    json: bool,
+) -> Result<KgData, Diagnostic> {
+    if tsuzuri::kg::write::has_marker(path) {
+        return open::read(path);
+    }
+    if !path.exists() {
+        return Err(Diagnostic::of(
+            DiagnosticKind::IoFailure,
+            format!("cannot read '{}'", path.display()),
+            Span::default(),
+        ));
+    }
+    let project = load_project(path)?;
+    let dir = open::directory(&project, kg_dir);
+    open::open_project(&project, &dir, refresh, &mut |set, project| {
+        print_diagnostics(set, project, json)
+    })
+}
+
+/// `kg impact (--git REV | --from PATH [--to PATH])` (G28 Phase 3).
+fn kg_impact(arguments: &KgArguments) -> Result<u8, Diagnostic> {
+    const USAGE: &str = "usage: tsuzuri kg impact (--git REV | --from PATH [--to PATH]) [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]";
+    only(
+        arguments,
+        &[
+            "--git",
+            "--from",
+            "--to",
+            "--path",
+            "--kg-dir",
+            "--no-refresh",
+            "--json",
+        ],
+        USAGE,
+    )?;
+    if !arguments.positionals.is_empty() {
+        return Err(usage_error(USAGE));
+    }
+    let json = arguments.json();
+    let refresh = refresh_of(arguments);
+    let (git, from, to) = (
+        arguments.value("--git"),
+        arguments.value("--from"),
+        arguments.value("--to"),
+    );
+    let impact = match (git, from, to) {
+        (Some(rev), None, None) => {
+            let path = query_path(arguments);
+            let project = load_project(&path)?;
+            let root = project
+                .root_directory()
+                .unwrap_or_else(|| PathBuf::from("."));
+            let checkout = tsuzuri::kg::git::Checkout::create(&root, &rev.to_string_lossy())?;
+            let base = impact_graph(checkout.project_root(), None, Refresh::Auto, json)?;
+            let head = impact_graph(&path, kg_dir_of(arguments).as_deref(), refresh, json)?;
+            tsuzuri::kg::impact::diff(
+                &base,
+                &head,
+                &format!("git {}", checkout.sha12()),
+                "working tree",
+            )
+        }
+        (None, Some(from), to) => {
+            let base = impact_graph(Path::new(from), None, refresh, json)?;
+            let (head_path, label) = match to {
+                Some(to) => (PathBuf::from(to), to.to_string_lossy().into_owned()),
+                None => (query_path(arguments), "working tree".to_owned()),
+            };
+            let kg_dir = if to.is_some() {
+                None
+            } else {
+                kg_dir_of(arguments)
+            };
+            let head = impact_graph(&head_path, kg_dir.as_deref(), refresh, json)?;
+            tsuzuri::kg::impact::diff(&base, &head, &from.to_string_lossy(), &label)
+        }
+        _ => return Err(usage_error(USAGE)),
+    };
+    if json {
+        print!("{}", impact.render_json());
+    } else {
+        print!("{}", impact.render_text());
     }
     Ok(EXIT_SUCCESS)
 }

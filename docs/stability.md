@@ -21,6 +21,7 @@
 | `tsuzuri api-diff` の出力形式 | テキストの行の形と `--json` のキー（キーが増えることはあります） |
 | 知識グラフの schema（facts の行は `tz-facts/1`。G26・D-60） | `nodes.jsonl`・`edges.jsonl`・`tests.jsonl`・`facts/`・`layout/` の行のキーを消さず・改名せず、行の意味を変えません。キーと、`kind`・`rel`・`event`・`conv`・`layout` の語彙を足すのは互換の変更です（読み手は知らないキーと語彙を無視します）。互換のない変更は schema の番号を上げます（[知識グラフの形式](../_tsuzuri/language-reference/compiler/kg-format.md)） |
 | 知識グラフの置き場と `tsuzuri kg`（G27） | `target/tz/kg/` のファイル名、`manifest.json` の schema `tz-kg/1` とキー（`counts` の項目は増えることがあります）、`tsuzuri kg` のサブコマンド・オプション・`--json` のキー・終了コード、`E2009` の kind（[知識グラフ](../_tsuzuri/language-reference/compiler/kg.md)） |
+| `tsuzuri kg impact` と `test --affected`（G28） | `impact --json` の行の `type` と、`change` の `severity`・`action`・`kind`・`name`・`old`・`new`・`note`、`tests` の `mode`・`affected`・`total`・`reason`・`paths`、`summary` の `breaking`・`non_breaking`・`info`・`omitted`。`--affected --json` の `mode`・`affected`・`total`・`base`・`reason`。`impact` の終了コードは差があっても 0。照会と git のリビジョンの `E2000` の kind `kg_ambiguous_id`・`kg_unknown_id`・`unknown_git_revision` |
 
 ### 安定として保たないもの
 

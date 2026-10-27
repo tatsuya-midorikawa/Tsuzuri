@@ -267,7 +267,6 @@ pub fn missing(dir: &Path, marker: bool) -> Diagnostic {
         ),
         Span::default(),
     )
-    .with_help("run tsuzuri check or tsuzuri kg build")
 }
 
 /// `E2009` `kg_stale`.
@@ -280,7 +279,6 @@ pub fn stale(dir: &Path, reason: &str) -> Diagnostic {
         ),
         Span::default(),
     )
-    .with_help("run tsuzuri kg build")
 }
 
 /// `E2009` `kg_broken`.
@@ -293,7 +291,6 @@ pub fn broken(dir: &Path, reason: &str) -> Diagnostic {
         ),
         Span::default(),
     )
-    .with_help("run tsuzuri kg build --force")
 }
 
 /// `E2009` `kg_incomplete`: the graph was written for sources that do not type-check.
@@ -306,7 +303,6 @@ pub fn incomplete(dir: &Path, errors: u64) -> Diagnostic {
         ),
         Span::default(),
     )
-    .with_help("fix the errors and run tsuzuri check")
 }
 
 /// The diagnostic of a graph that is not `Fresh`.

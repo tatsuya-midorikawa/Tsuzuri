@@ -6,7 +6,7 @@
 | 優先度 | P1 |
 | 規模 | XL（Phase 1 M・Phase 2 M・Phase 3 M・Phase 4 L・Phase 5 L・Phase 6 M） |
 | 依存 | [G22](G22-diagnostic-v2.md)（Phase 5 だけ。所有権の起点の span の記録と挿入点を共有する。Phase 1〜4・6 は診断 v2 の型を使わない）。[A20](../A20-effect-summary-and-checked-attributes.md)（Phase 3 の `effects` を完全にする。未完でも縮退版で出荷できる）。[A15](A15-copy-cost-visibility.md)（done。`copies::sites`）、[PM01](../../_perfs/_completed/PM01-value-layout.md)（done。`record_slots`・`UnionLayout`）、[F12](F12-bounds-check-elimination.md)（done。`ranges.rs`）、[G20](G20-error-recovery.md)（done） |
-| 後続 | [G27](G27-build-time-kb.md)（Phase 1 から。書き込みと `check`・`build` への組み込み）、[G28](../G28-kb-query-and-impact.md)、[G29](../G29-mcp-server.md)、[G30](../G30-diagrams.md)（Phase 1・2・5・6）、[G35](../G35-generated-docs-single-source.md)、[E15](../E15-trust-boundary-and-capabilities.md)（Phase 3）、A20（facts への hook） |
+| 後続 | [G27](G27-build-time-kb.md)（Phase 1 から。書き込みと `check`・`build` への組み込み）、[G28](G28-kb-query-and-impact.md)、[G29](../G29-mcp-server.md)、[G30](../G30-diagrams.md)（Phase 1・2・5・6）、[G35](../G35-generated-docs-single-source.md)、[E15](../E15-trust-boundary-and-capabilities.md)（Phase 3）、A20（facts への hook） |
 | 状態 | done（Phase 1〜6。2026-10-28。D-60 の KG） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーとの差は「現状」） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |

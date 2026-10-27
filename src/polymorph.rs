@@ -2508,35 +2508,11 @@ impl Classes {
             };
         }
         match self.declarations[class].name.as_str() {
-            "Add" => ty.is_numeric() || ty.is_string(),
-            "Sub" | "Mul" | "Div" | "Numeric" => ty.is_numeric(),
-            "Ord" => ty.is_numeric() || ty.is_string() || matches!(ty, Type::Char | Type::Utf8Char),
-            "Rem" | "Bits" | "Integer" => ty.is_integer(),
-            "Pow" => ty.is_integer() || matches!(ty, Type::Binary(32 | 64)),
-            "SignedInteger" => matches!(ty, Type::Integer(_, true)),
-            "UnsignedInteger" => matches!(ty, Type::Integer(_, false)),
-            "Neg" => ty.is_float() || matches!(ty, Type::Integer(_, true)),
-            "Float" => ty.is_float(),
-            "Elementary" => matches!(ty, Type::Binary(32 | 64)),
-            "Eq" => ty.is_scalar() || ty.is_string() || *ty == Type::Unit,
             "Copy" => ty.is_copy(types),
             "Capture" => ty.can_capture(types),
             "Send" => ty.can_send(types),
             "Sync" => ty.can_sync(types),
-            "AtomicValue" => matches!(ty, Type::Integer(8 | 16 | 32 | 64, _) | Type::Bool),
-            "Display" => {
-                ty.is_numeric()
-                    || ty.is_string()
-                    || matches!(ty, Type::Bool | Type::Unit | Type::Char | Type::Utf8Char)
-            }
-            "Parse" => ty.is_numeric() || matches!(ty, Type::Bool | Type::Char | Type::Utf8Char),
-            "Hash" => ty.is_scalar() || ty.is_string() || matches!(ty, Type::Unit),
-            "Default" => {
-                ty.is_scalar()
-                    || ty.is_string()
-                    || matches!(ty, Type::Unit | Type::Array(_) | Type::List(_))
-            }
-            _ => false,
+            name => builtin_instance_by_type(name, ty).unwrap_or(false),
         }
     }
 
@@ -5423,6 +5399,40 @@ impl Specializer<'_> {
         self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)
     }
+}
+
+/// Whether `ty` is an instance of the builtin class named `class` by a rule that reads the type
+/// alone (`Ord`, `Float`, `Numeric`, ...). `None` for the classes whose rule needs the type
+/// context (`Copy`, `Capture`, `Send`, `Sync`) and for names that are no such class. The checker
+/// (`Classes::intrinsic`) and `kg find` share it.
+pub(crate) fn builtin_instance_by_type(class: &str, ty: &Type) -> Option<bool> {
+    Some(match class {
+        "Add" => ty.is_numeric() || ty.is_string(),
+        "Sub" | "Mul" | "Div" | "Numeric" => ty.is_numeric(),
+        "Ord" => ty.is_numeric() || ty.is_string() || matches!(ty, Type::Char | Type::Utf8Char),
+        "Rem" | "Bits" | "Integer" => ty.is_integer(),
+        "Pow" => ty.is_integer() || matches!(ty, Type::Binary(32 | 64)),
+        "SignedInteger" => matches!(ty, Type::Integer(_, true)),
+        "UnsignedInteger" => matches!(ty, Type::Integer(_, false)),
+        "Neg" => ty.is_float() || matches!(ty, Type::Integer(_, true)),
+        "Float" => ty.is_float(),
+        "Elementary" => matches!(ty, Type::Binary(32 | 64)),
+        "Eq" => ty.is_scalar() || ty.is_string() || *ty == Type::Unit,
+        "AtomicValue" => matches!(ty, Type::Integer(8 | 16 | 32 | 64, _) | Type::Bool),
+        "Display" => {
+            ty.is_numeric()
+                || ty.is_string()
+                || matches!(ty, Type::Bool | Type::Unit | Type::Char | Type::Utf8Char)
+        }
+        "Parse" => ty.is_numeric() || matches!(ty, Type::Bool | Type::Char | Type::Utf8Char),
+        "Hash" => ty.is_scalar() || ty.is_string() || matches!(ty, Type::Unit),
+        "Default" => {
+            ty.is_scalar()
+                || ty.is_string()
+                || matches!(ty, Type::Unit | Type::Array(_) | Type::List(_))
+        }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

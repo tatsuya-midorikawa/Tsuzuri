@@ -1,0 +1,26 @@
+namespace Acme::Shop
+
+/// One line of a cart: a product, how many, and its price in cents.
+record Line { sku: string, quantity: i64, unit_price: i64, tax: i64 }
+
+/// The price of one line in cents.
+def line_total :: ref Line -> i64 = \line ->
+    do! IO.write_line line.quantity
+    line.quantity * line.unit_price + line.tax
+
+/// The price of all lines in cents.
+def total :: ref [Line] -> i64 = \lines ->
+    let mut sum = 0
+    let mut i = 0
+    while i < lines.length do
+        sum = sum + line_total (ref lines[i])
+        i = i + 1
+    sum
+
+/// The price of all lines after a percentage discount.
+def discount :: ref [Line] -> i64 -> i64 = \lines percent ->
+    let rate = 5
+    total lines * (100 - percent) / 100
+
+test "line total" = assert (line_total (ref Line { sku: "pen", quantity: 3, unit_price: 100, tax: 0 }) == 300)
+test "empty cart" = assert (total (ref new [Line](0, i -> Line { sku: "x", quantity: 0, unit_price: 0, tax: 0 })) == 0)

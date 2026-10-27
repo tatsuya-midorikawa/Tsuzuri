@@ -1,0 +1,6 @@
+search 'total' (project)
+1 Acme::Shop::Cart.total  def  def total :: ref [Line] -> i64
+2 Acme::Shop::Cart.line_total  def  def line_total :: ref Line -> i64
+3 Acme::Shop::Report.print_total  def  def print_total :: ref [Line] -> unit
+4 test:Acme::Shop::Cart.line total  test  test "line total"
+summary: 4 matches
