@@ -5,10 +5,27 @@ pub(super) struct WarningOptions {
     pub shadowing: bool,
 }
 
+/// The unqualified names of the program's functions (`area` for `Shapes.area`), once per analysis
+/// for `unused_locals`.
+pub(super) fn function_names(names: &Names) -> BTreeSet<&str> {
+    names
+        .functions
+        .keys()
+        .map(|name| {
+            name.rsplit_once('.')
+                .map_or(name.as_str(), |(_, last)| last)
+        })
+        .collect()
+}
+
 /// W1001 at each local of `function` that nothing uses. The warning carries the `certain` fix
 /// that prefixes the name with `_`, when no local of the function and no function of the program
-/// already has the prefixed name (so the rename cannot capture or shadow another name; G24).
-pub(super) fn unused_locals(function: &CheckedFunction, names: &Names) -> Vec<Diagnostic> {
+/// (`function_names`) already has the prefixed name, so the rename cannot capture or shadow
+/// another name (G24).
+pub(super) fn unused_locals(
+    function: &CheckedFunction,
+    function_names: &BTreeSet<&str>,
+) -> Vec<Diagnostic> {
     if function.origin.module != ModuleOrigin::User {
         return Vec::new();
     }
@@ -40,14 +57,7 @@ pub(super) fn unused_locals(function: &CheckedFunction, names: &Names) -> Vec<Di
     if unused.is_empty() {
         return Vec::new();
     }
-    let taken: BTreeSet<&str> = locals
-        .values()
-        .map(|local| local.name.as_str())
-        .chain(names.functions.keys().map(|name| {
-            name.rsplit_once('.')
-                .map_or(name.as_str(), |(_, last)| last)
-        }))
-        .collect();
+    let taken: BTreeSet<&str> = locals.values().map(|local| local.name.as_str()).collect();
     unused
         .into_iter()
         .map(|local| {
@@ -62,6 +72,7 @@ pub(super) fn unused_locals(function: &CheckedFunction, names: &Names) -> Vec<Di
             let prefixed = format!("_{}", local.name);
             // The span must be the name itself for the edit to rename it.
             if taken.contains(prefixed.as_str())
+                || function_names.contains(prefixed.as_str())
                 || partial.contains(&local.id)
                 || local.span.end - local.span.start != local.name.len()
             {

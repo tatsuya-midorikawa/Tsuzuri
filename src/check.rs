@@ -7765,6 +7765,7 @@ fn check_modules_collect(
     // so the functions finish in parallel; what each leaves for the shared lists is applied in
     // function order.
     let workers = parallelism.workers(functions.len(), FUNCTIONS_PER_WORKER);
+    let function_names = warnings::function_names(&names);
     ordered_for_each_owned(
         functions.iter_mut().zip(pending),
         workers,
@@ -7778,7 +7779,7 @@ fn check_modules_collect(
                 let coverage = checker.check_coverage()?;
                 if function.origin.module == ModuleOrigin::User {
                     function_warnings.extend(coverage);
-                    function_warnings.extend(warnings::unused_locals(function, &names));
+                    function_warnings.extend(warnings::unused_locals(function, &function_names));
                     function_warnings.append(&mut checker.shadowing_warnings);
                 }
                 if function.name == "$entry" {

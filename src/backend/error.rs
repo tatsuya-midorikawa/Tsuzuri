@@ -2,7 +2,7 @@
 
 use std::hash::{BuildHasherDefault, Hasher};
 
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 
 /// A construct the translator does not lower. It becomes E2002; the translator never turns it into
 /// code with another meaning.
