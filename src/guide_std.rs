@@ -22,6 +22,7 @@ const LEGEND: &str = "ref T borrows (read), ref mut T borrows (write), own T or 
 const PRELUDE: &str = "prelude";
 
 /// One module of the index: its type lines and its function lines, each sorted.
+#[derive(Clone)]
 pub(crate) struct ModuleIndex {
     pub name: String,
     pub opt_in: bool,
@@ -38,28 +39,82 @@ pub(crate) fn collect() -> Vec<ModuleIndex> {
     collect_from(crate::stdlib::SOURCES, &builtins)
 }
 
-/// The index, collected once per process: `--list` renders every std topic.
-fn index() -> &'static [ModuleIndex] {
-    static INDEX: OnceLock<Vec<ModuleIndex>> = OnceLock::new();
-    INDEX.get_or_init(collect)
+/// The index as `edition` names the std, collected once per process for every supported edition:
+/// `--list` renders every std topic.
+fn index(edition: Edition) -> &'static [ModuleIndex] {
+    static INDEX: OnceLock<BTreeMap<Edition, Vec<ModuleIndex>>> = OnceLock::new();
+    INDEX
+        .get_or_init(|| {
+            let base = collect();
+            Edition::SUPPORTED
+                .iter()
+                .map(|edition| (*edition, with_edition(&base, *edition)))
+                .collect()
+        })
+        .get(&edition)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// `base` with the entry points of `check::BORROWING_APIS`: in every edition the owning name
+/// (`Vec.push_owned`) has the legacy signature of the plain one, and in an edition whose
+/// parameters borrow (2027) the plain name (`Vec.push`) has the signature of the borrowing one
+/// (`Vec.push_mut`), as the checker resolves them.
+fn with_edition(base: &[ModuleIndex], edition: Edition) -> Vec<ModuleIndex> {
+    let signature = |name: &str| -> Option<String> {
+        let module = name.split_once('.').map(|(module, _)| module)?;
+        let prefix = format!("{name} :: ");
+        base.iter()
+            .find(|index| index.name == module)?
+            .functions
+            .iter()
+            .find_map(|line| line.strip_prefix(&prefix).map(str::to_owned))
+    };
+    let mut modules = base.to_vec();
+    for (value, read, owned) in crate::check::BORROWING_APIS {
+        let (Some(legacy), Some(module)) = (
+            signature(value),
+            value.split_once('.').map(|(module, _)| module),
+        ) else {
+            continue;
+        };
+        let Some(index) = modules.iter_mut().find(|index| index.name == module) else {
+            continue;
+        };
+        if edition.borrows_parameters()
+            && let Some(borrowing) = signature(read)
+        {
+            let prefix = format!("{value} :: ");
+            for line in &mut index.functions {
+                if line.starts_with(&prefix) {
+                    *line = format!("{value} :: {borrowing}");
+                }
+            }
+        }
+        let owning = format!("{owned} :: ");
+        if !index.functions.iter().any(|line| line.starts_with(&owning)) {
+            index.functions.push(format!("{owned} :: {legacy}"));
+        }
+        index.functions.sort();
+    }
+    modules
 }
 
 /// `tsuzuri guide std`: one line per module.
-pub(crate) fn render_modules() -> String {
-    modules_text(index())
+pub(crate) fn render_modules(edition: Edition) -> String {
+    modules_text(index(edition))
 }
 
 /// `tsuzuri guide std MODULE`: every function of one module; `None` for an unknown module.
-pub(crate) fn render_module(module: &str) -> Option<String> {
-    index()
+pub(crate) fn render_module(module: &str, edition: Edition) -> Option<String> {
+    index(edition)
         .iter()
         .find(|index| index.name == module)
         .map(|index| module_page(index, LIMIT_STD_MODULE))
 }
 
 /// `tsuzuri guide --topic std-all`: every function of every module.
-pub(crate) fn render_all() -> String {
-    all_text(index(), LIMIT_STD_ALL)
+pub(crate) fn render_all(edition: Edition) -> String {
+    all_text(index(edition), LIMIT_STD_ALL)
 }
 
 /// The lines of one module while it is collected, keyed so that a builtin replaces a source
@@ -565,6 +620,36 @@ mod tests {
     }
 
     /// A synthetic module whose function lines are `Name.fNNNN :: own i64 -> i64`.
+    #[test]
+    fn the_edition_chooses_the_entry_point_of_a_plain_name() {
+        let base = [ModuleIndex {
+            name: "Vec".to_owned(),
+            opt_in: false,
+            types: Vec::new(),
+            functions: vec![
+                "Vec.push :: 'a -> Vec<'a> -> Vec<'a>".to_owned(),
+                "Vec.push_mut :: 'a -> ref mut Vec<'a> -> unit".to_owned(),
+            ],
+        }];
+        let lines = |edition| with_edition(&base, edition)[0].functions.clone();
+        assert_eq!(
+            lines(Edition::E2026),
+            [
+                "Vec.push :: 'a -> Vec<'a> -> Vec<'a>",
+                "Vec.push_mut :: 'a -> ref mut Vec<'a> -> unit",
+                "Vec.push_owned :: 'a -> Vec<'a> -> Vec<'a>",
+            ]
+        );
+        assert_eq!(
+            lines(Edition::E2027),
+            [
+                "Vec.push :: 'a -> ref mut Vec<'a> -> unit",
+                "Vec.push_mut :: 'a -> ref mut Vec<'a> -> unit",
+                "Vec.push_owned :: 'a -> Vec<'a> -> Vec<'a>",
+            ]
+        );
+    }
+
     fn probe(name: &str, opt_in: bool, count: usize) -> ModuleIndex {
         ModuleIndex {
             name: name.to_owned(),
@@ -899,24 +984,26 @@ mod tests {
         assert_eq!(names, sorted);
         assert!(module(&index, "Json").opt_in && !module(&index, "Array").opt_in);
 
-        let list = render_modules();
-        assert!(list.is_ascii());
-        assert_eq!(list.lines().count(), index.len() + 2);
-        for name in &names {
-            let page = render_module(name).unwrap();
-            assert!(page.is_ascii(), "{name}");
-            assert!(chars(&page) <= LIMIT_STD_MODULE, "{name}");
+        for &edition in Edition::SUPPORTED {
+            let list = render_modules(edition);
+            assert!(list.is_ascii());
+            assert_eq!(list.lines().count(), index.len() + 2);
+            for name in &names {
+                let page = render_module(name, edition).unwrap();
+                assert!(page.is_ascii(), "{name}");
+                assert!(chars(&page) <= LIMIT_STD_MODULE, "{name}");
+            }
+            let all = render_all(edition);
+            assert!(all.is_ascii());
+            assert!(chars(&all) <= LIMIT_STD_ALL);
+            assert_eq!(render_all(edition), all, "deterministic");
+            assert_eq!(render_module("Nope", edition), None);
+            assert_eq!(
+                render_module("array", edition),
+                None,
+                "module names are case-sensitive"
+            );
         }
-        let all = render_all();
-        assert!(all.is_ascii());
-        assert!(chars(&all) <= LIMIT_STD_ALL);
-        assert_eq!(render_all(), all, "deterministic");
-        assert_eq!(render_module("Nope"), None);
-        assert_eq!(
-            render_module("array"),
-            None,
-            "module names are case-sensitive"
-        );
 
         // The independent reference: the `def fold ::` line of std/Array.tz.
         let fold = include_str!("../std/Array.tz")

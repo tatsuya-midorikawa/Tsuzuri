@@ -735,6 +735,24 @@ fn guide_std_is_deterministic_and_unknown_modules_fail() {
 }
 
 #[test]
+fn guide_std_follows_the_edition() {
+    let line = |text: &str, name: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(&format!("{name} :: ")))
+            .unwrap_or_else(|| panic!("{name} is missing"))
+            .to_owned()
+    };
+    let (_, old, _) = tsuzuri(&["guide", "std", "Vec", "--edition", "2026"]);
+    let (_, new, _) = tsuzuri(&["guide", "std", "Vec", "--edition", "2027"]);
+    // The owning name keeps the legacy contract in every edition; in 2027 the plain name is the
+    // borrowing entry point.
+    assert_eq!(line(&old, "Vec.push"), line(&old, "Vec.push_owned"));
+    assert_eq!(line(&new, "Vec.push_owned"), line(&old, "Vec.push"));
+    assert_eq!(line(&new, "Vec.push"), line(&new, "Vec.push_mut"));
+    assert!(line(&new, "Vec.push").ends_with("-> unit"));
+}
+
+#[test]
 fn guide_edition_flag_selects_the_edition() {
     assert_eq!(
         tsuzuri(&["guide", "--edition", &latest()]).1,

@@ -713,7 +713,7 @@ tsuzuri guide --llms-txt app   # app の llms.txt の内容
 | `--edition YEAR` | その edition の書き方で出す。既定は作業ディレクトリの `Tsuzuri.toml` の `edition`、なければ最新の edition |
 | `--agents [DIR]`・`--llms-txt [DIR]` | `DIR`（既定は `.`）の `Tsuzuri.toml` の値で、`tsuzuri new` が書く `AGENTS.md`・`llms.txt` を出す。ファイルは書かない。ほかのオプションとは併用できない |
 
-ガイドは、どの edition でも通る書き方（読む引数は `ref T`、所有権を移す引数は `own T` など）を教え、edition で違う規則だけを edition ごとに書き分けます。`pitfalls` の章の後半は、[ヒント](diagnostics.md#ヒント) の表から作ります。std の索引は、std のソースと組み込み関数から作ります（opt-in のモジュールには `(opt-in)` が付きます。`std-all` が 45,000 字を超えるときは、大きい opt-in のモジュールから 1 行にまとめます）。
+ガイドは、どの edition でも通る書き方（読む引数は `ref T`、所有権を移す引数は `own T` など）を教え、edition で違う規則だけを edition ごとに書き分けます。`pitfalls` の章の後半は、[ヒント](diagnostics.md#ヒント) の表から作ります。std の索引は、std のソースと組み込み関数から作り、表示する edition の名前の解決に従います。2027 では `Vec.push` を `Vec.push_mut` の、`Array.map` を `Array.mapr` の署名で出し、`Vec.push_owned`・`Array.map_owned` などの所有する入口は全 edition で従来の署名で出します。opt-in のモジュールには `(opt-in)` が付きます。`std-all` が 45,000 字を超えるときは、自分のページで全関数を出せるモジュールから（opt-in を先に、大きい順に）1 行にまとめます。
 
 本文の文言は保証しません。サブコマンドとオプションの名前、`--json` のキー（足すことはあっても消さない）、終了コードは保ちます。終了コードは、出力したら 0、`--agents`・`--llms-txt` が `Tsuzuri.toml` を読めないときは 1（`E2000`）、引数の誤り（未知のトピックや std のモジュールを含む）は 2（`E2000`）です。
 

@@ -214,9 +214,12 @@ pub fn parse_arguments(arguments: &[String]) -> Result<Invocation, Diagnostic> {
         }
     }
     if std.is_some()
-        && let Some(other) = flags
-            .iter()
-            .find(|flag| matches!(**flag, "--level" | "--topic" | "--list"))
+        && let Some(other) = flags.iter().find(|flag| {
+            matches!(
+                **flag,
+                "--level" | "--topic" | "--list" | "--agents" | "--llms-txt"
+            )
+        })
     {
         return conflict("std", other);
     }
@@ -391,7 +394,7 @@ pub fn render(action: &Action, edition: Edition) -> Result<Rendered, Diagnostic>
                 1,
                 Some("std-all"),
                 STD_ALL_TITLE,
-                crate::guide_std::render_all(),
+                crate::guide_std::render_all(edition),
             )),
             _ => {
                 let chapter = chapter(name).ok_or_else(|| unknown_topic(name))?;
@@ -407,10 +410,10 @@ pub fn render(action: &Action, edition: Edition) -> Result<Rendered, Diagnostic>
             1,
             Some("std"),
             STD_TITLE,
-            crate::guide_std::render_modules(),
+            crate::guide_std::render_modules(edition),
         )),
         Action::Std(Some(module)) => {
-            let text = crate::guide_std::render_module(module).ok_or_else(|| {
+            let text = crate::guide_std::render_module(module, edition).ok_or_else(|| {
                 bad(
                     DiagnosticKind::GuideUnknownStdModule,
                     format!("unknown std module '{module}'; run 'tsuzuri guide std' for the list"),
@@ -445,13 +448,13 @@ fn topics(edition: Edition) -> Vec<(&'static str, u8, usize, &'static str)> {
     topics.push((
         "std",
         1,
-        chars(&crate::guide_std::render_modules()),
+        chars(&crate::guide_std::render_modules(edition)),
         STD_TITLE,
     ));
     topics.push((
         "std-all",
         1,
-        chars(&crate::guide_std::render_all()),
+        chars(&crate::guide_std::render_all(edition)),
         STD_ALL_TITLE,
     ));
     topics
@@ -592,6 +595,9 @@ mod tests {
             &["--list", "--level", "1"],
             &["--agents", "--json"],
             &["std", "--list"],
+            &["std", "--agents", "app"],
+            &["std", "--llms-txt", "app"],
+            &["std", "Array", "--agents"],
             &["stray"],
         ] {
             assert_eq!(kind(words), "guide_bad_arguments", "{words:?}");
