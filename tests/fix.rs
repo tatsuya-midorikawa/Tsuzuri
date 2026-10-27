@@ -178,13 +178,17 @@ const LEGACY: &str = "/// @deprecated use Helper::Legacy.next instead\ndef old :
 const APP: &str = "using Helper\n\nlet a = Legacy.old 1\na\n";
 
 fn deprecation_root(legacy: &str) -> PathBuf {
+    deprecation_root_with(legacy, APP)
+}
+
+fn deprecation_root_with(legacy: &str, app: &str) -> PathBuf {
     root(
         "deprecated",
         &[
             ("helper/Tsuzuri.toml", HELPER_MANIFEST),
             ("helper/Legacy.tz", legacy),
             ("app/Tsuzuri.toml", APP_MANIFEST),
-            ("app/Main.tz", APP),
+            ("app/Main.tz", app),
         ],
     )
 }
@@ -349,7 +353,11 @@ fn w1001_has_no_fix_when_one_rename_cannot_reach_every_occurrence() {
 
 /// The `W1005` warnings of the app of `deprecation_root(legacy)`.
 fn deprecations(legacy: &str) -> Vec<Diagnostic> {
-    let root = deprecation_root(legacy);
+    deprecations_with(legacy, APP)
+}
+
+fn deprecations_with(legacy: &str, app: &str) -> Vec<Diagnostic> {
+    let root = deprecation_root_with(legacy, app);
     let project = Project::load(&root.join("app")).unwrap();
     project
         .analyze()
@@ -362,7 +370,8 @@ fn deprecations(legacy: &str) -> Vec<Diagnostic> {
 
 #[test]
 fn fix_replaces_deprecated_functions_in_parentheses() {
-    let app = "using Helper\n\ndef apply :: (i64 -> i64) -> i64 = \\f -> f 1\n\nlet a = apply (Legacy.old)\nlet b = ( (Legacy.old) ) 2\na + b + Legacy.old 3\n";
+    let app = "using Helper\n\ndef apply :: (i64 -> i64) -> i64 = \\f -> f 1\n\ninstance Size<i64> {\n    fn size value = (Legacy.old) value\n}\n\nlet n: i64 = 2\nlet a = apply (Legacy.old)\nlet b = ( (Legacy.old) ) 2\na + b + Legacy.old 3 + Size.doubled (ref n)\n";
+    let sizes = "using Helper\n\nclass Size<'a> {\n    def size :: ref 'a -> i64\n    def doubled :: ref 'a -> i64\n    fn doubled value = (Legacy.old) (Size.size value)\n}\n";
     let root = root(
         "deprecated-parentheses",
         &[
@@ -370,9 +379,10 @@ fn fix_replaces_deprecated_functions_in_parentheses() {
             ("helper/Legacy.tz", LEGACY),
             ("app/Tsuzuri.toml", APP_MANIFEST),
             ("app/Main.tz", app),
+            ("app/Sizes.tt", sizes),
         ],
     );
-    let (status, _, stderr) = tsuzuri(
+    let (status, stdout, stderr) = tsuzuri(
         &[
             "fix",
             "--applicability",
@@ -382,10 +392,14 @@ fn fix_replaces_deprecated_functions_in_parentheses() {
         None,
     );
     assert_eq!(status, 0, "{stderr}");
-    assert_eq!(
-        read(&root.join("app/Main.tz")),
-        app.replace("Legacy.old", "Legacy.next")
-    );
+    assert!(stdout.contains("applied 5 fixes in 2 files"), "{stdout}");
+    for (file, text) in [("app/Main.tz", app), ("app/Sizes.tt", sizes)] {
+        assert_eq!(
+            read(&root.join(file)),
+            text.replace("Legacy.old", "Legacy.next"),
+            "{file}"
+        );
+    }
 }
 
 #[test]
@@ -403,17 +417,8 @@ fn w1005_carries_a_likely_replacement_for_a_same_signature_function() {
 /// `LEGACY` with generic functions.
 const GENERIC: &str = "/// @deprecated use Helper::Legacy.next instead\ndef old :: 'a -> 'a = \\n -> n\n\ndef next :: 'a -> 'a = \\n -> n\n";
 
-#[test]
-fn w1005_replaces_a_generic_function_with_the_same_constraints() {
-    for legacy in [
-        GENERIC.to_owned(),
-        GENERIC.replace(":: 'a", ":: Numeric<'a> => 'a"),
-    ] {
-        let warnings = deprecations(&legacy);
-        assert_eq!(warnings.len(), 1, "{warnings:#?}");
-        assert_eq!(warnings[0].fixes[0].edits[0].text, "next", "{legacy}");
-    }
-}
+/// `LEGACY` with functions that return a borrow of their first argument.
+const REGIONS: &str = "/// @deprecated use Helper::Legacy.next instead\ndef old {r} :: ref {r} string -> ref string -> ref {r} string = \\a b -> a\n\ndef next {r} :: ref {r} string -> ref string -> ref {r} string = \\a b -> a\n";
 
 #[test]
 fn w1005_has_no_fix_when_the_signature_differs_or_the_note_is_free_text() {
@@ -423,7 +428,8 @@ fn w1005_has_no_fix_when_the_signature_differs_or_the_note_is_free_text() {
             "def next :: i64 -> i32 = \\n -> 1",
         ),
         LEGACY.replace("def old ::", "pure def old ::"),
-        GENERIC.replace("def next ::", "def next :: Numeric<'a> =>"),
+        // Type parameters carry requirements that the signature does not show.
+        GENERIC.to_owned(),
         LEGACY.replace("use Helper::Legacy.next instead", "use next"),
         LEGACY.replace(
             "use Helper::Legacy.next instead",
@@ -434,6 +440,21 @@ fn w1005_has_no_fix_when_the_signature_differs_or_the_note_is_free_text() {
         assert_eq!(warnings.len(), 1, "{legacy}");
         assert!(warnings[0].fixes.is_empty(), "{legacy}");
     }
+}
+
+#[test]
+fn w1005_has_no_fix_for_functions_with_named_regions() {
+    let app = "using Helper\n\nlet a = \"a\"\nlet b = \"b\"\nlet c = Legacy.old (ref a) (ref b)\nc.length\n";
+    let warnings = deprecations_with(REGIONS, app);
+    assert_eq!(warnings.len(), 1, "{warnings:#?}");
+    assert!(warnings[0].fixes.is_empty());
+    // The same functions without named regions get a replacement.
+    let plain = REGIONS
+        .replace(" {r}", "")
+        .replace("ref string -> ref string", "ref string -> string");
+    let warnings = deprecations_with(&plain, &app.replace("(ref b)", "b"));
+    assert_eq!(warnings.len(), 1, "{plain}");
+    assert_eq!(warnings[0].fixes.len(), 1, "{plain}");
 }
 
 #[test]

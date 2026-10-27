@@ -3748,29 +3748,14 @@ impl CheckedFunction {
         format!("{}.{}", self.module, self.name)
     }
 
-    /// The class and member constraints, sorted, as text that is equal for two functions only
-    /// when they constrain their types alike.
-    pub(crate) fn constraint_key(&self, types: &TypeContext<'_>) -> Vec<String> {
-        let mut key: Vec<String> = self
-            .constraints
-            .iter()
-            .map(|constraint| format!("{} {}", constraint.class, constraint.ty.display(types)))
-            .chain(self.members.iter().map(|member| {
-                format!(
-                    "{} {}.{} {}",
-                    member.receiver.display(types),
-                    member.module,
-                    member.name,
-                    member
-                        .signature
-                        .as_ref()
-                        .map_or_else(String::new, |ty| ty.display(types))
-                )
-            }))
-            .collect();
-        key.sort();
-        key.dedup();
-        key
+    /// Whether the calls of the function depend only on its declared signature: it has no type
+    /// parameters, whose inferred constraints and ownership requirements the signature does not
+    /// show, and no named-region contracts.
+    pub(crate) fn plain_signature(&self) -> bool {
+        self.type_parameters.is_empty()
+            && self.region_sources.is_none()
+            && self.region_slots.is_none()
+            && self.callback_contracts.is_empty()
     }
 }
 

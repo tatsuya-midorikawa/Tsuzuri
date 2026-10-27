@@ -895,13 +895,16 @@ fn replacement_for(
             })
             .collect()
     };
-    // The modifiers (`pure `, `const `), the declared signature (`own 'a -> unit`) and the
-    // constraints, which neither shows: a replacement must accept every call and every context
-    // that the deprecated function does.
-    fn signature(definition: &semantic::Definition) -> Option<(&str, &str, &[String])> {
+    // The modifiers (`pure `, `const `) and the declared signature (`own string -> unit`): a
+    // replacement must accept every call and every context that the deprecated function does,
+    // which the signature shows only without type parameters and named regions.
+    fn signature(definition: &semantic::Definition) -> Option<(&str, &str)> {
+        if !definition.plain_signature {
+            return None;
+        }
         let (head, signature) = definition.detail.split_once(" :: ")?;
         let (modifiers, _) = head.split_once("def ")?;
-        Some((modifiers, signature, &definition.constraints))
+        Some((modifiers, signature))
     }
     index
         .definitions
