@@ -31,6 +31,8 @@ pub mod formatter;
 pub(crate) mod frontend_cache;
 pub mod gpu;
 pub mod gpu_devices;
+pub mod guide;
+mod guide_std;
 pub mod hints;
 mod interval;
 pub mod lexer;

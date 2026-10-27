@@ -546,9 +546,12 @@ pub fn valid_namespace(text: &str, edition: Edition) -> bool {
 /// `Tsuzuri.toml` that names its default namespace and the latest language
 /// edition, a `Main.tz` that declares the namespace, and a `.gitignore`.
 /// Returns the created files.
+/// Creates a project in an empty or missing `directory`: `Tsuzuri.toml`, `Main.tz`, and
+/// `.gitignore`, and with `agent_files`, `AGENTS.md` and `llms.txt` for AI agents (G21).
 pub fn create_project(
     directory: &Path,
     namespace: Option<&str>,
+    agent_files: bool,
 ) -> Result<Vec<PathBuf>, Diagnostic> {
     let error =
         |kind: DiagnosticKind, message: String| Diagnostic::of(kind, message, Span::default());
@@ -613,6 +616,19 @@ pub fn create_project(
         ),
         (".gitignore", ".tsuzuri/\n".to_owned()),
     ];
+    let values = crate::guide::Values {
+        name: &name,
+        namespace: &namespace,
+        edition,
+        version: env!("CARGO_PKG_VERSION"),
+    };
+    let agents = [
+        ("AGENTS.md", crate::guide::agents_md(&values)),
+        ("llms.txt", crate::guide::llms_txt(&values)),
+    ];
+    let files = files
+        .into_iter()
+        .chain(agents.into_iter().filter(|_| agent_files));
     let mut created = Vec::new();
     for (file, text) in files {
         let path = directory.join(file);
@@ -1455,8 +1471,9 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let created = create_project(&root.join("hello-world"), None).unwrap();
-        assert_eq!(created.len(), 3);
+        let created = create_project(&root.join("hello-world"), None, true).unwrap();
+        assert_eq!(created.len(), 5);
+        assert!(created[3].ends_with("AGENTS.md") && created[4].ends_with("llms.txt"));
         let manifest = parse_manifest(&std::fs::read_to_string(&created[0]).unwrap(), 0).unwrap();
         assert_eq!(
             (manifest.name.as_str(), manifest.namespace.as_str()),
@@ -1476,9 +1493,9 @@ mod tests {
             .analyze()
             .unwrap();
         assert!(crate::llvm::main_entry(&module), "{main}");
-        let again = create_project(&root.join("hello-world"), None).unwrap_err();
+        let again = create_project(&root.join("hello-world"), None, true).unwrap_err();
         assert!(again.message.contains("is not empty"), "{}", again.message);
-        create_project(&root.join("other"), Some("Acme::Tools")).unwrap();
+        create_project(&root.join("other"), Some("Acme::Tools"), false).unwrap();
         assert!(
             std::fs::read_to_string(root.join("other/Tsuzuri.toml"))
                 .unwrap()
@@ -1491,7 +1508,7 @@ mod tests {
         );
         for namespace in ["IO", "acme-tools", "A::::B", "Acme.Tools"] {
             assert!(
-                create_project(&root.join("bad"), Some(namespace)).is_err(),
+                create_project(&root.join("bad"), Some(namespace), false).is_err(),
                 "{namespace}"
             );
         }
