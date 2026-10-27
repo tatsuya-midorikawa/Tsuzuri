@@ -82,6 +82,8 @@ pub struct Definition {
     /// `name: type` for each parameter of a function or extern.
     pub parameters: Vec<String>,
     pub result: String,
+    /// The constraints of a function (`CheckedFunction::constraint_key`), which `detail` omits.
+    pub constraints: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -283,6 +285,7 @@ fn plain(
         exported: false,
         parameters: Vec::new(),
         result: String::new(),
+        constraints: Vec::new(),
     }
 }
 
@@ -576,6 +579,7 @@ fn define_declarations(
                 exported,
                 parameters,
                 result: function.signature.result.display(types),
+                constraints: function.constraint_key(types),
                 ..plain(declared, kind, name, detail, visibility)
             });
             links.callables.insert(qualified, definition);
@@ -1025,6 +1029,7 @@ fn index_function(
             exported: false,
             parameters: Vec::new(),
             result: String::new(),
+            constraints: Vec::new(),
         });
         definitions.insert(local.id, definition);
     }

@@ -359,7 +359,7 @@ flowchart TD
 | `W1002` | 公開 API から到達しない private な関数、レコード、共用体、型エイリアス | 削除するか、公開する |
 | `W1003` | 前のガード無しの節が覆っている、到達しない `match` の節 | 節を削除するか、前のパターンを狭くする |
 | `W1004` | 同じ字句スコープでのシャドーイング | コマンドラインからは出せません。内部検査のときだけです |
-| `W1005` | 別のパッケージや標準ライブラリが `@deprecated` にした `def`・`record`・`union` の使用 | 案内に従って別の宣言へ移ります。同じパッケージの中の使用には出ません（[ドキュメント コメント](../organizing-tsuzuri/documentation-comment.md#警告-w1005)）。関数の案内がちょうど `use Module.name instead` で、`name` が同じモジュールの同じ型の公開関数なら、その名前に置き換える `likely` の修正案を持ちます（`tsuzuri fix --applicability likely`） |
+| `W1005` | 別のパッケージや標準ライブラリが `@deprecated` にした `def`・`record`・`union` の使用 | 案内に従って別の宣言へ移ります。同じパッケージの中の使用には出ません（[ドキュメント コメント](../organizing-tsuzuri/documentation-comment.md#警告-w1005)）。関数の案内がちょうど `use Module.name instead` で、`name` が同じモジュールの公開関数で、引数と結果の型、型クラスとメンバーの制約、`pure`・`const` が同じなら、その名前に置き換える `likely` の修正案を持ちます（`tsuzuri fix --applicability likely`） |
 | `W1006` | 配列やリストの暗黙のディープコピー | `--warn implicit-copy` のときだけ。`ref` で借りるか、`Array.copy` / `List.copy` で明示する |
 | `W2001` | キャッシュを使えなかった、プロファイルが合わなかった、`run --profile-generate` がプロファイルを書かなかった、などのツール警告 | ソースの警告ではありません。`--json` のときこのコードになります。プロファイルが合わないときは、`profile data does not match N function(s) in this build; they are optimized without profile data. Rebuild with --profile-generate and rerun the training workload` の 1 行です（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)） |
 | `W2002` | `tsuzuri bindgen` が C ヘッダーの宣言や整数のマクロを変換せずに省いた。理由はメッセージと、出力の `// skipped` 行にあります | 手で宣言するか、対応する型だけの C 関数で包みます。ポインターと長さの組は `--buffer` で変換できることがあります。位置はヘッダーの宣言やマクロの名前です |
@@ -398,7 +398,7 @@ Run `tsuzuri explain use_after_move` for an explanation.
 
 未保存のバッファも、開いているテキストで検査します。入力を読めないときも、同じオブジェクトを 1 件出します。閉じた文書に新しい診断を送り続けることはしません。
 
-VS Code 拡張は、これを波線と問題パネルに出します。`textDocument/codeAction` のクイックフィックスは、診断の修正案です。修正案は、適用したテキストをもう一度検査し、その診断のコードの件数が減り、どのコードのエラーも増えないときだけ出します。ほかのエラーは残っていてもよく、適用後に検査が通ることまでは保証しません（警告の修正案なら警告も数えます。表示の上限の 50 件を超えた診断も数え、収集の上限の 1000 件に達したときは出しません）。現在、修正案を持つのは、未使用ローカル（`W1001`。名前に `_` を付ける `certain`）、`@deprecated` の案内が同じ型の関数を名指しする使用（`W1005`。`likely`）、`E1021` の足りない腕（`maybe`）、[ヒント](#ヒント) の 7 件（`likely` か `maybe`）です。`certain` の修正案だけを優先のクイックフィックス（`isPreferred`）にします。`context.only` が `source`・`source.fixAll`・`source.fixAll.tsuzuri` を含むか、`only` がないときは、その文書の `certain` の修正案を `tsuzuri fix` と同じラウンドと検証でまとめて適用する `source.fixAll.tsuzuri`（題 `Fix all auto-fixable problems`）も返します（適用するものがなければ返しません）。CLI からは `tsuzuri fix` で適用できます（[コンパイラの使い方](usage.md#fix)）。
+VS Code 拡張は、これを波線と問題パネルに出します。`textDocument/codeAction` のクイックフィックスは、診断の修正案です。修正案は、適用したテキストをもう一度検査し、その診断のコードの件数が減り、どのコードのエラーも増えないときだけ出します。ほかのエラーは残っていてもよく、適用後に検査が通ることまでは保証しません（警告の修正案なら警告も数えます。表示の上限の 50 件を超えた診断も数え、収集の上限の 1000 件に達したときは出しません）。現在、修正案を持つのは、未使用ローカル（`W1001`。名前に `_` を付ける `certain`）、`@deprecated` の案内が同じシグネチャの関数を名指しする使用（`W1005`。`likely`）、`E1021` の足りない腕（`maybe`）、[ヒント](#ヒント) の 7 件（`likely` か `maybe`）です。`certain` の修正案だけを優先のクイックフィックス（`isPreferred`）にします。`context.only` が `source`・`source.fixAll`・`source.fixAll.tsuzuri` を含むか、`only` がないときは、その文書の `certain` の修正案を `tsuzuri fix` と同じラウンドと検証でまとめて適用する `source.fixAll.tsuzuri`（題 `Fix all auto-fixable problems`）も返します（適用するものがなければ返しません）。CLI からは `tsuzuri fix` で適用できます（[コンパイラの使い方](usage.md#fix)）。
 
 ## まとめ
 

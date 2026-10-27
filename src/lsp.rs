@@ -1110,11 +1110,17 @@ impl Session {
     /// rounds to the project with the open buffers. `None` when the project has no `certain` fix,
     /// the run fails, or nothing in the document changes.
     fn fix_all(&self, directory: &Path, state: &ProjectState, source_id: usize) -> Option<Value> {
+        // Only a `certain` fix that edits this document alone can change it: without one, skip
+        // loading and analyzing the project again.
+        let root = state.project.root;
         if !state.diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .fixes
-                .iter()
-                .any(|fix| fix.applicability == Applicability::Certain)
+            diagnostic.fixes.iter().any(|fix| {
+                fix.applicability == Applicability::Certain
+                    && fix
+                        .edits
+                        .iter()
+                        .all(|edit| edit.span.source.unwrap_or(root) == source_id)
+            })
         }) {
             return None;
         }
