@@ -5,7 +5,7 @@
 | ID | G31 |
 | 優先度 | P1 |
 | 規模 | 全体 L 寄りの M（D-50 の表は M。Phase 1 M、Phase 2 S、Phase 3 M。D-50 の M は Phase 1〜2 の規模）。当初の Phase 別 PR 案に対し、全 Phase の承認に従って PR #43 で一括実装 |
-| 依存 | なし（Phase 1・2 は HEAD の `tsuzuri check`・`tsuzuri test --list` を呼ぶだけ）。**弱い依存**（あれば測る行が増え、なければその行だけを出さない）: Phase 2 の `diag-v2` は [G22](G22-diagnostic-v2.md) の関連位置、`diag-fix` は [G24](G24-tsuzuri-fix.md) Phase 1。Phase 3 の静的サイズは [G21](../G21-ai-guide-pack.md)・[G27](../G27-build-time-kb.md)・G28、`kb` 方式は G27 Phase 2 と G28 Phase 1、MCP の行は [G29](../G29-mcp-server.md) Phase 1 |
+| 依存 | なし（Phase 1・2 は HEAD の `tsuzuri check`・`tsuzuri test --list` を呼ぶだけ）。**弱い依存**（あれば測る行が増え、なければその行だけを出さない）: Phase 2 の `diag-v2` は [G22](G22-diagnostic-v2.md) の関連位置、`diag-fix` は [G24](G24-tsuzuri-fix.md) Phase 1。Phase 3 の静的サイズは [G21](G21-ai-guide-pack.md)・[G27](../G27-build-time-kb.md)・G28、`kb` 方式は G27 Phase 2 と G28 Phase 1、MCP の行は [G29](../G29-mcp-server.md) Phase 1 |
 | 後続 | G21・G22・G24・G27・G28・G29（各チケットの「AI の作業コストが下がる」という主張を、`docs/ai-cost.md` の数値で裏づける）。G32 の `brief` を入力量に使う案は取り込まない（「対象外」） |
 | 状態 | done（Phase 1〜3。[PR #43](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/43)。実装 head `5097b87` の CI・3 環境の targets は成功、Copilot は actionable な指摘なし。G21・G27・G28・G29 本体は未実装） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` の 41 行の削除だけ） |

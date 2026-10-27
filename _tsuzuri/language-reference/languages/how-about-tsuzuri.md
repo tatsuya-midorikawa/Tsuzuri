@@ -274,7 +274,8 @@ flowchart TD
 | `tsuzuri fmt` | 意味を変えずに、空白とインデントを整えます。 |
 | `tsuzuri doc` | 公開宣言とドキュメントコメントから Markdown を生成します。 |
 | `tsuzuri lsp` | 診断、ホバー、定義への移動などをエディターへ渡します。 |
-| `tsuzuri new` | 空のフォルダーに `Tsuzuri.toml`、`Main.tz`、`.gitignore` を作ります。 |
+| `tsuzuri new` | 空のフォルダーに `Tsuzuri.toml`、`Main.tz`、`.gitignore` と、AI エージェント向けの `AGENTS.md`・`llms.txt` を作ります。 |
+| `tsuzuri guide` | AI エージェント向けの英語の短いガイドと std の索引を出します。例はすべてコンパイラで検査しています。 |
 
 `--json` を付けると、診断は標準エラーへ 1 行 1 JSON で出ます。位置が付くので、エディターや自動化からも同じ検査を使えます。詳しくは[コンパイラの使い方](../compiler/usage.md)と[診断メッセージ](../compiler/diagnostics.md)を見てください。
 

@@ -321,7 +321,7 @@ mod tests {
         let temporary = TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
         let root = temporary.path.join("app");
         fs::create_dir(&root).unwrap();
-        crate::package::create_project(&root, Some("App")).unwrap();
+        crate::package::create_project(&root, Some("App"), false).unwrap();
         fs::write(root.join("Extra.tz"), "let x = 1\n").unwrap();
         fs::write(root.join("notes.txt"), "not a source").unwrap();
         let watcher = Watcher::new(&root, false);

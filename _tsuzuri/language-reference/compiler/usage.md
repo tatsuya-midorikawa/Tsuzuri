@@ -20,6 +20,7 @@
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
 - `api-diff` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると終了コード 1 です。
 - `explain` は、診断の kind（`use_after_move` など）やコード（`E1012`）の原因と、誤りの例・直した例を出します。`--catalog` は全 kind の一覧です。
+- `guide` は、AI エージェント向けの英語の短いガイド（構文の早見、所有権の規則、落とし穴、作業の流れ。例はすべて検証済み）と std の索引を出します。`tsuzuri new` は `AGENTS.md`・`llms.txt` も作ります。
 - 引数の誤りは終了コード 2、ソースや実行の失敗は 1、成功は 0 です。
 
 ## コマンドの流れ
@@ -184,7 +185,7 @@ tsuzuri 0.1.0
 
 ### new
 
-空のディレクトリに、パッケージ、入口、gitignore を作ります。
+空のディレクトリに、パッケージ、入口、gitignore と、AI エージェント向けの `AGENTS.md`・`llms.txt` を作ります。
 
 ```sh
 tsuzuri new demo --namespace Acme::Demo
@@ -194,7 +195,11 @@ tsuzuri new demo --namespace Acme::Demo
 Created demo/Tsuzuri.toml
 Created demo/Main.tz
 Created demo/.gitignore
+Created demo/AGENTS.md
+Created demo/llms.txt
 ```
+
+`AGENTS.md` は、プロジェクトで作業する AI エージェントへの指示（まず `tsuzuri guide` を読む、編集のたびに `tsuzuri check . --json`、守る規則、よくある誤り）で、`llms.txt` は <https://llmstxt.org> の形の索引です。どちらも英語で、プロジェクトの名前・名前空間・edition・コンパイラの版が入ります。`--no-agent-files` を付けると、この 2 つを作らず、出力は最初の 3 行だけです。
 
 `Tsuzuri.toml` は名前、版、言語版（`edition`）、名前空間を持ちます。`--namespace` を省略すると、フォルダー名から名前空間を導きます。導けない名前のときは、自分で渡してください。
 
@@ -202,7 +207,7 @@ Created demo/.gitignore
 [package]
 name = "demo"
 version = "0.1.0"
-edition = "2026"
+edition = "2027"
 namespace = "Acme::Demo"
 ```
 
@@ -224,7 +229,7 @@ test "adds numbers" = assert (1 + 2 == 3)
 Hello, Tsuzuri!
 ```
 
-`.gitignore` は、ビルド結果を置く `.tsuzuri/` を除外します。ディレクトリが空でない、名前空間が識別子を `::` でつないだ形でない、といった失敗は終了コード 1 です。引数の形が `tsuzuri new directory [--namespace NAME]` と違うときは、終了コード 2 です。
+`.gitignore` は、ビルド結果を置く `.tsuzuri/` を除外します。ディレクトリが空でない、名前空間が識別子を `::` でつないだ形でない、といった失敗は終了コード 1 です。引数の形が `tsuzuri new directory [--namespace NAME] [--no-agent-files]` と違うときは、終了コード 2 です。
 
 ### fetch
 
@@ -683,6 +688,34 @@ Passing a value to a function that takes ownership, ...
 ```
 
 kind の考え方と JSON の `kind` キーは [診断メッセージとエラーコード](diagnostics.md#kind-と-explain) にあります。
+
+### guide
+
+AI エージェント向けの、英語の短いガイドを標準出力へ出します。コンパイラに埋め込まれているので、インストールしたコンパイラの振る舞いと一致します。ガイドの例と、ガイドが名指すエラーコードは、コンパイラで検査しています。
+
+```sh
+tsuzuri guide                  # level 0: 構文・数値・所有権・落とし穴・作業の流れ（6,000 字以内）
+tsuzuri guide --level 1        # 全 4 章（20,000 字以内）
+tsuzuri guide --topic ownership
+tsuzuri guide --list
+tsuzuri guide std              # std のモジュールと関数の数
+tsuzuri guide std Array        # 1 モジュールの関数を 1 行 1 関数で（借用の規約つき）
+tsuzuri guide --agents         # このプロジェクトの AGENTS.md の内容
+tsuzuri guide --llms-txt app   # app の llms.txt の内容
+```
+
+| オプション | 内容 |
+| --- | --- |
+| `--level 0\|1` | 0（既定）はカード、1 は `language`・`ownership`・`pitfalls`・`workflow` の 4 章 |
+| `--topic NAME` | 1 章だけ。名前は `--list` の 1 列目（`card`・`language`・`ownership`・`pitfalls`・`workflow`・`std`・`std-all`） |
+| `--list` | トピックごとに名前・level・文字数・題 |
+| `--json` | 1 行の JSON（`schema`（`tz-guide/1`）・`compiler`・`edition`・`level`・`topic`・`title`・`chars`・`text`。`--list` は `schema`・`compiler`・`topics`） |
+| `--edition YEAR` | その edition の書き方で出す。既定は作業ディレクトリの `Tsuzuri.toml` の `edition`、なければ最新の edition |
+| `--agents [DIR]`・`--llms-txt [DIR]` | `DIR`（既定は `.`）の `Tsuzuri.toml` の値で、`tsuzuri new` が書く `AGENTS.md`・`llms.txt` を出す。ファイルは書かない。ほかのオプションとは併用できない |
+
+ガイドは、どの edition でも通る書き方（読む引数は `ref T`、所有権を移す引数は `own T` など）を教え、edition で違う規則だけを edition ごとに書き分けます。`pitfalls` の章の後半は、[ヒント](diagnostics.md#ヒント) の表から作ります。std の索引は、std のソースと組み込み関数から作り、表示する edition の名前の解決に従います。2027 では `Vec.push` を `Vec.push_mut` の、`Array.map` を `Array.mapr` の署名で出し、`Vec.push_owned`・`Array.map_owned` などの所有する入口は全 edition で従来の署名で出します。opt-in のモジュールには `(opt-in)` が付きます。`std-all` が 45,000 字を超えるときは、自分のページで全関数を出せるモジュールから（opt-in を先に、大きい順に）1 行にまとめます。
+
+本文の文言は保証しません。サブコマンドとオプションの名前、`--json` のキー（足すことはあっても消さない）、終了コードは保ちます。終了コードは、出力したら 0、`--agents`・`--llms-txt` が `Tsuzuri.toml` を読めないときは 1（`E2000`）、引数の誤り（未知のトピックや std のモジュールを含む）は 2（`E2000`）です。
 
 ### bindgen
 

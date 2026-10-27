@@ -1,0 +1,19 @@
+# {{name}}
+
+> Tsuzuri project (namespace {{namespace}}, edition {{edition}}). Tsuzuri is statically typed, uses ownership instead of a GC, and compiles through LLVM to native code or WASM. It is not in LLM training data: read the guide before you write code.
+
+## Read first
+- [AGENTS.md](AGENTS.md): rules and commands for AI agents working in this project.
+- `tsuzuri guide`: the language card for the installed compiler (about 6 KB, every example checked). Run it; it is not a file.
+
+## More from the compiler
+- `tsuzuri guide --level 1`: the full guide (types, type classes, modules, tasks, the std map).
+- `tsuzuri guide --list`: chapter names for `tsuzuri guide --topic NAME`.
+- `tsuzuri check . --json`: diagnostics as JSON lines on stderr.
+
+## Source
+- [Tsuzuri.toml](Tsuzuri.toml): package manifest.
+- [Main.tz](Main.tz): entry point.
+
+## Optional
+- [Language reference](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/main/_tsuzuri/language-reference/index.md): the full manual (Japanese).

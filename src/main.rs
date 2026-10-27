@@ -58,10 +58,13 @@ Usage:
                     [--profile-generate DIR|--profile-use PATH] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
-  tsuzuri new directory [--namespace NAME]
+  tsuzuri new directory [--namespace NAME] [--no-agent-files]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--effective] [--json]
+  tsuzuri guide [--level 0|1] [--topic NAME] [--list] [--json] [--edition YEAR]
+  tsuzuri guide std [MODULE] [--json]
+  tsuzuri guide --agents [DIR] | --llms-txt [DIR]
   tsuzuri explain TARGET [--json]
   tsuzuri explain --catalog [--json]
   tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] source.tz|source.tt|source.tc|directory
@@ -109,7 +112,11 @@ is replaced. `tsuzuri serve --status DIR` prints its counters. The sockets are i
 TSUZURI_SERVER_DIR (an absolute path; empty turns servers off), by default the user's cache
 (macOS) or runtime (Linux) directory, which only its owner can enter. A directory named serve is
 built with `tsuzuri build serve`.
-`tsuzuri new` creates Tsuzuri.toml, Main.tz, and .gitignore in an empty folder.
+`tsuzuri new` creates Tsuzuri.toml, Main.tz, .gitignore, and for AI agents AGENTS.md and llms.txt
+in an empty folder; --no-agent-files leaves out the last two.
+`tsuzuri guide` prints a short English guide to the language for AI agents (level 0, about 6 KB);
+--level 1 prints the full guide, --topic NAME one chapter (--list names them), `guide std [MODULE]`
+the std index. --agents and --llms-txt print the AGENTS.md and llms.txt of the project in DIR.
 `tsuzuri fetch` downloads the git dependencies of Tsuzuri.toml
 ({ git = \"https://...\", rev = \"<40-hex commit>\" }) and the registry dependencies
 ({ version = \"1.2.3\" }, the minimal versions that satisfy every requirement in the
@@ -2215,10 +2222,13 @@ fn version_line(tool: &Path) -> String {
 fn new_project(arguments: &[OsString]) -> ExitCode {
     let mut directory = None;
     let mut namespace = None;
+    let mut agent_files = true;
     let mut rest = arguments.iter();
     let mut valid = true;
     while let Some(argument) = rest.next() {
-        if argument == "--namespace" && namespace.is_none() {
+        if argument == "--no-agent-files" && agent_files {
+            agent_files = false;
+        } else if argument == "--namespace" && namespace.is_none() {
             namespace = rest
                 .next()
                 .and_then(|value| value.to_str())
@@ -2234,7 +2244,7 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
         print_diagnostic(
             &Diagnostic::of(
                 DiagnosticKind::UsageError,
-                "usage: tsuzuri new directory [--namespace NAME]",
+                "usage: tsuzuri new directory [--namespace NAME] [--no-agent-files]",
                 Span::default(),
             ),
             Path::new("<command line>"),
@@ -2243,7 +2253,7 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
         );
         return ExitCode::from(2);
     };
-    match tsuzuri::package::create_project(&directory, namespace.as_deref()) {
+    match tsuzuri::package::create_project(&directory, namespace.as_deref(), agent_files) {
         Ok(files) => {
             for file in files {
                 println!("Created {}", file.display());
@@ -2475,6 +2485,58 @@ fn api_diff_usage(json: bool) -> ExitCode {
         json,
     );
     ExitCode::from(2)
+}
+
+/// `tsuzuri guide`: the guide for AI agents (G21), on standard output. The exit status is 2 for a
+/// usage error and 1 when `--agents` or `--llms-txt` finds no readable manifest.
+fn guide_command(arguments: &[OsString]) -> ExitCode {
+    use tsuzuri::guide::{self, Action, Values};
+    let words: Vec<String> = arguments
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect();
+    let json = words.iter().any(|word| word == "--json");
+    let error = |diagnostic: &Diagnostic, code: u8| {
+        print_diagnostic(diagnostic, Path::new("<command line>"), "", json);
+        ExitCode::from(code)
+    };
+    let invocation = match guide::parse_arguments(&words) {
+        Ok(invocation) => invocation,
+        Err(diagnostic) => return error(&diagnostic, 2),
+    };
+    // The edition of the project in the working directory, else the latest.
+    let edition = invocation.edition.unwrap_or_else(|| {
+        guide::project_values(Path::new("."))
+            .map_or(tsuzuri::syntax::Edition::LATEST, |values| values.2)
+    });
+    let text = match &invocation.action {
+        Action::List if json => guide::list_json(edition),
+        Action::List => guide::list_text(edition),
+        Action::Agents(directory) | Action::LlmsTxt(directory) => {
+            let (name, namespace, edition) = match guide::project_values(Path::new(directory)) {
+                Ok(values) => values,
+                Err(diagnostic) => return error(&diagnostic, 1),
+            };
+            let values = Values {
+                name: &name,
+                namespace: &namespace,
+                edition,
+                version: env!("CARGO_PKG_VERSION"),
+            };
+            if matches!(invocation.action, Action::Agents(_)) {
+                guide::agents_md(&values)
+            } else {
+                guide::llms_txt(&values)
+            }
+        }
+        action => match guide::render(action, edition) {
+            Ok(rendered) if json => guide::json_text(&rendered, edition),
+            Ok(rendered) => rendered.text,
+            Err(diagnostic) => return error(&diagnostic, 2),
+        },
+    };
+    print!("{text}");
+    ExitCode::SUCCESS
 }
 
 /// `tsuzuri explain TARGET [--json]` and `tsuzuri explain --catalog [--json]`: the explanation of a
@@ -2955,6 +3017,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "explain") {
         return explain_command(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "guide") {
+        return guide_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "fix") {
         return fix_command(&raw[1..]);
@@ -6911,6 +6976,7 @@ mod tests {
             "explain_command",
             "fix_command",
             "fix_edition_command",
+            "guide_command",
             "main",
             "new_project",
             "print_coverage",

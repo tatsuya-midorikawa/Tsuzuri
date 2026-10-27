@@ -20,7 +20,7 @@
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
 - **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです。`--target` は、Linux の glibc/musl と Windows の MSVC/MinGW を区別した 9 個の native triple を受け付け、同梱ツールチェーンか `TSUZURI_SYSROOT` でクロスリンクします。検証範囲と機能の制限は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
-- **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
+- **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`。AI エージェント向けの `AGENTS.md`・`llms.txt` も作る）、AI エージェント向けのガイド（`tsuzuri guide`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
 
 ---
 
@@ -28,7 +28,7 @@
 
 ### プロジェクトの作成 (`tsuzuri new`)
 
-`tsuzuri new` コマンドで、推奨構成のプロジェクト（`Tsuzuri.toml`、`Main.tz`、`.gitignore`）を新規作成できます。
+`tsuzuri new` コマンドで、推奨構成のプロジェクト（`Tsuzuri.toml`、`Main.tz`、`.gitignore`）と、AI エージェント向けの `AGENTS.md`・`llms.txt` を新規作成できます（`--no-agent-files` で 2 つを省きます）。AI エージェントには、コンパイラの版と一致する英語のガイド `tsuzuri guide`（例はすべて検証済み）を読ませます。
 
 ```sh
 tsuzuri new my-project --namespace MyCompany::MyProject
@@ -897,7 +897,9 @@ tsuzuri serve --status directory | --stop directory
 tsuzuri check|build ... [--no-server]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
-tsuzuri new directory [--namespace NAME]
+tsuzuri new directory [--namespace NAME] [--no-agent-files]
+tsuzuri guide [--level 0|1] [--topic NAME] [--list] [--json] [--edition YEAR]
+tsuzuri guide std [MODULE] | --agents [DIR] | --llms-txt [DIR]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
 tsuzuri api-diff old new [--json] [--effective]
@@ -1073,6 +1075,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
 | 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
 | `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
+| AI 向けガイド（`guide/`、`tsuzuri guide`、`tsuzuri new` の `AGENTS.md`・`llms.txt`） | `tests/guide.rs`、`src/guide.rs`・`src/guide_std.rs` の test module | `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-guide.mjs`（例を全 edition で `check`・`run`・`test`。上限の検査） |
 
 表にない組み合わせは、変更した関数名を `grep -rn "<関数名>" tests/` して、それを使うテストを全部実行します。
 
