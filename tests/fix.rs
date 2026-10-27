@@ -361,6 +361,34 @@ fn deprecations(legacy: &str) -> Vec<Diagnostic> {
 }
 
 #[test]
+fn fix_replaces_deprecated_functions_in_parentheses() {
+    let app = "using Helper\n\ndef apply :: (i64 -> i64) -> i64 = \\f -> f 1\n\nlet a = apply (Legacy.old)\nlet b = ( (Legacy.old) ) 2\na + b + Legacy.old 3\n";
+    let root = root(
+        "deprecated-parentheses",
+        &[
+            ("helper/Tsuzuri.toml", HELPER_MANIFEST),
+            ("helper/Legacy.tz", LEGACY),
+            ("app/Tsuzuri.toml", APP_MANIFEST),
+            ("app/Main.tz", app),
+        ],
+    );
+    let (status, _, stderr) = tsuzuri(
+        &[
+            "fix",
+            "--applicability",
+            "likely",
+            root.join("app").to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(status, 0, "{stderr}");
+    assert_eq!(
+        read(&root.join("app/Main.tz")),
+        app.replace("Legacy.old", "Legacy.next")
+    );
+}
+
+#[test]
 fn w1005_carries_a_likely_replacement_for_a_same_signature_function() {
     let warnings = deprecations(LEGACY);
     assert_eq!(warnings.len(), 1, "{warnings:#?}");

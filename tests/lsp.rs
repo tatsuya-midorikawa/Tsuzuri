@@ -192,6 +192,23 @@ fn references_and_highlights_cover_def_and_fn_heads() {
     assert!(responses[3]["result"].is_null());
 }
 
+#[test]
+fn rename_covers_function_names_in_parentheses() {
+    let main = "def twice :: i64 -> i64 = \\n -> n * 2\n\ndef apply :: (i64 -> i64) -> i64 = \\f -> f 1\n\nlet a = apply (twice)\nlet b = ( (twice) ) 3\na + b + twice 4\n";
+    let mut uri = String::new();
+    let responses = scripted(&[("Main.tz", main)], "utf-16", |path| {
+        uri = path("Main.tz");
+        vec![rename_request(1, &uri, main, "twice ::", "double")]
+    });
+    let edits = responses[0]["result"]["changes"][uri.as_str()]
+        .as_array()
+        .unwrap_or_else(|| panic!("{:?}", responses[0]));
+    assert_eq!(
+        apply_text_edits(main, edits),
+        main.replace("twice", "double")
+    );
+}
+
 fn rename_request(id: u64, uri: &str, text: &str, needle: &str, name: &str) -> serde_json::Value {
     serde_json::json!({"id": id, "method": "textDocument/rename", "params": {"textDocument": {"uri": uri}, "position": position(text, needle, "utf-16"), "newName": name}})
 }

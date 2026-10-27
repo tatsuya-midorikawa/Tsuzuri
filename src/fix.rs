@@ -619,7 +619,7 @@ pub fn run(
             let source = diagnostic.span.source.unwrap_or(project.root);
             let text = project.sources.get(source).map_or("", |file| &file.text);
             let message = format!(
-                "the fixes would introduce {} in '{}' at line {}: {}; no file was changed, review the fixes with --dry-run --json",
+                "the fixes would introduce {} in '{}' at line {}: {}; no file was changed; review the fixes with tsuzuri check --json",
                 diagnostic.code,
                 display_path(project, source),
                 location(text, diagnostic.span.start).0,
@@ -1488,7 +1488,7 @@ mod tests {
         assert_eq!(error.diagnostic.kind, Some("fix_verification_failed"));
         assert_eq!(
             error.diagnostic.message,
-            "the fixes would introduce E1003 in 'Main.tz' at line 1: expected i64, found bool; no file was changed, review the fixes with --dry-run --json"
+            "the fixes would introduce E1003 in 'Main.tz' at line 1: expected i64, found bool; no file was changed; review the fixes with tsuzuri check --json"
         );
         assert_eq!(project.sources[0].text, "x");
     }
