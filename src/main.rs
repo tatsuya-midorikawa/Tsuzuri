@@ -40,6 +40,7 @@ Tsuzuri - a statically typed language with ownership, powered by LLVM
 
 Usage:
     tsuzuri lsp
+    tsuzuri mcp [--root DIR] [--kg-dir DIR]
   tsuzuri check source.tz|source.tt|source.tc|directory [--json]
     tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
@@ -129,6 +130,9 @@ is replaced. `tsuzuri serve --status DIR` prints its counters. The sockets are i
 TSUZURI_SERVER_DIR (an absolute path; empty turns servers off), by default the user's cache
 (macOS) or runtime (Linux) directory, which only its owner can enter. A directory named serve is
 built with `tsuzuri build serve`.
+`tsuzuri mcp` is a Model Context Protocol server on standard input and output for AI agents: read-only
+tools that type-check the project (tz_check), read the guide, explain diagnostics, query the knowledge
+graph, search by type, compare versions, plan fixes, and draw diagrams. It never writes a file.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, .gitignore, and for AI agents AGENTS.md and llms.txt
 in an empty folder; --no-agent-files leaves out the last two.
 `tsuzuri check`, `build`, `run`, and `test` of a project (a root with Tsuzuri.toml or Main.tz) write
@@ -3150,6 +3154,9 @@ fn main() -> ExitCode {
     if raw.first().is_some_and(|command| *command == "api-diff") {
         return api_diff_command(&raw[1..]);
     }
+    if raw.first().is_some_and(|command| *command == "mcp") {
+        return mcp_command(&raw[1..]);
+    }
     if raw.first().is_some_and(|command| *command == "kg") {
         return kg_command::kg_command(&raw[1..]);
     }
@@ -3451,6 +3458,87 @@ fn select_affected(
                 println!("affected: {} of {total} tests ({value})", indices.len());
             }
             Ok(Some(indices))
+        }
+    }
+}
+
+/// The arguments of `tsuzuri mcp` (G29).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct McpArguments {
+    root: Option<PathBuf>,
+    kg_dir: Option<PathBuf>,
+}
+
+fn parse_mcp_arguments(arguments: &[OsString]) -> Result<McpArguments, String> {
+    let mut parsed = McpArguments::default();
+    let mut position = 0;
+    while position < arguments.len() {
+        let option = arguments[position].to_string_lossy().into_owned();
+        position += 1;
+        let slot = match option.as_str() {
+            "--root" => &mut parsed.root,
+            "--kg-dir" => &mut parsed.kg_dir,
+            _ => {
+                return Err(
+                    "mcp takes no paths; supported options are --root and --kg-dir".to_owned(),
+                );
+            }
+        };
+        if slot.is_some() {
+            return Err(format!("{option} specified more than once"));
+        }
+        match arguments.get(position).filter(|value| !value.is_empty()) {
+            Some(value) => *slot = Some(PathBuf::from(value)),
+            None => return Err(format!("{option} needs a directory")),
+        }
+        position += 1;
+    }
+    Ok(parsed)
+}
+
+/// `tsuzuri mcp [--root DIR] [--kg-dir DIR]`: the MCP server on standard input and output.
+fn mcp_command(arguments: &[OsString]) -> ExitCode {
+    let fail = |kind: DiagnosticKind, message: String, code: u8| {
+        print_diagnostic(
+            &Diagnostic::of(kind, message, Span::default()),
+            Path::new("<command line>"),
+            "",
+            false,
+        );
+        ExitCode::from(code)
+    };
+    let parsed = match parse_mcp_arguments(arguments) {
+        Ok(parsed) => parsed,
+        Err(message) => return fail(DiagnosticKind::McpBadArguments, message, EXIT_USAGE),
+    };
+    if let Some(code) = invalid_thread_setting(&mut io::stderr(), false) {
+        return ExitCode::from(code);
+    }
+    let current = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let given = parsed.root.unwrap_or_else(|| current.clone());
+    let root = match tsuzuri::mcp::project_root(&given) {
+        Some(root) => root,
+        None => {
+            return fail(
+                DiagnosticKind::McpRootUnusable,
+                format!("project root '{}' is not a directory", given.display()),
+                EXIT_FAILURE,
+            );
+        }
+    };
+    let options = tsuzuri::mcp::Options {
+        root,
+        kg_dir: parsed.kg_dir.map(|dir| current.join(dir)),
+    };
+    match tsuzuri::mcp::serve(options, io::stdin(), io::stdout().lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(tsuzuri::mcp::Fatal(message)) => {
+            let kind = if message.starts_with("cannot start the worker") {
+                DiagnosticKind::McpWorkerFailed
+            } else {
+                DiagnosticKind::McpIoFailed
+            };
+            fail(kind, message, EXIT_FAILURE)
         }
     }
 }
@@ -7262,6 +7350,40 @@ mod tests {
         assert!(parse(&["check", "Main.tz", "--kg", "--no-kg"]).is_ok());
     }
 
+    /// G29: `tsuzuri mcp` takes `--root` and `--kg-dir`, each once and with a value.
+    #[test]
+    fn parses_mcp_arguments() {
+        let parse = |values: &[&str]| {
+            parse_mcp_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+        };
+        assert_eq!(parse(&[]), Ok(McpArguments::default()));
+        assert_eq!(
+            parse(&["--kg-dir", "b", "--root", "a"]),
+            Ok(McpArguments {
+                root: Some(PathBuf::from("a")),
+                kg_dir: Some(PathBuf::from("b")),
+            })
+        );
+        for (values, message) in [
+            (
+                vec!["--root", "a", "--root", "b"],
+                "--root specified more than once",
+            ),
+            (vec!["--root"], "--root needs a directory"),
+            (vec!["--kg-dir", ""], "--kg-dir needs a directory"),
+            (
+                vec!["--json"],
+                "mcp takes no paths; supported options are --root and --kg-dir",
+            ),
+            (
+                vec!["x"],
+                "mcp takes no paths; supported options are --root and --kg-dir",
+            ),
+        ] {
+            assert_eq!(parse(&values), Err(message.to_owned()), "{values:?}");
+        }
+    }
+
     /// G28: `--affected BASE` selects the tests of `test` and nothing else.
     #[test]
     fn accepts_affected_only_with_test() {
@@ -7357,6 +7479,7 @@ mod tests {
             "fix_edition_command",
             "guide_command",
             "main",
+            "mcp_command",
             "new_project",
             "print_coverage",
             "print_diagnostic",

@@ -1,0 +1,1118 @@
+[
+  {
+    "name": "tz_guide",
+    "title": "Tsuzuri language guide",
+    "description": "Return the Tsuzuri language guide that matches this compiler: syntax, ownership rules, numeric rules, common mistakes and the standard library index. Omit topic for the short card; pass topic \"list\" to see every topic.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Guide topic. Omit for the short card; \"list\" lists the topics."
+        },
+        "module": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "With topic \"std\": the standard library module whose page to return, for example Array."
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "topic",
+        "text",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Tsuzuri language guide",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_check",
+    "title": "Type-check a Tsuzuri project",
+    "description": "Type-check a project (or one file) without building it and return every diagnostic with its code, position and message, plus help, related locations and fixes when the compiler has them. Run it after every edit.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "File or directory to check, relative to the project root. Default: the project root, which needs Main.tz. For a library without Main.tz pass one of its .tz files."
+        },
+        "warnings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include warnings. false returns errors only."
+        },
+        "implicit_copy": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also report W1006, the implicit copies of arrays and lists."
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warnings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "error",
+                  "warning"
+                ]
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "span": {
+                "type": "object",
+                "properties": {
+                  "start": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "end": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "column": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "end_line": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "end_column": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "start",
+                  "end",
+                  "line",
+                  "column",
+                  "end_line",
+                  "end_column"
+                ]
+              }
+            },
+            "required": [
+              "severity",
+              "code",
+              "message",
+              "path",
+              "span"
+            ]
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok",
+        "files",
+        "errors",
+        "warnings",
+        "omitted",
+        "diagnostics",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Type-check a Tsuzuri project",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_explain",
+    "title": "Explain a diagnostic",
+    "description": "Explain a compiler diagnostic: why it is reported, a failing example and the fix. query is a code such as E1012 or W1006, or a kind such as use_after_move.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Diagnostic code (E1012) or kind (use_after_move)."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "since": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "title",
+        "text",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Explain a diagnostic",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_symbol",
+    "title": "Show a declaration",
+    "description": "Show one declaration from the knowledge graph: signature, parameter conventions (own, ref, ref mut), effects, trap, alloc and copy sites, callees and tests. id is a knowledge-graph id such as Main.sum_to or Array.map.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Knowledge-base id of a module, function, type, class, field or test."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name"
+          ]
+        },
+        "facts": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "callees": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "callers": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "symbol",
+        "facts",
+        "callees",
+        "tests",
+        "callers",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Show a declaration",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_brief",
+    "title": "Summary card of a project, module or item",
+    "description": "Return a short summary card: the whole project (omit id), one module (id such as Main) or one function or type. Use it to orient yourself before reading code.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Knowledge-base id of a module, function or type. Omit for the whole project."
+        },
+        "budget": {
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 200000,
+          "default": 6000,
+          "description": "Largest answer in characters; lower-priority lines are replaced by an 'N more' line."
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "L0",
+            "L1",
+            "L2"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "text",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Summary card of a project, module or item",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_search",
+    "title": "Search declarations by text",
+    "description": "Find declarations by text in names, signatures and documentation. Returns knowledge-graph ids to pass to tz_symbol, tz_brief or tz_callers.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Text to look for."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "module",
+            "def",
+            "const",
+            "record",
+            "union",
+            "case",
+            "field",
+            "class",
+            "method",
+            "instance",
+            "alias",
+            "test",
+            "bench",
+            "extern",
+            "handle"
+          ],
+          "description": "Only declarations of this kind."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 20,
+          "description": "Most matches to return."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "matches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "signature": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "signature"
+            ]
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query",
+        "matches",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Search declarations by text",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_callers",
+    "title": "Callers of a function, users of a type",
+    "description": "List the call sites that call a function (relation calls) or the declarations that use a type (relation uses_type), up to depth levels of callers. Each row has the caller id, the position and the argument conventions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Knowledge-base id of a function (relation calls) or a type (relation uses_type)."
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "calls",
+            "uses_type"
+          ],
+          "default": "calls"
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8,
+          "default": 1,
+          "description": "Levels of callers to follow."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50,
+          "description": "Most rows to return."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "calls",
+            "uses_type"
+          ]
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "callers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "rel": {
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "span": {
+                "type": "object"
+              },
+              "depth": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "rel",
+              "from",
+              "to",
+              "span",
+              "depth"
+            ]
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "relation",
+        "depth",
+        "callers",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Callers of a function, users of a type",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_path",
+    "title": "Shortest chain between two declarations",
+    "description": "Find a shortest chain of knowledge-graph edges from one declaration to another, for example how main reaches a function. Follows calls unless relations says otherwise; each step has its position.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Knowledge-graph id to start from."
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Knowledge-graph id to reach."
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "contains",
+              "calls",
+              "uses_type",
+              "implements",
+              "instance_of",
+              "imports",
+              "tested_by"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 7,
+          "description": "Edge relations to follow. Default [\"calls\"]."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 8,
+          "description": "Most edges in the chain."
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "found": {
+          "type": "boolean"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "from": {
+                "type": "string"
+              },
+              "rel": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "span": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "index",
+              "from",
+              "rel",
+              "to",
+              "span"
+            ]
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "relations",
+        "depth",
+        "found",
+        "steps",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Shortest chain between two declarations",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_find",
+    "title": "Search declarations by type",
+    "description": "Search the declarations visible in the project by type, for example 'ref [i64] -> i64'. _ matches any type and 'a is a type variable. Returns the best candidates first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "A Tsuzuri type, for example \"ref [i64] -> i64\"."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 10,
+          "description": "Most candidates to return (the search never returns more than 10)."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "signature": {
+                "type": "string"
+              },
+              "how": {
+                "type": "string",
+                "enum": [
+                  "call",
+                  "value",
+                  "type",
+                  "module"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "signature",
+              "how"
+            ]
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query",
+        "candidates",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Search declarations by type",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_impact",
+    "title": "Impact of a change",
+    "description": "Compare two versions of a project and report what the change touches: signature and parameter-convention changes, effect changes, new warnings and the tests that reach the changed code. old and new are directories inside the project root: a project or a knowledge graph.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "old": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Directory of the earlier version, relative to the project root."
+        },
+        "new": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "Directory of the later version, relative to the project root. Default: the project root."
+        }
+      },
+      "required": [
+        "old"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "old": {
+          "type": "string"
+        },
+        "new": {
+          "type": "string"
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "old",
+        "new",
+        "records",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Impact of a change",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_fix_plan",
+    "title": "Plan machine-applicable fixes",
+    "description": "Plan the fixes that the compiler can apply mechanically for the diagnostics of a project and return the edits and a unified diff. It never changes a file: apply the diff or the edits yourself.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "File or directory, relative to the project root. Default: the project root."
+        },
+        "applicability": {
+          "type": "string",
+          "enum": [
+            "certain",
+            "likely",
+            "maybe"
+          ],
+          "default": "certain",
+          "description": "certain: meaning-preserving rewrites only. likely: also rewrites that a person should review. maybe: also suggestions that need a decision."
+        }
+      },
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "applicability": {
+          "type": "string",
+          "enum": [
+            "certain",
+            "likely",
+            "maybe"
+          ]
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stop": {
+          "type": "string",
+          "enum": [
+            "fixed_point",
+            "round_limit"
+          ]
+        },
+        "fixes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "applicability": {
+                "type": "string",
+                "enum": [
+                  "certain",
+                  "likely",
+                  "maybe"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "round": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "edits": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "span": {
+                      "type": "object"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "span",
+                    "text"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "code",
+              "applicability",
+              "title",
+              "round",
+              "edits"
+            ]
+          }
+        },
+        "dropped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "applicability": {
+                "type": "string",
+                "enum": [
+                  "certain",
+                  "likely",
+                  "maybe"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "applicability",
+              "title",
+              "reason"
+            ]
+          }
+        },
+        "diff": {
+          "type": "string"
+        },
+        "remaining_errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_warnings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applicability",
+        "rounds",
+        "stop",
+        "fixes",
+        "dropped",
+        "diff",
+        "remaining_errors",
+        "remaining_warnings",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Plan machine-applicable fixes",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tz_diagram",
+    "title": "Generate a diagram",
+    "description": "Generate a Mermaid (or DOT) diagram from the knowledge graph: module dependencies, types, the call graph of a function, the ownership timeline of a function, the concurrency topology, the memory layout of a type, or the state transitions of a union.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "module",
+            "types",
+            "calls",
+            "ownership",
+            "concurrency",
+            "layout",
+            "transitions"
+          ],
+          "description": "Which diagram."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "calls and ownership: a function id. layout and transitions: a type id. module, types and concurrency: an optional module id to focus on."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6,
+          "default": 2,
+          "description": "calls: levels of callees to draw."
+        },
+        "max_nodes": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 200,
+          "default": 60,
+          "description": "Most nodes before the diagram folds modules into single nodes."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "mermaid",
+            "dot"
+          ],
+          "default": "mermaid"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "mermaid",
+            "dot",
+            "markdown"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "nodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "format",
+        "text",
+        "nodes",
+        "truncated"
+      ]
+    },
+    "annotations": {
+      "title": "Generate a diagram",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  }
+]

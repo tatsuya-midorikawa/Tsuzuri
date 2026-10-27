@@ -6,7 +6,7 @@
 | 優先度 | P1（D-50 の表） |
 | 規模 | L。Phase 1 M（照会 7 コマンドと ID の解決）、Phase 2 S（`kb find`）、Phase 3 L（`kb impact`）、Phase 4 S（`test --affected`） |
 | 依存 | [G27](G27-build-time-kb.md) Phase 2（`KbData`・`KbView`・`open`・`Card`・`kb` の分岐）。[G26](G26-facts-model.md)（行のキー）。Phase 2 は [G25](../G25-typed-holes-and-find.md) の Phase 3（`tsuzuri find`）。graph・facts が無い KB には縮退する（「前提とする他チケットのインターフェース」） |
-| 後続 | [G29](../G29-mcp-server.md)（照会の関数と `impact` を MCP が呼ぶ）、G31（AI 作業コスト指標の KB 方式） |
+| 後続 | [G29](G29-mcp-server.md)（照会の関数と `impact` を MCP が呼ぶ）、G31（AI 作業コスト指標の KB 方式） |
 | 状態 | done（Phase 1〜4。D-60 の KG。2026-10-28） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。確認に使った作業ツリーは `9dd0fbbc`（main）で、`git diff --stat 9dd0fbbc a2313d19` は `docs/benchmarks.md` の 41 行だけ。ソースは同じ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D12 はすべて承認済み |

@@ -5,9 +5,9 @@
 | ID | G29 |
 | 優先度 | P2 |
 | 規模 | 全体 L（Phase 1: M、Phase 2: M、Phase 3: S、Phase 4: S）。D-50 の表は M だが、ツールが 11 個（種の 10 個 + `tz_search`）になり、Phase 2 が依存チケットごとの接続（各 S）になったので見直した |
-| 依存 | Phase 1: なし（HEAD だけ。`tz_check` は `check --json` と同じ解析）。Phase 2 はツールごとに、`tz_guide` が [G21](_completed/G21-ai-guide-pack.md)、`tz_explain` が [G23](_completed/G23-diagnostic-kinds-explain-hints.md)、`tz_symbol`・`tz_brief`・`tz_search`・`tz_callers` が [G26](_completed/G26-facts-model.md)・[G27](_completed/G27-build-time-kb.md)・[G28](_completed/G28-kb-query-and-impact.md)、`tz_impact` が G28 Phase 3、`tz_find` が [G25](G25-typed-holes-and-find.md)、`tz_fix_plan` が [G24](_completed/G24-tsuzuri-fix.md)、`tz_diagram` が [G30](_completed/G30-diagrams.md)。弱い依存: [G22](_completed/G22-diagnostic-v2.md)（診断の追加キー。なくても動き、あれば自動で出る）。Phase 3 は Phase 1 と、資源ごとに G21・G23・G27 |
-| 後続 | [G31](_completed/G31-ai-cost-metrics.md)（計測アダプターは実装済み。MCP 方式の実測は本 G29 の提供後）。VS Code 拡張（`vsc/`）からの自動登録は対象外 |
-| 状態 | todo |
+| 依存 | Phase 1: なし（HEAD だけ。`tz_check` は `check --json` と同じ解析）。Phase 2 はツールごとに、`tz_guide` が [G21](G21-ai-guide-pack.md)、`tz_explain` が [G23](G23-diagnostic-kinds-explain-hints.md)、`tz_symbol`・`tz_brief`・`tz_search`・`tz_callers` が [G26](G26-facts-model.md)・[G27](G27-build-time-kb.md)・[G28](G28-kb-query-and-impact.md)、`tz_impact` が G28 Phase 3、`tz_find` が [G25](../G25-typed-holes-and-find.md)、`tz_fix_plan` が [G24](G24-tsuzuri-fix.md)、`tz_diagram` が [G30](G30-diagrams.md)。弱い依存: [G22](G22-diagnostic-v2.md)（診断の追加キー。なくても動き、あれば自動で出る）。Phase 3 は Phase 1 と、資源ごとに G21・G23・G27 |
+| 後続 | [G31](G31-ai-cost-metrics.md)（計測アダプターは実装済み。MCP 方式の実測は本 G29 の提供後）。VS Code 拡張（`vsc/`）からの自動登録は対象外 |
+| 状態 | done（Phase 1〜4。D-60 の KG。2026-10-28） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D18 はすべて承認済み |
 | 改善する劣位 | AI エージェントが診断・知識を得る道は、シェルで `tsuzuri check --json` を起動して標準エラーを読み、ファイルを `grep` することだけで、ツールの型も結果の形も機械可読に宣言されていない（D-50 の結論 (1)）。MCP は VS Code・Claude Code・Copilot CLI・Cursor が共通に持つ接続口で、本チケットは、その上に読み取り専用で型付きの 11 ツールを置く |
@@ -18,7 +18,7 @@
 
 ## KG への更新（D-60、2026-10-28）
 
-本チケットは [D-60](GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。オプションは `--kg-dir`（既定 `<根>/target/tz/kg`）、能力は `kg`、資源は `tz://kg/brief/L0`・`tz://kg/brief/{id}`。
+本チケットは [D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。オプションは `--kg-dir`（既定 `<根>/target/tz/kg`）、能力は `kg`、資源は `tz://kg/brief/L0`・`tz://kg/brief/{id}`。
 
 | 本文 | KG での実装 |
 | --- | --- |
@@ -26,6 +26,34 @@
 | `tz_find`（G25 が `done` のとき） | G28 Phase 2 の KG の型検索（D-60）で有効にする |
 | KB の 4 ツールの `kb_incomplete` | `kg_incomplete`（本文は同じ） |
 | `tests/mcp_knowledge.rs` | 同じ名前。KG のツールのテストを足す |
+
+## 実装と検証（2026-10-28）
+
+[D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) の KG の名前で Phase 1〜4 を完了した（ブランチ `feat/g29-mcp-server`）。依存のチケット（G21・G23・G24・G26・G27・G28・G30）がすべて `done` なので、12 のツール（D-60 の `tz_path` を含む）をすべて有効にした。`tz_find` は G25 でなく G28 の KG の型検索（D-60）。
+
+**実装したもの**: `src/mcp/{mod,backend,rpc,schema,tools,session,path,check,knowledge,cache,resources}.rs`・`src/mcp/tools.json`（付録 B に D-60 の変更: `tz_path` を `tz_callers` の次に、説明の knowledge base を knowledge graph に）、`src/main.rs`（`tsuzuri mcp`・`parse_mcp_arguments`・`HELP`）、`src/lib.rs`（`pub mod mcp;`）、`src/parallel.rs`（`WORKER_STACK_BYTES` を `pub(crate)`）、`src/kg/build.rs`（`memory`: KG をメモリの上だけに作る。frontend のキャッシュも使わない）、`src/kg/find.rs`（`Match.parameters`。G25 の `how`）、`src/diagnostic_kinds.rs`（`E2000` の `mcp_bad_arguments`、`E2010` の `mcp_root_unusable`・`mcp_io_failed`・`mcp_worker_failed`）、`src/explain/codes/E2010.md`。テスト `tests/mcp.rs`（46 件: 群 P 7・T 11・C 10・K 6・L 6、資源 5、敵対的な入力 1）・`tests/mcp_knowledge.rs`（17 件）、単体テスト（`rpc` 4・`schema` 4・`tools` 5・`path` 2・`resources` 1・`cache` 1、`main.rs` の `parses_mcp_arguments`）、`tests/fixtures/mcp/tool-examples.json`。
+
+**実行したコマンドと結果**: `cargo nextest run --locked` の全件（2,347 件）が通過。`cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` が通過。`node scripts/check-docs.mjs` で変更した 5 ページが通過。手順 1 の比較: `examples/` と `tests/fixtures/` の 123 のプロジェクトで、G29 の前のバイナリ（release）と後のバイナリの `check --json --no-kg` の標準出力・標準エラー・終了コードが 123 件すべて同じ。**公式 SDK**（付録 F.2。`@modelcontextprotocol/sdk` 1.32.1、Node 20.17、リポジトリの外に置いた）で `kg_shop` の写しに接続し、`initialize`・`ping`・`tools/list`（12 ツール）・12 ツールの `callTool`（全部 `ok`・`structured`。クライアントが `structuredContent` を `outputSchema` で検証する）・`resources/list`・`resources/templates/list`・`resources/read`（`tz://kg/brief/L0`）が通り、最後が `DONE`。`tools/list` の応答は 2025-06-18 で 16,062 bytes（16,384 以下）。
+
+**期待値の出どころ**: プロトコルの期待は付録 C の JSON（MCP の仕様の例）と本文の表から、テストの中に書いた。`tz_check` の診断は同じ根の `tsuzuri check --json` の行、知識グラフ・`explain`・`guide`・`fix`・図の期待は、それぞれの CLI（`kg show`・`kg brief`・`kg search`・`kg callers`・`kg uses`・`kg path`・`kg find`・`kg impact`・`kg diagram`・`explain`・`guide`・`fix --dry-run`）の出力で、MCP の出力を写していない。`tool-examples.json`（偽のバックエンドが返し、`outputSchema` で検証する入力）は、付録 D の「依存チケットの実装後に実際の出力で置き換える」に従い、`examples/point` での実際の出力にした。
+
+**チケットから外れた判断**:
+
+1. D-60 の名前: オプション `--kg-dir`（既定 `<根>/target/tz/kg`）、`Capabilities::kg`、資源 `tz://kg/brief/L0`・`tz://kg/brief/{id}`、不完全な KG のメッセージは本文のまま。
+2. 付録 G.1 の誤りのプログラム（`consume text` を 2 回）は、今のコンパイラでは誤りにならない（`Tsuzuri.toml` のない入力は edition 2027 で、読むだけの引数は借用）。テストは `own string` の引数で `E1012` を出す同じ形のプログラム（5:26）を使う。`structuredContent` の診断は G22 の後の `check --json` と同じく `kind`・`related`・`help` を持つ。
+3. Phase 1〜4 を 1 つの変更で出したので、`initialize` は最初から `resources: {}` を宣言する（付録 C.1 の Phase 3 の形）。
+4. KG の取得: `manifest::inspect` が新しいと言えば `KgData::open`（`facts/`・`layout/` は G28 の遅延読み込みで、読むだけ）、そうでなければ `kg::build::memory`。どちらも書かない（`kg_acquisition_writes_nothing` が、全ツールの呼び出しの前後で根の下の全ファイルのパス・大きさ・更新時刻が同じことを確かめる）。std の KG は `StdSource::Memory`。
+5. `tz_symbol` の `symbol` は、辺の行き先にだけ現れる ID（`IO.write_line`）では `{"id","kind":"external","name"}`（`outputSchema` の必須キーを満たす）。
+6. `tz_callers` の `uses_type` で `depth` が 2 以上のときは、`uses_type` の辺を逆に幅優先でたどった行と、`kg callers` と同じ形の text（`uses of X (depth D)`）。`depth` 1 の text は `kg uses` と同じ。`calls` は `kg callers` と同じ（開始の関数の自己呼び出しは再び出さない）。
+7. `tz_search` の `kind`・`limit` で行を落としたときの text は、`kg search` と同じ形の行を残ったものから作る。落とさなければ `kg search` の text そのもの。
+8. `tz_find` の text の最後の `... N more; raise --limit (at most 100)` は、ツールの引数に合わせて `raise limit (at most 10)` にする。`how` は引数があれば `call`、なければ `value`（G25 の規則）。
+9. `tz_impact` の `old`・`new` は根の下のディレクトリで、マーカーのある KG はそのまま読み、プロジェクトはメモリの上で KG にする。ラベルは与えた値、`new` を省くと根のプロジェクトで `working tree`。`.tsuzuri-kg` のマーカーも `Tsuzuri.toml` もソースもないディレクトリは `'{p}' is neither a knowledge graph nor a project directory`。
+10. 結果のキャッシュの鍵は、ツール名・引数・入力のハッシュ（プロジェクトを読むツールは KG の `source_hash`、`tz_guide`・`tz_explain` は空）。`tz_impact` は別のディレクトリを読むのでキャッシュしない。誤りの結果はキャッシュしない。
+11. 未知の ID のメッセージは `unknown id '{id}'; use tz_search to find ids` に、G28 の候補があれば `; did you mean: …` を足す。
+12. `src/main.rs` の「直接出力してよい関数」の一覧に `mcp_command` を足した（サーバーは `mcp` を実行しない）。
+13. `tools/list` が 16,384 bytes に近い（16,062）。説明を足すときは `tools_list_stays_small` が止める。
+
+**更新した文書**: `_tsuzuri/language-reference/compiler/mcp.md`（新規）・`usage.md`（`### mcp`）・`option.md`（`mcp` の引数と `TSUZURI_THREADS`）・`diagnostics.md`（`E2010`・`E2000` と kind の一覧）・`index.md`、`README.md`（開発支援、「MCP サーバー」の節、CLI）、`docs/language.md`（`E2010` と `tsuzuri mcp` の段落）、`docs/architecture.md`（ファイル表と「MCP サーバー（G29、D-60）」）、`docs/stability.md`。
 
 ## 実装者向け早見
 
@@ -573,24 +601,24 @@ fn knowledge(&self) -> Result<Arc<KbView>, ToolError>:
 
 ### Phase 1
 
-- [ ] `tsuzuri mcp` が、付録 F の公式 SDK のクライアントで `initialize`・`tools/list`・`tools/call tz_check` を通る。
-- [ ] `tests/mcp.rs` の Phase 1 のテスト（手順 2・6・7・9 の名前）がすべて通り、`src/mcp/*.rs` の単体テストが通る。
-- [ ] `tools/list` は `tz_check` だけで、`tools.json` の該当要素と等しい。16,384 bytes 以下。
-- [ ] stdout は JSON の行だけ。ファイルを書かない・子プロセス・環境変数の読み取り（`src/mcp/`）がない（静的な検査）。
-- [ ] 手順 1 の `check --json` の保存と、現在のバイナリの出力が 1 byte も変わらない。
-- [ ] 文書（手順 10）。`cargo fmt`・`clippy`・`cargo test --locked` が緑。
+- [x] `tsuzuri mcp` が、付録 F の公式 SDK のクライアントで `initialize`・`tools/list`・`tools/call tz_check` を通る。
+- [x] `tests/mcp.rs` の Phase 1 のテスト（手順 2・6・7・9 の名前）がすべて通り、`src/mcp/*.rs` の単体テストが通る。
+- [x] `tools/list` は `tz_check` だけで、`tools.json` の該当要素と等しい。16,384 bytes 以下。
+- [x] stdout は JSON の行だけ。ファイルを書かない・子プロセス・環境変数の読み取り（`src/mcp/`）がない（静的な検査）。
+- [x] 手順 1 の `check --json` の保存と、現在のバイナリの出力が 1 byte も変わらない。
+- [x] 文書（手順 10）。`cargo fmt`・`clippy`・`cargo test --locked` が緑。
 
 ### Phase 2
 
-- [ ] 依存が `done` のツールすべてが `tools/list` に出て、それぞれのテストが通る。未完の依存のツールは出ない。
-- [ ] KB の取得が何も書かない（手順 13 のテスト）。結果のキャッシュのテストが通る。
-- [ ] `tools/list` が 16,384 bytes 以下のまま。
+- [x] 依存が `done` のツールすべてが `tools/list` に出て、それぞれのテストが通る。未完の依存のツールは出ない。
+- [x] KB の取得が何も書かない（手順 13 のテスト）。結果のキャッシュのテストが通る。
+- [x] `tools/list` が 16,384 bytes 以下のまま。
 
 ### Phase 3 と Phase 4
 
-- [ ] 資源のテストと敵対的な入力の表のテストが通る。`initialize` が `resources: {}` を宣言する。
-- [ ] 公式 SDK のクライアントで、全ツールと資源が通った（結果を完了報告に書く）。
-- [ ] 文書の全ページが `check-docs.mjs` を通る。
+- [x] 資源のテストと敵対的な入力の表のテストが通る。`initialize` が `resources: {}` を宣言する。
+- [x] 公式 SDK のクライアントで、全ツールと資源が通った（結果を完了報告に書く）。
+- [x] 文書の全ページが `check-docs.mjs` を通る。
 
 ## 落とし穴
 

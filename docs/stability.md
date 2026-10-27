@@ -21,6 +21,7 @@
 | `tsuzuri api-diff` の出力形式 | テキストの行の形と `--json` のキー（キーが増えることはあります） |
 | 知識グラフの schema（facts の行は `tz-facts/1`。G26・D-60） | `nodes.jsonl`・`edges.jsonl`・`tests.jsonl`・`facts/`・`layout/` の行のキーを消さず・改名せず、行の意味を変えません。キーと、`kind`・`rel`・`event`・`conv`・`layout` の語彙を足すのは互換の変更です（読み手は知らないキーと語彙を無視します）。互換のない変更は schema の番号を上げます（[知識グラフの形式](../_tsuzuri/language-reference/compiler/kg-format.md)） |
 | 知識グラフの置き場と `tsuzuri kg`（G27） | `target/tz/kg/` のファイル名、`manifest.json` の schema `tz-kg/1` とキー（`counts` の項目は増えることがあります）、`tsuzuri kg` のサブコマンド・オプション・`--json` のキー・終了コード、`E2009` の kind（[知識グラフ](../_tsuzuri/language-reference/compiler/kg.md)） |
+| `tsuzuri mcp`（G29） | ツールの名前、引数のキーと値、`structuredContent` のキー（キーは増えることがあります）、資源の URI、`E2010` と `mcp_*` の kind。`tools.json` のキーを消す・改名するのは互換のない変更です |
 | `tsuzuri kg diagram`（G30） | `KIND` の 7 つの名前、`--format` の値（`mermaid`・`dot`）、`--json` の行のキー（`kind`・`format`・`text`・`nodes`・`folded`）、`DiagramOutput` のフィールド、`views/` のファイル名（`modules.mmd`・`types.mmd`・`concurrency.mmd`）、`E2000` の `diagram_*` の kind と終了コード |
 | `tsuzuri kg impact` と `test --affected`（G28） | `impact --json` の行の `type` と、`change` の `severity`・`action`・`kind`・`name`・`old`・`new`・`note`、`tests` の `mode`・`affected`・`total`・`reason`・`paths`、`summary` の `breaking`・`non_breaking`・`info`・`omitted`。`--affected --json` の `mode`・`affected`・`total`・`base`・`reason`。`impact` の終了コードは差があっても 0。照会と git のリビジョンの `E2000` の kind `kg_ambiguous_id`・`kg_unknown_id`・`unknown_git_revision` |
 
@@ -34,6 +35,7 @@
 | `tsuzuri guide` の本文、`AGENTS.md`・`llms.txt` のひな形 | 文言・章立て・例・std の索引の行は直します（D-56） |
 | `tsuzuri explain` の説明 | 題と本文の文言、例、専用の説明を持つ kind の範囲は直します |
 | 知識グラフの brief カードの文言 | 行の並び・文言・優先度・切り詰め方は直します（上限の文字数は保ちます） |
+| MCP の本文 | `content` の本文、ツールと資源の説明、`instructions` の文言は直します |
 | `kg diagram` と `views/*.mmd` の図の本文 | Mermaid・DOT・Markdown の字句、色、ノードと辺の順序、ラベルの切り方の細部は直します（生成した Mermaid が Mermaid で読めることは保ちます） |
 | 警告が出るかどうか | 新しい警告が増えることがあります。`--deny-warnings` を付けたビルドは、コンパイラの更新や、依存パッケージが宣言を非推奨にしたことで失敗することがあります。警告を出す・出さないと `--deny-warnings` の結果は、保証の対象外です |
 | 実験的と書いた機能（GPU カーネルなど） | 仕様が固まるまで変わります |
