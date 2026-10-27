@@ -7946,6 +7946,14 @@ fn check_modules_collect(
             diagnostics.extend(errors);
             first
         })?;
+    let recursive_functions = function_declarations
+        .iter()
+        .enumerate()
+        .filter_map(|(id, (_, declaration))| declaration.recursion.is_some().then_some(id))
+        .collect();
+    drop(check_time);
+    // G26: the declaration view of the knowledge graph, while the module still has the abstract
+    // bodies; its own phase, so that the phases of `TSUZURI_TIME_PASSES` do not overlap.
     if let Some(capture) = capture {
         let _kg_time = crate::timings::Phase::start("kg-capture");
         kg_capture::collect_abstract(
@@ -7959,12 +7967,6 @@ fn check_modules_collect(
             },
         );
     }
-    let recursive_functions = function_declarations
-        .iter()
-        .enumerate()
-        .filter_map(|(id, (_, declaration))| declaration.recursion.is_some().then_some(id))
-        .collect();
-    drop(check_time);
     let specialize_time = crate::timings::Phase::start("specialize");
     let module = polymorph::specialize(
         module,

@@ -614,7 +614,7 @@ pub fn create_project(
                 "namespace {namespace}\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln \"Hello, Tsuzuri!\"\n    0\n\ntest \"adds numbers\" = assert (1 + 2 == 3)\n"
             ),
         ),
-        (".gitignore", ".tsuzuri/\n".to_owned()),
+        (".gitignore", ".tsuzuri/\ntarget/\n".to_owned()),
     ];
     let values = crate::guide::Values {
         name: &name,
@@ -1474,6 +1474,11 @@ mod tests {
         let created = create_project(&root.join("hello-world"), None, true).unwrap();
         assert_eq!(created.len(), 5);
         assert!(created[3].ends_with("AGENTS.md") && created[4].ends_with("llms.txt"));
+        // `target/` holds the build output and the knowledge graph (G27).
+        assert_eq!(
+            std::fs::read_to_string(&created[2]).unwrap(),
+            ".tsuzuri/\ntarget/\n"
+        );
         let manifest = parse_manifest(&std::fs::read_to_string(&created[0]).unwrap(), 0).unwrap();
         assert_eq!(
             (manifest.name.as_str(), manifest.namespace.as_str()),

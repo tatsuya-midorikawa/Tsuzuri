@@ -1,0 +1,6 @@
+namespace Acme::Shop
+
+using Acme::Shop
+
+def print_total :: ref [Line] -> unit = \lines ->
+    do! IO.write_line (Cart.total lines)

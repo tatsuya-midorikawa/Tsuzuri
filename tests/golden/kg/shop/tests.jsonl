@@ -1,0 +1,3 @@
+{"id":"test:Acme::Shop::Cart.empty cart","kind":"test","module":"Acme::Shop::Cart","name":"empty cart","index":1,"span":{"path":"Cart.tz","start":595,"end":607,"line":19,"column":6}}
+{"id":"test:Acme::Shop::Cart.line total","kind":"test","module":"Acme::Shop::Cart","name":"line total","index":0,"span":{"path":"Cart.tz","start":492,"end":504,"line":18,"column":6}}
+{"id":"test:Acme::Shop::Main.main runs","kind":"test","module":"Acme::Shop::Main","name":"main runs","index":2,"span":{"path":"Main.tz","start":170,"end":181,"line":8,"column":6}}

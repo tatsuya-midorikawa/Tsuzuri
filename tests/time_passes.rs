@@ -80,7 +80,13 @@ fn phases(output: &Output) -> Vec<String> {
                 "closures",
                 "ownership",
                 "emit",
-                "cache"
+                "cache",
+                "kg-capture",
+                "kg-model",
+                "kg-write",
+                "kg-facts",
+                "kg-brief",
+                "kg-publish"
             ]
             .contains(&name)
                 || name.starts_with("tool."),
@@ -125,7 +131,7 @@ fn time_passes_is_off_by_default() {
 #[test]
 fn check_reports_frontend_phases_in_order() {
     assert_eq!(
-        phases(&compiler(&["check", hello()], Some("1"))),
+        phases(&compiler(&["check", hello(), "--no-kg"], Some("1"))),
         [
             "load",
             "cache",
@@ -135,6 +141,49 @@ fn check_reports_frontend_phases_in_order() {
             "closures",
             "ownership"
         ]
+    );
+}
+
+/// A check that writes the knowledge graph (G27) times its stages after the frontend's, each in its
+/// own phase.
+#[test]
+fn check_reports_the_kg_phases_in_order() {
+    let temporary = Temporary::new("kg");
+    fs::write(
+        temporary.path().join("Main.tz"),
+        "def answer :: unit -> i64 = \\_ -> 42\n\nanswer ()\n",
+    )
+    .unwrap();
+    let names = phases(&compiler(
+        &["check", temporary.path().to_str().unwrap()],
+        Some("1"),
+    ));
+    assert_eq!(
+        names,
+        [
+            "load",
+            "cache",
+            "parse",
+            "check",
+            "kg-capture",
+            "specialize",
+            "closures",
+            "ownership",
+            "kg-model",
+            "kg-write",
+            "kg-facts",
+            "kg-brief",
+            "kg-publish"
+        ]
+    );
+    // The graph is fresh now: the next check does none of its work.
+    let names = phases(&compiler(
+        &["check", temporary.path().to_str().unwrap()],
+        Some("1"),
+    ));
+    assert!(
+        !names.iter().any(|name| name.starts_with("kg-")),
+        "{names:?}"
     );
 }
 

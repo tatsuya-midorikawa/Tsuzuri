@@ -5,9 +5,9 @@
 | ID | G27 |
 | 優先度 | P1（D-50 の表） |
 | 規模 | L。Phase 1 M（書き込み・manifest・鮮度・フラグ）、Phase 2 M（brief カードと `kb build`／`verify`／`clean`／`export`）、Phase 3 M（増分）、Phase 4 M（std の KB と `KbView` の std）、Phase 5 S（計測の記録と台帳） |
-| 依存 | [G26](_completed/G26-facts-model.md) Phase 1（`src/kb/`・ID 規則・`KbModel::build`・`write_symbols`・`analyze_inputs_core`・`check_modules_captured`）。graph・tests・facts・layout の書き手（G26 Phase 2〜6）は**あれば使い、なければそのファイルとカードの該当行を出さない**（縮退。「前提とする他チケットのインターフェース」）。弱い依存: [G22](_completed/G22-diagnostic-v2.md)（`E2009` に kind を付ける。未実装なら付けない） |
+| 依存 | [G26](G26-facts-model.md) Phase 1（`src/kb/`・ID 規則・`KbModel::build`・`write_symbols`・`analyze_inputs_core`・`check_modules_captured`）。graph・tests・facts・layout の書き手（G26 Phase 2〜6）は**あれば使い、なければそのファイルとカードの該当行を出さない**（縮退。「前提とする他チケットのインターフェース」）。弱い依存: [G22](G22-diagnostic-v2.md)（`E2009` に kind を付ける。未実装なら付けない） |
 | 後続 | G28（照会と `impact`）、G29（MCP）、G30（図表）、G31（AI 作業コスト指標の KB 方式）、G35（生成物による文書） |
-| 状態 | todo |
+| 状態 | done（Phase 1〜5。2026-10-28。D-60 の KG。Phase 3 は着手の条件を満たさず再利用なし） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。確認に使った作業ツリーは `9dd0fbbc`（main）で、`git diff --stat 9dd0fbbc a2313d19` は `docs/benchmarks.md` の 41 行だけ。ソースは同じ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
 | 改善する劣位 | コンパイラは解析のたびにシンボル・呼び出し・効果・トラップ箇所を内部で得るが、`check` が終わると捨てる。AI は同じ事実を `grep` とファイルの全文読みで毎回作り直す（D-50 の調査結論 (1)）。KB はその事実と小さな要約（brief カード）を `target/tz/kb` に決定的に残し、最初の 700〜2,400 字から読み始められるようにする |
@@ -16,7 +16,7 @@
 
 ## KG への更新（D-60、2026-10-28）
 
-本チケットは [D-60](GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。名前は D-60 の対応表で読み替える（`target/tz/kg`・`.tsuzuri-kg`・`tz-kg/1`・`nodes.jsonl`・`edges.jsonl`・`--kg`・`--no-kg`・`--kg-dir`・`TSUZURI_KG`・`TSUZURI_KG_DIR`・`tsuzuri kg`・`kg_*` の kind・`src/kg/`・`KgData`・`KgView`・`tests/kg_*.rs`・`kg_shop`・`compiler/kg.md`）。規則（鮮度・置換・決定性・カードの上限と切り詰め）は変えない。
+本チケットは [D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。名前は D-60 の対応表で読み替える（`target/tz/kg`・`.tsuzuri-kg`・`tz-kg/1`・`nodes.jsonl`・`edges.jsonl`・`--kg`・`--no-kg`・`--kg-dir`・`TSUZURI_KG`・`TSUZURI_KG_DIR`・`tsuzuri kg`・`kg_*` の kind・`src/kg/`・`KgData`・`KgView`・`tests/kg_*.rs`・`kg_shop`・`compiler/kg.md`）。規則（鮮度・置換・決定性・カードの上限と切り詰め）は変えない。
 
 | 本文 | KG での実装 |
 | --- | --- |
@@ -30,7 +30,7 @@
 
 ## 実装者向け早見
 
-- **最初に読む**: [GUIDE-LITE.md](GUIDE-LITE.md)、`GUIDE.md` の D-52、G26 の「仕様」（行のキー）、このチケットの「仕様」「設計」。例は [G27-appendix.md](G27-appendix.md)。
+- **最初に読む**: [GUIDE-LITE.md](../GUIDE-LITE.md)、`GUIDE.md` の D-52、G26 の「仕様」（行のキー）、このチケットの「仕様」「設計」。例は [G27-appendix.md](G27-appendix.md)。
 - **最初に書くテスト**: 手順 2 の `tests/kb_build.rs::check_creates_the_kb_and_a_second_check_writes_nothing`。
 - **D-55 に足す名前**: フラグ `--force`（`kb build`）・`--std`（`kb build`／`kb clean`）・`--no-refresh`（`kb export`。G28 も使う）、`E2009` の kind `kb_missing`・`kb_stale`・`kb_broken`・`kb_not_ours`・`kb_incomplete`。
 - **ファイルは 2 種類**: 名前が `.` で始まらないもの（どの機械でも同じ byte）と、機械ごとのもの（`.tsuzuri-kb`＝マーカーと stamp、`.tsuzuri-reuse.json`＝Phase 3 の鍵）。絶対パス・日時・stamp を前者に入れない。
@@ -581,3 +581,29 @@ G26 の各 Phase の手順の最後で、`emit.rs` に足す行（付録 H）: P
 
 [G27-appendix.md](G27-appendix.md): A 実測の再現、B `polymorphism`（symbols だけの KB）の全カード、C `point`（symbols と graph）の全カード、D `kb_shop` の全ファイル、E 切り詰めの手計算、F カード規則・ファイル名・`source_hash` の Python の参照実装、G 計測の手順と増分の鍵（`fwd`・`rev`・無効化の表）、H Rust の型の全フィールドと `emit.rs` の足し方、I `E2009` のメッセージと各テストの入力・期待。
 
+
+## 実装と検証（2026-10-28）
+
+[D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) の KG の名前で Phase 1〜5 を完了した（ブランチ `feat/g27-build-time-kg`）。Phase 3 は、本チケットの着手の条件（§10）を測って満たさなかったので、停止条件 8 の B（再利用のコードを入れない）とした。
+
+**実装したもの**: `src/kg/{settings,input,manifest,write,emit,build,open,store,brief,std_kg}.rs`、`src/main_kg.rs`（`tsuzuri kg build|verify|clean|export`）、`src/main.rs`（`--kg`・`--no-kg`・`--kg-dir`、`TSUZURI_KG`・`TSUZURI_KG_DIR`、解析の前の計画と後の書き出し、`HELP`）、`src/driver.rs`（`analyze_cached_captured`・`analyze_cached_core`、`root_directory` の公開、`collect_sources` のマーカーの除外）、`src/package.rs`（`.gitignore` に `target/`）、`src/diagnostic_kinds.rs`（`E2009` の kind 5 つ）、`src/explain/codes/E2009.md`、`scripts/check-docs.mjs`（`TSUZURI_KG=0`）。fixture `tests/fixtures/kg_shop/`、golden `tests/golden/kg/shop/`（全 17 ファイルと manifest）・`tests/golden/kg/{point,polymorphism}/brief/`、テスト `tests/kg_build.rs`（13 件）・`tests/kg_brief.rs`（11 件）・`tests/kg_std.rs`（3 件）、`src/main.rs` の `accepts_the_kg_flags_only_where_they_apply`・`the_help_lists_the_kg_options`、各モジュールの単体テスト。
+
+**実行したコマンドと結果**: `cargo nextest run --locked` の全件（2,156 件）を回し、落ちた 5 件（`time_passes` 2 件、`explain` 1 件、`guide` 1 件、`server` 1 件）を下の 10・11 と `E2009` の explain のページで直し、その 5 件と KG のテスト（`kg`・`kg_build` 13 件・`kg_brief` 11 件・`kg_std` 3 件・`time_passes` 5 件など計 91 件）を再実行して通過。`cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` が通過。`node scripts/check-docs.mjs` で変更した 7 ページが通過。
+
+**期待値の出どころ**: カードと manifest は、付録 F の参照実装 `cards.py`・`kbwriter.py` を D-60 の名前に直し（L0 の 2 行目、`next:`、`contains` の辺で子を引く、`tz-kg-input`）、`kg_shop` の行（G26 の規則の出力。G26 の golden で検証済み）に当てて作った。付録 D との行の違いは、G26 の規則と照らしてすべて手で確かめた（下の 2〜5）。付録 E の切り詰め（384・315・204・163・93・40 字）は参照実装と一致した。
+
+**チケットから外れた判断**:
+
+1. D-60 の名前（`target/tz/kg`・`.tsuzuri-kg`・`tz-kg/1`・`nodes.jsonl`・`edges.jsonl`・`--kg`・`TSUZURI_KG`・`kg_*`）。L0 の 2 行目は `tz-kg/1 | edition … | modules M | nodes N | edges E | tests T`。`kg verify` は SHA-256 に加えてグラフの不変条件（ID の一意性、辺の始点、`contains` の森）を確かめる。
+2. 付録 D-3 の辺には、G26 の規則（D1）が出す組み込み関数の `calls`（`assert`）と、`do!` の展開の `IO.run` がない。G26 の付録 H3 の件数は `assert` を含むので、規則に従った。
+3. 付録 D-4 の facts にない `while`（`Cart.total`）、所有権の事象（`reborrow`・`borrow`・`drop`）、std の中まで続く `via`（`IO.write_line`・`IO.try_write_line`・`IO.try_output`。std のソースで確かめた）は、G26 の規則（A6・G1）の結果。
+4. `diag.jsonl` は、G22・G23 の後の `check --json` と同じ形なので、`kind`・`fixes` を持つ。
+5. `source_hash` の入力の package は `SourceFile::package` の名前（§3 の式）で、現在の driver ではルートのソースも root の `PackageId` を持つ（付録 D-5 の「ルートのソースの package は None」は古い）。
+6. `$entry` の誤り（`def main` のプロジェクトで `main` と同じ関数の `$entry` ノードを作っていた）を G26 のブランチで直した（`def_main_is_not_an_entry_node`）。
+7. カードの生成は、モジュールの依存とモジュールごとの行を 1 回だけ計算して共有する（200 モジュールで 57 ms → 23.5 ms）。
+8. Phase 3（増分）: 200 モジュールの合成プロジェクトで `kg-facts` は知識グラフの生成時間の 2.7%（4.8 / 約 178 ms）で、§10 の着手の条件（10%）に届かないため、再利用のコードを入れない（停止条件 8 の B）。測定は `docs/benchmarks.md` の「知識グラフ（G26・G27、2026-10-28）」。
+9. `kg build --std` と照会の std の ID は `std_kg.rs`（キャッシュの `kg-std/<stamp の先頭 16 桁>/`、3 世代）。`StdSource::Memory` は何も書かない。
+10. `tsuzuri new` の `.gitignore` の変更で、G21 のテスト `new_without_agent_files_keeps_the_old_output` の期待値を `.tsuzuri/\ntarget/\n` に直した（§1 の仕様による変更）。`server.rs` の出力の検査は、`main.rs` と同じくコマンドラインの `main_kg.rs` を対象外にした。
+11. `TSUZURI_TIME_PASSES` の段は重ならないようにした（段の合計が `total_ms` を超えない約束）: `kg-capture` は `check` の後・`specialize` の前の別の段、`kg-facts` は `kg-write` の入れ子でなく次の段。`tests/time_passes.rs` の既知の段の一覧に `kg-*` を足し、`check_reports_frontend_phases_in_order` は `--no-kg` で前段だけを見る（`check_reports_the_kg_phases_in_order` を足した）。`option.md` の「コンパイルの段階別時間」に段を足した。
+
+**更新した文書**: `_tsuzuri/language-reference/compiler/kg.md`（新規）・`kg-format.md`・`usage.md`（`### kg`、`new` の `.gitignore`）・`option.md`（受け付けるコマンド、オプション、組み合わせのエラー、環境変数）・`diagnostics.md`（`E2009` とその kind）・`index.md`、`organizing-tsuzuri/packages.md`、`vsc/README.md`、`README.md`（CLI と「知識グラフ」の節）、`docs/language.md`（「知識グラフ（kg）」と `E2009`）、`docs/architecture.md`（ファイル表と「知識グラフのファイル（G27、D-60）」）、`docs/stability.md`、`docs/benchmarks.md`。

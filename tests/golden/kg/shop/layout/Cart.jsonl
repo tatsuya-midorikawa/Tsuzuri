@@ -1,0 +1,1 @@
+{"id":"Acme::Shop::Cart.Line","kind":"record","type":"Cart.Line","size":[32,32],"align":[8,8],"fields":[{"name":"sku","type":"string","slot":0},{"name":"quantity","type":"i64","slot":1},{"name":"unit_price","type":"i64","slot":2}],"reordered":false,"drop_flag":false}

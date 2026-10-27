@@ -350,6 +350,7 @@ pub const CODE_PAGES: &[(&str, &str)] = &[
     ("E2006", include_str!("explain/codes/E2006.md")),
     ("E2007", include_str!("explain/codes/E2007.md")),
     ("E2008", include_str!("explain/codes/E2008.md")),
+    ("E2009", include_str!("explain/codes/E2009.md")),
     ("W1001", include_str!("explain/codes/W1001.md")),
     ("W1002", include_str!("explain/codes/W1002.md")),
     ("W1003", include_str!("explain/codes/W1003.md")),

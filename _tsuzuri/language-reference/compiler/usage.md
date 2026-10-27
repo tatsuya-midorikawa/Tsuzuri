@@ -229,7 +229,19 @@ test "adds numbers" = assert (1 + 2 == 3)
 Hello, Tsuzuri!
 ```
 
-`.gitignore` は、ビルド結果を置く `.tsuzuri/` を除外します。ディレクトリが空でない、名前空間が識別子を `::` でつないだ形でない、といった失敗は終了コード 1 です。引数の形が `tsuzuri new directory [--namespace NAME] [--no-agent-files]` と違うときは、終了コード 2 です。
+`.gitignore` は、ビルド結果を置く `.tsuzuri/` と、知識グラフ（[知識グラフ](kg.md)）などを置く `target/` を除外します。ディレクトリが空でない、名前空間が識別子を `::` でつないだ形でない、といった失敗は終了コード 1 です。引数の形が `tsuzuri new directory [--namespace NAME] [--no-agent-files]` と違うときは、終了コード 2 です。
+
+### kg
+
+`check`・`build`・`run`・`test` は、プロジェクトを解析するたびに、その知識グラフ（宣言をノード、関係を辺にした機械可読の表と、短い英語の要約カード）を `target/tz/kg/` に書きます。ソースが変わっていなければ何も書き直しません。`--no-kg`（か `TSUZURI_KG=0`）で書かず、`--kg-dir DIR` で置き場を変えます。書けないときは警告 1 行（`W2001`）だけで、診断と終了コードは変わりません。
+
+```sh
+tsuzuri check .
+tsuzuri kg verify
+tsuzuri kg export --nodes
+```
+
+`tsuzuri kg build|verify|clean|export` は、知識グラフを作る・確かめる・消す・出力するコマンドです。詳しくは [知識グラフ](kg.md) にあります。ファイルの形は [知識グラフの形式](kg-format.md) にあります。
 
 ### fetch
 

@@ -583,7 +583,7 @@ fn new_without_agent_files_keeps_the_old_output() {
     assert_eq!(stdout.lines().count(), 3, "{stdout}");
     let directory = base.join("try");
     assert_eq!(read(&directory.join("Main.tz")), MAIN_TZ);
-    assert_eq!(read(&directory.join(".gitignore")), ".tsuzuri/\n");
+    assert_eq!(read(&directory.join(".gitignore")), ".tsuzuri/\ntarget/\n");
     assert_eq!(
         read(&directory.join("Tsuzuri.toml")),
         format!(

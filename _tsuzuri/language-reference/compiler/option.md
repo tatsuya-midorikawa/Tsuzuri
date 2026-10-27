@@ -34,6 +34,7 @@
 | `--cpu` | | ○ | ○ | | | | | ○ | ○ |
 | `--no-cache` | | ○ | ○ | | | | | ○ | ○ |
 | `--no-server` | ○ | ○ | | | | | | | |
+| `--kg` / `--no-kg` / `--kg-dir DIR` | ○ | ○ | ○ | ○ | | | | | |
 | `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | | | | |
 | `--debug-output` | | ○ | ○ | | | | | | |
 | `--trap-info` | | ○ | ○ | | | | | | |
@@ -413,6 +414,9 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
 | `--no-cache` | キャッシュ有効 | `build`・`run`・`script` で、成果物・構文解析・ランタイム object のキャッシュを読まない、書かない。同梱 runtime object も使わずソースからビルドする。`repl` では成果物のキャッシュだけ（`repl` は構文解析の結果のキャッシュを使わない）。ほかのコマンドでは `E2000` |
 | `--no-server` | サーバーに尋ねる | `check` と `build` で、`tsuzuri serve` が動いていても、その要求を出さずにこのプロセスで実行する。出力は変わらない。ほかのコマンドでは `E2000`（`--no-server is only valid with check or build`）。2 回書くと `no-server specified more than once`（[serve](usage.md#serve)） |
+| `--kg` | プロジェクトなら書く | `check`・`build`・`run`・`test` で、プロジェクト（`Tsuzuri.toml` か `Main.tz` のある根）でない単独のファイルでも、知識グラフを書く（[知識グラフ](kg.md)） |
+| `--no-kg` | プロジェクトなら書く | 知識グラフを書かない。`--kg` と同時は `E2000`（`--kg and --no-kg cannot be used together`） |
+| `--kg-dir DIR` | `<根>/target/tz/kg` | 知識グラフの置き場。相対パスはカレントディレクトリから。空は `E2000`。`--kg` を含意しない |
 
 `[native]` の `link`、`libraries`、`search` が先で、コマンドラインがそのあとに続きます。実行ファイルと `--emit shared` 以外、たとえば `--emit object` や WASM にリンク入力を付けると拒否されます。
 
@@ -436,6 +440,8 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | --- | --- |
 | `--no-cache` を `check` などに付ける | `--no-cache is only valid with build, run, script, or repl` |
 | `--no-server` を `check`・`build` 以外に付ける | `--no-server is only valid with check or build` |
+| `--kg`・`--no-kg`・`--kg-dir` を `check`・`build`・`run`・`test` 以外に付ける | `--kg, --no-kg, and --kg-dir are only valid with check, build, run, or test` |
+| `--kg` と `--no-kg` を両方付ける | `--kg and --no-kg cannot be used together` |
 | `--wasm-feature` を `build` 以外に付ける | `--wasm-feature is only valid with build` |
 | `threads` なのに wasm32 の object / wasm でない | `--wasm-feature threads requires wasm32 object or WASM output` |
 | `jspi` なのに WASM の object / llvm / wasm / bindings-js でない | `--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output` |
@@ -565,6 +571,8 @@ flowchart TD
 | `TSUZURI_TIME_PASSES` | 無効 | なし | 値が `1` のときだけ、終了時に段階別時間の JSON を stderr の最後へ 1 行出す。成果物・診断・終了コードは変わらない |
 | `TSUZURI_RANGE_FLAGS` | `off` | なし | `off`・`proven`・`audit`。整数の `+ - *` に、コンパイラが範囲を証明できたときだけ LLVM の `nsw`／`nuw` を書くかを選ぶ。空は既定、ほかの値は `E2000`。計算の結果は変わらない。ビルドキャッシュのキーに入る（[整数の範囲証明の旗](#整数の範囲証明の旗)） |
 | `TSUZURI_STRINGS` | `utf16` | なし | `utf16`・`compact`。`string` の内部表現を選ぶ。`compact` は、全コード単位が 0xFF 以下の文字列を 1 単位 1 byte（Latin-1）で保存する。空は既定、ほかの値は `E2000`。値・順序・hash・出力・host との ABI は変わらない。ビルドキャッシュのキーに入る（[コンパクト文字列の旗](#コンパクト文字列の旗)） |
+| `TSUZURI_KG` | 未設定（プロジェクトなら書く） | なし | `0` は知識グラフを書かない、`1` は単独のファイルでも書く。空は既定、ほかの値は `E2000`（`TSUZURI_KG must be 0 or 1`）。`--kg`・`--no-kg` が優先する（[知識グラフ](kg.md)） |
+| `TSUZURI_KG_DIR` | 未設定（`<根>/target/tz/kg`） | なし | 知識グラフの置き場。空は未設定。`--kg-dir` が優先する。`tsuzuri mcp` は読まない |
 | `TSUZURI_THREADS` | 使える core 数（最大 8） | なし | コンパイラ自身が使うスレッド数の上限（1 から 32 の整数）。`1` は 1 スレッド。範囲外や整数でない値は `E2000`。成果物・診断・終了コードは変わらない |
 | `TSUZURI_CODEGEN_UNITS` | `single` | なし | `auto`・`single`・`split`。`-O0` のビルドを codegen unit に分けるか（[コード生成の単位](#コード生成の単位codegen-unit)）。未設定と空は `single`、ほかの値は `E2000`。成果物の意味は変わらない。`auto` か `split` のときだけ、whole-build キャッシュのキーに入る |
 | `TSUZURI_NMEDIT` / `TSUZURI_OBJCOPY` | `nmedit`（macOS）/ `llvm-objcopy`、なければ `objcopy` | なし | codegen unit に分けた `--emit object` が、unit が `hidden` にした定義を局所化する道具。macOS は Xcode の `nmedit`、ほかは `objcopy`（GNU でも LLVM でも）。見つからなければ、その `--emit object` は 1 つのモジュールで作る |
@@ -620,7 +628,7 @@ Mach-O の target では `-Os`／`-Oz` と併用できません。最終リン�
 ```
 
 値はミリ秒、小数 3 桁です。段は `load`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`cache` と、
-外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。[codegen unit](#コード生成の単位codegen-unit) に分けるビルドには、`emit` と `tool.*` の間に `split`（IR の分割）と
+外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。[知識グラフ](kg.md)を書くときは、`kg-capture`（`check` と `specialize` の間。宣言の視点）、`ownership` の後の `kg-model`（事実）・`kg-write`（ノード・辺・テスト・診断）・`kg-facts`（モジュールごとの事実とレイアウト）・`kg-brief`（カード）・`kg-publish`（ファイルの作成と置換）が入ります。知識グラフが新しいときは入りません。[codegen unit](#コード生成の単位codegen-unit) に分けるビルドには、`emit` と `tool.*` の間に `split`（IR の分割）と
 `units`（unit の鍵の計算、unit cache の読み書き、ファイルの書き出し）が入り、unit のコンパイルの待ちは `tool.<Clang の名前>` です。
 そのコマンドが通った段だけを、最初に通った順に出します。
 tool 名の空白・日本語などもそのまま保持し、性能レコードの読み手も同じ名前を受け付けます。

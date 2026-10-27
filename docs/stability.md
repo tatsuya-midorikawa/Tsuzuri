@@ -20,6 +20,7 @@
 | `tsuzuri explain` の JSON | `--json` と `--catalog --json` のキーの名前と順序を変えません（キーが増えることはあります）。終了コードは成功 0、引数の誤りと不明な対象 2 です |
 | `tsuzuri api-diff` の出力形式 | テキストの行の形と `--json` のキー（キーが増えることはあります） |
 | 知識グラフの schema（facts の行は `tz-facts/1`。G26・D-60） | `nodes.jsonl`・`edges.jsonl`・`tests.jsonl`・`facts/`・`layout/` の行のキーを消さず・改名せず、行の意味を変えません。キーと、`kind`・`rel`・`event`・`conv`・`layout` の語彙を足すのは互換の変更です（読み手は知らないキーと語彙を無視します）。互換のない変更は schema の番号を上げます（[知識グラフの形式](../_tsuzuri/language-reference/compiler/kg-format.md)） |
+| 知識グラフの置き場と `tsuzuri kg`（G27） | `target/tz/kg/` のファイル名、`manifest.json` の schema `tz-kg/1` とキー（`counts` の項目は増えることがあります）、`tsuzuri kg` のサブコマンド・オプション・`--json` のキー・終了コード、`E2009` の kind（[知識グラフ](../_tsuzuri/language-reference/compiler/kg.md)） |
 
 ### 安定として保たないもの
 
@@ -30,6 +31,7 @@
 | 診断のメッセージの文言 | 読みやすくするために直します。コードと位置の意味は保ちます。`related` の `message`、`help`、修正案の `title` と `text` も同じです。どの診断が関連する位置や修正案を持つかも増えることがあります。ヒントの表（`help` とヒントの修正案を付ける規則）も増減します |
 | `tsuzuri guide` の本文、`AGENTS.md`・`llms.txt` のひな形 | 文言・章立て・例・std の索引の行は直します（D-56） |
 | `tsuzuri explain` の説明 | 題と本文の文言、例、専用の説明を持つ kind の範囲は直します |
+| 知識グラフの brief カードの文言 | 行の並び・文言・優先度・切り詰め方は直します（上限の文字数は保ちます） |
 | 警告が出るかどうか | 新しい警告が増えることがあります。`--deny-warnings` を付けたビルドは、コンパイラの更新や、依存パッケージが宣言を非推奨にしたことで失敗することがあります。警告を出す・出さないと `--deny-warnings` の結果は、保証の対象外です |
 | 実験的と書いた機能（GPU カーネルなど） | 仕様が固まるまで変わります |
 | `tsuzuri api-diff` が見つける変更の範囲 | 宣言の署名だけを読むので、見つけられない変更があります（[公開 API の差分](#公開-api-の差分)） |

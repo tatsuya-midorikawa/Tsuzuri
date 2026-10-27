@@ -1787,7 +1787,10 @@ pub(crate) fn collect_sources(
                     ));
                 }
             } else if kind.is_dir() {
-                if !package_roots.contains(&path) {
+                // A knowledge graph's directory (G27) is generated output, never sources.
+                let graph = fs::symlink_metadata(path.join(crate::kg::write::MARKER))
+                    .is_ok_and(|metadata| metadata.is_file());
+                if !package_roots.contains(&path) && !graph {
                     pending.push((path, depth + 1));
                 }
             } else if source_kind(&path).is_some() {
@@ -2943,6 +2946,32 @@ impl Project {
         cache: bool,
         kind: AnalysisKind,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
+        self.analyze_cached_core(cache, kind, None)
+    }
+
+    /// `analyze_cached` that also fills `capture`, the declaration view of the knowledge graph
+    /// (G26, G27). The result and the diagnostics are those of `analyze_cached`.
+    pub(crate) fn analyze_cached_captured(
+        &self,
+        cache: bool,
+        kind: AnalysisKind,
+        capture: &mut crate::check::kg_capture::Capture,
+    ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
+        let result = self.analyze_cached_core(cache, kind, Some(&mut *capture));
+        let inputs = self.inputs();
+        let texts: Vec<_> = inputs.iter().map(|input| input.text).collect();
+        if let Some(index) = capture.semantic.as_mut() {
+            index.retain_spelled(&texts);
+        }
+        result
+    }
+
+    fn analyze_cached_core(
+        &self,
+        cache: bool,
+        kind: AnalysisKind,
+        capture: Option<&mut crate::check::kg_capture::Capture>,
+    ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
         let inputs = self.inputs();
         let cache_time = crate::timings::Phase::start("cache");
         let frontend = cache
@@ -2957,9 +2986,9 @@ impl Project {
         let parallelism = crate::parallel::Parallelism::command_line();
         match frontend {
             Some(mut cache) => {
-                crate::analyze_inputs_with(&inputs, None, Some(&mut cache), parallelism)
+                crate::analyze_inputs_core(&inputs, None, Some(&mut cache), parallelism, capture)
             }
-            None => crate::analyze_inputs_with(&inputs, None, None, parallelism),
+            None => crate::analyze_inputs_core(&inputs, None, None, parallelism, capture),
         }
     }
 
@@ -2990,7 +3019,7 @@ impl Project {
     }
 
     /// The directory that the root source's relative path starts from.
-    fn root_directory(&self) -> Option<PathBuf> {
+    pub(crate) fn root_directory(&self) -> Option<PathBuf> {
         let source = self.sources.get(self.root)?;
         let directory = source
             .path

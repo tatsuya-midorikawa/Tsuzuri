@@ -31,7 +31,7 @@ OS と CPU に合ったパッケージが自動で選ばれます。対応して
 | --- | --- |
 | Main.tz | 名前空間の宣言、プログラムの入口、テストの例 |
 | Tsuzuri.toml | パッケージ名、バージョン、言語版（`edition`）、既定の名前空間（`namespace`） |
-| .gitignore | ビルド結果を置く `.tsuzuri/` を Git の管理から除外 |
+| .gitignore | ビルド結果を置く `.tsuzuri/` と、知識グラフを置く `target/` を Git の管理から除外 |
 | AGENTS.md・llms.txt | AI エージェント向けの指示と索引（英語）。AI に作業させる前に、`tsuzuri guide` を読むよう案内します |
 
 ファイルは同梱のコンパイラの `tsuzuri new` が作ります。

@@ -1,0 +1,462 @@
+//! G27 Phase 1 (D-60): `check`, `build`, `run` and `test` write the knowledge graph of a project to
+//! `target/tz/kg`, leave a fresh one alone, never overwrite a directory they did not write, and
+//! change neither the diagnostics nor the exit code.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn repository() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// A fresh root with the given files.
+fn root(label: &str, files: &[(&str, &str)]) -> PathBuf {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-kg-build-{label}-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    for (path, text) in files {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    root
+}
+
+/// A copy of `tests/fixtures/kg_shop` in a fresh root.
+fn shop(label: &str) -> PathBuf {
+    let source = repository().join("tests/fixtures/kg_shop");
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        files.push((name, std::fs::read_to_string(&path).unwrap()));
+    }
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    root(label, &files)
+}
+
+fn tsuzuri(cwd: &Path, arguments: &[&str], environment: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tsuzuri"));
+    command
+        .current_dir(cwd)
+        .args(arguments)
+        .env_remove("TSUZURI_KG")
+        .env_remove("TSUZURI_KG_DIR");
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+    command.output().unwrap()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// Every file below `dir` whose name does not start with `.`, by relative path.
+fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut found = BTreeMap::new();
+    let mut pending = vec![dir.to_owned()];
+    while let Some(at) = pending.pop() {
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let relative = path
+                    .strip_prefix(dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                found.insert(relative, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    found
+}
+
+/// The modification time and identity of every file below `dir`.
+fn stamps(dir: &Path) -> BTreeMap<PathBuf, (std::time::SystemTime, u64)> {
+    let mut found = BTreeMap::new();
+    let mut pending = vec![dir.to_owned()];
+    while let Some(at) = pending.pop() {
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::metadata(&path).unwrap();
+            if metadata.is_dir() {
+                pending.push(path);
+            } else {
+                #[cfg(unix)]
+                let identity = std::os::unix::fs::MetadataExt::ino(&metadata);
+                #[cfg(not(unix))]
+                let identity = metadata.len();
+                found.insert(path, (metadata.modified().unwrap(), identity));
+            }
+        }
+    }
+    found
+}
+
+fn manifest(dir: &Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap()
+}
+
+const BROKEN: &str = "def broken :: i64 -> i64 = \\x -> x\n\nlet value: i64 = \"a\"\nvalue\n";
+
+#[test]
+fn check_creates_the_kg_and_a_second_check_writes_nothing() {
+    let root = shop("first");
+    let output = tsuzuri(&root, &["check", "."], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let kg = root.join("target/tz/kg");
+    for file in [
+        ".tsuzuri-kg",
+        "manifest.json",
+        "nodes.jsonl",
+        "edges.jsonl",
+        "diag.jsonl",
+    ] {
+        assert!(kg.join(file).is_file(), "{file}");
+    }
+    let manifest = manifest(&kg);
+    assert_eq!(manifest["schema"], "tz-kg/1");
+    assert_eq!(manifest["complete"], true);
+    assert_eq!(manifest["counts"]["warnings"], 1);
+    let diag = std::fs::read_to_string(kg.join("diag.jsonl")).unwrap();
+    assert_eq!(diag.lines().count(), 1);
+    assert!(diag.contains("\"path\":\"Cart.tz\""), "{diag}");
+    let before = stamps(&kg);
+    let output = tsuzuri(&root, &["check", "."], &[]);
+    assert!(output.status.success());
+    assert_eq!(stamps(&kg), before);
+}
+
+#[test]
+fn editing_a_source_rebuilds_the_kg() {
+    let root = shop("edit");
+    assert!(tsuzuri(&root, &["check", "."], &[]).status.success());
+    let kg = root.join("target/tz/kg");
+    let hash = manifest(&kg)["source_hash"].clone();
+    let mut cart = std::fs::read_to_string(root.join("Cart.tz")).unwrap();
+    cart.push_str(
+        "\n/// The count of lines.\ndef count :: ref [Line] -> i64 = \\lines -> lines.length\n",
+    );
+    std::fs::write(root.join("Cart.tz"), cart).unwrap();
+    assert!(tsuzuri(&root, &["check", "."], &[]).status.success());
+    assert_ne!(manifest(&kg)["source_hash"], hash);
+    let nodes = std::fs::read_to_string(kg.join("nodes.jsonl")).unwrap();
+    assert!(nodes.contains("\"id\":\"Acme::Shop::Cart.count\""));
+}
+
+#[test]
+fn no_kg_env_and_loose_files() {
+    let root = shop("off");
+    assert!(
+        tsuzuri(&root, &["check", ".", "--no-kg"], &[])
+            .status
+            .success()
+    );
+    assert!(
+        tsuzuri(&root, &["check", "."], &[("TSUZURI_KG", "0")])
+            .status
+            .success()
+    );
+    assert!(!root.join("target").exists());
+    let loose = root_with_physics("loose");
+    assert!(
+        tsuzuri(&loose, &["check", "Physics.tz"], &[])
+            .status
+            .success()
+    );
+    assert!(!loose.join("target").exists());
+    assert!(
+        tsuzuri(&loose, &["check", "Physics.tz", "--kg"], &[])
+            .status
+            .success()
+    );
+    assert!(loose.join("target/tz/kg/nodes.jsonl").is_file());
+    let loose = root_with_physics("loose-env");
+    assert!(
+        tsuzuri(&loose, &["check", "Physics.tz"], &[("TSUZURI_KG", "1")])
+            .status
+            .success()
+    );
+    assert!(loose.join("target/tz/kg/nodes.jsonl").is_file());
+}
+
+fn root_with_physics(label: &str) -> PathBuf {
+    root(
+        label,
+        &[(
+            "Physics.tz",
+            "def speed :: f64 -> f64 -> f64 = \\d t -> d / t\n",
+        )],
+    )
+}
+
+#[test]
+fn kg_flag_conflicts_and_bad_env_are_e2000() {
+    let root = shop("conflicts");
+    for (arguments, environment, message) in [
+        (
+            vec!["check", ".", "--kg", "--no-kg"],
+            vec![],
+            "--kg and --no-kg cannot be used together",
+        ),
+        (
+            vec!["check", "."],
+            vec![("TSUZURI_KG", "2")],
+            "TSUZURI_KG must be 0 or 1",
+        ),
+        (
+            vec!["check", ".", "--kg-dir", ""],
+            vec![],
+            "--kg-dir must not be empty",
+        ),
+        (
+            vec!["doc", ".", "-o", "docs", "--kg"],
+            vec![],
+            "--kg, --no-kg, and --kg-dir are only valid with check, build, run, or test",
+        ),
+    ] {
+        let output = tsuzuri(&root, &arguments, &environment);
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}");
+        let text = stderr(&output);
+        assert!(text.contains("error[E2000]"), "{text}");
+        assert!(text.contains(message), "{text}");
+    }
+    assert!(!root.join("target").exists());
+}
+
+#[test]
+fn kg_dir_flag_and_env_choose_the_directory() {
+    let root = shop("dirs");
+    assert!(
+        tsuzuri(
+            &root,
+            &["check", ".", "--kg-dir", "flag"],
+            &[("TSUZURI_KG_DIR", "env")]
+        )
+        .status
+        .success()
+    );
+    assert!(root.join("flag/manifest.json").is_file());
+    assert!(!root.join("env").exists());
+    assert!(
+        tsuzuri(&root, &["check", "."], &[("TSUZURI_KG_DIR", "env")])
+            .status
+            .success()
+    );
+    assert!(root.join("env/manifest.json").is_file());
+    assert!(!root.join("target").exists());
+}
+
+#[test]
+fn a_foreign_directory_is_never_overwritten() {
+    let root = shop("foreign");
+    std::fs::create_dir_all(root.join("target/tz/kg/x")).unwrap();
+    std::fs::write(root.join("target/tz/kg/x/keep.txt"), "mine").unwrap();
+    let output = tsuzuri(&root, &["check", "."], &[]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = stderr(&output);
+    assert_eq!(text.matches("kg not updated: ").count(), 1, "{text}");
+    assert!(
+        text.contains("exists and is not a KG (no .tsuzuri-kg marker)"),
+        "{text}"
+    );
+    let output = tsuzuri(&root, &["check", ".", "--json"], &[]);
+    let notices: Vec<&str> = std::str::from_utf8(&output.stderr)
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("kg not updated"))
+        .collect();
+    assert_eq!(notices.len(), 1);
+    assert!(
+        notices[0].starts_with("{\"severity\":\"warning\",\"code\":\"W2001\""),
+        "{}",
+        notices[0]
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("target/tz/kg/x/keep.txt")).unwrap(),
+        "mine"
+    );
+    assert!(!root.join("target/tz/kg/manifest.json").exists());
+}
+
+#[test]
+fn an_unwritable_target_warns_once() {
+    let root = shop("unwritable");
+    std::fs::write(root.join("target"), "a file").unwrap();
+    let output = tsuzuri(&root, &["check", "."], &[]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stderr(&output).matches("kg not updated: ").count(),
+        1,
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_failed_analysis_writes_an_incomplete_kg() {
+    let root = root("failed", &[("Main.tz", BROKEN)]);
+    let output = tsuzuri(&root, &["check", "."], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    let kg = root.join("target/tz/kg");
+    let manifest = manifest(&kg);
+    assert_eq!(manifest["complete"], false);
+    assert_eq!(manifest["counts"]["errors"], 1);
+    assert_eq!(manifest["modules"], serde_json::json!([]));
+    let diag = std::fs::read_to_string(kg.join("diag.jsonl")).unwrap();
+    assert!(diag.contains("\"code\":\"E1003\""), "{diag}");
+    assert!(!kg.join("nodes.jsonl").exists());
+    let before = stamps(&kg);
+    assert_eq!(tsuzuri(&root, &["check", "."], &[]).status.code(), Some(1));
+    assert_eq!(stamps(&kg), before);
+}
+
+#[test]
+fn the_kg_is_identical_in_two_directories_and_thread_counts() {
+    let first = shop("same-1");
+    let second = shop("same-2");
+    assert!(
+        tsuzuri(&first, &["check", "."], &[("TSUZURI_THREADS", "1")])
+            .status
+            .success()
+    );
+    assert!(
+        tsuzuri(&second, &["check", "."], &[("TSUZURI_THREADS", "8")])
+            .status
+            .success()
+    );
+    let a = files(&first.join("target/tz/kg"));
+    let b = files(&second.join("target/tz/kg"));
+    assert_eq!(a, b);
+    let stamp = std::fs::read_to_string(first.join("target/tz/kg/.tsuzuri-kg")).unwrap();
+    let stamp = stamp.lines().nth(1).unwrap().trim_start_matches("stamp ");
+    for (path, bytes) in &a {
+        let text = String::from_utf8_lossy(bytes);
+        for leak in [first.to_string_lossy().as_ref(), stamp] {
+            assert!(!text.contains(leak), "{path} holds '{leak}'");
+        }
+    }
+}
+
+#[test]
+fn concurrent_checks_leave_a_valid_kg() {
+    let root = shop("concurrent");
+    let mut children: Vec<_> = (0..8)
+        .map(|_| {
+            Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+                .current_dir(&root)
+                .args(["check", "."])
+                .env_remove("TSUZURI_KG")
+                .env_remove("TSUZURI_KG_DIR")
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for child in &mut children {
+        assert!(child.wait().unwrap().success());
+    }
+    let kg = root.join("target/tz/kg");
+    assert_eq!(manifest(&kg)["complete"], true);
+    let output = tsuzuri(&root, &["kg", "verify", "."], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let leftovers: Vec<_> = std::fs::read_dir(root.join("target/tz"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".tsuzuri-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn the_output_of_commands_does_not_depend_on_the_kg() {
+    let with = shop("output-with");
+    let without = shop("output-without");
+    for arguments in [vec!["check", "."], vec!["test", "."]] {
+        let mut no_kg = arguments.clone();
+        no_kg.push("--no-kg");
+        let a = tsuzuri(&with, &arguments, &[]);
+        let b = tsuzuri(&without, &no_kg, &[]);
+        assert_eq!(a.status.code(), b.status.code(), "{arguments:?}");
+        let normalize = |output: &Output, root: &Path| {
+            String::from_utf8_lossy(&output.stdout)
+                .replace(root.to_string_lossy().as_ref(), "<root>")
+                + &String::from_utf8_lossy(&output.stderr)
+                    .replace(root.to_string_lossy().as_ref(), "<root>")
+        };
+        assert_eq!(
+            normalize(&a, &with),
+            normalize(&b, &without),
+            "{arguments:?}"
+        );
+    }
+    let failing = root("output-fail", &[("Main.tz", BROKEN)]);
+    let a = tsuzuri(&failing, &["check", "."], &[]);
+    let b = tsuzuri(&failing, &["check", ".", "--no-kg"], &[]);
+    assert_eq!(a.status.code(), b.status.code());
+    assert_eq!(a.stderr, b.stderr);
+}
+
+#[test]
+fn kg_dir_is_skipped_by_source_discovery() {
+    let root = shop("discovery");
+    assert!(tsuzuri(&root, &["check", "."], &[]).status.success());
+    std::fs::write(
+        root.join("target/tz/kg/Broken.tz"),
+        "def broken :: i64 = (\n",
+    )
+    .unwrap();
+    let output = tsuzuri(&root, &["check", "."], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    std::fs::remove_file(root.join("target/tz/kg/.tsuzuri-kg")).unwrap();
+    let output = tsuzuri(&root, &["check", "."], &[]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("error[E0002]"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn test_run_and_build_create_the_kg() {
+    let root = root(
+        "commands",
+        &[(
+            "Main.tz",
+            "def double :: i64 -> i64 = \\n -> n * 2\n\ntest \"doubles\" = assert (double 2 == 4)\n\ndouble 21\n",
+        )],
+    );
+    let kg = root.join("target/tz/kg");
+    let output = tsuzuri(&root, &["test", "."], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(kg.join("tests.jsonl").is_file());
+    std::fs::remove_dir_all(&kg).unwrap();
+    let output = tsuzuri(
+        &root,
+        &["build", ".", "--emit", "llvm", "-o", "out.ll"],
+        &[],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(kg.join("nodes.jsonl").is_file());
+    std::fs::remove_dir_all(&kg).unwrap();
+    let output = tsuzuri(&root, &["run", "."], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(kg.join("nodes.jsonl").is_file());
+}
