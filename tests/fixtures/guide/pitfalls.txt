@@ -1,0 +1,131 @@
+# The claims of the guide's pitfall lines (G21). `## ID snippet => CODES [@EDITION]`, then the source
+# of Main.tz up to the next `## `. The first diagnostic of `tsuzuri check` must have one of CODES, in
+# EDITION or in every supported edition; `{word}` is replaced by each word of the snippet. A line of
+# guide/card.md or guide/pitfalls.md, as that edition shows it, holds the snippet and every code.
+## P01 pair.0 => E0002
+def first :: (i64 * i64) -> i64 = \pair -> pair.0
+
+def main :: unit -> i32 = \() -> 0
+## P02 x += 1 => E0002
+def main :: unit -> i32 = \() ->
+    let mut x = 1
+    x += 1
+    0
+## P03 p.x = 1 => E1012 @2026
+record P { x: i64 }
+
+def main :: unit -> i32 = \() ->
+    let mut p = P { x: 0 }
+    p.x = 1
+    0
+## P04 xs[i] = v => E1012 @2026
+def main :: unit -> i32 = \() ->
+    let mut xs = [1, 2]
+    xs[0] = 5
+    0
+## P03b p.x = 1 => E1014 @2027
+record P { x: i64 }
+
+def main :: unit -> i32 = \() ->
+    let p = P { x: 0 }
+    p.x = 1
+    0
+## P04b xs[i] = v => E1014 @2027
+def main :: unit -> i32 = \() ->
+    let xs = [1, 2]
+    xs[0] = 5
+    0
+## P05 IO.writeln s => E1003
+def main :: unit -> i32 = \() ->
+    IO.writeln "x"
+    0
+## P06 else if => E0002
+def sign :: i64 -> i64 = \n ->
+    if n < 0 then
+        -1
+    else if n == 0 then
+        0
+    else
+        1
+
+def main :: unit -> i32 = \() -> 0
+## P07 n + 1.5 => E1003
+def grow :: i64 -> f64 = \n -> n + 1.5
+
+def main :: unit -> i32 = \() -> 0
+## P08 "a" + 1 => E1003
+def label :: i64 -> string = \n -> "a" + n
+
+def main :: unit -> i32 = \() -> 0
+## P09 new type to with test do in => E0002
+def main :: unit -> i32 = \() ->
+    let {word} = 1
+    0
+## P10 length xs => E1002
+def size :: ref [i64] -> i64 = \xs -> length xs
+
+def main :: unit -> i32 = \() -> 0
+## P11 abs n => E1003
+def mag :: i64 -> i64 = \n -> abs n
+
+def main :: unit -> i32 = \() -> 0
+## P12 Display.to_string x => E1002
+def main :: unit -> i32 = \() ->
+    let s = Display.to_string 5
+    0
+## P13 u8 => E1004
+def main :: unit -> i32 = \() ->
+    let a: u8 = 5
+    0
+## P14 usize => E1004
+def main :: unit -> i32 = \() ->
+    let a: usize = 5
+    0
+## P15 String => E1004
+def main :: unit -> i32 = \() ->
+    let a: String = "x"
+    0
+## P16 Option => E1004
+def main :: unit -> i32 = \() ->
+    let a: Option<i64> = None
+    0
+## P17 True => E1002
+def main :: unit -> i32 = \() ->
+    let a: bool = True
+    0
+## P18 Vec.empty () => E1006
+def main :: unit -> i32 = \() ->
+    let mut v: Vec<i64> = Vec.empty ()
+    0
+## P19 main => E1003
+def main :: unit -> i32 = \() ->
+    let r = 4i64
+    r
+## R01 E1012 => E1012
+def eat :: own string -> i64 = \s -> s.length
+
+def main :: unit -> i32 = \() ->
+    let s = "hi"
+    let a = eat s
+    let b = eat s
+    0
+## R02 E1014 => E1014
+def bump :: ref mut i64 -> unit = \r -> deref r = deref r + 1
+
+def main :: unit -> i32 = \() ->
+    let mut c = 1
+    let r = ref mut c
+    let seen = c
+    bump r
+    0
+## R03 let mut => E1014
+def main :: unit -> i32 = \() ->
+    let c = 0
+    c = c + 1
+    0
+## R04 ref local => E1013
+def first_word :: unit -> ref string = \() ->
+    let s = "hello world"
+    ref s
+
+def main :: unit -> i32 = \() -> 0

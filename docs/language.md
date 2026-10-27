@@ -277,7 +277,7 @@ def main :: unit -> i32 = \() ->
 アプリケーションのエントリーポイントは、名前空間の宣言内容にかかわらず、ルートパッケージ直下の `Main.tz` として一意に定まります。
 コンパイラ内部および LLVM IR 上のシンボル名には、デフォルト名前空間を除去したドット区切りの名前（例: `Main.main`、`Geometry.Point.distance`）が用いられるため、デフォルト名前空間を明示的に宣言した場合であっても既存のシンボル名やリンク互換性に影響を与えることはありません。
 
-`tsuzuri new <directory> [--namespace NAME]` コマンドは、空のディレクトリに対して `Tsuzuri.toml`、`Main.tz`、および `.gitignore` を自動生成してプロジェクトを初期化します。
+`tsuzuri new <directory> [--namespace NAME] [--no-agent-files]` コマンドは、空のディレクトリに対して `Tsuzuri.toml`、`Main.tz`、`.gitignore` と、AI エージェント向けの `AGENTS.md`・`llms.txt`（`--no-agent-files` のときは作らない）を自動生成してプロジェクトを初期化します。`tsuzuri guide` は、コンパイラに埋め込んだ AI エージェント向けの英語のガイド（level 0 のカード、`--level 1` の 4 章、`std [MODULE]` の std の索引）を出します。ガイドは全 edition で通る書き方を教え、edition で違う規則は edition ごとに書き分けます（`--edition YEAR`。既定は作業ディレクトリの `Tsuzuri.toml` の edition、なければ最新）。
 生成される `Tsuzuri.toml` には必ず `namespace` と `edition = "2026"` が定義され、`Main.tz` にも同一の名前空間宣言が自動付与されます。`--namespace` オプションを省略した場合は、ディレクトリ名からパッケージ名および名前空間が自動決定されます。VS Code 拡張機能の新規プロジェクト作成機能もこのコマンドを基盤としています。
 
 #### ローカルパッケージ

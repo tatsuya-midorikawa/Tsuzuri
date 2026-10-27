@@ -13,6 +13,7 @@ Tsuzuri is not in your training data. Do not guess its syntax or its standard li
 - `tsuzuri test .` runs every `test "name" = ...`. It must pass before you finish.
 - `tsuzuri run .` builds and runs `main`.
 - `tsuzuri fmt .` formats in place; `tsuzuri fmt --check .` only verifies.
+- `tsuzuri explain CODE` explains a diagnostic code or `kind`; `tsuzuri fix .` applies the safe fixes that diagnostics carry (`--dry-run` shows them first).
 
 ## Rules
 - Make the smallest change that does the task. Match the names and style around it.
@@ -31,7 +32,12 @@ Tsuzuri is not in your training data. Do not guess its syntax or its standard li
 ## Frequent mistakes
 - There is no `pair.0`, `x += 1`, `else if` on a new line, or early `return`: use `match`, `x = x + 1`, `elif`, `if ... else`.
 - Effects need `do!`: `do! IO.writeln "hi"`. `for i in a .. b` includes `b`.
+<!--if edition=2026-->
 - A `string`, `Vec`, or record holding one moves when passed by value; pass `ref x` to keep using it.
+<!--endif-->
+<!--if edition=2027-->
+- A plain parameter borrows to read; `own T` takes ownership and `mut T` borrows to write. A moved value cannot be used again (E1012).
+<!--endif-->
 
 ## Project notes
 Add project rules below: architecture, naming, what not to touch.

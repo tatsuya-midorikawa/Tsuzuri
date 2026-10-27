@@ -504,10 +504,11 @@ pub fn json_text(rendered: &Rendered, edition: Edition) -> String {
     )
 }
 
-/// The template with its four words replaced, in this order, once each.
+/// The template as the project's edition shows it, with its four words replaced, in this order,
+/// once each.
 pub fn render_template(template: &str, values: &Values<'_>) -> String {
-    template
-        .replace("\r\n", "\n")
+    prepare(template, values.edition)
+        .unwrap_or_else(|error| format!("template: {error}\n"))
         .replace("{{name}}", values.name)
         .replace("{{namespace}}", values.namespace)
         .replace("{{edition}}", &values.edition.to_string())

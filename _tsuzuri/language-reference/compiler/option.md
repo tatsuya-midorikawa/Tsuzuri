@@ -62,6 +62,8 @@
 
 未知のフラグは `unknown option '...'; use --help` です。値を取り忘れると `--output needs a value` のように、そのフラグの名前で止まります。
 
+`guide` の専用オプションは `--level 0|1`・`--topic NAME`・`--list`・`--json`・`--edition YEAR`・`--agents [DIR]`・`--llms-txt [DIR]` と位置引数 `std [MODULE]` で（[コンパイラの使い方](usage.md#guide)）、`new` は `--namespace NAME` と `--no-agent-files` を受け付けます。
+
 `fix` の専用オプションは `--applicability certain|likely|maybe`・`--dry-run`・`--json`、edition の移行では `--edition YEAR`・`--from YEAR` です。
 入力はファイルかディレクトリ 1 つで、ビルド用のフラグは受け付けません。`--edition` と `--applicability` は一緒に使えず、`--applicability maybe` は `--dry-run` が要ります。
 `--edition` は一般の build/check のオプションではありません（[契約を保つ移行](usage.md#fix)）。

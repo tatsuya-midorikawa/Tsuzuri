@@ -332,8 +332,12 @@ tsuzuri new my-app
 my-app/
   ├── Tsuzuri.toml
   ├── Main.tz
-  └── .gitignore
+  ├── .gitignore
+  ├── AGENTS.md
+  └── llms.txt
 ```
+
+`AGENTS.md` と `llms.txt` は AI エージェント向けの指示と索引です（英語。`tsuzuri guide` を読むよう案内します）。`--no-agent-files` を付けると作りません（[コンパイラの使い方](../compiler/usage.md#new)）。
 
 `.gitignore` の中身は `.tsuzuri/` です。生成される `Tsuzuri.toml` の例:
 
@@ -341,7 +345,7 @@ my-app/
 [package]
 name = "my-app"
 version = "0.1.0"
-edition = "2026"
+edition = "2027"
 namespace = "MyApp"
 ```
 
