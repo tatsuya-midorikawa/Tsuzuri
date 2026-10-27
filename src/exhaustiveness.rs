@@ -249,8 +249,8 @@ impl Checker<'_> {
             let wild = search.wild.clone();
             if let Some(witness) = search.run(rows.clone(), push(wild, None), true)? {
                 let missing = self.witness(&witness, coverage.span);
-                let mut error = Diagnostic::new(
-                    "E1021",
+                let mut error = Diagnostic::of(
+                    DiagnosticKind::NonExhaustiveMatch,
                     format!("match is not exhaustive; missing: {missing}"),
                     coverage.span,
                 )

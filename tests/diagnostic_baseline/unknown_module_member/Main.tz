@@ -1,0 +1,1 @@
+def f :: string -> i64 = \s -> String.len s

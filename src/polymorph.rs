@@ -334,8 +334,12 @@ pub(super) struct Inference {
 
 /// The `E1003` of a type mismatch; `expected` and `found` are the displayed types.
 fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
-    Diagnostic::new("E1003", format!("expected {expected}, found {found}"), span)
-        .expected_found(expected, found)
+    Diagnostic::of(
+        DiagnosticKind::TypeMismatch,
+        format!("expected {expected}, found {found}"),
+        span,
+    )
+    .expected_found(expected, found)
 }
 
 impl Inference {
@@ -3797,8 +3801,8 @@ impl Checker<'_> {
                         "Integer" | "SignedInteger"
                     )
                 {
-                    Diagnostic::new(
-                        "E1003",
+                    Diagnostic::of(
+                        DiagnosticKind::TypeMismatch,
                         format!(
                             "expected an integer, found {}",
                             constraint.ty.display(&self.types)

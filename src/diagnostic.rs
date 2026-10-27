@@ -1,5 +1,7 @@
 use std::{collections::BTreeMap, fmt::Write};
 
+pub use crate::diagnostic_kinds::DiagnosticKind;
+
 pub const MAX_REPORTED_ERRORS: usize = 50;
 pub const MAX_UNIQUE_DIAGNOSTICS: usize = 1000;
 
@@ -336,13 +338,19 @@ impl std::ops::DerefMut for Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn new(code: &'static str, message: impl Into<String>, span: Span) -> Self {
+    fn build(
+        severity: Severity,
+        code: &'static str,
+        kind: Option<&'static str>,
+        message: String,
+        span: Span,
+    ) -> Self {
         Self(Box::new(DiagnosticData {
-            severity: Severity::Error,
+            severity,
             code,
-            message: message.into(),
+            message,
             span,
-            kind: None,
+            kind,
             related: Vec::new(),
             help: None,
             fixes: Vec::new(),
@@ -350,10 +358,37 @@ impl Diagnostic {
         }))
     }
 
+    /// A diagnostic of `kind`: the code, the severity, and the kind come from the registry.
+    pub fn of(kind: DiagnosticKind, message: impl Into<String>, span: Span) -> Self {
+        Self::build(
+            kind.severity(),
+            kind.code(),
+            Some(kind.id()),
+            message.into(),
+            span,
+        )
+    }
+
+    pub fn new(code: &'static str, message: impl Into<String>, span: Span) -> Self {
+        Self::build(Severity::Error, code, None, message.into(), span)
+    }
+
     pub fn warning(code: &'static str, message: impl Into<String>, span: Span) -> Self {
-        let mut diagnostic = Self::new(code, message, span);
-        diagnostic.severity = Severity::Warning;
-        diagnostic
+        Self::build(Severity::Warning, code, None, message.into(), span)
+    }
+
+    /// The same diagnostic reported as `kind`: the severity, the code, and the kind change; the
+    /// message, the span, and the other fields stay.
+    pub fn recode(mut self, kind: DiagnosticKind) -> Self {
+        self.severity = kind.severity();
+        self.code = kind.code();
+        self.kind = Some(kind.id());
+        self
+    }
+
+    /// The registered kind of the diagnostic.
+    pub fn kind_of(&self) -> Option<DiagnosticKind> {
+        self.kind.and_then(DiagnosticKind::from_id)
     }
 
     pub fn with_kind(mut self, kind: &'static str) -> Self {

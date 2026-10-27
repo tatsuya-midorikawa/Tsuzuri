@@ -6,7 +6,9 @@ use crate::check::{
     RegionSources, Type, TypedExpr, TypedExprKind as E,
 };
 use crate::copies::{CopyKind, CopyRead};
-use crate::diagnostic::{Diagnostic, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, RelatedRole, Span};
+use crate::diagnostic::{
+    Diagnostic, DiagnosticKind, Diagnostics, MAX_UNIQUE_DIAGNOSTICS, RelatedRole, Span,
+};
 use crate::parallel::{Parallelism, ordered_for_each};
 use crate::syntax::BinaryOp;
 
@@ -1496,8 +1498,8 @@ impl<'a> Checker<'a, '_> {
                     "part of the value moved here, in the previous iteration of the loop"
                 }
             };
-            let mut diagnostic = error(
-                "E1012",
+            let mut diagnostic = Diagnostic::of(
+                DiagnosticKind::UseAfterMove,
                 format!("use of moved or partially moved value '{name}'"),
                 span,
             )
@@ -1555,8 +1557,8 @@ impl<'a> Checker<'a, '_> {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
             if !mutable || (usage != Use::Write && !unmarked_fields(place).is_empty()) {
-                let diagnostic = error(
-                    "E1014",
+                let diagnostic = Diagnostic::of(
+                    DiagnosticKind::MutateImmutableValue,
                     "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
                     span,
                 );
@@ -1646,8 +1648,8 @@ impl<'a> Checker<'a, '_> {
     #[cold]
     #[inline(never)]
     fn conflict(&mut self, loan: usize, span: Span) -> Diagnostic {
-        let mut diagnostic = error(
-            "E1014",
+        let mut diagnostic = Diagnostic::of(
+            DiagnosticKind::BorrowConflict,
             "access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively",
             span,
         );
@@ -2408,8 +2410,8 @@ impl<'a> Checker<'a, '_> {
                         *id,
                         tail.span,
                         "'{name}' is declared here and dropped at the end of this block",
-                        error(
-                            "E1013",
+                        Diagnostic::of(
+                            DiagnosticKind::BorrowOutlivesBlock,
                             "borrowed value does not live long enough to leave this block",
                             tail.span,
                         ),

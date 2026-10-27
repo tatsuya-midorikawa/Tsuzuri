@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 
 use crate::diagnostic::{
-    Applicability, Diagnostic, DiagnosticSet, Diagnostics, Edit, MAX_UNIQUE_DIAGNOSTICS,
-    RelatedRole, ScopeEntry, Span,
+    Applicability, Diagnostic, DiagnosticKind, DiagnosticSet, Diagnostics, Edit,
+    MAX_UNIQUE_DIAGNOSTICS, RelatedRole, ScopeEntry, Span,
 };
 use crate::parallel::{Parallelism, ordered_for_each_owned};
 pub use crate::syntax::Provenance;
@@ -11185,7 +11185,11 @@ impl<'a> Checker<'a> {
                         field.text
                     )
                 };
-                return Err(Diagnostic::new("E1002", message, field.span));
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UnknownModuleMember,
+                    message,
+                    field.span,
+                ));
             }
             ExprKind::Field(value, field) => self.field_access(value, field)?,
             ExprKind::Index(value, index) => {
@@ -12788,9 +12792,13 @@ impl<'a> Checker<'a> {
                 names.join(", ")
             )
         };
-        Diagnostic::new("E1002", format!("unknown value '{}'", name.text), name.span)
-            .with_help(help)
-            .with_scope(scope)
+        Diagnostic::of(
+            DiagnosticKind::UnknownValue,
+            format!("unknown value '{}'", name.text),
+            name.span,
+        )
+        .with_help(help)
+        .with_scope(scope)
     }
 
     /// A case used as a value: a nullary case is a union value, and a case

@@ -1,0 +1,5 @@
+def f :: bool -> Task<i64> = \c ->
+    task {
+        if c then return 1
+        return 2
+    }

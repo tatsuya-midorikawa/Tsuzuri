@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use tsuzuri::diagnostic::{Diagnostic, Span, json_string};
+use tsuzuri::diagnostic::{Diagnostic, DiagnosticKind, Span, json_string};
 use tsuzuri::driver::{
     self, Backend, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost,
 };
@@ -62,6 +62,8 @@ Usage:
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--effective] [--json]
+  tsuzuri explain TARGET [--json]
+  tsuzuri explain --catalog [--json]
   tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] input
   tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
                     [--consume F:P]... [--json]
@@ -2167,6 +2169,72 @@ fn api_diff_usage(json: bool) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// `tsuzuri explain TARGET [--json]` and `tsuzuri explain --catalog [--json]`: the explanation of a
+/// diagnostic kind or code, or the list of every kind, on standard output. The exit status is 2
+/// for a usage error and for a target that is neither a kind nor a code.
+fn explain_command(arguments: &[OsString]) -> ExitCode {
+    use tsuzuri::explain::{self, Target};
+    let mut json = false;
+    let mut catalog = false;
+    let mut unknown = None;
+    let mut targets = Vec::new();
+    for argument in arguments {
+        let text = argument.to_string_lossy();
+        match text.as_ref() {
+            "--json" => json = true,
+            "--catalog" => catalog = true,
+            option if option.starts_with('-') => {
+                unknown.get_or_insert_with(|| option.to_string());
+            }
+            _ => targets.push(text.into_owned()),
+        }
+    }
+    let error = |kind: DiagnosticKind, message: String| {
+        print_diagnostic(
+            &Diagnostic::of(kind, message, Span::default()),
+            Path::new("<command line>"),
+            "",
+            json,
+        );
+        ExitCode::from(2)
+    };
+    if let Some(option) = unknown {
+        return error(
+            DiagnosticKind::UnknownOption,
+            format!("unknown option '{option}'; use --help"),
+        );
+    }
+    if catalog {
+        if !targets.is_empty() {
+            return error(
+                DiagnosticKind::OptionConflict,
+                "--catalog cannot be combined with a target; list the kinds, or explain one"
+                    .to_string(),
+            );
+        }
+        print!("{}", explain::render_catalog(json));
+        return ExitCode::SUCCESS;
+    }
+    let [target] = targets.as_slice() else {
+        return error(
+            DiagnosticKind::UsageError,
+            "usage: tsuzuri explain TARGET [--json] | tsuzuri explain --catalog [--json]"
+                .to_string(),
+        );
+    };
+    match explain::resolve(target) {
+        Ok(Target::Kind(kind)) => print!("{}", explain::render_kind(kind, json)),
+        Ok(Target::Code(code)) => print!("{}", explain::render_code(code, json)),
+        Err(candidates) => {
+            return error(
+                DiagnosticKind::UnknownExplainTarget,
+                explain::unknown_target_message(target, &candidates),
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn fix_edition_command(arguments: &[OsString]) -> ExitCode {
     use tsuzuri::syntax::Edition;
     let json = arguments.iter().any(|argument| argument == "--json");
@@ -2557,6 +2625,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "api-diff") {
         return api_diff_command(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "explain") {
+        return explain_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "fix") {
         return fix_edition_command(&raw[1..]);

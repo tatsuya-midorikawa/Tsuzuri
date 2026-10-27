@@ -1,0 +1,2 @@
+union Light = Red | Green
+def f :: Light -> i64 = \l -> match l with | Red -> 1

@@ -1,0 +1,1 @@
+def f :: bool -> bool -> bool = \a b -> a and b

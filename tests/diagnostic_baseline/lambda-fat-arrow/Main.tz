@@ -1,0 +1,1 @@
+def f :: [i64] -> [i64] = \xs -> Array.map (x => x + 1) xs
