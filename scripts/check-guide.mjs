@@ -68,7 +68,8 @@ try {
   assert.ok(files.length > 0, `no guide files in ${guide}`);
   for (const name of files) {
     const label = `guide/${name}`;
-    const source = readFileSync(join(guide, name), 'utf8');
+    // A Windows checkout with core.autocrlf has CRLF; the fences and edition markers are matched per line.
+    const source = readFileSync(join(guide, name), 'utf8').replaceAll('\r\n', '\n');
     assert.ok(source.endsWith('\n'), `${label}: missing final newline`);
     assert.ok(/^[\x00-\x7f]*$/.test(source), `${label}: the guide is ASCII only`);
     assert.ok(!/^[ \t]+```tsuzuri/m.test(source), `${label}: an indented tsuzuri code fence is not checked; start it at column 1`);

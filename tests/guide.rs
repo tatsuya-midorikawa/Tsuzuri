@@ -15,6 +15,12 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
+/// A file of the repository with LF line endings, which a Windows checkout with
+/// `core.autocrlf` turns into CRLF; files that the compiler writes are read as they are.
+fn repo_text(path: &Path) -> String {
+    read(path).replace("\r\n", "\n")
+}
+
 /// A fresh directory with the given files.
 fn root(label: &str, files: &[(&str, &str)]) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -86,7 +92,7 @@ fn shown(text: &str, edition: &str) -> String {
 
 /// The pitfalls chapter: its generated section is the hint table, one line per hint.
 fn expected_chapter(name: &str, edition: &str) -> String {
-    let text = shown(&read(&repo(&format!("guide/{name}.md"))), edition);
+    let text = shown(&repo_text(&repo(&format!("guide/{name}.md"))), edition);
     let Some(start) = text.find("<!-- generated:pitfalls -->\n") else {
         return text;
     };
@@ -113,7 +119,7 @@ fn latest() -> String {
 fn the_guide_prints_level_zero_by_default() {
     let (status, stdout, stderr) = tsuzuri(&["guide"]);
     assert_eq!((status, stderr.as_str()), (0, ""));
-    assert_eq!(stdout, shown(&read(&repo("guide/card.md")), &latest()));
+    assert_eq!(stdout, shown(&repo_text(&repo("guide/card.md")), &latest()));
 }
 
 #[test]
@@ -169,7 +175,7 @@ fn list_names_every_topic() {
         let fields: Vec<&str> = line.split_whitespace().collect();
         let name = fields[0];
         let text = if name == "card" {
-            shown(&read(&repo("guide/card.md")), &latest())
+            shown(&repo_text(&repo("guide/card.md")), &latest())
         } else {
             expected_chapter(name, &latest())
         };
@@ -204,7 +210,7 @@ fn json_output_has_the_documented_keys() {
     );
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     let text = value["text"].as_str().unwrap();
-    assert_eq!(text, shown(&read(&repo("guide/card.md")), &latest()));
+    assert_eq!(text, shown(&repo_text(&repo("guide/card.md")), &latest()));
     assert_eq!(value["chars"], text.chars().count());
     let (_, level_one, _) = tsuzuri(&["guide", "--level", "1", "--json"]);
     assert!(
@@ -269,7 +275,7 @@ fn bad_arguments_are_rejected_with_e2000() {
 #[test]
 fn guide_sizes_stay_within_the_limits() {
     for edition in editions() {
-        let card = shown(&read(&repo("guide/card.md")), &edition);
+        let card = shown(&repo_text(&repo("guide/card.md")), &edition);
         assert!(card.chars().count() <= guide::LIMIT_L0, "card in {edition}");
         for (name, limit) in guide::CHAPTER_LIMITS {
             let text = expected_chapter(name, &edition);
@@ -282,7 +288,7 @@ fn guide_sizes_stay_within_the_limits() {
     }
     for entry in std::fs::read_dir(repo("guide")).unwrap() {
         let path = entry.unwrap().path();
-        let text = read(&path);
+        let text = repo_text(&path);
         assert!(
             text.is_ascii() && !text.contains('\r'),
             "{}",
@@ -348,7 +354,7 @@ fn the_guide_examples_type_check() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let mut projects = Projects::new();
-        for (edition, project, file, body) in examples(&read(&path)) {
+        for (edition, project, file, body) in examples(&repo_text(&path)) {
             projects
                 .entry((edition, project))
                 .or_default()
@@ -387,7 +393,7 @@ fn the_guide_names_only_existing_subcommands() {
     assert!(commands.contains("guide") && commands.contains("explain") && commands.contains("fix"));
     for entry in std::fs::read_dir(repo("guide")).unwrap() {
         let path = entry.unwrap().path();
-        let text: String = read(&path)
+        let text: String = repo_text(&path)
             .lines()
             .filter(|line| !line.starts_with("```"))
             .collect::<Vec<_>>()
@@ -408,7 +414,7 @@ fn the_guide_names_only_existing_subcommands() {
 
 /// The entries of the pitfall table: (id, snippet, codes, edition, source).
 fn pitfalls() -> Vec<Pitfall> {
-    let text = read(&repo("tests/fixtures/guide/pitfalls.txt"));
+    let text = repo_text(&repo("tests/fixtures/guide/pitfalls.txt"));
     let mut entries = Vec::new();
     for part in text.split("\n## ").skip(1) {
         let (header, source) = part.split_once('\n').unwrap();
@@ -461,8 +467,8 @@ fn pitfall_claims_hold_and_appear_in_the_card() {
                 );
             }
             let texts = [
-                shown(&read(&repo("guide/card.md")), &edition),
-                shown(&read(&repo("guide/pitfalls.md")), &edition),
+                shown(&repo_text(&repo("guide/card.md")), &edition),
+                shown(&repo_text(&repo("guide/pitfalls.md")), &edition),
             ];
             assert!(
                 texts.iter().flat_map(|text| text.lines()).any(|line| {
@@ -477,7 +483,7 @@ fn pitfall_claims_hold_and_appear_in_the_card() {
 #[test]
 fn every_pitfall_line_has_a_verification_entry() {
     let snippets: Vec<String> = pitfalls().into_iter().map(|entry| entry.1).collect();
-    let text = read(&repo("guide/pitfalls.md"));
+    let text = repo_text(&repo("guide/pitfalls.md"));
     // The generated section is the hint table, which tests/hints.rs verifies.
     let manual = &text[..text.find("<!-- generated:").unwrap_or(text.len())];
     for line in manual.lines().filter(|line| line.starts_with("- ")) {
@@ -492,18 +498,22 @@ fn every_pitfall_line_has_a_verification_entry() {
     }
 }
 
+/// The output of scripts/check-guide.mjs on the guide files of `directory`; `None` without node.
+fn check_guide(directory: &Path) -> Option<std::process::Output> {
+    let output = Command::new("node")
+        .arg(repo("scripts/check-guide.mjs"))
+        .env("TSUZURI_GUIDE_EXAMPLES", directory)
+        .env("TSUZURI_BIN", env!("CARGO_BIN_EXE_tsuzuri"))
+        .output();
+    if output.is_err() {
+        eprintln!("skipped: node is not available");
+    }
+    output.ok()
+}
+
 #[test]
 fn the_checker_rejects_a_broken_example() {
-    let Ok(output) = Command::new("node")
-        .arg(repo("scripts/check-guide.mjs"))
-        .env(
-            "TSUZURI_GUIDE_EXAMPLES",
-            repo("tests/fixtures/guide_broken"),
-        )
-        .env("TSUZURI_BIN", env!("CARGO_BIN_EXE_tsuzuri"))
-        .output()
-    else {
-        eprintln!("skipped: node is not available");
+    let Some(output) = check_guide(&repo("tests/fixtures/guide_broken")) else {
         return;
     };
     assert!(!output.status.success());
@@ -513,22 +523,18 @@ fn the_checker_rejects_a_broken_example() {
 
 #[test]
 fn the_checker_checks_the_project_of_each_edition_block() {
-    let Ok(output) = Command::new("node")
-        .arg(repo("scripts/check-guide.mjs"))
-        .env(
-            "TSUZURI_GUIDE_EXAMPLES",
-            repo("tests/fixtures/guide_editions"),
-        )
-        .env("TSUZURI_BIN", env!("CARGO_BIN_EXE_tsuzuri"))
-        .output()
-    else {
-        eprintln!("skipped: node is not available");
-        return;
-    };
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(output.status.success(), "{stderr}");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Guide: 2 checked examples"), "{stdout}");
+    let fixture = repo_text(&repo("tests/fixtures/guide_editions/card.md"));
+    // A Windows checkout with core.autocrlf has CRLF line endings.
+    let crlf = root("crlf", &[("card.md", &fixture.replace('\n', "\r\n"))]);
+    for directory in [repo("tests/fixtures/guide_editions"), crlf] {
+        let Some(output) = check_guide(&directory) else {
+            return;
+        };
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("Guide: 2 checked examples"), "{stdout}");
+    }
 }
 
 const MAIN_TZ: &str = "namespace Acme::Try\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln \"Hello, Tsuzuri!\"\n    0\n\ntest \"adds numbers\" = assert (1 + 2 == 3)\n";
@@ -708,7 +714,7 @@ fn guide_std_page_has_one_line_per_function() {
             "{stdout}"
         );
     }
-    let source = read(&repo("std/Array.tz"));
+    let source = repo_text(&repo("std/Array.tz"));
     for line in source.lines() {
         if let Some(rest) = line.strip_prefix("def ") {
             let name = rest.split_whitespace().next().unwrap();
@@ -786,13 +792,13 @@ fn guide_edition_flag_selects_the_edition() {
     for edition in editions() {
         let (status, stdout, _) = tsuzuri(&["guide", "--edition", &edition]);
         assert_eq!(status, 0);
-        assert_eq!(stdout, shown(&read(&repo("guide/card.md")), &edition));
+        assert_eq!(stdout, shown(&repo_text(&repo("guide/card.md")), &edition));
     }
     // The edition of the project in the working directory.
     let project = root("edition", &[("Tsuzuri.toml", &manifest("2026"))]);
     assert_eq!(
         tsuzuri_in(&["guide"], Some(&project)).1,
-        shown(&read(&repo("guide/card.md")), "2026")
+        shown(&repo_text(&repo("guide/card.md")), "2026")
     );
     let (status, _, stderr) = tsuzuri(&["guide", "--edition", "2030"]);
     assert_eq!(status, 2);
@@ -806,7 +812,7 @@ fn guide_edition_flag_selects_the_edition() {
 fn every_guide_file_filters_for_every_supported_edition() {
     for entry in std::fs::read_dir(repo("guide")).unwrap() {
         let path = entry.unwrap().path();
-        let text = read(&path);
+        let text = repo_text(&path);
         for edition in Edition::SUPPORTED {
             let prepared = guide::prepare(&text, *edition)
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
