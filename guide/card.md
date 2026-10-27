@@ -42,7 +42,7 @@ test "area" = assert (area (Circle 2) == 12)
 - `if c then a else b`, several lines: `elif`. `match v with | P -> e | _ -> d`. Lambda: `\x -> x + 1`. `let mut x = 0`, then `x = x + 1`.
 - `for x in xs do`, `for i in a .. b do` (includes `b`), `while c do`, `break`, `continue`.
 - Strings: `a + b`, `$"n = {n}"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push_owned 1 v`.
-- Errors are values: `Maybe<T>` (`Some x`, `None`), `Result<T, E>` (`Ok x`, `Error e`). No exceptions, no `?`.
+- Errors are values: `Maybe<T>` (`Some x`, `None`), `Result<T, E>` (`Ok x`, `Error e`). No `?` and no unwinding: `try ... with` only turns the `OverflowException` of `@checked` arithmetic in the same function into a `Result`.
 - Std names are qualified (`Array.sum xs`, `Int.abs n`, `Math.sqrt x`). A def without parameters is called `f()`.
 
 ## Types and numbers

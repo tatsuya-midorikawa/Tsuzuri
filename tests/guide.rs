@@ -598,13 +598,18 @@ fn rendered_templates_stay_within_the_limits() {
 #[test]
 fn guide_agents_prints_the_template_for_a_project() {
     let base = root("agents", &[]);
-    assert_eq!(tsuzuri_in(&["new", "proj"], Some(&base)).0, 0);
+    // A namespace of several segments is written with `::` in both.
+    assert_eq!(
+        tsuzuri_in(&["new", "proj", "--namespace", "Acme::App"], Some(&base)).0,
+        0
+    );
     let directory = base.join("proj");
     let (status, stdout, _) = tsuzuri_in(&["guide", "--agents", "proj"], Some(&base));
     assert_eq!(status, 0);
     assert_eq!(stdout, read(&directory.join("AGENTS.md")));
     let (_, stdout, _) = tsuzuri_in(&["guide", "--llms-txt", "proj"], Some(&base));
     assert_eq!(stdout, read(&directory.join("llms.txt")));
+    assert!(stdout.contains("namespace Acme::App"), "{stdout}");
     let (status, stdout, _) = tsuzuri_in(&["guide", "--agents"], Some(&directory));
     assert_eq!(status, 0);
     assert_eq!(stdout, read(&directory.join("AGENTS.md")));

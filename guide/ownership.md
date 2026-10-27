@@ -16,7 +16,7 @@ No GC: an owned value has one owner, a binding, and is freed when it leaves scop
 - Edition 2027: a plain parameter of a heap type (`string`, array, `Vec`, record that needs freeing), a bare `'a` or a function borrows like `ref T`; numbers pass by value.
 <!--endif-->
 - A move in one `if`/`match` branch, or in a loop body of an outer value, makes the next use E1012.
-- `let t = r.title` moves one field; the Copy fields of `r` stay readable. A non-Copy element cannot move out of `xs[i]`: use `ref xs[i]`. `{ r with f = v }` consumes a non-Copy `r`. A lambda cannot capture a non-Copy value (E1005).
+- `let t = r.title` moves one field; the Copy fields of `r` stay readable. A non-Copy element cannot move out of `xs[i]`: use `ref xs[i]`. `{ r with f = v }` consumes a non-Copy `r`. A lambda that names a non-Copy local moves it in (a later use is E1012); a `ref mut` borrow or a task cannot be captured (E1005).
 - Fix E1012: borrow (`ref T`), copy (`clone_string s`, `Array.copy (ref xs)`), or move last.
 
 ## Borrows

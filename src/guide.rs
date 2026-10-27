@@ -537,9 +537,15 @@ pub fn project_values(directory: &Path) -> Result<(String, String, Edition), Dia
             ),
         )
     };
-    let text = std::fs::read_to_string(directory.join("Tsuzuri.toml")).map_err(|_| missing())?;
-    let manifest = crate::package::parse_manifest(&text, 0).map_err(|_| missing())?;
-    Ok((manifest.name, manifest.namespace, manifest.edition))
+    // The manifest reader takes only a regular file, with a bounded read.
+    let (_, manifest) =
+        crate::driver::read_manifest(&directory.join("Tsuzuri.toml")).map_err(|_| missing())?;
+    // The compiler keeps namespaces dotted; a manifest and a source write them with `::`.
+    Ok((
+        manifest.name,
+        manifest.namespace.replace('.', "::"),
+        manifest.edition,
+    ))
 }
 
 #[cfg(test)]

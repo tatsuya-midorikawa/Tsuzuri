@@ -92,7 +92,7 @@ def main :: unit -> i32 = \() ->
 ```
 
 ## Computation expressions and effects
-- No exceptions: failures are values; a trap (`assert`, bounds, division by zero) stops the program.
+- Failures are values; a trap (`assert`, bounds, division by zero) stops the program. The one exception is the `OverflowException` of `@checked` arithmetic: `try @checked x + 1 with | e -> e` turns it into a `Result` in the same function; nothing unwinds across functions.
 - `IO<T>` is an action that runs only when bound. In `main`, `do! a` runs `a` and `let! x = a` binds its result. `IO { ... }` builds an action to return.
 - In a body returning `Maybe` or `Result` (or in `Maybe { }`, `Result { }`), `let! x = m` unwraps, the first `None` or `Error` skips the rest, and `return v` wraps.
 - `return` only ends a builder block; it is not an early exit. `and!` runs left to right. `match! m with` unwraps, then matches.
