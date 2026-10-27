@@ -84,8 +84,10 @@ try {
           return [option.slice(0, separator), option.slice(separator + 1)];
         }));
         assert.ok(Object.keys(options).every(key => ['project', 'file', 'run'].includes(key)), `${label}: unknown example option`);
-        const key = options.project ?? `block-${block}`;
-        const entry = projects.get(key) ?? { files: new Map(), expected: undefined, edition: part.edition };
+        // A project is per edition block, as in tests/guide.rs: the same name in two blocks is two projects.
+        const name = options.project ?? `block-${block}`;
+        const key = `${name} ${part.edition ?? 'every edition'}`;
+        const entry = projects.get(key) ?? { name, files: new Map(), expected: undefined, edition: part.edition };
         const file = options.file ?? 'Main.tz';
         assert.ok(!file.includes('..') && !file.startsWith(sep) && ['.tz', '.tt', '.tc'].includes(extname(file)), `${label}: invalid example file`);
         assert.ok(!entry.files.has(file), `${label}: duplicate example file ${file}`);
@@ -94,9 +96,9 @@ try {
         projects.set(key, entry);
       }
     }
-    for (const [key, entry] of projects) {
+    for (const entry of projects.values()) {
       for (const edition of entry.edition ? [entry.edition] : EDITIONS) {
-        const context = `${label} (${key}, edition ${edition})`;
+        const context = `${label} (${entry.name}, edition ${edition})`;
         const directory = project(entry.files, edition);
         compile(['check', directory], context);
         examples++;

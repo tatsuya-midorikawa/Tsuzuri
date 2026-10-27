@@ -126,12 +126,10 @@ pub fn parse_arguments(arguments: &[String]) -> Result<Invocation, Diagnostic> {
     let (mut level, mut topic, mut edition, mut directory) = (None, None, None, None);
     let mut std = None;
     let mut words = arguments.iter().peekable();
-    let mut first = true;
     while let Some(word) = words.next() {
-        let positional_first = first;
-        first = false;
         if !word.starts_with('-') {
-            if positional_first && word == "std" {
+            // `std [MODULE]` is the only positional form, before or after the options.
+            if std.is_none() && word == "std" {
                 let module = words.next_if(|next| !next.starts_with('-')).cloned();
                 std = Some(module);
                 continue;
@@ -582,6 +580,23 @@ mod tests {
         );
         assert_eq!(action(&["std"]), Action::Std(None));
         assert_eq!(action(&["std", "Array"]), Action::Std(Some("Array".into())));
+        for words in [
+            &["--json", "std", "Array"][..],
+            &["std", "Array", "--json"],
+            &["--edition", "2026", "std", "Vec"],
+            &["std", "Vec", "--edition", "2026"],
+        ] {
+            let invocation = parse(words).unwrap();
+            assert!(
+                matches!(invocation.action, Action::Std(Some(_))),
+                "{words:?}"
+            );
+            assert_eq!(
+                (invocation.json, invocation.edition.is_some()),
+                (words.contains(&"--json"), words.contains(&"--edition")),
+                "{words:?}"
+            );
+        }
         assert!(parse(&["--json"]).unwrap().json);
         assert_eq!(
             parse(&["--edition", "2026"]).unwrap().edition,
@@ -604,6 +619,8 @@ mod tests {
             &["std", "--agents", "app"],
             &["std", "--llms-txt", "app"],
             &["std", "Array", "--agents"],
+            &["std", "Array", "std"],
+            &["--json", "std", "Array", "Vec"],
             &["stray"],
         ] {
             assert_eq!(kind(words), "guide_bad_arguments", "{words:?}");

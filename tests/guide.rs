@@ -511,6 +511,26 @@ fn the_checker_rejects_a_broken_example() {
     assert!(stderr.contains("card.md"), "{stderr}");
 }
 
+#[test]
+fn the_checker_checks_the_project_of_each_edition_block() {
+    let Ok(output) = Command::new("node")
+        .arg(repo("scripts/check-guide.mjs"))
+        .env(
+            "TSUZURI_GUIDE_EXAMPLES",
+            repo("tests/fixtures/guide_editions"),
+        )
+        .env("TSUZURI_BIN", env!("CARGO_BIN_EXE_tsuzuri"))
+        .output()
+    else {
+        eprintln!("skipped: node is not available");
+        return;
+    };
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Guide: 2 checked examples"), "{stdout}");
+}
+
 const MAIN_TZ: &str = "namespace Acme::Try\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln \"Hello, Tsuzuri!\"\n    0\n\ntest \"adds numbers\" = assert (1 + 2 == 3)\n";
 
 #[test]
