@@ -486,6 +486,30 @@ fn effects_are_transitive_through_user_functions() {
     );
 }
 
+/// Destroying an array or a record that holds a value with a user `Drop` runs it.
+#[test]
+fn user_drop_is_found_inside_stored_types() {
+    let model = one(concat!(
+        "record Res { id: i64 }\n",
+        "instance Drop<Res> {\n",
+        "    fn drop _value = ()\n",
+        "}\n",
+        "record Wrapper { inner: Res }\n",
+        "def all :: own [Res] -> [Res]\n",
+        "fn all values = values\n",
+        "def wrapped :: own Wrapper -> Wrapper\n",
+        "fn wrapped value = value\n",
+        "def plain :: own [i64] -> [i64]\n",
+        "fn plain values = values\n",
+    ));
+    for name in ["Main.all", "Main.wrapped"] {
+        let row = facts_of(&model, "Main", name);
+        assert_eq!(row["effects"], serde_json::json!(["user_drop"]), "{name}");
+    }
+    let row = facts_of(&model, "Main", "Main.plain");
+    assert_eq!(row["effects"], serde_json::json!([]));
+}
+
 #[test]
 fn effects_complete_is_false_without_a_20_summary() {
     let model = kg_basic();
@@ -617,6 +641,11 @@ fn trap_sites_proven_and_unproven() {
         [("assert".into(), false, 84, 21)]
     );
     assert_eq!(traps("Acme::Kg::Main.sum_to"), []);
+    // A pipe into `assert` is the same call.
+    let model = one("test \"piped\" = 1 + 1 == 2 |> assert\n");
+    let piped = facts_of(&model, "Main", "test:Main.piped");
+    assert_eq!(piped["trap_sites"].as_array().unwrap().len(), 1, "{piped}");
+    assert_eq!(piped["trap_sites"][0]["kind"], "assert");
     let model = one("def half :: i64 -> i64 = \\n -> n / 2\n");
     let half = facts_of(&model, "Main", "Main.half");
     let proven: Vec<bool> = half["trap_sites"]
@@ -710,6 +739,52 @@ fn ownership_events_for_kg_basic() {
     assert_eq!(drop["span"]["start"], drop["span"]["end"]);
     assert_eq!(drop["span"]["column"], 25);
     assert!(events("Acme::Kg::Main.copies").contains(&("values".into(), "copy".into(), None, 54)));
+}
+
+/// `text |> consume` gives `text` to `consume`, as `consume text` does.
+#[test]
+fn piped_arguments_have_their_target() {
+    let model = one(concat!(
+        "def consume :: own string -> i64\n",
+        "fn consume text = text.length\n",
+        "def direct :: own string -> i64\n",
+        "fn direct text = consume text\n",
+        "def piped :: own string -> i64\n",
+        "fn piped text = text |> consume\n",
+    ));
+    for name in ["Main.direct", "Main.piped"] {
+        let row = facts_of(&model, "Main", name);
+        let moves: Vec<_> = row["ownership"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["event"] == "move")
+            .map(|event| (event["var"].clone(), event["to"].clone()))
+            .collect();
+        assert_eq!(
+            moves,
+            [("text".into(), "Main.consume".into())],
+            "{name}: {row}"
+        );
+    }
+}
+
+/// A generic function that needs its type variable to be Copy copies an array of it: the use is
+/// no move.
+#[test]
+fn copies_of_generic_arrays_are_no_moves() {
+    let model = one(concat!(
+        "def dup :: own ['a] -> (['a] * ['a])\n",
+        "fn dup values = (values, values)\n",
+    ));
+    let row = facts_of(&model, "Main", "Main.dup");
+    let moves: Vec<_> = row["ownership"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["event"] == "move")
+        .collect();
+    assert_eq!(moves, Vec::<&serde_json::Value>::new(), "{row}");
 }
 
 #[test]

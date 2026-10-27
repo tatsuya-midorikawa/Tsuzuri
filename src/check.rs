@@ -707,6 +707,12 @@ impl Type {
         }
     }
 
+    /// Whether destroying a value of this type runs a user `Drop`: the type or a type that it
+    /// stores (not through a reference) has one.
+    pub(crate) fn holds_user_drop(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |part| !part.has_user_drop(types))
+    }
+
     pub(crate) fn sequence_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
         match self {
             Self::Record(id, arguments)
@@ -7946,6 +7952,13 @@ fn check_modules_collect(
             diagnostics.extend(errors);
             first
         })?;
+    let recursive_functions = function_declarations
+        .iter()
+        .enumerate()
+        .filter_map(|(id, (_, declaration))| declaration.recursion.is_some().then_some(id))
+        .collect();
+    // The phases do not overlap: the capture is timed apart from `check`.
+    drop(check_time);
     if let Some(capture) = capture {
         let _kg_time = crate::timings::Phase::start("kg-capture");
         kg_capture::collect_abstract(
@@ -7959,12 +7972,6 @@ fn check_modules_collect(
             },
         );
     }
-    let recursive_functions = function_declarations
-        .iter()
-        .enumerate()
-        .filter_map(|(id, (_, declaration))| declaration.recursion.is_some().then_some(id))
-        .collect();
-    drop(check_time);
     let specialize_time = crate::timings::Phase::start("specialize");
     let module = polymorph::specialize(
         module,
