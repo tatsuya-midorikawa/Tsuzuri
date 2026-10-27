@@ -39,7 +39,10 @@ def main :: unit -> i32 = \() ->
 - `match v with | p when c -> e | _ -> d` must be exhaustive (E1021). Patterns: literals, `_`, tuples, records `{ x = a }`, cases, lists `[|a|]` and `h :: t`, arrays `[a, b]`, `p | q`, `p as all`.
 - Guard clauses right after `->` match the arguments; `where` holds shared values.
 - `for x in xs do` walks arrays, lists, `Vec`, strings, ranges and `Seq`; `for i in a .. b do` includes `b`. `for i = a to b do` is E0002 in a body that uses `do!` or `let!`. `while c do`, `break`, `continue`.
-- `def rec f` recurses (mutual: `and`); direct tail calls become loops.
+- `def rec f` recurses (mutual: `and`). A direct self tail call becomes a loop unless the function takes a borrow (`ref T`) or a function value; other recursion uses the stack.
+<!--if edition=2027-->
+- Edition 2027: a bare non-Copy parameter is a borrow, so write `own T` where a tail call must loop.
+<!--endif-->
 ```tsuzuri run=Point%20%7B%20x%3A%201%2C%20y%3A%205%20%7D%20true%20big
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display)
 
