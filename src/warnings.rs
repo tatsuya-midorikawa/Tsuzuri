@@ -5,7 +5,27 @@ pub(super) struct WarningOptions {
     pub shadowing: bool,
 }
 
-pub(super) fn unused_locals(function: &CheckedFunction) -> Vec<Diagnostic> {
+/// The unqualified names of the program's functions (`area` for `Shapes.area`), once per analysis
+/// for `unused_locals`.
+pub(super) fn function_names(names: &Names) -> BTreeSet<&str> {
+    names
+        .functions
+        .keys()
+        .map(|name| {
+            name.rsplit_once('.')
+                .map_or(name.as_str(), |(_, last)| last)
+        })
+        .collect()
+}
+
+/// W1001 at each local of `function` that nothing uses. The warning carries the `certain` fix
+/// that prefixes the name with `_`, when no local of the function and no function of the program
+/// (`function_names`) already has the prefixed name, so the rename cannot capture or shadow
+/// another name (G24).
+pub(super) fn unused_locals(
+    function: &CheckedFunction,
+    function_names: &BTreeSet<&str>,
+) -> Vec<Diagnostic> {
     if function.origin.module != ModuleOrigin::User {
         return Vec::new();
     }
@@ -16,22 +36,55 @@ pub(super) fn unused_locals(function: &CheckedFunction) -> Vec<Diagnostic> {
         .collect();
     let mut uses = Uses::default();
     collect_locals(&function.body, &mut locals, &mut uses);
+    // A rename of one span cannot reach the other binders of an or-pattern, nor the mentions of a
+    // `let rec` function inside its group.
+    let partial: BTreeSet<usize> = uses
+        .calls
+        .values()
+        .flatten()
+        .chain(&uses.shared)
+        .copied()
+        .collect();
     let used = uses.finish();
-    locals
-        .into_values()
+    let unused: Vec<_> = locals
+        .values()
         .filter(|local| {
             local.provenance == Provenance::User
                 && !local.name.starts_with('_')
                 && !used.contains(&local.id)
         })
+        .collect();
+    if unused.is_empty() {
+        return Vec::new();
+    }
+    let taken: BTreeSet<&str> = locals.values().map(|local| local.name.as_str()).collect();
+    unused
+        .into_iter()
         .map(|local| {
-            Diagnostic::of(
+            let diagnostic = Diagnostic::of(
                 DiagnosticKind::UnusedLocal,
                 format!(
                     "unused local '{}'; prefix it with '_' to silence this warning",
                     local.name
                 ),
                 local.span,
+            );
+            let prefixed = format!("_{}", local.name);
+            // The span must be the name itself for the edit to rename it.
+            if taken.contains(prefixed.as_str())
+                || function_names.contains(prefixed.as_str())
+                || partial.contains(&local.id)
+                || local.span.end - local.span.start != local.name.len()
+            {
+                return diagnostic;
+            }
+            diagnostic.fix(
+                format!("Prefix '{}' with '_'", local.name),
+                Applicability::Certain,
+                vec![Edit {
+                    span: local.span,
+                    text: prefixed,
+                }],
             )
         })
         .collect()
@@ -47,6 +100,8 @@ struct Uses {
     bodies: Vec<(usize, Vec<usize>)>,
     /// The functions of a group that the body of each function mentions.
     calls: BTreeMap<usize, BTreeSet<usize>>,
+    /// The locals that several alternatives of a match arm bind, each at its own span.
+    shared: BTreeSet<usize>,
 }
 
 impl Uses {
@@ -135,6 +190,14 @@ fn collect_locals<'a>(
         }
         Match { arms, .. } => {
             for arm in arms {
+                if arm.alternatives.len() > 1 {
+                    uses.shared.extend(
+                        arm.alternatives
+                            .iter()
+                            .flat_map(|alternative| &alternative.bindings)
+                            .map(|(local, _)| local.id),
+                    );
+                }
                 for alternative in &arm.alternatives {
                     locals.extend(
                         alternative
@@ -791,6 +854,72 @@ struct DeprecatedUse {
     owner: usize,
     case: bool,
     message: String,
+    /// The function that the note names as the replacement (`replacement_for`).
+    replacement: Option<String>,
+}
+
+/// The function that replaces the deprecated function `owner` at a use spelled `spelled`: the
+/// note is exactly `use {path} instead`, `path` names a function of the same module as
+/// `spelled` does, and that function is public and has the same parameter and result types.
+fn replacement_for(
+    owner: &semantic::Definition,
+    spelled: &str,
+    note: &str,
+    index: &semantic::SemanticIndex,
+) -> Option<String> {
+    if owner.kind != semantic::SymbolKind::Function {
+        return None;
+    }
+    let path = note.trim().strip_prefix("use ")?.strip_suffix(" instead")?;
+    if path.is_empty() || path.contains(char::is_whitespace) {
+        return None;
+    }
+    let (module, target) = path.rsplit_once('.')?;
+    if spelled.rsplit_once('.').map(|(module, _)| module) != Some(module)
+        || !target.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        || !target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let types = |definition: &semantic::Definition| -> Vec<String> {
+        definition
+            .parameters
+            .iter()
+            .map(|parameter| {
+                parameter
+                    .split_once(": ")
+                    .map_or(parameter.as_str(), |(_, ty)| ty)
+                    .to_owned()
+            })
+            .collect()
+    };
+    // The modifiers (`pure `, `const `) and the declared signature (`own string -> unit`): a
+    // replacement must accept every call and every context that the deprecated function does,
+    // which the signature shows only without type parameters and named regions.
+    fn signature(definition: &semantic::Definition) -> Option<(&str, &str)> {
+        if !definition.plain_signature {
+            return None;
+        }
+        let (head, signature) = definition.detail.split_once(" :: ")?;
+        let (modifiers, _) = head.split_once("def ")?;
+        Some((modifiers, signature))
+    }
+    index
+        .definitions
+        .iter()
+        .any(|candidate| {
+            candidate.kind == semantic::SymbolKind::Function
+                && candidate.module == owner.module
+                && candidate.name == target
+                && candidate.public
+                && types(candidate) == types(owner)
+                && candidate.result == owner.result
+                && signature(candidate).is_some()
+                && signature(candidate) == signature(owner)
+        })
+        .then(|| target.to_owned())
 }
 
 /// W1005 at each reference, in a user module, to a deprecated declaration of another package
@@ -803,6 +932,8 @@ pub(super) fn deprecated_uses(
     deprecations: &BTreeMap<(usize, usize), Deprecation>,
 ) -> Vec<Diagnostic> {
     let mut reported = BTreeSet::new();
+    // The replacement of each deprecated function, found once: the search walks every definition.
+    let mut replacements: BTreeMap<usize, Option<String>> = BTreeMap::new();
     let mut uses = Vec::new();
     for reference in &index.references {
         let Some(source) = reference.span.source else {
@@ -856,12 +987,19 @@ pub(super) fn deprecated_uses(
             (false, false) => format!("'{spelled}' is deprecated: {shown}"),
             (false, true) => format!("'{spelled}' is deprecated: {shown}..."),
         };
+        // The span must be the name itself for the edit to replace it.
+        let replacement = replacements
+            .entry(owner_id)
+            .or_insert_with(|| replacement_for(owner, &spelled, &deprecation.note, index))
+            .clone()
+            .filter(|_| reference.span.end - reference.span.start == owner.name.len());
         uses.push(DeprecatedUse {
             source,
             span: reference.span,
             owner: owner_id,
             case,
             message,
+            replacement,
         });
     }
     // `Union.Case` names the union and the case, which is one use: it warns at the case.
@@ -872,7 +1010,23 @@ pub(super) fn deprecated_uses(
         .collect();
     uses.into_iter()
         .filter(|used| used.case || !cases.contains(&(used.source, used.owner, used.span.end + 1)))
-        .map(|used| Diagnostic::of(DiagnosticKind::DeprecatedUse, used.message, used.span))
+        .map(|used| {
+            let diagnostic = Diagnostic::of(DiagnosticKind::DeprecatedUse, used.message, used.span);
+            match used.replacement {
+                Some(target) => diagnostic.fix(
+                    format!(
+                        "Replace '{}' with '{target}'",
+                        index.definitions[used.owner].name
+                    ),
+                    Applicability::Likely,
+                    vec![Edit {
+                        span: used.span,
+                        text: target,
+                    }],
+                ),
+                None => diagnostic,
+            }
+        })
         .collect()
 }
 

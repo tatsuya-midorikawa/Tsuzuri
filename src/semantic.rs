@@ -82,6 +82,8 @@ pub struct Definition {
     /// `name: type` for each parameter of a function or extern.
     pub parameters: Vec<String>,
     pub result: String,
+    /// A function whose calls depend only on `detail` (`CheckedFunction::plain_signature`).
+    pub plain_signature: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -283,6 +285,7 @@ fn plain(
         exported: false,
         parameters: Vec::new(),
         result: String::new(),
+        plain_signature: false,
     }
 }
 
@@ -576,6 +579,7 @@ fn define_declarations(
                 exported,
                 parameters,
                 result: function.signature.result.display(types),
+                plain_signature: function.plain_signature(),
                 ..plain(declared, kind, name, detail, visibility)
             });
             links.callables.insert(qualified, definition);
@@ -853,6 +857,9 @@ pub(super) fn collect(
             );
         }
     }
+    // A parenthesized name keeps the span of its parentheses (`(Legacy.old)`); the span of the
+    // name itself, for the references of `index_function`.
+    let mut names_in_parentheses: BTreeMap<(Option<usize>, usize, usize), Span> = BTreeMap::new();
     for module in modules
         .iter()
         .filter(|module| module.origin == ModuleOrigin::User)
@@ -862,12 +869,31 @@ pub(super) fn collect(
             .functions
             .iter()
             .map(|function| &function.body)
+            .chain(
+                program
+                    .classes
+                    .iter()
+                    .flat_map(|class| &class.defaults)
+                    .chain(
+                        program
+                            .instances
+                            .iter()
+                            .flat_map(|instance| &instance.methods),
+                    )
+                    .map(|method| &method.body),
+            )
             .chain(program.constants.iter().map(|constant| &constant.value))
             .chain(program.tests.iter().map(|test| &test.body))
             .chain(program.benches.iter().map(|bench| &bench.body))
             .chain(program.entry.as_ref());
         for body in bodies {
             body.visit(&mut |expression| {
+                if let ExprKind::Name(name) | ExprKind::Field(_, name) = &expression.kind
+                    && name.span.end != expression.span.end
+                {
+                    let span = expression.span;
+                    names_in_parentheses.insert((span.source, span.start, span.end), name.span);
+                }
                 let annotations: Vec<&TypeExpr> = match &expression.kind {
                     ExprKind::Block { bindings, .. } => bindings
                         .iter()
@@ -893,7 +919,15 @@ pub(super) fn collect(
         .filter(|(_, function)| std_only || function.origin.module == ModuleOrigin::User)
     {
         let uses = name_uses.get(position).map_or(&[][..], Vec::as_slice);
-        index_function(&mut index, function, uses, functions, links, &types);
+        index_function(
+            &mut index,
+            function,
+            uses,
+            functions,
+            links,
+            &types,
+            &names_in_parentheses,
+        );
     }
     index.entries.sort_by_key(|entry| {
         (
@@ -926,6 +960,7 @@ fn index_function(
     functions: &[CheckedFunction],
     links: &Links,
     types: &TypeContext<'_>,
+    names_in_parentheses: &BTreeMap<(Option<usize>, usize, usize), Span>,
 ) {
     let mut locals: BTreeMap<usize, &Local> = function
         .parameters
@@ -1025,6 +1060,7 @@ fn index_function(
             exported: false,
             parameters: Vec::new(),
             result: String::new(),
+            plain_signature: false,
         });
         definitions.insert(local.id, definition);
     }
@@ -1093,16 +1129,17 @@ fn index_function(
             && let Some(&definition) = links.callables.get(&functions[id].qualified_name())
         {
             // A qualified spelling ends with the function name.
-            let start = expression.span.end.saturating_sub(functions[id].name.len());
-            if start >= expression.span.start {
-                index.reference(
-                    Span {
-                        start,
-                        ..expression.span
-                    },
-                    definition,
-                    Role::Read,
-                );
+            let span = names_in_parentheses
+                .get(&(
+                    expression.span.source,
+                    expression.span.start,
+                    expression.span.end,
+                ))
+                .copied()
+                .unwrap_or(expression.span);
+            let start = span.end.saturating_sub(functions[id].name.len());
+            if start >= span.start {
+                index.reference(Span { start, ..span }, definition, Role::Read);
             }
         }
         let mut ty = &expression.ty;

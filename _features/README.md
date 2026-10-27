@@ -264,7 +264,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G21 | [AI ガイドパック（`tsuzuri guide`、`tsuzuri new` の `AGENTS.md`・`llms.txt`）](G21-ai-guide-pack.md) | P1 | L | (G23) | todo（承認済み） |
 | G22 | [診断 v2 の基盤（関連位置・help・fix・expected/found。所有権の移動元・借用元）](_completed/G22-diagnostic-v2.md) | P0 | L | G20, G12 | done（Phase 1〜4、2026-10-26） |
 | G23 | [診断の kind・`tsuzuri explain`・ヒント DB](_completed/G23-diagnostic-kinds-explain-hints.md) | P1 | L | G22 | done（Phase 1〜4、2026-10-27） |
-| G24 | [`tsuzuri fix`（機械的な修正の適用と edition の移行基盤）](G24-tsuzuri-fix.md) | P1 | L | G22 | todo（承認済み） |
+| G24 | [`tsuzuri fix`（機械的な修正の適用と edition の移行基盤）](_completed/G24-tsuzuri-fix.md) | P1 | L | G22 | done（Phase 1〜4、2026-10-27） |
 | G25 | [型つき穴 `?` と `tsuzuri find`（型でのシグネチャ検索）、未解決名の候補](G25-typed-holes-and-find.md) | P2 | L | G22, (G24) | todo（承認済み） |
 | G26 | [Facts モデル（コンパイラの事実の機械可読な定義と exporter）](G26-facts-model.md) | P1 | XL | (G22), (A20) | todo（承認済み） |
 | G27 | [ビルド時の KB（`target/tz/kb`、brief カード、増分、鮮度）](G27-build-time-kb.md) | P1 | L | G26 | todo（承認済み） |
@@ -535,7 +535,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | [G22](_completed/G22-diagnostic-v2.md) | 診断（P0・基盤） | 診断に関連位置（移動元・借用元・期待の原因など）・`help`・`fixes`・`expected`／`found`・`candidates`・`scope` を足す。JSON はキーを足すだけで、追加の情報を持たない診断は 1 byte も変わらない。`Diagnostic` を 8 bytes の `Box` にして stack の余裕を保つ（フィールドを直に足すと GUIDE §3.1 の stack の回帰テストが溢れることを実測）。所有権の 7 か所と型の不一致に付け、LSP の `relatedInformation`・`quickfix` に接続する | 承認済み・実装済み（Phase 1〜4） |
 | [G21](G21-ai-guide-pack.md) | 知識 | `tsuzuri guide`（L0 6,000 字・L1 20,000 字・std のページと 1 行索引。英語。コンパイラの表と実行を通った例から生成。`--json` あり）と、`tsuzuri new` が書く `AGENTS.md`・`llms.txt`。落とし穴の表は G23 のヒント DB と共有する | 承認済み |
 | [G23](_completed/G23-diagnostic-kinds-explain-hints.md) | 診断 | 粗い 47 コードを原因ごとの kind（653）に分け（enum とマクロの登録簿。`Diagnostic::of`）、`tsuzuri explain`（47 コードと厳選した 84 kind のページ、`--catalog --json`）と、`pair.0`・`Display.to_string` のように AI が繰り返す誤りに「どう書くか」を返すヒント DB を足す。発行 1,077 か所を `#[deprecated]` とモジュールごとの `deny` で段階的に移行する | 承認済み・実装済み（Phase 1〜4。kind 693・コードのページ 49） |
-| [G24](G24-tsuzuri-fix.md) | 診断 | `tsuzuri fix [PATH]`: `fixes` の `certain` を既定で適用し（`--applicability likely` なら `likely` も）、適用後に再検査して新しい誤りが出れば何も書かない（`E2008`）。`--dry-run` は差分だけで、`maybe` は `--dry-run` のときだけ。`--edition 2027` で edition を移行する（A22 が使う）。編集の適用は LSP の quickfix と共有する（`apply_edits`） | 承認済み |
+| [G24](_completed/G24-tsuzuri-fix.md) | 診断 | `tsuzuri fix [PATH]`: `fixes` の `certain` を既定で適用し（`--applicability likely` なら `likely` も）、適用後に再検査して新しい誤りが出れば何も書かない（`E2008`）。`--dry-run` は差分だけで、`maybe` は `--dry-run` のときだけ。`--edition 2027` で edition を移行する（A22 が使う）。編集の適用は LSP の quickfix と共有する（`apply_edits`） | 承認済み・実装済み（Phase 1〜4。`--edition` は A18 の移行に統合） |
 | [G25](G25-typed-holes-and-find.md) | 診断・検索 | 型つき穴 `?`（`E1030`: 期待する型と、スコープの束縛・その型を作れる候補を出す）、`tsuzuri find 'ref [i64] -> i64'`（型でのシグネチャ検索。`kb find` と同じ実装）、未解決名の候補（`unknown value 'length'` に近い名前） | 承認済み |
 | [G26](G26-facts-model.md) | 知識（事実） | コンパイラが内部に持つ事実（シンボル・呼び出し・効果・複製・確保・トラップ・所有権の出来事・再帰・ループ・特殊化・型のレイアウト）を `tz-facts/1` の JSON Lines として定義し、`check` の解析だけから決定的に書き出す exporter。Phase 1〜6 は独立に出荷でき、A20 が揃うまで `effects_complete`・`alloc_complete` は `false` | 承認済み |
 | [G27](G27-build-time-kb.md) | 知識（KB） | `check`・`build`・`run`・`test` が `target/tz/kb/`（`tz-kb/1`。シンボル・グラフ・facts・brief カード・図）を既定で書く。入力の SHA-256 で増分と鮮度（`E2009`）を判定し、`--no-kb`・`TSUZURI_KB=0` で止められる。brief カードは L0 2,400 字・L1 1,600 字・L2 700 字。`tsuzuri new` の `.gitignore` に `target/` を足す | 承認済み |

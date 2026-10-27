@@ -3747,6 +3747,16 @@ impl CheckedFunction {
     pub fn qualified_name(&self) -> String {
         format!("{}.{}", self.module, self.name)
     }
+
+    /// Whether the calls of the function depend only on its declared signature: it has no type
+    /// parameters, whose inferred constraints and ownership requirements the signature does not
+    /// show, and no named-region contracts.
+    pub(crate) fn plain_signature(&self) -> bool {
+        self.type_parameters.is_empty()
+            && self.region_sources.is_none()
+            && self.region_slots.is_none()
+            && self.callback_contracts.is_empty()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -7765,6 +7775,7 @@ fn check_modules_collect(
     // so the functions finish in parallel; what each leaves for the shared lists is applied in
     // function order.
     let workers = parallelism.workers(functions.len(), FUNCTIONS_PER_WORKER);
+    let function_names = warnings::function_names(&names);
     ordered_for_each_owned(
         functions.iter_mut().zip(pending),
         workers,
@@ -7778,7 +7789,7 @@ fn check_modules_collect(
                 let coverage = checker.check_coverage()?;
                 if function.origin.module == ModuleOrigin::User {
                     function_warnings.extend(coverage);
-                    function_warnings.extend(warnings::unused_locals(function));
+                    function_warnings.extend(warnings::unused_locals(function, &function_names));
                     function_warnings.append(&mut checker.shadowing_warnings);
                 }
                 if function.name == "$entry" {

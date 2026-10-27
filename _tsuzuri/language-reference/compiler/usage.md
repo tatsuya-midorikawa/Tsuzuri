@@ -487,7 +487,28 @@ tsuzuri doc demo -o demo-docs
 
 ### fix
 
-旧版の値渡しの契約を保って edition を移行します。所有する引数を `own` で明示し、
+`tsuzuri fix` には 2 つの使い方があります。`--edition` を付けないと、診断が持つ修正案を適用します。`--edition` を付けると、edition を移行します。
+
+```sh
+tsuzuri fix app/
+tsuzuri fix app/ --dry-run
+tsuzuri fix app/ --applicability likely --json
+tsuzuri fix app/Main.tz
+```
+
+修正案の適用は、`check` と同じくプロジェクト全体を解析し、診断（`--json` の `fixes`）ごとに、指定した確かさ以上の最初の修正案を 1 つ選びます。既定は `certain`（意味を保つ機械的な書き換え）だけで、`--applicability likely` は `likely` も、`--applicability maybe` は提案も含めます。`maybe` は `--dry-run` と一緒のときだけ受け付け、書きません。重なる修正案は、整列した順で先のものだけをそのラウンドに入れ、残りは次のラウンドに回します。ラウンドごとにメモリ上で適用して解析し直し、エラーが増えたり、エラーのないプロジェクトで警告が増えたり、エラーが収集の上限の 1000 件に達して増減を確かめられなかったりしたら、どのファイルも書かずに `E2008`（`fix_verification_failed`）で止まります（`--dry-run` も同じ検証で止まるので、修正案は `tsuzuri check PATH --json` の `fixes` で確かめます）。適用するものがなくなるか 5 ラウンドで終え、変わったファイルを `fmt` と同じ保護（通常のファイルだけ、読んだときの内容のままのときだけ、一時ファイルからの置き換え）でまとめて書きます。途中で書けなかったら、書いたファイルを元に戻します。
+
+書くのはプロジェクト自身のソースだけです。依存パッケージ、標準ライブラリ、`Tsuzuri.toml` と `Tsuzuri.lock` は書きません。ファイルを渡すと、解析はプロジェクト全体で、書くのはそのファイルだけです。
+
+| 出力 | 内容 |
+| --- | --- |
+| 既定 | ファイルごとに `fixed Main.tz: 2 fixes`、最後に `applied 2 fixes in 1 file`。適用するものがなければ `no fixes to apply`。確かさが足りずに適用しなかった修正案があれば `skipped 1 fix (use --json for the list)` と `note: rerun with --applicability likely to apply 1 more fix` |
+| `--dry-run` | 書かずに、ファイルごとの統一差分（`--- a/Main.tz`、`+++ b/Main.tz`）と `would apply 2 fixes in 1 file` |
+| `--json` | 1 行 1 オブジェクト。修正案ごとの `{"event":"fix","status":"applied","round":1,"code","kind","applicability","title","edits"}`（適用しなかったものは `"status":"skipped","reason":"applicability"` など）、ファイルごとの `{"event":"file","path","fixes"}`（`--dry-run` では `diff` も）、最後に `{"event":"summary",...}` |
+
+標準エラー出力には、書いた後のプロジェクトに残った診断を `check` と同じ形で出します（`--dry-run` では出しません）。終了コードは、適用した・適用するものがない・診断が残っている、のどれでも 0、`E2008` などで止まったときは 1、引数の誤りは 2 です。修正案を持つ診断は、未使用のローカル（`W1001`。名前に `_` を付ける `certain`）、`@deprecated` の案内が同じシグネチャの関数を名指しする使用（`W1005`。その関数への置き換え。`likely`）、網羅していない `match`（`E1021`。`maybe`）、ヒントの字句の置き換え（`likely` か `maybe`）です（[診断](diagnostics.md#関連する位置help修正案)）。
+
+`--edition YEAR` は、旧版の値渡しの契約を保って edition を移行します。所有する引数を `own` で明示し、
 Array／List の値 callback と消費する `Vec.push` を `_owned` 入口へ変更します。
 同名の利用者定義や依存パッケージは書き換えません。
 
@@ -860,7 +881,7 @@ macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sec
 | コード | いつ |
 | --- | --- |
 | 0 | 成功。警告だけでも、`--deny-warnings` が無ければ 0 |
-| 1 | ソースの診断、読み書き、リンカー、実行時の失敗、テスト失敗、`fmt --check` の差分、`--deny-warnings`、`api-diff` の互換性のない変更 |
+| 1 | ソースの診断、読み書き、リンカー、実行時の失敗、テスト失敗、`fmt --check` の差分、`--deny-warnings`、`api-diff` の互換性のない変更、`fix` の中止（`E2008`） |
 | 2 | 引数の不足や組み合わせ。引数なしでヘルプを出したときも 2。`explain` の不明な kind やコードも 2 |
 
 `def main` が 0 以外を返した場合は、コンパイラから見ると実行の失敗 `E2005` になり、`tsuzuri run` 自体の終了コードは 1 になります。プログラム自身の戻り値がそのまま `tsuzuri run` の終了コードになるわけではありません（`tsuzuri build` で生成したバイナリを直接実行した場合は、`def main` の戻り値がプロセスの終了コードになります）。

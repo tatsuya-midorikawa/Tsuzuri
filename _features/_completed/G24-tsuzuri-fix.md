@@ -7,7 +7,7 @@
 | 規模 | 全体 L（Phase 1: M、Phase 2: S、Phase 3: M、Phase 4: S の合計。D-50 の表の M は Phase 1〜2 の規模）。Phase ごとに別の PR にする |
 | 依存 | G22 の Phase 1（診断 v2 のデータモデル: `Fix`・`Edit`・`Applicability`・`Diagnostic.fixes`・`Diagnostic::fix`・JSON の `fixes`）。Phase 2 の LSP の整理は G22 Phase 4 の有無で分岐（手順 11）。Phase 3 の本番の配線は A22（`Edition::E2027`・`W1007`・`E0004`）が足すまで `E2000` で止まる（A22 が本チケットに依存する）。弱い依存: G23（kind の登録簿。G23 があれば本チケットの kind を S1 の手順で登録簿へ足して `of` で出し、なければ `with_kind` で直接付ける。D-51） |
 | 後続 | A22（`--edition` と `fix::canonical_warnings` を使う）、G25 Phase 4（`E1002` の `maybe` の fix を `--applicability maybe --dry-run` で表示）、A20・G23（fix を足す診断）、G29（`tz_fix_plan` が `fix::run` を書き込みなしで呼ぶ）、G21（ガイドの作業の流れ） |
-| 状態 | todo |
+| 状態 | done（Phase 1〜4、2026-10-27） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D16 はすべて承認済み |
 | 改善する劣位 | Rust 比（`cargo fix`）: 警告や edition の移行を機械的に直す手段がない。診断が `fixes`（G22）を持っても、適用するには編集の再実装が要る。AI の作業の流れ（`check --json` → 直す → `test`）の「直す」が欠けている（D-50 の結論 (1)） |
@@ -273,7 +273,7 @@ $ tsuzuri fix a --json
 
 | コード | kind | 条件 | メッセージの雛形 | 位置 |
 | --- | --- | --- | --- | --- |
-| `E2008` | `fix_verification_failed` | ラウンドの検証の失敗 | `the fixes would introduce {code} in '{path}' at line {line}: {message}; no file was changed, review the fixes with --dry-run --json`（増えた最初の診断。V2・V3 は件数が増えた `(path, code)` の `after` で最初のもの、V1 だけなら `after` の最初の誤り） | `<command line>` |
+| `E2008` | `fix_verification_failed` | ラウンドの検証の失敗 | `the fixes would introduce {code} in '{path}' at line {line}: {message}; no file was changed; review the fixes with tsuzuri check --json`（増えた最初の診断。V2・V3 は件数が増えた `(path, code)` の `after` で最初のもの、V1 だけなら `after` の最初の誤り） | `<command line>` |
 | `E2008` | `fix_source_changed` | 書く直前の読み直しが、解析したときの内容と違う | `'{path}' changed while fixing; nothing was left replaced, rerun tsuzuri fix` | そのファイルのパス、引用なし |
 | `E2008` | `fix_write_failed` | I/O の失敗、シンボリックリンク・通常でないファイル、巻き戻しの失敗、`set_edition` の失敗 | `cannot replace '{path}': {detail}; {n} earlier replacements were restored`（巻き戻せないファイルがあれば `; could not restore {paths}`） | そのファイルのパス、引用なし |
 | `E2008` | `fix_edition_blocked` | 移行後も目標 edition が拒否する誤りが残る | `edition {target} still rejects {n} places after the fixes; Tsuzuri.toml was not changed, fix them by hand and rerun tsuzuri fix --edition {target}`（この前に残った誤りを通常の診断として出す） | `<command line>` |
@@ -282,7 +282,7 @@ $ tsuzuri fix a --json
 **例 4**（想定出力。`fix_verification_failed`。偽の fix が型の誤りを足したとき）:
 
 ```text
-<command line>:1:1: error[E2008]: the fixes would introduce E1003 in 'Main.tz' at line 3: expected i64, found bool; no file was changed, review the fixes with --dry-run --json
+<command line>:1:1: error[E2008]: the fixes would introduce E1003 in 'Main.tz' at line 3: expected i64, found bool; no file was changed; review the fixes with tsuzuri check --json
 ```
 
 **例 5**（想定出力。`fix_source_changed`。`--json`。G22 Phase 1 が前提なので、D-51 の順序で `kind` が `span` の次に入る）:
@@ -662,3 +662,40 @@ return Report { rounds, stop, records: applied + skipped, files, last: current }
 ## 付録
 
 - [付録 A〜D（診断コードごとの判断表、検証済みの試作、実測と参照出力、テストの入力と期待値）](G24-appendix.md)
+
+## 実装と検証（2026-10-27）
+
+Phase 1〜4 をブランチ `feat/g24-tsuzuri-fix`（G23 の `feat/g23-diagnostic-kinds` の上）に実装した。
+
+### HEAD との食い違いと、その扱い
+
+| 食い違い | 扱い |
+| --- | --- |
+| A18 が `tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] PATH`（`src/edition_migration.rs`。値渡しの契約を `own`・`_owned` で保って移行し、目標の edition で再検査し、ソース → マニフェストの順に巻き戻しつきで書く）を既に出荷していた。本チケットは `fix` を未知のサブコマンドとして書かれていた | `tsuzuri fix` の引数解析を 1 つにした（`fix::parse_arguments`）。`--edition` がなければ本チケットの修正案の適用、あれば A18 の移行。Phase 3 の「段 2〜5」（目標での再検査・マニフェストの更新・出力）は A18 の実装と出力をそのまま使い、本チケットからは段 3 の **canonical のラウンド**（`fix::canonical_round`。`only_codes = ["W1007"]` の `certain` の修正案。`canonical_warnings` は A22 まで空）を A18 の `prepare` の最初に足した。`package::set_edition` は A18 の `set_manifest_edition` と同じ役割なので足さなかった（`set_edition_table` も書かない）。`fix_edition_downgrade`・`fix_edition_blocked` の kind は、A18 の `E2008` の `migration_edition_backwards` と、移行前の再検査の誤りがその役を持つので登録しない |
+| `--from` | A18 の `--from YEAR` を同じ解析器で受け、`--edition` なしの `--from` は `fix_bad_arguments` にした |
+| 引数の誤りの kind | A18 の解析器が使っていた `duplicate_option` などを、本チケットの `fix_bad_arguments`・`fix_edition_unsupported`・`fix_edition_with_applicability`・`fix_maybe_needs_dry_run` に揃えた（メッセージは本チケットの表のとおり。`--edition needs a year such as 2027` と `{flag} specified more than once` は A18 と同じ文言） |
+| G23 が済んでいる | 新しい診断は `Diagnostic::of` で、kind を登録簿へ足した（8 個）。`W1001`・`W1005` は kind を持ち、`fix --json` の `fix` の行に `kind` が入る |
+| `W1005` の「同じ型」 | `Definition.parameters` は `名前: 型` なので、引数名を除いた型の列と結果の型で比べた（引数名だけが違う置き換えも受ける）。`detail` の `pure`・`const` と宣言のシグネチャも同じで、どちらも型引数と名前付きの region を持たない（`Definition.plain_signature`、`CheckedFunction::plain_signature`）ときだけ置き換える。型引数の制約（推論した `Copy` などを含む）と region の契約は表示したシグネチャに表れず、合わない置き換えは元の呼び出しをエラーにして `--applicability likely` の実行全体を止めるため。標準ライブラリに `@deprecated` の関数はまだないので、失うものはない。括弧の中の名前（`apply (Legacy.old)`）の参照は括弧ごとの span から名前の長さを引いていたので `ld)` を指した。構文木の名前の span を使う（関数・class の既定・instance のメソッドの本体） |
+| 修正案の span の確かめ | `W1001` はローカルの span が名前の長さと同じとき、`W1005` は参照の span が宣言の名前の長さと同じときだけ修正案を付けた（span が名前でないと置き換えが壊れ、検証で実行全体が止まるため） |
+| LSP の `W1001` | 手順 11 のとおり専用の経路（`rename`）を消し、`fixes` 由来の quickfix に一本化した。題・`isPreferred`・編集は同じで、`diagnostics` に公開した診断と同じ `data`（`kind`・`fixes`）が入る（`code_action_prefixes_unused_locals` の期待値の `data` だけを直した） |
+| `no_fixes_prints_a_note_and_changes_nothing` | Phase 2 の後は `W1001` が修正案を持つので、修正案のない `W1003`（到達しない腕）だけのプログラムで検査した |
+
+### 実行したコマンドと結果
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 通過。
+- `cargo test --locked --lib diff::`: 4 件、`--lib fix::`: 19 件（付録 D2 の 17 件と canonical のラウンドの 2 件）、`--test fix`: 23 件、`--test lsp`: 43 件（新規 2 件）、`--test edition_migration`: 10 件、`--bin tsuzuri`（`the_help_lists_the_fix_command` を含む）。
+- `cargo nextest run --locked`: 全件通過（下の最終確認）。
+- `node tests/lsp_sessions.mjs`・`ai_cost.mjs`・`script.mjs`・`frontend_cache.mjs`（`target/debug/tsuzuri`）: 通過。`ai_cost.mjs` の能力の検出（`benchmarks/ai/run.mjs` の `probe`）は、`tsuzuri fix` の使い方の誤りが `usage: tsuzuri fix --edition` で始まらなくなったので `diagFix` を有効と判定する。
+- `node scripts/check-docs.mjs`（`compiler/usage.md`・`option.md`・`diagnostics.md`・`directives.md`）: 通過。
+
+### 統括者が台帳へ足す名前
+
+`E2008`: `fix_verification_failed`・`fix_source_changed`・`fix_write_failed`。`E2000`: `fix_bad_arguments`・`fix_edition_unsupported`・`fix_edition_with_applicability`・`fix_maybe_needs_dry_run`。`E1017`: `fix_candidate_limit`。修正案の題: `Prefix '{name}' with '_'`（`W1001`、`certain`）、`Replace '{name}' with '{target}'`（`W1005`、`likely`）。LSP の code action の kind: `source.fixAll.tsuzuri`（題 `Fix all auto-fixable problems`）。
+
+### 更新した文書
+
+`compiler/usage.md`（`### fix` の修正案の適用、終了コード）、`compiler/option.md`、`compiler/diagnostics.md`（`E2008`・`E1017`・`W1001`・`W1005`・人間向けの例の `fix` の行・LSP の `source.fixAll.tsuzuri`）、`compiler/directives.md`（例の `fix` の行）、`README.md`、`docs/language.md`、`docs/stability.md`（`fix --json`）、`docs/architecture.md`（`diff.rs`・`fix.rs`）、`vsc/README.md`、`src/explain/codes/E2008.md`。
+
+### 変更したファイル
+
+新規: `src/diff.rs`、`src/fix.rs`、`tests/fix.rs`。変更: `src/lib.rs`、`src/main.rs`（`fix_command`・`HELP`）、`src/driver.rs`（`FileUpdate`・`ReplaceFailure`・`ReplaceError`・`replace_files`）、`src/edition_migration.rs`（canonical のラウンド）、`src/warnings.rs`・`src/check.rs`（`W1001`・`W1005` の修正案）、`src/lsp.rs`（`source.fixAll.tsuzuri`、`W1001` の経路の削除）、`src/diagnostic_kinds.rs`（8 kind）、`tests/lsp.rs`。
