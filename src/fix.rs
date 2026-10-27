@@ -395,10 +395,13 @@ fn collect(
             continue;
         }
         for edit in &candidate.edits {
-            accepted
+            // Edits of one fix may share a start (an insert and a replacement): keep the furthest end.
+            let end = accepted
                 .entry(edit.source)
                 .or_default()
-                .insert(edit.start, edit.end);
+                .entry(edit.start)
+                .or_insert(edit.end);
+            *end = (*end).max(edit.end);
         }
         chosen.push(candidate);
     }
@@ -1198,6 +1201,40 @@ mod tests {
             .collect();
         assert_eq!(spans, [(5, 10), (20, 21)]);
         assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn a_fix_with_an_insert_at_its_start_keeps_its_whole_span() {
+        // One fix deletes 0..6 and inserts at 0; another edits 3..4 and must wait.
+        let project = project("abcdefgh");
+        let mut first = Diagnostic::of(
+            DiagnosticKind::UnusedLocal,
+            "m",
+            Span::new(0, 6).in_source(0),
+        );
+        first.fixes.push(Fix {
+            title: "first".to_owned(),
+            applicability: Applicability::Certain,
+            edits: vec![edit(0, 0, 6, ""), edit(0, 0, 0, "X")],
+        });
+        let analysis = analysis(
+            Vec::new(),
+            0,
+            vec![
+                first,
+                fixed(
+                    DiagnosticKind::UnusedLocal,
+                    0,
+                    3,
+                    4,
+                    "Y",
+                    Applicability::Certain,
+                ),
+            ],
+        );
+        let (chosen, _) = collect(&project, &analysis, &options(Scope::Project)).unwrap();
+        assert_eq!(chosen.len(), 1);
+        assert_eq!(chosen[0].record.title, "first");
     }
 
     #[test]

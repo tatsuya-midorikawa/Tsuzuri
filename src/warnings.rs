@@ -19,6 +19,15 @@ pub(super) fn unused_locals(function: &CheckedFunction, names: &Names) -> Vec<Di
         .collect();
     let mut uses = Uses::default();
     collect_locals(&function.body, &mut locals, &mut uses);
+    // A rename of one span cannot reach the other binders of an or-pattern, nor the mentions of a
+    // `let rec` function inside its group.
+    let partial: BTreeSet<usize> = uses
+        .calls
+        .values()
+        .flatten()
+        .chain(&uses.shared)
+        .copied()
+        .collect();
     let used = uses.finish();
     let unused: Vec<_> = locals
         .values()
@@ -53,6 +62,7 @@ pub(super) fn unused_locals(function: &CheckedFunction, names: &Names) -> Vec<Di
             let prefixed = format!("_{}", local.name);
             // The span must be the name itself for the edit to rename it.
             if taken.contains(prefixed.as_str())
+                || partial.contains(&local.id)
                 || local.span.end - local.span.start != local.name.len()
             {
                 return diagnostic;
@@ -79,6 +89,8 @@ struct Uses {
     bodies: Vec<(usize, Vec<usize>)>,
     /// The functions of a group that the body of each function mentions.
     calls: BTreeMap<usize, BTreeSet<usize>>,
+    /// The locals that several alternatives of a match arm bind, each at its own span.
+    shared: BTreeSet<usize>,
 }
 
 impl Uses {
@@ -167,6 +179,14 @@ fn collect_locals<'a>(
         }
         Match { arms, .. } => {
             for arm in arms {
+                if arm.alternatives.len() > 1 {
+                    uses.shared.extend(
+                        arm.alternatives
+                            .iter()
+                            .flat_map(|alternative| &alternative.bindings)
+                            .map(|(local, _)| local.id),
+                    );
+                }
                 for alternative in &arm.alternatives {
                     locals.extend(
                         alternative
