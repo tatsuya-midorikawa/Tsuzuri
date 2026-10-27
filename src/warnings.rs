@@ -1150,6 +1150,7 @@ mod tests {
                 &mut Diagnostics::new(0),
                 WarningOptions { shadowing: enabled },
                 None,
+                None,
                 crate::parallel::Parallelism::SEQUENTIAL,
             )
             .unwrap();

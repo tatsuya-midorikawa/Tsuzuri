@@ -32,7 +32,7 @@ mod facts;
 #[path = "llvm_frame.rs"]
 mod frame;
 #[path = "llvm_layout.rs"]
-mod layout;
+pub(crate) mod layout;
 #[path = "llvm_return_slot.rs"]
 mod return_slot;
 #[path = "llvm_split.rs"]

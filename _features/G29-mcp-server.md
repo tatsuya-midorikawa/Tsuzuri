@@ -5,7 +5,7 @@
 | ID | G29 |
 | 優先度 | P2 |
 | 規模 | 全体 L（Phase 1: M、Phase 2: M、Phase 3: S、Phase 4: S）。D-50 の表は M だが、ツールが 11 個（種の 10 個 + `tz_search`）になり、Phase 2 が依存チケットごとの接続（各 S）になったので見直した |
-| 依存 | Phase 1: なし（HEAD だけ。`tz_check` は `check --json` と同じ解析）。Phase 2 はツールごとに、`tz_guide` が [G21](_completed/G21-ai-guide-pack.md)、`tz_explain` が [G23](_completed/G23-diagnostic-kinds-explain-hints.md)、`tz_symbol`・`tz_brief`・`tz_search`・`tz_callers` が [G26](G26-facts-model.md)・[G27](G27-build-time-kb.md)・[G28](G28-kb-query-and-impact.md)、`tz_impact` が G28 Phase 3、`tz_find` が [G25](G25-typed-holes-and-find.md)、`tz_fix_plan` が [G24](_completed/G24-tsuzuri-fix.md)、`tz_diagram` が [G30](G30-diagrams.md)。弱い依存: [G22](_completed/G22-diagnostic-v2.md)（診断の追加キー。なくても動き、あれば自動で出る）。Phase 3 は Phase 1 と、資源ごとに G21・G23・G27 |
+| 依存 | Phase 1: なし（HEAD だけ。`tz_check` は `check --json` と同じ解析）。Phase 2 はツールごとに、`tz_guide` が [G21](_completed/G21-ai-guide-pack.md)、`tz_explain` が [G23](_completed/G23-diagnostic-kinds-explain-hints.md)、`tz_symbol`・`tz_brief`・`tz_search`・`tz_callers` が [G26](_completed/G26-facts-model.md)・[G27](G27-build-time-kb.md)・[G28](G28-kb-query-and-impact.md)、`tz_impact` が G28 Phase 3、`tz_find` が [G25](G25-typed-holes-and-find.md)、`tz_fix_plan` が [G24](_completed/G24-tsuzuri-fix.md)、`tz_diagram` が [G30](G30-diagrams.md)。弱い依存: [G22](_completed/G22-diagnostic-v2.md)（診断の追加キー。なくても動き、あれば自動で出る）。Phase 3 は Phase 1 と、資源ごとに G21・G23・G27 |
 | 後続 | [G31](_completed/G31-ai-cost-metrics.md)（計測アダプターは実装済み。MCP 方式の実測は本 G29 の提供後）。VS Code 拡張（`vsc/`）からの自動登録は対象外 |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
@@ -15,6 +15,17 @@
 | 主な影響ファイル | 新規: `src/mcp/mod.rs`・`rpc.rs`・`schema.rs`・`tools.rs`・`tools.json`・`session.rs`・`backend.rs`・`path.rs`・`check.rs`（Phase 1）、`knowledge.rs`・`cache.rs`（Phase 2）、`resources.rs`（Phase 3）、`tests/mcp.rs`、`tests/mcp_knowledge.rs`（Phase 2）、`_tsuzuri/language-reference/compiler/mcp.md`。変更: `src/lib.rs`（`pub mod mcp;`）、`src/main.rs`、`src/parallel.rs`（`WORKER_STACK_BYTES` を `pub(crate)` にするだけ）、文書（「ドキュメント」）。**`Cargo.toml` は変えない** |
 
 詳しい JSON・Rust の骨格・検証記録は 2 つの付録にある（以下「付録 A〜H」）。付録 A〜D（仕様・JSON）は [G29-appendix.md](G29-appendix.md)、付録 E〜H（実装・テスト・測定）は [G29-appendix-impl.md](G29-appendix-impl.md)。付録 B の `tools.json` は、そのまま `src/mcp/tools.json` に写す。
+
+## KG への更新（D-60、2026-10-28）
+
+本チケットは [D-60](GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。オプションは `--kg-dir`（既定 `<根>/target/tz/kg`）、能力は `kg`、資源は `tz://kg/brief/L0`・`tz://kg/brief/{id}`。
+
+| 本文 | KG での実装 |
+| --- | --- |
+| 11 ツール | 12 ツール。**`tz_path`**（`from`・`to` が必須、`relations`（既定 `["calls"]`）・`depth`（1〜16、既定 8）。G28 の `kg path`）を `tz_callers` の次に足す。`tools/list` の応答は 16,384 bytes 以下を保つ |
+| `tz_find`（G25 が `done` のとき） | G28 Phase 2 の KG の型検索（D-60）で有効にする |
+| KB の 4 ツールの `kb_incomplete` | `kg_incomplete`（本文は同じ） |
+| `tests/mcp_knowledge.rs` | 同じ名前。KG のツールのテストを足す |
 
 ## 実装者向け早見
 

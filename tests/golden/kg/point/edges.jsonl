@@ -1,0 +1,12 @@
+{"rel":"calls","from":"Main.$entry","to":"Point.distance","args":["copy"],"span":{"path":"Main.tz","start":43,"end":57,"line":2,"column":9}}
+{"rel":"calls","from":"Point.distance","to":"sqrt","args":["copy"],"span":{"path":"Point.tz","start":82,"end":86,"line":4,"column":5}}
+{"rel":"calls","from":"Point.hypotenuse","to":"Point.distance","args":["copy"],"span":{"path":"Point.tz","start":193,"end":201,"line":7,"column":5}}
+{"rel":"contains","from":"Main","to":"Main.$entry","span":{"path":"Main.tz","start":0,"end":61,"line":1,"column":1}}
+{"rel":"contains","from":"Point","to":"Point.Point","span":{"path":"Point.tz","start":7,"end":12,"line":1,"column":8}}
+{"rel":"contains","from":"Point","to":"Point.distance","span":{"path":"Point.tz","start":37,"end":45,"line":3,"column":5}}
+{"rel":"contains","from":"Point","to":"Point.hypotenuse","span":{"path":"Point.tz","start":139,"end":149,"line":6,"column":12}}
+{"rel":"contains","from":"Point.Point","to":"Point.Point.x","span":{"path":"Point.tz","start":15,"end":16,"line":1,"column":16}}
+{"rel":"contains","from":"Point.Point","to":"Point.Point.y","span":{"path":"Point.tz","start":23,"end":24,"line":1,"column":24}}
+{"rel":"uses_type","from":"Main.$entry","to":"Point.Point","span":{"path":"Main.tz","start":8,"end":13,"line":1,"column":9}}
+{"rel":"uses_type","from":"Point.distance","to":"Point.Point","span":{"path":"Point.tz","start":53,"end":58,"line":3,"column":21}}
+{"rel":"uses_type","from":"Point.hypotenuse","to":"Point.Point","span":{"path":"Point.tz","start":203,"end":208,"line":7,"column":15}}

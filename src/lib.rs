@@ -35,6 +35,7 @@ pub mod guide;
 mod guide_std;
 pub mod hints;
 mod interval;
+pub mod kg;
 pub mod lexer;
 pub mod llvm;
 pub mod lsp;
@@ -311,10 +312,38 @@ pub(crate) fn analyze_inputs_with(
     cache: Option<&mut frontend_cache::FrontendCache>,
     parallelism: parallel::Parallelism,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
-    analyze_inputs_unannotated(inputs, semantic, cache, parallelism).map_err(|mut set| {
+    analyze_inputs_core(inputs, semantic, cache, parallelism, None)
+}
+
+/// `analyze_inputs_with` that also fills `capture`, the declaration view of the knowledge graph
+/// (G26). With a capture the semantic index is the capture's, so `semantic` must be `None` then.
+/// The capture changes neither the result nor the diagnostics.
+pub(crate) fn analyze_inputs_core(
+    inputs: &[SourceInput<'_>],
+    semantic: Option<&mut check::semantic::SemanticIndex>,
+    cache: Option<&mut frontend_cache::FrontendCache>,
+    parallelism: parallel::Parallelism,
+    capture: Option<&mut check::kg_capture::Capture>,
+) -> Result<check::CheckedModule, DiagnosticSet> {
+    analyze_inputs_unannotated(inputs, semantic, cache, parallelism, capture).map_err(|mut set| {
         hints::annotate(&mut set, inputs);
         set
     })
+}
+
+/// Checks `inputs` once and fills `capture` (G26), keeping only references of the semantic index
+/// that the sources spell, as `analyze_inputs_semantic` does.
+pub(crate) fn analyze_inputs_captured(
+    inputs: &[SourceInput<'_>],
+    capture: &mut check::kg_capture::Capture,
+    parallelism: parallel::Parallelism,
+) -> Result<check::CheckedModule, DiagnosticSet> {
+    let checked = analyze_inputs_core(inputs, None, None, parallelism, Some(&mut *capture));
+    let texts: Vec<_> = inputs.iter().map(|input| input.text).collect();
+    if let Some(index) = capture.semantic.as_mut() {
+        index.retain_spelled(&texts);
+    }
+    checked
 }
 
 /// `analyze_inputs_with` without the hints of the failed analysis.
@@ -323,6 +352,7 @@ fn analyze_inputs_unannotated(
     semantic: Option<&mut check::semantic::SemanticIndex>,
     mut cache: Option<&mut frontend_cache::FrontendCache>,
     parallelism: parallel::Parallelism,
+    capture: Option<&mut check::kg_capture::Capture>,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
     let mut programs = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
@@ -397,7 +427,10 @@ fn analyze_inputs_unannotated(
             },
         )
         .collect();
-    check::check_modules_indexed_all(&modules, semantic, parallelism)
+    match capture {
+        Some(capture) => check::check_modules_captured(&modules, capture, parallelism),
+        None => check::check_modules_indexed_all(&modules, semantic, parallelism),
+    }
 }
 
 /// Checks `inputs` and fills `index`, keeping only references spelled in the sources.

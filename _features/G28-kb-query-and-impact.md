@@ -5,7 +5,7 @@
 | ID | G28 |
 | 優先度 | P1（D-50 の表） |
 | 規模 | L。Phase 1 M（照会 7 コマンドと ID の解決）、Phase 2 S（`kb find`）、Phase 3 L（`kb impact`）、Phase 4 S（`test --affected`） |
-| 依存 | [G27](G27-build-time-kb.md) Phase 2（`KbData`・`KbView`・`open`・`Card`・`kb` の分岐）。[G26](G26-facts-model.md)（行のキー）。Phase 2 は [G25](G25-typed-holes-and-find.md) の Phase 3（`tsuzuri find`）。graph・facts が無い KB には縮退する（「前提とする他チケットのインターフェース」） |
+| 依存 | [G27](G27-build-time-kb.md) Phase 2（`KbData`・`KbView`・`open`・`Card`・`kb` の分岐）。[G26](_completed/G26-facts-model.md)（行のキー）。Phase 2 は [G25](G25-typed-holes-and-find.md) の Phase 3（`tsuzuri find`）。graph・facts が無い KB には縮退する（「前提とする他チケットのインターフェース」） |
 | 後続 | [G29](G29-mcp-server.md)（照会の関数と `impact` を MCP が呼ぶ）、G31（AI 作業コスト指標の KB 方式） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。確認に使った作業ツリーは `9dd0fbbc`（main）で、`git diff --stat 9dd0fbbc a2313d19` は `docs/benchmarks.md` の 41 行だけ。ソースは同じ） |
@@ -15,6 +15,18 @@
 | 主な影響ファイル | **Phase 1**: 新規 `src/kb/query.rs`・`suggest.rs`・`tests/kb_query.rs`・`_tsuzuri/language-reference/compiler/kb.md`（節を足す）。変更 `src/kb/command.rs`・`store.rs`（G27）、`src/main.rs`。**Phase 2**: `src/kb/command.rs`。**Phase 3**: 新規 `src/kb/impact.rs`・`git.rs`、`tests/kb_impact.rs`、`tests/fixtures/kb_shop_head/`。変更 `src/fetch.rs`（可視性）。**Phase 4**: 変更 `src/main.rs`・`src/test_runner.rs`・`src/kb/command.rs`、`tests/kb_affected.rs`（新規）。文書は各 Phase で |
 
 詳細な実例・参照実装は [付録](G28-appendix.md) にある（以下「付録 A〜F」）。
+
+## KG への更新（D-60、2026-10-28）
+
+本チケットは [D-60](GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。コマンドは `tsuzuri kg …`、テストは `tests/kg_query.rs`・`tests/kg_impact.rs`、fixture は `kg_shop_head`。照会はすべて `KgIndex` の上のグラフの探索で、アルゴリズムは `src/kg/algo.rs` の 1 か所にある。
+
+| 本文 | KG での実装 |
+| --- | --- |
+| `callers`・`callees`（幅優先） | `algo::bfs`（有界・親つき）。出力の規則（§3）は同じ |
+| `impact` の影響を受けるテスト（逆引き・深さ 8・クラスのメソッドの辺） | `algo::reverse_reach`（深さつき。`calls` と、`instance_of` から作る仮想の辺）。`--json` の `tests` の行に、選んだテストごとの最短の根拠の鎖 `paths`（`[{"test","via":[ID…]}]`。変更したノードからテストまで）を足す（キーの追加。テキストの出力は同じ） |
+| Phase 2 `kb find`（G25 を待つ） | **G25 を待たない**。`kg find TYPE` は、KG の関数のノード（プロジェクトと std の KG）の `params`・`result` の型の文字列を解析し、問い合わせの型と型変数の付け替えで照合する（`exact`・`generalizes`・`specializes`）。G25 の `tsuzuri find` は後でこの実装を呼ぶ |
+| 新しい照会 | `kg path FROM TO [--rel R[,R…]] [--depth N]`（最短路。D-60） |
+| `kb` の分岐の `COMMANDS` | `build, verify, clean, export, brief, show, callers, callees, uses, tests-for, search, find, impact, path, diagram` |
 
 ## 実装者向け早見
 

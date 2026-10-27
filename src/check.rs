@@ -27,6 +27,8 @@ mod exhaustiveness;
 #[path = "higher_kinds.rs"]
 mod higher_kinds;
 pub use higher_kinds::{Constructor, Partial};
+#[path = "kg_capture.rs"]
+pub(crate) mod kg_capture;
 #[path = "polymorph.rs"]
 mod polymorph;
 #[path = "pure_rules.rs"]
@@ -6144,12 +6146,33 @@ pub(crate) fn check_modules_indexed_all(
     semantic: Option<&mut semantic::SemanticIndex>,
     parallelism: Parallelism,
 ) -> Result<CheckedModule, DiagnosticSet> {
+    check_modules_with_capture(modules, semantic, None, parallelism)
+}
+
+/// `check_modules_indexed_all` that also fills `capture`, the declaration view of the knowledge
+/// graph (G26). The capture only reads the checker's state: the result and the diagnostics are
+/// those of the same analysis without it.
+pub(crate) fn check_modules_captured(
+    modules: &[ModuleInput<'_>],
+    capture: &mut kg_capture::Capture,
+    parallelism: Parallelism,
+) -> Result<CheckedModule, DiagnosticSet> {
+    check_modules_with_capture(modules, None, Some(capture), parallelism)
+}
+
+fn check_modules_with_capture(
+    modules: &[ModuleInput<'_>],
+    semantic: Option<&mut semantic::SemanticIndex>,
+    capture: Option<&mut kg_capture::Capture>,
+    parallelism: Parallelism,
+) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
     match check_modules_collect(
         modules,
         &mut diagnostics,
         warnings::WarningOptions::default(),
         semantic,
+        capture,
         parallelism,
     ) {
         Ok(module) => Ok(module),
@@ -6165,13 +6188,14 @@ fn check_modules_collect(
     diagnostics: &mut Diagnostics,
     warning_options: warnings::WarningOptions,
     mut semantic: Option<&mut semantic::SemanticIndex>,
+    mut capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
     // A `@deprecated` declaration needs the references that the semantic index records (W1005),
     // so a project without one never collects them unless the caller asked for the index.
     let deprecations = warnings::deprecations(modules);
-    let indexing = semantic.is_some() || !deprecations.is_empty();
+    let indexing = semantic.is_some() || capture.is_some() || !deprecations.is_empty();
     let mut names = Names {
         warning_options,
         ..Names::default()
@@ -7860,6 +7884,9 @@ fn check_modules_collect(
                 &deprecations,
             ));
         }
+        if let Some(capture) = capture.as_deref_mut() {
+            capture.semantic = Some(index.clone());
+        }
         if let Some(requested) = semantic.as_deref_mut() {
             *requested = index;
         }
@@ -7919,6 +7946,19 @@ fn check_modules_collect(
             diagnostics.extend(errors);
             first
         })?;
+    if let Some(capture) = capture {
+        let _kg_time = crate::timings::Phase::start("kg-capture");
+        kg_capture::collect_abstract(
+            capture,
+            &kg_capture::Abstract {
+                modules,
+                module: &module,
+                names: &names,
+                classes: &classes,
+                references: &references,
+            },
+        );
+    }
     let recursive_functions = function_declarations
         .iter()
         .enumerate()

@@ -6,7 +6,7 @@
 | 優先度 | P2（D-50 の表） |
 | 規模 | 全体 L（D-50 の表は M。Phase 2 の driver・WASM・test の配線を数え直して L にした）。Phase 1: S（1〜2 日）、Phase 2: L（1〜2 週）、Phase 3: M（3〜5 日） |
 | 依存 | [PR02](../_perfs/_completed/PR02-integer-ranges.md)（done。範囲の証明 `RangeFacts::integer_flags` と `RangeFlags` の `audit` の流儀を使う）。[G22](_completed/G22-diagnostic-v2.md) は**弱い依存**: 本チケットは新しい診断コードを作らず、実行時の報告だけを足すので、G22 を待たずに実装する。G22 が決める JSON のキーの順序（D-51）には、`run --json` の 1 行（`W2001`。付録 D.2）を従わせる |
-| 後続 | なし。[A20](A20-effect-summary-and-checked-attributes.md) の `@no_trap` とは無関係（折り返しは trap ではない）。[G26](G26-facts-model.md) の `trap_sites` に折り返しの地点は入れない |
+| 後続 | なし。[A20](A20-effect-summary-and-checked-attributes.md) の `@no_trap` とは無関係（折り返しは trap ではない）。[G26](_completed/G26-facts-model.md) の `trap_sites` に折り返しの地点は入れない |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは同じコードの `9dd0fbbc`。差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
@@ -315,7 +315,7 @@ reported(function) =
 | チケット | 使う名前・形 | 未実装のときの代替 |
 | --- | --- | --- |
 | [G22](_completed/G22-diagnostic-v2.md)（D-51） | JSON の 1 行のキーの順序 `severity`・`code`・`message`・`path`・`span`（`path`・`span` は足すだけで互換）。`kind` は付けない（G23 の登録簿が決める） | G22 がなくても同じ形で出せる（既存の 5 キーの流儀） |
-| [A19](_completed/A19-pure-functions.md)・[A20](A20-effect-summary-and-checked-attributes.md)（D-53）・[G26](G26-facts-model.md) | 機能としては使わない。`trap` 効果にも `trap_sites` にも折り返しは入らない（`Int.wrapping_*` は `alloc`・`trap` を持たない純粋な演算）。ただし分類表（`builtin_effect`・`builtin_facts`）が実装済みなら、手順 3 の「分類表」で 4 つを足す | 表がなければ足すものはない |
+| [A19](_completed/A19-pure-functions.md)・[A20](A20-effect-summary-and-checked-attributes.md)（D-53）・[G26](_completed/G26-facts-model.md) | 機能としては使わない。`trap` 効果にも `trap_sites` にも折り返しは入らない（`Int.wrapping_*` は `alloc`・`trap` を持たない純粋な演算）。ただし分類表（`builtin_effect`・`builtin_facts`）が実装済みなら、手順 3 の「分類表」で 4 つを足す | 表がなければ足すものはない |
 | PR02（done） | `RangeFacts::integer_flags`・`Flags`・`RangeFlags` | — |
 
 ## 実装手順

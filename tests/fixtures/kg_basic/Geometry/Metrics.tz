@@ -1,0 +1,3 @@
+/// The sum of the absolute coordinates.
+export def norm1 :: f64 -> f64 -> f64
+fn norm1 x y = abs x + abs y

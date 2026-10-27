@@ -5,7 +5,7 @@
 | ID | G27 |
 | 優先度 | P1（D-50 の表） |
 | 規模 | L。Phase 1 M（書き込み・manifest・鮮度・フラグ）、Phase 2 M（brief カードと `kb build`／`verify`／`clean`／`export`）、Phase 3 M（増分）、Phase 4 M（std の KB と `KbView` の std）、Phase 5 S（計測の記録と台帳） |
-| 依存 | [G26](G26-facts-model.md) Phase 1（`src/kb/`・ID 規則・`KbModel::build`・`write_symbols`・`analyze_inputs_core`・`check_modules_captured`）。graph・tests・facts・layout の書き手（G26 Phase 2〜6）は**あれば使い、なければそのファイルとカードの該当行を出さない**（縮退。「前提とする他チケットのインターフェース」）。弱い依存: [G22](_completed/G22-diagnostic-v2.md)（`E2009` に kind を付ける。未実装なら付けない） |
+| 依存 | [G26](_completed/G26-facts-model.md) Phase 1（`src/kb/`・ID 規則・`KbModel::build`・`write_symbols`・`analyze_inputs_core`・`check_modules_captured`）。graph・tests・facts・layout の書き手（G26 Phase 2〜6）は**あれば使い、なければそのファイルとカードの該当行を出さない**（縮退。「前提とする他チケットのインターフェース」）。弱い依存: [G22](_completed/G22-diagnostic-v2.md)（`E2009` に kind を付ける。未実装なら付けない） |
 | 後続 | G28（照会と `impact`）、G29（MCP）、G30（図表）、G31（AI 作業コスト指標の KB 方式）、G35（生成物による文書） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。確認に使った作業ツリーは `9dd0fbbc`（main）で、`git diff --stat 9dd0fbbc a2313d19` は `docs/benchmarks.md` の 41 行だけ。ソースは同じ） |
@@ -13,6 +13,20 @@
 | 改善する劣位 | コンパイラは解析のたびにシンボル・呼び出し・効果・トラップ箇所を内部で得るが、`check` が終わると捨てる。AI は同じ事実を `grep` とファイルの全文読みで毎回作り直す（D-50 の調査結論 (1)）。KB はその事実と小さな要約（brief カード）を `target/tz/kb` に決定的に残し、最初の 700〜2,400 字から読み始められるようにする |
 | 手本にする既存実装 | 置換とマーカー: `src/driver.rs` の `document`・`protect_documentation`・`TemporaryDirectory`。ハッシュ: `src/cache.rs` の `Sha256`・`file_digest`・`read_regular`。識別と interface: `src/frontend_cache.rs` の `compiler_identity`・`interface_hash`・`ModuleRecord`。並列: `src/parallel.rs` の `Parallelism::command_line`・`workers`・`ordered_for_each`。通知（W2001）: `src/main.rs` の `main`。サブコマンドと引数のテスト: `api_diff_command`・`new_project`・`rejects_ambiguous_or_unused_arguments`。探索: `collect_sources`。計測: `benchmarks/run-cache.mjs` |
 | 主な影響ファイル | 新規 `src/kb/{settings,input,manifest,write,emit,build}.rs`（Phase 1）・`{store,brief,open,command}.rs`（Phase 2）・`incremental.rs`（Phase 3）・`std_kb.rs`（Phase 4）、`tests/kb_{build,brief,incremental,std}.rs`、`tests/fixtures/kb_shop/`、`tests/golden/kb/`、`_tsuzuri/language-reference/compiler/kb.md`。変更 G26 の `src/kb/{mod,model}.rs`・`src/kb_capture.rs`、`src/main.rs`・`driver.rs`・`lib.rs`・`frontend_cache.rs`・`package.rs`、`scripts/check-docs.mjs`、文書（Phase 5: `docs/benchmarks.md`・`GUIDE.md`） |
+
+## KG への更新（D-60、2026-10-28）
+
+本チケットは [D-60](GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。名前は D-60 の対応表で読み替える（`target/tz/kg`・`.tsuzuri-kg`・`tz-kg/1`・`nodes.jsonl`・`edges.jsonl`・`--kg`・`--no-kg`・`--kg-dir`・`TSUZURI_KG`・`TSUZURI_KG_DIR`・`tsuzuri kg`・`kg_*` の kind・`src/kg/`・`KgData`・`KgView`・`tests/kg_*.rs`・`kg_shop`・`compiler/kg.md`）。規則（鮮度・置換・決定性・カードの上限と切り詰め）は変えない。
+
+| 本文 | KG での実装 |
+| --- | --- |
+| `manifest.json` の `counts` の `symbols`・`public_symbols`・`edges` | `nodes`・`public_nodes`・`edges`（同じ数え方） |
+| `kb export --symbols`・`--graph` | `kg export --nodes`・`--edges` |
+| `KbData`（行の配列） | `KgData` は読み込みのときに `KgIndex`（ノードの添字と、関係ごとの前向き・後ろ向きの CSR）を 1 回作る。カードの「子」（fields・cases・methods）は `contains` の辺、「依存」「callers」「used by」は辺の索引で引く |
+| `kb verify` | ファイルの SHA-256 に加え、グラフの不変条件（`contains` の森、辺の `from` がノード、ID の一意性）を検査し、違えば `kg_broken` |
+| L0 の 2 行目 `tz-kb/1 \| edition … \| symbols {S} \| tests {T}` | `tz-kg/1 \| edition … \| modules {M} \| nodes {N} \| edges {E} \| tests {T}`（`edges` は `edges.jsonl` があるとき。`E` は全辺の数） |
+| L0 の `next:` | `next: brief/L1/<key>.md, brief/L2/<id>.md, nodes.jsonl, edges.jsonl, facts/<key>.jsonl ('::' is '.' in file names)` |
+| 付録 B〜E のカード（期待値） | 付録 F の参照実装 `cards.py` を D-60 の名前に直して作り直した値（コンパイラの出力は写さない） |
 
 ## 実装者向け早見
 

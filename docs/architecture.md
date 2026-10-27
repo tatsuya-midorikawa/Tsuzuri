@@ -115,6 +115,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/package.rs` / `src/fetch.rs` | マニフェストの限定 TOML（`[package]` の `edition` を含む）、版（`Version`）、`Tsuzuri.lock` と registry index の厳密な JSON と正規形、内容ハッシュ、`tsuzuri fetch` による git・registry 依存の取得・最小版選択・検査・ストアへの確定、`tsuzuri publish`（`git` を起動する唯一の経路） |
 | `src/bindgen.rs` / `src/bindgen_driver.rs` | `tsuzuri bindgen`（E11）。前者は Clang の JSON AST から宣言の所属ファイルを追跡し、型の表記を typedef 展開して固定の表と完全一致で照合し、名前の規則と `W2002` の理由を適用して決定的なテキストを作る純関数だけを持つ。後者（driver の子モジュール）はヘッダーの読み込みと SHA-256、Clang の起動（stdout は 256 MiB まで、stderr は別スレッドで読む）、LP64 の確認、出力保護とステージングを伴う書き込みを行う |
 | `src/copies.rs` | 単一使用と `LastUses` の証明を生成と共有した暗黙の複製箇所の列挙（`copies::sites`）、`W1006` とインレイヒントの基となる配列・リストの複製検出（`costly_sites`） |
+| `src/kg/` | 知識グラフ（KG。G26・D-60）。行の型と JSON Lines の書き手（`model.rs`・`json.rs`）、ID と型の ID テキスト（`ids.rs`）、グラフのアルゴリズム（`algo.rs`: CSR の隣接、層ごとの幅優先、Tarjan の強連結成分、最短路、トポロジカル順。どれも明示のスタック・キュー）、単相化後の実体の視点の事実（`facts.rs` が最終の関数を宣言へ帰属させ、`effects.rs`・`sites.rs`・`layout.rs` が効果・トラップと確保の箇所・レイアウトを作る） |
+| `src/kg_capture.rs` | `check` の子モジュール。所有権の推論の後・特殊化の前に、単相化前の宣言の視点（ノード、`contains`・`calls`・`uses_type`・`implements`・`instance_of`・`imports`・`tested_by` の辺、テスト、再帰・ループ・所有権の出来事）を、checker の状態を読むだけで集める |
 | `src/lsp.rs` / `src/semantic.rs` | stdio 経由の言語サーバー、Unicode 位置変換、単相化前の型・定義位置インデックス。定義・参照・ローカル変数の有効範囲・record 型の式をインデックス化し、型付き木で脱落するフィールド名・record 名・case 名は checker の `name_uses` から収集。リネームとクイックフィックスは編集後の再解析により診断と名前の結び付きの不変性を検証。診断の修正案のクイックフィックスは、適用後の再解析でその診断のコードの件数が減り、どのコードも増えないものだけを出す（`fix_removes`。件数は表示の上限の前の `DiagnosticSet.counts`。エラーの修正案は警告を数えない）。`publishDiagnostics` は利用者のファイルにある `related` を `relatedInformation`、`kind` と修正案を `data` にする。入力中の補完・シグネチャヘルプ・セマンティックトークン・複製のインレイヒントは、直前の成功インデックスを共通の接頭辞・接尾辞に基づいて写像して再利用 |
 | `src/repl.rs` | `tsuzuri repl`（G13）。入力の読み取り（1 行目が末尾で未完なら空行まで継続）、宣言の塊（parser が各トップレベル宣言を始めた位置 `Program::declaration_starts` で区切る。列は問わず、文書コメントと属性はその宣言に入り、同じ行の前の空白とコメントも付く。`and` の再帰群と、別に書いたシグネチャと定義は一つの項目）とトップレベルの文（`;` で終わる文は `;` ごと残す）への分類、アクションの行をまとめて左へ寄せること、同じ名前の項目の置き換え、生成した `Main.tz` の解析と `SemanticIndex` からの型の取得、`driver::run_captured` による実行、診断の位置の `input`／`session` への写像 |
 
@@ -366,6 +368,14 @@ WASM は単一スレッドの globals を使い、`tsuzuri_async_set_epoch` が�
 ### 非推奨と W1005（G19）
 
 `Documentation::deprecation` が説明の `@deprecated` の行を読みます。`warnings::deprecations` は、std の、または依存パッケージ（root パッケージでないもの。root に依存するパッケージはありません）の公開の `def`・`record`・`union` の印を集め、空でなければ `check_modules_collect` が `semantic::collect` を 1 回だけ走らせます（`SemanticIndex` を求められたときとの共有で、使える印のない project は追加の解析をしません）。`warnings::deprecated_uses` は、利用者のモジュールにある `SemanticIndex::references` のうち、関数、record、union、union の case（印は union のもの。`Union.Case` は case の位置に 1 件）の定義が別のパッケージか std の印を持つものに `W1005` を出します（同じ span は 1 回）。同じパッケージかどうかは `ModuleInput::package` で決まります。これは依存パッケージの `PackageId` で、root パッケージ、manifest のないソース、std は `None` です（`Project::dependency_package`）。警告は、ほかの警告と同じ経路（`CheckedModule::warnings`）で CLI・`--deny-warnings`・LSP・frontend cache の有無に関係なく届き、生成コードには作用しません。
+
+### 知識グラフ（G26、D-60）
+
+`tsuzuri::kg::collect`（`src/kg/mod.rs`）は、プロジェクトを 1 回だけ解析して知識グラフ（`KgModel`）を作ります。解析は `analyze_inputs_captured` で、`check_modules_collect` に `Some(&mut Capture)` を渡します。フックは 2 か所で、どちらも checker の状態を**読むだけ**です。H1: 意味の索引（`semantic::collect`）を capture があるときにも作り、`@deprecated` の警告（`W1005`）は宣言があるときだけなので、警告の集合は変わりません。H2: `ownership::infer_copy_all` の直後、`polymorph::specialize` がモジュールを消費する前に `kg_capture::collect_abstract` を呼びます。capture を渡さない解析は capture の仕事を 1 つもせず、生成 IR・診断・警告は capture の有無で変わりません（`analysis_with_capture_keeps_the_ir_identical`）。
+
+事実は 2 つの視点から作ります。**宣言の視点**（`Capture`。単相化前）は、ジェネリック関数も 1 つの宣言として扱い、ノード（`Program` のすべての field を `..` なしで分解するので、宣言の種類を足すと compile error になる）、辺（`calls` は抽象本体の `Call` と値としての関数、`uses_type` は意味の索引の参照、`tested_by` と `recursion` は `recursion::check` の参照グラフの有界の幅優先と強連結成分）、ループ、所有権の出来事（`ownership::events_abstract`。`check_body` の event の sink で、sink を渡さない検査は何も変わらない。`ownership_sink_does_not_change_diagnostics`）を集めます。**実体の視点**（最終の `CheckedModule`。単相化と `closures::lower` の後）は、具体型の要る効果・トラップと確保の箇所・`copies::sites`・特殊化の数・レイアウトを作り、各関数を宣言へ帰属させます（持ち上げたラムダは親、`.$mono.` は基底の名前、`$builtin` の包みと std は対象外）。`closures::lower` は組み込み関数への参照を `$builtin` の関数で包むので、トラップの判定は包みの本体を見ます。効果の証拠の鎖は、効果を直接持つ関数への最短の鎖です（幅優先の距離で決まり、相互再帰でも有限）。レイアウトは `llvm::layout` の `layout_bound`・`record_slots`・`union_layout` を `target_scope(false)` の中で呼びます（IR は変わらない）。
+
+出力は決定的です。行は ID と位置で整列し、`HashMap` の反復順を使いません。ID は位置に依存せず、衝突はソースの位置の順に `#n` を付けます。グラフのアルゴリズムは `src/kg/algo.rs` の 1 か所にあり、照会・`impact`・図も同じものを使います（D-60）。
 
 ### 公開 API の差分（G19）
 

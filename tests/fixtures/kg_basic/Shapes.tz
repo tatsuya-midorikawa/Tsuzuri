@@ -1,0 +1,40 @@
+/// A point on the plane.
+record Point { x: f64, y: f64 } deriving (Eq)
+
+/// A counter between two flags.
+record Packed { a: i8, n: i64, b: i8 }
+
+/// A shape.
+union Shape =
+    | Circle of f64
+    | Empty
+
+/// A length in meters.
+type Meters = f64
+
+/// The unit radius.
+const unit_radius: f64 = 1.0
+
+extern type Handle
+
+extern "kb_close" def close :: Handle -> i64
+
+instance Traits.Sized<Point> {
+    fn size _point = 2
+}
+
+/// The area of a shape.
+def area :: ref Shape -> f64
+fn area shape =
+    match shape with
+    | Circle r -> r * r * 3.0
+    | Empty -> 0.0
+
+def twice :: 'a -> 'a
+fn twice value = value + value
+
+def origin_point :: unit -> Point
+fn origin_point _ = Point { x: 0.0, y: 0.0 }
+
+def shift :: ref Point -> Meters -> Point
+fn shift point dx = Point { x: point.x + dx, y: point.y }
