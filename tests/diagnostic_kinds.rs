@@ -277,3 +277,49 @@ fn json_adds_only_the_kind_key() {
         [insert_after_span(before, ",\"kind\":\"use_after_move\"")]
     );
 }
+
+/// The `DiagnosticKind::Variant` names that the sources of `directory` use.
+fn emitted_variants(directory: &Path, found: &mut std::collections::BTreeSet<String>) {
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            emitted_variants(&path, found);
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy();
+        // The registry, the pages and the hints name kinds without emitting them.
+        if !name.ends_with(".rs")
+            || ["diagnostic_kinds.rs", "explain.rs", "hints.rs"].contains(&name.as_ref())
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (index, _) in text.match_indices("DiagnosticKind::") {
+            let rest = &text[index + "DiagnosticKind::".len()..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(rest.len());
+            if rest[..end].starts_with(|c: char| c.is_ascii_uppercase()) {
+                found.insert(rest[..end].to_string());
+            }
+        }
+    }
+}
+
+#[test]
+fn every_kind_has_an_emission_site() {
+    let mut found = std::collections::BTreeSet::new();
+    emitted_variants(
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+        &mut found,
+    );
+    let unemitted: Vec<&str> = DiagnosticKind::ALL
+        .iter()
+        .filter(|kind| !found.contains(&format!("{kind:?}")))
+        .map(|kind| kind.id())
+        .collect();
+    assert!(
+        unemitted.is_empty(),
+        "kinds that no source emits: {unemitted:?}"
+    );
+}

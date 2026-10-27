@@ -148,8 +148,15 @@ async function session(encoding) {
     assert.equal(extraSymbols.result[0].name, "value");
     assert.equal(existsSync(extra), false);
     notify("textDocument/didChange", { textDocument: { uri, version: 3 }, contentChanges: [{ text: invalid }] });
-    const stale = await request("textDocument/hover", { textDocument: { uri }, position: position(invalid, "true") });
+    const stale = await request("textDocument/hover", { textDocument: { uri }, position: position(invalid, "bad") });
     assert.equal(stale.result, null);
+    // A diagnostic under the cursor: its kind and how to read its explanation (G23). Elsewhere a program
+    // with errors still has no hover.
+    const mismatch = (await request("textDocument/hover", { textDocument: { uri }, position: position(invalid, "true") })).result;
+    assert.equal(mismatch.contents.kind, "markdown");
+    assert.ok(mismatch.contents.value.startsWith("**error[E1003]** `type_mismatch`  \nexpected i64, found bool"), mismatch.contents.value);
+    assert.ok(mismatch.contents.value.endsWith("Run `tsuzuri explain type_mismatch` for an explanation."), mismatch.contents.value);
+    assert.deepEqual(mismatch.range.start, position(invalid, "true"));
     const badUri = await request("textDocument/hover", { textDocument: { uri: "file://remote/Main.tz" }, position: { line: 0, character: 0 } });
     assert.equal(badUri.error.code, -32602);
     const badPosition = await request("textDocument/hover", { textDocument: { uri }, position: { line: 1000, character: 0 } });

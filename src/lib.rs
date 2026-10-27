@@ -29,6 +29,7 @@ pub mod formatter;
 pub(crate) mod frontend_cache;
 pub mod gpu;
 pub mod gpu_devices;
+pub mod hints;
 mod interval;
 pub mod lexer;
 pub mod llvm;
@@ -301,6 +302,19 @@ fn parse_plan(
 /// `parallelism` bounds the threads of the stages that run in parallel; it changes neither the
 /// result nor the order and content of the diagnostics.
 pub(crate) fn analyze_inputs_with(
+    inputs: &[SourceInput<'_>],
+    semantic: Option<&mut check::semantic::SemanticIndex>,
+    cache: Option<&mut frontend_cache::FrontendCache>,
+    parallelism: parallel::Parallelism,
+) -> Result<check::CheckedModule, DiagnosticSet> {
+    analyze_inputs_unannotated(inputs, semantic, cache, parallelism).map_err(|mut set| {
+        hints::annotate(&mut set, inputs);
+        set
+    })
+}
+
+/// `analyze_inputs_with` without the hints of the failed analysis.
+fn analyze_inputs_unannotated(
     inputs: &[SourceInput<'_>],
     semantic: Option<&mut check::semantic::SemanticIndex>,
     mut cache: Option<&mut frontend_cache::FrontendCache>,

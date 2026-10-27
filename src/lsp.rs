@@ -575,15 +575,32 @@ impl Session {
                     return Ok(json!(symbols));
                 }
                 let offset = position_offset(&state.mappers[source_id], &source.text, params)?;
+                let hovered = if method.ends_with("hover") {
+                    hovered_diagnostics(state, source_id, offset)
+                } else {
+                    Vec::new()
+                };
                 let Some(entry) = state
                     .index
                     .as_ref()
                     .and_then(|index| index.at(source_id, offset))
                 else {
-                    return Ok(Value::Null);
+                    // A program with errors has no index; the diagnostics under the cursor remain.
+                    let Some(first) = hovered.first() else {
+                        return Ok(Value::Null);
+                    };
+                    return Ok(json!({
+                        "contents": {"kind": "markdown", "value": diagnostic_hover(&hovered)},
+                        "range": state.mappers[source_id].range(&source.text, first.span),
+                    }));
                 };
                 if method.ends_with("hover") {
-                    let mut markdown = format!("```tsuzuri\n{}\n```", entry.detail);
+                    let mut markdown = String::new();
+                    if !hovered.is_empty() {
+                        markdown = diagnostic_hover(&hovered);
+                        markdown.push_str("\n\n---\n\n");
+                    }
+                    markdown.push_str(&format!("```tsuzuri\n{}\n```", entry.detail));
                     if let Some(doc) = state
                         .index
                         .as_ref()
@@ -1104,7 +1121,7 @@ impl Session {
             actions.push(json!({
                 "title": format!("Prefix '{name}' with '_'"),
                 "kind": "quickfix",
-                "diagnostics": [diagnostic_json(mapper, &source.text, diagnostic)],
+                "diagnostics": [self.diagnostic_value(&state.project, &state.mappers, source_id, diagnostic)],
                 "isPreferred": true,
                 "edit": edit,
             }));
@@ -1316,6 +1333,42 @@ fn is_user(project: &Project, span: Span) -> bool {
 /// How many diagnostics of each severity and code an analysis reported, those past the display
 /// limit included; `None` when it reached the collection limit, past which nothing is counted.
 type DiagnosticCounts = Option<BTreeMap<(Severity, &'static str), usize>>;
+
+/// The most diagnostics that a hover shows.
+const MAX_HOVERED_DIAGNOSTICS: usize = 3;
+
+/// The diagnostics with a kind whose span contains `offset` of the source (an empty span: starts
+/// at it), in the order they were reported.
+fn hovered_diagnostics(state: &ProjectState, source_id: usize, offset: usize) -> Vec<&Diagnostic> {
+    state
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            let span = diagnostic.span;
+            diagnostic.kind.is_some()
+                && span.source.unwrap_or(state.project.root) == source_id
+                && (span.start..span.end.max(span.start + 1)).contains(&offset)
+        })
+        .take(MAX_HOVERED_DIAGNOSTICS)
+        .collect()
+}
+
+/// `**error[E1012]** `use_after_move``, the message, and how to read the explanation, per diagnostic.
+fn diagnostic_hover(diagnostics: &[&Diagnostic]) -> String {
+    let blocks: Vec<String> = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let kind = diagnostic.kind.unwrap_or_default();
+            format!(
+                "**{}[{}]** `{kind}`  \n{}  \nRun `tsuzuri explain {kind}` for an explanation.",
+                diagnostic.severity.as_str(),
+                diagnostic.code,
+                diagnostic.message
+            )
+        })
+        .collect();
+    blocks.join("\n\n")
+}
 
 fn diagnostic_counts(diagnostics: &[Diagnostic]) -> BTreeMap<(Severity, &'static str), usize> {
     let mut counts = BTreeMap::new();
