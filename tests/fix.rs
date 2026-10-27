@@ -322,6 +322,31 @@ fn w1001_has_no_fix_when_the_prefixed_name_is_taken() {
     }
 }
 
+#[test]
+fn w1001_has_no_fix_when_one_rename_cannot_reach_every_occurrence() {
+    // The binders of an or-pattern, and a `let rec` function that only its own body mentions.
+    let source = "union U = A of i64 | B of i64\n\ndef f :: U -> i64 = \\u ->\n    match u with\n    | A n | B n -> 1\n\ndef g :: i64 -> i64 = \\x ->\n    let rec loop = \\n -> if n == 0 then 0 else loop (n - 1)\n    x\n\nf (A 1) + g 2\n";
+    let module = tsuzuri::analyze_modules_all(&[("Main", source)]).unwrap();
+    let names: Vec<_> = module
+        .warnings
+        .iter()
+        .map(|warning| (warning.message.clone(), warning.fixes.len()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            (
+                "unused local 'n'; prefix it with '_' to silence this warning".to_owned(),
+                0
+            ),
+            (
+                "unused local 'loop'; prefix it with '_' to silence this warning".to_owned(),
+                0
+            ),
+        ]
+    );
+}
+
 /// The `W1005` warnings of the app of `deprecation_root(legacy)`.
 fn deprecations(legacy: &str) -> Vec<Diagnostic> {
     let root = deprecation_root(legacy);
