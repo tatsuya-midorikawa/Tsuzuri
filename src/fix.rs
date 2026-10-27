@@ -225,17 +225,55 @@ fn display_path(project: &Project, source: usize) -> String {
     )
 }
 
-fn record(project: &Project, diagnostic: &Diagnostic, fix: &Fix, status: Status) -> FixRecord {
+/// The line starts of the sources, built once per round, so that placing many edits does not scan
+/// each prefix again. The positions are those of `diagnostic::location`.
+struct Positions<'a> {
+    project: &'a Project,
+    starts: BTreeMap<usize, Vec<usize>>,
+}
+
+impl<'a> Positions<'a> {
+    fn new(project: &'a Project) -> Self {
+        Self {
+            project,
+            starts: BTreeMap::new(),
+        }
+    }
+
+    /// The 1-based line and column (in Unicode scalar values) of `offset` in `source`.
+    fn at(&mut self, source: usize, offset: usize) -> (usize, usize) {
+        let text = &self.project.sources[source].text;
+        let starts = self.starts.entry(source).or_insert_with(|| {
+            std::iter::once(0)
+                .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+                .collect()
+        });
+        let mut offset = offset.min(text.len());
+        while !text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let line = starts.partition_point(|start| *start <= offset);
+        (line, text[starts[line - 1]..offset].chars().count() + 1)
+    }
+}
+
+fn record(
+    positions: &mut Positions<'_>,
+    diagnostic: &Diagnostic,
+    fix: &Fix,
+    status: Status,
+) -> FixRecord {
+    let project = positions.project;
     let edits = fix
         .edits
         .iter()
         .map(|edit| {
             let source = edit.span.source.unwrap_or(project.root);
             let (path, (line, column), (end_line, end_column)) = match project.sources.get(source) {
-                Some(file) => (
+                Some(_) => (
                     display_path(project, source),
-                    location(&file.text, edit.span.start),
-                    location(&file.text, edit.span.end),
+                    positions.at(source, edit.span.start),
+                    positions.at(source, edit.span.end),
                 ),
                 None => ("<invalid>".to_owned(), (0, 0), (0, 0)),
             };
@@ -359,6 +397,7 @@ fn collect(
 ) -> Result<(Vec<Candidate>, Vec<FixRecord>), SourceError> {
     let mut candidates = Vec::new();
     let mut skipped = Vec::new();
+    let mut positions = Positions::new(project);
     for diagnostic in analysis.errors.diagnostics.iter().chain(&analysis.warnings) {
         if diagnostic.fixes.is_empty()
             || options
@@ -373,7 +412,7 @@ fn collect(
             .find(|fix| options.threshold.admits(fix.applicability))
         else {
             skipped.push(record(
-                project,
+                &mut positions,
                 diagnostic,
                 &diagnostic.fixes[0],
                 Status::Skipped(Skip::Applicability),
@@ -382,10 +421,20 @@ fn collect(
         };
         match validate(project, fix, options.scope) {
             Ok(edits) => candidates.push(Candidate {
-                record: record(project, diagnostic, fix, Status::Applied { round: 0 }),
+                record: record(
+                    &mut positions,
+                    diagnostic,
+                    fix,
+                    Status::Applied { round: 0 },
+                ),
                 edits,
             }),
-            Err(skip) => skipped.push(record(project, diagnostic, fix, Status::Skipped(skip))),
+            Err(skip) => skipped.push(record(
+                &mut positions,
+                diagnostic,
+                fix,
+                Status::Skipped(skip),
+            )),
         }
     }
     let key = |candidate: &Candidate| {
@@ -508,13 +557,18 @@ fn first_increase<'a>(
 }
 
 /// The diagnostic that shows a round made the analysis worse: more errors (V1), more errors of
-/// a file and a code when no error was omitted (V2), or more warnings of a file and a code when
-/// there was no error (V3).
+/// a file and a code when no error was omitted (V2), more warnings of a file and a code when
+/// there was no error (V3), or errors past the collection limit, whose counts prove nothing.
 fn worsened<'a>(
     project: &Project,
     before: &Analysis,
     after: &'a Analysis,
 ) -> Option<&'a Diagnostic> {
+    // At the collection limit the counts are only a lower bound, so the round cannot be shown not
+    // to add errors.
+    if after.errors.omitted_is_lower_bound {
+        return after.errors.diagnostics.first();
+    }
     if before.errors.omitted == 0
         && let Some(diagnostic) = first_increase(
             project,
@@ -1311,6 +1365,41 @@ mod tests {
         assert_eq!(chosen[0].edits[0].text, "b");
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].status, Status::Skipped(Skip::InvalidEdit));
+    }
+
+    #[test]
+    fn positions_match_the_diagnostic_locations() {
+        let text = "ab\n\u{3042}c\n\nd";
+        let project = project(text);
+        let mut positions = Positions::new(&project);
+        for offset in 0..=text.len() + 2 {
+            assert_eq!(positions.at(0, offset), location(text, offset), "{offset}");
+        }
+    }
+
+    #[test]
+    fn a_round_past_the_collection_limit_aborts() {
+        let mut project = project("x");
+        let mut analyze = |project: &Project| {
+            if project.sources[0].text.contains('y') {
+                let mut errors = analysis(
+                    vec![Diagnostic::of(
+                        DiagnosticKind::TypeMismatch,
+                        "m",
+                        Span::new(0, 1).in_source(0),
+                    )],
+                    999,
+                    Vec::new(),
+                );
+                errors.errors.omitted_is_lower_bound = true;
+                errors
+            } else {
+                x_warnings(project)
+            }
+        };
+        let error = run(&mut project, &options(Scope::Project), &mut analyze).unwrap_err();
+        assert_eq!(error.diagnostic.kind, Some("fix_verification_failed"));
+        assert_eq!(project.sources[0].text, "x");
     }
 
     #[test]

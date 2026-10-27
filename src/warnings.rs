@@ -895,6 +895,14 @@ fn replacement_for(
             })
             .collect()
     };
+    // The modifiers (`pure `, `const `), the declared signature (`own 'a -> unit`) and the
+    // constraints, which neither shows: a replacement must accept every call and every context
+    // that the deprecated function does.
+    fn signature(definition: &semantic::Definition) -> Option<(&str, &str, &[String])> {
+        let (head, signature) = definition.detail.split_once(" :: ")?;
+        let (modifiers, _) = head.split_once("def ")?;
+        Some((modifiers, signature, &definition.constraints))
+    }
     index
         .definitions
         .iter()
@@ -905,6 +913,8 @@ fn replacement_for(
                 && candidate.public
                 && types(candidate) == types(owner)
                 && candidate.result == owner.result
+                && signature(candidate).is_some()
+                && signature(candidate) == signature(owner)
         })
         .then(|| target.to_owned())
 }
@@ -919,6 +929,8 @@ pub(super) fn deprecated_uses(
     deprecations: &BTreeMap<(usize, usize), Deprecation>,
 ) -> Vec<Diagnostic> {
     let mut reported = BTreeSet::new();
+    // The replacement of each deprecated function, found once: the search walks every definition.
+    let mut replacements: BTreeMap<usize, Option<String>> = BTreeMap::new();
     let mut uses = Vec::new();
     for reference in &index.references {
         let Some(source) = reference.span.source else {
@@ -973,7 +985,10 @@ pub(super) fn deprecated_uses(
             (false, true) => format!("'{spelled}' is deprecated: {shown}..."),
         };
         // The span must be the name itself for the edit to replace it.
-        let replacement = replacement_for(owner, &spelled, &deprecation.note, index)
+        let replacement = replacements
+            .entry(owner_id)
+            .or_insert_with(|| replacement_for(owner, &spelled, &deprecation.note, index))
+            .clone()
             .filter(|_| reference.span.end - reference.span.start == owner.name.len());
         uses.push(DeprecatedUse {
             source,

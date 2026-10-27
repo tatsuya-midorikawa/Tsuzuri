@@ -372,6 +372,21 @@ fn w1005_carries_a_likely_replacement_for_a_same_signature_function() {
     assert_eq!(fix.edits[0].text, "next");
 }
 
+/// `LEGACY` with generic functions.
+const GENERIC: &str = "/// @deprecated use Helper::Legacy.next instead\ndef old :: 'a -> 'a = \\n -> n\n\ndef next :: 'a -> 'a = \\n -> n\n";
+
+#[test]
+fn w1005_replaces_a_generic_function_with_the_same_constraints() {
+    for legacy in [
+        GENERIC.to_owned(),
+        GENERIC.replace(":: 'a", ":: Numeric<'a> => 'a"),
+    ] {
+        let warnings = deprecations(&legacy);
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert_eq!(warnings[0].fixes[0].edits[0].text, "next", "{legacy}");
+    }
+}
+
 #[test]
 fn w1005_has_no_fix_when_the_signature_differs_or_the_note_is_free_text() {
     for legacy in [
@@ -379,6 +394,8 @@ fn w1005_has_no_fix_when_the_signature_differs_or_the_note_is_free_text() {
             "def next :: i64 -> i64 = \\n -> n + 1",
             "def next :: i64 -> i32 = \\n -> 1",
         ),
+        LEGACY.replace("def old ::", "pure def old ::"),
+        GENERIC.replace("def next ::", "def next :: Numeric<'a> =>"),
         LEGACY.replace("use Helper::Legacy.next instead", "use next"),
         LEGACY.replace(
             "use Helper::Legacy.next instead",
