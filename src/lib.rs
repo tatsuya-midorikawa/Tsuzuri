@@ -53,7 +53,7 @@ pub mod trap;
 pub mod watch;
 
 use check::{ModuleInput, ModuleOrigin};
-use diagnostic::{Diagnostic, DiagnosticSet, Diagnostics, Span};
+use diagnostic::{Diagnostic, DiagnosticKind, DiagnosticSet, Diagnostics, Span};
 use std::ops::ControlFlow;
 
 /// One program source: a user file named `Name` or `Name.ext`, or a standard
@@ -217,8 +217,8 @@ fn parse_input(
             }),
         ModuleOrigin::Std => {
             let Some(name) = stdlib::module_name(input.path) else {
-                let error = Diagnostic::new(
-                    "E1011",
+                let error = Diagnostic::of(
+                    DiagnosticKind::InvalidStdPath,
                     format!(
                         "invalid standard library path '{}'; std sources are flat files such as 'std/Math.tz'",
                         input.path
@@ -424,8 +424,8 @@ pub fn analyze_modules_with_semantics(
 pub(crate) fn module_name_from_relative(path: &std::path::Path) -> Result<String, Diagnostic> {
     use std::path::Component;
     let invalid = || {
-        Diagnostic::new(
-            "E1011",
+        Diagnostic::of(
+            DiagnosticKind::InvalidSourcePath,
             "source paths must be relative ASCII module segments without traversal or dots",
             Span::default(),
         )

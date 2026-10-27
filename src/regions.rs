@@ -1,7 +1,7 @@
 use super::*;
 
-fn failure(span: Span, message: impl Into<String>) -> Diagnostic {
-    Diagnostic::new("E1013", message, span)
+fn failure(kind: DiagnosticKind, span: Span, message: impl Into<String>) -> Diagnostic {
+    Diagnostic::of(kind, message, span)
 }
 
 fn children(expression: &TypeExpr) -> Vec<&TypeExpr> {
@@ -54,6 +54,7 @@ fn has_quantifier(expression: &TypeExpr) -> bool {
 
 fn misplaced_quantifier(span: Span) -> Diagnostic {
     failure(
+        DiagnosticKind::MisplacedRegionQuantifier,
         span,
         "region-quantified function types are only supported as whole parameter types of a named function",
     )
@@ -62,6 +63,7 @@ fn misplaced_quantifier(span: Span) -> Diagnostic {
 pub(super) fn reject_local(expression: &TypeExpr) -> Result<(), Diagnostic> {
     if has_regions(expression) {
         Err(failure(
+            DiagnosticKind::NamedRegionInLocal,
             expression.span,
             "named regions belong in function signatures or record declarations; let local borrows be inferred",
         ))
@@ -83,6 +85,7 @@ fn labels(
     while let Some(expression) = pending.pop() {
         if matches!(expression.kind, TypeExprKind::Function(..)) && has_regions(expression) {
             return Err(failure(
+                DiagnosticKind::NamedRegionInFunctionType,
                 expression.span,
                 "named regions inside higher-order function types are not supported; use a named function with all parameters bound",
             ));
@@ -99,6 +102,7 @@ fn labels(
             }
             if regions.len() != 1 {
                 return Err(failure(
+                    DiagnosticKind::MultipleRegionsOnValue,
                     expression.span,
                     "each borrowed value has one named region; split values with independent regions",
                 ));
@@ -106,6 +110,7 @@ fn labels(
             let ty = resolve_type(inner, module, names)?;
             if !ty.carries_loans(&types) || matches!(ty, Type::Function(..) | Type::Task(_)) {
                 return Err(failure(
+                    DiagnosticKind::RegionOnNonBorrow,
                     expression.span,
                     "a named region requires a reference or an aggregate carrying borrows",
                 ));
@@ -127,6 +132,7 @@ fn labels(
 
 fn undeclared(region: &Ident) -> Diagnostic {
     failure(
+        DiagnosticKind::UndeclaredRegion,
         region.span,
         format!(
             "undeclared region '{}'; add it after the declaration name",
@@ -137,6 +143,7 @@ fn undeclared(region: &Ident) -> Diagnostic {
 
 fn mixing(span: Span, field: bool) -> Diagnostic {
     failure(
+        DiagnosticKind::FieldMixesRegions,
         span,
         if field {
             "one field cannot mix distinct named regions; give each field one region or use a record type with several regions"
@@ -148,6 +155,7 @@ fn mixing(span: Span, field: bool) -> Diagnostic {
 
 fn region_count_mismatch(span: Span, count: usize) -> Diagnostic {
     failure(
+        DiagnosticKind::RegionCountMismatch,
         span,
         format!(
             "the record declares {count} regions; write exactly {count} region names in declaration order"
@@ -244,6 +252,7 @@ fn target_labels(
     let inner = labels(target, declared, module, names, types, field)?;
     if resolve_type(target, module, names)?.reaches_exclusive(&types) {
         return Err(failure(
+            DiagnosticKind::ExclusiveBorrowBehindRegion,
             target.span,
             "the data behind a reference with its own target region cannot hold exclusive borrows; use one region, as in 'ref mut {r} T'",
         ));
@@ -267,8 +276,8 @@ pub(super) struct RecordRegions {
 pub(super) fn field_regions(record: &RecordDecl) -> Result<RecordRegions, Diagnostic> {
     let count = record.regions.len();
     if count > MAX_RECORD_REGIONS {
-        return Err(Diagnostic::new(
-            "E1017",
+        return Err(Diagnostic::of(
+            DiagnosticKind::TooManyRecordRegions,
             format!(
                 "too many regions in record '{}'; declare at most {MAX_RECORD_REGIONS} and share one region among borrows with the same lifetime",
                 record.name.text
@@ -329,6 +338,7 @@ pub(super) fn field_regions(record: &RecordDecl) -> Result<RecordRegions, Diagno
 fn check_used(regions: &[Ident], used: &BTreeSet<String>) -> Result<(), Diagnostic> {
     if let Some(region) = regions.iter().find(|region| !used.contains(&region.text)) {
         return Err(failure(
+            DiagnosticKind::UnusedRegion,
             region.span,
             format!(
                 "unused region '{}'; remove it or use it in a borrowed type",
@@ -351,6 +361,7 @@ fn exclusive_field_regions(
     let name = &field.name.text;
     match ty {
         Type::Reference(_, true) => Err(failure(
+            DiagnosticKind::ExclusiveFieldWithoutRegion,
             field.ty.span,
             format!(
                 "exclusive borrow field '{name}' needs a named region; declare one after the record name and write 'ref mut {{r}} T'"
@@ -363,6 +374,7 @@ fn exclusive_field_regions(
             let inner = &types.records[*id];
             let record = inner.name.rsplit('.').next().unwrap_or(&inner.name);
             Err(failure(
+                DiagnosticKind::ExclusiveFieldRegionsMissing,
                 field.ty.span,
                 format!(
                     "field '{name}' stores an exclusive borrow inside record '{record}'; apply its regions, for example '{record} {{{}}}'",
@@ -409,6 +421,7 @@ fn exclusive_positions(
             }
             if seen & bit != 0 {
                 return Err(failure(
+                    DiagnosticKind::ExclusiveRegionReused,
                     field.ty.span,
                     format!(
                         "region '{}' belongs to an exclusive borrow, so only one field position may use it; give field '{}' its own region",
@@ -454,6 +467,7 @@ pub(super) fn validate_modules(
                         .contains_stored_reference(&types)
                 {
                     return Err(failure(
+                        DiagnosticKind::BorrowFieldWithoutRegion,
                         field.ty.span,
                         format!(
                             "field '{}' stores a borrow without a region; name one of the record's regions in its type, for example 'ref {{r}} T'",
@@ -517,6 +531,7 @@ pub(super) fn contract(
         if let TypeExprKind::Quantified(regions, inner) = &parameter.ty.kind {
             if parameter.mutable {
                 return Err(failure(
+                    DiagnosticKind::MutableRegionQuantifiedParameter,
                     parameter.name.span,
                     "a parameter with a region-quantified function type cannot be mutable",
                 ));
@@ -620,6 +635,7 @@ fn result_sources(
     }
     if !matches!(expression.kind, TypeExprKind::Regions(..)) {
         return Err(failure(
+            DiagnosticKind::ResultRegionMissing,
             expression.span,
             "annotate the whole borrowed result with one region, for example 'View {r}' or 'ref {r} T'",
         ));
@@ -642,6 +658,7 @@ fn result_sources(
             .collect();
         if pairs.is_empty() {
             return Err(failure(
+                DiagnosticKind::ResultRegionWithoutInput,
                 expression.span,
                 format!(
                     "result region '{region}' has no matching input; bind all function parameters and name an input region"
@@ -665,12 +682,14 @@ fn callback_contract(
 ) -> Result<CallbackContract, Diagnostic> {
     let TypeExprKind::Function(parameters, result) = &inner.kind else {
         return Err(failure(
+            DiagnosticKind::RegionQuantifierTarget,
             inner.span,
             "a region quantifier applies to a function type, as in '{r} ref {r} T -> ref {r} T'",
         ));
     };
     if let Some(region) = regions.iter().find(|region| outer.contains(&region.text)) {
         return Err(failure(
+            DiagnosticKind::RegionAlreadyDeclared,
             region.span,
             format!(
                 "region '{}' is already declared by the function; give the quantified region another name",
@@ -684,6 +703,7 @@ fn callback_contract(
             && let Some(region) = labels.iter().find(|region| outer.contains(&region.text))
         {
             return Err(failure(
+                DiagnosticKind::RegionBelongsToFunction,
                 region.span,
                 format!(
                     "region '{}' belongs to the function, not to the quantified function type; quantify a region of its own",
@@ -713,6 +733,7 @@ fn callback_contract(
         Some(sources) => sources,
         None if resolve_type(result, module, names)?.carries_loans(&types) => {
             return Err(failure(
+                DiagnosticKind::ResultRegionMissing,
                 result.span,
                 "annotate the whole borrowed result with one region, for example 'View {r}' or 'ref {r} T'",
             ));
@@ -752,6 +773,7 @@ pub(super) fn validate_contract_calls(module: &CheckedModule) -> Result<(), Diag
     let direct_only = |id: usize, span: Span| {
         let name = &module.functions[id].name;
         failure(
+            DiagnosticKind::RegionCallbackStoresExclusiveInput,
             span,
             if module.functions[id].callback_contracts.is_empty() {
                 format!(

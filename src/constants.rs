@@ -13,12 +13,13 @@ mod statics;
 use machine::{Machine, Value};
 pub(super) use rules::check_signature;
 
-pub(super) fn failure(span: Span, message: impl Into<String>) -> Diagnostic {
-    Diagnostic::new("E1026", message, span)
+pub(super) fn failure(kind: DiagnosticKind, span: Span, message: impl Into<String>) -> Diagnostic {
+    Diagnostic::of(kind, message, span)
 }
 
 fn limit(span: Span) -> Diagnostic {
     failure(
+        DiagnosticKind::ConstLimitExceeded,
         span,
         "const evaluation exceeds the compiler limit; split or simplify the constants",
     )
@@ -82,6 +83,7 @@ pub(super) fn validate(
                 .try_for_each(|argument| validate(argument, const_names))
         }
         _ => Err(failure(
+            DiagnosticKind::ConstExpressionNotAllowed,
             expression.span,
             "this expression is not allowed in a phase-1 const; precompute it or use a runtime let",
         )),
@@ -352,8 +354,8 @@ impl Checker<'_> {
             if !constant {
                 return Ok(());
             }
-            return Err(Diagnostic::new(
-                "E1013",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ConstTemporaryBorrowEscapes,
                 "a temporary const borrow cannot escape or cross application stages; bind the constant with let first",
                 span,
             ));
@@ -505,6 +507,7 @@ impl Evaluator<'_> {
                 }
                 if !self.active.insert(id) {
                     return Err(failure(
+                        DiagnosticKind::ConstCycle,
                         span,
                         "cyclic const definition; break the cycle or make one value a function",
                     ));
@@ -568,6 +571,7 @@ fn unary(operator: UnaryOp, value: &TypedExpr, span: Span) -> Result<TypedExprKi
         }
         _ => {
             return Err(failure(
+                DiagnosticKind::ConstUnsupportedOperation,
                 span,
                 "this const unary operation is unsupported; use a runtime let",
             ));
@@ -630,12 +634,14 @@ fn binary(
                     || (*is_signed && *left == 1 << (bits - 1) && *right == mask(*bits)))
             {
                 return Err(failure(
+                    DiagnosticKind::ConstEvaluationTrapped,
                     span,
                     "const division trapped on zero or signed overflow; use a nonzero divisor without overflow",
                 ));
             }
             if operator == Power && *is_signed && signed(*right, *bits) < 0 {
                 return Err(failure(
+                    DiagnosticKind::ConstEvaluationTrapped,
                     span,
                     "const power trapped on a negative exponent; use a nonnegative exponent",
                 ));
@@ -669,6 +675,7 @@ fn binary(
                 ShiftRight | ShiftRightUnsigned => left >> shift,
                 _ => {
                     return Err(failure(
+                        DiagnosticKind::ConstUnsupportedOperation,
                         span,
                         "unsupported const integer operation; use a runtime let",
                     ));
@@ -681,9 +688,14 @@ fn binary(
             32 => float_binary::<Single>(operator, left, right, span),
             64 => float_binary::<Double>(operator, left, right, span),
             128 => float_binary::<Quad>(operator, left, right, span),
-            _ => Err(failure(span, "unsupported binary float width")),
+            _ => Err(failure(
+                DiagnosticKind::ConstUnsupportedOperation,
+                span,
+                "unsupported binary float width",
+            )),
         },
         _ => Err(failure(
+            DiagnosticKind::ConstUnsupportedOperation,
             span,
             "this const arithmetic is unsupported; keep decimal arithmetic and overloaded operations in runtime code",
         )),
@@ -741,6 +753,7 @@ fn float_binary<Binary: Float>(
         }
         _ => {
             return Err(failure(
+                DiagnosticKind::ConstUnsupportedOperation,
                 span,
                 "unsupported const floating-point operation; use a runtime let",
             ));
@@ -795,6 +808,7 @@ where
         }
         _ => {
             return Err(failure(
+                DiagnosticKind::ConstUnsupportedOperation,
                 span,
                 "decimal const casts are unsupported; use a runtime conversion",
             ));
@@ -840,6 +854,7 @@ fn cast(value: &TypedExpr, target: &Type, span: Span) -> Result<TypedExprKind, D
         _ => {}
     }
     Err(failure(
+        DiagnosticKind::ConstUnsupportedOperation,
         span,
         "this const cast is unsupported; keep the conversion in runtime code",
     ))

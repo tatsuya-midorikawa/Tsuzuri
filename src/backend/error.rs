@@ -35,8 +35,8 @@ impl Failure {
             .function
             .map(|name| format!(" in @{name}"))
             .unwrap_or_default();
-        Diagnostic::new(
-            "E2002",
+        Diagnostic::of(
+            DiagnosticKind::FastBackendUnsupportedConstruct,
             format!(
                 "the fast backend cannot translate {}{place}; build with --backend llvm and report this program",
                 self.construct

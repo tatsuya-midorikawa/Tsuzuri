@@ -1,4 +1,4 @@
-use tsuzuri::diagnostic::{Diagnostic, DiagnosticSet, Severity, Span};
+use tsuzuri::diagnostic::{Diagnostic, DiagnosticKind, DiagnosticSet, Severity, Span};
 
 fn warnings(source: &str) -> Vec<Diagnostic> {
     tsuzuri::analyze(source).unwrap().warnings
@@ -158,7 +158,11 @@ fn cli_caps_warnings_and_denies_before_touching_artifacts() {
 
 #[test]
 fn warning_severity_survives_rendering_sorting_and_capping() {
-    let warning = Diagnostic::warning("W1001", "unused local 'value'", Span::new(4, 9));
+    let warning = Diagnostic::of(
+        DiagnosticKind::UnusedLocal,
+        "unused local 'value'",
+        Span::new(4, 9),
+    );
     assert_eq!(warning.severity, Severity::Warning);
     assert!(
         warning
@@ -171,11 +175,17 @@ fn warning_severity_survives_rendering_sorting_and_capping() {
             .contains("\"severity\":\"warning\"")
     );
     assert_eq!(
-        Diagnostic::new("E1003", "bad type", Span::default()).severity,
+        Diagnostic::of(DiagnosticKind::TypeMismatch, "bad type", Span::default()).severity,
         Severity::Error
     );
     let diagnostics = DiagnosticSet::from_diagnostics(
-        (0..60).map(|index| Diagnostic::warning("W1001", "unused", Span::new(index, index + 1))),
+        (0..60).map(|index| {
+            Diagnostic::of(
+                DiagnosticKind::UnusedLocal,
+                "unused",
+                Span::new(index, index + 1),
+            )
+        }),
         0,
     );
     assert_eq!(diagnostics.diagnostics.len(), 50);

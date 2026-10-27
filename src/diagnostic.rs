@@ -369,10 +369,12 @@ impl Diagnostic {
         )
     }
 
+    #[deprecated(note = "use Diagnostic::of")]
     pub fn new(code: &'static str, message: impl Into<String>, span: Span) -> Self {
         Self::build(Severity::Error, code, None, message.into(), span)
     }
 
+    #[deprecated(note = "use Diagnostic::of")]
     pub fn warning(code: &'static str, message: impl Into<String>, span: Span) -> Self {
         Self::build(Severity::Warning, code, None, message.into(), span)
     }
@@ -737,7 +739,11 @@ mod tests {
     fn reports_character_columns_and_escapes_json() {
         assert_eq!(location("// 日本語\nlet x", 18), (2, 6));
         assert_eq!(json_string("a\n\"\\\u{1}"), "\"a\\n\\\"\\\\\\u0001\"");
-        let diagnostic = Diagnostic::new("E0001", "bad \"value\"", Span::new(0, 1));
+        let diagnostic = Diagnostic::of(
+            DiagnosticKind::UnexpectedCharacter,
+            "bad \"value\"",
+            Span::new(0, 1),
+        );
         assert!(diagnostic.json("A.tz", "x").contains("\"column\":1"));
         assert!(diagnostic.render("A.tz", "x").contains("A.tz:1:1"));
         assert!(
@@ -749,7 +755,11 @@ mod tests {
 
     #[test]
     fn renders_warnings_with_their_severity() {
-        let warning = Diagnostic::new("W1003", "unreachable", Span::new(4, 5));
+        let warning = Diagnostic::of(
+            DiagnosticKind::UnreachableMatchArm,
+            "unreachable",
+            Span::new(4, 5),
+        );
         let source = "a\nbc d";
         assert_eq!(
             warning.render_with_severity("warning", "M.tz", source),
@@ -772,7 +782,12 @@ mod tests {
     #[test]
     fn without_extras_the_output_is_unchanged() {
         let source = "a\nbc d";
-        let warning = Diagnostic::warning("W1003", "unreachable", Span::new(4, 5));
+        let mut warning = Diagnostic::of(
+            DiagnosticKind::UnreachableMatchArm,
+            "unreachable",
+            Span::new(4, 5),
+        );
+        warning.kind = None;
         assert_eq!(
             warning.render("M.tz", source),
             "M.tz:2:3: warning[W1003]: unreachable\n  2 | bc d\n    |   ^"
@@ -781,7 +796,8 @@ mod tests {
             warning.json("M.tz", source),
             "{\"severity\":\"warning\",\"code\":\"W1003\",\"message\":\"unreachable\",\"path\":\"M.tz\",\"span\":{\"start\":4,\"end\":5,\"line\":2,\"column\":3,\"end_line\":2,\"end_column\":4}}"
         );
-        let error = Diagnostic::new("E0001", "bad", Span::new(0, 1));
+        let mut error = Diagnostic::of(DiagnosticKind::UnexpectedCharacter, "bad", Span::new(0, 1));
+        error.kind = None;
         assert_eq!(
             error.render_with("error", "A.tz", "x", &|_| None),
             "A.tz:1:1: error[E0001]: bad\n  1 | x\n    | ^"
@@ -800,18 +816,18 @@ mod tests {
     #[test]
     fn builders_keep_the_limits() {
         let span = Span::new(0, 1);
-        let mut diagnostic = Diagnostic::new("E0001", "m", span);
+        let mut diagnostic = Diagnostic::of(DiagnosticKind::UnexpectedCharacter, "m", span);
         for index in 0..20 {
             diagnostic = diagnostic.related(RelatedRole::Note, format!("n{index}"), span);
         }
         assert_eq!(diagnostic.related.len(), MAX_RELATED);
         assert_eq!(diagnostic.related[MAX_RELATED - 1].message, "n15");
-        let mut diagnostic = Diagnostic::new("E0001", "m", span);
+        let mut diagnostic = Diagnostic::of(DiagnosticKind::UnexpectedCharacter, "m", span);
         for _ in 0..10 {
             diagnostic = diagnostic.fix("t", Applicability::Maybe, edits(1));
         }
         assert_eq!(diagnostic.fixes.len(), MAX_FIXES);
-        let diagnostic = Diagnostic::new("E0001", "m", span)
+        let diagnostic = Diagnostic::of(DiagnosticKind::UnexpectedCharacter, "m", span)
             .fix("none", Applicability::Maybe, edits(0))
             .fix("too many", Applicability::Maybe, edits(MAX_EDITS + 1))
             .fix("limit", Applicability::Maybe, edits(MAX_EDITS));
@@ -824,7 +840,8 @@ mod tests {
                 how: String::new(),
             })
             .collect();
-        let diagnostic = Diagnostic::new("E0001", "m", span).with_candidates(candidates);
+        let diagnostic = Diagnostic::of(DiagnosticKind::UnexpectedCharacter, "m", span)
+            .with_candidates(candidates);
         assert_eq!(diagnostic.detail.candidates.len(), MAX_CANDIDATES);
         let scope = (0..40)
             .map(|index| ScopeEntry {
@@ -832,7 +849,8 @@ mod tests {
                 ty: String::new(),
             })
             .collect();
-        let diagnostic = Diagnostic::new("E0001", "m", span).with_scope(scope);
+        let diagnostic =
+            Diagnostic::of(DiagnosticKind::UnexpectedCharacter, "m", span).with_scope(scope);
         assert_eq!(diagnostic.detail.scope.len(), MAX_SCOPE);
     }
 
@@ -860,28 +878,32 @@ mod tests {
     #[test]
     fn json_key_order_and_escaping() {
         let source = "let x = 1\n";
-        let diagnostic = Diagnostic::new("E0001", "a\n\"\\\u{1}", Span::new(4, 5))
-            .with_kind("k")
-            .related(RelatedRole::Note, "r", Span::new(0, 3))
-            .with_help("h")
-            .expected_found("E", "F")
-            .with_candidates(vec![Candidate {
-                name: "n".into(),
-                signature: "s".into(),
-                how: "w".into(),
-            }])
-            .with_scope(vec![ScopeEntry {
-                name: "x".into(),
-                ty: "i64".into(),
-            }])
-            .fix(
-                "t",
-                Applicability::Certain,
-                vec![Edit {
-                    span: Span::new(9, 9),
-                    text: "\n".into(),
-                }],
-            );
+        let diagnostic = Diagnostic::of(
+            DiagnosticKind::UnexpectedCharacter,
+            "a\n\"\\\u{1}",
+            Span::new(4, 5),
+        )
+        .with_kind("k")
+        .related(RelatedRole::Note, "r", Span::new(0, 3))
+        .with_help("h")
+        .expected_found("E", "F")
+        .with_candidates(vec![Candidate {
+            name: "n".into(),
+            signature: "s".into(),
+            how: "w".into(),
+        }])
+        .with_scope(vec![ScopeEntry {
+            name: "x".into(),
+            ty: "i64".into(),
+        }])
+        .fix(
+            "t",
+            Applicability::Certain,
+            vec![Edit {
+                span: Span::new(9, 9),
+                text: "\n".into(),
+            }],
+        );
         assert_eq!(
             diagnostic.json("M.tz", source),
             r#"{"severity":"error","code":"E0001","message":"a\n\"\\\u0001","path":"M.tz","span":{"start":4,"end":5,"line":1,"column":5,"end_line":1,"end_column":6},"kind":"k","related":[{"role":"note","message":"r","path":"M.tz","span":{"start":0,"end":3,"line":1,"column":1,"end_line":1,"end_column":4}}],"help":"h","expected":"E","found":"F","candidates":[{"name":"n","signature":"s","how":"w"}],"scope":[{"name":"x","type":"i64"}],"fixes":[{"title":"t","applicability":"certain","edits":[{"path":"M.tz","span":{"start":9,"end":9,"line":1,"column":10,"end_line":1,"end_column":10},"text":"\n"}]}]}"#
@@ -892,13 +914,17 @@ mod tests {
     fn related_in_another_source_uses_the_lookup() {
         let main = "def first :: i64 = 2\n";
         let other = "\n\ndef first :: i64 = 1\n";
-        let diagnostic = Diagnostic::new("E1001", "dup", Span::new(4, 9).in_source(0))
-            .related(
-                RelatedRole::FirstDefinedHere,
-                "first defined here",
-                Span::new(6, 11).in_source(1),
-            )
-            .related(RelatedRole::Note, "same source", Span::new(0, 3));
+        let diagnostic = Diagnostic::of(
+            DiagnosticKind::DuplicateName,
+            "dup",
+            Span::new(4, 9).in_source(0),
+        )
+        .related(
+            RelatedRole::FirstDefinedHere,
+            "first defined here",
+            Span::new(6, 11).in_source(1),
+        )
+        .related(RelatedRole::Note, "same source", Span::new(0, 3));
         let lookup = |index: usize| (index == 1).then_some(("Other.tz", other));
         assert_eq!(
             diagnostic.render_with("error", "Main.tz", main, &lookup),
@@ -916,14 +942,18 @@ mod tests {
             span,
             text: "x".into(),
         };
-        let diagnostic = Diagnostic::new("E1001", "dup", Span::new(4, 9).in_source(0))
-            .related(RelatedRole::Note, "unknown source", elsewhere)
-            .fix("whole", Applicability::Maybe, vec![edit(Span::new(0, 0))])
-            .fix(
-                "half",
-                Applicability::Maybe,
-                vec![edit(Span::new(0, 0)), edit(elsewhere)],
-            );
+        let diagnostic = Diagnostic::of(
+            DiagnosticKind::DuplicateName,
+            "dup",
+            Span::new(4, 9).in_source(0),
+        )
+        .related(RelatedRole::Note, "unknown source", elsewhere)
+        .fix("whole", Applicability::Maybe, vec![edit(Span::new(0, 0))])
+        .fix(
+            "half",
+            Applicability::Maybe,
+            vec![edit(Span::new(0, 0)), edit(elsewhere)],
+        );
         let text = diagnostic.render_with("error", "Main.tz", main, &|_| None);
         assert!(
             !text.contains("note:")

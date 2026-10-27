@@ -1,8 +1,8 @@
 use super::*;
 use std::collections::VecDeque;
 
-fn failure(span: Span, message: impl Into<String>) -> Diagnostic {
-    Diagnostic::new("E1029", message, span)
+fn failure(kind: DiagnosticKind, span: Span, message: impl Into<String>) -> Diagnostic {
+    Diagnostic::of(kind, message, span)
 }
 
 fn opaque_input(ty: &Type, types: &TypeContext<'_>, shared: bool) -> bool {
@@ -36,6 +36,7 @@ pub(super) fn check_function_type(
             matches!(parameter, Type::Reference(_, false)),
         ) {
             return Err(failure(
+                DiagnosticKind::PureFunctionTypeParameterNotAllowed,
                 span,
                 "a pure function type takes only shared data and pure callbacks; mutable references, ordinary callbacks, dyn and task inputs are not supported",
             ));
@@ -44,6 +45,7 @@ pub(super) fn check_function_type(
             && own_violation_with(parameter, types, true).is_some()
         {
             return Err(failure(
+                DiagnosticKind::PureFunctionTypeParameterNotAllowed,
                 span,
                 "a value parameter of a pure function type must be plain data; use a shared reference",
             ));
@@ -145,7 +147,13 @@ pub(super) fn check_parameter(
     } else {
         None
     };
-    message.map_or(Ok(()), |message| Err(failure(parameter.name.span, message)))
+    message.map_or(Ok(()), |message| {
+        Err(failure(
+            DiagnosticKind::PureParameterNotAllowed,
+            parameter.name.span,
+            message,
+        ))
+    })
 }
 
 pub(super) fn borrow_parameter(ty: &Type, owned: bool, types: &TypeContext<'_>) -> bool {
@@ -1206,8 +1214,8 @@ pub(super) fn callback_variables<'a>(
             &mut bodies,
         )
         .map_err(|_| {
-            Diagnostic::new(
-                "E1017",
+            Diagnostic::of(
+                DiagnosticKind::PureCallbackProofLimit,
                 "pure callback API proof exceeds the expression analysis limit; split the program",
                 value.span,
             )
@@ -1216,8 +1224,8 @@ pub(super) fn callback_variables<'a>(
     scanner
         .scan_body(bodies, aliases, BTreeSet::new(), None, Some(&mut variables))
         .map_err(|_| {
-            Diagnostic::new(
-                "E1017",
+            Diagnostic::of(
+                DiagnosticKind::PureCallbackProofLimit,
                 "pure callback API proof exceeds the expression analysis limit; split the program",
                 span,
             )
@@ -1262,7 +1270,7 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
             while let Some(expression) = pending.pop() {
                 nodes += 1;
                 if nodes > limits.nodes {
-                    diagnostics.push(Diagnostic::new("E1017", "pure function value validation exceeds the expression analysis limit; split the program", expression.span));
+                    diagnostics.push(Diagnostic::of(DiagnosticKind::PureValueValidationLimit, "pure function value validation exceeds the expression analysis limit; split the program", expression.span));
                     return diagnostics;
                 }
                 if let TypedExprKind::Block { bindings, .. } = &expression.kind {
@@ -1288,7 +1296,7 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                             }
                             if matches!(qualified, Type::Function(parameters, _) if parameters.len() + captures != module.functions[*id].signature.parameters.len())
                             {
-                                diagnostics.push(failure(expression.span, "a returned function has a separate effect contract; qualify each call stage explicitly"));
+                                diagnostics.push(failure(DiagnosticKind::PureReturnedFunctionContract, expression.span, "a returned function has a separate effect contract; qualify each call stage explicitly"));
                                 continue;
                             }
                             let targets = closed_callable(
@@ -1308,7 +1316,7 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                                 _ => false,
                             };
                             if !captures_closed {
-                                diagnostics.push(failure(expression.span, "this pure function value captures a callback whose effects are unknown"));
+                                diagnostics.push(failure(DiagnosticKind::PureValueCapturesUnknownCallback, expression.span, "this pure function value captures a callback whose effects are unknown"));
                                 continue;
                             }
                             roots.entry(*id).or_insert(expression.span);
@@ -1316,11 +1324,11 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                         TypedExprKind::Lambda { .. } if templates => {
                             match scanner.value_witness(expression, &aliases) {
                                 Ok(None) => {}
-                                Ok(Some((_, impurity))) => diagnostics.push(failure(
+                                Ok(Some((_, impurity))) => diagnostics.push(failure(DiagnosticKind::ImpurePureFunctionValue,
                                     impurity.span,
                                     format!("this pure function value is not pure: it {}", impurity.reason),
                                 )),
-                                Err(_) => diagnostics.push(failure(
+                                Err(_) => diagnostics.push(failure(DiagnosticKind::PureValueUnprovable,
                                     expression.span,
                                     "this pure function value cannot be proven pure within the analysis limits",
                                 )),
@@ -1328,7 +1336,7 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                         }
                         TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
                             if let Some(category) = builtin_effect(instance.builtin) {
-                                diagnostics.push(failure(
+                                diagnostics.push(failure(DiagnosticKind::ImpureBuiltinForPureContract,
                                 expression.span,
                                 format!(
                                     "this builtin cannot satisfy a pure function contract: it {}",
@@ -1360,6 +1368,7 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
             })
         {
             diagnostics.push(failure(
+                DiagnosticKind::PureSpecializationOwnParameter,
                 function.parameters[index].span,
                 format!(
                     "an 'own' parameter of a pure specialization must be plain data; found {}",
@@ -1382,11 +1391,14 @@ fn validate_mode(module: &CheckedModule, limits: Limits, templates: bool) -> Vec
                         impurity.reason, impurity.chain
                     )
                 };
-                diagnostics.push(failure(impurity.span, message));
+                diagnostics.push(failure(
+                    DiagnosticKind::ImpureOperationInPureDef,
+                    impurity.span,
+                    message,
+                ));
             }
             Err(_) => {
-                diagnostics.push(Diagnostic::new(
-                    "E1017",
+                diagnostics.push(Diagnostic::of(DiagnosticKind::PureDefinitionReachLimit,
                     format!("a pure def reaches more than {} functions or {} expression nodes; split it", limits.functions, limits.nodes),
                     span,
                 ));

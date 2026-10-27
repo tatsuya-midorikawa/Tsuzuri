@@ -4581,8 +4581,8 @@ impl NameInfo {
         } else {
             declaration_display(&self.name)
         };
-        Diagnostic::new(
-            "E1022",
+        Diagnostic::of(
+            DiagnosticKind::PrivateNameAccess,
             format!(
                 "private {kind} '{name}' is only visible inside module '{}'; expose a public wrapper or move the use into the same module",
                 namespace_display(&self.module)
@@ -5026,8 +5026,8 @@ impl Names {
             .map(|full| format!("'{}'", namespace_display(&full)))
             .collect::<Vec<_>>()
             .join(", ");
-        Err(Diagnostic::new(
-            "E1004",
+        Err(Diagnostic::of(
+            DiagnosticKind::AmbiguousName,
             format!(
                 "'{name}' is ambiguous: using declarations make the modules {modules} visible; qualify it with its namespace"
             ),
@@ -5194,8 +5194,8 @@ impl Names {
         written: &str,
         span: Span,
     ) -> Diagnostic {
-        Diagnostic::new(
-            "E1004",
+        Diagnostic::of(
+            DiagnosticKind::RepeatedModuleName,
             format!(
                 "'{path}' repeats the module name; the {kind} '{name}' shares its module's name, so write '{written}'"
             ),
@@ -5273,8 +5273,8 @@ impl Names {
             .map(|key| format!("'{}'", self.module_display(key)))
             .collect::<Vec<_>>()
             .join(", ");
-        Diagnostic::new(
-            "E1004",
+        Diagnostic::of(
+            DiagnosticKind::AmbiguousBuilderAlias,
             format!(
                 "builder alias '{written}' is ambiguous: the builders {builders} declare it; write the name of the builder you mean, or rename an alias"
             ),
@@ -5339,8 +5339,8 @@ impl Names {
                 .map(TypeHead::Type);
         }
         match (class, named) {
-            (Choice::Found(..), Choice::Found(named, _)) => Err(Diagnostic::new(
-                "E1004",
+            (Choice::Found(..), Choice::Found(named, _)) => Err(Diagnostic::of(
+                DiagnosticKind::AmbiguousName,
                 format!(
                     "'{}' names both a type class and the {} type '{}'; qualify the {} type or rename one of them",
                     head.text,
@@ -5356,8 +5356,8 @@ impl Names {
             (_, named @ (Choice::Ambiguous(..) | Choice::Hidden(_))) => self
                 .type_result(named, &head.text, head.span)
                 .map(TypeHead::Type),
-            _ => Err(Diagnostic::new(
-                "E1004",
+            _ => Err(Diagnostic::of(
+                DiagnosticKind::UnknownTypeName,
                 format!(
                     "unknown type class, record type, or union type '{}'; {}",
                     head.text,
@@ -5376,24 +5376,24 @@ impl Names {
     fn record(&self, module: &str, name: &str, span: Span) -> Result<usize, Diagnostic> {
         match self.named_type(module, name, span)? {
             NamedType::Record(info) => Ok(info.id),
-            NamedType::Union(info) => Err(Diagnostic::new(
-                "E1004",
+            NamedType::Union(info) => Err(Diagnostic::of(
+                DiagnosticKind::NotARecordType,
                 format!(
                     "'{name}' names the union type '{}', not a record type; construct or match it with its cases",
                     self.type_spelling(&info.name)
                 ),
                 span,
             )),
-            NamedType::Alias(info) => Err(Diagnostic::new(
-                "E1004",
+            NamedType::Alias(info) => Err(Diagnostic::of(
+                DiagnosticKind::NotARecordType,
                 format!(
                     "'{}' is a type alias; use the original record name to construct or match a value",
                     self.type_spelling(&info.name)
                 ),
                 span,
             )),
-            NamedType::Handle(info) => Err(Diagnostic::new(
-                "E1004",
+            NamedType::Handle(info) => Err(Diagnostic::of(
+                DiagnosticKind::NotARecordType,
                 format!(
                     "'{name}' names the extern type '{}', not a record type; host handles have no fields and cannot be constructed",
                     self.type_spelling(&info.name)
@@ -5418,8 +5418,8 @@ impl Names {
         if matches!(choice, Choice::Missing)
             && let Some(spelling) = self.namespace_spelling(module, name)
         {
-            return Err(Diagnostic::new(
-                "E1004",
+            return Err(Diagnostic::of(
+                DiagnosticKind::UnknownTypeName,
                 format!(
                     "unknown record, union, or type alias '{name}'; join namespaces and modules with '::', as in '{spelling}'"
                 ),
@@ -5553,8 +5553,8 @@ impl Names {
         match choice {
             Choice::Found(named, _) => Ok(named),
             Choice::Hidden(named) => Err(named.info().private_error("type", span)),
-            Choice::Missing => Err(Diagnostic::new(
-                "E1004",
+            Choice::Missing => Err(Diagnostic::of(
+                DiagnosticKind::UnknownTypeName,
                 format!("unknown record, union, or type alias '{name}'"),
                 span,
             )),
@@ -5572,8 +5572,8 @@ impl Names {
                 } else {
                     "type"
                 };
-                Err(Diagnostic::new(
-                    "E1004",
+                Err(Diagnostic::of(
+                    DiagnosticKind::AmbiguousName,
                     format!(
                         "ambiguous {kind} '{name}'; qualify it as {}",
                         visible
@@ -5626,8 +5626,8 @@ impl Names {
     ) -> Result<Option<&'n str>, Diagnostic> {
         match choice {
             Choice::Found(class, _) => Ok(Some(class)),
-            Choice::Ambiguous(classes, _) => Err(Diagnostic::new(
-                "E1004",
+            Choice::Ambiguous(classes, _) => Err(Diagnostic::of(
+                DiagnosticKind::AmbiguousName,
                 format!(
                     "ambiguous type class '{name}'; qualify it as {}",
                     classes
@@ -5676,8 +5676,8 @@ impl Names {
         };
         match found {
             Some((arity, ty)) if arity == args.len() => Ok(ty),
-            _ => Err(Diagnostic::new(
-                "E1004",
+            _ => Err(Diagnostic::of(
+                DiagnosticKind::StdItemMissing,
                 format!(
                     "this builtin needs the standard library type '{qualified}' with {} type argument(s)",
                     args.len()
@@ -5709,8 +5709,8 @@ impl Names {
             Choice::Found(case, _) => Ok(Some(case)),
             Choice::Hidden(case) => Err(case.info.private_error("union case", span)),
             Choice::Missing => Ok(None),
-            Choice::Ambiguous(visible, _) => Err(Diagnostic::new(
-                "E1004",
+            Choice::Ambiguous(visible, _) => Err(Diagnostic::of(
+                DiagnosticKind::AmbiguousName,
                 format!(
                     "ambiguous union case '{name}'; qualify it as {}",
                     visible
@@ -5744,8 +5744,8 @@ impl Names {
             .get(&format!("{module}.{name}"))
             .filter(|case| case.info.id == info.id)
             .ok_or_else(|| {
-                Diagnostic::new(
-                    "E1002",
+                Diagnostic::of(
+                    DiagnosticKind::UnknownUnionCase,
                     format!("union '{}' has no case '{name}'", type_display(&info.name)),
                     span,
                 )
@@ -5907,8 +5907,8 @@ impl Names {
             Type::Record(id, _) => &types.records[*id].name,
             Type::Union(id, _) => &types.unions[*id].name,
             _ => {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FunctionConstraintUnresolvable,
                     format!(
                         "{} has no declaring module for function constraint '#{name}'",
                         receiver.display(types)
@@ -5920,8 +5920,8 @@ impl Names {
         let (module, _) = qualified_type.rsplit_once('.').unwrap();
         let qualified = format!("{module}.{name}");
         self.function(requester, &qualified, span)?.ok_or_else(|| {
-            Diagnostic::new(
-                "E1005",
+            Diagnostic::of(
+                DiagnosticKind::FunctionConstraintUnsatisfied,
                 format!(
                     "{} does not satisfy '#{name}': module '{}' has no function '{name}'",
                     receiver.display(types),
@@ -5970,8 +5970,8 @@ impl Names {
             |(info, _)| info.visible_from(requester),
         ) {
             Choice::Found((info, case), _) => Ok(Some((info.id, *case))),
-            Choice::Ambiguous(candidates, _) => Err(Diagnostic::new(
-                "E1004",
+            Choice::Ambiguous(candidates, _) => Err(Diagnostic::of(
+                DiagnosticKind::AmbiguousName,
                 format!(
                     "ambiguous active pattern '{name}'; qualify one of {}",
                     candidates
@@ -6049,8 +6049,8 @@ fn validate_public_type(
                 let info = names.named_type(module, name, expression.span)?.info();
                 if info.visibility == Visibility::Private {
                     let (kind, owner) = owner;
-                    return Err(Diagnostic::new(
-                        "E1022",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::PrivateTypeInPublicApi,
                         format!(
                             "private type '{}' leaks from public {kind} '{owner}'; make the {kind} private or expose a public type",
                             names.type_spelling(&info.name)
@@ -6074,8 +6074,8 @@ fn validate_public_type(
                 let info = named.info();
                 if info.visibility == Visibility::Private {
                     let (kind, owner) = owner;
-                    return Err(Diagnostic::new(
-                        "E1022",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::PrivateTypeInPublicApi,
                         format!(
                             "private type '{}' leaks from public {kind} '{owner}'; make the {kind} private or expose a public type",
                             names.type_spelling(&info.name)
@@ -6195,11 +6195,15 @@ fn check_modules_collect(
                     "module name '{name}' is reserved for the standard library; rename the file"
                 ),
             };
-            Diagnostic::new("E1011", message, Span::default().in_source(at))
+            Diagnostic::of(
+                DiagnosticKind::ReservedStdNamespace,
+                message,
+                Span::default().in_source(at),
+            )
         };
         if name.len() > 255 || name.split('.').count() > 16 {
-            diagnostics.push(Diagnostic::new(
-                "E1017",
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::ModulePathLimit,
                 "module paths are limited to 16 segments and 255 bytes",
                 Span::default().in_source(source),
             ));
@@ -6237,8 +6241,7 @@ fn check_modules_collect(
                     )
                 })
                 .unwrap_or_default();
-            diagnostics.push(Diagnostic::new(
-                "E1011",
+            diagnostics.push(Diagnostic::of(DiagnosticKind::InvalidModuleName,
                 format!(
                     "module name '{stem}' must start with an uppercase ASCII letter; rename the file{suggestion}"
                 ),
@@ -6259,8 +6262,7 @@ fn check_modules_collect(
         if module.origin == ModuleOrigin::User
             && full.split('.').next() == Some(crate::stdlib::NAMESPACE)
         {
-            diagnostics.push(Diagnostic::new(
-                "E1011",
+            diagnostics.push(Diagnostic::of(DiagnosticKind::ReservedStdNamespace,
                 format!(
                     "module '{}' is in the namespace 'std', which is reserved for the standard library; choose another namespace",
                     namespace_display(&full)
@@ -6270,8 +6272,7 @@ fn check_modules_collect(
             continue;
         }
         if valid && names.full_modules.contains_key(&full) {
-            diagnostics.push(Diagnostic::new(
-                "E1011",
+            diagnostics.push(Diagnostic::of(DiagnosticKind::DuplicateModule,
                 format!(
                     "module '{}' is declared by more than one file; rename a file or change its namespace",
                     namespace_display(&full)
@@ -6294,8 +6295,7 @@ fn check_modules_collect(
             continue;
         }
         if !valid || previous.is_some() {
-            diagnostics.push(Diagnostic::new(
-                "E1011",
+            diagnostics.push(Diagnostic::of(DiagnosticKind::InvalidModuleName,
                 format!(
                     "invalid or duplicate module name '{name}'; each .tz, .tt, or .tc filename must have a unique ASCII identifier stem, not '_', 'Task', or a keyword"
                 ),
@@ -6330,8 +6330,8 @@ fn check_modules_collect(
                     "using '{path}' names no namespace with modules; check the spelling or the namespace declarations"
                 ),
             };
-            diagnostics.push(Diagnostic::new(
-                "E1011",
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::InvalidUsingDeclaration,
                 message,
                 using.path.span.in_source(source),
             ));
@@ -6469,8 +6469,8 @@ fn check_modules_collect(
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
-                return Err(Diagnostic::new(
-                    "E1008",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExternDeclarationConstraints,
                     "extern declarations cannot have constraints or named regions",
                     external.name.span,
                 ));
@@ -6518,8 +6518,8 @@ fn check_modules_collect(
     for module in modules {
         for test in &module.program.tests {
             if module.origin == ModuleOrigin::Std {
-                diagnostics.push(Diagnostic::new(
-                    "E1018",
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::StdDeclaresTest,
                     "embedded standard-library sources cannot declare tests",
                     test.name_span,
                 ));
@@ -6566,8 +6566,8 @@ fn check_modules_collect(
     for module in modules {
         for bench in &module.program.benches {
             if module.origin == ModuleOrigin::Std {
-                diagnostics.push(Diagnostic::new(
-                    "E1018",
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::StdDeclaresTest,
                     "embedded standard-library sources cannot declare benchmarks",
                     bench.name_span,
                 ));
@@ -6711,8 +6711,8 @@ fn check_modules_collect(
                 continue;
             }
             if !starts_uppercase(&alias.name.text) {
-                diagnostics.push(Diagnostic::new(
-                    "E1024",
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::TypeNameCase,
                     "a type alias name must start with an uppercase ASCII letter",
                     alias.name.span,
                 ));
@@ -6757,8 +6757,8 @@ fn check_modules_collect(
                         alias.target.span,
                     ));
                 }
-                return Err(Diagnostic::new(
-                    "E1024",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UndeclaredTypeVariable,
                     format!(
                         "type variable '{variable} is not declared by type alias '{}'; add it to the alias parameters",
                         alias.name.text
@@ -6771,8 +6771,8 @@ fn check_modules_collect(
                 .iter()
                 .find(|parameter| !used.contains(&parameter.text))
             {
-                return Err(Diagnostic::new(
-                    "E1024",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UnusedTypeParameter,
                     format!(
                         "{} is not used by the alias target; remove it or use it in the target",
                         parameter_name(&parameter.text)
@@ -6844,8 +6844,8 @@ fn check_modules_collect(
                                 field.ty.span,
                             ));
                         }
-                        return Err(Diagnostic::new(
-                            "E1024",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::UndeclaredTypeVariable,
                             format!(
                                 "type variable '{variable} is not declared by record '{}'; add it in angle brackets after the record name, as in 'record {}<'{variable}> {{ ... }}'",
                                 record.name.text, record.name.text
@@ -6856,8 +6856,8 @@ fn check_modules_collect(
                     used.insert(variable);
                 }
                 if field.mutable {
-                    return Err(Diagnostic::new(
-                        "E1013",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MutableRecordField,
                         "record fields are immutable; use an owned update instead of a mutable field",
                         field.name.span,
                     ));
@@ -6869,8 +6869,8 @@ fn check_modules_collect(
                 .iter()
                 .find(|parameter| !opaque && !used.contains(&parameter.text))
             {
-                return Err(Diagnostic::new(
-                    "E1024",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UnusedTypeParameter,
                     format!(
                         "{} is not used by any field; remove it or add a field that mentions it",
                         parameter_name(&parameter.text)
@@ -7095,22 +7095,22 @@ fn check_modules_collect(
                 }
             }
             if function.exported && names.origin(module) == ModuleOrigin::Std {
-                return Err(Diagnostic::new(
-                    "E1018",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StdExportsFunction,
                     "the standard library cannot export functions; std modules add no C/WASM exports",
                     function.name.span,
                 ));
             }
             if function.exported && function.name.text.starts_with("$active.") {
-                return Err(Diagnostic::new(
-                    "E1008",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExportActiveRecognizer,
                     "active recognizers cannot be exported; expose an ordinary wrapper",
                     function.name.span,
                 ));
             }
             if function.exported && !export_names.insert(&function.name.text) {
-                return Err(Diagnostic::new(
-                    "E1001",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DuplicateExportName,
                     format!(
                         "duplicate export 'tz_{}'; C/WASM export names must be unique across modules",
                         function.name.text
@@ -7148,8 +7148,8 @@ fn check_modules_collect(
                         .get(module.as_str())
                         .is_some_and(|edition| edition.borrows_parameters())
                 {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MutParameterNeedsEdition2027,
                         "'mut T' parameter conventions require edition 2027",
                         parameter.ty.span,
                     ));
@@ -7193,8 +7193,8 @@ fn check_modules_collect(
                     .any(|ty| !crate::abi::parameter(ty, &types))
                     || !crate::abi::result(public_result, &types))
             {
-                return Err(Diagnostic::new(
-                    "E1008",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UnsupportedExportSignature,
                     "exports support scalar values, borrowed i64/f64/ubyte arrays and string/utf8string inputs, owned buffer results, and scalar-only records (scalars, scalar fixed-length arrays, and such records as fields) with distinct C field names; mutable borrows, owned buffer inputs, wide numbers, and other aggregates are not supported",
                     function.name.span,
                 ));
@@ -7215,8 +7215,8 @@ fn check_modules_collect(
                 && !names.constants.contains(&id)
                 && !entry_signature(&signature)
             {
-                return Err(Diagnostic::new(
-                    "E2004",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InvalidMainSignature,
                     "the entry point must be 'def main :: unit -> i32' or 'def main :: Array<string> -> i32'; main returns the process exit code",
                     function.name.span,
                 ));
@@ -7225,8 +7225,8 @@ fn check_modules_collect(
             let variables = polymorph::variables(&signature.as_type());
             if external_functions.contains_key(&id) {
                 if !variables.is_empty() {
-                    return Err(Diagnostic::new(
-                        "E1015",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExternSignatureNotConcrete,
                         "extern signatures must be concrete; provide a scalar ABI type",
                         function.name.span,
                     ));
@@ -7236,8 +7236,8 @@ fn check_modules_collect(
                     .iter()
                     .any(|ty| matches!(ty, Type::Function(..)) && !crate::abi::callback(ty))
                 {
-                    return Err(Diagnostic::new(
-                        "E1008",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::UnsupportedExternSignature,
                         "extern callback parameters support functions over scalar, unit and extern handle types; buffers, records and nested functions are not supported",
                         function.name.span,
                     ));
@@ -7248,8 +7248,8 @@ fn check_modules_collect(
                         && !matches!(ty, Type::Function(..))
                 }) || !crate::abi::result(&signature.result, &types)
                 {
-                    return Err(Diagnostic::new(
-                        "E1008",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::UnsupportedExternSignature,
                         "extern signatures support scalar/unit, shared ABI buffers and scalar records, and owned ABI buffer or scalar record results",
                         function.name.span,
                     ));
@@ -7261,8 +7261,8 @@ fn check_modules_collect(
                         .entry(import.native_symbol.clone())
                         .or_insert_with(|| declared.clone());
                     if *known != declared {
-                        return Err(Diagnostic::new(
-                            "E1008",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ConflictingExternDeclaration,
                             format!(
                                 "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
                                 import.native_symbol
@@ -7274,6 +7274,7 @@ fn check_modules_collect(
             }
             if names.constants.contains(&id) && !variables.is_empty() {
                 return Err(constants::failure(
+                    DiagnosticKind::ConstantTypeNotConcrete,
                     function.result.span,
                     "constant types must be concrete; remove type variables",
                 ));
@@ -7293,8 +7294,8 @@ fn check_modules_collect(
                     .iter()
                     .any(|variable| !variables.contains(variable))
                 {
-                    return Err(Diagnostic::new(
-                        "E1015",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::TypeVariableAbsentFromSignature,
                         "constraint mentions a type variable absent from the signature",
                         constraint.ty.span,
                     ));
@@ -7315,8 +7316,7 @@ fn check_modules_collect(
                                     .iter()
                                     .any(|variable| !variables.contains(variable))
                                 {
-                                    return Err(Diagnostic::new(
-                                        "E1015",
+                                    return Err(Diagnostic::of(DiagnosticKind::TypeVariableAbsentFromSignature,
                                         "the function constraint's type mentions a type variable absent from the signature",
                                         annotation.span,
                                     ));
@@ -7388,8 +7388,8 @@ fn check_modules_collect(
             let id = function.id;
             let signature = &signatures[id].signature;
             if !signatures[id].is_poisoned() && signature.parameters.is_empty() {
-                diagnostics.push(Diagnostic::new(
-                    "E1006",
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::ActiveRecognizerParameters,
                     "an active recognizer needs an input parameter",
                     active.cases[0].span,
                 ));
@@ -7401,8 +7401,8 @@ fn check_modules_collect(
                 && signatures[id].signature.result != Type::Bool
                 && !maybe_result
             {
-                diagnostics.push(Diagnostic::new(
-                    "E1003",
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::ActiveRecognizerResult,
                     "a partial active recognizer must return bool or Maybe payload",
                     active.cases[0].span,
                 ));
@@ -7416,13 +7416,13 @@ fn check_modules_collect(
                     {
                         None
                     }
-                    Type::Union(..) => Some(Diagnostic::new(
-                        "E1020",
+                    Type::Union(..) => Some(Diagnostic::of(
+                        DiagnosticKind::ActivePatternCaseCount,
                         "active pattern and backing union must have the same case count",
                         active.cases[0].span,
                     )),
-                    _ => Some(Diagnostic::new(
-                        "E1003",
+                    _ => Some(Diagnostic::of(
+                        DiagnosticKind::ActiveRecognizerResult,
                         "a multi-case active recognizer must return a union",
                         active.cases[0].span,
                     )),
@@ -7694,16 +7694,15 @@ fn check_modules_collect(
             continue;
         };
         if origin != ModuleOrigin::User || !is_entry {
-            diagnostics.push(Diagnostic::new(
-                "E2004",
+            diagnostics.push(Diagnostic::of(DiagnosticKind::ToplevelCodeOutsideMain,
                 "top-level execution is only allowed in Main.tz; other modules contain record and function declarations",
                 expression.span,
             ));
             continue;
         }
         if entry.is_some() {
-            diagnostics.push(Diagnostic::new(
-                "E2004",
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::AmbiguousEntryPoint,
                 "Main.tz must use either top-level entry-point code or 'def main', not both",
                 expression.span,
             ));
@@ -7978,8 +7977,8 @@ fn validate_cpu_functions(module: &CheckedModule) -> Result<(), Diagnostic> {
             .chain([&signature.result])
             .any(|ty| ty.holds_wide_vector(&types))
         {
-            return Err(Diagnostic::new(
-                "E1005",
+            return Err(Diagnostic::of(
+                DiagnosticKind::CpuFunctionWideVectorBoundary,
                 "a '@cpu' function cannot take or return a SIMD vector wider than 128 bits, also inside a record, union, tuple, or fixed-length array; pass a slice or return a scalar",
                 function.span,
             ));
@@ -7994,8 +7993,8 @@ fn validate_cpu_functions(module: &CheckedModule) -> Result<(), Diagnostic> {
                     .chain([result.as_ref()])
                     .any(|ty| ty.holds_wide_vector(&types))
             {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::CpuFunctionWideVectorBoundary,
                     "a '@cpu' function cannot call a function value that takes or returns a SIMD vector wider than 128 bits; call a named function",
                     expression.span,
                 ));
@@ -8023,8 +8022,8 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
         _ => None,
     };
     let direct_only = |id: usize, span: Span| {
-        Diagnostic::new(
-            "E1008",
+        Diagnostic::of(
+            DiagnosticKind::ExternCallbackCallForm,
             format!(
                 "extern '{}' takes a callback and must be called directly with all arguments",
                 module.functions[id].name
@@ -8056,8 +8055,8 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
                 }
                 for (parameter, argument) in target.signature.parameters.iter().zip(arguments) {
                     if matches!(parameter, Type::Function(..)) && !plain_function(argument) {
-                        return Err(Diagnostic::new(
-                            "E1008",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ExternCallbackArgument,
                             "callback arguments must name a top-level user function without captures; move the logic into a 'def' and pass its name",
                             argument.span,
                         ));
@@ -8243,8 +8242,8 @@ fn infer_active_result(
     let id = names.local_function(module, &function.name.text).unwrap();
     let scheme = &signatures[id];
     if scheme.variables.iter().any(|name| name == "T") {
-        return Err(Diagnostic::new(
-            "E1020",
+        return Err(Diagnostic::of(
+            DiagnosticKind::ReservedActiveResultVariable,
             "'T is reserved for the implicit active-pattern result, not an input type variable",
             function.result.span,
         ));
@@ -8333,8 +8332,8 @@ fn field_names_help(record: &str, fields: &[(String, Type)]) -> String {
 }
 
 fn duplicate(name: &Ident) -> Diagnostic {
-    Diagnostic::new(
-        "E1001",
+    Diagnostic::of(
+        DiagnosticKind::DuplicateName,
         format!("duplicate or reserved name '{}'", name.text),
         name.span,
     )
@@ -8367,15 +8366,15 @@ fn declared_parameters(
     let mut declared: Vec<String> = Vec::new();
     for parameter in parameters {
         if parameter.text == "_" {
-            return Err(Diagnostic::new(
-                "E1024",
+            return Err(Diagnostic::of(
+                DiagnosticKind::InvalidTypeParameterName,
                 format!("'_ cannot name a {kind} type parameter; use a variable such as 'a"),
                 parameter.span,
             ));
         }
         if declared.contains(&parameter.text) {
-            return Err(Diagnostic::new(
-                "E1024",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DuplicateTypeParameter,
                 format!(
                     "duplicate {} in {kind} '{name}'; give each parameter a distinct name",
                     parameter_name(&parameter.text)
@@ -8398,8 +8397,8 @@ fn parameter_name(text: &str) -> String {
 
 /// A length name in a declaration that is neither a declared length parameter nor a constant.
 fn undeclared_length(kind: &str, name: &str, length: &str, span: Span) -> Diagnostic {
-    Diagnostic::new(
-        "E1024",
+    Diagnostic::of(
+        DiagnosticKind::UndeclaredLengthParameter,
         format!(
             "length '{length}' is not declared by {kind} '{name}'; add 'const {length}: i64' in angle brackets after the name, or define an 'i64' constant '{length}'"
         ),
@@ -8426,8 +8425,8 @@ fn collect_unions(
         let registered = (|| {
             let name = &union.name;
             if !starts_uppercase(&name.text) {
-                return Err(Diagnostic::new(
-                    "E1024",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeNameCase,
                     format!(
                         "union type '{}' must start with an uppercase ASCII letter",
                         name.text
@@ -8481,8 +8480,8 @@ fn collect_unions(
             let registered = (|| {
                 let name = &declaration.name;
                 if !starts_uppercase(&name.text) {
-                    return Err(Diagnostic::new(
-                        "E1024",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::UnionCaseNameCase,
                         format!(
                             "union case '{}' must start with an uppercase ASCII letter; lowercase names in patterns bind variables",
                             name.text
@@ -8494,8 +8493,8 @@ fn collect_unions(
                     .iter()
                     .find(|other| other.name.text == name.text)
                 {
-                    return Err(Diagnostic::new(
-                        "E1024",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::DuplicateUnionCase,
                         format!(
                             "duplicate case '{}' in union '{}'; give each case a distinct name",
                             name.text, union.name.text
@@ -8571,8 +8570,8 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
                 if let Some(length) = variable.strip_prefix('#') {
                     return Err(undeclared_length("union", name, length, expression.span));
                 }
-                return Err(Diagnostic::new(
-                    "E1024",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UndeclaredTypeVariable,
                     format!(
                         "type variable '{variable} is not declared by union '{name}'; add it in angle brackets after the union name, as in 'union {name}<'{variable}> = ...'"
                     ),
@@ -8582,8 +8581,8 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
             used.insert(variable);
         }
         if ty.contains_reference() {
-            return Err(Diagnostic::new(
-                "E1013",
+            return Err(Diagnostic::of(
+                DiagnosticKind::BorrowedUnionPayload,
                 "union payloads are owned values; borrowed payloads require lifetime parameters, which are not supported",
                 expression.span,
             ));
@@ -8595,8 +8594,8 @@ fn check_union(module: &str, union: &UnionDecl, names: &Names) -> Result<Checked
         .iter()
         .find(|parameter| !used.contains(&parameter.text))
     {
-        return Err(Diagnostic::new(
-            "E1024",
+        return Err(Diagnostic::of(
+            DiagnosticKind::UnusedTypeParameter,
             format!(
                 "{} is not used by any case payload; remove it or add a payload that mentions it",
                 parameter_name(&parameter.text)
@@ -8640,8 +8639,8 @@ fn resolve_type_with_kinds(
         TypeExprKind::Apply(head, args) if head.text.starts_with('\'') => {
             let variable = &head.text[1..];
             if kinds.get(variable) != Some(&args.len()) || args.is_empty() {
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ConstructorVariableKindAnnotation,
                     "type constructor variable requires a matching explicit class kind annotation",
                     head.span,
                 ));
@@ -8653,8 +8652,8 @@ fn resolve_type_with_kinds(
         }
         TypeExprKind::Apply(head, args) if head.text == "Vec" => {
             let [element] = &**args else {
-                return Err(Diagnostic::new(
-                    "E1004",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeArgumentCount,
                     "Vec expects exactly one element type",
                     expression.span,
                 ));
@@ -8664,8 +8663,8 @@ fn resolve_type_with_kinds(
         TypeExprKind::Apply(head, args) if SharedKind::named(&head.text).is_some() => {
             let kind = SharedKind::named(&head.text).expect("checked by the guard");
             let [value] = &**args else {
-                return Err(Diagnostic::new(
-                    "E1004",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeArgumentCount,
                     format!(
                         "{} expects exactly one value type, as in '{}<i64>'",
                         kind.name(),
@@ -8678,8 +8677,8 @@ fn resolve_type_with_kinds(
         }
         TypeExprKind::Named(name) if SharedKind::named(name).is_some() => {
             let kind = SharedKind::named(name).expect("checked by the guard");
-            return Err(Diagnostic::new(
-                "E1004",
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeArgumentCount,
                 format!(
                     "{} expects exactly one value type, as in '{}<i64>'",
                     kind.name(),
@@ -8696,11 +8695,12 @@ fn resolve_type_with_kinds(
             }
             None => {
                 let named = names.named_type(module, name, expression.span)?;
-                record_arity(names, named, name, 0, expression.span).map_err(|mut error| {
-                    if !matches!(named, NamedType::Alias(_)) {
-                        error.code = "E1015";
+                record_arity(names, named, name, 0, expression.span).map_err(|error| {
+                    if matches!(named, NamedType::Alias(_)) {
+                        error
+                    } else {
+                        error.recode(DiagnosticKind::MissingTypeArguments)
                     }
-                    error
                 })?;
                 match named {
                     NamedType::Record(info) => Type::Record(info.id, Box::default()),
@@ -8717,8 +8717,8 @@ fn resolve_type_with_kinds(
         },
         TypeExprKind::Apply(head, args) => {
             if crate::numeric::primitive(&head.text).is_some() {
-                return Err(Diagnostic::new(
-                    "E1004",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeArgumentCount,
                     format!(
                         "type '{}' takes no type arguments; remove the arguments after it",
                         head.text
@@ -8730,8 +8730,8 @@ fn resolve_type_with_kinds(
                 // `Add<'a>` constrains its argument; `Classes::inline_constraints` records the constraint.
                 TypeHead::Class => {
                     let [ty] = &**args else {
-                        return Err(Diagnostic::new(
-                            "E1016",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ClassConstraintArity,
                             format!(
                                 "type class '{}' constrains exactly one type, as in '{}<'a>'",
                                 head.text, head.text
@@ -8779,8 +8779,8 @@ fn resolve_type_with_kinds(
         }
         TypeExprKind::Variable(name) => {
             if kinds.get(name).is_some_and(|arity| *arity > 0) {
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeConstructorNotApplied,
                     "a type constructor must be fully applied in a value type",
                     expression.span,
                 ));
@@ -8794,15 +8794,15 @@ fn resolve_type_with_kinds(
             _ => Type::Reference(Box::new(resolve(ty)?), *mutable),
         },
         TypeExprKind::Own(_) => {
-            return Err(Diagnostic::new(
-                "E1005",
+            return Err(Diagnostic::of(
+                DiagnosticKind::MisplacedOwnConvention,
                 "'own' is only valid on the type of a parameter in a 'def' signature",
                 expression.span,
             ));
         }
         TypeExprKind::Mut(_) => {
-            return Err(Diagnostic::new(
-                "E1005",
+            return Err(Diagnostic::of(
+                DiagnosticKind::MisplacedMutConvention,
                 "'mut' is only valid on the type of a parameter in a 'def' signature",
                 expression.span,
             ));
@@ -8819,8 +8819,8 @@ fn resolve_type_with_kinds(
                 resolve(inner)?
             };
             let Type::Function(parameters, _) = &mut ty else {
-                return Err(Diagnostic::new(
-                    "E1029",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::PureOnNonFunctionType,
                     "'pure' qualifies a function type; write 'pure (T -> U)'",
                     expression.span,
                 ));
@@ -8829,8 +8829,8 @@ fn resolve_type_with_kinds(
             ty
         }
         TypeExprKind::ArrayView(_) => {
-            return Err(Diagnostic::new(
-                "E1005",
+            return Err(Diagnostic::of(
+                DiagnosticKind::UnsizedSliceTypePosition,
                 "'[T..]' is only valid directly after 'ref mut'; write 'ref mut [T..]' for an exclusive slice, 'ref [T]' for a shared slice, or '[T]' for an owned array",
                 expression.span,
             ));
@@ -8844,8 +8844,8 @@ fn resolve_type_with_kinds(
             )
         }
         TypeExprKind::Length(length) => {
-            return Err(Diagnostic::new(
-                "E1004",
+            return Err(Diagnostic::of(
+                DiagnosticKind::LengthUsedAsType,
                 format!(
                     "expected a type, found the length {length}; a length belongs in '[T; N]' or a length parameter 'const N: i64'"
                 ),
@@ -8877,8 +8877,8 @@ fn resolve_dyn(expression: &DynTypeExpr, module: &str, names: &Names) -> Result<
             } else {
                 format!("unknown type class '{}'", name.text)
             };
-            return Err(Diagnostic::new(
-                "E1004",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DynNeedsTypeClass,
                 format!("{kind}; dyn needs a type class such as dyn Shapes.Shape"),
                 name.span,
             ));
@@ -8930,8 +8930,8 @@ fn resolve_length(
         TypeExprKind::Named(name) => match names.length_constant(module, name, expression.span) {
             Some((_, Some(length))) => length,
             Some((_, None)) => {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InvalidLengthConstant,
                     format!(
                         "constant '{name}' cannot be a length; a length constant has type 'i64' and an integer literal value"
                     ),
@@ -8942,8 +8942,8 @@ fn resolve_length(
                 || name == "bigint"
                 || names.named_type(module, name, expression.span).is_ok() =>
             {
-                return Err(Diagnostic::new(
-                    "E1004",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeUsedAsLength,
                     format!("expected a length, found the type '{name}'"),
                     expression.span,
                 ));
@@ -8952,8 +8952,8 @@ fn resolve_length(
                 return Ok(Type::Variable(format!("#{name}")));
             }
             None => {
-                return Err(Diagnostic::new(
-                    "E1002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::UnknownLengthConstant,
                     format!(
                         "unknown constant '{name}'; a length is an integer literal, an 'i64' constant, or a length parameter"
                     ),
@@ -8962,16 +8962,16 @@ fn resolve_length(
             }
         },
         _ => {
-            return Err(Diagnostic::new(
-                "E1004",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExpectedLength,
                 "expected a length, such as '3', an 'i64' constant, or a length parameter 'N'",
                 expression.span,
             ));
         }
     };
     if length > MAX_FIXED_ARRAY_LENGTH {
-        return Err(Diagnostic::new(
-            "E1010",
+        return Err(Diagnostic::of(
+            DiagnosticKind::FixedArrayTooLong,
             format!(
                 "fixed array length {length} exceeds {MAX_FIXED_ARRAY_LENGTH} elements; use '[T]' for larger arrays"
             ),
@@ -9007,12 +9007,12 @@ fn record_arity(
             if expected == 1 { "" } else { "s" }
         )
     };
-    let code = if matches!(named, NamedType::Alias(_)) {
-        "E1024"
+    let kind = if matches!(named, NamedType::Alias(_)) {
+        DiagnosticKind::AliasArgumentCount
     } else {
-        "E1004"
+        DiagnosticKind::TypeArgumentCount
     };
-    Err(Diagnostic::new(code, message, span))
+    Err(Diagnostic::of(kind, message, span))
 }
 
 fn expand_type_aliases(
@@ -9043,8 +9043,8 @@ impl TypeAliasExpansion<'_> {
     ) -> Result<TypeExpr, Diagnostic> {
         self.nodes += 1;
         if depth > MAX_NESTING || self.nodes > 4096 {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeAliasExpansionLimit,
                 "type alias expansion exceeds the compiler limit; simplify the aliases",
                 expression.span,
             ));
@@ -9173,8 +9173,8 @@ impl TypeAliasExpansion<'_> {
             depth,
         )?;
         if self.active.contains(&info.name) {
-            return Err(Diagnostic::new(
-                "E1024",
+            return Err(Diagnostic::of(
+                DiagnosticKind::CyclicTypeAlias,
                 format!(
                     "cyclic type alias '{}'; remove the recursive alias reference",
                     self.names.type_spelling(&info.name)
@@ -9226,8 +9226,8 @@ impl TypeAliasExpansion<'_> {
     ) -> Result<(), Diagnostic> {
         self.nodes += 1;
         if depth > MAX_NESTING || self.nodes > 4096 {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeAliasExpansionLimit,
                 "type alias expansion exceeds the compiler limit; simplify the aliases",
                 expression.span,
             ));
@@ -9308,8 +9308,8 @@ fn reject_expanded_field_constraints(
                 } else {
                     "record fields"
                 };
-                return Err(Diagnostic::new(
-                    "E1016",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FieldTypeConstraint,
                     format!(
                         "{parts} cannot constrain type parameters; put the constraint on the functions that use the {owner}"
                     ),
@@ -9345,8 +9345,8 @@ fn reject_expanded_field_constraints(
 }
 
 fn size_error(span: Span) -> Diagnostic {
-    Diagnostic::new(
-        "E1010",
+    Diagnostic::of(
+        DiagnosticKind::ValueLayoutTooLarge,
         format!("value layout exceeds {MAX_VALUE_BYTES} bytes; use smaller value types"),
         span,
     )
@@ -9388,8 +9388,8 @@ impl<'a> Layouts<'a> {
         }
         let span = if args.is_empty() { record.span } else { span };
         if !self.visiting.insert(ty.clone()) {
-            return Err(Diagnostic::new(
-                "E1010",
+            return Err(Diagnostic::of(
+                DiagnosticKind::InfiniteRecursiveLayout,
                 format!(
                     "recursive value layout for '{}'; recursive heap types are not supported in 0.1",
                     record.name
@@ -9398,8 +9398,8 @@ impl<'a> Layouts<'a> {
             ));
         }
         if depth > MAX_NESTING {
-            return Err(Diagnostic::new(
-                "E1010",
+            return Err(Diagnostic::of(
+                DiagnosticKind::LayoutNestingLimit,
                 format!("record nesting exceeds {MAX_NESTING}"),
                 span,
             ));
@@ -9439,8 +9439,8 @@ impl<'a> Layouts<'a> {
         }
         let span = if args.is_empty() { union.span } else { span };
         if !self.visiting.insert(ty.clone()) {
-            return Err(Diagnostic::new(
-                "E1010",
+            return Err(Diagnostic::of(
+                DiagnosticKind::InfiniteRecursiveLayout,
                 format!(
                     "recursive union layout for '{}'; recursive heap types are not supported in 0.1",
                     union.name
@@ -9449,8 +9449,8 @@ impl<'a> Layouts<'a> {
             ));
         }
         if depth > MAX_NESTING {
-            return Err(Diagnostic::new(
-                "E1010",
+            return Err(Diagnostic::of(
+                DiagnosticKind::LayoutNestingLimit,
                 format!("union nesting exceeds {MAX_NESTING}"),
                 span,
             ));
@@ -9639,7 +9639,11 @@ fn validate_exclusive_field(
         }
         _ => return Ok(()),
     };
-    Err(Diagnostic::new("E1013", message, span))
+    Err(Diagnostic::of(
+        DiagnosticKind::ExclusiveBorrowFieldShape,
+        message,
+        span,
+    ))
 }
 
 /// A13: why the field `index` of the record instance `owner` cannot hold its substituted type
@@ -9697,7 +9701,11 @@ impl Validation<'_> {
                         if let Some(message) =
                             instance_field_error(ty, record, index, &field, &types)
                         {
-                            return Err(Diagnostic::new("E1013", message, span));
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ExclusiveBorrowFieldShape,
+                                message,
+                                span,
+                            ));
                         }
                         self.check(&field, span)?;
                     }
@@ -9716,8 +9724,8 @@ impl Validation<'_> {
                         };
                         polymorph::bounded_type(&payload, span)?;
                         if payload.contains_stored_mutable_reference(&types) {
-                            return Err(Diagnostic::new(
-                                "E1013",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::UnionPayloadExclusiveBorrow,
                                 format!(
                                     "union payloads cannot store mutable references; {} would store one in case '{name}'; use a shared borrow",
                                     ty.display(&types)
@@ -9743,8 +9751,8 @@ impl Validation<'_> {
             | Type::List(element)
             | Type::Vec(element) => {
                 if element.contains_stored_mutable_reference(&self.layouts.types) {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::CollectionElementExclusiveBorrow,
                         "array and list elements cannot contain mutable references; collections cannot hold exclusive borrows, so keep exclusive slices in locals or split them with 'Array.split_at_mut'",
                         span,
                     ));
@@ -9776,8 +9784,8 @@ impl Validation<'_> {
             }
             Type::Shared(value, kind) => {
                 if value.contains_stored_mutable_reference(&self.layouts.types) {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::SharedContainerExclusiveBorrow,
                         format!(
                             "{} cannot hold a mutable reference; its owners only read the shared value, so share the data itself or keep the exclusive borrow in a local",
                             kind.name()
@@ -9790,8 +9798,8 @@ impl Validation<'_> {
             }
             Type::Task(result) => {
                 if result.contains_stored_reference(&self.layouts.types) {
-                    return Err(Diagnostic::new(
-                        "E1013",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::TaskResultIsReference,
                         "task results must be owned values, not references",
                         span,
                     ));
@@ -10037,8 +10045,8 @@ impl<'a> Checker<'a> {
                 .and_then(|scope| scope.get(&name.text))
                 .is_some_and(|previous| previous.provenance == Provenance::User)
         {
-            self.shadowing_warnings.push(Diagnostic::warning(
-                "W1004",
+            self.shadowing_warnings.push(Diagnostic::of(
+                DiagnosticKind::ShadowedLocal,
                 format!(
                     "local '{}' shadows an earlier binding in the same scope",
                     name.text
@@ -10547,8 +10555,8 @@ impl<'a> Checker<'a> {
         let mut checked = Vec::with_capacity(group.len());
         for (binding, local) in group.iter().zip(&locals) {
             let ExprKind::Lambda(names, body) = &binding.value.kind else {
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InternalRecBindingNotLambda,
                     "internal compiler error: a 'let rec' binding is not a lambda",
                     binding.value.span,
                 ));
@@ -10581,8 +10589,8 @@ impl<'a> Checker<'a> {
         if error.code != "E1005" {
             return error;
         }
-        Diagnostic::new(
-            "E1005",
+        Diagnostic::of(
+            DiagnosticKind::UseRequiresDrop,
             format!(
                 "'use' needs a value whose type implements Drop; {} does not, so bind it with 'let'",
                 self.inference.resolve(ty).display(&self.types)
@@ -10895,8 +10903,8 @@ impl<'a> Checker<'a> {
                         .or_else(|| expected.filter(|ty| ty.is_float()).cloned())
                         .unwrap_or(Type::F64);
                     if !ty.is_float() {
-                        return Err(Diagnostic::new(
-                            "E1009",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::FloatLiteralType,
                             "a floating-point literal needs a binary or decimal floating-point type",
                             expression.span,
                         ));
@@ -10923,8 +10931,8 @@ impl<'a> Checker<'a> {
             // The body of a generated `dyn` instance method has the method's result type (A14).
             ExprKind::DynDispatch { slot, slots } => {
                 let ty = expected.cloned().ok_or_else(|| {
-                    Diagnostic::new(
-                        "E1015",
+                    Diagnostic::of(
+                        DiagnosticKind::DynDispatchResultType,
                         "a dyn dispatch needs the method's result type",
                         expression.span,
                     )
@@ -10958,8 +10966,8 @@ impl<'a> Checker<'a> {
                 (TypedExprKind::Tuple(values), ty)
             }
             ExprKind::Range { .. } => {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeAsValue,
                     "a range is an enumerable expression for 'for...in', not a stored value",
                     expression.span,
                 ));
@@ -11061,8 +11069,8 @@ impl<'a> Checker<'a> {
                 let breaking = matches!(expression.kind, ExprKind::Break);
                 if self.normal_loop_depth == 0 {
                     let keyword = if breaking { "break" } else { "continue" };
-                    return Err(Diagnostic::new(
-                        "E1023",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::JumpOutsideLoop,
                         format!(
                             "{keyword} can only target an enclosing for or while loop in the same function, task, or computation; return a value across boundaries"
                         ),
@@ -11105,8 +11113,8 @@ impl<'a> Checker<'a> {
                     checked.push(value);
                 }
                 let element = element_type.ok_or_else(|| {
-                    Diagnostic::new(
-                        "E1004",
+                    Diagnostic::of(
+                        DiagnosticKind::EmptyListNeedsAnnotation,
                         if list {
                             "an empty list needs a type annotation, for example '[|i64|]'"
                         } else {
@@ -11147,8 +11155,8 @@ impl<'a> Checker<'a> {
                 let literal = self.expression(literal, expected)?;
                 let ty = literal.ty.clone();
                 if matches!(self.inference.resolve(&ty), Type::FixedArray(..)) {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::NewOnFixedArray,
                         "'new' creates a heap array or list; remove 'new' to create a fixed-length array value",
                         expression.span,
                     ));
@@ -11205,8 +11213,8 @@ impl<'a> Checker<'a> {
                     Type::String => Type::Integer(16, false),
                     Type::Utf8String => Type::Integer(8, false),
                     _ => {
-                        return Err(Diagnostic::new(
-                            "E1005",
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::IndexNonIndexable,
                             "indexing requires an array, list, string, or utf8string",
                             value.span,
                         ));
@@ -11251,8 +11259,8 @@ impl<'a> Checker<'a> {
                     return Ok(TypedExpr::error(expression.span));
                 }
                 let Some(ty) = value.ty.dereferenced() else {
-                    return Err(Diagnostic::new(
-                        "E1005",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::DerefNonReference,
                         match notation {
                             Notation::Symbol => "dereference requires a reference",
                             Notation::Keyword => "'deref' requires a reference",
@@ -11270,8 +11278,8 @@ impl<'a> Checker<'a> {
                 Self::require_mutable_reference(&place)?;
                 if matches!(&place.kind, TypedExprKind::Dereference(reference) if reference.ty.is_view())
                 {
-                    return Err(Diagnostic::new(
-                        "E1014",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ReplaceExclusiveSlice,
                         "cannot replace an exclusive slice as a whole because its length is fixed; write elements with 'Array.write' or replace the array through its owner ('ref mut [T]')",
                         expression.span,
                     ));
@@ -11286,8 +11294,8 @@ impl<'a> Checker<'a> {
                     TypedExprKind::Local(_) | TypedExprKind::Dereference(_)
                 ) && !(self.read_conventions && projection)
                 {
-                    return Err(Diagnostic::new(
-                        "E1012",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::AssignToImmutablePlace,
                         "assignment replaces a mutable binding; record fields, array elements, and list elements are immutable",
                         place.span,
                     ));
@@ -11661,8 +11669,8 @@ impl<'a> Checker<'a> {
                     | TypedExprKind::TypeFunction { .. }
             )
         {
-            return Err(Diagnostic::new(
-                "E1029",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ImpureCallbackForPureContract,
                 "an unknown ordinary callback cannot satisfy a pure function contract; pass a pure callback or a closed function",
                 value.span,
             ));
@@ -11817,8 +11825,8 @@ impl<'a> Checker<'a> {
     fn require_mutable_reference(place: &TypedExpr) -> Result<(), Diagnostic> {
         if matches!(&place.kind, TypedExprKind::Dereference(reference) if matches!(reference.ty, Type::Reference(_, false)))
         {
-            Err(Diagnostic::new(
-                "E1014",
+            Err(Diagnostic::of(
+                DiagnosticKind::MutateThroughSharedReference,
                 "cannot mutate or exclusively reborrow through a shared reference",
                 place.span,
             ))
@@ -12010,8 +12018,8 @@ impl<'a> Checker<'a> {
             let spelled = spec_text(&spec);
             let needs_number = spec.plus || spec.precision.is_some() || spec.kind.is_some();
             if needs_number && matches!(ty, Type::Infer(_) | Type::Variable(_)) {
-                return Err(Diagnostic::new(
-                    "E1003",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FormatSpecTypeUnknown,
                     format!(
                         "format spec '{spelled}' needs a concrete numeric type, found {}; annotate the value's type",
                         ty.display(&self.types)
@@ -12038,8 +12046,8 @@ impl<'a> Checker<'a> {
                 None
             };
             if let Some(reason) = reason {
-                return Err(Diagnostic::new(
-                    "E1003",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FormatSpecTypeMismatch,
                     format!(
                         "format spec '{spelled}' does not apply to {}; {reason}",
                         ty.display(&self.types)
@@ -12088,8 +12096,8 @@ impl<'a> Checker<'a> {
                 .iter()
                 .position(|(name, _)| name == &field.text)
                 .ok_or_else(|| {
-                    Diagnostic::new(
-                        "E1007",
+                    Diagnostic::of(
+                        DiagnosticKind::RecordHasNoField,
                         format!("record '{}' has no field '{}'", record.name, field.text),
                         field.span,
                     )
@@ -12105,8 +12113,8 @@ impl<'a> Checker<'a> {
             .map(|(name, _)| name.as_str())
             .collect();
         if !missing.is_empty() {
-            return Err(Diagnostic::new(
-                "E1007",
+            return Err(Diagnostic::of(
+                DiagnosticKind::MissingRecordFields,
                 format!("missing fields: {}", missing.join(", ")),
                 span,
             ));
@@ -12147,8 +12155,8 @@ impl<'a> Checker<'a> {
                     span,
                 })
             }
-            ty => Err(Diagnostic::new(
-                "E1003",
+            ty => Err(Diagnostic::of(
+                DiagnosticKind::IndexNotInteger,
                 format!(
                     "an index must have an integer type (i8 to i128 or i8u to i128u), found {}",
                     ty.display(&self.types)
@@ -12180,15 +12188,15 @@ impl<'a> Checker<'a> {
                 element.clone()
             }
             Type::FixedArray(..) => {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::SliceOfFixedArray,
                     "a fixed-length array has no exclusive slices; replace the whole value through 'let mut', or use '[T]'",
                     span,
                 ));
             }
             _ => {
-                return Err(Diagnostic::new(
-                    "E1005",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::SliceNonArray,
                     "a slice requires an array; lists and strings do not support array slicing",
                     span,
                 ));
@@ -12224,8 +12232,8 @@ impl<'a> Checker<'a> {
         if source.is_place() {
             Ok(())
         } else {
-            Err(Diagnostic::new(
-                "E1014",
+            Err(Diagnostic::of(
+                DiagnosticKind::ExclusiveSliceSource,
                 "an exclusive slice must borrow a named array; bind the value with 'let mut' first",
                 span,
             ))
@@ -12238,8 +12246,8 @@ impl<'a> Checker<'a> {
         if source.is_place() || self.plain_constant(source) {
             Ok(())
         } else {
-            Err(Diagnostic::new(
-                "E1005",
+            Err(Diagnostic::of(
+                DiagnosticKind::FixedSliceSource,
                 "slicing a fixed-length array requires a named value; bind it with 'let' first",
                 source.span,
             ))
@@ -12267,8 +12275,8 @@ impl<'a> Checker<'a> {
         };
         let ty = Type::FixedArray(Box::new(element.clone()), Box::new(length.clone()));
         if length != Type::Length(found) && !length.contains_error() {
-            return Err(Diagnostic::new(
-                "E1003",
+            return Err(Diagnostic::of(
+                DiagnosticKind::FixedArrayLiteralLength,
                 format!(
                     "expected {} elements for '{}', found {found}",
                     length.display(&self.types),
@@ -12329,8 +12337,8 @@ impl<'a> Checker<'a> {
     }
 
     fn whole_array_error(span: Span) -> Diagnostic {
-        Diagnostic::new(
-            "E1005",
+        Diagnostic::of(
+            DiagnosticKind::ExclusiveSliceWholeArrayParameter,
             "an exclusive slice cannot be passed as 'ref mut [T]' because that parameter may replace the whole array; declare the parameter as 'ref mut [T..]'",
             span,
         )
@@ -12363,8 +12371,8 @@ impl<'a> Checker<'a> {
                     Self::whole_view(Self::reborrow_operand(value))
                 }
                 Type::Reference(inner, false) if matches!(**inner, Type::Array(_)) => {
-                    return Err(Diagnostic::new(
-                        "E1014",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MutateThroughSharedReference,
                         "cannot mutate or exclusively reborrow through a shared reference",
                         span,
                     ));
@@ -12435,8 +12443,8 @@ impl<'a> Checker<'a> {
             return Ok((TypedExprKind::Error, Type::Error));
         }
         let Type::Record(id, args) = &base.ty else {
-            return Err(Diagnostic::new(
-                "E1005",
+            return Err(Diagnostic::of(
+                DiagnosticKind::RecordUpdateNonRecord,
                 "record update requires a record value",
                 span,
             ));
@@ -12458,8 +12466,8 @@ impl<'a> Checker<'a> {
                 .iter()
                 .position(|(name, _)| name == &field.text)
                 .ok_or_else(|| {
-                    Diagnostic::new(
-                        "E1007",
+                    Diagnostic::of(
+                        DiagnosticKind::RecordHasNoField,
                         format!("record '{}' has no field '{}'", record.name, field.text),
                         field.span,
                     )
@@ -12494,8 +12502,8 @@ impl<'a> Checker<'a> {
                     .iter()
                     .position(|(name, _)| name == &field.text)
                     .ok_or_else(|| {
-                        Diagnostic::new(
-                            "E1007",
+                        Diagnostic::of(
+                            DiagnosticKind::UnknownField,
                             format!("unknown field '{}'", field.text),
                             field.span,
                         )
@@ -12517,8 +12525,8 @@ impl<'a> Checker<'a> {
             Type::String | Type::Utf8String if field.text == "length" => {
                 Ok((TypedExprKind::StringLength(Box::new(value)), Type::I64))
             }
-            _ => Err(Diagnostic::new(
-                "E1007",
+            _ => Err(Diagnostic::of(
+                DiagnosticKind::FieldAccessNonRecord,
                 "field access requires a record, or '.length' on an array, list, string, or utf8string",
                 field.span,
             )),
@@ -12533,8 +12541,8 @@ impl<'a> Checker<'a> {
                 .rsplit_once('.')
                 .is_some_and(|(module, _)| module != self.module)
         {
-            return Err(Diagnostic::new(
-                "E1022",
+            return Err(Diagnostic::of(
+                DiagnosticKind::OpaqueTypeRepresentation,
                 format!(
                     "the representation of '{}' is opaque; use its module API",
                     type_display(&record.name)
@@ -12653,8 +12661,8 @@ impl<'a> Checker<'a> {
             .or_else(|| expected.filter(|ty| ty.is_integer()).cloned())
             .unwrap_or(Type::I32);
         let Type::Integer(bits, signed) = ty else {
-            return Err(Diagnostic::new(
-                "E1009",
+            return Err(Diagnostic::of(
+                DiagnosticKind::IntegerLiteralType,
                 "an integer literal needs an integer type",
                 span,
             ));
@@ -12667,8 +12675,8 @@ impl<'a> Checker<'a> {
             (1u128 << bits) - 1
         };
         if value > maximum || (negative && !signed) {
-            return Err(Diagnostic::new(
-                "E1009",
+            return Err(Diagnostic::of(
+                DiagnosticKind::IntegerLiteralOutOfRange,
                 format!(
                     "integer literal is outside the range of {}",
                     ty.display(types)
@@ -12741,8 +12749,8 @@ impl<'a> Checker<'a> {
             .map_or_else(String::new, |spelling| {
                 format!("; join namespaces and modules with '::', as in '{spelling}'")
             });
-        Err(Diagnostic::new(
-            "E1002",
+        Err(Diagnostic::of(
+            DiagnosticKind::UnknownFunction,
             format!("unknown function '{}'{hint}", name.text),
             name.span,
         ))
@@ -12859,8 +12867,8 @@ impl<'a> Checker<'a> {
             Type::Dyn(dyn_type) => dyn_type,
             Type::Error => return Ok(()),
             _ => {
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DynOfNeedsExpectedType,
                     "Dyn.of needs an expected dyn type here; annotate the binding, parameter, or field, for example let shape: dyn Shapes.Shape = Dyn.of value",
                     span,
                 ));
@@ -13325,7 +13333,11 @@ mod allocation_tests {
             let mut visited = 0;
             let failure = expression.try_for_each_child_mut(&mut |child| {
                 visited += 1;
-                Err(Diagnostic::new("E1017", "visitor stopped", child.span))
+                Err(Diagnostic::of(
+                    DiagnosticKind::PolymorphicTypeExpansionLimit,
+                    "visitor stopped",
+                    child.span,
+                ))
             });
             assert_eq!(visited, 1);
             assert_eq!(failure.unwrap_err().span, expected[0].0);

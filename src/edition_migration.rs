@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::check::ModuleOrigin;
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::driver::{Project, SourceError, replace_source_atomically};
 use crate::syntax::{Edition, MAX_SOURCE_BYTES, TypeExprKind};
 
@@ -20,8 +20,8 @@ pub struct Migration {
     pub target: Edition,
 }
 
-fn error(path: &Path, message: impl Into<String>) -> SourceError {
-    SourceError::new(path, Diagnostic::new("E2008", message, Span::default()))
+fn error(kind: DiagnosticKind, path: &Path, message: impl Into<String>) -> SourceError {
+    SourceError::new(path, Diagnostic::of(kind, message, Span::default()))
 }
 
 fn analysis_error(project: &Project, diagnostic: Diagnostic) -> SourceError {
@@ -138,6 +138,7 @@ fn preserve_parameters(
         for (start, end, replacement) in edits.into_iter().rev() {
             if !source.text.is_char_boundary(start) || !source.text.is_char_boundary(end) {
                 return Err(error(
+                    DiagnosticKind::MigrationInvalidEdit,
                     &source.path,
                     "invalid parameter span during migration",
                 ));
@@ -146,6 +147,7 @@ fn preserve_parameters(
         }
         if source.text.len() > MAX_SOURCE_BYTES {
             return Err(error(
+                DiagnosticKind::MigrationSourceTooLarge,
                 &source.path,
                 "migration exceeds the source size limit",
             ));
@@ -197,11 +199,16 @@ pub fn prepare(
         .collect();
     let current = project.sources[project.root].edition;
     if from.is_some_and(|from| project.root_package.is_some() && from != current) {
-        return Err(error(input, "--from disagrees with the package manifest"));
+        return Err(error(
+            DiagnosticKind::MigrationEditionMismatch,
+            input,
+            "--from disagrees with the package manifest",
+        ));
     }
     let current = from.unwrap_or(current);
     if target < current {
         return Err(error(
+            DiagnosticKind::MigrationEditionBackwards,
             input,
             format!("cannot migrate from edition {current} to {target}"),
         ));
@@ -237,12 +244,21 @@ pub fn prepare(
             source.package == root_package && source.relative_path == Path::new("Tsuzuri.toml")
         })
     {
-        let after = set_manifest_edition(&source.text, target)
-            .ok_or_else(|| error(&source.path, "cannot update the package edition"))?;
+        let after = set_manifest_edition(&source.text, target).ok_or_else(|| {
+            error(
+                DiagnosticKind::MigrationManifestUpdateFailed,
+                &source.path,
+                "cannot update the package edition",
+            )
+        })?;
         let parsed = crate::package::parse_manifest(&after, 0)
             .map_err(|diagnostic| SourceError::new(&source.path, diagnostic))?;
         if parsed.edition != target {
-            return Err(error(&source.path, "manifest edition verification failed"));
+            return Err(error(
+                DiagnosticKind::MigrationManifestUpdateFailed,
+                &source.path,
+                "manifest edition verification failed",
+            ));
         }
         changes.push(Change {
             path: source.path.clone(),
@@ -262,10 +278,10 @@ pub fn prepare(
 pub fn apply(migration: &Migration) -> Result<(), SourceError> {
     let mut applied: Vec<&Change> = Vec::new();
     for change in &migration.changes {
-        if let Err(mut diagnostic) =
+        if let Err(diagnostic) =
             replace_source_atomically(&change.path, &change.before, &change.after)
         {
-            diagnostic.code = "E2008";
+            let mut diagnostic = diagnostic.recode(DiagnosticKind::MigrationWriteFailed);
             for previous in applied.into_iter().rev() {
                 if let Err(rollback) =
                     replace_source_atomically(&previous.path, &previous.after, &previous.before)

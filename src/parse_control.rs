@@ -10,8 +10,8 @@ impl Parser<'_> {
         let partial = loop {
             let case = self.ident()?;
             if !case.text.as_bytes()[0].is_ascii_uppercase() {
-                return Err(Diagnostic::new(
-                    "E1020",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ActivePatternCaseName,
                     "an active pattern case starts with an uppercase letter",
                     case.span,
                 ));
@@ -23,14 +23,17 @@ impl Parser<'_> {
                 return Err(duplicate_active_case(&case));
             }
             if cases.len() == MAX_NESTING {
-                return Err(self.error("too many active pattern cases"));
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyActivePatternCases,
+                    "too many active pattern cases",
+                ));
             }
             cases.push(case);
             self.expect(&TokenKind::Pipe, "'|' after the active pattern case")?;
             if matches!(&self.current().kind, TokenKind::Ident(name) if name == "_") {
                 if cases.len() != 1 {
-                    return Err(Diagnostic::new(
-                        "E1020",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::PartialActivePatternCaseCount,
                         "partial active patterns have exactly one case",
                         self.current().span,
                     ));
@@ -80,8 +83,8 @@ impl Parser<'_> {
             return Ok(function);
         }
         if !matches!(&function.result.kind, TypeExprKind::Variable(name) if name == "T") {
-            return Err(Diagnostic::new(
-                "E1020",
+            return Err(Diagnostic::of(
+                DiagnosticKind::MultiCaseActivePatternResultType,
                 "multi-case active patterns use the implicit result type 'T, not an explicit union",
                 function.result.span,
             ));
@@ -222,8 +225,8 @@ impl Parser<'_> {
             let mut brace = self.tokens[self.position - 1].span;
             brace.start = brace.end - 1;
             if holes.len() == MAX_INTERPOLATION_HOLES {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TooManyInterpolationHoles,
                     format!(
                         "an interpolated string has at most {MAX_INTERPOLATION_HOLES} holes; split it into several strings"
                     ),
@@ -236,8 +239,8 @@ impl Parser<'_> {
             ) {
                 let mut span = brace;
                 span.end = self.current().span.start + 1;
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::EmptyInterpolationHole,
                     "an interpolation hole needs an expression; write '{{' for a literal brace",
                     span,
                 ));
@@ -248,7 +251,10 @@ impl Parser<'_> {
                 self.current().kind,
                 TokenKind::InterpolationMiddle(_) | TokenKind::InterpolationEnd(_)
             ) {
-                return Err(self.error("expected '}' to close the interpolation hole"));
+                return Err(self.error_of(
+                    DiagnosticKind::ExpectedInterpolationClose,
+                    "expected '}' to close the interpolation hole",
+                ));
             }
             let token = self.take();
             let (mut piece, last) = match token.kind {
@@ -312,7 +318,10 @@ impl Parser<'_> {
             let start = self.position;
             let body = self.layout_block(self.column(self.current().span))?;
             if self.position == start {
-                return Err(self.error("expected a body expression"));
+                return Err(self.error_of(
+                    DiagnosticKind::ExpectedBodyExpression,
+                    "expected a body expression",
+                ));
             }
             Ok(body)
         } else if self.implicit_computation_ahead(Some(self.column(self.current().span))) {
@@ -449,7 +458,10 @@ impl Parser<'_> {
         loop {
             elements.push(self.type_primary()?);
             if elements.len() > MAX_NESTING {
-                return Err(self.error("too many tuple elements"));
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyTupleElements,
+                    "too many tuple elements",
+                ));
             }
             if !self.eat(&TokenKind::Star) {
                 break;
@@ -505,8 +517,8 @@ impl Parser<'_> {
     fn for_source(&mut self, pattern: &Pattern) -> Result<Expr, Diagnostic> {
         if self.eat(&TokenKind::Equal) {
             if !matches!(pattern.kind, PatternKind::Binding(_)) {
-                return Err(Diagnostic::new(
-                    "E0002",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ForLoopNeedsIdentifier,
                     "a for...to loop requires an identifier",
                     pattern.span,
                 ));
@@ -573,13 +585,17 @@ impl Parser<'_> {
             };
             parameters.push((name, mutable));
             if parameters.len() > MAX_NESTING {
-                return Err(self.error("too many lambda parameters"));
+                return Err(self.error_of(
+                    DiagnosticKind::TooManyLambdaParameters,
+                    "too many lambda parameters",
+                ));
             }
         }
         if parameters.is_empty() {
-            return Err(
-                self.error("a lambda requires at least one parameter; use '\\() -> ...' for unit")
-            );
+            return Err(self.error_of(
+                DiagnosticKind::LambdaWithoutParameters,
+                "a lambda requires at least one parameter; use '\\() -> ...' for unit",
+            ));
         }
         let outer = self.in_task;
         self.in_task = false;
@@ -654,12 +670,14 @@ impl Parser<'_> {
     ) -> Result<Expr, Diagnostic> {
         let start = self.current().span;
         if !self.checked_attribute() {
-            return Err(self.error(
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedExpressionAfterAttribute,
                 "expected an expression; '@checked' is the only attribute of an expression",
             ));
         }
         if stop_at_newline && self.newline_before_current() {
-            return Err(self.error(
+            return Err(self.error_of(
+                DiagnosticKind::MisplacedCheckedAttribute,
                 "'@checked' on its own line applies to the next statement of a body or block",
             ));
         }
@@ -825,12 +843,15 @@ impl Parser<'_> {
         self.take();
         let indent = self.column(self.current().span);
         if !self.newline_before_current() || indent <= self.column(start) {
-            return Err(self.error("expected indented bindings after 'where'"));
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedWhereBindings,
+                "expected indented bindings after 'where'",
+            ));
         }
         let mut bindings = Vec::new();
         loop {
             if self.at(&TokenKind::Rec) {
-                return Err(self.error(
+                return Err(self.error_of(DiagnosticKind::RecursiveWhereBinding,
                     "'where' bindings cannot be recursive; define the function with 'let rec' in the body",
                 ));
             }
@@ -842,7 +863,10 @@ impl Parser<'_> {
                 break;
             }
             if self.column(self.current().span) != indent {
-                return Err(self.error("where bindings must have the same indentation"));
+                return Err(self.error_of(
+                    DiagnosticKind::WhereBindingIndentation,
+                    "where bindings must have the same indentation",
+                ));
             }
         }
         let span = start.through(bindings.last().unwrap().value.span);
@@ -963,7 +987,10 @@ impl Parser<'_> {
         self.stop_at_arm = outer_arm;
         self.stop_at_arrow = outer_arrow;
         if arms.is_empty() {
-            return Err(self.error("expected at least one '| pattern -> expression' arm"));
+            return Err(self.error_of(
+                DiagnosticKind::MatchWithoutArms,
+                "expected at least one '| pattern -> expression' arm",
+            ));
         }
         Ok(arms)
     }
@@ -1019,8 +1046,8 @@ impl Parser<'_> {
         depth: usize,
     ) -> Result<Pattern, Diagnostic> {
         if depth > MAX_NESTING {
-            return Err(Diagnostic::new(
-                "E0002",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PatternNestingTooDeep,
                 "pattern nesting exceeds the compiler limit",
                 span,
             ));
@@ -1095,7 +1122,10 @@ impl Parser<'_> {
                     self.current().kind,
                     TokenKind::Integer(_) | TokenKind::Float(_)
                 ) {
-                    return Err(self.error("a negative pattern requires a numeric literal"));
+                    return Err(self.error_of(
+                        DiagnosticKind::NegativePatternNeedsNumber,
+                        "a negative pattern requires a numeric literal",
+                    ));
                 }
                 let value = self.literal()?;
                 let span = start.through(value.span);
@@ -1115,7 +1145,7 @@ impl Parser<'_> {
             | TokenKind::String(_)
             | TokenKind::Char(_)
             | TokenKind::Utf8Char(_) => (PatternKind::Literal(Box::new(self.literal()?)), 1),
-            _ => return Err(self.error("expected a pattern")),
+            _ => return Err(self.error_of(DiagnosticKind::ExpectedPattern, "expected a pattern")),
         };
         let span = start.through(self.tokens[self.position - 1].span);
         self.make_pattern(kind, span, depth)
@@ -1124,8 +1154,8 @@ impl Parser<'_> {
     fn named_pattern(&mut self) -> Result<Pattern, Diagnostic> {
         let name = self.qualified_path(18)?;
         if name.text == "null" {
-            return Err(Diagnostic::new(
-                "E1020",
+            return Err(Diagnostic::of(
+                DiagnosticKind::NullPattern,
                 "Tsuzuri has no null values; null patterns are not supported",
                 name.span,
             ));

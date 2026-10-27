@@ -108,8 +108,8 @@ pub(super) fn analyze(
                 if !cycle.iter().any(|ty| matches!(ty, Type::Union(..)))
                     && !self.shared.iter().any(|entered| *entered > start)
                 {
-                    return Err(Diagnostic::new(
-                        "E1010",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::InfiniteRecursiveLayout,
                         "recursive value layout must pass through a union with a finite alternative",
                         self.span,
                     ));
@@ -136,8 +136,8 @@ pub(super) fn analyze(
                 return Err(if growing {
                     changes_arguments(self.span)
                 } else {
-                    Diagnostic::new(
-                        "E1017",
+                    Diagnostic::of(
+                        DiagnosticKind::RecursiveTypeExpansionLimit,
                         "recursive type expansion exceeds the compiler limit",
                         self.span,
                     )
@@ -181,8 +181,8 @@ pub(super) fn analyze(
         }
     }
     fn changes_arguments(span: Span) -> Diagnostic {
-        Diagnostic::new(
-            "E1017",
+        Diagnostic::of(
+            DiagnosticKind::RecursiveTypeChangesArguments,
             "recursive generic type changes its arguments; use a non-growing recursive occurrence",
             span,
         )
@@ -283,8 +283,8 @@ pub(super) fn analyze(
         }
     }
     if graph.recursive.iter().any(|ty| !inhabited.contains(ty)) {
-        return Err(Diagnostic::new(
-            "E1010",
+        return Err(Diagnostic::of(
+            DiagnosticKind::RecursiveUnionWithoutBaseCase,
             "recursive union has no finite value; add a base case or an empty collection alternative",
             span,
         ));
@@ -519,7 +519,11 @@ mod tests {
             std::cell::RefCell::new(BTreeMap::<Box<[Type]>, Result<bool, Diagnostic>>::new());
         assert_eq!(format!("{cache:?}"), format!("{reference:?}"));
         let key: Box<[Type]> = vec![Type::Integer(64, true), Type::Bool].into();
-        let error = Diagnostic::new("E1010", "recursive", Span::new(1, 2));
+        let error = Diagnostic::of(
+            DiagnosticKind::InfiniteRecursiveLayout,
+            "recursive",
+            Span::new(1, 2),
+        );
         cache.insert(key.clone(), Ok(true));
         cache.insert(Box::default(), Err(error.clone()));
         reference.borrow_mut().insert(key.clone(), Ok(true));

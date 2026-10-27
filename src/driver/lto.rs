@@ -14,9 +14,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, DiagnosticKind};
 
-use super::{ToolSource, driver_error, io_error, resolve_tool, run_tool};
+use super::{ToolSource, driver_error_of, io_error, resolve_tool, run_tool};
 
 /// What Clang writes on a C function compiled with the flags of a build: the CPU it compiles for, the CPU it
 /// tunes for where it differs, and the features it enables.
@@ -126,8 +126,7 @@ pub fn probe_target_attributes(
     let ir =
         fs::read_to_string(&output).map_err(|error| io_error("read probe IR", &output, error))?;
     probed_attributes(&ir).ok_or_else(|| {
-        driver_error(
-            "E2002",
+        driver_error_of(DiagnosticKind::TargetAttributesUnreadable,
             "cannot read target attributes from Clang output; set TSUZURI_CLANG to a Clang that emits LLVM IR",
         )
     })
@@ -334,8 +333,8 @@ pub fn stamp_target_attributes(
 /// stops the stamp.
 fn definition_end(line: &str, start: usize) -> Result<usize, Diagnostic> {
     let unexpected = |why: &str| {
-        driver_error(
-            "E2002",
+        driver_error_of(
+            DiagnosticKind::TargetAttributesNotApplicable,
             format!(
                 "cannot add target attributes to the LLVM IR: a definition {why}: {}",
                 line.chars().take(120).collect::<String>()
@@ -365,8 +364,8 @@ pub fn check_bitcode(artifact: &Path, clang: &OsStr) -> Result<(), Diagnostic> {
     if is_bitcode(&head[..read]) {
         return Ok(());
     }
-    Err(driver_error(
-        "E2002",
+    Err(driver_error_of(
+        DiagnosticKind::ExternalToolFailed,
         format!(
             "'{}' did not write LLVM bitcode for --emit bitcode; compiling LLVM IR with -x ir -flto=thin -c must give bitcode, so set TSUZURI_CLANG to a Clang that does",
             Path::new(clang).display()
@@ -422,8 +421,8 @@ pub fn keep_runtime_exports(
         return Ok(kept);
     }
     if ir.contains("@llvm.used") {
-        return Err(driver_error(
-            "E2002",
+        return Err(driver_error_of(
+            DiagnosticKind::BitcodeSymbolNotKept,
             "cannot keep the C runtime's entry points in the bitcode: the LLVM IR already has an @llvm.used list",
         ));
     }
@@ -473,8 +472,8 @@ pub fn check_kept_exports(merged: &Path, kept: &[String]) -> Result<(), Diagnost
     if lost.is_empty() {
         return Ok(());
     }
-    Err(driver_error(
-        "E2002",
+    Err(driver_error_of(
+        DiagnosticKind::BitcodeSymbolNotKept,
         format!(
             "llvm-link did not keep {} as a public symbol of the bitcode, so a host could not call it; llvm-link must come from the same LLVM as Clang: set TSUZURI_LLVM_LINK",
             lost.join(", ")

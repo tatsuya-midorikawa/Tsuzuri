@@ -234,8 +234,8 @@ impl Checker<'_> {
                     }
                 }
                 if !useful {
-                    warnings.push(Diagnostic::warning(
-                        "W1003",
+                    warnings.push(Diagnostic::of(
+                        DiagnosticKind::UnreachableMatchArm,
                         "unreachable match arm; previous patterns already cover this arm",
                         arm.span,
                     ));
@@ -554,8 +554,8 @@ fn float_key(ty: &Type, bits: &str, negative: bool) -> Option<String> {
 impl Search<'_, '_> {
     fn limit(&self, alternatives: usize) -> Result<(), Diagnostic> {
         if alternatives > MAX_PATTERN_ALTERNATIVES {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::PatternAlternativesLimit,
                 "pattern alternatives exceed the compiler limit; split the match",
                 self.span,
             ));
@@ -566,8 +566,8 @@ impl Search<'_, '_> {
     fn charge(&mut self, work: usize) -> Result<(), Diagnostic> {
         self.work = self.work.saturating_add(work);
         if self.work > MAX_WORK {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExhaustivenessSearchLimit,
                 "the match is too large to check for exhaustiveness; split the match",
                 self.span,
             ));

@@ -144,8 +144,8 @@ fn check_graph(
         if component.len() > 1 || graph[root].contains(&root) {
             for id in component {
                 if requires_rec(id) {
-                    return Err(Diagnostic::new(
-                        "E1019",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MissingRecMarker,
                         format!(
                             "recursive function '{}' requires 'rec' on its declaration and definition (or 'and' in a recursive group)",
                             functions[id].qualified_name()

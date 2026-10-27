@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::check::{CheckedModule, ModuleOrigin};
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::llvm::{self, Entry};
 use crate::syntax::{Edition, MAX_SOURCE_BYTES, SourceKind};
 use crate::target::{ForeignRunner, PlatformScope};
@@ -89,22 +89,22 @@ impl LinkInputs {
     /// The inputs as a whole: their number, repeats and library names. Does not touch the file system.
     pub fn check_shape(&self) -> Result<(), Diagnostic> {
         if self.paths.len() + self.libraries.len() + self.search.len() > MAX_LINK_INPUTS {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::LinkInputLimit,
                 format!("too many link inputs; at most {MAX_LINK_INPUTS} are supported"),
             ));
         }
         for name in &self.libraries {
             if let Some(message) = library_name_error(name) {
-                return Err(driver_error("E2000", message));
+                return Err(driver_error_of(DiagnosticKind::InvalidLibraryName, message));
             }
         }
         let repeated = |seen: &mut BTreeSet<String>, input: String| {
             if seen.insert(input.clone()) {
                 Ok(())
             } else {
-                Err(driver_error(
-                    "E2000",
+                Err(driver_error_of(
+                    DiagnosticKind::DuplicateLinkInput,
                     format!("link input '{input}' specified more than once"),
                 ))
             }
@@ -128,8 +128,8 @@ impl LinkInputs {
     pub fn check_readable(&self) -> Result<(), Diagnostic> {
         let check = |path: &Path, directory: bool| match fs::metadata(path) {
             Ok(metadata) if metadata.is_dir() == directory => Ok(()),
-            Ok(_) => Err(driver_error(
-                "E2001",
+            Ok(_) => Err(driver_error_of(
+                DiagnosticKind::LinkInputUnreadable,
                 format!(
                     "cannot read link input '{}': not a {}",
                     path.display(),
@@ -173,8 +173,8 @@ fn protect_links(links: &LinkInputs, output: &Path) -> Result<(), Diagnostic> {
         let same = fs::canonicalize(input).ok() == fs::canonicalize(output).ok()
             || same_file(input, output, &metadata).unwrap_or(false);
         if same {
-            return Err(driver_error(
-                "E2003",
+            return Err(driver_error_of(
+                DiagnosticKind::OutputOverwritesLinkInput,
                 format!(
                     "output '{}' would overwrite a link input; choose a different -o path",
                     output.display()
@@ -540,8 +540,8 @@ impl BuildOptions {
                 || self.wasm_net
                 || self.wasm_tail_call)
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 if self.emit.is_spirv() {
                     "SPIR-V output does not use target, CPU, debug, or WASM feature options"
                 } else {
@@ -565,8 +565,8 @@ impl BuildOptions {
             && (self.target != Target::Wasm32
                 || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::BindingsJs))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-feature threads requires wasm32 object or WASM output",
             ));
         }
@@ -577,14 +577,14 @@ impl BuildOptions {
                     Emit::Wasm | Emit::Object | Emit::Llvm | Emit::BindingsJs
                 ))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output",
             ));
         }
         if self.wasm_jspi && (self.wasm_threads || self.wasm_host.is_some()) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
                 "--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host",
             ));
         }
@@ -592,14 +592,14 @@ impl BuildOptions {
             && (self.target != Target::Wasm32
                 || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::Llvm))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-feature webgpu requires wasm32 object, LLVM IR, or WASM output; the JavaScript bindings do not provide the WebGPU imports, so instantiate the module with createGpuImports of src/runtime/webgpu.mjs",
             ));
         }
         if self.wasm_webgpu && (self.wasm_threads || self.wasm_host.is_some()) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
                 "--wasm-feature webgpu cannot be combined with --wasm-feature threads or --wasm-host: its imports suspend the WebAssembly stack with JavaScript Promise Integration",
             ));
         }
@@ -610,26 +610,26 @@ impl BuildOptions {
                     Emit::Wasm | Emit::Object | Emit::Llvm | Emit::BindingsJs
                 ))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-feature net requires wasm32 object, LLVM IR, WASM, or JavaScript bindings output",
             ));
         }
         if self.wasm_net && !self.wasm_jspi {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresOption,
                 "--wasm-feature net requires --wasm-feature jspi: a blocking socket call suspends the WebAssembly stack with JavaScript Promise Integration while the host works",
             ));
         }
         if self.wasm_net && (self.wasm_threads || self.wasm_host.is_some()) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
                 "--wasm-feature net cannot be combined with --wasm-feature threads or --wasm-host",
             ));
         }
         if self.wasm_simd && (!self.target.is_wasm() || self.emit == Emit::Header) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-feature simd128 requires wasm32 or wasm64 object, LLVM IR, or WASM output",
             ));
         }
@@ -637,40 +637,40 @@ impl BuildOptions {
             && (!self.target.is_wasm()
                 || !matches!(self.emit, Emit::Wasm | Emit::Object | Emit::Llvm))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-feature tail-call requires wasm32 or wasm64 object, LLVM IR, or WASM output",
             ));
         }
         if self.wasm_host.is_some()
             && (self.target != Target::Wasm32 || !matches!(self.emit, Emit::Object | Emit::Wasm))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-host wasi requires wasm32 object or WASM output",
             ));
         }
         if self.wasm_host.is_some() && self.wasm_threads {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
                 "--wasm-host wasi cannot be combined with --wasm-feature threads",
             ));
         }
         if self.debug_info && self.emit == Emit::Header {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--debug-info is not valid for header output",
             ));
         }
         if self.trap_info && self.emit == Emit::Header {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--trap-info is not valid for header output",
             ));
         }
         if self.debug_output && self.emit == Emit::Header {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--debug-output is not valid for header output",
             ));
         }
@@ -688,48 +688,48 @@ impl BuildOptions {
                         | Emit::BindingsCpp
                 ))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--trap-mode return is only valid for native object, llvm or header output",
             ));
         }
         self.validate_allocator()?;
         if self.strip {
             if self.target.is_wasm() {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     "--strip requires a native executable; WASM output is already stripped unless --debug-info is used",
                 ));
             }
             if self.emit != Emit::Executable {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     "--strip requires native executable output (--emit exe)",
                 ));
             }
             if self.debug_info {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionConflict,
                     "--strip cannot be combined with --debug-info: a debugger needs the symbols",
                 ));
             }
         }
         if self.wasm_opt {
             if self.target != Target::Wasm32 || self.emit != Emit::Wasm {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     "--wasm-opt requires WASM output (--target wasm32, --emit wasm)",
                 ));
             }
             if self.wasm_threads {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionConflict,
                     "--wasm-opt cannot be combined with --wasm-feature threads",
                 ));
             }
             if self.debug_info {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionConflict,
                     "--wasm-opt cannot be combined with --debug-info: the optimizer rewrites the code the names and debug information describe",
                 ));
             }
@@ -737,8 +737,8 @@ impl BuildOptions {
         if (self.emit == Emit::Executable && self.target != Target::Native)
             || (self.emit == Emit::Wasm && !self.target.is_wasm())
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "'--emit exe' requires '--target native'; '--emit wasm' requires '--target wasm32' or '--target wasm64'",
             ));
         }
@@ -747,14 +747,14 @@ impl BuildOptions {
                 || matches!(self.emit, Emit::Llvm | Emit::Header)
                 || self.emit.is_bindings()
             {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     "'--cpu native' requires native executable or object output",
                 ));
             }
             if let Some(triple) = self.triple.filter(|_| self.platform().cross()) {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     format!(
                         "'--cpu native' requires the host target; use '--cpu generic' when cross-compiling to {}",
                         triple.name()
@@ -770,14 +770,14 @@ impl BuildOptions {
                     Emit::Object | Emit::Llvm | Emit::Wasm | Emit::Bitcode
                 ))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-max-memory requires wasm32 or wasm64 object, LLVM IR, bitcode, or WASM output",
             ));
         }
         if self.wasm_stack_size.is_some() && (!self.target.is_wasm() || self.emit != Emit::Wasm) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--wasm-stack-size requires WASM output; link object and LLVM IR output with wasm-ld -z stack-size",
             ));
         }
@@ -819,8 +819,8 @@ impl BuildOptions {
             triple,
         } = self;
         if optimization != OptLevel::O0 {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::FastBackendUnsupportedOption,
                 format!(
                     "--backend fast supports only -O0; remove {} or use --backend llvm",
                     optimization.flag()
@@ -844,8 +844,8 @@ impl BuildOptions {
                 (_, Some(triple)) => format!("--target {}", triple.name()),
                 _ => "wasm64".to_owned(),
             };
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::FastBackendUnsupportedOption,
                 format!(
                     "--backend fast supports only the native target and wasm32; use --backend llvm for {other}"
                 ),
@@ -870,16 +870,16 @@ impl BuildOptions {
             .into_iter()
             .find_map(|(set, option)| set.then_some(option));
             if let Some(option) = unsupported {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::FastBackendUnsupportedOption,
                     format!(
                         "--backend fast does not support {option} for wasm32; remove it or use --backend llvm"
                     ),
                 ));
             }
             if !matches!(emit, Emit::Wasm | Emit::Object) {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::FastBackendUnsupportedOption,
                     format!(
                         "--backend fast produces only wasm and object outputs for wasm32; use --backend llvm for --emit {}",
                         output_kind()
@@ -887,8 +887,8 @@ impl BuildOptions {
                 ));
             }
         } else if !matches!(emit, Emit::Executable | Emit::Object) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::FastBackendUnsupportedOption,
                 format!(
                     "--backend fast produces only exe and object outputs; use --backend llvm for --emit {}",
                     output_kind()
@@ -896,8 +896,8 @@ impl BuildOptions {
             ));
         }
         if cpu != Cpu::Generic {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::FastBackendUnsupportedOption,
                 "--backend fast does not support --cpu native yet; remove it or use --backend llvm",
             ));
         }
@@ -905,8 +905,8 @@ impl BuildOptions {
             any(target_os = "macos", target_os = "linux"),
             any(target_arch = "aarch64", target_arch = "x86_64")
         )) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::FastBackendUnavailable,
                 format!(
                     "--backend fast is not available on {}-{}; use --backend llvm",
                     env::consts::OS,
@@ -915,8 +915,8 @@ impl BuildOptions {
             ));
         }
         if !cfg!(feature = "fast-backend") {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::FastBackendUnavailable,
                 "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm",
             ));
         }
@@ -929,8 +929,8 @@ impl BuildOptions {
         if self.emit != Emit::BindingsJs {
             if self.target != Target::Native {
                 let (kind, _) = self.emit.bindings().expect("bindings output");
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     format!("'--emit {kind}' requires '--target native'"),
                 ));
             }
@@ -942,8 +942,8 @@ impl BuildOptions {
                 (self.freestanding, "--freestanding"),
             ] {
                 if set {
-                    return Err(driver_error(
-                        "E2000",
+                    return Err(driver_error_of(
+                        DiagnosticKind::OptionRequiresBuild,
                         format!(
                             "{option} is not valid for bindings output; pass it when building the shared library"
                         ),
@@ -953,8 +953,8 @@ impl BuildOptions {
             return Ok(());
         }
         if self.target != Target::Wasm32 {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "'--emit bindings-js' requires '--target wasm32'",
             ));
         }
@@ -968,8 +968,8 @@ impl BuildOptions {
             (self.allocator != llvm::Allocator::System, "--allocator"),
         ] {
             if set {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     format!(
                         "{option} is not valid for bindings output; pass it when building the .wasm"
                     ),
@@ -982,20 +982,20 @@ impl BuildOptions {
     /// The options of `--emit shared` (E13 Phase 2): a native library that hosts load at run time.
     fn validate_shared(self) -> Result<(), Diagnostic> {
         if self.target != Target::Native {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "'--emit shared' requires '--target native'",
             ));
         }
         if self.platform().windows() {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
                 "'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL",
             ));
         }
         if self.allocator == llvm::Allocator::Host {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
                 "--allocator host cannot be combined with --emit shared: a shared library resolves its symbols when it is linked; link the object into the host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc",
             ));
         }
@@ -1006,14 +1006,14 @@ impl BuildOptions {
     /// target or from wasm32. The other options of an object apply to it unchanged.
     fn validate_bitcode(self) -> Result<(), Diagnostic> {
         if !matches!(self.target, Target::Native | Target::Wasm32) {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "'--emit bitcode' requires '--target native' or '--target wasm32'; wasm64 bitcode is not supported",
             ));
         }
         if self.target == Target::Native && self.platform().windows() {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
                 "'--emit bitcode' is not supported on Windows yet (G10); build an object with --emit object and link it normally",
             ));
         }
@@ -1025,8 +1025,8 @@ impl BuildOptions {
     fn validate_triple(self, triple: Triple) -> Result<(), Diagnostic> {
         let name = triple.name();
         if self.target != Target::Native {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionInvalidValue,
                 format!("--target {name} names a native target, not WebAssembly"),
             ));
         }
@@ -1045,8 +1045,8 @@ impl BuildOptions {
             } else {
                 return Ok(());
             };
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
                 format!("--debug-info for {name} needs a {needed} host: {tool}"),
             ));
         }
@@ -1056,65 +1056,65 @@ impl BuildOptions {
     /// The combinations of `--allocator` and `--freestanding` (F13): the target first, then the output.
     fn validate_allocator(self) -> Result<(), Diagnostic> {
         if self.allocator == llvm::Allocator::Host && self.wasm_threads {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
                 "--allocator host cannot be combined with --wasm-feature threads; WASM threads keep their locked internal allocator",
             ));
         }
         if self.allocator == llvm::Allocator::Host
             && (self.emit.is_kernel() || self.emit == Emit::Executable)
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--allocator host requires object, LLVM IR, header, or WebAssembly output; link the object into a host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc",
             ));
         }
         if self.allocator == llvm::Allocator::Counting && self.emit.is_kernel() {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--allocator counting requires executable, object, shared library, LLVM IR, header, or WebAssembly output",
             ));
         }
         if self.allocator != llvm::Allocator::System && self.trap_return {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
                 "--trap-mode return keeps its own tracked allocator; remove --allocator",
             ));
         }
         if self.allocator == llvm::Allocator::Small && self.target != Target::Native {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--allocator small requires a native target; WebAssembly modules keep their own heap",
             ));
         }
         if self.allocator == llvm::Allocator::Small && self.emit.is_kernel() {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "--allocator small requires executable, object, shared library, LLVM IR, or header output",
             ));
         }
         if self.freestanding {
             if self.target != Target::Native {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     "--freestanding requires a native target",
                 ));
             }
             if !matches!(self.emit, Emit::Object | Emit::Llvm | Emit::Header) {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
                     "--freestanding requires object, LLVM IR, or header output",
                 ));
             }
             if self.allocator != llvm::Allocator::Host {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresOption,
                     "--freestanding requires --allocator host: without the C library the host provides the heap",
                 ));
             }
             if self.trap_info || self.debug_output {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionConflict,
                     "--freestanding cannot be combined with --trap-info or --debug-output: they write through the C library",
                 ));
             }
@@ -1170,8 +1170,8 @@ pub fn bindings_output_error(emit: Emit, output: &Path) -> Option<Diagnostic> {
     {
         return None;
     }
-    Some(driver_error(
-        "E2000",
+    Some(driver_error_of(
+        DiagnosticKind::OutputExtensionInvalid,
         if emit == Emit::BindingsJs {
             "bindings output must end with '.mjs'; declarations are written next to it as '<name>.d.mts'".to_owned()
         } else {
@@ -1202,8 +1202,8 @@ pub fn wasm_memory_limits(
     let stack = stack.unwrap_or(DEFAULT_WASM_STACK_SIZE);
     let max = max.unwrap_or(DEFAULT_WASM_MAX_MEMORY);
     if stack % 16 != 0 || stack < 65536 {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionInvalidValue,
             "--wasm-stack-size must be a multiple of 16 bytes and at least 64 KiB",
         ));
     }
@@ -1219,11 +1219,11 @@ pub fn wasm_memory_limits(
         )
     };
     if max % 65536 != 0 || max > ceiling {
-        return Err(driver_error("E2000", message));
+        return Err(driver_error_of(DiagnosticKind::OptionInvalidValue, message));
     }
     if max < stack.saturating_add(65536) {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionInvalidValue,
             "--wasm-max-memory must be at least the stack size plus 64 KiB; raise the memory limit or lower --wasm-stack-size",
         ));
     }
@@ -1245,8 +1245,8 @@ fn native_cpu_flag(architecture: &str) -> Result<&'static str, Diagnostic> {
     match architecture {
         "x86" | "x86_64" => Ok("-march=native"),
         "arm" | "aarch64" => Ok("-mcpu=native"),
-        _ => Err(driver_error(
-            "E2000",
+        _ => Err(driver_error_of(
+            DiagnosticKind::OptionUnsupportedPlatform,
             format!("'--cpu native' is not supported on {architecture}; use '--cpu generic'"),
         )),
     }
@@ -1522,8 +1522,8 @@ fn sdk_args_for(
         }
     } else if let Some(sysroot) = sysroot {
         if triple.is_msvc() {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::EnvironmentSettingInvalid,
                 format!(
                     "{SYSROOT_VARIABLE} does not apply to {}: the MSVC linker reads the Windows SDK and CRT from the INCLUDE and LIB environment variables",
                     triple.name(),
@@ -1565,15 +1565,15 @@ fn final_link_args_for(
     let mut arguments = link_args(platform);
     match linker.and_then(OsStr::to_str) {
         None if linker.is_some() => {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::EnvironmentSettingInvalid,
                 format!("{LINKER_VARIABLE} must be 'default' or 'lld'"),
             ));
         }
         None | Some("" | "default") => {}
         Some("lld") if platform.windows() => {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::EnvironmentSettingInvalid,
                 format!("{LINKER_VARIABLE}=lld is not supported for Windows targets; unset it"),
             ));
         }
@@ -1584,8 +1584,8 @@ fn final_link_args_for(
             }
         }
         Some(other) => {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::EnvironmentSettingInvalid,
                 format!("{LINKER_VARIABLE} must be 'default' or 'lld', not '{other}'"),
             ));
         }
@@ -1604,8 +1604,8 @@ fn check_linker_with_optimization(
         && matches!(optimization, OptLevel::Os | OptLevel::Oz)
         && linker.is_some_and(|value| value == "lld")
     {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::EnvironmentSettingInvalid,
             format!(
                 "{LINKER_VARIABLE}=lld cannot be combined with {} for a Mach-O target (Clang passes the size level to ld64.lld, which rejects it); use -O2 or unset {LINKER_VARIABLE}",
                 optimization.flag()
@@ -1716,7 +1716,10 @@ impl SourceFile {
         let name = path.file_stem().and_then(OsStr::to_str).ok_or_else(|| {
             SourceError::new(
                 path,
-                driver_error("E1011", "the module filename must be an ASCII identifier"),
+                driver_error_of(
+                    DiagnosticKind::InvalidModuleFilename,
+                    "the module filename must be an ASCII identifier",
+                ),
             )
         })?;
         Ok(Self {
@@ -1744,8 +1747,8 @@ pub(crate) fn collect_sources(
         if directories > 1024 || depth >= 16 {
             return Err(SourceError::new(
                 &directory,
-                driver_error(
-                    "E1017",
+                driver_error_of(
+                    DiagnosticKind::ModuleDiscoveryLimit,
                     "module discovery exceeds 1024 directories or 16 path segments",
                 ),
             ));
@@ -1777,8 +1780,8 @@ pub(crate) fn collect_sources(
                 {
                     return Err(SourceError::new(
                         &path,
-                        driver_error(
-                            "E1011",
+                        driver_error_of(
+                            DiagnosticKind::SymlinkNotFollowed,
                             "module discovery does not follow source or directory symbolic links",
                         ),
                     ));
@@ -1791,14 +1794,20 @@ pub(crate) fn collect_sources(
                 if !kind.is_file() {
                     return Err(SourceError::new(
                         &path,
-                        driver_error("E1011", "module sources must be regular files"),
+                        driver_error_of(
+                            DiagnosticKind::ModuleSourceNotRegularFile,
+                            "module sources must be regular files",
+                        ),
                     ));
                 }
                 paths.push(path);
                 if paths.len() > 4096 {
                     return Err(SourceError::new(
                         root,
-                        driver_error("E1017", "module discovery exceeds 4096 source files"),
+                        driver_error_of(
+                            DiagnosticKind::ModuleDiscoveryLimit,
+                            "module discovery exceeds 4096 source files",
+                        ),
                     ));
                 }
             }
@@ -1900,8 +1909,8 @@ pub(crate) fn read_manifest(
     if !metadata.is_file() || metadata.is_symlink() {
         return Err(SourceError::new(
             path,
-            driver_error(
-                "E1011",
+            driver_error_of(
+                DiagnosticKind::ManifestNotRegularFile,
                 "package manifests must be regular files, not symbolic links",
             ),
         ));
@@ -1962,14 +1971,20 @@ pub(crate) fn load_packages(
         if active.contains(&root) {
             return Err(SourceError::new(
                 &path,
-                driver_error("E1011", "cyclic package dependency"),
+                driver_error_of(
+                    DiagnosticKind::CyclicPackageDependency,
+                    "cyclic package dependency",
+                ),
             ));
         }
         if !loaded.contains_key(&root) {
             if loaded.len() >= 1024 || active.len() >= 128 {
                 return Err(SourceError::new(
                     &path,
-                    driver_error("E1017", "package graph exceeds 1024 packages or depth 128"),
+                    driver_error_of(
+                        DiagnosticKind::PackageGraphLimit,
+                        "package graph exceeds 1024 packages or depth 128",
+                    ),
                 ));
             }
             let (text, manifest) = read_manifest(&path)?;
@@ -1980,8 +1995,8 @@ pub(crate) fn load_packages(
             }) {
                 return Err(SourceError::new(
                     &path,
-                    driver_error(
-                        "E1011",
+                    driver_error_of(
+                        DiagnosticKind::ReservedPackageNamespace,
                         "package namespace is reserved by the standard library",
                     ),
                 ));
@@ -1992,8 +2007,8 @@ pub(crate) fn load_packages(
             {
                 return Err(SourceError::new(
                     &path,
-                    driver_error(
-                        "E1011",
+                    driver_error_of(
+                        DiagnosticKind::AmbiguousPackageRoot,
                         "package name or namespace resolves to multiple roots",
                     ),
                 ));
@@ -2003,8 +2018,8 @@ pub(crate) fn load_packages(
             {
                 return Err(SourceError::new(
                     &path,
-                    driver_error(
-                        "E2007",
+                    driver_error_of(
+                        DiagnosticKind::LockfileVersionMismatch,
                         format!(
                             "registry package '{}' declares version {} but Tsuzuri.lock records {version}; run tsuzuri fetch",
                             manifest.name, manifest.version
@@ -2025,15 +2040,15 @@ pub(crate) fn load_packages(
                     DependencySource::Git { url, rev } => Source::Git(url.clone(), rev.clone()),
                     DependencySource::Registry(_) => Source::Registry,
                 };
-                let error = |code: &'static str, message: String| {
-                    SourceError::new(&path, Diagnostic::new(code, message, dependency.span))
+                let error = |kind: DiagnosticKind, message: String| {
+                    SourceError::new(&path, Diagnostic::of(kind, message, dependency.span))
                 };
                 if sources
                     .get(name)
                     .is_some_and(|existing| *existing != source)
                 {
                     return Err(error(
-                        "E1011",
+                        DiagnosticKind::ConflictingDependencySource,
                         format!(
                             "package '{name}' is required from different sources; a package name has one source: paths, one git url and rev, or registry versions"
                         ),
@@ -2046,13 +2061,13 @@ pub(crate) fn load_packages(
                         Origin::Registry { .. },
                     ) => {
                         return Err(error(
-                            "E1011",
+                            DiagnosticKind::DependencyKindNotAllowed,
                             "registry packages can depend only on registry packages; use a version requirement".to_owned(),
                         ));
                     }
                     (DependencySource::Path(_), Origin::Git { .. }) => {
                         return Err(error(
-                            "E1011",
+                            DiagnosticKind::DependencyKindNotAllowed,
                             "git packages cannot have path dependencies; use a git dependency"
                                 .to_owned(),
                         ));
@@ -2127,8 +2142,8 @@ pub(crate) fn load_packages(
         {
             return Err(SourceError::new(
                 &path,
-                Diagnostic::new(
-                    "E1011",
+                Diagnostic::of(
+                    DiagnosticKind::DependencyNameMismatch,
                     "dependency key must match the dependency package name",
                     span,
                 ),
@@ -2159,7 +2174,11 @@ fn dependency_directory(
             _ => {
                 return Err(SourceError::new(
                     manifest,
-                    Diagnostic::new("E1011", "dependency paths must be relative", span),
+                    Diagnostic::of(
+                        DiagnosticKind::DependencyPathNotRelative,
+                        "dependency paths must be relative",
+                        span,
+                    ),
                 ));
             }
         }
@@ -2172,8 +2191,8 @@ fn dependency_directory(
         if !metadata.is_dir() || metadata.is_symlink() {
             return Err(SourceError::new(
                 manifest,
-                Diagnostic::new(
-                    "E1011",
+                Diagnostic::of(
+                    DiagnosticKind::SymlinkNotFollowed,
                     "dependency paths must traverse real directories, not symbolic links",
                     span,
                 ),
@@ -2209,8 +2228,8 @@ pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, Source
     if !metadata.is_file() || metadata.is_symlink() {
         return Err(SourceError::new(
             &path,
-            driver_error(
-                "E2007",
+            driver_error_of(
+                DiagnosticKind::LockfileNotRegularFile,
                 "Tsuzuri.lock must be a regular file, not a symbolic link or directory",
             ),
         ));
@@ -2218,7 +2237,10 @@ pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, Source
     if metadata.len() > crate::package::MAX_PACKAGE_FILE_BYTES as u64 {
         return Err(SourceError::new(
             &path,
-            driver_error("E1017", "Tsuzuri.lock exceeds 1 MiB"),
+            driver_error_of(
+                DiagnosticKind::LockfileTooLarge,
+                "Tsuzuri.lock exceeds 1 MiB",
+            ),
         ));
     }
     let mut bytes = Vec::new();
@@ -2231,8 +2253,7 @@ pub(crate) fn read_lockfile(directory: &Path) -> Result<Option<Lockfile>, Source
     let text = String::from_utf8(bytes).map_err(|_| {
         SourceError::new(
             &path,
-            driver_error(
-                "E2007",
+            driver_error_of(DiagnosticKind::InvalidLockfile,
                 "Tsuzuri.lock is not a valid lockfile (it is not UTF-8); restore it from version control or delete it and run tsuzuri fetch",
             ),
         )
@@ -2253,14 +2274,14 @@ fn offline_package(
     request: &PackageRequest<'_>,
 ) -> Result<Option<Resolution>, SourceError> {
     use crate::package::DependencySource;
-    let error = |message: String| {
+    let error = |kind: DiagnosticKind, message: String| {
         SourceError::new(
             request.manifest,
-            Diagnostic::new("E2007", message, request.span),
+            Diagnostic::of(kind, message, request.span),
         )
     };
     let lock = lock.ok_or_else(|| {
-        error("Tsuzuri.lock is missing; run tsuzuri fetch to download git dependencies and record them".to_owned())
+        error(DiagnosticKind::LockfileMissing, "Tsuzuri.lock is missing; run tsuzuri fetch to download git dependencies and record them".to_owned())
     })?;
     let (entry, kind) = match request.source {
         DependencySource::Git { url, rev } => (
@@ -2268,7 +2289,7 @@ fn offline_package(
                 .get(request.name)
                 .filter(|entry| entry.git == *url && entry.rev == *rev && entry.version.is_none())
                 .ok_or_else(|| {
-                    error(format!(
+                    error(DiagnosticKind::LockfileEntryMissing, format!(
                         "Tsuzuri.lock does not record git dependency '{}' at this url and rev; run tsuzuri fetch",
                         request.name
                     ))
@@ -2284,7 +2305,7 @@ fn offline_package(
                         .is_some_and(|version| version.satisfies(*requirement))
                 })
                 .ok_or_else(|| {
-                    error(format!(
+                    error(DiagnosticKind::LockfileEntryMissing, format!(
                         "Tsuzuri.lock does not record a version of '{}' that satisfies {requirement}; run tsuzuri fetch",
                         request.name
                     ))
@@ -2295,6 +2316,7 @@ fn offline_package(
     };
     let store = crate::cache::package_store().ok_or_else(|| {
         error(
+            DiagnosticKind::PackageStoreUnavailable,
             "no package store is available; set TSUZURI_CACHE_DIR and run tsuzuri fetch".to_owned(),
         )
     })?;
@@ -2303,10 +2325,13 @@ fn offline_package(
     if !fs::symlink_metadata(&root)
         .is_ok_and(|metadata| metadata.is_dir() && !metadata.is_symlink())
     {
-        return Err(error(format!(
-            "{kind} '{}' is not downloaded; run tsuzuri fetch",
-            request.name
-        )));
+        return Err(error(
+            DiagnosticKind::PackageNotDownloaded,
+            format!(
+                "{kind} '{}' is not downloaded; run tsuzuri fetch",
+                request.name
+            ),
+        ));
     }
     Ok(Some(Resolution {
         root,
@@ -2344,8 +2369,8 @@ impl Project {
                 if text.len() > MAX_SOURCE_BYTES {
                     return Err(SourceError::new(
                         path,
-                        driver_error(
-                            "E0003",
+                        driver_error_of(
+                            DiagnosticKind::SourceTooLarge,
                             format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit"),
                         ),
                     ));
@@ -2353,7 +2378,10 @@ impl Project {
                 let path = parent.join(path.file_name().ok_or_else(|| {
                     SourceError::new(
                         path,
-                        driver_error("E1011", "a source file needs a filename"),
+                        driver_error_of(
+                            DiagnosticKind::SourceWithoutFilename,
+                            "a source file needs a filename",
+                        ),
                     )
                 })?);
                 if path.strip_prefix(&directory).is_ok_and(|relative| {
@@ -2444,7 +2472,10 @@ impl Project {
                 let relative = path.strip_prefix(root).map_err(|_| {
                     SourceError::new(
                         &path,
-                        driver_error("E1011", "source is outside its package root"),
+                        driver_error_of(
+                            DiagnosticKind::SourceOutsidePackageRoot,
+                            "source is outside its package root",
+                        ),
                     )
                 })?;
                 if relative
@@ -2482,8 +2513,8 @@ impl Project {
                     }) {
                         return Err(SourceError::new(
                             &path,
-                            driver_error(
-                                "E1011",
+                            driver_error_of(
+                                DiagnosticKind::ModuleNamespaceCollision,
                                 "root module collides with a dependency namespace",
                             ),
                         ));
@@ -2522,7 +2553,10 @@ impl Project {
                 if sources.len() > 4096 {
                     return Err(SourceError::new(
                         directory,
-                        driver_error("E1017", "package graph exceeds 4096 source files"),
+                        driver_error_of(
+                            DiagnosticKind::PackageGraphLimit,
+                            "package graph exceeds 4096 source files",
+                        ),
                     ));
                 }
             }
@@ -2545,8 +2579,8 @@ impl Project {
                     .map_or_else(|| directory.join("Tsuzuri.lock"), |lock| lock.path.clone());
                 return Err(SourceError::new(
                     &lock,
-                    driver_error(
-                        "E2007",
+                    driver_error_of(
+                        DiagnosticKind::LockfileChecksumMismatch,
                         format!(
                             "{} '{}' does not match its sha256 in Tsuzuri.lock; run tsuzuri fetch to restore it",
                             package.kind(),
@@ -2559,7 +2593,7 @@ impl Project {
         sources
             .sort_by_cached_key(|source| source.relative_path.to_string_lossy().replace('\\', "/"));
         let root = if let Some(selected) = selected {
-            sources.iter().position(|source| source.relative_path == selected).ok_or_else(|| SourceError::new(&directory.join(selected), driver_error("E1011", "source filename must match its directory entry exactly, including case")))?
+            sources.iter().position(|source| source.relative_path == selected).ok_or_else(|| SourceError::new(&directory.join(selected), driver_error_of(DiagnosticKind::SourceFilenameCaseMismatch, "source filename must match its directory entry exactly, including case")))?
         } else {
             sources
                 .iter()
@@ -2615,8 +2649,8 @@ impl Project {
             if package.sha256.is_some() {
                 return Err(SourceError::new(
                     &package.id.root.join("Tsuzuri.toml"),
-                    Diagnostic::new(
-                        "E2000",
+                    Diagnostic::of(
+                        DiagnosticKind::NativeLinkSettingNotAllowed,
                         "git and registry packages cannot declare [native] link settings; move them to the application manifest",
                         *span,
                     ),
@@ -2625,8 +2659,8 @@ impl Project {
             if package.id.root != directory && !trusted.contains(&package.id.root) {
                 return Err(SourceError::new(
                     &package.id.root.join("Tsuzuri.toml"),
-                    Diagnostic::new(
-                        "E2000",
+                    Diagnostic::of(
+                        DiagnosticKind::NativeLinkSettingNotAllowed,
                         "only the root package and dependencies it marks with native = true may declare [native] link settings; move them to the application manifest or mark the dependency",
                         *span,
                     ),
@@ -2746,7 +2780,10 @@ impl Project {
         {
             return Err(SourceError::new(
                 input,
-                driver_error("E2000", "input directory has no .tz, .tt, or .tc sources"),
+                driver_error_of(
+                    DiagnosticKind::NoSourcesFound,
+                    "input directory has no .tz, .tt, or .tc sources",
+                ),
             ));
         }
         Ok(project)
@@ -2769,7 +2806,10 @@ impl Project {
         if metadata.is_symlink() {
             return Err(SourceError::new(
                 input,
-                driver_error("E1011", "source inputs must not be symbolic links"),
+                driver_error_of(
+                    DiagnosticKind::SymlinkNotFollowed,
+                    "source inputs must not be symbolic links",
+                ),
             ));
         }
         let input = if metadata.is_dir() {
@@ -2801,8 +2841,8 @@ impl Project {
         ) {
             return Err(SourceError::new(
                 path,
-                driver_error(
-                    "E2000",
+                driver_error_of(
+                    DiagnosticKind::ScriptWrongFileKind,
                     "a script is a .tz program; .tt and .tc files are type class and builder modules",
                 ),
             ));
@@ -2982,9 +3022,12 @@ impl AnalysisKind {
 
 pub fn document(project: &Project, output: &Path) -> Result<Vec<String>, Diagnostic> {
     let pages = crate::docgen::render_project(project)?;
-    let name = output
-        .file_name()
-        .ok_or_else(|| driver_error("E2003", "documentation output needs a directory name"))?;
+    let name = output.file_name().ok_or_else(|| {
+        driver_error_of(
+            DiagnosticKind::DocOutputInvalid,
+            "documentation output needs a directory name",
+        )
+    })?;
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -3007,8 +3050,8 @@ pub fn document(project: &Project, output: &Path) -> Result<Vec<String>, Diagnos
     fs::write(&marker, "generated by tsuzuri doc\n")
         .map_err(|error| io_error("write documentation marker", &marker, error))?;
     if protect_documentation(project, &output)? != previous {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::DocOutputChanged,
             "documentation output changed during generation",
         ));
     }
@@ -3020,8 +3063,8 @@ pub fn document(project: &Project, output: &Path) -> Result<Vec<String>, Diagnos
     if let Err(error) = fs::rename(&staged, &output) {
         if previous && let Err(restore) = fs::rename(&backup, &output) {
             temporary.removed = true;
-            return Err(driver_error(
-                "E2003",
+            return Err(driver_error_of(
+                DiagnosticKind::DocPublicationFailed,
                 format!(
                     "documentation publication failed ({error}) and restore failed ({restore}); recovery files remain in '{}'",
                     temporary.path.display()
@@ -3041,8 +3084,8 @@ fn protect_documentation(project: &Project, output: &Path) -> Result<bool, Diagn
         Err(error) => return Err(io_error("inspect documentation output", output, error)),
     };
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::DocOutputInvalid,
             "documentation output must be a regular directory, not a symlink",
         ));
     }
@@ -3051,8 +3094,8 @@ fn protect_documentation(project: &Project, output: &Path) -> Result<bool, Diagn
         metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= 4096
     });
     if !valid_marker {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::DocOutputNotOwned,
             "existing documentation output needs a regular .tsuzuri-docs marker",
         ));
     }
@@ -3061,8 +3104,8 @@ fn protect_documentation(project: &Project, output: &Path) -> Result<bool, Diagn
         .and_then(|file| file.take(4097).read_to_string(&mut text))
         .map_err(|error| io_error("read documentation marker", &marker, error))?;
     if text.len() > 4096 || !text.contains("generated by tsuzuri doc") {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::DocOutputNotOwned,
             "documentation marker does not identify tsuzuri doc output",
         ));
     }
@@ -3076,8 +3119,8 @@ fn protect_documentation(project: &Project, output: &Path) -> Result<bool, Diagn
             fs::canonicalize(&source.path).is_ok_and(|source| source.starts_with(&destination))
         })
     {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::DocOutputContainsSources,
             "documentation output must not contain project sources",
         ));
     }
@@ -3086,8 +3129,8 @@ fn protect_documentation(project: &Project, output: &Path) -> Result<bool, Diagn
 
 pub fn read_source(path: &Path) -> Result<String, Diagnostic> {
     if source_kind(path).is_none() {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::InputExtensionInvalid,
             "input files must use '.tz' (code), '.tt' (type classes), or '.tc' (computation builder); rename old '.tzr' code files to '.tz'",
         ));
     }
@@ -3099,7 +3142,10 @@ pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
     let started = crate::resident::clock();
     let metadata = fs::metadata(path).map_err(|error| io_error("inspect source", path, error))?;
     if !metadata.is_file() {
-        return Err(driver_error("E2001", "the source must be a regular file"));
+        return Err(driver_error_of(
+            DiagnosticKind::InputNotRegularFile,
+            "the source must be a regular file",
+        ));
     }
     if started.is_some()
         && let Some(text) = crate::resident::cached_source(path, &metadata)
@@ -3111,11 +3157,14 @@ pub(crate) fn read_source_text(path: &Path) -> Result<String, Diagnostic> {
         .metadata()
         .map_err(|error| io_error("inspect source", path, error))?;
     if !opened.is_file() {
-        return Err(driver_error("E2001", "the source must be a regular file"));
+        return Err(driver_error_of(
+            DiagnosticKind::InputNotRegularFile,
+            "the source must be a regular file",
+        ));
     }
     if opened.len() > MAX_SOURCE_BYTES as u64 {
-        return Err(driver_error(
-            "E0003",
+        return Err(driver_error_of(
+            DiagnosticKind::SourceTooLarge,
             format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit"),
         ));
     }
@@ -3179,8 +3228,12 @@ pub fn format_sources(input: &Path, check_only: bool) -> Result<Vec<PathBuf>, So
     for path in paths {
         let update = (|| {
             require_regular_source(&path)?;
-            let kind = source_kind(&path)
-                .ok_or_else(|| driver_error("E2000", "fmt accepts .tz, .tt, or .tc files"))?;
+            let kind = source_kind(&path).ok_or_else(|| {
+                driver_error_of(
+                    DiagnosticKind::InputExtensionInvalid,
+                    "fmt accepts .tz, .tt, or .tc files",
+                )
+            })?;
             let source = read_source(&path)?;
             let result = crate::formatter::format_source_with_edition(
                 &path.to_string_lossy(),
@@ -3208,8 +3261,8 @@ fn require_regular_source(path: &Path) -> Result<fs::Metadata, Diagnostic> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| io_error("inspect source", path, error))?;
     if !metadata.file_type().is_file() {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::FormatTargetNotRegularFile,
             "fmt refuses symlinks, directories, and special files",
         ));
     }
@@ -3223,8 +3276,8 @@ pub(crate) fn replace_source_atomically(
 ) -> Result<(), Diagnostic> {
     let metadata = require_regular_source(path)?;
     if read_source_text(path)? != original {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::SourceChangedDuringFormatting,
             "source changed during formatting; no replacement made",
         ));
     }
@@ -3245,8 +3298,8 @@ pub(crate) fn replace_source_atomically(
     drop(file);
     require_regular_source(path)?;
     if read_source_text(path)? != original {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::SourceChangedDuringFormatting,
             "source changed during formatting; no replacement made",
         ));
     }
@@ -3323,8 +3376,8 @@ fn build_complete(
         if options.target != Target::Native
             || !matches!(options.emit, Emit::Executable | Emit::Shared)
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
             ));
         }
@@ -3334,22 +3387,22 @@ fn build_complete(
     // The executor of `Async.start` and `Async.block_on` keeps its state across calls (B08), so the
     // blocks that a trapped call allocated and the trap boundary frees could still be reachable from it.
     if options.trap_return && !llvm::host_entries(module).is_empty() {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
             "--trap-mode return cannot be combined with Async.start or Async.block_on: a trap inside the executor would leave its state half updated",
         ));
     }
     // Each thread has its own executor in thread-local storage, which the workers of WebAssembly
     // threads do not set up. Their glue would also call exports from several workers (B08).
     if options.wasm_threads && !llvm::host_entries(module).is_empty() {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
             "--wasm-feature threads cannot be combined with Async.start or Async.block_on: their executor keeps per-thread state that WebAssembly threads do not set up",
         ));
     }
     if options.target.is_wasm() && !options.wasm_jspi && llvm::reaches_reactor(module) {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresOption,
             "Async.block_on on WebAssembly needs --wasm-feature jspi: it suspends the WebAssembly stack with JavaScript Promise Integration while it waits",
         ));
     }
@@ -3365,8 +3418,8 @@ fn build_complete(
     if options.emit == Emit::Executable
         && project.sources[project.root].relative_path != Path::new("Main.tz")
     {
-        return Err(driver_error(
-            "E2004",
+        return Err(driver_error_of(
+            DiagnosticKind::EntryPointMissing,
             "an application must start from Main.tz; pass Main.tz or its directory, or use '--emit object' for a library",
         ));
     }
@@ -3375,14 +3428,14 @@ fn build_complete(
         && !llvm::main_entry(module)
         && !module.functions.iter().any(|function| function.exported)
     {
-        return Err(driver_error(
-            "E2004",
+        return Err(driver_error_of(
+            DiagnosticKind::EntryPointMissing,
             "a WebAssembly module needs 'def main', top-level IO<T> entry-point code, or at least one 'export def' entry point",
         ));
     }
     if options.emit == Emit::Shared && !module.functions.iter().any(|function| function.exported) {
-        return Err(driver_error(
-            "E2004",
+        return Err(driver_error_of(
+            DiagnosticKind::EntryPointMissing,
             "a shared library needs at least one 'export def' entry point",
         ));
     }
@@ -3455,8 +3508,8 @@ fn build_complete(
             .map(|(id, _)| id)
             .collect();
         if exports.len() != 1 {
-            return Err(driver_error(
-                "E2004",
+            return Err(driver_error_of(
+                DiagnosticKind::SpirvKernelCount,
                 if options.emit.is_spirv() {
                     "SPIR-V output requires exactly one exported scalar kernel; use a dedicated source project"
                 } else {
@@ -3504,8 +3557,8 @@ fn build_complete(
                 )
             })?;
             if output.ir.contains("@tz.callback.") {
-                return Err(driver_error(
-                    "E2000",
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionConflict,
                     "--trap-mode return cannot be combined with extern callbacks: a trap would unwind through the host's frames",
                 ));
             }
@@ -3694,8 +3747,8 @@ fn build_complete(
         .into_iter()
         .find(|(marker, _)| ir.contains(marker))
         {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
                 format!(
                     "--freestanding cannot use {feature}: its runtime needs the C library; keep it in the host and pass the results to the exports"
                 ),
@@ -3736,18 +3789,24 @@ fn build_complete(
     // A callback's address is a table index the host resolves through the exported table.
     let callback_table = options.target.is_wasm() && runtime_symbols.prefix("tz.callback.");
     if task_runtime && !platform.threads() && !matches!(options.emit, Emit::Llvm | Emit::Header) {
-        return Err(driver_error(
-            "E2002",
+        return Err(driver_error_of(
+            DiagnosticKind::ToolchainMissingFeature,
             "native parallel tasks require a POSIX or Windows toolchain; wasm32 provides the portable sequential backend",
         ));
     }
     // The OS-API errors come first: `os_runtime` is part of `native_runtime`, and the generic message below
     // would send a Windows user to link a POSIX runtime that cannot be linked there.
     if os_runtime && options.target.is_wasm() && options.wasm_host.is_none() {
-        return Err(driver_error("E2000", OS_WASM_MESSAGE));
+        return Err(driver_error_of(
+            DiagnosticKind::WasmOsApiNeedsOptIn,
+            OS_WASM_MESSAGE,
+        ));
     }
     if net_runtime && options.target.is_wasm() && !options.wasm_net {
-        return Err(driver_error("E2000", NET_WASM_MESSAGE));
+        return Err(driver_error_of(
+            DiagnosticKind::WasmNetNeedsOptIn,
+            NET_WASM_MESSAGE,
+        ));
     }
     // The poller completes an async operation through the reactor's mailbox, which exists only in `Async.block_on`.
     // On WebAssembly the host completes it with `tsuzuri_async_complete`.
@@ -3756,32 +3815,44 @@ fn build_complete(
         && llvm::uses_net_async(&text)
         && !async_reactor
     {
-        return Err(driver_error("E2000", NET_ASYNC_MESSAGE));
+        return Err(driver_error_of(
+            DiagnosticKind::NetAsyncNeedsBlockOn,
+            NET_ASYNC_MESSAGE,
+        ));
     }
     if net_runtime
         && !platform.net()
         && options.target == Target::Native
         && options.emit != Emit::Llvm
     {
-        return Err(driver_error("E2002", net_message(platform)));
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
+            net_message(platform),
+        ));
     }
     if async_reactor
         && !platform.reactor()
         && options.target == Target::Native
         && options.emit != Emit::Llvm
     {
-        return Err(driver_error("E2002", async_message(platform)));
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
+            async_message(platform),
+        ));
     }
     if os_runtime
         && !platform.os_apis()
         && options.target == Target::Native
         && options.emit != Emit::Llvm
     {
-        return Err(driver_error("E2002", os_message(platform)));
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
+            os_message(platform),
+        ));
     }
     if platform.windows() && native_runtime && options.emit == Emit::Object {
-        return Err(driver_error(
-            "E2002",
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
             "Windows COFF objects with embedded task, CPU, IO, or Async runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
     }
@@ -4133,8 +4204,8 @@ fn build_complete(
             && native_runtime
             && options.emit == Emit::Object
         {
-            return Err(driver_error(
-                "E2002",
+            return Err(driver_error_of(
+                DiagnosticKind::FastBackendUnsupportedConstruct,
                 "--backend fast cannot put the C runtime that this program needs into a macOS debug object, because the relocatable link drops the DWARF; build an executable, drop -g, or use --backend llvm",
             ));
         }
@@ -4670,8 +4741,7 @@ fn build_complete(
             // What was `internal` is `hidden` in the units, and `hidden` is for the link inside this object.
             if unit_objects.is_some() {
                 let localizer = units::localizer(platform).ok_or_else(|| {
-                    driver_error(
-                        "E2002",
+                    driver_error_of(DiagnosticKind::ToolchainMissingFeature,
                         "an object built from codegen units needs nmedit (macOS) or objcopy; set TSUZURI_NMEDIT or TSUZURI_OBJCOPY, or TSUZURI_CODEGEN_UNITS=single",
                     )
                 })?;
@@ -4966,8 +5036,8 @@ fn build_bindings(
         return Err(error);
     }
     if !module.functions.iter().any(|function| function.exported) {
-        return Err(driver_error(
-            "E2004",
+        return Err(driver_error_of(
+            DiagnosticKind::EntryPointMissing,
             "bindings need at least one 'export def' entry point",
         ));
     }
@@ -5057,8 +5127,8 @@ fn publish_outputs(
             };
             if let Err(restore_error) = restored {
                 temporary.removed = true;
-                return Err(driver_error(
-                    "E2003",
+                return Err(driver_error_of(
+                    DiagnosticKind::OutputPublicationFailed,
                     format!(
                         "output publication failed ({}) and a sidecar could not be restored ({restore_error}); recovery files remain in '{}'",
                         error.message,
@@ -5292,8 +5362,8 @@ fn run_process(
     profile: &Profile,
 ) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
     if options.target != Target::Native || options.emit != Emit::Executable {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresBuild,
             "run requires native executable output",
         ));
     }
@@ -5356,7 +5426,10 @@ fn run_process(
         } else {
             format!("program exited with code {code}")
         };
-        return Err(driver_error("E2005", message));
+        return Err(driver_error_of(
+            DiagnosticKind::ProgramExitedNonzero,
+            message,
+        ));
     }
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
@@ -5386,7 +5459,11 @@ fn run_process(
         } else {
             format!("program terminated with {}:\n{}", status, stderr.trim_end())
         };
-        return Err(Diagnostic::new("E2005", message, site.unwrap_or_default()));
+        return Err(Diagnostic::of(
+            DiagnosticKind::ProgramTerminated,
+            message,
+            site.unwrap_or_default(),
+        ));
     }
     if json {
         io::stderr()
@@ -5546,7 +5623,11 @@ fn capture(
         while open > 0 && next(Some(grace)).is_ok() {
             open -= 1;
         }
-        return Err(Diagnostic::new("E2005", message, Span::default()));
+        return Err(Diagnostic::of(
+            DiagnosticKind::ProgramTimeLimitExceeded,
+            message,
+            Span::default(),
+        ));
     }
     let stdout = stdout_reader
         .join()
@@ -5574,8 +5655,7 @@ pub(crate) fn foreign_runner(
     };
     let name = triple.name();
     ForeignRunner::from_environment().map(Some).ok_or_else(|| {
-        driver_error(
-            "E2000",
+        driver_error_of(DiagnosticKind::ForeignTargetNotRunnable,
             format!(
                 "cannot run {name} {what} on this machine; run {them} on a {name} machine, set {} to a command that runs {name} executables (such as qemu-user, Wine, or an emulator wrapper), or use 'tsuzuri build --target {name}'",
                 crate::target::RUNNER_VARIABLE
@@ -5657,8 +5737,8 @@ fn translate_fast(text: &str, platform: Platform, object: &Path) -> Result<(), D
 
 #[cfg(not(feature = "fast-backend"))]
 fn translate_fast(_: &str, _: Platform, _: &Path) -> Result<(), Diagnostic> {
-    Err(driver_error(
-        "E2000",
+    Err(driver_error_of(
+        DiagnosticKind::FastBackendUnavailable,
         "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm",
     ))
 }
@@ -5676,8 +5756,8 @@ fn translate_fast_wasm(text: &str, multivalue: bool, object: &Path) -> Result<()
 
 #[cfg(not(feature = "fast-backend"))]
 fn translate_fast_wasm(_: &str, _: bool, _: &Path) -> Result<(), Diagnostic> {
-    Err(driver_error(
-        "E2000",
+    Err(driver_error_of(
+        DiagnosticKind::FastBackendUnavailable,
         "this tsuzuri was built without the fast backend; rebuild with cargo build --release --features fast-backend or use --backend llvm",
     ))
 }
@@ -5887,7 +5967,10 @@ fn tool_output(
     hint: &str,
 ) -> Result<String, Diagnostic> {
     let output = output.map_err(|error| {
-        driver_error("E2002", format!("cannot execute '{name}': {error}; {hint}"))
+        driver_error_of(
+            DiagnosticKind::ExternalToolNotRunnable,
+            format!("cannot execute '{name}': {error}; {hint}"),
+        )
     })?;
     let text = format!(
         "{}{}",
@@ -5895,8 +5978,8 @@ fn tool_output(
         String::from_utf8_lossy(&output.stderr)
     );
     if !output.status.success() {
-        return Err(driver_error(
-            "E2002",
+        return Err(driver_error_of(
+            DiagnosticKind::ExternalToolFailed,
             format!(
                 "'{name}' failed ({}):\n{}\n{hint}",
                 output.status,
@@ -5972,16 +6055,16 @@ fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
 
 fn protect_source(input: &Path, output: &Path) -> Result<(), Diagnostic> {
     if source_kind(output).is_some() {
-        return Err(driver_error(
-            "E2003",
+        return Err(driver_error_of(
+            DiagnosticKind::OutputHasSourceExtension,
             "an output must not have a '.tz', '.tt', or '.tc' source extension",
         ));
     }
     match fs::symlink_metadata(output) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(driver_error(
-                    "E2003",
+                return Err(driver_error_of(
+                    DiagnosticKind::OutputNotRegularFile,
                     "the output must not be a symlink, directory, or special file",
                 ));
             }
@@ -5990,8 +6073,8 @@ fn protect_source(input: &Path, output: &Path) -> Result<(), Diagnostic> {
             let destination = fs::canonicalize(output)
                 .map_err(|error| io_error("resolve output", output, error))?;
             if source == destination || same_file(input, output, &metadata)? {
-                return Err(driver_error(
-                    "E2003",
+                return Err(driver_error_of(
+                    DiagnosticKind::OutputOverwritesInput,
                     "refusing to overwrite the input source",
                 ));
             }
@@ -6026,13 +6109,13 @@ fn same_file(
     Ok(false)
 }
 
-fn driver_error(code: &'static str, message: impl Into<String>) -> Diagnostic {
-    Diagnostic::new(code, message, Span::default())
+fn driver_error_of(kind: DiagnosticKind, message: impl Into<String>) -> Diagnostic {
+    Diagnostic::of(kind, message, Span::default())
 }
 
 fn io_error(action: &str, path: &Path, error: io::Error) -> Diagnostic {
-    driver_error(
-        "E2001",
+    driver_error_of(
+        DiagnosticKind::IoFailure,
         format!("cannot {action} '{}': {error}", path.display()),
     )
 }
@@ -6070,8 +6153,8 @@ impl TemporaryDirectory {
                 Err(error) => return Err(io_error("create temporary directory", &path, error)),
             }
         }
-        Err(driver_error(
-            "E2001",
+        Err(driver_error_of(
+            DiagnosticKind::TempDirectoryFailed,
             "could not create a unique temporary directory",
         ))
     }

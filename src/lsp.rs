@@ -2751,6 +2751,7 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::DiagnosticKind;
     use std::io::Cursor;
 
     #[test]
@@ -2787,8 +2788,8 @@ mod tests {
 
     #[test]
     fn a_fix_must_remove_its_diagnostic_and_add_nothing() {
-        let error = |code: &'static str| Diagnostic::new(code, "m", Span::new(0, 0));
-        let warning = |code: &'static str| Diagnostic::warning(code, "m", Span::new(0, 0));
+        let error = |kind: DiagnosticKind| Diagnostic::of(kind, "m", Span::new(0, 0));
+        let warning = error;
         let removes = |diagnostic: &Diagnostic, before: &[Diagnostic], after: &[Diagnostic]| {
             fix_removes(
                 diagnostic,
@@ -2797,17 +2798,80 @@ mod tests {
             )
         };
         // A fixed error may uncover warnings of later passes.
-        assert!(removes(&error("E1021"), &[error("E1021")], &[warning("W1001")]).is_ok());
-        assert!(removes(&error("E1021"), &[error("E1021")], &[error("E1021")]).is_err());
-        assert!(removes(&error("E1021"), &[error("E1021")], &[error("E1003")]).is_err());
-        assert!(removes(&warning("W1001"), &[warning("W1001")], &[]).is_ok());
-        assert!(removes(&warning("W1001"), &[warning("W1001")], &[warning("W1001")]).is_err());
-        assert!(removes(&warning("W1001"), &[warning("W1001")], &[warning("W1005")]).is_err());
-        assert!(removes(&warning("W1001"), &[warning("W1001")], &[error("E1003")]).is_err());
+        assert!(
+            removes(
+                &error(DiagnosticKind::NonExhaustiveMatch),
+                &[error(DiagnosticKind::NonExhaustiveMatch)],
+                &[warning(DiagnosticKind::UnusedLocal)]
+            )
+            .is_ok()
+        );
+        assert!(
+            removes(
+                &error(DiagnosticKind::NonExhaustiveMatch),
+                &[error(DiagnosticKind::NonExhaustiveMatch)],
+                &[error(DiagnosticKind::NonExhaustiveMatch)]
+            )
+            .is_err()
+        );
+        assert!(
+            removes(
+                &error(DiagnosticKind::NonExhaustiveMatch),
+                &[error(DiagnosticKind::NonExhaustiveMatch)],
+                &[error(DiagnosticKind::TypeMismatch)]
+            )
+            .is_err()
+        );
+        assert!(
+            removes(
+                &warning(DiagnosticKind::UnusedLocal),
+                &[warning(DiagnosticKind::UnusedLocal)],
+                &[]
+            )
+            .is_ok()
+        );
+        assert!(
+            removes(
+                &warning(DiagnosticKind::UnusedLocal),
+                &[warning(DiagnosticKind::UnusedLocal)],
+                &[warning(DiagnosticKind::UnusedLocal)]
+            )
+            .is_err()
+        );
+        assert!(
+            removes(
+                &warning(DiagnosticKind::UnusedLocal),
+                &[warning(DiagnosticKind::UnusedLocal)],
+                &[warning(DiagnosticKind::DeprecatedUse)]
+            )
+            .is_err()
+        );
+        assert!(
+            removes(
+                &warning(DiagnosticKind::UnusedLocal),
+                &[warning(DiagnosticKind::UnusedLocal)],
+                &[error(DiagnosticKind::TypeMismatch)]
+            )
+            .is_err()
+        );
         // The counts include the diagnostics past the display limit: 51 to 50 is one fewer.
-        let many = |count: usize| vec![error("E1021"); count];
-        assert!(removes(&error("E1021"), &many(51), &many(50)).is_ok());
-        assert!(removes(&error("E1021"), &many(51), &many(51)).is_err());
+        let many = |count: usize| vec![error(DiagnosticKind::NonExhaustiveMatch); count];
+        assert!(
+            removes(
+                &error(DiagnosticKind::NonExhaustiveMatch),
+                &many(51),
+                &many(50)
+            )
+            .is_ok()
+        );
+        assert!(
+            removes(
+                &error(DiagnosticKind::NonExhaustiveMatch),
+                &many(51),
+                &many(51)
+            )
+            .is_err()
+        );
     }
 
     #[test]

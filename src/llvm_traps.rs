@@ -337,14 +337,24 @@ impl Sites {
                     .ok()
                     .and_then(|count| count.checked_mul(TrapKind::ALL.len() as u32))
                     .and_then(|base| base.checked_add(1))
-                    .ok_or_else(|| Diagnostic::new("E1017", "too many trap locations", span))?;
+                    .ok_or_else(|| {
+                        Diagnostic::of(
+                            DiagnosticKind::TooManyTrapLocations,
+                            "too many trap locations",
+                            span,
+                        )
+                    })?;
                 *self.bases.entry(key).or_insert(next)
             }
         };
         for kind in kinds {
-            let id = base
-                .checked_add(*kind as u32)
-                .ok_or_else(|| Diagnostic::new("E1017", "too many trap locations", span))?;
+            let id = base.checked_add(*kind as u32).ok_or_else(|| {
+                Diagnostic::of(
+                    DiagnosticKind::TooManyTrapLocations,
+                    "too many trap locations",
+                    span,
+                )
+            })?;
             self.sites.entry(id).or_insert(TrapSite {
                 id,
                 kind: *kind,
@@ -397,8 +407,8 @@ pub(super) fn instrument_numbered(
     numbering: TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
     if sources.is_empty() {
-        return Err(Diagnostic::new(
-            "E2000",
+        return Err(Diagnostic::of(
+            DiagnosticKind::TrapInfoWithoutSourceMap,
             "trap information requires a source map",
             Span::default(),
         ));

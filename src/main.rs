@@ -1384,8 +1384,8 @@ fn run_test_action(
         .any(|index| *index >= module.tests.len())
     {
         print_diagnostic(
-            &Diagnostic::new(
-                "E2000",
+            &Diagnostic::of(
+                DiagnosticKind::IndexOutOfRange,
                 "test index is out of range; refresh the test list",
                 Span::default(),
             ),
@@ -1522,8 +1522,8 @@ fn run_test_action(
         .iter()
         .find(|result| result.failure.is_some())
     {
-        let diagnostic = Diagnostic::new(
-            "E2006",
+        let diagnostic = Diagnostic::of(
+            DiagnosticKind::TestsFailed,
             format!("{failed} test{} failed", if failed == 1 { "" } else { "s" }),
             first.case.span,
         );
@@ -1614,8 +1614,8 @@ fn run_bench_action(
         .any(|index| *index >= module.benches.len())
     {
         print_diagnostic(
-            &Diagnostic::new(
-                "E2000",
+            &Diagnostic::of(
+                DiagnosticKind::IndexOutOfRange,
                 "bench index is out of range; refresh the bench list",
                 Span::default(),
             ),
@@ -1760,8 +1760,8 @@ fn run_bench_action(
         );
     }
     for result in &failed {
-        let diagnostic = Diagnostic::new(
-            "E2005",
+        let diagnostic = Diagnostic::of(
+            DiagnosticKind::BenchmarkFailed,
             format!(
                 "benchmark '{}.{}' {}",
                 result.case.module,
@@ -1940,8 +1940,8 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
     }
     let Some(directory) = directory.filter(|_| valid) else {
         print_diagnostic(
-            &Diagnostic::new(
-                "E2000",
+            &Diagnostic::of(
+                DiagnosticKind::UsageError,
                 "usage: tsuzuri new directory [--namespace NAME]",
                 Span::default(),
             ),
@@ -2157,8 +2157,8 @@ fn api_diff_command(arguments: &[OsString]) -> ExitCode {
 
 fn api_diff_usage(json: bool) -> ExitCode {
     print_diagnostic(
-        &Diagnostic::new(
-            "E2000",
+        &Diagnostic::of(
+            DiagnosticKind::UsageError,
             "usage: tsuzuri api-diff old new [--effective] [--json]; old and new are two directories or files",
             Span::default(),
         ),
@@ -2288,7 +2288,11 @@ fn fix_edition_command(arguments: &[OsString]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(message) => {
             print_diagnostic(
-                &Diagnostic::new("E2000", message, Span::default()),
+                &Diagnostic::of(
+                    DiagnosticKind::BindgenArgumentError,
+                    message,
+                    Span::default(),
+                ),
                 Path::new("<command line>"),
                 "",
                 json,
@@ -2487,8 +2491,8 @@ fn repl_command(arguments: &[OsString]) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             print_diagnostic(
-                &Diagnostic::new(
-                    "E2001",
+                &Diagnostic::of(
+                    DiagnosticKind::ReplStreamFailure,
                     format!("cannot read or write the REPL's standard streams: {error}"),
                     Span::default(),
                 ),

@@ -41,8 +41,8 @@ fn combine(
     span: Span,
 ) -> Result<Vec<Alternative>, Diagnostic> {
     if left.len().saturating_mul(right.len()) > MAX_PATTERN_ALTERNATIVES {
-        return Err(Diagnostic::new(
-            "E1017",
+        return Err(Diagnostic::of(
+            DiagnosticKind::PatternAlternativesLimit,
             "pattern alternatives exceed the compiler limit; split the match",
             span,
         ));
@@ -124,15 +124,15 @@ impl Checker<'_> {
                         Type::String => Type::Integer(16, false),
                         Type::Utf8String => Type::Integer(8, false),
                         Type::FixedArray(..) => {
-                            return Err(Diagnostic::new(
-                                "E1005",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ForOverFixedArray,
                                 "a fixed-length array is not enumerable; iterate 'for i in 0 .. xs.length - 1' and index it",
                                 source.span,
                             ));
                         }
                         _ => {
-                            return Err(Diagnostic::new(
-                                "E1005",
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ForSourceNotIterable,
                                 "for...in expects an array, list, string, utf8string, integer range, or Seq; call Module.iter explicitly for user-defined types",
                                 source.span,
                             ));
@@ -235,8 +235,8 @@ impl Checker<'_> {
     ) -> Result<TypedExpr, Diagnostic> {
         let depth = body.depth.max(pattern.depth) + 12 * (self.normal_loop_depth + 1);
         if depth > MAX_NESTING {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::SequenceLoopDepthLimit,
                 "sequence loop expansion exceeds the compiler depth limit; extract the body into a function",
                 span,
             ));
@@ -438,8 +438,8 @@ impl Checker<'_> {
                         let local = locals
                             .get(&name.text)
                             .ok_or_else(|| {
-                                Diagnostic::new(
-                                    "E1020",
+                                Diagnostic::of(
+                                    DiagnosticKind::OrPatternBindingMismatch,
                                     "both sides of an OR pattern must bind the same names",
                                     name.span,
                                 )
@@ -455,8 +455,8 @@ impl Checker<'_> {
                     bindings.push((local, projection));
                 }
                 if seen.len() != locals.len() {
-                    return Err(Diagnostic::new(
-                        "E1020",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::OrPatternBindingMismatch,
                         "both sides of an OR pattern must bind the same names",
                         arm.pattern.span,
                     ));
@@ -533,8 +533,8 @@ impl Checker<'_> {
                     return self.active_pattern(name, &[], matched);
                 }
                 if name.text.contains(['.', ':']) {
-                    return Err(Diagnostic::new(
-                        "E1020",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::QualifiedPatternBinding,
                         "a pattern binding cannot be a qualified name",
                         name.span,
                     ));
@@ -549,8 +549,8 @@ impl Checker<'_> {
                 return self.active_pattern(name, arguments, matched);
             }
             PatternKind::Argument(_) => {
-                return Err(Diagnostic::new(
-                    "E1020",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExpressionInPattern,
                     "expressions are only allowed as recognizer arguments; use 'when' for a guard",
                     pattern.span,
                 ));
@@ -585,8 +585,8 @@ impl Checker<'_> {
                 let (others, right) = self.pattern_alternatives(right, matched)?;
                 alternatives.extend(others);
                 if alternatives.len() > MAX_PATTERN_ALTERNATIVES {
-                    return Err(Diagnostic::new(
-                        "E1017",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::OrPatternAlternativesLimit,
                         "too many OR pattern alternatives",
                         pattern.span,
                     ));
@@ -636,8 +636,8 @@ impl Checker<'_> {
                 } else if let Type::Record(id, arguments) = self.inference.resolve(&matched.ty) {
                     (id, arguments)
                 } else {
-                    return Err(Diagnostic::new(
-                        "E1020",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::RecordPatternUnknownType,
                         "an unqualified record pattern needs a known record type",
                         pattern.span,
                     ));
@@ -658,8 +658,8 @@ impl Checker<'_> {
                         .iter()
                         .position(|(field, _)| field == &name.text)
                         .ok_or_else(|| {
-                            Diagnostic::new(
-                                "E1007",
+                            Diagnostic::of(
+                                DiagnosticKind::RecordHasNoField,
                                 format!("record has no field '{}'", name.text),
                                 name.span,
                             )
@@ -687,8 +687,8 @@ impl Checker<'_> {
             }
             PatternKind::Array(patterns) | PatternKind::List(patterns) => {
                 if matches!(self.inference.resolve(&matched.ty), Type::FixedArray(..)) {
-                    return Err(Diagnostic::new(
-                        "E1020",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ArrayPatternOnFixedArray,
                         "fixed-length arrays cannot be destructured by patterns; index the elements instead",
                         pattern.span,
                     ));
@@ -777,8 +777,8 @@ impl Checker<'_> {
                 .names
                 .has_active_pattern(self.module, &format!("{}.{}", self.module, name.text))
         {
-            return Err(Diagnostic::new(
-                "E1004",
+            return Err(Diagnostic::of(
+                DiagnosticKind::AmbiguousPatternName,
                 format!(
                     "'{}' names both the union case '{}' and an active pattern of module '{}'; qualify the case as '{}'",
                     name.text, case.info.name, self.module, case.info.name
@@ -803,8 +803,8 @@ impl Checker<'_> {
             (false, []) => None,
             (true, [payload]) => Some(payload),
             (true, []) => {
-                return Err(Diagnostic::new(
-                    "E1020",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::CasePatternMissingPayload,
                     format!(
                         "union case '{}' carries a payload; match it with a payload pattern such as '{} _'",
                         name.text, name.text
@@ -813,8 +813,8 @@ impl Checker<'_> {
                 ));
             }
             (false, _) => {
-                return Err(Diagnostic::new(
-                    "E1020",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::CasePatternUnexpectedPayload,
                     format!(
                         "union case '{}' has no payload; remove the patterns after it",
                         name.text
@@ -823,8 +823,8 @@ impl Checker<'_> {
                 ));
             }
             (true, _) => {
-                return Err(Diagnostic::new(
-                    "E1020",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::CasePatternPayloadShape,
                     format!(
                         "union case '{}' carries one payload; match several values with one tuple pattern such as '{} (a, b)'",
                         name.text, name.text
@@ -924,8 +924,8 @@ impl Checker<'_> {
                     .collect::<Result<_, _>>()?,
             ),
             _ => {
-                return Err(Diagnostic::new(
-                    "E1020",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ActiveArgumentNotValue,
                     "a recognizer argument must be a value expression, not a binding pattern",
                     pattern.span,
                 ));
@@ -945,8 +945,8 @@ impl Checker<'_> {
         matched: TypedExpr,
     ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
         let (id, active_case) = self.active_recognizer(name)?.ok_or_else(|| {
-            Diagnostic::new(
-                "E1020",
+            Diagnostic::of(
+                DiagnosticKind::UnknownCaseOrActivePattern,
                 format!("unknown union case or active pattern '{}'", name.text),
                 name.span,
             )
@@ -1005,8 +1005,8 @@ impl Checker<'_> {
         {
             None
         } else {
-            return Err(Diagnostic::new(
-                "E1006",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ActivePatternArgumentCount,
                 format!(
                     "recognizer '{}' expects {extras} arguments{}",
                     name.text,
@@ -1039,8 +1039,8 @@ impl Checker<'_> {
                 )
             }
             Type::Reference(_, true) => {
-                return Err(Diagnostic::new(
-                    "E1014",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ActivePatternMutatesInput,
                     "active recognizers cannot mutate the matched input",
                     name.span,
                 ));

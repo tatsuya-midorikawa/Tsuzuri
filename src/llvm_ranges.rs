@@ -47,8 +47,8 @@ impl RangeFlags {
     /// value is an error: a mode that was asked for and does not exist must not fall back silently.
     pub fn from_environment() -> Result<Self, Diagnostic> {
         let invalid = |value: &str| {
-            Diagnostic::new(
-                "E2000",
+            Diagnostic::of(
+                DiagnosticKind::InvalidRangeFlagSetting,
                 format!("{ENVIRONMENT_VARIABLE} must be off, proven or audit, not '{value}'"),
                 Span::default(),
             )

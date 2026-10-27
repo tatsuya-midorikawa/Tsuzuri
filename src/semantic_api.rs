@@ -255,8 +255,8 @@ pub(in crate::check) fn collect(
         for declaration in &program.functions {
             let Some((id, function)) = functions.get(&format!("{name}.{}", declaration.name.text))
             else {
-                return Err(Diagnostic::new(
-                    "E1016",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InternalEffectiveApiUnavailable,
                     "effective API signature is unavailable",
                     declaration.name.span,
                 ));
@@ -344,8 +344,8 @@ pub(in crate::check) fn collect(
         for declaration in &program.records {
             let Some(record) = records.get(format!("{name}.{}", declaration.name.text).as_str())
             else {
-                return Err(Diagnostic::new(
-                    "E1016",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InternalEffectiveApiUnavailable,
                     "effective API record is unavailable",
                     declaration.name.span,
                 ));
@@ -369,8 +369,8 @@ pub(in crate::check) fn collect(
         for declaration in &program.unions {
             let Some(union) = unions.get(format!("{name}.{}", declaration.name.text).as_str())
             else {
-                return Err(Diagnostic::new(
-                    "E1016",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InternalEffectiveApiUnavailable,
                     "effective API union is unavailable",
                     declaration.name.span,
                 ));
@@ -411,8 +411,8 @@ pub(in crate::check) fn collect(
                     &format!("{name}.{}", declaration.name.text),
                     &method.name.text,
                 ) else {
-                    return Err(Diagnostic::new(
-                        "E1016",
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::InternalEffectiveApiUnavailable,
                         "effective API class method is unavailable",
                         method.name.span,
                     ));

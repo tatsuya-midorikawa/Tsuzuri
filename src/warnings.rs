@@ -25,8 +25,8 @@ pub(super) fn unused_locals(function: &CheckedFunction) -> Vec<Diagnostic> {
                 && !used.contains(&local.id)
         })
         .map(|local| {
-            Diagnostic::warning(
-                "W1001",
+            Diagnostic::of(
+                DiagnosticKind::UnusedLocal,
                 format!(
                     "unused local '{}'; prefix it with '_' to silence this warning",
                     local.name
@@ -271,8 +271,8 @@ pub(super) fn unused_private(
             {
                 candidates.insert(
                     node,
-                    Diagnostic::warning(
-                        "W1002",
+                    Diagnostic::of(
+                        DiagnosticKind::UnusedPrivateFunction,
                         format!(
                             "unused private function '{}'; remove it or make it public",
                             names.spelling(&function.qualified_name())
@@ -338,8 +338,8 @@ pub(super) fn unused_private(
             if visibility == Visibility::Private && name.provenance == Provenance::User {
                 candidates.insert(
                     node,
-                    Diagnostic::warning(
-                        "W1002",
+                    Diagnostic::of(
+                        DiagnosticKind::UnusedPrivateType,
                         format!(
                             "unused private type '{}'; remove it or make it public",
                             names.type_spelling(&qualified)
@@ -872,7 +872,7 @@ pub(super) fn deprecated_uses(
         .collect();
     uses.into_iter()
         .filter(|used| used.case || !cases.contains(&(used.source, used.owner, used.span.end + 1)))
-        .map(|used| Diagnostic::warning("W1005", used.message, used.span))
+        .map(|used| Diagnostic::of(DiagnosticKind::DeprecatedUse, used.message, used.span))
         .collect()
 }
 

@@ -101,8 +101,8 @@ pub(super) fn arity(kind: &Kind, span: Span) -> Result<usize, Diagnostic> {
     let mut count = 0;
     while let Kind::Arrow(argument, result) = current {
         if **argument != Kind::Type {
-            return Err(Diagnostic::new(
-                "E1015",
+            return Err(Diagnostic::of(
+                DiagnosticKind::HigherOrderKindArgument,
                 "phase-1 constructors accept value types, not higher-order kind arguments",
                 span,
             ));
@@ -130,16 +130,16 @@ pub(super) fn resolve_constructor(
         }
         TypeExprKind::Variable(name) => return Ok(Type::Variable(name.clone())),
         _ => {
-            return Err(Diagnostic::new(
-                "E1015",
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExpectedTypeConstructor,
                 "expected a named type constructor with the declared kind",
                 expression.span,
             ));
         }
     };
     if crate::numeric::primitive(name).is_some() {
-        return Err(Diagnostic::new(
-            "E1015",
+        return Err(Diagnostic::of(
+            DiagnosticKind::ScalarAsTypeConstructor,
             "a scalar value type is not a type constructor",
             expression.span,
         ));
@@ -153,15 +153,15 @@ pub(super) fn resolve_constructor(
             NamedType::Record(info) => Constructor::Record(info.id, names.record_arities[info.id]),
             NamedType::Union(info) => Constructor::Union(info.id, names.union_arities[info.id]),
             NamedType::Alias(_) => {
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::HigherKindedAlias,
                     "higher-kinded type aliases are not supported; use the underlying constructor",
                     expression.span,
                 ));
             }
             NamedType::Handle(_) => {
-                return Err(Diagnostic::new(
-                    "E1015",
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExternTypeAsConstructor,
                     "an extern type takes no type arguments, so it is not a type constructor",
                     expression.span,
                 ));
@@ -169,8 +169,8 @@ pub(super) fn resolve_constructor(
         },
     };
     if constructor.arity().checked_sub(arguments.len()) != Some(expected) {
-        return Err(Diagnostic::new(
-            "E1015",
+        return Err(Diagnostic::of(
+            DiagnosticKind::ConstructorKindMismatch,
             "type constructor kind does not match the class parameter",
             expression.span,
         ));

@@ -107,15 +107,15 @@ fn run_with_timeout(
     timeout: Duration,
 ) -> Result<TestReport, Diagnostic> {
     if options.optimization > 3 {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionInvalidValue,
             "test optimization must be between 0 and 3",
         ));
     }
     if !links.is_empty() {
         if options.target.is_wasm() {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
             ));
         }
@@ -125,28 +125,28 @@ fn run_with_timeout(
     if !options.target.is_wasm()
         && (options.wasm_max_memory.is_some() || options.wasm_stack_size.is_some())
     {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresBuild,
             "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64",
         ));
     }
     if options.coverage && options.target.is_wasm() {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresBuild,
             "test coverage supports only the native target",
         ));
     }
     if options.backend == Backend::Fast && options.target.is_wasm() {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::FastBackendUnsupportedOption,
             "--backend fast tests only the native target; use --backend llvm to test a WebAssembly target",
         ));
     }
     let platform = options.platform();
     if let Some(triple) = options.triple {
         if options.target != Target::Native {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionInvalidValue,
                 format!(
                     "--target {} names a native target, not WebAssembly",
                     triple.name()
@@ -154,8 +154,8 @@ fn run_with_timeout(
             ));
         }
         if options.coverage && platform.cross() {
-            return Err(driver_error(
-                "E2000",
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
                 format!(
                     "test coverage needs a target this machine runs; run 'tsuzuri test --coverage' on a {} machine",
                     triple.name()
@@ -300,8 +300,8 @@ fn merge_coverage(
         let bytes =
             fs::read(&path).map_err(|error| io_error("read coverage counters", &path, error))?;
         crate::coverage::merge(&mut counts, &bytes).map_err(|message| {
-            driver_error(
-                "E2002",
+            driver_error_of(
+                DiagnosticKind::InvalidCoverageCounters,
                 format!(
                     "invalid coverage counters in '{}': {message}",
                     path.display()
@@ -393,33 +393,33 @@ pub fn build_debug_runner(
     output: &Path,
 ) -> Result<DebugRunner, Diagnostic> {
     let [index] = options.indices[..] else {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
             "debugging a test needs exactly one --index",
         ));
     };
     let Some(case) = module.tests.get(index).cloned() else {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::IndexOutOfRange,
             "test index is out of range; refresh the test list",
         ));
     };
     if options.target != Target::Native {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresBuild,
             "debugging a test requires the native target",
         ));
     }
     let platform = options.platform();
     if platform.cross() {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresBuild,
             "debugging a test needs a target this machine runs; use 'tsuzuri test --index N -g -o PATH' on a machine of that target",
         ));
     }
     if options.optimization > 3 {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionInvalidValue,
             "test optimization must be between 0 and 3",
         ));
     }
@@ -591,8 +591,8 @@ fn native_runtime_sources(
     let mut sources = vec![("main.c", include_str!("runtime/test-runner.c").to_owned())];
     if text.contains("declare void @tsuzuri_task_parallel(") {
         if !platform.threads() {
-            return Err(driver_error(
-                "E2002",
+            return Err(driver_error_of(
+                DiagnosticKind::ToolchainMissingFeature,
                 "native parallel tasks require POSIX or Windows threads",
             ));
         }
@@ -600,16 +600,25 @@ fn native_runtime_sources(
     }
     if text.contains("declare i64 @tsuzuri_os_") {
         if !platform.os_apis() {
-            return Err(driver_error("E2002", crate::driver::os_message(platform)));
+            return Err(driver_error_of(
+                DiagnosticKind::PlatformUnsupportedApi,
+                crate::driver::os_message(platform),
+            ));
         }
         sources.push(("os.c", include_str!("runtime/os.c").to_owned()));
     }
     if llvm::uses_net(text) {
         if !platform.net() {
-            return Err(driver_error("E2002", crate::driver::net_message(platform)));
+            return Err(driver_error_of(
+                DiagnosticKind::PlatformUnsupportedApi,
+                crate::driver::net_message(platform),
+            ));
         }
         if llvm::uses_net_async(text) && !llvm::uses_reactor(text) {
-            return Err(driver_error("E2000", crate::driver::NET_ASYNC_MESSAGE));
+            return Err(driver_error_of(
+                DiagnosticKind::NetAsyncNeedsBlockOn,
+                crate::driver::NET_ASYNC_MESSAGE,
+            ));
         }
         sources.push(("net.c", include_str!("runtime/net.c").to_owned()));
     }
@@ -621,8 +630,8 @@ fn native_runtime_sources(
     }
     if llvm::uses_reactor(text) {
         if !platform.reactor() {
-            return Err(driver_error(
-                "E2002",
+            return Err(driver_error_of(
+                DiagnosticKind::PlatformUnsupportedApi,
                 crate::driver::async_message(platform),
             ));
         }
@@ -744,14 +753,20 @@ fn build_runner(
     text = llvm::with_wasm_gpu_host(text, false);
     text.push_str(include_str!("runtime/wasm.ll"));
     if text.contains("declare i64 @tsuzuri_os_") {
-        return Err(driver_error("E2000", crate::driver::OS_WASM_MESSAGE));
+        return Err(driver_error_of(
+            DiagnosticKind::WasmOsApiNeedsOptIn,
+            crate::driver::OS_WASM_MESSAGE,
+        ));
     }
     if llvm::uses_net(&text) {
-        return Err(driver_error("E2000", crate::driver::NET_WASM_MESSAGE));
+        return Err(driver_error_of(
+            DiagnosticKind::WasmNetNeedsOptIn,
+            crate::driver::NET_WASM_MESSAGE,
+        ));
     }
     if text.contains("define i64 @tsuzuri_async_poll(") || llvm::uses_reactor(&text) {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::WasmTestRunnerAsync,
             "the WebAssembly test runner cannot drive Async.start or Async.block_on; use Async.run, or build a module with an asynchronous host",
         ));
     }
@@ -849,8 +864,8 @@ fn compile_native_runner(
     }
     let task_runtime = text.contains("declare void @tsuzuri_task_parallel(");
     if task_runtime && !platform.threads() {
-        return Err(driver_error(
-            "E2002",
+        return Err(driver_error_of(
+            DiagnosticKind::ToolchainMissingFeature,
             "native parallel tasks require POSIX or Windows threads",
         ));
     }
@@ -866,14 +881,20 @@ fn compile_native_runner(
         String::new()
     };
     if os_runtime && !platform.os_apis() {
-        return Err(driver_error("E2002", crate::driver::os_message(platform)));
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
+            crate::driver::os_message(platform),
+        ));
     }
     if net_runtime && !platform.net() {
-        return Err(driver_error("E2002", crate::driver::net_message(platform)));
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
+            crate::driver::net_message(platform),
+        ));
     }
     if async_runtime && !platform.reactor() {
-        return Err(driver_error(
-            "E2002",
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
             crate::driver::async_message(platform),
         ));
     }
@@ -1062,15 +1083,15 @@ pub fn run_benches_linked(
     links: &LinkInputs,
 ) -> Result<BenchReport, Diagnostic> {
     if options.target.is_wasm() {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresBuild,
             "tsuzuri bench supports only the native target",
         ));
     }
     let platform = Platform::new(options.triple);
     if let Some(triple) = options.triple.filter(|_| platform.cross()) {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresBuild,
             format!(
                 "tsuzuri bench measures the machine it runs on and cannot run {0} benchmarks here; run 'tsuzuri bench' on a {0} machine",
                 triple.name()
@@ -1078,14 +1099,14 @@ pub fn run_benches_linked(
         ));
     }
     if options.optimization > 3 {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionInvalidValue,
             "bench optimization must be between 0 and 3",
         ));
     }
     if !(1..=1000).contains(&options.samples) {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::OptionInvalidValue,
             "bench samples must be an integer between 1 and 1000",
         ));
     }
@@ -1094,8 +1115,8 @@ pub fn run_benches_linked(
         .iter()
         .any(|index| *index >= module.benches.len())
     {
-        return Err(driver_error(
-            "E2000",
+        return Err(driver_error_of(
+            DiagnosticKind::IndexOutOfRange,
             "bench index is out of range; refresh the bench list",
         ));
     }
@@ -1337,8 +1358,8 @@ fn run_captured(
     let program = command.get_program().to_owned();
     let mut child = command.spawn().map_err(|error| {
         if foreign {
-            driver_error(
-                "E2001",
+            driver_error_of(
+                DiagnosticKind::ForeignRunnerNotStartable,
                 format!(
                     "cannot start the runner of {} '{}': {error}",
                     crate::target::RUNNER_VARIABLE,
@@ -1346,7 +1367,10 @@ fn run_captured(
                 ),
             )
         } else {
-            driver_error("E2002", format!("cannot start {kind} runner: {error}"))
+            driver_error_of(
+                DiagnosticKind::ExternalToolNotRunnable,
+                format!("cannot start {kind} runner: {error}"),
+            )
         }
     })?;
     let out = child.stdout.take().map(|pipe| {
@@ -1366,8 +1390,8 @@ fn run_captured(
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(driver_error(
-                    "E2002",
+                return Err(driver_error_of(
+                    DiagnosticKind::ExternalToolWaitFailed,
                     format!("cannot wait for {kind} runner: {error}"),
                 ));
             }
@@ -1376,10 +1400,16 @@ fn run_captured(
             let stopped = child.kill();
             let collected = child.wait();
             collected.map_err(|error| {
-                driver_error("E2002", format!("cannot collect timed-out {kind}: {error}"))
+                driver_error_of(
+                    DiagnosticKind::ExternalToolWaitFailed,
+                    format!("cannot collect timed-out {kind}: {error}"),
+                )
             })?;
             stopped.map_err(|error| {
-                driver_error("E2002", format!("cannot stop timed-out {kind}: {error}"))
+                driver_error_of(
+                    DiagnosticKind::ExternalToolWaitFailed,
+                    format!("cannot stop timed-out {kind}: {error}"),
+                )
             })?;
             break None;
         }

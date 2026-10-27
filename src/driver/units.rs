@@ -18,10 +18,10 @@ use std::thread;
 
 use super::{
     Backend, BuildOptions, CODEGEN_UNITS_VARIABLE, Emit, OptLevel, Platform, Profile, Target,
-    collect_message, driver_error, io_error, run_tool_untimed,
+    collect_message, driver_error_of, io_error, run_tool_untimed,
 };
 use crate::cache::{self, BuildCache, ToolIdentity};
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, DiagnosticKind};
 use crate::llvm::split::{SplitInput, Unit, split};
 
 /// `TSUZURI_CODEGEN_UNITS`.
@@ -55,8 +55,8 @@ pub(super) fn mode_of(value: Option<&OsStr>) -> Result<Mode, Diagnostic> {
             Some("" | "single") => Ok(Mode::Single),
             Some("auto") => Ok(Mode::Auto),
             Some("split") => Ok(Mode::Split),
-            _ => Err(driver_error(
-                "E2000",
+            _ => Err(driver_error_of(
+                DiagnosticKind::EnvironmentSettingInvalid,
                 format!(
                     "invalid {CODEGEN_UNITS_VARIABLE} value '{}'; use 'auto', 'single' or 'split'",
                     value.to_string_lossy()
@@ -415,8 +415,8 @@ pub(super) fn build(
         for (bundle, _) in &compiled {
             for index in bundle {
                 if !objects[*index].is_file() {
-                    return Err(driver_error(
-                        "E2002",
+                    return Err(driver_error_of(
+                        DiagnosticKind::ExternalToolFailed,
                         format!(
                             "Clang wrote no object for a unit of LLVM IR ({})",
                             units[*index].name

@@ -80,8 +80,8 @@ pub(super) fn instances(
         }
     }
     if output.len() > 1024 {
-        return Err(Diagnostic::new(
-            "E1017",
+        return Err(Diagnostic::of(
+            DiagnosticKind::DerivingInstanceLimit,
             "deriving exceeds 1024 instances",
             output[1024].1.class.span,
         ));
@@ -104,8 +104,8 @@ fn json_names<'a>(
         if let Some(attribute) = attribute
             && !json
         {
-            return Err(Diagnostic::new(
-                "E1025",
+            return Err(Diagnostic::of(
+                DiagnosticKind::JsonNameWithoutDeriving,
                 format!(
                     "'@json' names a {place} only for deriving (Encode, Decode); derive one of them or remove the attribute"
                 ),
@@ -114,8 +114,8 @@ fn json_names<'a>(
         }
         let units = json_units(name, attribute);
         if json && !seen.insert(units.clone()) {
-            return Err(Diagnostic::new(
-                "E1025",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DuplicateJsonName,
                 format!(
                     "the JSON name \"{}\" of {place} '{}' repeats another; give each {place} a distinct '@json' name",
                     String::from_utf16_lossy(&units),
@@ -227,8 +227,8 @@ impl Build<'_> {
         };
         self.nodes.set(self.nodes.get() + 1);
         if depth > MAX_NESTING || self.nodes.get() > 4096 {
-            return Err(Diagnostic::new(
-                "E1017",
+            return Err(Diagnostic::of(
+                DiagnosticKind::DerivingExpressionLimit,
                 "deriving exceeds the expression depth or node limit",
                 self.span,
             ));
@@ -407,8 +407,8 @@ impl Build<'_> {
                 ("gt", Greater),
                 ("ge", GreaterEqual),
             ]),
-            _ => Err(Diagnostic::new(
-                "E1025",
+            _ => Err(Diagnostic::of(
+                DiagnosticKind::DerivingUnavailable,
                 "this deriving implementation is not available yet",
                 self.span,
             )),

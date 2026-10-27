@@ -21,7 +21,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::diagnostic::{Diagnostic, Span};
+use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::driver::{PackageRequest, Resolution, SourceError, TemporaryDirectory};
 use crate::package::{DependencySource, IndexEntry, LockEntry, Version};
 use crate::syntax::MAX_SOURCE_BYTES;
@@ -85,8 +85,7 @@ pub fn publish(directory: &Path, url: &str, rev: &str) -> Result<String, SourceE
         span: Span::default(),
     };
     let version = Version::parse(&manifest.version).ok_or_else(|| {
-        location.error(
-            "E1011",
+        location.error(DiagnosticKind::InvalidPublishVersion,
             "a published package needs [package] version in MAJOR.MINOR.PATCH form without leading zeros, such as \"1.2.3\"".to_owned(),
         )
     })?;
@@ -95,8 +94,8 @@ pub fn publish(directory: &Path, url: &str, rev: &str) -> Result<String, SourceE
         let DependencySource::Registry(requirement) = dependency.source else {
             return Err(SourceError::new(
                 &manifest_path,
-                Diagnostic::new(
-                    "E1011",
+                Diagnostic::of(
+                    DiagnosticKind::PublishNonRegistryDependency,
                     format!(
                         "a published package can depend only on registry packages; '{name}' is a path or git dependency"
                     ),
@@ -109,8 +108,8 @@ pub fn publish(directory: &Path, url: &str, rev: &str) -> Result<String, SourceE
     if let Some((_, span)) = &manifest.native {
         return Err(SourceError::new(
             &manifest_path,
-            Diagnostic::new(
-                "E2000",
+            Diagnostic::of(
+                DiagnosticKind::NativeLinkSettingNotAllowed,
                 "a published package cannot declare [native] link settings",
                 *span,
             ),
@@ -118,7 +117,7 @@ pub fn publish(directory: &Path, url: &str, rev: &str) -> Result<String, SourceE
     }
     let local = package_sha256(directory).ok_or_else(|| {
         location.error(
-            "E2007",
+            DiagnosticKind::PackageFilesUnreadable,
             format!("cannot read the package files of {}", directory.display()),
         )
     })?;
@@ -129,8 +128,7 @@ pub fn publish(directory: &Path, url: &str, rev: &str) -> Result<String, SourceE
     let sha256 = download.sha256.clone();
     download.commit(&store)?;
     if sha256 != local {
-        return Err(location.error(
-            "E2007",
+        return Err(location.error(DiagnosticKind::PublishedPackageMismatch,
             format!(
                 "the package in {} does not match {url} at {rev} (sha256 {local} here, {sha256} in the commit); commit and push the package, then publish that commit",
                 directory.display()
@@ -163,8 +161,8 @@ impl Location {
         }
     }
 
-    fn error(&self, code: &'static str, message: String) -> SourceError {
-        SourceError::new(&self.manifest, Diagnostic::new(code, message, self.span))
+    fn error(&self, kind: DiagnosticKind, message: String) -> SourceError {
+        SourceError::new(&self.manifest, Diagnostic::of(kind, message, self.span))
     }
 }
 
@@ -229,7 +227,7 @@ impl Fetcher {
                     })
                     .ok_or_else(|| {
                         Location::of(request).error(
-                            "E2007",
+                            DiagnosticKind::RegistryDependencyNotSelected,
                             format!(
                                 "registry dependency '{}' was not selected; run tsuzuri fetch again",
                                 request.name
@@ -263,7 +261,7 @@ impl Fetcher {
         let location = Location::of(request);
         if !url_allowed(request.parent_url, url) {
             return Err(location.error(
-                "E2007",
+                DiagnosticKind::FileUrlAfterHttps,
                 format!(
                     "package '{}' was fetched over https and cannot use the file:// url of '{}'",
                     request.parent, request.name
@@ -302,8 +300,8 @@ impl Fetcher {
         {
             return Err(SourceError::new(
                 &self.lock_path,
-                Diagnostic::new(
-                    "E2007",
+                Diagnostic::of(
+                    DiagnosticKind::LockfileChecksumMismatch,
                     format!(
                         "git dependency '{}' at rev {rev} has sha256 {} but Tsuzuri.lock records {}; remove its entry only if you trust the new content",
                         request.name, download.sha256, old.sha256
@@ -339,8 +337,7 @@ impl Fetcher {
     ) -> Result<(), SourceError> {
         let first = self.requirements[0].clone();
         let registry = root.registry.as_ref().ok_or_else(|| {
-            first.location.error(
-                "E2007",
+            first.location.error(DiagnosticKind::RegistryIndexMissing,
                 format!(
                     "registry dependency '{}' needs a [registry] index in the root package's Tsuzuri.toml",
                     first.name
@@ -364,13 +361,12 @@ impl Fetcher {
                 let version = requirement.version;
                 let Some(versions) = index.entries.get(&name) else {
                     return Err(requirement.location.error(
-                        "E2007",
+                        DiagnosticKind::RegistryPackageMissing,
                         format!("the registry index has no package '{name}'"),
                     ));
                 };
                 let Some(entry) = versions.get(&version) else {
-                    return Err(requirement.location.error(
-                        "E2007",
+                    return Err(requirement.location.error(DiagnosticKind::RegistryVersionMissing,
                         format!(
                             "the registry index has no version {version} of '{name}' (required by {})",
                             requirement.by
@@ -389,8 +385,7 @@ impl Fetcher {
                 }
                 required.entry(name).or_default().push(requirement);
                 if required.len() > MAX_REGISTRY_PACKAGES || visited.len() > MAX_REGISTRY_VERSIONS {
-                    return Err(self.requirements[0].location.error(
-                        "E1017",
+                    return Err(self.requirements[0].location.error(DiagnosticKind::RegistryResolutionLimit,
                         format!(
                             "registry resolution exceeds {MAX_REGISTRY_PACKAGES} packages or {MAX_REGISTRY_VERSIONS} package versions"
                         ),
@@ -426,8 +421,7 @@ impl Fetcher {
                     } else {
                         (&requirement, first)
                     };
-                    return Err(requirement.location.error(
-                        "E1011",
+                    return Err(requirement.location.error(DiagnosticKind::IncompatibleDependencyVersions,
                         format!(
                             "package '{}' is required at incompatible versions {} (by {}) and {} (by {}); one package name has one version",
                             requirement.name, lower.version, lower.by, higher.version, higher.by
@@ -472,8 +466,7 @@ impl Fetcher {
         location: &Location,
     ) -> Result<(), SourceError> {
         if !url_allowed(Some(index), &entry.git) {
-            return Err(location.error(
-                "E2007",
+            return Err(location.error(DiagnosticKind::FileUrlAfterHttps,
                 format!(
                     "the registry index was fetched over https and cannot use the file:// url of '{name}'"
                 ),
@@ -487,8 +480,8 @@ impl Fetcher {
         {
             return Err(SourceError::new(
                 &self.lock_path,
-                Diagnostic::new(
-                    "E2007",
+                Diagnostic::of(
+                    DiagnosticKind::LockfileChecksumMismatch,
                     format!(
                         "registry package '{name}' {version} has sha256 {} in the registry index but Tsuzuri.lock records {}; remove its entry only if you trust the new content",
                         entry.sha256, old.sha256
@@ -502,8 +495,7 @@ impl Fetcher {
             self.check_git(location)?;
             let download = download(store, name, &entry.git, &entry.rev, location)?;
             if download.sha256 != entry.sha256 {
-                return Err(location.error(
-                    "E2007",
+                return Err(location.error(DiagnosticKind::RegistryChecksumMismatch,
                     format!(
                         "registry package '{name}' {version} at {} has sha256 {} but the registry index records {}",
                         entry.rev, download.sha256, entry.sha256
@@ -514,8 +506,7 @@ impl Fetcher {
         }
         // The index lists the package's own requirements; the commit must agree.
         let mismatch = |detail: String| {
-            location.error(
-                "E2007",
+            location.error(DiagnosticKind::RegistryEntryMismatch,
                 format!(
                     "registry package '{name}' {version} does not match its registry index entry ({detail})"
                 ),
@@ -563,7 +554,7 @@ impl Fetcher {
         }
         let root = crate::cache::default_root().ok_or_else(|| {
             location.error(
-                "E2007",
+                DiagnosticKind::PackageStoreUnavailable,
                 "no package store is available; set TSUZURI_CACHE_DIR and run tsuzuri fetch"
                     .to_owned(),
             )
@@ -571,8 +562,8 @@ impl Fetcher {
         let unusable = |detail: String| {
             SourceError::new(
                 Path::new("<command line>"),
-                Diagnostic::new(
-                    "E2007",
+                Diagnostic::of(
+                    DiagnosticKind::PackageStoreUnusable,
                     format!(
                         "cannot use the cache directory {} for packages ({detail}); set TSUZURI_CACHE_DIR to an empty or Tsuzuri cache directory",
                         root.display()
@@ -625,7 +616,7 @@ impl Fetcher {
         });
         if !supported {
             return Err(location.error(
-                "E2007",
+                DiagnosticKind::GitVersionUnsupported,
                 format!(
                     "git 2.32 or later is required to fetch git dependencies (found: {})",
                     found.as_deref().unwrap_or("none")
@@ -657,8 +648,7 @@ impl Index {
     ) -> Result<Self, SourceError> {
         let rev = registry.rev.as_deref().unwrap_or("HEAD");
         let failed = |command: &str, detail: String| {
-            location.error(
-                "E2007",
+            location.error(DiagnosticKind::GitCommandFailed,
                 format!(
                     "git {command} of the registry index {} at {rev} failed: {detail}; check the url, the commit id, and network access",
                     registry.index
@@ -688,7 +678,7 @@ impl Index {
             .map_err(|failure| match failure {
                 Failure::Git(detail) => failed("ls-tree", detail),
                 Failure::TooLarge => location.error(
-                    "E1017",
+                    DiagnosticKind::RegistryIndexTooLarge,
                     "the registry index has a listing larger than 64 MiB".to_owned(),
                 ),
             })?;
@@ -745,7 +735,7 @@ impl Index {
             let file = &self.files[*name];
             if file.size > crate::package::MAX_PACKAGE_FILE_BYTES as u64 {
                 return Err(self.location.error(
-                    "E1017",
+                    DiagnosticKind::RegistryIndexTooLarge,
                     format!("the registry index file for '{name}' exceeds 1 MiB"),
                 ));
             }
@@ -757,7 +747,7 @@ impl Index {
         }
         let blobs = self.repository.read_blobs(&wanted).map_err(|detail| {
             self.location.error(
-                "E2007",
+                DiagnosticKind::GitCommandFailed,
                 format!(
                     "git cat-file of the registry index {} failed: {detail}",
                     self.url
@@ -769,8 +759,7 @@ impl Index {
                 .map_err(|_| "not UTF-8".to_owned())
                 .and_then(|text| crate::package::parse_index(name, &text))
                 .map_err(|detail| {
-                    self.location.error(
-                        "E2007",
+                    self.location.error(DiagnosticKind::RegistryIndexInvalid,
                         format!(
                             "the registry index file for '{name}' is invalid ({detail}); fix index/{name}.json in the registry index"
                         ),
@@ -785,8 +774,8 @@ impl Index {
 fn io_error(action: &str, path: &Path, error: io::Error) -> SourceError {
     SourceError::new(
         path,
-        Diagnostic::new(
-            "E2001",
+        Diagnostic::of(
+            DiagnosticKind::IoFailure,
             format!("cannot {action} '{}': {error}", path.display()),
             Span::default(),
         ),
@@ -1056,16 +1045,16 @@ fn parse_tree(
     name: &str,
     rev: &str,
     listing: &[u8],
-) -> Result<Vec<TreeEntry>, (&'static str, String)> {
+) -> Result<Vec<TreeEntry>, (DiagnosticKind, String)> {
     let unreadable = || {
         (
-            "E2007",
+            DiagnosticKind::GitTreeUnreadable,
             format!("git dependency '{name}' has an unreadable tree listing"),
         )
     };
     let limits = || {
         (
-            "E1017",
+            DiagnosticKind::ModuleDiscoveryLimit,
             "module discovery exceeds 1024 directories or 16 path segments".to_owned(),
         )
     };
@@ -1088,7 +1077,7 @@ fn parse_tree(
         }
         let path = std::str::from_utf8(path).map_err(|_| {
             (
-                "E2007",
+                DiagnosticKind::GitUnsafePath,
                 format!(
                     "git dependency '{name}' has an unsafe path '{}'",
                     String::from_utf8_lossy(path)
@@ -1114,13 +1103,13 @@ fn parse_tree(
                     .any(|character| character.is_control() || matches!(character, '\\' | ':'))
         }) {
             return Err((
-                "E2007",
+                DiagnosticKind::GitUnsafePath,
                 format!("git dependency '{name}' has an unsafe path '{path}'"),
             ));
         }
         if !matches!((mode, kind), ("100644" | "100755", "blob")) {
             return Err((
-                "E2007",
+                DiagnosticKind::GitNonRegularEntry,
                 format!(
                     "git dependency '{name}' has a symbolic link or submodule at '{path}'; packages may contain only regular source files"
                 ),
@@ -1129,7 +1118,7 @@ fn parse_tree(
         let size: u64 = size.parse().map_err(|_| unreadable())?;
         if size > MAX_SOURCE_BYTES as u64 {
             return Err((
-                "E0003",
+                DiagnosticKind::SourceTooLarge,
                 format!("source exceeds the {MAX_SOURCE_BYTES}-byte limit"),
             ));
         }
@@ -1137,7 +1126,7 @@ fn parse_tree(
             manifest = true;
         } else if entries.len() - usize::from(manifest) >= 4096 {
             return Err((
-                "E1017",
+                DiagnosticKind::ModuleDiscoveryLimit,
                 "module discovery exceeds 4096 source files".to_owned(),
             ));
         }
@@ -1155,7 +1144,7 @@ fn parse_tree(
             match folded.get(&prefix.to_lowercase()) {
                 Some(other) if *other != prefix => {
                     return Err((
-                        "E2007",
+                        DiagnosticKind::GitCaseCollision,
                         format!(
                             "git dependency '{name}' has paths that differ only in case: '{other}' and '{prefix}'"
                         ),
@@ -1175,7 +1164,7 @@ fn parse_tree(
     }
     if !manifest {
         return Err((
-            "E2007",
+            DiagnosticKind::GitMissingManifest,
             format!(
                 "git dependency '{name}' has no Tsuzuri.toml at the repository root of rev {rev}"
             ),
@@ -1199,8 +1188,7 @@ fn download(
     location: &Location,
 ) -> Result<Download, SourceError> {
     let failed = |command: &str, detail: String| {
-        location.error(
-            "E2007",
+        location.error(DiagnosticKind::GitCommandFailed,
             format!(
                 "git {command} of {url} at {rev} failed: {detail}; check the url, the commit id, and network access"
             ),
@@ -1229,12 +1217,12 @@ fn download(
         .map_err(|failure| match failure {
             Failure::Git(detail) => failed("ls-tree", detail),
             Failure::TooLarge => location.error(
-                "E1017",
+                DiagnosticKind::GitDependencyTooLarge,
                 format!("git dependency '{name}' has a tree listing larger than 64 MiB"),
             ),
         })?;
     let entries =
-        parse_tree(name, rev, &listing).map_err(|(code, message)| location.error(code, message))?;
+        parse_tree(name, rev, &listing).map_err(|(kind, message)| location.error(kind, message))?;
     let blobs = repository
         .read_blobs(&entries)
         .map_err(|detail| failed("cat-file", detail))?;
@@ -1243,7 +1231,7 @@ fn download(
     for (entry, bytes) in entries.iter().zip(blobs) {
         let text = String::from_utf8(bytes).map_err(|_| {
             location.error(
-                "E2007",
+                DiagnosticKind::GitSourceNotUtf8,
                 format!(
                     "git dependency '{name}' has a source that is not UTF-8: '{}'",
                     entry.path

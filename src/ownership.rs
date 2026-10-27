@@ -621,8 +621,8 @@ fn collect_declarations<'a>(body: &'a TypedExpr, locals: &mut BTreeMap<usize, &'
     }
 }
 
-fn error(code: &'static str, message: impl Into<String>, span: Span) -> Diagnostic {
-    Diagnostic::new(code, message, span)
+fn error(kind: DiagnosticKind, message: impl Into<String>, span: Span) -> Diagnostic {
+    Diagnostic::of(kind, message, span)
 }
 
 /// Whether `callee` is `Dyn.of` building a dyn value without a region, which owns all it holds (A14).
@@ -712,7 +712,11 @@ impl<'a> Checker<'a, '_> {
                         if let Some(argument) = arguments.get(callback.parameter)
                             && let Some(message) = self.unsatisfied(argument, callback)
                         {
-                            return Err(error("E1013", message, argument.span));
+                            return Err(error(
+                                DiagnosticKind::CallbackContractUnsatisfied,
+                                message,
+                                argument.span,
+                            ));
                         }
                     }
                 }
@@ -1137,7 +1141,7 @@ impl<'a> Checker<'a, '_> {
             }
             if task || !self.external.contains(&place.root) {
                 let diagnostic = error(
-                    "E1013",
+                    DiagnosticKind::TaskResultRetainsBorrow,
                     if task {
                         "task results cannot retain borrowed values"
                     } else {
@@ -1174,7 +1178,7 @@ impl<'a> Checker<'a, '_> {
                     .is_none_or(|slots| slots.get(index).is_some_and(|loans| loans.contains(id)));
                 if held && !owner.is_some_and(|owner| allowed.contains(&(owner, slot))) {
                     return Err(error(
-                        "E1013",
+                        DiagnosticKind::ResultRegionMismatch,
                         "returned borrow does not match the declared result region; return a borrow from an input with that region",
                         body.span,
                     ));
@@ -1517,7 +1521,7 @@ impl<'a> Checker<'a, '_> {
         }
         if usage == Use::Write && Some(place.root) == self.drop_root {
             return Err(error(
-                "E1012",
+                DiagnosticKind::DropReplaceWholeValue,
                 if place.fields.is_empty() {
                     "cannot replace the whole value inside Drop.drop; read or borrow its fields instead"
                 } else {
@@ -1533,7 +1537,7 @@ impl<'a> Checker<'a, '_> {
                 || (usage == Use::Consume && Some(usize::MAX - place.root) == self.drop_root)
             {
                 return Err(error(
-                    "E1012",
+                    DiagnosticKind::DropPassExclusiveValue,
                     "cannot pass the value on as 'ref mut' inside Drop.drop; read it or borrow it with 'ref' instead",
                     span,
                 ));
@@ -1851,7 +1855,7 @@ impl<'a> Checker<'a, '_> {
                         return Ok(places);
                     }
                     return Err(error(
-                        "E1013",
+                        DiagnosticKind::ReferenceWithoutOwner,
                         "reference has no live owner",
                         expression.span,
                     ));
@@ -1859,7 +1863,7 @@ impl<'a> Checker<'a, '_> {
                 Ok(places)
             }
             _ => Err(error(
-                "E1013",
+                DiagnosticKind::BorrowOfTemporary,
                 "borrow requires a local place; bind the temporary with 'let' first",
                 expression.span,
             )),
@@ -1879,7 +1883,7 @@ impl<'a> Checker<'a, '_> {
                         && inner.holds_exclusive_record(&types)
                     {
                         return Err(error(
-                            "E1014",
+                            DiagnosticKind::MutateThroughSharedReference,
                             "cannot mutate or exclusively reborrow through a shared reference",
                             span,
                         ));
@@ -1978,7 +1982,7 @@ impl<'a> Checker<'a, '_> {
                 .filter(|slot| !slot.target_regions.is_empty())
             else {
                 return Err(error(
-                    "E1013",
+                    DiagnosticKind::StoreRegionUnnamed,
                     format!(
                         "{UNNAMED}; name the target's region apart from the reference's, as in 'ref mut {{r}} T {{s}}', and store borrows of inputs with region 's'"
                     ),
@@ -1993,7 +1997,7 @@ impl<'a> Checker<'a, '_> {
                 }
                 if !self.external.contains(&place.root) {
                     return Err(error(
-                        "E1013",
+                        DiagnosticKind::StoreLocalBorrowThroughReference,
                         "cannot store a borrow of a local value through a reference parameter; the caller's data would outlive it",
                         span,
                     ));
@@ -2004,7 +2008,7 @@ impl<'a> Checker<'a, '_> {
                     .and_then(|slot| slot.region);
                 if !region.is_some_and(|region| target.target_regions.contains(&region)) {
                     return Err(error(
-                        "E1013",
+                        DiagnosticKind::StoreRegionMismatch,
                         "the stored borrow does not have the region of the reference's target; store a borrow of an input with that region",
                         span,
                     ));
@@ -2013,7 +2017,7 @@ impl<'a> Checker<'a, '_> {
             return Ok(());
         }
         let Some((_, owner)) = self.state.locals.get_mut(&place.root) else {
-            return Err(error("E1013", UNNAMED, span));
+            return Err(error(DiagnosticKind::StoreRegionUnnamed, UNNAMED, span));
         };
         owner.loans.extend(&value.loans);
         owner.regions = None;
@@ -2125,7 +2129,7 @@ impl<'a> Checker<'a, '_> {
                         .any(|id| *id != reference && self.loans[*id].place.overlaps(&place))
                     {
                         return Err(error(
-                            "E1013",
+                            DiagnosticKind::SelfReferentialStore,
                             "cannot store a reference inside its own owner",
                             span,
                         ));
@@ -2212,7 +2216,7 @@ impl<'a> Checker<'a, '_> {
         }
         if moving && matches!(expression.kind, E::Index(..)) {
             return Err(error(
-                "E1012",
+                DiagnosticKind::MoveOutOfCollectionElement,
                 "cannot move a non-Copy element out of an array or list; borrow the element instead",
                 expression.span,
             ));
@@ -2247,14 +2251,14 @@ impl<'a> Checker<'a, '_> {
             moving = usage == Use::Consume && !self.is_copy(&expression.ty);
             if moving && place.fields.contains(&ELEMENT) {
                 return Err(error(
-                    "E1012",
+                    DiagnosticKind::MoveOutOfCollectionElement,
                     "cannot move a non-Copy value out of an array or list element; borrow it instead",
                     expression.span,
                 ));
             }
             if moving && !via.is_empty() {
                 return Err(error(
-                    "E1012",
+                    DiagnosticKind::MoveOutOfReferenceBinding,
                     if via.iter().any(|id| self.loans[*id].view.is_some()) {
                         "cannot move a non-Copy pattern variable bound through a reference or a collection element; borrow it with 'ref' instead"
                     } else {
@@ -2264,7 +2268,11 @@ impl<'a> Checker<'a, '_> {
                 ));
             }
             if moving && place.through_drop {
-                return Err(error("E1012", MOVE_OUT_OF_DROP, expression.span));
+                return Err(error(
+                    DiagnosticKind::MoveOutOfDropType,
+                    MOVE_OUT_OF_DROP,
+                    expression.span,
+                ));
             }
             self.access(
                 &place,
@@ -2288,7 +2296,7 @@ impl<'a> Checker<'a, '_> {
                     }
                 } else {
                     return Err(error(
-                        "E1013",
+                        DiagnosticKind::NestedBorrowUnsupported,
                         "nested borrowed values require explicit lifetime parameters, which are not supported",
                         expression.span,
                     ));
@@ -2300,7 +2308,7 @@ impl<'a> Checker<'a, '_> {
                         .any(|id| !self.loans[*id].parents.is_disjoint(&value.loans))
                 {
                     return Err(error(
-                        "E1014",
+                        DiagnosticKind::MoveReborrowedExclusiveReference,
                         "cannot move an exclusive reference while it is reborrowed",
                         expression.span,
                     ));
@@ -2352,7 +2360,11 @@ impl<'a> Checker<'a, '_> {
                 .iter()
                 .any(|loan| !self.placeholders.contains(&self.loans[*loan].place.root))
         {
-            return Err(error("E1013", ASYNC_BORROW, expression.span));
+            return Err(error(
+                DiagnosticKind::BorrowAcrossAsyncBoundary,
+                ASYNC_BORROW,
+                expression.span,
+            ));
         }
         Ok(value)
     }
@@ -2433,8 +2445,7 @@ impl<'a> Checker<'a, '_> {
                         *loan,
                         expression.span,
                         "'{name}' is declared here and dropped at the end of this block",
-                        error(
-                            "E1013",
+                        error(DiagnosticKind::AssignmentExtendsBorrow,
                             "assignment lets a reference outlive its owner",
                             expression.span,
                         ),
@@ -2503,14 +2514,14 @@ impl<'a> Checker<'a, '_> {
                 && !self.is_generated_parameter(argument)
             {
                 return Err(error(
-                    "E1013",
+                    DiagnosticKind::MutexResultRetainsBorrow,
                     "Mutex.with_lock results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy",
                     argument.span,
                 ));
             }
             if !value.loans.is_empty() && owned_dyn_of(callee) {
                 return Err(error(
-                    "E1013",
+                    DiagnosticKind::DynHoldsBorrowWithoutRegion,
                     "a dyn value without a region cannot hold borrowed data; pass an owned value to Dyn.of, or name a region, as in 'dyn Shapes.Shape {r}'",
                     argument.span,
                 ));
@@ -2527,7 +2538,7 @@ impl<'a> Checker<'a, '_> {
                 && !self.is_generated_parameter(argument)
             {
                 return Err(error(
-                    "E1013",
+                    DiagnosticKind::ChannelItemHoldsBorrow,
                     "a channel item cannot hold a borrow, including a borrowed function environment: it is received later, perhaps after the borrowed data is gone; send an owned value, or a function that captures a copy, or an Owned.Function built where it is sent",
                     argument.span,
                 ));
@@ -2671,7 +2682,7 @@ impl<'a> Checker<'a, '_> {
             let value = self.eval(&value, Use::Consume, during)?;
             if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
                 return Err(error(
-                    "E1013",
+                    DiagnosticKind::TaskCaptureRetainsBorrow,
                     "task captures cannot retain borrowed values, including borrowed function environments",
                     expression.span,
                 ));
@@ -2700,8 +2711,7 @@ impl<'a> Checker<'a, '_> {
             E::Function(crate::check::FunctionRef::Builtin(instance))
                 if instance.builtin.is_parallel() =>
             {
-                return Err(error(
-                    "E1013",
+                return Err(error(DiagnosticKind::MustApplyDirectly,
                     "parallel operations must be fully applied directly; their ownership boundary cannot be erased into an ordinary function value",
                     expression.span,
                 ));
@@ -2713,8 +2723,7 @@ impl<'a> Checker<'a, '_> {
                     .locked_result(expression)
                     .is_some_and(|returned| returned.carries_loans(&self.module.types())) =>
             {
-                return Err(error(
-                    "E1013",
+                return Err(error(DiagnosticKind::MustApplyDirectly,
                     "Mutex.with_lock must be fully applied directly when its result may hold borrowed values, so that the result can be checked: call it with the lock and the callback together",
                     expression.span,
                 ));
@@ -2725,8 +2734,7 @@ impl<'a> Checker<'a, '_> {
                     .sent_item(expression)
                     .is_some_and(|item| item.carries_loans(&self.module.types())) =>
             {
-                return Err(error(
-                    "E1013",
+                return Err(error(DiagnosticKind::MustApplyDirectly,
                     "Channel.send must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the sender and the item together",
                     expression.span,
                 ));
@@ -2809,8 +2817,7 @@ impl<'a> Checker<'a, '_> {
                                 && source.root == place.root)
                     })
                     {
-                        return Err(error(
-                            "E1013",
+                        return Err(error(DiagnosticKind::SelfReferentialStore,
                             "cannot store a reference inside its own owner",
                             expression.span,
                         ));
@@ -2873,8 +2880,7 @@ impl<'a> Checker<'a, '_> {
                 for capture in captures {
                     let value = self.eval(capture, Use::Consume, &during)?;
                     if matches!(expression.ty, Type::Task(_)) && !value.loans.is_empty() {
-                        return Err(error(
-                            "E1013",
+                        return Err(error(DiagnosticKind::TaskCaptureRetainsBorrow,
                             "task captures cannot retain borrowed values, including borrowed function environments",
                             expression.span,
                         ));
@@ -2922,8 +2928,7 @@ impl<'a> Checker<'a, '_> {
                         if referent.carries_loans(&self.module.types())
                             && self.shares_borrowed_environment(argument, &value)
                         {
-                            return Err(error(
-                                "E1013",
+                            return Err(error(DiagnosticKind::TaskScopeSharesBorrowedEnvironment,
                                 "task scopes can share only values with proven owned environments",
                                 argument.span,
                             ));
@@ -2936,15 +2941,13 @@ impl<'a> Checker<'a, '_> {
                         if element.carries_loans(&self.module.types())
                             && self.shares_borrowed_environment(argument, &value)
                         {
-                            return Err(error(
-                                "E1013",
+                            return Err(error(DiagnosticKind::ParallelInputBorrowsEnvironment,
                                 "parallel input elements must have proven owned environments",
                                 argument.span,
                             ));
                         }
                     } else if !value.loans.is_empty() {
-                        return Err(error(
-                            "E1013",
+                        return Err(error(DiagnosticKind::ParallelCallbackBorrowsEnvironment,
                             "parallel callbacks and values cannot retain borrowed environments",
                             argument.span,
                         ));
@@ -2953,8 +2956,7 @@ impl<'a> Checker<'a, '_> {
                         && expression.ty.carries_loans(&self.module.types())
                         && !value.closed_result[result_arity]
                     {
-                        return Err(error(
-                            "E1013",
+                        return Err(error(DiagnosticKind::ParallelResultRetainsBorrow,
                             "parallel callback results must be proven free of borrowed environments",
                             argument.span,
                         ));
@@ -2992,8 +2994,7 @@ impl<'a> Checker<'a, '_> {
                 if matches!(expression.kind, E::RecordUpdate { .. })
                     && expression.ty.has_user_drop(&self.module.types())
                 {
-                    return Err(error(
-                        "E1012",
+                    return Err(error(DiagnosticKind::UpdateDropTypeValue,
                         "cannot update a value whose type implements Drop; construct a new value instead",
                         expression.span,
                     ));
@@ -3045,8 +3046,7 @@ impl<'a> Checker<'a, '_> {
             }
             E::Index(value, index) => {
                 if !self.is_copy(&expression.ty) && !self.require_copy(&expression.ty) {
-                    return Err(error(
-                        "E1012",
+                    return Err(error(DiagnosticKind::MoveOutOfCollectionElement,
                         "cannot move a non-Copy array or list element; borrow it instead",
                         expression.span,
                     ));
@@ -3065,7 +3065,7 @@ impl<'a> Checker<'a, '_> {
                 // The glue drops a temporary Drop value whole, so only Copy parts leave it.
                 if value.ty.has_user_drop(&self.module.types()) {
                     if !self.is_copy(&expression.ty) && !self.require_copy(&expression.ty) {
-                        return Err(error("E1012", MOVE_OUT_OF_DROP, expression.span));
+                        return Err(error(DiagnosticKind::MoveOutOfDropType, MOVE_OUT_OF_DROP, expression.span));
                     }
                     self.note_copy(expression, expression.span, CopyKind::Temporary, false);
                 }

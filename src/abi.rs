@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::check::{Type, TypeContext};
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, DiagnosticKind};
 use crate::syntax::LinkName;
 
 /// C names that generated code declares or defines itself, in ascending order:
@@ -63,8 +63,8 @@ pub fn link_name_error(link: &LinkName) -> Option<Diagnostic> {
         .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
         && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric());
     if !identifier || symbol.len() > 255 {
-        return Some(Diagnostic::new(
-            "E1008",
+        return Some(Diagnostic::of(
+            DiagnosticKind::InvalidExternSymbol,
             format!("invalid extern symbol '{symbol}'; use a C identifier of at most 255 bytes"),
             link.span,
         ));
@@ -73,8 +73,8 @@ pub fn link_name_error(link: &LinkName) -> Option<Diagnostic> {
         .iter()
         .any(|prefix| symbol.starts_with(prefix))
     {
-        return Some(Diagnostic::new(
-            "E1008",
+        return Some(Diagnostic::of(
+            DiagnosticKind::ReservedExternSymbol,
             format!(
                 "extern symbol '{symbol}' is reserved by Tsuzuri; choose a name that does not start with 'tz_', 'tsuzuri' or '__'"
             ),
@@ -82,8 +82,8 @@ pub fn link_name_error(link: &LinkName) -> Option<Diagnostic> {
         ));
     }
     if RESERVED_HOST_SYMBOLS.contains(&symbol.as_str()) {
-        return Some(Diagnostic::new(
-            "E1008",
+        return Some(Diagnostic::of(
+            DiagnosticKind::ReservedExternSymbol,
             format!(
                 "extern symbol '{symbol}' is reserved by Tsuzuri because the generated code declares it; wrap the host function under another symbol"
             ),
@@ -98,8 +98,7 @@ pub fn link_name_error(link: &LinkName) -> Option<Diagnostic> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
         && !module.starts_with("tsuzuri_");
     (!valid).then(|| {
-        Diagnostic::new(
-            "E1008",
+        Diagnostic::of(DiagnosticKind::InvalidWasmImportModule,
             format!(
                 "invalid WASM import module '{module}'; use 1 to 255 ASCII letters, digits, '_', '-' or '.' not starting with 'tsuzuri_'"
             ),

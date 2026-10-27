@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{GpuKernel, unsupported};
 use crate::{
     check::{CheckedFunction, FunctionRef, Type, TypedExpr, TypedExprKind},
-    diagnostic::{Diagnostic, Span},
+    diagnostic::{Diagnostic, DiagnosticKind, Span},
     syntax::{BinaryOp, UnaryOp},
 };
 
@@ -468,12 +468,14 @@ impl<'a, 'k> Emitter<'a, 'k> {
             Type::Binary(32) => Kind::F32,
             Type::Binary(64) => {
                 return Err(unsupported(
+                    DiagnosticKind::GpuUnsupportedType,
                     "Vulkan kernels do not support f64; use the CPU reference path or f32",
                     span,
                 ));
             }
             _ => {
                 return Err(unsupported(
+                    DiagnosticKind::GpuUnsupportedType,
                     "Vulkan kernels support bool, 32/64-bit integer, and f32 scalars only",
                     span,
                 ));
@@ -481,6 +483,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
         };
         if self.relaxed && matches!(kind, Kind::I64 | Kind::U64) {
             return Err(unsupported(
+                DiagnosticKind::GpuUnsupportedType,
                 "relaxed GPU kernels support f32, i32, and i32u values; 64-bit integers need the strict API",
                 span,
             ));
@@ -492,6 +495,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
         let kind = self.kind_of(ty, span)?;
         if kind == Kind::Bool {
             return Err(unsupported(
+                DiagnosticKind::GpuUnsupportedType,
                 "Vulkan kernels require i32, i32u, i64, i64u, or f32 buffer lanes; bool lanes are unavailable",
                 span,
             ));
@@ -757,12 +761,14 @@ impl<'a, 'k> Emitter<'a, 'k> {
         }
         let Some(value) = self.expression(&function.body)? else {
             return Err(unsupported(
+                DiagnosticKind::GpuKernelSignature,
                 "GPU kernel functions must return a scalar value",
                 function.span,
             ));
         };
         if value.kind != result_kind {
             return Err(unsupported(
+                DiagnosticKind::GpuKernelSignature,
                 "GPU kernel function result type mismatch",
                 function.span,
             ));
@@ -948,8 +954,13 @@ impl<'a, 'k> Emitter<'a, 'k> {
     }
 
     fn value(&mut self, expression: &TypedExpr) -> Result<Val, Diagnostic> {
-        self.expression(expression)?
-            .ok_or_else(|| unsupported("a GPU kernel expression has no value", expression.span))
+        self.expression(expression)?.ok_or_else(|| {
+            unsupported(
+                DiagnosticKind::GpuUnsupportedConstruct,
+                "a GPU kernel expression has no value",
+                expression.span,
+            )
+        })
     }
 
     fn expression(&mut self, expression: &TypedExpr) -> Result<Option<Val>, Diagnostic> {
@@ -959,6 +970,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 let kind = self.kind_of(&expression.ty, span)?;
                 if !kind.is_integer() {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedConstruct,
                         "an integer literal needs an integer type",
                         span,
                     ));
@@ -972,6 +984,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 let kind = self.kind_of(&expression.ty, span)?;
                 if kind != Kind::F32 {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedConstruct,
                         "a floating-point literal needs the f32 type",
                         span,
                     ));
@@ -1005,7 +1018,11 @@ impl<'a, 'k> Emitter<'a, 'k> {
                     }
                     let kind = self.kind_of(&local.ty, local.span)?;
                     let Some(value) = value else {
-                        return Err(unsupported("a GPU local needs a value", local.span));
+                        return Err(unsupported(
+                            DiagnosticKind::GpuUnsupportedConstruct,
+                            "a GPU local needs a value",
+                            local.span,
+                        ));
                     };
                     let slot = if local.mutable {
                         let variable = self.new_variable(kind);
@@ -1020,11 +1037,16 @@ impl<'a, 'k> Emitter<'a, 'k> {
             }
             TypedExprKind::Assign(place, value) => {
                 let TypedExprKind::Local(id) = &place.kind else {
-                    return Err(unsupported("GPU assignment requires a scalar local", span));
+                    return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedConstruct,
+                        "GPU assignment requires a scalar local",
+                        span,
+                    ));
                 };
                 let value = self.value(value)?;
                 let Some(Slot::Variable(variable, _)) = self.locals.get(id).copied() else {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedConstruct,
                         "GPU assignment requires a mutable scalar local",
                         span,
                     ));
@@ -1036,7 +1058,13 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 let id = match &callee.kind {
                     TypedExprKind::Function(FunctionRef::User(id))
                     | TypedExprKind::Closure(id, _) => *id,
-                    _ => return Err(unsupported("GPU calls require known functions", span)),
+                    _ => {
+                        return Err(unsupported(
+                            DiagnosticKind::GpuCallbackNotKnown,
+                            "GPU calls require known functions",
+                            span,
+                        ));
+                    }
                 };
                 let mut operands = Vec::new();
                 for argument in arguments {
@@ -1045,7 +1073,11 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 let kind = self.kind_of(&expression.ty, span)?;
                 let ty = self.type_of(kind);
                 let function = *self.functions.get(&id).ok_or_else(|| {
-                    unsupported("a GPU kernel calls a function that is not emitted", span)
+                    unsupported(
+                        DiagnosticKind::GpuUnsupportedConstruct,
+                        "a GPU kernel calls a function that is not emitted",
+                        span,
+                    )
                 })?;
                 self.weight = self
                     .weight
@@ -1059,6 +1091,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
             }
             _ => {
                 return Err(unsupported(
+                    DiagnosticKind::GpuUnsupportedConstruct,
                     "expression is not supported by SPIR-V generation",
                     span,
                 ));
@@ -1077,6 +1110,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 })
             }
             None => Err(unsupported(
+                DiagnosticKind::GpuUnsupportedConstruct,
                 "a GPU kernel reads a local that is not in scope",
                 span,
             )),
@@ -1101,6 +1135,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
             (UnaryOp::BitNot, kind) if kind.is_integer() => self.result(op::NOT, ty, &[value.id]),
             _ => {
                 return Err(unsupported(
+                    DiagnosticKind::GpuUnsupportedOperator,
                     "unsupported unary operator in a GPU kernel",
                     span,
                 ));
@@ -1137,6 +1172,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 BinaryOp::Divide if self.relaxed => (op::F_DIV, false),
                 BinaryOp::Divide => {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedOperator,
                         "strict GPU kernels cannot reproduce floating-point division: SPIR-V OpFDiv may differ by up to 2.5 ULP; use the relaxed API or compute it on the CPU",
                         span,
                     ));
@@ -1149,12 +1185,14 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 BinaryOp::GreaterEqual => (op::F_ORD_GREATER_THAN_EQUAL, true),
                 BinaryOp::Remainder => {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedOperator,
                         "GPU kernels do not support floating-point remainder; compute it on the CPU",
                         span,
                     ));
                 }
                 _ => {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedOperator,
                         "unsupported floating-point operator in a GPU kernel",
                         span,
                     ));
@@ -1166,6 +1204,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 BinaryOp::NotEqual => (op::LOGICAL_NOT_EQUAL, true),
                 _ => {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedOperator,
                         "unsupported boolean operator in a GPU kernel",
                         span,
                     ));
@@ -1190,6 +1229,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 BinaryOp::ShiftLeft | BinaryOp::ShiftRight | BinaryOp::ShiftRightUnsigned => {
                     if rhs.kind != kind {
                         return Err(unsupported(
+                            DiagnosticKind::GpuUnsupportedOperator,
                             "a GPU shift count must have the type of the value",
                             span,
                         ));
@@ -1208,12 +1248,14 @@ impl<'a, 'k> Emitter<'a, 'k> {
                 }
                 BinaryOp::Power => {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedOperator,
                         "GPU kernels do not support '**'; multiply explicitly",
                         span,
                     ));
                 }
                 _ => {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedOperator,
                         "GPU kernel division/remainder may trap on the CPU and are not supported",
                         span,
                     ));
@@ -1309,6 +1351,7 @@ impl<'a, 'k> Emitter<'a, 'k> {
         let kind = self.kind_of(ty, span)?;
         let (Some(then_value), Some(else_value)) = (then_value, else_value) else {
             return Err(unsupported(
+                DiagnosticKind::GpuUnsupportedConstruct,
                 "a GPU conditional needs a value in both branches",
                 span,
             ));
@@ -1356,13 +1399,20 @@ impl<'a, 'k> Emitter<'a, 'k> {
             (Kind::F32, to) if to.is_integer() => {
                 if self.relaxed {
                     return Err(unsupported(
+                        DiagnosticKind::GpuUnsupportedOperator,
                         "relaxed GPU kernels cannot reproduce Tsuzuri float-to-integer or f64 casts; compute them on the CPU",
                         span,
                     ));
                 }
                 self.saturating_float_to_integer(value.id, to)
             }
-            _ => return Err(unsupported("unsupported cast in a GPU kernel", span)),
+            _ => {
+                return Err(unsupported(
+                    DiagnosticKind::GpuUnsupportedOperator,
+                    "unsupported cast in a GPU kernel",
+                    span,
+                ));
+            }
         };
         Ok(Val { id, kind: to })
     }

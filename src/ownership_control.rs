@@ -28,7 +28,7 @@ impl<'a> Checker<'a, '_> {
         };
         if flow.raises.len() >= 4096 {
             return Err(error(
-                "E1017",
+                DiagnosticKind::TooManyRaisePoints,
                 "too many raise points in one try; split the try body",
                 span,
             ));
@@ -137,7 +137,7 @@ impl<'a> Checker<'a, '_> {
             .expect("loop context checked before ownership");
         if flow.breaks.len() + flow.continues.len() >= 4096 {
             return Err(error(
-                "E1017",
+                DiagnosticKind::TooManyLoopExits,
                 "too many loop exit paths; split the loop body",
                 span,
             ));
@@ -265,8 +265,7 @@ impl<'a> Checker<'a, '_> {
                     *loan,
                     span,
                     "'{name}' is bound here and ends with this arm or iteration",
-                    error(
-                        "E1013",
+                    error(DiagnosticKind::BorrowOutlivesBinding,
                         "a borrowed value cannot outlive its pattern or iteration binding",
                         span,
                     ),
@@ -363,7 +362,7 @@ impl<'a> Checker<'a, '_> {
             }
         }
         Err(error(
-            "E1017",
+            DiagnosticKind::LoopOwnershipLimit,
             "loop ownership analysis exceeds the compiler limit; simplify loop-carried borrows",
             body.span,
         ))
