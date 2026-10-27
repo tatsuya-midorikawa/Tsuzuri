@@ -627,7 +627,14 @@ tsuzuri fmt src/
 tsuzuri fmt --check src/
 ```
 
-### 言語版の移行 (`tsuzuri fix`)
+### 修正案の適用と言語版の移行 (`tsuzuri fix`)
+
+`tsuzuri fix PATH` は、診断が持つ修正案（既定は意味を保つ `certain` だけ。`--applicability likely` で `likely` も）を適用し、ラウンドごとに再検査して、診断が増えるなら何も書きません。`--dry-run` は統一差分を出し、`--json` は適用した・しなかった修正案を 1 行 1 オブジェクトで出します。依存パッケージと標準ライブラリは書き換えません。
+
+```sh
+tsuzuri fix app/ --dry-run
+tsuzuri fix app/
+```
 
 値渡しの署名と標準 API を `own`・`_owned` で保存し、対象版で全体を再検査してから atomic に書き換えます。
 依存パッケージは変更せず、manifest の edition は最後に更新します（[詳細](_tsuzuri/language-reference/compiler/usage.md#fix)）。
@@ -641,7 +648,7 @@ tsuzuri fix --edition 2027 --from 2026 app/
 
 VS Code や Neovim など、LSP 対応のエディタから利用可能な標準入出力（stdio）言語サーバーです。
 
-- **主要機能**: 未保存バッファのリアルタイム全量同期、複数診断、型ホバー表示、定義ジャンプ、シンボル検索、参照検索、リネーム、補完、シグネチャヘルプ、セマンティックハイライト、関連する位置の表示、未使用ローカル変数と診断の修正案（`E1021` の足りない腕、ヒントの字句の置き換え）のクイックフィックス、診断の範囲の hover での kind と `tsuzuri explain` の案内。
+- **主要機能**: 未保存バッファのリアルタイム全量同期、複数診断、型ホバー表示、定義ジャンプ、シンボル検索、参照検索、リネーム、補完、シグネチャヘルプ、セマンティックハイライト、関連する位置の表示、診断の修正案（未使用ローカル変数の `_`、`E1021` の足りない腕、ヒントの字句の置き換えなど）のクイックフィックスと、文書の `certain` の修正案をまとめて適用する `source.fixAll.tsuzuri`、診断の範囲の hover での kind と `tsuzuri explain` の案内。
 - **高精度なリファクタリング**: リネームやクイックフィックスは編集後のコードを内部で再解析し、安全性が確認された差分のみを適用します。診断の修正案は、適用するとその診断のコードの件数が減り、どのコードのエラーも増えないものだけを出します（ほかのエラーは残っていてもかまいません）。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md) を参照してください。
 
 ### 変更の監視 (`tsuzuri watch`)
@@ -894,6 +901,8 @@ tsuzuri new directory [--namespace NAME]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
 tsuzuri api-diff old new [--json] [--effective]
+tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] source.tz|directory
+tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] source.tz|directory
 tsuzuri explain TARGET [--json]
 tsuzuri explain --catalog [--json]
 tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]... [--consume F:P]... [--json]

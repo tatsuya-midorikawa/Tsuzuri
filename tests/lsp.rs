@@ -667,6 +667,104 @@ fn semantic_tokens_encode_declarations_and_references() {
     }
 }
 
+/// `text` with the LSP text edits applied (ASCII text: a character is a byte).
+fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> String {
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let offset = |position: &serde_json::Value| {
+        starts[position["line"].as_u64().unwrap() as usize]
+            + position["character"].as_u64().unwrap() as usize
+    };
+    let mut edits: Vec<(usize, usize, &str)> = edits
+        .iter()
+        .map(|edit| {
+            (
+                offset(&edit["range"]["start"]),
+                offset(&edit["range"]["end"]),
+                edit["newText"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    edits.sort_unstable();
+    let mut result = text.to_owned();
+    for (start, end, new_text) in edits.into_iter().rev() {
+        result.replace_range(start..end, new_text);
+    }
+    result
+}
+
+#[test]
+fn code_action_fix_all_prefixes_every_unused_local_of_the_document() {
+    use serde_json::json;
+    let warn = "fn warn() -> i64 { let spare = 1; let other = 3; 2 }\n";
+    let mut uri = String::new();
+    let responses = scripted(
+        &[
+            ("Main.tz", P1_MAIN),
+            ("Shapes.tz", P1_SHAPES),
+            ("Warn.tz", warn),
+        ],
+        "utf-16",
+        |path| {
+            uri = path("Warn.tz");
+            vec![
+                json!({"id": 1, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": uri}, "range": range(0, 0, 0), "context": {"diagnostics": [], "only": ["source.fixAll"]}}}),
+            ]
+        },
+    );
+    let actions = responses[0]["result"].as_array().unwrap();
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert_eq!(actions[0]["kind"], "source.fixAll.tsuzuri");
+    assert_eq!(actions[0]["title"], "Fix all auto-fixable problems");
+    assert!(actions[0].get("isPreferred").is_none());
+    let edits = actions[0]["edit"]["changes"][uri.as_str()]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        apply_text_edits(warn, edits),
+        "fn warn() -> i64 { let _spare = 1; let _other = 3; 2 }\n"
+    );
+}
+
+#[test]
+fn code_action_fix_all_is_offered_only_when_asked_and_when_there_is_something_to_fix() {
+    use serde_json::json;
+    let responses = scripted(&P1, "utf-16", |uri| {
+        let warn = uri("Warn.tz");
+        let shapes = uri("Shapes.tz");
+        let request = |id: u64, uri: &str, end: usize, context: serde_json::Value| json!({"id": id, "method": "textDocument/codeAction", "params": {"textDocument": {"uri": uri}, "range": range(0, 0, end), "context": context}});
+        vec![
+            request(
+                1,
+                &warn,
+                37,
+                json!({"diagnostics": [], "only": ["quickfix"]}),
+            ),
+            request(
+                2,
+                &warn,
+                37,
+                json!({"diagnostics": [], "only": ["refactor"]}),
+            ),
+            request(3, &shapes, 10, json!({"diagnostics": []})),
+            request(4, &warn, 37, json!({"diagnostics": []})),
+        ]
+    });
+    let kinds = |index: usize| -> Vec<String> {
+        responses[index]["result"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{:?}", responses[index]))
+            .iter()
+            .map(|action| action["kind"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(kinds(0), ["quickfix"]);
+    assert!(kinds(1).is_empty());
+    assert!(kinds(2).is_empty());
+    assert_eq!(kinds(3), ["quickfix", "source.fixAll.tsuzuri"]);
+}
+
 #[test]
 fn code_action_prefixes_unused_locals() {
     use serde_json::json;
@@ -780,7 +878,7 @@ fn capabilities_are_advertised_exactly() {
                 "full": true,
                 "range": false,
             },
-            "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+            "codeActionProvider": {"codeActionKinds": ["quickfix", "source.fixAll.tsuzuri"]},
             "documentFormattingProvider": true,
             "inlayHintProvider": true,
         })

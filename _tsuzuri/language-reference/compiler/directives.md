@@ -152,6 +152,7 @@ tsuzuri build Main.tz -o shop
 ./Main.tz:2:9: warning[W1001]: unused local 'unused'; prefix it with '_' to silence this warning
   2 |     let unused = 1
     |         ^
+  fix (certain): Prefix 'unused' with '_'
 ```
 
 この警告だけの `check` は終了コード 0 ですが、`--deny-warnings` を付けると終了コード 1 になります。`--json` でも重要度は `warning` のままです。エラーがあるファイルでは、警告は出しません。

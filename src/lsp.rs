@@ -460,7 +460,7 @@ impl Session {
                     "completionProvider": {"triggerCharacters": [".", ":"], "resolveProvider": false},
                     "signatureHelpProvider": {"triggerCharacters": [" ", "("], "retriggerCharacters": [","]},
                     "semanticTokensProvider": {"legend": legend, "full": true, "range": false},
-                    "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+                    "codeActionProvider": {"codeActionKinds": ["quickfix", FIX_ALL]},
                     "documentFormattingProvider": true,
                     "inlayHintProvider": true,
                 },
@@ -1086,13 +1086,87 @@ impl Session {
     }
 
     fn code_actions(&self, directory: &Path, source_id: usize, params: &Value) -> RpcResult {
-        if params["context"]["only"]
-            .as_array()
-            .is_some_and(|kinds| !kinds.iter().any(|kind| kind == "quickfix"))
-        {
-            return Ok(json!([]));
-        }
+        let only = params["context"]["only"].as_array();
+        let asks = |kinds: &[&str]| {
+            only.is_none_or(|only| {
+                only.iter()
+                    .any(|kind| kinds.iter().any(|asked| kind == asked))
+            })
+        };
         let state = &self.projects[directory];
+        let mut actions = Vec::new();
+        if asks(&["quickfix"]) {
+            actions = self.quick_fixes(directory, state, source_id, params)?;
+        }
+        if asks(&["source", "source.fixAll", FIX_ALL])
+            && let Some(action) = self.fix_all(directory, state, source_id)
+        {
+            actions.push(action);
+        }
+        Ok(json!(actions))
+    }
+
+    /// `source.fixAll.tsuzuri`: every `certain` fix of the document, applied by `tsuzuri fix`'s
+    /// rounds to the project with the open buffers. `None` when the project has no `certain` fix,
+    /// the run fails, or nothing in the document changes.
+    fn fix_all(&self, directory: &Path, state: &ProjectState, source_id: usize) -> Option<Value> {
+        if !state.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .fixes
+                .iter()
+                .any(|fix| fix.applicability == Applicability::Certain)
+        }) {
+            return None;
+        }
+        let overlays: BTreeMap<PathBuf, String> = self
+            .buffers
+            .iter()
+            .map(|(path, buffer)| (path.clone(), buffer.text.clone()))
+            .collect();
+        let mut project = Project::load_with_overlays(directory, &overlays).ok()?;
+        let path = &state.project.sources[source_id].path;
+        let index = project
+            .sources
+            .iter()
+            .position(|source| source.path == *path)?;
+        let options = crate::fix::Options {
+            threshold: crate::fix::Threshold::Certain,
+            scope: crate::fix::Scope::File(index),
+            only_codes: None,
+        };
+        let report = crate::fix::run(&mut project, &options, &mut |project| {
+            crate::fix::analyze_project(project, false)
+        })
+        .ok()?;
+        let change = report.files.iter().find(|change| change.source == index)?;
+        let mapper = PositionMapper::new(&change.original, self.encoding);
+        let edits: Vec<Value> = match crate::diff::line_edits(&change.original, &change.fixed) {
+            Some(edits) => edits
+                .into_iter()
+                .map(|edit| {
+                    json!({"range": mapper.range(&change.original, Span::new(edit.start, edit.end)), "newText": edit.text})
+                })
+                .collect(),
+            None => vec![json!({
+                "range": mapper.range(&change.original, Span::new(0, change.original.len())),
+                "newText": change.fixed,
+            })],
+        };
+        Some(json!({
+            "title": "Fix all auto-fixable problems",
+            "kind": FIX_ALL,
+            "edit": {"changes": {self.uri(path)?: edits}},
+        }))
+    }
+
+    /// The quick fixes of the diagnostics in the requested range.
+    fn quick_fixes(
+        &self,
+        directory: &Path,
+        state: &ProjectState,
+        source_id: usize,
+        params: &Value,
+    ) -> Result<Vec<Value>, (i64, String)> {
         let source = &state.project.sources[source_id];
         let mapper = &state.mappers[source_id];
         let bound = |name: &str| {
@@ -1125,7 +1199,7 @@ impl Session {
                 }));
             }
         }
-        Ok(json!(actions))
+        Ok(actions)
     }
 
     /// `diagnostic_json` plus `relatedInformation` (the related locations in the project's own
@@ -1226,6 +1300,8 @@ impl Session {
     }
 }
 
+/// The code action kind of applying every `certain` fix of a document (G24).
+const FIX_ALL: &str = "source.fixAll.tsuzuri";
 const POSITION_ERROR: &str = "position is outside the document or splits a Unicode character";
 const NO_RENAMABLE_NAME: &str = "no renamable name at this position; place the cursor on a name";
 

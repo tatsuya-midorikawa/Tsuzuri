@@ -6909,6 +6909,7 @@ mod tests {
             "bindgen_command",
             "debug_test",
             "explain_command",
+            "fix_command",
             "fix_edition_command",
             "main",
             "new_project",

@@ -6,7 +6,7 @@
 | 優先度 | P1 |
 | 規模 | 全体 L（D-50 の表は M。L1 の本文と Phase 3 の std 索引を詳細化して見積もりを上げた）。Phase 1 M、Phase 2 S、Phase 3 M、Phase 4 S |
 | 依存 | なし。Phase 4 は [G23](_completed/G23-diagnostic-kinds-explain-hints.md) のヒント DB（`hints::TABLE`）が出荷済みなら使う（なければ静的な版。「前提とする他チケットのインターフェース」） |
-| 後続 | G23（落とし穴の表をガイドの生成元にする）、[G24](G24-tsuzuri-fix.md)・A22・A18・A19（出荷するとき `guide/card.md` の行を足す・替える。[付録 H](G21-appendix.md#付録-h-他チケットへの依頼guide-の行の差し替え)）、G29（`tz_guide` が `guide::render` を呼ぶ）、G31（ガイドの静的なサイズ上限をテストで強制する）、G32（リポジトリの `AGENTS.md` に「AI エージェントへ」の節を足す案の手本） |
+| 後続 | G23（落とし穴の表をガイドの生成元にする）、[G24](_completed/G24-tsuzuri-fix.md)・A22・A18・A19（出荷するとき `guide/card.md` の行を足す・替える。[付録 H](G21-appendix.md#付録-h-他チケットへの依頼guide-の行の差し替え)）、G29（`tz_guide` が `guide::render` を呼ぶ）、G31（ガイドの静的なサイズ上限をテストで強制する）、G32（リポジトリの `AGENTS.md` に「AI エージェントへ」の節を足す案の手本） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
