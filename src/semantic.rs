@@ -82,8 +82,8 @@ pub struct Definition {
     /// `name: type` for each parameter of a function or extern.
     pub parameters: Vec<String>,
     pub result: String,
-    /// The constraints of a function (`CheckedFunction::constraint_key`), which `detail` omits.
-    pub constraints: Vec<String>,
+    /// A function whose calls depend only on `detail` (`CheckedFunction::plain_signature`).
+    pub plain_signature: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -285,7 +285,7 @@ fn plain(
         exported: false,
         parameters: Vec::new(),
         result: String::new(),
-        constraints: Vec::new(),
+        plain_signature: false,
     }
 }
 
@@ -579,7 +579,7 @@ fn define_declarations(
                 exported,
                 parameters,
                 result: function.signature.result.display(types),
-                constraints: function.constraint_key(types),
+                plain_signature: function.plain_signature(),
                 ..plain(declared, kind, name, detail, visibility)
             });
             links.callables.insert(qualified, definition);
@@ -869,6 +869,19 @@ pub(super) fn collect(
             .functions
             .iter()
             .map(|function| &function.body)
+            .chain(
+                program
+                    .classes
+                    .iter()
+                    .flat_map(|class| &class.defaults)
+                    .chain(
+                        program
+                            .instances
+                            .iter()
+                            .flat_map(|instance| &instance.methods),
+                    )
+                    .map(|method| &method.body),
+            )
             .chain(program.constants.iter().map(|constant| &constant.value))
             .chain(program.tests.iter().map(|test| &test.body))
             .chain(program.benches.iter().map(|bench| &bench.body))
@@ -1047,7 +1060,7 @@ fn index_function(
             exported: false,
             parameters: Vec::new(),
             result: String::new(),
-            constraints: Vec::new(),
+            plain_signature: false,
         });
         definitions.insert(local.id, definition);
     }
