@@ -343,10 +343,19 @@ struct Arguments {
     no_server: bool,
 }
 
-fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
+/// A diagnostic of the command line: it has no position, and the caller prints it at
+/// `<command line>`.
+fn command_line_error(kind: DiagnosticKind, message: impl Into<String>) -> Diagnostic {
+    Diagnostic::of(kind, message, Span::default())
+}
+
+fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     if arguments.first().is_some_and(|argument| argument == "lsp") {
         if arguments.len() != 1 {
-            return Err("lsp takes no paths or build options".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "lsp takes no paths or build options",
+            ));
         }
         return Ok(Arguments {
             action: Action::Lsp,
@@ -458,54 +467,76 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("--no-cache") => {
                     if no_cache {
-                        return Err("no-cache specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "no-cache specified more than once",
+                        ));
                     }
                     no_cache = true;
                     continue;
                 }
                 Some("--no-server") => {
                     if no_server {
-                        return Err("no-server specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "no-server specified more than once",
+                        ));
                     }
                     no_server = true;
                     continue;
                 }
                 Some("--deny-warnings") => {
                     if deny_warnings {
-                        return Err("deny-warnings specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "deny-warnings specified more than once",
+                        ));
                     }
                     deny_warnings = true;
                     continue;
                 }
                 Some("--warn") => {
                     let Some(name) = arguments.get(position) else {
-                        return Err(
-                            "--warn requires a warning name; supported: implicit-copy".into()
-                        );
+                        return Err(command_line_error(
+                            DiagnosticKind::OptionMissingValue,
+                            "--warn requires a warning name; supported: implicit-copy",
+                        ));
                     };
                     position += 1;
                     if name != "implicit-copy" {
-                        return Err(format!(
-                            "unknown warning '{}' for --warn; supported: implicit-copy",
-                            name.to_string_lossy()
+                        return Err(command_line_error(
+                            DiagnosticKind::OptionInvalidValue,
+                            format!(
+                                "unknown warning '{}' for --warn; supported: implicit-copy",
+                                name.to_string_lossy()
+                            ),
                         ));
                     }
                     if warn_implicit_copy {
-                        return Err("warn implicit-copy specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "warn implicit-copy specified more than once",
+                        ));
                     }
                     warn_implicit_copy = true;
                     continue;
                 }
                 Some("--check") => {
                     if format_check {
-                        return Err("check specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "check specified more than once",
+                        ));
                     }
                     format_check = true;
                     continue;
                 }
                 Some("--list") => {
                     if test_list {
-                        return Err("list specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "list specified more than once",
+                        ));
                     }
                     test_list = true;
                     continue;
@@ -516,34 +547,58 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         .filter(|value| {
                             !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
                         })
-                        .ok_or("test index must be a nonnegative integer")?
+                        .ok_or_else(|| {
+                            command_line_error(
+                                DiagnosticKind::OptionInvalidValue,
+                                "test index must be a nonnegative integer",
+                            )
+                        })?
                         .parse::<usize>()
-                        .map_err(|_| "test index is too large")?;
+                        .map_err(|_| {
+                            command_line_error(
+                                DiagnosticKind::OptionInvalidValue,
+                                "test index is too large",
+                            )
+                        })?;
                     test_indices.push(value);
                     continue;
                 }
                 Some("--filter") => {
                     if test_filter.is_some() {
-                        return Err("filter specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "filter specified more than once",
+                        ));
                     }
                     test_filter = Some(
                         next_value(arguments, &mut position, "--filter")?
                             .to_str()
-                            .ok_or("test filter must be UTF-8")?
+                            .ok_or_else(|| {
+                                command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "test filter must be UTF-8",
+                                )
+                            })?
                             .to_owned(),
                     );
                     continue;
                 }
                 Some("--allocs") => {
                     if bench_allocs {
-                        return Err("allocs specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "allocs specified more than once",
+                        ));
                     }
                     bench_allocs = true;
                     continue;
                 }
                 Some("--samples") => {
                     if bench_samples.is_some() {
-                        return Err("samples specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "samples specified more than once",
+                        ));
                     }
                     bench_samples = Some(
                         next_value(arguments, &mut position, "--samples")?
@@ -553,13 +608,21 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             })
                             .and_then(|value| value.parse::<usize>().ok())
                             .filter(|samples| (1..=1000).contains(samples))
-                            .ok_or("bench samples must be an integer between 1 and 1000")?,
+                            .ok_or_else(|| {
+                                command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "bench samples must be an integer between 1 and 1000",
+                                )
+                            })?,
                     );
                     continue;
                 }
                 Some("--seed") => {
                     if test_seed.is_some() {
-                        return Err("seed specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "seed specified more than once",
+                        ));
                     }
                     test_seed = Some(
                         next_value(arguments, &mut position, "--seed")?
@@ -568,15 +631,21 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                                 !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
                             })
                             .and_then(|value| value.parse::<u64>().ok())
-                            .ok_or(
-                                "property seed must be an integer between 0 and 18446744073709551615",
-                            )?,
+                            .ok_or_else(|| {
+                                command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "property seed must be an integer between 0 and 18446744073709551615",
+                                )
+                            })?,
                     );
                     continue;
                 }
                 Some("--coverage") => {
                     if coverage.is_some() {
-                        return Err("coverage specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "coverage specified more than once",
+                        ));
                     }
                     coverage = Some(PathBuf::from(next_value(
                         arguments,
@@ -587,31 +656,48 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("--debug-output") => {
                     if debug_output {
-                        return Err("debug-output specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "debug-output specified more than once",
+                        ));
                     }
                     debug_output = true;
                     continue;
                 }
                 Some("--trap-info") => {
                     if trap_info {
-                        return Err("trap-info specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "trap-info specified more than once",
+                        ));
                     }
                     trap_info = true;
                     continue;
                 }
                 Some("--trap-mode") => {
                     if trap_return {
-                        return Err("trap mode specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "trap mode specified more than once",
+                        ));
                     }
                     match next_value(arguments, &mut position, "--trap-mode")?.to_str() {
                         Some("return") => trap_return = true,
-                        _ => return Err("trap mode must be 'return'".into()),
+                        _ => {
+                            return Err(command_line_error(
+                                DiagnosticKind::OptionInvalidValue,
+                                "trap mode must be 'return'",
+                            ));
+                        }
                     }
                     continue;
                 }
                 Some("--allocator") => {
                     if allocator.is_some() {
-                        return Err("allocator specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "allocator specified more than once",
+                        ));
                     }
                     allocator = Some(
                         match next_value(arguments, &mut position, "--allocator")?.to_str() {
@@ -620,10 +706,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("counting") => Allocator::Counting,
                             Some("small") => Allocator::Small,
                             _ => {
-                                return Err(
-                                    "allocator must be 'system', 'host', 'counting', or 'small'"
-                                        .into(),
-                                );
+                                return Err(command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "allocator must be 'system', 'host', 'counting', or 'small'",
+                                ));
                             }
                         },
                     );
@@ -631,28 +717,40 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("--freestanding") => {
                     if freestanding {
-                        return Err("freestanding specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "freestanding specified more than once",
+                        ));
                     }
                     freestanding = true;
                     continue;
                 }
                 Some("--strip") => {
                     if strip {
-                        return Err("strip specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "strip specified more than once",
+                        ));
                     }
                     strip = true;
                     continue;
                 }
                 Some("--wasm-opt") => {
                     if wasm_opt {
-                        return Err("wasm-opt specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "wasm-opt specified more than once",
+                        ));
                     }
                     wasm_opt = true;
                     continue;
                 }
                 Some("--profile-generate") => {
                     if profile_generate.is_some() {
-                        return Err("profile generation specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "profile generation specified more than once",
+                        ));
                     }
                     profile_generate = Some(profile_path(
                         next_value(arguments, &mut position, "--profile-generate")?,
@@ -662,7 +760,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("--profile-use") => {
                     if profile_use.is_some() {
-                        return Err("profile use specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "profile use specified more than once",
+                        ));
                     }
                     profile_use = Some(profile_path(
                         next_value(arguments, &mut position, "--profile-use")?,
@@ -672,14 +773,20 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("-g" | "--debug-info") => {
                     if debug_info {
-                        return Err("debug information specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "debug information specified more than once",
+                        ));
                     }
                     debug_info = true;
                     continue;
                 }
                 Some("-o" | "--output") => {
                     if output.is_some() {
-                        return Err("output specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "output specified more than once",
+                        ));
                     }
                     output = Some(PathBuf::from(next_value(
                         arguments,
@@ -690,44 +797,69 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("--target") => {
                     if target.is_some() {
-                        return Err("target specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "target specified more than once",
+                        ));
                     }
                     let value = next_value(arguments, &mut position, "--target")?;
-                    let (named, named_triple) =
-                        tsuzuri::target::parse_target(value.to_str().ok_or(
+                    let name = value.to_str().ok_or_else(|| {
+                        command_line_error(
+                            DiagnosticKind::OptionInvalidValue,
                             "target names are UTF-8; use native, wasm32, wasm64, or a TRIPLE",
-                        )?)?;
+                        )
+                    })?;
+                    let (named, named_triple) =
+                        tsuzuri::target::parse_target(name).map_err(|message| {
+                            command_line_error(DiagnosticKind::UnknownTarget, message)
+                        })?;
                     target = Some(named);
                     triple = named_triple;
                     continue;
                 }
                 Some("--wasm-feature") => {
-                    let feature = match next_value(arguments, &mut position, "--wasm-feature")?.to_str() {
+                    let feature = match next_value(arguments, &mut position, "--wasm-feature")?
+                        .to_str()
+                    {
                         Some("simd128") => &mut wasm_simd,
                         Some("threads") => &mut wasm_threads,
                         Some("jspi") => &mut wasm_jspi,
                         Some("webgpu") => &mut wasm_webgpu,
                         Some("net") => &mut wasm_net,
                         Some("tail-call") => &mut wasm_tail_call,
-                        _ => return Err("supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', 'net', and 'tail-call'; relaxed SIMD is not supported".into()),
+                        _ => {
+                            return Err(command_line_error(
+                                DiagnosticKind::OptionInvalidValue,
+                                "supported WASM features are 'simd128', 'threads', 'jspi', 'webgpu', 'net', and 'tail-call'; relaxed SIMD is not supported",
+                            ));
+                        }
                     };
                     if *feature {
-                        return Err("WASM feature specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "WASM feature specified more than once",
+                        ));
                     }
                     *feature = true;
                     continue;
                 }
                 Some("--wasm-host") => {
                     if wasm_host.is_some() {
-                        return Err("--wasm-host specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "--wasm-host specified more than once",
+                        ));
                     }
                     wasm_host = Some(
                         match next_value(arguments, &mut position, "--wasm-host")?.to_str() {
                             Some("wasi") => WasmHost::Wasi,
                             other => {
-                                return Err(format!(
-                                    "unknown wasm host '{}'; the supported host is wasi",
-                                    other.unwrap_or("?")
+                                return Err(command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    format!(
+                                        "unknown wasm host '{}'; the supported host is wasi",
+                                        other.unwrap_or("?")
+                                    ),
                                 ));
                             }
                         },
@@ -741,7 +873,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                         (&mut wasm_stack_size, "stack size")
                     };
                     if slot.is_some() {
-                        return Err(format!("WASM {name} specified more than once"));
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            format!("WASM {name} specified more than once"),
+                        ));
                     }
                     *slot = Some(parse_size(
                         next_value(arguments, &mut position, option)?,
@@ -751,7 +886,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some("--emit") => {
                     if emit.is_some() {
-                        return Err("emit kind specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "emit kind specified more than once",
+                        ));
                     }
                     emit = Some(
                         match next_value(arguments, &mut position, "--emit")?.to_str() {
@@ -771,10 +909,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                             Some("bindings-py") => Emit::BindingsPy,
                             Some("bindings-cpp") => Emit::BindingsCpp,
                             _ => {
-                                return Err(
-                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp"
-                                        .into(),
-                                );
+                                return Err(command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                                ));
                             }
                         },
                     );
@@ -782,33 +920,52 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 }
                 Some(level @ ("-O0" | "-O1" | "-O2" | "-O3" | "-Os" | "-Oz")) => {
                     if optimization.is_some() {
-                        return Err("optimization specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "optimization specified more than once",
+                        ));
                     }
                     optimization = OptLevel::from_flag(level);
                     continue;
                 }
                 Some("--backend") => {
                     if backend.is_some() {
-                        return Err("backend specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "backend specified more than once",
+                        ));
                     }
                     backend = Some(
                         match next_value(arguments, &mut position, "--backend")?.to_str() {
                             Some("llvm") => Backend::Llvm,
                             Some("fast") => Backend::Fast,
-                            _ => return Err("backend must be 'llvm' or 'fast'".into()),
+                            _ => {
+                                return Err(command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "backend must be 'llvm' or 'fast'",
+                                ));
+                            }
                         },
                     );
                     continue;
                 }
                 Some("--cpu") => {
                     if cpu.is_some() {
-                        return Err("CPU tuning specified more than once".into());
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "CPU tuning specified more than once",
+                        ));
                     }
                     cpu = Some(
                         match next_value(arguments, &mut position, "--cpu")?.to_str() {
                             Some("generic") => Cpu::Generic,
                             Some("native") => Cpu::Native,
-                            _ => return Err("CPU tuning must be 'generic' or 'native'".into()),
+                            _ => {
+                                return Err(command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "CPU tuning must be 'generic' or 'native'",
+                                ));
+                            }
                         },
                     );
                     continue;
@@ -831,120 +988,190 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     links.libraries.push(
                         next_value(arguments, &mut position, "-l")?
                             .to_str()
-                            .ok_or("library names must be UTF-8")?
+                            .ok_or_else(|| {
+                                command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "library names must be UTF-8",
+                                )
+                            })?
                             .to_owned(),
                     );
                     continue;
                 }
                 Some(value) if value.starts_with('-') => {
-                    return Err(format!("unknown option '{value}'; use --help"));
+                    return Err(command_line_error(
+                        DiagnosticKind::UnknownOption,
+                        format!("unknown option '{value}'; use --help"),
+                    ));
                 }
                 _ => {}
             }
         }
         if input.replace(PathBuf::from(argument)).is_some() {
-            return Err(
-                "pass one .tz, .tt, or .tc file or project directory; modules are loaded recursively"
-                    .into(),
-            );
+            return Err(command_line_error(
+                DiagnosticKind::InputCountInvalid,
+                "pass one .tz, .tt, or .tc file or project directory; modules are loaded recursively",
+            ));
         }
     }
-    let input = input.ok_or("missing .tz, .tt, or .tc input or project directory; use --help")?;
+    let input = input.ok_or_else(|| {
+        command_line_error(
+            DiagnosticKind::MissingInput,
+            "missing .tz, .tt, or .tc input or project directory; use --help",
+        )
+    })?;
     if no_cache && !matches!(action, Action::Build | Action::Run) {
-        return Err("--no-cache is only valid with build, run, script, or repl".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--no-cache is only valid with build, run, script, or repl",
+        ));
     }
     if backend.is_some() && !matches!(action, Action::Build | Action::Run | Action::Test) {
-        return Err("--backend applies only to build, run, and test".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--backend applies only to build, run, and test",
+        ));
     }
     if no_server && !matches!(action, Action::Check | Action::Build) {
-        return Err("--no-server is only valid with check or build".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--no-server is only valid with check or build",
+        ));
     }
     if emit.is_some_and(Emit::is_kernel)
         && (target.is_some() || optimization.is_some() || cpu.is_some())
     {
-        return Err(if emit.is_some_and(Emit::is_spirv) {
-            "SPIR-V output does not use target, optimization, or CPU options"
-        } else {
-            "WGSL output does not use target, optimization, or CPU options"
-        }
-        .into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionRequiresBuild,
+            if emit.is_some_and(Emit::is_spirv) {
+                "SPIR-V output does not use target, optimization, or CPU options"
+            } else {
+                "WGSL output does not use target, optimization, or CPU options"
+            },
+        ));
     }
     if (wasm_simd || wasm_threads || wasm_jspi || wasm_webgpu || wasm_net || wasm_tail_call)
         && action != Action::Build
     {
-        return Err("--wasm-feature is only valid with build".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--wasm-feature is only valid with build",
+        ));
     }
     if wasm_host.is_some() && action != Action::Build {
-        return Err("--wasm-host is only valid with build".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--wasm-host is only valid with build",
+        ));
     }
     if wasm_max_memory.is_some() || wasm_stack_size.is_some() {
         if !matches!(action, Action::Build | Action::Test) {
-            return Err(
-                "--wasm-max-memory and --wasm-stack-size are only valid with build or test".into(),
-            );
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--wasm-max-memory and --wasm-stack-size are only valid with build or test",
+            ));
         }
         if action == Action::Test && !target.is_some_and(Target::is_wasm) {
-            return Err(
-                "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64".into(),
-            );
+            return Err(command_line_error(
+                DiagnosticKind::OptionRequiresBuild,
+                "--wasm-max-memory and --wasm-stack-size require --target wasm32 or wasm64",
+            ));
         }
     }
     if debug_info && !matches!(action, Action::Build | Action::Run | Action::Test) {
-        return Err("--debug-info is only valid with build, run, or test".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--debug-info is only valid with build, run, or test",
+        ));
     }
     // `test --index N -g -o PATH` builds the runner of one test for a debugger (G16 Phase 2).
     if action == Action::Test && (debug_info || output.is_some()) {
         if !debug_info || output.is_none() {
-            return Err("debugging a test needs both -g and -o with the runner's path".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionRequiresOption,
+                "debugging a test needs both -g and -o with the runner's path",
+            ));
         }
         if test_indices.len() != 1 || test_list || test_filter.is_some() {
-            return Err(
-                "debugging a test needs exactly one --index, without --list or --filter".into(),
-            );
+            return Err(command_line_error(
+                DiagnosticKind::OptionConflict,
+                "debugging a test needs exactly one --index, without --list or --filter",
+            ));
         }
         if target.is_some_and(Target::is_wasm) {
-            return Err("debugging a test requires the native target".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionRequiresBuild,
+                "debugging a test requires the native target",
+            ));
         }
     }
     if debug_output && !matches!(action, Action::Build | Action::Run) {
-        return Err("--debug-output is only valid with build or run".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--debug-output is only valid with build or run",
+        ));
     }
     if trap_info && !matches!(action, Action::Build | Action::Run) {
-        return Err("--trap-info is only valid with build or run".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--trap-info is only valid with build or run",
+        ));
     }
     if trap_return && action != Action::Build {
-        return Err("--trap-mode is only valid with build".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--trap-mode is only valid with build",
+        ));
     }
     if allocator.is_some()
         && action != Action::Build
         && !(matches!(action, Action::Run | Action::Test)
             && allocator == Some(tsuzuri::llvm::Allocator::Counting))
     {
-        return Err("--allocator is only valid with build".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--allocator is only valid with build",
+        ));
     }
     if freestanding && action != Action::Build {
-        return Err("--freestanding is only valid with build".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--freestanding is only valid with build",
+        ));
     }
     if strip && action != Action::Build {
-        return Err("--strip is only valid with build".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--strip is only valid with build",
+        ));
     }
     if wasm_opt && action != Action::Build {
-        return Err("--wasm-opt is only valid with build".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--wasm-opt is only valid with build",
+        ));
     }
     if (profile_generate.is_some() || profile_use.is_some())
         && !matches!(action, Action::Build | Action::Run)
     {
-        return Err("--profile-generate and --profile-use are only valid with build or run".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--profile-generate and --profile-use are only valid with build or run",
+        ));
     }
     if format_check && action != Action::Fmt {
-        return Err("--check is only valid with fmt".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--check is only valid with fmt",
+        ));
     }
     if action == Action::Fmt
         && (optimization.is_some() || cpu.is_some() || deny_warnings || warn_implicit_copy)
     {
-        return Err(
-            "fmt does not use optimization, CPU tuning, or compiler warning options".into(),
-        );
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "fmt does not use optimization, CPU tuning, or compiler warning options",
+        ));
     }
     if matches!(action, Action::Test | Action::Bench)
         && optimization.is_some_and(|level| level.speed_level().is_none())
@@ -954,51 +1181,88 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         } else {
             "bench"
         };
-        return Err(format!(
-            "{name} supports -O0 to -O3; use -Os or -Oz with build or run"
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidValue,
+            format!("{name} supports -O0 to -O3; use -Os or -Oz with build or run"),
         ));
     }
     if !matches!(action, Action::Test | Action::Bench)
         && (test_filter.is_some() || test_list || !test_indices.is_empty())
     {
-        return Err("--filter, --list, and --index are only valid with test or bench".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--filter, --list, and --index are only valid with test or bench",
+        ));
     }
     if action == Action::Test && cpu.is_some() {
-        return Err("test does not use CPU tuning".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "test does not use CPU tuning",
+        ));
     }
     if bench_samples.is_some() && action != Action::Bench {
-        return Err("--samples is only valid with bench".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--samples is only valid with bench",
+        ));
     }
     if bench_allocs && action != Action::Bench {
-        return Err("--allocs is only valid with bench".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--allocs is only valid with bench",
+        ));
     }
     if test_seed.is_some() && action != Action::Test {
-        return Err("--seed is only valid with test".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--seed is only valid with test",
+        ));
     }
     if action == Action::Bench {
         if cpu.is_some() {
-            return Err("bench does not use CPU tuning".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "bench does not use CPU tuning",
+            ));
         }
         if target.is_some_and(Target::is_wasm) {
-            return Err("tsuzuri bench supports only the native target".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionRequiresBuild,
+                "tsuzuri bench supports only the native target",
+            ));
         }
     }
     if coverage.is_some() {
         if action != Action::Test {
-            return Err("--coverage is only valid with test".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--coverage is only valid with test",
+            ));
         }
         if target.is_some_and(Target::is_wasm) {
-            return Err("test coverage supports only the native target".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionRequiresBuild,
+                "test coverage supports only the native target",
+            ));
         }
         if test_list {
-            return Err("coverage cannot be combined with --list".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionConflict,
+                "coverage cannot be combined with --list",
+            ));
         }
         if debug_info {
-            return Err("coverage cannot be combined with -g; a debug runner only builds".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionConflict,
+                "coverage cannot be combined with -g; a debug runner only builds",
+            ));
         }
     }
     if action == Action::Run && target.is_some_and(Target::is_wasm) {
-        return Err("run supports only a native target; build WebAssembly with 'tsuzuri build --target wasm32' and load the module in a host".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionRequiresBuild,
+            "run supports only a native target; build WebAssembly with 'tsuzuri build --target wasm32' and load the module in a host",
+        ));
     }
     if output.is_some() && !matches!(action, Action::Build | Action::Doc | Action::Test)
         || emit.is_some() && action != Action::Build
@@ -1008,21 +1272,36 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                 Action::Build | Action::Test | Action::Bench | Action::Run
             )
     {
-        return Err("--output requires build or doc; --target and --emit require a supported build/test action".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--output requires build or doc; --target and --emit require a supported build/test action",
+        ));
     }
     if action == Action::Doc {
         if output.is_none() {
-            return Err("doc requires -o or --output with an output directory".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionRequiresOption,
+                "doc requires -o or --output with an output directory",
+            ));
         }
         if optimization.is_some() || cpu.is_some() {
-            return Err("doc does not use optimization or CPU tuning".into());
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "doc does not use optimization or CPU tuning",
+            ));
         }
     }
     if action == Action::Check && optimization.is_some() {
-        return Err("check does not use an optimization level".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "check does not use an optimization level",
+        ));
     }
     if action == Action::Check && cpu.is_some() {
-        return Err("check does not use CPU tuning".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "check does not use CPU tuning",
+        ));
     }
     let target = target.unwrap_or(Target::Native);
     let backend = backend.unwrap_or_default();
@@ -1066,36 +1345,34 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         wasm_opt,
         triple,
     };
-    options
-        .validate()
-        .map_err(|error| error.into_data().message)?;
+    // These checks report `E2000` diagnostics without a position, as the command line does.
+    options.validate()?;
     let profile = match (profile_generate, profile_use) {
         (Some(_), Some(_)) => {
-            return Err(
-                "--profile-generate and --profile-use cannot be combined; build once with each"
-                    .into(),
-            );
+            return Err(command_line_error(
+                DiagnosticKind::OptionConflict,
+                "--profile-generate and --profile-use cannot be combined; build once with each",
+            ));
         }
-        (Some(directory), None) => {
-            driver::Profile::generate(&directory).map_err(|error| error.into_data().message)?
-        }
+        // A directory that cannot be made absolute is a value of the command line (`E2000`).
+        (Some(directory), None) => driver::Profile::generate(&directory)
+            .map_err(|error| error.recode(DiagnosticKind::OptionInvalidValue))?,
         (None, Some(path)) => driver::Profile::Use(path),
         (None, None) => driver::Profile::None,
     };
-    profile
-        .validate(options)
-        .map_err(|error| error.into_data().message)?;
+    profile.validate(options)?;
     if let Some(error) = output
         .as_deref()
         .and_then(|output| driver::bindings_output_error(options.emit, output))
     {
-        return Err(error.into_data().message);
+        return Err(error);
     }
-    links
-        .check_shape()
-        .map_err(|error| error.into_data().message)?;
+    links.check_shape()?;
     if !links.is_empty() && !links_apply(action, &options) {
-        return Err("link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe".into());
+        return Err(command_line_error(
+            DiagnosticKind::OptionRequiresBuild,
+            "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+        ));
     }
     Ok(Arguments {
         action,
@@ -1120,9 +1397,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
 }
 
 /// The value of `--profile-generate` or `--profile-use`: a path that is not empty.
-fn profile_path(value: &OsStr, option: &str) -> Result<PathBuf, String> {
+fn profile_path(value: &OsStr, option: &str) -> Result<PathBuf, Diagnostic> {
     if value.is_empty() {
-        return Err(format!("{option} needs a value"));
+        return Err(command_line_error(
+            DiagnosticKind::OptionMissingValue,
+            format!("{option} needs a value"),
+        ));
     }
     Ok(PathBuf::from(value))
 }
@@ -1144,16 +1424,19 @@ fn next_value<'a>(
     arguments: &'a [OsString],
     position: &mut usize,
     option: &str,
-) -> Result<&'a OsString, String> {
-    let value = arguments
-        .get(*position)
-        .ok_or_else(|| format!("{option} needs a value"))?;
+) -> Result<&'a OsString, Diagnostic> {
+    let value = arguments.get(*position).ok_or_else(|| {
+        command_line_error(
+            DiagnosticKind::OptionMissingValue,
+            format!("{option} needs a value"),
+        )
+    })?;
     *position += 1;
     Ok(value)
 }
 
 /// Parses a byte count with an optional binary `KiB`, `MiB`, or `GiB` suffix.
-fn parse_size(value: &OsStr, option: &str) -> Result<u64, String> {
+fn parse_size(value: &OsStr, option: &str) -> Result<u64, Diagnostic> {
     value
         .to_str()
         .and_then(tsuzuri::package::parse_size)
@@ -1163,8 +1446,11 @@ fn parse_size(value: &OsStr, option: &str) -> Result<u64, String> {
             } else {
                 "67108864 or 64MiB"
             };
-            format!(
-                "{option} must be a byte count or a number followed by KiB, MiB, or GiB, such as {example}"
+            command_line_error(
+                DiagnosticKind::OptionInvalidValue,
+                format!(
+                    "{option} must be a byte count or a number followed by KiB, MiB, or GiB, such as {example}"
+                ),
             )
         })
 }
@@ -1269,15 +1555,23 @@ fn write_with_severity(
     );
 }
 
+/// A tool message of a build, of a test or bench runner, or of a script run as a JSON line: a
+/// `W2001` warning without a position.
+fn tool_notice_json(message: &str) -> String {
+    let kind = DiagnosticKind::ToolNotice;
+    format!(
+        "{{\"severity\":\"warning\",\"code\":\"{}\",\"message\":{},\"kind\":\"{}\"}}",
+        kind.code(),
+        json_string(message.trim()),
+        kind.id()
+    )
+}
+
 /// The tool messages of a build (W2001 as JSON) that follow a successful command.
 fn write_messages(err: &mut dyn Write, messages: &[String], json: bool) {
     for message in messages {
         if json {
-            errln!(
-                err,
-                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
-                json_string(message.trim())
-            );
+            errln!(err, "{}", tool_notice_json(message));
         } else {
             errln!(err, "{}", message.trim());
         }
@@ -1330,9 +1624,12 @@ fn run_formatter(arguments: &Arguments) -> u8 {
             if arguments.format_check {
                 for path in &changed {
                     if arguments.json {
+                        let kind = DiagnosticKind::FileNotFormatted;
                         eprintln!(
-                            "{{\"severity\":\"error\",\"code\":\"E2000\",\"message\":\"file is not formatted\",\"path\":{}}}",
-                            json_string(&path.to_string_lossy())
+                            "{{\"severity\":\"error\",\"code\":\"{}\",\"message\":\"file is not formatted\",\"path\":{},\"kind\":\"{}\"}}",
+                            kind.code(),
+                            json_string(&path.to_string_lossy()),
+                            kind.id()
                         );
                     } else {
                         eprintln!("{}: not formatted", path.display());
@@ -1401,7 +1698,7 @@ fn run_test_action(
     if arguments.test_list {
         for case in module.tests.iter().filter(|case| options.includes(case)) {
             if arguments.json {
-                let source = project.source_for(&Diagnostic::new("E2000", "", case.span));
+                let source = project.source_for_span(case.span);
                 let mapper = tsuzuri::lsp::PositionMapper::new(
                     &source.text,
                     tsuzuri::lsp::PositionEncoding::Utf16,
@@ -1441,10 +1738,7 @@ fn run_test_action(
     };
     for message in &report.messages {
         if arguments.json {
-            eprintln!(
-                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
-                json_string(message.trim())
-            );
+            eprintln!("{}", tool_notice_json(message));
         } else {
             eprintln!("{}", message.trim());
         }
@@ -1559,10 +1853,7 @@ fn debug_test(
     };
     for message in &runner.messages {
         if arguments.json {
-            eprintln!(
-                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
-                json_string(message.trim())
-            );
+            eprintln!("{}", tool_notice_json(message));
         } else {
             eprintln!("{}", message.trim());
         }
@@ -1628,7 +1919,7 @@ fn run_bench_action(
     if arguments.test_list {
         for case in module.benches.iter().filter(|case| options.includes(case)) {
             if arguments.json {
-                let source = project.source_for(&Diagnostic::new("E2000", "", case.span));
+                let source = project.source_for_span(case.span);
                 let mapper = tsuzuri::lsp::PositionMapper::new(
                     &source.text,
                     tsuzuri::lsp::PositionEncoding::Utf16,
@@ -1662,10 +1953,7 @@ fn run_bench_action(
     };
     for message in &report.messages {
         if arguments.json {
-            eprintln!(
-                "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":{}}}",
-                json_string(message.trim())
-            );
+            eprintln!("{}", tool_notice_json(message));
         } else {
             eprintln!("{}", message.trim());
         }
@@ -1973,9 +2261,9 @@ fn fetch_dependencies(arguments: &[OsString]) -> ExitCode {
         .iter()
         .filter(|argument| *argument != "--json")
         .collect();
-    let usage = |message: &str| {
+    let usage = |kind: DiagnosticKind, message: &str| {
         print_diagnostic(
-            &Diagnostic::new("E2000", message, Span::default()),
+            &command_line_error(kind, message),
             Path::new("<command line>"),
             "",
             json,
@@ -1986,11 +2274,17 @@ fn fetch_dependencies(arguments: &[OsString]) -> ExitCode {
         || paths[0].to_string_lossy().starts_with('-')
         || arguments.len() - paths.len() > 1
     {
-        return usage("fetch takes one project directory and optionally --json");
+        return usage(
+            DiagnosticKind::UsageError,
+            "fetch takes one project directory and optionally --json",
+        );
     }
     let directory = Path::new(paths[0]);
     if !directory.join("Tsuzuri.toml").is_file() {
-        return usage("fetch requires a Tsuzuri.toml in the project directory");
+        return usage(
+            DiagnosticKind::ProjectManifestMissing,
+            "fetch requires a Tsuzuri.toml in the project directory",
+        );
     }
     match tsuzuri::fetch::fetch(directory) {
         Ok(()) => ExitCode::SUCCESS,
@@ -2005,9 +2299,9 @@ fn fetch_dependencies(arguments: &[OsString]) -> ExitCode {
 /// and prints the registry index entry of that commit. It changes no registry.
 fn publish_package(arguments: &[OsString]) -> ExitCode {
     let json = arguments.iter().any(|argument| argument == "--json");
-    let usage = |message: &str| {
+    let usage = |kind: DiagnosticKind, message: &str| {
         print_diagnostic(
-            &Diagnostic::new("E2000", message, Span::default()),
+            &command_line_error(kind, message),
             Path::new("<command line>"),
             "",
             json,
@@ -2042,17 +2336,27 @@ fn publish_package(arguments: &[OsString]) -> ExitCode {
     }
     let (Some(directory), Some(url), Some(rev), true) = (directory, url, rev, valid) else {
         return usage(
+            DiagnosticKind::UsageError,
             "publish takes one package directory, --git URL, --rev COMMIT, and optionally --json",
         );
     };
     if !tsuzuri::package::valid_git_url(&url) {
-        return usage(tsuzuri::package::GIT_URL_RULE);
+        return usage(
+            DiagnosticKind::InvalidPublishGitUrl,
+            tsuzuri::package::GIT_URL_RULE,
+        );
     }
     if !tsuzuri::package::valid_rev(&rev) {
-        return usage(tsuzuri::package::GIT_REV_RULE);
+        return usage(
+            DiagnosticKind::InvalidPublishGitRev,
+            tsuzuri::package::GIT_REV_RULE,
+        );
     }
     if !directory.join("Tsuzuri.toml").is_file() {
-        return usage("publish requires a Tsuzuri.toml in the package directory");
+        return usage(
+            DiagnosticKind::ProjectManifestMissing,
+            "publish requires a Tsuzuri.toml in the package directory",
+        );
     }
     // A published package must check like any library first.
     let project = match Project::load_for_tests(&directory) {
@@ -2252,18 +2556,29 @@ fn fix_edition_command(arguments: &[OsString]) -> ExitCode {
                 paths_only = true;
             } else if !paths_only && word.starts_with('-') {
                 if !seen.insert(word) {
-                    return Err(format!("{word} specified more than once"));
+                    return Err(command_line_error(
+                        DiagnosticKind::DuplicateOption,
+                        format!("{word} specified more than once"),
+                    ));
                 }
                 match word {
                     "--edition" | "--from" => {
                         let value = arguments
                             .next()
                             .and_then(|value| value.to_str())
-                            .ok_or_else(|| format!("{word} needs a year such as 2027"))?;
+                            .ok_or_else(|| {
+                                command_line_error(
+                                    DiagnosticKind::OptionMissingValue,
+                                    format!("{word} needs a year such as 2027"),
+                                )
+                            })?;
                         let edition = Edition::parse(value).ok_or_else(|| {
-                            format!(
-                                "unsupported edition '{value}'; supported editions: {}",
-                                Edition::supported_names()
+                            command_line_error(
+                                DiagnosticKind::OptionInvalidValue,
+                                format!(
+                                    "unsupported edition '{value}'; supported editions: {}",
+                                    Edition::supported_names()
+                                ),
                             )
                         })?;
                         if word == "--edition" {
@@ -2274,29 +2589,31 @@ fn fix_edition_command(arguments: &[OsString]) -> ExitCode {
                     }
                     "--dry-run" => dry_run = true,
                     "--json" => {}
-                    _ => return Err(format!("unknown option '{word}' for edition migration")),
+                    _ => {
+                        return Err(command_line_error(
+                            DiagnosticKind::UnknownOption,
+                            format!("unknown option '{word}' for edition migration"),
+                        ));
+                    }
                 }
             } else if path.replace(PathBuf::from(argument)).is_some() {
-                return Err("fix takes one input path".into());
+                return Err(command_line_error(
+                    DiagnosticKind::InputCountInvalid,
+                    "fix takes one input path",
+                ));
             }
         }
         target.zip(path).ok_or_else(|| {
-            "usage: tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] PATH".into()
+            command_line_error(
+                DiagnosticKind::UsageError,
+                "usage: tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] PATH",
+            )
         })
     })();
     let (target, path) = match parsed {
         Ok(parsed) => parsed,
-        Err(message) => {
-            print_diagnostic(
-                &Diagnostic::of(
-                    DiagnosticKind::BindgenArgumentError,
-                    message,
-                    Span::default(),
-                ),
-                Path::new("<command line>"),
-                "",
-                json,
-            );
+        Err(error) => {
+            print_diagnostic(&error, Path::new("<command line>"), "", json);
             return ExitCode::from(2);
         }
     };
@@ -2375,7 +2692,7 @@ fn bindgen_command(arguments: &[OsString]) -> ExitCode {
         Ok(arguments) => arguments,
         Err(message) => {
             print_diagnostic(
-                &Diagnostic::new("E2000", message, Span::default()),
+                &command_line_error(DiagnosticKind::BindgenArgumentError, message),
                 Path::new("<command line>"),
                 "",
                 json,
@@ -2416,14 +2733,17 @@ const REPL_USAGE: &str =
 const REPL_TIMEOUT: &str = "--timeout requires whole seconds from 0 to 3600";
 
 /// `tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]`.
-fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOptions, String> {
+fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOptions, Diagnostic> {
     let mut options = tsuzuri::repl::ReplOptions::default();
     let mut seen = BTreeSet::new();
     let mut rest = arguments.iter();
     while let Some(argument) = rest.next() {
         let option = match argument.to_str() {
             Some("--target") => {
-                return Err("repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'".into());
+                return Err(command_line_error(
+                    DiagnosticKind::OptionRequiresBuild,
+                    "repl supports only the native target; build WebAssembly with 'tsuzuri build --target wasm32'",
+                ));
             }
             Some(level @ ("-O0" | "-O1" | "-O2" | "-O3")) => {
                 if let Some(level) = OptLevel::from_flag(level) {
@@ -2435,7 +2755,12 @@ fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOpt
                 options.build.cpu = match rest.next().and_then(|value| value.to_str()) {
                     Some("generic") => Cpu::Generic,
                     Some("native") => Cpu::Native,
-                    _ => return Err("CPU tuning must be 'generic' or 'native'".into()),
+                    _ => {
+                        return Err(command_line_error(
+                            DiagnosticKind::OptionInvalidValue,
+                            "CPU tuning must be 'generic' or 'native'",
+                        ));
+                    }
                 };
                 "CPU tuning"
             }
@@ -2452,14 +2777,19 @@ fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOpt
                     })
                     .and_then(|value| value.parse::<u64>().ok())
                     .filter(|seconds| *seconds <= 3600)
-                    .ok_or(REPL_TIMEOUT)?;
+                    .ok_or_else(|| {
+                        command_line_error(DiagnosticKind::OptionInvalidValue, REPL_TIMEOUT)
+                    })?;
                 options.timeout = (seconds != 0).then(|| std::time::Duration::from_secs(seconds));
                 "timeout"
             }
-            _ => return Err(REPL_USAGE.into()),
+            _ => return Err(command_line_error(DiagnosticKind::UsageError, REPL_USAGE)),
         };
         if !seen.insert(option) {
-            return Err(format!("{option} specified more than once"));
+            return Err(command_line_error(
+                DiagnosticKind::DuplicateOption,
+                format!("{option} specified more than once"),
+            ));
         }
     }
     Ok(options)
@@ -2469,13 +2799,8 @@ fn parse_repl_arguments(arguments: &[OsString]) -> Result<tsuzuri::repl::ReplOpt
 fn repl_command(arguments: &[OsString]) -> ExitCode {
     let options = match parse_repl_arguments(arguments) {
         Ok(options) => options,
-        Err(message) => {
-            print_diagnostic(
-                &Diagnostic::new("E2000", message, Span::default()),
-                Path::new("<command line>"),
-                "",
-                false,
-            );
+        Err(error) => {
+            print_diagnostic(&error, Path::new("<command line>"), "", false);
             return ExitCode::from(2);
         }
     };
@@ -2512,7 +2837,7 @@ const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --js
 /// Splits `tsuzuri script [options] FILE [arguments...]` into the arguments of
 /// `tsuzuri run [options] -- FILE` and the program's arguments: everything after FILE,
 /// unchanged, so that a script's own options never reach the compiler.
-fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsString>), String> {
+fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsString>), Diagnostic> {
     let mut run = vec![OsString::from("run")];
     let mut rest = arguments.iter();
     while let Some(argument) = rest.next() {
@@ -2530,12 +2855,22 @@ fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsStri
                 run.push(argument.clone());
                 run.push(
                     rest.next()
-                        .ok_or_else(|| format!("{option} needs a value"))?
+                        .ok_or_else(|| {
+                            command_line_error(
+                                DiagnosticKind::OptionMissingValue,
+                                format!("{option} needs a value"),
+                            )
+                        })?
                         .clone(),
                 );
                 continue;
             }
-            Some(option) if option.starts_with('-') => return Err(SCRIPT_OPTIONS.into()),
+            Some(option) if option.starts_with('-') => {
+                return Err(command_line_error(
+                    DiagnosticKind::UsageError,
+                    SCRIPT_OPTIONS,
+                ));
+            }
             _ => argument,
         };
         run.extend([OsString::from("--"), file.clone()]);
@@ -2547,7 +2882,7 @@ fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsStri
     {
         return Ok((run, Vec::new()));
     }
-    Err(SCRIPT_FILE.into())
+    Err(command_line_error(DiagnosticKind::UsageError, SCRIPT_FILE))
 }
 
 /// Whether the options before a script's file ask for JSON diagnostics. Option values and the
@@ -2586,9 +2921,9 @@ fn main() -> ExitCode {
     let (raw, program_arguments) = if raw.first().is_some_and(|command| *command == "script") {
         match script_arguments(&raw[1..]) {
             Ok((run, program)) => (run, Some(program)),
-            Err(message) => {
+            Err(error) => {
                 print_diagnostic(
-                    &Diagnostic::new("E2000", message, Span::default()),
+                    &error,
                     Path::new("<command line>"),
                     "",
                     script_json(&raw[1..]),
@@ -2678,14 +3013,8 @@ fn cli(
         .any(|argument| argument == "--json");
     let arguments = match parse_arguments(raw) {
         Ok(arguments) => arguments,
-        Err(message) => {
-            write_diagnostic(
-                err,
-                &Diagnostic::new("E2000", message, Span::default()),
-                Path::new("<command line>"),
-                "",
-                json,
-            );
+        Err(error) => {
+            write_diagnostic(err, &error, Path::new("<command line>"), "", json);
             return EXIT_USAGE;
         }
     };
@@ -2733,21 +3062,14 @@ fn cli(
     let mut arguments = arguments;
     arguments.options = arguments.options.with_manifest_wasm(project.wasm);
     // Command-line values were validated during parsing, so only manifest values can fail here.
-    if let Err(error) = arguments.options.validate() {
-        write_diagnostic(
-            err,
-            &Diagnostic::new(
-                error.code,
-                format!(
-                    "{} (after applying the root package's [wasm])",
-                    error.message
-                ),
-                Span::default(),
-            ),
-            Path::new("Tsuzuri.toml"),
-            "",
-            arguments.json,
+    if let Err(mut error) = arguments.options.validate() {
+        // The diagnostic keeps its code and kind; the message names where the setting came from.
+        error.message = format!(
+            "{} (after applying the root package's [wasm])",
+            error.message
         );
+        error.span = Span::default();
+        write_diagnostic(err, &error, Path::new("Tsuzuri.toml"), "", arguments.json);
         return EXIT_FAILURE;
     }
     let kind = match arguments.action {
@@ -2811,10 +3133,13 @@ fn cli(
 
 /// The arguments of `tsuzuri watch ARGS`, `ARGS` being those of `check`, `build` or `test`. The
 /// command is named, so that `watch app` is not read as a build of `app`.
-fn parse_watch_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
+fn parse_watch_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     match arguments.first().and_then(|command| command.to_str()) {
         Some("check" | "build" | "test") => parse_arguments(arguments),
-        _ => Err("watch runs check, build, or test; use tsuzuri watch check <path>".into()),
+        _ => Err(command_line_error(
+            DiagnosticKind::UsageError,
+            "watch runs check, build, or test; use tsuzuri watch check <path>",
+        )),
     }
 }
 
@@ -2828,13 +3153,8 @@ fn watch_main(arguments: &[OsString]) -> ExitCode {
         .any(|argument| argument == "--json");
     let parsed = match parse_watch_arguments(arguments) {
         Ok(parsed) => parsed,
-        Err(message) => {
-            print_diagnostic(
-                &Diagnostic::new("E2000", message, Span::default()),
-                Path::new("<command line>"),
-                "",
-                json,
-            );
+        Err(error) => {
+            print_diagnostic(&error, Path::new("<command line>"), "", json);
             return ExitCode::from(EXIT_USAGE);
         }
     };
@@ -2902,7 +3222,7 @@ enum ServeMode {
     Stop(PathBuf),
 }
 
-fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeMode, String> {
+fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeMode, Diagnostic> {
     let mut input = None;
     let mut idle = None;
     let (mut status, mut stop) = (false, false);
@@ -2913,17 +3233,28 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeMode, String> {
         match argument.to_str() {
             Some("--idle-timeout") => {
                 if idle.is_some() {
-                    return Err("idle-timeout specified more than once".into());
+                    return Err(command_line_error(
+                        DiagnosticKind::DuplicateOption,
+                        "idle-timeout specified more than once",
+                    ));
                 }
                 let value = arguments
                     .get(position)
                     .and_then(|value| value.to_str())
-                    .ok_or("--idle-timeout requires a number of seconds")?;
+                    .ok_or_else(|| {
+                        command_line_error(
+                            DiagnosticKind::OptionMissingValue,
+                            "--idle-timeout requires a number of seconds",
+                        )
+                    })?;
                 position += 1;
                 let invalid = || {
-                    format!(
-                        "--idle-timeout must be an integer from 1 to {}, not '{value}'",
-                        server::MAX_IDLE_SECONDS
+                    command_line_error(
+                        DiagnosticKind::OptionInvalidValue,
+                        format!(
+                            "--idle-timeout must be an integer from 1 to {}, not '{value}'",
+                            server::MAX_IDLE_SECONDS
+                        ),
                     )
                 };
                 let seconds: u64 = value.parse().map_err(|_| invalid())?;
@@ -2934,32 +3265,47 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeMode, String> {
             }
             Some("--status") => {
                 if std::mem::replace(&mut status, true) {
-                    return Err("status specified more than once".into());
+                    return Err(command_line_error(
+                        DiagnosticKind::DuplicateOption,
+                        "status specified more than once",
+                    ));
                 }
             }
             Some("--stop") => {
                 if std::mem::replace(&mut stop, true) {
-                    return Err("stop specified more than once".into());
+                    return Err(command_line_error(
+                        DiagnosticKind::DuplicateOption,
+                        "stop specified more than once",
+                    ));
                 }
             }
             Some(value) if value.starts_with('-') => {
-                return Err(format!("unknown option '{value}' for serve; {SERVE_USAGE}"));
+                return Err(command_line_error(
+                    DiagnosticKind::UnknownOption,
+                    format!("unknown option '{value}' for serve; {SERVE_USAGE}"),
+                ));
             }
             _ => {
                 if input.replace(PathBuf::from(argument)).is_some() {
-                    return Err(SERVE_USAGE.into());
+                    return Err(command_line_error(DiagnosticKind::UsageError, SERVE_USAGE));
                 }
             }
         }
     }
-    let input = input.ok_or(SERVE_USAGE)?;
+    let input = input.ok_or_else(|| command_line_error(DiagnosticKind::UsageError, SERVE_USAGE))?;
     match (status, stop, idle) {
         (false, false, idle) => Ok(ServeMode::Run {
             input,
             idle: idle.unwrap_or(server::DEFAULT_IDLE_SECONDS),
         }),
-        (true, true, _) => Err("--status and --stop cannot be used together".into()),
-        (_, _, Some(_)) => Err("--idle-timeout applies to starting a server".into()),
+        (true, true, _) => Err(command_line_error(
+            DiagnosticKind::OptionConflict,
+            "--status and --stop cannot be used together",
+        )),
+        (_, _, Some(_)) => Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--idle-timeout applies to starting a server",
+        )),
         (true, false, None) => Ok(ServeMode::Status(input)),
         (false, true, None) => Ok(ServeMode::Stop(input)),
     }
@@ -3010,10 +3356,10 @@ impl server::Handler for CommandServer {
     ) -> Result<server::Response, server::Refused> {
         use server::{Refusal, Refused};
         let raw: Vec<OsString> = request.args.iter().map(OsString::from).collect();
-        let arguments = parse_arguments(&raw).map_err(|message| {
+        let arguments = parse_arguments(&raw).map_err(|error| {
             Refused::new(
                 Refusal::Unsupported,
-                format!("the command line is not valid ({message})"),
+                format!("the command line is not valid ({})", error.message),
             )
         })?;
         if !matches!(arguments.action, Action::Check | Action::Build) || arguments.no_server {
@@ -3079,9 +3425,9 @@ impl server::Handler for CommandServer {
     }
 }
 
-fn serve_failure(code: &'static str, message: String, exit: u8) -> ExitCode {
+fn serve_failure(kind: DiagnosticKind, message: impl Into<String>, exit: u8) -> ExitCode {
     print_diagnostic(
-        &Diagnostic::new(code, message, Span::default()),
+        &command_line_error(kind, message),
         Path::new("<command line>"),
         "",
         false,
@@ -3093,12 +3439,15 @@ fn serve_failure(code: &'static str, message: String, exit: u8) -> ExitCode {
 fn serve_main(arguments: &[OsString]) -> ExitCode {
     let mode = match parse_serve_arguments(arguments) {
         Ok(mode) => mode,
-        Err(message) => return serve_failure("E2000", message, EXIT_USAGE),
+        Err(error) => {
+            print_diagnostic(&error, Path::new("<command line>"), "", false);
+            return ExitCode::from(EXIT_USAGE);
+        }
     };
     if !cfg!(unix) {
         return serve_failure(
-            "E2000",
-            "the build server needs Unix domain sockets; use tsuzuri watch, or run check and build without a server".into(),
+            DiagnosticKind::OptionUnsupportedPlatform,
+            "the build server needs Unix domain sockets; use tsuzuri watch, or run check and build without a server",
             EXIT_USAGE,
         );
     }
@@ -3111,7 +3460,11 @@ fn serve_main(arguments: &[OsString]) -> ExitCode {
                 );
                 ExitCode::SUCCESS
             }
-            Err(message) => serve_failure("E2001", message, EXIT_FAILURE),
+            Err(message) => serve_failure(
+                DiagnosticKind::BuildServerControlFailed,
+                message,
+                EXIT_FAILURE,
+            ),
         },
         ServeMode::Stop(input) => match server::control(&input, &server::Operation::Shutdown) {
             Ok(_) => {
@@ -3119,7 +3472,11 @@ fn serve_main(arguments: &[OsString]) -> ExitCode {
                 println!("stopped the build server for {}", root.display());
                 ExitCode::SUCCESS
             }
-            Err(message) => serve_failure("E2001", message, EXIT_FAILURE),
+            Err(message) => serve_failure(
+                DiagnosticKind::BuildServerControlFailed,
+                message,
+                EXIT_FAILURE,
+            ),
         },
         ServeMode::Run { input, idle } => start_server(&input, idle),
     }
@@ -3132,11 +3489,17 @@ fn start_server(input: &Path, idle: u64) -> ExitCode {
     }
     let directory = match server::server_directory() {
         Ok(directory) => directory,
-        Err(error) => return serve_failure("E2000", error.to_string(), EXIT_USAGE),
+        Err(error) => {
+            return serve_failure(
+                DiagnosticKind::EnvironmentSettingInvalid,
+                error.to_string(),
+                EXIT_USAGE,
+            );
+        }
     };
     let Some(root) = server::project_root(input).filter(|root| root.to_str().is_some()) else {
         return serve_failure(
-            "E2001",
+            DiagnosticKind::IoFailure,
             format!(
                 "cannot find the project of {}: it must be an existing project directory or file with a UTF-8 path, not a symbolic link",
                 input.display()
@@ -3145,14 +3508,18 @@ fn start_server(input: &Path, idle: u64) -> ExitCode {
         );
     };
     if let Err(message) = server::ensure_private_directory(&directory) {
-        return serve_failure("E2001", message, EXIT_FAILURE);
+        return serve_failure(
+            DiagnosticKind::BuildServerStartFailed,
+            message,
+            EXIT_FAILURE,
+        );
     }
     let compiler = env::current_exe().and_then(std::fs::canonicalize);
     let cwd = env::current_dir();
     let (Ok(compiler), Ok(cwd)) = (compiler, cwd) else {
         return serve_failure(
-            "E2001",
-            "cannot find the compiler file or the working directory".into(),
+            DiagnosticKind::IoFailure,
+            "cannot find the compiler file or the working directory",
             EXIT_FAILURE,
         );
     };
@@ -3160,7 +3527,7 @@ fn start_server(input: &Path, idle: u64) -> ExitCode {
         Ok(environment) => environment,
         Err(name) => {
             return serve_failure(
-                "E2000",
+                DiagnosticKind::EnvironmentSettingInvalid,
                 format!(
                     "the environment variable {} is not valid UTF-8; the build server compares it with its clients'",
                     name.to_string_lossy()
@@ -3184,13 +3551,16 @@ fn start_server(input: &Path, idle: u64) -> ExitCode {
     match server::serve(&config, &mut handler, io::stderr()) {
         Ok(server::Stop::Idle | server::Stop::Shutdown) => ExitCode::SUCCESS,
         Ok(server::Stop::CompilerChanged) => ExitCode::from(EXIT_FAILURE),
+        // `ServeError` names its code: `E2000` for a setting to change (the socket path that
+        // `TSUZURI_SERVER_DIR` gives is too long), `E2001` for the file system and the threads.
         Err(error) => {
-            let exit = if error.code == "E2000" {
-                EXIT_USAGE
+            let (kind, exit) = if error.code == "E2000" {
+                (DiagnosticKind::EnvironmentSettingInvalid, EXIT_USAGE)
             } else {
-                EXIT_FAILURE
+                (DiagnosticKind::BuildServerStartFailed, EXIT_FAILURE)
             };
-            serve_failure(error.code, error.message, exit)
+            debug_assert_eq!(kind.code(), error.code, "{}", error.message);
+            serve_failure(kind, error.message, exit)
         }
     }
 }
@@ -3201,10 +3571,12 @@ mod tests {
 
     fn parse(values: &[&str]) -> Result<Arguments, String> {
         parse_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+            .map_err(|error| error.message.clone())
     }
 
     fn parse_repl(values: &[&str]) -> Result<tsuzuri::repl::ReplOptions, String> {
         parse_repl_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+            .map_err(|error| error.message.clone())
     }
 
     #[test]
@@ -3259,7 +3631,9 @@ mod tests {
         assert_eq!(parsed.options.optimization, OptLevel::O3);
         assert_eq!(parsed.links.libraries, ["m"]);
         assert_eq!(
-            parse_arguments(&split(&["-O0", "-O3", "a.tz"]).unwrap().0).unwrap_err(),
+            parse_arguments(&split(&["-O0", "-O3", "a.tz"]).unwrap().0)
+                .unwrap_err()
+                .message,
             "optimization specified more than once"
         );
         for (values, message) in [
@@ -3272,7 +3646,7 @@ mod tests {
             (&["--timeout", "1", "a.tz"], SCRIPT_OPTIONS),
             (&["--cpu"], "--cpu needs a value"),
         ] {
-            assert_eq!(split(values).unwrap_err(), message, "{values:?}");
+            assert_eq!(split(values).unwrap_err().message, message, "{values:?}");
         }
         // Help before the file needs no file.
         assert_eq!(strings(&split(&["--help"]).unwrap().0), ["run", "--help"]);
@@ -5339,7 +5713,9 @@ mod tests {
             "17179869184GiB",
         ] {
             assert_eq!(
-                parse_size(OsStr::new(text), "--wasm-stack-size").unwrap_err(),
+                parse_size(OsStr::new(text), "--wasm-stack-size")
+                    .unwrap_err()
+                    .message,
                 "--wasm-stack-size must be a byte count or a number followed by KiB, MiB, or GiB, such as 4194304 or 4MiB",
                 "{text}"
             );
@@ -6034,7 +6410,7 @@ mod tests {
                     .map(OsString::from)
                     .collect::<Vec<_>>(),
             );
-            assert_eq!(split.unwrap_err(), SCRIPT_OPTIONS);
+            assert_eq!(split.unwrap_err().message, SCRIPT_OPTIONS);
         }
     }
 
@@ -6292,6 +6668,7 @@ mod tests {
     fn watch_arguments_accept_check_build_test_only() {
         let watch = |values: &[&str]| {
             parse_watch_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+                .map_err(|error| error.message.clone())
         };
         for (values, action, input) in [
             (vec!["check", "Main.tz"], Action::Check, "Main.tz"),
@@ -6342,6 +6719,7 @@ mod tests {
     fn serve_arguments_need_one_directory_and_valid_timeout() {
         let serve = |values: &[&str]| {
             parse_serve_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+                .map_err(|error| error.message.clone())
         };
         let run = |input: &str, idle| ServeMode::Run {
             input: PathBuf::from(input),
@@ -6388,6 +6766,86 @@ mod tests {
             "--idle-timeout must be an integer from 1 to 86400, not '0'"
         );
         assert_eq!(serve(&[]).unwrap_err(), SERVE_USAGE);
+    }
+
+    #[test]
+    fn command_line_errors_carry_their_kinds() {
+        let strings = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+        for (values, expected) in [
+            (
+                &["build", "Main.tz", "--nope"][..],
+                DiagnosticKind::UnknownOption,
+            ),
+            (
+                &["build", "-O0", "-O3", "Main.tz"],
+                DiagnosticKind::DuplicateOption,
+            ),
+            (
+                &["build", "Main.tz", "--emit"],
+                DiagnosticKind::OptionMissingValue,
+            ),
+            (
+                &["build", "Main.tz", "--cpu", "fast"],
+                DiagnosticKind::OptionInvalidValue,
+            ),
+            (
+                &["build", "Main.tz", "--target", "nope"],
+                DiagnosticKind::UnknownTarget,
+            ),
+            (&["build"], DiagnosticKind::MissingInput),
+            (
+                &["build", "a.tz", "b.tz"],
+                DiagnosticKind::InputCountInvalid,
+            ),
+            (
+                &["check", "Main.tz", "--strip"],
+                DiagnosticKind::OptionInvalidForCommand,
+            ),
+            (
+                &["test", "Main.tz", "--coverage", "c", "--list"],
+                DiagnosticKind::OptionConflict,
+            ),
+            // `BuildOptions::validate` gives the kind, which the command line keeps.
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--target",
+                    "wasm32",
+                    "--wasm-feature",
+                    "net",
+                ],
+                DiagnosticKind::OptionRequiresOption,
+            ),
+        ] {
+            let error = parse_arguments(&strings(values)).unwrap_err();
+            assert_eq!(
+                error.kind_of(),
+                Some(expected),
+                "{values:?}: {}",
+                error.message
+            );
+            assert_eq!(
+                (error.code, error.span),
+                ("E2000", Span::default()),
+                "{values:?}"
+            );
+        }
+        let kind = |result: Result<(), Diagnostic>| result.unwrap_err().kind_of();
+        let usage = Some(DiagnosticKind::UsageError);
+        assert_eq!(
+            kind(parse_repl_arguments(&strings(&["--bogus"])).map(drop)),
+            usage
+        );
+        assert_eq!(kind(script_arguments(&strings(&[])).map(drop)), usage);
+        assert_eq!(
+            kind(parse_watch_arguments(&strings(&["run", "a.tz"])).map(drop)),
+            usage
+        );
+        assert_eq!(
+            kind(parse_serve_arguments(&strings(&["--status", "--stop", "app"])).map(drop)),
+            Some(DiagnosticKind::OptionConflict)
+        );
     }
 
     #[test]
@@ -6450,6 +6908,7 @@ mod tests {
             "api_diff_command",
             "bindgen_command",
             "debug_test",
+            "explain_command",
             "fix_edition_command",
             "main",
             "new_project",
