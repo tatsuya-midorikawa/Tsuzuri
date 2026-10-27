@@ -707,6 +707,12 @@ impl Type {
         }
     }
 
+    /// Whether destroying a value of this type runs a user `Drop`: the type or a type that it
+    /// stores (not through a reference) has one.
+    pub(crate) fn holds_user_drop(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |part| !part.has_user_drop(types))
+    }
+
     pub(crate) fn sequence_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
         match self {
             Self::Record(id, arguments)
