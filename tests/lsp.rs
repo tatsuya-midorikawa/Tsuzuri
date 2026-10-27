@@ -683,7 +683,7 @@ fn code_action_prefixes_unused_locals() {
     assert_eq!(actions[0]["isPreferred"], true);
     assert_eq!(
         actions[0]["diagnostics"],
-        json!([{"range": range(0, 23, 28), "severity": 2, "code": "W1001", "source": "tsuzuri", "message": "unused local 'spare'; prefix it with '_' to silence this warning", "data": {"kind": "unused_local"}}])
+        json!([{"range": range(0, 23, 28), "severity": 2, "code": "W1001", "source": "tsuzuri", "message": "unused local 'spare'; prefix it with '_' to silence this warning", "data": {"kind": "unused_local", "fixes": [{"title": "Prefix 'spare' with '_'", "applicability": "certain"}]}}])
     );
     assert_eq!(
         actions[0]["edit"],

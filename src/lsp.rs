@@ -1102,30 +1102,6 @@ impl Session {
         };
         let (start, end) = (bound("start")?, bound("end")?);
         let mut actions = Vec::new();
-        for diagnostic in &state.diagnostics {
-            let span = diagnostic.span;
-            if diagnostic.code != "W1001"
-                || span.source != Some(source_id)
-                || span.start > end
-                || start > span.end
-            {
-                continue;
-            }
-            let Some(name) = source.text.get(span.start..span.end) else {
-                continue;
-            };
-            let Ok(edit) = self.rename(directory, source_id, span.start, &format!("_{name}"))
-            else {
-                continue;
-            };
-            actions.push(json!({
-                "title": format!("Prefix '{name}' with '_'"),
-                "kind": "quickfix",
-                "diagnostics": [self.diagnostic_value(&state.project, &state.mappers, source_id, diagnostic)],
-                "isPreferred": true,
-                "edit": edit,
-            }));
-        }
         // The fixes of diagnostics, each offered only when applying it removes its diagnostic.
         for diagnostic in &state.diagnostics {
             let span = diagnostic.span;

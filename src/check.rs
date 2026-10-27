@@ -7778,7 +7778,7 @@ fn check_modules_collect(
                 let coverage = checker.check_coverage()?;
                 if function.origin.module == ModuleOrigin::User {
                     function_warnings.extend(coverage);
-                    function_warnings.extend(warnings::unused_locals(function));
+                    function_warnings.extend(warnings::unused_locals(function, &names));
                     function_warnings.append(&mut checker.shadowing_warnings);
                 }
                 if function.name == "$entry" {

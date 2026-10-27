@@ -3312,6 +3312,94 @@ pub(crate) fn replace_source_atomically(
     Ok(())
 }
 
+/// One file that `replace_files` replaces: its text when it was read and its new text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileUpdate {
+    pub path: PathBuf,
+    pub original: String,
+    pub replacement: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplaceFailure {
+    /// The file no longer has the text it had when it was read.
+    Changed { path: PathBuf },
+    /// The file is not a regular file, or an I/O operation failed.
+    Failed { path: PathBuf, detail: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplaceError {
+    pub failure: ReplaceFailure,
+    /// How many earlier replacements were restored.
+    pub restored: usize,
+    /// The earlier replacements that could not be restored.
+    pub unrestored: Vec<PathBuf>,
+}
+
+/// Replaces each file of `updates`, in order, with the protections of `tsuzuri fmt`: only a
+/// regular file, only while it still has its original text, through a staged file renamed over
+/// it with the original permissions. When one fails, the earlier ones are restored in reverse.
+pub fn replace_files(updates: &[FileUpdate]) -> Result<(), ReplaceError> {
+    for (index, update) in updates.iter().enumerate() {
+        if let Err(failure) = replace_file(&update.path, &update.original, &update.replacement) {
+            let mut restored = 0;
+            let mut unrestored = Vec::new();
+            for earlier in updates[..index].iter().rev() {
+                match replace_file(&earlier.path, &earlier.replacement, &earlier.original) {
+                    Ok(()) => restored += 1,
+                    Err(_) => unrestored.push(earlier.path.clone()),
+                }
+            }
+            return Err(ReplaceError {
+                failure,
+                restored,
+                unrestored,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn replace_file(path: &Path, original: &str, replacement: &str) -> Result<(), ReplaceFailure> {
+    let failed = |detail: String| ReplaceFailure::Failed {
+        path: path.to_owned(),
+        detail,
+    };
+    let regular = || {
+        let metadata = fs::symlink_metadata(path).map_err(|error| failed(error.to_string()))?;
+        if !metadata.file_type().is_file() {
+            return Err(failed(
+                "refusing symlinks, directories, and special files".to_owned(),
+            ));
+        }
+        match read_source_text(path) {
+            Ok(text) if text == original => Ok(metadata),
+            Ok(_) => Err(ReplaceFailure::Changed {
+                path: path.to_owned(),
+            }),
+            Err(error) => Err(failed(error.message.clone())),
+        }
+    };
+    let metadata = regular()?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let temporary =
+        TemporaryDirectory::new(parent).map_err(|error| failed(error.message.clone()))?;
+    let staged = temporary.path.join("fixed");
+    let write = || -> io::Result<()> {
+        let mut file = fs::File::create_new(&staged)?;
+        file.write_all(replacement.as_bytes())?;
+        file.set_permissions(metadata.permissions())?;
+        file.sync_all()
+    };
+    write().map_err(|error| failed(error.to_string()))?;
+    regular()?;
+    fs::rename(&staged, path).map_err(|error| failed(error.to_string()))
+}
+
 pub(crate) fn source_kind(path: &Path) -> Option<SourceKind> {
     path.extension()
         .and_then(OsStr::to_str)

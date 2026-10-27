@@ -227,11 +227,43 @@ pub fn prepare(
             source.edition = current;
         }
     }
+    // The forms that every edition accepts come first: the `certain` fixes of the canonical-form
+    // warnings (A22's `W1007`), applied in memory (G24).
+    let originals: Vec<(usize, String)> = indices
+        .iter()
+        .map(|&id| (id, project.sources[id].text.clone()))
+        .collect();
+    let scope = if directory {
+        crate::fix::Scope::Project
+    } else {
+        crate::fix::Scope::File(project.root)
+    };
+    crate::fix::canonical_round(&mut project, scope, &mut crate::fix::analyze_project)?;
     let mut semantic = crate::check::semantic::SemanticIndex::default();
     crate::analyze_inputs_semantic(&project.inputs(), &mut semantic)
         .map_err(crate::first_error)
         .map_err(|diagnostic| analysis_error(&project, diagnostic))?;
     let mut changes = preserve_parameters(&mut project, &indices, &semantic)?;
+    // A file that the canonical round changed is one change from its text on disk.
+    for (id, original) in originals {
+        let source = &project.sources[id];
+        if source.text == original {
+            continue;
+        }
+        match changes.iter_mut().find(|change| change.path == source.path) {
+            Some(change) => change.before = original,
+            None => changes.push(Change {
+                path: source.path.clone(),
+                before: original,
+                after: source.text.clone(),
+            }),
+        }
+    }
+    changes.sort_by_key(|change| {
+        indices
+            .iter()
+            .position(|&id| project.sources[id].path == change.path)
+    });
     for &id in &indices {
         project.sources[id].edition = target;
     }

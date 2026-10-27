@@ -64,6 +64,7 @@ Usage:
   tsuzuri api-diff old new [--effective] [--json]
   tsuzuri explain TARGET [--json]
   tsuzuri explain --catalog [--json]
+  tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] source.tz|source.tt|source.tc|directory
   tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] input
   tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
                     [--consume F:P]... [--json]
@@ -126,6 +127,9 @@ locked dependencies, fully checks both versions, and compares resolved aliases, 
 callable purity and region contracts; an analysis error never falls back to syntax comparison.
 Exit status 1 means a breaking change or an analysis error; with --json each change and the
 final summary is one JSON object per line.
+`tsuzuri fix PATH` applies the fixes that diagnostics carry: `certain` ones by default, and `likely`
+ones too with --applicability likely. It checks the project again after each round and writes nothing
+when the fixes would add a diagnostic; --dry-run prints the unified diff instead of writing.
 `tsuzuri bindgen` writes extern declarations, constants (also from integer #defines),
 records, opaque extern types, and type aliases for the C header's own declarations
 whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it reports each
@@ -2539,79 +2543,16 @@ fn explain_command(arguments: &[OsString]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn fix_edition_command(arguments: &[OsString]) -> ExitCode {
-    use tsuzuri::syntax::Edition;
-    let json = arguments.iter().any(|argument| argument == "--json");
-    let mut target = None;
-    let mut from = None;
-    let mut dry_run = false;
-    let mut path = None;
-    let mut seen = BTreeSet::new();
-    let mut paths_only = false;
-    let mut arguments = arguments.iter();
-    let parsed = (|| {
-        while let Some(argument) = arguments.next() {
-            let word = argument.to_str().unwrap_or("");
-            if !paths_only && word == "--" {
-                paths_only = true;
-            } else if !paths_only && word.starts_with('-') {
-                if !seen.insert(word) {
-                    return Err(command_line_error(
-                        DiagnosticKind::DuplicateOption,
-                        format!("{word} specified more than once"),
-                    ));
-                }
-                match word {
-                    "--edition" | "--from" => {
-                        let value = arguments
-                            .next()
-                            .and_then(|value| value.to_str())
-                            .ok_or_else(|| {
-                                command_line_error(
-                                    DiagnosticKind::OptionMissingValue,
-                                    format!("{word} needs a year such as 2027"),
-                                )
-                            })?;
-                        let edition = Edition::parse(value).ok_or_else(|| {
-                            command_line_error(
-                                DiagnosticKind::OptionInvalidValue,
-                                format!(
-                                    "unsupported edition '{value}'; supported editions: {}",
-                                    Edition::supported_names()
-                                ),
-                            )
-                        })?;
-                        if word == "--edition" {
-                            target = Some(edition);
-                        } else {
-                            from = Some(edition);
-                        }
-                    }
-                    "--dry-run" => dry_run = true,
-                    "--json" => {}
-                    _ => {
-                        return Err(command_line_error(
-                            DiagnosticKind::UnknownOption,
-                            format!("unknown option '{word}' for edition migration"),
-                        ));
-                    }
-                }
-            } else if path.replace(PathBuf::from(argument)).is_some() {
-                return Err(command_line_error(
-                    DiagnosticKind::InputCountInvalid,
-                    "fix takes one input path",
-                ));
-            }
-        }
-        target.zip(path).ok_or_else(|| {
-            command_line_error(
-                DiagnosticKind::UsageError,
-                "usage: tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] PATH",
-            )
-        })
-    })();
-    let (target, path) = match parsed {
-        Ok(parsed) => parsed,
+/// `tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] PATH` applies the fixes
+/// of the diagnostics (G24); `tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] PATH`
+/// migrates the input to an edition (A18). The exit status is 2 for a usage error.
+fn fix_command(arguments: &[OsString]) -> ExitCode {
+    let json = arguments
+        .iter()
+        .take_while(|argument| *argument != "--")
+        .any(|argument| argument == "--json");
+    let arguments = match tsuzuri::fix::parse_arguments(arguments) {
+        Ok(arguments) => arguments,
         Err(error) => {
             print_diagnostic(&error, Path::new("<command line>"), "", json);
             return ExitCode::from(2);
@@ -2620,7 +2561,54 @@ fn fix_edition_command(arguments: &[OsString]) -> ExitCode {
     if let Some(code) = invalid_thread_setting(&mut io::stderr(), json) {
         return ExitCode::from(code);
     }
-    let result = tsuzuri::edition_migration::prepare(&path, target, from).and_then(|migration| {
+    if let Some(target) = arguments.edition {
+        return fix_edition_command(
+            &arguments.input,
+            target,
+            arguments.from,
+            arguments.dry_run,
+            json,
+        );
+    }
+    let mut project = match Project::load(&arguments.input) {
+        Ok(project) => project,
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            return ExitCode::FAILURE;
+        }
+    };
+    match tsuzuri::fix::execute(&mut project, &arguments) {
+        Ok(done) => {
+            print!("{}", done.stdout);
+            if let Some(remaining) = done.remaining {
+                print_diagnostics(&remaining.errors, &project, json);
+                let warnings =
+                    tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(remaining.warnings, 0);
+                print_diagnostics(&warnings, &project, json);
+            }
+            ExitCode::from(done.exit)
+        }
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            ExitCode::from(if error.diagnostic.code == "E2000" {
+                2
+            } else {
+                1
+            })
+        }
+    }
+}
+
+/// `tsuzuri fix --edition YEAR`: rewrites the input so that it keeps its meaning in `target`,
+/// then updates the package's edition.
+fn fix_edition_command(
+    path: &Path,
+    target: tsuzuri::syntax::Edition,
+    from: Option<tsuzuri::syntax::Edition>,
+    dry_run: bool,
+    json: bool,
+) -> ExitCode {
+    let result = tsuzuri::edition_migration::prepare(path, target, from).and_then(|migration| {
         if !dry_run {
             tsuzuri::edition_migration::apply(&migration)?;
         }
@@ -2969,7 +2957,7 @@ fn main() -> ExitCode {
         return explain_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "fix") {
-        return fix_edition_command(&raw[1..]);
+        return fix_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "bindgen") {
         return bindgen_command(&raw[1..]);
@@ -5354,6 +5342,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_help_lists_the_fix_command() {
+        let help = help();
+        assert!(help.contains(
+            "tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] source.tz|source.tt|source.tc|directory"
+        ));
+        assert!(
+            help.contains("tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] input")
+        );
+        assert!(help.contains("`tsuzuri fix PATH` applies the fixes that diagnostics carry"));
     }
 
     #[test]

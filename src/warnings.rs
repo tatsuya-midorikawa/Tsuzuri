@@ -5,7 +5,10 @@ pub(super) struct WarningOptions {
     pub shadowing: bool,
 }
 
-pub(super) fn unused_locals(function: &CheckedFunction) -> Vec<Diagnostic> {
+/// W1001 at each local of `function` that nothing uses. The warning carries the `certain` fix
+/// that prefixes the name with `_`, when no local of the function and no function of the program
+/// already has the prefixed name (so the rename cannot capture or shadow another name; G24).
+pub(super) fn unused_locals(function: &CheckedFunction, names: &Names) -> Vec<Diagnostic> {
     if function.origin.module != ModuleOrigin::User {
         return Vec::new();
     }
@@ -17,21 +20,50 @@ pub(super) fn unused_locals(function: &CheckedFunction) -> Vec<Diagnostic> {
     let mut uses = Uses::default();
     collect_locals(&function.body, &mut locals, &mut uses);
     let used = uses.finish();
-    locals
-        .into_values()
+    let unused: Vec<_> = locals
+        .values()
         .filter(|local| {
             local.provenance == Provenance::User
                 && !local.name.starts_with('_')
                 && !used.contains(&local.id)
         })
+        .collect();
+    if unused.is_empty() {
+        return Vec::new();
+    }
+    let taken: BTreeSet<&str> = locals
+        .values()
+        .map(|local| local.name.as_str())
+        .chain(names.functions.keys().map(|name| {
+            name.rsplit_once('.')
+                .map_or(name.as_str(), |(_, last)| last)
+        }))
+        .collect();
+    unused
+        .into_iter()
         .map(|local| {
-            Diagnostic::of(
+            let diagnostic = Diagnostic::of(
                 DiagnosticKind::UnusedLocal,
                 format!(
                     "unused local '{}'; prefix it with '_' to silence this warning",
                     local.name
                 ),
                 local.span,
+            );
+            let prefixed = format!("_{}", local.name);
+            // The span must be the name itself for the edit to rename it.
+            if taken.contains(prefixed.as_str())
+                || local.span.end - local.span.start != local.name.len()
+            {
+                return diagnostic;
+            }
+            diagnostic.fix(
+                format!("Prefix '{}' with '_'", local.name),
+                Applicability::Certain,
+                vec![Edit {
+                    span: local.span,
+                    text: prefixed,
+                }],
             )
         })
         .collect()
@@ -791,6 +823,59 @@ struct DeprecatedUse {
     owner: usize,
     case: bool,
     message: String,
+    /// The function that the note names as the replacement (`replacement_for`).
+    replacement: Option<String>,
+}
+
+/// The function that replaces the deprecated function `owner` at a use spelled `spelled`: the
+/// note is exactly `use {path} instead`, `path` names a function of the same module as
+/// `spelled` does, and that function is public and has the same parameter and result types.
+fn replacement_for(
+    owner: &semantic::Definition,
+    spelled: &str,
+    note: &str,
+    index: &semantic::SemanticIndex,
+) -> Option<String> {
+    if owner.kind != semantic::SymbolKind::Function {
+        return None;
+    }
+    let path = note.trim().strip_prefix("use ")?.strip_suffix(" instead")?;
+    if path.is_empty() || path.contains(char::is_whitespace) {
+        return None;
+    }
+    let (module, target) = path.rsplit_once('.')?;
+    if spelled.rsplit_once('.').map(|(module, _)| module) != Some(module)
+        || !target.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        || !target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let types = |definition: &semantic::Definition| -> Vec<String> {
+        definition
+            .parameters
+            .iter()
+            .map(|parameter| {
+                parameter
+                    .split_once(": ")
+                    .map_or(parameter.as_str(), |(_, ty)| ty)
+                    .to_owned()
+            })
+            .collect()
+    };
+    index
+        .definitions
+        .iter()
+        .any(|candidate| {
+            candidate.kind == semantic::SymbolKind::Function
+                && candidate.module == owner.module
+                && candidate.name == target
+                && candidate.public
+                && types(candidate) == types(owner)
+                && candidate.result == owner.result
+        })
+        .then(|| target.to_owned())
 }
 
 /// W1005 at each reference, in a user module, to a deprecated declaration of another package
@@ -856,12 +941,16 @@ pub(super) fn deprecated_uses(
             (false, false) => format!("'{spelled}' is deprecated: {shown}"),
             (false, true) => format!("'{spelled}' is deprecated: {shown}..."),
         };
+        // The span must be the name itself for the edit to replace it.
+        let replacement = replacement_for(owner, &spelled, &deprecation.note, index)
+            .filter(|_| reference.span.end - reference.span.start == owner.name.len());
         uses.push(DeprecatedUse {
             source,
             span: reference.span,
             owner: owner_id,
             case,
             message,
+            replacement,
         });
     }
     // `Union.Case` names the union and the case, which is one use: it warns at the case.
@@ -872,7 +961,23 @@ pub(super) fn deprecated_uses(
         .collect();
     uses.into_iter()
         .filter(|used| used.case || !cases.contains(&(used.source, used.owner, used.span.end + 1)))
-        .map(|used| Diagnostic::of(DiagnosticKind::DeprecatedUse, used.message, used.span))
+        .map(|used| {
+            let diagnostic = Diagnostic::of(DiagnosticKind::DeprecatedUse, used.message, used.span);
+            match used.replacement {
+                Some(target) => diagnostic.fix(
+                    format!(
+                        "Replace '{}' with '{target}'",
+                        index.definitions[used.owner].name
+                    ),
+                    Applicability::Likely,
+                    vec![Edit {
+                        span: used.span,
+                        text: target,
+                    }],
+                ),
+                None => diagnostic,
+            }
+        })
         .collect()
 }
 
