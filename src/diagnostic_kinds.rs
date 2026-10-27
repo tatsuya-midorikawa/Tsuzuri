@@ -657,6 +657,8 @@ diagnostic_kinds! {
         (WasmOsApiNeedsOptIn, "wasm_os_api_needs_opt_in", "E2000"),
         (WasmTestRunnerAsync, "wasm_test_runner_async", "E2000"),
         // E2001
+        (BuildServerControlFailed, "build_server_control_failed", "E2001"),
+        (BuildServerStartFailed, "build_server_start_failed", "E2001"),
         (ForeignRunnerNotStartable, "foreign_runner_not_startable", "E2001"),
         (InputNotRegularFile, "input_not_regular_file", "E2001"),
         (InputNotUtf8, "input_not_utf8", "E2001"),

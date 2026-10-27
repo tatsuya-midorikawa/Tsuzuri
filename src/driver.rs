@@ -2916,7 +2916,12 @@ impl Project {
     }
 
     pub fn source_for(&self, error: &Diagnostic) -> &SourceFile {
-        let index = error.span.source.unwrap_or(self.root);
+        self.source_for_span(error.span)
+    }
+
+    /// The file that `span` points into: the root source for a span without a source.
+    pub fn source_for_span(&self, span: Span) -> &SourceFile {
+        let index = span.source.unwrap_or(self.root);
         self.sources
             .get(index)
             .unwrap_or_else(|| &self.manifests[index - self.sources.len()])
