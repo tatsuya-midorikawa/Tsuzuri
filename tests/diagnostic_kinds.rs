@@ -125,10 +125,11 @@ fn check_json(directory: &Path) -> Vec<String> {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", directory.display());
+    // The baseline was recorded on Unix: Windows writes the path `.\\Main.tz` (escaped in JSON).
     String::from_utf8(output.stderr)
         .unwrap()
         .lines()
-        .map(str::to_string)
+        .map(|line| line.replace(".\\\\Main.tz", "./Main.tz"))
         .collect()
 }
 
