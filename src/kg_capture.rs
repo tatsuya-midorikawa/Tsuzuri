@@ -921,7 +921,10 @@ fn declare_module(
             span: bench.name_span,
         });
     }
-    if let Some(entry) = builder.input.module.entry
+    // Top-level code is the function `$entry`; with `def main` the entry is `main` itself, a node
+    // already.
+    if input.program.entry.is_some()
+        && let Some(entry) = builder.input.module.entry
         && checked[entry].module == key
     {
         let function = &checked[entry];

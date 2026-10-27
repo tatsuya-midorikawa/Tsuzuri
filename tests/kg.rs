@@ -225,6 +225,28 @@ fn duplicate_test_names_get_suffixes() {
     assert!(edges.contains("\"from\":\"test:Main.same#2\""), "{edges}");
 }
 
+/// With `def main`, the entry is `main` itself: no `$entry` node, and `main` keeps its calls.
+#[test]
+fn def_main_is_not_an_entry_node() {
+    let model = one(
+        "def helper :: i64 -> i64 = \\n -> n + 1\n\ndef main :: unit -> i32 = \\() ->\n    let value = helper 1\n    0\n",
+    );
+    let nodes = text(|o| model.write_nodes(o));
+    assert!(!nodes.contains("$entry"), "{nodes}");
+    let calls: Vec<String> = rows(&text(|o| model.write_edges(o)))
+        .into_iter()
+        .filter(|edge| edge["rel"] == "calls")
+        .map(|edge| {
+            format!(
+                "{} -> {}",
+                edge["from"].as_str().unwrap(),
+                edge["to"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(calls, ["Main.main -> Main.helper"]);
+}
+
 #[test]
 fn collect_fails_on_a_type_error() {
     let errors = kg::collect_sources(&[("Main.tz", "let x: i64 = \"a\"\nx\n")]).unwrap_err();
