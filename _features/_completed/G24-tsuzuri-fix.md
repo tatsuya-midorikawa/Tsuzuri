@@ -273,7 +273,7 @@ $ tsuzuri fix a --json
 
 | コード | kind | 条件 | メッセージの雛形 | 位置 |
 | --- | --- | --- | --- | --- |
-| `E2008` | `fix_verification_failed` | ラウンドの検証の失敗 | `the fixes would introduce {code} in '{path}' at line {line}: {message}; no file was changed, review the fixes with --dry-run --json`（増えた最初の診断。V2・V3 は件数が増えた `(path, code)` の `after` で最初のもの、V1 だけなら `after` の最初の誤り） | `<command line>` |
+| `E2008` | `fix_verification_failed` | ラウンドの検証の失敗 | `the fixes would introduce {code} in '{path}' at line {line}: {message}; no file was changed; review the fixes with tsuzuri check --json`（増えた最初の診断。V2・V3 は件数が増えた `(path, code)` の `after` で最初のもの、V1 だけなら `after` の最初の誤り） | `<command line>` |
 | `E2008` | `fix_source_changed` | 書く直前の読み直しが、解析したときの内容と違う | `'{path}' changed while fixing; nothing was left replaced, rerun tsuzuri fix` | そのファイルのパス、引用なし |
 | `E2008` | `fix_write_failed` | I/O の失敗、シンボリックリンク・通常でないファイル、巻き戻しの失敗、`set_edition` の失敗 | `cannot replace '{path}': {detail}; {n} earlier replacements were restored`（巻き戻せないファイルがあれば `; could not restore {paths}`） | そのファイルのパス、引用なし |
 | `E2008` | `fix_edition_blocked` | 移行後も目標 edition が拒否する誤りが残る | `edition {target} still rejects {n} places after the fixes; Tsuzuri.toml was not changed, fix them by hand and rerun tsuzuri fix --edition {target}`（この前に残った誤りを通常の診断として出す） | `<command line>` |
@@ -282,7 +282,7 @@ $ tsuzuri fix a --json
 **例 4**（想定出力。`fix_verification_failed`。偽の fix が型の誤りを足したとき）:
 
 ```text
-<command line>:1:1: error[E2008]: the fixes would introduce E1003 in 'Main.tz' at line 3: expected i64, found bool; no file was changed, review the fixes with --dry-run --json
+<command line>:1:1: error[E2008]: the fixes would introduce E1003 in 'Main.tz' at line 3: expected i64, found bool; no file was changed; review the fixes with tsuzuri check --json
 ```
 
 **例 5**（想定出力。`fix_source_changed`。`--json`。G22 Phase 1 が前提なので、D-51 の順序で `kind` が `span` の次に入る）:
