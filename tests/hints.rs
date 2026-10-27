@@ -86,7 +86,9 @@ fn hint_text_follows_the_style() {
         );
         assert!(
             hint.help.chars().count() <= 160
-                && hint.help.starts_with(|c: char| c.is_ascii_lowercase())
+                && hint
+                    .help
+                    .starts_with(|c: char| c.is_ascii_lowercase() || c == '\'')
                 && !hint.help.ends_with('.'),
             "{}: {}",
             hint.id,

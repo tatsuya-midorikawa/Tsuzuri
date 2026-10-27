@@ -2221,6 +2221,8 @@ mod tests {
         let expected: BTreeMap<String, usize> = [
             // `run` relays the standard error of the program that it started.
             ("driver.rs", 2),
+            // The example program of a hint spells `println!(`; it is data, not a write.
+            ("hints.rs", 1),
             ("resident.rs", 1),
             ("timings.rs", 1),
         ]

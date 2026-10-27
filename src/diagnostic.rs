@@ -369,16 +369,6 @@ impl Diagnostic {
         )
     }
 
-    #[deprecated(note = "use Diagnostic::of")]
-    pub fn new(code: &'static str, message: impl Into<String>, span: Span) -> Self {
-        Self::build(Severity::Error, code, None, message.into(), span)
-    }
-
-    #[deprecated(note = "use Diagnostic::of")]
-    pub fn warning(code: &'static str, message: impl Into<String>, span: Span) -> Self {
-        Self::build(Severity::Warning, code, None, message.into(), span)
-    }
-
     /// The same diagnostic reported as `kind`: the severity, the code, and the kind change; the
     /// message, the span, and the other fields stay.
     pub fn recode(mut self, kind: DiagnosticKind) -> Self {
