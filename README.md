@@ -793,7 +793,7 @@ summary: 2 breaking, 1 non-breaking
 
 ### 知識グラフ (`target/tz/kg`、`tsuzuri kg`)
 
-`check`・`build`・`run`・`test` は、プロジェクトの知識グラフ（宣言をノード、呼び出し・型の使用・テストなどの関係を辺にした JSON Lines、関数ごとの効果・トラップ・所有権の事実、型のレイアウト、短い英語の要約カード）を `target/tz/kg/` に書きます。ソースが変わっていなければ書き直さず、`--no-kg` か `TSUZURI_KG=0` で止められます。`tsuzuri kg build|verify|clean|export` で明示的に作る・確かめる・消す・出力でき、`tsuzuri kg show|callers|callees|uses|tests-for|search|find|path|brief` でソースを読まずに宣言・呼び出し・テスト・型での検索・最短の関係の鎖を引けます。`tsuzuri kg impact --git REV` は前の版との差（公開 API・効果・警告）とその差に届くテストを出し、`tsuzuri test --affected REV` はそのテストだけを実行します（[知識グラフ](_tsuzuri/language-reference/compiler/kg.md)、[形式](_tsuzuri/language-reference/compiler/kg-format.md)）。
+`check`・`build`・`run`・`test` は、プロジェクトの知識グラフ（宣言をノード、呼び出し・型の使用・テストなどの関係を辺にした JSON Lines、関数ごとの効果・トラップ・所有権の事実、型のレイアウト、短い英語の要約カード）を `target/tz/kg/` に書きます。ソースが変わっていなければ書き直さず、`--no-kg` か `TSUZURI_KG=0` で止められます。`tsuzuri kg build|verify|clean|export` で明示的に作る・確かめる・消す・出力でき、`tsuzuri kg show|callers|callees|uses|tests-for|search|find|path|brief` でソースを読まずに宣言・呼び出し・テスト・型での検索・最短の関係の鎖を引けます。`tsuzuri kg impact --git REV` は前の版との差（公開 API・効果・警告）とその差に届くテストを出し、`tsuzuri test --affected REV` はそのテストだけを実行します。`tsuzuri kg diagram module|types|calls|ownership|concurrency|layout|transitions` は、その知識グラフからモジュールの依存・型・呼び出し・所有権の流れ・並行・メモリの配置・状態遷移の図を Mermaid・DOT・Markdown で出し、ID の要らない図は `views/*.mmd` として知識グラフに入ります（[図表の生成](_tsuzuri/language-reference/compiler/diagrams.md)、[知識グラフ](_tsuzuri/language-reference/compiler/kg.md)、[形式](_tsuzuri/language-reference/compiler/kg-format.md)）。
 
 ### 診断の説明 (`tsuzuri explain`)
 
@@ -911,6 +911,7 @@ tsuzuri check|build|run|test ... [--kg | --no-kg] [--kg-dir DIR]
 tsuzuri kg build|verify|clean|export [PATH] [--kg-dir DIR] [--std] [--force] [--nodes|--edges|--facts] [--no-refresh] [--json]
 tsuzuri kg brief|show|callers|callees|uses|tests-for|search|find|path ... [--budget N] [--path PATH] [--no-refresh] [--json]
 tsuzuri kg impact (--git REV | --from PATH [--to PATH]) [--path PATH] [--json]
+tsuzuri kg diagram KIND [ID] [--path PATH] [--format mermaid|dot] [--max-nodes N] [--depth N] [--json]
 tsuzuri test source.tz|directory --affected BASE
 tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] source.tz|directory
 tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] source.tz|directory

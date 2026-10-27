@@ -1825,7 +1825,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | CLI（`find`・`kb find`） | `--project`・`--result`・`--takes`・`--module`・`--limit` | G25 | 型でのシグネチャ検索 |
 | CLI（`kg build`・`kg clean`、`kg export`） | `--std`・`--force`、`--nodes`・`--edges`・`--facts` | G27 | std の KG・古くなくても作り直す・書き出すファイル（D-60） |
 | CLI（`kg` の照会・`impact`・`path`） | `--path`・`--depth`・`--budget`・`--no-refresh`・`--git`・`--from`・`--to`・`--affected`・`--rel` | G28 | 照会の範囲・文字数の上限・差分の指定・最短路の関係（`--rel` は D-60） |
-| CLI（`kg diagram`） | `--format mermaid\|dot`・`--max-nodes N`（5〜200）・`--depth N`・`--path`（この 4 つは `kg diagram` の中だけ。`--kg-dir`・`--no-refresh` は G28 と同じ意味） | G30 | 図の出力形式と大きさの上限 |
+| CLI（`kg diagram`） | `--format mermaid\|dot`・`--max-nodes N`（5〜200）・`--depth N`・`--path`（この 4 つは `kg diagram` の中だけ。`--kg-dir`・`--no-refresh` は G28 と同じ意味） | G30 | 図の出力形式と大きさの上限。誤りは `E2000` の kind `diagram_usage`・`diagram_unknown_kind`・`diagram_needs_id`・`diagram_format_unsupported`・`diagram_bad_option`・`diagram_unknown_id`・`diagram_wrong_id_kind`・`diagram_unavailable`・`diagram_too_large`（すべて終了コード 2） |
 | CLI（`mcp`） | `--root DIR`・`--kg-dir DIR` | G29 | stdio の MCP サーバー（プロトコルは 2025-06-18 だけ。**環境変数を読まない**ので `TSUZURI_KG_DIR` は効かず、置き場は `--kg-dir` か `<root>/target/tz/kg`） |
 | CLI（`fix`） | `--applicability`・`--dry-run`・`--edition`（移行先の edition） | G24 | `--applicability maybe` は `--dry-run` のときだけ受理する。`--yes` は作らない（提案の自動適用をしない） |
 | CLI（`build`・`run`・`test`） | `--overflow-report`（`build`・`run`・`test`）・`--allow-overflow`（`test` だけ） | A23 | 折り返しの報告。`test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告のまま通す）。`--no-overflow-report` は作らない |

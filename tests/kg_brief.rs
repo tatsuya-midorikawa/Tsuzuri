@@ -438,7 +438,7 @@ fn kg_build_verify_clean_export_round_trip() {
     let output = tsuzuri(&root, &["kg", "build"]);
     assert_eq!(
         stdout(&output),
-        "kg: wrote 19 files to target/tz/kg\n",
+        "kg: wrote 21 files to target/tz/kg\n",
         "{}",
         stderr(&output)
     );
@@ -454,7 +454,7 @@ fn kg_build_verify_clean_export_round_trip() {
     let output = tsuzuri(&root, &["kg", "verify"]);
     assert_eq!(
         stdout(&output),
-        "kg: ok (14 nodes, 17 files, source a52eb1a4dfdb)\n",
+        "kg: ok (14 nodes, 19 files, source a52eb1a4dfdb)\n",
         "{}",
         stderr(&output)
     );

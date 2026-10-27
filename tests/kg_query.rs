@@ -270,7 +270,7 @@ fn argument_errors_are_e2000() {
         ),
         (
             vec!["show", "x", "--depth", "2"],
-            "--depth is only valid with kg callers, kg callees, or kg path",
+            "--depth is only valid with kg callers, kg callees, kg path, or kg diagram",
         ),
         (
             vec!["show", "x", "--std"],
@@ -352,7 +352,7 @@ fn argument_errors_are_e2000() {
         ),
         (
             vec!["nope"],
-            "unknown kg command 'nope'; use build, verify, clean, export, brief, show, callers, callees, uses, tests-for, search, find, impact, or path",
+            "unknown kg command 'nope'; use build, verify, clean, export, brief, show, callers, callees, uses, tests-for, search, find, impact, path, or diagram",
         ),
         (vec!["show", ""], "id must not be empty"),
         (

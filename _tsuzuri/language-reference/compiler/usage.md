@@ -244,9 +244,10 @@ tsuzuri kg callers line_total --depth 2
 tsuzuri kg path main line_total
 tsuzuri kg find 'ref [Line] -> i64'
 tsuzuri kg impact --git HEAD
+tsuzuri kg diagram module
 ```
 
-`tsuzuri kg build|verify|clean|export` は、知識グラフを作る・確かめる・消す・出力するコマンドです。`kg brief`・`show`・`callers`・`callees`・`uses`・`tests-for`・`search`・`find`・`path` は、ソースを読まずにグラフから宣言・呼び出し・型の使用・テスト・最短の関係の鎖を答え（`--budget N` で文字数を抑えます）、`kg impact` は 2 つの版の差と、その差に届くテストを出します。詳しくは [知識グラフ](kg.md) にあります。ファイルの形は [知識グラフの形式](kg-format.md) にあります。
+`tsuzuri kg build|verify|clean|export` は、知識グラフを作る・確かめる・消す・出力するコマンドです。`kg brief`・`show`・`callers`・`callees`・`uses`・`tests-for`・`search`・`find`・`path` は、ソースを読まずにグラフから宣言・呼び出し・型の使用・テスト・最短の関係の鎖を答え（`--budget N` で文字数を抑えます）、`kg impact` は 2 つの版の差と、その差に届くテストを出し、`kg diagram KIND [ID]` はモジュール・型・呼び出し・所有権・並行・配置・状態遷移の図を Mermaid・DOT・Markdown で出します（[図表の生成](diagrams.md)）。詳しくは [知識グラフ](kg.md) にあります。ファイルの形は [知識グラフの形式](kg-format.md) にあります。
 
 ### fetch
 

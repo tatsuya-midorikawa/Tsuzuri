@@ -1,0 +1,18 @@
+digraph tsuzuri {
+    rankdir=LR;
+    node [shape=box, fontname="monospace"];
+    edge [fontname="monospace"];
+    n1 [label="<<builtin>>\nEq"];
+    n2 [label="<<record>>\nLine\n+a Point\l+b Point\l"];
+    n3 [label="<<record>>\nPoint\n+x f64\l+y f64\l"];
+    n4 [label="<<union>>\nShape\n+Dot Point\l+Segment Line\l+Empty\l"];
+    n5 [label="<<class>>\nSized\n+size(ref 'a) i64\l"];
+    n6 [label="<<instance>>\nTraits.Sized<Point>\n"];
+    n2 -> n3 [arrowhead=vee, label="a"];
+    n2 -> n3 [arrowhead=vee, label="b"];
+    n3 -> n1 [arrowhead=empty, style=dashed, label="derive"];
+    n4 -> n2 [arrowhead=vee, label="Segment"];
+    n4 -> n3 [arrowhead=vee, label="Dot"];
+    n6 -> n3 [arrowhead=open, style=dashed, label="for"];
+    n6 -> n5 [arrowhead=empty, style=dashed];
+}

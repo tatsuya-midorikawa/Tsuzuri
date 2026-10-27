@@ -1,0 +1,35 @@
+classDiagram
+    direction LR
+    class n1["Eq"] {
+        <<builtin>>
+    }
+    class n2["Line"] {
+        <<record>>
+        +a Point
+        +b Point
+    }
+    class n3["Point"] {
+        <<record>>
+        +x f64
+        +y f64
+    }
+    class n4["Shape"] {
+        <<union>>
+        +Dot Point
+        +Segment Line
+        +Empty
+    }
+    class n5["Sized"] {
+        <<class>>
+        +size(ref 'a) i64
+    }
+    class n6["Traits.Sized#lt;Point#gt;"] {
+        <<instance>>
+    }
+    n2 --> n3 : a
+    n2 --> n3 : b
+    n3 ..|> n1 : derive
+    n4 --> n2 : Segment
+    n4 --> n3 : Dot
+    n6 ..> n3 : for
+    n6 ..|> n5

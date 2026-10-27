@@ -1,0 +1,27 @@
+flowchart TD
+    n1(["Channel.bounded"])
+    n2(["Channel.recv"])
+    n3(["Channel.send"])
+    n4[["Main.$entry"]]
+    n5(["Mutex.create"])
+    n6(["Mutex.with_lock"])
+    n7(["Owned.drop"])
+    n8(["Task.scope"])
+    n9["Worker.bump"]
+    n10["Worker.drain"]
+    n11["Worker.feed"]
+    n4 -->|"copy"| n1
+    n4 -->|"copy"| n5
+    n4 -->|"own"| n7
+    n4 -->|"ref,copy,copy ×2"| n8
+    n4 -->|"ref,copy"| n9
+    n4 -->|"ref"| n10
+    n4 -->|"ref,copy"| n11
+    n9 -->|"ref,copy"| n6
+    n10 -->|"ref"| n2
+    n11 -->|"ref,copy"| n3
+    classDef io fill:#ddf4ff,stroke:#0969da
+    classDef ext fill:#f6f8fa,stroke:#8c959f,stroke-dasharray:4 2
+    class n4,n9,n10,n11 io
+    class n1,n2,n3,n5,n6,n7,n8 ext
+    style n4 stroke-width:3px

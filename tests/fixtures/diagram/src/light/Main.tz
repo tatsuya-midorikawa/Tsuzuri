@@ -1,0 +1,5 @@
+let a = Light.next Light.Red
+let b = Light.reset (Light.next a)
+match b with
+| Light.Red -> 0
+| _ -> 1

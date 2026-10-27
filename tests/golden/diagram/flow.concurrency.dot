@@ -1,0 +1,20 @@
+digraph tsuzuri {
+    rankdir=LR;
+    node [shape=box, fontname="monospace"];
+    edge [fontname="monospace"];
+    n1 [label="Main.$entry · Task.scope", shape=box, peripheries=2, fillcolor="#fff1e5", style="filled"];
+    n2 [label="Worker.bump", shape=box];
+    n3 [label="Worker.drain", shape=box];
+    n4 [label="Worker.feed", shape=box];
+    n5 [label="Channel<i64>", shape=box, fillcolor="#fbefff", style="rounded,filled"];
+    n6 [label="Mutex<i64>", shape=box, fillcolor="#fbefff", style="rounded,filled"];
+    n7 [label="approximate: from signatures and call sites", shape=box, fillcolor="#fff8c5", style="filled,dashed"];
+    n1 -> n2 [label="calls", style=dashed];
+    n1 -> n3 [label="calls", style=dashed];
+    n1 -> n4 [label="calls", style=dashed];
+    n1 -> n5 [label="create", style=dashed];
+    n1 -> n6 [label="create", style=dashed];
+    n2 -> n6 [label="lock"];
+    n4 -> n5 [label="send"];
+    n5 -> n3 [label="recv"];
+}

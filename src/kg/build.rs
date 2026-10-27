@@ -271,6 +271,14 @@ pub fn checked_files(
         .collect();
     let (l2_cards, l2_omitted) = super::brief::add_cards(&data, &modules, &mut files);
     drop(brief_time);
+    // The diagrams that need no ID (G30); one that cannot be drawn is left out.
+    let views_time = crate::timings::Phase::start("kg-views");
+    if let Ok(input) = crate::diagram::Input::from_kg(&data) {
+        for (path, text) in crate::diagram::views(&input) {
+            files.put(path, text.into_bytes());
+        }
+    }
+    drop(views_time);
     counts.push(("l2_cards".to_owned(), l2_cards));
     counts.push(("l2_omitted".to_owned(), l2_omitted));
     Ok((files, counts))

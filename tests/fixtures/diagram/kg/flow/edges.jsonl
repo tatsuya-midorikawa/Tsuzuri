@@ -1,0 +1,11 @@
+{"rel":"calls","from":"Main.$entry","to":"Mutex.create","args":["copy"],"span":{"path":"Main.tz","line":1,"column":15}}
+{"rel":"calls","from":"Main.$entry","to":"Channel.bounded","args":["copy"],"span":{"path":"Main.tz","line":2,"column":7}}
+{"rel":"calls","from":"Main.$entry","to":"Task.scope","args":["ref","copy","copy"],"span":{"path":"Main.tz","line":4,"column":17}}
+{"rel":"calls","from":"Main.$entry","to":"Worker.feed","args":["ref","copy"],"span":{"path":"Main.tz","line":4,"column":63}}
+{"rel":"calls","from":"Main.$entry","to":"Owned.drop","args":["own"],"span":{"path":"Main.tz","line":5,"column":5}}
+{"rel":"calls","from":"Main.$entry","to":"Task.scope","args":["ref","copy","copy"],"span":{"path":"Main.tz","line":6,"column":17}}
+{"rel":"calls","from":"Main.$entry","to":"Worker.bump","args":["ref","copy"],"span":{"path":"Main.tz","line":6,"column":64}}
+{"rel":"calls","from":"Main.$entry","to":"Worker.drain","args":["ref"],"span":{"path":"Main.tz","line":7,"column":5}}
+{"rel":"calls","from":"Worker.feed","to":"Channel.send","args":["ref","copy"],"span":{"path":"Worker.tz","line":3,"column":11}}
+{"rel":"calls","from":"Worker.drain","to":"Channel.recv","args":["ref"],"span":{"path":"Worker.tz","line":12,"column":15}}
+{"rel":"calls","from":"Worker.bump","to":"Mutex.with_lock","args":["ref","copy"],"span":{"path":"Worker.tz","line":19,"column":5}}

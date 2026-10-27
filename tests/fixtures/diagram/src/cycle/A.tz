@@ -1,0 +1,3 @@
+record A { n: i32 }
+
+def a_of :: B -> i32 = \b -> b.m

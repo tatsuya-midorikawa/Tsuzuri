@@ -40,6 +40,8 @@
     "facts/Report.jsonl": "824c82badce9ae3f2da3e704294dd624415af232a8a3fb6dcf886e83f9c9ff82",
     "layout/Cart.jsonl": "bc943ed30148439196d197a8d7e59443fb684b5714a73bb2ef32219cf13145e8",
     "nodes.jsonl": "6a53090ddea39cb4feb714b971e50927cc54fa2d61aba5185e1932358de6a75a",
-    "tests.jsonl": "412f96bae1f9af2f9764d4abdcd3651f4896be65935e51d0a3a6501a1312e618"
+    "tests.jsonl": "412f96bae1f9af2f9764d4abdcd3651f4896be65935e51d0a3a6501a1312e618",
+    "views/modules.mmd": "bbb7ceeb5831355ded6e0e136aed909906e81f38810965c4bfcfc133ac9506c8",
+    "views/types.mmd": "c27bf0a99f6d7a15a598dd4966477ce235bfd549ca652bccac29808c88b2ccb6"
   }
 }

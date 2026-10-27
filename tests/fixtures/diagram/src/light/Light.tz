@@ -1,0 +1,17 @@
+union Light =
+    | Red
+    | Green
+    | Yellow of i64
+
+def next :: Light -> Light
+fn next light =
+    match light with
+    | Red -> Green
+    | Green -> Yellow 3
+    | Yellow n -> if n > 0 then Yellow (n - 1) else Red
+
+def reset :: Light -> Light
+fn reset light =
+    match light with
+    | Red -> Red
+    | _ -> Red

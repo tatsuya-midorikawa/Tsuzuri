@@ -174,7 +174,7 @@ pub fn resolve(view: &KgView, text: &str, modules: bool) -> Resolution {
     found
 }
 
-fn resolve_in(candidates: &BTreeMap<String, String>, text: &str) -> Resolution {
+pub(crate) fn resolve_in(candidates: &BTreeMap<String, String>, text: &str) -> Resolution {
     if let Some(id) = candidates.get(text) {
         return Resolution::One(id.clone());
     }

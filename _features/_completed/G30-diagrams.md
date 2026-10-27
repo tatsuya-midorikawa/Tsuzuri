@@ -5,9 +5,9 @@
 | ID | G30 |
 | 優先度 | P2 |
 | 規模 | L（Phase 1 M・Phase 2 M・Phase 3 M・Phase 4 M・Phase 5 M） |
-| 依存 | [G26](_completed/G26-facts-model.md)（Phase 1〜2 の `symbols`・`graph`。Phase 2 の効果の色は Phase 3 の `facts`、Phase 3 は Phase 5 の `ownership`、Phase 5 のレイアウト表は Phase 6 の `layout`）、[G27](_completed/G27-build-time-kb.md)（Phase 2 の `KbData`・`open`・`finish`・`manifest.json`）。弱い依存: [G28](_completed/G28-kb-query-and-impact.md)（`kb` の引数の形と ID の解決。未完なら本チケットの規則）、[G22](_completed/G22-diagnostic-v2.md)（`related` の role 名だけを表に写す。なくても動く） |
-| 後続 | [G29](G29-mcp-server.md)（`tz_diagram`）、[G35](G35-generated-docs-single-source.md)（`views/*.mmd` を文書に取り込む） |
-| 状態 | todo |
+| 依存 | [G26](G26-facts-model.md)（Phase 1〜2 の `symbols`・`graph`。Phase 2 の効果の色は Phase 3 の `facts`、Phase 3 は Phase 5 の `ownership`、Phase 5 のレイアウト表は Phase 6 の `layout`）、[G27](G27-build-time-kb.md)（Phase 2 の `KbData`・`open`・`finish`・`manifest.json`）。弱い依存: [G28](G28-kb-query-and-impact.md)（`kb` の引数の形と ID の解決。未完なら本チケットの規則）、[G22](G22-diagnostic-v2.md)（`related` の role 名だけを表に写す。なくても動く） |
+| 後続 | [G29](../G29-mcp-server.md)（`tz_diagram`）、[G35](../G35-generated-docs-single-source.md)（`views/*.mmd` を文書に取り込む） |
+| 状態 | done（Phase 1〜5。D-60 の KG。2026-10-28） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
 | 改善する劣位 | プロジェクトの構造（モジュールの依存・型の関係・呼び出し・所有権の流れ・並行・メモリの配置・状態の遷移）は、AI も人間もソースを全部読んで頭の中で組み立てるしかない。KB（G26・G27）は JSONL の行で、関係を一目で見る形がない。文書の Mermaid 76 個は手書きで、1 つは Mermaid 12.1.0 で parse できない（「現状」4） |
@@ -18,7 +18,7 @@
 
 ## KG への更新（D-60、2026-10-28）
 
-本チケットは [D-60](GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。コマンドは `tsuzuri kg diagram`、`Input::from_kg(&KgData)`（本文の `from_kb`）は `nodes.jsonl`・`edges.jsonl` の行を読む（キーは同じ）。
+本チケットは [D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。コマンドは `tsuzuri kg diagram`、`Input::from_kg(&KgData)`（本文の `from_kb`）は `nodes.jsonl`・`edges.jsonl` の行を読む（キーは同じ）。
 
 | 本文 | KG での実装 |
 | --- | --- |
@@ -27,6 +27,31 @@
 | `calls` の幅優先 | `algo::bfs` と同じ順の規則（§`calls` の手順 2） |
 | `views/*.mmd` | KG の `views/`（`manifest.json` の `files` に入る） |
 | 付録 C の行・付録 E の参照実装 | 行のキーは同じ。ファイル名だけ `nodes`・`edges` に読み替える |
+| 状態図の遷移のラベル | `esc` の後に `:` を `#58;` にする（名前空間のある ID の `::` で `mermaid` 12.1.0 が失敗するため。「実装と検証」の 2） |
+
+## 実装と検証（2026-10-28）
+
+[D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) の KG の名前で Phase 1〜5 を完了した（ブランチ `feat/g30-kg-diagrams`）。
+
+**実装したもの**: `src/diagram/{mod,input,resolve,escape,graph,mermaid,dot,validate,module,types,calls,ownership,concurrency,layout,transitions,views}.rs`（公開 API は本文の「ライブラリ API」。`Input::from_kb` は `Input::from_kg`）、`src/main_kg.rs`（`kg diagram` と引数の検査）、`src/kg/build.rs`（`checked_files` がカードの後に `views/*.mmd` を足す。`kg-views` の段）、`src/kg/query.rs`（`resolve_in` を `pub(crate)`）、`src/kg_capture.rs`（下の 3）、`src/diagnostic_kinds.rs`（`E2000` の kind 9 個）、`src/main.rs`（`HELP`）。fixture `tests/fixtures/diagram/kg/`（付録 C の行。ファイル名は `nodes`・`edges`）・`tests/fixtures/diagram/src/`（付録 B）・`tests/fixtures/diagram/neg/`（付録 D.8）、golden `tests/golden/diagram/`（付録 D の 21 ファイル）・`tests/golden/diagram/cli/`（16 ファイル。下の「期待値の出どころ」）・`tests/golden/kg/shop/views/` と同じ golden の `manifest.json`、テスト `tests/diagram.rs`（46 件）・`tests/diagram_cli.rs`（10 件）・`tests/diagram_syntax.rs`（1 件）、`src/diagram/` の単体テスト（11 件）。
+
+**実行したコマンドと結果**: `cargo nextest run --locked` の全件（2,266 件）が通過。`cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` が通過。`node scripts/check-docs.mjs` で変更した 7 ページが通過。付録 F の harness（`mermaid` 12.1.0・`jsdom`。Node 20.19.6、リポジトリの外に置いた）: `tests/golden/diagram/*.mmd` と `cli/*.mmd`・`.md` の Mermaid（27 個）・`tests/golden/kg/shop/views/*.mmd`・`diagrams.md` の 6 ブロックがすべて `failures=0`、負の例は付録 F.3 と同じ（4 件が失敗、3 件が通る）。`examples/` の 9 プロジェクトで `module`・`types`・`concurrency`（Mermaid 27・DOT 27）と、全関数の `calls`（35）・`ownership`（33）、全 record の `layout`（2）を出し、すべてが `failures=0` と `dot -Tplain`（Graphviz 14.1.2）を通った。`mmdc` はこの機械にないので `golden_diagrams_parse_with_mmdc_when_available` は何もしない。`kg-views` の測定は `docs/benchmarks.md` の「知識グラフの図（G30、2026-10-28）」（知識グラフの段の約 2%。停止条件 4 の 5% に届かない）。
+
+**期待値の出どころ**: 付録 E の参照実装を付録から取り出して実行し、付録 D の 21 個の期待出力と byte 単位で一致することを確かめてから golden にした。`tests/golden/diagram/cli/` は、fixture のプロジェクト（付録 B と `examples/point`）を今のコンパイラで `kg build` した KG の行に参照実装を当てた出力で、CLI の出力と比べる（KG の行は G26 の出力なので、行が変われば作り直す）。G27 の shop の `views/` も、golden の行に参照実装の `views` を当てて作った。手で足したテストの期待（畳み込み・上限・候補など）は、本文の規則から手で数えた。
+
+**チケットから外れた判断**:
+
+1. 今のコンパイラの KG と付録 C の行の違い: (a) `Tsuzuri.toml` のないフォルダーのモジュールは、フォルダー名の名前空間を持つ（`Point::Main`）。付録 D の期待出力は付録 C の行（名前空間なし）に対するものなので、CLI の期待出力は上の `cli/` で別に持つ。(b) `own` の `consume text` は、引数の渡し方の推論で借用になり（`kg show` の `conv` が `ref`）、所有権の図は `move` でなく `borrow` と最後の `drop` になる。今のコンパイラの意味のとおりなので図はそれに従う。
+2. **状態図の遷移のラベルの `:` を `#58;` にする**（本文の「共通の規則」3 に足す）。名前空間のある ID（`→ Own::Main.peek`）を遷移のラベルに書くと、`mermaid` 12.1.0 の `parse` が失敗する（`::` を新しい説明の始まりと読む）。付録の fixture には名前空間がないので、参照実装もこの誤りを持っていた（参照実装にも同じ修正を入れて、付録 D の出力が変わらないことを確かめた）。構造検証器も、遷移のラベルの生の `:` を拒否する。
+3. G26 の `calls` の辺の欠落を直した: `Task.scope`・`Parallel.*`（`TypedExprKind::Parallel`）と `Task.run`・`Task.parallel`・`Task.parallel_results` は、型検査の後に専用の式になるので辺がなく、`concurrency` の区画と `calls` の `Task.scope` が出なかった。この 5 種類を `calls` の辺にした（`to` は組み込みの名前、`span` は呼び出しの式全体）。付録 C の `flow` の行と同じ `args`（`ref,copy,copy`）になる。
+4. ID は、完全な ID のほかに `kg` の照会と同じ段（一意な後ろの部分、大文字小文字を除いた一致、一意な前の部分。G28 §2）で解決する（停止条件 5: G28 に合わせる）。曖昧なときは `diagram_unknown_id` で候補を挙げる。完全な ID の種類が違えば `diagram_wrong_id_kind`。
+5. `--depth` の誤用のメッセージは、`kg` の照会と共有の規則で `--depth is only valid with kg callers, kg callees, kg path, or kg diagram`、`kg diagram` の中では本文の `--depth is only valid with the calls diagram`。`--format`・`--max-nodes` をほかの `kg` のコマンドに付けると `--format is only valid with kg diagram`。`kg diagram` の引数の解析の誤り（重複・値なし・未知）は kind が `diagram_bad_option`。
+6. 辺の 400 本の上限は、フローチャート（Mermaid と DOT。DOT は `// omitted: N edges`）と `classDiagram` の関係に当てる。`classDiagram` の `%% omitted` の行は構造検証器が受理する（参照実装の検証器にはない形）。
+7. 低い層のテスト（エスケープ・番号付け・辺の整列・検証器の個々の規則）は `tests/diagram.rs` でなく各モジュールの単体テストにした（公開 API を増やさないため）。
+8. `layout` の ID が `layout` の行になく、record・union でないノードなら `diagram_wrong_id_kind`（`a type id`）、`layout` の行が 1 つもなければ `diagram_unavailable`。
+9. `KgData` の `layouts` は G28 で `Tables`（モジュールごとの遅延読み込み）になっており、`Input::from_kg` が全部を読む。手順 18 の `store.rs` の変更は不要だった。
+
+**更新した文書**: `_tsuzuri/language-reference/compiler/diagrams.md`（新規）・`kg.md`（図の節と `views/`）・`kg-format.md`（`calls` の組み込みと `views/`）・`usage.md`・`option.md`（`kg-views` の段、`kg` のオプションの案内）・`diagnostics.md`（`E2000` と kind の一覧）・`index.md`、`README.md`、`docs/language.md`、`docs/architecture.md`（ファイル表と「知識グラフの図（G30、D-60）」）、`docs/stability.md`、`docs/benchmarks.md`、`_features/GUIDE.md`（D-55 の kind）。**`gpu.md` の `call` の誤り（付録 A.5）は直していない**（本文の指示どおり）。
 
 ## 実装者向け早見
 
@@ -153,7 +178,7 @@ tsuzuri kb diagram KIND [ID] [--path PATH] [--kb-dir DIR] [--format mermaid|dot]
 
 1. **入力**: G30 は `Input`（`input.rs`）だけを読む。`Input::from_kb(&KbData)` が、`KbData` の `symbols`・`graph`・`facts`（`Fact.raw` の `ownership`）・`meta`（`edition`・`modules`）と、G30 が足す `layouts`（`layout/*.jsonl` の全行。「前提とする他チケットのインターフェース」）から作る。読むキーは付録 C の表の列だけで、ほかのキーは無視する。`Input::from_texts` は、同じ行を JSON Lines のテキストから作る（テスト用）。必須のキーがない行は `E2009`（kind `kb_broken`。`bad row in '{file}' line {n}: missing '{key}'`。`from_kb` では `{file}` が `symbols`・`graph`・`facts`・`layouts` のどれか）。`graph`・`facts`・`layouts` が `None`（ファイルがない）なら 0 行として扱う。
 2. **ID の番号**: 図のノードの鍵（元の ID）を byte 順に整列して、1 から `n1`・`n2`… を振る（フローチャートと classDiagram）。状態は `s0`・`s1`…（所有権は変数ごとの図の中で、遷移の順）、`transitions` は case の宣言順に `s1`…。元の名前は**ラベル**に出す。
-3. **エスケープ `esc(text, limit)`**（Mermaid の全部のラベル・メンバー・関係のラベルに使う）: ① `\t`・`\r`・`\n` を空白 1 つにする。② 文字数（Unicode scalar value）が `limit` を超えたら、先頭 `limit - 1` 文字に `…`（U+2026）を付ける（**切ってからエスケープする**）。③ 次の 6 文字を、文字ごとに 1 回だけ置き換える（置き換えた結果をもう一度置き換えない）: `#`→`#35;`、`"`→`#quot;`、`<`→`#lt;`、`>`→`#gt;`、`&`→`#amp;`、`` ` ``→`#96;`。`limit` は、ノードとメンバーのラベル 60、フローチャートの辺のラベル 40、classDiagram の関係のラベル 30、`stateDiagram-v2` の遷移のラベル（`ownership` は 60、`transitions` は 40）。
+3. **エスケープ `esc(text, limit)`**（Mermaid の全部のラベル・メンバー・関係のラベルに使う）: ① `\t`・`\r`・`\n` を空白 1 つにする。② 文字数（Unicode scalar value）が `limit` を超えたら、先頭 `limit - 1` 文字に `…`（U+2026）を付ける（**切ってからエスケープする**）。③ 次の 6 文字を、文字ごとに 1 回だけ置き換える（置き換えた結果をもう一度置き換えない）: `#`→`#35;`、`"`→`#quot;`、`<`→`#lt;`、`>`→`#gt;`、`&`→`#amp;`、`` ` ``→`#96;`。`limit` は、ノードとメンバーのラベル 60、フローチャートの辺のラベル 40、classDiagram の関係のラベル 30、`stateDiagram-v2` の遷移のラベル（`ownership` は 60、`transitions` は 40）。④ `stateDiagram-v2` の遷移のラベル（` : ` の後ろの引用しないテキスト）だけは、③ の後に `:` を `#58;` にする（2026-10-28 に追加。`Own::Main.peek` の `::` で `mermaid` 12.1.0 の `parse` が失敗する）。
 4. **DOT のエスケープ `dot_esc(text, limit)`**: ①②は同じ。③ `\`→`\\`、`"`→`\"`。DOT のラベルの中の改行は、`types` のメンバーだけが `\l`（左寄せの行末。リテラルの `\` と `l`）と `\n`（中央の改行）を**エスケープの後に**足す。
 5. **テキストの形**: UTF-8、改行は `\n`、最後も `\n` で終わる。インデントは空白 4 つ（classDiagram のメンバーとアノテーションは 8）。空行・タブ・`\r` を出さない。
 6. **上限**: ノード 200（`--max-nodes` の上限）、辺 400、テキスト 45,000 文字。辺が 400 を超えたら、整列した辺の先頭 400 本を残し、最後の行に `    %% omitted: {n} edges`（Mermaid のコメント）を足し、`folded` を `true`。テキストが 45,000 文字を超えたら、ラベルの `limit` を半分にして 1 回だけ作り直し、それでも超えたら `diagram_too_large`。
@@ -490,16 +515,16 @@ pub struct Graph { pub direction: Direction, pub nodes: BTreeMap<String, Node>, 
 
 ### Phase 1
 
-- [ ] `tsuzuri kb diagram module`・`types` が付録 D の期待出力と 1 byte も違わない。`--format dot` も同じ。
-- [ ] 全期待出力が、`validate_mermaid`（`tests/diagram.rs`）と、付録 F の harness（`mermaid` 12.1.0 の `parse`・`failures=0`）と、`dot -Tplain` を通る。
-- [ ] `kb build` が `views/modules.mmd`・`views/types.mmd` を作り、`kb verify` が `ok`。`files` の増加は `views/` の行だけ。2 回の `kb build` が byte 単位で同じ。
-- [ ] 「診断」の表の全メッセージが出る。`kb build` の時間が基準の 5% 以下。文書（手順 11）。
+- [x] `tsuzuri kb diagram module`・`types` が付録 D の期待出力と 1 byte も違わない。`--format dot` も同じ。
+- [x] 全期待出力が、`validate_mermaid`（`tests/diagram.rs`）と、付録 F の harness（`mermaid` 12.1.0 の `parse`・`failures=0`）と、`dot -Tplain` を通る。
+- [x] `kb build` が `views/modules.mmd`・`views/types.mmd` を作り、`kb verify` が `ok`。`files` の増加は `views/` の行だけ。2 回の `kb build` が byte 単位で同じ。
+- [x] 「診断」の表の全メッセージが出る。`kb build` の時間が基準の 5% 以下。文書（手順 11）。
 
 ### Phase 2〜5
 
-- [ ] 各 Phase の KIND（`calls`・`ownership`・`concurrency`・`layout`・`transitions`）が、付録 D の期待出力と 1 byte も違わず、同じ 3 つの検証を通る。G26 の対応する Phase がないものは `diagram_unavailable`。
-- [ ] `views/concurrency.mmd`（Phase 4）。`DiagramOutput` を G29 の `tz_diagram` が使える（G29 の `tool-examples.json` の `tz_diagram` の例が、実際の出力と同じ形）。
-- [ ] 全ページが `check-docs.mjs` を通る。付録 F の harness の結果を完了報告に書く。
+- [x] 各 Phase の KIND（`calls`・`ownership`・`concurrency`・`layout`・`transitions`）が、付録 D の期待出力と 1 byte も違わず、同じ 3 つの検証を通る。G26 の対応する Phase がないものは `diagram_unavailable`。
+- [x] `views/concurrency.mmd`（Phase 4）。`DiagramOutput` を G29 の `tz_diagram` が使える（G29 の `tool-examples.json` の `tz_diagram` の例が、実際の出力と同じ形）。
+- [x] 全ページが `check-docs.mjs` を通る。付録 F の harness の結果を完了報告に書く。
 
 ## 落とし穴
 

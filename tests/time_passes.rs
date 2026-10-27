@@ -86,6 +86,7 @@ fn phases(output: &Output) -> Vec<String> {
                 "kg-write",
                 "kg-facts",
                 "kg-brief",
+                "kg-views",
                 "kg-publish"
             ]
             .contains(&name)
@@ -173,6 +174,7 @@ fn check_reports_the_kg_phases_in_order() {
             "kg-write",
             "kg-facts",
             "kg-brief",
+            "kg-views",
             "kg-publish"
         ]
     );

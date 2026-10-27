@@ -58,6 +58,8 @@
 | `--allocs` | | | | | ○ | | | | |
 | `--timeout` | | | | | | | | ○ | |
 
+`tsuzuri kg` のサブコマンドのオプション（`--path`・`--budget`・`--depth`・`--no-refresh`・`--format`・`--max-nodes` など）は、この表ではなく [知識グラフ](kg.md) と [図表の生成](diagrams.md) にあります。
+
 `--deny-warnings` と `--warn` は、ヘルプでは `check` / `build` / `run` が中心です。実装では警告の表示が `doc` と `test` の前にも走るので、この 2 つでも効きます。`fmt` は明示的に拒否します。
 
 同じオプションを 2 回以上指定すると `E2000` になります。複数回の指定が許可されているのは `--link`、`-l`、`-L`、`--index`、および異なる機能名を指定した `--wasm-feature` のみです。`--link`、`-l`、`-L` の合計は最大 256 個までです。
@@ -633,7 +635,7 @@ Mach-O の target では `-Os`／`-Oz` と併用できません。最終リン�
 ```
 
 値はミリ秒、小数 3 桁です。段は `load`・`parse`・`check`・`specialize`・`closures`・`ownership`・`emit`・`cache` と、
-外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。[知識グラフ](kg.md)を書くときは、`kg-capture`（`check` と `specialize` の間。宣言の視点）、`ownership` の後の `kg-model`（事実）・`kg-write`（ノード・辺・テスト・診断）・`kg-facts`（モジュールごとの事実とレイアウト）・`kg-brief`（カード）・`kg-publish`（ファイルの作成と置換）が入ります。知識グラフが新しいときは入りません。[codegen unit](#コード生成の単位codegen-unit) に分けるビルドには、`emit` と `tool.*` の間に `split`（IR の分割）と
+外部ツールの `tool.<実行ファイル名（拡張子を除く）>` です。[知識グラフ](kg.md)を書くときは、`kg-capture`（`check` と `specialize` の間。宣言の視点）、`ownership` の後の `kg-model`（事実）・`kg-write`（ノード・辺・テスト・診断）・`kg-facts`（モジュールごとの事実とレイアウト）・`kg-brief`（カード）・`kg-views`（`views/*.mmd` の図）・`kg-publish`（ファイルの作成と置換）が入ります。知識グラフが新しいときは入りません。[codegen unit](#コード生成の単位codegen-unit) に分けるビルドには、`emit` と `tool.*` の間に `split`（IR の分割）と
 `units`（unit の鍵の計算、unit cache の読み書き、ファイルの書き出し）が入り、unit のコンパイルの待ちは `tool.<Clang の名前>` です。
 そのコマンドが通った段だけを、最初に通った順に出します。
 tool 名の空白・日本語などもそのまま保持し、性能レコードの読み手も同じ名前を受け付けます。

@@ -1050,6 +1050,36 @@ fn function_edges(builder: &mut Builder<'_, '_>, budget: &mut usize) {
                         children.pop();
                     }
                 }
+                // The builtins that check into nodes of their own (G30): `Task.scope`,
+                // `Parallel.*` and the task runners are calls too.
+                TypedExprKind::Parallel(operation, arguments) => edges.push(CapturedEdge {
+                    rel: "calls",
+                    from: id.clone(),
+                    to: operation.name().to_owned(),
+                    args: Some(
+                        arguments
+                            .iter()
+                            .map(|argument| argument_conv(argument, &types))
+                            .collect(),
+                    ),
+                    span: expression.span,
+                }),
+                TypedExprKind::TaskRun(argument)
+                | TypedExprKind::TaskParallel(argument)
+                | TypedExprKind::TaskParallelResults(argument) => {
+                    let builtin = match &expression.kind {
+                        TypedExprKind::TaskRun(_) => crate::check::Builtin::TaskRun,
+                        TypedExprKind::TaskParallel(_) => crate::check::Builtin::TaskParallel,
+                        _ => crate::check::Builtin::TaskParallelResults,
+                    };
+                    edges.push(CapturedEdge {
+                        rel: "calls",
+                        from: id.clone(),
+                        to: builtin.name().to_owned(),
+                        args: Some(vec![argument_conv(argument, &types)]),
+                        span: expression.span,
+                    });
+                }
                 TypedExprKind::Function(FunctionRef::User(_))
                 | TypedExprKind::GenericFunction(..)
                 | TypedExprKind::Method(..) => {
