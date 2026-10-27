@@ -296,15 +296,8 @@ fn validate(project: &Project, fix: &Fix, scope: Scope) -> Result<Vec<ResolvedEd
     }) {
         return Err(Skip::InvalidEdit);
     }
-    let mut sizes: BTreeMap<usize, usize> = BTreeMap::new();
-    for edit in &edits {
-        let size = sizes
-            .entry(edit.source)
-            .or_insert(project.sources[edit.source].text.len());
-        *size = *size + edit.text.len() - (edit.end - edit.start);
-    }
     if edits.iter().any(|edit| edit.text.len() > MAX_EDIT_TEXT)
-        || sizes.values().any(|size| *size > MAX_SOURCE_BYTES)
+        || grown_sizes(project, &edits, &BTreeMap::new()).is_none()
     {
         return Err(Skip::InvalidEdit);
     }
@@ -318,6 +311,32 @@ fn validate(project: &Project, fix: &Fix, scope: Scope) -> Result<Vec<ResolvedEd
         return Err(Skip::InvalidEdit);
     }
     Ok(edits)
+}
+
+/// The size of each source that `edits` change, from `sizes` (the sizes after the fixes taken
+/// before) or the source's text; `None` when one would exceed `MAX_SOURCE_BYTES` or the edits
+/// remove more than the source holds (overlapping deletions).
+fn grown_sizes(
+    project: &Project,
+    edits: &[ResolvedEdit],
+    sizes: &BTreeMap<usize, usize>,
+) -> Option<BTreeMap<usize, usize>> {
+    let mut grown: BTreeMap<usize, usize> = BTreeMap::new();
+    for edit in edits {
+        let size = grown.entry(edit.source).or_insert_with(|| {
+            sizes
+                .get(&edit.source)
+                .copied()
+                .unwrap_or(project.sources[edit.source].text.len())
+        });
+        *size = size
+            .checked_add(edit.text.len())?
+            .checked_sub(edit.end - edit.start)?;
+    }
+    grown
+        .values()
+        .all(|size| *size <= MAX_SOURCE_BYTES)
+        .then_some(grown)
 }
 
 /// Whether the closed interval `[start, end]` meets one already taken in `accepted`. The taken
@@ -385,6 +404,9 @@ fn collect(
     candidates.sort_by_cached_key(key);
     candidates.dedup_by(|later, earlier| later.edits == earlier.edits);
     let mut accepted: BTreeMap<usize, BTreeMap<usize, usize>> = BTreeMap::new();
+    // The size of each source after the fixes taken so far: together they must stay within the
+    // limit, though each fits alone.
+    let mut sizes: BTreeMap<usize, usize> = BTreeMap::new();
     let mut chosen = Vec::new();
     for candidate in candidates {
         if candidate
@@ -394,6 +416,14 @@ fn collect(
         {
             continue;
         }
+        let Some(grown) = grown_sizes(project, &candidate.edits, &sizes) else {
+            skipped.push(FixRecord {
+                status: Status::Skipped(Skip::InvalidEdit),
+                ..candidate.record
+            });
+            continue;
+        };
+        sizes.extend(grown);
         for edit in &candidate.edits {
             // Edits of one fix may share a start (an insert and a replacement): keep the furthest end.
             let end = accepted
@@ -1235,6 +1265,52 @@ mod tests {
         let (chosen, _) = collect(&project, &analysis, &options(Scope::Project)).unwrap();
         assert_eq!(chosen.len(), 1);
         assert_eq!(chosen[0].record.title, "first");
+    }
+
+    #[test]
+    fn overlapping_deletions_are_an_invalid_edit() {
+        let project = project("abcdef");
+        let fix = Fix {
+            title: "t".to_owned(),
+            applicability: Applicability::Certain,
+            edits: vec![edit(0, 0, 6, ""), edit(0, 0, 6, "")],
+        };
+        assert_eq!(
+            validate(&project, &fix, Scope::Project),
+            Err(Skip::InvalidEdit)
+        );
+    }
+
+    #[test]
+    fn fixes_that_fit_alone_but_not_together_are_split() {
+        let project = project(&"a".repeat(MAX_SOURCE_BYTES - 1));
+        let analysis = analysis(
+            Vec::new(),
+            0,
+            vec![
+                fixed(
+                    DiagnosticKind::UnusedLocal,
+                    0,
+                    0,
+                    0,
+                    "b",
+                    Applicability::Certain,
+                ),
+                fixed(
+                    DiagnosticKind::UnusedLocal,
+                    0,
+                    9,
+                    9,
+                    "c",
+                    Applicability::Certain,
+                ),
+            ],
+        );
+        let (chosen, skipped) = collect(&project, &analysis, &options(Scope::Project)).unwrap();
+        assert_eq!(chosen.len(), 1);
+        assert_eq!(chosen[0].edits[0].text, "b");
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].status, Status::Skipped(Skip::InvalidEdit));
     }
 
     #[test]
