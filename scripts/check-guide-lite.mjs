@@ -10,9 +10,9 @@ export const SECTION_KEYWORDS = {
     '1': '絶対に守る規則', '3.1': 'テスト選択', '6.7': '診断コード', '6.9': '走査箇所',
     '8': 'ドキュメント更新規約', '11.1': '落とし穴', '12': '構文の早見表', '13.1': '止めて報告する条件',
 };
-export const PLANNED = ['guide/'];
+export const PLANNED = [];
 const escaped = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-export function checkGuideLite(ctx, kb, file = '_features/GUIDE-LITE.md') {
+export function checkGuideLite(ctx, kb, file = '_features/GUIDE-LITE.md', planned = PLANNED) {
     const files = ctx.files ?? listFiles(ctx.root);
     const set = new Set(files);
     const read = path => inputText(ctx, path);
@@ -33,13 +33,13 @@ export function checkGuideLite(ctx, kb, file = '_features/GUIDE-LITE.md') {
         checked.add(key);
         if (reason) failures.push(`FAIL ${kind} ${token} — ${reason} (line ${line})`);
     }
-    for (const planned of PLANNED) {
-        if (files.some(p => p.startsWith(planned))) check('directory', planned, 1, 'now exists; remove it from PLANNED');
+    for (const entry of planned) {
+        if (files.some(p => p.startsWith(entry))) check('directory', entry, 1, 'now exists; remove it from PLANNED');
     }
     function pathToken(token, line, kind = 'file') {
         if (/^(?:target\/|\/tmp\/)/.test(token) || /[<>$=*{}]/.test(token)) return;
         if (/^[A-Za-z0-9_.][A-Za-z0-9_./-]*\/$/.test(token)) {
-            check('directory', token, line, !files.some(p => p.startsWith(token)) && !PLANNED.includes(token) ? 'directory does not exist' : null);
+            check('directory', token, line, !files.some(p => p.startsWith(token)) && !planned.includes(token) ? 'directory does not exist' : null);
         } else if (/^[A-Za-z0-9_.][A-Za-z0-9_./-]*\.(?:rs|mjs|md|sh|toml|yml|yaml|py|ll|c|json|jsonl|tz|tt|tc|lock)$/.test(token)) {
             if (token.includes('/')) check(kind, token, line, set.has(token) ? null : 'file does not exist');
             else if (/\.(?:rs|mjs|sh|ll)$/.test(token)) check('file', token, line, files.some(p => posix.basename(p) === token) ? null : 'no file with this name');

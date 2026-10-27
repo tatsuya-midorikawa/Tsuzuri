@@ -457,7 +457,9 @@ fn module_page(module: &ModuleIndex, limit: usize) -> String {
 }
 
 /// `tsuzuri guide --topic std-all`, at most `limit` characters: while it is longer, the body of
-/// one module after another becomes one line, opt-in modules first, each group largest first.
+/// one module after another becomes one line: first the modules whose own page is complete, then
+/// those whose page is truncated (std-all is where the rest of their functions is), each group
+/// opt-in modules first and then largest first.
 fn all_text(modules: &[ModuleIndex], limit: usize) -> String {
     let header = format!("# std index\n{LEGEND}\n");
     let headings: Vec<String> = modules
@@ -475,7 +477,9 @@ fn all_text(modules: &[ModuleIndex], limit: usize) -> String {
     order.sort_by_key(|&position| {
         let module = &modules[position];
         let size: usize = module.functions.iter().map(|line| chars(line)).sum();
+        let truncated = chars(&module_page(module, usize::MAX)) > LIMIT_STD_MODULE;
         (
+            truncated,
             !module.opt_in,
             std::cmp::Reverse(size),
             module.name.as_str(),
@@ -813,8 +817,9 @@ mod tests {
             )
         };
 
-        // 29,000 + 15,000 + 9,300 + 280 characters of lines: the largest opt-in module (`Large`,
-        // smaller than `Core`) is collapsed, and the rest fits, so `Medium` and `Wee` stay.
+        // 29,000 + 15,000 + 9,300 + 280 characters of lines. `Wee`, whose own page is complete,
+        // is collapsed first; then the largest opt-in module whose page is truncated (`Large`),
+        // and the rest fits, so `Core` and `Medium` stay.
         let index = [
             probe("Core", false, 1000),
             probe("Large", true, 500),
@@ -829,7 +834,7 @@ mod tests {
                 section(&index[0]),
                 collapsed("Large", 500),
                 section(&index[2]),
-                section(&index[3])
+                collapsed("Wee", 10)
             )
         );
         assert!(chars(&text) <= LIMIT_STD_ALL);

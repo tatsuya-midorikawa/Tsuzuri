@@ -291,6 +291,12 @@ fn guide_sizes_stay_within_the_limits() {
     }
 }
 
+/// The files of one example project, by (edition, project).
+type Projects = std::collections::BTreeMap<(Option<String>, String), Vec<(String, String)>>;
+
+/// One entry of the pitfall table: (id, snippet, codes, edition, source).
+type Pitfall = (String, String, Vec<String>, Option<String>, String);
+
 /// The ```tsuzuri fences of a guide file as (project, file, text), with the edition each is in.
 fn examples(text: &str) -> Vec<(Option<String>, String, String, String)> {
     let mut found = Vec::new();
@@ -341,10 +347,7 @@ fn the_guide_examples_type_check() {
     for entry in std::fs::read_dir(repo("guide")).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let mut projects: std::collections::BTreeMap<
-            (Option<String>, String),
-            Vec<(String, String)>,
-        > = Default::default();
+        let mut projects = Projects::new();
         for (edition, project, file, body) in examples(&read(&path)) {
             projects
                 .entry((edition, project))
@@ -384,7 +387,11 @@ fn the_guide_names_only_existing_subcommands() {
     assert!(commands.contains("guide") && commands.contains("explain") && commands.contains("fix"));
     for entry in std::fs::read_dir(repo("guide")).unwrap() {
         let path = entry.unwrap().path();
-        let text = read(&path);
+        let text: String = read(&path)
+            .lines()
+            .filter(|line| !line.starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n");
         for (index, _) in text.match_indices("`tsuzuri ") {
             let word: String = text[index + "`tsuzuri ".len()..]
                 .chars()
@@ -400,7 +407,7 @@ fn the_guide_names_only_existing_subcommands() {
 }
 
 /// The entries of the pitfall table: (id, snippet, codes, edition, source).
-fn pitfalls() -> Vec<(String, String, Vec<String>, Option<String>, String)> {
+fn pitfalls() -> Vec<Pitfall> {
     let text = read(&repo("tests/fixtures/guide/pitfalls.txt"));
     let mut entries = Vec::new();
     for part in text.split("\n## ").skip(1) {
@@ -658,16 +665,34 @@ fn guide_std_page_has_one_line_per_function() {
     let mut sorted = functions.clone();
     sorted.sort_unstable();
     assert_eq!(functions, sorted);
+    // A page longer than 6,000 characters ends with a line that points at std-all, which then
+    // lists the module in full.
+    let (_, all, _) = tsuzuri(&["guide", "--topic", "std-all"]);
+    let reachable: Vec<&str> = functions
+        .iter()
+        .copied()
+        .chain(all.lines().filter(|line| line.starts_with("Array.")))
+        .collect();
+    if stdout
+        .lines()
+        .last()
+        .is_some_and(|line| line.starts_with("... "))
+    {
+        assert!(
+            stdout.ends_with("more: tsuzuri guide --topic std-all\n"),
+            "{stdout}"
+        );
+    }
     let source = read(&repo("std/Array.tz"));
     for line in source.lines() {
         if let Some(rest) = line.strip_prefix("def ") {
             let name = rest.split_whitespace().next().unwrap();
             if name.starts_with(|c: char| c.is_ascii_lowercase()) && !name.contains("__") {
                 assert!(
-                    functions
+                    reachable
                         .iter()
                         .any(|line| line.starts_with(&format!("Array.{name} :: "))),
-                    "Array.{name} is missing"
+                    "Array.{name} is in neither its page nor std-all"
                 );
             }
         }

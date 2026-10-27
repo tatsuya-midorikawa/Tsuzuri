@@ -380,7 +380,7 @@ test('guide_lite_check_reports_each_class', () => scratch(dir => {
 test('guide_lite_planned_entry_fails_when_it_exists', () => {
     const ctx = context();
     ctx.files.push('guide/README.md');
-    assert.ok(checkGuideLite(ctx, fixtureKb(), '_features/GUIDE-LITE.md').failures.some(f => f.includes('now exists; remove it from PLANNED')));
+    assert.ok(checkGuideLite(ctx, fixtureKb(), '_features/GUIDE-LITE.md', ['guide/']).failures.some(f => f.includes('now exists; remove it from PLANNED')));
 });
 
 test('cli_exit_codes', async () => {

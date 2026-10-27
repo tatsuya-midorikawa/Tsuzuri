@@ -6976,6 +6976,7 @@ mod tests {
             "explain_command",
             "fix_command",
             "fix_edition_command",
+            "guide_command",
             "main",
             "new_project",
             "print_coverage",

@@ -261,7 +261,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G18 | [ベンチマーク・カバレッジ・プロパティテスト](_completed/G18-bench-coverage.md) | P2 | M | G06, (D07), (E08) | done |
 | G19 | [言語版（edition）と互換性・非推奨の管理](_completed/G19-editions-compatibility.md) | P3 | M | E04, G09, (E10) | done（Phase 1・2） |
 | G20 | [関数内の型・所有権エラーからの回復](_completed/G20-error-recovery.md) | P1 | L | G02 | done |
-| G21 | [AI ガイドパック（`tsuzuri guide`、`tsuzuri new` の `AGENTS.md`・`llms.txt`）](G21-ai-guide-pack.md) | P1 | L | (G23) | todo（承認済み） |
+| G21 | [AI ガイドパック（`tsuzuri guide`、`tsuzuri new` の `AGENTS.md`・`llms.txt`）](_completed/G21-ai-guide-pack.md) | P1 | L | (G23) | done（Phase 1〜4、2026-10-27） |
 | G22 | [診断 v2 の基盤（関連位置・help・fix・expected/found。所有権の移動元・借用元）](_completed/G22-diagnostic-v2.md) | P0 | L | G20, G12 | done（Phase 1〜4、2026-10-26） |
 | G23 | [診断の kind・`tsuzuri explain`・ヒント DB](_completed/G23-diagnostic-kinds-explain-hints.md) | P1 | L | G22 | done（Phase 1〜4、2026-10-27） |
 | G24 | [`tsuzuri fix`（機械的な修正の適用と edition の移行基盤）](_completed/G24-tsuzuri-fix.md) | P1 | L | G22 | done（Phase 1〜4、2026-10-27） |
@@ -533,7 +533,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | --- | --- | --- | --- |
 | [G32](G32-repo-kb-and-ticket-brief.md) | ツール（P0） | `scripts/repo-kb.mjs`: チケット・GUIDE の決定・診断コード・名前を決定的に索引し、`brief <ID>` が実装に要る文脈（要点・停止条件・仕様・指定 Phase の手順・テスト・受け入れ条件・依存先のインターフェース・GUIDE-LITE）を 24,000 字以内で出す。GUIDE-LITE と台帳の食い違いも検査する。小さいモデルが GUIDE（約 15.5 万字）とチケット全体を読まずに着手できる。**第3期で最初に入れる** | 承認済み |
 | [G22](_completed/G22-diagnostic-v2.md) | 診断（P0・基盤） | 診断に関連位置（移動元・借用元・期待の原因など）・`help`・`fixes`・`expected`／`found`・`candidates`・`scope` を足す。JSON はキーを足すだけで、追加の情報を持たない診断は 1 byte も変わらない。`Diagnostic` を 8 bytes の `Box` にして stack の余裕を保つ（フィールドを直に足すと GUIDE §3.1 の stack の回帰テストが溢れることを実測）。所有権の 7 か所と型の不一致に付け、LSP の `relatedInformation`・`quickfix` に接続する | 承認済み・実装済み（Phase 1〜4） |
-| [G21](G21-ai-guide-pack.md) | 知識 | `tsuzuri guide`（L0 6,000 字・L1 20,000 字・std のページと 1 行索引。英語。コンパイラの表と実行を通った例から生成。`--json` あり）と、`tsuzuri new` が書く `AGENTS.md`・`llms.txt`。落とし穴の表は G23 のヒント DB と共有する | 承認済み |
+| [G21](_completed/G21-ai-guide-pack.md) | 知識 | `tsuzuri guide`（L0 6,000 字・L1 20,000 字・std のページと 1 行索引。英語。コンパイラの表と実行を通った例から生成。`--json` あり）と、`tsuzuri new` が書く `AGENTS.md`・`llms.txt`。落とし穴の表は G23 のヒント DB と共有する | 承認済み・実装済み（Phase 1〜4。edition ブロックで 2026／2027 を書き分け） |
 | [G23](_completed/G23-diagnostic-kinds-explain-hints.md) | 診断 | 粗い 47 コードを原因ごとの kind（653）に分け（enum とマクロの登録簿。`Diagnostic::of`）、`tsuzuri explain`（47 コードと厳選した 84 kind のページ、`--catalog --json`）と、`pair.0`・`Display.to_string` のように AI が繰り返す誤りに「どう書くか」を返すヒント DB を足す。発行 1,077 か所を `#[deprecated]` とモジュールごとの `deny` で段階的に移行する | 承認済み・実装済み（Phase 1〜4。kind 693・コードのページ 49） |
 | [G24](_completed/G24-tsuzuri-fix.md) | 診断 | `tsuzuri fix [PATH]`: `fixes` の `certain` を既定で適用し（`--applicability likely` なら `likely` も）、適用後に再検査して新しい誤りが出れば何も書かない（`E2008`）。`--dry-run` は差分だけで、`maybe` は `--dry-run` のときだけ。`--edition 2027` で edition を移行する（A22 が使う）。編集の適用は LSP の quickfix と共有する（`apply_edits`） | 承認済み・実装済み（Phase 1〜4。`--edition` は A18 の移行に統合） |
 | [G25](G25-typed-holes-and-find.md) | 診断・検索 | 型つき穴 `?`（`E1030`: 期待する型と、スコープの束縛・その型を作れる候補を出す）、`tsuzuri find 'ref [i64] -> i64'`（型でのシグネチャ検索。`kb find` と同じ実装）、未解決名の候補（`unknown value 'length'` に近い名前） | 承認済み |

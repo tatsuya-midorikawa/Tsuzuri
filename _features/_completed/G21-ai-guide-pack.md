@@ -5,9 +5,9 @@
 | ID | G21 |
 | 優先度 | P1 |
 | 規模 | 全体 L（D-50 の表は M。L1 の本文と Phase 3 の std 索引を詳細化して見積もりを上げた）。Phase 1 M、Phase 2 S、Phase 3 M、Phase 4 S |
-| 依存 | なし。Phase 4 は [G23](_completed/G23-diagnostic-kinds-explain-hints.md) のヒント DB（`hints::TABLE`）が出荷済みなら使う（なければ静的な版。「前提とする他チケットのインターフェース」） |
-| 後続 | G23（落とし穴の表をガイドの生成元にする）、[G24](_completed/G24-tsuzuri-fix.md)・A22・A18・A19（出荷するとき `guide/card.md` の行を足す・替える。[付録 H](G21-appendix.md#付録-h-他チケットへの依頼guide-の行の差し替え)）、G29（`tz_guide` が `guide::render` を呼ぶ）、G31（ガイドの静的なサイズ上限をテストで強制する）、G32（リポジトリの `AGENTS.md` に「AI エージェントへ」の節を足す案の手本） |
-| 状態 | todo |
+| 依存 | なし。Phase 4 は [G23](G23-diagnostic-kinds-explain-hints.md) のヒント DB（`hints::TABLE`）が出荷済みなら使う（なければ静的な版。「前提とする他チケットのインターフェース」） |
+| 後続 | G23（落とし穴の表をガイドの生成元にする）、[G24](G24-tsuzuri-fix.md)・A22・A18・A19（出荷するとき `guide/card.md` の行を足す・替える。[付録 H](G21-appendix.md#付録-h-他チケットへの依頼guide-の行の差し替え)）、G29（`tz_guide` が `guide::render` を呼ぶ）、G31（ガイドの静的なサイズ上限をテストで強制する）、G32（リポジトリの `AGENTS.md` に「AI エージェントへ」の節を足す案の手本） |
+| 状態 | done（Phase 1〜4、2026-10-27） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
 | 改善する劣位 | 学習データにない言語を AI が最初の 1 回で書けない。言語リファレンスは日本語で 111 ページ・1,081,198 字（`_tsuzuri`）、`docs/language.md` は 350,810 字、README は 65,435 字あり、AI 向けの短い英語の入口がない。`tsuzuri new` は `AGENTS.md` も `llms.txt` も作らない。D-50 の調査結論 (3)（同じ意味に複数の書き方があり、落とし穴が多い）と (4)（文書が大きすぎる）に当たる |
@@ -611,3 +611,45 @@ pub fn expand_generated(text: &str, generate: &dyn Fn(&str) -> Option<String>) -
 
 
 
+
+## 実装と検証（2026-10-27）
+
+Phase 1〜4 をブランチ `feat/g21-ai-guide-pack`（G24 の `feat/g24-tsuzuri-fix` の上）に実装した。
+
+### HEAD との食い違いと、その扱い
+
+| 食い違い | 扱い |
+| --- | --- |
+| `Edition::SUPPORTED` が `[2026, 2027]`（A18 が出荷済み。停止条件 9） | 付録 A〜E を両 edition で検査した。例はどちらでも通ったが、3 つの主張が 2026 だけのもの: 値渡しの引数がムーブする（2027 の無印の引数は読み取りの借用）、`p.x = 1`・`xs[i] = v` が `E1012`（2027 は可変な所有者なら書け、そうでなければ `E1014`）、`v = Vec.push 1 v`（2027 の `Vec.push` はその場で更新して unit）。D3 に従い、ガイドは全 edition で通る書き方（`ref T`・`ref mut T`・`own T`・`Vec.push_owned`）を教え、違いだけを Phase 4 の edition ブロックに書いた。付録 H の A18 の行（所有権の規則 1・2）の具体化で、付録 H にない差は `p.x = 1`・`xs[i] = v` の行（落とし穴）だけ。edition ブロックは Phase 1 から使うので、Phase 4 の `filter_edition`・`--edition` を最初から入れた |
+| 落とし穴の検証表 | `## ID snippet => CODES @EDITION` の edition の印を足した（`P03`・`P04` は `@2026`、2027 用に `P03b`・`P04b` を `E1014` で足した）。`R01` のソースは `own string` にした（両 edition で `E1012`）。表と card の 1 行の照合は、その edition で見える行で行う |
+| G23・G24 が出荷済み | 付録 H の行を足した（Workflow に `tsuzuri explain`・`tsuzuri fix`、Commands の JSON のキーに `kind`・`help`）。`pitfalls` の章の後半を `hints::TABLE` の生成節（`<!-- generated:pitfalls -->`。1 ヒント 1 行の `- CODE: help`）にした。診断の kind は登録簿に足した（`guide_bad_arguments`・`guide_edition_unsupported`・`guide_manifest_missing`・`guide_unknown_std_module`・`guide_unknown_topic`） |
+| `parse_arguments` の型 | `Result<Invocation, Diagnostic>`（kind を保つため。仕様は `String`）、`Invocation.edition` は `Option<Edition>` |
+| `tsuzuri guide` の出力 | `guide/card.md` のバイト列そのものではなく、表示する edition（作業ディレクトリの `Tsuzuri.toml`、なければ最新）でブロックを選んだもの。ひな形（`AGENTS.md`・`llms.txt`）も、そのプロジェクトの edition で描画する |
+| `check-guide.mjs` | 例を、edition ブロックの外なら両 edition、中ならその edition のマニフェストを付けたプロジェクトで検査する |
+| std の索引の溢れ（停止条件 8） | std の `def` が `own` を書くようになり、付録 I の見積もり（約 44,000 字）を大きく超えた（68,421 字）。付録 J の規則のままでは、`Array` のページが `std-all` を指し、`std-all` が `Array` を 1 行に畳んで、77 関数がどこにも出ない。**自分のページが完全なモジュールを先に畳み、ページが切り詰められるモジュールは最後に畳む**順に変えた（`std-all` は 43,209 字。`Array`・`List` は `std-all` に全部出る）。`guide_std_page_has_one_line_per_function` は「ページか `std-all` のどちらかに全関数がある」を検査する |
+| `SimdLane` の描画 | このバリアントはベクトルの要素型なので、付録 J の `Simd<t, n>` ではなく `Lane<t, n>`・`Lane<t>` にした（`Simd.splat :: SimdVector<'a> => Lane<'a> -> 'a`） |
+| `Array.fold` の行 | std のソースが変わり、`Array.fold :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> ref ['a] -> 'state`（ソースの `def fold ::` の行と一致することを単体テストで照合） |
+
+### 計測
+
+`target/debug/tsuzuri guide` の文字数（2026 / 2027）: card 5,779 / 5,826、language 7,988 / 8,075、ownership 3,874 / 4,274、pitfalls 3,895 / 3,857、workflow 2,832 / 2,731、L1 18,592 / 18,940。std: 56 モジュール（`prelude` を含む）、1,019 関数、一覧 1,818 字、最大のページ 5,977 字（`List`）、`std-all` 43,209 字。
+
+### 実行したコマンドと結果
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 通過。
+- `cargo nextest run --locked`: 2,059 件中、最後の 2 件（`the_docs_list_every_kind`・`only_functions_that_a_server_never_runs_print_directly`）を直したあと、両方を個別に再実行して通過。`--test guide` 24 件、`--lib guide` 5 件、`--lib guide_std` 7 件。
+- `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-guide.mjs`: `Guide: 17 checked examples, 32 native runs (O0/O3), 4 test projects.`
+- `node tests/{parallel_frontend,examples,lsp_sessions,ai_cost}.mjs target/debug/tsuzuri`: 通過。
+- `node scripts/check-docs.mjs`（`compiler/usage.md`・`option.md`・`organizing-tsuzuri/packages.md`・`languages/how-about-tsuzuri.md`）: 通過。
+
+### 見つけたこと
+
+`for i = a to b do`（`downto` も）は、`do!`・`let!` を使う関数の本体の中では `E0002`（`expected 'in' after the loop binding`）になる（ループが最初の `do!` より前でも）。`loops-and-conditionals/for-to.md` には書かれていない。ガイドは `for i in a .. b` を教え、この制限を書いた。不具合なら別チケットで直す。
+
+### 更新した文書
+
+`compiler/usage.md`（`### new`、`### guide`、ポイント）、`compiler/option.md`、`organizing-tsuzuri/packages.md`、`languages/how-about-tsuzuri.md`、`compiler/diagnostics.md`（kind の一覧）、`README.md`、`docs/language.md`、`docs/stability.md`、`docs/architecture.md`、`vsc/README.md`。
+
+### 変更したファイル
+
+新規: `guide/`（`card.md`・`language.md`・`ownership.md`・`pitfalls.md`・`workflow.md`・`AGENTS.md.tmpl`・`llms.txt.tmpl`）、`src/guide.rs`、`src/guide_std.rs`、`scripts/check-guide.mjs`、`tests/guide.rs`、`tests/fixtures/guide/pitfalls.txt`、`tests/fixtures/guide_broken/card.md`。変更: `src/lib.rs`、`src/main.rs`（`guide_command`・`HELP`・`new --no-agent-files`）、`src/package.rs`（`create_project` の `agent_files`）、`src/watch.rs`（呼び出し）、`src/diagnostic_kinds.rs`（5 kind）。
