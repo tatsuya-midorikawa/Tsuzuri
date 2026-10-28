@@ -1,0 +1,6 @@
+{"rel":"calls","from":"Main.$entry","to":"Point.distance","args":["copy"],"span":{"path":"Main.tz","line":2,"column":9}}
+{"rel":"calls","from":"Point.distance","to":"sqrt","args":["copy"],"span":{"path":"Point.tz","line":4,"column":5}}
+{"rel":"calls","from":"Point.hypotenuse","to":"Point.distance","args":["copy"],"span":{"path":"Point.tz","line":7,"column":5}}
+{"rel":"uses_type","from":"Main.$entry","to":"Point.Point","span":{"path":"Main.tz","line":1,"column":9}}
+{"rel":"uses_type","from":"Point.distance","to":"Point.Point","span":{"path":"Point.tz","line":3,"column":17}}
+{"rel":"uses_type","from":"Point.hypotenuse","to":"Point.Point","span":{"path":"Point.tz","line":7,"column":15}}

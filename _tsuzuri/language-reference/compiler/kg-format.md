@@ -8,7 +8,7 @@
 - ID は名前空間つきの完全名で、位置に依存しません（`Acme::Shop::Cart.total`、`test:Acme::Shop::Main.adds`）。
 - `contains` の辺がモジュールから宣言、record から field、union から case、class と instance から method へ伸び、モジュールを根とする森（木の集まり）を作ります。
 - 事実は `check` の解析だけから作り、LLVM IR を使いません。`effects_complete`・`alloc_complete` は、効果の要約（A20）が入るまで `false` です。
-- `check`・`build`・`run`・`test` が `target/tz/kg/` に書きます（[知識グラフ](kg.md)）。ライブラリの `tsuzuri::kg::collect` でも作れます。
+- `check`・`build`・`run`・`test` が `target/tz/kg/` に書きます（[知識グラフ](kg.md)）。同じ置き場の `views/*.mmd` は行から作った Mermaid の図で、この記事の形式ではありません（[図表の生成](diagrams.md)）。ライブラリの `tsuzuri::kg::collect` でも作れます。
 
 ## 共通の規則
 
@@ -61,7 +61,7 @@
 | `rel` | `from` | `to` | `span` |
 | --- | --- | --- | --- |
 | `contains` | 親（モジュール・record・union・class・instance） | 子の宣言 | 子の名前 |
-| `calls` | 呼び出しを含む関数・テスト・`$entry` | 呼び先（ノード、std の関数、組み込み関数、class のメソッド） | 呼び先の式。`args` は実引数ごとの `conv`。関数を値として渡しただけなら `[]` |
+| `calls` | 呼び出しを含む関数・テスト・`$entry` | 呼び先（ノード、std の関数、組み込み関数（`Task.scope`・`Task.run`・`Task.parallel`・`Parallel.*` を含む）、class のメソッド） | 呼び先の式（`Task.scope` などは呼び出しの式全体）。`args` は実引数ごとの `conv`。関数を値として渡しただけなら `[]` |
 | `uses_type` | 型名の使用を囲む最も内側の宣言 | record・union・class・`extern type` | 型名 |
 | `implements` | 型（instance の型、`deriving` の型） | class | class 名 |
 | `instance_of` | instance | class | class 名 |

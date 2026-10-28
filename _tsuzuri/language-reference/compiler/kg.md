@@ -11,6 +11,7 @@
 - `tsuzuri kg build|verify|clean|export` で、明示的に作る・確かめる・消す・出力できます。
 - `tsuzuri kg show|callers|callees|uses|tests-for|search|find|path|brief` は、ソースを読まずにグラフから答えます（[照会](#照会)）。
 - `tsuzuri kg impact` は 2 つの版の差（公開 API・効果・警告）と、その差に届くテストを出し、`tsuzuri test --affected` はそのテストだけを実行します（[変更の影響](#変更の影響kg-impact)）。
+- `tsuzuri kg diagram` は、モジュール・型・呼び出し・所有権・並行・配置・状態遷移の図を Mermaid・DOT・Markdown で出します（[図表の生成](diagrams.md)）。
 
 ## 置き場とファイル
 
@@ -23,6 +24,7 @@
 | `facts/<モジュール>.jsonl`・`layout/<モジュール>.jsonl` | 関数の事実と型のレイアウト（行のあるモジュールだけ） |
 | `diag.jsonl` | 解析の診断（`check --json` と同じ形。パスは根からの相対。`--warn implicit-copy` の `W1006` は入れない） |
 | `brief/L0.md`・`brief/L1/<モジュール>.md`・`brief/L2/<ID>.md` | 要約カード（プロジェクト・モジュール・宣言） |
+| `views/modules.mmd`・`views/types.mmd`・`views/concurrency.mmd` | モジュールの依存・型・並行の Mermaid の図（作れるものだけ。[図表の生成](diagrams.md#知識グラフの-views)） |
 
 置き場は `--kg-dir DIR`、次に `TSUZURI_KG_DIR`、どちらもなければ `<根>/target/tz/kg` です（`Tsuzuri.toml` のあるプロジェクトの根は、そのマニフェストのディレクトリです）。ファイル名は、モジュールの key か ID の `::` を `.` にし、英数字・`_`・`.` 以外の文字を `%XX` にしたものです。200 バイトを超える名前は、先頭の 183 バイト（`%XX` の途中では切らない）に `-` と ID の SHA-256 の先頭 16 桁を続けたものになります。`tsuzuri new` の `.gitignore` は `target/` を除外します。ソースを探すとき、マーカーのあるディレクトリは読みません。
 
@@ -87,7 +89,7 @@ tsuzuri kg export [PATH] [--kg-dir DIR] (--nodes | --edges | --facts) [--no-refr
 | `clean` | マーカーのある置き場を消す | なし | 0。マーカーのないディレクトリと、プロジェクトのソースを含むディレクトリ（マーカーがあっても）は消さず `E2009` で 1 |
 | `export` | 古ければ作り直し（`--no-refresh` では作らない）、`nodes.jsonl`・`edges.jsonl`・`facts/*.jsonl` をそのまま標準出力へ | JSON Lines | 0。ないか不完全は `E2009` で 1 |
 
-`--json` の `build` は `{"type":"kg_build","status":"written","dir":"…","files":19,"complete":true}`（`status` は `written`・`unchanged`・`incomplete`。エラーのあるプロジェクトの知識グラフが前回のままなら、書かずに `incomplete`・`"files":0`・`"complete":false` で、終了コードは 1）、`verify` は `{"type":"kg_verify","status":"ok","source_hash":"…","nodes":14,"files":17}` を 1 行出します。
+`--json` の `build` は `{"type":"kg_build","status":"written","dir":"…","files":21,"complete":true}`（`status` は `written`・`unchanged`・`incomplete`。エラーのあるプロジェクトの知識グラフが前回のままなら、書かずに `incomplete`・`"files":0`・`"complete":false` で、終了コードは 1）、`verify` は `{"type":"kg_verify","status":"ok","source_hash":"…","nodes":14,"files":19}` を 1 行出します。
 
 ```sh
 tsuzuri kg build
@@ -307,6 +309,16 @@ affected: 1 of 3 tests (base)
 ```
 
 選ばれたテストが 0 件なら、何も実行せず終了コード 0 です。全部を選んだときは `affected: all 3 tests (the compiler changed)` のように理由を出します。選んだテストに、知識グラフの `tests.jsonl` が番号を持たないものがあれば、落とさずに全部を実行します（`the KG does not number every affected test`）。`--json` では `{"type":"affected","mode":"some","affected":1,"total":3,"base":"base","reason":null}` です。`--list` と組み合わせると、選んだテストだけを一覧にします（実行しません）。`--filter`・`--index`・`--no-kg`・`TSUZURI_KG=0` とは組み合わせられません（`E2000`、終了コード 2）。`test` 以外のコマンドに付けても `E2000` です。
+
+## 図（`kg diagram`）
+
+`tsuzuri kg diagram KIND [ID]` は、知識グラフから 7 種類の図を作ります。引数・図の読み方・例は [図表の生成](diagrams.md) にあります。
+
+```text
+tsuzuri kg diagram module
+tsuzuri kg diagram calls hypotenuse --depth 3
+tsuzuri kg diagram types --format dot
+```
 
 ## 標準ライブラリの知識グラフ
 

@@ -1,0 +1,4 @@
+let line = Shapes.Line { a: Shapes.Point { x: 0.0, y: 0.0 }, b: Shapes.Point { x: 3.0, y: 4.0 } }
+match Shapes.Segment line with
+| Shapes.Segment _ -> 1
+| _ -> 0

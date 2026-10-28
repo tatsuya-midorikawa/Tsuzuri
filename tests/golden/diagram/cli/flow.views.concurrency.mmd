@@ -1,0 +1,22 @@
+flowchart LR
+    n1[["Flow::Main.$entry · Task.scope"]]
+    n2["Flow::Worker.bump"]
+    n3["Flow::Worker.drain"]
+    n4["Flow::Worker.feed"]
+    n5("Channel#lt;i64#gt;")
+    n6("Mutex#lt;i64#gt;")
+    n7["approximate: from signatures and call sites"]
+    n1 -.->|"calls"| n2
+    n1 -.->|"calls"| n3
+    n1 -.->|"calls"| n4
+    n1 -.->|"create"| n5
+    n1 -.->|"create"| n6
+    n2 -->|"lock"| n6
+    n4 -->|"send"| n5
+    n5 -->|"recv"| n3
+    classDef region fill:#fff1e5,stroke:#bc4c00
+    classDef cell fill:#fbefff,stroke:#8250df
+    classDef note fill:#fff8c5,stroke:#d4a72c,stroke-dasharray:4 2
+    class n1 region
+    class n5,n6 cell
+    class n7 note

@@ -1,0 +1,15 @@
+flowchart TD
+    n1[["Main.$entry"]]
+    n2["Worker (3)"]
+    n3["std:Channel (3)"]
+    n4["std:Mutex (2)"]
+    n5["…2 more groups (2)"]
+    n1 -->|"×3"| n2
+    n1 -->|"copy"| n3
+    n1 -->|"copy"| n4
+    n1 -->|"×3"| n5
+    n2 -->|"×2"| n3
+    n2 -->|"ref,copy"| n4
+    classDef io fill:#ddf4ff,stroke:#0969da
+    class n1 io
+    style n1 stroke-width:3px

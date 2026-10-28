@@ -1,0 +1,12 @@
+flowchart TD
+    n1["A"]
+    n2["B"]
+    n3["Main"]
+    n1 --> n2
+    n2 --> n1
+    n3 -->|"×2"| n1
+    n3 -->|"×2"| n2
+    classDef cycle fill:#ffebe9,stroke:#cf222e
+    class n1,n2 cycle
+    linkStyle 0 stroke:#cf222e,stroke-width:2px
+    linkStyle 1 stroke:#cf222e,stroke-width:2px

@@ -1,0 +1,8 @@
+flowchart TD
+    n1["Acme::Shop::Cart"]
+    n2["Acme::Shop::Main"]
+    n3["Acme::Shop::Report"]
+    n2 -->|"×3"| n1
+    n2 --> n3
+    n3 -->|"×2"| n1
+    n3 -.->|"using"| n2

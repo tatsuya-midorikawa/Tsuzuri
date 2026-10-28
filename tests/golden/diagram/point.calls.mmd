@@ -1,0 +1,9 @@
+flowchart TD
+    n1["Point.distance"]
+    n2["Point.hypotenuse"]
+    n3(["sqrt"])
+    n1 -->|"copy"| n3
+    n2 -->|"copy"| n1
+    classDef ext fill:#f6f8fa,stroke:#8c959f,stroke-dasharray:4 2
+    class n3 ext
+    style n2 stroke-width:3px

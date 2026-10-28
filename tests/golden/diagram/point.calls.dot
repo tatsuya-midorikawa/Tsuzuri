@@ -1,0 +1,10 @@
+digraph tsuzuri {
+    rankdir=TB;
+    node [shape=box, fontname="monospace"];
+    edge [fontname="monospace"];
+    n1 [label="Point.distance", shape=box];
+    n2 [label="Point.hypotenuse", shape=box, penwidth=3];
+    n3 [label="sqrt", shape=ellipse, fillcolor="#f6f8fa", style="filled,dashed"];
+    n1 -> n3 [label="copy"];
+    n2 -> n1 [label="copy"];
+}

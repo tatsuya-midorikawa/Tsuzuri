@@ -1,0 +1,14 @@
+digraph tsuzuri {
+    rankdir=LR;
+    node [shape=ellipse, fontname="monospace"];
+    edge [fontname="monospace"];
+    s1 [label="Red"];
+    s2 [label="Green"];
+    s3 [label="Yellow of i64"];
+    s1 -> s1 [label="reset"];
+    s1 -> s2 [label="next"];
+    s2 -> s1 [label="reset"];
+    s2 -> s3 [label="next"];
+    s3 -> s1 [label="next, reset"];
+    s3 -> s3 [label="next"];
+}

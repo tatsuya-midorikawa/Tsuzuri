@@ -1,0 +1,7 @@
+let counter = Mutex.create 0i64
+match Channel.bounded 8 with
+| (sender, receiver) ->
+    let _sent = Task.scope (ref sender) 8 (shared -> index -> Worker.feed shared (index + 1))
+    Owned.drop sender
+    let _seen = Task.scope (ref counter) 4 (shared -> index -> Worker.bump shared index)
+    Worker.drain (ref receiver)

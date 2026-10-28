@@ -26,6 +26,7 @@ const COMMANDS: &[&str] = &[
     "find",
     "impact",
     "path",
+    "diagram",
 ];
 
 /// Whether an option takes a value.
@@ -50,6 +51,8 @@ const OPTIONS: &[(&str, bool)] = &[
     ("--result", true),
     ("--takes", true),
     ("--limit", true),
+    ("--format", true),
+    ("--max-nodes", true),
 ];
 
 /// The options that may be written more than once (each value is kept).
@@ -172,6 +175,15 @@ pub(crate) fn exit_of(error: &Diagnostic) -> u8 {
         DiagnosticKind::OptionMissingValue,
         DiagnosticKind::OptionInvalidValue,
         DiagnosticKind::OptionInvalidForCommand,
+        DiagnosticKind::DiagramUsage,
+        DiagnosticKind::DiagramUnknownKind,
+        DiagnosticKind::DiagramNeedsId,
+        DiagnosticKind::DiagramFormatUnsupported,
+        DiagnosticKind::DiagramBadOption,
+        DiagnosticKind::DiagramUnknownId,
+        DiagnosticKind::DiagramWrongIdKind,
+        DiagnosticKind::DiagramUnavailable,
+        DiagnosticKind::DiagramTooLarge,
     ];
     if error.code == "E2000" && usage.iter().any(|kind| error.kind == Some(kind.id())) {
         EXIT_USAGE
@@ -200,6 +212,19 @@ pub(crate) fn kg_command(arguments: &[OsString]) -> ExitCode {
     }
     let parsed = match parse_kg_arguments(arguments, OPTIONS) {
         Ok(parsed) => parsed,
+        // The errors of `kg diagram`'s options have the kind of its other option errors (G30).
+        Err(error)
+            if arguments
+                .first()
+                .is_some_and(|command| command == "diagram") =>
+        {
+            let error = tsuzuri::diagram::DiagramError {
+                kind: "diagram_bad_option",
+                message: error.message.clone(),
+            }
+            .diagnostic();
+            return fail(&error, json, EXIT_USAGE);
+        }
         Err(error) => return fail(&error, json, EXIT_USAGE),
     };
     let result = match parsed.command.as_str() {
@@ -210,6 +235,7 @@ pub(crate) fn kg_command(arguments: &[OsString]) -> ExitCode {
         "brief" | "show" | "callers" | "callees" | "uses" | "tests-for" | "search" | "find"
         | "path" => kg_query(&parsed),
         "impact" => kg_impact(&parsed),
+        "diagram" => kg_diagram(&parsed),
         other => Err(usage_error(format!(
             "unknown kg command '{other}'; use {}",
             commands_list()
@@ -227,11 +253,21 @@ pub(crate) fn kg_command(arguments: &[OsString]) -> ExitCode {
 /// The options that belong to some commands only, with the message for the others (G28 §1).
 fn misplaced(arguments: &KgArguments) -> Option<&'static str> {
     let command = arguments.command.as_str();
-    let rules: [(&str, &[&str], &str); 12] = [
+    let rules: [(&str, &[&str], &str); 14] = [
         (
             "--depth",
-            &["callers", "callees", "path"],
-            "--depth is only valid with kg callers, kg callees, or kg path",
+            &["callers", "callees", "path", "diagram"],
+            "--depth is only valid with kg callers, kg callees, kg path, or kg diagram",
+        ),
+        (
+            "--format",
+            &["diagram"],
+            "--format is only valid with kg diagram",
+        ),
+        (
+            "--max-nodes",
+            &["diagram"],
+            "--max-nodes is only valid with kg diagram",
         ),
         (
             "--std",
@@ -963,6 +999,135 @@ fn kg_impact(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         print!("{}", impact.render_json());
     } else {
         print!("{}", impact.render_text());
+    }
+    Ok(EXIT_SUCCESS)
+}
+
+/// `kg diagram KIND [ID]` (G30, D-60): a diagram of the project's graph on standard output.
+fn kg_diagram(arguments: &KgArguments) -> Result<u8, Diagnostic> {
+    use tsuzuri::diagram::{self, DiagramError, DiagramRequest, Format, Kind};
+    const USAGE: &str = "usage: tsuzuri kg diagram KIND [ID] [options]";
+    let error = |kind: &'static str, message: String| DiagramError { kind, message }.diagnostic();
+    let bad = |message: &str| error("diagram_bad_option", message.to_owned());
+    let allowed = [
+        "--path",
+        "--kg-dir",
+        "--format",
+        "--max-nodes",
+        "--depth",
+        "--no-refresh",
+        "--json",
+    ];
+    if let Some(option) = arguments
+        .options
+        .keys()
+        .find(|option| !allowed.contains(option))
+    {
+        return Err(bad(&format!(
+            "{option} is not valid with kg diagram; {USAGE}"
+        )));
+    }
+    let positional: Vec<String> = arguments
+        .positionals
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect();
+    let (kind_text, id) = match positional.as_slice() {
+        [kind] => (kind, None),
+        [kind, id] => (kind, Some(id.clone())),
+        _ => return Err(error("diagram_usage", USAGE.to_owned())),
+    };
+    let kind = Kind::parse(kind_text).ok_or_else(|| {
+        error(
+            "diagram_unknown_kind",
+            format!(
+                "unknown diagram kind '{kind_text}'; use module, types, calls, ownership, concurrency, layout, or transitions"
+            ),
+        )
+    })?;
+    let format = match arguments
+        .value("--format")
+        .map(|value| value.to_string_lossy())
+    {
+        None => Format::Mermaid,
+        Some(value) if value == "mermaid" => Format::Mermaid,
+        Some(value) if value == "dot" => Format::Dot,
+        Some(_) => return Err(bad("--format must be mermaid or dot")),
+    };
+    let number =
+        |option: &str, range: (usize, usize), default: usize, message: &str| match arguments
+            .value(option)
+        {
+            None => Ok(default),
+            Some(value) => value
+                .to_str()
+                .and_then(|text| text.parse::<usize>().ok())
+                .filter(|value| (range.0..=range.1).contains(value))
+                .ok_or_else(|| bad(message)),
+        };
+    let max_nodes = number(
+        "--max-nodes",
+        diagram::MAX_NODES_RANGE,
+        diagram::DEFAULT_MAX_NODES,
+        "--max-nodes must be an integer from 5 to 200",
+    )?;
+    if arguments.has("--depth") && kind != Kind::Calls {
+        return Err(bad("--depth is only valid with the calls diagram"));
+    }
+    let depth = number(
+        "--depth",
+        diagram::DEPTH_RANGE,
+        diagram::DEFAULT_DEPTH,
+        "--depth must be an integer from 1 to 6",
+    )?;
+    if format == Format::Dot && kind.markdown() {
+        return Err(error(
+            "diagram_format_unsupported",
+            format!("format 'dot' is not available for kind '{}'", kind.name()),
+        ));
+    }
+    if kind.needs_id() && id.is_none() {
+        return Err(error(
+            "diagram_needs_id",
+            format!("diagram kind '{}' needs an id", kind.name()),
+        ));
+    }
+    let project = load_project(&query_path(arguments))?;
+    let dir = open::directory(&project, kg_dir_of(arguments).as_deref());
+    let json = arguments.json();
+    let data = open::open_project(
+        &project,
+        &dir,
+        refresh_of(arguments),
+        &mut |set, project| print_diagnostics(set, project, json),
+    )?;
+    let input = diagram::Input::from_kg(&data).map_err(|failure| failure.diagnostic())?;
+    // `from_kg` read the facts and layouts: a file that did not match is a broken or replaced
+    // graph (`E2009`), before any diagram's own error.
+    data.intact()?;
+    let sources = diagram::ProjectSources::of(&project);
+    let request = DiagramRequest {
+        kind,
+        id,
+        depth,
+        max_nodes,
+        format,
+    };
+    let output =
+        diagram::render(&input, &sources, &request).map_err(|failure| failure.diagnostic())?;
+    let mut out = io::stdout().lock();
+    if json {
+        let _ = writeln!(
+            out,
+            "{{\"kind\":{},\"format\":{},\"text\":{},\"nodes\":{},\"folded\":{}}}",
+            json_string(kind.name()),
+            json_string(output.format.name()),
+            json_string(&output.text),
+            output.nodes,
+            output.folded
+        );
+    } else {
+        let _ = out.write_all(output.text.as_bytes());
     }
     Ok(EXIT_SUCCESS)
 }

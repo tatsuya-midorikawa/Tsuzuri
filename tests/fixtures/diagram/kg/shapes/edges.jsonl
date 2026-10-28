@@ -1,0 +1,10 @@
+{"rel":"uses_type","from":"Shapes.Line.a","to":"Shapes.Point","span":{"path":"Shapes.tz","line":3,"column":18}}
+{"rel":"uses_type","from":"Shapes.Line.b","to":"Shapes.Point","span":{"path":"Shapes.tz","line":3,"column":28}}
+{"rel":"uses_type","from":"Shapes.Shape.Dot","to":"Shapes.Point","span":{"path":"Shapes.tz","line":6,"column":14}}
+{"rel":"uses_type","from":"Shapes.Shape.Segment","to":"Shapes.Line","span":{"path":"Shapes.tz","line":7,"column":18}}
+{"rel":"uses_type","from":"instance:Traits.Sized<Shapes.Point>","to":"Shapes.Point","span":{"path":"Shapes.tz","line":10,"column":23}}
+{"rel":"uses_type","from":"Main.$entry","to":"Shapes.Line","span":{"path":"Main.tz","line":1,"column":12}}
+{"rel":"uses_type","from":"Main.$entry","to":"Shapes.Point","span":{"path":"Main.tz","line":1,"column":29}}
+{"rel":"implements","from":"Shapes.Point","to":"Traits.Sized","span":{"path":"Shapes.tz","line":10,"column":10}}
+{"rel":"implements","from":"Shapes.Point","to":"Eq","span":{"path":"Shapes.tz","line":1,"column":43}}
+{"rel":"instance_of","from":"instance:Traits.Sized<Shapes.Point>","to":"Traits.Sized","span":{"path":"Shapes.tz","line":10,"column":10}}

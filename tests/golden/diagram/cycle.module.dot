@@ -1,0 +1,12 @@
+digraph tsuzuri {
+    rankdir=TB;
+    node [shape=box, fontname="monospace"];
+    edge [fontname="monospace"];
+    n1 [label="A", shape=box, fillcolor="#ffebe9", style="filled"];
+    n2 [label="B", shape=box, fillcolor="#ffebe9", style="filled"];
+    n3 [label="Main", shape=box];
+    n1 -> n2 [color="#cf222e"];
+    n2 -> n1 [color="#cf222e"];
+    n3 -> n1 [label="×2"];
+    n3 -> n2 [label="×2"];
+}

@@ -1,0 +1,6 @@
+{"rel":"uses_type","from":"A.a_of","to":"B.B","span":{"path":"A.tz","line":3,"column":13}}
+{"rel":"uses_type","from":"B.b_of","to":"A.A","span":{"path":"B.tz","line":3,"column":13}}
+{"rel":"calls","from":"Main.$entry","to":"A.a_of","args":["copy"],"span":{"path":"Main.tz","line":3,"column":2}}
+{"rel":"calls","from":"Main.$entry","to":"B.b_of","args":["copy"],"span":{"path":"Main.tz","line":3,"column":15}}
+{"rel":"uses_type","from":"Main.$entry","to":"A.A","span":{"path":"Main.tz","line":1,"column":9}}
+{"rel":"uses_type","from":"Main.$entry","to":"B.B","span":{"path":"Main.tz","line":2,"column":9}}

@@ -1,0 +1,16 @@
+private def peek :: ref string -> i64
+fn peek text = text.length
+
+private def consume :: string -> i64
+fn consume text = text.length
+
+export def demo :: i64 -> i64
+fn demo n =
+    let text = "own" + "ed"
+    let seen = peek (ref text)
+    let owned = consume text
+    let label = "kb" + "!"
+    let again = peek (ref label)
+    seen + owned + again + n
+
+demo 1

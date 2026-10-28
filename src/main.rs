@@ -77,6 +77,8 @@ Usage:
   tsuzuri kg path FROM TO [--rel R[,R...]] [--depth N] [query options]
                              query options: [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]
   tsuzuri kg impact (--git REV | --from PATH [--to PATH]) [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]
+  tsuzuri kg diagram module|types|calls|ownership|concurrency|layout|transitions [ID] [--format mermaid|dot]
+                             [--max-nodes N] [--depth N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]
   tsuzuri guide [--level 0|1] [--topic NAME] [--list] [--json] [--edition YEAR]
   tsuzuri guide std [MODULE] [--json]
   tsuzuri guide --agents [DIR] | --llms-txt [DIR]
@@ -141,6 +143,8 @@ the standard library's graph in the compiler's cache. `kg brief`, `show`, `calle
 the graph within --budget characters, rebuilding it first unless --no-refresh. `kg impact` lists
 the changes between two graphs (--git REV: that commit of this project) and the tests that reach
 them; `tsuzuri test --affected BASE` (a path, a graph directory, or a git revision) runs only those.
+`kg diagram` draws the modules, types, calls, ownership, concurrency, layout, or transitions as
+Mermaid, DOT, or Markdown; the graph keeps the modules, types, and concurrency diagrams in views/.
 `tsuzuri guide` prints a short English guide to the language for AI agents (level 0, about 6 KB);
 --level 1 prints the full guide, --topic NAME one chapter (--list names them), `guide std [MODULE]`
 the std index. --agents and --llms-txt print the AGENTS.md and llms.txt of the project in DIR.
@@ -7350,6 +7354,7 @@ mod tests {
             "tsuzuri kg path",
             "tsuzuri kg impact",
             "[--affected BASE]",
+            "tsuzuri kg diagram",
         ] {
             assert!(text.contains(needle), "{needle}");
         }

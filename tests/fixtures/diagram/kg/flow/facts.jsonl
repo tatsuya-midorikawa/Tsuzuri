@@ -1,0 +1,4 @@
+{"id":"Main.$entry","effects":["atomic","task"],"effects_complete":false,"ownership":[]}
+{"id":"Worker.feed","effects":["atomic"],"effects_complete":false,"ownership":[]}
+{"id":"Worker.drain","effects":["atomic"],"effects_complete":false,"ownership":[]}
+{"id":"Worker.bump","effects":["atomic"],"effects_complete":false,"ownership":[]}

@@ -1,0 +1,12 @@
+record Point { x: f64, y: f64 } deriving (Eq)
+
+record Line { a: Point, b: Point }
+
+union Shape =
+    | Dot of Point
+    | Segment of Line
+    | Empty
+
+instance Traits.Sized<Point> {
+    fn size _point = 2
+}

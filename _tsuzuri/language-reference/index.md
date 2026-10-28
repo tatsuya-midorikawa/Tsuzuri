@@ -160,8 +160,9 @@
 - [対応プラットフォームとクロスコンパイル](./compiler/platforms.md)（Windows x64/Arm64・Linux x64/Arm64・macOSはApple Siliconのみ）
 - [コンパイラ ディレクティブ](./compiler/directives.md)
 - [診断メッセージとエラーコード](./compiler/diagnostics.md)
-- [知識グラフ](./compiler/kg.md)（`target/tz/kg`、鮮度、brief カード、`tsuzuri kg build|verify|clean|export`、std の知識グラフ）
+- [知識グラフ](./compiler/kg.md)（`target/tz/kg`、鮮度、brief カード、`tsuzuri kg build|verify|clean|export`、照会と `impact`、std の知識グラフ）
 - [知識グラフの形式](./compiler/kg-format.md)（ノード・辺・事実・レイアウトの JSON Lines。ID と `contains` の森）
+- [図表の生成](./compiler/diagrams.md)（`tsuzuri kg diagram`。モジュール・型・呼び出し・所有権・並行・配置・状態遷移の Mermaid・DOT・Markdown、`views/*.mmd`）
 - [WebAssembly への出力](./compiler/webassembly.md)
 - [ネイティブ連携 (C ABI)](./compiler/native-interop.md)
 - [デバッグ](./compiler/debugging.md)

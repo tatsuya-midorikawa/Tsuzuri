@@ -1,0 +1,11 @@
+stateDiagram-v2
+    direction LR
+    state "Red" as s1
+    state "Green" as s2
+    state "Yellow of i64" as s3
+    s1 --> s1 : reset
+    s1 --> s2 : next
+    s2 --> s1 : reset
+    s2 --> s3 : next
+    s3 --> s1 : next, reset
+    s3 --> s3 : next
