@@ -1838,9 +1838,10 @@ impl Parser<'_> {
         }
         let constraint_column = self.column(self.current().span);
         while self.at(&TokenKind::At) {
-            // The attribute of the next declaration, at its column, after a signature without a body.
+            // The attribute of the next declaration, at its column, after a signature without a body
+            // (and after its constraint lines, which are indented further).
             if self.newline_before_current()
-                && constraint_column <= column
+                && self.column(self.current().span) <= column
                 && (self.effect_attribute_ahead().is_some()
                     || matches!(
                         self.tokens.get(self.position + 1).map(|token| &token.kind),

@@ -1881,9 +1881,21 @@ fn hover_shows_attributes_and_inferred_effects() {
                 def plain :: i64 -> i64\nfn plain n = n\n\
                 def main :: unit -> i32 = \\() -> (total [1, 2] + first [3] + pick [4] 0 + plain 1) as i32\n";
     let hovers = [
-        ("total xs", "@no_copy def Main.total :: ref [i64] -> i64", Some("inferred effects: none")),
-        ("first xs", "@no_trap def Main.first :: ref [i64] -> i64", Some("inferred effects: none")),
-        ("pick xs", "@no_copy def Main.pick :: ref [i64] -> i64 -> i64", Some("inferred effects: trap")),
+        (
+            "total xs",
+            "@no_copy def Main.total :: ref [i64] -> i64",
+            Some("inferred effects: none"),
+        ),
+        (
+            "first xs",
+            "@no_trap def Main.first :: ref [i64] -> i64",
+            Some("inferred effects: none"),
+        ),
+        (
+            "pick xs",
+            "@no_copy def Main.pick :: ref [i64] -> i64 -> i64",
+            Some("inferred effects: trap"),
+        ),
         ("plain n", "def Main.plain :: i64 -> i64", None),
     ];
     let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {
@@ -1908,4 +1920,23 @@ fn hover_shows_attributes_and_inferred_effects() {
             None => assert!(!hover.contains("inferred effects"), "{needle}: {hover}"),
         }
     }
+}
+
+/// Review of #63: the hover's summary is complete (a lone `@no_copy` still shows `trap`), and a
+/// function in a namespace finds its summary.
+#[test]
+fn hover_shows_complete_effects_in_namespaces() {
+    use serde_json::json;
+    let main = "namespace Demo::Shapes\n@no_copy\ndef pick :: ref [i64] -> i64 -> i64\nfn pick xs i = xs[i]\n\
+                def main :: unit -> i32 = \\() -> (pick [4] 0) as i32\n";
+    let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {
+        vec![
+            json!({"id": 1, "method": "textDocument/hover", "params": {"textDocument": {"uri": uri("Main.tz")}, "position": position(main, "pick xs", "utf-16")}}),
+        ]
+    });
+    let hover = responses[0]["result"]["contents"]["value"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", responses[0]));
+    assert!(hover.contains("Demo::Shapes"), "{hover}");
+    assert!(hover.contains("inferred effects: trap"), "{hover}");
 }

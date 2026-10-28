@@ -3264,7 +3264,7 @@ Simd.sum_lanes shifted
 - **関数型の引数**: 属性つきの関数が自分の引数を呼ぶとき、その効果は呼び出し側で検査します。渡した関数の効果が禁じる効果を含めば、その呼び出しが `E1031` です。呼び出し元が自分の引数を渡すなら、呼び出し元にも同じ属性が要ります。
 - **置き場**: `def` 以外・重複・`extern`・式の位置は `E1032`（`effect_attribute_misplaced`・`effect_attribute_duplicate`・`effect_attribute_on_extern`）。ジェネリック関数はインスタンスごとに検査し、インスタンスがなければ警告 `W1008`（`effect_attribute_unchecked_generic`）、`const def` は実行時の本体を検査して `W1008`（`effect_attribute_on_const_def`）です。
 - 上限: 1 つの要約が 4,096 関数または 2,097,152 式を超えると `E1017`（`effect_summary_limit`）です。
-- `tsuzuri doc`・hover は属性を表示し、hover は推論した効果も表示します。`api-diff` は属性を足すのを互換、外すのを互換のない変更とします。`no_alloc` などは予約語ではありません。
+- `tsuzuri doc`・hover は属性を表示し、hover は推論した効果も表示します。`api-diff` は属性を足すのを互換、外すのを互換のない変更とします（関数を受け取りうる引数を持つ関数に足すのは、呼び出し側の渡す関数に義務を課すので互換のない変更）。hover の効果は、属性が禁じる効果に限らず、すべての効果を推論した結果です。`no_alloc` などは予約語ではありません。
 
 ### Seq と明示的な反復
 

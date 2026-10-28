@@ -47,9 +47,7 @@ fn ir_trap_sites_are_covered_by_the_rule() {
     let (mut sites, mut functions_checked) = (0, 0);
     let mut missing = Vec::new();
     for directory in &projects {
-        let Some((ir, table)) = ir_scan::emit(directory, &scratch) else {
-            continue;
-        };
+        let (ir, table) = ir_scan::emit(directory, &scratch);
         let project = Project::load_for_tests(directory).unwrap();
         let module = project.analyze().unwrap();
         let summary = effects::summarize(
