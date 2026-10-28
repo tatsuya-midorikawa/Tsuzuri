@@ -644,20 +644,25 @@ fn layout_of_a_generic_record_finds_its_concrete_type() {
     let nodes = node("M", "module", "M") + &node("M.Box", "record", "M");
     let one = row("M.Box<i64>");
     let input = Input::from_texts(&nodes, "", &[], &[&one], "").unwrap();
-    let text = draw(&input, &request(Kind::Layout, Some("M.Box")));
-    assert!(
-        text.starts_with("# Layout of M.Box<i64> (native, 64-bit)\n"),
-        "{text}"
-    );
+    // Its ID shortened as any other (`Box`, `box`) names it too.
+    for id in ["M.Box", "Box", "box"] {
+        let text = draw(&input, &request(Kind::Layout, Some(id)));
+        assert!(
+            text.starts_with("# Layout of M.Box<i64> (native, 64-bit)\n"),
+            "{id}: {text}"
+        );
+    }
     let two = row("M.Box<i64>") + &row("M.Box<string>");
     let input = Input::from_texts(&nodes, "", &[], &[&two], "").unwrap();
-    let error = render(&input, &no_sources(), &request(Kind::Layout, Some("M.Box"))).unwrap_err();
-    assert_eq!(error.kind, "diagram_unknown_id");
-    assert!(
-        error.message.contains("M.Box<i64>") && error.message.contains("M.Box<string>"),
-        "{}",
-        error.message
-    );
+    for id in ["M.Box", "Box"] {
+        let error = render(&input, &no_sources(), &request(Kind::Layout, Some(id))).unwrap_err();
+        assert_eq!(error.kind, "diagram_unknown_id");
+        assert!(
+            error.message.contains("M.Box<i64>") && error.message.contains("M.Box<string>"),
+            "{}",
+            error.message
+        );
+    }
     // Only its own concrete types: not those of `M.Boxed`, whose ID starts the same.
     let nodes_boxed = nodes.clone() + &node("M.Boxed", "record", "M");
     let boxed = row("M.Boxed");
@@ -667,11 +672,13 @@ fn layout_of_a_generic_record_finds_its_concrete_type() {
     assert!(!error.message.contains("M.Boxed"), "{}", error.message);
     let both = one.clone() + &boxed;
     let input = Input::from_texts(&nodes_boxed, "", &[], &[&both], "").unwrap();
-    let text = draw(&input, &request(Kind::Layout, Some("M.Box")));
-    assert!(
-        text.starts_with("# Layout of M.Box<i64> (native, 64-bit)\n"),
-        "{text}"
-    );
+    for id in ["M.Box", "Box"] {
+        let text = draw(&input, &request(Kind::Layout, Some(id)));
+        assert!(
+            text.starts_with("# Layout of M.Box<i64> (native, 64-bit)\n"),
+            "{id}: {text}"
+        );
+    }
     // A function is still the wrong kind.
     let nodes = nodes + &def("M.f", "M", "i64", "i64");
     let input = Input::from_texts(&nodes, "", &[], &[&one], "").unwrap();
@@ -1476,6 +1483,85 @@ fn transitions_read_the_matches_of_both_branches() {
         "s2 --> s1 : pick",
         "s2 --> s2 : pick",
     ] {
+        assert!(text.contains(edge), "{edge}: {text}");
+    }
+}
+
+/// The transitions of the union `union` with `cases`, from the functions `defs` of the module
+/// `module` whose source (`module.tz`) is `source`.
+fn transitions_of(
+    union: &str,
+    cases: &[&str],
+    module: &str,
+    defs: &[(&str, &str, &str)],
+    source: &str,
+) -> Result<String, String> {
+    let manifest = format!(
+        "{{\"edition\":\"2026\",\"modules\":[{{\"name\":\"{module}\",\"key\":\"{module}\",\"origin\":\"project\",\"path\":\"{module}.tz\",\"source\":\"{}\"}}]}}",
+        tsuzuri::kg::input::digest(source.as_bytes())
+    );
+    let home = union.rsplit_once('.').unwrap().0;
+    let mut nodes = node(union, "union", home);
+    for case in cases {
+        nodes.push_str(&node(&format!("{union}.{case}"), "case", home));
+    }
+    for (name, param, result) in defs {
+        nodes.push_str(&def(&format!("{module}.{name}"), module, param, result));
+    }
+    let input = Input::from_texts(&nodes, "", &[], &[], &manifest).unwrap();
+    let sources = BTreeMap::from([(format!("{module}.tz"), source.to_owned())]);
+    render(&input, &sources, &request(Kind::Transitions, Some(union)))
+        .map(|output| output.text)
+        .map_err(|error| error.kind.to_owned())
+}
+
+/// A parameter that borrows the union with a region (`ref {r} U`) is the union.
+#[test]
+fn transitions_read_a_reference_with_a_region() {
+    let source = "def flip {r} :: ref {r} U -> U = \\value ->\n    match value with\n    | A -> B\n    | B -> A\n";
+    let text = transitions_of(
+        "M.U",
+        &["A", "B"],
+        "M",
+        &[("flip", "ref {r} U", "U")],
+        source,
+    )
+    .unwrap();
+    for edge in ["s1 --> s2 : flip", "s2 --> s1 : flip"] {
+        assert!(text.contains(edge), "{edge}: {text}");
+    }
+}
+
+/// A `match` over a local that hides the first parameter is not a transition of it.
+#[test]
+fn transitions_skip_a_local_that_hides_the_parameter() {
+    let source = "def flip :: U -> U = \\value ->\n    match value with\n    | A -> B\n    | B -> A\n\ndef reset :: U -> U = \\value ->\n    let value = A\n    match value with\n    | A -> B\n    | _ -> A\n";
+    let text = transitions_of(
+        "M.U",
+        &["A", "B"],
+        "M",
+        &[("flip", "U", "U"), ("reset", "U", "U")],
+        source,
+    )
+    .unwrap();
+    assert!(text.contains("s1 --> s2 : flip\n"), "{text}");
+    assert!(!text.contains("reset"), "{text}");
+}
+
+/// A union named after its module is written as the module (`Util::Light` of
+/// `Util::Light.Light`), and its cases through it (`Util::Light.Red`).
+#[test]
+fn transitions_of_a_union_named_after_its_module() {
+    let source = "def advance :: Util::Light -> Util::Light = \\light ->\n    match light with\n    | Util::Light.Red -> Util::Light.Green\n    | _ -> Util::Light.Red\n";
+    let text = transitions_of(
+        "Util::Light.Light",
+        &["Red", "Green"],
+        "Main",
+        &[("advance", "Util::Light", "Util::Light")],
+        source,
+    )
+    .unwrap();
+    for edge in ["s1 --> s2 : advance", "s2 --> s1 : advance"] {
         assert!(text.contains(edge), "{edge}: {text}");
     }
 }
