@@ -951,6 +951,14 @@ fn temporary_root(files: &[(&str, &str)]) -> PathBuf {
 const BAD: &str = "def consume :: own string -> i64 = \\text -> text.length\n\ndef run :: own string -> i64 = \\text ->\n    let first = consume text\n    let second = consume text\n    first + second\n\nrun \"abc\"\n";
 const WARN: &str = "def scale :: i64 -> i64 = \\n ->\n    let spare = 1\n    n * 2\n\nscale 21\n";
 
+/// `text` with the CLI's spelling of `Main.tz` given from the root (`./Main.tz`, `.\Main.tz` on
+/// Windows, escaped in JSON) as the root-relative name that the server reports.
+fn from_root(text: &str) -> String {
+    text.replace(r".\\Main.tz", "Main.tz")
+        .replace(r".\Main.tz", "Main.tz")
+        .replace("./Main.tz", "Main.tz")
+}
+
 fn tsuzuri(cwd: &Path, arguments: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
         .current_dir(cwd)
@@ -971,9 +979,7 @@ fn tz_check_reports_the_moved_value_error() {
     let output = tsuzuri(&root, &["check", "Main.tz"]);
     let expected = format!(
         "{}\n\nFAILED: 1 error, 0 warnings in 1 file",
-        String::from_utf8_lossy(&output.stderr)
-            .trim_end()
-            .replace("./Main.tz", "Main.tz")
+        from_root(String::from_utf8_lossy(&output.stderr).trim_end())
     );
     assert_eq!(answer["result"]["content"][0]["text"], expected);
 }
@@ -1005,7 +1011,7 @@ fn tz_check_matches_check_json() {
         let output = tsuzuri(&root, &["check", "Main.tz", "--json"]);
         let mut expected: Vec<Value> = String::from_utf8_lossy(&output.stderr)
             .lines()
-            .map(|line| serde_json::from_str(&line.replace("./Main.tz", "Main.tz")).unwrap())
+            .map(|line| serde_json::from_str(&from_root(line)).unwrap())
             .collect();
         expected.retain(|row: &Value| row["severity"] != "note");
         let client = Client::project(&root);

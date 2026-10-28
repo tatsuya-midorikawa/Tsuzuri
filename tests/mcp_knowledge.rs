@@ -44,11 +44,15 @@ fn build_in_process(root: &Path) {
     .unwrap();
 }
 
+/// Copies the sources under `from`, not a `target/` that a command run there left behind.
 fn copy(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
         let path = entry.unwrap().path();
         let target = to.join(path.file_name().unwrap());
+        if path.file_name().is_some_and(|name| name == "target") {
+            continue;
+        }
         if path.is_dir() {
             copy(&path, &target);
         } else {
