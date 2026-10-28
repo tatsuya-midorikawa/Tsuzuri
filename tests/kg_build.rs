@@ -29,12 +29,16 @@ fn root(label: &str, files: &[(&str, &str)]) -> PathBuf {
     root
 }
 
-/// A copy of `tests/fixtures/kg_shop` in a fresh root.
+/// A copy of the sources of `tests/fixtures/kg_shop` in a fresh root (not the graph that a `check`
+/// of the fixture leaves in its `target/`).
 fn shop(label: &str) -> PathBuf {
     let source = repository().join("tests/fixtures/kg_shop");
     let mut files = Vec::new();
     for entry in std::fs::read_dir(&source).unwrap() {
         let path = entry.unwrap().path();
+        if !path.is_file() {
+            continue;
+        }
         let name = path.file_name().unwrap().to_str().unwrap().to_owned();
         files.push((name, std::fs::read_to_string(&path).unwrap()));
     }
@@ -517,11 +521,17 @@ fn the_output_of_commands_does_not_depend_on_the_kg() {
         let a = tsuzuri(&with, &arguments, &[]);
         let b = tsuzuri(&without, &no_kg, &[]);
         assert_eq!(a.status.code(), b.status.code(), "{arguments:?}");
+        // The compiler names the sources of a project by their canonical path, which differs
+        // from the temporary root (`/var` and `/private/var` on macOS; a short name and `\\?\` on
+        // Windows).
         let normalize = |output: &Output, root: &Path| {
-            String::from_utf8_lossy(&output.stdout)
+            let canonical = std::fs::canonicalize(root).unwrap();
+            let canonical = canonical.to_string_lossy();
+            let plain = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+            (String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr))
+                .replace(canonical.as_ref(), "<root>")
+                .replace(plain, "<root>")
                 .replace(root.to_string_lossy().as_ref(), "<root>")
-                + &String::from_utf8_lossy(&output.stderr)
-                    .replace(root.to_string_lossy().as_ref(), "<root>")
         };
         assert_eq!(
             normalize(&a, &with),

@@ -288,10 +288,7 @@ fn impact_against_a_git_revision() {
     git(&root.join("repo"), &["init", "-q"]);
     git(&root.join("repo"), &["add", "."]);
     git(&root.join("repo"), &["commit", "-q", "-m", "base"]);
-    for entry in std::fs::read_dir(repository().join("tests/fixtures/kg_shop_head")).unwrap() {
-        let path = entry.unwrap().path();
-        std::fs::copy(&path, project.join(path.file_name().unwrap())).unwrap();
-    }
+    copy("kg_shop_head", &project);
     let output = tsuzuri(&project, &["kg", "impact", "--git", "HEAD"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let text = stdout(&output);
@@ -338,10 +335,7 @@ fn impact_against_the_graph_that_the_head_replaces() {
     std::fs::write(root.join("repo/.gitignore"), "target/\n").unwrap();
     git(&root.join("repo"), &["add", "."]);
     git(&root.join("repo"), &["commit", "-q", "-m", "base"]);
-    for entry in std::fs::read_dir(repository().join("tests/fixtures/kg_shop_head")).unwrap() {
-        let path = entry.unwrap().path();
-        std::fs::copy(&path, project.join(path.file_name().unwrap())).unwrap();
-    }
+    copy("kg_shop_head", &project);
     let effect = "breaking: added effect io on Acme::Shop::Cart.line_total (reached by 4 functions and 3 tests)\n";
     let shared = root.join("shared");
     let with_shared = |arguments: &[&str]| {
@@ -473,10 +467,7 @@ fn worktree_is_removed_on_success_and_on_failure() {
     let (root, repo) = repository_with_shop("worktree");
     let project = repo.join("shop");
     let temporary = root.join("tmp");
-    for entry in std::fs::read_dir(repository().join("tests/fixtures/kg_shop_head")).unwrap() {
-        let path = entry.unwrap().path();
-        std::fs::copy(&path, project.join(path.file_name().unwrap())).unwrap();
-    }
+    copy("kg_shop_head", &project);
     let output = impact_git(&project, &temporary, &["kg", "impact", "--git", "HEAD"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(git_output(&repo, &["worktree", "list"]).lines().count(), 1);

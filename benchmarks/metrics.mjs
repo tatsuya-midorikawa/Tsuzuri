@@ -21,7 +21,7 @@ const fields = ["schema", "run_id", "commit", "dirty", "date", "mode", "host", "
   "language", "variant", "target", "opt", "cpu_mode", "metric", "phase", "unit", "samples", "median", "min", "max"];
 const hostFields = ["os", "os_version", "arch", "cpu", "cores", "clang", "rustc", "node", "tsuzuri_sha256"];
 const keyFields = ["suite", "workload", "size", "language", "variant", "target", "opt", "cpu_mode", "metric", "phase"];
-const phasePattern = /^(load|parse|check|specialize|closures|ownership|emit|split|units|cache|total|tool\.[^\u0000]+|backend\.[a-z]+)$/;
+const phasePattern = /^(load|parse|check|specialize|closures|ownership|emit|split|units|cache|total|kg-(capture|model|write|facts|brief|publish)|tool\.[^\u0000]+|backend\.[a-z]+)$/;
 const key = (record) => JSON.stringify(keyFields.map((field) => record[field]));
 const nonempty = (value) => typeof value === "string" && value.length > 0;
 const hash = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");

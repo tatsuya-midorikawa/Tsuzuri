@@ -35,10 +35,12 @@ fn root(label: &str, files: &[(String, String)]) -> PathBuf {
 
 fn shop(label: &str) -> PathBuf {
     let source = repository().join("tests/fixtures/kg_shop");
+    // Only the sources: a `check` of the fixture leaves its graph in `target/`.
     let files: Vec<(String, String)> = std::fs::read_dir(&source)
         .unwrap()
-        .map(|entry| {
-            let path = entry.unwrap().path();
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file())
+        .map(|path| {
             (
                 path.file_name().unwrap().to_string_lossy().into_owned(),
                 std::fs::read_to_string(&path).unwrap(),
