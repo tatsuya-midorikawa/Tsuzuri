@@ -229,7 +229,7 @@ def sample :: i32 -> f32
 fn sample index = (index as f32) * 0.015625 + 0.5
 
 def shapes_available :: bool
-fn shapes_available = Result.is_ok (&(Gpu.request Gpu.WebGpu))
+fn shapes_available = Result.is_ok (ref (Gpu.request Gpu.WebGpu))
 
 def shape_mismatches :: i32 -> i32
 fn shape_mismatches count = {
@@ -242,7 +242,7 @@ fn shape_mismatches count = {
     let floats = Gpu.to_array (Gpu.map_relaxed (ref reference) bump_float (Gpu.init_relaxed (ref reference) (count as i64) sample));
     let float_actual = Gpu.to_array (Gpu.map_relaxed (ref device) bump_float (Gpu.init_relaxed (ref device) (count as i64) sample));
     let mut wrong = 0;
-    for index in 0i64 .. ((count as i64) - 1) do {
+    for index in 0i64 ..= ((count as i64) - 1) do {
         if actual[index] != expected[index] then wrong = wrong + 1 else ();
         if chain_actual[index] != chained[index] then wrong = wrong + 1 else ();
         if float_actual[index] != floats[index] then wrong = wrong + 1 else ()
@@ -254,7 +254,7 @@ def shapes_sweep :: i32
 fn shapes_sweep = {
     let counts = [0, 1, 3, 255, 256, 257, 1000, 4097, 70000];
     let mut wrong = 0;
-    for position in 0i64 .. 8i64 do
+    for position in 0i64 ..= 8i64 do
         wrong = wrong + shape_mismatches counts[position];
     wrong
 }
@@ -326,7 +326,7 @@ try {
     const text = readFileSync(ir, "utf8");
     assert.match(text, /var local_\d+: i32 = param_\d+;/);
     assert.match(text, /var local_\d+: f32 = param_\d+;/);
-    assert.ok(text.includes("bitcast<i32>(161i32u)") && !text.includes("bitcast<i32>(162i32u)"));
+    assert.ok(text.includes("bitcast<i32>(161u)") && !text.includes("bitcast<i32>(162u)"));
   }
   // A relaxed call with 63 arms is refused at compile time (E1017), like `--emit wgsl-relaxed`.
   const refused63 = project("deep-relaxed", `def chain :: f32 -> f32\nfn chain value = ${arms(63, number => `${number}.0`)}0.0\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values: [f32] = [1.0]\nGpu.to_array (Gpu.map_relaxed (ref device) chain (Gpu.from_array (ref device) (ref values)))\n`);
@@ -348,13 +348,13 @@ try {
       assert.equal(result.stdout.trim(), "-1");
       assert.match(result.stderr, pattern);
     };
-    refused(mock("older", ["-DMOCK_VERSION=0x1C000000i32u"]), /wgpu-native 28\.0\.0\.0 is not supported; the runtime needs major version 29/);
-    refused(mock("newer", ["-DMOCK_VERSION=0x1E000000i32u"]), /wgpu-native 30\.0\.0\.0 is not supported/);
+    refused(mock("older", ["-DMOCK_VERSION=0x1C000000u"]), /wgpu-native 28\.0\.0\.0 is not supported; the runtime needs major version 29/);
+    refused(mock("newer", ["-DMOCK_VERSION=0x1E000000u"]), /wgpu-native 30\.0\.0\.0 is not supported/);
     refused(mock("other", ["-DMOCK_NO_VERSION"]), /the library has no wgpuGetVersion; only wgpu-native 29 is supported/);
-    refused(mock("incomplete", ["-DMOCK_VERSION=0x1D000101i32u"]), /the library lacks wgpu/);
+    refused(mock("incomplete", ["-DMOCK_VERSION=0x1D000101u"]), /the library lacks wgpu/);
     // A build from source (Homebrew's wgpu-native) reports version 0: the user vouches for it by naming it. The
     // libraries that the runtime finds by itself are not trusted that way (see the host builds below).
-    const unversioned = mock("unversioned", ["-DMOCK_VERSION=0i32u"]);
+    const unversioned = mock("unversioned", ["-DMOCK_VERSION=0u"]);
     refused(unversioned, /the library lacks wgpu/);
 
     // ---- The runtime driven directly: a C host (tests/gpu_runtime_host.c) built with src/runtime/gpu.c ---------------
@@ -425,7 +425,7 @@ try {
     mkdirSync(planted);
     const marker = join(planted, "loaded");
     const bare = `libwgpu_native.${extension}`;
-    execute(clang, ["-shared", "-fPIC", "-DMOCK_VERSION=0x1D000101i32u", "-DMOCK_MARKER", resolve("tests/gpu_runtime_mock.c"), "-o", join(planted, bare)]);
+    execute(clang, ["-shared", "-fPIC", "-DMOCK_VERSION=0x1D000101u", "-DMOCK_MARKER", resolve("tests/gpu_runtime_mock.c"), "-o", join(planted, bare)]);
     const production = compile(join(directory, "host-production"), [hostSource, runtimeSource]);
     const searching = { ...quiet, TSUZURI_WEBGPU_LIBRARY: undefined, TSUZURI_GPU_DEBUG: "1", MOCK_LOAD_MARKER: marker };
     const ignored = execute(production, ["open"], { env: searching, cwd: planted, success: false });

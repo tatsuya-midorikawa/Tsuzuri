@@ -92,7 +92,7 @@ function render(statements, indent = "    ") {
       case "array": return line(`let mut ${s.name} = new [i64](4, \\i -> i + ${s.offset})`);
       case "let": return line(`let ${s.mutable ? "mut " : ""}${s.name} = ${expression(s.value)}`);
       case "assign": return line(`${s.name} = ${expression(s.value)}`);
-      case "for": return line(`for ${s.name} in 0 .. 3 do\n`) + render(s.body, indent + "    ");
+      case "for": return line(`for ${s.name} in 0 ..= 3 do\n`) + render(s.body, indent + "    ");
       case "while": return line(`while ${expression(s.condition)} do\n`) + render(s.body, indent + "    ");
       case "jump": return line(`if ${expression(s.condition)} then ${s.kind} else ()`);
       case "closure": return line(`let ${s.name} = \\k -> ${s.array}[k % 4] + ${s.extra}`);

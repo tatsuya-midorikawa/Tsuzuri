@@ -157,7 +157,7 @@ fn wrong_${kind}_${lower} count = {
     let expected = Gpu.to_array (${map} (ref reference) ${kernel} (${init} (ref reference) (count as i64) ${maker}));
     let actual = Gpu.to_array (${map} (ref device) ${kernel} (${init} (ref device) (count as i64) ${maker}));
     let mut wrong = 0;
-    for index in 0i64 .. ((count as i64) - 1) do
+    for index in 0i64 ..= ((count as i64) - 1) do
         if ${same} then () else wrong = wrong + 1;
     wrong
 }
