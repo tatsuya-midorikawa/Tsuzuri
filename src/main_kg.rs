@@ -472,6 +472,12 @@ fn kg_verify(arguments: &KgArguments) -> Result<u8, Diagnostic> {
             .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
     };
     let (manifest, files) = tsuzuri::kg::store::read_snapshot(&dir, &|_| true).map_err(broken)?;
+    // What is verified is that publication: one that replaced the graph since `inspect` must be
+    // fresh as well.
+    match manifest::judge(&dir, &manifest, &hash, &stamp) {
+        Freshness::Fresh => {}
+        other => return Err(manifest::diagnostic(&dir, &other).expect("not fresh")),
+    }
     let data =
         KgData::from_parts(&manifest, &files).map_err(|reason| manifest::broken(&dir, &reason))?;
     if let Some(violation) = data.violation() {
@@ -513,9 +519,9 @@ fn kg_clean(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     if std::fs::symlink_metadata(&dir).is_err() {
         return Ok(EXIT_SUCCESS);
     }
-    if !tsuzuri::kg::write::has_marker(&dir) {
-        return Err(tsuzuri::kg::write::not_ours(&dir));
-    }
+    // Only a graph that the compiler wrote, and never a directory that holds the project's
+    // sources (a marker copied to the root with `--kg-dir .`).
+    tsuzuri::kg::build::protect(&dir, &project)?;
     std::fs::remove_dir_all(&dir).map_err(|error| {
         Diagnostic::of(
             DiagnosticKind::IoFailure,
@@ -551,7 +557,7 @@ fn kg_export(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     };
     let project = load_project(&path)?;
     let dir = open::directory(&project, kg_dir_of(arguments).as_deref());
-    let data = open::open_project(&project, &dir, refresh, &mut |set, project| {
+    open::open_project(&project, &dir, refresh, &mut |set, project| {
         print_diagnostics(set, project, false)
     })?;
     let wanted: &dyn Fn(&str) -> bool = match chosen[0] {
@@ -559,15 +565,18 @@ fn kg_export(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         "--edges" => &|file| file == "edges.jsonl",
         _ => &|file| file.starts_with("facts/") && file.ends_with(".jsonl"),
     };
-    // The files of one publication: the graph that was opened, or a complete one of the same
-    // sources that a writer put in its place since.
+    // The files of one publication: the graph that was opened, or one that a writer put in its
+    // place since, which must be fresh and complete as well.
     let (manifest, files) =
         tsuzuri::kg::store::read_snapshot(&dir, wanted).map_err(|freshness| {
             manifest::diagnostic(&dir, &freshness)
                 .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
         })?;
-    if !manifest.complete || manifest.source_hash != data.meta.source_hash {
-        return Err(manifest::broken(&dir, "it changed while it was read"));
+    let hash = tsuzuri::kg::input::hex(&tsuzuri::kg::input::source_hash(&project));
+    let stamp = tsuzuri::kg::build::current_stamp()?;
+    match manifest::judge(&dir, &manifest, &hash, &stamp) {
+        Freshness::Fresh => {}
+        other => return Err(manifest::diagnostic(&dir, &other).expect("not fresh")),
     }
     let mut out = io::stdout().lock();
     for bytes in files.0.values() {
