@@ -226,7 +226,12 @@ pub fn resolve_one(view: &KgView, text: &str, modules: bool) -> Result<String, Q
 }
 
 /// A list: header lines and the summary always stay; items are dropped from the end.
-fn listing(header: &[String], items: Vec<String>, footer: &[String], limit: usize) -> String {
+pub(crate) fn listing(
+    header: &[String],
+    items: Vec<String>,
+    footer: &[String],
+    limit: usize,
+) -> String {
     let mut card = Card::new(limit, "\n");
     card.block(
         None,

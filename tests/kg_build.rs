@@ -327,6 +327,129 @@ fn a_failed_analysis_writes_an_incomplete_kg() {
     assert_eq!(stamps(&kg), before);
 }
 
+/// `kg build` of a graph that is incomplete and unchanged reports it so, and fails again.
+#[test]
+fn an_unchanged_incomplete_kg_stays_a_failure() {
+    let root = root("incomplete-again", &[("Main.tz", BROKEN)]);
+    let build = || tsuzuri(&root, &["kg", "build", "--json"], &[]);
+    let first = build();
+    assert_eq!(first.status.code(), Some(1));
+    let second = build();
+    assert_eq!(second.status.code(), Some(1), "{}", stderr(&second));
+    assert_eq!(
+        String::from_utf8_lossy(&second.stdout),
+        "{\"type\":\"kg_build\",\"status\":\"incomplete\",\"dir\":\"target/tz/kg\",\"files\":0,\"complete\":false}\n"
+    );
+    let text = tsuzuri(&root, &["kg", "build"], &[]);
+    assert_eq!(text.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&text.stdout),
+        "kg: incomplete, 1 errors (target/tz/kg)\n"
+    );
+}
+
+/// A library without `Main.tz` keeps its graph in its own directory, under its own name, although
+/// a dependency's source and manifest sort first.
+#[test]
+fn a_library_keeps_its_own_directory_and_name() {
+    let root = root(
+        "library",
+        &[
+            (
+                "zoo/Tsuzuri.toml",
+                "[package]\nname = \"zoo\"\nversion = \"1.2.0\"\n[dependencies]\nalpha = { path = \"../alpha\" }\n",
+            ),
+            (
+                "zoo/Lib.tz",
+                "def twice :: i64 -> i64 = \\n -> Alpha::Util.inc (Alpha::Util.inc n)\n",
+            ),
+            (
+                "alpha/Tsuzuri.toml",
+                "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n",
+            ),
+            ("alpha/Util.tz", "def inc :: i64 -> i64 = \\n -> n + 1\n"),
+        ],
+    );
+    let output = tsuzuri(&root.join("zoo"), &["kg", "build"], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let kg = root.join("zoo/target/tz/kg");
+    assert_eq!(manifest(&kg)["project"], "zoo");
+    assert_eq!(manifest(&kg)["version"], "1.2.0");
+    assert!(!root.join("alpha/target").exists());
+}
+
+/// Without a manifest the directory's name is the namespace, so renaming the directory makes the
+/// graph stale.
+#[test]
+fn renaming_a_project_without_a_manifest_makes_the_kg_stale() {
+    let root = root(
+        "rename",
+        &[("foo/Main.tz", "def answer :: unit -> i64 = \\() -> 42\n")],
+    );
+    let output = tsuzuri(&root.join("foo"), &["kg", "build"], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let nodes = std::fs::read_to_string(root.join("foo/target/tz/kg/nodes.jsonl")).unwrap();
+    assert!(nodes.contains("\"Foo::Main.answer\""), "{nodes}");
+    std::fs::rename(root.join("foo"), root.join("bar")).unwrap();
+    let output = tsuzuri(&root.join("bar"), &["kg", "verify"], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("is stale (sources changed)"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// A reader takes only files that the manifest lists, with their digests: a missing or changed
+/// file breaks the graph instead of shrinking it.
+#[test]
+fn listed_files_must_be_there_and_match() {
+    let root = shop("listed");
+    assert!(tsuzuri(&root, &["kg", "build"], &[]).status.success());
+    let kg = root.join("target/tz/kg");
+    let export = |flag: &str| tsuzuri(&root, &["kg", "export", flag, "--no-refresh"], &[]);
+    let facts: Vec<String> = manifest(&kg)["files"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|path| path.starts_with("facts/"))
+        .cloned()
+        .collect();
+    assert!(export("--facts").status.success());
+    std::fs::remove_file(kg.join(&facts[0])).unwrap();
+    let output = export("--facts");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains(&format!("is broken ({} cannot be read)", facts[0])),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        tsuzuri(&root, &["kg", "build", "--force"], &[])
+            .status
+            .success()
+    );
+    let edges = std::fs::read(kg.join("edges.jsonl")).unwrap();
+    std::fs::write(kg.join("edges.jsonl"), &edges[1..]).unwrap();
+    let output = export("--edges");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("is broken (edges.jsonl does not match manifest.json)"),
+        "{}",
+        stderr(&output)
+    );
+    // `--edges` reads `nodes.jsonl` too, through the graph it opens.
+    std::fs::write(kg.join("edges.jsonl"), &edges).unwrap();
+    std::fs::remove_file(kg.join("nodes.jsonl")).unwrap();
+    let output = export("--edges");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("is broken (nodes.jsonl cannot be read)"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 #[test]
 fn the_kg_is_identical_in_two_directories_and_thread_counts() {
     let first = shop("same-1");

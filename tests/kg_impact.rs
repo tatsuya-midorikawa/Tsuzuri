@@ -42,6 +42,26 @@ fn tsuzuri(cwd: &Path, arguments: &[&str]) -> Output {
         .unwrap()
 }
 
+/// Removes the files of the graph at `dir` whose paths start with `prefix`, with their entries in
+/// `manifest.json`: a graph without that table, not a broken one.
+fn without(dir: &Path, prefix: &str) {
+    let path = dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let files = manifest["files"].as_object_mut().unwrap();
+    let removed: Vec<String> = files
+        .keys()
+        .filter(|file| file.starts_with(prefix))
+        .cloned()
+        .collect();
+    assert!(!removed.is_empty(), "{prefix}");
+    for file in &removed {
+        files.remove(file);
+        std::fs::remove_file(dir.join(file)).unwrap();
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -185,7 +205,7 @@ fn another_compiler_or_no_edges_runs_every_test() {
     );
     let bare = root.join("bare");
     copy_tree(&root.join("head/target/tz/kg"), &bare);
-    std::fs::remove_file(bare.join("edges.jsonl")).unwrap();
+    without(&bare, "edges.jsonl");
     let output = tsuzuri(
         &root,
         &[
@@ -303,6 +323,55 @@ fn impact_against_a_git_revision() {
         assert_eq!(output.status.code(), Some(code), "{revision}");
         assert!(stderr(&output).contains(message), "{}", stderr(&output));
     }
+}
+
+/// The head's graph may be where the base's is: the base is read in full before the head's graph
+/// replaces it (`--from` the project's own graph, and `--git` or `test --affected` with
+/// `TSUZURI_KG_DIR`, which names only the working tree's graph).
+#[test]
+fn impact_against_the_graph_that_the_head_replaces() {
+    let root = fresh("same-dir");
+    let project = root.join("repo/shop");
+    copy("kg_shop", &project);
+    assert!(tsuzuri(&project, &["kg", "build"]).status.success());
+    git(&root.join("repo"), &["init", "-q"]);
+    std::fs::write(root.join("repo/.gitignore"), "target/\n").unwrap();
+    git(&root.join("repo"), &["add", "."]);
+    git(&root.join("repo"), &["commit", "-q", "-m", "base"]);
+    for entry in std::fs::read_dir(repository().join("tests/fixtures/kg_shop_head")).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, project.join(path.file_name().unwrap())).unwrap();
+    }
+    let effect = "breaking: added effect io on Acme::Shop::Cart.line_total (reached by 4 functions and 3 tests)\n";
+    let shared = root.join("shared");
+    let with_shared = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&project)
+            .args(arguments)
+            .env_remove("TSUZURI_KG")
+            .env("TSUZURI_KG_DIR", &shared)
+            .output()
+            .unwrap()
+    };
+    let output = with_shared(&["kg", "impact", "--git", "HEAD"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).contains(effect), "{}", stdout(&output));
+    let output = with_shared(&["test", ".", "--affected", "HEAD"]);
+    assert!(
+        stdout(&output).contains("affected: 3 of 3 tests (HEAD)"),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    // The graph that the head refreshes is the base.
+    let output = tsuzuri(&project, &["kg", "impact", "--from", "target/tz/kg"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.starts_with("impact: target/tz/kg -> working tree\n"),
+        "{text}"
+    );
+    assert!(text.contains(effect), "{text}");
 }
 
 #[test]
