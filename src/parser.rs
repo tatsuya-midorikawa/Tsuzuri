@@ -4,6 +4,23 @@ use crate::syntax::*;
 
 /// An effect attribute before a declaration: its kind and the span of `@` and its name (A20).
 type EffectMark = (EffectKind, Span);
+
+/// The attributes before a top-level declaration (D-53).
+#[derive(Default)]
+struct Attributes {
+    cpu: Option<u8>,
+    effects: Vec<EffectMark>,
+    trusted: Option<TrustedMark>,
+}
+
+/// A `@trusted` attribute as read: its properties, its whole span, the span of its `@` and the
+/// span of its first property.
+struct TrustedMark {
+    properties: u8,
+    span: Span,
+    at: Span,
+    first: Option<Span>,
+}
 use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "parse_control.rs"]
@@ -432,6 +449,7 @@ impl Parser<'_> {
             dyn_types: Vec::new(),
             cpu_attributes: Vec::new(),
             effect_attributes: Vec::new(),
+            trusted: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
         };
@@ -489,9 +507,22 @@ impl Parser<'_> {
                     program.aliases.push(alias);
                     return Ok(());
                 }
-                let (cpu, effects) = self.attributes()?;
+                let Attributes {
+                    cpu,
+                    effects,
+                    trusted,
+                } = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
+                if let Some(mark) = &trusted
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::TrustedWrongTarget,
+                        "'@trusted' applies to an extern declaration; remove it or declare the function with 'extern'",
+                        mark.span,
+                    ));
+                }
                 if let Some(&(kind, span)) = effects.first() {
                     let after_export = self.position + usize::from(self.at(&TokenKind::Export));
                     let modifier = self.tokens.get(after_export).is_some_and(|token| {
@@ -576,8 +607,31 @@ impl Parser<'_> {
                 match self.extern_declaration(doc, visibility, column, &|name| {
                     defined_names.contains(name) || signatures.contains_key(name)
                 })? {
-                    ExternDeclaration::Type(declaration) => program.extern_types.push(declaration),
+                    ExternDeclaration::Type(declaration) => {
+                        if let Some(mark) = trusted {
+                            if let Some(first) = mark.first {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::TrustedTypeProperty,
+                                    "'@trusted' on an extern type takes no properties; write '@trusted' alone",
+                                    first,
+                                ));
+                            }
+                            program.trusted.push(TrustedAttribute {
+                                target: declaration.name.clone(),
+                                properties: 0,
+                                span: mark.span,
+                            });
+                        }
+                        program.extern_types.push(declaration)
+                    }
                     ExternDeclaration::Function(signature) => {
+                        if let Some(mark) = trusted {
+                            program.trusted.push(TrustedAttribute {
+                                target: signature.name.clone(),
+                                properties: mark.properties,
+                                span: mark.span,
+                            });
+                        }
                         defined_names.insert(signature.name.text.clone());
                         program.externs.push(signature);
                     }
@@ -1100,15 +1154,15 @@ impl Parser<'_> {
         Ok(())
     }
 
-    /// The attributes before a top-level declaration, in any order (D-53): `@cpu [...]` and the
-    /// effect attributes `@no_alloc`, `@no_copy`, `@no_trap` and `@terminates` (A20), each once.
-    /// The effect attributes come back in source order with the span of their `@` and name.
-    fn attributes(&mut self) -> Result<(Option<u8>, Vec<EffectMark>), Diagnostic> {
-        let mut cpu = None;
-        let mut effects: Vec<EffectMark> = Vec::new();
+    /// The attributes before a top-level declaration, in any order (D-53): `@cpu [...]`, the
+    /// effect attributes `@no_alloc`, `@no_copy`, `@no_trap` and `@terminates` (A20) and
+    /// `@trusted` (E15), each once. The effect attributes come back in source order with the
+    /// span of their `@` and name.
+    fn attributes(&mut self) -> Result<Attributes, Diagnostic> {
+        let mut attributes = Attributes::default();
         loop {
             if let Some((kind, span)) = self.effect_attribute_ahead() {
-                if effects.iter().any(|(seen, _)| *seen == kind) {
+                if attributes.effects.iter().any(|(seen, _)| *seen == kind) {
                     return Err(Diagnostic::of(
                         DiagnosticKind::EffectAttributeDuplicate,
                         format!("'@{}' is written twice; remove one", kind.name()),
@@ -1117,15 +1171,72 @@ impl Parser<'_> {
                 }
                 self.take();
                 self.take();
-                effects.push((kind, span));
-            } else if cpu.is_none()
+                attributes.effects.push((kind, span));
+            } else if let Some(trusted) = self.trusted_attribute()? {
+                if attributes.trusted.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::TrustedRepeated,
+                        "'@trusted' appears twice on one declaration; remove one",
+                        trusted.at,
+                    ));
+                }
+                attributes.trusted = Some(trusted);
+            } else if attributes.cpu.is_none()
                 && let Some(levels) = self.cpu_attribute()?
             {
-                cpu = Some(levels);
+                attributes.cpu = Some(levels);
             } else {
-                return Ok((cpu, effects));
+                return Ok(attributes);
             }
         }
+    }
+
+    /// `@trusted` and the properties on its line, before an extern declaration (E15).
+    fn trusted_attribute(&mut self) -> Result<Option<TrustedMark>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "trusted"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let mut span = at.through(self.take().span);
+        let mut properties = 0u8;
+        let mut first = None;
+        while !self.newline_before_current()
+            && let TokenKind::Ident(name) = &self.current().kind
+        {
+            let property = self.current().span;
+            let Some(bit) = crate::syntax::trusted_property_bit(name) else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TrustedUnknownProperty,
+                    format!(
+                        "unknown '@trusted' property '{name}'; use pure, no_alloc, no_copy, no_trap, or terminates"
+                    ),
+                    property,
+                ));
+            };
+            if properties & bit != 0 {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TrustedDuplicateProperty,
+                    format!("'@trusted' lists '{name}' twice; remove one"),
+                    property,
+                ));
+            }
+            properties |= bit;
+            first.get_or_insert(property);
+            span = span.through(property);
+            self.take();
+        }
+        Ok(Some(TrustedMark {
+            properties,
+            span,
+            at,
+            first,
+        }))
     }
 
     /// The effect attribute that starts at the current token, with the span of `@` and its name.
@@ -1884,7 +1995,7 @@ impl Parser<'_> {
                 && (self.effect_attribute_ahead().is_some()
                     || matches!(
                         self.tokens.get(self.position + 1).map(|token| &token.kind),
-                        Some(TokenKind::Ident(name)) if name == "cpu"
+                        Some(TokenKind::Ident(name)) if name == "cpu" || name == "trusted"
                     ))
             {
                 break;

@@ -2,6 +2,7 @@
 // header: main.h sha256=<sha256>
 // clang: <clang>
 // target: <target>
+// Review each extern declaration and add '@trusted' once you have checked its contract; bindgen never adds it.
 
 extern "a" def a :: unit -> i32
 const IN_MAIN: i32 = 2

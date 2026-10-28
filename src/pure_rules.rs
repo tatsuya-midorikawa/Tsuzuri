@@ -740,8 +740,17 @@ impl<'a> Scanner<'a> {
             })
             .map(|parameter| parameter.id)
             .collect();
-        let scanned =
-            self.scan_body(vec![&function.body], BTreeMap::new(), trusted, effect, None)?;
+        // E15: an extern function marked `@trusted pure` is as pure as a `pure def`.
+        let vouched = matches!(function.body.kind, TypedExprKind::HostCall(..))
+            && function.origin.trusted.is_some_and(|bits| {
+                crate::syntax::trusted_property_bit("pure").is_some_and(|pure| bits & pure != 0)
+            });
+        let body = if vouched {
+            Vec::new()
+        } else {
+            vec![&function.body]
+        };
+        let scanned = self.scan_body(body, BTreeMap::new(), trusted, effect, None)?;
         self.scanned.insert(id, scanned);
         Ok(())
     }

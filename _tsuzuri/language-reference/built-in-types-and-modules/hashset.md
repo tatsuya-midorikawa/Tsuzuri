@@ -2,6 +2,8 @@
 
 `HashSet<K>` は、オープンアドレス法ハッシュテーブルに基づく高速な集合コンテナです。平均 **$O(1)$** の計算量で要素の包含判定・追加・削除を行えます。
 
+必要な権限: `random`（`HashSet.randomized`・`HashSet.try_randomized` だけ）。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+
 要素の重複を排除したい場合や、高速な存在判定（`contains`）が主たる目的であり順序が不要な場合に最適です。要素の整列順序や集合演算（`union`, `intersect`, `difference`）が必要な場合は [Set](./set.md) を使用してください。
 
 ## この記事のポイント

@@ -18,13 +18,14 @@
 
 ## どのサブコマンドが受け付けるか
 
-`lsp` は引数を取りません。`mcp` は `--root DIR` と `--kg-dir DIR`（それぞれ 1 回）だけを受け付け、ほかの引数は `E2000` です（[MCP サーバー](mcp.md)）。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`watch` は、次の語（`check`・`build`・`test`）の列と同じオプションを受け付けます。`watch` 自体のオプションはなく、それ以外のコマンドは `E2000` です。`serve` はプロジェクトのディレクトリ 1 つと `--idle-timeout SECONDS`（1〜86400）、または `--status` か `--stop` とディレクトリ 1 つだけを受け付けます（`--status` と `--stop` は同時に使えず、`--idle-timeout` とも組み合わせられません）。`api-diff` は古い版と新しい版の入力 2 つと、`--json`・`--effective` だけを受け付けます。`prove` はプロジェクト 1 つ（省略時はカレントディレクトリ）と、`--function NAME`（繰り返し可）、`--prove-timeout SECONDS`（1〜3600）、`--json` だけを受け付けます。`--effective` は依存込みで型検査して解決後の契約を比較します。既定は構文比較です。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
+`lsp` は引数を取りません。`mcp` は `--root DIR` と `--kg-dir DIR`（それぞれ 1 回）だけを受け付け、ほかの引数は `E2000` です（[MCP サーバー](mcp.md)）。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`watch` は、次の語（`check`・`build`・`test`）の列と同じオプションを受け付けます。`watch` 自体のオプションはなく、それ以外のコマンドは `E2000` です。`serve` はプロジェクトのディレクトリ 1 つと `--idle-timeout SECONDS`（1〜86400）、または `--status` か `--stop` とディレクトリ 1 つだけを受け付けます（`--status` と `--stop` は同時に使えず、`--idle-timeout` とも組み合わせられません）。`api-diff` は古い版と新しい版の入力 2 つと、`--json`・`--effective` だけを受け付けます。`prove` はプロジェクト 1 つ（省略時はカレントディレクトリ）と、`--function NAME`（繰り返し可）、`--prove-timeout SECONDS`（1〜3600）、`--json` だけを受け付けます。`audit` はプロジェクト 1 つ（省略時はカレントディレクトリ）と、`--json`・`--deny-warnings`（それぞれ 1 回）だけを受け付けます。`--effective` は依存込みで型検査して解決後の契約を比較します。既定は構文比較です。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
 
 | オプション | check | build | run | test | bench | doc | fmt | repl | script |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `--json` | ○ | ○ | ○ | ○ | ○ | ○ | ○ | | ○ |
 | `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
 | `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
+| `--warn untrusted-extern` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
 | `--contracts off\|check\|test\|prove` | ○（`prove` だけ） | ○（`test` を除く） | ○（`test` を除く） | ○ | | | | | ○（`test` を除く） |
 | `--prove-timeout SECONDS` / `--function NAME` | ○ | ○ | ○ | ○ | | | | | |
 | `-o` / `--output` | | ○ | | ○（`-g` と） | | ○（必須） | | | |
@@ -362,6 +363,7 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--json` | オフ | 診断を stderr の 1 行 1 JSON にする |
 | `--deny-warnings` | オフ | 警告があれば、コード生成や実行の前に終了コード 1 |
 | `--warn implicit-copy` | オフ | 配列とリストの暗黙コピー `W1006` を出す。生成コードは変わらない |
+| `--warn untrusted-extern` | オフ | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出す。生成コードは変わらない |
 | `--contracts off\|check\|test\|prove` | `build` は `off`、`run`・`test`・`script` は `check` | 契約の行（`@requires`・`@ensures`）の使い方。`off` は検査コードを出さない、`check` は偽ならトラップ、`test` は性質テストも作る（`test` だけ）、`prove` は先に SMT ソルバーで証明してから `check` として続ける（[契約](../values-and-functions/contracts.md)） |
 | `--prove-timeout SECONDS` | 10 | `--contracts prove` と `prove` で、問い 1 つあたりのソルバーの時間（1〜3600） |
 | `--function NAME` | すべて | `--contracts prove` と `prove` で、証明する関数（`Module.name`。繰り返し可） |

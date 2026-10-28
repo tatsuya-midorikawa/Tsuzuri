@@ -64,6 +64,7 @@ diagnostic_kinds! {
         (DefinitionWithoutSignature, "definition_without_signature", "E0002"),
         (DoBangOutsideTask, "do_bang_outside_task", "E0002"),
         (DuplicateBuilderAlias, "duplicate_builder_alias", "E0002"),
+        (DuplicateCapability, "duplicate_capability", "E0002"),
         (DuplicateCpuTarget, "duplicate_cpu_target", "E0002"),
         (DuplicateJsonAttribute, "duplicate_json_attribute", "E0002"),
         (DuplicateManifestKey, "duplicate_manifest_key", "E0002"),
@@ -97,6 +98,7 @@ diagnostic_kinds! {
         (HeaderPathOnSameLine, "header_path_on_same_line", "E0002"),
         (HeaderPathSpacing, "header_path_spacing", "E0002"),
         (IntegerLiteralTooLarge, "integer_literal_too_large", "E0002"),
+        (InvalidCapabilities, "invalid_capabilities", "E0002"),
         (InvalidDependencyForm, "invalid_dependency_form", "E0002"),
         (InvalidDependencyNativeFlag, "invalid_dependency_native_flag", "E0002"),
         (InvalidDependencyPath, "invalid_dependency_path", "E0002"),
@@ -130,6 +132,7 @@ diagnostic_kinds! {
         (MisplacedNamespaceDeclaration, "misplaced_namespace_declaration", "E0002"),
         (MisplacedRegionList, "misplaced_region_list", "E0002"),
         (MisplacedUsingDeclaration, "misplaced_using_declaration", "E0002"),
+        (MissingCapabilitiesAllow, "missing_capabilities_allow", "E0002"),
         (MissingPackageField, "missing_package_field", "E0002"),
         (MissingRegistryIndex, "missing_registry_index", "E0002"),
         (ModuleDeclarationUnsupported, "module_declaration_unsupported", "E0002"),
@@ -160,6 +163,7 @@ diagnostic_kinds! {
         (TooManyTypeArguments, "too_many_type_arguments", "E0002"),
         (TypeParametersNeedAngleBrackets, "type_parameters_need_angle_brackets", "E0002"),
         (TypedAndNeedsBody, "typed_and_needs_body", "E0002"),
+        (UnknownCapability, "unknown_capability", "E0002"),
         (UnknownCpuTarget, "unknown_cpu_target", "E0002"),
         (UnknownManifestKey, "unknown_manifest_key", "E0002"),
         (UnsupportedEdition, "unsupported_edition", "E0002"),
@@ -436,6 +440,7 @@ diagnostic_kinds! {
         (UnknownTypeClass, "unknown_type_class", "E1016"),
         // E1017
         (AndGroupTooLarge, "and_group_too_large", "E1017"),
+        (CapabilityAnalysisLimit, "capability_analysis_limit", "E1017"),
         (ClassConstraintLimit, "class_constraint_limit", "E1017"),
         (ContractLineLimit, "contract_line_limit", "E1017"),
         (DerivingExpressionLimit, "deriving_expression_limit", "E1017"),
@@ -636,8 +641,17 @@ diagnostic_kinds! {
         (ProveSolverMissing, "prove_solver_missing", "E1034"),
         (ProveUnknown, "prove_unknown", "E1034"),
         (ProveUnsupported, "prove_unsupported", "E1034"),
+        // E1036
+        (CapabilityDenied, "capability_denied", "E1036"),
+        // E1037
+        (TrustedDuplicateProperty, "trusted_duplicate_property", "E1037"),
+        (TrustedRepeated, "trusted_repeated", "E1037"),
+        (TrustedTypeProperty, "trusted_type_property", "E1037"),
+        (TrustedUnknownProperty, "trusted_unknown_property", "E1037"),
+        (TrustedWrongTarget, "trusted_wrong_target", "E1037"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
+        (AuditUsage, "audit_usage", "E2000"),
         (BindgenAnnotationError, "bindgen_annotation_error", "E2000"),
         (BindgenArgumentError, "bindgen_argument_error", "E2000"),
         (CannotDeriveNamespace, "cannot_derive_namespace", "E2000"),
@@ -838,6 +852,8 @@ diagnostic_kinds! {
         (ContractAlwaysTrue, "contract_always_true", "W1009"),
         (ContractResultUnused, "contract_result_unused", "W1009"),
         (ContractTestSkipped, "contract_test_skipped", "W1009"),
+        // W1010
+        (UntrustedExtern, "untrusted_extern", "W1010"),
         // W2001
         (ToolNotice, "tool_notice", "W2001"),
         // W2002

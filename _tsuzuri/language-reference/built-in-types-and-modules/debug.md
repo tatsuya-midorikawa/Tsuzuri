@@ -2,6 +2,8 @@
 
 `Debug` は、開発中に値を見るための小さなモジュールです。標準エラーへ、`Display` の文字列と改行を出します。ログの枠組みではなく、標準出力の結果とは混ぜないための出口です。
 
+必要な権限: `stdio`（`Debug.print`・`Debug.trace`）。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+
 ## この記事のポイント
 
 - `print` は共有借用して表示します。所有権は呼び出し元に残ります。

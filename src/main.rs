@@ -67,6 +67,8 @@ Usage:
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--effective] [--json]
+  tsuzuri audit [PATH] [--json] [--deny-warnings]
+                             Report the capabilities and extern functions of each package
   tsuzuri prove [source.tz|directory] [--function NAME]... [--prove-timeout SECONDS] [--json]
                              Prove the contract lines with an SMT solver (z3 or cvc5, TSUZURI_SMT)
   tsuzuri kg build [PATH] [--kg-dir DIR] [--force] [--json] | kg build --std [--force] [--json]
@@ -172,6 +174,13 @@ locked dependencies, fully checks both versions, and compares resolved aliases, 
 callable purity and region contracts; an analysis error never falls back to syntax comparison.
 Exit status 1 means a breaking change or an analysis error; with --json each change and the
 final summary is one JSON object per line.
+`tsuzuri audit [PATH]` checks the project like `check` and reports, per package, the capabilities
+(env ffi fs gpu net process random stdio time) that its code uses through std and extern
+functions, what the manifests' [capabilities] allow, and whether each extern function is marked
+'@trusted'. E1036 (a denied use) and W1010 (an unmarked extern function) go to standard error.
+Exit status 1 means a denied use, a W1010 under --deny-warnings, or a project that does not
+compile; with --json the report is JSON Lines (tz-audit/1). The check is static and is not a
+run-time sandbox: a package allowed ffi can call any C code.
 `tsuzuri fix PATH` applies the fixes that diagnostics carry: `certain` ones by default, and `likely`
 ones too with --applicability likely. It checks the project again after each round and writes nothing
 when the fixes would add a diagnostic; --dry-run prints the unified diff instead of writing.
@@ -268,6 +277,8 @@ Build options:
                             MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings
     --warn implicit-copy   Report W1006 at implicit copies of arrays and lists
+    --warn untrusted-extern
+                         Report W1010 at extern functions that are used but not marked '@trusted'
     --contracts off|check|test|prove
                          How build, run, test, and check use @requires and @ensures lines: off emits
                          no checks (build default), check traps when one is false (run and test
@@ -385,6 +396,8 @@ struct Arguments {
     json: bool,
     deny_warnings: bool,
     warn_implicit_copy: bool,
+    /// E15: report W1010 at the root package's used extern functions without `@trusted`.
+    warn_untrusted_extern: bool,
     format_check: bool,
     test_filter: Option<String>,
     test_list: bool,
@@ -435,6 +448,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             json: false,
             deny_warnings: false,
             warn_implicit_copy: false,
+            warn_untrusted_extern: false,
             format_check: false,
             test_filter: None,
             test_list: false,
@@ -493,6 +507,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut json = false;
     let mut deny_warnings = false;
     let mut warn_implicit_copy = false;
+    let mut warn_untrusted_extern = false;
     let mut format_check = false;
     let mut test_filter = None;
     let mut test_list = false;
@@ -624,29 +639,34 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                     continue;
                 }
                 Some("--warn") => {
+                    let supported = WARNINGS.join(", ");
                     let Some(name) = arguments.get(position) else {
                         return Err(command_line_error(
                             DiagnosticKind::OptionMissingValue,
-                            "--warn requires a warning name; supported: implicit-copy",
+                            format!("--warn requires a warning name; supported: {supported}"),
                         ));
                     };
                     position += 1;
-                    if name != "implicit-copy" {
-                        return Err(command_line_error(
-                            DiagnosticKind::OptionInvalidValue,
-                            format!(
-                                "unknown warning '{}' for --warn; supported: implicit-copy",
-                                name.to_string_lossy()
-                            ),
-                        ));
-                    }
-                    if warn_implicit_copy {
+                    let flag = match name.to_str() {
+                        Some("implicit-copy") => &mut warn_implicit_copy,
+                        Some("untrusted-extern") => &mut warn_untrusted_extern,
+                        _ => {
+                            return Err(command_line_error(
+                                DiagnosticKind::OptionInvalidValue,
+                                format!(
+                                    "unknown warning '{}' for --warn; supported: {supported}",
+                                    name.to_string_lossy()
+                                ),
+                            ));
+                        }
+                    };
+                    if *flag {
                         return Err(command_line_error(
                             DiagnosticKind::DuplicateOption,
-                            "warn implicit-copy specified more than once",
+                            format!("warn {} specified more than once", name.to_string_lossy()),
                         ));
                     }
-                    warn_implicit_copy = true;
+                    *flag = true;
                     continue;
                 }
                 Some("--check") => {
@@ -1335,7 +1355,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         ));
     }
     if action == Action::Fmt
-        && (optimization.is_some() || cpu.is_some() || deny_warnings || warn_implicit_copy)
+        && (optimization.is_some()
+            || cpu.is_some()
+            || deny_warnings
+            || warn_implicit_copy
+            || warn_untrusted_extern)
     {
         return Err(command_line_error(
             DiagnosticKind::OptionInvalidForCommand,
@@ -1614,6 +1638,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         json,
         deny_warnings,
         warn_implicit_copy,
+        warn_untrusted_extern,
         format_check,
         test_filter,
         test_list,
@@ -2817,6 +2842,123 @@ fn prove_command(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// The arguments of `tsuzuri audit` (E15).
+#[derive(Debug, PartialEq, Eq)]
+struct AuditArguments {
+    path: PathBuf,
+    json: bool,
+    deny_warnings: bool,
+}
+
+/// The names that `--warn` takes, in the fixed order of D-55: `implicit-copy`, `canonical` (A22),
+/// `untrusted-extern` (E15), each once it is implemented.
+const WARNINGS: [&str; 2] = ["implicit-copy", "untrusted-extern"];
+
+const AUDIT_USAGE: &str = "usage: tsuzuri audit [PATH] [--json] [--deny-warnings]";
+
+/// `tsuzuri audit [PATH] [--json] [--deny-warnings]`; `None` for a usage error.
+fn parse_audit_arguments(arguments: &[OsString]) -> Option<AuditArguments> {
+    let mut parsed = AuditArguments {
+        path: PathBuf::from("."),
+        json: false,
+        deny_warnings: false,
+    };
+    let mut path = None;
+    let mut paths_only = false;
+    for argument in arguments {
+        match argument.to_str() {
+            Some("--") if !paths_only => paths_only = true,
+            Some("--json") if !paths_only => {
+                if std::mem::replace(&mut parsed.json, true) {
+                    return None;
+                }
+            }
+            Some("--deny-warnings") if !paths_only => {
+                if std::mem::replace(&mut parsed.deny_warnings, true) {
+                    return None;
+                }
+            }
+            _ if !paths_only && argument.to_string_lossy().starts_with('-') => return None,
+            _ => {
+                if path.replace(PathBuf::from(argument)).is_some() {
+                    return None;
+                }
+            }
+        }
+    }
+    if let Some(path) = path {
+        parsed.path = path;
+    }
+    Some(parsed)
+}
+
+/// `tsuzuri audit` (E15): the capabilities and extern functions of each package of the project,
+/// on standard output; `E1036` and `W1010` on standard error. The exit status is 1 for a denied
+/// use, an untrusted extern function under `--deny-warnings` or a project that does not compile,
+/// and 2 for a usage error.
+fn audit_command(arguments: &[OsString]) -> ExitCode {
+    let Some(arguments) = parse_audit_arguments(arguments) else {
+        let json = arguments.iter().any(|argument| argument == "--json");
+        print_diagnostic(
+            &command_line_error(DiagnosticKind::AuditUsage, AUDIT_USAGE),
+            Path::new("<command line>"),
+            "",
+            json,
+        );
+        return ExitCode::from(2);
+    };
+    let json = arguments.json;
+    let project = match Project::load(&arguments.path) {
+        Ok(project) => project,
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            return ExitCode::FAILURE;
+        }
+    };
+    let module = match project.analyze_cached(true, driver::AnalysisKind::Program) {
+        Ok(module) => module,
+        Err(errors) => {
+            print_diagnostics(&errors, &project, json);
+            return ExitCode::FAILURE;
+        }
+    };
+    // Without a manifest the root package is named after its directory, or after the file.
+    let name = if arguments.path.is_dir() {
+        std::fs::canonicalize(&arguments.path)
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_default()
+    } else {
+        arguments
+            .path
+            .file_stem()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let (report, diagnostics) = match project.audit(&module, &name) {
+        Ok(audit) => audit,
+        Err(error) => {
+            let source = project.source_for(&error);
+            print_diagnostic(&error, &source.path, &source.text, json);
+            return ExitCode::FAILURE;
+        }
+    };
+    print!(
+        "{}",
+        if json {
+            report.render_json(arguments.deny_warnings)
+        } else {
+            report.render_text()
+        }
+    );
+    let set = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(diagnostics, 0);
+    print_diagnostics(&set, &project, json);
+    ExitCode::from(report.exit_code(arguments.deny_warnings) as u8)
+}
+
 fn api_diff_command(arguments: &[OsString]) -> ExitCode {
     let mut json = false;
     let mut effective = false;
@@ -3436,6 +3578,9 @@ fn main() -> ExitCode {
     if raw.first().is_some_and(|command| *command == "prove") {
         return prove_command(&raw[1..]);
     }
+    if raw.first().is_some_and(|command| *command == "audit") {
+        return audit_command(&raw[1..]);
+    }
     if raw.first().is_some_and(|command| *command == "mcp") {
         return mcp_command(&raw[1..]);
     }
@@ -3637,6 +3782,22 @@ fn cli(
             return EXIT_FAILURE;
         }
     };
+    // E15: an enforced `[capabilities]` policy stops the command before code generation.
+    if arguments.action != Action::Doc {
+        let denied = match project.check_capabilities(&module) {
+            Ok(denied) => denied,
+            Err(error) => vec![error],
+        };
+        if !denied.is_empty() {
+            let set = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(denied, 0);
+            write_diagnostics(err, &set, &project, arguments.json);
+            if let Some(pending) = pending {
+                kg_notice = tsuzuri::kg::build::complete(pending, &project, Ok(&module));
+            }
+            write_messages(err, kg_notice.as_slice(), arguments.json);
+            return EXIT_FAILURE;
+        }
+    }
     // A21: `--contracts prove` proves the contracts first, then goes on as `check`.
     if arguments.contract_mode() == ContractMode::Prove
         && !run_prove(
@@ -3661,8 +3822,25 @@ fn cli(
     } else {
         Vec::new()
     };
+    let untrusted = if arguments.warn_untrusted_extern {
+        match project.untrusted_extern_warnings(&module) {
+            Ok(warnings) => warnings,
+            Err(error) => {
+                let set = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics([error], 0);
+                write_diagnostics(err, &set, &project, arguments.json);
+                return EXIT_FAILURE;
+            }
+        }
+    } else {
+        Vec::new()
+    };
     let warnings = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(
-        module.warnings.iter().cloned().chain(copies),
+        module
+            .warnings
+            .iter()
+            .cloned()
+            .chain(copies)
+            .chain(untrusted),
         0,
     );
     write_diagnostics(err, &warnings, &project, arguments.json);
@@ -5797,20 +5975,87 @@ mod tests {
     }
 
     #[test]
+    fn parses_audit_arguments() {
+        let parse = |values: &[&str]| {
+            let values: Vec<OsString> = values.iter().map(OsString::from).collect();
+            parse_audit_arguments(&values)
+        };
+        assert_eq!(
+            parse(&[]),
+            Some(AuditArguments {
+                path: PathBuf::from("."),
+                json: false,
+                deny_warnings: false
+            })
+        );
+        assert_eq!(
+            parse(&["app", "--json", "--deny-warnings"]),
+            Some(AuditArguments {
+                path: PathBuf::from("app"),
+                json: true,
+                deny_warnings: true
+            })
+        );
+        assert_eq!(
+            parse(&["--", "--json"]).map(|arguments| (arguments.path, arguments.json)),
+            Some((PathBuf::from("--json"), false))
+        );
+        for invalid in [
+            &["--frobnicate"][..],
+            &["a", "b"],
+            &["--json", "--json"],
+            &["--deny-warnings", "--deny-warnings"],
+            &["-o", "out"],
+        ] {
+            assert_eq!(parse(invalid), None, "{invalid:?}");
+        }
+    }
+
+    #[test]
     fn parses_warn_implicit_copy() {
         for action in ["check", "build", "run", "test"] {
             let arguments = parse(&[action, "Main.tz", "--warn", "implicit-copy"]).unwrap();
             assert!(arguments.warn_implicit_copy, "{action}");
+            assert!(!arguments.warn_untrusted_extern, "{action}");
             assert!(!parse(&[action, "Main.tz"]).unwrap().warn_implicit_copy);
+            let arguments = parse(&[action, "Main.tz", "--warn", "untrusted-extern"]).unwrap();
+            assert!(arguments.warn_untrusted_extern, "{action}");
+            assert!(!arguments.warn_implicit_copy, "{action}");
+            assert!(!parse(&[action, "Main.tz"]).unwrap().warn_untrusted_extern);
         }
+        let both = parse(&[
+            "check",
+            "Main.tz",
+            "--warn",
+            "untrusted-extern",
+            "--warn",
+            "implicit-copy",
+        ])
+        .unwrap();
+        assert!(both.warn_implicit_copy && both.warn_untrusted_extern);
         for (values, message) in [
             (
                 vec!["check", "Main.tz", "--warn"],
-                "--warn requires a warning name; supported: implicit-copy",
+                "--warn requires a warning name; supported: implicit-copy, untrusted-extern",
             ),
             (
                 vec!["check", "Main.tz", "--warn", "shadowing"],
-                "unknown warning 'shadowing' for --warn; supported: implicit-copy",
+                "unknown warning 'shadowing' for --warn; supported: implicit-copy, untrusted-extern",
+            ),
+            (
+                vec![
+                    "check",
+                    "Main.tz",
+                    "--warn",
+                    "untrusted-extern",
+                    "--warn",
+                    "untrusted-extern",
+                ],
+                "warn untrusted-extern specified more than once",
+            ),
+            (
+                vec!["fmt", "Main.tz", "--warn", "untrusted-extern"],
+                "fmt does not use optimization, CPU tuning, or compiler warning options",
             ),
             (
                 vec![
@@ -7813,6 +8058,7 @@ mod tests {
         }
         let expected = std::collections::BTreeSet::from([
             "api_diff_command",
+            "audit_command",
             "bindgen_command",
             "debug_test",
             "explain_command",

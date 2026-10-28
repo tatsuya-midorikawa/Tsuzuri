@@ -2,6 +2,7 @@
 // header: ext.h sha256=<sha256>
 // clang: <clang>
 // target: <target>
+// Review each extern declaration and add '@trusted' once you have checked its contract; bindgen never adds it.
 // options: --buffer ext_sum:values:count --buffer ext_mean:values:count --buffer ext_checksum:1:2 --buffer ext_text_length:text:length --buffer ext_fill:values:count --buffer ext_split:values:count --buffer ext_sum32:values:count --consume ext_counter_free:counter
 
 const EXT_VERSION: i32 = 3

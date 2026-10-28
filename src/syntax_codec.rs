@@ -552,6 +552,7 @@ impl Wire for Program {
             dyn_types,
             cpu_attributes,
             effect_attributes,
+            trusted,
             aliases,
             declaration_starts,
         } = self;
@@ -576,6 +577,7 @@ impl Wire for Program {
         dyn_types.put(out)?;
         cpu_attributes.put(out)?;
         effect_attributes.put(out)?;
+        trusted.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
@@ -605,8 +607,35 @@ impl Wire for Program {
             dyn_types: Vec::get(input)?,
             cpu_attributes: Vec::get(input)?,
             effect_attributes: Vec::get(input)?,
+            trusted: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
+        })
+    }
+}
+
+impl Wire for TrustedAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let TrustedAttribute {
+            target,
+            properties,
+            span,
+        } = self;
+        target.put(out)?;
+        out.byte(*properties);
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        let target = Ident::get(input)?;
+        let properties = input.byte()?;
+        if properties >> TRUSTED_PROPERTIES.len() != 0 {
+            return Err(Invalid);
+        }
+        Ok(TrustedAttribute {
+            target,
+            properties,
+            span: Span::get(input)?,
         })
     }
 }
@@ -2772,6 +2801,6 @@ add_one 41
         "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
         "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d01030000000003002245",
+        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000000003002245",
     );
 }

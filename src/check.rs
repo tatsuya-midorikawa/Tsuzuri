@@ -3533,6 +3533,9 @@ pub struct FunctionOrigin {
     pub pure_values: bool,
     /// The effect attributes of the declaration (A20). Generated helpers have none.
     pub asserts: Asserts,
+    /// The `@trusted` mark of an extern function (E15): `None` without one, else the bits of its
+    /// properties (`syntax::TRUSTED_PROPERTIES`). Other functions have none.
+    pub trusted: Option<u8>,
 }
 
 /// A set of effect attributes (`crate::syntax::EffectKind`), one bit each (A20).
@@ -3573,6 +3576,7 @@ impl FunctionOrigin {
             pure: false,
             pure_values: false,
             asserts: Asserts(0),
+            trusted: None,
         }
     }
 
@@ -3584,6 +3588,7 @@ impl FunctionOrigin {
             cpu: 0,
             pure: false,
             asserts: Asserts(0),
+            trusted: None,
             ..self
         }
     }
@@ -6562,6 +6567,7 @@ fn check_modules_collect(
         }
     }
     let mut external_functions = BTreeMap::new();
+    let mut trusted_by_id: BTreeMap<usize, u8> = BTreeMap::new();
     let mut external_symbols = BTreeSet::new();
     for module in modules {
         for external in &module.program.externs {
@@ -6605,6 +6611,15 @@ fn check_modules_collect(
                     "extern declarations cannot have constraints or named regions",
                     external.name.span,
                 ));
+            }
+            // E15: the `@trusted` mark of the declaration, by name in its module.
+            if let Some(mark) = module
+                .program
+                .trusted
+                .iter()
+                .find(|mark| mark.target.text == external.name.text)
+            {
+                trusted_by_id.insert(function_declarations.len(), mark.properties);
             }
             external_functions.insert(function_declarations.len(), import);
             function_declarations.push((
@@ -7771,6 +7786,7 @@ fn check_modules_collect(
                         bench: bench_functions.get(&id).copied(),
                         cpu: cpu_levels.get(&id).copied().unwrap_or(0),
                         asserts: asserts_by_decl.get(&id).copied().unwrap_or_default(),
+                        trusted: trusted_by_id.get(&id).copied(),
                         pure: function.pure,
                         pure_values: checker.pure_values,
                         ..FunctionOrigin::source(names.origin(module))
@@ -8146,7 +8162,25 @@ fn check_modules_collect(
         } else {
             None
         };
-        let validation = effects::validate(&module, summary.as_ref(), &declared_attributes);
+        // E15: an attribute whose `@trusted` property an extern function states gets a summary
+        // in which that function is not a source of `extern`.
+        let mut trusted = BTreeMap::new();
+        if summary.is_some() {
+            for kind in effects::trusted_kinds(&module) {
+                let options = effects::Options {
+                    trusted: Some(effects::trusted_property(kind)),
+                    ..effects::Options::checking(&module)
+                };
+                match effects::summarize(&module, options) {
+                    Ok(vouched) => {
+                        trusted.insert(kind, vouched);
+                    }
+                    Err(error) => diagnostics.push(error),
+                }
+            }
+        }
+        let validation =
+            effects::validate_trusted(&module, summary.as_ref(), &trusted, &declared_attributes);
         diagnostics.extend(validation.errors);
         if !validation.warnings.is_empty() {
             module.warnings.extend(validation.warnings);

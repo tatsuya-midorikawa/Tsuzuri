@@ -19,13 +19,14 @@
 - コンパイラ自身は、使える core 数（最大 8）のスレッドで、構文解析・関数ごとの型検査・所有権の検査を並列に実行します（ソースや関数が少ない入力は 1 スレッドです）。`TSUZURI_THREADS` で上限を変えられ、`1` なら 1 スレッドです。出力はスレッド数で変わりません（[コンパイラのスレッド数](option.md#コンパイラのスレッド数)）。
 - git と registry の依存は `fetch` だけが取得します。`publish` は registry に載せる項目を出力します。ほかのサブコマンドは `git` もネットワークも使いません。
 - `api-diff` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると終了コード 1 です。
+- `audit` は、パッケージごとに、コードが使う権限（`fs`・`net` など）・マニフェストが許す権限・`extern` の関数の信頼の印（`@trusted`）を報告します。許可の外の使用があると終了コード 1 です。
 - `explain` は、診断の kind（`use_after_move` など）やコード（`E1012`）の原因と、誤りの例・直した例を出します。`--catalog` は全 kind の一覧です。
 - `guide` は、AI エージェント向けの英語の短いガイド（構文の早見、所有権の規則、落とし穴、作業の流れ。例はすべて検証済み）と std の索引を出します。`tsuzuri new` は `AGENTS.md`・`llms.txt` も作ります。
 - 引数の誤りは終了コード 2、ソースや実行の失敗は 1、成功は 0 です。
 
 ## コマンドの流れ
 
-`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`api-diff`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`watch` は、次の語（`check`・`build`・`test`）以降をそのコマンドの引数として読み、そのコマンドの流れを繰り返します。`serve` は、自分の引数（ディレクトリ、`--idle-timeout`、`--status`、`--stop`）を読み、要求を待つか、動いているサーバーに問い合わせます。`check` と `build` は、引数の検査のあと、プロジェクトを読む前に、そのプロジェクトのサーバーがあれば要求を渡します。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。`api-diff` は 2 つの入力のソースを構文解析だけして比べます。
+`script` は、ファイルより後ろの引数をプログラムのものとして最初に取り分けます。引数なしと `--help` は、解析に入る前に分かれます。`new`、`fetch`、`publish`、`api-diff`、`audit`、`bindgen`、`repl`、`toolchain info` も、ほかのサブコマンドの引数の解析に入る前に分かれます。`watch` は、次の語（`check`・`build`・`test`）以降をそのコマンドの引数として読み、そのコマンドの流れを繰り返します。`serve` は、自分の引数（ディレクトリ、`--idle-timeout`、`--status`、`--stop`）を読み、要求を待つか、動いているサーバーに問い合わせます。`check` と `build` は、引数の検査のあと、プロジェクトを読む前に、そのプロジェクトのサーバーがあれば要求を渡します。`new`、`bindgen`、`toolchain info` はソースを読む前に終わります。`repl` はプロジェクトを読まず、標準入力と `:load` のファイルから受け取ったソースだけを検査します。`api-diff` は 2 つの入力のソースを構文解析だけして比べます。
 
 ```mermaid
 flowchart TD
@@ -280,6 +281,8 @@ tsuzuri check demo
 ```
 
 警告があっても、既定では終了コードは 0 のままです。`--deny-warnings` を付けると、警告だけで終了コード 1 になり、その後の処理へ進みません。
+
+`--warn untrusted-extern` を付けると、ルートのパッケージで宣言して使っている `extern` の関数のうち、`@trusted` のないものに警告 `W1010` を出します（`build`・`run`・`test` でも同じ。[属性](../values-and-functions/attributes.md#trusted-extern-の信頼の印)）。ルートのマニフェストに権限の宣言があれば、許可の外の使用を `E1036` で報告し、終了コード 1 です（[パッケージ](../organizing-tsuzuri/packages.md#権限capabilities)）。
 
 ### run
 
@@ -560,6 +563,50 @@ tsuzuri prove . --function Main.clamp --prove-timeout 30
 ```
 
 関数ごとに `proved Main.clamp`・`counterexample Main.bad`・`unsupported Main.f (a loop)`・`unknown Main.f`・`error Main.f (solver)` の 1 行を標準出力へ出し、反例などは `E1034` として標準エラーへ出します。`--json` は関数ごとの JSON Lines と最後の summary です。すべて `proved` なら終了コード 0、それ以外は 1、引数の誤りは 2 です。ソルバーは `TSUZURI_SMT`、なければ `z3`、`cvc5` です。
+
+### audit
+
+`tsuzuri audit [PATH] [--json] [--deny-warnings]` は、プロジェクトを `check` と同じに型検査し、パッケージごとに、コードが使う権限、マニフェストが許す権限、`extern` の関数の信頼の印を報告します（[パッケージ](../organizing-tsuzuri/packages.md#権限capabilities)）。`PATH` の既定は `.` です。
+
+```sh
+tsuzuri audit app
+```
+
+```text
+audit: app 0.1.0
+policy: enforced
+packages: 2
+
+package app 0.1.0 (root)
+  allowed: fs stdio
+  used: stdio
+    stdio: 1 site
+      Main.tz:3:9  IO.write_line
+  denied: none
+  unused: fs
+  externs: none
+
+package fscache 0.2.0 (dependency)
+  allowed: fs
+  granted: app: fs
+  used: fs time
+    fs: 1 site
+      Cache.tz:1:63  File.read_text
+    time: 1 site
+      Cache.tz:3:57  Time.monotonic_ns
+  denied: time
+  unused: none
+  externs: none
+
+summary: used=fs,stdio,time denied=1 untrusted_externs=0
+```
+
+- 報告は標準出力、診断（許可の外の使用の `E1036`、`@trusted` のない `extern` の `W1010`）は標準エラーです。`W1010` は依存のパッケージの `extern` も報告します。
+- `policy` は、ルートのマニフェストに権限の宣言があれば `enforced`、なければ `none` です。`none` のとき `allowed` は `all` で、`unused` は出しません。マニフェストのないプロジェクトのパッケージ名は、ディレクトリ名（ファイルなら拡張子を除いた名前）です。
+- 地点は 1 つの権限につき 5 行まで出し、残りは `... and N more` です。パスはパッケージのルートからの相対で、絶対パス・日時・環境変数を含みません。同じソースからは同じバイト列です。
+- `externs` の行は `名前 -> "シンボル"  位置  trusted [性質] | untrusted` です。
+- `--json` は JSON Lines（`schema` は `tz-audit/1`）です。行は `audit`・パッケージごとの `package`・`extern`・最後の `summary` で、キーの順序は固定です。`package` は `name`・`version`・`root`・`allowed`・`granted`（`{"by","capabilities"}`）・`used`（`{"capability","count","sites"}`。地点は 1 権限 100 件まで、超えた数は `truncated`）・`denied`・`unused`・`effects`（`{"declared","asserted":{"pure","no_alloc","no_copy","no_trap","terminates"}}`。宣言した関数の数と、`pure def` と各効果の表明を持つ関数の数）を持ちます。地点は `{"path","line","column","callee","function","scope"}` で、`scope` はテストとベンチマークの中なら `"test"` です。キーは足すだけで、読み手は知らないキーを無視します。
+- 終了コードは、`E1036` があるか、`--deny-warnings` で `W1010` があると 1、型エラーも 1、引数の誤りは 2（`usage: tsuzuri audit [PATH] [--json] [--deny-warnings]`）、それ以外は 0 です。
 
 ### api-diff
 

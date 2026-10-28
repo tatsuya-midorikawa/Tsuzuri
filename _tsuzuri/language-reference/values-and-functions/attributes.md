@@ -1,16 +1,17 @@
 # 属性
 
-`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、関数の効果の表明、JSON での名前、コンピュテーション式ビルダーの別名をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
+`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、関数の効果の表明、`extern` の信頼の印、JSON での名前、コンピュテーション式ビルダーの別名をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
 
-このページでは、9 つの属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。関数の本体の先頭に書く契約の行 `@requires`・`@ensures` は、[契約](./contracts.md) を見てください。
+このページでは、10 個の属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。関数の本体の先頭に書く契約の行 `@requires`・`@ensures` は、[契約](./contracts.md) を見てください。
 
 ## この記事のポイント
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@json`、`@alias` の 9 つです。ユーザー定義の属性はありません。
+- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@json`、`@alias` の 10 個です。ユーザー定義の属性はありません。
 - `@literal` は `def` の前に付け、`const` と同じコンパイル時定数にします。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` はトップレベル関数の `def` の前に付け、命令セットごとの版を作ります。ビルド先で選べない名前は無視されます。
 - `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` はトップレベル関数の `def` の前に付け、「確保しない」「暗黙に複製しない」「論理のトラップをしない」「停止する」をコンパイラに検査させます。生成コードは変わりません。
+- `@trusted` は `extern` の宣言の前に付け、人がその外部関数の契約を確かめたことを記録します。コンパイラは確かめず、生成コードも変わりません。性質（`pure` など）を添えると、`pure def` や効果の表明から呼べます。
 - `@json "名前"` はレコードのフィールドや共用体の case の前に付け、導出した `Encode` / `Decode` が使う JSON の名前を変えます。
 - `@alias 名前` は `.tc` のトップレベルに書き、`名前 { ... }` でそのビルダーを呼べるようにします。標準の `Async` は `@alias async` を宣言済みです。
 - `@'a : 制約` は制約行です。属性の一覧には入りません。
@@ -24,6 +25,7 @@ flowchart TD
     at --> checked["@checked<br/>検査付き算術"]
     at --> cpu["@cpu<br/>関数の版"]
     at --> effects["@no_alloc / @no_copy<br/>@no_trap / @terminates<br/>効果の表明"]
+    at --> trusted["@trusted<br/>extern の信頼の印"]
     at --> json["@json<br/>JSON での名前"]
     at --> alias["@alias<br/>ビルダーの別名"]
     at --> row["型変数が続く行<br/>制約行。属性ではない"]
@@ -35,6 +37,7 @@ flowchart TD
 | `@checked` | 式、または対応する文の直前 | `+` `-` `*` `**` と単項 `-` の桁あふれ検査 | [演算子と式](./op-and-expressions.md) |
 | `@cpu` | `private` や `export` より前、トップレベル `def` の直前 | 命令セットごとの関数の版 | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `@no_alloc` `@no_copy` `@no_trap` `@terminates` | `private` や `export` より前、トップレベル `def` の直前（`@cpu` と任意の順序） | 関数の効果の検査。違反は `E1031` | [効果の表明](#効果の表明no_allocno_copyno_trapterminates) |
+| `@trusted` | `extern` の宣言の直前（`private` より前）。性質は同じ行 | 人が確かめた `extern` の印。性質は `pure` と効果の表明に効く | [信頼の印](#trusted-extern-の信頼の印) |
 | `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
 | `@alias` | `.tc` のトップレベルの 1 行 | `名前 { ... }` で呼べるビルダーの別名 | [コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名) |
 
@@ -215,7 +218,7 @@ apply (\x -> x * 3 + 1) 2
 ### 書ける位置とエラー
 
 - トップレベル関数の `def` の直前だけです（`private`・`export`・`const`・`pure` より前）。`@cpu` と任意の順序で並べられ、同じ属性は 1 回だけです。2 回目は `E1032` です。
-- `record`・`union`・`type`・`const` の値・実装の `fn`・式に付けると `E1032` です。`extern` の関数には本体がないので `E1032` です。ラムダ・ローカル関数・型クラスのメソッド・インスタンスのメソッドには付けられません。
+- `record`・`union`・`type`・`const` の値・実装の `fn`・式に付けると `E1032` です。`extern` の関数には本体がないので `E1032` です。`extern` の関数の性質は [`@trusted`](#trusted-extern-の信頼の印) で書きます。ラムダ・ローカル関数・型クラスのメソッド・インスタンスのメソッドには付けられません。
 - 表明を破ると `E1031` です。メッセージは、効果の生じる式、または関数から外へ出る最初の呼び出しを示し、呼び出しの連鎖と属性の位置を添えます。
 
 ```text
@@ -229,6 +232,39 @@ Main.tz:4:15: error[E1031]: 'Main.fill' is marked '@no_alloc' but this call reac
 ### 精密さの限界
 
 規則は生成コードより保守的です。確保しないコードを `alloc` と判定することがあります（捕捉した値を即値で持つクロージャ、関数値の環境の複製、タスクの生成など）。そのときは属性を外すか、名前付き関数や借用に書き換えます。`Vec`・`List`・文字列の添字とスライスの範囲は証明しないので、`@no_trap` では `trap` です。
+
+## @trusted (extern の信頼の印)
+
+`@trusted` は、`extern` で宣言した C の関数の ABI・所有権・寿命の約束を人が確かめた、という印です。コンパイラはその約束を確かめず、生成コードも変えません。印のない `extern` を使うと、`--warn untrusted-extern` を付けた `check`・`build`・`run`・`test` と、`tsuzuri audit` が警告 `W1010` を出します。
+
+```tsuzuri
+@trusted pure no_trap
+extern "abs" def c_abs :: i32 -> i32
+
+pure def distance :: i32 -> i32 -> i32 = \a b -> c_abs (a - b)
+
+def main :: unit -> i32 = \() -> distance 3 7
+```
+
+`@trusted` と同じ行に、その関数について人が確かめた性質を書けます。性質は検査に効きますが、確かめるのは書いた人です。
+
+| 性質 | 意味 | 効く検査 |
+| --- | --- | --- |
+| `pure` | 外の世界にも共有状態にも触れない | `pure def` から呼べる。契約の条件（`@requires`・`@ensures`）で呼べる |
+| `no_alloc` | ヒープを確保しない | `@no_alloc` の関数から呼べる |
+| `no_copy` | 長さに比例する複製をしない | なし（`@no_copy` は `extern` を禁じない） |
+| `no_trap` | トラップしない | `@no_trap` の関数から呼べる |
+| `terminates` | 停止する | `@terminates` の関数から呼べる |
+
+性質は属性ごとに独立です。`@trusted no_alloc` の関数は `@no_alloc` からは呼べますが、`pure def` や `@no_trap` からは呼べません（`E1029`・`E1031`）。性質のない `@trusted` は印だけで、どの検査も緩めません。
+
+### 書ける位置とエラー
+
+- `extern` の関数（`extern "sym" def`・`extern "mod" "sym" def`・`extern def`）と `extern type` の直前だけです。`private` より前に書きます。`extern type` には性質を付けられません。
+- 誤りはすべて `E1037` です: `extern` でない宣言への `@trusted`（`trusted_wrong_target`）、未知の性質（`trusted_unknown_property`）、同じ性質を 2 回（`trusted_duplicate_property`）、`extern type` の性質（`trusted_type_property`）、1 つの宣言に `@trusted` を 2 回（`trusted_repeated`）。
+- `trusted` と性質の名前は予約語ではありません。`@trusted` の直後の同じ行だけで性質として読みます。
+- `@trusted` は権限を変えません。`extern` の呼び出しは、印があってもなくても権限 `ffi` を使います（[パッケージ](../organizing-tsuzuri/packages.md#権限capabilities)）。`tsuzuri api-diff` は `@trusted` を API の変更として扱いません。
+- `tsuzuri bindgen` は `@trusted` を付けません。生成したファイルの 5 行目は、宣言を確かめてから `@trusted` を足すように促す注意書きです（[ネイティブ相互運用](../compiler/native-interop.md)）。
 
 ## @json (JSON での名前)
 
@@ -286,17 +322,18 @@ fn Return value = value
 
 ## ユーザー定義の属性はない
 
-Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@json`、`@alias` と、本体の先頭の契約の行 `@requires`・`@ensures`（`@ensures` の中の `@old`）以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
+Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@json`、`@alias` と、本体の先頭の契約の行 `@requires`・`@ensures`（`@ensures` の中の `@old`）以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
 
 ## まとめ
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@json`、`@alias` の 9 つです。
+- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@json`、`@alias` の 10 個です。
 - `@'a : 制約` は制約行であり、属性ではありません。
 - ユーザー定義の属性はありません。
 - `@literal` は `const` と同じコンパイル時定数です。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` は命令セットごとの関数の版を作ります。選べない名前は無視され、未知の名前は `E0002` です。
 - `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` は推論した効果を検査する表明で、違反は `E1031`、置き場の誤りは `E1032` です。生成コードは変わりません。
+- `@trusted` は人が確かめた `extern` の印で、誤りは `E1037` です。性質は `pure def` と効果の表明に効きます。
 - `@json` は導出した `Encode` / `Decode` が使うフィールドや case の名前を変えます。
 - `@alias` は `.tc` のビルダーに小文字の別名を足し、`async { ... }` のような書き方を可能にします。
 

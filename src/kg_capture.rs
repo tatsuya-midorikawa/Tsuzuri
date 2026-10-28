@@ -390,6 +390,7 @@ fn declare_module(
         dyn_types: _,
         cpu_attributes: _,
         effect_attributes: _,
+        trusted: _,
         aliases: _,
         declaration_starts: _,
     } = input.program;

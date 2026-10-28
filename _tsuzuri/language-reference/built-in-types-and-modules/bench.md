@@ -2,6 +2,8 @@
 
 `bench "名前" = 本体` は、`tsuzuri bench` が計測するベンチマークの宣言です。標準ライブラリの `Bench` モジュールが、本体を作る `Bench.with_input`・`Bench.of` と、時計 `Bench.now`・最適化の障壁 `Bench.consume` を提供します。結果は準備を除いた 1 回あたりの時間の中央値・最小・最大で、速さの合否の閾値はありません。
 
+必要な権限: `time`（`Bench.of`・`Bench.with_input`）。ベンチマークの中の使用は検査しません。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+
 ## この記事のポイント
 
 - `bench "名前" = 本体` の本体は `i64 -> i64` です。反復回数を受け取り、準備を除いたその回数分の経過ナノ秒を返します。

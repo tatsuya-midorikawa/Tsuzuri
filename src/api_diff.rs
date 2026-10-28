@@ -648,6 +648,8 @@ fn add_items(
         dyn_types: _,
         cpu_attributes: _,
         effect_attributes,
+        // E15: `@trusted` is a reviewer's mark, not part of the API.
+        trusted: _,
         aliases,
         declaration_starts: _,
     } = program;

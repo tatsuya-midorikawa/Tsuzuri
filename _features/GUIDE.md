@@ -265,6 +265,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/pure_rules.rs` | A19 の署名・平たい所有データ・純粋性の検査。閉じた根からの到達可能性と D-53 の問い合わせ口 |
 | `src/contracts.rs` | A21 の契約: `ContractMode`・織り込み・`off` の剥がし・条件の純粋性・性質テストの生成 |
 | `src/prove.rs`・`src/prove_smt.rs` | A21 の `tsuzuri prove`: `QF_BV` への翻訳・ソルバーの起動・反例の復元 |
+| `src/capabilities.rs` | E15 の信頼境界と権限: `Capability`・`Policy`（実効の権限は入辺の積）・型付き IR の権限の解析（`analyze`）・`E1036`・`W1010`・`tsuzuri audit` の報告 |
 | `src/effects.rs` | A20 の効果の要約（`check::effects`）と効果の属性の検査（`E1031`・`E1032`・`W1008`）。組み込み関数の分類表 `builtin_facts` |
 | `src/derive.rs` | `deriving` の instance を通常の AST として生成（A07） |
 | `src/docgen.rs` | API 文書の生成（G09） |

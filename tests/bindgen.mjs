@@ -48,6 +48,9 @@ function golden(name, header, module, extra = []) {
   assert.equal(lines[1], `// header: ${header} sha256=${sha256(join(fixture, header))}`);
   assert.equal(lines[2], `// clang: ${clangVersion}`);
   assert.equal(lines[3], `// target: ${target}`);
+  // E15: bindgen checks the ABI, not the behaviour, so it never adds '@trusted'.
+  assert.equal(lines[4], "// Review each extern declaration and add '@trusted' once you have checked its contract; bindgen never adds it.");
+  assert.ok(!lines.some((line) => line.startsWith("@trusted")), `${name} marks a declaration @trusted`);
   lines[1] = `// header: ${header} sha256=<sha256>`;
   lines[2] = "// clang: <clang>";
   lines[3] = "// target: <target>";

@@ -13,6 +13,7 @@ Tsuzuri のパッケージシステムは、決定論的なビルドと安全性
 - `tsuzuri fetch` が依存を取得し、内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。ほかのコマンドは `git` もネットワークも使いません。
 - `tsuzuri publish` は、パッケージを検査し、公開する commit の index の項目を出力します。公開の前に、`tsuzuri api-diff` で前の版との互換性を確かめられます。
 - `[wasm]` と `[native]` で、WebAssembly のメモリとネイティブのリンク入力を指定できます。
+- `[capabilities]` と依存の `capabilities = [...]` で、各パッケージがファイル・ネットワーク・環境・時計などに触れてよいかを宣言できます。違反はコンパイルの段階の `E1036` です。`tsuzuri audit` が使用を報告します。
 - `tsuzuri new <dir>` で、マニフェスト付きの雛形を作れます。
 
 ## Tsuzuri.toml の役割と構文規則
@@ -23,7 +24,7 @@ Tsuzuri のパッケージシステムは、決定論的なビルドと安全性
 
 - `#` の行コメント、空行、CRLF / LF
 - ダブルクォートの UTF-8 文字列と、エスケープ `\"`、`\\`、`\n`、`\r`、`\t`
-- `[package]` を最初に置き、そのあとに `[dependencies]`、`[wasm]`、`[native]`、`[registry]` を任意の順で、それぞれ 1 回まで
+- `[package]` を最初に置き、そのあとに `[dependencies]`、`[wasm]`、`[native]`、`[registry]`、`[capabilities]` を任意の順で、それぞれ 1 回まで
 
 複数行の配列、未知のセクションやキー、対応していない TOML は `E0002` です。マニフェストは最大 1 MiB で、超えると `E1017` です（ソースの上限の 4 MiB を超えるファイルは、読み込みの `E0003` です）。シンボリックリンクのマニフェストは `E1011` です。
 
@@ -94,6 +95,7 @@ native-helper = { path = "../native-helper", native = true }
 - **キー名**: テーブルのキーは、依存先の `name` と一致させます。違うと `E1011` です。同じキーを 2 回書くのも `E1011` です。
 - **相対パス**: `path` は空でない相対パスです。`/usr/lib` や `C:\lib` のようなルート付きパスは `E0002` です。途中のシンボリックリンクも `E1011` です。
 - **`native`**: 既定は `false` です。`native = true` の依存だけが、自分の `[native]` をルートのビルドへ渡します。`[native]` がある依存を `native = true` にしないと、無視ではなく `E2000` です。
+- **`capabilities`**: その依存に許す権限の配列です（`native` のあと。git 依存と registry 依存にも書けます）。[権限（capabilities）](#権限capabilities) を見てください。
 - **依存の制限**:
   - 循環（A が B に依存し、B が A に依存する）は `E1011` です。
   - 同じ正規化パスのパッケージは共有されます。違うパスが同じ名前空間に解決されると `E1011` です。パス依存どうしでは、パッケージ名が同じだけでは拒否されません。
@@ -318,6 +320,65 @@ search = ["libs"]
 
 ルートの入力が先、`native = true` の依存があとです。`link`、`libraries`、`search` を合わせて 256 個までです。超えると `E2000` です。絶対パスは拒否されます。
 
+## 権限（capabilities）
+
+パッケージのコードが外の世界に触れる道は、std の関数（`File`、`Net` など）と `extern` の関数だけです。マニフェストに権限を宣言すると、コンパイラは各パッケージのコードが**静的に**使う権限を調べ、許可の外の使用を `E1036` にします。
+
+```toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+fscache = { path = "../fscache", capabilities = ["fs"] }
+remote = { git = "https://example.org/remote.git", rev = "0123456789abcdef0123456789abcdef01234567", capabilities = [] }
+registered = { version = "1.0.0", capabilities = ["net", "time"] }
+
+[capabilities]
+allow = ["fs", "net", "stdio", "time"]
+```
+
+権限は次の 9 個で、名前の順に並べて表示します。
+
+| 権限 | 使う std の関数（例） |
+| --- | --- |
+| `env` | `Env.args`・`Env.var`・`Env.current_dir` |
+| `ffi` | `extern` の関数（`@trusted` でも同じ） |
+| `fs` | `File` と `Dir` の関数 |
+| `gpu` | `Gpu.request`・`Gpu.init`・`Gpu.map`・`Gpu.last_backend` など |
+| `net` | `Net` の接続・送受信の関数（`Net.parse_address` などのアドレスの操作は権限なし） |
+| `process` | `Process.run` |
+| `random` | `Random.bytes`・`Random.next_u64`、`HashMap.randomized`・`HashSet.randomized`、`Array.random_*`・`List.random_*` |
+| `stdio` | `IO` の読み書き、`Debug.print`・`Debug.trace`、`Gen.for_all` などの失敗の報告 |
+| `time` | `Time` の関数、`Async.block_on`、`Bench.of`・`Bench.with_input` |
+
+`Path`、`Task`・`Parallel`・`Atomic`・`Mutex`・`Channel`（CPU の資源）、`Random.pcg` のような純粋な関数は権限を要りません。std の関数の権限は、その本体が参照する私的な組み込み関数と std の関数から推移的に決まります。
+
+- **有効にする条件**: ルートのマニフェストに `[capabilities]` がある、またはルートの依存の項目のどれかに `capabilities` があるときだけ検査します。どちらもなければ何も検査せず、出力は宣言のないときと 1 byte も変わりません。依存のマニフェストの `[capabilities]` は無視します。
+- **ルート**: `allow` に書いた権限だけを使えます。`[capabilities]` がなければ全権限、`allow = []` なら何も使えません。`[capabilities]` を書くなら `allow` は必須です。
+- **依存**: 項目の `capabilities` が、その親がその依存に許す権限です。書かなければ空です。依存が使える権限は、その依存へのすべての辺の「親が使える権限 ∩ 項目の `capabilities`」の積です（どの親も許した権限だけ）。
+- **何を数えるか**: 各パッケージの関数の本体が直接参照する std の関数と `extern` の関数です。呼ばれない関数も数えます。別のパッケージの関数の呼び出しは数えません（そのパッケージが自分の本体で検査されます）。テストとベンチマークの中の使用は検査しません（`tsuzuri audit` は `scope: "test"` で報告します）。
+- **いつ検査するか**: `check`・`build`・`run`・`test`・`bench` が型検査の後、コード生成の前に検査します。`doc` と言語サーバーは検査しません。
+- **サンドボックスではない**: 権限はコンパイルしたプログラムの静的な使用の検査です。実行時に OS の権限を取り上げることはなく、`ffi` を許したパッケージは任意の C のコードを呼べます。
+
+誤りはすべて `E0002` です。
+
+| 書き方 | メッセージ |
+| --- | --- |
+| `[capabilities]` に `allow` がない | `[capabilities] requires allow = ["fs", ...]` |
+| `allow` 以外のキー | `unknown capabilities key; expected allow` |
+| `allow = "fs"`、`allow = [1]` | `allow must be an array of capability names on one line, such as ["fs", "time"]` |
+| 未知の名前 | `unknown capability 'files'; expected one of env, ffi, fs, gpu, net, process, random, stdio, time` |
+| 同じ名前を 2 回 | `capability 'fs' is listed twice` |
+
+違反は、使用の地点を指す `E1036` です。依存の違反は、阻んだのがルートの `allow` か、どの親の項目かを示し、std の中の呼び出しの連鎖を添えます。
+
+```text
+fscache/Cache.tz:3:57: error[E1036]: package 'fscache' may not use capability 'time' ('Time.monotonic_ns'); the root [capabilities] allow does not list "time"
+```
+
+`tsuzuri audit` は、パッケージごとの使用・許可・未使用の権限と、`extern` の関数の信頼の印（`@trusted`）を報告します（[コンパイラの使い方](../compiler/usage.md#audit)）。
+
 ## tsuzuri new によるプロジェクト作成
 
 新しいパッケージを作成するときは、`tsuzuri new` コマンドを使用します。
@@ -425,6 +486,7 @@ Tsuzuri 0.1.0 には、次の機能はありません（未実装です）。
 - `tsuzuri fetch` が `git` で依存を取得し、`Tsuzuri.lock` に内容の SHA-256 と選んだ版を記録します。ビルドは lockfile とストアだけを読み、内容の一致を確かめます。
 - `tsuzuri publish` は、検査した内容と同じ commit の index の項目を出力します。index への反映は index リポジトリへの commit です。公開の前に `tsuzuri api-diff` で前の版との互換性を確かめます。
 - `native = true` を付けない依存の `[native]` は、無視ではなく `E2000` です。
+- `[capabilities]` と依存の `capabilities` を書くと、各パッケージの静的な権限の使用を検査します（`E1036`）。書かなければ何も変わりません。実行時のサンドボックスではありません。
 - `tsuzuri new` で、マニフェストと入口を含む初期構成を作れます。
 
 ## 関連項目

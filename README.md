@@ -215,6 +215,7 @@ def distance_of :: 'T -> 'U
 
 - **純粋性の契約**: `pure def` と関数型 `pure (T -> U)` は、観測できる副作用がないことをコンパイラが検査する契約です。引数は共有借用か平たいデータの `own` で、generic・純粋 callback・class／instance・`@cpu` にも対応します。停止・トラップしないこと・割り当てがないことは保証しません（[純粋関数](_tsuzuri/language-reference/values-and-functions/functions.md)）。
 - **契約**: 関数の本体の先頭に `@requires 条件`・`@ensures \r -> 条件` を書くと、`run`・`test` は入口と出口で検査し（`build` の既定は検査コードなし）、`tsuzuri test --contracts test` は性質テストを生成し、`tsuzuri prove` は z3 などの SMT ソルバーで証明します（[契約](_tsuzuri/language-reference/values-and-functions/contracts.md)）。
+- **信頼境界と権限**: `extern` の宣言に `@trusted [pure no_alloc ...]` を付けて、人が確かめた外部関数を記録します（印のない使用は `--warn untrusted-extern` と `tsuzuri audit` の `W1010`）。マニフェストの `[capabilities]` と依存の `capabilities = [...]` で、パッケージごとに `fs`・`net`・`env`・`time` など 9 個の権限を許すと、許可の外の静的な使用を `E1036` で拒否します。`tsuzuri audit` はパッケージごとの使用・許可・`extern` の信頼をテキストと JSON Lines（`tz-audit/1`）で報告します。実行時のサンドボックスではありません（[パッケージ: 権限](_tsuzuri/language-reference/organizing-tsuzuri/packages.md#権限capabilities)）。
 - **効果の表明**: `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` を `def` に付けると、コンパイラが関数の効果（確保・暗黙の複製・論理のトラップ・停止しない可能性）を型付き IR から推論し、表明を破れば `E1031` で拒否します。属性は検査だけで、生成コードは変わりません（[属性: 効果の表明](_tsuzuri/language-reference/values-and-functions/attributes.md#効果の表明no_allocno_copyno_trapterminates)）。
 - **カリー化と静的単相化**: すべての関数は自動的にカリー化されており、部分適用を自然に行えます。型クラスによるメソッド解決はコンパイル時に完全に完了し、動的ディスパッチやランタイム辞書渡しのコストを一切発生させません（明示した [`dyn` 型](_tsuzuri/language-reference/types-and-type-inference/type-classes.md) を除きます）。呼び出しに使われた具体的な型の組み合わせごとに最適化されたコードを生成します。
 - **演算子**: パイプライン演算子 `|>`、関数合成演算子 `>>`（順方向: `\x -> g (f x)`）および `<<`（逆方向: `\x -> f (g x)`）、累乗演算子 `**`（右結合）、組み込みの `not` や `ignore` を提供します。ビット演算には F# と同様の `&&&`、`|||`、`^^^`、`~~~`、`<<<`、`>>>` を使用します（`>>>` は符号付き整数なら算術シフト、符号なし整数なら論理シフト）。詳細は [演算子と式](_tsuzuri/language-reference/values-and-functions/op-and-expressions.md) を参照してください。
@@ -801,6 +802,15 @@ summary: 2 breaking, 1 non-breaking
 
 `tsuzuri publish` は `api-diff` を呼びません。公開の前に実行してください。出力とその制限は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#api-diff) にあります。
 
+### 信頼境界と権限 (`tsuzuri audit`)
+
+`tsuzuri audit [PATH]` は、プロジェクトを `check` と同じに検査し、パッケージごとに、コードが使う権限（std の関数と `extern` から導出）、マニフェストが許す権限、`extern` の関数の `@trusted` の印を報告します。ルートの `Tsuzuri.toml` に `[capabilities]` か依存の `capabilities` があると、`check`・`build`・`run`・`test` も許可の外の使用を `E1036` で止めます。宣言がなければ何も検査せず、出力は変わりません（[コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#audit)）。
+
+```sh
+tsuzuri audit app
+tsuzuri audit app --json --deny-warnings
+```
+
 ### 知識グラフ (`target/tz/kg`、`tsuzuri kg`)
 
 `check`・`build`・`run`・`test` は、プロジェクトの知識グラフ（宣言をノード、呼び出し・型の使用・テストなどの関係を辺にした JSON Lines、関数ごとの効果・トラップ・所有権の事実、型のレイアウト、短い英語の要約カード）を `target/tz/kg/` に書きます。ソースが変わっていなければ書き直さず、`--no-kg` か `TSUZURI_KG=0` で止められます。`tsuzuri kg build|verify|clean|export` で明示的に作る・確かめる・消す・出力でき、`tsuzuri kg show|callers|callees|uses|tests-for|search|find|path|brief` でソースを読まずに宣言・呼び出し・テスト・型での検索・最短の関係の鎖を引けます。`tsuzuri kg impact --git REV` は前の版との差（公開 API・効果・警告）とその差に届くテストを出し、`tsuzuri test --affected REV` はそのテストだけを実行します。`tsuzuri kg diagram module|types|calls|ownership|concurrency|layout|transitions` は、その知識グラフからモジュールの依存・型・呼び出し・所有権の流れ・並行・メモリの配置・状態遷移の図を Mermaid・DOT・Markdown で出し、ID の要らない図は `views/*.mmd` として知識グラフに入ります（[図表の生成](_tsuzuri/language-reference/compiler/diagrams.md)、[知識グラフ](_tsuzuri/language-reference/compiler/kg.md)、[形式](_tsuzuri/language-reference/compiler/kg-format.md)）。
@@ -917,6 +927,7 @@ tsuzuri guide std [MODULE] | --agents [DIR] | --llms-txt [DIR]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
 tsuzuri api-diff old new [--json] [--effective]
+tsuzuri audit [PATH] [--json] [--deny-warnings]
 tsuzuri prove [source.tz|directory] [--function NAME]... [--prove-timeout SECONDS] [--json]
 tsuzuri build|run|test|check ... [--contracts off|check|test|prove]
 tsuzuri check|build|run|test ... [--kg | --no-kg] [--kg-dir DIR]
@@ -945,6 +956,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `-Os`, `-Oz` | サイズ重視の最適化（`build` と `run` だけ。`test`・`bench`・`repl`・`script` は `-O0`〜`-O3` だけ）。生成する LLVM IR は `-O3` と同じで（native の関数値の inline 属性 `alwaysinline` だけは、`-O0`・`-Os`・`-Oz` で外れます）、Clang に渡すレベルだけが変わります。意味・トラップ・`-g` は変わりません。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
+| `--warn untrusted-extern` | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出します。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
 | `-g`, `--debug-info` | DWARF デバッグ情報を付与します。`test` では `--index N -g -o PATH` で 1 件のテストをデバッグ用のランナーとしてビルドします（実行しません）。 |
 | `--wasm-max-memory SIZE` | WASM の最大線形メモリサイズ（既定: 16MiB、例: `256MiB`）。 |
