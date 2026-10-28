@@ -405,6 +405,35 @@ fn concurrency_reads_every_cell_of_a_signature() {
     }
     assert!(!text.contains("Mutex#lt;i64#gt;"), "{text}");
     assert_eq!(validate_mermaid(&text), Ok(()));
+    // The `>` of a function arrow closes nothing.
+    let input = Input::from_texts(
+        &symbol("map", "ref Channel.Sender<(i64 -> i64)>"),
+        "",
+        &[],
+        &[],
+        "",
+    )
+    .unwrap();
+    let text = draw(&input, &request(Kind::Concurrency, None));
+    assert!(
+        text.contains("(\"Channel#lt;(i64 -#gt; i64)#gt;\")"),
+        "{text}"
+    );
+    assert_eq!(validate_mermaid(&text), Ok(()));
+}
+
+/// `Task.parallel_results` forks and joins as `Task.parallel` does: its caller is a region.
+#[test]
+fn concurrency_regions_include_parallel_results() {
+    let nodes = node("M", "module", "M") + &def("M.run", "M", "i64", "i64");
+    let edges = "{\"rel\":\"calls\",\"from\":\"M.run\",\"to\":\"Task.parallel_results\",\"args\":[],\"span\":{\"line\":2,\"column\":1}}\n";
+    let input = Input::from_texts(&nodes, edges, &[], &[], "").unwrap();
+    let text = draw(&input, &request(Kind::Concurrency, None));
+    assert!(
+        text.contains("M.run \u{b7} Task.parallel_results"),
+        "{text}"
+    );
+    assert_eq!(validate_mermaid(&text), Ok(()));
 }
 
 #[test]
@@ -581,6 +610,39 @@ fn layout_shows_the_live_flag_and_types_as_code() {
         ),
         "{text}"
     );
+}
+
+/// A generic record's layouts are those of its concrete types: its ID finds the one there is, and
+/// several are named as candidates.
+#[test]
+fn layout_of_a_generic_record_finds_its_concrete_type() {
+    let row = |id: &str| {
+        format!(
+            "{{\"id\":\"{id}\",\"kind\":\"record\",\"type\":\"{id}\",\"size\":[8,8],\"align\":[8,8],\"fields\":[{{\"name\":\"value\",\"type\":\"i64\",\"slot\":0}}],\"reordered\":false,\"drop_flag\":false}}\n"
+        )
+    };
+    let nodes = node("M", "module", "M") + &node("M.Box", "record", "M");
+    let one = row("M.Box<i64>");
+    let input = Input::from_texts(&nodes, "", &[], &[&one], "").unwrap();
+    let text = draw(&input, &request(Kind::Layout, Some("M.Box")));
+    assert!(
+        text.starts_with("# Layout of M.Box<i64> (native, 64-bit)\n"),
+        "{text}"
+    );
+    let two = row("M.Box<i64>") + &row("M.Box<string>");
+    let input = Input::from_texts(&nodes, "", &[], &[&two], "").unwrap();
+    let error = render(&input, &no_sources(), &request(Kind::Layout, Some("M.Box"))).unwrap_err();
+    assert_eq!(error.kind, "diagram_unknown_id");
+    assert!(
+        error.message.contains("M.Box<i64>") && error.message.contains("M.Box<string>"),
+        "{}",
+        error.message
+    );
+    // A function is still the wrong kind.
+    let nodes = nodes + &def("M.f", "M", "i64", "i64");
+    let input = Input::from_texts(&nodes, "", &[], &[&one], "").unwrap();
+    let error = render(&input, &no_sources(), &request(Kind::Layout, Some("M.f"))).unwrap_err();
+    assert_eq!(error.kind, "diagram_wrong_id_kind");
 }
 
 #[test]
@@ -1354,6 +1416,28 @@ fn transitions_compare_whole_namespaces() {
         lib.as_ref().is_err() || !lib.as_ref().unwrap().text.contains("flip"),
         "{lib:?}"
     );
+}
+
+/// Every case of a transitions diagram is a state, and states are not folded: more cases than
+/// `--max-nodes` is too large, in both formats.
+#[test]
+fn transitions_respect_max_nodes() {
+    // Six cases, five nodes.
+    let mut nodes = node("M.U", "union", "M");
+    for index in 0..6 {
+        nodes.push_str(&node(&format!("M.U.C{index}"), "case", "M"));
+    }
+    let input = Input::from_texts(&nodes, "", &[], &[], "").unwrap();
+    for format in [Format::Mermaid, Format::Dot] {
+        let mut request = folded(request(Kind::Transitions, Some("M.U")), 5);
+        request.format = format;
+        let error = render(&input, &no_sources(), &request).unwrap_err();
+        assert_eq!(error.kind, "diagram_too_large");
+        assert_eq!(
+            error.message,
+            "'M.U' has 6 cases, more than --max-nodes 5 can show; raise --max-nodes"
+        );
+    }
 }
 
 /// The transitions of a union are at most 400 edges, with the omitted count, in both formats.

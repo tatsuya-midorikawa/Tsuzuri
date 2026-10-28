@@ -252,19 +252,24 @@ pub fn read(dir: &Path) -> Result<Manifest, Freshness> {
 /// Whether the graph at `dir` was written for `source_hash` by this compiler (`stamp`).
 pub fn inspect(dir: &Path, source_hash: &str, stamp: &str) -> Freshness {
     match read(dir) {
-        Ok(manifest) => judge(dir, &manifest, source_hash, stamp),
+        Ok(manifest) => judge(&manifest, marker_stamp(dir).as_deref(), source_hash, stamp),
         Err(freshness) => freshness,
     }
 }
 
-/// Whether `manifest`, read from `dir`, was written for `source_hash` by this compiler (`stamp`).
-/// A reader judges the manifest of the publication that it read, since another one can replace
-/// the graph after `inspect`.
-pub fn judge(dir: &Path, manifest: &Manifest, source_hash: &str, stamp: &str) -> Freshness {
+/// Whether `manifest`, with the stamp of its marker (`marker`), was written for `source_hash` by
+/// this compiler (`stamp`). A reader judges the manifest and the marker of the publication that it
+/// read (`store::Snapshot`), since another one can replace the graph after `inspect`.
+pub fn judge(
+    manifest: &Manifest,
+    marker: Option<&str>,
+    source_hash: &str,
+    stamp: &str,
+) -> Freshness {
     if manifest.schema != SCHEMA {
         return Freshness::Stale("built with a different schema");
     }
-    if manifest.compiler != compiler() || marker_stamp(dir).as_deref() != Some(stamp) {
+    if manifest.compiler != compiler() || marker != Some(stamp) {
         return Freshness::Stale("built by a different compiler");
     }
     if manifest.source_hash != source_hash {

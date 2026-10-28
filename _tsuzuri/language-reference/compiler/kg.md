@@ -136,11 +136,11 @@ tsuzuri kg path      FROM TO [--rel R[,R...]] [--depth N] [共通]
 | --- | --- |
 | `brief` | 要約カード。引数なしと `--project` は L0、`--module M` は L1、ID は L2（モジュールなら L1）。`--budget` がなければ保存したカードと同じ byte です |
 | `show` | 宣言 1 つ: 種類・公開・位置、署名、説明の 1 行目、引数の渡し方、事実（効果、トラップ・確保・複製の箇所の数、再帰）、呼び先・呼び出し元・テスト・使う宣言 |
-| `callers`・`callees` | 呼び出しの辺（`calls`）を幅優先にたどった呼び出し元・呼び先。各 ID は最も浅い深さで 1 回だけ、深さ 2 以上は `via`（1 つ手前の ID）つきです。テストも呼び出し元に出ます |
+| `callers`・`callees` | 呼び出しの辺（`calls`）を幅優先にたどった呼び出し元・呼び先。各 ID は最も浅い深さで 1 回だけ、深さ 2 以上は `via`（1 つ手前の ID）つきです。テストも呼び出し元に出ます。std の関数の呼び先は std の知識グラフで、呼び出し元はプロジェクトの知識グラフでたどります |
 | `uses` | 型を使う宣言（`uses_type`・`implements`・`instance_of` の辺） |
 | `tests-for` | 宣言に届くテスト（`tested_by` の辺） |
 | `search` | 名前・ID・署名・説明の 1 行目に文字列を含む宣言を、名前の一致を先に並べます。`--std` で std も探します |
-| `path` | `FROM` から `TO` への最短の辺の鎖。`--rel` で使う辺の種類（`contains`・`calls`・`uses_type`・`implements`・`instance_of`・`imports`・`tested_by`。既定は `calls`）を選びます |
+| `path` | `FROM` から `TO` への最短の辺の鎖。`--rel` で使う辺の種類（`contains`・`calls`・`uses_type`・`implements`・`instance_of`・`imports`・`tested_by`。既定は `calls`）を選びます。`FROM` を宣言する知識グラフ（std の関数なら std のもの）でたどります |
 
 ```text
 $ tsuzuri kg show total

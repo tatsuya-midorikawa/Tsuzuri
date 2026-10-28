@@ -270,6 +270,8 @@ pub struct KgData {
     pub diag: Vec<Diag>,
     pub index: KgIndex,
     by_id: BTreeMap<String, usize>,
+    /// The position in `meta.modules` of each module, by name.
+    modules_by_name: BTreeMap<String, usize>,
     source: Source,
     /// The first file of `facts` or `layouts` that did not match the manifest (`intact`).
     failure: Arc<OnceLock<manifest::Freshness>>,
@@ -386,16 +388,25 @@ fn read_listed(dir: &Path, manifest: &Manifest, path: &str) -> Result<Option<Vec
 /// Runs `body` over one publication of the graph at `dir`: it reads files through the function
 /// it gets (see `read_listed`). A writer replaces the whole directory, so a file that does not
 /// match the manifest was read across a replacement when the manifest has changed since: `body`
-/// runs again, up to `READ_ATTEMPTS` times. Otherwise the graph is broken.
+/// runs again, up to `READ_ATTEMPTS` times. Otherwise the graph is broken. The stamp of the
+/// marker (`None` without one) is that publication's too: the marker read before the manifest and
+/// after the files must agree, else the read crossed a replacement and starts again.
 fn with_snapshot<T>(
     dir: &Path,
     body: impl Fn(&Manifest, ReadFile) -> Result<T, String>,
-) -> Result<T, manifest::Freshness> {
+) -> Result<(T, Option<String>), manifest::Freshness> {
     let mut attempt = 1;
     loop {
+        let stamp = super::write::marker_stamp(dir);
         let manifest = manifest::read(dir)?;
         match body(&manifest, &|path| read_listed(dir, &manifest, path)) {
-            Ok(value) => return Ok(value),
+            Ok(value) if super::write::marker_stamp(dir) == stamp => return Ok((value, stamp)),
+            Ok(_) if attempt == READ_ATTEMPTS => {
+                return Err(manifest::Freshness::Broken(
+                    "it was replaced while it was read".into(),
+                ));
+            }
+            Ok(_) => attempt += 1,
             Err(reason) => {
                 let replaced = manifest::read(dir).ok().as_ref() != Some(&manifest);
                 if !replaced || attempt == READ_ATTEMPTS {
@@ -407,19 +418,33 @@ fn with_snapshot<T>(
     }
 }
 
+/// One publication of a graph: its manifest, the files that the reader took, and the stamp of
+/// its marker.
+pub struct Snapshot {
+    pub manifest: Manifest,
+    pub files: Files,
+    pub stamp: Option<String>,
+}
+
 /// The manifest and the files that `wanted` selects of one publication of the graph at `dir`,
-/// each with the SHA-256 that the manifest lists (`kg export`, `kg verify`).
+/// each with the SHA-256 that the manifest lists, and its marker's stamp (`kg export`,
+/// `kg verify`).
 pub fn read_snapshot(
     dir: &Path,
     wanted: &dyn Fn(&str) -> bool,
-) -> Result<(Manifest, Files), manifest::Freshness> {
-    with_snapshot(dir, |manifest, read| {
+) -> Result<Snapshot, manifest::Freshness> {
+    let ((manifest, files), stamp) = with_snapshot(dir, |manifest, read| {
         let mut files = Files::default();
         for path in manifest.files.keys().filter(|path| wanted(path)) {
             let bytes = read(path)?.expect("a listed file");
             files.put(path.clone(), bytes);
         }
         Ok((manifest.clone(), files))
+    })?;
+    Ok(Snapshot {
+        manifest,
+        files,
+        stamp,
     })
 }
 
@@ -489,11 +514,9 @@ struct Rows<T> {
 /// The lower-case stem of a module key that the table file at `path` holds: its name without
 /// `.jsonl` and without the `~n` that `write::unique_names` adds.
 fn group_of(path: &str) -> String {
-    let name = path
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .trim_end_matches(".jsonl");
+    // One extension: the module `Util.jsonl` has the file `Util.jsonl.jsonl`.
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let name = file.strip_suffix(".jsonl").unwrap_or(file);
     let base = match name.rsplit_once('~') {
         Some((base, number)) if number.bytes().all(|byte| byte.is_ascii_digit()) => base,
         _ => name,
@@ -633,6 +656,7 @@ impl KgData {
         with_snapshot(dir, |manifest, read| {
             Self::parse(manifest, read, Source::Directory(dir.to_path_buf()))
         })
+        .map(|(data, _)| data)
     }
 
     /// Reads the graph at `dir` as `open` does, and judges the manifest of that publication: the
@@ -643,11 +667,11 @@ impl KgData {
         source_hash: &str,
         stamp: &str,
     ) -> Result<KgData, manifest::Freshness> {
-        let (manifest, data) = with_snapshot(dir, |manifest, read| {
+        let ((manifest, data), marker) = with_snapshot(dir, |manifest, read| {
             let data = Self::parse(manifest, read, Source::Directory(dir.to_path_buf()))?;
             Ok((manifest.clone(), data))
         })?;
-        match manifest::judge(dir, &manifest, source_hash, stamp) {
+        match manifest::judge(&manifest, marker.as_deref(), source_hash, stamp) {
             manifest::Freshness::Fresh => Ok(data),
             other => Err(other),
         }
@@ -781,8 +805,13 @@ impl KgData {
             .enumerate()
             .map(|(index, node)| (node.id.clone(), index))
             .collect();
+        let meta = Meta::of(manifest);
+        let mut modules_by_name = BTreeMap::new();
+        for (index, module) in meta.modules.iter().enumerate() {
+            modules_by_name.entry(module.name.clone()).or_insert(index);
+        }
         Ok(KgData {
-            meta: Meta::of(manifest),
+            meta,
             nodes,
             edges,
             tests,
@@ -791,6 +820,7 @@ impl KgData {
             diag,
             index,
             by_id,
+            modules_by_name,
             source,
             failure,
         })
@@ -897,13 +927,23 @@ impl KgData {
             .map(|test| test.index)
     }
 
+    /// Replaces the modules of the manifest (a graph made of rows alone has none), with their
+    /// index by name.
+    pub fn set_modules(&mut self, modules: Vec<ModuleEntry>) {
+        self.modules_by_name.clear();
+        for (index, module) in modules.iter().enumerate() {
+            self.modules_by_name
+                .entry(module.name.clone())
+                .or_insert(index);
+        }
+        self.meta.modules = modules;
+    }
+
     /// The key of the module `id` (from the manifest's modules).
     pub fn module_key(&self, id: &str) -> Option<&str> {
-        self.meta
-            .modules
-            .iter()
-            .find(|module| module.name == id)
-            .map(|module| module.key.as_str())
+        self.modules_by_name
+            .get(id)
+            .map(|index| self.meta.modules[*index].key.as_str())
     }
 
     /// The facts row of the node `id`, from its module's file.
@@ -1093,7 +1133,7 @@ mod tests {
         let dir = root.path.join("kg");
         super::super::write::publish(&dir, &graph("old"), "00").unwrap();
         let attempts = std::cell::Cell::new(0);
-        let (manifest, files) = with_snapshot(&dir, |manifest, read| {
+        let ((manifest, files), stamp) = with_snapshot(&dir, |manifest, read| {
             attempts.set(attempts.get() + 1);
             let nodes = read("nodes.jsonl")?.unwrap();
             if attempts.get() == 1 {
@@ -1105,6 +1145,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(attempts.get(), 2);
+        assert_eq!(stamp.as_deref(), Some("00"));
         assert_eq!(files.0, b"{\"id\":\"new\"}\n");
         assert_eq!(files.1, b"{\"id\":\"new\"}\n");
         assert_eq!(manifest.files["nodes.jsonl"], digest(&files.0));
@@ -1159,6 +1200,32 @@ mod tests {
         data.intact().unwrap();
     }
 
+    /// The stamp of a snapshot is that of its own marker: a graph of the same files that another
+    /// compiler publishes between the reader's manifest and its last file is read again.
+    #[test]
+    fn a_snapshot_keeps_the_stamp_of_its_marker() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        super::super::write::publish(&dir, &graph("a"), "00").unwrap();
+        let attempts = std::cell::Cell::new(0);
+        let (_, stamp) = with_snapshot(&dir, |_, read| {
+            attempts.set(attempts.get() + 1);
+            let nodes = read("nodes.jsonl")?;
+            if attempts.get() == 1 {
+                // The same files, published by a compiler with another stamp.
+                super::super::write::publish(&dir, &graph("a"), "01").unwrap();
+            }
+            Ok(nodes)
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(stamp.as_deref(), Some("01"));
+        assert_eq!(
+            KgData::open_fresh(&dir, &"00".repeat(32), "00").unwrap_err(),
+            manifest::Freshness::Stale("built by a different compiler")
+        );
+    }
+
     /// A reader judges the publication that it read: a graph of other sources, of another compiler
     /// or incomplete is not taken for the fresh one that it replaced.
     #[test]
@@ -1201,6 +1268,10 @@ mod tests {
             "facts/Acme.Mainly.jsonl".to_owned(),
             b"{\"id\":\"c\"}\n".to_vec(),
         );
+        bytes.insert(
+            "facts/Util.jsonl.jsonl".to_owned(),
+            b"{\"id\":\"d\"}\n".to_vec(),
+        );
         let manifest = Manifest {
             schema: "tz-kg/1".into(),
             compiler: manifest::compiler(),
@@ -1232,6 +1303,8 @@ mod tests {
         assert_eq!(tables.find("Acme::Main", "b").unwrap().id, "b");
         assert!(tables.find("Acme::Main", "c").is_none());
         assert_eq!(tables.find("Acme::Mainly", "c").unwrap().id, "c");
+        // The module `Util.jsonl`: one extension is the file's.
+        assert_eq!(tables.find("Util.jsonl", "d").unwrap().id, "d");
         assert!(tables.find("Acme::Other", "a").is_none());
     }
 

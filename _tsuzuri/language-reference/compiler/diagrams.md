@@ -151,7 +151,7 @@ stateDiagram-v2
 
 ### `concurrency`
 
-並行の近似です。値の流れは知識グラフにないので、署名の型（`Channel.Sender<T>`・`Channel.Receiver<T>`・`Mutex<T>`・`Atomic<T>`）と呼び出し（`Task.scope`・`Task.parallel`・`Parallel.*`・`Channel.bounded`・`Mutex.create`・`Atomic.create`）から作り、図に「approximate」の注記を必ず付けます。並行の区画を作る関数は二重枠、共有するセルは紫です。生成の呼び出しの型 `T` は、署名に同じ種類のセルの型が 1 つしかないときだけ書き、2 つ以上なら `?` です。ID にモジュールを渡すと、そのモジュールの関数だけを描きます（ほかのモジュールの区画からの呼び出しは描きません）。区画とセルはまとめません: `--max-nodes` に区画とセル、ほかの関数のまとめ 1 つ、注記が収まらなければ `diagram_too_large` です。
+並行の近似です。値の流れは知識グラフにないので、署名の型（`Channel.Sender<T>`・`Channel.Receiver<T>`・`Mutex<T>`・`Atomic<T>`）と呼び出し（`Task.scope`・`Task.parallel`・`Task.parallel_results`・`Parallel.*`・`Channel.bounded`・`Mutex.create`・`Atomic.create`）から作り、図に「approximate」の注記を必ず付けます。並行の区画を作る関数は二重枠、共有するセルは紫です。生成の呼び出しの型 `T` は、署名に同じ種類のセルの型が 1 つしかないときだけ書き、2 つ以上なら `?` です（`Channel.Sender<(i64 -> i64)>` の `->` の `>` は型の終わりではありません）。ID にモジュールを渡すと、そのモジュールの関数だけを描きます（ほかのモジュールの区画からの呼び出しは描きません）。区画とセルはまとめません: `--max-nodes` に区画とセル、ほかの関数のまとめ 1 つ、注記が収まらなければ `diagram_too_large` です。
 
 ```mermaid
 flowchart LR
@@ -180,7 +180,7 @@ flowchart LR
 
 ### `layout`
 
-record・union のメモリの配置を表にします。数値は 64-bit の native のものだけです（wasm32 ではポインターが 4 byte なので違います）。record のフィールドのオフセットは、大きさの分かる基本型（`i8`〜`i64`・`u8`〜`u64`・`f32`・`f64`・`bool`）が続く間だけ書き、分からない型の後ろは `?` です。`Drop` を実装する record は、フィールドの後ろの 1 byte が生存フラグ（`(live flag)` の行）で、その後ろが末尾の詰め物です。型はコード（`` `Vec<i64>` ``）として書くので、Markdown が `<i64>` を HTML として隠すことはありません。
+record・union のメモリの配置を表にします。数値は 64-bit の native のものだけです（wasm32 ではポインターが 4 byte なので違います）。record のフィールドのオフセットは、大きさの分かる基本型（`i8`〜`i64`・`u8`〜`u64`・`f32`・`f64`・`bool`）が続く間だけ書き、分からない型の後ろは `?` です。`Drop` を実装する record は、フィールドの後ろの 1 byte が生存フラグ（`(live flag)` の行）で、その後ろが末尾の詰め物です。型はコード（`` `Vec<i64>` ``）として書くので、Markdown が `<i64>` を HTML として隠すことはありません。型引数のある record・union の配置は具体的な型ごと（`M.Box<i64>`）にあり、宣言の ID（`M.Box`）で 1 つに決まればそれを、いくつもあれば候補を出します。
 
 ```text
 # Layout of Shapes::Shapes.Shape (native, 64-bit)
@@ -290,7 +290,7 @@ Mermaid の既定の上限（辺 500 本・50,000 文字）より内側に収め
 | `diagram_unknown_id` | ID が見つからない（似た ID を 5 つまで挙げます） |
 | `diagram_wrong_id_kind` | ID の種類が違う（`'X' is a record; diagram kind 'calls' needs a function id`） |
 | `diagram_unavailable` | 図に要る事実がない（所有権の事実・レイアウトの行・`match` の遷移がない） |
-| `diagram_too_large` | 45,000 文字を超える、`concurrency` の区画とセルが `--max-nodes` に収まらない |
+| `diagram_too_large` | 45,000 文字を超える、`concurrency` の区画とセルが `--max-nodes` に収まらない、`transitions` の case（状態はまとめない）が `--max-nodes` より多い |
 
 知識グラフがない・古い・壊れているとき、`transitions` のソースが知識グラフと違うときは `E2009`（終了コード 1）です。
 

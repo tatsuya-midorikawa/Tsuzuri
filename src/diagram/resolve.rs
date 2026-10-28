@@ -43,7 +43,14 @@ pub fn resolve(input: &Input, kind: Kind, text: &str) -> Result<String, DiagramE
     if ids.iter().any(|id| id == text) {
         return Ok(text.to_owned());
     }
-    if let Some(symbol) = input.symbol(text) {
+    // A record or union names its layouts, whose IDs are those of its concrete types
+    // (`M.Box<i64>` of the generic `M.Box`): it goes on to the stages below.
+    let layout_of_a_type = |symbol: &super::input::Symbol| {
+        kind == Kind::Layout && matches!(symbol.kind.as_str(), "record" | "union")
+    };
+    if let Some(symbol) = input.symbol(text)
+        && !layout_of_a_type(symbol)
+    {
         return Err(DiagramError {
             kind: "diagram_wrong_id_kind",
             message: format!(

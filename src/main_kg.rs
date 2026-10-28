@@ -471,15 +471,16 @@ fn kg_verify(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         manifest::diagnostic(&dir, &freshness)
             .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
     };
-    let (manifest, files) = tsuzuri::kg::store::read_snapshot(&dir, &|_| true).map_err(broken)?;
+    let snapshot = tsuzuri::kg::store::read_snapshot(&dir, &|_| true).map_err(broken)?;
+    let (manifest, files) = (&snapshot.manifest, &snapshot.files);
     // What is verified is that publication: one that replaced the graph since `inspect` must be
     // fresh as well.
-    match manifest::judge(&dir, &manifest, &hash, &stamp) {
+    match manifest::judge(manifest, snapshot.stamp.as_deref(), &hash, &stamp) {
         Freshness::Fresh => {}
         other => return Err(manifest::diagnostic(&dir, &other).expect("not fresh")),
     }
     let data =
-        KgData::from_parts(&manifest, &files).map_err(|reason| manifest::broken(&dir, &reason))?;
+        KgData::from_parts(manifest, files).map_err(|reason| manifest::broken(&dir, &reason))?;
     if let Some(violation) = data.violation() {
         return Err(manifest::broken(&dir, &violation));
     }
@@ -567,19 +568,18 @@ fn kg_export(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     };
     // The files of one publication: the graph that was opened, or one that a writer put in its
     // place since, which must be fresh and complete as well.
-    let (manifest, files) =
-        tsuzuri::kg::store::read_snapshot(&dir, wanted).map_err(|freshness| {
-            manifest::diagnostic(&dir, &freshness)
-                .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
-        })?;
+    let snapshot = tsuzuri::kg::store::read_snapshot(&dir, wanted).map_err(|freshness| {
+        manifest::diagnostic(&dir, &freshness)
+            .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
+    })?;
     let hash = tsuzuri::kg::input::hex(&tsuzuri::kg::input::source_hash(&project));
     let stamp = tsuzuri::kg::build::current_stamp()?;
-    match manifest::judge(&dir, &manifest, &hash, &stamp) {
+    match manifest::judge(&snapshot.manifest, snapshot.stamp.as_deref(), &hash, &stamp) {
         Freshness::Fresh => {}
         other => return Err(manifest::diagnostic(&dir, &other).expect("not fresh")),
     }
     let mut out = io::stdout().lock();
-    for bytes in files.0.values() {
+    for bytes in snapshot.files.0.values() {
         let _ = out.write_all(bytes);
     }
     Ok(EXIT_SUCCESS)
@@ -1102,6 +1102,9 @@ fn kg_diagram(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         &mut |set, project| print_diagnostics(set, project, json),
     )?;
     let input = diagram::Input::from_kg(&data).map_err(|failure| failure.diagnostic())?;
+    // `from_kg` read the facts and layouts: a file that did not match is a broken or replaced
+    // graph (`E2009`), before any diagram's own error.
+    data.intact()?;
     let sources = diagram::ProjectSources::of(&project);
     let request = DiagramRequest {
         kind,
@@ -1112,7 +1115,6 @@ fn kg_diagram(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     };
     let output =
         diagram::render(&input, &sources, &request).map_err(|failure| failure.diagnostic())?;
-    data.intact()?;
     let mut out = io::stdout().lock();
     if json {
         let _ = writeln!(

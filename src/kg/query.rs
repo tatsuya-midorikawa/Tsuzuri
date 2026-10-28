@@ -544,7 +544,18 @@ fn walk<'a>(data: &'a KgData, start: &str, depth: usize, forward: bool) -> Vec<R
     reached
 }
 
-fn graph_data<'a>(view: &'a KgView, id: &str) -> Option<&'a KgData> {
+/// The graph to walk from `id`. Forward (callees, a path's start): the graph that declares `id`,
+/// since the project's graph knows a std function only as the end of its calls. Backward
+/// (callers): the project's first, whose calls into std end at std IDs.
+fn graph_data<'a>(view: &'a KgView, id: &str, forward: bool) -> Option<&'a KgData> {
+    if forward
+        && let Some(owner) = view
+            .project()
+            .filter(|data| data.edges.is_some() && data.node(id).is_some())
+            .or_else(|| view.std().filter(|data| data.node(id).is_some()))
+    {
+        return Some(owner);
+    }
     view.project()
         .filter(|data| data.edges.is_some())
         .filter(|data| data.index.number(id).is_some())
@@ -569,7 +580,7 @@ pub fn calls(
             format!("summary: 0 {word}, depth {depth}"),
         ));
     }
-    let reached = graph_data(view, &id)
+    let reached = graph_data(view, &id, forward)
         .map(|data| walk(data, &id, depth, forward))
         .unwrap_or_default();
     let mut items = Vec::new();
@@ -802,7 +813,12 @@ pub fn path(
     let end = resolve_one(view, to, false)?;
     let relations_text = relations.join(" or ");
     let header = format!("path from {start} to {end} (by {relations_text}, depth {depth})");
-    let Some(data) = view.project().filter(|data| data.edges.is_some()) else {
+    let data = if view.project().is_some_and(|data| data.edges.is_none()) {
+        None
+    } else {
+        graph_data(view, &start, true)
+    };
+    let Some(data) = data else {
         return Ok(no_graph(
             header,
             format!("summary: no path within depth {depth}"),

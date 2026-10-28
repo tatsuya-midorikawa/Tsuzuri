@@ -842,6 +842,44 @@ fn std_ids_resolve_when_the_std_kg_exists() {
     );
 }
 
+/// Callees and paths of a std function walk the std graph, even when the project calls it (and so
+/// knows its ID as the end of an edge); its callers are still the project's.
+#[test]
+fn forward_queries_of_std_functions_walk_the_std_graph() {
+    let outer = std::env::temp_dir().join(format!("tsuzuri-kg-query-tail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outer);
+    let root = outer.join("tail");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("Lib.tz"),
+        "def rest :: ref [i64] -> [i64] = \\values -> Array.tail values\n",
+    )
+    .unwrap();
+    let run = |arguments: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&root)
+            .args(["kg"])
+            .args(arguments)
+            .env("TSUZURI_CACHE_DIR", outer.join("cache"))
+            .env_remove("TSUZURI_KG")
+            .env_remove("TSUZURI_KG_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            stderr(&output)
+        );
+        stdout(&output)
+    };
+    let callees = run(&["callees", "Array.tail"]);
+    assert!(callees.contains("\n1 Array.sub  "), "{callees}");
+    let path = run(&["path", "Array.tail", "Array.sub"]);
+    assert!(path.contains("Array.tail --calls--> Array.sub"), "{path}");
+    let callers = run(&["callers", "Array.tail"]);
+    assert!(callers.contains("1 Tail::Lib.rest  Lib.tz:1:"), "{callers}");
+}
+
 #[test]
 fn queries_read_a_kg_without_facts() {
     let root = project("kg_shop", "no-facts");
