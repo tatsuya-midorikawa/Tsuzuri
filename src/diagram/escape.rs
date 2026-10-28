@@ -54,6 +54,33 @@ pub fn member(text: &str, limit: usize) -> String {
     esc(text, limit).replace('(', "#40;").replace(')', "#41;")
 }
 
+/// `text` as a Markdown code span on one line: control characters become spaces, the fence is one
+/// backtick longer than any run of backticks inside, and a text that starts or ends with one is
+/// padded with a space (CommonMark).
+pub fn code_span(text: &str) -> String {
+    let line: String = text
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let longest = line
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest + 1);
+    if line.starts_with('`') || line.ends_with('`') {
+        format!("{fence} {line} {fence}")
+    } else {
+        format!("{fence}{line}{fence}")
+    }
+}
+
 /// A DOT label: cut, then `\` and `"` with a backslash.
 pub fn dot_esc(text: &str, limit: usize) -> String {
     cut(text, limit).replace('\\', "\\\\").replace('"', "\\\"")
@@ -91,6 +118,15 @@ mod tests {
     #[test]
     fn member_escapes_parentheses() {
         assert_eq!(member("f(x) <y>", 60), "f#40;x#41; #lt;y#gt;");
+    }
+
+    #[test]
+    fn code_spans_hold_any_text() {
+        assert_eq!(code_span("Main.demo"), "`Main.demo`");
+        assert_eq!(code_span("test:M.<empty>"), "`test:M.<empty>`");
+        assert_eq!(code_span("a\nb"), "`a b`");
+        assert_eq!(code_span("a`b``c"), "```a`b``c```");
+        assert_eq!(code_span("`x"), "`` `x ``");
     }
 
     #[test]

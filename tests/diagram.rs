@@ -466,6 +466,26 @@ fn owning(events: &[(&str, &str, usize)]) -> Input {
     Input::from_texts(nodes, "", &[&facts], &[], "").unwrap()
 }
 
+/// A test's ID may hold any text: the heading shows it as one code span.
+#[test]
+fn ownership_headings_hold_any_test_name() {
+    let id = "test:M.<empty> `x`\nline";
+    let nodes = format!(
+        "{{\"id\":{},\"kind\":\"test\",\"module\":\"M\",\"name\":\"t\",\"params\":[],\"result\":null,\"origin\":\"project\",\"span\":{{\"path\":\"M.tz\",\"line\":1,\"column\":1}}}}\n",
+        serde_json::to_string(id).unwrap()
+    );
+    let facts = format!(
+        "{{\"id\":{},\"effects\":[],\"effects_complete\":false,\"ownership\":[{{\"var\":\"p\",\"event\":\"drop\",\"span\":{{\"path\":\"M.tz\",\"line\":2,\"column\":5}}}}]}}\n",
+        serde_json::to_string(id).unwrap()
+    );
+    let input = Input::from_texts(&nodes, "", &[&facts], &[], "").unwrap();
+    let text = draw(&input, &request(Kind::Ownership, Some(id)));
+    assert!(
+        text.starts_with("# Ownership of ``test:M.<empty> `x` line``\n"),
+        "{text}"
+    );
+}
+
 #[test]
 fn ownership_release_precedes_the_next_event() {
     let input = owning(&[("p", "borrow", 2), ("p", "move", 3)]);
@@ -637,6 +657,20 @@ fn layout_of_a_generic_record_finds_its_concrete_type() {
         error.message.contains("M.Box<i64>") && error.message.contains("M.Box<string>"),
         "{}",
         error.message
+    );
+    // Only its own concrete types: not those of `M.Boxed`, whose ID starts the same.
+    let nodes_boxed = nodes.clone() + &node("M.Boxed", "record", "M");
+    let boxed = row("M.Boxed");
+    let input = Input::from_texts(&nodes_boxed, "", &[], &[&boxed], "").unwrap();
+    let error = render(&input, &no_sources(), &request(Kind::Layout, Some("M.Box"))).unwrap_err();
+    assert_eq!(error.kind, "diagram_unknown_id");
+    assert!(!error.message.contains("M.Boxed"), "{}", error.message);
+    let both = one.clone() + &boxed;
+    let input = Input::from_texts(&nodes_boxed, "", &[], &[&both], "").unwrap();
+    let text = draw(&input, &request(Kind::Layout, Some("M.Box")));
+    assert!(
+        text.starts_with("# Layout of M.Box<i64> (native, 64-bit)\n"),
+        "{text}"
     );
     // A function is still the wrong kind.
     let nodes = nodes + &def("M.f", "M", "i64", "i64");
@@ -1416,6 +1450,34 @@ fn transitions_compare_whole_namespaces() {
         lib.as_ref().is_err() || !lib.as_ref().unwrap().text.contains("flip"),
         "{lib:?}"
     );
+}
+
+/// A function whose two branches each match the parameter gives the transitions of both.
+#[test]
+fn transitions_read_the_matches_of_both_branches() {
+    let source = "def pick :: U -> bool -> U\nfn pick value flag =\n    if flag then\n        match value with\n        | _ -> B\n    else\n        match value with\n        | _ -> A\n".to_owned();
+    let manifest = format!(
+        "{{\"edition\":\"2026\",\"modules\":[{{\"name\":\"M\",\"key\":\"M\",\"origin\":\"project\",\"path\":\"M.tz\",\"source\":\"{}\"}}]}}",
+        tsuzuri::kg::input::digest(source.as_bytes())
+    );
+    let mut nodes = node("M.U", "union", "M");
+    for case in ["A", "B"] {
+        nodes.push_str(&node(&format!("M.U.{case}"), "case", "M"));
+    }
+    nodes.push_str(&def("M.pick", "M", "U", "U"));
+    let input = Input::from_texts(&nodes, "", &[], &[], &manifest).unwrap();
+    let sources = BTreeMap::from([("M.tz".to_owned(), source)]);
+    let text = render(&input, &sources, &request(Kind::Transitions, Some("M.U")))
+        .unwrap()
+        .text;
+    for edge in [
+        "s1 --> s1 : pick",
+        "s1 --> s2 : pick",
+        "s2 --> s1 : pick",
+        "s2 --> s2 : pick",
+    ] {
+        assert!(text.contains(edge), "{edge}: {text}");
+    }
 }
 
 /// Every case of a transitions diagram is a state, and states are not folded: more cases than
