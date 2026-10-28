@@ -422,6 +422,14 @@ fn a_kg_without_edges_notes_it() {
         stdout(&output),
         "callers of Acme::Shop::Cart.total (depth 1)\nnote: this KG has no edges.jsonl\nsummary: 0 callers, depth 1\n"
     );
+    // The note is a line of the listing, within the budget like any other.
+    let output = query(
+        &root,
+        &["callers", "Acme::Shop::Cart.total", "--budget", "100"],
+    );
+    let text = stdout(&output);
+    assert!(text.chars().count() <= 100, "{text}");
+    assert!(text.ends_with("summary: 0 callers, depth 1\n"), "{text}");
 }
 
 #[test]
@@ -878,6 +886,21 @@ fn forward_queries_of_std_functions_walk_the_std_graph() {
     assert!(path.contains("Array.tail --calls--> Array.sub"), "{path}");
     let callers = run(&["callers", "Array.tail"]);
     assert!(callers.contains("1 Tail::Lib.rest  Lib.tz:1:"), "{callers}");
+    // A std type's users in the project, in `kg uses` and in `kg show` alike.
+    std::fs::write(
+        root.join("Wrap.tz"),
+        "def wrap :: i64 -> Maybe<i64> = \\n -> Some n\n",
+    )
+    .unwrap();
+    let uses = run(&["uses", "Maybe.Maybe"]);
+    assert!(uses.contains("Tail::Wrap.wrap"), "{uses}");
+    let show = run(&["show", "Maybe.Maybe"]);
+    assert!(show.contains("Tail::Wrap.wrap"), "{show}");
+    let json = run(&["show", "Maybe.Maybe", "--json"]);
+    assert!(json.contains("\"Tail::Wrap.wrap\""), "{json}");
+    // A search reads the whole first line of a description, past the 100 characters a card shows.
+    let found = run(&["search", "NaN", "--std", "--budget", "20000"]);
+    assert!(found.contains(" Array.sort_in_place  "), "{found}");
 }
 
 #[test]
