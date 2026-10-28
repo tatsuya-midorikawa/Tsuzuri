@@ -266,6 +266,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/contracts.rs` | A21 の契約: `ContractMode`・織り込み・`off` の剥がし・条件の純粋性・性質テストの生成 |
 | `src/prove.rs`・`src/prove_smt.rs` | A21 の `tsuzuri prove`: `QF_BV` への翻訳・ソルバーの起動・反例の復元 |
 | `src/canonical.rs`・`src/parse_canonical.rs` | A22 の正準形: 非正準な表記の記録（`Program.noncanonical`）・`W1007` と修正案・edition 2027 の `E0004`・`RangeOp`（`..=`・`..<`） |
+| `src/overflow.rs`・`src/llvm_overflow.rs` | A23 の整数の折り返しの報告: `Scope`（driver から emission へ）・地点の表・メッセージ・WASM の地点の表・`run --json` の行（`overflow.rs`）、計装 `overflow_check` と実行時の IR（`llvm_overflow.rs`） |
 | `src/capabilities.rs` | E15 の信頼境界と権限: `Capability`・`Policy`（実効の権限は入辺の積）・型付き IR の権限の解析（`analyze`）・`E1036`・`W1010`・`tsuzuri audit` の報告 |
 | `src/effects.rs` | A20 の効果の要約（`check::effects`）と効果の属性の検査（`E1031`・`E1032`・`W1008`）。組み込み関数の分類表 `builtin_facts` |
 | `src/derive.rs` | `deriving` の instance を通常の AST として生成（A07） |

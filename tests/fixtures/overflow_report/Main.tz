@@ -1,0 +1,11 @@
+export def add32 :: i32 -> i32 -> i32 = \a b -> a + b
+export def sub32u :: i32u -> i32u -> i32u = \a b -> a - b
+export def mul8 :: i8 -> i8 -> i8 = \a b -> a * b
+export def neg64 :: i64 -> i64 = \a -> -a
+export def pow16 :: i16 -> i16 -> i16 = \a b -> a ** b
+def sum128 :: i128 -> i128 = \a -> (a <<< 64) + (a <<< 64)
+export def wide64 :: i64 -> i64 = \a -> (sum128 (a as i128)) as i64
+def rec accumulate :: i32 -> i32 -> i32 = \n total -> if n == 0 then total else accumulate (n - 1) (total + 1000000000)
+export def tail32 :: i32 -> i32 = \n -> accumulate n 0
+export def masked :: i32 -> i32 = \a -> (a &&& 255) + 1
+export def saturated :: i32 -> i32 -> i32 = \a b -> Int.saturating_add a b

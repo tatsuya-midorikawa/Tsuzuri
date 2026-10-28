@@ -11,7 +11,7 @@ fn show_result value =
     | Result.Error inner -> "Error " + to_string inner
 
 test "i64 holds" = Gen.for_all (Gen.i64()) (\x -> x + 0 == x)
-test "pair commutes" = Gen.for_all (Gen.pair (Gen.i32()) (Gen.i32())) (\pair -> match pair with | (a, b) -> a + b == b + a)
+test "pair commutes" = Gen.for_all (Gen.pair (Gen.i32()) (Gen.i32())) (\pair -> match pair with | (a, b) -> Int.wrapping_add a b == Int.wrapping_add b a)
 test "i64 below 100" = Gen.for_all (Gen.i64()) (\x -> x < 100)
 test "i64 above -100" = Gen.for_all (Gen.i64()) (\x -> x > -100)
 test "i32 below 1000" = Gen.for_all (Gen.i32()) (\x -> x < 1000)

@@ -10,7 +10,8 @@ const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-integer-intrinsics-"));
 const operations = ["min", "max", "clamp", "abs", "unsigned_abs", "abs_diff", "count_ones",
   "leading_zeros", "trailing_zeros", "rotate_left", "rotate_right", "swap_bytes", "reverse_bits",
   "is_power_of_two", "checked_add", "checked_sub", "checked_mul", "checked_div", "checked_rem",
-  "checked_neg", "saturating_add", "saturating_sub", "saturating_mul", "wrapping_pow", "checked_pow", "widening_mul"];
+  "checked_neg", "saturating_add", "saturating_sub", "saturating_mul", "wrapping_pow", "checked_pow", "widening_mul",
+  "wrapping_add", "wrapping_sub", "wrapping_mul", "wrapping_neg"];
 const definitions = [], functions = [], cases = [];
 const bitsOf = (value, bits) => BigInt.asUintN(bits, value);
 const limbs = (value, signed) => [bitsOf(value, 64), signed ? BigInt.asIntN(64, value >> 64n) : bitsOf(value >> 64n, 64)];
@@ -75,6 +76,10 @@ function reference(operation, left, right, amount, bits, signed) {
     case "wrapping_pow": return wrap(left ** amount);
     case "checked_pow": return amount < 0n ? null : checked(left ** amount);
     case "widening_mul": return left * right;
+    case "wrapping_add": return wrap(left + right);
+    case "wrapping_sub": return wrap(left - right);
+    case "wrapping_mul": return wrap(left * right);
+    case "wrapping_neg": return wrap(-left);
     default: throw new Error(operation);
   }
 }
@@ -94,13 +99,13 @@ for (const bits of [8, 16, 32, 64, 128]) for (const signed of [true, false]) {
     inputs.push([left, signed ? BigInt.asIntN(bits, seed) : bitsOf(seed, bits)]);
   }
   for (const operation of operations) {
-    if ((!signed && ["abs", "unsigned_abs", "checked_neg"].includes(operation)) || (signed && operation === "is_power_of_two") || (bits === 128 && operation === "widening_mul")) continue;
+    if ((!signed && ["abs", "unsigned_abs", "checked_neg", "wrapping_neg"].includes(operation)) || (signed && operation === "is_power_of_two") || (bits === 128 && operation === "widening_mul")) continue;
     const id = functions.length, name = `integer_${id}`;
     const count = ["count_ones", "leading_zeros", "trailing_zeros"].includes(operation);
     const outputSigned = count || (signed && !["unsigned_abs", "abs_diff"].includes(operation));
     const outputWide = outputSigned ? "i128" : "i128u", outputHigh = outputSigned ? "i64" : "i64u";
     const checked = operation.startsWith("checked_");
-    const unary = ["abs", "unsigned_abs", "count_ones", "leading_zeros", "trailing_zeros", "swap_bytes", "reverse_bits", "is_power_of_two", "checked_neg"].includes(operation);
+    const unary = ["abs", "unsigned_abs", "count_ones", "leading_zeros", "trailing_zeros", "swap_bytes", "reverse_bits", "is_power_of_two", "checked_neg", "wrapping_neg"].includes(operation);
     const arguments_ = operation === "clamp" ? `left (Int.min right (amount as ${type})) (Int.max right (amount as ${type}))`
       : operation.endsWith("_pow") || operation.startsWith("rotate_") ? "left amount" : unary ? "left" : "left right";
     const compare = operation === "is_power_of_two" ? "(if actual then 1i128 else 0i128) == expected as i128" : `(actual as ${outputWide}) == expected`;

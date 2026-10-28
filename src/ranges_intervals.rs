@@ -92,6 +92,16 @@ impl RangeFacts {
         interval::arithmetic(operation, ty, left, right).flags
     }
 
+    /// The overflow flags of `-operand`: none unless it is an integer of at most 64 bits. The
+    /// rule is the one that `compute` reads `-x` with, `0 - x` (A23).
+    pub(crate) fn negation_flags(&mut self, module: &CheckedModule, operand: &TypedExpr) -> Flags {
+        let Some(ty) = integer(&operand.ty) else {
+            return Flags::default();
+        };
+        let value = self.value(module, operand, ty, 0);
+        interval::arithmetic(Operation::Subtract, ty, Interval::point(0), value).flags
+    }
+
     /// Records the values of the immutable integer local that `value` initializes, for the rest of
     /// the function: it is bound once and never changes.
     pub(crate) fn bind(&mut self, module: &CheckedModule, local: &Local, value: &TypedExpr) {

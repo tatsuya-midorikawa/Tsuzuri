@@ -591,6 +591,30 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 > [!WARNING]
 > トラップ後のインスタンスで `tz_` 関数を続けると、壊れたヒープを読みます。境界がインスタンスを作り直すのは、そのためです。
 
+## 整数の折り返しの報告
+
+`--overflow-report` を付けたモジュールは、整数の演算が折り返した地点を記録します（[整数の折り返しの報告](usage.md#整数の折り返しの報告)）。WebAssembly は報告を書かず、import も足しません。代わりに 2 つの関数を export し、成果物の隣に `<output>.overflow.json` を書きます。
+
+| export | 意味 |
+| --- | --- |
+| `tsuzuri_overflow_count() -> i32` | 地点の数 |
+| `tsuzuri_overflow_hit(i32) -> i32` | 地点 `i` が折り返したなら 1、まだなら 0。範囲外の `i` は 0 |
+
+記録は一度立つと下りません。新しいインスタンスでは 0 から始まります。表の `sites[i]` は `id`（= `i`）、`operation`（`add`・`sub`・`mul`・`neg`・`pow`）、`type`、`path`、`span`、`message` を持ち、`message` は native が標準エラーに書く文と同じです。
+
+```text
+{"version":1,"sites":[{"id":0,"operation":"add","type":"i32","path":"./Main.tz","span":{"start":48,"end":53,"line":1,"column":49,"end_line":1,"end_column":54},"message":"integer overflow wrapped at ./Main.tz:1:49 (i32 add)"}]}
+```
+
+Node からは、呼び出しのあとで折り返した地点の文を読めます（抜粋）。
+
+```text
+const table = JSON.parse(readFileSync("Main.wasm.overflow.json", "utf8"));
+for (let i = 0; i < exports.tsuzuri_overflow_count(); i += 1) {
+  if (exports.tsuzuri_overflow_hit(i) === 1) console.warn(`warning: ${table.sites[i].message}`);
+}
+```
+
 ## まとめ
 
 - `--emit bindings-js` のグルーが、型の検査、複製と解放、import、トラップを受け持ちます。
@@ -602,6 +626,7 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 - `Async.start` の実行器は `tsuzuri_async_poll` と `tsuzuri_async_complete` で駆動し、グルーでは `bindings.async` が受け持ちます。`Async.block_on` は `--wasm-feature jspi` が要ります。
 - `Gpu.request Gpu.WebGpu` は `--wasm-feature webgpu` が要り、JSPI のホスト（`createGpuImports`）が WebGPU を呼びます。`Gpu.Vulkan` は WebAssembly では使えず（`Unavailable`）、`Gpu.Auto` は CPU 参照です。
 - `--trap-info` の `.trap.json` とサイト ID で位置を引き、トラップしたインスタンスは捨てます。
+- `--overflow-report` のモジュールは、`tsuzuri_overflow_count`・`tsuzuri_overflow_hit` と `.overflow.json` で、折り返した整数の演算を知らせます。
 
 ## 関連項目
 

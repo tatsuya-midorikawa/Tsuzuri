@@ -11,6 +11,7 @@
 - 1 件でも失敗すると終了コードは 1 で、`E2006` が最初の失敗を指します。
 - `--coverage PATH` は、成功したテストが通った行と関数を lcov 形式で書きます（ネイティブだけ）。
 - プロパティテストは `Gen.for_all 生成器 性質` です。反例は縮小して表示され、seed は `--seed N` で変えられます。
+- テストの中で整数の演算が折り返すと、そのテストは失敗します。意図した折り返しは `Int.wrapping_add` などで書きます。`--allow-overflow` は報告だけにします（[整数の折り返し](#整数の折り返し)）。
 - 確保数の表明は [Alloc](alloc.md) の `snapshot`・`since`・`measure` で書けます。選んだテストが使うときだけ counting heap が自動で入り、時間の閾値なしで構造的な性質を検査できます。
 
 ## テストを書く
@@ -99,8 +100,42 @@ tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
 | `-g -o PATH` | `--index` の 1 件をデバッグ情報付きでビルドし、実行しない（[テストをデバッグする](#テストをデバッグする)） |
 | `--coverage PATH` | 成功したテストのカバレッジを lcov で `PATH` に書く。ネイティブだけ（[カバレッジ](#カバレッジ)） |
 | `--seed N` | プロパティテストの seed（0〜18446744073709551615）。既定は固定の `11400714819323198485`（[プロパティテスト](#プロパティテスト)） |
+| `--allow-overflow` | 整数の演算が折り返したテストを失敗にせず、報告だけを出す（[整数の折り返し](#整数の折り返し)） |
 
 `--cpu` と `--emit` は使えません。`-o` は `-g` と組み合わせるときだけ使えます。タイムアウトを変えるオプションもありません。1 テストの上限は 30 秒です。
+
+### 整数の折り返し
+
+`tsuzuri test` は既定で、テストが実行した整数の `+`・`-`・`*`・`**`・単項 `-` が折り返したかを調べ（[整数の折り返しの報告](../compiler/usage.md#整数の折り返しの報告)）、折り返したテストを失敗にします。失敗理由は最初の報告の行で、その報告はテストの出力にも残ります。
+
+```text
+ok 1 - Main adds
+not ok 2 - Main hashes
+  failure: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
+  warning: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
+
+1 passed; 1 failed; 0 ignored
+```
+
+報告するのは、ルートパッケージのソースに書いた関数とテストの演算だけです。標準ライブラリと依存パッケージの中の演算、`@checked` の中、`Int.wrapping_*` などの名前で意味を書いた関数は報告しません。トラップや `assert` で失敗したテストは、その理由のまま失敗します。値は報告しないときと同じです。
+
+ハッシュや乱数のように折り返すことが正しい計算は、`Int.wrapping_add`・`Int.wrapping_sub`・`Int.wrapping_mul`・`Int.wrapping_neg` で書きます（[Int](int.md#検査飽和累乗拡大乗算)）。これらの関数は演算子と同じ命令で、報告されません。
+
+```tsuzuri project=hashing file=Hash.tz
+def mix :: i32 -> i32 -> i32 = \total x -> Int.wrapping_add (Int.wrapping_mul total 31) x
+
+test "mixes" =
+    assert (mix 2000000000 7 == 1870457863)
+```
+
+既存のテストが失敗するようになったら、折り返しが意図したものかを確かめ、意図したものなら `Int.wrapping_*` に直し、そうでなければ型の幅や計算を直します。`--allow-overflow` は、移行の間に使う一時的な逃げ道です。テストを成功のままにして、`ok` の行のあとに報告を出します。
+
+```text
+ok 2 - Main hashes
+  warning: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
+```
+
+ライブラリ API の `driver::run_tests`（`TestOptions::default()`）は報告しません。`--index N -g -o PATH` のデバッグ用のランナーと `tsuzuri bench` も計装しません。
 
 フィルターは正規表現ではありません。`Checks.tz` の `adds integers` は、一覧では `Checks.adds integers` です。`--filter "Checks.adds"` はこの 1 件に一致し、ほかは `ignored` になります。一致が 0 件でも終了コードは 0 です。
 
@@ -159,7 +194,11 @@ flowchart TD
 {"type":"summary","passed":2,"failed":0,"ignored":0,"duration_ms":307}
 ```
 
-失敗した行には `failure` が足されます。失敗したテストが標準エラーに書いていれば、その内容が `output` に入ります。
+失敗した行には `failure` が足されます。失敗したテストが標準エラーに書いていれば、その内容が `output` に入ります。整数の演算が折り返したテストの行には、`failure`・`output` のあと、`duration_ms` の前に `overflow`（報告の文の配列。`warning: ` は付きません）が足されます。`--allow-overflow` で成功したテストの行にも付きます。
+
+```text
+{"type":"test","index":1,"module":"Main","name":"hashes","status":"failed","failure":"integer overflow wrapped at ./Main.tz:2:44 (i32 mul)","output":"warning: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)\n","overflow":["integer overflow wrapped at ./Main.tz:2:44 (i32 mul)"],"duration_ms":76}
+```
 
 ```text
 {"type":"test","index":1,"module":"Main","name":"stock is positive","status":"failed","failure":"trapped or terminated by signal","duration_ms":269}
@@ -209,6 +248,8 @@ not ok 1 - Properties below 100
 ```
 
 値の選び方は決定的です。既定の seed は固定の `11400714819323198485` で、`--seed N` で変えられます。同じ seed なら、ネイティブでも WASM でも、`-O0` でも `-O3` でも同じ値を試し、同じ反例になります。
+
+乱数の整数どうしの `+`・`-`・`*` は、たいてい溢れます。`Gen.for_all (Gen.pair (Gen.i32()) (Gen.i32())) (\pair -> match pair with | (a, b) -> a + b == b + a)` は性質としては成り立ちますが、`a + b` が折り返すので、テストは折り返しの報告で失敗します。折り返しも含めて確かめるなら `Int.wrapping_add a b == Int.wrapping_add b a` と書き、溢れない値だけを試すなら `Gen.range` で範囲を絞ります（[整数の折り返し](#整数の折り返し)）。
 
 ## カバレッジ
 

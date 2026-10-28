@@ -108,7 +108,7 @@ instance Ord<Probe> {
 }
 
 def next_state :: i64u -> i64u
-fn next_state state = state * 6364136223846793005 + 1442695040888963407
+fn next_state state = Int.wrapping_add (Int.wrapping_mul state 6364136223846793005) 1442695040888963407
 
 def log2 :: i64 -> i64
 fn log2 n =

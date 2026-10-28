@@ -89,6 +89,8 @@ a=512 b=4 c=10 d=4
 通常の整数演算（`+`、`-`、`*`、`**`、単項 `-`）は、型の幅で折り返します。未定義動作にはなりません。
 コンパイラは、その演算がオーバーフローしないと範囲から証明できたときだけ、LLVM の `nsw`／`nuw` の旗を書けます（環境変数 `TSUZURI_RANGE_FLAGS=proven`。既定の `off` は何も書きません）。証明できない演算は、旗のない折り返しのままで、計算の結果はどのモードでも同じです（[整数の範囲証明の旗](../compiler/option.md#整数の範囲証明の旗)）。
 
+折り返すことが意図の計算（ハッシュ、乱数）は、`Int.wrapping_add`・`Int.wrapping_sub`・`Int.wrapping_mul`・`Int.wrapping_neg` で名前を付けて書けます。演算子と同じ命令で、値も同じです（[Int](../built-in-types-and-modules/int.md#検査飽和累乗拡大乗算)）。`--overflow-report`（`tsuzuri test` は既定）は、演算子が実際に折り返した地点を報告し、`Int.wrapping_*` は報告しません（[整数の折り返しの報告](../compiler/usage.md#整数の折り返しの報告)）。
+
 折り返したくない式には `@checked` を付けます。注釈が付いた式や文が直接評価する演算子だけを検査し、溢れると `OverflowException` になります。呼び出した関数の中までは検査しません。注釈の中に書いたラムダの演算子は検査されますが、その例外はラムダの外の `try` には届きません。
 
 ```tsuzuri run=wrapped%3D-2147483648%20msg%3DArithmetic%20operation%20resulted%20in%20an%20overflow.

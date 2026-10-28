@@ -27,6 +27,18 @@ pub struct TestOptions {
     /// A21: the sources (path, text) whose trap locations a native runner reports, so that a test
     /// that breaks a contract line names it. Empty: no trap locations (the default).
     pub trap_sources: Vec<(String, String)>,
+    /// A23: report the integer arithmetic of the tests that wraps; `None` (the default) does not.
+    /// `tsuzuri test` reports it and fails the tests that wrap, unless `--allow-overflow`.
+    pub overflow: Option<OverflowTests>,
+}
+
+/// The integer overflow report of a test run (A23).
+#[derive(Clone, Debug)]
+pub struct OverflowTests {
+    /// Whether a test whose arithmetic wraps fails; `tsuzuri test --allow-overflow` clears it.
+    pub fail: bool,
+    /// The sources of the report, as `Project::overflow_sources` gives them.
+    pub sources: Vec<crate::overflow::Source>,
 }
 
 impl Default for TestOptions {
@@ -44,6 +56,7 @@ impl Default for TestOptions {
             backend: Backend::Llvm,
             allocator: llvm::Allocator::System,
             trap_sources: Vec::new(),
+            overflow: None,
         }
     }
 }
@@ -69,6 +82,8 @@ pub struct TestResult {
     pub failure: Option<String>,
     /// The end of the standard error of a failed test, such as a property's counterexample.
     pub output: String,
+    /// A23: the overflow reports of the test, without `warning: `, whether it failed or not.
+    pub overflow: Vec<String>,
     pub duration_ms: u128,
 }
 
@@ -248,15 +263,18 @@ fn run_with_timeout(
                     };
                     let started = Instant::now();
                     let result =
-                        execute_test(&runner, index, timeout).map(|(failure, output)| TestResult {
-                            case: case.clone(),
-                            output: if failure.is_some() {
-                                output
-                            } else {
-                                String::new()
-                            },
-                            failure,
-                            duration_ms: started.elapsed().as_millis(),
+                        execute_test(&runner, index, timeout).map(|(failure, output, overflow)| {
+                            TestResult {
+                                case: case.clone(),
+                                output: if failure.is_some() {
+                                    output
+                                } else {
+                                    String::new()
+                                },
+                                failure,
+                                overflow,
+                                duration_ms: started.elapsed().as_millis(),
+                            }
                         });
                     results.lock().unwrap().push((case.index, result));
                 }
@@ -373,6 +391,8 @@ struct Runner {
     coverage: Option<PathBuf>,
     /// Whether `program` is the command of `TSUZURI_RUNNER`, which starts the test executable.
     foreign: bool,
+    /// A23: whether a test that reports an integer overflow fails.
+    overflow_fails: bool,
 }
 
 /// A native test runner with debug information that runs one test when a debugger starts
@@ -644,23 +664,27 @@ fn native_runtime_sources(
     Ok(sources)
 }
 
-/// Runs selected test `index`: why it failed, if it did, and the end of its stderr.
+/// Runs selected test `index`: why it failed, if it did, the end of its stderr, and its overflow
+/// reports. A test that ends well but reports an overflow fails with its first report (A23).
 fn execute_test(
     runner: &Runner,
     index: usize,
     timeout: Duration,
-) -> Result<(Option<String>, String), Diagnostic> {
+) -> Result<(Option<String>, String, Vec<String>), Diagnostic> {
     let mut command = Command::new(&runner.program);
     command.args(&runner.arguments).arg(index.to_string());
     if let Some(directory) = &runner.coverage {
         command.env("TSUZURI_COVERAGE_FILE", coverage_file(directory, index));
     }
     let finished = run_captured(&mut command, timeout, false, "test", runner.foreign)?;
-    let failure = match finished.status {
+    let mut failure = match finished.status {
         Some(status) => (!status.success()).then(|| termination_reason(&status)),
         None => Some(format!("timed out after {}ms", timeout.as_millis())),
     };
-    Ok((failure, finished.stderr))
+    if failure.is_none() && runner.overflow_fails {
+        failure = finished.overflow.first().cloned();
+    }
+    Ok((failure, finished.stderr, finished.overflow))
 }
 
 fn termination_reason(status: &std::process::ExitStatus) -> String {
@@ -702,6 +726,12 @@ fn build_runner(
         .functions
         .iter()
         .any(|function| function.module == "Gen");
+    // A23: the emission instruments the arithmetic of the report, and numbers its sites.
+    let overflow = options
+        .overflow
+        .as_ref()
+        .map(|tests| crate::overflow::Scope::enter(tests.sources.clone()));
+    let overflow_fails = options.overflow.as_ref().is_some_and(|tests| tests.fail);
     // A21: a native runner of a program with contract lines reports where a trap happened.
     let trap_sources: Vec<crate::trap::TrapSource<'_>> = options
         .trap_sources
@@ -756,8 +786,24 @@ fn build_runner(
             arguments: Vec::new(),
             coverage: coverage.map(|_| directory.to_owned()),
             foreign: false,
+            overflow_fails,
         });
     }
+    // WebAssembly cannot write the report: the Node runner reads the hits and writes the lines of
+    // the side table.
+    let overflow_table = match (&overflow, &options.overflow) {
+        (Some(scope), Some(tests)) => {
+            let path = directory.join("overflow.json");
+            fs::write(
+                &path,
+                crate::overflow::side_table(&scope.sites(), &tests.sources),
+            )
+            .map_err(|error| io_error("write overflow side table", &path, error))?;
+            Some(path)
+        }
+        _ => None,
+    };
+    drop(overflow);
     text = llvm::with_wasm_heap_limit(text, max_memory);
     if crate::driver::wasm_stack_checks(options.target, false, max_memory) {
         text = llvm::with_stack_checks(text, false);
@@ -815,6 +861,16 @@ fn build_runner(
             "--export=tsuzuri_test_count",
             "--export=tsuzuri_test_run",
         ])
+        .args(
+            overflow_table
+                .is_some()
+                .then_some([
+                    "--export=tsuzuri_overflow_count",
+                    "--export=tsuzuri_overflow_hit",
+                ])
+                .into_iter()
+                .flatten(),
+        )
         // The host's `tsuzuri_debug.write` reads the text from the exported memory. wasm-ld
         // exports it by default; like `build --debug-output`, do not rely on that.
         .args(debug_output.then_some("--export-memory"))
@@ -836,11 +892,14 @@ fn build_runner(
     let script = directory.join("run.mjs");
     fs::write(&script, include_str!("runtime/test-runner.mjs"))
         .map_err(|error| io_error("write Node test runner", &script, error))?;
+    let mut arguments = vec![script.into_os_string(), artifact.into_os_string()];
+    arguments.extend(overflow_table.map(PathBuf::into_os_string));
     Ok(Runner {
         program: "node".into(),
-        arguments: vec![script.into_os_string(), artifact.into_os_string()],
+        arguments,
         coverage: None,
         foreign: false,
+        overflow_fails,
     })
 }
 
@@ -1342,10 +1401,17 @@ struct Captured {
     status: Option<std::process::ExitStatus>,
     stdout: String,
     stderr: String,
+    /// The overflow reports of its standard error, without `warning: ` (A23).
+    overflow: Vec<String>,
 }
 
 /// The most bytes of a child's standard error that a report keeps (the last ones).
 const CAPTURED_STDERR: usize = 64 * 1024;
+/// The most overflow report lines that a test keeps: one per site up to the 100 that a program
+/// writes, and the line that stops the report (A23).
+const CAPTURED_OVERFLOW_LINES: usize = crate::overflow::MAX_PRINTED as usize + 1;
+/// The most bytes of one overflow report line that a test keeps.
+const CAPTURED_LINE: usize = 4096;
 
 /// Runs `command` with null stdin, waiting at most `timeout`. Readers drain the pipes while the
 /// child runs, so a full pipe never blocks it; stdout is kept only with `stdout`. `kind` is
@@ -1432,23 +1498,42 @@ fn run_captured(
     let stdout = out
         .map(|reader| reader.join().unwrap_or_default())
         .unwrap_or_default();
-    let stderr = err.join().unwrap_or_default();
+    let (stderr, overflow) = err.join().unwrap_or_default();
     Ok(Captured {
         status,
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr,
+        overflow,
     })
 }
 
-/// Reads `reader` to its end and keeps its last `limit` bytes, noting what it left out.
-fn read_tail(mut reader: impl std::io::Read, limit: usize) -> String {
+/// Reads `reader` to its end and keeps its last `limit` bytes, noting what it left out, and the
+/// overflow report lines wherever they are, so that a long output cannot push them out (A23).
+fn read_tail(mut reader: impl std::io::Read, limit: usize) -> (String, Vec<String>) {
     let mut kept: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
     let mut omitted = 0usize;
     let mut buffer = [0u8; 8192];
+    let mut reports = Vec::new();
+    let mut line = Vec::new();
+    let finish = |line: &mut Vec<u8>, reports: &mut Vec<String>| {
+        let text = String::from_utf8_lossy(line);
+        let text = text.trim_end_matches('\r');
+        if reports.len() < CAPTURED_OVERFLOW_LINES && crate::overflow::is_report_line(text) {
+            reports.push(text["warning: ".len()..].to_owned());
+        }
+        line.clear();
+    };
     loop {
         match reader.read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(count) => {
+                for &byte in &buffer[..count] {
+                    if byte == b'\n' {
+                        finish(&mut line, &mut reports);
+                    } else if line.len() < CAPTURED_LINE {
+                        line.push(byte);
+                    }
+                }
                 kept.extend(&buffer[..count]);
                 while kept.len() > limit {
                     kept.pop_front();
@@ -1457,12 +1542,14 @@ fn read_tail(mut reader: impl std::io::Read, limit: usize) -> String {
             }
         }
     }
+    finish(&mut line, &mut reports);
     let text = String::from_utf8_lossy(kept.make_contiguous()).into_owned();
-    if omitted == 0 {
+    let text = if omitted == 0 {
         text
     } else {
         format!("[{omitted} earlier bytes omitted]\n{text}")
-    }
+    };
+    (text, reports)
 }
 
 #[cfg(test)]
@@ -1691,6 +1778,7 @@ mod tests {
                 arguments: vec!["-c".into(), script.into()],
                 coverage: None,
                 foreign: false,
+                overflow_fails: false,
             };
             assert_eq!(
                 execute_test(&runner, 0, Duration::from_secs(5))

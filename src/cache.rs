@@ -753,7 +753,8 @@ impl BuildCache {
             let files = metadata["files"]
                 .as_object()
                 .ok_or_else(|| invalid("missing cache files"))?;
-            if !files.contains_key("artifact") || files.len() > 3 {
+            // A WebAssembly module may come with its trap and overflow tables and a profile writer.
+            if !files.contains_key("artifact") || files.len() > 4 {
                 return Err(invalid("invalid cache artifact set"));
             }
             let mut remaining = MAX_ENTRY_BYTES;
@@ -761,7 +762,7 @@ impl BuildCache {
             for (name, fields) in files {
                 if !matches!(
                     name.as_str(),
-                    "artifact" | "traps" | "dwarf" | "pdb" | "profile"
+                    "artifact" | "traps" | "overflow" | "dwarf" | "pdb" | "profile"
                 ) {
                     return Err(invalid("invalid cache artifact name"));
                 }
@@ -888,7 +889,7 @@ impl BuildCache {
         for (name, file) in files {
             if !matches!(
                 name.as_str(),
-                "artifact" | "traps" | "dwarf" | "pdb" | "profile"
+                "artifact" | "traps" | "overflow" | "dwarf" | "pdb" | "profile"
             ) {
                 return Err(invalid("invalid cache artifact name"));
             }
@@ -1287,20 +1288,26 @@ mod tests {
             fs::write(&path, name).unwrap();
             path
         };
-        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF, and an
-        // instrumented WebAssembly module caches its profile writer (PR07).
-        for sidecars in [["traps", "dwarf"], ["traps", "pdb"], ["traps", "profile"]] {
+        // A Windows `-g` build caches its PDB beside the executable (G16), as macOS caches DWARF, an
+        // instrumented WebAssembly module caches its profile writer (PR07), and a WebAssembly module
+        // with the overflow report its side table (A23).
+        for sidecars in [
+            &["traps", "dwarf"][..],
+            &["traps", "pdb"],
+            &["traps", "profile"],
+            &["traps", "overflow", "profile"],
+        ] {
             let mut hash = Sha256::new();
             hash.field("sidecars", sidecars.join(",").as_bytes());
             let key = hash.hex();
             let mut paths = BTreeMap::from([("artifact".to_owned(), file("artifact"))]);
-            for name in sidecars {
+            for &name in sidecars {
                 paths.insert(name.to_owned(), file(name));
             }
             cache.store(&key, &paths, &[]).unwrap();
             let loaded = cache.load(&key).unwrap().unwrap();
             assert!(loaded.files.keys().eq(paths.keys()));
-            for name in sidecars {
+            for &name in sidecars {
                 assert_eq!(loaded.files[name].bytes, name.as_bytes());
             }
         }

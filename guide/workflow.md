@@ -14,12 +14,12 @@
 
 ## Tests
 - `test "name" = body` (a `unit` body) sits beside the code and is not in the executable. Use `assert (c)`, `Test.is_true c`, `Test.equal (ref a) (ref b)`. `Gen.for_all gen prop` tries 100 values with a fixed seed (`--seed N`).
-- `tsuzuri test .` runs each test in its own process at `-O0`. `--list`, `--filter TEXT` (a substring of `Module.name`), `--json` (results on stdout). A failure exits 1 (E2006).
+- `tsuzuri test .` runs each test in its own process at `-O0`. `--list`, `--filter TEXT` (a substring of `Module.name`), `--json` (results on stdout). A failure exits 1 (E2006). A test whose integer `+ - *` wraps fails: write intended wrapping as `Int.wrapping_add`.
 ```tsuzuri
 def double :: i64 -> i64 = \n -> n * 2
 
 test "double" = Test.equal (ref (double 21)) (ref 42)
-test "even" = Gen.for_all (Gen.i64()) (\n -> double n % 2 == 0)
+test "even" = Gen.for_all (Gen.range (-1000) 1000) (\n -> double n % 2 == 0)
 ```
 
 ## Performance and debugging

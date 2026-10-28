@@ -793,6 +793,27 @@ impl<'a> Translator<'a> {
                             width,
                         ))
                     }
+                    (
+                        Builtin::IntWrappingAdd | Builtin::IntWrappingSub | Builtin::IntWrappingMul,
+                        [Value::Bits(a, width), Value::Bits(b, _)],
+                    ) => {
+                        let operator = match instance.builtin {
+                            Builtin::IntWrappingAdd => BinaryOp::Add,
+                            Builtin::IntWrappingSub => BinaryOp::Subtract,
+                            _ => BinaryOp::Multiply,
+                        };
+                        let width = *width;
+                        let term =
+                            binary_term(operator, width, signed, a, b).expect("integer arithmetic");
+                        Ok(Value::Bits(self.bits(term, width, span)?, width))
+                    }
+                    (Builtin::IntWrappingNeg, [Value::Bits(a, width)]) => {
+                        let width = *width;
+                        Ok(Value::Bits(
+                            self.bits(format!("(bvneg {a})"), width, span)?,
+                            width,
+                        ))
+                    }
                     _ => Err(unsupported(format!("a call of '{name}'"), span)),
                 }
             }

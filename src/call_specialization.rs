@@ -341,6 +341,32 @@ pub(super) fn intrinsic_operation(function: &CheckedFunction) -> Option<BinaryOp
     .then_some(*operator)
 }
 
+/// The `Int.wrapping_*` builtin that a `$builtin` wrapper applies to its parameters in order
+/// (A23 D8). Every use of a builtin calls such a wrapper, so a direct call of it is the builtin's
+/// one instruction, which the emitter writes instead of the call, as for `Add.add`.
+pub(super) fn wrapping_builtin(function: &CheckedFunction) -> Option<Builtin> {
+    if function.module != "$builtin" {
+        return None;
+    }
+    let TypedExprKind::Call(callee, arguments) = &function.body.kind else {
+        return None;
+    };
+    let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind else {
+        return None;
+    };
+    (matches!(
+        instance.builtin,
+        Builtin::IntWrappingAdd
+            | Builtin::IntWrappingSub
+            | Builtin::IntWrappingMul
+            | Builtin::IntWrappingNeg
+    ) && arguments.len() == function.parameters.len()
+        && arguments.iter().zip(&function.parameters).all(|(argument, parameter)| {
+            matches!(argument.kind, TypedExprKind::Local(id) if id == parameter.id)
+        }))
+    .then_some(instance.builtin)
+}
+
 pub(crate) fn field_root(mut expression: &TypedExpr) -> Option<(usize, &Type)> {
     loop {
         match &expression.kind {

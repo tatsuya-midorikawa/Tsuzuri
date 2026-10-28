@@ -101,7 +101,8 @@ let a = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
 let view = MatrixView.of_matrix (ref a)
 let gram = MatrixView.mul (MatrixView.transpose view) view
 let plain = Matrix.mul (ref (Matrix.transpose (ref a))) (ref a)
-let same = Matrix.fold (\total x -> total * 31 + x) 0 (ref gram) == Matrix.fold (\total x -> total * 31 + x) 0 (ref plain)
+let hash = Matrix.fold (\total x -> Int.wrapping_add (Int.wrapping_mul total 31) x) 0
+let same = hash (ref gram) == hash (ref plain)
 $"{Matrix.rows (ref gram)}x{Matrix.cols (ref gram)} {deref (Matrix.at 1 2 (ref gram))} {same}"
 ```
 

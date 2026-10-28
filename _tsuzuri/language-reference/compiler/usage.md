@@ -296,6 +296,8 @@ tsuzuri check demo
 
 `run` は `--target TRIPLE` も受け付けます（native の target だけで、WebAssembly は `E2000`）。ビルド機で動かせない target は、`TSUZURI_RUNNER` に実行器（qemu-user など）を指定したときだけ、その実行器を通して実行します。指定がなければ、ビルドの前に `E2000` です（[ほかの target の実行ファイルを動かす](platforms.md#ほかの-target-の実行ファイルを動かす)）。
 
+`run` に `--overflow-report` を付けると、範囲の証明で溢れないと示せない整数の演算に検査を足し、演算が折り返したときに標準エラーへ `warning: integer overflow wrapped at ./Main.tz:1:43 (i32u add)` のような行を書きます。値と終了コードは付けないときと同じです。`--json` を付けると、プログラムが成功したあと、報告の行は `path` と `span` を持つ `W2001` の警告の JSON になります（[整数の折り返しの報告](#整数の折り返しの報告)）。
+
 `run` に `--profile-generate DIR` を付けると、計装したプログラムを実行し、正常に終了したときに `DIR` へ LLVM の raw profile を書きます。トラップした実行は書きません。`--profile-use PATH` を付けると、プロファイルで最適化したプログラムを実行します。`run` は `--trap-info` でビルドするので、その IR に合うプロファイルは `run` か `build --trap-info` で作ります（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 
 ### repl
@@ -456,6 +458,8 @@ tsuzuri build demo/Main.tz -o demo/hello --profile-use demo/prof
 
 native の `exe` と `object`、wasm32 の module だけで、Windows と別の機械の `--target` は `E2000` です。プロファイルの中身（merge したバイト列）が成果物キャッシュのキーに入ります（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 
+`--overflow-report` は、整数の折り返しを報告する計装を足します。native の `exe`・`object`・`shared`・`llvm` と WebAssembly の出力で使え、WebAssembly では出力の隣に地点の表 `<出力>.overflow.json` を書きます。`--freestanding` との組み合わせ、`--emit header`・カーネル（`wgsl`・`spirv` 系）・バインディング（`bindings-*`）は `E2000` です（[整数の折り返しの報告](#整数の折り返しの報告)）。
+
 ### test
 
 確保数の表明には [Alloc](../built-in-types-and-modules/alloc.md) を使えます。選んだテストが読むときだけ counting heap が自動で連結されます。`--allocator counting` を明示すると、`Alloc` を使わないテストも counting で動きます。ほかの `--allocator` の値は `test` では `E2000` です。
@@ -484,6 +488,17 @@ WASM のテストは PATH の `node` を使います。配布物の `bin/` か�
 `--index N -g -o PATH` は、テスト N だけをデバッグ情報付きのランナーとして `PATH` にビルドし、実行しません。デバッガーでランナーを引数 `0` で起動します（[テストをデバッグする](debugging.md#テストをデバッグする)）。`-O1` から `-O3` を付けると最適化したランナーになり、テストの行とブレークポイントは残ります（変数は消えることがあります）。
 
 失敗したテストが標準エラーに書いた内容は、失敗理由の下に字下げして出ます（成功したテストの出力は出ません）。プロパティテスト（[Gen](../built-in-types-and-modules/gen.md)）の反例もここに出ます。`--seed N` はプロパティテストの seed を変えます。既定は固定の `11400714819323198485` で、同じ seed なら同じ値を試します。
+
+`test` は既定で、テストの中で折り返した整数の演算を報告し、そのテストを失敗にします。失敗理由は最初の報告の行（`warning: ` を除いたもの）です。トラップや `assert` で失敗したテストの理由は変わりません。意図した折り返しは `Int.wrapping_add` などで書きます（[Test の整数の折り返し](../built-in-types-and-modules/test.md#整数の折り返し)）。`--allow-overflow` は、折り返したテストを成功のままにして、`ok` の行のあとに `  warning: ...` で報告を出します。`--allow-overflow` は `test` 以外と、`-g` のデバッグ用のランナーでは `E2000` です。`--overflow-report` は `test` では既定と同じなので付けなくて構いません。
+
+```text
+ok 1 - Main adds
+not ok 2 - Main hashes
+  failure: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
+  warning: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
+
+1 passed; 1 failed; 0 ignored
+```
 
 `--coverage PATH` は、成功したテストが通った利用者のコードの行と関数を、lcov 形式で `PATH` に書きます。テストの要約の後に `coverage: 3/4 lines (75.0%), 1/2 functions` のような 1 行が出ます。ネイティブだけで、`--list` や `-g` とは組み合わせられません。数え方は [Test のカバレッジ](../built-in-types-and-modules/test.md#カバレッジ) にあります。
 
@@ -877,6 +892,34 @@ tsuzuri serve --stop demo
 ### toolchain info
 
 上の「配布物を使う」で見たとおり、`tsuzuri toolchain info` の 2 語だけがこのモードです。`toolchain` という名前のディレクトリをビルドしたいときは、`tsuzuri build toolchain` のようにサブコマンドを書いてください。
+
+## 整数の折り返しの報告
+
+整数の `+`・`-`・`*`・`**`・単項 `-` は、溢れると黙って折り返します。これは言語の意味で、変わりません。`--overflow-report` を付けた `build` と `run`、そして `test`（既定）は、範囲の証明で溢れないと示せない演算の前に検査を足し、折り返したら報告して、折り返した値のまま続けます。値・標準出力・トラップ・終了コードは、付けないときとビット単位で同じです。
+
+```text
+$ tsuzuri run . --overflow-report
+warning: integer overflow wrapped at ./Main.tz:1:43 (i32u add)
+1705032704
+```
+
+報告するのは、ルートパッケージのソースに書いた関数・ラムダ・`task`・テストの演算です。
+
+| 演算 | 報告 |
+| --- | --- |
+| 整数（8〜128 bit）の `x + y`・`x - y`・`x * y`、`Add.add x y` などの直接の呼び出し | する（範囲の証明で溢れないと示せるものは検査しない） |
+| 符号付き整数の `-x` | する |
+| 整数の `x ** y` | する。二乗法のどの積が溢れても、`**` の式 1 つの地点として報告する |
+| `@checked` の中、`Int.wrapping_*`・`Int.checked_*`・`Int.saturating_*`・`Int.widening_mul`・`Int.abs` | しない（意味が名前や構文に書いてある） |
+| シフト・ビット演算・`as`・浮動小数点・decimal・SIMD のレーン・`for` の範囲ループの内部の増分 | しない |
+| コンパイル時に畳み込まれる式（トップレベルの `let` の定数、`const`） | しない（実行時に演算が残らない） |
+| 標準ライブラリ・依存パッケージ・コンパイラが作る補助関数・ベンチ | しない |
+
+報告の行は `warning: integer overflow wrapped at <パス>:<行>:<列> (<型> <演算>)` です。パスはビルドに渡した綴り、行と列は演算の式の始まり（列は文字数）、型は `i8`〜`i128u`、演算は `add`・`sub`・`mul`・`neg`・`pow` です。1 つの地点は最初に折り返したときに 1 回だけ書き、100 地点を書いたあとは `warning: integer overflow reports stop after 100 sites` を 1 回書いて止めます。報告は native では書き込みのたびに標準エラーへ出るので、トラップで止まったプログラムでも、それまでの報告は残ります。
+
+WebAssembly は報告を書きません（import を足しません）。地点ごとに折り返したかどうかを記録し、2 つの関数を export します。`tsuzuri_overflow_count()` は地点の数、`tsuzuri_overflow_hit(i)` は地点 `i` が折り返したなら 1（範囲外の `i` は 0）です。地点の説明は `<出力>.overflow.json` にあり、`sites[i].message` が native の報告と同じ文です（[WebAssembly の折り返しの報告](webassembly.md#整数の折り返しの報告)）。
+
+計装は診断のためのもので、配布するビルドには使いません。検査が増える分だけ遅くなり、ベクトル化も妨げます。地点が 3 つの 10 億回のループ（1 つの workload、1 台）では、`-O3` で約 1.9 倍の時間でした。1 つのプログラムの地点は 65,536 までで、超えると `E1017` です。
 
 ## 入力の解決
 

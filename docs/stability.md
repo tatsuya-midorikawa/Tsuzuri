@@ -12,7 +12,7 @@
 | --- | --- |
 | edition ごとの構文と意味 | 型、値、評価順序、所有権と借用、数値のオーバーフロー・丸め・NaN・トラップ。バグの修正は除きます |
 | std の公開 API | 公開した宣言を削除せず、シグネチャも変えません。例外は [既知の例外](#既知の例外) です |
-| 公開 ABI | `export def` の `tz_<name>` シンボル、`--emit header` が出す C ヘッダー、`tsuzuri_` で始まるシンボル、`extern` のリンク名と WebAssembly の import 名 |
+| 公開 ABI | `export def` の `tz_<name>` シンボル、`--emit header` が出す C ヘッダー、`tsuzuri_` で始まるシンボル（`--overflow-report` の WebAssembly が export する `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` を含む）、`extern` のリンク名と WebAssembly の import 名。`--trap-info` の `.trap.json` と `--overflow-report` の `.overflow.json` のキーも同じ扱いです（キーが増えることはあります） |
 | 診断のコード・重要度・JSON のキー | コードの意味を変えず、別の条件へ再利用しません。`--json` の既存のキーを消したり改名したりしません（キーが増えることはあります）。追加の情報のキー（`kind`・`related`・`help`・`expected`・`found`・`candidates`・`scope`・`fixes`）は値があるときだけ出し、名前と順序、`related` の `role` と修正案の `applicability` の値を変えません（[診断](../_tsuzuri/language-reference/compiler/diagnostics.md#json-の-1-行-1-オブジェクト)） |
 | 診断の kind | すべての診断が持つ `kind` の値（`use_after_move` など）。kind は足すことはあっても、消したり、名前を変えたり、別のコードへ移したりしません。1 つの kind を 2 つに分けるのは互換の変更で、元の kind は残りの条件に使い続けます。edition は kind を変えません（[kind と explain](../_tsuzuri/language-reference/compiler/diagnostics.md#kind-と-explain)） |
 | `tsuzuri guide` | サブコマンドとオプションの名前、`--json` の schema `tz-guide/1` とキーの名前と順序（キーが増えることはあります）、終了コード（出力 0、`--agents`・`--llms-txt` のマニフェストがない 1、引数の誤り 2） |
@@ -39,7 +39,7 @@
 | 知識グラフの brief カードの文言 | 行の並び・文言・優先度・切り詰め方は直します（上限の文字数は保ちます） |
 | MCP の本文 | `content` の本文、ツールと資源の説明、`instructions` の文言は直します |
 | `kg diagram` と `views/*.mmd` の図の本文 | Mermaid・DOT・Markdown の字句、色、ノードと辺の順序、ラベルの切り方の細部は直します（生成した Mermaid が Mermaid で読めることは保ちます） |
-| 警告が出るかどうか | 新しい警告が増えることがあります。`--deny-warnings` を付けたビルドは、コンパイラの更新や、依存パッケージが宣言を非推奨にしたことで失敗することがあります。警告を出す・出さないと `--deny-warnings` の結果は、保証の対象外です |
+| 警告が出るかどうか | 新しい警告が増えることがあります。`--deny-warnings` を付けたビルドは、コンパイラの更新や、依存パッケージが宣言を非推奨にしたことで失敗することがあります。警告を出す・出さないと `--deny-warnings` の結果は、保証の対象外です。`tsuzuri test` が整数の折り返しを報告してテストを失敗にする（A23。`--allow-overflow` で報告だけ）のも、この扱いです。範囲の証明が強くなると報告される地点は減り、計装の対象が変わると増えることがあります |
 | 実験的と書いた機能（GPU カーネルなど） | 仕様が固まるまで変わります |
 | `tsuzuri api-diff` が見つける変更の範囲 | 宣言の署名だけを読むので、見つけられない変更があります（[公開 API の差分](#公開-api-の差分)） |
 | std の関数が要る権限 | std の関数の本体が変わると、その権限も変わることがあります（権限は本体から導出します）。権限を新たに要るようになった std の関数を、権限を宣言したプロジェクトが使っていれば `E1036` になります。リリースノートで知らせます |

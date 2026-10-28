@@ -43,6 +43,8 @@
 | `-g` / `--debug-info` | | ○ | ○ | ○（1 件の `--index` と `-o`） | | | | | |
 | `--debug-output` | | ○ | ○ | | | | | | |
 | `--trap-info` | | ○ | ○ | | | | | | |
+| `--overflow-report` | | ○ | ○ | ○（既定でオン） | | | | | |
+| `--allow-overflow` | | | | ○（`-g` を除く） | | | | | |
 | `--trap-mode` | | ○ | | | | | | | |
 | `--allocator` | | ○ | ○（counting のみ） | ○（counting のみ） | | | | | |
 | `--freestanding` | | ○ | | | | | | | |
@@ -375,6 +377,8 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--debug-output` | オフ | WASM の `Debug` 出力 import を有効にする。native は常に書く |
 | `--trap-info` | `run` はオン、`build` はオフ | トラップ位置と `<output>.trap.json`。`header` では不可 |
 | `--trap-mode return` | オフ | native の `object` / `llvm` / `header` / `shared` / `bitcode` と C#・Python・C++ のバインディング。各 export に `tsuzuri_try_<name>` を足す |
+| `--overflow-report` | `test` はオン、`build`・`run` はオフ | 範囲の証明で溢れないと示せない整数の `+ - * ** -x` に検査を足し、折り返した地点を報告する（native は標準エラー、WebAssembly は export と `<output>.overflow.json`）。値は変わらない。`header`・カーネル・バインディングと `--freestanding` では不可（[整数の折り返しの報告](usage.md#整数の折り返しの報告)） |
+| `--allow-overflow` | オフ | `test` だけ。折り返したテストを失敗にせず、報告だけを出す |
 
 `--trap-mode return` は、`object`、`llvm`、`shared`、`bitcode` では `--trap-info` も有効にします。`header` では位置表を出さないので、`--trap-info` とは組み合わせません。戻り値は 0 が成功、1 がトラップ、2 が同じスレッドでの再入です。詳しくは [言語仕様のトラップ位置](../../../docs/language.md#トラップ位置) を見てください。
 
@@ -458,6 +462,11 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--kg`・`--no-kg`・`--kg-dir` を `check`・`build`・`run`・`test` 以外に付ける | `--kg, --no-kg, and --kg-dir are only valid with check, build, run, or test` |
 | `--kg` と `--no-kg` を両方付ける | `--kg and --no-kg cannot be used together` |
 | `--affected` を `test` 以外に付ける | `--affected is only valid with test` |
+| `--overflow-report` を `check`・`bench`・`doc`・`fmt` に付ける | `--overflow-report is only valid with build, run, or test` |
+| `--overflow-report` と `--emit header`・カーネル・バインディング | `--overflow-report is not valid for header, kernel, or bindings output` |
+| `--overflow-report` と `--freestanding` | `--overflow-report cannot be combined with --freestanding: the report is written through the C library` |
+| `--allow-overflow` を `test` 以外に付ける | `--allow-overflow is only valid with test` |
+| `--allow-overflow` と `-g` のデバッグ用のランナー | `--allow-overflow cannot be combined with -g; a debug runner only builds` |
 | `--affected` と `--filter`・`--index` | `--affected cannot be combined with --filter or --index` |
 | `--affected` と `--no-kg`・`TSUZURI_KG=0` | `--affected needs the KG; remove --no-kg or TSUZURI_KG=0` |
 | `--wasm-feature` を `build` 以外に付ける | `--wasm-feature is only valid with build` |

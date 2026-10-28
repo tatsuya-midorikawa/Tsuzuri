@@ -1,7 +1,10 @@
 import { readFileSync, writeSync } from "node:fs";
 
-if (process.argv.length !== 4 || !/^[0-9]+$/.test(process.argv[3])) process.exit(2);
-const index = Number(process.argv[3]);
+// `node run.mjs tests.wasm [overflow.json] index`: the side table of the overflow report (A23)
+// comes between the module and the index when the runner reports the arithmetic that wraps.
+if (![4, 5].includes(process.argv.length) || !/^[0-9]+$/.test(process.argv.at(-1))) process.exit(2);
+const index = Number(process.argv.at(-1));
+const overflow = process.argv.length === 5 ? JSON.parse(readFileSync(process.argv[3], "utf8")) : null;
 const module = new WebAssembly.Module(readFileSync(process.argv[2]));
 const imports = WebAssembly.Module.imports(module);
 // Only a program that uses property tests imports the Debug output, for its reports.
@@ -23,4 +26,18 @@ try {
 } catch (error) {
   if (!(error instanceof WebAssembly.RuntimeError)) throw error;
   process.exitCode = 1;
+}
+// The sites that wrapped, in site order, as a native runner writes them: at most 100 lines, then
+// one line that says the report stops.
+if (overflow && process.exitCode === 0) {
+  let written = 0;
+  for (let site = 0; site < instance.exports.tsuzuri_overflow_count(); site += 1) {
+    if (instance.exports.tsuzuri_overflow_hit(site) !== 1) continue;
+    if (written === 100) {
+      writeSync(2, "warning: integer overflow reports stop after 100 sites\n");
+      break;
+    }
+    writeSync(2, `warning: ${overflow.sites[site].message}\n`);
+    written += 1;
+  }
 }

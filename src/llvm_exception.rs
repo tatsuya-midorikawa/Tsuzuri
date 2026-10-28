@@ -100,6 +100,8 @@ impl FunctionEmitter<'_, '_> {
                 "call {llvm} @tz_math_pow_f{bits}({llvm} {base}, {llvm} {exponent})"
             ));
         };
+        // Every product of the loop reports to the one site of the `**` (A23).
+        let span = self.current_span;
         if signed {
             let valid = self.value(format!("icmp sge {llvm} {exponent}, 0"));
             self.guard(&valid, TrapKind::NumericRuntime);
@@ -120,6 +122,14 @@ impl FunctionEmitter<'_, '_> {
                 emitter.raise_overflow_if(&overflow);
                 product
             } else {
+                emitter.overflow_check(
+                    crate::overflow::Operation::Power,
+                    ty,
+                    span,
+                    false,
+                    left,
+                    right,
+                );
                 emitter.value(format!("mul {llvm} {left}, {right}"))
             }
         };

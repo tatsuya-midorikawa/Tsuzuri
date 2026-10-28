@@ -378,6 +378,10 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | IntSaturatingSub
         | IntSaturatingMul
         | IntWrappingPow
+        | IntWrappingAdd
+        | IntWrappingSub
+        | IntWrappingMul
+        | IntWrappingNeg
         | IntCheckedPow
         | IntWideningMul
         | OwnedDrop

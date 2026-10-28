@@ -491,6 +491,7 @@ diagnostic_kinds! {
         (SuperclassResolutionLimit, "superclass_resolution_limit", "E1017"),
         (TooManyDependencies, "too_many_dependencies", "E1017"),
         (TooManyLoopExits, "too_many_loop_exits", "E1017"),
+        (TooManyOverflowSites, "too_many_overflow_sites", "E1017"),
         (TooManyRaisePoints, "too_many_raise_points", "E1017"),
         (TooManyRecordRegions, "too_many_record_regions", "E1017"),
         (TooManyRegionParameters, "too_many_region_parameters", "E1017"),
@@ -872,6 +873,7 @@ diagnostic_kinds! {
         // W1010
         (UntrustedExtern, "untrusted_extern", "W1010"),
         // W2001
+        (IntegerOverflowWrapped, "integer_overflow_wrapped", "W2001"),
         (ToolNotice, "tool_notice", "W2001"),
         // W2002
         (BindgenSkippedDeclaration, "bindgen_skipped_declaration", "W2002"),

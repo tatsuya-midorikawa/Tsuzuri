@@ -1,13 +1,13 @@
 # Int
 
-`Int` は、固定幅の整数を扱う組み込みモジュールです。型の名前ではありません。`i8` から `i128` までの符号付き・符号なし整数に対して、選択、絶対値、ビット操作、検査付き演算、飽和演算、拡大乗算を、幅と符号を保ったまま提供します。桁数に上限のない整数は [`BigInt`](bigint.md) です。
+`Int` は、固定幅の整数を扱う組み込みモジュールです。型の名前ではありません。`i8` から `i128` までの符号付き・符号なし整数に対して、選択、絶対値、ビット操作、検査付き演算、飽和演算、折り返す演算、拡大乗算を、幅と符号を保ったまま提供します。桁数に上限のない整数は [`BigInt`](bigint.md) です。
 
-通常の `+` は溢れると折り返します。失敗を値にしたいとき、端で留めたいとき、例外にしたいときは、名前で契約を選びます。暗黙の型変換はありません。
+通常の `+` は溢れると折り返します。失敗を値にしたいとき、端で留めたいとき、例外にしたいとき、折り返すことを意図として書きたいときは、名前で契約を選びます。暗黙の型変換はありません。
 
 ## この記事のポイント
 
 - `Int.min` や `Int.checked_add` は、引数の整数型をそのまま結果に使います。`i8` を渡して `i32` が返ることはありません。
-- 溢れたときの振る舞いは、目的に応じて「折り返し」「`Maybe.None`」「飽和」「`OverflowException` の送出」の 4 通りから選べます。
+- 溢れたときの振る舞いは、目的に応じて「折り返し」「`Maybe.None`」「飽和」「`OverflowException` の送出」の 4 通りから選べます。折り返しは、通常の演算子のほかに、折り返すことを名前で書く `Int.wrapping_*` があります。
 - 整数は Copy 型です。`Int` の関数は値を受け取り、`ref` は取りません。
 - 符号付き整数の最小値に対する絶対値は、同幅での表現不可を考慮して `abs` と `unsigned_abs` で挙動が分かれています。
 
@@ -39,7 +39,9 @@ flowchart TD
   overflow --> checked["Int.checked_*"]
   overflow --> saturating["Int.saturating_*"]
   overflow --> marked["@checked を付けた演算"]
+  overflow --> wrapping["Int.wrapping_*"]
   wrap --> wrapped["同じ幅で折り返す"]
+  wrapping --> wrapped2["同じ幅で折り返す（意図の表明）"]
   checked --> none["None"]
   saturating --> bound["最小値または最大値"]
   marked --> exception["OverflowException"]
@@ -123,9 +125,13 @@ $"{ones}:{rotated as i64}:{reversed}:{swapped}"
 | `Int.checked_div` / `checked_rem` | `Integer<'a> => 'a -> 'a -> Maybe<'a>` | ゼロ除算と、符号付き最小値 `/` `%` `-1` も `None` |
 | `Int.checked_neg` | `SignedInteger<'a> => 'a -> Maybe<'a>` | 最小値の符号反転は `None` |
 | `Int.saturating_add` / `saturating_sub` / `saturating_mul` | `Integer<'a> => 'a -> 'a -> 'a` | 最小値または最大値へ飽和。失敗値は返さない |
+| `Int.wrapping_add` / `wrapping_sub` / `wrapping_mul` | `Integer<'a> => 'a -> 'a -> 'a` | 失敗しない。折り返す |
+| `Int.wrapping_neg` | `SignedInteger<'a> => 'a -> 'a` | 失敗しない。折り返す（最小値は最小値のまま） |
 | `Int.wrapping_pow` | `Integer<'a> => 'a -> i64 -> 'a` | 指数 0 は 1。負の指数はトラップ。溢れは折り返し |
 | `Int.checked_pow` | `Integer<'a> => 'a -> i64 -> Maybe<'a>` | 指数 0 は `Some 1`。負の指数と溢れは `None` |
 | `Int.widening_mul` | `Integer<'a> => 'a -> 'a ->` 同じ符号の倍幅 | 128 bit を渡すと `E1005`。実行時の失敗はない |
+
+`Int.wrapping_add`・`wrapping_sub`・`wrapping_mul`・`wrapping_neg` は、`+`・`-`・`*`・単項 `-` と同じ値を返し、同じ 1 命令になります（`-O0` でも呼び出しは残りません）。違いは意図です。ハッシュの混ぜ合わせや乱数のように、折り返すことが正しい計算を名前で書きます。符号なしの否定は `Int.wrapping_sub 0i32u x` と書きます（`Int.wrapping_neg` は、符号なしの `-x` と同じく符号付きだけです）。
 
 `saturating_div` はありません。除算の失敗を値にするなら `checked_div`、トラップで止めるなら `/` です。
 
@@ -162,6 +168,25 @@ $"{gap}:{magnitude}:{wide}:{power as i64}"
 
 `7i8 ** 3` も `Int.wrapping_pow 7i8 3` も、`343` を 8 bit で折り返した `87` です。`100i8 * 100i8` の数学的な積 `10000` は、飽和すると `127i8`、符号なしの減算 `0i8u - 1i8u` は飽和すると `0i8u` です。
 
+折り返す 4 つの関数は、同じ計算を幅で折り返した値を返します。
+
+```tsuzuri run=-128:255:16:-128
+let a = Int.wrapping_add 127i8 1i8
+let b = Int.wrapping_sub 0i8u 1i8u
+let c = Int.wrapping_mul 100i8 100i8
+let d = Int.wrapping_neg (-128i8)
+assert (a == -128i8)
+$"{a as i64}:{b as i64}:{c as i64}:{d as i64}"
+```
+
+実行結果:
+
+```text
+-128:255:16:-128
+```
+
+`100i8 * 100i8` の積 `10000` は、256 で割った余り `16` になります。`-128i8` の符号反転は `i8` で表せないので `-128i8` のままです。
+
 ## 通常の演算子と @checked
 
 `Int.checked_add` と `@checked` は別物です。前者は `Maybe` を返します。後者は式の型を変えず、溢れたときに `OverflowException` を送出します。対象は `+`、`-`、`*`、`**` と単項 `-` です。`/` と `%` は `@checked` の対象外で、ゼロ除算と最小値 `/` `-1` は従来どおりトラップします。
@@ -188,6 +213,10 @@ label 20 22 + " / " + label 2147483647 1
 ```
 
 `@checked` は、書いた式の中だけを検査します。`@checked f x` としても、`f` の本体は検査されません。例外は同じ関数の中の `try` だけが捕捉できます。詳しくは [try 式](../exception-handling/try-with-finally.md) を見てください。
+
+### 折り返しを見つける
+
+通常の演算子が実際に折り返したかは、`tsuzuri run --overflow-report` や `tsuzuri build --overflow-report` で調べられます。範囲の証明で溢れないと示せない演算に検査を足し、折り返したら `warning: integer overflow wrapped at ./Main.tz:1:43 (i32u add)` のように報告して、折り返した値のまま続けます。`tsuzuri test` は既定でこの報告を有効にし、折り返したテストを失敗にします。`Int.wrapping_*`・`Int.checked_*`・`Int.saturating_*` と `@checked` の中の演算は報告しません。詳しくは [整数の折り返しの報告](../compiler/usage.md#整数の折り返しの報告) を見てください。
 
 ビット演算子 `&&&`、`|||`、`^^^`、`~~~` とシフト `<<<`、`>>>` は `Int` の関数ではありません。符号付きの論理右シフトは `Bits.ushr` です。演算子の優先順位は [演算子と式](../values-and-functions/op-and-expressions.md) にまとまっています。
 
@@ -217,7 +246,7 @@ label 20 22 + " / " + label 2147483647 1
 
 | 操作 | Tsuzuri | Rust | F# |
 | --- | --- | --- | --- |
-| 通常の `+` | 常に折り返す | デバッグではパニック、リリースでは折り返し | 既定では折り返す |
+| 通常の `+` | 常に折り返す。意図した折り返しは `Int.wrapping_add` | デバッグではパニック、リリースでは折り返し。意図した折り返しは `wrapping_add` | 既定では折り返す |
 | 検査付き加算 | `Int.checked_add` が `Maybe`、または `@checked` が例外 | `checked_add` が `Option` | `Checked.(+)` が例外 |
 | 飽和 | `Int.saturating_add` など 3 つ。除算はない | `saturating_add` など | 標準の飽和演算子はない |
 | 最小値の絶対値 | `Int.abs` は最小値のまま。`unsigned_abs` が符号なし | デバッグの `abs` はパニックし得る | `abs` は溢れると折り返す |
@@ -225,7 +254,7 @@ label 20 22 + " / " + label 2147483647 1
 ## まとめ
 
 - `Int` はモジュールであり、固定幅の整数型そのものではありません。
-- 溢れたときの振る舞いは、通常の演算子（折り返し）、`checked_*`（`Maybe`）、`saturating_*`（飽和）、`@checked`（例外）から使い分けます。
+- 溢れたときの振る舞いは、通常の演算子（折り返し）、`wrapping_*`（意図した折り返し）、`checked_*`（`Maybe`）、`saturating_*`（飽和）、`@checked`（例外）から使い分けます。
 - ビットカウントや循環シフトの量、累乗の指数には `i64` を使います。
 - 符号付き整数の最小値に対する絶対値は、同幅での表現不可を考慮して `abs` と `unsigned_abs` で役割が分かれています。
 - 128 bit の拡大乗算や、型変数が未確定なラッパー関数の定義はコンパイルエラーになります。
