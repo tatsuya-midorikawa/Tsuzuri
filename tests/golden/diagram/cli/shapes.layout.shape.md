@@ -1,4 +1,4 @@
-# Layout of Shapes::Shapes.Shape (native, 64-bit)
+# Layout of `Shapes::Shapes.Shape` (native, 64-bit)
 
 | item | value |
 | --- | --- |

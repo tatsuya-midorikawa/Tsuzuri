@@ -648,7 +648,7 @@ fn layout_of_a_generic_record_finds_its_concrete_type() {
     for id in ["M.Box", "Box", "box"] {
         let text = draw(&input, &request(Kind::Layout, Some(id)));
         assert!(
-            text.starts_with("# Layout of M.Box<i64> (native, 64-bit)\n"),
+            text.starts_with("# Layout of `M.Box<i64>` (native, 64-bit)\n"),
             "{id}: {text}"
         );
     }
@@ -675,7 +675,7 @@ fn layout_of_a_generic_record_finds_its_concrete_type() {
     for id in ["M.Box", "Box"] {
         let text = draw(&input, &request(Kind::Layout, Some(id)));
         assert!(
-            text.starts_with("# Layout of M.Box<i64> (native, 64-bit)\n"),
+            text.starts_with("# Layout of `M.Box<i64>` (native, 64-bit)\n"),
             "{id}: {text}"
         );
     }
