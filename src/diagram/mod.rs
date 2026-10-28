@@ -299,33 +299,32 @@ fn draw(
             flow(&graph, folded, graph.nodes.len())
         }
         Kind::Concurrency => {
-            let (graph, folded) = concurrency::graph(input, id, request.max_nodes);
+            let (graph, folded) = concurrency::graph(input, id, request.max_nodes)?;
             let nodes = graph.nodes.len() - 1;
             flow(&graph, folded, nodes)
         }
         Kind::Types => {
             if dot {
-                let (text, nodes) = types::dot(input, id, limits);
+                let (text, nodes, cut) = types::dot(input, id, limits);
                 DiagramOutput {
                     format: Format::Dot,
                     text,
                     nodes,
-                    folded: false,
+                    folded: cut,
                 }
             } else {
                 let (text, nodes, folded) = types::mermaid(input, id, request.max_nodes, limits);
-                let cut = text.contains("\n    %% omitted: ");
                 DiagramOutput {
                     format: Format::Mermaid,
                     text,
                     nodes,
-                    folded: folded || cut,
+                    folded,
                 }
             }
         }
         Kind::Ownership => {
             let function = id.unwrap_or_default();
-            let (text, drawn) = ownership::markdown(input, function, limits.label)?;
+            let (text, drawn, cut) = ownership::markdown(input, function, limits.label)?;
             let variables = input
                 .facts
                 .get(function)
@@ -345,7 +344,7 @@ fn draw(
                 format: Format::Markdown,
                 text,
                 nodes: drawn,
-                folded: drawn < variables,
+                folded: drawn < variables || cut,
             }
         }
         Kind::Layout => {
@@ -376,7 +375,7 @@ fn draw(
                 )
             })?;
             let edges = transitions::extract(input, sources, union)?;
-            let (text, nodes) = if dot {
+            let (text, nodes, cut) = if dot {
                 transitions::dot(input, id, &edges, limits)
             } else {
                 transitions::mermaid(input, id, &edges, limits)
@@ -385,7 +384,7 @@ fn draw(
                 format: request.format,
                 text,
                 nodes,
-                folded: false,
+                folded: cut,
             }
         }
     })

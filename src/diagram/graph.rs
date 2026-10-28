@@ -144,19 +144,17 @@ pub fn fold(
             *group,
         )
     });
-    // `room - 1` groups and one for the rest; a negative room counts from the end, as a slice
-    // of the reference does.
-    let room = max_nodes as isize - keep.len() as isize;
-    let shown: Vec<&String> = if ranked.len() as isize <= room {
+    // Every group, or `room - 1` groups and one node for the rest: at most `max_nodes` nodes. The
+    // caller leaves room for one node besides `keep` when there are groups.
+    let room = max_nodes.saturating_sub(keep.len());
+    debug_assert!(
+        ranked.is_empty() || room >= 1,
+        "no room for the folded groups"
+    );
+    let shown: Vec<&String> = if ranked.len() <= room {
         ranked.clone()
     } else {
-        let end = room - 1;
-        let end = if end < 0 {
-            (ranked.len() as isize + end).max(0)
-        } else {
-            end.min(ranked.len() as isize)
-        };
-        ranked[..end as usize].to_vec()
+        ranked[..room.saturating_sub(1)].to_vec()
     };
     let shown_set: BTreeSet<&String> = shown.iter().copied().collect();
     let rest: Vec<&String> = ranked

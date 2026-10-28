@@ -403,7 +403,7 @@ pub fn validate_mermaid(text: &str) -> Result<(), Vec<String>> {
                     .and_then(|rest| class_use(rest, &STATE_CLASSES))
                 {
                     check.uses(number, ids);
-                } else {
+                } else if !line.strip_prefix("    ").is_some_and(omitted) {
                     check.unknown(number, line);
                 }
             }

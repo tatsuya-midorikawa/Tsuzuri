@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::DiagramError;
 use super::graph::{Direction, Graph, Shape, fold};
 use super::input::Input;
 
@@ -51,8 +52,14 @@ fn has_opening(text: &str, opening: &str) -> bool {
     })
 }
 
-/// The graph (its last node the note), and whether it was folded.
-pub fn graph(input: &Input, focus: Option<&str>, max_nodes: usize) -> (Graph, bool) {
+/// The graph (its last node the note), and whether it was folded. The regions and cells are never
+/// folded: when they, a node for the other functions and the note do not fit in `max_nodes`, the
+/// diagram is too large.
+pub fn graph(
+    input: &Input,
+    focus: Option<&str>,
+    max_nodes: usize,
+) -> Result<(Graph, bool), DiagramError> {
     let mut evidence: BTreeMap<String, BTreeSet<(&str, &str, String)>> = BTreeMap::new();
     let mut region: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut known: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
@@ -143,6 +150,7 @@ pub fn graph(input: &Input, focus: Option<&str>, max_nodes: usize) -> (Graph, bo
     for edge in &input.edges {
         if edge.rel == "calls"
             && region.contains_key(&edge.from)
+            && involved.contains(&edge.from)
             && involved.contains(&edge.to)
             && edge.to != edge.from
         {
@@ -166,7 +174,18 @@ pub fn graph(input: &Input, focus: Option<&str>, max_nodes: usize) -> (Graph, bo
                 input.module_of(key).unwrap_or_default().to_owned()
             }
         };
-        graph = fold(&graph, &group_of, &keep, max_nodes.saturating_sub(1));
+        let others = graph.nodes.len() - keep.len();
+        let needed = keep.len() + usize::from(others > 0) + 1;
+        if needed > max_nodes {
+            return Err(DiagramError {
+                kind: "diagram_too_large",
+                message: format!(
+                    "the concurrency diagram has {} regions and cells, more than --max-nodes {max_nodes} can show; raise --max-nodes or name a module",
+                    keep.len()
+                ),
+            });
+        }
+        graph = fold(&graph, &group_of, &keep, max_nodes - 1);
     }
     graph.node(
         NOTE,
@@ -175,5 +194,5 @@ pub fn graph(input: &Input, focus: Option<&str>, max_nodes: usize) -> (Graph, bo
         Some("note"),
         false,
     );
-    (graph, folded)
+    Ok((graph, folded))
 }

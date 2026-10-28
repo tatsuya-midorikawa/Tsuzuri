@@ -2,9 +2,9 @@
 //! (moves, borrows, drops), and the ledger of every event with the role that a diagnostic gives
 //! the same position.
 
-use super::DiagramError;
 use super::escape::transition;
 use super::input::{Event, Input};
+use super::{DiagramError, MAX_EDGES};
 
 const VARIABLE_LIMIT: usize = 12;
 const LEDGER_LIMIT: usize = 200;
@@ -40,9 +40,10 @@ impl States {
     }
 }
 
-/// The state diagram of one variable; `events` are its events other than copies, in order. A
-/// borrow lasts until the variable's next event.
-fn variable_diagram(events: &[&Event], limit: usize) -> String {
+/// The state diagram of one variable, and how many of its events it leaves out to stay within
+/// `MAX_EDGES` transitions; `events` are its events other than copies, in order. A borrow lasts
+/// until the variable's next event.
+fn variable_diagram(events: &[&Event], limit: usize) -> (String, usize) {
     let mut states = States {
         lines: vec![
             "stateDiagram-v2".to_owned(),
@@ -57,16 +58,26 @@ fn variable_diagram(events: &[&Event], limit: usize) -> String {
         step: 0,
         limit,
     };
-    for event in events {
+    // `[*] --> s0` and the final `--> [*]`.
+    let mut transitions = 2;
+    let mut omitted = 0;
+    for (index, event) in events.iter().enumerate() {
+        let borrowing = matches!(states.current, "Borrowed" | "BorrowedMut");
+        let kind = event.event.as_str();
+        let release = borrowing && matches!(kind, "borrow" | "borrow_mut" | "move" | "drop");
+        let needed = 1 + usize::from(release);
+        if transitions + needed > MAX_EDGES {
+            omitted = events.len() - index;
+            break;
+        }
+        transitions += needed;
         let to = event
             .to
             .as_deref()
             .map(|to| format!(" \u{2192} {to}"))
             .unwrap_or_default();
         let line = event.line;
-        let kind = event.event.as_str();
-        let borrowing = matches!(states.current, "Borrowed" | "BorrowedMut");
-        if borrowing && matches!(kind, "borrow" | "borrow_mut" | "move" | "drop") {
+        if release {
             states.add("Owned", "release");
         }
         match kind {
@@ -98,15 +109,16 @@ fn variable_diagram(events: &[&Event], limit: usize) -> String {
     if !states.borrowed.is_empty() {
         lines.push(format!("    class {} borrowed", states.borrowed.join(",")));
     }
-    lines.join("\n") + "\n"
+    (lines.join("\n") + "\n", omitted)
 }
 
-/// The Markdown of `function`, and the number of variables drawn.
+/// The Markdown of `function`, the number of variables drawn, and whether a diagram or the ledger
+/// left events out.
 pub fn markdown(
     input: &Input,
     function: &str,
     limit: usize,
-) -> Result<(String, usize), DiagramError> {
+) -> Result<(String, usize, bool), DiagramError> {
     let unavailable = || DiagramError {
         kind: "diagram_unavailable",
         message: format!(
@@ -159,17 +171,24 @@ pub fn markdown(
         })
         .unwrap_or_default();
     let mut parts = vec![format!("# Ownership of {function}\n")];
+    let mut cut = false;
     for variable in &drawn {
         let own: Vec<&Event> = of(&events, variable)
             .filter(|event| event.event != "copy")
             .copied()
             .collect();
-        let diagram = variable_diagram(&own, limit);
+        let (diagram, omitted) = variable_diagram(&own, limit);
         let heading = match parameters.iter().find(|(name, _)| name == variable) {
             Some((_, ty)) => format!("## {variable} (parameter: {ty})"),
             None => format!("## {variable}"),
         };
         parts.push(format!("{heading}\n\n```mermaid\n{diagram}```\n"));
+        if omitted > 0 {
+            cut = true;
+            parts.push(format!(
+                "{omitted} later events of {variable} are not drawn.\n"
+            ));
+        }
     }
     if omitted > 0 {
         parts.push(format!(
@@ -199,7 +218,14 @@ pub fn markdown(
         ));
     }
     parts.push(table.join("\n") + "\n");
-    Ok((parts.join("\n"), drawn.len()))
+    if events.len() > LEDGER_LIMIT {
+        cut = true;
+        parts.push(format!(
+            "{} more events are not listed.\n",
+            events.len() - LEDGER_LIMIT
+        ));
+    }
+    Ok((parts.join("\n"), drawn.len(), cut))
 }
 
 /// The Mermaid blocks of a Markdown text, for the validator.
