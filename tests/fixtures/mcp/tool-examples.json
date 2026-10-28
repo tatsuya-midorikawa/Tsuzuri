@@ -1,0 +1,286 @@
+[
+ {
+  "tool": "tz_guide",
+  "arguments": {},
+  "text": "# Tsuzuri guide, level 0\n\nTsuzuri is statically typed, uses ownership instead of a GC, and compiles through LLVM to native code or WASM. One file is one module: `Main.tz` is the entry, `Shapes.tz` is module `Shapes` (call `Shapes.area`). A project from `tsuzuri new` starts `Main.tz` with `namespace Name`; keep that line first. The programs below and every error code named here are checked against this compiler. More: `tsuzuri guide --list`.\n\n## Commands\n- `tsuzuri check .` type-checks. With `--json` each diagnostic is one JSON line on stderr: `severity`, `code`, `message`, `path`, `span` (`line`, `column`, `end_line`, `end_column`), `kind` (the rule), and often `help`. Exit 1 on errors.\n- `tsuzuri run .` builds and runs; `tsuzuri test .` runs `test \"name\" = assert (...)`; `tsuzuri fmt .` formats in place.\n\n## A program\n```tsuzuri run=24%2055%207\nrecord Point { x: i64, y: i64 } deriving (Eq)\n\nunion Shape =\n    | Circle of i64\n    | Rect of i64 * i64\n\ndef area :: Shape -> i64 = \\shape ->\n    match shape with\n    | Circle r -> 3 * r * r\n    | Rect (w, h) -> w * h\n\ndef sum_to :: i64 -> i64 = \\n ->\n    let mut total = 0\n    for i in 1 .. n do\n        total = total + i\n    total\n\ndef norm1 :: ref Point -> i64 = \\p -> Int.abs p.x + Int.abs p.y\n\ndef main :: unit -> i32 = \\() ->\n    let p = Point { x: -3, y: 4 }\n    let mut sum = 0\n    for s in [Circle 2, Rect (3, 4)] do\n        sum = sum + area s\n    do! IO.writeln $\"{sum} {sum_to 10} {norm1 p}\"\n    0\n\ntest \"area\" = assert (area (Circle 2) == 12)\n```\n- `def f :: A -> B -> C = \\a b -> body`; call `f x y`. The last expression is the value (no `return`). Blocks are indented. Comments are `//`.\n- `do! action` runs an effect statement; `let! line = IO.read_line ()` binds its result. `main :: unit -> i32` returns the exit code.\n- `if c then a else b`, several lines: `elif`. `match v with | P -> e | _ -> d`. Lambda: `\\x -> x + 1`. `let mut x = 0`, then `x = x + 1`.\n- `for x in xs do`, `for i in a .. b do` (includes `b`), `while c do`, `break`, `continue`.\n- Strings: `a + b`, `$\"n = {n}\"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push_owned 1 v`.\n- Errors are values: `Maybe<T>` (`Some x`, `None`), `Result<T, E>` (`Ok x`, `Error e`). No `?` and no unwinding: `try ... with` only turns the `OverflowException` of `@checked` arithmetic in the same function into a `Result`.\n- Std names are qualified (`Array.sum xs`, `Int.abs n`, `Math.sqrt x`). A def without parameters is called `f()`.\n\n## Types and numbers\n- `i8 i16 i32 i64 i128`, unsigned `i8u i16u i32u i64u i128u` (not `u8`), `f32 f64`, `bool char string unit`, `[T]`, `(A * B)`, `Maybe<T>`.\n- A bare integer literal is `i32` and a float literal `f64`, unless the context says otherwise. No implicit conversion: `n as f64`. A literal beyond `i32` needs a type: `let big: i64 = 3000000000` (else E1009).\n- Integer `+ - *` wrap around. `/` truncates toward zero. `/` or `%` by zero and `MIN / -1` trap. Floats are IEEE 754.\n- `==` on a record or union needs `deriving (Eq)`.\n\n## Ownership\n```tsuzuri run=5\ndef len :: ref string -> i64 = \\s -> s.length\ndef eat :: own string -> i64 = \\s -> s.length\ndef bump :: ref mut i64 -> unit = \\r -> deref r = deref r + 1\n\ndef main :: unit -> i32 = \\() ->\n    let s = \"hi\"\n    let mut n = len s\n    bump n\n    n = n + eat s\n    do! IO.writeln n\n    0\n```\n1. A `string`, `Vec`, or record/union holding one has one owner. `let b = a`, passing `a` to an `own T` parameter, or returning it moves it; any later use of `a` is E1012. Numbers, `bool`, `char`, `ref T` and arrays of Copy values are Copy (an array copy is O(n)). Copy a string on purpose with `clone_string s`.\n   Edition 2027: a plain parameter `T` of such a type borrows it to read (like `ref T`); `mut T` borrows it to write.\n2. To keep using a value, borrow it: parameter `ref T` reads, `ref mut T` writes. `f x` borrows automatically; `ref x` and `ref mut x` also work. `deref r` reads, `deref r = v` assigns.\n3. Assignment and `ref mut` need `let mut` (else E1014). While a `ref mut` lives, any other use of the value is E1014. Many `ref` may coexist.\n4. A reference cannot outlive its owner: returning `ref local` is E1013. Return the owned value.\n5. Values are freed once at scope end. There is no free or delete; sharing is explicit (`Rc`, `Arc`).\n\n## Pitfalls\n- `pair.0` is E0002: `match pair with | (a, _) -> a`.\n- `x += 1` is E0002: `x = x + 1`.\n- `p.x = 1` and `xs[i] = v` need a `let mut` owner or a `mut T` parameter (else E1014). `{ p with x = 1 }` works in every edition.\n- `IO.writeln s` as a statement is E1003 (`expected unit, found IO<unit>`): `do! IO.writeln s`.\n- `for i in 0 .. xs.length` compiles, then traps: `..` includes the end. Use `0 .. xs.length - 1`.\n- `else if` on a new line is E0002: `elif`.\n- `n + 1.5` and `\"a\" + 1` are E1003: `n as f64 + 1.5`, `$\"a{n}\"`.\n- `new type to with test do in` are reserved words (E0002): rename.\n- `length xs`, `abs n` are E1002/E1003: `xs.length`, `Int.abs n` (`abs` is f64 only).\n- `Display.to_string x` is E1002: `to_string x`, or `Display.display x`.\n- `u8`, `usize`, `String`, `Option`, `True` are E1004/E1002: `i8u`, `i64`, `string`, `Maybe`, `true`.\n- `Vec.empty ()` is E1006: `Vec.empty()`. `main` must return `i32` (E1003).\n\n## Workflow\n1. Write a little, then `tsuzuri check . --json`. Do not write 100 lines blind.\n2. Fix the first diagnostic by `code`, `span.line` and `message`, then check again; later ones are often consequences.\n3. Add a `test` for each function; `tsuzuri test .` must pass. Run `tsuzuri fmt .` last.\n4. Unsure of a rule: `tsuzuri guide --level 1` or `--topic NAME`. Std API: `tsuzuri guide std`, then `tsuzuri guide std Array`.\n5. Unknown code or kind: `tsuzuri explain E1012` or `tsuzuri explain use_after_move`.\n6. Mechanical fixes: `tsuzuri fix .` (`--dry-run` shows the diff first).\n",
+  "structured": {
+   "text": "# Tsuzuri guide, level 0\n\nTsuzuri is statically typed, uses ownership instead of a GC, and compiles through LLVM to native code or WASM. One file is one module: `Main.tz` is the entry, `Shapes.tz` is module `Shapes` (call `Shapes.area`). A project from `tsuzuri new` starts `Main.tz` with `namespace Name`; keep that line first. The programs below and every error code named here are checked against this compiler. More: `tsuzuri guide --list`.\n\n## Commands\n- `tsuzuri check .` type-checks. With `--json` each diagnostic is one JSON line on stderr: `severity`, `code`, `message`, `path`, `span` (`line`, `column`, `end_line`, `end_column`), `kind` (the rule), and often `help`. Exit 1 on errors.\n- `tsuzuri run .` builds and runs; `tsuzuri test .` runs `test \"name\" = assert (...)`; `tsuzuri fmt .` formats in place.\n\n## A program\n```tsuzuri run=24%2055%207\nrecord Point { x: i64, y: i64 } deriving (Eq)\n\nunion Shape =\n    | Circle of i64\n    | Rect of i64 * i64\n\ndef area :: Shape -> i64 = \\shape ->\n    match shape with\n    | Circle r -> 3 * r * r\n    | Rect (w, h) -> w * h\n\ndef sum_to :: i64 -> i64 = \\n ->\n    let mut total = 0\n    for i in 1 .. n do\n        total = total + i\n    total\n\ndef norm1 :: ref Point -> i64 = \\p -> Int.abs p.x + Int.abs p.y\n\ndef main :: unit -> i32 = \\() ->\n    let p = Point { x: -3, y: 4 }\n    let mut sum = 0\n    for s in [Circle 2, Rect (3, 4)] do\n        sum = sum + area s\n    do! IO.writeln $\"{sum} {sum_to 10} {norm1 p}\"\n    0\n\ntest \"area\" = assert (area (Circle 2) == 12)\n```\n- `def f :: A -> B -> C = \\a b -> body`; call `f x y`. The last expression is the value (no `return`). Blocks are indented. Comments are `//`.\n- `do! action` runs an effect statement; `let! line = IO.read_line ()` binds its result. `main :: unit -> i32` returns the exit code.\n- `if c then a else b`, several lines: `elif`. `match v with | P -> e | _ -> d`. Lambda: `\\x -> x + 1`. `let mut x = 0`, then `x = x + 1`.\n- `for x in xs do`, `for i in a .. b do` (includes `b`), `while c do`, `break`, `continue`.\n- Strings: `a + b`, `$\"n = {n}\"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push_owned 1 v`.\n- Errors are values: `Maybe<T>` (`Some x`, `None`), `Result<T, E>` (`Ok x`, `Error e`). No `?` and no unwinding: `try ... with` only turns the `OverflowException` of `@checked` arithmetic in the same function into a `Result`.\n- Std names are qualified (`Array.sum xs`, `Int.abs n`, `Math.sqrt x`). A def without parameters is called `f()`.\n\n## Types and numbers\n- `i8 i16 i32 i64 i128`, unsigned `i8u i16u i32u i64u i128u` (not `u8`), `f32 f64`, `bool char string unit`, `[T]`, `(A * B)`, `Maybe<T>`.\n- A bare integer literal is `i32` and a float literal `f64`, unless the context says otherwise. No implicit conversion: `n as f64`. A literal beyond `i32` needs a type: `let big: i64 = 3000000000` (else E1009).\n- Integer `+ - *` wrap around. `/` truncates toward zero. `/` or `%` by zero and `MIN / -1` trap. Floats are IEEE 754.\n- `==` on a record or union needs `deriving (Eq)`.\n\n## Ownership\n```tsuzuri run=5\ndef len :: ref string -> i64 = \\s -> s.length\ndef eat :: own string -> i64 = \\s -> s.length\ndef bump :: ref mut i64 -> unit = \\r -> deref r = deref r + 1\n\ndef main :: unit -> i32 = \\() ->\n    let s = \"hi\"\n    let mut n = len s\n    bump n\n    n = n + eat s\n    do! IO.writeln n\n    0\n```\n1. A `string`, `Vec`, or record/union holding one has one owner. `let b = a`, passing `a` to an `own T` parameter, or returning it moves it; any later use of `a` is E1012. Numbers, `bool`, `char`, `ref T` and arrays of Copy values are Copy (an array copy is O(n)). Copy a string on purpose with `clone_string s`.\n   Edition 2027: a plain parameter `T` of such a type borrows it to read (like `ref T`); `mut T` borrows it to write.\n2. To keep using a value, borrow it: parameter `ref T` reads, `ref mut T` writes. `f x` borrows automatically; `ref x` and `ref mut x` also work. `deref r` reads, `deref r = v` assigns.\n3. Assignment and `ref mut` need `let mut` (else E1014). While a `ref mut` lives, any other use of the value is E1014. Many `ref` may coexist.\n4. A reference cannot outlive its owner: returning `ref local` is E1013. Return the owned value.\n5. Values are freed once at scope end. There is no free or delete; sharing is explicit (`Rc`, `Arc`).\n\n## Pitfalls\n- `pair.0` is E0002: `match pair with | (a, _) -> a`.\n- `x += 1` is E0002: `x = x + 1`.\n- `p.x = 1` and `xs[i] = v` need a `let mut` owner or a `mut T` parameter (else E1014). `{ p with x = 1 }` works in every edition.\n- `IO.writeln s` as a statement is E1003 (`expected unit, found IO<unit>`): `do! IO.writeln s`.\n- `for i in 0 .. xs.length` compiles, then traps: `..` includes the end. Use `0 .. xs.length - 1`.\n- `else if` on a new line is E0002: `elif`.\n- `n + 1.5` and `\"a\" + 1` are E1003: `n as f64 + 1.5`, `$\"a{n}\"`.\n- `new type to with test do in` are reserved words (E0002): rename.\n- `length xs`, `abs n` are E1002/E1003: `xs.length`, `Int.abs n` (`abs` is f64 only).\n- `Display.to_string x` is E1002: `to_string x`, or `Display.display x`.\n- `u8`, `usize`, `String`, `Option`, `True` are E1004/E1002: `i8u`, `i64`, `string`, `Maybe`, `true`.\n- `Vec.empty ()` is E1006: `Vec.empty()`. `main` must return `i32` (E1003).\n\n## Workflow\n1. Write a little, then `tsuzuri check . --json`. Do not write 100 lines blind.\n2. Fix the first diagnostic by `code`, `span.line` and `message`, then check again; later ones are often consequences.\n3. Add a `test` for each function; `tsuzuri test .` must pass. Run `tsuzuri fmt .` last.\n4. Unsure of a rule: `tsuzuri guide --level 1` or `--topic NAME`. Std API: `tsuzuri guide std`, then `tsuzuri guide std Array`.\n5. Unknown code or kind: `tsuzuri explain E1012` or `tsuzuri explain use_after_move`.\n6. Mechanical fixes: `tsuzuri fix .` (`--dry-run` shows the diff first).\n",
+   "topic": "card",
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_explain",
+  "arguments": {
+   "query": "E1012"
+  },
+  "text": "E1012  error\nUse of a moved value or invalid assignment\n\nkinds:\n  assign_to_immutable_place  Assignment to something that is not a place\n  drop_pass_exclusive_value  Drop pass exclusive value\n  drop_replace_whole_value  Drop replace whole value\n  move_out_of_collection_element  Move of an element out of an array or list\n  move_out_of_drop_type  Move out of drop type\n  move_out_of_owned_function  Move out of owned function\n  move_out_of_rec_function  Move out of rec function\n  move_out_of_reference_binding  Move out of reference binding\n  update_drop_type_value  Record update of a type with a Drop instance\n  use_after_move  Use of a moved value\n\n## What it covers\nOwnership forbids a move or an assignment: using a value after it was moved; moving a non-Copy value out of an array or list element, a reference, a value whose type implements `Drop`, an owned function, or a `let rec` function that borrows it; assigning to a place that cannot be assigned (in edition 2026 any record field or collection element; in edition 2027 a character of a `string`, a computed member such as `.length`, or a field re-initialized after a move); and updating or replacing a `Drop` value.\n\n## Fixes\n- Read what you need before the move, or move the value last; the note shows where it moved, also in a previous loop iteration.\n- Pass a borrow with `ref name` where the callee accepts one; in edition 2027, declare a parameter `own T` when the function must move its value.\n- Borrow elements of arrays and lists, and fields of `Drop` values, with `ref` instead of moving them.\n- Edition 2026: assign only to a `let mut` binding and build a new value with `{ value with field = expression }`. Edition 2027: assign a field or element through a `let mut` owner, a `mut T` parameter, or a `ref mut` reference.\n- Construct a new value instead of updating a `Drop` value; inside `Drop.drop`, only read or borrow its fields.\n\n## See also\n- `use_after_move`\n- `move_out_of_collection_element`\n- `assign_to_immutable_place`\n- `update_drop_type_value`\n",
+  "structured": {
+   "code": "E1012",
+   "text": "E1012  error\nUse of a moved value or invalid assignment\n\nkinds:\n  assign_to_immutable_place  Assignment to something that is not a place\n  drop_pass_exclusive_value  Drop pass exclusive value\n  drop_replace_whole_value  Drop replace whole value\n  move_out_of_collection_element  Move of an element out of an array or list\n  move_out_of_drop_type  Move out of drop type\n  move_out_of_owned_function  Move out of owned function\n  move_out_of_rec_function  Move out of rec function\n  move_out_of_reference_binding  Move out of reference binding\n  update_drop_type_value  Record update of a type with a Drop instance\n  use_after_move  Use of a moved value\n\n## What it covers\nOwnership forbids a move or an assignment: using a value after it was moved; moving a non-Copy value out of an array or list element, a reference, a value whose type implements `Drop`, an owned function, or a `let rec` function that borrows it; assigning to a place that cannot be assigned (in edition 2026 any record field or collection element; in edition 2027 a character of a `string`, a computed member such as `.length`, or a field re-initialized after a move); and updating or replacing a `Drop` value.\n\n## Fixes\n- Read what you need before the move, or move the value last; the note shows where it moved, also in a previous loop iteration.\n- Pass a borrow with `ref name` where the callee accepts one; in edition 2027, declare a parameter `own T` when the function must move its value.\n- Borrow elements of arrays and lists, and fields of `Drop` values, with `ref` instead of moving them.\n- Edition 2026: assign only to a `let mut` binding and build a new value with `{ value with field = expression }`. Edition 2027: assign a field or element through a `let mut` owner, a `mut T` parameter, or a `ref mut` reference.\n- Construct a new value instead of updating a `Drop` value; inside `Drop.drop`, only read or borrow its fields.\n\n## See also\n- `use_after_move`\n- `move_out_of_collection_element`\n- `assign_to_immutable_place`\n- `update_drop_type_value`\n",
+   "title": "Use of a moved value or invalid assignment",
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_symbol",
+  "arguments": {
+   "id": "Point.hypotenuse"
+  },
+  "text": "Point::Point.hypotenuse\ndef | public export | Point.tz:6:12\nsignature: export def hypotenuse :: own f64 -> own f64 -> f64\nparams:\n  x  copy  f64\n  y  copy  f64\nresult: f64\neffects: none\nsites: trap 0, alloc 0, copy 0\ncallees (1):\n  Point::Point.distance  Point.tz:7:5  args copy\n",
+  "structured": {
+   "callees": [
+    "Point::Point.distance"
+   ],
+   "callers": 0,
+   "facts": {
+    "alloc_complete": false,
+    "alloc_sites": [],
+    "copy_sites": [],
+    "effect_sites": [],
+    "effects": [],
+    "effects_complete": false,
+    "id": "Point::Point.hypotenuse",
+    "loops": [],
+    "ownership": [],
+    "recursion": "none",
+    "specializations": 0,
+    "trap_sites": [],
+    "truncated": {}
+   },
+   "symbol": {
+    "deprecated": null,
+    "doc": null,
+    "export": true,
+    "id": "Point::Point.hypotenuse",
+    "kind": "def",
+    "module": "Point::Point",
+    "name": "hypotenuse",
+    "origin": "project",
+    "params": [
+     {
+      "conv": "copy",
+      "name": "x",
+      "type": "f64"
+     },
+     {
+      "conv": "copy",
+      "name": "y",
+      "type": "f64"
+     }
+    ],
+    "public": true,
+    "pure": false,
+    "result": "f64",
+    "signature": "export def hypotenuse :: own f64 -> own f64 -> f64",
+    "span": {
+     "column": 12,
+     "end": 149,
+     "line": 6,
+     "path": "Point.tz",
+     "start": 139
+    }
+   },
+   "tests": [],
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_brief",
+  "arguments": {
+   "id": "Point.hypotenuse"
+  },
+  "text": "Point::Point.hypotenuse\ndef | public export | Point.tz:6\nsig: export def hypotenuse :: own f64 -> own f64 -> f64\nparams: x:copy, y:copy\ncallees (1): Point::Point.distance\n",
+  "structured": {
+   "id": "Point::Point.hypotenuse",
+   "level": "L2",
+   "text": "Point::Point.hypotenuse\ndef | public export | Point.tz:6\nsig: export def hypotenuse :: own f64 -> own f64 -> f64\nparams: x:copy, y:copy\ncallees (1): Point::Point.distance\n",
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_search",
+  "arguments": {
+   "query": "distance"
+  },
+  "text": "search 'distance' (project)\n1 Point::Point.distance  def  def distance :: own Point -> f64\nsummary: 1 match\n",
+  "structured": {
+   "matches": [
+    {
+     "id": "Point::Point.distance",
+     "kind": "def",
+     "signature": "def distance :: own Point -> f64"
+    }
+   ],
+   "query": "distance",
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_callers",
+  "arguments": {
+   "id": "Point.distance"
+  },
+  "text": "callers of Point::Point.distance (depth 1)\n1 Point::Main.$entry  Main.tz:2:9  args copy\n1 Point::Point.hypotenuse  Point.tz:7:5  args copy\nsummary: 2 callers, depth 1\n",
+  "structured": {
+   "callers": [
+    {
+     "depth": 1,
+     "from": "Point::Main.$entry",
+     "rel": "calls",
+     "span": {
+      "column": 9,
+      "end": 57,
+      "line": 2,
+      "path": "Main.tz",
+      "start": 43
+     },
+     "to": "Point::Point.distance"
+    },
+    {
+     "depth": 1,
+     "from": "Point::Point.hypotenuse",
+     "rel": "calls",
+     "span": {
+      "column": 5,
+      "end": 201,
+      "line": 7,
+      "path": "Point.tz",
+      "start": 193
+     },
+     "to": "Point::Point.distance"
+    }
+   ],
+   "depth": 1,
+   "id": "Point::Point.distance",
+   "relation": "calls",
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_path",
+  "arguments": {
+   "from": "Main.$entry",
+   "to": "Point.distance"
+  },
+  "text": "path from Point::Main.$entry to Point::Point.distance (by calls, depth 8)\nPoint::Main.$entry --calls--> Point::Point.distance  Main.tz:2:9\nsummary: 1 step\n",
+  "structured": {
+   "depth": 8,
+   "found": true,
+   "from": "Point::Main.$entry",
+   "relations": [
+    "calls"
+   ],
+   "steps": [
+    {
+     "from": "Point::Main.$entry",
+     "index": 1,
+     "rel": "calls",
+     "span": {
+      "column": 9,
+      "end": 57,
+      "line": 2,
+      "path": "Main.tz",
+      "start": 43
+     },
+     "to": "Point::Point.distance"
+    }
+   ],
+   "to": "Point::Point.distance",
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_find",
+  "arguments": {
+   "query": "ref [i64] -> i64",
+   "limit": 3
+  },
+  "text": "exact   Array.exactly_one :: Copy<'a> => ref ['a] -> 'a\nexact   Array.head :: Copy<'a> => ref ['a] -> 'a\nexact   Array.last :: Copy<'a> => ref ['a] -> 'a\n... 49 more; raise limit (at most 10)\n",
+  "structured": {
+   "candidates": [
+    {
+     "how": "call",
+     "name": "Array.exactly_one",
+     "signature": "Array.exactly_one :: Copy<'a> => ref ['a] -> 'a"
+    },
+    {
+     "how": "call",
+     "name": "Array.head",
+     "signature": "Array.head :: Copy<'a> => ref ['a] -> 'a"
+    },
+    {
+     "how": "call",
+     "name": "Array.last",
+     "signature": "Array.last :: Copy<'a> => ref ['a] -> 'a"
+    }
+   ],
+   "query": "ref [i64] -> i64",
+   "truncated": true
+  }
+ },
+ {
+  "tool": "tz_impact",
+  "arguments": {
+   "old": "."
+  },
+  "text": "impact: . -> working tree\ntests: 0 of 0 affected\nsummary: 0 breaking, 0 non-breaking, 0 info\n",
+  "structured": {
+   "new": "working tree",
+   "old": ".",
+   "records": [
+    {
+     "base": ".",
+     "head": "working tree",
+     "type": "impact"
+    },
+    {
+     "affected": [],
+     "mode": "some",
+     "paths": [],
+     "reason": null,
+     "total": 0,
+     "type": "tests"
+    },
+    {
+     "breaking": 0,
+     "info": 0,
+     "non_breaking": 0,
+     "omitted": 0,
+     "type": "summary"
+    }
+   ],
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_fix_plan",
+  "arguments": {},
+  "text": "no fixes to apply\n",
+  "structured": {
+   "applicability": "certain",
+   "diff": "",
+   "dropped": [],
+   "fixes": [],
+   "remaining_errors": 0,
+   "remaining_warnings": 0,
+   "rounds": 0,
+   "stop": "fixed_point",
+   "truncated": false
+  }
+ },
+ {
+  "tool": "tz_diagram",
+  "arguments": {
+   "kind": "module"
+  },
+  "text": "flowchart TD\n    n1[\"Point::Main\"]\n    n2[\"Point::Point\"]\n    n1 -->|\"×2\"| n2\n",
+  "structured": {
+   "format": "mermaid",
+   "kind": "module",
+   "nodes": 2,
+   "text": "flowchart TD\n    n1[\"Point::Main\"]\n    n2[\"Point::Point\"]\n    n1 -->|\"×2\"| n2\n",
+   "truncated": false
+  }
+ }
+]

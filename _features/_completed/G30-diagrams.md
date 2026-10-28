@@ -6,7 +6,7 @@
 | 優先度 | P2 |
 | 規模 | L（Phase 1 M・Phase 2 M・Phase 3 M・Phase 4 M・Phase 5 M） |
 | 依存 | [G26](G26-facts-model.md)（Phase 1〜2 の `symbols`・`graph`。Phase 2 の効果の色は Phase 3 の `facts`、Phase 3 は Phase 5 の `ownership`、Phase 5 のレイアウト表は Phase 6 の `layout`）、[G27](G27-build-time-kb.md)（Phase 2 の `KbData`・`open`・`finish`・`manifest.json`）。弱い依存: [G28](G28-kb-query-and-impact.md)（`kb` の引数の形と ID の解決。未完なら本チケットの規則）、[G22](G22-diagnostic-v2.md)（`related` の role 名だけを表に写す。なくても動く） |
-| 後続 | [G29](../G29-mcp-server.md)（`tz_diagram`）、[G35](../G35-generated-docs-single-source.md)（`views/*.mmd` を文書に取り込む） |
+| 後続 | [G29](G29-mcp-server.md)（`tz_diagram`）、[G35](../G35-generated-docs-single-source.md)（`views/*.mmd` を文書に取り込む） |
 | 状態 | done（Phase 1〜5。D-60 の KG。2026-10-28） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |

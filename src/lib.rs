@@ -40,6 +40,7 @@ pub mod kg;
 pub mod lexer;
 pub mod llvm;
 pub mod lsp;
+pub mod mcp;
 pub mod numeric;
 pub mod ownership;
 pub mod package;

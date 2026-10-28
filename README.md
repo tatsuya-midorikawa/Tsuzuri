@@ -20,7 +20,7 @@
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
 - **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです。`--target` は、Linux の glibc/musl と Windows の MSVC/MinGW を区別した 9 個の native triple を受け付け、同梱ツールチェーンか `TSUZURI_SYSROOT` でクロスリンクします。検証範囲と機能の制限は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
-- **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`。AI エージェント向けの `AGENTS.md`・`llms.txt` も作る）、AI エージェント向けのガイド（`tsuzuri guide`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
+- **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`。AI エージェント向けの `AGENTS.md`・`llms.txt` も作る）、AI エージェント向けのガイド（`tsuzuri guide`）と MCP サーバー（`tsuzuri mcp`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
 
 ---
 
@@ -644,6 +644,14 @@ tsuzuri fix --edition 2027 --from 2026 --dry-run app/
 tsuzuri fix --edition 2027 --from 2026 app/
 ```
 
+### MCP サーバー (`tsuzuri mcp`)
+
+Claude Code・VS Code・Copilot CLI・Cursor などの AI エージェントから使える、標準入出力の Model Context Protocol サーバーです。型検査の診断（`tz_check`）、言語の案内、診断の説明、知識グラフの照会（宣言・呼び出し元・最短の鎖・型での検索）、版の比較、修正の計画、図を、読み取り専用の 12 の型付きツールで返します。ファイルを書かず、子プロセスもネットワークも使いません（[MCP サーバー](_tsuzuri/language-reference/compiler/mcp.md)）。
+
+```sh
+claude mcp add --transport stdio tsuzuri -- tsuzuri mcp
+```
+
 ### 言語サーバー (`tsuzuri lsp`)
 
 VS Code や Neovim など、LSP 対応のエディタから利用可能な標準入出力（stdio）言語サーバーです。
@@ -919,6 +927,7 @@ tsuzuri explain TARGET [--json]
 tsuzuri explain --catalog [--json]
 tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]... [--consume F:P]... [--json]
 tsuzuri lsp
+tsuzuri mcp [--root DIR] [--kg-dir DIR]
 ```
 
 ### 主要オプション一覧

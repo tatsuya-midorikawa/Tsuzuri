@@ -25,7 +25,7 @@ pub(crate) const MAX_THREADS: usize = 32;
 pub(crate) const AUTOMATIC_THREADS: usize = 8;
 /// The stack of a worker, what the main thread has by default on macOS and Linux (and eight times
 /// what Windows gives it): a worker must not overflow on a program that the main thread accepts.
-const WORKER_STACK_BYTES: usize = 8 << 20;
+pub(crate) const WORKER_STACK_BYTES: usize = 8 << 20;
 
 /// How many threads the frontend may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

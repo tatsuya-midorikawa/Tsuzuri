@@ -601,6 +601,8 @@ pub struct Match {
     pub module: String,
     pub origin: &'static str,
     pub signature: String,
+    /// The number of parameters: G25's `how` is `call` with some, `value` without.
+    pub parameters: usize,
 }
 
 /// The parse error of a query.
@@ -782,6 +784,7 @@ pub fn search(view: &KgView, query: &Query) -> Result<(Vec<Match>, usize), Query
             module: entry.node.module.clone(),
             origin: entry.origin,
             signature: entry.text.clone(),
+            parameters: entry.parameters.len(),
         });
     }
     // One match per (name, kind): the best tier.

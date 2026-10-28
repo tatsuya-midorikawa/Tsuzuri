@@ -16,7 +16,7 @@ use super::write::{Files, MANIFEST, not_ours, publish};
 use crate::check::CheckedModule;
 use crate::check::kg_capture::Capture;
 use crate::diagnostic::{Diagnostic, DiagnosticKind, DiagnosticSet, Span, json_string};
-use crate::driver::Project;
+use crate::driver::{AnalysisKind, Project};
 
 /// Where a graph is written and what it is written for.
 #[derive(Clone, Debug)]
@@ -411,6 +411,53 @@ pub(crate) fn files_of(
             Ok((files, false, None))
         }
     }
+}
+
+/// Why `memory` built no graph.
+#[derive(Debug)]
+pub enum Unbuilt {
+    /// The project does not type-check.
+    Errors(DiagnosticSet),
+    Failure(Diagnostic),
+}
+
+/// The graph of `project` built in memory and written nowhere, without the frontend cache: for the
+/// readers that must not write (`tsuzuri mcp`, G29 D6).
+pub fn memory(project: &Project) -> Result<KgData, Unbuilt> {
+    let hash = hex(&super::input::source_hash(project));
+    let mut capture = Capture::default();
+    let module = project
+        .analyze_cached_captured(false, AnalysisKind::Tests, &mut capture)
+        .map_err(Unbuilt::Errors)?;
+    let warnings = DiagnosticSet::from_diagnostics(module.warnings.iter().cloned(), 0);
+    let (files, _, _) = files_of(
+        &hash,
+        project,
+        Analysis::Checked {
+            module: &module,
+            capture: Box::new(capture),
+            warnings: &warnings,
+        },
+    )
+    .map_err(Unbuilt::Failure)?;
+    let manifest = files
+        .get(MANIFEST)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| Manifest::parse(text).ok())
+        .ok_or_else(|| {
+            Unbuilt::Failure(Diagnostic::of(
+                DiagnosticKind::IoFailure,
+                "cannot read the KG that was built in memory",
+                Span::default(),
+            ))
+        })?;
+    KgData::from_parts(&manifest, &files).map_err(|reason| {
+        Unbuilt::Failure(Diagnostic::of(
+            DiagnosticKind::IoFailure,
+            format!("cannot read the KG that was built in memory: {reason}"),
+            Span::default(),
+        ))
+    })
 }
 
 /// Builds the files of the graph of `analysis` and publishes them at `target`.

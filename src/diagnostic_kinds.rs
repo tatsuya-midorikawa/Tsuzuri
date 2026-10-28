@@ -650,6 +650,7 @@ diagnostic_kinds! {
         (KgAmbiguousId, "kg_ambiguous_id", "E2000"),
         (KgUnknownId, "kg_unknown_id", "E2000"),
         (LinkInputLimit, "link_input_limit", "E2000"),
+        (McpBadArguments, "mcp_bad_arguments", "E2000"),
         (MissingInput, "missing_input", "E2000"),
         (NativeLinkSettingNotAllowed, "native_link_setting_not_allowed", "E2000"),
         (NetAsyncNeedsBlockOn, "net_async_needs_block_on", "E2000"),
@@ -779,6 +780,10 @@ diagnostic_kinds! {
         (KgMissing, "kg_missing", "E2009"),
         (KgNotOurs, "kg_not_ours", "E2009"),
         (KgStale, "kg_stale", "E2009"),
+        // E2010
+        (McpIoFailed, "mcp_io_failed", "E2010"),
+        (McpRootUnusable, "mcp_root_unusable", "E2010"),
+        (McpWorkerFailed, "mcp_worker_failed", "E2010"),
         // W1001
         (UnusedLocal, "unused_local", "W1001"),
         // W1002
