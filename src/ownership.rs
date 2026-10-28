@@ -15,6 +15,48 @@ use crate::syntax::BinaryOp;
 #[path = "ownership_control.rs"]
 mod control;
 
+/// What the checker does to a variable at a place (G26 phase 5): the knowledge graph reads these
+/// events from the abstract bodies. Collecting them changes no check and no diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OwnershipEvent {
+    pub(crate) var: String,
+    pub(crate) kind: EventKind,
+    /// The function that receives the value or the borrow, for an argument of a call.
+    pub(crate) to: Option<EventTarget>,
+    pub(crate) span: Span,
+    /// The type of a moved value: a move of a type variable that the body turns out to need as
+    /// Copy is a copy, not a move.
+    moved: Option<Type>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum EventKind {
+    Move,
+    Borrow,
+    BorrowMut,
+    Reborrow,
+    Drop,
+}
+
+impl EventKind {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Borrow => "borrow",
+            Self::BorrowMut => "borrow_mut",
+            Self::Reborrow => "reborrow",
+            Self::Drop => "drop",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EventTarget {
+    User(usize),
+    Builtin(crate::check::Builtin),
+    Method(usize, usize),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Place {
     root: usize,
@@ -178,6 +220,7 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
             Contract::of(function),
             &mut recovered,
             None,
+            None,
         );
     }
     recovered
@@ -200,6 +243,7 @@ pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
             Contract::of(function),
             &mut Vec::new(),
             Some(&mut copies),
+            None,
         );
         reads.push(copies);
     }
@@ -246,6 +290,7 @@ fn check_functions(
                 module.user_drops.values().any(|drop| *drop == id),
                 Contract::of(function),
                 &mut recovered,
+                None,
                 None,
             );
             if scalar {
@@ -411,6 +456,7 @@ fn check_body<'a>(
     contract: Contract<'a>,
     recovered: &mut Vec<Diagnostic>,
     copies: Option<&mut Vec<CopyRead>>,
+    events: Option<&mut Vec<OwnershipEvent>>,
 ) -> Result<BTreeSet<String>, Diagnostic> {
     let mut declarations: BTreeMap<_, _> =
         parameters.clone().map(|local| (local.id, local)).collect();
@@ -432,6 +478,7 @@ fn check_body<'a>(
         closed,
         recovered,
         copies,
+        events,
         reported: BTreeSet::new(),
         callbacks: contract
             .callbacks
@@ -459,8 +506,56 @@ fn check_body<'a>(
             .insert(parameter.id, (parameter, value));
     }
     let result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
+    if checker.events.is_some() {
+        let end = Span {
+            start: body.span.end,
+            ..body.span
+        };
+        let ids: Vec<usize> = parameters.clone().map(|parameter| parameter.id).collect();
+        checker.drop_events(&ids, end);
+    }
     checker.check_result(parameters, body, task, contract, result)?;
+    if let Some(events) = checker.events.take() {
+        // With the Copy variables that the whole body needs, a move of a type that is Copy (a type
+        // variable, or an array, tuple, record or union of such) is a copy.
+        events.retain(|event| !event.moved.as_ref().is_some_and(|ty| checker.is_copy(ty)));
+        events.sort_by_key(|event| (event.span.start, event.span.end, event.kind));
+        events.dedup();
+    }
     Ok(checker.copy_variables)
+}
+
+/// The ownership events of the abstract bodies of `functions` (G26 phase 5): each body is
+/// checked once more, as the inference does, with an event sink.
+pub(crate) fn events_abstract(
+    module: &CheckedModule,
+    functions: &[usize],
+) -> BTreeMap<usize, Vec<OwnershipEvent>> {
+    let closed = closed_returns(module);
+    let mut result = BTreeMap::new();
+    for &id in functions {
+        let Some(function) = module.functions.get(id) else {
+            continue;
+        };
+        let mut events = Vec::new();
+        let checked = check_body(
+            module,
+            function.parameters.iter(),
+            &function.body,
+            true,
+            &closed,
+            function.is_task,
+            module.user_drops.values().any(|drop| *drop == id),
+            Contract::of(function),
+            &mut Vec::new(),
+            None,
+            Some(&mut events),
+        );
+        if checked.is_ok() {
+            result.insert(id, events);
+        }
+    }
+    result
 }
 
 // Unknown results retain their input loans. Only proven closed snapshots can end a curried stage's loans.
@@ -652,6 +747,8 @@ struct Checker<'a, 'run> {
     recovered: &'run mut Vec<Diagnostic>,
     /// Collects the copied consuming reads for `copies::sites`; the checks stay the same.
     copies: Option<&'run mut Vec<CopyRead>>,
+    /// Collects the ownership events for the knowledge graph (G26); the checks stay the same.
+    events: Option<&'run mut Vec<OwnershipEvent>>,
     reported: BTreeSet<usize>,
     /// Parameters with region-quantified function types, by local id (A12 Phase 2).
     callbacks: BTreeMap<usize, &'a CallbackContract>,
@@ -794,6 +891,7 @@ impl<'a> Checker<'a, '_> {
                             slots: None,
                         },
                         &mut Vec::new(),
+                        None,
                         None,
                     )
                     .is_ok()
@@ -1928,6 +2026,7 @@ impl<'a> Checker<'a, '_> {
         let mut result = Value::default();
         for (place, via) in places {
             self.access(&place, &via, Use::MutBorrow, span)?;
+            self.borrow_event(&place, via.is_empty(), true, span);
             result.loans.insert(self.loan(place, true, via, span));
         }
         Ok(result)
@@ -2320,6 +2419,12 @@ impl<'a> Checker<'a, '_> {
             }
             if moving {
                 self.state.moved.insert(place.clone(), expression.span);
+                self.event(
+                    place.root,
+                    EventKind::Move,
+                    expression.span,
+                    Some(&expression.ty),
+                );
                 if self.infer {
                     self.state
                         .generic_moves
@@ -2367,6 +2472,93 @@ impl<'a> Checker<'a, '_> {
             ));
         }
         Ok(value)
+    }
+
+    /// Records an ownership event of the variable at `root` (G26 phase 5).
+    fn event(&mut self, root: usize, kind: EventKind, span: Span, moved: Option<&Type>) {
+        if self.events.is_none() || is_static_root(root) {
+            return;
+        }
+        let id = if self.external.contains(&root) {
+            usize::MAX - root
+        } else {
+            root
+        };
+        let Some(local) = self.declarations.get(&id) else {
+            return;
+        };
+        // A variable that the compiler generated is no variable of the source.
+        if local.provenance != crate::syntax::Provenance::User || local.name.starts_with('$') {
+            return;
+        }
+        let var = local.name.clone();
+        if let Some(events) = self.events.as_deref_mut() {
+            events.push(OwnershipEvent {
+                var,
+                kind,
+                to: None,
+                span,
+                moved: moved.cloned(),
+            });
+        }
+    }
+
+    /// A borrow event: a borrow of a variable itself, or a reborrow through a reference.
+    fn borrow_event(&mut self, place: &Place, direct: bool, mutable: bool, span: Span) {
+        let kind = match (direct, mutable) {
+            (false, _) => EventKind::Reborrow,
+            (true, false) => EventKind::Borrow,
+            (true, true) => EventKind::BorrowMut,
+        };
+        self.event(place.root, kind, span, None);
+    }
+
+    /// `drop` events at `end` for the locals `ids` that are dropped there: declared in the source,
+    /// needing a drop, and not moved (in part or whole) on the way.
+    fn drop_events(&mut self, ids: &[usize], end: Span) {
+        let types = self.module.types();
+        for &id in ids {
+            let Some(local) = self.declarations.get(&id).copied() else {
+                continue;
+            };
+            if local.provenance != crate::syntax::Provenance::User
+                || !local.ty.needs_drop(&types)
+                || self.state.moved.keys().any(|place| place.root == id)
+            {
+                continue;
+            }
+            if let Some(events) = self.events.as_deref_mut() {
+                events.push(OwnershipEvent {
+                    var: local.name.clone(),
+                    kind: EventKind::Drop,
+                    to: None,
+                    span: end,
+                    moved: None,
+                });
+            }
+        }
+    }
+
+    /// Gives the events of an argument at `span`, recorded from `mark` on, the callee as target.
+    fn event_targets(&mut self, mark: usize, span: Span, callee: &TypedExpr) {
+        let Some(events) = self.events.as_deref_mut() else {
+            return;
+        };
+        let target = match &callee.kind {
+            E::Function(crate::check::FunctionRef::User(id)) | E::GenericFunction(id, _) => {
+                EventTarget::User(*id)
+            }
+            E::Function(crate::check::FunctionRef::Builtin(instance)) => {
+                EventTarget::Builtin(instance.builtin)
+            }
+            E::Method(class, method, _) => EventTarget::Method(*class, *method),
+            _ => return,
+        };
+        for event in events.iter_mut().skip(mark) {
+            if event.span == span && event.to.is_none() {
+                event.to = Some(target.clone());
+            }
+        }
     }
 
     fn eval_block(
@@ -2455,6 +2647,14 @@ impl<'a> Checker<'a, '_> {
                     ));
             }
         }
+        if self.events.is_some() {
+            let end = Span {
+                start: expression.span.end,
+                ..expression.span
+            };
+            let ids: Vec<usize> = ids.iter().copied().collect();
+            self.drop_events(&ids, end);
+        }
         for id in ids {
             self.state.locals.remove(&id);
         }
@@ -2501,7 +2701,9 @@ impl<'a> Checker<'a, '_> {
         current.regions = region_sources.and_then(call_slots);
         self.held.push(value);
         for (index, argument) in arguments.iter().enumerate() {
+            let mark = self.events.as_ref().map_or(0, |events| events.len());
             let value = self.eval(argument, Use::Consume, &during)?;
+            self.event_targets(mark, argument.span, callee);
             // The callback runs under the lock, so a result that holds a borrow of the locked value
             // would use it after the lock is released: the value may be replaced and freed, or be
             // written by another task, by then. Only a result that is proven free of borrows made
@@ -2634,6 +2836,7 @@ impl<'a> Checker<'a, '_> {
             false,
             Contract::default(),
             self.recovered,
+            None,
             None,
         )?);
         self.capture_loans(expression, &during, &mut result)?;
@@ -2768,6 +2971,7 @@ impl<'a> Checker<'a, '_> {
             E::Slice { value, start, end } => {
                 for (place, via) in self.place(value, &during)? {
                     self.access(&place, &via, Use::Borrow, expression.span)?;
+                    self.borrow_event(&place, via.is_empty(), false, expression.span);
                     result
                         .loans
                         .insert(self.loan(place, false, via, expression.span));
@@ -2796,6 +3000,7 @@ impl<'a> Checker<'a, '_> {
                         },
                         expression.span,
                     )?;
+                    self.borrow_event(&place, via.is_empty(), *mutable, expression.span);
                     result
                         .loans
                         .insert(self.loan(place, *mutable, via, expression.span));
@@ -2979,7 +3184,12 @@ impl<'a> Checker<'a, '_> {
                 } else {
                     Use::Consume
                 };
+                let mark = self.events.as_ref().map_or(0, |events| events.len());
                 let value = self.eval(left, usage, &during)?;
+                if *operator == BinaryOp::Pipe {
+                    // `text |> consume` gives its argument to `consume`, as `consume text` does.
+                    self.event_targets(mark, left.span, right);
+                }
                 self.held.push(value.clone());
                 let callee = self.eval(right, usage, &during)?;
                 self.held.pop();
@@ -4044,5 +4254,74 @@ mod later_use_tests {
             ),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    /// The event sink (G26 phase 5) only records: every body of every shipped project checks
+    /// with the same result, diagnostics and constraints with and without it.
+    #[test]
+    fn ownership_sink_does_not_change_diagnostics() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut projects = Vec::new();
+        for directory in ["examples", "tests/fixtures"] {
+            for entry in std::fs::read_dir(root.join(directory)).unwrap() {
+                let path = entry.unwrap().path();
+                if path.join("Main.tz").is_file() || path.join("Tsuzuri.toml").is_file() {
+                    projects.push(path);
+                }
+            }
+        }
+        projects.sort();
+        let mut checked = 0;
+        for path in projects {
+            let Ok(project) = crate::driver::Project::load(&path) else {
+                continue;
+            };
+            let Ok(module) = project.analyze_all() else {
+                continue;
+            };
+            let closed = closed_returns(&module);
+            for (id, function) in module.functions.iter().enumerate() {
+                for infer in [false, true] {
+                    let run = |events: Option<&mut Vec<OwnershipEvent>>| {
+                        let mut recovered = Vec::new();
+                        let result = check_body(
+                            &module,
+                            function.parameters.iter(),
+                            &function.body,
+                            infer,
+                            &closed,
+                            function.is_task,
+                            module.user_drops.values().any(|drop| *drop == id),
+                            Contract::of(function),
+                            &mut recovered,
+                            None,
+                            events,
+                        );
+                        (
+                            result.map_err(|error| (error.code, error.span, error.message.clone())),
+                            recovered
+                                .into_iter()
+                                .map(|error| (error.code, error.span, error.message.clone()))
+                                .collect::<Vec<_>>(),
+                        )
+                    };
+                    let mut events = Vec::new();
+                    assert_eq!(
+                        run(None),
+                        run(Some(&mut events)),
+                        "{} {}",
+                        path.display(),
+                        function.name
+                    );
+                }
+            }
+            checked += 1;
+        }
+        assert!(checked >= 20, "only {checked} projects were checked");
     }
 }

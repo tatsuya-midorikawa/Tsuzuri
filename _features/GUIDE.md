@@ -1695,6 +1695,8 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 
 ### D-52 Facts と KB の共通仕様（G26・G27・G28・G29・G30・G31・E15・A20）
 
+**2026-10-28 に [D-60](#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KG（知識グラフ）に改めた。** 以下の KB の名前（`target/tz/kb`・`symbols.jsonl`・`graph.jsonl`・`--kb` など）は D-60 の対応表で読み替える。行のキー・ID・整列・上限・カードの規則は変わらない。
+
 - **用語**: *facts* は、コンパイラが解析で得た事実（シンボル・呼び出し・効果・トラップ箇所・確保箇所・複製箇所・所有権の出来事・型のレイアウト）の機械可読な表。*KB* は、facts と、そこから決定的に作る要約（brief カード）と図（Mermaid）を置いた
   ディレクトリ。**KB に LLM が書いた文章・日時・絶対パスは入れない。** 同じソースと同じコンパイラからは byte 単位で同じ内容ができる。
 - **schema の名前**: KB は `tz-kb/1`（`manifest.json` の `schema`）、facts の各行は `tz-facts/1`。互換のない変更は番号を上げ、足すだけの変更は番号を保つ（読み手は知らないキーを無視する）。
@@ -1781,7 +1783,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 診断コード | `E1038` | B10 | `Domain` の使い方の誤り |
 | 診断コード | `E1039` | F15 | `Monoid` の還元・並列 API の使い方の誤り |
 | 診断コード | `E2008` | G24 | `tsuzuri fix` の中止（新しい誤りが出る、競合、書き込めない） |
-| 診断コード | `E2009` | G27・G28 | KB の欠落・古い・壊れた・上書きできない |
+| 診断コード | `E2009` | G27・G28 | KG の欠落・古い・壊れた・上書きできない（D-60） |
 | 診断コード | `E2010` | G29 | MCP の致命的な誤り |
 | 診断コード | `E2011` | G34 | `tsuzuri test --doc` の例の記法の誤り（閉じのない・字下げした・空の `tsuzuri` のフェンス） |
 | 警告 | `W1007` | A22 | 非正準な表記（既定は無効） |
@@ -1792,19 +1794,19 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | サブコマンド | `guide` | G21 | AI 向けの案内の出力 |
 | サブコマンド | `explain` | G23 | 診断コード・kind の説明 |
 | サブコマンド | `fix` | G24 | 機械的な修正の適用 |
-| サブコマンド | `find` | G25 | 型での検索（`kb find` も同じ実装） |
-| サブコマンド | `kb`（`build`・`verify`・`clean`・`export`・`brief`・`show`・`callers`・`callees`・`uses`・`search`・`find`・`tests-for`・`impact`・`diagram`） | G27・G28・G30 | KB の作成と照会 |
+| サブコマンド | `find` | G25 | 型での検索（`kg find` も同じ実装。D-60） |
+| サブコマンド | `kg`（`build`・`verify`・`clean`・`export`・`brief`・`show`・`callers`・`callees`・`uses`・`search`・`find`・`tests-for`・`impact`・`path`・`diagram`） | G27・G28・G30 | 知識グラフの作成と照会（D-60。旧名 `kb`） |
 | サブコマンド | `mcp` | G29 | stdio の MCP サーバー |
 | サブコマンド | `audit` | E15 | 信頼境界と権限の報告 |
 | サブコマンド | `prove` | A21 | 契約の静的検証（`--contracts prove` と同じ） |
-| CLI | `--kb`・`--no-kb`・`--kb-dir DIR` | G27 | KB の作成の制御 |
+| CLI | `--kg`・`--no-kg`・`--kg-dir DIR` | G27 | KG の作成の制御（D-60。旧名 `--kb`・`--no-kb`・`--kb-dir`） |
 | CLI | `--warn canonical` | A22 | `W1007` を有効にする（既存の `--warn implicit-copy` と同じ形） |
 | CLI | `--edition 2026\|2027` | A22 | マニフェストのない入力の edition の指定（`check`・`build`・`run`・`test`・`script`） |
 | CLI | `--applicability certain\|likely\|maybe`・`--dry-run` | G24 | `fix` の適用範囲と差分の表示 |
 | CLI | `--contracts off\|check\|test\|prove` | A21 | 契約の扱い（既定は `build` が `off`、`run`・`test`・`repl` が `check`。`check`・`doc` は何も生成せず常に型検査だけ。`--prove-timeout`・`--function` は `prove` のときだけ） |
 | CLI | `--overflow-report` | A23 | 折り返しの報告の計装（`test` は既定で有効） |
 | CLI | `--allocator counting` の `build`・`run`・`test` への対応 | F14 | 確保数の計装（`build`・`run` は明示、`test` は `Alloc` に到達すると自動） |
-| 環境変数 | `TSUZURI_KB`（`0` で作らない）・`TSUZURI_KB_DIR` | G27 | KB |
+| 環境変数 | `TSUZURI_KG`（`0` で作らない）・`TSUZURI_KG_DIR` | G27 | KG（D-60。旧名 `TSUZURI_KB`・`TSUZURI_KB_DIR`） |
 | 環境変数 | `TSUZURI_GUIDE_EXAMPLES`（テスト用） | G21 | ガイドの例の検証の対象の切り替え |
 | std | `Text`（型クラスとモジュール） | D14 | 文字列の API の統一 |
 | std | `Alloc` | F14 | 確保数の測定（テストでは自動、通常の `build`・`run` は counting を明示） |
@@ -1821,10 +1823,10 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | --- | --- | --- | --- |
 | CLI（`guide`・`new`） | `--level`・`--topic`・`--list`・`--agents`・`--llms-txt`・`--edition`（`guide` の中だけ）・`--no-agent-files`（`new` の中だけ） | G21 | AI 向けの案内。JSON の schema は `tz-guide/1` |
 | CLI（`find`・`kb find`） | `--project`・`--result`・`--takes`・`--module`・`--limit` | G25 | 型でのシグネチャ検索 |
-| CLI（`kb build`・`kb clean`） | `--std`・`--force` | G27 | std の KB・古くなくても作り直す |
-| CLI（`kb` の照会・`impact`） | `--path`・`--depth`・`--budget`・`--no-refresh`・`--git`・`--from`・`--to`・`--affected` | G28 | 照会の範囲・文字数の上限・差分の指定 |
-| CLI（`kb diagram`） | `--format mermaid\|dot`・`--max-nodes N`（5〜200）・`--depth N`・`--path`（この 4 つは `kb diagram` の中だけ。`--kb-dir`・`--no-refresh` は G28 と同じ意味） | G30 | 図の出力形式と大きさの上限 |
-| CLI（`mcp`） | `--root DIR`・`--kb-dir DIR` | G29 | stdio の MCP サーバー（プロトコルは 2025-06-18 だけ。**環境変数を読まない**ので `TSUZURI_KB_DIR` は効かず、置き場は `--kb-dir` か `<root>/target/tz/kb`） |
+| CLI（`kg build`・`kg clean`、`kg export`） | `--std`・`--force`、`--nodes`・`--edges`・`--facts` | G27 | std の KG・古くなくても作り直す・書き出すファイル（D-60） |
+| CLI（`kg` の照会・`impact`・`path`） | `--path`・`--depth`・`--budget`・`--no-refresh`・`--git`・`--from`・`--to`・`--affected`・`--rel` | G28 | 照会の範囲・文字数の上限・差分の指定・最短路の関係（`--rel` は D-60） |
+| CLI（`kg diagram`） | `--format mermaid\|dot`・`--max-nodes N`（5〜200）・`--depth N`・`--path`（この 4 つは `kg diagram` の中だけ。`--kg-dir`・`--no-refresh` は G28 と同じ意味） | G30 | 図の出力形式と大きさの上限 |
+| CLI（`mcp`） | `--root DIR`・`--kg-dir DIR` | G29 | stdio の MCP サーバー（プロトコルは 2025-06-18 だけ。**環境変数を読まない**ので `TSUZURI_KG_DIR` は効かず、置き場は `--kg-dir` か `<root>/target/tz/kg`） |
 | CLI（`fix`） | `--applicability`・`--dry-run`・`--edition`（移行先の edition） | G24 | `--applicability maybe` は `--dry-run` のときだけ受理する。`--yes` は作らない（提案の自動適用をしない） |
 | CLI（`build`・`run`・`test`） | `--overflow-report`（`build`・`run`・`test`）・`--allow-overflow`（`test` だけ） | A23 | 折り返しの報告。`test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告のまま通す）。`--no-overflow-report` は作らない |
 | CLI（`--contracts prove`・`prove`） | `--prove-timeout SECONDS`（1〜3600）・`--function NAME` | A21 | 契約の静的検証（`prove` のときだけ使える） |
@@ -1842,7 +1844,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | std | `Text`（常に読み込む型クラス）・`RegexText` | D14 | 文字列の API の統一。`RESERVED_MODULES` の数は現在値から増やす |
 | std | `Monoid`（型クラス。常に読み込む）・`Monoids`（opt-in の newtype 群。`Monoids.Sum` のように修飾して書く）・`Array.fold_monoid`・`Parallel.fold` | F15 | 還元の保証。浮動小数点を含む型の `Monoid` は `E1039`（kind `monoid_float_instance`）。`RESERVED_MODULES` へ `Monoid`・`Monoids`（現在値から 2 増やす） |
 | std | `Map.chunk_count`・`Map.invariants_hold`・`Set.chunk_count`・`Set.invariants_hold` | C12 | 診断・テスト用の公開関数（チャンクの数と不変条件の検査）。`Map`／`Set` の計算量の表は C12 の仕様 §5 が正（G35 が `@complexity` を生成するときに合わせる） |
-| 生成物 | `target/tz/kb/`・`target/progfuzz/`・`target/ai-cost/` | G27・G36・G31 | すべて `target/` の下（コミットしない） |
+| 生成物 | `target/tz/kg/`・`target/progfuzz/`・`target/ai-cost/` | G27・G36・G31 | すべて `target/` の下（コミットしない） |
 
 ### D-56 AI 向け成果物（ガイド・AGENTS.md・llms.txt・brief カード）の言語とサイズ
 
@@ -1872,6 +1874,41 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - 検査は `tests/std_argument_order.rs`。`std/` の全ファイルを `MODULES` に分類しないと赤になるので、新しいモジュールは必ずここに当たる。`def` 行の型で「対象を取る関数は対象が最後」を調べ、同じ型が 2 つ並ぶ `String`・`Utf8String`・`Regex` は `fn` 行の最後の仮引数名（`text`・`parts`）で調べる。コンパイラ組み込みの `Array`・`List`・`Vec`・`String`・`Utf8String` の型にも同じ規則を当て、旧順の呼び出しが型エラーになること、パイプと合成が通ることも確かめる。
 - 文書は、利用者向けの `_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md` と各モジュールのページの「引数の順序」の節、仕様の `docs/language.md`（標準ライブラリの引数の順序）、AI 向けの `AGENTS.md`（Standard library API conventions）。
 - 経緯: `Array`・`List`・`Vec` を先に揃え（`Vec` は .NET の `List<T>` との互換と同時）、その後に `Map`・`Set`・`HashMap`・`HashSet`・`Arena`・`String`・`Utf8String`・`Matrix`・`MatrixView`・`Tensor`・`Maybe`・`Result`・`IO`・`Regex`・`Json` を同じ規則に揃えた。
+
+### D-60 KB から KG（知識グラフ）への再設計（G26・G27・G28・G29・G30）
+
+- **経緯**: 2026-10-28、利用者の指示で、D-52 の KB（ファイルの集まりとしての知識ベース）を、グラフ理論に基づく **KG（知識グラフ）** に改めた。G26〜G30 のチケットの本文は書いた時点（KB）のまま残し、各チケットの先頭の「KG への更新（D-60）」の節と、この決定を正とする。D-52 の行のキー・ID の規則・整列・上限・カードの上限・鮮度の規則は変えない。
+- **モデル**: KG は型付きの有向多重グラフ（property graph）*G* = (*V*, *E*)。
+  - **ノード** *V*: `nodes.jsonl`（旧 `symbols.jsonl`）の 1 行が 1 つのノードで、`id` が主キー、`kind` がラベル（`module`・`def`・`const`・`record`・`union`・`case`・`field`・`class`・`method`・`instance`・`alias`・`test`・`bench`・`extern`・`handle`）。ノードの性質は、その行のキーと、性質の表 `tests.jsonl`（テストのノードの `index`）・`facts/<key>.jsonl`（関数的なノードの事実）・`layout/<key>.jsonl`（型の実体のレイアウト。キーは `type_id_text`）の、同じ ID の行。
+  - **辺** *E*: `edges.jsonl`（旧 `graph.jsonl`）の 1 行が 1 本の有向辺 `from` → `to`。ラベルは `rel`、性質は `args`・`span`。同じ端点の間に、出現の位置ごとに別の辺がありうる（多重グラフ）。
+  - **構造の辺 `contains`（新規）**: module → 最上位の宣言（`$entry`・instance・test・bench を含む）、record → field、union → case、class → method、instance → method。`span` は子の `span`。**不変条件**: `contains` は森で、根はちょうど `module` のノード、`module` 以外のノードは `contains` の入次数がちょうど 1（`kg verify` とテストが検査する）。親を ID の文字列から推測しない（`contains` を辿る）。
+  - **端点**: `from` はつねにこの KG のノード（`implements` の `from` だけは型の `type_id_text` で、利用者の型でなければ外部）。`to` は、この KG のノードか、**外部の端点**（std の KG のノード、組み込み関数 `sqrt`・組み込みのクラス `Eq`、`imports` の名前空間）。読み手は外部の端点を「この KG にない葉」として扱い、std の KG（G27 Phase 4）があれば、そのノードに結ぶ。
+- **索引とアルゴリズム**: 読み手（`KgData`）は読み込みのときに 1 回だけ、ノードの ID を 0..*n* の添字にし、関係ごとに前向き・後ろ向きの隣接（CSR。辺は `(相手, span.path, span.start)` の順）を作る（`KgIndex`）。グラフのアルゴリズムは `src/kg/algo.rs` の 1 か所にまとめ、どれも明示のスタック・キューで書く（再帰しない）。
+  | アルゴリズム | 使う所 |
+  | --- | --- |
+  | 有界の幅優先（*k* 近傍、親つき） | `kg callers`・`callees`（深さ 1〜8）、`tested_by`（深さ 8・200 件）、`kg diagram calls` |
+  | 強連結成分（Tarjan の反復版）と縮約 | facts の `recursion`、`kg diagram module` の循環、`impact` の変更モジュール |
+  | 逆向きの到達可能性（深さつき。仮想の辺つき） | `kg impact` と `test --affected` の影響を受けるテスト（クラスのメソッドの呼び出しは、`instance_of` でそのクラスの全 instance のメソッドへ届く辺を足す） |
+  | 最短路（重みなしの幅優先。同じ長さなら ID の byte 順で最初） | 新しい照会 `kg path`、`impact` の JSON の根拠の鎖（`via`） |
+- **新しい照会** `tsuzuri kg path FROM TO [--rel R[,R…]] [--depth N]`: `FROM` から `TO` への最短路を、指定した関係（既定 `calls`。`contains`・`calls`・`uses_type`・`implements`・`instance_of`・`imports`・`tested_by` の組み合わせ）の辺だけで求める（`--depth` は 1〜16、既定 8）。1 行 1 段 `{ID} --{rel}--> {ID}  {path}:{line}:{column}`、最後に `summary: {n} steps`（見つからなければ `summary: no path within depth {N}`。どちらも終了コード 0）。`--json` は段ごとの `{"type":"step",…}` と `{"type":"summary",…}`。MCP は `tz_path`（G29）。
+- **検証**: `kg verify` は、ファイルの SHA-256 に加えて、グラフの不変条件（`contains` の森、辺の `from` がノードであること、ID の一意性）を検査し、違えば `E2009` `kg_broken`。
+- **名前の対応**（D-52・D-55 と各チケットの本文の名前は、この表で読み替える。行のキー・語彙・ID は変えない）:
+  | 旧（KB） | 新（KG） |
+  | --- | --- |
+  | `target/tz/kb/`、マーカー `.tsuzuri-kb`（1 行目 `generated by tsuzuri kb`） | `target/tz/kg/`、`.tsuzuri-kg`（`generated by tsuzuri kg`） |
+  | `manifest.json` の `schema` `tz-kb/1`（facts の行の `tz-facts/1` は変えない） | `tz-kg/1` |
+  | `symbols.jsonl`・`graph.jsonl`（`manifest.json` の `counts` の `symbols`・`public_symbols`） | `nodes.jsonl`・`edges.jsonl`（`nodes`・`public_nodes`） |
+  | `tsuzuri kb …`（`build`・`verify`・`clean`・`export`・`brief`・`show`・`callers`・`callees`・`uses`・`tests-for`・`search`・`find`・`impact`・`diagram`） | `tsuzuri kg …`（同じ名前と `path`） |
+  | `kb export --symbols`・`--graph`・`--facts` | `kg export --nodes`・`--edges`・`--facts` |
+  | `--kb`・`--no-kb`・`--kb-dir`、`TSUZURI_KB`・`TSUZURI_KB_DIR` | `--kg`・`--no-kg`・`--kg-dir`、`TSUZURI_KG`・`TSUZURI_KG_DIR` |
+  | `E2009` の kind `kb_missing`・`kb_stale`・`kb_broken`・`kb_not_ours`・`kb_incomplete` | `kg_missing`・`kg_stale`・`kg_broken`・`kg_not_ours`・`kg_incomplete` |
+  | `src/kb/`・`src/kb_capture.rs`・`KbModel`・`KbData`・`KbView`・`KbFlags` | `src/kg/`・`src/kg_capture.rs`・`KgModel`・`KgData`・`KgView`・`KgFlags` |
+  | `tests/kb*.rs`、fixture `kb_basic`・`kb_shop`・`kb_shop_head`、`tests/golden/kb/` | `tests/kg*.rs`、`kg_basic`・`kg_shop`・`kg_shop_head`、`tests/golden/kg/` |
+  | 文書 `compiler/kb-format.md`・`compiler/kb.md` | `compiler/kg-format.md`・`compiler/kg.md` |
+  | MCP の `--kb-dir`、資源 `tz://kb/brief/…`、能力 `kb` | `--kg-dir`、`tz://kg/brief/…`、`kg` |
+  | brief カードの L0 の行 `tz-kb/1 \| … \| symbols S \| …`、`next:` の `symbols.jsonl, graph.jsonl` | `tz-kg/1 \| … \| nodes N \| edges E \| …`（`edges` は `edges.jsonl` があるとき）、`nodes.jsonl, edges.jsonl` |
+- **G25 との関係**: G28 Phase 2 の `kg find` は、G25 の完了を待たず、KG の関数のノード（プロジェクトと std の KG）の署名を型で照合する検索として実装する（グラフの問い合わせの 1 つ）。G25 の `tsuzuri find` は、出荷するときにこの実装を呼ぶ（D-55 の「同じ実装」のまま）。G29 の `tz_find` はこの実装を使う。
+- **変えないもの**: `check`・`build`・`run`・`test` の出力・終了コード・IR、診断コード `E2009`・`E2010`・`W2001` の扱い、facts の規則（G26 の付録）、カードの文字数の上限（L0 2,400・L1 1,600・L2 700）、決定性（同じソースと同じコンパイラから byte 単位で同じ）。
 
 ## 10. 完了の定義（全チケット共通）
 

@@ -1,0 +1,86 @@
+using Acme::Kg::Geometry
+
+export def total :: ref [i64] -> i64
+fn total values =
+    let mut sum = 0
+    for index in 0 .. values.length - 1 do
+        sum = sum + values[index]
+    sum
+
+export def at :: ref [i64] -> i64 -> i64
+fn at values index = values[index]
+
+export def ratio :: i64 -> i64 -> i64
+fn ratio left right = left / right
+
+def rec sum_to :: i64 -> i64 -> i64
+fn rec sum_to n acc =
+    match n with
+    | 0 -> acc
+    | n -> sum_to (n - 1) (acc + n)
+
+def rec fib :: i64 -> i64
+fn rec fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+def rec is_even :: i64 -> bool
+def and is_odd :: i64 -> bool
+fn rec is_even n = if n == 0 then true else is_odd (n - 1)
+and is_odd n = if n == 0 then false else is_even (n - 1)
+
+export def countdown :: i64 -> i64
+fn countdown start =
+    let mut n = start
+    let mut steps = 0
+    while n > 0 do
+        n = n - 1
+        steps = steps + 1
+    steps
+
+export def describe :: f64 -> f64
+fn describe radius = Shapes.area (ref (Shapes.Circle radius)) + Metrics.norm1 radius 1.0
+
+export def doubled :: i64 -> f64 -> f64
+fn doubled n x = Shapes.twice x + (Shapes.twice n as f64)
+
+export def filled :: i64 -> i64
+fn filled n =
+    let values = new [i64](n, i -> i * 2)
+    total (ref values)
+
+export def copies :: i64 -> i64
+fn copies n =
+    let values = [n, n, n]
+    let first = total (ref values)
+    let moved = values
+    first + total (ref moved) + total (ref values)
+
+private def add_to :: ref mut i64 -> i64 -> unit
+fn add_to target amount = { deref target = deref target + amount; }
+
+private def peek :: ref string -> i64
+fn peek text = text.length
+
+private def peek_twice :: ref string -> i64
+fn peek_twice text = peek text + peek text
+
+private def consume :: string -> i64
+fn consume text = text.length
+
+export def ownership :: i64 -> i64
+fn ownership n =
+    let mut total = n
+    add_to (ref mut total) 1
+    let label = "kb" + "!"
+    let seen = peek_twice (ref label)
+    let text = "own" + "ed"
+    let owned = consume text
+    total + seen + owned
+
+export def traced :: i64 -> i64
+fn traced n =
+    Debug.print (ref n)
+    n + 1
+
+test "total adds" = assert (total (ref [1, 2, 3]) == 6)
+
+bench "total of three" = \n -> n + total (ref [1, 2, 3])

@@ -5,7 +5,7 @@
 | ID | G30 |
 | 優先度 | P2 |
 | 規模 | L（Phase 1 M・Phase 2 M・Phase 3 M・Phase 4 M・Phase 5 M） |
-| 依存 | [G26](G26-facts-model.md)（Phase 1〜2 の `symbols`・`graph`。Phase 2 の効果の色は Phase 3 の `facts`、Phase 3 は Phase 5 の `ownership`、Phase 5 のレイアウト表は Phase 6 の `layout`）、[G27](G27-build-time-kb.md)（Phase 2 の `KbData`・`open`・`finish`・`manifest.json`）。弱い依存: [G28](G28-kb-query-and-impact.md)（`kb` の引数の形と ID の解決。未完なら本チケットの規則）、[G22](_completed/G22-diagnostic-v2.md)（`related` の role 名だけを表に写す。なくても動く） |
+| 依存 | [G26](_completed/G26-facts-model.md)（Phase 1〜2 の `symbols`・`graph`。Phase 2 の効果の色は Phase 3 の `facts`、Phase 3 は Phase 5 の `ownership`、Phase 5 のレイアウト表は Phase 6 の `layout`）、[G27](G27-build-time-kb.md)（Phase 2 の `KbData`・`open`・`finish`・`manifest.json`）。弱い依存: [G28](G28-kb-query-and-impact.md)（`kb` の引数の形と ID の解決。未完なら本チケットの規則）、[G22](_completed/G22-diagnostic-v2.md)（`related` の role 名だけを表に写す。なくても動く） |
 | 後続 | [G29](G29-mcp-server.md)（`tz_diagram`）、[G35](G35-generated-docs-single-source.md)（`views/*.mmd` を文書に取り込む） |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
@@ -15,6 +15,18 @@
 | 主な影響ファイル | 新規: `src/diagram/{mod,input,resolve,escape,graph,mermaid,dot,validate,module,types,views}.rs`（Phase 1）、`calls.rs`（Phase 2）、`ownership.rs`（Phase 3）、`concurrency.rs`（Phase 4）、`layout.rs`・`transitions.rs`（Phase 5）、`tests/diagram.rs`・`tests/diagram_cli.rs`、`tests/fixtures/diagram/`・`tests/golden/diagram/`、`_tsuzuri/language-reference/compiler/diagrams.md`。変更: `src/lib.rs`（`pub mod diagram;`）、`src/kb/command.rs`（`diagram` の分岐）、`src/kb/build.rs`（`finish` に views）、`src/kb/store.rs`（Phase 5 で `KbData` に `layouts` を足す）、文書（「ドキュメント」）。**`Cargo.toml` は変えない** |
 
 詳しい検証記録・参照実装・fixture・期待出力は 2 つの付録にある。付録 A〜D（Mermaid の制約の実験・fixture・期待出力・負の例）は [G30-appendix.md](G30-appendix.md)、付録 E〜F（参照実装と検証の手順）は [G30-appendix-reference.md](G30-appendix-reference.md)。**参照実装（付録 E の Python）の出力が期待出力の正本**で、本文の表と食い違ったら、参照実装に合わせて本文を直す。
+
+## KG への更新（D-60、2026-10-28）
+
+本チケットは [D-60](GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。コマンドは `tsuzuri kg diagram`、`Input::from_kg(&KgData)`（本文の `from_kb`）は `nodes.jsonl`・`edges.jsonl` の行を読む（キーは同じ）。
+
+| 本文 | KG での実装 |
+| --- | --- |
+| `module` の循環（Tarjan） | `src/kg/algo.rs` の強連結成分（反復版）を使う |
+| `types` のメンバーの所有者（ID の最後の `.` の前） | `contains` の辺の親（結果は同じ。ID を解析しない） |
+| `calls` の幅優先 | `algo::bfs` と同じ順の規則（§`calls` の手順 2） |
+| `views/*.mmd` | KG の `views/`（`manifest.json` の `files` に入る） |
+| 付録 C の行・付録 E の参照実装 | 行のキーは同じ。ファイル名だけ `nodes`・`edges` に読み替える |
 
 ## 実装者向け早見
 

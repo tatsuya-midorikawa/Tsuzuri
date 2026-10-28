@@ -19,6 +19,7 @@
 | `tsuzuri fix --json` | `event` ごとのキー（`fix`・`file`・`summary`）の名前と順序、`status`・`reason`・`applicability`・`stop` の値を変えません（キーが増えることはあります）。終了コードは完了 0、中止 1、引数の誤り 2 です。`--applicability` の既定（`certain`）を変えません |
 | `tsuzuri explain` の JSON | `--json` と `--catalog --json` のキーの名前と順序を変えません（キーが増えることはあります）。終了コードは成功 0、引数の誤りと不明な対象 2 です |
 | `tsuzuri api-diff` の出力形式 | テキストの行の形と `--json` のキー（キーが増えることはあります） |
+| 知識グラフの schema（facts の行は `tz-facts/1`。G26・D-60） | `nodes.jsonl`・`edges.jsonl`・`tests.jsonl`・`facts/`・`layout/` の行のキーを消さず・改名せず、行の意味を変えません。キーと、`kind`・`rel`・`event`・`conv`・`layout` の語彙を足すのは互換の変更です（読み手は知らないキーと語彙を無視します）。互換のない変更は schema の番号を上げます（[知識グラフの形式](../_tsuzuri/language-reference/compiler/kg-format.md)） |
 
 ### 安定として保たないもの
 

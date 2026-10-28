@@ -5,9 +5,9 @@
 | ID | G26 |
 | 優先度 | P1 |
 | 規模 | XL（Phase 1 M・Phase 2 M・Phase 3 M・Phase 4 L・Phase 5 L・Phase 6 M） |
-| 依存 | [G22](_completed/G22-diagnostic-v2.md)（Phase 5 だけ。所有権の起点の span の記録と挿入点を共有する。Phase 1〜4・6 は診断 v2 の型を使わない）。[A20](A20-effect-summary-and-checked-attributes.md)（Phase 3 の `effects` を完全にする。未完でも縮退版で出荷できる）。[A15](_completed/A15-copy-cost-visibility.md)（done。`copies::sites`）、[PM01](../_perfs/_completed/PM01-value-layout.md)（done。`record_slots`・`UnionLayout`）、[F12](_completed/F12-bounds-check-elimination.md)（done。`ranges.rs`）、[G20](_completed/G20-error-recovery.md)（done） |
-| 後続 | [G27](G27-build-time-kb.md)（Phase 1 から。書き込みと `check`・`build` への組み込み）、[G28](G28-kb-query-and-impact.md)、[G29](G29-mcp-server.md)、[G30](G30-diagrams.md)（Phase 1・2・5・6）、[G35](G35-generated-docs-single-source.md)、[E15](E15-trust-boundary-and-capabilities.md)（Phase 3）、A20（facts への hook） |
-| 状態 | todo |
+| 依存 | [G22](G22-diagnostic-v2.md)（Phase 5 だけ。所有権の起点の span の記録と挿入点を共有する。Phase 1〜4・6 は診断 v2 の型を使わない）。[A20](../A20-effect-summary-and-checked-attributes.md)（Phase 3 の `effects` を完全にする。未完でも縮退版で出荷できる）。[A15](A15-copy-cost-visibility.md)（done。`copies::sites`）、[PM01](../../_perfs/_completed/PM01-value-layout.md)（done。`record_slots`・`UnionLayout`）、[F12](F12-bounds-check-elimination.md)（done。`ranges.rs`）、[G20](G20-error-recovery.md)（done） |
+| 後続 | [G27](../G27-build-time-kb.md)（Phase 1 から。書き込みと `check`・`build` への組み込み）、[G28](../G28-kb-query-and-impact.md)、[G29](../G29-mcp-server.md)、[G30](../G30-diagrams.md)（Phase 1・2・5・6）、[G35](../G35-generated-docs-single-source.md)、[E15](../E15-trust-boundary-and-capabilities.md)（Phase 3）、A20（facts への hook） |
+| 状態 | done（Phase 1〜6。2026-10-28。D-60 の KG） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーとの差は「現状」） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
 | 改善する劣位 | コンパイラは移動・借用・複製・確保・トラップ・型のレイアウトの事実を内部に持つが、機械が読める形で出さない。AI は、関数の署名・呼び出し元・効果・トラップ箇所を知るために、ソースを探索して読むしかない（D-50 の結論 (1)）。D-52 の KB の中身を定義し、`check` の解析だけから決定的に作る |
@@ -15,6 +15,21 @@
 | 主な影響ファイル | 新規: `src/kb/mod.rs`・`src/kb/model.rs`・`src/kb/json.rs`・`src/kb/ids.rs`・`src/kb/symbols.rs`（Phase 1）、`src/kb/graph.rs`（Phase 2）、`src/kb/facts.rs`・`src/kb/effects.rs`（Phase 3）、`src/kb/sites.rs`（Phase 4）、`src/kb/events.rs`（Phase 5）、`src/kb/layout.rs`（Phase 6）、`src/kb_capture.rs`（新規。`check` の子モジュール）、`tests/kb.rs`（新規）、`tests/fixtures/kb_basic/`（新規。付録 A）、`tests/golden/kb/point/`・`tests/golden/kb/polymorphism/`（新規。付録 H）、`_tsuzuri/language-reference/compiler/kb-format.md`（新規）。変更: `src/lib.rs`（`pub mod kb;`・`analyze_inputs_core`・`analyze_inputs_captured`）、`src/check.rs`（`pub(crate) mod kb_capture;`・`check_modules_collect` の引数・`check_modules_captured`・`indexing`・フック 2 か所）、`src/polymorph.rs`（`Classes` の読み取り口。Phase 1）、`src/warnings.rs`（テストの呼び出し 1 か所）、`src/ownership.rs`（Phase 5）、`src/llvm.rs`（Phase 6。可視性だけ）、`docs/architecture.md`、`docs/stability.md`、`_tsuzuri/language-reference/index.md` |
 
 詳細な表・実例・想定出力は [付録](G26-appendix.md) にある（以下「付録 A〜J」）。
+
+## KG への更新（D-60、2026-10-28）
+
+本チケットは [D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) で KB から **KG（知識グラフ）** に改めた。本文の KB の名前はこの節と D-60 の対応表で読み替える。facts の規則（付録 B〜G）と ID は変えない。
+
+| 本文 | KG での実装 |
+| --- | --- |
+| `src/kb/`・`src/kb_capture.rs`・`KbModel` | `src/kg/`・`src/kg_capture.rs`・`KgModel`。`src/kb/symbols.rs` は `src/kg/nodes.rs`、`src/kb/graph.rs` は `src/kg/edges.rs` |
+| `symbols.jsonl`・`write_symbols` | `nodes.jsonl`・`write_nodes`（行のキーは同じ。1 行が 1 ノード） |
+| `graph.jsonl`・`write_graph` | `edges.jsonl`・`write_edges`（行のキーは同じ。1 行が 1 本の有向辺） |
+| `rel` の 6 種類 | 7 種類。**`contains`**（module → 最上位の宣言、record → field、union → case、class → method、instance → method。`span` は子の `span`）を足す。`kg_basic` では 43 本（47 ノード − 4 モジュール。module 以外のノードは入次数 1） |
+| A3（`tested_by` の幅優先）・A4（`recursion` の Kosaraju） | `src/kg/algo.rs`（新規）の有界の幅優先と Tarjan の反復版の強連結成分を使う（分割は一意なので結果は同じ）。どちらも明示のスタック・キュー |
+| `tests/kb.rs`・`tests/fixtures/kb_basic/`・`tests/golden/kb/` | `tests/kg.rs`・`tests/fixtures/kg_basic/`・`tests/golden/kg/`。テスト名の `symbols` は `nodes`、`graph` は `edges` に読み替える。足すテスト: `contains_edges_form_a_forest_rooted_at_modules`、`src/kg/algo.rs` の単体テスト |
+| 付録 H1 の `graph.jsonl`（6 行） | `tests/golden/kg/point/edges.jsonl` は 12 行: H1 の 6 行と、H1 のノードから手で作った `contains` の 6 行（`Main`→`Main.$entry`、`Point`→`Point.Point`・`Point.distance`・`Point.hypotenuse`、`Point.Point`→`Point.Point.x`・`Point.Point.y`） |
+| `compiler/kb-format.md` | `compiler/kg-format.md` |
 
 ## 実装者向け早見
 
@@ -48,7 +63,7 @@
 
 - 依存: Phase 1〜4・6 は依存チケットを待たない（A15・PM01・F12・G20 は done）。Phase 3 の完全版（Level A）は A20 Phase 1 が done のとき。Phase 5 は G22 Phase 2 が done なら、挿入点を共有する（「前提とする他チケットのインターフェース」）。未完でも Phase 5 は単独で出荷できる。
 - 基準（GUIDE §2.3）: `cargo build --release --locked && cargo test --locked` を実行し、`running N tests` の合計 N を控える。失敗があれば自分の変更と無関係であることを記録する（手順 1）。
-- 読むもの: [GUIDE](GUIDE.md) §6.9・§7・§8、D-51・D-52・D-53・D-55、`docs/stability.md`、本チケットの付録 B〜E、`src/check.rs` の `check_modules_collect`（フックの周辺）。
+- 読むもの: [GUIDE](../GUIDE.md) §6.9・§7・§8、D-51・D-52・D-53・D-55、`docs/stability.md`、本チケットの付録 B〜E、`src/check.rs` の `check_modules_collect`（フックの周辺）。
 
 ### 停止条件
 
@@ -518,7 +533,7 @@ pub(crate) struct Abstract<'a> { pub modules: &'a [ModuleInput<'a>], pub module:
 
 ## ドキュメント
 
-- `_tsuzuri/language-reference/compiler/kb-format.md`（新規）: KB の各ファイルのキー・型・整列・省略規則、ID の規則、`kind`・`rel`・`event` の語彙、限界（付録 D の限界）。「ファイルへの書き出しと CLI は計画中（[G27](G27-build-time-kb.md)）」と書き、`tsuzuri::kb::collect` の使い方を示す。`index.md` の「コンパイラ」の一覧に足す。
+- `_tsuzuri/language-reference/compiler/kb-format.md`（新規）: KB の各ファイルのキー・型・整列・省略規則、ID の規則、`kind`・`rel`・`event` の語彙、限界（付録 D の限界）。「ファイルへの書き出しと CLI は計画中（[G27](../G27-build-time-kb.md)）」と書き、`tsuzuri::kb::collect` の使い方を示す。`index.md` の「コンパイラ」の一覧に足す。
 - `docs/architecture.md`: ファイル表に `src/kb/`・`src/kb_capture.rs` の行、「Facts と KB の exporter」の節（2 つの視点・フック）。`docs/stability.md`: 「安定として保つもの」の表に schema の 1 行。`docs/language.md`・`README.md`: 更新なし（言語と CLI が変わらない。PR の説明に書く）。`_features/README.md`・GUIDE の台帳は統括者が更新する。
 - 検証: `node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/kb-format.md _tsuzuri/language-reference/index.md`。
 
@@ -616,3 +631,33 @@ Phase 1〜4・6 は診断 v2 の型を使わない。D-50 の表（依存 G22）
 ## 付録
 
 [G26-appendix.md](G26-appendix.md): A fixture `kb_basic`／B ID と `symbols` の決定表／C 関数と宣言の対応／D `graph` の表／E `TypedExprKind` の分類と trap・alloc／F 効果の縮退版の写像／G 所有権の事象とレイアウトの表／H 想定出力（手計算）／J 実測と測定の手順。
+
+## 実装と検証（2026-10-28）
+
+[D-60](../GUIDE.md#d-60-kb-から-kg知識グラフへの再設計g26g27g28g29g30) の KG の名前で、Phase 1〜6 をすべて実装した（ブランチ `feat/g26-kg-facts-model`）。
+
+**実装したもの**: `src/kg/`（`mod.rs`・`model.rs`・`json.rs`・`ids.rs`・`algo.rs`・`facts.rs`・`effects.rs`・`sites.rs`・`layout.rs`）、`src/kg_capture.rs`（`check` の子）、`check.rs` のフック H1・H2 と `check_modules_captured`、`lib.rs` の `analyze_inputs_core`・`analyze_inputs_captured`、`polymorph.rs` の `Classes` の読み取り口（`declared_name`・`class_is_builtin`・`class_id`・`method_name`・`method_signature_at`・`instance_views`）、`ownership.rs` の事象の sink（`OwnershipEvent`・`events_abstract`）、`llvm.rs` の `pub(crate) mod layout`。fixture `tests/fixtures/kg_basic/`（付録 A。名前空間は `Acme::Kg`）、golden `tests/golden/kg/{point,polymorphism}/`、`tests/kg.rs`（28 件と測定ツール 2 件）。
+
+**実行したコマンドと結果**:
+
+- `cargo nextest run --locked`: 2,116 件すべて通過（3 件 skip）。`cargo test --locked --test kg`: 28 件通過。`src/kg` の単体テスト 15 件と `ownership_sink_does_not_change_diagnostics`（`examples`・`tests/fixtures` の全プロジェクトの全関数で、sink の有無で `check_body` の結果・診断が同じ）が通過。
+- IR の不変: 変更前のコンパイラ（`main` の `ce276177`）と変更後で、`examples/point`・`examples/polymorphism` の `build --emit llvm -O0` が 1 byte も違わない。`check --warn implicit-copy` の出力も `kg_basic`・`examples/hello` で同じ。`analysis_with_capture_keeps_the_ir_identical` が capture の有無で IR と警告が同じことを確かめる。
+- `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings`: 通過。`node scripts/check-docs.mjs _tsuzuri/language-reference/compiler/kg-format.md _tsuzuri/language-reference/index.md`: 通過。
+- 付録 J2 の測定（`cargo test --locked --release --test kg -- --ignored --nocapture measure`、中央値 5 回）: 139 プロジェクトで KG の追加費用の比 `(collect - check) / check` は中央値 0.10、最大 0.34（`tests/fixtures/value_layout`。`check` 227.5 ms、KG 込み 305.8 ms）。`check` の遅い 5 件は `json` 287.1→335.8 ms、`net_wasm` 265.8→314.5 ms、`net_async` 260.7→306.4 ms、`value_layout`、`cbor` 200.0→226.1 ms。停止条件 8（100%）には当たらず、目標の 30% を超えたのは 1 件。
+
+**チケットから外れた判断**（D-60 と、起票後のコードの変化による）:
+
+1. D-60: ファイル・型・テストの名前を KG に改め、`contains` の辺（43 本。`kg_basic` のノード 47 − モジュール 4）と `src/kg/algo.rs`（CSR、層ごとの幅優先、Tarjan の反復版、最短路、トポロジカル順、森の検査）を足した。`tested_by`・`recursion` はこの 1 か所のアルゴリズムを使う（結果は本文の A3・A4 と同じ）。
+2. 付録 H1・H2 の golden: 起票後に A18（2026-10-24）が examples に `own ` を入れたため、付録の手計算の行を、現在のソースへ位置を写して作り直した（挿入の前の byte 数だけずらし、行と列を数え直す Python。コンパイラの出力は読んでいない）。署名は `own` を含む書かれたとおり。結果は実装の出力と byte 単位で一致した。
+3. `params[].type` は `own`・`mut` の印を含めない（引数の渡し方は `conv` が表す。署名は書かれたまま）。edition 2027 の読み取りの既定の引数は、解決した型が `ref` なので `conv` が `ref` になる。
+4. `x |> f`（`Binary(Pipe, x, f)`）も `calls` に 1 本（`args` は `x` の `conv`）。値としての参照にしない。
+5. 付録 H4 の `Main.total` は `bounds_check` だけだが、付録 E3 の規則（`ForRange` は常に `range_step_zero`。step が定数 1 なので `proven: true`）に従い、それも出す（停止条件 6 は規則で決まる）。
+6. 付録 H5 の位置: `add_to (ref mut total) 1` の `borrow_mut` は 72:12（括弧の位置）。G1 の規則は `expression.span` で、括弧つきの実引数の `Borrow` の span は括弧から始まる（`Debug.print (ref n)` も 81:17）。規則に従った。括弧のない `peek text` の `reborrow` は 64:27・64:39 で付録と同じ。
+7. `closures::lower` は組み込み関数への参照を `$builtin` の関数で包むので、最終のモジュールの `assert` の呼び出しは `Function(User)` になる。トラップの判定は包みの本体（`Call(Function(Builtin(..)))`）を見る（`called_builtin`）。効果は包みを参照の辺で通す（名前がないので `via` に出ない）。
+8. `Builtin` は起票時の 246 から 249 個（と test 用の 3 個）に増えた。新しい `AllocCounter` は A19 の表（`pure_rules.rs`）のとおり `debug`。不純は 90 個。`TypedExprKind` は 65 variant（`SaturatingIndex` が増えた）で、`sites.rs` の `bears_facts` が全 variant を名前で並べる。
+9. `layout` の `niche` に `null_descriptor`（関数値・task の niche。起票後のコンパイラにある 3 つ目の niche）を足した。
+10. `effect_sites` の `via` は、効果を直接持つ関数への**最短の鎖**（幅優先の距離。同じ距離なら参照の位置が最小）。本文の「参照のスパンが最小」は相互再帰で鎖が循環しうるため（`evidence_follows_a_shortest_chain`）。
+11. 所有権の事象から、コンパイラが生成した変数（`extern` の包みの `$host_arg0` など）を除く。`copy` の事象の `var` は、複製した式が名前ならその名前、そうでなければ `$value`。
+12. `kg::collect_sources` は、manifest のないソースと同じく `Edition::LATEST` で読む（`Project::load` と同じ）。
+
+**更新した文書**: `_tsuzuri/language-reference/compiler/kg-format.md`（新規）、`_tsuzuri/language-reference/index.md`、`docs/architecture.md`（ファイル表と「知識グラフ（G26、D-60）」）、`docs/stability.md`（schema の行）、`_features/GUIDE.md`（D-60、D-52・D-55 の読み替え）、`_features/GUIDE-LITE.md`。`docs/language.md`・`README.md` は、言語と CLI が変わらないので更新なし。

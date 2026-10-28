@@ -695,7 +695,60 @@ pub(super) const BUILTIN_CLASSES: [&str; 33] = [
     "AtomicValue",
 ];
 
+/// An instance as the knowledge graph reads it (G26): its class, head, where its class name is
+/// written, and the function of each method with the method's name.
+pub(super) struct InstanceView<'a> {
+    pub(super) class: usize,
+    pub(super) head: &'a Type,
+    pub(super) derived: bool,
+    pub(super) span: Span,
+    pub(super) methods: Vec<(usize, &'a str)>,
+}
+
 impl Classes {
+    /// The name of a class: a built-in class's name, or a user class's `Module.Name`.
+    pub(super) fn declared_name(&self, class: usize) -> &str {
+        &self.declarations[class].name
+    }
+
+    pub(super) fn class_is_builtin(&self, class: usize) -> bool {
+        self.declarations[class].builtin
+    }
+
+    /// The class named `name` (`Add`, or a user class as `Module.Name`).
+    pub(super) fn class_id(&self, name: &str) -> Option<usize> {
+        self.names.get(name).copied()
+    }
+
+    pub(super) fn method_name(&self, class: usize, method: usize) -> &str {
+        &self.declarations[class].methods[method].name
+    }
+
+    pub(super) fn method_signature_at(&self, class: usize, method: usize) -> Option<&Signature> {
+        self.declarations[class]
+            .methods
+            .get(method)
+            .and_then(|method| method.signature.as_ref().ok())
+    }
+
+    pub(super) fn instance_views(&self) -> Vec<InstanceView<'_>> {
+        self.instances
+            .iter()
+            .map(|instance| InstanceView {
+                class: instance.class,
+                head: &instance.head,
+                derived: instance.derived,
+                span: instance.span,
+                methods: instance
+                    .methods
+                    .iter()
+                    .zip(&self.declarations[instance.class].methods)
+                    .map(|((function, _), method)| (*function, method.name.as_str()))
+                    .collect(),
+            })
+            .collect()
+    }
+
     pub(super) fn reads_parameter(&self, function: &str, index: usize) -> bool {
         self.function_reads
             .get(function)
