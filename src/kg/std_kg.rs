@@ -4,7 +4,7 @@
 //! view needs it, and the three newest generations stay. Without a cache, or for a reader that
 //! must not write (MCP), it is built in memory.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::build::current_stamp;
 use super::emit::emit;
@@ -127,18 +127,20 @@ pub fn cache_directory() -> Option<PathBuf> {
     Some(cache_root()?.join(&stamp[..16]))
 }
 
+/// Whether `dir` holds a complete std graph of this compiler.
+fn complete_at(dir: &Path) -> bool {
+    super::store::read_manifest(dir)
+        .is_some_and(|manifest| manifest.complete && manifest.compiler == compiler())
+        && super::write::has_marker(dir)
+}
+
 /// Writes this compiler's std graph to the cache unless a complete one is there (`force` writes it
 /// anyway), and keeps the newest generations. Returns the directory and how many files were
 /// written (0 when it was up to date).
 pub fn build(force: bool) -> Result<(PathBuf, usize), Diagnostic> {
     let dir = cache_directory()
         .ok_or_else(|| failure("there is no compiler cache directory for the std KG".to_owned()))?;
-    if !force
-        && let Some(manifest) = super::store::read_manifest(&dir)
-        && manifest.complete
-        && manifest.compiler == compiler()
-        && super::write::has_marker(&dir)
-    {
+    if !force && complete_at(&dir) {
         return Ok((dir, 0));
     }
     let stamp = current_stamp()?;
@@ -182,5 +184,9 @@ pub fn load(source: StdSource) -> Option<KgData> {
             Ok((dir, _)) => KgData::open(&dir).ok().or_else(memory),
             Err(_) => memory(),
         },
+        StdSource::Cached => {
+            let dir = cache_directory()?;
+            complete_at(&dir).then(|| KgData::open(&dir).ok()).flatten()
+        }
     }
 }

@@ -1,0 +1,7 @@
+callers of Acme::Shop::Cart.line_total (depth 2)
+1 Acme::Shop::Cart.total  Cart.tz:14:21  args ref
+1 test:Acme::Shop::Cart.line total  Cart.tz:18:29  args ref
+2 Acme::Shop::Report.print_total  Report.tz:6:24  via Acme::Shop::Cart.total
+2 test:Acme::Shop::Cart.empty cart  Cart.tz:19:29  via Acme::Shop::Cart.total
+2 test:Acme::Shop::Main.main runs  Main.tz:8:28  via Acme::Shop::Cart.total
+summary: 5 callers, depth 2

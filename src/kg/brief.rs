@@ -69,10 +69,16 @@ fn after_colons(signature: &str) -> &str {
 
 /// The first non-empty line of a description, normalized and clipped to 100 characters.
 pub fn first_line(doc: Option<&str>) -> String {
+    clip(&doc_line(doc), 100)
+}
+
+/// The first non-empty line of a documentation comment, whole (what a search matches; a card
+/// shows it clipped by `first_line`).
+pub fn doc_line(doc: Option<&str>) -> String {
     doc.unwrap_or_default()
         .lines()
         .find(|line| !line.trim().is_empty())
-        .map(|line| clip(&norm(line), 100))
+        .map(norm)
         .unwrap_or_default()
 }
 
@@ -472,10 +478,12 @@ fn l0_of(kg: &Kg<'_>, limit: usize) -> String {
         true,
     );
     if let Some(facts) = &data.facts {
+        let facts: BTreeMap<&str, &super::store::Fact> =
+            facts.all().map(|fact| (fact.id.as_str(), fact)).collect();
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
         for node in &data.nodes {
             if matches!(node.kind.as_str(), "def" | "method")
-                && let Some(fact) = facts.get(&node.id)
+                && let Some(fact) = facts.get(node.id.as_str())
             {
                 for effect in &fact.effects {
                     *counts.entry(effect.as_str()).or_default() += 1;

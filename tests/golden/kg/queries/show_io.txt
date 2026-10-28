@@ -1,0 +1,4 @@
+IO.write_line
+symbol: not in this KG
+callers (1):
+  Acme::Shop::Report.print_total  Report.tz:6:9  args copy

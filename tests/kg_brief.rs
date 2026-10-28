@@ -187,7 +187,13 @@ fn shop_graph() -> KgData {
             parts.put(path, bytes);
         }
     }
-    data("shop", "2026", Some("0.1.0"), 1, parts)
+    // The modules map each module to the key that names its facts file.
+    let manifest =
+        Manifest::parse(&std::fs::read_to_string(golden_dir.join("manifest.json")).unwrap())
+            .unwrap();
+    let mut graph = data("shop", "2026", Some("0.1.0"), 1, parts);
+    graph.set_modules(manifest.modules);
+    graph
 }
 
 #[test]

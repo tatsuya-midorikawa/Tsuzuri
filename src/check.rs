@@ -31,6 +31,7 @@ pub use higher_kinds::{Constructor, Partial};
 pub(crate) mod kg_capture;
 #[path = "polymorph.rs"]
 mod polymorph;
+pub(crate) use polymorph::builtin_instance_by_type;
 #[path = "pure_rules.rs"]
 pub(crate) mod pure_rules;
 #[path = "recursion.rs"]

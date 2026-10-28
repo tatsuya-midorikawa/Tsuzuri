@@ -1,0 +1,9 @@
+Acme::Shop::Cart.total
+def | public | Cart.tz:10:5
+signature: def total :: ref [Line] -> i64
+doc: The price of all lines in cents.
+params:
+  lines  ref  ref [Line]
+result: i64
+effects: none
+…10 more

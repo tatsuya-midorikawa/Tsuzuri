@@ -222,6 +222,8 @@ pub enum Freshness {
     Stale(&'static str),
     /// Up to date, for sources that do not type-check (with the number of errors).
     Incomplete(u64),
+    /// A reader's graph was replaced by a writer after the reader opened it.
+    Replaced,
     Fresh,
 }
 
@@ -294,7 +296,6 @@ pub fn missing(dir: &Path, marker: bool) -> Diagnostic {
         ),
         Span::default(),
     )
-    .with_help("run tsuzuri check or tsuzuri kg build")
 }
 
 /// `E2009` `kg_stale`.
@@ -307,7 +308,6 @@ pub fn stale(dir: &Path, reason: &str) -> Diagnostic {
         ),
         Span::default(),
     )
-    .with_help("run tsuzuri kg build")
 }
 
 /// `E2009` `kg_broken`.
@@ -320,7 +320,6 @@ pub fn broken(dir: &Path, reason: &str) -> Diagnostic {
         ),
         Span::default(),
     )
-    .with_help("run tsuzuri kg build --force")
 }
 
 /// `E2009` `kg_incomplete`: the graph was written for sources that do not type-check.
@@ -333,7 +332,6 @@ pub fn incomplete(dir: &Path, errors: u64) -> Diagnostic {
         ),
         Span::default(),
     )
-    .with_help("fix the errors and run tsuzuri check")
 }
 
 /// The diagnostic of a graph that is not `Fresh`.
@@ -345,6 +343,14 @@ pub fn diagnostic(dir: &Path, freshness: &Freshness) -> Option<Diagnostic> {
         Freshness::Broken(reason) => Some(broken(dir, reason)),
         Freshness::Stale(reason) => Some(stale(dir, reason)),
         Freshness::Incomplete(errors) => Some(incomplete(dir, *errors)),
+        Freshness::Replaced => Some(Diagnostic::of(
+            DiagnosticKind::KgStale,
+            format!(
+                "the KG at '{}' was replaced while it was read; run the command again",
+                dir.display()
+            ),
+            Span::default(),
+        )),
     }
 }
 

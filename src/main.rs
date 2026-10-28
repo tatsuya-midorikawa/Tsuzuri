@@ -45,7 +45,7 @@ Usage:
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
                              [--target native|wasm32|wasm64|TRIPLE] [--wasm-max-memory SIZE] [--wasm-stack-size SIZE]
-                             [--coverage PATH] [--seed N]
+                             [--coverage PATH] [--seed N] [--affected BASE]
     tsuzuri test source.tz|directory --index N -g -o PATH [-O0|-O1|-O2|-O3] [--seed N] [--json]
                              Build test N alone with debug information as PATH without running it;
                              a debugger starts PATH with the printed argument 0
@@ -69,6 +69,14 @@ Usage:
   tsuzuri kg verify [PATH] [--kg-dir DIR] [--json]
   tsuzuri kg clean [PATH] [--kg-dir DIR] | kg clean --std
   tsuzuri kg export [PATH] [--kg-dir DIR] (--nodes | --edges | --facts) [--no-refresh]
+  tsuzuri kg brief [ID | --project | --module M] [query options]
+  tsuzuri kg show|tests-for ID [query options] | kg uses TYPE [query options]
+  tsuzuri kg callers|callees ID [--depth N] [query options]
+  tsuzuri kg search TEXT [--std] [query options]
+  tsuzuri kg find TYPE | --result TYPE [--takes TYPE]... [--module M] [--limit N] [query options]
+  tsuzuri kg path FROM TO [--rel R[,R...]] [--depth N] [query options]
+                             query options: [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]
+  tsuzuri kg impact (--git REV | --from PATH [--to PATH]) [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]
   tsuzuri guide [--level 0|1] [--topic NAME] [--list] [--json] [--edition YEAR]
   tsuzuri guide std [MODULE] [--json]
   tsuzuri guide --agents [DIR] | --llms-txt [DIR]
@@ -128,7 +136,11 @@ that did not change are not written again. --kg writes it for a loose file too, 
 TSUZURI_KG=0 does not write it (TSUZURI_KG=1 writes it), and --kg-dir DIR or TSUZURI_KG_DIR moves it;
 a failure to write is one warning and changes neither the diagnostics nor the exit code.
 `tsuzuri kg build|verify|clean|export` builds, checks, removes, and prints the graph; --std builds
-the standard library's graph in the compiler's cache.
+the standard library's graph in the compiler's cache. `kg brief`, `show`, `callers`, `callees`,
+`uses`, `tests-for`, `search`, `find` (by type), and `path` (a shortest chain of edges) answer from
+the graph within --budget characters, rebuilding it first unless --no-refresh. `kg impact` lists
+the changes between two graphs (--git REV: that commit of this project) and the tests that reach
+them; `tsuzuri test --affected BASE` (a path, a graph directory, or a git revision) runs only those.
 `tsuzuri guide` prints a short English guide to the language for AI agents (level 0, about 6 KB);
 --level 1 prints the full guide, --topic NAME one chapter (--list names them), `guide std [MODULE]`
 the std index. --agents and --llms-txt print the AGENTS.md and llms.txt of the project in DIR.
@@ -370,6 +382,9 @@ struct Arguments {
     /// `--kg`, `--no-kg` and `--kg-dir` (G27): whether `check`, `build`, `run` and `test` write the
     /// knowledge graph, and where.
     kg: tsuzuri::kg::settings::KgFlags,
+    /// `tsuzuri test --affected VALUE` (G28): run only the tests that the change since VALUE (a
+    /// knowledge graph, a project, or a git revision) reaches.
+    affected: Option<String>,
 }
 
 /// A diagnostic of the command line: it has no position, and the caller prints it at
@@ -406,6 +421,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             test_seed: None,
             no_server: false,
             kg: Default::default(),
+            affected: None,
         });
     }
     let mut position = 0;
@@ -481,6 +497,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut no_cache = false;
     let mut no_server = false;
     let mut kg = tsuzuri::kg::settings::KgFlags::default();
+    let mut affected: Option<String> = None;
     let mut links = driver::LinkInputs::default();
     let mut paths_only = false;
     while position < arguments.len() {
@@ -504,6 +521,20 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                         ));
                     }
                     no_cache = true;
+                    continue;
+                }
+                Some("--affected") => {
+                    if affected.is_some() {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "affected specified more than once",
+                        ));
+                    }
+                    affected = Some(
+                        next_value(arguments, &mut position, "--affected")?
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
                     continue;
                 }
                 Some("--kg") => {
@@ -1264,6 +1295,26 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             "--kg, --no-kg, and --kg-dir are only valid with check, build, run, or test",
         ));
     }
+    if affected.is_some() {
+        if action != Action::Test {
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--affected is only valid with test",
+            ));
+        }
+        if test_filter.is_some() || !test_indices.is_empty() {
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--affected cannot be combined with --filter or --index",
+            ));
+        }
+        if kg.no_kg {
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--affected needs the KG; remove --no-kg or TSUZURI_KG=0",
+            ));
+        }
+    }
     if !matches!(action, Action::Test | Action::Bench)
         && (test_filter.is_some() || test_list || !test_indices.is_empty())
     {
@@ -1472,6 +1523,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         test_seed,
         no_server,
         kg,
+        affected,
     })
 }
 
@@ -1740,8 +1792,9 @@ fn run_test_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
+    affected_base: Option<Result<tsuzuri::kg::store::KgData, Diagnostic>>,
 ) -> u8 {
-    let options = driver::TestOptions {
+    let mut options = driver::TestOptions {
         target: arguments.options.target,
         optimization: speed_level(arguments.options.optimization),
         filter: arguments.test_filter.clone(),
@@ -1754,6 +1807,17 @@ fn run_test_action(
         backend: arguments.options.backend,
         allocator: arguments.options.allocator,
     };
+    if let Some(base) = &arguments.affected {
+        match select_affected(arguments, project, base, affected_base) {
+            Ok(Some(indices)) if indices.is_empty() => return EXIT_SUCCESS,
+            Ok(Some(indices)) => options.indices = indices,
+            Ok(None) => {}
+            Err(error) => {
+                print_diagnostic(&error, Path::new("<command line>"), "", arguments.json);
+                return kg_command::exit_of(&error);
+            }
+        }
+    }
     if options
         .indices
         .iter()
@@ -3168,6 +3232,23 @@ fn cli(
     } else {
         None
     };
+    if arguments.affected.is_some()
+        && kg_settings
+            .as_ref()
+            .is_some_and(|settings| settings.mode == tsuzuri::kg::settings::KgMode::Off)
+    {
+        write_diagnostic(
+            err,
+            &command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--affected needs the KG; remove --no-kg or TSUZURI_KG=0",
+            ),
+            Path::new("<command line>"),
+            "",
+            json,
+        );
+        return EXIT_USAGE;
+    }
     if arguments.action == Action::Lsp {
         return tsuzuri::lsp::serve(io::stdin(), out, err) as u8;
     }
@@ -3234,6 +3315,13 @@ fn cli(
                 tsuzuri::kg::build::Plan::Off
             }
         };
+    // G28: a BASE of `test --affected` that is a graph directory is read whole before this command
+    // publishes its own graph, which can replace it (`--affected target/tz/kg`).
+    let affected_base = arguments
+        .affected
+        .as_deref()
+        .filter(|_| arguments.action == Action::Test)
+        .and_then(base_graph);
     // check, test and doc do not take --no-cache; TSUZURI_CACHE_DIR= disables every cache.
     let (analysis, pending) =
         tsuzuri::kg::build::analyze(&project, arguments.options.cache, kind, plan);
@@ -3272,7 +3360,7 @@ fn cli(
         return EXIT_FAILURE;
     }
     if arguments.action == Action::Test {
-        return run_test_action(&arguments, &project, &module, &links);
+        return run_test_action(&arguments, &project, &module, &links, affected_base);
     }
     if arguments.action == Action::Bench {
         return run_bench_action(&arguments, &project, &module, &links);
@@ -3293,6 +3381,110 @@ fn cli(
             let source = project.source_for(&error);
             write_diagnostic(err, &error, &source.path, &source.text, arguments.json);
             EXIT_FAILURE
+        }
+    }
+}
+
+/// The graph that `test --affected VALUE` compares with, read whole, when VALUE is a graph
+/// directory; `None` for a project directory or a git revision.
+fn base_graph(value: &str) -> Option<Result<tsuzuri::kg::store::KgData, Diagnostic>> {
+    let given = Path::new(value);
+    (given.is_dir() && tsuzuri::kg::write::has_marker(given)).then(|| {
+        let data = tsuzuri::kg::open::read(given)?;
+        data.read_all()?;
+        Ok(data)
+    })
+}
+
+/// G28 `test --affected VALUE`: the indices of the tests that the change from VALUE to the project
+/// reaches, after printing the `affected:` line; `None` runs every test. `graph` is the base when
+/// VALUE is a graph directory, read before the command wrote the project's graph.
+fn select_affected(
+    arguments: &Arguments,
+    project: &Project,
+    value: &str,
+    graph: Option<Result<tsuzuri::kg::store::KgData, Diagnostic>>,
+) -> Result<Option<Vec<usize>>, Diagnostic> {
+    use tsuzuri::kg::open::{self, Refresh};
+    let given = Path::new(value);
+    let report = |set: &tsuzuri::diagnostic::DiagnosticSet, project: &Project| {
+        print_diagnostics(set, project, arguments.json)
+    };
+    // The checkout lives until the diff has read the base graph's files.
+    let mut checkout = None;
+    let base = if let Some(graph) = graph {
+        graph?
+    } else if given.is_dir() {
+        let base = Project::load_for_tests(given).map_err(|error| error.diagnostic)?;
+        let dir = open::own_directory(&base);
+        open::open_project(&base, &dir, Refresh::Auto, &mut |set, project| {
+            report(set, project)
+        })?
+    } else {
+        let root = project
+            .project_directory()
+            .unwrap_or_else(|| PathBuf::from("."));
+        let made = tsuzuri::kg::git::Checkout::create(&root, value)?;
+        let base =
+            Project::load_for_tests(made.project_root()).map_err(|error| error.diagnostic)?;
+        let dir = open::own_directory(&base);
+        let data = open::open_project(&base, &dir, Refresh::Auto, &mut |set, project| {
+            report(set, project)
+        })?;
+        checkout = Some(made);
+        data
+    };
+    let dir = open::directory(project, arguments.kg.dir.as_deref());
+    if base
+        .directory()
+        .is_some_and(|base| open::same_directory(base, &dir))
+    {
+        base.read_all()?;
+    }
+    let head = open::open_project(project, &dir, Refresh::Auto, &mut |set, project| {
+        report(set, project)
+    })?;
+    let impact = tsuzuri::kg::impact::diff(&base, &head, value, "working tree");
+    base.intact()?;
+    head.intact()?;
+    drop(checkout);
+    let total = impact.total_tests;
+    let all = |reason: &str| {
+        if arguments.json {
+            println!(
+                "{{\"type\":\"affected\",\"mode\":\"all\",\"affected\":{total},\"total\":{total},\"base\":{},\"reason\":{}}}",
+                json_string(value),
+                json_string(reason)
+            );
+        } else {
+            println!("affected: all {total} tests ({reason})");
+        }
+        Ok(None)
+    };
+    match &impact.tests {
+        tsuzuri::kg::impact::Tests::All(reason) => all(reason),
+        tsuzuri::kg::impact::Tests::Some(tests) => {
+            // A selected test that the graph's test table does not number cannot be run alone,
+            // and must not be dropped: every test runs instead.
+            let Some(mut indices) = tests
+                .iter()
+                .map(|id| head.test_index(id))
+                .collect::<Option<Vec<usize>>>()
+            else {
+                return all("the KG does not number every affected test");
+            };
+            indices.sort_unstable();
+            indices.dedup();
+            if arguments.json {
+                println!(
+                    "{{\"type\":\"affected\",\"mode\":\"some\",\"affected\":{},\"total\":{total},\"base\":{},\"reason\":null}}",
+                    indices.len(),
+                    json_string(value)
+                );
+            } else {
+                println!("affected: {} of {total} tests ({value})", indices.len());
+            }
+            Ok(Some(indices))
         }
     }
 }
@@ -7104,6 +7296,41 @@ mod tests {
         assert!(parse(&["check", "Main.tz", "--kg", "--no-kg"]).is_ok());
     }
 
+    /// G28: `--affected BASE` selects the tests of `test` and nothing else.
+    #[test]
+    fn accepts_affected_only_with_test() {
+        let parsed = parse(&["test", "Main.tz", "--affected", "HEAD"]).unwrap();
+        assert_eq!(parsed.affected.as_deref(), Some("HEAD"));
+        for (values, message) in [
+            (
+                vec!["check", "Main.tz", "--affected", "HEAD"],
+                "--affected is only valid with test",
+            ),
+            (
+                vec!["test", "Main.tz", "--affected", "a", "--affected", "b"],
+                "affected specified more than once",
+            ),
+            (
+                vec!["test", "Main.tz", "--affected"],
+                "--affected needs a value",
+            ),
+            (
+                vec!["test", "Main.tz", "--affected", "HEAD", "--filter", "x"],
+                "--affected cannot be combined with --filter or --index",
+            ),
+            (
+                vec!["test", "Main.tz", "--affected", "HEAD", "--index", "0"],
+                "--affected cannot be combined with --filter or --index",
+            ),
+            (
+                vec!["test", "Main.tz", "--affected", "HEAD", "--no-kg"],
+                "--affected needs the KG; remove --no-kg or TSUZURI_KG=0",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
     #[test]
     fn the_help_lists_the_kg_options() {
         let text = help();
@@ -7115,6 +7342,14 @@ mod tests {
             "tsuzuri kg build",
             "tsuzuri kg verify",
             "tsuzuri kg export",
+            "tsuzuri kg brief",
+            "tsuzuri kg show",
+            "tsuzuri kg callers|callees",
+            "tsuzuri kg search",
+            "tsuzuri kg find",
+            "tsuzuri kg path",
+            "tsuzuri kg impact",
+            "[--affected BASE]",
         ] {
             assert!(text.contains(needle), "{needle}");
         }
@@ -7165,6 +7400,7 @@ mod tests {
             "run_bench_action",
             "run_formatter",
             "run_test_action",
+            "select_affected",
             "serve_main",
             "start_server",
             "watch_main",

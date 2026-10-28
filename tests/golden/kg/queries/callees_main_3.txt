@@ -1,0 +1,7 @@
+callees of Acme::Shop::Main.main (depth 3)
+1 Acme::Shop::Report.print_total  Main.tz:5:5  args ref
+2 Acme::Shop::Cart.total  Report.tz:6:24  via Acme::Shop::Report.print_total
+2 IO.run  Report.tz:6:9  via Acme::Shop::Report.print_total
+2 IO.write_line  Report.tz:6:9  via Acme::Shop::Report.print_total
+3 Acme::Shop::Cart.line_total  Cart.tz:14:21  via Acme::Shop::Cart.total
+summary: 5 callees, depth 3

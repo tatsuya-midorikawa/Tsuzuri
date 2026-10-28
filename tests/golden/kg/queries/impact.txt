@@ -1,0 +1,12 @@
+impact: base -> working tree
+breaking: added field Acme::Shop::Cart.Line.tax: `tax: i64` (constructions of the record without it stop compiling)
+breaking: added effect io on Acme::Shop::Cart.line_total (reached by 4 functions and 3 tests)
+breaking: added effect io on Acme::Shop::Cart.total (reached by 3 functions and 2 tests)
+breaking: changed def Acme::Shop::Report.print_total: `def print_total :: ref [Line] -> unit` => `def print_total :: [Line] -> unit`
+non-breaking: added def Acme::Shop::Cart.discount: `def discount :: ref [Line] -> i64 -> i64`
+info: new warning W1001 at Cart.tz:22: unused local 'rate'; prefix it with '_' to silence this warning
+tests: 3 of 3 affected
+  test:Acme::Shop::Cart.empty cart
+  test:Acme::Shop::Cart.line total
+  test:Acme::Shop::Main.main runs
+summary: 4 breaking, 1 non-breaking, 1 info

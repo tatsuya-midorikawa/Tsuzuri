@@ -784,7 +784,7 @@ fn io_error(action: &str, path: &Path, error: io::Error) -> SourceError {
 
 /// A `git` command that ignores the user's and the system's configuration and
 /// every `GIT_*` variable, and never prompts for credentials.
-fn git_command() -> Command {
+pub(crate) fn git_command() -> Command {
     let mut command = Command::new("git");
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy().to_ascii_uppercase();
@@ -801,7 +801,7 @@ fn git_command() -> Command {
 }
 
 /// The first `fatal:` or `error:` line of git's standard error, or its last line.
-fn failure_line(stderr: &[u8]) -> String {
+pub(crate) fn failure_line(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     let lines: Vec<&str> = text
         .lines()

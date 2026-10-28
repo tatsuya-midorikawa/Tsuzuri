@@ -4,7 +4,7 @@
 //! diagrams and MCP read graphs through it and never touch the disk.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
@@ -12,6 +12,7 @@ use serde_json::Value;
 use super::algo::Digraph;
 use super::manifest::{self, Manifest, ModuleEntry};
 use super::write::{Files, MANIFEST};
+use crate::diagnostic::Diagnostic;
 
 /// The most bytes of one graph file that a reader reads.
 const FILE_LIMIT: u64 = 256 << 20;
@@ -262,12 +263,18 @@ pub struct KgData {
     pub nodes: Vec<Node>,
     pub edges: Option<Vec<Edge>>,
     pub tests: Option<Vec<TestEntry>>,
-    pub facts: Option<BTreeMap<String, Fact>>,
-    /// The rows of every `layout/*.jsonl`.
-    pub layouts: Option<Vec<Value>>,
+    /// The rows of `facts/*.jsonl`, read one module's file at a time.
+    pub facts: Option<Tables<Fact>>,
+    /// The rows of `layout/*.jsonl`, read one module's file at a time.
+    pub layouts: Option<Tables<Value>>,
     pub diag: Vec<Diag>,
     pub index: KgIndex,
     by_id: BTreeMap<String, usize>,
+    /// The position in `meta.modules` of each module, by name.
+    modules_by_name: BTreeMap<String, usize>,
+    source: Source,
+    /// The first file of `facts` or `layouts` that did not match the manifest (`intact`).
+    failure: Arc<OnceLock<manifest::Freshness>>,
 }
 
 fn string(value: &Value, key: &str) -> String {
@@ -349,14 +356,10 @@ type ReadFile<'a> = &'a dyn Fn(&str) -> Result<Option<Vec<u8>>, String>;
 /// How many times a reader starts again when a writer replaced the graph while it read it.
 const READ_ATTEMPTS: usize = 3;
 
-/// A file of the graph at `dir` for a reader: `None` when the manifest does not list it (an
-/// optional table), and an error when it cannot be read, a directory on its way is not a plain
-/// directory, or its bytes do not have the SHA-256 that the manifest lists.
-fn read_listed(dir: &Path, manifest: &Manifest, path: &str) -> Result<Option<Vec<u8>>, String> {
-    let Some(sha) = manifest.files.get(path) else {
-        return Ok(None);
-    };
-    // `Manifest::parse` keeps only plain relative paths; no directory below `dir` may be a link.
+/// The bytes of the file at `path` of the graph at `dir`, which must have the SHA-256 `sha`: an
+/// error when it cannot be read, a directory on its way is not a plain directory, or the bytes
+/// differ. `Manifest::parse` keeps only plain relative paths, so the file is below `dir`.
+fn read_file(dir: &Path, path: &str, sha: &str) -> Result<Vec<u8>, String> {
     let names: Vec<&str> = path.split('/').collect();
     let mut parent = dir.to_path_buf();
     for name in &names[..names.len() - 1] {
@@ -367,10 +370,19 @@ fn read_listed(dir: &Path, manifest: &Manifest, path: &str) -> Result<Option<Vec
     }
     let bytes = crate::cache::read_regular(&dir.join(path), FILE_LIMIT)
         .map_err(|_| format!("{path} cannot be read"))?;
-    if super::input::digest(&bytes) != *sha {
+    if super::input::digest(&bytes) != sha {
         return Err(format!("{path} does not match manifest.json"));
     }
-    Ok(Some(bytes))
+    Ok(bytes)
+}
+
+/// A file of the graph at `dir` for a reader: `None` when the manifest does not list it (an
+/// optional table), else as `read_file` reads it.
+fn read_listed(dir: &Path, manifest: &Manifest, path: &str) -> Result<Option<Vec<u8>>, String> {
+    match manifest.files.get(path) {
+        Some(sha) => read_file(dir, path, sha).map(Some),
+        None => Ok(None),
+    }
 }
 
 /// Runs `body` over one publication of the graph at `dir`: it reads files through the function
@@ -439,12 +451,215 @@ pub fn read_snapshot(
     })
 }
 
+/// Where the per-module files of a graph come from.
+#[derive(Clone, Debug)]
+enum Source {
+    Directory(PathBuf),
+    Memory(Arc<BTreeMap<String, Vec<u8>>>),
+}
+
+impl Source {
+    /// The bytes of the file at `path`, which the opened manifest lists with `sha`. A file of a
+    /// directory that does not match was replaced when the manifest there lists it otherwise now.
+    fn read(&self, path: &str, sha: &str) -> Result<Vec<u8>, manifest::Freshness> {
+        match self {
+            Self::Directory(dir) => read_file(dir, path, sha).map_err(|reason| {
+                let listed =
+                    read_manifest(dir).and_then(|manifest| manifest.files.get(path).cloned());
+                if listed.as_deref() == Some(sha) {
+                    manifest::Freshness::Broken(reason)
+                } else {
+                    manifest::Freshness::Replaced
+                }
+            }),
+            Self::Memory(files) => files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| manifest::Freshness::Broken(format!("{path} cannot be read"))),
+        }
+    }
+
+    fn directory(&self) -> Option<&Path> {
+        match self {
+            Self::Directory(dir) => Some(dir),
+            Self::Memory(_) => None,
+        }
+    }
+}
+
+/// A table with one file per module (`facts/` or `layout/`). A file is read and parsed the first
+/// time a row of its module is asked for, so that a query opens the files it needs and not one
+/// per module of the project. It must have the SHA-256 of the manifest that the graph was opened
+/// with: a file that does not (the graph was replaced since, or is broken) has no rows, and the
+/// first such failure is kept for `KgData::intact`, so that no answer mixes two graphs.
+#[derive(Clone, Debug)]
+pub struct Tables<T> {
+    source: Source,
+    /// By path: the SHA-256 that the manifest lists, and the rows once read.
+    files: BTreeMap<String, (String, OnceLock<Rows<T>>)>,
+    /// The paths of each module's files by the lower-case stem of the module key.
+    groups: BTreeMap<String, Vec<String>>,
+    row: fn(Value) -> T,
+    id: fn(&T) -> Option<&str>,
+    failure: Arc<OnceLock<manifest::Freshness>>,
+}
+
+/// How a table reads a row from its JSON, and the row's ID.
+type RowOf<T> = (fn(Value) -> T, fn(&T) -> Option<&str>);
+
+/// The rows of one file, and the first row of each ID.
+#[derive(Clone, Debug)]
+struct Rows<T> {
+    rows: Vec<T>,
+    by_id: BTreeMap<String, usize>,
+}
+
+/// The lower-case stem of a module key that the table file at `path` holds: its name without
+/// `.jsonl` and without the `~n` that `write::unique_names` adds.
+fn group_of(path: &str) -> String {
+    // One extension: the module `Util.jsonl` has the file `Util.jsonl.jsonl`.
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let name = file.strip_suffix(".jsonl").unwrap_or(file);
+    let base = match name.rsplit_once('~') {
+        Some((base, number)) if number.bytes().all(|byte| byte.is_ascii_digit()) => base,
+        _ => name,
+    };
+    base.to_lowercase()
+}
+
+impl<T> Tables<T> {
+    fn new(
+        source: Source,
+        manifest: &Manifest,
+        prefix: &str,
+        (row, id): RowOf<T>,
+        failure: Arc<OnceLock<manifest::Freshness>>,
+    ) -> Self {
+        let files: BTreeMap<String, (String, OnceLock<Rows<T>>)> = manifest
+            .files
+            .iter()
+            .filter(|(path, _)| path.starts_with(prefix) && path.ends_with(".jsonl"))
+            .map(|(path, sha)| (path.clone(), (sha.clone(), OnceLock::new())))
+            .collect();
+        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for path in files.keys() {
+            groups.entry(group_of(path)).or_default().push(path.clone());
+        }
+        Self {
+            source,
+            files,
+            groups,
+            row,
+            id,
+            failure,
+        }
+    }
+
+    /// The files of the table with their SHA-256 (empty when unknown), by path.
+    pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.files
+            .iter()
+            .map(|(path, (sha, _))| (path.as_str(), sha.as_str()))
+    }
+
+    /// The rows of the file at `path`.
+    pub fn rows(&self, path: &str) -> &[T] {
+        self.loaded(path).map_or(&[], |rows| &rows.rows)
+    }
+
+    fn loaded(&self, path: &str) -> Option<&Rows<T>> {
+        let (sha, rows) = self.files.get(path)?;
+        Some(rows.get_or_init(|| {
+            let parsed = self.source.read(path, sha).and_then(|bytes| {
+                lines(&bytes)
+                    .map_err(|reason| manifest::Freshness::Broken(format!("{path} {reason}")))
+            });
+            let rows: Vec<T> = match parsed {
+                Ok(rows) => rows.into_iter().map(self.row).collect(),
+                Err(failure) => {
+                    let _ = self.failure.set(failure);
+                    Vec::new()
+                }
+            };
+            let mut by_id = BTreeMap::new();
+            for (index, row) in rows.iter().enumerate() {
+                if let Some(id) = (self.id)(row) {
+                    by_id.entry(id.to_owned()).or_insert(index);
+                }
+            }
+            Rows { rows, by_id }
+        }))
+    }
+
+    /// The files of the module with this key. Its file is named by the key's stem, with `~n` after
+    /// it when the stem differs from another one only in case (`write::unique_names`); the files
+    /// of the stem's case-insensitive group are all read.
+    fn module_files(&self, key: &str) -> &[String] {
+        self.groups
+            .get(&super::write::stem(key).to_lowercase())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The rows of the module with this key.
+    pub fn of_module(&self, key: &str) -> impl Iterator<Item = &T> {
+        self.module_files(key)
+            .iter()
+            .flat_map(|path| self.rows(path))
+    }
+
+    /// The first row with this ID among the module's rows.
+    pub fn find(&self, key: &str, id: &str) -> Option<&T> {
+        self.module_files(key).iter().find_map(|path| {
+            let rows = self.loaded(path)?;
+            rows.by_id.get(id).map(|index| &rows.rows[*index])
+        })
+    }
+
+    /// Every row of the table, file by file.
+    pub fn all(&self) -> impl Iterator<Item = &T> {
+        self.files.keys().flat_map(|path| self.rows(path))
+    }
+}
+
+fn fact_of(row: Value) -> Fact {
+    Fact {
+        id: string(&row, "id"),
+        effects: strings(&row, "effects"),
+        effect_sites: row
+            .get("effect_sites")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| EffectSite {
+                        effect: string(item, "effect"),
+                        span: span(item),
+                        via: strings(item, "via"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        effects_complete: flag(&row, "effects_complete"),
+        copy_sites: sites(&row, "copy_sites"),
+        alloc_sites: sites(&row, "alloc_sites"),
+        alloc_complete: flag(&row, "alloc_complete"),
+        trap_sites: sites(&row, "trap_sites"),
+        recursion: optional(&row, "recursion").unwrap_or_else(|| "none".into()),
+        specializations: number(&row, "specializations"),
+        raw: row,
+    }
+}
+
 impl KgData {
     /// Reads the graph at `dir`, all of one publication: `Err` with the reason when the manifest
     /// or a file it lists cannot be read or does not match (the caller reports `kg_missing`,
-    /// `kg_broken` or `kg_incomplete`).
+    /// `kg_broken` or `kg_incomplete`). The files of `facts/` and `layout/` are read when first
+    /// used, against the same manifest (see `Tables`).
     pub fn open(dir: &Path) -> Result<KgData, manifest::Freshness> {
-        with_snapshot(dir, |manifest, read| Self::parse(manifest, read)).map(|(data, _)| data)
+        with_snapshot(dir, |manifest, read| {
+            Self::parse(manifest, read, Source::Directory(dir.to_path_buf()))
+        })
+        .map(|(data, _)| data)
     }
 
     /// Reads the graph at `dir` as `open` does, and judges the manifest of that publication: the
@@ -456,7 +671,8 @@ impl KgData {
         stamp: &str,
     ) -> Result<KgData, manifest::Freshness> {
         let ((manifest, data), marker) = with_snapshot(dir, |manifest, read| {
-            Ok((manifest.clone(), Self::parse(manifest, read)?))
+            let data = Self::parse(manifest, read, Source::Directory(dir.to_path_buf()))?;
+            Ok((manifest.clone(), data))
         })?;
         match manifest::judge(&manifest, marker.as_deref(), source_hash, stamp) {
             manifest::Freshness::Fresh => Ok(data),
@@ -467,10 +683,16 @@ impl KgData {
     /// The graph of files in memory, as `open` would read them once written.
     pub fn from_parts(manifest: &Manifest, files: &Files) -> Result<KgData, String> {
         let read = |path: &str| Ok(files.get(path).map(<[u8]>::to_vec));
-        Self::parse(manifest, &read)
+        let tables = files
+            .0
+            .iter()
+            .filter(|(path, _)| path.starts_with("facts/") || path.starts_with("layout/"))
+            .map(|(path, bytes)| (path.clone(), bytes.clone()))
+            .collect();
+        Self::parse(manifest, &read, Source::Memory(Arc::new(tables)))
     }
 
-    fn parse(manifest: &Manifest, read: ReadFile) -> Result<KgData, String> {
+    fn parse(manifest: &Manifest, read: ReadFile, source: Source) -> Result<KgData, String> {
         let rows = |path: &str| -> Result<Option<Vec<Value>>, String> {
             match read(path)? {
                 Some(bytes) => lines(&bytes)
@@ -478,14 +700,6 @@ impl KgData {
                     .map_err(|reason| format!("{path} {reason}")),
                 None => Ok(None),
             }
-        };
-        let listed = |prefix: &str| -> Vec<String> {
-            manifest
-                .files
-                .keys()
-                .filter(|path| path.starts_with(prefix) && path.ends_with(".jsonl"))
-                .cloned()
-                .collect()
         };
         let nodes: Vec<Node> = rows("nodes.jsonl")?
             .unwrap_or_default()
@@ -545,54 +759,33 @@ impl KgData {
                 })
                 .collect()
         });
-        let fact_files = listed("facts/");
-        let facts = if fact_files.is_empty() && !manifest.complete {
-            None
-        } else {
-            let mut facts = BTreeMap::new();
-            for path in fact_files {
-                for row in rows(&path)?.unwrap_or_default() {
-                    let fact = Fact {
-                        id: string(&row, "id"),
-                        effects: strings(&row, "effects"),
-                        effect_sites: row
-                            .get("effect_sites")
-                            .and_then(Value::as_array)
-                            .map(|items| {
-                                items
-                                    .iter()
-                                    .map(|item| EffectSite {
-                                        effect: string(item, "effect"),
-                                        span: span(item),
-                                        via: strings(item, "via"),
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        effects_complete: flag(&row, "effects_complete"),
-                        copy_sites: sites(&row, "copy_sites"),
-                        alloc_sites: sites(&row, "alloc_sites"),
-                        alloc_complete: flag(&row, "alloc_complete"),
-                        trap_sites: sites(&row, "trap_sites"),
-                        recursion: optional(&row, "recursion").unwrap_or_else(|| "none".into()),
-                        specializations: number(&row, "specializations"),
-                        raw: row,
-                    };
-                    facts.insert(fact.id.clone(), fact);
-                }
-            }
-            Some(facts)
+        // A graph of a failed analysis has no tables; a complete one has them, maybe empty.
+        let tables = |prefix: &str| {
+            manifest.complete
+                || manifest
+                    .files
+                    .keys()
+                    .any(|path| path.starts_with(prefix) && path.ends_with(".jsonl"))
         };
-        let layout_files = listed("layout/");
-        let layouts = if layout_files.is_empty() && !manifest.complete {
-            None
-        } else {
-            let mut layouts = Vec::new();
-            for path in layout_files {
-                layouts.extend(rows(&path)?.unwrap_or_default());
-            }
-            Some(layouts)
-        };
+        let failure = Arc::new(OnceLock::new());
+        let facts = tables("facts/").then(|| {
+            Tables::new(
+                source.clone(),
+                manifest,
+                "facts/",
+                (fact_of, |fact| Some(&fact.id)),
+                failure.clone(),
+            )
+        });
+        let layouts = tables("layout/").then(|| {
+            Tables::new(
+                source.clone(),
+                manifest,
+                "layout/",
+                (|row| row, |row| row.get("id").and_then(Value::as_str)),
+                failure.clone(),
+            )
+        });
         let diag = rows("diag.jsonl")?
             .unwrap_or_default()
             .into_iter()
@@ -615,8 +808,13 @@ impl KgData {
             .enumerate()
             .map(|(index, node)| (node.id.clone(), index))
             .collect();
+        let meta = Meta::of(manifest);
+        let mut modules_by_name = BTreeMap::new();
+        for (index, module) in meta.modules.iter().enumerate() {
+            modules_by_name.entry(module.name.clone()).or_insert(index);
+        }
         Ok(KgData {
-            meta: Meta::of(manifest),
+            meta,
             nodes,
             edges,
             tests,
@@ -625,7 +823,40 @@ impl KgData {
             diag,
             index,
             by_id,
+            modules_by_name,
+            source,
+            failure,
         })
+    }
+
+    /// `Ok` when every file that the graph read on demand matched the manifest it was opened with;
+    /// else `E2009`: the graph was replaced since it was opened (`kg_stale`), or is broken. A
+    /// command checks it before it prints an answer.
+    pub fn intact(&self) -> Result<(), Diagnostic> {
+        match self.failure.get() {
+            None => Ok(()),
+            Some(failure) => {
+                let dir = self.source.directory().unwrap_or(Path::new("<memory>"));
+                Err(manifest::diagnostic(dir, failure).expect("a failure is not fresh"))
+            }
+        }
+    }
+
+    /// Reads every file of `facts/` and `layout/` now (and checks them, see `intact`): for a graph
+    /// whose directory another graph is about to replace.
+    pub fn read_all(&self) -> Result<(), Diagnostic> {
+        if let Some(facts) = &self.facts {
+            facts.all().for_each(drop);
+        }
+        if let Some(layouts) = &self.layouts {
+            layouts.all().for_each(drop);
+        }
+        self.intact()
+    }
+
+    /// The directory that the graph was read from (`None` for a graph in memory).
+    pub fn directory(&self) -> Option<&Path> {
+        self.source.directory()
     }
 
     pub fn node(&self, id: &str) -> Option<&Node> {
@@ -699,17 +930,30 @@ impl KgData {
             .map(|test| test.index)
     }
 
-    /// The key of the module `id` (from the manifest's modules).
-    pub fn module_key(&self, id: &str) -> Option<&str> {
-        self.meta
-            .modules
-            .iter()
-            .find(|module| module.name == id)
-            .map(|module| module.key.as_str())
+    /// Replaces the modules of the manifest (a graph made of rows alone has none), with their
+    /// index by name.
+    pub fn set_modules(&mut self, modules: Vec<ModuleEntry>) {
+        self.modules_by_name.clear();
+        for (index, module) in modules.iter().enumerate() {
+            self.modules_by_name
+                .entry(module.name.clone())
+                .or_insert(index);
+        }
+        self.meta.modules = modules;
     }
 
+    /// The key of the module `id` (from the manifest's modules).
+    pub fn module_key(&self, id: &str) -> Option<&str> {
+        self.modules_by_name
+            .get(id)
+            .map(|index| self.meta.modules[*index].key.as_str())
+    }
+
+    /// The facts row of the node `id`, from its module's file.
     pub fn fact(&self, id: &str) -> Option<&Fact> {
-        self.facts.as_ref()?.get(id)
+        let node = self.node(id)?;
+        let key = self.module_key(&node.module).unwrap_or(&node.module);
+        self.facts.as_ref()?.find(key, id)
     }
 
     /// The structural invariants of the graph (D-60): node IDs are unique, every edge starts at a
@@ -767,6 +1011,8 @@ pub enum StdSource {
     None,
     /// The std graph in the compiler's cache, built there once; in memory when there is no cache.
     Cache,
+    /// The std graph in the compiler's cache if it is there, never built (`--no-refresh`).
+    Cached,
     /// The std graph built in memory and never written.
     Memory,
 }
@@ -789,6 +1035,17 @@ impl KgView {
 
     pub fn project(&self) -> Option<&KgData> {
         self.project.as_deref()
+    }
+
+    /// `KgData::intact` of the project's graph and of the std graph if it was read.
+    pub fn intact(&self) -> Result<(), Diagnostic> {
+        if let Some(project) = self.project() {
+            project.intact()?;
+        }
+        match self.loaded.get() {
+            Some(Some(std)) => std.intact(),
+            _ => Ok(()),
+        }
     }
 
     /// The std graph, built or read the first time it is needed.
@@ -895,19 +1152,55 @@ mod tests {
         assert_eq!(files.0, b"{\"id\":\"new\"}\n");
         assert_eq!(files.1, b"{\"id\":\"new\"}\n");
         assert_eq!(manifest.files["nodes.jsonl"], digest(&files.0));
-        // A file that does not match an unchanged manifest is broken, and so is a missing one.
+        // A file read on demand that does not match an unchanged manifest is broken, and so is a
+        // missing one; `nodes.jsonl` is read when the graph is opened.
+        let message = |data: &KgData| data.read_all().unwrap_err().message.clone();
         std::fs::write(dir.join("facts/Main.jsonl"), b"{}\n").unwrap();
-        let error = KgData::open(&dir).unwrap_err();
-        assert_eq!(
-            error,
-            manifest::Freshness::Broken("facts/Main.jsonl does not match manifest.json".into())
+        let data = KgData::open(&dir).unwrap();
+        assert!(
+            message(&data).contains("is broken (facts/Main.jsonl does not match manifest.json)")
         );
         std::fs::remove_file(dir.join("facts/Main.jsonl")).unwrap();
-        let error = KgData::open(&dir).unwrap_err();
+        let data = KgData::open(&dir).unwrap();
+        assert!(message(&data).contains("is broken (facts/Main.jsonl cannot be read)"));
+        std::fs::remove_file(dir.join("nodes.jsonl")).unwrap();
         assert_eq!(
-            error,
-            manifest::Freshness::Broken("facts/Main.jsonl cannot be read".into())
+            KgData::open(&dir).unwrap_err(),
+            manifest::Freshness::Broken("nodes.jsonl cannot be read".into())
         );
+    }
+
+    /// A graph that a writer replaces after a reader opened it gives the reader no rows of the
+    /// new graph: the reader learns that it was replaced.
+    #[test]
+    fn lazy_rows_of_a_replaced_graph_are_refused() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        super::super::write::publish(&dir, &graph("old"), "00").unwrap();
+        let data = KgData::open(&dir).unwrap();
+        assert_eq!(data.nodes[0].id, "old");
+        super::super::write::publish(&dir, &graph("new"), "00").unwrap();
+        assert_eq!(data.facts.as_ref().unwrap().all().count(), 0);
+        let error = data.intact().unwrap_err();
+        assert_eq!(error.code, "E2009");
+        assert!(
+            error
+                .message
+                .ends_with("was replaced while it was read; run the command again")
+        );
+        // A graph that read everything first keeps it.
+        let data = KgData::open(&dir).unwrap();
+        data.read_all().unwrap();
+        super::super::write::publish(&dir, &graph("newer"), "00").unwrap();
+        let ids: Vec<&str> = data
+            .facts
+            .as_ref()
+            .unwrap()
+            .all()
+            .map(|fact| fact.id.as_str())
+            .collect();
+        assert_eq!(ids, ["new"]);
+        data.intact().unwrap();
     }
 
     /// The stamp of a snapshot is that of its own marker: a graph of the same files that another
@@ -983,6 +1276,63 @@ mod tests {
         ));
     }
 
+    /// A module's rows are its files' (the stem's case-insensitive group, `~n` included), and a
+    /// row is found by its ID: the first one with it.
+    #[test]
+    fn module_rows_are_found_by_group_and_id() {
+        let mut bytes = BTreeMap::new();
+        bytes.insert(
+            "facts/Acme.Main.jsonl".to_owned(),
+            b"{\"id\":\"a\",\"effects\":[\"io\"]}\n{\"id\":\"a\"}\n".to_vec(),
+        );
+        bytes.insert(
+            "facts/acme.main~1.jsonl".to_owned(),
+            b"{\"id\":\"b\"}\n".to_vec(),
+        );
+        bytes.insert(
+            "facts/Acme.Mainly.jsonl".to_owned(),
+            b"{\"id\":\"c\"}\n".to_vec(),
+        );
+        bytes.insert(
+            "facts/Util.jsonl.jsonl".to_owned(),
+            b"{\"id\":\"d\"}\n".to_vec(),
+        );
+        let manifest = Manifest {
+            schema: "tz-kg/1".into(),
+            compiler: manifest::compiler(),
+            edition: "2026".into(),
+            project: "p".into(),
+            version: None,
+            complete: true,
+            source_hash: "00".repeat(32),
+            counts: Vec::new(),
+            modules: Vec::new(),
+            files: bytes
+                .iter()
+                .map(|(path, bytes)| (path.clone(), digest(bytes)))
+                .collect(),
+        };
+        let tables = Tables::new(
+            Source::Memory(Arc::new(bytes)),
+            &manifest,
+            "facts/",
+            (fact_of, |fact: &Fact| Some(fact.id.as_str())),
+            Arc::new(OnceLock::new()),
+        );
+        let ids: Vec<&str> = tables
+            .of_module("Acme::Main")
+            .map(|fact| fact.id.as_str())
+            .collect();
+        assert_eq!(ids, ["a", "a", "b"]);
+        assert_eq!(tables.find("Acme::Main", "a").unwrap().effects, ["io"]);
+        assert_eq!(tables.find("Acme::Main", "b").unwrap().id, "b");
+        assert!(tables.find("Acme::Main", "c").is_none());
+        assert_eq!(tables.find("Acme::Mainly", "c").unwrap().id, "c");
+        // The module `Util.jsonl`: one extension is the file's.
+        assert_eq!(tables.find("Util.jsonl", "d").unwrap().id, "d");
+        assert!(tables.find("Acme::Other", "a").is_none());
+    }
+
     /// A directory on the way to a listed file that is a link is not followed.
     #[cfg(unix)]
     #[test]
@@ -993,9 +1343,12 @@ mod tests {
         let outside = root.path.join("outside");
         std::fs::rename(dir.join("facts"), &outside).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("facts")).unwrap();
-        assert_eq!(
-            KgData::open(&dir).unwrap_err(),
-            manifest::Freshness::Broken("facts/Main.jsonl cannot be read".into())
+        let data = KgData::open(&dir).unwrap();
+        assert!(
+            data.read_all()
+                .unwrap_err()
+                .message
+                .contains("is broken (facts/Main.jsonl cannot be read)")
         );
     }
 }

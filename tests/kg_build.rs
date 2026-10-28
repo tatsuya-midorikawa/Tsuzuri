@@ -617,3 +617,40 @@ fn test_run_and_build_create_the_kg() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(kg.join("nodes.jsonl").is_file());
 }
+
+/// The facts of a module are read from its own file (G28): every row of every facts file is found
+/// through its node, in a project with a path dependency and in std's graph.
+#[test]
+fn every_facts_row_is_found_through_its_node() {
+    let root = root(
+        "facts-lookup",
+        &[
+            (
+                "Tsuzuri.toml",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2026\"\nnamespace = \"App\"\n\n[dependencies]\nhelper = { path = \"helper\" }\n",
+            ),
+            (
+                "Main.tz",
+                "def main :: unit -> i32 = \\() ->\n    do! IO.write_line (Lib::Util.twice 21)\n    0\n",
+            ),
+            (
+                "helper/Tsuzuri.toml",
+                "[package]\nname = \"helper\"\nversion = \"0.1.0\"\nedition = \"2026\"\nnamespace = \"Lib\"\n",
+            ),
+            ("helper/Util.tz", "def twice :: i64 -> i64 = \\n -> n * 2\n"),
+        ],
+    );
+    let output = tsuzuri(&root, &["kg", "build"], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let data = tsuzuri::kg::store::KgData::open(&root.join("target/tz/kg")).unwrap();
+    let std = tsuzuri::kg::std_kg::memory().expect("the std graph");
+    for graph in [&data, &std] {
+        let facts = graph.facts.as_ref().unwrap();
+        let rows: Vec<_> = facts.all().collect();
+        assert!(!rows.is_empty());
+        for row in rows {
+            assert_eq!(graph.fact(&row.id).map(|fact| &fact.id), Some(&row.id));
+        }
+    }
+    assert!(data.fact("Lib::Util.twice").is_some());
+}

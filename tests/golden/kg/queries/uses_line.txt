@@ -1,0 +1,10 @@
+uses of Acme::Shop::Cart.Line
+uses_type Acme::Shop::Cart.line_total  Cart.tz:7:23
+uses_type Acme::Shop::Cart.total  Cart.tz:10:19
+uses_type Acme::Shop::Main.main  Main.tz:4:18
+uses_type Acme::Shop::Report.print_total  Report.tz:5:25
+uses_type test:Acme::Shop::Cart.empty cart  Cart.tz:19:45
+uses_type test:Acme::Shop::Cart.empty cart  Cart.tz:19:59
+uses_type test:Acme::Shop::Cart.line total  Cart.tz:18:45
+uses_type test:Acme::Shop::Main.main runs  Main.tz:8:45
+summary: 8 uses

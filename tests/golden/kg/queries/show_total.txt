@@ -1,0 +1,18 @@
+Acme::Shop::Cart.total
+def | public | Cart.tz:10:5
+signature: def total :: ref [Line] -> i64
+doc: The price of all lines in cents.
+params:
+  lines  ref  ref [Line]
+result: i64
+effects: none
+sites: trap 1, alloc 0, copy 0
+callees (1):
+  Acme::Shop::Cart.line_total  Cart.tz:14:21  args ref
+callers (3):
+  Acme::Shop::Report.print_total  Report.tz:6:24  args ref
+  test:Acme::Shop::Cart.empty cart  Cart.tz:19:29  args ref
+  test:Acme::Shop::Main.main runs  Main.tz:8:28  args ref
+tests (2):
+  test:Acme::Shop::Cart.empty cart  Cart.tz:19:6
+  test:Acme::Shop::Main.main runs  Main.tz:8:6

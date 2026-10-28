@@ -3018,17 +3018,17 @@ impl Project {
             .filter(|package| self.root_package.as_ref() != Some(*package))
     }
 
-    /// The directory that the root source's relative path starts from.
     /// The directory of the project itself: its root package's when it has a manifest (the root
     /// source of a library without `Main.tz` may be a dependency's), else that of the root source.
-    pub(crate) fn project_directory(&self) -> Option<PathBuf> {
+    pub fn project_directory(&self) -> Option<PathBuf> {
         match &self.root_package {
             Some(package) => Some(package.root.clone()),
             None => self.root_directory(),
         }
     }
 
-    pub(crate) fn root_directory(&self) -> Option<PathBuf> {
+    /// The directory that the root source's relative path starts from.
+    pub fn root_directory(&self) -> Option<PathBuf> {
         let source = self.sources.get(self.root)?;
         let directory = source
             .path

@@ -9,6 +9,8 @@
 - 書けないとき（置き場が知識グラフでない、書き込めないなど）は警告 1 行（`W2001`）だけで、診断と終了コードは変わりません。
 - 同じソースと同じコンパイラからは、どの機械・どのディレクトリでも、名前が `.` で始まらないファイルが byte 単位で同じになります。
 - `tsuzuri kg build|verify|clean|export` で、明示的に作る・確かめる・消す・出力できます。
+- `tsuzuri kg show|callers|callees|uses|tests-for|search|find|path|brief` は、ソースを読まずにグラフから答えます（[照会](#照会)）。
+- `tsuzuri kg impact` は 2 つの版の差（公開 API・効果・警告）と、その差に届くテストを出し、`tsuzuri test --affected` はそのテストだけを実行します（[変更の影響](#変更の影響kg-impact)）。
 
 ## 置き場とファイル
 
@@ -98,10 +100,213 @@ tsuzuri kg export --edges | grep '"rel":"calls"'
 | kind | いつ |
 | --- | --- |
 | `kg_missing` | 置き場がない（マーカーのないディレクトリがあるときは「no .tsuzuri-kg marker」） |
-| `kg_stale` | ソースが変わった・別のコンパイラ・別の schema |
+| `kg_stale` | ソースが変わった・別のコンパイラ・別の schema。照会の途中で知識グラフが入れ替わったとき（`was replaced while it was read; run the command again`。2 つの知識グラフを混ぜた答えは出しません） |
 | `kg_broken` | `manifest.json` が読めない、ファイルの欠落・不一致、グラフの不変条件の違反 |
 | `kg_not_ours` | 置き場が知識グラフでないか、プロジェクトのソースを含む |
 | `kg_incomplete` | 型検査の通らないプロジェクトの知識グラフ |
+
+## 照会
+
+```text
+tsuzuri kg brief     [ID | --project | --module M] [共通]
+tsuzuri kg show      ID [共通]
+tsuzuri kg callers   ID [--depth N] [共通]
+tsuzuri kg callees   ID [--depth N] [共通]
+tsuzuri kg uses      TYPE [共通]
+tsuzuri kg tests-for ID [共通]
+tsuzuri kg search    TEXT [--std] [共通]
+tsuzuri kg path      FROM TO [--rel R[,R...]] [--depth N] [共通]
+共通 = [--budget N] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]
+```
+
+照会は、プロジェクトの知識グラフを開き（古ければ `check` と同じに解析して作り直します）、グラフをたどって答えます。ソースは読みません。位置引数は ID や文字列に使うので、プロジェクトは `--path` で渡します。
+
+| オプション | 既定 | 意味 |
+| --- | --- | --- |
+| `--path PATH` | `.` | プロジェクト（`check` と同じ入力） |
+| `--kg-dir DIR` | `<根>/target/tz/kg` | 知識グラフの置き場（`TSUZURI_KG_DIR` も読みます） |
+| `--no-refresh` | 作り直す | 作り直さず読むだけ。ない・古い・不完全なら `E2009`。std の知識グラフも作らず、コンパイラのキャッシュにあれば読みます（`tsuzuri kg build --std`） |
+| `--budget N` | `brief` は 2,400・1,600・700、`show` は 3,000、一覧は 2,000 | テキストの文字数の上限（100〜100,000）。超える分は項目を後ろから落とし、`…N more` を出します |
+| `--depth N` | 1（`path` は 8） | `callers`・`callees` は 1〜8、`path` は 1〜16 の深さ |
+| `--json` | オフ | 1 行 1 オブジェクトの JSON Lines。`--budget` は効きません |
+
+| コマンド | 答え |
+| --- | --- |
+| `brief` | 要約カード。引数なしと `--project` は L0、`--module M` は L1、ID は L2（モジュールなら L1）。`--budget` がなければ保存したカードと同じ byte です |
+| `show` | 宣言 1 つ: 種類・公開・位置、署名、説明の 1 行目、引数の渡し方、事実（効果、トラップ・確保・複製の箇所の数、再帰）、呼び先・呼び出し元・テスト・使う宣言（呼び出し元と使う宣言は、std の宣言でもプロジェクトの知識グラフから。`kg callers`・`kg uses` と同じ） |
+| `callers`・`callees` | 呼び出しの辺（`calls`）を幅優先にたどった呼び出し元・呼び先。各 ID は最も浅い深さで 1 回だけ、深さ 2 以上は `via`（1 つ手前の ID）つきです。テストも呼び出し元に出ます。std の関数の呼び先は std の知識グラフで、呼び出し元はプロジェクトの知識グラフでたどります |
+| `uses` | 型を使う宣言（`uses_type`・`implements`・`instance_of` の辺） |
+| `tests-for` | 宣言に届くテスト（`tested_by` の辺） |
+| `search` | 名前・ID・署名・説明の 1 行目（全体。カードでは 100 文字に切ります）に文字列を含む宣言を、名前の一致を先に並べます。`--std` で std も探します |
+| `path` | `FROM` から `TO` への最短の辺の鎖。`--rel` で使う辺の種類（`contains`・`calls`・`uses_type`・`implements`・`instance_of`・`imports`・`tested_by`。既定は `calls`）を選びます。`FROM` を宣言する知識グラフ（std の関数なら std のもの）でたどります |
+
+```text
+$ tsuzuri kg show total
+Acme::Shop::Cart.total
+def | public | Cart.tz:10:5
+signature: def total :: ref [Line] -> i64
+doc: The price of all lines in cents.
+params:
+  lines  ref  ref [Line]
+result: i64
+effects: none
+sites: trap 1, alloc 0, copy 0
+callees (1):
+  Acme::Shop::Cart.line_total  Cart.tz:14:21  args ref
+callers (3):
+  Acme::Shop::Report.print_total  Report.tz:6:24  args ref
+  test:Acme::Shop::Cart.empty cart  Cart.tz:19:29  args ref
+  test:Acme::Shop::Main.main runs  Main.tz:8:28  args ref
+tests (2):
+  test:Acme::Shop::Cart.empty cart  Cart.tz:19:6
+  test:Acme::Shop::Main.main runs  Main.tz:8:6
+
+$ tsuzuri kg callers line_total --depth 2
+callers of Acme::Shop::Cart.line_total (depth 2)
+1 Acme::Shop::Cart.total  Cart.tz:14:21  args ref
+1 test:Acme::Shop::Cart.line total  Cart.tz:18:29  args ref
+2 Acme::Shop::Report.print_total  Report.tz:6:24  via Acme::Shop::Cart.total
+2 test:Acme::Shop::Cart.empty cart  Cart.tz:19:29  via Acme::Shop::Cart.total
+2 test:Acme::Shop::Main.main runs  Main.tz:8:28  via Acme::Shop::Cart.total
+summary: 5 callers, depth 2
+
+$ tsuzuri kg path main line_total
+path from Acme::Shop::Main.main to Acme::Shop::Cart.line_total (by calls, depth 8)
+Acme::Shop::Main.main --calls--> Acme::Shop::Report.print_total  Main.tz:5:5
+Acme::Shop::Report.print_total --calls--> Acme::Shop::Cart.total  Report.tz:6:24
+Acme::Shop::Cart.total --calls--> Acme::Shop::Cart.line_total  Cart.tz:14:21
+summary: 3 steps
+```
+
+鎖がなければ `summary: no path within depth N` で、終了コードは 0 です。`args` は引数の渡し方（`ref`・`mut`・`own`・`copy`）です。
+
+### ID の解決
+
+ID は完全な形（`Acme::Shop::Cart.total`、テストは `test:Acme::Shop::Cart.line total`）のほかに、短く書けます。次の段を上から調べ、最初に見つかった段で決めます。
+
+1. ID と完全に一致する。
+2. ID が `::` か `.` に続けてその文字列で終わる（`total`、`Cart.total`）。
+3. 大文字小文字を除いて 1 と同じ。
+4. 大文字小文字を除いて 2 と同じ。
+5. ID がその文字列で始まる。
+6. 大文字小文字を除いて 5 と同じ。
+
+1 つの段で 2 件以上見つかると曖昧です（`E2000`、kind `kg_ambiguous_id`、終了コード 1）。候補を 10 件まで挙げます。どの段にもなければ未知で（`E2000`、kind `kg_unknown_id`、終了コード 1）、最後の名前の綴りが近い ID を 5 件まで挙げます。
+
+```text
+<command line>:1:1: error[E2000]: unknown id 'totl'; did you mean: Acme::Shop::Cart.total
+```
+
+プロジェクトにない ID は std の知識グラフでも探します（`Array.map`）。辺の行き先にだけ現れる組み込みの関数（`IO.write_line`）は、`show` で `symbol: not in this KG` と呼び出し元だけを出します。
+
+### `--json`
+
+| コマンド | 行 |
+| --- | --- |
+| `brief` | `{"type":"brief","level":"L0","id":null,"text":"…"}` |
+| `show` | `{"type":"symbol","symbol":{ノードの行},"facts":{事実の行} または null,"callees":[辺],"callers":[…],"tests":[…],"used_by":[…]}` |
+| `callers`・`callees` | 項目ごとに `{"type":"edge","depth":1,"id":…,"via":null,"sites":1,"span":{…},"args":["ref"]}`（`sites` はその相手との辺の数）、最後に `{"type":"summary","count":5,"depth":2}` |
+| `uses`・`tests-for`・`search` | `{"type":"use",…}`・`{"type":"test",…}`・`{"type":"match","rank":1,…}`、最後に `{"type":"summary","count":n}` |
+| `path` | 辺ごとに `{"type":"step","index":1,"from":…,"rel":"calls","to":…,"span":{…}}`、最後に `{"type":"summary","found":true,"steps":3,"depth":8}` |
+
+辺のファイル（`edges.jsonl`）がない知識グラフでは、一覧は見出しと `note: this KG has no edges.jsonl`（JSON は `{"type":"note",…}`）と `summary: 0 …` を出して 0 で終わります。
+
+## 型で探す（`kg find`）
+
+```text
+tsuzuri kg find TYPE [--module M] [--limit N] [共通]
+tsuzuri kg find --result TYPE [--takes TYPE]... [--module M] [--limit N] [共通]
+```
+
+`kg find` は、プロジェクトと std の知識グラフの関数（`def`・`const`・`extern`、field の取り出し `ref Record -> T`、case の構築子）を、署名の型で探します。型引数のある record・union では、取り出しと構築子も宣言の型引数を持ちます（`record Box<'a> { value: 'a }` の `value` は `ref Box<'a> -> 'a`、`Maybe` の `Some` は `'a -> Maybe<'a>`）。問い合わせは署名と同じ型の書き方で、`'a` は型変数（同じ名前は同じ型）、`_` は任意の型です。固定長の配列の長さ `[i64; N]` の `N` も変数で、1 つの署名のどこでも同じ長さです（`[i64; N] -> [i64; N] -> i64` は `[i64; 2] -> [i64; 3] -> i64` に一致しません）。署名の型の名前は、そのモジュールの型、その関数が使う型（`uses_type` の辺）、同じ名前空間の型の順に知識グラフの型に決め、名前は一方が他方と同じか、`.`・`::` の後の末尾が一致するときに同じとします。`A.Point` は `B` の `Point` を受け取る関数に一致せず、どの型にもない修飾（`Nope.Point`）は何にも一致しません。修飾のない `Point` はどの `Point` にも一致します。両方の型変数を単一化して比べ、次の段に分けます。
+
+| 段 | 意味 |
+| --- | --- |
+| `exact` | 引数と結果がそのまま一致する |
+| `borrow` | 外側の `ref`・`ref mut` を外すと一致する |
+| `partial` | 問い合わせの引数が、順にその関数の引数のどれかと一致する。余った引数の数を `(+n)` で出します |
+
+`--result` と `--takes`（繰り返せます）は、結果と引数の一部だけで探します（`exact` と `borrow` だけ）。`--module M` は 1 つのモジュール（`Array` や `Acme::Shop::Cart`）に絞ります。`--limit` は 1〜100（既定 20）で、切ったときは最後に `... N more; raise --limit (at most 100)` を出します。テキストは一覧と同じに `--budget`（既定 2,000 文字）に収め、超える分は後ろから `…N more` にします（`--json` は切りません）。制約（`=>`）は、型変数が `i64` や `string` のような基本の型に決まったとき、コンパイラの組み込みの class の規則で確かめます（`ref [i64] -> i64` に `Array.average :: Float<'a> => ref ['a] -> 'a` は出ません。その instance のノードがあれば出ます）。それ以外の制約（record の型や `Copy` など）は表示するだけで、確かめません（知識グラフはすべての instance を持たないため）。
+
+```text
+$ tsuzuri kg find 'ref [Line] -> i64' --limit 3
+exact   Acme::Shop::Cart.total :: ref [Line] -> i64
+exact   Array.length :: ref ['a] -> i64
+partial Array.average_by :: (Copy<'a>, Float<'b>) => own ('a -> 'b) -> ref ['a] -> 'b  (+1)
+... 29 more; raise --limit (at most 100)
+```
+
+問い合わせが型として読めないとき（閉じていない `{` や `<` など）は `E2000`（`cannot parse the type query: …`、終了コード 2）です。
+
+## 変更の影響（`kg impact`）
+
+```text
+tsuzuri kg impact --git REV [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]
+tsuzuri kg impact --from PATH [--to PATH] [--path PATH] [--kg-dir DIR] [--no-refresh] [--json]
+```
+
+`kg impact` は、2 つの知識グラフ（前の版 base と今の版 head）を比べ、変わった宣言・効果・警告と、その変更に届くテストを出します。終了コードは、差があっても 0 です。
+
+| 指定 | base | head |
+| --- | --- | --- |
+| `--git REV` | `--path` のプロジェクトの、git のコミット `REV` の版 | `--path`（既定 `.`）の作業ツリー |
+| `--from A` | `A` | `--path` の作業ツリー |
+| `--from A --to B` | `A` | `B` |
+
+`A`・`B` は、知識グラフのディレクトリ（`.tsuzuri-kg` のあるもの。そのまま読みます）か、プロジェクト（知識グラフを開きます。古ければ作り直します）です。`--kg-dir` と `TSUZURI_KG_DIR` は作業ツリーの知識グラフだけの置き場で、base と `--to` のプロジェクトの知識グラフはそれぞれの `target/tz/kg` に置きます。base が作業ツリーの知識グラフそのもの（`--from target/tz/kg`）でも、作業ツリーの知識グラフを作り直す前に base を読み終えます。`--git` は、リポジトリの外の一時ディレクトリに `git worktree add --detach` でコミットを取り出し（フックは走らせません）、終わると消します。
+
+| 区分 | 変更 |
+| --- | --- |
+| `breaking` | 公開の宣言の削除・署名や引数の渡し方の変更・非公開への変更、公開の record の field・union の case・class のメソッドの追加、field と case の並びの変更、公開の関数への効果の追加（`reached by …` に、その関数に届く関数とテストの数） |
+| `non-breaking` | 宣言の追加、非公開の宣言の変更、`deprecated`・説明の変更、公開の関数からの効果の削除 |
+| `info` | 非公開の関数の効果、トラップ・確保・複製の箇所の数や再帰の変化、警告の増減 |
+
+`breaking`・`non-breaking` の行は `tsuzuri api-diff` と同じ文字列です。`api-diff` との違いは、非公開の変更・効果・警告も出すこと、引数の渡し方だけの変更（`changed conv`）と公開の変化（`changed visibility`）を 1 行で出すこと、終了コードが常に 0 であることです。2 つの知識グラフのコンパイラが違うときは事実を比べず、`info: skipped facts (…)` を出します。
+
+**届くテスト**は、変わったモジュール（ソースの SHA-256 が違うか、片方にしかないもの）の宣言から、呼び出しの辺を逆向きに深さ 8 までたどって届くテストと、そのモジュールのテストと、消えた宣言を呼んでいたテストです。class のメソッドの呼び出しは、その class のすべての instance のメソッドに届くものとして数えます。次のときは全部のテストを選び、理由を出します。
+
+| 理由 | いつ |
+| --- | --- |
+| `the KG has no graph` | head に `edges.jsonl` がない |
+| `the compiler changed` | 2 つの知識グラフのコンパイラか schema が違う |
+| `the manifest or a dependency changed` | ソースの入力は違うが、どのモジュールのソースも同じ（`Tsuzuri.toml`・依存の変更） |
+| `an instance of a std class changed` | 変わったモジュールに std の class（`Eq`・`Ord` など）の instance がある |
+| `callers deeper than 8 calls` | 深さ 8 の先にまだ呼び出し元がある |
+
+```text
+$ tsuzuri kg impact --from base --path head
+impact: base -> working tree
+breaking: added field Acme::Shop::Cart.Line.tax: `tax: i64` (constructions of the record without it stop compiling)
+breaking: added effect io on Acme::Shop::Cart.line_total (reached by 4 functions and 3 tests)
+breaking: added effect io on Acme::Shop::Cart.total (reached by 3 functions and 2 tests)
+breaking: changed def Acme::Shop::Report.print_total: `def print_total :: ref [Line] -> unit` => `def print_total :: [Line] -> unit`
+non-breaking: added def Acme::Shop::Cart.discount: `def discount :: ref [Line] -> i64 -> i64`
+info: new warning W1001 at Cart.tz:22: unused local 'rate'; prefix it with '_' to silence this warning
+tests: 3 of 3 affected
+  test:Acme::Shop::Cart.empty cart
+  test:Acme::Shop::Cart.line total
+  test:Acme::Shop::Main.main runs
+summary: 4 breaking, 1 non-breaking, 1 info
+```
+
+1,000 件を超える変更は `note: N more changes not shown` にまとめます。`--json` は `{"type":"impact","base":…,"head":…}`、変更ごとに `{"type":"change","severity":"breaking","action":"added","kind":"field","name":…,"old":null,"new":…,"note":…}`（`api-diff --json` と同じキー）、`{"type":"tests","mode":"some","affected":[ID…],"total":3,"reason":null,"paths":[{"test":ID,"via":[ID…]}]}`、最後に `{"type":"summary","breaking":4,"non_breaking":1,"info":1,"omitted":0}` です。`paths` は、選んだテストごとに、変わった宣言からそのテストまでの最短の呼び出しの鎖です（`mode` が `all` のときは `affected` と `paths` が空です）。
+
+| 誤り | コード | 終了コード |
+| --- | --- | --- |
+| `--git` と `--from` の併用、`--to` だけ、どちらもない | `E2000`（`usage: …`） | 2 |
+| `REV` が空か `-` で始まる | `E2000`（`invalid git revision 'REV'`） | 2 |
+| `REV` がコミットでない | `E2000`（`unknown git revision 'REV'`、kind `unknown_git_revision`） | 1 |
+| リポジトリの外、git が動かない、そのコミットにプロジェクトのディレクトリがない、`--from`・`--to` が読めない | `E2001` | 1 |
+
+### 影響のあるテストだけを実行する
+
+`tsuzuri test PATH --affected BASE` は、`BASE` と `PATH` の間の `kg impact` が選んだテストだけを実行します。`BASE` は、知識グラフのディレクトリ、プロジェクトのディレクトリ、git のリビジョンの順に読みます（`./name` でパス、`refs/heads/name` でリビジョンに決められます）。知識グラフのディレクトリは、このコマンドがプロジェクトの知識グラフを書く前に全部読むので、プロジェクト自身の `target/tz/kg`（前回の `check` のもの）も `BASE` にできます。実行の前に 1 行を出します。
+
+```text
+affected: 1 of 3 tests (base)
+```
+
+選ばれたテストが 0 件なら、何も実行せず終了コード 0 です。全部を選んだときは `affected: all 3 tests (the compiler changed)` のように理由を出します。選んだテストに、知識グラフの `tests.jsonl` が番号を持たないものがあれば、落とさずに全部を実行します（`the KG does not number every affected test`）。`--json` では `{"type":"affected","mode":"some","affected":1,"total":3,"base":"base","reason":null}` です。`--list` と組み合わせると、選んだテストだけを一覧にします（実行しません）。`--filter`・`--index`・`--no-kg`・`TSUZURI_KG=0` とは組み合わせられません（`E2000`、終了コード 2）。`test` 以外のコマンドに付けても `E2000` です。
 
 ## 標準ライブラリの知識グラフ
 

@@ -35,6 +35,19 @@ pub fn directory(project: &Project, kg_dir: Option<&Path>) -> PathBuf {
     KgSettings::explicit(dir).directory(project)
 }
 
+/// The graph directory of a second project of one command (the base of `kg impact` and
+/// `test --affected`): its own `<root>/target/tz/kg`. `--kg-dir` and `TSUZURI_KG_DIR` name the
+/// graph of the command's own project, and two graphs in one directory would replace each other.
+pub fn own_directory(project: &Project) -> PathBuf {
+    KgSettings::explicit(None).directory(project)
+}
+
+/// Whether two graph directories are one, so that opening the second may replace the first.
+pub fn same_directory(a: &Path, b: &Path) -> bool {
+    let real = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    real(a) == real(b)
+}
+
 /// Reads the graph of `project` at `dir`. `report` receives the diagnostics of an analysis that
 /// `Refresh::Auto` runs.
 pub fn open_project(
