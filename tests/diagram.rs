@@ -1,5 +1,6 @@
 //! G30 (D-60): the diagrams from the rows of G30 appendix C. The expected outputs are those of
-//! the reference implementation (appendix E), as appendix D lists them.
+//! the reference implementation (appendix E), as appendix D lists them, except that the layout
+//! tables write types as inline code (`` `f64` ``), so that Markdown never reads `<T>` as HTML.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -353,6 +354,59 @@ fn concurrency_unique_element_type_attaches_creators() {
     assert!(draw(&two, &request(Kind::Concurrency, None)).contains("(\"Channel#lt;?#gt;\")"));
 }
 
+/// A test's name may hold a backslash or a control character; its label still validates.
+#[test]
+fn labels_of_test_names_with_backslashes_and_controls_validate() {
+    let name = "path\\\\case\\u0000x";
+    let test = format!(
+        "{{\"id\":\"test:M.{name}\",\"kind\":\"test\",\"module\":\"M\",\"name\":\"{name}\",\"params\":[],\"result\":null,\"origin\":\"project\",\"span\":{{\"path\":\"M.tz\",\"line\":1,\"column\":1}}}}\n"
+    );
+    let nodes = node("M", "module", "M") + &def("M.f", "M", "i64", "i64") + &test;
+    let edges = format!(
+        "{{\"rel\":\"calls\",\"from\":\"test:M.{name}\",\"to\":\"M.f\",\"args\":[],\"span\":{{\"line\":2,\"column\":1}}}}\n"
+    );
+    let input = Input::from_texts(&nodes, &edges, &[], &[], "").unwrap();
+    let id = Some("test:M.path\\case\u{0}x");
+    let text = draw(&input, &request(Kind::Calls, id));
+    assert!(
+        text.contains("path#92;case x") && text.contains("M.f"),
+        "{text}"
+    );
+    assert_eq!(validate_mermaid(&text), Ok(()), "{text}");
+    let text = draw(&input, &dot(request(Kind::Calls, id)));
+    assert!(text.contains("path\\\\case x"), "{text}");
+}
+
+/// Each cell type of a signature is drawn with its own element type, and a name that only ends
+/// with a cell's (`NotMutex<i64>`) is not one.
+#[test]
+fn concurrency_reads_every_cell_of_a_signature() {
+    let symbol = |id: &str, param: &str| {
+        format!(
+            "{{\"id\":\"M.{id}\",\"kind\":\"def\",\"module\":\"M\",\"name\":\"{id}\",\"params\":[{{\"name\":\"c\",\"type\":\"{param}\",\"conv\":\"ref\"}}],\"result\":\"i64\",\"origin\":\"project\",\"span\":{{\"path\":\"M.tz\",\"line\":1,\"column\":1}}}}\n"
+        )
+    };
+    let input = Input::from_texts(
+        &(symbol("pair", "ref (NotMutex<i64> * Mutex<string>)")
+            + &symbol("both", "ref (Mutex<bool> * Mutex<f64>)")),
+        "",
+        &[],
+        &[],
+        "",
+    )
+    .unwrap();
+    let text = draw(&input, &request(Kind::Concurrency, None));
+    for cell in [
+        "Mutex#lt;string#gt;",
+        "Mutex#lt;bool#gt;",
+        "Mutex#lt;f64#gt;",
+    ] {
+        assert!(text.contains(&format!("(\"{cell}\")")), "{cell}: {text}");
+    }
+    assert!(!text.contains("Mutex#lt;i64#gt;"), "{text}");
+    assert_eq!(validate_mermaid(&text), Ok(()));
+}
+
 #[test]
 fn ownership_markdown_matches_the_golden() {
     let own = fixture("own");
@@ -387,7 +441,7 @@ fn owning(events: &[(&str, &str, usize)]) -> Input {
 fn ownership_release_precedes_the_next_event() {
     let input = owning(&[("p", "borrow", 2), ("p", "move", 3)]);
     let text = draw(&input, &request(Kind::Ownership, Some("M.f")));
-    assert!(text.contains("## p (parameter: string)\n"), "{text}");
+    assert!(text.contains("## p (parameter: `string`)\n"), "{text}");
     assert!(
         text.contains(
             "    s1 --> s2 : release\n    state \"Moved\" as s3\n    s2 --> s3 : L3 move\n"
@@ -503,8 +557,30 @@ fn layout_offsets_stop_at_the_first_unknown_type() {
     let row = "{\"id\":\"M.R\",\"kind\":\"record\",\"type\":\"M.R\",\"size\":[24,24],\"align\":[8,8],\"fields\":[{\"name\":\"a\",\"type\":\"i32\",\"slot\":0},{\"name\":\"s\",\"type\":\"string\",\"slot\":1},{\"name\":\"b\",\"type\":\"i8\",\"slot\":2}],\"reordered\":false,\"drop_flag\":false}\n";
     let input = Input::from_texts("", "", &[], &[row], "").unwrap();
     let text = draw(&input, &request(Kind::Layout, Some("M.R")));
-    assert!(text.contains("| 0 | a | i32 | 4 | 4 | 0 |\n| 1 | s | string | ? | ? | ? |\n| 2 | b | i8 | ? | ? | ? |\n"), "{text}");
+    assert!(text.contains("| 0 | a | `i32` | 4 | 4 | 0 |\n| 1 | s | `string` | ? | ? | ? |\n| 2 | b | `i8` | ? | ? | ? |\n"), "{text}");
     assert!(!text.contains("tail padding"));
+}
+
+/// A Drop record's live flag is the byte after its fields, not padding; types are inline code, with
+/// the `|` of a list escaped for the table.
+#[test]
+fn layout_shows_the_live_flag_and_types_as_code() {
+    let row = "{\"id\":\"M.R\",\"kind\":\"record\",\"type\":\"M.R\",\"size\":[16,16],\"align\":[8,8],\"fields\":[{\"name\":\"n\",\"type\":\"i64\",\"slot\":0}],\"reordered\":false,\"drop_flag\":true}\n";
+    let input = Input::from_texts("", "", &[], &[row], "").unwrap();
+    let text = draw(&input, &request(Kind::Layout, Some("M.R")));
+    assert!(
+        text.contains("| 0 | n | `i64` | 8 | 8 | 0 |\n| - | (live flag) | `i8` | 1 | 1 | 8 |\n| - | (tail padding) | - | 7 | - | 9 |\n"),
+        "{text}"
+    );
+    let row = "{\"id\":\"M.G\",\"kind\":\"record\",\"type\":\"M.G\",\"size\":[48,48],\"align\":[8,8],\"fields\":[{\"name\":\"v\",\"type\":\"Vec<i64>\",\"slot\":0},{\"name\":\"l\",\"type\":\"[|i64|]\",\"slot\":1}],\"reordered\":false,\"drop_flag\":false}\n";
+    let input = Input::from_texts("", "", &[], &[row], "").unwrap();
+    let text = draw(&input, &request(Kind::Layout, Some("M.G")));
+    assert!(
+        text.contains(
+            "| 0 | v | `Vec<i64>` | ? | ? | ? |\n| 1 | l | `[\\|i64\\|]` | ? | ? | ? |\n"
+        ),
+        "{text}"
+    );
 }
 
 #[test]
@@ -1218,6 +1294,68 @@ fn transitions_take_the_functions_of_the_union_itself() {
     );
 }
 
+/// A namespace is compared whole: `Shapes.U` in `Acme::App::Main` is `Acme::App::Shapes.U`, not
+/// `Acme::Lib::Shapes.U`.
+#[test]
+fn transitions_compare_whole_namespaces() {
+    let sources = BTreeMap::from([
+        (
+            "App/Main.tz".to_owned(),
+            "def flip :: Shapes.U -> Shapes.U\nfn flip value =\n    match value with\n    | A -> B\n    | B -> A\n".to_owned(),
+        ),
+        ("App/Shapes.tz".to_owned(), String::new()),
+        ("Lib/Shapes.tz".to_owned(), String::new()),
+    ]);
+    let modules: Vec<String> = [
+        ("Acme::App::Main", "App/Main.tz"),
+        ("Acme::App::Shapes", "App/Shapes.tz"),
+        ("Acme::Lib::Shapes", "Lib/Shapes.tz"),
+    ]
+    .iter()
+    .map(|(name, path)| {
+        format!(
+            "{{\"name\":\"{name}\",\"key\":\"{name}\",\"origin\":\"project\",\"path\":\"{path}\",\"source\":\"{}\"}}",
+            tsuzuri::kg::input::digest(sources[*path].as_bytes())
+        )
+    })
+    .collect();
+    let manifest = format!(
+        "{{\"edition\":\"2026\",\"modules\":[{}]}}",
+        modules.join(",")
+    );
+    let mut nodes = String::new();
+    for namespace in ["App", "Lib"] {
+        let module = format!("Acme::{namespace}::Shapes");
+        nodes.push_str(&node(&format!("{module}.U"), "union", &module));
+        for case in ["A", "B"] {
+            nodes.push_str(&node(&format!("{module}.U.{case}"), "case", &module));
+        }
+    }
+    nodes.push_str(&def(
+        "Acme::App::Main.flip",
+        "Acme::App::Main",
+        "Shapes.U",
+        "Shapes.U",
+    ));
+    let input = Input::from_texts(&nodes, "", &[], &[], &manifest).unwrap();
+    let app = render(
+        &input,
+        &sources,
+        &request(Kind::Transitions, Some("Acme::App::Shapes.U")),
+    )
+    .unwrap();
+    assert!(app.text.contains("flip"), "{}", app.text);
+    let lib = render(
+        &input,
+        &sources,
+        &request(Kind::Transitions, Some("Acme::Lib::Shapes.U")),
+    );
+    assert!(
+        lib.as_ref().is_err() || !lib.as_ref().unwrap().text.contains("flip"),
+        "{lib:?}"
+    );
+}
+
 /// The transitions of a union are at most 400 edges, with the omitted count, in both formats.
 #[test]
 fn transitions_stay_within_max_edges() {
@@ -1293,4 +1431,29 @@ fn types_fold_bounds_the_module_groups() {
     assert_eq!(classes, 5, "{}", output.text);
     assert!(output.text.contains("more groups (4)"), "{}", output.text);
     assert_eq!(validate_mermaid(&output.text), Ok(()), "{}", output.text);
+    // DOT folds into the same classes.
+    let output = render(
+        &input,
+        &no_sources(),
+        &dot(folded(request(Kind::Types, None), 5)),
+    )
+    .unwrap();
+    assert!(output.folded);
+    assert_eq!(output.nodes, 5);
+    let nodes = output
+        .text
+        .lines()
+        .filter(|line| line.starts_with("    n") && line.contains("[label="))
+        .count();
+    assert_eq!(nodes, 5, "{}", output.text);
+    assert!(output.text.contains("more groups (4)"), "{}", output.text);
+    // Within the limit, DOT draws every type and is not folded.
+    let output = render(
+        &input,
+        &no_sources(),
+        &dot(folded(request(Kind::Types, None), 8)),
+    )
+    .unwrap();
+    assert!(!output.folded);
+    assert_eq!(output.nodes, 8);
 }

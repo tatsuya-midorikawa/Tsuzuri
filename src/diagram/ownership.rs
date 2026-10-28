@@ -179,7 +179,8 @@ pub fn markdown(
             .collect();
         let (diagram, omitted) = variable_diagram(&own, limit);
         let heading = match parameters.iter().find(|(name, _)| name == variable) {
-            Some((_, ty)) => format!("## {variable} (parameter: {ty})"),
+            // The type as inline code: `<i64>` of `Vec<i64>` is not HTML.
+            Some((_, ty)) => format!("## {variable} (parameter: `{ty}`)"),
             None => format!("## {variable}"),
         };
         parts.push(format!("{heading}\n\n```mermaid\n{diagram}```\n"));

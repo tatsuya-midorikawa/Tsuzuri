@@ -1800,6 +1800,7 @@ fn run_test_action(
     project: &Project,
     module: &tsuzuri::check::CheckedModule,
     links: &driver::LinkInputs,
+    affected_base: Option<Result<tsuzuri::kg::store::KgData, Diagnostic>>,
 ) -> u8 {
     let mut options = driver::TestOptions {
         target: arguments.options.target,
@@ -1815,7 +1816,7 @@ fn run_test_action(
         allocator: arguments.options.allocator,
     };
     if let Some(base) = &arguments.affected {
-        match select_affected(arguments, project, base) {
+        match select_affected(arguments, project, base, affected_base) {
             Ok(Some(indices)) if indices.is_empty() => return EXIT_SUCCESS,
             Ok(Some(indices)) => options.indices = indices,
             Ok(None) => {}
@@ -3325,6 +3326,13 @@ fn cli(
                 tsuzuri::kg::build::Plan::Off
             }
         };
+    // G28: a BASE of `test --affected` that is a graph directory is read whole before this command
+    // publishes its own graph, which can replace it (`--affected target/tz/kg`).
+    let affected_base = arguments
+        .affected
+        .as_deref()
+        .filter(|_| arguments.action == Action::Test)
+        .and_then(base_graph);
     // check, test and doc do not take --no-cache; TSUZURI_CACHE_DIR= disables every cache.
     let (analysis, pending) =
         tsuzuri::kg::build::analyze(&project, arguments.options.cache, kind, plan);
@@ -3363,7 +3371,7 @@ fn cli(
         return EXIT_FAILURE;
     }
     if arguments.action == Action::Test {
-        return run_test_action(&arguments, &project, &module, &links);
+        return run_test_action(&arguments, &project, &module, &links, affected_base);
     }
     if arguments.action == Action::Bench {
         return run_bench_action(&arguments, &project, &module, &links);
@@ -3388,12 +3396,25 @@ fn cli(
     }
 }
 
+/// The graph that `test --affected VALUE` compares with, read whole, when VALUE is a graph
+/// directory; `None` for a project directory or a git revision.
+fn base_graph(value: &str) -> Option<Result<tsuzuri::kg::store::KgData, Diagnostic>> {
+    let given = Path::new(value);
+    (given.is_dir() && tsuzuri::kg::write::has_marker(given)).then(|| {
+        let data = tsuzuri::kg::open::read(given)?;
+        data.read_all()?;
+        Ok(data)
+    })
+}
+
 /// G28 `test --affected VALUE`: the indices of the tests that the change from VALUE to the project
-/// reaches, after printing the `affected:` line; `None` runs every test.
+/// reaches, after printing the `affected:` line; `None` runs every test. `graph` is the base when
+/// VALUE is a graph directory, read before the command wrote the project's graph.
 fn select_affected(
     arguments: &Arguments,
     project: &Project,
     value: &str,
+    graph: Option<Result<tsuzuri::kg::store::KgData, Diagnostic>>,
 ) -> Result<Option<Vec<usize>>, Diagnostic> {
     use tsuzuri::kg::open::{self, Refresh};
     let given = Path::new(value);
@@ -3402,8 +3423,8 @@ fn select_affected(
     };
     // The checkout lives until the diff has read the base graph's files.
     let mut checkout = None;
-    let base = if given.is_dir() && tsuzuri::kg::write::has_marker(given) {
-        open::read(given)?
+    let base = if let Some(graph) = graph {
+        graph?
     } else if given.is_dir() {
         let base = Project::load_for_tests(given).map_err(|error| error.diagnostic)?;
         let dir = open::own_directory(&base);

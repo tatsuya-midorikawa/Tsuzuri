@@ -368,6 +368,32 @@ fn impact_against_the_graph_that_the_head_replaces() {
     assert!(text.contains(effect), "{text}");
 }
 
+/// `test --affected` with the project's own graph as BASE: the base is read whole before the
+/// command writes the project's new graph in its place.
+#[test]
+fn test_affected_against_the_projects_own_graph() {
+    let root = fresh("own-graph");
+    let project = root.join("shop");
+    copy("kg_shop", &project);
+    assert!(tsuzuri(&project, &["kg", "build"]).status.success());
+    copy("kg_shop_head", &project);
+    let output = tsuzuri(&project, &["test", ".", "--affected", "target/tz/kg"]);
+    assert!(
+        stdout(&output).contains("affected: 3 of 3 tests (target/tz/kg)\n"),
+        "{}{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    // The command wrote the head's graph there: nothing changed since.
+    let output = tsuzuri(&project, &["test", ".", "--affected", "target/tz/kg"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("affected: 0 of 3 tests (target/tz/kg)\n"),
+        "{}",
+        stdout(&output)
+    );
+}
+
 #[test]
 fn test_affected_runs_only_the_reached_tests() {
     let root = scene("affected");

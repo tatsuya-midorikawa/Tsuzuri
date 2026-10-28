@@ -134,6 +134,88 @@ impl Model<'_> {
     }
 }
 
+/// The classes of a diagram of more than `max_nodes` types: the module groups with the most
+/// relations to other groups (`builtin` for the builtin types), and one class for the rest, so that
+/// there are at most `max_nodes`.
+struct Grouped {
+    /// The number, name and number of types of each shown group.
+    shown: Vec<(usize, String, usize)>,
+    /// The number of the class of the other groups, how many they are, and their types.
+    rest: Option<(usize, usize, usize)>,
+    /// The relations between two classes, counted.
+    counts: BTreeMap<(usize, usize), usize>,
+}
+
+impl Grouped {
+    fn classes(&self) -> usize {
+        self.shown.len() + usize::from(self.rest.is_some())
+    }
+}
+
+fn grouped(model: &Model, keys: &[String], max_nodes: usize) -> Grouped {
+    let group_of = |key: &str| -> String {
+        if model.builtin.contains(key) {
+            "builtin".to_owned()
+        } else {
+            model.nodes[key].module.clone()
+        }
+    };
+    let mut sizes: BTreeMap<String, usize> = BTreeMap::new();
+    for key in keys {
+        *sizes.entry(group_of(key)).or_default() += 1;
+    }
+    let mut degree: BTreeMap<String, usize> = BTreeMap::new();
+    for (a, b, _, _) in &model.relations {
+        let (ga, gb) = (group_of(a), group_of(b));
+        if ga != gb {
+            *degree.entry(ga).or_default() += 1;
+            *degree.entry(gb).or_default() += 1;
+        }
+    }
+    let mut ranked: Vec<&String> = sizes.keys().collect();
+    ranked.sort_by_key(|group| {
+        (
+            std::cmp::Reverse(degree.get(*group).copied().unwrap_or(0)),
+            *group,
+        )
+    });
+    let kept: BTreeSet<&String> = if ranked.len() <= max_nodes {
+        ranked.iter().copied().collect()
+    } else {
+        ranked[..max_nodes - 1].iter().copied().collect()
+    };
+    let shown: Vec<(usize, String, usize)> = sizes
+        .iter()
+        .filter(|(group, _)| kept.contains(group))
+        .enumerate()
+        .map(|(index, (group, size))| (index + 1, group.clone(), *size))
+        .collect();
+    let ids: BTreeMap<&str, usize> = shown
+        .iter()
+        .map(|(id, group, _)| (group.as_str(), *id))
+        .collect();
+    let number = shown.len() + 1;
+    let hidden: Vec<usize> = sizes
+        .iter()
+        .filter(|(group, _)| !kept.contains(group))
+        .map(|(_, size)| *size)
+        .collect();
+    let rest = (!hidden.is_empty()).then(|| (number, hidden.len(), hidden.iter().sum()));
+    let id_of = |group: &str| ids.get(group).copied().unwrap_or(number);
+    let mut counts: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    for (a, b, _, _) in &model.relations {
+        let (ga, gb) = (id_of(&group_of(a)), id_of(&group_of(b)));
+        if ga != gb {
+            *counts.entry((ga, gb)).or_default() += 1;
+        }
+    }
+    Grouped {
+        shown,
+        rest,
+        counts,
+    }
+}
+
 /// The class diagram, its number of classes, and whether it was folded.
 pub fn mermaid(
     input: &Input,
@@ -145,94 +227,39 @@ pub fn mermaid(
     let keys = model.keys();
     let mut lines = vec!["classDiagram".to_owned(), "    direction LR".to_owned()];
     if keys.len() > max_nodes {
-        let group_of = |key: &str| -> String {
-            if model.builtin.contains(key) {
-                "builtin".to_owned()
-            } else {
-                model.nodes[key].module.clone()
-            }
-        };
-        let mut sizes: BTreeMap<String, usize> = BTreeMap::new();
-        for key in &keys {
-            *sizes.entry(group_of(key)).or_default() += 1;
-        }
-        // At most `max_nodes` classes: the groups with the most relations to other groups, and one
-        // class for the rest.
-        let mut degree: BTreeMap<String, usize> = BTreeMap::new();
-        for (a, b, _, _) in &model.relations {
-            let (ga, gb) = (group_of(a), group_of(b));
-            if ga != gb {
-                *degree.entry(ga).or_default() += 1;
-                *degree.entry(gb).or_default() += 1;
-            }
-        }
-        let mut ranked: Vec<&String> = sizes.keys().collect();
-        ranked.sort_by_key(|group| {
-            (
-                std::cmp::Reverse(degree.get(*group).copied().unwrap_or(0)),
-                *group,
-            )
-        });
-        let shown: BTreeSet<&String> = if ranked.len() <= max_nodes {
-            ranked.iter().copied().collect()
-        } else {
-            ranked[..max_nodes - 1].iter().copied().collect()
-        };
-        let ids: BTreeMap<&str, usize> = sizes
-            .keys()
-            .filter(|group| shown.contains(group))
-            .enumerate()
-            .map(|(index, group)| (group.as_str(), index + 1))
-            .collect();
-        let rest = shown.len() + 1;
-        let id_of = |group: &str| ids.get(group).copied().unwrap_or(rest);
-        let mut counts: BTreeMap<(usize, usize), usize> = BTreeMap::new();
-        for (a, b, _, _) in &model.relations {
-            let (ga, gb) = (id_of(&group_of(a)), id_of(&group_of(b)));
-            if ga != gb {
-                *counts.entry((ga, gb)).or_default() += 1;
-            }
-        }
-        for (group, size) in sizes.iter().filter(|(group, _)| shown.contains(group)) {
+        let grouped = grouped(&model, &keys, max_nodes);
+        for (id, group, size) in &grouped.shown {
             let annotation = if group == "builtin" {
                 "builtin"
             } else {
                 "module"
             };
             lines.push(format!(
-                "    class n{}[\"{} ({size})\"] {{",
-                ids[group.as_str()],
+                "    class n{id}[\"{} ({size})\"] {{",
                 esc(group, limits.label)
             ));
             lines.push(format!("        <<{annotation}>>"));
             lines.push("    }".to_owned());
         }
-        if shown.len() < sizes.len() {
-            let hidden: Vec<&usize> = sizes
-                .iter()
-                .filter(|(group, _)| !shown.contains(group))
-                .map(|(_, size)| size)
-                .collect();
+        if let Some((rest, hidden, size)) = grouped.rest {
             lines.push(format!(
-                "    class n{rest}[\"{} more groups ({})\"] {{",
-                esc(&format!("\u{2026}{}", hidden.len()), limits.label),
-                hidden.into_iter().sum::<usize>()
+                "    class n{rest}[\"{} more groups ({size})\"] {{",
+                esc(&format!("\u{2026}{hidden}"), limits.label),
             ));
             lines.push("        <<module>>".to_owned());
             lines.push("    }".to_owned());
         }
         push_relations(
             &mut lines,
-            counts.into_iter().map(|((a, b), n)| {
-                if n >= 2 {
+            grouped.counts.iter().map(|((a, b), n)| {
+                if *n >= 2 {
                     format!("    n{a} --> n{b} : \u{d7}{n}")
                 } else {
                     format!("    n{a} --> n{b}")
                 }
             }),
         );
-        let classes = shown.len() + usize::from(shown.len() < sizes.len());
-        return (lines.join("\n") + "\n", classes, true);
+        return (lines.join("\n") + "\n", grouped.classes(), true);
     }
     let ids: BTreeMap<&str, usize> = keys
         .iter()
@@ -320,11 +347,19 @@ fn push_relations(lines: &mut Vec<String>, relations: impl Iterator<Item = Strin
     omitted > 0
 }
 
-/// The same nodes and relations as DOT (never folded), the number of nodes, and whether relations
-/// beyond `MAX_EDGES` were left out.
-pub fn dot(input: &Input, focus: Option<&str>, limits: &Limits) -> (String, usize, bool) {
+/// The same nodes and relations as DOT, folded into module groups as the class diagram is, the
+/// number of nodes, and whether it was folded or relations beyond `MAX_EDGES` were left out.
+pub fn dot(
+    input: &Input,
+    focus: Option<&str>,
+    max_nodes: usize,
+    limits: &Limits,
+) -> (String, usize, bool) {
     let model = model(input, focus);
     let keys = model.keys();
+    if keys.len() > max_nodes {
+        return dot_grouped(&grouped(&model, &keys, max_nodes), limits);
+    }
     let ids: BTreeMap<&str, usize> = keys
         .iter()
         .enumerate()
@@ -416,4 +451,46 @@ pub fn dot(input: &Input, focus: Option<&str>, limits: &Limits) -> (String, usiz
     }
     lines.push("}".to_owned());
     (lines.join("\n") + "\n", keys.len(), omitted > 0)
+}
+
+/// The DOT of a folded diagram: a node per class of `grouped`, an edge per pair with its count.
+fn dot_grouped(grouped: &Grouped, limits: &Limits) -> (String, usize, bool) {
+    let mut lines = vec![
+        "digraph tsuzuri {".to_owned(),
+        "    rankdir=LR;".to_owned(),
+        "    node [shape=box, fontname=\"monospace\"];".to_owned(),
+        "    edge [fontname=\"monospace\"];".to_owned(),
+    ];
+    for (id, group, size) in &grouped.shown {
+        let annotation = if group == "builtin" {
+            "builtin"
+        } else {
+            "module"
+        };
+        lines.push(format!(
+            "    n{id} [label=\"<<{annotation}>>\\n{} ({size})\"];",
+            dot_esc(group, limits.label)
+        ));
+    }
+    if let Some((rest, hidden, size)) = grouped.rest {
+        lines.push(format!(
+            "    n{rest} [label=\"<<module>>\\n{} more groups ({size})\"];",
+            dot_esc(&format!("\u{2026}{hidden}"), limits.label)
+        ));
+    }
+    let omitted = grouped.counts.len().saturating_sub(MAX_EDGES);
+    for ((a, b), n) in grouped.counts.iter().take(MAX_EDGES) {
+        if *n >= 2 {
+            lines.push(format!(
+                "    n{a} -> n{b} [arrowhead=vee, label=\"\u{d7}{n}\"];"
+            ));
+        } else {
+            lines.push(format!("    n{a} -> n{b} [arrowhead=vee];"));
+        }
+    }
+    if omitted > 0 {
+        lines.push(format!("    // omitted: {omitted} edges"));
+    }
+    lines.push("}".to_owned());
+    (lines.join("\n") + "\n", grouped.classes(), true)
 }

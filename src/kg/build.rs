@@ -77,7 +77,14 @@ pub fn protect(dir: &Path, project: &Project) -> Result<(), Diagnostic> {
         .filter(|source| source.origin == crate::check::ModuleOrigin::User)
         .any(|source| ancestor_of(dir, &source.path))
     {
-        return Err(not_ours(dir));
+        return Err(Diagnostic::of(
+            DiagnosticKind::KgNotOurs,
+            format!(
+                "'{}' holds the project's sources and cannot be a KG; choose another directory with --kg-dir",
+                dir.display()
+            ),
+            Span::default(),
+        ));
     }
     Ok(())
 }
@@ -156,12 +163,9 @@ pub fn diagnostics_jsonl(set: &DiagnosticSet, project: &Project) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// The name, version and edition of the project for the manifest.
+/// The name, version and edition of the project for the manifest: the root package's, else those of
+/// the directory and the root source.
 pub fn project_identity(project: &Project) -> (String, Option<String>, String) {
-    let edition = project.sources.get(project.root).map_or_else(
-        || crate::syntax::Edition::LATEST.to_string(),
-        |source| source.edition.to_string(),
-    );
     // Every package's manifest is a `Tsuzuri.toml`: the root package's is the project's.
     let manifest = project.root_package.as_ref().and_then(|root| {
         project
@@ -183,6 +187,13 @@ pub fn project_identity(project: &Project) -> (String, Option<String>, String) {
                     .map(|name| name.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "project".to_owned()),
+    };
+    let edition = match &manifest {
+        Some(manifest) => manifest.edition.to_string(),
+        None => project.sources.get(project.root).map_or_else(
+            || crate::syntax::Edition::LATEST.to_string(),
+            |source| source.edition.to_string(),
+        ),
     };
     (name, manifest.map(|manifest| manifest.version), edition)
 }

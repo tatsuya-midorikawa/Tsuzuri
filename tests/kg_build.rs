@@ -299,6 +299,29 @@ fn a_foreign_directory_is_never_overwritten() {
     assert!(!root.join("target/tz/kg/manifest.json").exists());
 }
 
+/// `kg clean` removes only a graph: never a directory that holds the project's sources, even with
+/// a marker copied into it.
+#[test]
+fn clean_never_removes_the_sources() {
+    let root = shop("clean-root");
+    assert!(tsuzuri(&root, &["kg", "build"], &[]).status.success());
+    std::fs::copy(
+        root.join("target/tz/kg/.tsuzuri-kg"),
+        root.join(".tsuzuri-kg"),
+    )
+    .unwrap();
+    let output = tsuzuri(&root, &["kg", "clean", "--kg-dir", "."], &[]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stderr(&output);
+    assert!(text.contains("E2009"), "{text}");
+    assert!(text.contains("holds the project's sources"), "{text}");
+    assert!(root.join("Main.tz").is_file() && root.join("Tsuzuri.toml").is_file());
+    assert!(root.join("target/tz/kg/manifest.json").is_file());
+    assert!(tsuzuri(&root, &["kg", "clean"], &[]).status.success());
+    assert!(!root.join("target/tz/kg").exists());
+    assert!(root.join("Main.tz").is_file());
+}
+
 #[test]
 fn an_unwritable_target_warns_once() {
     let root = shop("unwritable");
@@ -361,7 +384,7 @@ fn a_library_keeps_its_own_directory_and_name() {
         &[
             (
                 "zoo/Tsuzuri.toml",
-                "[package]\nname = \"zoo\"\nversion = \"1.2.0\"\n[dependencies]\nalpha = { path = \"../alpha\" }\n",
+                "[package]\nname = \"zoo\"\nversion = \"1.2.0\"\nedition = \"2027\"\n[dependencies]\nalpha = { path = \"../alpha\" }\n",
             ),
             (
                 "zoo/Lib.tz",
@@ -369,7 +392,7 @@ fn a_library_keeps_its_own_directory_and_name() {
             ),
             (
                 "alpha/Tsuzuri.toml",
-                "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\n",
+                "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
             ),
             ("alpha/Util.tz", "def inc :: i64 -> i64 = \\n -> n + 1\n"),
         ],
@@ -379,6 +402,7 @@ fn a_library_keeps_its_own_directory_and_name() {
     let kg = root.join("zoo/target/tz/kg");
     assert_eq!(manifest(&kg)["project"], "zoo");
     assert_eq!(manifest(&kg)["version"], "1.2.0");
+    assert_eq!(manifest(&kg)["edition"], "2027");
     assert!(!root.join("alpha/target").exists());
 }
 

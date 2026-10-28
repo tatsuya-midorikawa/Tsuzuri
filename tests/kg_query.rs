@@ -633,6 +633,61 @@ fn output_is_deterministic() {
 
 /// A generic record's accessor and a generic union's constructors keep the owner's type arguments,
 /// a view's `..` ends a name, and an unterminated region is a parse error, not a panic.
+/// Two modules that both declare `Point`: a qualified query finds the functions of its own, and a
+/// qualifier that no type has finds none.
+#[test]
+fn find_keeps_types_of_the_same_name_apart() {
+    let outer =
+        std::env::temp_dir().join(format!("tsuzuri-kg-query-points-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outer);
+    let root = outer.join("points");
+    std::fs::create_dir_all(&root).unwrap();
+    for (module, function) in [("A", "norm_a"), ("B", "norm_b")] {
+        std::fs::write(
+            root.join(format!("{module}.tz")),
+            format!(
+                "record Point {{ x: i64 }}\n\ndef {function} :: ref Point -> i64 = \\p -> p.x\n"
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("Main.tz"),
+        "def from_a :: ref A.Point -> i64 = \\p -> p.x\n\nfrom_a (ref A.Point { x: 1 })\n",
+    )
+    .unwrap();
+    let find = |query: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&root)
+            .args(["kg", "find", query, "--limit", "100"])
+            .env("TSUZURI_CACHE_DIR", outer.join("cache"))
+            .env_remove("TSUZURI_KG")
+            .env_remove("TSUZURI_KG_DIR")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{query}: {}", stderr(&output));
+        stdout(&output)
+    };
+    let a = find("ref A.Point -> i64");
+    for name in [
+        "Points::A.norm_a ",
+        "Points::Main.from_a ",
+        "Points::A.Point.x ",
+    ] {
+        assert!(a.contains(&format!("exact   {name}")), "{a}");
+    }
+    assert!(!a.contains("Points::B."), "{a}");
+    let b = find("ref Points::B.Point -> i64");
+    assert!(b.contains("exact   Points::B.norm_b "), "{b}");
+    assert!(!b.contains("Points::A.") && !b.contains("from_a"), "{b}");
+    let nope = find("ref Nope.Point -> i64");
+    assert!(!nope.contains("Points::"), "{nope}");
+    let any = find("ref Point -> i64");
+    for name in ["norm_a", "norm_b", "from_a"] {
+        assert!(any.contains(name), "{any}");
+    }
+}
+
 #[test]
 fn find_keeps_type_arguments_and_rejects_bad_queries() {
     let outer =

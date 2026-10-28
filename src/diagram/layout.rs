@@ -16,6 +16,12 @@ fn primitive(ty: &str) -> Option<(u64, u64)> {
     }
 }
 
+/// A type in a table cell: inline code, so that Markdown does not read `<i64>` of `Vec<i64>` as
+/// HTML, with the `|` of `[|i64|]` escaped for the table.
+fn cell_type(ty: &str) -> String {
+    format!("`{}`", ty.replace('|', "\\|"))
+}
+
 fn bound((low, high): (u64, u64)) -> String {
     if low == high {
         low.to_string()
@@ -68,7 +74,9 @@ pub fn markdown(row: &LayoutRow) -> String {
                     let start = offset.div_ceil(align) * align;
                     lines.push(format!(
                         "| {} | {} | {} | {size} | {align} | {start} |",
-                        field.slot, field.name, field.ty
+                        field.slot,
+                        field.name,
+                        cell_type(&field.ty)
                     ));
                     offset = start + size;
                 }
@@ -76,10 +84,17 @@ pub fn markdown(row: &LayoutRow) -> String {
                     known = false;
                     lines.push(format!(
                         "| {} | {} | {} | ? | ? | ? |",
-                        field.slot, field.name, field.ty
+                        field.slot,
+                        field.name,
+                        cell_type(&field.ty)
                     ));
                 }
             }
+        }
+        // A Drop record's live flag (`i8 1`, `llvm_layout::drop_flag`) follows its fields.
+        if known && row.drop_flag {
+            lines.push(format!("| - | (live flag) | `i8` | 1 | 1 | {offset} |"));
+            offset += 1;
         }
         if known && row.size.0 == row.size.1 {
             lines.push(format!(
@@ -94,7 +109,9 @@ pub fn markdown(row: &LayoutRow) -> String {
             lines.push(format!(
                 "| {} | {} |",
                 case.name,
-                case.payload.as_deref().unwrap_or("-")
+                case.payload
+                    .as_deref()
+                    .map_or_else(|| "-".to_owned(), cell_type)
             ));
         }
     }
