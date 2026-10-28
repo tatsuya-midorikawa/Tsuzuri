@@ -208,7 +208,7 @@ fn decode text bytes utf8 =
 private def encode16 :: own Vec<i64> -> string
 fn encode16 codes =
 	let mut units: Vec<i16u> = Vec.with_capacity (Vec.length (ref codes))
-	for index in 0 .. Vec.length (ref codes) - 1 do
+	for index in 0 ..= Vec.length (ref codes) - 1 do
 		let code = codes[index]
 		if code >= 65536 then units = Vec.push_owned ((56320 + code % 1024) as i16u) (Vec.push_owned ((55296 + (code - 65536) / 1024) as i16u) units)
 		else units = Vec.push_owned (code as i16u) units
@@ -217,13 +217,13 @@ fn encode16 codes =
 private def encode8 :: own Vec<i64> -> utf8string
 fn encode8 codes =
 	let mut bytes: Vec<ubyte> = Vec.with_capacity (Vec.length (ref codes))
-	for index in 0 .. Vec.length (ref codes) - 1 do
+	for index in 0 ..= Vec.length (ref codes) - 1 do
 		let code = codes[index]
 		if code < 128 then bytes = Vec.push_owned (code as ubyte) bytes
 		else
 			let count = if code < 2048 then 1 elif code < 65536 then 2 else 3
 			bytes = Vec.push_owned ((if count == 1 then 192 + code / 64 elif count == 2 then 224 + code / 4096 else 240 + code / 262144) as ubyte) bytes
-			for shift in 1 .. count do bytes = Vec.push_owned ((128 + (code >>> (6 * (count - shift))) % 64) as ubyte) bytes
+			for shift in 1 ..= count do bytes = Vec.push_owned ((128 + (code >>> (6 * (count - shift))) % 64) as ubyte) bytes
 	Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
 
 private def combining_class :: own i64 -> i64
@@ -244,7 +244,7 @@ fn rec append_decomposed output code compatible =
 		elif length == 1 then append_decomposed output (mapping / 64) compatible
 		else
 			let mut result = output
-			for part in 0 .. length - 1 do result = append_decomposed result (Unicode.__table_entry DecompositionPool (mapping / 64 + part)) compatible
+			for part in 0 ..= length - 1 do result = append_decomposed result (Unicode.__table_entry DecompositionPool (mapping / 64 + part)) compatible
 			result
 
 /// Sorts each run of non-starters stably by canonical combining class (canonical ordering).
@@ -260,11 +260,11 @@ fn reorder codes =
 		if stop - start > 1 then
 			let mut keys: [i64] = new [i64](stop - start, \_index -> 0)
 			let mut run: [i64] = new [i64](stop - start, \_index -> 0)
-			for index in 0 .. stop - start - 1 do
+			for index in 0 ..= stop - start - 1 do
 				Array.write index (combining_class output[start + index] * 4398046511104 + index) (ref mut keys)
 				Array.write index output[start + index] (ref mut run)
 			Array.sort_in_place (ref mut keys)
-			for index in 0 .. stop - start - 1 do output = Vec.set (start + index) run[keys[index] % 4398046511104] output
+			for index in 0 ..= stop - start - 1 do output = Vec.set (start + index) run[keys[index] % 4398046511104] output
 		start = stop + 1
 	output
 
@@ -274,7 +274,7 @@ fn compose_pair first second =
 	elif first >= 44032 && first <= 55203 && (first - 44032) % 28 == 0 && second >= 4520 && second <= 4546 then first + second - 4519
 	else
 		let mut found = -1
-		for index in rank Compositions 3 0 (first - 1) .. rank Compositions 3 0 first - 1 do
+		for index in rank Compositions 3 0 (first - 1) ..= rank Compositions 3 0 first - 1 do
 			if Unicode.__table_entry Compositions (3 * index + 1) == second then found = Unicode.__table_entry Compositions (3 * index + 2)
 		found
 
@@ -287,7 +287,7 @@ fn compose codes =
 		let mut starter = 0
 		let mut last_class = if combining_class output[0] == 0 then 0 else 256
 		let mut write = 1
-		for read in 1 .. length - 1 do
+		for read in 1 ..= length - 1 do
 			let code = output[read]
 			let group = combining_class code
 			let composite = if last_class < group || last_class == 0 then compose_pair output[starter] code else -1
@@ -341,7 +341,7 @@ fn grapheme_breaks codes =
 	let mut regional = 0
 	let mut emoji = 0
 	let mut conjunct = 0
-	for index in 0 .. codes.length - 1 do
+	for index in 0 ..= codes.length - 1 do
 		let found = run_value GraphemeRuns 7 codes[index]
 		let group = if found % 16 == 12 && (codes[index] - 44032) % 28 != 0 then 13 else found % 16
 		let pictographic = found / 16 % 2 == 1
@@ -375,7 +375,7 @@ fn word_breaks codes =
 	// WB4: an Extend, Format or ZWJ belongs to the scalar before it, unless that is a line break or the start.
 	let mut anchors: Vec<i64> = Vec.with_capacity count
 	let mut regional: Vec<i64> = Vec.with_capacity count
-	for index in 0 .. count - 1 do
+	for index in 0 ..= count - 1 do
 		let group = classes[index] % 32
 		let before = if index > 0 then anchors[index - 1] else -1
 		let host = if before >= 0 then classes[before] % 32 else 1
@@ -388,12 +388,12 @@ fn word_breaks codes =
 	// WB6, WB7b and WB12 look past the Extend, Format and ZWJ after a scalar: `following[i]` is the
 	// first index from `i` whose scalar is none of them, or `count`. One backward pass keeps the scan linear.
 	let mut following: [i64] = new [i64](count + 1, \_index -> count)
-	for step in 1 .. count do
+	for step in 1 ..= count do
 		let index = count - step
 		let group = classes[index] % 32
 		let value = if group == 4 || group == 5 || group == 7 then following[index + 1] else index
 		Array.write index value (ref mut following)
-	for index in 0 .. count - 1 do
+	for index in 0 ..= count - 1 do
 		let previous = if index > 0 then classes[index - 1] % 32 else -1
 		let current = classes[index] % 32
 		let anchor = if index > 0 then anchors[index - 1] else -1
@@ -429,7 +429,7 @@ fn word_breaks codes =
 private def boundaries :: ref [i64] -> ref [bool] -> [i64]
 fn boundaries offsets breaks =
 	let mut output: Vec<i64> = Vec.with_capacity offsets.length
-	for index in 0 .. breaks.length - 1 do
+	for index in 0 ..= breaks.length - 1 do
 		if breaks[index] then output = Vec.push_owned offsets[index] output
 	Vec.to_array (Vec.push_owned offsets[offsets.length - 1] output)
 
@@ -511,7 +511,7 @@ fn append_mapped output code kind =
 	if found > 0 && Unicode.__table_entry FullMappings (2 * found - 2) == code * 4 + kind then
 		let value = Unicode.__table_entry FullMappings (2 * found - 1)
 		let mut result = output
-		for part in 0 .. value % 32 - 1 do result = Vec.push_owned (Unicode.__table_entry FullPool (value / 32 + part)) result
+		for part in 0 ..= value % 32 - 1 do result = Vec.push_owned (Unicode.__table_entry FullPool (value / 32 + part)) result
 		result
 	else
 		let simple = if kind == 0 then run_map LowerRuns code elif kind == 3 then run_map SimpleFoldingRuns code else run_map UpperRuns code
@@ -534,7 +534,7 @@ fn converted codes kind =
 	let breaks = if kind == 1 then word_breaks codes else []
 	let mut output: Vec<i64> = Vec.with_capacity codes.length
 	let mut titled = false
-	for index in 0 .. codes.length - 1 do
+	for index in 0 ..= codes.length - 1 do
 		if kind == 1 && breaks[index] then titled = false
 		if kind == 0 || (kind == 1 && titled) then output = append_lower output codes index
 		elif kind == 1 && !(in_ranges CasedRanges codes[index]) then output = Vec.push_owned codes[index] output

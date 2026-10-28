@@ -34,7 +34,7 @@ function project(name, source) {
 const depth = "def rec depth :: i64 -> i64\nfn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n\n\n";
 const projects = {
   deep: project("deep", `${depth}let result = depth 100000000\nresult\n`),
-  worker: project("worker", `${depth}let results = Task.run (Task.parallel (new [Task<i64>](4, i -> task { depth (100000000 + i) })))\nresults[0]\n`),
+  worker: project("worker", `${depth}let results = Task.run (Task.parallel (new [Task<i64>](4, \\i -> task { depth (100000000 + i) })))\nresults[0]\n`),
   shallow: project("shallow", `${depth}let result = depth 20\nresult\n`),
   hello: project("hello", "let value = 6 * 7\nvalue\n"),
   foreign: project("foreign", `${depth}extern "e14_crash" def crash :: i64 -> i64\n\ncrash (depth 4)\n`),

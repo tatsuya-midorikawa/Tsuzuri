@@ -110,7 +110,7 @@ def caught :: i8 -> string = \x ->
     let outcome =
         try
             use ticket = Ticket { id: 3 }
-            let doubled = @checked x * 2y
+            let doubled = @checked x * 2i8
             do! IO.write_line ("held " + to_string ticket.id)
             doubled
         with
@@ -121,9 +121,9 @@ def caught :: i8 -> string = \x ->
     | Ok value -> to_string value
     | Error _ -> "overflow"
 
-do! IO.write_line (caught 20y)
+do! IO.write_line (caught 20i8)
 do! IO.write_line "---"
-do! IO.write_line (caught 100y)
+do! IO.write_line (caught 100i8)
 ```
 
 実行結果:

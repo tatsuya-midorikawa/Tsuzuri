@@ -86,7 +86,7 @@ test "find without a match" = sink (Array.find (\x -> x > 9) ints)
 test "find_back without a match" = sink (Array.find_back (\x -> x > 9) ints)
 test "find_index without a match" = sink (Array.find_index (\x -> x > 9) ints)
 test "find_index_back without a match" = sink (Array.find_index_back (\x -> x > 9) ints)
-test "findr without a match" = sink (Array.findr (\x -> *x > 9) ints)
+test "findr without a match" = sink (Array.findr (\x -> deref x > 9) ints)
 test "pick without a match" = sink (Array.pick (\x -> if x > 9 then Maybe.Some x else Maybe.None) ints)
 
 // ---- Updates ----
@@ -146,8 +146,8 @@ test "iter reaches the last element" = Array.iter_owned (\x -> assert (x < 3)) i
 test "iteri passes the index" = Array.iteri_owned (\i x -> assert (x == i)) ints
 test "iter2 pairs the elements" = Array.iter2 (\a b -> assert (a == b + 1)) ints ints
 test "iteri2 passes the index" = Array.iteri2 (\i a b -> assert (i == a + b)) ints ints
-test "iterr reaches the last element" = Array.iterr (\x -> assert (*x < 3)) ints
-test "iterir passes the index" = Array.iterir (\i x -> assert (i == *x)) ints
+test "iterr reaches the last element" = Array.iterr (\x -> assert (deref x < 3)) ints
+test "iterir passes the index" = Array.iterir (\i x -> assert (i == deref x)) ints
 test "map reaches every element" = sink (Array.map_owned (\x -> { assert (x < 3); x }) ints)
 test "exists reaches every element" = sink (Array.exists (\x -> { assert (x < 3); false }) ints)
 test "forall reaches every element" = sink (Array.forall (\x -> { assert (x < 3); true }) ints)

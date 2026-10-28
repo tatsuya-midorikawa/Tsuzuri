@@ -32,28 +32,28 @@ fn call_host n = reenter n + 1
 
 export def parallel_div :: own i64 -> own i64 -> i64
 fn parallel_div count divisor = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](count, i -> task {
-        let scratch = new [i64](64, n -> n + i)
+    let! results = Task.parallel (new [Task<i64>](count, \i -> task {
+        let scratch = new [i64](64, \n -> n + i)
         return (scratch[1] + i) / (if i == 5 then divisor else 1)
     }))
-    return Array.sum (&results)
+    return Array.sum (ref results)
 }
 
 export def parallel_mixed :: own i64 -> own i64 -> i64
 fn parallel_mixed fail_at trap_at =
-    let jobs = new [Task<Result<i64, i64>>](16, index -> task {
-        let scratch = new [i64](32, n -> n)
+    let jobs = new [Task<Result<i64, i64>>](16, \index -> task {
+        let scratch = new [i64](32, \n -> n)
         if index == trap_at then Result.Ok (1 / (index - trap_at)) else (if index == fail_at then Result.Error index else Result.Ok scratch[index])
     })
     match Task.run (Task.parallel_results jobs) with
-    | Result.Ok values -> Array.sum (&values)
+    | Result.Ok values -> Array.sum (ref values)
     | Result.Error error -> 1000 + error
 
 export def nested_div :: own i64 -> i64
 fn nested_div trap_at = Task.run task {
-    let! outer = Task.parallel (new [Task<i64>](4, i -> task {
-        let! inner = Task.parallel (new [Task<i64>](4, j -> task { 100 / (i * 4 + j - trap_at) }))
-        return Array.sum (&inner)
+    let! outer = Task.parallel (new [Task<i64>](4, \i -> task {
+        let! inner = Task.parallel (new [Task<i64>](4, \j -> task { 100 / (i * 4 + j - trap_at) }))
+        return Array.sum (ref inner)
     }))
-    return Array.sum (&outer)
+    return Array.sum (ref outer)
 }

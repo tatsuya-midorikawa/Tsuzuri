@@ -251,7 +251,7 @@ fn stride_sum numbers start =
     total
 
 let numbers = new [i64](100, \index -> index + 1)
-let partial = Task.scope (ref numbers) 4 (shared -> part -> stride_sum shared part)
+let partial = Task.scope (ref numbers) 4 (\shared part -> stride_sum shared part)
 $"partial={partial[0]},{partial[1]},{partial[2]},{partial[3]} total={Array.sum (ref partial)}"
 ```
 
@@ -267,7 +267,7 @@ partial=1225,1250,1275,1300 total=5050
 
 ```tsuzuri run=36
 let hits = Atomic.create 0i64
-let _seen = Task.scope (ref hits) 8 (shared -> index -> Atomic.fetch_add shared (index + 1))
+let _seen = Task.scope (ref hits) 8 (\shared index -> Atomic.fetch_add shared (index + 1))
 Atomic.load (ref hits)
 ```
 

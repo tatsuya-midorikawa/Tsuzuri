@@ -22,7 +22,7 @@ fn (|Owned|_|) number = if number < 0 then None else Some ("he" + "llo")
 export def active_owned :: own i64 -> i64
 fn active_owned count =
     let mut total = 0
-    for index in 0i64 .. count - 1 do
+    for index in 0i64 ..= count - 1 do
         total = total + (match index with
             | Owned "missing" -> 100
             | Owned text when false -> text.length
@@ -43,7 +43,7 @@ def (|Small|Large|) :: own i64 -> 'T = \number ->
 export def active_multi_owned :: own i64 -> i64
 fn active_multi_owned count =
     let mut total = 0
-    for index in 0i64 .. count - 1 do
+    for index in 0i64 ..= count - 1 do
         total = total + (match index with
             | Small text when false -> text.length
             | Large text when false -> text.length
@@ -75,7 +75,7 @@ fn active_conservative =
     match 42 with | Left (ref mut state) -> 100 | Right (ref mut state) -> 200 | _ -> state
 
 def (|Head|_|) :: ref [string] -> Maybe<ref string>
-fn (|Head|_|) values = Array.try_findr (text -> text.length > 3) values
+fn (|Head|_|) values = Array.try_findr (\text -> text.length > 3) values
 
 export def active_borrowed :: i64
 fn active_borrowed =

@@ -138,7 +138,7 @@ fn transpose arrays =
         while index < arrays.length do
             assert (arrays[index].length == width)
             index = index + 1
-        new [['a]](width, column -> new ['a](arrays.length, row -> arrays[row][column]))
+        new [['a]](width, \column -> new ['a](arrays.length, \row -> arrays[row][column]))
 
 private def reverse_in_place :: ref mut ['a..] -> unit
 fn reverse_in_place values =
@@ -198,33 +198,33 @@ fn iteri2 action left right =
         index = index + 1
 
 def map :: Copy<'a> => own ('a -> 'b) -> ref ['a] -> ['b]
-fn map transform values = new ['b](values.length, index -> transform values[index])
+fn map transform values = new ['b](values.length, \index -> transform values[index])
 
 def mapi :: Copy<'a> => own (i64 -> 'a -> 'b) -> ref ['a] -> ['b]
-fn mapi transform values = new ['b](values.length, index -> transform index values[index])
+fn mapi transform values = new ['b](values.length, \index -> transform index values[index])
 
 /// Like `map`, but `transform` borrows each element, so the elements need not be `Copy`.
 def mapr :: own (ref 'a -> 'b) -> ref ['a] -> ['b]
-fn mapr transform values = new ['b](values.length, index -> transform (ref values[index]))
+fn mapr transform values = new ['b](values.length, \index -> transform (ref values[index]))
 
 /// Like `mapi`, but `transform` borrows each element, so the elements need not be `Copy`.
 def mapir :: own (i64 -> ref 'a -> 'b) -> ref ['a] -> ['b]
-fn mapir transform values = new ['b](values.length, index -> transform index (ref values[index]))
+fn mapir transform values = new ['b](values.length, \index -> transform index (ref values[index]))
 
 def map2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> ['c]
 fn map2 transform left right =
     assert (left.length == right.length)
-    new ['c](left.length, index -> transform left[index] right[index])
+    new ['c](left.length, \index -> transform left[index] right[index])
 
 def mapi2 :: (Copy<'a>, Copy<'b>) => own (i64 -> 'a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> ['c]
 fn mapi2 transform left right =
     assert (left.length == right.length)
-    new ['c](left.length, index -> transform index left[index] right[index])
+    new ['c](left.length, \index -> transform index left[index] right[index])
 
 def map3 :: (Copy<'a>, Copy<'b>, Copy<'c>) => own ('a -> 'b -> 'c -> 'd) -> ref ['a] -> ref ['b] -> ref ['c] -> ['d]
 fn map3 transform first second third =
     assert (first.length == second.length && second.length == third.length)
-    new ['d](first.length, index -> transform first[index] second[index] third[index])
+    new ['d](first.length, \index -> transform first[index] second[index] third[index])
 
 def map_fold :: Copy<'a> => own ('state -> 'a -> ('b * 'state)) -> own 'state -> ref ['a] -> (['b] * 'state)
 fn map_fold mapping initial values =
@@ -695,55 +695,55 @@ fn binary_search target values =
 // ---- Combining and reshaping ----
 
 def copy :: Copy<'a> => ref ['a] -> ['a]
-fn copy values = *values
+fn copy values = deref values
 
 def rev :: Copy<'a> => ref ['a] -> ['a]
-fn rev values = new ['a](values.length, index -> values[values.length - 1 - index])
+fn rev values = new ['a](values.length, \index -> values[values.length - 1 - index])
 
 def append :: Copy<'a> => ref ['a] -> ref ['a] -> ['a]
 fn append left right =
     assert (left.length <= 9223372036854775807 - right.length)
-    new ['a](left.length + right.length, index -> if index < left.length then left[index] else right[index - left.length])
+    new ['a](left.length + right.length, \index -> if index < left.length then left[index] else right[index - left.length])
 
 def zip :: ref ['a] -> ref ['b] -> [('a * 'b)]
 fn zip left right =
     assert (left.length == right.length)
-    new [('a * 'b)](left.length, index -> (left[index], right[index]))
+    new [('a * 'b)](left.length, \index -> (left[index], right[index]))
 
 def zip3 :: ref ['a] -> ref ['b] -> ref ['c] -> [('a * 'b * 'c)]
 fn zip3 first second third =
     assert (first.length == second.length && second.length == third.length)
-    new [('a * 'b * 'c)](first.length, index -> (first[index], second[index], third[index]))
+    new [('a * 'b * 'c)](first.length, \index -> (first[index], second[index], third[index]))
 
 def unzip :: ref [('a * 'b)] -> (['a] * ['b])
 fn unzip pairs =
-    let left = new ['a](pairs.length, index -> match pairs[index] with | (item, _) -> item)
-    let right = new ['b](pairs.length, index -> match pairs[index] with | (_, item) -> item)
+    let left = new ['a](pairs.length, \index -> match pairs[index] with | (item, _) -> item)
+    let right = new ['b](pairs.length, \index -> match pairs[index] with | (_, item) -> item)
     (left, right)
 
 def unzip3 :: ref [('a * 'b * 'c)] -> (['a] * ['b] * ['c])
 fn unzip3 triples =
-    let first = new ['a](triples.length, index -> match triples[index] with | (item, _, _) -> item)
-    let second = new ['b](triples.length, index -> match triples[index] with | (_, item, _) -> item)
-    let third = new ['c](triples.length, index -> match triples[index] with | (_, _, item) -> item)
+    let first = new ['a](triples.length, \index -> match triples[index] with | (item, _, _) -> item)
+    let second = new ['b](triples.length, \index -> match triples[index] with | (_, item, _) -> item)
+    let third = new ['c](triples.length, \index -> match triples[index] with | (_, _, item) -> item)
     (first, second, third)
 
 def all_pairs :: (Copy<'a>, Copy<'b>) => ref ['a] -> ref ['b] -> [('a * 'b)]
 fn all_pairs left right =
     assert (right.length == 0 || left.length <= 9223372036854775807 / right.length)
-    new [('a * 'b)](left.length * right.length, index -> (left[index / right.length], right[index % right.length]))
+    new [('a * 'b)](left.length * right.length, \index -> (left[index / right.length], right[index % right.length]))
 
 def indexed :: Copy<'a> => ref ['a] -> [(i64 * 'a)]
-fn indexed values = new [(i64 * 'a)](values.length, index -> (index, values[index]))
+fn indexed values = new [(i64 * 'a)](values.length, \index -> (index, values[index]))
 
 def pairwise :: Copy<'a> => ref ['a] -> [('a * 'a)]
 fn pairwise values =
-    if values.length < 2 then [] else new [('a * 'a)](values.length - 1, index -> (values[index], values[index + 1]))
+    if values.length < 2 then [] else new [('a * 'a)](values.length - 1, \index -> (values[index], values[index + 1]))
 
 def windowed :: Copy<'a> => own i64 -> ref ['a] -> [['a]]
 fn windowed size values =
     assert (size > 0)
-    if size > values.length then [] else new [['a]](values.length - size + 1, index -> sub index size values)
+    if size > values.length then [] else new [['a]](values.length - size + 1, \index -> sub index size values)
 
 private def chunk_at :: Copy<'a> => ref ['a] -> own i64 -> own i64 -> ['a]
 fn chunk_at values size index =
@@ -754,7 +754,7 @@ def chunk_by_size :: Copy<'a> => own i64 -> ref ['a] -> [['a]]
 fn chunk_by_size size values =
     assert (size > 0)
     let chunks = values.length / size + (if values.length % size == 0 then 0 else 1)
-    new [['a]](chunks, index -> chunk_at values size index)
+    new [['a]](chunks, \index -> chunk_at values size index)
 
 private def part_at :: Copy<'a> => ref ['a] -> own i64 -> own i64 -> own i64 -> ['a]
 fn part_at values base extra index =
@@ -766,7 +766,7 @@ fn split_into count values =
     assert (count > 0)
     if values.length == 0 then [] else
         let parts = if count < values.length then count else values.length
-        new [['a]](parts, index -> part_at values (values.length / parts) (values.length % parts) index)
+        new [['a]](parts, \index -> part_at values (values.length / parts) (values.length % parts) index)
 
 def unfold :: own ('state -> Maybe<('a * 'state)>) -> own 'state -> ['a]
 fn unfold generator initial =
@@ -793,14 +793,14 @@ fn permute index_map values =
         assert (sources[target] < 0)
         Array.write target index (ref mut sources)
         index = index + 1
-    new ['a](values.length, target -> values[sources[target]])
+    new ['a](values.length, \target -> values[sources[target]])
 
 // ---- Updating ----
 
 def insert_at :: Copy<'a> => own i64 -> own 'a -> ref ['a] -> ['a]
 fn insert_at index value values =
     assert (index >= 0 && index <= values.length)
-    new ['a](values.length + 1, position ->
+    new ['a](values.length + 1, \position ->
         if position < index then values[position]
         elif position == index then value
         else values[position - 1])
@@ -809,7 +809,7 @@ def insert_many_at :: Copy<'a> => own i64 -> ref ['a] -> ref ['a] -> ['a]
 fn insert_many_at index items values =
     assert (index >= 0 && index <= values.length)
     assert (items.length <= 9223372036854775807 - values.length)
-    new ['a](values.length + items.length, position ->
+    new ['a](values.length + items.length, \position ->
         if position < index then values[position]
         elif position < index + items.length then items[position - index]
         else values[position - items.length])
@@ -817,12 +817,12 @@ fn insert_many_at index items values =
 def remove_at :: Copy<'a> => own i64 -> ref ['a] -> ['a]
 fn remove_at index values =
     assert (index >= 0 && index < values.length)
-    new ['a](values.length - 1, position -> if position < index then values[position] else values[position + 1])
+    new ['a](values.length - 1, \position -> if position < index then values[position] else values[position + 1])
 
 def remove_many_at :: Copy<'a> => own i64 -> own i64 -> ref ['a] -> ['a]
 fn remove_many_at index count values =
     assert (count >= 0 && index >= 0 && index <= values.length - count)
-    new ['a](values.length - count, position -> if position < index then values[position] else values[position + count])
+    new ['a](values.length - count, \position -> if position < index then values[position] else values[position + count])
 
 /// A copy of `source` with the element at `index` replaced. It consumes `source`, whose buffer is reused unless
 /// `source` is used again (then it is copied first); `index` out of range traps. F# `updateAt`.
@@ -970,10 +970,10 @@ fn count_by projection values =
         for owner in owners do
             let current = counts[owner]
             Array.write owner (current + 1) (ref mut counts)
-        new [('key * i64)](keys.length, group -> (keys[group], counts[group]))
+        new [('key * i64)](keys.length, \group -> (keys[group], counts[group]))
 
 private def group_values :: Copy<'a> => ref ['a] -> ref [i64] -> own i64 -> own i64 -> ['a]
-fn group_values values order start size = new ['a](size, offset -> values[order[start + offset]])
+fn group_values values order start size = new ['a](size, \offset -> values[order[start + offset]])
 
 def group_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref ['a] -> [('key * ['a])]
 fn group_by projection values =
@@ -993,27 +993,27 @@ fn group_by projection values =
             group = group + 1
         let mut cursors = copy starts
         let mut order = new [i64](values.length, \_position -> 0)
-        for index in 0 .. values.length - 1 do
+        for index in 0 ..= values.length - 1 do
             let owner = owners[index]
             let position = cursors[owner]
             Array.write position index (ref mut order)
             Array.write owner (position + 1) (ref mut cursors)
-        new [('key * ['a])](count, member -> (keys[member], group_values values (ref order) starts[member] sizes[member]))
+        new [('key * ['a])](count, \member -> (keys[member], group_values values (ref order) starts[member] sizes[member]))
 
 // ---- Sorting ----
 
 def sort :: Ord<'a> => ref ['a] -> ['a]
-fn sort values = Array.__sort_with (left -> right -> if Ord.lt right left then 1i64 else 0i64) values
+fn sort values = Array.__sort_with (\left right -> if Ord.lt right left then 1i64 else 0i64) values
 
 def sort_descending :: Ord<'a> => ref ['a] -> ['a]
-fn sort_descending values = Array.__sort_with (left -> right -> if Ord.lt left right then 1i64 else 0i64) values
+fn sort_descending values = Array.__sort_with (\left right -> if Ord.lt left right then 1i64 else 0i64) values
 
 def sort_with :: Copy<'a> => own ('a -> 'a -> i64) -> ref ['a] -> ['a]
 fn sort_with comparer values = sort_with_borrowed (ref comparer) values
 
 /// The adapter captures a borrow of the comparer, so a comparison does not copy the comparer's environment into it.
 private def sort_with_borrowed :: Copy<'a> => ref ('a -> 'a -> i64) -> ref ['a] -> ['a]
-fn sort_with_borrowed comparer values = Array.__sort_with (left -> right -> (*comparer) *left *right) values
+fn sort_with_borrowed comparer values = Array.__sort_with (\left right -> (deref comparer) (deref left) (deref right)) values
 
 private def indices :: own i64 -> [i64]
 fn indices count = new [i64](count, \index -> index)
@@ -1032,7 +1032,7 @@ fn key_takes_right descending left right =
 /// borrow: capturing an owned array would copy every key at each comparison.
 private def key_order :: Ord<'key> => ref ['key] -> own bool -> [i64]
 fn key_order keys descending =
-    Array.__sort_with (left -> right -> key_takes_right descending (ref keys[*left]) (ref keys[*right])) (indices keys.length)
+    Array.__sort_with (\left right -> key_takes_right descending (ref keys[deref left]) (ref keys[deref right])) (indices keys.length)
 
 /// The keys of `values`, from a loop that calls `projection` directly: a callback that a closure also captures (as the
 /// initializer of `new` would) cannot be specialized, and then every call copies its environment.
@@ -1049,13 +1049,13 @@ def sort_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by projection values =
     let keys = keys_of projection values
     let order = key_order (ref keys) false
-    new ['a](values.length, position -> values[order[position]])
+    new ['a](values.length, \position -> values[order[position]])
 
 def sort_by_descending :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by_descending projection values =
     let keys = keys_of projection values
     let order = key_order (ref keys) true
-    new ['a](values.length, position -> values[order[position]])
+    new ['a](values.length, \position -> values[order[position]])
 
 private def overwrite :: Copy<'a> => ref mut ['a..] -> ref ['a] -> unit
 fn overwrite target source =
@@ -1083,14 +1083,14 @@ def sort_in_place :: Ord<'a> => ref mut ['a..] -> unit
 fn sort_in_place values =
     let length = values.length
     let blocks = length / 20
-    for block in 0i64 .. (blocks - 1) do
+    for block in 0i64 ..= (blocks - 1) do
         sort_in_place_insertion values (block * 20) (block * 20 + 20)
     sort_in_place_insertion values (blocks * 20) length
     let mut width = 20i64
     let mut double = 40i64
     while width < length do
         let pairs = length / double
-        for pair in 0i64 .. (pairs - 1) do
+        for pair in 0i64 ..= (pairs - 1) do
             sort_in_place_merge values (pair * double) (pair * double + width) (pair * double + double)
         let rest = pairs * double
         if rest + width < length then sort_in_place_merge values rest (rest + width) length
@@ -1099,7 +1099,7 @@ fn sort_in_place values =
 
 private def sort_in_place_insertion :: Ord<'a> => ref mut ['a..] -> own i64 -> own i64 -> unit
 fn sort_in_place_insertion values first last =
-    for index in (first + 1) .. (last - 1) do
+    for index in (first + 1) ..= (last - 1) do
         let mut current = index
         while current > first && Ord.lt (ref values[current]) (ref values[current - 1]) do
             Array.swap_in current (current - 1) values
@@ -1113,7 +1113,7 @@ fn rec sort_in_place_merge values first middle last =
         while low < high do
             let half = low + (high - low) / 2
             if Ord.lt (ref values[half]) (ref values[first]) then low = half + 1 else high = half
-        for index in first .. (low - 2) do
+        for index in first ..= (low - 2) do
             Array.swap_in index (index + 1) values
     elif last - middle == 1 then
         let mut low = first
@@ -1121,7 +1121,7 @@ fn rec sort_in_place_merge values first middle last =
         while low < high do
             let half = low + (high - low) / 2
             if !(Ord.lt (ref values[middle]) (ref values[half])) then low = half + 1 else high = half
-        for index in middle .. -1 .. (low + 1) do
+        for index in middle .. -1 ..= (low + 1) do
             Array.swap_in index (index - 1) values
     else
         let center = first + (last - first) / 2
@@ -1145,10 +1145,10 @@ fn sort_in_place_rotate values first middle last =
         let count = if left > right then right else left
         let source = middle - left
         let target = if left > right then middle else middle + right - left
-        for step in 0i64 .. (count - 1) do
+        for step in 0i64 ..= (count - 1) do
             Array.swap_in (source + step) (target + step) values
         if left > right then left = left - right else right = right - left
-    for step in 0i64 .. (left - 1) do
+    for step in 0i64 ..= (left - 1) do
         Array.swap_in (middle - left + step) (middle + step) values
 
 // ---- Floating-point reductions in a fixed order (not in F#) ----

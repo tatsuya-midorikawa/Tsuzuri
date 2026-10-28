@@ -26,7 +26,7 @@ fn text_length text = text.length
 export def owned_option :: own i64 -> i64
 fn owned_option count =
     let mut total = 0
-    for _index in 0i64 .. (count - 1) do
+    for _index in 0i64 ..= (count - 1) do
         let value = Maybe.Some ("hello" + "!")
         let result = fmap text_length value
         total = total + Maybe.get result
@@ -39,7 +39,7 @@ fn all_constructors =
     let vector = Keep.keep (Vec.push_owned 42 (Vec.empty()))
     let boxed = Keep.keep (Instances.Box { value: 42 })
     let work = Keep.keep task { 42 }
-    array[0] + list[0] + Maybe.get (Vec.get 0 (& vector)) + boxed.value + Task.run work
+    array[0] + list[0] + Maybe.get (Vec.get 0 (ref  vector)) + boxed.value + Task.run work
 
 export def binary_constructor :: i64
 fn binary_constructor =

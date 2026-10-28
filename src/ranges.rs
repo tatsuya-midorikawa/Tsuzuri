@@ -280,10 +280,16 @@ impl Scan {
                 step,
                 finish,
                 descending,
+                exclusive,
                 ..
             } => {
                 self.declare_local(local);
-                if let Some(kind) = loop_kind(module, local, start, step, finish, *descending) {
+                let kind = if *exclusive {
+                    half_open_loop_kind(module, local, start, step, finish)
+                } else {
+                    loop_kind(module, local, start, step, finish, *descending)
+                };
+                if let Some(kind) = kind {
                     self.loops.push((local.id, kind));
                 }
             }
@@ -453,6 +459,41 @@ fn loop_kind(
             (*first).min(*last) as u64,
             (*first).max(*last) as u64,
         ));
+    }
+    None
+}
+
+/// A22: the counter of `start ..< finish` stays below `finish`: `0 ..< xs.length` indexes `xs`,
+/// and a constant range ends one before its end. Anything else proves nothing (conservative).
+fn half_open_loop_kind(
+    module: &CheckedModule,
+    local: &Local,
+    start: &TypedExpr,
+    step: &TypedExpr,
+    finish: &TypedExpr,
+) -> Option<Loop> {
+    use TypedExprKind::Int;
+    if local.ty != Type::I64 {
+        return None;
+    }
+    let up = matches!(step.kind, Int(1));
+    let down = matches!(step.kind, Int(MINUS_ONE));
+    if up
+        && matches!(start.kind, Int(0))
+        && let Some(array) = length_root(module, finish)
+    {
+        return Some(Loop::BelowLength(array));
+    }
+    if let (Int(first), Int(last)) = (&start.kind, &finish.kind)
+        && *first < SIGNED_LIMIT
+        && *last < SIGNED_LIMIT
+    {
+        if up && first < last {
+            return Some(Loop::Constant(*first as u64, (*last - 1) as u64));
+        }
+        if down && first > last {
+            return Some(Loop::Constant((*last + 1) as u64, *first as u64));
+        }
     }
     None
 }
@@ -809,6 +850,7 @@ mod tests {
                 finish,
                 body,
                 descending,
+                ..
             } => {
                 for part in [start, step, finish] {
                     flag_walk(module, facts, part, flags);

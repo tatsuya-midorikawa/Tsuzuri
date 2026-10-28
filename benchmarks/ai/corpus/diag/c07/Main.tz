@@ -23,7 +23,7 @@ def is_degenerate :: Segment -> bool = \s -> length_of s == 0
 
 def count_at :: ref [Point] -> Point -> i64 = \points target ->
     let mut count = 0
-    for i in 0 .. points.length - 1 do
+    for i in 0 ..= points.length - 1 do
         if points[i] == target then count = count + 1
     count
 

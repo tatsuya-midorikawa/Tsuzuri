@@ -315,9 +315,9 @@ fn trap_context_preserves_collections_closures_and_parallel_task_abis() {
     ));
     fs::create_dir(&root).unwrap();
     let input = root.join("Main.tz");
-    let source = "export def stress :: i64\nfn stress =\n    let source = new [3, 1, 2]\n    let sorted = Array.sort (ref source)\n    let linked = Array.to_list (ref sorted)\n    let mapped = List.map (value -> value + 1) (ref linked)\n    let values = Vec.push_owned 4 (Vec.of_array sorted)\n    let tasks = new [Task<i64>](4, index -> task { return index + 1 })\n    let results = Task.run (Task.parallel tasks)\n    assert (source[0] == 3)\n    List.fold (total -> value -> total + value) 0 (ref mapped) + Vec.length (ref values) + Array.sum (ref results)\n\
+    let source = "export def stress :: i64\nfn stress =\n    let source = new [3, 1, 2]\n    let sorted = Array.sort (ref source)\n    let linked = Array.to_list (ref sorted)\n    let mapped = List.map (\\value -> value + 1) (ref linked)\n    let values = Vec.push_owned 4 (Vec.of_array sorted)\n    let tasks = new [Task<i64>](4, \\index -> task { return index + 1 })\n    let results = Task.run (Task.parallel tasks)\n    assert (source[0] == 3)\n    List.fold (\\total value -> total + value) 0 (ref mapped) + Vec.length (ref values) + Array.sum (ref results)\n\
         export def pattern_failure :: unit\nfn pattern_failure = for [only] in [[1, 2]] do assert (only == 0)\n\
-        export def step_failure :: i64 -> unit\nfn step_failure step = for _value in 0 .. step .. 10 do ()\n\
+        export def step_failure :: i64 -> unit\nfn step_failure step = for _value in 0 .. step ..= 10 do ()\n\
         export def vec_failure :: i64 -> i64\nfn vec_failure index = { let values = Vec.push_owned 1 Vec.empty(); deref (Vec.at index (ref values)) }\n\
         stress()";
     fs::write(&input, source).unwrap();
@@ -390,7 +390,7 @@ fn parallel_callbacks_report_their_source_traps() {
     ));
     fs::create_dir(&root).unwrap();
     let input = root.join("Main.tz");
-    fs::write(&input, "export def fail :: i64\nfn fail = (Parallel.init 8193 (index -> { assert (index != 4096); index })).length\nfail()").unwrap();
+    fs::write(&input, "export def fail :: i64\nfn fail = (Parallel.init 8193 (\\index -> { assert (index != 4096); index })).length\nfail()").unwrap();
     let project = tsuzuri::driver::Project::load(&input).unwrap();
     let module = project.analyze().unwrap();
     for optimization in [0, 3] {

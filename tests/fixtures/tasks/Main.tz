@@ -15,7 +15,7 @@ fn pure value = task { return value }
 def increment :: own i64 -> Task<i64>
 fn increment n = task { n + 1 }
 
-def rec total :: &[i64] -> own i64 -> own i64 -> i64
+def rec total :: ref [i64] -> own i64 -> own i64 -> i64
 fn rec total values index sum =
     if index == values.length { sum }
     else { total values (index + 1) (sum + values[index]) }
@@ -30,31 +30,31 @@ fn sequence n = Task.run task {
 
 export def parallel_sum :: own i64 -> i64
 fn parallel_sum count = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](count, i -> task { i * i }))
-    return total (&results) 0 0
+    let! results = Task.parallel (new [Task<i64>](count, \i -> task { i * i }))
+    return total (ref results) 0 0
 }
 
 export def ordered :: own i64 -> bool
 fn ordered count = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](count, i -> task {
-        let values = new [i64](count - i, n -> n);
+    let! results = Task.parallel (new [Task<i64>](count, \i -> task {
+        let values = new [i64](count - i, \n -> n);
         return i + values.length - (count - i)
     }))
-    return check_order (&results) 0
+    return check_order (ref results) 0
 }
 
-def rec check_order :: &[i64] -> own i64 -> bool
+def rec check_order :: ref [i64] -> own i64 -> bool
 fn rec check_order values index =
     if index == values.length { true }
     else { values[index] == index && check_order values (index + 1) }
 
 export def nested :: own i64 -> i64
 fn nested n = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](8, i -> task {
-        let! inner = Task.parallel (new [Task<i64>](8, j -> task { n + i * 8 + j }))
-        return total (&inner) 0 0
+    let! results = Task.parallel (new [Task<i64>](8, \i -> task {
+        let! inner = Task.parallel (new [Task<i64>](8, \j -> task { n + i * 8 + j }))
+        return total (ref inner) 0 0
     }))
-    return total (&results) 0 0
+    return total (ref results) 0 0
 }
 
 export def owned_results :: i64
@@ -67,8 +67,8 @@ fn owned_results = {
 
 export def record_results :: i64
 fn record_results = Task.run task {
-    let! results = Task.parallel (new [Task<Report>](3, i -> task {
-        return Report { text: "hello", numbers: new [i64](i + 1, n -> n + 10) }
+    let! results = Task.parallel (new [Task<Report>](3, \i -> task {
+        return Report { text: "hello", numbers: new [i64](i + 1, \n -> n + 10) }
     }))
     return results[0].text.length + results[2].numbers[2]
 }
@@ -81,9 +81,9 @@ fn list_results = Task.run task {
 
 export def function_results :: i64
 fn function_results = Task.run task {
-    let! functions = Task.parallel (new [Task<i64 -> i64>](2, i -> task {
+    let! functions = Task.parallel (new [Task<i64 -> i64>](2, \i -> task {
         let text = "hello";
-        return n -> n + text.length + i
+        return \n -> n + text.length + i
     }))
     return functions[0] 10 + functions[1] 21
 }
@@ -91,7 +91,7 @@ fn function_results = Task.run task {
 export def function_captures :: i64
 fn function_captures = {
     let text = "hello";
-    let callback = Callback { call: n -> n + text.length };
+    let callback = Callback { call: \n -> n + text.length };
     let work = task { callback.call 37 };
     Task.run work
 }
@@ -128,7 +128,7 @@ fn nested_task = Task.run (Task.run task { return task { 42 } })
 
 export def nested_group :: i64
 fn nested_group = Task.run task {
-    let! plans = Task.parallel (new [Task<Task<i64>>](2, i -> task { task { i + 20 } }))
+    let! plans = Task.parallel (new [Task<Task<i64>>](2, \i -> task { task { i + 20 } }))
     let! results = Task.parallel plans
     return results[0] + results[1] + 1
 }
@@ -146,7 +146,7 @@ fn cold = {
 
 export def units :: i64
 fn units = Task.run task {
-    let! values = Task.parallel (new [Task<unit>](16, i -> task { assert (i < 16); }))
+    let! values = Task.parallel (new [Task<unit>](16, \i -> task { assert (i < 16); }))
     return values.length
 }
 
@@ -189,7 +189,7 @@ def rec cycles :: own i64 -> own i64 -> i64
 fn rec cycles n sum =
     if n == 0 { sum }
     else {
-        let values = new [i64](1024, i -> i + n);
+        let values = new [i64](1024, \i -> i + n);
         let work = task { values[n % 1024] };
         let result = Task.run work;
         cycles (n - 1) (sum + result)
@@ -202,7 +202,7 @@ def rec repeated :: own i64 -> own i64 -> i64
 fn rec repeated n sum =
     if n == 0 { sum }
     else {
-        let results = Task.run (Task.parallel (new [Task<string>](8, i -> task {
+        let results = Task.run (Task.parallel (new [Task<string>](8, \i -> task {
             if i % 2 == 0 { "even" } else { "odd" }
         })));
         repeated (n - 1) (sum + results[0].length + results[1].length)
@@ -229,13 +229,13 @@ fn trap_task = Task.run task { assert false; 0 }
 
 export def trap_parallel :: i64
 fn trap_parallel = {
-    let values = Task.run (Task.parallel (new [Task<i64>](8, i -> task { 1 / (i - i) })));
+    let values = Task.run (Task.parallel (new [Task<i64>](8, \i -> task { 1 / (i - i) })));
     values.length
 }
 
 export def trap_allocation :: i64
 fn trap_allocation = {
-    let values = Task.run (Task.parallel (new [Task<i64>](-1, i -> task { i })));
+    let values = Task.run (Task.parallel (new [Task<i64>](-1, \i -> task { i })));
     values.length
 }
 
@@ -250,14 +250,14 @@ fn parallel_results_recursive fail =
 
 export def parallel_results_ok :: own i64 -> i64
 fn parallel_results_ok count =
-    let jobs = new [Task<Result<i64, i64>>](count, index -> task { Result.Ok (index * index) })
+    let jobs = new [Task<Result<i64, i64>>](count, \index -> task { Result.Ok (index * index) })
     match Task.run (Task.parallel_results jobs) with
-    | Result.Ok values -> Array.sum (&values)
+    | Result.Ok values -> Array.sum (ref values)
     | Result.Error error -> error
 
 export def parallel_results_lowest :: i64
 fn parallel_results_lowest =
-    let jobs = new [Task<Result<i64, i64>>](64, index -> task {
+    let jobs = new [Task<Result<i64, i64>>](64, \index -> task {
         if index == 2 || index == 7 then Result.Error index else Result.Ok index
     })
     match Task.run (Task.parallel_results jobs) with
@@ -266,7 +266,7 @@ fn parallel_results_lowest =
 
 def captured_result :: own i64 -> Task<Result<string, string>>
 fn captured_result index =
-    let values = new [i64](128, offset -> index + offset)
+    let values = new [i64](128, \offset -> index + offset)
     let text = "captured" + "!"
     task {
         if index == 0 || index == 2 then Result.Error ("error" + "!")
@@ -296,14 +296,14 @@ fn parallel_results_functions =
 
 export def parallel_results_nested :: i64
 fn parallel_results_nested =
-    let jobs = new [Task<Result<i64, i64>>](8, index -> task {
-        let nested = new [Task<Result<i64, i64>>](8, inner -> task { Result.Ok (index * 8 + inner) })
+    let jobs = new [Task<Result<i64, i64>>](8, \index -> task {
+        let nested = new [Task<Result<i64, i64>>](8, \inner -> task { Result.Ok (index * 8 + inner) })
         match Task.run (Task.parallel_results nested) with
-        | Result.Ok values -> Result.Ok (Array.sum (&values))
+        | Result.Ok values -> Result.Ok (Array.sum (ref values))
         | Result.Error error -> Result.Error error
     })
     match Task.run (Task.parallel_results jobs) with
-    | Result.Ok values -> Array.sum (&values)
+    | Result.Ok values -> Array.sum (ref values)
     | Result.Error error -> error
 
 export def parallel_results_first_class :: i64
@@ -311,7 +311,7 @@ fn parallel_results_first_class =
     let combine: [Task<Result<i64, string>>] -> Task<Result<[i64], string>> = Task.parallel_results
     let result = Task.run (combine [task { Result.Ok 42 }])
     let values = Result.get result
-    Array.sum (&values)
+    Array.sum (ref values)
 
 export def parallel_results_cold :: i64
 fn parallel_results_cold =

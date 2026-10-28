@@ -111,11 +111,11 @@ fn to_matrix view =
     if count == 0 then Matrix.init view.rows view.cols (\_row _col -> view.data[0])
     elif is_contiguous view then Matrix.of_array view.rows view.cols (Array.sub view.offset count view.data)
     else
-        let mut out = new ['a](count, _ -> view.data[view.offset])
-        for i in 0i64 .. (view.rows - 1) do
+        let mut out = new ['a](count, \_ -> view.data[view.offset])
+        for i in 0i64 ..= (view.rows - 1) do
             let target = ref mut out[i * view.cols .. i * view.cols + view.cols]
             let base = view.offset + i * view.row_stride
-            for j in 0i64 .. (view.cols - 1) do
+            for j in 0i64 ..= (view.cols - 1) do
                 let value = view.data[base + j * view.col_stride]
                 Array.write j value target
         Matrix.of_array view.rows view.cols out
@@ -125,9 +125,9 @@ def fold { r } :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> Matr
 fn fold folder initial view =
     if view.rows == 0 || view.cols == 0 then initial else
         let mut state = initial
-        for i in 0i64 .. (view.rows - 1) do
+        for i in 0i64 ..= (view.rows - 1) do
             let base = view.offset + i * view.row_stride
-            for j in 0i64 .. (view.cols - 1) do
+            for j in 0i64 ..= (view.cols - 1) do
                 state = folder state view.data[base + j * view.col_stride]
         state
 
@@ -135,7 +135,7 @@ fn fold folder initial view =
 def map { r } :: Copy<'a> => own ('a -> 'b) -> MatrixView<'a> { r } -> Matrix<'b>
 fn map transform view =
     let count = view.rows * view.cols
-    Matrix.of_array view.rows view.cols (new ['b](count, index -> transform view.data[view.offset + (index / view.cols) * view.row_stride + (index % view.cols) * view.col_stride]))
+    Matrix.of_array view.rows view.cols (new ['b](count, \index -> transform view.data[view.offset + (index / view.cols) * view.row_stride + (index % view.cols) * view.col_stride]))
 
 /// The product of two windows. Operands that are not contiguous are first copied into row-major
 /// buffers, then `Matrix.mul` runs, so the bits equal `Matrix.mul` of the copied operands.
@@ -188,9 +188,9 @@ fn transpose_mut view = Mut { data: view.data, offset: view.offset, rows: view.c
 def fill { r } :: Copy<'a> => own 'a -> ref mut Mut<'a> { r } -> unit
 fn fill value view =
     if view.rows > 0 && view.cols > 0 then
-        for i in 0i64 .. (view.rows - 1) do
+        for i in 0i64 ..= (view.rows - 1) do
             let base = view.offset + i * view.row_stride
-            for j in 0i64 .. (view.cols - 1) do
+            for j in 0i64 ..= (view.cols - 1) do
                 let index = base + j * view.col_stride
                 Array.write index value view.data
 
@@ -199,10 +199,10 @@ def copy_from { s r } :: Copy<'a> => MatrixView<'a> { s } -> ref mut Mut<'a> { r
 fn copy_from source target =
     assert (target.rows == source.rows && target.cols == source.cols)
     if target.rows > 0 && target.cols > 0 then
-        for i in 0i64 .. (target.rows - 1) do
+        for i in 0i64 ..= (target.rows - 1) do
             let source_base = source.offset + i * source.row_stride
             let target_base = target.offset + i * target.row_stride
-            for j in 0i64 .. (target.cols - 1) do
+            for j in 0i64 ..= (target.cols - 1) do
                 let value = source.data[source_base + j * source.col_stride]
                 let index = target_base + j * target.col_stride
                 Array.write index value target.data
@@ -211,9 +211,9 @@ fn copy_from source target =
 def map_in_place { r } :: Copy<'a> => own ('a -> 'a) -> ref mut Mut<'a> { r } -> unit
 fn map_in_place transform view =
     if view.rows > 0 && view.cols > 0 then
-        for i in 0i64 .. (view.rows - 1) do
+        for i in 0i64 ..= (view.rows - 1) do
             let base = view.offset + i * view.row_stride
-            for j in 0i64 .. (view.cols - 1) do
+            for j in 0i64 ..= (view.cols - 1) do
                 let index = base + j * view.col_stride
                 let value = transform view.data[index]
                 Array.write index value view.data

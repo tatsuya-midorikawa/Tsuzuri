@@ -12,45 +12,45 @@ fn inclusive first last down =
 export def stepped :: own i64 -> own i64 -> own i64 -> i64
 fn stepped first step last =
     let mut total = 0
-    for i in first .. step .. last do total = total + i
+    for i in first .. step ..= last do total = total + i
     total
 
 export def unsigned_steps :: own i64u -> own i64u -> own i64u -> i64
 fn unsigned_steps first step last =
     let mut total = 0i64u
-    for i in first .. step .. last do total = total + i
+    for i in first .. step ..= last do total = total + i
     total as i64
 
 export def integer_boundaries :: i64
 fn integer_boundaries =
     let mut total = 0
-    for i in 125i8 .. 2i8 .. 127i8 do total = total + i as i64
-    for i in -126i8 .. -2i8 .. -128i8 do total = total + i as i64
-    for _ in 170141183460469231731687303715884105726i128 .. 170141183460469231731687303715884105727i128 do total = total + 1
-    for _ in 340282366920938463463374607431768211454i128u .. 2i128u .. 340282366920938463463374607431768211455i128u do total = total + 1
-    for _ in -170141183460469231731687303715884105727i128 .. -2i128 .. -170141183460469231731687303715884105728i128 do total = total + 1
+    for i in 125i8 .. 2i8 ..= 127i8 do total = total + i as i64
+    for i in -126i8 .. -2i8 ..= -128i8 do total = total + i as i64
+    for _ in 170141183460469231731687303715884105726i128 ..= 170141183460469231731687303715884105727i128 do total = total + 1
+    for _ in 340282366920938463463374607431768211454i128u .. 2i128u ..= 340282366920938463463374607431768211455i128u do total = total + 1
+    for _ in -170141183460469231731687303715884105727i128 .. -2i128 ..= -170141183460469231731687303715884105728i128 do total = total + 1
     total
 
-def bound :: &mut i64 -> own i32 -> i32
-fn bound state n = { *state = *state * 10 + n as i64; n }
+def bound :: ref mut i64 -> own i32 -> i32
+fn bound state n = { deref state = deref state * 10 + n as i64; n }
 
 export def bounds_once :: i64
 fn bounds_once =
     let mut state = 0
     let mut finish = 3i32
-    for i = bound (&mut state) 1 to bound (&mut state) finish do
+    for i = bound (ref mut state) 1 to bound (ref mut state) finish do
         finish = 0
         state = state * 10 + i as i64
     state
 
-def condition :: &mut i64 -> own i64 -> bool
-fn condition count last = { *count = *count + 1; *count <= last }
+def condition :: ref mut i64 -> own i64 -> bool
+fn condition count last = { deref count = deref count + 1; deref count <= last }
 
 export def while_checks :: own i64 -> i64
 fn while_checks n =
     let mut checks = 0
     let mut iterations = 0
-    while condition (&mut checks) n do iterations = iterations + 1
+    while condition (ref mut checks) n do iterations = iterations + 1
     checks * 100 + iterations
 
 export def collection_sum :: own i64 -> own i64 -> i64
@@ -245,7 +245,7 @@ fn loop_copies n =
     let values = [20, 22]
     let callback = \i -> values[0] + values[1] + i
     let mut total = 0
-    for i in 0 .. n - 1 do
+    for i in 0 ..= n - 1 do
         let copy = values
         let f = callback
         total = total + copy[0] + f i
@@ -296,14 +296,14 @@ fn (|Divisible|_|) divisor n = n % divisor == 0
 def (|Parts|) :: own i64 -> (i64 * i64)
 fn (|Parts|) n = (n, n + 1)
 
-def (|Length|) :: &string -> i64
+def (|Length|) :: ref string -> i64
 fn (|Length|) text = text.length
 
-def (|Copy|) :: &string -> string
+def (|Copy|) :: ref string -> string
 fn (|Copy|) text = clone_string text
 
-def (|Mark|_|) :: &mut i64 -> own i64 -> own bool -> own i64 -> bool
-fn (|Mark|_|) state digit accepted n = { *state = *state * 10 + digit; accepted }
+def (|Mark|_|) :: ref mut i64 -> own i64 -> own bool -> own i64 -> bool
+fn (|Mark|_|) state digit accepted n = { deref state = deref state * 10 + digit; accepted }
 
 export def active_patterns :: i64
 fn active_patterns =
@@ -320,8 +320,8 @@ fn active_order =
     let mut state = 0
     let answer =
         match 42 with
-        | Mark (&mut state) 1 true | Mark (&mut state) 2 true when state == 2 -> 999
-        | Mark (&mut state) 3 false | Mark (&mut state) 4 true -> 42
+        | Mark (ref mut state) 1 true | Mark (ref mut state) 2 true when state == 2 -> 999
+        | Mark (ref mut state) 3 false | Mark (ref mut state) 4 true -> 42
         | _ -> 0
     answer + state * 1000
 
@@ -329,7 +329,7 @@ export def active_owned :: own i64 -> i64
 fn active_owned n =
     let text = "owned"
     let mut total = 0
-    for _ in 1 .. n do
+    for _ in 1 ..= n do
         let result =
             match text with
             | Copy s when s.length == 99 -> s
@@ -378,14 +378,14 @@ fn floating_order =
     for value in values do total = total + value
     total
 
-def position :: &mut i64 -> i64
-fn position counter = { *counter = *counter + 1; 0 }
+def position :: ref mut i64 -> i64
+fn position counter = { deref counter = deref counter + 1; 0 }
 
 export def scrutinee_once :: i64
 fn scrutinee_once =
     let values = [42]
     let mut count = 0
-    let answer = match values[position (&mut count)] with | 42 -> 42 | _ -> 0
+    let answer = match values[position (ref mut count)] with | 42 -> 42 | _ -> 0
     answer + count * 100
 
 export def empty_loops :: i64
@@ -401,7 +401,7 @@ fn empty_loops =
     42
 
 export def trap_step :: unit
-fn trap_step = for _ in 1 .. 0 .. 2 do ()
+fn trap_step = for _ in 1 .. 0 ..= 2 do ()
 
 export def trap_pattern :: unit
 fn trap_pattern = for [x] in [[1], [2, 3]] do ()

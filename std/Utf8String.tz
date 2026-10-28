@@ -4,7 +4,7 @@ fn length text = text.length
 private def append_range :: own Vec<ubyte> -> ref utf8string -> own i64 -> own i64 -> Vec<ubyte>
 fn append_range initial text first last =
 	let mut output = initial
-	for index in first .. (last - 1) do output = Vec.push_owned text[index] output
+	for index in first ..= (last - 1) do output = Vec.push_owned text[index] output
 	output
 
 private def add_length :: own i64 -> own i64 -> i64
@@ -89,11 +89,11 @@ fn chars text =
 def join :: ref utf8string -> ref [utf8string] -> utf8string
 fn join separator parts =
 	let mut size = 0
-	for index in 0 .. (parts.length - 1) do
+	for index in 0 ..= (parts.length - 1) do
 		size = add_length size parts[index].length
 		if index > 0 then size = add_length size separator.length
 	let mut output: Vec<ubyte> = Vec.with_capacity size
-	for index in 0 .. (parts.length - 1) do
+	for index in 0 ..= (parts.length - 1) do
 		if index > 0 then output = append_range output separator 0 separator.length
 		output = append_range output (ref parts[index]) 0 parts[index].length
 	Maybe.get (Utf8String.from_bytes (Vec.to_array output))
@@ -157,17 +157,17 @@ fn trim text =
 	Maybe.get (slice first last text)
 
 def to_ascii_lower :: ref utf8string -> utf8string
-fn to_ascii_lower text = Maybe.get (Utf8String.from_bytes (new [ubyte](text.length, index -> if text[index] >= 65ubyte && text[index] <= 90ubyte then text[index] + 32ubyte else text[index])))
+fn to_ascii_lower text = Maybe.get (Utf8String.from_bytes (new [ubyte](text.length, \index -> if text[index] >= 65ubyte && text[index] <= 90ubyte then text[index] + 32ubyte else text[index])))
 
 def to_ascii_upper :: ref utf8string -> utf8string
-fn to_ascii_upper text = Maybe.get (Utf8String.from_bytes (new [ubyte](text.length, index -> if text[index] >= 97ubyte && text[index] <= 122ubyte then text[index] - 32ubyte else text[index])))
+fn to_ascii_upper text = Maybe.get (Utf8String.from_bytes (new [ubyte](text.length, \index -> if text[index] >= 97ubyte && text[index] <= 122ubyte then text[index] - 32ubyte else text[index])))
 
 def repeat :: own i64 -> ref utf8string -> utf8string
 fn repeat count text =
 	assert (count >= 0)
 	if count == 0 || text.length == 0 then u8"" else
 		let size = Maybe.get (Int.checked_mul text.length count)
-		Maybe.get (Utf8String.from_bytes (new [ubyte](size, index -> text[index % text.length])))
+		Maybe.get (Utf8String.from_bytes (new [ubyte](size, \index -> text[index % text.length])))
 
 def replace :: ref utf8string -> ref utf8string -> ref utf8string -> utf8string
 fn replace needle replacement text =

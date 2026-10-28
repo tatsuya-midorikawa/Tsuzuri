@@ -29,7 +29,7 @@ fn textbook left right =
     let n = Matrix.rows left
     let a = Matrix.as_array left
     let b = Matrix.as_array right
-    Matrix.of_array n n (new [f64](n * n, index -> textbook_element a b n (index / n) (index % n)))
+    Matrix.of_array n n (new [f64](n * n, \index -> textbook_element a b n (index / n) (index % n)))
 
 // Modes: 0 mul, 1 mul_parallel, 2 mul_fma, 3 mul_fma_parallel, otherwise the i-j-k loop above. The C comparators
 // compute the same inputs and the same per-element order, so the checksums must be bit-equal.
@@ -38,7 +38,7 @@ fn matmul_checksum n repeats mode =
     let left = Matrix.init n n left_value
     let right = Matrix.init n n right_value
     let mut sum = 0.0
-    for _ in 0i64 .. (repeats - 1) do
+    for _ in 0i64 ..= (repeats - 1) do
         let product =
             match mode with
             | 0 -> Matrix.mul (ref left) (ref right)
@@ -55,7 +55,7 @@ fn matmul_checksum32 n repeats mode =
     let left = Matrix.init n n (\i j -> left_value i j as f32)
     let right = Matrix.init n n (\i j -> right_value i j as f32)
     let mut sum = 0.0
-    for _ in 0i64 .. (repeats - 1) do
+    for _ in 0i64 ..= (repeats - 1) do
         let product = if mode == 0 then Matrix.mul (ref left) (ref right) else Matrix.mul_parallel (ref left) (ref right)
         sum = sum + checksum32 (ref product)
     sum
@@ -66,7 +66,7 @@ fn matmul_checksum_int n repeats mode =
     let left = Matrix.init n n (\i j -> (i * 7 + j * 3) % 13 - 6)
     let right = Matrix.init n n (\i j -> (i * 5 + j * 11) % 17 - 8)
     let mut sum = 0
-    for _ in 0i64 .. (repeats - 1) do
+    for _ in 0i64 ..= (repeats - 1) do
         let product = if mode == 0 then Matrix.mul (ref left) (ref right) else Matrix.mul_parallel (ref left) (ref right)
         sum = sum + checksum_int (ref product)
     sum

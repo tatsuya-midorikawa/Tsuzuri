@@ -2,11 +2,11 @@ export def range_edges :: own i64 -> own i64 -> own bool -> i64
 fn range_edges first last down =
     let mut total = 0i64
     if down then
-        for i in first .. -1 .. last do
+        for i in first .. -1 ..= last do
             if i % 2 == 0 then continue
             total = total + i * 3
     else
-        for i in first .. last do
+        for i in first ..= last do
             if i % 2 == 0 then continue
             total = total + i * 3
     total
@@ -14,32 +14,32 @@ fn range_edges first last down =
 export def range_edges_u64 :: own i64u -> own i64u -> i64
 fn range_edges_u64 first last =
     let mut total = 0i64u
-    for i in first .. last do total = total + (i ^ 5i64u) * 7i64u
+    for i in first ..= last do total = total + (i ^ 5i64u) * 7i64u
     total as i64
 
 export def range_edges_u32 :: own i32u -> own i32u -> i64
 fn range_edges_u32 first last =
     let mut total = 0i64
-    for i in first .. last do total = total + (i as i64) * 3
+    for i in first ..= last do total = total + (i as i64) * 3
     total
 
 export def range_edges_i8 :: own i8 -> own i8 -> own bool -> i64
 fn range_edges_i8 first last down =
     let mut total = 0i64
     if down then
-        for i in first .. -1i8 .. last do total = total * 31 + (i as i64)
+        for i in first .. -1i8 ..= last do total = total * 31 + (i as i64)
     else
-        for i in first .. last do total = total * 31 + (i as i64)
+        for i in first ..= last do total = total * 31 + (i as i64)
     total
 
 export def range_edges_i128 :: i64
 fn range_edges_i128 =
     let mut count = 0i64
     let mut low = 0i64
-    for i in 170141183460469231731687303715884105724i128 .. 170141183460469231731687303715884105727i128 do
+    for i in 170141183460469231731687303715884105724i128 ..= 170141183460469231731687303715884105727i128 do
         count = count + 1
         low = low + (i as i64)
-    for i in -170141183460469231731687303715884105725i128 .. -1i128 .. -170141183460469231731687303715884105728i128 do
+    for i in -170141183460469231731687303715884105725i128 .. -1i128 ..= -170141183460469231731687303715884105728i128 do
         count = count + 1
         low = low + (i as i64)
     count * 1000 + low
@@ -72,13 +72,13 @@ fn builtin_wrap seed =
     let f = Sub.sub (seed as i32u) 1i32u
     a + b * 3 + c + (d as i64) + (e as i64) + (f as i64)
 
-def tick :: &mut i64 -> own i64 -> i64
-fn tick log digit = { *log = *log * 10 + digit; digit }
+def tick :: ref mut i64 -> own i64 -> i64
+fn tick log digit = { deref log = deref log * 10 + digit; digit }
 
 export def builtin_order :: i64
 fn builtin_order =
     let mut log = 0
-    let sum = Add.add (tick (&mut log) 1) (Mul.mul (tick (&mut log) 2) (tick (&mut log) 3))
+    let sum = Add.add (tick (ref mut log) 1) (Mul.mul (tick (ref mut log) 2) (tick (ref mut log) 3))
     log * 1000 + sum
 
 // PR02: arithmetic that a range proof covers, next to arithmetic at the edge of the range, where a
@@ -87,7 +87,7 @@ export def affine_sum :: own i64 -> i64
 fn affine_sum n =
     let weight = (n >>> 8) & 255
     let mut total = 0i64
-    for i in 0 .. (n & 255) do total = total + (i * 3 + 1) * weight
+    for i in 0 ..= (n & 255) do total = total + (i * 3 + 1) * weight
     total
 
 export def wrap_edges :: own i64 -> own i64 -> i64

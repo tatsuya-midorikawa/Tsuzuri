@@ -70,7 +70,7 @@ fn csv_aggregate size seed =
             sums = Vec.set category sum sums
             counts = Vec.set category count counts
         let mut total = fold 0 (lines.length as i64u)
-        for category in 0i64 .. 15i64 do total = fold (fold total sums[category]) counts[category]
+        for category in 0i64 ..= 15i64 do total = fold (fold total sums[category]) counts[category]
         total
 
 export def map_count :: own i64 -> own i64u -> i64u
@@ -79,14 +79,14 @@ fn map_count size seed =
     let mut counts: Map<i64u, i64u> = Map.empty()
     let mut keys: Set<i64u> = Set.empty()
     let mut state = seed
-    for _index in 0i64 .. size - 1 do
+    for _index in 0i64 ..= size - 1 do
         state = state * 6364136223846793005 + 1442695040888963407
         let key = (state >>> 33) & 1023
         let count = Maybe.default_value 0 (Map.get key (ref counts))
         counts = Map.insert key (count + 1) counts
         keys = Set.insert (key & 255) keys
     let mut total = Map.length (ref counts) as i64u * 1000003 + Set.length (ref keys) as i64u
-    for key in 0i64u .. 1023i64u do total = fold total (Maybe.default_value 0 (Map.get key (ref counts)))
+    for key in 0i64u ..= 1023i64u do total = fold total (Maybe.default_value 0 (Map.get key (ref counts)))
     total
 
 record Item { key: i64u, id: i64u }
@@ -151,7 +151,7 @@ export def tree_transform :: own i64 -> own i64u -> i64u
 fn tree_transform size seed =
     assert (size >= 0 && size <= 100000)
     let mut total = 0i64u
-    for index in 0i64 .. size - 1 do
+    for index in 0i64 ..= size - 1 do
         let tree = simplify (build_expr 12 (seed + index as i64u))
         total = fold total (eval (ref tree))
     total
@@ -176,7 +176,7 @@ export def binary_trees :: own i64 -> own i64u -> i64u
 fn binary_trees size seed =
     assert (size >= 0 && size <= 1000000)
     let mut total = 0i64u
-    for index in 0i64 .. size - 1 do
+    for index in 0i64 ..= size - 1 do
         let depth = 4 + ((seed + index as i64u) & 7) as i64
         let tree = build_tree depth
         total = fold total (count_tree (ref tree))
@@ -204,7 +204,7 @@ fn graph_bfs size seed =
             degrees = Vec.set source degree degrees
         let mut offsets = Vec.push_owned 0i64 (Vec.with_capacity (size + 1))
         let mut running = 0i64
-        for index in 0i64 .. size - 1 do
+        for index in 0i64 ..= size - 1 do
             running = running + degrees[index]
             offsets = Vec.push_owned running offsets
         let starts = ref offsets
@@ -222,13 +222,13 @@ fn graph_bfs size seed =
             let source = queue[head]
             head = head + 1
             let distance = distances[source] + 1
-            for position in offsets[source] .. offsets[source + 1] - 1 do
+            for position in offsets[source] ..= offsets[source + 1] - 1 do
                 let destination = adjacent[position]
                 if distances[destination] == -1 then
                     distances = Vec.set destination distance distances
                     queue = Vec.push_owned destination queue
         let mut total = 0i64u
-        for index in 0i64 .. size - 1 do total = fold total (distances[index] as i64u)
+        for index in 0i64 ..= size - 1 do total = fold total (distances[index] as i64u)
         total
 
 def matrix_value :: own i64 -> own i64 -> f64
@@ -240,7 +240,7 @@ def multiply :: own bool -> ref [f64] -> [f64]
 fn multiply transpose values =
     new [f64](values.length, \row ->
         let mut total = 0.0
-        for column in 0i64 .. values.length - 1 do
+        for column in 0i64 ..= values.length - 1 do
             let coefficient = if transpose then matrix_value column row else matrix_value row column
             total = total + coefficient * values[column]
         total)
@@ -256,12 +256,12 @@ fn spectral_norm size seed =
     if size == 0 then 0 else
         let mut u = new [f64](size, \_ -> 1.0)
         let mut v = new [f64](size, \_ -> 0.0)
-        for _iteration in 1i64 .. 10i64 do
+        for _iteration in 1i64 ..= 10i64 do
             v = multiply_ata (ref u)
             u = multiply_ata (ref v)
         let mut uv = 0.0
         let mut vv = 0.0
-        for index in 0i64 .. size - 1 do
+        for index in 0i64 ..= size - 1 do
             uv = uv + u[index] * v[index]
             vv = vv + v[index] * v[index]
         (Math.sqrt (uv / vv) * 1e15) as i64u ^ seed

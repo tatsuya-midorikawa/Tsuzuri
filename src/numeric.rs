@@ -32,6 +32,14 @@ pub fn is_numeric_name(name: &str) -> bool {
     NUMERIC_NAMES.contains(&name)
 }
 
+/// The type name that a short suffix such as `uy` stands for (A22: not a type name itself).
+pub(crate) fn short_suffix_type(suffix: &str) -> Option<&'static str> {
+    SHORT_SUFFIXES
+        .iter()
+        .find(|(short, _)| *short == suffix)
+        .map(|(_, name)| *name)
+}
+
 /// The type name of a literal suffix: a numeric type name or a short suffix such as `uy`.
 pub fn suffix_type(suffix: &str) -> Option<&'static str> {
     NUMERIC_NAMES

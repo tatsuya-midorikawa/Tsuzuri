@@ -21,7 +21,7 @@ def area :: Shape -> i64 = \shape ->
 
 def sum_to :: i64 -> i64 = \n ->
     let mut total = 0
-    for i in 1 .. n do
+    for i in 1 ..= n do
         total = total + i
     total
 
@@ -40,7 +40,7 @@ test "area" = assert (area (Circle 2) == 12)
 - `def f :: A -> B -> C = \a b -> body`; call `f x y`. The last expression is the value (no `return`). Blocks are indented. Comments are `//`.
 - `do! action` runs an effect statement; `let! line = IO.read_line ()` binds its result. `main :: unit -> i32` returns the exit code.
 - `if c then a else b`, several lines: `elif`. `match v with | P -> e | _ -> d`. Lambda: `\x -> x + 1`. `let mut x = 0`, then `x = x + 1`.
-- `for x in xs do`, `for i in a .. b do` (includes `b`), `while c do`, `break`, `continue`.
+- `for x in xs do`, `for i in a ..= b do` (includes `b`), `for i in a ..< b do` (excludes `b`), `while c do`, `break`, `continue`.
 - Strings: `a + b`, `$"n = {n}"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push_owned 1 v`.
 - Errors are values: `Maybe<T>` (`Some x`, `None`), `Result<T, E>` (`Ok x`, `Error e`). No `?` and no unwinding: `try ... with` only turns the `OverflowException` of `@checked` arithmetic in the same function into a `Result`.
 - Std names are qualified (`Array.sum xs`, `Int.abs n`, `Math.sqrt x`). A def without parameters is called `f()`.
@@ -87,7 +87,7 @@ def main :: unit -> i32 = \() ->
 - `p.x = 1` and `xs[i] = v` need a `let mut` owner or a `mut T` parameter (else E1014). `{ p with x = 1 }` works in every edition.
 <!--endif-->
 - `IO.writeln s` as a statement is E1003 (`expected unit, found IO<unit>`): `do! IO.writeln s`.
-- `for i in 0 .. xs.length` compiles, then traps: `..` includes the end. Use `0 .. xs.length - 1`.
+- `for i in 0 ..= xs.length` compiles, then traps: `..=` includes the end. Use `0 ..< xs.length`.
 - `else if` on a new line is E0002: `elif`.
 - `n + 1.5` and `"a" + 1` are E1003: `n as f64 + 1.5`, `$"a{n}"`.
 - `new type to with test do in` are reserved words (E0002): rename.

@@ -43,7 +43,7 @@ first=0 second=5 old=10 swapped=20 refused=30 now=30
 
 ```tsuzuri run=36
 let hits = Atomic.create 0i64
-let _seen = Task.scope (ref hits) 8 (shared -> index -> Atomic.fetch_add shared (index + 1))
+let _seen = Task.scope (ref hits) 8 (\shared index -> Atomic.fetch_add shared (index + 1))
 Atomic.load (ref hits)
 ```
 
@@ -70,7 +70,7 @@ fn rec raise_to cell value =
         | Result.Error _current -> raise_to cell value
 
 let highest = Atomic.create 0i64
-let _seen = Task.scope (ref highest) 8 (shared -> index -> raise_to shared (index * 10))
+let _seen = Task.scope (ref highest) 8 (\shared index -> raise_to shared (index * 10))
 $"max={Atomic.load (ref highest)}"
 ```
 

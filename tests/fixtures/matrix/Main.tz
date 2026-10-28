@@ -93,7 +93,7 @@ fn shapes n =
     let m = Matrix.init n (n + 2) (\i j -> i * 100 + j)
     let t = Matrix.transpose (ref m)
     let mut total = Matrix.fold (\acc x -> acc * 31 + x) 7 (ref t)
-    for i in 0i64 .. (n - 1) do
+    for i in 0i64 ..= (n - 1) do
         total = total * 17 + Array.sum (Matrix.row i (ref m))
     let doubled = Matrix.map (\x -> x * 2) (ref m)
     total = total * 13 + Matrix.fold (\acc x -> acc + x) 0 (ref doubled)
@@ -109,13 +109,13 @@ export def owned_elements :: own i64 -> i64
 fn owned_elements n =
     let m = Matrix.init n n (\i j -> new [i64](i + j, \x -> x * 3 + i))
     let mut total = 0
-    for i in 0i64 .. (n - 1) do
-        for j in 0i64 .. (n - 1) do
+    for i in 0i64 ..= (n - 1) do
+        for j in 0i64 ..= (n - 1) do
             let e = Matrix.at i j (ref m)
             total = total * 3 + e.length + (if e.length > 0 then e[e.length - 1] else 0)
     if n > 0 then total = total * 5 + Array.length (Matrix.row (n - 1) (ref m))
     let words = Matrix.init n 2 (\i j -> $"{i}:{j}")
-    for i in 0i64 .. (n - 1) do
+    for i in 0i64 ..= (n - 1) do
         let word = Matrix.at i 1 (ref words)
         total = total * 11 + word.length
     let transposed = Matrix.transpose (ref m)
@@ -216,7 +216,7 @@ fn oracle_element left right inner cols row col =
     total
 
 private def oracle_product :: Numeric<'a> => own i64 -> own i64 -> own i64 -> ref ['a] -> ref ['a] -> ['a]
-fn oracle_product rows inner cols left right = new ['a](rows * cols, index -> oracle_element left right inner cols (index / cols) (index % cols))
+fn oracle_product rows inner cols left right = new ['a](rows * cols, \index -> oracle_element left right inner cols (index / cols) (index % cols))
 
 private def fma_element :: Float<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> own i64 -> 'a
 fn fma_element left right inner cols row col =
@@ -228,7 +228,7 @@ fn fma_element left right inner cols row col =
     total
 
 private def fma_product :: Float<'a> => own i64 -> own i64 -> own i64 -> ref ['a] -> ref ['a] -> ['a]
-fn fma_product rows inner cols left right = new ['a](rows * cols, index -> fma_element left right inner cols (index / cols) (index % cols))
+fn fma_product rows inner cols left right = new ['a](rows * cols, \index -> fma_element left right inner cols (index / cols) (index % cols))
 
 private def left64 :: own i64 -> own i64 -> own i64 -> own i64 -> Matrix<f64>
 fn left64 rows inner seed span = Matrix.init rows inner (\i k -> special64 ((i * 37 + k * 11 + seed) % span))

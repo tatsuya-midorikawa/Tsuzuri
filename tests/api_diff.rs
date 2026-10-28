@@ -1109,7 +1109,7 @@ fn a_thunk_is_not_an_extra_parameter() {
     );
     check(
         "def build :: i64 -> i64 = \\n -> n\n",
-        "def build :: fn() -> (i64 -> i64)\nfn build = { let k = 1; n -> n + k }\n",
+        "def build :: fn() -> (i64 -> i64)\nfn build = { let k = 1; \\n -> n + k }\n",
         &["breaking changed def Main.build"],
     );
     let class =

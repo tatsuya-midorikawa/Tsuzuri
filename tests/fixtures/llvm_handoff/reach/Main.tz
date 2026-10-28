@@ -23,7 +23,7 @@ def total :: i64 -> i64
 fn total x =
     let items = shapes x
     let mut sum = 0i64
-    for index in 0i64 .. (items.length - 1) do sum = sum + Shapes.Sized.size (ref items[index])
+    for index in 0i64 ..= (items.length - 1) do sum = sum + Shapes.Sized.size (ref items[index])
     sum
 
 def apply_twice :: (i64 -> i64) -> i64 -> i64 = \f x -> f (f x)

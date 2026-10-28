@@ -15,7 +15,7 @@ fn vec values = Vec.of_array values
 private def check_words :: ref Vec<string> -> ref [string] -> unit
 fn check_words actual expected =
     eq actual.length expected.length
-    for index in 0 .. (expected.length - 1) do
+    for index in 0 ..= (expected.length - 1) do
         Test.equal (Vec.at index actual) (ref expected[index])
 
 private def is_nan :: own f64 -> bool
@@ -51,12 +51,12 @@ test "clone makes a copy whose capacity is its length, as new List<T>(list) does
 test "a copied closure keeps the spare capacity of the Vec it captured" =
     let mut values: Vec<i64> = Vec.with_capacity 10
     values = Vec.add 1 values
-    let read = offset -> Vec.capacity (ref values) + offset
+    let read = \offset -> Vec.capacity (ref values) + offset
     let copied = read
     eq (read 0) 10
     eq (copied 0) 10
     let empty: Vec<i64> = Vec.with_capacity 7
-    let look = offset -> Vec.capacity (ref empty) * 100 + offset
+    let look = \offset -> Vec.capacity (ref empty) * 100 + offset
     let again = look
     eq (again 1) 701
     eq (look 2) 702
@@ -95,21 +95,21 @@ test "ensure_capacity grows to the larger of the request and twice the capacity"
 
 test "trim_excess shrinks the capacity only below 90 percent" =
     let mut ten: Vec<i64> = Vec.with_capacity 10
-    for number in 1 .. 9 do ten = Vec.add number ten
+    for number in 1 ..= 9 do ten = Vec.add number ten
     ten = Vec.trim_excess ten
     eq (Vec.capacity (ref ten)) 10
     ten = Vec.remove_at 0 ten
     ten = Vec.trim_excess ten
     eq (Vec.capacity (ref ten)) 8
     let mut hundred: Vec<i64> = Vec.with_capacity 100
-    for number in 1 .. 90 do hundred = Vec.add number hundred
+    for number in 1 ..= 90 do hundred = Vec.add number hundred
     hundred = Vec.trim_excess hundred
     eq (Vec.capacity (ref hundred)) 100
     hundred = Vec.remove_at 0 hundred
     hundred = Vec.trim_excess hundred
     eq (Vec.capacity (ref hundred)) 89
     let mut fifteen: Vec<i64> = Vec.with_capacity 15
-    for number in 1 .. 13 do fifteen = Vec.add number fifteen
+    for number in 1 ..= 13 do fifteen = Vec.add number fifteen
     fifteen = Vec.trim_excess fifteen
     eq (Vec.capacity (ref fifteen)) 15
     fifteen = Vec.remove_at 0 fifteen
@@ -122,14 +122,14 @@ test "trim_excess shrinks the capacity only below 90 percent" =
 private def filled :: own i64 -> Vec<i64>
 fn filled capacity =
     let mut values: Vec<i64> = Vec.with_capacity capacity
-    for index in 1 .. capacity do values = Vec.add index values
+    for index in 1 ..= capacity do values = Vec.add index values
     values
 
 test "ensure_capacity, add_range, insert_range and insert grow by the same rule" =
     for capacity in [0, 1, 3, 4, 7, 10, 100] do
-        for extra in 1 .. (2 * capacity + 3) do
+        for extra in 1 ..= (2 * capacity + 3) do
             let wanted = ensure_capacity_of capacity extra
-            let more = new [i64](extra, index -> index)
+            let more = new [i64](extra, \index -> index)
             let appended = Vec.add_range (ref more) (filled capacity)
             eq (Vec.capacity (ref appended)) wanted
             let inserted = Vec.insert_range (capacity / 2) (ref more) (filled capacity)
@@ -149,7 +149,7 @@ test "add appends and doubles the capacity from 4" =
     eq (Vec.capacity (ref values)) 0
     values = Vec.add 1 values
     eq (Vec.capacity (ref values)) 4
-    for number in 2 .. 5 do values = Vec.add number values
+    for number in 2 ..= 5 do values = Vec.add number values
     eq (Vec.capacity (ref values)) 8
     eq (items (ref values)) [1, 2, 3, 4, 5]
 
@@ -316,7 +316,7 @@ test "remove_all removes the elements the predicate accepts and counts them" =
 
 test "remove_allr keeps the order of the elements that stay" =
     let values = vec [5, 1, 4, 2, 3]
-    match Vec.remove_allr (\number -> *number % 2 == 0) values with
+    match Vec.remove_allr (\number -> deref number % 2 == 0) values with
     | (rest, removed) ->
         eq removed 2
         eq (items (ref rest)) [5, 1, 3]
@@ -386,9 +386,9 @@ test "sort orders the elements in place and keeps the capacity" =
     words = Vec.sort words
     check_words (ref words) ["apple", "fig", "pear"]
     let mut many: Vec<i64> = Vec.empty()
-    for index in 0 .. 999 do many = Vec.add ((index * 7919) % 1000) many
+    for index in 0 ..= 999 do many = Vec.add ((index * 7919) % 1000) many
     many = Vec.sort many
-    for index in 0 .. 999 do eq many[index] index
+    for index in 0 ..= 999 do eq many[index] index
     let mut empty: Vec<i64> = Vec.empty()
     empty = Vec.sort empty
     eq (Vec.length (ref empty)) 0
@@ -402,12 +402,12 @@ test "sort puts a NaN before every number, as .NET does" =
     eq values[3] 0.5
     eq values[4] 1.0
     eq values[5] 2.0
-    let single = 0.0f / 0.0f
-    let mut singles = Vec.of_array [3.0f, single, 1.0f]
+    let single = 0.0f32 / 0.0f32
+    let mut singles = Vec.of_array [3.0f32, single, 1.0f32]
     singles = Vec.sort singles
     Test.is_true (singles[0] != singles[0])
-    eq singles[1] 1.0f
-    eq singles[2] 3.0f
+    eq singles[1] 1.0f32
+    eq singles[2] 3.0f32
     let mut tuples = Vec.of_array [(2, 1.0), (1, nan), (1, 0.5)]
     tuples = Vec.sort tuples
     match tuples[0] with
@@ -415,11 +415,11 @@ test "sort puts a NaN before every number, as .NET does" =
 
 test "sort moves the NaNs to the front in place, for every length and spacing" =
     let nan = 0.0 / 0.0
-    for length in 0i64 .. 130 do
-        for every in 2i64 .. 4 do
+    for length in 0i64 ..= 130 do
+        for every in 2i64 ..= 4 do
             let mut values: Vec<f64> = Vec.empty()
             let mut numbers = 0i64
-            for position in 0i64 .. length - 1 do
+            for position in 0i64 ..= length - 1 do
                 if (position * 7 + length) % every == 0 then values = Vec.add nan values
                 else
                     values = Vec.add (((position * 37 + length) % 11) as f64) values
@@ -427,15 +427,15 @@ test "sort moves the NaNs to the front in place, for every length and spacing" =
             let nans = length - numbers
             values = Vec.sort values
             eq (Vec.length (ref values)) length
-            for index in 0 .. (nans - 1) do Test.is_true (is_nan values[index])
-            for index in nans .. (length - 1) do Test.is_true (!(is_nan values[index]))
-            for index in (nans + 1) .. (length - 1) do Test.is_true (values[index - 1] <= values[index])
+            for index in 0 ..= (nans - 1) do Test.is_true (is_nan values[index])
+            for index in nans ..= (length - 1) do Test.is_true (!(is_nan values[index]))
+            for index in (nans + 1) ..= (length - 1) do Test.is_true (values[index - 1] <= values[index])
 
 test "the elements that differ from themselves keep their order when they move to the front" =
     let nan = 0.0 / 0.0
-    for length in 0i64 .. 100 do
+    for length in 0i64 ..= 100 do
         let mut values: Vec<(f64 * i64)> = Vec.empty()
-        for position in 0i64 .. length - 1 do
+        for position in 0i64 ..= length - 1 do
             let key = if position % 3 == 1 then nan else ((position * 5) % 7) as f64
             values = Vec.add (key, position) values
         values = Vec.sort values
@@ -509,7 +509,7 @@ private def tied :: own i64 -> own i64 -> Vec<i64>
 fn tied length seed =
     let mut state = seed
     let mut values: Vec<i64> = Vec.empty()
-    for position in 0i64 .. length - 1 do
+    for position in 0i64 ..= length - 1 do
         state = (state * 1103515245 + 12345) % 2147483648
         values = Vec.add ((state / 65536) % 7 * 1000 + position) values
     values
@@ -518,24 +518,24 @@ private def by_key :: own i64 -> own i64 -> i64
 fn by_key left right = left / 1000 - right / 1000
 
 test "sort_withr and sort_range_withr agree with the stable sort_with for every length" =
-    for length in 0i64 .. 170 do
+    for length in 0i64 ..= 170 do
         let expected = Vec.sort_with by_key (tied length length)
-        let sorted = Vec.sort_withr (\left right -> by_key *left *right) (tied length length)
+        let sorted = Vec.sort_withr (\left right -> by_key (deref left) (deref right)) (tied length length)
         eq (items (ref sorted)) (items (ref expected))
         if length >= 6 then
             let inner = Vec.sort_range_with 2 (length - 5) by_key (tied length 5)
-            let inner_r = Vec.sort_range_withr 2 (length - 5) (\left right -> by_key *left *right) (tied length 5)
+            let inner_r = Vec.sort_range_withr 2 (length - 5) (\left right -> by_key (deref left) (deref right)) (tied length 5)
             eq (items (ref inner_r)) (items (ref inner))
-        let descending = Vec.sort_withr (\left right -> by_key *right *left) (tied length 3)
+        let descending = Vec.sort_withr (\left right -> by_key (deref right) (deref left)) (tied length 3)
         let mut earlier = 7
         for value in Vec.iter (ref descending) do
-            Test.is_true (*value / 1000 <= earlier)
-            earlier = *value / 1000
+            Test.is_true (deref value / 1000 <= earlier)
+            earlier = deref value / 1000
 
 test "sorting moves elements without dropping or duplicating them" =
     let shared = Rc.new "x"
     let mut owners: Vec<Rc<string>> = Vec.empty()
-    for _ in 1 .. 5 do owners = Vec.add (Rc.share (ref shared)) owners
+    for _ in 1 ..= 5 do owners = Vec.add (Rc.share (ref shared)) owners
     owners = Vec.sort_withr (\_left _right -> 0) owners
     owners = Vec.reverse owners
     owners = Vec.reverse_range 1 3 owners
@@ -785,7 +785,7 @@ test "the arguments before the Vec may borrow it, because it is moved last" =
 test "removed elements are dropped and moved ones are not" =
     let shared = Rc.new "x"
     let mut owners: Vec<Rc<string>> = Vec.empty()
-    for _ in 1 .. 6 do owners = Vec.add (Rc.share (ref shared)) owners
+    for _ in 1 ..= 6 do owners = Vec.add (Rc.share (ref shared)) owners
     eq (Rc.strong_count (ref shared)) 7
     owners = Vec.remove_at 2 owners
     eq (Rc.strong_count (ref shared)) 6
@@ -806,7 +806,7 @@ test "removed elements are dropped and moved ones are not" =
 test "remove_allr keeps the elements that stay and drops the others" =
     let shared = Rc.new "x"
     let mut owners: Vec<Rc<string>> = Vec.empty()
-    for _ in 1 .. 8 do owners = Vec.add (Rc.share (ref shared)) owners
+    for _ in 1 ..= 8 do owners = Vec.add (Rc.share (ref shared)) owners
     match Vec.remove_allr (\owner -> Rc.strong_count owner > 100) owners with
     | (same, removed) ->
         eq removed 0
@@ -821,7 +821,7 @@ test "remove_allr keeps the elements that stay and drops the others" =
 
 test "insert and remove_range move large blocks" =
     let mut values: Vec<i64> = Vec.with_capacity 20000
-    for index in 0 .. 9999 do values = Vec.add index values
+    for index in 0 ..= 9999 do values = Vec.add index values
     values = Vec.insert 5000 (-1) values
     eq values[4999] 4999
     eq values[5000] (-1)
@@ -838,7 +838,7 @@ test "insert and remove_range move large blocks" =
 
 test "remove_all and reverse work on a large Vec" =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 0 .. 9999 do values = Vec.add index values
+    for index in 0 ..= 9999 do values = Vec.add index values
     match Vec.remove_all (\number -> number % 3 == 0) values with
     | (rest, removed) ->
         eq removed 3334
@@ -854,7 +854,7 @@ test "insert and remove agree with the Array functions over many steps" =
     let mut state = 12345
     let mut values: Vec<i64> = Vec.empty()
     let mut model: [i64] = []
-    for step in 0 .. 399 do
+    for step in 0 ..= 399 do
         state = (state * 1103515245 + 12345) % 2147483648
         let length = Vec.length (ref values)
         let kind = state % 4
@@ -883,12 +883,12 @@ test "insert and remove agree with the Array functions over many steps" =
 test "sort and binary_search agree with a model over many elements" =
     let mut state = 777
     let mut values: Vec<i64> = Vec.empty()
-    for _ in 0 .. 499 do
+    for _ in 0 ..= 499 do
         state = (state * 1103515245 + 12345) % 2147483648
         values = Vec.add (state / 65536 % 200) values
     values = Vec.sort values
-    for index in 1 .. 499 do Test.is_true (values[index - 1] <= values[index])
-    for probe in 0 .. 199 do
+    for index in 1 ..= 499 do Test.is_true (values[index - 1] <= values[index])
+    for probe in 0 ..= 199 do
         let found = Vec.binary_search probe values
         if found >= 0 then eq values[found] probe
         else

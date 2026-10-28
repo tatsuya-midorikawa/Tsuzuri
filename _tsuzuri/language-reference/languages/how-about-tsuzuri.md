@@ -168,7 +168,7 @@ match answer with
 `task { ... }` は、作っただけでは実行されない一回きりの計算です。`Task.run` がそれを消費します。複数のタスクは `Task.parallel` でまとめ、結果は入力の順に返ります。
 
 ```tsuzuri run=42
-let jobs = new [Task<i64>](3, index -> task { return (index + 1) * 7 })
+let jobs = new [Task<i64>](3, \index -> task { return (index + 1) * 7 })
 let totals = Task.run (Task.parallel jobs)
 Array.sum ref totals
 ```

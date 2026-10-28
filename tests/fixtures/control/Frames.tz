@@ -47,7 +47,7 @@ fn frames_nested n =
 export def frames_jumps :: own i64 -> i64
 fn frames_jumps n =
     let mut total = 0
-    for i in 0 .. n - 1 do
+    for i in 0 ..= n - 1 do
         let xs = [|i, i + 1, i + 2|]
         if i % 3 == 0 then continue
         if total > 1000 then break
@@ -57,7 +57,7 @@ fn frames_jumps n =
 export def frames_buffers :: own i64 -> i64
 fn frames_buffers n =
     let mut total = 0
-    for i in 0 .. n - 1 do
+    for i in 0 ..= n - 1 do
         let joined = (if i % 2 == 0 then "ab" else "abc") + "x"
         total = total + joined.length + joined[0] as i64
     total
@@ -65,7 +65,7 @@ fn frames_buffers n =
 export def frames_closures :: own i64 -> i64
 fn frames_closures n =
     let mut total = 0
-    for i in 0 .. n - 1 do
+    for i in 0 ..= n - 1 do
         let a = i + 1
         let b = i * 2
         let add = \k -> k + a + b

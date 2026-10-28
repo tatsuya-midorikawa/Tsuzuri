@@ -91,14 +91,14 @@ fn scale value = value * 3 + 1
 def total :: ref Gpu.Device -> i32
 fn total device = {
     let values = Gpu.to_array (Gpu.init device 5 scale);
-    Array.sum (&values)
+    Array.sum (ref values)
 }
 
 match Gpu.request Gpu.WebGpu with
-| Result.Ok device -> total (&device)
+| Result.Ok device -> total (ref device)
 | Result.Error _ -> {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
-    total (&reference)
+    total (ref reference)
 }
 ```
 
@@ -177,20 +177,20 @@ await host.close();
 
 ```tsuzuri run=128849018885
 def scale :: i64 -> i64
-fn scale value = value * 3l + 1l
+fn scale value = value * 3i64 + 1i64
 
 def total :: ref Gpu.Device -> i64
 fn total device = {
-    let buffer = Gpu.init device 5 (\index -> (index as i64) * 4294967296l);
+    let buffer = Gpu.init device 5 (\index -> (index as i64) * 4294967296i64);
     let values = Gpu.to_array (Gpu.map device scale buffer);
-    Array.sum (&values)
+    Array.sum (ref values)
 }
 
 match Gpu.request Gpu.Vulkan with
-| Result.Ok device -> total (&device)
+| Result.Ok device -> total (ref device)
 | Result.Error _ -> {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
-    total (&reference)
+    total (ref reference)
 }
 ```
 
@@ -460,7 +460,7 @@ Apple M1 Max で、native（wgpu-native 29）と WebAssembly（Dawn）の両方�
 
 ```tsuzuri
 export def mix :: i64 -> i64
-fn mix value = (value * 6364136223846793005l + 1442695040888963407l) ^ (value >>> 17)
+fn mix value = (value * 6364136223846793005i64 + 1442695040888963407i64) ^ (value >>> 17)
 ```
 
 ```sh

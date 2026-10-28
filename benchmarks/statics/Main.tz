@@ -46,7 +46,7 @@ fn byte_at index = ((index * 7 + 3) & 255) as i32u
 export def crc_in_place :: own i64 -> i64
 fn crc_in_place count =
     let mut crc = ~(0 as i32u)
-    for i in 0 .. count - 1 do
+    for i in 0 ..= count - 1 do
         crc = CrcTable[((crc ^ byte_at i) & 0xFF) as i64] ^ (crc >>> 8)
     (~crc) as i64
 
@@ -55,7 +55,7 @@ export def crc_bound :: own i64 -> i64
 fn crc_bound count =
     let table = CrcTable
     let mut crc = ~(0 as i32u)
-    for i in 0 .. count - 1 do
+    for i in 0 ..= count - 1 do
         crc = table[((crc ^ byte_at i) & 0xFF) as i64] ^ (crc >>> 8)
     (~crc) as i64
 
@@ -63,7 +63,7 @@ fn crc_bound count =
 export def crc_copied :: own i64 -> i64
 fn crc_copied count =
     let mut crc = ~(0 as i32u)
-    for i in 0 .. count - 1 do
+    for i in 0 ..= count - 1 do
         let table = CrcTable
         crc = table[((crc ^ byte_at i) & 0xFF) as i64] ^ (crc >>> 8)
     (~crc) as i64

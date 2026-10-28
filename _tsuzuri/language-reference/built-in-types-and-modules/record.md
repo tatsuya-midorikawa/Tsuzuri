@@ -290,9 +290,9 @@ Secret.reveal 42
 フィールドに共有借用を置けます。`&string` と `ref string` は同じ型です。返したレコードは、元の所有者の寿命を超えて生きられません。
 
 ```tsuzuri run=8
-record View { text: &string }
+record View { text: ref string }
 
-def view :: &string -> View = \text -> View { text: text }
+def view :: ref string -> View = \text -> View { text: text }
 
 let text = "borrowed"
 (view (ref text)).text.length

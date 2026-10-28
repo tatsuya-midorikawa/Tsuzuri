@@ -57,12 +57,12 @@ fn identity source =
     return value
 
 def curried :: i64 -> Maybe<i64> -> Maybe<i64>
-fn curried offset = source ->
+fn curried offset = \\source ->
     let! value = source
     return value + offset
 
 def implemented_with_let :: i64 -> Maybe<i64>
-let implemented_with_let = input ->
+let implemented_with_let = \\input ->
     let! value = Some input
     return value + 1
 
@@ -310,7 +310,7 @@ fn match_bang_uses_bind_and_normal_pattern_semantics() {
     for source in [
         "Maybe.get (Maybe { match! Some 1 with | 1 -> return 42 | _ -> return 0 })",
         "let result: Result<i64, string> = Result { match! Ok (20, 22) with | (left, right) -> return left + right }\nResult.get result",
-        "let missing: Maybe<i64> = None\nlet result: Maybe<i64> = Maybe { match! missing with | _ -> return 1 / 0 }\nMaybe.is_none (&result)",
+        "let missing: Maybe<i64> = None\nlet result: Maybe<i64> = Maybe { match! missing with | _ -> return 1 / 0 }\nMaybe.is_none (ref result)",
         "Maybe {\n    match! Some \"owned\" with\n    | value when value.length == 5 ->\n        let! other = Some \"text\"\n        return value + other\n    | value -> return value\n}",
     ] {
         let module = analyze_modules(&[("Main.tz", source)])

@@ -7,13 +7,13 @@ fn mix hash value = (hash * 31 + value + 1) % 1000000007
 private def hash_string :: own i64 -> ref string -> i64
 fn hash_string seed text =
     let mut hash = mix seed text.length
-    for index in 0 .. text.length - 1 do hash = mix hash (text[index] as i64)
+    for index in 0 ..= text.length - 1 do hash = mix hash (text[index] as i64)
     hash
 
 private def hash_bytes :: own i64 -> ref utf8string -> i64
 fn hash_bytes seed text =
     let mut hash = mix seed text.length
-    for index in 0 .. text.length - 1 do hash = mix hash (text[index] as i64)
+    for index in 0 ..= text.length - 1 do hash = mix hash (text[index] as i64)
     hash
 
 private def form_of :: own i64 -> Unicode.NormalizationForm
@@ -37,7 +37,7 @@ private def unpack :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> str
 fn unpack a b c d e =
     let packed = [a, b, c, d, e]
     let mut units: Vec<i16u> = Vec.empty()
-    for index in 0 .. 14 do
+    for index in 0 ..= 14 do
         let slot = (packed[index / 3] >>> (21 * (index % 3))) &&& 2097151
         let code = slot - 1
         if code >= 65536 then units = Vec.push_owned ((56320 + code % 1024) as i16u) (Vec.push_owned ((55296 + (code - 65536) / 1024) as i16u) units)
@@ -47,7 +47,7 @@ fn unpack a b c d e =
 private def mask :: ref [i64] -> i64
 fn mask offsets =
     let mut bits = 0
-    for index in 0 .. offsets.length - 1 do bits = bits ||| (1 <<< offsets[index])
+    for index in 0 ..= offsets.length - 1 do bits = bits ||| (1 <<< offsets[index])
     bits
 
 private def converted :: own i64 -> ref string -> string
@@ -74,7 +74,7 @@ fn normalize_chunk start step utf8 =
     let text = chunk start step
     let bytes = Utf8String.from_string (ref text)
     let mut hash = 0
-    for form in 0 .. 3 do
+    for form in 0 ..= 3 do
         if utf8 == 1 then
             let result = Unicode.normalize_utf8 (form_of form) (ref bytes)
             hash = hash_bytes hash (ref result)
@@ -89,7 +89,7 @@ private def case_hash :: ref string -> own i64 -> own bool -> i64
 fn case_hash text kinds utf8 =
     let bytes = Utf8String.from_string text
     let mut hash = 0
-    for kind in (if kinds == 0 then 0 else kinds) .. (if kinds == 0 then 2 else kinds) do
+    for kind in (if kinds == 0 then 0 else kinds) ..= (if kinds == 0 then 2 else kinds) do
         if kind != 1 || kinds == 1 then
             let result = converted kind text
             hash = hash_string hash (ref result)
@@ -114,7 +114,7 @@ fn normalize_packed a b c d e =
     let text = unpack a b c d e
     let bytes = Utf8String.from_string (ref text)
     let mut hash = 0
-    for form in 0 .. 3 do
+    for form in 0 ..= 3 do
         let result = Unicode.normalize (form_of form) (ref text)
         let result8 = Unicode.normalize_utf8 (form_of form) (ref bytes)
         let flags = (if Unicode.is_normalized (form_of form) (ref text) then 1 else 0) + (if Unicode.is_normalized_utf8 (form_of form) (ref bytes) then 2 else 0)
@@ -134,14 +134,14 @@ fn segments_packed which a b c d e =
         let pieces = Unicode.graphemes (ref text)
         let pieces8 = Unicode.graphemes_utf8 (ref bytes)
         hash = mix hash pieces.length
-        for index in 0 .. pieces.length - 1 do hash = hash_string hash (ref pieces[index])
-        for index in 0 .. pieces8.length - 1 do hash = hash_bytes hash (ref pieces8[index])
+        for index in 0 ..= pieces.length - 1 do hash = hash_string hash (ref pieces[index])
+        for index in 0 ..= pieces8.length - 1 do hash = hash_bytes hash (ref pieces8[index])
     else
         let pieces = Unicode.words (ref text)
         let pieces8 = Unicode.words_utf8 (ref bytes)
         hash = mix hash pieces.length
-        for index in 0 .. pieces.length - 1 do hash = hash_string hash (ref pieces[index])
-        for index in 0 .. pieces8.length - 1 do hash = hash_bytes hash (ref pieces8[index])
+        for index in 0 ..= pieces.length - 1 do hash = hash_string hash (ref pieces[index])
+        for index in 0 ..= pieces8.length - 1 do hash = hash_bytes hash (ref pieces8[index])
     hash
 
 /// `first`, `run` copies of U+0301 (Extend), `middle`, `run` copies of U+0301 and `last`, all in the BMP: the hash
@@ -150,9 +150,9 @@ export def word_run :: own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn word_run first middle last run =
     let mut units: Vec<i16u> = Vec.empty()
     units = Vec.push_owned (first as i16u) units
-    for _index in 1 .. run do units = Vec.push_owned 769i16u units
+    for _index in 1 ..= run do units = Vec.push_owned 769i16u units
     units = Vec.push_owned (middle as i16u) units
-    for _index in 1 .. run do units = Vec.push_owned 769i16u units
+    for _index in 1 ..= run do units = Vec.push_owned 769i16u units
     units = Vec.push_owned (last as i16u) units
     let text = String.from_code_units (Vec.to_array units)
     let bytes = Utf8String.from_string (ref text)

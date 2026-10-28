@@ -202,7 +202,7 @@ Created demo/llms.txt
 
 `AGENTS.md` は、プロジェクトで作業する AI エージェントへの指示（まず `tsuzuri guide` を読む、編集のたびに `tsuzuri check . --json`、守る規則、よくある誤り）で、`llms.txt` は <https://llmstxt.org> の形の索引です。どちらも英語で、プロジェクトの名前・名前空間・edition・コンパイラの版が入ります。`--no-agent-files` を付けると、この 2 つを作らず、出力は最初の 3 行だけです。
 
-`Tsuzuri.toml` は名前、版、言語版（`edition`）、名前空間を持ちます。`--namespace` を省略すると、フォルダー名から名前空間を導きます。導けない名前のときは、自分で渡してください。
+`Tsuzuri.toml` は名前、版、言語版（`edition`。既定は 2027 で、`--edition 2026` で選べます）、名前空間を持ちます。`--namespace` を省略すると、フォルダー名から名前空間を導きます。導けない名前のときは、自分で渡してください。
 
 ```toml
 [package]
@@ -281,6 +281,8 @@ tsuzuri check demo
 ```
 
 警告があっても、既定では終了コードは 0 のままです。`--deny-warnings` を付けると、警告だけで終了コード 1 になり、その後の処理へ進みません。
+
+`--warn canonical` を付けると、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に、正準形への書き換えを修正案として持つ警告 `W1007` を出します（edition 2026 のソースだけに出ます）。`--edition 2026` は、`Tsuzuri.toml` のないプロジェクトのソースを edition 2026 で読みます（`build`・`run`・`test`・`script` でも同じ。マニフェストがあると `E2000`）。
 
 `--warn untrusted-extern` を付けると、ルートのパッケージで宣言して使っている `extern` の関数のうち、`@trusted` のないものに警告 `W1010` を出します（`build`・`run`・`test` でも同じ。[属性](../values-and-functions/attributes.md#trusted-extern-の信頼の印)）。ルートのマニフェストに権限の宣言があれば、許可の外の使用を `E1036` で報告し、終了コード 1 です（[パッケージ](../organizing-tsuzuri/packages.md#権限capabilities)）。
 

@@ -197,7 +197,7 @@ private def normalize :: own Vec<i64> -> Vec<i64>
 fn normalize ranges =
 	let count = Vec.length (ref ranges) / 2
 	let mut keys: [i64] = new [i64](count, \_index -> 0)
-	for index in 0 .. count - 1 do Array.write index (ranges[2 * index] * 2097152 + ranges[2 * index + 1]) (ref mut keys)
+	for index in 0 ..= count - 1 do Array.write index (ranges[2 * index] * 2097152 + ranges[2 * index + 1]) (ref mut keys)
 	Array.sort_in_place (ref mut keys)
 	let mut output: Vec<i64> = Vec.with_capacity (2 * count)
 	let mut low = -1
@@ -442,7 +442,7 @@ fn add_class classes ranges set =
 private def same_text :: ref string -> own i64 -> own i64 -> own i64 -> bool
 fn same_text pattern first second length =
 	let mut same = true
-	for index in 0 .. length - 1 do
+	for index in 0 ..= length - 1 do
 		if pattern[first + index] != pattern[second + index] then same = false
 	same
 
@@ -902,7 +902,7 @@ fn best_slots re slots =
 
 private def copy_slots :: ref mut [i64..] -> own i64 -> own i64 -> own i64 -> unit
 fn copy_slots ws from into count =
-	for index in 0 .. count - 1 do
+	for index in 0 ..= count - 1 do
 		let value = ws[from + index]
 		Array.write (into + index) value ws
 
@@ -984,7 +984,7 @@ fn search re text bytes utf8 ws start slots first =
 	while running do
 		let code = if here < 0 then -1 else here / 8
 		if !matched && (pos == start || !re.anchored) then
-			for slot in 0 .. slots - 1 do Array.write (work + slot) (-1) ws
+			for slot in 0 ..= slots - 1 do Array.write (work + slot) (-1) ws
 			length = add_thread re ws slots list length 0 pos prev code
 		if length == 0 then running = false
 		else

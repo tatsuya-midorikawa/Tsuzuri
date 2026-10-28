@@ -215,6 +215,7 @@ def distance_of :: 'T -> 'U
 
 - **純粋性の契約**: `pure def` と関数型 `pure (T -> U)` は、観測できる副作用がないことをコンパイラが検査する契約です。引数は共有借用か平たいデータの `own` で、generic・純粋 callback・class／instance・`@cpu` にも対応します。停止・トラップしないこと・割り当てがないことは保証しません（[純粋関数](_tsuzuri/language-reference/values-and-functions/functions.md)）。
 - **契約**: 関数の本体の先頭に `@requires 条件`・`@ensures \r -> 条件` を書くと、`run`・`test` は入口と出口で検査し（`build` の既定は検査コードなし）、`tsuzuri test --contracts test` は性質テストを生成し、`tsuzuri prove` は z3 などの SMT ソルバーで証明します（[契約](_tsuzuri/language-reference/values-and-functions/contracts.md)）。
+- **正準形（edition 2027）**: 範囲は `a ..= b`（終端を含む）と `a ..< b`（含まない）、接尾辞は型名（`86i8u`・`1.5f32`）、借用はキーワード（`ref x`・`deref r`・`ref T`）、ラムダは `\x y -> e` の 1 つの書き方です。edition 2027 は別の書き方を `E0004` で拒否し、edition 2026 では `--warn canonical`（`W1007`）と `tsuzuri fix --edition 2027` が書き換えます（[for...in](_tsuzuri/language-reference/loops-and-conditionals/for-in.md#整数範囲の反復)）。
 - **信頼境界と権限**: `extern` の宣言に `@trusted [pure no_alloc ...]` を付けて、人が確かめた外部関数を記録します（印のない使用は `--warn untrusted-extern` と `tsuzuri audit` の `W1010`）。マニフェストの `[capabilities]` と依存の `capabilities = [...]` で、パッケージごとに `fs`・`net`・`env`・`time` など 9 個の権限を許すと、許可の外の静的な使用を `E1036` で拒否します。`tsuzuri audit` はパッケージごとの使用・許可・`extern` の信頼をテキストと JSON Lines（`tz-audit/1`）で報告します。実行時のサンドボックスではありません（[パッケージ: 権限](_tsuzuri/language-reference/organizing-tsuzuri/packages.md#権限capabilities)）。
 - **効果の表明**: `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` を `def` に付けると、コンパイラが関数の効果（確保・暗黙の複製・論理のトラップ・停止しない可能性）を型付き IR から推論し、表明を破れば `E1031` で拒否します。属性は検査だけで、生成コードは変わりません（[属性: 効果の表明](_tsuzuri/language-reference/values-and-functions/attributes.md#効果の表明no_allocno_copyno_trapterminates)）。
 - **カリー化と静的単相化**: すべての関数は自動的にカリー化されており、部分適用を自然に行えます。型クラスによるメソッド解決はコンパイル時に完全に完了し、動的ディスパッチやランタイム辞書渡しのコストを一切発生させません（明示した [`dyn` 型](_tsuzuri/language-reference/types-and-type-inference/type-classes.md) を除きます）。呼び出しに使われた具体的な型の組み合わせごとに最適化されたコードを生成します。
@@ -921,7 +922,7 @@ tsuzuri serve --status directory | --stop directory
 tsuzuri check|build ... [--no-server]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
-tsuzuri new directory [--namespace NAME] [--no-agent-files]
+tsuzuri new directory [--namespace NAME] [--edition 2026|2027] [--no-agent-files]
 tsuzuri guide [--level 0|1] [--topic NAME] [--list] [--json] [--edition YEAR]
 tsuzuri guide std [MODULE] | --agents [DIR] | --llms-txt [DIR]
 tsuzuri fetch directory [--json]
@@ -956,6 +957,8 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `-Os`, `-Oz` | サイズ重視の最適化（`build` と `run` だけ。`test`・`bench`・`repl`・`script` は `-O0`〜`-O3` だけ）。生成する LLVM IR は `-O3` と同じで（native の関数値の inline 属性 `alwaysinline` だけは、`-O0`・`-Os`・`-Oz` で外れます）、Clang に渡すレベルだけが変わります。意味・トラップ・`-g` は変わりません。 |
 | `--cpu generic\|native` | CPU 命令セットの特化（既定: `generic`。`native` はビルド機の命令セットとスケジューリングに最適化）。 |
 | `--deny-warnings` | 警告が存在する場合にコンパイルを失敗させ、コード生成や実行を行わずに停止します。 |
+| `--warn canonical` | edition 2026 のソースの、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に `W1007` を出し、正準形への書き換えを修正案として示します。 |
+| `--edition 2026\|2027` | `Tsuzuri.toml` のないプロジェクトのソースを読む edition（既定は 2027。マニフェストがあると `E2000`）。`check`・`build`・`run`・`test`・`script` と `tsuzuri new` で使えます。 |
 | `--warn untrusted-extern` | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出します。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
 | `-g`, `--debug-info` | DWARF デバッグ情報を付与します。`test` では `--index N -g -o PATH` で 1 件のテストをデバッグ用のランナーとしてビルドします（実行しません）。 |

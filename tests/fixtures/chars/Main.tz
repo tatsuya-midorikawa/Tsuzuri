@@ -1,7 +1,7 @@
 export def all_code_units :: i64
 fn all_code_units =
     let mut count = 0
-    for number in 0 .. 65535 do
+    for number in 0 ..= 65535 do
         let value = Char.of_u16 (number as i16u)
         assert (Char.to_u16 value == number as i16u)
         let text = to_string value

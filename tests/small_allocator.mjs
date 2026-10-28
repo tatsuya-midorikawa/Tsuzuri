@@ -95,7 +95,7 @@ try {
   writeFileSync(join(grow, "Grow.tz"), `export def grow :: i64 -> i64
 fn grow count =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 1i64 .. count do values = Vec.push_owned index values
+    for index in 1i64 ..= count do values = Vec.push_owned index values
     let result = Vec.to_array values
     Array.sum ref result
 `);
@@ -280,12 +280,12 @@ ${body}
     for (const [name, source] of [["a", `export def make_a :: i64 -> i64
 fn make_a count =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 1i64 .. count do values = Vec.push_owned index values
+    for index in 1i64 ..= count do values = Vec.push_owned index values
     let result = Vec.to_array values
     Array.sum ref result
 `], ["b", `export def make_b :: i64 -> i64
 fn make_b count =
-    let values = new [i64](count, index -> index)
+    let values = new [i64](count, \\index -> index)
     Array.sum ref values
 `]]) {
       const directory = join(work, `two-${name}`);

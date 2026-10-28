@@ -146,7 +146,7 @@ check("R10", ["while true do ()", "1 + 1"], ["it: i32 = 2"], {
 });
 
 // 17 MiB + 1 byte, as `tsuzuri run` of the same Main.tz writes.
-check("R11", ["do! IO.write_line (String.repeat (17l * 1048576l) \"x\")", "1 + 1"], ["it: i32 = 2"], {
+check("R11", ["do! IO.write_line (String.repeat (17i64 * 1048576i64) \"x\")", "1 + 1"], ["it: i32 = 2"], {
   errors: ["input:1:1: error[E2005]: program output exceeded 16 MiB and the program was stopped"],
 });
 

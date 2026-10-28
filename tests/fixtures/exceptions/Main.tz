@@ -106,7 +106,7 @@ export def loop_strings :: own i64 -> i64
 fn loop_strings count =
     let mut caught = 0
     let mut total = 0
-    for index in 0 .. count - 1 do
+    for index in 0 ..= count - 1 do
         let label = to_string index
         let result =
             try
@@ -186,19 +186,19 @@ fn bits value shift =
 
 export def suffixes :: i64
 fn suffixes =
-    let small = 100y
-    let byte = 200uy
-    let short = -300s
-    let word = 400us
-    let unsigned = 500u
-    let long = 6000000000l
-    let ulong = 7ul
-    let wide = 8L
-    let uwide = 9UL
-    let half = 1.5hf
-    let single = 2.5f
-    let quad = 3.5F
-    let decimal = 0.25m
+    let small = 100i8
+    let byte = 200i8u
+    let short = -300i16
+    let word = 400i16u
+    let unsigned = 500i32u
+    let long = 6000000000i64
+    let ulong = 7i64u
+    let wide = 8i128
+    let uwide = 9i128u
+    let half = 1.5f16
+    let single = 2.5f32
+    let quad = 3.5f128
+    let decimal = 0.25d64
     let integers = (small as i64) + (byte as i64) + (short as i64) + (word as i64) + (unsigned as i64) + long + (ulong as i64)
     let floats = (half as f64) + (single as f64) + (quad as f64) + (decimal as f64)
     integers + (wide as i64) + (uwide as i64) + floats as i64

@@ -1,5 +1,5 @@
 export def maybe_some :: i64
-fn maybe_some = Maybe.get (Maybe.map (n -> n + 1) (Some 41))
+fn maybe_some = Maybe.get (Maybe.map (\n -> n + 1) (Some 41))
 
 export def maybe_none_short_circuit :: i64
 fn maybe_none_short_circuit =
@@ -58,7 +58,7 @@ fn trap_propagation_statement = propagation_selected_branch false
 export def maybe_loop :: own i64 -> i64
 fn maybe_loop count =
     Maybe.default_value (-1) (Maybe {
-        for n in new [i64](count, i -> i) do
+        for n in new [i64](count, \i -> i) do
             do! if n < 0 then None else Some ()
         return count
     })
@@ -66,7 +66,7 @@ fn maybe_loop count =
 export def result_loop :: own i64 -> i64
 fn result_loop count =
     let result: Result<i64, i64> = Result {
-        for n in new [i64](count, i -> i) do
+        for n in new [i64](count, \i -> i) do
             do! if n < 0 then Error n else Ok ()
         return count
     }
@@ -121,23 +121,23 @@ fn owned_loop_failures =
 
 export def remaining_functions :: i64
 fn remaining_functions =
-    let first = Maybe.or_else (_unit -> Some 10) None
+    let first = Maybe.or_else (\_unit -> Some 10) None
     let missing: Result<i64, string> = Error ("ba" + "d")
-    assert (Result.is_error (&missing))
-    let second = Result.or_else (_unit -> Ok 11) missing
+    assert (Result.is_error (ref missing))
+    let second = Result.or_else (\_unit -> Ok 11) missing
     let success: Result<i64, string> = Ok 21
-    let third = Result.or_else (_unit -> unreachable ()) success
-    assert (Result.is_ok (&third))
-    let third = Result.bind (n -> Ok (n - 1)) (Result.map (n -> n + 1) third)
+    let third = Result.or_else (\_unit -> unreachable ()) success
+    assert (Result.is_ok (ref third))
+    let third = Result.bind (\n -> Ok (n - 1)) (Result.map (\n -> n + 1) third)
     Maybe.get first + Result.get second + Result.default_value 0 third
 
 export def defaults :: i64
 fn defaults =
-    let first = Maybe.default_with (_unit -> 0 / 0) (Some 10)
-    let second = Maybe.default_with (_unit -> 10) None
-    let third = Maybe.get (Maybe.or_else (_unit -> unreachable ()) (Some 10))
+    let first = Maybe.default_with (\_unit -> 0 / 0) (Some 10)
+    let second = Maybe.default_with (\_unit -> 10) None
+    let third = Maybe.get (Maybe.or_else (\_unit -> unreachable ()) (Some 10))
     let result: Result<i64, string> = Ok 12
-    let fourth = Result.default_with (_unit -> 0 / 0) result
+    let fourth = Result.default_with (\_unit -> 0 / 0) result
     first + second + third + fourth
 
 export def conversions :: i64
@@ -150,44 +150,44 @@ fn conversions =
         Maybe.default_value 11 (Maybe.of_result third) +
         Maybe.default_value 11 (Result.to_maybe fourth)
 
-def size :: &string -> i64
+def size :: ref string -> i64
 fn size text = text.length
 
 export def owned :: own i64 -> i64
 fn owned count =
     let mut total = 0
-    for _index in 1 .. count do
+    for _index in 1 ..= count do
         let maybe = Some ("ab" + "c")
-        let length = Maybe.get (Maybe.map_ref size (&maybe))
-        let copy = Maybe.get (Maybe.bind_ref (text -> Some (clone_string text)) (&maybe))
-        let filtered = Maybe.filter (text -> size text == 3) maybe
-        let joined = Maybe.get (Maybe.bind (text -> Some (text + "!")) filtered)
+        let length = Maybe.get (Maybe.map_ref size (ref maybe))
+        let copy = Maybe.get (Maybe.bind_ref (\text -> Some (clone_string text)) (ref maybe))
+        let filtered = Maybe.filter (\text -> size text == 3) maybe
+        let joined = Maybe.get (Maybe.bind (\text -> Some (text + "!")) filtered)
         let result: Result<string, i64> = Ok copy
-        let mapped = Result.map_ref size (&result)
-        let bound = Result.bind_ref (text -> Ok (clone_string text)) (&result)
+        let mapped = Result.map_ref size (ref result)
+        let bound = Result.bind_ref (\text -> Ok (clone_string text)) (ref result)
         let error: Result<string, string> = Error ("ba" + "d")
-        let error = Result.map_error (text -> text + "!") error
+        let error = Result.map_error (\text -> text + "!") error
         total = total + length + joined.length + Result.get mapped +
             (Result.get bound).length + (Result.get_error error).length + (Result.get result).length
     total
 
-def take :: &mut (Maybe<'a>) -> Maybe<'a>
+def take :: ref mut (Maybe<'a>) -> Maybe<'a>
 fn take value =
-    match *value with
+    match deref value with
     | Some item ->
-        *value = None
+        deref value = None
         Some item
     | None -> None
 
 export def copy_snapshot :: i64
 fn copy_snapshot =
     let mut value = Some [20, 22]
-    let previous = take (&mut value)
-    assert (Maybe.is_none (&value))
+    let previous = take (ref mut value)
+    assert (Maybe.is_none (ref value))
     let numbers = Maybe.get previous
     numbers[0] + numbers[1]
 
-def list_size :: &([|string|]) -> i64
+def list_size :: ref ([|string|]) -> i64
 fn list_size values =
     match values with
     | head :: tail ->
@@ -199,11 +199,11 @@ fn list_size values =
 export def borrowed_patterns :: i64
 fn borrowed_patterns =
     let values = [|"a", "bb", "ccc"|]
-    let mut total = list_size (&values)
+    let mut total = list_size (ref values)
     for (text, n) in [("hello", 1), ("there", 2)] do
         total = total + text.length + n
     let nested = Some (Some "hello")
-    total + (match &nested with
+    total + (match ref nested with
              | Some inner -> match inner with | Some text -> text.length | None -> 0
              | None -> 0)
 

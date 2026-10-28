@@ -1,5 +1,5 @@
 def rows :: own i64 -> [string]
-fn rows count = new [string](count, index -> "\u6771\u4eac," + to_string index + ",\u5927\u962a")
+fn rows count = new [string](count, \index -> "\u6771\u4eac," + to_string index + ",\u5927\u962a")
 
 def fields :: ref [string] -> Vec<string>
 fn fields lines =

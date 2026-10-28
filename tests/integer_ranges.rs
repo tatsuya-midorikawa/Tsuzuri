@@ -87,19 +87,19 @@ fn has_flag(text: &str) -> bool {
 const PROGRAMS: &[(&str, &str)] = &[
     (
         "ascending",
-        "def ascending :: i64 -> i64\nfn ascending n =\n    let mut total = 0i64\n    for i in 0 .. n do total = total + i\n    total\n",
+        "def ascending :: i64 -> i64\nfn ascending n =\n    let mut total = 0i64\n    for i in 0 ..= n do total = total + i\n    total\n",
     ),
     (
         "descending",
-        "def descending :: i64 -> i64\nfn descending n =\n    let mut total = 0i64\n    for i in n .. -1 .. 0 do total = total + i\n    total\n",
+        "def descending :: i64 -> i64\nfn descending n =\n    let mut total = 0i64\n    for i in n .. -1 ..= 0 do total = total + i\n    total\n",
     ),
     (
         "unsigned",
-        "def unsigned :: i64u -> i64u\nfn unsigned n =\n    let mut total = 0i64u\n    for i in 0i64u .. n do total = total + i\n    total\n",
+        "def unsigned :: i64u -> i64u\nfn unsigned n =\n    let mut total = 0i64u\n    for i in 0i64u ..= n do total = total + i\n    total\n",
     ),
     (
         "wide",
-        "def wide :: i128 -> i128\nfn wide n =\n    let mut total = 0i128\n    for i in 0i128 .. n do total = total + i\n    total\n",
+        "def wide :: i128 -> i128\nfn wide n =\n    let mut total = 0i128\n    for i in 0i128 ..= n do total = total + i\n    total\n",
     ),
     (
         "narrow_up",
@@ -111,11 +111,11 @@ const PROGRAMS: &[(&str, &str)] = &[
     ),
     (
         "narrow_unsigned",
-        "def narrow_unsigned :: i32u -> i64\nfn narrow_unsigned n =\n    let mut total = 0i64\n    for i in 0i32u .. n do total = total + (i as i64)\n    total\n",
+        "def narrow_unsigned :: i32u -> i64\nfn narrow_unsigned n =\n    let mut total = 0i64\n    for i in 0i32u ..= n do total = total + (i as i64)\n    total\n",
     ),
     (
         "stepped",
-        "def stepped :: i64 -> i64\nfn stepped n =\n    let mut total = 0i64\n    for i in 0 .. 2 .. n do total = total + i\n    total\n",
+        "def stepped :: i64 -> i64\nfn stepped n =\n    let mut total = 0i64\n    for i in 0 .. 2 ..= n do total = total + i\n    total\n",
     ),
     (
         "each_array",
@@ -135,7 +135,7 @@ const PROGRAMS: &[(&str, &str)] = &[
     ),
     (
         "counted",
-        "def counted :: i64 -> i64\nfn counted count =\n    let values = new [i64](count, \\i -> i * 3)\n    let mut total = 0i64\n    for i in 0 .. values.length - 1 do total = total + values[i] + i * 4 + 3\n    total\n",
+        "def counted :: i64 -> i64\nfn counted count =\n    let values = new [i64](count, \\i -> i * 3)\n    let mut total = 0i64\n    for i in 0 ..= values.length - 1 do total = total + values[i] + i * 4 + 3\n    total\n",
     ),
 ];
 
@@ -1496,11 +1496,11 @@ fn proven_flags_are_those_of_an_evaluation_of_every_input() {
 /// body those that the range of the counter proves, and a mutable local proves nothing.
 const LOOPS: &[(&str, &[&str])] = &[
     (
-        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. 99 do total = total + i * 2\n    total",
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 ..= 99 do total = total + i * 2\n    total",
         &["add i64 %, %", "add nsw i64 %, 1", "mul nuw nsw i64 %, 2"],
     ),
     (
-        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 100 .. -1 .. 1 do total = total + (i - 1)\n    total",
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 100 .. -1 ..= 1 do total = total + (i - 1)\n    total",
         &[
             "add i64 %, %",
             "add nsw i64 %, 18446744073709551615",
@@ -1510,19 +1510,19 @@ const LOOPS: &[(&str, &[&str])] = &[
     // The counter of a loop to an unknown bound can be the maximum: `i + 1` cannot be proved to be
     // free of signed overflow, but the counter is not negative.
     (
-        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. n do total = total + (i + 1)\n    total",
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 ..= n do total = total + (i + 1)\n    total",
         &["add i64 %, %", "add nsw i64 %, 1", "add nuw i64 %, 1"],
     ),
     (
-        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. n do total = total + i * 2\n    total",
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 ..= n do total = total + i * 2\n    total",
         &["add i64 %, %", "add nsw i64 %, 1", "mul nuw i64 %, 2"],
     ),
     (
-        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 .. n do total = total + i * 3\n    total",
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 0 ..= n do total = total + i * 3\n    total",
         &["add i64 %, %", "add nsw i64 %, 1", "mul i64 %, 3"],
     ),
     (
-        "def f :: ref [i64] -> i64\nfn f values =\n    let mut total = 0\n    for i in 0 .. values.length - 1 do total = total + (i + 1)\n    total",
+        "def f :: ref [i64] -> i64\nfn f values =\n    let mut total = 0\n    for i in 0 ..= values.length - 1 do total = total + (i + 1)\n    total",
         &[
             "add i64 %, %",
             "add nsw i64 %, 1",
@@ -1532,11 +1532,11 @@ const LOOPS: &[(&str, &[&str])] = &[
     ),
     // A step of unknown sign keeps the counter between the bounds, which are known.
     (
-        "def f :: i64 -> i64 -> i64\nfn f n s =\n    let mut total = 0\n    for i in 0 .. s .. 9 do total = total + (i + 1)\n    total",
+        "def f :: i64 -> i64 -> i64\nfn f n s =\n    let mut total = 0\n    for i in 0 .. s ..= 9 do total = total + (i + 1)\n    total",
         &["add i64 %, %", "add nuw nsw i64 %, 1"],
     ),
     (
-        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 9 .. -1 .. n do total = total + (i + 1)\n    total",
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 9 .. -1 ..= n do total = total + (i + 1)\n    total",
         &[
             "add i64 %, %",
             "add nsw i64 %, 1",
@@ -1544,7 +1544,7 @@ const LOOPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "def f :: i8u -> i64\nfn f n =\n    let mut total = 0\n    for i in 0i8u .. n do total = total + ((i as i64) + 1)\n    total",
+        "def f :: i8u -> i64\nfn f n =\n    let mut total = 0\n    for i in 0i8u ..= n do total = total + ((i as i64) + 1)\n    total",
         &[
             "add i64 %, %",
             "add nuw nsw i64 %, 1",
@@ -1559,7 +1559,7 @@ const LOOPS: &[(&str, &[&str])] = &[
     // A descending counter takes its largest value first: `i + 1` overflows as a signed number at
     // the start, although the loop ends at 9223372036854775806.
     (
-        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 9223372036854775807 .. -1 .. 9223372036854775806 do total = total + (i + 1)\n    total",
+        "def f :: i64 -> i64\nfn f n =\n    let mut total = 0\n    for i in 9223372036854775807 .. -1 ..= 9223372036854775806 do total = total + (i + 1)\n    total",
         &[
             "add i64 %, %",
             "add nsw i64 %, 18446744073709551615",

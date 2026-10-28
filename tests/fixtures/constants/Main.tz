@@ -29,7 +29,7 @@ fn owned_values =
     total
 
 export def borrowed_values :: i64
-fn borrowed_values = String.length (&Text) + Array.length (&Values) + String.length ref Text - 1
+fn borrowed_values = String.length (ref Text) + Array.length (ref Values) + String.length ref Text - 1
 
 export def float_values :: bool
 fn float_values = Half == 1.001953125f16 && 1.0 / NegativeZero < 0.0 && Infinity > 1.0f32 && Nan != Nan

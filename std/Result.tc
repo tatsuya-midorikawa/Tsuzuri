@@ -17,13 +17,13 @@ fn Bind2 left right next =
     | Error error -> Error error
     | Ok (first, second) -> Ok (next first second)
 
-def is_ok :: &(Result<'a, 'e>) -> bool
+def is_ok :: ref (Result<'a, 'e>) -> bool
 fn is_ok result =
     match result with
     | Ok _ -> true
     | Error _ -> false
 
-def is_error :: &(Result<'a, 'e>) -> bool
+def is_error :: ref (Result<'a, 'e>) -> bool
 fn is_error result = ! (is_ok result)
 
 def get :: own Result<'a, 'e> -> 'a
@@ -56,10 +56,10 @@ fn map transform result =
     | Ok value -> Ok (transform value)
     | Error error -> Error error
 
-def map_ref :: Copy<'e> => own (&'a -> 'b) -> &(Result<'a, 'e>) -> Result<'b, 'e>
+def map_ref :: Copy<'e> => own (ref 'a -> 'b) -> ref (Result<'a, 'e>) -> Result<'b, 'e>
 fn map_ref transform result =
     match result with
-    | Ok value -> Ok (transform (&value))
+    | Ok value -> Ok (transform (ref value))
     | Error error -> Error error
 
 def map_error :: own ('e -> 'f) -> own Result<'a, 'e> -> Result<'a, 'f>
@@ -74,10 +74,10 @@ fn bind next result =
     | Ok value -> next value
     | Error error -> Error error
 
-def bind_ref :: Copy<'e> => own (&'a -> Result<'b, 'e>) -> &(Result<'a, 'e>) -> Result<'b, 'e>
+def bind_ref :: Copy<'e> => own (ref 'a -> Result<'b, 'e>) -> ref (Result<'a, 'e>) -> Result<'b, 'e>
 fn bind_ref next result =
     match result with
-    | Ok value -> next (&value)
+    | Ok value -> next (ref value)
     | Error error -> Error error
 
 def or_else :: own (unit -> Result<'a, 'e>) -> own Result<'a, 'e> -> Result<'a, 'e>
@@ -126,7 +126,7 @@ def For :: Copy<'a> => own ['a] -> own ('a -> Result<unit, 'e>) -> Result<unit, 
 fn For values body =
     let mut result = Ok ()
     let mut index = 0
-    while index < values.length && is_ok (&result) do
+    while index < values.length && is_ok (ref result) do
         result = body values[index]
         index = index + 1
     result
@@ -134,6 +134,6 @@ fn For values body =
 def While :: own (unit -> bool) -> own (unit -> Result<unit, 'e>) -> Result<unit, 'e>
 fn While guard body =
     let mut result = Ok ()
-    while is_ok (&result) && guard () do
+    while is_ok (ref result) && guard () do
         result = body ()
     result

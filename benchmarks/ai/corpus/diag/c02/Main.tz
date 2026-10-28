@@ -12,7 +12,7 @@ def percent :: i64 -> i64 -> i64 = \part whole ->
 def bar :: i64 -> string = \percent_value ->
     let filled = clamp 0 10 (percent_value / 10)
     let mut text = ""
-    for i in 1 .. 10 do
+    for i in 1 ..= 10 do
         text = text + (if i <= filled then "#" else ".")
     text
 

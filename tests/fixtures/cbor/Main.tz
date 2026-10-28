@@ -138,7 +138,7 @@ fn decode_hash case =
 export def nesting :: own i64 -> i64
 fn nesting count =
     let mut bytes = Vec.empty()
-    for _index in 1 .. count do bytes = Vec.push_owned 129ubyte bytes
+    for _index in 1 ..= count do bytes = Vec.push_owned 129ubyte bytes
     let input = Vec.to_array (Vec.push_owned 128ubyte bytes)
     match Cbor.decode (ref input) with
     | Ok _ -> -1
@@ -169,7 +169,7 @@ fn scene_hash =
 def descending_keys :: own i64 -> Vec<i64>
 fn descending_keys count =
     let mut keys = Vec.with_capacity count
-    for index in 1 .. count do keys = Vec.push_owned (count - index) keys
+    for index in 1 ..= count do keys = Vec.push_owned (count - index) keys
     keys
 
 /// `count` entries whose keys descend, decoded from CBOR: inserting them into the sorted `Map` or
@@ -187,7 +187,7 @@ fn descending case count =
         | Error error -> error_status (ref error)
     | _ ->
         let mut pairs = Vec.with_capacity count
-        for index in 1 .. count do pairs = Vec.push_owned (count - index, (count - index) * 3) pairs
+        for index in 1 ..= count do pairs = Vec.push_owned (count - index, (count - index) * 3) pairs
         let bytes = Result.get (Cbor.serialize (ref pairs))
         let decoded: Result<Map<i64, i64>, Json.Error> = Cbor.deserialize (ref bytes)
         match decoded with
@@ -199,7 +199,7 @@ fn descending case count =
 def scattered :: own i64 -> Vec<i64>
 fn scattered count =
     let mut keys = Vec.with_capacity count
-    for index in 0 .. (count - 1) do
+    for index in 0 ..= (count - 1) do
         let source = if index == count - 1 then 0 elif index == count / 2 then count / 3 else index
         keys = Vec.push_owned ((source * 7919) % count) keys
     keys

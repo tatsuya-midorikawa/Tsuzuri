@@ -67,8 +67,8 @@ test "sort_range with a negative count" = sink (Vec.sort_range 0 (-1) (numbers()
 test "sort_range past the length" = sink (Vec.sort_range 2 2 (numbers()))
 test "sort_range_with below zero" = sink (Vec.sort_range_with (-1) 1 (\left right -> left - right) (numbers()))
 test "sort_range_with past the length" = sink (Vec.sort_range_with 2 2 (\left right -> left - right) (numbers()))
-test "sort_range_withr below zero" = sink (Vec.sort_range_withr (-1) 1 (\left right -> *left - *right) (numbers()))
-test "sort_range_withr past the length" = sink (Vec.sort_range_withr 2 2 (\left right -> *left - *right) (numbers()))
+test "sort_range_withr below zero" = sink (Vec.sort_range_withr (-1) 1 (\left right -> deref left - deref right) (numbers()))
+test "sort_range_withr past the length" = sink (Vec.sort_range_withr 2 2 (\left right -> deref left - deref right) (numbers()))
 
 // ---- Searching by value ----
 
@@ -151,7 +151,7 @@ test "remove_all calls the predicate once for each element in order" =
     | (_rest, _removed) -> assert false
 
 test "remove_allr calls the predicate once for each element in order" =
-    match Vec.remove_allr (\number -> seen *number (*number % 2 == 0)) (Vec.of_array [5, 1, 4, 2, 3]) with
+    match Vec.remove_allr (\number -> seen (deref number) (deref number % 2 == 0)) (Vec.of_array [5, 1, 4, 2, 3]) with
     | (_rest, _removed) -> assert false
 
 test "exists stops at the first match in order" =

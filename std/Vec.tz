@@ -188,7 +188,7 @@ private def unordered_first :: Eq<'a> => ref mut ['a..] -> i64
 fn unordered_first view =
     let length = view.length
     let mut found = 0
-    for index in 0 .. (length - 1) do
+    for index in 0 ..= (length - 1) do
         if !(Eq.eq (ref view[index]) (ref view[index])) then found = found + 1
     if found > 0 && found < length then
         let _end = partition_unordered view 0 length
@@ -267,14 +267,14 @@ private def sort_slice_by :: own (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> 
 fn sort_slice_by comparison values =
     let length = values.length
     let blocks = length / 20
-    for block in 0i64 .. (blocks - 1) do
+    for block in 0i64 ..= (blocks - 1) do
         insertion_by comparison values (block * 20) (block * 20 + 20)
     insertion_by comparison values (blocks * 20) length
     let mut width = 20i64
     let mut double = 40i64
     while width < length do
         let pairs = length / double
-        for pair in 0i64 .. (pairs - 1) do
+        for pair in 0i64 ..= (pairs - 1) do
             merge_by comparison values (pair * double) (pair * double + width) (pair * double + double)
         let rest = pairs * double
         if rest + width < length then merge_by comparison values rest (rest + width) length
@@ -283,7 +283,7 @@ fn sort_slice_by comparison values =
 
 private def insertion_by :: own (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> own i64 -> own i64 -> unit
 fn insertion_by comparison values first last =
-    for index in (first + 1) .. (last - 1) do
+    for index in (first + 1) ..= (last - 1) do
         let mut current = index
         while current > first && comparison (ref values[current]) (ref values[current - 1]) < 0 do
             Array.swap_in current (current - 1) values
@@ -298,7 +298,7 @@ fn rec merge_by comparison values first middle last =
         while low < high do
             let half = low + (high - low) / 2
             if comparison (ref values[half]) (ref values[first]) < 0 then low = half + 1 else high = half
-        for index in first .. (low - 2) do
+        for index in first ..= (low - 2) do
             Array.swap_in index (index + 1) values
     elif last - middle == 1 then
         let mut low = first
@@ -306,7 +306,7 @@ fn rec merge_by comparison values first middle last =
         while low < high do
             let half = low + (high - low) / 2
             if !(comparison (ref values[middle]) (ref values[half]) < 0) then low = half + 1 else high = half
-        for index in middle .. -1 .. (low + 1) do
+        for index in middle .. -1 ..= (low + 1) do
             Array.swap_in index (index - 1) values
     else
         let center = first + (last - first) / 2
@@ -331,10 +331,10 @@ fn rotate_slice values first middle last =
         let count = if left > right then right else left
         let source = middle - left
         let target = if left > right then middle else middle + right - left
-        for step in 0i64 .. (count - 1) do
+        for step in 0i64 ..= (count - 1) do
             Array.swap_in (source + step) (target + step) values
         if left > right then left = left - right else right = right - left
-    for step in 0i64 .. (left - 1) do
+    for step in 0i64 ..= (left - 1) do
         Array.swap_in (middle - left + step) (middle + step) values
 
 // ---- Searching ----
@@ -544,14 +544,14 @@ fn ordering left right =
     else 0
 
 def binary_searchr :: Ord<'a> => ref 'a -> ref Vec<'a> -> i64
-fn binary_searchr item values = search values 0 (Vec.length values) (element -> ordering element item)
+fn binary_searchr item values = search values 0 (Vec.length values) (\element -> ordering element item)
 
 def binary_search :: Ord<'a> => own 'a -> ref Vec<'a> -> i64
 fn binary_search item values = binary_searchr (ref item) values
 
 def binary_search_withr :: ref 'a -> own (ref 'a -> ref 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_withr item comparison values =
-    search values 0 (Vec.length values) (element -> comparison element item)
+    search values 0 (Vec.length values) (\element -> comparison element item)
 
 def binary_search_with :: Copy<'a> => own 'a -> own ('a -> 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_with item comparison values =
@@ -560,7 +560,7 @@ fn binary_search_with item comparison values =
 def binary_search_range :: Copy<'a> => own i64 -> own i64 -> own 'a -> own ('a -> 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_range index count item comparison values =
     assert (index >= 0 && count >= 0 && Vec.length values - index >= count)
-    search values index count (element -> comparison (deref element) item)
+    search values index count (\element -> comparison (deref element) item)
 
 // ---- Visiting and converting ----
 
@@ -607,7 +607,7 @@ fn convert_all converter values =
 def get_range :: Copy<'a> => own i64 -> own i64 -> ref Vec<'a> -> Vec<'a>
 fn get_range index count values =
     assert (index >= 0 && count >= 0 && Vec.length values - index >= count)
-    Vec.of_array (new ['a](count, position -> values[index + position]))
+    Vec.of_array (new ['a](count, \position -> values[index + position]))
 
 def slice :: Copy<'a> => own i64 -> own i64 -> ref Vec<'a> -> Vec<'a>
 fn slice start length values = get_range start length values

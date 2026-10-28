@@ -58,8 +58,8 @@ namespace = "GeometryTools"
 
 `edition` は、そのパッケージのソースを読む規則の版です。`2026` と `2027` に対応します。
 値を省略したマニフェストは、新しい edition ができても `2026` のままです。
-2027 は現在の最新で、通常の関数の引数を既定で共有借用にします。manifest のない CLI 入力・script・REPL、
-新規プロジェクトも 2027 です。`own T` は旧版の値渡し、`mut T` は排他借用を明示します。
+2027 は現在の最新で、通常の関数の引数を既定で共有借用にします。また、同じ意味の書き方が複数あった表記を正準形に絞ります（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、`x -> e` の旧ラムダは `E0004`。[診断](../compiler/diagnostics.md)）。manifest のない CLI 入力・script・REPL、
+新規プロジェクトも 2027 です（`tsuzuri new --edition 2026` で 2026 を選べます。manifest のない入力は `--edition 2026` で 2026 として読めます）。`own T` は旧版の値渡し、`mut T` は排他借用を明示します。
 旧ソースは [`fix --edition 2027 --from 2026`](../compiler/usage.md#fix) で契約を保って移行できます。
 詳しくは[引数の所有権](../values-and-functions/functions.md#引数の所有権own-と-edition-2027)を参照してください。
 
@@ -78,7 +78,7 @@ Tsuzuri.toml:1:1: error[E0002]: unsupported edition '2030'; supported editions: 
 
 edition はパッケージごとに決まります。依存パッケージ（path、git、registry）は自分の
 `Tsuzuri.toml` の edition で解決した署名を公開します。2027 の呼び出し側でも、2026 の
-依存関数の無印の所有引数は移動のままです。`Tsuzuri.toml` のない入力と std は現在も 2026 です。
+依存関数の無印の所有引数は移動のままです。`Tsuzuri.toml` のない入力と std は 2027 です。
 `tsuzuri fmt` は、入力のディレクトリ（ファイルなら親）の manifest の edition で整形し、上位は探しません。
 [安定性と互換性の方針](../../../docs/stability.md#edition)に保証の範囲をまとめています。
 

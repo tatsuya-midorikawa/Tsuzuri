@@ -12,7 +12,7 @@ def rec size :: Tree -> i64 = \tree ->
 
 def bump :: i64 -> i64 = \n ->
     let total = Mutex.create 0i64
-    let _seen = Task.scope (ref total) 4 (shared -> index -> Mutex.with_lock shared (value -> {
+    let _seen = Task.scope (ref total) 4 (\shared index -> Mutex.with_lock shared (\value -> {
         deref value = deref value + index + n;
         index
     }))

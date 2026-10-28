@@ -17,7 +17,7 @@ fn is_empty values = values.length == 0
 
 /// Returns a new list with a copy of every element, the explicit form of an implicit list copy.
 def copy :: Copy<'a> => ref [|'a|] -> [|'a|]
-fn copy values = *values
+fn copy values = deref values
 
 /// The list of the elements of `items`, in order. The elements move, so they need not be `Copy`; the list is a chain of
 /// chunks, as one built by `List.cons` is.
@@ -38,7 +38,7 @@ fn of_vec items =
 
 /// A list of the arrays of `arrays`, in order.
 private def lists_of :: Copy<'a> => ref [['a]] -> [|[|'a|]|]
-fn lists_of arrays = new [|[|'a|]|](arrays.length, index -> Array.to_list (ref arrays[index]))
+fn lists_of arrays = new [|[|'a|]|](arrays.length, \index -> Array.to_list (ref arrays[index]))
 
 /// The number of elements that two lists share. The functions that take two lists visit the shared prefix before they
 /// trap on lists of different lengths, as F# does.
@@ -687,11 +687,11 @@ fn pairwise values = Array.to_list (Array.pairwise (List.to_array values))
 
 /// The `length` elements of `source` from `start`, as a list.
 private def slice_list :: Copy<'a> => ref ['a] -> own i64 -> own i64 -> [|'a|]
-fn slice_list source start length = new [|'a|](length, offset -> source[start + offset])
+fn slice_list source start length = new [|'a|](length, \offset -> source[start + offset])
 
 private def windows_of :: Copy<'a> => own i64 -> ref ['a] -> [|[|'a|]|]
 fn windows_of size source =
-    if size > source.length then [||] else new [|[|'a|]|](source.length - size + 1, start -> slice_list source start size)
+    if size > source.length then [||] else new [|[|'a|]|](source.length - size + 1, \start -> slice_list source start size)
 
 def windowed :: Copy<'a> => own i64 -> ref [|'a|] -> [|[|'a|]|]
 fn windowed size values =
@@ -705,7 +705,7 @@ fn chunk_at source size index =
 
 private def chunks_of :: Copy<'a> => own i64 -> ref ['a] -> [|[|'a|]|]
 fn chunks_of size source =
-    new [|[|'a|]|](source.length / size + (if source.length % size == 0 then 0 else 1), index -> chunk_at source size index)
+    new [|[|'a|]|](source.length / size + (if source.length % size == 0 then 0 else 1), \index -> chunk_at source size index)
 
 def chunk_by_size :: Copy<'a> => own i64 -> ref [|'a|] -> [|[|'a|]|]
 fn chunk_by_size size values =
@@ -720,7 +720,7 @@ private def parts_of :: Copy<'a> => own i64 -> ref ['a] -> [|[|'a|]|]
 fn parts_of count source =
     if source.length == 0 then [||] else
         let parts = if count < source.length then count else source.length
-        new [|[|'a|]|](parts, index -> part_at source (source.length / parts) (source.length % parts) index)
+        new [|[|'a|]|](parts, \index -> part_at source (source.length / parts) (source.length % parts) index)
 
 def split_into :: Copy<'a> => own i64 -> ref [|'a|] -> [|[|'a|]|]
 fn split_into count values =
@@ -788,7 +788,7 @@ fn to_seq values =
     Seq.unfold (\state ->
         match state with
         | (elements, index) ->
-            if index < Vec.length (ref elements) then Maybe.Some (*elements[index], (elements, index + 1))
+            if index < Vec.length (ref elements) then Maybe.Some (deref elements[index], (elements, index + 1))
             else Maybe.None) (references values, 0)
 
 // ---- Duplicates and groups ----
@@ -808,7 +808,7 @@ fn count_by projection values = Array.to_list (Array.count_by projection (List.t
 def group_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref [|'a|] -> [|('key * [|'a|])|]
 fn group_by projection values =
     let groups = Array.group_by projection (List.to_array values)
-    new [|('key * [|'a|])|](groups.length, index ->
+    new [|('key * [|'a|])|](groups.length, \index ->
         match groups[index] with
         | (key, members) -> (key, Array.to_list (ref members)))
 

@@ -280,9 +280,9 @@ result=[10, 99, 30]
 
 ```tsuzuri run=after_five%3D8%20after_nine%3D16%20ensured%3D40%20exact%3D12%20trimmed%3D9
 let mut values: Vec<i64> = Vec.empty()
-for n in 1i64 .. 5 do values = Vec.add n values
+for n in 1i64 ..= 5 do values = Vec.add n values
 let after_five = Vec.capacity (ref values)
-for n in 6i64 .. 9 do values = Vec.add n values
+for n in 6i64 ..= 9 do values = Vec.add n values
 let after_nine = Vec.capacity (ref values)
 values = Vec.ensure_capacity 40 values
 let ensured = Vec.capacity (ref values)

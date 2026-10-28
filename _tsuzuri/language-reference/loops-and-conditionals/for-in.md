@@ -5,7 +5,7 @@
 ## この記事のポイント
 
 - 構文は `for パターン in コレクション do 本体` です。本体も式全体も `unit` です。
-- 配列、リスト、`Vec`、`string`、`utf8string`、整数範囲、`Seq` を直接反復できます。
+- 配列、リスト、`Vec`、`string`、`utf8string`、整数範囲、`Seq` を直接反復できます。整数範囲は終端を含む `a ..= b` と含まない `a ..< b` です。
 - `Map`、`Set`、`HashMap`、`HashSet` やユーザー定義型は、`Module.iter` で `Seq` にしてから反復します。
 - 配列、リスト、`Vec`、文字列の走査中はコレクションが共有借用されます。要素のための複製はありません。
 - `string` は UTF-16 コード単位（`i16u`）、`utf8string` は UTF-8 バイト（`ubyte`）です。
@@ -59,18 +59,18 @@ Tsuzuri の `for...in` が直接受理するコレクションは以下の通り
 | 配列 `[T]` | メモリ格納順の要素 | 要素型 `T` | 0 番目から末尾まで |
 | 連結リスト `[\|T\|]` | 先頭からの要素 | 要素型 `T` | 先頭の chunk から順 |
 | `Vec<T>` | インデックス昇順の要素 | 要素型 `T` | 0 番目から末尾まで |
-| 整数範囲 `a .. b` | 昇順または降順の整数 | その整数型 | 刻みごと |
+| 整数範囲 `a ..= b`・`a ..< b` | 昇順または降順の整数 | その整数型 | 刻みごと |
 | `string` | UTF-16 コード単位 | `i16u` | 16 bit（`.length` と同じ単位） |
 | `utf8string` | UTF-8 バイト | `ubyte` | 8 bit のバイト |
 | `Seq<'a>` | 遅延列挙される要素 | `'a` | `Seq.next` で 1 つずつ |
 
 ### 整数範囲の反復
 
-`start .. finish` およびステップ幅を指定する `start .. step .. finish` を使って、整数範囲を走査できます。
+`start ..= finish`（終端を含む）と `start ..< finish`（終端を含まない）、ステップ幅を指定する `start .. step ..= finish`・`start .. step ..< finish` を使って、整数範囲を走査できます。配列の添字を順に回すときは `0 ..< xs.length` と書きます。
 
 ```tsuzuri run=30
 let mut sum = 0
-for i in 1 .. 4 do
+for i in 1 ..= 4 do
     sum = sum + i * 3
 sum
 ```
@@ -85,7 +85,7 @@ sum
 
 ```tsuzuri run=28
 let mut result = 0
-for n in 10 .. -2 .. 4 do
+for n in 10 .. -2 ..= 4 do
     result = result + n
 result
 ```
@@ -96,9 +96,28 @@ result
 28
 ```
 
-対応するのは 8 bit から 128 bit までの符号付き・符号なし整数です。開始、刻み、終了は同じ型で、この順に 1 回ずつ評価されます。刻みが `0` だと実行時に言語トラップします（`range step is zero`）。終端を越えない値までを列挙し、次の値が型の範囲を外れるとその場で止まります。`125i8 .. 2i8 .. 127i8` は `125` と `127` だけです。
+```tsuzuri run=123
+let words = ["a", "bb", "ccc"]
+let mut total = 0
+for i in 0 ..< words.length do
+    total = total * 10 + words[i].length
+total
+```
 
-この `..` は `for...in` 専用の列挙構文です。変数に保存すると `E1005`（`a range is an enumerable expression for 'for...in', not a stored value`）になります。浮動小数点の範囲もありません。配列の添字は両端を含むので、`0 .. (words.length - 1)` とします。固定長配列 `[T; N]` も直接は反復できず、`E1005`（`a fixed-length array is not enumerable`）になります。添字の範囲で回して要素を読んでください。
+実行結果:
+
+```text
+123
+```
+
+対応するのは 8 bit から 128 bit までの符号付き・符号なし整数です。開始、刻み、終了は同じ型で、この順に 1 回ずつ評価されます。刻みが `0` だと、範囲が空でも実行時に言語トラップします（`range step is zero`）。`..=` は終端を越えない値まで、`..<` は終端に届く手前の値までを列挙し（正の刻みなら `v < finish`、負の刻みなら `v > finish`）、次の値が型の範囲を外れるとその場で止まります。`125i8 .. 2i8 ..= 127i8` は `125` と `127`、`125i8 .. 2i8 ..< 127i8` は `125` だけです。`3 ..< 3` は空です。
+
+`0 ..< xs.length` で `xs[i]` を読むループは、添字の境界検査を省けることをコンパイラが証明します（`0 ..= xs.length - 1` と同じです）。
+
+範囲は `for...in` 専用の列挙構文です。変数に保存すると `E1005`（`a range is an enumerable expression for 'for...in', not a stored value`）になります。浮動小数点の範囲もありません。ステップは 1 つだけで、`0 ..= 3 .. 6` のように 2 つ目の演算子が `..=`・`..<` だと `E0002`（`a range takes at most one step; write 'start .. step ..= finish'`）です。
+
+> [!NOTE]
+> 演算子のない素の `..`（`for i in 1 .. 4`）は `..=` と同じ意味ですが、edition 2027 では `E0004` です（edition 2026 では受理し、`--warn canonical` で `W1007` を出します）。`tsuzuri fix --edition 2027` が `..=` に書き換えます。スライスの `xs[a..b]` の `..` は半開のままで、どの edition でも使えます。固定長配列 `[T; N]` も直接は反復できず、`E1005`（`a fixed-length array is not enumerable`）になります。添字の範囲で回して要素を読んでください。
 
 ### 文字列の走査（string と utf8string）
 
@@ -185,7 +204,7 @@ total
 let values = Vec.push_owned 40 (Vec.push_owned 20 (Vec.empty()))
 let mut total = 0
 
-for item in Vec.iter (&values) do
+for item in Vec.iter (ref values) do
     total = total + deref item
 
 total
@@ -203,7 +222,7 @@ total
 let m = Map.singleton "answer" 42
 let mut result = 0
 
-for (key, value) in Map.iter (&m) do
+for (key, value) in Map.iter (ref m) do
     if deref key == "answer" then
         result = deref value
 
@@ -300,7 +319,7 @@ error[E1013]: a borrowed value cannot outlive its pattern or iteration binding
 ```tsuzuri run=12
 let mut sum = 0
 
-for n in 1 .. 10 do
+for n in 1 ..= 10 do
     if n % 2 == 1 then
         continue
     if n > 6 then

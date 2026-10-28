@@ -97,8 +97,8 @@ fn spacing_preserves_calls_indices_generics_and_prefix_operators() {
             "record Pair<'a, 'b> { left: 'a, right: 'b }\n",
         ),
         (
-            "def get::&i64->i64\nfn get value=*value",
-            "def get :: &i64 -> i64\nfn get value = *value\n",
+            "def get::ref i64->i64\nfn get value=deref value",
+            "def get :: ref i64 -> i64\nfn get value = deref value\n",
         ),
         (
             "Maybe{let! value=Some 1;return value}",
@@ -151,7 +151,7 @@ fn inline_definitions_and_implicit_unions_preserve_layout_and_fingerprints() {
 
 #[test]
 fn formats_exclusive_slices() {
-    let source = "def fill::ref mut [i64..]->i64->unit=\\values value->Array.write 0 value values\nlet mut values:[i64]=[1,2,3]\nlet tail=ref mut values[1..]\nfill tail 2\nlet head=&mut values[..2]\nfill head 1\nlet whole:ref mut [i64..]=ref mut values[0..]\nwhole.length\n";
+    let source = "def fill::ref mut [i64..]->i64->unit=\\values value->Array.write 0 value values\nlet mut values:[i64]=[1,2,3]\nlet tail=ref mut values[1..]\nfill tail 2\nlet head=ref mut values[..2]\nfill head 1\nlet whole:ref mut [i64..]=ref mut values[0..]\nwhole.length\n";
     let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
     let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
     assert_eq!(first.formatted, second.formatted);
@@ -166,7 +166,7 @@ fn formats_exclusive_slices() {
 
 #[test]
 fn formats_fixed_arrays_and_length_parameters() {
-    let source = "record Grid<'a,const N:i64>{cells:['a;N]}\ndef total::[i64;N]->i64=\\v->v.length\ndef first::Grid<f64,3>->f64=\\g->g.cells[0]\nlet v:[i64;3]=[1,2,3]\nlet mut sum=0i64\nfor index in 0i64 .. 2 do sum=sum+v[index]\nsum+total v\n";
+    let source = "record Grid<'a,const N:i64>{cells:['a;N]}\ndef total::[i64;N]->i64=\\v->v.length\ndef first::Grid<f64,3>->f64=\\g->g.cells[0]\nlet v:[i64;3]=[1,2,3]\nlet mut sum=0i64\nfor index in 0i64 ..= 2 do sum=sum+v[index]\nsum+total v\n";
     let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
     let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
     assert_eq!(first.formatted, second.formatted);
@@ -194,7 +194,7 @@ fn formats_fixed_arrays_and_length_parameters() {
     );
     // A statement's range keeps its spaces (its implicit `unit` annotation is no type text).
     assert!(
-        first.formatted.contains("for index in 0i64 .. 2 do"),
+        first.formatted.contains("for index in 0i64 ..= 2 do"),
         "{}",
         first.formatted
     );
@@ -445,14 +445,33 @@ fn corpus_is_idempotent_and_semantically_unchanged() {
                 .and_then(SourceKind::from_extension)
             {
                 let source = fs::read_to_string(&path).unwrap();
-                let first = format_source(&path.to_string_lossy(), &source, kind)
+                // A package reads its sources with its manifest's edition (2026 without one).
+                let edition = path
+                    .ancestors()
+                    .skip(1)
+                    .find_map(|directory| fs::read_to_string(directory.join("Tsuzuri.toml")).ok())
+                    .map_or(tsuzuri::syntax::Edition::LATEST, |manifest| {
+                        tsuzuri::package::parse_manifest(&manifest, 0)
+                            .map_or(tsuzuri::syntax::Edition::MANIFEST_DEFAULT, |manifest| {
+                                manifest.edition
+                            })
+                    });
+                let format = |text: &str| {
+                    tsuzuri::formatter::format_source_with_edition(
+                        &path.to_string_lossy(),
+                        text,
+                        kind,
+                        edition,
+                    )
+                };
+                let parse = |text: &str| parser::parse_with_source(text, 0, edition).unwrap();
+                let first = format(&source)
                     .unwrap_or_else(|error| panic!("{}: {}", path.display(), error.message));
-                let second =
-                    format_source(&path.to_string_lossy(), &first.formatted, kind).unwrap();
+                let second = format(&first.formatted).unwrap();
                 assert_eq!(first.formatted, second.formatted, "{}", path.display());
                 assert_eq!(
-                    ast_fingerprint(parser::parse(&source).unwrap()),
-                    ast_fingerprint(parser::parse(&first.formatted).unwrap()),
+                    ast_fingerprint(parse(&source)),
+                    ast_fingerprint(parse(&first.formatted)),
                     "{}",
                     path.display()
                 );

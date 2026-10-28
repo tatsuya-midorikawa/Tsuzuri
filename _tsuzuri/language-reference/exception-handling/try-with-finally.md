@@ -90,7 +90,7 @@ flowchart TD
 def step :: i8 -> string = \x ->
     let outcome =
         try
-            @checked x * 2y
+            @checked x * 2i8
         with
         | e ->
             do! IO.write_line "handler"
@@ -101,8 +101,8 @@ def step :: i8 -> string = \x ->
     | Ok value -> to_string value
     | Error _ -> "overflow"
 
-do! IO.write_line (step 20y)
-do! IO.write_line (step 100y)
+do! IO.write_line (step 20i8)
+do! IO.write_line (step 100i8)
 ```
 
 実行結果:
@@ -130,7 +130,7 @@ def step :: i8 -> string = \x ->
                     do! IO.write_line "inner finally"
             match inner with
             | Ok value -> value
-            | Error _ -> 0y
+            | Error _ -> 0i8
         with
         | e is OverflowException ->
             do! IO.write_line "outer handler"
@@ -139,7 +139,7 @@ def step :: i8 -> string = \x ->
     | Ok value -> to_string value
     | Error _ -> "overflow"
 
-step 12y
+step 12i8
 ```
 
 実行結果:

@@ -17,7 +17,7 @@ fn pick flag a b = if flag then a else b
 def total :: own [i64; N] -> i64
 fn total v =
     let mut sum = 0i64
-    for index in 0i64 .. (v.length - 1) do sum = sum + v[index]
+    for index in 0i64 ..= (v.length - 1) do sum = sum + v[index]
     sum
 
 def zeros :: [i64; M]

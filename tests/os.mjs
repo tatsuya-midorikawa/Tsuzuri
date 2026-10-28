@@ -1180,7 +1180,7 @@ fn same_text result input =
     | Result.Error error -> Os.message (ref error)
 
 def big_input :: unit -> [ubyte]
-fn big_input _unit = new [ubyte](1048576, index -> ((index * 7 + index / 256) % 256) as ubyte)
+fn big_input _unit = new [ubyte](1048576, \\index -> ((index * 7 + index / 256) % 256) as ubyte)
 
 def run_say :: own string -> own [string] -> own [ubyte] -> IO<unit>
 fn run_say program args input = IO.bind (\\result -> say (output_text result)) (Process.run program args input)

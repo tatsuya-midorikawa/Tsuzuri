@@ -31,14 +31,14 @@ instance Classes.Score<Point> {
 }
 
 instance Classes.Score<i32> {
-    fn score value = *value
+    fn score value = deref value
 }
 
 instance Add<Point> {
     fn add left right = Point { x: left.x + right.x, y: left.y + right.y }
 }
 
-def score :: Classes.Score<'a> => &'a -> i32
+def score :: Classes.Score<'a> => ref 'a -> i32
 fn score value = Classes.Score.score value
 
 export def integer :: own i32 -> own i32 -> i32
@@ -65,9 +65,9 @@ fn parametric = {
 export def classes :: i32
 fn classes = {
     let point = add (Point { x: 10, y: 20 }) (Point { x: 5, y: 7 });
-    let f: &Point -> i32 = Classes.Score.score;
-    let value = f (&point);
-    score (&value)
+    let f: ref Point -> i32 = Classes.Score.score;
+    let value = f (ref point);
+    score (ref value)
 }
 
 export def intrinsic :: i32
@@ -85,17 +85,17 @@ fn owned = {
     text.length
 }
 
-def borrow :: &'a -> &'a
+def borrow :: ref 'a -> ref 'a
 fn borrow value = value
 
 export def borrowed :: i64
 fn borrowed = {
     let text = "borrowed";
-    (borrow (&text)).length
+    (borrow (ref text)).length
 }
 
-def tick :: &mut i64 -> i64
-fn tick counter = { *counter = *counter + 1; *counter }
+def tick :: ref mut i64 -> i64
+fn tick counter = { deref counter = deref counter + 1; deref counter }
 
 def combine :: own 'a -> own 'a -> 'a
 fn combine x y = x * 10 + y
@@ -103,7 +103,7 @@ fn combine x y = x * 10 + y
 export def ordered :: i64
 fn ordered = {
     let mut counter = 0;
-    combine (tick (&mut counter)) (tick (&mut counter))
+    combine (tick (ref mut counter)) (tick (ref mut counter))
 }
 
 def distance :: own Point -> i32
@@ -181,7 +181,7 @@ fn implicit_borrows = {
     adjust reference 3;
     let shared = borrow reference;
     assert (number_value shared == 6);
-    let twice = value -> { adjust value 2; adjust value 3; };
+    let twice = \value -> { adjust value 2; adjust value 3; };
     twice reference;
     let plus = borrowed_sum reference;
     assert (plus 1 == 12);

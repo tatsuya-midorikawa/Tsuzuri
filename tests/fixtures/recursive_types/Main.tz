@@ -3,7 +3,7 @@ union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>
 def build :: own i64 -> Tree<i64>
 fn build count =
     let mut tree = Leaf
-    for index in 1i64 .. count do tree = Node (tree, index, Leaf)
+    for index in 1i64 ..= count do tree = Node (tree, index, Leaf)
     tree
 
 def root :: ref Tree<i64> -> i64
@@ -17,7 +17,7 @@ fn deep_drop count =
 export def deep_clone :: own i64 -> i64
 fn deep_clone count =
     let tree = build count
-    let read = offset -> root (ref tree) + offset
+    let read = \offset -> root (ref tree) + offset
     let copied = read
     copied 1 + read 2
 
@@ -41,8 +41,8 @@ union Rose = Branch of [Rose]
 export def rose_clone :: own i64 -> i64
 fn rose_clone count =
     let mut tree = Branch []
-    for _index in 1i64 .. count do tree = Branch [tree]
-    let read = offset -> (match ref tree with | Branch children -> children.length) + offset
+    for _index in 1i64 ..= count do tree = Branch [tree]
+    let read = \offset -> (match ref tree with | Branch children -> children.length) + offset
     let copied = read
     copied 1 + read 2
 
@@ -50,14 +50,14 @@ union Linked = Links of [|Linked|]
 export def list_drop :: own i64 -> i64
 fn list_drop count =
     let mut tree = Links [||]
-    for _index in 1i64 .. count do tree = Links [|tree|]
+    for _index in 1i64 ..= count do tree = Links [|tree|]
     match ref tree with | Links children -> children.length
 
 export def list_clone :: own i64 -> i64
 fn list_clone count =
     let mut tree = Links [||]
-    for _index in 1i64 .. count do tree = Links [|tree|]
-    let read = offset -> (match ref tree with | Links children -> children.length) + offset
+    for _index in 1i64 ..= count do tree = Links [|tree|]
+    let read = \offset -> (match ref tree with | Links children -> children.length) + offset
     let copied = read
     copied 1 + read 2
 
@@ -66,8 +66,8 @@ union RecordTree = Empty | Filled of BranchData
 export def record_clone :: own i64 -> i64
 fn record_clone count =
     let mut tree = Empty
-    for _index in 1i64 .. count do tree = Filled (BranchData { left: tree, text: "he" + "llo", right: Empty })
-    let read = offset -> (match ref tree with | Empty -> 0 | Filled branch -> branch.text.length) + offset
+    for _index in 1i64 ..= count do tree = Filled (BranchData { left: tree, text: "he" + "llo", right: Empty })
+    let read = \offset -> (match ref tree with | Empty -> 0 | Filled branch -> branch.text.length) + offset
     let copied = read
     copied 1 + read 2
 
@@ -100,8 +100,8 @@ union BufferTree = Children of Vec<BufferTree>
 export def vec_clone :: own i64 -> i64
 fn vec_clone count =
     let mut tree = Children (Vec.empty())
-    for _index in 1i64 .. count do tree = Children (Vec.push_owned tree (Vec.empty()))
-    let read = offset -> (match ref tree with | Children children -> children.length) + offset
+    for _index in 1i64 ..= count do tree = Children (Vec.push_owned tree (Vec.empty()))
+    let read = \offset -> (match ref tree with | Children children -> children.length) + offset
     let copied = read
     copied 1 + read 2
 
@@ -111,8 +111,8 @@ union Third = ToBack of Second
 export def mutual_clone :: own i64 -> i64
 fn mutual_clone count =
     let mut tree = Stop
-    for _index in 1i64 .. count do tree = ToThird (ToBack (ToFirst tree))
-    let read = offset -> (match ref tree with | ToThird (ToBack (ToFirst _)) -> 20 | _ -> 0) + offset
+    for _index in 1i64 ..= count do tree = ToThird (ToBack (ToFirst tree))
+    let read = \offset -> (match ref tree with | ToThird (ToBack (ToFirst _)) -> 20 | _ -> 0) + offset
     let copied = read
     copied 1 + read 2
 

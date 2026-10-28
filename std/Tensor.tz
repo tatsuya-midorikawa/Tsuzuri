@@ -16,7 +16,7 @@ fn volume shape =
     assert (shape.length <= 16)
     let mut empty = false
     let mut count = 1
-    for axis in 0i64 .. (shape.length - 1) do
+    for axis in 0i64 ..= (shape.length - 1) do
         assert (shape[axis] >= 0)
         if shape[axis] == 0 then empty = true
         else
@@ -27,11 +27,11 @@ fn volume shape =
 private def stride_of :: ref [i64] -> own i64 -> i64
 fn stride_of shape axis =
     let mut stride = 1
-    for later in (axis + 1) .. (shape.length - 1) do stride = stride * shape[later]
+    for later in (axis + 1) ..= (shape.length - 1) do stride = stride * shape[later]
     stride
 
 private def dense_strides :: ref [i64] -> [i64]
-fn dense_strides shape = new [i64](shape.length, axis -> stride_of shape axis)
+fn dense_strides shape = new [i64](shape.length, \axis -> stride_of shape axis)
 
 /// Takes a row-major array without copying; traps unless its length is the product of the shape.
 def of_array :: own [i64] -> own ['a] -> Tensor<'a>
@@ -110,7 +110,7 @@ private def offset_of :: ref View<'a> -> ref [i64] -> i64
 fn offset_of view index =
     assert (index.length == view.shape.length)
     let mut offset = view.offset
-    for axis in 0i64 .. (index.length - 1) do
+    for axis in 0i64 ..= (index.length - 1) do
         assert (index[axis] >= 0 && index[axis] < view.shape[axis])
         offset = offset + index[axis] * view.strides[axis]
     offset
@@ -124,7 +124,7 @@ def get :: Copy<'a> => own [i64] -> ref View<'a> -> Maybe<'a>
 fn get index view =
     let mut inside = index.length == view.shape.length
     if inside then
-        for axis in 0i64 .. (index.length - 1) do
+        for axis in 0i64 ..= (index.length - 1) do
             if index[axis] < 0 || index[axis] >= view.shape[axis] then inside = false
     if inside then Maybe.Some view.data[offset_of view (ref index)] else Maybe.None
 
@@ -134,24 +134,24 @@ def permute { r } :: own [i64] -> ref View<'a> { r } -> View<'a> { r }
 fn permute axes view =
     let rank = view.shape.length
     assert (axes.length == rank)
-    for axis in 0i64 .. (rank - 1) do
+    for axis in 0i64 ..= (rank - 1) do
         assert (axes[axis] >= 0 && axes[axis] < rank)
-        for earlier in 0i64 .. (axis - 1) do assert (axes[earlier] != axes[axis])
-    View { data: view.data, offset: view.offset, shape: new [i64](rank, axis -> view.shape[axes[axis]]), strides: new [i64](rank, axis -> view.strides[axes[axis]]) }
+        for earlier in 0i64 ..= (axis - 1) do assert (axes[earlier] != axes[axis])
+    View { data: view.data, offset: view.offset, shape: new [i64](rank, \axis -> view.shape[axes[axis]]), strides: new [i64](rank, \axis -> view.strides[axes[axis]]) }
 
 /// Fixes one axis at a position, which removes that axis; traps unless the position is inside its extent.
 def index_axis { r } :: own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn index_axis axis position view =
     let rank = view.shape.length
     assert (axis >= 0 && axis < rank && position >= 0 && position < view.shape[axis])
-    View { data: view.data, offset: view.offset + position * view.strides[axis], shape: new [i64](rank - 1, d -> if d < axis then view.shape[d] else view.shape[d + 1]), strides: new [i64](rank - 1, d -> if d < axis then view.strides[d] else view.strides[d + 1]) }
+    View { data: view.data, offset: view.offset + position * view.strides[axis], shape: new [i64](rank - 1, \d -> if d < axis then view.shape[d] else view.shape[d + 1]), strides: new [i64](rank - 1, \d -> if d < axis then view.strides[d] else view.strides[d + 1]) }
 
 /// Keeps `length` positions of one axis starting at `start`; traps unless they lie inside the extent.
 def narrow { r } :: own i64 -> own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn narrow axis start length view =
     let rank = view.shape.length
     assert (axis >= 0 && axis < rank && start >= 0 && length >= 0 && start <= view.shape[axis] && length <= view.shape[axis] - start)
-    View { data: view.data, offset: view.offset + start * view.strides[axis], shape: new [i64](rank, d -> if d == axis then length else view.shape[d]), strides: Array.copy (ref view.strides) }
+    View { data: view.data, offset: view.offset + start * view.strides[axis], shape: new [i64](rank, \d -> if d == axis then length else view.shape[d]), strides: Array.copy (ref view.strides) }
 
 /// Whether the elements are one run of `data` in row-major order (a window without elements is contiguous).
 def is_contiguous :: ref View<'a> -> bool
@@ -177,10 +177,10 @@ private def rec fold_axis :: Copy<'a> => own ('state -> 'a -> 'state) -> ref ['a
 fn rec fold_axis folder data shape strides axis offset state =
     let mut result = state
     if axis == shape.length - 1 then
-        for position in 0i64 .. (shape[axis] - 1) do
+        for position in 0i64 ..= (shape[axis] - 1) do
             result = folder result data[offset + position * strides[axis]]
     else
-        for position in 0i64 .. (shape[axis] - 1) do
+        for position in 0i64 ..= (shape[axis] - 1) do
             result = fold_axis folder data shape strides (axis + 1) (offset + position * strides[axis]) result
     result
 
@@ -196,11 +196,11 @@ private def rec gather :: Copy<'a> => ref ['a] -> ref [i64] -> ref [i64] -> own 
 fn rec gather data shape strides axis offset out position =
     let mut next = position
     if axis == shape.length - 1 then
-        for step in 0i64 .. (shape[axis] - 1) do
+        for step in 0i64 ..= (shape[axis] - 1) do
             Array.write next data[offset + step * strides[axis]] out
             next = next + 1
     else
-        for step in 0i64 .. (shape[axis] - 1) do
+        for step in 0i64 ..= (shape[axis] - 1) do
             next = gather data shape strides (axis + 1) (offset + step * strides[axis]) out next
     next
 
@@ -211,7 +211,7 @@ fn to_tensor view =
     if total == 0 then Tensor { shape: Array.copy (ref view.shape), data: Array.init 0 (\_ -> view.data[0]) }
     elif is_contiguous view then Tensor { shape: Array.copy (ref view.shape), data: Array.sub view.offset total view.data }
     else
-        let mut out = new ['a](total, _ -> view.data[view.offset])
+        let mut out = new ['a](total, \_ -> view.data[view.offset])
         let written = gather view.data (ref view.shape) (ref view.strides) 0 view.offset (ref mut out) 0
         assert (written == total)
         Tensor { shape: Array.copy (ref view.shape), data: out }

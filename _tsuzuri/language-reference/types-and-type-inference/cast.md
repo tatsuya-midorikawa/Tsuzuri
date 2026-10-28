@@ -105,8 +105,8 @@ $"{trunc_pos}:{trunc_neg}:{sat_pos as i64}:{sat_neg as i64}:{nan_val}"
 整数から浮動小数点への `as` は、IEEE 754 の最近接・偶数丸めです。`f64` が正確に表せる整数は $2^{53}$ までです。その先は、近い偶数へ丸めます。`i64` の最大値は `f64` では $2^{63}$ になります。無限大は変換先の端へ飽和し、`nan` は `0` です。
 
 ```tsuzuri run=true:9223372036854775807:0
-let tie = 9007199254740993l as f64
-let even = 9007199254740992l as f64
+let tie = 9007199254740993i64 as f64
+let even = 9007199254740992i64 as f64
 let inf_i = (1.0 / 0.0) as i64
 let nan_i = (0.0 / 0.0) as i64
 $"{tie == even}:{inf_i}:{nan_i}"

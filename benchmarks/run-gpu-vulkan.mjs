@@ -53,7 +53,7 @@ fn make count = Array.init count (\\index -> (index as i32) * 7 + 3)
 def checksum :: Gpu.Buffer<i32> -> i32
 fn checksum buffer = {
     let values = Gpu.to_array buffer;
-    values[0] + values[Array.length (&values) - 1]
+    values[0] + values[Array.length (ref values) - 1]
 }
 `;
 const step = (name, backend, call) => `def ${name}_step :: ref [i32] -> Gpu.Buffer<i32>
@@ -62,12 +62,12 @@ fn ${name}_step values = {
     ${call}
 }
 `;
-const mapped = "Gpu.map (&device) kernel (Gpu.from_array (&device) values)";
+const mapped = "Gpu.map (ref device) kernel (Gpu.from_array (ref device) values)";
 const benchSource = steps => `${prelude(steps)}
 ${step("reference", "CpuReference", mapped)}
 ${step("vulkan", "Vulkan", mapped)}
 ${step("auto", "Auto", mapped)}
-${step("copy", "CpuReference", "Gpu.from_array (&device) values")}
+${step("copy", "CpuReference", "Gpu.from_array (ref device) values")}
 ${counts.flatMap(count => ["reference", "vulkan", "auto", "fallback", "copy"].map(name => `bench "${name} ${count}" = Bench.with_input (\\_ -> make ${count}) ${name === "fallback" ? "auto" : name}_step`)).join("\n")}
 `;
 // The warm Auto device's own choice in every cell: one explicit Vulkan call opens the device and builds the pipeline first. The
@@ -84,11 +84,11 @@ def main :: unit -> i32 = \\() ->
     let vulkan = Result.get (Gpu.request Gpu.Vulkan)
     let auto = Result.get (Gpu.request Gpu.Auto)
     let warm = make 1024
-    let _first = Gpu.map (&vulkan) kernel (Gpu.from_array (&vulkan) (&warm))
+    let _first = Gpu.map (ref vulkan) kernel (Gpu.from_array (ref vulkan) (ref warm))
 ${counts.map((count, index) => `    let values${index} = make ${count}
-    let expected${index} = checksum (Gpu.map (&cpu) kernel (Gpu.from_array (&cpu) (&values${index})))
-    let device${index} = checksum (Gpu.map (&vulkan) kernel (Gpu.from_array (&vulkan) (&values${index})))
-    let chosen${index} = checksum (Gpu.map (&auto) kernel (Gpu.from_array (&auto) (&values${index})))
+    let expected${index} = checksum (Gpu.map (ref cpu) kernel (Gpu.from_array (ref cpu) (&values${index})))
+    let device${index} = checksum (Gpu.map (ref vulkan) kernel (Gpu.from_array (ref vulkan) (&values${index})))
+    let chosen${index} = checksum (Gpu.map (ref auto) kernel (Gpu.from_array (ref auto) (&values${index})))
     let served${index} = code (Gpu.last_backend ())
     do! IO.write_line ("${count} " + to_string served${index} + " " + to_string (expected${index} == device${index} && expected${index} == chosen${index}))`).join("\n")}
     0
@@ -100,13 +100,13 @@ def main :: unit -> i32 = \\() ->
     let vulkan = Result.get (Gpu.request Gpu.Vulkan)
     let! open_end = Time.monotonic_ns ()
     let values = make 1024
-    let input = Gpu.from_array (&vulkan) (&values)
+    let input = Gpu.from_array (ref vulkan) (ref values)
     let! first_start = Time.monotonic_ns ()
-    let output = Gpu.map (&vulkan) kernel input
+    let output = Gpu.map (ref vulkan) kernel input
     let! first_end = Time.monotonic_ns ()
-    let input2 = Gpu.from_array (&vulkan) (&values)
+    let input2 = Gpu.from_array (ref vulkan) (ref values)
     let! second_start = Time.monotonic_ns ()
-    let output2 = Gpu.map (&vulkan) kernel input2
+    let output2 = Gpu.map (ref vulkan) kernel input2
     let! second_end = Time.monotonic_ns ()
     do! IO.write_line (to_string (Result.get open_end - Result.get open_start) + " " + to_string (Result.get first_end - Result.get first_start) + " " + to_string (Result.get second_end - Result.get second_start) + " " + to_string (checksum output + checksum output2))
     0

@@ -287,7 +287,7 @@ export def budget :: i64 -> i64
 fn budget offset = {
     let values = [offset];
     let mut total = 0;
-    ${Array.from({ length: 520 }, (_, index) => `total = total + apply (value -> value + values[0]) ${index};`).join("\n")}
+    ${Array.from({ length: 520 }, (_, index) => `total = total + apply (\\value -> value + values[0]) ${index};`).join("\n")}
     total
 }
 budget 1

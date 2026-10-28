@@ -178,7 +178,7 @@ fn work receiver total = task {
     while open do
         match Channel.recv (Arc.get (ref receiver)) with
         | Maybe.Some job ->
-            let _seen = Mutex.with_lock (Arc.get (ref total)) (value -> {
+            let _seen = Mutex.with_lock (Arc.get (ref total)) (\value -> {
                 deref value = deref value + job * job;
                 0
             })
@@ -192,7 +192,7 @@ match Channel.bounded 64 with
     let shared = Arc.new receiver
     let total = Arc.new (Mutex.create 0i64)
     let results = Task.run (Task.parallel [produce sender 20, work (Arc.share (ref shared)) (Arc.share (ref total)), work (Arc.share (ref shared)) (Arc.share (ref total))])
-    let squares = Mutex.with_lock (Arc.get (ref total)) (value -> deref value)
+    let squares = Mutex.with_lock (Arc.get (ref total)) (\value -> deref value)
     $"jobs={results[1] + results[2]} squares={squares}"
 ```
 
@@ -211,7 +211,7 @@ jobs=20 squares=2870
 ```tsuzuri run=total%3D36
 match Channel.bounded 8 with
 | (sender, receiver) ->
-    let _sent = Task.scope (ref sender) 8 (shared -> index -> match Channel.send shared (index + 1) with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
+    let _sent = Task.scope (ref sender) 8 (\shared index -> match Channel.send shared (index + 1) with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
     Owned.drop sender
     let mut total = 0
     let mut open = true
@@ -279,7 +279,7 @@ Tsuzuri runtime: deadlock: every task is waiting on a channel
 match Channel.bounded 2 with
 | (sender, receiver) ->
     let k = 41i64
-    let _sent = Channel.send (ref sender) (x -> x + k)
+    let _sent = Channel.send (ref sender) (\x -> x + k)
     match Channel.recv (ref receiver) with
     | Maybe.Some f -> f 1
     | Maybe.None -> 0

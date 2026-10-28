@@ -175,7 +175,7 @@ compute 21
 @terminates
 def checksum :: ref [i64] -> i64 = \values ->
     let mut sum = 0
-    for i in 0 .. values.length - 1 do
+    for i in 0 ..= values.length - 1 do
         sum = sum * 31 + values[i]
     sum
 

@@ -259,7 +259,7 @@ fn map_reads_noncopy_elements_and_keeps_first_class_callback_conventions() {
     .unwrap();
     check(
         "2027",
-        "export def answer :: i64 = Array.sum (Array.mapr (\\n -> *n + 1) [1, 2, 3])\n",
+        "export def answer :: i64 = Array.sum (Array.mapr (\\n -> deref n + 1) [1, 2, 3])\n",
     )
     .unwrap();
 }
@@ -348,7 +348,10 @@ fn projected_updates_preserve_destructor_whole_value_restrictions() {
         export def answer :: i64 = { let value = Value { text: \"old\" }; value.text.length }\n";
     assert_eq!(check("2027", source).unwrap_err().code, "E1012");
     assert_eq!(check("2026", source).unwrap_err().code, "E1012");
-    let whole = source.replace("value.text = \"done\"", "*value = Value { text: \"done\" }");
+    let whole = source.replace(
+        "value.text = \"done\"",
+        "deref value = Value { text: \"done\" }",
+    );
     assert_eq!(check("2027", &whole).unwrap_err().code, "E1012");
 }
 
@@ -356,7 +359,7 @@ fn projected_updates_preserve_destructor_whole_value_restrictions() {
 fn read_callbacks_cannot_escape_local_elements() {
     let source = "def borrow_value :: ref i64 -> ref i64 = \\value -> value\n\
         def leak :: unit -> [ref i64] = \\() -> { let values = [42]; Array.map borrow_value values }\n\
-        export def answer :: i64 = *(leak ())[0]\n";
+        export def answer :: i64 = deref (leak ())[0]\n";
     let error = check("2027", source).unwrap_err();
     assert!(matches!(error.code, "E1013" | "E1014"), "{error:?}");
 }
@@ -412,7 +415,7 @@ fn value_expressions_are_lent_like_operator_temporaries() {
     ir(
         "2027",
         "def at :: Integer<'n> => 'n -> ref [i64] -> i64 = \\i xs -> xs[i as i64]\n\
-         export def answer :: i32 -> i64 = \\n ->\n    let xs = [10i64, 20]\n    at (n as i16) &xs + at (n as i64) (&xs)\n",
+         export def answer :: i32 -> i64 = \\n ->\n    let xs = [10i64, 20]\n    at (n as i16) (ref xs) + at (n as i64) (ref xs)\n",
     );
     // A value of another type is still a mismatch.
     let source = "def k :: ref i64 -> i64 = \\a -> deref a\nexport def answer :: i32 -> i64 = \\n -> k (n as i16)\n";
@@ -524,7 +527,7 @@ fn projected_writes_preserve_sibling_loans_and_require_unique_mutable_owners() {
         "record Holder { borrowed: ref i64, n: i64 }\n\
          export def answer :: i64 = { let mut value = 1; \
          let mut holder = Holder { borrowed: ref value, n: 0 }; \
-         holder.n = 1; value = 2; *holder.borrowed }\n",
+         holder.n = 1; value = 2; deref holder.borrowed }\n",
     ] {
         assert_eq!(check("2027", source).unwrap_err().code, "E1014", "{source}");
     }
@@ -574,7 +577,7 @@ fn vector_push_borrows_mutably_only_in_2027_and_tracks_stored_borrows() {
         "export def answer :: i64 = { let mut values = Vec.of_array [1]; \
          values |> Vec.push (values[0] + 1); values[0] }\n",
         "export def answer :: i64 = { let mut values = Vec.of_array [1]; \
-         let element = Vec.at 0 values; Vec.push 2 values; *element }\n",
+         let element = Vec.at 0 values; Vec.push 2 values; deref element }\n",
     ] {
         assert_eq!(check("2027", source).unwrap_err().code, "E1014", "{source}");
     }
@@ -772,12 +775,21 @@ fn own_accepts_every_type_primary_starter() {
         "own &&string",
         "own (&&string)",
         "(own &&string)",
+        "own ref ref string",
+        "own (ref ref string)",
+        "(own ref ref string)",
         "own Vec<Vec<i64>>",
         "own Vec<Vec<Vec<i64>>>",
         "own (Vec<Vec<i64>>)",
     ] {
         let source = format!("def accept :: {ty} -> i64 = \\_value -> 0\n");
-        for edition in ["2026", "2027"] {
+        // A22: edition 2027 spells `&&T` as `ref ref T`.
+        let editions: &[&str] = if ty.contains('&') {
+            &["2026"]
+        } else {
+            &["2026", "2027"]
+        };
+        for &edition in editions {
             check_with_files(
                 edition,
                 &source,

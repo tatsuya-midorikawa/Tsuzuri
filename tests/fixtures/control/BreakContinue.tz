@@ -5,7 +5,7 @@ def discard :: own string -> own unit -> unit
 fn discard text finished = ()
 
 def reader :: own string -> own i64 -> i64
-fn reader text = value -> text.length + value
+fn reader text = \value -> text.length + value
 
 export def break_while :: own i64 -> i64
 fn break_while limit =
@@ -18,7 +18,7 @@ fn break_while limit =
 export def continue_sum :: own i64 -> i64
 fn continue_sum count =
     let mut total = 0
-    for index in 0 .. (count - 1) do
+    for index in 0 ..= (count - 1) do
         if index % 3 == 0 then continue
         total = total + index
     total
@@ -28,12 +28,12 @@ fn continue_endpoints =
     let mut count = 0
     for index = 2147483646 to 2147483647 do { count = count + 1; continue }
     for index = -2147483647 downto -2147483648 do { count = count + 1; continue }
-    for index in 254i8u .. 255i8u do { count = count + 1; continue }
-    for index in 9223372036854775806l .. 9223372036854775807l do { count = count + 1; continue }
-    for index in -9223372036854775807l .. -1 .. -9223372036854775808l do { count = count + 1; continue }
-    for index in 170141183460469231731687303715884105726i128 .. 170141183460469231731687303715884105727i128 do { count = count + 1; continue }
-    for index in -170141183460469231731687303715884105727i128 .. -1i128 .. -170141183460469231731687303715884105728i128 do { count = count + 1; continue }
-    for index in 18446744073709551614i64u .. 18446744073709551615i64u do { count = count + 1; continue }
+    for index in 254i8u ..= 255i8u do { count = count + 1; continue }
+    for index in 9223372036854775806i64 ..= 9223372036854775807i64 do { count = count + 1; continue }
+    for index in -9223372036854775807i64 .. -1 ..= -9223372036854775808i64 do { count = count + 1; continue }
+    for index in 170141183460469231731687303715884105726i128 ..= 170141183460469231731687303715884105727i128 do { count = count + 1; continue }
+    for index in -170141183460469231731687303715884105727i128 .. -1i128 ..= -170141183460469231731687303715884105728i128 do { count = count + 1; continue }
+    for index in 18446744073709551614i64u ..= 18446744073709551615i64u do { count = count + 1; continue }
     count
 
 export def break_nested :: i64
@@ -50,7 +50,7 @@ fn break_nested =
 export def break_owned :: own i64 -> i64
 fn break_owned count =
     let mut total = 0
-    for index in 0 .. (count - 1) do
+    for index in 0 ..= (count - 1) do
         let values = new ["ab" + "cd"]
         total = total + values[0].length
         if index >= 3 then break
@@ -59,7 +59,7 @@ fn break_owned count =
 export def continue_owned :: own i64 -> i64
 fn continue_owned count =
     let mut total = 0
-    for index in 0 .. (count - 1) do
+    for index in 0 ..= (count - 1) do
         let values = new ["a" + "b", "c" + "d"]
         if index % 2 == 0 then continue
         total = total + values[0].length + values[1].length

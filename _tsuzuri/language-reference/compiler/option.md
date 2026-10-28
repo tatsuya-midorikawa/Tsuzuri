@@ -26,6 +26,8 @@
 | `--deny-warnings` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
 | `--warn implicit-copy` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
 | `--warn untrusted-extern` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
+| `--warn canonical` | ○ | ○ | ○ | ○ | ○ | ○ | | | ○ |
+| `--edition 2026\|2027` | ○ | ○ | ○ | ○ | | | | | ○ |
 | `--contracts off\|check\|test\|prove` | ○（`prove` だけ） | ○（`test` を除く） | ○（`test` を除く） | ○ | | | | | ○（`test` を除く） |
 | `--prove-timeout SECONDS` / `--function NAME` | ○ | ○ | ○ | ○ | | | | | |
 | `-o` / `--output` | | ○ | | ○（`-g` と） | | ○（必須） | | | |
@@ -363,6 +365,8 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--json` | オフ | 診断を stderr の 1 行 1 JSON にする |
 | `--deny-warnings` | オフ | 警告があれば、コード生成や実行の前に終了コード 1 |
 | `--warn implicit-copy` | オフ | 配列とリストの暗黙コピー `W1006` を出す。生成コードは変わらない |
+| `--warn canonical` | オフ | edition 2027 が拒否する表記に `W1007` を出す（書き換えの修正案付き）。生成コードは変わらない |
+| `--edition 2026\|2027` | `Tsuzuri.toml` があればその `edition`、なければ 2027 | マニフェストのないプロジェクトのソースを読む edition。マニフェストのあるプロジェクトでは `E2000`。std は常に最新 |
 | `--warn untrusted-extern` | オフ | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出す。生成コードは変わらない |
 | `--contracts off\|check\|test\|prove` | `build` は `off`、`run`・`test`・`script` は `check` | 契約の行（`@requires`・`@ensures`）の使い方。`off` は検査コードを出さない、`check` は偽ならトラップ、`test` は性質テストも作る（`test` だけ）、`prove` は先に SMT ソルバーで証明してから `check` として続ける（[契約](../values-and-functions/contracts.md)） |
 | `--prove-timeout SECONDS` | 10 | `--contracts prove` と `prove` で、問い 1 つあたりのソルバーの時間（1〜3600） |

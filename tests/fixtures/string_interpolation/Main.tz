@@ -1,4 +1,4 @@
-def digest :: &string -> i64
+def digest :: ref string -> i64
 fn digest text =
     let mut hash = 0
     let mut index = 0
@@ -21,7 +21,7 @@ instance Display<Boom> {
     fn display _value = unreachable ()
 }
 
-def stamp :: &mut i64 -> own i64 -> i64
+def stamp :: ref mut i64 -> own i64 -> i64
 fn stamp log digit =
     deref log = deref log * 10 + digit
     digit
@@ -45,14 +45,14 @@ fn borrowed_holes =
 export def evaluation_order :: i64
 fn evaluation_order =
     let mut log = 0
-    let text = $"{stamp (&mut log) 1}{stamp (&mut log) 2}{stamp (&mut log) 3}"
+    let text = $"{stamp (ref mut log) 1}{stamp (ref mut log) 2}{stamp (ref mut log) 3}"
     assert (text == "123")
     log * 1000 + text.length
 
 export def temporaries :: own i64 -> i64
 fn temporaries n =
     let text = $"{n + 1}|{"abc"}|{42}"
-    digest (&text)
+    digest (ref text)
 
 export def utf8_holes :: i64
 fn utf8_holes =
@@ -100,36 +100,36 @@ fn trap_display =
 export def spec_integer :: own i64 -> i64
 fn spec_integer v =
     let text = $"{v:x}|{v:X}|{v:o}|{v:b}|{v:+}|{v:>25}|{v:*^25}|{v:0>25}"
-    digest (&text)
+    digest (ref text)
 
 export def spec_unsigned :: own i64 -> i64
 fn spec_unsigned v =
     let u = v as i64u
     let text = $"{u:x}|{u:+}|{u:b}|{u:^22}"
-    digest (&text)
+    digest (ref text)
 
 export def spec_narrow :: own i64 -> i64
 fn spec_narrow v =
     let a = v as i8
     let b = v as i16u
     let text = $"{a:x}|{a:b}|{b:X}|{b:o}"
-    digest (&text)
+    digest (ref text)
 
 export def spec_i128_min :: i64
 fn spec_i128_min =
     let m: i128 = -170141183460469231731687303715884105728i128
     let text = $"{m:x}|{m:+}|{m:b}"
-    digest (&text)
+    digest (ref text)
 
 export def spec_f64 :: own f64 -> i64
 fn spec_f64 x =
     let text = $"{x:.0}|{x:.2}|{x:.17}|{x:+.3}|{x:.0e}|{x:.3e}|{x:.16e}|{x:>12.1}"
-    digest (&text)
+    digest (ref text)
 
 export def spec_f32 :: own f32 -> i64
 fn spec_f32 x =
     let text = $"{x:.0}|{x:.2}|{x:.17}|{x:+.3}|{x:.0e}|{x:.3e}|{x:.16e}|{x:>12.1}"
-    digest (&text)
+    digest (ref text)
 
 export def spec_wide :: own i64 -> i64
 fn spec_wide k =
@@ -140,13 +140,13 @@ fn spec_wide k =
         | 2 -> $"{0.125d32:.3}|{0.125d32:.20}|{0.125d32:.2e}"
         | 3 -> $"{2.5d64:.3}|{2.5d64:.20}|{2.5d64:.2e}"
         | _ -> $"{1e-30d128:.3}|{1e-30d128:.20}|{1e-30d128:.2e}"
-    digest (&text)
+    digest (ref text)
 
 export def spec_padding :: i64
 fn spec_padding =
     let label = Label { text: "lab" }
     let text = $"{"é😀":*>5}|{"\uD800":3}|{"ab":^6}|{label:>8}|{true:<6}|{'x':^3}"
-    digest (&text)
+    digest (ref text)
 
 export def spec_utf8_padding :: i64
 fn spec_utf8_padding =
@@ -187,7 +187,7 @@ fn format_instances =
     let p = Point { x: 3, y: -4 }
     let boxed = Box { value: p }
     let text = $"{p:>10}|{p:<10}|{p:^10}|{p:+}|{p:.2}|{p:*>+12.1f}|{Light:x}|{Dark:>3}|{boxed:^9.1e}|{Point { x: 0, y: 1 }:+}"
-    digest (&text)
+    digest (ref text)
 
 export def format_instances_utf8 :: i64
 fn format_instances_utf8 =
@@ -205,7 +205,7 @@ fn format_keeps_owners =
 export def display_case_holes :: i64
 fn display_case_holes =
     let text = $"{Quiet}{Loud}"
-    digest (&text)
+    digest (ref text)
 
 private def describe :: own Maybe<Format.Spec> -> string
 fn describe parsed =
@@ -237,7 +237,7 @@ fn format_parse =
     while index < specs.length do
         out = out + describe (Format.parse (ref specs[index])) + "|"
         index = index + 1
-    digest (&out)
+    digest (ref out)
 
 export def format_pad :: i64
 fn format_pad =
@@ -254,4 +254,4 @@ fn format_pad =
             | Maybe.None -> out = out + "invalid|"
             text_index = text_index + 1
         spec_index = spec_index + 1
-    digest (&out)
+    digest (ref out)

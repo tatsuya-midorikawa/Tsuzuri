@@ -259,8 +259,8 @@ test "iter iteri iter2 iteri2 and the r forms run their actions" =
     List.iteri_owned (\i x -> assert (x == i * 10)) [|0, 10, 20|]
     List.iter2 (\a b -> assert (b == a * 2)) [|1, 2, 3|] [|2, 4, 6|]
     List.iteri2 (\i a b -> assert (a + b == i * 3)) [|0, 1, 2|] [|0, 2, 4|]
-    List.iterr (\x -> assert (*x > 0)) [|1, 2, 3|]
-    List.iterir (\i x -> assert (*x == i * 10)) [|0, 10, 20|]
+    List.iterr (\x -> assert (deref x > 0)) [|1, 2, 3|]
+    List.iterir (\i x -> assert (deref x == i * 10)) [|0, 10, 20|]
     let words = [|"a", "bb"|]
     List.iterr (\w -> assert (w.length > 0)) words
     List.iterir (\i w -> assert (w.length == i + 1)) words
@@ -296,8 +296,8 @@ test "mapr mapir work for elements that are not Copy" =
     eq (List.mapir (\i w -> i + w.length) words) [|1, 4, 4|]
     let nested = [|[|1, 2|], no_ints, [|3|]|]
     eq (List.mapr (\row -> row.length) nested) [|2, 0, 1|]
-    eq (List.mapr (\x -> *x + 1) [|1, 2, 3|]) [|2, 3, 4|]
-    eq (List.mapir (\i x -> i * *x) [|1, 2, 3|]) [|0, 2, 6|]
+    eq (List.mapr (\x -> deref x + 1) [|1, 2, 3|]) [|2, 3, 4|]
+    eq (List.mapir (\i x -> i * deref x) [|1, 2, 3|]) [|0, 2, 6|]
     let labels = List.mapir (\i w -> $"{i}{w}") words
     Test.equal (ref labels[1]) (ref "1bbb")
 
@@ -361,14 +361,14 @@ test "fold fold_back fold2 fold_back2 and the r forms" =
     let no_ints: [|i64|] = [||]
     let xs = [|1, 2, 3, 4|]
     eq (List.fold_owned (\acc x -> acc * 10 + x) 0 xs) 1234
-    eq (List.foldr (\acc x -> acc * 10 + *x) 0 xs) 1234
+    eq (List.foldr (\acc x -> acc * 10 + deref x) 0 xs) 1234
     eq (List.fold_back_owned (\x acc -> acc * 10 + x) 0 xs) 4321
-    eq (List.foldr_back (\x acc -> acc * 10 + *x) 0 xs) 4321
+    eq (List.foldr_back (\x acc -> acc * 10 + deref x) 0 xs) 4321
     eq (List.fold2 (\acc a b -> acc + a * b) 0 [|1, 2, 3|] [|4, 5, 6|]) 32
     eq (List.fold_back2 (\a b acc -> acc * 10 + a + b) 0 [|1, 2, 3|] [|10, 20, 30|]) 3531
     eq (List.fold_owned (\acc x -> acc + x) 7 no_ints) 7
     eq (List.fold_back_owned (\x acc -> acc + x) 7 no_ints) 7
-    eq (List.foldr_back (\x acc -> acc + *x) 7 no_ints) 7
+    eq (List.foldr_back (\x acc -> acc + deref x) 7 no_ints) 7
     let words = [|"a", "bcd"|]
     eq (List.foldr (\acc w -> acc + w.length) 0 words) 4
     eq (List.foldr_back (\w acc -> acc * 10 + w.length) 0 words) 31
@@ -391,10 +391,10 @@ test "exists forall exists2 forall2 and the r forms" =
     let xs = [|1, 2, 3, 4, 5|]
     Test.is_true (List.exists (\x -> x % 4 == 0) xs)
     Test.is_true (!(List.exists (\x -> x % 6 == 0) xs))
-    Test.is_true (List.existsr (\x -> *x == 3) xs)
+    Test.is_true (List.existsr (\x -> deref x == 3) xs)
     Test.is_true (List.forall (\x -> x > 0) xs)
     Test.is_true (!(List.forall (\x -> x > 1) xs))
-    Test.is_true (List.forallr (\x -> *x > 0) xs)
+    Test.is_true (List.forallr (\x -> deref x > 0) xs)
     Test.is_true (List.exists2 (\a b -> a > b) [|1, 4|] [|1, 3|])
     Test.is_true (!(List.exists2 (\a b -> a > b) [|1, 2|] [|1, 3|]))
     Test.is_true (List.forall2 (\a b -> a == b) [|1, 2, 3|] [|1, 2, 3|])
@@ -439,11 +439,11 @@ test "find find_back find_index find_index_back and the try forms" =
 
 test "findr try_findr borrow the element" =
     let xs = [|1, 2, 3, 4, 5|]
-    eq (*(List.findr (\x -> *x > 3) xs)) 4
-    match List.try_findr (\x -> *x > 3) xs with
-    | Maybe.Some found -> eq *found 4
+    eq (deref (List.findr (\x -> deref x > 3) xs)) 4
+    match List.try_findr (\x -> deref x > 3) xs with
+    | Maybe.Some found -> eq (deref found) 4
     | Maybe.None -> assert false
-    none (List.try_findr (\x -> *x > 9) xs)
+    none (List.try_findr (\x -> deref x > 9) xs)
     let words = [|"apple", "fig", "banana"|]
     eq (List.findr (\w -> w.length == 3) words).length 3
     match List.try_findr (\w -> w.length > 5) words with
@@ -515,8 +515,8 @@ test "min max min_by max_by minr maxr" =
     eq (List.min_by (\p -> match p with | (_, size) -> size) [|(0, 1), (1, 1)|]) (0, 1)
     eq (List.max_by (\p -> match p with | (_, size) -> size) [|(0, 4), (1, 4)|]) (0, 4)
     let numbers = [|10, 12, 11|]
-    eq (*(List.minr numbers)) 10
-    eq (*(List.maxr numbers)) 12
+    eq (deref (List.minr numbers)) 10
+    eq (deref (List.maxr numbers)) 12
     let words = [|"bb", "a", "ccc"|]
     eq (List.minr words).length 1
     eq (List.maxr words).length 3
@@ -687,7 +687,7 @@ test "mapi map2 mapi2 map3 mapir and sort_by work with a callback that owns a ta
     eq (List.item 3 numbered) (table[3] + 6)
     let triples = List.map3 (\a b c -> table[a] + b + c) indices indices indices
     eq (List.item 10 triples) (table[10] + 20)
-    let borrowed = List.mapir (\i x -> table[*x] + i) indices
+    let borrowed = List.mapir (\i x -> table[deref x] + i) indices
     eq (List.item 5 borrowed) (table[5] + 5)
     let sorted = List.sort_by (\x -> table[x]) indices
     Test.is_true (ordered_by_table (ref sorted) (ref table))
@@ -741,19 +741,19 @@ test "sort sort_by sort_by_descending put NaN last" =
 // `sort` moves the NaN of an f32 or f64 list last through its comparison builtin; an f16 NaN is left to `Ord`. A
 // keyed sort decides by the key itself, so it puts the NaN of any float format last.
 test "NaN of f32 and f16 in the sorts" =
-    let nan32 = 0.0f / 0.0f
-    let singles = [|nan32, 1.0f, 0.5f|]
+    let nan32 = 0.0f32 / 0.0f32
+    let singles = [|nan32, 1.0f32, 0.5f32|]
     let sorted32 = List.sort singles
-    eq (List.take 2 sorted32) [|0.5f, 1.0f|]
+    eq (List.take 2 sorted32) [|0.5f32, 1.0f32|]
     Test.is_true (sorted32[2] != sorted32[2])
     let descending32 = List.sort_descending singles
-    eq (List.take 2 descending32) [|1.0f, 0.5f|]
+    eq (List.take 2 descending32) [|1.0f32, 0.5f32|]
     Test.is_true (descending32[2] != descending32[2])
     let with32 = List.sort_with (\a b -> if a < b then -1 else if a > b then 1 else 0) singles
-    eq (List.take 2 with32) [|0.5f, 1.0f|]
+    eq (List.take 2 with32) [|0.5f32, 1.0f32|]
     Test.is_true (with32[2] != with32[2])
     let by_key32 = List.sort_by (\x -> x) singles
-    eq (List.take 2 by_key32) [|0.5f, 1.0f|]
+    eq (List.take 2 by_key32) [|0.5f32, 1.0f32|]
     Test.is_true (by_key32[2] != by_key32[2])
     let nan16 = 0.0f16 / 0.0f16
     let halves = [|nan16, 1.0f16, 0.5f16|]
@@ -790,7 +790,7 @@ test "update_at keeps the source" =
     eq xs [|1, 2, 3|]
     eq updated [|9, 2, 3|]
     let mut state = [|0, 0, 0, 0|]
-    for i in 0 .. 3 do
+    for i in 0 ..= 3 do
         state = List.update_at i (i * 2) state
     eq state [|0, 2, 4, 6|]
 
@@ -880,23 +880,23 @@ test "lists of several chunks give the same results as lists of one chunk" =
     eq (List.rev many) (List.rev one)
     eq (List.map_owned (\x -> x * 2) many) (List.map_owned (\x -> x * 2) one)
     eq (List.mapi_owned (\i x -> i + x) many) (List.mapi_owned (\i x -> i + x) one)
-    eq (List.mapr (\x -> *x + 1) many) (List.mapr (\x -> *x + 1) one)
+    eq (List.mapr (\x -> deref x + 1) many) (List.mapr (\x -> deref x + 1) one)
     eq (List.append many one) (List.append one many)
     eq (List.fold_owned (\acc x -> acc + x) 0 many) 49995000
-    eq (List.foldr (\acc x -> acc + *x) 0 many) 49995000
+    eq (List.foldr (\acc x -> acc + deref x) 0 many) 49995000
     eq (List.fold_back_owned (\x acc -> acc + x) 0 many) 49995000
-    eq (List.foldr_back (\x acc -> acc + *x) 0 many) 49995000
+    eq (List.foldr_back (\x acc -> acc + deref x) 0 many) 49995000
     eq (List.reduce (\a b -> a + b) many) 49995000
     eq (List.reduce_back (\a b -> a + b) many) 49995000
     eq (List.sum many) 49995000
     eq (List.min many) 0
     eq (List.max many) (count - 1)
-    eq (*(List.maxr many)) (count - 1)
+    eq (deref (List.maxr many)) (count - 1)
     eq (List.find (\x -> x > 9000) many) 9001
     eq (List.find_back (\x -> x < 100) many) 99
     eq (List.find_index (\x -> x == 9000) many) 9000
     eq (List.find_index_back (\x -> x < 100) many) 99
-    eq (*(List.findr (\x -> *x == 9500) many)) 9500
+    eq (deref (List.findr (\x -> deref x == 9500) many)) 9500
     Test.is_true (List.exists (\x -> x == 9999) many)
     Test.is_true (List.forall (\x -> x >= 0) many)
     Test.is_true (List.contains 9999 many)

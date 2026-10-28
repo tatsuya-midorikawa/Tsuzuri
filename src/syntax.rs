@@ -37,9 +37,17 @@ impl Edition {
     /// give the manifests that already exist new reserved words.
     pub const MANIFEST_DEFAULT: Self = Self::E2026;
     pub const SUPPORTED: &'static [Self] = &[Self::E2026, Self::E2027];
+    /// What `tsuzuri new` writes into a new manifest (A22).
+    pub const NEW_PROJECT: Self = Self::E2027;
 
     pub fn borrows_parameters(self) -> bool {
         matches!(self, Self::E2027)
+    }
+
+    /// Whether the edition rejects the spellings that A22 replaced with canonical forms (`E0004`).
+    /// `>=` on purpose: a spelling that one edition rejects stays rejected in later ones.
+    pub fn rejects_noncanonical(self) -> bool {
+        self >= Self::E2027
     }
 
     /// The supported edition that `text` names, such as `2026`.
@@ -146,6 +154,10 @@ pub enum TokenKind {
     Comma,
     Dot,
     DotDot,
+    /// `..=`: a range that includes its end (A22).
+    DotDotEqual,
+    /// `..<`: a range that excludes its end (A22).
+    DotDotLess,
     At,
     Hash,
     Arrow,
@@ -298,6 +310,8 @@ pub struct Program {
     pub effect_attributes: Vec<EffectAttribute>,
     /// The `@trusted` marks of this module's extern declarations, in source order (E15).
     pub trusted: Vec<TrustedAttribute>,
+    /// The spellings that have a canonical form, in parse order (A22).
+    pub noncanonical: Vec<Noncanonical>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
     /// the builder, so that `name { ... }` builds the same computation as `Builder { ... }`.
     pub aliases: Vec<Ident>,
@@ -986,6 +1000,8 @@ pub enum ExprKind {
         finish: Box<Expr>,
         counted: bool,
         descending: bool,
+        /// The operator before `finish`; `for i = a to b` is `Closed` (A22).
+        op: RangeOp,
     },
     Match {
         value: Box<Expr>,
@@ -1023,6 +1039,8 @@ pub enum ExprKind {
         start: Option<Box<Expr>>,
         end: Option<Box<Expr>>,
         mutable: bool,
+        /// `..` and `..<` exclude `end`; `..=` includes it (A22).
+        op: RangeOp,
     },
     Borrow(Box<Expr>, bool, Notation),
     Dereference(Box<Expr>, Notation),
@@ -1057,6 +1075,64 @@ pub struct TryExpr {
 pub struct InterpolationHole {
     pub value: Expr,
     pub spec: Option<FormatSpec>,
+}
+
+/// A spelling that has a canonical form (A22): `W1007` reports it, and edition 2027 rejects it
+/// (`E0004`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoncanonicalKind {
+    /// The last `..` of a `for` range: `..=`.
+    BareRange,
+    /// A short numeric suffix such as `86uy`: the type name.
+    ShortSuffix,
+    /// `&x` and `&mut x` in an expression: `ref x`, `ref mut x`.
+    SymbolicBorrow,
+    /// `*r` and `**r`: `deref r`, `deref deref r`.
+    SymbolicDeref,
+    /// `&T`, `&mut T`, `&&T` in a type: `ref T`, `ref mut T`, `ref ref T`.
+    SymbolicReferenceType,
+    /// `x -> e` and `x -> y -> e`: `\x -> e`, `\x y -> e`.
+    LegacyLambda,
+}
+
+/// How sure a rewrite of a noncanonical spelling is to keep the program's meaning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FixLevel {
+    Certain,
+    Likely,
+    /// No rewrite: the canonical spelling would mean something else.
+    Unavailable,
+}
+
+/// A replacement of the text at `span`; an empty span inserts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    pub span: Span,
+    pub text: String,
+}
+
+/// One noncanonical spelling and its rewrite (A22).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Noncanonical {
+    pub kind: NoncanonicalKind,
+    /// The span that the diagnostic points at.
+    pub span: Span,
+    /// The spelling as written, for the message: `..`, `86uy`, `&mut`, `*`, `x -> y ->`.
+    pub spelling: String,
+    /// Its canonical form: `..=`, `86i8u`, `ref mut`, `deref`, `\x y ->`.
+    pub canonical: String,
+    pub level: FixLevel,
+    /// Empty when `level` is `Unavailable`.
+    pub edits: Vec<TextEdit>,
+}
+
+/// The operator of a range (A22): `..`, which a `for` reads as closed and a slice as half-open,
+/// `..=` (closed) and `..<` (half-open).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RangeOp {
+    Bare,
+    Closed,
+    Open,
 }
 
 /// Spelling of a borrow or dereference. Both spellings produce the same typed tree.

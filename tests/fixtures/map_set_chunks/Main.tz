@@ -5,7 +5,7 @@
 def sequence :: i64 -> i64 -> i64 -> Map<i64, i64>
 fn sequence first step count =
     let mut map: Map<i64, i64> = Map.empty()
-    for index in 0i64 .. count - 1 do map = Map.insert (first + index * step) index map
+    for index in 0i64 ..= count - 1 do map = Map.insert (first + index * step) index map
     map
 
 def chunks :: ref Map<i64, i64> -> i64
@@ -34,7 +34,7 @@ fn merge_after_removals =
     let mut map = sequence 0 2 512
     map = Map.insert 1 99 map
     let start = chunks (ref map)
-    for index in 0i64 .. 255 do map = Map.remove (2 + index * 4) map
+    for index in 0i64 ..= 255 do map = Map.remove (2 + index * 4) map
     let before = chunks (ref map)
     map = Map.remove 0 map
     let after = chunks (ref map)
@@ -44,7 +44,7 @@ export def head_deleted :: i64
 fn head_deleted =
     let mut map = sequence 0 1 768
     let before = chunks (ref map)
-    for key in 0i64 .. 511 do map = Map.remove key map
+    for key in 0i64 ..= 511 do map = Map.remove key map
     let after = chunks (ref map)
     before * 100000 + after * 1000 + Map.length (ref map)
 
@@ -60,8 +60,8 @@ export def set_algebra_chunks :: i64
 fn set_algebra_chunks =
     let mut left: Set<i64> = Set.empty()
     let mut right: Set<i64> = Set.empty()
-    for key in 0i64 .. 999 do left = Set.insert key left
-    for key in 500i64 .. 1499 do right = Set.insert key right
+    for key in 0i64 ..= 999 do left = Set.insert key left
+    for key in 500i64 ..= 1499 do right = Set.insert key right
     let common = Set.intersect (ref left) (ref right)
     let different = Set.difference (ref left) (ref right)
     let both = Set.union left right
@@ -74,7 +74,7 @@ export def array_key_selection :: bool -> i64
 fn array_key_selection intersection =
     let mut left: Set<[i64]> = Set.empty()
     let mut right: Set<[i64]> = Set.empty()
-    for value in 0i64 .. 2 do
+    for value in 0i64 ..= 2 do
         left = Set.insert (new [i64](2, \index -> value * 2 + index)) left
         right = Set.insert (new [i64](2, \index -> value + 1 + index)) right
     let selected =
@@ -135,7 +135,7 @@ fn comparison_bounds size =
     let total_bound = size * (log2 size + 6)
     let mut state = 88172645463325252
     let mut phase_start = 0
-    for index in 0i64 .. size - 1 do
+    for index in 0i64 ..= size - 1 do
         state = next_state state
         let before = Atomic.load (ref hits)
         let allowed = insert_bound (Map.chunk_count (ref map))
@@ -144,7 +144,7 @@ fn comparison_bounds size =
     if Atomic.load (ref hits) - phase_start > total_bound && failure == 0 then failure = 21
     phase_start = Atomic.load (ref hits)
     state = 88172645463325252
-    for _index in 0i64 .. size - 1 do
+    for _index in 0i64 ..= size - 1 do
         state = next_state state
         let before = Atomic.load (ref hits)
         let found = Map.contains_key (Probe { value: (state >>> 20) as i64, hits: ref hits }) (ref map)
@@ -153,7 +153,7 @@ fn comparison_bounds size =
     if Atomic.load (ref hits) - phase_start > total_bound && failure == 0 then failure = 22
     phase_start = Atomic.load (ref hits)
     state = 88172645463325252
-    for _index in 0i64 .. size - 1 do
+    for _index in 0i64 ..= size - 1 do
         state = next_state state
         let before = Atomic.load (ref hits)
         let allowed = lookup_bound (Map.chunk_count (ref map))
@@ -167,7 +167,7 @@ def probe_sets :: ref Atomic<i64> -> i64 -> (Set<Probe> * Set<Probe>)
 fn probe_sets hits size =
     let mut left: Set<Probe> = Set.empty()
     let mut right: Set<Probe> = Set.empty()
-    for index in 0i64 .. size - 1 do
+    for index in 0i64 ..= size - 1 do
         left = Set.insert (Probe { value: index * 2, hits: hits }) left
         right = Set.insert (Probe { value: index * 3, hits: hits }) right
     (left, right)
@@ -266,14 +266,14 @@ fn table_remove table key = Table { present: Array.update_at key false table.pre
 def table_keys :: ref Table -> [i64]
 fn table_keys table =
     let mut keys = Vec.empty()
-    for key in 0i64 .. table.present.length - 1 do
+    for key in 0i64 ..= table.present.length - 1 do
         if table.present[key] then keys = Vec.push_owned key keys
     Vec.to_array keys
 
 def table_values :: ref Table -> [i64]
 fn table_values table =
     let mut values = Vec.empty()
-    for key in 0i64 .. table.present.length - 1 do
+    for key in 0i64 ..= table.present.length - 1 do
         if table.present[key] then values = Vec.push_owned table.values[key] values
     Vec.to_array values
 
@@ -325,7 +325,7 @@ def build_set :: i64 -> [(i64 * i64)] -> (Set<i64> * Table)
 fn build_set range operations =
     let mut set: Set<i64> = Set.empty()
     let mut table = blank range
-    for step in 0i64 .. operations.length - 1 do
+    for step in 0i64 ..= operations.length - 1 do
         match operations[step] with
         | (kind, key) ->
             if kind == 0 then
@@ -350,7 +350,7 @@ fn run_algebra range pair =
             let mut both = blank range
             let mut common = blank range
             let mut different = blank range
-            for key in 0i64 .. range - 1 do
+            for key in 0i64 ..= range - 1 do
                 if left_table.present[key] || right_table.present[key] then both = table_insert both key 0
                 if left_table.present[key] && right_table.present[key] then common = table_insert common key 0
                 if left_table.present[key] && !right_table.present[key] then different = table_insert different key 0
@@ -378,7 +378,7 @@ fn profile_operations profile seed =
     let inserts = profile_inserts profile
     let mut operations = Vec.with_capacity (profile_count profile)
     let mut state = seed
-    for _step in 0i64 .. profile_count profile - 1 do
+    for _step in 0i64 ..= profile_count profile - 1 do
         state = next_state state
         let choice = draw state 100
         state = next_state state

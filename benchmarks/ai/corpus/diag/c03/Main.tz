@@ -22,13 +22,13 @@ def scale_all :: [i64] -> i64 -> [i64] = \values factor ->
 
 def checksum :: ref [i64] -> i64 = \values ->
     let mut acc = 0
-    for i in 0 .. values.length - 1 do
+    for i in 0 ..= values.length - 1 do
         acc = (acc * 31 + values[i]) % 1000003
     acc
 
 def report :: ref [Row] -> string = \rows ->
     let mut lines = ""
-    for i in 0 .. rows.length - 1 do
+    for i in 0 ..= rows.length - 1 do
         lines = lines + render (ref rows[i]) + "\n"
     lines
 

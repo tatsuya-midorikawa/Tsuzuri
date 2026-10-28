@@ -12,8 +12,8 @@ fn input index seed =
 
 export def ordered64 :: own i64 -> own i64 -> own i64 -> f64
 fn ordered64 count seed operation =
-    let values = new [f64](count, index -> input index seed)
-    let other = new [f64](count, index -> input index (seed + 3))
+    let values = new [f64](count, \index -> input index seed)
+    let other = new [f64](count, \index -> input index (seed + 3))
     match operation with
     | 0 -> Array.sum (ref values)
     | 1 -> Array.sum_pairwise (ref values)
@@ -22,8 +22,8 @@ fn ordered64 count seed operation =
 
 export def ordered32 :: own i64 -> own i64 -> own i64 -> f32
 fn ordered32 count seed operation =
-    let values = new [f32](count, index -> (input index seed) as f32)
-    let other = new [f32](count, index -> (input index (seed + 3)) as f32)
+    let values = new [f32](count, \index -> (input index seed) as f32)
+    let other = new [f32](count, \index -> (input index (seed + 3)) as f32)
     match operation with
     | 0 -> Array.sum (ref values)
     | 1 -> Array.sum_pairwise (ref values)
@@ -32,10 +32,10 @@ fn ordered32 count seed operation =
 
 export def fused_order :: own i64 -> bool
 fn fused_order count =
-    let left = new [f64](count, index -> input index 0)
-    let right = new [f64](count, index -> input index 3)
+    let left = new [f64](count, \index -> input index 0)
+    let right = new [f64](count, \index -> input index 3)
     let mut expected = 0.0
-    for index in 0i64 .. (count - 1) do expected = Math.fma left[index] right[index] expected
+    for index in 0i64 ..= (count - 1) do expected = Math.fma left[index] right[index] expected
     Array.dot_fma (ref left) (ref right) == expected
 
 private def format_cases :: Float<'a> => own 'a -> bool

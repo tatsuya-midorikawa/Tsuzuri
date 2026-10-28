@@ -1,16 +1,16 @@
 record Label { text: string, other: string, count: i32 }
 
-fn text_length(text: &string) -> i64 { text.length }
-fn first(values: &[string]) -> &string { &values[0] }
-fn replace(text: &mut string) -> unit { *text = "changed"; }
+fn text_length(text: ref string) -> i64 { text.length }
+fn first(values: ref [string]) -> ref string { ref values[0] }
+fn replace(text: ref mut string) -> unit { deref text = "changed"; }
 
 export fn strings(flag: own bool) -> i64 {
     let mut text = "日本語";
-    let borrowed = &text;
+    let borrowed = ref text;
     let original = text_length(borrowed);
-    replace(&mut text);
-    let values = [clone_string(&text), "second"];
-    let label = Label { text: clone_string(first(&values)), other: "!", count: 7 };
+    replace(ref mut text);
+    let values = [clone_string(ref text), "second"];
+    let label = Label { text: clone_string(first(ref values)), other: "!", count: 7 };
     let moved = label.text;
     let joined = if flag { moved + label.other } else { moved };
     let _ = assert(text == "changed");
@@ -21,7 +21,7 @@ export fn strings(flag: own bool) -> i64 {
 }
 
 fn rec owned_loop(n: own i64, text: own string) -> i64 {
-    let temporary = clone_string(&text);
+    let temporary = clone_string(ref text);
     let size = temporary.length;
     if n == 0 { size } else { owned_loop(n - 1, text) }
 }
@@ -44,10 +44,10 @@ export fn coalescing(n: own i64) -> i64 {
 
 export fn mutable_local() -> i32 {
     let mut value: i32 = 1;
-    let exclusive = &mut value;
-    let reborrow = &mut *exclusive;
-    *reborrow = 40;
-    *exclusive = *exclusive + 2;
+    let exclusive = ref mut value;
+    let reborrow = ref mut deref exclusive;
+    deref reborrow = 40;
+    deref exclusive = deref exclusive + 2;
     value
 }
 
@@ -140,7 +140,7 @@ export fn signed128_overflow() -> i64 {
 export fn string_bounds(index: own i64) -> i16u { "abc"[index] }
 
 fn rec grow(n: own i64, text: own string) -> i64 {
-    if n == 0 { text.length } else { grow(n - 1, clone_string(&text) + text) }
+    if n == 0 { text.length } else { grow(n - 1, clone_string(ref text) + text) }
 }
 
 export fn allocation_limit() -> i64 { grow(25, "a") }

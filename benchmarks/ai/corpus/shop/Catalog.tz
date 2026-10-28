@@ -8,7 +8,7 @@ def gross :: ref Item -> i64 = \item -> Money.with_tax item.price item.tax_perce
 
 def position :: ref [Item] -> i64 -> i64 = \items id ->
     let mut found = -1
-    for i in 0 .. items.length - 1 do
+    for i in 0 ..= items.length - 1 do
         if items[i].id == id then found = i
     found
 

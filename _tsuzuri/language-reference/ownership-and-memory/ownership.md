@@ -213,7 +213,7 @@ first.length + second.length
 
 ```tsuzuri run=9
 let mut xs = new [i64](4, \_i -> 0)
-for i in 0 .. 3 do
+for i in 0 ..= 3 do
     xs = Array.update_at i (i * 3) xs
 xs[3]
 ```

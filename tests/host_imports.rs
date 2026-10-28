@@ -86,7 +86,7 @@ fn scalar_imports_use_effectful_abi_wrappers_and_prune_unused_declarations() {
 #[test]
 fn host_imports_reuse_buffer_and_record_abi() {
     use tsuzuri::llvm;
-    let source = "record Point { x: f64, flag: bool }\nextern def transform :: ref [i64] -> ref string -> Point -> [i64]\nextern def point :: ref Point -> Point\nextern def text :: utf8string\nfn use_buffers() -> i64 { let values = [20, 22]; let label = \"text\"; let point = Point { x: 1.0, flag: true }; let result = transform (&values) (&label) point; let other = Main.point (&point); let text = Main.text(); result.length + text.length }";
+    let source = "record Point { x: f64, flag: bool }\nextern def transform :: ref [i64] -> ref string -> Point -> [i64]\nextern def point :: ref Point -> Point\nextern def text :: utf8string\nfn use_buffers() -> i64 { let values = [20, 22]; let label = \"text\"; let point = Point { x: 1.0, flag: true }; let result = transform (ref values) (ref label) point; let other = Main.point (ref point); let text = Main.text(); result.length + text.length }";
     let module = analyze(source).unwrap();
     for wasm in [false, true] {
         let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();

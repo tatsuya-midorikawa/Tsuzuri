@@ -49,13 +49,13 @@ and word_odd n = if n == 0 then "odd" else word_even (n - 1)
 export def tail_words :: own i64 -> i64
 fn tail_words n = (word_even n).length
 
-def rec lend_even :: &i64 -> own i64 -> i64
-def and lend_odd :: &i64 -> own i64 -> i64
-fn rec lend_even value n = if n == 0 then *value else lend_odd value (n - 1)
-and lend_odd value n = if n == 0 then *value * 2 else lend_even value (n - 1)
+def rec lend_even :: ref i64 -> own i64 -> i64
+def and lend_odd :: ref i64 -> own i64 -> i64
+fn rec lend_even value n = if n == 0 then deref value else lend_odd value (n - 1)
+and lend_odd value n = if n == 0 then deref value * 2 else lend_even value (n - 1)
 
 export def tail_lend :: own i64 -> own i64 -> i64
-fn tail_lend value n = lend_even (&value) n
+fn tail_lend value n = lend_even (ref value) n
 
 // A group where a function also calls itself: the self call is a loop, the other call a tail call.
 def rec step_a :: own i64 -> own i64 -> i64

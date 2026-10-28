@@ -49,7 +49,7 @@ fn specializes_shared_non_generic_callee_once() {
 
 #[test]
 fn parses_typeclass_contexts_and_default_methods() {
-    let source = "class (Eq<'a>, Ord<'a>) => Total<'a> { def same :: ref 'a -> ref 'a -> bool; fn same left right = Eq.eq left right }\nrecord Box<'a> { value: 'a }\ninstance Eq<'a> => Eq<Box<'a>> { fn eq left right = left.value == right.value; let ne = left -> right -> !(Eq.eq left right) }";
+    let source = "class (Eq<'a>, Ord<'a>) => Total<'a> { def same :: ref 'a -> ref 'a -> bool; fn same left right = Eq.eq left right }\nrecord Box<'a> { value: 'a }\ninstance Eq<'a> => Eq<Box<'a>> { fn eq left right = left.value == right.value; let ne = \\left right -> !(Eq.eq left right) }";
     let program = tsuzuri::parser::parse(source).unwrap();
     assert_eq!(program.classes[0].superclasses.len(), 2);
     assert_eq!(program.classes[0].methods.len(), 1);

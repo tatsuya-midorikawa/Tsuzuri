@@ -14,9 +14,9 @@ instance Ord<Named> {
 
 export def compare_loop :: own i64 -> i64
 fn compare_loop count =
-    let values = new [Named](2, index -> Named { text: "own" + "ed", rank: index })
+    let values = new [Named](2, \index -> Named { text: "own" + "ed", rank: index })
     let mut total = 0
-    for index in 1 .. count do
+    for index in 1 ..= count do
         assert (values[0] == values[0])
         assert (values[0] != values[1])
         assert (values[0] < values[1])

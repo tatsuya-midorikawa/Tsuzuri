@@ -71,16 +71,16 @@ def near :: f32 -> f32 -> f32 -> bool
 fn near tolerance actual expected = Math.abs (actual - expected) <= tolerance * Math.abs expected
 
 def available :: bool
-fn available = Result.is_ok (&(Gpu.request Gpu.WebGpu))
+fn available = Result.is_ok (ref (Gpu.request Gpu.WebGpu))
 
 def strict_mismatches :: i32 -> i32
 fn strict_mismatches count = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
     let device = Result.get (Gpu.request Gpu.WebGpu);
-    let expected = Gpu.to_array (Gpu.map (&reference) mix (Gpu.init (&reference) (count as i64) (\\index -> index * 3 - 7)));
-    let actual = Gpu.to_array (Gpu.map (&device) mix (Gpu.init (&device) (count as i64) (\\index -> index * 3 - 7)));
+    let expected = Gpu.to_array (Gpu.map (ref reference) mix (Gpu.init (ref reference) (count as i64) (\\index -> index * 3 - 7)));
+    let actual = Gpu.to_array (Gpu.map (ref device) mix (Gpu.init (ref device) (count as i64) (\\index -> index * 3 - 7)));
     let mut wrong = 0;
-    for index in 0i64 .. ((count as i64) - 1) do
+    for index in 0i64 ..= ((count as i64) - 1) do
         if actual[index] != expected[index] then wrong = wrong + 1 else ();
     wrong
 }
@@ -89,10 +89,10 @@ def unsigned_mismatches :: i32 -> i32
 fn unsigned_mismatches count = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
     let device = Result.get (Gpu.request Gpu.WebGpu);
-    let expected = Gpu.to_array (Gpu.map (&reference) scramble (Gpu.init (&reference) (count as i64) (\\index -> (index as i32u) * 2654435761i32u)));
-    let actual = Gpu.to_array (Gpu.map (&device) scramble (Gpu.init (&device) (count as i64) (\\index -> (index as i32u) * 2654435761i32u)));
+    let expected = Gpu.to_array (Gpu.map (ref reference) scramble (Gpu.init (ref reference) (count as i64) (\\index -> (index as i32u) * 2654435761i32u)));
+    let actual = Gpu.to_array (Gpu.map (ref device) scramble (Gpu.init (ref device) (count as i64) (\\index -> (index as i32u) * 2654435761i32u)));
     let mut wrong = 0;
-    for index in 0i64 .. ((count as i64) - 1) do
+    for index in 0i64 ..= ((count as i64) - 1) do
         if actual[index] != expected[index] then wrong = wrong + 1 else ();
     wrong
 }
@@ -101,10 +101,10 @@ def relaxed_mismatches :: i32 -> i32
 fn relaxed_mismatches count = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
     let device = Result.get (Gpu.request Gpu.WebGpu);
-    let expected = Gpu.to_array (Gpu.map_relaxed (&reference) poly (Gpu.init_relaxed (&reference) (count as i64) sample));
-    let actual = Gpu.to_array (Gpu.map_relaxed (&device) poly (Gpu.init_relaxed (&device) (count as i64) sample));
+    let expected = Gpu.to_array (Gpu.map_relaxed (ref reference) poly (Gpu.init_relaxed (ref reference) (count as i64) sample));
+    let actual = Gpu.to_array (Gpu.map_relaxed (ref device) poly (Gpu.init_relaxed (ref device) (count as i64) sample));
     let mut wrong = 0;
-    for index in 0i64 .. ((count as i64) - 1) do
+    for index in 0i64 ..= ((count as i64) - 1) do
         if near 0.00001 actual[index] expected[index] then () else wrong = wrong + 1;
     wrong
 }
@@ -113,10 +113,10 @@ def threshold_mismatches :: i32 -> i32
 fn threshold_mismatches count = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
     let device = Result.get (Gpu.request Gpu.WebGpu);
-    let expected = Gpu.to_array (Gpu.map_relaxed (&reference) above (Gpu.init_relaxed (&reference) (count as i64) sample));
-    let actual = Gpu.to_array (Gpu.map_relaxed (&device) above (Gpu.init_relaxed (&device) (count as i64) sample));
+    let expected = Gpu.to_array (Gpu.map_relaxed (ref reference) above (Gpu.init_relaxed (ref reference) (count as i64) sample));
+    let actual = Gpu.to_array (Gpu.map_relaxed (ref device) above (Gpu.init_relaxed (ref device) (count as i64) sample));
     let mut wrong = 0;
-    for index in 0i64 .. ((count as i64) - 1) do
+    for index in 0i64 ..= ((count as i64) - 1) do
         if actual[index] != expected[index] then wrong = wrong + 1 else ();
     wrong
 }
@@ -125,7 +125,7 @@ def sweep :: i32
 fn sweep = {
     let counts = [0, 1, 3, 255, 256, 257, 1000, 4097, 70000];
     let mut wrong = 0;
-    for position in 0i64 .. 8i64 do
+    for position in 0i64 ..= 8i64 do
         wrong = wrong + strict_mismatches counts[position] + unsigned_mismatches counts[position] + relaxed_mismatches counts[position] + threshold_mismatches counts[position];
     wrong
 }
@@ -134,7 +134,7 @@ def strict_float :: f32 -> f32
 fn strict_float value = {
     let device = Result.get (Gpu.request Gpu.WebGpu);
     let values = [value];
-    let mapped = Gpu.map (&device) (\\item -> item * item + item) (Gpu.from_array (&device) (&values));
+    let mapped = Gpu.map (ref device) (\\item -> item * item + item) (Gpu.from_array (ref device) (ref values));
     let result = Gpu.to_array mapped;
     result[0]
 }
@@ -160,20 +160,20 @@ def half_narrow :: f32 -> f16
 fn half_narrow value = (value * 0.5 + 0.25) as f16
 
 def half_available :: bool
-fn half_available = Result.is_ok (&(Gpu.request Gpu.WebGpu))
+fn half_available = Result.is_ok (ref (Gpu.request Gpu.WebGpu))
 
 def half_mismatches :: i32 -> i32
 fn half_mismatches count = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
     let device = Result.get (Gpu.request Gpu.WebGpu);
-    let expected = Gpu.to_array (Gpu.map_relaxed (&reference) half_square (Gpu.init_relaxed (&reference) (count as i64) half_sample));
-    let actual = Gpu.to_array (Gpu.map_relaxed (&device) half_square (Gpu.init_relaxed (&device) (count as i64) half_sample));
-    let wide_expected = Gpu.to_array (Gpu.map_relaxed (&reference) half_widen (Gpu.init_relaxed (&reference) (count as i64) half_sample));
-    let wide_actual = Gpu.to_array (Gpu.map_relaxed (&device) half_widen (Gpu.init_relaxed (&device) (count as i64) half_sample));
-    let narrow_expected = Gpu.to_array (Gpu.map_relaxed (&reference) half_narrow (Gpu.init_relaxed (&reference) (count as i64) sample));
-    let narrow_actual = Gpu.to_array (Gpu.map_relaxed (&device) half_narrow (Gpu.init_relaxed (&device) (count as i64) sample));
+    let expected = Gpu.to_array (Gpu.map_relaxed (ref reference) half_square (Gpu.init_relaxed (ref reference) (count as i64) half_sample));
+    let actual = Gpu.to_array (Gpu.map_relaxed (ref device) half_square (Gpu.init_relaxed (ref device) (count as i64) half_sample));
+    let wide_expected = Gpu.to_array (Gpu.map_relaxed (ref reference) half_widen (Gpu.init_relaxed (ref reference) (count as i64) half_sample));
+    let wide_actual = Gpu.to_array (Gpu.map_relaxed (ref device) half_widen (Gpu.init_relaxed (ref device) (count as i64) half_sample));
+    let narrow_expected = Gpu.to_array (Gpu.map_relaxed (ref reference) half_narrow (Gpu.init_relaxed (ref reference) (count as i64) sample));
+    let narrow_actual = Gpu.to_array (Gpu.map_relaxed (ref device) half_narrow (Gpu.init_relaxed (ref device) (count as i64) sample));
     let mut wrong = 0;
-    for index in 0i64 .. ((count as i64) - 1) do {
+    for index in 0i64 ..= ((count as i64) - 1) do {
         if near 0.004 (actual[index] as f32) (expected[index] as f32) then () else wrong = wrong + 1;
         if near 0.000001 wide_actual[index] wide_expected[index] then () else wrong = wrong + 1;
         if near 0.002 (narrow_actual[index] as f32) (narrow_expected[index] as f32) then () else wrong = wrong + 1
@@ -185,7 +185,7 @@ def half_sweep :: i32
 fn half_sweep = {
     let counts = [0, 1, 3, 255, 256, 257, 1000, 4097, 70000];
     let mut wrong = 0;
-    for position in 0i64 .. 8i64 do
+    for position in 0i64 ..= 8i64 do
         wrong = wrong + half_mismatches counts[position];
     wrong
 }
@@ -235,12 +235,12 @@ def shape_mismatches :: i32 -> i32
 fn shape_mismatches count = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
     let device = Result.get (Gpu.request Gpu.WebGpu);
-    let expected = Gpu.to_array (Gpu.map (&reference) bump (Gpu.init (&reference) (count as i64) (\\index -> index * 3 - 7)));
-    let actual = Gpu.to_array (Gpu.map (&device) bump (Gpu.init (&device) (count as i64) (\\index -> index * 3 - 7)));
-    let chained = Gpu.to_array (Gpu.init (&reference) (count as i64) chain62);
-    let chain_actual = Gpu.to_array (Gpu.init (&device) (count as i64) chain62);
-    let floats = Gpu.to_array (Gpu.map_relaxed (&reference) bump_float (Gpu.init_relaxed (&reference) (count as i64) sample));
-    let float_actual = Gpu.to_array (Gpu.map_relaxed (&device) bump_float (Gpu.init_relaxed (&device) (count as i64) sample));
+    let expected = Gpu.to_array (Gpu.map (ref reference) bump (Gpu.init (ref reference) (count as i64) (\\index -> index * 3 - 7)));
+    let actual = Gpu.to_array (Gpu.map (ref device) bump (Gpu.init (ref device) (count as i64) (\\index -> index * 3 - 7)));
+    let chained = Gpu.to_array (Gpu.init (ref reference) (count as i64) chain62);
+    let chain_actual = Gpu.to_array (Gpu.init (ref device) (count as i64) chain62);
+    let floats = Gpu.to_array (Gpu.map_relaxed (ref reference) bump_float (Gpu.init_relaxed (ref reference) (count as i64) sample));
+    let float_actual = Gpu.to_array (Gpu.map_relaxed (ref device) bump_float (Gpu.init_relaxed (ref device) (count as i64) sample));
     let mut wrong = 0;
     for index in 0i64 .. ((count as i64) - 1) do {
         if actual[index] != expected[index] then wrong = wrong + 1 else ();
@@ -263,7 +263,7 @@ def deep63 :: i32
 fn deep63 = {
     let device = Result.get (Gpu.request Gpu.WebGpu);
     let values = [5];
-    let mapped = Gpu.map (&device) chain63 (Gpu.from_array (&device) (&values));
+    let mapped = Gpu.map (ref device) chain63 (Gpu.from_array (ref device) (ref values));
     (Gpu.to_array mapped)[0]
 }
 `;
@@ -279,8 +279,8 @@ nativeSources.shapes = `${shapes}\nif shapes_available() then shapes_sweep() els
 nativeSources.deep = `${shapes}\ndeep63()\n`;
 // The largest call that a device with the default limits takes (65,535 workgroups of 256 invocations), and one lane more,
 // which the runtime refuses with status 3 before it makes a buffer.
-nativeSources.edge = "let device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = Gpu.to_array (Gpu.init (&device) 16776960 (\\index -> index * 2))\nvalues[16776959]\n";
-nativeSources.over = "let device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = Gpu.to_array (Gpu.init (&device) 16776961 (\\index -> index * 2))\nvalues[16776960]\n";
+nativeSources.edge = "let device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = Gpu.to_array (Gpu.init (ref device) 16776960 (\\index -> index * 2))\nvalues[16776959]\n";
+nativeSources.over = "let device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = Gpu.to_array (Gpu.init (ref device) 16776961 (\\index -> index * 2))\nvalues[16776960]\n";
 
 try {
   // ---- Native: the runtime of src/runtime/gpu.c loads wgpu-native at run time --------------------------------------
@@ -326,10 +326,10 @@ try {
     const text = readFileSync(ir, "utf8");
     assert.match(text, /var local_\d+: i32 = param_\d+;/);
     assert.match(text, /var local_\d+: f32 = param_\d+;/);
-    assert.ok(text.includes("bitcast<i32>(161u)") && !text.includes("bitcast<i32>(162u)"));
+    assert.ok(text.includes("bitcast<i32>(161i32u)") && !text.includes("bitcast<i32>(162i32u)"));
   }
   // A relaxed call with 63 arms is refused at compile time (E1017), like `--emit wgsl-relaxed`.
-  const refused63 = project("deep-relaxed", `def chain :: f32 -> f32\nfn chain value = ${arms(63, number => `${number}.0`)}0.0\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values: [f32] = [1.0]\nGpu.to_array (Gpu.map_relaxed (&device) chain (Gpu.from_array (&device) (&values)))\n`);
+  const refused63 = project("deep-relaxed", `def chain :: f32 -> f32\nfn chain value = ${arms(63, number => `${number}.0`)}0.0\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values: [f32] = [1.0]\nGpu.to_array (Gpu.map_relaxed (ref device) chain (Gpu.from_array (ref device) (ref values)))\n`);
   assert.equal(JSON.parse(cli(["build", refused63, "--json", "-o", join(refused63, "never")], false).stderr).code, "E1017");
 
   // Libraries that are not wgpu-native 29 fail closed with a reason.
@@ -348,13 +348,13 @@ try {
       assert.equal(result.stdout.trim(), "-1");
       assert.match(result.stderr, pattern);
     };
-    refused(mock("older", ["-DMOCK_VERSION=0x1C000000u"]), /wgpu-native 28\.0\.0\.0 is not supported; the runtime needs major version 29/);
-    refused(mock("newer", ["-DMOCK_VERSION=0x1E000000u"]), /wgpu-native 30\.0\.0\.0 is not supported/);
+    refused(mock("older", ["-DMOCK_VERSION=0x1C000000i32u"]), /wgpu-native 28\.0\.0\.0 is not supported; the runtime needs major version 29/);
+    refused(mock("newer", ["-DMOCK_VERSION=0x1E000000i32u"]), /wgpu-native 30\.0\.0\.0 is not supported/);
     refused(mock("other", ["-DMOCK_NO_VERSION"]), /the library has no wgpuGetVersion; only wgpu-native 29 is supported/);
-    refused(mock("incomplete", ["-DMOCK_VERSION=0x1D000101u"]), /the library lacks wgpu/);
+    refused(mock("incomplete", ["-DMOCK_VERSION=0x1D000101i32u"]), /the library lacks wgpu/);
     // A build from source (Homebrew's wgpu-native) reports version 0: the user vouches for it by naming it. The
     // libraries that the runtime finds by itself are not trusted that way (see the host builds below).
-    const unversioned = mock("unversioned", ["-DMOCK_VERSION=0u"]);
+    const unversioned = mock("unversioned", ["-DMOCK_VERSION=0i32u"]);
     refused(unversioned, /the library lacks wgpu/);
 
     // ---- The runtime driven directly: a C host (tests/gpu_runtime_host.c) built with src/runtime/gpu.c ---------------
@@ -425,7 +425,7 @@ try {
     mkdirSync(planted);
     const marker = join(planted, "loaded");
     const bare = `libwgpu_native.${extension}`;
-    execute(clang, ["-shared", "-fPIC", "-DMOCK_VERSION=0x1D000101u", "-DMOCK_MARKER", resolve("tests/gpu_runtime_mock.c"), "-o", join(planted, bare)]);
+    execute(clang, ["-shared", "-fPIC", "-DMOCK_VERSION=0x1D000101i32u", "-DMOCK_MARKER", resolve("tests/gpu_runtime_mock.c"), "-o", join(planted, bare)]);
     const production = compile(join(directory, "host-production"), [hostSource, runtimeSource]);
     const searching = { ...quiet, TSUZURI_WEBGPU_LIBRARY: undefined, TSUZURI_GPU_DEBUG: "1", MOCK_LOAD_MARKER: marker };
     const ignored = execute(production, ["open"], { env: searching, cwd: planted, success: false });
@@ -450,7 +450,7 @@ try {
     notes.push("a C host drove the runtime against a fake wgpu-native: 10 injected faults end in statuses (no submit of an invalid object), a stalled device is given up on and not asked again, the limits come from the device, no library is loaded from the working directory");
 
     // A user call of the device-aware std functions would name a kernel of its own: they are private to the Gpu module.
-    const forged = project("forged", "def negate :: i32 -> i32\nfn negate value = 0 - value\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = [10, 20, 30]\nlet mapped = Gpu.map_on (&device) negate (Gpu.from_array (&device) (&values)) 0\n(Gpu.to_array mapped)[0]\n");
+    const forged = project("forged", "def negate :: i32 -> i32\nfn negate value = 0 - value\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values = [10, 20, 30]\nlet mapped = Gpu.map_on (ref device) negate (Gpu.from_array (ref device) (ref values)) 0\n(Gpu.to_array mapped)[0]\n");
     const refusal = JSON.parse(cli(["build", forged, "--json", "-o", join(forged, "never")], false).stderr);
     assert.equal(refusal.code, "E1022");
     assert.match(refusal.message, /private name 'Gpu\.map_on' is only visible inside module 'Gpu'/);
@@ -459,7 +459,7 @@ try {
     // the call, and a kernel with other lanes is a call without a kernel: the host sizes its copies of the arrays by the
     // kinds, so a mismatch would read and write past them. The compiler numbers every call itself, so the descriptor is
     // patched here: the f16 output of the kernel becomes a 32-bit output, which is twice the size of what the call allocates.
-    const lanes = project("lanes", "def half_index :: i32 -> f16\nfn half_index value = value as f16\nexport def half_length :: i32\nfn half_length = {\n    let device = Result.get (Gpu.request Gpu.WebGpu);\n    let values = Gpu.to_array (Gpu.init_relaxed (&device) 4 half_index);\n    values.length as i32\n}\n");
+    const lanes = project("lanes", "def half_index :: i32 -> f16\nfn half_index value = value as f16\nexport def half_length :: i32\nfn half_length = {\n    let device = Result.get (Gpu.request Gpu.WebGpu);\n    let values = Gpu.to_array (Gpu.init_relaxed (ref device) 4 half_index);\n    values.length as i32\n}\n");
     cli(["build", lanes, "--emit", "llvm", "-o", join(lanes, "intact.ll")]);
     const text = readFileSync(join(lanes, "intact.ll"), "utf8");
     // The descriptor is `{ flags, lanes, features, wgsl, wgsl_length, spirv, spirv_length, weight }` (F09 Phase 3 added the last
@@ -638,7 +638,7 @@ try {
       }
       // The same in a real module: a 2.4 GB array moves the heap above 2 GiB, so the result of Gpu.init lies there.
       if (totalmem() >= 12 * 2 ** 30) {
-        const highProject = project("wasm-high", "export def wasm_high :: i32\nfn wasm_high = {\n    let device = Result.get (Gpu.request Gpu.WebGpu);\n    let filler = Array.init 600000000 (\\index -> (index as i32) * 7);\n    let values = Gpu.to_array (Gpu.init (&device) 1000 (\\index -> index));\n    values[999] + filler[(values[1] as i64)]\n}\n");
+        const highProject = project("wasm-high", "export def wasm_high :: i32\nfn wasm_high = {\n    let device = Result.get (Gpu.request Gpu.WebGpu);\n    let filler = Array.init 600000000 (\\index -> (index as i32) * 7);\n    let values = Gpu.to_array (Gpu.init (ref device) 1000 (\\index -> index));\n    values[999] + filler[(values[1] as i64)]\n}\n");
         const highModule = join(highProject, "high.wasm");
         cli(["build", highProject, "--target", "wasm32", "--wasm-feature", "webgpu", "--wasm-max-memory", "3500MiB", "-O3", "-o", highModule]);
         const { host, call } = instantiate(highModule, fakeProvider());

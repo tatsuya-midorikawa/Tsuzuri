@@ -6,7 +6,7 @@
 @terminates
 export def sum_squares :: i64 -> i64 = \n ->
     let mut total = 0
-    for i in 0 .. n do
+    for i in 0 ..= n do
         total = total + i * i
     total
 
@@ -33,7 +33,7 @@ export def divided :: i64 -> i64 = \n -> if n == 0 then 0 else 1000 / 7 + n / 3 
 export def checksum :: i64 -> i64 = \n ->
     let bytes = [1, 2, 3, 4, 5]
     let mut sum = n
-    for i in 0 .. bytes.length - 1 do
+    for i in 0 ..= bytes.length - 1 do
         sum = sum * 31 + bytes[i]
     sum
 

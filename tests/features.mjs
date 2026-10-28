@@ -434,6 +434,89 @@ const descending = (n) => Array.from({ length: n }, (_, i) => BigInt(n - 1 - i))
 const ascending = (n) => Array.from({ length: n }, (_, i) => BigInt(i));
 
 const suites = {
+  range_forms: {
+    cases: (() => {
+      const MAX = (1n << 63n) - 1n;
+      const MIN = -(1n << 63n);
+      // The values that `for i in start .. step OP finish` visits in a type of `bits`, stopping
+      // where the next value would leave the type (A22 appendix F).
+      const values = (start, step, finish, exclusive, bits, signed) => {
+        const low = signed ? -(1n << (bits - 1n)) : 0n;
+        const high = signed ? (1n << (bits - 1n)) - 1n : (1n << bits) - 1n;
+        const out = [];
+        for (let v = start; step > 0n ? (exclusive ? v < finish : v <= finish) : (exclusive ? v > finish : v >= finish); v += step) {
+          out.push(v);
+          if (v + step < low || v + step > high) break;
+        }
+        return out;
+      };
+      const fold = (list) => list.reduce((t, v) => BigInt.asIntN(64, t * 31n + v), 0n);
+      const narrow = (value, bits, signed) => (signed ? BigInt.asIntN(Number(bits), value) : BigInt.asUintN(Number(bits), value));
+      const loop = (bits, signed, step = 1n) => (exclusive) => (a, b) =>
+        fold(values(narrow(a, bits, signed), step, narrow(b, bits, signed), exclusive, bits, signed));
+      const xs = [10n, 20n, 30n, 40n, 50n];
+      const slice = (a, end) => {
+        const start = BigInt.asUintN(64, a);
+        const stop = BigInt.asUintN(64, end);
+        if (!(start <= stop && stop <= 5n)) return null;
+        const part = xs.slice(Number(start), Number(stop));
+        return BigInt(part.length) * 1000n + part.reduce((sum, value) => sum + value, 0n);
+      };
+      const cases = [];
+      const add = (name, args, expected) => { if (expected !== null) cases.push([name, args, expected]); };
+      for (const [a, b] of [[0n, 3n], [3n, 3n], [5n, 2n], [-3n, 3n], [2147483646n, 2147483647n]]) {
+        add("closed_i32", [a, b], loop(32n, true)(false)(a, b));
+        add("open_i32", [a, b], loop(32n, true)(true)(a, b));
+      }
+      for (const [a, b] of [[3n, 0n], [0n, 0n], [0n, 3n], [-2147483647n, -2147483648n]]) {
+        add("down_closed_i32", [a, b], loop(32n, true, -1n)(false)(a, b));
+        add("down_open_i32", [a, b], loop(32n, true, -1n)(true)(a, b));
+      }
+      for (const [a, b] of [[0n, 3n], [0n, 0n], [5n, 2n], [MAX - 1n, MAX], [MIN, MIN + 1n], [MIN, MIN]]) {
+        add("closed_i64", [a, b], loop(64n, true)(false)(a, b));
+        add("open_i64", [a, b], loop(64n, true)(true)(a, b));
+      }
+      for (const [a, b] of [[3n, 0n], [MIN + 1n, MIN], [0n, 0n]]) {
+        add("down_closed_i64", [a, b], loop(64n, true, -1n)(false)(a, b));
+        add("down_open_i64", [a, b], loop(64n, true, -1n)(true)(a, b));
+      }
+      for (const [a, s, b] of [[0n, 2n, 7n], [0n, 2n, 6n], [10n, -3n, 0n], [10n, -3n, 1n], [5n, 1n, 5n], [0n, 3n, 100n]]) {
+        add("stride_closed", [a, s, b], fold(values(a, s, b, false, 64n, true)));
+        add("stride_open", [a, s, b], fold(values(a, s, b, true, 64n, true)));
+      }
+      for (const [a, b] of [[250n, 255n], [0n, 0n], [0n, 255n], [255n, 255n]]) {
+        add("u8_closed", [a, b], loop(8n, false)(false)(a, b));
+        add("u8_open", [a, b], loop(8n, false)(true)(a, b));
+      }
+      for (const [a, s, b] of [[125n, 2n, 127n], [-128n, 50n, 127n], [127n, -1n, 126n]]) {
+        add("i8_stride_closed", [a, s, b], fold(values(a, s, b, false, 8n, true)));
+        add("i8_stride_open", [a, s, b], fold(values(a, s, b, true, 8n, true)));
+      }
+      for (const [a, b] of [[1n, 3n], [0n, 4n], [2n, 1n], [0n, -1n], [1n, 1n]]) {
+        add("slice_closed", [a, b], slice(a, b + 1n));
+      }
+      for (const [a, b] of [[1n, 3n], [0n, 5n], [2n, 2n], [0n, 0n]]) {
+        add("slice_open", [a, b], slice(a, b));
+        add("slice_bare", [a, b], slice(a, b));
+      }
+      for (const n of [0n, 1n, 10n, 1000n]) add("sum_below_length", [n], 3n * (n * (n - 1n) / 2n));
+      for (const n of [0n, 1n, 4n]) add("folded", [n], 5050n + n * (n - 1n) / 2n);
+      return cases;
+    })(),
+    traps: [
+      ["stride_open", [0n, 0n, 5n], "range step is zero"], ["stride_open", [5n, 0n, 5n], "range step is zero"],
+      ["stride_closed", [0n, 0n, 5n], "range step is zero"],
+      ["slice_closed", [0n, 5n], "index out of bounds"], ["slice_closed", [2n, 0n], "index out of bounds"],
+      ["slice_closed", [0n, -2n], "index out of bounds"], ["slice_closed", [0n, (1n << 63n) - 1n], "index out of bounds"],
+      ["slice_open", [0n, 6n], "index out of bounds"],
+    ],
+    trapKind: "range step is zero",
+    inspect(ir) {
+      // The closed loops keep their inclusive test; `..=` slices end at `b + 1`.
+      assert.match(ir, /icmp eq i64/);
+      assert.match(ir, /add i64 %[\w.]+, 1/);
+    },
+  },
   contracts: {
     options: ["--contracts", "check"],
     cases: (() => {
@@ -2886,7 +2969,7 @@ function debugOutputChecks() {
     assert.deepEqual(readFileSync(base), readFileSync(opted));
     const parallel = mkdtempSync(join(directory, "parallel-"));
     const parallelSource = join(parallel, "Main.tz");
-    writeFileSync(parallelSource, "let tasks = new [Task<i64>](16, index -> task { return Debug.trace index })\nlet results = Task.run (Task.parallel tasks)\nArray.sum (ref results)");
+    writeFileSync(parallelSource, "let tasks = new [Task<i64>](16, \\index -> task { return Debug.trace index })\nlet results = Task.run (Task.parallel tasks)\nArray.sum (ref results)");
     for (const optimization of [0, 3]) {
       const native = join(directory, `parallel-${optimization}`);
       cli(["build", parallelSource, `-O${optimization}`, "-o", native]);

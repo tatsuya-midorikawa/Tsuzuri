@@ -63,7 +63,7 @@ Usage:
                     [--profile-generate DIR|--profile-use PATH] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
-  tsuzuri new directory [--namespace NAME] [--no-agent-files]
+  tsuzuri new directory [--namespace NAME] [--edition 2026|2027] [--no-agent-files]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--effective] [--json]
@@ -277,6 +277,8 @@ Build options:
                             MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings
     --warn implicit-copy   Report W1006 at implicit copies of arrays and lists
+    --warn canonical       Report W1007 at spellings that have a canonical form, with their rewrites
+    --edition 2026|2027    Read the sources of a project without a Tsuzuri.toml with this edition
     --warn untrusted-extern
                          Report W1010 at extern functions that are used but not marked '@trusted'
     --contracts off|check|test|prove
@@ -396,6 +398,8 @@ struct Arguments {
     json: bool,
     deny_warnings: bool,
     warn_implicit_copy: bool,
+    /// A22: report W1007 at the root package's noncanonical spellings.
+    warn_canonical: bool,
     /// E15: report W1010 at the root package's used extern functions without `@trusted`.
     warn_untrusted_extern: bool,
     format_check: bool,
@@ -412,6 +416,8 @@ struct Arguments {
     test_seed: Option<u64>,
     /// `--contracts off|check|test|prove` (A21); `None` takes the command's default.
     contracts: Option<ContractMode>,
+    /// A22 `--edition`: the edition of the root sources of a project without a manifest.
+    edition: Option<tsuzuri::syntax::Edition>,
     /// `--prove-timeout` and `--function` of `--contracts prove` (A21 Phase 5).
     prove: tsuzuri::prove::ProveOptions,
     /// `--no-server`: `check` and `build` run in this process even where a build server runs.
@@ -448,6 +454,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             json: false,
             deny_warnings: false,
             warn_implicit_copy: false,
+            warn_canonical: false,
             warn_untrusted_extern: false,
             format_check: false,
             test_filter: None,
@@ -458,6 +465,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             bench_allocs: false,
             test_seed: None,
             contracts: None,
+            edition: None,
             prove: Default::default(),
             no_server: false,
             kg: Default::default(),
@@ -508,6 +516,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut deny_warnings = false;
     let mut warn_implicit_copy = false;
     let mut warn_untrusted_extern = false;
+    let mut warn_canonical = false;
     let mut format_check = false;
     let mut test_filter = None;
     let mut test_list = false;
@@ -517,6 +526,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut bench_allocs = false;
     let mut test_seed = None;
     let mut contracts: Option<ContractMode> = None;
+    let mut edition = None;
     let mut prove = tsuzuri::prove::ProveOptions::default();
     let mut prove_timeout_given = false;
     let mut debug_output = false;
@@ -649,6 +659,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                     position += 1;
                     let flag = match name.to_str() {
                         Some("implicit-copy") => &mut warn_implicit_copy,
+                        Some("canonical") => &mut warn_canonical,
                         Some("untrusted-extern") => &mut warn_untrusted_extern,
                         _ => {
                             return Err(command_line_error(
@@ -780,6 +791,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                 Some("--function") => {
                     let value = next_value(arguments, &mut position, "--function")?;
                     prove.functions.push(value.to_string_lossy().into_owned());
+                    continue;
+                }
+                Some("--edition") => {
+                    let value = arguments.get(position);
+                    position += usize::from(value.is_some());
+                    edition = Some(parse_edition_value(value, edition.is_some())?);
                     continue;
                 }
                 Some("--contracts") => {
@@ -1359,6 +1376,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             || cpu.is_some()
             || deny_warnings
             || warn_implicit_copy
+            || warn_canonical
             || warn_untrusted_extern)
     {
         return Err(command_line_error(
@@ -1447,6 +1465,17 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         return Err(command_line_error(
             DiagnosticKind::OptionRequiresOption,
             "--prove-timeout and --function need --contracts prove or the prove command",
+        ));
+    }
+    if edition.is_some()
+        && !matches!(
+            action,
+            Action::Build | Action::Run | Action::Test | Action::Check
+        )
+    {
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--edition is only valid with check, build, run, test, script, or new",
         ));
     }
     if let Some(mode) = contracts {
@@ -1638,6 +1667,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         json,
         deny_warnings,
         warn_implicit_copy,
+        warn_canonical,
         warn_untrusted_extern,
         format_check,
         test_filter,
@@ -1648,6 +1678,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         bench_allocs,
         test_seed,
         contracts,
+        edition,
         prove,
         no_server,
         kg,
@@ -2517,12 +2548,21 @@ fn version_line(tool: &Path) -> String {
 fn new_project(arguments: &[OsString]) -> ExitCode {
     let mut directory = None;
     let mut namespace = None;
+    let mut edition = None;
     let mut agent_files = true;
     let mut rest = arguments.iter();
     let mut valid = true;
     while let Some(argument) = rest.next() {
         if argument == "--no-agent-files" && agent_files {
             agent_files = false;
+        } else if argument == "--edition" {
+            match parse_edition_value(rest.next(), edition.is_some()) {
+                Ok(value) => edition = Some(value),
+                Err(error) => {
+                    print_diagnostic(&error, Path::new("<command line>"), "", false);
+                    return ExitCode::from(2);
+                }
+            }
         } else if argument == "--namespace" && namespace.is_none() {
             namespace = rest
                 .next()
@@ -2539,7 +2579,7 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
         print_diagnostic(
             &Diagnostic::of(
                 DiagnosticKind::UsageError,
-                "usage: tsuzuri new directory [--namespace NAME] [--no-agent-files]",
+                "usage: tsuzuri new directory [--namespace NAME] [--edition 2026|2027] [--no-agent-files]",
                 Span::default(),
             ),
             Path::new("<command line>"),
@@ -2548,7 +2588,12 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
         );
         return ExitCode::from(2);
     };
-    match tsuzuri::package::create_project(&directory, namespace.as_deref(), agent_files) {
+    match tsuzuri::package::create_project_with(
+        &directory,
+        namespace.as_deref(),
+        agent_files,
+        edition.unwrap_or(tsuzuri::syntax::Edition::NEW_PROJECT),
+    ) {
         Ok(files) => {
             for file in files {
                 println!("Created {}", file.display());
@@ -2842,6 +2887,38 @@ fn prove_command(arguments: &[OsString]) -> ExitCode {
     }
 }
 
+/// The edition after `--edition` (A22): `again` when the option was already given.
+fn parse_edition_value(
+    value: Option<&OsString>,
+    again: bool,
+) -> Result<tsuzuri::syntax::Edition, Diagnostic> {
+    let supported = tsuzuri::syntax::Edition::supported_names();
+    if again {
+        return Err(command_line_error(
+            DiagnosticKind::DuplicateOption,
+            "edition specified more than once",
+        ));
+    }
+    let Some(value) = value else {
+        return Err(command_line_error(
+            DiagnosticKind::OptionMissingValue,
+            format!("--edition requires an edition year; supported editions: {supported}"),
+        ));
+    };
+    value
+        .to_str()
+        .and_then(tsuzuri::syntax::Edition::parse)
+        .ok_or_else(|| {
+            command_line_error(
+                DiagnosticKind::OptionInvalidValue,
+                format!(
+                    "unsupported edition '{}' for --edition; supported editions: {supported}",
+                    value.to_string_lossy()
+                ),
+            )
+        })
+}
+
 /// The arguments of `tsuzuri audit` (E15).
 #[derive(Debug, PartialEq, Eq)]
 struct AuditArguments {
@@ -2852,7 +2929,7 @@ struct AuditArguments {
 
 /// The names that `--warn` takes, in the fixed order of D-55: `implicit-copy`, `canonical` (A22),
 /// `untrusted-extern` (E15), each once it is implemented.
-const WARNINGS: [&str; 2] = ["implicit-copy", "untrusted-extern"];
+const WARNINGS: [&str; 3] = ["implicit-copy", "canonical", "untrusted-extern"];
 
 const AUDIT_USAGE: &str = "usage: tsuzuri audit [PATH] [--json] [--deny-warnings]";
 
@@ -3442,7 +3519,7 @@ fn repl_command(arguments: &[OsString]) -> ExitCode {
 
 const SCRIPT_FILE: &str =
     "script needs a source file: tsuzuri script [options] FILE [arguments...]";
-const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --link, -l, and -L before the file";
+const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --edition, --link, -l, and -L before the file";
 
 /// Splits `tsuzuri script [options] FILE [arguments...]` into the arguments of
 /// `tsuzuri run [options] -- FILE` and the program's arguments: everything after FILE,
@@ -3461,7 +3538,10 @@ fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsStri
                 run.push(argument.clone());
                 continue;
             }
-            Some(option @ ("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--contracts")) => {
+            Some(
+                option
+                @ ("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--contracts" | "--edition"),
+            ) => {
                 run.push(argument.clone());
                 run.push(
                     rest.next()
@@ -3502,7 +3582,7 @@ fn script_json(arguments: &[OsString]) -> bool {
     while let Some(argument) = rest.next() {
         match argument.to_str() {
             Some("--json") => return true,
-            Some("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--contracts") => {
+            Some("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--contracts" | "--edition") => {
                 rest.next();
             }
             Some(option) if option.starts_with('-') && option != "--" => {}
@@ -3722,6 +3802,16 @@ fn cli(
             return EXIT_FAILURE;
         }
     };
+    // A22: `--edition` chooses the edition of a project without a manifest.
+    if let Some(edition) = arguments.edition {
+        project = match project.with_edition(edition) {
+            Ok(project) => project,
+            Err(error) => {
+                write_diagnostic(err, &error.diagnostic, &error.path, "", arguments.json);
+                return EXIT_FAILURE;
+            }
+        };
+    }
     // A21: the property tests of `--contracts test` generate their inputs with `Gen`.
     if arguments.contract_mode() == ContractMode::Test {
         project.require_std("Gen");
@@ -3822,6 +3912,11 @@ fn cli(
     } else {
         Vec::new()
     };
+    let canonical = if arguments.warn_canonical {
+        tsuzuri::canonical::warnings(&module)
+    } else {
+        Vec::new()
+    };
     let untrusted = if arguments.warn_untrusted_extern {
         match project.untrusted_extern_warnings(&module) {
             Ok(warnings) => warnings,
@@ -3840,6 +3935,7 @@ fn cli(
             .iter()
             .cloned()
             .chain(copies)
+            .chain(canonical)
             .chain(untrusted),
         0,
     );
@@ -5975,6 +6071,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_edition_and_warn_canonical() {
+        use tsuzuri::syntax::Edition;
+        for action in ["check", "build", "run", "test"] {
+            let arguments = parse(&[action, "Main.tz", "--edition", "2026"]).unwrap();
+            assert_eq!(arguments.edition, Some(Edition::E2026), "{action}");
+            assert_eq!(parse(&[action, "Main.tz"]).unwrap().edition, None);
+            let arguments = parse(&[action, "Main.tz", "--warn", "canonical"]).unwrap();
+            assert!(arguments.warn_canonical, "{action}");
+        }
+        for (values, message) in [
+            (
+                vec!["check", "Main.tz", "--edition"],
+                "--edition requires an edition year; supported editions: 2026, 2027",
+            ),
+            (
+                vec!["check", "Main.tz", "--edition", "2030"],
+                "unsupported edition '2030' for --edition; supported editions: 2026, 2027",
+            ),
+            (
+                vec!["check", "Main.tz", "--edition", "2026", "--edition", "2027"],
+                "edition specified more than once",
+            ),
+            (
+                vec!["fmt", "Main.tz", "--edition", "2026"],
+                "--edition is only valid with check, build, run, test, script, or new",
+            ),
+            (
+                vec![
+                    "check",
+                    "Main.tz",
+                    "--warn",
+                    "canonical",
+                    "--warn",
+                    "canonical",
+                ],
+                "warn canonical specified more than once",
+            ),
+            (
+                vec!["fmt", "Main.tz", "--warn", "canonical"],
+                "fmt does not use optimization, CPU tuning, or compiler warning options",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
     fn parses_audit_arguments() {
         let parse = |values: &[&str]| {
             let values: Vec<OsString> = values.iter().map(OsString::from).collect();
@@ -6036,11 +6179,11 @@ mod tests {
         for (values, message) in [
             (
                 vec!["check", "Main.tz", "--warn"],
-                "--warn requires a warning name; supported: implicit-copy, untrusted-extern",
+                "--warn requires a warning name; supported: implicit-copy, canonical, untrusted-extern",
             ),
             (
                 vec!["check", "Main.tz", "--warn", "shadowing"],
-                "unknown warning 'shadowing' for --warn; supported: implicit-copy, untrusted-extern",
+                "unknown warning 'shadowing' for --warn; supported: implicit-copy, canonical, untrusted-extern",
             ),
             (
                 vec![

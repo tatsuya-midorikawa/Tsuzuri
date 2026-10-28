@@ -1,7 +1,7 @@
 export def transform :: own i64 -> own i32 -> i64
 fn transform count seed =
     let input = new [i32](count, \index -> (index as i32) + seed)
-    let output = Array.map_owned (\value -> value * 3i32 + 7i32) (&input)
+    let output = Array.map_owned (\value -> value * 3i32 + 7i32) (ref input)
     let mut total = 0
     for value in output do total = total + (value as i64)
     total

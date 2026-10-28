@@ -6,5 +6,5 @@ class Eq<'a> => EqualDefault<'a> {
 class Sized<'a> {
     def size :: ref 'a -> i64
     def is_empty :: ref 'a -> bool
-    let is_empty = value -> Sized.size value == 0
+    let is_empty = \value -> Sized.size value == 0
 }

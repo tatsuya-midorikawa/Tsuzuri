@@ -10,7 +10,7 @@ fn make_view values = Nested { view: View { data: values } }
 export def view_sum :: own i64 -> i64
 fn view_sum count =
     let values = new [i64](count, \index -> index + 1)
-    let nested = make_view (&values)
+    let nested = make_view (ref values)
     let copy = nested
     Array.sum nested.view.data + Array.sum copy.view.data
 

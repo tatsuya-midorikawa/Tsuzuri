@@ -4,14 +4,14 @@
 export def atomic_counter :: own i64 -> i64
 fn atomic_counter n =
     let counter = Atomic.create 0i64
-    let _previous = Task.scope (ref counter) n (shared -> index -> Atomic.fetch_add shared (index + 1))
+    let _previous = Task.scope (ref counter) n (\shared index -> Atomic.fetch_add shared (index + 1))
     Atomic.load (ref counter)
 
 // Each child adds one a thousand times: a plain, non-atomic add would lose updates between workers.
 export def atomic_contended :: own i64 -> i64
 fn atomic_contended n =
     let counter = Atomic.create 0i64
-    let _done = Task.scope (ref counter) n (shared -> _index -> add_many shared 1000)
+    let _done = Task.scope (ref counter) n (\shared _index -> add_many shared 1000)
     Atomic.load (ref counter)
 
 def add_many :: ref Atomic<i64> -> own i64 -> i64
@@ -26,7 +26,7 @@ fn add_many cell count =
 export def atomic_compare_exchange_loop :: own i64 -> i64
 fn atomic_compare_exchange_loop n =
     let counter = Atomic.create 0i64
-    let _done = Task.scope (ref counter) n (shared -> index -> increment shared (index + 1))
+    let _done = Task.scope (ref counter) n (\shared index -> increment shared (index + 1))
     Atomic.load (ref counter)
 
 def rec increment :: ref Atomic<i64> -> own i64 -> i64
@@ -39,9 +39,9 @@ fn rec increment cell amount =
 export def scope_results_order :: own i64 -> i64
 fn scope_results_order n =
     let unit_value = 0i64
-    let results = Task.scope (ref unit_value) n (_shared -> index -> index * 3 + 1)
+    let results = Task.scope (ref unit_value) n (\_shared index -> index * 3 + 1)
     let mut checksum = 0;
-    for position in 0i64 .. (results.length - 1) do
+    for position in 0i64 ..= (results.length - 1) do
         checksum = checksum * 31 + results[position] + position
     checksum
 
@@ -66,7 +66,7 @@ def add_locked :: ref Mutex<i64> -> own i64 -> i64
 fn add_locked cell count =
     let mut round = 0i64
     while round < count do
-        let _seen = Mutex.with_lock cell (value -> {
+        let _seen = Mutex.with_lock cell (\value -> {
             deref value = deref value + 1;
             0
         })
@@ -76,13 +76,13 @@ fn add_locked cell count =
 export def mutex_contended :: own i64 -> i64
 fn mutex_contended n =
     let total = Mutex.create 0i64
-    let _done = Task.scope (ref total) n (shared -> _index -> add_locked shared 1000)
+    let _done = Task.scope (ref total) n (\shared _index -> add_locked shared 1000)
     Mutex.into_inner total
 
 export def mutex_total :: own i64 -> i64
 fn mutex_total n =
     let total = Mutex.create 0i64
-    let indices = Task.scope (ref total) n (shared -> index -> Mutex.with_lock shared (value -> {
+    let indices = Task.scope (ref total) n (\shared index -> Mutex.with_lock shared (\value -> {
         deref value = deref value + index + 1;
         index
     }))
@@ -92,7 +92,7 @@ fn mutex_total n =
 export def mutex_owned_array :: own i64 -> i64
 fn mutex_owned_array n =
     let slots = Mutex.create (new [i64](n, \_index -> 0))
-    let _done = Task.scope (ref slots) n (shared -> index -> Mutex.with_lock shared (values -> {
+    let _done = Task.scope (ref slots) n (\shared index -> Mutex.with_lock shared (\values -> {
         Array.write index (index * 2 + 1) values;
         0
     }))
@@ -100,7 +100,7 @@ fn mutex_owned_array n =
 
 def bump :: own Arc<Mutex<i64>> -> own i64 -> Task<i64>
 fn bump shared amount = task {
-    return Mutex.with_lock (Arc.get (ref shared)) (value -> { deref value = deref value + amount; deref value })
+    return Mutex.with_lock (Arc.get (ref shared)) (\value -> { deref value = deref value + amount; deref value })
 }
 
 def bumps :: ref Arc<Mutex<i64>> -> own i64 -> [Task<i64>]
@@ -110,7 +110,7 @@ export def arc_mutex_tasks :: own i64 -> i64
 fn arc_mutex_tasks n =
     let shared = Arc.new (Mutex.create 0i64)
     let _seen = Task.run (Task.parallel (bumps (ref shared) n))
-    Mutex.with_lock (Arc.get (ref shared)) (value -> deref value) * 1000 + Arc.strong_count (ref shared)
+    Mutex.with_lock (Arc.get (ref shared)) (\value -> deref value) * 1000 + Arc.strong_count (ref shared)
 
 // A critical section never waits, so these are refused on every schedule: a trap.
 export def mutex_nested :: i64
@@ -118,18 +118,18 @@ fn mutex_nested =
     let outer = Mutex.create 1i64
     let inner = Mutex.create 2i64
     let inner_borrow = ref inner
-    Mutex.with_lock (ref outer) (_a -> Mutex.with_lock inner_borrow (b -> deref b))
+    Mutex.with_lock (ref outer) (\_a -> Mutex.with_lock inner_borrow (\b -> deref b))
 
 export def mutex_parallel_inside :: i64
 fn mutex_parallel_inside =
     let total = Mutex.create 0i64
     let unit_value = 0i64
-    Mutex.with_lock (ref total) (_value -> Array.sum (ref (Task.scope (ref unit_value) 2 (_shared -> index -> index))))
+    Mutex.with_lock (ref total) (\_value -> Array.sum (ref (Task.scope (ref unit_value) 2 (\_shared index -> index))))
 
 // A lock that was released by the end of a call can be taken again: the flag of the thread is clear.
 export def mutex_twice :: own i64 -> i64
 fn mutex_twice n =
     let total = Mutex.create 0i64
-    let _first = Task.scope (ref total) n (shared -> _index -> add_locked shared 10)
-    let _second = Task.scope (ref total) n (shared -> _index -> add_locked shared 10)
+    let _first = Task.scope (ref total) n (\shared _index -> add_locked shared 10)
+    let _second = Task.scope (ref total) n (\shared _index -> add_locked shared 10)
     Mutex.into_inner total

@@ -159,7 +159,7 @@ export def rhs_before_index :: i64 =
 
 export def mutable_vector :: i64 -> i64 = \count ->
     let mut values: Vec<string> = Vec.empty()
-    for index in 0 .. (count - 1) do Vec.push $"text{index}" values
+    for index in 0 ..= (count - 1) do Vec.push $"text{index}" values
     let mut result: i64 = 0
     for text in values do result = result + text.length
     result

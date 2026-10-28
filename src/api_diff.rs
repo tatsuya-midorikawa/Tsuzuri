@@ -650,6 +650,7 @@ fn add_items(
         effect_attributes,
         // E15: `@trusted` is a reviewer's mark, not part of the API.
         trusted: _,
+        noncanonical: _,
         aliases,
         declaration_starts: _,
     } = program;

@@ -36,7 +36,7 @@ fn prove(arguments: &[&str], root: &Path, solver: Option<&Path>) -> (i32, String
 const SOURCE: &str = "def clamp :: i64 -> i64 -> i64 -> i64 = \\lo hi x ->\n    @requires lo <= hi\n    @ensures \\r -> lo <= r && r <= hi\n    if x < lo then lo elif x > hi then hi else x\n\
 def bad :: i64 -> i64 -> i64 -> i64 = \\lo hi x ->\n    @requires lo <= hi\n    @ensures \\r -> lo <= r && r < hi\n    if x < lo then lo elif x > hi then hi else x\n\
 def half :: i32 -> i32 -> i32 = \\a b ->\n    @requires b != 0i32\n    a / b\n\
-def sum_to :: i64 -> i64 = \\n ->\n    @requires n >= 0\n    let mut total = 0\n    for i in 0 .. n do\n        total = total + i\n    total\n\
+def sum_to :: i64 -> i64 = \\n ->\n    @requires n >= 0\n    let mut total = 0\n    for i in 0 ..= n do\n        total = total + i\n    total\n\
 def main :: unit -> i32 = \\() -> 0\n";
 
 #[test]

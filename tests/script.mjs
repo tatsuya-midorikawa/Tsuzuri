@@ -85,8 +85,8 @@ assert.equal(entries().length, 1);
 // Command-line errors exit with 2 and source errors with 1, as for the other subcommands.
 for (const [args, message] of [
   [["script"], "script needs a source file: tsuzuri script [options] FILE [arguments...]"],
-  [["script", "--target", "wasm32", "hello.tz"], "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --link, -l, and -L before the file"],
-  [["script", "-o", "out", "hello.tz"], "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --link, -l, and -L before the file"],
+  [["script", "--target", "wasm32", "hello.tz"], "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --edition, --link, -l, and -L before the file"],
+  [["script", "-o", "out", "hello.tz"], "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --edition, --link, -l, and -L before the file"],
   [["script", "-O0", "-O3", "hello.tz"], "optimization specified more than once"],
 ]) {
   expect(tsuzuri(args), 2, "", [`<command line>:1:1: error[E2000]: ${message}`]);

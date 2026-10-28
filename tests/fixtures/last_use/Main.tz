@@ -15,7 +15,7 @@ def classify :: own Result<[i64], string> -> i64 = \r ->
 
 export def self_update_loop :: own i64 -> i64 = \n ->
     let mut xs = new [i64](4, \_i -> 1)
-    for i in 0 .. (n - 1) do
+    for i in 0 ..= (n - 1) do
         xs = Array.__set (i % 4) (i * 3) xs
     xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
 
@@ -44,14 +44,14 @@ export def read_after_read :: own i64 -> i64 = \n ->
 export def loop_invariant :: own i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + 1)
     let mut total = 0
-    for i in 0 .. (n - 1) do
+    for i in 0 ..= (n - 1) do
         let ys = Array.__set 0 i xs
         total = total + ys[0] + xs[1]
     total
 
 export def earlier_argument_reads_it :: own i64 -> i64 = \n ->
     let mut xs = new [i64](4, \i -> i + 1)
-    for i in 0 .. (n - 1) do
+    for i in 0 ..= (n - 1) do
         xs = Array.__set (i % 4) (xs[(i + 1) % 4] + i) xs
     xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
 
@@ -60,7 +60,7 @@ def set_at :: own [i64] -> own i64 -> own i64 -> [i64] = \xs index value -> Arra
 
 export def later_argument_reads_it :: own i64 -> i64 = \n ->
     let mut xs = new [i64](4, \i -> i + 1)
-    for i in 0 .. (n - 1) do
+    for i in 0 ..= (n - 1) do
         xs = set_at xs (i % 4) (xs[(i + 1) % 4] + i)
     xs[0] + xs[1] * 10 + xs[2] * 100 + xs[3] * 1000
 
@@ -79,7 +79,7 @@ export def closure_then_use :: own i64 -> i64 = \n ->
 export def break_keeps_live :: own i64 -> i64 = \n ->
     let xs = new [i64](3, \i -> i + 1)
     let mut acc = 0
-    for i in 0 .. (n - 1) do
+    for i in 0 ..= (n - 1) do
         let ys = Array.__set 1 (i + 10) xs
         acc = acc + ys[1]
         if i == 2 then break else ()
@@ -120,7 +120,7 @@ export def tuple_scrutinee :: own i64 -> i64 = \n ->
 
 export def list_cons_loop :: own i64 -> i64 = \n ->
     let mut items: [|i64|] = [||]
-    for i in 0 .. (n - 1) do
+    for i in 0 ..= (n - 1) do
         items = List.cons i items
     List.fold_owned (\acc x -> acc * 3 + x) 0 (ref items)
 

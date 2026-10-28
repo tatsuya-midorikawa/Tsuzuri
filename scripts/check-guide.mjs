@@ -116,9 +116,9 @@ try {
       }
     }
   }
-  // The card says that `for i in 0 .. xs.length` compiles, then traps: `..` includes the end.
+  // The card says that `for i in 0 ..= xs.length` compiles, then traps: `..=` includes the end.
   for (const edition of EDITIONS) {
-    const directory = project(new Map([['Main.tz', 'def main :: unit -> i32 = \\() ->\n    let xs = [1, 2, 3]\n    let mut sum = 0\n    for i in 0 .. xs.length do\n        sum = sum + xs[i]\n    sum\n']]), edition);
+    const directory = project(new Map([['Main.tz', 'def main :: unit -> i32 = \\() ->\n    let xs = [1, 2, 3]\n    let mut sum = 0\n    for i in 0 ..= xs.length do\n        sum = sum + xs[i]\n    sum\n']]), edition);
     compile(['check', directory], `the trap claim (edition ${edition})`);
     const run = spawnSync(compiler, ['run', directory], { encoding: 'utf8' });
     assert.equal(run.status, 1, `the trap claim (edition ${edition}): ${run.stderr}`);

@@ -330,8 +330,8 @@ section("integer Parse and format specs print the same at every level and match 
         sign + "0x" + magnitude.toString(16).toUpperCase().split("").join("_"), digits.split("").join("_"));
     }
     lines.push(`    for text in [${texts.map((text) => JSON.stringify(text)).join(", ")}] do`,
-      `        let parsed${index}: Maybe<${type.name}> = Parse.parse (&text)`,
-      `        do! IO.write_line (if Maybe.is_none (&parsed${index}) then "none" else to_string (Maybe.get parsed${index}))`);
+      `        let parsed${index}: Maybe<${type.name}> = Parse.parse (ref text)`,
+      `        do! IO.write_line (if Maybe.is_none (ref parsed${index}) then "none" else to_string (Maybe.get parsed${index}))`);
     for (const text of texts) expected.push(String(parseReference(text, type) ?? "none"));
     lines.push(`    let values${index} = [${values.map((value) => literal(value, type)).join(", ")}]`,
       `    for value in values${index} do`,
@@ -369,7 +369,7 @@ section("a float still uses the numeric runtime to parse, with the ASCII copy", 
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, "Main.tz"), [
     "def main :: unit -> i32 = \\() ->",
-    '    let parsed: Maybe<f64> = Parse.parse (&"2.5")',
+    '    let parsed: Maybe<f64> = Parse.parse (ref "2.5")',
     "    do! IO.write_line (to_string (Maybe.get parsed))",
     '    let spec = $"{Maybe.get parsed:.3}"',
     "    do! IO.write_line spec",
@@ -393,9 +393,9 @@ section("an integer-only WASM module parses and formats specs without the numeri
     "    let decimal = to_string x",
     '    let hexadecimal = $"0x{x:x}"',
     '    let binary = $"0b{x:b}"',
-    `    let first: Maybe<${name}> = Parse.parse (&decimal)`,
-    `    let second: Maybe<${name}> = Parse.parse (&hexadecimal)`,
-    `    let third: Maybe<${name}> = Parse.parse (&binary)`,
+    `    let first: Maybe<${name}> = Parse.parse (ref decimal)`,
+    `    let second: Maybe<${name}> = Parse.parse (ref hexadecimal)`,
+    `    let third: Maybe<${name}> = Parse.parse (ref binary)`,
     "    if Maybe.is_none (&first) || Maybe.is_none (&second) || Maybe.is_none (&third) then 0 else",
     "        (Maybe.get first) as i64 + (Maybe.get second) as i64 + (Maybe.get third) as i64",
   ]);
@@ -405,7 +405,7 @@ section("an integer-only WASM module parses and formats specs without the numeri
   const withFloat = join(directory, "wasm-parse-float");
   mkdirSync(withFloat, { recursive: true });
   writeFileSync(join(withFloat, "Main.tz"), body.join("\n") +
-    '\nexport def parse_f64 :: i64 -> i64 = \\n ->\n    let parsed: Maybe<f64> = Parse.parse (&(to_string n))\n    to_int (Maybe.get parsed)\n');
+    '\nexport def parse_f64 :: i64 -> i64 = \\n ->\n    let parsed: Maybe<f64> = Parse.parse (ref (to_string n))\n    to_int (Maybe.get parsed)\n');
   const size = (file) => statSync(file).size;
   for (const level of ["-O0", "-O3", "-Oz"]) {
     const integers = build(project, ["--target", "wasm32", level], ".wasm");

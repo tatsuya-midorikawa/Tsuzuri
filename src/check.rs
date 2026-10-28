@@ -3643,6 +3643,9 @@ pub struct CheckedModule {
     pub statics: BTreeMap<usize, StaticData>,
     /// A20: the effect summaries that the effect attributes needed; `None` without attributes.
     pub effects: Option<effects::FunctionEffects>,
+    /// A22: the noncanonical spellings of the root package's own sources, by source and start;
+    /// a symbolic borrow of a reference has no rewrite.
+    pub noncanonical: Vec<crate::syntax::Noncanonical>,
 }
 
 /// The value of a constant that the program keeps once, as read-only static data (D11 Phase 2).
@@ -3987,6 +3990,8 @@ pub enum TypedExprKind {
         /// `1`, so that an unsigned counter can count down too. A range `start .. step .. finish`
         /// is never descending; a negative step moves its counter down.
         descending: bool,
+        /// `start ..< finish` (A22): the counter stops before `finish`.
+        exclusive: bool,
     },
     ForEach {
         owner: Local,
@@ -7926,6 +7931,7 @@ fn check_modules_collect(
         polymorph::solve_members(&mut functions, &mut pending)?;
     }
     let mut name_uses = Vec::new();
+    let mut reference_borrows: Vec<Span> = Vec::new();
     // Finishing a function reads the shared tables and changes only that function and its checker,
     // so the functions finish in parallel; what each leaves for the shared lists is applied in
     // function order.
@@ -7939,8 +7945,10 @@ fn check_modules_collect(
         |_, (function, mut checker)| {
             let name_use = std::mem::take(&mut checker.name_uses);
             let mut function_warnings = Vec::new();
+            let mut references = Vec::new();
             let checked = (|| {
                 checker.finish(&mut function.body)?;
+                references = std::mem::take(&mut checker.reference_borrows);
                 let coverage = checker.check_coverage()?;
                 if function.origin.module == ModuleOrigin::User {
                     function_warnings.extend(coverage);
@@ -7965,10 +7973,11 @@ fn check_modules_collect(
                     .map_or(usize::MAX, |info| info.id);
                 classes.derived_error(id, error)
             });
-            (name_use, function_warnings, error)
+            (name_use, function_warnings, error, references)
         },
         |_, outcome| {
-            let (name_use, function_warnings, error) = outcome.get();
+            let (name_use, function_warnings, error, references) = outcome.get();
+            reference_borrows.extend(references);
             name_uses.push(name_use);
             warnings.extend(function_warnings);
             if let Some(error) = error {
@@ -8066,6 +8075,7 @@ fn check_modules_collect(
         gpu: Default::default(),
         statics,
         effects: None,
+        noncanonical: root_noncanonical(modules, &reference_borrows),
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -8466,7 +8476,36 @@ fn recovery_module(
         gpu: Default::default(),
         statics: BTreeMap::new(),
         effects: None,
+        noncanonical: Vec::new(),
     }
+}
+
+/// A22: the noncanonical spellings of the root package's own sources (D10), where a symbolic
+/// borrow whose operand the type check found to be a reference keeps no rewrite.
+fn root_noncanonical(
+    modules: &[ModuleInput<'_>],
+    reference_borrows: &[Span],
+) -> Vec<crate::syntax::Noncanonical> {
+    let references: BTreeSet<(Option<usize>, usize)> = reference_borrows
+        .iter()
+        .map(|span| (span.source, span.start))
+        .collect();
+    let mut found: Vec<_> = modules
+        .iter()
+        .filter(|input| input.origin == ModuleOrigin::User && input.package.is_none())
+        .flat_map(|input| input.program.noncanonical.iter().cloned())
+        .map(|mut finding| {
+            if finding.kind == crate::syntax::NoncanonicalKind::SymbolicBorrow
+                && references.contains(&(finding.span.source, finding.span.start))
+            {
+                finding.level = crate::syntax::FixLevel::Unavailable;
+                finding.edits.clear();
+            }
+            finding
+        })
+        .collect();
+    found.sort_by_key(|finding| (finding.span.source, finding.span.start));
+    found
 }
 
 fn infer_active_result(
@@ -10129,6 +10168,10 @@ struct Checker<'a> {
     computation_depth: usize,
     /// Operands of keyword `ref` whose type was still unknown; `finish` rejects any that became references.
     undecided_borrows: Vec<(Type, Span)>,
+    /// A22: each symbolic borrow `&x` with the type of `x`, until `finish` resolves it.
+    symbolic_borrows: Vec<(Type, Span)>,
+    /// A22: the symbolic borrows whose operand is a reference (`&r`), which `ref r` cannot say.
+    reference_borrows: Vec<Span>,
     /// Format specs of interpolation holes; `finish` checks them against the final hole types.
     format_specs: Vec<(Type, FormatSpec)>,
     /// Values of `use` bindings whose `Drop` requirement waits for inference.
@@ -10189,6 +10232,8 @@ impl<'a> Checker<'a> {
             normal_loop_depth: 0,
             computation_depth: 0,
             undecided_borrows: Vec::new(),
+            symbolic_borrows: Vec::new(),
+            reference_borrows: Vec::new(),
             format_specs: Vec::new(),
             use_bindings: Vec::new(),
             piped: None,
@@ -11322,11 +11367,13 @@ impl<'a> Checker<'a> {
                 start,
                 end,
                 mutable,
+                op,
             } => self.slice(
                 value,
                 start.as_deref(),
                 end.as_deref(),
                 *mutable,
+                *op == RangeOp::Closed,
                 expression.span,
             )?,
             ExprKind::Break | ExprKind::Continue => {
@@ -11499,7 +11546,10 @@ impl<'a> Checker<'a> {
                             Some(Type::Error) => Some(Type::Error),
                             _ => None,
                         };
-                        self.expression(value, hint.as_ref())?
+                        let value = self.expression(value, hint.as_ref())?;
+                        self.symbolic_borrows
+                            .push((value.ty.clone(), expression.span));
+                        value
                     }
                     Notation::Keyword => {
                         let value = self.expression(value, None)?;
@@ -12436,6 +12486,7 @@ impl<'a> Checker<'a> {
         start: Option<&Expr>,
         end: Option<&Expr>,
         mutable: bool,
+        inclusive: bool,
         span: Span,
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let mut source = self.expression(source, None)?;
@@ -12476,6 +12527,27 @@ impl<'a> Checker<'a> {
         let end = end
             .map(|value| self.index_operand(value).map(Box::new))
             .transpose()?;
+        // A22: `xs[a..=b]` ends at `b + 1`, a wrapping addition, so that the slice's unsigned
+        // bounds checks reject `b = MAX` and negative ends as they reject any other bad end.
+        let end = match end {
+            Some(end) if inclusive => {
+                let span = end.span;
+                Some(Box::new(TypedExpr {
+                    kind: TypedExprKind::Binary(
+                        BinaryOp::Add,
+                        end,
+                        Box::new(TypedExpr {
+                            kind: TypedExprKind::Int(1),
+                            ty: Type::I64,
+                            span,
+                        }),
+                    ),
+                    ty: Type::I64,
+                    span,
+                }))
+            }
+            end => end,
+        };
         let ty = if mutable {
             Type::Reference(Box::new(Type::ArrayView(element)), true)
         } else {

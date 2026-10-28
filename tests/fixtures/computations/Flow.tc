@@ -27,13 +27,13 @@ fn Run body = body.invoke ()
 def Combine :: own i64 -> own Deferred -> i64
 fn Combine first rest = first + rest.invoke ()
 
-def rec fold :: &[i64] -> own (i64 -> i64) -> own i64 -> own i64 -> i64
+def rec fold :: ref [i64] -> own (i64 -> i64) -> own i64 -> own i64 -> i64
 fn rec fold values body index total =
     if index == values.length { total }
     else { fold values body (index + 1) (total + body values[index]) }
 
 def For :: own [i64] -> own (i64 -> i64) -> i64
-fn For values body = fold (&values) body 0 0
+fn For values body = fold (ref values) body 0 0
 
 def rec While :: own (unit -> bool) -> own Deferred -> i64
 fn rec While guard body =

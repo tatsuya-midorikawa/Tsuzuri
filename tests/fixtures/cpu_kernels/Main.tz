@@ -23,7 +23,7 @@ def data :: Numeric<'a> => own i64 -> own i64 -> own bool -> ['a]
 fn data pattern bits signed =
     let mut state = 1i64
     let mut values: Vec<'a> = Vec.with_capacity 4100
-    for k in 0i64 .. 4099i64 do
+    for k in 0i64 ..= 4099i64 do
         state = next state
         values = Vec.push_owned ((element pattern bits signed k state) as 'a) values
     Vec.to_array values
@@ -33,8 +33,8 @@ fn data pattern bits signed =
 def checksum :: own (ref ['a] -> i64) -> ref ['a] -> i64
 fn checksum measure values =
     let mut total = 0i64
-    for offset in 0i64 .. 3i64 do
-        for length in 0i64 .. 4097i64 do
+    for offset in 0i64 ..= 3i64 do
+        for length in 0i64 ..= 4097i64 do
             if length <= 70 || (length >= 127 && length <= 129) || (length >= 255 && length <= 257) || length >= 4095 then
                 total = total * 1000003 + measure (ref values[offset..offset + length])
     total
@@ -47,125 +47,125 @@ fn best smallest values =
 export def sum_i8 :: own i64 -> i64
 fn sum_i8 pattern =
     let values: [i8] = data pattern 8 true
-    checksum (slice -> (Array.sum slice) as i64) (ref values)
+    checksum (\slice -> (Array.sum slice) as i64) (ref values)
 
 export def sum_i16 :: own i64 -> i64
 fn sum_i16 pattern =
     let values: [i16] = data pattern 16 true
-    checksum (slice -> (Array.sum slice) as i64) (ref values)
+    checksum (\slice -> (Array.sum slice) as i64) (ref values)
 
 export def sum_i32 :: own i64 -> i64
 fn sum_i32 pattern =
     let values: [i32] = data pattern 32 true
-    checksum (slice -> (Array.sum slice) as i64) (ref values)
+    checksum (\slice -> (Array.sum slice) as i64) (ref values)
 
 export def sum_i64 :: own i64 -> i64
 fn sum_i64 pattern =
     let values: [i64] = data pattern 64 true
-    checksum (slice -> Array.sum slice) (ref values)
+    checksum (\slice -> Array.sum slice) (ref values)
 
 export def sum_i8u :: own i64 -> i64
 fn sum_i8u pattern =
     let values: [i8u] = data pattern 8 false
-    checksum (slice -> (Array.sum slice) as i64) (ref values)
+    checksum (\slice -> (Array.sum slice) as i64) (ref values)
 
 export def sum_i16u :: own i64 -> i64
 fn sum_i16u pattern =
     let values: [i16u] = data pattern 16 false
-    checksum (slice -> (Array.sum slice) as i64) (ref values)
+    checksum (\slice -> (Array.sum slice) as i64) (ref values)
 
 export def sum_i32u :: own i64 -> i64
 fn sum_i32u pattern =
     let values: [i32u] = data pattern 32 false
-    checksum (slice -> (Array.sum slice) as i64) (ref values)
+    checksum (\slice -> (Array.sum slice) as i64) (ref values)
 
 export def sum_i64u :: own i64 -> i64
 fn sum_i64u pattern =
     let values: [i64u] = data pattern 64 false
-    checksum (slice -> (Array.sum slice) as i64) (ref values)
+    checksum (\slice -> (Array.sum slice) as i64) (ref values)
 
 export def min_i8 :: own i64 -> i64
 fn min_i8 pattern =
     let values: [i8] = data pattern 8 true
-    checksum (slice -> (best true slice) as i64) (ref values)
+    checksum (\slice -> (best true slice) as i64) (ref values)
 
 export def min_i16 :: own i64 -> i64
 fn min_i16 pattern =
     let values: [i16] = data pattern 16 true
-    checksum (slice -> (best true slice) as i64) (ref values)
+    checksum (\slice -> (best true slice) as i64) (ref values)
 
 export def min_i32 :: own i64 -> i64
 fn min_i32 pattern =
     let values: [i32] = data pattern 32 true
-    checksum (slice -> (best true slice) as i64) (ref values)
+    checksum (\slice -> (best true slice) as i64) (ref values)
 
 export def min_i64 :: own i64 -> i64
 fn min_i64 pattern =
     let values: [i64] = data pattern 64 true
-    checksum (slice -> best true slice) (ref values)
+    checksum (\slice -> best true slice) (ref values)
 
 export def min_i8u :: own i64 -> i64
 fn min_i8u pattern =
     let values: [i8u] = data pattern 8 false
-    checksum (slice -> (best true slice) as i64) (ref values)
+    checksum (\slice -> (best true slice) as i64) (ref values)
 
 export def min_i16u :: own i64 -> i64
 fn min_i16u pattern =
     let values: [i16u] = data pattern 16 false
-    checksum (slice -> (best true slice) as i64) (ref values)
+    checksum (\slice -> (best true slice) as i64) (ref values)
 
 export def min_i32u :: own i64 -> i64
 fn min_i32u pattern =
     let values: [i32u] = data pattern 32 false
-    checksum (slice -> (best true slice) as i64) (ref values)
+    checksum (\slice -> (best true slice) as i64) (ref values)
 
 export def min_i64u :: own i64 -> i64
 fn min_i64u pattern =
     let values: [i64u] = data pattern 64 false
-    checksum (slice -> (best true slice) as i64) (ref values)
+    checksum (\slice -> (best true slice) as i64) (ref values)
 
 export def max_i8 :: own i64 -> i64
 fn max_i8 pattern =
     let values: [i8] = data pattern 8 true
-    checksum (slice -> (best false slice) as i64) (ref values)
+    checksum (\slice -> (best false slice) as i64) (ref values)
 
 export def max_i16 :: own i64 -> i64
 fn max_i16 pattern =
     let values: [i16] = data pattern 16 true
-    checksum (slice -> (best false slice) as i64) (ref values)
+    checksum (\slice -> (best false slice) as i64) (ref values)
 
 export def max_i32 :: own i64 -> i64
 fn max_i32 pattern =
     let values: [i32] = data pattern 32 true
-    checksum (slice -> (best false slice) as i64) (ref values)
+    checksum (\slice -> (best false slice) as i64) (ref values)
 
 export def max_i64 :: own i64 -> i64
 fn max_i64 pattern =
     let values: [i64] = data pattern 64 true
-    checksum (slice -> best false slice) (ref values)
+    checksum (\slice -> best false slice) (ref values)
 
 export def max_i8u :: own i64 -> i64
 fn max_i8u pattern =
     let values: [i8u] = data pattern 8 false
-    checksum (slice -> (best false slice) as i64) (ref values)
+    checksum (\slice -> (best false slice) as i64) (ref values)
 
 export def max_i16u :: own i64 -> i64
 fn max_i16u pattern =
     let values: [i16u] = data pattern 16 false
-    checksum (slice -> (best false slice) as i64) (ref values)
+    checksum (\slice -> (best false slice) as i64) (ref values)
 
 export def max_i32u :: own i64 -> i64
 fn max_i32u pattern =
     let values: [i32u] = data pattern 32 false
-    checksum (slice -> (best false slice) as i64) (ref values)
+    checksum (\slice -> (best false slice) as i64) (ref values)
 
 export def max_i64u :: own i64 -> i64
 fn max_i64u pattern =
     let values: [i64u] = data pattern 64 false
-    checksum (slice -> (best false slice) as i64) (ref values)
+    checksum (\slice -> (best false slice) as i64) (ref values)
 
 def lcg_data :: own i64 -> [i32]
-fn lcg_data length = Array.init length (index -> (next (index + 1)) as i32)
+fn lcg_data length = Array.init length (\index -> (next (index + 1)) as i32)
 
 def total :: Numeric<'a> => ref ['a] -> 'a
 fn total values = Array.sum values
