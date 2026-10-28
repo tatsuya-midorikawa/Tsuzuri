@@ -4,13 +4,17 @@
 /// The ellipsis that ends a cut text.
 pub const ELLIPSIS: char = '\u{2026}';
 
-/// `text` on one line, cut to `limit` characters with `…` as the last one.
+/// `text` on one line, cut to `limit` characters with `…` as the last one. Every control
+/// character (a line break, a tab, `\0` in a test's name) becomes a space.
 pub fn cut(text: &str, limit: usize) -> String {
     let line: String = text
         .chars()
-        .map(|character| match character {
-            '\t' | '\r' | '\n' => ' ',
-            other => other,
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
         })
         .collect();
     if line.chars().count() <= limit {
@@ -21,7 +25,7 @@ pub fn cut(text: &str, limit: usize) -> String {
     out
 }
 
-/// A Mermaid label: cut, then the six characters that break the syntax as entity codes.
+/// A Mermaid label: cut, then the seven characters that break the syntax as entity codes.
 pub fn esc(text: &str, limit: usize) -> String {
     let mut out = String::new();
     for character in cut(text, limit).chars() {
@@ -32,6 +36,7 @@ pub fn esc(text: &str, limit: usize) -> String {
             '>' => out.push_str("#gt;"),
             '&' => out.push_str("#amp;"),
             '`' => out.push_str("#96;"),
+            '\\' => out.push_str("#92;"),
             other => out.push(other),
         }
     }
@@ -59,10 +64,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn esc_replaces_the_six_characters() {
+    fn esc_replaces_the_seven_characters() {
         assert_eq!(esc("a#b\"c<d>e&f", 60), "a#35;b#quot;c#lt;d#gt;e#amp;f");
         assert_eq!(esc("`x`", 60), "#96;x#96;");
+        assert_eq!(esc("path\\case", 60), "path#92;case");
         assert_eq!(esc("a\tb\nc\rd", 60), "a b c d");
+        assert_eq!(esc("a\0b\u{1b}c\u{7f}d\u{85}e", 60), "a b c d e");
+        assert_eq!(dot_esc("a\0b", 60), "a b");
     }
 
     #[test]

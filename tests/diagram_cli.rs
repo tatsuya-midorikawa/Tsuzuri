@@ -1,6 +1,7 @@
 //! G30 (D-60): `tsuzuri kg diagram` and the views of `kg build`. The expected outputs in
 //! `tests/golden/diagram/cli/` are those of the reference implementation (G30 appendix E) run on
-//! the rows of the fixture projects' own graphs.
+//! the rows of the fixture projects' own graphs, except that the layout tables write types as
+//! inline code (`` `f64` ``), so that Markdown never reads `<T>` as HTML.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -287,6 +288,33 @@ fn kg_diagram_dot_for_ownership_is_e2000() {
     let output = diagram(&root, &["ownership", "Main.demo", "--format", "dot"]);
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr(&output).contains("format 'dot' is not available for kind 'ownership'"));
+}
+
+/// The transitions of a dependency's union: its module's path in the graph is the logical one
+/// (its namespace and file), and the diagram reads the source that the project loaded.
+#[test]
+fn kg_diagram_transitions_of_a_dependency() {
+    let light = project("light");
+    let root = light.parent().unwrap().join("app");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("Tsuzuri.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nlight = { path = \"../light\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        light.join("Tsuzuri.toml"),
+        "[package]\nname = \"light\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::remove_file(light.join("Main.tz")).unwrap();
+    std::fs::write(root.join("Lib.tz"), "def go :: unit -> i64 = \\_ -> 0\n").unwrap();
+    let output = diagram(&root, &["transitions", "Light::Light.Light"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.starts_with("stateDiagram-v2\n"), "{text}");
+    assert!(text.contains("next"), "{text}");
+    assert!(!light.join("target").exists() || root.join("target/tz/kg").is_dir());
 }
 
 #[test]

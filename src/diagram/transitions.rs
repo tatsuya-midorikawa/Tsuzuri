@@ -3,7 +3,6 @@
 //! graph was built from (its SHA-256 is in `manifest.json`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 
 use super::escape::{dot_esc, esc, transition};
 use super::input::{Input, Symbol};
@@ -15,26 +14,30 @@ pub trait Sources {
     fn read(&self, relative_path: &str) -> Option<String>;
 }
 
-/// The sources of a project on disk: `root.join(path)`, for relative paths without `..`.
-pub struct DiskSources {
-    pub root: PathBuf,
+/// The sources that a project loaded, by the path that the graph's modules name: a dependency's is
+/// its logical path (its namespace and file), not a file under the root. Nothing else is read.
+pub struct ProjectSources<'a>(BTreeMap<String, &'a str>);
+
+impl<'a> ProjectSources<'a> {
+    pub fn of(project: &'a crate::driver::Project) -> Self {
+        Self(
+            project
+                .sources
+                .iter()
+                .map(|source| {
+                    (
+                        crate::kg::build::relative(&source.relative_path),
+                        source.text.as_str(),
+                    )
+                })
+                .collect(),
+        )
+    }
 }
 
-/// The largest source this reads.
-const SOURCE_LIMIT: u64 = 64 * 1024 * 1024;
-
-impl Sources for DiskSources {
+impl Sources for ProjectSources<'_> {
     fn read(&self, relative_path: &str) -> Option<String> {
-        let path = std::path::Path::new(relative_path);
-        if relative_path.is_empty()
-            || !path
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)))
-        {
-            return None;
-        }
-        let bytes = crate::cache::read_regular(&self.root.join(path), SOURCE_LIMIT).ok()?;
-        String::from_utf8(bytes).ok()
+        self.0.get(relative_path).map(|text| (*text).to_owned())
     }
 }
 
@@ -182,9 +185,10 @@ fn names_union(input: &Input, function: &Symbol, ty: &str, union: &Symbol) -> bo
     if named.iter().any(|symbol| symbol.module == function.module) {
         return union.module == function.module;
     }
+    // The whole enclosing namespace: `Acme::App` of `Acme::App::Main`, not `Acme`.
     let namespace = |module: &str| {
         module
-            .split_once("::")
+            .rsplit_once("::")
             .map_or("", |(namespace, _)| namespace)
             .to_owned()
     };

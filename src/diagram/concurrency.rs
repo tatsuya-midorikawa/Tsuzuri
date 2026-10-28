@@ -23,9 +23,8 @@ const CREATORS: [(&str, &str); 3] = [
     ("Atomic.create", "Atomic"),
 ];
 
-/// The type between the first `opening` and its matching `>`.
-fn inner_type(text: &str, opening: &str) -> String {
-    let start = text.find(opening).map_or(0, |at| at + opening.len());
+/// The type between `opening` at byte `start` of `text` and its matching `>`.
+fn inner_type(text: &str, start: usize) -> String {
     let mut depth = 1;
     for (index, character) in text[start..].char_indices() {
         match character {
@@ -42,14 +41,18 @@ fn inner_type(text: &str, opening: &str) -> String {
     text[start..].to_owned()
 }
 
-/// Whether `opening` occurs where no identifier character comes before it.
-fn has_opening(text: &str, opening: &str) -> bool {
-    text.match_indices(opening).any(|(at, _)| {
-        !text[..at]
-            .chars()
-            .next_back()
-            .is_some_and(|before| before.is_ascii_alphanumeric() || before == '_')
-    })
+/// The inner type of each `opening` in `text` that no identifier character comes before
+/// (`Mutex<` in `(NotMutex<i64>, Mutex<string>)` is the second one only).
+fn occurrences(text: &str, opening: &str) -> Vec<String> {
+    text.match_indices(opening)
+        .filter(|(at, _)| {
+            !text[..*at]
+                .chars()
+                .next_back()
+                .is_some_and(|before| before.is_ascii_alphanumeric() || before == '_')
+        })
+        .map(|(at, _)| inner_type(text, at + opening.len()))
+        .collect()
 }
 
 /// The graph (its last node the note), and whether it was folded. The regions and cells are never
@@ -74,8 +77,7 @@ pub fn graph(
             .chain(symbol.result.as_deref().map(|result| (result, false)));
         for (text, parameter) in places {
             for (opening, relation, kind) in CELL_EVIDENCE {
-                if has_opening(text, opening) {
-                    let inner = inner_type(text, opening);
+                for inner in occurrences(text, opening) {
                     known.entry(kind).or_default().insert(inner.clone());
                     evidence.entry(symbol.id.clone()).or_default().insert((
                         if parameter { relation } else { "create" },

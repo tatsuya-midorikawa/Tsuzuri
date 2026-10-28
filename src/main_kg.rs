@@ -1102,11 +1102,7 @@ fn kg_diagram(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         &mut |set, project| print_diagnostics(set, project, json),
     )?;
     let input = diagram::Input::from_kg(&data).map_err(|failure| failure.diagnostic())?;
-    let sources = diagram::DiskSources {
-        root: project
-            .project_directory()
-            .unwrap_or_else(|| PathBuf::from(".")),
-    };
+    let sources = diagram::ProjectSources::of(&project);
     let request = DiagramRequest {
         kind,
         id,

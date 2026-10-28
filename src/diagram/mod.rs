@@ -24,7 +24,7 @@ pub use input::{
     Event, FactRow, Input, LayoutCase, LayoutField, LayoutRow, ModuleRow, Param, Relation, Symbol,
 };
 pub use ownership::mermaid_blocks;
-pub use transitions::{DiskSources, Sources};
+pub use transitions::{ProjectSources, Sources};
 pub use validate::validate_mermaid;
 pub use views::views;
 
@@ -305,7 +305,7 @@ fn draw(
         }
         Kind::Types => {
             if dot {
-                let (text, nodes, cut) = types::dot(input, id, limits);
+                let (text, nodes, cut) = types::dot(input, id, request.max_nodes, limits);
                 DiagramOutput {
                     format: Format::Dot,
                     text,
