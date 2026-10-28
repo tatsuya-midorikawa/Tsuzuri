@@ -317,6 +317,28 @@ fn kg_diagram_transitions_of_a_dependency() {
     assert!(!light.join("target").exists() || root.join("target/tz/kg").is_dir());
 }
 
+/// A facts file that does not match the manifest is a broken graph (`E2009`, exit 1), not a
+/// diagram without facts.
+#[test]
+fn kg_diagram_reports_a_broken_facts_file() {
+    let root = project("own");
+    assert!(
+        tsuzuri(&["kg", "build", root.to_str().unwrap()])
+            .status
+            .success()
+    );
+    for entry in std::fs::read_dir(root.join("target/tz/kg/facts")).unwrap() {
+        std::fs::write(entry.unwrap().path(), "{}\n").unwrap();
+    }
+    let output = diagram(&root, &["ownership", "Main.demo", "--no-refresh"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("error[E2009]"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 #[test]
 fn kg_diagram_transitions_reject_a_changed_source() {
     let root = project("light");

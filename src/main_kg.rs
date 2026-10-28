@@ -1102,6 +1102,9 @@ fn kg_diagram(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         &mut |set, project| print_diagnostics(set, project, json),
     )?;
     let input = diagram::Input::from_kg(&data).map_err(|failure| failure.diagnostic())?;
+    // `from_kg` read the facts and layouts: a file that did not match is a broken or replaced
+    // graph (`E2009`), before any diagram's own error.
+    data.intact()?;
     let sources = diagram::ProjectSources::of(&project);
     let request = DiagramRequest {
         kind,
@@ -1112,7 +1115,6 @@ fn kg_diagram(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     };
     let output =
         diagram::render(&input, &sources, &request).map_err(|failure| failure.diagnostic())?;
-    data.intact()?;
     let mut out = io::stdout().lock();
     if json {
         let _ = writeln!(

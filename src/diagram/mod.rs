@@ -374,6 +374,17 @@ fn draw(
                     format!("unknown id '{id}' for diagram kind 'transitions'"),
                 )
             })?;
+            // Each case is a state, and states are not folded.
+            let states = transitions::cases(input, id).len();
+            if states > request.max_nodes {
+                return Err(DiagramError::new(
+                    "diagram_too_large",
+                    format!(
+                        "'{id}' has {states} cases, more than --max-nodes {} can show; raise --max-nodes",
+                        request.max_nodes
+                    ),
+                ));
+            }
             let edges = transitions::extract(input, sources, union)?;
             let (text, nodes, cut) = if dot {
                 transitions::dot(input, id, &edges, limits)

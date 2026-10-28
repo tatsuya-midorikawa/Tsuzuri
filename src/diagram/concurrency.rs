@@ -1,6 +1,7 @@
 //! `concurrency` (G30, D8): an approximation of what runs in parallel and what it shares, from the
 //! signatures (`Channel.Sender<T>`, `Channel.Receiver<T>`, `Mutex<T>`, `Atomic<T>`) and the calls
-//! (`Task.scope`, `Task.parallel`, `Parallel.*`, the creators of the cells). A note says so.
+//! (`Task.scope`, `Task.parallel`, `Task.parallel_results`, `Parallel.*`, the creators of the
+//! cells). A note says so.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,13 +24,17 @@ const CREATORS: [(&str, &str); 3] = [
     ("Atomic.create", "Atomic"),
 ];
 
-/// The type between `opening` at byte `start` of `text` and its matching `>`.
+/// The type between `opening` at byte `start` of `text` and its matching `>` (not the `>` of a
+/// function arrow `->`).
 fn inner_type(text: &str, start: usize) -> String {
     let mut depth = 1;
+    let mut previous = None;
     for (index, character) in text[start..].char_indices() {
+        let arrow = previous == Some('-');
+        previous = Some(character);
         match character {
             '<' => depth += 1,
-            '>' => {
+            '>' if !arrow => {
                 depth -= 1;
                 if depth == 0 {
                     return text[start..start + index].to_owned();
@@ -92,8 +97,10 @@ pub fn graph(
         if edge.rel != "calls" || input.symbol(&edge.from).is_none() {
             continue;
         }
-        if matches!(edge.to.as_str(), "Task.parallel" | "Task.scope")
-            || edge.to.starts_with("Parallel.")
+        if matches!(
+            edge.to.as_str(),
+            "Task.parallel" | "Task.parallel_results" | "Task.scope"
+        ) || edge.to.starts_with("Parallel.")
         {
             region
                 .entry(edge.from.clone())
