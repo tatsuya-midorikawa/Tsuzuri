@@ -2321,7 +2321,11 @@ entry:
                 for entry in std::fs::read_dir(&directory).unwrap() {
                     let path = entry.unwrap().path();
                     if path.is_dir() {
-                        flat = false;
+                        // `target/` holds what commands write there (the knowledge graph), not
+                        // sources.
+                        if path.file_name() != Some(std::ffi::OsStr::new("target")) {
+                            flat = false;
+                        }
                     } else if path.extension().is_some_and(|extension| extension == "tz") {
                         let name = path.file_name().unwrap().to_string_lossy().into_owned();
                         files.push((name, std::fs::read_to_string(&path).unwrap()));
