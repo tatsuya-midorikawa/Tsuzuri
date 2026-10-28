@@ -396,7 +396,7 @@ section("an integer-only WASM module parses and formats specs without the numeri
     `    let first: Maybe<${name}> = Parse.parse (ref decimal)`,
     `    let second: Maybe<${name}> = Parse.parse (ref hexadecimal)`,
     `    let third: Maybe<${name}> = Parse.parse (ref binary)`,
-    "    if Maybe.is_none (&first) || Maybe.is_none (&second) || Maybe.is_none (&third) then 0 else",
+    "    if Maybe.is_none (ref first) || Maybe.is_none (ref second) || Maybe.is_none (ref third) then 0 else",
     "        (Maybe.get first) as i64 + (Maybe.get second) as i64 + (Maybe.get third) as i64",
   ]);
   const project = join(directory, "wasm-parse");

@@ -58,19 +58,19 @@ fn rounds device values iterations = {
 const nativeSource = (count, kernel, [cpuRounds, gpuRounds]) => `${prelude(count, kernel)}
 def main :: unit -> i32 = \\() ->
     let reference = Result.get (Gpu.request Gpu.CpuReference)
-    let values = Gpu.to_array (Gpu.init_relaxed (&reference) ${count} sample)
+    let values = Gpu.to_array (Gpu.init_relaxed (ref reference) ${count} sample)
     let! cpu_start = Time.monotonic_ns ()
-    let cpu_total = rounds (&reference) (&values) ${cpuRounds}
+    let cpu_total = rounds (ref reference) (ref values) ${cpuRounds}
     let! cpu_end = Time.monotonic_ns ()
     let! open_start = Time.monotonic_ns ()
     let device = Result.get (Gpu.request Gpu.WebGpu)
     let! open_end = Time.monotonic_ns ()
-    let first_total = rounds (&device) (&values) 1
+    let first_total = rounds (ref device) (ref values) 1
     let! first_end = Time.monotonic_ns ()
-    let gpu_total = rounds (&device) (&values) ${gpuRounds}
+    let gpu_total = rounds (ref device) (ref values) ${gpuRounds}
     let! gpu_end = Time.monotonic_ns ()
-    let cpu_check = rounds (&reference) (&values) 3
-    let gpu_check = rounds (&device) (&values) 3
+    let cpu_check = rounds (ref reference) (ref values) 3
+    let gpu_check = rounds (ref device) (ref values) 3
     do! IO.write_line (Result.get cpu_end - Result.get cpu_start)
     do! IO.write_line (Result.get open_end - Result.get open_start)
     do! IO.write_line (Result.get first_end - Result.get open_end)
@@ -82,19 +82,19 @@ const wasmSource = (count, kernel) => `${prelude(count, kernel)}
 export def wasm_cpu :: i32 -> f32
 fn wasm_cpu iterations = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
-    let values = Gpu.to_array (Gpu.init_relaxed (&reference) ${count} sample);
-    rounds (&reference) (&values) (iterations as i64)
+    let values = Gpu.to_array (Gpu.init_relaxed (ref reference) ${count} sample);
+    rounds (ref reference) (ref values) (iterations as i64)
 }
 
 export def wasm_open :: bool
-fn wasm_open = Result.is_ok (&(Gpu.request Gpu.WebGpu))
+fn wasm_open = Result.is_ok (ref (Gpu.request Gpu.WebGpu))
 
 export def wasm_gpu :: i32 -> f32
 fn wasm_gpu iterations = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
-    let values = Gpu.to_array (Gpu.init_relaxed (&reference) ${count} sample);
+    let values = Gpu.to_array (Gpu.init_relaxed (ref reference) ${count} sample);
     let device = Result.get (Gpu.request Gpu.WebGpu);
-    rounds (&device) (&values) (iterations as i64)
+    rounds (ref device) (ref values) (iterations as i64)
 }
 `;
 const rows = [];
