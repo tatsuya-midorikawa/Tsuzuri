@@ -166,6 +166,9 @@ impl Manifest {
             .ok_or("missing 'files'")?
             .iter()
             .map(|(path, digest)| {
+                if !plain_path(path) {
+                    return Err(format!("file '{path}' is not a plain relative path"));
+                }
                 digest
                     .as_str()
                     .map(|digest| (path.clone(), digest.to_owned()))
@@ -191,6 +194,19 @@ impl Manifest {
             files,
         })
     }
+}
+
+/// Whether `path` is a path that a writer lists: `/`-separated names of `[A-Za-z0-9_.%~-]`, none
+/// of them empty, `.` or `..`. A reader never leaves the graph's directory.
+pub fn plain_path(path: &str) -> bool {
+    path.split('/').all(|name| {
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'%' | b'~' | b'-')
+            })
+    })
 }
 
 /// The state of a graph's directory (G27 §4).
@@ -365,5 +381,34 @@ mod tests {
             Manifest::parse(&without_version.render()).unwrap(),
             without_version
         );
+    }
+
+    /// A manifest that lists a path out of the graph's directory is not a manifest.
+    #[test]
+    fn listed_paths_stay_in_the_directory() {
+        for path in [
+            "nodes.jsonl",
+            "facts/Acme.Shop.Cart.jsonl",
+            "brief/L2/Main.b~1.md",
+            "brief/L2/test%3AMain.f-0123456789abcdef.md",
+        ] {
+            assert!(plain_path(path), "{path}");
+        }
+        for path in [
+            "",
+            "../secret.jsonl",
+            "facts/../../secret.jsonl",
+            "/etc/passwd",
+            "facts//Main.jsonl",
+            "facts/./Main.jsonl",
+            "facts\\Main.jsonl",
+            "C:secret.jsonl",
+            "facts/Main.jsonl/",
+        ] {
+            assert!(!plain_path(path), "{path}");
+            let mut manifest = sample();
+            manifest.files.insert(path.into(), "00".repeat(32));
+            assert!(Manifest::parse(&manifest.render()).is_err(), "{path}");
+        }
     }
 }

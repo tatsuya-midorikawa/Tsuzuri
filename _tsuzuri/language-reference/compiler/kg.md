@@ -22,7 +22,7 @@
 | `diag.jsonl` | 解析の診断（`check --json` と同じ形。パスは根からの相対。`--warn implicit-copy` の `W1006` は入れない） |
 | `brief/L0.md`・`brief/L1/<モジュール>.md`・`brief/L2/<ID>.md` | 要約カード（プロジェクト・モジュール・宣言） |
 
-置き場は `--kg-dir DIR`、次に `TSUZURI_KG_DIR`、どちらもなければ `<根>/target/tz/kg` です。ファイル名は、モジュールの key か ID の `::` を `.` にし、英数字・`_`・`.` 以外の文字を `%XX` にしたものです。`tsuzuri new` の `.gitignore` は `target/` を除外します。ソースを探すとき、マーカーのあるディレクトリは読みません。
+置き場は `--kg-dir DIR`、次に `TSUZURI_KG_DIR`、どちらもなければ `<根>/target/tz/kg` です（`Tsuzuri.toml` のあるプロジェクトの根は、そのマニフェストのディレクトリです）。ファイル名は、モジュールの key か ID の `::` を `.` にし、英数字・`_`・`.` 以外の文字を `%XX` にしたものです。200 バイトを超える名前は、先頭の 183 バイト（`%XX` の途中では切らない）に `-` と ID の SHA-256 の先頭 16 桁を続けたものになります。`tsuzuri new` の `.gitignore` は `target/` を除外します。ソースを探すとき、マーカーのあるディレクトリは読みません。
 
 型検査の通らないプロジェクトの知識グラフは、マーカー・`manifest.json`（`complete: false`）・`diag.jsonl` だけです。前の事実を残して、今のソースの事実のように見せることはしません。
 
@@ -30,11 +30,11 @@
 
 `check` などは解析の前に、置き場の `manifest.json` とマーカーを読みます。次がすべて前回と同じなら、何も書かず、解析も知識グラフの分の仕事をしません。
 
-- 入力のハッシュ（利用者と依存パッケージの `.tz`・`.tt`・`.tc` と、`Tsuzuri.toml`・`Tsuzuri.lock` の内容）
+- 入力のハッシュ（利用者と依存パッケージの `.tz`・`.tt`・`.tc` と、`Tsuzuri.toml`・`Tsuzuri.lock` の内容、ソースの既定の名前空間。マニフェストのないプロジェクトではディレクトリの名前が名前空間なので、ディレクトリの名前を変えても書き直します）
 - schema（`tz-kg/1`）とコンパイラの版
 - マーカーの stamp（その機械のコンパイラの実行ファイルの識別。開発中に作り直したコンパイラを見分けます）
 
-書くときは、置き場の隣の一時ディレクトリにすべてを書いてから、ディレクトリごと入れ替えます。読み手が見るのは、前の知識グラフか、ないか、新しい知識グラフのどれかで、混ざることはありません。同時に複数のプロセスが書いても壊れません。マーカーのないディレクトリは決して上書きしません。
+書くときは、置き場の隣の一時ディレクトリにすべてを書いてから、ディレクトリごと入れ替えます。読み手は `manifest.json` に載ったファイルだけを読み、どのファイルも `manifest.json` の SHA-256 と一致することを確かめます。読む途中で知識グラフが入れ替わって一致しなければ初めから読み直す（3 回まで）ので、読み手が見るのは、前の知識グラフか、ないか、新しい知識グラフのどれかで、混ざることはありません。載っているファイルがない・一致しない・置き場の外を指す（`..` やリンクのディレクトリ）ときは `kg_broken` です。同時に複数のプロセスが書いても壊れません。マーカーのないディレクトリは決して上書きしません。
 
 ## brief カード
 
@@ -85,7 +85,7 @@ tsuzuri kg export [PATH] [--kg-dir DIR] (--nodes | --edges | --facts) [--no-refr
 | `clean` | マーカーのある置き場を消す | なし | 0。マーカーのないディレクトリは `E2009` で 1 |
 | `export` | 古ければ作り直し（`--no-refresh` では作らない）、`nodes.jsonl`・`edges.jsonl`・`facts/*.jsonl` をそのまま標準出力へ | JSON Lines | 0。ないか不完全は `E2009` で 1 |
 
-`--json` の `build` は `{"type":"kg_build","status":"written","dir":"…","files":19,"complete":true}`（`status` は `written`・`unchanged`・`incomplete`）、`verify` は `{"type":"kg_verify","status":"ok","source_hash":"…","nodes":14,"files":17}` を 1 行出します。
+`--json` の `build` は `{"type":"kg_build","status":"written","dir":"…","files":19,"complete":true}`（`status` は `written`・`unchanged`・`incomplete`。エラーのあるプロジェクトの知識グラフが前回のままなら、書かずに `incomplete`・`"files":0`・`"complete":false` で、終了コードは 1）、`verify` は `{"type":"kg_verify","status":"ok","source_hash":"…","nodes":14,"files":17}` を 1 行出します。
 
 ```sh
 tsuzuri kg build

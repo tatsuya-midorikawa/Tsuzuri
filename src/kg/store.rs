@@ -343,27 +343,93 @@ fn lines(bytes: &[u8]) -> Result<Vec<Value>, String> {
         .collect()
 }
 
-impl KgData {
-    /// Reads the graph at `dir`: `Err` with the reason when the manifest or a file it lists cannot
-    /// be read (the caller reports `kg_missing`, `kg_broken` or `kg_incomplete`).
-    pub fn open(dir: &Path) -> Result<KgData, manifest::Freshness> {
+/// How a reader gets a file of the graph by path: `None` when the graph has no such file.
+type ReadFile<'a> = &'a dyn Fn(&str) -> Result<Option<Vec<u8>>, String>;
+
+/// How many times a reader starts again when a writer replaced the graph while it read it.
+const READ_ATTEMPTS: usize = 3;
+
+/// A file of the graph at `dir` for a reader: `None` when the manifest does not list it (an
+/// optional table), and an error when it cannot be read, a directory on its way is not a plain
+/// directory, or its bytes do not have the SHA-256 that the manifest lists.
+fn read_listed(dir: &Path, manifest: &Manifest, path: &str) -> Result<Option<Vec<u8>>, String> {
+    let Some(sha) = manifest.files.get(path) else {
+        return Ok(None);
+    };
+    // `Manifest::parse` keeps only plain relative paths; no directory below `dir` may be a link.
+    let names: Vec<&str> = path.split('/').collect();
+    let mut parent = dir.to_path_buf();
+    for name in &names[..names.len() - 1] {
+        parent.push(name);
+        if !std::fs::symlink_metadata(&parent).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(format!("{path} cannot be read"));
+        }
+    }
+    let bytes = crate::cache::read_regular(&dir.join(path), FILE_LIMIT)
+        .map_err(|_| format!("{path} cannot be read"))?;
+    if super::input::digest(&bytes) != *sha {
+        return Err(format!("{path} does not match manifest.json"));
+    }
+    Ok(Some(bytes))
+}
+
+/// Runs `body` over one publication of the graph at `dir`: it reads files through the function
+/// it gets (see `read_listed`). A writer replaces the whole directory, so a file that does not
+/// match the manifest was read across a replacement when the manifest has changed since: `body`
+/// runs again, up to `READ_ATTEMPTS` times. Otherwise the graph is broken.
+fn with_snapshot<T>(
+    dir: &Path,
+    body: impl Fn(&Manifest, ReadFile) -> Result<T, String>,
+) -> Result<T, manifest::Freshness> {
+    let mut attempt = 1;
+    loop {
         let manifest = manifest::read(dir)?;
-        let read = |path: &str| crate::cache::read_regular(&dir.join(path), FILE_LIMIT).ok();
-        Self::parse(&manifest, &read).map_err(manifest::Freshness::Broken)
+        match body(&manifest, &|path| read_listed(dir, &manifest, path)) {
+            Ok(value) => return Ok(value),
+            Err(reason) => {
+                let replaced = manifest::read(dir).ok().as_ref() != Some(&manifest);
+                if !replaced || attempt == READ_ATTEMPTS {
+                    return Err(manifest::Freshness::Broken(reason));
+                }
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// The manifest and the files that `wanted` selects of one publication of the graph at `dir`,
+/// each with the SHA-256 that the manifest lists (`kg export`, `kg verify`).
+pub fn read_snapshot(
+    dir: &Path,
+    wanted: &dyn Fn(&str) -> bool,
+) -> Result<(Manifest, Files), manifest::Freshness> {
+    with_snapshot(dir, |manifest, read| {
+        let mut files = Files::default();
+        for path in manifest.files.keys().filter(|path| wanted(path)) {
+            let bytes = read(path)?.expect("a listed file");
+            files.put(path.clone(), bytes);
+        }
+        Ok((manifest.clone(), files))
+    })
+}
+
+impl KgData {
+    /// Reads the graph at `dir`, all of one publication: `Err` with the reason when the manifest
+    /// or a file it lists cannot be read or does not match (the caller reports `kg_missing`,
+    /// `kg_broken` or `kg_incomplete`).
+    pub fn open(dir: &Path) -> Result<KgData, manifest::Freshness> {
+        with_snapshot(dir, |manifest, read| Self::parse(manifest, read))
     }
 
     /// The graph of files in memory, as `open` would read them once written.
     pub fn from_parts(manifest: &Manifest, files: &Files) -> Result<KgData, String> {
-        let read = |path: &str| files.get(path).map(<[u8]>::to_vec);
+        let read = |path: &str| Ok(files.get(path).map(<[u8]>::to_vec));
         Self::parse(manifest, &read)
     }
 
-    fn parse(
-        manifest: &Manifest,
-        read: &dyn Fn(&str) -> Option<Vec<u8>>,
-    ) -> Result<KgData, String> {
+    fn parse(manifest: &Manifest, read: ReadFile) -> Result<KgData, String> {
         let rows = |path: &str| -> Result<Option<Vec<Value>>, String> {
-            match read(path) {
+            match read(path)? {
                 Some(bytes) => lines(&bytes)
                     .map(Some)
                     .map_err(|reason| format!("{path} {reason}")),
@@ -722,4 +788,92 @@ impl KgView {
 pub fn read_manifest(dir: &Path) -> Option<Manifest> {
     let bytes = crate::cache::read_regular(&dir.join(MANIFEST), manifest::MANIFEST_LIMIT).ok()?;
     Manifest::parse(std::str::from_utf8(&bytes).ok()?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kg::input::digest;
+
+    /// The files of a graph of one node named `id`, with its manifest.
+    fn graph(id: &str) -> Files {
+        let mut files = Files::default();
+        files.put("nodes.jsonl", format!("{{\"id\":\"{id}\"}}\n").into_bytes());
+        files.put(
+            "facts/Main.jsonl",
+            format!("{{\"id\":\"{id}\"}}\n").into_bytes(),
+        );
+        let manifest = Manifest {
+            schema: "tz-kg/1".into(),
+            compiler: "tsuzuri".into(),
+            edition: "2026".into(),
+            project: "p".into(),
+            version: None,
+            complete: true,
+            source_hash: "00".repeat(32),
+            counts: Vec::new(),
+            modules: Vec::new(),
+            files: files
+                .0
+                .iter()
+                .map(|(path, bytes)| (path.clone(), digest(bytes)))
+                .collect(),
+        };
+        files.put(MANIFEST, manifest.render().into_bytes());
+        files
+    }
+
+    /// A reader that a writer interrupts reads the files of one publication: the read that
+    /// crossed the replacement starts again on the new graph.
+    #[test]
+    fn a_read_across_a_replacement_starts_again() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        super::super::write::publish(&dir, &graph("old"), "00").unwrap();
+        let attempts = std::cell::Cell::new(0);
+        let (manifest, files) = with_snapshot(&dir, |manifest, read| {
+            attempts.set(attempts.get() + 1);
+            let nodes = read("nodes.jsonl")?.unwrap();
+            if attempts.get() == 1 {
+                // A writer replaces the graph between the reader's two files.
+                super::super::write::publish(&dir, &graph("new"), "00").unwrap();
+            }
+            let facts = read("facts/Main.jsonl")?.unwrap();
+            Ok((manifest.clone(), (nodes, facts)))
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(files.0, b"{\"id\":\"new\"}\n");
+        assert_eq!(files.1, b"{\"id\":\"new\"}\n");
+        assert_eq!(manifest.files["nodes.jsonl"], digest(&files.0));
+        // A file that does not match an unchanged manifest is broken, and so is a missing one.
+        std::fs::write(dir.join("facts/Main.jsonl"), b"{}\n").unwrap();
+        let error = KgData::open(&dir).unwrap_err();
+        assert_eq!(
+            error,
+            manifest::Freshness::Broken("facts/Main.jsonl does not match manifest.json".into())
+        );
+        std::fs::remove_file(dir.join("facts/Main.jsonl")).unwrap();
+        let error = KgData::open(&dir).unwrap_err();
+        assert_eq!(
+            error,
+            manifest::Freshness::Broken("facts/Main.jsonl cannot be read".into())
+        );
+    }
+
+    /// A directory on the way to a listed file that is a link is not followed.
+    #[cfg(unix)]
+    #[test]
+    fn linked_directories_are_not_followed() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        super::super::write::publish(&dir, &graph("a"), "00").unwrap();
+        let outside = root.path.join("outside");
+        std::fs::rename(dir.join("facts"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("facts")).unwrap();
+        assert_eq!(
+            KgData::open(&dir).unwrap_err(),
+            manifest::Freshness::Broken("facts/Main.jsonl cannot be read".into())
+        );
+    }
 }

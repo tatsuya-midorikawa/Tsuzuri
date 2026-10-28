@@ -285,8 +285,19 @@ fn kg_build(arguments: &KgArguments) -> Result<u8, Diagnostic> {
             }
         }
         tsuzuri::kg::build::Plan::Fresh | tsuzuri::kg::build::Plan::Off => {
-            report_build(&dir, "unchanged", 0, true, 0, json);
-            Ok(EXIT_SUCCESS)
+            // An unchanged graph of a failed analysis stays incomplete, and so does the status.
+            let manifest = tsuzuri::kg::store::read_manifest(&dir);
+            match manifest.filter(|manifest| !manifest.complete) {
+                Some(manifest) => {
+                    let errors = manifest.count("errors").unwrap_or(0) as usize;
+                    report_build(&dir, "incomplete", 0, false, errors, json);
+                    Ok(EXIT_FAILURE)
+                }
+                None => {
+                    report_build(&dir, "unchanged", 0, true, 0, json);
+                    Ok(EXIT_SUCCESS)
+                }
+            }
         }
     }
 }
@@ -327,23 +338,14 @@ fn kg_verify(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         Freshness::NotOurs if dir.is_dir() => return Err(manifest::missing(&dir, true)),
         other => return Err(manifest::diagnostic(&dir, &other).expect("not fresh")),
     }
-    let manifest = tsuzuri::kg::store::read_manifest(&dir)
-        .ok_or_else(|| manifest::broken(&dir, "manifest.json is not valid"))?;
-    for (file, digest) in &manifest.files {
-        let Ok(bytes) = std::fs::read(dir.join(file)) else {
-            return Err(manifest::broken(&dir, &format!("{file} is missing")));
-        };
-        if tsuzuri::kg::input::digest(&bytes) != *digest {
-            return Err(manifest::broken(
-                &dir,
-                &format!("{file} does not match manifest.json"),
-            ));
-        }
-    }
-    let data = KgData::open(&dir).map_err(|freshness| {
+    // Every file of one publication, and the graph's invariants over those same bytes.
+    let broken = |freshness: Freshness| {
         manifest::diagnostic(&dir, &freshness)
             .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
-    })?;
+    };
+    let (manifest, files) = tsuzuri::kg::store::read_snapshot(&dir, &|_| true).map_err(broken)?;
+    let data =
+        KgData::from_parts(&manifest, &files).map_err(|reason| manifest::broken(&dir, &reason))?;
     if let Some(violation) = data.violation() {
         return Err(manifest::broken(&dir, &violation));
     }
@@ -421,33 +423,27 @@ fn kg_export(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     };
     let project = load_project(&path)?;
     let dir = open::directory(&project, kg_dir_of(arguments).as_deref());
-    open::open_project(&project, &dir, refresh, &mut |set, project| {
+    let data = open::open_project(&project, &dir, refresh, &mut |set, project| {
         print_diagnostics(set, project, false)
     })?;
-    let manifest = tsuzuri::kg::store::read_manifest(&dir)
-        .ok_or_else(|| manifest::broken(&dir, "manifest.json is not valid"))?;
-    let files: Vec<&String> = match chosen[0] {
-        "--nodes" => manifest
-            .files
-            .keys()
-            .filter(|file| *file == "nodes.jsonl")
-            .collect(),
-        "--edges" => manifest
-            .files
-            .keys()
-            .filter(|file| *file == "edges.jsonl")
-            .collect(),
-        _ => manifest
-            .files
-            .keys()
-            .filter(|file| file.starts_with("facts/") && file.ends_with(".jsonl"))
-            .collect(),
+    let wanted: &dyn Fn(&str) -> bool = match chosen[0] {
+        "--nodes" => &|file| file == "nodes.jsonl",
+        "--edges" => &|file| file == "edges.jsonl",
+        _ => &|file| file.starts_with("facts/") && file.ends_with(".jsonl"),
     };
+    // The files of one publication: the graph that was opened, or a complete one of the same
+    // sources that a writer put in its place since.
+    let (manifest, files) =
+        tsuzuri::kg::store::read_snapshot(&dir, wanted).map_err(|freshness| {
+            manifest::diagnostic(&dir, &freshness)
+                .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
+        })?;
+    if !manifest.complete || manifest.source_hash != data.meta.source_hash {
+        return Err(manifest::broken(&dir, "it changed while it was read"));
+    }
     let mut out = io::stdout().lock();
-    for file in files {
-        let bytes = std::fs::read(dir.join(file))
-            .map_err(|_| manifest::broken(&dir, &format!("{file} is missing")))?;
-        let _ = out.write_all(&bytes);
+    for bytes in files.0.values() {
+        let _ = out.write_all(bytes);
     }
     Ok(EXIT_SUCCESS)
 }
