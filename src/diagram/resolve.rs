@@ -43,14 +43,22 @@ pub fn resolve(input: &Input, kind: Kind, text: &str) -> Result<String, DiagramE
     if ids.iter().any(|id| id == text) {
         return Ok(text.to_owned());
     }
-    // A record or union names its layouts, whose IDs are those of its concrete types
-    // (`M.Box<i64>` of the generic `M.Box`): it goes on to the stages below.
-    let layout_of_a_type = |symbol: &super::input::Symbol| {
-        kind == Kind::Layout && matches!(symbol.kind.as_str(), "record" | "union")
-    };
-    if let Some(symbol) = input.symbol(text)
-        && !layout_of_a_type(symbol)
-    {
+    if let Some(symbol) = input.symbol(text) {
+        // A record or union names the layouts of its concrete types (`M.Box<i64>` of the generic
+        // `M.Box`), and only those: not `M.Boxed`'s.
+        if kind == Kind::Layout && matches!(symbol.kind.as_str(), "record" | "union") {
+            let prefix = format!("{text}<");
+            let mut own: Vec<String> = ids
+                .iter()
+                .filter(|id| id.starts_with(&prefix))
+                .cloned()
+                .collect();
+            if own.len() == 1 {
+                return Ok(own.remove(0));
+            }
+            own.sort();
+            return Err(unknown(text, kind, &own));
+        }
         return Err(DiagramError {
             kind: "diagram_wrong_id_kind",
             message: format!(
@@ -80,13 +88,18 @@ pub fn resolve(input: &Input, kind: Kind, text: &str) -> Result<String, DiagramE
             found
         }
     };
+    Err(unknown(text, kind, &suggestions))
+}
+
+/// `diagram_unknown_id`, with up to 5 of `suggestions`.
+fn unknown(text: &str, kind: Kind, suggestions: &[String]) -> DiagramError {
     let mut message = format!("unknown id '{text}' for diagram kind '{}'", kind.name());
     if !suggestions.is_empty() {
         let shown: Vec<&str> = suggestions.iter().take(5).map(String::as_str).collect();
         message.push_str(&format!("; did you mean: {}", shown.join(", ")));
     }
-    Err(DiagramError {
+    DiagramError {
         kind: "diagram_unknown_id",
         message,
-    })
+    }
 }

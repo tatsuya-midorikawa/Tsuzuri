@@ -3460,22 +3460,30 @@ fn select_affected(
     head.intact()?;
     drop(checkout);
     let total = impact.total_tests;
-    match &impact.tests {
-        tsuzuri::kg::impact::Tests::All(reason) => {
-            if arguments.json {
-                println!(
-                    "{{\"type\":\"affected\",\"mode\":\"all\",\"affected\":{total},\"total\":{total},\"base\":{},\"reason\":{}}}",
-                    json_string(value),
-                    json_string(reason)
-                );
-            } else {
-                println!("affected: all {total} tests ({reason})");
-            }
-            Ok(None)
+    let all = |reason: &str| {
+        if arguments.json {
+            println!(
+                "{{\"type\":\"affected\",\"mode\":\"all\",\"affected\":{total},\"total\":{total},\"base\":{},\"reason\":{}}}",
+                json_string(value),
+                json_string(reason)
+            );
+        } else {
+            println!("affected: all {total} tests ({reason})");
         }
+        Ok(None)
+    };
+    match &impact.tests {
+        tsuzuri::kg::impact::Tests::All(reason) => all(reason),
         tsuzuri::kg::impact::Tests::Some(tests) => {
-            let mut indices: Vec<usize> =
-                tests.iter().filter_map(|id| head.test_index(id)).collect();
+            // A selected test that the graph's test table does not number cannot be run alone,
+            // and must not be dropped: every test runs instead.
+            let Some(mut indices) = tests
+                .iter()
+                .map(|id| head.test_index(id))
+                .collect::<Option<Vec<usize>>>()
+            else {
+                return all("the KG does not number every affected test");
+            };
             indices.sort_unstable();
             indices.dedup();
             if arguments.json {

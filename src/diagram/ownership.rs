@@ -2,7 +2,7 @@
 //! (moves, borrows, drops), and the ledger of every event with the role that a diagnostic gives
 //! the same position.
 
-use super::escape::transition;
+use super::escape::{code_span, transition};
 use super::input::{Event, Input};
 use super::{DiagramError, MAX_EDGES};
 
@@ -170,7 +170,8 @@ pub fn markdown(
                 .collect()
         })
         .unwrap_or_default();
-    let mut parts = vec![format!("# Ownership of {function}\n")];
+    // A test's ID holds its name, which may be any text: the heading shows it as code.
+    let mut parts = vec![format!("# Ownership of {}\n", code_span(function))];
     let mut cut = false;
     for variable in &drawn {
         let own: Vec<&Event> = of(&events, variable)
@@ -180,7 +181,7 @@ pub fn markdown(
         let (diagram, omitted) = variable_diagram(&own, limit);
         let heading = match parameters.iter().find(|(name, _)| name == variable) {
             // The type as inline code: `<i64>` of `Vec<i64>` is not HTML.
-            Some((_, ty)) => format!("## {variable} (parameter: `{ty}`)"),
+            Some((_, ty)) => format!("## {variable} (parameter: {})", code_span(ty)),
             None => format!("## {variable}"),
         };
         parts.push(format!("{heading}\n\n```mermaid\n{diagram}```\n"));

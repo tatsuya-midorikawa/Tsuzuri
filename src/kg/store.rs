@@ -390,17 +390,20 @@ fn read_listed(dir: &Path, manifest: &Manifest, path: &str) -> Result<Option<Vec
 /// match the manifest was read across a replacement when the manifest has changed since: `body`
 /// runs again, up to `READ_ATTEMPTS` times. Otherwise the graph is broken. The stamp of the
 /// marker (`None` without one) is that publication's too: the marker read before the manifest and
-/// after the files must agree, else the read crossed a replacement and starts again.
+/// after the files must be the same text, whose token no other publication has, else the read
+/// crossed a replacement (even by the same compiler) and starts again.
 fn with_snapshot<T>(
     dir: &Path,
     body: impl Fn(&Manifest, ReadFile) -> Result<T, String>,
 ) -> Result<(T, Option<String>), manifest::Freshness> {
     let mut attempt = 1;
     loop {
-        let stamp = super::write::marker_stamp(dir);
+        let marker = super::write::read_marker(dir);
         let manifest = manifest::read(dir)?;
         match body(&manifest, &|path| read_listed(dir, &manifest, path)) {
-            Ok(value) if super::write::marker_stamp(dir) == stamp => return Ok((value, stamp)),
+            Ok(value) if super::write::read_marker(dir) == marker => {
+                return Ok((value, marker.as_deref().map(super::write::stamp_of)));
+            }
             Ok(_) if attempt == READ_ATTEMPTS => {
                 return Err(manifest::Freshness::Broken(
                     "it was replaced while it was read".into(),
@@ -1224,6 +1227,28 @@ mod tests {
             KgData::open_fresh(&dir, &"00".repeat(32), "00").unwrap_err(),
             manifest::Freshness::Stale("built by a different compiler")
         );
+    }
+
+    /// Another publication by the same compiler between the reader's marker and its last file (A,
+    /// then B, then A again) is read again too: each publication's marker has its own token.
+    #[test]
+    fn a_snapshot_is_of_one_publication_of_the_same_compiler() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        super::super::write::publish(&dir, &graph("a"), "00").unwrap();
+        let attempts = std::cell::Cell::new(0);
+        let (_, stamp) = with_snapshot(&dir, |_, read| {
+            attempts.set(attempts.get() + 1);
+            let nodes = read("nodes.jsonl")?;
+            if attempts.get() == 1 {
+                super::super::write::publish(&dir, &graph("a"), "01").unwrap();
+                super::super::write::publish(&dir, &graph("a"), "00").unwrap();
+            }
+            Ok(nodes)
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(stamp.as_deref(), Some("00"));
     }
 
     /// A reader judges the publication that it read: a graph of other sources, of another compiler

@@ -394,6 +394,35 @@ fn test_affected_against_the_projects_own_graph() {
     );
 }
 
+/// An affected test that the head's graph does not number (no `tests.jsonl`) is not dropped:
+/// every test runs.
+#[test]
+fn affected_tests_that_the_graph_does_not_number_run_all() {
+    let root = fresh("unnumbered");
+    let project = root.join("shop");
+    copy("kg_shop", &project);
+    assert!(tsuzuri(&project, &["kg", "build"]).status.success());
+    copy_tree(&project.join("target/tz/kg"), &root.join("base"));
+    let main = project.join("Main.tz");
+    let text = std::fs::read_to_string(&main).unwrap();
+    std::fs::write(&main, format!("{text}\n// touched\n")).unwrap();
+    assert!(tsuzuri(&project, &["kg", "build"]).status.success());
+    without(&project.join("target/tz/kg"), "tests.jsonl");
+    let base = root.join("base");
+    let output = tsuzuri(
+        &project,
+        &["test", ".", "--affected", base.to_str().unwrap()],
+    );
+    let text = stdout(&output);
+    assert!(
+        text.contains("tests (the KG does not number every affected test)\n"),
+        "{text}{}",
+        stderr(&output)
+    );
+    assert_eq!(output.status.code(), Some(0), "{text}{}", stderr(&output));
+    assert!(text.contains("3 passed"), "{text}");
+}
+
 #[test]
 fn test_affected_runs_only_the_reached_tests() {
     let root = scene("affected");

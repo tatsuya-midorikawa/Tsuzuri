@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::algo;
-use super::brief::{self, Card, ELLIPSIS, clip, first_line, norm, plural};
+use super::brief::{self, Card, ELLIPSIS, clip, doc_line, first_line, norm, plural};
 use super::json::{self, Object};
 use super::store::{Edge, KgData, KgView, Node, Span};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Span as SourceSpan};
@@ -251,9 +251,16 @@ pub(crate) fn listing(
     card.render()
 }
 
-fn no_graph(header: String, summary: String) -> Output {
+/// The answer of a query that needs the edges of a graph without `edges.jsonl`, within the
+/// query's budget as any listing.
+fn no_graph(header: String, summary: String, options: &Options) -> Output {
     Output {
-        text: format!("{header}\nnote: this KG has no edges.jsonl\n{summary}\n"),
+        text: listing(
+            &[header],
+            vec!["note: this KG has no edges.jsonl".to_owned()],
+            &[summary],
+            options.budget.unwrap_or(LIST_BUDGET),
+        ),
         rows: vec![
             Object::new()
                 .string("type", "note")
@@ -437,14 +444,16 @@ pub fn show(view: &KgView, text: &str, options: &Options) -> Result<Output, Quer
     {
         callees = graph.edges_from("calls", &id);
         tests = graph.edges_from("tested_by", &id);
-        used = ["uses_type", "implements", "instance_of"]
-            .iter()
-            .flat_map(|rel| graph.edges_to(rel, &id))
-            .collect();
-        used.sort_by(|a, b| (&a.from, &a.rel, a.span.start).cmp(&(&b.from, &b.rel, b.span.start)));
     }
+    // What comes in (callers and uses) is the project's first, as `kg callers` and `kg uses` read
+    // it: a std type's users in the project are edges of the project's graph.
     if let Some(data) = callers_data {
         callers = data.edges_to("calls", &id);
+        used = USE_RELATIONS
+            .iter()
+            .flat_map(|rel| data.edges_to(rel, &id))
+            .collect();
+        used.sort_by(|a, b| (&a.from, &a.rel, a.span.start).cmp(&(&b.from, &b.rel, b.span.start)));
     }
     let mut group = |label: &str, edges: &[&Edge], format: &dyn Fn(&Edge) -> String| {
         if edges.is_empty() {
@@ -518,15 +527,17 @@ fn walk<'a>(data: &'a KgData, start: &str, depth: usize, forward: bool) -> Vec<R
         .filter_map(|visit| {
             let parent = data.index.name(visit.parent?).to_owned();
             let id = data.index.name(visit.node).to_owned();
+            // The edges between the two, from the side of the node reached: each reached node's
+            // adjacency is read once, not the parent's once per child.
             let edges: Vec<&Edge> = if forward {
-                data.edges_from("calls", &parent)
+                data.edges_to("calls", &id)
                     .into_iter()
-                    .filter(|edge| edge.to == id)
+                    .filter(|edge| edge.from == parent)
                     .collect()
             } else {
-                data.edges_to("calls", &parent)
+                data.edges_from("calls", &id)
                     .into_iter()
-                    .filter(|edge| edge.from == id)
+                    .filter(|edge| edge.to == parent)
                     .collect()
             };
             let mut edges = edges;
@@ -578,6 +589,7 @@ pub fn calls(
         return Ok(no_graph(
             header,
             format!("summary: 0 {word}, depth {depth}"),
+            options,
         ));
     }
     let reached = graph_data(view, &id, forward)
@@ -631,6 +643,10 @@ pub fn calls(
     Ok(Output { text, rows })
 }
 
+/// The relations of a use of a type or class: `kg uses`, `kg show` and the MCP `tz_callers`
+/// follow the same.
+pub const USE_RELATIONS: [&str; 3] = ["uses_type", "implements", "instance_of"];
+
 /// `kg uses TYPE`: the `uses_type`, `implements` and `instance_of` edges into a type.
 /// The relations of a use of a type or class: `kg uses` and the MCP `tz_callers` follow the same.
 pub const USE_RELATIONS: [&str; 3] = ["uses_type", "implements", "instance_of"];
@@ -639,10 +655,10 @@ pub fn uses(view: &KgView, text: &str, options: &Options) -> Result<Output, Quer
     let id = resolve_one(view, text, false)?;
     let header = format!("uses of {id}");
     let Some(data) = view.project() else {
-        return Ok(no_graph(header, "summary: 0 uses".into()));
+        return Ok(no_graph(header, "summary: 0 uses".into(), options));
     };
     if data.edges.is_none() {
-        return Ok(no_graph(header, "summary: 0 uses".into()));
+        return Ok(no_graph(header, "summary: 0 uses".into(), options));
     }
     let mut edges: Vec<&Edge> = USE_RELATIONS
         .iter()
@@ -684,7 +700,7 @@ pub fn tests_for(view: &KgView, text: &str, options: &Options) -> Result<Output,
     let id = resolve_one(view, text, false)?;
     let header = format!("tests for {id}");
     let Some(data) = view.project().filter(|data| data.edges.is_some()) else {
-        return Ok(no_graph(header, "summary: 0 tests".into()));
+        return Ok(no_graph(header, "summary: 0 tests".into(), options));
     };
     let edges = data.edges_from("tested_by", &id);
     let items = edges
@@ -737,7 +753,7 @@ pub fn search(
     let mut found: Vec<(usize, &str, &Node)> = Vec::new();
     for node in nodes {
         let name = node.name.to_lowercase();
-        let line = first_line(node.doc.as_deref()).to_lowercase();
+        let line = doc_line(node.doc.as_deref()).to_lowercase();
         let rank = if name == low {
             1
         } else if name.starts_with(&low) {
@@ -822,6 +838,7 @@ pub fn path(
         return Ok(no_graph(
             header,
             format!("summary: no path within depth {depth}"),
+            options,
         ));
     };
     let graph = data.index.digraph(data.edges(), relations);

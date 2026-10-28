@@ -130,7 +130,7 @@ flowchart TD
 関数の変数ごとに、所有権の出来事（借用・移動・解放）を状態図にします。借用は、その変数の次の出来事まで続くものとして `release` で `Owned` に戻します。移動・解放した状態は赤、借用中は黄です。1 つの状態図の遷移は 400 本までで、それを超える出来事は `N later events of x are not drawn.` と書いて描きません。図の後ろに、全部の出来事の表（200 行まで。残りは `N more events are not listed.`）があり、`diagnostic role` の列は、同じ位置を `E1012`・`E1014` の診断が `moved_here`・`borrowed_here` として引用することを示します。変数が 13 個以上なら、移動か借用のある変数を 12 個まで描きます。
 
 ````text
-# Ownership of Own::Main.demo
+# Ownership of `Own::Main.demo`
 
 ## text
 
@@ -180,7 +180,7 @@ flowchart LR
 
 ### `layout`
 
-record・union のメモリの配置を表にします。数値は 64-bit の native のものだけです（wasm32 ではポインターが 4 byte なので違います）。record のフィールドのオフセットは、大きさの分かる基本型（`i8`〜`i64`・`u8`〜`u64`・`f32`・`f64`・`bool`）が続く間だけ書き、分からない型の後ろは `?` です。`Drop` を実装する record は、フィールドの後ろの 1 byte が生存フラグ（`(live flag)` の行）で、その後ろが末尾の詰め物です。型はコード（`` `Vec<i64>` ``）として書くので、Markdown が `<i64>` を HTML として隠すことはありません。型引数のある record・union の配置は具体的な型ごと（`M.Box<i64>`）にあり、宣言の ID（`M.Box`）で 1 つに決まればそれを、いくつもあれば候補を出します。
+record・union のメモリの配置を表にします。数値は 64-bit の native のものだけです（wasm32 ではポインターが 4 byte なので違います）。record のフィールドのオフセットは、大きさの分かる基本型（`i8`〜`i64`・`u8`〜`u64`・`f32`・`f64`・`bool`）が続く間だけ書き、分からない型の後ろは `?` です。`Drop` を実装する record は、フィールドの後ろの 1 byte が生存フラグ（`(live flag)` の行）で、その後ろが末尾の詰め物です。型はコード（`` `Vec<i64>` ``）として書くので、Markdown が `<i64>` を HTML として隠すことはありません。型引数のある record・union の配置は具体的な型ごと（`M.Box<i64>`）にあり、宣言の ID（`M.Box`）で、その型の配置（`M.Box<…>`）だけから 1 つに決まればそれを、いくつもあれば候補を出します（`M.Boxed` のような名前の続くほかの型は数えません）。
 
 ```text
 # Layout of Shapes::Shapes.Shape (native, 64-bit)

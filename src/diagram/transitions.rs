@@ -63,21 +63,26 @@ fn last_word(text: &str) -> &str {
     text.rsplit(['.', ':']).next().unwrap_or(text)
 }
 
-/// The `match` over the parameter `name` in a function's body.
-fn find_match<'a>(body: &'a Expr, name: &str) -> Option<&'a [crate::syntax::MatchArm]> {
+/// The `match`es over the parameter `name` that a function's body returns: the body's own, or
+/// those of both branches of an `if`.
+fn find_matches<'a>(body: &'a Expr, name: &str, found: &mut Vec<&'a [crate::syntax::MatchArm]>) {
     match &body.kind {
-        ExprKind::Match { value, arms, .. } => match &value.kind {
-            ExprKind::Name(id) if id.text == name => Some(arms),
-            _ => None,
-        },
-        ExprKind::Block { result, .. } => find_match(result, name),
+        ExprKind::Match { value, arms, .. } => {
+            if matches!(&value.kind, ExprKind::Name(id) if id.text == name) {
+                found.push(arms);
+            }
+        }
+        ExprKind::Block { result, .. } => find_matches(result, name, found),
         ExprKind::If {
             then_branch,
             else_branch,
             ..
-        } => find_match(then_branch, name).or_else(|| find_match(else_branch, name)),
-        ExprKind::Checked(inner) => find_match(inner, name),
-        _ => None,
+        } => {
+            find_matches(then_branch, name, found);
+            find_matches(else_branch, name, found);
+        }
+        ExprKind::Checked(inner) => find_matches(inner, name, found),
+        _ => {}
     }
 }
 
@@ -270,28 +275,30 @@ pub fn extract(
         let Some(parameter) = function.parameters.first() else {
             continue;
         };
-        let Some(arms) = find_match(&function.body, &parameter.name.text) else {
-            continue;
-        };
-        let mut named: BTreeSet<String> = BTreeSet::new();
-        for arm in arms {
-            let from = match starts(&arm.pattern, &names) {
-                Some(Start::Cases(cases)) => {
-                    named.extend(cases.iter().cloned());
-                    cases
-                }
-                Some(Start::Rest) => names
-                    .iter()
-                    .filter(|name| !named.contains(**name))
-                    .map(|name| (*name).to_owned())
-                    .collect(),
-                None => continue,
-            };
-            let mut to = BTreeSet::new();
-            ends(&arm.body, &names, &mut to);
-            for source in &from {
-                for target in &to {
-                    edges.push((source.clone(), target.clone(), candidate.name.clone()));
+        let mut matches = Vec::new();
+        find_matches(&function.body, &parameter.name.text, &mut matches);
+        // Each `match` names its own cases before its wildcard.
+        for arms in matches {
+            let mut named: BTreeSet<String> = BTreeSet::new();
+            for arm in arms {
+                let from = match starts(&arm.pattern, &names) {
+                    Some(Start::Cases(cases)) => {
+                        named.extend(cases.iter().cloned());
+                        cases
+                    }
+                    Some(Start::Rest) => names
+                        .iter()
+                        .filter(|name| !named.contains(**name))
+                        .map(|name| (*name).to_owned())
+                        .collect(),
+                    None => continue,
+                };
+                let mut to = BTreeSet::new();
+                ends(&arm.body, &names, &mut to);
+                for source in &from {
+                    for target in &to {
+                        edges.push((source.clone(), target.clone(), candidate.name.clone()));
+                    }
                 }
             }
         }
