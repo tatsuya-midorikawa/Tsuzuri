@@ -1,4 +1,4 @@
-# Layout of Acme::Kb::Shapes.Packed (native, 64-bit)
+# Layout of `Acme::Kb::Shapes.Packed` (native, 64-bit)
 
 | item | value |
 | --- | --- |

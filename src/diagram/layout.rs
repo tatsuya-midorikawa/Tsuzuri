@@ -1,6 +1,7 @@
 //! `layout` (G30, D7): the native layout of a record or union as tables, with the offsets of the
 //! fields while their sizes are known.
 
+use super::escape::code_span;
 use super::input::LayoutRow;
 
 /// The note under every layout: the numbers are those of a 64-bit native target.
@@ -34,7 +35,7 @@ fn bound((low, high): (u64, u64)) -> String {
 pub fn markdown(row: &LayoutRow) -> String {
     let flag = |value: bool| if value { "yes" } else { "no" };
     let mut lines = vec![
-        format!("# Layout of {} (native, 64-bit)", row.id),
+        format!("# Layout of {} (native, 64-bit)", code_span(&row.id)),
         String::new(),
         "| item | value |".to_owned(),
         "| --- | --- |".to_owned(),

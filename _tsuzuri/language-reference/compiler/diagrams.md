@@ -180,10 +180,10 @@ flowchart LR
 
 ### `layout`
 
-record・union のメモリの配置を表にします。数値は 64-bit の native のものだけです（wasm32 ではポインターが 4 byte なので違います）。record のフィールドのオフセットは、大きさの分かる基本型（`i8`〜`i64`・`u8`〜`u64`・`f32`・`f64`・`bool`）が続く間だけ書き、分からない型の後ろは `?` です。`Drop` を実装する record は、フィールドの後ろの 1 byte が生存フラグ（`(live flag)` の行）で、その後ろが末尾の詰め物です。型はコード（`` `Vec<i64>` ``）として書くので、Markdown が `<i64>` を HTML として隠すことはありません。型引数のある record・union の配置は具体的な型ごと（`M.Box<i64>`）にあり、宣言の ID（`M.Box`。ほかの ID と同じく `Box` のように縮めても）で、その型の配置（`M.Box<…>`）だけから 1 つに決まればそれを、いくつもあれば候補を出します（`M.Boxed` のような名前の続くほかの型は数えません）。
+record・union のメモリの配置を表にします。数値は 64-bit の native のものだけです（wasm32 ではポインターが 4 byte なので違います）。record のフィールドのオフセットは、大きさの分かる基本型（`i8`〜`i64`・`u8`〜`u64`・`f32`・`f64`・`bool`）が続く間だけ書き、分からない型の後ろは `?` です。`Drop` を実装する record は、フィールドの後ろの 1 byte が生存フラグ（`(live flag)` の行）で、その後ろが末尾の詰め物です。見出しの型の ID と表の型はコード（`` `Vec<i64>` ``）として書くので、Markdown が `<i64>` を HTML として隠すことはありません。型引数のある record・union の配置は具体的な型ごと（`M.Box<i64>`）にあり、宣言の ID（`M.Box`。ほかの ID と同じく `Box` のように縮めても）で、その型の配置（`M.Box<…>`）だけから 1 つに決まればそれを、いくつもあれば候補を出します（`M.Boxed` のような名前の続くほかの型は数えません）。
 
 ```text
-# Layout of Shapes::Shapes.Shape (native, 64-bit)
+# Layout of `Shapes::Shapes.Shape` (native, 64-bit)
 
 | item | value |
 | --- | --- |
