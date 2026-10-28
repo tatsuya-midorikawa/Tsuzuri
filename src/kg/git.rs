@@ -63,7 +63,12 @@ impl Checkout {
         let hooks = real.join("no-hooks");
         std::fs::create_dir_all(&hooks)
             .map_err(|error| failure(format!("cannot run git: {error}")))?;
-        let checkout = real.join("checkout");
+        // The checkout keeps the repository's directory name: a project without a manifest takes
+        // its namespace from the name of its directory (`driver::folder_namespace`).
+        let parent = real.join("checkout");
+        std::fs::create_dir_all(&parent)
+            .map_err(|error| failure(format!("cannot run git: {error}")))?;
+        let checkout = parent.join(top.file_name().unwrap_or("checkout".as_ref()));
         let output = git_command()
             .arg("-c")
             .arg(format!("core.hooksPath={}", hooks.display()))

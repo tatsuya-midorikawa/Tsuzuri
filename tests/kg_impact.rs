@@ -322,6 +322,35 @@ fn impact_against_a_git_revision() {
     }
 }
 
+/// A project without a manifest at the top of its repository takes its namespace from the
+/// repository's directory name, in the checkout of the base too.
+#[test]
+fn impact_against_a_git_revision_of_a_project_without_a_manifest() {
+    let root = fresh("folder-namespace");
+    let repo = root.join("shop");
+    std::fs::create_dir_all(&repo).unwrap();
+    for file in ["Cart.tz", "Main.tz", "Report.tz"] {
+        let text = std::fs::read_to_string(repository().join("tests/fixtures/kg_shop").join(file))
+            .unwrap();
+        let text: String = text
+            .lines()
+            .filter(|line| !line.starts_with("namespace "))
+            .map(|line| format!("{}\n", line.replace("using Acme::Shop", "using Shop")))
+            .collect();
+        std::fs::write(repo.join(file), text).unwrap();
+    }
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "base"]);
+    let output = tsuzuri(&repo, &["kg", "impact", "--git", "HEAD"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.ends_with("tests: 0 of 3 affected\nsummary: 0 breaking, 0 non-breaking, 0 info\n"),
+        "{text}"
+    );
+}
+
 /// The head's graph may be where the base's is: the base is read in full before the head's graph
 /// replaces it (`--from` the project's own graph, and `--git` or `test --affected` with
 /// `TSUZURI_KG_DIR`, which names only the working tree's graph).
@@ -710,7 +739,15 @@ fn affected_tests_cover_every_failing_test() {
         let text = std::fs::read_to_string(copy_dir.join(file)).unwrap();
         assert!(text.contains(from), "{name}");
         std::fs::write(copy_dir.join(file), text.replacen(from, to, 1)).unwrap();
-        let failed = numbers(&stdout(&tsuzuri(&root, &["test", name])), true);
+        // The reference is a run of all three tests: one that stops before it runs them (a
+        // compile error) would fail none and prove nothing.
+        let run = stdout(&tsuzuri(&root, &["test", name]));
+        let results = run
+            .lines()
+            .filter(|line| line.starts_with("ok ") || line.starts_with("not ok "))
+            .count();
+        assert_eq!(results, 3, "{name}: {run}");
+        let failed = numbers(&run, true);
         let listed = tsuzuri(&root, &["test", name, "--affected", "shop", "--list"]);
         assert_eq!(listed.status.code(), Some(0), "{name}: {}", stderr(&listed));
         let selected = numbers(&stdout(&listed), false);
