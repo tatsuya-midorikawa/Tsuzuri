@@ -9,10 +9,11 @@ use crate::driver::Project;
 pub const KG_FORMAT: u32 = 1;
 
 /// The SHA-256 of the inputs of `project`: its user sources (those of its dependencies included)
-/// and its manifests, by package name and relative path. Std is the compiler's, and the stamp
-/// covers it; thread counts and warning options are not inputs.
+/// and its manifests, by package name and relative path, with the namespace that each source's
+/// path is relative to (without a manifest, the directory's name decides it). Std is the
+/// compiler's, and the stamp covers it; thread counts and warning options are not inputs.
 pub fn source_hash(project: &Project) -> [u8; 32] {
-    let mut inputs: Vec<(&str, String, &str, &[u8])> = project
+    let mut inputs: Vec<(&str, String, &str, &str, &[u8])> = project
         .sources
         .iter()
         .filter(|source| source.origin == ModuleOrigin::User)
@@ -25,6 +26,7 @@ pub fn source_hash(project: &Project) -> [u8; 32] {
                     .as_ref()
                     .map_or("", |package| package.name.as_str()),
                 source.relative_path.to_string_lossy().replace('\\', "/"),
+                source.namespace.as_str(),
                 kind,
                 source.text.as_bytes(),
             )
@@ -33,9 +35,10 @@ pub fn source_hash(project: &Project) -> [u8; 32] {
     inputs.sort_by(|a, b| (a.0.as_bytes(), a.1.as_bytes()).cmp(&(b.0.as_bytes(), b.1.as_bytes())));
     let mut hash = Sha256::new();
     hash.field("tz-kg-input", &KG_FORMAT.to_le_bytes());
-    for (package, path, kind, text) in inputs {
+    for (package, path, namespace, kind, text) in inputs {
         hash.field("package", package.as_bytes());
         hash.field("path", path.as_bytes());
+        hash.field("namespace", namespace.as_bytes());
         hash.field(kind, text);
     }
     hash.finalize()

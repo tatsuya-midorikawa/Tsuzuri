@@ -515,11 +515,10 @@ fn check_body<'a>(
         checker.drop_events(&ids, end);
     }
     checker.check_result(parameters, body, task, contract, result)?;
-    if let Some(events) = checker.events.as_deref_mut() {
-        let copies = &checker.copy_variables;
-        events.retain(
-            |event| !matches!(&event.moved, Some(Type::Variable(name)) if copies.contains(name)),
-        );
+    if let Some(events) = checker.events.take() {
+        // With the Copy variables that the whole body needs, a move of a type that is Copy (a type
+        // variable, or an array, tuple, record or union of such) is a copy.
+        events.retain(|event| !event.moved.as_ref().is_some_and(|ty| checker.is_copy(ty)));
         events.sort_by_key(|event| (event.span.start, event.span.end, event.kind));
         events.dedup();
     }
@@ -3185,7 +3184,12 @@ impl<'a> Checker<'a, '_> {
                 } else {
                     Use::Consume
                 };
+                let mark = self.events.as_ref().map_or(0, |events| events.len());
                 let value = self.eval(left, usage, &during)?;
+                if *operator == BinaryOp::Pipe {
+                    // `text |> consume` gives its argument to `consume`, as `consume text` does.
+                    self.event_targets(mark, left.span, right);
+                }
                 self.held.push(value.clone());
                 let callee = self.eval(right, usage, &during)?;
                 self.held.pop();

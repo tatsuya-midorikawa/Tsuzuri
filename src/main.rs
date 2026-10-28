@@ -3393,35 +3393,44 @@ fn select_affected(
     let report = |set: &tsuzuri::diagnostic::DiagnosticSet, project: &Project| {
         print_diagnostics(set, project, arguments.json)
     };
+    // The checkout lives until the diff has read the base graph's files.
     let mut checkout = None;
     let base = if given.is_dir() && tsuzuri::kg::write::has_marker(given) {
         open::read(given)?
     } else if given.is_dir() {
         let base = Project::load_for_tests(given).map_err(|error| error.diagnostic)?;
-        let dir = open::directory(&base, None);
+        let dir = open::own_directory(&base);
         open::open_project(&base, &dir, Refresh::Auto, &mut |set, project| {
             report(set, project)
         })?
     } else {
         let root = project
-            .root_directory()
+            .project_directory()
             .unwrap_or_else(|| PathBuf::from("."));
         let made = tsuzuri::kg::git::Checkout::create(&root, value)?;
         let base =
             Project::load_for_tests(made.project_root()).map_err(|error| error.diagnostic)?;
-        let dir = open::directory(&base, None);
+        let dir = open::own_directory(&base);
         let data = open::open_project(&base, &dir, Refresh::Auto, &mut |set, project| {
             report(set, project)
         })?;
         checkout = Some(made);
         data
     };
-    drop(checkout);
     let dir = open::directory(project, arguments.kg.dir.as_deref());
+    if base
+        .directory()
+        .is_some_and(|base| open::same_directory(base, &dir))
+    {
+        base.read_all()?;
+    }
     let head = open::open_project(project, &dir, Refresh::Auto, &mut |set, project| {
         report(set, project)
     })?;
     let impact = tsuzuri::kg::impact::diff(&base, &head, value, "working tree");
+    base.intact()?;
+    head.intact()?;
+    drop(checkout);
     let total = impact.total_tests;
     match &impact.tests {
         tsuzuri::kg::impact::Tests::All(reason) => {

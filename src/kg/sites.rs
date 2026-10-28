@@ -194,11 +194,14 @@ pub(crate) fn sites(
             })
         };
         match &expression.kind {
-            TypedExprKind::Call(callee, _) => match called_builtin(module, callee) {
-                Some(Builtin::Assert) => trap("assert", false),
-                Some(Builtin::Unreachable) => trap("unreachable", false),
-                _ => {}
-            },
+            // `condition |> assert` stays a pipe, which `llvm.rs` emits as the call.
+            TypedExprKind::Call(callee, _) | TypedExprKind::Binary(BinaryOp::Pipe, _, callee) => {
+                match called_builtin(module, callee) {
+                    Some(Builtin::Assert) => trap("assert", false),
+                    Some(Builtin::Unreachable) => trap("unreachable", false),
+                    _ => {}
+                }
+            }
             TypedExprKind::Binary(BinaryOp::Divide | BinaryOp::Remainder, left, right) => {
                 if let Type::Integer(bits, signed) = left.ty {
                     let constant = match right.kind {
