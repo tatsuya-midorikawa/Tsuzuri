@@ -81,8 +81,8 @@ tsuzuri kg export [PATH] [--kg-dir DIR] (--nodes | --edges | --facts) [--no-refr
 | コマンド | 動き | 出力 | 終了コード |
 | --- | --- | --- | --- |
 | `build` | 古ければ解析して書く（`--force` は新しくても書き直す）。解析の診断は `check` と同じに標準エラーへ | `kg: wrote N files to DIR`・`kg: up to date (DIR)`・`kg: incomplete, N errors (DIR)` | 0。エラーのあるプロジェクトは 1 |
-| `verify` | 新しさ、全ファイルの SHA-256、グラフの不変条件（ID が一意、辺の始点がノード、`contains` がモジュールを根とする森）を確かめる | `kg: ok (N nodes, N files, source 先頭 12 桁)` | 0。違えば `E2009` で 1 |
-| `clean` | マーカーのある置き場を消す | なし | 0。マーカーのないディレクトリは `E2009` で 1 |
+| `verify` | 新しさ、全ファイルの SHA-256、グラフの不変条件（ID が一意、辺の始点がノード、`contains` がモジュールを根とする森）を確かめる。確かめるのは読んだ 1 回分の発行で、途中でほかの書き手が置き換えたものも新しさから確かめる | `kg: ok (N nodes, N files, source 先頭 12 桁)` | 0。違えば `E2009` で 1 |
+| `clean` | マーカーのある置き場を消す | なし | 0。マーカーのないディレクトリと、プロジェクトのソースを含むディレクトリ（マーカーがあっても）は消さず `E2009` で 1 |
 | `export` | 古ければ作り直し（`--no-refresh` では作らない）、`nodes.jsonl`・`edges.jsonl`・`facts/*.jsonl` をそのまま標準出力へ | JSON Lines | 0。ないか不完全は `E2009` で 1 |
 
 `--json` の `build` は `{"type":"kg_build","status":"written","dir":"…","files":19,"complete":true}`（`status` は `written`・`unchanged`・`incomplete`。エラーのあるプロジェクトの知識グラフが前回のままなら、書かずに `incomplete`・`"files":0`・`"complete":false` で、終了コードは 1）、`verify` は `{"type":"kg_verify","status":"ok","source_hash":"…","nodes":14,"files":17}` を 1 行出します。

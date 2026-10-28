@@ -421,6 +421,23 @@ impl KgData {
         with_snapshot(dir, |manifest, read| Self::parse(manifest, read))
     }
 
+    /// Reads the graph at `dir` as `open` does, and judges the manifest of that publication: the
+    /// graph of `source_hash` written by this compiler (`stamp`), complete. A graph that replaced
+    /// a fresh one after the caller looked is not taken for it.
+    pub fn open_fresh(
+        dir: &Path,
+        source_hash: &str,
+        stamp: &str,
+    ) -> Result<KgData, manifest::Freshness> {
+        let (manifest, data) = with_snapshot(dir, |manifest, read| {
+            Ok((manifest.clone(), Self::parse(manifest, read)?))
+        })?;
+        match manifest::judge(dir, &manifest, source_hash, stamp) {
+            manifest::Freshness::Fresh => Ok(data),
+            other => Err(other),
+        }
+    }
+
     /// The graph of files in memory, as `open` would read them once written.
     pub fn from_parts(manifest: &Manifest, files: &Files) -> Result<KgData, String> {
         let read = |path: &str| Ok(files.get(path).map(<[u8]>::to_vec));
@@ -797,6 +814,11 @@ mod tests {
 
     /// The files of a graph of one node named `id`, with its manifest.
     fn graph(id: &str) -> Files {
+        graph_of(id, &"00".repeat(32), true)
+    }
+
+    /// The files of a graph of one node named `id` written for `source_hash` by this compiler.
+    fn graph_of(id: &str, source_hash: &str, complete: bool) -> Files {
         let mut files = Files::default();
         files.put("nodes.jsonl", format!("{{\"id\":\"{id}\"}}\n").into_bytes());
         files.put(
@@ -805,12 +827,12 @@ mod tests {
         );
         let manifest = Manifest {
             schema: "tz-kg/1".into(),
-            compiler: "tsuzuri".into(),
+            compiler: manifest::compiler(),
             edition: "2026".into(),
             project: "p".into(),
             version: None,
-            complete: true,
-            source_hash: "00".repeat(32),
+            complete,
+            source_hash: source_hash.into(),
             counts: Vec::new(),
             modules: Vec::new(),
             files: files
@@ -859,6 +881,31 @@ mod tests {
             error,
             manifest::Freshness::Broken("facts/Main.jsonl cannot be read".into())
         );
+    }
+
+    /// A reader judges the publication that it read: a graph of other sources, of another compiler
+    /// or incomplete is not taken for the fresh one that it replaced.
+    #[test]
+    fn a_fresh_read_judges_the_publication_it_read() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        let fresh = "00".repeat(32);
+        super::super::write::publish(&dir, &graph("a"), "00").unwrap();
+        assert!(KgData::open_fresh(&dir, &fresh, "00").is_ok());
+        assert_eq!(
+            KgData::open_fresh(&dir, &fresh, "01").unwrap_err(),
+            manifest::Freshness::Stale("built by a different compiler")
+        );
+        super::super::write::publish(&dir, &graph_of("b", &"11".repeat(32), true), "00").unwrap();
+        assert_eq!(
+            KgData::open_fresh(&dir, &fresh, "00").unwrap_err(),
+            manifest::Freshness::Stale("sources changed")
+        );
+        super::super::write::publish(&dir, &graph_of("c", &fresh, false), "00").unwrap();
+        assert!(matches!(
+            KgData::open_fresh(&dir, &fresh, "00").unwrap_err(),
+            manifest::Freshness::Incomplete(_)
+        ));
     }
 
     /// A directory on the way to a listed file that is a link is not followed.

@@ -43,18 +43,16 @@ pub fn open_project(
     refresh: Refresh,
     report: &mut dyn FnMut(&DiagnosticSet, &Project),
 ) -> Result<KgData, Diagnostic> {
+    let hash = hex(&source_hash(project));
+    let stamp = build::current_stamp()?;
     match refresh {
-        Refresh::Never => {
-            let hash = hex(&source_hash(project));
-            let stamp = build::current_stamp()?;
-            match manifest::inspect(dir, &hash, &stamp) {
-                Freshness::Fresh => read(dir),
-                Freshness::NotOurs if !super::write::has_marker(dir) && dir.is_dir() => {
-                    Err(manifest::missing(dir, true))
-                }
-                other => Err(manifest::diagnostic(dir, &other).expect("not fresh")),
+        Refresh::Never => match manifest::inspect(dir, &hash, &stamp) {
+            Freshness::Fresh => read_fresh(dir, &hash, &stamp),
+            Freshness::NotOurs if !super::write::has_marker(dir) && dir.is_dir() => {
+                Err(manifest::missing(dir, true))
             }
-        }
+            other => Err(manifest::diagnostic(dir, &other).expect("not fresh")),
+        },
         Refresh::Auto => {
             if let Plan::Build(target) = build::target_for(dir, project, false)? {
                 let mut capture = Capture::default();
@@ -81,9 +79,18 @@ pub fn open_project(
                     }
                 }
             }
-            read(dir)
+            read_fresh(dir, &hash, &stamp)
         }
     }
+}
+
+/// Reads the graph at `dir` and requires the publication that it read to be that of `hash` by this
+/// compiler (`stamp`), complete: `E2009` otherwise.
+fn read_fresh(dir: &Path, hash: &str, stamp: &str) -> Result<KgData, Diagnostic> {
+    KgData::open_fresh(dir, hash, stamp).map_err(|freshness| match freshness {
+        Freshness::NotOurs if dir.is_dir() => manifest::missing(dir, true),
+        other => manifest::diagnostic(dir, &other).unwrap_or_else(|| manifest::missing(dir, false)),
+    })
 }
 
 /// Reads the graph at `dir` without looking at the sources: `E2009` when it is missing,
