@@ -121,7 +121,7 @@ test("GNU time versions and distro UNKNOWN banner", () => {
 test("phase reports and non-overlap", () => {
   const report = '{"time_passes":1,"phases":[{"name":"parse","ms":1}],"total_ms":2}';
   assert.equal(parseTimePasses(`${report}\nother\n${report.replace('"ms":1', '"ms":0.5')}\n`).phases[0].ms, 0.5);
-  for (const name of ["split", "units", "kg-capture", "kg-model", "kg-write", "kg-facts", "kg-brief", "kg-publish"]) {
+  for (const name of ["split", "units", "kg-capture", "kg-model", "kg-write", "kg-facts", "kg-brief", "kg-views", "kg-publish"]) {
     assert.equal(parseTimePasses(report.replace("parse", name)).phases[0].name, name);
   }
   assert.throws(() => parseTimePasses(report.replace("parse", "kg-other")));
