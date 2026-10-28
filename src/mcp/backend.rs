@@ -112,6 +112,9 @@ pub struct ProjectBackend {
     pub(crate) knowledge: std::sync::Mutex<Option<super::knowledge::Cached>>,
     /// How many analyses the backend ran (for the tests of the result cache).
     pub(crate) analyses: AtomicUsize,
+    /// The inputs that the running tool read (`cache::inputs` spells them), which the result
+    /// cache files its answer under.
+    pub(crate) analyzed: std::sync::Mutex<Option<String>>,
 }
 
 impl ProjectBackend {
@@ -125,6 +128,7 @@ impl ProjectBackend {
             results: std::sync::Mutex::new(super::cache::ResultCache::default()),
             knowledge: std::sync::Mutex::new(None),
             analyses: AtomicUsize::new(0),
+            analyzed: std::sync::Mutex::new(None),
         }
     }
 
@@ -135,6 +139,21 @@ impl ProjectBackend {
 
     pub(crate) fn count_analysis(&self) {
         self.analyses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records the inputs that the running tool read: the hash of the project it loaded (or the
+    /// guide's edition), spelled as `cache::inputs` spells them.
+    pub(crate) fn note_inputs(&self, inputs: String) {
+        if let Ok(mut analyzed) = self.analyzed.lock() {
+            *analyzed = Some(inputs);
+        }
+    }
+
+    /// Records the hash of the project that the running tool loaded.
+    pub(crate) fn note_project(&self, project: &crate::driver::Project) {
+        self.note_inputs(crate::kg::input::hex(&crate::kg::input::source_hash(
+            project,
+        )));
     }
 }
 

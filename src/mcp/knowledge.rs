@@ -55,6 +55,7 @@ fn opened(backend: &ProjectBackend) -> Result<(Arc<KgView>, crate::driver::Proje
     let project = crate::driver::Project::load_for_tests(root)
         .map_err(|error| ToolError(scrub(&error.diagnostic.message, root)))?;
     let hash = crate::kg::input::hex(&crate::kg::input::source_hash(&project));
+    backend.note_inputs(hash.clone());
     if let Ok(cached) = backend.knowledge.lock()
         && let Some(cached) = cached.as_ref()
         && cached.hash == hash
@@ -147,6 +148,7 @@ pub(crate) fn guide(
 ) -> Result<ToolOutput, ToolError> {
     use crate::guide::{self, Action};
     let edition = guide_edition(&backend.root);
+    backend.note_inputs(edition.to_string());
     let topic = text_argument(request, "topic");
     let (name, text) = match topic {
         None => (

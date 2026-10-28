@@ -51,7 +51,10 @@ pub(crate) fn run(
         .unwrap_or(false);
     let input = resolve_path(root, path, Wanted::Source)?;
     let project = match Project::load(&input) {
-        Ok(project) => project,
+        Ok(project) => {
+            backend.note_project(&project);
+            project
+        }
         Err(error) => {
             let shown = relative_text(root, &error.path);
             let mut diagnostic: Value = serde_json::from_str(&error.diagnostic.json_with(
@@ -187,6 +190,7 @@ pub(crate) fn fix_plan(
     let input = resolve_path(root, path, Wanted::Source)?;
     let mut project =
         Project::load(&input).map_err(|error| ToolError(scrub(&error.diagnostic.message, root)))?;
+    backend.note_project(&project);
     let scope = if input.is_dir() {
         Scope::Project
     } else {

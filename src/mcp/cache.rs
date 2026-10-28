@@ -73,16 +73,15 @@ pub fn cached(
     let Some(inputs) = inputs(backend, request) else {
         return compute(request);
     };
-    let mut hash = Sha256::new();
-    hash.field("tool", request.name.as_bytes());
-    hash.field(
-        "arguments",
-        serde_json::to_string(request.arguments)
-            .unwrap_or_default()
-            .as_bytes(),
-    );
-    hash.field("inputs", inputs.as_bytes());
-    let key = hash.hex();
+    let arguments = serde_json::to_string(request.arguments).unwrap_or_default();
+    let key_of = |inputs: &str| {
+        let mut hash = Sha256::new();
+        hash.field("tool", request.name.as_bytes());
+        hash.field("arguments", arguments.as_bytes());
+        hash.field("inputs", inputs.as_bytes());
+        hash.hex()
+    };
+    let key = key_of(&inputs);
     if let Some(output) = backend
         .results
         .lock()
@@ -91,8 +90,26 @@ pub fn cached(
     {
         return Ok(output);
     }
+    if let Ok(mut analyzed) = backend.analyzed.lock() {
+        *analyzed = None;
+    }
     let output = compute(request)?;
-    if let Ok(mut cache) = backend.results.lock() {
+    // The answer is filed under the inputs that the tool read, which a save between the two loads
+    // makes other than `inputs`; a tool that reads none (`tz_explain`) answers for no inputs, and
+    // one that did not say what it read is not kept.
+    let analyzed = backend
+        .analyzed
+        .lock()
+        .ok()
+        .and_then(|mut analyzed| analyzed.take());
+    let key = match analyzed {
+        Some(read) => Some(key_of(&read)),
+        None if inputs.is_empty() => Some(key),
+        None => None,
+    };
+    if let Some(key) = key
+        && let Ok(mut cache) = backend.results.lock()
+    {
         cache.put(key, output.clone());
     }
     Ok(output)
@@ -102,6 +119,47 @@ pub fn cached(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A save between the hash of the inputs and the tool's own load: the answer is filed under
+    /// what the tool read, so going back to the first version analyzes it again.
+    #[test]
+    fn an_answer_is_filed_under_what_the_tool_read() {
+        let directory = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let root = crate::mcp::project_root(&directory.path).unwrap();
+        let main = root.join("Main.tz");
+        let first = "def scale :: i64 -> i64 = \\n -> n * 2\n\nscale 21\n";
+        let second = "def scale :: i64 -> i64 = \\n ->\n    let spare = 1\n    n * 2\n\nscale 21\n";
+        std::fs::write(&main, first).unwrap();
+        let backend = ProjectBackend::new(&crate::mcp::Options {
+            root: root.clone(),
+            kg_dir: None,
+        });
+        let arguments = json!({});
+        let cancel = super::super::backend::Cancel::new();
+        let request = ToolRequest {
+            name: "tz_check",
+            arguments: &arguments,
+            cancel: &cancel,
+        };
+        let saved = cached(&backend, &request, |request| {
+            std::fs::write(&main, second).unwrap();
+            super::super::check::run(&backend, request)
+        })
+        .unwrap();
+        assert_eq!(saved.structured["warnings"], 1);
+        std::fs::write(&main, first).unwrap();
+        let own = cached(&backend, &request, |request| {
+            super::super::check::run(&backend, request)
+        })
+        .unwrap();
+        assert_eq!(own.structured["warnings"], 0);
+        std::fs::write(&main, second).unwrap();
+        let again = cached(&backend, &request, |_| {
+            panic!("the second version's answer is kept")
+        })
+        .unwrap();
+        assert_eq!(again, saved);
+    }
 
     #[test]
     fn keeps_the_last_eight() {

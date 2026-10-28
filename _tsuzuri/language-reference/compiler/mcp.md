@@ -107,7 +107,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `structuredContent` | 400,000 bytes | `isError` の結果（`result too large`） |
 | `tools/list` の応答 | 16,384 bytes 以下（テストで保つ） | |
 
-ツールの呼び出しは、来た順に 1 つずつ実行します。`ping`・`initialize`・`tools/list` は実行中でもすぐに答えます。実行中か待っている呼び出しの ID は、どのメソッドの要求にも使えません（`-32600`、`request id is already in use`）。`notifications/cancelled` で取り消した呼び出しには答えません（解析そのものは途中で止まりません）。同じプロジェクトと同じ引数への答えは、byte 単位で同じです。直近 8 件の答えはソースが変わらない間は再利用します（`tz_check`・`tz_fix_plan` は `path` のプロジェクトのソースとマニフェストで見ます）。
+ツールの呼び出しは、来た順に 1 つずつ実行します。`ping`・`initialize`・`tools/list` は実行中でもすぐに答えます。実行中か待っている呼び出しの ID は、どのメソッドの要求にも使えません（`-32600`、`request id is already in use`）。`notifications/cancelled` で取り消した呼び出しには答えません（解析そのものは途中で止まりません）。同じプロジェクトと同じ引数への答えは、byte 単位で同じです。直近 8 件の答えはソースが変わらない間は再利用します（`tz_check`・`tz_fix_plan` は `path` のプロジェクトのソースとマニフェストで見ます）。答えは、ツールが実際に読んだソース（と `tz_guide` は版）で覚えるので、途中で保存されたファイルの答えが前の版のものとして返ることはありません。
 
 ## 安全
 
