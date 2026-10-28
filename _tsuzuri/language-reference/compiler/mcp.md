@@ -67,7 +67,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `tz_symbol` | `id` | 宣言 1 つ: 署名・引数の渡し方・効果・箇所・呼び先・テスト | `tsuzuri kg show` |
 | `tz_brief` | なし（`id`・`budget`） | 要約カード（プロジェクト・モジュール・宣言） | `tsuzuri kg brief` |
 | `tz_search` | `query`（`kind`・`limit`） | 名前・署名・説明に文字列を含む宣言 | `tsuzuri kg search` |
-| `tz_callers` | `id`（`relation`・`depth`・`limit`） | 呼び出し元（`calls`）か型を使う宣言（`uses_type`） | `tsuzuri kg callers`・`uses` |
+| `tz_callers` | `id`（`relation`・`depth`・`limit`） | 呼び出し元（`calls`）か型を使う宣言（`uses_type`。class には実装と instance も、`kg uses` と同じ） | `tsuzuri kg callers`・`uses` |
 | `tz_path` | `from`・`to`（`relations`・`depth`） | 2 つの宣言の間の最短の辺の鎖 | `tsuzuri kg path` |
 | `tz_find` | `query`（`limit`） | 型で探した関数（`how` は `call` か `value`） | `tsuzuri kg find` |
 | `tz_impact` | `old`（`new`） | 2 つの版の差と、差に届くテスト | `tsuzuri kg impact` |
@@ -76,7 +76,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 
 `tz_impact` の `old`・`new` は根の下のディレクトリで、知識グラフ（`.tsuzuri-kg` のあるもの）かプロジェクトです。`new` を省くと根のプロジェクトです。知識グラフは同じように全部を確かめてから読み、確かめられなければ誤り（`is broken (…)`）です。
 
-`tz_callers` の `limit` は、`structuredContent` と本文の両方の件数です（本文は残りを `…N more; raise limit` と書きます）。`tz_fix_plan` の `path` に根の下のプロジェクトを渡しても、`edits` と差分のパスは `tz_check` と同じに根からの相対パスです。
+`tz_callers` の `limit` は、`structuredContent` と本文の両方の件数です（本文は残りを `…N more; raise limit` と書きます）。`tz_fix_plan` の `path` に根の下のプロジェクトを渡しても、`edits` と差分のパスは `tz_check` と同じに根からの相対パスです。差分の行と `edits` の置き換えの文字列はソースのままで、根のパスを含む行も書き換えません（そのまま当てられます）。`tz_diagram` の `transitions` が読むのは、プロジェクトが読み込んだソースだけです。
 
 引数がスキーマに合わない、ID が見つからない、プロジェクトが型検査に通らない、といった誤りは、JSON-RPC のエラーではなく、本文に理由を書いた `isError: true` の結果です（モデルが読んで直せます）。未知のツールと、`params` の形の誤りだけが JSON-RPC のエラー（`-32602`）です。
 
@@ -103,11 +103,11 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | 入力 1 行 | 4,194,304 bytes（行末の `\n` か `\r\n` を除く） | `-32600`。次の行から続けます |
 | JSON の入れ子 | 128 | `-32700` |
 | 待っている呼び出し | 64 件 | `-32000`（`too many pending requests`） |
-| 本文（`content[0].text`） | 200,000 文字 | 切って `… truncated: N more characters` を付け、`truncated: true` |
+| 本文（`content[0].text`） | 200,000 文字 | 切って `… truncated: N more characters` を付け、`truncated: true`（`isError` の結果の本文も同じに切ります） |
 | `structuredContent` | 400,000 bytes | `isError` の結果（`result too large`） |
 | `tools/list` の応答 | 16,384 bytes 以下（テストで保つ） | |
 
-ツールの呼び出しは、来た順に 1 つずつ実行します。`ping`・`initialize`・`tools/list` は実行中でもすぐに答えます。`notifications/cancelled` で取り消した呼び出しには答えません（解析そのものは途中で止まりません）。同じプロジェクトと同じ引数への答えは、byte 単位で同じです。直近 8 件の答えはソースが変わらない間は再利用します（`tz_check`・`tz_fix_plan` は `path` のプロジェクトのソースとマニフェストで見ます）。
+ツールの呼び出しは、来た順に 1 つずつ実行します。`ping`・`initialize`・`tools/list` は実行中でもすぐに答えます。実行中か待っている呼び出しの ID は、どのメソッドの要求にも使えません（`-32600`、`request id is already in use`）。`notifications/cancelled` で取り消した呼び出しには答えません（解析そのものは途中で止まりません）。同じプロジェクトと同じ引数への答えは、byte 単位で同じです。直近 8 件の答えはソースが変わらない間は再利用します（`tz_check`・`tz_fix_plan` は `path` のプロジェクトのソースとマニフェストで見ます）。
 
 ## 安全
 

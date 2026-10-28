@@ -216,10 +216,9 @@ pub(crate) fn fix_plan(
             rebased.insert(own, shown);
         }
     }
-    let text = scrub(
-        &crate::fix::render_text(&report, &project, true, threshold),
-        root,
-    );
+    // The text is the diffs, whose paths are now relative, and the summary: nothing to scrub, and
+    // a source line that holds the root's path must stay as it is for the patch to apply.
+    let text = crate::fix::render_text(&report, &project, true, threshold);
     let mut fixes = Vec::new();
     let mut dropped = Vec::new();
     let mut diff = String::new();
@@ -228,13 +227,22 @@ pub(crate) fn fix_plan(
         let Ok(mut row) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        scrub_value(&mut row, root);
+        // The paths and messages are scrubbed; a file's diff and an edit's text are source bytes.
+        if let Some(object) = row.as_object_mut() {
+            for (key, value) in object.iter_mut() {
+                if key != "diff" && key != "edits" {
+                    scrub_value(value, root);
+                }
+            }
+        }
         if let Some(edits) = row.get_mut("edits").and_then(Value::as_array_mut) {
             for edit in edits {
-                if let Some(path) = edit["path"].as_str()
-                    && let Some(shown) = rebased.get(path)
-                {
-                    edit["path"] = Value::String(shown.clone());
+                if let Some(path) = edit["path"].as_str() {
+                    let path = rebased
+                        .get(path)
+                        .cloned()
+                        .unwrap_or_else(|| scrub(path, root));
+                    edit["path"] = Value::String(path);
                 }
             }
         }

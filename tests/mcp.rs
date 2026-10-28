@@ -860,8 +860,46 @@ fn duplicate_in_flight_ids_are_rejected() {
             "invalid request: request id is already in use".into()
         )
     );
+    // A request answered at once may not take the ID either.
+    for method in ["ping", "tools/list", "resources/list"] {
+        client.send(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}));
+        assert_eq!(
+            error_of(&client.recv()),
+            (
+                -32600,
+                "invalid request: request id is already in use".into()
+            ),
+            "{method}"
+        );
+    }
     open(&gate);
     assert_eq!(client.recv()["id"], 1);
+    client.assert_quiet(9);
+    // Once answered, the ID is free again.
+    client.send(json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}));
+    assert_eq!(
+        client.recv(),
+        json!({"jsonrpc": "2.0", "id": 1, "result": {}})
+    );
+}
+
+/// An error result is cut like any result: an argument's name cannot make it larger.
+#[test]
+fn error_results_keep_the_text_limit() {
+    let root = temporary_root(&[("Main.tz", WARN)]);
+    let client = Client::project(&root);
+    client.initialize("2025-06-18");
+    let key = "k".repeat(300_000);
+    let answer = client.call(1, "tz_check", json!({ key: 1 }));
+    assert_eq!(
+        answer["result"]["isError"],
+        true,
+        "{}",
+        &answer.to_string()[..200]
+    );
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.chars().count() < 200_100, "{}", text.chars().count());
+    assert!(text.contains("truncated: "), "{}", &text[..200]);
 }
 
 #[test]

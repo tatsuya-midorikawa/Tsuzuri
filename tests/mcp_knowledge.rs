@@ -517,6 +517,36 @@ fn unsafe_or_changed_graphs_on_disk_are_not_read() {
     );
 }
 
+/// `tz_diagram transitions` reads only the sources that the project loaded: a graph on disk whose
+/// module names a path through a link out of the root does not make the server read there.
+#[cfg(unix)]
+#[test]
+fn transitions_read_only_the_loaded_sources() {
+    let root = root_with("tests/fixtures/diagram/src/light");
+    build_in_process(&root);
+    let transitions = json!({"kind": "transitions", "id": "Light.Light"});
+    let drawn = call(&backend(&root), "tz_diagram", transitions.clone()).unwrap();
+    assert!(drawn.text.contains("next"), "{}", drawn.text);
+    // The same text outside the root, behind a link, named by the module of the graph.
+    let outside = root.parent().unwrap().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::copy(root.join("Light.tz"), outside.join("Light.tz")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join(".links")).unwrap();
+    let manifest_path = root.join("target/tz/kg/manifest.json");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+    let crafted = manifest.replace("\"path\":\"Light.tz\"", "\"path\":\".links/Light.tz\"");
+    assert_ne!(crafted, manifest);
+    std::fs::write(&manifest_path, &crafted).unwrap();
+    let backend = backend(&root);
+    let error = call(&backend, "tz_diagram", transitions).unwrap_err();
+    assert!(
+        error.contains("cannot read source '.links/Light.tz'"),
+        "{error}"
+    );
+    // The crafted graph was taken as fresh: the refusal is the source's, not the graph's.
+    assert_eq!(backend.analysis_count(), 0);
+}
+
 #[test]
 fn tz_impact_rejects_paths_outside_the_root() {
     let root = root_with("tests/fixtures/kg_shop");
@@ -587,6 +617,72 @@ fn tz_fix_plan_paths_are_relative_to_the_root() {
         "{}",
         output.text
     );
+}
+
+/// The uses of a class are its implementations and instances as well, in the text and in the rows,
+/// and `limit` cuts both.
+#[test]
+fn tz_callers_uses_of_a_class_include_its_instances() {
+    let root = root_with("tests/fixtures/diagram/src/shapes");
+    let backend = backend(&root);
+    let uses = call(
+        &backend,
+        "tz_callers",
+        json!({"id": "Sized", "relation": "uses_type"}),
+    )
+    .unwrap();
+    assert_eq!(uses.text, stdout(&tsuzuri(&root, &["kg", "uses", "Sized"])));
+    let rels: Vec<&str> = uses.structured["callers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["rel"].as_str().unwrap())
+        .collect();
+    assert_eq!(rels, ["implements", "instance_of"], "{}", uses.structured);
+    assert_eq!(uses.structured["truncated"], false);
+    let limited = call(
+        &backend,
+        "tz_callers",
+        json!({"id": "Sized", "relation": "uses_type", "limit": 1}),
+    )
+    .unwrap();
+    assert_eq!(limited.structured["callers"].as_array().unwrap().len(), 1);
+    assert_eq!(limited.structured["truncated"], true);
+    assert!(
+        limited.text.contains("\u{2026}1 more; raise limit"),
+        "{}",
+        limited.text
+    );
+}
+
+/// A source line that holds the root's path stays as it is in the plan's diff and text, so that
+/// the patch applies to the file.
+#[test]
+fn tz_fix_plan_keeps_source_lines_that_name_the_root() {
+    let root = root_with("tests/fixtures/kg_shop");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let literal = root.to_string_lossy().replace('\\', "\\\\");
+    let line = format!("    let unused = \"{literal}/data\"");
+    std::fs::write(
+        root.join("sub/Main.tz"),
+        format!("def main :: unit -> i32 = \\() ->\n{line}\n    0\n"),
+    )
+    .unwrap();
+    let output = call(
+        &backend(&root),
+        "tz_fix_plan",
+        json!({"path": "sub/Main.tz"}),
+    )
+    .unwrap();
+    let fixed = format!("+    let _unused = \"{literal}/data\"\n");
+    let diff = output.structured["diff"].as_str().unwrap();
+    assert!(
+        diff.contains(&format!("-{line}\n")) && diff.contains(&fixed),
+        "{diff}"
+    );
+    assert!(output.text.contains(&fixed), "{}", output.text);
+    let fixes = output.structured["fixes"].as_array().unwrap();
+    assert_eq!(fixes[0]["edits"][0]["path"], "sub/Main.tz");
 }
 
 /// `tz_check` of a project below the root is cached by that project's inputs.

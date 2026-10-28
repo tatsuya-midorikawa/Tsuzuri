@@ -42,9 +42,15 @@ fn view_of(data: KgData) -> Arc<KgView> {
 
 /// The project's graph: the one on disk when it is fresh, else one built in memory. A graph on
 /// disk is read whole and checked against its manifest at once (`KgData::read_all`: plain paths
-/// below the graph's directory, every file with its SHA-256), so that what the server keeps does
-/// not depend on the directory later; one that does not pass is built in memory instead.
+/// below the graph's directory, every file with its SHA-256), and the manifest of what was read
+/// must be fresh (`KgData::open_fresh`), so that what the server keeps does not depend on the
+/// directory later; one that does not pass is built in memory instead.
 pub(crate) fn view(backend: &ProjectBackend) -> Result<Arc<KgView>, ToolError> {
+    opened(backend).map(|(view, _)| view)
+}
+
+/// The project's graph (as `view`) and the project as it was loaded for it.
+fn opened(backend: &ProjectBackend) -> Result<(Arc<KgView>, crate::driver::Project), ToolError> {
     let root = &backend.root;
     let project = crate::driver::Project::load_for_tests(root)
         .map_err(|error| ToolError(scrub(&error.diagnostic.message, root)))?;
@@ -53,13 +59,13 @@ pub(crate) fn view(backend: &ProjectBackend) -> Result<Arc<KgView>, ToolError> {
         && let Some(cached) = cached.as_ref()
         && cached.hash == hash
     {
-        return Ok(Arc::clone(&cached.view));
+        return Ok((Arc::clone(&cached.view), project));
     }
     let stamp =
         crate::kg::build::current_stamp().map_err(|error| ToolError(error.message.clone()))?;
     let data = match crate::kg::manifest::inspect(&backend.kg_dir, &hash, &stamp) {
         Freshness::Incomplete(_) => return Err(ToolError(INCOMPLETE.into())),
-        Freshness::Fresh => match KgData::open(&backend.kg_dir) {
+        Freshness::Fresh => match KgData::open_fresh(&backend.kg_dir, &hash, &stamp) {
             Ok(data) if data.read_all().is_ok() => data,
             _ => built(backend, &project)?,
         },
@@ -72,7 +78,7 @@ pub(crate) fn view(backend: &ProjectBackend) -> Result<Arc<KgView>, ToolError> {
             view: Arc::clone(&view),
         });
     }
-    Ok(view)
+    Ok((view, project))
 }
 
 fn built(backend: &ProjectBackend, project: &crate::driver::Project) -> Result<KgData, ToolError> {
@@ -405,7 +411,8 @@ fn limited_text(text: &str, rows: &[Value], limit: usize) -> String {
     out.join("\n") + "\n"
 }
 
-/// The declarations that use the type `id`, and those that use them, up to `depth` levels.
+/// The declarations that use the type or class `id` (`uses_type`, and for a class `implements`
+/// and `instance_of`, as `kg uses` lists them), and those that use them, up to `depth` levels.
 fn uses(
     view: &KgView,
     text: &str,
@@ -423,11 +430,16 @@ fn uses(
         let mut next = Vec::new();
         frontier.sort();
         for target in &frontier {
-            let mut edges = data.edges_to("uses_type", target);
-            edges.sort_by(|a, b| (&a.from, a.span.start).cmp(&(&b.from, b.span.start)));
+            let mut edges: Vec<_> = query::USE_RELATIONS
+                .iter()
+                .flat_map(|rel| data.edges_to(rel, target))
+                .collect();
+            edges.sort_by(|a, b| {
+                (&a.rel, &a.from, a.span.start).cmp(&(&b.rel, &b.from, b.span.start))
+            });
             for edge in edges {
                 rows.push(json!({
-                    "rel": "uses_type",
+                    "rel": edge.rel,
                     "from": edge.from,
                     "to": edge.to,
                     "span": edge.raw["span"],
@@ -610,12 +622,12 @@ pub(crate) fn diagram(
     let kind_text = text_argument(request, "kind").unwrap_or_default();
     let kind = Kind::parse(kind_text)
         .ok_or_else(|| ToolError(format!("unknown diagram kind '{kind_text}'")))?;
-    let view = view(backend)?;
+    let (view, project) = opened(backend)?;
     let data = view.project().ok_or_else(|| ToolError(INCOMPLETE.into()))?;
     let input = diagram::Input::from_kg(data).map_err(|error| ToolError(error.message))?;
-    let sources = diagram::DiskSources {
-        root: backend.root.clone(),
-    };
+    // Only the sources that the project loaded, by the paths that the graph's modules name: a
+    // path that a graph on disk names otherwise (a link out of the root) is not read.
+    let sources = diagram::ProjectSources::of(&project);
     let request = DiagramRequest {
         kind,
         id: text_argument(request, "id").map(str::to_owned),

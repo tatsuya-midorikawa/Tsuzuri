@@ -230,6 +230,15 @@ impl<W: Write> Session<W> {
     }
 
     fn request(&mut self, id: Value, method: &str, params: Value) -> Result<(), Fatal> {
+        // The ID of a request that runs or waits belongs to it, whatever the method of another
+        // request (a `ping` answered at once would give the ID two responses).
+        if self.in_use(&id) {
+            return self.fail(
+                &id,
+                rpc::INVALID_REQUEST,
+                "invalid request: request id is already in use",
+            );
+        }
         let known = matches!(
             method,
             "ping"
@@ -309,19 +318,14 @@ impl<W: Write> Session<W> {
         self.reply(id, result)
     }
 
-    fn enqueue(&mut self, id: Value, work: Work) -> Result<(), Fatal> {
-        let in_use = self
-            .running
+    fn in_use(&self, id: &Value) -> bool {
+        self.running
             .as_ref()
-            .is_some_and(|(running, _)| *running == id)
-            || self.queue.iter().any(|job| job.id == id);
-        if in_use {
-            return self.fail(
-                &id,
-                rpc::INVALID_REQUEST,
-                "invalid request: request id is already in use",
-            );
-        }
+            .is_some_and(|(running, _)| running == id)
+            || self.queue.iter().any(|job| job.id == *id)
+    }
+
+    fn enqueue(&mut self, id: Value, work: Work) -> Result<(), Fatal> {
         if self.queue.len() + usize::from(self.running.is_some()) >= MAX_PENDING {
             return self.fail(
                 &id,

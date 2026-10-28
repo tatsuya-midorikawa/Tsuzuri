@@ -108,9 +108,11 @@ pub fn cap_text(text: String) -> (String, bool) {
     (out, true)
 }
 
-/// A result with `isError: true` and `message` as its text.
+/// A result with `isError: true` and `message` as its text, cut as any result's text is (an
+/// argument's name or value can be most of a message).
 pub fn error_result(message: &str) -> Value {
-    json!({"content": [{"type": "text", "text": message}], "isError": true})
+    let (text, _) = cap_text(message.to_owned());
+    json!({"content": [{"type": "text", "text": text}], "isError": true})
 }
 
 /// The `tools/call` result of a tool's output (G29 "結果の組み立て").
@@ -212,6 +214,15 @@ mod tests {
         );
         assert_eq!(only_check.len(), 1);
         assert_eq!(only_check[0]["name"], "tz_check");
+    }
+
+    #[test]
+    fn error_results_are_capped() {
+        let result = error_result(&"x".repeat(MAX_TEXT_CHARS + 10));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.ends_with("\n\u{2026} truncated: 10 more characters"));
+        assert_eq!(result["isError"], true);
+        assert_eq!(error_result("short")["content"][0]["text"], "short");
     }
 
     #[test]
