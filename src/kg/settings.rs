@@ -74,7 +74,7 @@ pub fn resolve(
 /// Whether the root of `project` is a project: it has a manifest, or a regular `Main.tz`.
 pub fn is_project(project: &Project) -> bool {
     project.root_package.is_some()
-        || project.root_directory().is_some_and(|root| {
+        || project.project_directory().is_some_and(|root| {
             std::fs::symlink_metadata(root.join("Main.tz")).is_ok_and(|metadata| metadata.is_file())
         })
 }
@@ -104,7 +104,7 @@ impl KgSettings {
             None => {
                 // The root as the user wrote it: relative to the current directory when it is in it.
                 let root = project
-                    .root_directory()
+                    .project_directory()
                     .unwrap_or_else(|| PathBuf::from("."));
                 let shown = std::env::current_dir()
                     .ok()

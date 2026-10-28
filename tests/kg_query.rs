@@ -40,6 +40,26 @@ fn tsuzuri(cwd: &Path, arguments: &[&str]) -> Output {
         .unwrap()
 }
 
+/// Removes the files of the graph at `dir` whose paths start with `prefix`, with their entries in
+/// `manifest.json`: a graph without that table, not a broken one.
+fn without(dir: &Path, prefix: &str) {
+    let path = dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let files = manifest["files"].as_object_mut().unwrap();
+    let removed: Vec<String> = files
+        .keys()
+        .filter(|file| file.starts_with(prefix))
+        .cloned()
+        .collect();
+    assert!(!removed.is_empty(), "{prefix}");
+    for file in &removed {
+        files.remove(file);
+        std::fs::remove_file(dir.join(file)).unwrap();
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -395,7 +415,7 @@ fn argument_errors_are_e2000() {
 #[test]
 fn a_kg_without_edges_notes_it() {
     let root = project("kg_shop", "no-edges");
-    std::fs::remove_file(root.join("target/tz/kg/edges.jsonl")).unwrap();
+    without(&root.join("target/tz/kg"), "edges.jsonl");
     let output = query(&root, &["callers", "Acme::Shop::Cart.total"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
@@ -611,6 +631,135 @@ fn output_is_deterministic() {
     }
 }
 
+/// A generic record's accessor and a generic union's constructors keep the owner's type arguments,
+/// a view's `..` ends a name, and an unterminated region is a parse error, not a panic.
+#[test]
+fn find_keeps_type_arguments_and_rejects_bad_queries() {
+    let outer =
+        std::env::temp_dir().join(format!("tsuzuri-kg-query-generic-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outer);
+    // Without a manifest the folder's name is the namespace.
+    let root = outer.join("generic");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("Main.tz"),
+        concat!(
+            "record Box<'a> { value: 'a }\n",
+            "union Slot<'a> = Empty | Full of 'a\n",
+            "def head :: ref mut [i64..] -> i64 = \\values -> values[0]\n",
+            "def first :: Copy<'a> => ref mut ['a..] -> 'a = \\values -> values[0]\n",
+        ),
+    )
+    .unwrap();
+    let cache = outer.join("cache");
+    let find = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&root)
+            .args(["kg", "find"])
+            .args(arguments)
+            .env("TSUZURI_CACHE_DIR", &cache)
+            .env_remove("TSUZURI_KG")
+            .env_remove("TSUZURI_KG_DIR")
+            .output()
+            .unwrap()
+    };
+    let main = |query: &str| stdout(&find(&[query, "--module", "Main"]));
+    assert_eq!(
+        main("ref Box<i64> -> i64"),
+        "exact   Generic::Main.Box.value :: ref Box<'a> -> 'a\n"
+    );
+    assert_eq!(main("ref Box<i64> -> string"), "no matches\n");
+    assert_eq!(
+        main("i64 -> Slot<i64>"),
+        "exact   Generic::Main.Slot.Full :: 'a -> Slot<'a>\n"
+    );
+    assert_eq!(main("string -> Slot<i64>"), "no matches\n");
+    assert!(main("Slot<i64>").starts_with("exact   Generic::Main.Slot.Empty :: Slot<'a>\n"));
+    // The standard constructors too.
+    let some = stdout(&find(&["i64 -> Maybe<i64>", "--limit", "100"]));
+    assert!(
+        some.contains("exact   Maybe.Maybe.Some :: 'a -> Maybe<'a>\n"),
+        "{some}"
+    );
+    let none = stdout(&find(&["Maybe<i64>", "--limit", "100"]));
+    assert!(
+        none.contains("exact   Maybe.Maybe.None :: Maybe<'a>\n"),
+        "{none}"
+    );
+    // `[i64..]` is a view, and `'a..` is the variable `'a` before `..`.
+    assert_eq!(
+        main("ref mut [string..] -> string"),
+        "exact   Generic::Main.first :: Copy<'a> => ref mut ['a..] -> 'a\n"
+    );
+    assert_eq!(main("ref mut [string..] -> i64"), "no matches\n");
+    assert_eq!(main("ref [i64] -> i64"), "no matches\n");
+    assert!(
+        main("ref mut [i64..] -> i64")
+            .contains("exact   Generic::Main.head :: ref mut [i64..] -> i64\n")
+    );
+    for broken in ["ref {r", "ref {r [i64]", "{"] {
+        let output = find(&[broken]);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{broken}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains("cannot parse the type query"),
+            "{broken}: {}",
+            stderr(&output)
+        );
+    }
+    // `--budget` bounds the text and not the JSON.
+    let wide = find(&["--takes", "_", "--limit", "100", "--budget", "100"]);
+    let shown = stdout(&wide);
+    assert!(shown.chars().count() <= 100, "{shown}");
+    assert!(shown.contains(" more\n"), "{shown}");
+    let json = find(&[
+        "--takes", "_", "--limit", "100", "--budget", "100", "--json",
+    ]);
+    let results = rows(&json)
+        .iter()
+        .filter(|row| row["event"] == "result")
+        .count();
+    assert_eq!(results, 100);
+    let _ = std::fs::remove_dir_all(&outer);
+}
+
+/// `--no-refresh` builds no std graph, and reads the one that the cache has.
+#[test]
+fn no_refresh_reads_an_existing_std_kg() {
+    let root = project("kg_shop", "std-cached");
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .current_dir(&root)
+            .args(arguments)
+            .env("TSUZURI_CACHE_DIR", root.join("cache"))
+            .env_remove("TSUZURI_KG")
+            .env_remove("TSUZURI_KG_DIR")
+            .output()
+            .unwrap()
+    };
+    let output = run(&["kg", "show", "Array.length", "--no-refresh"]);
+    assert!(
+        stderr(&output).contains("unknown id 'Array.length'"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!root.join("cache/kg-std").exists());
+    assert!(run(&["kg", "build", "--std"]).status.success());
+    let output = run(&["kg", "show", "Array.length", "--no-refresh"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).starts_with("Array.length\n"));
+    let output = run(&["kg", "find", "ref ['a] -> i64", "--no-refresh"]);
+    assert!(
+        stdout(&output).contains("exact   Array.length :: ref ['a] -> i64\n"),
+        "{}",
+        stdout(&output)
+    );
+}
+
 #[test]
 fn std_ids_resolve_when_the_std_kg_exists() {
     let root = project("kg_shop", "std-ids");
@@ -641,7 +790,7 @@ fn std_ids_resolve_when_the_std_kg_exists() {
 #[test]
 fn queries_read_a_kg_without_facts() {
     let root = project("kg_shop", "no-facts");
-    std::fs::remove_dir_all(root.join("target/tz/kg/facts")).unwrap();
+    without(&root.join("target/tz/kg"), "facts/");
     let output = query(&root, &["show", "total"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let text = stdout(&output);

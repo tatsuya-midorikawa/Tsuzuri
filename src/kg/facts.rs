@@ -134,8 +134,9 @@ pub(crate) fn build(
     let roots = roots(module, capture);
     let names = chain_names(module, capture);
     let mut budget = VIEW_NODES;
+    let mut drops = BTreeMap::new();
     let scans: Vec<_> = (0..module.functions.len())
-        .map(|function| effects::scan(module, function, FUNCTION_NODES, &mut budget))
+        .map(|function| effects::scan(module, function, FUNCTION_NODES, &mut budget, &mut drops))
         .collect();
     let truncated_scans: Vec<bool> = scans.iter().map(|scan| scan.truncated).collect();
     let summary = effects::summarize(&scans, &names);
@@ -149,13 +150,13 @@ pub(crate) fn build(
         for (effect, evidence) in &summary[function] {
             let better = match entry.effects.get(effect) {
                 Some(best) => {
-                    (effects::order(evidence.span), evidence.via.len())
-                        < (effects::order(best.span), best.via.len())
+                    (effects::order(evidence.span), evidence.length)
+                        < (effects::order(best.span), best.length)
                 }
                 None => true,
             };
             if better {
-                entry.effects.insert(effect, evidence.clone());
+                entry.effects.insert(effect, *evidence);
             }
         }
         let (traps, allocations, stopped) =
@@ -206,10 +207,15 @@ pub(crate) fn build(
             .effects
             .iter()
             .filter_map(|(effect, evidence)| {
+                let span = table.locate(evidence.span)?;
+                let (via, left_out) = effects::via(&summary, &names, effect, evidence, ARRAY_LIMIT);
+                if left_out > 0 {
+                    *truncated.entry("via".to_owned()).or_default() += left_out;
+                }
                 Some(EffectSite {
                     effect: (*effect).to_owned(),
-                    span: table.locate(evidence.span)?,
-                    via: evidence.via.clone(),
+                    span,
+                    via,
                 })
             })
             .collect();

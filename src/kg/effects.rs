@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::check::{Builtin, CheckedModule, FunctionRef, TypedExprKind};
+use crate::check::{Builtin, CheckedModule, FunctionRef, Type, TypedExprKind};
 use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
@@ -216,14 +216,17 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
     }
 }
 
-/// Where a final function shows an effect: the expression that has it directly (`via` empty), or
-/// the reference to the next function on a shortest chain to one that has it directly, with the
-/// named functions of that chain (lifted lambdas and generated helpers have no name and are left
-/// out).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where a final function shows an effect: the expression that has it directly (`next` is
+/// `None`), or the reference to `next`, the next function on a shortest chain to one that has it
+/// directly. The chain is a list of links, so that a long call graph does not copy it into every
+/// caller; [`via`] spells it out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Evidence {
     pub(crate) span: Span,
-    pub(crate) via: Vec<String>,
+    pub(crate) next: Option<usize>,
+    /// The number of named functions on the whole chain (lifted lambdas and generated helpers have
+    /// no name and are left out).
+    pub(crate) length: usize,
 }
 
 /// What one body shows by itself.
@@ -246,6 +249,7 @@ pub(crate) fn scan(
     function: usize,
     limit: usize,
     budget: &mut usize,
+    drops: &mut BTreeMap<Type, bool>,
 ) -> Scan {
     let types = module.types();
     let mut found = Scan::default();
@@ -281,7 +285,10 @@ pub(crate) fn scan(
             | TypedExprKind::Parallel(..) => note("task", expression.span, &mut found),
             _ => {}
         }
-        if expression.ty.has_user_drop(&types) {
+        let holds_drop = *drops
+            .entry(expression.ty.clone())
+            .or_insert_with(|| expression.ty.holds_user_drop(&types));
+        if holds_drop {
             note("user_drop", expression.span, &mut found);
         }
         stack.extend(expression.children().into_iter().rev());
@@ -340,7 +347,8 @@ pub(crate) fn summarize(
             let evidence = if distance[function] == 0 {
                 Evidence {
                     span: scans[function].direct[effect],
-                    via: Vec::new(),
+                    next: None,
+                    length: 0,
                 }
             } else {
                 let &(next, span) = scans[function]
@@ -352,14 +360,37 @@ pub(crate) fn summarize(
                     })
                     .min_by_key(|(callee, span)| (order(*span), *callee))
                     .expect("a function at a distance names one nearer");
-                let mut via: Vec<String> = names[next].iter().cloned().collect();
-                via.extend(result[next][effect].via.iter().cloned());
-                Evidence { span, via }
+                Evidence {
+                    span,
+                    next: Some(next),
+                    length: result[next][effect].length + usize::from(names[next].is_some()),
+                }
             };
             result[function].insert(effect, evidence);
         }
     }
     result
+}
+
+/// The named functions on the chain of `evidence` for `effect`, nearest first: at most `limit` of
+/// them, with how many more the chain has.
+pub(crate) fn via(
+    summary: &[BTreeMap<&'static str, Evidence>],
+    names: &[Option<String>],
+    effect: &str,
+    evidence: &Evidence,
+    limit: usize,
+) -> (Vec<String>, usize) {
+    let mut chain = Vec::new();
+    let mut next = evidence.next;
+    while let Some(function) = next
+        && chain.len() < limit
+    {
+        chain.extend(names[function].iter().cloned());
+        next = summary[function][effect].next;
+    }
+    let left_out = evidence.length - chain.len();
+    (chain, left_out)
 }
 
 #[cfg(test)]
@@ -395,10 +426,11 @@ mod tests {
             stack.extend(expression.children());
         }
         let mut budget = usize::MAX;
-        assert!(!scan(&module, function, nodes, &mut budget).truncated);
-        assert!(scan(&module, function, nodes - 1, &mut budget).truncated);
+        let mut drops = BTreeMap::new();
+        assert!(!scan(&module, function, nodes, &mut budget, &mut drops).truncated);
+        assert!(scan(&module, function, nodes - 1, &mut budget, &mut drops).truncated);
         let mut budget = nodes - 1;
-        assert!(scan(&module, function, nodes, &mut budget).truncated);
+        assert!(scan(&module, function, nodes, &mut budget, &mut drops).truncated);
         assert_eq!(budget, 0);
     }
 
@@ -430,9 +462,48 @@ mod tests {
             Some("C".to_owned()),
         ];
         let effects = summarize(&scans, &names);
+        let via = |function: usize| via(&effects, &names, "io", &effects[function]["io"], 10);
         assert_eq!(effects[0]["io"].span, span(20));
-        assert_eq!(effects[0]["io"].via, ["C"]);
-        assert_eq!(effects[1]["io"].via, ["A", "C"]);
-        assert_eq!(effects[2]["io"].via, Vec::<String>::new());
+        assert_eq!(via(0), (vec!["C".to_owned()], 0));
+        assert_eq!(via(1), (vec!["A".to_owned(), "C".to_owned()], 0));
+        assert_eq!(via(2), (Vec::new(), 0));
+    }
+
+    /// A chain of 10,000 functions keeps one link per function, and a chain names at most
+    /// `limit` functions with the count of the rest; unnamed functions are not counted.
+    #[test]
+    fn long_chains_are_links_and_bounded() {
+        let count = 10_000;
+        let span = |start| Span {
+            start,
+            end: start + 1,
+            source: Some(0),
+        };
+        // Function `i` names `i + 1`; the last one has `io` directly; every tenth has no name.
+        let mut scans: Vec<Scan> = (0..count - 1)
+            .map(|function| Scan {
+                references: vec![(function + 1, span(function))],
+                ..Scan::default()
+            })
+            .collect();
+        scans.push(Scan {
+            direct: BTreeMap::from([("io", span(count))]),
+            ..Scan::default()
+        });
+        let names: Vec<Option<String>> = (0..count)
+            .map(|function| (function % 10 != 0).then(|| format!("F{function}")))
+            .collect();
+        let effects = summarize(&scans, &names);
+        // Functions 1..count, without the 999 multiples of ten among them.
+        assert_eq!(effects[0]["io"].length, count - 1 - 999);
+        let (chain, left_out) = via(&effects, &names, "io", &effects[0]["io"], 5);
+        assert_eq!(chain, ["F1", "F2", "F3", "F4", "F5"]);
+        assert_eq!(left_out, count - 1 - 999 - 5);
+        let (chain, left_out) = via(&effects, &names, "io", &effects[count - 3]["io"], 5);
+        assert_eq!(
+            chain,
+            [format!("F{}", count - 2), format!("F{}", count - 1)]
+        );
+        assert_eq!(left_out, 0);
     }
 }

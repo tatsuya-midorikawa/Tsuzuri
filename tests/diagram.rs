@@ -1027,3 +1027,270 @@ fn input_from_kg_matches_input_from_texts() {
     let data = KgData::from_parts(&manifest, &files).unwrap();
     assert_eq!(Input::from_kg(&data).unwrap(), fixture("point"));
 }
+
+/// A def node `id` of module `module` with the given parameter and result types.
+fn def(id: &str, module: &str, param: &str, result: &str) -> String {
+    let name = id.rsplit('.').next().unwrap();
+    format!(
+        "{{\"id\":\"{id}\",\"kind\":\"def\",\"module\":\"{module}\",\"name\":\"{name}\",\"params\":[{{\"name\":\"x\",\"type\":\"{param}\",\"conv\":\"own\"}}],\"result\":\"{result}\",\"origin\":\"project\",\"span\":{{\"path\":\"{module}.tz\",\"line\":1,\"column\":1}}}}\n"
+    )
+}
+
+/// A node of another kind (`module`, `record`, `union`, `case`).
+fn node(id: &str, kind: &str, module: &str) -> String {
+    let name = id.rsplit('.').next().unwrap();
+    format!(
+        "{{\"id\":\"{id}\",\"kind\":\"{kind}\",\"module\":\"{module}\",\"name\":\"{name}\",\"params\":[],\"result\":null,\"origin\":\"project\",\"span\":{{\"path\":\"{module}.tz\",\"line\":1,\"column\":1}}}}\n"
+    )
+}
+
+/// The diagram of a module that the regions call into leaves out the callers outside it.
+#[test]
+fn concurrency_of_a_module_leaves_out_callers_outside_it() {
+    let flow = fixture("flow");
+    for format in [Format::Mermaid, Format::Dot] {
+        let mut request = request(Kind::Concurrency, Some("Worker"));
+        request.format = format;
+        let output = render(&flow, &no_sources(), &request).unwrap();
+        assert!(!output.text.contains("Main.$entry"), "{}", output.text);
+        if format == Format::Mermaid {
+            assert_eq!(validate_mermaid(&output.text), Ok(()), "{}", output.text);
+        }
+    }
+}
+
+/// Regions and cells are kept whole: when they do not fit in `--max-nodes` with the note, the
+/// diagram is too large; when they do, the other functions fold into the room left.
+#[test]
+fn concurrency_keeps_regions_within_max_nodes() {
+    let mut nodes = String::new();
+    let mut edges = String::new();
+    for index in 0..6 {
+        let id = format!("M{index}.run");
+        nodes.push_str(&node(&format!("M{index}"), "module", &format!("M{index}")));
+        nodes.push_str(&def(&id, &format!("M{index}"), "i64", "i64"));
+        edges.push_str(&format!(
+            "{{\"rel\":\"calls\",\"from\":\"{id}\",\"to\":\"Task.scope\",\"args\":[],\"span\":{{\"line\":2,\"column\":1}}}}\n"
+        ));
+    }
+    let input = Input::from_texts(&nodes, &edges, &[], &[], "").unwrap();
+    let error = render(
+        &input,
+        &no_sources(),
+        &folded(request(Kind::Concurrency, None), 5),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, "diagram_too_large");
+    let output = render(
+        &input,
+        &no_sources(),
+        &folded(request(Kind::Concurrency, None), 7),
+    )
+    .unwrap();
+    assert!(output.nodes < 7, "{}", output.text);
+    assert_eq!(validate_mermaid(&output.text), Ok(()));
+    // Three regions and three other functions in five nodes: the regions, one group, the note.
+    let mut nodes = String::new();
+    let mut edges = String::new();
+    for index in 0..6 {
+        let id = format!("M{index}.run");
+        nodes.push_str(&node(&format!("M{index}"), "module", &format!("M{index}")));
+        nodes.push_str(&def(&id, &format!("M{index}"), "Mutex<i64>", "i64"));
+        if index < 3 {
+            edges.push_str(&format!(
+                "{{\"rel\":\"calls\",\"from\":\"{id}\",\"to\":\"Task.scope\",\"args\":[],\"span\":{{\"line\":2,\"column\":1}}}}\n"
+            ));
+        }
+    }
+    let input = Input::from_texts(&nodes, &edges, &[], &[], "").unwrap();
+    let output = render(
+        &input,
+        &no_sources(),
+        &folded(request(Kind::Concurrency, None), 6),
+    )
+    .unwrap();
+    assert!(output.folded);
+    let declared = output
+        .text
+        .lines()
+        .filter(|line| line.starts_with("    n") && !line.contains("-->") && !line.contains("-.->"))
+        .count();
+    assert!(declared <= 6, "{}", output.text);
+    assert_eq!(validate_mermaid(&output.text), Ok(()), "{}", output.text);
+}
+
+/// A state diagram has at most 400 transitions; the events beyond are counted after it.
+#[test]
+fn ownership_diagrams_stay_within_max_edges() {
+    let events: Vec<(&str, &str, usize)> = (0..201).map(|line| ("p", "borrow", line + 2)).collect();
+    let output = render(
+        &owning(&events),
+        &no_sources(),
+        &request(Kind::Ownership, Some("M.f")),
+    )
+    .unwrap();
+    assert!(output.folded);
+    for block in mermaid_blocks(&output.text) {
+        let transitions = block.lines().filter(|line| line.contains(" --> ")).count();
+        assert!(transitions <= 400, "{transitions}");
+        assert_eq!(validate_mermaid(&block), Ok(()));
+    }
+    assert!(
+        output.text.contains(" later events of p are not drawn.\n"),
+        "{}",
+        output.text
+    );
+    assert!(output.text.contains("| 200 | 201 | p | borrow |"));
+    assert!(output.text.contains("1 more events are not listed.\n"));
+}
+
+/// The sources and input of two unions named `Shape` (in `Shapes` and `Other`) and of functions
+/// over them, written with bare and qualified names.
+fn shapes_twice() -> (Input, BTreeMap<String, String>) {
+    let sources = BTreeMap::from([
+        (
+            "Shapes.tz".to_owned(),
+            "def flip :: Shape -> Shape\nfn flip shape =\n    match shape with\n    | Circle -> Square\n    | Square -> Circle\n".to_owned(),
+        ),
+        (
+            "Other.tz".to_owned(),
+            "def grow :: Shape -> Shape\nfn grow shape =\n    match shape with\n    | Dot -> Line\n    | Line -> Line\n".to_owned(),
+        ),
+        (
+            "Main.tz".to_owned(),
+            "using Shapes\n\ndef keep :: Shapes.Shape -> Shapes.Shape\nfn keep shape =\n    match shape with\n    | Circle -> Circle\n    | _ -> Square\n".to_owned(),
+        ),
+    ]);
+    let modules: Vec<String> = ["Main", "Other", "Shapes"]
+        .iter()
+        .map(|name| {
+            format!(
+                "{{\"name\":\"{name}\",\"key\":\"{name}\",\"origin\":\"project\",\"path\":\"{name}.tz\",\"source\":\"{}\"}}",
+                tsuzuri::kg::input::digest(sources[&format!("{name}.tz")].as_bytes())
+            )
+        })
+        .collect();
+    let manifest = format!(
+        "{{\"edition\":\"2026\",\"modules\":[{}]}}",
+        modules.join(",")
+    );
+    let mut nodes = String::new();
+    for (union, cases) in [
+        ("Shapes.Shape", ["Circle", "Square"]),
+        ("Other.Shape", ["Dot", "Line"]),
+    ] {
+        let module = union.split('.').next().unwrap();
+        nodes.push_str(&node(union, "union", module));
+        for case in cases {
+            nodes.push_str(&node(&format!("{union}.{case}"), "case", module));
+        }
+    }
+    nodes.push_str(&def("Shapes.flip", "Shapes", "Shape", "Shape"));
+    nodes.push_str(&def("Other.grow", "Other", "Shape", "Shape"));
+    nodes.push_str(&def("Main.keep", "Main", "Shapes.Shape", "Shapes.Shape"));
+    (
+        Input::from_texts(&nodes, "", &[], &[], &manifest).unwrap(),
+        sources,
+    )
+}
+
+/// A signature names the union that its name resolves to: a bare name the union of its module, a
+/// qualified name the union it ends.
+#[test]
+fn transitions_take_the_functions_of_the_union_itself() {
+    let (input, sources) = shapes_twice();
+    let draw = |id: &str| {
+        render(&input, &sources, &request(Kind::Transitions, Some(id)))
+            .unwrap()
+            .text
+    };
+    let shapes = draw("Shapes.Shape");
+    assert!(
+        shapes.contains("flip") && shapes.contains("keep"),
+        "{shapes}"
+    );
+    assert!(!shapes.contains("grow"), "{shapes}");
+    let other = draw("Other.Shape");
+    assert!(other.contains("grow"), "{other}");
+    assert!(
+        !other.contains("flip") && !other.contains("keep"),
+        "{other}"
+    );
+}
+
+/// The transitions of a union are at most 400 edges, with the omitted count, in both formats.
+#[test]
+fn transitions_stay_within_max_edges() {
+    let cases: Vec<String> = (0..23).map(|index| format!("C{index:02}")).collect();
+    let mut source = String::new();
+    let mut nodes = node("M.U", "union", "M");
+    for case in &cases {
+        nodes.push_str(&node(&format!("M.U.{case}"), "case", "M"));
+    }
+    for (index, target) in cases.iter().enumerate() {
+        let name = format!("to{index:02}");
+        nodes.push_str(&def(&format!("M.{name}"), "M", "U", "U"));
+        source.push_str(&format!(
+            "def {name} :: U -> U\nfn {name} value =\n    match value with\n    | _ -> {target}\n"
+        ));
+    }
+    let manifest = format!(
+        "{{\"edition\":\"2026\",\"modules\":[{{\"name\":\"M\",\"key\":\"M\",\"origin\":\"project\",\"path\":\"M.tz\",\"source\":\"{}\"}}]}}",
+        tsuzuri::kg::input::digest(source.as_bytes())
+    );
+    let input = Input::from_texts(&nodes, "", &[], &[], &manifest).unwrap();
+    let sources = BTreeMap::from([("M.tz".to_owned(), source)]);
+    for format in [Format::Mermaid, Format::Dot] {
+        let mut request = request(Kind::Transitions, Some("M.U"));
+        request.format = format;
+        let output = render(&input, &sources, &request).unwrap();
+        assert!(output.folded);
+        let arrow = if format == Format::Dot {
+            " -> "
+        } else {
+            " --> "
+        };
+        let drawn = output
+            .text
+            .lines()
+            .filter(|line| line.contains(arrow))
+            .count();
+        assert_eq!(drawn, 400);
+        assert!(
+            output.text.contains("omitted: 129 edges\n"),
+            "{}",
+            output.text
+        );
+        if format == Format::Mermaid {
+            assert_eq!(validate_mermaid(&output.text), Ok(()));
+        }
+    }
+}
+
+/// Folded types diagrams have at most `--max-nodes` classes, the rest in one class.
+#[test]
+fn types_fold_bounds_the_module_groups() {
+    let mut nodes = String::new();
+    for index in 0..8 {
+        let module = format!("M{index}");
+        nodes.push_str(&node(&module, "module", &module));
+        nodes.push_str(&node(&format!("{module}.R"), "record", &module));
+    }
+    let input = Input::from_texts(&nodes, "", &[], &[], "").unwrap();
+    let output = render(
+        &input,
+        &no_sources(),
+        &folded(request(Kind::Types, None), 5),
+    )
+    .unwrap();
+    assert!(output.folded);
+    assert_eq!(output.nodes, 5);
+    let classes = output
+        .text
+        .lines()
+        .filter(|line| line.starts_with("    class "))
+        .count();
+    assert_eq!(classes, 5, "{}", output.text);
+    assert!(output.text.contains("more groups (4)"), "{}", output.text);
+    assert_eq!(validate_mermaid(&output.text), Ok(()), "{}", output.text);
+}

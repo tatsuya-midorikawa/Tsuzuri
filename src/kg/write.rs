@@ -61,9 +61,31 @@ pub fn has_marker(dir: &Path) -> bool {
     marker_stamp(dir).is_some()
 }
 
+/// The most bytes of a stem: with a `~n` suffix and the longest extension (`.jsonl`), a file name
+/// stays well under the 255 bytes of a name on common file systems.
+pub const STEM_LIMIT: usize = 200;
+
 /// The stem of a file name for a module key or a node ID: `::` becomes `.`, and every byte of a
-/// character other than `[A-Za-z0-9_.]` becomes `%XX`.
+/// character other than `[A-Za-z0-9_.]` becomes `%XX`. A stem longer than `STEM_LIMIT` bytes keeps
+/// its first bytes (not cutting a `%XX`) and ends with `-` and the first 16 hexadecimal digits of
+/// the ID's SHA-256, which no short stem contains.
 pub fn stem(id: &str) -> String {
+    let full = full_stem(id);
+    if full.len() <= STEM_LIMIT {
+        return full;
+    }
+    let digest = super::input::digest(id.as_bytes());
+    let mut cut = STEM_LIMIT - 17;
+    let bytes = full.as_bytes();
+    if bytes[cut - 1] == b'%' {
+        cut -= 1;
+    } else if bytes[cut - 2] == b'%' {
+        cut -= 2;
+    }
+    format!("{}-{}", &full[..cut], &digest[..16])
+}
+
+fn full_stem(id: &str) -> String {
     let mut out = String::new();
     for (index, part) in id.split("::").enumerate() {
         if index > 0 {
@@ -255,6 +277,32 @@ mod tests {
         );
         assert_eq!(stem("test:Main.total adds"), "test%3AMain.total%20adds");
         assert_eq!(stem("é"), "%C3%A9");
+    }
+
+    #[test]
+    fn long_stems_are_bounded_by_bytes() {
+        let long = format!("Acme::{}.{}", "Module".repeat(40), "f");
+        let bounded = stem(&long);
+        assert_eq!(bounded.len(), STEM_LIMIT);
+        let digest = crate::kg::input::digest(long.as_bytes());
+        assert_eq!(
+            bounded,
+            format!("{}-{}", &full_stem(&long)[..183], &digest[..16])
+        );
+        // IDs that share their first bytes differ in their digests.
+        let other = format!("Acme::{}.{}", "Module".repeat(40), "g");
+        assert_ne!(stem(&other), bounded);
+        // A `%XX` (`é` is `%C3%A9`) is not cut: the prefix ends before it or after it.
+        let cut = |before: usize| {
+            let id = format!("{}é{}", "a".repeat(before), "b".repeat(40));
+            let bounded = stem(&id);
+            bounded[..bounded.len() - 17].to_owned()
+        };
+        assert_eq!(cut(182), "a".repeat(182));
+        assert_eq!(cut(181), "a".repeat(181));
+        assert_eq!(cut(180), format!("{}%C3", "a".repeat(180)));
+        let at_limit = "a".repeat(STEM_LIMIT);
+        assert_eq!(stem(&at_limit), at_limit);
     }
 
     #[test]

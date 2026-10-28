@@ -26,7 +26,7 @@
 | `brief/L0.md`・`brief/L1/<モジュール>.md`・`brief/L2/<ID>.md` | 要約カード（プロジェクト・モジュール・宣言） |
 | `views/modules.mmd`・`views/types.mmd`・`views/concurrency.mmd` | モジュールの依存・型・並行の Mermaid の図（作れるものだけ。[図表の生成](diagrams.md#知識グラフの-views)） |
 
-置き場は `--kg-dir DIR`、次に `TSUZURI_KG_DIR`、どちらもなければ `<根>/target/tz/kg` です。ファイル名は、モジュールの key か ID の `::` を `.` にし、英数字・`_`・`.` 以外の文字を `%XX` にしたものです。`tsuzuri new` の `.gitignore` は `target/` を除外します。ソースを探すとき、マーカーのあるディレクトリは読みません。
+置き場は `--kg-dir DIR`、次に `TSUZURI_KG_DIR`、どちらもなければ `<根>/target/tz/kg` です（`Tsuzuri.toml` のあるプロジェクトの根は、そのマニフェストのディレクトリです）。ファイル名は、モジュールの key か ID の `::` を `.` にし、英数字・`_`・`.` 以外の文字を `%XX` にしたものです。200 バイトを超える名前は、先頭の 183 バイト（`%XX` の途中では切らない）に `-` と ID の SHA-256 の先頭 16 桁を続けたものになります。`tsuzuri new` の `.gitignore` は `target/` を除外します。ソースを探すとき、マーカーのあるディレクトリは読みません。
 
 型検査の通らないプロジェクトの知識グラフは、マーカー・`manifest.json`（`complete: false`）・`diag.jsonl` だけです。前の事実を残して、今のソースの事実のように見せることはしません。
 
@@ -34,11 +34,11 @@
 
 `check` などは解析の前に、置き場の `manifest.json` とマーカーを読みます。次がすべて前回と同じなら、何も書かず、解析も知識グラフの分の仕事をしません。
 
-- 入力のハッシュ（利用者と依存パッケージの `.tz`・`.tt`・`.tc` と、`Tsuzuri.toml`・`Tsuzuri.lock` の内容）
+- 入力のハッシュ（利用者と依存パッケージの `.tz`・`.tt`・`.tc` と、`Tsuzuri.toml`・`Tsuzuri.lock` の内容、ソースの既定の名前空間。マニフェストのないプロジェクトではディレクトリの名前が名前空間なので、ディレクトリの名前を変えても書き直します）
 - schema（`tz-kg/1`）とコンパイラの版
 - マーカーの stamp（その機械のコンパイラの実行ファイルの識別。開発中に作り直したコンパイラを見分けます）
 
-書くときは、置き場の隣の一時ディレクトリにすべてを書いてから、ディレクトリごと入れ替えます。読み手が見るのは、前の知識グラフか、ないか、新しい知識グラフのどれかで、混ざることはありません。同時に複数のプロセスが書いても壊れません。マーカーのないディレクトリは決して上書きしません。
+書くときは、置き場の隣の一時ディレクトリにすべてを書いてから、ディレクトリごと入れ替えます。読み手は `manifest.json` に載ったファイルだけを読み、どのファイルも `manifest.json` の SHA-256 と一致することを確かめます。読む途中で知識グラフが入れ替わって一致しなければ初めから読み直す（3 回まで）ので、読み手が見るのは、前の知識グラフか、ないか、新しい知識グラフのどれかで、混ざることはありません。載っているファイルがない・一致しない・置き場の外を指す（`..` やリンクのディレクトリ）ときは `kg_broken` です。同時に複数のプロセスが書いても壊れません。マーカーのないディレクトリは決して上書きしません。
 
 ## brief カード
 
@@ -89,7 +89,7 @@ tsuzuri kg export [PATH] [--kg-dir DIR] (--nodes | --edges | --facts) [--no-refr
 | `clean` | マーカーのある置き場を消す | なし | 0。マーカーのないディレクトリは `E2009` で 1 |
 | `export` | 古ければ作り直し（`--no-refresh` では作らない）、`nodes.jsonl`・`edges.jsonl`・`facts/*.jsonl` をそのまま標準出力へ | JSON Lines | 0。ないか不完全は `E2009` で 1 |
 
-`--json` の `build` は `{"type":"kg_build","status":"written","dir":"…","files":21,"complete":true}`（`status` は `written`・`unchanged`・`incomplete`）、`verify` は `{"type":"kg_verify","status":"ok","source_hash":"…","nodes":14,"files":19}` を 1 行出します。
+`--json` の `build` は `{"type":"kg_build","status":"written","dir":"…","files":21,"complete":true}`（`status` は `written`・`unchanged`・`incomplete`。エラーのあるプロジェクトの知識グラフが前回のままなら、書かずに `incomplete`・`"files":0`・`"complete":false` で、終了コードは 1）、`verify` は `{"type":"kg_verify","status":"ok","source_hash":"…","nodes":14,"files":19}` を 1 行出します。
 
 ```sh
 tsuzuri kg build
@@ -102,7 +102,7 @@ tsuzuri kg export --edges | grep '"rel":"calls"'
 | kind | いつ |
 | --- | --- |
 | `kg_missing` | 置き場がない（マーカーのないディレクトリがあるときは「no .tsuzuri-kg marker」） |
-| `kg_stale` | ソースが変わった・別のコンパイラ・別の schema |
+| `kg_stale` | ソースが変わった・別のコンパイラ・別の schema。照会の途中で知識グラフが入れ替わったとき（`was replaced while it was read; run the command again`。2 つの知識グラフを混ぜた答えは出しません） |
 | `kg_broken` | `manifest.json` が読めない、ファイルの欠落・不一致、グラフの不変条件の違反 |
 | `kg_not_ours` | 置き場が知識グラフでないか、プロジェクトのソースを含む |
 | `kg_incomplete` | 型検査の通らないプロジェクトの知識グラフ |
@@ -127,7 +127,7 @@ tsuzuri kg path      FROM TO [--rel R[,R...]] [--depth N] [共通]
 | --- | --- | --- |
 | `--path PATH` | `.` | プロジェクト（`check` と同じ入力） |
 | `--kg-dir DIR` | `<根>/target/tz/kg` | 知識グラフの置き場（`TSUZURI_KG_DIR` も読みます） |
-| `--no-refresh` | 作り直す | 作り直さず読むだけ。ない・古い・不完全なら `E2009`。std の知識グラフも作りません |
+| `--no-refresh` | 作り直す | 作り直さず読むだけ。ない・古い・不完全なら `E2009`。std の知識グラフも作らず、コンパイラのキャッシュにあれば読みます（`tsuzuri kg build --std`） |
 | `--budget N` | `brief` は 2,400・1,600・700、`show` は 3,000、一覧は 2,000 | テキストの文字数の上限（100〜100,000）。超える分は項目を後ろから落とし、`…N more` を出します |
 | `--depth N` | 1（`path` は 8） | `callers`・`callees` は 1〜8、`path` は 1〜16 の深さ |
 | `--json` | オフ | 1 行 1 オブジェクトの JSON Lines。`--budget` は効きません |
@@ -220,7 +220,7 @@ tsuzuri kg find TYPE [--module M] [--limit N] [共通]
 tsuzuri kg find --result TYPE [--takes TYPE]... [--module M] [--limit N] [共通]
 ```
 
-`kg find` は、プロジェクトと std の知識グラフの関数（`def`・`const`・`extern`、field の取り出し `ref Record -> T`、case の構築子）を、署名の型で探します。問い合わせは署名と同じ型の書き方で、`'a` は型変数（同じ名前は同じ型）、`_` は任意の型です。両方の型変数を単一化して比べ、次の段に分けます。
+`kg find` は、プロジェクトと std の知識グラフの関数（`def`・`const`・`extern`、field の取り出し `ref Record -> T`、case の構築子）を、署名の型で探します。型引数のある record・union では、取り出しと構築子も宣言の型引数を持ちます（`record Box<'a> { value: 'a }` の `value` は `ref Box<'a> -> 'a`、`Maybe` の `Some` は `'a -> Maybe<'a>`）。問い合わせは署名と同じ型の書き方で、`'a` は型変数（同じ名前は同じ型）、`_` は任意の型です。両方の型変数を単一化して比べ、次の段に分けます。
 
 | 段 | 意味 |
 | --- | --- |
@@ -228,7 +228,7 @@ tsuzuri kg find --result TYPE [--takes TYPE]... [--module M] [--limit N] [共通
 | `borrow` | 外側の `ref`・`ref mut` を外すと一致する |
 | `partial` | 問い合わせの引数が、順にその関数の引数のどれかと一致する。余った引数の数を `(+n)` で出します |
 
-`--result` と `--takes`（繰り返せます）は、結果と引数の一部だけで探します（`exact` と `borrow` だけ）。`--module M` は 1 つのモジュール（`Array` や `Acme::Shop::Cart`）に絞ります。`--limit` は 1〜100（既定 20）で、切ったときは最後に `... N more; raise --limit (at most 100)` を出します。制約（`=>`）は、型変数が `i64` や `string` のような基本の型に決まったとき、コンパイラの組み込みの class の規則で確かめます（`ref [i64] -> i64` に `Array.average :: Float<'a> => ref ['a] -> 'a` は出ません。その instance のノードがあれば出ます）。それ以外の制約（record の型や `Copy` など）は表示するだけで、確かめません（知識グラフはすべての instance を持たないため）。
+`--result` と `--takes`（繰り返せます）は、結果と引数の一部だけで探します（`exact` と `borrow` だけ）。`--module M` は 1 つのモジュール（`Array` や `Acme::Shop::Cart`）に絞ります。`--limit` は 1〜100（既定 20）で、切ったときは最後に `... N more; raise --limit (at most 100)` を出します。テキストは一覧と同じに `--budget`（既定 2,000 文字）に収め、超える分は後ろから `…N more` にします（`--json` は切りません）。制約（`=>`）は、型変数が `i64` や `string` のような基本の型に決まったとき、コンパイラの組み込みの class の規則で確かめます（`ref [i64] -> i64` に `Array.average :: Float<'a> => ref ['a] -> 'a` は出ません。その instance のノードがあれば出ます）。それ以外の制約（record の型や `Copy` など）は表示するだけで、確かめません（知識グラフはすべての instance を持たないため）。
 
 ```text
 $ tsuzuri kg find 'ref [Line] -> i64' --limit 3
@@ -238,7 +238,7 @@ partial Array.average_by :: (Copy<'a>, Float<'b>) => own ('a -> 'b) -> ref ['a] 
 ... 29 more; raise --limit (at most 100)
 ```
 
-問い合わせが型として読めないときは `E2000`（`cannot parse the type query: …`、終了コード 2）です。
+問い合わせが型として読めないとき（閉じていない `{` や `<` など）は `E2000`（`cannot parse the type query: …`、終了コード 2）です。
 
 ## 変更の影響（`kg impact`）
 
@@ -255,7 +255,7 @@ tsuzuri kg impact --from PATH [--to PATH] [--path PATH] [--kg-dir DIR] [--no-ref
 | `--from A` | `A` | `--path` の作業ツリー |
 | `--from A --to B` | `A` | `B` |
 
-`A`・`B` は、知識グラフのディレクトリ（`.tsuzuri-kg` のあるもの。そのまま読みます）か、プロジェクト（知識グラフを開きます。古ければ作り直します）です。`--git` は、リポジトリの外の一時ディレクトリに `git worktree add --detach` でコミットを取り出し（フックは走らせません）、終わると消します。
+`A`・`B` は、知識グラフのディレクトリ（`.tsuzuri-kg` のあるもの。そのまま読みます）か、プロジェクト（知識グラフを開きます。古ければ作り直します）です。`--kg-dir` と `TSUZURI_KG_DIR` は作業ツリーの知識グラフだけの置き場で、base と `--to` のプロジェクトの知識グラフはそれぞれの `target/tz/kg` に置きます。base が作業ツリーの知識グラフそのもの（`--from target/tz/kg`）でも、作業ツリーの知識グラフを作り直す前に base を読み終えます。`--git` は、リポジトリの外の一時ディレクトリに `git worktree add --detach` でコミットを取り出し（フックは走らせません）、終わると消します。
 
 | 区分 | 変更 |
 | --- | --- |

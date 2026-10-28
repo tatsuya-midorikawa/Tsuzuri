@@ -127,7 +127,7 @@ flowchart TD
 
 ### `ownership`
 
-関数の変数ごとに、所有権の出来事（借用・移動・解放）を状態図にします。借用は、その変数の次の出来事まで続くものとして `release` で `Owned` に戻します。移動・解放した状態は赤、借用中は黄です。図の後ろに、全部の出来事の表（200 行まで）があり、`diagnostic role` の列は、同じ位置を `E1012`・`E1014` の診断が `moved_here`・`borrowed_here` として引用することを示します。変数が 13 個以上なら、移動か借用のある変数を 12 個まで描きます。
+関数の変数ごとに、所有権の出来事（借用・移動・解放）を状態図にします。借用は、その変数の次の出来事まで続くものとして `release` で `Owned` に戻します。移動・解放した状態は赤、借用中は黄です。1 つの状態図の遷移は 400 本までで、それを超える出来事は `N later events of x are not drawn.` と書いて描きません。図の後ろに、全部の出来事の表（200 行まで。残りは `N more events are not listed.`）があり、`diagnostic role` の列は、同じ位置を `E1012`・`E1014` の診断が `moved_here`・`borrowed_here` として引用することを示します。変数が 13 個以上なら、移動か借用のある変数を 12 個まで描きます。
 
 ````text
 # Ownership of Own::Main.demo
@@ -151,7 +151,7 @@ stateDiagram-v2
 
 ### `concurrency`
 
-並行の近似です。値の流れは知識グラフにないので、署名の型（`Channel.Sender<T>`・`Channel.Receiver<T>`・`Mutex<T>`・`Atomic<T>`）と呼び出し（`Task.scope`・`Task.parallel`・`Parallel.*`・`Channel.bounded`・`Mutex.create`・`Atomic.create`）から作り、図に「approximate」の注記を必ず付けます。並行の区画を作る関数は二重枠、共有するセルは紫です。生成の呼び出しの型 `T` は、署名に同じ種類のセルの型が 1 つしかないときだけ書き、2 つ以上なら `?` です。
+並行の近似です。値の流れは知識グラフにないので、署名の型（`Channel.Sender<T>`・`Channel.Receiver<T>`・`Mutex<T>`・`Atomic<T>`）と呼び出し（`Task.scope`・`Task.parallel`・`Parallel.*`・`Channel.bounded`・`Mutex.create`・`Atomic.create`）から作り、図に「approximate」の注記を必ず付けます。並行の区画を作る関数は二重枠、共有するセルは紫です。生成の呼び出しの型 `T` は、署名に同じ種類のセルの型が 1 つしかないときだけ書き、2 つ以上なら `?` です。ID にモジュールを渡すと、そのモジュールの関数だけを描きます（ほかのモジュールの区画からの呼び出しは描きません）。区画とセルはまとめません: `--max-nodes` に区画とセル、ほかの関数のまとめ 1 つ、注記が収まらなければ `diagram_too_large` です。
 
 ```mermaid
 flowchart LR
@@ -204,7 +204,7 @@ record・union のメモリの配置を表にします。数値は 64-bit の na
 
 ### `transitions`
 
-共用体 `U` について、最初の引数が `U` で結果も `U` の関数のうち、本体がその引数の `match` のものを探し、各腕の case から、腕の本体が返す case への遷移を描きます。`_` や小文字の名前の腕は、それまでの腕が名指ししていない case のすべてです。ガードは無視します。この図だけはソースを読み、知識グラフを作ったときのソースと SHA-256 が違えば `E2009`（`kg_stale`）です。
+共用体 `U` について、最初の引数が `U` で結果も `U` の関数のうち（署名の型の名前は `U` の ID かその後ろの部分。`Shapes.Shape` は `Acme::Kg::Shapes.Shape`。同じ名前の共用体がほかにもあれば、関数と同じモジュールのもの、なければ同じ名前空間でただ 1 つのもの）、本体がその引数の `match` のものを探し、各腕の case から、腕の本体が返す case への遷移を描きます。`_` や小文字の名前の腕は、それまでの腕が名指ししていない case のすべてです。ガードは無視します。この図だけはソースを読み、知識グラフを作ったときのソースと SHA-256 が違えば `E2009`（`kg_stale`）です。
 
 ```text
 union Light =
@@ -272,8 +272,8 @@ tsuzuri kg diagram module --format dot | dot -Tpng > modules.png
 
 | 上限 | 値 | 超えたとき |
 | --- | --- | --- |
-| ノード | `--max-nodes`（5〜200、既定 60） | モジュール（`calls` の std は `std:<モジュール>`）ごとに 1 つのノードにまとめ、辺の多いものから残します |
-| 辺 | 400 本 | 整列した先頭 400 本を残し、最後に `%% omitted: N edges` を書きます |
+| ノード | `--max-nodes`（5〜200、既定 60） | モジュール（`calls` の std は `std:<モジュール>`）ごとに 1 つのノードにまとめ、辺の多いものから残し、残りは `…N more groups (M)` の 1 つにします（`types` のクラスも同じ） |
+| 辺 | 400 本（`ownership` は状態図ごと） | 整列した先頭 400 本を残し、最後に `%% omitted: N edges`（DOT は `// omitted: N edges`）を書きます。`folded` は `true` です |
 | 文字 | 45,000 文字 | ラベルの上限を半分にして 1 回作り直し、それでも超えれば `E2000`（`diagram_too_large`） |
 
 Mermaid の既定の上限（辺 500 本・50,000 文字）より内側に収めるためです。
@@ -290,7 +290,7 @@ Mermaid の既定の上限（辺 500 本・50,000 文字）より内側に収め
 | `diagram_unknown_id` | ID が見つからない（似た ID を 5 つまで挙げます） |
 | `diagram_wrong_id_kind` | ID の種類が違う（`'X' is a record; diagram kind 'calls' needs a function id`） |
 | `diagram_unavailable` | 図に要る事実がない（所有権の事実・レイアウトの行・`match` の遷移がない） |
-| `diagram_too_large` | 45,000 文字を超える |
+| `diagram_too_large` | 45,000 文字を超える、`concurrency` の区画とセルが `--max-nodes` に収まらない |
 
 知識グラフがない・古い・壊れているとき、`transitions` のソースが知識グラフと違うときは `E2009`（終了コード 1）です。
 

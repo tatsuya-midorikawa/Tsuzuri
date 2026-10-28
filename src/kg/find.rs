@@ -45,12 +45,12 @@ impl Parser<'_> {
         while self.chars.get(self.at).is_some_and(|c| c.is_whitespace()) {
             self.at += 1;
         }
-        // A region annotation `{r s}` changes nothing that the search compares.
-        if self.chars.get(self.at) == Some(&'{') {
-            while self.at < self.chars.len() && self.chars[self.at] != '}' {
-                self.at += 1;
-            }
-            self.at += 1;
+        // A region annotation `{r s}` changes nothing that the search compares. Without its `}`
+        // it stays, and the query does not parse.
+        if self.chars.get(self.at) == Some(&'{')
+            && let Some(close) = self.chars[self.at..].iter().position(|c| *c == '}')
+        {
+            self.at += close + 1;
             self.skip();
         }
     }
@@ -76,12 +76,18 @@ impl Parser<'_> {
         *self.next - 1
     }
 
+    /// A name, qualified with `.` or `::`; it stops before `..`, which ends a view (`[i64..]`).
     fn name(&mut self) -> Option<String> {
         self.skip();
         let start = self.at;
-        while self.chars.get(self.at).is_some_and(|c| {
-            c.is_alphanumeric() || *c == '_' || *c == '.' || *c == ':' || *c == '#'
-        }) {
+        while let Some(&c) = self.chars.get(self.at) {
+            let part = match c {
+                '.' => self.chars.get(self.at + 1) != Some(&'.'),
+                _ => c.is_alphanumeric() || c == '_' || c == ':' || c == '#',
+            };
+            if !part {
+                break;
+            }
             self.at += 1;
         }
         (self.at > start).then(|| self.chars[start..self.at].iter().collect())
@@ -365,6 +371,29 @@ fn parameter_text(ty: &str, conv: &str) -> String {
     }
 }
 
+/// The type that the record or union of a field or case declares, as text (`Box<'a>`) and
+/// parsed with its parameters in `variables`, so that the member's type shares them: the accessor
+/// of `value: 'a` is `ref Box<'a> -> 'a`, the constructor `Some of 'a` is `'a -> Maybe<'a>`.
+fn owner_type(
+    data: &KgData,
+    member: &Node,
+    next: &mut usize,
+    variables: &mut BTreeMap<String, usize>,
+) -> (String, Ty) {
+    let owner = member.id.rsplit_once('.').map_or("", |(owner, _)| owner);
+    let name = owner.rsplit(['.', ':']).next().unwrap_or(owner).to_owned();
+    // `record Box<'a> {r}`: the name and parameters, without the keyword and the regions.
+    let declared = data
+        .node(owner)
+        .and_then(|node| node.signature.split_once(' '))
+        .map(|(_, rest)| rest.split('{').next().unwrap_or(rest).trim().to_owned())
+        .filter(|text| !text.is_empty());
+    match declared.and_then(|text| Some((parse(&text, next, variables)?, text))) {
+        Some((ty, text)) => (text, ty),
+        None => (name.clone(), Ty::Named(name, Vec::new())),
+    }
+}
+
 fn entries<'a>(data: &'a KgData, origin: &'static str, next: &mut usize) -> Vec<Entry<'a>> {
     let mut found = Vec::new();
     for node in &data.nodes {
@@ -400,25 +429,20 @@ fn entries<'a>(data: &'a KgData, origin: &'static str, next: &mut usize) -> Vec<
                 (kind, parameters, result, text)
             }
             "field" => {
-                let owner = node.id.rsplit_once('.').map_or("", |(owner, _)| owner);
-                let record = owner.rsplit(['.', ':']).next().unwrap_or(owner).to_owned();
+                let (record, owner) = owner_type(data, node, next, &mut variables);
                 let result = node
                     .result
                     .as_deref()
                     .and_then(|result| parse(result, next, &mut variables));
                 (
                     "field",
-                    Some(vec![Ty::Ref(
-                        Box::new(Ty::Named(record.clone(), Vec::new())),
-                        false,
-                    )]),
+                    Some(vec![Ty::Ref(Box::new(owner), false)]),
                     result,
                     format!("ref {record} -> {}", node.result.as_deref().unwrap_or("?")),
                 )
             }
             "case" => {
-                let owner = node.id.rsplit_once('.').map_or("", |(owner, _)| owner);
-                let union = owner.rsplit(['.', ':']).next().unwrap_or(owner).to_owned();
+                let (union, owner) = owner_type(data, node, next, &mut variables);
                 let parameters = match node.result.as_deref() {
                     Some(payload) => parse(payload, next, &mut variables).map(|ty| vec![ty]),
                     None => Some(Vec::new()),
@@ -427,7 +451,7 @@ fn entries<'a>(data: &'a KgData, origin: &'static str, next: &mut usize) -> Vec<
                     Some(payload) => format!("{payload} -> {union}"),
                     None => union.clone(),
                 };
-                ("case", parameters, Some(Ty::Named(union, Vec::new())), text)
+                ("case", parameters, Some(owner), text)
             }
             _ => continue,
         };
@@ -665,34 +689,45 @@ pub fn search(view: &KgView, query: &Query) -> Result<(Vec<Match>, usize), Query
 }
 
 /// The text and JSON Lines of a search.
+/// The text (at most `budget` characters, `LIST_BUDGET` by default; items are dropped from the
+/// end) and the JSON rows (never cut) of the matches.
 pub fn render(
     query_text: &str,
     query: &Query,
     found: &[Match],
     searched: usize,
+    budget: Option<usize>,
 ) -> (String, Vec<String>) {
     let shown: Vec<&Match> = found.iter().take(query.limit).collect();
-    let mut text = String::new();
-    if found.is_empty() {
-        text.push_str("no matches\n");
-    }
-    for item in &shown {
-        text.push_str(&format!(
-            "{:<7} {} :: {}",
-            item.tier, item.name, item.signature
-        ));
-        if item.tier == "partial" && item.extra > 0 {
-            text.push_str(&format!("  (+{})", item.extra));
-        }
-        text.push('\n');
-    }
+    let header = if found.is_empty() {
+        vec!["no matches".to_owned()]
+    } else {
+        Vec::new()
+    };
+    let items = shown
+        .iter()
+        .map(|item| {
+            let mut line = format!("{:<7} {} :: {}", item.tier, item.name, item.signature);
+            if item.tier == "partial" && item.extra > 0 {
+                line.push_str(&format!("  (+{})", item.extra));
+            }
+            line
+        })
+        .collect();
+    let mut footer = Vec::new();
     if found.len() > shown.len() {
-        text.push_str(&format!(
-            "... {} more; raise --limit (at most {})\n",
+        footer.push(format!(
+            "... {} more; raise --limit (at most {})",
             found.len() - shown.len(),
             LIMIT_RANGE.1
         ));
     }
+    let text = super::query::listing(
+        &header,
+        items,
+        &footer,
+        budget.unwrap_or(super::query::LIST_BUDGET),
+    );
     let mut rows: Vec<String> = shown
         .iter()
         .map(|item| {
@@ -756,6 +791,16 @@ mod tests {
         assert!(matches!(ty("[i64; 4]"), Ty::Fixed(..)));
         assert!(matches!(ty("fn() -> unit"), Ty::Function(..)));
         assert!(matches!(ty("ref mut {r} [i64..]"), Ty::Ref(_, true)));
+        assert!(matches!(ty("[i64..]"), Ty::View(_)));
+        assert!(matches!(ty("[Geometry.Point..]"), Ty::View(_)));
+        // `'a..` is `'a`: both occurrences are one variable.
+        match ty("['a..] -> 'a") {
+            Ty::Function(parameters, result) => match (&parameters[0], *result) {
+                (Ty::View(element), Ty::Var(b)) => assert_eq!(**element, Ty::Var(b)),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
         for broken in [
             "ref [i64 -> ",
             "ref [Line",
@@ -763,6 +808,9 @@ mod tests {
             "Maybe<i64",
             "[|i64",
             "[i64; ]",
+            "ref {r",
+            "{",
+            "ref {r [i64]",
         ] {
             let mut next = 0;
             assert!(

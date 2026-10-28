@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use super::DiagramError;
 use super::escape::{dot_esc, esc, transition};
 use super::input::{Input, Symbol};
+use super::{DiagramError, MAX_EDGES};
 use crate::syntax::{Edition, Expr, ExprKind, Pattern, PatternKind};
 
 /// Where `transitions` reads the sources: `render` never opens files itself (D14).
@@ -158,6 +158,45 @@ pub fn cases<'a>(input: &'a Input, union: &str) -> Vec<&'a Symbol> {
     cases
 }
 
+/// Whether `ty`, written in the signature of `function`, names `union`. The written name, with
+/// `::` read as `.`, must be the union's ID or end it (`Shapes.Shape` of `Acme::Kg::Shapes.Shape`).
+/// A name that several unions end with means the one of the function's module, else the only one
+/// of the function's namespace; otherwise it is ambiguous and names none.
+fn names_union(input: &Input, function: &Symbol, ty: &str, union: &Symbol) -> bool {
+    let written = head(ty).replace("::", ".");
+    let ends = |id: &str| {
+        let id = id.replace("::", ".");
+        id == written || id.ends_with(&format!(".{written}"))
+    };
+    if !ends(&union.id) {
+        return false;
+    }
+    let named: Vec<&Symbol> = input
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.kind == "union" && ends(&symbol.id))
+        .collect();
+    if named.len() == 1 {
+        return true;
+    }
+    if named.iter().any(|symbol| symbol.module == function.module) {
+        return union.module == function.module;
+    }
+    let namespace = |module: &str| {
+        module
+            .split_once("::")
+            .map_or("", |(namespace, _)| namespace)
+            .to_owned()
+    };
+    let home = namespace(&function.module);
+    namespace(&union.module) == home
+        && named
+            .iter()
+            .filter(|symbol| namespace(&symbol.module) == home)
+            .count()
+            == 1
+}
+
 /// The transitions (source case, target case, function) of the functions `U -> … -> U` that
 /// match on their first parameter.
 pub fn extract(
@@ -167,7 +206,6 @@ pub fn extract(
 ) -> Result<Vec<(String, String, String)>, DiagramError> {
     let cases = cases(input, &union.id);
     let names: Vec<&str> = cases.iter().map(|case| case.name.as_str()).collect();
-    let is_union = |ty: &str| head(ty) == union.name || head(ty) == union.id;
     let candidates: Vec<&Symbol> = input
         .symbols
         .iter()
@@ -176,8 +214,11 @@ pub fn extract(
                 && symbol
                     .params
                     .first()
-                    .is_some_and(|param| is_union(&param.ty))
-                && symbol.result.as_deref().is_some_and(is_union)
+                    .is_some_and(|param| names_union(input, symbol, &param.ty, union))
+                && symbol
+                    .result
+                    .as_deref()
+                    .is_some_and(|result| names_union(input, symbol, result, union))
         })
         .collect();
     let edition = Edition::parse(&input.edition).unwrap_or(Edition::E2026);
@@ -263,8 +304,12 @@ pub fn extract(
     Ok(edges)
 }
 
-/// The edges merged by (source, target), in case order, with their functions joined.
-fn merged(order: &[&str], edges: &[(String, String, String)]) -> Vec<(usize, usize, String)> {
+/// The edges merged by (source, target), in case order, with their functions joined: at most
+/// `MAX_EDGES` of them, and how many more there are.
+fn merged(
+    order: &[&str],
+    edges: &[(String, String, String)],
+) -> (Vec<(usize, usize, String)>, usize) {
     let mut functions: BTreeMap<(usize, usize), BTreeSet<&str>> = BTreeMap::new();
     for (source, target, function) in edges {
         let position = |name: &str| order.iter().position(|case| *case == name);
@@ -272,7 +317,7 @@ fn merged(order: &[&str], edges: &[(String, String, String)]) -> Vec<(usize, usi
             functions.entry((a, b)).or_default().insert(function);
         }
     }
-    functions
+    let mut merged: Vec<(usize, usize, String)> = functions
         .into_iter()
         .map(|((a, b), names)| {
             (
@@ -281,7 +326,10 @@ fn merged(order: &[&str], edges: &[(String, String, String)]) -> Vec<(usize, usi
                 names.into_iter().collect::<Vec<_>>().join(", "),
             )
         })
-        .collect()
+        .collect();
+    let omitted = merged.len().saturating_sub(MAX_EDGES);
+    merged.truncate(MAX_EDGES);
+    (merged, omitted)
 }
 
 fn state_label(case: &Symbol) -> String {
@@ -291,13 +339,14 @@ fn state_label(case: &Symbol) -> String {
     }
 }
 
-/// The state diagram, and its number of cases.
+/// The state diagram, its number of cases, and whether transitions beyond `MAX_EDGES` were left
+/// out.
 pub fn mermaid(
     input: &Input,
     union: &str,
     edges: &[(String, String, String)],
     limits: &super::Limits,
-) -> (String, usize) {
+) -> (String, usize, bool) {
     let cases = cases(input, union);
     let order: Vec<&str> = cases.iter().map(|case| case.name.as_str()).collect();
     let mut lines = vec!["stateDiagram-v2".to_owned(), "    direction LR".to_owned()];
@@ -308,13 +357,17 @@ pub fn mermaid(
             index + 1
         ));
     }
-    for (a, b, names) in merged(&order, edges) {
+    let (merged, omitted) = merged(&order, edges);
+    for (a, b, names) in merged {
         lines.push(format!(
             "    s{a} --> s{b} : {}",
             transition(&names, limits.edge)
         ));
     }
-    (lines.join("\n") + "\n", cases.len())
+    if omitted > 0 {
+        lines.push(format!("    %% omitted: {omitted} edges"));
+    }
+    (lines.join("\n") + "\n", cases.len(), omitted > 0)
 }
 
 pub fn dot(
@@ -322,7 +375,7 @@ pub fn dot(
     union: &str,
     edges: &[(String, String, String)],
     limits: &super::Limits,
-) -> (String, usize) {
+) -> (String, usize, bool) {
     let cases = cases(input, union);
     let order: Vec<&str> = cases.iter().map(|case| case.name.as_str()).collect();
     let mut lines = vec![
@@ -338,12 +391,16 @@ pub fn dot(
             dot_esc(&state_label(case), limits.label)
         ));
     }
-    for (a, b, names) in merged(&order, edges) {
+    let (merged, omitted) = merged(&order, edges);
+    for (a, b, names) in merged {
         lines.push(format!(
             "    s{a} -> s{b} [label=\"{}\"];",
             dot_esc(&names, limits.edge)
         ));
     }
+    if omitted > 0 {
+        lines.push(format!("    // omitted: {omitted} edges"));
+    }
     lines.push("}".to_owned());
-    (lines.join("\n") + "\n", cases.len())
+    (lines.join("\n") + "\n", cases.len(), omitted > 0)
 }

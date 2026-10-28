@@ -162,17 +162,21 @@ pub fn project_identity(project: &Project) -> (String, Option<String>, String) {
         || crate::syntax::Edition::LATEST.to_string(),
         |source| source.edition.to_string(),
     );
-    let manifest = project.root_package.as_ref().and_then(|_| {
+    // Every package's manifest is a `Tsuzuri.toml`: the root package's is the project's.
+    let manifest = project.root_package.as_ref().and_then(|root| {
         project
             .manifests
             .iter()
-            .find(|manifest| manifest.relative_path == Path::new("Tsuzuri.toml"))
+            .find(|manifest| {
+                manifest.relative_path == Path::new("Tsuzuri.toml")
+                    && manifest.package.as_ref() == Some(root)
+            })
             .and_then(|manifest| crate::package::parse_manifest(&manifest.text, 0).ok())
     });
     let name = match &manifest {
         Some(manifest) => manifest.name.clone(),
         None => project
-            .root_directory()
+            .project_directory()
             .and_then(|root| std::fs::canonicalize(root).ok())
             .and_then(|root| {
                 root.file_name()

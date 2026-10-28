@@ -12,6 +12,7 @@ use serde_json::Value;
 use super::algo::Digraph;
 use super::manifest::{self, Manifest, ModuleEntry};
 use super::write::{Files, MANIFEST};
+use crate::diagnostic::Diagnostic;
 
 /// The most bytes of one graph file that a reader reads.
 const FILE_LIMIT: u64 = 256 << 20;
@@ -269,6 +270,9 @@ pub struct KgData {
     pub diag: Vec<Diag>,
     pub index: KgIndex,
     by_id: BTreeMap<String, usize>,
+    source: Source,
+    /// The first file of `facts` or `layouts` that did not match the manifest (`intact`).
+    failure: Arc<OnceLock<manifest::Freshness>>,
 }
 
 fn string(value: &Value, key: &str) -> String {
@@ -344,6 +348,81 @@ fn lines(bytes: &[u8]) -> Result<Vec<Value>, String> {
         .collect()
 }
 
+/// How a reader gets a file of the graph by path: `None` when the graph has no such file.
+type ReadFile<'a> = &'a dyn Fn(&str) -> Result<Option<Vec<u8>>, String>;
+
+/// How many times a reader starts again when a writer replaced the graph while it read it.
+const READ_ATTEMPTS: usize = 3;
+
+/// The bytes of the file at `path` of the graph at `dir`, which must have the SHA-256 `sha`: an
+/// error when it cannot be read, a directory on its way is not a plain directory, or the bytes
+/// differ. `Manifest::parse` keeps only plain relative paths, so the file is below `dir`.
+fn read_file(dir: &Path, path: &str, sha: &str) -> Result<Vec<u8>, String> {
+    let names: Vec<&str> = path.split('/').collect();
+    let mut parent = dir.to_path_buf();
+    for name in &names[..names.len() - 1] {
+        parent.push(name);
+        if !std::fs::symlink_metadata(&parent).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(format!("{path} cannot be read"));
+        }
+    }
+    let bytes = crate::cache::read_regular(&dir.join(path), FILE_LIMIT)
+        .map_err(|_| format!("{path} cannot be read"))?;
+    if super::input::digest(&bytes) != sha {
+        return Err(format!("{path} does not match manifest.json"));
+    }
+    Ok(bytes)
+}
+
+/// A file of the graph at `dir` for a reader: `None` when the manifest does not list it (an
+/// optional table), else as `read_file` reads it.
+fn read_listed(dir: &Path, manifest: &Manifest, path: &str) -> Result<Option<Vec<u8>>, String> {
+    match manifest.files.get(path) {
+        Some(sha) => read_file(dir, path, sha).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Runs `body` over one publication of the graph at `dir`: it reads files through the function
+/// it gets (see `read_listed`). A writer replaces the whole directory, so a file that does not
+/// match the manifest was read across a replacement when the manifest has changed since: `body`
+/// runs again, up to `READ_ATTEMPTS` times. Otherwise the graph is broken.
+fn with_snapshot<T>(
+    dir: &Path,
+    body: impl Fn(&Manifest, ReadFile) -> Result<T, String>,
+) -> Result<T, manifest::Freshness> {
+    let mut attempt = 1;
+    loop {
+        let manifest = manifest::read(dir)?;
+        match body(&manifest, &|path| read_listed(dir, &manifest, path)) {
+            Ok(value) => return Ok(value),
+            Err(reason) => {
+                let replaced = manifest::read(dir).ok().as_ref() != Some(&manifest);
+                if !replaced || attempt == READ_ATTEMPTS {
+                    return Err(manifest::Freshness::Broken(reason));
+                }
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// The manifest and the files that `wanted` selects of one publication of the graph at `dir`,
+/// each with the SHA-256 that the manifest lists (`kg export`, `kg verify`).
+pub fn read_snapshot(
+    dir: &Path,
+    wanted: &dyn Fn(&str) -> bool,
+) -> Result<(Manifest, Files), manifest::Freshness> {
+    with_snapshot(dir, |manifest, read| {
+        let mut files = Files::default();
+        for path in manifest.files.keys().filter(|path| wanted(path)) {
+            let bytes = read(path)?.expect("a listed file");
+            files.put(path.clone(), bytes);
+        }
+        Ok((manifest.clone(), files))
+    })
+}
+
 /// Where the per-module files of a graph come from.
 #[derive(Clone, Debug)]
 enum Source {
@@ -352,35 +431,68 @@ enum Source {
 }
 
 impl Source {
-    fn read(&self, path: &str) -> Option<Vec<u8>> {
+    /// The bytes of the file at `path`, which the opened manifest lists with `sha`. A file of a
+    /// directory that does not match was replaced when the manifest there lists it otherwise now.
+    fn read(&self, path: &str, sha: &str) -> Result<Vec<u8>, manifest::Freshness> {
         match self {
-            Self::Directory(dir) => crate::cache::read_regular(&dir.join(path), FILE_LIMIT).ok(),
-            Self::Memory(files) => files.get(path).cloned(),
+            Self::Directory(dir) => read_file(dir, path, sha).map_err(|reason| {
+                let listed =
+                    read_manifest(dir).and_then(|manifest| manifest.files.get(path).cloned());
+                if listed.as_deref() == Some(sha) {
+                    manifest::Freshness::Broken(reason)
+                } else {
+                    manifest::Freshness::Replaced
+                }
+            }),
+            Self::Memory(files) => files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| manifest::Freshness::Broken(format!("{path} cannot be read"))),
+        }
+    }
+
+    fn directory(&self) -> Option<&Path> {
+        match self {
+            Self::Directory(dir) => Some(dir),
+            Self::Memory(_) => None,
         }
     }
 }
 
 /// A table with one file per module (`facts/` or `layout/`). A file is read and parsed the first
 /// time a row of its module is asked for, so that a query opens the files it needs and not one
-/// per module of the project. A file that cannot be read or parsed has no rows; `kg verify`
-/// checks every file against the manifest.
+/// per module of the project. It must have the SHA-256 of the manifest that the graph was opened
+/// with: a file that does not (the graph was replaced since, or is broken) has no rows, and the
+/// first such failure is kept for `KgData::intact`, so that no answer mixes two graphs.
 #[derive(Clone, Debug)]
 pub struct Tables<T> {
     source: Source,
     /// By path: the SHA-256 that the manifest lists, and the rows once read.
     files: BTreeMap<String, (String, OnceLock<Vec<T>>)>,
     row: fn(Value) -> T,
+    failure: Arc<OnceLock<manifest::Freshness>>,
 }
 
 impl<T> Tables<T> {
-    fn new(source: Source, manifest: &Manifest, prefix: &str, row: fn(Value) -> T) -> Self {
+    fn new(
+        source: Source,
+        manifest: &Manifest,
+        prefix: &str,
+        row: fn(Value) -> T,
+        failure: Arc<OnceLock<manifest::Freshness>>,
+    ) -> Self {
         let files = manifest
             .files
             .iter()
             .filter(|(path, _)| path.starts_with(prefix) && path.ends_with(".jsonl"))
             .map(|(path, sha)| (path.clone(), (sha.clone(), OnceLock::new())))
             .collect();
-        Self { source, files, row }
+        Self {
+            source,
+            files,
+            row,
+            failure,
+        }
     }
 
     /// The files of the table with their SHA-256 (empty when unknown), by path.
@@ -392,15 +504,21 @@ impl<T> Tables<T> {
 
     /// The rows of the file at `path`.
     pub fn rows(&self, path: &str) -> &[T] {
-        let Some((_, rows)) = self.files.get(path) else {
+        let Some((sha, rows)) = self.files.get(path) else {
             return &[];
         };
         rows.get_or_init(|| {
-            self.source
-                .read(path)
-                .and_then(|bytes| lines(&bytes).ok())
-                .map(|rows| rows.into_iter().map(self.row).collect())
-                .unwrap_or_default()
+            let parsed = self.source.read(path, sha).and_then(|bytes| {
+                lines(&bytes)
+                    .map_err(|reason| manifest::Freshness::Broken(format!("{path} {reason}")))
+            });
+            match parsed {
+                Ok(rows) => rows.into_iter().map(self.row).collect(),
+                Err(failure) => {
+                    let _ = self.failure.set(failure);
+                    Vec::new()
+                }
+            }
         })
     }
 
@@ -464,19 +582,19 @@ fn fact_of(row: Value) -> Fact {
 }
 
 impl KgData {
-    /// Reads the graph at `dir`: `Err` with the reason when the manifest or a file it lists cannot
-    /// be read (the caller reports `kg_missing`, `kg_broken` or `kg_incomplete`). The files of
-    /// `facts/` and `layout/` are read when first used.
+    /// Reads the graph at `dir`, all of one publication: `Err` with the reason when the manifest
+    /// or a file it lists cannot be read or does not match (the caller reports `kg_missing`,
+    /// `kg_broken` or `kg_incomplete`). The files of `facts/` and `layout/` are read when first
+    /// used, against the same manifest (see `Tables`).
     pub fn open(dir: &Path) -> Result<KgData, manifest::Freshness> {
-        let manifest = manifest::read(dir)?;
-        let read = |path: &str| crate::cache::read_regular(&dir.join(path), FILE_LIMIT).ok();
-        Self::parse(&manifest, &read, Source::Directory(dir.to_path_buf()))
-            .map_err(manifest::Freshness::Broken)
+        with_snapshot(dir, |manifest, read| {
+            Self::parse(manifest, read, Source::Directory(dir.to_path_buf()))
+        })
     }
 
     /// The graph of files in memory, as `open` would read them once written.
     pub fn from_parts(manifest: &Manifest, files: &Files) -> Result<KgData, String> {
-        let read = |path: &str| files.get(path).map(<[u8]>::to_vec);
+        let read = |path: &str| Ok(files.get(path).map(<[u8]>::to_vec));
         let tables = files
             .0
             .iter()
@@ -486,13 +604,9 @@ impl KgData {
         Self::parse(manifest, &read, Source::Memory(Arc::new(tables)))
     }
 
-    fn parse(
-        manifest: &Manifest,
-        read: &dyn Fn(&str) -> Option<Vec<u8>>,
-        source: Source,
-    ) -> Result<KgData, String> {
+    fn parse(manifest: &Manifest, read: ReadFile, source: Source) -> Result<KgData, String> {
         let rows = |path: &str| -> Result<Option<Vec<Value>>, String> {
-            match read(path) {
+            match read(path)? {
                 Some(bytes) => lines(&bytes)
                     .map(Some)
                     .map_err(|reason| format!("{path} {reason}")),
@@ -565,10 +679,18 @@ impl KgData {
                     .keys()
                     .any(|path| path.starts_with(prefix) && path.ends_with(".jsonl"))
         };
-        let facts =
-            tables("facts/").then(|| Tables::new(source.clone(), manifest, "facts/", fact_of));
-        let layouts =
-            tables("layout/").then(|| Tables::new(source, manifest, "layout/", |row| row));
+        let failure = Arc::new(OnceLock::new());
+        let facts = tables("facts/")
+            .then(|| Tables::new(source.clone(), manifest, "facts/", fact_of, failure.clone()));
+        let layouts = tables("layout/").then(|| {
+            Tables::new(
+                source.clone(),
+                manifest,
+                "layout/",
+                |row| row,
+                failure.clone(),
+            )
+        });
         let diag = rows("diag.jsonl")?
             .unwrap_or_default()
             .into_iter()
@@ -601,7 +723,39 @@ impl KgData {
             diag,
             index,
             by_id,
+            source,
+            failure,
         })
+    }
+
+    /// `Ok` when every file that the graph read on demand matched the manifest it was opened with;
+    /// else `E2009`: the graph was replaced since it was opened (`kg_stale`), or is broken. A
+    /// command checks it before it prints an answer.
+    pub fn intact(&self) -> Result<(), Diagnostic> {
+        match self.failure.get() {
+            None => Ok(()),
+            Some(failure) => {
+                let dir = self.source.directory().unwrap_or(Path::new("<memory>"));
+                Err(manifest::diagnostic(dir, failure).expect("a failure is not fresh"))
+            }
+        }
+    }
+
+    /// Reads every file of `facts/` and `layout/` now (and checks them, see `intact`): for a graph
+    /// whose directory another graph is about to replace.
+    pub fn read_all(&self) -> Result<(), Diagnostic> {
+        if let Some(facts) = &self.facts {
+            facts.all().for_each(drop);
+        }
+        if let Some(layouts) = &self.layouts {
+            layouts.all().for_each(drop);
+        }
+        self.intact()
+    }
+
+    /// The directory that the graph was read from (`None` for a graph in memory).
+    pub fn directory(&self) -> Option<&Path> {
+        self.source.directory()
     }
 
     pub fn node(&self, id: &str) -> Option<&Node> {
@@ -749,6 +903,8 @@ pub enum StdSource {
     None,
     /// The std graph in the compiler's cache, built there once; in memory when there is no cache.
     Cache,
+    /// The std graph in the compiler's cache if it is there, never built (`--no-refresh`).
+    Cached,
     /// The std graph built in memory and never written.
     Memory,
 }
@@ -771,6 +927,17 @@ impl KgView {
 
     pub fn project(&self) -> Option<&KgData> {
         self.project.as_deref()
+    }
+
+    /// `KgData::intact` of the project's graph and of the std graph if it was read.
+    pub fn intact(&self) -> Result<(), Diagnostic> {
+        if let Some(project) = self.project() {
+            project.intact()?;
+        }
+        match self.loaded.get() {
+            Some(Some(std)) => std.intact(),
+            _ => Ok(()),
+        }
     }
 
     /// The std graph, built or read the first time it is needed.
@@ -813,4 +980,131 @@ impl KgView {
 pub fn read_manifest(dir: &Path) -> Option<Manifest> {
     let bytes = crate::cache::read_regular(&dir.join(MANIFEST), manifest::MANIFEST_LIMIT).ok()?;
     Manifest::parse(std::str::from_utf8(&bytes).ok()?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kg::input::digest;
+
+    /// The files of a graph of one node named `id`, with its manifest.
+    fn graph(id: &str) -> Files {
+        let mut files = Files::default();
+        files.put("nodes.jsonl", format!("{{\"id\":\"{id}\"}}\n").into_bytes());
+        files.put(
+            "facts/Main.jsonl",
+            format!("{{\"id\":\"{id}\"}}\n").into_bytes(),
+        );
+        let manifest = Manifest {
+            schema: "tz-kg/1".into(),
+            compiler: "tsuzuri".into(),
+            edition: "2026".into(),
+            project: "p".into(),
+            version: None,
+            complete: true,
+            source_hash: "00".repeat(32),
+            counts: Vec::new(),
+            modules: Vec::new(),
+            files: files
+                .0
+                .iter()
+                .map(|(path, bytes)| (path.clone(), digest(bytes)))
+                .collect(),
+        };
+        files.put(MANIFEST, manifest.render().into_bytes());
+        files
+    }
+
+    /// A reader that a writer interrupts reads the files of one publication: the read that
+    /// crossed the replacement starts again on the new graph.
+    #[test]
+    fn a_read_across_a_replacement_starts_again() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        super::super::write::publish(&dir, &graph("old"), "00").unwrap();
+        let attempts = std::cell::Cell::new(0);
+        let (manifest, files) = with_snapshot(&dir, |manifest, read| {
+            attempts.set(attempts.get() + 1);
+            let nodes = read("nodes.jsonl")?.unwrap();
+            if attempts.get() == 1 {
+                // A writer replaces the graph between the reader's two files.
+                super::super::write::publish(&dir, &graph("new"), "00").unwrap();
+            }
+            let facts = read("facts/Main.jsonl")?.unwrap();
+            Ok((manifest.clone(), (nodes, facts)))
+        })
+        .unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(files.0, b"{\"id\":\"new\"}\n");
+        assert_eq!(files.1, b"{\"id\":\"new\"}\n");
+        assert_eq!(manifest.files["nodes.jsonl"], digest(&files.0));
+        // A file read on demand that does not match an unchanged manifest is broken, and so is a
+        // missing one; `nodes.jsonl` is read when the graph is opened.
+        let message = |data: &KgData| data.read_all().unwrap_err().message.clone();
+        std::fs::write(dir.join("facts/Main.jsonl"), b"{}\n").unwrap();
+        let data = KgData::open(&dir).unwrap();
+        assert!(
+            message(&data).contains("is broken (facts/Main.jsonl does not match manifest.json)")
+        );
+        std::fs::remove_file(dir.join("facts/Main.jsonl")).unwrap();
+        let data = KgData::open(&dir).unwrap();
+        assert!(message(&data).contains("is broken (facts/Main.jsonl cannot be read)"));
+        std::fs::remove_file(dir.join("nodes.jsonl")).unwrap();
+        assert_eq!(
+            KgData::open(&dir).unwrap_err(),
+            manifest::Freshness::Broken("nodes.jsonl cannot be read".into())
+        );
+    }
+
+    /// A graph that a writer replaces after a reader opened it gives the reader no rows of the
+    /// new graph: the reader learns that it was replaced.
+    #[test]
+    fn lazy_rows_of_a_replaced_graph_are_refused() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        super::super::write::publish(&dir, &graph("old"), "00").unwrap();
+        let data = KgData::open(&dir).unwrap();
+        assert_eq!(data.nodes[0].id, "old");
+        super::super::write::publish(&dir, &graph("new"), "00").unwrap();
+        assert_eq!(data.facts.as_ref().unwrap().all().count(), 0);
+        let error = data.intact().unwrap_err();
+        assert_eq!(error.code, "E2009");
+        assert!(
+            error
+                .message
+                .ends_with("was replaced while it was read; run the command again")
+        );
+        // A graph that read everything first keeps it.
+        let data = KgData::open(&dir).unwrap();
+        data.read_all().unwrap();
+        super::super::write::publish(&dir, &graph("newer"), "00").unwrap();
+        let ids: Vec<&str> = data
+            .facts
+            .as_ref()
+            .unwrap()
+            .all()
+            .map(|fact| fact.id.as_str())
+            .collect();
+        assert_eq!(ids, ["new"]);
+        data.intact().unwrap();
+    }
+
+    /// A directory on the way to a listed file that is a link is not followed.
+    #[cfg(unix)]
+    #[test]
+    fn linked_directories_are_not_followed() {
+        let root = crate::driver::TemporaryDirectory::new(&std::env::temp_dir()).unwrap();
+        let dir = root.path.join("kg");
+        super::super::write::publish(&dir, &graph("a"), "00").unwrap();
+        let outside = root.path.join("outside");
+        std::fs::rename(dir.join("facts"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("facts")).unwrap();
+        let data = KgData::open(&dir).unwrap();
+        assert!(
+            data.read_all()
+                .unwrap_err()
+                .message
+                .contains("is broken (facts/Main.jsonl cannot be read)")
+        );
+    }
 }

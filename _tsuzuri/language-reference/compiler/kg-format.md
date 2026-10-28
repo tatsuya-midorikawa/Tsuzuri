@@ -82,7 +82,7 @@
 | --- | --- |
 | `id` | ノードの ID |
 | `effects` | 効果の名前（辞書順）。効果の要約（A20）が入るまでは `debug`・`io`・`os`・`net`・`task`・`atomic`・`rc`・`gpu`・`extern`・`user_drop` だけで、呼び出しを通して伝わります |
-| `effect_sites` | 効果ごとに `{"effect","span","via"}`。`via` は、効果を直接持つ関数までの最短の呼び出しの鎖（名前のある関数の ID） |
+| `effect_sites` | 効果ごとに `{"effect","span","via"}`。`via` は、効果を直接持つ関数までの最短の呼び出しの鎖（名前のある関数の ID、近い順）。100 件を超える鎖は先頭の 100 件で、残りの数を `truncated` の `via` に足します |
 | `effects_complete` | 効果の要約が全部の効果を計算したか（今は `false`） |
 | `copy_sites` | 暗黙の複製 `{"span","type","kind","cost"}`（`--warn implicit-copy` の `W1006` と同じ位置） |
 | `alloc_sites` | 明示の確保 `{"span","kind"}`（`new_array`・`new_list`・`new_literal`） |

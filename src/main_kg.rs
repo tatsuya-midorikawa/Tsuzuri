@@ -413,8 +413,19 @@ fn kg_build(arguments: &KgArguments) -> Result<u8, Diagnostic> {
             }
         }
         tsuzuri::kg::build::Plan::Fresh | tsuzuri::kg::build::Plan::Off => {
-            report_build(&dir, "unchanged", 0, true, 0, json);
-            Ok(EXIT_SUCCESS)
+            // An unchanged graph of a failed analysis stays incomplete, and so does the status.
+            let manifest = tsuzuri::kg::store::read_manifest(&dir);
+            match manifest.filter(|manifest| !manifest.complete) {
+                Some(manifest) => {
+                    let errors = manifest.count("errors").unwrap_or(0) as usize;
+                    report_build(&dir, "incomplete", 0, false, errors, json);
+                    Ok(EXIT_FAILURE)
+                }
+                None => {
+                    report_build(&dir, "unchanged", 0, true, 0, json);
+                    Ok(EXIT_SUCCESS)
+                }
+            }
         }
     }
 }
@@ -455,23 +466,14 @@ fn kg_verify(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         Freshness::NotOurs if dir.is_dir() => return Err(manifest::missing(&dir, true)),
         other => return Err(manifest::diagnostic(&dir, &other).expect("not fresh")),
     }
-    let manifest = tsuzuri::kg::store::read_manifest(&dir)
-        .ok_or_else(|| manifest::broken(&dir, "manifest.json is not valid"))?;
-    for (file, digest) in &manifest.files {
-        let Ok(bytes) = std::fs::read(dir.join(file)) else {
-            return Err(manifest::broken(&dir, &format!("{file} is missing")));
-        };
-        if tsuzuri::kg::input::digest(&bytes) != *digest {
-            return Err(manifest::broken(
-                &dir,
-                &format!("{file} does not match manifest.json"),
-            ));
-        }
-    }
-    let data = KgData::open(&dir).map_err(|freshness| {
+    // Every file of one publication, and the graph's invariants over those same bytes.
+    let broken = |freshness: Freshness| {
         manifest::diagnostic(&dir, &freshness)
             .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
-    })?;
+    };
+    let (manifest, files) = tsuzuri::kg::store::read_snapshot(&dir, &|_| true).map_err(broken)?;
+    let data =
+        KgData::from_parts(&manifest, &files).map_err(|reason| manifest::broken(&dir, &reason))?;
     if let Some(violation) = data.violation() {
         return Err(manifest::broken(&dir, &violation));
     }
@@ -549,33 +551,27 @@ fn kg_export(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     };
     let project = load_project(&path)?;
     let dir = open::directory(&project, kg_dir_of(arguments).as_deref());
-    open::open_project(&project, &dir, refresh, &mut |set, project| {
+    let data = open::open_project(&project, &dir, refresh, &mut |set, project| {
         print_diagnostics(set, project, false)
     })?;
-    let manifest = tsuzuri::kg::store::read_manifest(&dir)
-        .ok_or_else(|| manifest::broken(&dir, "manifest.json is not valid"))?;
-    let files: Vec<&String> = match chosen[0] {
-        "--nodes" => manifest
-            .files
-            .keys()
-            .filter(|file| *file == "nodes.jsonl")
-            .collect(),
-        "--edges" => manifest
-            .files
-            .keys()
-            .filter(|file| *file == "edges.jsonl")
-            .collect(),
-        _ => manifest
-            .files
-            .keys()
-            .filter(|file| file.starts_with("facts/") && file.ends_with(".jsonl"))
-            .collect(),
+    let wanted: &dyn Fn(&str) -> bool = match chosen[0] {
+        "--nodes" => &|file| file == "nodes.jsonl",
+        "--edges" => &|file| file == "edges.jsonl",
+        _ => &|file| file.starts_with("facts/") && file.ends_with(".jsonl"),
     };
+    // The files of one publication: the graph that was opened, or a complete one of the same
+    // sources that a writer put in its place since.
+    let (manifest, files) =
+        tsuzuri::kg::store::read_snapshot(&dir, wanted).map_err(|freshness| {
+            manifest::diagnostic(&dir, &freshness)
+                .unwrap_or_else(|| manifest::broken(&dir, "it cannot be read"))
+        })?;
+    if !manifest.complete || manifest.source_hash != data.meta.source_hash {
+        return Err(manifest::broken(&dir, "it changed while it was read"));
+    }
     let mut out = io::stdout().lock();
-    for file in files {
-        let bytes = std::fs::read(dir.join(file))
-            .map_err(|_| manifest::broken(&dir, &format!("{file} is missing")))?;
-        let _ = out.write_all(&bytes);
+    for bytes in files.0.values() {
+        let _ = out.write_all(bytes);
     }
     Ok(EXIT_SUCCESS)
 }
@@ -624,8 +620,9 @@ fn query_view(arguments: &KgArguments) -> Result<tsuzuri::kg::store::KgView, Dia
         refresh_of(arguments),
         &mut |set, project| print_diagnostics(set, project, json),
     )?;
+    // `--no-refresh` builds nothing, and reads the std graph only when the cache has it.
     let std = if arguments.has("--no-refresh") {
-        tsuzuri::kg::store::StdSource::None
+        tsuzuri::kg::store::StdSource::Cached
     } else {
         tsuzuri::kg::store::StdSource::Cache
     };
@@ -635,7 +632,14 @@ fn query_view(arguments: &KgArguments) -> Result<tsuzuri::kg::store::KgView, Dia
     ))
 }
 
-fn print_output(output: &tsuzuri::kg::query::Output, json: bool) {
+/// Prints the answer of a query over `view`, unless a file that the view read on demand shows that
+/// its graph was replaced or is broken.
+fn print_output(
+    view: &tsuzuri::kg::store::KgView,
+    output: &tsuzuri::kg::query::Output,
+    json: bool,
+) -> Result<(), Diagnostic> {
+    view.intact()?;
     let mut out = io::stdout().lock();
     if json {
         for row in &output.rows {
@@ -644,6 +648,7 @@ fn print_output(output: &tsuzuri::kg::query::Output, json: bool) {
     } else {
         let _ = out.write_all(output.text.as_bytes());
     }
+    Ok(())
 }
 
 /// `kg brief|show|callers|callees|uses|tests-for|search|find|path` (G28 Phase 1 and 2, D-60).
@@ -719,7 +724,7 @@ fn kg_query(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         let view = query_view(arguments)?;
         let output = query::brief(&view, &target, &Options { budget, depth: 1 })
             .map_err(|error| error.diagnostic())?;
-        print_output(&output, json);
+        print_output(&view, &output, json)?;
         return Ok(EXIT_SUCCESS);
     }
     if command == "find" {
@@ -782,7 +787,7 @@ fn kg_query(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         }
     }
     .map_err(|error| error.diagnostic())?;
-    print_output(&output, json);
+    print_output(&view, &output, json)?;
     Ok(EXIT_SUCCESS)
 }
 
@@ -836,34 +841,79 @@ fn kg_find(arguments: &KgArguments, positional: &[String], usage: &str) -> Resul
             format!("cannot parse the type query: {}", error.0),
         )
     })?;
-    let (text, rows) = find::render(&query_text, &query, &found, searched);
+    let budget = bounded(
+        arguments,
+        "--budget",
+        tsuzuri::kg::query::BUDGET_RANGE,
+        "--budget must be an integer from 100 to 100000",
+    )?;
+    let (text, rows) = find::render(&query_text, &query, &found, searched, budget);
     let output = tsuzuri::kg::query::Output { text, rows };
-    print_output(&output, arguments.json());
+    print_output(&view, &output, arguments.json())?;
     Ok(EXIT_SUCCESS)
 }
 
-/// The graph at `path` for `impact`: a graph directory as it is, or a project's graph.
-fn impact_graph(
-    path: &Path,
-    kg_dir: Option<&Path>,
+/// A graph that `impact` compares: a graph directory as it is, or a project's graph in `dir`.
+enum ImpactInput {
+    Graph(PathBuf),
+    Project(Box<Project>, PathBuf),
+}
+
+impl ImpactInput {
+    /// The input at `path`. A project's graph is in `kg_dir`, else (for the working tree, `own`
+    /// false) where `--kg-dir` and `TSUZURI_KG_DIR` say, else in its own `target/tz/kg`.
+    fn at(path: &Path, kg_dir: Option<&Path>, own: bool) -> Result<Self, Diagnostic> {
+        if tsuzuri::kg::write::has_marker(path) {
+            return Ok(Self::Graph(path.to_path_buf()));
+        }
+        if !path.exists() {
+            return Err(Diagnostic::of(
+                DiagnosticKind::IoFailure,
+                format!("cannot read '{}'", path.display()),
+                Span::default(),
+            ));
+        }
+        let project = load_project(path)?;
+        let dir = if own {
+            open::own_directory(&project)
+        } else {
+            open::directory(&project, kg_dir)
+        };
+        Ok(Self::Project(Box::new(project), dir))
+    }
+
+    fn directory(&self) -> &Path {
+        match self {
+            Self::Graph(dir) | Self::Project(_, dir) => dir,
+        }
+    }
+
+    fn open(&self, refresh: Refresh, json: bool) -> Result<KgData, Diagnostic> {
+        match self {
+            Self::Graph(dir) => open::read(dir),
+            Self::Project(project, dir) => {
+                open::open_project(project, dir, refresh, &mut |set, project| {
+                    print_diagnostics(set, project, json)
+                })
+            }
+        }
+    }
+}
+
+/// The base and head graphs of `impact`, opened in that order. When the head's graph is in the
+/// base's directory, refreshing it would replace the base's files: the base reads them all first.
+fn impact_graphs(
+    base: &ImpactInput,
+    head: &ImpactInput,
     refresh: Refresh,
     json: bool,
-) -> Result<KgData, Diagnostic> {
-    if tsuzuri::kg::write::has_marker(path) {
-        return open::read(path);
+) -> Result<(KgData, KgData), Diagnostic> {
+    let base_data = base.open(refresh, json)?;
+    if open::same_directory(base.directory(), head.directory()) {
+        base_data.read_all()?;
     }
-    if !path.exists() {
-        return Err(Diagnostic::of(
-            DiagnosticKind::IoFailure,
-            format!("cannot read '{}'", path.display()),
-            Span::default(),
-        ));
-    }
-    let project = load_project(path)?;
-    let dir = open::directory(&project, kg_dir);
-    open::open_project(&project, &dir, refresh, &mut |set, project| {
-        print_diagnostics(set, project, json)
-    })
+    let head_data = head.open(refresh, json)?;
+    Ok((base_data, head_data))
 }
 
 /// `kg impact (--git REV | --from PATH [--to PATH])` (G28 Phase 3).
@@ -892,36 +942,47 @@ fn kg_impact(arguments: &KgArguments) -> Result<u8, Diagnostic> {
         arguments.value("--from"),
         arguments.value("--to"),
     );
+    let kg_dir = kg_dir_of(arguments);
     let impact = match (git, from, to) {
         (Some(rev), None, None) => {
             let path = query_path(arguments);
             let project = load_project(&path)?;
             let root = project
-                .root_directory()
+                .project_directory()
                 .unwrap_or_else(|| PathBuf::from("."));
+            // The checkout lives until the diff has read the base graph's files.
             let checkout = tsuzuri::kg::git::Checkout::create(&root, &rev.to_string_lossy())?;
-            let base = impact_graph(checkout.project_root(), None, Refresh::Auto, json)?;
-            let head = impact_graph(&path, kg_dir_of(arguments).as_deref(), refresh, json)?;
-            tsuzuri::kg::impact::diff(
+            let base = ImpactInput::at(checkout.project_root(), None, true)?;
+            let dir = open::directory(&project, kg_dir.as_deref());
+            let head = ImpactInput::Project(Box::new(project), dir);
+            let (base, head) = impact_graphs(&base, &head, refresh, json)?;
+            let impact = tsuzuri::kg::impact::diff(
                 &base,
                 &head,
                 &format!("git {}", checkout.sha12()),
                 "working tree",
-            )
+            );
+            base.intact()?;
+            head.intact()?;
+            impact
         }
         (None, Some(from), to) => {
-            let base = impact_graph(Path::new(from), None, refresh, json)?;
-            let (head_path, label) = match to {
-                Some(to) => (PathBuf::from(to), to.to_string_lossy().into_owned()),
-                None => (query_path(arguments), "working tree".to_owned()),
+            let base = ImpactInput::at(Path::new(from), None, true)?;
+            let (head, label) = match to {
+                Some(to) => (
+                    ImpactInput::at(Path::new(to), None, true)?,
+                    to.to_string_lossy().into_owned(),
+                ),
+                None => (
+                    ImpactInput::at(&query_path(arguments), kg_dir.as_deref(), false)?,
+                    "working tree".to_owned(),
+                ),
             };
-            let kg_dir = if to.is_some() {
-                None
-            } else {
-                kg_dir_of(arguments)
-            };
-            let head = impact_graph(&head_path, kg_dir.as_deref(), refresh, json)?;
-            tsuzuri::kg::impact::diff(&base, &head, &from.to_string_lossy(), &label)
+            let (base, head) = impact_graphs(&base, &head, refresh, json)?;
+            let impact = tsuzuri::kg::impact::diff(&base, &head, &from.to_string_lossy(), &label);
+            base.intact()?;
+            head.intact()?;
+            impact
         }
         _ => return Err(usage_error(USAGE)),
     };
@@ -1034,7 +1095,7 @@ fn kg_diagram(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     let input = diagram::Input::from_kg(&data).map_err(|failure| failure.diagnostic())?;
     let sources = diagram::DiskSources {
         root: project
-            .root_directory()
+            .project_directory()
             .unwrap_or_else(|| PathBuf::from(".")),
     };
     let request = DiagramRequest {
@@ -1046,6 +1107,7 @@ fn kg_diagram(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     };
     let output =
         diagram::render(&input, &sources, &request).map_err(|failure| failure.diagnostic())?;
+    data.intact()?;
     let mut out = io::stdout().lock();
     if json {
         let _ = writeln!(
