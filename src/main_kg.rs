@@ -368,8 +368,13 @@ fn kg_build(arguments: &KgArguments) -> Result<u8, Diagnostic> {
     match tsuzuri::kg::build::target_for(&dir, &project, arguments.has("--force"))? {
         tsuzuri::kg::build::Plan::Build(target) => {
             let plan = tsuzuri::kg::build::Plan::Build(target);
-            let (analysis, pending) =
-                tsuzuri::kg::build::analyze(&project, true, driver::AnalysisKind::Tests, plan);
+            let (analysis, pending) = tsuzuri::kg::build::analyze(
+                &project,
+                true,
+                driver::AnalysisKind::Tests,
+                plan,
+                tsuzuri::check::contracts::ContractMode::Check,
+            );
             let pending = pending.expect("a build plan captures");
             match analysis {
                 Ok(module) => {

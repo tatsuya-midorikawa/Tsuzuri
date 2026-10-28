@@ -115,6 +115,8 @@ show (payable 1000 10) + " / " + show (payable 1000 0)
 | 操作 | 報告される理由 |
 | --- | --- |
 | `assert` の失敗 | `assertion failed` |
+| `@requires` の違反（`--contracts check`） | `contract requires failed` |
+| `@ensures` の違反（`--contracts check`） | `contract ensures failed` |
 | 整数のゼロ除算 | `integer division by zero` |
 | 符号付き最小値の `/ -1` や `% -1` | `integer division overflow` |
 | 配列・リスト・`Vec` の範囲外添字 | `index out of bounds` |

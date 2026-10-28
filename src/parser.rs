@@ -232,6 +232,13 @@ struct Parser<'a> {
     pending_statement: Option<ComputationStatement>,
     /// Every `dyn` type parsed so far, for `Program::dyn_types` (A14).
     dyn_types: Vec<TypeExpr>,
+    /// The token where the body of the top-level function being parsed starts, the only place
+    /// where its contract lines may begin (A21). An explicit lambda moves it to its own body.
+    contract_site: Option<usize>,
+    /// The contract lines that the current top-level declaration's body started with.
+    site_contracts: Vec<ContractClause>,
+    /// Parsing the condition of an `@ensures` line, where `@old (expression)` may appear.
+    in_ensures: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -258,6 +265,9 @@ impl<'a> Parser<'a> {
             exception_arms: false,
             pending_statement: None,
             dyn_types: Vec::new(),
+            contract_site: None,
+            site_contracts: Vec::new(),
+            in_ensures: false,
         }
     }
 }
@@ -427,6 +437,7 @@ impl Parser<'_> {
         };
         let mut signatures = BTreeMap::new();
         let mut definitions: Vec<Definition> = Vec::new();
+        let mut contracts_by_function: BTreeMap<String, Vec<ContractClause>> = BTreeMap::new();
         let mut defined_names = BTreeSet::new();
         let mut signature_group = None;
         let mut definition_group = None;
@@ -462,6 +473,8 @@ impl Parser<'_> {
         }
         while !self.at(&TokenKind::End) && diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS {
             let start = self.position;
+            self.contract_site = None;
+            self.site_contracts.clear();
             let parsed = (|| -> Result<(), Diagnostic> {
                 let doc = self.take_doc();
                 if self.alias_ahead() {
@@ -753,6 +766,8 @@ impl Parser<'_> {
                             first,
                         ));
                         }
+                        // A21: the body's first lines may be contract lines.
+                        self.contract_site = Some(self.position);
                         let body = if self.at(&TokenKind::Backslash) {
                             self.explicit_lambda()?
                         } else {
@@ -817,6 +832,7 @@ impl Parser<'_> {
                     result,
                     constraints: Vec::new(),
                     body,
+                    contracts: Vec::new(),
                 });
             } else {
                 if self.header_ahead("namespace") {
@@ -843,6 +859,16 @@ impl Parser<'_> {
             }
                 Ok(())
             })();
+            // A21: the contract lines belong to the definition that this declaration made.
+            if parsed.is_ok()
+                && !self.site_contracts.is_empty()
+                && let Some(definition) = definitions.last()
+            {
+                contracts_by_function.insert(
+                    definition.name.text.clone(),
+                    std::mem::take(&mut self.site_contracts),
+                );
+            }
             if let Err(error) = parsed {
                 let resume = error.span.start.min(self.current().span.start);
                 diagnostics.push(error);
@@ -883,6 +909,19 @@ impl Parser<'_> {
                     )
                 })
                 .and_then(|signature| Self::define(signature, definition))
+                .and_then(|mut function| {
+                    function.contracts = contracts_by_function
+                        .remove(&function.name.text)
+                        .unwrap_or_default();
+                    if function.constant && let Some(first) = function.contracts.first() {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ContractOnConst,
+                            "a 'const def' cannot have contract lines: the compiler evaluates it before the program runs; use a 'def' or remove the line",
+                            first.span,
+                        ));
+                    }
+                    Ok(function)
+                })
                 .and_then(|function| self.implicit_active_union(function, &mut program.unions));
             match defined {
                 Ok(function) => program.functions.push(function),
@@ -1355,12 +1394,13 @@ impl Parser<'_> {
                 "Display" => DeriveClass::Display,
                 "Hash" => DeriveClass::Hash,
                 "Default" => DeriveClass::Default,
+                "Arbitrary" => DeriveClass::Arbitrary,
                 "Encode" => DeriveClass::Encode,
                 "Decode" => DeriveClass::Decode,
                 _ => {
                     return Err(Diagnostic::of(
                         DiagnosticKind::UnderivableClass,
-                        "only Eq, Ord, Display, Hash, Default, Encode and Decode can be derived",
+                        "only Eq, Ord, Display, Hash, Default, Encode, Decode and Arbitrary can be derived",
                         name.span,
                     ));
                 }
@@ -1969,6 +2009,8 @@ impl Parser<'_> {
             self.guarded_definition(&parameters)?
         } else {
             self.take();
+            // A21: the body's first lines may be contract lines.
+            self.contract_site = Some(self.position);
             self.body_expression()?
         };
         Ok(Definition {
@@ -2043,6 +2085,7 @@ impl Parser<'_> {
             result,
             constraints: signature.constraints,
             body: definition.body,
+            contracts: Vec::new(),
         })
     }
 

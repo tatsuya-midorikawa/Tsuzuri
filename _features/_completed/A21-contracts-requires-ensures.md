@@ -5,9 +5,9 @@
 | ID | A21 |
 | 優先度 | P2 |
 | 規模 | XL（全体）。Phase 1: M ／ Phase 2: L ／ Phase 3: L ／ Phase 4: M ／ Phase 5: XL ／ Phase 6: M |
-| 依存 | [A19](_completed/A19-pure-functions.md)（**Phase 1 の done が前提**。`pure def` と `src/pure_rules.rs` の効果の源の走査）。A20 Phase 1（任意。`src/effects.rs` があれば純粋性の走査にそれを使う）。G22（任意。`Diagnostic::with_kind`・`related`・`help` があれば使い、なければ付けない。「前提とする他チケットのインターフェース」）。F14（本チケットは機能として使わない。種の依存欄にあるが、使う箇所がない。逸脱として報告済み） |
+| 依存 | [A19](A19-pure-functions.md)（**Phase 1 の done が前提**。`pure def` と `src/pure_rules.rs` の効果の源の走査）。A20 Phase 1（任意。`src/effects.rs` があれば純粋性の走査にそれを使う）。G22（任意。`Diagnostic::with_kind`・`related`・`help` があれば使い、なければ付けない。「前提とする他チケットのインターフェース」）。F14（本チケットは機能として使わない。種の依存欄にあるが、使う箇所がない。逸脱として報告済み） |
 | 後続 | G26（facts の `contracts` キー。任意）。ほかの第3期チケットで本チケットを前提にするものはない |
-| 状態 | todo |
+| 状態 | done（全 Phase。実装と検証は末尾の節） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D9 はすべて承認済み |
 | 改善する劣位 | Eiffel・Ada/SPARK・Dafny・Kotlin（`require`／`ensure`）・Rust（`contracts` crate）は事前条件・事後条件を言語か標準の仕組みとして持ち、実行時検査・性質テスト・静的検証へつなぐ。Tsuzuri には `assert` だけがあり、関数の約束を署名のそばに宣言できず、AI が書いた関数の意図を機械が検査する足場がない（D-50 の調査結論 (2)「署名の契約として固定できない」） |
@@ -55,7 +55,7 @@ HEAD での測定（「現状」）: `@requires` は `E0002` で拒否される�
 
 - **依存**: A19 Phase 1 が done（`git ls-files src/pure_rules.rs` が 1 行）。A20 は任意（`src/effects.rs` があれば純粋性の走査にそちらを使う。「前提とする他チケットのインターフェース」）。
 - **ベースライン（GUIDE §2.3）**: `cargo build --release --locked && cargo test --locked` の件数を控え、`target/release/tsuzuri` を `/tmp/tz-A21/tsuzuri-before` に残し、`tests/fixtures` と `examples` の各プロジェクトを `--emit llvm -O0` で `/tmp/tz-A21/before/<名前>.ll` に保存する（手順 1。「IR が変わらない」確認に使う）。
-- **読むもの**: GUIDE §6.2・§6.5・§6.7・§6.8・§6.9、D-51・D-53・D-55、[A19](_completed/A19-pure-functions.md) の「本体の規則: 効果の源」と「検証のアルゴリズム」。
+- **読むもの**: GUIDE §6.2・§6.5・§6.7・§6.8・§6.9、D-51・D-53・D-55、[A19](A19-pure-functions.md) の「本体の規則: 効果の源」と「検証のアルゴリズム」。
 - `z3` は Phase 5 の確認にだけ要る（調査は Z3 5.1.0）。なければ `z3` を使うテストは skip され、偽の solver のテストだけが走る。
 
 ### 停止条件
@@ -584,3 +584,13 @@ assume（契約を最適化の前提にする）モード。契約の継承・�
 ### D9: `@old (式)`（Phase 6）は `@ensures` の中だけ、Copy のみ
 
 予約語・組み込みモジュール名を足さない。
+
+## 実装と検証（2026-10-29）
+
+- **範囲**: Phase 1〜6 をすべて実装した（構文・織り込み・純粋性・`ContractMode` と `off` の剥がし、`--contracts`・`TrapKind` 2 つ・`E2005` の kind・test runner のトラップ行・E2E、`Gen.for_all_where`・`Arbitrary`・`deriving (Arbitrary)`・`--contracts test` の性質テスト、`W1009`・docgen・hover・`api-diff`、`tsuzuri prove`・`--contracts prove`、`@old`）。基盤は A20 のブランチ（`feat/a20-effect-summary`）の上。
+- **A20 との接続（チケットの経路）**: A20 が先に入ったので、条件の純粋性は `effects.rs` の走査を使う `effects::impurities`（条件の式を関数の文脈で走査し、参照する関数の要約を `summarize_from` で求める。`PURE_FORBIDDEN` と `dyn`・未解決・純粋な関数型でない関数値の呼び出しを不純とする）。`$requires`・`$ensures` は A20 の分類表で `trap`（D-53）。A19 の `pure_rules` の走査は契約の組み込み関数の引数へ降りない（`E1029` との二重の報告を避ける。A19 の既存テストは不変）。
+- **チケットからの逸脱**: ① 性質テストの双子の名前は `$contract_raw_<名前>`（`.` を含む名前はモジュールの修飾と読まれるため）。② `--contracts test` は `Gen` を名前で読み込む opt-in なので、`Project::require_std("Gen")` で足す。③ 生成できる型から `Maybe` を外した（std の `Maybe` に `Display` の instance がなく、`Gen.for_all_where` の反例の表示が型検査に通らない）。④ facts の `contracts` キー（手順 24）は、手順のとおり `src/facts.rs` がない（G26 は `src/kg/` にある）ので飛ばした。⑤ `prove` は、束縛のある複数の選択肢を持つ `match` の腕を `a pattern with alternatives that bind` として非対応にした。`trap_free` の反例の位置は関数名。⑥ `--contracts` は `script` にも値つきの選択肢として足した。⑦ `tests/trap_locations.rs` の専用テストの代わりに、`tests/contracts.rs` の CLI のテスト（native の `trap:` 行と `E2005` の kind・位置）と E2E（WASM の `.trap.json` の kind）で確かめた。
+- **数**: `Builtin` 252 → 254、`TrapKind` 16 → 18（`ContractRequires` = 16・`ContractEnsures` = 17。既存の番号は不変）、`DeriveClass` 7 → 8、`BUILTIN_CLASSES` 33 → 34、`FRONTEND_FORMAT` 10 → 12（契約の符号化と `deriving (Arbitrary)`）。`E2005` の一般の文言は `assert, a contract, or allocation`。
+- **検証**: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。`tests/contracts.rs` 20 件（`off` の IR が契約の行を消した版と完全一致する 10 関数の比較、`off` の先の検査、`check` の IR と決定性、CLI のモードと `E2005`、test runner のトラップ行、`@old`、1,000 万段の自己末尾再帰）、`tests/contracts_property.rs` 5 件、`tests/prove.rs` 6 件（z3 5.1 で `proved`・反例・`unsupported`、反例を native で実行すると契約でトラップ、偽のソルバーで `unknown`・`proved`・`error`・起動の失敗、**差分テスト 3,312／3,312 件が native の実行と一致**）、`api_diff_classifies_contract_lines`。`node tests/features.mjs target/debug/tsuzuri contracts` は 13 cases と 4 traps（native／WASM × O0／O3、WASM の kind）。A20 の掃引（`effects_alloc_conservative`）は契約の fixture を含む 126 プログラムで違反 0。
+- **文書**: 新規 `values-and-functions/contracts.md`、`index.md`・`attributes.md`・`functions.md`・`exception-handling.md`・`assert.md`・`compiler/diagnostics.md`（`E1033`・`E1034`・`W1009` と kind の表）・`option.md`・`usage.md`・`gen.md`・`record.md`・`union.md`・`type-classes.md`、`docs/language.md`・`docs/architecture.md`・`docs/stability.md`・`README.md`・`_features/GUIDE.md`（§4）、explain の `E1033`・`E1034`・`W1009`。`check-docs` は 13 ページ・470 リンク・76 例・136 回の実行が成功。
+- **IR の比較**: A20 の完了時の基準（`target/scratch/a20/base`。fixture と examples の 123 プロジェクトの `--emit llvm -O0`）と比べて、違うのは `tests/fixtures/map_set_chunks` の 1 つだけ。これは `Gen` を読み込むプログラムで、std の `Gen.tz` に足した `Arbitrary` の instance の分だけ、生成する instance の通し番号（`Main.$instance.897` → `900`）がずれる。命令は同じ。`Gen` を読み込まないプログラムは 1 byte も変わらない。全体の `cargo nextest run --locked` は 2,518 件が成功。node の `features`（`contracts`・`effect_attributes`）・`frontend_cache`・`docgen`・`lsp_sessions`・`script`・`e2e`、`check-guide-lite`・`repo_kb` も成功。

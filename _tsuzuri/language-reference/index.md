@@ -38,6 +38,7 @@
   - [純粋な関数型と呼び出しの段階](./values-and-functions/functions.md#純粋な関数型と呼び出しの段階)
   - [IO アクションの構築](./values-and-functions/functions.md#io-アクションの構築)
   - [保証と局所的な最適化](./values-and-functions/functions.md#保証と局所的な最適化)
+- [契約（`@requires`・`@ensures`）](./values-and-functions/contracts.md)
 - [ジェネリック関数と型パラメータ制約](./values-and-functions/generics-functions.md)
 - [ラムダ式](./values-and-functions/lambda-expressions.md)
 - [属性](./values-and-functions/attributes.md)

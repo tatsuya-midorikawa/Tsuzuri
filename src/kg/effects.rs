@@ -91,6 +91,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | ToFloat
         | ToInt
         | Assert
+        | ContractRequires
+        | ContractEnsures
         | CloneString
         | CloneUtf8String
         | StringFromUtf8

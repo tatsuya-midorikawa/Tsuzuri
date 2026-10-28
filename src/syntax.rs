@@ -490,6 +490,8 @@ pub enum DeriveClass {
     Default,
     Encode,
     Decode,
+    /// A21: a generator of values for the property tests of contracts.
+    Arbitrary,
 }
 
 impl DeriveClass {
@@ -502,6 +504,7 @@ impl DeriveClass {
             Self::Default => "Default",
             Self::Encode => "Encode",
             Self::Decode => "Decode",
+            Self::Arbitrary => "Arbitrary",
         }
     }
 }
@@ -530,6 +533,39 @@ pub struct FunctionDecl {
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
     pub body: Expr,
+    /// The `@requires` and `@ensures` lines that start the body (A21), in source order.
+    pub contracts: Vec<ContractClause>,
+}
+
+/// Whether a contract line is checked on entry or on exit (A21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContractKind {
+    Requires,
+    Ensures,
+}
+
+impl ContractKind {
+    /// The attribute's name after `@`.
+    pub fn name(self) -> &'static str {
+        match self {
+            ContractKind::Requires => "requires",
+            ContractKind::Ensures => "ensures",
+        }
+    }
+}
+
+/// One `@requires condition` or `@ensures \result -> condition` line of a function body (A21).
+#[derive(Clone, Debug)]
+pub struct ContractClause {
+    pub kind: ContractKind,
+    /// `@ensures \r -> ..`: the name of the result (`_` for `\_`). `None` for `@requires`.
+    pub binder: Option<Ident>,
+    pub condition: Expr,
+    /// The condition's source text with line breaks and the indentation after them collapsed to
+    /// one space; docgen, hover, api-diff and facts print it. The AST fingerprint clears it.
+    pub text: String,
+    /// From the `@` to the end of the condition.
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

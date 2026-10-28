@@ -659,7 +659,7 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 33] = [
+pub(super) const BUILTIN_CLASSES: [&str; 34] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -691,6 +691,7 @@ pub(super) const BUILTIN_CLASSES: [&str; 33] = [
     "Err",
     "Encode",
     "Decode",
+    "Arbitrary",
     "Sync",
     "AtomicValue",
 ];
@@ -1014,6 +1015,34 @@ impl Classes {
                     default: None,
                 });
         }
+        // A21: `Arbitrary.arbitrary()` is the generator of `Gen` for a type, which the property
+        // tests of contracts build their inputs from.
+        let generator = names
+            .std_type(
+                "Gen",
+                "Gen",
+                vec![Type::Variable("a".into())].into(),
+                Span::default(),
+            )
+            .map(|result| Signature {
+                parameters: Vec::new(),
+                result,
+            })
+            .map_err(|_| {
+                Diagnostic::of(
+                    DiagnosticKind::StdItemMissing,
+                    "Arbitrary needs the standard module Gen",
+                    Span::default(),
+                )
+            });
+        classes.declarations[classes.names["Arbitrary"]]
+            .methods
+            .push(Method {
+                name: "arbitrary".into(),
+                signature: generator,
+                operation: None,
+                default: None,
+            });
         for &ModuleInput {
             name: module,
             program,
@@ -2862,6 +2891,7 @@ fn instance_function(
         ),
         constraints,
         body: definition.body,
+        contracts: Vec::new(),
     })
 }
 
@@ -5334,6 +5364,7 @@ impl Specializer<'_> {
             capture_count: 0,
             is_task: false,
             owned_captures: false,
+            contracts: Default::default(),
         });
         self.intrinsics.insert(key, id);
         self.request(id, Vec::new(), span)
@@ -5399,6 +5430,7 @@ impl Specializer<'_> {
             capture_count: 0,
             is_task: false,
             owned_captures: false,
+            contracts: Default::default(),
         });
         self.to_strings.insert(ty.clone(), id);
         self.request(id, Vec::new(), span)

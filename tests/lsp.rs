@@ -1881,9 +1881,21 @@ fn hover_shows_attributes_and_inferred_effects() {
                 def plain :: i64 -> i64\nfn plain n = n\n\
                 def main :: unit -> i32 = \\() -> (total [1, 2] + first [3] + pick [4] 0 + plain 1) as i32\n";
     let hovers = [
-        ("total xs", "@no_copy def Main.total :: ref [i64] -> i64", Some("inferred effects: none")),
-        ("first xs", "@no_trap def Main.first :: ref [i64] -> i64", Some("inferred effects: none")),
-        ("pick xs", "@no_copy def Main.pick :: ref [i64] -> i64 -> i64", Some("inferred effects: trap")),
+        (
+            "total xs",
+            "@no_copy def Main.total :: ref [i64] -> i64",
+            Some("inferred effects: none"),
+        ),
+        (
+            "first xs",
+            "@no_trap def Main.first :: ref [i64] -> i64",
+            Some("inferred effects: none"),
+        ),
+        (
+            "pick xs",
+            "@no_copy def Main.pick :: ref [i64] -> i64 -> i64",
+            Some("inferred effects: trap"),
+        ),
         ("plain n", "def Main.plain :: i64 -> i64", None),
     ];
     let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {

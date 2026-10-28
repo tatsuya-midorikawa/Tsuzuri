@@ -162,6 +162,10 @@ fn marked<'a>(line: &'a str, marks: &Marks) -> (&'a str, Option<(Span, Option<Tr
 fn runtime_kind(function: &str) -> TrapKind {
     if function == "@tz.stack.check" {
         TrapKind::StackOverflow
+    } else if function.contains("builtin.$requires") {
+        TrapKind::ContractRequires
+    } else if function.contains("builtin.$ensures") {
+        TrapKind::ContractEnsures
     } else if function.contains("builtin.assert") || function.starts_with("@tz.mutex.") {
         TrapKind::Assert
     } else if function.contains("builtin.unreachable") {

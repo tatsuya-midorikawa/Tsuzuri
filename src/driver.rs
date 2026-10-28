@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::check::contracts::ContractMode;
 use crate::check::{CheckedModule, ModuleOrigin};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::llvm::{self, Entry};
@@ -2934,6 +2935,35 @@ impl Project {
         self.analyze_all().map_err(crate::first_error)
     }
 
+    /// Adds the opt-in std module `module` (and the modules it uses) when the sources did not
+    /// name it: the property tests that `--contracts test` generates use `Gen` (A21).
+    pub fn require_std(&mut self, module: &str) {
+        let present: std::collections::BTreeSet<PathBuf> = self
+            .sources
+            .iter()
+            .filter(|source| source.origin == ModuleOrigin::Std)
+            .map(|source| source.path.clone())
+            .collect();
+        let added: Vec<SourceFile> = crate::stdlib::sources_for([module])
+            .into_iter()
+            .filter(|(path, _)| !present.contains(Path::new(path)))
+            .map(|(path, text)| SourceFile {
+                path: PathBuf::from(path),
+                relative_path: PathBuf::from(path),
+                name: crate::stdlib::module_name(path)
+                    .expect("embedded std paths are flat")
+                    .to_owned(),
+                text: text.to_owned(),
+                origin: ModuleOrigin::Std,
+                package: None,
+                namespace: String::new(),
+                edition: crate::syntax::Edition::LATEST,
+            })
+            .collect();
+        // Manifests follow the sources in the indices of spans, so they keep their place after.
+        self.sources.extend(added);
+    }
+
     pub fn analyze_all(&self) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
         crate::analyze_inputs_all(&self.inputs())
     }
@@ -2946,7 +2976,17 @@ impl Project {
         cache: bool,
         kind: AnalysisKind,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
-        self.analyze_cached_core(cache, kind, None)
+        self.analyze_cached_core(cache, kind, None, ContractMode::Check)
+    }
+
+    /// `analyze_cached` in a command's contract mode (A21).
+    pub fn analyze_cached_with_contracts(
+        &self,
+        cache: bool,
+        kind: AnalysisKind,
+        contracts: ContractMode,
+    ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
+        self.analyze_cached_core(cache, kind, None, contracts)
     }
 
     /// `analyze_cached` that also fills `capture`, the declaration view of the knowledge graph
@@ -2956,8 +2996,9 @@ impl Project {
         cache: bool,
         kind: AnalysisKind,
         capture: &mut crate::check::kg_capture::Capture,
+        contracts: ContractMode,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
-        let result = self.analyze_cached_core(cache, kind, Some(&mut *capture));
+        let result = self.analyze_cached_core(cache, kind, Some(&mut *capture), contracts);
         let inputs = self.inputs();
         let texts: Vec<_> = inputs.iter().map(|input| input.text).collect();
         if let Some(index) = capture.semantic.as_mut() {
@@ -2971,6 +3012,7 @@ impl Project {
         cache: bool,
         kind: AnalysisKind,
         capture: Option<&mut crate::check::kg_capture::Capture>,
+        contracts: ContractMode,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
         let inputs = self.inputs();
         let cache_time = crate::timings::Phase::start("cache");
@@ -2985,10 +3027,17 @@ impl Project {
         // The commands of the command line use the available cores unless `TSUZURI_THREADS` says otherwise.
         let parallelism = crate::parallel::Parallelism::command_line();
         match frontend {
-            Some(mut cache) => {
-                crate::analyze_inputs_core(&inputs, None, Some(&mut cache), parallelism, capture)
+            Some(mut cache) => crate::analyze_inputs_core(
+                &inputs,
+                None,
+                Some(&mut cache),
+                parallelism,
+                capture,
+                contracts,
+            ),
+            None => {
+                crate::analyze_inputs_core(&inputs, None, None, parallelism, capture, contracts)
             }
-            None => crate::analyze_inputs_core(&inputs, None, None, parallelism, capture),
         }
     }
 
@@ -5571,8 +5620,13 @@ fn run_process(
                     site.message(sources)
                         .is_ok_and(|message| stderr.contains(&message))
                 })
-                .map(|site| site.span)
+                .map(|site| (site.span, site.kind))
         });
+        // A21: a contract line's trap is reported with its own kind.
+        let kind = site
+            .and_then(|(_, kind)| kind.diagnostic_kind())
+            .unwrap_or(DiagnosticKind::ProgramTerminated);
+        let site = site.map(|(span, _)| span);
         let message = if !json || stderr.trim().is_empty() {
             if site.is_none() && stderr.contains(STACK_OVERFLOW_REPORT) {
                 format!(
@@ -5584,17 +5638,13 @@ fn run_process(
                 )
             } else {
                 format!(
-                    "program terminated with {status}; integer division, indexing, assert, or allocation may have trapped"
+                    "program terminated with {status}; integer division, indexing, assert, a contract, or allocation may have trapped"
                 )
             }
         } else {
             format!("program terminated with {}:\n{}", status, stderr.trim_end())
         };
-        return Err(Diagnostic::of(
-            DiagnosticKind::ProgramTerminated,
-            message,
-            site.unwrap_or_default(),
-        ));
+        return Err(Diagnostic::of(kind, message, site.unwrap_or_default()));
     }
     if json {
         io::stderr()

@@ -49,6 +49,8 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/computation.rs` | ソース種別の検査、`.tc` ビルダーと `@alias` の収集、型検査前の関数・継続への展開（check の子モジュール） |
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、モジュール関数制約の解決、制約の伝播、単相化（check の子モジュール） |
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉解析、lambda lifting、公開 ABI 向けの完全適用ラッパー生成 |
+| `src/contracts.rs` | `check::contracts`（A21）: `ContractMode`・`ContractShape`、契約の行の型付き IR への織り込み（`Checker::contracted_body`。`$requires`・`$ensures` の呼び出しと `@old` の束縛を `Block` に並べる）、`off` の剥がし（`strip`。`polymorph::specialize` の直前）、条件の純粋性（`effects::impurities` による `E1033`）、`--contracts test` の性質テストの生成（`generate_tests`。AST の双子と `test`） |
+| `src/prove.rs`・`src/prove_smt.rs` | `tsuzuri prove`・`--contracts prove`（A21 Phase 5）: 織り込んだ関数を `QF_BV` の SMT-LIB に翻訳し（トラップは値でなく義務として集める）、問いごとに外部ソルバーを起動し、反例を復元して報告する。`binary_term` は差分テストの被験 |
 | `src/effects.rs` | `check::effects`（A20）: 特殊化と `closures::lower` の後の型付き IR から関数ごとの効果の要約（D-53 の 14 個のビット集合と「たどれない呼び出し」）を推論する。関数の参照を辺とする呼び出しグラフの強連結成分は同じ要約を持ち（Kosaraju、反復）、証拠は直接の源から幅優先で伝える。組み込み関数は wildcard のない `builtin_facts` の表（A19 の `pure_rules::builtin_impure` と facts の `kg::effects::builtin_effect` と一致を単体テストで固定）。`alloc` はエミッターの `llvm::frame_bytes`・`llvm::staying_locals` を再利用する位置規則、`trap` は `ranges::analyze` と `enter_else_condition`、`copy` は `copies::sites`。関数型の引数の呼び出しは `calls_params` に移し、属性つきの関数の呼び出し側で実引数を検査する。属性（`Program.effect_attributes` → `FunctionOrigin.asserts`。特殊化のインスタンスは保ち、生成関数は持たない）がなければ何も計算しない。`validate` が `E1031`・`E1032`・`W1008` を作る。生成 IR は変えない |
 | `src/closures_rec.rs` | ローカルな `let rec`（`and` のグループを含む）のリフト。グループの捕捉の和、値渡しと借用の分類、本体ごとのフレーム（どの `let rec` 関数を直接呼べるか）、予約した id、直接呼び出しへの書き換え（closures の子モジュール） |
 | `src/numeric.rs` | プリミティブ型名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |

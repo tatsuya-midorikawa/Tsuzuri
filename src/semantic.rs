@@ -579,7 +579,14 @@ fn define_declarations(
                         || function.signature.as_type().display(types),
                         |declaration| declaration_signature(declaration, function, types)
                     )
-                )
+                ) + &declaration
+                    .map(|declaration| {
+                        crate::docgen::contract_lines(&declaration.contracts)
+                            .into_iter()
+                            .map(|line| format!("\n    {line}"))
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default()
             };
             let definition = index.define(Definition {
                 exported,
@@ -771,7 +778,10 @@ pub(super) fn collect(
                         },
                         function.name,
                         declaration_signature(declaration, function, &types)
-                    ),
+                    ) + &crate::docgen::contract_lines(&declaration.contracts)
+                        .into_iter()
+                        .map(|line| format!("\n    {line}"))
+                        .collect::<String>(),
                 );
             }
             for parameter in &declaration.parameters {

@@ -301,7 +301,7 @@ fn derive_components_without_instances_report_e1025() {
     let message = rejects("record R { value: i64 } deriving (Copy)\n()", "E1025");
     assert_eq!(
         message,
-        "only Eq, Ord, Display, Hash, Default, Encode and Decode can be derived"
+        "only Eq, Ord, Display, Hash, Default, Encode, Decode and Arbitrary can be derived"
     );
     rejects(
         "record R { value: i64 } deriving (Encode, Encode)\n()",

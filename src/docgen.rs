@@ -319,6 +319,17 @@ fn module_page(name: &str, namespace: Option<&str>, program: &Program) -> String
     )
 }
 
+/// The contract lines of a function as written, with each condition on one line (A21).
+pub(crate) fn contract_lines(contracts: &[ContractClause]) -> Vec<String> {
+    contracts
+        .iter()
+        .map(|clause| match &clause.binder {
+            Some(binder) => format!("@ensures \\{} -> {}", binder.text, clause.text),
+            None => format!("@requires {}", clause.text),
+        })
+        .collect()
+}
+
 fn render_declarations(program: &Program) -> String {
     let mut declarations = Vec::new();
     for declaration in &program.functions {
@@ -370,7 +381,7 @@ fn render_declarations(program: &Program) -> String {
                 kind: TypeExprKind::Variable("T".into()),
                 span: declaration.result.span,
             });
-        let code = signature(
+        let mut code = signature(
             &prefix,
             &name,
             &declaration.regions,
@@ -378,6 +389,11 @@ fn render_declarations(program: &Program) -> String {
             declaration.parameters.iter().map(|parameter| &parameter.ty),
             implicit_result.as_ref().unwrap_or(&declaration.result),
         );
+        // A21: the contract lines follow the signature, as the body starts with them.
+        for line in contract_lines(&declaration.contracts) {
+            code.push_str("\n    ");
+            code.push_str(&line);
+        }
         let position = declaration
             .parameters
             .first()

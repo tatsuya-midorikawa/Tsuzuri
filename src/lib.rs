@@ -46,6 +46,7 @@ pub mod ownership;
 pub mod package;
 mod parallel;
 pub mod parser;
+pub mod prove;
 mod ranges;
 pub mod repl;
 pub mod resident;
@@ -141,6 +142,35 @@ pub fn analyze_modules_with_std_all(
     std_sources: &[(&str, &str)],
 ) -> Result<check::CheckedModule, DiagnosticSet> {
     analyze_modules_in_edition(sources, std_sources, syntax::Edition::E2026)
+}
+
+/// `analyze_modules_all` with the contract mode of a command (A21): `Off` strips the woven
+/// contract lines before specialization, after checking them as `Check` does.
+pub fn analyze_modules_with_contracts(
+    sources: &[(&str, &str)],
+    mode: check::contracts::ContractMode,
+) -> Result<check::CheckedModule, DiagnosticSet> {
+    let std_sources = stdlib::sources_for(sources.iter().map(|(_, text)| *text));
+    let inputs: Vec<_> = sources
+        .iter()
+        .map(|(path, text)| SourceInput {
+            path,
+            text,
+            origin: ModuleOrigin::User,
+            namespace: "",
+            edition: syntax::Edition::E2026,
+            package: None,
+        })
+        .chain(std_sources.iter().map(|(path, text)| SourceInput {
+            path,
+            text,
+            origin: ModuleOrigin::Std,
+            namespace: "",
+            edition: syntax::Edition::E2026,
+            package: None,
+        }))
+        .collect();
+    analyze_inputs_with_contracts(&inputs, None, None, parallel::Parallelism::library(), mode)
 }
 
 fn analyze_modules_in_edition(
@@ -314,7 +344,24 @@ pub(crate) fn analyze_inputs_with(
     cache: Option<&mut frontend_cache::FrontendCache>,
     parallelism: parallel::Parallelism,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
-    analyze_inputs_core(inputs, semantic, cache, parallelism, None)
+    analyze_inputs_with_contracts(
+        inputs,
+        semantic,
+        cache,
+        parallelism,
+        check::contracts::ContractMode::Check,
+    )
+}
+
+/// `analyze_inputs_with` in a command's contract mode (A21).
+pub(crate) fn analyze_inputs_with_contracts(
+    inputs: &[SourceInput<'_>],
+    semantic: Option<&mut check::semantic::SemanticIndex>,
+    cache: Option<&mut frontend_cache::FrontendCache>,
+    parallelism: parallel::Parallelism,
+    contracts: check::contracts::ContractMode,
+) -> Result<check::CheckedModule, DiagnosticSet> {
+    analyze_inputs_core(inputs, semantic, cache, parallelism, None, contracts)
 }
 
 /// `analyze_inputs_with` that also fills `capture`, the declaration view of the knowledge graph
@@ -326,11 +373,14 @@ pub(crate) fn analyze_inputs_core(
     cache: Option<&mut frontend_cache::FrontendCache>,
     parallelism: parallel::Parallelism,
     capture: Option<&mut check::kg_capture::Capture>,
+    contracts: check::contracts::ContractMode,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
-    analyze_inputs_unannotated(inputs, semantic, cache, parallelism, capture).map_err(|mut set| {
-        hints::annotate(&mut set, inputs);
-        set
-    })
+    analyze_inputs_unannotated(inputs, semantic, cache, parallelism, capture, contracts).map_err(
+        |mut set| {
+            hints::annotate(&mut set, inputs);
+            set
+        },
+    )
 }
 
 /// Checks `inputs` once and fills `capture` (G26), keeping only references of the semantic index
@@ -340,7 +390,14 @@ pub(crate) fn analyze_inputs_captured(
     capture: &mut check::kg_capture::Capture,
     parallelism: parallel::Parallelism,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
-    let checked = analyze_inputs_core(inputs, None, None, parallelism, Some(&mut *capture));
+    let checked = analyze_inputs_core(
+        inputs,
+        None,
+        None,
+        parallelism,
+        Some(&mut *capture),
+        check::contracts::ContractMode::Check,
+    );
     let texts: Vec<_> = inputs.iter().map(|input| input.text).collect();
     if let Some(index) = capture.semantic.as_mut() {
         index.retain_spelled(&texts);
@@ -355,6 +412,7 @@ fn analyze_inputs_unannotated(
     mut cache: Option<&mut frontend_cache::FrontendCache>,
     parallelism: parallel::Parallelism,
     capture: Option<&mut check::kg_capture::Capture>,
+    contracts: check::contracts::ContractMode,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
     let mut programs = Vec::new();
     let mut diagnostics = Diagnostics::new(0);
@@ -414,6 +472,16 @@ fn analyze_inputs_unannotated(
             .collect();
         cache.finish(&records);
     }
+    // A21 Phase 3: `--contracts test` turns the contract lines of the user's functions into
+    // property tests.
+    let mut skipped = Vec::new();
+    if contracts == check::contracts::ContractMode::Test {
+        for (((name, _, _), program, _), input) in programs.iter_mut().zip(inputs) {
+            if input.origin == ModuleOrigin::User {
+                skipped.extend(check::contracts::generate_tests(program, name));
+            }
+        }
+    }
     let modules: Vec<_> = programs
         .iter()
         .zip(inputs)
@@ -429,10 +497,33 @@ fn analyze_inputs_unannotated(
             },
         )
         .collect();
-    match capture {
-        Some(capture) => check::check_modules_captured(&modules, capture, parallelism),
-        None => check::check_modules_indexed_all(&modules, semantic, parallelism),
+    // A21: `off` emits no contract checks, but checks the woven lines once first, so that the
+    // checks after specialization (ownership, purity, effects) do not depend on the mode.
+    if contracts == check::contracts::ContractMode::Off
+        && modules.iter().any(|module| {
+            module.origin == ModuleOrigin::User
+                && module
+                    .program
+                    .functions
+                    .iter()
+                    .any(|function| !function.contracts.is_empty())
+        })
+    {
+        check::check_modules_indexed_all(
+            &modules,
+            None,
+            parallelism,
+            check::contracts::ContractMode::Check,
+        )?;
     }
+    let checked = match capture {
+        Some(capture) => check::check_modules_captured(&modules, capture, parallelism, contracts),
+        None => check::check_modules_indexed_all(&modules, semantic, parallelism, contracts),
+    };
+    checked.map(|mut module| {
+        module.warnings.extend(skipped);
+        module
+    })
 }
 
 /// Checks `inputs` and fills `index`, keeping only references spelled in the sources.

@@ -263,6 +263,8 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/cache.rs` | 全ビルドの cache。SHA-256、metadata、writer lock、GC（G11） |
 | `src/constants.rs`、`src/const_machine.rs`、`src/const_rules.rs`、`src/const_static.rs` | 定数の評価と型付きリテラルへの展開（D06）。`const def` の明示スタックの評価器（`Machine`）、署名と本体の規則（`Type`／`TypedExprKind` を `_ =>` なしで振り分ける）、平たいデータの定数の静的データ（D11） |
 | `src/pure_rules.rs` | A19 の署名・平たい所有データ・純粋性の検査。閉じた根からの到達可能性と D-53 の問い合わせ口 |
+| `src/contracts.rs` | A21 の契約: `ContractMode`・織り込み・`off` の剥がし・条件の純粋性・性質テストの生成 |
+| `src/prove.rs`・`src/prove_smt.rs` | A21 の `tsuzuri prove`: `QF_BV` への翻訳・ソルバーの起動・反例の復元 |
 | `src/effects.rs` | A20 の効果の要約（`check::effects`）と効果の属性の検査（`E1031`・`E1032`・`W1008`）。組み込み関数の分類表 `builtin_facts` |
 | `src/derive.rs` | `deriving` の instance を通常の AST として生成（A07） |
 | `src/docgen.rs` | API 文書の生成（G09） |

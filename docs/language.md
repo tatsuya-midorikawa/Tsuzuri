@@ -3266,6 +3266,14 @@ Simd.sum_lanes shifted
 - 上限: 1 つの要約が 4,096 関数または 2,097,152 式を超えると `E1017`（`effect_summary_limit`）です。
 - `tsuzuri doc`・hover は属性を表示し、hover は推論した効果も表示します。`api-diff` は属性を足すのを互換、外すのを互換のない変更とします。`no_alloc` などは予約語ではありません。
 
+### 契約（`@requires`・`@ensures`）
+
+トップレベル関数の本体の最初の行から、`@requires 条件` と `@ensures \r -> 条件` を本体の文と同じ字下げで連続して書くと、関数の契約になります（`def f :: T = \x ->`（入れ子のラムダは最も内側）・`fn f x =`・引数のない `def f :: T =` の形。`{ }` の本体・ガード・ラムダ・ローカル関数・`test`・メソッドには書けず、`const def` の契約も `E1033`）。条件は純粋な `bool` の式で（A19 の `pure` と同じ効果を禁じ、確保とトラップは許す）、`@ensures` はラムダで結果に名前を付けます（`\_` も可、複数の行が別の名前でもよい）。`requires`・`ensures` は予約語ではありません。
+型検査器は本体を `Block`（`$requires` の呼び出し → `@old` の束縛 → 結果の束縛 → `$ensures` の呼び出し → 結果）に織り込みます。`@requires` は入口で、`@ensures` は出口で評価し、偽ならトラップします（`TrapKind` の 16 `contract requires failed`・17 `contract ensures failed`。位置は契約の行。`run` の `E2005` の kind は `contract_requires`・`contract_ensures`）。評価は通常の式と同じで、契約を最適化の前提にしません。`@ensures` を持つ関数の自己末尾呼び出しは末尾でなくなります。
+モードは `--contracts off|check|test|prove` です（既定は `build`・`bench` が `off`、`run`・`script`・`test` が `check`、`check`・`doc`・LSP は常に型検査する）。`off` は特殊化の直前に織り込みを剥がし、生成 IR は契約の行がないのと 1 byte も同じです（契約のあるプロジェクトは先に `check` の形で 1 回検査し、`off` と `check` で受理と診断が変わらない）。`test` は `tsuzuri test` が関数ごとに `Gen.for_all_where` の試験 `contract <名前>` を作り（双子の関数 `$contract_raw_<名前>` を呼ぶ。生成できない関数は `W1009`）、`prove` は SMT ソルバーで証明してから `check` として続けます。`@ensures` の中の `@old (式)` は入口の値です（平たい Copy の値だけ）。
+`tsuzuri prove [PATH] [--function NAME]... [--prove-timeout SECONDS] [--json]` は、関数ごとに `trap_free`（`@requires` のもとで本体がトラップしない）と各 `@ensures` を、`QF_BV` の台本に翻訳して外部ソルバー（`TSUZURI_SMT`、`z3`、`cvc5`。同梱しない）に問います（1 問 1 プロセス、決定的な台本）。対応するのは整数・`bool`・組・レコード・ペイロードのない union、`if`・`match`・`Block`、深さ 8 までのインライン展開と `Int.min`・`Int.max`・`Int.abs`・`assert` で、ループ・文字列・配列・クロージャ・浮動小数点・再帰・契約の条件の中の除算は `unsupported` です。結果は `proved`・`counterexample`・`unsupported`・`unknown`・`error` の 1 行で、`proved` 以外は `E1034` です。証明しても実行時の検査は取り除きません。
+`tsuzuri doc` と hover は契約の行を署名の下に出し、`api-diff` は `@requires` の追加と `@ensures` の削除を互換のない変更とします。
+
 ### Seq と明示的な反復
 
 `Seq<'a>` は、同期的かつ 1 回消費限りの遅延シーケンス（ジェネレータ）型です。常に非 Copy 型であり、`Seq.next sequence` は現在のシーケンスの所有権を消費して、タプル `(Seq<'a> * Maybe<'a>)` を返却します。
@@ -4348,6 +4356,8 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1029` | `pure def` の署名・到達する処理・`own` の平たいデータの規則に対する違反 |
 | `E1031` | 効果の属性（`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`）の表明を推論した効果が破る |
 | `E1032` | 効果の属性の置き場の誤り（`def` 以外・重複・`extern`・式の位置） |
+| `E1033` | 契約の行（`@requires`・`@ensures`・`@old`）の置き場・型・純粋性・結果のラムダ・参照の結果の誤り、`const def` の契約 |
+| `E1034` | `tsuzuri prove`・`--contracts prove` の反例・非対応・時間切れ・ソルバーの失敗・ソルバーがない |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |
@@ -4357,6 +4367,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1005` | 別のパッケージまたは標準ライブラリが `@deprecated` にした `def`・`record`・`union` の使用（警告。デフォルトで有効。同じパッケージの中の使用には出ない） |
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
 | `W1008` | 効果の属性が検査されない（インスタンスのないジェネリック関数）か、`const def` の実行時の本体だけを検査する |
+| `W1009` | 契約の行が何も確かめない（常に真・使わない結果の名前）か、`--contracts test` で性質テストを作れない |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
 | `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合、`--freestanding` での `Mutex` と `Channel` |
 | `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |

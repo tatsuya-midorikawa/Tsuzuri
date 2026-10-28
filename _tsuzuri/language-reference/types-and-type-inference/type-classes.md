@@ -9,7 +9,7 @@
 - クラス宣言は `.tt`、インスタンスは `.tz` または `.tc` に置きます。
 - メソッドの型はクラス側に書き、インスタンス側では書き直しません。
 - 同じクラスと型のインスタンスは、プロジェクトに 1 つだけです。
-- `deriving` は `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` を構造から作ります。
+- `deriving` は `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode`、`Arbitrary` を構造から作ります。
 - `dyn C` は、異なる型の値を一つのコレクションへ入れ、vtable でメソッドを呼びます。
 
 ## クラスとインスタンス
@@ -133,6 +133,7 @@ flowchart TD
 | `Parse` | `parse :: ref string -> Maybe<'a>` |
 | `Hash` | `hash :: ref 'a -> i64u` |
 | `Default` | 引数なしの `default`。呼び出しは `Default.default()` |
+| `Arbitrary` | 引数なしの `arbitrary`。型の `Gen` の生成器。呼び出しは `Arbitrary.arbitrary()`（[Gen](../built-in-types-and-modules/gen.md#arbitrary-と-deriving-arbitrary)） |
 | `Drop` | `drop :: ref mut 'a -> unit`。スコープの終わりに自動で一度だけ呼ばれる |
 | `Format` | `format :: ref 'a -> ref string -> string`。補間の穴向け |
 | `Err` | `msg :: ref 'a -> string`。`try` のハンドラが返すエラーの説明 |
@@ -147,7 +148,7 @@ flowchart TD
 
 ## deriving
 
-型宣言の末尾に `deriving (...)` を付けると、同じモジュールへ条件付きインスタンスが生成されます。指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode` です。
+型宣言の末尾に `deriving (...)` を付けると、同じモジュールへ条件付きインスタンスが生成されます。指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode`、`Arbitrary` です。
 
 ```tsuzuri run=42
 record Point { horizontal: i64, vertical: i64 } deriving (Eq, Ord, Display, Hash, Default)
@@ -179,6 +180,7 @@ else
 | `Hash` | 64-bit FNV-1a。同じ値は同じハッシュ。逆は保証しない |
 | `Encode` | レコードは宣言順の object、共用体は `"Case"` か `{"Case": payload}`。最初の Error で止まる |
 | `Decode` | 同じ形だけを受理する。余分なキーは無視し、無いキーは `null` として decode する。宣言順で最初の Error を返す |
+| `Arbitrary` | レコードは各フィールドの生成器を組にした `Gen`、共用体はケースを同じ確率で選ぶ `Gen`。再帰的な型は `E1025` |
 
 ```tsuzuri run=42
 union Status = Waiting | Completed of i64 deriving (Eq, Display, Default)

@@ -214,6 +214,7 @@ def distance_of :: 'T -> 'U
 #### カリー化・演算子・クロージャ
 
 - **純粋性の契約**: `pure def` と関数型 `pure (T -> U)` は、観測できる副作用がないことをコンパイラが検査する契約です。引数は共有借用か平たいデータの `own` で、generic・純粋 callback・class／instance・`@cpu` にも対応します。停止・トラップしないこと・割り当てがないことは保証しません（[純粋関数](_tsuzuri/language-reference/values-and-functions/functions.md)）。
+- **契約**: 関数の本体の先頭に `@requires 条件`・`@ensures \r -> 条件` を書くと、`run`・`test` は入口と出口で検査し（`build` の既定は検査コードなし）、`tsuzuri test --contracts test` は性質テストを生成し、`tsuzuri prove` は z3 などの SMT ソルバーで証明します（[契約](_tsuzuri/language-reference/values-and-functions/contracts.md)）。
 - **効果の表明**: `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` を `def` に付けると、コンパイラが関数の効果（確保・暗黙の複製・論理のトラップ・停止しない可能性）を型付き IR から推論し、表明を破れば `E1031` で拒否します。属性は検査だけで、生成コードは変わりません（[属性: 効果の表明](_tsuzuri/language-reference/values-and-functions/attributes.md#効果の表明no_allocno_copyno_trapterminates)）。
 - **カリー化と静的単相化**: すべての関数は自動的にカリー化されており、部分適用を自然に行えます。型クラスによるメソッド解決はコンパイル時に完全に完了し、動的ディスパッチやランタイム辞書渡しのコストを一切発生させません（明示した [`dyn` 型](_tsuzuri/language-reference/types-and-type-inference/type-classes.md) を除きます）。呼び出しに使われた具体的な型の組み合わせごとに最適化されたコードを生成します。
 - **演算子**: パイプライン演算子 `|>`、関数合成演算子 `>>`（順方向: `\x -> g (f x)`）および `<<`（逆方向: `\x -> f (g x)`）、累乗演算子 `**`（右結合）、組み込みの `not` や `ignore` を提供します。ビット演算には F# と同様の `&&&`、`|||`、`^^^`、`~~~`、`<<<`、`>>>` を使用します（`>>>` は符号付き整数なら算術シフト、符号なし整数なら論理シフト）。詳細は [演算子と式](_tsuzuri/language-reference/values-and-functions/op-and-expressions.md) を参照してください。
@@ -916,6 +917,8 @@ tsuzuri guide std [MODULE] | --agents [DIR] | --llms-txt [DIR]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
 tsuzuri api-diff old new [--json] [--effective]
+tsuzuri prove [source.tz|directory] [--function NAME]... [--prove-timeout SECONDS] [--json]
+tsuzuri build|run|test|check ... [--contracts off|check|test|prove]
 tsuzuri check|build|run|test ... [--kg | --no-kg] [--kg-dir DIR]
 tsuzuri kg build|verify|clean|export [PATH] [--kg-dir DIR] [--std] [--force] [--nodes|--edges|--facts] [--no-refresh] [--json]
 tsuzuri kg brief|show|callers|callees|uses|tests-for|search|find|path ... [--budget N] [--path PATH] [--no-refresh] [--json]
@@ -950,6 +953,8 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
 | `--allocs` | `tsuzuri bench` の時間測定後、別の counting 実行器で `alloc_calls`・`alloc_bytes` を報告します。指定しない出力は変わりません。 |
 | `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
+| `--contracts off\|check\|test\|prove` | 契約の行（`@requires`・`@ensures`）の使い方（既定: `build` は `off`、`run`・`test` は `check`）。`test` は `tsuzuri test` で性質テストを作り、`prove` は SMT ソルバーで証明してから `check` として続けます。 |
+| `--prove-timeout SECONDS`, `--function NAME` | `--contracts prove` と `tsuzuri prove` の問いごとの時間（既定 10 秒）と、証明する関数。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
 | `--wasm-feature simd128\|threads\|jspi\|webgpu\|net\|tail-call` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、Async の JavaScript Promise Integration、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`、同じ再帰グループへの保証された末尾呼び出しを `return_call` にする `tail-call`。`net` には `jspi` が必要）を有効化します。 |
 | `--allocator system\|host\|counting\|small` | ヒープ確保の行き先（既定: `system`）。`host` はホストの `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼びます。`counting` は実行ファイル・object・共有ライブラリ・LLVM IR・header・WASM に使え、`Alloc` と従来の 32-byte ABI `tsuzuri_alloc_stats` で読めます。`run` と `test` も `counting` だけを受けます。`small` は native 64-bit のサイズ区分 allocator（512 バイト以下を区分から、それ以上を C ライブラリから確保）で、WASM・`--trap-mode return`・`--freestanding` とは排他です。 |

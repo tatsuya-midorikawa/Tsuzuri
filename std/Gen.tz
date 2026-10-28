@@ -393,3 +393,78 @@ fn for_all generator property = check (\value -> Display.display value) (default
 /// Checks `property` on `cases` values of `generator`, as `check` with `Display.display`.
 def for_all_cases :: Display<'a> => own i64 -> own Gen<'a> -> own ('a -> bool) -> unit
 fn for_all_cases cases generator property = check (\value -> Display.display value) cases generator property
+
+/// Runs `generator` on `source`, then `property` on its value: its verdict (`None` discards the
+/// value), and the choices that the run made.
+private def attempt_where :: own Gen<'a> -> own ('a -> Maybe<bool>) -> own Source -> (Maybe<bool> * [i64u])
+fn attempt_where generator property source =
+	match generator.run source with
+	| (value, (_, _, _, choices)) -> (property value, Vec.to_array choices)
+
+/// Checks `property` on values of `generator` until `cases` of them are valid (the property is
+/// not `None`), and traps on the first value where it is `Some false`, as `check` does. More than
+/// nine discarded values per valid one end the test with a failure.
+def check_where :: own (ref 'a -> string) -> own i64 -> own Gen<'a> -> own ('a -> Maybe<bool>) -> unit
+fn check_where show cases generator property =
+	assert (cases > 0)
+	let seed = Gen.__seed()
+	let limit = cases * 10
+	let mut tried = 0
+	let mut valid = 0
+	let mut failing: [i64u] = []
+	let mut failed = false
+	while !failed && valid < cases && tried < limit do
+		match attempt_where generator property (search seed (tried as i64u)) with
+		| (Some false, choices) ->
+			failing = choices
+			failed = true
+		| (Some true, _) ->
+			valid = valid + 1
+			tried = tried + 1
+		| (None, _) -> tried = tried + 1
+	if failed then
+		// A discarded value counts as holding, so that shrinking does not escape to one.
+		let holds = \value ->
+			match property value with
+			| Some false -> false
+			| _ -> true
+		match shrink generator holds failing with
+		| (smallest, shrinks) ->
+			let header = "property failed after " + to_string (tried + 1) + " tries (seed " + to_string seed + ")"
+			let found = "counterexample: " + describe show generator smallest
+			let original = "shrunk " + to_string shrinks + " times from " + describe show generator failing
+			Debug.print (ref header)
+			Debug.print (ref found)
+			Debug.print (ref original)
+			assert false
+	elif valid < cases then
+		Debug.print (ref ("property gave up: " + to_string valid + " of " + to_string cases + " values were valid after " + to_string tried + " tries (seed " + to_string seed + ")"))
+		assert false
+
+/// Checks `property` on 100 valid values of `generator`, as `check_where` with `Display.display`.
+def for_all_where :: Display<'a> => own Gen<'a> -> own ('a -> Maybe<bool>) -> unit
+fn for_all_where generator property = check_where (\value -> Display.display value) (default_cases()) generator property
+
+instance Arbitrary<i64> { fn arbitrary = Gen.i64() }
+instance Arbitrary<i32> { fn arbitrary = Gen.i32() }
+instance Arbitrary<i16> { fn arbitrary = Gen.map (\value -> value as i16) (Gen.i64()) }
+instance Arbitrary<i8> { fn arbitrary = Gen.map (\value -> value as i8) (Gen.i64()) }
+instance Arbitrary<i64u> { fn arbitrary = Gen.map (\value -> value as i64u) (Gen.i64()) }
+instance Arbitrary<i32u> { fn arbitrary = Gen.map (\value -> value as i32u) (Gen.i64()) }
+instance Arbitrary<i16u> { fn arbitrary = Gen.map (\value -> value as i16u) (Gen.i64()) }
+instance Arbitrary<i8u> { fn arbitrary = Gen.map (\value -> value as i8u) (Gen.i64()) }
+instance Arbitrary<bool> { fn arbitrary = Gen.bool() }
+instance Arbitrary<f64> { fn arbitrary = Gen.f64() }
+instance Arbitrary<char> { fn arbitrary = Gen.char() }
+instance Arbitrary<string> { fn arbitrary = Gen.string() }
+instance Arbitrary<'a> => Arbitrary<['a]> { fn arbitrary = Gen.array (Arbitrary.arbitrary()) }
+instance Arbitrary<'a> => Arbitrary<Maybe<'a>> { fn arbitrary = Gen.maybe (Arbitrary.arbitrary()) }
+instance (Arbitrary<'a>, Arbitrary<'b>) => Arbitrary<('a * 'b)> {
+	fn arbitrary = Gen.pair (Arbitrary.arbitrary()) (Arbitrary.arbitrary())
+}
+instance (Arbitrary<'a>, Arbitrary<'b>, Arbitrary<'c>) => Arbitrary<('a * 'b * 'c)> {
+	fn arbitrary = Gen.map (\t -> match t with | (a, (b, c)) -> (a, b, c)) (Gen.pair (Arbitrary.arbitrary()) (Gen.pair (Arbitrary.arbitrary()) (Arbitrary.arbitrary())))
+}
+instance (Arbitrary<'a>, Arbitrary<'b>, Arbitrary<'c>, Arbitrary<'d>) => Arbitrary<('a * 'b * 'c * 'd)> {
+	fn arbitrary = Gen.map (\t -> match t with | (a, (b, (c, d))) -> (a, b, c, d)) (Gen.pair (Arbitrary.arbitrary()) (Gen.pair (Arbitrary.arbitrary()) (Gen.pair (Arbitrary.arbitrary()) (Arbitrary.arbitrary()))))
+}
