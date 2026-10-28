@@ -339,7 +339,7 @@ my-app/
 
 `AGENTS.md` と `llms.txt` は AI エージェント向けの指示と索引です（英語。`tsuzuri guide` を読むよう案内します）。`--no-agent-files` を付けると作りません（[コンパイラの使い方](../compiler/usage.md#new)）。
 
-`.gitignore` の中身は `.tsuzuri/` です。生成される `Tsuzuri.toml` の例:
+`.gitignore` の中身は `.tsuzuri/` と `target/`（知識グラフなどの置き場）の 2 行です。生成される `Tsuzuri.toml` の例:
 
 ```toml
 [package]

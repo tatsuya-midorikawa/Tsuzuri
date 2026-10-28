@@ -33,6 +33,7 @@ export function breakdown(report) {
   let frontend = 0, cache = 0, tools = 0;
   for (const phase of report.phases) {
     // PB07: `units` is the reads and writes of the unit cache (and of the files of the units), `split` the cut of the IR.
+    // G27: the stages of the knowledge graph (`kg-*`) count with the frontend.
     if (phase.name === "cache" || phase.name === "units") cache += phase.ms;
     else if (phase.name.startsWith("tool.")) tools += phase.ms;
     else frontend += phase.ms;

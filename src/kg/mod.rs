@@ -3,15 +3,29 @@
 //! (`edges.jsonl`), and the property tables `tests.jsonl`, `facts/<Module>.jsonl` and
 //! `layout/<Module>.jsonl` hold more facts of some nodes. Everything comes from one analysis, and
 //! the same sources and compiler give the same bytes.
+//!
+//! G27 writes a project's graph to `target/tz/kg/` when `check`, `build`, `run` and `test` analyze
+//! it (`build`, `write`, `manifest`), with brief cards (`brief`), and reads it back for queries
+//! (`store`, `open`); the standard library's graph lives in the compiler's cache (`std_kg`).
 
 pub mod algo;
+pub mod brief;
+pub mod build;
 mod effects;
+pub mod emit;
 mod facts;
 pub(crate) mod ids;
+pub mod input;
 pub(crate) mod json;
 mod layout;
+pub mod manifest;
 pub mod model;
+pub mod open;
+pub mod settings;
 mod sites;
+pub mod std_kg;
+pub mod store;
+pub mod write;
 
 pub use model::{EdgeRow, FactsRow, KgModel, LayoutRow, Location, ModuleInfo, NodeRow, TestRow};
 

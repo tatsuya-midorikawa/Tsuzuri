@@ -761,6 +761,12 @@ diagnostic_kinds! {
         (MigrationManifestUpdateFailed, "migration_manifest_update_failed", "E2008"),
         (MigrationSourceTooLarge, "migration_source_too_large", "E2008"),
         (MigrationWriteFailed, "migration_write_failed", "E2008"),
+        // E2009
+        (KgBroken, "kg_broken", "E2009"),
+        (KgIncomplete, "kg_incomplete", "E2009"),
+        (KgMissing, "kg_missing", "E2009"),
+        (KgNotOurs, "kg_not_ours", "E2009"),
+        (KgStale, "kg_stale", "E2009"),
         // W1001
         (UnusedLocal, "unused_local", "W1001"),
         // W1002

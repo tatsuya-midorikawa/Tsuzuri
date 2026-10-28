@@ -243,7 +243,7 @@ flowchart TD
 
 ## エラーコード
 
-エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0003`）は字句解析と構文解析、`E1`（`E1001`〜`E1029`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2008`）は CLI 引数・I/O・リンカー・実行時・依存の取得・edition の移行などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1006`）およびツールの警告 `W2001`・`W2002` です。
+エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0003`）は字句解析と構文解析、`E1`（`E1001`〜`E1029`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2009`）は CLI 引数・I/O・リンカー・実行時・依存の取得・edition の移行・知識グラフなどのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1006`）およびツールの警告 `W2001`・`W2002` です。
 
 | コード | 何を報告するか |
 | --- | --- |
@@ -279,6 +279,7 @@ flowchart TD
 | `E2006` | 言語内テストの失敗 |
 | `E2007` | 依存の取得と検証の失敗。`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存や内容が SHA-256 と違う依存、`git` の欠落・失敗、取得したリポジトリのシンボリックリンク・submodule・危険なパス・大文字小文字だけ違うパス、registry の index にない版、index の項目と違うパッケージ、`publish` で commit とディレクトリの内容が違うこと（[パッケージ](../organizing-tsuzuri/packages.md#git-依存と-tsuzurilock)） |
 | `E2008` | `tsuzuri fix` の中止（修正案を適用すると診断が増える `fix_verification_failed`、実行中にファイルが変わった `fix_source_changed`、置き換えの失敗 `fix_write_failed`。どれもファイルは書かないか元に戻します）と、`tsuzuri fix --edition` による edition の移行の失敗。`--from` とマニフェストの版の食い違い、古い版への移行、移行後のソースが大きすぎること、マニフェストの更新や置き換えの失敗（[コンパイラの使い方](usage.md#fix)） |
+| `E2009` | 知識グラフ（`tsuzuri kg`）を読めない・置けない。置き場がない `kg_missing`、ソースやコンパイラが変わった `kg_stale`、`manifest.json` やファイルの欠落・不一致・グラフの不変条件の違反 `kg_broken`、置き場が知識グラフでない（マーカー `.tsuzuri-kg` がない）かソースを含む `kg_not_ours`、型検査の通らないプロジェクトの知識グラフ `kg_incomplete`。`check`・`build`・`run`・`test` が自動で書くときの失敗は、この診断ではなく警告 1 行（`W2001`、`kg not updated: …`）で、終了コードは変わりません（[知識グラフ](kg.md)） |
 
 `E1001` から `E1010` は型検査・意味解析の基本的なエラーに割り当てられています。具体的には、`E1001` が識別子名の重複（1 つの `let rec` グループに同じ名前を 2 度書く場合を含む。関数のシグネチャと定義、レコード、レコードのフィールド、引数の重複は最初の定義 `first_defined_here` を持ちます）、`E1002` が未知の値・関数・定数・ケースの名前（未知の値は、見えるローカル変数の `scope` と `help` を持ちます）、`E1003` が型の不一致（expected ... found ...。`expected`・`found` を持ち、`let` の型注釈・関数の結果の型・名前付きの関数の引数の型が期待を決めたときは、その宣言 `expected_because` を持ちます。引数が足りない呼び出しには `help` が付きます）、`E1004` が曖昧な識別子や名前解決エラー（複数のビルダーが宣言する別名の曖昧さを含む）、`E1005` が関数呼び出しや演算子インスタンスの不備（関数値が捕捉できない値の捕捉を含み、型変数 `'a` を含む型の値を捕捉する `let rec` もここです。関数でない値の呼び出しには `help` が付きます）、`E1006` が関数適用の引数の個数の不一致（アクティブパターンの追加引数や `Owned.function` に渡すラムダの引数の数を含む。引数が多すぎるときは `help` が付きます）、`E1007` がレコードフィールドの不備（未知のフィールドは、レコードのフィールドを並べた `help` を持ちます）、`E1008` が公開 ABI や extern の制約違反、`E1009` が数値リテラルの不正、`E1010` が型レイアウトの制限です。詳細な理由は各診断メッセージで示されます。
 
@@ -330,6 +331,7 @@ flowchart TD
 | `E2006` | `tests_failed` |
 | `E2007` | `file_url_after_https`, `git_case_collision`, `git_command_failed`, `git_missing_manifest`, `git_non_regular_entry`, `git_source_not_utf8`, `git_tree_unreadable`, `git_unsafe_path`, `git_version_unsupported`, `invalid_lockfile`, `lockfile_checksum_mismatch`, `lockfile_entry_missing`, `lockfile_missing`, `lockfile_not_regular_file`, `lockfile_version_mismatch`, `package_files_unreadable`, `package_not_downloaded`, `package_store_unavailable`, `package_store_unusable`, `published_package_mismatch`, `registry_checksum_mismatch`, `registry_dependency_not_selected`, `registry_entry_mismatch`, `registry_index_invalid`, `registry_index_missing`, `registry_package_missing`, `registry_version_missing` |
 | `E2008` | `fix_source_changed`, `fix_verification_failed`, `fix_write_failed`, `migration_edition_backwards`, `migration_edition_mismatch`, `migration_invalid_edit`, `migration_manifest_update_failed`, `migration_source_too_large`, `migration_write_failed` |
+| `E2009` | `kg_broken`, `kg_incomplete`, `kg_missing`, `kg_not_ours`, `kg_stale` |
 | `W1001` | `unused_local` |
 | `W1002` | `unused_private_function`, `unused_private_type` |
 | `W1003` | `unreachable_match_arm` |

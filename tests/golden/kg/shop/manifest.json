@@ -1,0 +1,45 @@
+{
+  "schema": "tz-kg/1",
+  "compiler": "tsuzuri 0.1.0",
+  "edition": "2026",
+  "project": "shop",
+  "version": "0.1.0",
+  "complete": true,
+  "source_hash": "335fb51f87cbad0208adf0e6cb3913637781a7d80df698359b1170ab2fcd1e28",
+  "counts": {
+    "modules": 3,
+    "nodes": 14,
+    "public_nodes": 8,
+    "edges": 36,
+    "tests": 3,
+    "benches": 0,
+    "errors": 0,
+    "warnings": 1,
+    "l2_cards": 5,
+    "l2_omitted": 0
+  },
+  "modules": [
+    {"name":"Acme::Shop::Cart","key":"Cart","origin":"project","path":"Cart.tz","source":"7b8e394e141b45edcd80a35e7d1f06cbffeb28b4cf5aca35c4f4b192c5ed2750"},
+    {"name":"Acme::Shop::Main","key":"Main","origin":"project","path":"Main.tz","source":"d7208bd0a04aed88790357d4a0edde9cbb0b5aa25a44ea69910d70e700a1ae65"},
+    {"name":"Acme::Shop::Report","key":"Report","origin":"project","path":"Report.tz","source":"7c5a4d722b7b150685203cdf3ccb91a11ab3a14c9ea6b41d8e1ada3691f3c6cf"}
+  ],
+  "files": {
+    "brief/L0.md": "5cba4d5ef823cd031a3165d004b8962d9340ec3405d9ffdf0f0c7cc7cefd0c9a",
+    "brief/L1/Cart.md": "6d3cbaa72431b22eb9c1432f3bb9489903680720e2d61fb953b4491d01383fb7",
+    "brief/L1/Main.md": "58c2eabc39ddd69125450107bbea7f7146a83af499aed70c875d077d37bf5235",
+    "brief/L1/Report.md": "f50ab8fbc07fcc5447f3f725f3fa083846e28bdb102a9261f87d4adf3d7d1502",
+    "brief/L2/Acme.Shop.Cart.Line.md": "4acccef323042c08a669040e3fe6898d20fe07a2179ee61a761f9c92fbc11fff",
+    "brief/L2/Acme.Shop.Cart.line_total.md": "d51c9c8a026ea3860a85617c10297ac0a331c5a1da099e0f97c35a379b11092c",
+    "brief/L2/Acme.Shop.Cart.total.md": "d5287b00b65dd434fd75aadfd29bbb9ca01011df22427a1c512870f00f919360",
+    "brief/L2/Acme.Shop.Main.main.md": "32d82930cdcc82da72765478048b10cc1a0055830e93715e7a409c440d9ec86e",
+    "brief/L2/Acme.Shop.Report.print_total.md": "af1c77cf3d00d0ac5a651ed07ce655847871fe02da2a23ba2723d8cd3214533c",
+    "diag.jsonl": "643979037675ed81476bed0ed38277c739f16afc4d6c89f1f54133f71c6615c4",
+    "edges.jsonl": "095a8d17a74d48a2c68c81fa211853fe4211627391d99f88c8627d9dc229c0e2",
+    "facts/Cart.jsonl": "c9e0ad948f3ff58c4c01b05f077dd2b0f722c0171b65e7f798bd34fe25561496",
+    "facts/Main.jsonl": "a9f3f388164ed3546c1338b5740b2d317342f8810447d2c7fe59aac0dcc68bcb",
+    "facts/Report.jsonl": "824c82badce9ae3f2da3e704294dd624415af232a8a3fb6dcf886e83f9c9ff82",
+    "layout/Cart.jsonl": "bc943ed30148439196d197a8d7e59443fb684b5714a73bb2ef32219cf13145e8",
+    "nodes.jsonl": "6a53090ddea39cb4feb714b971e50927cc54fa2d61aba5185e1932358de6a75a",
+    "tests.jsonl": "412f96bae1f9af2f9764d4abdcd3651f4896be65935e51d0a3a6501a1312e618"
+  }
+}

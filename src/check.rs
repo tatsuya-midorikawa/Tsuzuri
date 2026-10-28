@@ -7957,8 +7957,9 @@ fn check_modules_collect(
         .enumerate()
         .filter_map(|(id, (_, declaration))| declaration.recursion.is_some().then_some(id))
         .collect();
-    // The phases do not overlap: the capture is timed apart from `check`.
     drop(check_time);
+    // G26: the declaration view of the knowledge graph, while the module still has the abstract
+    // bodies; its own phase, so that the phases of `TSUZURI_TIME_PASSES` do not overlap.
     if let Some(capture) = capture {
         let _kg_time = crate::timings::Phase::start("kg-capture");
         kg_capture::collect_abstract(

@@ -1,0 +1,8 @@
+namespace Acme::Shop
+
+def main :: unit -> i32 = \() ->
+    let lines = [Line { sku: "pen", quantity: 3, unit_price: 100 }]
+    Report.print_total (ref lines)
+    0
+
+test "main runs" = assert (Cart.total (ref [Line { sku: "ink", quantity: 1, unit_price: 250 }]) == 250)

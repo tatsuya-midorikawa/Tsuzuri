@@ -8,7 +8,7 @@
 - ID は名前空間つきの完全名で、位置に依存しません（`Acme::Shop::Cart.total`、`test:Acme::Shop::Main.adds`）。
 - `contains` の辺がモジュールから宣言、record から field、union から case、class と instance から method へ伸び、モジュールを根とする森（木の集まり）を作ります。
 - 事実は `check` の解析だけから作り、LLVM IR を使いません。`effects_complete`・`alloc_complete` は、効果の要約（A20）が入るまで `false` です。
-- ファイルへの書き出しと `tsuzuri kg` のコマンドは計画中です（[G27](../../../_features/G27-build-time-kb.md)）。今はライブラリの `tsuzuri::kg::collect` で作れます。
+- `check`・`build`・`run`・`test` が `target/tz/kg/` に書きます（[知識グラフ](kg.md)）。ライブラリの `tsuzuri::kg::collect` でも作れます。
 
 ## 共通の規則
 

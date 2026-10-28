@@ -1,0 +1,36 @@
+{"rel":"calls","from":"Acme::Shop::Cart.total","to":"Acme::Shop::Cart.line_total","args":["ref"],"span":{"path":"Cart.tz","start":434,"end":444,"line":14,"column":21}}
+{"rel":"calls","from":"Acme::Shop::Main.main","to":"Acme::Shop::Report.print_total","args":["ref"],"span":{"path":"Main.tz","start":127,"end":145,"line":5,"column":5}}
+{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"Acme::Shop::Cart.total","args":["ref"],"span":{"path":"Report.tz","start":113,"end":123,"line":6,"column":24}}
+{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"IO.run","args":["copy"],"span":{"path":"Report.tz","start":98,"end":130,"line":6,"column":9}}
+{"rel":"calls","from":"Acme::Shop::Report.print_total","to":"IO.write_line","args":["copy"],"span":{"path":"Report.tz","start":98,"end":111,"line":6,"column":9}}
+{"rel":"calls","from":"test:Acme::Shop::Cart.empty cart","to":"Acme::Shop::Cart.total","args":["ref"],"span":{"path":"Cart.tz","start":618,"end":623,"line":19,"column":29}}
+{"rel":"calls","from":"test:Acme::Shop::Cart.empty cart","to":"assert","args":["copy"],"span":{"path":"Cart.tz","start":610,"end":616,"line":19,"column":21}}
+{"rel":"calls","from":"test:Acme::Shop::Cart.line total","to":"Acme::Shop::Cart.line_total","args":["ref"],"span":{"path":"Cart.tz","start":515,"end":525,"line":18,"column":29}}
+{"rel":"calls","from":"test:Acme::Shop::Cart.line total","to":"assert","args":["copy"],"span":{"path":"Cart.tz","start":507,"end":513,"line":18,"column":21}}
+{"rel":"calls","from":"test:Acme::Shop::Main.main runs","to":"Acme::Shop::Cart.total","args":["ref"],"span":{"path":"Main.tz","start":192,"end":202,"line":8,"column":28}}
+{"rel":"calls","from":"test:Acme::Shop::Main.main runs","to":"assert","args":["copy"],"span":{"path":"Main.tz","start":184,"end":190,"line":8,"column":20}}
+{"rel":"contains","from":"Acme::Shop::Cart","to":"Acme::Shop::Cart.Line","span":{"path":"Cart.tz","start":98,"end":102,"line":4,"column":8}}
+{"rel":"contains","from":"Acme::Shop::Cart","to":"Acme::Shop::Cart.line_total","span":{"path":"Cart.tz","start":192,"end":202,"line":7,"column":5}}
+{"rel":"contains","from":"Acme::Shop::Cart","to":"Acme::Shop::Cart.total","span":{"path":"Cart.tz","start":307,"end":312,"line":10,"column":5}}
+{"rel":"contains","from":"Acme::Shop::Cart","to":"test:Acme::Shop::Cart.empty cart","span":{"path":"Cart.tz","start":595,"end":607,"line":19,"column":6}}
+{"rel":"contains","from":"Acme::Shop::Cart","to":"test:Acme::Shop::Cart.line total","span":{"path":"Cart.tz","start":492,"end":504,"line":18,"column":6}}
+{"rel":"contains","from":"Acme::Shop::Cart.Line","to":"Acme::Shop::Cart.Line.quantity","span":{"path":"Cart.tz","start":118,"end":126,"line":4,"column":28}}
+{"rel":"contains","from":"Acme::Shop::Cart.Line","to":"Acme::Shop::Cart.Line.sku","span":{"path":"Cart.tz","start":105,"end":108,"line":4,"column":15}}
+{"rel":"contains","from":"Acme::Shop::Cart.Line","to":"Acme::Shop::Cart.Line.unit_price","span":{"path":"Cart.tz","start":133,"end":143,"line":4,"column":43}}
+{"rel":"contains","from":"Acme::Shop::Main","to":"Acme::Shop::Main.main","span":{"path":"Main.tz","start":26,"end":30,"line":3,"column":5}}
+{"rel":"contains","from":"Acme::Shop::Main","to":"test:Acme::Shop::Main.main runs","span":{"path":"Main.tz","start":170,"end":181,"line":8,"column":6}}
+{"rel":"contains","from":"Acme::Shop::Report","to":"Acme::Shop::Report.print_total","span":{"path":"Report.tz","start":44,"end":55,"line":5,"column":5}}
+{"rel":"imports","from":"Acme::Shop::Report","to":"Acme::Shop","span":{"path":"Report.tz","start":22,"end":38,"line":3,"column":1}}
+{"rel":"tested_by","from":"Acme::Shop::Cart.line_total","to":"test:Acme::Shop::Cart.empty cart","span":{"path":"Cart.tz","start":595,"end":607,"line":19,"column":6}}
+{"rel":"tested_by","from":"Acme::Shop::Cart.line_total","to":"test:Acme::Shop::Cart.line total","span":{"path":"Cart.tz","start":492,"end":504,"line":18,"column":6}}
+{"rel":"tested_by","from":"Acme::Shop::Cart.line_total","to":"test:Acme::Shop::Main.main runs","span":{"path":"Main.tz","start":170,"end":181,"line":8,"column":6}}
+{"rel":"tested_by","from":"Acme::Shop::Cart.total","to":"test:Acme::Shop::Cart.empty cart","span":{"path":"Cart.tz","start":595,"end":607,"line":19,"column":6}}
+{"rel":"tested_by","from":"Acme::Shop::Cart.total","to":"test:Acme::Shop::Main.main runs","span":{"path":"Main.tz","start":170,"end":181,"line":8,"column":6}}
+{"rel":"uses_type","from":"Acme::Shop::Cart.line_total","to":"Acme::Shop::Cart.Line","span":{"path":"Cart.tz","start":210,"end":214,"line":7,"column":23}}
+{"rel":"uses_type","from":"Acme::Shop::Cart.total","to":"Acme::Shop::Cart.Line","span":{"path":"Cart.tz","start":321,"end":325,"line":10,"column":19}}
+{"rel":"uses_type","from":"Acme::Shop::Main.main","to":"Acme::Shop::Cart.Line","span":{"path":"Main.tz","start":72,"end":76,"line":4,"column":18}}
+{"rel":"uses_type","from":"Acme::Shop::Report.print_total","to":"Acme::Shop::Cart.Line","span":{"path":"Report.tz","start":64,"end":68,"line":5,"column":25}}
+{"rel":"uses_type","from":"test:Acme::Shop::Cart.empty cart","to":"Acme::Shop::Cart.Line","span":{"path":"Cart.tz","start":634,"end":638,"line":19,"column":45}}
+{"rel":"uses_type","from":"test:Acme::Shop::Cart.empty cart","to":"Acme::Shop::Cart.Line","span":{"path":"Cart.tz","start":648,"end":652,"line":19,"column":59}}
+{"rel":"uses_type","from":"test:Acme::Shop::Cart.line total","to":"Acme::Shop::Cart.Line","span":{"path":"Cart.tz","start":531,"end":535,"line":18,"column":45}}
+{"rel":"uses_type","from":"test:Acme::Shop::Main.main runs","to":"Acme::Shop::Cart.Line","span":{"path":"Main.tz","start":209,"end":213,"line":8,"column":45}}

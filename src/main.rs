@@ -12,6 +12,9 @@ use tsuzuri::driver::{
 use tsuzuri::llvm::Allocator;
 use tsuzuri::server;
 
+#[path = "main_kg.rs"]
+mod kg_command;
+
 /// `eprintln!` to `err`. A failed write panics with the message that `eprintln!` has.
 macro_rules! errln {
     ($err:expr) => {
@@ -62,6 +65,10 @@ Usage:
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--effective] [--json]
+  tsuzuri kg build [PATH] [--kg-dir DIR] [--force] [--json] | kg build --std [--force] [--json]
+  tsuzuri kg verify [PATH] [--kg-dir DIR] [--json]
+  tsuzuri kg clean [PATH] [--kg-dir DIR] | kg clean --std
+  tsuzuri kg export [PATH] [--kg-dir DIR] (--nodes | --edges | --facts) [--no-refresh]
   tsuzuri guide [--level 0|1] [--topic NAME] [--list] [--json] [--edition YEAR]
   tsuzuri guide std [MODULE] [--json]
   tsuzuri guide --agents [DIR] | --llms-txt [DIR]
@@ -114,6 +121,14 @@ TSUZURI_SERVER_DIR (an absolute path; empty turns servers off), by default the u
 built with `tsuzuri build serve`.
 `tsuzuri new` creates Tsuzuri.toml, Main.tz, .gitignore, and for AI agents AGENTS.md and llms.txt
 in an empty folder; --no-agent-files leaves out the last two.
+`tsuzuri check`, `build`, `run`, and `test` of a project (a root with Tsuzuri.toml or Main.tz) write
+its knowledge graph to target/tz/kg: the declarations as nodes (nodes.jsonl), their relations as
+edges (edges.jsonl), facts and layouts per module, diagnostics, and short English brief cards. Sources
+that did not change are not written again. --kg writes it for a loose file too, --no-kg or
+TSUZURI_KG=0 does not write it (TSUZURI_KG=1 writes it), and --kg-dir DIR or TSUZURI_KG_DIR moves it;
+a failure to write is one warning and changes neither the diagnostics nor the exit code.
+`tsuzuri kg build|verify|clean|export` builds, checks, removes, and prints the graph; --std builds
+the standard library's graph in the compiler's cache.
 `tsuzuri guide` prints a short English guide to the language for AI agents (level 0, about 6 KB);
 --level 1 prints the full guide, --topic NAME one chapter (--list names them), `guide std [MODULE]`
 the std index. --agents and --llms-txt print the AGENTS.md and llms.txt of the project in DIR.
@@ -352,6 +367,9 @@ struct Arguments {
     test_seed: Option<u64>,
     /// `--no-server`: `check` and `build` run in this process even where a build server runs.
     no_server: bool,
+    /// `--kg`, `--no-kg` and `--kg-dir` (G27): whether `check`, `build`, `run` and `test` write the
+    /// knowledge graph, and where.
+    kg: tsuzuri::kg::settings::KgFlags,
 }
 
 /// A diagnostic of the command line: it has no position, and the caller prints it at
@@ -387,6 +405,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             bench_allocs: false,
             test_seed: None,
             no_server: false,
+            kg: Default::default(),
         });
     }
     let mut position = 0;
@@ -461,6 +480,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut wasm_stack_size = None;
     let mut no_cache = false;
     let mut no_server = false;
+    let mut kg = tsuzuri::kg::settings::KgFlags::default();
     let mut links = driver::LinkInputs::default();
     let mut paths_only = false;
     while position < arguments.len() {
@@ -484,6 +504,43 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                         ));
                     }
                     no_cache = true;
+                    continue;
+                }
+                Some("--kg") => {
+                    if kg.kg {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "kg specified more than once",
+                        ));
+                    }
+                    kg.kg = true;
+                    continue;
+                }
+                Some("--no-kg") => {
+                    if kg.no_kg {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "no-kg specified more than once",
+                        ));
+                    }
+                    kg.no_kg = true;
+                    continue;
+                }
+                Some("--kg-dir") => {
+                    if kg.dir.is_some() {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "kg-dir specified more than once",
+                        ));
+                    }
+                    let value = next_value(arguments, &mut position, "--kg-dir")?;
+                    if value.is_empty() {
+                        return Err(command_line_error(
+                            DiagnosticKind::OptionInvalidValue,
+                            "--kg-dir must not be empty",
+                        ));
+                    }
+                    kg.dir = Some(PathBuf::from(value));
                     continue;
                 }
                 Some("--no-server") => {
@@ -1197,6 +1254,16 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             format!("{name} supports -O0 to -O3; use -Os or -Oz with build or run"),
         ));
     }
+    if !matches!(
+        action,
+        Action::Check | Action::Build | Action::Run | Action::Test
+    ) && (kg.kg || kg.no_kg || kg.dir.is_some())
+    {
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--kg, --no-kg, and --kg-dir are only valid with check, build, run, or test",
+        ));
+    }
     if !matches!(action, Action::Test | Action::Bench)
         && (test_filter.is_some() || test_list || !test_indices.is_empty())
     {
@@ -1404,6 +1471,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         bench_allocs,
         test_seed,
         no_server,
+        kg,
     })
 }
 
@@ -3015,6 +3083,9 @@ fn main() -> ExitCode {
     if raw.first().is_some_and(|command| *command == "api-diff") {
         return api_diff_command(&raw[1..]);
     }
+    if raw.first().is_some_and(|command| *command == "kg") {
+        return kg_command::kg_command(&raw[1..]);
+    }
     if raw.first().is_some_and(|command| *command == "explain") {
         return explain_command(&raw[1..]);
     }
@@ -3076,6 +3147,27 @@ fn cli(
     {
         return code;
     }
+    // G27: the knowledge graph of check, build, run and test (not of a script). The settings are
+    // checked before any source is read.
+    let kg_settings = if matches!(
+        arguments.action,
+        Action::Check | Action::Build | Action::Run | Action::Test
+    ) && program_arguments.is_none()
+    {
+        match tsuzuri::kg::settings::resolve(
+            &arguments.kg,
+            env::var_os("TSUZURI_KG").as_deref(),
+            env::var_os("TSUZURI_KG_DIR").as_deref(),
+        ) {
+            Ok(settings) => Some(settings),
+            Err(error) => {
+                write_diagnostic(err, &error, Path::new("<command line>"), "", json);
+                return EXIT_USAGE;
+            }
+        }
+    } else {
+        None
+    };
     if arguments.action == Action::Lsp {
         return tsuzuri::lsp::serve(io::stdin(), out, err) as u8;
     }
@@ -3131,11 +3223,28 @@ fn cli(
         Action::Doc => driver::AnalysisKind::Docs,
         _ => driver::AnalysisKind::Program,
     };
+    // G27: a graph that is up to date is left alone; the analysis captures what a new one needs.
+    let mut kg_notice = None;
+    let plan =
+        match kg_settings.map(|settings| tsuzuri::kg::build::plan(&settings, &project, false)) {
+            None => tsuzuri::kg::build::Plan::Off,
+            Some(Ok(plan)) => plan,
+            Some(Err(error)) => {
+                kg_notice = Some(tsuzuri::kg::build::notice(&error));
+                tsuzuri::kg::build::Plan::Off
+            }
+        };
     // check, test and doc do not take --no-cache; TSUZURI_CACHE_DIR= disables every cache.
-    let module = match project.analyze_cached(arguments.options.cache, kind) {
+    let (analysis, pending) =
+        tsuzuri::kg::build::analyze(&project, arguments.options.cache, kind, plan);
+    let module = match analysis {
         Ok(module) => module,
         Err(errors) => {
             write_diagnostics(err, &errors, &project, arguments.json);
+            if let Some(pending) = pending {
+                kg_notice = tsuzuri::kg::build::complete(pending, &project, Err(&errors));
+            }
+            write_messages(err, kg_notice.as_slice(), arguments.json);
             return EXIT_FAILURE;
         }
     };
@@ -3155,6 +3264,10 @@ fn cli(
         0,
     );
     write_diagnostics(err, &warnings, &project, arguments.json);
+    if let Some(pending) = pending {
+        kg_notice = tsuzuri::kg::build::complete(pending, &project, Ok(&module));
+    }
+    write_messages(err, kg_notice.as_slice(), arguments.json);
     if arguments.deny_warnings && !warnings.is_empty() {
         return EXIT_FAILURE;
     }
@@ -6941,6 +7054,70 @@ mod tests {
             "no-server specified more than once"
         );
         assert!(parse(&["lsp", "--no-server"]).is_err());
+    }
+
+    /// G27: the knowledge graph flags belong to check, build, run and test.
+    #[test]
+    fn accepts_the_kg_flags_only_where_they_apply() {
+        for command in ["check", "build", "run", "test"] {
+            let parsed = parse(&[command, "Main.tz", "--kg", "--kg-dir", "out"]).unwrap();
+            assert!(parsed.kg.kg && !parsed.kg.no_kg, "{command}");
+            assert_eq!(parsed.kg.dir, Some(PathBuf::from("out")), "{command}");
+            assert!(parse(&[command, "Main.tz", "--no-kg"]).unwrap().kg.no_kg);
+        }
+        for values in [
+            vec!["doc", "Main.tz", "-o", "out", "--kg"],
+            vec!["fmt", "Main.tz", "--no-kg"],
+            vec!["bench", "Main.tz", "--kg-dir", "x"],
+        ] {
+            assert_eq!(
+                parse(&values).unwrap_err(),
+                "--kg, --no-kg, and --kg-dir are only valid with check, build, run, or test",
+                "{values:?}"
+            );
+        }
+        for (values, message) in [
+            (
+                vec!["check", "Main.tz", "--kg", "--kg"],
+                "kg specified more than once",
+            ),
+            (
+                vec!["check", "Main.tz", "--no-kg", "--no-kg"],
+                "no-kg specified more than once",
+            ),
+            (
+                vec!["check", "Main.tz", "--kg-dir", "a", "--kg-dir", "b"],
+                "kg-dir specified more than once",
+            ),
+            (
+                vec!["check", "Main.tz", "--kg-dir"],
+                "--kg-dir needs a value",
+            ),
+            (
+                vec!["check", "Main.tz", "--kg-dir", ""],
+                "--kg-dir must not be empty",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        // Both flags parse; the settings reject them (E2000) before any source is read.
+        assert!(parse(&["check", "Main.tz", "--kg", "--no-kg"]).is_ok());
+    }
+
+    #[test]
+    fn the_help_lists_the_kg_options() {
+        let text = help();
+        for needle in [
+            "--kg-dir",
+            "--no-kg",
+            "TSUZURI_KG=0",
+            "TSUZURI_KG_DIR",
+            "tsuzuri kg build",
+            "tsuzuri kg verify",
+            "tsuzuri kg export",
+        ] {
+            assert!(text.contains(needle), "{needle}");
+        }
     }
 
     /// A server hands a command's `out` and `err` to the client. A print that bypasses them in a

@@ -791,6 +791,10 @@ summary: 2 breaking, 1 non-breaking
 
 `tsuzuri publish` は `api-diff` を呼びません。公開の前に実行してください。出力とその制限は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#api-diff) にあります。
 
+### 知識グラフ (`target/tz/kg`、`tsuzuri kg`)
+
+`check`・`build`・`run`・`test` は、プロジェクトの知識グラフ（宣言をノード、呼び出し・型の使用・テストなどの関係を辺にした JSON Lines、関数ごとの効果・トラップ・所有権の事実、型のレイアウト、短い英語の要約カード）を `target/tz/kg/` に書きます。ソースが変わっていなければ書き直さず、`--no-kg` か `TSUZURI_KG=0` で止められます。`tsuzuri kg build|verify|clean|export` で明示的に作る・確かめる・消す・出力できます（[知識グラフ](_tsuzuri/language-reference/compiler/kg.md)、[形式](_tsuzuri/language-reference/compiler/kg-format.md)）。
+
 ### 診断の説明 (`tsuzuri explain`)
 
 すべての診断は、原因を表す安定した識別子 kind（`use_after_move`、`type_mismatch` など）を持ち、`--json` の `kind` キーと LSP の `data.kind` に出ます。`tsuzuri explain` は、kind の原因と、テストで検査した誤りの例・直した例を出します。コードを渡すと、そのコードの kind の一覧と直し方を出します。説明はコンパイラに埋め込まれた英語です。
@@ -903,6 +907,8 @@ tsuzuri guide std [MODULE] | --agents [DIR] | --llms-txt [DIR]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
 tsuzuri api-diff old new [--json] [--effective]
+tsuzuri check|build|run|test ... [--kg | --no-kg] [--kg-dir DIR]
+tsuzuri kg build|verify|clean|export [PATH] [--kg-dir DIR] [--std] [--force] [--nodes|--edges|--facts] [--no-refresh] [--json]
 tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] source.tz|directory
 tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] source.tz|directory
 tsuzuri explain TARGET [--json]

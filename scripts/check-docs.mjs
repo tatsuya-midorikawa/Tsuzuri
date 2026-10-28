@@ -88,7 +88,12 @@ try {
             const context = `${label} (${key})`;
             const invoke = args => {
                 try {
-                    return execFileSync(compiler, args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+                    // An example is checked in a temporary project; it writes no knowledge graph (G27 D10).
+                    return execFileSync(compiler, args, {
+                        encoding: 'utf8',
+                        maxBuffer: 4 * 1024 * 1024,
+                        env: { ...process.env, TSUZURI_KG: '0' },
+                    });
                 } catch (error) {
                     throw new Error(`${context}: ${error.stderr ?? error.message}`, { cause: error });
                 }
