@@ -648,9 +648,6 @@ pub fn calls(
 pub const USE_RELATIONS: [&str; 3] = ["uses_type", "implements", "instance_of"];
 
 /// `kg uses TYPE`: the `uses_type`, `implements` and `instance_of` edges into a type.
-/// The relations of a use of a type or class: `kg uses` and the MCP `tz_callers` follow the same.
-pub const USE_RELATIONS: [&str; 3] = ["uses_type", "implements", "instance_of"];
-
 pub fn uses(view: &KgView, text: &str, options: &Options) -> Result<Output, QueryError> {
     let id = resolve_one(view, text, false)?;
     let header = format!("uses of {id}");
