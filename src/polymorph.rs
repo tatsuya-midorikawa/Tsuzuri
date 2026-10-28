@@ -4554,6 +4554,7 @@ pub(super) fn specialize(
         uses_dyn: module.uses_dyn,
         gpu: module.gpu,
         statics: module.statics,
+        effects: None,
     })
 }
 
@@ -4750,9 +4751,12 @@ impl Specializer<'_> {
             // The instances of a generic `@cpu` function keep its CPU levels (F08 Phase 3).
             let cpu = function.origin.cpu;
             let pure = function.origin.pure;
+            // A20: an instance is checked against the attributes of its declaration.
+            let asserts = function.origin.asserts;
             function.origin = function.origin.generated(instance);
             function.origin.cpu = cpu;
             function.origin.pure = pure;
+            function.origin.asserts = asserts;
         }
         for constraint in &function.constraints {
             self.classes.validate(

@@ -652,3 +652,19 @@ fn bom_is_metadata_not_comment_or_token_text() {
     assert_eq!(tokens[0].token.span.start, 3);
     assert!(tokens[0].leading.is_empty());
 }
+
+#[test]
+fn formats_effect_attributes_and_round_trips() {
+    let source = "@no_alloc\n@cpu [\"avx2\"]  @no_trap\ndef f :: i64->i64 = \\n -> n+1\n\n@terminates\nexport pure def g :: i64 -> i64 = \\n -> n\n";
+    let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
+    assert_eq!(
+        first.formatted,
+        "@no_alloc\n@cpu [\"avx2\"] @no_trap\ndef f :: i64 -> i64 = \\n -> n + 1\n\n@terminates\nexport pure def g :: i64 -> i64 = \\n -> n\n"
+    );
+    let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
+    assert_eq!(first.formatted, second.formatted);
+    let before = parser::parse(source).unwrap();
+    let after = parser::parse(&first.formatted).unwrap();
+    assert_eq!(after.effect_attributes.len(), 3);
+    assert_eq!(ast_fingerprint(before), ast_fingerprint(after));
+}

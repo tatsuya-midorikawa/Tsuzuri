@@ -31,6 +31,9 @@ mod escape;
 mod facts;
 #[path = "llvm_frame.rs"]
 mod frame;
+// A20: the effect summary decides `alloc` with the emitter's own rules for literals in the frame.
+pub(crate) use escape::staying_locals;
+pub(crate) use frame::frame_bytes;
 #[path = "llvm_layout.rs"]
 pub(crate) mod layout;
 #[path = "llvm_return_slot.rs"]

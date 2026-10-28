@@ -29,7 +29,7 @@ use crate::syntax::{Edition, Program, SourceKind};
 use crate::syntax_codec::{self, Invalid, Mode};
 
 /// The version of the pack, entry, manifest, codec and hash rules. Bump it whenever any changes.
-pub(crate) const FRONTEND_FORMAT: u32 = 9;
+pub(crate) const FRONTEND_FORMAT: u32 = 10;
 const PACK_MAGIC: &[u8; 8] = b"TZPACK\0\0";
 const PACK_HEADER_BYTES: usize = 84;
 const ENTRY_MAGIC: &[u8; 8] = b"TZFRONT\0";

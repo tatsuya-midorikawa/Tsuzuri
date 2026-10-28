@@ -1,6 +1,9 @@
 use crate::diagnostic::{Diagnostic, DiagnosticKind, MAX_UNIQUE_DIAGNOSTICS, RelatedRole, Span};
 use crate::lexer::{lex, lex_all};
 use crate::syntax::*;
+
+/// An effect attribute before a declaration: its kind and the span of `@` and its name (A20).
+type EffectMark = (EffectKind, Span);
 use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "parse_control.rs"]
@@ -418,6 +421,7 @@ impl Parser<'_> {
             entry: None,
             dyn_types: Vec::new(),
             cpu_attributes: Vec::new(),
+            effect_attributes: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
         };
@@ -472,9 +476,44 @@ impl Parser<'_> {
                     program.aliases.push(alias);
                     return Ok(());
                 }
-                let cpu = self.cpu_attribute()?;
+                let (cpu, effects) = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
+                if let Some(&(kind, span)) = effects.first() {
+                    let after_export = self.position + usize::from(self.at(&TokenKind::Export));
+                    let modifier = self.tokens.get(after_export).is_some_and(|token| {
+                        token.kind == TokenKind::Const
+                            || matches!(&token.kind, TokenKind::Ident(name) if name == "pure")
+                    });
+                    if self
+                        .tokens
+                        .get(after_export)
+                        .is_some_and(|token| token.kind == TokenKind::Extern)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::EffectAttributeOnExtern,
+                            format!(
+                                "an extern function has no body to check; remove '@{}'",
+                                kind.name()
+                            ),
+                            span,
+                        ));
+                    }
+                    if !self
+                        .tokens
+                        .get(after_export + usize::from(modifier))
+                        .is_some_and(|token| token.kind == TokenKind::Def)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::EffectAttributeMisplaced,
+                            format!(
+                                "'@{}' applies to the 'def' signature of a top-level function",
+                                kind.name()
+                            ),
+                            span,
+                        ));
+                    }
+                }
                 if let Some(documentation) = &doc {
                     if !self.doc_target() {
                         return Err(Diagnostic::of(
@@ -729,6 +768,9 @@ impl Parser<'_> {
                     }
                     if let Some(levels) = cpu {
                         program.cpu_attributes.push(CpuAttribute { function: name.clone(), levels });
+                    }
+                    for &(kind, span) in &effects {
+                        program.effect_attributes.push(EffectAttribute { function: name.clone(), kind, span });
                     }
                     signatures.insert(name.text.clone(), signature);
                     self.eat(&TokenKind::Semicolon);
@@ -1017,6 +1059,47 @@ impl Parser<'_> {
         }
         self.expect(&TokenKind::DoubleColon, description)?;
         Ok(())
+    }
+
+    /// The attributes before a top-level declaration, in any order (D-53): `@cpu [...]` and the
+    /// effect attributes `@no_alloc`, `@no_copy`, `@no_trap` and `@terminates` (A20), each once.
+    /// The effect attributes come back in source order with the span of their `@` and name.
+    fn attributes(&mut self) -> Result<(Option<u8>, Vec<EffectMark>), Diagnostic> {
+        let mut cpu = None;
+        let mut effects: Vec<EffectMark> = Vec::new();
+        loop {
+            if let Some((kind, span)) = self.effect_attribute_ahead() {
+                if effects.iter().any(|(seen, _)| *seen == kind) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::EffectAttributeDuplicate,
+                        format!("'@{}' is written twice; remove one", kind.name()),
+                        span,
+                    ));
+                }
+                self.take();
+                self.take();
+                effects.push((kind, span));
+            } else if cpu.is_none()
+                && let Some(levels) = self.cpu_attribute()?
+            {
+                cpu = Some(levels);
+            } else {
+                return Ok((cpu, effects));
+            }
+        }
+    }
+
+    /// The effect attribute that starts at the current token, with the span of `@` and its name.
+    pub(super) fn effect_attribute_ahead(&self) -> Option<EffectMark> {
+        if !self.at(&TokenKind::At) {
+            return None;
+        }
+        let name = self.tokens.get(self.position + 1)?;
+        let TokenKind::Ident(text) = &name.kind else {
+            return None;
+        };
+        let kind = EffectKind::from_name(text)?;
+        Some((kind, self.current().span.through(name.span)))
     }
 
     /// `@cpu ["avx2", ...]` before a function's `def` signature, as a bit set of the levels
@@ -1755,6 +1838,17 @@ impl Parser<'_> {
         }
         let constraint_column = self.column(self.current().span);
         while self.at(&TokenKind::At) {
+            // The attribute of the next declaration, at its column, after a signature without a body.
+            if self.newline_before_current()
+                && constraint_column <= column
+                && (self.effect_attribute_ahead().is_some()
+                    || matches!(
+                        self.tokens.get(self.position + 1).map(|token| &token.kind),
+                        Some(TokenKind::Ident(name)) if name == "cpu"
+                    ))
+            {
+                break;
+            }
             if !self.newline_before_current()
                 || constraint_column <= column
                 || self.column(self.current().span) != constraint_column

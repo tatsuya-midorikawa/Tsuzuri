@@ -158,3 +158,19 @@ fn inline_definitions_keep_docs_on_functions_and_typed_continuations() {
     assert_eq!(program.classes[0].defaults.len(), 1);
     analyze(source).unwrap();
 }
+
+#[test]
+fn docgen_shows_effect_attributes() {
+    let source = "/// Sum.\n@no_alloc\n@cpu [\"avx2\"]\n@no_trap\ndef total :: ref [i64] -> i64 = \\xs -> Array.sum xs\n\
+        @terminates\nexport pure def double :: i64 -> i64 = \\n -> n * 2\n";
+    let program = parser::parse(source).unwrap();
+    let page = docgen::render_module("Main", &program);
+    assert!(
+        page.contains("```tsuzuri\n@no_alloc @no_trap def total :: ref [i64] -> i64\n```"),
+        "{page}"
+    );
+    assert!(
+        page.contains("```tsuzuri\n@terminates export pure def double :: i64 -> i64\n```"),
+        "{page}"
+    );
+}

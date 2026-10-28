@@ -1971,3 +1971,22 @@ fn a_long_report_lists_breaking_changes_first_and_counts_the_rest() {
     std::fs::remove_dir_all(old).unwrap();
     std::fs::remove_dir_all(new).unwrap();
 }
+
+#[test]
+fn api_diff_treats_attributes_as_promises() {
+    let plain = "def f :: i64 -> i64 = \\n -> n + 1\n";
+    let attributed = format!("@no_alloc\n@no_trap\n{plain}");
+    assert_eq!(
+        compare(plain, &attributed, &[]),
+        ["non-breaking changed def Main.f"]
+    );
+    assert_eq!(
+        compare(&attributed, plain, &[]),
+        ["breaking changed def Main.f"]
+    );
+    assert_eq!(
+        compare(&attributed, &attributed.replace("@no_trap\n", ""), &[]),
+        ["breaking changed def Main.f"]
+    );
+    assert!(compare(&attributed, &attributed, &[]).is_empty());
+}

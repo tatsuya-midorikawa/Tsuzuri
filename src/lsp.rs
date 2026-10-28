@@ -280,6 +280,8 @@ struct ProjectState {
     counts: DiagnosticCounts,
     /// The implicit array and list copies that inlay hints show (A15).
     copies: Vec<CopySite>,
+    /// The inferred effects of the functions with effect attributes, by declared name (A20).
+    effects: BTreeMap<String, Vec<&'static str>>,
     modules: ModuleNames,
 }
 
@@ -377,9 +379,14 @@ impl Session {
             }
         };
         let (analyzed, diagnostics, counts) = analyze(&project);
-        let (index, copies) = analyzed.map_or((None, Vec::new()), |(index, module)| {
-            (Some(index), crate::copies::costly_sites(&module))
-        });
+        let (index, copies, effects) =
+            analyzed.map_or((None, Vec::new(), BTreeMap::new()), |(index, module)| {
+                (
+                    Some(index),
+                    crate::copies::costly_sites(&module),
+                    inferred_effects(&module),
+                )
+            });
         let mappers: Vec<_> = project
             .sources
             .iter()
@@ -411,6 +418,7 @@ impl Session {
                 diagnostics,
                 counts,
                 copies,
+                effects,
                 modules,
             },
         );
@@ -601,6 +609,18 @@ impl Session {
                         markdown.push_str("\n\n---\n\n");
                     }
                     markdown.push_str(&format!("```tsuzuri\n{}\n```", entry.detail));
+                    if let Some(effects) =
+                        hovered_function(&entry.detail).and_then(|name| state.effects.get(name))
+                    {
+                        markdown.push_str(&format!(
+                            "\n\ninferred effects: {}",
+                            if effects.is_empty() {
+                                "none".to_owned()
+                            } else {
+                                effects.join(", ")
+                            }
+                        ));
+                    }
                     if let Some(doc) = state
                         .index
                         .as_ref()
@@ -1397,6 +1417,34 @@ const MAX_HOVERED_DIAGNOSTICS: usize = 3;
 
 /// The diagnostics with a kind whose span contains `offset` of the source (an empty span: starts
 /// at it), in the order they were reported.
+/// The inferred effects of each function with effect attributes, the union of its instances (A20).
+fn inferred_effects(module: &crate::check::CheckedModule) -> BTreeMap<String, Vec<&'static str>> {
+    let Some(summaries) = &module.effects else {
+        return BTreeMap::new();
+    };
+    let mut effects: BTreeMap<String, crate::check::effects::EffectSet> = BTreeMap::new();
+    for (id, function) in module.functions.iter().enumerate() {
+        if function.origin.asserts.is_empty() {
+            continue;
+        }
+        let name = function.qualified_name();
+        let name = name.split(".$mono.").next().unwrap().to_owned();
+        let entry = effects.entry(name).or_default();
+        *entry = entry.union(summaries.summary(id).effects);
+    }
+    effects
+        .into_iter()
+        .map(|(name, set)| (name, set.names()))
+        .collect()
+}
+
+/// The declared name in a function's hover detail, `[@attribute ]... [const |pure ]def Name.f :: ...`.
+fn hovered_function(detail: &str) -> Option<&str> {
+    let start = detail.find("def ")? + 4;
+    let rest = &detail[start..];
+    Some(&rest[..rest.find(" ::")?])
+}
+
 fn hovered_diagnostics(state: &ProjectState, source_id: usize, offset: usize) -> Vec<&Diagnostic> {
     state
         .diagnostics

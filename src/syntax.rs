@@ -294,6 +294,8 @@ pub struct Program {
     pub dyn_types: Vec<TypeExpr>,
     /// The `@cpu [...]` attributes of this module's functions (F08 Phase 3).
     pub cpu_attributes: Vec<CpuAttribute>,
+    /// The effect attributes (`@no_alloc` ...) of this module's functions, in source order (A20).
+    pub effect_attributes: Vec<EffectAttribute>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
     /// the builder, so that `name { ... }` builds the same computation as `Builder { ... }`.
     pub aliases: Vec<Ident>,
@@ -332,6 +334,53 @@ pub struct CpuAttribute {
     pub function: Ident,
     /// Bit `L` is set for each named level `L` of `CPU_TARGETS`.
     pub levels: u8,
+}
+
+/// An effect attribute before a `def` signature (A20): a promise that the function's inferred
+/// effect summary does not hold an effect. It is only checked; it changes no emitted code.
+#[derive(Clone, Debug)]
+pub struct EffectAttribute {
+    pub function: Ident,
+    pub kind: EffectKind,
+    /// The `@` and the name.
+    pub span: Span,
+}
+
+/// The four effect attributes, in the order that `check` reports them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EffectKind {
+    NoAlloc,
+    NoCopy,
+    NoTrap,
+    Terminates,
+}
+
+impl EffectKind {
+    pub const ALL: [EffectKind; 4] = [
+        EffectKind::NoAlloc,
+        EffectKind::NoCopy,
+        EffectKind::NoTrap,
+        EffectKind::Terminates,
+    ];
+
+    /// The attribute's name after `@`.
+    pub fn name(self) -> &'static str {
+        match self {
+            EffectKind::NoAlloc => "no_alloc",
+            EffectKind::NoCopy => "no_copy",
+            EffectKind::NoTrap => "no_trap",
+            EffectKind::Terminates => "terminates",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<EffectKind> {
+        EffectKind::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
+    /// The attribute's bit in a set of attributes.
+    pub fn bit(self) -> u8 {
+        1 << self as u8
+    }
 }
 
 /// A `namespace A::B` or `using A::B` declaration.

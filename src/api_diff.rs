@@ -14,8 +14,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::check::ModuleOrigin;
 use crate::check::semantic::{ResolvedApi, SemanticIndex, api_key};
+use crate::check::{Asserts, ModuleOrigin};
 use crate::diagnostic::{Diagnostic, Span, json_string};
 use crate::docgen::{
     constraints_text, json_text, parameters_text, region_text, signature, type_text,
@@ -223,6 +223,8 @@ struct Item {
     borrowing_defaults: Vec<bool>,
     /// The arity protected by the pure contract, excluding returned callable stages.
     pure: Option<usize>,
+    /// The effect attributes (A20): promises that adding keeps and removing breaks.
+    asserts: Asserts,
     contract: Option<String>,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
@@ -253,6 +255,7 @@ impl Item {
             constant: false,
             borrowing_defaults: Vec::new(),
             pure: None,
+            asserts: Asserts(0),
             contract: None,
             members: Vec::new(),
             derives: BTreeSet::new(),
@@ -270,6 +273,11 @@ impl Item {
     /// The declaration as `tsuzuri doc` shows it, with `export` and `const` in front where it has them.
     fn text(&self) -> String {
         let mut text = String::new();
+        for kind in self.asserts.kinds() {
+            text.push('@');
+            text.push_str(kind.name());
+            text.push(' ');
+        }
         if self.exported {
             text.push_str("export ");
         }
@@ -636,6 +644,7 @@ fn add_items(
         entry: _,
         dyn_types: _,
         cpu_attributes: _,
+        effect_attributes,
         aliases,
         declaration_starts: _,
     } = program;
@@ -701,6 +710,12 @@ fn add_items(
         item.exported = declaration.exported;
         item.constant = declaration.constant;
         item.pure = declaration.pure.then_some(declaration.parameters.len());
+        for attribute in effect_attributes
+            .iter()
+            .filter(|attribute| attribute.function.text == declaration.name.text)
+        {
+            item.asserts.insert(attribute.kind);
+        }
         item.contract = effective
             .and_then(|resolved| resolved.contracts.get(&api_key(declaration.name.span)))
             .cloned();
@@ -1223,6 +1238,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         || old.constant != new.constant
         || old.borrowing_defaults != new.borrowing_defaults
         || old.pure != new.pure
+        || old.asserts != new.asserts
         || old.contract != new.contract
     {
         // Exporting or adding a const/pure contract adds a symbol or a use
@@ -1232,6 +1248,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             && old.constant <= new.constant
             && old.borrowing_defaults == new.borrowing_defaults
             && (old.pure.is_none() || old.pure == new.pure)
+            && old.asserts.0 & !new.asserts.0 == 0
             && old.contract == new.contract;
         changes.push(Change {
             breaking: !widened,

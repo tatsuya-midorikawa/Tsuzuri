@@ -11,7 +11,7 @@
 pub mod algo;
 pub mod brief;
 pub mod build;
-mod effects;
+pub(crate) mod effects;
 pub mod emit;
 mod facts;
 pub mod find;

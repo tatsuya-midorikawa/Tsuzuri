@@ -434,6 +434,24 @@ const descending = (n) => Array.from({ length: n }, (_, i) => BigInt(n - 1 - i))
 const ascending = (n) => Array.from({ length: n }, (_, i) => BigInt(i));
 
 const suites = {
+  effect_attributes: {
+    cases: (() => {
+      const wrap = (value) => BigInt.asIntN(64, value);
+      const table = [3n, 1n, 4n, 1n, 5n, 9n, 2n, 6n];
+      const inputs = [-3n, -1n, 0n, 1n, 2n, 7n, 8n, 100n, 1000n];
+      const expectations = {
+        sum_squares: (n) => { let total = 0n; for (let i = 0n; i <= n; i++) total = wrap(total + i * i); return total; },
+        table_lookup: (n) => (n < 0n || n >= 8n ? -1n : table[Number(n)]),
+        clamped: (n) => (n < 0n ? 0n : n > 100n ? 100n : n) + 1n,
+        applied: (n) => wrap(wrap(n * 3n + 1n) + 1n),
+        divided: (n) => (n === 0n ? 0n : 142n + n / 3n - n % 5n),
+        checksum: (n) => [1n, 2n, 3n, 4n, 5n].reduce((sum, byte) => wrap(sum * 31n + byte), n),
+      };
+      const extremes = [-(1n << 63n), (1n << 63n) - 1n];
+      return Object.entries(expectations).flatMap(([name, expected]) =>
+        [...inputs, ...(name === "sum_squares" ? [] : extremes)].map((n) => [name, [n], expected(n)]));
+    })(),
+  },
   pure_parallel: {
     cases: [
       ...[0n, 1n, 4095n, 4096n, 4097n, 8192n].map((n) => ["parallel_sum", [n], n * (n + 1n)]),

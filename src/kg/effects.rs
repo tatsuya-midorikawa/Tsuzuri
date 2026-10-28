@@ -18,11 +18,11 @@ const IMPURE_BUILTINS: usize = 90;
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
     use Builtin::*;
     match builtin {
-        DebugPrintString | AllocCounter => Some("debug"),
+        DebugPrintString | AllocCounter | BenchConsume => Some("debug"),
         IOReadLine | IOWrite | AsyncResume | AsyncTake | AsyncPut | AsyncNextId | AsyncClock
         | AsyncWait | AsyncPosted | AsyncRetire => Some("io"),
         OsRead | OsArgs | OsWrite | OsRandom | OsClock | OsSleep | OsOpen | OsHandle | OsClose
-        | OsSpawn | BenchNow | BenchConsume | GenSeed => Some("os"),
+        | OsSpawn | BenchNow | GenSeed => Some("os"),
         NetResolve | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify
         | NetWatch | NetUnwatch | NetConnect | NetNames | NetSend => Some("net"),
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap

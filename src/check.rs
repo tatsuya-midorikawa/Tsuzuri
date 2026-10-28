@@ -32,6 +32,8 @@ pub(crate) mod kg_capture;
 #[path = "polymorph.rs"]
 mod polymorph;
 pub(crate) use polymorph::builtin_instance_by_type;
+#[path = "effects.rs"]
+pub mod effects;
 #[path = "pure_rules.rs"]
 pub(crate) mod pure_rules;
 #[path = "recursion.rs"]
@@ -3517,6 +3519,33 @@ pub struct FunctionOrigin {
     pub cpu: u8,
     pub pure: bool,
     pub pure_values: bool,
+    /// The effect attributes of the declaration (A20). Generated helpers have none.
+    pub asserts: Asserts,
+}
+
+/// A set of effect attributes (`crate::syntax::EffectKind`), one bit each (A20).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Asserts(pub u8);
+
+impl Asserts {
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn contains(self, kind: crate::syntax::EffectKind) -> bool {
+        self.0 & kind.bit() != 0
+    }
+
+    pub fn insert(&mut self, kind: crate::syntax::EffectKind) {
+        self.0 |= kind.bit();
+    }
+
+    /// The attributes of the set, in `EffectKind::ALL` order.
+    pub fn kinds(self) -> impl Iterator<Item = crate::syntax::EffectKind> {
+        crate::syntax::EffectKind::ALL
+            .into_iter()
+            .filter(move |kind| self.contains(*kind))
+    }
 }
 
 impl FunctionOrigin {
@@ -3531,6 +3560,7 @@ impl FunctionOrigin {
             cpu: 0,
             pure: false,
             pure_values: false,
+            asserts: Asserts(0),
         }
     }
 
@@ -3541,6 +3571,7 @@ impl FunctionOrigin {
             parent: Some(parent),
             cpu: 0,
             pure: false,
+            asserts: Asserts(0),
             ..self
         }
     }
@@ -3593,6 +3624,8 @@ pub struct CheckedModule {
     /// D11 Phase 2: the plain constants that the program reads in place or borrows, by the id
     /// of the constant's declaration. `TypedExprKind::Static(id)` names one.
     pub statics: BTreeMap<usize, StaticData>,
+    /// A20: the effect summaries that the effect attributes needed; `None` without attributes.
+    pub effects: Option<effects::FunctionEffects>,
 }
 
 /// The value of a constant that the program keeps once, as read-only static data (D11 Phase 2).
@@ -6415,6 +6448,37 @@ fn check_modules_collect(
             }
         }
     }
+    // A20: the effect attributes of each function declaration.
+    let mut asserts_by_decl: BTreeMap<usize, Asserts> = BTreeMap::new();
+    for module in modules {
+        for attribute in &module.program.effect_attributes {
+            if let Some(id) = function_declarations.iter().position(|(owner, function)| {
+                owner == module.name && function.name.text == attribute.function.text
+            }) {
+                asserts_by_decl
+                    .entry(id)
+                    .or_default()
+                    .insert(attribute.kind);
+            }
+        }
+    }
+    let declared_attributes: Vec<effects::DeclaredAttribute> =
+        modules
+            .iter()
+            .flat_map(|module| {
+                module.program.effect_attributes.iter().map(|attribute| {
+                    effects::DeclaredAttribute {
+                        module: module.name.to_owned(),
+                        function: attribute.function.text.clone(),
+                        kind: attribute.kind,
+                        span: attribute.span,
+                        constant: module.program.functions.iter().any(|function| {
+                            function.name.text == attribute.function.text && function.constant
+                        }),
+                    }
+                })
+            })
+            .collect();
     // The names that a const initializer may apply: `const def`s, and union cases to build the
     // arguments of a call (D11).
     let const_names: BTreeSet<String> = modules
@@ -7665,6 +7729,7 @@ fn check_modules_collect(
                         test: test_functions.get(&id).copied(),
                         bench: bench_functions.get(&id).copied(),
                         cpu: cpu_levels.get(&id).copied().unwrap_or(0),
+                        asserts: asserts_by_decl.get(&id).copied().unwrap_or_default(),
                         pure: function.pure,
                         pure_values: checker.pure_values,
                         ..FunctionOrigin::source(names.origin(module))
@@ -7940,6 +8005,7 @@ fn check_modules_collect(
             .any(|input| !input.program.dyn_types.is_empty()),
         gpu: Default::default(),
         statics,
+        effects: None,
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -8012,6 +8078,31 @@ fn check_modules_collect(
     diagnostics.extend(pure_rules::validate(&module));
     if let Err(error) = validate_cpu_functions(&module) {
         diagnostics.push(error);
+    }
+    // A20: the effect attributes are checked against the inferred summaries; a program without
+    // them computes nothing.
+    if !declared_attributes.is_empty() {
+        let _effects_time = crate::timings::Phase::start("effects");
+        let summary = if effects::needed(&module) {
+            match effects::summarize(&module, effects::Options::checking(&module)) {
+                Ok(summary) => Some(summary),
+                Err(error) => {
+                    diagnostics.push(error);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let validation = effects::validate(&module, summary.as_ref(), &declared_attributes);
+        diagnostics.extend(validation.errors);
+        if !validation.warnings.is_empty() {
+            module.warnings.extend(validation.warnings);
+            module
+                .warnings
+                .sort_by_key(|warning| (warning.span.source, warning.span.start));
+        }
+        module.effects = summary;
     }
     diagnostics.check()?;
     // F09 Phase 2: the calls are validated, so their callbacks are known functions.
@@ -8287,6 +8378,7 @@ fn recovery_module(
         uses_dyn: false,
         gpu: Default::default(),
         statics: BTreeMap::new(),
+        effects: None,
     }
 }
 

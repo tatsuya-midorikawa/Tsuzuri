@@ -669,6 +669,16 @@ impl Parser<'_> {
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
         let start = self.current().span;
+        if let Some((kind, span)) = self.effect_attribute_ahead() {
+            return Err(Diagnostic::of(
+                DiagnosticKind::EffectAttributeMisplaced,
+                format!(
+                    "'@{}' applies to the 'def' signature of a top-level function",
+                    kind.name()
+                ),
+                span,
+            ));
+        }
         if !self.checked_attribute() {
             return Err(self.error_of(
                 DiagnosticKind::ExpectedExpressionAfterAttribute,
