@@ -4,12 +4,15 @@
 //! write them; a query is a type in the same syntax, where `'a` is a variable and `_` any type.
 //! Both sides' variables are unified. The tiers are those of G25's `tsuzuri find`: `exact` (the
 //! same parameters and result), `borrow` (the same without the outer `ref`s) and `partial` (the
-//! query's parameters among the entry's, in order, with the extra count). A constraint (`=>`)
+//! query's parameters among the entry's, in order, with the extra count). A named type of an entry
+//! is the type node that its module, its `uses_type` edges or its namespace give, so that `A.Point`
+//! and `B.Point` stay apart; two names match when one is the other or ends with it after a `.` or
+//! `::`. The length of a fixed array is a literal or a variable bound once per match. A constraint (`=>`)
 //! whose variable the match binds to a primitive type is checked with the checker's own rule for
 //! the builtin classes (`Float<i64>` fails), unless an instance node says otherwise; the other
 //! constraints are shown, not checked (the graph does not hold every instance).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::json::Object;
 use super::store::{KgData, KgView, Node};
@@ -22,13 +25,15 @@ pub const DEFAULT_LIMIT: usize = 20;
 enum Ty {
     /// A type variable or `_` (a fresh variable per occurrence), numbered.
     Var(usize),
-    /// A named type with its arguments: `i64`, `Maybe<'a>`, the last segment of a qualified name.
+    /// A named type with its arguments: `i64`, `Maybe<'a>`, `Shapes.Point`, or the ID of the type
+    /// node that an entry's name resolves to.
     Named(String, Vec<Ty>),
     Ref(Box<Ty>, bool),
     Array(Box<Ty>),
     View(Box<Ty>),
     List(Box<Ty>),
-    Fixed(Box<Ty>, String),
+    /// A fixed array and its length: a literal (`Named("4")`) or a variable (`N`).
+    Fixed(Box<Ty>, Box<Ty>),
     Tuple(Vec<Ty>),
     Function(Vec<Ty>, Box<Ty>),
 }
@@ -74,6 +79,16 @@ impl Parser<'_> {
     fn fresh(&mut self) -> usize {
         *self.next += 1;
         *self.next - 1
+    }
+
+    /// The variable that `key` names in this type, the same for every occurrence.
+    fn variable(&mut self, key: String) -> usize {
+        if let Some(id) = self.variables.get(&key) {
+            return *id;
+        }
+        let id = self.fresh();
+        self.variables.insert(key, id);
+        id
     }
 
     /// A name, qualified with `.` or `::`; it stops before `..`, which ends a view (`[i64..]`).
@@ -135,7 +150,15 @@ impl Parser<'_> {
             }
             if self.eat(";") {
                 let length = self.name()?;
-                return self.eat("]").then(|| Ty::Fixed(Box::new(element), length));
+                // `N` is a length variable (apart from the type variable `'N`), `4` a length.
+                let length = if length.starts_with(char::is_alphabetic) {
+                    Ty::Var(self.variable(format!(";{length}")))
+                } else {
+                    Ty::Named(length, Vec::new())
+                };
+                return self
+                    .eat("]")
+                    .then(|| Ty::Fixed(Box::new(element), Box::new(length)));
             }
             return self.eat("]").then(|| Ty::Array(Box::new(element)));
         }
@@ -156,12 +179,7 @@ impl Parser<'_> {
         }
         if self.eat("'") {
             let name = self.name()?;
-            let existing = self.variables.get(&name).copied();
-            return Some(Ty::Var(existing.unwrap_or_else(|| {
-                let id = self.fresh();
-                self.variables.insert(name, id);
-                id
-            })));
+            return Some(Ty::Var(self.variable(name)));
         }
         if self.eat("_") {
             return Some(Ty::Var(self.fresh()));
@@ -177,12 +195,91 @@ impl Parser<'_> {
                 return None;
             }
         }
-        let last = name
-            .rsplit(['.', ':'])
-            .find(|part| !part.is_empty())
-            .unwrap_or(&name)
-            .to_owned();
-        Some(Ty::Named(last, arguments))
+        Some(Ty::Named(name, arguments))
+    }
+}
+
+/// Whether `long` is `short`, or ends with it after a `.` or `::` (`Acme::Geo.Point` and
+/// `Geo.Point`, not `MyPoint`).
+fn ends_with_name(long: &str, short: &str) -> bool {
+    long.strip_suffix(short)
+        .is_some_and(|rest| rest.is_empty() || rest.ends_with('.') || rest.ends_with("::"))
+}
+
+/// Whether two type names can name one type: one ends with the other. `A::Point` and `B::Point` do
+/// not, nor does a qualifier that no type has.
+fn same_name(a: &str, b: &str) -> bool {
+    ends_with_name(a, b) || ends_with_name(b, a)
+}
+
+/// The types of a graph (records, unions, aliases and handles) by the last segment of their IDs.
+struct Types<'a>(BTreeMap<&'a str, Vec<&'a str>>);
+
+impl<'a> Types<'a> {
+    fn of(data: &'a KgData) -> Self {
+        let mut types: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for node in &data.nodes {
+            if matches!(node.kind.as_str(), "record" | "union" | "alias" | "handle") {
+                types
+                    .entry(last_segment(&node.id))
+                    .or_default()
+                    .push(&node.id);
+            }
+        }
+        Self(types)
+    }
+
+    fn has(&self, id: &str) -> bool {
+        self.0
+            .get(last_segment(id))
+            .is_some_and(|ids| ids.contains(&id))
+    }
+
+    /// The ID of the type that `name` names in a signature of `module` whose node refers to the
+    /// types `used` (its `uses_type` edges): the module's own, one it uses, one of its namespace,
+    /// or the type with that ID. Otherwise `name` as it is written (a primitive, a std type, or
+    /// a name the graph does not decide).
+    fn resolve(&self, name: &str, module: &str, used: &BTreeSet<&str>) -> String {
+        let own = format!("{module}.{name}");
+        if self.has(&own) {
+            return own;
+        }
+        let mut using = used.iter().filter(|id| ends_with_name(id, name));
+        if let (Some(id), None) = (using.next(), using.next()) {
+            return (*id).to_owned();
+        }
+        if let Some((namespace, _)) = module.rsplit_once("::") {
+            let id = format!("{namespace}::{name}");
+            if self.has(&id) {
+                return id;
+            }
+        }
+        name.to_owned()
+    }
+}
+
+fn last_segment(name: &str) -> &str {
+    name.rsplit(['.', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(name)
+}
+
+/// `ty` with each named type replaced by what `resolve` gives (not the length of a fixed array).
+fn qualify(ty: Ty, resolve: &dyn Fn(&str) -> String) -> Ty {
+    let all =
+        |types: Vec<Ty>| -> Vec<Ty> { types.into_iter().map(|ty| qualify(ty, resolve)).collect() };
+    match ty {
+        Ty::Var(id) => Ty::Var(id),
+        Ty::Named(name, arguments) => Ty::Named(resolve(&name), all(arguments)),
+        Ty::Ref(inner, mutable) => Ty::Ref(Box::new(qualify(*inner, resolve)), mutable),
+        Ty::Array(inner) => Ty::Array(Box::new(qualify(*inner, resolve))),
+        Ty::View(inner) => Ty::View(Box::new(qualify(*inner, resolve))),
+        Ty::List(inner) => Ty::List(Box::new(qualify(*inner, resolve))),
+        Ty::Fixed(inner, length) => Ty::Fixed(Box::new(qualify(*inner, resolve)), length),
+        Ty::Tuple(elements) => Ty::Tuple(all(elements)),
+        Ty::Function(parameters, result) => {
+            Ty::Function(all(parameters), Box::new(qualify(*result, resolve)))
+        }
     }
 }
 
@@ -224,11 +321,10 @@ impl Subst {
         match self.resolve(ty) {
             Ty::Var(other) => other == id,
             Ty::Named(_, args) | Ty::Tuple(args) => args.iter().any(|arg| self.occurs(id, arg)),
-            Ty::Ref(inner, _)
-            | Ty::Array(inner)
-            | Ty::View(inner)
-            | Ty::List(inner)
-            | Ty::Fixed(inner, _) => self.occurs(id, &inner),
+            Ty::Ref(inner, _) | Ty::Array(inner) | Ty::View(inner) | Ty::List(inner) => {
+                self.occurs(id, &inner)
+            }
+            Ty::Fixed(inner, length) => self.occurs(id, &inner) || self.occurs(id, &length),
             Ty::Function(parameters, result) => {
                 parameters
                     .iter()
@@ -250,16 +346,15 @@ impl Subst {
                 true
             }
             (Ty::Named(x, xs), Ty::Named(y, ys)) => {
-                x == y && xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.unify(x, y))
+                same_name(x, y)
+                    && xs.len() == ys.len()
+                    && xs.iter().zip(ys).all(|(x, y)| self.unify(x, y))
             }
             (Ty::Ref(x, m), Ty::Ref(y, n)) => m == n && self.unify(x, y),
             (Ty::Array(x), Ty::Array(y))
             | (Ty::View(x), Ty::View(y))
             | (Ty::List(x), Ty::List(y)) => self.unify(x, y),
-            (Ty::Fixed(x, n), Ty::Fixed(y, m)) => {
-                (n == m || n.starts_with(char::is_alphabetic) || m.starts_with(char::is_alphabetic))
-                    && self.unify(x, y)
-            }
+            (Ty::Fixed(x, n), Ty::Fixed(y, m)) => self.unify(n, m) && self.unify(x, y),
             (Ty::Tuple(xs), Ty::Tuple(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| self.unify(x, y))
             }
@@ -374,6 +469,7 @@ fn parameter_text(ty: &str, conv: &str) -> String {
 /// The type that the record or union of a field or case declares, as text (`Box<'a>`) and
 /// parsed with its parameters in `variables`, so that the member's type shares them: the accessor
 /// of `value: 'a` is `ref Box<'a> -> 'a`, the constructor `Some of 'a` is `'a -> Maybe<'a>`.
+/// The owner is named by its ID.
 fn owner_type(
     data: &KgData,
     member: &Node,
@@ -381,7 +477,7 @@ fn owner_type(
     variables: &mut BTreeMap<String, usize>,
 ) -> (String, Ty) {
     let owner = member.id.rsplit_once('.').map_or("", |(owner, _)| owner);
-    let name = owner.rsplit(['.', ':']).next().unwrap_or(owner).to_owned();
+    let name = last_segment(owner).to_owned();
     // `record Box<'a> {r}`: the name and parameters, without the keyword and the regions.
     let declared = data
         .node(owner)
@@ -389,17 +485,31 @@ fn owner_type(
         .map(|(_, rest)| rest.split('{').next().unwrap_or(rest).trim().to_owned())
         .filter(|text| !text.is_empty());
     match declared.and_then(|text| Some((parse(&text, next, variables)?, text))) {
+        Some((Ty::Named(_, arguments), text)) => (text, Ty::Named(owner.to_owned(), arguments)),
         Some((ty, text)) => (text, ty),
-        None => (name.clone(), Ty::Named(name, Vec::new())),
+        None => (name, Ty::Named(owner.to_owned(), Vec::new())),
     }
 }
 
 fn entries<'a>(data: &'a KgData, origin: &'static str, next: &mut usize) -> Vec<Entry<'a>> {
+    let types = Types::of(data);
     let mut found = Vec::new();
     for node in &data.nodes {
         if node.name.starts_with('$') || (origin == "std" && !node.public) {
             continue;
         }
+        // The types that the node's signature refers to, as the checker resolved them; a member's
+        // are its owner's.
+        let owner = node.id.rsplit_once('.').map_or("", |(owner, _)| owner);
+        let used: BTreeSet<&str> = [node.id.as_str(), owner]
+            .into_iter()
+            .flat_map(|id| data.edges_from("uses_type", id))
+            .map(|edge| edge.to.as_str())
+            .collect();
+        let resolve = |name: &str| types.resolve(name, &node.module, &used);
+        let typed = |text: &str, next: &mut usize, variables: &mut BTreeMap<String, usize>| {
+            parse(text, next, variables).map(|ty| qualify(ty, &resolve))
+        };
         let mut variables = BTreeMap::new();
         let mut constraints = Vec::new();
         let (kind, parameters, result, text) = match node.kind.as_str() {
@@ -408,7 +518,7 @@ fn entries<'a>(data: &'a KgData, origin: &'static str, next: &mut usize) -> Vec<
                     .params
                     .iter()
                     .map(|param| {
-                        parse(
+                        typed(
                             &parameter_text(&param.ty, &param.conv),
                             next,
                             &mut variables,
@@ -418,7 +528,7 @@ fn entries<'a>(data: &'a KgData, origin: &'static str, next: &mut usize) -> Vec<
                 let result = node
                     .result
                     .as_deref()
-                    .and_then(|result| parse(result, next, &mut variables));
+                    .and_then(|result| typed(result, next, &mut variables));
                 let kind = match node.kind.as_str() {
                     "const" => "const",
                     "extern" => "extern",
@@ -433,7 +543,7 @@ fn entries<'a>(data: &'a KgData, origin: &'static str, next: &mut usize) -> Vec<
                 let result = node
                     .result
                     .as_deref()
-                    .and_then(|result| parse(result, next, &mut variables));
+                    .and_then(|result| typed(result, next, &mut variables));
                 (
                     "field",
                     Some(vec![Ty::Ref(Box::new(owner), false)]),
@@ -444,7 +554,7 @@ fn entries<'a>(data: &'a KgData, origin: &'static str, next: &mut usize) -> Vec<
             "case" => {
                 let (union, owner) = owner_type(data, node, next, &mut variables);
                 let parameters = match node.result.as_deref() {
-                    Some(payload) => parse(payload, next, &mut variables).map(|ty| vec![ty]),
+                    Some(payload) => typed(payload, next, &mut variables).map(|ty| vec![ty]),
                     None => Some(Vec::new()),
                 };
                 let text = match &node.result {
@@ -782,7 +892,10 @@ mod tests {
             ty("Numeric<'a> => ref ['a] -> 'a"),
             Ty::Function(..)
         ));
-        assert_eq!(ty("Geometry::Point"), Ty::Named("Point".into(), vec![]));
+        assert_eq!(
+            ty("Geometry::Point"),
+            Ty::Named("Geometry::Point".into(), vec![])
+        );
         assert!(matches!(ty("(i64 * string)"), Ty::Tuple(_)));
         assert!(matches!(ty("[|i64|]"), Ty::List(_)));
         assert!(matches!(ty("[i64; 4]"), Ty::Fixed(..)));
@@ -828,5 +941,55 @@ mod tests {
         assert!(!Subst::default().unify(&a, &b));
         let c = parse("i64 -> i64", &mut next, &mut BTreeMap::new()).unwrap();
         assert!(Subst::default().unify(&a, &c));
+    }
+
+    /// Names match when one ends with the other: a qualifier keeps two types apart.
+    #[test]
+    fn qualified_names_keep_types_apart() {
+        assert!(same_name("Acme::Geo.Point", "Geo.Point"));
+        assert!(same_name("Point", "Acme::Geo.Point"));
+        assert!(same_name("Acme::Geo.Point", "Acme::Geo.Point"));
+        assert!(!same_name("A::Point", "B::Point"));
+        assert!(!same_name("Acme::Geo.Point", "Nope.Point"));
+        assert!(!same_name("MyPoint", "Point"));
+        assert!(!same_name("12", "2"));
+        assert!(!Subst::default().unify(&ty("A::Point"), &ty("B::Point")));
+        assert!(Subst::default().unify(&ty("Maybe<Geo.Point>"), &ty("Maybe<Acme::Geo.Point>")));
+    }
+
+    /// A length variable is one length in every place of a signature.
+    #[test]
+    fn length_variables_are_bound_once() {
+        let mut next = 0;
+        let same = parse(
+            "[i64; N] -> [i64; N] -> i64",
+            &mut next,
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
+        let apart = parse(
+            "[i64; 2] -> [i64; 3] -> i64",
+            &mut next,
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
+        let equal = parse(
+            "[i64; 2] -> [i64; 2] -> i64",
+            &mut next,
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(!Subst::default().unify(&same, &apart));
+        assert!(Subst::default().unify(&same, &equal));
+        // `N` of one side and `N` of the other are two variables; `'N` is a type variable.
+        let other = parse(
+            "[i64; N] -> [i64; M] -> i64",
+            &mut next,
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(Subst::default().unify(&other, &apart));
+        assert!(Subst::default().unify(&ty("[i64; N] -> 'N"), &ty("[i64; 4] -> string")));
+        assert!(!Subst::default().unify(&ty("[i64; 4]"), &ty("[i64; 5]")));
     }
 }

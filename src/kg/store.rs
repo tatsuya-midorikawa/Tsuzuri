@@ -468,9 +468,37 @@ impl Source {
 pub struct Tables<T> {
     source: Source,
     /// By path: the SHA-256 that the manifest lists, and the rows once read.
-    files: BTreeMap<String, (String, OnceLock<Vec<T>>)>,
+    files: BTreeMap<String, (String, OnceLock<Rows<T>>)>,
+    /// The paths of each module's files by the lower-case stem of the module key.
+    groups: BTreeMap<String, Vec<String>>,
     row: fn(Value) -> T,
+    id: fn(&T) -> Option<&str>,
     failure: Arc<OnceLock<manifest::Freshness>>,
+}
+
+/// How a table reads a row from its JSON, and the row's ID.
+type RowOf<T> = (fn(Value) -> T, fn(&T) -> Option<&str>);
+
+/// The rows of one file, and the first row of each ID.
+#[derive(Clone, Debug)]
+struct Rows<T> {
+    rows: Vec<T>,
+    by_id: BTreeMap<String, usize>,
+}
+
+/// The lower-case stem of a module key that the table file at `path` holds: its name without
+/// `.jsonl` and without the `~n` that `write::unique_names` adds.
+fn group_of(path: &str) -> String {
+    let name = path
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches(".jsonl");
+    let base = match name.rsplit_once('~') {
+        Some((base, number)) if number.bytes().all(|byte| byte.is_ascii_digit()) => base,
+        _ => name,
+    };
+    base.to_lowercase()
 }
 
 impl<T> Tables<T> {
@@ -478,19 +506,25 @@ impl<T> Tables<T> {
         source: Source,
         manifest: &Manifest,
         prefix: &str,
-        row: fn(Value) -> T,
+        (row, id): RowOf<T>,
         failure: Arc<OnceLock<manifest::Freshness>>,
     ) -> Self {
-        let files = manifest
+        let files: BTreeMap<String, (String, OnceLock<Rows<T>>)> = manifest
             .files
             .iter()
             .filter(|(path, _)| path.starts_with(prefix) && path.ends_with(".jsonl"))
             .map(|(path, sha)| (path.clone(), (sha.clone(), OnceLock::new())))
             .collect();
+        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for path in files.keys() {
+            groups.entry(group_of(path)).or_default().push(path.clone());
+        }
         Self {
             source,
             files,
+            groups,
             row,
+            id,
             failure,
         }
     }
@@ -504,46 +538,55 @@ impl<T> Tables<T> {
 
     /// The rows of the file at `path`.
     pub fn rows(&self, path: &str) -> &[T] {
-        let Some((sha, rows)) = self.files.get(path) else {
-            return &[];
-        };
-        rows.get_or_init(|| {
+        self.loaded(path).map_or(&[], |rows| &rows.rows)
+    }
+
+    fn loaded(&self, path: &str) -> Option<&Rows<T>> {
+        let (sha, rows) = self.files.get(path)?;
+        Some(rows.get_or_init(|| {
             let parsed = self.source.read(path, sha).and_then(|bytes| {
                 lines(&bytes)
                     .map_err(|reason| manifest::Freshness::Broken(format!("{path} {reason}")))
             });
-            match parsed {
+            let rows: Vec<T> = match parsed {
                 Ok(rows) => rows.into_iter().map(self.row).collect(),
                 Err(failure) => {
                     let _ = self.failure.set(failure);
                     Vec::new()
                 }
+            };
+            let mut by_id = BTreeMap::new();
+            for (index, row) in rows.iter().enumerate() {
+                if let Some(id) = (self.id)(row) {
+                    by_id.entry(id.to_owned()).or_insert(index);
+                }
             }
-        })
+            Rows { rows, by_id }
+        }))
     }
 
-    /// The rows of the module with this key. Its file is named by the key's stem, with `~n` after
+    /// The files of the module with this key. Its file is named by the key's stem, with `~n` after
     /// it when the stem differs from another one only in case (`write::unique_names`); the files
     /// of the stem's case-insensitive group are all read.
+    fn module_files(&self, key: &str) -> &[String] {
+        self.groups
+            .get(&super::write::stem(key).to_lowercase())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The rows of the module with this key.
     pub fn of_module(&self, key: &str) -> impl Iterator<Item = &T> {
-        let wanted = super::write::stem(key).to_lowercase();
-        self.files
-            .keys()
-            .filter(move |path| {
-                let name = path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(path)
-                    .trim_end_matches(".jsonl");
-                let base = match name.rsplit_once('~') {
-                    Some((base, number)) if number.bytes().all(|byte| byte.is_ascii_digit()) => {
-                        base
-                    }
-                    _ => name,
-                };
-                base.to_lowercase() == wanted
-            })
+        self.module_files(key)
+            .iter()
             .flat_map(|path| self.rows(path))
+    }
+
+    /// The first row with this ID among the module's rows.
+    pub fn find(&self, key: &str, id: &str) -> Option<&T> {
+        self.module_files(key).iter().find_map(|path| {
+            let rows = self.loaded(path)?;
+            rows.by_id.get(id).map(|index| &rows.rows[*index])
+        })
     }
 
     /// Every row of the table, file by file.
@@ -698,14 +741,21 @@ impl KgData {
                     .any(|path| path.starts_with(prefix) && path.ends_with(".jsonl"))
         };
         let failure = Arc::new(OnceLock::new());
-        let facts = tables("facts/")
-            .then(|| Tables::new(source.clone(), manifest, "facts/", fact_of, failure.clone()));
+        let facts = tables("facts/").then(|| {
+            Tables::new(
+                source.clone(),
+                manifest,
+                "facts/",
+                (fact_of, |fact| Some(&fact.id)),
+                failure.clone(),
+            )
+        });
         let layouts = tables("layout/").then(|| {
             Tables::new(
                 source.clone(),
                 manifest,
                 "layout/",
-                |row| row,
+                (|row| row, |row| row.get("id").and_then(Value::as_str)),
                 failure.clone(),
             )
         });
@@ -860,10 +910,7 @@ impl KgData {
     pub fn fact(&self, id: &str) -> Option<&Fact> {
         let node = self.node(id)?;
         let key = self.module_key(&node.module).unwrap_or(&node.module);
-        self.facts
-            .as_ref()?
-            .of_module(key)
-            .find(|fact| fact.id == id)
+        self.facts.as_ref()?.find(key, id)
     }
 
     /// The structural invariants of the graph (D-60): node IDs are unique, every edge starts at a
@@ -1135,6 +1182,57 @@ mod tests {
             KgData::open_fresh(&dir, &fresh, "00").unwrap_err(),
             manifest::Freshness::Incomplete(_)
         ));
+    }
+
+    /// A module's rows are its files' (the stem's case-insensitive group, `~n` included), and a
+    /// row is found by its ID: the first one with it.
+    #[test]
+    fn module_rows_are_found_by_group_and_id() {
+        let mut bytes = BTreeMap::new();
+        bytes.insert(
+            "facts/Acme.Main.jsonl".to_owned(),
+            b"{\"id\":\"a\",\"effects\":[\"io\"]}\n{\"id\":\"a\"}\n".to_vec(),
+        );
+        bytes.insert(
+            "facts/acme.main~1.jsonl".to_owned(),
+            b"{\"id\":\"b\"}\n".to_vec(),
+        );
+        bytes.insert(
+            "facts/Acme.Mainly.jsonl".to_owned(),
+            b"{\"id\":\"c\"}\n".to_vec(),
+        );
+        let manifest = Manifest {
+            schema: "tz-kg/1".into(),
+            compiler: manifest::compiler(),
+            edition: "2026".into(),
+            project: "p".into(),
+            version: None,
+            complete: true,
+            source_hash: "00".repeat(32),
+            counts: Vec::new(),
+            modules: Vec::new(),
+            files: bytes
+                .iter()
+                .map(|(path, bytes)| (path.clone(), digest(bytes)))
+                .collect(),
+        };
+        let tables = Tables::new(
+            Source::Memory(Arc::new(bytes)),
+            &manifest,
+            "facts/",
+            (fact_of, |fact: &Fact| Some(fact.id.as_str())),
+            Arc::new(OnceLock::new()),
+        );
+        let ids: Vec<&str> = tables
+            .of_module("Acme::Main")
+            .map(|fact| fact.id.as_str())
+            .collect();
+        assert_eq!(ids, ["a", "a", "b"]);
+        assert_eq!(tables.find("Acme::Main", "a").unwrap().effects, ["io"]);
+        assert_eq!(tables.find("Acme::Main", "b").unwrap().id, "b");
+        assert!(tables.find("Acme::Main", "c").is_none());
+        assert_eq!(tables.find("Acme::Mainly", "c").unwrap().id, "c");
+        assert!(tables.find("Acme::Other", "a").is_none());
     }
 
     /// A directory on the way to a listed file that is a link is not followed.

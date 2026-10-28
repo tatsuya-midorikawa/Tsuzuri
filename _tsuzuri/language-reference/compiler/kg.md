@@ -218,7 +218,7 @@ tsuzuri kg find TYPE [--module M] [--limit N] [共通]
 tsuzuri kg find --result TYPE [--takes TYPE]... [--module M] [--limit N] [共通]
 ```
 
-`kg find` は、プロジェクトと std の知識グラフの関数（`def`・`const`・`extern`、field の取り出し `ref Record -> T`、case の構築子）を、署名の型で探します。型引数のある record・union では、取り出しと構築子も宣言の型引数を持ちます（`record Box<'a> { value: 'a }` の `value` は `ref Box<'a> -> 'a`、`Maybe` の `Some` は `'a -> Maybe<'a>`）。問い合わせは署名と同じ型の書き方で、`'a` は型変数（同じ名前は同じ型）、`_` は任意の型です。両方の型変数を単一化して比べ、次の段に分けます。
+`kg find` は、プロジェクトと std の知識グラフの関数（`def`・`const`・`extern`、field の取り出し `ref Record -> T`、case の構築子）を、署名の型で探します。型引数のある record・union では、取り出しと構築子も宣言の型引数を持ちます（`record Box<'a> { value: 'a }` の `value` は `ref Box<'a> -> 'a`、`Maybe` の `Some` は `'a -> Maybe<'a>`）。問い合わせは署名と同じ型の書き方で、`'a` は型変数（同じ名前は同じ型）、`_` は任意の型です。固定長の配列の長さ `[i64; N]` の `N` も変数で、1 つの署名のどこでも同じ長さです（`[i64; N] -> [i64; N] -> i64` は `[i64; 2] -> [i64; 3] -> i64` に一致しません）。署名の型の名前は、そのモジュールの型、その関数が使う型（`uses_type` の辺）、同じ名前空間の型の順に知識グラフの型に決め、名前は一方が他方と同じか、`.`・`::` の後の末尾が一致するときに同じとします。`A.Point` は `B` の `Point` を受け取る関数に一致せず、どの型にもない修飾（`Nope.Point`）は何にも一致しません。修飾のない `Point` はどの `Point` にも一致します。両方の型変数を単一化して比べ、次の段に分けます。
 
 | 段 | 意味 |
 | --- | --- |
@@ -300,7 +300,7 @@ summary: 4 breaking, 1 non-breaking, 1 info
 
 ### 影響のあるテストだけを実行する
 
-`tsuzuri test PATH --affected BASE` は、`BASE` と `PATH` の間の `kg impact` が選んだテストだけを実行します。`BASE` は、知識グラフのディレクトリ、プロジェクトのディレクトリ、git のリビジョンの順に読みます（`./name` でパス、`refs/heads/name` でリビジョンに決められます）。実行の前に 1 行を出します。
+`tsuzuri test PATH --affected BASE` は、`BASE` と `PATH` の間の `kg impact` が選んだテストだけを実行します。`BASE` は、知識グラフのディレクトリ、プロジェクトのディレクトリ、git のリビジョンの順に読みます（`./name` でパス、`refs/heads/name` でリビジョンに決められます）。知識グラフのディレクトリは、このコマンドがプロジェクトの知識グラフを書く前に全部読むので、プロジェクト自身の `target/tz/kg`（前回の `check` のもの）も `BASE` にできます。実行の前に 1 行を出します。
 
 ```text
 affected: 1 of 3 tests (base)
