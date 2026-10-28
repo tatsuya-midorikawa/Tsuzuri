@@ -48,14 +48,24 @@ impl Sources for BTreeMap<String, String> {
     }
 }
 
-/// A type's head: without a leading `ref ` or `ref mut `, and up to its first `<`.
+/// A type's name: without a leading `ref ` or `ref mut ` and the reference's region
+/// (`ref {r} U`), and up to its arguments (`U<T>`) or its own region (`U {r}`).
 fn head(ty: &str) -> &str {
     let ty = ty.trim_start();
     let ty = ty
         .strip_prefix("ref mut ")
         .or_else(|| ty.strip_prefix("ref "))
-        .unwrap_or(ty);
-    ty.split('<').next().unwrap_or(ty).trim()
+        .unwrap_or(ty)
+        .trim_start();
+    let ty = match ty.strip_prefix('{') {
+        Some(rest) => rest
+            .split_once('}')
+            .map_or(rest, |(_, rest)| rest)
+            .trim_start(),
+        None => ty,
+    };
+    let end = ty.find(['<', ' ', '{']).unwrap_or(ty.len());
+    &ty[..end]
 }
 
 /// The last word of a name: after its last `.` or `:`.
@@ -64,7 +74,7 @@ fn last_word(text: &str) -> &str {
 }
 
 /// The `match`es over the parameter `name` that a function's body returns: the body's own, or
-/// those of both branches of an `if`.
+/// those of both branches of an `if`. A block whose local takes the name hides the parameter.
 fn find_matches<'a>(body: &'a Expr, name: &str, found: &mut Vec<&'a [crate::syntax::MatchArm]>) {
     match &body.kind {
         ExprKind::Match { value, arms, .. } => {
@@ -72,7 +82,11 @@ fn find_matches<'a>(body: &'a Expr, name: &str, found: &mut Vec<&'a [crate::synt
                 found.push(arms);
             }
         }
-        ExprKind::Block { result, .. } => find_matches(result, name, found),
+        ExprKind::Block { bindings, result } => {
+            if bindings.iter().all(|binding| binding.name.text != name) {
+                find_matches(result, name, found);
+            }
+        }
         ExprKind::If {
             then_branch,
             else_branch,
@@ -121,19 +135,30 @@ fn starts(pattern: &Pattern, cases: &[&str]) -> Option<Start> {
     }
 }
 
+/// The case that `expr` names: `Red`, or through its union (`Light.Red`, `Util::Light.Red`).
+fn case_name(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Name(id) => Some(last_word(&id.text)),
+        ExprKind::Field(base, id) if matches!(base.kind, ExprKind::Name(_)) => Some(&id.text),
+        _ => None,
+    }
+}
+
 /// The cases an arm's body ends in.
 fn ends(body: &Expr, cases: &[&str], out: &mut BTreeSet<String>) {
     match &body.kind {
-        ExprKind::Name(id) => {
-            if cases.contains(&last_word(&id.text)) {
-                out.insert(last_word(&id.text).to_owned());
+        ExprKind::Name(_) | ExprKind::Field(..) => {
+            if let Some(name) = case_name(body)
+                && cases.contains(&name)
+            {
+                out.insert(name.to_owned());
             }
         }
         ExprKind::Call(callee, _) => {
-            if let ExprKind::Name(id) = &callee.kind
-                && cases.contains(&last_word(&id.text))
+            if let Some(name) = case_name(callee)
+                && cases.contains(&name)
             {
-                out.insert(last_word(&id.text).to_owned());
+                out.insert(name.to_owned());
             }
         }
         ExprKind::If {
@@ -166,23 +191,34 @@ pub fn cases<'a>(input: &'a Input, union: &str) -> Vec<&'a Symbol> {
     cases
 }
 
+/// The full names of a union, with `::` read as `.`: its ID, and its module's when it is named after
+/// its module (`Util::Light` of `Util::Light.Light`, which the source writes as the module).
+fn full_names(union: &Symbol) -> Vec<String> {
+    let mut names = vec![union.id.replace("::", ".")];
+    if union.module.rsplit("::").next() == Some(union.name.as_str()) {
+        names.push(union.module.replace("::", "."));
+    }
+    names
+}
+
 /// Whether `ty`, written in the signature of `function`, names `union`. The written name, with
-/// `::` read as `.`, must be the union's ID or end it (`Shapes.Shape` of `Acme::Kg::Shapes.Shape`).
-/// A name that several unions end with means the one of the function's module, else the only one
-/// of the function's namespace; otherwise it is ambiguous and names none.
+/// `::` read as `.`, must be one of the union's full names or end it (`Shapes.Shape` of
+/// `Acme::Kg::Shapes.Shape`). A name that several unions end with means the one of the function's
+/// module, else the only one of the function's namespace; otherwise it is ambiguous and names none.
 fn names_union(input: &Input, function: &Symbol, ty: &str, union: &Symbol) -> bool {
     let written = head(ty).replace("::", ".");
-    let ends = |id: &str| {
-        let id = id.replace("::", ".");
-        id == written || id.ends_with(&format!(".{written}"))
+    let ends = |symbol: &Symbol| {
+        full_names(symbol)
+            .iter()
+            .any(|name| *name == written || name.ends_with(&format!(".{written}")))
     };
-    if !ends(&union.id) {
+    if !ends(union) {
         return false;
     }
     let named: Vec<&Symbol> = input
         .symbols
         .iter()
-        .filter(|symbol| symbol.kind == "union" && ends(&symbol.id))
+        .filter(|symbol| symbol.kind == "union" && ends(symbol))
         .collect();
     if named.len() == 1 {
         return true;
