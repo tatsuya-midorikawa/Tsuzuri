@@ -35,15 +35,16 @@ impl ResultCache {
 }
 
 /// The inputs a tool reads: the sources and manifests of the project it analyzes (by the hash of
-/// the KG's inputs; for `tz_check` and `tz_fix_plan`, the project at their `path`), nothing for the
-/// guide and `explain`, `None` for a tool whose inputs are other directories (`tz_impact`) and for
-/// a path that does not load, which are not cached.
+/// the KG's inputs; for `tz_check` and `tz_fix_plan`, the project at their `path`), the edition of
+/// the root's manifest for the guide, nothing for `explain`, `None` for a tool whose inputs are
+/// other directories (`tz_impact`) and for a path that does not load, which are not cached.
 fn inputs(backend: &ProjectBackend, request: &ToolRequest<'_>) -> Option<String> {
     let hash = |project: &crate::driver::Project| {
         crate::kg::input::hex(&crate::kg::input::source_hash(project))
     };
     match request.name {
-        "tz_guide" | "tz_explain" => Some(String::new()),
+        "tz_guide" => Some(super::knowledge::guide_edition(&backend.root).to_string()),
+        "tz_explain" => Some(String::new()),
         "tz_impact" => None,
         "tz_check" | "tz_fix_plan" => {
             let path = request

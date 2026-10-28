@@ -355,7 +355,7 @@ fn protocol_error(code: i64, message: impl Into<String>) -> Outcome {
 fn run_job(backend: &dyn Backend, registry: &Registry, job: &Job) -> Outcome {
     match &job.work {
         Work::Tool(params) => run_tool(backend, registry, job, params),
-        Work::Resource(params) => run_resource(backend, job, params),
+        Work::Resource(params) => run_resource(backend, registry, job, params),
     }
 }
 
@@ -404,11 +404,20 @@ fn run_tool(backend: &dyn Backend, registry: &Registry, job: &Job, params: &Valu
     })
 }
 
-fn run_resource(backend: &dyn Backend, job: &Job, params: &Value) -> Outcome {
+fn run_resource(backend: &dyn Backend, registry: &Registry, job: &Job, params: &Value) -> Outcome {
     let Some(uri) = params.get("uri").and_then(Value::as_str) else {
         return protocol_error(rpc::INVALID_PARAMS, "invalid params: uri must be a string");
     };
     if let Err(reason) = resources::parse(uri) {
+        return protocol_error(rpc::INVALID_PARAMS, format!("invalid params: {reason}"));
+    }
+    // The arguments that the URI gives its tool meet that tool's schema (an ID of at most 512
+    // characters), as those of `tools/call` do.
+    let caps = backend.capabilities();
+    if let Some((name, arguments)) = resources::tool_request(uri, caps)
+        && let Some(tool) = registry.get(name, caps)
+        && let Err(reason) = super::schema::validate(&tool["inputSchema"], &arguments)
+    {
         return protocol_error(rpc::INVALID_PARAMS, format!("invalid params: {reason}"));
     }
     let not_found = || Outcome::ProtocolError {

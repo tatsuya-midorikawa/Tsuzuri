@@ -150,6 +150,22 @@ pub fn templates(version: Version, caps: Capabilities) -> Vec<Value> {
     list
 }
 
+/// The tool and arguments that read `uri` when `caps` offers it. The session checks the
+/// arguments against the tool's input schema, as for `tools/call`.
+pub fn tool_request(uri: &str, caps: Capabilities) -> Option<(&'static str, Value)> {
+    let Ok(Some(resource)) = parse(uri) else {
+        return None;
+    };
+    Some(match &resource {
+        Resource::GuideCard if caps.guide => ("tz_guide", json!({})),
+        Resource::GuideFull if caps.guide => ("tz_guide", json!({"topic": "language"})),
+        Resource::BriefProject if caps.kg => ("tz_brief", json!({})),
+        Resource::Brief(id) if caps.kg => ("tz_brief", json!({"id": id})),
+        Resource::Explain(query) if caps.explain => ("tz_explain", json!({"query": query})),
+        _ => return None,
+    })
+}
+
 /// The text of `uri`, through the functions of the tools.
 pub fn read(
     backend: &ProjectBackend,
@@ -157,17 +173,8 @@ pub fn read(
     cancel: &Cancel,
 ) -> Result<Option<String>, ToolError> {
     use super::backend::{Backend, ToolRequest};
-    let caps = backend.capabilities();
-    let Ok(Some(resource)) = parse(uri) else {
+    let Some((name, arguments)) = tool_request(uri, backend.capabilities()) else {
         return Ok(None);
-    };
-    let (name, arguments) = match &resource {
-        Resource::GuideCard if caps.guide => ("tz_guide", json!({})),
-        Resource::GuideFull if caps.guide => ("tz_guide", json!({"topic": "language"})),
-        Resource::BriefProject if caps.kg => ("tz_brief", json!({})),
-        Resource::Brief(id) if caps.kg => ("tz_brief", json!({"id": id})),
-        Resource::Explain(query) if caps.explain => ("tz_explain", json!({"query": query})),
-        _ => return Ok(None),
     };
     let request = ToolRequest {
         name,

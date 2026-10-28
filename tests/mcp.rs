@@ -1320,6 +1320,24 @@ fn resources_read_not_found_is_32002() {
     );
 }
 
+/// The arguments that a URI gives its tool meet the tool's schema, as those of `tools/call` do:
+/// an ID longer than 512 characters, or an explanation query longer than 64, is invalid params,
+/// not a resource that the backend looked for.
+#[test]
+fn resources_read_checks_the_tool_schema() {
+    let client = initialized(Capabilities::all());
+    let long = "x".repeat(3_000_000);
+    for (id, uri) in [
+        (1, format!("tz://kg/brief/{long}")),
+        (2, format!("tz://explain/{}", "E".repeat(65))),
+    ] {
+        let (code, message) = error_of(&client.request(id, "resources/read", json!({"uri": uri})));
+        assert_eq!(code, -32602, "{message}");
+        assert!(message.starts_with("invalid params: "), "{message}");
+        assert!(message.len() < 1_000, "{}", message.len());
+    }
+}
+
 #[test]
 fn resources_uri_decoding_table() {
     let client = initialized(Capabilities::all());

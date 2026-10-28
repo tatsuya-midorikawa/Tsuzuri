@@ -122,12 +122,12 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, std::time::SystemTime)> {
 fn tz_guide_returns_the_card_and_lists_topics() {
     let root = root_with("tests/fixtures/kg_shop");
     let backend = backend(&root);
-    let empty = std::env::temp_dir();
+    // As `tsuzuri guide` answers in the project (an edition-2026 one).
     let card = call(&backend, "tz_guide", json!({})).unwrap();
-    assert_eq!(card.text, stdout(&tsuzuri(&empty, &["guide"])));
+    assert_eq!(card.text, stdout(&tsuzuri(&root, &["guide"])));
     assert_eq!(card.structured["topic"], "card");
     let list = call(&backend, "tz_guide", json!({"topic": "list"})).unwrap();
-    assert_eq!(list.text, stdout(&tsuzuri(&empty, &["guide", "--list"])));
+    assert_eq!(list.text, stdout(&tsuzuri(&root, &["guide", "--list"])));
     assert_eq!(list.structured["topic"], "list");
     let error = call(&backend, "tz_guide", json!({"topic": "nothing"})).unwrap_err();
     assert_eq!(
@@ -617,6 +617,37 @@ fn tz_fix_plan_paths_are_relative_to_the_root() {
         "{}",
         output.text
     );
+}
+
+/// The guide follows the edition of the project at the root, as `tsuzuri guide` does there, and a
+/// changed manifest changes the answer.
+#[test]
+fn tz_guide_follows_the_projects_edition() {
+    let root = root_with("tests/fixtures/kg_shop");
+    let manifest = |edition: &str| {
+        std::fs::write(
+            root.join("Tsuzuri.toml"),
+            format!("[package]\nname = \"shop\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"),
+        )
+        .unwrap();
+    };
+    let backend = backend(&root);
+    let page = json!({"topic": "std", "module": "Vec"});
+    for edition in ["2026", "2027"] {
+        manifest(edition);
+        let output = call(&backend, "tz_guide", page.clone()).unwrap();
+        assert_eq!(
+            output.text,
+            stdout(&tsuzuri(&root, &["guide", "std", "Vec"])),
+            "{edition}"
+        );
+        let push = if edition == "2026" {
+            "Vec.push :: 'a -> Vec<'a> -> Vec<'a>\n"
+        } else {
+            "Vec.push :: 'a -> ref mut Vec<'a> -> unit\n"
+        };
+        assert!(output.text.contains(push), "{edition}: {}", output.text);
+    }
 }
 
 /// The uses of a class are its implementations and instances as well, in the text and in the rows,

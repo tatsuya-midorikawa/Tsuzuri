@@ -146,7 +146,7 @@ impl Backend for ProjectBackend {
     fn call(&self, request: &ToolRequest<'_>) -> Result<ToolOutput, ToolError> {
         super::cache::cached(self, request, |request| match request.name {
             "tz_check" => super::check::run(self, request),
-            "tz_guide" => super::knowledge::guide(request),
+            "tz_guide" => super::knowledge::guide(self, request),
             "tz_explain" => super::knowledge::explain(request),
             "tz_symbol" => super::knowledge::symbol(self, request),
             "tz_brief" => super::knowledge::brief(self, request),

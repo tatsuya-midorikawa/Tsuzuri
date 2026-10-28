@@ -62,7 +62,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | ツール | 必須の引数 | 答え | CLI |
 | --- | --- | --- | --- |
 | `tz_check` | なし（`path`・`warnings`・`implicit_copy`） | 型検査の診断（コード・位置・メッセージ・`help`・関連する位置・修正案）と件数 | `tsuzuri check --json` |
-| `tz_guide` | なし（`topic`・`module`） | 言語の案内（`topic` なしは短いカード、`"list"` は一覧） | `tsuzuri guide` |
+| `tz_guide` | なし（`topic`・`module`） | 言語の案内（`topic` なしは短いカード、`"list"` は一覧）。版は根の `Tsuzuri.toml` の `edition`（ないときは最新） | `tsuzuri guide` |
 | `tz_explain` | `query` | 診断コードか kind の説明 | `tsuzuri explain` |
 | `tz_symbol` | `id` | 宣言 1 つ: 署名・引数の渡し方・効果・箇所・呼び先・テスト | `tsuzuri kg show` |
 | `tz_brief` | なし（`id`・`budget`） | 要約カード（プロジェクト・モジュール・宣言） | `tsuzuri kg brief` |
@@ -94,7 +94,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `tz://kg/brief/{id}` | 宣言・モジュールのカード（`{id}` は ID をパーセントエンコードしたもの。`Point%3A%3APoint.hypotenuse`） |
 | `tz://explain/{kind}` | 診断コードか kind の説明 |
 
-本文は Markdown（`text/markdown`）です。ない資源は `-32002`、`%` の誤ったエンコードは `-32602` です。
+本文は Markdown（`text/markdown`）です。ない資源は `-32002`、`%` の誤ったエンコードは `-32602` です。URI の ID や kind は、対応するツール（`tz_brief`・`tz_explain`）の引数と同じ上限（ID は 512 文字、kind は 64 文字）で確かめ、超えれば `-32602` です。
 
 ## 上限
 

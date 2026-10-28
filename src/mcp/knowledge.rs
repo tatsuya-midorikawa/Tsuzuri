@@ -135,9 +135,18 @@ fn rows(output: &query::Output) -> Vec<Value> {
         .collect()
 }
 
-pub(crate) fn guide(request: &ToolRequest<'_>) -> Result<ToolOutput, ToolError> {
+/// The edition of the project at the root, as `tsuzuri guide` reads it from the manifest; the
+/// latest without one.
+pub(crate) fn guide_edition(root: &std::path::Path) -> crate::syntax::Edition {
+    crate::guide::project_values(root).map_or(crate::syntax::Edition::LATEST, |values| values.2)
+}
+
+pub(crate) fn guide(
+    backend: &ProjectBackend,
+    request: &ToolRequest<'_>,
+) -> Result<ToolOutput, ToolError> {
     use crate::guide::{self, Action};
-    let edition = crate::syntax::Edition::LATEST;
+    let edition = guide_edition(&backend.root);
     let topic = text_argument(request, "topic");
     let (name, text) = match topic {
         None => (
