@@ -192,7 +192,7 @@ fn shop_graph() -> KgData {
         Manifest::parse(&std::fs::read_to_string(golden_dir.join("manifest.json")).unwrap())
             .unwrap();
     let mut graph = data("shop", "2026", Some("0.1.0"), 1, parts);
-    graph.meta.modules = manifest.modules;
+    graph.set_modules(manifest.modules);
     graph
 }
 

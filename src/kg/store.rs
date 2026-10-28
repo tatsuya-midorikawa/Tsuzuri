@@ -270,6 +270,8 @@ pub struct KgData {
     pub diag: Vec<Diag>,
     pub index: KgIndex,
     by_id: BTreeMap<String, usize>,
+    /// The position in `meta.modules` of each module, by name.
+    modules_by_name: BTreeMap<String, usize>,
     source: Source,
     /// The first file of `facts` or `layouts` that did not match the manifest (`intact`).
     failure: Arc<OnceLock<manifest::Freshness>>,
@@ -512,11 +514,9 @@ struct Rows<T> {
 /// The lower-case stem of a module key that the table file at `path` holds: its name without
 /// `.jsonl` and without the `~n` that `write::unique_names` adds.
 fn group_of(path: &str) -> String {
-    let name = path
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .trim_end_matches(".jsonl");
+    // One extension: the module `Util.jsonl` has the file `Util.jsonl.jsonl`.
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let name = file.strip_suffix(".jsonl").unwrap_or(file);
     let base = match name.rsplit_once('~') {
         Some((base, number)) if number.bytes().all(|byte| byte.is_ascii_digit()) => base,
         _ => name,
@@ -805,8 +805,13 @@ impl KgData {
             .enumerate()
             .map(|(index, node)| (node.id.clone(), index))
             .collect();
+        let meta = Meta::of(manifest);
+        let mut modules_by_name = BTreeMap::new();
+        for (index, module) in meta.modules.iter().enumerate() {
+            modules_by_name.entry(module.name.clone()).or_insert(index);
+        }
         Ok(KgData {
-            meta: Meta::of(manifest),
+            meta,
             nodes,
             edges,
             tests,
@@ -815,6 +820,7 @@ impl KgData {
             diag,
             index,
             by_id,
+            modules_by_name,
             source,
             failure,
         })
@@ -921,13 +927,23 @@ impl KgData {
             .map(|test| test.index)
     }
 
+    /// Replaces the modules of the manifest (a graph made of rows alone has none), with their
+    /// index by name.
+    pub fn set_modules(&mut self, modules: Vec<ModuleEntry>) {
+        self.modules_by_name.clear();
+        for (index, module) in modules.iter().enumerate() {
+            self.modules_by_name
+                .entry(module.name.clone())
+                .or_insert(index);
+        }
+        self.meta.modules = modules;
+    }
+
     /// The key of the module `id` (from the manifest's modules).
     pub fn module_key(&self, id: &str) -> Option<&str> {
-        self.meta
-            .modules
-            .iter()
-            .find(|module| module.name == id)
-            .map(|module| module.key.as_str())
+        self.modules_by_name
+            .get(id)
+            .map(|index| self.meta.modules[*index].key.as_str())
     }
 
     /// The facts row of the node `id`, from its module's file.
@@ -1252,6 +1268,10 @@ mod tests {
             "facts/Acme.Mainly.jsonl".to_owned(),
             b"{\"id\":\"c\"}\n".to_vec(),
         );
+        bytes.insert(
+            "facts/Util.jsonl.jsonl".to_owned(),
+            b"{\"id\":\"d\"}\n".to_vec(),
+        );
         let manifest = Manifest {
             schema: "tz-kg/1".into(),
             compiler: manifest::compiler(),
@@ -1283,6 +1303,8 @@ mod tests {
         assert_eq!(tables.find("Acme::Main", "b").unwrap().id, "b");
         assert!(tables.find("Acme::Main", "c").is_none());
         assert_eq!(tables.find("Acme::Mainly", "c").unwrap().id, "c");
+        // The module `Util.jsonl`: one extension is the file's.
+        assert_eq!(tables.find("Util.jsonl", "d").unwrap().id, "d");
         assert!(tables.find("Acme::Other", "a").is_none());
     }
 
