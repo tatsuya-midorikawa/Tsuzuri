@@ -202,6 +202,20 @@ pub(crate) fn fix_plan(
         crate::fix::analyze_project(project, false)
     })
     .map_err(|error| ToolError(scrub(&error.diagnostic.message, root)))?;
+    // The analysis is done: the plan's paths are relative to the root, as `tz_check`'s are (a
+    // project at `path` below the root names its files from its own directory).
+    let mut rebased: std::collections::BTreeMap<String, String> = Default::default();
+    for source in &mut project.sources {
+        if source.origin != ModuleOrigin::User {
+            continue;
+        }
+        let shown = shown_path(root, source);
+        let own = source.relative_path.to_string_lossy().replace('\\', "/");
+        if shown != own {
+            source.relative_path = std::path::PathBuf::from(&shown);
+            rebased.insert(own, shown);
+        }
+    }
     let text = scrub(
         &crate::fix::render_text(&report, &project, true, threshold),
         root,
@@ -215,6 +229,15 @@ pub(crate) fn fix_plan(
             continue;
         };
         scrub_value(&mut row, root);
+        if let Some(edits) = row.get_mut("edits").and_then(Value::as_array_mut) {
+            for edit in edits {
+                if let Some(path) = edit["path"].as_str()
+                    && let Some(shown) = rebased.get(path)
+                {
+                    edit["path"] = Value::String(shown.clone());
+                }
+            }
+        }
         match row["event"].as_str() {
             Some("fix") if row["status"] == "applied" => {
                 let mut fix = Map::new();

@@ -40,7 +40,10 @@ fn view_of(data: KgData) -> Arc<KgView> {
     Arc::new(KgView::new(Some(Arc::new(data)), StdSource::Memory))
 }
 
-/// The project's graph: the one on disk when it is fresh, else one built in memory.
+/// The project's graph: the one on disk when it is fresh, else one built in memory. A graph on
+/// disk is read whole and checked against its manifest at once (`KgData::read_all`: plain paths
+/// below the graph's directory, every file with its SHA-256), so that what the server keeps does
+/// not depend on the directory later; one that does not pass is built in memory instead.
 pub(crate) fn view(backend: &ProjectBackend) -> Result<Arc<KgView>, ToolError> {
     let root = &backend.root;
     let project = crate::driver::Project::load_for_tests(root)
@@ -57,8 +60,8 @@ pub(crate) fn view(backend: &ProjectBackend) -> Result<Arc<KgView>, ToolError> {
     let data = match crate::kg::manifest::inspect(&backend.kg_dir, &hash, &stamp) {
         Freshness::Incomplete(_) => return Err(ToolError(INCOMPLETE.into())),
         Freshness::Fresh => match KgData::open(&backend.kg_dir) {
-            Ok(data) => data,
-            Err(_) => built(backend, &project)?,
+            Ok(data) if data.read_all().is_ok() => data,
+            _ => built(backend, &project)?,
         },
         _ => built(backend, &project)?,
     };
@@ -357,6 +360,11 @@ pub(crate) fn callers(
         uses(&view, text, &id, depth, &options)?
     };
     let truncated = all.len() > limit;
+    let text = if truncated {
+        limited_text(&text, &all, limit)
+    } else {
+        text
+    };
     Ok(ToolOutput {
         text,
         structured: json!({
@@ -367,6 +375,34 @@ pub(crate) fn callers(
             "truncated": truncated,
         }),
     })
+}
+
+/// The text of the first `limit` of `rows` (edges with `from`, `to`, `span` and `depth`), between
+/// the header and the summary of the full answer `text`, with the count of the rest: what the
+/// model reads is what `structuredContent` holds.
+fn limited_text(text: &str, rows: &[Value], limit: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = vec![lines.first().copied().unwrap_or_default().to_owned()];
+    for row in rows.iter().take(limit) {
+        let span = &row["span"];
+        let mut line = format!(
+            "{} {}  {}:{}:{}",
+            row["depth"],
+            row["from"].as_str().unwrap_or_default(),
+            span["path"].as_str().unwrap_or_default(),
+            span["line"],
+            span["column"]
+        );
+        if row["depth"].as_u64().is_some_and(|depth| depth > 1) {
+            line.push_str(&format!("  via {}", row["to"].as_str().unwrap_or_default()));
+        }
+        out.push(line);
+    }
+    out.push(format!("\u{2026}{} more; raise limit", rows.len() - limit));
+    if let Some(summary) = lines.last().filter(|line| line.starts_with("summary:")) {
+        out.push((*summary).to_owned());
+    }
+    out.join("\n") + "\n"
 }
 
 /// The declarations that use the type `id`, and those that use them, up to `depth` levels.
@@ -488,7 +524,7 @@ pub(crate) fn find(
     };
     let (found, searched) = find::search(&view, &query)
         .map_err(|error| ToolError(format!("cannot parse the type query: {}", error.0)))?;
-    let (rendered, _) = find::render(text, &query, &found, searched);
+    let (rendered, _) = find::render(text, &query, &found, searched, None);
     // The tool's argument is `limit`, at most 10.
     let rendered = rendered.replace(
         "; raise --limit (at most 100)\n",
@@ -515,7 +551,10 @@ pub(crate) fn find(
 fn graph_at(backend: &ProjectBackend, arg: &str) -> Result<KgData, ToolError> {
     let directory = resolve_path(&backend.root, arg, Wanted::Directory)?;
     if crate::kg::write::has_marker(&directory) {
+        // Read whole and checked now: a graph whose files leave its directory or do not match its
+        // manifest is refused.
         return crate::kg::open::read(&directory)
+            .and_then(|data| data.read_all().map(|()| data))
             .map_err(|error| ToolError(scrub(&error.message, &backend.root)));
     }
     let neither = || {

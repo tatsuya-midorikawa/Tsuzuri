@@ -34,19 +34,32 @@ impl ResultCache {
     }
 }
 
-/// The inputs a tool reads: the project's own sources and manifests (by the hash of the KG's
-/// inputs), nothing for the guide and `explain`, `None` for a tool whose inputs are other
-/// directories (`tz_impact`), which is not cached.
-fn inputs(backend: &ProjectBackend, tool: &str) -> Option<String> {
-    match tool {
+/// The inputs a tool reads: the sources and manifests of the project it analyzes (by the hash of
+/// the KG's inputs; for `tz_check` and `tz_fix_plan`, the project at their `path`), nothing for the
+/// guide and `explain`, `None` for a tool whose inputs are other directories (`tz_impact`) and for
+/// a path that does not load, which are not cached.
+fn inputs(backend: &ProjectBackend, request: &ToolRequest<'_>) -> Option<String> {
+    let hash = |project: &crate::driver::Project| {
+        crate::kg::input::hex(&crate::kg::input::source_hash(project))
+    };
+    match request.name {
         "tz_guide" | "tz_explain" => Some(String::new()),
         "tz_impact" => None,
-        _ => {
-            let project = crate::driver::Project::load_for_tests(&backend.root).ok()?;
-            Some(crate::kg::input::hex(&crate::kg::input::source_hash(
-                &project,
-            )))
+        "tz_check" | "tz_fix_plan" => {
+            let path = request
+                .arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let input =
+                super::path::resolve_path(&backend.root, path, super::path::Wanted::Source).ok()?;
+            crate::driver::Project::load(&input)
+                .ok()
+                .map(|project| hash(&project))
         }
+        _ => crate::driver::Project::load_for_tests(&backend.root)
+            .ok()
+            .map(|project| hash(&project)),
     }
 }
 
@@ -56,7 +69,7 @@ pub fn cached(
     request: &ToolRequest<'_>,
     compute: impl FnOnce(&ToolRequest<'_>) -> Result<ToolOutput, ToolError>,
 ) -> Result<ToolOutput, ToolError> {
-    let Some(inputs) = inputs(backend, request.name) else {
+    let Some(inputs) = inputs(backend, request) else {
         return compute(request);
     };
     let mut hash = Sha256::new();

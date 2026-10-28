@@ -25,19 +25,21 @@ pub enum Line {
     TooLong,
 }
 
-/// The next non-blank line without its `\n` (and a `\r` before it). A line over `MAX_LINE_BYTES`
-/// is read to its end and dropped.
+/// The next non-blank line without its `\n` (and a `\r` before it). A line whose payload (without
+/// the `\r\n` or `\n`) is over `MAX_LINE_BYTES` is read to its end and dropped.
 pub fn read_line(reader: &mut impl BufRead) -> io::Result<Line> {
+    // The payload and both bytes of a `\r\n`.
+    let limit = MAX_LINE_BYTES + 2;
     loop {
         let mut buffer = Vec::new();
-        let read =
-            Read::take(&mut *reader, MAX_LINE_BYTES as u64 + 1).read_until(b'\n', &mut buffer)?;
+        let read = Read::take(&mut *reader, limit as u64).read_until(b'\n', &mut buffer)?;
         if read == 0 {
             return Ok(Line::Eof);
         }
         if buffer.last() == Some(&b'\n') {
             buffer.pop();
-        } else if buffer.len() > MAX_LINE_BYTES {
+        } else if buffer.len() == limit {
+            // No `\n` in the payload's room and both bytes of a terminator: too long.
             discard_line(reader)?;
             return Ok(Line::TooLong);
         }
@@ -329,6 +331,27 @@ mod tests {
             Line::Bytes(vec![b'y'; MAX_LINE_BYTES])
         );
         assert_eq!(read_line(&mut input).unwrap(), Line::Eof);
+    }
+
+    /// The limit is the payload's: `\r\n` and `\n` end lines of the same lengths alike.
+    #[test]
+    fn read_line_limits_the_payload_with_either_terminator() {
+        for terminator in [&b"\n"[..], &b"\r\n"[..]] {
+            let mut bytes = vec![b'y'; MAX_LINE_BYTES];
+            bytes.extend_from_slice(terminator);
+            bytes.extend(vec![b'z'; MAX_LINE_BYTES + 1]);
+            bytes.extend_from_slice(terminator);
+            bytes.extend_from_slice(b"ok");
+            bytes.extend_from_slice(terminator);
+            let mut input = std::io::BufReader::with_capacity(1024, std::io::Cursor::new(bytes));
+            assert_eq!(
+                read_line(&mut input).unwrap(),
+                Line::Bytes(vec![b'y'; MAX_LINE_BYTES])
+            );
+            assert_eq!(read_line(&mut input).unwrap(), Line::TooLong);
+            assert_eq!(read_line(&mut input).unwrap(), Line::Bytes(b"ok".to_vec()));
+            assert_eq!(read_line(&mut input).unwrap(), Line::Eof);
+        }
     }
 
     #[test]

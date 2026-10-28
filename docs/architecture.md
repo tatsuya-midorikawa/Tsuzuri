@@ -685,7 +685,7 @@ DWARF メタデータとトラップ情報テーブルは、共通のソース�
 
 ### MCP サーバー（G29、D-60）
 
-`tsuzuri mcp` は 3 つのスレッドで動きます。読み手のスレッドが標準入力を 1 行ずつ（4 MiB まで）読んで `sync_channel(8)` で渡し、呼び出したスレッドが唯一の書き手として、`initialize`・`ping`・`tools/list`・資源の一覧・取り消しにすぐ答え、`tools/call` と `resources/read` を待ち行列（64 件まで）に積みます。作業のスレッド（`WORKER_STACK_BYTES`、8 MiB）が 1 件ずつ来た順に `Backend::call` を `catch_unwind` の中で実行し、取り消された答えは捨てます。`ProjectBackend` は読み取り専用です: `tz_check` は `Project::load`・`analyze_all`（frontend のキャッシュを書かない）、知識グラフは `target/tz/kg` が新しければ `KgData::open` で読み（`facts/` などは遅延読み込み）、古ければ `kg::build::memory` がメモリの上に作り、std の知識グラフも `StdSource::Memory` です。答えは、ツール名・引数・入力のハッシュの SHA-256 を鍵に、直近 8 件を再利用します。`src/mcp/` には、標準出力・環境変数・プロセス・ファイルの書き込みの API を書きません（テストが静的に検査します）。
+`tsuzuri mcp` は 3 つのスレッドで動きます。読み手のスレッドが標準入力を 1 行ずつ（4 MiB まで）読んで `sync_channel(8)` で渡し、呼び出したスレッドが唯一の書き手として、`initialize`・`ping`・`tools/list`・資源の一覧・取り消しにすぐ答え、`tools/call` と `resources/read` を待ち行列（64 件まで）に積みます。作業のスレッド（`WORKER_STACK_BYTES`、8 MiB）が 1 件ずつ来た順に `Backend::call` を `catch_unwind` の中で実行し、取り消された答えは捨てます。`ProjectBackend` は読み取り専用です: `tz_check` は `Project::load`・`analyze_all`（frontend のキャッシュを書かない）、知識グラフは `target/tz/kg` が新しければ `KgData::open` と `KgData::read_all` で全部を読んで manifest と照合し（サーバーが持つグラフが後でディレクトリに左右されない。照合できなければメモリの上に作る。`tz_impact` の取り込んだグラフは照合できなければ誤り）、古ければ `kg::build::memory` がメモリの上に作り、std の知識グラフも `StdSource::Memory` です。答えは、ツール名・引数・入力のハッシュ（`tz_check`・`tz_fix_plan` は `path` のプロジェクトのもの）の SHA-256 を鍵に、直近 8 件を再利用します。1 行の上限は行末の `\r\n` を除いた payload の長さです。`src/mcp/` には、標準出力・環境変数・プロセス・ファイルの書き込みの API を書きません（テストが静的に検査します）。
 
 ### 言語サーバー
 

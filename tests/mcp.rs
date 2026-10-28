@@ -944,7 +944,8 @@ fn temporary_root(files: &[(&str, &str)]) -> PathBuf {
     for (path, text) in files {
         std::fs::write(root.join(path), text).unwrap();
     }
-    root.canonicalize().unwrap()
+    // The form that `tsuzuri mcp` gives the backend (not `\\?\` on Windows).
+    tsuzuri::mcp::project_root(&root).unwrap()
 }
 
 const BAD: &str = "def consume :: own string -> i64 = \\text -> text.length\n\ndef run :: own string -> i64 = \\text ->\n    let first = consume text\n    let second = consume text\n    first + second\n\nrun \"abc\"\n";

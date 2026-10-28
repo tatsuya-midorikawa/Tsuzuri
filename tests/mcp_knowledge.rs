@@ -26,7 +26,8 @@ fn root_with(fixture: &str) -> PathBuf {
     let root = root.join(Path::new(fixture).file_name().unwrap());
     std::fs::create_dir_all(&root).unwrap();
     copy(&repository().join(fixture), &root);
-    root.canonicalize().unwrap()
+    // The form that `tsuzuri mcp` gives the backend (not `\\?\` on Windows).
+    tsuzuri::mcp::project_root(&root).unwrap()
 }
 
 /// Writes the project's graph to `target/tz/kg` with this process's compiler (the stamp that the
@@ -374,6 +375,14 @@ fn tz_callers_follows_depth_and_stops_on_cycles() {
     .unwrap();
     assert_eq!(limited.structured["callers"].as_array().unwrap().len(), 1);
     assert_eq!(limited.structured["truncated"], true);
+    // The text is the same one caller, with the count of the rest.
+    let first = &limited.structured["callers"][0];
+    let lines: Vec<&str> = limited.text.lines().collect();
+    assert_eq!(lines.len(), 4, "{}", limited.text);
+    assert!(lines[0].starts_with("callers of Acme::Shop::Cart.line_total"));
+    assert!(lines[1].starts_with(&format!("1 {}  ", first["from"].as_str().unwrap())));
+    assert_eq!(lines[2], "\u{2026}4 more; raise limit");
+    assert_eq!(lines[3], "summary: 5 callers, depth 2");
 }
 
 #[test]
@@ -457,6 +466,53 @@ fn tz_impact_reports_a_signature_change() {
     );
 }
 
+/// A graph on disk whose manifest lists a path out of its directory, or whose files do not match
+/// it, is not read: the project's graph is built in memory, and an imported graph is refused.
+#[test]
+fn unsafe_or_changed_graphs_on_disk_are_not_read() {
+    let root = root_with("tests/fixtures/kg_shop");
+    build_in_process(&root);
+    let kg = root.join("target/tz/kg");
+    let manifest_path = kg.join("manifest.json");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        root.join("secret.jsonl"),
+        "{\"id\":\"Acme::Shop::Cart.total\",\"effects\":[\"leaked\"]}\n",
+    )
+    .unwrap();
+    let facts = manifest
+        .lines()
+        .find(|line| line.contains("\"facts/Cart.jsonl\""))
+        .unwrap()
+        .to_owned();
+    let secret = tsuzuri::kg::input::digest(&std::fs::read(root.join("secret.jsonl")).unwrap());
+    let crafted = manifest.replace(
+        &facts,
+        &format!("    \"facts/../../../secret.jsonl\": \"{secret}\","),
+    );
+    std::fs::write(&manifest_path, &crafted).unwrap();
+    let backend = backend(&root);
+    let symbol = call(&backend, "tz_symbol", json!({"id": "total"})).unwrap();
+    assert!(!symbol.text.contains("leaked"), "{}", symbol.text);
+    assert_eq!(backend.analysis_count(), 1);
+    assert!(
+        call(&backend, "tz_impact", json!({"old": "target/tz/kg"}))
+            .unwrap_err()
+            .contains("is broken"),
+    );
+    // A changed file of a listed path is refused too.
+    std::fs::write(&manifest_path, &manifest).unwrap();
+    std::fs::write(kg.join("facts/Cart.jsonl"), "{}\n").unwrap();
+    let backend = self::backend(&root);
+    call(&backend, "tz_symbol", json!({"id": "total"})).unwrap();
+    assert_eq!(backend.analysis_count(), 1);
+    let error = call(&backend, "tz_impact", json!({"old": "target/tz/kg"})).unwrap_err();
+    assert!(
+        error.contains("facts/Cart.jsonl does not match manifest.json"),
+        "{error}"
+    );
+}
+
 #[test]
 fn tz_impact_rejects_paths_outside_the_root() {
     let root = root_with("tests/fixtures/kg_shop");
@@ -496,6 +552,60 @@ fn tz_fix_plan_matches_fix_dry_run_and_changes_no_file() {
             .contains("+++ b/Cart.tz")
     );
     assert_eq!(output.structured["remaining_warnings"], 0);
+}
+
+/// The plan of a project below the root names its files from the root, as `tz_check` does.
+#[test]
+fn tz_fix_plan_paths_are_relative_to_the_root() {
+    let root = root_with("tests/fixtures/kg_shop");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(
+        root.join("sub/Main.tz"),
+        "def main :: unit -> i32 = \\() ->\n    let unused = 1\n    0\n",
+    )
+    .unwrap();
+    let output = call(
+        &backend(&root),
+        "tz_fix_plan",
+        json!({"path": "sub/Main.tz"}),
+    )
+    .unwrap();
+    let fixes = output.structured["fixes"].as_array().unwrap();
+    assert_eq!(fixes.len(), 1, "{}", output.text);
+    assert_eq!(fixes[0]["edits"][0]["path"], "sub/Main.tz");
+    let diff = output.structured["diff"].as_str().unwrap();
+    assert!(
+        diff.starts_with("--- a/sub/Main.tz\n+++ b/sub/Main.tz\n"),
+        "{diff}"
+    );
+    assert!(
+        output.text.starts_with("--- a/sub/Main.tz\n"),
+        "{}",
+        output.text
+    );
+}
+
+/// `tz_check` of a project below the root is cached by that project's inputs.
+#[test]
+fn result_cache_follows_the_project_at_path() {
+    let root = root_with("tests/fixtures/kg_shop");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(
+        root.join("sub/Tsuzuri.toml"),
+        "[package]\nname = \"sub\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("sub/Main.tz"),
+        "def main :: unit -> i32 = \\() -> 0\n",
+    )
+    .unwrap();
+    let backend = backend(&root);
+    let first = call(&backend, "tz_check", json!({"path": "sub"})).unwrap();
+    assert_eq!(first.structured["ok"], true, "{}", first.text);
+    std::fs::write(root.join("sub/Tsuzuri.toml"), "[package]\nname = 1\n").unwrap();
+    let second = call(&backend, "tz_check", json!({"path": "sub"})).unwrap();
+    assert_eq!(second.structured["ok"], false, "{}", second.text);
 }
 
 #[test]
