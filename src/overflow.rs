@@ -241,33 +241,54 @@ pub fn side_table(sites: &[Site], sources: &[Source]) -> String {
 pub fn report_lines(stderr: &str) -> Vec<&str> {
     stderr
         .lines()
-        .filter(|line| is_report_line(line))
-        .map(|line| line.strip_prefix("warning: ").unwrap_or(line))
+        .filter_map(report)
+        .map(|record| &record["warning: ".len()..])
         .collect()
 }
 
-/// Whether `line`, without its line break, is a report line.
-pub fn is_report_line(line: &str) -> bool {
-    line.starts_with(REPORT_PREFIX) || line == STOPPED_LINE
+/// The report that `line`, without its line break, ends with: from the last `REPORT_PREFIX`, or
+/// the line that stops the report. A report starts a line of its own, but the program's own
+/// output that did not end its line (`IO.write_error "prefix"`) comes before it on that line.
+fn report(line: &str) -> Option<&str> {
+    report_bytes(line.as_bytes()).map(|start| &line[start..])
 }
 
-/// The standard error of a program that `run --json` ran, with each report line turned into a
-/// `W2001` warning: the message without `warning: `, and the path and span of the site whose
-/// message it is. The other lines keep their bytes, UTF-8 or not.
+/// Where the report that `line` ends with starts, when it is UTF-8 (the bytes before it need
+/// not be).
+pub fn report_bytes(line: &[u8]) -> Option<usize> {
+    let start = if line.ends_with(STOPPED_LINE.as_bytes()) {
+        line.len() - STOPPED_LINE.len()
+    } else {
+        let prefix = REPORT_PREFIX.as_bytes();
+        line.windows(prefix.len())
+            .rposition(|window| window == prefix)?
+    };
+    std::str::from_utf8(&line[start..]).ok().map(|_| start)
+}
+
+/// The standard error of a program that `run --json` ran, with each report turned into a `W2001`
+/// warning on a line of its own: the message without `warning: `, and the path and span of the
+/// site whose message it is. The other bytes are kept, UTF-8 or not; output of the program that
+/// did not end its line before a report keeps its bytes and gets the line break.
 pub fn json_lines(stderr: &[u8], sites: &[Site], sources: &[Source]) -> Vec<u8> {
     // Each site's message and the index of its source's lines, once the first report line is
     // met: a message names the operator, so it names one site.
     let mut by_message: Option<Messages> = None;
     let mut output = Vec::with_capacity(stderr.len());
     for line in stderr.split_inclusive(|byte| *byte == b'\n') {
-        let Some(text) = std::str::from_utf8(line)
-            .ok()
-            .map(|line| line.trim_end_matches(['\n', '\r']))
-            .filter(|text| is_report_line(text))
-        else {
+        let mut content = line.strip_suffix(b"\n").unwrap_or(line);
+        while let Some(rest) = content.strip_suffix(b"\r") {
+            content = rest;
+        }
+        let Some(start) = report_bytes(content) else {
             output.extend_from_slice(line);
             continue;
         };
+        if start > 0 {
+            output.extend_from_slice(&content[..start]);
+            output.push(b'\n');
+        }
+        let text = std::str::from_utf8(&content[start..]).expect("report_bytes checks UTF-8");
         let by_message = by_message.get_or_insert_with(|| messages(sites, sources));
         let message = &text["warning: ".len()..];
         let kind = if text == STOPPED_LINE {
@@ -421,6 +442,31 @@ mod tests {
         assert!(lines.starts_with(b"\xff\xfe raw\r\n{\"severity\":\"warning\",\"code\":\"W2001\""));
         assert!(lines.ends_with(b"\"kind\":\"integer_overflow_wrapped\"}\n\x80"));
         assert_eq!(json_lines(b"\xff\n", &[site], &[]), b"\xff\n");
+        // Review 3 of #67: output that did not end its line comes before a report on the same
+        // line; it keeps its bytes on a line of its own, and the report is still a warning.
+        let after = b"prefix \xffwarning: integer overflow wrapped at ./Main.tz:1:51 (i32 add)\r\nnext\nwarning: integer overflow wrapped at ./Main.tz:1:51 (i32 add) and more\n";
+        let lines = json_lines(after, &[site], &[source(text)]);
+        let warning = "{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at ./Main.tz:1:51 (i32 add)\",\"path\":\"./Main.tz\"";
+        assert!(
+            lines.starts_with(&[b"prefix \xff\n".as_slice(), warning.as_bytes()].concat()),
+            "{}",
+            String::from_utf8_lossy(&lines)
+        );
+        assert!(
+            String::from_utf8_lossy(&lines)
+                .contains("\"kind\":\"integer_overflow_wrapped\"}\nnext\n{\"severity\""),
+            "{}",
+            String::from_utf8_lossy(&lines)
+        );
+        assert_eq!(
+            report_lines(
+                "x: warning: integer overflow reports stop after 100 sites\nwarning: integer overflow wrapped at nothing"
+            ),
+            [
+                "integer overflow reports stop after 100 sites",
+                "integer overflow wrapped at nothing"
+            ]
+        );
     }
 
     #[test]

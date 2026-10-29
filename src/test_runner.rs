@@ -1410,7 +1410,8 @@ const CAPTURED_STDERR: usize = 64 * 1024;
 /// The most overflow report lines that a test keeps: one per site up to the 100 that a program
 /// writes, and the line that stops the report (A23).
 const CAPTURED_OVERFLOW_LINES: usize = crate::overflow::MAX_PRINTED as usize + 1;
-/// The most bytes of one overflow report line that a test keeps.
+/// The most bytes at the end of one line of standard error in which a test looks for an overflow
+/// report.
 const CAPTURED_LINE: usize = 4096;
 
 /// Runs `command` with null stdin, waiting at most `timeout`. Readers drain the pipes while the
@@ -1516,10 +1517,15 @@ fn read_tail(mut reader: impl std::io::Read, limit: usize) -> (String, Vec<Strin
     let mut reports = Vec::new();
     let mut line = Vec::new();
     let finish = |line: &mut Vec<u8>, reports: &mut Vec<String>| {
-        let text = String::from_utf8_lossy(line);
-        let text = text.trim_end_matches('\r');
-        if reports.len() < CAPTURED_OVERFLOW_LINES && crate::overflow::is_report_line(text) {
-            reports.push(text["warning: ".len()..].to_owned());
+        let mut content = &line[line.len().saturating_sub(CAPTURED_LINE)..];
+        while let Some(rest) = content.strip_suffix(b"\r") {
+            content = rest;
+        }
+        if reports.len() < CAPTURED_OVERFLOW_LINES
+            && let Some(start) = crate::overflow::report_bytes(content)
+        {
+            let text = String::from_utf8_lossy(&content[start + "warning: ".len()..]);
+            reports.push(text.into_owned());
         }
         line.clear();
     };
@@ -1530,8 +1536,13 @@ fn read_tail(mut reader: impl std::io::Read, limit: usize) -> (String, Vec<Strin
                 for &byte in &buffer[..count] {
                     if byte == b'\n' {
                         finish(&mut line, &mut reports);
-                    } else if line.len() < CAPTURED_LINE {
+                    } else {
                         line.push(byte);
+                        // A report ends its line, which may start with the program's own output:
+                        // a long line keeps its last bytes.
+                        if line.len() >= 2 * CAPTURED_LINE {
+                            line.drain(..line.len() - CAPTURED_LINE);
+                        }
                     }
                 }
                 kept.extend(&buffer[..count]);
@@ -1555,6 +1566,20 @@ fn read_tail(mut reader: impl std::io::Read, limit: usize) -> (String, Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review 3 of #67: a report that follows the program's own output on the same line is found,
+    /// also after a fragment longer than the bytes of a line that a test looks at.
+    #[test]
+    fn reports_after_unterminated_output_are_found() {
+        let report = "warning: integer overflow wrapped at ./Main.tz:1:40 (i8 add)";
+        let long = "x".repeat(3 * CAPTURED_LINE);
+        let stderr = format!("prefix{report}\r\n{long}{report}\nplain\n\u{fffd}{report}");
+        let (text, reports) = read_tail(stderr.as_bytes(), CAPTURED_STDERR);
+        assert_eq!(text, stderr);
+        assert_eq!(reports, [&report["warning: ".len()..]; 3]);
+        let (_, reports) = read_tail(b"no report\n".as_slice(), CAPTURED_STDERR);
+        assert!(reports.is_empty());
+    }
 
     #[test]
     fn runner_rejects_malformed_indices_and_reaps_timed_out_children() {

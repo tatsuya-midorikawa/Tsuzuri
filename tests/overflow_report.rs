@@ -395,6 +395,32 @@ fn run_json_turns_report_lines_into_warning_objects() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Review 3 of #67: output that did not end its line comes before a report on the same line;
+/// `run --json` keeps the output on a line of its own and turns the report into a warning.
+#[test]
+fn run_json_finds_a_report_after_unterminated_output() {
+    let program = "def mix :: i32u -> i32u -> i32u = \\a b -> a + b\n\
+                   def main :: unit -> i32 = \\_ ->\n\
+                   \x20   do! IO.write_error \"prefix\"\n\
+                   \x20   Debug.print (to_string (mix 3000000000i32u 3000000000i32u))\n\
+                   \x20   0\n";
+    let root = scratch("run-json-prefix");
+    std::fs::write(root.join("Main.tz"), program).unwrap();
+    let output = tsuzuri(&["run", ".", "--overflow-report", "--json"], &root);
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let path = json_text(&cli_path());
+    assert!(
+        stderr.contains(&format!(
+            "prefix\n{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at {path}:1:45 (i32u add)\",\"path\":\"{path}\""
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.ends_with("}\n1705032704\n"), "{stderr}");
+    assert!(!stderr.contains("warning: integer overflow"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn run_without_json_relays_the_report_unchanged() {
     let root = scratch("run-text");
@@ -576,6 +602,36 @@ fn reports_survive_a_long_standard_error() {
         "the tail no longer holds it"
     );
     assert_eq!(result.overflow, [BUMP_SITE]);
+}
+
+/// Review 3 of #67: a WebAssembly test that exhausts the engine's stack (a `RangeError` in
+/// Node) fails and still reports what wrapped before.
+#[test]
+fn wasm_tests_report_overflow_after_the_stack_is_exhausted() {
+    let source = "def bump :: i8 -> i8 -> i8 = \\a b -> a + b\n\
+                  \n\
+                  def rec down :: i64 -> i64 = \\n -> if n == 0 then 0 else 1 + down (n - 1)\n\
+                  \n\
+                  test \"wraps then recurses\" =\n\
+                  \x20   let wrapped = bump 127i8 1i8\n\
+                  \x20   assert (wrapped == -128i8 && down 100000000 > 0)\n";
+    let module = analyze(source).unwrap();
+    let options = tsuzuri::driver::TestOptions {
+        target: tsuzuri::driver::Target::Wasm32,
+        ..overflow_tests(source, true)
+    };
+    let report = tsuzuri::driver::run_tests(&module, &options).unwrap();
+    let result = &report.results[0];
+    let failure = result.failure.as_deref().unwrap();
+    assert!(!failure.contains("integer overflow"), "{failure}");
+    assert_eq!(result.overflow, [BUMP_SITE], "{}", result.output);
+    assert!(
+        result
+            .output
+            .contains("the stack was probably exhausted by deep recursion"),
+        "{}",
+        result.output
+    );
 }
 
 #[test]

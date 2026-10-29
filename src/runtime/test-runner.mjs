@@ -24,7 +24,13 @@ if (!Number.isSafeInteger(index) || index >= instance.exports.tsuzuri_test_count
 try {
   process.exitCode = instance.exports.tsuzuri_test_run(index);
 } catch (error) {
-  if (!(error instanceof WebAssembly.RuntimeError)) throw error;
+  // A trap, or the engine's stack limit under deep recursion (`RangeError` in V8, `InternalError`
+  // elsewhere), as `trap-boundary.mjs` reads them: the test fails, and still reports below.
+  if (error instanceof RangeError || error?.name === "InternalError") {
+    writeSync(2, `${error.name}: ${error.message}; the stack was probably exhausted by deep recursion\n`);
+  } else if (!(error instanceof WebAssembly.RuntimeError)) {
+    throw error;
+  }
   process.exitCode = 1;
 }
 // The sites that wrapped, in site order, as a native runner writes them: at most 100 lines, then
