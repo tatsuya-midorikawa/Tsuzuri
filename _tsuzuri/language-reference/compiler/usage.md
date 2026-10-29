@@ -607,7 +607,7 @@ summary: used=fs,stdio,time denied=1 untrusted_externs=0
 - `policy` は、ルートのマニフェストに権限の宣言があれば `enforced`、なければ `none` です。`none` のとき `allowed` は `all` で、`unused` は出しません。マニフェストのないプロジェクトのパッケージ名は、ディレクトリ名（ファイルなら拡張子を除いた名前）です。
 - 地点は 1 つの権限につき 5 行まで出し、残りは `... and N more` です。パスはパッケージのルートからの相対で、絶対パス・日時・環境変数を含みません。同じソースからは同じバイト列です。
 - `externs` の行は `名前 -> "シンボル"  位置  trusted [性質] | untrusted` です。
-- `--json` は JSON Lines（`schema` は `tz-audit/1`）です。行は `audit`・パッケージごとの `package`・`extern`・最後の `summary` で、キーの順序は固定です。`package` は `name`・`version`・`root`・`allowed`・`granted`（`{"by","capabilities"}`）・`used`（`{"capability","count","sites"}`。地点は 1 権限 100 件まで、超えた数は `truncated`）・`denied`・`unused`・`effects`（`{"declared","asserted":{"pure","no_alloc","no_copy","no_trap","terminates"}}`。宣言した関数の数と、`pure def` と各効果の表明を持つ関数の数）を持ちます。地点は `{"path","line","column","callee","function","scope"}` で、`scope` はテストとベンチマークの中なら `"test"` です。キーは足すだけで、読み手は知らないキーを無視します。
+- `--json` は JSON Lines（`schema` は `tz-audit/1`）です。行は `audit`・パッケージごとの `package`・`extern`・最後の `summary` で、キーの順序は固定です。`package` は `name`・`version`・`root`・`allowed`・`granted`（`{"by","capabilities"}`）・`used`（`{"capability","count","sites"}`。地点は 1 権限 100 件まで、超えた数は `truncated`）・`denied`・`unused`・`effects`（`{"declared","asserted":{"pure","no_alloc","no_copy","no_trap","terminates"}}`。宣言した関数の数と、`pure def` と各効果の表明を持つ関数の数。ジェネリック関数は具体化の数によらず 1 つと数え、どこからも呼ばれないものも数えます）を持ちます。地点は `{"path","line","column","callee","function","scope"}` で、`scope` はテストとベンチマークの中なら `"test"` です。キーは足すだけで、読み手は知らないキーを無視します。
 - 終了コードは、`E1036` があるか、`--deny-warnings` で `W1010` があると 1、型エラーも 1、引数の誤りは 2（`usage: tsuzuri audit [PATH] [--json] [--deny-warnings]`）、それ以外は 0 です。
 
 ### api-diff

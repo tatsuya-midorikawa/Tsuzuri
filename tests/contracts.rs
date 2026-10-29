@@ -6,7 +6,7 @@ use std::process::Command;
 
 use tsuzuri::check::contracts::{ContractMode, ContractShape};
 use tsuzuri::check::{CheckedModule, TypedExprKind};
-use tsuzuri::syntax::ContractKind;
+use tsuzuri::syntax::{ContractKind, Edition};
 use tsuzuri::{analyze, analyze_modules_with_contracts, llvm, parser};
 
 const MAIN: &str = "def main :: unit -> i32 = \\() -> 0\n";
@@ -450,6 +450,108 @@ fn contract_lines_cannot_write_through_computed_or_nested_references() {
         "{counter}pure def read :: Counter -> i64 = \\c -> deref c.value + c.step\n\
          def peek :: ref Counter -> i64 = \\c -> deref c.value\n\
          def f :: own Counter -> bool -> i64 = \\c b ->\n    @requires read c >= 0 && peek (ref c) >= 0\n    @ensures \\r -> {{ let mut x = 1; let mut y = 2; poke (if b then ref mut x else ref mut y) }} && r >= 0\n    0\n{poke}{MAIN}"
+    ));
+}
+
+/// Review 4 of #64: a pipeline passes its value as a call does, and a reference that an assignment
+/// stores in the condition's own storage (a local, a field of a local record, the target of a local
+/// reference) may write to the call as a binding does.
+#[test]
+fn contract_lines_cannot_write_through_pipelines_or_assigned_references() {
+    let writes = Some("contract_writes");
+    let counter = "record Counter {r} { value: ref mut {r} i64, step: i64 }\n\
+                   def touch :: own Counter -> bool = \\c ->\n    deref c.value = 5\n    true\n\
+                   def nudge :: i64 -> own Counter -> bool = \\n c ->\n    deref c.value = n\n    true\n";
+    for condition in ["c |> touch", "c |> nudge 2"] {
+        rejects(
+            &format!(
+                "{counter}def f :: own Counter -> i64 = \\c ->\n    @requires {condition}\n    0\n{MAIN}"
+            ),
+            "E1033",
+            writes,
+        );
+    }
+    let set = |condition: &str| {
+        format!(
+            "record Holder {{r}} {{ value: ref mut {{r}} i64 }}\n\
+             def set :: ref mut i64 -> unit = \\p ->\n    @ensures \\_ -> {condition}\n    ()\n{MAIN}"
+        )
+    };
+    for condition in [
+        "{ let mut n = 0; let mut q = ref mut n; q = p; deref q = 7; true }",
+        "{ let mut n = 0; let mut slot = ref mut n; { let q = &mut slot; deref q = p }; deref slot = 7; true }",
+        "{ let mut n = 0; let mut slot = ref mut n; let q = &mut slot; deref q = p; deref (deref q) = 7; true }",
+    ] {
+        rejects(&set(condition), "E1033", writes);
+    }
+    // Edition 2027 assigns the fields of a mutable record.
+    let source = set(
+        "{ let mut n = 0; let mut h = Holder { value: ref mut n }; h.value = p; deref h.value = 7; true }",
+    );
+    let error = tsuzuri::analyze_with_edition(&source, Edition::E2027).expect_err(&source);
+    assert_eq!(
+        (error.code, error.kind),
+        ("E1033", writes),
+        "{}",
+        error.message
+    );
+    // A reference to the condition's own data stays its own.
+    accepts(&format!(
+        "def set :: ref mut i64 -> unit = \\_p ->\n    @ensures \\_ -> {{ let mut n = 0; let mut m = 1; let mut q = ref mut n; q = ref mut m; deref q = 7; true }}\n    ()\n{MAIN}"
+    ));
+}
+
+/// Review 4 of #64: the contract lines of a generic function are checked before specialization
+/// too, in `check` and in `off`, so a function that no program calls cannot hide an impure line or
+/// a write. What only an instance resolves (a class method) is checked in each instance.
+#[test]
+fn uncalled_generic_functions_check_their_contract_lines() {
+    let poke = "def poke :: ref mut i64 -> bool = \\p ->\n    deref p = 1\n    true\n";
+    for (source, kind) in [
+        (
+            format!(
+                "def f :: 'a -> unit = \\_x ->\n    @requires {{ Debug.print (ref \"checking\"); true }}\n    ()\n{MAIN}"
+            ),
+            "contract_impure",
+        ),
+        (
+            format!(
+                "{poke}def w :: 'a -> ref mut i64 -> unit = \\_x p ->\n    @requires poke p\n    ()\n{MAIN}"
+            ),
+            "contract_writes",
+        ),
+    ] {
+        for mode in [ContractMode::Check, ContractMode::Off] {
+            let error = analyze_modules_with_contracts(&[("Main.tz", &source)], mode)
+                .expect_err(&source)
+                .first()
+                .unwrap();
+            assert_eq!(error.code, "E1033", "{source}\n{}", error.message);
+            assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+        }
+    }
+    accepts(&format!(
+        "def ordered :: Ord<'a> => 'a -> 'a -> 'a = \\lo hi ->\n    @requires lo <= hi\n    @ensures \\r -> r >= lo\n    hi\n{MAIN}"
+    ));
+}
+
+/// Review 4 of #64: a helper that calls a function value that the analysis cannot follow (a field
+/// of its argument) is not pure, unless the value has a `pure` function type.
+#[test]
+fn contracts_reject_helpers_that_call_unknown_function_values() {
+    rejects(
+        &format!(
+            "record Callback {{ call: i64 -> bool }}\n\
+             def invoke :: ref Callback -> i64 -> bool = \\cb x -> cb.call x\n\
+             def f :: ref Callback -> i64 -> i64 = \\cb x ->\n    @requires invoke cb x\n    x\n{MAIN}"
+        ),
+        "E1033",
+        Some("contract_impure"),
+    );
+    accepts(&format!(
+        "record Callback {{ call: pure (i64 -> bool) }}\n\
+         def invoke :: ref Callback -> i64 -> bool = \\cb x -> cb.call x\n\
+         def f :: ref Callback -> i64 -> i64 = \\cb x ->\n    @requires invoke cb x && cb.call x && (x |> cb.call)\n    x\n{MAIN}"
     ));
 }
 

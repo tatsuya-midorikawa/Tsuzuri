@@ -3646,6 +3646,18 @@ pub struct CheckedModule {
     /// A22: the noncanonical spellings of the root package's own sources, by source and start;
     /// a symbolic borrow of a reference has no rewrite.
     pub noncanonical: Vec<crate::syntax::Noncanonical>,
+    /// E15: the generic functions written in source code. Specialization replaces each with its
+    /// instances and drops one that nothing calls, so `audit` counts the declarations from here.
+    pub generic_declarations: Vec<GenericDeclaration>,
+}
+
+/// A generic function as it was declared, before specialization (E15).
+#[derive(Clone, Debug)]
+pub struct GenericDeclaration {
+    /// `module.name`, as `CheckedFunction::qualified_name` writes it.
+    pub qualified_name: String,
+    pub span: Span,
+    pub origin: FunctionOrigin,
 }
 
 /// The value of a constant that the program keeps once, as read-only static data (D11 Phase 2).
@@ -8075,9 +8087,11 @@ fn check_modules_collect(
         statics,
         effects: None,
         noncanonical: root_noncanonical(modules, &reference_borrows),
+        generic_declarations: Vec::new(),
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
+    diagnostics.extend(contracts::validate_templates(&module));
     diagnostics.check()?;
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
@@ -8477,6 +8491,7 @@ fn recovery_module(
         statics: BTreeMap::new(),
         effects: None,
         noncanonical: Vec::new(),
+        generic_declarations: Vec::new(),
     }
 }
 

@@ -874,23 +874,39 @@ pub fn analyze_with_limits(
             *entry = entry.union(caps[id]);
         }
     }
+    // The instances of a generic function are generated; its declaration is counted once, from
+    // the list that specialization keeps, even when nothing calls it.
+    let written = functions
+        .iter()
+        .enumerate()
+        .filter(|(id, function)| {
+            !is_std(*id)
+                && !is_extern(*id)
+                && !function.module.starts_with('$')
+                && function.origin.provenance == crate::syntax::Provenance::User
+        })
+        .map(|(id, function)| (declared_name_key(function), source_of(id), function.origin));
+    let generic = module.generic_declarations.iter().map(|declaration| {
+        let source = declaration
+            .span
+            .source
+            .and_then(|source| sources.get(source));
+        (
+            declaration.qualified_name.clone(),
+            source,
+            declaration.origin,
+        )
+    });
     let mut seen = BTreeSet::new();
     let mut declared: BTreeMap<Option<PackageId>, Declared> = BTreeMap::new();
-    for (id, function) in functions.iter().enumerate() {
-        let origin = &function.origin;
-        if is_std(id)
-            || is_extern(id)
-            || function.module.starts_with('$')
-            || origin.provenance != crate::syntax::Provenance::User
-            || origin.test.is_some()
-            || origin.bench.is_some()
-        {
+    for (name, source, origin) in written.chain(generic) {
+        if origin.test.is_some() || origin.bench.is_some() {
             continue;
         }
-        let Some(source) = source_of(id) else {
+        let Some(source) = source else {
             continue;
         };
-        if !seen.insert(declared_name_key(function)) {
+        if !seen.insert(name) {
             continue;
         }
         let counts = declared.entry(source.package.clone()).or_default();
