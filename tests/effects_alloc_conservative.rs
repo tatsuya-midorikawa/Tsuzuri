@@ -12,7 +12,8 @@ use tsuzuri::check::effects::{self, Effect, EffectSet, Options, Scope};
 use tsuzuri::driver::Project;
 use tsuzuri::llvm;
 
-/// `Module.name` of every `def` and `export def` of `std/` (regions and `rec` dropped).
+/// `Module.name` of every public `def` of `std/`, whatever its modifiers (`export`, `const`,
+/// `pure`; review 3 of #63), with regions and `rec` dropped.
 fn std_public_functions() -> Vec<String> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
     let mut names = Vec::new();
@@ -23,10 +24,14 @@ fn std_public_functions() -> Vec<String> {
         }
         let module = path.file_stem().unwrap().to_string_lossy().into_owned();
         for line in std::fs::read_to_string(&path).unwrap().lines() {
-            let Some(rest) = line
-                .strip_prefix("export def ")
-                .or_else(|| line.strip_prefix("def "))
-            else {
+            let mut rest = line;
+            while let Some(after) = ["export ", "const ", "pure "]
+                .iter()
+                .find_map(|modifier| rest.strip_prefix(modifier))
+            {
+                rest = after;
+            }
+            let Some(rest) = rest.strip_prefix("def ") else {
                 continue;
             };
             let rest = rest.strip_prefix("rec ").unwrap_or(rest);

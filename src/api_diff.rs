@@ -226,9 +226,10 @@ struct Item {
     /// The effect attributes (A20): promises that adding keeps and removing breaks, except on a
     /// function that may call the functions it is given (see `callbacks`).
     asserts: Asserts,
-    /// Whether a parameter may carry a function value that the function calls, or has a type
-    /// variable. An effect attribute added to such a function also binds its callers, which must
-    /// then pass callbacks (or instantiate it with types) that keep it (A20 Phase 6).
+    /// Whether a parameter may carry a function value that the function calls, or the signature
+    /// has a type variable or a length parameter. An effect attribute added to such a function
+    /// also binds its callers, which must then pass callbacks (or instantiate it with types and
+    /// lengths) that keep it (A20 Phase 6).
     callbacks: bool,
     /// The contract lines (A21) as written: `@requires ...` and `@ensures \r -> ...`.
     contracts: BTreeSet<String>,
@@ -633,6 +634,7 @@ fn add_items(
 ) {
     let fresh = || Renaming::new(canonical, resolved);
     let effective = resolved.filter(|_| canonical);
+    let lengths = Lengths::of(program);
     // Every field is named so that a new kind of declaration cannot be left out silently.
     let Program {
         source_kind: _,
@@ -722,7 +724,11 @@ fn add_items(
         item.constant = declaration.constant;
         item.pure = declaration.pure.then_some(declaration.parameters.len());
         item.callbacks = types.iter().any(|ty| may_carry_functions(ty))
-            || has_type_variable(implicit.as_ref().unwrap_or(result));
+            || types
+                .iter()
+                .copied()
+                .chain([implicit.as_ref().unwrap_or(result)])
+                .any(|ty| has_type_variable(ty, &lengths));
         for attribute in effect_attributes
             .iter()
             .filter(|attribute| attribute.function.text == declaration.name.text)
@@ -1312,13 +1318,73 @@ fn may_carry_functions(ty: &TypeExpr) -> bool {
     }
 }
 
-/// Whether a type mentions a type variable: an attribute of a generic function is checked for
-/// each instance, with the types that its callers choose.
-fn has_type_variable(ty: &TypeExpr) -> bool {
+/// What tells a length parameter from a length constant in the signatures of one module.
+struct Lengths<'p> {
+    /// The constants of the module, which a length may name without qualification.
+    constants: BTreeSet<&'p str>,
+    /// For each record, union and alias of the module, which of its parameters are lengths.
+    positions: BTreeMap<&'p str, Vec<bool>>,
+}
+
+impl<'p> Lengths<'p> {
+    fn of(program: &'p Program) -> Self {
+        let declared = |parameters: &[Ident]| {
+            parameters
+                .iter()
+                .map(|parameter| parameter.text.starts_with('#'))
+                .collect()
+        };
+        let mut positions = BTreeMap::new();
+        for record in &program.records {
+            positions.insert(record.name.text.as_str(), declared(&record.parameters));
+        }
+        for union in &program.unions {
+            positions.insert(union.name.text.as_str(), declared(&union.parameters));
+        }
+        for alias in &program.type_aliases {
+            positions.insert(alias.name.text.as_str(), declared(&alias.parameters));
+        }
+        Self {
+            constants: program
+                .constants
+                .iter()
+                .map(|constant| constant.name.text.as_str())
+                .collect(),
+            positions,
+        }
+    }
+
+    /// Whether a length is a parameter that each caller chooses: `#N` in a resolved signature,
+    /// or, as written, a name that is not a constant of the module (another module's constant
+    /// is qualified).
+    fn parameter(&self, length: &TypeExpr) -> bool {
+        match &length.kind {
+            TypeExprKind::Variable(_) => true,
+            TypeExprKind::Named(name) => {
+                !name.contains(['.', ':']) && !self.constants.contains(name.as_str())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether a type mentions a type variable or a length parameter: an attribute of a generic
+/// function is checked for each instance, with the types and lengths that its callers choose
+/// (`N = 0` makes `xs[0]` trap; review 3 of #63).
+fn has_type_variable(ty: &TypeExpr, lengths: &Lengths<'_>) -> bool {
     match &ty.kind {
         TypeExprKind::Variable(_) => true,
         TypeExprKind::Named(_) | TypeExprKind::Length(_) | TypeExprKind::Dyn(_) => false,
-        TypeExprKind::Apply(_, arguments) => arguments.iter().any(has_type_variable),
+        TypeExprKind::Apply(head, arguments) => {
+            let positions = lengths.positions.get(head.text.as_str());
+            arguments.iter().enumerate().any(|(index, argument)| {
+                if positions.is_some_and(|positions| positions.get(index) == Some(&true)) {
+                    lengths.parameter(argument)
+                } else {
+                    has_type_variable(argument, lengths)
+                }
+            })
+        }
         TypeExprKind::Regions(inner, _)
         | TypeExprKind::Quantified(_, inner)
         | TypeExprKind::Array(inner)
@@ -1328,13 +1394,18 @@ fn has_type_variable(ty: &TypeExpr) -> bool {
         | TypeExprKind::Reference(inner, _)
         | TypeExprKind::Own(inner)
         | TypeExprKind::Mut(inner)
-        | TypeExprKind::Pure(inner) => has_type_variable(inner),
+        | TypeExprKind::Pure(inner) => has_type_variable(inner, lengths),
         TypeExprKind::FixedArray(inner, length) => {
-            has_type_variable(inner) || has_type_variable(length)
+            has_type_variable(inner, lengths) || lengths.parameter(length)
         }
-        TypeExprKind::Tuple(elements) => elements.iter().any(has_type_variable),
+        TypeExprKind::Tuple(elements) => elements
+            .iter()
+            .any(|element| has_type_variable(element, lengths)),
         TypeExprKind::Function(parameters, result) => {
-            parameters.iter().any(has_type_variable) || has_type_variable(result)
+            parameters
+                .iter()
+                .any(|parameter| has_type_variable(parameter, lengths))
+                || has_type_variable(result, lengths)
         }
     }
 }
