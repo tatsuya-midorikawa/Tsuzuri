@@ -1216,15 +1216,23 @@ impl Line<'_> {
                             "native must be true or false",
                         ));
                     };
-                    // `capabilities` may follow `native`; anything else is left for `}`.
-                    let rest = self.rest.trim_start();
-                    if rest
-                        .strip_prefix(',')
-                        .is_some_and(|rest| rest.trim_start().starts_with("capabilities"))
-                    {
-                        self.take(",");
-                        self.key()?;
-                        capabilities = self.dependency_capabilities()?;
+                    // Only `capabilities` may follow `native`.
+                    if self.take(",") {
+                        match self.key()?.as_str() {
+                            "capabilities" => capabilities = self.dependency_capabilities()?,
+                            "native" => {
+                                return Err(self.error(
+                                    DiagnosticKind::DuplicateManifestKey,
+                                    "duplicate key 'native' in a dependency",
+                                ));
+                            }
+                            _ => {
+                                return Err(self.error(
+                                    DiagnosticKind::UnknownManifestKey,
+                                    "only the path, native, and capabilities keys are supported in a dependency",
+                                ));
+                            }
+                        }
                     }
                 }
                 "capabilities" => capabilities = self.dependency_capabilities()?,
@@ -1494,7 +1502,11 @@ mod tests {
             ("a = { path = \"a\", native = true", "expected '}'"),
             (
                 "a = { path = \"a\", native = true, native = true }",
-                "expected '}'",
+                "duplicate key 'native' in a dependency",
+            ),
+            (
+                "a = { path = \"a\", native = true, capabilities_extra = [\"ffi\"] }",
+                "only the path, native, and capabilities keys are supported in a dependency",
             ),
         ] {
             let error =

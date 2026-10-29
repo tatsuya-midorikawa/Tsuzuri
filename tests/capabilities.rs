@@ -645,3 +645,57 @@ fn limits_report_e1017() {
     );
     assert!(capabilities::analyze(&module, &sources).is_ok());
 }
+
+/// Review of #65: top-level code whose result is printed writes to the standard output through
+/// the compiler's entry, so a policy without `stdio` refuses it.
+#[test]
+fn a_printed_top_level_result_uses_stdio() {
+    let root = scratch("printed");
+    write(
+        &root,
+        "Tsuzuri.toml",
+        "[package]\nname = \"printer\"\nversion = \"0.1.0\"\n\n[capabilities]\nallow = []\n",
+    );
+    write(&root, "Main.tz", "42\n");
+    let errors = check_errors(&root);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].code, "E1036");
+    assert!(
+        errors[0].message.contains("'stdio'"),
+        "{}",
+        errors[0].message
+    );
+    // A unit result prints nothing, and `def main` returns its exit code.
+    write(&root, "Main.tz", "let x = 1\n");
+    assert!(check_errors(&root).is_empty());
+    write(&root, "Main.tz", MAIN);
+    assert!(check_errors(&root).is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Review of #65: only `capabilities` may follow `native` in a path dependency.
+#[test]
+fn a_dependency_key_after_native_must_be_capabilities() {
+    let root = scratch("extra-key");
+    write(
+        &root,
+        "app/Tsuzuri.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nhost = { path = \"../host\", native = true, capabilities_extra = [\"ffi\"] }\n",
+    );
+    write(&root, "app/Main.tz", MAIN);
+    write(
+        &root,
+        "host/Tsuzuri.toml",
+        "[package]\nname = \"host\"\nversion = \"0.1.0\"\n",
+    );
+    write(&root, "host/Lib.tz", "def one :: unit -> i64 = \\() -> 1\n");
+    let output = tsuzuri(&["check", "."], &root.join("app"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr
+            .contains("only the path, native, and capabilities keys are supported in a dependency"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

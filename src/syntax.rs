@@ -816,6 +816,143 @@ pub struct Expr {
 }
 
 impl Expr {
+    /// Visits the expression and its subexpressions, outermost first, for rewriting: the visitor
+    /// returns whether to descend into the (possibly replaced) expression. The expressions inside
+    /// patterns and computation bodies are not visited.
+    pub(crate) fn visit_mut(&mut self, visitor: &mut impl FnMut(&mut Expr) -> bool) {
+        if !visitor(self) {
+            return;
+        }
+        use ExprKind::*;
+        match &mut self.kind {
+            Unary(_, value)
+            | Lambda(_, value)
+            | Task(value)
+            | TaskRun(value)
+            | ComputationBoundary(value)
+            | Checked(value)
+            | NewLiteral(value)
+            | Field(value, _)
+            | Borrow(value, ..)
+            | Dereference(value, _)
+            | Cast(value, _) => value.visit_mut(visitor),
+            Binary(_, left, right)
+            | Index(left, right)
+            | Assign(left, right)
+            | NewArray(_, left, right)
+            | NewList(_, left, right) => {
+                left.visit_mut(visitor);
+                right.visit_mut(visitor);
+            }
+            Call(callee, arguments) => {
+                callee.visit_mut(visitor);
+                for argument in arguments {
+                    argument.visit_mut(visitor);
+                }
+            }
+            If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                condition.visit_mut(visitor);
+                then_branch.visit_mut(visitor);
+                else_branch.visit_mut(visitor);
+            }
+            While { condition, body } => {
+                condition.visit_mut(visitor);
+                body.visit_mut(visitor);
+            }
+            For { source, body, .. } => {
+                source.visit_mut(visitor);
+                body.visit_mut(visitor);
+            }
+            Range {
+                start,
+                step,
+                finish,
+                ..
+            } => {
+                start.visit_mut(visitor);
+                if let Some(step) = step {
+                    step.visit_mut(visitor);
+                }
+                finish.visit_mut(visitor);
+            }
+            Match { value, arms, .. } => {
+                value.visit_mut(visitor);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        guard.visit_mut(visitor);
+                    }
+                    arm.body.visit_mut(visitor);
+                }
+            }
+            Try(handled) => {
+                handled.body.visit_mut(visitor);
+                for arm in &mut handled.arms {
+                    if let Some(guard) = &mut arm.guard {
+                        guard.visit_mut(visitor);
+                    }
+                    arm.body.visit_mut(visitor);
+                }
+                if let Some(finally) = &mut handled.finally {
+                    finally.visit_mut(visitor);
+                }
+            }
+            Block { bindings, result } => {
+                for binding in bindings {
+                    binding.value.visit_mut(visitor);
+                }
+                result.visit_mut(visitor);
+            }
+            Record { fields, .. } => {
+                for (_, value) in fields {
+                    value.visit_mut(visitor);
+                }
+            }
+            RecordUpdate { base, fields } => {
+                base.visit_mut(visitor);
+                for (_, value) in fields {
+                    value.visit_mut(visitor);
+                }
+            }
+            Array(values) | List(values) | Tuple(values) => {
+                for value in values {
+                    value.visit_mut(visitor);
+                }
+            }
+            Slice {
+                value, start, end, ..
+            } => {
+                value.visit_mut(visitor);
+                for bound in start.iter_mut().chain(end.iter_mut()) {
+                    bound.visit_mut(visitor);
+                }
+            }
+            Interpolated(interpolation) => {
+                for hole in &mut interpolation.holes {
+                    hole.value.visit_mut(visitor);
+                }
+            }
+            Computation(..)
+            | Integer(..)
+            | BigInt(_)
+            | Float(..)
+            | String(_)
+            | Char(_)
+            | Utf8Char(_)
+            | Bool(_)
+            | Unit
+            | Break
+            | Continue
+            | Name(_)
+            | QualifiedFunction(_)
+            | TypeFunction(..)
+            | DynDispatch { .. } => {}
+        }
+    }
+
     pub(crate) fn visit(&self, visitor: &mut impl FnMut(&Expr)) {
         visitor(self);
         use ExprKind::*;

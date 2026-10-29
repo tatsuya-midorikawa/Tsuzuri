@@ -182,8 +182,9 @@ pub fn corpus() -> Vec<std::path::PathBuf> {
     projects
 }
 
-/// `tsuzuri build <dir> --emit llvm --trap-info`: the IR and the trap table's JSON.
-pub fn emit(directory: &std::path::Path, scratch: &std::path::Path) -> Option<(String, String)> {
+/// `tsuzuri build <dir> --emit llvm --trap-info`: the IR and the trap table's JSON. Every project
+/// of the corpus emits; one that stops compiling fails the check instead of leaving it.
+pub fn emit(directory: &std::path::Path, scratch: &std::path::Path) -> (String, String) {
     let name = directory
         .file_name()
         .unwrap()
@@ -197,12 +198,15 @@ pub fn emit(directory: &std::path::Path, scratch: &std::path::Path) -> Option<(S
         .arg(&output)
         .output()
         .expect("run tsuzuri");
-    if !status.status.success() {
-        return None;
-    }
-    let ir = std::fs::read_to_string(&output).ok()?;
+    assert!(
+        status.status.success(),
+        "{} does not emit LLVM IR:\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let ir = std::fs::read_to_string(&output).expect("the emitted IR");
     let mut table = output.clone().into_os_string();
     table.push(".trap.json");
     let table = std::fs::read_to_string(table).unwrap_or_default();
-    Some((ir, table))
+    (ir, table)
 }

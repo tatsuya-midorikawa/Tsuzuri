@@ -704,7 +704,15 @@ impl Parser<'_> {
             )
     }
 
-    fn contract_misplaced(span: Span) -> Diagnostic {
+    fn contract_misplaced(&self, span: Span) -> Diagnostic {
+        if self.method_body {
+            return Diagnostic::of(
+                DiagnosticKind::ContractMisplaced,
+                "contract lines are for 'def' functions, not for instance methods or class defaults",
+                span,
+            )
+            .with_help("check the condition in a 'def' function that the method calls");
+        }
         Diagnostic::of(
             DiagnosticKind::ContractMisplaced,
             "a contract line must start a function body: write '@requires' and '@ensures' on their own lines right after '=' or '->', before the first statement",
@@ -723,7 +731,7 @@ impl Parser<'_> {
                 .span
                 .through(self.tokens[self.position + 1].span);
             if !self.newline_before_current() || self.column(self.current().span) != column {
-                return Err(Self::contract_misplaced(head));
+                return Err(self.contract_misplaced(head));
             }
             if clauses.len() == 32 {
                 return Err(Diagnostic::of(
@@ -737,7 +745,7 @@ impl Parser<'_> {
         if self.at(&TokenKind::LeftBrace)
             || (self.newline_before_current() && self.column(self.current().span) > column)
         {
-            return Err(Self::contract_misplaced(self.current().span));
+            return Err(self.contract_misplaced(self.current().span));
         }
         if !self.newline_before_current() || self.column(self.current().span) < column {
             return Err(self.error_of(
@@ -798,10 +806,24 @@ impl Parser<'_> {
         self.in_ensures = outer;
         let condition = condition?;
         self.nesting -= 1;
-        let text = self.source[condition.span.start..condition.span.end]
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        // The condition as written, with the space between tokens (continuation lines included)
+        // made one space; the text of each token, a string literal's spaces too, is kept.
+        let first = self
+            .tokens
+            .partition_point(|token| token.span.start < condition.span.start);
+        let mut text = String::new();
+        let mut previous: Option<usize> = None;
+        for token in self.tokens[first..]
+            .iter()
+            .take_while(|token| token.span.end <= condition.span.end)
+            .filter(|token| token.span.start < token.span.end)
+        {
+            if previous.is_some_and(|end| token.span.start > end) {
+                text.push(' ');
+            }
+            text.push_str(&self.source[token.span.start..token.span.end]);
+            previous = Some(token.span.end);
+        }
         Ok(ContractClause {
             kind,
             binder,
@@ -852,9 +874,7 @@ impl Parser<'_> {
     ) -> Result<Expr, Diagnostic> {
         let start = self.current().span;
         if self.contract_ahead() {
-            return Err(Self::contract_misplaced(
-                start.through(self.tokens[self.position + 1].span),
-            ));
+            return Err(self.contract_misplaced(start.through(self.tokens[self.position + 1].span)));
         }
         if self.at(&TokenKind::At)
             && matches!(
