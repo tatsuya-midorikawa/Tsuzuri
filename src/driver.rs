@@ -5519,6 +5519,19 @@ pub(crate) fn probable_stack_exhaustion(_status: &std::process::ExitStatus) -> b
     false
 }
 
+/// The exit code that an `IO<i32>` entry returned, when the program ended with one: a non-zero
+/// code of such an entry is its value, not a trap, unless the program reported a trap site
+/// (Windows ends a trap with an exception code, not a signal).
+fn returned_code(
+    status: &std::process::ExitStatus,
+    trapped: bool,
+    exit_code_entry: bool,
+) -> Option<i32> {
+    status
+        .code()
+        .filter(|code| *code != 0 && exit_code_entry && !trapped)
+}
+
 pub fn run(
     module: &CheckedModule,
     project: &Project,
@@ -5688,22 +5701,6 @@ fn run_process(
         RunStdio::Capture { timeout, limit } => capture(runner.as_ref(), &output, timeout, limit)?,
     };
     temporary.close()?;
-    // An `IO<i32>` entry returns its value as the exit code, so a non-zero code is not a trap.
-    if let Some(code) = status.code()
-        && code != 0
-        && llvm::exit_code_entry(module)
-    {
-        let stderr = String::from_utf8_lossy(&stderr);
-        let message = if json && !stderr.trim().is_empty() {
-            format!("program exited with code {code}:\n{}", stderr.trim_end())
-        } else {
-            format!("program exited with code {code}")
-        };
-        return Err(driver_error_of(
-            DiagnosticKind::ProgramExitedNonzero,
-            message,
-        ));
-    }
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
         let site = project.with_trap_sources(|sources| {
@@ -5715,6 +5712,17 @@ fn run_process(
                 })
                 .map(|site| (site.span, site.kind))
         });
+        if let Some(code) = returned_code(&status, site.is_some(), llvm::exit_code_entry(module)) {
+            let message = if json && !stderr.trim().is_empty() {
+                format!("program exited with code {code}:\n{}", stderr.trim_end())
+            } else {
+                format!("program exited with code {code}")
+            };
+            return Err(driver_error_of(
+                DiagnosticKind::ProgramExitedNonzero,
+                message,
+            ));
+        }
         // A21: a contract line's trap is reported with its own kind.
         let kind = site
             .and_then(|(_, kind)| kind.diagnostic_kind())
@@ -6508,6 +6516,22 @@ mod tests {
                 "E2001"
             );
         }
+    }
+
+    /// An `IO<i32>` entry's non-zero code is its value, unless the program reported a trap site:
+    /// on Windows a trap ends the process with an exit code (`0xC000001D`), not a signal.
+    #[cfg(unix)]
+    #[test]
+    fn a_reported_trap_is_not_an_exit_code() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        let code = ExitStatus::from_raw(3 << 8);
+        assert_eq!(returned_code(&code, false, true), Some(3));
+        assert_eq!(returned_code(&code, true, true), None);
+        assert_eq!(returned_code(&code, false, false), None);
+        assert_eq!(returned_code(&ExitStatus::from_raw(0), false, true), None);
+        // A signal has no code (SIGTRAP).
+        assert_eq!(returned_code(&ExitStatus::from_raw(5), false, true), None);
     }
 
     #[cfg(unix)]

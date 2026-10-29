@@ -503,8 +503,10 @@ fn place_root(mut expression: &TypedExpr) -> Option<usize> {
     }
 }
 
-/// The first place in `condition` that may write to one of the `outside` locals.
+/// The first place in `condition` that may write to one of the `outside` locals, directly or
+/// through a reference that a local of the condition holds (`let q = p` of a `ref mut` `p`).
 fn write_outside(condition: &TypedExpr, outside: &BTreeSet<usize>) -> Option<Span> {
+    let outside = aliases(condition, outside);
     let rooted = |place: &TypedExpr| place_root(place).is_some_and(|id| outside.contains(&id));
     let mut pending = vec![condition];
     while let Some(expression) = pending.pop() {
@@ -529,6 +531,66 @@ fn write_outside(condition: &TypedExpr, outside: &BTreeSet<usize>) -> Option<Spa
         pending.extend(expression.children());
     }
     None
+}
+
+/// `outside` and the locals of `condition` that may hold a reference into it: a binding of a
+/// type with a reference whose value reads one of them, until no binding is added.
+fn aliases(condition: &TypedExpr, outside: &BTreeSet<usize>) -> BTreeSet<usize> {
+    let mut bindings = Vec::new();
+    let mut pending = vec![condition];
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            TypedExprKind::Block {
+                bindings: locals, ..
+            } => bindings.extend(locals.iter().map(|(local, value)| (local, value))),
+            TypedExprKind::Match { local, value, arms } => {
+                bindings.push((local, value));
+                for alternative in arms.iter().flat_map(|arm| &arm.alternatives) {
+                    bindings.extend(
+                        alternative
+                            .bindings
+                            .iter()
+                            .map(|(local, value)| (local, value)),
+                    );
+                    bindings.extend(alternative.steps.iter().filter_map(|step| match step {
+                        PatternStep::Bind(local, value) => Some((local, value)),
+                        PatternStep::Test(_) => None,
+                    }));
+                }
+            }
+            _ => {}
+        }
+        pending.extend(expression.children());
+    }
+    let mut outside = outside.clone();
+    loop {
+        let before = outside.len();
+        for (local, value) in &bindings {
+            if !outside.contains(&local.id)
+                && local.ty.contains_reference()
+                && reads_any(value, &outside)
+            {
+                outside.insert(local.id);
+            }
+        }
+        if outside.len() == before {
+            return outside;
+        }
+    }
+}
+
+/// Whether `expression` reads one of `locals`.
+fn reads_any(expression: &TypedExpr, locals: &BTreeSet<usize>) -> bool {
+    let mut pending = vec![expression];
+    while let Some(expression) = pending.pop() {
+        if let TypedExprKind::Local(id) = expression.kind
+            && locals.contains(&id)
+        {
+            return true;
+        }
+        pending.extend(expression.children());
+    }
+    false
 }
 
 /// Whether a parameter of this written type has a generator for the property tests: the named
@@ -646,16 +708,79 @@ fn skipped(function: &FunctionDecl, program: &Program) -> Option<String> {
         .map(|binder| binder.text.as_str())
         .filter(|name| *name != "_")
         .collect();
-    (names.len() > 1).then(|| "its '@ensures' lines name the result differently".into())
+    if names.len() > 1 {
+        return Some("its '@ensures' lines name the result differently".into());
+    }
+    // Each run binds the result once, which moves a result that is not Copy.
+    let result = ResultName::of(function);
+    let copy = matches!(
+        &value_type(&function.result).kind,
+        TypeExprKind::Named(name) if matches!(
+            name.as_str(),
+            "i8" | "i16" | "i32" | "i64" | "i8u" | "i16u" | "i32u" | "i64u" | "bool" | "f64" | "char"
+        )
+    );
+    (result.shadows && result.runs > 1 && !copy).then(|| {
+        format!(
+            "its '@ensures' lines name the result '{}' on both sides of a line that reads another '{}'",
+            result.name.unwrap_or_default(),
+            result.name.unwrap_or_default()
+        )
+    })
 }
 
-/// A21 Phase 3 (`--contracts test`): for each function of `program` with contract lines, a
-/// private twin `$contract_raw_<name>` without them and a test `contract <name>` that checks its
-/// `@ensures` lines on generated arguments that satisfy its `@requires` lines. Returns `W1009`
-/// for each function that gets no test, and why.
+/// How the `@ensures` lines of a function name its result.
+struct ResultName<'a> {
+    /// The name that the lines with a named result give it; one name (`skipped`).
+    name: Option<&'a str>,
+    /// Whether a line without that name reads a variable of the same name (a parameter, say),
+    /// which the result must not hide.
+    shadows: bool,
+    /// The runs of adjacent lines that name the result.
+    runs: usize,
+}
+
+impl<'a> ResultName<'a> {
+    fn of(function: &'a FunctionDecl) -> Self {
+        let ensures: Vec<_> = function
+            .contracts
+            .iter()
+            .filter(|clause| clause.kind == ContractKind::Ensures)
+            .collect();
+        let named = |clause: &ContractClause| {
+            clause
+                .binder
+                .as_ref()
+                .is_some_and(|binder| binder.text != "_")
+        };
+        let name = ensures
+            .iter()
+            .find_map(|clause| clause.binder.as_ref().filter(|_| named(clause)))
+            .map(|binder| binder.text.as_str());
+        let shadows = name.is_some_and(|name| {
+            ensures
+                .iter()
+                .any(|clause| !named(clause) && mentions(&clause.condition, name))
+        });
+        let runs = ensures
+            .iter()
+            .enumerate()
+            .filter(|(index, clause)| named(clause) && (*index == 0 || !named(ensures[index - 1])))
+            .count();
+        Self {
+            name,
+            shadows,
+            runs,
+        }
+    }
+}
+
+/// A21 Phase 3 (`--contracts test`): for each function of `program` with contract lines, a test
+/// `contract <name>` that runs its body on generated arguments that satisfy its `@requires`
+/// lines and checks its `@ensures` lines. Returns `W1009` for each function that gets no test,
+/// and why.
 pub(crate) fn generate_tests(program: &mut Program, module: &str) -> Vec<Diagnostic> {
     let mut warnings = Vec::new();
-    let mut twins = Vec::new();
     let mut tests = Vec::new();
     for function in &program.functions {
         if function.contracts.is_empty() {
@@ -673,68 +798,35 @@ pub(crate) fn generate_tests(program: &mut Program, module: &str) -> Vec<Diagnos
             continue;
         }
         match property_test(function, module) {
-            Ok((twin, test)) => {
-                twins.push(twin);
-                tests.push(test);
-            }
+            Ok(test) => tests.push(test),
             Err(error) => warnings.push(error),
         }
     }
-    program.functions.extend(twins);
     program.tests.extend(tests);
     warnings
 }
 
-fn property_test(
-    function: &FunctionDecl,
-    module: &str,
-) -> Result<(FunctionDecl, TestDecl), Diagnostic> {
+/// The type of a value that a pattern or a `let` names: an `own T` parameter or result is a `T`.
+fn value_type(ty: &TypeExpr) -> TypeExpr {
+    match &ty.kind {
+        TypeExprKind::Own(inner) => value_type(inner),
+        _ => ty.clone(),
+    }
+}
+
+/// The test of one function. The body runs in the scope of the generated arguments, as the
+/// woven body does, so the `@ensures` lines still read the arguments that it only borrows. The
+/// result is bound under the name of the lines that name it; when another line reads a variable
+/// of that name, under `$contract_result`, and each run of lines that name it binds the name
+/// around itself only.
+fn property_test(function: &FunctionDecl, module: &str) -> Result<TestDecl, Diagnostic> {
     let build = deriving::Build {
         module,
         span: function.name.span,
         nodes: std::cell::Cell::new(0),
     };
-    let raw = format!("$contract_raw_{}", function.name.text);
-    let mut twin = function.clone();
-    twin.name = build.ident(&raw);
-    twin.contracts = Vec::new();
-    twin.visibility = Visibility::Private;
-    twin.exported = false;
-    twin.recursion = None;
-    twin.doc = None;
-    let names: Vec<&str> = function
-        .parameters
-        .iter()
-        .map(|parameter| parameter.name.text.as_str())
-        .collect();
-    let all = |kind: ContractKind| -> Result<Option<Expr>, Diagnostic> {
-        let mut joined: Option<Expr> = None;
-        for clause in function
-            .contracts
-            .iter()
-            .filter(|clause| clause.kind == kind)
-        {
-            let condition = clause.condition.clone();
-            joined = Some(match joined {
-                None => condition,
-                Some(left) => build.binary(BinaryOp::And, left, condition)?,
-            });
-        }
-        Ok(joined)
-    };
-    let result = function
-        .contracts
-        .iter()
-        .filter_map(|clause| clause.binder.as_ref())
-        .map(|binder| binder.text.clone())
-        .find(|name| name != "_")
-        .unwrap_or_else(|| "_".into());
-    let arguments = names
-        .iter()
-        .map(|name| build.name(name))
-        .collect::<Result<Vec<_>, _>>()?;
-    let call = build.make(ExprKind::Call(Box::new(build.name(&raw)?), arguments))?;
-    // Each `@old (e)` is `e` on entry: bound before the call, which may take the arguments, and
+    let result = ResultName::of(function);
+    // Each `@old (e)` is `e` on entry: bound before the body, which may take the arguments, and
     // read by name in the `@ensures` lines.
     let mut olds = Vec::new();
     for clause in &function.contracts {
@@ -747,8 +839,9 @@ fn property_test(
         .enumerate()
         .map(|(index, (_, operand))| build.bind(format!("$old_{index}"), operand.clone()))
         .collect();
-    let ensures = all(ContractKind::Ensures)?.map(|mut ensures| {
-        ensures.visit_mut(&mut |expression| {
+    let condition = |clause: &ContractClause| {
+        let mut condition = clause.condition.clone();
+        condition.visit_mut(&mut |expression| {
             let Some(index) = olds
                 .iter()
                 .position(|(span, _)| *span == expression.span)
@@ -759,51 +852,102 @@ fn property_test(
             expression.kind = ExprKind::Name(build.ident(format!("$old_{index}")));
             false
         });
-        ensures
-    });
-    let verdict = match ensures {
-        Some(ensures) => build.construct("Maybe.Maybe", "Some", ensures)?,
-        None => build.construct("Maybe.Maybe", "Some", build.boolean(true)?)?,
+        condition
     };
-    bindings.push(build.bind(result, call));
+    let and = |left: Option<Expr>, right: Expr| match left {
+        None => Ok(right),
+        Some(left) => build.binary(BinaryOp::And, left, right),
+    };
+    let held = if result.shadows {
+        "$contract_result"
+    } else {
+        result.name.unwrap_or("_")
+    };
+    let mut ensures: Option<Expr> = None;
+    let mut run: Option<Expr> = None;
+    for clause in function
+        .contracts
+        .iter()
+        .filter(|clause| clause.kind == ContractKind::Ensures)
+    {
+        let named = clause
+            .binder
+            .as_ref()
+            .is_some_and(|binder| binder.text != "_");
+        if result.shadows && named {
+            run = Some(and(run, condition(clause))?);
+            continue;
+        }
+        if let Some(lines) = run.take() {
+            let bound = build.bind(result.name.unwrap(), build.name(held)?);
+            ensures = Some(and(ensures, build.block(vec![bound], lines)?)?);
+        }
+        ensures = Some(and(ensures, condition(clause))?);
+    }
+    if let Some(lines) = run.take() {
+        let bound = build.bind(result.name.unwrap(), build.name(held)?);
+        ensures = Some(and(ensures, build.block(vec![bound], lines)?)?);
+    }
+    let verdict = build.construct(
+        "Maybe.Maybe",
+        "Some",
+        match ensures {
+            Some(ensures) => ensures,
+            None => build.boolean(true)?,
+        },
+    )?;
+    let mut value = build.bind(held, function.body.clone());
+    value.annotation = Some(value_type(&function.result));
+    bindings.push(value);
     let mut property = build.block(bindings, verdict)?;
-    if let Some(requires) = all(ContractKind::Requires)? {
+    if let Some(requires) = function
+        .contracts
+        .iter()
+        .filter(|clause| clause.kind == ContractKind::Requires)
+        .try_fold(None, |joined, clause| {
+            and(joined, clause.condition.clone()).map(Some)
+        })?
+    {
         property = build.conditional(requires, property, build.case("Maybe.Maybe", "None")?)?;
     }
-    // The generator of the arguments, paired from the right, and the pattern that names them.
+    // The generator of the arguments, paired from the right, and the pattern that names them
+    // with their written types.
     let mut generator = build.call("Arbitrary", "arbitrary", Vec::new())?;
-    let binding = |name: &str| Pattern {
-        kind: PatternKind::Binding(build.ident(name)),
+    let binding = |parameter: &Parameter| Pattern {
+        kind: PatternKind::Annotated(
+            Box::new(Pattern {
+                kind: PatternKind::Binding(build.ident(parameter.name.text.as_str())),
+                span: build.span,
+                depth: 1,
+            }),
+            value_type(&parameter.ty),
+        ),
         span: build.span,
-        depth: 1,
+        depth: 2,
     };
-    let mut pattern = binding(names[names.len() - 1]);
-    for name in names[..names.len() - 1].iter().rev() {
+    let parameters = &function.parameters;
+    let mut pattern = binding(&parameters[parameters.len() - 1]);
+    for parameter in parameters[..parameters.len() - 1].iter().rev() {
         generator = build.apply(
             "Gen.pair",
             vec![build.call("Arbitrary", "arbitrary", Vec::new())?, generator],
         )?;
         let depth = pattern.depth + 1;
         pattern = Pattern {
-            kind: PatternKind::Tuple(vec![binding(name), pattern]),
+            kind: PatternKind::Tuple(vec![binding(parameter), pattern]),
             span: build.span,
             depth,
         };
     }
-    let checker = if names.len() == 1 {
-        build.lambda(&[names[0]], property)?
-    } else {
-        build.lambda(
-            &["$args"],
-            build.matched("$args", vec![build.arm(pattern, property)])?,
-        )?
-    };
+    let checker = build.lambda(
+        &["$args"],
+        build.matched("$args", vec![build.arm(pattern, property)])?,
+    )?;
     let body = build.apply("Gen.for_all_where", vec![generator, checker])?;
-    let test = TestDecl {
+    Ok(TestDecl {
         name: format!("contract {}", function.name.text),
         name_span: function.name.span,
         body,
         span: function.name.span,
-    };
-    Ok((twin, test))
+    })
 }
