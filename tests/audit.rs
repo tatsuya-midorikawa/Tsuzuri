@@ -31,6 +31,11 @@ fn stdout(output: &Output) -> String {
     String::from_utf8(output.stdout.clone()).unwrap()
 }
 
+/// A relative path as a diagnostic spells it on this platform.
+fn native(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 /// Appendix D.4: a root package with a policy and a dependency that reads the clock.
 fn d4(root: &Path) -> PathBuf {
     write(
@@ -101,7 +106,7 @@ fn audit_text_matches_the_examples() {
     );
     let stderr = String::from_utf8_lossy(&app.stderr);
     assert!(
-        stderr.contains("fscache/Cache.tz:3:57: error[E1036]: package 'fscache' may not use capability 'time' ('Time.monotonic_ns'); the root [capabilities] allow does not list \"time\""),
+        stderr.contains(&format!("{}:3:57: error[E1036]: package 'fscache' may not use capability 'time' ('Time.monotonic_ns'); the root [capabilities] allow does not list \"time\"", native("fscache/Cache.tz"))),
         "{stderr}"
     );
     d5(&root, "");
@@ -112,7 +117,10 @@ fn audit_text_matches_the_examples() {
     );
     let stderr = String::from_utf8_lossy(&ffi.stderr);
     assert!(
-        stderr.starts_with("ffi/Main.tz:1:18: warning[W1010]: extern function 'c_abs' is used but not marked '@trusted'"),
+        stderr.starts_with(&format!(
+            "{}:1:18: warning[W1010]: extern function 'c_abs' is used but not marked '@trusted'",
+            native("ffi/Main.tz")
+        )),
         "{stderr}"
     );
     d5(&root, "@trusted pure\n");
@@ -322,7 +330,7 @@ fn audit_reports_untrusted_externs_of_dependencies() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("absval/Abs.tz:1:18: warning[W1010]"),
+        stderr.contains(&format!("{}:1:18: warning[W1010]", native("absval/Abs.tz"))),
         "{stderr}"
     );
     assert_eq!(output.status.code(), Some(0));

@@ -464,14 +464,17 @@ impl<'a> Translator<'a> {
                         matched = self.boolean(format!("(and {matched} {term})"), span)?;
                     }
                     let last = index + 1 == arms.len();
-                    let body_path = if last {
-                        reached.clone()
-                    } else {
-                        self.boolean(format!("(and {reached} {matched})"), span)?
-                    };
+                    let body_path = self.boolean(format!("(and {reached} {matched})"), span)?;
                     let body = self.translate(&arm.body, &body_path)?;
+                    // The value of the last arm stands for every path that reaches it, since
+                    // the paths that it does not match trap.
                     results.push((if last { "true".into() } else { matched.clone() }, body));
                     reached = self.boolean(format!("(and {reached} (not {matched}))"), span)?;
+                    // A value that no arm matches traps: the checker proves an explicit `match`
+                    // exhaustive, but not the patterns and `when` guards of lambda parameters.
+                    if last && matched != "true" {
+                        self.obligation(&reached, "true", "pattern mismatch");
+                    }
                 }
                 let Some((_, mut value)) = results.pop() else {
                     return Err(unsupported("an unresolved expression", span));

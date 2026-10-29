@@ -42,6 +42,11 @@ fn tsuzuri(arguments: &[&str], directory: &Path, cache: &Path) -> Output {
         .unwrap()
 }
 
+/// A relative path as a diagnostic spells it on this platform.
+fn native(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 #[test]
 fn trusted_marks_extern_functions_and_types() {
     let module = analyze(&format!(
@@ -193,9 +198,10 @@ fn untrusted_extern_warning_is_off_by_default_and_on_with_the_flag() {
     assert!(on.status.success());
     let stderr = String::from_utf8_lossy(&on.stderr);
     assert!(
-        stderr.starts_with(
-            "ffi/Main.tz:1:18: warning[W1010]: extern function 'c_abs' is used but not marked '@trusted'; review its contract and add '@trusted' above its declaration\n"
-        ),
+        stderr.starts_with(&format!(
+            "{}:1:18: warning[W1010]: extern function 'c_abs' is used but not marked '@trusted'; review its contract and add '@trusted' above its declaration\n",
+            native("ffi/Main.tz")
+        )),
         "{stderr}"
     );
     assert_eq!(stderr.matches("warning[W1010]").count(), 1, "{stderr}");
@@ -254,6 +260,24 @@ fn untrusted_extern_warning_is_off_by_default_and_on_with_the_flag() {
         String::from_utf8_lossy(&trusted.stderr)
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_trusted_extern_type_does_not_mark_a_function_of_the_same_name() {
+    // The type's mark does not reach the unannotated function.
+    let module = analyze(&format!(
+        "@trusted\nextern type Handle\nextern \"abs\" def Handle :: i32 -> i32\n\
+         def c_abs :: i32 -> i32 = \\x -> Handle x\n{MAIN}"
+    ))
+    .unwrap();
+    assert_eq!(trusted_of(&module, "Handle"), None);
+    // An earlier type mark does not hide the function's own properties.
+    let source = "@trusted\nextern type Handle\n@trusted pure\nextern \"abs\" def Handle :: i32 -> i32\n\
+                  pure def distance :: i32 -> i32 -> i32 = \\a b -> Handle (a - b)\n\
+                  def main :: unit -> i32 = \\() -> distance 3 7\n";
+    let module =
+        analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    assert_eq!(trusted_of(&module, "Handle"), Some(0b00001));
 }
 
 #[test]
