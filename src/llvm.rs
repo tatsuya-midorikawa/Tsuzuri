@@ -4648,11 +4648,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Arithmetic(String),
         }
         let mut pending = Vec::with_capacity(arguments.len());
+        // A23: under the overflow report a helper of the program (`def plus a b = a + b`) stays a
+        // call, so its arithmetic is reported by the helper's own body and policy; the compiler's
+        // `Add.add` is the operator itself, as in `binary`.
+        let reporting = self.globals.overflow.is_some();
         for argument in arguments {
             let operation = call_specialization::binary_operation(argument, self.module).filter(
-                |(operator, _, _, _)| {
+                |(operator, _, _, helper)| {
                     argument.ty.is_integer()
                         && matches!(operator, BinaryOp::Add | BinaryOp::Subtract)
+                        && !(reporting
+                            && helper.is_some_and(|helper| {
+                                self.module.functions[helper].module != "$intrinsic"
+                            }))
                 },
             );
             if let Some((operator, left, right, helper)) = operation {
@@ -4674,7 +4682,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 } else {
                     overflow::Operation::Subtract
                 };
-                self.overflow_check(operation, &argument.ty, argument.span, proven, &lhs, &rhs);
+                let symbol = if operator == BinaryOp::Add { "+" } else { "-" };
+                let anchor =
+                    self.overflow_anchor(argument.span, left.span.end, right.span.start, symbol);
+                if !proven {
+                    self.overflow_check(operation, &argument.ty, argument.span, anchor, &lhs, &rhs);
+                }
                 let words = self.arithmetic_flags(operator, left, right, &lhs, &rhs);
                 pending.push(Argument::Arithmetic(format!(
                     "{opcode} {words}{} {lhs}, {rhs}",
@@ -5111,14 +5124,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 if *operator == UnaryOp::Negate && matches!(operand.ty, Type::Integer(_, true)) {
                     let proven = self.overflow_counted
                         && self.ranges.negation_flags(self.module, operand).nsw;
-                    self.overflow_check(
-                        overflow::Operation::Negate,
-                        &operand.ty,
-                        self.current_span,
-                        proven,
-                        &value,
-                        "",
-                    );
+                    let span = self.current_span;
+                    let anchor = self.overflow_anchor(span, span.start, operand.span.start, "-");
+                    if !proven {
+                        self.overflow_check(
+                            overflow::Operation::Negate,
+                            &operand.ty,
+                            span,
+                            anchor,
+                            &value,
+                            "",
+                        );
+                    }
                 }
                 self.value(match operator {
                     UnaryOp::Negate if matches!(operand.ty, Type::Binary(32 | 64)) => {
@@ -6936,7 +6953,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             return self.simd_binary(operator, vector, &lhs, &rhs);
         }
         if operator == Power {
-            return self.power(&left.ty, &lhs, &rhs, false);
+            let span = self.current_span;
+            let anchor = self.overflow_anchor(span, left.span.end, right.span.start, "**");
+            return self.power(&left.ty, &lhs, &rhs, false, anchor);
         }
         let ty = self.ty(&left.ty);
         if matches!(left.ty, Type::Binary(16)) && self.globals.f16.arithmetic() {
@@ -7084,12 +7103,16 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         };
         if matches!(operator, Add | Subtract | Multiply) && left.ty.is_integer() {
             let proven = self.ranges_proven(operator, left, right);
-            let operation = match operator {
-                Add => overflow::Operation::Add,
-                Subtract => overflow::Operation::Subtract,
-                _ => overflow::Operation::Multiply,
+            let (operation, symbol) = match operator {
+                Add => (overflow::Operation::Add, "+"),
+                Subtract => (overflow::Operation::Subtract, "-"),
+                _ => (overflow::Operation::Multiply, "*"),
             };
-            self.overflow_check(operation, &left.ty, self.current_span, proven, &lhs, &rhs);
+            let span = self.current_span;
+            let anchor = self.overflow_anchor(span, left.span.end, right.span.start, symbol);
+            if !proven {
+                self.overflow_check(operation, &left.ty, span, anchor, &lhs, &rhs);
+            }
         }
         let words = if matches!(operator, Add | Subtract | Multiply) && !left.ty.is_float() {
             self.arithmetic_flags(operator, left, right, &lhs, &rhs)

@@ -74,7 +74,7 @@ impl FunctionEmitter<'_, '_> {
             TypedExprKind::Binary(BinaryOp::Power, left, right) => {
                 let left = self.expression(left);
                 let right = self.expression(right);
-                self.power(&value.ty, &left, &right, true)
+                self.power(&value.ty, &left, &right, true, 0)
             }
             TypedExprKind::Unary(UnaryOp::Negate, operand) => {
                 let operand = self.expression(operand);
@@ -90,7 +90,15 @@ impl FunctionEmitter<'_, '_> {
     /// `base ** exponent`: `pow` for `f32` and `f64`, and square-and-multiply
     /// for integers, whose negative exponent traps. Checked products raise
     /// `OverflowException`; unchecked products wrap.
-    pub(super) fn power(&mut self, ty: &Type, base: &str, exponent: &str, checked: bool) -> String {
+    /// `anchor`: the offset of the `**` for the overflow report (A23); unused when `checked`.
+    pub(super) fn power(
+        &mut self,
+        ty: &Type,
+        base: &str,
+        exponent: &str,
+        checked: bool,
+        anchor: usize,
+    ) -> String {
         let llvm = self.ty(ty);
         let Type::Integer(bits, signed) = *ty else {
             let Type::Binary(bits) = *ty else {
@@ -126,7 +134,7 @@ impl FunctionEmitter<'_, '_> {
                     crate::overflow::Operation::Power,
                     ty,
                     span,
-                    false,
+                    anchor,
                     left,
                     right,
                 );

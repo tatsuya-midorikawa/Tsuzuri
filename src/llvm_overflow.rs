@@ -16,6 +16,10 @@ pub(super) struct Report {
     scope: Rc<ScopeData>,
     index: BTreeMap<Site, usize>,
     order: Vec<Site>,
+    /// The line that a native program writes for each site, in number order.
+    lines: Vec<String>,
+    /// The line starts of each source that has a site.
+    line_indexes: BTreeMap<usize, overflow::LineIndex>,
     /// `overflow::MAX_SITES`; a unit test takes a smaller one.
     limit: usize,
     exceeded: bool,
@@ -27,6 +31,8 @@ impl Report {
             scope,
             index: BTreeMap::new(),
             order: Vec::new(),
+            lines: Vec::new(),
+            line_indexes: BTreeMap::new(),
             limit: overflow::MAX_SITES,
             exceeded: false,
         }
@@ -57,19 +63,59 @@ impl Report {
             return None;
         }
         let index = self.order.len();
+        let source = self
+            .scope
+            .source(site.source)
+            .expect("a site's source is in the scope");
+        let lines = self
+            .line_indexes
+            .entry(site.source)
+            .or_insert_with(|| overflow::LineIndex::new(&source.text));
+        self.lines.push(format!(
+            "warning: {}\n",
+            site.message_indexed(source, lines)
+        ));
         self.index.insert(site, index);
         self.order.push(site);
         Some(index)
     }
 
     /// The bytes of the line that a native program writes for the site `index`.
-    fn line(&self, index: usize) -> String {
-        let site = &self.order[index];
-        let source = self
-            .scope
-            .source(site.source)
-            .expect("a site's source is in the scope");
-        format!("warning: {}\n", site.message(source))
+    fn line(&self, index: usize) -> &str {
+        &self.lines[index]
+    }
+
+    /// The offset that a site's message names: the operator found in the text from `after` to
+    /// `before` (between the operands, or before the operand of `-x`), else `fallback`.
+    pub(super) fn anchor(
+        &self,
+        source: Option<usize>,
+        after: usize,
+        before: usize,
+        symbol: &str,
+        fallback: usize,
+    ) -> usize {
+        let Some(text) = source
+            .and_then(|source| self.scope.source(source))
+            .map(|source| source.text.as_str())
+        else {
+            return fallback;
+        };
+        let Some(between) = text.get(after..before.max(after)) else {
+            return fallback;
+        };
+        let mut offset = 0;
+        while offset < between.len() {
+            let rest = &between[offset..];
+            if rest.starts_with("//") {
+                offset += rest.find('\n').unwrap_or(rest.len());
+            } else if rest.starts_with(symbol) {
+                return after + offset;
+            } else {
+                offset += rest.chars().next().map_or(1, char::len_utf8);
+            }
+        }
+        fallback
     }
 
     /// The globals and functions that the instrumented code uses, once the emission has numbered
@@ -169,15 +215,33 @@ impl FunctionEmitter<'_, '_> {
         if signed { flags.nsw } else { flags.nuw }
     }
 
-    /// Writes the check of one integer operation before the operation itself. `proven`: the range
-    /// proof shows that it cannot overflow in the sense of its type. For `Negate`, `left` is the
+    /// Writes the check of one integer operation before the operation itself; the caller skips
+    /// the operations that the range proof keeps within their type. For `Negate`, `left` is the
     /// operand and `right` is unused.
+    /// The offset of the operator of an operation at `span` whose operator lies between `after`
+    /// and `before` (see `Report::anchor`); the start of `span` when the report does not cover
+    /// this body.
+    pub(super) fn overflow_anchor(
+        &self,
+        span: Span,
+        after: usize,
+        before: usize,
+        symbol: &str,
+    ) -> usize {
+        match &self.globals.overflow {
+            Some(report) if self.overflow_counted => {
+                report.anchor(span.source, after, before, symbol, span.start)
+            }
+            _ => span.start,
+        }
+    }
+
     pub(super) fn overflow_check(
         &mut self,
         operation: Operation,
         ty: &Type,
         span: Span,
-        proven: bool,
+        anchor: usize,
         left: &str,
         right: &str,
     ) {
@@ -187,13 +251,14 @@ impl FunctionEmitter<'_, '_> {
         let Some(source) = span.source else {
             return;
         };
-        if proven || !self.overflow_counted {
+        if !self.overflow_counted {
             return;
         }
         let site = Site {
             source,
             start: span.start,
             end: span.end,
+            anchor,
             operation,
             bits,
             signed,
@@ -262,6 +327,7 @@ mod tests {
             source: 0,
             start,
             end: start + 1,
+            anchor: start,
             operation: Operation::Add,
             bits: 32,
             signed: true,

@@ -309,14 +309,14 @@ fn the_message_names_the_line_column_type_and_operation() {
     assert_eq!(
         messages,
         [
-            "integer overflow wrapped at ./Main.tz:1:49 (i32 add)",
-            "integer overflow wrapped at ./Main.tz:2:53 (i32u sub)",
-            "integer overflow wrapped at ./Main.tz:3:45 (i8 mul)",
+            "integer overflow wrapped at ./Main.tz:1:51 (i32 add)",
+            "integer overflow wrapped at ./Main.tz:2:55 (i32u sub)",
+            "integer overflow wrapped at ./Main.tz:3:47 (i8 mul)",
             "integer overflow wrapped at ./Main.tz:4:40 (i64 neg)",
-            "integer overflow wrapped at ./Main.tz:5:49 (i16 pow)",
-            "integer overflow wrapped at ./Main.tz:6:36 (i128 add)",
-            "integer overflow wrapped at ./Main.tz:8:100 (i32 add)",
-            "integer overflow wrapped at ./Main.tz:8:92 (i32 sub)",
+            "integer overflow wrapped at ./Main.tz:5:51 (i16 pow)",
+            "integer overflow wrapped at ./Main.tz:6:47 (i128 add)",
+            "integer overflow wrapped at ./Main.tz:8:107 (i32 add)",
+            "integer overflow wrapped at ./Main.tz:8:95 (i32 sub)",
         ]
     );
     // The column counts characters: a comment in Japanese before the operation.
@@ -329,7 +329,7 @@ fn the_message_names_the_line_column_type_and_operation() {
     };
     assert_eq!(
         sites[0].message(&text),
-        "integer overflow wrapped at ./Main.tz:2:68 (i32 add)"
+        "integer overflow wrapped at ./Main.tz:2:70 (i32 add)"
     );
 }
 
@@ -350,6 +350,20 @@ fn tsuzuri(arguments: &[&str], directory: &std::path::Path) -> std::process::Out
         .unwrap()
 }
 
+/// The path that the CLI shows for `Main.tz` of the project `.`: `./Main.tz`, or `.\Main.tz` on
+/// Windows, which keeps native paths.
+fn cli_path() -> String {
+    std::path::Path::new(".")
+        .join("Main.tz")
+        .display()
+        .to_string()
+}
+
+/// `text` inside a JSON string.
+fn json_text(text: &str) -> String {
+    text.replace('\\', "\\\\")
+}
+
 /// A program whose `mix` wraps once, and which writes a line of its own to the standard error.
 const RUN_PROGRAM: &str = "def mix :: i32u -> i32u -> i32u = \\a b -> a + b\n\
                            def main :: unit -> i32 = \\_ ->\n\
@@ -364,8 +378,9 @@ fn run_json_turns_report_lines_into_warning_objects() {
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     let start = RUN_PROGRAM.find("a + b").unwrap();
+    let path = json_text(&cli_path());
     let expected = format!(
-        "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at ./Main.tz:1:43 (i32u add)\",\"path\":\"./Main.tz\",\"span\":{{\"start\":{start},\"end\":{},\"line\":1,\"column\":43,\"end_line\":1,\"end_column\":48}},\"kind\":\"integer_overflow_wrapped\"}}",
+        "{{\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at {path}:1:45 (i32u add)\",\"path\":\"{path}\",\"span\":{{\"start\":{start},\"end\":{},\"line\":1,\"column\":43,\"end_line\":1,\"end_column\":48}},\"kind\":\"integer_overflow_wrapped\"}}",
         start + 5
     );
     let lines: Vec<_> = stderr.lines().collect();
@@ -388,7 +403,10 @@ fn run_without_json_relays_the_report_unchanged() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "warning: integer overflow wrapped at ./Main.tz:1:43 (i32u add)\n1705032704\n"
+        format!(
+            "warning: integer overflow wrapped at {}:1:45 (i32u add)\n1705032704\n",
+            cli_path()
+        )
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -416,7 +434,13 @@ fn overflow_tests(source: &str, fail: bool) -> tsuzuri::driver::TestOptions {
     }
 }
 
-const BUMP_SITE: &str = "integer overflow wrapped at ./Main.tz:1:38 (i8 add)";
+/// The report of `bump`'s `+` as the library API, given `./Main.tz`, shows it.
+const BUMP_SITE: &str = "integer overflow wrapped at ./Main.tz:1:40 (i8 add)";
+
+/// The same report as the CLI shows it.
+fn cli_bump() -> String {
+    format!("integer overflow wrapped at {}:1:40 (i8 add)", cli_path())
+}
 
 #[test]
 fn test_fails_a_test_that_wraps_and_names_the_site() {
@@ -427,7 +451,10 @@ fn test_fails_a_test_that_wraps_and_names_the_site() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("ok 1 - Main adds\n"), "{stdout}");
     assert!(
-        stdout.contains(&format!("not ok 2 - Main wraps\n  failure: {BUMP_SITE}\n")),
+        stdout.contains(&format!(
+            "not ok 2 - Main wraps\n  failure: {}\n",
+            cli_bump()
+        )),
         "{stdout}"
     );
     assert!(stdout.contains("1 passed; 1 failed; 0 ignored"), "{stdout}");
@@ -442,7 +469,7 @@ fn allow_overflow_keeps_the_test_passing_and_reports_it() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains(&format!("ok 2 - Main wraps\n  warning: {BUMP_SITE}\n")),
+        stdout.contains(&format!("ok 2 - Main wraps\n  warning: {}\n", cli_bump())),
         "{stdout}"
     );
     assert!(stdout.contains("2 passed; 0 failed; 0 ignored"), "{stdout}");
@@ -480,11 +507,24 @@ fn a_failing_test_keeps_its_own_failure_reason() {
                   test \"wraps and fails\" =\n\
                   \x20   assert (bump 127i8 1i8 == 0i8)\n";
     let module = analyze(source).unwrap();
-    let report = tsuzuri::driver::run_tests(&module, &overflow_tests(source, true)).unwrap();
-    let result = &report.results[0];
-    let failure = result.failure.as_deref().unwrap();
-    assert!(!failure.contains("integer overflow"), "{failure}");
-    assert_eq!(result.overflow, [BUMP_SITE]);
+    // Review of #67: a WebAssembly test that traps still reports what wrapped before.
+    for target in [
+        tsuzuri::driver::Target::Native,
+        tsuzuri::driver::Target::Wasm32,
+    ] {
+        let options = tsuzuri::driver::TestOptions {
+            target,
+            ..overflow_tests(source, true)
+        };
+        let report = tsuzuri::driver::run_tests(&module, &options).unwrap();
+        let result = &report.results[0];
+        let failure = result.failure.as_deref().unwrap();
+        assert!(
+            !failure.contains("integer overflow"),
+            "{target:?}: {failure}"
+        );
+        assert_eq!(result.overflow, [BUMP_SITE], "{target:?}");
+    }
 }
 
 #[test]
@@ -569,8 +609,9 @@ fn test_command_text_and_json_show_the_report() {
         .lines()
         .find(|line| line.contains("\"name\":\"wraps\""))
         .unwrap();
+    let site = json_text(&cli_bump());
     let prefix = format!(
-        "{{\"type\":\"test\",\"index\":1,\"module\":\"Main\",\"name\":\"wraps\",\"status\":\"failed\",\"failure\":\"{BUMP_SITE}\",\"output\":\"warning: {BUMP_SITE}\\n\",\"overflow\":[\"{BUMP_SITE}\"],\"duration_ms\":"
+        "{{\"type\":\"test\",\"index\":1,\"module\":\"Main\",\"name\":\"wraps\",\"status\":\"failed\",\"failure\":\"{site}\",\"output\":\"warning: {site}\\n\",\"overflow\":[\"{site}\"],\"duration_ms\":"
     );
     assert!(line.starts_with(&prefix), "{line}");
     let passed = stdout
@@ -587,9 +628,54 @@ fn test_command_text_and_json_show_the_report() {
         .unwrap();
     assert!(
         line.contains(&format!(
-            "\"status\":\"passed\",\"overflow\":[\"{BUMP_SITE}\"],\"duration_ms\":"
+            "\"status\":\"passed\",\"overflow\":[\"{site}\"],\"duration_ms\":"
         )),
         "{line}"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Review of #67: the sites of `a + b` and `a + b + c` start together, so their messages name
+/// the operator, and `run --json` finds the one that wrapped.
+#[test]
+fn nested_sites_name_their_operators() {
+    let source = "export def sum3 :: i32 -> i32 -> i32 -> i32 = \\a b c -> a + b + c\n";
+    let (_, sites) = emit(source, false);
+    assert_eq!(sites.len(), 2, "{sites:?}");
+    assert_eq!(sites[0].start, sites[1].start);
+    let text = Source {
+        path: "./Main.tz".into(),
+        text: source.into(),
+        reported: true,
+    };
+    let messages: Vec<_> = sites.iter().map(|site| site.message(&text)).collect();
+    assert_ne!(messages[0], messages[1]);
+    let outer = sites
+        .iter()
+        .find(|site| site.end == source.len() - 1)
+        .unwrap();
+    let line = format!("warning: {}\n", outer.message(&text));
+    let json = overflow::json_lines(&line, &sites, &[text]);
+    assert!(json.contains(&format!("\"end\":{},", outer.end)), "{json}");
+    assert!(
+        json.contains(&format!("\"column\":{}", outer.start + 1)),
+        "{json}"
+    );
+}
+
+/// Review of #67: under the report a helper of the program stays a call in a native tail call,
+/// so its arithmetic is reported at its own body, not at the argument.
+#[test]
+fn helper_calls_in_tail_arguments_keep_their_own_sites() {
+    let source = "def plus :: i32 -> i32 -> i32 = \\a b -> a + b\n\
+                  def rec spin :: i32 -> i32 -> i32 = \\n acc -> if n == 0 then acc else spin (n - 1) (plus acc 1000000000)\n\
+                  export def run :: i32 -> i32 = \\n -> spin n 0\n";
+    let (_, sites) = emit(source, false);
+    let texts: Vec<_> = sites
+        .iter()
+        .map(|site| &source[site.start..site.end])
+        .collect();
+    assert!(texts.contains(&"a + b"), "{texts:?}");
+    assert!(texts.contains(&"(n - 1)"), "{texts:?}");
+    assert!(!texts.iter().any(|text| text.contains("plus")), "{texts:?}");
 }

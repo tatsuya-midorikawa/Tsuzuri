@@ -55,6 +55,10 @@ pub struct Site {
     pub source: usize,
     pub start: usize,
     pub end: usize,
+    /// The offset that the message names: the operator (`+` of `a + b`, `**`, the `-` of `-x`),
+    /// which tells apart sites that start together (`a + b` and `a + b + c`); the start of the
+    /// operation when it has no operator token (`Add.add a b`).
+    pub anchor: usize,
     pub operation: Operation,
     pub bits: u16,
     pub signed: bool,
@@ -71,15 +75,48 @@ impl Site {
     }
 
     /// `integer overflow wrapped at ./Main.tz:12:5 (i32 add)`: the path as the build received it,
-    /// and the line and column (in characters) where the operation starts.
+    /// and the line and column (in characters) of the operator.
     pub fn message(&self, source: &Source) -> String {
-        let (line, column) = location(&source.text, self.start);
+        self.message_at(source, location(&source.text, self.anchor))
+    }
+
+    /// `message` with the line and column from an index of the source's lines.
+    pub fn message_indexed(&self, source: &Source, lines: &LineIndex) -> String {
+        self.message_at(source, lines.location(&source.text, self.anchor))
+    }
+
+    fn message_at(&self, source: &Source, (line, column): (usize, usize)) -> String {
         format!(
             "integer overflow wrapped at {}:{line}:{column} ({} {})",
             source.path,
             self.type_name(),
             self.operation.name()
         )
+    }
+}
+
+/// The starts of the lines of a text, for many lookups of a line and column.
+#[derive(Clone, Debug)]
+pub struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub fn new(text: &str) -> LineIndex {
+        let mut starts = vec![0];
+        starts.extend(text.match_indices('\n').map(|(at, _)| at + 1));
+        LineIndex { starts }
+    }
+
+    /// The line and column (in characters, both from 1) of `offset`, as `diagnostic::location`.
+    pub fn location(&self, text: &str, offset: usize) -> (usize, usize) {
+        let mut offset = offset.min(text.len());
+        while !text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let line = self.starts.partition_point(|&start| start <= offset);
+        let start = self.starts[line - 1];
+        (line, text[start..offset].chars().count() + 1)
     }
 }
 
@@ -163,9 +200,13 @@ pub(crate) fn active() -> Option<Rc<ScopeData>> {
 /// "path":"./Main.tz","span":{...},"message":"..."}]}` and a newline. A site's `id` is its index,
 /// which `tsuzuri_overflow_hit` takes.
 pub fn side_table(sites: &[Site], sources: &[Source]) -> String {
+    let mut lines = std::collections::BTreeMap::new();
     let mut output = String::from("{\"version\":1,\"sites\":[");
     for (id, site) in sites.iter().enumerate() {
         let source = &sources[site.source];
+        let index = lines
+            .entry(site.source)
+            .or_insert_with(|| LineIndex::new(&source.text));
         if id > 0 {
             output.push(',');
         }
@@ -176,7 +217,7 @@ pub fn side_table(sites: &[Site], sources: &[Source]) -> String {
             json_string(&site.type_name()),
             json_string(&source.path),
             span_json(&source.text, site.span()),
-            json_string(&site.message(source)),
+            json_string(&site.message_indexed(source, index)),
         );
     }
     output.push_str("]}\n");
@@ -202,6 +243,22 @@ pub fn is_report_line(line: &str) -> bool {
 /// `W2001` warning: the message without `warning: `, and the path and span of the site whose
 /// message it is. The other lines stay as they are.
 pub fn json_lines(stderr: &str, sites: &[Site], sources: &[Source]) -> String {
+    // Each site's message, once: a message names the operator, so it names one site.
+    let mut indexes = std::collections::BTreeMap::new();
+    let mut by_message = std::collections::HashMap::new();
+    if stderr.contains(REPORT_PREFIX) {
+        for site in sites {
+            let Some(source) = sources.get(site.source) else {
+                continue;
+            };
+            let index = indexes
+                .entry(site.source)
+                .or_insert_with(|| LineIndex::new(&source.text));
+            by_message
+                .entry(site.message_indexed(source, index))
+                .or_insert((site, source));
+        }
+    }
     let mut output = String::with_capacity(stderr.len());
     for line in stderr.split_inclusive('\n') {
         let text = line.trim_end_matches(['\n', '\r']);
@@ -210,10 +267,7 @@ pub fn json_lines(stderr: &str, sites: &[Site], sources: &[Source]) -> String {
             continue;
         }
         let message = &text["warning: ".len()..];
-        let site = sites.iter().find_map(|site| {
-            let source = sources.get(site.source)?;
-            (site.message(source) == message).then_some((site, source))
-        });
+        let site = by_message.get(message).copied();
         let kind = if text == STOPPED_LINE {
             DiagnosticKind::ToolNotice
         } else {
@@ -258,13 +312,14 @@ mod tests {
             source: 0,
             start,
             end: start + 5,
+            anchor: start + 2,
             operation: Operation::Add,
             bits: 32,
             signed: true,
         };
         assert_eq!(
             site.message(&source(text)),
-            "integer overflow wrapped at ./Main.tz:2:10 (i32 add)"
+            "integer overflow wrapped at ./Main.tz:2:12 (i32 add)"
         );
         let unsigned = Site {
             operation: Operation::Power,
@@ -284,13 +339,14 @@ mod tests {
             source: 0,
             start,
             end: start + 5,
+            anchor: start + 2,
             operation: Operation::Add,
             bits: 32,
             signed: true,
         };
         assert_eq!(
             side_table(&[site], &[source(text)]),
-            "{\"version\":1,\"sites\":[{\"id\":0,\"operation\":\"add\",\"type\":\"i32\",\"path\":\"./Main.tz\",\"span\":{\"start\":48,\"end\":53,\"line\":1,\"column\":49,\"end_line\":1,\"end_column\":54},\"message\":\"integer overflow wrapped at ./Main.tz:1:49 (i32 add)\"}]}\n"
+            "{\"version\":1,\"sites\":[{\"id\":0,\"operation\":\"add\",\"type\":\"i32\",\"path\":\"./Main.tz\",\"span\":{\"start\":48,\"end\":53,\"line\":1,\"column\":49,\"end_line\":1,\"end_column\":54},\"message\":\"integer overflow wrapped at ./Main.tz:1:51 (i32 add)\"}]}\n"
         );
         assert_eq!(side_table(&[], &[]), "{\"version\":1,\"sites\":[]}\n");
     }
@@ -303,16 +359,17 @@ mod tests {
             source: 0,
             start,
             end: start + 5,
+            anchor: start + 2,
             operation: Operation::Add,
             bits: 32,
             signed: true,
         };
-        let stderr = "debug line\nwarning: integer overflow wrapped at ./Main.tz:1:49 (i32 add)\nwarning: integer overflow wrapped at ./Other.tz:3:1 (i8 mul)\nwarning: integer overflow reports stop after 100 sites\ntail";
+        let stderr = "debug line\nwarning: integer overflow wrapped at ./Main.tz:1:51 (i32 add)\nwarning: integer overflow wrapped at ./Other.tz:3:1 (i8 mul)\nwarning: integer overflow reports stop after 100 sites\ntail";
         let lines = json_lines(stderr, &[site], &[source(text)]);
         assert_eq!(
             lines,
             "debug line\n\
-             {\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at ./Main.tz:1:49 (i32 add)\",\"path\":\"./Main.tz\",\"span\":{\"start\":48,\"end\":53,\"line\":1,\"column\":49,\"end_line\":1,\"end_column\":54},\"kind\":\"integer_overflow_wrapped\"}\n\
+             {\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at ./Main.tz:1:51 (i32 add)\",\"path\":\"./Main.tz\",\"span\":{\"start\":48,\"end\":53,\"line\":1,\"column\":49,\"end_line\":1,\"end_column\":54},\"kind\":\"integer_overflow_wrapped\"}\n\
              {\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at ./Other.tz:3:1 (i8 mul)\",\"kind\":\"integer_overflow_wrapped\"}\n\
              {\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow reports stop after 100 sites\",\"kind\":\"tool_notice\"}\n\
              tail"
@@ -320,11 +377,24 @@ mod tests {
         assert_eq!(
             report_lines(stderr),
             [
-                "integer overflow wrapped at ./Main.tz:1:49 (i32 add)",
+                "integer overflow wrapped at ./Main.tz:1:51 (i32 add)",
                 "integer overflow wrapped at ./Other.tz:3:1 (i8 mul)",
                 "integer overflow reports stop after 100 sites",
             ]
         );
+    }
+
+    #[test]
+    fn line_index_agrees_with_location() {
+        let text = "a\n日本語 b\r\n\n  c";
+        let lines = LineIndex::new(text);
+        for offset in 0..=text.len() + 2 {
+            assert_eq!(
+                lines.location(text, offset),
+                location(text, offset),
+                "{offset}"
+            );
+        }
     }
 
     #[test]
@@ -343,6 +413,7 @@ mod tests {
                 source: 0,
                 start: 0,
                 end: 1,
+                anchor: 0,
                 operation: Operation::Negate,
                 bits: 64,
                 signed: true,

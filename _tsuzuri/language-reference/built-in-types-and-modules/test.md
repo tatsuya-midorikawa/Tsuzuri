@@ -111,8 +111,8 @@ tsuzuri test . --index 1 -g -o .tsuzuri/test/runner
 ```text
 ok 1 - Main adds
 not ok 2 - Main hashes
-  failure: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
-  warning: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
+  failure: integer overflow wrapped at ./Main.tz:2:50 (i32 mul)
+  warning: integer overflow wrapped at ./Main.tz:2:50 (i32 mul)
 
 1 passed; 1 failed; 0 ignored
 ```
@@ -132,7 +132,7 @@ test "mixes" =
 
 ```text
 ok 2 - Main hashes
-  warning: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
+  warning: integer overflow wrapped at ./Main.tz:2:50 (i32 mul)
 ```
 
 ライブラリ API の `driver::run_tests`（`TestOptions::default()`）は報告しません。`--index N -g -o PATH` のデバッグ用のランナーと `tsuzuri bench` も計装しません。
@@ -197,7 +197,7 @@ flowchart TD
 失敗した行には `failure` が足されます。失敗したテストが標準エラーに書いていれば、その内容が `output` に入ります。整数の演算が折り返したテストの行には、`failure`・`output` のあと、`duration_ms` の前に `overflow`（報告の文の配列。`warning: ` は付きません）が足されます。`--allow-overflow` で成功したテストの行にも付きます。
 
 ```text
-{"type":"test","index":1,"module":"Main","name":"hashes","status":"failed","failure":"integer overflow wrapped at ./Main.tz:2:44 (i32 mul)","output":"warning: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)\n","overflow":["integer overflow wrapped at ./Main.tz:2:44 (i32 mul)"],"duration_ms":76}
+{"type":"test","index":1,"module":"Main","name":"hashes","status":"failed","failure":"integer overflow wrapped at ./Main.tz:2:50 (i32 mul)","output":"warning: integer overflow wrapped at ./Main.tz:2:50 (i32 mul)\n","overflow":["integer overflow wrapped at ./Main.tz:2:50 (i32 mul)"],"duration_ms":76}
 ```
 
 ```text

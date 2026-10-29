@@ -216,7 +216,7 @@ label 20 22 + " / " + label 2147483647 1
 
 ### 折り返しを見つける
 
-通常の演算子が実際に折り返したかは、`tsuzuri run --overflow-report` や `tsuzuri build --overflow-report` で調べられます。範囲の証明で溢れないと示せない演算に検査を足し、折り返したら `warning: integer overflow wrapped at ./Main.tz:1:43 (i32u add)` のように報告して、折り返した値のまま続けます。`tsuzuri test` は既定でこの報告を有効にし、折り返したテストを失敗にします。`Int.wrapping_*`・`Int.checked_*`・`Int.saturating_*` と `@checked` の中の演算は報告しません。詳しくは [整数の折り返しの報告](../compiler/usage.md#整数の折り返しの報告) を見てください。
+通常の演算子が実際に折り返したかは、`tsuzuri run --overflow-report` や `tsuzuri build --overflow-report` で調べられます。範囲の証明で溢れないと示せない演算に検査を足し、折り返したら `warning: integer overflow wrapped at ./Main.tz:1:45 (i32u add)` のように報告して、折り返した値のまま続けます。`tsuzuri test` は既定でこの報告を有効にし、折り返したテストを失敗にします。`Int.wrapping_*`・`Int.checked_*`・`Int.saturating_*` と `@checked` の中の演算は報告しません。詳しくは [整数の折り返しの報告](../compiler/usage.md#整数の折り返しの報告) を見てください。
 
 ビット演算子 `&&&`、`|||`、`^^^`、`~~~` とシフト `<<<`、`>>>` は `Int` の関数ではありません。符号付きの論理右シフトは `Bits.ushr` です。演算子の優先順位は [演算子と式](../values-and-functions/op-and-expressions.md) にまとまっています。
 

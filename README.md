@@ -744,7 +744,7 @@ tsuzuri test tests/ --seed 42
 test "加算は可換" = Gen.for_all (Gen.pair (Gen.i64()) (Gen.i64())) (\pair -> match pair with | (a, b) -> Int.wrapping_add a b == Int.wrapping_add b a)
 ```
 
-`tsuzuri test` は既定で、テストの中で折り返した整数の演算を `integer overflow wrapped at ./Main.tz:2:44 (i32 mul)` のように報告し、そのテストを失敗にします。乱数の整数どうしの足し算のように折り返すことが正しい計算は、`Int.wrapping_add` などで書きます（`--allow-overflow` は報告だけにします）。
+`tsuzuri test` は既定で、テストの中で折り返した整数の演算を `integer overflow wrapped at ./Main.tz:2:50 (i32 mul)` のように報告し、そのテストを失敗にします。乱数の整数どうしの足し算のように折り返すことが正しい計算は、`Int.wrapping_add` などで書きます（`--allow-overflow` は報告だけにします）。
 
 テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。`tsuzuri test tests/ --index 1 -g -o runner` は 1 件のテストをデバッグ情報付きのランナーとしてビルドし、デバッガーで `runner 0` として起動できます（VS Code の Testing ビューの **Debug** も同じ仕組みです）。`--coverage PATH` はコンパイラ自身の計装で、関数・`if` の枝・`match` の節・ループの本体ごとのカウンターを数え、lcov のファイルとテスト要約の後の 1 行の要約を出します。
 

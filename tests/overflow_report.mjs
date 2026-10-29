@@ -25,21 +25,23 @@ const i32 = (value) => BigInt.asIntN(32, value), u32 = (value) => BigInt.asUintN
 const i8 = (value) => BigInt.asIntN(8, value), i16 = (value) => BigInt.asIntN(16, value);
 const i64 = (value) => BigInt.asIntN(64, value), i128 = (value) => BigInt.asIntN(128, value);
 const tail = (n) => { let total = 0n; for (; n > 0n; n -= 1n) total = i32(total + 1000000000n); return total; };
-// Each export with the input that wraps and the one that does not (appendix E.2).
+// Each export with the input that wraps and the one that does not (appendix E.2), the start of
+// its site's span (`line:column (type operation)`, as the side table has it) and the operator
+// that the report line names.
 const cases = [
-  ["add32", [[2147483647n, 1n], [1n, 2n]], (a, b) => i32(a + b), "1:49 (i32 add)"],
-  ["sub32u", [[0n, 1n], [5n, 3n]], (a, b) => u32(a - b), "2:53 (i32u sub)"],
-  ["mul8", [[100n, 100n], [3n, 4n]], (a, b) => i8(a * b), "3:45 (i8 mul)"],
-  ["neg64", [[-9223372036854775808n], [5n]], (a) => i64(-a), "4:40 (i64 neg)"],
-  ["pow16", [[200n, 2n], [3n, 2n]], (a, b) => i16(a ** b), "5:49 (i16 pow)"],
-  ["wide64", [[4611686018427387904n], [1n]], (a) => i64(i128((a << 64n) + (a << 64n))), "6:36 (i128 add)"],
-  ["tail32", [[3n], [2n]], tail, "8:100 (i32 add)"],
+  ["add32", [[2147483647n, 1n], [1n, 2n]], (a, b) => i32(a + b), "1:49 (i32 add)", "1:51"],
+  ["sub32u", [[0n, 1n], [5n, 3n]], (a, b) => u32(a - b), "2:53 (i32u sub)", "2:55"],
+  ["mul8", [[100n, 100n], [3n, 4n]], (a, b) => i8(a * b), "3:45 (i8 mul)", "3:47"],
+  ["neg64", [[-9223372036854775808n], [5n]], (a) => i64(-a), "4:40 (i64 neg)", "4:40"],
+  ["pow16", [[200n, 2n], [3n, 2n]], (a, b) => i16(a ** b), "5:49 (i16 pow)", "5:51"],
+  ["wide64", [[4611686018427387904n], [1n]], (a) => i64(i128((a << 64n) + (a << 64n))), "6:36 (i128 add)", "6:47"],
+  ["tail32", [[3n], [2n]], tail, "8:100 (i32 add)", "8:107"],
 ];
 const expectedStdout = [
   ...cases.map(([, inputs, reference]) => inputs.map((input) => reference(...input)).join(" ")),
   `233 2147483647`,
 ].join("\n") + "\n";
-const expectedReport = cases.map(([, , , site]) => `warning: integer overflow wrapped at ${path}:${site.split(" ")[0]} ${site.slice(site.indexOf(" ") + 1)}\n`).join("");
+const expectedReport = cases.map(([, , , site, operator]) => `warning: integer overflow wrapped at ${path}:${operator} ${site.slice(site.indexOf(" ") + 1)}\n`).join("");
 
 let runs = 0;
 for (const optimization of ["0", "3"]) {
@@ -74,7 +76,11 @@ for (const optimization of ["0", "3"]) {
   for (const [index, entry] of table.sites.entries()) {
     assert.equal(entry.id, index);
     assert.equal(entry.path, path);
-    assert.equal(entry.message, `integer overflow wrapped at ${path}:${entry.span.line}:${entry.span.column} (${entry.type} ${entry.operation})`);
+    assert.match(entry.message, new RegExp(`^integer overflow wrapped at ${path.replaceAll(".", "\\.")}:${entry.span.line}:\\d+ \\(${entry.type} ${entry.operation}\\)$`));
+  }
+  for (const [, , , site, operator] of cases) {
+    const entry = table.sites[at(site)];
+    assert.equal(entry.message, `integer overflow wrapped at ${path}:${operator} ${site.slice(site.indexOf(" ") + 1)}`);
   }
   const call = (exports, name, input) => {
     const argument = (value) => (["neg64", "wide64"].includes(name) ? value : Number(value));

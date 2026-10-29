@@ -28,8 +28,8 @@ try {
   process.exitCode = 1;
 }
 // The sites that wrapped, in site order, as a native runner writes them: at most 100 lines, then
-// one line that says the report stops.
-if (overflow && process.exitCode === 0) {
+// one line that says the report stops. A test that trapped keeps its failure, and still reports.
+if (overflow) {
   let written = 0;
   for (let site = 0; site < instance.exports.tsuzuri_overflow_count(); site += 1) {
     if (instance.exports.tsuzuri_overflow_hit(site) !== 1) continue;

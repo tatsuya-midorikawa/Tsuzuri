@@ -150,10 +150,10 @@ main_value ()
 {"severity":"error","code":"E2000","message":"file is not formatted","path":"unformatted.tz","kind":"file_not_formatted"}
 ```
 
-ツールがビルドのついでに出す警告、たとえばキャッシュを使えなかった通知は、`code` が `W2001`、`kind` が `tool_notice` で、スパンを持たない行になることがあります。`run --overflow-report --json` では、プログラムが成功したあと、整数の折り返しの報告の行が `W2001` の行になり、`kind` は `integer_overflow_wrapped`、`path` と `span` は折り返した演算の式です（[整数の折り返しの報告](usage.md#整数の折り返しの報告)）。
+ツールがビルドのついでに出す警告、たとえばキャッシュを使えなかった通知は、`code` が `W2001`、`kind` が `tool_notice` で、スパンを持たない行になることがあります。`run --overflow-report --json` では、プログラムが成功したあと、整数の折り返しの報告の行が `W2001` の行になり、`kind` は `integer_overflow_wrapped`、`path` と `span` は折り返した演算の式です（メッセージの列は演算子の位置で、`span` は式全体です）（[整数の折り返しの報告](usage.md#整数の折り返しの報告)）。
 
 ```text
-{"severity":"warning","code":"W2001","message":"integer overflow wrapped at ./Main.tz:1:43 (i32u add)","path":"./Main.tz","span":{"start":42,"end":47,"line":1,"column":43,"end_line":1,"end_column":48},"kind":"integer_overflow_wrapped"}
+{"severity":"warning","code":"W2001","message":"integer overflow wrapped at ./Main.tz:1:45 (i32u add)","path":"./Main.tz","span":{"start":42,"end":47,"line":1,"column":43,"end_line":1,"end_column":48},"kind":"integer_overflow_wrapped"}
 ```
 最後の一時ディレクトリを消せなかった、といった後始末の注意は、JSON モードでもプレーンテキストのままです。
 

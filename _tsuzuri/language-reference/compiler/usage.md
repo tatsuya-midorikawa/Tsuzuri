@@ -296,7 +296,7 @@ tsuzuri check demo
 
 `run` は `--target TRIPLE` も受け付けます（native の target だけで、WebAssembly は `E2000`）。ビルド機で動かせない target は、`TSUZURI_RUNNER` に実行器（qemu-user など）を指定したときだけ、その実行器を通して実行します。指定がなければ、ビルドの前に `E2000` です（[ほかの target の実行ファイルを動かす](platforms.md#ほかの-target-の実行ファイルを動かす)）。
 
-`run` に `--overflow-report` を付けると、範囲の証明で溢れないと示せない整数の演算に検査を足し、演算が折り返したときに標準エラーへ `warning: integer overflow wrapped at ./Main.tz:1:43 (i32u add)` のような行を書きます。値と終了コードは付けないときと同じです。`--json` を付けると、プログラムが成功したあと、報告の行は `path` と `span` を持つ `W2001` の警告の JSON になります（[整数の折り返しの報告](#整数の折り返しの報告)）。
+`run` に `--overflow-report` を付けると、範囲の証明で溢れないと示せない整数の演算に検査を足し、演算が折り返したときに標準エラーへ `warning: integer overflow wrapped at ./Main.tz:1:45 (i32u add)` のような行を書きます。値と終了コードは付けないときと同じです。`--json` を付けると、プログラムが成功したあと、報告の行は `path` と `span` を持つ `W2001` の警告の JSON になります（[整数の折り返しの報告](#整数の折り返しの報告)）。
 
 `run` に `--profile-generate DIR` を付けると、計装したプログラムを実行し、正常に終了したときに `DIR` へ LLVM の raw profile を書きます。トラップした実行は書きません。`--profile-use PATH` を付けると、プロファイルで最適化したプログラムを実行します。`run` は `--trap-info` でビルドするので、その IR に合うプロファイルは `run` か `build --trap-info` で作ります（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 
@@ -494,8 +494,8 @@ WASM のテストは PATH の `node` を使います。配布物の `bin/` か�
 ```text
 ok 1 - Main adds
 not ok 2 - Main hashes
-  failure: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
-  warning: integer overflow wrapped at ./Main.tz:2:44 (i32 mul)
+  failure: integer overflow wrapped at ./Main.tz:2:50 (i32 mul)
+  warning: integer overflow wrapped at ./Main.tz:2:50 (i32 mul)
 
 1 passed; 1 failed; 0 ignored
 ```
@@ -899,7 +899,7 @@ tsuzuri serve --stop demo
 
 ```text
 $ tsuzuri run . --overflow-report
-warning: integer overflow wrapped at ./Main.tz:1:43 (i32u add)
+warning: integer overflow wrapped at ./Main.tz:1:45 (i32u add)
 1705032704
 ```
 
@@ -915,7 +915,7 @@ warning: integer overflow wrapped at ./Main.tz:1:43 (i32u add)
 | コンパイル時に畳み込まれる式（トップレベルの `let` の定数、`const`） | しない（実行時に演算が残らない） |
 | 標準ライブラリ・依存パッケージ・コンパイラが作る補助関数・ベンチ | しない |
 
-報告の行は `warning: integer overflow wrapped at <パス>:<行>:<列> (<型> <演算>)` です。パスはビルドに渡した綴り、行と列は演算の式の始まり（列は文字数）、型は `i8`〜`i128u`、演算は `add`・`sub`・`mul`・`neg`・`pow` です。1 つの地点は最初に折り返したときに 1 回だけ書き、100 地点を書いたあとは `warning: integer overflow reports stop after 100 sites` を 1 回書いて止めます。報告は native では書き込みのたびに標準エラーへ出るので、トラップで止まったプログラムでも、それまでの報告は残ります。
+報告の行は `warning: integer overflow wrapped at <パス>:<行>:<列> (<型> <演算>)` です。パスはビルドに渡した綴り、行と列は演算子の位置（`a + b` の `+`、`-x` の `-`。演算子のない `Add.add a b` は式の始まり。列は文字数）、型は `i8`〜`i128u`、演算は `add`・`sub`・`mul`・`neg`・`pow` です。1 つの地点は最初に折り返したときに 1 回だけ書き、100 地点を書いたあとは `warning: integer overflow reports stop after 100 sites` を 1 回書いて止めます。報告は native では書き込みのたびに標準エラーへ出るので、トラップで止まったプログラムでも、それまでの報告は残ります。
 
 WebAssembly は報告を書きません（import を足しません）。地点ごとに折り返したかどうかを記録し、2 つの関数を export します。`tsuzuri_overflow_count()` は地点の数、`tsuzuri_overflow_hit(i)` は地点 `i` が折り返したなら 1（範囲外の `i` は 0）です。地点の説明は `<出力>.overflow.json` にあり、`sites[i].message` が native の報告と同じ文です（[WebAssembly の折り返しの報告](webassembly.md#整数の折り返しの報告)）。
 

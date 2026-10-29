@@ -603,7 +603,7 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 記録は一度立つと下りません。新しいインスタンスでは 0 から始まります。表の `sites[i]` は `id`（= `i`）、`operation`（`add`・`sub`・`mul`・`neg`・`pow`）、`type`、`path`、`span`、`message` を持ち、`message` は native が標準エラーに書く文と同じです。
 
 ```text
-{"version":1,"sites":[{"id":0,"operation":"add","type":"i32","path":"./Main.tz","span":{"start":48,"end":53,"line":1,"column":49,"end_line":1,"end_column":54},"message":"integer overflow wrapped at ./Main.tz:1:49 (i32 add)"}]}
+{"version":1,"sites":[{"id":0,"operation":"add","type":"i32","path":"./Main.tz","span":{"start":48,"end":53,"line":1,"column":49,"end_line":1,"end_column":54},"message":"integer overflow wrapped at ./Main.tz:1:51 (i32 add)"}]}
 ```
 
 Node からは、呼び出しのあとで折り返した地点の文を読めます（抜粋）。
