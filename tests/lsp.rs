@@ -930,6 +930,43 @@ fn index_links_locals_and_parameters() {
     );
 }
 
+/// Review 5 of #64: the result name of each `@ensures` line is a definition of its own, with the
+/// written name and span: hover shows it, its definition is the binder, and its references are
+/// the reads in that line. No generated name of the woven body shows.
+#[test]
+fn index_links_the_result_names_of_ensures_lines() {
+    let main = "def grow :: i64 -> i64 = \\x ->\n    @ensures \\r -> r > x\n    @ensures \\res -> res == @old (x) + 1\n    x + 1\n";
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", main)]).unwrap();
+    let r = definition(&index, 0, "r", SymbolKind::Parameter);
+    assert_eq!(
+        starts(&index, r),
+        [(0, at(main, "r -> r")), (0, at(main, "r > x"))]
+    );
+    let res = definition(&index, 0, "res", SymbolKind::Parameter);
+    assert_eq!(
+        starts(&index, res),
+        [(0, at(main, "res ->")), (0, at(main, "res =="))]
+    );
+    let hover = index.at(0, at(main, "r > x")).unwrap();
+    assert_eq!(hover.detail, "r: i64");
+    assert_eq!(
+        hover.target.map(|span| span.start),
+        Some(at(main, "r -> r"))
+    );
+    assert!(
+        index
+            .entries
+            .iter()
+            .all(|entry| !entry.detail.contains('$')),
+        "{:?}",
+        index
+            .entries
+            .iter()
+            .map(|entry| &entry.detail)
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn index_links_records_fields_cases_and_constants() {
     let (_, index) = analyze_modules_with_semantics(&[("Main.tz", P2_MAIN)]).unwrap();

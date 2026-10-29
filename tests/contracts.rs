@@ -555,6 +555,33 @@ fn contracts_reject_helpers_that_call_unknown_function_values() {
     ));
 }
 
+/// Review 5 of #64: the contract lines of a lambda that the function returns (a later call stage
+/// of a `pure def`) would run when the function is called, so they are `E1033`; nested lambdas
+/// that become the function's parameters keep their lines.
+#[test]
+fn contract_lines_of_returned_lambdas_are_rejected() {
+    for source in [
+        "pure def make :: i64 -> (i64 -> i64) = \\a -> \\b ->\n    @requires a > 0\n    b\n",
+        "pure def make :: i64 -> (i64 -> i64) = \\a -> \\b ->\n    @requires b > 0\n    b\n",
+        "pure def make :: i64 -> (i64 -> i64)\nfn make a = \\b ->\n    @ensures \\r -> r > a\n    a + b\n",
+    ] {
+        let error = rejects(
+            &format!("{source}{MAIN}"),
+            "E1033",
+            Some("contract_misplaced"),
+        );
+        assert!(error.message.contains("returns"), "{}", error.message);
+    }
+    for source in [
+        "def make :: i64 -> (i64 -> i64) = \\a -> \\b ->\n    @requires a > 0\n    b\n",
+        "pure def add :: i64 -> i64 -> i64 = \\a -> \\b ->\n    @requires a > 0\n    a + b\n",
+        "pure def make :: i64 -> (i64 -> i64) = \\a ->\n    @requires a > 0\n    \\b -> a + b\n",
+        "def make :: i64 -> (i64 -> i64)\nfn make a = \\b ->\n    @requires a > 0\n    a + b\n",
+    ] {
+        accepts(&format!("{source}{MAIN}"));
+    }
+}
+
 /// Review 3 of #64: the 32 contract lines of a function may take more than 255 `@old` values;
 /// the woven body is laid out by counts that do not wrap, in `check` and in `off`.
 #[test]
