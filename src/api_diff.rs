@@ -226,9 +226,9 @@ struct Item {
     /// The effect attributes (A20): promises that adding keeps and removing breaks, except on a
     /// function that may call the functions it is given (see `callbacks`).
     asserts: Asserts,
-    /// Whether a parameter may carry a function value that the function calls. An effect
-    /// attribute added to such a function also binds its callers, which must then pass callbacks
-    /// that keep it (A20 Phase 6).
+    /// Whether a parameter may carry a function value that the function calls, or has a type
+    /// variable. An effect attribute added to such a function also binds its callers, which must
+    /// then pass callbacks (or instantiate it with types) that keep it (A20 Phase 6).
     callbacks: bool,
     /// The contract lines (A21) as written: `@requires ...` and `@ensures \r -> ...`.
     contracts: BTreeSet<String>,
@@ -719,7 +719,8 @@ fn add_items(
         item.exported = declaration.exported;
         item.constant = declaration.constant;
         item.pure = declaration.pure.then_some(declaration.parameters.len());
-        item.callbacks = types.iter().any(|ty| may_carry_functions(ty));
+        item.callbacks = types.iter().any(|ty| may_carry_functions(ty))
+            || has_type_variable(implicit.as_ref().unwrap_or(result));
         for attribute in effect_attributes
             .iter()
             .filter(|attribute| attribute.function.text == declaration.name.text)
@@ -1244,10 +1245,12 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
     }
 }
 
-/// Whether a parameter of this type may carry a function value that the function can call:
-/// a function, task or `dyn` type, or a named type that the syntax alone cannot show to be
-/// closed (records and unions may hold functions). Scalars, strings, type variables and the
-/// standard collections of closed types are closed.
+/// Whether a parameter of this type may carry a function value that the function can call, or
+/// makes the attribute depend on the caller: a function, task or `dyn` type, a named type that
+/// the syntax alone cannot show to be closed (records and unions may hold functions), or a type
+/// variable (each instance is checked with the caller's type, which may be a function or copy an
+/// array; review of #63). Scalars, strings and the standard collections of closed types are
+/// closed.
 fn may_carry_functions(ty: &TypeExpr) -> bool {
     const CLOSED: [&str; 31] = [
         "i8",
@@ -1286,7 +1289,8 @@ fn may_carry_functions(ty: &TypeExpr) -> bool {
         "Array", "List", "Vec", "Maybe", "Result", "Map", "Set", "HashMap", "HashSet",
     ];
     match &ty.kind {
-        TypeExprKind::Variable(_) | TypeExprKind::Length(_) => false,
+        TypeExprKind::Variable(_) => true,
+        TypeExprKind::Length(_) => false,
         TypeExprKind::Named(name) => !CLOSED.contains(&name.as_str()),
         TypeExprKind::Apply(head, arguments) => {
             let name = head.text.rsplit('.').next().unwrap_or(&head.text);
@@ -1303,6 +1307,33 @@ fn may_carry_functions(ty: &TypeExpr) -> bool {
         TypeExprKind::FixedArray(inner, _) => may_carry_functions(inner),
         TypeExprKind::Tuple(elements) => elements.iter().any(may_carry_functions),
         _ => true,
+    }
+}
+
+/// Whether a type mentions a type variable: an attribute of a generic function is checked for
+/// each instance, with the types that its callers choose.
+fn has_type_variable(ty: &TypeExpr) -> bool {
+    match &ty.kind {
+        TypeExprKind::Variable(_) => true,
+        TypeExprKind::Named(_) | TypeExprKind::Length(_) | TypeExprKind::Dyn(_) => false,
+        TypeExprKind::Apply(_, arguments) => arguments.iter().any(has_type_variable),
+        TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Quantified(_, inner)
+        | TypeExprKind::Array(inner)
+        | TypeExprKind::ArrayView(inner)
+        | TypeExprKind::List(inner)
+        | TypeExprKind::Task(inner)
+        | TypeExprKind::Reference(inner, _)
+        | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner) => has_type_variable(inner),
+        TypeExprKind::FixedArray(inner, length) => {
+            has_type_variable(inner) || has_type_variable(length)
+        }
+        TypeExprKind::Tuple(elements) => elements.iter().any(has_type_variable),
+        TypeExprKind::Function(parameters, result) => {
+            parameters.iter().any(has_type_variable) || has_type_variable(result)
+        }
     }
 }
 
@@ -1339,7 +1370,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             note: if old.borrowing_defaults != new.borrowing_defaults {
                 "default parameter conventions change; effective signatures may differ"
             } else if added_obligation {
-                "callers must pass functions that keep the new effect attribute"
+                "callers must pass functions (or instantiate it with types) that keep the new effect attribute"
             } else {
                 ""
             },

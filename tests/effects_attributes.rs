@@ -285,3 +285,46 @@ fn an_attribute_after_constraint_lines_starts_the_next_declaration() {
     .unwrap_err();
     assert_eq!(error.code, "E0002", "{}", error.message);
 }
+
+/// Review of #63: a function drops the owned parameters that its body does not move on, so
+/// their destructors are among its effects even when no expression names them.
+#[test]
+fn unused_owned_parameters_run_their_destructors() {
+    let trapping = "record R { id: i64 }\ninstance Drop<R> { fn drop r = ignore (10 / r.id) }\n";
+    let error = rejects(
+        &format!("{trapping}@no_trap\ndef discard :: own R -> i64 = \\_r -> 0\n{MAIN}"),
+        "E1031",
+        "effect_trap_in_no_trap",
+    );
+    assert!(
+        error.message.contains("'Main.discard'"),
+        "{}",
+        error.message
+    );
+    let allocating = "record R { id: i64 }\ninstance Drop<R> { fn drop r = ignore ((Array.init r.id (\\i -> i)).length) }\n";
+    rejects(
+        &format!("{allocating}@no_alloc\ndef discard :: own R -> i64 = \\_r -> 0\n{MAIN}"),
+        "E1031",
+        "effect_alloc_in_no_alloc",
+    );
+    // A borrowed parameter is dropped by its owner, not here.
+    accepts(&format!(
+        "{trapping}@no_trap\ndef peek :: ref R -> i64 = \\_r -> 0\n{MAIN}"
+    ));
+}
+
+/// Review of #63: `Os.__write` and `Os.__open` copy the path into the C heap and may wait for the
+/// other end of a FIFO, so the `File` functions that reach them allocate and may not terminate.
+#[test]
+fn file_writes_and_opens_allocate_and_may_wait() {
+    for call in [
+        "File.write_text \"out.txt\" \"text\"",
+        "File.open \"out.txt\" File.Write",
+    ] {
+        let source = format!(
+            "@terminates\ndef save :: unit -> i64 = \\() ->\n    let action = {call}\n    0\n{MAIN}"
+        );
+        let error = rejects(&source, "E1031", "effect_diverge_in_terminates");
+        assert!(error.message.contains("'Main.save'"), "{}", error.message);
+    }
+}

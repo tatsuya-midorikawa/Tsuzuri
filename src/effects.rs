@@ -287,6 +287,8 @@ pub struct FunctionEffects {
     witnesses: Vec<[Option<Witness>; BITS]>,
     sites: Vec<Vec<Site>>,
     calls: Vec<Vec<CallSite>>,
+    /// The references to attributed functions in each function.
+    references: Vec<Vec<Reference>>,
     /// The function that the `cycle` source of `diverge` in each function refers to.
     cycle_targets: BTreeMap<usize, usize>,
     empty: Summary,
@@ -370,15 +372,13 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | SimdOfLanes32 | SimdSum | SimdEq | SimdNe | SimdLt | SimdLe | SimdGt | SimdGe
         | SimdSelect | SimdAll | SimdAny | VecLength | VecCapacity | VecIsEmpty | VecPop
         | VecOfArray | VecToArray | VecView | CharToU16 | CharOfU16 | Utf8CharToU32
-        | Utf8CharOfU32 | StringToCodeUnits | StringFromCodeUnits | Utf8StringToBytes
-        | Utf8StringFromBytes | StringCompare | Utf8StringCompare | IntMin | IntMax | IntAbs
-        | IntUnsignedAbs | IntAbsDiff | IntCountOnes | IntLeadingZeros | IntTrailingZeros
-        | IntRotateLeft | IntRotateRight | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo
-        | IntCheckedAdd | IntCheckedSub | IntCheckedMul | IntCheckedDiv | IntCheckedRem
-        | IntCheckedNeg | IntSaturatingAdd | IntSaturatingSub | IntSaturatingMul
-        | IntCheckedPow | IntWideningMul | OwnedDrop | OwnedFunction | Not | Ignore => {
-            facts(None, false, false, false, false, false, None)
-        }
+        | Utf8CharOfU32 | Utf8StringToBytes | Utf8StringFromBytes | StringCompare
+        | Utf8StringCompare | IntMin | IntMax | IntAbs | IntUnsignedAbs | IntAbsDiff
+        | IntCountOnes | IntLeadingZeros | IntTrailingZeros | IntRotateLeft | IntRotateRight
+        | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo | IntCheckedAdd | IntCheckedSub
+        | IntCheckedMul | IntCheckedDiv | IntCheckedRem | IntCheckedNeg | IntSaturatingAdd
+        | IntSaturatingSub | IntSaturatingMul | IntCheckedPow | IntWideningMul | OwnedDrop
+        | OwnedFunction | Not | Ignore => facts(None, false, false, false, false, false, None),
         #[cfg(test)]
         TestAdd | TestUnsigned | TestWiden => facts(None, false, false, false, false, false, None),
         // B2: the index is checked before the bounds guard, which never fails.
@@ -413,11 +413,14 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | IntWrappingPow => facts(None, false, true, false, false, false, None),
         // B5
         ArrayUpdate => facts(None, false, true, false, true, false, None),
-        // B6
+        // B6. `String.to_code_units` and `String.from_code_units` widen or narrow the units into a
+        // new buffer when the program's strings are compact; the rule does not depend on the form.
         CloneString | CloneUtf8String | StringFromUtf8 | Utf8StringFromString
         | StringToWellFormed | ToString | Display | Parse | DisplayQuoted | ListCons
         | ArrayConcat | ArrayToList | ListReverse | ListToArray | VecWithCapacity | VecPush
-        | VecPushMut | VecReserve | VecClone => facts(None, true, false, false, false, false, None),
+        | VecPushMut | VecReserve | VecClone | StringToCodeUnits | StringFromCodeUnits => {
+            facts(None, true, false, false, false, false, None)
+        }
         // B7
         ArraySortBy | ListMap | ListMapRef => facts(None, true, false, false, true, false, None),
         // B8
@@ -461,7 +464,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // B14
         BenchNow | GenSeed => facts(Some(Effect::Os), false, false, false, false, false, None),
         // B15
-        OsWrite | OsClock | OsSleep | OsOpen | OsClose => facts(
+        OsClock | OsSleep | OsClose => facts(
             Some(Effect::Os),
             false,
             false,
@@ -480,8 +483,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             false,
             Some("host_status"),
         ),
-        // B17
-        OsRead | OsHandle | OsSpawn => facts(
+        // B17: `Os.__write` and `Os.__open` copy the path into a buffer of the C heap, and opening
+        // a FIFO waits for its other end (review of #63).
+        OsRead | OsHandle | OsSpawn | OsWrite | OsOpen => facts(
             Some(Effect::Os),
             true,
             false,
@@ -680,10 +684,45 @@ struct Local {
     calls: Vec<CallSite>,
     /// Calls of the function's own parameters: the bit set and the first call of each.
     param_calls: u64,
+    /// The references to attributed functions, with what uses them (resolved after the scan).
+    references: Vec<(usize, Span, Consumer)>,
+    /// The uses of each immutable local.
+    alias_uses: BTreeMap<usize, Vec<Consumer>>,
     sites: Vec<Site>,
     nodes: usize,
     /// The frame bytes of the literal trees that stay in the frame so far (A7).
     frame: usize,
+}
+
+/// Whether a function has a `string` parameter, which a host call may copy for the host.
+fn takes_string(function: &CheckedFunction) -> bool {
+    function.parameters.iter().any(|parameter| {
+        let mut ty = &parameter.ty;
+        while let Type::Reference(inner, _) = ty {
+            ty = inner;
+        }
+        *ty == Type::String
+    })
+}
+
+/// The arguments that every call of a value used as `consumer` supplies: through the uses of
+/// the immutable local it is bound to (`usize::MAX` when nothing calls it or passes it on).
+fn supplied(consumer: Consumer, uses: &BTreeMap<usize, Vec<Consumer>>, depth: usize) -> usize {
+    let Some(local) = consumer.alias else {
+        return consumer.supplied;
+    };
+    // Aliases of aliases deeper than this are not followed: the value counts as passed on.
+    if depth > 64 {
+        return consumer.supplied;
+    }
+    let rest = uses.get(&local).map_or(usize::MAX, |found| {
+        found
+            .iter()
+            .map(|&next| supplied(next, uses, depth + 1))
+            .min()
+            .unwrap_or(usize::MAX)
+    });
+    consumer.supplied.saturating_add(rest)
 }
 
 fn position(span: Span) -> (usize, usize, usize) {
@@ -707,6 +746,27 @@ struct Ctx {
     pattern: bool,
     /// An element of a literal tree whose root already counted the frame bytes.
     nested: bool,
+    /// What the enclosing expressions do with the value, when it is a function.
+    consumer: Consumer,
+}
+
+/// How the enclosing expressions use a function value: the arguments that the calls of the value
+/// supply (a value used otherwise is called later with none of them), and the immutable local it
+/// is bound to, whose uses supply the rest. A reference to an attributed function that calls its
+/// parameters must be called with them, or the functions passed to it go unchecked (review of #63).
+#[derive(Clone, Copy, Default, Debug)]
+struct Consumer {
+    supplied: usize,
+    alias: Option<usize>,
+}
+
+/// A reference to a function with an effect attribute, and the arguments that every call of it
+/// supplies (`usize::MAX` for a value that is never called).
+#[derive(Clone, Copy, Debug)]
+struct Reference {
+    function: usize,
+    span: Span,
+    supplied: usize,
 }
 
 enum Item<'a> {
@@ -837,10 +897,11 @@ fn argument<'a>(
                     if param.replace(index).is_some_and(|other| other != index) {
                         return Arg::Unknown;
                     }
-                } else if let Some(value) = aliases.get(id)
-                    && seen.insert(*id)
-                {
-                    pending.push(value);
+                } else if let Some(value) = aliases.get(id) {
+                    // An alias reached twice (two branches, two elements) is followed once.
+                    if seen.insert(*id) {
+                        pending.push(value);
+                    }
                 } else {
                     return Arg::Unknown;
                 }
@@ -858,6 +919,7 @@ fn argument<'a>(
                 pending.push(then_branch);
                 pending.push(else_branch);
             }
+            TypedExprKind::Match { arms, .. } => pending.extend(arms.iter().map(|arm| &arm.body)),
             TypedExprKind::Array(values)
             | TypedExprKind::List(values)
             | TypedExprKind::Tuple(values) => pending.extend(values),
@@ -976,13 +1038,25 @@ impl<'s, 'a> Scan<'s, 'a> {
         arguments: &[&'a TypedExpr],
         span: Span,
     ) {
-        // A call of a known function through an immutable alias or a partial application is a
-        // call of that function too, so its callbacks are checked as at a direct call.
+        // A call of a known function through an immutable alias, a partial application or a
+        // branch is a call of that function too, so its callbacks are checked as at a direct
+        // call. A value that the classification follows to functions but `targets` does not is
+        // a call that cannot be followed.
         if let Some(callee) = callee {
-            for (target, bound) in self.targets(callee) {
-                let mut supplied = bound;
-                supplied.extend(arguments.iter().copied());
-                self.record_call(target, supplied, span);
+            match self.targets(callee) {
+                Some(targets) => {
+                    for (target, bound) in targets {
+                        let mut supplied = bound;
+                        supplied.extend(arguments.iter().copied());
+                        self.record_call(target, supplied, span);
+                    }
+                }
+                None => {
+                    if matches!(self.classify(callee), Arg::Known(functions) if !functions.is_empty())
+                    {
+                        self.unknown(VALUE_CALL, span, "value-call");
+                    }
+                }
             }
         }
         let mut values: Vec<&'a TypedExpr> = callee.into_iter().collect();
@@ -1000,35 +1074,86 @@ impl<'s, 'a> Scan<'s, 'a> {
         }
     }
 
-    /// The functions that a function value certainly is, with the arguments it already binds
+    /// The functions that a function value is one of, with the arguments that each already binds
     /// (captures, then the arguments of a partial application): followed through immutable
-    /// locals and borrows. Empty for a value that cannot be followed to one function.
-    fn targets(&self, value: &'a TypedExpr) -> Vec<(usize, Vec<&'a TypedExpr>)> {
+    /// locals, borrows, casts, blocks and the branches of `if` and `match`, as `argument` follows
+    /// them. `None` for a value that cannot be followed to functions.
+    fn targets(&self, value: &'a TypedExpr) -> Option<Vec<(usize, Vec<&'a TypedExpr>)>> {
         use TypedExprKind as K;
-        let mut value = value;
+        let mut pending = vec![value];
+        let mut found = Vec::new();
         let mut seen = BTreeSet::new();
-        loop {
+        let mut steps = 0;
+        while let Some(value) = pending.pop() {
+            steps += 1;
+            if steps > 256 {
+                return None;
+            }
             match &value.kind {
-                K::Function(FunctionRef::User(id)) => return vec![(*id, Vec::new())],
-                K::Closure(id, captures) => return vec![(*id, captures.iter().collect())],
-                K::Call(inner, bound) if matches!(&inner.ty, Type::Function(parameters, _) if bound.len() < parameters.len()) =>
-                {
-                    return match &inner.kind {
-                        K::Function(FunctionRef::User(id)) => vec![(*id, bound.iter().collect())],
-                        K::Closure(id, captures) => {
-                            vec![(*id, captures.iter().chain(bound.iter()).collect())]
+                K::Function(FunctionRef::User(id)) => found.push((*id, Vec::new())),
+                K::Closure(id, captures) => found.push((*id, captures.iter().collect())),
+                K::Call(inner, bound) if matches!(&inner.ty, Type::Function(parameters, _) if bound.len() < parameters.len()) => {
+                    match &inner.kind {
+                        K::Function(FunctionRef::User(id)) => {
+                            found.push((*id, bound.iter().collect()))
                         }
-                        _ => Vec::new(),
-                    };
+                        K::Closure(id, captures) => {
+                            found.push((*id, captures.iter().chain(bound.iter()).collect()))
+                        }
+                        _ => return None,
+                    }
                 }
-                K::Local(id) if !self.parameters.contains_key(id) => match self.aliases.get(id) {
-                    Some(alias) if seen.insert(*id) => value = alias,
-                    _ => return Vec::new(),
-                },
-                K::Borrow(inner, false) | K::BorrowOperand(inner) | K::Dereference(inner) => {
-                    value = inner
+                K::Local(id) if !self.parameters.contains_key(id) => {
+                    let alias = self.aliases.get(id)?;
+                    if seen.insert(*id) {
+                        pending.push(alias);
+                    }
                 }
-                _ => return Vec::new(),
+                K::Borrow(inner, false)
+                | K::BorrowOperand(inner)
+                | K::Dereference(inner)
+                | K::Cast(inner) => pending.push(inner),
+                K::Block { result, .. } => pending.push(result),
+                K::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    pending.push(then_branch);
+                    pending.push(else_branch);
+                }
+                K::Match { arms, .. } => pending.extend(arms.iter().map(|arm| &arm.body)),
+                _ => return None,
+            }
+        }
+        Some(found)
+    }
+
+    /// A host import that takes a callback is lowered at each call (`llvm_imports`), so the
+    /// copies of its string arguments are made in the caller.
+    fn host_call_here(&mut self, callee: usize, span: Span) {
+        let function = &self.state.module.functions[callee];
+        if let TypedExprKind::HostCall(import, _) = &function.body.kind
+            && import.callbacks
+            && takes_string(function)
+        {
+            self.source(Effect::Alloc, span, "string-marshalling");
+        }
+    }
+
+    /// The `Drop` implementations that dropping a value of type `ty` runs: a source of
+    /// `user_drop` and an edge to each.
+    fn user_drop(&mut self, ty: &Type, span: Span) {
+        let drops = self.state.drop_functions(ty);
+        if drops.is_empty() {
+            return;
+        }
+        self.source(Effect::UserDrop, span, "user-drop");
+        for id in drops {
+            if id == usize::MAX {
+                self.unknown(UNRESOLVED, span, "user-drop");
+            } else {
+                self.local.edges.push((id, span));
             }
         }
     }
@@ -1078,7 +1203,33 @@ impl<'s, 'a> Scan<'s, 'a> {
     }
 
     fn scan(&mut self) -> Result<(), Diagnostic> {
-        self.scan_root(&self.function.body)
+        let function = self.function;
+        let user_drops = !self.state.module.user_drops.is_empty();
+        // The compact form replaces the body of `String.slice` and `String.join` with a runtime
+        // call that builds the result; the rule counts it in both forms.
+        if crate::llvm::compact_replacement(function).is_some() {
+            self.source(Effect::Alloc, function.body.span, "string-build");
+        }
+        if user_drops {
+            // The function drops the owned parameters that its body does not move on, so their
+            // destructors run here even when no expression names them (review of #63). A
+            // parameter read by default is a reference, and the environment of an owned function
+            // outlives each call.
+            let borrowed = if function.owned_captures {
+                function.capture_count
+            } else {
+                0
+            };
+            for parameter in &function.parameters[borrowed..] {
+                let span = if parameter.span == Span::default() {
+                    function.body.span
+                } else {
+                    parameter.span
+                };
+                self.user_drop(&parameter.ty, span);
+            }
+        }
+        self.scan_root(&function.body)
     }
 
     fn scan_root(&mut self, root: &'a TypedExpr) -> Result<(), Diagnostic> {
@@ -1115,24 +1266,24 @@ impl<'s, 'a> Scan<'s, 'a> {
                 return Err(limit_error(self.state.limits, expression.span));
             }
             if user_drops {
-                let drops = self.state.drop_functions(&expression.ty);
-                if !drops.is_empty() {
-                    self.source(Effect::UserDrop, expression.span, "user-drop");
-                    for id in drops {
-                        if id == usize::MAX {
-                            self.unknown(UNRESOLVED, expression.span, "user-drop");
-                        } else {
-                            self.local.edges.push((id, expression.span));
-                        }
-                    }
-                }
+                self.user_drop(&expression.ty, expression.span);
             }
             let pushed = self.node(expression, ctx, &types, &mut stack);
             if !pushed {
+                // A dereference or a cast of a function value is the same function.
+                let consumer = if matches!(
+                    expression.kind,
+                    TypedExprKind::Dereference(_) | TypedExprKind::Cast(_)
+                ) {
+                    ctx.consumer
+                } else {
+                    Consumer::default()
+                };
                 let child = Ctx {
                     read: false,
                     pattern: ctx.pattern,
                     nested: false,
+                    consumer,
                 };
                 for value in expression.children().into_iter().rev() {
                     stack.push(Item::Node(value, child));
@@ -1185,11 +1336,13 @@ impl<'s, 'a> Scan<'s, 'a> {
             read: inherit,
             pattern: ctx.pattern,
             nested: false,
+            consumer: Consumer::default(),
         };
         let element = Ctx {
             read: ctx.read,
             pattern: false,
             nested: ctx.read,
+            consumer: Consumer::default(),
         };
         match &expression.kind {
             K::Error
@@ -1204,6 +1357,13 @@ impl<'s, 'a> Scan<'s, 'a> {
                 true
             }
             K::Local(local) => {
+                if self.aliases.contains_key(local) {
+                    self.local
+                        .alias_uses
+                        .entry(*local)
+                        .or_default()
+                        .push(ctx.consumer);
+                }
                 // Copying a function value without captures copies no environment.
                 if !self.environment_copies.is_empty()
                     && matches!(
@@ -1239,6 +1399,9 @@ impl<'s, 'a> Scan<'s, 'a> {
             }
             K::Function(FunctionRef::User(id)) => {
                 self.local.edges.push((*id, span));
+                if !self.state.module.functions[*id].origin.asserts.is_empty() {
+                    self.local.references.push((*id, span, ctx.consumer));
+                }
                 false
             }
             K::Function(FunctionRef::Builtin(instance)) => {
@@ -1293,6 +1456,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                                 K::Closure(_, captures) => captures,
                                 _ => &[],
                             };
+                            self.host_call_here(*id, span);
                             self.call_site(*id, captures, &[left.as_ref()], span);
                         }
                         K::Call(callee, arguments)
@@ -1314,11 +1478,21 @@ impl<'s, 'a> Scan<'s, 'a> {
                                 .iter()
                                 .chain(std::iter::once(left.as_ref()))
                                 .collect();
+                            self.host_call_here(*id, span);
                             self.call_site(*id, captures, &supplied, span);
                         }
                         _ => self.value_call(Some(right), &[left.as_ref()], span),
                     }
-                    stack.push(Item::Node(right, read(true)));
+                    stack.push(Item::Node(
+                        right,
+                        Ctx {
+                            consumer: Consumer {
+                                supplied: 1,
+                                alias: None,
+                            },
+                            ..read(true)
+                        },
+                    ));
                     stack.push(Item::Node(left, read(false)));
                     return true;
                 }
@@ -1353,6 +1527,9 @@ impl<'s, 'a> Scan<'s, 'a> {
                     }
                 }
                 let values: Vec<&'a TypedExpr> = arguments.iter().collect();
+                if let K::Function(FunctionRef::User(id)) = &callee.kind {
+                    self.host_call_here(*id, span);
+                }
                 match &callee.kind {
                     K::Function(FunctionRef::User(id)) => self.call_site(*id, &[], &values, span),
                     K::Closure(id, captures) => self.call_site(*id, captures, &values, span),
@@ -1370,11 +1547,37 @@ impl<'s, 'a> Scan<'s, 'a> {
                 for value in arguments.iter().rev() {
                     stack.push(Item::Node(value, read(false)));
                 }
-                stack.push(Item::Node(callee, read(true)));
+                // The callee receives these arguments; a partial application is used as its
+                // result is, with these arguments already supplied.
+                let consumer = if matches!(&callee.ty, Type::Function(parameters, _) if arguments.len() < parameters.len())
+                {
+                    Consumer {
+                        supplied: ctx.consumer.supplied.saturating_add(arguments.len()),
+                        alias: ctx.consumer.alias,
+                    }
+                } else {
+                    Consumer {
+                        supplied: arguments.len(),
+                        alias: None,
+                    }
+                };
+                stack.push(Item::Node(
+                    callee,
+                    Ctx {
+                        consumer,
+                        ..read(true)
+                    },
+                ));
                 true
             }
             K::HostCall(..) => {
                 self.source(Effect::Extern, span, "extern-call");
+                // The call itself may copy a string argument for the host (into UTF-16, when the
+                // program's strings are compact): an allocation of the marshalling, which no
+                // property of the C function covers.
+                if takes_string(self.function) {
+                    self.source(Effect::Alloc, span, "string-marshalling");
+                }
                 self.exempt(Effect::Trap, span, "host-call");
                 false
             }
@@ -1435,6 +1638,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                     read: ctx.read,
                     pattern: ctx.pattern,
                     nested: ctx.nested,
+                    consumer: ctx.consumer,
                 };
                 stack.push(Item::Leave);
                 stack.push(Item::Node(else_branch, branch));
@@ -1467,11 +1671,13 @@ impl<'s, 'a> Scan<'s, 'a> {
                     read: false,
                     pattern: true,
                     nested: false,
+                    consumer: Consumer::default(),
                 };
                 let body = Ctx {
                     read: ctx.read,
                     pattern: ctx.pattern,
                     nested: ctx.nested,
+                    consumer: ctx.consumer,
                 };
                 for arm in arms.iter().rev() {
                     stack.push(Item::Node(&arm.body, body));
@@ -1502,11 +1708,23 @@ impl<'s, 'a> Scan<'s, 'a> {
                         read: ctx.read,
                         pattern: ctx.pattern,
                         nested: ctx.nested,
+                        consumer: ctx.consumer,
                     },
                 ));
                 for (local, value) in bindings.iter().rev() {
                     let stays = !local.mutable && self.staying.contains(&local.id);
-                    stack.push(Item::Node(value, read(stays)));
+                    // The uses of an immutable local decide how its function value is called.
+                    let consumer = Consumer {
+                        supplied: 0,
+                        alias: (!local.mutable).then_some(local.id),
+                    };
+                    stack.push(Item::Node(
+                        value,
+                        Ctx {
+                            consumer,
+                            ..read(stays)
+                        },
+                    ));
                 }
                 true
             }
@@ -1596,6 +1814,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                         read: true,
                         pattern: ctx.pattern,
                         nested: false,
+                        consumer: Consumer::default(),
                     },
                 ));
                 true
@@ -1608,12 +1827,34 @@ impl<'s, 'a> Scan<'s, 'a> {
                 stack.push(Item::Node(value, read(true)));
                 true
             }
-            K::Length(value) | K::StringLength(value) | K::BorrowOperand(value) => {
+            K::Length(value) | K::StringLength(value) => {
                 stack.push(Item::Node(value, read(true)));
                 true
             }
+            // A shared borrow of a function value is the same function.
+            K::BorrowOperand(value) => {
+                stack.push(Item::Node(
+                    value,
+                    Ctx {
+                        consumer: ctx.consumer,
+                        ..read(true)
+                    },
+                ));
+                true
+            }
             K::Borrow(value, mutable) => {
-                stack.push(Item::Node(value, read(!*mutable)));
+                let consumer = if *mutable {
+                    Consumer::default()
+                } else {
+                    ctx.consumer
+                };
+                stack.push(Item::Node(
+                    value,
+                    Ctx {
+                        consumer,
+                        ..read(!*mutable)
+                    },
+                ));
                 true
             }
             K::Dereference(_)
@@ -1731,6 +1972,7 @@ fn summarize_roots(
         witnesses: vec![[None; BITS]; count],
         sites: vec![Vec::new(); count],
         calls: vec![Vec::new(); count],
+        references: vec![Vec::new(); count],
         cycle_targets: BTreeMap::new(),
         empty: Summary::default(),
     };
@@ -1956,6 +2198,15 @@ fn summarize_roots(
         sites.sort_by_key(|site| (position(site.span), site.effect, site.exempt));
         sites.dedup();
         result.sites[id] = sites;
+        result.references[id] = local
+            .references
+            .iter()
+            .map(|&(function, span, consumer)| Reference {
+                function,
+                span,
+                supplied: supplied(consumer, &local.alias_uses, 0),
+            })
+            .collect();
         result.calls[id] = local.calls;
     }
     Ok(result)
@@ -2222,6 +2473,10 @@ fn phrase(effect: Effect, code: &str) -> (&'static str, &'static str) {
         (Effect::Alloc, "recursive-node") => (
             "creates a heap-allocated node of a recursive union",
             "use an array and indices instead of a recursive union",
+        ),
+        (Effect::Alloc, "string-marshalling") => (
+            "passes a string to an extern function, which may copy it for the host",
+            "pass the bytes as a 'ref [i8u]' buffer, or remove the attribute",
         ),
         (Effect::Alloc, "task" | "parallel") => {
             ("creates tasks", "remove the tasks, or remove the attribute")
@@ -2592,6 +2847,47 @@ impl Report<'_> {
         }
     }
 
+    /// A reference to an attributed function that calls some of its parameters, used where the
+    /// calls of the value do not supply all of them (stored, returned, passed on or captured):
+    /// the functions that those calls pass are never checked, so the attribute cannot hold.
+    fn escapes(&self, errors: &mut Vec<(Span, usize, EffectKind, Diagnostic)>) {
+        for reference in self.effects.references.iter().flatten() {
+            let calls_params = self.effects.summary(reference.function).calls_params;
+            let unchecked = if reference.supplied >= PARAMETER_BITS {
+                0
+            } else {
+                calls_params >> reference.supplied
+            };
+            if unchecked == 0 {
+                continue;
+            }
+            let function = &self.module.functions[reference.function];
+            let name = declared_name(function);
+            for kind in function.origin.asserts.kinds() {
+                let attribute = kind.name();
+                let help = format!(
+                    "call '{name}' with the functions it calls, directly or through a 'let' that is only called"
+                );
+                let mut diagnostic = Diagnostic::of(
+                    DiagnosticKind::EffectUnknownCallee,
+                    format!(
+                        "'{name}' is marked '@{attribute}' and calls the functions it is given, but here it is used as a value whose calls are not checked; {help}"
+                    ),
+                    reference.span,
+                )
+                .with_help(help);
+                if let Some(at) = self.attribute_span(reference.function, kind) {
+                    diagnostic = diagnostic.related(
+                        RelatedRole::RequiredBy,
+                        "required by this attribute",
+                        at,
+                    );
+                }
+                errors.push((reference.span, reference.function, kind, diagnostic));
+            }
+        }
+    }
+
     /// The violation of attribute `kind` of `name` by a function that a call passes to it.
     fn argument_violation(
         &self,
@@ -2677,6 +2973,7 @@ pub fn validate(
         witnesses: Vec::new(),
         sites: Vec::new(),
         calls: Vec::new(),
+        references: Vec::new(),
         cycle_targets: BTreeMap::new(),
         empty: Summary::default(),
     };
@@ -2744,6 +3041,7 @@ pub fn validate(
             }
         }
         report.call_sites(&mut found);
+        report.escapes(&mut found);
     }
     // One diagnostic per declaration and attribute: the first in source order, of any instance.
     found.sort_by_key(|(span, _, _, _)| position(*span));
@@ -3037,7 +3335,7 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 53);
+        assert_eq!(count(|facts| facts.alloc), 57);
     }
 
     #[test]
@@ -3048,7 +3346,7 @@ mod tests {
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 14);
+        assert_eq!(count(|facts| facts.diverge), 16);
     }
 
     #[test]
