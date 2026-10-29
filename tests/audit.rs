@@ -227,6 +227,23 @@ fn audit_json_matches_the_examples() {
 }
 
 #[test]
+fn audit_counts_each_generic_declaration_once() {
+    let root = scratch("generics");
+    write(
+        &root,
+        "generics/Main.tz",
+        "pure def same :: 'a -> 'a = \\x -> x\n@no_alloc\ndef first :: 'a -> 'a = \\x -> x\n@terminates\ndef unused :: 'a -> 'a = \\x -> x\ndef main :: unit -> i32 = \\() -> if same true then first 1 + same 2 else 0\n",
+    );
+    // `same` has two instances, `first` one and `unused` none: each declaration counts once.
+    let report = stdout(&audit(&["generics", "--json"], &root));
+    assert!(
+        report.contains("\"effects\":{\"declared\":4,\"asserted\":{\"pure\":1,\"no_alloc\":1,\"no_copy\":0,\"no_trap\":0,\"terminates\":1}}"),
+        "{report}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn audit_exit_codes() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = scratch("exit");

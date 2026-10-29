@@ -411,21 +411,42 @@ impl Checker<'_> {
     }
 }
 
+/// `validate_purity` and `validate_writes` for the generic functions before specialization, which
+/// keeps only the instances that the program calls: the contract lines of a generic function that
+/// nothing calls are checked too. What only an instance resolves (a class method, a value that
+/// the analysis cannot follow, an argument of a type variable) is checked in each instance.
+pub(super) fn validate_templates(module: &CheckedModule) -> Vec<Diagnostic> {
+    let generic = |function: &CheckedFunction| {
+        !function.type_parameters.is_empty() || !function.constraints.is_empty()
+    };
+    let mut diagnostics = purity(module, &generic, true);
+    diagnostics.extend(writes(module, &generic));
+    diagnostics
+}
+
 /// `E1033` (`contract_impure`) for each function whose contract conditions are not pure: they
 /// may not do any of A19's effects (`alloc`, `trap`, `copy` and `diverge` are allowed). The first
 /// source in source order, per function.
 pub(super) fn validate_purity(module: &CheckedModule) -> Vec<Diagnostic> {
+    purity(module, &|_| true, false)
+}
+
+fn purity(
+    module: &CheckedModule,
+    checked: &dyn Fn(&CheckedFunction) -> bool,
+    templates: bool,
+) -> Vec<Diagnostic> {
     let roots: Vec<(usize, Vec<(&TypedExpr, Span)>)> = module
         .functions
         .iter()
         .enumerate()
-        .filter(|(_, function)| !function.contracts.is_empty())
+        .filter(|(_, function)| !function.contracts.is_empty() && checked(function))
         .map(|(id, function)| (id, conditions(function)))
         .collect();
     if roots.is_empty() {
         return Vec::new();
     }
-    match effects::impurities(module, &roots) {
+    match effects::impurities(module, &roots, templates) {
         Ok(found) => {
             let mut seen = BTreeSet::new();
             found
@@ -453,11 +474,15 @@ pub(super) fn validate_purity(module: &CheckedModule) -> Vec<Diagnostic> {
 /// exclusive reference. Such a line would make `check` and `off` compute differently. A
 /// condition may read mutable arguments and change data of its own.
 pub(super) fn validate_writes(module: &CheckedModule) -> Vec<Diagnostic> {
+    writes(module, &|_| true)
+}
+
+fn writes(module: &CheckedModule, checked: &dyn Fn(&CheckedFunction) -> bool) -> Vec<Diagnostic> {
     let types = module.types();
     let mut diagnostics = Vec::new();
     let mut seen = BTreeSet::new();
     for function in &module.functions {
-        if function.contracts.is_empty() {
+        if function.contracts.is_empty() || !checked(function) {
             continue;
         }
         // The storage of the call: the parameters and the locals that the woven body binds
@@ -525,9 +550,9 @@ fn reaches_outside(place: &TypedExpr, outside: &BTreeSet<usize>) -> bool {
 
 /// The first place in `condition` that may write to one of the `outside` locals, directly or
 /// through a reference that a local of the condition holds (`let q = p` of a `ref mut` `p`).
-/// A call may write through a `ref mut` or `mut` parameter and, unless it is `pure`, through an
-/// exclusive reference that a record parameter holds (a shared reference to such a record cannot
-/// change the data, `E1014`).
+/// A call or a pipeline may write through a `ref mut` or `mut` parameter and, unless the callee
+/// is `pure`, through an exclusive reference that a record parameter holds (a shared reference to
+/// such a record cannot change the data, `E1014`).
 fn write_outside(
     condition: &TypedExpr,
     outside: &BTreeSet<usize>,
@@ -536,25 +561,33 @@ fn write_outside(
     let outside = aliases(condition, outside, types);
     let rooted = |place: &TypedExpr| reaches_outside(place, &outside);
     let exclusive = |ty: &Type| !types.stored_all(ty, |ty| !matches!(ty, Type::Reference(_, true)));
+    // Whether a function of type `callee` may write through its parameter `index`.
+    let mutable = |callee: &Type, index: usize| {
+        let Type::Function(parameters, _) = callee else {
+            return false;
+        };
+        parameters.conventions.get(index) == Some(&ParameterConvention::Mut)
+            || parameters.types.get(index).is_some_and(|ty| {
+                matches!(ty, Type::Reference(_, true)) || (!parameters.pure && exclusive(ty))
+            })
+    };
     let mut pending = vec![condition];
     while let Some(expression) = pending.pop() {
         match &expression.kind {
             TypedExprKind::Assign(place, _) if rooted(place) => return Some(expression.span),
             TypedExprKind::Borrow(place, true) if rooted(place) => return Some(expression.span),
             TypedExprKind::Call(callee, arguments) => {
-                if let Type::Function(parameters, _) = &callee.ty {
-                    for (index, argument) in arguments.iter().enumerate() {
-                        let mutable = parameters.conventions.get(index)
-                            == Some(&ParameterConvention::Mut)
-                            || parameters.types.get(index).is_some_and(|ty| {
-                                matches!(ty, Type::Reference(_, true))
-                                    || (!parameters.pure && exclusive(ty))
-                            });
-                        if mutable && rooted(argument) {
-                            return Some(argument.span);
-                        }
+                for (index, argument) in arguments.iter().enumerate() {
+                    if mutable(&callee.ty, index) && rooted(argument) {
+                        return Some(argument.span);
                     }
                 }
+            }
+            // `x |> f a` passes `x` as the first parameter of the function value `f a`.
+            TypedExprKind::Binary(BinaryOp::Pipe, value, callee)
+                if mutable(&callee.ty, 0) && rooted(value) =>
+            {
+                return Some(value.span);
             }
             _ => {}
         }
@@ -563,18 +596,20 @@ fn write_outside(
     None
 }
 
-/// `outside` and the locals of `condition` that may hold a reference into it: a binding of a
-/// type that stores a reference (a record field included) whose value reads one of them, until
-/// no binding is added.
+/// `outside` and the locals of `condition` that may hold a reference into it, until none is
+/// added: a binding of a type that stores a reference (a record field included) whose value reads
+/// one of them, and the storage that an assignment of such a value changes (`assigned`).
 fn aliases(
     condition: &TypedExpr,
     outside: &BTreeSet<usize>,
     types: &TypeContext<'_>,
 ) -> BTreeSet<usize> {
     let mut bindings = Vec::new();
+    let mut assignments = Vec::new();
     let mut pending = vec![condition];
     while let Some(expression) = pending.pop() {
         match &expression.kind {
+            TypedExprKind::Assign(place, value) => assignments.push((&**place, &**value)),
             TypedExprKind::Block {
                 bindings: locals, ..
             } => bindings.extend(locals.iter().map(|(local, value)| (local, value))),
@@ -597,6 +632,16 @@ fn aliases(
         }
         pending.extend(expression.children());
     }
+    // The values that each local may hold: its binding and what is assigned to a path from it.
+    let mut held: BTreeMap<usize, Vec<&TypedExpr>> = BTreeMap::new();
+    for (local, value) in &bindings {
+        held.entry(local.id).or_default().push(value);
+    }
+    for (place, value) in &assignments {
+        if let (Some(root), false) = path_root(place) {
+            held.entry(root).or_default().push(value);
+        }
+    }
     let mut outside = outside.clone();
     loop {
         let before = outside.len();
@@ -608,10 +653,57 @@ fn aliases(
                 outside.insert(local.id);
             }
         }
+        for (place, value) in &assignments {
+            if value.ty.contains_stored_reference(types) && reads_any(value, &outside) {
+                outside.extend(assigned(place, &held));
+            }
+        }
         if outside.len() == before {
             return outside;
         }
     }
+}
+
+/// The local that a path of fields, indices and slices in `place` starts from, if any, and
+/// whether the path goes through a dereference (or a computed reference) on the way.
+fn path_root(place: &TypedExpr) -> (Option<usize>, bool) {
+    let mut place = place;
+    let mut through = false;
+    loop {
+        match &place.kind {
+            TypedExprKind::Local(id) => return (Some(*id), through),
+            TypedExprKind::Field(inner, _)
+            | TypedExprKind::Index(inner, _)
+            | TypedExprKind::Slice { value: inner, .. } => place = inner,
+            TypedExprKind::Dereference(inner) | TypedExprKind::BorrowOperand(inner) => {
+                through = true;
+                place = inner;
+            }
+            _ => return (None, true),
+        }
+    }
+}
+
+/// The locals whose storage an assignment to `place` may change: the local that its path starts
+/// from or, through a dereference or a computed reference, every local that the place reads and
+/// every local that those may hold a reference into, following `held`.
+fn assigned(place: &TypedExpr, held: &BTreeMap<usize, Vec<&TypedExpr>>) -> BTreeSet<usize> {
+    let (root, through) = path_root(place);
+    if !through {
+        return root.into_iter().collect();
+    }
+    let mut found = BTreeSet::new();
+    let mut pending = vec![place];
+    while let Some(expression) = pending.pop() {
+        if let TypedExprKind::Local(id) = expression.kind {
+            if found.insert(id) {
+                pending.extend(held.get(&id).into_iter().flatten().copied());
+            }
+            continue;
+        }
+        pending.extend(expression.children());
+    }
+    found
 }
 
 /// Whether `expression` reads one of `locals`.
@@ -812,10 +904,11 @@ impl<'a> ResultName<'a> {
 
 /// A21 Phase 3 (`--contracts test`): for each function of `program` with contract lines, a test
 /// `contract <name>` that runs its body on generated arguments that satisfy its `@requires`
-/// lines and checks its `@ensures` lines. Returns `W1009` for each function that gets no test,
-/// and why.
+/// lines and checks its `@ensures` lines, through a private function `$contract_<name>` with the
+/// function's parameters. Returns `W1009` for each function that gets no test, and why.
 pub(crate) fn generate_tests(program: &mut Program, module: &str) -> Vec<Diagnostic> {
     let mut warnings = Vec::new();
+    let mut checkers = Vec::new();
     let mut tests = Vec::new();
     for function in &program.functions {
         if function.contracts.is_empty() {
@@ -833,10 +926,14 @@ pub(crate) fn generate_tests(program: &mut Program, module: &str) -> Vec<Diagnos
             continue;
         }
         match property_test(function, module) {
-            Ok(test) => tests.push(test),
+            Ok((checker, test)) => {
+                checkers.push(checker);
+                tests.push(test);
+            }
             Err(error) => warnings.push(error),
         }
     }
+    program.functions.extend(checkers);
     program.tests.extend(tests);
     warnings
 }
@@ -849,12 +946,18 @@ fn value_type(ty: &TypeExpr) -> TypeExpr {
     }
 }
 
-/// The test of one function. The body runs in the scope of the generated arguments, as the
-/// woven body does, so the `@ensures` lines still read the arguments that it only borrows. The
-/// result is bound under the name of the lines that name it; when another line reads a variable
-/// of that name, under `$contract_result`, and each run of lines that name it binds the name
-/// around itself only.
-fn property_test(function: &FunctionDecl, module: &str) -> Result<TestDecl, Diagnostic> {
+/// The test of one function and the function that it calls. That function has the parameters of
+/// `function`, so each generated argument reaches the body and the lines with the parameter's
+/// effective convention, as a call of `function` passes it (a `string` of a `pure def` or of
+/// edition 2027 is borrowed, a `ref string`). The body runs in the scope of the parameters, as
+/// the woven body does, so the `@ensures` lines still read the arguments that it only borrows.
+/// The result is bound under the name of the lines that name it; when another line reads a
+/// variable of that name, under `$contract_result`, and each run of lines that name it binds the
+/// name around itself only.
+fn property_test(
+    function: &FunctionDecl,
+    module: &str,
+) -> Result<(FunctionDecl, TestDecl), Diagnostic> {
     let build = deriving::Build {
         module,
         span: function.name.span,
@@ -945,6 +1048,38 @@ fn property_test(function: &FunctionDecl, module: &str) -> Result<TestDecl, Diag
     {
         property = build.conditional(requires, property, build.case("Maybe.Maybe", "None")?)?;
     }
+    let name = format!("$contract_{}", function.name.text);
+    let checker = FunctionDecl {
+        doc: None,
+        name: build.ident(name.as_str()),
+        regions: function.regions.clone(),
+        recursion: None,
+        visibility: Visibility::Private,
+        exported: false,
+        constant: false,
+        pure: function.pure,
+        parameters: function
+            .parameters
+            .iter()
+            .map(|parameter| Parameter {
+                name: build.ident(parameter.name.text.as_str()),
+                ..parameter.clone()
+            })
+            .collect(),
+        result: TypeExpr {
+            kind: TypeExprKind::Apply(
+                Box::new(build.ident(key_path("Maybe.Maybe"))),
+                Box::new([TypeExpr {
+                    kind: TypeExprKind::Named("bool".into()),
+                    span: build.span,
+                }]),
+            ),
+            span: build.span,
+        },
+        constraints: Vec::new(),
+        body: property,
+        contracts: Vec::new(),
+    };
     // The generator of the arguments, paired from the right, and the pattern that names them
     // with their written types.
     let mut generator = build.call("Arbitrary", "arbitrary", Vec::new())?;
@@ -974,15 +1109,21 @@ fn property_test(function: &FunctionDecl, module: &str) -> Result<TestDecl, Diag
             depth,
         };
     }
-    let checker = build.lambda(
+    let arguments = parameters
+        .iter()
+        .map(|parameter| build.name(&parameter.name.text))
+        .collect::<Result<_, _>>()?;
+    let call = build.apply(&format!("{module}.{name}"), arguments)?;
+    let property = build.lambda(
         &["$args"],
-        build.matched("$args", vec![build.arm(pattern, property)])?,
+        build.matched("$args", vec![build.arm(pattern, call)])?,
     )?;
-    let body = build.apply("Gen.for_all_where", vec![generator, checker])?;
-    Ok(TestDecl {
+    let body = build.apply("Gen.for_all_where", vec![generator, property])?;
+    let test = TestDecl {
         name: format!("contract {}", function.name.text),
         name_span: function.name.span,
         body,
         span: function.name.span,
-    })
+    };
+    Ok((checker, test))
 }

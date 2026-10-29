@@ -4403,6 +4403,20 @@ pub(super) fn specialize(
     }
     let validate_concrete_purity = before_specialization(&module);
     let templates = std::mem::take(&mut module.functions);
+    let generic_declarations = templates
+        .iter()
+        .filter(|function| {
+            !function.type_parameters.is_empty()
+                && function.origin.module == ModuleOrigin::User
+                && function.origin.provenance == Provenance::User
+                && !function.module.starts_with('$')
+        })
+        .map(|function| GenericDeclaration {
+            qualified_name: function.qualified_name(),
+            span: function.span,
+            origin: function.origin,
+        })
+        .collect();
     let mut concrete_api_calls = Vec::new();
     if validate_concrete_purity {
         for function in &templates {
@@ -4592,6 +4606,7 @@ pub(super) fn specialize(
         statics: module.statics,
         effects: None,
         noncanonical: module.noncanonical,
+        generic_declarations,
     })
 }
 
