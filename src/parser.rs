@@ -235,6 +235,9 @@ struct Parser<'a> {
     /// The token where the body of the top-level function being parsed starts, the only place
     /// where its contract lines may begin (A21). An explicit lambda moves it to its own body.
     contract_site: Option<usize>,
+    /// Whether the parser is in the body of an instance method or a class default, which takes
+    /// no contract lines (A21).
+    method_body: bool,
     /// The contract lines that the current top-level declaration's body started with.
     site_contracts: Vec<ContractClause>,
     /// Parsing the condition of an `@ensures` line, where `@old (expression)` may appear.
@@ -266,6 +269,7 @@ impl<'a> Parser<'a> {
             pending_statement: None,
             dyn_types: Vec::new(),
             contract_site: None,
+            method_body: false,
             site_contracts: Vec::new(),
             in_ensures: false,
         }
@@ -804,7 +808,7 @@ impl Parser<'_> {
                     if exported {
                         return Err(self.error_of(DiagnosticKind::ExportOnImplementation, "put 'export' on the function signature"));
                     }
-                    let mut definition = self.definition(name)?;
+                    let mut definition = self.definition(name, true)?;
                     definition.recursion = recursion;
                     defined_names.insert(definition.name.text.clone());
                     definitions.push(definition);
@@ -1812,7 +1816,7 @@ impl Parser<'_> {
         }
         let recursive = self.eat(&TokenKind::Rec);
         let name = self.ident()?;
-        let mut definition = self.definition(name.clone())?;
+        let mut definition = self.definition(name.clone(), false)?;
         definition.pure = pure;
         definition.recursion = recursive.then_some(name.text);
         if anonymous
@@ -2000,7 +2004,9 @@ impl Parser<'_> {
         false
     }
 
-    fn definition(&mut self, name: Ident) -> Result<Definition, Diagnostic> {
+    /// A `fn` definition. `contracts`: whether its body may start with contract lines, which only
+    /// a top-level function's may (A21).
+    fn definition(&mut self, name: Ident, contracts: bool) -> Result<Definition, Diagnostic> {
         let mut parameters = Vec::new();
         while !self.at(&TokenKind::Equal) && !self.at(&TokenKind::Pipe) {
             let mutable = self.eat(&TokenKind::Mut);
@@ -2011,8 +2017,13 @@ impl Parser<'_> {
         } else {
             self.take();
             // A21: the body's first lines may be contract lines.
-            self.contract_site = Some(self.position);
-            self.body_expression()?
+            if contracts {
+                self.contract_site = Some(self.position);
+            }
+            let method = std::mem::replace(&mut self.method_body, !contracts);
+            let body = self.body_expression();
+            self.method_body = method;
+            body?
         };
         Ok(Definition {
             pure: false,

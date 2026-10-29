@@ -112,6 +112,27 @@ fn rejects_misplaced_contract_lines() {
         "E1033",
         misplaced,
     );
+    // Review of #64: an instance method takes no contract lines; the lines are not attached to
+    // the function declared before the instance either.
+    for method in [
+        "    fn eq left right =\n        @requires left.key >= 0\n        left.key == right.key\n",
+        "    fn eq left right = \\l r ->\n        @requires l >= 0\n        l == r\n",
+    ] {
+        let error = rejects(
+            &format!(
+                "record Keyed {{ key: i64 }}\ndef before :: i64 -> i64 = \\x -> x\ninstance Eq<Keyed> {{\n{method}    fn ne left right = left.key != right.key\n}}\n{MAIN}"
+            ),
+            "E1033",
+            misplaced,
+        );
+        assert!(
+            error
+                .message
+                .starts_with("contract lines are for 'def' functions"),
+            "{}",
+            error.message
+        );
+    }
     // Other names after `@` keep their old error.
     rejects(
         &format!("def f :: i64 -> i64 = \\x -> @serialize x\n{MAIN}"),
@@ -299,6 +320,69 @@ fn contract_impure_is_rejected() {
     accepts(&format!(
         "def positive :: i64 -> bool = \\x -> x > 0\n\
          def f :: ref [i64] -> i64 -> i64 = \\xs i ->\n    @requires positive i && xs[i] > 0 && (Array.init 2 (\\k -> k)).length == 2\n    xs[i]\n{MAIN}"
+    ));
+}
+
+/// Review of #64: the recorded text of a contract line keeps string literals as written and
+/// makes only the space between tokens one space.
+#[test]
+fn contract_text_keeps_string_literals() {
+    let source = "def f :: string -> i64 = \\text ->\n    @requires text == \"a  b\" ||\n        text.length   >  3\n    text.length\n";
+    let program = parser::parse(source).unwrap();
+    let clause = &program.functions[0].contracts[0];
+    assert_eq!(clause.text, "text == \"a  b\" || text.length > 3");
+    let single = parser::parse(&source.replace("a  b", "a b")).unwrap();
+    assert_ne!(single.functions[0].contracts[0].text, clause.text);
+}
+
+/// Review of #64: the operand of `@old` is evaluated on entry in `check` and not at all in
+/// `off`, so it must be pure like the conditions.
+#[test]
+fn old_operands_must_be_pure() {
+    rejects(
+        &format!(
+            "def noisy :: i64 -> i64 = \\x ->\n    Debug.print (ref \"checking\")\n    x\n\
+             def f :: i64 -> i64 = \\x ->\n    @ensures \\r -> r == @old (noisy x)\n    x\n{MAIN}"
+        ),
+        "E1033",
+        Some("contract_impure"),
+    );
+    accepts(&format!(
+        "def f :: i64 -> i64 = \\x ->\n    @ensures \\r -> r == @old (x * 2) / 2\n    x\n{MAIN}"
+    ));
+}
+
+/// Review of #64: a contract line may read mutable arguments but not change them, or the value
+/// it returns: `check` and `off` would compute differently.
+#[test]
+fn contract_lines_cannot_write_to_the_call() {
+    let writes = Some("contract_writes");
+    let helper =
+        "def touch :: ref mut [i64..] -> bool = \\xs ->\n    Array.write 0 7 xs\n    true\n";
+    let error = rejects(
+        &format!(
+            "{helper}def f :: ref mut [i64..] -> i64 = \\xs ->\n    @requires touch xs\n    xs.length\n{MAIN}"
+        ),
+        "E1033",
+        writes,
+    );
+    assert!(
+        error
+            .message
+            .starts_with("a contract line cannot change the data"),
+        "{}",
+        error.message
+    );
+    rejects(
+        &format!(
+            "{helper}def f :: ref mut [i64..] -> i64 = \\xs ->\n    @ensures \\r -> touch xs && r >= 0\n    xs.length\n{MAIN}"
+        ),
+        "E1033",
+        writes,
+    );
+    // Reading a mutable argument, and changing data of the condition's own, are allowed.
+    accepts(&format!(
+        "{helper}def f :: ref mut [i64..] -> i64 = \\xs ->\n    @requires xs.length > 0 && Array.sum xs >= 0\n    @ensures \\r -> {{ let mut copy = [1, 2]; touch (ref mut copy[0..]) }} && r >= 0\n    xs.length\n{MAIN}"
     ));
 }
 

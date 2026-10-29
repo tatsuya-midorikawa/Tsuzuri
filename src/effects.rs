@@ -2855,7 +2855,8 @@ pub(crate) fn impurities(
         }
         // A function value that the condition calls must be a pure function type.
         for (index, parameter) in declaration.parameters.iter().enumerate() {
-            if local.param_calls & (1 << index.min(63)) != 0
+            if index < PARAMETER_BITS
+                && local.param_calls & (1 << index) != 0
                 && parameter.ty.function_purity() != Some(true)
             {
                 candidates.push((parameter.span, "cannot be proven pure".into()));
@@ -2863,7 +2864,7 @@ pub(crate) fn impurities(
         }
         for site in &local.calls {
             let calls_params = summaries.summary(site.callee).calls_params;
-            let open = (0..64)
+            let open = (0..PARAMETER_BITS)
                 .filter(|index| calls_params & (1 << index) != 0)
                 .any(|index| match site.arguments.get(index) {
                     Some(Arg::Param(parameter)) => declaration

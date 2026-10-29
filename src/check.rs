@@ -8128,6 +8128,7 @@ fn check_modules_collect(
     }
     diagnostics.extend(pure_rules::validate(&module));
     diagnostics.extend(contracts::validate_purity(&module));
+    diagnostics.extend(contracts::validate_writes(&module));
     if let Err(error) = validate_cpu_functions(&module) {
         diagnostics.push(error);
     }

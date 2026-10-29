@@ -630,6 +630,7 @@ diagnostic_kinds! {
         (ContractOldOperand, "contract_old_operand", "E1033"),
         (ContractOnConst, "contract_on_const", "E1033"),
         (ContractResultLambda, "contract_result_lambda", "E1033"),
+        (ContractWrites, "contract_writes", "E1033"),
         // E1034
         (ProveCounterexample, "prove_counterexample", "E1034"),
         (ProveSolverError, "prove_solver_error", "E1034"),
@@ -698,6 +699,7 @@ diagnostic_kinds! {
         (OptionUnsupportedPlatform, "option_unsupported_platform", "E2000"),
         (OutputExtensionInvalid, "output_extension_invalid", "E2000"),
         (ProjectManifestMissing, "project_manifest_missing", "E2000"),
+        (ProveUnknownFunction, "prove_unknown_function", "E2000"),
         (ReplCommandUsage, "repl_command_usage", "E2000"),
         (ReplDeclarationNotAllowed, "repl_declaration_not_allowed", "E2000"),
         (ReplUnknownCommand, "repl_unknown_command", "E2000"),
