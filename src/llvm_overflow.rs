@@ -45,7 +45,10 @@ impl Report {
             && function.origin.bench.is_none()
             && (!function.module.starts_with('$')
                 || matches!(function.module.as_str(), "$lambda" | "$task"))
-            && (function.origin.provenance == Provenance::User || function.origin.parent.is_some())
+            // The checker makes the top-level code of a file `$entry`, a generated function.
+            && (function.origin.provenance == Provenance::User
+                || function.origin.parent.is_some()
+                || function.name == "$entry")
             && !matches!(
                 function.body.kind,
                 TypedExprKind::HostCall(..) | TypedExprKind::DynDispatch { .. }
@@ -109,6 +112,8 @@ impl Report {
             let rest = &between[offset..];
             if rest.starts_with("//") {
                 offset += rest.find('\n').unwrap_or(rest.len());
+            } else if rest.starts_with("/*") {
+                offset += block_comment_length(rest);
             } else if rest.starts_with(symbol) {
                 return after + offset;
             } else {
@@ -307,6 +312,29 @@ impl FunctionEmitter<'_, '_> {
         self.jump(&done);
         self.begin(&done);
     }
+}
+
+/// The length of the nested block comment that starts `text`, as the lexer reads it; the whole
+/// text when it does not end.
+fn block_comment_length(text: &str) -> usize {
+    let mut depth = 0;
+    let mut offset = 0;
+    while offset < text.len() {
+        let rest = &text[offset..];
+        if rest.starts_with("/*") {
+            depth += 1;
+            offset += 2;
+        } else if rest.starts_with("*/") {
+            depth -= 1;
+            offset += 2;
+            if depth == 0 {
+                return offset;
+            }
+        } else {
+            offset += rest.chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    text.len()
 }
 
 #[cfg(test)]

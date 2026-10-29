@@ -655,7 +655,7 @@ fn nested_sites_name_their_operators() {
         .find(|site| site.end == source.len() - 1)
         .unwrap();
     let line = format!("warning: {}\n", outer.message(&text));
-    let json = overflow::json_lines(&line, &sites, &[text]);
+    let json = String::from_utf8(overflow::json_lines(line.as_bytes(), &sites, &[text])).unwrap();
     assert!(json.contains(&format!("\"end\":{},", outer.end)), "{json}");
     assert!(
         json.contains(&format!("\"column\":{}", outer.start + 1)),
@@ -678,4 +678,34 @@ fn helper_calls_in_tail_arguments_keep_their_own_sites() {
     assert!(texts.contains(&"a + b"), "{texts:?}");
     assert!(texts.contains(&"(n - 1)"), "{texts:?}");
     assert!(!texts.iter().any(|text| text.contains("plus")), "{texts:?}");
+}
+
+/// Review of #67: a block comment between the operands, nested or not, is not the operator.
+#[test]
+fn block_comments_between_the_operands_are_skipped() {
+    let source = "export def mul :: i32 -> i32 -> i32 = \\a b -> a /* x * y /* * */ */ * b\n";
+    let (_, sites) = emit(source, false);
+    let [site] = sites.as_slice() else {
+        panic!("{sites:?}");
+    };
+    assert_eq!(site.anchor, source.rfind('*').unwrap(), "{site:?}");
+}
+
+/// Review of #67: the top-level code of a file (the checker's `$entry`) is the program's own code.
+#[test]
+fn top_level_code_is_reported() {
+    let root = scratch("entry");
+    let program = "def value :: unit -> i32 = \\_ -> 2147483647\nDebug.print (value () + 1)\n";
+    std::fs::write(root.join("Main.tz"), program).unwrap();
+    let output = tsuzuri(&["run", ".", "--overflow-report"], &root);
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.starts_with(&format!(
+            "warning: integer overflow wrapped at {}:2:23 (i32 add)\n",
+            cli_path()
+        )),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }

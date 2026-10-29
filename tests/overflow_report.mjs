@@ -6,12 +6,16 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const fixture = "tests/fixtures/overflow_report";
-const path = `${fixture}/Main.tz`;
+// The source path as the build spells it: the directory it received, then the file.
+const path = `${fixture}${sep}Main.tz`;
+const pattern = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// A C host writes CRLF on Windows, where its standard streams are in text mode.
+const lines = (text) => text.replaceAll("\r\n", "\n");
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-overflow-report-"));
 
 const run = (program, args) => {
@@ -48,14 +52,14 @@ for (const optimization of ["0", "3"]) {
   // Native: the C host prints the values; the report goes to its standard error.
   for (const report of [false, true]) {
     const ir = join(temporary, `native-${optimization}-${report}.ll`);
-    const executable = join(temporary, `host-${optimization}-${report}`);
+    const executable = join(temporary, `host-${optimization}-${report}${process.platform === "win32" ? ".exe" : ""}`);
     run(compiler, ["build", fixture, "--emit", "llvm", `-O${optimization}`, "-o", ir, ...(report ? ["--overflow-report"] : [])]);
     const text = readFileSync(ir, "utf8");
     assert.equal(text.includes("tsuzuri_overflow_hits"), report);
     run(clang, [`-O${optimization}`, "-Wno-override-module", `${fixture}/host.c`, ir, "-o", executable]);
     const result = run(executable, []);
-    assert.equal(result.stdout, expectedStdout, `native -O${optimization} report=${report}`);
-    assert.equal(result.stderr, report ? expectedReport : "", `native -O${optimization} report=${report}`);
+    assert.equal(lines(result.stdout), expectedStdout, `native -O${optimization} report=${report}`);
+    assert.equal(lines(result.stderr), report ? expectedReport : "", `native -O${optimization} report=${report}`);
     runs += 1;
   }
   // wasm32: the hits are read through the exports, and the side table names the sites.
@@ -76,7 +80,7 @@ for (const optimization of ["0", "3"]) {
   for (const [index, entry] of table.sites.entries()) {
     assert.equal(entry.id, index);
     assert.equal(entry.path, path);
-    assert.match(entry.message, new RegExp(`^integer overflow wrapped at ${path.replaceAll(".", "\\.")}:${entry.span.line}:\\d+ \\(${entry.type} ${entry.operation}\\)$`));
+    assert.match(entry.message, new RegExp(`^integer overflow wrapped at ${pattern(path)}:${entry.span.line}:\\d+ \\(${entry.type} ${entry.operation}\\)$`));
   }
   for (const [, , , site, operator] of cases) {
     const entry = table.sites[at(site)];

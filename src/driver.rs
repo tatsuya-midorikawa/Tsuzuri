@@ -5846,12 +5846,7 @@ fn run_process(
     if json {
         // A23: the report lines of a program that succeeded become `W2001` warnings.
         let stderr = if options.overflow_report {
-            crate::overflow::json_lines(
-                &String::from_utf8_lossy(&stderr),
-                &overflow_sites,
-                &project.overflow_sources(),
-            )
-            .into_bytes()
+            crate::overflow::json_lines(&stderr, &overflow_sites, &project.overflow_sources())
         } else {
             stderr
         };

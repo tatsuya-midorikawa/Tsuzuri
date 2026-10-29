@@ -9,10 +9,11 @@
 //! table and the `run --json` lines. It does not depend on LLVM.
 
 use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use std::rc::Rc;
 
-use crate::diagnostic::{DiagnosticKind, Span, json_string, location, span_json};
+use crate::diagnostic::{DiagnosticKind, Span, json_string, location};
 
 /// The most sites that one program reports; more is `E1017`.
 pub const MAX_SITES: usize = 65_536;
@@ -118,6 +119,17 @@ impl LineIndex {
         let start = self.starts[line - 1];
         (line, text[start..offset].chars().count() + 1)
     }
+
+    /// `diagnostic::span_json` with the lines and columns from this index.
+    pub fn span_json(&self, text: &str, span: Span) -> String {
+        let (line, column) = self.location(text, span.start);
+        let (end_line, end_column) = self.location(text, span.end);
+        format!(
+            "{{\"start\":{},\"end\":{},\"line\":{line},\"column\":{column},\
+             \"end_line\":{end_line},\"end_column\":{end_column}}}",
+            span.start, span.end,
+        )
+    }
 }
 
 /// A source file of the program, by the index that `Span::source` uses.
@@ -200,7 +212,7 @@ pub(crate) fn active() -> Option<Rc<ScopeData>> {
 /// "path":"./Main.tz","span":{...},"message":"..."}]}` and a newline. A site's `id` is its index,
 /// which `tsuzuri_overflow_hit` takes.
 pub fn side_table(sites: &[Site], sources: &[Source]) -> String {
-    let mut lines = std::collections::BTreeMap::new();
+    let mut lines = BTreeMap::new();
     let mut output = String::from("{\"version\":1,\"sites\":[");
     for (id, site) in sites.iter().enumerate() {
         let source = &sources[site.source];
@@ -216,7 +228,7 @@ pub fn side_table(sites: &[Site], sources: &[Source]) -> String {
             json_string(site.operation.name()),
             json_string(&site.type_name()),
             json_string(&source.path),
-            span_json(&source.text, site.span()),
+            index.span_json(&source.text, site.span()),
             json_string(&site.message_indexed(source, index)),
         );
     }
@@ -241,55 +253,75 @@ pub fn is_report_line(line: &str) -> bool {
 
 /// The standard error of a program that `run --json` ran, with each report line turned into a
 /// `W2001` warning: the message without `warning: `, and the path and span of the site whose
-/// message it is. The other lines stay as they are.
-pub fn json_lines(stderr: &str, sites: &[Site], sources: &[Source]) -> String {
-    // Each site's message, once: a message names the operator, so it names one site.
-    let mut indexes = std::collections::BTreeMap::new();
-    let mut by_message = std::collections::HashMap::new();
-    if stderr.contains(REPORT_PREFIX) {
-        for site in sites {
-            let Some(source) = sources.get(site.source) else {
-                continue;
-            };
-            let index = indexes
-                .entry(site.source)
-                .or_insert_with(|| LineIndex::new(&source.text));
-            by_message
-                .entry(site.message_indexed(source, index))
-                .or_insert((site, source));
-        }
-    }
-    let mut output = String::with_capacity(stderr.len());
-    for line in stderr.split_inclusive('\n') {
-        let text = line.trim_end_matches(['\n', '\r']);
-        if !is_report_line(text) {
-            output.push_str(line);
+/// message it is. The other lines keep their bytes, UTF-8 or not.
+pub fn json_lines(stderr: &[u8], sites: &[Site], sources: &[Source]) -> Vec<u8> {
+    // Each site's message and the index of its source's lines, once the first report line is
+    // met: a message names the operator, so it names one site.
+    let mut by_message: Option<Messages> = None;
+    let mut output = Vec::with_capacity(stderr.len());
+    for line in stderr.split_inclusive(|byte| *byte == b'\n') {
+        let Some(text) = std::str::from_utf8(line)
+            .ok()
+            .map(|line| line.trim_end_matches(['\n', '\r']))
+            .filter(|text| is_report_line(text))
+        else {
+            output.extend_from_slice(line);
             continue;
-        }
+        };
+        let by_message = by_message.get_or_insert_with(|| messages(sites, sources));
         let message = &text["warning: ".len()..];
-        let site = by_message.get(message).copied();
         let kind = if text == STOPPED_LINE {
             DiagnosticKind::ToolNotice
         } else {
             DiagnosticKind::IntegerOverflowWrapped
         };
-        let _ = write!(
-            output,
+        let mut json = format!(
             "{{\"severity\":\"warning\",\"code\":\"{}\",\"message\":{}",
             kind.code(),
             json_string(message)
         );
-        if let Some((site, source)) = site {
+        if let Some(site) = by_message.sites.get(message)
+            && let Some(source) = sources.get(site.source)
+        {
+            let index = &by_message.indexes[&site.source];
             let _ = write!(
-                output,
+                json,
                 ",\"path\":{},\"span\":{}",
                 json_string(&source.path),
-                span_json(&source.text, site.span())
+                index.span_json(&source.text, site.span())
             );
         }
-        let _ = writeln!(output, ",\"kind\":\"{}\"}}", kind.id());
+        let _ = writeln!(json, ",\"kind\":\"{}\"}}", kind.id());
+        output.extend_from_slice(json.as_bytes());
     }
     output
+}
+
+/// Each site by its message, and the line index of each source that has a site.
+struct Messages<'a> {
+    sites: HashMap<String, &'a Site>,
+    indexes: BTreeMap<usize, LineIndex>,
+}
+
+fn messages<'a>(sites: &'a [Site], sources: &[Source]) -> Messages<'a> {
+    let mut messages = Messages {
+        sites: HashMap::new(),
+        indexes: BTreeMap::new(),
+    };
+    for site in sites {
+        let Some(source) = sources.get(site.source) else {
+            continue;
+        };
+        let index = messages
+            .indexes
+            .entry(site.source)
+            .or_insert_with(|| LineIndex::new(&source.text));
+        messages
+            .sites
+            .entry(site.message_indexed(source, index))
+            .or_insert(site);
+    }
+    messages
 }
 
 #[cfg(test)]
@@ -365,9 +397,9 @@ mod tests {
             signed: true,
         };
         let stderr = "debug line\nwarning: integer overflow wrapped at ./Main.tz:1:51 (i32 add)\nwarning: integer overflow wrapped at ./Other.tz:3:1 (i8 mul)\nwarning: integer overflow reports stop after 100 sites\ntail";
-        let lines = json_lines(stderr, &[site], &[source(text)]);
+        let lines = json_lines(stderr.as_bytes(), &[site], &[source(text)]);
         assert_eq!(
-            lines,
+            String::from_utf8(lines).unwrap(),
             "debug line\n\
              {\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at ./Main.tz:1:51 (i32 add)\",\"path\":\"./Main.tz\",\"span\":{\"start\":48,\"end\":53,\"line\":1,\"column\":49,\"end_line\":1,\"end_column\":54},\"kind\":\"integer_overflow_wrapped\"}\n\
              {\"severity\":\"warning\",\"code\":\"W2001\",\"message\":\"integer overflow wrapped at ./Other.tz:3:1 (i8 mul)\",\"kind\":\"integer_overflow_wrapped\"}\n\
@@ -382,6 +414,13 @@ mod tests {
                 "integer overflow reports stop after 100 sites",
             ]
         );
+        // The bytes of other lines stay as the program wrote them, UTF-8 or not.
+        let raw =
+            b"\xff\xfe raw\r\nwarning: integer overflow wrapped at ./Main.tz:1:51 (i32 add)\n\x80";
+        let lines = json_lines(raw, &[site], &[source(text)]);
+        assert!(lines.starts_with(b"\xff\xfe raw\r\n{\"severity\":\"warning\",\"code\":\"W2001\""));
+        assert!(lines.ends_with(b"\"kind\":\"integer_overflow_wrapped\"}\n\x80"));
+        assert_eq!(json_lines(b"\xff\n", &[site], &[]), b"\xff\n");
     }
 
     #[test]
@@ -392,6 +431,12 @@ mod tests {
             assert_eq!(
                 lines.location(text, offset),
                 location(text, offset),
+                "{offset}"
+            );
+            let span = Span::new(offset / 2, offset);
+            assert_eq!(
+                lines.span_json(text, span),
+                crate::diagnostic::span_json(text, span),
                 "{offset}"
             );
         }
