@@ -223,8 +223,13 @@ struct Item {
     borrowing_defaults: Vec<bool>,
     /// The arity protected by the pure contract, excluding returned callable stages.
     pure: Option<usize>,
-    /// The effect attributes (A20): promises that adding keeps and removing breaks.
+    /// The effect attributes (A20): promises that adding keeps and removing breaks, except on a
+    /// function that may call the functions it is given (see `callbacks`).
     asserts: Asserts,
+    /// Whether a parameter may carry a function value that the function calls. An effect
+    /// attribute added to such a function also binds its callers, which must then pass callbacks
+    /// that keep it (A20 Phase 6).
+    callbacks: bool,
     /// The contract lines (A21) as written: `@requires ...` and `@ensures \r -> ...`.
     contracts: BTreeSet<String>,
     contract: Option<String>,
@@ -258,6 +263,7 @@ impl Item {
             borrowing_defaults: Vec::new(),
             pure: None,
             asserts: Asserts(0),
+            callbacks: false,
             contracts: BTreeSet::new(),
             contract: None,
             members: Vec::new(),
@@ -713,6 +719,7 @@ fn add_items(
         item.exported = declaration.exported;
         item.constant = declaration.constant;
         item.pure = declaration.pure.then_some(declaration.parameters.len());
+        item.callbacks = types.iter().any(|ty| may_carry_functions(ty));
         for attribute in effect_attributes
             .iter()
             .filter(|attribute| attribute.function.text == declaration.name.text)
@@ -1237,6 +1244,68 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
     }
 }
 
+/// Whether a parameter of this type may carry a function value that the function can call:
+/// a function, task or `dyn` type, or a named type that the syntax alone cannot show to be
+/// closed (records and unions may hold functions). Scalars, strings, type variables and the
+/// standard collections of closed types are closed.
+fn may_carry_functions(ty: &TypeExpr) -> bool {
+    const CLOSED: [&str; 31] = [
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "i128",
+        "i8u",
+        "i16u",
+        "i32u",
+        "i64u",
+        "i128u",
+        "byte",
+        "ubyte",
+        "sbyte",
+        "f16",
+        "f32",
+        "f64",
+        "f128",
+        "d32",
+        "d64",
+        "d128",
+        "bool",
+        "char",
+        "utf8char",
+        "string",
+        "utf8string",
+        "unit",
+        "bigint",
+        "BigInt",
+        "Json",
+        "Instant",
+        "Duration",
+    ];
+    const COLLECTIONS: [&str; 9] = [
+        "Array", "List", "Vec", "Maybe", "Result", "Map", "Set", "HashMap", "HashSet",
+    ];
+    match &ty.kind {
+        TypeExprKind::Variable(_) | TypeExprKind::Length(_) => false,
+        TypeExprKind::Named(name) => !CLOSED.contains(&name.as_str()),
+        TypeExprKind::Apply(head, arguments) => {
+            let name = head.text.rsplit('.').next().unwrap_or(&head.text);
+            !COLLECTIONS.contains(&name) || arguments.iter().any(may_carry_functions)
+        }
+        TypeExprKind::Array(inner)
+        | TypeExprKind::ArrayView(inner)
+        | TypeExprKind::List(inner)
+        | TypeExprKind::Reference(inner, _)
+        | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner)
+        | TypeExprKind::Regions(inner, _) => may_carry_functions(inner),
+        TypeExprKind::FixedArray(inner, _) => may_carry_functions(inner),
+        TypeExprKind::Tuple(elements) => elements.iter().any(may_carry_functions),
+        _ => true,
+    }
+}
+
 /// The changes between two versions of an item with the same name and kind.
 fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
     if old.header != new.header
@@ -1248,13 +1317,17 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         || old.contract != new.contract
     {
         // Exporting or adding a const/pure contract adds a symbol or a use
-        // and changes nothing else; revoking either breaks the code that relied on it.
+        // and changes nothing else; revoking either breaks the code that relied on it. An effect
+        // attribute added to a function that calls the functions it is given requires its callers
+        // to pass callbacks that keep it, so it breaks them.
+        let added_obligation = new.callbacks && new.asserts.0 & !old.asserts.0 != 0;
         let widened = old.header == new.header
             && old.exported <= new.exported
             && old.constant <= new.constant
             && old.borrowing_defaults == new.borrowing_defaults
             && (old.pure.is_none() || old.pure == new.pure)
             && old.asserts.0 & !new.asserts.0 == 0
+            && !added_obligation
             && old.contract == new.contract;
         changes.push(Change {
             breaking: !widened,
@@ -1265,6 +1338,8 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             new: Some(new.text()),
             note: if old.borrowing_defaults != new.borrowing_defaults {
                 "default parameter conventions change; effective signatures may differ"
+            } else if added_obligation {
+                "callers must pass functions that keep the new effect attribute"
             } else {
                 ""
             },

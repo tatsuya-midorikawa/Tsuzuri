@@ -280,8 +280,9 @@ struct ProjectState {
     counts: DiagnosticCounts,
     /// The implicit array and list copies that inlay hints show (A15).
     copies: Vec<CopySite>,
-    /// The inferred effects of the functions with effect attributes, by declared name (A20).
-    effects: BTreeMap<String, Vec<&'static str>>,
+    /// The inferred effects of the functions with effect attributes, by the position of the
+    /// declared name (A20).
+    effects: BTreeMap<(usize, usize), String>,
     modules: ModuleNames,
 }
 
@@ -609,17 +610,14 @@ impl Session {
                         markdown.push_str("\n\n---\n\n");
                     }
                     markdown.push_str(&format!("```tsuzuri\n{}\n```", entry.detail));
-                    if let Some(effects) =
-                        hovered_function(&entry.detail).and_then(|name| state.effects.get(name))
+                    let definition = entry.target.unwrap_or(entry.span);
+                    if let Some(effects) = definition
+                        .source
+                        .and_then(|source| state.effects.get(&(source, definition.start)))
+                        .filter(|_| hovered_function(&entry.detail).is_some())
                     {
-                        markdown.push_str(&format!(
-                            "\n\ninferred effects: {}",
-                            if effects.is_empty() {
-                                "none".to_owned()
-                            } else {
-                                effects.join(", ")
-                            }
-                        ));
+                        markdown.push_str("\n\ninferred effects: ");
+                        markdown.push_str(effects);
                     }
                     if let Some(doc) = state
                         .index
@@ -1417,24 +1415,48 @@ const MAX_HOVERED_DIAGNOSTICS: usize = 3;
 
 /// The diagnostics with a kind whose span contains `offset` of the source (an empty span: starts
 /// at it), in the order they were reported.
-/// The inferred effects of each function with effect attributes, the union of its instances (A20).
-fn inferred_effects(module: &crate::check::CheckedModule) -> BTreeMap<String, Vec<&'static str>> {
-    let Some(summaries) = &module.effects else {
+/// The inferred effects of each function with effect attributes, the union of its instances, by
+/// the position of its declared name (A20). The summaries are complete: `check` computes only the
+/// effects that the attributes forbid, which would read as "none" for the others.
+fn inferred_effects(module: &crate::check::CheckedModule) -> BTreeMap<(usize, usize), String> {
+    use crate::check::effects::{EffectSet, Options, SUPPORTED, Scope, summarize};
+    if module
+        .functions
+        .iter()
+        .all(|function| function.origin.asserts.is_empty())
+    {
+        return BTreeMap::new();
+    }
+    let Ok(summaries) = summarize(module, Options::new(Scope::Reachable, SUPPORTED)) else {
         return BTreeMap::new();
     };
-    let mut effects: BTreeMap<String, crate::check::effects::EffectSet> = BTreeMap::new();
+    let mut effects: BTreeMap<(usize, usize), (EffectSet, bool)> = BTreeMap::new();
     for (id, function) in module.functions.iter().enumerate() {
+        let Some(source) = function.span.source else {
+            continue;
+        };
         if function.origin.asserts.is_empty() {
             continue;
         }
-        let name = function.qualified_name();
-        let name = name.split(".$mono.").next().unwrap().to_owned();
-        let entry = effects.entry(name).or_default();
-        *entry = entry.union(summaries.summary(id).effects);
+        let summary = summaries.summary(id);
+        let entry = effects.entry((source, function.span.start)).or_default();
+        entry.0 = entry.0.union(summary.effects);
+        entry.1 |= summary.unknown.is_some();
     }
     effects
         .into_iter()
-        .map(|(name, set)| (name, set.names()))
+        .map(|(position, (set, unknown))| {
+            let names = set.names();
+            let mut text = if names.is_empty() {
+                "none".to_owned()
+            } else {
+                names.join(", ")
+            };
+            if unknown {
+                text.push_str(" (and calls that the analysis cannot follow)");
+            }
+            (position, text)
+        })
         .collect()
 }
 
