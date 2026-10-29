@@ -3830,7 +3830,7 @@ pub fn main_entry(module: &CheckedModule) -> bool {
 }
 
 /// Whether `main` takes the command-line arguments.
-fn main_arguments(module: &CheckedModule) -> bool {
+pub fn main_arguments(module: &CheckedModule) -> bool {
     main_entry(module)
         && module.entry.is_some_and(|id| {
             matches!(

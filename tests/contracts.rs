@@ -401,6 +401,86 @@ fn contract_lines_cannot_write_to_the_call() {
     ));
 }
 
+/// Review 3 of #64: a reference that a conditional, a `match` or a block computes, and an
+/// exclusive reference in a record that a call receives, may write to the call as well.
+#[test]
+fn contract_lines_cannot_write_through_computed_or_nested_references() {
+    let writes = Some("contract_writes");
+    let poke = "def poke :: ref mut i64 -> bool = \\p ->\n    deref p = 1\n    true\n";
+    for condition in [
+        "poke (if b then p else p)",
+        "poke (match b with | true -> p | false -> p)",
+        "poke ({ let n = 1; p })",
+        "{ deref (if b then p else p) = 7; true }",
+    ] {
+        rejects(
+            &format!(
+                "{poke}def set :: bool -> ref mut i64 -> unit = \\b p ->\n    @ensures \\_ -> {condition}\n    ()\n{MAIN}"
+            ),
+            "E1033",
+            writes,
+        );
+    }
+    let counter = "record Counter {r} { value: ref mut {r} i64, step: i64 }\n\
+                   def touch :: own Counter -> bool = \\c ->\n    deref c.value = 5\n    true\n";
+    let error = rejects(
+        &format!(
+            "{counter}def f :: own Counter -> i64 = \\c ->\n    @requires touch c\n    0\n{MAIN}"
+        ),
+        "E1033",
+        writes,
+    );
+    assert!(
+        error.message.contains("exclusive reference"),
+        "{}",
+        error.message
+    );
+    rejects(
+        &format!(
+            "{counter}def bump :: Counter -> bool = \\c ->\n    deref c.value = deref c.value + c.step\n    true\n\
+             def f :: own Counter -> i64 = \\c ->\n    @requires {{ let d = c; bump d }}\n    0\n{MAIN}"
+        ),
+        "E1033",
+        writes,
+    );
+    // A `pure` callee cannot write through what it receives, and a shared reference to the
+    // record cannot change the data of its exclusive field (E1014); a condition-local
+    // reference is the condition's own.
+    accepts(&format!(
+        "{counter}pure def read :: Counter -> i64 = \\c -> deref c.value + c.step\n\
+         def peek :: ref Counter -> i64 = \\c -> deref c.value\n\
+         def f :: own Counter -> bool -> i64 = \\c b ->\n    @requires read c >= 0 && peek (ref c) >= 0\n    @ensures \\r -> {{ let mut x = 1; let mut y = 2; poke (if b then ref mut x else ref mut y) }} && r >= 0\n    0\n{poke}{MAIN}"
+    ));
+}
+
+/// Review 3 of #64: the 32 contract lines of a function may take more than 255 `@old` values;
+/// the woven body is laid out by counts that do not wrap, in `check` and in `off`.
+#[test]
+fn more_than_255_old_values() {
+    let olds = ["@old (x)"; 10].join(" + ");
+    let mut source = String::from("def f :: i64 -> i64 = \\x ->\n");
+    for _ in 0..4 {
+        source.push_str("    @requires x >= 0\n");
+    }
+    for _ in 0..28 {
+        source.push_str(&format!("    @ensures \\r -> r == {olds} - 9 * x\n"));
+    }
+    source.push_str("    x\ndef use :: unit -> i64 = \\() -> f 3\n");
+    source.push_str(MAIN);
+    let module = analyze_modules_with_contracts(&[("Main.tz", &source)], ContractMode::Check)
+        .unwrap_or_else(|errors| panic!("{:?}", errors.first().map(|e| e.message.clone())));
+    let shape = function(&module, "Main.f").contracts;
+    assert_eq!((shape.requires, shape.olds, shape.ensures), (4, 280, 28));
+    llvm::emit(&module, llvm::Entry::Library).unwrap();
+    let plain = without_contract_lines(&source);
+    let emit = |text: &str| {
+        let module = analyze_modules_with_contracts(&[("Main.tz", text)], ContractMode::Off)
+            .unwrap_or_else(|errors| panic!("{:?}", errors.first().map(|e| e.message.clone())));
+        llvm::emit(&module, llvm::Entry::Library).unwrap()
+    };
+    assert_eq!(emit(&source), emit(&plain));
+}
+
 /// Review of #64, round 2: `@old` is resolved where the checker reads an argument without
 /// `expression` (a qualified call) and inside a computation.
 #[test]

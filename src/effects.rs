@@ -717,7 +717,14 @@ fn takes_string(function: &CheckedFunction) -> bool {
 
 /// The arguments that every call of a value used as `consumer` supplies: through the uses of
 /// the immutable local it is bound to (`usize::MAX` when nothing calls it or passes it on).
-fn supplied(consumer: Consumer, uses: &BTreeMap<usize, Vec<Consumer>>, depth: usize) -> usize {
+/// `known` keeps the answer of each local, which an alias that uses its source twice
+/// (`let b = if c then a else a`) would otherwise compute once for each path (review 3 of #63).
+fn supplied(
+    consumer: Consumer,
+    uses: &BTreeMap<usize, Vec<Consumer>>,
+    known: &mut BTreeMap<usize, usize>,
+    depth: usize,
+) -> usize {
     let Some(local) = consumer.alias else {
         return consumer.supplied;
     };
@@ -725,13 +732,20 @@ fn supplied(consumer: Consumer, uses: &BTreeMap<usize, Vec<Consumer>>, depth: us
     if depth > 64 {
         return consumer.supplied;
     }
-    let rest = uses.get(&local).map_or(usize::MAX, |found| {
-        found
-            .iter()
-            .map(|&next| supplied(next, uses, depth + 1))
-            .min()
-            .unwrap_or(usize::MAX)
-    });
+    let rest = match known.get(&local) {
+        Some(&rest) => rest,
+        None => {
+            let rest = uses.get(&local).map_or(usize::MAX, |found| {
+                found
+                    .iter()
+                    .map(|&next| supplied(next, uses, known, depth + 1))
+                    .min()
+                    .unwrap_or(usize::MAX)
+            });
+            known.insert(local, rest);
+            rest
+        }
+    };
     consumer.supplied.saturating_add(rest)
 }
 
@@ -1786,8 +1800,11 @@ impl<'s, 'a> Scan<'s, 'a> {
                 self.exempt(Effect::Trap, span, "pattern-projection");
                 false
             }
-            K::NewArray(length, _) | K::NewList(length, _) => {
+            K::NewArray(length, initializer) | K::NewList(length, initializer) => {
                 self.source(Effect::Alloc, span, "new-collection");
+                // The initializer is called with each index, as the callback of `Array.init` is
+                // (review 3 of #63).
+                self.value_call(None, &[initializer.as_ref()], span);
                 let non_negative = matches!(length.kind, K::Length(_) | K::StringLength(_))
                     || matches!(length.kind, K::Int(value) if value < 1 << 63);
                 if non_negative {
@@ -2217,13 +2234,14 @@ fn summarize_roots(
         sites.sort_by_key(|site| (position(site.span), site.effect, site.exempt));
         sites.dedup();
         result.sites[id] = sites;
+        let mut known = BTreeMap::new();
         result.references[id] = local
             .references
             .iter()
             .map(|&(function, span, consumer)| Reference {
                 function,
                 span,
-                supplied: supplied(consumer, &local.alias_uses, 0),
+                supplied: supplied(consumer, &local.alias_uses, &mut known, 0),
             })
             .collect();
         result.calls[id] = local.calls;
