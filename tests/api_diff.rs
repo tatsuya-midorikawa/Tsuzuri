@@ -2006,4 +2006,20 @@ fn api_diff_treats_attributes_as_promises() {
         compare(closed, &format!("@no_alloc\n{closed}"), &[]),
         ["non-breaking changed def Main.total"]
     );
+    // Review of #63: each instance of a generic function is checked with the types its callers
+    // choose, so a new attribute can reject an instantiation that compiled before (`[i64]` here).
+    let generic = "def pair :: ref 'a -> ('a * 'a) = \\x -> (deref x, deref x)\n";
+    assert_eq!(
+        compare(generic, &format!("@no_copy\n{generic}"), &[]),
+        ["breaking changed def Main.pair"]
+    );
+    assert_eq!(
+        compare_mode(generic, &format!("@no_copy\n{generic}"), &[], true),
+        ["breaking changed def Main.pair"]
+    );
+    let result_only = "def empty :: unit -> ['a] = \\() -> []\n";
+    assert_eq!(
+        compare(result_only, &format!("@no_alloc\n{result_only}"), &[]),
+        ["breaking changed def Main.empty"]
+    );
 }

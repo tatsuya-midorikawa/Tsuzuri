@@ -79,12 +79,12 @@
 
 | 行 | 件数 | 効果 | alloc | trap | diverge | cb | 免除 | variant |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B1 | 107 | - | - | - | - | - | - | Sqrt Floor Ceil Abs MathSqrt MathFloor MathCeil MathTrunc MathRound MathRoundEven MathAbs MathMin MathMax MathClamp MathFma MathCopysign MathIsNan MathIsInfinite MathIsFinite MathPi MathE MathSin MathCos MathTan MathAsin MathAcos MathAtan MathAtan2 MathExp MathExp2 MathLog MathLog2 MathLog10 MathPow MathCbrt MathHypot ToFloat ToInt StringIsWellFormed UnicodeTableLength Default Hash HashMix VecEmpty SimdSplat SimdOfLanes2 SimdOfLanes4 SimdOfLanes8 SimdOfLanes16 SimdOfLanes32 SimdSum SimdEq SimdNe SimdLt SimdLe SimdGt SimdGe SimdSelect SimdAll SimdAny VecLength VecCapacity VecIsEmpty VecPop VecOfArray VecToArray CharToU16 CharOfU16 Utf8CharToU32 Utf8CharOfU32 StringToCodeUnits StringFromCodeUnits Utf8StringToBytes Utf8StringFromBytes StringCompare Utf8StringCompare IntMin IntMax IntAbs IntUnsignedAbs IntAbsDiff IntCountOnes IntLeadingZeros IntTrailingZeros IntRotateLeft IntRotateRight IntSwapBytes IntReverseBits IntIsPowerOfTwo IntCheckedAdd IntCheckedSub IntCheckedMul IntCheckedDiv IntCheckedRem IntCheckedNeg IntSaturatingAdd IntSaturatingSub IntSaturatingMul IntCheckedPow IntWideningMul OwnedDrop OwnedFunction Not Ignore TestAdd TestUnsigned TestWiden |
+| B1 | 105 | - | - | - | - | - | - | Sqrt Floor Ceil Abs MathSqrt MathFloor MathCeil MathTrunc MathRound MathRoundEven MathAbs MathMin MathMax MathClamp MathFma MathCopysign MathIsNan MathIsInfinite MathIsFinite MathPi MathE MathSin MathCos MathTan MathAsin MathAcos MathAtan MathAtan2 MathExp MathExp2 MathLog MathLog2 MathLog10 MathPow MathCbrt MathHypot ToFloat ToInt StringIsWellFormed UnicodeTableLength Default Hash HashMix VecEmpty SimdSplat SimdOfLanes2 SimdOfLanes4 SimdOfLanes8 SimdOfLanes16 SimdOfLanes32 SimdSum SimdEq SimdNe SimdLt SimdLe SimdGt SimdGe SimdSelect SimdAll SimdAny VecLength VecCapacity VecIsEmpty VecPop VecOfArray VecToArray CharToU16 CharOfU16 Utf8CharToU32 Utf8CharOfU32 Utf8StringToBytes Utf8StringFromBytes StringCompare Utf8StringCompare IntMin IntMax IntAbs IntUnsignedAbs IntAbsDiff IntCountOnes IntLeadingZeros IntTrailingZeros IntRotateLeft IntRotateRight IntSwapBytes IntReverseBits IntIsPowerOfTwo IntCheckedAdd IntCheckedSub IntCheckedMul IntCheckedDiv IntCheckedRem IntCheckedNeg IntSaturatingAdd IntSaturatingSub IntSaturatingMul IntCheckedPow IntWideningMul OwnedDrop OwnedFunction Not Ignore TestAdd TestUnsigned TestWiden |
 | B2 | 3 | - | - | - | - | - | dead_guard | VecTruncate VecClear VecGet |
 | B3 | 4 | - | - | - | - | ○ | - | FixedArrayInit ListFoldRef SeqNext OwnedCall |
 | B4 | 20 | - | - | ○ | - | - | - | Assert Unreachable UnicodeTableEntry ArraySet ArraySwap ArrayWrite ArraySwapIn ArraySplitAtMut ListTail SimdExtract SimdReplace SimdLoad SimdStore VecSet VecSwap VecAt Utf8CharOfU32Unchecked Utf8StringDecodeAt IntClamp IntWrappingPow |
 | B5 | 1 | - | - | ○ | - | ○ | - | ArrayUpdate |
-| B6 | 18 | - | ○ | - | - | - | - | CloneString CloneUtf8String StringFromUtf8 Utf8StringFromString StringToWellFormed ToString Display Parse DisplayQuoted ListCons ArrayConcat ArrayToList ListReverse ListToArray VecWithCapacity VecPush VecReserve VecClone |
+| B6 | 20 | - | ○ | - | - | - | - | CloneString CloneUtf8String StringFromUtf8 Utf8StringFromString StringToWellFormed ToString Display Parse DisplayQuoted ListCons ArrayConcat ArrayToList ListReverse ListToArray VecWithCapacity VecPush VecReserve VecClone StringToCodeUnits StringFromCodeUnits（#63 のレビュー: compact な文字列では単位を新しい領域へ広げる・狭める） |
 | B7 | 3 | - | ○ | - | - | ○ | - | ArraySortBy ListMap ListMapRef |
 | B8 | 1 | dyn | ○ | - | - | - | - | DynOf |
 | B9 | 3 | io | - | - | - | - | - | IOWrite AsyncClock AsyncRetire |
@@ -93,9 +93,9 @@
 | B12 | 1 | io | - | - | ○ | - | runtime_internal | AsyncWait |
 | B13 | 1 | io | ○ | - | ○ | - | host_status | IOReadLine |
 | B14 | 2 | os | - | - | - | - | - | BenchNow GenSeed |
-| B15 | 5 | os | - | - | - | - | host_status | OsWrite OsClock OsSleep OsOpen OsClose |
+| B15 | 3 | os | - | - | - | - | host_status | OsClock OsSleep OsClose |
 | B16 | 2 | os | ○ | - | - | - | host_status | OsArgs OsRandom |
-| B17 | 3 | os | ○ | - | ○ | - | host_status | OsRead OsHandle OsSpawn |
+| B17 | 5 | os | ○ | - | ○ | - | host_status | OsRead OsHandle OsSpawn OsWrite OsOpen（#63 のレビュー: パスを C のヒープへ複製し、FIFO を開くと相手を待つ） |
 | B18 | 5 | net | - | - | - | - | host_status | NetClose NetClassify NetWatch NetUnwatch NetSend |
 | B19 | 2 | net | - | - | ○ | - | host_status | NetWrite NetConnect |
 | B20 | 1 | net | ○ | - | - | - | host_status | NetNames |
