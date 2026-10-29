@@ -3643,6 +3643,18 @@ pub struct CheckedModule {
     pub statics: BTreeMap<usize, StaticData>,
     /// A20: the effect summaries that the effect attributes needed; `None` without attributes.
     pub effects: Option<effects::FunctionEffects>,
+    /// E15: the generic functions written in source code. Specialization replaces each with its
+    /// instances and drops one that nothing calls, so `audit` counts the declarations from here.
+    pub generic_declarations: Vec<GenericDeclaration>,
+}
+
+/// A generic function as it was declared, before specialization (E15).
+#[derive(Clone, Debug)]
+pub struct GenericDeclaration {
+    /// `module.name`, as `CheckedFunction::qualified_name` writes it.
+    pub qualified_name: String,
+    pub span: Span,
+    pub origin: FunctionOrigin,
 }
 
 /// The value of a constant that the program keeps once, as read-only static data (D11 Phase 2).
@@ -8065,6 +8077,7 @@ fn check_modules_collect(
         gpu: Default::default(),
         statics,
         effects: None,
+        generic_declarations: Vec::new(),
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -8466,6 +8479,7 @@ fn recovery_module(
         gpu: Default::default(),
         statics: BTreeMap::new(),
         effects: None,
+        generic_declarations: Vec::new(),
     }
 }
 
