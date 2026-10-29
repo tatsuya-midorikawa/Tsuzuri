@@ -1989,6 +1989,23 @@ fn api_diff_treats_attributes_as_promises() {
         ["breaking changed def Main.f"]
     );
     assert!(compare(&attributed, &attributed, &[]).is_empty());
+    // Review of #63: on a function that may call what it is given, a new attribute also binds
+    // the callers, whose callbacks must keep it.
+    let apply = "def apply :: (i64 -> i64) -> i64 -> i64 = \\f x -> f x\n";
+    assert_eq!(
+        compare(apply, &format!("@no_alloc\n{apply}"), &[]),
+        ["breaking changed def Main.apply"]
+    );
+    let record = "record Box { f: i64 -> i64 }\ndef run :: ref Box -> i64 = \\b -> b.f 1\n";
+    assert!(
+        compare(record, &record.replace("def run", "@no_trap\ndef run"), &[])
+            .contains(&"breaking changed def Main.run".to_owned())
+    );
+    let closed = "def total :: ref [i64] -> Maybe<i64> -> i64 = \\xs extra -> xs.length + Maybe.get_or 0 extra\n";
+    assert_eq!(
+        compare(closed, &format!("@no_alloc\n{closed}"), &[]),
+        ["non-breaking changed def Main.total"]
+    );
 }
 
 #[test]

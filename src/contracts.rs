@@ -87,7 +87,8 @@ pub(crate) fn strip(function: &mut CheckedFunction) {
     function.contracts = ContractShape::default();
 }
 
-/// The condition of each contract line of a woven body, with the span of its line.
+/// The condition of each contract line of a woven body, with the span of its line, and the
+/// operand of each `@old`, which the woven body evaluates on entry, with its own span.
 pub(crate) fn conditions(function: &CheckedFunction) -> Vec<(&TypedExpr, Span)> {
     let shape = function.contracts;
     if shape.is_empty() {
@@ -108,6 +109,8 @@ pub(crate) fn conditions(function: &CheckedFunction) -> Vec<(&TypedExpr, Span)> 
         .iter()
         .filter_map(|(_, value)| condition(value))
         .collect();
+    let olds = requires..(requires + usize::from(shape.olds)).min(bindings.len());
+    found.extend(bindings[olds].iter().map(|(_, value)| (value, value.span)));
     found.extend(
         bindings
             .iter()
@@ -445,6 +448,89 @@ pub(super) fn validate_purity(module: &CheckedModule) -> Vec<Diagnostic> {
     }
 }
 
+/// `E1033` (`contract_writes`) for each function whose contract lines may change data that the
+/// function received or returns: an assignment to it, a mutable borrow of it, or a call that
+/// receives it as a mutable reference. Such a line would make `check` and `off` compute
+/// differently. A condition may read mutable arguments and change data of its own.
+pub(super) fn validate_writes(module: &CheckedModule) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut seen = BTreeSet::new();
+    for function in &module.functions {
+        if function.contracts.is_empty() {
+            continue;
+        }
+        // The storage of the call: the parameters and the locals that the woven body binds
+        // around the conditions (the result and the `@old` values).
+        let mut outside: BTreeSet<usize> = function.parameters.iter().map(|p| p.id).collect();
+        if let TypedExprKind::Block { bindings, .. } = &function.body.kind {
+            outside.extend(bindings.iter().map(|(local, _)| local.id));
+        }
+        for (condition, _) in conditions(function) {
+            let Some(span) = write_outside(condition, &outside) else {
+                continue;
+            };
+            let name = function.qualified_name();
+            if seen.insert(name.split(".$mono.").next().unwrap().to_owned()) {
+                diagnostics.push(
+                    Diagnostic::of(
+                        DiagnosticKind::ContractWrites,
+                        "a contract line cannot change the data that the function receives or returns; 'off' would not run it",
+                        span,
+                    )
+                    .with_help("read the value, or copy it into a local of the condition first"),
+                );
+            }
+            break;
+        }
+    }
+    diagnostics
+}
+
+/// The local that a place is rooted at: through fields, indices, slices, borrows and
+/// dereferences.
+fn place_root(mut expression: &TypedExpr) -> Option<usize> {
+    loop {
+        match &expression.kind {
+            TypedExprKind::Local(id) => return Some(*id),
+            TypedExprKind::Field(inner, _)
+            | TypedExprKind::Index(inner, _)
+            | TypedExprKind::Borrow(inner, _)
+            | TypedExprKind::BorrowOperand(inner)
+            | TypedExprKind::Dereference(inner)
+            | TypedExprKind::Slice { value: inner, .. } => expression = inner,
+            _ => return None,
+        }
+    }
+}
+
+/// The first place in `condition` that may write to one of the `outside` locals.
+fn write_outside(condition: &TypedExpr, outside: &BTreeSet<usize>) -> Option<Span> {
+    let rooted = |place: &TypedExpr| place_root(place).is_some_and(|id| outside.contains(&id));
+    let mut pending = vec![condition];
+    while let Some(expression) = pending.pop() {
+        match &expression.kind {
+            TypedExprKind::Assign(place, _) if rooted(place) => return Some(expression.span),
+            TypedExprKind::Borrow(place, true) if rooted(place) => return Some(expression.span),
+            TypedExprKind::Call(callee, arguments) => {
+                if let Type::Function(parameters, _) = &callee.ty {
+                    for (index, argument) in arguments.iter().enumerate() {
+                        let mutable =
+                            matches!(parameters.types.get(index), Some(Type::Reference(_, true)))
+                                || parameters.conventions.get(index)
+                                    == Some(&ParameterConvention::Mut);
+                        if mutable && rooted(argument) {
+                            return Some(argument.span);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        pending.extend(expression.children());
+    }
+    None
+}
+
 /// Whether a parameter of this written type has a generator for the property tests: the named
 /// numbers, `bool`, `f64`, `char`, `string`, arrays and tuples of two to four of such, and the
 /// non-generic records and unions of `program` that derive both `Arbitrary` and `Display`
@@ -648,11 +734,39 @@ fn property_test(
         .map(|name| build.name(name))
         .collect::<Result<Vec<_>, _>>()?;
     let call = build.make(ExprKind::Call(Box::new(build.name(&raw)?), arguments))?;
-    let verdict = match all(ContractKind::Ensures)? {
+    // Each `@old (e)` is `e` on entry: bound before the call, which may take the arguments, and
+    // read by name in the `@ensures` lines.
+    let mut olds = Vec::new();
+    for clause in &function.contracts {
+        if clause.kind == ContractKind::Ensures {
+            old_operands(&clause.condition, &mut olds);
+        }
+    }
+    let mut bindings: Vec<_> = olds
+        .iter()
+        .enumerate()
+        .map(|(index, (_, operand))| build.bind(format!("$old_{index}"), operand.clone()))
+        .collect();
+    let ensures = all(ContractKind::Ensures)?.map(|mut ensures| {
+        ensures.visit_mut(&mut |expression| {
+            let Some(index) = olds
+                .iter()
+                .position(|(span, _)| *span == expression.span)
+                .filter(|_| matches!(&expression.kind, ExprKind::Call(callee, _) if matches!(&callee.kind, ExprKind::Name(name) if name.text == "$old")))
+            else {
+                return true;
+            };
+            expression.kind = ExprKind::Name(build.ident(format!("$old_{index}")));
+            false
+        });
+        ensures
+    });
+    let verdict = match ensures {
         Some(ensures) => build.construct("Maybe.Maybe", "Some", ensures)?,
         None => build.construct("Maybe.Maybe", "Some", build.boolean(true)?)?,
     };
-    let mut property = build.block(vec![build.bind(result, call)], verdict)?;
+    bindings.push(build.bind(result, call));
+    let mut property = build.block(bindings, verdict)?;
     if let Some(requires) = all(ContractKind::Requires)? {
         property = build.conditional(requires, property, build.case("Maybe.Maybe", "None")?)?;
     }

@@ -104,6 +104,56 @@ fn counterexample_breaks_the_contract_natively() {
     let _ = std::fs::remove_dir_all(replay);
 }
 
+/// Review of #64: an inlined callee numbers its locals in its own function; they must not
+/// overwrite the caller's, or a false postcondition is proved. Native execution agrees.
+#[test]
+fn inlined_callee_locals_keep_the_callers() {
+    if !z3() {
+        println!("skipped: z3 not found");
+        return;
+    }
+    let source = "def helper :: i64 -> i64 = \\a ->\n    let z = 0\n    z + a - a\n\
+                  def f :: i64 -> i64 = \\x ->\n    @ensures \\r -> r == 0\n    let y = x\n    let w = helper 1\n    y + w\n\
+                  def main :: unit -> i32 = \\() -> (f 7) as i32\n";
+    let root = project("locals", source);
+    let (code, stdout, stderr) = prove(&["--function", "Main.f"], &root, None);
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert_eq!(stdout, "counterexample Main.f\n", "{stderr}");
+    let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("run")
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("trap: contract ensures failed"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Review of #64: a `--function` name that matches no function with contract lines is an error,
+/// alone or beside valid names, before any solver runs.
+#[test]
+fn unmatched_function_names_are_errors() {
+    let root = project("unmatched", SOURCE);
+    for arguments in [
+        &["--function", "Main.clmap"][..],
+        &["--function", "Main.clamp", "--function", "Main.clmap"],
+        &["--function", "Main.main"],
+    ] {
+        let (code, stdout, stderr) = prove(arguments, &root, None);
+        assert_eq!(code, 1, "{arguments:?}: {stdout}{stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(
+            stderr.contains("error[E2000]: --function '")
+                && stderr.contains("names no function with contract lines"),
+            "{arguments:?}: {stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn unsupported_constructs_are_named() {
     if !z3() {

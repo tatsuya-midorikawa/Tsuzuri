@@ -151,7 +151,10 @@ pub fn analyze_modules_with_contracts(
     sources: &[(&str, &str)],
     mode: check::contracts::ContractMode,
 ) -> Result<check::CheckedModule, DiagnosticSet> {
-    let std_sources = stdlib::sources_for(sources.iter().map(|(_, text)| *text));
+    // The property tests of `test` mode use `Gen` whether the sources name it or not, as
+    // `tsuzuri test --contracts test` loads it.
+    let generated = (mode == check::contracts::ContractMode::Test).then_some("Gen");
+    let std_sources = stdlib::sources_for(sources.iter().map(|(_, text)| *text).chain(generated));
     let inputs: Vec<_> = sources
         .iter()
         .map(|(path, text)| SourceInput {

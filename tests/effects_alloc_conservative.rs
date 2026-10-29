@@ -63,9 +63,7 @@ fn rule_is_at_least_as_conservative_as_the_ir() {
     let mut violations = Vec::new();
     let mut covered = std::collections::BTreeSet::new();
     for directory in &projects {
-        let Some((ir, _)) = ir_scan::emit(directory, &scratch) else {
-            continue;
-        };
+        let (ir, _) = ir_scan::emit(directory, &scratch);
         let project = Project::load_for_tests(directory).unwrap();
         let module = project.analyze().unwrap();
         // The program's build, and its tests, whose code a build leaves out.

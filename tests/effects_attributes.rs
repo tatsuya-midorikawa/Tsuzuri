@@ -271,3 +271,17 @@ fn attribute_does_not_change_ir() {
     assert_eq!(emit(&plain), with);
     assert_eq!(with, emit(&attributed));
 }
+
+/// Review of #63: the attribute of the next declaration may follow the constraint lines of a
+/// signature without a body; the constraint lines' indentation does not apply to it.
+#[test]
+fn an_attribute_after_constraint_lines_starts_the_next_declaration() {
+    let source = "def show_it :: 'a -> string\n    @'a: Display\n@no_copy\ndef twice :: i64 -> i64 = \\x -> x * 2\nfn show_it value = to_string value\n";
+    tsuzuri::analyze(source).unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    // A misindented constraint line is still refused.
+    let error = tsuzuri::analyze(
+        "def show_it :: 'a -> string\n    @'a: Display\n  @'a: Eq\nfn show_it value = to_string value\n",
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "E0002", "{}", error.message);
+}

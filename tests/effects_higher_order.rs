@@ -85,3 +85,56 @@ fn closed_callers_need_no_obligation() {
     ))
     .unwrap();
 }
+
+/// Review of #63: a call through an immutable alias or a partial application is a call of the
+/// attributed function, so the callback it passes is checked as at a direct call.
+#[test]
+fn alias_and_partial_calls_check_their_callbacks() {
+    const ALLOCATING: &str = "(\\y -> (Array.init y (\\i -> i)).length)";
+    for body in [
+        format!("\\n ->\n    let invoke = apply\n    invoke {ALLOCATING} n"),
+        format!("\\n ->\n    let bound = apply {ALLOCATING}\n    bound n"),
+        format!("\\n ->\n    let invoke = apply\n    let again = invoke\n    again {ALLOCATING} n"),
+    ] {
+        let (message, kind, _) =
+            check(&format!("{APPLY}def user :: i64 -> i64 = {body}\n")).unwrap_err();
+        assert_eq!(kind, Some("effect_alloc_in_no_alloc"), "{body}\n{message}");
+    }
+    check(&format!(
+        "{APPLY}def user :: i64 -> i64 = \\n ->\n    let invoke = apply\n    invoke (\\y -> y + 1) n\n"
+    ))
+    .unwrap();
+}
+
+/// Review of #63: an attributed function that takes a function inside an aggregate (here an
+/// `Owned.Function`) still has its callers checked.
+#[test]
+fn owned_function_parameters_are_checked_at_their_callers() {
+    let wrapper = "@no_trap\ndef run :: ref Owned.Function<i64, i64> -> i64 -> i64 = \\f x -> Owned.call f x\n";
+    let (message, kind, _) = check(&format!(
+        "{wrapper}def user :: i64 -> i64 = \\n ->\n    let f = Owned.function (\\y -> 10 / y)\n    run (ref f) n\n"
+    ))
+    .unwrap_err();
+    assert!(
+        matches!(
+            kind,
+            Some("effect_trap_in_no_trap" | "effect_unknown_callee")
+        ),
+        "{kind:?}: {message}"
+    );
+}
+
+/// Review of #63: a function that calls its 65th parameter cannot record it in the bit set, so the
+/// call is one that the analysis cannot follow, and an attribute that needs it is refused.
+#[test]
+fn a_call_of_a_parameter_beyond_64_is_not_followed() {
+    let parameters: Vec<String> = (0..65).map(|index| format!("p{index}")).collect();
+    let types = vec!["i64"; 64].join(" -> ");
+    let source = format!(
+        "@no_alloc\ndef wide :: {types} -> (i64 -> i64) -> i64 = \\{} -> {} 1\n",
+        parameters.join(" "),
+        parameters[64]
+    );
+    let (message, kind, _) = check(&source).unwrap_err();
+    assert_eq!(kind, Some("effect_unknown_callee"), "{message}");
+}
