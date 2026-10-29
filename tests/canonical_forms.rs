@@ -313,6 +313,11 @@ fn tsuzuri(arguments: &[&str], directory: &Path) -> Output {
         .unwrap()
 }
 
+/// A relative path as a diagnostic spells it on this platform.
+fn native(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 /// A 2026 project, where the noncanonical spellings are still accepted.
 fn legacy(root: &Path, main: &str) {
     write(
@@ -341,9 +346,10 @@ fn warn_canonical_is_off_by_default() {
     assert!(on.status.success());
     let stderr = String::from_utf8_lossy(&on.stderr);
     assert!(
-        stderr.contains(
-            "app/Main.tz:2:12: warning[W1007]: '..' is not canonical; write '..='\n  2 | for i in 1 .. 3 do\n    |            ^\n  help: write '..=' to include the end or '..<' to exclude it\n  fix (certain): Replace '..' with '..='\n"
-        ),
+        stderr.contains(&format!(
+            "{}:2:12: warning[W1007]: '..' is not canonical; write '..='\n  2 | for i in 1 .. 3 do\n    |            ^\n  help: write '..=' to include the end or '..<' to exclude it\n  fix (certain): Replace '..' with '..='\n",
+            native("app/Main.tz")
+        )),
         "{stderr}"
     );
     let _ = std::fs::remove_dir_all(root);
@@ -417,7 +423,10 @@ fn std_and_dependencies_report_nothing() {
     let output = tsuzuri(&["check", "app", "--warn", "canonical"], &root);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(stderr.matches("warning[W1007]").count(), 1, "{stderr}");
-    assert!(stderr.contains("app/Main.tz:1:25"), "{stderr}");
+    assert!(
+        stderr.contains(&format!("{}:1:25", native("app/Main.tz"))),
+        "{stderr}"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
