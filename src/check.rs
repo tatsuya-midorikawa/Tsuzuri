@@ -8053,6 +8053,7 @@ fn check_modules_collect(
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
+    diagnostics.extend(contracts::validate_templates(&module));
     diagnostics.check()?;
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.

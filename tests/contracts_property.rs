@@ -167,6 +167,27 @@ fn generated_properties_keep_arguments_and_result_names() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Review 4 of #64: the generated property passes the generated arguments to the parameters as a
+/// call does, so a parameter that the function borrows by default (`pure def`, edition 2027) is a
+/// reference in the body and the lines, as in `check`.
+#[test]
+fn generated_properties_borrow_the_parameters_that_the_function_borrows() {
+    let source = "pure def size :: string -> i64 = \\s ->\n    @ensures \\r -> r == (deref s).length\n    (deref s).length\n\
+                  def count :: [i64] -> i64 = \\xs ->\n    @requires (deref xs).length < 100\n    @ensures \\r -> r >= 0\n    (deref xs).length\n\
+                  def plain :: i64 -> string -> i64 = \\n s ->\n    @requires n >= 0 && n < 1000\n    @ensures \\r -> r >= n\n    n + s.length\n";
+    let root = project("borrowed", source);
+    let (code, stdout, stderr) = test(&["--contracts", "test"], &root);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    for name in ["size", "count", "plain"] {
+        assert!(
+            stdout.contains(&format!(" - Main contract {name}\n")),
+            "{name}\n{stdout}{stderr}"
+        );
+    }
+    assert!(stdout.contains("3 passed; 0 failed"), "{stdout}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn contract_warnings_name_useless_lines() {
     let module = analyze(
