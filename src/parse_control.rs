@@ -611,6 +611,7 @@ impl Parser<'_> {
         // destructures or guards its parameters.
         if at_site && guard.is_none() && patterns.is_empty() {
             self.contract_site = Some(self.position);
+            self.site_lambdas += 1;
         }
         let mut body = if guard.is_none() && self.at(&TokenKind::Pipe) {
             self.guarded_definition(&parameters)?
