@@ -749,6 +749,38 @@ pub fn analyze_with_limits(
             });
         }
     }
+    // Top-level entry code with a printable result is written to the standard output by the entry
+    // that the compiler adds, which no function of the program names.
+    if let Some(entry) = module.entry
+        && !crate::llvm::main_entry(module)
+        && !crate::llvm::io_entry(module)
+        && functions[entry].signature.result != crate::check::Type::Unit
+        && let Some(source) = source_of(entry)
+    {
+        let function = &functions[entry];
+        let span = function.body.span;
+        sites
+            .entry((
+                source.package.clone(),
+                span.source.unwrap_or(usize::MAX),
+                span.start,
+                span.end,
+                Capability::Stdio,
+            ))
+            .or_insert(Site {
+                capability: Capability::Stdio,
+                span,
+                callee: "the printed result of the top-level code".into(),
+                // The top-level code belongs to its module rather than to a declared function.
+                function: declared(&function.qualified_name())
+                    .trim_end_matches(".$entry")
+                    .to_owned(),
+                scope: Scope::Program,
+                via: Vec::new(),
+                source_span: Some(span),
+                primitive: Some("tz.console.write"),
+            });
+    }
     let mut sites: Vec<(Option<PackageId>, Site)> = sites
         .into_iter()
         .map(|((package, ..), site)| (package, site))

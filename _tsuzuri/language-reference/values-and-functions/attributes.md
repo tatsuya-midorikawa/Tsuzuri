@@ -258,6 +258,8 @@ def main :: unit -> i32 = \() -> distance 3 7
 
 性質は属性ごとに独立です。`@trusted no_alloc` の関数は `@no_alloc` からは呼べますが、`pure def` や `@no_trap` からは呼べません（`E1029`・`E1031`）。性質のない `@trusted` は印だけで、どの検査も緩めません。
 
+性質は C の関数についての約束で、呼び出しの受け渡しには及びません。`string` の引数は、ホストへ渡すために複製されることがある（文字列がコンパクト形式のとき UTF-16 に広げる）ので、`@trusted no_alloc` の関数でも `string` を渡す呼び出しは `@no_alloc` の確保です（`E1031`）。
+
 ### 書ける位置とエラー
 
 - `extern` の関数（`extern "sym" def`・`extern "mod" "sym" def`・`extern def`）と `extern type` の直前だけです。`private` より前に書きます。`extern type` には性質を付けられません。

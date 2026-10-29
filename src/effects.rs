@@ -1393,6 +1393,18 @@ impl<'s, 'a> Scan<'s, 'a> {
                 if !vouched {
                     self.source(Effect::Extern, span, "extern-call");
                 }
+                // The call itself may copy a string argument for the host (into UTF-16, when the
+                // program's strings are compact): an allocation of the marshalling, which no
+                // property of the C function covers.
+                if self.function.parameters.iter().any(|parameter| {
+                    let mut ty = &parameter.ty;
+                    while let Type::Reference(inner, _) = ty {
+                        ty = inner;
+                    }
+                    *ty == Type::String
+                }) {
+                    self.source(Effect::Alloc, span, "string-marshalling");
+                }
                 self.exempt(Effect::Trap, span, "host-call");
                 false
             }
@@ -2240,6 +2252,10 @@ fn phrase(effect: Effect, code: &str) -> (&'static str, &'static str) {
         (Effect::Alloc, "recursive-node") => (
             "creates a heap-allocated node of a recursive union",
             "use an array and indices instead of a recursive union",
+        ),
+        (Effect::Alloc, "string-marshalling") => (
+            "passes a string to an extern function, which may copy it for the host",
+            "pass the bytes as a 'ref [i8u]' buffer, or remove the attribute",
         ),
         (Effect::Alloc, "task" | "parallel") => {
             ("creates tasks", "remove the tasks, or remove the attribute")

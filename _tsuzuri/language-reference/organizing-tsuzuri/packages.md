@@ -349,7 +349,7 @@ allow = ["fs", "net", "stdio", "time"]
 | `net` | `Net` の接続・送受信の関数（`Net.parse_address` などのアドレスの操作は権限なし） |
 | `process` | `Process.run` |
 | `random` | `Random.bytes`・`Random.next_u64`、`HashMap.randomized`・`HashSet.randomized`、`Array.random_*`・`List.random_*` |
-| `stdio` | `IO` の読み書き、`Debug.print`・`Debug.trace`、`Gen.for_all` などの失敗の報告 |
+| `stdio` | `IO` の読み書き、`Debug.print`・`Debug.trace`、`Gen.for_all` などの失敗の報告、結果を表示するトップレベルのコード（`Main.tz` の `42` のように、`unit` でない値で終わるもの） |
 | `time` | `Time` の関数、`Async.block_on`、`Bench.of`・`Bench.with_input` |
 
 `Path`、`Task`・`Parallel`・`Atomic`・`Mutex`・`Channel`（CPU の資源）、`Random.pcg` のような純粋な関数は権限を要りません。std の関数の権限は、その本体が参照する私的な組み込み関数と std の関数から推移的に決まります。
