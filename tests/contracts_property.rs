@@ -138,6 +138,35 @@ fn generated_properties_take_old_values_before_the_call() {
     );
 }
 
+/// Review of #64, round 2: the generated property runs the body where the `@ensures` lines still
+/// read an owned argument that it only borrows; each line that names the result sees it, and a
+/// line with `_` sees the parameter of the same name; `@old` inside a computation is resolved.
+#[test]
+fn generated_properties_keep_arguments_and_result_names() {
+    let source = "def size :: own string -> i64 = \\s ->\n    @ensures \\r -> r == s.length\n    s.length\n\
+                  def scoped :: i64 -> i64 = \\x ->\n    @requires x >= 0 && x < 1000\n    @ensures \\x -> x == 1000\n    @ensures \\_ -> x < 1000\n    @ensures \\x -> x > 999\n    1000\n\
+                  def once :: i64 -> string = \\x ->\n    @requires x >= 0 && x < 1000\n    @ensures \\_ -> x < 1000\n    @ensures \\x -> x.length > 0 && x.length < 4\n    $\"{x}\"\n\
+                  def label :: i64 -> string = \\x ->\n    @requires x >= 0\n    @ensures \\x -> x.length > 0\n    @ensures \\_ -> x >= 0\n    @ensures \\x -> x.length < 30\n    $\"{x}\"\n\
+                  def boxed :: i64 -> i64 = \\x ->\n    @requires x >= 0 && x < 1000\n    @ensures \\r -> { let m = Maybe { return @old (x) + 1 }; Maybe.default_value 0 m == r }\n    x + 1\n\
+                  def narrow :: i8 -> i8 = \\x ->\n    @requires x > 0i8\n    @ensures \\r -> r == 1i8\n    1i8\n";
+    let root = project("scopes", source);
+    let (code, stdout, stderr) = test(&["--contracts", "test"], &root);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    for name in ["size", "scoped", "once", "boxed", "narrow"] {
+        assert!(
+            stdout.contains(&format!(" - Main contract {name}\n")),
+            "{name}\n{stdout}{stderr}"
+        );
+    }
+    // Two runs of lines that name a string result would each move it.
+    assert!(
+        stderr.contains("no property test for 'Main.label': its '@ensures' lines name the result 'x' on both sides of a line that reads another 'x'"),
+        "{stderr}"
+    );
+    assert!(stdout.contains("5 passed; 0 failed"), "{stdout}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn contract_warnings_name_useless_lines() {
     let module = analyze(

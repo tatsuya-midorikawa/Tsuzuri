@@ -10459,29 +10459,45 @@ impl<'a> Checker<'a> {
         self.inference.unify(actual, expected, &self.types, span)
     }
 
+    /// A21 Phase 6: `@old (e)` in an `@ensures` line reads the value bound on entry.
+    fn old_value(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+    ) -> Option<Result<TypedExpr, Diagnostic>> {
+        if self.old_locals.is_empty() {
+            return None;
+        }
+        let ExprKind::Call(callee, _) = &expression.kind else {
+            return None;
+        };
+        if !matches!(&callee.kind, ExprKind::Name(name) if name.text == "$old") {
+            return None;
+        }
+        let (_, local) = self
+            .old_locals
+            .iter()
+            .find(|(span, _)| *span == expression.span)?;
+        let local = local.clone();
+        Some((|| {
+            if let Some(expected) = expected {
+                self.same(&local.ty, expected, expression.span)?;
+            }
+            Ok(TypedExpr {
+                kind: TypedExprKind::Local(local.id),
+                ty: local.ty,
+                span: expression.span,
+            })
+        })())
+    }
+
     fn expression(
         &mut self,
         expression: &Expr,
         expected: Option<&Type>,
     ) -> Result<TypedExpr, Diagnostic> {
-        // A21 Phase 6: `@old (e)` in an `@ensures` line reads the value bound on entry.
-        if !self.old_locals.is_empty()
-            && let ExprKind::Call(callee, _) = &expression.kind
-            && matches!(&callee.kind, ExprKind::Name(name) if name.text == "$old")
-            && let Some((_, local)) = self
-                .old_locals
-                .iter()
-                .find(|(span, _)| *span == expression.span)
-        {
-            let local = local.clone();
-            if let Some(expected) = expected {
-                self.same(&local.ty, expected, expression.span)?;
-            }
-            return Ok(TypedExpr {
-                kind: TypedExprKind::Local(local.id),
-                ty: local.ty,
-                span: expression.span,
-            });
+        if let Some(old) = self.old_value(expression, expected) {
+            return old;
         }
         if expected.is_some_and(Type::contains_error) {
             self.poisoned = true;
@@ -10839,6 +10855,10 @@ impl<'a> Checker<'a> {
         let ExprKind::Call(callee, arguments) = &expression.kind else {
             unreachable!("call expressions only")
         };
+        // An argument reaches here without `expression`.
+        if let Some(old) = self.old_value(expression, expected) {
+            return old;
+        }
         if let ExprKind::Call(inner, first) = &callee.kind {
             if !first.is_empty() && !arguments.is_empty() {
                 let mut combined = first.clone();
