@@ -6612,13 +6612,12 @@ fn check_modules_collect(
                     external.name.span,
                 ));
             }
-            // E15: the `@trusted` mark of the declaration, by name in its module.
-            if let Some(mark) = module
-                .program
-                .trusted
-                .iter()
-                .find(|mark| mark.target.text == external.name.text)
-            {
+            // E15: the `@trusted` mark of this declaration. An extern type may share the name, so
+            // the mark is matched by the position of the declared name.
+            if let Some(mark) = module.program.trusted.iter().find(|mark| {
+                mark.target.text == external.name.text
+                    && mark.target.span.start == external.name.span.start
+            }) {
                 trusted_by_id.insert(function_declarations.len(), mark.properties);
             }
             external_functions.insert(function_declarations.len(), import);
