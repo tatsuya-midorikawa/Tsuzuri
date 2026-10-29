@@ -155,6 +155,16 @@ pub(crate) fn normalize_definition(
     Ok(definition)
 }
 
+/// The lambdas that start `expression`, one in the body of the other (`\a -> \b -> e` has 2).
+fn leading_lambdas(mut expression: &Expr) -> usize {
+    let mut count = 0;
+    while let ExprKind::Lambda(_, body) = &expression.kind {
+        count += 1;
+        expression = body;
+    }
+    count
+}
+
 /// Parses a source that no package owns (a snippet, the REPL, a test) with the latest edition.
 /// A package's source goes through `parse_with_source` with its own edition.
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
@@ -240,6 +250,8 @@ struct Parser<'a> {
     method_body: bool,
     /// The contract lines that the current top-level declaration's body started with.
     site_contracts: Vec<ContractClause>,
+    /// The lambdas that `contract_site` moved through to reach the lines, `\a -> \b ->` 2 (A21).
+    site_lambdas: usize,
     /// Parsing the condition of an `@ensures` line, where `@old (expression)` may appear.
     in_ensures: bool,
 }
@@ -271,6 +283,7 @@ impl<'a> Parser<'a> {
             contract_site: None,
             method_body: false,
             site_contracts: Vec::new(),
+            site_lambdas: 0,
             in_ensures: false,
         }
     }
@@ -441,7 +454,8 @@ impl Parser<'_> {
         };
         let mut signatures = BTreeMap::new();
         let mut definitions: Vec<Definition> = Vec::new();
-        let mut contracts_by_function: BTreeMap<String, Vec<ContractClause>> = BTreeMap::new();
+        let mut contracts_by_function: BTreeMap<String, (Vec<ContractClause>, usize)> =
+            BTreeMap::new();
         let mut defined_names = BTreeSet::new();
         let mut signature_group = None;
         let mut definition_group = None;
@@ -479,6 +493,7 @@ impl Parser<'_> {
             let start = self.position;
             self.contract_site = None;
             self.site_contracts.clear();
+            self.site_lambdas = 0;
             let parsed = (|| -> Result<(), Diagnostic> {
                 let doc = self.take_doc();
                 if self.alias_ahead() {
@@ -870,7 +885,7 @@ impl Parser<'_> {
             {
                 contracts_by_function.insert(
                     definition.name.text.clone(),
-                    std::mem::take(&mut self.site_contracts),
+                    (std::mem::take(&mut self.site_contracts), self.site_lambdas),
                 );
             }
             if let Err(error) = parsed {
@@ -912,11 +927,28 @@ impl Parser<'_> {
                         definition.name.span,
                     )
                 })
-                .and_then(|signature| Self::define(signature, definition))
-                .and_then(|mut function| {
-                    function.contracts = contracts_by_function
+                .and_then(|signature| {
+                    let lambdas = leading_lambdas(&definition.body);
+                    Self::define(signature, definition).map(|function| (function, lambdas))
+                })
+                .and_then(|(mut function, lambdas)| {
+                    let (contracts, depth) = contracts_by_function
                         .remove(&function.name.text)
                         .unwrap_or_default();
+                    // The lines of a lambda that the function returns (a later call stage of a
+                    // `pure def`) would run when the function is called: the site went through
+                    // more lambdas than became its parameters.
+                    if depth > lambdas.saturating_sub(leading_lambdas(&function.body))
+                        && let Some(first) = contracts.first()
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ContractMisplaced,
+                            "a contract line must start the function's own body, not a lambda that the function returns: it would run when the function is called",
+                            first.span,
+                        )
+                        .with_help("bind the lambda's parameters in the function's call stage, or remove the line"));
+                    }
+                    function.contracts = contracts;
                     if function.constant && let Some(first) = function.contracts.first() {
                         return Err(Diagnostic::of(
                             DiagnosticKind::ContractOnConst,
