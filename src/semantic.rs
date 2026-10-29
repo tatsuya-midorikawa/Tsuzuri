@@ -903,10 +903,14 @@ pub(super) fn collect(
                 result_names.insert((span.source, span.start), names);
             }
         }
+        // A function's contract lines are expressions of its own, outside its body (A21).
         let bodies = program
             .functions
             .iter()
-            .map(|function| &function.body)
+            .flat_map(|function| {
+                std::iter::once(&function.body)
+                    .chain(function.contracts.iter().map(|clause| &clause.condition))
+            })
             .chain(
                 program
                     .classes
@@ -1162,6 +1166,16 @@ fn index_function(
         }
     }
     for expression in expressions {
+        // A parenthesized name (`(x)`) keeps the span of its parentheses; it is spelled by the
+        // name inside.
+        let spelled = names_in_parentheses
+            .get(&(
+                expression.span.source,
+                expression.span.start,
+                expression.span.end,
+            ))
+            .copied()
+            .unwrap_or(expression.span);
         // The result read in an `@ensures` line is that line's name; the woven body's own read of
         // it is no source.
         let line = match (&expression.kind, &result) {
@@ -1186,7 +1200,7 @@ fn index_function(
                 target: Some(name.span),
                 priority: 0,
             });
-            index.reference(expression.span, result_definitions[line], Role::Read);
+            index.reference(spelled, result_definitions[line], Role::Read);
             continue;
         }
         let target = match &expression.kind {
@@ -1235,24 +1249,16 @@ fn index_function(
             } else {
                 Role::Read
             };
-            index.reference(expression.span, definition, role);
+            index.reference(spelled, definition, role);
         }
         if let Some(id) = callee
             && expression.span.source.is_some()
             && let Some(&definition) = links.callables.get(&functions[id].qualified_name())
         {
             // A qualified spelling ends with the function name.
-            let span = names_in_parentheses
-                .get(&(
-                    expression.span.source,
-                    expression.span.start,
-                    expression.span.end,
-                ))
-                .copied()
-                .unwrap_or(expression.span);
-            let start = span.end.saturating_sub(functions[id].name.len());
-            if start >= span.start {
-                index.reference(Span { start, ..span }, definition, Role::Read);
+            let start = spelled.end.saturating_sub(functions[id].name.len());
+            if start >= spelled.start {
+                index.reference(Span { start, ..spelled }, definition, Role::Read);
             }
         }
         let mut ty = &expression.ty;
