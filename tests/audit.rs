@@ -295,6 +295,78 @@ fn audit_is_deterministic_and_path_free() {
     let _ = std::fs::remove_dir_all(second);
 }
 
+/// Review 3 of #65: two path packages may share a name when their namespaces differ; each lists
+/// only the extern functions that it declares.
+#[test]
+fn audit_lists_externs_by_package_not_by_name() {
+    let root = scratch("same-name");
+    write(
+        &root,
+        "app/Tsuzuri.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nfirst = { path = \"../first\" }\nsecond = { path = \"../second\" }\n",
+    );
+    write(
+        &root,
+        "app/Main.tz",
+        "def main :: unit -> i32 = \\() -> First::Lib.run () + Second::Lib.run ()\n",
+    );
+    for (user, util, namespace) in [("first", "util-a", "UtilA"), ("second", "util-b", "UtilB")] {
+        write(
+            &root,
+            &format!("{user}/Tsuzuri.toml"),
+            &format!(
+                "[package]\nname = \"{user}\"\nversion = \"1.0.0\"\n\n[dependencies]\nutil = {{ path = \"../{util}\" }}\n"
+            ),
+        );
+        write(
+            &root,
+            &format!("{user}/Lib.tz"),
+            &format!("def run :: unit -> i32 = \\() -> {namespace}::Abs.of (0 - 5)\n"),
+        );
+        write(
+            &root,
+            &format!("{util}/Tsuzuri.toml"),
+            &format!(
+                "[package]\nname = \"util\"\nversion = \"1.0.0\"\nnamespace = \"{namespace}\"\n"
+            ),
+        );
+    }
+    write(
+        &root,
+        "util-a/Abs.tz",
+        "extern \"abs\" def c_abs :: i32 -> i32\n\ndef of :: i32 -> i32 = \\x -> c_abs x\n",
+    );
+    write(
+        &root,
+        "util-b/Abs.tz",
+        "@trusted pure\nextern \"abs\" def c_abs :: i32 -> i32\n\ndef of :: i32 -> i32 = \\x -> c_abs x\n",
+    );
+    let output = audit(&["app"], &root);
+    let text = stdout(&output);
+    let utils: Vec<&str> = text
+        .split("\n\n")
+        .filter(|block| block.starts_with("package util 1.0.0 (dependency)"))
+        .collect();
+    assert_eq!(utils.len(), 2, "{text}");
+    let mut externs: Vec<&str> = utils
+        .iter()
+        .map(|block| {
+            let start = block.find("  externs: ").unwrap();
+            &block[start..]
+        })
+        .collect();
+    externs.sort_unstable();
+    assert_eq!(
+        externs,
+        [
+            "  externs: 1 (0 trusted)\n    c_abs -> \"abs\"  Abs.tz:1:18  untrusted",
+            "  externs: 1 (1 trusted)\n    c_abs -> \"abs\"  Abs.tz:2:18  trusted pure",
+        ],
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn audit_reports_untrusted_externs_of_dependencies() {
     let root = scratch("dependency");

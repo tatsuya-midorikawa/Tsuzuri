@@ -781,6 +781,36 @@ pub fn analyze_with_limits(
                 primitive: Some("tz.console.write"),
             });
     }
+    // A `def main` that takes the command-line arguments receives them from the entry that the
+    // compiler adds (`tsuzuri_arguments`), as `Os.args` reads them through `Os.__args`.
+    if crate::llvm::main_arguments(module)
+        && let Some(entry) = module.entry
+        && let Some(source) = source_of(entry)
+    {
+        let function = &functions[entry];
+        let span = function
+            .parameters
+            .first()
+            .map_or(function.span, |parameter| parameter.span);
+        sites
+            .entry((
+                source.package.clone(),
+                span.source.unwrap_or(usize::MAX),
+                span.start,
+                span.end,
+                Capability::Env,
+            ))
+            .or_insert(Site {
+                capability: Capability::Env,
+                span,
+                callee: "the command-line arguments of main".into(),
+                function: declared(&function.qualified_name()).to_owned(),
+                scope: Scope::Program,
+                via: Vec::new(),
+                source_span: Some(span),
+                primitive: Some("tsuzuri_arguments"),
+            });
+    }
     let mut sites: Vec<(Option<PackageId>, Site)> = sites
         .into_iter()
         .map(|((package, ..), site)| (package, site))
@@ -1025,6 +1055,9 @@ pub struct PackageReport {
 
 #[derive(Clone, Debug)]
 pub struct ExternReport {
+    /// The package that declares the function; `package` is its name, which two path
+    /// packages with different namespaces may share.
+    pub owner: Option<PackageId>,
     pub package: String,
     pub name: String,
     pub symbol: String,
@@ -1168,6 +1201,7 @@ impl Report {
             .map(|extern_use| {
                 let (path, line, column) = place(extern_use.span);
                 ExternReport {
+                    owner: extern_use.package.clone(),
                     package: name_of(&extern_use.package),
                     name: extern_use.name.clone(),
                     symbol: extern_use.symbol.clone(),
@@ -1285,7 +1319,7 @@ impl Report {
             let externs: Vec<&ExternReport> = self
                 .externs
                 .iter()
-                .filter(|extern_report| extern_report.package == info.name)
+                .filter(|extern_report| extern_report.owner == info.owner)
                 .collect();
             if externs.is_empty() {
                 out.push_str("  externs: none\n");

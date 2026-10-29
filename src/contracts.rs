@@ -49,12 +49,13 @@ impl ContractMode {
 }
 
 /// How a function's woven body is laid out: the counts of its contract lines and of the
-/// `@old` values that it binds on entry.
+/// `@old` values that it binds on entry. The lines are at most 32, but each may take any
+/// number of `@old` values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ContractShape {
-    pub requires: u8,
-    pub olds: u8,
-    pub ensures: u8,
+    pub requires: usize,
+    pub olds: usize,
+    pub ensures: usize,
 }
 
 impl ContractShape {
@@ -80,9 +81,7 @@ pub(crate) fn strip(function: &mut CheckedFunction) {
     function.body = if shape.ensures == 0 {
         *result
     } else {
-        bindings
-            .swap_remove(usize::from(shape.requires) + usize::from(shape.olds))
-            .1
+        bindings.swap_remove(shape.requires + shape.olds).1
     };
     function.contracts = ContractShape::default();
 }
@@ -97,8 +96,8 @@ pub(crate) fn conditions(function: &CheckedFunction) -> Vec<(&TypedExpr, Span)> 
     let TypedExprKind::Block { bindings, .. } = &function.body.kind else {
         return Vec::new();
     };
-    let requires = usize::from(shape.requires);
-    let ensures_from = requires + usize::from(shape.olds) + usize::from(shape.ensures > 0);
+    let requires = shape.requires;
+    let ensures_from = requires + shape.olds + usize::from(shape.ensures > 0);
     fn condition(value: &TypedExpr) -> Option<(&TypedExpr, Span)> {
         match &value.kind {
             TypedExprKind::Call(_, arguments) => arguments.first().map(|c| (c, value.span)),
@@ -109,7 +108,7 @@ pub(crate) fn conditions(function: &CheckedFunction) -> Vec<(&TypedExpr, Span)> 
         .iter()
         .filter_map(|(_, value)| condition(value))
         .collect();
-    let olds = requires..(requires + usize::from(shape.olds)).min(bindings.len());
+    let olds = requires..(requires + shape.olds).min(bindings.len());
     found.extend(bindings[olds].iter().map(|(_, value)| (value, value.span)));
     found.extend(
         bindings
@@ -343,7 +342,7 @@ impl Checker<'_> {
         let span = body.span;
         let ty = result.ty.clone();
         bindings.push((result.clone(), body));
-        shape.ensures = u8::try_from(ensures.len()).unwrap_or(u8::MAX);
+        shape.ensures = ensures.len();
         bindings.extend(ensures);
         Ok((
             TypedExpr {
@@ -450,9 +449,11 @@ pub(super) fn validate_purity(module: &CheckedModule) -> Vec<Diagnostic> {
 
 /// `E1033` (`contract_writes`) for each function whose contract lines may change data that the
 /// function received or returns: an assignment to it, a mutable borrow of it, or a call that
-/// receives it as a mutable reference. Such a line would make `check` and `off` compute
-/// differently. A condition may read mutable arguments and change data of its own.
+/// receives it as a mutable reference or, unless the callee is `pure`, as a record that holds an
+/// exclusive reference. Such a line would make `check` and `off` compute differently. A
+/// condition may read mutable arguments and change data of its own.
 pub(super) fn validate_writes(module: &CheckedModule) -> Vec<Diagnostic> {
+    let types = module.types();
     let mut diagnostics = Vec::new();
     let mut seen = BTreeSet::new();
     for function in &module.functions {
@@ -466,7 +467,7 @@ pub(super) fn validate_writes(module: &CheckedModule) -> Vec<Diagnostic> {
             outside.extend(bindings.iter().map(|(local, _)| local.id));
         }
         for (condition, _) in conditions(function) {
-            let Some(span) = write_outside(condition, &outside) else {
+            let Some(span) = write_outside(condition, &outside, &types) else {
                 continue;
             };
             let name = function.qualified_name();
@@ -474,7 +475,7 @@ pub(super) fn validate_writes(module: &CheckedModule) -> Vec<Diagnostic> {
                 diagnostics.push(
                     Diagnostic::of(
                         DiagnosticKind::ContractWrites,
-                        "a contract line cannot change the data that the function receives or returns; 'off' would not run it",
+                        "a contract line cannot change the data that the function receives or returns, or pass it where an exclusive reference may change it; 'off' would not run it",
                         span,
                     )
                     .with_help("read the value, or copy it into a local of the condition first"),
@@ -486,28 +487,55 @@ pub(super) fn validate_writes(module: &CheckedModule) -> Vec<Diagnostic> {
     diagnostics
 }
 
-/// The local that a place is rooted at: through fields, indices, slices, borrows and
-/// dereferences.
-fn place_root(mut expression: &TypedExpr) -> Option<usize> {
-    loop {
+/// Whether the storage that `place` names, or that the reference it computes points into, may be
+/// one of `outside`: through fields, indices, slices, borrows and dereferences to a local, through
+/// each result of a conditional, a `match` and a block, and, for any other expression (a call
+/// that returns a reference, a record built of references), whenever it reads one of them.
+fn reaches_outside(place: &TypedExpr, outside: &BTreeSet<usize>) -> bool {
+    let mut pending = vec![place];
+    while let Some(expression) = pending.pop() {
         match &expression.kind {
-            TypedExprKind::Local(id) => return Some(*id),
+            TypedExprKind::Local(id) => {
+                if outside.contains(id) {
+                    return true;
+                }
+            }
             TypedExprKind::Field(inner, _)
             | TypedExprKind::Index(inner, _)
             | TypedExprKind::Borrow(inner, _)
             | TypedExprKind::BorrowOperand(inner)
             | TypedExprKind::Dereference(inner)
-            | TypedExprKind::Slice { value: inner, .. } => expression = inner,
-            _ => return None,
+            | TypedExprKind::Slice { value: inner, .. } => pending.push(inner),
+            TypedExprKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => pending.extend([&**then_branch, &**else_branch]),
+            TypedExprKind::Match { arms, .. } => pending.extend(arms.iter().map(|arm| &arm.body)),
+            TypedExprKind::Block { result, .. } => pending.push(result),
+            _ => {
+                if reads_any(expression, outside) {
+                    return true;
+                }
+            }
         }
     }
+    false
 }
 
 /// The first place in `condition` that may write to one of the `outside` locals, directly or
 /// through a reference that a local of the condition holds (`let q = p` of a `ref mut` `p`).
-fn write_outside(condition: &TypedExpr, outside: &BTreeSet<usize>) -> Option<Span> {
-    let outside = aliases(condition, outside);
-    let rooted = |place: &TypedExpr| place_root(place).is_some_and(|id| outside.contains(&id));
+/// A call may write through a `ref mut` or `mut` parameter and, unless it is `pure`, through an
+/// exclusive reference that a record parameter holds (a shared reference to such a record cannot
+/// change the data, `E1014`).
+fn write_outside(
+    condition: &TypedExpr,
+    outside: &BTreeSet<usize>,
+    types: &TypeContext<'_>,
+) -> Option<Span> {
+    let outside = aliases(condition, outside, types);
+    let rooted = |place: &TypedExpr| reaches_outside(place, &outside);
+    let exclusive = |ty: &Type| !types.stored_all(ty, |ty| !matches!(ty, Type::Reference(_, true)));
     let mut pending = vec![condition];
     while let Some(expression) = pending.pop() {
         match &expression.kind {
@@ -516,10 +544,12 @@ fn write_outside(condition: &TypedExpr, outside: &BTreeSet<usize>) -> Option<Spa
             TypedExprKind::Call(callee, arguments) => {
                 if let Type::Function(parameters, _) = &callee.ty {
                     for (index, argument) in arguments.iter().enumerate() {
-                        let mutable =
-                            matches!(parameters.types.get(index), Some(Type::Reference(_, true)))
-                                || parameters.conventions.get(index)
-                                    == Some(&ParameterConvention::Mut);
+                        let mutable = parameters.conventions.get(index)
+                            == Some(&ParameterConvention::Mut)
+                            || parameters.types.get(index).is_some_and(|ty| {
+                                matches!(ty, Type::Reference(_, true))
+                                    || (!parameters.pure && exclusive(ty))
+                            });
                         if mutable && rooted(argument) {
                             return Some(argument.span);
                         }
@@ -534,8 +564,13 @@ fn write_outside(condition: &TypedExpr, outside: &BTreeSet<usize>) -> Option<Spa
 }
 
 /// `outside` and the locals of `condition` that may hold a reference into it: a binding of a
-/// type with a reference whose value reads one of them, until no binding is added.
-fn aliases(condition: &TypedExpr, outside: &BTreeSet<usize>) -> BTreeSet<usize> {
+/// type that stores a reference (a record field included) whose value reads one of them, until
+/// no binding is added.
+fn aliases(
+    condition: &TypedExpr,
+    outside: &BTreeSet<usize>,
+    types: &TypeContext<'_>,
+) -> BTreeSet<usize> {
     let mut bindings = Vec::new();
     let mut pending = vec![condition];
     while let Some(expression) = pending.pop() {
@@ -567,7 +602,7 @@ fn aliases(condition: &TypedExpr, outside: &BTreeSet<usize>) -> BTreeSet<usize> 
         let before = outside.len();
         for (local, value) in &bindings {
             if !outside.contains(&local.id)
-                && local.ty.contains_reference()
+                && local.ty.contains_stored_reference(types)
                 && reads_any(value, &outside)
             {
                 outside.insert(local.id);

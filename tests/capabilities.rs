@@ -678,6 +678,43 @@ fn a_printed_top_level_result_uses_stdio() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Review 3 of #65: a `def main` that takes the command-line arguments reads them from the
+/// host through the compiler's entry, so a policy without `env` refuses it and `audit` lists it.
+#[test]
+fn main_with_arguments_uses_env() {
+    let root = scratch("arguments");
+    write(
+        &root,
+        "Tsuzuri.toml",
+        "[package]\nname = \"arguments\"\nversion = \"0.1.0\"\n\n[capabilities]\nallow = []\n",
+    );
+    write(
+        &root,
+        "Main.tz",
+        "def main :: Array<string> -> i32 = \\args -> args.length as i32\n",
+    );
+    let errors = check_errors(&root);
+    let [error] = errors.as_slice() else {
+        panic!("{errors:?}");
+    };
+    assert_eq!(
+        error.message,
+        "the root package may not use capability 'env' ('the command-line arguments of main'); add \"env\" to allow in [capabilities]"
+    );
+    let output = tsuzuri(&["audit", "."], &root);
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        report.contains(
+            "  used: env\n    env: 1 site\n      Main.tz:1:37  the command-line arguments of main\n"
+        ),
+        "{report}"
+    );
+    // `main` without the arguments reads nothing from the host.
+    write(&root, "Main.tz", MAIN);
+    assert!(check_errors(&root).is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Review of #65: only `capabilities` may follow `native` in a path dependency.
 #[test]
 fn a_dependency_key_after_native_must_be_capabilities() {
