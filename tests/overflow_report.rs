@@ -635,6 +635,41 @@ fn wasm_tests_report_overflow_after_the_stack_is_exhausted() {
 }
 
 #[test]
+fn wasm_tests_report_overflow_after_a_stack_check_traps() {
+    // Above 2 GiB of memory, wasm32 functions check their stack pointer. Frames of 1,000 values
+    // reach the check before the engine's own limit, and it traps with the stack pointer below
+    // the guard, where the runner still reads the hits.
+    let values: Vec<String> = (0..1000).map(|index| format!("n + {index}")).collect();
+    let source = format!(
+        "def bump :: i8 -> i8 -> i8 = \\a b -> a + b\n\
+         \n\
+         def rec deep :: i64 -> i64 = \\n ->\n\
+         \x20   let values = [{}]\n\
+         \x20   if n == 0 then 0 else values[deep (n - 1) % 1000]\n\
+         \n\
+         test \"wraps then recurses\" =\n\
+         \x20   let wrapped = bump 127i8 1i8\n\
+         \x20   assert (wrapped == -128i8 && deep 1000 >= 0)\n",
+        values.join(", ")
+    );
+    let module = analyze(&source).unwrap();
+    let options = tsuzuri::driver::TestOptions {
+        target: tsuzuri::driver::Target::Wasm32,
+        wasm_max_memory: Some(3 << 30),
+        wasm_stack_size: Some(64 << 10),
+        ..overflow_tests(&source, true)
+    };
+    let report = tsuzuri::driver::run_tests(&module, &options).unwrap();
+    let result = &report.results[0];
+    assert_eq!(result.overflow, [BUMP_SITE], "{}", result.output);
+    assert!(
+        !result.output.contains("RangeError"),
+        "the engine's limit came first: {}",
+        result.output
+    );
+}
+
+#[test]
 fn wasm_tests_report_overflow_like_native_tests() {
     let module = analyze(WRAPPING_TESTS).unwrap();
     let options = tsuzuri::driver::TestOptions {

@@ -298,6 +298,10 @@ pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
 /// C and the appended i128 helpers, whose frames total under 1 KiB.
 const STACK_CHECK_MARGIN: u32 = 4096;
 
+/// Exports that the host calls after a trap, which can leave the stack pointer below the guard:
+/// the readers of the overflow report (A23). They only read globals, so they have no check.
+const UNCHECKED_STACK_EXPORTS: [&str; 2] = ["@tsuzuri_overflow_count(", "@tsuzuri_overflow_hit("];
+
 /// Checks every function's stack pointer, after its static frame is allocated,
 /// against its stack, so an overflow traps before the frame is used instead of
 /// wrapping below address 0 into grown memory or running into a worker stack's neighbor.
@@ -307,7 +311,12 @@ pub(crate) fn with_stack_checks(ir: String, workers: bool) -> String {
     while let Some(line) = lines.next() {
         output.push_str(line);
         let header = line.trim_end();
-        if !header.starts_with("define ") || !header.ends_with('{') {
+        if !header.starts_with("define ")
+            || !header.ends_with('{')
+            || UNCHECKED_STACK_EXPORTS
+                .iter()
+                .any(|name| header.contains(name))
+        {
             continue;
         }
         if let Some(label) = lines.next_if(|next| {
@@ -9922,7 +9931,7 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
 
     #[test]
     fn stack_checks_follow_static_allocas_in_every_definition() {
-        let ir = "@text = constant [8 x i8] c\"define {\"\ndeclare void @external()\ndefine internal i64 @a(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\ndefine void @b() {\n  ret void\n}\ndefine i32 @c() {\n0: ; entry\n  ret i32 0\n}\n";
+        let ir = "@text = constant [8 x i8] c\"define {\"\ndeclare void @external()\ndefine internal i64 @a(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\ndefine void @b() {\n  ret void\n}\ndefine i32 @c() {\n0: ; entry\n  ret i32 0\n}\ndefine i32 @tsuzuri_overflow_count() nounwind {\nentry:\n  ret i32 1\n}\n";
         let call = "  call void @tz.stack.check()\n";
         for workers in [false, true] {
             let checked = with_stack_checks(ir.to_owned(), workers);
