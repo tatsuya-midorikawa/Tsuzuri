@@ -268,6 +268,26 @@ fn reference_operand_borrows_have_no_fix() {
     );
     assert!(warnings[0].fixes.is_empty());
     assert_eq!(warnings[1].fixes.len(), 1);
+    // Review of #66: parentheses widen the borrow's span to the `(`; the `&` inside is still
+    // found, and a parenthesized borrow of a plain value keeps its rewrite.
+    let module = tsuzuri::analyze(
+        "let x = 41\nlet r = ref x\nlet rr = (&r)\nlet rs = Maybe.Some (&r)\nlet y = (&x)\nlet z = ((&x))\n0\n",
+    )
+    .unwrap();
+    let levels: Vec<_> = module
+        .noncanonical
+        .iter()
+        .map(|finding| finding.level)
+        .collect();
+    assert_eq!(
+        levels,
+        [
+            FixLevel::Unavailable,
+            FixLevel::Unavailable,
+            FixLevel::Certain,
+            FixLevel::Certain
+        ]
+    );
 }
 
 fn scratch(name: &str) -> PathBuf {

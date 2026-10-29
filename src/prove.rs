@@ -659,7 +659,7 @@ pub fn run(
     options: &ProveOptions,
     clauses: &BTreeMap<String, Vec<String>>,
 ) -> Outcome {
-    let mut selected: Vec<&CheckedFunction> = module
+    let eligible: Vec<&CheckedFunction> = module
         .functions
         .iter()
         .filter(|function| {
@@ -667,7 +667,42 @@ pub fn run(
                 && function.origin.module == ModuleOrigin::User
                 && function.origin.provenance == Provenance::User
                 && function.origin.test.is_none()
-                && (options.functions.is_empty() || options.functions.contains(&shown(function)))
+        })
+        .collect();
+    // A name that `--function` gives must name a function with contract lines: a typo would
+    // otherwise prove nothing and succeed.
+    let unmatched: Vec<&str> = options
+        .functions
+        .iter()
+        .filter(|name| !eligible.iter().any(|function| &shown(function) == *name))
+        .map(String::as_str)
+        .collect();
+    if !unmatched.is_empty() {
+        return Outcome {
+            reports: Vec::new(),
+            error: Some(
+                Diagnostic::of(
+                    DiagnosticKind::ProveUnknownFunction,
+                    format!(
+                        "--function {} names no function with contract lines",
+                        unmatched
+                            .iter()
+                            .map(|name| format!("'{name}'"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    Span::default(),
+                )
+                .with_help(
+                    "write 'Module.name' of a function that has '@requires' or '@ensures' lines",
+                ),
+            ),
+        };
+    }
+    let mut selected: Vec<&CheckedFunction> = eligible
+        .into_iter()
+        .filter(|function| {
+            options.functions.is_empty() || options.functions.contains(&shown(function))
         })
         .collect();
     selected.sort_by_key(|function| {

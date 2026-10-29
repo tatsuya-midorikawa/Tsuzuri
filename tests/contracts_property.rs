@@ -107,6 +107,37 @@ fn contracts_test_generates_property_tests() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Review of #64: `@old` in an `@ensures` line becomes a value taken before the generated call,
+/// and the library API loads `Gen` for `test` mode without the sources naming it.
+#[test]
+fn generated_properties_take_old_values_before_the_call() {
+    let source = "def grow :: i64 -> i64 = \\x ->\n    @requires x >= 0 && x < 1000\n    @ensures \\r -> r == @old (x) + 1\n    x + 1\n\
+                  def shrink :: i64 -> i64 = \\x ->\n    @requires x >= 0 && x < 1000\n    @ensures \\r -> r == @old (x * 2) - x\n    x - 1\n";
+    let root = project("old", source);
+    let (code, stdout, stderr) = test(&["--contracts", "test"], &root);
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert!(
+        stdout.contains("ok 1 - Main contract grow"),
+        "{stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("not ok 2 - Main contract shrink"),
+        "{stdout}{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+    let module = tsuzuri::analyze_modules_with_contracts(
+        &[("Main", "def clamp :: i64 -> i64 = \\x ->\n    @ensures \\r -> r >= 0\n    if x < 0 then 0 else x\n")],
+        tsuzuri::check::contracts::ContractMode::Test,
+    )
+    .unwrap_or_else(|errors| panic!("{errors:?}"));
+    assert!(
+        module
+            .tests
+            .iter()
+            .any(|test| test.name == "contract clamp")
+    );
+}
+
 #[test]
 fn contract_warnings_name_useless_lines() {
     let module = analyze(

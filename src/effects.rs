@@ -658,6 +658,10 @@ pub fn summarize(module: &CheckedModule, options: Options) -> Result<FunctionEff
     summarize_with(module, options, Limits::default())
 }
 
+/// The parameters whose calls a summary records, one bit each; a call of a later parameter is a
+/// call of a value that the analysis cannot follow.
+const PARAMETER_BITS: usize = 64;
+
 /// What an argument of a call gives a parameter that the callee calls (Phase 6).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Arg {
@@ -897,14 +901,6 @@ fn open_type(ty: &Type, types: &TypeContext<'_>) -> bool {
     })
 }
 
-fn function_type(ty: &Type) -> bool {
-    let mut ty = ty;
-    while let Type::Reference(inner, _) = ty {
-        ty = inner;
-    }
-    matches!(ty, Type::Function(..) | Type::Task(_))
-}
-
 struct Scan<'s, 'a> {
     state: &'s mut State<'a>,
     function: &'a CheckedFunction,
@@ -990,6 +986,15 @@ impl<'s, 'a> Scan<'s, 'a> {
         arguments: &[&'a TypedExpr],
         span: Span,
     ) {
+        // A call of a known function through an immutable alias or a partial application is a
+        // call of that function too, so its callbacks are checked as at a direct call.
+        if let Some(callee) = callee {
+            for (target, bound) in self.targets(callee) {
+                let mut supplied = bound;
+                supplied.extend(arguments.iter().copied());
+                self.record_call(target, supplied, span);
+            }
+        }
         let mut values: Vec<&'a TypedExpr> = callee.into_iter().collect();
         values.extend(arguments.iter().copied());
         for value in values {
@@ -997,9 +1002,43 @@ impl<'s, 'a> Scan<'s, 'a> {
                 continue;
             }
             match self.classify(value) {
-                Arg::Param(index) => self.local.param_calls |= 1 << index.min(63),
+                Arg::Param(index) if index < PARAMETER_BITS => self.local.param_calls |= 1 << index,
+                // A call of a parameter beyond the bit set is a call that cannot be followed.
+                Arg::Param(_) | Arg::Unknown => self.unknown(VALUE_CALL, span, "value-call"),
                 Arg::Known(_) => {}
-                Arg::Unknown => self.unknown(VALUE_CALL, span, "value-call"),
+            }
+        }
+    }
+
+    /// The functions that a function value certainly is, with the arguments it already binds
+    /// (captures, then the arguments of a partial application): followed through immutable
+    /// locals and borrows. Empty for a value that cannot be followed to one function.
+    fn targets(&self, value: &'a TypedExpr) -> Vec<(usize, Vec<&'a TypedExpr>)> {
+        use TypedExprKind as K;
+        let mut value = value;
+        let mut seen = BTreeSet::new();
+        loop {
+            match &value.kind {
+                K::Function(FunctionRef::User(id)) => return vec![(*id, Vec::new())],
+                K::Closure(id, captures) => return vec![(*id, captures.iter().collect())],
+                K::Call(inner, bound) if matches!(&inner.ty, Type::Function(parameters, _) if bound.len() < parameters.len()) =>
+                {
+                    return match &inner.kind {
+                        K::Function(FunctionRef::User(id)) => vec![(*id, bound.iter().collect())],
+                        K::Closure(id, captures) => {
+                            vec![(*id, captures.iter().chain(bound.iter()).collect())]
+                        }
+                        _ => Vec::new(),
+                    };
+                }
+                K::Local(id) if !self.parameters.contains_key(id) => match self.aliases.get(id) {
+                    Some(alias) if seen.insert(*id) => value = alias,
+                    _ => return Vec::new(),
+                },
+                K::Borrow(inner, false) | K::BorrowOperand(inner) | K::Dereference(inner) => {
+                    value = inner
+                }
+                _ => return Vec::new(),
             }
         }
     }
@@ -1011,6 +1050,13 @@ impl<'s, 'a> Scan<'s, 'a> {
         arguments: &[&'a TypedExpr],
         span: Span,
     ) {
+        let supplied: Vec<&'a TypedExpr> =
+            captures.iter().chain(arguments.iter().copied()).collect();
+        self.record_call(callee, supplied, span);
+    }
+
+    /// Records a call of `callee` with all the values it receives (captures first).
+    fn record_call(&mut self, callee: usize, supplied: Vec<&'a TypedExpr>, span: Span) {
         let target = &self.state.module.functions[callee];
         let open: Vec<bool> = target
             .parameters
@@ -1023,8 +1069,6 @@ impl<'s, 'a> Scan<'s, 'a> {
         if !open.contains(&true) {
             return;
         }
-        let supplied: Vec<&'a TypedExpr> =
-            captures.iter().chain(arguments.iter().copied()).collect();
         let arguments = supplied
             .iter()
             .enumerate()
@@ -1349,6 +1393,18 @@ impl<'s, 'a> Scan<'s, 'a> {
                 });
                 if !vouched {
                     self.source(Effect::Extern, span, "extern-call");
+                }
+                // The call itself may copy a string argument for the host (into UTF-16, when the
+                // program's strings are compact): an allocation of the marshalling, which no
+                // property of the C function covers.
+                if self.function.parameters.iter().any(|parameter| {
+                    let mut ty = &parameter.ty;
+                    while let Type::Reference(inner, _) = ty {
+                        ty = inner;
+                    }
+                    *ty == Type::String
+                }) {
+                    self.source(Effect::Alloc, span, "string-marshalling");
                 }
                 self.exempt(Effect::Trap, span, "host-call");
                 false
@@ -1808,15 +1864,18 @@ fn summarize_roots(
                     } else {
                         result.summaries[site.callee].calls_params
                     };
-                    for index in (0..64).filter(|index| callee_params & (1 << index) != 0) {
+                    for index in
+                        (0..PARAMETER_BITS).filter(|index| callee_params & (1 << index) != 0)
+                    {
                         // A parameter that the call does not supply comes from a later call of the
                         // value, whose arguments are classified there.
                         match site.arguments.get(index) {
                             Some(Arg::Known(_)) | None => {}
-                            Some(Arg::Param(parameter)) => {
-                                calls_params |= 1 << (*parameter).min(63)
+                            Some(Arg::Param(parameter)) if *parameter < PARAMETER_BITS => {
+                                calls_params |= 1 << *parameter
                             }
-                            Some(Arg::Unknown) => unknown_calls.push(site.span),
+                            // A parameter beyond the bit set cannot carry the obligation.
+                            Some(Arg::Param(_) | Arg::Unknown) => unknown_calls.push(site.span),
                         }
                     }
                 }
@@ -1951,7 +2010,7 @@ fn roots(module: &CheckedModule) -> Vec<usize> {
             module.functions[id]
                 .parameters
                 .iter()
-                .any(|parameter| function_type(&parameter.ty))
+                .any(|parameter| open_type(&parameter.ty, &module.types()))
         })
         .collect();
     if !higher_order.is_empty() {
@@ -2161,7 +2220,7 @@ pub struct Validation {
 
 /// The `{what}` and `{help}` of a direct source (appendix J.3 of A20).
 fn phrase(effect: Effect, code: &str) -> (&'static str, &'static str) {
-    const GUARD: &str = "guard it ('if i >= 0 && i < xs.length then xs[i] else ...') or use 'Array.get' and match the Maybe";
+    const GUARD: &str = "guard it ('if i >= 0 && i < xs.length then xs[i] else ...') or use 'Array.try_item' and match the Maybe";
     match (effect, code) {
         (_, "copy-site") => (
             "implicitly copies every element",
@@ -2194,6 +2253,10 @@ fn phrase(effect: Effect, code: &str) -> (&'static str, &'static str) {
         (Effect::Alloc, "recursive-node") => (
             "creates a heap-allocated node of a recursive union",
             "use an array and indices instead of a recursive union",
+        ),
+        (Effect::Alloc, "string-marshalling") => (
+            "passes a string to an extern function, which may copy it for the host",
+            "pass the bytes as a 'ref [i8u]' buffer, or remove the attribute",
         ),
         (Effect::Alloc, "task" | "parallel") => {
             ("creates tasks", "remove the tasks, or remove the attribute")
@@ -2514,7 +2577,9 @@ impl Report<'_> {
                     }
                     let name = declared_name(callee);
                     let attribute = kind.name();
-                    for index in (0..64).filter(|index| calls_params & (1 << index) != 0) {
+                    for index in
+                        (0..PARAMETER_BITS).filter(|index| calls_params & (1 << index) != 0)
+                    {
                         let diagnostic = match site.arguments.get(index) {
                             None => continue,
                             Some(Arg::Known(functions)) => {
@@ -2864,7 +2929,8 @@ pub(crate) fn impurities(
         }
         // A function value that the condition calls must be a pure function type.
         for (index, parameter) in declaration.parameters.iter().enumerate() {
-            if local.param_calls & (1 << index.min(63)) != 0
+            if index < PARAMETER_BITS
+                && local.param_calls & (1 << index) != 0
                 && parameter.ty.function_purity() != Some(true)
             {
                 candidates.push((parameter.span, "cannot be proven pure".into()));
@@ -2872,7 +2938,7 @@ pub(crate) fn impurities(
         }
         for site in &local.calls {
             let calls_params = summaries.summary(site.callee).calls_params;
-            let open = (0..64)
+            let open = (0..PARAMETER_BITS)
                 .filter(|index| calls_params & (1 << index) != 0)
                 .any(|index| match site.arguments.get(index) {
                     Some(Arg::Param(parameter)) => declaration

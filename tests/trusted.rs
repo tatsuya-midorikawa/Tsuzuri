@@ -308,3 +308,25 @@ fn untrusted_extern_still_breaks_no_trap() {
         );
     }
 }
+
+/// Review of #65: a string argument of an extern call may be copied for the host, which no
+/// trusted property of the C function covers, so `@no_alloc` still sees an allocation.
+#[test]
+fn trusted_no_alloc_extern_with_a_string_argument_still_allocates() {
+    let source = "@trusted no_alloc\nextern \"strlen\" def c_length :: ref string -> i64\n\
+                  @no_alloc\ndef measure :: ref string -> i64 = \\text -> c_length text\n\
+                  def main :: unit -> i32 = \\() -> 0\n";
+    let error = tsuzuri::analyze(source).unwrap_err();
+    assert_eq!(error.code, "E1031", "{}", error.message);
+    assert!(
+        error.message.contains("may copy it for the host"),
+        "{}",
+        error.message
+    );
+    tsuzuri::analyze(
+        &source
+            .replace("ref string", "i64")
+            .replace("c_length text", "c_length 3"),
+    )
+    .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+}

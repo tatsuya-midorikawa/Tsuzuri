@@ -86,7 +86,8 @@ fn audit_text_matches_the_examples() {
     let tasks = audit(&["examples/tasks"], repository);
     assert_eq!(
         stdout(&tasks),
-        "audit: tasks\npolicy: none\npackages: 1\n\npackage tasks (root)\n  allowed: all\n  used: none\n  denied: none\n  externs: none\n\nsummary: used=none denied=0 untrusted_externs=0\n"
+        // Review of #65: the printed result of the top-level code writes to the standard output.
+        "audit: tasks\npolicy: none\npackages: 1\n\npackage tasks (root)\n  allowed: all\n  used: stdio\n    stdio: 1 site\n      Main.tz:5:1  the printed result of the top-level code\n  denied: none\n  externs: none\n\nsummary: used=stdio denied=0 untrusted_externs=0\n"
     );
     let root = scratch("text");
     d4(&root);
@@ -149,7 +150,7 @@ fn audit_json_matches_the_examples() {
         .collect();
     assert_eq!(lines.len(), 3);
     assert!(
-        lines[1].contains("\"used\":[],\"denied\":[],\"unused\":[]"),
+        lines[1].contains("\"used\":[{\"capability\":\"stdio\",\"count\":1,\"sites\":[{\"path\":\"Main.tz\",\"line\":5,\"column\":1,\"callee\":\"the printed result of the top-level code\",\"function\":\"Main\",\"scope\":\"program\"}]}],\"denied\":[],\"unused\":[]"),
         "{}",
         lines[1]
     );

@@ -8174,6 +8174,7 @@ fn check_modules_collect(
     }
     diagnostics.extend(pure_rules::validate(&module));
     diagnostics.extend(contracts::validate_purity(&module));
+    diagnostics.extend(contracts::validate_writes(&module));
     if let Err(error) = validate_cpu_functions(&module) {
         diagnostics.push(error);
     }
@@ -8506,17 +8507,28 @@ fn root_noncanonical(
     modules: &[ModuleInput<'_>],
     reference_borrows: &[Span],
 ) -> Vec<crate::syntax::Noncanonical> {
-    let references: BTreeSet<(Option<usize>, usize)> = reference_borrows
+    // Each span runs from the start of a borrow of a reference to its operand, so it holds the
+    // `&` whatever parentheses surround the borrow. The spans do not overlap: the last one that
+    // starts at or before a finding is the only one that can hold it.
+    let references: BTreeSet<(Option<usize>, usize, usize)> = reference_borrows
         .iter()
-        .map(|span| (span.source, span.start))
+        .map(|span| (span.source, span.start, span.end))
         .collect();
+    let borrows_a_reference = |span: Span| {
+        references
+            .range(..=(span.source, span.start, usize::MAX))
+            .next_back()
+            .is_some_and(|&(source, start, end)| {
+                source == span.source && start <= span.start && span.start < end
+            })
+    };
     let mut found: Vec<_> = modules
         .iter()
         .filter(|input| input.origin == ModuleOrigin::User && input.package.is_none())
         .flat_map(|input| input.program.noncanonical.iter().cloned())
         .map(|mut finding| {
             if finding.kind == crate::syntax::NoncanonicalKind::SymbolicBorrow
-                && references.contains(&(finding.span.source, finding.span.start))
+                && borrows_a_reference(finding.span)
             {
                 finding.level = crate::syntax::FixLevel::Unavailable;
                 finding.edits.clear();
@@ -11567,8 +11579,14 @@ impl<'a> Checker<'a> {
                             _ => None,
                         };
                         let value = self.expression(value, hint.as_ref())?;
-                        self.symbolic_borrows
-                            .push((value.ty.clone(), expression.span));
+                        // The text before the operand holds the `&`, also when parentheses around
+                        // the borrow widen the expression's span: `(&r)`.
+                        let operator = Span {
+                            start: expression.span.start,
+                            end: value.span.start.max(expression.span.start),
+                            source: expression.span.source,
+                        };
+                        self.symbolic_borrows.push((value.ty.clone(), operator));
                         value
                     }
                     Notation::Keyword => {

@@ -711,25 +711,20 @@ impl<'a> Translator<'a> {
                     .iter()
                     .map(|argument| self.translate(argument, path))
                     .collect::<Result<Vec<_>, _>>()?;
-                let saved: Vec<_> = function
-                    .parameters
-                    .iter()
-                    .map(|parameter| (parameter.id, self.environment.get(&parameter.id).cloned()))
-                    .collect();
+                // The callee's locals are numbered in their own function, so they would overwrite
+                // the caller's: the callee sees only its parameters, and the caller's environment
+                // comes back whole.
+                let mut callee = BTreeMap::new();
                 for (parameter, value) in function.parameters.iter().zip(values) {
-                    self.environment.insert(parameter.id, value);
+                    callee.insert(parameter.id, value);
                 }
+                let saved = std::mem::replace(&mut self.environment, callee);
                 self.inlined.push(*id);
                 let outer = std::mem::replace(&mut self.in_contract, false);
                 let result = self.translate(&function.body, path);
                 self.in_contract = outer;
                 self.inlined.pop();
-                for (id, value) in saved {
-                    match value {
-                        Some(value) => self.environment.insert(id, value),
-                        None => self.environment.remove(&id),
-                    };
-                }
+                self.environment = saved;
                 result
             }
             TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
