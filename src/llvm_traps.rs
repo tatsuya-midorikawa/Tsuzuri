@@ -217,9 +217,10 @@ pub enum TrapNumbering {
 }
 
 /// The most files that a stable numbering gives sites to, and the most locations in each of them. A program with more
-/// is numbered densely (and built from one unit).
-const STABLE_SOURCES: u64 = 8191;
+/// is numbered densely (and built from one unit). The files are as many as keep every number a positive `i32`: the
+/// wasm32 export `tsuzuri_trap_site` returns one, which the host compares with the side table as JavaScript reads it.
 const STABLE_LOCATIONS: u64 = 1 << 14;
+const STABLE_SOURCES: u64 = i32::MAX as u64 / (TrapKind::ALL.len() as u64 * STABLE_LOCATIONS);
 /// How many site numbers each file owns.
 const STABLE_SPAN: u32 = (TrapKind::ALL.len() as u32) * (STABLE_LOCATIONS as u32);
 
@@ -762,4 +763,48 @@ fn source_modules(module: &CheckedModule) -> BTreeMap<usize, String> {
         }
     }
     modules
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The last place of the last block gives the largest numbers of a stable numbering; with every kind they are
+    /// still positive `i32` values, which the wasm32 export `tsuzuri_trap_site` returns.
+    #[test]
+    fn the_largest_stable_site_is_a_positive_i32() {
+        let path = (0..)
+            .map(|index| format!("dir{index}/Main.tz"))
+            .find(|path| fnv(path.bytes()) % STABLE_SOURCES == STABLE_SOURCES - 1)
+            .unwrap();
+        let start = (0usize..)
+            .find(|&start| {
+                let end = start as u64 + 1;
+                fnv((start as u64)
+                    .to_le_bytes()
+                    .into_iter()
+                    .chain(end.to_le_bytes()))
+                    % STABLE_LOCATIONS
+                    == STABLE_LOCATIONS - 1
+            })
+            .unwrap();
+        let sources = [TrapSource {
+            path: &path,
+            text: "",
+        }];
+        let location = (0, start, start + 1);
+        let assignment = assign_stable(
+            &BTreeSet::from([location]),
+            &sources,
+            (0, usize::MAX, usize::MAX),
+        )
+        .unwrap();
+        let largest = assignment.bases[&location]
+            + TrapKind::ALL.iter().map(|kind| *kind as u32).max().unwrap();
+        assert_eq!(
+            u64::from(largest),
+            TrapKind::ALL.len() as u64 * STABLE_SOURCES * STABLE_LOCATIONS
+        );
+        assert!(i32::try_from(largest).is_ok(), "{largest}");
+    }
 }
