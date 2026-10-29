@@ -233,6 +233,13 @@ pub struct Options {
     /// E15: a `@trusted` property bit (`syntax::TRUSTED_PROPERTIES`). An extern function whose
     /// mark states it is not a source of `extern`; others still are.
     pub trusted: Option<u8>,
+    /// A call of a value of a `pure` function type adds nothing: `computed` holds only effects
+    /// that `pure` forbids, as for A21's contract conditions.
+    pub pure_values: bool,
+    /// The bodies are generic templates before specialization (A21's check of the contract lines
+    /// of generic functions): a generic function stands for its instances and a lambda's body for
+    /// its calls.
+    pub templates: bool,
 }
 
 impl Options {
@@ -253,6 +260,8 @@ impl Options {
             computed: computed.intersection(SUPPORTED),
             sites: false,
             trusted: None,
+            pure_values: false,
+            templates: false,
         }
     }
 }
@@ -1061,6 +1070,13 @@ impl<'s, 'a> Scan<'s, 'a> {
         arguments: &[&'a TypedExpr],
         span: Span,
     ) {
+        // A `pure` function value runs no effect that `pure_values` computes, whatever it is
+        // given: it cannot call an argument that is not `pure` itself.
+        if self.state.options.pure_values
+            && callee.is_some_and(|callee| callee.ty.function_purity() == Some(true))
+        {
+            return;
+        }
         // A call of a known function through an immutable alias, a partial application or a
         // branch is a call of that function too, so its callbacks are checked as at a direct
         // call. A value that the classification follows to functions but `targets` does not is
@@ -1319,6 +1335,9 @@ impl<'s, 'a> Scan<'s, 'a> {
     /// The literal rule (A6, A7): a non-empty literal stays in the frame only when it is read in
     /// place and its tree fits the frame; otherwise it is copied to the heap.
     fn literal(&mut self, expression: &'a TypedExpr, ctx: Ctx, moved: &'static str) {
+        if !self.state.computes(Effect::Alloc) {
+            return;
+        }
         if !ctx.read {
             self.source(Effect::Alloc, expression.span, moved);
             return;
@@ -1335,7 +1354,7 @@ impl<'s, 'a> Scan<'s, 'a> {
 
     /// Counts the frame bytes of a record or tuple that stays in place (A7).
     fn aggregate(&mut self, expression: &'a TypedExpr, ctx: Ctx) {
-        if ctx.read && !ctx.nested {
+        if ctx.read && !ctx.nested && self.state.computes(Effect::Alloc) {
             let bytes = crate::llvm::frame_bytes(expression, self.state.module);
             self.local.frame = self.local.frame.saturating_add(bytes);
             if bytes > MAX_VALUE_BYTES || self.local.frame > MAX_FRAME_BYTES {
@@ -1368,6 +1387,11 @@ impl<'s, 'a> Scan<'s, 'a> {
             consumer: Consumer::default(),
         };
         match &expression.kind {
+            K::GenericFunction(id, _) if self.state.options.templates => {
+                self.local.edges.push((*id, span));
+                false
+            }
+            K::Lambda { .. } if self.state.options.templates => false,
             K::Error
             | K::GenericFunction(..)
             | K::Method(..)
@@ -3160,14 +3184,20 @@ fn impurity_reason(effect: Effect, why: Why) -> String {
 /// (`contract_impure`): a source of an effect that A19's `pure` forbids, a `dyn` dispatch, an
 /// unresolved expression, or a call of a function value that is not a pure function type.
 /// `roots` holds each function with its conditions and the span of their contract lines.
+/// `templates` checks generic functions before specialization (`Options::templates`): what only
+/// an instance resolves (a class method, a value that the analysis cannot follow) is left to the
+/// check of each instance.
 pub(crate) fn impurities(
     module: &CheckedModule,
     roots: &[(usize, Vec<(&TypedExpr, Span)>)],
+    templates: bool,
 ) -> Result<Vec<(usize, Diagnostic)>, Diagnostic> {
     let count = module.functions.len();
     // E15: an extern function marked `@trusted pure` is as pure as a `pure def`.
     let options = Options {
         trusted: crate::syntax::trusted_property_bit("pure"),
+        pure_values: true,
+        templates,
         ..Options::new(Scope::All, EffectSet::PURE_FORBIDDEN)
     };
     let mut state = State {
@@ -3225,6 +3255,8 @@ pub(crate) fn impurities(
                 impurity_reason(effect, why)
             } else if index == DYN {
                 "uses dyn dispatch".into()
+            } else if templates {
+                continue;
             } else {
                 "cannot be proven pure".into()
             };
@@ -3248,7 +3280,7 @@ pub(crate) fn impurities(
                         .parameters
                         .get(*parameter)
                         .is_none_or(|parameter| parameter.ty.function_purity() != Some(true)),
-                    Some(Arg::Unknown) => true,
+                    Some(Arg::Unknown) => !templates,
                     Some(Arg::Known(_)) | None => false,
                 });
             if open {
@@ -3294,10 +3326,7 @@ pub(crate) fn impurities(
                     reason.push_str(&format!(" (through {text})"));
                 }
                 candidates.push((at, reason));
-            } else if summary
-                .unknown
-                .is_some_and(|unknown| unknown != Unknown::ValueCall)
-            {
+            } else if summary.unknown.is_some() && !templates {
                 candidates.push((span, "cannot be proven pure".into()));
             }
         }
