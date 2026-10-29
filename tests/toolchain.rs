@@ -61,7 +61,21 @@ fn info(
     for (name, value) in environment {
         command.env(name, value);
     }
-    let output = command.output().unwrap();
+    // The tests copy the compiler while other tests start processes: a child forked during a copy
+    // holds the copy open for writing until it executes, and running the copy fails with ETXTBSY
+    // until then.
+    let mut attempts = 0;
+    let output = loop {
+        match command.output() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 100 =>
+            {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => break result.unwrap(),
+        }
+    };
     (
         output.status.code().unwrap(),
         String::from_utf8(output.stdout).unwrap(),
