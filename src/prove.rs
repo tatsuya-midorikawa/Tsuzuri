@@ -427,8 +427,8 @@ fn prove_function(
     if let Err(error) = translator.parameters(function) {
         return unsupported_report(error.reason, error.span);
     }
-    let requires = usize::from(shape.requires);
-    let olds = usize::from(shape.olds);
+    let requires = shape.requires;
+    let olds = shape.olds;
     let condition_of = |value: &crate::check::TypedExpr| match &value.kind {
         TypedExprKind::Call(_, arguments) => arguments.first().cloned(),
         _ => None,
