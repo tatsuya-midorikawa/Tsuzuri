@@ -983,7 +983,16 @@ impl<'w, 'a> Lower<'w, 'a> {
                 len,
             } => {
                 let base = self.val(base, Ty::Ptr)?;
-                let value = self.gep(ty, base, start, len)?;
+                let mut value = self.gep(ty, base, start, len)?;
+                // A constant offset from a register is added where the address is used, at that
+                // instruction's line. With `-g` the address is made here, as LLVM's FastISel makes
+                // it, so a line that only computes addresses (the fields that a pattern borrows)
+                // keeps its code.
+                if self.module.debug
+                    && let Val::Off { base, off } = value
+                {
+                    value = Val::S(self.b.ins().iadd_imm(base, off));
+                }
                 self.vals[dst as usize] = Some(value);
             }
             Inst::Alloca {
