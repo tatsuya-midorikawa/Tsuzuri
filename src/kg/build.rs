@@ -488,14 +488,16 @@ pub struct Pending {
 }
 
 /// Runs the analysis of a command (`check`, `build`, `run`, `test`) once: with a capture when
-/// `plan` writes the graph, and as `analyze_cached` otherwise.
+/// `plan` writes the graph, and as `analyze_cached` otherwise. The project first gets the std
+/// modules that `contracts` uses (`Project::prepare_contracts`).
 pub fn analyze(
-    project: &Project,
+    project: &mut Project,
     cache: bool,
     kind: crate::driver::AnalysisKind,
     plan: Plan,
     contracts: crate::check::contracts::ContractMode,
 ) -> (Result<CheckedModule, DiagnosticSet>, Option<Pending>) {
+    project.prepare_contracts(contracts);
     match plan {
         Plan::Build(target) => {
             let mut capture = Capture::default();

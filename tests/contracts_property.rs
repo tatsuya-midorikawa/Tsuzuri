@@ -188,6 +188,46 @@ fn generated_properties_borrow_the_parameters_that_the_function_borrows() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Review 5 of #64: the Project API loads what the generated property tests use (`Gen`) in
+/// `test` mode, into the project's own sources, so the spans of the module and the diagnostics
+/// index them; the command line does not add it separately.
+#[test]
+fn the_project_api_loads_gen_for_test_mode() {
+    let root = project(
+        "api",
+        "def grow :: i64 -> i64 = \\x ->\n    @requires x >= 0 && x < 1000\n    @ensures \\r -> r > x\n    x + 1\n",
+    );
+    let mut loaded = tsuzuri::driver::Project::load_for_tests(&root).unwrap();
+    let module = loaded
+        .analyze_cached_with_contracts(
+            false,
+            tsuzuri::driver::AnalysisKind::Tests,
+            tsuzuri::check::contracts::ContractMode::Test,
+        )
+        .unwrap_or_else(|errors| panic!("{:?}", errors.diagnostics));
+    assert!(module.tests.iter().any(|test| test.name == "contract grow"));
+    let for_all = module
+        .functions
+        .iter()
+        .find(|function| function.module == "Gen")
+        .expect("Gen is loaded");
+    let source = loaded.source_for_span(for_all.span);
+    assert!(source.path.ends_with("Gen.tz"), "{}", source.path.display());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Review 5 of #64: an ignored parameter (`fn f _ =`) is bound and passed under a generated name.
+#[test]
+fn generated_properties_take_ignored_parameters() {
+    let source = "def zero :: i64 -> i64\nfn zero _ =\n    @ensures \\r -> r == 0\n    0\n\
+                  def second :: i64 -> i64 -> i64\nfn second _ y =\n    @requires y >= 0\n    @ensures \\r -> r == y\n    y\n";
+    let root = project("ignored", source);
+    let (code, stdout, stderr) = test(&["--contracts", "test"], &root);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("2 passed; 0 failed"), "{stdout}{stderr}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn contract_warnings_name_useless_lines() {
     let module = analyze(

@@ -882,11 +882,27 @@ pub(super) fn collect(
     // A parenthesized name keeps the span of its parentheses (`(Legacy.old)`); the span of the
     // name itself, for the references of `index_function`.
     let mut names_in_parentheses: BTreeMap<(Option<usize>, usize, usize), Span> = BTreeMap::new();
+    // The result names of the `@ensures` lines of each function (A21), by the function's name.
+    let mut result_names: BTreeMap<(Option<usize>, usize), Vec<ResultName<'_>>> = BTreeMap::new();
     for module in modules
         .iter()
         .filter(|module| module.origin == ModuleOrigin::User)
     {
         let program = module.program;
+        for declaration in &program.functions {
+            let names: Vec<_> = declaration
+                .contracts
+                .iter()
+                .filter_map(|clause| {
+                    let binder = clause.binder.as_ref().filter(|binder| binder.text != "_")?;
+                    Some((binder, clause.condition.span))
+                })
+                .collect();
+            if !names.is_empty() {
+                let span = declaration.name.span;
+                result_names.insert((span.source, span.start), names);
+            }
+        }
         let bodies = program
             .functions
             .iter()
@@ -941,10 +957,14 @@ pub(super) fn collect(
         .filter(|(_, function)| std_only || function.origin.module == ModuleOrigin::User)
     {
         let uses = name_uses.get(position).map_or(&[][..], Vec::as_slice);
+        let results = result_names
+            .get(&(function.span.source, function.span.start))
+            .map_or(&[][..], Vec::as_slice);
         index_function(
             &mut index,
             function,
             uses,
+            results,
             functions,
             links,
             &types,
@@ -974,11 +994,17 @@ pub(super) fn collect(
     index
 }
 
+/// The name that an `@ensures` line gives the result (A21), with the line's condition, where it
+/// is seen.
+type ResultName<'a> = (&'a Ident, Span);
+
 /// Hover entries, local definitions and scopes, and references of one body.
+#[allow(clippy::too_many_arguments)]
 fn index_function(
     index: &mut SemanticIndex,
     function: &CheckedFunction,
     uses: &[(Span, NameTarget)],
+    results: &[ResultName<'_>],
     functions: &[CheckedFunction],
     links: &Links,
     types: &TypeContext<'_>,
@@ -1086,6 +1112,42 @@ fn index_function(
         });
         definitions.insert(local.id, definition);
     }
+    // A21: the woven body binds the result once, as a generated local that every `@ensures` line
+    // reads; each line's name is a definition of its own, seen in that line's condition.
+    let result = locals
+        .values()
+        .find(|local| local.provenance == Provenance::Generated && local.name == "$contract.result")
+        .map(|local| (local.id, local.ty.display(types)));
+    let mut result_definitions = Vec::new();
+    if let Some((_, ty)) = &result {
+        for (name, condition) in results {
+            let detail = format!("{}: {ty}", name.text);
+            index.entries.push(SemanticEntry {
+                span: name.span,
+                detail: detail.clone(),
+                target: Some(name.span),
+                priority: 0,
+            });
+            let definition = index.define(Definition {
+                name: name.text.clone(),
+                kind: SymbolKind::Parameter,
+                span: name.span,
+                module: function.module.clone(),
+                container: None,
+                detail,
+                public: false,
+                exported: false,
+                parameters: Vec::new(),
+                result: String::new(),
+                plain_signature: false,
+            });
+            index.scopes.push(LocalScope {
+                definition,
+                visible: *condition,
+            });
+            result_definitions.push(definition);
+        }
+    }
     let mut scoped = BTreeSet::new();
     for (id, start, end) in scopes {
         if let Some(&definition) = definitions.get(&id)
@@ -1100,6 +1162,33 @@ fn index_function(
         }
     }
     for expression in expressions {
+        // The result read in an `@ensures` line is that line's name; the woven body's own read of
+        // it is no source.
+        let line = match (&expression.kind, &result) {
+            (TypedExprKind::Local(id), Some((result, _))) if id == result => {
+                let line = results.iter().position(|(_, condition)| {
+                    condition.source == expression.span.source
+                        && condition.start <= expression.span.start
+                        && expression.span.end <= condition.end
+                });
+                if line.is_none() {
+                    continue;
+                }
+                line
+            }
+            _ => None,
+        };
+        if let Some(line) = line {
+            let (name, _) = results[line];
+            index.entries.push(SemanticEntry {
+                span: expression.span,
+                detail: format!("{}: {}", name.text, expression.ty.display(types)),
+                target: Some(name.span),
+                priority: 0,
+            });
+            index.reference(expression.span, result_definitions[line], Role::Read);
+            continue;
+        }
         let target = match &expression.kind {
             TypedExprKind::Local(id) => locals.get(id).map(|local| local.span),
             TypedExprKind::Function(FunctionRef::User(id))
@@ -1107,9 +1196,11 @@ fn index_function(
             TypedExprKind::Record(_) => type_target(&expression.ty, types),
             _ => None,
         };
+        // A generated local (an `@old` value, say) has no name that the source spells.
         let detail = if let TypedExprKind::Local(id) = expression.kind {
             locals
                 .get(&id)
+                .filter(|local| !local.name.starts_with('$'))
                 .map(|local| format!("{}: {}", local.name, expression.ty.display(types)))
                 .unwrap_or_else(|| expression.ty.display(types))
         } else {

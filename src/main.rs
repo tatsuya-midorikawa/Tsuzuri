@@ -2920,7 +2920,7 @@ fn prove_command(arguments: &[OsString]) -> ExitCode {
         options.timeout_seconds = seconds;
     }
     let path = path.unwrap_or_else(|| PathBuf::from("."));
-    let project = match Project::load(&path) {
+    let mut project = match Project::load(&path) {
         Ok(project) => project,
         Err(error) => {
             print_diagnostic(&error.diagnostic, &error.path, "", json);
@@ -3877,10 +3877,6 @@ fn cli(
             }
         };
     }
-    // A21: the property tests of `--contracts test` generate their inputs with `Gen`.
-    if arguments.contract_mode() == ContractMode::Test {
-        project.require_std("Gen");
-    }
     let mut arguments = arguments;
     arguments.options = arguments.options.with_manifest_wasm(project.wasm);
     // Command-line values were validated during parsing, so only manifest values can fail here.
@@ -3920,7 +3916,7 @@ fn cli(
         .and_then(base_graph);
     // check, test and doc do not take --no-cache; TSUZURI_CACHE_DIR= disables every cache.
     let (analysis, pending) = tsuzuri::kg::build::analyze(
-        &project,
+        &mut project,
         arguments.options.cache,
         kind,
         plan,

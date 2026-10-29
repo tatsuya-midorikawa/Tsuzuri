@@ -2964,9 +2964,19 @@ impl Project {
         self.analyze_all().map_err(crate::first_error)
     }
 
+    /// Adds the std modules that analysis in `contracts` mode uses whether the sources name them
+    /// or not: the property tests of `test` mode generate their inputs with `Gen` (A21). They join
+    /// the project's sources, so the spans of the module, the diagnostics and the trap sources
+    /// index them as they index any other source. The analyses in a contract mode call it.
+    pub fn prepare_contracts(&mut self, contracts: ContractMode) {
+        if contracts == ContractMode::Test {
+            self.require_std("Gen");
+        }
+    }
+
     /// Adds the opt-in std module `module` (and the modules it uses) when the sources did not
-    /// name it: the property tests that `--contracts test` generates use `Gen` (A21).
-    pub fn require_std(&mut self, module: &str) {
+    /// name it.
+    fn require_std(&mut self, module: &str) {
         let present: std::collections::BTreeSet<PathBuf> = self
             .sources
             .iter()
@@ -3008,18 +3018,20 @@ impl Project {
         self.analyze_cached_core(cache, kind, None, ContractMode::Check)
     }
 
-    /// `analyze_cached` in a command's contract mode (A21).
+    /// `analyze_cached` in a command's contract mode (A21), after `prepare_contracts`.
     pub fn analyze_cached_with_contracts(
-        &self,
+        &mut self,
         cache: bool,
         kind: AnalysisKind,
         contracts: ContractMode,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
+        self.prepare_contracts(contracts);
         self.analyze_cached_core(cache, kind, None, contracts)
     }
 
     /// `analyze_cached` that also fills `capture`, the declaration view of the knowledge graph
-    /// (G26, G27). The result and the diagnostics are those of `analyze_cached`.
+    /// (G26, G27). The result and the diagnostics are those of `analyze_cached`. A caller in
+    /// `test` mode calls `prepare_contracts` first (`kg::build::analyze`).
     pub(crate) fn analyze_cached_captured(
         &self,
         cache: bool,

@@ -1081,37 +1081,36 @@ fn property_test(
         contracts: Vec::new(),
     };
     // The generator of the arguments, paired from the right, and the pattern that names them
-    // with their written types.
+    // `$arg_<index>` with their written types: a parameter may be `_`, which binds nothing.
     let mut generator = build.call("Arbitrary", "arbitrary", Vec::new())?;
-    let binding = |parameter: &Parameter| Pattern {
+    let binding = |index: usize| Pattern {
         kind: PatternKind::Annotated(
             Box::new(Pattern {
-                kind: PatternKind::Binding(build.ident(parameter.name.text.as_str())),
+                kind: PatternKind::Binding(build.ident(format!("$arg_{index}"))),
                 span: build.span,
                 depth: 1,
             }),
-            value_type(&parameter.ty),
+            value_type(&function.parameters[index].ty),
         ),
         span: build.span,
         depth: 2,
     };
-    let parameters = &function.parameters;
-    let mut pattern = binding(&parameters[parameters.len() - 1]);
-    for parameter in parameters[..parameters.len() - 1].iter().rev() {
+    let count = function.parameters.len();
+    let mut pattern = binding(count - 1);
+    for index in (0..count - 1).rev() {
         generator = build.apply(
             "Gen.pair",
             vec![build.call("Arbitrary", "arbitrary", Vec::new())?, generator],
         )?;
         let depth = pattern.depth + 1;
         pattern = Pattern {
-            kind: PatternKind::Tuple(vec![binding(parameter), pattern]),
+            kind: PatternKind::Tuple(vec![binding(index), pattern]),
             span: build.span,
             depth,
         };
     }
-    let arguments = parameters
-        .iter()
-        .map(|parameter| build.name(&parameter.name.text))
+    let arguments = (0..count)
+        .map(|index| build.name(&format!("$arg_{index}")))
         .collect::<Result<_, _>>()?;
     let call = build.apply(&format!("{module}.{name}"), arguments)?;
     let property = build.lambda(
