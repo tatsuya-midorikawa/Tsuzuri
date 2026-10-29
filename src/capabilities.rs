@@ -811,6 +811,38 @@ pub fn analyze_with_limits(
                 primitive: Some("tsuzuri_arguments"),
             });
     }
+    // An extern `main` is called by the entry that the compiler adds, which no function of the
+    // program names: the declaration is its use.
+    if let Some(entry) = module.entry
+        && is_extern(entry)
+        && let Some(source) = source_of(entry)
+    {
+        let function = &functions[entry];
+        let span = function.span;
+        externs.entry(entry).or_default().insert((
+            span.source.unwrap_or(usize::MAX),
+            span.start,
+            span.end,
+        ));
+        sites
+            .entry((
+                source.package.clone(),
+                span.source.unwrap_or(usize::MAX),
+                span.start,
+                span.end,
+                Capability::Ffi,
+            ))
+            .or_insert(Site {
+                capability: Capability::Ffi,
+                span,
+                callee: function.name.clone(),
+                function: declared(&function.qualified_name()).to_owned(),
+                scope: Scope::Program,
+                via: Vec::new(),
+                source_span: Some(span),
+                primitive: None,
+            });
+    }
     let mut sites: Vec<(Option<PackageId>, Site)> = sites
         .into_iter()
         .map(|((package, ..), site)| (package, site))

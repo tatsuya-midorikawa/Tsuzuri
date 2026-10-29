@@ -343,7 +343,7 @@ allow = ["fs", "net", "stdio", "time"]
 | 権限 | 使う std の関数（例） |
 | --- | --- |
 | `env` | `Env.args`・`Env.var`・`Env.current_dir`、コマンドライン引数を受け取る `def main :: Array<string> -> i32` |
-| `ffi` | `extern` の関数（`@trusted` でも同じ） |
+| `ffi` | `extern` の関数（`@trusted` でも同じ）、`extern` で宣言した `main` |
 | `fs` | `File` と `Dir` の関数 |
 | `gpu` | `Gpu.request`・`Gpu.init`・`Gpu.map`・`Gpu.last_backend` など |
 | `net` | `Net` の接続・送受信の関数（`Net.parse_address` などのアドレスの操作は権限なし） |

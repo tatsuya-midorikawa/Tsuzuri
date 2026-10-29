@@ -715,6 +715,46 @@ fn main_with_arguments_uses_env() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Review of #65: an extern `main` is called by the entry that the compiler adds.
+#[test]
+fn an_extern_main_uses_ffi() {
+    let root = scratch("extern-main");
+    write(
+        &root,
+        "Tsuzuri.toml",
+        "[package]\nname = \"externmain\"\nversion = \"0.1.0\"\n\n[capabilities]\nallow = []\n",
+    );
+    write(
+        &root,
+        "Main.tz",
+        "extern \"host_main\" def main :: unit -> i32\n",
+    );
+    let errors = check_errors(&root);
+    let [error] = errors.as_slice() else {
+        panic!("{errors:?}");
+    };
+    assert_eq!(
+        error.message,
+        "the root package may not use capability 'ffi' ('main'); add \"ffi\" to allow in [capabilities]"
+    );
+    let output = tsuzuri(&["audit", "."], &root);
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        report.contains("  used: ffi\n    ffi: 1 site\n      Main.tz:1:24  main\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains("summary: used=ffi denied=1 untrusted_externs=1"),
+        "{report}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning[W1010]: extern function 'main' is used but not marked '@trusted'"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Review of #65: only `capabilities` may follow `native` in a path dependency.
 #[test]
 fn a_dependency_key_after_native_must_be_capabilities() {
