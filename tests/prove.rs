@@ -132,6 +132,47 @@ fn inlined_callee_locals_keep_the_callers() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Review of #64, round 2: a lambda parameter's `when` guard is not checked for exhaustiveness,
+/// so a value that fails it traps with `pattern mismatch`; the prover must not read the last arm
+/// as unconditional. An exhaustive `match` with no catch-all arm still proves.
+#[test]
+fn a_guard_that_can_fail_is_a_trap() {
+    if !z3() {
+        println!("skipped: z3 not found");
+        return;
+    }
+    let source = "def positive :: i64 -> i64 = \\x when x > 0 -> x\n\
+                  def f :: i64 -> i64 = \\x ->\n    @ensures \\r -> r == x\n    positive x\n\
+                  def sign :: bool -> i64 -> i64 = \\b x ->\n    @ensures \\r -> r == 0 || r == x\n    match b with\n    | true -> x\n    | false -> 0\n\
+                  def main :: unit -> i32 = \\() -> (f 0) as i32\n";
+    let root = project("guard", source);
+    let (code, stdout, stderr) = prove(&["--function", "Main.f"], &root, None);
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert_eq!(stdout, "counterexample Main.f\n", "{stderr}");
+    assert!(
+        stderr.contains("'the body' of 'Main.f' can fail: Main.f ")
+            && stderr.contains(" traps: pattern mismatch"),
+        "{stderr}"
+    );
+    let (code, stdout, stderr) = prove(&["--function", "Main.sign"], &root, None);
+    assert_eq!(
+        (code, stdout.as_str()),
+        (0, "proved Main.sign\n"),
+        "{stderr}"
+    );
+    let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("run")
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("trap: pattern mismatch"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Review of #64: a `--function` name that matches no function with contract lines is an error,
 /// alone or beside valid names, before any solver runs.
 #[test]
@@ -192,6 +233,7 @@ fn unsupported_constructs_are_named() {
 }
 
 /// A fake solver: a shell script that prints `answer` for every script.
+#[cfg(unix)]
 fn fake(name: &str, answer: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("tsuzuri-prove-{name}-{}.sh", std::process::id()));
     std::fs::write(
@@ -199,7 +241,6 @@ fn fake(name: &str, answer: &str) -> PathBuf {
         format!("#!/bin/sh\ncat > /dev/null\nprintf '{answer}'\n"),
     )
     .unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();

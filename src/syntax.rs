@@ -817,8 +817,8 @@ pub struct Expr {
 
 impl Expr {
     /// Visits the expression and its subexpressions, outermost first, for rewriting: the visitor
-    /// returns whether to descend into the (possibly replaced) expression. The expressions inside
-    /// patterns and computation bodies are not visited.
+    /// returns whether to descend into the (possibly replaced) expression. It reaches the same
+    /// expressions as [`Expr::visit`], those in patterns and computation bodies included.
     pub(crate) fn visit_mut(&mut self, visitor: &mut impl FnMut(&mut Expr) -> bool) {
         if !visitor(self) {
             return;
@@ -863,7 +863,12 @@ impl Expr {
                 condition.visit_mut(visitor);
                 body.visit_mut(visitor);
             }
-            For { source, body, .. } => {
+            For {
+                pattern,
+                source,
+                body,
+            } => {
+                pattern.visit_expressions_mut(visitor);
                 source.visit_mut(visitor);
                 body.visit_mut(visitor);
             }
@@ -882,6 +887,7 @@ impl Expr {
             Match { value, arms, .. } => {
                 value.visit_mut(visitor);
                 for arm in arms {
+                    arm.pattern.visit_expressions_mut(visitor);
                     if let Some(guard) = &mut arm.guard {
                         guard.visit_mut(visitor);
                     }
@@ -891,6 +897,7 @@ impl Expr {
             Try(handled) => {
                 handled.body.visit_mut(visitor);
                 for arm in &mut handled.arms {
+                    arm.pattern.visit_expressions_mut(visitor);
                     if let Some(guard) = &mut arm.guard {
                         guard.visit_mut(visitor);
                     }
@@ -930,13 +937,13 @@ impl Expr {
                     bound.visit_mut(visitor);
                 }
             }
+            Computation(_, body) => body.visit_expressions_mut(visitor),
             Interpolated(interpolation) => {
                 for hole in &mut interpolation.holes {
                     hole.value.visit_mut(visitor);
                 }
             }
-            Computation(..)
-            | Integer(..)
+            Integer(..)
             | BigInt(_)
             | Float(..)
             | String(_)
@@ -1307,6 +1314,29 @@ pub enum PatternKind {
 }
 
 impl Pattern {
+    fn visit_expressions_mut(&mut self, visitor: &mut impl FnMut(&mut Expr) -> bool) {
+        use PatternKind::*;
+        match &mut self.kind {
+            Literal(value) | Argument(value) => value.visit_mut(visitor),
+            Apply(_, patterns) | Tuple(patterns) | Array(patterns) | List(patterns) => {
+                for pattern in patterns {
+                    pattern.visit_expressions_mut(visitor);
+                }
+            }
+            Record(_, fields) => {
+                for (_, pattern) in fields {
+                    pattern.visit_expressions_mut(visitor);
+                }
+            }
+            Cons(left, right) | Or(left, right) | And(left, right) => {
+                left.visit_expressions_mut(visitor);
+                right.visit_expressions_mut(visitor);
+            }
+            As(pattern, _) | Annotated(pattern, _) => pattern.visit_expressions_mut(visitor),
+            Wildcard | Binding(_) => {}
+        }
+    }
+
     fn visit_expressions(&self, visitor: &mut impl FnMut(&Expr)) {
         use PatternKind::*;
         match &self.kind {
@@ -1419,6 +1449,47 @@ pub struct ComputationMatchArm {
 }
 
 impl ComputationBlock {
+    fn visit_expressions_mut(&mut self, visitor: &mut impl FnMut(&mut Expr) -> bool) {
+        use ComputationStatementKind::*;
+        for statement in &mut self.statements {
+            match &mut statement.kind {
+                Let(binding, _) => binding.value.visit_mut(visitor),
+                LetAnd(bindings) => {
+                    for binding in bindings {
+                        binding.value.visit_mut(visitor);
+                    }
+                }
+                Do(value) | Operation(_, value) | Expression(value) => value.visit_mut(visitor),
+                Match(value, arms) => {
+                    value.visit_mut(visitor);
+                    for arm in arms {
+                        arm.pattern.visit_expressions_mut(visitor);
+                        if let Some(guard) = &mut arm.guard {
+                            guard.visit_mut(visitor);
+                        }
+                        arm.body.visit_expressions_mut(visitor);
+                    }
+                }
+                If(condition, yes, no) => {
+                    condition.visit_mut(visitor);
+                    yes.visit_expressions_mut(visitor);
+                    if let Some(no) = no {
+                        no.visit_expressions_mut(visitor);
+                    }
+                }
+                For(pattern, source, body) => {
+                    pattern.visit_expressions_mut(visitor);
+                    source.visit_mut(visitor);
+                    body.visit_expressions_mut(visitor);
+                }
+                While(condition, body) => {
+                    condition.visit_mut(visitor);
+                    body.visit_expressions_mut(visitor);
+                }
+            }
+        }
+    }
+
     fn visit_expressions(&self, visitor: &mut impl FnMut(&Expr)) {
         use ComputationStatementKind::*;
         for statement in &self.statements {

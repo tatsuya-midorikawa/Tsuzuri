@@ -380,9 +380,33 @@ fn contract_lines_cannot_write_to_the_call() {
         "E1033",
         writes,
     );
+    // Round 2 of the review: a local that holds the argument's reference writes to it too.
+    rejects(
+        &format!(
+            "def set :: ref mut i64 -> unit = \\p ->\n    @ensures \\_ -> {{ let q = p; deref q = 7; true }}\n    ()\n{MAIN}"
+        ),
+        "E1033",
+        writes,
+    );
+    rejects(
+        &format!(
+            "def poke :: ref mut i64 -> bool = \\p ->\n    deref p = 1\n    true\ndef set :: ref mut i64 -> unit = \\p ->\n    @ensures \\_ -> {{ let q = p; let r = q; poke r }}\n    ()\n{MAIN}"
+        ),
+        "E1033",
+        writes,
+    );
     // Reading a mutable argument, and changing data of the condition's own, are allowed.
     accepts(&format!(
         "{helper}def f :: ref mut [i64..] -> i64 = \\xs ->\n    @requires xs.length > 0 && Array.sum xs >= 0\n    @ensures \\r -> {{ let mut copy = [1, 2]; touch (ref mut copy[0..]) }} && r >= 0\n    xs.length\n{MAIN}"
+    ));
+}
+
+/// Review of #64, round 2: `@old` is resolved where the checker reads an argument without
+/// `expression` (a qualified call) and inside a computation.
+#[test]
+fn old_values_reach_call_arguments_and_computations() {
+    accepts(&format!(
+        "def grow :: i64 -> i64 = \\x ->\n    @ensures \\r -> Int.max (@old (x)) 0 <= r || r < 0\n    @ensures \\r -> {{ let m = Maybe {{ return @old (x) + 1 }}; Maybe.default_value 0 m == r }}\n    x + 1\n{MAIN}"
     ));
 }
 

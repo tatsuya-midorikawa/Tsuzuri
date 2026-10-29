@@ -50,6 +50,11 @@ fn tsuzuri(arguments: &[&str], directory: &Path) -> Output {
         .unwrap()
 }
 
+/// A relative path as a diagnostic spells it on this platform.
+fn native(path: &str) -> String {
+    path.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 const MAIN: &str = "def main :: unit -> i32 = \\() -> 0\n";
 
 /// Appendix D.4: `app` allows `fs` and `stdio`; its dependency `fscache` is granted `fs` and
@@ -385,7 +390,7 @@ fn root_allow_denies_the_root_itself() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("app/Main.tz:2:15: error[E1036]"),
+        stderr.contains(&format!("{}:2:15: error[E1036]", native("app/Main.tz"))),
         "{stderr}"
     );
     // `build` stops before code generation, and `run` too.

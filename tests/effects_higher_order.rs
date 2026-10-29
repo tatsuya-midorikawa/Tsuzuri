@@ -138,3 +138,74 @@ fn a_call_of_a_parameter_beyond_64_is_not_followed() {
     let (message, kind, _) = check(&source).unwrap_err();
     assert_eq!(kind, Some("effect_unknown_callee"), "{message}");
 }
+
+/// Review of #63: a call of a value that is one of several known functions (the branches of an
+/// `if` or a `match`) checks the callback against each of them.
+#[test]
+fn branches_of_a_called_value_check_their_callbacks() {
+    const ALLOCATING: &str = "(\\y -> (Array.init y (\\i -> i)).length)";
+    for body in [
+        format!("\\n -> (if n > 0 then apply else apply) {ALLOCATING} n"),
+        format!(
+            "\\n ->\n    let invoke = if n > 0 then apply else apply\n    invoke {ALLOCATING} n"
+        ),
+        format!(
+            "\\n ->\n    let invoke =\n        match n with\n        | 0 -> apply\n        | _ -> apply\n    invoke {ALLOCATING} n"
+        ),
+    ] {
+        let (message, kind, _) =
+            check(&format!("{APPLY}def user :: i64 -> i64 = {body}\n")).unwrap_err();
+        assert_eq!(kind, Some("effect_alloc_in_no_alloc"), "{body}\n{message}");
+    }
+    check(&format!(
+        "{APPLY}def user :: i64 -> i64 = \\n -> (if n > 0 then apply else apply) (\\y -> y + 1) n\n"
+    ))
+    .unwrap();
+}
+
+/// Review of #63: an attributed function that calls the functions it is given may only be
+/// called with them. Stored, returned, passed on or captured, its later calls would pass
+/// functions that nothing checks, so the use is refused where the value leaves.
+#[test]
+fn attributed_functions_that_call_their_parameters_do_not_escape() {
+    const NO_TRAP: &str = "@no_trap\ndef apply :: (i64 -> i64) -> i64 -> i64 = \\f x -> f x\n";
+    const RUNNER: &str = "record Runner { run: (i64 -> i64) -> i64 -> i64 }\n";
+    for program in [
+        format!(
+            "{RUNNER}def make :: unit -> Runner = \\() -> Runner {{ run: apply }}\n\
+             def user :: i64 -> i64 = \\n -> (make ()).run (\\y -> 10 / y) n\n"
+        ),
+        "def get :: unit -> ((i64 -> i64) -> i64 -> i64) = \\() -> apply\n".to_owned(),
+        "def twice :: ((i64 -> i64) -> i64 -> i64) -> i64 = \\g -> g (\\y -> 10 / y) 0\n\
+         def user :: unit -> i64 = \\() -> twice apply\n"
+            .to_owned(),
+        format!(
+            "{RUNNER}def make :: unit -> Runner = \\() ->\n    let invoke = apply\n    Runner {{ run: invoke }}\n"
+        ),
+        "def user :: i64 -> i64 = \\n ->\n    let invoke = apply\n    let later = \\y -> invoke (\\z -> 10 / z) y\n    later n\n"
+            .to_owned(),
+    ] {
+        let source = format!("{NO_TRAP}{program}");
+        let (message, kind, at) = check(&source).unwrap_err();
+        assert_eq!(kind, Some("effect_unknown_callee"), "{source}\n{message}");
+        assert!(
+            message.starts_with(
+                "'Main.apply' is marked '@no_trap' and calls the functions it is given, but here it is used as a value whose calls are not checked"
+            ),
+            "{message}"
+        );
+        assert!(at == "apply", "{source}\n{at}");
+    }
+    // A partial application that supplies the callback leaves nothing unchecked, and a value
+    // that is only called is checked at each call.
+    check(&format!(
+        "{NO_TRAP}record Step {{ run: i64 -> i64 }}\n\
+         def make :: unit -> Step = \\() -> Step {{ run: apply (\\y -> y + 1) }}\n\
+         def user :: i64 -> i64 = \\n ->\n    let invoke = apply\n    let bound = invoke (\\y -> y * 2)\n    invoke (\\y -> y) (bound n)\n"
+    ))
+    .unwrap();
+    check(&format!(
+        "{NO_TRAP}def user :: i64 -> i64 = \\n -> n |> apply (\\y -> y - 1)\n"
+    ))
+    .unwrap();
+}

@@ -25,6 +25,7 @@ mod debug;
 pub(crate) mod last_use;
 pub use debug::with_codeview;
 pub use range_flags::{ENVIRONMENT_VARIABLE as RANGE_FLAGS_VARIABLE, RangeFlags};
+pub(crate) use strings::compact_replacement;
 pub use strings::{ENVIRONMENT_VARIABLE as STRINGS_VARIABLE, StringForm};
 #[path = "llvm_escape.rs"]
 mod escape;
