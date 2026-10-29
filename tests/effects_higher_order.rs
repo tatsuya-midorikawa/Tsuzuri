@@ -209,3 +209,61 @@ fn attributed_functions_that_call_their_parameters_do_not_escape() {
     ))
     .unwrap();
 }
+
+/// Review 3 of #63: aliases that use their source twice (`let b = if c then a else a`) are
+/// followed once each, so a chain of them is checked in time linear in its length.
+#[test]
+fn chains_of_branching_aliases_are_followed_once() {
+    let program = |callback: &str| {
+        let mut body = "\\c n ->\n    let a0 = apply\n".to_owned();
+        for level in 1..=40 {
+            let previous = level - 1;
+            body.push_str(&format!(
+                "    let a{level} = if c then a{previous} else a{previous}\n"
+            ));
+        }
+        body.push_str(&format!("    a40 {callback} n\n"));
+        format!("{APPLY}def user :: bool -> i64 -> i64 = {body}")
+    };
+    check(&program("(\\y -> y + 1)")).unwrap();
+    let (message, kind, _) =
+        check(&program("(\\y -> (Array.init y (\\i -> i)).length)")).unwrap_err();
+    assert_eq!(kind, Some("effect_alloc_in_no_alloc"), "{message}");
+}
+
+/// Review 3 of #63: `new [T](n, f)` and `new [|T|](n, f)` call the initializer with each index,
+/// so a function that passes its parameter there has its callers' functions checked.
+#[test]
+fn collection_initializers_are_calls_of_the_initializer() {
+    for (ty, new) in [
+        ("[i64]", "new [i64](1, f)"),
+        ("[|i64|]", "new [|i64|](1, f)"),
+    ] {
+        let fill = |attribute: &str| {
+            format!("@{attribute}\ndef fill :: (i64 -> i64) -> {ty} = \\f -> {new}\n")
+        };
+        let (message, kind, at) = check(&format!(
+            "{}def user :: unit -> {ty} = \\() -> fill (\\i -> 1 / i)\n",
+            fill("no_trap")
+        ))
+        .unwrap_err();
+        assert_eq!(kind, Some("effect_trap_in_no_trap"), "{new}\n{message}");
+        assert!(at.starts_with("fill"), "{new}\n{at}");
+        let (message, kind, at) = check(&format!(
+            "{}def rec spin :: i64 -> i64 = \\i -> spin i\ndef user :: unit -> {ty} = \\() -> fill spin\n",
+            fill("terminates")
+        ))
+        .unwrap_err();
+        assert_eq!(
+            kind,
+            Some("effect_diverge_in_terminates"),
+            "{new}\n{message}"
+        );
+        assert!(at.starts_with("fill"), "{new}\n{at}");
+        check(&format!(
+            "{}def user :: unit -> {ty} = \\() -> fill (\\i -> i + 1)\n",
+            fill("no_trap")
+        ))
+        .unwrap();
+    }
+}

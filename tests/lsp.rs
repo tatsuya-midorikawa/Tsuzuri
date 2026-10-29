@@ -1879,7 +1879,8 @@ fn hover_shows_attributes_and_inferred_effects() {
                 @no_trap\ndef first :: ref [i64] -> i64\nfn first xs = xs.length\n\
                 @no_copy\ndef pick :: ref [i64] -> i64 -> i64\nfn pick xs i = xs[i]\n\
                 def plain :: i64 -> i64\nfn plain n = n\n\
-                def main :: unit -> i32 = \\() -> (total [1, 2] + first [3] + pick [4] 0 + plain 1) as i32\n";
+                @no_alloc\ndef apply :: (i64 -> i64) -> i64 -> i64\nfn apply f x = f x\n\
+                def main :: unit -> i32 = \\() -> (total [1, 2] + first [3] + pick [4] 0 + plain 1 + apply plain 2) as i32\n";
     let hovers = [
         (
             "total xs",
@@ -1897,6 +1898,12 @@ fn hover_shows_attributes_and_inferred_effects() {
             Some("inferred effects: trap"),
         ),
         ("plain n", "def Main.plain :: i64 -> i64", None),
+        // Review 3 of #63: the effects of the callbacks are not in the summary.
+        (
+            "apply f x",
+            "@no_alloc def Main.apply :: (i64 -> i64) -> i64 -> i64",
+            Some("inferred effects: none (and the effects of the functions it is given)"),
+        ),
     ];
     let responses = scripted(&[("Main.tz", main)], "utf-16", |uri| {
         hovers

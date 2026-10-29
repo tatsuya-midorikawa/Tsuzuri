@@ -2022,4 +2022,31 @@ fn api_diff_treats_attributes_as_promises() {
         compare(result_only, &format!("@no_alloc\n{result_only}"), &[]),
         ["breaking changed def Main.empty"]
     );
+    // Review 3 of #63: a length parameter is chosen by the callers too (`N = 0` makes `xs[0]`
+    // trap), in a parameter or only in the result. A length constant is not.
+    let first = "def first :: ref [i64; N] -> i64 = \\xs -> xs[0]\n";
+    let zeros = "def zeros :: unit -> [i64; N] = \\() -> FixedArray.init (\\_ -> 0)\n";
+    let constant = "const SIZE: i64 = 2\ndef head :: ref [i64; SIZE] -> i64 = \\xs -> xs[0]\n";
+    for effective in [false, true] {
+        assert_eq!(
+            compare_mode(first, &format!("@no_trap\n{first}"), &[], effective),
+            ["breaking changed def Main.first"],
+            "effective: {effective}"
+        );
+        assert_eq!(
+            compare_mode(zeros, &format!("@no_alloc\n{zeros}"), &[], effective),
+            ["breaking changed def Main.zeros"],
+            "effective: {effective}"
+        );
+        assert_eq!(
+            compare_mode(
+                constant,
+                &constant.replace("def head", "@no_trap\ndef head"),
+                &[],
+                effective
+            ),
+            ["non-breaking changed def Main.head"],
+            "effective: {effective}"
+        );
+    }
 }
