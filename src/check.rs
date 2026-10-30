@@ -5542,7 +5542,7 @@ impl Names {
         let missing = matches!(choice, Choice::Missing);
         self.type_result(choice, name, span).map_err(|unknown| {
             if missing {
-                find::with_suggestions(unknown, name, span, &self.type_pool())
+                find::with_suggestions(unknown, name, span, &self.type_pool(module))
             } else {
                 unknown
             }

@@ -440,3 +440,56 @@ fn an_unknown_expected_type_has_no_candidates() {
     assert!(hole.detail.candidates.is_empty());
     assert!(hole.fixes.is_empty());
 }
+
+#[test]
+fn a_users_generic_function_is_not_a_candidate() {
+    // `bits` requires `Integer<'a>` through its body, which is not known when the hole is checked.
+    let hole = one(
+        "def bits :: 'a -> i64 = \\x -> Int.count_ones x\ndef f :: string -> i64 = \\text -> ?\nf \"a\"\n",
+    );
+    assert!(
+        !candidate_names(&hole)
+            .iter()
+            .any(|name| name.starts_with("Main.bits"))
+    );
+}
+
+#[test]
+fn an_open_numeric_local_keeps_its_class() {
+    // `n` is an `Integer`, so it neither fits a `bool` hole nor gives a fix.
+    let hole = one("def f :: unit -> bool = \\_ ->\n    let n = 1\n    ?\nf ()\n");
+    assert_eq!(hole.detail.expected.as_deref(), Some("bool"));
+    assert!(!candidate_names(&hole).contains(&"n"));
+    assert!(hole.fixes.is_empty());
+    assert_eq!(scope_names(&hole), ["n"]);
+}
+
+#[test]
+fn fields_are_projections_of_readable_records() {
+    let hole = one("record P { x: i64 }\ndef f :: P -> i64 = \\p -> ?\nf (P { x: 1 })\n");
+    let names = candidate_names(&hole);
+    assert!(names.contains(&"p.x"), "{names:?}");
+    assert!(!names.iter().any(|name| name.starts_with("Main.P.x")));
+    // A std record whose representation is private to its module has no field candidates.
+    let hole = one("def f :: Map<i64, i64> -> i64 = \\m -> ?\nf (Map.empty())\n");
+    assert!(
+        !candidate_names(&hole)
+            .iter()
+            .any(|name| name.starts_with("m."))
+    );
+}
+
+#[test]
+fn a_function_without_parameters_is_called() {
+    let hole = one(
+        "def answer :: i64 = 42\nconst limit: i64 = 7\ndef f :: unit -> i64 = \\_ -> ?\nf ()\n",
+    );
+    let found: Vec<(&str, &str)> = hole
+        .detail
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.name.as_str(), candidate.how.as_str()))
+        .collect();
+    assert!(found.contains(&("Main.answer()", "call")), "{found:?}");
+    assert!(found.contains(&("Main.limit", "value")), "{found:?}");
+}

@@ -250,3 +250,29 @@ fn messages_codes_and_spans_do_not_change() {
         );
     }
 }
+
+#[test]
+fn private_names_of_other_modules_are_not_suggested() {
+    let error = tsuzuri::analyze_modules_all(&[
+        ("Main", "let t: Tokn = Secret.make ()\n0\n"),
+        (
+            "Secret",
+            "private record Token { x: i64 }\nprivate def make :: unit -> Token = \\_ -> Token { x: 1 }\n",
+        ),
+    ])
+    .expect_err("Tokn");
+    let diagnostic = error
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "E1004")
+        .unwrap();
+    assert!(
+        !diagnostic
+            .detail
+            .candidates
+            .iter()
+            .any(|candidate| candidate.name == "Token"),
+        "{:?}",
+        diagnostic.detail.candidates
+    );
+}

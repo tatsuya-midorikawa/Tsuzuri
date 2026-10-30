@@ -728,18 +728,17 @@ fn module_named(display: &str, module: &str) -> bool {
         || display.replace("::", ".") == module
 }
 
-/// Whether some searchable entry of the project's or std's graph belongs to the module that
-/// `--module NAME` names.
+/// Whether the project's or std's graph has a module node that `--module NAME` names (a module
+/// that declares only types counts; `search` decides what it holds).
 pub fn has_module(view: &KgView, module: &str) -> bool {
-    let mut next = 0;
-    let sides = [(view.project(), "user"), (view.std(), "std")];
-    sides.into_iter().any(|(data, origin)| {
-        data.is_some_and(|data| {
-            entries(data, origin, &mut next)
+    [view.project(), view.std()]
+        .into_iter()
+        .flatten()
+        .any(|data| {
+            data.nodes
                 .iter()
-                .any(|entry| module_named(&entry.node.module, module))
+                .any(|node| node.kind == "module" && module_named(&node.module, module))
         })
-    })
 }
 
 /// The matches of `query` among the project's and std's function-like nodes, and the number of

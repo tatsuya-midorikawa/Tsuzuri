@@ -122,15 +122,52 @@ impl Checker<'_> {
     }
 
     /// Whether a value of type `ty` can stand where `wanted` is expected, on a copy of both
-    /// types: nothing of the checker's inference changes.
+    /// types: nothing of the checker's inference changes. The open parts of `ty` keep the class
+    /// constraints that wait on them (`let n = 1` is an `Integer`, never a `bool`).
     fn fits(&self, ty: &Type, wanted: &Type) -> bool {
         let mut search = Inference::default();
         let mut map = BTreeMap::new();
         let goal = import_type(&self.inference.resolve(wanted), &mut search, &mut map);
-        let ty = import_type(&self.inference.resolve(ty), &mut search, &mut map);
+        let (ty, pending) = self.import_with_constraints(ty, &mut search, &mut map);
         search
             .unify(&ty, &goal, &self.types, Span::default())
             .is_ok()
+            && constraints_hold(&pending, &search, &self.types, self.classes)
+    }
+
+    /// `ty` imported into `search` (`import_type`) with the checker's pending class constraints
+    /// over its inference variables, imported through the same `map`.
+    fn import_with_constraints(
+        &self,
+        ty: &Type,
+        search: &mut Inference,
+        map: &mut BTreeMap<usize, Type>,
+    ) -> (Type, Vec<(usize, Type)>) {
+        let ty = self.inference.resolve(ty);
+        let mut open = BTreeSet::new();
+        polymorph::map_type(&ty, &mut |t| {
+            if let Type::Infer(k) = t {
+                open.insert(*k);
+            }
+            t.clone()
+        });
+        let imported = import_type(&ty, search, map);
+        if open.is_empty() {
+            return (imported, Vec::new());
+        }
+        let mut pending = Vec::new();
+        for constraint in &self.constraints {
+            let resolved = self.inference.resolve(&constraint.ty);
+            let mut mentions = false;
+            polymorph::map_type(&resolved, &mut |t| {
+                mentions |= matches!(t, Type::Infer(k) if open.contains(k));
+                t.clone()
+            });
+            if mentions {
+                pending.push((constraint.class, import_type(&resolved, search, map)));
+            }
+        }
+        (imported, pending)
     }
 }
 
@@ -189,6 +226,9 @@ pub struct Entry {
     pub constraints: Vec<(usize, Type)>,
     /// `Numeric<'a> => ref ['a] -> 'a`
     pub text: String,
+    /// Whether the entry is a function, which is applied even without parameters
+    /// (`Main.answer()`), unlike a constant or a union case.
+    pub call: bool,
 }
 
 impl Entry {
@@ -249,6 +289,7 @@ pub(super) fn build(
             Kind::Def
         };
         entries.push(Entry {
+            call: kind == Kind::Def,
             kind,
             name: declaration_display(key),
             module: info.module.clone(),
@@ -310,11 +351,13 @@ pub(super) fn build(
                 (constraint.class, ty)
             })
             .collect();
+        let call = matches!(named, Type::Function(..));
         let (parameters, result) = match named {
             Type::Function(parameters, result) => (parameters.types, *result),
             other => (Vec::new(), other),
         };
         entries.push(Entry {
+            call,
             kind: Kind::Builtin,
             name: name.to_owned(),
             module: name
@@ -343,6 +386,7 @@ pub(super) fn build(
         let whole = Type::Record(info.id, arguments);
         for (field, ty) in &record.fields {
             entries.push(Entry {
+                call: false,
                 kind: Kind::Field,
                 name: format!("{}.{field}", type_display(key)),
                 module: info.module.clone(),
@@ -367,6 +411,7 @@ pub(super) fn build(
         let whole = Type::Union(case.info.id, arguments);
         let parameters: Vec<Type> = union.cases[case.case].1.clone().into_iter().collect();
         entries.push(Entry {
+            call: false,
             kind: Kind::Case,
             name: declaration_display(key),
             module: case.info.module.clone(),
@@ -456,14 +501,9 @@ impl Checker<'_> {
     ) -> (Vec<Candidate>, Vec<Fix>) {
         let span = Span::default();
         let mut ranked: Vec<Ranked> = Vec::new();
-        let fits = |ty: &Type| {
-            let mut search = Inference::default();
-            let mut map = BTreeMap::new();
-            let goal = import_type(wanted, &mut search, &mut map);
-            let ty = import_type(ty, &mut search, &mut map);
-            search.unify(&ty, &goal, &self.types, span).is_ok()
-        };
-        // Rank 0: a local of the type. Rank 1: a field of a local record.
+        let fits = |ty: &Type| self.fits(ty, wanted);
+        // Rank 0: a local of the type. Rank 1: a field of a local record whose representation
+        // this module may read.
         for (local_name, local_type) in scope {
             if fits(local_type) {
                 ranked.push(Ranked {
@@ -482,7 +522,9 @@ impl Checker<'_> {
                 Type::Reference(inner, _) => inner.as_ref(),
                 other => other,
             };
-            if let Type::Record(id, arguments) = record {
+            if let Type::Record(id, arguments) = record
+                && self.record_storage(*id, span).is_ok()
+            {
                 let record = &self.types.records[*id];
                 let fields = self.types.record_fields(*id, arguments);
                 for ((field, _), ty) in record.fields.iter().zip(fields) {
@@ -509,7 +551,15 @@ impl Checker<'_> {
             .get_or_init(|| build(self.names, self.types, self.signatures, self.classes));
         let mut examined = 0;
         for entry in entries {
-            if !entry.visible_from(self.module) || (entry.id.is_some() && entry.id == self.function)
+            // A field is a projection of a value (`p.x`), which the locals above give. A user's
+            // generic `def` may require classes that its body infers and that are not known until
+            // the body is checked, so its candidates could not be trusted.
+            if !entry.visible_from(self.module)
+                || (entry.id.is_some() && entry.id == self.function)
+                || entry.kind == Kind::Field
+                || (entry.kind == Kind::Def
+                    && entry.origin == ModuleOrigin::User
+                    && !entry.variables.is_empty())
             {
                 continue;
             }
@@ -537,7 +587,8 @@ impl Checker<'_> {
                     }
                     let mut trial = search.clone();
                     let mut local_map = map.clone();
-                    let local_type = import_type(local_type, &mut trial, &mut local_map);
+                    let (local_type, pending) =
+                        self.import_with_constraints(local_type, &mut trial, &mut local_map);
                     let mutable = self.local(local_name).is_some_and(|local| local.mutable);
                     let text = match (&parameter, &local_type) {
                         (
@@ -561,6 +612,7 @@ impl Checker<'_> {
                     // does not fit.
                     if text.is_some()
                         && constraints_hold(&constraints, &trial, &self.types, self.classes)
+                        && constraints_hold(&pending, &trial, &self.types, self.classes)
                     {
                         search = trial;
                         map = local_map;
@@ -585,6 +637,11 @@ impl Checker<'_> {
                 text.push(' ');
                 text.push_str(fill.as_deref().unwrap_or("?"));
             }
+            // A function without parameters is still called: `Main.answer()`.
+            let call = !parameters.is_empty() || entry.call;
+            if parameters.is_empty() && entry.call {
+                text.push_str("()");
+            }
             if text.len() > MAX_CANDIDATE_TEXT {
                 continue;
             }
@@ -596,12 +653,7 @@ impl Checker<'_> {
                 candidate: Candidate {
                     name: text,
                     signature: format!("{} :: {}", entry.name, entry.text),
-                    how: if parameters.is_empty() {
-                        "value"
-                    } else {
-                        "call"
-                    }
-                    .to_owned(),
+                    how: if call { "call" } else { "value" }.to_owned(),
                 },
             });
         }
@@ -640,31 +692,44 @@ impl Checker<'_> {
     }
 }
 
-/// Damerau-Levenshtein distance (optimal string alignment): insert, delete, replace, and swap of
-/// two neighbors each cost 1.
-fn distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in rows.iter_mut().enumerate() {
-        row[0] = i;
+/// The Damerau-Levenshtein distance (optimal string alignment: insert, delete, replace, and swap
+/// of two neighbors each cost 1) of `a` and `b` when it is at most `limit`, else `None`. Only the
+/// band `|i - j| <= limit` is computed, in three rows of `b.len() + 1` cells, so a long name costs
+/// time and memory linear in its length.
+fn distance_within(a: &[char], b: &[char], limit: usize) -> Option<usize> {
+    if a.len().abs_diff(b.len()) > limit {
+        return None;
     }
-    for (j, cell) in rows[0].iter_mut().enumerate() {
-        *cell = j;
-    }
+    let over = limit + 1;
+    let width = b.len() + 1;
+    let mut before = vec![over; width];
+    let mut previous: Vec<usize> = (0..width).map(|j| j.min(over)).collect();
+    let mut current = vec![over; width];
     for i in 1..=a.len() {
-        for j in 1..=b.len() {
+        current.fill(over);
+        current[0] = i.min(over);
+        let low = i.saturating_sub(limit).max(1);
+        let high = (i + limit).min(b.len());
+        let mut smallest = current[0];
+        for j in low..=high {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (rows[i - 1][j] + 1)
-                .min(rows[i][j - 1] + 1)
-                .min(rows[i - 1][j - 1] + cost);
+            let mut best = (previous[j] + 1)
+                .min(current[j - 1] + 1)
+                .min(previous[j - 1] + cost);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                best = best.min(rows[i - 2][j - 2] + 1);
+                best = best.min(before[j - 2] + 1);
             }
-            rows[i][j] = best;
+            current[j] = best.min(over);
+            smallest = smallest.min(current[j]);
         }
+        if smallest > limit {
+            return None;
+        }
+        std::mem::swap(&mut before, &mut previous);
+        std::mem::swap(&mut previous, &mut current);
     }
-    rows[a.len()][b.len()]
+    let found = previous[b.len()];
+    (found <= limit).then_some(found)
 }
 
 /// The most edits that still count as similar: 1 for a name of up to 4 characters, else 2.
@@ -729,11 +794,12 @@ pub(super) fn suggest(target: &str, pool: &[Pooled]) -> Vec<Suggestion> {
         } else if target.chars().count() < 2 {
             continue;
         } else {
-            let distance = distance(target, &item.name);
-            if distance > limit(target) {
-                continue;
+            let wanted: Vec<char> = target.chars().collect();
+            let name: Vec<char> = item.name.chars().collect();
+            match distance_within(&wanted, &name, limit(target)) {
+                Some(distance) => distance,
+                None => continue,
             }
-            distance
         };
         found.push(Suggestion {
             text: item.text.clone(),
@@ -879,7 +945,9 @@ impl Checker<'_> {
             }
         }
         for alias in self.names.case_aliases.keys() {
-            pool.push(Pooled::new(alias.clone(), 2, "union case"));
+            if self.names.resolves_case(self.module, alias) {
+                pool.push(Pooled::new(alias.clone(), 2, "union case"));
+            }
         }
         for (key, case) in &self.names.cases {
             if last_segment(key) == target
@@ -977,31 +1045,43 @@ impl Checker<'_> {
 
     /// The pool of `unknown union case or active pattern 'c'`: the cases and active patterns.
     pub(super) fn pattern_pool(&self) -> Vec<Pooled> {
-        let cases = self
-            .names
+        let names = self.names;
+        let cases = names
             .case_aliases
             .keys()
+            .filter(|alias| names.resolves_case(self.module, alias))
             .map(|alias| Pooled::new(alias.clone(), 2, "union case"));
-        let actives = self
-            .names
+        let actives = names
             .active_aliases
             .keys()
+            .filter(|alias| {
+                names
+                    .active_pattern(self.module, alias, Span::default())
+                    .is_ok_and(|found| found.is_some())
+            })
             .map(|alias| Pooled::new(alias.clone(), 2, "active pattern"));
         cases.chain(actives).collect()
     }
 }
 
 impl Names {
-    /// The pool of `unknown record, union, or type alias 'n'`: the type names and the primitive
-    /// types.
-    pub(super) fn type_pool(&self) -> Vec<Pooled> {
+    /// Whether the unqualified case name `alias` resolves from `module`: visible and not ambiguous.
+    fn resolves_case(&self, module: &str, alias: &str) -> bool {
+        self.case(module, alias, Span::default())
+            .is_ok_and(|found| found.is_some())
+    }
+
+    /// The pool of `unknown record, union, or type alias 'n'` in `module`: the type names that
+    /// resolve there (visible and not ambiguous) and the primitive types.
+    pub(super) fn type_pool(&self, module: &str) -> Vec<Pooled> {
         let declared = self
             .record_aliases
             .keys()
             .chain(self.union_aliases.keys())
             .chain(self.type_alias_names.keys())
             .chain(self.handle_aliases.keys())
-            .map(String::as_str);
+            .map(String::as_str)
+            .filter(|name| matches!(self.type_choice(module, name), Choice::Found(..)));
         let primitive = crate::numeric::NUMERIC_NAMES.into_iter().chain([
             "bool",
             "unit",
@@ -1032,6 +1112,11 @@ mod tests {
         }
     }
 
+    fn distance(a: &str, b: &str) -> usize {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        distance_within(&a, &b, a.len().max(b.len())).unwrap()
+    }
+
     #[test]
     fn distances_are_damerau_levenshtein() {
         assert_eq!(distance("cnt", "count"), 2);
@@ -1042,6 +1127,23 @@ mod tests {
         assert_eq!(distance("", "ab"), 2);
         assert_eq!(limit("cnt"), 1);
         assert_eq!(limit("count"), 2);
+        // The band gives the same answers, and a long name is cheap.
+        let chars = |text: &str| text.chars().collect::<Vec<_>>();
+        assert_eq!(
+            distance_within(&chars("lenght"), &chars("length"), 2),
+            Some(1)
+        );
+        assert_eq!(distance_within(&chars("cnt"), &chars("count"), 1), None);
+        assert_eq!(distance_within(&chars("abcdef"), &chars("badcfe"), 2), None);
+        assert_eq!(
+            distance_within(&chars("abcdef"), &chars("badcfe"), 3),
+            Some(3)
+        );
+        let long: Vec<char> = "x".repeat(32_768).chars().collect();
+        let mut near = long.clone();
+        near[100] = 'y';
+        assert_eq!(distance_within(&long, &near, 2), Some(1));
+        assert_eq!(distance_within(&long, &long[..10], 2), None);
     }
 
     #[test]

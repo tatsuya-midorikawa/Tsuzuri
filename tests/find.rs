@@ -376,3 +376,24 @@ fn output_is_deterministic_across_thread_counts() {
     assert!(!outputs[0].is_empty());
     assert!(outputs.windows(2).all(|pair| pair[0] == pair[1]));
 }
+
+#[test]
+fn a_module_with_only_types_is_known() {
+    let root = Root::new("types-only");
+    let project = root.project(
+        "app",
+        &[("Main.tz", "0\n"), ("Types.tz", "type Count = i64\n")],
+    );
+    let output = find(
+        &root,
+        &[
+            "--project",
+            project.to_str().unwrap(),
+            "--module",
+            "Types",
+            "i64",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "no matches\n");
+}
