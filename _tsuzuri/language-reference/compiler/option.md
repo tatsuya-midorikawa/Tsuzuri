@@ -539,7 +539,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--seed` が 0〜18446744073709551615 の整数でない | `property seed must be an integer between 0 and 18446744073709551615` |
 | `--doc` を `test` 以外に付ける | `--doc is only valid with test` |
 | `--doc` を 2 回付ける | `doc specified more than once` |
-| `test --doc` に `--coverage`／`--seed`／`--affected`／`--allow-overflow` | `--doc cannot be combined with --coverage`（`--seed`・`--affected`・`--allow-overflow` も同じ形） |
+| `test --doc` に `--coverage`／`--seed`／`--affected` | `--doc cannot be combined with --coverage`（`--seed`・`--affected` も同じ形） |
 | `test --doc` に `-g` か `-o` | `--doc cannot be combined with -g or -o` |
 | `test --doc` に `--target` | `--doc does not use --target; examples run on this machine` |
 | `test --doc` に `--link`・`-l`・`-L` | `--doc does not use --link, -l, or -L; list native inputs in Tsuzuri.toml` |
