@@ -408,6 +408,12 @@ fn notation_error(message: impl Into<String>, span: Span) -> Diagnostic {
     Diagnostic::of(DiagnosticKind::DocExampleInvalid, message, span)
 }
 
+/// Whether `text` may hold a `tsuzuri` fence: a quick test before `scan`, which also accepts
+/// blanks between the backticks and the language (`/// ``` tsuzuri run=1`).
+fn may_have_examples(text: &str) -> bool {
+    text.contains("```") && text.contains("tsuzuri")
+}
+
 /// The examples of one source, or its notation errors (`E2011`). `index` is 0.
 pub fn examples_in_source(
     text: &str,
@@ -415,7 +421,7 @@ pub fn examples_in_source(
     source: usize,
     module: &str,
 ) -> Result<Vec<Example>, Vec<Diagnostic>> {
-    if !text.contains("```tsuzuri") && !text.contains("``tsuzuri") {
+    if !may_have_examples(text) {
         return Ok(Vec::new());
     }
     let program =
@@ -610,6 +616,19 @@ pub fn run(project: &Project, input: &Path, examples: &[Example], options: &Opti
         .sources
         .iter()
         .any(|source| source.origin == ModuleOrigin::User);
+    // A project without a manifest reads its sources in the edition that `--edition` chose (A22);
+    // the example's project is loaded again, so it gets the same edition.
+    let edition = project
+        .root_package
+        .is_none()
+        .then(|| {
+            project
+                .sources
+                .iter()
+                .find(|source| source.origin == ModuleOrigin::User)
+                .map(|source| source.edition)
+        })
+        .flatten();
     let workers = crate::parallel::Parallelism::command_line().workers(runnable.len(), 1);
     let mut notices = std::collections::BTreeSet::new();
     crate::parallel::ordered_for_each(
@@ -617,7 +636,7 @@ pub fn run(project: &Project, input: &Path, examples: &[Example], options: &Opti
         workers,
         1,
         None,
-        |item| run_one(input, runnable[item], options, std_mode),
+        |item| run_one(input, runnable[item], options, std_mode, edition),
         |_, item| {
             let (result, messages) = item.get();
             notices.extend(messages);
@@ -638,14 +657,25 @@ pub fn run(project: &Project, input: &Path, examples: &[Example], options: &Opti
 
 /// The project that runs one example: the package with `Main.tz` replaced, or `Main.tz` alone
 /// with the std modules that it names.
-fn example_project(input: &Path, program: &str, std_mode: bool) -> Result<Project, Diagnostic> {
+fn example_project(
+    input: &Path,
+    program: &str,
+    std_mode: bool,
+    edition: Option<Edition>,
+) -> Result<Project, Diagnostic> {
     if std_mode {
         Ok(Project::single_main(
             PathBuf::from("<doctest>").join("Main.tz"),
             program.to_owned(),
         ))
     } else {
-        Project::for_doc_example(input, program).map_err(|error| error.diagnostic)
+        let project = Project::for_doc_example(input, program).map_err(|error| error.diagnostic)?;
+        match edition {
+            Some(edition) => project
+                .with_edition(edition)
+                .map_err(|error| error.diagnostic),
+            None => Ok(project),
+        }
     }
 }
 
@@ -654,18 +684,29 @@ fn run_one(
     example: &Example,
     options: &Options,
     std_mode: bool,
+    edition: Option<Edition>,
 ) -> (ExampleResult, Vec<String>) {
     let started = Instant::now();
     let mut messages = Vec::new();
     let mut output = String::new();
     let failure = (|| -> Option<String> {
-        let built = match example_project(input, &example.program, std_mode) {
+        let built = match example_project(input, &example.program, std_mode, edition) {
             Ok(built) => built,
             Err(error) => return Some(format!("{}: {}", error.code, error.message)),
         };
         let root = built.root;
         let program = &example.program;
-        let analyzed = built.analyze_all();
+        // E15: the package's `[capabilities]` policy binds its examples as it binds `check`.
+        let analyzed = built.analyze_all().and_then(|module| {
+            let denied = built
+                .check_capabilities(&module)
+                .unwrap_or_else(|error| vec![error]);
+            if denied.is_empty() {
+                Ok(module)
+            } else {
+                Err(DiagnosticSet::from_diagnostics(denied, 0))
+            }
+        });
         if let Expectation::Fails(code) = &example.expectation {
             return match analyzed {
                 Ok(_) => Some(format!("expected {code}, but the example was accepted")),
@@ -724,6 +765,8 @@ fn run_one(
                 let test_options = driver::TestOptions {
                     optimization: options.level,
                     indices,
+                    backend: options.build.backend,
+                    allocator: options.build.allocator,
                     ..Default::default()
                 };
                 match driver::run_tests_linked(&module, &test_options, &built.native) {
@@ -760,7 +803,7 @@ fn run_one(
 /// lines loses its options and hidden lines, and shows its expected output or error code after
 /// it. Other text, and an example without either, stays byte for byte.
 pub fn render_doc(text: &str) -> String {
-    if !text.contains("```tsuzuri") {
+    if !may_have_examples(text) {
         return text.to_owned();
     }
     let lines: Vec<&str> = text.split('\n').collect();

@@ -376,6 +376,70 @@ fn rejected_option_combinations_exit_with_2() {
 }
 
 #[test]
+fn examples_obey_the_capability_policy_of_their_package() {
+    // E15: an example is code of the package, so `[capabilities]` binds it as it binds `check`.
+    let source = "/// One.\n///\n/// ```tsuzuri\n/// let _text = File.read_text \"notes.txt\"\n/// ```\n///\n/// ```tsuzuri fails=E1036\n/// let _text = File.read_text \"notes.txt\"\n/// ```\ndef one :: i64 = 1\n";
+    let package = Package::new(
+        "capabilities",
+        &[
+            (
+                "Tsuzuri.toml",
+                "[package]\nname = \"lib\"\nversion = \"0.1.0\"\nedition = \"2027\"\n\n[capabilities]\nallow = [\"stdio\"]\n",
+            ),
+            ("Lib.tz", source),
+        ],
+    );
+    let output = tsuzuri(&["test", "--doc", package.path()], &package.cache(), &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.contains("not ok 1 - Lib one#1\n  failure: E1036: "),
+        "{text}"
+    );
+    assert!(text.contains("ok 2 - Lib one#2\n"), "{text}");
+    assert!(text.ends_with("1 passed; 1 failed; 0 ignored\n"), "{text}");
+}
+
+#[test]
+fn examples_keep_the_edition_that_edition_chose() {
+    // `1l` is accepted in edition 2026 and rejected (E0004) in 2027; the example project is
+    // loaded again, and keeps the `--edition` of a project without a manifest.
+    let source = "/// One.\n///\n/// ```tsuzuri\n/// let _x = 1l\n/// ```\ndef one :: i64 = 1\n";
+    let package = Package::new("edition", &[("Lib.tz", source)]);
+    let output = tsuzuri(
+        &["test", "--doc", package.path(), "--edition", "2026"],
+        &package.cache(),
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    assert!(stdout(&output).ends_with("1 passed; 0 failed; 0 ignored\n"));
+    let output = tsuzuri(&["test", "--doc", package.path()], &package.cache(), &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stdout(&output).contains("failure: E0004: "),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
+fn a_blank_between_the_backticks_and_the_language_still_opens_an_example() {
+    let source = "/// One.\n///\n/// ``` tsuzuri run=1\n/// Lib.one\n/// ```\ndef one :: i64 = 1\n";
+    let package = Package::new("spaced-fence", &[("Lib.tz", source)]);
+    let output = tsuzuri(
+        &["test", "--doc", package.path(), "--list"],
+        &package.cache(),
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "0 Lib.one#1 [run]\n");
+    assert_eq!(
+        tsuzuri::doctest::render_doc("One.\n\n``` tsuzuri run=1\n# let x = 1\nLib.one\n```"),
+        "One.\n\n```tsuzuri\nLib.one\n```\n\nOutput:\n\n```text\n1\n```"
+    );
+}
+
+#[test]
 fn package_with_a_manifest_and_nested_modules_runs_its_examples() {
     let package = Package::new(
         "manifest",
