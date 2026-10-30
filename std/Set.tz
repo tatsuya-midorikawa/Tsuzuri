@@ -85,6 +85,8 @@ fn join head tail =
 
 /// An empty set.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=0
 /// let set: Set<i64> = Set.empty()
 /// Set.length set
@@ -94,6 +96,8 @@ fn empty = Set { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
 /// A set of the one key `key`.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=[7]
 /// Set.to_array (Set.singleton 7)
 /// ```
@@ -102,6 +106,8 @@ fn singleton key = Set { head: Vec.push_owned key (Vec.empty()), rest: Vec.empty
 
 /// The number of keys.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=2
 /// Set.empty() |> Set.insert 2 |> Set.insert 1 |> Set.insert 2 |> Set.length
 /// ```
@@ -109,6 +115,8 @@ def length :: ref Set<'key> -> i64
 fn length set = set.length
 
 /// Whether the set has no keys.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=true
 /// Set.singleton 1 |> Set.remove 1 |> Set.is_empty
@@ -120,6 +128,8 @@ private def chunk_total :: ref Set<'key> -> i64
 fn chunk_total set = if set.length == 0 then 0 else 1 + Vec.length (ref set.rest)
 
 /// The number of chunks that hold the keys (0 for an empty set). A diagnostic for tests, like `HashSet.longest_probe`.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=2
 /// let mut set: Set<i64> = Set.empty()
@@ -160,6 +170,8 @@ fn locate set key =
 		if start < size && !(Ord.lt key (ref keys[start])) then (low, start) else (low, -1 - start)
 
 /// Whether the set has `key`.
+///
+/// @complexity O(log n)
 ///
 /// ```tsuzuri run=true%20false
 /// let set = Set.empty() |> Set.insert 1 |> Set.insert 3
@@ -221,6 +233,8 @@ fn beyond_last set key =
 
 /// Adds `key`; a set that has it already comes back unchanged.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[1,%203]
 /// Set.empty() |> Set.insert 3 |> Set.insert 1 |> Set.insert 3 |> Set.to_array
 /// ```
@@ -266,6 +280,8 @@ fn delete_chunk set index =
 
 /// Removes `key`; a set without it comes back unchanged.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[2,%203]
 /// let set = Set.empty() |> Set.insert 1 |> Set.insert 2 |> Set.insert 3
 /// set |> Set.remove 1 |> Set.remove 5 |> Set.to_array
@@ -297,6 +313,8 @@ fn append_keys output keys =
 
 /// The keys in ascending order.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[1,%205,%209]
 /// Set.empty() |> Set.insert 9 |> Set.insert 1 |> Set.insert 5 |> Set.to_array
 /// ```
@@ -310,6 +328,8 @@ fn to_array set =
 	Vec.to_array output
 
 /// Folds `folder` over the keys in ascending order, starting from `initial`.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=123
 /// let set = Set.empty() |> Set.insert 3 |> Set.insert 1 |> Set.insert 2
@@ -357,6 +377,8 @@ fn from_chunks chunks total =
 		| (others, first) -> Set { head: first, rest: others, length: total }
 
 /// The keys that are in `left`, in `right` or in both.
+///
+/// @complexity O(n + m)
 ///
 /// ```tsuzuri run=[1,%202,%203]
 /// let left = Set.empty() |> Set.insert 1 |> Set.insert 2
@@ -468,6 +490,8 @@ fn select left right include_equal =
 
 /// The keys that are in both `left` and `right`.
 ///
+/// @complexity O(n + m)
+///
 /// ```tsuzuri run=[2,%203]
 /// let left = Set.empty() |> Set.insert 1 |> Set.insert 2 |> Set.insert 3
 /// let right = Set.empty() |> Set.insert 2 |> Set.insert 3 |> Set.insert 4
@@ -477,6 +501,8 @@ def intersect :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> Se
 fn intersect left right = select left right true
 
 /// The keys of `left` that are not in `right`.
+///
+/// @complexity O(n + m)
 ///
 /// ```tsuzuri run=[1]
 /// let left = Set.empty() |> Set.insert 1 |> Set.insert 2 |> Set.insert 3
@@ -496,6 +522,8 @@ fn rec iter_from set chunk offset = Seq.defer (\() ->
 
 /// A sequence of references to the keys, in ascending order.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=abc
 /// let set = Set.empty() |> Set.insert "b" |> Set.insert "c" |> Set.insert "a"
 /// let mut text = ""
@@ -507,6 +535,8 @@ fn iter set = iter_from set 0 0
 
 /// Whether the chunks obey their rules: 1 to 512 keys each, more than 256 keys in any two neighbours, strictly ascending keys, and `length`
 /// equal to the number of keys. A diagnostic for tests, like `HashSet.longest_probe`.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=true
 /// let mut set: Set<i64> = Set.empty()

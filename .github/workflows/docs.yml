@@ -1,0 +1,74 @@
+name: Tsuzuri docs
+
+# G35: the generated documentation blocks, the drift checks and the link check. The compiler is built
+# without LLVM: every command here only reads, checks or documents (`check`, `doc`, `explain`, `--help`).
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - docs/**
+      - _tsuzuri/**
+      - _specs/**
+      - README.md
+      - std/**
+      - src/**
+      - benchmarks/**
+      - scripts/gen-docs.mjs
+      - scripts/check-cli-docs.mjs
+      - scripts/check-links.mjs
+      - scripts/check-docs.mjs
+      - tests/gen_docs.mjs
+      - tests/check_cli_docs.mjs
+      - tests/check_links.mjs
+      - tests/benchmark_render.mjs
+      - tests/fixtures/gen-docs/**
+      - Cargo.*
+      - .github/workflows/docs.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The dev profile is opt-level 1 (Cargo.toml): fast enough for `doc std` and `explain`.
+      TSUZURI_BIN: target/debug/tsuzuri
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: docs-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: docs-${{ runner.os }}-
+      - name: Build the compiler
+        run: cargo build --locked
+      # Each step starts with `if: ${{ !cancelled() }}` so that a failure above does not hide it.
+      - name: Generated blocks
+        if: ${{ !cancelled() }}
+        run: |
+          node tests/gen_docs.mjs
+          node scripts/gen-docs.mjs --check
+      - name: Benchmark renderer and links into docs/benchmarks.md
+        if: ${{ !cancelled() }}
+        run: |
+          node tests/benchmark_render.mjs
+          node tests/check_links.mjs
+          node scripts/check-links.mjs
+      - name: Drift checks
+        if: ${{ !cancelled() }}
+        run: |
+          node tests/check_cli_docs.mjs
+          node scripts/check-cli-docs.mjs

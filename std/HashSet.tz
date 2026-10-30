@@ -2,6 +2,8 @@ record HashSet<'key> { map: HashMap<'key, unit> }
 
 /// An empty set.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=0
 /// let set: HashSet<string> = HashSet.empty()
 /// HashSet.length set
@@ -11,6 +13,8 @@ fn empty = HashSet { map: HashMap.empty() }
 
 /// An empty set with room for `count` keys before its table grows.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=1
 /// HashSet.with_capacity 100 |> HashSet.insert "a" |> HashSet.length
 /// ```
@@ -18,6 +22,8 @@ def with_capacity :: own i64 -> HashSet<'key>
 fn with_capacity count = HashSet { map: HashMap.with_capacity count }
 
 /// The number of keys.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=2
 /// HashSet.empty() |> HashSet.insert "a" |> HashSet.insert "b" |> HashSet.insert "a" |> HashSet.length
@@ -27,6 +33,8 @@ fn length set = HashMap.length (ref set.map)
 
 /// Whether the set has no keys.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=true
 /// HashSet.empty() |> HashSet.insert 1 |> HashSet.remove 1 |> HashSet.is_empty
 /// ```
@@ -34,6 +42,8 @@ def is_empty :: ref HashSet<'key> -> bool
 fn is_empty set = HashMap.is_empty (ref set.map)
 
 /// An empty set whose hashes are keyed by `seed`; see `HashMap.with_seed`.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=true
 /// let set = HashSet.with_seed 2026i64u |> HashSet.insert "a" |> HashSet.insert "b"
@@ -44,6 +54,8 @@ fn with_seed seed = HashSet { map: HashMap.with_seed seed }
 
 /// An empty set with room for `count` keys whose hashes are keyed by `seed`; see `HashMap.with_capacity_and_seed`.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=2
 /// let set = HashSet.with_capacity_and_seed 16 2026i64u |> HashSet.insert 1 |> HashSet.insert 2
 /// HashSet.length set
@@ -52,6 +64,8 @@ def with_capacity_and_seed :: own i64 -> own i64u -> HashSet<'key>
 fn with_capacity_and_seed count seed = HashSet { map: HashMap.with_capacity_and_seed count seed }
 
 /// An empty set keyed by a seed from the operating system; see `HashMap.try_randomized`.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri
 /// def main :: unit -> i32 = \() ->
@@ -68,6 +82,8 @@ fn try_randomized _unit = IO.map (\made ->
 
 /// `try_randomized` that traps when the operating system gives no seed.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri
 /// def main :: unit -> i32 = \() ->
 ///     let! set = HashSet.randomized ()
@@ -79,6 +95,8 @@ fn randomized _unit = IO.map (\made -> Result.get made) (try_randomized ())
 
 /// Adds `key`; a set that has it already comes back unchanged.
 ///
+/// @complexity amortized O(1), worst O(n * n)
+///
 /// ```tsuzuri run=true%202
 /// let set = HashSet.empty() |> HashSet.insert "tea" |> HashSet.insert "cake" |> HashSet.insert "tea"
 /// $"{HashSet.contains "cake" set} {HashSet.length set}"
@@ -87,6 +105,9 @@ def insert :: (Hash<'key>, Eq<'key>) => own 'key -> own HashSet<'key> -> HashSet
 fn insert key set = HashSet { map: HashMap.insert key () set.map }
 
 /// Removes `key`, which is borrowed; a set without it comes back unchanged.
+///
+/// @complexity expected O(1), worst O(n)
+/// @see HashSet.remove
 ///
 /// ```tsuzuri run=false
 /// let key = "tea"
@@ -98,6 +119,9 @@ fn remove_ref key set = HashSet { map: HashMap.remove_ref key set.map }
 
 /// Removes `key`; a set without it comes back unchanged.
 ///
+/// @complexity expected O(1), worst O(n)
+/// @see HashSet.remove_ref
+///
 /// ```tsuzuri run=[3]
 /// let set = HashSet.empty() |> HashSet.insert 1 |> HashSet.insert 3
 /// set |> HashSet.remove 1 |> HashSet.remove 2 |> HashSet.to_array
@@ -106,6 +130,9 @@ def remove :: (Hash<'key>, Eq<'key>) => own 'key -> own HashSet<'key> -> HashSet
 fn remove key set = HashSet { map: HashMap.remove key set.map }
 
 /// Whether the set has `key`, which is borrowed.
+///
+/// @complexity expected O(1), worst O(n)
+/// @see HashSet.contains
 ///
 /// ```tsuzuri run=true
 /// let key = "tea"
@@ -116,6 +143,9 @@ fn contains_ref key set = HashMap.contains_key_ref key (ref set.map)
 
 /// Whether the set has `key`.
 ///
+/// @complexity expected O(1), worst O(n)
+/// @see HashSet.contains_ref
+///
 /// ```tsuzuri run=true%20false
 /// let set = HashSet.empty() |> HashSet.insert 1 |> HashSet.insert 3
 /// $"{HashSet.contains 3 set} {HashSet.contains 2 set}"
@@ -124,6 +154,9 @@ def contains :: (Hash<'key>, Eq<'key>) => own 'key -> ref HashSet<'key> -> bool
 fn contains key set = HashMap.contains_key key (ref set.map)
 
 /// The longest probe of the underlying table; see `HashMap.longest_probe`.
+/// Scans the whole table of the underlying map, whose size follows the largest number of entries it has held or the capacity it was made with.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=0
 /// HashSet.empty() |> HashSet.insert 7 |> HashSet.longest_probe
@@ -132,6 +165,8 @@ def longest_probe :: ref HashSet<'key> -> i64
 fn longest_probe set = HashMap.longest_probe (ref set.map)
 
 /// The keys, in the order of the entries of the underlying map (see `HashMap.iter`).
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[1,%202,%203]
 /// let set = HashSet.empty() |> HashSet.insert 3 |> HashSet.insert 1 |> HashSet.insert 2
@@ -142,6 +177,8 @@ fn to_array set = HashMap.keys (ref set.map)
 
 /// Folds `folder` over the keys, in the order of the entries of the underlying map, starting from `initial`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=6
 /// let set = HashSet.empty() |> HashSet.insert 1 |> HashSet.insert 2 |> HashSet.insert 3
 /// HashSet.fold (\total key -> total + deref key) 0 set
@@ -150,6 +187,8 @@ def fold :: own ('state -> ref 'key -> 'state) -> own 'state -> ref HashSet<'key
 fn fold folder initial set = HashMap.fold (\state key _unit -> folder state key) initial (ref set.map)
 
 /// A sequence of references to the keys, in the order of the entries of the underlying map.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=7
 /// let set = HashSet.empty() |> HashSet.insert "tea" |> HashSet.insert "cake"

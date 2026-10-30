@@ -232,17 +232,38 @@ seed を付けても走査順は変わりません。同じ操作列なら、see
 
 ## 計算量
 
-| 操作 | 期待計算量（平均） | 最悪計算量（全キー衝突時） |
-| --- | --- | --- |
-| 検索 `contains_key` / `get` / `at` | $O(1)$ | $O(n)$ |
-| 挿入 `HashMap.insert`（新規追加） | 償却 $O(1)$ | $O(n)$ |
-| 挿入 `HashMap.insert`（既存更新） | $O(1)$ | $O(n)$ |
-| 削除 `HashMap.remove`（swap-remove） | $O(1)$ | $O(n)$ |
-| 長さの参照 `length` / `is_empty` | $O(1)$ | $O(1)$ |
-| 全走査・配列化 `fold` / `keys` / `to_array` | $O(n)$ | $O(n)$ |
-| `with_capacity n` | $O(n)$ | $O(n)$ |
+計算量は 1 回の呼び出しの最悪の時間です。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。
 
-ハッシュ値が一様なときの計算量です。`Hash.hash` や `Eq.eq` のコスト（長い文字列の比較など）は含みません。
+<!-- generated:complexity:HashMap -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `HashMap.empty` | $O(1)$ | - |
+| `HashMap.length` | $O(1)$ | - |
+| `HashMap.is_empty` | $O(1)$ | - |
+| `HashMap.sip13` | $O(1)$ | - |
+| `HashMap.with_capacity` | $O(k)$ | - |
+| `HashMap.with_seed` | $O(1)$ | - |
+| `HashMap.with_capacity_and_seed` | $O(k)$ | - |
+| `HashMap.try_randomized` | $O(1)$ | - |
+| `HashMap.randomized` | $O(1)$ | - |
+| `HashMap.contains_key_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.contains_key` |
+| `HashMap.contains_key` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.contains_key_ref` |
+| `HashMap.get_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get` |
+| `HashMap.get` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get_ref` |
+| `HashMap.at_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at` |
+| `HashMap.at` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at_ref` |
+| `HashMap.insert` | 償却 $O(1)$、最悪 $O(n \cdot n)$ | - |
+| `HashMap.remove_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove` |
+| `HashMap.remove` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove_ref` |
+| `HashMap.longest_probe` | $O(n)$ | - |
+| `HashMap.to_array` | $O(n)$ | - |
+| `HashMap.keys` | $O(n)$ | - |
+| `HashMap.values` | $O(n)$ | - |
+| `HashMap.fold` | $O(n)$ | - |
+| `HashMap.iter` | $O(1)$ | - |
+<!-- /generated:complexity:HashMap -->
+
+`insert` が表を広げるときは、すべてのエントリを入れ直します。すべてのキーのハッシュが衝突すると、その 1 回の呼び出しは $O(n^2)$ になります（`worst` の値）。
 
 消費したマップの再利用は `E1012`、`at` の参照が生きている間の更新や移動は `E1014`、その参照を関数の外へ返すと `E1013` です。`Hash` / `Eq` がないキーや、`get` / `keys` / `values` / `to_array` で `Copy` を満たさない型は `E1005` です。
 

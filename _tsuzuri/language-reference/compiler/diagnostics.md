@@ -312,7 +312,7 @@ flowchart TD
 
 ### kind の一覧
 
-コードごとの全 kind です。`tsuzuri explain --catalog` と同じ内容で、`tests/explain.rs` の `the_docs_list_every_kind` が登録簿との一致を検査します。kind を足したら、そのテストの失敗メッセージにある表を、次の 2 つのマーカーの間に貼ります。
+コードごとの全 kind です。`tsuzuri explain --catalog` と同じ内容で、`tests/explain.rs` の `the_docs_list_every_kind` と `node scripts/gen-docs.mjs --check` が登録簿との一致を検査します。kind を足したら、`node scripts/gen-docs.mjs` を実行すると、次の 2 つのマーカーの間が作り直されます（手で書き換えません）。
 
 <!-- generated:diagnostic-kinds -->
 | コード | kind |

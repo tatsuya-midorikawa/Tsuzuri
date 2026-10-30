@@ -201,6 +201,36 @@ dashed=-a-b- once=- rep=hahaha
 
 `Utf8String.from_string` は逆向きで、孤立サロゲートではトラップします。コンソール出力も UTF-8 なので、整形式でない `string` をそのまま最後の式にするとトラップします。先に `is_well_formed` を見るか、`to_well_formed` を明示してください。
 
+## 計算量
+
+計算量は 1 回の呼び出しの最悪の時間です。`n` は `text`（対象の文字列）のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数、`k` は結果のコード単位数です（`join`・`concat` の `n` は部品の数）。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/String.tz` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。組み込み関数のうち `compare`・`from_utf8`・`is_well_formed`・`to_well_formed` の計算量は、各節の表の `計算量` の列にあります。
+
+<!-- generated:complexity:String -->
+| 関数 | 計算量 |
+| --- | --- |
+| `String.length` | $O(1)$ |
+| `String.find` | $O(n \cdot m)$ |
+| `String.rfind` | $O(n \cdot m)$ |
+| `String.contains` | $O(n \cdot m)$ |
+| `String.starts_with` | $O(m)$ |
+| `String.ends_with` | $O(m)$ |
+| `String.slice` | $O(k)$ |
+| `String.sub` | $O(k)$ |
+| `String.decode_at` | $O(1)$ |
+| `String.char_count` | $O(1)$ |
+| `String.chars` | $O(n)$ |
+| `String.join` | $O(n + k)$ |
+| `String.concat` | $O(n + k)$ |
+| `String.split` | $O(n \cdot m)$ |
+| `String.trim_start` | $O(n)$ |
+| `String.trim_end` | $O(n)$ |
+| `String.trim` | $O(n)$ |
+| `String.to_ascii_lower` | $O(n)$ |
+| `String.to_ascii_upper` | $O(n)$ |
+| `String.repeat` | $O(k)$ |
+| `String.replace` | $O(n \cdot m + k)$ |
+<!-- /generated:complexity:String -->
+
 ## 注意点
 
 > [!NOTE]

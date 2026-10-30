@@ -3,6 +3,8 @@ record HashMap<'key, 'value> { entries: Vec<Entry<'key, 'value>>, slots: Vec<i64
 
 /// An empty map.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=0
 /// let map: HashMap<string, i64> = HashMap.empty()
 /// HashMap.length map
@@ -12,6 +14,8 @@ fn empty = HashMap { entries: Vec.empty(), slots: Vec.empty(), key0: 0i64u, key1
 
 /// The number of entries.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=2
 /// HashMap.empty() |> HashMap.insert "a" 1 |> HashMap.insert "b" 2 |> HashMap.insert "a" 3 |> HashMap.length
 /// ```
@@ -19,6 +23,8 @@ def length :: ref HashMap<'key, 'value> -> i64
 fn length map = Vec.length (ref map.entries)
 
 /// Whether the map has no entries.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=true
 /// HashMap.empty() |> HashMap.insert 1 "one" |> HashMap.remove 1 |> HashMap.is_empty
@@ -49,6 +55,8 @@ fn sip_round state =
 /// SipHash-1-3 of one 64-bit word (its eight little-endian bytes) under the 128-bit key `key0`, `key1`.
 /// A map made with `with_seed` finalizes `Hash.hash` with it, so a table position cannot be chosen
 /// without knowing the seed.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=3931806377309739662
 /// HashMap.sip13 0x0706050403020100i64u 0x0f0e0d0c0b0a0908i64u 0x0706050403020100i64u
@@ -132,6 +140,8 @@ fn find map key =
 
 /// An empty map with room for `count` entries before its table grows.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=1
 /// HashMap.with_capacity 100 |> HashMap.insert "a" 1 |> HashMap.length
 /// ```
@@ -144,6 +154,8 @@ fn with_capacity count =
 /// fixed mixing of `empty` spread out. The 128-bit key is two SplitMix64 outputs of the seed, and the
 /// iteration order does not depend on it. Keys that collide in the whole `Hash.hash` digest still collide.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=2
 /// let map = HashMap.with_seed 2026i64u |> HashMap.insert "a" 1 |> HashMap.insert "b" 2
 /// HashMap.get "b" map |> Maybe.default_value 0
@@ -152,6 +164,8 @@ def with_seed :: own i64u -> HashMap<'key, 'value>
 fn with_seed seed = HashMap { entries: Vec.empty(), slots: Vec.empty(), key0: split_mix seed, key1: split_mix (seed + 0x9e3779b97f4a7c15i64u), keyed: true }
 
 /// `with_seed` with room for `count` entries that needs no growth.
+///
+/// @complexity O(k)
 ///
 /// ```tsuzuri run=20
 /// let map = HashMap.with_capacity_and_seed 16 2026i64u |> HashMap.insert 1 10 |> HashMap.insert 2 20
@@ -165,6 +179,8 @@ fn with_capacity_and_seed count seed =
 /// An empty map keyed by a seed from the operating system (`Random.next_u64`). A failure to get one is
 /// reported, never replaced by a fixed seed. Not available on the default wasm32 target, which has no
 /// operating-system APIs; give `with_seed` a seed the host chose instead.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri
 /// def main :: unit -> i32 = \() ->
@@ -181,6 +197,8 @@ fn try_randomized _unit = IO.map (\seed ->
 
 /// `try_randomized` that traps when the operating system gives no seed.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri
 /// def main :: unit -> i32 = \() ->
 ///     let! map = HashMap.randomized ()
@@ -192,6 +210,9 @@ fn randomized _unit = IO.map (\made -> Result.get made) (try_randomized ())
 
 /// Whether an entry has `key`, which is borrowed.
 ///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.contains_key
+///
 /// ```tsuzuri run=true
 /// let key = "tea"
 /// HashMap.empty() |> HashMap.insert "tea" 3 |> HashMap.contains_key_ref (ref key)
@@ -201,6 +222,9 @@ fn contains_key_ref key map = find map key >= 0
 
 /// Whether an entry has `key`.
 ///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.contains_key_ref
+///
 /// ```tsuzuri run=true%20false
 /// let map = HashMap.empty() |> HashMap.insert 1 "one"
 /// $"{HashMap.contains_key 1 map} {HashMap.contains_key 2 map}"
@@ -209,6 +233,9 @@ def contains_key :: (Hash<'key>, Eq<'key>) => own 'key -> ref HashMap<'key, 'val
 fn contains_key key map = contains_key_ref (ref key) map
 
 /// The value for `key`, which is borrowed, or `None`.
+///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.get
 ///
 /// ```tsuzuri run=5
 /// let key = "cake"
@@ -222,6 +249,9 @@ fn get_ref key map =
 
 /// The value for `key`, or `None`.
 ///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.get_ref
+///
 /// ```tsuzuri run=3%200
 /// let prices = HashMap.empty() |> HashMap.insert "tea" 3
 /// let tea = HashMap.get "tea" prices |> Maybe.default_value 0
@@ -232,6 +262,9 @@ def get :: (Hash<'key>, Eq<'key>, Copy<'value>) => own 'key -> ref HashMap<'key,
 fn get key map = get_ref (ref key) map
 
 /// A reference to the value for `key`, which is borrowed; traps when no entry has it.
+///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.at
 ///
 /// ```tsuzuri run=one
 /// let key = 1
@@ -246,6 +279,9 @@ fn at_ref key map =
 
 /// A reference to the value for `key`; traps when no entry has it.
 ///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.at_ref
+///
 /// ```tsuzuri run=two
 /// let names = HashMap.empty() |> HashMap.insert 1 "one" |> HashMap.insert 2 "two"
 /// $"{HashMap.at 2 names}"
@@ -254,6 +290,8 @@ def at :: (Hash<'key>, Eq<'key>) => own 'key -> ref HashMap<'key, 'value> -> ref
 fn at key map = at_ref (ref key) map
 
 /// Adds an entry for `key` with `value`, or replaces the value of the entry that has `key`.
+///
+/// @complexity amortized O(1), worst O(n * n)
 ///
 /// ```tsuzuri run=1%2030
 /// let map = HashMap.empty() |> HashMap.insert "a" 10 |> HashMap.insert "a" 30
@@ -295,6 +333,9 @@ fn unlink entries slots start =
 
 /// Removes the entry that has `key`, which is borrowed; a map without one comes back unchanged.
 ///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.remove
+///
 /// ```tsuzuri run=false%201
 /// let key = "tea"
 /// let map = HashMap.empty() |> HashMap.insert "tea" 3 |> HashMap.insert "cake" 5 |> HashMap.remove_ref (ref key)
@@ -320,6 +361,9 @@ fn remove_ref key map =
 
 /// Removes the entry that has `key`; a map without one comes back unchanged.
 ///
+/// @complexity expected O(1), worst O(n)
+/// @see HashMap.remove_ref
+///
 /// ```tsuzuri run=[(3,%2030)]
 /// let map = HashMap.empty() |> HashMap.insert 1 10 |> HashMap.insert 3 30
 /// map |> HashMap.remove 1 |> HashMap.remove 2 |> HashMap.to_array
@@ -329,6 +373,9 @@ fn remove key map = remove_ref (ref key) map
 
 /// How far the entry that sits farthest from its ideal table position is from it: 0 for an empty map.
 /// A diagnostic for tuning and tests; a map that is flooded with colliding keys has a large value.
+/// Scans the whole table, whose size follows the largest number of entries the map has held or the capacity it was made with.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=0
 /// HashMap.empty() |> HashMap.insert 7 "seven" |> HashMap.longest_probe
@@ -349,6 +396,8 @@ fn longest_probe map =
 
 /// The entries as `(key, value)` pairs, in the order of the entries (see `iter`).
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[(1,%2010),%20(2,%2020)]
 /// let map = HashMap.empty() |> HashMap.insert 2 20 |> HashMap.insert 1 10
 /// HashMap.to_array map |> Array.sort
@@ -357,6 +406,8 @@ def to_array :: (Copy<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> [('ke
 fn to_array map = new [('key * 'value)](length map, \index -> (map.entries[index].key, map.entries[index].value))
 
 /// The keys, in the order of the entries (see `iter`).
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[1,%202,%203]
 /// let map = HashMap.empty() |> HashMap.insert 3 "c" |> HashMap.insert 1 "a" |> HashMap.insert 2 "b"
@@ -367,6 +418,8 @@ fn keys map = new ['key](length map, \index -> map.entries[index].key)
 
 /// The values, in the order of the entries (see `iter`).
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[10,%2020,%2030]
 /// let map = HashMap.empty() |> HashMap.insert "c" 30 |> HashMap.insert "a" 10 |> HashMap.insert "b" 20
 /// HashMap.values map |> Array.sort
@@ -375,6 +428,8 @@ def values :: Copy<'value> => ref HashMap<'key, 'value> -> ['value]
 fn values map = new ['value](length map, \index -> map.entries[index].value)
 
 /// Folds `folder` over the entries, in the order of the entries (see `iter`), starting from `initial`.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=8
 /// let stock = HashMap.empty() |> HashMap.insert "tea" 3 |> HashMap.insert "cake" 5
@@ -396,6 +451,8 @@ fn rec iter_from map index = Seq.defer (\() ->
 
 /// A sequence of references to the keys and values, in the order of the entries: the order of insertion, until a
 /// `remove` moves the last entry into the place of the removed one.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=8
 /// let stock = HashMap.empty() |> HashMap.insert "tea" 3 |> HashMap.insert "cake" 5

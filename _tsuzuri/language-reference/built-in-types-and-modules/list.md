@@ -684,29 +684,154 @@ lengths=[|5, 3, 6|] total=14 has_long=true has_fig=true
 
 ## 計算量
 
+計算量は 1 回の呼び出しの最悪の時間です。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。
+
+<!-- generated:complexity:List -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `List.length` | $O(1)$ | - |
+| `List.is_empty` | $O(1)$ | - |
+| `List.copy` | $O(n)$ | - |
+| `List.empty` | $O(1)$ | - |
+| `List.singleton` | $O(1)$ | - |
+| `List.replicate` | $O(k)$ | - |
+| `List.init` | $O(k)$ | - |
+| `List.head` | $O(1)$ | - |
+| `List.try_head` | $O(1)$ | - |
+| `List.item` | $O(n)$ | - |
+| `List.try_item` | $O(n)$ | - |
+| `List.last` | $O(n)$ | - |
+| `List.try_last` | $O(n)$ | - |
+| `List.exactly_one` | $O(1)$ | - |
+| `List.try_exactly_one` | $O(1)$ | - |
+| `List.take` | $O(k)$ | - |
+| `List.skip` | $O(n)$ | - |
+| `List.truncate` | $O(k)$ | - |
+| `List.split_at` | $O(n)$ | - |
+| `List.take_while` | $O(n)$ | - |
+| `List.skip_while` | $O(n)$ | - |
+| `List.where` | $O(n)$ | - |
+| `List.filter` | $O(n)$ | - |
+| `List.transpose` | $O(n + k)$ | - |
+| `List.iter` | $O(n)$ | `List.iterr` |
+| `List.iterr` | $O(n)$ | `List.iter` |
+| `List.iteri` | $O(n)$ | `List.iterir` |
+| `List.iterir` | $O(n)$ | `List.iteri` |
+| `List.iter2` | $O(n)$ | - |
+| `List.iteri2` | $O(n)$ | - |
+| `List.mapi` | $O(n)$ | `List.mapir` |
+| `List.mapir` | $O(n)$ | `List.mapi` |
+| `List.map2` | $O(n)$ | - |
+| `List.mapi2` | $O(n)$ | - |
+| `List.map3` | $O(n)$ | - |
+| `List.map_fold` | $O(n)$ | - |
+| `List.map_fold_back` | $O(n)$ | - |
+| `List.collect` | $O(n + k)$ | - |
+| `List.choose` | $O(n)$ | - |
+| `List.fold` | $O(n)$ | - |
+| `List.fold2` | $O(n)$ | - |
+| `List.fold_back` | $O(n)$ | `List.foldr_back` |
+| `List.foldr_back` | $O(n)$ | `List.fold_back` |
+| `List.fold_back2` | $O(n)$ | - |
+| `List.reduce` | $O(n)$ | - |
+| `List.reduce_back` | $O(n)$ | - |
+| `List.scan` | $O(n)$ | - |
+| `List.scan_back` | $O(n)$ | - |
+| `List.exists` | $O(n)$ | `List.existsr` |
+| `List.existsr` | $O(n)$ | `List.exists` |
+| `List.exists2` | $O(n + m)$ | - |
+| `List.forall` | $O(n)$ | `List.forallr` |
+| `List.forallr` | $O(n)$ | `List.forall` |
+| `List.forall2` | $O(n + m)$ | - |
+| `List.try_find_index` | $O(n)$ | - |
+| `List.find_index` | $O(n)$ | - |
+| `List.try_find_index_back` | $O(n)$ | - |
+| `List.find_index_back` | $O(n)$ | - |
+| `List.try_find` | $O(n)$ | `List.try_findr` |
+| `List.find` | $O(n)$ | `List.findr` |
+| `List.try_find_back` | $O(n)$ | - |
+| `List.find_back` | $O(n)$ | - |
+| `List.try_findr` | $O(n)$ | `List.try_find` |
+| `List.findr` | $O(n)$ | `List.find` |
+| `List.try_pick` | $O(n)$ | - |
+| `List.pick` | $O(n)$ | - |
+| `List.partition` | $O(n)$ | - |
+| `List.partition_with` | $O(n)$ | - |
+| `List.sum` | $O(n)$ | - |
+| `List.sum_by` | $O(n)$ | - |
+| `List.average` | $O(n)$ | - |
+| `List.average_by` | $O(n)$ | - |
+| `List.min` | $O(n)$ | `List.minr` |
+| `List.max` | $O(n)$ | `List.maxr` |
+| `List.minr` | $O(n)$ | `List.min` |
+| `List.maxr` | $O(n)$ | `List.max` |
+| `List.min_by` | $O(n)$ | - |
+| `List.max_by` | $O(n)$ | - |
+| `List.compare_with` | $O(n + m)$ | - |
+| `List.containsr` | $O(n)$ | `List.contains` |
+| `List.contains` | $O(n)$ | `List.containsr` |
+| `List.append` | $O(n + m)$ | - |
+| `List.concat` | $O(n + k)$ | - |
+| `List.zip` | $O(n)$ | - |
+| `List.zip3` | $O(n)$ | - |
+| `List.unzip` | $O(n)$ | - |
+| `List.unzip3` | $O(n)$ | - |
+| `List.all_pairs` | $O(n \cdot m)$ | - |
+| `List.indexed` | $O(n)$ | - |
+| `List.pairwise` | $O(n)$ | - |
+| `List.windowed` | $O(n + k)$ | - |
+| `List.chunk_by_size` | $O(n)$ | - |
+| `List.split_into` | $O(n)$ | - |
+| `List.unfold` | $O(k)$ | - |
+| `List.permute` | $O(n)$ | - |
+| `List.insert_at` | $O(n)$ | - |
+| `List.insert_many_at` | $O(n + m)$ | - |
+| `List.remove_at` | $O(n)$ | - |
+| `List.remove_many_at` | $O(n)$ | - |
+| `List.update_at` | $O(n)$ | - |
+| `List.of_array` | $O(n)$ | - |
+| `List.of_seq` | $O(n)$ | - |
+| `List.to_seqr` | $O(n)$ | `List.to_seq` |
+| `List.to_seq` | $O(n)$ | `List.to_seqr` |
+| `List.distinct` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `List.distinct_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `List.except` | 平均 $O(n + m)$、最悪 $O(n \cdot n + n \cdot m + m \cdot m)$ | - |
+| `List.count_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `List.group_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `List.sort` | $O(n \log n)$ | - |
+| `List.sort_descending` | $O(n \log n)$ | - |
+| `List.sort_with` | $O(n \log n)$ | - |
+| `List.sort_by` | $O(n \log n)$ | - |
+| `List.sort_by_descending` | $O(n \log n)$ | - |
+| `List.random_shuffle_by` | $O(n)$ | - |
+| `List.random_shuffle_with` | $O(n)$ | - |
+| `List.random_choice_by` | $O(n)$ | - |
+| `List.random_choice_with` | $O(n)$ | - |
+| `List.random_choices_by` | $O(n + k)$ | - |
+| `List.random_choices_with` | $O(n + k)$ | - |
+| `List.random_sample_by` | $O(n)$ | - |
+| `List.random_sample_with` | $O(n)$ | - |
+| `List.random_shuffle` | $O(n)$ | - |
+| `List.random_choice` | $O(n)$ | - |
+| `List.random_choices` | $O(n + k)$ | - |
+| `List.random_sample` | $O(n)$ | - |
+<!-- /generated:complexity:List -->
+
+### 構文と組み込みの操作
+
+次の操作は `std/List.tz` の `def` ではないので、表は手書きです。
+
 | 操作 | 計算量 | 備考 |
 | --- | --- | --- |
 | 先頭への追加 `List.cons` | 償却 $O(1)$ | 先頭の chunk の空き slot に書く。満杯なら容量 1.5 倍（上限 32 KiB）の chunk を 1 つ確保して足す |
-| 先頭の取得 `match xs with head :: _` / `head` | $O(1)$ | 先頭の chunk の slot の読み出し |
+| 先頭の取得 `match xs with head :: _` | $O(1)$ | 先頭の chunk の slot の読み出し |
 | 先頭の除去 `List.tail` | $O(1)$ | 先頭要素を drop し、残りを返す（chunk は最後の要素と一緒に解放）。空ならトラップ |
-| 空判定 `is_empty` | $O(1)$ | 長さが 0 かどうか |
-| 添字アクセス `xs[i]` / `item` / `last` | 一度に作ったリストは $O(1)$、`List.cons` で伸ばしたリストは先行する chunk の数 | その要素より前の chunk の `next` をたどる |
-| 長さの取得 `length` / `.length` | $O(1)$ | 保存済みの長さを読む |
-| 要素変換 `map` / `mapr` | $O(n)$ | 全要素を走査して 1 つの chunk の新しいリストを構築 |
-| 要素変換 `mapi` / `mapir` / `map2` / `mapi2` / `map3` / `choose` / `map_fold` / `unfold` | $O(n)$ | 結果を `Vec` に集めてから `List.cons` で並べるので、chunk の連なりのリスト |
-| 畳み込み `fold` / `foldr` / `sum` | $O(n)$ | 全要素を 1 回走査 |
-| 反転 `rev` | $O(n)$ | 全要素を逆順に並べた 1 つの chunk のリストを構築 |
-| 先頭 n 個 `take` / `truncate` / `take_while` | $O(n)$ | n 個目で走査を止める |
-| 取り除き `skip` / `skip_while` / `split_at` | $O(\text{length})$ | 残りの要素を複製する |
-| 連結 `append` / `concat` | $O(n + m)$ | 両方の要素を複製する |
-| 探索 `exists` / `forall` / `find` / `try_find` / `contains` | $O(n)$ | 答えが決まった時点で短絡終了。要素は添字を使わず走査する |
-| 末尾からの探索 `find_back` / `fold_back` / `reduce_back` | $O(n)$ | いったん配列へ複写する |
-| ソート `sort` / `sort_by` / `sort_with` | $O(n \log n)$ | 安定マージソート。`sort_by` はキーを $n$ 回だけ計算 |
-| 重複除去・グループ化 `distinct` / `count_by` / `group_by` | 平均 $O(n)$ | ハッシュ表を使う |
-| 組み合わせ `all_pairs` / `transpose` | $O(n \cdot m)$ | 結果の要素数に比例 |
-| 窓 `windowed` | $O(n \cdot w)$ | 窓の数 × 窓の幅。各窓は新しいリスト |
-| 挿入・削除・更新 `insert_at` / `remove_at` / `update_at` | $O(n)$ | 新しいリストを作る |
-| 配列化 `to_array`、配列から `of_array` | $O(n)$ | 全要素を連続メモリへコピー |
+| 添字アクセス `xs[i]` | 一度に作ったリストは $O(1)$、`List.cons` で伸ばしたリストは先行する chunk の数 | その要素より前の chunk の `next` をたどる |
+| 長さの取得 `xs.length` | $O(1)$ | 保存済みの長さを読む |
+| 要素変換 `List.map` / `mapr` | $O(n)$ | 全要素を走査して 1 つの chunk の新しいリストを構築 |
+| 畳み込み `List.foldr` | $O(n)$ | 全要素を 1 回走査 |
+| 反転 `List.rev` | $O(n)$ | 全要素を逆順に並べた 1 つの chunk のリストを構築 |
+| 配列化 `List.to_array` | $O(n)$ | 全要素を連続メモリへコピー |
 
 要素を複製する関数は、いったん配列へ複写して処理する関数と、リストを 1 回走査して集める関数のどちらかです。どちらもリストを添字で回しません。`List.cons` で伸ばしたリストでも、長さに比例する時間で終わります。結果の要素が `Copy` でなくてよい関数（`mapi`、`map2`、`choose`、`partition_with`、`unfold`、`of_seq` など）は、結果が配列を通れないので、`Vec` に集めてから `List.cons` で並べたリスト、つまり chunk の連なりを返します。`List.cons` で伸ばしたリストと同じで、走査の速さは変わらず、添字だけが先行する chunk の数に比例します。コールバックは、閉包に包まず、ループから直接呼びます。呼び出しごとに環境が複製されて、表のような大きな値を所有するコールバックが遅くなるのを避けるためです。
 

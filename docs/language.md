@@ -152,6 +152,8 @@ def answer :: i64 = 42
 警告の対象は `def`（`extern def` を除く）、`record`、`union` で、`const`、`type`、`class`、メソッド、`extern def` の印は表示されるだけです。別のパッケージ（標準ライブラリを含む）が非推奨の宣言の名前を書くと、警告 `W1005`（`'LegacyLib::Old.old' is deprecated: use LegacyLib::Old.next instead`。案内が空なら `'...' is deprecated; see its documentation for a replacement`）が出ます。
 参照の種類は、関数、record の構築と型の注釈（パターンの中の型注釈を除く）、union の case の構築とパターンで、case は union の印を使います（`Light.Red` は case の位置に 1 件です）。案内は 200 文字までで、超えると `...` で切ります。同じパッケージの中の使用（`Tsuzuri.toml` のないプロジェクトは全体で 1 つのパッケージ）には出ません。W1005 は既定で有効で、`--deny-warnings` で終了コード 1 になり、警告の有無は互換性の保証の対象外です（[安定性と互換性の方針](stability.md#非推奨の手順)）。`@deprecated` の有無で、生成される IR は変わりません。
 
+説明の行を `@complexity`・`@since`・`@see` で始めると、宣言に計算量・版・関連する宣言を付けられます（新しい構文ではありません。`@deprecated` と同じ「行頭のタグ」の規則です）。各行の先頭の空白を除いた最初の語がタグそのもので、直後は行末か空白（スペースかタブ）です。`@complexityX` はタグではありません。値は、タグの後ろから行末までの前後の空白を除いたもの（空でもよい）です。`@complexity` と `@since` は最初の 1 行だけが有効で、`@see` は何行でも書けます。`tsuzuri doc` と LSP のホバーは、これらの行も説明として表示します。コンパイラは値を検査せず、診断も出さず、生成される IR も変わりません。標準ライブラリの値は `node scripts/gen-docs.mjs` と `cargo test --test std_tags` が検査し、標準コレクションの計算量の表（[標準コレクションの計算量](#標準コレクションの計算量)）は `@complexity` から作られます。書き方と規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) です。
+
 `tsuzuri doc <file|directory> -o <outdir> [--json]` コマンドは、プロジェクト全体の型検査を完了した後に、公開宣言のみを抽出して Markdown 形式のドキュメントを生成します。
 ライブラリのドキュメント生成に対応するため、ディレクトリ入力であっても `Main.tz` の存在は必須としません。階層化されたモジュールのページは `Geometry.Point.md`（見出しおよび一覧での表示表記は `Geometry::Point`）、モジュール一覧ページは `index.md` として出力されます。
 ページ名は決定論的にソートされ、ページ内のシグネチャはソースコードでの出現順序に従います。型変数、制約、region、およびアクティブパターンの宣言名が忠実に保持されます。
@@ -3470,15 +3472,9 @@ to_string (HashSet.to_array (ref set))    // ['a', 'd', 'c']
 内部アーキテクチャは、エントリデータが密に詰まった連続配列と、オープンアドレス法（線形探査法・後方シフト削除・墓標なし）に基づくインデックステーブルの組み合わせで構成されています。デフォルトでは各キーの `Hash.hash` 結果に対して fmix64（MurmurHash3 の最終ビット混合関数）が適用され、混合後のハッシュ値の下位ビットによってテーブルの初期スロットが決定されます。
 インデックステーブルのバケットサイズは常に 8 以上の 2 の冪乗に保たれ、最大負荷率は 1/2（要素件数 $\times 2 \le \text{テーブルサイズ}$）に厳密に抑制されます。空のマップはテーブル領域を確保せずメモリを一切消費しません。新しいキーの追加によって負荷率が 1/2 を超過する場合にのみテーブルサイズが 2 倍に拡張され、既存キーの値置換においてテーブルが拡張されることはありません（自動縮小処理は行われません）。`with_capacity n` は、`n` 件のエントリ領域と負荷率を超えない最小のテーブルサイズをあらかじめ一括確保するため、`n` 件までの追加であれば途中のメモリアロケーションを完全に回避できます。
 
-| 提供操作 | 期待計算量（平均） | 最悪計算量（全キー衝突時） |
-|---|---|---|
-| `insert`（新規キーの追加） | 償却 $O(1)$ | $O(n)$ |
-| `insert`（既存キーの置換）・`contains_key`・`get`・`at`・`remove` | $O(1)$ | $O(n)$ |
-| `length`・`is_empty`・`empty` | $O(1)$ | $O(1)$ |
-| `fold`・`iter` による全走査・`keys`・`values`・`to_array` | $O(n)$ | $O(n)$ |
-| `with_capacity n` | $O(n)$ | $O(n)$ |
+計算量は [標準コレクションの計算量](#標準コレクションの計算量) の表のとおりです。
 
-※ 上記はハッシュ値が一様に分散している場合の期待計算量です。`Hash.hash` や `Eq.eq` の実行コスト（例えば長い文字列キーの比較に要する計算量など）は除外しています。
+※ 平均・償却の値は、ハッシュ値が一様に分散している場合のものです。`Hash.hash` や `Eq.eq` の実行コスト（例えば長い文字列キーの比較に要する計算量）は除外しています。
 
 #### seed と HashDoS
 
@@ -3716,6 +3712,507 @@ let digits = Array.fold_back (\x acc -> acc * 10 + x) 0 xs   // 4321
 let texts = ["a", "bcd"]
 let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 ```
+
+### 標準コレクションの計算量
+
+計算量は 1 回の呼び出しの最悪の時間です。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。組み込みの操作（`Vec.push`・`Array.write`・`List.cons` など）は、各モジュールのページの手書きの表にあります。`String` の `n` は `text` のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数です。
+
+**Array**
+
+<!-- generated:complexity:Array -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `Array.length` | $O(1)$ | - |
+| `Array.is_empty` | $O(1)$ | - |
+| `Array.empty` | $O(1)$ | - |
+| `Array.singleton` | $O(1)$ | - |
+| `Array.create` | $O(k)$ | - |
+| `Array.replicate` | $O(k)$ | - |
+| `Array.zero_create` | $O(k)$ | - |
+| `Array.init` | $O(k)$ | - |
+| `Array.get` | $O(1)$ | - |
+| `Array.item` | $O(1)$ | - |
+| `Array.try_item` | $O(1)$ | - |
+| `Array.at` | $O(1)$ | - |
+| `Array.head` | $O(1)$ | - |
+| `Array.try_head` | $O(1)$ | - |
+| `Array.last` | $O(1)$ | - |
+| `Array.try_last` | $O(1)$ | - |
+| `Array.exactly_one` | $O(1)$ | - |
+| `Array.try_exactly_one` | $O(1)$ | - |
+| `Array.sub` | $O(k)$ | - |
+| `Array.tail` | $O(n)$ | - |
+| `Array.take` | $O(k)$ | - |
+| `Array.skip` | $O(n)$ | - |
+| `Array.truncate` | $O(k)$ | - |
+| `Array.split_at` | $O(n)$ | - |
+| `Array.take_while` | $O(k)$ | - |
+| `Array.skip_while` | $O(n)$ | - |
+| `Array.where` | $O(n)$ | - |
+| `Array.filter` | $O(n)$ | - |
+| `Array.transpose` | $O(n + k)$ | - |
+| `Array.iter` | $O(n)$ | `Array.iterr` |
+| `Array.iterr` | $O(n)$ | `Array.iter` |
+| `Array.iteri` | $O(n)$ | `Array.iterir` |
+| `Array.iterir` | $O(n)$ | `Array.iteri` |
+| `Array.iter2` | $O(n)$ | - |
+| `Array.iteri2` | $O(n)$ | - |
+| `Array.map` | $O(n)$ | `Array.mapr` |
+| `Array.mapi` | $O(n)$ | `Array.mapir` |
+| `Array.mapr` | $O(n)$ | `Array.map` |
+| `Array.mapir` | $O(n)$ | `Array.mapi` |
+| `Array.map2` | $O(n)$ | - |
+| `Array.mapi2` | $O(n)$ | - |
+| `Array.map3` | $O(n)$ | - |
+| `Array.map_fold` | $O(n)$ | - |
+| `Array.map_fold_back` | $O(n)$ | - |
+| `Array.collect` | $O(n + k)$ | - |
+| `Array.choose` | $O(n)$ | - |
+| `Array.fold` | $O(n)$ | `Array.foldr` |
+| `Array.foldr` | $O(n)$ | `Array.fold` |
+| `Array.fold2` | $O(n)$ | - |
+| `Array.fold_back` | $O(n)$ | `Array.foldr_back` |
+| `Array.foldr_back` | $O(n)$ | `Array.fold_back` |
+| `Array.fold_back2` | $O(n)$ | - |
+| `Array.reduce` | $O(n)$ | - |
+| `Array.reduce_back` | $O(n)$ | - |
+| `Array.scan` | $O(n)$ | - |
+| `Array.scan_back` | $O(n)$ | - |
+| `Array.exists` | $O(n)$ | `Array.existsr` |
+| `Array.existsr` | $O(n)$ | `Array.exists` |
+| `Array.exists2` | $O(n)$ | - |
+| `Array.forall` | $O(n)$ | `Array.forallr` |
+| `Array.forallr` | $O(n)$ | `Array.forall` |
+| `Array.forall2` | $O(n)$ | - |
+| `Array.count` | $O(n)$ | `Array.countr` |
+| `Array.countr` | $O(n)$ | `Array.count` |
+| `Array.try_find_index` | $O(n)$ | - |
+| `Array.find_index` | $O(n)$ | - |
+| `Array.try_find_index_back` | $O(n)$ | - |
+| `Array.find_index_back` | $O(n)$ | - |
+| `Array.try_find` | $O(n)$ | `Array.try_findr` |
+| `Array.find` | $O(n)$ | `Array.findr` |
+| `Array.try_find_back` | $O(n)$ | - |
+| `Array.find_back` | $O(n)$ | - |
+| `Array.try_findr` | $O(n)$ | `Array.try_find` |
+| `Array.findr` | $O(n)$ | `Array.find` |
+| `Array.try_pick` | $O(n)$ | - |
+| `Array.pick` | $O(n)$ | - |
+| `Array.partition` | $O(n)$ | - |
+| `Array.partition_with` | $O(n)$ | - |
+| `Array.sum` | $O(n)$ | `Array.sum_pairwise`, `Array.sum_kahan` |
+| `Array.sum_by` | $O(n)$ | - |
+| `Array.average` | $O(n)$ | - |
+| `Array.average_by` | $O(n)$ | - |
+| `Array.product` | $O(n)$ | - |
+| `Array.min` | $O(n)$ | `Array.minr` |
+| `Array.max` | $O(n)$ | `Array.maxr` |
+| `Array.minr` | $O(n)$ | `Array.min` |
+| `Array.maxr` | $O(n)$ | `Array.max` |
+| `Array.min_by` | $O(n)$ | - |
+| `Array.max_by` | $O(n)$ | - |
+| `Array.compare_with` | $O(n)$ | - |
+| `Array.containsr` | $O(n)$ | `Array.contains` |
+| `Array.contains` | $O(n)$ | `Array.containsr` |
+| `Array.index_of` | $O(n)$ | - |
+| `Array.equal` | $O(n)$ | - |
+| `Array.binary_search` | $O(\log n)$ | - |
+| `Array.copy` | $O(n)$ | - |
+| `Array.rev` | $O(n)$ | - |
+| `Array.append` | $O(n + m)$ | - |
+| `Array.zip` | $O(n)$ | - |
+| `Array.zip3` | $O(n)$ | - |
+| `Array.unzip` | $O(n)$ | - |
+| `Array.unzip3` | $O(n)$ | - |
+| `Array.all_pairs` | $O(n \cdot m)$ | - |
+| `Array.indexed` | $O(n)$ | - |
+| `Array.pairwise` | $O(n)$ | - |
+| `Array.windowed` | $O(k)$ | - |
+| `Array.chunk_by_size` | $O(k)$ | - |
+| `Array.split_into` | $O(k)$ | - |
+| `Array.unfold` | $O(k)$ | - |
+| `Array.permute` | $O(n)$ | - |
+| `Array.insert_at` | $O(n)$ | - |
+| `Array.insert_many_at` | $O(n + m)$ | - |
+| `Array.remove_at` | $O(n)$ | - |
+| `Array.remove_many_at` | $O(n)$ | - |
+| `Array.update_at` | $O(1)$ | - |
+| `Array.set` | $O(1)$ | - |
+| `Array.fill` | $O(n)$ | - |
+| `Array.blit` | $O(n)$ | - |
+| `Array.of_list` | $O(n)$ | - |
+| `Array.of_seq` | $O(n)$ | - |
+| `Array.to_seq` | $O(1)$ | `Array.to_seqr` |
+| `Array.to_seqr` | $O(1)$ | `Array.to_seq` |
+| `Array.distinct` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `Array.distinct_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `Array.except` | 平均 $O(n + m)$、最悪 $O(n \cdot n + m \cdot m)$ | - |
+| `Array.count_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `Array.group_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `Array.sort` | $O(n \log n)$ | - |
+| `Array.sort_descending` | $O(n \log n)$ | - |
+| `Array.sort_with` | $O(n \log n)$ | - |
+| `Array.sort_by` | $O(n \log n)$ | - |
+| `Array.sort_by_descending` | $O(n \log n)$ | - |
+| `Array.sort_in_place_with` | $O(n \log n)$ | - |
+| `Array.sort_in_place_by` | $O(n \log n)$ | - |
+| `Array.sort_in_place` | $O(n \log^2 n)$ | - |
+| `Array.sum_pairwise` | $O(n)$ | `Array.sum`, `Array.sum_kahan` |
+| `Array.sum_kahan` | $O(n)$ | `Array.sum`, `Array.sum_pairwise` |
+| `Array.dot` | $O(n)$ | `Array.dot_fma` |
+| `Array.dot_fma` | $O(n)$ | `Array.dot` |
+| `Array.random_shuffle_in_place_by` | $O(n)$ | - |
+| `Array.random_shuffle_by` | $O(n)$ | - |
+| `Array.random_choice_by` | $O(1)$ | - |
+| `Array.random_choices_by` | $O(k)$ | - |
+| `Array.random_sample_by` | $O(n)$ | - |
+| `Array.random_shuffle_in_place_with` | $O(n)$ | - |
+| `Array.random_shuffle_with` | $O(n)$ | - |
+| `Array.random_choice_with` | $O(1)$ | - |
+| `Array.random_choices_with` | $O(k)$ | - |
+| `Array.random_sample_with` | $O(n)$ | - |
+| `Array.random_shuffle_in_place` | $O(n)$ | - |
+| `Array.random_shuffle` | $O(n)$ | - |
+| `Array.random_choice` | $O(1)$ | - |
+| `Array.random_choices` | $O(k)$ | - |
+| `Array.random_sample` | $O(n)$ | - |
+<!-- /generated:complexity:Array -->
+
+**Vec**
+
+<!-- generated:complexity:Vec -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `Vec.iter` | $O(1)$ | - |
+| `Vec.of_seq` | $O(n)$ | - |
+| `Vec.of_list` | $O(n)$ | - |
+| `Vec.set_capacity` | $O(k)$ | - |
+| `Vec.ensure_capacity` | $O(k)$ | - |
+| `Vec.trim_excess` | $O(n)$ | - |
+| `Vec.add` | 償却 $O(1)$、最悪 $O(n)$ | - |
+| `Vec.add_range` | 償却 $O(m)$、最悪 $O(n + m)$ | - |
+| `Vec.add_range_seq` | 償却 $O(m)$、最悪 $O(n + m)$ | - |
+| `Vec.append` | 償却 $O(m)$、最悪 $O(n + m)$ | - |
+| `Vec.insert` | $O(n)$ | - |
+| `Vec.insert_range` | $O(n + m)$ | - |
+| `Vec.insert_range_seq` | $O(n + m)$ | - |
+| `Vec.remove_at` | $O(n)$ | - |
+| `Vec.remove_range` | $O(n)$ | - |
+| `Vec.remover` | $O(n)$ | `Vec.remove` |
+| `Vec.remove` | $O(n)$ | `Vec.remover` |
+| `Vec.remove_allr` | $O(n)$ | `Vec.remove_all` |
+| `Vec.remove_all` | $O(n)$ | `Vec.remove_allr` |
+| `Vec.reverse` | $O(n)$ | - |
+| `Vec.reverse_range` | $O(n)$ | - |
+| `Vec.sort_range` | $O(n \log^2 n)$ | - |
+| `Vec.sort` | $O(n \log^2 n)$ | - |
+| `Vec.sort_range_with` | $O(n \log n)$ | `Vec.sort_range_withr` |
+| `Vec.sort_with` | $O(n \log n)$ | `Vec.sort_withr` |
+| `Vec.sort_range_withr` | $O(n \log^2 n)$ | `Vec.sort_range_with` |
+| `Vec.sort_withr` | $O(n \log^2 n)$ | `Vec.sort_with` |
+| `Vec.index_ofr` | $O(n)$ | `Vec.index_of` |
+| `Vec.index_of` | $O(n)$ | `Vec.index_ofr` |
+| `Vec.index_of_from` | $O(n)$ | - |
+| `Vec.index_of_range` | $O(n)$ | - |
+| `Vec.last_index_ofr` | $O(n)$ | `Vec.last_index_of` |
+| `Vec.last_index_of` | $O(n)$ | `Vec.last_index_ofr` |
+| `Vec.last_index_of_from` | $O(n)$ | - |
+| `Vec.last_index_of_range` | $O(n)$ | - |
+| `Vec.containsr` | $O(n)$ | `Vec.contains` |
+| `Vec.contains` | $O(n)$ | `Vec.containsr` |
+| `Vec.find_indexr` | $O(n)$ | `Vec.find_index` |
+| `Vec.find_index` | $O(n)$ | `Vec.find_indexr` |
+| `Vec.find_index_from` | $O(n)$ | - |
+| `Vec.find_index_range` | $O(n)$ | - |
+| `Vec.find_last_indexr` | $O(n)$ | `Vec.find_last_index` |
+| `Vec.find_last_index` | $O(n)$ | `Vec.find_last_indexr` |
+| `Vec.find_last_index_from` | $O(n)$ | - |
+| `Vec.find_last_index_range` | $O(n)$ | - |
+| `Vec.existsr` | $O(n)$ | `Vec.exists` |
+| `Vec.exists` | $O(n)$ | `Vec.existsr` |
+| `Vec.true_for_allr` | $O(n)$ | `Vec.true_for_all` |
+| `Vec.true_for_all` | $O(n)$ | `Vec.true_for_allr` |
+| `Vec.findr` | $O(n)$ | `Vec.find` |
+| `Vec.find` | $O(n)$ | `Vec.findr` |
+| `Vec.find_lastr` | $O(n)$ | `Vec.find_last` |
+| `Vec.find_last` | $O(n)$ | `Vec.find_lastr` |
+| `Vec.find_all` | $O(n)$ | - |
+| `Vec.binary_searchr` | $O(\log n)$ | `Vec.binary_search` |
+| `Vec.binary_search` | $O(\log n)$ | `Vec.binary_searchr` |
+| `Vec.binary_search_withr` | $O(\log n)$ | `Vec.binary_search_with` |
+| `Vec.binary_search_with` | $O(\log n)$ | `Vec.binary_search_withr` |
+| `Vec.binary_search_range` | $O(\log n)$ | - |
+| `Vec.for_eachr` | $O(n)$ | `Vec.for_each` |
+| `Vec.for_each` | $O(n)$ | `Vec.for_eachr` |
+| `Vec.convert_allr` | $O(n)$ | `Vec.convert_all` |
+| `Vec.convert_all` | $O(n)$ | `Vec.convert_allr` |
+| `Vec.get_range` | $O(k)$ | - |
+| `Vec.slice` | $O(k)$ | - |
+| `Vec.copy_to_range` | $O(n)$ | - |
+| `Vec.copy_to_at` | $O(n)$ | - |
+| `Vec.copy_to` | $O(n)$ | - |
+<!-- /generated:complexity:Vec -->
+
+**Map**
+
+<!-- generated:complexity:Map -->
+| 関数 | 計算量 |
+| --- | --- |
+| `Map.empty` | $O(1)$ |
+| `Map.singleton` | $O(1)$ |
+| `Map.length` | $O(1)$ |
+| `Map.is_empty` | $O(1)$ |
+| `Map.chunk_count` | $O(1)$ |
+| `Map.contains_key` | $O(\log n)$ |
+| `Map.get` | $O(\log n)$ |
+| `Map.at` | $O(\log n)$ |
+| `Map.insert` | $O(n)$ |
+| `Map.remove` | $O(n)$ |
+| `Map.to_array` | $O(n)$ |
+| `Map.keys` | $O(n)$ |
+| `Map.values` | $O(n)$ |
+| `Map.fold` | $O(n)$ |
+| `Map.iter` | $O(1)$ |
+| `Map.invariants_hold` | $O(n)$ |
+<!-- /generated:complexity:Map -->
+
+**Set**
+
+<!-- generated:complexity:Set -->
+| 関数 | 計算量 |
+| --- | --- |
+| `Set.empty` | $O(1)$ |
+| `Set.singleton` | $O(1)$ |
+| `Set.length` | $O(1)$ |
+| `Set.is_empty` | $O(1)$ |
+| `Set.chunk_count` | $O(1)$ |
+| `Set.contains` | $O(\log n)$ |
+| `Set.insert` | $O(n)$ |
+| `Set.remove` | $O(n)$ |
+| `Set.to_array` | $O(n)$ |
+| `Set.fold` | $O(n)$ |
+| `Set.union` | $O(n + m)$ |
+| `Set.intersect` | $O(n + m)$ |
+| `Set.difference` | $O(n + m)$ |
+| `Set.iter` | $O(1)$ |
+| `Set.invariants_hold` | $O(n)$ |
+<!-- /generated:complexity:Set -->
+
+**HashMap**
+
+<!-- generated:complexity:HashMap -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `HashMap.empty` | $O(1)$ | - |
+| `HashMap.length` | $O(1)$ | - |
+| `HashMap.is_empty` | $O(1)$ | - |
+| `HashMap.sip13` | $O(1)$ | - |
+| `HashMap.with_capacity` | $O(k)$ | - |
+| `HashMap.with_seed` | $O(1)$ | - |
+| `HashMap.with_capacity_and_seed` | $O(k)$ | - |
+| `HashMap.try_randomized` | $O(1)$ | - |
+| `HashMap.randomized` | $O(1)$ | - |
+| `HashMap.contains_key_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.contains_key` |
+| `HashMap.contains_key` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.contains_key_ref` |
+| `HashMap.get_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get` |
+| `HashMap.get` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get_ref` |
+| `HashMap.at_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at` |
+| `HashMap.at` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at_ref` |
+| `HashMap.insert` | 償却 $O(1)$、最悪 $O(n \cdot n)$ | - |
+| `HashMap.remove_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove` |
+| `HashMap.remove` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove_ref` |
+| `HashMap.longest_probe` | $O(n)$ | - |
+| `HashMap.to_array` | $O(n)$ | - |
+| `HashMap.keys` | $O(n)$ | - |
+| `HashMap.values` | $O(n)$ | - |
+| `HashMap.fold` | $O(n)$ | - |
+| `HashMap.iter` | $O(1)$ | - |
+<!-- /generated:complexity:HashMap -->
+
+**HashSet**
+
+<!-- generated:complexity:HashSet -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `HashSet.empty` | $O(1)$ | - |
+| `HashSet.with_capacity` | $O(k)$ | - |
+| `HashSet.length` | $O(1)$ | - |
+| `HashSet.is_empty` | $O(1)$ | - |
+| `HashSet.with_seed` | $O(1)$ | - |
+| `HashSet.with_capacity_and_seed` | $O(k)$ | - |
+| `HashSet.try_randomized` | $O(1)$ | - |
+| `HashSet.randomized` | $O(1)$ | - |
+| `HashSet.insert` | 償却 $O(1)$、最悪 $O(n \cdot n)$ | - |
+| `HashSet.remove_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.remove` |
+| `HashSet.remove` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.remove_ref` |
+| `HashSet.contains_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.contains` |
+| `HashSet.contains` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.contains_ref` |
+| `HashSet.longest_probe` | $O(n)$ | - |
+| `HashSet.to_array` | $O(n)$ | - |
+| `HashSet.fold` | $O(n)$ | - |
+| `HashSet.iter` | $O(1)$ | - |
+<!-- /generated:complexity:HashSet -->
+
+**List**
+
+<!-- generated:complexity:List -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `List.length` | $O(1)$ | - |
+| `List.is_empty` | $O(1)$ | - |
+| `List.copy` | $O(n)$ | - |
+| `List.empty` | $O(1)$ | - |
+| `List.singleton` | $O(1)$ | - |
+| `List.replicate` | $O(k)$ | - |
+| `List.init` | $O(k)$ | - |
+| `List.head` | $O(1)$ | - |
+| `List.try_head` | $O(1)$ | - |
+| `List.item` | $O(n)$ | - |
+| `List.try_item` | $O(n)$ | - |
+| `List.last` | $O(n)$ | - |
+| `List.try_last` | $O(n)$ | - |
+| `List.exactly_one` | $O(1)$ | - |
+| `List.try_exactly_one` | $O(1)$ | - |
+| `List.take` | $O(k)$ | - |
+| `List.skip` | $O(n)$ | - |
+| `List.truncate` | $O(k)$ | - |
+| `List.split_at` | $O(n)$ | - |
+| `List.take_while` | $O(n)$ | - |
+| `List.skip_while` | $O(n)$ | - |
+| `List.where` | $O(n)$ | - |
+| `List.filter` | $O(n)$ | - |
+| `List.transpose` | $O(n + k)$ | - |
+| `List.iter` | $O(n)$ | `List.iterr` |
+| `List.iterr` | $O(n)$ | `List.iter` |
+| `List.iteri` | $O(n)$ | `List.iterir` |
+| `List.iterir` | $O(n)$ | `List.iteri` |
+| `List.iter2` | $O(n)$ | - |
+| `List.iteri2` | $O(n)$ | - |
+| `List.mapi` | $O(n)$ | `List.mapir` |
+| `List.mapir` | $O(n)$ | `List.mapi` |
+| `List.map2` | $O(n)$ | - |
+| `List.mapi2` | $O(n)$ | - |
+| `List.map3` | $O(n)$ | - |
+| `List.map_fold` | $O(n)$ | - |
+| `List.map_fold_back` | $O(n)$ | - |
+| `List.collect` | $O(n + k)$ | - |
+| `List.choose` | $O(n)$ | - |
+| `List.fold` | $O(n)$ | - |
+| `List.fold2` | $O(n)$ | - |
+| `List.fold_back` | $O(n)$ | `List.foldr_back` |
+| `List.foldr_back` | $O(n)$ | `List.fold_back` |
+| `List.fold_back2` | $O(n)$ | - |
+| `List.reduce` | $O(n)$ | - |
+| `List.reduce_back` | $O(n)$ | - |
+| `List.scan` | $O(n)$ | - |
+| `List.scan_back` | $O(n)$ | - |
+| `List.exists` | $O(n)$ | `List.existsr` |
+| `List.existsr` | $O(n)$ | `List.exists` |
+| `List.exists2` | $O(n + m)$ | - |
+| `List.forall` | $O(n)$ | `List.forallr` |
+| `List.forallr` | $O(n)$ | `List.forall` |
+| `List.forall2` | $O(n + m)$ | - |
+| `List.try_find_index` | $O(n)$ | - |
+| `List.find_index` | $O(n)$ | - |
+| `List.try_find_index_back` | $O(n)$ | - |
+| `List.find_index_back` | $O(n)$ | - |
+| `List.try_find` | $O(n)$ | `List.try_findr` |
+| `List.find` | $O(n)$ | `List.findr` |
+| `List.try_find_back` | $O(n)$ | - |
+| `List.find_back` | $O(n)$ | - |
+| `List.try_findr` | $O(n)$ | `List.try_find` |
+| `List.findr` | $O(n)$ | `List.find` |
+| `List.try_pick` | $O(n)$ | - |
+| `List.pick` | $O(n)$ | - |
+| `List.partition` | $O(n)$ | - |
+| `List.partition_with` | $O(n)$ | - |
+| `List.sum` | $O(n)$ | - |
+| `List.sum_by` | $O(n)$ | - |
+| `List.average` | $O(n)$ | - |
+| `List.average_by` | $O(n)$ | - |
+| `List.min` | $O(n)$ | `List.minr` |
+| `List.max` | $O(n)$ | `List.maxr` |
+| `List.minr` | $O(n)$ | `List.min` |
+| `List.maxr` | $O(n)$ | `List.max` |
+| `List.min_by` | $O(n)$ | - |
+| `List.max_by` | $O(n)$ | - |
+| `List.compare_with` | $O(n + m)$ | - |
+| `List.containsr` | $O(n)$ | `List.contains` |
+| `List.contains` | $O(n)$ | `List.containsr` |
+| `List.append` | $O(n + m)$ | - |
+| `List.concat` | $O(n + k)$ | - |
+| `List.zip` | $O(n)$ | - |
+| `List.zip3` | $O(n)$ | - |
+| `List.unzip` | $O(n)$ | - |
+| `List.unzip3` | $O(n)$ | - |
+| `List.all_pairs` | $O(n \cdot m)$ | - |
+| `List.indexed` | $O(n)$ | - |
+| `List.pairwise` | $O(n)$ | - |
+| `List.windowed` | $O(n + k)$ | - |
+| `List.chunk_by_size` | $O(n)$ | - |
+| `List.split_into` | $O(n)$ | - |
+| `List.unfold` | $O(k)$ | - |
+| `List.permute` | $O(n)$ | - |
+| `List.insert_at` | $O(n)$ | - |
+| `List.insert_many_at` | $O(n + m)$ | - |
+| `List.remove_at` | $O(n)$ | - |
+| `List.remove_many_at` | $O(n)$ | - |
+| `List.update_at` | $O(n)$ | - |
+| `List.of_array` | $O(n)$ | - |
+| `List.of_seq` | $O(n)$ | - |
+| `List.to_seqr` | $O(n)$ | `List.to_seq` |
+| `List.to_seq` | $O(n)$ | `List.to_seqr` |
+| `List.distinct` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `List.distinct_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `List.except` | 平均 $O(n + m)$、最悪 $O(n \cdot n + n \cdot m + m \cdot m)$ | - |
+| `List.count_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `List.group_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
+| `List.sort` | $O(n \log n)$ | - |
+| `List.sort_descending` | $O(n \log n)$ | - |
+| `List.sort_with` | $O(n \log n)$ | - |
+| `List.sort_by` | $O(n \log n)$ | - |
+| `List.sort_by_descending` | $O(n \log n)$ | - |
+| `List.random_shuffle_by` | $O(n)$ | - |
+| `List.random_shuffle_with` | $O(n)$ | - |
+| `List.random_choice_by` | $O(n)$ | - |
+| `List.random_choice_with` | $O(n)$ | - |
+| `List.random_choices_by` | $O(n + k)$ | - |
+| `List.random_choices_with` | $O(n + k)$ | - |
+| `List.random_sample_by` | $O(n)$ | - |
+| `List.random_sample_with` | $O(n)$ | - |
+| `List.random_shuffle` | $O(n)$ | - |
+| `List.random_choice` | $O(n)$ | - |
+| `List.random_choices` | $O(n + k)$ | - |
+| `List.random_sample` | $O(n)$ | - |
+<!-- /generated:complexity:List -->
+
+**String**
+
+<!-- generated:complexity:String -->
+| 関数 | 計算量 |
+| --- | --- |
+| `String.length` | $O(1)$ |
+| `String.find` | $O(n \cdot m)$ |
+| `String.rfind` | $O(n \cdot m)$ |
+| `String.contains` | $O(n \cdot m)$ |
+| `String.starts_with` | $O(m)$ |
+| `String.ends_with` | $O(m)$ |
+| `String.slice` | $O(k)$ |
+| `String.sub` | $O(k)$ |
+| `String.decode_at` | $O(1)$ |
+| `String.char_count` | $O(1)$ |
+| `String.chars` | $O(n)$ |
+| `String.join` | $O(n + k)$ |
+| `String.concat` | $O(n + k)$ |
+| `String.split` | $O(n \cdot m)$ |
+| `String.trim_start` | $O(n)$ |
+| `String.trim_end` | $O(n)$ |
+| `String.trim` | $O(n)$ |
+| `String.to_ascii_lower` | $O(n)$ |
+| `String.to_ascii_upper` | $O(n)$ |
+| `String.repeat` | $O(k)$ |
+| `String.replace` | $O(n \cdot m + k)$ |
+<!-- /generated:complexity:String -->
 
 ### 演算子
 
@@ -4399,6 +4896,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1008` | 効果の属性が検査されない（インスタンスのないジェネリック関数）か、`const def` の実行時の本体だけを検査する |
 | `W1009` | 契約の行が何も確かめない（常に真・使わない結果の名前）か、`--contracts test` で性質テストを作れない |
 | `W1010` | `@trusted` のない `extern` の関数の使用（`--warn untrusted-extern` 指定時と `tsuzuri audit` だけ） |
+| `W2001` | キャッシュや知識グラフを使えなかったときのツール警告（ソースの警告ではない。`--json` のときだけ、このコードの JSON オブジェクトになる） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
 | `E2000` | CLI コマンドライン引数・オプション・拡張子の不備（`tsuzuri find` の引数・読めない問い合わせの型 `find_bad_arguments` と、どのモジュールにも当たらない `--module` の `find_unknown_module` を含む）、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合、`--freestanding` での `Mutex` と `Channel` |
 | `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |
@@ -4408,3 +4906,4 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E2008` | `tsuzuri fix` の中止（修正案を適用すると診断が増える、実行中にファイルが変わった、置き換えの失敗）と、`tsuzuri fix --edition` による edition の移行の失敗（`--from` とマニフェストの版の食い違い、古い版への移行、移行後のソースの大きさの上限、マニフェストの更新や置き換えの失敗） |
 | `E2010` | `tsuzuri mcp` の致命的な誤り（根がディレクトリでない `mcp_root_unusable`、入出力の失敗 `mcp_io_failed`、作業のスレッドを作れない `mcp_worker_failed`）。終了コード 1 |
 | `E2009` | 知識グラフ（`tsuzuri kg`）の欠落・古い・壊れた・置き場が知識グラフでない・型検査の通らないプロジェクトのもの（kind は `kg_missing`・`kg_stale`・`kg_broken`・`kg_not_ours`・`kg_incomplete`）。`check`・`build`・`run`・`test` が自動で書くときの失敗は `W2001` の警告 1 行で、終了コードは変わらない |
+| `E2011` | `tsuzuri test --doc` の doc の例の記法の誤り（`doc_example_invalid`。未知・重複・併用した印、`fails=` の値、`run=` の符号化、字下げ・閉じのない・空のフェンス） |

@@ -219,13 +219,30 @@ keys=[10, 20, 30] summary=10:a, 20:b, 30:c
 
 ## 計算量
 
-| 操作 | 計算量 | 備考 |
-| --- | --- | --- |
-| 検索 `contains_key` / `get` / `at` | $O(\log n)$ | チャンクの最後のキーへの二分探索と、チャンク内の二分探索。探索自体は確保なし（`get` の結果コピーの費用は別） |
-| 挿入 `Map.insert` | $O(\log n)$ 回の比較 + 1 チャンク内の移動 | 移動は最大 511 エントリ。満ちたチャンクは分割（さらに $O(c)$）。最大キーより大きい挿入は最後のチャンクへの追加 |
-| 削除 `Map.remove` | $O(\log n)$ 回の比較 + 1 チャンク内の移動 | 隣り合う 2 つのチャンクの合計が 256 以下になれば併合（さらに $O(c)$）。チャンクの個数 $c \le 2n/257 + 1$ |
-| 要素数の参照 `length` / `is_empty` / `chunk_count` | $O(1)$ | 長さのフィールドの参照 |
-| 反復・配列化 `fold` / `keys` / `to_array` | $O(n)$ | 全要素を昇順に 1 回走査 |
+計算量は 1 回の呼び出しの最悪の時間です。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。
+
+<!-- generated:complexity:Map -->
+| 関数 | 計算量 |
+| --- | --- |
+| `Map.empty` | $O(1)$ |
+| `Map.singleton` | $O(1)$ |
+| `Map.length` | $O(1)$ |
+| `Map.is_empty` | $O(1)$ |
+| `Map.chunk_count` | $O(1)$ |
+| `Map.contains_key` | $O(\log n)$ |
+| `Map.get` | $O(\log n)$ |
+| `Map.at` | $O(\log n)$ |
+| `Map.insert` | $O(n)$ |
+| `Map.remove` | $O(n)$ |
+| `Map.to_array` | $O(n)$ |
+| `Map.keys` | $O(n)$ |
+| `Map.values` | $O(n)$ |
+| `Map.fold` | $O(n)$ |
+| `Map.iter` | $O(1)$ |
+| `Map.invariants_hold` | $O(n)$ |
+<!-- /generated:complexity:Map -->
+
+検索は、チャンクの最後のキーへの二分探索と、チャンク内の二分探索です（確保なし）。`insert` と `remove` の要素の移動は 1 つのチャンクの中（最大 511 エントリ）で済みますが、満ちたチャンクの分割、隣り合うチャンクの併合、空になったチャンクの削除は、後ろのチャンクをずらすので最悪 $O(n)$ です（チャンクの個数 $c \le 2n/257 + 1$）。既存のキーの値の置換は $O(\log n)$ で、最大のキーより大きいキーの追加は最後のチャンクへの追加です。
 
 ## 所有権と借用
 

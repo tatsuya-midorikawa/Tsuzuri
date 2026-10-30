@@ -4,9 +4,11 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { publishSummary, renderSummary, renderTable, updateSummary } from "../benchmarks/report.mjs";
+import { replaceNamedBlock } from "../scripts/gen-docs.mjs";
+import { publishSummary, summarizeResults } from "../benchmarks/report.mjs";
+import { renderMetricsBlock, renderSummaryBlock, renderTable } from "../benchmarks/render.mjs";
 import { allocatorVariants, artifactFingerprint, captureRun, compareRuns, instrumentAllocations, makeRecord, measureProcess, median, parseCompilerDiagnostics, parseTimeOutput,
-  parseTimePasses, readRecords, renderComparison, renderMetricsSummary, summarize, updateMetricsSummary,
+  parseTimePasses, publishMetrics, readRecords, renderComparison, summarize, summarizeRecords,
   unsupportedReason, validateGnuTimeVersion, validateRecord, writeRecords } from "../benchmarks/metrics.mjs";
 import { BUILD_LANGUAGES, FUNCTIONS_PER_MODULE, expectedOutput, generateProject, mainSource, moduleSource,
   writeProject } from "../benchmarks/build/generate.mjs";
@@ -21,20 +23,20 @@ const result = {
     ["tsuzuri", 2], ["cpp", 1], ["rust", 1], ["csharp", 3], ["javascript", 4],
   ].map(([name, median_wall_ms]) => [name, { median_wall_ms }])) }],
 };
-const original = "# 性能測定\n\n## 表の読み方\n\n説明\n\n## 記録\n\n過去の結果\n";
+const original = "# 性能測定\n\n## 表の読み方\n\n説明\n\n## ベンチマーク サマリー\n\n<!-- generated:benchmark-summary -->\n<!-- /generated:benchmark-summary -->\n\n## 記録\n\n過去の結果\n";
+const renderSummary = (results) => renderSummaryBlock(summarizeResults(results)).join("\n");
+const updateSummary = (document, results) => replaceNamedBlock(document, "benchmark-summary", renderSummary(results).split("\n"), "report.md");
 const updated = updateSummary(original, [result]);
 assert.ok(updated.indexOf("## ベンチマーク サマリー") > updated.indexOf("## 表の読み方"));
 assert.ok(updated.indexOf("## ベンチマーク サマリー") < updated.indexOf("## 記録"));
 assert.ok(updated.endsWith("## 記録\n\n過去の結果\n"));
-assert.equal((updated.match(/data-fastest="true"/g) ?? []).length, 2);
+assert.equal((updated.match(/\*\*[0-9.]+\*\*/g) ?? []).length, 2);
 assert.match(updated, /C\+\+ \/ Rust（同率）/);
 assert.match(updated, /Tsuzuri 相対性能/);
-assert.match(updated, /最速 = 1\.00000/);
-assert.match(updated, /data-tsuzuri-performance="0\.5"/);
-assert.match(updated, />\s+0\.50000<\/code>/);
+assert.match(updated, /最速を `1\.00000` とし/);
+assert.match(updated, /\| 0\.50000 \|/);
 assert.match(updated, /Test &lt;CPU&gt;/);
-assert.match(updated, /font-variant-numeric:tabular-nums/);
-assert.match(updated, /<strong><code style=/);
+assert.doesNotMatch(updated, /<table|style=|<strong>/);
 assert.ok(updated.indexOf("Tsuzuri (ms)") < updated.indexOf("C++ (ms)"));
 assert.equal(updateSummary(updated, [result]).trim(), updated.trim());
 assert.throws(() => renderSummary([{ ...result, mode: "correctness-smoke" }]));
@@ -44,38 +46,42 @@ invalid.workloads[0].variants.tsuzuri.median_wall_ms = NaN;
 assert.throws(() => renderSummary([invalid]));
 const owned = structuredClone(result);
 owned.workloads[0].name = "std_option_owned";
-assert.match(renderSummary([owned]), /data-fastest/);
-assert.match(renderSummary([owned]), /data-tsuzuri-performance=/);
+assert.match(renderSummary([owned]), /\*\*1\.000000\*\*/);
+assert.match(renderSummary([owned]), /\| 0\.50000 \|/);
 const fastest = structuredClone(result);
 fastest.workloads[0].variants.tsuzuri.median_wall_ms = 0.5;
-assert.match(renderSummary([fastest]), /data-tsuzuri-performance="1"/);
-assert.match(renderSummary([fastest]), />\s+1\.00000<\/code>/);
+assert.match(renderSummary([fastest]), /\| 1\.00000 \|/);
+assert.match(renderSummary([fastest]), /\*\*0\.500000\*\*/);
 fastest.workloads[0].variants.tsuzuri.median_wall_ms = 1;
-assert.match(renderSummary([fastest]), /data-tsuzuri-performance="1"/);
+assert.match(renderSummary([fastest]), /\| 1\.00000 \|/);
 fastest.workloads[0].variants.tsuzuri.median_wall_ms = 1000000;
 assert.match(renderSummary([fastest]), /&lt;0\.00001/);
-assert.doesNotMatch(renderTable(["種目", "Tsuzuri (ms)", "C++ (ms)"], [["zero", "1.000000", "0.000000"]], { timingColumns: [1, 2] }), /data-tsuzuri-performance=/);
-assert.doesNotMatch(renderTable(["種目", "Tsuzuri (ms)", "C++ (ms)"], [["missing", "-", "1.000000"]], { timingColumns: [1, 2] }), /data-tsuzuri-performance=/);
+assert.match(renderTable(["種目", "Tsuzuri (ms)", "C++ (ms)"], [["zero", "1.000000", "0.000000"]], { timingColumns: [1, 2] }).join("\n"), /\| - \|$/);
+assert.match(renderTable(["種目", "Tsuzuri (ms)", "C++ (ms)"], [["missing", "-", "1.000000"]], { timingColumns: [1, 2] }).join("\n"), /\| - \|$/);
 const tiny = structuredClone(result);
 tiny.workloads[0].variants.tsuzuri.median_wall_ms = 0.000000001;
 assert.match(renderSummary([tiny]), /1\.000e-9/);
-assert.match(renderTable(["名前", "時間 (ms)"], [["<script>", "0.100000"]], { timingColumns: [1] }), /&lt;script&gt;/);
+assert.match(renderTable(["<名前>", "時間 (ms)"], [["<script>", "0.100000"]], { timingColumns: [1] }).join("\n"), /&lt;名前&gt; \|[^\n]*\n[^\n]*\n\| `<script>` \|/);
 const second = structuredClone(result);
 second.measured_at = "2026-09-26T01:00:00.000Z";
 second.workloads[0].variants.tsuzuri.median_wall_ms = 6;
 assert.match(renderSummary([result, second]), /4\.000000/);
 assert.match(renderSummary([result, second]), /2026-09-26T01:00:00.000Z/);
 assert.throws(() => renderSummary([result, { ...result, scale: 1 }]));
-assert.throws(() => updateSummary(updated.replace("<!-- benchmark-summary:end -->", ""), [result]));
+assert.throws(() => updateSummary(updated.replace("<!-- /generated:benchmark-summary -->", ""), [result]), /missing end marker/);
+assert.throws(() => updateSummary("# Test", [result]), /add the generated:benchmark-summary markers/);
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-report-test-"));
 try {
   const path = join(temporary, "report.md");
+  const data = join(temporary, "data", "summary.json");
   writeFileSync(path, original);
-  assert.throws(() => publishSummary([invalid], path));
+  assert.throws(() => publishSummary([invalid], { document: path, data }));
   assert.equal(readFileSync(path, "utf8"), original);
-  publishSummary([result], path);
+  assert.ok(!existsSync(data));
+  publishSummary([result], { document: path, data });
   assert.equal(readFileSync(path, "utf8"), updated);
-  publishSummary([result], path);
+  assert.deepEqual(JSON.parse(readFileSync(data, "utf8")), summarizeResults([result]));
+  publishSummary([result], { document: path, data });
   assert.equal(readFileSync(path, "utf8"), updated);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
@@ -92,6 +98,7 @@ const record = (fields = {}, run = context) => makeRecord(run, {
   suite: "process", workload: "example", language: "tsuzuri", variant: "execute", opt: "O0",
   metric: "peak_rss", samples: Array(9).fill(1687552), ...fields,
 });
+const renderRecords = (records) => renderMetricsBlock({ schema: "tz-bench-metrics/1", runs: [summarizeRecords(records)] }).join("\n");
 test("median and summary", () => {
   assert.equal(median([3, 1, 2]), 2);
   assert.equal(median([4, 1, 3, 2]), 2.5);
@@ -183,7 +190,7 @@ test("allocator variants: a run with another allocator never matches the default
   assert.deepEqual(verdicts(counts("default"), counts(allocatorVariants("small").allocation)), ["片側のみ", "片側のみ"]);
   assert.equal(counts(allocatorVariants("small").allocation).variant, "system");
   // The summary gives the small allocator a column of its own.
-  const summary = renderMetricsSummary([timing("default"), record({ suite: "control", language: "c", variant: "default", opt: "O3", metric: "wall_time", samples: Array(9).fill(2) }),
+  const summary = renderRecords([timing("default"), record({ suite: "control", language: "c", variant: "default", opt: "O3", metric: "wall_time", samples: Array(9).fill(2) }),
     record({ suite: "control", variant: "small", opt: "O3", metric: "wall_time", samples: Array(9).fill(3) })]);
   assert.match(summary, /Tsuzuri small/);
 });
@@ -412,22 +419,36 @@ try {
     assert.match(table, /1687552 \| - \| - \| -/);
   });
   test("summary metadata, units and escaping", () => {
-    const summary = renderMetricsSummary([record({ workload: "<example>" }),
+    const summary = renderRecords([record({ workload: "<example>" }),
       record({ workload: "<example>", language: "c" })]);
     assert.match(summary, /peak_rss \(bytes\) \/ native \/ O0 \/ generic \/ 中央値/);
-    assert.match(summary, /process\/&lt;example&gt;/);
-    assert.ok(summary.indexOf("Tsuzuri execute") < summary.indexOf(">C execute<"));
-    assert.doesNotMatch(summary, /data-fastest|data-tsuzuri-performance/);
-    assert.match(renderMetricsSummary([record({ metric: "wall_time", samples: Array(9).fill(1.25) })]), /1\.250/);
+    assert.match(summary, /`process\/<example>`/);
+    assert.ok(summary.indexOf("Tsuzuri execute") < summary.indexOf("C execute"));
+    assert.doesNotMatch(summary, /<table|style=|data-fastest|data-tsuzuri-performance/);
+    assert.match(renderRecords([record({ metric: "wall_time", samples: Array(9).fill(1.25) })]), /1\.250/);
   });
   test("summary markers, publication guards and idempotence", () => {
-    const document = "# Test\n<!-- perf-metrics:start -->\n<!-- perf-metrics:end -->\nlast\n";
-    const updated = updateMetricsSummary(document, [[record()]]);
-    assert.equal(updateMetricsSummary(updated, [[record()]]), updated);
-    assert.ok(updated.endsWith("last\n"));
-    assert.throws(() => updateMetricsSummary("# Test", [[record()]]), /add the perf-metrics markers/);
-    assert.throws(() => updateMetricsSummary(document, [[record({}, { ...context, mode: "quick" })]]), /must not be published/);
-    assert.throws(() => updateMetricsSummary(document, [[record(), record({}, { ...context, host: { ...context.host, cpu: "Different" } })]]));
+    const document = "# Test\n<!-- generated:perf-metrics -->\n<!-- /generated:perf-metrics -->\nlast\n";
+    const directory = mkdtempSync(join(tmpdir(), "tsuzuri-metrics-test-"));
+    try {
+      const path = join(directory, "report.md");
+      const data = join(directory, "data", "metrics.json");
+      writeFileSync(path, document);
+      publishMetrics([[record()]], { document: path, data });
+      const updated = readFileSync(path, "utf8");
+      assert.ok(updated.endsWith("last\n"));
+      assert.deepEqual(JSON.parse(readFileSync(data, "utf8")), { schema: "tz-bench-metrics/1", runs: [summarizeRecords([record()])] });
+      publishMetrics([[record()]], { document: path, data });
+      assert.equal(readFileSync(path, "utf8"), updated);
+      writeFileSync(path, "# Test");
+      assert.throws(() => publishMetrics([[record()]], { document: path, data }), /add the generated:perf-metrics markers/);
+      writeFileSync(path, document);
+      assert.throws(() => publishMetrics([[record({}, { ...context, mode: "quick" })]], { document: path, data }), /must not be published/);
+      assert.throws(() => publishMetrics([[record(), record({}, { ...context, host: { ...context.host, cpu: "Different" } })]], { document: path, data }));
+      assert.equal(readFileSync(path, "utf8"), document);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
   if (["darwin", "linux"].includes(platform()) && existsSync("/usr/bin/time")) test("process measurement, RSS and failures", () => {
     const measured = measureProcess(process.execPath, ["-e", "const b = Buffer.alloc(64 * 1024 * 1024, 1); console.log(b[12345])"], { runs: 2, warmups: 1 });

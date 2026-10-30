@@ -11,6 +11,7 @@
 - `def`、`record`、`union`、`type`、`const`、`class`、型クラス内のメソッド `def` に付与できます。
 - `fn` や `let` 実装、`instance`、フィールド、ローカル束縛への配置は構文エラー `E0002` です。
 - 説明の行を `@deprecated` で始めると宣言が非推奨になり、別のパッケージ（標準ライブラリを含む）からの使用が警告 `W1005` になります。
+- `@complexity`・`@since`・`@see` の行で、計算量・版・関連する宣言を書けます（構造化タグ）。標準コレクションの計算量の表は、このタグから生成されます。
 - 説明の中の ```` ```tsuzuri ```` のコード例は、`tsuzuri test --doc` が型検査・実行して確かめます（doc-test）。`run=出力`・`test`・`fails=コード`・`ignore` で確かめ方を選び、`# ` で始まる行は隠し行です。
 - `tsuzuri doc <input> -o <outdir>` コマンドで公開 API の Markdown ドキュメントを出力します。
 - 出力先ディレクトリは `.tsuzuri-docs` マーカーファイルによる上書き保護機構を備えています。
@@ -157,6 +158,25 @@ app/Main.tz:6:16: warning[W1005]: 'LegacyLib::Old.old' is deprecated: use Legacy
 - **コード生成**: 生成されるコードは、`@deprecated` の有無で変わりません。別のパッケージが使える非推奨の宣言がないプロジェクトでは、警告のための追加の解析も行いません。
 
 非推奨にした宣言を取り除く手順と、警告が互換性の保証の対象外であることは、[安定性と互換性の方針](../../../docs/stability.md#非推奨の手順) にあります。
+
+## 構造化タグ
+
+説明の行を `@complexity`・`@since`・`@see` で始めると、宣言に計算量・版・関連する宣言を付けられます。新しい構文ではなく、`@deprecated`（[非推奨の印](#非推奨の印)）と同じ、説明の本文の約束です。
+
+```text
+/// Returns a new array with a copy of every element.
+///
+/// @complexity O(n)
+/// @see Array.append
+def copy :: Copy<'a> => ref ['a] -> ['a]
+```
+
+- **タグの行**: 各行の先頭の空白を除いた最初の語がタグそのもので、直後が行末か空白（スペースかタブ）の行です。`@complexityX` はタグではありません。値は、タグの後ろから行末までの前後の空白を除いたものです。説明の本文との間に `///` だけの行を 1 行置くと、`tsuzuri doc` で別の段落になります。順序は「説明、`@complexity`、`@since`、`@see`、例（[例を書く](#例を書くdoc-test)）」で、タグの行と例の間にも `///` だけの行を置きます。
+- **`@complexity`**: 最初の 1 行だけが有効です。値は `O(式)`、または `amortized O(式)`・`expected O(式)` に `, worst O(式)` を続けたものです。式は `1`、変数 `n`・`m`・`k`、`log`・`log^2`、`+`・`*` で書きます（`n log n`、`n + m`、`n * m`）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は新しいコレクションを作る関数の結果の要素数です。1 回の呼び出しの最悪の時間で、コールバック・`Eq.eq`・`Ord.lt`・`Hash.hash` は `O(1)` と数えます。`Seq` を返す関数は `Seq` を返すまでの時間です。`expected` と `amortized` は、キーのハッシュが一様に分散するときの値です。
+- **`@since`**: 最初の 1 行だけが有効です。値は `0.2.0` のような版で、その宣言が最初に入ったコンパイラの版です。新しい公開関数から付けます。
+- **`@see`**: 何行でも書けます。値は `Array.sum_kahan` のような `Module.name`（または `Module`）で、1 行に 1 つです。
+- **検査**: コンパイラは値を検査せず、診断も出しません。標準ライブラリの Array・Vec・Map・Set・HashMap・HashSet・List・String の全公開関数に有効な `@complexity` が要り、各ページの「計算量」の表は `node scripts/gen-docs.mjs` がこのタグから作ります。
+- **互換性**: タグの追加と変更は説明の変更で、`tsuzuri api-diff` は `non-breaking` と報告します。IR は変わりません。
 
 ## 例を書く（doc-test）
 
