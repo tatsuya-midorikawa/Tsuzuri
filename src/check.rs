@@ -32,6 +32,8 @@ pub(crate) mod kg_capture;
 #[path = "polymorph.rs"]
 mod polymorph;
 pub(crate) use polymorph::builtin_instance_by_type;
+#[path = "contracts.rs"]
+pub mod contracts;
 #[path = "effects.rs"]
 pub mod effects;
 #[path = "pure_rules.rs"]
@@ -1241,6 +1243,10 @@ pub enum Builtin {
     ToFloat,
     ToInt,
     Assert,
+    /// `$requires` and `$ensures`: a contract line of A21, checked like `assert` with its own
+    /// trap kind. Only the checker writes them; `$` is not a token.
+    ContractRequires,
+    ContractEnsures,
     CloneString,
     CloneUtf8String,
     StringFromUtf8,
@@ -1708,6 +1714,8 @@ impl Builtin {
         Self::ToFloat,
         Self::ToInt,
         Self::Assert,
+        Self::ContractRequires,
+        Self::ContractEnsures,
         Self::CloneString,
         Self::CloneUtf8String,
         Self::StringFromUtf8,
@@ -1969,6 +1977,8 @@ impl Builtin {
             Self::ToFloat => "to_float",
             Self::ToInt => "to_int",
             Self::Assert => "assert",
+            Self::ContractRequires => "$requires",
+            Self::ContractEnsures => "$ensures",
             Self::CloneString => "clone_string",
             Self::CloneUtf8String => "Utf8String.clone",
             Self::StringFromUtf8 => "String.from_utf8",
@@ -2889,7 +2899,9 @@ impl Builtin {
             ),
             Self::ToFloat => (vec![Concrete(Type::I64)], Concrete(Type::F64), Vec::new()),
             Self::ToInt => (vec![Concrete(Type::F64)], Concrete(Type::I64), Vec::new()),
-            Self::Assert => (vec![Concrete(Type::Bool)], Concrete(Type::Unit), Vec::new()),
+            Self::Assert | Self::ContractRequires | Self::ContractEnsures => {
+                (vec![Concrete(Type::Bool)], Concrete(Type::Unit), Vec::new())
+            }
             Self::DebugPrintString => (
                 vec![Concrete(Type::String)],
                 Concrete(Type::Unit),
@@ -3783,6 +3795,8 @@ pub struct CheckedFunction {
     pub(crate) is_task: bool,
     /// A lambda passed directly to `Owned.function` (B07); its body borrows the captures.
     pub(crate) owned_captures: bool,
+    /// A21: how the body weaves in the function's contract lines; empty without them.
+    pub contracts: contracts::ContractShape,
 }
 
 impl CheckedFunction {
@@ -4869,6 +4883,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
             span,
             depth: bench.body.depth.max(2) + 1,
         },
+        contracts: Vec::new(),
     }
 }
 
@@ -6178,15 +6193,21 @@ const FUNCTIONS_PER_WORKER: usize = 64;
 const FUNCTION_CHUNK: usize = 8;
 
 pub fn check_modules_all(modules: &[ModuleInput<'_>]) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_indexed_all(modules, None, Parallelism::library())
+    check_modules_indexed_all(
+        modules,
+        None,
+        Parallelism::library(),
+        contracts::ContractMode::Check,
+    )
 }
 
 pub(crate) fn check_modules_indexed_all(
     modules: &[ModuleInput<'_>],
     semantic: Option<&mut semantic::SemanticIndex>,
     parallelism: Parallelism,
+    contracts: contracts::ContractMode,
 ) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_with_capture(modules, semantic, None, parallelism)
+    check_modules_with_capture(modules, semantic, None, parallelism, contracts)
 }
 
 /// `check_modules_indexed_all` that also fills `capture`, the declaration view of the knowledge
@@ -6196,8 +6217,9 @@ pub(crate) fn check_modules_captured(
     modules: &[ModuleInput<'_>],
     capture: &mut kg_capture::Capture,
     parallelism: Parallelism,
+    contracts: contracts::ContractMode,
 ) -> Result<CheckedModule, DiagnosticSet> {
-    check_modules_with_capture(modules, None, Some(capture), parallelism)
+    check_modules_with_capture(modules, None, Some(capture), parallelism, contracts)
 }
 
 fn check_modules_with_capture(
@@ -6205,6 +6227,7 @@ fn check_modules_with_capture(
     semantic: Option<&mut semantic::SemanticIndex>,
     capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
+    contracts: contracts::ContractMode,
 ) -> Result<CheckedModule, DiagnosticSet> {
     let mut diagnostics = Diagnostics::new(0);
     match check_modules_collect(
@@ -6214,6 +6237,7 @@ fn check_modules_with_capture(
         semantic,
         capture,
         parallelism,
+        contracts,
     ) {
         Ok(module) => Ok(module),
         Err(error) => {
@@ -6230,6 +6254,7 @@ fn check_modules_collect(
     mut semantic: Option<&mut semantic::SemanticIndex>,
     mut capture: Option<&mut kg_capture::Capture>,
     parallelism: Parallelism,
+    contract_mode: contracts::ContractMode,
 ) -> Result<CheckedModule, Diagnostic> {
     let check_time = crate::timings::Phase::start("check");
     // A `@deprecated` declaration needs the references that the semantic index records (W1005),
@@ -6531,6 +6556,7 @@ fn check_modules_collect(
                     result: constant.ty.clone(),
                     constraints: Vec::new(),
                     body: constant.value.clone(),
+                    contracts: Vec::new(),
                 },
             ));
         }
@@ -6614,6 +6640,7 @@ fn check_modules_collect(
                         span: external.name.span,
                         depth: 1,
                     },
+                    contracts: Vec::new(),
                 },
             ));
         }
@@ -6662,6 +6689,7 @@ fn check_modules_collect(
                     },
                     constraints: Vec::new(),
                     body: test.body.clone(),
+                    contracts: Vec::new(),
                 },
             ));
         }
@@ -7674,7 +7702,11 @@ fn check_modules_collect(
                     parameters.push(local);
                 }
                 computation::expand(&mut function.body, &names, module)?;
+                for clause in &mut function.contracts {
+                    computation::expand(&mut clause.condition, &names, module)?;
+                }
                 checker.recovering = true;
+                let mut shape = contracts::ContractShape::default();
                 let body = if let Some(import) = external_functions.get(&id) {
                     let mut import = import.clone();
                     import.callbacks = signature
@@ -7698,7 +7730,16 @@ fn check_modules_collect(
                     }
                 } else {
                     let from = checker.recovered.len();
-                    let mut body = checker.expression(&function.body, Some(&signature.result));
+                    let mut body = if function.contracts.is_empty() {
+                        checker.expression(&function.body, Some(&signature.result))
+                    } else {
+                        checker
+                            .contracted_body(function, &signature.result)
+                            .map(|(body, woven)| {
+                                shape = woven;
+                                body
+                            })
+                    };
                     // Generated functions (tests, benchmarks) have no written result type.
                     if (body.is_err() || checker.recovered.len() > from)
                         && function.name.provenance == Provenance::User
@@ -7747,6 +7788,7 @@ fn check_modules_collect(
                     capture_count: 0,
                     is_task: false,
                     owned_captures: false,
+                    contracts: shape,
                 })
             })();
             let recovered: Vec<_> = std::mem::take(&mut checker.recovered)
@@ -7849,6 +7891,7 @@ fn check_modules_collect(
                 capture_count: 0,
                 is_task: false,
                 owned_captures: false,
+                contracts: Default::default(),
             })
         })();
         diagnostics.extend(std::mem::take(&mut checker.recovered));
@@ -7887,6 +7930,7 @@ fn check_modules_collect(
                     function_warnings.extend(coverage);
                     function_warnings.extend(warnings::unused_locals(function, &function_names));
                     function_warnings.append(&mut checker.shadowing_warnings);
+                    function_warnings.append(&mut checker.contract_warnings);
                 }
                 if function.name == "$entry" {
                     entry_result(&mut function.body, &names, &classes, &types);
@@ -8009,6 +8053,7 @@ fn check_modules_collect(
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
+    diagnostics.extend(contracts::validate_templates(&module));
     diagnostics.check()?;
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
@@ -8039,6 +8084,13 @@ fn check_modules_collect(
                 references: &references,
             },
         );
+    }
+    // A21: `off` removes the woven contract lines before specialization numbers the instances,
+    // so that the IR is the IR without the lines. Every check before this saw them.
+    if contract_mode == contracts::ContractMode::Off {
+        for function in &mut module.functions {
+            contracts::strip(function);
+        }
     }
     let specialize_time = crate::timings::Phase::start("specialize");
     let module = polymorph::specialize(
@@ -8076,6 +8128,8 @@ fn check_modules_collect(
         diagnostics.push(error);
     }
     diagnostics.extend(pure_rules::validate(&module));
+    diagnostics.extend(contracts::validate_purity(&module));
+    diagnostics.extend(contracts::validate_writes(&module));
     if let Err(error) = validate_cpu_functions(&module) {
         diagnostics.push(error);
     }
@@ -8354,6 +8408,7 @@ fn recovery_module(
             capture_count: 0,
             is_task: false,
             owned_captures: false,
+            contracts: Default::default(),
         })
         .collect();
     for (id, function) in checked {
@@ -10034,6 +10089,8 @@ struct Checker<'a> {
     type_parameters: Vec<String>,
     active_result: Option<Box<ActiveResult>>,
     scopes: Vec<BTreeMap<String, Local>>,
+    /// A21 Phase 6: the locals that hold the `@old` values of the `@ensures` line being checked.
+    old_locals: Vec<(Span, Local)>,
     kinds: BTreeMap<String, usize>,
     next_local: usize,
     normal_loop_depth: usize,
@@ -10054,6 +10111,8 @@ struct Checker<'a> {
     /// them; `check_coverage` inspects them once inference has finished.
     coverage: Vec<exhaustiveness::MatchCoverage>,
     shadowing_warnings: Vec<Diagnostic>,
+    /// A21: `W1009` for the contract lines of the function being checked.
+    contract_warnings: Vec<Diagnostic>,
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
@@ -10092,6 +10151,7 @@ impl<'a> Checker<'a> {
             type_parameters: Vec::new(),
             active_result: None,
             scopes: vec![BTreeMap::new()],
+            old_locals: Vec::new(),
             kinds: BTreeMap::new(),
             next_local: 0,
             normal_loop_depth: 0,
@@ -10104,6 +10164,7 @@ impl<'a> Checker<'a> {
             families: Vec::new(),
             coverage: Vec::new(),
             shadowing_warnings: Vec::new(),
+            contract_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
             default_reads: BTreeMap::new(),
             read_value_parameters: BTreeSet::new(),
@@ -10399,11 +10460,46 @@ impl<'a> Checker<'a> {
         self.inference.unify(actual, expected, &self.types, span)
     }
 
+    /// A21 Phase 6: `@old (e)` in an `@ensures` line reads the value bound on entry.
+    fn old_value(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+    ) -> Option<Result<TypedExpr, Diagnostic>> {
+        if self.old_locals.is_empty() {
+            return None;
+        }
+        let ExprKind::Call(callee, _) = &expression.kind else {
+            return None;
+        };
+        if !matches!(&callee.kind, ExprKind::Name(name) if name.text == "$old") {
+            return None;
+        }
+        let (_, local) = self
+            .old_locals
+            .iter()
+            .find(|(span, _)| *span == expression.span)?;
+        let local = local.clone();
+        Some((|| {
+            if let Some(expected) = expected {
+                self.same(&local.ty, expected, expression.span)?;
+            }
+            Ok(TypedExpr {
+                kind: TypedExprKind::Local(local.id),
+                ty: local.ty,
+                span: expression.span,
+            })
+        })())
+    }
+
     fn expression(
         &mut self,
         expression: &Expr,
         expected: Option<&Type>,
     ) -> Result<TypedExpr, Diagnostic> {
+        if let Some(old) = self.old_value(expression, expected) {
+            return old;
+        }
         if expected.is_some_and(Type::contains_error) {
             self.poisoned = true;
             // During recovery an erroneous context is unknown: still check the operand unless its type needs that context.
@@ -10760,6 +10856,10 @@ impl<'a> Checker<'a> {
         let ExprKind::Call(callee, arguments) = &expression.kind else {
             unreachable!("call expressions only")
         };
+        // An argument reaches here without `expression`.
+        if let Some(old) = self.old_value(expression, expected) {
+            return old;
+        }
         if let ExprKind::Call(inner, first) = &callee.kind {
             if !first.is_empty() && !arguments.is_empty() {
                 let mut combined = first.clone();

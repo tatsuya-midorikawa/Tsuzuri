@@ -20,10 +20,14 @@ pub enum TrapKind {
     StackOverflow,
     /// A checked operation overflowed outside every `try` that could catch it.
     Overflow,
+    /// A21: a `@requires` line of the called function was false on entry.
+    ContractRequires,
+    /// A21: an `@ensures` line was false on exit.
+    ContractEnsures,
 }
 
 impl TrapKind {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 18] = [
         Self::Assert,
         Self::IntegerDivisionByZero,
         Self::IntegerDivisionOverflow,
@@ -40,6 +44,8 @@ impl TrapKind {
         Self::DebugOutput,
         Self::StackOverflow,
         Self::Overflow,
+        Self::ContractRequires,
+        Self::ContractEnsures,
     ];
 
     pub fn description(self) -> &'static str {
@@ -62,6 +68,17 @@ impl TrapKind {
             Self::Overflow => {
                 "unhandled OverflowException: arithmetic operation resulted in an overflow"
             }
+            Self::ContractRequires => "contract requires failed",
+            Self::ContractEnsures => "contract ensures failed",
+        }
+    }
+
+    /// The kind of the `E2005` that reports this trap, for the kinds that have one (A21).
+    pub fn diagnostic_kind(self) -> Option<crate::diagnostic::DiagnosticKind> {
+        match self {
+            Self::ContractRequires => Some(crate::diagnostic::DiagnosticKind::ContractRequires),
+            Self::ContractEnsures => Some(crate::diagnostic::DiagnosticKind::ContractEnsures),
+            _ => None,
         }
     }
 }

@@ -58,8 +58,8 @@ function checkRun(result, table) {
   assert.deepEqual([...traps.keys()], Object.keys(expected));
   for (const [name, [kind, line]] of Object.entries(expected)) {
     const { site, kind: number } = traps.get(name);
-    // The host-visible kind is the kind encoded in the site id.
-    assert.equal((site - 1) % 16, number, name);
+    // The host-visible kind is the kind encoded in the site id: one of the 18 kinds of TrapKind::ALL.
+    assert.equal((site - 1) % 18, number, name);
     const entry = sites.find((candidate) => candidate.id === site);
     assert.ok(entry, `${name}: site ${site} is not in the table`);
     if (typeof kind === "string") assert.equal(entry.kind, kind, name);

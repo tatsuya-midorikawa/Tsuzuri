@@ -234,7 +234,7 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     },
     OptIn {
         module: "Gen",
-        names: &["Gen"],
+        names: &["Gen", "Arbitrary"],
         aliases: &[],
         uses: &[],
     },

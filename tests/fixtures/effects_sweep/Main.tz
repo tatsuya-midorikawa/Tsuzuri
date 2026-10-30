@@ -154,6 +154,7 @@ test "generators" =
     Gen.for_all (Gen.one_of [Gen.string(), Gen.string_of Gen.char()]) (\_x -> true)
     Gen.for_all (Gen.element [1, 2, 3]) (\x -> x > 0)
     Test.not_equal (ref 1) (ref 2)
+    Gen.for_all_where (Gen.i64()) (\x -> if x > 0 then Maybe.Some (x > 0) else Maybe.None)
 
 bench "of" = Bench.of (\() -> 1)
 bench "with input" = Bench.with_input (\() -> [1, 2]) (\xs -> xs.length)

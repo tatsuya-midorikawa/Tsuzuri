@@ -233,6 +233,14 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         canonical.ty(&mut function.result);
         canonical.constraints(&mut function.constraints);
         canonical.expression(&mut function.body);
+        for clause in &mut function.contracts {
+            clause.span = Span::default();
+            clause.text.clear();
+            if let Some(binder) = &mut clause.binder {
+                canonical.ident(binder);
+            }
+            canonical.expression(&mut clause.condition);
+        }
     }
     for class in &mut program.classes {
         Canonical::doc(&mut class.doc);

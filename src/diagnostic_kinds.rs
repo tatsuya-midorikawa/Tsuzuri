@@ -437,6 +437,7 @@ diagnostic_kinds! {
         // E1017
         (AndGroupTooLarge, "and_group_too_large", "E1017"),
         (ClassConstraintLimit, "class_constraint_limit", "E1017"),
+        (ContractLineLimit, "contract_line_limit", "E1017"),
         (DerivingExpressionLimit, "deriving_expression_limit", "E1017"),
         (DerivingInstanceLimit, "deriving_instance_limit", "E1017"),
         (EffectSummaryLimit, "effect_summary_limit", "E1017"),
@@ -462,6 +463,7 @@ diagnostic_kinds! {
         (PolymorphicConstraintLimit, "polymorphic_constraint_limit", "E1017"),
         (PolymorphicRecursionGrowth, "polymorphic_recursion_growth", "E1017"),
         (PolymorphicTypeExpansionLimit, "polymorphic_type_expansion_limit", "E1017"),
+        (ProveLimit, "prove_limit", "E1017"),
         (PureCallbackProofLimit, "pure_callback_proof_limit", "E1017"),
         (PureDefinitionReachLimit, "pure_definition_reach_limit", "E1017"),
         (PureValueValidationLimit, "pure_value_validation_limit", "E1017"),
@@ -617,6 +619,24 @@ diagnostic_kinds! {
         (EffectAttributeMisplaced, "effect_attribute_misplaced", "E1032"),
         (EffectAttributeOnExtern, "effect_attribute_on_extern", "E1032"),
         (EffectAttributeUnavailable, "effect_attribute_unavailable", "E1032"),
+        // E1033
+        (ContractEnsuresReferenceResult, "contract_ensures_reference_result", "E1033"),
+        (ContractImpure, "contract_impure", "E1033"),
+        (ContractMisplaced, "contract_misplaced", "E1033"),
+        (ContractNotBool, "contract_not_bool", "E1033"),
+        (ContractOldMisplaced, "contract_old_misplaced", "E1033"),
+        (ContractOldNested, "contract_old_nested", "E1033"),
+        (ContractOldNotCopy, "contract_old_not_copy", "E1033"),
+        (ContractOldOperand, "contract_old_operand", "E1033"),
+        (ContractOnConst, "contract_on_const", "E1033"),
+        (ContractResultLambda, "contract_result_lambda", "E1033"),
+        (ContractWrites, "contract_writes", "E1033"),
+        // E1034
+        (ProveCounterexample, "prove_counterexample", "E1034"),
+        (ProveSolverError, "prove_solver_error", "E1034"),
+        (ProveSolverMissing, "prove_solver_missing", "E1034"),
+        (ProveUnknown, "prove_unknown", "E1034"),
+        (ProveUnsupported, "prove_unsupported", "E1034"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (BindgenAnnotationError, "bindgen_annotation_error", "E2000"),
@@ -679,6 +699,7 @@ diagnostic_kinds! {
         (OptionUnsupportedPlatform, "option_unsupported_platform", "E2000"),
         (OutputExtensionInvalid, "output_extension_invalid", "E2000"),
         (ProjectManifestMissing, "project_manifest_missing", "E2000"),
+        (ProveUnknownFunction, "prove_unknown_function", "E2000"),
         (ReplCommandUsage, "repl_command_usage", "E2000"),
         (ReplDeclarationNotAllowed, "repl_declaration_not_allowed", "E2000"),
         (ReplUnknownCommand, "repl_unknown_command", "E2000"),
@@ -744,6 +765,8 @@ diagnostic_kinds! {
         (ToplevelCodeOutsideMain, "toplevel_code_outside_main", "E2004"),
         // E2005
         (BenchmarkFailed, "benchmark_failed", "E2005"),
+        (ContractEnsures, "contract_ensures", "E2005"),
+        (ContractRequires, "contract_requires", "E2005"),
         (ProgramExitedNonzero, "program_exited_nonzero", "E2005"),
         (ProgramTerminated, "program_terminated", "E2005"),
         (ProgramTimeLimitExceeded, "program_time_limit_exceeded", "E2005"),
@@ -813,6 +836,10 @@ diagnostic_kinds! {
         // W1008
         (EffectAttributeOnConstDef, "effect_attribute_on_const_def", "W1008"),
         (EffectAttributeUncheckedGeneric, "effect_attribute_unchecked_generic", "W1008"),
+        // W1009
+        (ContractAlwaysTrue, "contract_always_true", "W1009"),
+        (ContractResultUnused, "contract_result_unused", "W1009"),
+        (ContractTestSkipped, "contract_test_skipped", "W1009"),
         // W2001
         (ToolNotice, "tool_notice", "W2001"),
         // W2002

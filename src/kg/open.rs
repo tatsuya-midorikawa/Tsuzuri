@@ -69,8 +69,12 @@ pub fn open_project(
         Refresh::Auto => {
             if let Plan::Build(target) = build::target_for(dir, project, false)? {
                 let mut capture = Capture::default();
-                let result =
-                    project.analyze_cached_captured(true, AnalysisKind::Tests, &mut capture);
+                let result = project.analyze_cached_captured(
+                    true,
+                    AnalysisKind::Tests,
+                    &mut capture,
+                    crate::check::contracts::ContractMode::Check,
+                );
                 match &result {
                     Ok(module) => {
                         let warnings =

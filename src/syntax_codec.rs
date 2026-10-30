@@ -278,6 +278,7 @@ unit_enum!(SourceKind {
 });
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
+unit_enum!(ContractKind { Requires, Ensures });
 unit_enum!(Recursion { None, Rec, And });
 unit_enum!(DeriveClass {
     Eq,
@@ -286,7 +287,8 @@ unit_enum!(DeriveClass {
     Hash,
     Default,
     Encode,
-    Decode
+    Decode,
+    Arbitrary
 });
 unit_enum!(UnaryOp {
     Negate,
@@ -890,6 +892,7 @@ impl Wire for FunctionDecl {
             result,
             constraints,
             body,
+            contracts,
         } = self;
         put_doc(doc, out)?;
         name.put(out)?;
@@ -904,6 +907,7 @@ impl Wire for FunctionDecl {
         constraints.put(out)?;
         if out.full() {
             body.put(out)?;
+            contracts.put(out)?;
         }
         Ok(())
     }
@@ -922,6 +926,34 @@ impl Wire for FunctionDecl {
             result: TypeExpr::get(input)?,
             constraints: Vec::get(input)?,
             body: Expr::get(input)?,
+            contracts: Vec::get(input)?,
+        })
+    }
+}
+
+impl Wire for ContractClause {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let ContractClause {
+            kind,
+            binder,
+            condition,
+            text,
+            span,
+        } = self;
+        kind.put(out)?;
+        binder.put(out)?;
+        condition.put(out)?;
+        text.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(ContractClause {
+            kind: ContractKind::get(input)?,
+            binder: Option::get(input)?,
+            condition: Expr::get(input)?,
+            text: String::get(input)?,
+            span: Span::get(input)?,
         })
     }
 }
@@ -2449,6 +2481,15 @@ mod tests {
             def h :: i64 -> bool = \\n ->\n    let rec even = \\m -> if m == 0 then true else odd (m - 1)\n    and odd = \\m -> if m == 0 then false else even (m - 1)\n    even n\n";
         seen.extend(round_trips(patterns, 0).expect("the pattern sample parses"));
         seen.extend(round_trips("def take :: own string -> i64 = \\s -> s.length\n", 0).unwrap());
+        // A21: contract lines and `deriving (Arbitrary)`.
+        seen.extend(
+            round_trips(
+                "record P { x: i64 } deriving (Arbitrary, Display)\n\
+                 def f :: i64 -> i64 = \\x ->\n    @requires x > 0\n    @ensures \\r -> r > x\n    x + 1\n",
+                0,
+            )
+            .unwrap(),
+        );
         seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
         seen.extend(
             round_trips(
@@ -2503,7 +2544,8 @@ mod tests {
             ("Provenance", 2),
             ("Visibility", 2),
             ("Recursion", 3),
-            ("DeriveClass", 7),
+            ("DeriveClass", 8),
+            ("ContractKind", 2),
             ("UnaryOp", 4),
             ("BinaryOp", 21),
             ("MatchOrigin", 4),
@@ -2728,7 +2770,7 @@ add_one 41
     const GOLDEN: &str = concat!(
         "000000000000000101084120706f696e742e000c0100015014150100000001017818190100000369",
         "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
-        "03693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000101664a4d",
+        "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
         "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d01030000000003002245",
     );

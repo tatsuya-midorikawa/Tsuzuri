@@ -295,6 +295,7 @@ pub(super) fn lower(mut module: CheckedModule) -> Result<CheckedModule, Diagnost
                 capture_count: 0,
                 is_task: false,
                 owned_captures: false,
+                contracts: Default::default(),
             });
             function.exported = false;
         }
@@ -388,6 +389,7 @@ fn lower_expression(
                 capture_count: captures.len(),
                 is_task: matches!(expression.ty, Type::Task(_)),
                 owned_captures: *owned,
+                contracts: Default::default(),
             });
             expression.kind = Closure(id, captures.iter().map(local_value).collect());
         }
@@ -510,6 +512,7 @@ fn lower_expression(
                     capture_count: 0,
                     is_task: false,
                     owned_captures: false,
+                    contracts: Default::default(),
                 });
                 generated.builtins.insert(key, id);
                 id
@@ -576,6 +579,7 @@ fn lower_expression(
                     capture_count: 0,
                     is_task: false,
                     owned_captures: false,
+                    contracts: Default::default(),
                 });
                 generated.cases.insert(key, id);
                 id

@@ -1011,6 +1011,8 @@ pub struct TestRunnerOptions<'a> {
     pub debug: Option<(&'a [TrapSource<'a>], bool)>,
     /// How a native runner computes f16 values (D10).
     pub f16: F16Path,
+    /// A21: report the location of a trap, as `--trap-info` does (native only).
+    pub trap_sources: Option<&'a [TrapSource<'a>]>,
     /// Link the counting heap even when no selected test reads its counters.
     pub allocator: Allocator,
 }
@@ -1027,7 +1029,8 @@ pub fn emit_test_runner_with(
             Span::default(),
         ));
     }
-    emit_program(
+    let traps = options.trap_sources.filter(|_| !options.wasm);
+    let (ir, marks) = emit_program(
         module,
         Entry::TestRunner,
         options.wasm,
@@ -1040,10 +1043,23 @@ pub fn emit_test_runner_with(
             seed: options.seed,
             f16: options.f16,
             allocator: options.allocator,
+            traps: traps.is_some(),
             ..Instrumentation::default()
         },
-    )
-    .map(|(ir, _)| ir)
+    )?;
+    match (traps, marks) {
+        (Some(sources), Some(marks)) => traps::instrument_numbered(
+            ir,
+            module,
+            marks,
+            sources,
+            false,
+            false,
+            TrapNumbering::Dense,
+        )
+        .map(|output| output.ir),
+        _ => Ok(ir),
+    }
 }
 
 /// The native runner of the selected benches for `tsuzuri bench` (G18). `@tsuzuri_bench_sample`
@@ -7439,7 +7455,7 @@ fn emit_builtin(
                  entry:\n  %r = call i64 @{intrinsic}(double %x)\n  ret i64 %r\n}}\n\n"
             )
         }
-        Builtin::Assert => format!(
+        Builtin::Assert | Builtin::ContractRequires | Builtin::ContractEnsures => format!(
             "define internal i8 @tz.builtin.{name}(i1 %x) nounwind {{\n\
              entry:\n  br i1 %x, label %ok, label %fail\n\
              fail:\n  call void @llvm.trap()\n  unreachable\n\

@@ -383,6 +383,7 @@ fn lower_group(
             capture_count: captured.len(),
             is_task: false,
             owned_captures: false,
+            contracts: Default::default(),
         });
         generated.recursive.functions.insert(
             members[position].0.id,

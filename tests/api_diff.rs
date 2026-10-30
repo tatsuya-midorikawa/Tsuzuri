@@ -2050,3 +2050,27 @@ fn api_diff_treats_attributes_as_promises() {
         );
     }
 }
+
+#[test]
+fn api_diff_classifies_contract_lines() {
+    let plain = "def f :: i64 -> i64 = \\x ->\n    x + 1\n";
+    let requires = "def f :: i64 -> i64 = \\x ->\n    @requires x > 0\n    x + 1\n";
+    let ensures = "def f :: i64 -> i64 = \\x ->\n    @ensures \\r -> r > x\n    x + 1\n";
+    assert_eq!(
+        compare(plain, requires, &[]),
+        ["breaking added contract Main.f.@requires x > 0"]
+    );
+    assert_eq!(
+        compare(requires, plain, &[]),
+        ["non-breaking removed contract Main.f.@requires x > 0"]
+    );
+    assert_eq!(
+        compare(plain, ensures, &[]),
+        ["non-breaking added contract Main.f.@ensures \\r -> r > x"]
+    );
+    assert_eq!(
+        compare(ensures, plain, &[]),
+        ["breaking removed contract Main.f.@ensures \\r -> r > x"]
+    );
+    assert!(compare(requires, requires, &[]).is_empty());
+}

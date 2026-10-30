@@ -1,0 +1,43 @@
+/// A21: contract lines checked at run time (`--contracts check`).
+
+export def clamp :: i64 -> i64 -> i64 -> i64 = \lo hi x ->
+    @requires lo <= hi
+    @ensures \r -> lo <= r && r <= hi
+    if x < lo then lo elif x > hi then hi else x
+
+export def safe_div :: i64 -> i64 -> i64 = \a b ->
+    @requires b != 0
+    @ensures \r -> r * b + a % b == a
+    a / b
+
+def rec sum_acc :: i64 -> i64 -> i64 = \n acc ->
+    if n == 0 then acc else sum_acc (n - 1) (acc + n)
+
+export def sum_to :: i64 -> i64 = \n ->
+    @requires n >= 0
+    sum_acc n 0
+
+export def at_least :: i64 -> i64 -> i64 = \a b ->
+    @ensures \r -> r >= a
+    @ensures \value -> value >= b
+    Int.max a b
+
+export def wrap_add :: i64 -> i64 -> i64 = \a b ->
+    @ensures \r -> r == a + b
+    a + b
+
+export def abs_diff :: i64 -> i64 -> i64 = \a b ->
+    @requires a >= b
+    @ensures \r -> r >= 0
+    a - b
+
+def bump :: ref mut [i64..] -> i64 -> unit = \xs v ->
+    @ensures \_ -> xs[0] == v && @old (xs[0]) != v
+    Array.write 0 v xs
+
+export def bump_first :: i64 -> i64 = \v ->
+    let mut xs = [1, 2, 3]
+    bump (ref mut xs) v
+    xs[0] + 1
+
+def main :: unit -> i32 = \() -> 0

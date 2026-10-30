@@ -490,6 +490,8 @@ pub enum DeriveClass {
     Default,
     Encode,
     Decode,
+    /// A21: a generator of values for the property tests of contracts.
+    Arbitrary,
 }
 
 impl DeriveClass {
@@ -502,6 +504,7 @@ impl DeriveClass {
             Self::Default => "Default",
             Self::Encode => "Encode",
             Self::Decode => "Decode",
+            Self::Arbitrary => "Arbitrary",
         }
     }
 }
@@ -530,6 +533,39 @@ pub struct FunctionDecl {
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
     pub body: Expr,
+    /// The `@requires` and `@ensures` lines that start the body (A21), in source order.
+    pub contracts: Vec<ContractClause>,
+}
+
+/// Whether a contract line is checked on entry or on exit (A21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ContractKind {
+    Requires,
+    Ensures,
+}
+
+impl ContractKind {
+    /// The attribute's name after `@`.
+    pub fn name(self) -> &'static str {
+        match self {
+            ContractKind::Requires => "requires",
+            ContractKind::Ensures => "ensures",
+        }
+    }
+}
+
+/// One `@requires condition` or `@ensures \result -> condition` line of a function body (A21).
+#[derive(Clone, Debug)]
+pub struct ContractClause {
+    pub kind: ContractKind,
+    /// `@ensures \r -> ..`: the name of the result (`_` for `\_`). `None` for `@requires`.
+    pub binder: Option<Ident>,
+    pub condition: Expr,
+    /// The condition's source text with line breaks and the indentation after them collapsed to
+    /// one space; docgen, hover, api-diff and facts print it. The AST fingerprint clears it.
+    pub text: String,
+    /// From the `@` to the end of the condition.
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -739,6 +775,150 @@ pub struct Expr {
 }
 
 impl Expr {
+    /// Visits the expression and its subexpressions, outermost first, for rewriting: the visitor
+    /// returns whether to descend into the (possibly replaced) expression. It reaches the same
+    /// expressions as [`Expr::visit`], those in patterns and computation bodies included.
+    pub(crate) fn visit_mut(&mut self, visitor: &mut impl FnMut(&mut Expr) -> bool) {
+        if !visitor(self) {
+            return;
+        }
+        use ExprKind::*;
+        match &mut self.kind {
+            Unary(_, value)
+            | Lambda(_, value)
+            | Task(value)
+            | TaskRun(value)
+            | ComputationBoundary(value)
+            | Checked(value)
+            | NewLiteral(value)
+            | Field(value, _)
+            | Borrow(value, ..)
+            | Dereference(value, _)
+            | Cast(value, _) => value.visit_mut(visitor),
+            Binary(_, left, right)
+            | Index(left, right)
+            | Assign(left, right)
+            | NewArray(_, left, right)
+            | NewList(_, left, right) => {
+                left.visit_mut(visitor);
+                right.visit_mut(visitor);
+            }
+            Call(callee, arguments) => {
+                callee.visit_mut(visitor);
+                for argument in arguments {
+                    argument.visit_mut(visitor);
+                }
+            }
+            If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                condition.visit_mut(visitor);
+                then_branch.visit_mut(visitor);
+                else_branch.visit_mut(visitor);
+            }
+            While { condition, body } => {
+                condition.visit_mut(visitor);
+                body.visit_mut(visitor);
+            }
+            For {
+                pattern,
+                source,
+                body,
+            } => {
+                pattern.visit_expressions_mut(visitor);
+                source.visit_mut(visitor);
+                body.visit_mut(visitor);
+            }
+            Range {
+                start,
+                step,
+                finish,
+                ..
+            } => {
+                start.visit_mut(visitor);
+                if let Some(step) = step {
+                    step.visit_mut(visitor);
+                }
+                finish.visit_mut(visitor);
+            }
+            Match { value, arms, .. } => {
+                value.visit_mut(visitor);
+                for arm in arms {
+                    arm.pattern.visit_expressions_mut(visitor);
+                    if let Some(guard) = &mut arm.guard {
+                        guard.visit_mut(visitor);
+                    }
+                    arm.body.visit_mut(visitor);
+                }
+            }
+            Try(handled) => {
+                handled.body.visit_mut(visitor);
+                for arm in &mut handled.arms {
+                    arm.pattern.visit_expressions_mut(visitor);
+                    if let Some(guard) = &mut arm.guard {
+                        guard.visit_mut(visitor);
+                    }
+                    arm.body.visit_mut(visitor);
+                }
+                if let Some(finally) = &mut handled.finally {
+                    finally.visit_mut(visitor);
+                }
+            }
+            Block { bindings, result } => {
+                for binding in bindings {
+                    binding.value.visit_mut(visitor);
+                }
+                result.visit_mut(visitor);
+            }
+            Record { fields, .. } => {
+                for (_, value) in fields {
+                    value.visit_mut(visitor);
+                }
+            }
+            RecordUpdate { base, fields } => {
+                base.visit_mut(visitor);
+                for (_, value) in fields {
+                    value.visit_mut(visitor);
+                }
+            }
+            Array(values) | List(values) | Tuple(values) => {
+                for value in values {
+                    value.visit_mut(visitor);
+                }
+            }
+            Slice {
+                value, start, end, ..
+            } => {
+                value.visit_mut(visitor);
+                for bound in start.iter_mut().chain(end.iter_mut()) {
+                    bound.visit_mut(visitor);
+                }
+            }
+            Computation(_, body) => body.visit_expressions_mut(visitor),
+            Interpolated(interpolation) => {
+                for hole in &mut interpolation.holes {
+                    hole.value.visit_mut(visitor);
+                }
+            }
+            Integer(..)
+            | BigInt(_)
+            | Float(..)
+            | String(_)
+            | Char(_)
+            | Utf8Char(_)
+            | Bool(_)
+            | Unit
+            | Break
+            | Continue
+            | Name(_)
+            | QualifiedFunction(_)
+            | TypeFunction(..)
+            | DynDispatch { .. } => {}
+        }
+    }
+
     pub(crate) fn visit(&self, visitor: &mut impl FnMut(&Expr)) {
         visitor(self);
         use ExprKind::*;
@@ -1031,6 +1211,29 @@ pub enum PatternKind {
 }
 
 impl Pattern {
+    fn visit_expressions_mut(&mut self, visitor: &mut impl FnMut(&mut Expr) -> bool) {
+        use PatternKind::*;
+        match &mut self.kind {
+            Literal(value) | Argument(value) => value.visit_mut(visitor),
+            Apply(_, patterns) | Tuple(patterns) | Array(patterns) | List(patterns) => {
+                for pattern in patterns {
+                    pattern.visit_expressions_mut(visitor);
+                }
+            }
+            Record(_, fields) => {
+                for (_, pattern) in fields {
+                    pattern.visit_expressions_mut(visitor);
+                }
+            }
+            Cons(left, right) | Or(left, right) | And(left, right) => {
+                left.visit_expressions_mut(visitor);
+                right.visit_expressions_mut(visitor);
+            }
+            As(pattern, _) | Annotated(pattern, _) => pattern.visit_expressions_mut(visitor),
+            Wildcard | Binding(_) => {}
+        }
+    }
+
     fn visit_expressions(&self, visitor: &mut impl FnMut(&Expr)) {
         use PatternKind::*;
         match &self.kind {
@@ -1143,6 +1346,47 @@ pub struct ComputationMatchArm {
 }
 
 impl ComputationBlock {
+    fn visit_expressions_mut(&mut self, visitor: &mut impl FnMut(&mut Expr) -> bool) {
+        use ComputationStatementKind::*;
+        for statement in &mut self.statements {
+            match &mut statement.kind {
+                Let(binding, _) => binding.value.visit_mut(visitor),
+                LetAnd(bindings) => {
+                    for binding in bindings {
+                        binding.value.visit_mut(visitor);
+                    }
+                }
+                Do(value) | Operation(_, value) | Expression(value) => value.visit_mut(visitor),
+                Match(value, arms) => {
+                    value.visit_mut(visitor);
+                    for arm in arms {
+                        arm.pattern.visit_expressions_mut(visitor);
+                        if let Some(guard) = &mut arm.guard {
+                            guard.visit_mut(visitor);
+                        }
+                        arm.body.visit_expressions_mut(visitor);
+                    }
+                }
+                If(condition, yes, no) => {
+                    condition.visit_mut(visitor);
+                    yes.visit_expressions_mut(visitor);
+                    if let Some(no) = no {
+                        no.visit_expressions_mut(visitor);
+                    }
+                }
+                For(pattern, source, body) => {
+                    pattern.visit_expressions_mut(visitor);
+                    source.visit_mut(visitor);
+                    body.visit_expressions_mut(visitor);
+                }
+                While(condition, body) => {
+                    condition.visit_mut(visitor);
+                    body.visit_expressions_mut(visitor);
+                }
+            }
+        }
+    }
+
     fn visit_expressions(&self, visitor: &mut impl FnMut(&Expr)) {
         use ComputationStatementKind::*;
         for statement in &self.statements {

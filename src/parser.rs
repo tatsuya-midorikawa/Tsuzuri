@@ -155,6 +155,16 @@ pub(crate) fn normalize_definition(
     Ok(definition)
 }
 
+/// The lambdas that start `expression`, one in the body of the other (`\a -> \b -> e` has 2).
+fn leading_lambdas(mut expression: &Expr) -> usize {
+    let mut count = 0;
+    while let ExprKind::Lambda(_, body) = &expression.kind {
+        count += 1;
+        expression = body;
+    }
+    count
+}
+
 /// Parses a source that no package owns (a snippet, the REPL, a test) with the latest edition.
 /// A package's source goes through `parse_with_source` with its own edition.
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
@@ -232,6 +242,18 @@ struct Parser<'a> {
     pending_statement: Option<ComputationStatement>,
     /// Every `dyn` type parsed so far, for `Program::dyn_types` (A14).
     dyn_types: Vec<TypeExpr>,
+    /// The token where the body of the top-level function being parsed starts, the only place
+    /// where its contract lines may begin (A21). An explicit lambda moves it to its own body.
+    contract_site: Option<usize>,
+    /// Whether the parser is in the body of an instance method or a class default, which takes
+    /// no contract lines (A21).
+    method_body: bool,
+    /// The contract lines that the current top-level declaration's body started with.
+    site_contracts: Vec<ContractClause>,
+    /// The lambdas that `contract_site` moved through to reach the lines, `\a -> \b ->` 2 (A21).
+    site_lambdas: usize,
+    /// Parsing the condition of an `@ensures` line, where `@old (expression)` may appear.
+    in_ensures: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -258,6 +280,11 @@ impl<'a> Parser<'a> {
             exception_arms: false,
             pending_statement: None,
             dyn_types: Vec::new(),
+            contract_site: None,
+            method_body: false,
+            site_contracts: Vec::new(),
+            site_lambdas: 0,
+            in_ensures: false,
         }
     }
 }
@@ -427,6 +454,8 @@ impl Parser<'_> {
         };
         let mut signatures = BTreeMap::new();
         let mut definitions: Vec<Definition> = Vec::new();
+        let mut contracts_by_function: BTreeMap<String, (Vec<ContractClause>, usize)> =
+            BTreeMap::new();
         let mut defined_names = BTreeSet::new();
         let mut signature_group = None;
         let mut definition_group = None;
@@ -462,6 +491,9 @@ impl Parser<'_> {
         }
         while !self.at(&TokenKind::End) && diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS {
             let start = self.position;
+            self.contract_site = None;
+            self.site_contracts.clear();
+            self.site_lambdas = 0;
             let parsed = (|| -> Result<(), Diagnostic> {
                 let doc = self.take_doc();
                 if self.alias_ahead() {
@@ -753,6 +785,8 @@ impl Parser<'_> {
                             first,
                         ));
                         }
+                        // A21: the body's first lines may be contract lines.
+                        self.contract_site = Some(self.position);
                         let body = if self.at(&TokenKind::Backslash) {
                             self.explicit_lambda()?
                         } else {
@@ -789,7 +823,7 @@ impl Parser<'_> {
                     if exported {
                         return Err(self.error_of(DiagnosticKind::ExportOnImplementation, "put 'export' on the function signature"));
                     }
-                    let mut definition = self.definition(name)?;
+                    let mut definition = self.definition(name, true)?;
                     definition.recursion = recursion;
                     defined_names.insert(definition.name.text.clone());
                     definitions.push(definition);
@@ -817,6 +851,7 @@ impl Parser<'_> {
                     result,
                     constraints: Vec::new(),
                     body,
+                    contracts: Vec::new(),
                 });
             } else {
                 if self.header_ahead("namespace") {
@@ -843,6 +878,16 @@ impl Parser<'_> {
             }
                 Ok(())
             })();
+            // A21: the contract lines belong to the definition that this declaration made.
+            if parsed.is_ok()
+                && !self.site_contracts.is_empty()
+                && let Some(definition) = definitions.last()
+            {
+                contracts_by_function.insert(
+                    definition.name.text.clone(),
+                    (std::mem::take(&mut self.site_contracts), self.site_lambdas),
+                );
+            }
             if let Err(error) = parsed {
                 let resume = error.span.start.min(self.current().span.start);
                 diagnostics.push(error);
@@ -882,7 +927,37 @@ impl Parser<'_> {
                         definition.name.span,
                     )
                 })
-                .and_then(|signature| Self::define(signature, definition))
+                .and_then(|signature| {
+                    let lambdas = leading_lambdas(&definition.body);
+                    Self::define(signature, definition).map(|function| (function, lambdas))
+                })
+                .and_then(|(mut function, lambdas)| {
+                    let (contracts, depth) = contracts_by_function
+                        .remove(&function.name.text)
+                        .unwrap_or_default();
+                    // The lines of a lambda that the function returns (a later call stage of a
+                    // `pure def`) would run when the function is called: the site went through
+                    // more lambdas than became its parameters.
+                    if depth > lambdas.saturating_sub(leading_lambdas(&function.body))
+                        && let Some(first) = contracts.first()
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ContractMisplaced,
+                            "a contract line must start the function's own body, not a lambda that the function returns: it would run when the function is called",
+                            first.span,
+                        )
+                        .with_help("bind the lambda's parameters in the function's call stage, or remove the line"));
+                    }
+                    function.contracts = contracts;
+                    if function.constant && let Some(first) = function.contracts.first() {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ContractOnConst,
+                            "a 'const def' cannot have contract lines: the compiler evaluates it before the program runs; use a 'def' or remove the line",
+                            first.span,
+                        ));
+                    }
+                    Ok(function)
+                })
                 .and_then(|function| self.implicit_active_union(function, &mut program.unions));
             match defined {
                 Ok(function) => program.functions.push(function),
@@ -1355,12 +1430,13 @@ impl Parser<'_> {
                 "Display" => DeriveClass::Display,
                 "Hash" => DeriveClass::Hash,
                 "Default" => DeriveClass::Default,
+                "Arbitrary" => DeriveClass::Arbitrary,
                 "Encode" => DeriveClass::Encode,
                 "Decode" => DeriveClass::Decode,
                 _ => {
                     return Err(Diagnostic::of(
                         DiagnosticKind::UnderivableClass,
-                        "only Eq, Ord, Display, Hash, Default, Encode and Decode can be derived",
+                        "only Eq, Ord, Display, Hash, Default, Encode, Decode and Arbitrary can be derived",
                         name.span,
                     ));
                 }
@@ -1772,7 +1848,7 @@ impl Parser<'_> {
         }
         let recursive = self.eat(&TokenKind::Rec);
         let name = self.ident()?;
-        let mut definition = self.definition(name.clone())?;
+        let mut definition = self.definition(name.clone(), false)?;
         definition.pure = pure;
         definition.recursion = recursive.then_some(name.text);
         if anonymous
@@ -1960,7 +2036,9 @@ impl Parser<'_> {
         false
     }
 
-    fn definition(&mut self, name: Ident) -> Result<Definition, Diagnostic> {
+    /// A `fn` definition. `contracts`: whether its body may start with contract lines, which only
+    /// a top-level function's may (A21).
+    fn definition(&mut self, name: Ident, contracts: bool) -> Result<Definition, Diagnostic> {
         let mut parameters = Vec::new();
         while !self.at(&TokenKind::Equal) && !self.at(&TokenKind::Pipe) {
             let mutable = self.eat(&TokenKind::Mut);
@@ -1970,7 +2048,14 @@ impl Parser<'_> {
             self.guarded_definition(&parameters)?
         } else {
             self.take();
-            self.body_expression()?
+            // A21: the body's first lines may be contract lines.
+            if contracts {
+                self.contract_site = Some(self.position);
+            }
+            let method = std::mem::replace(&mut self.method_body, !contracts);
+            let body = self.body_expression();
+            self.method_body = method;
+            body?
         };
         Ok(Definition {
             pure: false,
@@ -2044,6 +2129,7 @@ impl Parser<'_> {
             result,
             constraints: signature.constraints,
             body: definition.body,
+            contracts: Vec::new(),
         })
     }
 

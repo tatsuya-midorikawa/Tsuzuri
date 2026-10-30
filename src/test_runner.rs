@@ -24,6 +24,9 @@ pub struct TestOptions {
     pub backend: Backend,
     /// Force the counting heap even for tests that do not use `Alloc`.
     pub allocator: llvm::Allocator,
+    /// A21: the sources (path, text) whose trap locations a native runner reports, so that a test
+    /// that breaks a contract line names it. Empty: no trap locations (the default).
+    pub trap_sources: Vec<(String, String)>,
 }
 
 impl Default for TestOptions {
@@ -40,6 +43,7 @@ impl Default for TestOptions {
             triple: None,
             backend: Backend::Llvm,
             allocator: llvm::Allocator::System,
+            trap_sources: Vec::new(),
         }
     }
 }
@@ -698,6 +702,13 @@ fn build_runner(
         .functions
         .iter()
         .any(|function| function.module == "Gen");
+    // A21: a native runner of a program with contract lines reports where a trap happened.
+    let trap_sources: Vec<crate::trap::TrapSource<'_>> = options
+        .trap_sources
+        .iter()
+        .filter(|_| !wasm)
+        .map(|(path, text)| crate::trap::TrapSource { path, text })
+        .collect();
     let mut text = llvm::emit_test_runner_with(
         module,
         selected,
@@ -715,6 +726,7 @@ fn build_runner(
                 options.target,
                 Cpu::Generic,
             ),
+            trap_sources: (!trap_sources.is_empty()).then_some(trap_sources.as_slice()),
         },
     )?;
     if !wasm {

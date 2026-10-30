@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::check::contracts::ContractMode;
 use crate::check::{CheckedModule, ModuleOrigin};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::llvm::{self, Entry};
@@ -2934,6 +2935,45 @@ impl Project {
         self.analyze_all().map_err(crate::first_error)
     }
 
+    /// Adds the std modules that analysis in `contracts` mode uses whether the sources name them
+    /// or not: the property tests of `test` mode generate their inputs with `Gen` (A21). They join
+    /// the project's sources, so the spans of the module, the diagnostics and the trap sources
+    /// index them as they index any other source. The analyses in a contract mode call it.
+    pub fn prepare_contracts(&mut self, contracts: ContractMode) {
+        if contracts == ContractMode::Test {
+            self.require_std("Gen");
+        }
+    }
+
+    /// Adds the opt-in std module `module` (and the modules it uses) when the sources did not
+    /// name it.
+    fn require_std(&mut self, module: &str) {
+        let present: std::collections::BTreeSet<PathBuf> = self
+            .sources
+            .iter()
+            .filter(|source| source.origin == ModuleOrigin::Std)
+            .map(|source| source.path.clone())
+            .collect();
+        let added: Vec<SourceFile> = crate::stdlib::sources_for([module])
+            .into_iter()
+            .filter(|(path, _)| !present.contains(Path::new(path)))
+            .map(|(path, text)| SourceFile {
+                path: PathBuf::from(path),
+                relative_path: PathBuf::from(path),
+                name: crate::stdlib::module_name(path)
+                    .expect("embedded std paths are flat")
+                    .to_owned(),
+                text: text.to_owned(),
+                origin: ModuleOrigin::Std,
+                package: None,
+                namespace: String::new(),
+                edition: crate::syntax::Edition::LATEST,
+            })
+            .collect();
+        // Manifests follow the sources in the indices of spans, so they keep their place after.
+        self.sources.extend(added);
+    }
+
     pub fn analyze_all(&self) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
         crate::analyze_inputs_all(&self.inputs())
     }
@@ -2946,18 +2986,31 @@ impl Project {
         cache: bool,
         kind: AnalysisKind,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
-        self.analyze_cached_core(cache, kind, None)
+        self.analyze_cached_core(cache, kind, None, ContractMode::Check)
+    }
+
+    /// `analyze_cached` in a command's contract mode (A21), after `prepare_contracts`.
+    pub fn analyze_cached_with_contracts(
+        &mut self,
+        cache: bool,
+        kind: AnalysisKind,
+        contracts: ContractMode,
+    ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
+        self.prepare_contracts(contracts);
+        self.analyze_cached_core(cache, kind, None, contracts)
     }
 
     /// `analyze_cached` that also fills `capture`, the declaration view of the knowledge graph
-    /// (G26, G27). The result and the diagnostics are those of `analyze_cached`.
+    /// (G26, G27). The result and the diagnostics are those of `analyze_cached`. A caller in
+    /// `test` mode calls `prepare_contracts` first (`kg::build::analyze`).
     pub(crate) fn analyze_cached_captured(
         &self,
         cache: bool,
         kind: AnalysisKind,
         capture: &mut crate::check::kg_capture::Capture,
+        contracts: ContractMode,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
-        let result = self.analyze_cached_core(cache, kind, Some(&mut *capture));
+        let result = self.analyze_cached_core(cache, kind, Some(&mut *capture), contracts);
         let inputs = self.inputs();
         let texts: Vec<_> = inputs.iter().map(|input| input.text).collect();
         if let Some(index) = capture.semantic.as_mut() {
@@ -2971,6 +3024,7 @@ impl Project {
         cache: bool,
         kind: AnalysisKind,
         capture: Option<&mut crate::check::kg_capture::Capture>,
+        contracts: ContractMode,
     ) -> Result<CheckedModule, crate::diagnostic::DiagnosticSet> {
         let inputs = self.inputs();
         let cache_time = crate::timings::Phase::start("cache");
@@ -2985,10 +3039,17 @@ impl Project {
         // The commands of the command line use the available cores unless `TSUZURI_THREADS` says otherwise.
         let parallelism = crate::parallel::Parallelism::command_line();
         match frontend {
-            Some(mut cache) => {
-                crate::analyze_inputs_core(&inputs, None, Some(&mut cache), parallelism, capture)
+            Some(mut cache) => crate::analyze_inputs_core(
+                &inputs,
+                None,
+                Some(&mut cache),
+                parallelism,
+                capture,
+                contracts,
+            ),
+            None => {
+                crate::analyze_inputs_core(&inputs, None, None, parallelism, capture, contracts)
             }
-            None => crate::analyze_inputs_core(&inputs, None, None, parallelism, capture),
         }
     }
 
@@ -5377,6 +5438,19 @@ pub(crate) fn probable_stack_exhaustion(_status: &std::process::ExitStatus) -> b
     false
 }
 
+/// The exit code that an `IO<i32>` entry returned, when the program ended with one: a non-zero
+/// code of such an entry is its value, not a trap, unless the program reported a trap site
+/// (Windows ends a trap with an exception code, not a signal).
+fn returned_code(
+    status: &std::process::ExitStatus,
+    trapped: bool,
+    exit_code_entry: bool,
+) -> Option<i32> {
+    status
+        .code()
+        .filter(|code| *code != 0 && exit_code_entry && !trapped)
+}
+
 pub fn run(
     module: &CheckedModule,
     project: &Project,
@@ -5546,22 +5620,6 @@ fn run_process(
         RunStdio::Capture { timeout, limit } => capture(runner.as_ref(), &output, timeout, limit)?,
     };
     temporary.close()?;
-    // An `IO<i32>` entry returns its value as the exit code, so a non-zero code is not a trap.
-    if let Some(code) = status.code()
-        && code != 0
-        && llvm::exit_code_entry(module)
-    {
-        let stderr = String::from_utf8_lossy(&stderr);
-        let message = if json && !stderr.trim().is_empty() {
-            format!("program exited with code {code}:\n{}", stderr.trim_end())
-        } else {
-            format!("program exited with code {code}")
-        };
-        return Err(driver_error_of(
-            DiagnosticKind::ProgramExitedNonzero,
-            message,
-        ));
-    }
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
         let site = project.with_trap_sources(|sources| {
@@ -5571,8 +5629,24 @@ fn run_process(
                     site.message(sources)
                         .is_ok_and(|message| stderr.contains(&message))
                 })
-                .map(|site| site.span)
+                .map(|site| (site.span, site.kind))
         });
+        if let Some(code) = returned_code(&status, site.is_some(), llvm::exit_code_entry(module)) {
+            let message = if json && !stderr.trim().is_empty() {
+                format!("program exited with code {code}:\n{}", stderr.trim_end())
+            } else {
+                format!("program exited with code {code}")
+            };
+            return Err(driver_error_of(
+                DiagnosticKind::ProgramExitedNonzero,
+                message,
+            ));
+        }
+        // A21: a contract line's trap is reported with its own kind.
+        let kind = site
+            .and_then(|(_, kind)| kind.diagnostic_kind())
+            .unwrap_or(DiagnosticKind::ProgramTerminated);
+        let site = site.map(|(span, _)| span);
         let message = if !json || stderr.trim().is_empty() {
             if site.is_none() && stderr.contains(STACK_OVERFLOW_REPORT) {
                 format!(
@@ -5584,17 +5658,13 @@ fn run_process(
                 )
             } else {
                 format!(
-                    "program terminated with {status}; integer division, indexing, assert, or allocation may have trapped"
+                    "program terminated with {status}; integer division, indexing, assert, a contract, or allocation may have trapped"
                 )
             }
         } else {
             format!("program terminated with {}:\n{}", status, stderr.trim_end())
         };
-        return Err(Diagnostic::of(
-            DiagnosticKind::ProgramTerminated,
-            message,
-            site.unwrap_or_default(),
-        ));
+        return Err(Diagnostic::of(kind, message, site.unwrap_or_default()));
     }
     if json {
         io::stderr()
@@ -6365,6 +6435,22 @@ mod tests {
                 "E2001"
             );
         }
+    }
+
+    /// An `IO<i32>` entry's non-zero code is its value, unless the program reported a trap site:
+    /// on Windows a trap ends the process with an exit code (`0xC000001D`), not a signal.
+    #[cfg(unix)]
+    #[test]
+    fn a_reported_trap_is_not_an_exit_code() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        let code = ExitStatus::from_raw(3 << 8);
+        assert_eq!(returned_code(&code, false, true), Some(3));
+        assert_eq!(returned_code(&code, true, true), None);
+        assert_eq!(returned_code(&code, false, false), None);
+        assert_eq!(returned_code(&ExitStatus::from_raw(0), false, true), None);
+        // A signal has no code (SIGTRAP).
+        assert_eq!(returned_code(&ExitStatus::from_raw(5), false, true), None);
     }
 
     #[cfg(unix)]

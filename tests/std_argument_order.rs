@@ -84,8 +84,10 @@ const MODULES: &[(&str, Kind)] = &[
             names: &[],
             except: &[
                 ("check", HARNESS),
+                ("check_where", HARNESS),
                 ("for_all", HARNESS),
                 ("for_all_cases", HARNESS),
+                ("for_all_where", HARNESS),
             ],
         },
     ),

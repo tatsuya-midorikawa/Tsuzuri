@@ -434,6 +434,30 @@ const descending = (n) => Array.from({ length: n }, (_, i) => BigInt(n - 1 - i))
 const ascending = (n) => Array.from({ length: n }, (_, i) => BigInt(i));
 
 const suites = {
+  contracts: {
+    options: ["--contracts", "check"],
+    cases: (() => {
+      const wrap = (value) => BigInt.asIntN(64, value);
+      const truncating = (a, b) => a / b;
+      return [
+        ["clamp", [0n, 10n, -5n], 0n], ["clamp", [0n, 10n, 5n], 5n], ["clamp", [0n, 10n, 50n], 10n],
+        ["clamp", [min, max, 0n], 0n],
+        ["safe_div", [7n, 2n], truncating(7n, 2n)], ["safe_div", [-7n, 2n], truncating(-7n, 2n)],
+        ["sum_to", [10n], 55n], ["sum_to", [1000000n], 1000000n * 1000001n / 2n],
+        ["at_least", [3n, 5n], 5n], ["at_least", [-2n, -9n], -2n], ["wrap_add", [max, 1n], wrap(max + 1n)],
+        ["abs_diff", [9n, 4n], 5n], ["bump_first", [9n], 10n],
+      ];
+    })(),
+    traps: [
+      ["clamp", [5n, 3n, 0n], "contract requires failed"], ["sum_to", [-1n], "contract requires failed"],
+      ["abs_diff", [max, -1n], "contract ensures failed"], ["bump_first", [1n], "contract ensures failed"],
+    ],
+    trapKind: "contract requires failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.builtin\.\$requires/);
+      assert.match(ir, /@tz\.builtin\.\$ensures/);
+    },
+  },
   effect_attributes: {
     cases: (() => {
       const wrap = (value) => BigInt.asIntN(64, value);
@@ -2670,9 +2694,9 @@ function run(name, suite) {
     const again = join(temporary, "again.ll");
     // A `tz-` prefix keeps fixture headers from shadowing system headers.
     const headerPath = join(temporary, `tz-${name}.h`);
-    cli(["build", fixture, "--emit", "header", ...allocatorOptions, "-o", headerPath]);
-    cli(["build", fixture, "--emit", "llvm", ...allocatorOptions, "-o", ir]);
-    cli(["build", fixture, "--emit", "llvm", ...allocatorOptions, "-o", again]);
+    cli(["build", fixture, ...(suite.options ?? []), "--emit", "header", ...allocatorOptions, "-o", headerPath]);
+    cli(["build", fixture, ...(suite.options ?? []), "--emit", "llvm", ...allocatorOptions, "-o", ir]);
+    cli(["build", fixture, ...(suite.options ?? []), "--emit", "llvm", ...allocatorOptions, "-o", again]);
     const sourceIr = readFileSync(ir, "utf8");
     assert.equal(sourceIr, readFileSync(again, "utf8"), `${name}: IR is deterministic`);
     const declarations = sourceIr.match(/^declare .*$/gm) ?? [];
@@ -2785,7 +2809,7 @@ int main(int argc, char **argv) {
         assert.ok(result.status !== 0 || result.signal, `${name} native O${optimization}: ${traps[index][0]} must trap`);
       }
       const wasm = join(temporary, `${name}-O${optimization}.wasm`);
-      cli(["build", fixture, "--target", wasmTarget, ...wasmOptions, `-O${optimization}`, "-o", wasm]);
+      cli(["build", fixture, ...(suite.options ?? []), "--target", wasmTarget, ...wasmOptions, `-O${optimization}`, "-o", wasm]);
       const module = new WebAssembly.Module(readFileSync(wasm));
       assert.deepEqual(WebAssembly.Module.imports(module), [], `${name}: WASM has no imports`);
       const exports = new WebAssembly.Instance(module).exports;
@@ -2807,7 +2831,7 @@ int main(int argc, char **argv) {
         // The kind of each trap: a violated precondition must trap as an assertion, before any allocation,
         // element access or callback. An entry may name its own kind as a third element.
         const traced = join(temporary, `${name}-trap-kinds-O${optimization}.wasm`);
-        cli(["build", fixture, "--target", wasmTarget, ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", traced]);
+        cli(["build", fixture, ...(suite.options ?? []), "--target", wasmTarget, ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", traced]);
         const { sites } = JSON.parse(readFileSync(`${traced}.trap.json`, "utf8"));
         const boundary = createBoundary(new WebAssembly.Module(readFileSync(traced)), { sites });
         for (const [trap, args, kind = suite.trapKind] of traps) {
@@ -2818,7 +2842,7 @@ int main(int argc, char **argv) {
       }
       if (name === "recursive_types") {
         const measured = join(temporary, `recursive-traps-${optimization}.wasm`);
-        cli(["build", fixture, "--target", wasmTarget, ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", measured]);
+        cli(["build", fixture, ...(suite.options ?? []), "--target", wasmTarget, ...wasmOptions, "--trap-info", `-O${optimization}`, "-o", measured]);
         const checked = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(measured))).exports;
         assert.equal(checked.tz_deep_clone(50000n), 100003n);
         assert.equal(checked.tz_mutual_clone(20000n), 43n);

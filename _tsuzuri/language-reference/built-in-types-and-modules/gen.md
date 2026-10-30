@@ -97,6 +97,8 @@ test "points equal themselves" = Gen.for_all (points()) (\point -> point == poin
 | `Gen.for_all g p` | `Display<'a> => Gen<'a> -> ('a -> bool) -> unit` | 100 個の値で確かめる |
 | `Gen.for_all_cases n g p` | `Display<'a> => i64 -> Gen<'a> -> ('a -> bool) -> unit` | `n` 個の値で確かめる。`n` が 0 以下ならトラップ |
 | `Gen.check show n g p` | `(ref 'a -> string) -> i64 -> Gen<'a> -> ('a -> bool) -> unit` | 反例を `show` で表示する。`Display` のない型（`Maybe`、`Result`、`deriving (Display)` のないレコードなど）に使う |
+| `Gen.for_all_where g p` | `Display<'a> => Gen<'a> -> ('a -> Maybe<bool>) -> unit` | 性質が `None` を返した値は捨て、`Some` の値が 100 個になるまで確かめる。捨てた値が有効な値の 9 倍を超えると `property gave up` で失敗する。縮小は捨てる値へ逃げない |
+| `Gen.check_where show n g p` | `(ref 'a -> string) -> i64 -> Gen<'a> -> ('a -> Maybe<bool>) -> unit` | `for_all_where` の `show` と個数を選べる形 |
 
 ```tsuzuri project=checks file=Checks.tz
 def show :: ref Maybe<i64> -> string
@@ -113,6 +115,18 @@ test "doubles stay even" =
 ```
 
 `Gen` の実行関数は `test` の中で使うためのものです。テストの外で呼ぶこともでき、そのときは固定の seed を使います。
+
+## Arbitrary と deriving (Arbitrary)
+
+組み込みの型クラス `Arbitrary` のメソッド `arbitrary` は、型の既定の生成器です。`Arbitrary.arbitrary()` は文脈の型から生成器を選びます。std は整数（`i8`〜`i64`、`i8u`〜`i64u`）、`bool`、`f64`、`char`、`string`、配列、`Maybe`、2〜4 個の組の instance を持ちます。レコードと共用体は `deriving (Arbitrary)` で導出できます（再帰的な型は `E1025`）。
+
+```tsuzuri project=arbitrary file=Shapes.tz
+record Pt { x: i64, y: i64 } deriving (Arbitrary, Display, Eq)
+
+test "points equal themselves" = Gen.for_all (Arbitrary.arbitrary()) (\(p: Pt) -> p == p)
+```
+
+`tsuzuri test --contracts test` は、契約の行からこの生成器で性質テストを作ります（[契約](../values-and-functions/contracts.md#性質テスト--contracts-test)）。
 
 ## 選択と縮小の仕組み
 

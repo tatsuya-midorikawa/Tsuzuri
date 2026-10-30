@@ -264,6 +264,8 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | ToFloat
         | ToInt
         | Assert
+        | ContractRequires
+        | ContractEnsures
         | CloneString
         | CloneUtf8String
         | StringFromUtf8
@@ -600,6 +602,22 @@ fn closed_callable<'a>(
         }
     }
     Ok(Some(targets))
+}
+
+/// Whether `callee` is `$requires` or `$ensures`, or the generated function that wraps one.
+fn contract_check(module: &CheckedModule, callee: &TypedExpr) -> bool {
+    match &callee.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) => matches!(
+            instance.builtin,
+            Builtin::ContractRequires | Builtin::ContractEnsures
+        ),
+        TypedExprKind::Function(FunctionRef::User(id)) => {
+            let function = &module.functions[*id];
+            function.module == "$builtin"
+                && matches!(function.name.as_str(), "$requires" | "$ensures")
+        }
+        _ => false,
+    }
 }
 
 fn standard_io(module: &CheckedModule, ty: &Type) -> bool {
@@ -977,6 +995,13 @@ impl<'a> Scanner<'a> {
                     .is_none_or(|(_, span)| position(expression.span) < position(*span))
             {
                 effect = Some((found, expression.span));
+            }
+            // A21: the conditions of contract lines are checked by `contracts::validate_purity`
+            // (`E1033`); a `pure def` does not report them again.
+            if let TypedExprKind::Call(callee, _) = &expression.kind
+                && contract_check(self.module, callee)
+            {
+                continue;
             }
             if !matches!(expression.kind, TypedExprKind::Lambda { .. }) {
                 pending.extend(expression.children());

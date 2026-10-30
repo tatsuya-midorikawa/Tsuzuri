@@ -427,7 +427,12 @@ pub fn memory(project: &Project) -> Result<KgData, Unbuilt> {
     let hash = hex(&super::input::source_hash(project));
     let mut capture = Capture::default();
     let module = project
-        .analyze_cached_captured(false, AnalysisKind::Tests, &mut capture)
+        .analyze_cached_captured(
+            false,
+            AnalysisKind::Tests,
+            &mut capture,
+            crate::check::contracts::ContractMode::Check,
+        )
         .map_err(Unbuilt::Errors)?;
     let warnings = DiagnosticSet::from_diagnostics(module.warnings.iter().cloned(), 0);
     let (files, _, _) = files_of(
@@ -483,20 +488,26 @@ pub struct Pending {
 }
 
 /// Runs the analysis of a command (`check`, `build`, `run`, `test`) once: with a capture when
-/// `plan` writes the graph, and as `analyze_cached` otherwise.
+/// `plan` writes the graph, and as `analyze_cached` otherwise. The project first gets the std
+/// modules that `contracts` uses (`Project::prepare_contracts`).
 pub fn analyze(
-    project: &Project,
+    project: &mut Project,
     cache: bool,
     kind: crate::driver::AnalysisKind,
     plan: Plan,
+    contracts: crate::check::contracts::ContractMode,
 ) -> (Result<CheckedModule, DiagnosticSet>, Option<Pending>) {
+    project.prepare_contracts(contracts);
     match plan {
         Plan::Build(target) => {
             let mut capture = Capture::default();
-            let result = project.analyze_cached_captured(cache, kind, &mut capture);
+            let result = project.analyze_cached_captured(cache, kind, &mut capture, contracts);
             (result, Some(Pending { target, capture }))
         }
-        Plan::Off | Plan::Fresh => (project.analyze_cached(cache, kind), None),
+        Plan::Off | Plan::Fresh => (
+            project.analyze_cached_with_contracts(cache, kind, contracts),
+            None,
+        ),
     }
 }
 

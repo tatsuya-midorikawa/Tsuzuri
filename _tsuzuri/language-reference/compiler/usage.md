@@ -406,7 +406,7 @@ let word = (
 tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
 ```
 
-ファイルの前に置けるのは `-O0`〜`-O3`、`--cpu`、`--no-cache`、`--json`、`--deny-warnings`、`--warn implicit-copy`、`--link`、`-l`、`-L` で、意味と既定（`-O3`、キャッシュ有効）は `run` と同じです。名前が `-` で始まるファイルは `--` の後に置きます。
+ファイルの前に置けるのは `-O0`〜`-O3`、`--cpu`、`--no-cache`、`--json`、`--deny-warnings`、`--warn implicit-copy`、`--contracts`、`--link`、`-l`、`-L` で、意味と既定（`-O3`、キャッシュ有効）は `run` と同じです。名前が `-` で始まるファイルは `--` の後に置きます。
 
 ファイルの先頭の `#!` 行は、どのソースでも行コメントとして読み飛ばされます（[特殊文字](../values-and-functions/tokens.md#コメントの構文と入れ子)）。そのため、実行権限を付けたファイルを、そのままコマンドとして実行できます。
 
@@ -550,6 +550,16 @@ manifest の edition は最後に更新します。途中の書き込み失敗�
 単一ファイルの入力では、そのファイルだけを変え、package の版は変えません。
 埋め込みソースに一致する開発用 std の移行も検査できますが、依存の std コピーを変更する操作ではありません。
 これは一般の警告修正や、非正準形を拒否する A22 の移行ではありません。
+
+### prove
+
+契約の行（`@requires`・`@ensures`）を SMT ソルバーで証明します（[契約](../values-and-functions/contracts.md#証明tsuzuri-prove--contracts-prove)）。
+
+```sh
+tsuzuri prove . --function Main.clamp --prove-timeout 30
+```
+
+関数ごとに `proved Main.clamp`・`counterexample Main.bad`・`unsupported Main.f (a loop)`・`unknown Main.f`・`error Main.f (solver)` の 1 行を標準出力へ出し、反例などは `E1034` として標準エラーへ出します。`--json` は関数ごとの JSON Lines と最後の summary です。すべて `proved` なら終了コード 0、それ以外は 1、引数の誤りは 2 です。ソルバーは `TSUZURI_SMT`、なければ `z3`、`cvc5` です。
 
 ### api-diff
 

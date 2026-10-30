@@ -117,6 +117,10 @@ def paid :: Result<i64, string> -> i64 = \result ->
 - テストの失敗ログには、どの値が違ったかは出ません。名前と、必要なら `Debug.trace` で足します。`Debug` の出力は標準エラーで、テストランナーはそれを失敗理由には使いません。
 - `assert` を本番の入力検査に使うと、利用者のミスでプロセスが止まります。入力の拒否は `Result` で返します。
 
+## 契約との使い分け
+
+本体の途中の不変条件は `assert` に、関数の入口と出口の約束は署名のそばの契約の行 `@requires`・`@ensures` に書きます。契約は `build` の既定（`off`）では検査コードを出さず、`run`・`test` では検査し、`tsuzuri test --contracts test` の性質テストや `tsuzuri prove` の証明にも使えます（[契約](../values-and-functions/contracts.md)）。
+
 ## まとめ
 
 - `assert` は `bool -> unit` で、偽なら最適化レベルに関係なくトラップします。

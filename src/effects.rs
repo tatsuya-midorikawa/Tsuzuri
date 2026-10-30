@@ -225,6 +225,13 @@ pub struct Options {
     pub computed: EffectSet,
     /// Keep every direct source and exemption of each body (`FunctionEffects::sites`).
     pub sites: bool,
+    /// A call of a value of a `pure` function type adds nothing: `computed` holds only effects
+    /// that `pure` forbids, as for A21's contract conditions.
+    pub pure_values: bool,
+    /// The bodies are generic templates before specialization (A21's check of the contract lines
+    /// of generic functions): a generic function stands for its instances and a lambda's body for
+    /// its calls.
+    pub templates: bool,
 }
 
 impl Options {
@@ -244,6 +251,8 @@ impl Options {
             scope,
             computed: computed.intersection(SUPPORTED),
             sites: false,
+            pure_values: false,
+            templates: false,
         }
     }
 }
@@ -389,6 +398,8 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         }
         // B4
         Assert
+        | ContractRequires
+        | ContractEnsures
         | Unreachable
         | UnicodeTableEntry
         | ArraySet
@@ -1050,6 +1061,13 @@ impl<'s, 'a> Scan<'s, 'a> {
         arguments: &[&'a TypedExpr],
         span: Span,
     ) {
+        // A `pure` function value runs no effect that `pure_values` computes, whatever it is
+        // given: it cannot call an argument that is not `pure` itself.
+        if self.state.options.pure_values
+            && callee.is_some_and(|callee| callee.ty.function_purity() == Some(true))
+        {
+            return;
+        }
         // A call of a known function through an immutable alias, a partial application or a
         // branch is a call of that function too, so its callbacks are checked as at a direct
         // call. A value that the classification follows to functions but `targets` does not is
@@ -1215,10 +1233,8 @@ impl<'s, 'a> Scan<'s, 'a> {
     }
 
     fn scan(&mut self) -> Result<(), Diagnostic> {
-        let module = self.state.module;
         let function = self.function;
-        let types = module.types();
-        let user_drops = !module.user_drops.is_empty();
+        let user_drops = !self.state.module.user_drops.is_empty();
         // The compact form replaces the body of `String.slice` and `String.join` with a runtime
         // call that builds the result; the rule counts it in both forms.
         if crate::llvm::compact_replacement(function).is_some() {
@@ -1243,8 +1259,15 @@ impl<'s, 'a> Scan<'s, 'a> {
                 self.user_drop(&parameter.ty, span);
             }
         }
+        self.scan_root(&function.body)
+    }
+
+    fn scan_root(&mut self, root: &'a TypedExpr) -> Result<(), Diagnostic> {
+        let module = self.state.module;
+        let types = module.types();
+        let user_drops = !module.user_drops.is_empty();
         let mut entered = Vec::new();
-        let mut stack = vec![Item::Node(&function.body, Ctx::default())];
+        let mut stack = vec![Item::Node(root, Ctx::default())];
         while let Some(item) = stack.pop() {
             let (expression, ctx) = match item {
                 Item::Enter(condition) => {
@@ -1303,6 +1326,9 @@ impl<'s, 'a> Scan<'s, 'a> {
     /// The literal rule (A6, A7): a non-empty literal stays in the frame only when it is read in
     /// place and its tree fits the frame; otherwise it is copied to the heap.
     fn literal(&mut self, expression: &'a TypedExpr, ctx: Ctx, moved: &'static str) {
+        if !self.state.computes(Effect::Alloc) {
+            return;
+        }
         if !ctx.read {
             self.source(Effect::Alloc, expression.span, moved);
             return;
@@ -1319,7 +1345,7 @@ impl<'s, 'a> Scan<'s, 'a> {
 
     /// Counts the frame bytes of a record or tuple that stays in place (A7).
     fn aggregate(&mut self, expression: &'a TypedExpr, ctx: Ctx) {
-        if ctx.read && !ctx.nested {
+        if ctx.read && !ctx.nested && self.state.computes(Effect::Alloc) {
             let bytes = crate::llvm::frame_bytes(expression, self.state.module);
             self.local.frame = self.local.frame.saturating_add(bytes);
             if bytes > MAX_VALUE_BYTES || self.local.frame > MAX_FRAME_BYTES {
@@ -1352,6 +1378,11 @@ impl<'s, 'a> Scan<'s, 'a> {
             consumer: Consumer::default(),
         };
         match &expression.kind {
+            K::GenericFunction(id, _) if self.state.options.templates => {
+                self.local.edges.push((*id, span));
+                false
+            }
+            K::Lambda { .. } if self.state.options.templates => false,
             K::Error
             | K::GenericFunction(..)
             | K::Method(..)
@@ -1950,10 +1981,28 @@ fn components(graph: &BTreeMap<usize, Vec<usize>>) -> Vec<Vec<usize>> {
     components
 }
 
+/// The summaries of `roots` and of every function that they reach.
+pub(crate) fn summarize_from(
+    module: &CheckedModule,
+    options: Options,
+    roots: &[usize],
+) -> Result<FunctionEffects, Diagnostic> {
+    summarize_roots(module, options, Limits::default(), Some(roots))
+}
+
 pub(crate) fn summarize_with(
     module: &CheckedModule,
     options: Options,
     limits: Limits,
+) -> Result<FunctionEffects, Diagnostic> {
+    summarize_roots(module, options, limits, None)
+}
+
+fn summarize_roots(
+    module: &CheckedModule,
+    options: Options,
+    limits: Limits,
+    given: Option<&[usize]>,
 ) -> Result<FunctionEffects, Diagnostic> {
     let count = module.functions.len();
     let mut result = FunctionEffects {
@@ -1968,9 +2017,15 @@ pub(crate) fn summarize_with(
         cycle_targets: BTreeMap::new(),
         empty: Summary::default(),
     };
-    let roots: Vec<usize> = match options.scope {
-        Scope::All => (0..count).collect(),
-        Scope::Reachable => roots(module),
+    let roots: Vec<usize> = match (given, options.scope) {
+        (Some(given), _) => {
+            let mut given = given.to_vec();
+            given.sort_unstable();
+            given.dedup();
+            given
+        }
+        (None, Scope::All) => (0..count).collect(),
+        (None, Scope::Reachable) => roots(module),
     };
     if roots.is_empty() {
         return Ok(result);
@@ -3047,6 +3102,198 @@ pub fn validate(
     validation
 }
 
+/// Why an impure source makes a contract condition impure, in A19's words (`E1029`).
+fn impurity_reason(effect: Effect, why: Why) -> String {
+    let named = |text: &str| match why.builtin {
+        Some(builtin) => format!("{text} ('{}')", builtin.name()),
+        None => text.to_owned(),
+    };
+    match (effect, why.builtin) {
+        (_, Some(Builtin::BenchNow | Builtin::BenchConsume | Builtin::GenSeed)) => {
+            named("reads the clock, a random source, or a benchmark counter")
+        }
+        (_, Some(Builtin::AllocCounter)) => "reads allocation counters".into(),
+        (Effect::Io | Effect::Os | Effect::Net, _) => named("reads or writes the outside world"),
+        (Effect::Debug, _) => "prints debug output".into(),
+        (Effect::Task, _) => named("starts or waits for a task or a parallel operation"),
+        (Effect::Atomic | Effect::Rc, _) => named("uses shared mutable state"),
+        (Effect::Gpu, _) => named("uses the GPU"),
+        (Effect::UserDrop, _) => "holds a value whose type has a user Drop".into(),
+        _ => "cannot be proven pure".into(),
+    }
+}
+
+/// A21: the first impure source of the contract conditions of each function, as `E1033`
+/// (`contract_impure`): a source of an effect that A19's `pure` forbids, a `dyn` dispatch, an
+/// unresolved expression, or a call of a function value that is not a pure function type.
+/// `roots` holds each function with its conditions and the span of their contract lines.
+/// `templates` checks generic functions before specialization (`Options::templates`): what only
+/// an instance resolves (a class method, a value that the analysis cannot follow) is left to the
+/// check of each instance.
+pub(crate) fn impurities(
+    module: &CheckedModule,
+    roots: &[(usize, Vec<(&TypedExpr, Span)>)],
+    templates: bool,
+) -> Result<Vec<(usize, Diagnostic)>, Diagnostic> {
+    let count = module.functions.len();
+    let mut options = Options::new(Scope::All, EffectSet::PURE_FORBIDDEN);
+    options.pure_values = true;
+    options.templates = templates;
+    let mut state = State {
+        module,
+        options,
+        copy_sites: vec![Vec::new(); count],
+        drops: BTreeMap::new(),
+        open: BTreeMap::new(),
+        nodes: 0,
+        limits: Limits::default(),
+    };
+    let mut scanned = Vec::new();
+    let mut callees = Vec::new();
+    for (function, conditions) in roots {
+        let declaration = &module.functions[*function];
+        for (condition, line) in conditions {
+            let mut scan = Scan {
+                state: &mut state,
+                function: declaration,
+                local: Local::default(),
+                aliases: BTreeMap::new(),
+                parameters: declaration
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .map(|(index, parameter)| (parameter.id, index))
+                    .collect(),
+                facts: None,
+                staying: BTreeSet::new(),
+                environment_copies: BTreeSet::new(),
+            };
+            scan.scan_root(condition)?;
+            let local = scan.local;
+            callees.extend(local.edges.iter().map(|(callee, _)| *callee));
+            scanned.push((*function, *line, local));
+        }
+    }
+    let summaries = summarize_from(module, options, &callees)?;
+    let mut found = Vec::new();
+    for (function, line, local) in scanned {
+        let declaration = &module.functions[function];
+        let mut candidates: Vec<(Span, String)> = Vec::new();
+        for index in 0..BITS {
+            if !local.bits.contains(index) {
+                continue;
+            }
+            let Some((span, why)) = local.first[index] else {
+                continue;
+            };
+            let reason = if index < 14 {
+                let effect = Effect::ALL[index];
+                if !EffectSet::PURE_FORBIDDEN.contains(effect) {
+                    continue;
+                }
+                impurity_reason(effect, why)
+            } else if index == DYN {
+                "uses dyn dispatch".into()
+            } else if templates {
+                continue;
+            } else {
+                "cannot be proven pure".into()
+            };
+            candidates.push((span, reason));
+        }
+        // A function value that the condition calls must be a pure function type.
+        for (index, parameter) in declaration.parameters.iter().enumerate() {
+            if index < PARAMETER_BITS
+                && local.param_calls & (1 << index) != 0
+                && parameter.ty.function_purity() != Some(true)
+            {
+                candidates.push((parameter.span, "cannot be proven pure".into()));
+            }
+        }
+        for site in &local.calls {
+            let calls_params = summaries.summary(site.callee).calls_params;
+            let open = (0..PARAMETER_BITS)
+                .filter(|index| calls_params & (1 << index) != 0)
+                .any(|index| match site.arguments.get(index) {
+                    Some(Arg::Param(parameter)) => declaration
+                        .parameters
+                        .get(*parameter)
+                        .is_none_or(|parameter| parameter.ty.function_purity() != Some(true)),
+                    Some(Arg::Unknown) => !templates,
+                    Some(Arg::Known(_)) | None => false,
+                });
+            if open {
+                candidates.push((site.span, "cannot be proven pure".into()));
+            }
+        }
+        for &(callee, span) in &local.edges {
+            let summary = summaries.summary(callee);
+            let impure = summary.effects.intersection(EffectSet::PURE_FORBIDDEN);
+            if let Some(effect) = impure.iter().next() {
+                let chain = summaries.chain(callee, effect);
+                let Some(&(last, _)) = chain.last() else {
+                    continue;
+                };
+                let why = match summaries.witness(last, effect) {
+                    Some(Witness::Direct { why, .. }) => *why,
+                    _ => why_unknown(),
+                };
+                let mut reason = impurity_reason(effect, why);
+                if effect == Effect::Extern {
+                    reason = format!("calls the extern function '{}'", shown(module, last));
+                }
+                // A lambda of the condition: the source inside it; another function: the call.
+                let outside = chain
+                    .iter()
+                    .position(|&(id, _)| !in_family(module, id, function));
+                let at = match outside {
+                    None => chain.last().map_or(span, |(_, at)| *at),
+                    Some(0) => span,
+                    Some(index) => chain[index - 1].1,
+                };
+                let names: Vec<String> = chain
+                    .iter()
+                    .skip(outside.unwrap_or(chain.len()))
+                    .filter(|(id, _)| !module.functions[*id].module.starts_with('$'))
+                    .map(|(id, _)| format!("'{}'", shown(module, *id)))
+                    .collect();
+                if !names.is_empty() {
+                    let mut text = names[..names.len().min(4)].join(" -> ");
+                    if names.len() > 4 {
+                        text.push_str(" -> ...");
+                    }
+                    reason.push_str(&format!(" (through {text})"));
+                }
+                candidates.push((at, reason));
+            } else if summary.unknown.is_some() && !templates {
+                candidates.push((span, "cannot be proven pure".into()));
+            }
+        }
+        if let Some((span, reason)) = candidates
+            .into_iter()
+            .min_by_key(|(span, _)| position(*span))
+        {
+            found.push((
+                function,
+                Diagnostic::of(
+                    DiagnosticKind::ContractImpure,
+                    format!(
+                        "a contract must be pure: it {reason}; call only pure functions in a contract"
+                    ),
+                    span,
+                )
+                .related(RelatedRole::RequiredBy, "required by this contract line", line),
+            ));
+        }
+    }
+    found.sort_by_key(|(_, diagnostic)| position(diagnostic.span));
+    Ok(found)
+}
+
+fn why_unknown() -> Why {
+    why("unresolved")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3114,9 +3361,9 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 252);
+        assert_eq!(Builtin::ALL.len(), 254);
         assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 91);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 161);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 163);
     }
 
     #[test]
@@ -3140,7 +3387,7 @@ mod tests {
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 30);
+        assert_eq!(count(|facts| facts.trap), 32);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 

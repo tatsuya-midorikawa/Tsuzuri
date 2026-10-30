@@ -142,7 +142,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A18 | [引数規約: 読み取りを既定にする（`own`、edition 2027）](_completed/A18-parameter-conventions.md) | P2 | XL | A15, G19, (A17) | done（Phase 1〜4、2026-10-24。[PR48](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/48)、未マージ） |
 | A19 | [純粋関数 `pure def`（副作用のない関数を署名で保証。引数は共有借用か `own`）](_completed/A19-pure-functions.md) | P2 | L | D11, A15, B07, F10, C10, (A17) | done（全 Phase） |
 | A20 | [効果の要約と検査付き関数属性（`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`）](_completed/A20-effect-summary-and-checked-attributes.md) | P1 | XL | (A19), (G22) | done（全 Phase） |
-| A21 | [契約 `@requires`／`@ensures`（off／check／test／prove）](A21-contracts-requires-ensures.md) | P2 | XL | A19, (A20), (G22) | todo（承認済み） |
+| A21 | [契約 `@requires`／`@ensures`（off／check／test／prove）](_completed/A21-contracts-requires-ensures.md) | P2 | XL | A19, (A20), (G22) | done（全 Phase） |
 | A22 | [edition 2027 の正準形（`..<`／`..=`・接尾辞・借用の表記・旧ラムダ）と移行](A22-edition-2027-canonical-forms.md) | P1 | L | (G22), (G24) | todo（承認済み） |
 | A23 | [整数の折り返しの意図（`Int.wrapping_*`・`--overflow-report`・`tsuzuri test` の既定）](A23-integer-overflow-intent.md) | P2 | L | PR02, (G22) | todo（承認済み） |
 
@@ -544,7 +544,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | [G30](_completed/G30-diagrams.md) | 知識（図） | `tsuzuri kb diagram KIND`: モジュールの依存・型・呼び出し・所有権・並行・メモリのレイアウト・状態遷移を、facts から決定的に Mermaid（と DOT）で出す（`views/*.mmd` も KB に置く）。ノード数の上限（`--max-nodes`）と、文書の Mermaid を検査する harness | 承認済み |
 | [G31](_completed/G31-ai-cost-metrics.md) | 計測 | **Phase 1〜3 実装済み**。`node benchmarks/ai/run.mjs` が LLM・ネットワークなしで字数・往復数・推定トークンを決定的に数える（6 型 37 件）。grep・chunk・window・docs・診断 v1、外部実測の取り込み、静的サイズ上限と能力別アダプターを実装し、[基準値 104 行](../docs/ai-cost.md)を公開済み。G21・G27・G28・G29 本体は未実装で、ガイド・KB・MCP の実測行はない。診断 v2・`fix` もコンパイラの能力がなければ理由つきで省略し、改善値を捏造しない | 承認済み・実装済み（Phase 1〜3） |
 | [A20](_completed/A20-effect-summary-and-checked-attributes.md) | 検査付き属性 | `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` を署名の約束として検査する（`E1031`）。関数ごとの効果の要約（14 個の効果の閉じた語彙。呼び出しグラフ上の不動点）を `src/effects.rs` に作る。属性は IR を変えない表明。A19 が未実装なら、本チケットが `pure def` の基盤を先に作る（経路 B） | done（全 Phase） |
-| [A21](A21-contracts-requires-ensures.md) | 契約 | `@requires`・`@ensures` を `def` の本体の先頭に書き、`--contracts off`／`check`／`test`／`prove` で、実行時検査（`run`・`test` の既定）・性質テスト（`Arbitrary`・`Gen.for_all_where`）・静的検証（外部ソルバー。`E1034`）につなぐ。契約を最適化の前提に使うモード（assume）は作らない | 承認済み |
+| [A21](_completed/A21-contracts-requires-ensures.md) | 契約 | `@requires`・`@ensures` を `def` の本体の先頭に書き、`--contracts off`／`check`／`test`／`prove` で、実行時検査（`run`・`test` の既定）・性質テスト（`Arbitrary`・`Gen.for_all_where`）・静的検証（外部ソルバー。`E1034`）につなぐ。契約を最適化の前提に使うモード（assume）は作らない | done（全 Phase） |
 | [A22](A22-edition-2027-canonical-forms.md) | edition | 同じ意味の複数の書き方を edition `2027` の正準形に絞る: `for` の範囲は `..<`・`..=`、数値の接尾辞は型名、借用は `ref`／`ref mut`／`deref`、旧ラムダ `x -> e` は廃止。正準形は全 edition が受理し、2026 では `W1007`（既定は無効）、2027 では `E0004` で拒否する。`tsuzuri fix --edition 2027` が移行する。`..` の意味は edition で変えず、`LATEST` は `2026` のまま | 承認済み |
 | [A23](A23-integer-overflow-intent.md) | 数値 | `Int.wrapping_add`・`wrapping_sub`・`wrapping_mul`・`wrapping_neg`（折り返しの意図を明示）と、範囲の証明で溢れないと示せない整数演算を計装する `--overflow-report`（報告して、折り返した値で続ける。意味は変えない）。`tsuzuri test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告にとどめる） | 承認済み |
 | [B10](B10-trap-backtrace-and-domains.md) | 失敗の可観測性 | `E2005` にトラップのバックトレース（`at Main.level2 (./Main.tz:5:15)`。`llvm-symbolizer` で解決）と、配布した実行ファイルのクラッシュレポート（`TSUZURI_TRAP_REPORT`）を足す（Phase 1）。純粋関数の失敗を値として受ける `Domain`（E14 の追跡確保と `sigsetjmp` で、計算 1 件の失敗をプロセスを失わずに閉じ込める。Phase 2。`E1038`） | 承認済み |

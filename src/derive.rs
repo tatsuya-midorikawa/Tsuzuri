@@ -22,6 +22,9 @@ pub(super) fn instances(
                 unreachable!()
             };
             for &(class, span) in &record.derives {
+                if class == DeriveClass::Arbitrary && types.recursive(&ty) {
+                    return Err(recursive_arbitrary(span));
+                }
                 let build = Build {
                     span,
                     nodes: Cell::new(0),
@@ -54,6 +57,9 @@ pub(super) fn instances(
                 unreachable!()
             };
             for &(class, span) in &union.derives {
+                if class == DeriveClass::Arbitrary && types.recursive(&ty) {
+                    return Err(recursive_arbitrary(span));
+                }
                 let build = Build {
                     span,
                     nodes: Cell::new(0),
@@ -87,6 +93,14 @@ pub(super) fn instances(
         ));
     }
     Ok(output)
+}
+
+fn recursive_arbitrary(span: Span) -> Diagnostic {
+    Diagnostic::of(
+        DiagnosticKind::DerivingUnavailable,
+        "deriving (Arbitrary) cannot build a recursive type; write the instance by hand",
+        span,
+    )
 }
 
 /// Checks the `@json` names of record fields or union cases: they serve only derived `Encode` and
@@ -170,14 +184,14 @@ fn declared_type(
     )
 }
 
-struct Build<'a> {
-    module: &'a str,
-    span: Span,
-    nodes: Cell<usize>,
+pub(super) struct Build<'a> {
+    pub(super) module: &'a str,
+    pub(super) span: Span,
+    pub(super) nodes: Cell<usize>,
 }
 
 impl Build<'_> {
-    fn ident(&self, name: impl Into<String>) -> Ident {
+    pub(super) fn ident(&self, name: impl Into<String>) -> Ident {
         Ident {
             text: name.into(),
             span: self.span,
@@ -185,10 +199,11 @@ impl Build<'_> {
         }
     }
 
-    fn make(&self, kind: ExprKind) -> Result<Expr, Diagnostic> {
+    pub(super) fn make(&self, kind: ExprKind) -> Result<Expr, Diagnostic> {
         use ExprKind::*;
         let depth = 1 + match &kind {
-            Name(_) | QualifiedFunction(_) | Integer(..) | Bool(_) | String(_) => 0,
+            Name(_) | QualifiedFunction(_) | Integer(..) | Bool(_) | String(_) | Unit => 0,
+            Lambda(_, body) => body.depth,
             Array(values) => values.iter().map(|value| value.depth).max().unwrap_or(0),
             Field(value, _) | Borrow(value, ..) | Unary(_, value) => value.depth,
             Binary(_, left, right) => left.depth.max(right.depth),
@@ -240,10 +255,10 @@ impl Build<'_> {
         })
     }
 
-    fn name(&self, name: &str) -> Result<Expr, Diagnostic> {
+    pub(super) fn name(&self, name: &str) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Name(self.ident(name)))
     }
-    fn boolean(&self, value: bool) -> Result<Expr, Diagnostic> {
+    pub(super) fn boolean(&self, value: bool) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Bool(value))
     }
     fn integer(&self, value: usize) -> Result<Expr, Diagnostic> {
@@ -280,10 +295,15 @@ impl Build<'_> {
             self.word(count)?,
         )
     }
-    fn binary(&self, operator: BinaryOp, left: Expr, right: Expr) -> Result<Expr, Diagnostic> {
+    pub(super) fn binary(
+        &self,
+        operator: BinaryOp,
+        left: Expr,
+        right: Expr,
+    ) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Binary(operator, Box::new(left), Box::new(right)))
     }
-    fn conditional(
+    pub(super) fn conditional(
         &self,
         condition: Expr,
         then_branch: Expr,
@@ -295,7 +315,12 @@ impl Build<'_> {
             else_branch: Box::new(else_branch),
         })
     }
-    fn call(&self, class: &str, method: &str, arguments: Vec<Expr>) -> Result<Expr, Diagnostic> {
+    pub(super) fn call(
+        &self,
+        class: &str,
+        method: &str,
+        arguments: Vec<Expr>,
+    ) -> Result<Expr, Diagnostic> {
         let callee = self.make(ExprKind::Field(
             Box::new(self.name(&format!("$class.{class}"))?),
             self.ident(method),
@@ -311,18 +336,23 @@ impl Build<'_> {
     }
     /// A call of the std function `function`, named by its module key so that user modules and
     /// namespaces cannot shadow it (GUIDE D-07).
-    fn apply(&self, function: &str, arguments: Vec<Expr>) -> Result<Expr, Diagnostic> {
+    pub(super) fn apply(&self, function: &str, arguments: Vec<Expr>) -> Result<Expr, Diagnostic> {
         let callee = self.make(ExprKind::QualifiedFunction(self.ident(function)))?;
         self.make(ExprKind::Call(Box::new(callee), arguments))
     }
     /// The case `case` of the union `owner` (`Module.Union`) as a value or constructor.
-    fn case(&self, owner: &str, case: &str) -> Result<Expr, Diagnostic> {
+    pub(super) fn case(&self, owner: &str, case: &str) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Field(
             Box::new(self.name(&key_path(owner))?),
             self.ident(case),
         ))
     }
-    fn construct(&self, owner: &str, case: &str, value: Expr) -> Result<Expr, Diagnostic> {
+    pub(super) fn construct(
+        &self,
+        owner: &str,
+        case: &str,
+        value: Expr,
+    ) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Call(
             Box::new(self.case(owner, case)?),
             vec![value],
@@ -335,7 +365,7 @@ impl Build<'_> {
             Notation::Keyword,
         ))
     }
-    fn bind(&self, name: impl Into<String>, value: Expr) -> Binding {
+    pub(super) fn bind(&self, name: impl Into<String>, value: Expr) -> Binding {
         Binding {
             name: self.ident(name),
             mutable: false,
@@ -345,7 +375,7 @@ impl Build<'_> {
             value,
         }
     }
-    fn block(&self, bindings: Vec<Binding>, result: Expr) -> Result<Expr, Diagnostic> {
+    pub(super) fn block(&self, bindings: Vec<Binding>, result: Expr) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Block {
             bindings,
             result: Box::new(result),
@@ -357,6 +387,50 @@ impl Build<'_> {
             span: self.span,
             depth: 2,
         })
+    }
+    pub(super) fn lambda(&self, parameters: &[&str], body: Expr) -> Result<Expr, Diagnostic> {
+        self.make(ExprKind::Lambda(
+            parameters
+                .iter()
+                .map(|name| (self.ident(*name), false))
+                .collect(),
+            Box::new(body),
+        ))
+    }
+    /// A21: `Arbitrary.arbitrary()` paired from the right for `count` values, and the pattern of
+    /// the same shape that binds `$f0`, `$f1`, ...
+    pub(super) fn arbitrary_pairs(&self, count: usize) -> Result<(Expr, Pattern), Diagnostic> {
+        let binding = |index: usize| Pattern {
+            kind: PatternKind::Binding(self.ident(format!("$f{index}"))),
+            span: self.span,
+            depth: 1,
+        };
+        let mut generator = self.call("Arbitrary", "arbitrary", Vec::new())?;
+        let mut pattern = binding(count - 1);
+        for index in (0..count - 1).rev() {
+            generator = self.apply(
+                "Gen.pair",
+                vec![self.call("Arbitrary", "arbitrary", Vec::new())?, generator],
+            )?;
+            let depth = pattern.depth + 1;
+            pattern = Pattern {
+                kind: PatternKind::Tuple(vec![binding(index), pattern]),
+                span: self.span,
+                depth,
+            };
+        }
+        Ok((generator, pattern))
+    }
+    /// `Gen.map (\$t -> match $t with | <pattern> -> body) generator`, without the match for one
+    /// value.
+    fn mapped(&self, count: usize, body: Expr) -> Result<Expr, Diagnostic> {
+        let (generator, pattern) = self.arbitrary_pairs(count)?;
+        let function = if count == 1 {
+            self.lambda(&["$f0"], body)?
+        } else {
+            self.lambda(&["$t"], self.matched("$t", vec![self.arm(pattern, body)])?)?
+        };
+        self.apply("Gen.map", vec![function, generator])
     }
     fn definition(&self, name: &str, parameters: &[&str], body: Expr) -> Definition {
         Definition {
@@ -603,6 +677,37 @@ impl Build<'_> {
             })?;
             return Ok(vec![self.definition("hash", &["$value"], body)]);
         }
+        if class == DeriveClass::Arbitrary {
+            if record.fields.is_empty() {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DerivingUnavailable,
+                    "deriving (Arbitrary) needs at least one field",
+                    self.span,
+                ));
+            }
+            let fields = record
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    Ok((
+                        self.ident(&field.name.text),
+                        self.name(&format!("$f{index}"))?,
+                    ))
+                })
+                .collect::<Result<_, Diagnostic>>()?;
+            let body = self.make(ExprKind::Record {
+                name: Box::new(
+                    self.ident(key_path(&format!("{}.{}", self.module, record.name.text))),
+                ),
+                fields,
+            })?;
+            return Ok(vec![self.definition(
+                "arbitrary",
+                &[],
+                self.mapped(record.fields.len(), body)?,
+            )]);
+        }
         if class == DeriveClass::Default {
             let fields = record
                 .fields
@@ -686,14 +791,14 @@ impl Build<'_> {
             depth: 2,
         }
     }
-    fn matched(&self, name: &str, arms: Vec<MatchArm>) -> Result<Expr, Diagnostic> {
+    pub(super) fn matched(&self, name: &str, arms: Vec<MatchArm>) -> Result<Expr, Diagnostic> {
         self.make(ExprKind::Match {
             value: Box::new(self.name(name)?),
             arms,
             origin: MatchOrigin::Explicit,
         })
     }
-    fn arm(&self, pattern: Pattern, body: Expr) -> MatchArm {
+    pub(super) fn arm(&self, pattern: Pattern, body: Expr) -> MatchArm {
         MatchArm {
             pattern,
             body,
@@ -843,6 +948,27 @@ impl Build<'_> {
                 &["$value"],
                 self.matched("$value", arms)?,
             )]);
+        }
+        if class == DeriveClass::Arbitrary {
+            let owner = format!("{}.{}", self.module, union.name.text);
+            let mut generators = Vec::new();
+            for case in &union.cases {
+                generators.push(if case.payload.is_some() {
+                    let value = self.construct(&owner, &case.name.text, self.name("$f0")?)?;
+                    self.mapped(1, value)?
+                } else {
+                    let value = self.case(&owner, &case.name.text)?;
+                    self.apply(
+                        "Gen.map",
+                        vec![
+                            self.lambda(&["_"], value)?,
+                            self.apply("Gen.constant", vec![self.make(ExprKind::Unit)?])?,
+                        ],
+                    )?
+                });
+            }
+            let body = self.apply("Gen.one_of", vec![self.make(ExprKind::Array(generators))?])?;
+            return Ok(vec![self.definition("arbitrary", &[], body)]);
         }
         if class == DeriveClass::Default {
             let case = &union.cases[0];

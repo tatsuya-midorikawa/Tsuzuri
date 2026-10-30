@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use tsuzuri::check::contracts::ContractMode;
 use tsuzuri::diagnostic::{Diagnostic, DiagnosticKind, Span, json_string};
 use tsuzuri::driver::{
     self, Backend, BuildOptions, Cpu, Emit, OptLevel, Project, Target, Triple, WasmHost,
@@ -66,6 +67,8 @@ Usage:
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--effective] [--json]
+  tsuzuri prove [source.tz|directory] [--function NAME]... [--prove-timeout SECONDS] [--json]
+                             Prove the contract lines with an SMT solver (z3 or cvc5, TSUZURI_SMT)
   tsuzuri kg build [PATH] [--kg-dir DIR] [--force] [--json] | kg build --std [--force] [--json]
   tsuzuri kg verify [PATH] [--kg-dir DIR] [--json]
   tsuzuri kg clean [PATH] [--kg-dir DIR] | kg clean --std
@@ -265,6 +268,15 @@ Build options:
                             MSVC linker also emit CodeView and write OUTPUT.pdb with natvis views)
     --deny-warnings        Fail check/build/run before code generation on warnings
     --warn implicit-copy   Report W1006 at implicit copies of arrays and lists
+    --contracts off|check|test|prove
+                         How build, run, test, and check use @requires and @ensures lines: off emits
+                         no checks (build default), check traps when one is false (run and test
+                         default), test also generates property tests (test only), prove proves
+                         them first with an SMT solver and then goes on as check
+    --prove-timeout SECONDS
+                         With --contracts prove or the prove command: the solver time per
+                         question (1 to 3600, default 10)
+    --function NAME        With --contracts prove or the prove command: prove only Module.name (repeatable)
     --debug-output         Enable WASM Debug output imports (native always writes)
     --trap-info            Report trap locations and emit an output.trap.json table
                                                  Enabled by default for run; disabled by default for build
@@ -385,6 +397,10 @@ struct Arguments {
     bench_allocs: bool,
     /// `tsuzuri test --seed N`: the property-test seed.
     test_seed: Option<u64>,
+    /// `--contracts off|check|test|prove` (A21); `None` takes the command's default.
+    contracts: Option<ContractMode>,
+    /// `--prove-timeout` and `--function` of `--contracts prove` (A21 Phase 5).
+    prove: tsuzuri::prove::ProveOptions,
     /// `--no-server`: `check` and `build` run in this process even where a build server runs.
     no_server: bool,
     /// `--kg`, `--no-kg` and `--kg-dir` (G27): whether `check`, `build`, `run` and `test` write the
@@ -427,6 +443,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             bench_samples: None,
             bench_allocs: false,
             test_seed: None,
+            contracts: None,
+            prove: Default::default(),
             no_server: false,
             kg: Default::default(),
             affected: None,
@@ -483,6 +501,9 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut bench_samples = None;
     let mut bench_allocs = false;
     let mut test_seed = None;
+    let mut contracts: Option<ContractMode> = None;
+    let mut prove = tsuzuri::prove::ProveOptions::default();
+    let mut prove_timeout_given = false;
     let mut debug_output = false;
     let mut trap_info = false;
     let mut trap_return = false;
@@ -719,6 +740,47 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                                 command_line_error(
                                     DiagnosticKind::OptionInvalidValue,
                                     "bench samples must be an integer between 1 and 1000",
+                                )
+                            })?,
+                    );
+                    continue;
+                }
+                Some("--prove-timeout") => {
+                    if prove_timeout_given {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "prove timeout specified more than once",
+                        ));
+                    }
+                    prove_timeout_given = true;
+                    prove.timeout_seconds =
+                        prove_timeout(next_value(arguments, &mut position, "--prove-timeout")?)?;
+                    continue;
+                }
+                Some("--function") => {
+                    let value = next_value(arguments, &mut position, "--function")?;
+                    prove.functions.push(value.to_string_lossy().into_owned());
+                    continue;
+                }
+                Some("--contracts") => {
+                    if contracts.is_some() {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "contracts specified more than once",
+                        ));
+                    }
+                    let value = next_value(arguments, &mut position, "--contracts")?;
+                    contracts = Some(
+                        value
+                            .to_str()
+                            .and_then(ContractMode::from_name)
+                            .ok_or_else(|| {
+                                command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    format!(
+                                        "unknown contract mode '{}'; use off, check, test, or prove",
+                                        value.to_string_lossy()
+                                    ),
                                 )
                             })?,
                     );
@@ -1355,6 +1417,37 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             "--seed is only valid with test",
         ));
     }
+    if (prove_timeout_given || !prove.functions.is_empty())
+        && contracts != Some(ContractMode::Prove)
+    {
+        return Err(command_line_error(
+            DiagnosticKind::OptionRequiresOption,
+            "--prove-timeout and --function need --contracts prove or the prove command",
+        ));
+    }
+    if let Some(mode) = contracts {
+        if !matches!(
+            action,
+            Action::Build | Action::Run | Action::Test | Action::Check
+        ) {
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--contracts is only valid with build, run, test, or check",
+            ));
+        }
+        if mode == ContractMode::Test && action != Action::Test {
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--contracts test is only valid with test",
+            ));
+        }
+        if action == Action::Check && mode != ContractMode::Prove {
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "check always type-checks contracts; with check, --contracts takes only prove",
+            ));
+        }
+    }
     if action == Action::Bench {
         if cpu.is_some() {
             return Err(command_line_error(
@@ -1529,10 +1622,28 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         bench_samples,
         bench_allocs,
         test_seed,
+        contracts,
+        prove,
         no_server,
         kg,
         affected,
     })
+}
+
+impl Arguments {
+    /// The contract mode of the command (A21): `--contracts`, or `off` for `build` and `bench`
+    /// and `check` for the others (`check` and `doc` emit nothing, so contracts are only checked).
+    fn contract_mode(&self) -> ContractMode {
+        self.contracts.unwrap_or(match self.action {
+            Action::Build | Action::Bench => ContractMode::Off,
+            Action::Lsp
+            | Action::Check
+            | Action::Doc
+            | Action::Run
+            | Action::Fmt
+            | Action::Test => ContractMode::Check,
+        })
+    }
 }
 
 /// The value of `--profile-generate` or `--profile-use`: a path that is not empty.
@@ -1814,6 +1925,25 @@ fn run_test_action(
         triple: arguments.options.triple,
         backend: arguments.options.backend,
         allocator: arguments.options.allocator,
+        // A21: the runner reports the contract line that a test broke.
+        trap_sources: if module
+            .functions
+            .iter()
+            .any(|function| !function.contracts.is_empty())
+        {
+            project
+                .sources
+                .iter()
+                .map(|source| {
+                    (
+                        source.path.to_string_lossy().into_owned(),
+                        source.text.clone(),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
     };
     if let Some(base) = &arguments.affected {
         match select_affected(arguments, project, base, affected_base) {
@@ -2539,6 +2669,154 @@ fn publish_package(arguments: &[OsString]) -> ExitCode {
 /// `tsuzuri api-diff old new [--effective] [--json]`: how the public API of the package or project `new`
 /// differs from `old`, one line per change on standard output. The exit status is 1 when a
 /// change is breaking, and 2 for a usage error.
+/// The value of `--prove-timeout`: whole seconds from 1 to 3600.
+fn prove_timeout(value: &OsStr) -> Result<u64, Diagnostic> {
+    value
+        .to_str()
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| (1..=3600).contains(seconds))
+        .ok_or_else(|| {
+            command_line_error(
+                DiagnosticKind::OptionInvalidValue,
+                "prove timeout must be a whole number of seconds between 1 and 3600",
+            )
+        })
+}
+
+/// Runs the proof of A21 Phase 5 on an analyzed module and writes its lines to `out` and its
+/// diagnostics to `err`. Returns whether every selected function is proved.
+fn run_prove(
+    project: &Project,
+    module: &tsuzuri::check::CheckedModule,
+    options: &tsuzuri::prove::ProveOptions,
+    json: bool,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> bool {
+    let programs: Vec<(String, tsuzuri::syntax::Program)> = project
+        .sources
+        .iter()
+        .filter(|source| source.origin == tsuzuri::check::ModuleOrigin::User)
+        .filter_map(|source| {
+            tsuzuri::parser::parse(&source.text)
+                .ok()
+                .map(|program| (source.name.clone(), program))
+        })
+        .collect();
+    let clauses = tsuzuri::prove::ensures_lines(
+        programs
+            .iter()
+            .map(|(module, program)| (module.as_str(), program)),
+    );
+    let outcome = tsuzuri::prove::run(module, options, &clauses);
+    if let Some(error) = &outcome.error {
+        write_diagnostic(err, error, project.input(), "", json);
+        return false;
+    }
+    let lines = if json { outcome.json() } else { outcome.text() };
+    let _ = out.write_all(lines.as_bytes());
+    for report in &outcome.reports {
+        for diagnostic in &report.diagnostics {
+            let source = project.source_for(diagnostic);
+            write_diagnostic(err, diagnostic, &source.path, &source.text, json);
+        }
+    }
+    outcome.proved()
+}
+
+/// `tsuzuri prove [PATH] [--function NAME]... [--prove-timeout SECONDS] [--json]` (A21).
+fn prove_command(arguments: &[OsString]) -> ExitCode {
+    let json = arguments.iter().any(|argument| argument == "--json");
+    let usage = |message: &str| {
+        print_diagnostic(
+            &command_line_error(DiagnosticKind::UsageError, message),
+            Path::new("<command line>"),
+            "",
+            json,
+        );
+        ExitCode::from(2)
+    };
+    let mut options = tsuzuri::prove::ProveOptions::default();
+    let mut timeout = None;
+    let mut path = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].to_str() {
+            Some("--json") => {}
+            Some("--function") => {
+                let Some(name) = arguments.get(index + 1).and_then(|value| value.to_str()) else {
+                    return usage("--function needs a function name such as Main.clamp");
+                };
+                options.functions.push(name.to_owned());
+                index += 1;
+            }
+            Some("--prove-timeout") => {
+                if timeout.is_some() {
+                    return usage("prove timeout specified more than once");
+                }
+                let Some(value) = arguments.get(index + 1) else {
+                    return usage("--prove-timeout needs a number of seconds");
+                };
+                match prove_timeout(value) {
+                    Ok(seconds) => timeout = Some(seconds),
+                    Err(error) => {
+                        print_diagnostic(&error, Path::new("<command line>"), "", json);
+                        return ExitCode::from(2);
+                    }
+                }
+                index += 1;
+            }
+            _ if arguments[index].to_string_lossy().starts_with('-') => {
+                return usage(
+                    "usage: tsuzuri prove [PATH] [--function NAME]... [--prove-timeout SECONDS] [--json]",
+                );
+            }
+            _ if path.is_none() => path = Some(PathBuf::from(&arguments[index])),
+            _ => {
+                return usage(
+                    "usage: tsuzuri prove [PATH] [--function NAME]... [--prove-timeout SECONDS] [--json]",
+                );
+            }
+        }
+        index += 1;
+    }
+    if let Some(seconds) = timeout {
+        options.timeout_seconds = seconds;
+    }
+    let path = path.unwrap_or_else(|| PathBuf::from("."));
+    let mut project = match Project::load(&path) {
+        Ok(project) => project,
+        Err(error) => {
+            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            return ExitCode::FAILURE;
+        }
+    };
+    let module = match project.analyze_cached_with_contracts(
+        false,
+        driver::AnalysisKind::Program,
+        ContractMode::Prove,
+    ) {
+        Ok(module) => module,
+        Err(errors) => {
+            print_diagnostics(&errors, &project, json);
+            return ExitCode::FAILURE;
+        }
+    };
+    if run_prove(
+        &project,
+        &module,
+        &options,
+        json,
+        &mut io::stdout(),
+        &mut io::stderr(),
+    ) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn api_diff_command(arguments: &[OsString]) -> ExitCode {
     let mut json = false;
     let mut effective = false;
@@ -3022,7 +3300,7 @@ fn repl_command(arguments: &[OsString]) -> ExitCode {
 
 const SCRIPT_FILE: &str =
     "script needs a source file: tsuzuri script [options] FILE [arguments...]";
-const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --link, -l, and -L before the file";
+const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --link, -l, and -L before the file";
 
 /// Splits `tsuzuri script [options] FILE [arguments...]` into the arguments of
 /// `tsuzuri run [options] -- FILE` and the program's arguments: everything after FILE,
@@ -3041,7 +3319,7 @@ fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsStri
                 run.push(argument.clone());
                 continue;
             }
-            Some(option @ ("--cpu" | "--warn" | "--link" | "-l" | "-L")) => {
+            Some(option @ ("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--contracts")) => {
                 run.push(argument.clone());
                 run.push(
                     rest.next()
@@ -3082,7 +3360,7 @@ fn script_json(arguments: &[OsString]) -> bool {
     while let Some(argument) = rest.next() {
         match argument.to_str() {
             Some("--json") => return true,
-            Some("--cpu" | "--warn" | "--link" | "-l" | "-L") => {
+            Some("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--contracts") => {
                 rest.next();
             }
             Some(option) if option.starts_with('-') && option != "--" => {}
@@ -3154,6 +3432,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "api-diff") {
         return api_diff_command(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "prove") {
+        return prove_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "mcp") {
         return mcp_command(&raw[1..]);
@@ -3289,7 +3570,7 @@ fn cli(
         Project::load(&arguments.input)
     };
     drop(load_time);
-    let project = match loaded {
+    let mut project = match loaded {
         Ok(project) => project,
         Err(error) => {
             write_diagnostic(err, &error.diagnostic, &error.path, "", arguments.json);
@@ -3334,8 +3615,13 @@ fn cli(
         .filter(|_| arguments.action == Action::Test)
         .and_then(base_graph);
     // check, test and doc do not take --no-cache; TSUZURI_CACHE_DIR= disables every cache.
-    let (analysis, pending) =
-        tsuzuri::kg::build::analyze(&project, arguments.options.cache, kind, plan);
+    let (analysis, pending) = tsuzuri::kg::build::analyze(
+        &mut project,
+        arguments.options.cache,
+        kind,
+        plan,
+        arguments.contract_mode(),
+    );
     let module = match analysis {
         Ok(module) => module,
         Err(errors) => {
@@ -3347,6 +3633,19 @@ fn cli(
             return EXIT_FAILURE;
         }
     };
+    // A21: `--contracts prove` proves the contracts first, then goes on as `check`.
+    if arguments.contract_mode() == ContractMode::Prove
+        && !run_prove(
+            &project,
+            &module,
+            &arguments.prove,
+            arguments.json,
+            out,
+            err,
+        )
+    {
+        return EXIT_FAILURE;
+    }
     // The manifest's [native] inputs come first and apply only where the command line's would.
     let links = if links_apply(arguments.action, &arguments.options) {
         project.native.clone().followed_by(&arguments.links)
@@ -7523,6 +7822,7 @@ mod tests {
             "print_diagnostic",
             "print_diagnostics",
             "print_output",
+            "prove_command",
             "publish_package",
             "repl_command",
             "run_bench_action",

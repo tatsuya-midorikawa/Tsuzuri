@@ -231,6 +231,8 @@ struct Item {
     /// also binds its callers, which must then pass callbacks (or instantiate it with types and
     /// lengths) that keep it (A20 Phase 6).
     callbacks: bool,
+    /// The contract lines (A21) as written: `@requires ...` and `@ensures \r -> ...`.
+    contracts: BTreeSet<String>,
     contract: Option<String>,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
@@ -263,6 +265,7 @@ impl Item {
             pure: None,
             asserts: Asserts(0),
             callbacks: false,
+            contracts: BTreeSet::new(),
             contract: None,
             members: Vec::new(),
             derives: BTreeSet::new(),
@@ -730,6 +733,9 @@ fn add_items(
         {
             item.asserts.insert(attribute.kind);
         }
+        item.contracts = crate::docgen::contract_lines(&declaration.contracts)
+            .into_iter()
+            .collect();
         item.contract = effective
             .and_then(|resolved| resolved.contracts.get(&api_key(declaration.name.span)))
             .cloned();
@@ -1456,6 +1462,27 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
     }
     for class in new.derives.difference(&old.derives) {
         changes.push(derive(class, Action::Added, false));
+    }
+    // A21: removing an `@ensures` takes a guarantee away, adding a `@requires` asks more of
+    // the callers; the other two only help them.
+    let contract = |line: &String, action, breaking| Change {
+        breaking,
+        action,
+        kind: "contract",
+        name: format!("{}.{line}", new.name),
+        old: None,
+        new: None,
+        note: "",
+    };
+    for line in old.contracts.difference(&new.contracts) {
+        changes.push(contract(
+            line,
+            Action::Removed,
+            line.starts_with("@ensures"),
+        ));
+    }
+    for line in new.contracts.difference(&old.contracts) {
+        changes.push(contract(line, Action::Added, line.starts_with("@requires")));
     }
     match (&old.deprecated, &new.deprecated) {
         (None, Some(note)) => changes.push(Change {

@@ -312,6 +312,13 @@ impl Parser<'_> {
     }
 
     pub(super) fn body_expression(&mut self) -> Result<Expr, Diagnostic> {
+        // A21: a nested lambda (`\a -> \b ->`) passes the site on to the innermost body.
+        if self.contract_site == Some(self.position) && !self.at(&TokenKind::Backslash) {
+            self.contract_site = None;
+            if self.contract_ahead() {
+                self.site_contracts = self.contract_clauses()?;
+            }
+        }
         if self.at(&TokenKind::LeftBrace) {
             self.block()
         } else if self.newline_before_current() {
@@ -549,6 +556,7 @@ impl Parser<'_> {
     }
 
     pub(super) fn explicit_lambda(&mut self) -> Result<Expr, Diagnostic> {
+        let at_site = self.contract_site == Some(self.position);
         self.enter()?;
         let start = self.take().span;
         let mut parameters = Vec::new();
@@ -599,6 +607,12 @@ impl Parser<'_> {
         }
         let outer = self.in_task;
         self.in_task = false;
+        // A21: the innermost lambda of a function's body holds its contract lines, unless it
+        // destructures or guards its parameters.
+        if at_site && guard.is_none() && patterns.is_empty() {
+            self.contract_site = Some(self.position);
+            self.site_lambdas += 1;
+        }
         let mut body = if guard.is_none() && self.at(&TokenKind::Pipe) {
             self.guarded_definition(&parameters)?
         } else {
@@ -661,6 +675,176 @@ impl Parser<'_> {
         self.make_match(value, arms, start, MatchOrigin::Explicit)
     }
 
+    /// Whether `@requires` or `@ensures` starts at the current token (A21).
+    pub(super) fn contract_ahead(&self) -> bool {
+        self.at(&TokenKind::At)
+            && matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "requires" || name == "ensures"
+            )
+    }
+
+    fn contract_misplaced(&self, span: Span) -> Diagnostic {
+        if self.method_body {
+            return Diagnostic::of(
+                DiagnosticKind::ContractMisplaced,
+                "contract lines are for 'def' functions, not for instance methods or class defaults",
+                span,
+            )
+            .with_help("check the condition in a 'def' function that the method calls");
+        }
+        Diagnostic::of(
+            DiagnosticKind::ContractMisplaced,
+            "a contract line must start a function body: write '@requires' and '@ensures' on their own lines right after '=' or '->', before the first statement",
+            span,
+        )
+        .with_help("move the line above the first statement of the function body")
+    }
+
+    /// The contract lines that start a function body, each on its own line at one column (A21).
+    fn contract_clauses(&mut self) -> Result<Vec<ContractClause>, Diagnostic> {
+        let column = self.column(self.current().span);
+        let mut clauses = Vec::new();
+        while self.contract_ahead() {
+            let head = self
+                .current()
+                .span
+                .through(self.tokens[self.position + 1].span);
+            if !self.newline_before_current() || self.column(self.current().span) != column {
+                return Err(self.contract_misplaced(head));
+            }
+            if clauses.len() == 32 {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ContractLineLimit,
+                    "a function takes at most 32 contract lines; split the function",
+                    head,
+                ));
+            }
+            clauses.push(self.contract_clause()?);
+        }
+        if self.at(&TokenKind::LeftBrace)
+            || (self.newline_before_current() && self.column(self.current().span) > column)
+        {
+            return Err(self.contract_misplaced(self.current().span));
+        }
+        if !self.newline_before_current() || self.column(self.current().span) < column {
+            return Err(self.error_of(
+                DiagnosticKind::ExpectedBodyExpression,
+                "expected a body expression",
+            ));
+        }
+        Ok(clauses)
+    }
+
+    /// One `@requires condition` or `@ensures \result -> condition` line.
+    fn contract_clause(&mut self) -> Result<ContractClause, Diagnostic> {
+        let at = self.take().span;
+        let name = self.take();
+        let kind = match &name.kind {
+            TokenKind::Ident(text) if text == "ensures" => ContractKind::Ensures,
+            _ => ContractKind::Requires,
+        };
+        let head = at.through(name.span);
+        let binder = if kind == ContractKind::Ensures {
+            let wrong = |span: Span| {
+                Diagnostic::of(
+                    DiagnosticKind::ContractResultLambda,
+                    "'@ensures' takes a lambda that names the result: write '@ensures \\r -> condition'",
+                    span,
+                )
+            };
+            let next = self.current().span;
+            if self.newline_before_current() {
+                return Err(wrong(head));
+            }
+            if !self.eat(&TokenKind::Backslash) {
+                return Err(wrong(next));
+            }
+            let binder = match &self.current().kind {
+                TokenKind::Ident(text)
+                    if !text.as_bytes()[0].is_ascii_uppercase() && !text.contains(['.', ':']) =>
+                {
+                    Ident {
+                        text: text.clone(),
+                        span: self.current().span,
+                        provenance: Provenance::User,
+                    }
+                }
+                _ => return Err(wrong(next)),
+            };
+            self.take();
+            if !self.eat(&TokenKind::Arrow) {
+                return Err(wrong(next));
+            }
+            Some(binder)
+        } else {
+            None
+        };
+        self.enter()?;
+        let outer = std::mem::replace(&mut self.in_ensures, kind == ContractKind::Ensures);
+        let condition = self.expression_inner(0, true, true);
+        self.in_ensures = outer;
+        let condition = condition?;
+        self.nesting -= 1;
+        // The condition as written, with the space between tokens (continuation lines included)
+        // made one space; the text of each token, a string literal's spaces too, is kept.
+        let first = self
+            .tokens
+            .partition_point(|token| token.span.start < condition.span.start);
+        let mut text = String::new();
+        let mut previous: Option<usize> = None;
+        for token in self.tokens[first..]
+            .iter()
+            .take_while(|token| token.span.end <= condition.span.end)
+            .filter(|token| token.span.start < token.span.end)
+        {
+            if previous.is_some_and(|end| token.span.start > end) {
+                text.push(' ');
+            }
+            text.push_str(&self.source[token.span.start..token.span.end]);
+            previous = Some(token.span.end);
+        }
+        Ok(ContractClause {
+            kind,
+            binder,
+            span: at.through(condition.span),
+            condition,
+            text,
+        })
+    }
+
+    /// `@old (expression)` inside an `@ensures` line (A21 Phase 6): the value of the expression
+    /// on entry, as a call of the generated name `$old`.
+    fn old_expression(&mut self) -> Result<Expr, Diagnostic> {
+        let at = self.take().span;
+        let name = self.take().span;
+        if !self.in_ensures {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ContractOldMisplaced,
+                "'@old' is only valid inside an '@ensures' line",
+                at.through(name),
+            ));
+        }
+        if !self.at(&TokenKind::LeftParen) {
+            return Err(self.error_of(DiagnosticKind::ExpectedToken, "expected '(' after '@old'"));
+        }
+        self.enter()?;
+        let value = self.primary(true, false)?;
+        self.nesting -= 1;
+        let callee = self.make(
+            ExprKind::Name(Ident {
+                text: "$old".into(),
+                span: at.through(name),
+                provenance: Provenance::Generated,
+            }),
+            at.through(name),
+            1,
+        )?;
+        let span = at.through(value.span);
+        let depth = value.depth + 1;
+        self.make(ExprKind::Call(Box::new(callee), vec![value]), span, depth)
+    }
+
     /// `@checked expression`: the attribute covers the whole expression after it.
     #[inline(never)]
     pub(super) fn checked_expression(
@@ -669,6 +853,17 @@ impl Parser<'_> {
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
         let start = self.current().span;
+        if self.contract_ahead() {
+            return Err(self.contract_misplaced(start.through(self.tokens[self.position + 1].span)));
+        }
+        if self.at(&TokenKind::At)
+            && matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "old"
+            )
+        {
+            return self.old_expression();
+        }
         if let Some((kind, span)) = self.effect_attribute_ahead() {
             return Err(Diagnostic::of(
                 DiagnosticKind::EffectAttributeMisplaced,
