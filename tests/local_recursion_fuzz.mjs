@@ -268,7 +268,7 @@ function renderStatement(stmt) {
     case "arr": return `let ${stmt.n} = [${stmt.es.map(render).join(", ")}];`;
     case "lam": return `let ${stmt.n} = \\(${stmt.k}: i64) (${stmt.x}: i64) -> ${render(stmt.body)};`;
     case "part": return `let ${stmt.n} = (${stmt.f} ${render(stmt.a)});`;
-    case "for": return `for ${stmt.i} in 0i64 .. 2i64 do { ${[...stmt.stmts.map(renderStatement), "()"].join(" ")} };`;
+    case "for": return `for ${stmt.i} in 0i64 ..= 2i64 do { ${[...stmt.stmts.map(renderStatement), "()"].join(" ")} };`;
     case "rec":
       return stmt.members
         .map((m, index) => `${index === 0 ? "let rec" : "and"} ${m.n} = \\(${m.k}: i64) (${m.x}: i64) -> if (${m.k} == 0i64) then ${render(m.base)} else ${render(m.step)};`)

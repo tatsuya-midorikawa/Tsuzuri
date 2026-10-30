@@ -4,7 +4,7 @@
 const def crc_entry :: i32u -> i32u
 fn crc_entry index =
     let mut value = index
-    for _ in 1 .. 8 do
+    for _ in 1 ..= 8 do
         value = if (value & 1) == 1 then (value >>> 1) ^ 0xEDB88320 else value >>> 1
     value
 
@@ -65,7 +65,7 @@ fn first_of xs = xs[0]
 export def crc_buffer :: own i64 -> i64
 fn crc_buffer count =
     let mut crc = ~(0 as i32u)
-    for i in 0 .. count - 1 do
+    for i in 0 ..= count - 1 do
         let byte = ((i * 7 + 3) & 255) as i32u
         crc = CrcTable[((crc ^ byte) & 0xFF) as i64] ^ (crc >>> 8)
     (~crc) as i64
@@ -144,7 +144,7 @@ fn escaped_references =
 export def closures_and_tasks :: i64
 fn closures_and_tasks =
     let read = \i -> Primes[i] + Squares[i]
-    let scaled = Parallel.map (value -> value * Primes[1]) (ref Primes)
+    let scaled = Parallel.map (\value -> value * Primes[1]) (ref Primes)
     let task_total = Task.run task {
         let! a = task { Primes[1] }
         let! b = task { Squares[10] }
@@ -157,7 +157,7 @@ fn owned_copies =
     let copied = Array.copy (ref Squares)
     let reversed = Array.rev (ref Primes)
     let sorted = Array.sort (ref reversed)
-    let doubled = Array.map_owned (value -> value * 2) (ref Primes)
+    let doubled = Array.map_owned (\value -> value * 2) (ref Primes)
     let joined = Array.append (ref Primes) (ref Primes)
     let kept = Primes
     Array.sum (ref copied) + reversed[0] + sorted[0] + doubled[5] + joined.length + kept[1] + Squares[3] + Primes[4]
@@ -172,7 +172,7 @@ fn values_stay_values =
 export def strings_stay_values :: i64
 fn strings_stay_values =
     let text = Text
-    String.length (&Text) + text.length + Names.length + String.length ref Text
+    String.length (ref Text) + text.length + Names.length + String.length ref Text
 
 export def scalar_borrow :: i64
 fn scalar_borrow = String.length $"{Answer}" + (Answer + 1)
@@ -180,6 +180,6 @@ fn scalar_borrow = String.length $"{Answer}" + (Answer + 1)
 export def hot_loop :: own i64 -> i64
 fn hot_loop count =
     let mut total = 0
-    for i in 0 .. count - 1 do
+    for i in 0 ..= count - 1 do
         total = total + Primes[i % 6] + Squares[i & 4095] + (Bytes[i & 3] as i64)
     total

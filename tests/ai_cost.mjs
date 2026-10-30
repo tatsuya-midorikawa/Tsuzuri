@@ -51,14 +51,15 @@ function mutation(name, mutate) {
   put(file, JSON.stringify(json));
   return dir;
 }
-// These numbers are the independent shell totals in appendix D, not harness output.
+// These numbers are the independent shell totals in appendix D, not harness output. A22 wrote the
+// shop corpus's `for` range as `0 ..= n` (one character more), which adds 1 to A-05, F-02 and F-03.
 const GOLD = {
-  "A-05": [[1048, 2, 262], [107, 1, 27]],
+  "A-05": [[1049, 2, 263], [107, 1, 27]],
   "B-05": [[2567, 3, 642], [2567, 3, 642]],
   "B-06": [[1248, 2, 312], [478, 1, 120]],
   "F-01": [[3611, 8, 903], [2381, 6, 596]],
-  "F-02": [[8882, 16, 2221], [7652, 14, 1913]],
-  "F-03": [[6362, 12, 1591], [5902, 11, 1476]],
+  "F-02": [[8883, 16, 2221], [7653, 14, 1914]],
+  "F-03": [[6363, 12, 1591], [5903, 11, 1476]],
   "F-04": [[4320, 7, 1080], [3860, 6, 965]],
   "F-05": [[2708, 3, 677], [358, 1, 90]],
   "F-06": [[4772, 9, 1193], [4312, 8, 1078]],

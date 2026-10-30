@@ -5,6 +5,6 @@ def apply_twice :: own ('a -> 'a) -> own 'a -> 'a = \f value -> f (f value)
 def main :: own unit -> i32 = \() ->
     let increment = add 1i32
     let offset: i32 = 20
-    let shift = value -> value + offset
+    let shift = \value -> value + offset
     do! IO.write_line (apply_twice increment (shift 20))
     0

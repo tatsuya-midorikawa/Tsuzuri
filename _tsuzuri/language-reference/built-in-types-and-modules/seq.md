@@ -80,7 +80,7 @@ deferred=100
 let result =
     Seq.unfold (\v -> if v < 10 then Some (v, v + 1) else None) 0
     |> Seq.map (\x -> x * 2)
-    |> Seq.filter (\r -> (*r) % 3 == 0)
+    |> Seq.filter (\r -> (deref r) % 3 == 0)
     |> Seq.to_array
 
 let sum = Array.sum (ref result)

@@ -1,7 +1,7 @@
 def words :: own i64 -> Vec<string>
 fn words count =
     let mut output: Vec<string> = Vec.with_capacity count
-    for index in 0 .. (count - 1) do output = Vec.push_owned ("word-" + to_string index) output
+    for index in 0 ..= (count - 1) do output = Vec.push_owned ("word-" + to_string index) output
     output
 
 def total :: ref [string] -> i64

@@ -846,12 +846,15 @@ impl<'a> Run<'a, '_> {
 
     fn range_start(&mut self, expression: &'a TypedExpr) -> Result<(), Diagnostic> {
         let TypedExprKind::ForRange {
-            local, descending, ..
+            local,
+            descending,
+            exclusive,
+            ..
         } = &expression.kind
         else {
             return Err(unsupported(expression.span));
         };
-        let Type::Integer(bits, signed) = local.ty else {
+        let Type::Integer(bits, signed_type) = local.ty else {
             return Err(unsupported(expression.span));
         };
         let (Some(finish), Some(step), Some(start)) = (
@@ -867,6 +870,29 @@ impl<'a> Run<'a, '_> {
                 "range step is zero; use a nonzero step",
             ));
         }
+        // A22 `start ..< finish`: a non-empty range runs as the closed range that ends one value
+        // before `finish`, in the direction of the step.
+        let mut finish = finish;
+        let mut nonempty = true;
+        if *exclusive {
+            let up = !signed_type || signed(step, bits) > 0;
+            let (below, above) = if signed_type {
+                (
+                    signed(start, bits) < signed(finish, bits),
+                    signed(start, bits) > signed(finish, bits),
+                )
+            } else {
+                (start < finish, start > finish)
+            };
+            nonempty = if up { below } else { above };
+            if nonempty {
+                finish = if up {
+                    finish.wrapping_sub(1) & mask(bits)
+                } else {
+                    finish.wrapping_add(1) & mask(bits)
+                };
+            }
+        }
         let height = self.stack.len();
         self.tasks.push(Task::Loop(
             Loop::Range {
@@ -874,7 +900,7 @@ impl<'a> Run<'a, '_> {
                 current: start,
                 step,
                 finish,
-                active: within(start, step, finish, bits, signed, *descending),
+                active: nonempty && within(start, step, finish, bits, signed_type, *descending),
             },
             height,
         ));

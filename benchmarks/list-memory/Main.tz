@@ -6,7 +6,7 @@
 def build :: own i64 -> [|i64|]
 fn build n =
     let mut values: [|i64|] = [||]
-    for i in 0 .. n - 1 do values = List.cons i values
+    for i in 0 ..= n - 1 do values = List.cons i values
     values
 
 // `new [|i64|](n, f)` and a sum: n (n - 1) / 2.
@@ -33,7 +33,7 @@ fn tail_consume n =
     assert (n >= 0 && n <= 100000000)
     let mut values = new [|i64|](n, \i -> i)
     let mut total = 0i64
-    for _ in 0 .. n - 1 do
+    for _ in 0 ..= n - 1 do
         total = total + values[0]
         values = List.tail values
     total
@@ -55,7 +55,7 @@ fn index_walk n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
     let mut total = 0i64
-    for i in 0 .. n - 1 do total = total + values[i]
+    for i in 0 ..= n - 1 do total = total + values[i]
     total
 
 // A list of n strings that each own a heap buffer, and the sum of their lengths: 3 n.
@@ -73,7 +73,7 @@ fn walk_list n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
     let mut total = 0i64
-    for _ in 1 .. 16 do
+    for _ in 1 ..= 16 do
         for value in values do total = total + value
     total
 
@@ -83,7 +83,7 @@ fn fold_list n =
     assert (n >= 0 && n <= 100000000)
     let values = new [|i64|](n, \i -> i)
     let mut total = 0i64
-    for _ in 1 .. 16 do total = total + List.foldr (state -> value -> state + deref value) 0 (ref values)
+    for _ in 1 ..= 16 do total = total + List.foldr (\state value -> state + deref value) 0 (ref values)
     total
 
 // A list that `List.cons` built compared 16 times with a `new` list of the same elements: 16. Their chunks differ, so a comparison goes by runs of
@@ -94,7 +94,7 @@ fn compare_list n =
     let consed = build n
     let made = new [|i64|](n, \i -> n - 1 - i)
     let mut same = 0i64
-    for _ in 1 .. 16 do same = same + (if consed == made then 1 else 0)
+    for _ in 1 ..= 16 do same = same + (if consed == made then 1 else 0)
     same
 
 // `List.to_array` of a `new` list, and the sum of the array: n (n - 1) / 2.
@@ -126,7 +126,7 @@ export def escape_list :: own i64 -> i64
 fn escape_list n =
     assert (n >= 0 && n <= 100000000)
     let mut total = 0i64
-    for i in 0 .. n - 1 do
+    for i in 0 ..= n - 1 do
         let values = block i
         for value in values do total = total + value
     total

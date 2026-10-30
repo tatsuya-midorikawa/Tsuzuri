@@ -279,6 +279,20 @@ unit_enum!(SourceKind {
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
 unit_enum!(ContractKind { Requires, Ensures });
+unit_enum!(RangeOp { Bare, Closed, Open });
+unit_enum!(FixLevel {
+    Certain,
+    Likely,
+    Unavailable
+});
+unit_enum!(NoncanonicalKind {
+    BareRange,
+    ShortSuffix,
+    SymbolicBorrow,
+    SymbolicDeref,
+    SymbolicReferenceType,
+    LegacyLambda
+});
 unit_enum!(Recursion { None, Rec, And });
 unit_enum!(DeriveClass {
     Eq,
@@ -553,6 +567,7 @@ impl Wire for Program {
             cpu_attributes,
             effect_attributes,
             trusted,
+            noncanonical,
             aliases,
             declaration_starts,
         } = self;
@@ -582,6 +597,7 @@ impl Wire for Program {
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
             declaration_starts.put(out)?;
+            noncanonical.put(out)?;
         }
         Ok(())
     }
@@ -610,6 +626,52 @@ impl Wire for Program {
             trusted: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
+            noncanonical: Vec::get(input)?,
+        })
+    }
+}
+
+impl Wire for TextEdit {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let TextEdit { span, text } = self;
+        span.put(out)?;
+        text.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(TextEdit {
+            span: Span::get(input)?,
+            text: String::get(input)?,
+        })
+    }
+}
+
+impl Wire for Noncanonical {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let Noncanonical {
+            kind,
+            span,
+            spelling,
+            canonical,
+            level,
+            edits,
+        } = self;
+        kind.put(out)?;
+        span.put(out)?;
+        spelling.put(out)?;
+        canonical.put(out)?;
+        level.put(out)?;
+        edits.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(Noncanonical {
+            kind: NoncanonicalKind::get(input)?,
+            span: Span::get(input)?,
+            spelling: String::get(input)?,
+            canonical: String::get(input)?,
+            level: FixLevel::get(input)?,
+            edits: Vec::get(input)?,
         })
     }
 }
@@ -1606,13 +1668,15 @@ impl Wire for ExprKind {
                 finish,
                 counted,
                 descending,
+                op,
             } => {
                 out.tag("ExprKind", 24);
                 start.put(out)?;
                 step.put(out)?;
                 finish.put(out)?;
                 counted.put(out)?;
-                descending.put(out)
+                descending.put(out)?;
+                op.put(out)
             }
             Match {
                 value,
@@ -1690,12 +1754,14 @@ impl Wire for ExprKind {
                 start,
                 end,
                 mutable,
+                op,
             } => {
                 out.tag("ExprKind", 39);
                 value.put(out)?;
                 start.put(out)?;
                 end.put(out)?;
-                mutable.put(out)
+                mutable.put(out)?;
+                op.put(out)
             }
             Borrow(value, mutable, notation) => {
                 out.tag("ExprKind", 40);
@@ -1799,6 +1865,7 @@ impl Wire for ExprKind {
                     finish: Box::get(input)?,
                     counted: bool::get(input)?,
                     descending: bool::get(input)?,
+                    op: RangeOp::get(input)?,
                 })
             }),
             25 => variant(input, |input| {
@@ -1856,6 +1923,7 @@ impl Wire for ExprKind {
                     start: Option::get(input)?,
                     end: Option::get(input)?,
                     mutable: bool::get(input)?,
+                    op: RangeOp::get(input)?,
                 })
             }),
             40 => variant(input, |input| {
@@ -2504,11 +2572,21 @@ mod tests {
         }
         // Array patterns, active pattern arguments, unary plus and local `let rec` groups appear
         // only in the Rust tests.
-        let patterns = "def (|Above|_|) :: &i64 -> i64 -> bool\nfn (|Above|_|) limit n = n > *limit\n\
-            def f :: i64 -> i64\nfn f n = { let limit = 3; match n with | Above (&limit) -> 1 | _ -> 0 }\n\
+        let patterns = "def (|Above|_|) :: ref i64 -> i64 -> bool\nfn (|Above|_|) limit n = n > deref limit\n\
+            def f :: i64 -> i64\nfn f n = { let limit = 3; match n with | Above (ref limit) -> 1 | _ -> 0 }\n\
             def g :: [i64] -> i64 = \\xs ->\n    match xs with\n    | [x; y] -> +x + y\n    | _ -> 0\n\
             def h :: i64 -> bool = \\n ->\n    let rec even = \\m -> if m == 0 then true else odd (m - 1)\n    and odd = \\m -> if m == 0 then false else even (m - 1)\n    even n\n";
         seen.extend(round_trips(patterns, 0).expect("the pattern sample parses"));
+        // A22: the symbolic notation and the noncanonical records exist only in edition 2026.
+        let legacy = "let x = 1\nlet r = &x\nlet f = v -> *v + 1l\nfor i in 0 .. 2 do ()\nf r\n";
+        let program =
+            crate::parser::parse_with_source_all(legacy, 0, crate::syntax::Edition::E2026).unwrap();
+        assert_eq!(program.noncanonical.len(), 5);
+        let mut out = Writer::new(Mode::Full, 0, MAX_DEPTH);
+        program.put(&mut out).expect("a parsed program encodes");
+        let decoded = decode(&out.bytes, 0).expect("an encoded program decodes");
+        assert_eq!(format!("{decoded:?}"), format!("{program:?}"));
+        seen.extend(out.seen);
         seen.extend(round_trips("def take :: own string -> i64 = \\s -> s.length\n", 0).unwrap());
         // A21: contract lines and `deriving (Arbitrary)`.
         seen.extend(
@@ -2575,6 +2653,7 @@ mod tests {
             ("Recursion", 3),
             ("DeriveClass", 8),
             ("ContractKind", 2),
+            ("RangeOp", 3),
             ("UnaryOp", 4),
             ("BinaryOp", 21),
             ("MatchOrigin", 4),
@@ -2801,6 +2880,6 @@ add_one 41
         "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
         "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000000003002245",
+        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000000000300224500",
     );
 }

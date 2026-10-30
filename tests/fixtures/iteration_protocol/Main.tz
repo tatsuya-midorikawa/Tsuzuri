@@ -20,28 +20,28 @@ export def seq_range_sum :: own i64 -> i64
 fn seq_range_sum count =
     let counter = Counter { start: 0, finish: count }
     let mut total = 0
-    for value in Counter.iter (&counter) do total = total + value
+    for value in Counter.iter (ref counter) do total = total + value
     total
 
 export def seq_list :: own i64 -> i64
 fn seq_list count =
     let values = new [|i64|](count, \index -> index)
     let mut total = 0
-    for value in List.to_seqr (&values) do total = total + deref value
+    for value in List.to_seqr (ref values) do total = total + deref value
     total
 
 export def seq_map_filter :: own i64 -> i64
 fn seq_map_filter count =
     let counter = Counter { start: 0, finish: count }
-    let mapped = Seq.map (\value -> value * 2) (Counter.iter (&counter))
+    let mapped = Seq.map (\value -> value * 2) (Counter.iter (ref counter))
     let filtered = Seq.filter (\value -> deref value % 6 == 0) mapped
     let values = Seq.to_array filtered
-    Array.sum (&values)
+    Array.sum (ref values)
 
 export def seq_owned :: own i64 -> i64
 fn seq_owned count =
     let counter = Counter { start: 0, finish: count }
-    let text = Seq.map (\value -> to_string value) (Counter.iter (&counter))
+    let text = Seq.map (\value -> to_string value) (Counter.iter (ref counter))
     let filtered = Seq.filter (\value -> value.length % 2 == 0) text
     let mut total = 0
     for value in filtered do total = total + value.length
@@ -54,10 +54,10 @@ fn seq_borrowed =
     let map = Map.singleton "key" "value"
     let set = Set.singleton "borrowed"
     let mut total = 0
-    for value in Array.to_seqr (&strings) do total = total + value.length
-    for value in Vec.iter (&vector) do total = total + value.length
-    for (key, value) in Map.iter (&map) do total = total + key.length + value.length
-    for value in Set.iter (&set) do total = total + value.length
+    for value in Array.to_seqr (ref strings) do total = total + value.length
+    for value in Vec.iter (ref vector) do total = total + value.length
+    for (key, value) in Map.iter (ref map) do total = total + key.length + value.length
+    for value in Set.iter (ref set) do total = total + value.length
     total + 1
 
 export def seq_early_exit :: i64

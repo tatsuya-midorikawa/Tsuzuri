@@ -3822,6 +3822,12 @@ impl Checker<'_> {
         self.inference.apply_defaults();
         self.solve_families(true)?;
         self.check_format_specs()?;
+        // A22: `&r` of a reference `r` borrows the reference itself; `ref r` would reborrow.
+        for (ty, span) in std::mem::take(&mut self.symbolic_borrows) {
+            if matches!(self.inference.resolve(&ty), Type::Reference(..)) {
+                self.reference_borrows.push(span);
+            }
+        }
         for (ty, span) in &self.undecided_borrows {
             if matches!(self.inference.resolve(ty), Type::Reference(..)) {
                 return Err(Diagnostic::of(
@@ -4599,6 +4605,7 @@ pub(super) fn specialize(
         gpu: module.gpu,
         statics: module.statics,
         effects: None,
+        noncanonical: module.noncanonical,
         generic_declarations,
     })
 }

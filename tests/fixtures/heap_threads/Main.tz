@@ -4,7 +4,7 @@
 // allocated it. Every result is independent of the schedule.
 
 def block :: own i64 -> own i64 -> [i64]
-fn block seed count = new [i64](count, n -> seed + n)
+fn block seed count = new [i64](count, \n -> seed + n)
 
 // The sum of the last elements of the four blocks and the length of a label, for each of `rounds` rounds.
 def churn :: own i64 -> own i64 -> [i64]
@@ -21,7 +21,7 @@ fn churn seed rounds =
         round = round + 1
     Vec.to_array values
 
-def rec sum_rows :: &[[i64]] -> own i64 -> own i64 -> i64
+def rec sum_rows :: ref [[i64]] -> own i64 -> own i64 -> i64
 fn rec sum_rows rows row total =
     if row == rows.length then total
     else sum_rows rows (row + 1) (total + Array.sum (ref rows[row]))
@@ -29,18 +29,18 @@ fn rec sum_rows rows row total =
 // `tasks` tasks of `rounds` rounds each; the total over all of them.
 export def cross_free :: own i64 -> own i64 -> i64
 fn cross_free tasks rounds =
-    let results = Task.run (Task.parallel (new [Task<[i64]>](tasks, index -> task { churn index rounds })))
+    let results = Task.run (Task.parallel (new [Task<[i64]>](tasks, \index -> task { churn index rounds })))
     sum_rows (ref results) 0 0
 
 // More than the heap of 16 MiB holds: a trap that reports an allocation failure.
 export def exhaust :: own i64 -> i64
 fn exhaust count =
-    let values = new [i64](count, n -> n)
+    let values = new [i64](count, \n -> n)
     values[count - 1]
 
 // A Vec that outgrows the heap by reallocation: the same trap from the other entry point.
 export def grow :: own i64 -> i64
 fn grow count =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 0 .. (count - 1) do values = Vec.push_owned index values
+    for index in 0 ..= (count - 1) do values = Vec.push_owned index values
     Vec.length (ref values)

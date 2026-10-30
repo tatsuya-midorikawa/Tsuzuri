@@ -5,7 +5,7 @@ export def match_none :: bool
 fn match_none =
     let missing: Maybe<i64> = None
     let result: Maybe<i64> = Maybe { match! missing with | _ -> return 1 / 0 }
-    Maybe.is_none (&result)
+    Maybe.is_none (ref result)
 
 export def result_error :: i64
 fn result_error =
@@ -44,7 +44,7 @@ export def strict_none :: i64
 fn strict_none =
     let mut state = 0
     let result = Eager { let! first: i64 = None and! second = Some (stamp (ref mut state) 2); return first + second }
-    assert (Maybe.is_none (&result))
+    assert (Maybe.is_none (ref result))
     state
 
 export def mutable_group :: i64

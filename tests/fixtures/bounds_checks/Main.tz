@@ -1,7 +1,7 @@
 def sum_all :: ref [i64] -> i64
 fn sum_all values =
     let mut total = 0
-    for i in 0 .. Array.length values - 1 do
+    for i in 0 ..= Array.length values - 1 do
         total = total + values[i]
     total
 
@@ -9,7 +9,7 @@ export def forward :: own i64 -> i64
 fn forward count =
     let values = new [i64](count, \i -> i * 3 + 1)
     let mut total = 0
-    for i in 0 .. values.length - 1 do
+    for i in 0 ..= values.length - 1 do
         total = total + values[i]
     total
 
@@ -17,7 +17,7 @@ export def backward :: own i64 -> i64
 fn backward count =
     let values = new [i64](count, \i -> i * 3 + 1)
     let mut total = 0
-    for i in values.length - 1 .. -1 .. 0 do
+    for i in values.length - 1 .. -1 ..= 0 do
         total = total + values[i]
     total
 
@@ -36,7 +36,7 @@ export def replaced :: own i64 -> i64
 fn replaced count =
     let mut values = new [i64](count, \i -> i * 3 + 1)
     let mut total = 0
-    for i in 0 .. values.length - 1 do
+    for i in 0 ..= values.length - 1 do
         values = [0]
         total = total + values[i]
     total
@@ -46,7 +46,7 @@ fn other count =
     let a = new [i64](count, \i -> i * 3 + 1)
     let b = new [i64](0, \i -> i)
     let mut total = 0
-    for i in 0 .. a.length - 1 do
+    for i in 0 ..= a.length - 1 do
         total = total + b[i]
     total
 
@@ -54,7 +54,7 @@ export def past_end :: own i64 -> i64
 fn past_end count =
     let values = new [i64](count, \i -> i * 3 + 1)
     let mut total = 0
-    for i in 0 .. values.length do
+    for i in 0 ..= values.length do
         total = total + values[i]
     total
 

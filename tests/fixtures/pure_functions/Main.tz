@@ -7,7 +7,7 @@ pure def doubled_sum :: [i64] -> i64 = \xs -> Array.sum (Array.map (\x -> x * 2)
 
 pure def local_update :: [i64] -> i64 -> i64 = \xs n ->
     let mut ys = Array.copy xs
-    for i in 0 .. (n - 1) do
+    for i in 0 ..= (n - 1) do
         ys = Array.update_at (i % 4) (i * 3) ys
     ys[0] + ys[1] * 10 + ys[2] * 100 + ys[3] * 1000
 

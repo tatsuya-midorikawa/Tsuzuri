@@ -28,10 +28,10 @@ fn top_case = Ext.EXT_TOP
 export def counters :: i64 -> i64
 fn counters start =
     let counter = Ext.ext_counter_new start
-    let first = Ext.ext_counter_add (&counter) 5
-    let second = Ext.ext_counter_add (&counter) 7
-    let peeked = Ext.ext_counter_peek (&counter)
-    let seen = Ext.ext_visit peek_plus_one (&counter)
+    let first = Ext.ext_counter_add (ref counter) 5
+    let second = Ext.ext_counter_add (ref counter) 7
+    let peeked = Ext.ext_counter_peek (ref counter)
+    let seen = Ext.ext_visit peek_plus_one (ref counter)
     first + second + peeked + seen + Ext.ext_counter_free counter
 
 export def callbacks :: i64 -> i64
@@ -48,8 +48,8 @@ fn buffers =
     let doubles = [1.0, 2.0, 6.0]
     let bytes: [ubyte] = [1, 2, 3]
     let text = Utf8String.to_bytes u8"héllo"
-    let sum = Ext.ext_sum (&values) + Ext.ext_sum (&empty)
-    let mean = Ext.ext_mean (&doubles)
-    let checksum = Ext.ext_checksum (&bytes)
-    let length = Ext.ext_text_length (&text)
+    let sum = Ext.ext_sum (ref values) + Ext.ext_sum (ref empty)
+    let mean = Ext.ext_mean (ref doubles)
+    let checksum = Ext.ext_checksum (ref bytes)
+    let length = Ext.ext_text_length (ref text)
     sum + (mean as i64) * 100 + (checksum as i64) * 10000 + (length as i64) * 1000000

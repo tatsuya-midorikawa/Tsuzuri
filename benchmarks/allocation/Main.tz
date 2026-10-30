@@ -28,7 +28,7 @@ fn local_closure n =
 def run :: own (i64 -> i64) -> own i64 -> i64
 fn run step count =
     let mut total = 0
-    for i in new [i64](count, i -> i) do total = total + step (i & 1)
+    for i in new [i64](count, \i -> i) do total = total + step (i & 1)
     total
 
 run length_only_concat 1000000 + run buffer_concat 1000000 + run local_closure 1000000 + run buffer_escape 1000000

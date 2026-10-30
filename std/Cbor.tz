@@ -40,8 +40,8 @@ fn f64_bits value =
 	if magnitude == 0.0 then sign
 	elif magnitude < 2.2250738585072014e-308 then
 		let mut scaled = magnitude
-		for _step in 1 .. 16 do scaled = scaled * 18446744073709551616.0
-		for _step in 1 .. 50 do scaled = scaled * 2.0
+		for _step in 1 ..= 16 do scaled = scaled * 18446744073709551616.0
+		for _step in 1 ..= 50 do scaled = scaled * 2.0
 		sign ||| (scaled as i64u)
 	else
 		let mut scaled = magnitude
@@ -144,7 +144,7 @@ fn rec item output value =
 	| Json.Text text -> text_item output text
 	| Json.Items items ->
 		let mut result = Result.Ok (head output 4 (items.length as i64u))
-		for index in 0 .. (items.length - 1) do
+		for index in 0 ..= (items.length - 1) do
 			result = match result with
 				| Result.Ok bytes -> item bytes (ref items[index])
 				| Result.Error error -> Result.Error error
@@ -152,7 +152,7 @@ fn rec item output value =
 	| Json.Object members ->
 		let mut entries = Vec.with_capacity members.length
 		let mut problem = Maybe.None
-		for index in 0 .. (members.length - 1) do
+		for index in 0 ..= (members.length - 1) do
 			if Maybe.is_none (ref problem) then
 				match members[index] with
 				| (key, element) ->
@@ -168,7 +168,7 @@ fn rec item output value =
 			let mut sorted = Vec.to_array entries
 			Array.sort_in_place (ref mut sorted)
 			let mut repeated = -1
-			for index in 1 .. (sorted.length - 1) do
+			for index in 1 ..= (sorted.length - 1) do
 				match sorted[index] with
 				| (key, position, _) ->
 					match sorted[index - 1] with
@@ -178,7 +178,7 @@ fn rec item output value =
 				| (key, _) -> Result.Error (failure (Json.DuplicateKey (clone_string (ref key))) (-1))
 			else
 				let mut bytes = head output 5 (members.length as i64u)
-				for index in 0 .. (sorted.length - 1) do
+				for index in 0 ..= (sorted.length - 1) do
 					match sorted[index] with
 					| (key, _, element) ->
 						for byte in key do bytes = Vec.push_owned byte bytes
@@ -206,7 +206,7 @@ fn argument bytes start =
 	elif start + size >= bytes.length then Result.Error (failure Json.UnexpectedEnd bytes.length)
 	else
 		let mut value = 0i64u
-		for index in 1 .. size do value = (value <<< 8i64u) ||| (bytes[start + index] as i64u)
+		for index in 1 ..= size do value = (value <<< 8i64u) ||| (bytes[start + index] as i64u)
 		Result.Ok (value, start + 1 + size)
 
 /// `2^power` as an `f64`, for `power` from -1074 to 1023, by exact doubling and halving.
@@ -249,7 +249,7 @@ fn numeral_of text = Json.Number (Maybe.get (Json.numeral (ref (Utf8String.from_
 private def bignum_text :: ref [ubyte] -> own i64 -> own i64 -> own bool -> string
 fn bignum_text bytes first last negative =
 	let mut value = BigInt.of_i64 0
-	for index in first .. (last - 1) do value = value * BigInt.of_i64 256 + BigInt.of_i64 (bytes[index] as i64)
+	for index in first ..= (last - 1) do value = value * BigInt.of_i64 256 + BigInt.of_i64 (bytes[index] as i64)
 	if negative then to_string (BigInt.of_i64 (-1) - value) else to_string value
 
 /// The repeated key of a map that comes first, as `Json.parse` reports it.
@@ -257,13 +257,13 @@ private def repeated :: ref Vec<(string * Json.Value)> -> i64
 fn repeated members =
 	let count = Vec.length members
 	let mut keys = Vec.with_capacity count
-	for index in 0 .. (count - 1) do
+	for index in 0 ..= (count - 1) do
 		match members[index] with
 		| (key, _) -> keys = Vec.push_owned (clone_string (ref key), index) keys
 	let mut sorted = Vec.to_array keys
 	Array.sort_in_place (ref mut sorted)
 	let mut found = -1
-	for index in 1 .. (count - 1) do
+	for index in 1 ..= (count - 1) do
 		match sorted[index] with
 		| (key, position) ->
 			match sorted[index - 1] with
@@ -328,7 +328,7 @@ fn rec value_at bytes start depth =
 					if count > (remaining as i64u) then Result.Error (failure Json.UnexpectedEnd bytes.length) else
 						let length = count as i64
 						let mut copy = Vec.with_capacity length
-						for index in next .. (next + length - 1) do copy = Vec.push_owned bytes[index] copy
+						for index in next ..= (next + length - 1) do copy = Vec.push_owned bytes[index] copy
 						match Utf8String.from_bytes (Vec.to_array copy) with
 						| Maybe.Some text -> Result.Ok (Json.Text (String.from_utf8 (ref text)), next + length)
 						| Maybe.None -> Result.Error (failure Json.InvalidUtf8 start)

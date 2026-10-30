@@ -1,0 +1,124 @@
+// A22: `..=` includes the end of a range and `..<` excludes it, in `for` loops and in slices.
+// Each function folds the values that its loop visits, so that the suite compares them with a
+// reference enumeration.
+
+export def closed_i32 :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in (a as i32) ..= (b as i32) do
+        t = t * 31 + (i as i64)
+    t
+
+export def open_i32 :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in (a as i32) ..< (b as i32) do
+        t = t * 31 + (i as i64)
+    t
+
+export def down_closed_i32 :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in (a as i32) .. -1 ..= (b as i32) do
+        t = t * 31 + (i as i64)
+    t
+
+export def down_open_i32 :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in (a as i32) .. -1 ..< (b as i32) do
+        t = t * 31 + (i as i64)
+    t
+
+export def closed_i64 :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in a ..= b do
+        t = t * 31 + i
+    t
+
+export def open_i64 :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in a ..< b do
+        t = t * 31 + i
+    t
+
+export def down_closed_i64 :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in a .. -1 ..= b do
+        t = t * 31 + i
+    t
+
+export def down_open_i64 :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in a .. -1 ..< b do
+        t = t * 31 + i
+    t
+
+export def stride_closed :: i64 -> i64 -> i64 -> i64 = \a s b ->
+    let mut t: i64 = 0
+    for i in a .. s ..= b do
+        t = t * 31 + i
+    t
+
+export def stride_open :: i64 -> i64 -> i64 -> i64 = \a s b ->
+    let mut t: i64 = 0
+    for i in a .. s ..< b do
+        t = t * 31 + i
+    t
+
+export def u8_closed :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in (a as i8u) ..= (b as i8u) do
+        t = t * 31 + (i as i64)
+    t
+
+export def u8_open :: i64 -> i64 -> i64 = \a b ->
+    let mut t: i64 = 0
+    for i in (a as i8u) ..< (b as i8u) do
+        t = t * 31 + (i as i64)
+    t
+
+export def i8_stride_closed :: i64 -> i64 -> i64 -> i64 = \a s b ->
+    let mut t: i64 = 0
+    for i in (a as i8) .. (s as i8) ..= (b as i8) do
+        t = t * 31 + (i as i64)
+    t
+
+export def i8_stride_open :: i64 -> i64 -> i64 -> i64 = \a s b ->
+    let mut t: i64 = 0
+    for i in (a as i8) .. (s as i8) ..< (b as i8) do
+        t = t * 31 + (i as i64)
+    t
+
+private def measure :: ref [i64] -> i64 = \part ->
+    let mut sum: i64 = 0
+    for x in part do
+        sum = sum + x
+    part.length * 1000 + sum
+
+export def slice_closed :: i64 -> i64 -> i64 = \a b ->
+    let xs = [10i64, 20, 30, 40, 50]
+    measure (ref xs[a..=b])
+
+export def slice_open :: i64 -> i64 -> i64 = \a b ->
+    let xs = [10i64, 20, 30, 40, 50]
+    measure (ref xs[a..<b])
+
+export def slice_bare :: i64 -> i64 -> i64 = \a b ->
+    let xs = [10i64, 20, 30, 40, 50]
+    measure (ref xs[a..b])
+
+/// Indexes every element below the length: the bounds checks of `xs[i]` are proven away.
+export def sum_below_length :: i64 -> i64 = \n ->
+    let xs = new [i64](n, \i -> i * 3)
+    let mut sum: i64 = 0
+    for i in 0 ..< xs.length do
+        sum = sum + xs[i]
+    sum
+
+/// The same loop in a `const def`, evaluated at compile time.
+const def triangle :: i64 -> i64 = \n ->
+    let mut sum: i64 = 0
+    for i in 0 ..< n do
+        sum = sum + i
+    sum
+
+const TRIANGLE: i64 = triangle 101
+
+export def folded :: i64 -> i64 = \n -> TRIANGLE + triangle n

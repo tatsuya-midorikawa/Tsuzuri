@@ -391,7 +391,7 @@ export def sum :: ref [i64] -> i64
 fn sum values = Array.sum values
 
 export def bytes :: i64 -> [ubyte]
-fn bytes count = new [ubyte](count, index -> index as ubyte)
+fn bytes count = new [ubyte](count, \index -> index as ubyte)
 "#;
 
 /// Division traps on zero, which `--trap-mode return` hands to the host (E14).

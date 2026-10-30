@@ -7,19 +7,19 @@ fn mix hash value = (hash * 31 + value + 1) % 1000000007
 private def hash_string :: own i64 -> ref string -> i64
 fn hash_string seed text =
     let mut hash = mix seed text.length
-    for index in 0 .. text.length - 1 do hash = mix hash (text[index] as i64)
+    for index in 0 ..= text.length - 1 do hash = mix hash (text[index] as i64)
     hash
 
 private def hash_bytes :: own i64 -> ref utf8string -> i64
 fn hash_bytes seed text =
     let mut hash = mix seed text.length
-    for index in 0 .. text.length - 1 do hash = mix hash (text[index] as i64)
+    for index in 0 ..= text.length - 1 do hash = mix hash (text[index] as i64)
     hash
 
 private def hash_spans :: ref [(i64 * i64)] -> i64
 fn hash_spans spans =
     let mut hash = mix 0 spans.length
-    for index in 0 .. spans.length - 1 do
+    for index in 0 ..= spans.length - 1 do
         match spans[index] with
         | (first, last) -> hash = mix (mix hash first) last
     hash
@@ -100,7 +100,7 @@ fn split16 which =
     let text = Cases.input which
     let pieces = Regex.split (ref re) (ref text)
     let mut hash = mix 0 pieces.length
-    for index in 0 .. pieces.length - 1 do hash = hash_string hash (ref pieces[index])
+    for index in 0 ..= pieces.length - 1 do hash = hash_string hash (ref pieces[index])
     hash
 
 export def replace16 :: own i64 -> i64
@@ -150,7 +150,7 @@ fn split8 which =
     let text = bytes which
     let pieces = Regex.split_utf8 (ref re) (ref text)
     let mut hash = mix 0 pieces.length
-    for index in 0 .. pieces.length - 1 do hash = hash_bytes hash (ref pieces[index])
+    for index in 0 ..= pieces.length - 1 do hash = hash_bytes hash (ref pieces[index])
     hash
 
 export def replace8 :: own i64 -> i64
@@ -201,7 +201,7 @@ fn fold_orbit_hash =
         let stop = group_end (ref grouped) start
         let least = grouped[start] % 2097152
         let mut previous = -1
-        for index in start .. stop - 1 do
+        for index in start ..= stop - 1 do
             let member = grouped[index] % 2097152
             if member != previous then keyed = Vec.push_owned (least * 2097152 + member) keyed
             previous = member
@@ -214,7 +214,7 @@ fn fold_orbit_hash =
     while start < members.length do
         let stop = group_end (ref members) start
         hash = mix hash (stop - start)
-        for index in start .. stop - 1 do hash = mix hash (members[index] % 2097152)
+        for index in start ..= stop - 1 do hash = mix hash (members[index] % 2097152)
         orbits = orbits + 1
         start = stop
     mix hash orbits

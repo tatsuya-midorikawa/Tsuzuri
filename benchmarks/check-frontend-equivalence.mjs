@@ -127,7 +127,7 @@ const diagnostics = [
   ["borrowed-update", 'record Owned { text: string, count: i64 }\ndef update :: ref Owned -> Owned\nfn update borrowed = { deref borrowed with count = 2 }'],
   ["update-order", 'record Owned { text: string, count: i64 }\nlet value = Owned { text: "text", count: 1 }\n{ value with count = value.text.length }'],
   ["escape", 'fn bad() -> ref i64 { let value = 1; ref value }'],
-  ["mutable-alias", 'let mut value = 1\nlet first = ref mut value\nlet second = ref mut value\n*first + *second'],
+  ["mutable-alias", 'let mut value = 1\nlet first = ref mut value\nlet second = ref mut value\nderef first + deref second'],
   ["generic-copy", 'def duplicate :: \'a -> (\'a * \'a) = \\value -> (value, value)\nduplicate "owned"'],
   ["lookup-order", 'fn first() -> i64 { absent_one }\nfn second() -> i64 { absent_two }'],
   ["multi-error", 'fn first() -> i64 { absent_one }\nfn second() -> bool { 1 }\nfn third() -> i64 { absent_three }'],

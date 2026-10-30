@@ -44,7 +44,7 @@ fn nested n =
 export def closures :: own i64 -> i64
 fn closures n =
     let k = n * 2
-    apply_boxed (Box { value: x -> x + k }) 1
+    apply_boxed (Box { value: \x -> x + k }) 1
 
 export def matched :: own i64 -> i64
 fn matched n =

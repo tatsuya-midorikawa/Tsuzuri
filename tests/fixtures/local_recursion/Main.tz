@@ -43,7 +43,7 @@ fn binary_search target =
 // A loop over a borrowed array with a million iterations needs no stack either.
 export def walk :: own i64 -> i64
 fn walk count =
-    let values = Array.init count (i -> i)
+    let values = Array.init count (\i -> i)
     let rec go = \i acc -> if i == values.length then acc else go (i + 1) (acc + values[i])
     go 0 0
 
@@ -189,7 +189,7 @@ fn group_in_loop count =
     let text = to_string count
     let rec early = \k -> k + String.length (ref text)
     let mut total = 0i64
-    for i in 0i64 .. 2i64 do
+    for i in 0i64 ..= 2i64 do
         let rec later = \k -> early k + i
         total = total + later 1
     total

@@ -128,9 +128,9 @@ true:true:true
 decimal 型は、IEEE 754-2008 の 10 進浮動小数点形式（BID エンコーディング）を採用しています。2 進浮動小数点特有の丸め誤差（`0.1 + 0.2 != 0.3`）が発生しないため、金融計算や正確な十進表現が必要な用途に適しています。
 
 ```tsuzuri run=42
-let price: d64 = 0.1m
-let total = price + 0.2m
-assert (total == 0.3m)
+let price: d64 = 0.1d64
+let total = price + 0.2d64
+assert (total == 0.3d64)
 42
 ```
 

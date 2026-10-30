@@ -24,7 +24,7 @@ try {
   const project = join(directory, "console");
   mkdirSync(project);
   const input = join(project, "Main.tz");
-  writeFileSync(input, 'let text = "\u65e5\u672c\u8a9e"\nDebug.print (&text)\n42\n');
+  writeFileSync(input, 'let text = "\u65e5\u672c\u8a9e"\nDebug.print (ref text)\n42\n');
   for (const optimization of [0, 3]) {
     const flags = [`-O${optimization}`];
     const run = cli(["run", input, ...flags]);

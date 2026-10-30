@@ -11,7 +11,7 @@ def random_keys :: i64 -> [i64u]
 fn random_keys size =
     let mut keys = Vec.with_capacity size
     let mut state = 88172645463325252
-    for _index in 0i64 .. size - 1 do
+    for _index in 0i64 ..= size - 1 do
         state = next_state state
         keys = Vec.push_owned (state >>> 20) keys
     Vec.to_array keys
@@ -19,13 +19,13 @@ fn random_keys size =
 def filled :: ref [i64u] -> Map<i64u, i64u>
 fn filled keys =
     let mut map: Map<i64u, i64u> = Map.empty()
-    for index in 0i64 .. keys.length - 1 do map = Map.insert keys[index] (keys[index] & 1023) map
+    for index in 0i64 ..= keys.length - 1 do map = Map.insert keys[index] (keys[index] & 1023) map
     map
 
 def ascending_set :: i64 -> i64 -> Set<i64>
 fn ascending_set size step =
     let mut set: Set<i64> = Set.empty()
-    for index in 0i64 .. size - 1 do set = Set.insert (index * step) set
+    for index in 0i64 ..= size - 1 do set = Set.insert (index * step) set
     set
 
 def insert_random :: i64 -> (i64u * i64)
@@ -42,7 +42,7 @@ fn lookup_random size =
     let map = filled (ref keys)
     let! first = Time.monotonic_ns ()
     let mut total = 0i64u
-    for index in 0i64 .. size - 1 do total = fold total (Maybe.default_value 0 (Map.get keys[index] (ref map)))
+    for index in 0i64 ..= size - 1 do total = fold total (Maybe.default_value 0 (Map.get keys[index] (ref map)))
     let! second = Time.monotonic_ns ()
     (total, Result.get second - Result.get first)
 
@@ -51,7 +51,7 @@ fn remove_random size =
     let keys = random_keys size
     let mut map = filled (ref keys)
     let! first = Time.monotonic_ns ()
-    for index in 0i64 .. size - 1 do map = Map.remove keys[index] map
+    for index in 0i64 ..= size - 1 do map = Map.remove keys[index] map
     let! second = Time.monotonic_ns ()
     (Map.length (ref map) as i64u, Result.get second - Result.get first)
 
@@ -59,7 +59,7 @@ def insert_ascending :: i64 -> (i64u * i64)
 fn insert_ascending size =
     let! first = Time.monotonic_ns ()
     let mut map: Map<i64, i64> = Map.empty()
-    for index in 0i64 .. size - 1 do map = Map.insert index 1 map
+    for index in 0i64 ..= size - 1 do map = Map.insert index 1 map
     let! second = Time.monotonic_ns ()
     (Map.length (ref map) as i64u, Result.get second - Result.get first)
 
@@ -67,17 +67,17 @@ fn insert_ascending size =
 def update_counter :: i64 -> (i64u * i64)
 fn update_counter size =
     let mut counts: Map<i64u, i64u> = Map.empty()
-    for key in 0i64u .. 1023i64u do counts = Map.insert key 0 counts
+    for key in 0i64u ..= 1023i64u do counts = Map.insert key 0 counts
     let! first = Time.monotonic_ns ()
     let mut state = 1i64u
-    for _index in 0i64 .. size - 1 do
+    for _index in 0i64 ..= size - 1 do
         state = next_state state
         let key = (state >>> 33) & 1023
         let count = Maybe.default_value 0 (Map.get key (ref counts))
         counts = Map.insert key (count + 1) counts
     let! second = Time.monotonic_ns ()
     let mut total = 0i64u
-    for key in 0i64u .. 1023i64u do total = fold total (Maybe.default_value 0 (Map.get key (ref counts)))
+    for key in 0i64u ..= 1023i64u do total = fold total (Maybe.default_value 0 (Map.get key (ref counts)))
     (total, Result.get second - Result.get first)
 
 def set_algebra :: i64 -> (i64u * i64)

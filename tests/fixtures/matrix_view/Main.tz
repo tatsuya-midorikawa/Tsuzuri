@@ -51,13 +51,13 @@ fn degenerate rows cols =
 
 export def array_view :: own i64 -> own i64 -> i64
 fn array_view rows cols =
-    let data = new [i64](rows * cols, k -> k * 3 + 1)
+    let data = new [i64](rows * cols, \k -> k * 3 + 1)
     digest (MatrixView.of_array rows cols (ref data))
 
 // A buffer of 40 elements holding k * 7 + 3 at index k, with an arbitrary layout over it.
 export def strided_layout :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn strided_layout offset rows cols row_stride col_stride =
-    let data = new [i64](40, k -> k * 7 + 3)
+    let data = new [i64](40, \k -> k * 7 + 3)
     digest (MatrixView.strided offset rows cols row_stride col_stride (ref data))
 
 // get inside and outside the transposed view, and at inside it.
@@ -66,8 +66,8 @@ fn access rows cols =
     let m = Matrix.init rows cols (\i j -> i * 100 + j)
     let view = MatrixView.transpose (MatrixView.of_matrix (ref m))
     let mut total = 3
-    for i in (-1) .. (MatrixView.rows view) do
-        for j in (-1) .. (MatrixView.cols view) do
+    for i in (-1) ..= (MatrixView.rows view) do
+        for j in (-1) ..= (MatrixView.cols view) do
             total = mix total (Maybe.default_value (-1) (MatrixView.get i j view))
             if i >= 0 && i < MatrixView.rows view && j >= 0 && j < MatrixView.cols view then
                 total = mix total (deref (MatrixView.at i j view))
@@ -118,7 +118,7 @@ fn oracle_element left right inner cols row col =
     total
 
 private def oracle_product :: Numeric<'a> => own i64 -> own i64 -> own i64 -> ref ['a] -> ref ['a] -> ['a]
-fn oracle_product rows inner cols left right = new ['a](rows * cols, index -> oracle_element left right inner cols (index / cols) (index % cols))
+fn oracle_product rows inner cols left right = new ['a](rows * cols, \index -> oracle_element left right inner cols (index / cols) (index % cols))
 
 // (inner x rows)^T * (cols x inner)^T through windows, against the textbook sums of the explicit copies and
 // against Matrix.mul of those copies.
@@ -185,7 +185,7 @@ fn view_int_product n seed =
 // Every writable-window operation once; needs rows >= 2 and cols >= 2. The buffer is read after the last use of the window.
 export def mut_script :: own i64 -> own i64 -> i64
 fn mut_script rows cols =
-    let mut buffer = new [i64](rows * cols, k -> k)
+    let mut buffer = new [i64](rows * cols, \k -> k)
     let source = Matrix.init rows cols (\i j -> 1000 + i * 10 + j)
     let mut window = MatrixView.of_array_mut rows cols (ref mut buffer)
     MatrixView.write 0 0 99 (ref mut window)
@@ -212,11 +212,11 @@ fn mut_script rows cols =
 // Row-wise writes through exclusive row slices.
 export def rowwise :: own i64 -> own i64 -> i64
 fn rowwise rows cols =
-    let mut buffer = new [i64](rows * cols, _ -> 0)
+    let mut buffer = new [i64](rows * cols, \_ -> 0)
     let mut window = MatrixView.of_array_mut rows cols (ref mut buffer)
-    for i in 0i64 .. (rows - 1) do
+    for i in 0i64 ..= (rows - 1) do
         let line = MatrixView.row_mut i (ref mut window)
-        for j in 0i64 .. (cols - 1) do
+        for j in 0i64 ..= (cols - 1) do
             Array.write j (i * 1000 + j) line
     let mut total = 0
     let mut index = 0
@@ -242,8 +242,8 @@ fn owned_elements n =
     let view = MatrixView.transpose (MatrixView.of_matrix (ref words))
     let part = MatrixView.sub 1 0 (MatrixView.rows view - 1) (MatrixView.cols view) view
     let mut total = 0
-    for i in 0i64 .. (MatrixView.rows part - 1) do
-        for j in 0i64 .. (MatrixView.cols part - 1) do
+    for i in 0i64 ..= (MatrixView.rows part - 1) do
+        for j in 0i64 ..= (MatrixView.cols part - 1) do
             let word = MatrixView.at i j part
             total = mix total word.length
     mix total (MatrixView.rows part * 100 + MatrixView.cols part)
@@ -272,7 +272,7 @@ fn huge_empty =
 
 export def strided_trap :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn strided_trap offset rows cols row_stride col_stride =
-    let data = new [i64](10, k -> k)
+    let data = new [i64](10, \k -> k)
     MatrixView.rows (MatrixView.strided offset rows cols row_stride col_stride (ref data))
 
 export def of_array_trap :: i64

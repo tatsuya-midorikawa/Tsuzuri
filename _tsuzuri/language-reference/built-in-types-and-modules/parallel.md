@@ -64,7 +64,7 @@ Array.sum ref lengths
 ```tsuzuri run=56
 def scale :: i64 -> ref mut [i64..] -> unit
 fn scale start chunk =
-    for index in 0i64 .. (chunk.length - 1) do
+    for index in 0i64 ..= (chunk.length - 1) do
         Array.write index ((start + index) * 2) chunk
 
 let mut values = new [i64](8, \_index -> 0)

@@ -14,7 +14,7 @@ instance Ord<Keyed> {
 
 export def array_basics :: i64
 fn array_basics =
-    let values = Array.init 5 (index -> index + 1)
+    let values = Array.init 5 (\index -> index + 1)
     let sub = Array.sub 1 3 (ref values)
     let reversed = Array.rev (ref sub)
     let joined = Array.append (ref sub) (ref reversed)
@@ -27,7 +27,7 @@ export def borrowed_search :: i64
 fn borrowed_search =
     let values = new ["one" + "!", "longer" + "!", "last" + "!"]
     let needle = "longer" + "!"
-    let found = Array.try_findr (text -> text.length == 7) (ref values)
+    let found = Array.try_findr (\text -> text.length == 7) (ref values)
     let smallest = Array.minr (ref values)
     let largest = Array.maxr (ref values)
     assert (Array.containsr (ref needle) (ref values))
@@ -37,26 +37,26 @@ fn borrowed_search =
 export def bulk_callbacks :: i64
 fn bulk_callbacks =
     let values = [1, 2, 3]
-    let mapped = Array.map_owned (value -> value * 2) (ref values)
-    let indexed = Array.mapi_owned (index -> value -> value + index) (ref values)
-    let forward = Array.fold_owned (state -> value -> state * 10 + value) 0 (ref values)
-    let backward = Array.fold_back_owned (value -> state -> state * 10 + value) 0 (ref values)
-    let refs = Array.mapr (value -> deref value + 1) (ref values)
-    let indexed_refs = Array.mapir (index -> value -> deref value + index) (ref values)
-    let folded_refs = Array.foldr (state -> value -> state + deref value) 0 (ref values)
-    let folded_back = Array.foldr_back (value -> state -> state + deref value) 0 (ref values)
+    let mapped = Array.map_owned (\value -> value * 2) (ref values)
+    let indexed = Array.mapi_owned (\index value -> value + index) (ref values)
+    let forward = Array.fold_owned (\state value -> state * 10 + value) 0 (ref values)
+    let backward = Array.fold_back_owned (\value state -> state * 10 + value) 0 (ref values)
+    let refs = Array.mapr (\value -> deref value + 1) (ref values)
+    let indexed_refs = Array.mapir (\index value -> deref value + index) (ref values)
+    let folded_refs = Array.foldr (\state value -> state + deref value) 0 (ref values)
+    let folded_back = Array.foldr_back (\value state -> state + deref value) 0 (ref values)
     forward + backward + Array.sum (ref mapped) + Array.sum (ref indexed) + Array.sum (ref refs) + Array.sum (ref indexed_refs) + folded_refs + folded_back
 
 export def bulk_empty :: i64
 fn bulk_empty =
     let values: [i64] = []
     assert (Array.is_empty (ref values))
-    assert (Array.forallr (value -> unreachable ()) (ref values))
-    assert (Array.forall (value -> unreachable ()) (ref values))
-    assert (!(Array.existsr (value -> unreachable ()) (ref values)))
-    assert (!(Array.exists (value -> unreachable ()) (ref values)))
+    assert (Array.forallr (\value -> unreachable ()) (ref values))
+    assert (Array.forall (\value -> unreachable ()) (ref values))
+    assert (!(Array.existsr (\value -> unreachable ()) (ref values)))
+    assert (!(Array.exists (\value -> unreachable ()) (ref values)))
     let first = Array.try_head (ref values)
-    let found = Array.try_findr (value -> unreachable ()) (ref values)
+    let found = Array.try_findr (\value -> unreachable ()) (ref values)
     assert (Maybe.is_none (ref first))
     assert (Maybe.is_none (ref found))
     Array.sum (ref values) + Array.product (ref values)
@@ -64,36 +64,36 @@ fn bulk_empty =
 export def bulk_short_circuit :: bool
 fn bulk_short_circuit =
     let values = [1, 0]
-    let predicate: ref i64 -> bool = value -> { assert (deref value != 0); true }
-    let rejecting: ref i64 -> bool = value -> { assert (deref value != 0); false }
-    Array.existsr predicate (ref values) && !(Array.forallr rejecting (ref values)) && *(Maybe.get (Array.try_findr predicate (ref values))) == 1
+    let predicate: ref i64 -> bool = \value -> { assert (deref value != 0); true }
+    let rejecting: ref i64 -> bool = \value -> { assert (deref value != 0); false }
+    Array.existsr predicate (ref values) && !(Array.forallr rejecting (ref values)) && deref (Maybe.get (Array.try_findr predicate (ref values))) == 1
 
 export def bulk_list :: i64
 fn bulk_list =
     let values = [1, 2, 3]
     let list = Array.to_list (ref values)
-    let mapped = List.map_owned (value -> value + 1) (ref list)
+    let mapped = List.map_owned (\value -> value + 1) (ref list)
     let reversed = List.rev (ref mapped)
     let array = List.to_array (ref reversed)
     let strings = new [|"one" + "!", "two" + "!"|]
-    let sizes = List.mapr (text -> text.length) (ref strings)
-    let total = List.fold_owned (state -> value -> state + value) 0 (ref sizes)
-    let borrowed_total = List.foldr (state -> text -> state + text.length) 0 (ref strings)
-    Array.fold_owned (state -> value -> state * 10 + value) 0 (ref array) + total + borrowed_total
+    let sizes = List.mapr (\text -> text.length) (ref strings)
+    let total = List.fold_owned (\state value -> state + value) 0 (ref sizes)
+    let borrowed_total = List.foldr (\state text -> state + text.length) 0 (ref strings)
+    Array.fold_owned (\state value -> state * 10 + value) 0 (ref array) + total + borrowed_total
 
 export def sort_numbers :: own i64 -> i64
 fn sort_numbers count =
-    let values = new [i64](count, index -> (index * 13 + 7) % 19)
+    let values = new [i64](count, \index -> (index * 13 + 7) % 19)
     let sorted = Array.sort (ref values)
-    let weighted = Array.mapi_owned (index -> value -> (index + 1) * value) (ref sorted)
+    let weighted = Array.mapi_owned (\index value -> (index + 1) * value) (ref sorted)
     Array.sum (ref weighted)
 
 export def sort_stable_owned :: i64
 fn sort_stable_owned =
     let captured = "owned" + "!"
-    let values = new [Keyed](6, index -> Keyed { key: index % 2, ordinal: index, read: value -> value + captured.length })
+    let values = new [Keyed](6, \index -> Keyed { key: index % 2, ordinal: index, read: \value -> value + captured.length })
     let sorted = Array.sort (ref values)
-    Array.fold_owned (state -> value -> state * 10 + value.read value.ordinal) 0 (ref sorted)
+    Array.fold_owned (\state value -> state * 10 + value.read value.ordinal) 0 (ref sorted)
 
 export def sort_float :: bool
 fn sort_float =
@@ -118,8 +118,8 @@ fn first_duplicate =
 export def filtered :: i64
 fn filtered =
     let values = [1, 2, 3, 4, 5]
-    let selected = Array.filter (value -> value % 2 == 1) (ref values)
-    Array.fold_owned (state -> value -> state * 10 + value) 0 (ref selected)
+    let selected = Array.filter (\value -> value % 2 == 1) (ref values)
+    Array.fold_owned (\state value -> state * 10 + value) 0 (ref selected)
 
 export def trap_sub :: i64
 fn trap_sub =
@@ -136,12 +136,12 @@ fn trap_zip =
 export def foldr_union_state :: i64
 fn foldr_union_state =
     let numbers = new [|3, 4|]
-    let digits: Result<i64, string> = List.foldr (state -> item -> match state with | Ok total -> Ok (total * 10 + deref item) | Error error -> Error error) (Ok 0) (ref numbers)
+    let digits: Result<i64, string> = List.foldr (\state item -> match state with | Ok total -> Ok (total * 10 + deref item) | Error error -> Error error) (Ok 0) (ref numbers)
     let rows = new [|[1, 2], [3, 4, 5]|]
-    let lengths: Result<i64, string> = List.foldr (state -> row -> match state with | Ok total -> Ok (total * 10 + row.length) | Error error -> Error error) (Ok 0) (ref rows)
+    let lengths: Result<i64, string> = List.foldr (\state row -> match state with | Ok total -> Ok (total * 10 + row.length) | Error error -> Error error) (Ok 0) (ref rows)
     let words = new [|"ab", "cde"|]
-    let joined: Result<string, string> = List.foldr (state -> word -> match state with | Ok text -> Ok (text + clone_string word) | Error error -> Error error) (Ok "") (ref words)
-    let rendered: Result<Vec<string>, string> = List.foldr (state -> item -> match state with | Ok items -> Ok (Vec.push_owned (Display.display item) items) | Error error -> Error error) (Ok (Vec.empty())) (ref numbers)
+    let joined: Result<string, string> = List.foldr (\state word -> match state with | Ok text -> Ok (text + clone_string word) | Error error -> Error error) (Ok "") (ref words)
+    let rendered: Result<Vec<string>, string> = List.foldr (\state item -> match state with | Ok items -> Ok (Vec.push_owned (Display.display item) items) | Error error -> Error error) (Ok (Vec.empty())) (ref numbers)
     let first = match digits with
         | Ok value -> value
         | Error _ -> -1

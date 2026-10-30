@@ -302,6 +302,7 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
     // The `dyn` types repeat types already in the tree (A14); declaration starts are positions.
     program.dyn_types.clear();
     program.declaration_starts.clear();
+    program.noncanonical.clear();
     for attribute in &mut program.cpu_attributes {
         canonical.ident(&mut attribute.function);
     }

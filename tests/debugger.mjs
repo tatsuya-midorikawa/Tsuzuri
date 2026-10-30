@@ -210,7 +210,7 @@ try {
     "def build :: i64 -> Set<i64>",
     "fn build count =",
     "    let mut set: Set<i64> = Set.empty()",
-    "    for key in 0i64 .. count - 1 do set = Set.insert key set",
+    "    for key in 0i64 ..= count - 1 do set = Set.insert key set",
     "    set",
     "",
     "def inspect :: i64 -> i64",

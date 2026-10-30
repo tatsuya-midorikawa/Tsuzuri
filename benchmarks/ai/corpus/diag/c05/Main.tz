@@ -13,7 +13,7 @@ def score :: ref Note -> i64 = \note -> note.stars * 10 + note.title.length
 
 def best_index :: ref [Note] -> i64 = \notes ->
     let mut best = 0
-    for i in 1 .. notes.length - 1 do
+    for i in 1 ..= notes.length - 1 do
         if score (ref notes[i]) > score (ref notes[best]) then best = i
     best
 
@@ -22,7 +22,7 @@ def title_at :: ref [Note] -> i64 -> ref string = \notes index ->
 
 def shortest :: ref [Note] -> i64 = \notes ->
     let mut count = 0
-    for i in 0 .. notes.length - 1 do
+    for i in 0 ..= notes.length - 1 do
         if short (ref notes[i]) then count = count + 1
     count
 

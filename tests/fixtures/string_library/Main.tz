@@ -114,10 +114,10 @@ fn character_units =
 
 export def all_unit_transfer :: i64
 fn all_unit_transfer =
-    let units = new [i16u](65536, index -> index as i16u)
+    let units = new [i16u](65536, \index -> index as i16u)
     let text = String.from_code_units units
     let moved = String.to_code_units text
-    Array.fold_owned (total -> value -> total + value as i64) 0 (ref moved)
+    Array.fold_owned (\total value -> total + value as i64) 0 (ref moved)
 
 export def validate_bytes :: own i32 -> i64
 fn validate_bytes which =

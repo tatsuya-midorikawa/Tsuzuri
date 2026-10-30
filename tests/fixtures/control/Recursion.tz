@@ -46,13 +46,13 @@ fn recursion_wide mode =
     else
         wide_unsigned 340282366920938463463374607431768211455i128u 3 0 as i64
 
-def mark :: &mut i64 -> own i64 -> i64
-fn mark value digit = { *value = *value * 10 + digit; *value }
+def mark :: ref mut i64 -> own i64 -> i64
+fn mark value digit = { deref value = deref value * 10 + digit; deref value }
 
 def rec order :: own i64 -> i64 -> own i64 -> i64
 fn rec order rounds mut value result =
     if rounds == 0 then value * 10000 + result else
-    order (rounds - 1) (mark (&mut value) 1 + mark (&mut value) 2) ({ let observed = value; value = 99; observed })
+    order (rounds - 1) (mark (ref mut value) 1 + mark (ref mut value) 2) ({ let observed = value; value = 99; observed })
 
 def add :: own i64 -> own i64 -> i64
 fn add x y = { x + y }
@@ -60,12 +60,12 @@ fn add x y = { x + y }
 def rec order_call :: own i64 -> i64 -> own i64 -> i64
 fn rec order_call rounds mut value result =
     if rounds == 0 then value * 10000 + result else
-    order_call (rounds - 1) (add (mark (&mut value) 1) (mark (&mut value) 2)) ({ let observed = value; value = 99; observed })
+    order_call (rounds - 1) (add (mark (ref mut value) 1) (mark (ref mut value) 2)) ({ let observed = value; value = 99; observed })
 
 def rec order_builtin :: own i64 -> i64 -> own i64 -> i64
 fn rec order_builtin rounds mut value result =
     if rounds == 0 then value * 10000 + result else
-    order_builtin (rounds - 1) (Add.add (mark (&mut value) 1) (mark (&mut value) 2)) ({ let observed = value; value = 99; observed })
+    order_builtin (rounds - 1) (Add.add (mark (ref mut value) 1) (mark (ref mut value) 2)) ({ let observed = value; value = 99; observed })
 
 export def recursion_order :: own i32 -> i64
 fn recursion_order mode =

@@ -3,7 +3,7 @@
 export def lock_trap :: own i64 -> i64
 fn lock_trap divisor =
     let cell = Mutex.create 100i64
-    Mutex.with_lock (ref cell) (value -> {
+    Mutex.with_lock (ref cell) (\value -> {
         deref value = deref value / divisor;
         deref value
     })
@@ -11,14 +11,14 @@ fn lock_trap divisor =
 export def lock_after :: i64
 fn lock_after =
     let cell = Mutex.create 5i64
-    Mutex.with_lock (ref cell) (value -> deref value + 1)
+    Mutex.with_lock (ref cell) (\value -> deref value + 1)
 
 // Every child adds to one total under the lock; the child `bad` traps while it holds the lock, and
 // the children that wait for it must not wait for ever.
 export def group_lock_trap :: own i64 -> own i64 -> i64
 fn group_lock_trap count bad =
     let total = Mutex.create 0i64
-    let results = Task.scope (ref total) count (shared -> index -> Mutex.with_lock shared (value -> {
+    let results = Task.scope (ref total) count (\shared index -> Mutex.with_lock shared (\value -> {
         deref value = deref value + 100 / (if index == bad then 0 else 1);
         index
     }))
@@ -30,18 +30,18 @@ fn nested_lock =
     let outer = Mutex.create 1i64
     let inner = Mutex.create 2i64
     let inner_borrow = ref inner
-    Mutex.with_lock (ref outer) (_value -> Mutex.with_lock inner_borrow (other -> deref other))
+    Mutex.with_lock (ref outer) (\_value -> Mutex.with_lock inner_borrow (\other -> deref other))
 
 export def start_inside :: i64
 fn start_inside =
     let outer = Mutex.create 1i64
     let unit_value = 0i64
-    Mutex.with_lock (ref outer) (_value -> Array.sum (ref (Task.scope (ref unit_value) 3 (_shared -> index -> index))))
+    Mutex.with_lock (ref outer) (\_value -> Array.sum (ref (Task.scope (ref unit_value) 3 (\_shared index -> index))))
 
 export def lock_again :: i64
 fn lock_again =
     let cell = Mutex.create 41i64
-    Mutex.with_lock (ref cell) (value -> deref value + 1)
+    Mutex.with_lock (ref cell) (\value -> deref value + 1)
 
 // Channels under --trap-mode return (F10 Phase 2). A deadlock is a trap like any other: the verdict
 // wakes every waiter with the failure, the group completes, and the boundary reports the trap and frees
@@ -114,5 +114,5 @@ fn channel_in_lock =
     | (sender, receiver) ->
         let lock = Mutex.create 0i64
         let borrowed = ref sender
-        let held = Mutex.with_lock (ref lock) (_value -> match Channel.send borrowed 1 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
+        let held = Mutex.with_lock (ref lock) (\_value -> match Channel.send borrowed 1 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
         held + (match Channel.recv (ref receiver) with | Maybe.Some value -> value | Maybe.None -> 0)

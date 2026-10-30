@@ -171,12 +171,12 @@ fn first_duplicate members =
 			index = index + 1
 	else
 		let mut keys = Vec.with_capacity count
-		for index in 0 .. (count - 1) do
+		for index in 0 ..= (count - 1) do
 			match members[index] with
 			| (key, _) -> keys = Vec.push_owned (clone_string key, index) keys
 		let mut sorted = Vec.to_array keys
 		Array.sort_in_place (ref mut sorted)
-		for index in 1 .. (count - 1) do
+		for index in 1 ..= (count - 1) do
 			match sorted[index] with
 			| (key, position) ->
 				match sorted[index - 1] with
@@ -430,13 +430,13 @@ fn rec emit_value output value =
 	| Text text -> emit_string output text
 	| Items items ->
 		let mut bytes = Vec.push_owned 91ubyte output
-		for index in 0 .. (items.length - 1) do
+		for index in 0 ..= (items.length - 1) do
 			if index > 0 then bytes = Vec.push_owned 44ubyte bytes
 			bytes = emit_value bytes (ref items[index])
 		Vec.push_owned 93ubyte bytes
 	| Object members ->
 		let mut bytes = Vec.push_owned 123ubyte output
-		for index in 0 .. (members.length - 1) do
+		for index in 0 ..= (members.length - 1) do
 			if index > 0 then bytes = Vec.push_owned 44ubyte bytes
 			match members[index] with
 			| (key, item) ->
@@ -454,7 +454,7 @@ fn to_utf8string value = text_of (emit_value (Vec.empty()) value)
 private def push_spaces :: own Vec<ubyte> -> own i64 -> Vec<ubyte>
 fn push_spaces output count =
 	let mut bytes = output
-	for _index in 1 .. count do bytes = Vec.push_owned 32ubyte bytes
+	for _index in 1 ..= count do bytes = Vec.push_owned 32ubyte bytes
 	bytes
 
 /// `value` as `JSON.stringify(value, null, indent)` writes it for `indent` from 1 to 10.
@@ -464,14 +464,14 @@ fn rec emit_pretty output value indent level =
 	| Items items ->
 		if items.length == 0 then Vec.push_owned 93ubyte (Vec.push_owned 91ubyte output) else
 			let mut bytes = Vec.push_owned 91ubyte output
-			for index in 0 .. (items.length - 1) do
+			for index in 0 ..= (items.length - 1) do
 				if index > 0 then bytes = Vec.push_owned 44ubyte bytes
 				bytes = emit_pretty (push_spaces (Vec.push_owned 10ubyte bytes) (indent * (level + 1))) (ref items[index]) indent (level + 1)
 			Vec.push_owned 93ubyte (push_spaces (Vec.push_owned 10ubyte bytes) (indent * level))
 	| Object members ->
 		if members.length == 0 then Vec.push_owned 125ubyte (Vec.push_owned 123ubyte output) else
 			let mut bytes = Vec.push_owned 123ubyte output
-			for index in 0 .. (members.length - 1) do
+			for index in 0 ..= (members.length - 1) do
 				if index > 0 then bytes = Vec.push_owned 44ubyte bytes
 				match members[index] with
 				| (key, item) ->
@@ -536,7 +536,7 @@ fn rec decode_float value =
 	| _ -> Result.Error (expected "number")
 
 instance Encode<bool> {
-	fn rec encode value = Result.Ok (Bool *value)
+	fn rec encode value = Result.Ok (Bool (deref value))
 }
 
 instance Decode<bool> {
@@ -824,7 +824,7 @@ fn end_entries entries =
 	| Result.Error error -> Result.Error error
 	| Result.Ok pairs ->
 		let mut textual = true
-		for index in 0 .. (Vec.length (ref pairs) - 1) do
+		for index in 0 ..= (Vec.length (ref pairs) - 1) do
 			match pairs[index] with
 			| (Text _, _) -> ()
 			| _ -> textual = false
@@ -914,7 +914,7 @@ fn by_key entries =
 	let mut sorted = Vec.to_array entries
 	Array.sort_in_place (ref mut sorted)
 	let mut found = -1
-	for index in 1 .. (sorted.length - 1) do
+	for index in 1 ..= (sorted.length - 1) do
 		if !(Ord.lt (ref sorted[index - 1].key) (ref sorted[index].key)) && (found < 0 || sorted[index].index < found) then found = sorted[index].index
 	let mut low = 0
 	let mut high = sorted.length - 1
@@ -1080,11 +1080,11 @@ fn rec copy_value value =
 	| Text text -> Text (clone_string text)
 	| Items items ->
 		let mut copies = Vec.with_capacity items.length
-		for index in 0 .. (items.length - 1) do copies = Vec.push_owned (copy_value (ref items[index])) copies
+		for index in 0 ..= (items.length - 1) do copies = Vec.push_owned (copy_value (ref items[index])) copies
 		Items (Vec.to_array copies)
 	| Object members ->
 		let mut copies = Vec.with_capacity members.length
-		for index in 0 .. (members.length - 1) do
+		for index in 0 ..= (members.length - 1) do
 			match members[index] with
 			| (key, item) -> copies = Vec.push_owned (clone_string (ref key), copy_value (ref item)) copies
 		Object (Vec.to_array copies)
@@ -1173,7 +1173,7 @@ fn member_index value key =
 		let mut index = 0
 		while found < 0 && index < members.length do
 			match members[index] with
-			| (name, _) -> if name == *key then found = index
+			| (name, _) -> if name == deref key then found = index
 			index = index + 1
 		found
 	| _ -> -1
@@ -1210,7 +1210,7 @@ fn name_index names name =
 	let mut found = -1
 	let mut index = 0
 	while found < 0 && index < names.length do
-		if names[index] == *name then found = index
+		if names[index] == deref name then found = index
 		index = index + 1
 	found
 
@@ -1308,7 +1308,7 @@ fn scan_string text start =
 private def repeated_key :: ref utf8string -> ref Vec<Lexeme> -> own i64 -> own i64 -> Maybe<Error>
 fn repeated_key text keys first last =
 	let mut members = Vec.with_capacity (last - first)
-	for index in first .. (last - 1) do
+	for index in first ..= (last - 1) do
 		let token = keys[index]
 		match parse_string text (token.start - 1) with
 		| Result.Ok (key, _) -> members = Vec.push_owned (key, Null) members
@@ -1325,7 +1325,7 @@ private def reader_failure :: ref utf8string -> ref Reader -> own Error -> Resul
 fn reader_failure text reader error =
 	let mut best = error
 	let count = Vec.length (ref reader.marks)
-	for object in 0 .. (count - 1) do
+	for object in 0 ..= (count - 1) do
 		let last = if object + 1 < count then reader.marks[object + 1] else Vec.length (ref reader.keys)
 		match repeated_key text (ref reader.keys) reader.marks[object] last with
 		| Maybe.Some repeated -> if repeated.offset < best.offset then best = repeated
@@ -1444,7 +1444,7 @@ def token_matches :: ref string -> ref utf8string -> ref Lexeme -> bool
 fn token_matches expected text token =
 	if token.escaped || token.start < 1 || token.finish >= text.length || token.finish < token.start then
 		match token_text text token with
-		| Result.Ok value -> value == *expected
+		| Result.Ok value -> value == deref expected
 		| Result.Error _ -> false
 	else
 		let mut index = token.start

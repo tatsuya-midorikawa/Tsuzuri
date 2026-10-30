@@ -168,7 +168,7 @@ export def captured :: own i64 -> i64
 fn captured n =
     let label = Some "abc"
     let shape = Rect (to_float n, 2.0)
-    let measure = x -> x + to_int (area shape) + text_length label
+    let measure = \x -> x + to_int (area shape) + text_length label
     measure 1 + measure 2
 
 export def qualified :: own i64 -> i64

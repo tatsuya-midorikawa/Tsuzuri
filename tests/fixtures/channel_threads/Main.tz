@@ -103,7 +103,7 @@ fn work receiver total = task {
     while open do
         match Channel.recv (Arc.get (ref receiver)) with
         | Maybe.Some job ->
-            let _seen = Mutex.with_lock (Arc.get (ref total)) (value -> {
+            let _seen = Mutex.with_lock (Arc.get (ref total)) (\value -> {
                 deref value = deref value + job * job;
                 0
             })
@@ -119,7 +119,7 @@ fn job_queue count capacity =
         let shared = Arc.new receiver
         let total = Arc.new (Mutex.create 0i64)
         let results = Task.run (Task.parallel [produce sender 1 count, work (Arc.share (ref shared)) (Arc.share (ref total)), work (Arc.share (ref shared)) (Arc.share (ref total))])
-        let squares = Mutex.with_lock (Arc.get (ref total)) (value -> deref value)
+        let squares = Mutex.with_lock (Arc.get (ref total)) (\value -> deref value)
         squares * 1000 + results[1] + results[2]
 
 record Link {
@@ -161,7 +161,7 @@ fn ping_pong rounds =
         match Channel.bounded 1 with
         | (back_sender, back_receiver) ->
             let link = Link { forward_sender: forward_sender, forward_receiver: forward_receiver, back_sender: back_sender, back_receiver: back_receiver }
-            let results = Task.scope (ref link) 2 (shared -> index -> if index == 0 then ping shared rounds else pong shared rounds)
+            let results = Task.scope (ref link) 2 (\shared index -> if index == 0 then ping shared rounds else pong shared rounds)
             results[0] * 1000000 + results[1]
 
 def send_tokens :: own Channel.Sender<Token> -> own Arc<Atomic<i64>> -> own i64 -> Task<i64>

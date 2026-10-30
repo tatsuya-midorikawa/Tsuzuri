@@ -391,6 +391,7 @@ fn declare_module(
         cpu_attributes: _,
         effect_attributes: _,
         trusted: _,
+        noncanonical: _,
         aliases: _,
         declaration_starts: _,
     } = input.program;

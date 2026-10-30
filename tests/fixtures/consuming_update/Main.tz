@@ -1,6 +1,6 @@
 export def update_numbers :: own i64 -> own i64 -> own i64 -> i64
 fn update_numbers count index value =
-    let values = new [i64](count, offset -> offset)
+    let values = new [i64](count, \offset -> offset)
     let updated = Array.__set index value values
     let mut total = 0
     for item in updated do total = total + item
@@ -17,13 +17,13 @@ export def update_callback :: i64
 fn update_callback =
     let values = new ["old" + "!", "last" + "!"]
     let suffix = "new" + "!"
-    let updated = Array.update 0 (text -> text + suffix) values
+    let updated = Array.update 0 (\text -> text + suffix) values
     updated[0].length + updated[1].length
 
 export def update_owned :: own i64 -> i64
 fn update_owned count =
     let mut values = new ["start" + "!", "last" + "!"]
-    for index in 1 .. count do
+    for index in 1 ..= count do
         values = Array.__set 0 ("next" + "!") values
     values[0].length + values[1].length
 

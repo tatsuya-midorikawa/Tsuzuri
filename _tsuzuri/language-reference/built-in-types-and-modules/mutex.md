@@ -17,7 +17,7 @@
 
 ```tsuzuri run=total%3D36%20indices%3D28
 let total = Mutex.create 0i64
-let seen = Task.scope (ref total) 8 (shared -> index -> Mutex.with_lock shared (value -> {
+let seen = Task.scope (ref total) 8 (\shared index -> Mutex.with_lock shared (\value -> {
     deref value = deref value + index + 1;
     index
 }))
@@ -40,7 +40,7 @@ total=36 indices=28
 record Stats { count: i64, sum: i64 }
 
 let stats = Mutex.create (Stats { count: 0, sum: 0 })
-let _seen = Task.scope (ref stats) 100 (shared -> index -> Mutex.with_lock shared (value -> {
+let _seen = Task.scope (ref stats) 100 (\shared index -> Mutex.with_lock shared (\value -> {
     let current = deref value;
     deref value = Stats { count: current.count + 1, sum: current.sum + index };
     0
@@ -64,7 +64,7 @@ count=100 sum=4950
 ```tsuzuri run=total%3D36%20owners%3D1
 def bump :: own Arc<Mutex<i64>> -> i64 -> Task<i64>
 fn bump shared amount = task {
-    return Mutex.with_lock (Arc.get (ref shared)) (value -> { deref value = deref value + amount; amount })
+    return Mutex.with_lock (Arc.get (ref shared)) (\value -> { deref value = deref value + amount; amount })
 }
 
 def bumps :: ref Arc<Mutex<i64>> -> i64 -> [Task<i64>]
@@ -72,7 +72,7 @@ fn bumps shared n = new [Task<i64>](n, \index -> bump (Arc.share shared) (index 
 
 let shared = Arc.new (Mutex.create 0i64)
 let _seen = Task.run (Task.parallel (bumps (ref shared) 8))
-let total = Mutex.with_lock (Arc.get (ref shared)) (value -> deref value)
+let total = Mutex.with_lock (Arc.get (ref shared)) (\value -> deref value)
 $"total={total} owners={Arc.strong_count (ref shared)}"
 ```
 
@@ -93,9 +93,9 @@ total=36 owners=1
 
 ```tsuzuri run=adder%3D15
 let total = Mutex.create 5i64
-let adder = Mutex.with_lock (ref total) (value -> {
+let adder = Mutex.with_lock (ref total) (\value -> {
     let copy = deref value;
-    x -> copy + x
+    \x -> copy + x
 })
 $"adder={adder 10}"
 ```

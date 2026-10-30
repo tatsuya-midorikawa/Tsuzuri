@@ -1,6 +1,6 @@
 def accumulate :: ref mut i64 -> ref i64 -> own i64 -> i64
 fn accumulate output input count =
-    for _index in 0i64 .. (count - 1) do deref output = deref output + deref input
+    for _index in 0i64 ..= (count - 1) do deref output = deref output + deref input
     deref output
 
 export def scalar_loop :: own i64 -> own i64 -> i64
@@ -16,7 +16,7 @@ fn shared_alias seed = together (ref seed) (ref seed)
 
 def copy_elements :: ref mut [i64..] -> ref [i64] -> unit
 fn copy_elements output input =
-    for index in 0i64 .. (input.length - 1) do Array.write index (input[index] + 1) output
+    for index in 0i64 ..= (input.length - 1) do Array.write index (input[index] + 1) output
 
 export def buffer_loop :: own i64 -> i64
 fn buffer_loop count =
@@ -50,7 +50,7 @@ fn disjoint_siblings =
 
 def atomic_steps :: ref Atomic<i64> -> ref Atomic<i64> -> own i64 -> i64
 fn atomic_steps left right count =
-    for _index in 0i64 .. (count - 1) do Atomic.store right (Atomic.load left + 1)
+    for _index in 0i64 ..= (count - 1) do Atomic.store right (Atomic.load left + 1)
     Atomic.load left
 
 export def interior_alias :: own i64 -> own i64 -> i64
@@ -129,7 +129,7 @@ fn union_overlap seed =
     change_mixed (ref mut value)
 
 def checked_step :: own i64 -> unit
-fn checked_step amount = for _ in 1 .. amount .. 2 do ()
+fn checked_step amount = for _ in 1 .. amount ..= 2 do ()
 
 export def trap_step :: unit
 fn trap_step = checked_step 0

@@ -4987,8 +4987,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 finish,
                 body,
                 descending,
+                exclusive,
             } => {
-                self.range_loop(local, start, step, finish, body, *descending);
+                self.range_loop(local, start, step, finish, body, *descending, *exclusive);
                 "0".into()
             }
             TypedExprKind::ForEach {

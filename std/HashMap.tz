@@ -235,13 +235,13 @@ fn longest_probe map =
 	longest
 
 def to_array :: (Copy<'key>, Copy<'value>) => ref HashMap<'key, 'value> -> [('key * 'value)]
-fn to_array map = new [('key * 'value)](length map, index -> (map.entries[index].key, map.entries[index].value))
+fn to_array map = new [('key * 'value)](length map, \index -> (map.entries[index].key, map.entries[index].value))
 
 def keys :: Copy<'key> => ref HashMap<'key, 'value> -> ['key]
-fn keys map = new ['key](length map, index -> map.entries[index].key)
+fn keys map = new ['key](length map, \index -> map.entries[index].key)
 
 def values :: Copy<'value> => ref HashMap<'key, 'value> -> ['value]
-fn values map = new ['value](length map, index -> map.entries[index].value)
+fn values map = new ['value](length map, \index -> map.entries[index].value)
 
 def fold :: own ('state -> ref 'key -> ref 'value -> 'state) -> own 'state -> ref HashMap<'key, 'value> -> 'state
 fn fold folder initial map =

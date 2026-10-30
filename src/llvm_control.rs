@@ -69,6 +69,7 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&exit);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn range_loop(
         &mut self,
         local: &Local,
@@ -77,13 +78,97 @@ impl FunctionEmitter<'_, '_> {
         finish: &TypedExpr,
         body: &TypedExpr,
         descending: bool,
+        exclusive: bool,
     ) {
         let first = self.expression(start);
         let stride = self.expression(step);
         // ranges.rs (R1, R2) relies on start, step and finish being evaluated once, before the loop.
         let last = self.expression(finish);
+        // A half-open range keeps the closed range's facts: its end is one past a sound bound.
         self.ranges
             .enter_counter(self.module, local, start, step, finish, descending);
+        if !exclusive {
+            self.closed_range_loop(local, step, &first, &stride, &last, body, descending);
+            return;
+        }
+        // A22 `start ..< finish`: an empty range skips the loop, and a non-empty one runs the closed
+        // loop up to the value before `finish` in the direction of the step.
+        let join = self.label();
+        let last = self.half_open_last(local, step, &first, &stride, &last, &join);
+        self.closed_range_loop(local, step, &first, &stride, &last, body, false);
+        self.jump(&join);
+        self.begin(&join);
+    }
+
+    /// The closed end of a non-empty half-open range, in a block that only a non-empty range
+    /// reaches; an empty one branches to `join`. A zero step traps first, as a closed range's does.
+    fn half_open_last(
+        &mut self,
+        local: &Local,
+        step: &TypedExpr,
+        first: &str,
+        stride: &str,
+        last: &str,
+        join: &str,
+    ) -> String {
+        let Type::Integer(bits, signed) = local.ty else {
+            unreachable!("integer range checked")
+        };
+        let ty = self.ty(&local.ty);
+        let one = matches!(step.kind, TypedExprKind::Int(1));
+        let minus_one =
+            signed && matches!(step.kind, TypedExprKind::Int(n) if n == u128::MAX >> (128 - bits));
+        let mut positive = None;
+        let nonempty = if one {
+            let order = if signed { "slt" } else { "ult" };
+            self.value(format!("icmp {order} {ty} {first}, {last}"))
+        } else if minus_one {
+            self.value(format!("icmp sgt {ty} {first}, {last}"))
+        } else {
+            let nonzero = self.value(format!("icmp ne {ty} {stride}, 0"));
+            self.guard(&nonzero, TrapKind::RangeStepZero);
+            if signed {
+                let up = self.value(format!("icmp sgt {ty} {stride}, 0"));
+                let below = self.value(format!("icmp slt {ty} {first}, {last}"));
+                let above = self.value(format!("icmp sgt {ty} {first}, {last}"));
+                let nonempty = self.value(format!("select i1 {up}, i1 {below}, i1 {above}"));
+                positive = Some(up);
+                nonempty
+            } else {
+                self.value(format!("icmp ult {ty} {first}, {last}"))
+            }
+        };
+        let prep = self.label();
+        self.branch(&nonempty, &prep, join);
+        self.begin(&prep);
+        // No overflow flags: the non-empty branch keeps `last` away from the type's edge.
+        if minus_one {
+            return self.value(format!("add {ty} {last}, 1"));
+        }
+        let below = self.value(format!("sub {ty} {last}, 1"));
+        match positive {
+            Some(up) => {
+                let above = self.value(format!("add {ty} {last}, 1"));
+                self.value(format!("select i1 {up}, {ty} {below}, {ty} {above}"))
+            }
+            None => below,
+        }
+    }
+
+    /// The loop of a closed range `first .. stride .. last` over `local`, with the three values
+    /// already evaluated.
+    #[allow(clippy::too_many_arguments)]
+    fn closed_range_loop(
+        &mut self,
+        local: &Local,
+        step: &TypedExpr,
+        first: &str,
+        stride: &str,
+        last: &str,
+        body: &TypedExpr,
+        descending: bool,
+    ) {
+        let (first, stride, last) = (first.to_owned(), stride.to_owned(), last.to_owned());
         let Type::Integer(bits, signed) = local.ty else {
             unreachable!("integer range checked")
         };

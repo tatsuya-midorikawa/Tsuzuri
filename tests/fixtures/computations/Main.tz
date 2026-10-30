@@ -1,5 +1,5 @@
 instance Traits.Score<i64> {
-    fn score value = *value
+    fn score value = deref value
 }
 
 instance Traits.Size<string> {
@@ -80,7 +80,7 @@ fn zero_branch flag = Flow { if flag { return 42 } }
 
 export def loop_sum :: own i64 -> i64
 fn loop_sum count = Flow {
-    for n in new [i64](count, i -> i) {
+    for n in new [i64](count, \i -> i) {
         yield n * n
     }
 }
@@ -138,19 +138,19 @@ fn discarded_lazy = {
     42
 }
 
-def stamp :: &mut i64 -> string
+def stamp :: ref mut i64 -> string
 fn stamp counter = {
-    *counter = *counter + 1;
-    if *counter == 1 { "a" } else if *counter == 2 { "b" } else { "c" }
+    deref counter = deref counter + 1;
+    if deref counter == 1 { "a" } else if deref counter == 2 { "b" } else { "c" }
 }
 
 export def evaluation_order :: i64
 fn evaluation_order = {
     let mut counter = 0;
     let value = Text {
-        yield stamp (&mut counter)
-        yield! stamp (&mut counter)
-        return stamp (&mut counter)
+        yield stamp (ref mut counter)
+        yield! stamp (ref mut counter)
+        return stamp (ref mut counter)
     };
     assert (value == "abc");
     counter
@@ -159,26 +159,26 @@ fn evaluation_order = {
 export def borrowed :: i64
 fn borrowed = {
     let value = 42;
-    let reference: &i64 = Identity { return &value };
-    *reference
+    let reference: ref i64 = Identity { return ref value };
+    deref reference
 }
 
 export def type_classes :: i64
 fn type_classes = {
-    let value = Identity { return 37l };
+    let value = Identity { return 37i64 };
     let text = Text { return "owned" };
-    Traits.Score.score (&value) + Traits.Size.size (&text)
+    Traits.Score.score (ref value) + Traits.Size.size (ref text)
 }
 
 export def array_bind :: i64
 fn array_bind = Identity {
-    let! values = [1l, 2, 3]
+    let! values = [1i64, 2, 3]
     return values.length
 }
 
 export def explicit_array_bind :: i64
 fn explicit_array_bind =
-    Identity.Bind [1i64, 2, 3] (values -> Identity.Return values.length)
+    Identity.Bind [1i64, 2, 3] (\values -> Identity.Return values.length)
 
 export def nested_task :: i64
 fn nested_task = Task.run task {
@@ -216,7 +216,7 @@ fn nan_result = {
 def rec heap_loop :: own i64 -> own i64 -> i64
 fn rec heap_loop count total =
     if count == 0 { total } else {
-        let values = new [i64](256, i -> i);
+        let values = new [i64](256, \i -> i);
         let work: unit -> i64 = Lazy {
             let! offset = 20
             return values[0] + values[255] + offset

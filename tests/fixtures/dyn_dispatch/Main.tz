@@ -48,7 +48,7 @@ instance Shapes.Named<Bag> {
 instance Shapes.Shape<Bag> {
     fn area bag =
         let mut total = 0i64
-        for index in 0i64 .. (bag.items.length - 1) do total = total + Shapes.Shape.area (ref bag.items[index])
+        for index in 0i64 ..= (bag.items.length - 1) do total = total + Shapes.Shape.area (ref bag.items[index])
         total
     fn grow _bag _k = ()
     fn into_area bag = Shapes.Shape.area (ref bag)
@@ -114,28 +114,28 @@ export def total_area :: own i64 -> i64
 fn total_area x =
     let items = shapes x
     let mut total = 0i64
-    for index in 0i64 .. (items.length - 1) do total = total + Shapes.Shape.area (ref items[index])
+    for index in 0i64 ..= (items.length - 1) do total = total + Shapes.Shape.area (ref items[index])
     total
 
 export def describe_total :: own i64 -> i64
 fn describe_total x =
     let items = shapes x
     let mut total = 0i64
-    for index in 0i64 .. (items.length - 1) do total = total + Shapes.Shape.describe (ref items[index])
+    for index in 0i64 ..= (items.length - 1) do total = total + Shapes.Shape.describe (ref items[index])
     total
 
 export def generic_total :: own i64 -> i64
 fn generic_total x =
     let items = shapes x
     let mut total = 0i64
-    for index in 0i64 .. (items.length - 1) do total = total + area_of (ref items[index])
+    for index in 0i64 ..= (items.length - 1) do total = total + area_of (ref items[index])
     total
 
 export def names :: own i64 -> i64
 fn names x =
     let items = shapes x
     let mut total = 0i64
-    for index in 0i64 .. (items.length - 1) do total = total + Shapes.Named.id (ref items[index])
+    for index in 0i64 ..= (items.length - 1) do total = total + Shapes.Named.id (ref items[index])
     total
 
 export def bag_area :: own i64 -> i64

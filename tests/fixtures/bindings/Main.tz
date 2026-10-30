@@ -57,13 +57,13 @@ export def sum_float :: ref [f64] -> f64
 fn sum_float values = Array.sum values
 
 export def checksum :: ref [ubyte] -> i64
-fn checksum values = Array.fold_owned (total -> value -> total + value as i64) 0 values
+fn checksum values = Array.fold_owned (\total value -> total + value as i64) 0 values
 
 export def make_bytes :: own i64 -> [ubyte]
-fn make_bytes count = new [ubyte](count, index -> index as ubyte)
+fn make_bytes count = new [ubyte](count, \index -> index as ubyte)
 
 export def copy_values :: ref [i64] -> [i64]
-fn copy_values values = Array.map_owned (value -> value) values
+fn copy_values values = Array.map_owned (\value -> value) values
 
 export def copy_text :: ref string -> string
 fn copy_text text = clone_string text
@@ -105,7 +105,7 @@ fn note text =
 export def relay_flags :: own i8 -> f64
 fn relay_flags tiny =
     let flags = Flags { tiny: tiny, wide: 7, flag: true }
-    let sample = host_flags (&flags)
+    let sample = host_flags (ref flags)
     sample.amount + sample.flags.wide as f64 + sample.flags.tiny as f64
 
 export def mix :: own i32u -> own i64u -> i64u
@@ -114,7 +114,7 @@ fn mix small large = host_mix small large true (-2) + 1
 export def counters :: own i64 -> i64
 fn counters start =
     let counter = counter_new start
-    let first = counter_add (&counter) 5
+    let first = counter_add (ref counter) 5
     first + counter_free counter
 
 export def pass_through :: own Counter -> Counter
@@ -129,7 +129,7 @@ fn callbacks value = apply_host triple value
 export def visit :: own i64 -> i64
 fn visit start =
     let counter = counter_new start
-    let seen = visit_host above (&counter)
+    let seen = visit_host above (ref counter)
     seen + counter_free counter
 
 export def callback_trap :: own i64 -> i64

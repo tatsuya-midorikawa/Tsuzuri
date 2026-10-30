@@ -149,8 +149,8 @@ try {
     execute(process.execPath, [join(root, "tests/features.mjs"), compiler, "display_parse"]);
     for (const [name, source, expected, symbol] of [
       // A float's text is parsed by the numeric runtime, an integer's by the integer runtime in the module.
-      ["parse-only", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<f64> = Parse.parse (&text); to_int (Maybe.get n) }', 42, "tz_soft_parse"],
-      ["integer-parse", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<i64> = Parse.parse (&text); Maybe.get n }', 42, "tz.integer.parse"],
+      ["parse-only", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<f64> = Parse.parse (ref text); to_int (Maybe.get n) }', 42, "tz_soft_parse"],
+      ["integer-parse", 'export def value :: i64\nfn value = { let text = "42"; let n: Maybe<i64> = Parse.parse (ref text); Maybe.get n }', 42, "tz.integer.parse"],
       ["display-only", "export def value :: i64\nfn value = (to_string 4.5).length", 3, "tz_soft_format"],
       // An integer's text comes from the integer formatter in the module, with no numeric runtime.
       ["integer-display", "export def value :: i64\nfn value = (to_string 42).length + (to_string (-7i8)).length", 4, "tz.integer.format"],

@@ -4,7 +4,7 @@
 const def crc_entry :: i32u -> i32u
 fn crc_entry index =
     let mut value = index
-    for _ in 1 .. 8 do
+    for _ in 1 ..= 8 do
         value = if (value & 1) == 1 then (value >>> 1) ^ 0xEDB88320 else value >>> 1
     value
 
@@ -31,7 +31,7 @@ const def fib_iter :: i64 -> i64
 fn fib_iter n =
     let mut previous = 0
     let mut current = 1
-    for _ in 1 .. n do
+    for _ in 1 ..= n do
         let next = previous + current
         previous = current
         current = next
@@ -75,7 +75,7 @@ fn classify n = match n with
 const def classify_total :: i64 -> i64
 fn classify_total count =
     let mut total = 0
-    for i in 0 .. count do
+    for i in 0 ..= count do
         total = total + classify i
     total
 
@@ -138,7 +138,7 @@ fn first_negative xs =
 const def sum_odd :: i64 -> i64
 fn sum_odd count =
     let mut total = 0
-    for i in 1 .. count do
+    for i in 1 ..= count do
         if i % 2 == 0 then continue
         total = total + i
     total
@@ -182,7 +182,7 @@ export def crc_whole_table :: bool
 fn crc_whole_table =
     let runtime = crc_table()
     let mut same = runtime.length == CrcTable.length
-    for i in 0i64 .. 255 do
+    for i in 0i64 ..= 255 do
         same = same && runtime[i] == CrcTable[i]
     same
 

@@ -39,18 +39,18 @@ fn buffers =
     let text = "abc"
     let utf8 = u8"xy"
     let point = Point { x: 3.0, flag: true }
-    let read = host_read (&values) (&text) (&utf8) point
+    let read = host_read (ref values) (ref text) (ref utf8) point
     let result = host_buffer()
     let returned_text = host_text()
-    let changed = host_point (&point)
+    let changed = host_point (ref point)
     assert (changed.x == 3.5 && changed.flag)
-    read + Array.sum (&result) + returned_text.length
+    read + Array.sum (ref result) + returned_text.length
 
 export def tasks :: i64
 fn tasks =
     let jobs = new [Task<i64>](16, \_index -> task { return now () })
     let results = Task.run (Task.parallel jobs)
-    Array.sum (&results)
+    Array.sum (ref results)
 
 export def bad_buffer :: own i64 -> i64
 fn bad_buffer mode = (invalid_buffer mode).length

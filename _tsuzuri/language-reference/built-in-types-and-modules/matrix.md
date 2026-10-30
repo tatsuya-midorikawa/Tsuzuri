@@ -230,7 +230,7 @@ Apple M1 Max（10 コア）の native `-O3` で、`n = 512` の `f64` は `mul` 
 def scale_row :: i64 -> i64 -> ref mut [i64..] -> unit
 fn scale_row cols start chunk =
     let row = start / cols
-    for j in 0i64 .. (chunk.length - 1) do
+    for j in 0i64 ..= (chunk.length - 1) do
         let value = chunk[j]
         Array.write j (value * (row + 1)) chunk
 

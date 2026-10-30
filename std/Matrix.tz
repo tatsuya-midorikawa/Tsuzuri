@@ -17,7 +17,7 @@ fn of_array rows cols values =
 def init :: own i64 -> own i64 -> own (i64 -> i64 -> 'a) -> Matrix<'a>
 fn init rows cols initializer =
     let count = checked_count rows cols
-    Matrix { rows: rows, cols: cols, data: new ['a](count, index -> initializer (index / cols) (index % cols)) }
+    Matrix { rows: rows, cols: cols, data: new ['a](count, \index -> initializer (index / cols) (index % cols)) }
 
 /// The number of rows.
 def rows :: ref Matrix<'a> -> i64
@@ -74,13 +74,13 @@ def transpose :: Copy<'a> => ref Matrix<'a> -> Matrix<'a>
 fn transpose matrix =
     let out_rows = matrix.cols
     let out_cols = matrix.rows
-    Matrix { rows: out_rows, cols: out_cols, data: new ['a](matrix.data.length, index -> matrix.data[(index % out_cols) * out_rows + index / out_cols]) }
+    Matrix { rows: out_rows, cols: out_cols, data: new ['a](matrix.data.length, \index -> matrix.data[(index % out_cols) * out_rows + index / out_cols]) }
 
 /// Element-wise sum; traps unless both shapes are equal.
 def add :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
 fn add left right =
     assert (left.rows == right.rows && left.cols == right.cols)
-    Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, index -> left.data[index] + right.data[index]) }
+    Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, \index -> left.data[index] + right.data[index]) }
 
 // Adds the product rows `first ..` into `out`, which holds whole output rows of `cols` elements and
 // starts at +0. Every element of `out` is updated only by `out + (a * b)` with k ascending, so its
@@ -91,26 +91,26 @@ fn add left right =
 // built from the array lengths, and the out-of-line kernel ran at half speed whenever it failed.
 private def multiply_rows :: Numeric<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> ref mut ['a..] -> unit
 fn multiply_rows left right inner cols first out =
-    for r in 0i64 .. (out.length / cols - 1) do
+    for r in 0i64 ..= (out.length / cols - 1) do
         let row = ref mut out[r * cols .. r * cols + cols]
         let line = ref left[(first + r) * inner .. (first + r) * inner + inner]
-        for k in 0i64 .. (line.length - 1) do
+        for k in 0i64 ..= (line.length - 1) do
             let a = line[k]
             let source = ref right[k * cols .. k * cols + cols]
-            for j in 0i64 .. (row.length - 1) do
+            for j in 0i64 ..= (row.length - 1) do
                 let value = row[j] + a * source[j]
                 Array.write j value row
 
 // The same loops with one explicit fused multiply-add per step: out = fma(a, b, out).
 private def fma_rows :: Float<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> ref mut ['a..] -> unit
 fn fma_rows left right inner cols first out =
-    for r in 0i64 .. (out.length / cols - 1) do
+    for r in 0i64 ..= (out.length / cols - 1) do
         let row = ref mut out[r * cols .. r * cols + cols]
         let line = ref left[(first + r) * inner .. (first + r) * inner + inner]
-        for k in 0i64 .. (line.length - 1) do
+        for k in 0i64 ..= (line.length - 1) do
             let a = line[k]
             let source = ref right[k * cols .. k * cols + cols]
-            for j in 0i64 .. (row.length - 1) do
+            for j in 0i64 ..= (row.length - 1) do
                 let value = Math.fma a source[j] row[j]
                 Array.write j value row
 
@@ -129,7 +129,7 @@ def mul :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
 fn mul left right =
     assert (left.cols == right.rows)
     let count = checked_count left.rows right.cols
-    let mut out = new ['a](count, _ -> 0i64 as 'a)
+    let mut out = new ['a](count, \_ -> 0i64 as 'a)
     if count > 0 then multiply_rows (ref left.data) (ref right.data) left.cols right.cols 0 (ref mut out)
     Matrix { rows: left.rows, cols: right.cols, data: out }
 
@@ -140,7 +140,7 @@ def mul_fma :: Float<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
 fn mul_fma left right =
     assert (left.cols == right.rows)
     let count = checked_count left.rows right.cols
-    let mut out = new ['a](count, _ -> 0i64 as 'a)
+    let mut out = new ['a](count, \_ -> 0i64 as 'a)
     if count > 0 then fma_rows (ref left.data) (ref right.data) left.cols right.cols 0 (ref mut out)
     Matrix { rows: left.rows, cols: right.cols, data: out }
 
@@ -154,7 +154,7 @@ fn mul_parallel left right =
     let count = checked_count left.rows right.cols
     let inner = left.cols
     let cols = right.cols
-    let mut out = new ['a](count, _ -> 0i64 as 'a)
+    let mut out = new ['a](count, \_ -> 0i64 as 'a)
     if count > 0 && inner > 0 then
         if left.rows <= rows_per_chunk inner cols then multiply_rows (ref left.data) (ref right.data) inner cols 0 (ref mut out)
         else
@@ -170,7 +170,7 @@ fn mul_fma_parallel left right =
     let count = checked_count left.rows right.cols
     let inner = left.cols
     let cols = right.cols
-    let mut out = new ['a](count, _ -> 0i64 as 'a)
+    let mut out = new ['a](count, \_ -> 0i64 as 'a)
     if count > 0 && inner > 0 then
         if left.rows <= rows_per_chunk inner cols then fma_rows (ref left.data) (ref right.data) inner cols 0 (ref mut out)
         else

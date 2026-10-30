@@ -9,7 +9,7 @@ fn middle values start finish = ref values[start..finish]
 
 export def slice_sum :: own i64 -> own i64 -> own i64 -> i64
 fn slice_sum count start finish =
-    let values = new [i64](count, index -> index)
+    let values = new [i64](count, \index -> index)
     sum (middle (ref values) start finish)
 
 export def slice_nested :: i64
@@ -48,7 +48,7 @@ export def slice_closures :: i64
 fn slice_closures =
     let values = [10, 20, 30, 40]
     let slice = ref values[1..3]
-    let read = unused -> slice[0] + slice.length
+    let read = \unused -> slice[0] + slice.length
     let partial = add_length slice
     let function = middle
     read () + partial 10 + (function (ref values) 0 1).length

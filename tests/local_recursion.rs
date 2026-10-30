@@ -636,7 +636,7 @@ fn unused_local_let_rec_warns() {
 /// the lifted function were a call, whether the function captures numbers or a borrowed array.
 #[test]
 fn deep_local_tail_recursion_does_not_grow_the_stack() {
-    let source = "def triangle :: i64 -> i64 = \\limit ->\n    let rec go = \\n acc -> if n > limit then acc else go (n + 1) (acc + n)\n    go 1 0\n\ndef walk :: i64 -> i64 = \\count ->\n    let values = Array.init count (i -> i)\n    let rec go = \\i acc -> if i == values.length then acc else go (i + 1) (acc + values[i])\n    go 0 0\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (to_string (triangle 1000000))\n    do! IO.write_line (to_string (walk 1000000))\n    0\n";
+    let source = "def triangle :: i64 -> i64 = \\limit ->\n    let rec go = \\n acc -> if n > limit then acc else go (n + 1) (acc + n)\n    go 1 0\n\ndef walk :: i64 -> i64 = \\count ->\n    let values = Array.init count (\\i -> i)\n    let rec go = \\i acc -> if i == values.length then acc else go (i + 1) (acc + values[i])\n    go 0 0\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (to_string (triangle 1000000))\n    do! IO.write_line (to_string (walk 1000000))\n    0\n";
     let ir = accepts(source);
     let functions = lifted(&ir);
     assert!(

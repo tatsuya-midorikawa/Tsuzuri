@@ -3078,6 +3078,26 @@ impl Project {
             .collect()
     }
 
+    /// The project with its own sources read with `edition` (A22 `--edition`). A project with a
+    /// manifest names its edition there, so `--edition` is an error for it.
+    pub fn with_edition(mut self, edition: crate::syntax::Edition) -> Result<Self, SourceError> {
+        if let Some(package) = &self.root_package {
+            return Err(SourceError::new(
+                &package.root.join("Tsuzuri.toml"),
+                driver_error_of(
+                    DiagnosticKind::EditionOptionWithManifest,
+                    "--edition cannot be used in a project that has a Tsuzuri.toml; set 'edition' there",
+                ),
+            ));
+        }
+        for source in &mut self.sources {
+            if source.origin == ModuleOrigin::User {
+                source.edition = edition;
+            }
+        }
+        Ok(self)
+    }
+
     /// Each source as the capability analysis sees it (E15), in the order of `Span::source`.
     pub fn source_infos(&self) -> Vec<crate::capabilities::SourceInfo> {
         self.sources
@@ -7183,7 +7203,7 @@ mod tests {
         let (directory, project) = project(
             &[(
                 "Main.tz",
-                "export def add :: i64 -> i64 -> i64\nfn add a b = a + b\nexport def copy :: ref [i64] -> [i64]\nfn copy values = Array.map (value -> value) values\n",
+                "export def add :: i64 -> i64 -> i64\nfn add a b = a + b\nexport def copy :: ref [i64] -> [i64]\nfn copy values = Array.map (\\value -> value) values\n",
             )],
             "Main.tz",
         );

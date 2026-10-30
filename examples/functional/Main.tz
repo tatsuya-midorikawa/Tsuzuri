@@ -3,7 +3,7 @@ def add :: own 'a -> own 'a -> 'a = \a b -> a + b
 def triple :: own 'a -> 'a = \value -> value * 3
 
 def map :: own ('a -> 'b) -> own ['a] -> ['b] = \f values ->
-    new ['b](values.length, i -> f values[i])
+    new ['b](values.length, \i -> f values[i])
 
 def rec fold :: own ('b -> 'a -> 'b) -> own ['a] -> own i64 -> own 'b -> 'b = \f values index total ->
     if index == values.length {

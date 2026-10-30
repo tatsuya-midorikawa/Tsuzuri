@@ -129,7 +129,7 @@ $"{Matrix.rows (ref gram)}x{Matrix.cols (ref gram)} {deref (Matrix.at 1 2 (ref g
 | `MatrixView.freeze (ref w)` | 読み取りの窓として借りる。次の書き込みの前に使い終える |
 
 ```tsuzuri run=1%2C5%2C0%2C0%2C7%2C7
-let mut buffer = new [i64](6, _ -> 0)
+let mut buffer = new [i64](6, \_ -> 0)
 let mut grid = MatrixView.of_array_mut 2 3 (ref mut buffer)
 let line = MatrixView.row_mut 0 (ref mut grid)
 Array.write 1 5 line
@@ -256,7 +256,7 @@ let m = Matrix.init 3 4 (\row col -> row * 10 + col)
 let view = MatrixView.of_matrix (ref m)
 let corner = view |> MatrixView.sub 1 1 2 2 |> MatrixView.at 1 1
 let row_sum = view |> (MatrixView.row 2 >> MatrixView.fold (\total x -> total + x) 0)
-let mut buffer = new [i64](4, _ -> 0)
+let mut buffer = new [i64](4, \_ -> 0)
 let mut grid = MatrixView.of_array_mut 2 2 (ref mut buffer)
 let mut top = ref mut grid |> MatrixView.sub_mut 0 0 1 2
 ref mut top |> MatrixView.fill 7

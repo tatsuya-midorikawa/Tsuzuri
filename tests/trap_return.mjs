@@ -112,8 +112,8 @@ export def ordinary_sum :: ref [i64] -> i64
 fn ordinary_sum values = Array.sum values
 export def ordinary_parallel :: i64 -> i64
 fn ordinary_parallel count = Task.run task {
-    let! results = Task.parallel (new [Task<i64>](count, index -> task { index }))
-    return Array.sum (&results)
+    let! results = Task.parallel (new [Task<i64>](count, \\index -> task { index }))
+    return Array.sum (ref results)
 }
 `);
 

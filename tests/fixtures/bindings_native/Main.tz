@@ -36,13 +36,13 @@ export def sum_float :: ref [f64] -> f64
 fn sum_float values = Array.sum values
 
 export def checksum :: ref [ubyte] -> i64
-fn checksum values = Array.fold_owned (total -> value -> total + value as i64) 0 values
+fn checksum values = Array.fold_owned (\total value -> total + value as i64) 0 values
 
 export def make_bytes :: own i64 -> [ubyte]
-fn make_bytes count = new [ubyte](count, index -> index as ubyte)
+fn make_bytes count = new [ubyte](count, \index -> index as ubyte)
 
 export def copy_values :: ref [i64] -> [i64]
-fn copy_values values = Array.map_owned (value -> value) values
+fn copy_values values = Array.map_owned (\value -> value) values
 
 export def copy_text :: ref string -> string
 fn copy_text text = clone_string text
@@ -67,7 +67,7 @@ fn make_window seed = Window { values: [seed, seed * 2, -seed], scale: 0.5, mark
 export def counters :: own i64 -> i64
 fn counters start =
     let counter = counter_new start
-    let first = counter_add (&counter) 5
+    let first = counter_add (ref counter) 5
     first + counter_free counter
 
 export def pass_through :: own Counter -> Counter

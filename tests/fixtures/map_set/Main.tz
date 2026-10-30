@@ -5,16 +5,16 @@ fn map_insert_lookup count =
     while index < count do
         map = Map.insert (index * 37 % 101) (index * 3) map
         index = index + 1
-    let keys = Map.keys (&map)
-    let values = Map.values (&map)
-    let pairs = Map.to_array (&map)
+    let keys = Map.keys (ref map)
+    let values = Map.values (ref map)
+    let pairs = Map.to_array (ref map)
     assert (keys.length == values.length && values.length == pairs.length)
     index = 0
     while index < keys.length do
-        assert (Map.contains_key keys[index] (&map))
-        assert (Maybe.get (Map.get keys[index] (&map)) == values[index])
+        assert (Map.contains_key keys[index] (ref map))
+        assert (Maybe.get (Map.get keys[index] (ref map)) == values[index])
         index = index + 1
-    Map.fold (\total key value -> total * 31 + deref key * 7 + deref value) 0 (&map)
+    Map.fold (\total key value -> total * 31 + deref key * 7 + deref value) 0 (ref map)
 
 export def map_replace_drop :: own i64 -> i64
 fn map_replace_drop count =
@@ -23,7 +23,7 @@ fn map_replace_drop count =
     while index < count do
         map = Map.insert (to_string (index % 9)) (to_string index) map
         index = index + 1
-    Map.fold (\total key value -> total + key.length + value.length) 0 (&map)
+    Map.fold (\total key value -> total + key.length + value.length) 0 (ref map)
 
 export def map_remove :: own i64 -> i64
 fn map_remove count =
@@ -37,7 +37,7 @@ fn map_remove count =
         map = Map.remove index map
         index = index + 2
     map = Map.remove (-1) map
-    Map.fold (\total key value -> total + deref key + deref value) 0 (&map)
+    Map.fold (\total key value -> total + deref key + deref value) 0 (ref map)
 
 export def set_algebra :: own i64 -> i64
 fn set_algebra count =
@@ -48,67 +48,67 @@ fn set_algebra count =
         if index % 2 == 0 then left = Set.insert index left
         if index % 3 == 0 then right = Set.insert index right
         index = index + 1
-    let common = Set.intersect (&left) (&right)
-    let different = Set.difference (&left) (&right)
+    let common = Set.intersect (ref left) (ref right)
+    let different = Set.difference (ref left) (ref right)
     let combined = Set.union left right
-    let combined_values = Set.to_array (&combined)
-    let common_values = Set.to_array (&common)
-    let different_values = Set.to_array (&different)
-    Array.sum (&combined_values) * 1000000 + Array.sum (&common_values) * 1000 + Array.sum (&different_values)
+    let combined_values = Set.to_array (ref combined)
+    let common_values = Set.to_array (ref common)
+    let different_values = Set.to_array (ref different)
+    Array.sum (ref combined_values) * 1000000 + Array.sum (ref common_values) * 1000 + Array.sum (ref different_values)
 
 export def set_owned_union :: i64
 fn set_owned_union =
     let combined = Set.union (Set.singleton "a") (Set.insert "b" (Set.singleton "a"))
-    assert (Set.contains "a" (&combined) && Set.contains "b" (&combined))
-    Set.fold (\total key -> total + key.length) 0 (&combined)
+    assert (Set.contains "a" (ref combined) && Set.contains "b" (ref combined))
+    Set.fold (\total key -> total + key.length) 0 (ref combined)
 
 export def map_capture :: i64
 fn map_capture =
     let map = Map.singleton "answer" 42
-    let read = \() -> Maybe.get (Map.get "answer" (&map))
+    let read = \() -> Maybe.get (Map.get "answer" (ref map))
     read () + read ()
 
 export def map_borrowed_values :: i64
 fn map_borrowed_values =
     let text = "borrowed"
     let map = Map.singleton 1 (ref text)
-    let value = Map.at 1 (&map)
+    let value = Map.at 1 (ref map)
     value.length
 
 export def first_representative :: bool
 fn first_representative =
     let map = Map.insert 0.0 2 (Map.singleton (-0.0) 1)
-    let keys = Map.keys (&map)
+    let keys = Map.keys (ref map)
     let set = Set.union (Set.singleton (-0.0)) (Set.singleton 0.0)
-    let set_keys = Set.to_array (&set)
-    keys.length == 1 && 1.0 / keys[0] < 0.0 && Maybe.get (Map.get 0.0 (&map)) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
+    let set_keys = Set.to_array (ref set)
+    keys.length == 1 && 1.0 / keys[0] < 0.0 && Maybe.get (Map.get 0.0 (ref map)) == 2 && set_keys.length == 1 && 1.0 / set_keys[0] < 0.0
 
 export def map_task_drop :: i64
 fn map_task_drop =
     let text = "owned capture"
     let map = Map.singleton 1 (task { return text.length })
     let empty = Map.remove 1 map
-    Map.length (&empty)
+    Map.length (ref empty)
 
 record Key { name: string } deriving (Eq, Ord)
 
 export def owned_record_keys :: i64
 fn owned_record_keys =
     let map = Map.insert (Key { name: "answer" }) 42 (Map.empty())
-    Maybe.get (Map.get (Key { name: "answer" }) (&map))
+    Maybe.get (Map.get (Key { name: "answer" }) (ref map))
 
 export def map_at_missing :: i64
 fn map_at_missing =
     let map: Map<i64, string> = Map.empty()
-    let value = Map.at 1 (&map)
+    let value = Map.at 1 (ref map)
     value.length
 
 export def nan_query :: i64
 fn nan_query =
     let map = Map.insert (0.0 / 0.0) 1 (Map.empty())
-    Map.length (&map)
+    Map.length (ref map)
 
 export def nan_stored :: bool
 fn nan_stored =
     let map = Map.singleton (0.0 / 0.0) 1
-    Map.contains_key 1.0 (&map)
+    Map.contains_key 1.0 (ref map)

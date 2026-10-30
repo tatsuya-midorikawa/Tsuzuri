@@ -77,14 +77,14 @@ fn floating_masks mode =
 
 export def long_lists :: own i64 -> i64
 fn long_lists count =
-    let values = Array.init count (index -> index)
+    let values = Array.init count (\index -> index)
     let left = Array.to_list (ref values)
     let right = Array.to_list (ref values)
     if left == right then left.length else -1
 
 record Staged { text: string }
 instance Eq<Staged> {
-    fn eq left = { let length = left.text.length; right -> length == right.text.length }
+    fn eq left = { let length = left.text.length; \right -> length == right.text.length }
     fn ne left right = !(Eq.eq left right)
 }
 export def staged_comparison :: i64

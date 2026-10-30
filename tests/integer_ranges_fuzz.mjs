@@ -292,8 +292,8 @@ function render(node) {
     case "let": return `({ let ${node.n} = ${render(node.e)}; ${render(node.body)} })`;
     case "loop": {
       const range = node.step
-        ? `${render(node.lo)} .. ${render(node.step)} .. ${render(node.hi)}`
-        : `${render(node.lo)} .. ${render(node.hi)}`;
+        ? `${render(node.lo)} .. ${render(node.step)} ..= ${render(node.hi)}`
+        : `${render(node.lo)} ..= ${render(node.hi)}`;
       return `({ let mut ${node.acc} = ${render(node.init)}; for ${node.i} in ${range} do { ${node.acc} = ${render(node.update)}; () }; ${node.acc} })`;
     }
     default: throw new Error(node.t);

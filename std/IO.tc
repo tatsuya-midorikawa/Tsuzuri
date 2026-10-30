@@ -28,7 +28,7 @@ def Bind :: own IO<'a> -> own ('a -> IO<'b>) -> IO<'b>
 fn Bind action next = bind next action
 
 def Using :: own (('a -> 'b) -> 'c) -> own ('a -> IO<'b>) -> IO<'c>
-fn Using source next = IO { work: \() -> source (value -> (next value).work ()) }
+fn Using source next = IO { work: \() -> source (\value -> (next value).work ()) }
 
 def Zero :: IO<unit>
 fn Zero = pure ()

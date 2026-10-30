@@ -89,19 +89,19 @@ export def deep_call :: i64 -> i64 = \\n -> deep n
 extern def worker_failure :: i64 -> i64
 export def concurrent :: i64
 fn concurrent = {
-    let results = Task.run (Task.parallel (new [Task<i64>](3, index -> task { barrier index })));
+    let results = Task.run (Task.parallel (new [Task<i64>](3, \\index -> task { barrier index })));
     results[0] * 100 + results[1] * 10 + results[2]
 }
 export def fail :: i64
 fn fail = {
-    let results = Task.run (Task.parallel (new [Task<i64>](2, index -> task { worker_failure index })));
+    let results = Task.run (Task.parallel (new [Task<i64>](2, \\index -> task { worker_failure index })));
     results[0]
 }
 export def bulk :: i64
 fn bulk = {
     let values = Parallel.init 20000 (\\index -> index);
     let mapped = Parallel.map (\\value -> value + 1) values;
-    Array.sum (&mapped)
+    Array.sum (ref mapped)
 }
 `);
     const importsFile = join(directory, "imports.mjs");

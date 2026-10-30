@@ -38,7 +38,7 @@ def main :: unit -> i32 = \() ->
 - `if c then a elif d then b else e` is an expression. Conditions are `bool` only.
 - `match v with | p when c -> e | _ -> d` must be exhaustive (E1021). Patterns: literals, `_`, tuples, records `{ x = a }`, cases, lists `[|a|]` and `h :: t`, arrays `[a, b]`, `p | q`, `p as all`.
 - Guard clauses right after `->` match the arguments; `where` holds shared values.
-- `for x in xs do` walks arrays, lists, `Vec`, strings, ranges and `Seq`; `for i in a .. b do` includes `b`. `for i = a to b do` is E0002 in a body that uses `do!` or `let!`. `while c do`, `break`, `continue`.
+- `for x in xs do` walks arrays, lists, `Vec`, strings, ranges and `Seq`; `for i in a ..= b do` includes `b` and `for i in a ..< b do` excludes it. `for i = a to b do` is E0002 in a body that uses `do!` or `let!`. `while c do`, `break`, `continue`.
 - `def rec f` recurses (mutual: `and`). A direct self tail call becomes a loop unless the function takes a borrow (`ref T`) or a function value; other recursion uses the stack.
 <!--if edition=2027-->
 - Edition 2027: a bare non-Copy parameter is a borrow, so write `own T` where a tail call must loop.
@@ -127,7 +127,7 @@ def main :: unit -> i32 = \() ->
 ## Strings, characters, numbers
 - `string` is UTF-16: `s.length` and `s[i]` (an `i16u`) count code units. `u8"..."` is a `utf8string` (bytes). `char` (`'a'`) is one UTF-16 unit, `utf8char` one scalar. Copy a string with `clone_string s`.
 - `$"x = {x}, {f:.2}, {n:>4}"` interpolates (holes borrow; `{{` is a brace). `to_string v` uses `Display`.
-- An integer literal is `i32` unless the context or a suffix decides: `5l` is `i64`, `5ul` `i64u`, `5uy` `i8u`, `1.5f` `f32`, `1.5` `f64`, `5I` `bigint`.
+- An integer literal is `i32` unless the context or a type-name suffix decides: `5i64`, `5i8u`, `1.5f32`; `1.5` is `f64`, `5I` `bigint`.
 - `as` converts numbers only: narrowing wraps, float to integer truncates and saturates (NaN gives 0). For `char` use `Char.to_u16`.
 
 ## Std map

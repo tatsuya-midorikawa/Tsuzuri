@@ -148,7 +148,7 @@ export def tasks_parallel :: i64
 fn tasks_parallel =
     let jobs = new [Task<i64>](16, job)
     let results = Task.run (Task.parallel jobs)
-    Array.sum (&results)
+    Array.sum (ref results)
 
 export def drop_allocates :: i64
 fn drop_allocates =
@@ -271,7 +271,7 @@ fn packed_reassign =
 
 export def packed_array :: i64
 fn packed_array =
-    let all = new [Packed](3, i -> Packed { flag: i % 2 == 0, id: i + 1, mark: (i + 3) as i8, name: "n" })
+    let all = new [Packed](3, \i -> Packed { flag: i % 2 == 0, id: i + 1, mark: (i + 3) as i8, name: "n" })
     Array.length (ref all)
 
 export def packed_temporary :: i64

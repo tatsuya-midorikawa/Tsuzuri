@@ -159,7 +159,7 @@ map = Map.insert 20 "b" map
 let keys = Map.keys (ref map)
 
 let summary = Map.fold (\acc k v ->
-    let item = $"{*k}:{*v}"
+    let item = $"{deref k}:{deref v}"
     if acc == "" then item else $"{acc}, {item}"
 ) "" (ref map)
 

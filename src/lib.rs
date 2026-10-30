@@ -15,6 +15,7 @@ pub mod bindgen;
 pub mod bindings;
 mod bundle_identity;
 pub mod cache;
+pub mod canonical;
 pub mod capabilities;
 pub mod check;
 pub mod copies;
@@ -828,7 +829,7 @@ mod tests {
                     "\n    let mut total = x\n    let mut index = 0i64u\n    while index < 8 do\n        total = total * 6364136223846793005 + index + {c}\n        index = index + 1\n    total"
                 ),
                 1 => format!(
-                    "\n    let mut total = x\n    for i in 0 .. 7 do\n        total = total * 31 + (i as i64u) + {c}\n    total"
+                    "\n    let mut total = x\n    for i in 0 ..= 7 do\n        total = total * 31 + (i as i64u) + {c}\n    total"
                 ),
                 2 => format!(
                     "\n    match x % 4 with\n    | 0 -> x + {c}\n    | 1 -> x * 3\n    | 2 -> x + {}\n    | _ -> x / 2",

@@ -4,7 +4,7 @@ fn length text = text.length
 private def append_range :: own Vec<i16u> -> ref string -> own i64 -> own i64 -> Vec<i16u>
 fn append_range initial text first last =
 	let mut output = initial
-	for index in first .. (last - 1) do output = Vec.push_owned text[index] output
+	for index in first ..= (last - 1) do output = Vec.push_owned text[index] output
 	output
 
 private def add_length :: own i64 -> own i64 -> i64
@@ -69,16 +69,16 @@ def char_count :: ref string -> i64
 fn char_count text = text.length
 
 def chars :: ref string -> [char]
-fn chars text = new [char](text.length, index -> Char.of_u16 text[index])
+fn chars text = new [char](text.length, \index -> Char.of_u16 text[index])
 
 def join :: ref string -> ref [string] -> string
 fn join separator parts =
 	let mut size = 0
-	for index in 0 .. (parts.length - 1) do
+	for index in 0 ..= (parts.length - 1) do
 		size = add_length size parts[index].length
 		if index > 0 then size = add_length size separator.length
 	let mut output: Vec<i16u> = Vec.with_capacity size
-	for index in 0 .. (parts.length - 1) do
+	for index in 0 ..= (parts.length - 1) do
 		if index > 0 then output = append_range output separator 0 separator.length
 		output = append_range output (ref parts[index]) 0 parts[index].length
 	String.from_code_units (Vec.to_array output)
@@ -91,7 +91,7 @@ fn concat parts =
 def split :: ref string -> ref string -> [string]
 fn split separator text =
 	if separator.length == 0 then
-		new [string](text.length, index -> Maybe.get (slice index (index + 1) text))
+		new [string](text.length, \index -> Maybe.get (slice index (index + 1) text))
 	else
 		let mut count = 1
 		let mut index = 0
@@ -136,10 +136,10 @@ fn trim text =
 	Maybe.get (slice first last text)
 
 def to_ascii_lower :: ref string -> string
-fn to_ascii_lower text = String.from_code_units (new [i16u](text.length, index -> Char.to_u16 (Char.to_ascii_lower (Char.of_u16 text[index]))))
+fn to_ascii_lower text = String.from_code_units (new [i16u](text.length, \index -> Char.to_u16 (Char.to_ascii_lower (Char.of_u16 text[index]))))
 
 def to_ascii_upper :: ref string -> string
-fn to_ascii_upper text = String.from_code_units (new [i16u](text.length, index -> Char.to_u16 (Char.to_ascii_upper (Char.of_u16 text[index]))))
+fn to_ascii_upper text = String.from_code_units (new [i16u](text.length, \index -> Char.to_u16 (Char.to_ascii_upper (Char.of_u16 text[index]))))
 
 def repeat :: own i64 -> ref string -> string
 fn repeat count text =
@@ -147,7 +147,7 @@ fn repeat count text =
 	if count == 0 || text.length == 0 then "" else
 		let size = Maybe.get (Int.checked_mul text.length count)
 		assert (size <= 9007199254740991)
-		String.from_code_units (new [i16u](size, index -> text[index % text.length]))
+		String.from_code_units (new [i16u](size, \index -> text[index % text.length]))
 
 def replace :: ref string -> ref string -> ref string -> string
 fn replace needle replacement text =

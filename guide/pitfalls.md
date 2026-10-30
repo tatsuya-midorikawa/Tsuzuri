@@ -14,7 +14,7 @@ Each line is a wrong form, the code that `tsuzuri check` reports, and the right 
 <!--if edition=2027-->
 - `p.x = 1` and `xs[i] = v` need a `let mut` owner or a `mut T` parameter (else E1014).
 <!--endif-->
-- `for i in 0 .. xs.length` compiles, then traps: `..` includes the end. Use `0 .. xs.length - 1`.
+- `for i in 0 ..= xs.length` compiles, then traps: `..=` includes the end. Use `0 ..< xs.length`.
 
 ## Hints the compiler adds
 For these mistakes the diagnostic carries the hint below as `help` (code, then the hint):

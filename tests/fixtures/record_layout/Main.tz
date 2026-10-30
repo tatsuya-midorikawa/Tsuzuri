@@ -54,7 +54,7 @@ fn borrowed n =
 
 export def ordered :: own i64 -> i64
 fn ordered count =
-    let all = new [Keyed](count, i -> keyed ((i * 41) % 5) ((i * 7919) % 101) (i % 3))
+    let all = new [Keyed](count, \i -> keyed ((i * 41) % 5) ((i * 7919) % 101) (i % 3))
     let sorted = Array.sort (ref all)
     if count == 0 then 0 else keyed_code sorted[0] + keyed_code sorted[count - 1] * 100000000
 
@@ -93,8 +93,8 @@ fn spread_sum s = (s.a as i64) + s.b * 2 + (s.c as i64) * 3 + (s.d as i64) * 5 +
 
 export def spreads :: own i64 -> i64
 fn spreads count =
-    let all = new [Spread](count, i -> spread_of i)
-    let total = Array.fold_owned (sum -> s -> sum + spread_sum (ref s)) 0 (ref all)
+    let all = new [Spread](count, \i -> spread_of i)
+    let total = Array.fold_owned (\sum s -> sum + spread_sum (ref s)) 0 (ref all)
     if count == 0 then total else total * 100 + all[count - 1].d as i64
 
 export def crates :: own i64 -> i64
@@ -142,8 +142,8 @@ fn replaced n =
 
 export def ledger_array :: own i64 -> i64
 fn ledger_array count =
-    let all = new [Ledger](count, i -> ledger_of i)
-    Array.foldr (total -> l -> total + ledger_sum l) 0 (ref all) + Array.length (ref all)
+    let all = new [Ledger](count, \i -> ledger_of i)
+    Array.foldr (\total l -> total + ledger_sum l) 0 (ref all) + Array.length (ref all)
 
 record Rows { open: bool, entries: [i64], level: i8 }
 
@@ -156,9 +156,9 @@ fn rows_sum r = (if r.open then 1 else 0) + (r.level as i64) * 100 + Array.sum (
 // Copying an array of records copies the arrays inside each of them.
 export def row_copies :: own i64 -> i64
 fn row_copies count =
-    let all = new [Rows](count, i -> rows_of i)
+    let all = new [Rows](count, \i -> rows_of i)
     let copied = Array.copy (ref all)
-    Array.foldr (total -> r -> total + rows_sum r) 0 (ref all) + Array.foldr (total -> r -> total + rows_sum r) 0 (ref copied) * 3
+    Array.foldr (\total r -> total + rows_sum r) 0 (ref all) + Array.foldr (\total r -> total + rows_sum r) 0 (ref copied) * 3
 
 def slot_of :: own i64 -> Slot
 fn slot_of n = if n % 3 == 0 then Vacant elif n % 3 == 1 then Held (gauge_of n) else Both (gauge_of n, spread_of n)
@@ -172,7 +172,7 @@ fn slot_sum s =
 
 export def slots :: own i64 -> i64
 fn slots count =
-    let all = new [Slot](count, i -> slot_of i)
+    let all = new [Slot](count, \i -> slot_of i)
     let mut total = 0
     for item in all do
         total = total + slot_sum (ref item)

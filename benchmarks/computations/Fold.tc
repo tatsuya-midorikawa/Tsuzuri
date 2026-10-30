@@ -1,10 +1,10 @@
 def Yield :: own i64 -> i64
 fn Yield value = value
 
-def rec fold :: &[i64] -> own (i64 -> i64) -> own i64 -> own i64 -> i64
+def rec fold :: ref [i64] -> own (i64 -> i64) -> own i64 -> own i64 -> i64
 fn rec fold values body index total =
     if index == values.length { total }
     else { fold values body (index + 1) (total + body values[index]) }
 
-def For :: &[i64] -> own (i64 -> i64) -> i64
+def For :: ref [i64] -> own (i64 -> i64) -> i64
 fn For values body = fold values body 0 0

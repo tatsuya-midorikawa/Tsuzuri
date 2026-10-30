@@ -51,23 +51,23 @@ fn figure_area figure =
 def sum_areas :: Shapes.Shape<'a> => ref ['a] -> i64
 fn sum_areas items =
     let mut total = 0i64
-    for index in 0i64 .. (items.length - 1) do total = total + Shapes.Shape.area (ref items[index])
+    for index in 0i64 ..= (items.length - 1) do total = total + Shapes.Shape.area (ref items[index])
     total
 
 export def dyn_total :: own i64 -> own i64 -> i64
 fn dyn_total count rounds =
     let items = Array.init count make_dyn
     let mut total = 0i64
-    for _round in 1i64 .. rounds do
-        for index in 0i64 .. (count - 1) do total = total + Shapes.Shape.area (ref items[index])
+    for _round in 1i64 ..= rounds do
+        for index in 0i64 ..= (count - 1) do total = total + Shapes.Shape.area (ref items[index])
     total
 
 export def union_total :: own i64 -> own i64 -> i64
 fn union_total count rounds =
     let items = Array.init count make_figure
     let mut total = 0i64
-    for _round in 1i64 .. rounds do
-        for index in 0i64 .. (count - 1) do total = total + figure_area items[index]
+    for _round in 1i64 ..= rounds do
+        for index in 0i64 ..= (count - 1) do total = total + figure_area items[index]
     total
 
 export def generic_total :: own i64 -> own i64 -> i64
@@ -76,6 +76,6 @@ fn generic_total count rounds =
     let rects = Array.init ((count + 1) / 3) (\j -> rect (3 * j + 1))
     let tris = Array.init (count / 3) (\j -> tri (3 * j + 2))
     let mut total = 0i64
-    for _round in 1i64 .. rounds do
+    for _round in 1i64 ..= rounds do
         total = total + sum_areas (ref squares) + sum_areas (ref rects) + sum_areas (ref tris)
     total

@@ -804,12 +804,12 @@ try {
   diagnostic("def add :: 'a -> 'a -> 'a\nfn add x y = x + y\ndef f :: bool\nfn f = add true false", "E1005");
   diagnostic("fn add :: i32 -> i32 -> i32\nfn add x y = x + y", "E0002");
   diagnostic("def f :: Add<'a> -> 'a\nfn f x = x\ndef g :: bool\nfn g = f true", "E1005");
-  diagnostic("def f :: i64\nfn f = { let x = 1; let g: &i64 -> unit = r -> { *r = 2; }; 0 }", "E1014");
+  diagnostic("def f :: i64\nfn f = { let x = 1; let g: ref i64 -> unit = \\r -> { deref r = 2; }; 0 }", "E1014");
   diagnostic(Buffer.from([0xff]), "E2001");
   diagnostic(" ".repeat(4 * 1024 * 1024 + 1), "E0003");
   // G17 Phase 3: generic functions g0..g15, each calling the next at two larger types, need
   // 2^16 - 1 specializations; one more `id` reaches the limit of 65,536 and a second exceeds it.
-  const doubling = Array.from({ length: 15 }, (_, level) => `def g${level} :: 'a -> unit = \\x ->\n    g${level + 1} (ref x, 0uy)\n    g${level + 1} (ref x, 0y)\n`);
+  const doubling = Array.from({ length: 15 }, (_, level) => `def g${level} :: 'a -> unit = \\x ->\n    g${level + 1} (ref x, 0i8u)\n    g${level + 1} (ref x, 0i8)\n`);
   doubling.push("def g15 :: 'a -> unit = \\_x -> ()\n", "def id :: 'a -> 'a = \\x -> x\n", "g0 1\nlet _ = id 1\n");
   const limitDirectory = join(temporary, "specialization-limit");
   mkdirSync(limitDirectory, { recursive: true });

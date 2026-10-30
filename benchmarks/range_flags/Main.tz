@@ -6,31 +6,31 @@
 export def k_sum_ref :: ref [i64] -> i64
 fn k_sum_ref values =
     let mut total = 0i64
-    for i in 0 .. values.length - 1 do total = total + values[i]
+    for i in 0 ..= values.length - 1 do total = total + values[i]
     total
 
 export def k_diff :: ref [i64] -> i64
 fn k_diff values =
     let mut total = 0i64
-    for i in 0 .. values.length - 2 do total = total + (values[i + 1] - values[i])
+    for i in 0 ..= values.length - 2 do total = total + (values[i + 1] - values[i])
     total
 
 export def k_pairs :: ref [i64] -> i64
 fn k_pairs values =
     let mut total = 0i64
-    for i in 0 .. values.length / 2 - 1 do total = total + values[2 * i] * values[2 * i + 1]
+    for i in 0 ..= values.length / 2 - 1 do total = total + values[2 * i] * values[2 * i + 1]
     total
 
 export def k_window :: ref [i64] -> i64
 fn k_window values =
     let mut total = 0i64
-    for i in 1 .. values.length - 2 do total = total + values[i - 1] + values[i] + values[i + 1]
+    for i in 1 ..= values.length - 2 do total = total + values[i - 1] + values[i] + values[i + 1]
     total
 
 export def k_down :: ref [i64] -> i64
 fn k_down values =
     let mut total = 0i64
-    for i in values.length - 2 .. -1 .. 0 do total = total + (values[i + 1] - values[i])
+    for i in values.length - 2 .. -1 ..= 0 do total = total + (values[i + 1] - values[i])
     total
 
 // The types prove it: a byte widened to 32 bits cannot overflow a small product, and a mask bounds
@@ -44,7 +44,7 @@ fn k_widen values =
 export def k_mask :: ref [i64] -> i64
 fn k_mask values =
     let mut total = 0i64
-    for i in 0 .. values.length - 1 do total = total + (values[i] & 255) * 1000 + ((values[i] >>> 56) & 15)
+    for i in 0 ..= values.length - 1 do total = total + (values[i] & 255) * 1000 + ((values[i] >>> 56) & 15)
     total
 
 export def k_digits :: own i64u -> i64u
@@ -65,7 +65,7 @@ fn k_guarded x = if x >= 0 && x < 1000 then x * 3 + 1 else x - 1
 export def k_stride_unbounded :: ref [i64] -> own i64 -> i64
 fn k_stride_unbounded values n =
     let mut total = 0i64
-    for i in 0 .. n - 1 do total = total + values[i * 4 + 3]
+    for i in 0 ..= n - 1 do total = total + values[i * 4 + 3]
     total
 
 export def k_stride32_free :: ref [i64] -> own i32 -> i64
@@ -77,5 +77,5 @@ fn k_stride32_free values n =
 export def k_wrap_hash :: own i64 -> own i64 -> i64
 fn k_wrap_hash seed count =
     let mut state = seed
-    for i in 0 .. count do state = state * 6364136223846793005 + (i + 1442695040888963407)
+    for i in 0 ..= count do state = state * 6364136223846793005 + (i + 1442695040888963407)
     state

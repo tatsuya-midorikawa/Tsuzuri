@@ -38,7 +38,7 @@ try {
   writeFileSync(join(grow, "Grow.tz"), `export def grow :: i64 -> i64
 fn grow count =
     let mut values: Vec<i64> = Vec.empty()
-    for index in 1i64 .. count do values = Vec.push_owned index values
+    for index in 1i64 ..= count do values = Vec.push_owned index values
     let result = Vec.to_array values
     Array.sum ref result
 `);
@@ -250,7 +250,7 @@ int main(void) {
     }
   };
   freestanding("io", "IO { do! IO.write_line 42 }\n", "--freestanding cannot use the standard IO");
-  freestanding("tasks", "export def total :: i64 -> i64\nfn total count =\n    let tasks = new [Task<i64>](4, index -> task { return index * count })\n    let results = Task.run (Task.parallel tasks)\n    Array.sum (ref results)\n", "--freestanding cannot use parallel tasks");
+  freestanding("tasks", "export def total :: i64 -> i64\nfn total count =\n    let tasks = new [Task<i64>](4, \\index -> task { return index * count })\n    let results = Task.run (Task.parallel tasks)\n    Array.sum (ref results)\n", "--freestanding cannot use parallel tasks");
   freestanding("debug", "export def traced :: i64 -> i64\nfn traced value = Debug.trace value\n", "--freestanding cannot use Debug output");
   console.log("allocator: ok");
 } finally {

@@ -5,14 +5,27 @@
 | ID | A22 |
 | 優先度 | P1 |
 | 規模 | L（全体）。Phase 1 = S、Phase 2 = M、Phase 3 = M、Phase 4 = S、Phase 5 = M |
-| 依存 | **Phase 1・2・4: なし**。Phase 3 の fix の付与（手順 12）は [G22](_completed/G22-diagnostic-v2.md) Phase 1（`Diagnostic::fix`・`with_kind`・`with_help`）、Phase 5 の統合試験（手順 19）は [G24](_completed/G24-tsuzuri-fix.md) Phase 3 が要る。未実装ならその手順だけを飛ばして残りを出荷できる（「前提とする他チケットのインターフェース」）。[A18](_completed/A18-parameter-conventions.md) とは edition `2027` の足場（`Edition::E2027`・`SUPPORTED`・`docs/stability.md` の表・`tests/editions.rs`）だけを共有する（先に実装した方が足す。D-54） |
+| 依存 | **Phase 1・2・4: なし**。Phase 3 の fix の付与（手順 12）は [G22](G22-diagnostic-v2.md) Phase 1（`Diagnostic::fix`・`with_kind`・`with_help`）、Phase 5 の統合試験（手順 19）は [G24](G24-tsuzuri-fix.md) Phase 3 が要る。未実装ならその手順だけを飛ばして残りを出荷できる（「前提とする他チケットのインターフェース」）。[A18](A18-parameter-conventions.md) とは edition `2027` の足場（`Edition::E2027`・`SUPPORTED`・`docs/stability.md` の表・`tests/editions.rs`）だけを共有する（先に実装した方が足す。D-54） |
 | 後続 | G24 Phase 3（`fix::canonical_warnings` の本体を本チケットの `canonical::warnings` に差し替える）、G21（ガイドは正準形だけを教える）、A18（同じ edition `2027` に差を足す） |
-| 状態 | todo |
+| 状態 | done（全 Phase。実装と検証は末尾の節） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの `9dd0fbbc` との差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D14 はすべて承認済み |
 | 改善する劣位 | D-50 の調査結論 (3)「同じ意味に複数の書き方があり、同じ記号の意味が文脈で違う」。`..` は `for` で両端を含みスライスで半開、`&r` と `ref r` は別の意味、接尾辞は 1 文字の大小で幅が変わる（`l`=`i64`、`L`=`i128`）。AI も人間も書き方を 1 つに絞れない。Rust・Swift・Mojo は借用の書き方が 1 つで、範囲は端の扱いを記号が示す（`..`／`..=`） |
 | 手本にする既存実装 | edition: `src/syntax.rs` の `Edition`、`docs/stability.md`「edition を追加するとき」、`tests/editions.rs`。表記を AST に残す: `Notation`。範囲の下げ方: `src/llvm_control.rs` の `range_loop`、`src/ranges.rs` の `loop_kind`。警告の運び方: `src/copies.rs` の `warnings`、`src/main.rs` の `--warn`。符号化: `src/syntax_codec.rs`、`src/frontend_cache.rs` の `FRONTEND_FORMAT`。整形の安全検査: `src/formatter.rs` の `canonicalize` |
 | 主な影響ファイル | Phase ごとのファイルは各手順の「変更」。新規: `src/canonical.rs`・`src/parse_canonical.rs`・`tests/range_forms.rs`・`tests/canonical_forms.rs`・`tests/edition_2027.rs`・`tests/fixtures/range_forms/`・`tests/edition_2027.mjs`（G24 後）。文書: 「ドキュメント」 |
+
+## 方針の最新化（2026-10-29。実装前の再検討）
+
+起票時（HEAD `a2313d19`）の前提と、A18 の実装後の現状が食い違うので、実装前に方針を次のとおり改めた（人間の包括許可による判断。D-54 の「A18 と A22 の差は同じ edition 2027 に入れる」は保つ）。
+
+| 起票時の前提 | 現状（A18・G24 の実装後） | 改めた方針 |
+| --- | --- | --- |
+| `Edition::E2027` はない。`LATEST`・`MANIFEST_DEFAULT` は `2026` のまま | A18 が `E2027`・`SUPPORTED = [2026, 2027]` を足し、**`LATEST` を `2027`** にした（std・マニフェストのない入力・`script`・`repl`・文書の例が 2027 で読まれる）。`tsuzuri new` は `LATEST` を書く。`MANIFEST_DEFAULT` は `2026` | Phase 1 は足場を作らず、`rejects_noncanonical`・`NEW_PROJECT`・`--edition`・`new --edition` だけを足す。`LATEST` は `2027` のまま |
+| std・fixture・文書の例は `2026` で読むので書き換えない（D14）。Phase 4 は 2027 を選んだパッケージだけに効く | 同じものが 2027 で読まれる。Phase 4 をそのまま入れると、std・fixture・examples・文書の例・テストの中のプログラムの非正準な表記がすべて `E0004` になる | **D14 を改める**: A18 と同じ「検査付きの移行」で、std・fixture・examples・文書の例・テストのプログラムを、Phase 3 の `W1007` の `certain` の書き換えで正準形へ移す（移行の前後で IR が 1 byte も変わらないことを確かめる。`likely`・fix なしの表記は手で直し、同じく IR を比べる）。移行の試験の材料（非正準な表記）は、`edition = "2026"` のマニフェストを持つ専用の fixture に残す |
+| 移行の道具は G24 の後（手順 19） | G24 と A18 が `fix --edition` に canonical round（`fix::canonical_warnings`、空）を配線済み | 手順 19 の本体を差し替えるだけ |
+| `docs/stability.md` の「`LATEST` は新しい edition が受理を減らす間は動かさない」への書き換え（手順 18） | A18 が既に `LATEST` を動かし、「`LATEST` は移行が検証できるまで動かさない」と書いた | この書き換えはしない。2027 の行に差（非正準な表記の拒否）を足す |
+
+順序は Phase 1 → 2 → 3 → **移行** → 4 → 5。std は 2027 で読むので、std も正準形でなければならない（`W1007` は従来どおり根のパッケージの User のソースだけに出す。D10）。移行を検証できない表記が残った場合は、この節に記録して報告する。
 
 ## 実装者向け早見
 
@@ -42,7 +55,7 @@ HEAD で測った規模（コマンドは「付録 C」）: 非正準な表記�
 ### 着手条件
 
 - 承認は済んでいる（D-50）。GUIDE §2.3 の基準（`cargo build --release --locked && cargo test --locked`）を取り、件数を控える。
-- 読む: `docs/stability.md` の「edition」と「edition を追加するとき」、`tests/editions.rs`、[A18](_completed/A18-parameter-conventions.md) の「edition・manifest・cache」、[G24](_completed/G24-tsuzuri-fix.md) の「Phase 3: edition の移行」と「A22 との接点」、GUIDE の D-45・D-51・D-54・D-55。
+- 読む: `docs/stability.md` の「edition」と「edition を追加するとき」、`tests/editions.rs`、[A18](A18-parameter-conventions.md) の「edition・manifest・cache」、[G24](G24-tsuzuri-fix.md) の「Phase 3: edition の移行」と「A22 との接点」、GUIDE の D-45・D-51・D-54・D-55。
 - `grep -n "E2027" src/syntax.rs` が 0 件なら手順 2 を行う。1 件以上なら A18 が足し済みなので、足場は再実装せず手順 2 の「確認」だけを行う。
 - 手順 1 のとおり、変更前のコンパイラとコーパスの IR を残す。
 
@@ -574,3 +587,17 @@ ls /tmp/tz-A22/before/*.ll | wc -l
 ## 付録
 
 実測・診断の例・コーパスの数・同義表記・アルゴリズムの詳細・値の表・テストの表は [A22-appendix.md](A22-appendix.md)（付録 A〜G）。
+
+## 実装と検証（2026-10-29）
+
+- **範囲**: Phase 1〜5 をすべて実装した。冒頭の「方針の最新化」のとおり、A18 が先に edition 2027 を最新（`LATEST`）にしていたので、Phase 4 の前に std・fixture・examples・ベンチマーク・文書の例・テストの中のプログラムを検査付きで正準形へ移した。基盤は E15 のブランチ（`feat/e15-trust-capabilities`）の上。
+- **Phase 1**: `Edition::NEW_PROJECT`（2027）・`rejects_noncanonical`（`>= E2027`）、`--edition 2026|2027`（`check`・`build`・`run`・`test`・`script`。マニフェストがあると `E2000` の `edition_option_with_manifest`）、`tsuzuri new --edition`（`create_project_with`）。`E2027`・`SUPPORTED`・`LATEST = 2027` は A18 のもの。
+- **Phase 2**: `TokenKind::DotDotEqual`・`DotDotLess`、`RangeOp`（`ExprKind::Range`・`Slice`）、`ForRange.exclusive`。`llvm_control.rs` は閉区間の経路を `closed_range_loop` へ切り出し（切り出しの直後にコーパス 126 件の IR が 1 byte も同じことを確かめた）、半開は `half_open_last` の前置きのあと閉区間のループを回す。定数評価器（`const_machine.rs`）と範囲解析（`ranges.rs` の `half_open_loop_kind`。`0 ..< xs.length` は `BelowLength`）も半開を扱う。`xs[a..=b]` の終端は巻き戻る `b + 1`。`E0002` は `range_takes_one_step`・`slice_range_needs_end`。
+- **Phase 3**: `Program.noncanonical`（`NoncanonicalKind`・`FixLevel`・`TextEdit`。`Mode::Full` だけ符号化）、`src/parse_canonical.rs` の `record_*`、`src/canonical.rs`（`KINDS` 12 個・`warnings`・`rejections`）、`CheckedModule.noncanonical`（根のパッケージの User のソースだけ。型検査が参照と解いた `&r` は修正なし）、`--warn canonical`（`W1007`。修正案は G22 の `fix`）、`fix::canonical_warnings` の本体。
+- **Phase 4**: edition 2027 の構文解析が記録ごとに `E0004`（`*_rejected`、修正案なし）を出す。std と 2026 の依存は 2026 の記録を拒否しない（std は移行済み）。
+- **Phase 5**: `tsuzuri fix --edition 2027 --from 2026` は canonical round で `certain` の書き換えを当ててから A18 の移行をする（G24・A18 の配線のまま。本チケットは本体を差し替えただけ）。`tests/fixtures/canonical_2026`（`edition = "2026"`、45 件の `W1007`）を移行すると、`Tsuzuri.toml` が 2027 になり、IR が移行前と 1 byte も同じ（`corpus_migrates_without_changing_the_ir`）。
+- **移行（D14 の改定）**: 一時的な道具（構文解析の記録の `certain` の編集を当て、プロジェクトは型検査済みの記録で `&r` を除く）で、std 18 ファイル 202 か所、fixture と examples 111 ファイル 1,074 か所、ベンチマーク 117 か所、文書の `tsuzuri` ブロック 67 か所、テストの Rust と JavaScript の文字列の中のプログラムを書き換えた。fixture・examples の IR は移行前と 126 件中 123 件が 1 byte も同じで、違う 3 件（`matrix`・`matrix_view`・`tensor`）は、引数が `_` の旧ラムダ `_ -> e`（std に 6 か所、fixture・文書に 9 か所）を `\_ -> e` にしたもの。`\_` はワイルドカードのパターンなので、コンパイラが出す LLVM 最適化前の IR に空の `switch` と到達しないトラップのブロックができ、その関数から `memory(none)` が落ちる（`--emit llvm` は `-O3` でも最適化前の IR なので違う）。LLVM の最適化後の機械語は同じ（`new [i64](n, _ -> 7)` と `\_ -> 7` を `--emit object -O3` で比べて逆アセンブルが一致）。このため、引数が `_` の旧ラムダの書き換えは `likely` にした（決定表からの逸脱）。ベンチマークは書き換え前後のソースを同じコンパイラでビルドして IR が同じ（17 プロジェクト）。edition 2026 のマニフェストを持つ fixture（`kg_basic`・`kg_shop`・`kg_shop_head`）は移行しない（golden を保つ）。JavaScript の一括書き換えは型の文字列（`"i32 -> i32"`）・シェルの `>&2`・C の `void *` などを誤認したので、その箇所は戻して手で直した。
+- **ガイド（G21）**: `guide/card.md`・`pitfalls.md`・`language.md` を正準形（`..=`・`..<`・型名の接尾辞）で教えるように直した（`scripts/check-guide.mjs` の主張も `..=`）。D-56 の文字数の上限内。
+- **数**: `TokenKind` +2、`DiagnosticKind` +16（`E0004` 6・`W1007` 6・`E0002` 2・`E2000` 1・ほか）、`FRONTEND_FORMAT` 13 → 14（`RangeOp` と記録の符号化）、`--warn` の値は `implicit-copy, canonical, untrusted-extern`（`main.rs` の `WARNINGS`）。
+- **半開の `for` の境界検査**: `for i in 0 ..< xs.length` と `0 ..= xs.length - 1` の `-O3` の IR で、`xs[i]` の関数に残るトラップの数は同じ（どちらも 1。境界検査は省かれる）。性能は主張しない。
+- **検証**: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。`cargo nextest run --locked` は全件成功。新しいテストは `tests/range_forms.rs` 8、`tests/canonical_forms.rs` 7（付録 G.2 の 26 行を含む）、`tests/edition_2027.rs` 8、`tests/editions.rs` 3（`--edition`・`script --edition`・`new --edition`）、`src/canonical.rs` の単体 2、`src/main.rs` の `parses_edition_and_warn_canonical`、`syntax_codec` の 2026 の見本、E2E の suite `range_forms`（native と WASM の `-O0`・`-O3`、付録 F の値・トラップ）。

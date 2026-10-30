@@ -168,7 +168,7 @@ record Node { id: i64, peer: Mutex<Maybe<Arc<Node>>> }
 
 def link :: ref Arc<Node> -> own Arc<Node> -> i64
 fn link node target =
-    Mutex.with_lock (ref (Arc.get node).peer) (peer -> {
+    Mutex.with_lock (ref (Arc.get node).peer) (\peer -> {
         deref peer = Maybe.Some target;
         0
     })
@@ -199,7 +199,7 @@ record Node { id: i64, peer: Mutex<Maybe<Arc.Weak<Node>>> }
 
 def link :: ref Arc<Node> -> own Arc.Weak<Node> -> i64
 fn link node target =
-    Mutex.with_lock (ref (Arc.get node).peer) (peer -> {
+    Mutex.with_lock (ref (Arc.get node).peer) (\peer -> {
         deref peer = Maybe.Some target;
         0
     })

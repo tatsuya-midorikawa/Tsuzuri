@@ -142,7 +142,7 @@ numbers = Set.insert 20 numbers
 numbers = Set.insert 10 numbers
 numbers = Set.insert 30 numbers
 
-let sum = Set.fold (\acc x -> acc + *x) 0 (ref numbers)
+let sum = Set.fold (\acc x -> acc + deref x) 0 (ref numbers)
 $"sum={sum}"
 ```
 

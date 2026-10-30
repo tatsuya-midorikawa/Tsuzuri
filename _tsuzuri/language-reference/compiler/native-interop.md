@@ -629,7 +629,7 @@ extern "sample_next" def sample_next :: i32 -> i32
 export def norm_case :: f64 -> f64 -> f64
 fn norm_case x y =
     let point = SamplePoint { x: x, y: y, tag: 0 }
-    Sample.sample_norm (&point)
+    Sample.sample_norm (ref point)
 ```
 
 ```sh

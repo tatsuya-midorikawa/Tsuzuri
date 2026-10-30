@@ -7,7 +7,7 @@ fn debug_answer =
 export def debug_owned :: own i64 -> i64
 fn debug_owned count =
     let mut total = 0
-    for _index in 0i64 .. count - 1 do
+    for _index in 0i64 ..= count - 1 do
         let text = Debug.trace ("he" + "llo")
         total = total + text.length
     total

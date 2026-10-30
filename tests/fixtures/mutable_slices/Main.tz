@@ -12,7 +12,7 @@ fn rec negate_all values =
 
 def fill :: ref mut [i64..] -> own i64 -> unit
 fn fill values value =
-    for index in 0i64 .. (values.length - 1) do Array.write index value values
+    for index in 0i64 ..= (values.length - 1) do Array.write index value values
 
 def total :: ref [i64] -> i64
 fn total values =
@@ -40,7 +40,7 @@ fn negate =
 
 export def negate_sized :: own i64 -> i64
 fn negate_sized count =
-    let mut values = new [i64](count, index -> index + 1)
+    let mut values = new [i64](count, \index -> index + 1)
     negate_all (ref mut values)
     total values
 
@@ -73,9 +73,9 @@ fn strings_drop =
 
 export def heap_strings :: own i64 -> i64
 fn heap_strings count =
-    let mut texts = new [string](count, index -> to_string index)
+    let mut texts = new [string](count, \index -> to_string index)
     let words = ref mut texts[0..]
-    for index in 0i64 .. (count - 1) do Array.write index (to_string (index * 10)) words
+    for index in 0i64 ..= (count - 1) do Array.write index (to_string (index * 10)) words
     let mut sum = 0i64
     for word in texts do sum = sum + word.length
     sum
@@ -96,7 +96,7 @@ fn convert =
 
 export def convert_owner :: own i64 -> i64
 fn convert_owner count =
-    let mut values = new [i64](count, index -> index)
+    let mut values = new [i64](count, \index -> index)
     let whole = ref mut values
     fill whole 3
     total values
@@ -119,15 +119,15 @@ fn lcg x = (x * 1103515245 + 12345) % 2147483648
 def sorted_same :: own i64 -> bool
 fn sorted_same count =
     let mut seed = 1i64
-    let mut values = new [i64](count, _index -> 0)
+    let mut values = new [i64](count, \_index -> 0)
     let part = ref mut values[0..]
-    for index in 0i64 .. (count - 1) do
+    for index in 0i64 ..= (count - 1) do
         seed = lcg seed
         Array.write index (seed % 100) part
     let sorted = Array.sort (ref values)
     Array.sort_in_place (ref mut values)
     let mut same = true
-    for index in 0i64 .. (count - 1) do
+    for index in 0i64 ..= (count - 1) do
         if sorted[index] != values[index] then same = false
     same
 
@@ -203,27 +203,27 @@ fn trap_slice_order =
 
 def double_chunk :: own i64 -> ref mut [i64..] -> unit
 fn double_chunk start chunk =
-    for index in 0i64 .. (chunk.length - 1) do
+    for index in 0i64 ..= (chunk.length - 1) do
         let value = chunk[index]
         Array.write index (value * 2 + (start + index) % 3) chunk
 
 export def parallel_double :: own i64 -> own i64 -> i64
 fn parallel_double count size =
-    let mut values = new [i64](count, index -> index)
+    let mut values = new [i64](count, \index -> index)
     Parallel.for_each_chunk size double_chunk (ref mut values)
     total values
 
 export def parallel_captured :: own i64 -> own i64 -> i64
 fn parallel_captured count size =
-    let mut values = new [i64](count, _index -> 0)
+    let mut values = new [i64](count, \_index -> 0)
     let offset = count * 10
     Parallel.for_each_chunk size (\start chunk ->
-        for index in 0i64 .. (chunk.length - 1) do Array.write index (start + index + offset) chunk) (ref mut values)
+        for index in 0i64 ..= (chunk.length - 1) do Array.write index (start + index + offset) chunk) (ref mut values)
     total values
 
 export def parallel_strings :: own i64 -> i64
 fn parallel_strings count =
-    let mut words = new [string](count, index -> to_string (count - index))
+    let mut words = new [string](count, \index -> to_string (count - index))
     Parallel.for_each_chunk 7 (\_start chunk -> Array.sort_in_place chunk) (ref mut words)
     let mut sum = 0i64
     for word in words do sum = sum * 31 + word.length
@@ -231,12 +231,12 @@ fn parallel_strings count =
 
 def mark :: ref mut [i64..] -> own i64 -> own i64 -> unit
 fn mark chunk start offset =
-    for index in 0i64 .. (chunk.length - 1) do Array.write index (start + index + offset) chunk
+    for index in 0i64 ..= (chunk.length - 1) do Array.write index (start + index + offset) chunk
 
 // A callback chosen at run time is no known function, so every job runs its own copy of it.
 export def parallel_dynamic :: own i64 -> own i64 -> i64
 fn parallel_dynamic count size =
-    let mut values = new [i64](count, _index -> 0)
+    let mut values = new [i64](count, \_index -> 0)
     let offset = count * 10
     let body: i64 -> ref mut [i64..] -> unit = if size % 2 == 0 then (\start chunk -> mark chunk start offset) else (\start chunk -> mark chunk start (offset + 1))
     Parallel.for_each_chunk size body (ref mut values)

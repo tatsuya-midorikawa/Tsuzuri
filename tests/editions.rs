@@ -307,14 +307,14 @@ fn fmt_uses_the_manifest_edition() {
 }
 
 #[test]
-fn new_projects_declare_the_latest_edition() {
+fn new_projects_declare_edition_2027() {
     let root = root("new", &[]);
     let project = root.join("hello-world");
     let (status, _, stderr) = tsuzuri(&["new".as_ref(), project.as_os_str()]);
     assert_eq!(status, Some(0), "{stderr}");
     let manifest = std::fs::read_to_string(project.join("Tsuzuri.toml")).unwrap();
     assert!(
-        manifest.contains(&format!("edition = \"{}\"\n", Edition::LATEST)),
+        manifest.contains(&format!("edition = \"{}\"\n", Edition::NEW_PROJECT)),
         "{manifest}"
     );
     let (status, _, stderr) = tsuzuri(&["check".as_ref(), project.as_os_str()]);
@@ -363,4 +363,132 @@ fn the_edition_key_changes_no_generated_code() {
         assert!(explicit.contains("define"), "{target}");
         assert_eq!(explicit, implicit, "{target}");
     }
+}
+
+#[test]
+fn cli_edition_reads_a_project_without_a_manifest() {
+    // A22: `&x` is a 2026 spelling; a project without a manifest reads the latest edition.
+    let root = root(
+        "cli-edition",
+        &[("plain/Main.tz", "let x = 1\nlet r = &x\nderef r\n")],
+    );
+    let plain = root.join("plain");
+    let (status, _, stderr) = tsuzuri(&["check".as_ref(), plain.as_os_str()]);
+    assert_eq!(status, Some(1));
+    assert!(stderr.contains("error[E0004]"), "{stderr}");
+    let (status, _, stderr) = tsuzuri(&[
+        "check".as_ref(),
+        plain.as_os_str(),
+        "--edition".as_ref(),
+        "2026".as_ref(),
+    ]);
+    assert_eq!(status, Some(0), "{stderr}");
+    for (arguments, message) in [
+        (
+            vec!["--edition", "2030"],
+            "unsupported edition '2030' for --edition; supported editions: 2026, 2027",
+        ),
+        (
+            vec!["--edition"],
+            "--edition requires an edition year; supported editions: 2026, 2027",
+        ),
+        (
+            vec!["--edition", "2026", "--edition", "2027"],
+            "edition specified more than once",
+        ),
+    ] {
+        let mut full: Vec<&std::ffi::OsStr> = vec!["check".as_ref(), plain.as_os_str()];
+        full.extend(arguments.iter().map(std::ffi::OsStr::new));
+        let (status, _, stderr) = tsuzuri(&full);
+        assert_eq!(status, Some(2), "{arguments:?}");
+        assert!(stderr.contains(message), "{arguments:?}: {stderr}");
+    }
+    let (status, _, stderr) = tsuzuri(&[
+        "doc".as_ref(),
+        plain.as_os_str(),
+        "--edition".as_ref(),
+        "2026".as_ref(),
+    ]);
+    assert_eq!(status, Some(2));
+    assert!(
+        stderr.contains("--edition is only valid with check, build, run, test, script, or new"),
+        "{stderr}"
+    );
+    // A project with a manifest names its edition there.
+    let managed = root.join("managed");
+    std::fs::create_dir_all(&managed).unwrap();
+    std::fs::write(
+        managed.join("Tsuzuri.toml"),
+        "[package]\nname = \"managed\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(managed.join("Main.tz"), "0\n").unwrap();
+    let (status, _, stderr) = tsuzuri(&[
+        "check".as_ref(),
+        managed.as_os_str(),
+        "--edition".as_ref(),
+        "2026".as_ref(),
+    ]);
+    assert_eq!(status, Some(1));
+    assert!(
+        stderr.contains(
+            "--edition cannot be used in a project that has a Tsuzuri.toml; set 'edition' there"
+        ),
+        "{stderr}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn script_accepts_edition() {
+    let root = root(
+        "script-edition",
+        &[(
+            "legacy.tz",
+            "let x = 41\nlet r = &x\ndo! IO.write_line $\"{*r + 1}\"\n",
+        )],
+    );
+    let script = root.join("legacy.tz");
+    let (status, stdout, stderr) = tsuzuri(&[
+        "script".as_ref(),
+        "--edition".as_ref(),
+        "2026".as_ref(),
+        script.as_os_str(),
+    ]);
+    assert_eq!(status, Some(0), "{stderr}");
+    assert_eq!(stdout, "42\n");
+    let (status, _, stderr) = tsuzuri(&["script".as_ref(), script.as_os_str()]);
+    assert_eq!(status, Some(1));
+    assert!(stderr.contains("error[E0004]"), "{stderr}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn new_project_edition_can_be_chosen() {
+    let root = root("new-edition", &[]);
+    let project = root.join("old-style");
+    let (status, _, stderr) = tsuzuri(&[
+        "new".as_ref(),
+        project.as_os_str(),
+        "--edition".as_ref(),
+        "2026".as_ref(),
+    ]);
+    assert_eq!(status, Some(0), "{stderr}");
+    let manifest = std::fs::read_to_string(project.join("Tsuzuri.toml")).unwrap();
+    assert!(manifest.contains("edition = \"2026\"\n"), "{manifest}");
+    let (status, _, stderr) = tsuzuri(&["check".as_ref(), project.as_os_str()]);
+    assert_eq!(status, Some(0), "{stderr}");
+    let (status, _, stderr) = tsuzuri(&[
+        "new".as_ref(),
+        root.join("other").as_os_str(),
+        "--edition".as_ref(),
+        "2030".as_ref(),
+    ]);
+    assert_eq!(status, Some(2));
+    assert!(
+        stderr.contains("unsupported edition '2030' for --edition; supported editions: 2026, 2027"),
+        "{stderr}"
+    );
+    assert!(!root.join("other").exists());
+    std::fs::remove_dir_all(root).unwrap();
 }

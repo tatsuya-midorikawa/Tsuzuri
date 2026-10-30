@@ -258,7 +258,7 @@ fn announce value = IO { do! IO.write value; return value + 1 }
 IO {
     let! first = IO.bind announce (IO.pure 2)
     let! second = IO.bind IO.pure (announce 3)
-    let! third = IO.map (value -> value + 1) (IO.pure 3)
+    let! third = IO.map (\\value -> value + 1) (IO.pure 3)
     for number in [first, second, third] do do! IO.write number
     let! left = IO.pure 5
     and! right = IO.pure 6
@@ -311,11 +311,11 @@ fn identity source =
   let! value = source
   return value
 def curried :: i64 -> Maybe<i64> -> Maybe<i64>
-fn curried offset = source ->
+fn curried offset = \\source ->
   let! value = source
   return value + offset
 def implemented_with_let :: i64 -> Maybe<i64>
-let implemented_with_let = input ->
+let implemented_with_let = \\input ->
   let! value = Some input
   return value + 1
 def rec repeated :: i64 -> Maybe<i64>

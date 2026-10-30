@@ -270,7 +270,7 @@ def locked_send :: own Channel.Sender<i64> -> own Channel.Receiver<i64> -> i64
 fn locked_send sender _receiver =
     let lock = Mutex.create 0i64
     let borrowed = ref sender
-    Mutex.with_lock (ref lock) (_value -> match Channel.send borrowed 1 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
+    Mutex.with_lock (ref lock) (\_value -> match Channel.send borrowed 1 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
 
 export def send_inside_lock :: i64
 fn send_inside_lock =
@@ -282,7 +282,7 @@ fn locked_recv sender receiver =
     let _sent = Channel.send (ref sender) 9
     let lock = Mutex.create 0i64
     let borrowed = ref receiver
-    Mutex.with_lock (ref lock) (_value -> take borrowed)
+    Mutex.with_lock (ref lock) (\_value -> take borrowed)
 
 export def recv_inside_lock :: i64
 fn recv_inside_lock =
@@ -293,7 +293,7 @@ fn recv_inside_lock =
 // function holds copies, never a borrow (E1013), and the ring carries its environment.
 def offer :: ref Channel.Sender<i64 -> i64> -> own i64 -> unit
 fn offer sender k =
-    let _sent = Channel.send sender (x -> x + k)
+    let _sent = Channel.send sender (\x -> x + k)
     ()
 
 def run_functions :: own Channel.Sender<i64 -> i64> -> own Channel.Receiver<i64 -> i64> -> i64
@@ -335,7 +335,7 @@ fn forwarded =
 // two functions in the ring own the Arc, and nobody does afterwards.
 def offer_counting :: ref Channel.Sender<i64 -> i64> -> own Arc<Atomic<i64>> -> unit
 fn offer_counting sender counter =
-    let _sent = Channel.send sender (x -> x + Atomic.fetch_add (Arc.get (ref counter)) 1)
+    let _sent = Channel.send sender (\x -> x + Atomic.fetch_add (Arc.get (ref counter)) 1)
     ()
 
 def run_function_drop :: own Channel.Sender<i64 -> i64> -> own Channel.Receiver<i64 -> i64> -> own Arc<Atomic<i64>> -> i64

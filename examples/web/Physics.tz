@@ -32,4 +32,4 @@ export def next_velocity :: f64 -> f64 -> f64 -> f64 -> f64 = \position velocity
 
 export def next_positions :: ref [f64] -> ref [f64] -> f64 -> f64 -> [f64] = \positions velocities dt extent ->
     assert (positions.length == velocities.length)
-    new [f64](positions.length, index -> (step positions[index] velocities[index] dt extent).position)
+    new [f64](positions.length, \index -> (step positions[index] velocities[index] dt extent).position)

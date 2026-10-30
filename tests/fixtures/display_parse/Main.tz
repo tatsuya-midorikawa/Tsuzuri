@@ -1,7 +1,7 @@
 record Label { text: string, values: [i64] }
 
 instance Display<Label> {
-    fn display label = clone_string (&label.text)
+    fn display label = clone_string (ref label.text)
 }
 
 instance Parse<Label> {
@@ -20,7 +20,7 @@ fn displays =
 export def text_copy :: i64
 fn text_copy =
     let text = "a\0b\n日本語 😀"
-    let copy = Display.display (&text)
+    let copy = Display.display (ref text)
     assert (copy == text)
     let moved = to_string text
     assert (moved == copy)
@@ -29,10 +29,10 @@ fn text_copy =
 export def parse_numbers :: i64
 fn parse_numbers =
     let text = "0x2a"
-    let result: Maybe<i64> = Parse.parse (&text)
+    let result: Maybe<i64> = Parse.parse (ref text)
     assert (text.length == 4)
     let real = ".5"
-    let parsed: Maybe<f64> = Parse.parse (&real)
+    let parsed: Maybe<f64> = Parse.parse (ref real)
     assert (Maybe.get parsed == 0.5)
     Maybe.get result
 
@@ -41,40 +41,40 @@ fn parse_bool =
     let yes = "true"
     let no = "false"
     let invalid = "True"
-    let first: Maybe<bool> = Parse.parse (&yes)
-    let second: Maybe<bool> = Parse.parse (&no)
-    let third: Maybe<bool> = Parse.parse (&invalid)
-    Maybe.get first && ! (Maybe.get second) && Maybe.is_none (&third)
+    let first: Maybe<bool> = Parse.parse (ref yes)
+    let second: Maybe<bool> = Parse.parse (ref no)
+    let third: Maybe<bool> = Parse.parse (ref invalid)
+    Maybe.get first && ! (Maybe.get second) && Maybe.is_none (ref third)
 
 export def malformed :: bool
 fn malformed =
     let mut valid = true
     for text in ["", " 1", "1 ", "1__0", "1e+", "0X10", "NaN", "1\0"] do
-        let number: Maybe<i128> = Parse.parse (&text)
-        let real: Maybe<f128> = Parse.parse (&text)
-        valid = valid && Maybe.is_none (&number) && Maybe.is_none (&real)
+        let number: Maybe<i128> = Parse.parse (ref text)
+        let real: Maybe<f128> = Parse.parse (ref text)
+        valid = valid && Maybe.is_none (ref number) && Maybe.is_none (ref real)
     valid
 
 export def round_f64 :: own f64 -> f64
 fn round_f64 value =
     let text = to_string value
-    let result: Maybe<f64> = Parse.parse (&text)
+    let result: Maybe<f64> = Parse.parse (ref text)
     Maybe.get result
 
 export def round_f32 :: own f32 -> f32
 fn round_f32 value =
     let text = to_string value
-    let result: Maybe<f32> = Parse.parse (&text)
+    let result: Maybe<f32> = Parse.parse (ref text)
     Maybe.get result
 
 export def custom :: own i64 -> i64
 fn custom count =
     let mut size = 0
-    for i in 1 .. count do
+    for i in 1 ..= count do
         let text = "owned"
-        let parsed: Maybe<Label> = Parse.parse (&text)
+        let parsed: Maybe<Label> = Parse.parse (ref text)
         let label = Maybe.get parsed
-        let shown = Display.display (&label)
+        let shown = Display.display (ref label)
         let moved = to_string label
         assert (shown == moved)
         size = size + shown.length + moved.length

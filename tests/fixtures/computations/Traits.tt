@@ -1,7 +1,7 @@
 class Score<'a> {
-    def score :: &'a -> i64
+    def score :: ref 'a -> i64
 }
 
 class Size<'a> {
-    def size :: &'a -> i64
+    def size :: ref 'a -> i64
 }

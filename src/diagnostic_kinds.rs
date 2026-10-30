@@ -142,6 +142,7 @@ diagnostic_kinds! {
         (NegativePatternNeedsNumber, "negative_pattern_needs_number", "E0002"),
         (PatternNestingTooDeep, "pattern_nesting_too_deep", "E0002"),
         (PrefixKeywordOperand, "prefix_keyword_operand", "E0002"),
+        (RangeTakesOneStep, "range_takes_one_step", "E0002"),
         (RecursiveLetBang, "recursive_let_bang", "E0002"),
         (RecursiveWhereBinding, "recursive_where_binding", "E0002"),
         (ReturnNotLastInComputation, "return_not_last_in_computation", "E0002"),
@@ -150,6 +151,7 @@ diagnostic_kinds! {
         (SignatureUsesDoubleColon, "signature_uses_double_colon", "E0002"),
         (SignatureWithoutDefinition, "signature_without_definition", "E0002"),
         (SliceMustBeBorrowed, "slice_must_be_borrowed", "E0002"),
+        (SliceRangeNeedsEnd, "slice_range_needs_end", "E0002"),
         (SliceWithoutBounds, "slice_without_bounds", "E0002"),
         (StrayAndMember, "stray_and_member", "E0002"),
         (SyntaxNestingTooDeep, "syntax_nesting_too_deep", "E0002"),
@@ -172,6 +174,13 @@ diagnostic_kinds! {
         (WhereBindingIndentation, "where_binding_indentation", "E0002"),
         // E0003
         (SourceTooLarge, "source_too_large", "E0003"),
+        // E0004
+        (BareRangeInForRejected, "bare_range_in_for_rejected", "E0004"),
+        (LegacyLambdaRejected, "legacy_lambda_rejected", "E0004"),
+        (ShortLiteralSuffixRejected, "short_literal_suffix_rejected", "E0004"),
+        (SymbolicBorrowRejected, "symbolic_borrow_rejected", "E0004"),
+        (SymbolicDerefRejected, "symbolic_deref_rejected", "E0004"),
+        (SymbolicReferenceTypeRejected, "symbolic_reference_type_rejected", "E0004"),
         // E1001
         (DuplicateAndBinding, "duplicate_and_binding", "E1001"),
         (DuplicateDerivedClass, "duplicate_derived_class", "E1001"),
@@ -668,6 +677,7 @@ diagnostic_kinds! {
         (DiagramWrongIdKind, "diagram_wrong_id_kind", "E2000"),
         (DuplicateLinkInput, "duplicate_link_input", "E2000"),
         (DuplicateOption, "duplicate_option", "E2000"),
+        (EditionOptionWithManifest, "edition_option_with_manifest", "E2000"),
         (EnvironmentSettingInvalid, "environment_setting_invalid", "E2000"),
         (FastBackendUnavailable, "fast_backend_unavailable", "E2000"),
         (FastBackendUnsupportedOption, "fast_backend_unsupported_option", "E2000"),
@@ -847,6 +857,13 @@ diagnostic_kinds! {
         (DeprecatedUse, "deprecated_use", "W1005"),
         // W1006
         (ImplicitCopyOfLargeValue, "implicit_copy_of_large_value", "W1006"),
+        // W1007
+        (BareRangeInFor, "bare_range_in_for", "W1007"),
+        (LegacyLambda, "legacy_lambda", "W1007"),
+        (ShortLiteralSuffix, "short_literal_suffix", "W1007"),
+        (SymbolicBorrow, "symbolic_borrow", "W1007"),
+        (SymbolicDeref, "symbolic_deref", "W1007"),
+        (SymbolicReferenceType, "symbolic_reference_type", "W1007"),
         // W1008
         (EffectAttributeOnConstDef, "effect_attribute_on_const_def", "W1008"),
         (EffectAttributeUncheckedGeneric, "effect_attribute_unchecked_generic", "W1008"),

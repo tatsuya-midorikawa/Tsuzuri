@@ -120,7 +120,7 @@ stale=false fresh=true missing=none
 ```tsuzuri run=order%3D04235%20reused%3Dtrue
 let mut arena: Arena<i64> = Arena.empty()
 let mut handles: Vec<Arena.Handle<i64>> = Vec.empty()
-for value in 0i64 .. 4 do
+for value in 0i64 ..= 4 do
     match Arena.insert value arena with
     | (next, handle) ->
         arena = next

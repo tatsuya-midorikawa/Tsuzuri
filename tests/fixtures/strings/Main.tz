@@ -198,15 +198,15 @@ fn identity value = value
 export def owned_paths :: own i64 -> i64
 fn owned_paths count =
     let mut total = 0
-    for _ in 1 .. count do
+    for _ in 1 ..= count do
         let prefix = sample 9 + ""
-        let append: string -> string = suffix -> prefix + suffix
+        let append: string -> string = \suffix -> prefix + suffix
         let copied = append
         let pair = Pair { first: append "\uDC00", second: copied "é" }
         assert (pair.first == "\u{10000}" && pair.second == "\uD800é")
         let texts = [identity pair.first, identity pair.second, sample 8]
         let bytes = legacy() + u8""
-        let append_bytes: utf8string -> utf8string = suffix -> bytes + suffix
+        let append_bytes: utf8string -> utf8string = \suffix -> bytes + suffix
         let copied_bytes = append_bytes
         let byte_list = [|append_bytes u8"!", copied_bytes u8"?"|]
         assert (texts[0].length == 2 && texts[1].length == 2 && texts[2].length == 3)
@@ -241,12 +241,12 @@ export def pipeline_paths :: own i64 -> i64
 fn pipeline_paths count =
     let owned_text = "\uD800" + "😀"
     let owned_bytes = u8"é" + u8"😀"
-    let render_text: unit -> string = ignored -> owned_text |> to_string
-    let render_bytes: unit -> string = ignored -> owned_bytes |> to_string
+    let render_text: unit -> string = \ignored -> owned_text |> to_string
+    let render_bytes: unit -> string = \ignored -> owned_bytes |> to_string
     let copied_text = render_text
     let copied_bytes = render_bytes
     let mut total = 0
-    for _ in 1 .. count do
+    for _ in 1 ..= count do
         let first = render_text ()
         let second = copied_text ()
         let third = render_bytes ()

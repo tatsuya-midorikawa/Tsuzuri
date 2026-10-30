@@ -250,7 +250,7 @@ try {
   // kernel table that a device-aware program embeds. The values are small integers, which f16 holds exactly.
   const halfProject = join(directory, "halves");
   mkdirSync(halfProject);
-  writeFileSync(join(halfProject, "Main.tz"), "def square :: f16 -> f16\nfn square value = value * value + value\ndef index :: i32 -> f16\nfn index value = value as f16\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values: [f16] = [1.0f16]\nlet _a = Gpu.map_relaxed (&device) square (Gpu.from_array (&device) (&values))\nlet _b = Gpu.init_relaxed (&device) 4 index\n0\n");
+  writeFileSync(join(halfProject, "Main.tz"), "def square :: f16 -> f16\nfn square value = value * value + value\ndef index :: i32 -> f16\nfn index value = value as f16\nlet device = Result.get (Gpu.request Gpu.WebGpu)\nlet values: [f16] = [1.0f16]\nlet _a = Gpu.map_relaxed (ref device) square (Gpu.from_array (ref device) (ref values))\nlet _b = Gpu.init_relaxed (ref device) 4 index\n0\n");
   const halfIr = join(halfProject, "halves.ll");
   cli(["build", halfProject, "--emit", "llvm", "-o", halfIr]);
   const embedded = number => {
@@ -375,17 +375,17 @@ try {
   writeFileSync(source, `export def pipeline :: i64
 fn pipeline = {
     let device = Result.get (Gpu.request Gpu.CpuReference);
-    let buffer = Gpu.init (&device) 8 (\\index -> index * index);
-    let mapped = Gpu.map (&device) (\\value -> value + 1) buffer;
+    let buffer = Gpu.init (ref device) 8 (\\index -> index * index);
+    let mapped = Gpu.map (ref device) (\\value -> value + 1) buffer;
     let values = Gpu.to_array mapped;
-    Array.sum (&values) as i64
+    Array.sum (ref values) as i64
 }
 export def float_reference :: f32 -> f32
 fn float_reference value = {
     let device = Result.get (Gpu.request Gpu.CpuReference);
     let values = [value];
-    let buffer = Gpu.from_array (&device) (&values);
-    let mapped = Gpu.map (&device) (\\item -> item * item + item) buffer;
+    let buffer = Gpu.from_array (ref device) (ref values);
+    let mapped = Gpu.map (ref device) (\\item -> item * item + item) buffer;
     let result = Gpu.to_array mapped;
     result[0]
 }
@@ -393,23 +393,23 @@ export def relaxed_reference :: f32 -> f32
 fn relaxed_reference value = {
     let device = Result.get (Gpu.request Gpu.CpuReference);
     let values = [value];
-    let buffer = Gpu.from_array (&device) (&values);
-    let mapped = Gpu.map_relaxed (&device) (\\item -> item * item + item) buffer;
+    let buffer = Gpu.from_array (ref device) (ref values);
+    let mapped = Gpu.map_relaxed (ref device) (\\item -> item * item + item) buffer;
     let result = Gpu.to_array mapped;
     result[0]
 }
 export def relaxed_init_sum :: f32
 fn relaxed_init_sum = {
     let device = Result.get (Gpu.request Gpu.CpuReference);
-    let buffer = Gpu.init_relaxed (&device) 8 (\\index -> (index as f32) * 0.5 + 0.25);
+    let buffer = Gpu.init_relaxed (ref device) 8 (\\index -> (index as f32) * 0.5 + 0.25);
     let values = Gpu.to_array buffer;
-    Array.sum (&values)
+    Array.sum (ref values)
 }
 export def unavailable :: bool
 fn unavailable = {
   let explicit = Gpu.request Gpu.WebGpu;
   let automatic = Gpu.request Gpu.Auto;
-  Result.is_error (&explicit) && Result.is_ok (&automatic)
+  Result.is_error (ref explicit) && Result.is_ok (ref automatic)
 }
 `);
   const ir = join(api, "api.ll");

@@ -28,6 +28,7 @@ Tsuzuri では、区切り文字、括弧、矢印記号、演算子、コメン
 | `,` | タプル、配列、引数列、型パラメータの要素区切り | `(1, 2)`, `[1, 2, 3]` | [リテラル](../literals-and-strings/literals.md) |
 | `.` | レコードやモジュールのメンバー参照、小数点 | `user.name`, `Array.map` | [演算子と式](./op-and-expressions.md) |
 | `..` | 配列スライスの半開区間。必ず `ref` か `ref mut` と組む | `ref values[1..4]` | [演算子と式](./op-and-expressions.md) |
+| `..=` / `..<` | 終端を含む・含まない範囲。`for...in` の整数範囲と配列スライス | `for i in 0 ..< n`<br/>`ref values[1..=3]` | [for...in 式](../loops-and-conditionals/for-in.md#整数範囲の反復) |
 | `\|` | match アームの区切り、union ケース区切り、ビット OR | `\| Case ->`<br/>`\| Circle of f64` | [パターンマッチング](../pattern-matching/pattern-matching.md)<br/>[Union](../built-in-types-and-modules/union.md) |
 | `\|>` | パイプライン演算子（値を関数の引数へ渡す） | `data \|> process` | [演算子と式](./op-and-expressions.md) |
 | `'a` | ジェネリック型変数（小文字で始まる識別子） | `'a`, `'key`, `'value` | [ジェネリック関数と型パラメータ制約](./generics-functions.md) |

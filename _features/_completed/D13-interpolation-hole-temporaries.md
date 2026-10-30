@@ -313,7 +313,7 @@ Main.tz:2:10: error[E1013]: borrow requires a local place; bind the temporary wi
 | --- | --- |
 | D07（完了） | 穴の型付けの元の設計。本チケットは D07 の意図（型付けした式で分類する）に合わせる |
 | [F14](../F14-structural-performance-assertions.md) | 落とし穴の行が D13 を待つ。D13 の出荷後に F14 の実装者が消す。本チケットは F14 を編集しない |
-| [A22](../A22-edition-2027-canonical-forms.md) | `$"{&x}"` の穴の `&` を検出する（A22 のテスト T25）。本チケットは `&x`・`ref x` の穴の扱いを変えない |
+| [A22](A22-edition-2027-canonical-forms.md) | `$"{&x}"` の穴の `&` を検出する（A22 のテスト T25）。本チケットは `&x`・`ref x` の穴の扱いを変えない |
 
 ## 実装手順
 

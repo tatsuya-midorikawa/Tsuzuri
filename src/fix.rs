@@ -163,10 +163,9 @@ pub struct Report {
 }
 
 /// The warnings that bring a source to the forms that every edition accepts (A22's `W1007`),
-/// each with a `certain` fix. `tsuzuri fix --edition` applies them before it migrates. No such
-/// warning exists yet, so this is empty.
-pub fn canonical_warnings(_project: &Project, _module: &CheckedModule) -> Vec<Diagnostic> {
-    Vec::new()
+/// most with a `certain` fix. `tsuzuri fix --edition` applies them before it migrates.
+pub fn canonical_warnings(_project: &Project, module: &CheckedModule) -> Vec<Diagnostic> {
+    crate::canonical::warnings(module)
 }
 
 /// Analyzes the project like `check`, without the frontend cache; with `canonical`, the
@@ -1644,12 +1643,19 @@ mod tests {
     }
 
     #[test]
-    fn there_are_no_canonical_warnings_yet() {
+    fn canonical_warnings_are_only_the_noncanonical_spellings() {
         let project = project("let unused = 1\n42\n");
         assert_eq!(
             analyze_project(&project, true).warnings,
             analyze_project(&project, false).warnings
         );
+        // A22: a 2026 source may still write the noncanonical spellings.
+        let mut project = super::tests::project("let f = x -> x + 1\nf 41\n");
+        project.sources[0].edition = crate::syntax::Edition::E2026;
+        let canonical = analyze_project(&project, true).warnings;
+        let plain = analyze_project(&project, false).warnings;
+        assert_eq!(canonical.len(), plain.len() + 1);
+        assert!(canonical.iter().any(|warning| warning.code == "W1007"));
     }
 
     #[test]

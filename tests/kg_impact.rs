@@ -332,10 +332,18 @@ fn impact_against_a_git_revision_of_a_project_without_a_manifest() {
     for file in ["Cart.tz", "Main.tz", "Report.tz"] {
         let text = std::fs::read_to_string(repository().join("tests/fixtures/kg_shop").join(file))
             .unwrap();
+        // Without a manifest the sources are read with the latest edition, which spells a
+        // lambda with a backslash (A22); the fixture is a 2026 package.
         let text: String = text
             .lines()
             .filter(|line| !line.starts_with("namespace "))
-            .map(|line| format!("{}\n", line.replace("using Acme::Shop", "using Shop")))
+            .map(|line| {
+                format!(
+                    "{}\n",
+                    line.replace("using Acme::Shop", "using Shop")
+                        .replace("(0, i -> ", "(0, \\i -> ")
+                )
+            })
             .collect();
         std::fs::write(repo.join(file), text).unwrap();
     }

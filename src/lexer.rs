@@ -17,6 +17,47 @@ fn reserved_in(word: &str, edition: Edition, gated: &[(&str, Edition)]) -> bool 
         .any(|(gated, since)| *gated == word && *since > edition)
 }
 
+/// The type suffix of a numeric literal as written (A22): what follows its radix prefix, digits,
+/// fraction and exponent, scanned as `Lexer::number` scans them. `0x1Ful` has `ul`; `0xFFf` has
+/// none, since `f` is a hexadecimal digit.
+pub(crate) fn numeric_suffix(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let (radix, mut at) = if text.starts_with("0x") {
+        (16, 2)
+    } else if text.starts_with("0b") {
+        (2, 2)
+    } else {
+        (10, 0)
+    };
+    let digits = |at: &mut usize| {
+        while bytes
+            .get(*at)
+            .is_some_and(|byte| *byte == b'_' || (*byte as char).is_digit(radix))
+        {
+            *at += 1;
+        }
+    };
+    digits(&mut at);
+    if radix == 10 {
+        if bytes.get(at) == Some(&b'.') && bytes.get(at + 1).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+            digits(&mut at);
+        }
+        if matches!(bytes.get(at), Some(b'e' | b'E'))
+            && bytes
+                .get(at + 1)
+                .is_some_and(|byte| byte.is_ascii_digit() || matches!(byte, b'+' | b'-'))
+        {
+            at += 1;
+            if matches!(bytes.get(at), Some(b'+' | b'-')) {
+                at += 1;
+            }
+            digits(&mut at);
+        }
+    }
+    &text[at..]
+}
+
 pub fn lex(source: &str, edition: Edition) -> Result<Vec<Token>, Diagnostic> {
     let (tokens, diagnostics) = tokenize(source, false, edition, EDITION_KEYWORDS);
     diagnostics.into_iter().next().map_or(Ok(tokens), Err)
@@ -1024,6 +1065,8 @@ impl Lexer<'_> {
             ("->", Arrow),
             ("=>", FatArrow),
             ("::", DoubleColon),
+            ("..=", DotDotEqual),
+            ("..<", DotDotLess),
             ("..", DotDot),
             ("**", DoubleStar),
             ("==", EqualEqual),

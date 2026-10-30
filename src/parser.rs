@@ -5,6 +5,15 @@ use crate::syntax::*;
 /// An effect attribute before a declaration: its kind and the span of `@` and its name (A20).
 type EffectMark = (EffectKind, Span);
 
+/// The range operator that a token spells (A22).
+pub(super) fn range_op(kind: &TokenKind) -> RangeOp {
+    match kind {
+        TokenKind::DotDotEqual => RangeOp::Closed,
+        TokenKind::DotDotLess => RangeOp::Open,
+        _ => RangeOp::Bare,
+    }
+}
+
 /// The attributes before a top-level declaration (D-53).
 #[derive(Default)]
 struct Attributes {
@@ -25,6 +34,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "parse_control.rs"]
 mod control;
+#[path = "parse_canonical.rs"]
+mod noncanonical;
 
 /// What follows `extern` at the top level.
 enum ExternDeclaration {
@@ -211,7 +222,7 @@ pub fn parse_with_source_all(
     for token in &mut tokens {
         token.span.source = Some(source_id);
     }
-    Parser::new(source, &tokens).program_all(true)
+    Parser::new(source, &tokens, edition).program_all(true)
 }
 
 fn parse_source(
@@ -226,13 +237,17 @@ fn parse_source(
     for token in &mut tokens {
         token.span.source = source_id;
     }
-    Parser::new(source, &tokens).program()
+    Parser::new(source, &tokens, edition).program()
 }
 
 #[derive(Clone)]
 struct Parser<'a> {
     source: &'a str,
     tokens: &'a [Token],
+    /// The edition that the source is read with; 2027 rejects noncanonical spellings (A22).
+    edition: Edition,
+    /// The noncanonical spellings found so far, in parse order (A22).
+    noncanonical: Vec<Noncanonical>,
     /// The unconsumed suffix of a compound type closer; lexer tokens stay shared.
     type_remainder: Option<Token>,
     position: usize,
@@ -274,10 +289,12 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str, tokens: &'a [Token]) -> Self {
+    fn new(source: &'a str, tokens: &'a [Token], edition: Edition) -> Self {
         Self {
             source,
             tokens,
+            edition,
+            noncanonical: Vec::new(),
             type_remainder: None,
             position: 0,
             previous_end: 0,
@@ -467,6 +484,7 @@ impl Parser<'_> {
             cpu_attributes: Vec::new(),
             effect_attributes: Vec::new(),
             trusted: Vec::new(),
+            noncanonical: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
         };
@@ -1036,10 +1054,20 @@ impl Parser<'_> {
                 break;
             }
         }
+        // A22: edition 2027 rejects every noncanonical spelling, each with its own `E0004`.
+        if self.edition.rejects_noncanonical() && diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS {
+            let room = MAX_UNIQUE_DIAGNOSTICS - diagnostics.len();
+            diagnostics.extend(
+                crate::canonical::rejections(&self.noncanonical)
+                    .into_iter()
+                    .take(room),
+            );
+        }
         if !diagnostics.is_empty() {
             return Err(diagnostics);
         }
         program.active_patterns = self.active_patterns.into_values().collect();
+        program.noncanonical = self.noncanonical;
         program.dyn_types = self.dyn_types;
         Ok(program)
     }
@@ -1273,6 +1301,14 @@ impl Parser<'_> {
             at,
             first,
         }))
+    }
+
+    /// Whether the current token is a range operator: `..`, `..=` or `..<` (A22).
+    pub(super) fn range_operator_ahead(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::DotDot | TokenKind::DotDotEqual | TokenKind::DotDotLess
+        )
     }
 
     /// The effect attribute that starts at the current token, with the span of `@` and its name.
@@ -2413,7 +2449,11 @@ impl Parser<'_> {
     fn type_primary(&mut self) -> Result<TypeExpr, Diagnostic> {
         self.enter()?;
         let start = self.current().span;
-        let kind = if self.eat(&TokenKind::Ampersand) || self.eat(&TokenKind::Ref) {
+        let kind = if self.at(&TokenKind::Ampersand) {
+            let token = self.take();
+            self.record_symbolic_type(&token);
+            self.reference_type(start)?
+        } else if self.eat(&TokenKind::Ref) {
             self.reference_type(start)?
         } else if matches!(&self.current().kind, TokenKind::Ident(name) if name == "pure")
             && self
@@ -2451,7 +2491,9 @@ impl Parser<'_> {
         {
             self.position += 1;
             TypeExprKind::Own(Box::new(self.type_primary()?))
-        } else if self.eat(&TokenKind::AndAnd) {
+        } else if self.at(&TokenKind::AndAnd) {
+            let token = self.take();
+            self.record_symbolic_type(&token);
             // As in Rust, `&&T` is `& &T` and `&&mut T` is `& &mut T`.
             let mutable = self.eat(&TokenKind::Mut);
             let value = self.type_primary()?;
@@ -3799,8 +3841,9 @@ impl Parser<'_> {
             if self.stop_at_arm && self.at(&TokenKind::Pipe) {
                 break;
             }
-            if minimum == 0 && !self.stop_at_slice_dotdot && self.eat(&TokenKind::DotDot) {
-                left = self.range_expression(left, allow_record, stop_at_newline)?;
+            if minimum == 0 && !self.stop_at_slice_dotdot && self.range_operator_ahead() {
+                let op = self.take();
+                left = self.range_expression(left, op, allow_record, stop_at_newline)?;
                 continue;
             }
             if minimum <= APPLICATION && self.space_argument() {
@@ -4071,17 +4114,36 @@ impl Parser<'_> {
         let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
         let borrowed = self.slice_context.take();
         let outer_range = std::mem::replace(&mut self.stop_at_slice_dotdot, true);
-        let first = if self.at(&TokenKind::DotDot) {
+        let first = if self.range_operator_ahead() {
             None
         } else {
             Some(self.expression(0, true)?)
         };
-        let slice = self.eat(&TokenKind::DotDot);
+        let operator = self.range_operator_ahead().then(|| self.take());
+        let slice = operator.is_some();
+        let op = operator
+            .as_ref()
+            .map_or(RangeOp::Bare, |token| range_op(&token.kind));
         let last = if slice && !self.at(&TokenKind::RightBracket) {
             Some(self.expression(0, true)?)
         } else {
             None
         };
+        // A22: `..=` and `..<` need the end that they include or exclude.
+        if let Some(token) = &operator
+            && last.is_none()
+            && op != RangeOp::Bare
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::SliceRangeNeedsEnd,
+                if op == RangeOp::Closed {
+                    "an inclusive slice needs an end bound; write 'ref xs[start..=end]', or 'ref xs[start..]' to slice to the end"
+                } else {
+                    "a half-open slice with '..<' needs an end bound; write 'ref xs[start..<end]', or 'ref xs[start..]' to slice to the end"
+                },
+                token.span,
+            ));
+        }
         let end = self.expect(&TokenKind::RightBracket, "']'")?;
         self.stop_at_arm = outer_arm;
         self.stop_at_arrow = outer_arrow;
@@ -4120,6 +4182,7 @@ impl Parser<'_> {
                 start: first.map(Box::new),
                 end: last.map(Box::new),
                 mutable,
+                op,
             }
         } else {
             ExprKind::Index(
@@ -4475,8 +4538,9 @@ impl Parser<'_> {
         let mut name = self.ident()?;
         if self.at(&TokenKind::PathSep) {
             self.path_segments(&mut name)?;
-        } else if !self.stop_at_arrow && self.eat(&TokenKind::Arrow) {
-            return self.lambda(name, stop_at_newline);
+        } else if !self.stop_at_arrow && self.at(&TokenKind::Arrow) {
+            let arrow = self.take().span;
+            return self.lambda(name, arrow, stop_at_newline);
         }
         if allow_record {
             let mut end = self.position;
@@ -4549,7 +4613,12 @@ impl Parser<'_> {
         )
     }
 
-    fn lambda(&mut self, name: Ident, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
+    fn lambda(
+        &mut self,
+        name: Ident,
+        arrow: Span,
+        stop_at_newline: bool,
+    ) -> Result<Expr, Diagnostic> {
         let outer = self.in_task;
         self.in_task = false;
         let body = if self.implicit_computation_ahead(Some(self.column(self.current().span))) {
@@ -4558,6 +4627,7 @@ impl Parser<'_> {
             self.expression_inner(0, true, stop_at_newline)?
         };
         self.in_task = outer;
+        self.record_legacy_lambda(&name, arrow, &body);
         let span = name.span.through(body.span);
         let depth = body.depth + 1;
         let (mut parameters, body) = match body {
@@ -4573,6 +4643,9 @@ impl Parser<'_> {
 
     fn literal(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.take();
+        if matches!(token.kind, TokenKind::Integer(_) | TokenKind::Float(_)) {
+            self.record_short_suffix(token.span);
+        }
         let kind = match &token.kind {
             TokenKind::Integer(text) => {
                 let suffix = crate::numeric::literal_parts(text).1.map(str::to_owned);
@@ -4665,7 +4738,8 @@ impl Parser<'_> {
         term: bool,
     ) -> Result<Expr, Diagnostic> {
         let token = self.take();
-        let mutable = token.kind == TokenKind::Ampersand && self.eat(&TokenKind::Mut);
+        let mutable = token.kind == TokenKind::Ampersand && self.at(&TokenKind::Mut);
+        let mut_span = mutable.then(|| self.take().span);
         let borrow = (token.kind == TokenKind::Ampersand).then_some(mutable);
         let outer_slice = std::mem::replace(&mut self.slice_context, borrow);
         let value = if term {
@@ -4674,6 +4748,7 @@ impl Parser<'_> {
             self.expression_inner(PREFIX, allow_record, stop_at_newline)?
         };
         self.slice_context = outer_slice;
+        self.record_symbolic_prefix(&token, mut_span, term, &value);
         if borrow.is_some() && matches!(value.kind, ExprKind::Slice { .. }) {
             return Ok(Expr {
                 span: token.span.through(value.span),
@@ -4938,8 +5013,11 @@ mod tests {
     #[test]
     fn parses_only_borrowed_partial_array_slices() {
         for prefix in ["&", "ref ", "&mut ", "ref mut "] {
-            for range in ["1..3", "1..", "..3", "1 + 2..3 + 4"] {
-                let program = parse(&format!("{prefix}values[{range}]")).unwrap();
+            for range in ["1..=3", "1..", "..3", "1 + 2..=3 + 4"] {
+                // A22: `&` is a 2026 spelling.
+                let program =
+                    parse_with_source(&format!("{prefix}values[{range}]"), 0, Edition::E2026)
+                        .unwrap();
                 let debug = format!("{program:?}");
                 assert!(debug.contains("Slice"));
                 assert!(!debug.contains("Borrow("));

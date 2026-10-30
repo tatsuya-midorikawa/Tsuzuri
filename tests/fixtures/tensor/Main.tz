@@ -17,7 +17,7 @@ fn digest view =
     total = mix total (Tensor.count view)
     total = mix total (Tensor.offset view)
     total = mix total (flag (Tensor.is_contiguous view))
-    for axis in 0i64 .. (shape.length - 1) do
+    for axis in 0i64 ..= (shape.length - 1) do
         total = mix total shape[axis]
         total = mix total strides[axis]
     total = mix total (Tensor.fold mix 0 view)
@@ -121,13 +121,13 @@ fn empties =
     total = mix total (once (Tensor.reshape_view [0, 5] (ref fv)))
     let mapped = Tensor.map (\x -> x + 1) (ref nv)
     total = mix total (Array.length (Tensor.as_array (ref mapped)))
-    let moved = Tensor.reshape [0, 3, 3] (Tensor.of_array [3, 0] (new [i64](0, _ -> 0)))
+    let moved = Tensor.reshape [0, 3, 3] (Tensor.of_array [3, 0] (new [i64](0, \_ -> 0)))
     mix total (Array.length (Tensor.as_array (ref moved)))
 
 // Tensors with n axes of extent 1; at most 16 axes are allowed.
 export def rank_limit :: own i64 -> i64
 fn rank_limit n =
-    let t = Tensor.init (new [i64](n, _ -> 1)) element
+    let t = Tensor.init (new [i64](n, \_ -> 1)) element
     let v = Tensor.view (ref t)
     digest (ref v)
 
@@ -159,9 +159,9 @@ fn matrices rows cols =
 // Owner conversions: of_array and to_array move the buffer, as_array borrows it, borrow wraps a borrowed array.
 export def owners :: own i64 -> i64
 fn owners n =
-    let t = Tensor.of_array [n, 2] (new [i64](n * 2, k -> k * 3))
+    let t = Tensor.of_array [n, 2] (new [i64](n * 2, \k -> k * 3))
     let sum = Array.sum (Tensor.as_array (ref t))
-    let raw = new [i64](n * 2, k -> k + 100)
+    let raw = new [i64](n * 2, \k -> k + 100)
     let window = Tensor.borrow [2, n] (ref raw)
     let total = mix sum (digest (ref window))
     let kept = Tensor.to_array t
@@ -175,8 +175,8 @@ fn owned_tensor n =
     let v = Tensor.view (ref flat)
     let p = Tensor.permute [1, 0] (ref v)
     let mut total = 0
-    for i in 0i64 .. (n - 1) do
-        for j in 0i64 .. 1 do
+    for i in 0i64 ..= (n - 1) do
+        for j in 0i64 ..= 1 do
             let word = Tensor.at [i, j] (ref p)
             total = mix total word.length
     let rest = Tensor.index_axis 1 1 (ref p)
@@ -188,8 +188,8 @@ fn lookups =
     let t = Tensor.init [2, 3] element
     let v = Tensor.view (ref t)
     let mut total = 0
-    for i in (-1) .. 2 do
-        for j in (-1) .. 3 do
+    for i in (-1) ..= 2 do
+        for j in (-1) ..= 3 do
             total = mix total (Maybe.default_value (-1) (Tensor.get [i, j] (ref v)))
     total = mix total (Maybe.default_value (-1) (Tensor.get [1] (ref v)))
     total = mix total (Maybe.default_value (-1) (Tensor.get [1, 1, 1] (ref v)))
@@ -222,7 +222,7 @@ fn huge_empty =
 // A MatrixView window enters a tensor only through the checks of MatrixView.strided.
 export def matrix_window_trap :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
 fn matrix_window_trap offset rows cols row_stride col_stride =
-    let data = new [i64](10, k -> k)
+    let data = new [i64](10, \k -> k)
     rank_of (Tensor.of_matrix_view (MatrixView.strided offset rows cols row_stride col_stride (ref data)))
 
 export def init_trap :: own i64 -> own i64 -> i64

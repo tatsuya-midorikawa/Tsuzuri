@@ -345,7 +345,7 @@ true
 const def crc_entry :: i32u -> i32u
 fn crc_entry index =
     let mut value = index
-    for _ in 1 .. 8 do
+    for _ in 1 ..= 8 do
         value = if (value & 1) == 1 then (value >>> 1) ^ 0xEDB88320 else value >>> 1
     value
 

@@ -102,10 +102,10 @@ def scramble :: i32u -> i32u
 fn scramble value = value * 1664525i32u + 1013904223i32u
 
 def wide :: i64 -> i64
-fn wide value = (value * 6364136223846793005l + 1442695040888963407l) ^ (value >>> 17)
+fn wide value = (value * 6364136223846793005i64 + 1442695040888963407i64) ^ (value >>> 17)
 
 def wide_unsigned :: i64u -> i64u
-fn wide_unsigned value = (value * 6364136223846793005ul + 1442695040888963407ul) ^ (Bits.ushr value 29)
+fn wide_unsigned value = (value * 6364136223846793005i64u + 1442695040888963407i64u) ^ (Bits.ushr value 29)
 
 def poly :: f32 -> f32
 fn poly value = ((value * 0.5 + 0.25) * value + 0.125) * value + 1.0
@@ -127,10 +127,10 @@ fn code backend = match backend with
     | _ -> 0
 
 export def available_vulkan :: bool
-fn available_vulkan = Result.is_ok (&(Gpu.request Gpu.Vulkan))
+fn available_vulkan = Result.is_ok (ref (Gpu.request Gpu.Vulkan))
 
 export def auto_device_backend :: i32
-fn auto_device_backend = code (Gpu.backend (&(Result.get (Gpu.request Gpu.Auto))))
+fn auto_device_backend = code (Gpu.backend (ref (Result.get (Gpu.request Gpu.Auto))))
 
 export def before_any_call :: i32
 fn before_any_call = code (Gpu.last_backend ())
@@ -140,8 +140,8 @@ const kinds = {
   strict: { kernel: "mix", maker: "(\\index -> index * 3 - 7)", map: "Gpu.map", init: "Gpu.init", same: "actual[index] == expected[index]" },
   unsigned: { kernel: "scramble", maker: "(\\index -> (index as i32u) * 2654435761i32u)", map: "Gpu.map", init: "Gpu.init", same: "actual[index] == expected[index]" },
   relaxed: { kernel: "poly", maker: "sample", map: "Gpu.map_relaxed", init: "Gpu.init_relaxed", same: "near 0.00001 actual[index] expected[index]" },
-  wide: { kernel: "wide", maker: "(\\index -> (index as i64) * 4294967311l - 7l)", map: "Gpu.map", init: "Gpu.init", same: "actual[index] == expected[index]" },
-  unsigned_wide: { kernel: "wide_unsigned", maker: "(\\index -> (index as i64u) * 2654435761ul)", map: "Gpu.map", init: "Gpu.init", same: "actual[index] == expected[index]" },
+  wide: { kernel: "wide", maker: "(\\index -> (index as i64) * 4294967311i64 - 7i64)", map: "Gpu.map", init: "Gpu.init", same: "actual[index] == expected[index]" },
+  unsigned_wide: { kernel: "wide_unsigned", maker: "(\\index -> (index as i64u) * 2654435761i64u)", map: "Gpu.map", init: "Gpu.init", same: "actual[index] == expected[index]" },
   strict_float: { kernel: "strict_poly", maker: "sample", map: "Gpu.map", init: "Gpu.init", same: "actual[index] == expected[index]" },
 };
 // For a backend name (Vulkan or Gpu.Auto) and a kind: `wrong_<kind>_<backend> count` runs the reference and the device on the
@@ -154,10 +154,10 @@ function exportsFor(backend, kind) {
 fn wrong_${kind}_${lower} count = {
     let reference = Result.get (Gpu.request Gpu.CpuReference);
     let device = Result.get (Gpu.request Gpu.${backend});
-    let expected = Gpu.to_array (${map} (&reference) ${kernel} (${init} (&reference) (count as i64) ${maker}));
-    let actual = Gpu.to_array (${map} (&device) ${kernel} (${init} (&device) (count as i64) ${maker}));
+    let expected = Gpu.to_array (${map} (ref reference) ${kernel} (${init} (ref reference) (count as i64) ${maker}));
+    let actual = Gpu.to_array (${map} (ref device) ${kernel} (${init} (ref device) (count as i64) ${maker}));
     let mut wrong = 0;
-    for index in 0i64 .. ((count as i64) - 1) do
+    for index in 0i64 ..= ((count as i64) - 1) do
         if ${same} then () else wrong = wrong + 1;
     wrong
 }
@@ -165,7 +165,7 @@ fn wrong_${kind}_${lower} count = {
 export def served_${kind}_${lower} :: i32
 fn served_${kind}_${lower} = {
     let device = Result.get (Gpu.request Gpu.${backend});
-    let _values = Gpu.to_array (${map} (&device) ${kernel} (${init} (&device) 1000 ${maker}));
+    let _values = Gpu.to_array (${map} (ref device) ${kernel} (${init} (ref device) 1000 ${maker}));
     code (Gpu.last_backend ())
 }
 `;
@@ -353,7 +353,7 @@ const program = `def mix :: i32 -> i32
 fn mix value = (value * 1664525 + 1013904223) ^ (Bits.ushr value 13)
 
 def wide :: i64 -> i64
-fn wide value = (value * 6364136223846793005l + 1442695040888963407l) ^ (value >>> 17)
+fn wide value = (value * 6364136223846793005i64 + 1442695040888963407i64) ^ (value >>> 17)
 
 def name :: Gpu.Backend -> string
 fn name backend = match backend with
@@ -367,16 +367,16 @@ fn name backend = match backend with
 def main :: unit -> i32 = \\() ->
     let! a = IO.write_line ("before " + name (Gpu.last_backend ()))
     let auto = Result.get (Gpu.request Gpu.Auto)
-    let small = Gpu.to_array (Gpu.map (&auto) mix (Gpu.init (&auto) 1000 (\\index -> index * 3 - 7)))
+    let small = Gpu.to_array (Gpu.map (ref auto) mix (Gpu.init (ref auto) 1000 (\\index -> index * 3 - 7)))
     let! b = IO.write_line ("auto small " + name (Gpu.last_backend ()) + " " + to_string small[1])
-    let big = Gpu.to_array (Gpu.map (&auto) wide (Gpu.init (&auto) 100000 (\\index -> (index as i64) * 3l)))
+    let big = Gpu.to_array (Gpu.map (ref auto) wide (Gpu.init (ref auto) 100000 (\\index -> (index as i64) * 3i64)))
     let! c = IO.write_line ("auto wide " + name (Gpu.last_backend ()) + " " + to_string big[1])
     match Gpu.request Gpu.Vulkan with
     | Result.Error _ ->
         let! e = IO.write_line "vulkan unavailable"
         0
     | Result.Ok device ->
-        let explicit = Gpu.to_array (Gpu.map (&device) mix (Gpu.init (&device) 1000 (\\index -> index * 3 - 7)))
+        let explicit = Gpu.to_array (Gpu.map (ref device) mix (Gpu.init (ref device) 1000 (\\index -> index * 3 - 7)))
         let! d = IO.write_line ("explicit " + name (Gpu.last_backend ()) + " " + to_string explicit[1])
         0
 `;
@@ -463,8 +463,8 @@ def straight_calls :: unit -> i32
 fn straight_calls _unit = {
     let device = Result.get (Gpu.request Gpu.Auto);
     let mut served = 0;
-    for call in 0 .. 29 do {
-        let _values = Gpu.to_array (Gpu.map (&device) straight (Gpu.init (&device) 1000000 (\\index -> index - 500000)));
+    for call in 0 ..= 29 do {
+        let _values = Gpu.to_array (Gpu.map (ref device) straight (Gpu.init (ref device) 1000000 (\\index -> index - 500000)));
         served = served + on_vulkan ()
     };
     served
@@ -474,8 +474,8 @@ def branchy_calls :: unit -> i32
 fn branchy_calls _unit = {
     let device = Result.get (Gpu.request Gpu.Auto);
     let mut served = 0;
-    for call in 0 .. 29 do {
-        let _values = Gpu.to_array (Gpu.map (&device) branchy (Gpu.init (&device) 1000000 (\\index -> index - 500000)));
+    for call in 0 ..= 29 do {
+        let _values = Gpu.to_array (Gpu.map (ref device) branchy (Gpu.init (ref device) 1000000 (\\index -> index - 500000)));
         served = served + on_vulkan ()
     };
     served
@@ -518,13 +518,13 @@ def main :: unit -> i32 = \\() ->
     const guardProject = join(directory, "guard");
     mkdirSync(guardProject);
     writeFileSync(join(guardProject, "Main.tz"), `def widen :: i64 -> i64
-fn widen value = value * 3l + 1l
+fn widen value = value * 3i64 + 1i64
 
 export def widen_length :: i32
 fn widen_length = {
     let device = Result.get (Gpu.request Gpu.Vulkan);
-    let values: [i64] = [1l, 2l, 3l, 4l];
-    let mapped = Gpu.to_array (Gpu.map (&device) widen (Gpu.from_array (&device) (&values)));
+    let values: [i64] = [1i64, 2i64, 3i64, 4i64];
+    let mapped = Gpu.to_array (Gpu.map (ref device) widen (Gpu.from_array (ref device) (ref values)));
     mapped.length as i32
 }
 `);

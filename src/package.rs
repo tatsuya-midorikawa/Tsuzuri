@@ -559,9 +559,18 @@ pub fn create_project(
     namespace: Option<&str>,
     agent_files: bool,
 ) -> Result<Vec<PathBuf>, Diagnostic> {
+    create_project_with(directory, namespace, agent_files, Edition::NEW_PROJECT)
+}
+
+/// `create_project` whose manifest declares `edition` (`tsuzuri new --edition`, A22).
+pub fn create_project_with(
+    directory: &Path,
+    namespace: Option<&str>,
+    agent_files: bool,
+    edition: Edition,
+) -> Result<Vec<PathBuf>, Diagnostic> {
     let error =
         |kind: DiagnosticKind, message: String| Diagnostic::of(kind, message, Span::default());
-    let edition = Edition::LATEST;
     let resolved = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_owned());
     let folder = resolved
         .file_name()

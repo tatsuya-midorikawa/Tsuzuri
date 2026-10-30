@@ -166,21 +166,40 @@ impl Parser<'_> {
         Ok(function)
     }
 
+    /// The range after `first` and its first operator `op1` (`..`, `..=` or `..<`). After a
+    /// bare `..`, another operator makes the expression between them the step (A22).
     pub(super) fn range_expression(
         &mut self,
         first: Expr,
+        op1: Token,
         allow_record: bool,
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
         let next = self.expression_inner(1, allow_record, stop_at_newline)?;
-        let (step, finish) = if self.eat(&TokenKind::DotDot) {
+        let (step, finish, op2) = if op1.kind == TokenKind::DotDot && self.range_operator_ahead() {
+            let op2 = self.take();
             (
                 Some(Box::new(next)),
                 self.expression_inner(1, allow_record, stop_at_newline)?,
+                op2,
             )
         } else {
-            (None, next)
+            (None, next, op1)
         };
+        // Only a chain of bare `..` goes on as before (its type check rejects it).
+        if self.range_operator_ahead()
+            && (op2.kind != TokenKind::DotDot || self.current().kind != TokenKind::DotDot)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::RangeTakesOneStep,
+                "a range takes at most one step; write 'start .. step ..= finish'",
+                self.current().span,
+            ));
+        }
+        let op = range_op(&op2.kind);
+        if op == RangeOp::Bare {
+            self.record_bare_range(op2.span);
+        }
         let span = first.span.through(finish.span);
         let depth = first
             .depth
@@ -194,6 +213,7 @@ impl Parser<'_> {
                 finish: Box::new(finish),
                 counted: false,
                 descending: false,
+                op,
             },
             span,
             depth,
@@ -545,6 +565,7 @@ impl Parser<'_> {
                     finish: Box::new(finish),
                     counted: true,
                     descending,
+                    op: RangeOp::Closed,
                 },
                 span,
                 depth,

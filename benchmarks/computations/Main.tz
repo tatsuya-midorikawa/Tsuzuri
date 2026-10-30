@@ -85,7 +85,7 @@ fn ce_delayed count seed = { assert (count >= 0); delayed_loop count seed }
 export def direct_delayed :: own i64 -> own i64 -> i64
 fn direct_delayed count seed = { assert (count >= 0); direct_delayed_loop count seed }
 
-def rec sum :: &[i64] -> own i64 -> own i64 -> own i64 -> i64
+def rec sum :: ref [i64] -> own i64 -> own i64 -> own i64 -> i64
 fn rec sum values scale index total =
     if index == values.length { total }
     else {
@@ -96,10 +96,10 @@ fn rec sum values scale index total =
 export def ce_array_for :: own i64 -> own i64 -> i64
 fn ce_array_for count seed = {
     assert (count >= 0 && count <= 100000000);
-    let values = new [i64](count, i -> mix i seed);
+    let values = new [i64](count, \i -> mix i seed);
     let scale = seed | 1;
     Fold {
-        for value in (&values) {
+        for value in (ref values) {
             yield (value ^ (Bits.ushr value 17)) * scale
         }
     }
@@ -108,16 +108,16 @@ fn ce_array_for count seed = {
 export def direct_array_for :: own i64 -> own i64 -> i64
 fn direct_array_for count seed = {
     assert (count >= 0 && count <= 100000000);
-    let values = new [i64](count, i -> mix i seed);
-    sum (&values) (seed | 1) 0 0
+    let values = new [i64](count, \i -> mix i seed);
+    sum (ref values) (seed | 1) 0 0
 }
 
 export def ce_array_bind :: own i64 -> own i64 -> i64
 fn ce_array_bind count seed = {
     assert (count >= 0 && count <= 100000000);
     Identity {
-        let! values: [i64] = new [i64](count, i -> mix i seed)
-        return sum (&values) (seed | 1) 0 0
+        let! values: [i64] = new [i64](count, \i -> mix i seed)
+        return sum (ref values) (seed | 1) 0 0
     }
 }
 
@@ -129,7 +129,7 @@ fn rec apply_loop remaining next state =
     if remaining <= 0 { state }
     else { apply_loop (remaining - 1) next (next state) }
 
-def rec direct_owned_loop :: own i64 -> &[i64] -> own i64 -> i64
+def rec direct_owned_loop :: own i64 -> ref [i64] -> own i64 -> i64
 fn rec direct_owned_loop remaining values state =
     if remaining <= 0 { state }
     else { direct_owned_loop (remaining - 1) values (mix values[state & 255] state) }
@@ -137,8 +137,8 @@ fn rec direct_owned_loop remaining values state =
 export def ce_owned_capture :: own i64 -> own i64 -> i64
 fn ce_owned_capture count seed = {
     assert (count >= 0);
-    let values = new [i64](256, i -> mix i seed);
-    let next: i64 -> i64 = state -> Identity {
+    let values = new [i64](256, \i -> mix i seed);
+    let next: i64 -> i64 = \state -> Identity {
         let! value = values[state & 255]
         return mix value state
     };
@@ -148,8 +148,8 @@ fn ce_owned_capture count seed = {
 export def direct_owned_capture :: own i64 -> own i64 -> i64
 fn direct_owned_capture count seed = {
     assert (count >= 0);
-    let values = new [i64](256, i -> mix i seed);
-    direct_owned_loop count (&values) seed
+    let values = new [i64](256, \i -> mix i seed);
+    direct_owned_loop count (ref values) seed
 }
 
 def rec standard_loop :: own i64 -> own (i64 -> i64 -> i64) -> own i64 -> i64

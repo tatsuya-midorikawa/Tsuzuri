@@ -87,6 +87,7 @@ impl Checker<'_> {
                     finish,
                     counted: _,
                     descending,
+                    op,
                 } = &source.kind
                 {
                     // Both forms count in any integer type; an unsuffixed literal counter is `i32`.
@@ -103,7 +104,7 @@ impl Checker<'_> {
                     self.require("Integer", ty.clone(), source.span)?;
                     (
                         None,
-                        Some((start, step, finish, *descending)),
+                        Some((start, step, finish, *descending, *op == RangeOp::Open)),
                         self.inference.resolve(&ty),
                     )
                 } else {
@@ -176,7 +177,7 @@ impl Checker<'_> {
                 };
                 self.normal_loop_depth -= 1;
                 self.scopes.pop();
-                if let Some((start, step, finish, descending)) = range {
+                if let Some((start, step, finish, descending, exclusive)) = range {
                     TypedExprKind::ForRange {
                         local,
                         start: Box::new(start),
@@ -184,6 +185,7 @@ impl Checker<'_> {
                         finish: Box::new(finish),
                         body: Box::new(body),
                         descending,
+                        exclusive,
                     }
                 } else {
                     let source = source.unwrap();

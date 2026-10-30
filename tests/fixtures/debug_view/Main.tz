@@ -20,7 +20,7 @@ fn show input =
     let growing = Vec.push_owned 7 (Vec.empty())
     let table = Map.singleton 1 10
     let add = \offset -> input + offset
-    let total = Array.sum (&values)
+    let total = Array.sum (ref values)
     total + add 0 - input
 
 export def view :: own i64 -> i64 = \input -> show input

@@ -16,7 +16,7 @@ fn drain receiver =
 
 def bump :: ref Mutex<i64> -> i64 -> i64
 fn bump counter index =
-    Mutex.with_lock counter (value -> {
+    Mutex.with_lock counter (\value -> {
         deref value = deref value + index;
         index
     })

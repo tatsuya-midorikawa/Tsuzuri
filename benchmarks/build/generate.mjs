@@ -22,7 +22,7 @@ function tsuzuriModule(index, { salt, extra }) {
     const c = constant(index, fn, salt);
     const bodies = [
       `\n    let mut total = x\n    let mut index = 0i64u\n    while index < 8 do\n        total = total * ${multiplier} + index + ${c}\n        index = index + 1\n    total`,
-      `\n    let mut total = x\n    for i in 0 .. 7 do\n        total = total * 31 + (i as i64u) + ${c}\n    total`,
+      `\n    let mut total = x\n    for i in 0 ..= 7 do\n        total = total * 31 + (i as i64u) + ${c}\n    total`,
       `\n    match x % 4 with\n    | 0 -> x + ${c}\n    | 1 -> x * 3\n    | 2 -> x + ${c + 4n}\n    | _ -> x / 2`,
       `\n    let pair = Pair { left: x, right: x + ${c} }\n    pair.left * pair.right`,
       `\n    let shape = if x % 3 == 0 then Dot x else (if x % 3 == 1 then Span (x, x + ${c}) else Empty)\n    match shape with\n    | Dot value -> value\n    | Span (left, right) -> left * right\n    | Empty -> x + ${c + 2n}`,

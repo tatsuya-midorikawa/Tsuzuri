@@ -412,7 +412,7 @@ fn classifies_applied_names_as_constraints_or_records() {
 fn parses_nested_angle_bracket_type_applications() {
     let program = parser::parse(
         "record Pair<'a, 'b> { first: 'a, second: 'b }
-def f :: [Pair<i64, Pair<string, i64>>] -> Task<Pair<i64, i64>> -> &Pair<i64, i64> -> Pair<&i64, i64> -> i64
+def f :: [Pair<i64, Pair<string, i64>>] -> Task<Pair<i64, i64>> -> ref Pair<i64, i64> -> Pair<ref i64, i64> -> i64
 fn f a b c d = 0",
     )
     .unwrap();
@@ -545,12 +545,12 @@ fn rejects_legacy_and_malformed_generic_syntax() {
 
 #[test]
 fn retains_exact_source_spans_when_splitting_generic_closers() {
-    let source = "def f :: &Box<Box<Box<i64>>> -> i64\nfn f x = 0";
+    let source = "def f :: ref Box<Box<Box<i64>>> -> i64\nfn f x = 0";
     let program = parser::parse_with_source(source, 7, tsuzuri::syntax::Edition::LATEST).unwrap();
     let parameter = &program.functions[0].parameters[0].ty;
     assert_eq!(
         &source[parameter.span.start..parameter.span.end],
-        "&Box<Box<Box<i64>>>"
+        "ref Box<Box<Box<i64>>>"
     );
     let TypeExprKind::Reference(inner, _) = &parameter.kind else {
         panic!("expected a reference")

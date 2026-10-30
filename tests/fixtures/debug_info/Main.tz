@@ -7,7 +7,7 @@ fn answer input =
     let chain = [|input|]
     let capacity: Vec<i64> = Vec.with_capacity 2
     let pair = (input + 2, true)
-    assert (chain.length == 1 && Vec.length (&capacity) == 0)
+    assert (chain.length == 1 && Vec.length (ref capacity) == 0)
     assert (values[0] == point.x)
     let captured = \offset -> point.x + offset
     let expected = match pair with | (value, flag) -> if flag then value else 0
@@ -20,6 +20,6 @@ fn answer input =
 export def parallel :: i64
 fn parallel =
     let results = Task.run (Task.parallel [task { return 20 }, task { return 22 }])
-    Array.sum (&results)
+    Array.sum (ref results)
 
 answer 40
