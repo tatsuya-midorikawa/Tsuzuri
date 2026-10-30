@@ -3715,7 +3715,7 @@ let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 
 ### 標準コレクションの計算量
 
-計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。組み込みの操作（`Vec.push`・`Array.write`・`List.cons` など）は、各モジュールのページの手書きの表にあります。`String` の `n` は `text` のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数です。
+計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`with_capacity` などの容量を指定する関数では確保する容量、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。組み込みの操作（`Vec.push`・`Array.write`・`List.cons` など）は、各モジュールのページの手書きの表にあります。`String` の `n` は `text` のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数です。
 
 **Array**
 
