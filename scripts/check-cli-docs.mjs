@@ -96,9 +96,9 @@ export function checkStd(modules, readPage) {
         const page = stdPage(module);
         const text = readPage(page);
         if (text === null) { messages.push(`${module} has ${entries.length} public functions but no page in STD_PAGES`); continue; }
-        // `List.find_index` does not mention `List.find`: the qualified name must end there.
+        // `List.find_index` does not mention `List.find`, nor `HashMap.get` `Map.get`: the qualified name stands alone.
         for (const { name } of entries) {
-            if (!text.includes(`\`${name}\``) && !new RegExp(`${module}\\.${name}(?![A-Za-z0-9_])`).test(text)) messages.push(`${module}.${name} is not mentioned in ${page}`);
+            if (!text.includes(`\`${name}\``) && !new RegExp(`(?<![A-Za-z0-9_])${module}\\.${name}(?![A-Za-z0-9_])`).test(text)) messages.push(`${module}.${name} is not mentioned in ${page}`);
         }
     }
     return messages;

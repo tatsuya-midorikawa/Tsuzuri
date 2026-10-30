@@ -84,6 +84,7 @@ test('checkStd looks for each function on its module page', () => {
     assert.deepEqual(checkStd({ Other: [{ name: 'a' }] }, read), ['Other has 1 public functions but no page in STD_PAGES']);
     // `Sample.bc` does not mention `Sample.b`.
     assert.deepEqual(checkStd({ Sample: [{ name: 'b' }] }, () => 'Use `Sample.bc`.'), ['Sample.b is not mentioned in built-in-types-and-modules/sample.md']);
+    assert.deepEqual(checkStd({ Map: [{ name: 'get' }] }, () => 'Use HashMap.get.'), ['Map.get is not mentioned in built-in-types-and-modules/map.md']);
 });
 test('the command line reports usage errors with 2', () => {
     const script = join(root, 'scripts/check-cli-docs.mjs');
