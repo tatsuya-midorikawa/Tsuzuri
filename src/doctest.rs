@@ -137,6 +137,8 @@ pub struct ExampleResult {
     pub failure: Option<String>,
     /// The standard error of a failed `test` example.
     pub output: String,
+    /// The overflow reports (A23) of a `test` example that passed with `--allow-overflow`.
+    pub overflow: Vec<String>,
     pub duration_ms: u128,
 }
 
@@ -738,6 +740,7 @@ fn run_one(
     let started = Instant::now();
     let mut messages = Vec::new();
     let mut output = String::new();
+    let mut overflow = Vec::new();
     let failure = (|| -> Option<String> {
         let built = match example_project(input, &example.program, std_mode, edition) {
             Ok(built) => built,
@@ -840,16 +843,25 @@ fn run_one(
                 match driver::run_tests_linked(&module, &test_options, &built.native) {
                     Ok(test_report) => {
                         messages.extend(test_report.messages);
-                        let failed = test_report
+                        if let Some(failed) = test_report
+                            .results
+                            .iter()
+                            .find(|result| result.failure.is_some())
+                        {
+                            output = failed.output.clone();
+                            return Some(format!(
+                                "test {:?} failed: {}",
+                                failed.case.name,
+                                failed.failure.clone().unwrap_or_default()
+                            ));
+                        }
+                        // `--allow-overflow`: the tests pass and their reports are shown.
+                        overflow = test_report
                             .results
                             .into_iter()
-                            .find(|result| result.failure.is_some())?;
-                        output = failed.output;
-                        Some(format!(
-                            "test {:?} failed: {}",
-                            failed.case.name,
-                            failed.failure.unwrap_or_default()
-                        ))
+                            .flat_map(|result| result.overflow)
+                            .collect();
+                        None
                     }
                     Err(error) => Some(describe(&error, program, root)),
                 }
@@ -861,6 +873,7 @@ fn run_one(
             example: example.clone(),
             failure,
             output,
+            overflow,
             duration_ms: started.elapsed().as_millis(),
         },
         messages,

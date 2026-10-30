@@ -460,7 +460,33 @@ fn a_test_example_reports_wrapped_arithmetic_as_tsuzuri_test_does() {
         &[],
     );
     assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
-    assert!(stdout(&output).ends_with("1 passed; 0 failed; 0 ignored\n"));
+    let text = stdout(&output);
+    assert!(text.ends_with("1 passed; 0 failed; 0 ignored\n"), "{text}");
+    // The example passes and its report stays visible, in text and in JSON.
+    assert!(
+        text.contains("ok 1 - Lib one#1\n  warning: integer overflow wrapped at"),
+        "{text}"
+    );
+    let output = tsuzuri(
+        &[
+            "test",
+            "--doc",
+            package.path(),
+            "--allow-overflow",
+            "--json",
+        ],
+        &package.cache(),
+        &[],
+    );
+    let line = stdout(&output)
+        .lines()
+        .find(|line| line.contains("\"type\":\"doctest\""))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        line.contains("\"status\":\"passed\",\"overflow\":[\"integer overflow wrapped at"),
+        "{line}"
+    );
 }
 
 #[test]
