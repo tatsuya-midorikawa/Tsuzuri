@@ -11,6 +11,6 @@ The rules of this area, one sentence each, with the document that states them an
 | DIA-005 | A lexical error MUST stop the compiler before parsing, so no syntax error is reported in the same run. | [diagnostics.md](../../_tsuzuri/language-reference/compiler/diagnostics.md) | DIA-005-lexical-error-must-stop | active |
 | DIA-006 | A syntax error MUST stop the compiler before type checking, so no type error is reported in the same run. | [diagnostics.md](../../_tsuzuri/language-reference/compiler/diagnostics.md) | DIA-006-syntax-error-must-stop | active |
 | DIA-007 | The human format MUST be `path:line:column: severity[code]: message` followed by the source line and a caret line. | [diagnostics.md](../../_tsuzuri/language-reference/compiler/diagnostics.md) | DIA-007-human-format-must-be | active |
-| DIA-008 | A successful `check` MUST print nothing. | [usage.md](../../_tsuzuri/language-reference/compiler/usage.md) | DIA-008-successful-check-must-print | active |
+| DIA-008 | A `check` that finds no diagnostic MUST print nothing. | [usage.md](../../_tsuzuri/language-reference/compiler/usage.md) | DIA-008-successful-check-must-print | active |
 | DIA-009 | A diagnostic about a name MUST point at that name, not at the start of the statement. | [language.md § 診断](../../docs/language.md#診断) | DIA-009-diagnostic-about-name-must | active |
 | DIA-010 | A warning in `--json` output MUST use the severity `warning`. | [diagnostics.md](../../_tsuzuri/language-reference/compiler/diagnostics.md) | DIA-010-warning-in-json-output | active |

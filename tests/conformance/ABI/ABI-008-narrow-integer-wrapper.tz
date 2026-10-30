@@ -1,0 +1,8 @@
+export def neg :: i8 -> i8 = \x -> -x
+0
+
+// rule: ABI-008
+// cli: build $DIR --emit llvm -o $DIR/out.ll
+// expect: exit 0
+// expect: file-has out.ll "trunc i32 %arg0 to i8"
+// expect: file-has out.ll "sext i8 %result to i32"

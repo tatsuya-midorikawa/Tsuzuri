@@ -21,7 +21,7 @@ first.length
 // expect: check-error E1012 line=3
 ```
 
-The expectations are `check-ok`, `check-error CODE [line=N] [file=NAME] [kind=K]`, `check-warning CODE …`, `stdout "TEXT"`, `trap kind=K [line=N] [stdout "TEXT"]` and `tests-pass N`; `// cli: ARGS` runs the compiler with `ARGS` instead (`exit`, `stdout`, `stdout-has`, `stderr-has`, `stderr-lacks`, `stdout-empty`, `stderr-empty`, `stderr-lines`, `file-has`, `file-lacks`, `deterministic`). `// edition: 2026` checks a single-file test in that edition; `// targets:` narrows the compiler runs.
+The expectations are `check-ok`, `check-error CODE [line=N [column=N]] [file=NAME] [kind=K] [message "TEXT"]` (`message` matches a part of the message and comes last), `check-warning CODE …`, `stdout "TEXT"`, `trap kind=K [line=N] [stdout "TEXT"]` and `tests-pass N`; `// cli: ARGS` runs the compiler with `ARGS` instead (`exit`, `stdout`, `stdout-has`, `stderr-has`, `stderr-lacks`, `stdout-empty`, `stderr-empty`, `stderr-lines`, `file-has`, `file-lacks`, `deterministic`). `// edition: 2026` checks a single-file test in that edition; `// targets:` narrows the compiler runs.
 
 To add a rule:
 

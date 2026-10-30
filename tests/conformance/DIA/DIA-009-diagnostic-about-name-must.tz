@@ -4,4 +4,4 @@ let c = a
 c
 
 // rule: DIA-009
-// expect: check-error E1012 line=3
+// expect: check-error E1012 line=3 column=9

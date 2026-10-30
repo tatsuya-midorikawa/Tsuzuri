@@ -143,7 +143,11 @@ test('parse_check_options', () => {
     assert.equal(expects[0].line, 3);
     assert.equal(expects[0].file, 'Lib.tz');
     assert.equal(expects[0].diagKind, 'use_after_move');
-    for (const bad of ['check-error E1012 line=1 line=2', 'check-error E1012 line=0', 'check-error E1012 file=../x', 'check-error E1012 file=/x', 'check-error W1001', 'check-warning E1012', 'check-error E12']) {
+    const withColumn = parsed(['rule: DIA-004', 'expect: check-warning W1001 line=2 column=9 message "prefix it"']);
+    assert.deepEqual(withColumn.errors, []);
+    assert.equal(withColumn.expects[0].column, 9);
+    assert.equal(withColumn.expects[0].message, 'prefix it');
+    for (const bad of ['check-error E1012 line=1 line=2', 'check-error E1012 line=0', 'check-error E1012 file=../x', 'check-error E1012 file=/x', 'check-error W1001', 'check-warning E1012', 'check-error E12', 'check-error E1012 column=2', 'check-error E1012 line=1 column=0', 'check-error E1012 message "x" line=1', 'check-error E1012 message x']) {
         assert.deepEqual(errorNames(['rule: OWN-001', `expect: ${bad}`]), ['bad_argument'], bad);
     }
 });
@@ -167,6 +171,8 @@ test('parse_cli_mode', () => {
     assert.deepEqual(errorNames(['rule: CLI-001', 'cli: check $DIR', 'expect: check-ok']), ['unknown_expectation']);
     assert.deepEqual(errorNames(['rule: CLI-001', 'cli: build $DIR', 'expect: deterministic']), ['bad_argument']);
     assert.deepEqual(errorNames(['rule: CLI-001', 'cli: a "b"', 'expect: exit 0']), ['bad_argument']);
+    // A `cli` line that cannot be read is reported once, and `deterministic` does not read its words.
+    assert.deepEqual(errorNames(['rule: CLI-001', 'cli: a "b"', 'expect: deterministic']), ['bad_argument']);
 });
 
 test('parse_unknown_directive_and_expectation', () => {
@@ -308,10 +314,33 @@ test('run_check_expectations', () => {
 test('run_failure_reports_detail', () => {
     let result = runTree({ 'OWN/OWN-001-wrong-code.tz': `${OWN_BODY}// expect: check-error E1003\n` });
     assert.equal(result.status, 1);
-    assert.match(result.stdout, /check-error E1003: no error diagnostic matches; got E1012@Main.tz:3/);
+    assert.match(result.stdout, /check-error E1003: no error diagnostic matches; got E1012@Main.tz:3:1/);
     result = conformance(['--root', good, '--targets', 'native', '--area', 'OWN', '--timeout', '0.01']);
     assert.equal(result.status, 1);
     assert.match(result.stdout, /timed out after 0\.01 s/);
+});
+
+test('run_timeout_stops_the_programs_that_the_compiler_started', () => {
+    // `tsuzuri run` starts the program as its child, which inherits the pipes; a program that never ends must
+    // not keep the runner waiting after the timeout. The stand-in compiler starts such a child and waits.
+    if (process.platform === 'win32') return;
+    const dir = fresh();
+    const pidFile = join(dir, 'child.pid');
+    const fake = join(dir, 'fake-tsuzuri');
+    writeFileSync(fake, `#!/bin/sh\nsleep 300 &\necho $! > '${pidFile}'\nwait\n`, { mode: 0o755 });
+    const started = Date.now();
+    const result = spawnSync(
+        process.execPath,
+        [join(root, 'scripts', 'conformance.mjs'), fake, '--root', good, '--targets', 'native', '--filter', 'i8-wraps', '--timeout', '0.5'],
+        { encoding: 'utf8', timeout: 60000 },
+    );
+    const seconds = (Date.now() - started) / 1000;
+    assert.equal(result.error, undefined, 'the runner hung');
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /timed out after 0\.5 s/);
+    assert.ok(seconds < 30, `the runner took ${seconds} s`);
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    assert.throws(() => process.kill(pid, 0), /ESRCH/, `the program ${pid} still runs`);
 });
 
 test('run_stdout_and_trap', () => {

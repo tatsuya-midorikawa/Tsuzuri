@@ -1,0 +1,7 @@
+def f :: unit -> unit = \() -> ()
+f ()
+
+// rule: CLI-002
+// cli: run $DIR
+// expect: exit 0
+// expect: stdout-empty

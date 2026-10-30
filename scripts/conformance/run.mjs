@@ -1,6 +1,6 @@
 // Running one conformance test against a compiler (G33 §5, §6).
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -9,19 +9,76 @@ import { checkCli, matchDiagnostic, namesFile, parseDiagnostics, summaryOf, trap
 
 export const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
+/** Seconds that the runner waits for the pipes after the compiler exits or is stopped. */
+export const PIPE_GRACE_SECONDS = 2;
+
+const live = new Set();
+
+/**
+ * Stops `child` and everything that it started: `tsuzuri run` runs the program as its own child, which inherits
+ * the pipes. On POSIX the compiler leads its own process group (`detached`), so the group is killed; on Windows
+ * `taskkill /T` stops the tree.
+ */
+export function killTree(child) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+        if (process.platform !== 'win32') {
+            try {
+                process.kill(-child.pid, 'SIGKILL');
+            } catch {
+                // The group is gone.
+            }
+        }
+        return;
+    }
+    if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        child.kill('SIGKILL');
+        return;
+    }
+    try {
+        process.kill(-child.pid, 'SIGKILL');
+    } catch {
+        child.kill('SIGKILL');
+    }
+}
+
+process.on('exit', () => {
+    for (const child of live) killTree(child);
+});
+for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, () => {
+        for (const child of live) killTree(child);
+        process.kill(process.pid, signal);
+    });
+}
+
 /** Runs the compiler once: its status, standard output and error, and whether it timed out. */
 export function runCompiler(compiler, args, { cwd, timeout = 120, env = process.env } = {}) {
     return new Promise(resolve => {
-        const child = spawn(compiler, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(compiler, args, {
+            cwd,
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: process.platform !== 'win32',
+        });
+        live.add(child);
         const chunks = { stdout: [], stderr: [] };
         let size = 0;
         let tooLarge = false;
         let timedOut = false;
+        let done = false;
+        let grace = null;
+        const stop = () => {
+            killTree(child);
+            // A descendant that survives keeps the pipes open, and `close` would never come: stop waiting for it.
+            grace ??= setTimeout(() => finish(null), PIPE_GRACE_SECONDS * 1000);
+        };
         const collect = name => chunk => {
+            if (tooLarge) return;
             size += chunk.length;
             if (size > MAX_OUTPUT_BYTES) {
                 tooLarge = true;
-                child.kill('SIGKILL');
+                stop();
                 return;
             }
             chunks[name].push(chunk);
@@ -30,10 +87,18 @@ export function runCompiler(compiler, args, { cwd, timeout = 120, env = process.
         child.stderr.on('data', collect('stderr'));
         const timer = setTimeout(() => {
             timedOut = true;
-            child.kill('SIGKILL');
+            stop();
         }, timeout * 1000);
         const finish = status => {
+            if (done) return;
+            done = true;
             clearTimeout(timer);
+            clearTimeout(grace);
+            live.delete(child);
+            // What the program left running is stopped too, and its pipes are closed.
+            killTree(child);
+            child.stdout.destroy();
+            child.stderr.destroy();
             resolve({
                 status,
                 stdout: Buffer.concat(chunks.stdout).toString('utf8'),
@@ -46,7 +111,10 @@ export function runCompiler(compiler, args, { cwd, timeout = 120, env = process.
             chunks.stderr.push(Buffer.from(String(failure.message)));
             finish(null);
         });
-        child.on('close', status => finish(status));
+        child.on('exit', status => {
+            grace ??= setTimeout(() => finish(timedOut || tooLarge ? null : status), PIPE_GRACE_SECONDS * 1000);
+        });
+        child.on('close', status => finish(timedOut || tooLarge ? null : status));
     });
 }
 
@@ -76,7 +144,7 @@ function describeDiagnostics(diagnostics) {
     if (!diagnostics.length) return 'no diagnostics';
     return diagnostics
         .slice(0, 5)
-        .map(d => `${d.code}@${String(d.path ?? '').replaceAll('\\', '/').split('/').pop()}:${d.span?.line ?? '?'}`)
+        .map(d => `${d.code}@${String(d.path ?? '').replaceAll('\\', '/').split('/').pop()}:${d.span?.line ?? '?'}:${d.span?.column ?? '?'}`)
         .join(', ');
 }
 
@@ -147,7 +215,15 @@ export async function runTest(test, ctx) {
             }
             const severity = expect.kind === 'check-error' ? 'error' : 'warning';
             const status = severity === 'error' ? 1 : 0;
-            const wanted = { severity, code: expect.code, line: expect.line, file: expect.file, diagKind: expect.diagKind };
+            const wanted = {
+                severity,
+                code: expect.code,
+                line: expect.line,
+                column: expect.column,
+                file: expect.file,
+                diagKind: expect.diagKind,
+                message: expect.message,
+            };
             if (result.status !== status) {
                 details.push(`${expect.raw}: exit ${result.status}, expected ${status}; got ${describeDiagnostics(diagnostics)}`);
             } else if (!diagnostics.some(d => matchDiagnostic(d, wanted))) {

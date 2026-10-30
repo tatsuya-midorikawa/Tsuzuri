@@ -5,10 +5,10 @@ The rules of this area, one sentence each, with the document that states them an
 | ID | Rule | Doc | Tests | Status |
 | --- | --- | --- | --- | --- |
 | NUM-001 | An integer literal without a suffix and without any typing context MUST have type `i32`. | [type-inference.md § 文脈が決まらない場合の既定型](../../_tsuzuri/language-reference/types-and-type-inference/type-inference.md#文脈が決まらない場合の既定型) | NUM-001-integer-literal-without-suffix | active |
-| NUM-002 | Integer `+` MUST wrap modulo 2^width. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-002-integer-must-wrap-modulo | active |
-| NUM-003 | Integer `-` MUST wrap modulo 2^width. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-003-integer-must-wrap-modulo | active |
-| NUM-004 | Integer `*` MUST wrap modulo 2^width. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-004-integer-must-wrap-modulo | active |
-| NUM-005 | Unary minus of the minimum signed value MUST wrap to the same value. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-005-unary-minus-of-minimum | active |
+| NUM-002 | Outside `@checked`, fixed-width integer `+` MUST wrap modulo 2^width. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-002-integer-must-wrap-modulo | active |
+| NUM-003 | Outside `@checked`, fixed-width integer `-` MUST wrap modulo 2^width. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-003-integer-must-wrap-modulo | active |
+| NUM-004 | Outside `@checked`, fixed-width integer `*` MUST wrap modulo 2^width. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-004-integer-must-wrap-modulo | active |
+| NUM-005 | Outside `@checked`, unary minus of the minimum value of a fixed-width signed integer MUST wrap to the same value. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-005-unary-minus-of-minimum | active |
 | NUM-006 | Integer `/` MUST truncate toward zero. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-006-integer-must-truncate-toward | active |
 | NUM-007 | Integer `%` MUST take the sign of the dividend. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-007-integer-must-take-sign | active |
 | NUM-008 | Integer division by zero MUST trap. | [language.md § 数値仕様](../../docs/language.md#数値仕様) | NUM-008-integer-division-by-zero | active |

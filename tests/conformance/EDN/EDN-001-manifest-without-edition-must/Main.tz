@@ -1,4 +1,6 @@
-1
+// `1l` is accepted in edition 2026 and rejected (E0004) in 2027.
+let x = 1l
+x
 
 // rule: EDN-001
 // expect: check-ok

@@ -5,7 +5,7 @@ The rules of this area, one sentence each, with the document that states them an
 | ID | Rule | Doc | Tests | Status |
 | --- | --- | --- | --- | --- |
 | CLI-001 | An unknown option MUST be rejected with E2000 and exit code 2. | [option.md](../../_tsuzuri/language-reference/compiler/option.md) | CLI-001-unknown-option-must-be | active |
-| CLI-002 | `run` MUST print the value of the final expression of `Main.tz` and exit with 0. | [language.md § アプリケーションのエントリーポイント](../../docs/language.md#アプリケーションのエントリーポイント) | CLI-002-run-must-print-value | active |
+| CLI-002 | `run` MUST print the value of the final expression of `Main.tz` and exit with 0; a final expression of type `unit` prints nothing. | [language.md § アプリケーションのエントリーポイント](../../docs/language.md#アプリケーションのエントリーポイント) | CLI-002-run-must-print-value, CLI-002-unit-result-prints-nothing | active |
 | CLI-003 | A program that exits with a non-zero code MUST make `run` fail with E2005 and exit code 1. | [usage.md](../../_tsuzuri/language-reference/compiler/usage.md) | CLI-003-program-that-exits-with | active |
 | CLI-004 | `fmt --check` MUST exit with 1 and name the file when a source is not formatted. | [usage.md](../../_tsuzuri/language-reference/compiler/usage.md) | CLI-004-fmt-check-must-exit | active |
 | CLI-005 | `fmt --check` MUST exit with 0 and print nothing when every source is formatted. | [usage.md](../../_tsuzuri/language-reference/compiler/usage.md) | CLI-005-fmt-check-must-exit | active |

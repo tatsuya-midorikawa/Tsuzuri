@@ -4,7 +4,7 @@ The rules of this area, one sentence each, with the document that states them an
 
 | ID | Rule | Doc | Tests | Status |
 | --- | --- | --- | --- | --- |
-| EDN-001 | A manifest without `edition` MUST be accepted and use the latest edition. | [packages.md](../../_tsuzuri/language-reference/organizing-tsuzuri/packages.md) | EDN-001-manifest-without-edition-must | active |
+| EDN-001 | A manifest without `edition` MUST be accepted and use edition 2026 (the manifest default), not the latest edition. | [packages.md](../../_tsuzuri/language-reference/organizing-tsuzuri/packages.md) | EDN-001-manifest-without-edition-must | active |
 | EDN-002 | `edition = "2026"` MUST be accepted. | [packages.md](../../_tsuzuri/language-reference/organizing-tsuzuri/packages.md) | EDN-002-edition-2026-must-be | active |
 | EDN-003 | An unsupported edition MUST be rejected with E0002 and the message MUST list the supported editions. | [packages.md § 言語版（edition）](../../_tsuzuri/language-reference/organizing-tsuzuri/packages.md#言語版edition) | EDN-003-unsupported-edition-must-be | active |
 | EDN-004 | An unknown key in `[package]` MUST be rejected with E0002. | [packages.md](../../_tsuzuri/language-reference/organizing-tsuzuri/packages.md) | EDN-004-unknown-key-in-package | active |

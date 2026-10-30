@@ -124,12 +124,14 @@ function options(list, allowed) {
         if (!allowed.includes(key) || separator < 0) throw bad(`unknown option '${text}'`);
         if (key in found) throw bad(`'${key}=' is given twice`);
         if (key === 'line') found.line = integer(value, 'line', 1);
+        else if (key === 'column') found.column = integer(value, 'column', 1);
         else if (key === 'file') found.file = relative(value, 'file');
         else if (key === 'kind') {
             if (!/^[a-z][a-z0-9_]*$/.test(value)) throw bad(`kind must be snake_case, got '${value}'`);
             found.kind = value;
         }
     }
+    if (found.column !== undefined && found.line === undefined) throw bad('column= needs line=');
     return found;
 }
 
@@ -143,8 +145,16 @@ function normalExpectation(kind, args) {
             const code = word(args[0], 'the code');
             const pattern = kind === 'check-error' ? /^E[0-9]{4}$/ : /^W[0-9]{4}$/;
             if (!pattern.test(code)) throw bad(`'${code}' is not a code for ${kind}`);
-            const found = options(args.slice(1), ['line', 'file', 'kind']);
-            return { kind, code, line: found.line, file: found.file, diagKind: found.kind };
+            let rest = args.slice(1);
+            let message;
+            const at = rest.findIndex(token => !token.string && token.text === 'message');
+            if (at >= 0) {
+                if (at !== rest.length - 2) throw bad("'message' must be the last pair of " + kind);
+                message = string(rest[at + 1], 'the message');
+                rest = rest.slice(0, at);
+            }
+            const found = options(rest, ['line', 'column', 'file', 'kind']);
+            return { kind, code, line: found.line, column: found.column, file: found.file, diagKind: found.kind, message };
         }
         case 'stdout':
             if (args.length !== 1) throw bad('stdout takes one JSON string');
@@ -276,7 +286,8 @@ export function parseTest(text) {
         }
     }
     const kinds = new Set(expects.map(expect => expect.kind));
-    if (mode === 'cli' && kinds.has('deterministic') && !cli.includes('$OUT') && !cli.some(word => word.includes('$OUT'))) {
+    // A `cli` line that could not be read has its error already; the words are checked only when there are some.
+    if (mode === 'cli' && cli && kinds.has('deterministic') && !cli.some(word => word.includes('$OUT'))) {
         error(expects.find(expect => expect.kind === 'deterministic').at, 'bad_argument', 'deterministic needs $OUT in cli');
     }
     if (mode === 'normal' && kinds.has('trap') && kinds.has('stdout')) {

@@ -38,6 +38,8 @@ export function matchDiagnostic(d, e) {
         return false;
     }
     if (e.diagKind !== undefined && d.kind !== e.diagKind) return false;
+    if (e.column !== undefined && d.span?.column !== e.column) return false;
+    if (e.message !== undefined && !String(d.message ?? '').includes(e.message)) return false;
     return true;
 }
 

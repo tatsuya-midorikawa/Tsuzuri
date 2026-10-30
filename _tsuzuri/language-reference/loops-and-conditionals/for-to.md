@@ -140,7 +140,7 @@ count
 
 ## 評価順序とオーバーフローの安全性
 
-`start` 式と `finish` 式は、ループの開始前に左から右へ 1 回ずつ評価されます。反復のたびに終了値が再計算されることはありません。
+<!-- rule: EVL-013 -->`start` 式と `finish` 式は、ループの開始前に左から右へ 1 回ずつ評価されます。反復のたびに終了値が再計算されることはありません。
 
 ### 境界値とオーバーフロー安全性
 
@@ -223,7 +223,7 @@ sum
 
 | 機能 | Tsuzuri | F# | Rust |
 | --- | --- | --- | --- |
-| <!-- rule: EVL-013 -->構文 | `for i = a to b do` | `for i = a to b do` | `for i in a..=b` |
+| 構文 | `for i = a to b do` | `for i = a to b do` | `for i in a..=b` |
 | 降順 | `for i = a downto b do` | `for i = a downto b do` | `(b..=a).rev()` |
 | ループ変数の型 | 整数型（両端から推論、既定は `i32`） | 整数型（型推論） | 範囲の型 |
 | 両端の扱い | 両端を含む（inclusive） | 両端を含む（inclusive） | `..=` で両端を含む |
