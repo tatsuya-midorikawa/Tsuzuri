@@ -110,15 +110,51 @@ impl Checker<'_> {
             }
         }
         locals.sort_by_key(|local| local.id);
-        let (first, rest): (Vec<&Local>, Vec<&Local>) = locals
-            .into_iter()
-            .partition(|local| wanted.is_some_and(|wanted| self.fits(&local.ty, wanted)));
+        let (first, rest): (Vec<&Local>, Vec<&Local>) = locals.into_iter().partition(|local| {
+            wanted.is_some_and(|wanted| self.fits(&self.effective_type(local), wanted))
+        });
         first
             .into_iter()
             .chain(rest)
             .take(MAX_SCOPE_ENTRIES)
-            .map(|local| (local.name.clone(), self.inference.resolve(&local.ty)))
+            .map(|local| (local.name.clone(), self.effective_type(local)))
             .collect()
+    }
+
+    /// The type of a bare use of `local`: a parameter that the checker reads through its reference
+    /// (`read_value_parameters`) is dereferenced.
+    fn effective_type(&self, local: &Local) -> Type {
+        let ty = self.inference.resolve(&local.ty);
+        if self.reads_through(&local.name) {
+            ty.dereferenced().unwrap_or(ty)
+        } else {
+            ty
+        }
+    }
+
+    /// Whether the local named `name` is a parameter whose bare use reads through its reference.
+    fn reads_through(&self, name: &str) -> bool {
+        self.local(name)
+            .is_some_and(|local| self.read_value_parameters.contains(&local.id))
+    }
+
+    /// `ty` with each open number literal type at its default (`i32`, `f64`).
+    fn with_numeric_defaults(&self, ty: &Type) -> Type {
+        let ty = self.inference.resolve(ty);
+        polymorph::map_type(&ty, &mut |t| match t {
+            Type::Infer(_) => self
+                .inference
+                .numeric_default(t)
+                .unwrap_or_else(|| t.clone()),
+            _ => t.clone(),
+        })
+    }
+
+    /// Whether `ty`, decided, is a `Copy` type: a value read through a reference may be used
+    /// as an owned value only then.
+    fn copies(&self, ty: &Type) -> bool {
+        let ty = self.inference.resolve(ty);
+        ground(&ty) && self.classes.holds("Copy", &ty, &self.types)
     }
 
     /// Whether a value of type `ty` can stand where `wanted` is expected, on a copy of both
@@ -308,7 +344,7 @@ pub(super) fn build(
         entries.push(Entry {
             call: kind == Kind::Def,
             kind,
-            name: stable_name(declaration_display(key)),
+            name: stable_name(names.source_spelling(key, &info.module)),
             module: info.module.clone(),
             public: info.visibility == Visibility::Public,
             origin: names.origin(&info.module),
@@ -430,7 +466,7 @@ pub(super) fn build(
         entries.push(Entry {
             call: false,
             kind: Kind::Case,
-            name: declaration_display(key),
+            name: names.source_spelling(key, &case.info.module),
             module: case.info.module.clone(),
             public: case.info.visibility == Visibility::Public,
             origin: names.origin(&case.info.module),
@@ -522,7 +558,9 @@ impl Checker<'_> {
         // Rank 0: a local of the type. Rank 1: a field of a local record whose representation
         // this module may read.
         for (local_name, local_type) in scope {
-            if fits(local_type) {
+            // A parameter read through its reference gives an owned value only of a Copy type.
+            let through = self.reads_through(local_name);
+            if fits(local_type) && (!through || self.copies(local_type)) {
                 ranked.push(Ranked {
                     rank: 0,
                     generic: false,
@@ -537,7 +575,7 @@ impl Checker<'_> {
             }
             let (record, borrowed) = match local_type {
                 Type::Reference(inner, _) => (inner.as_ref(), true),
-                other => (other, false),
+                other => (other, through),
             };
             if let Type::Record(id, arguments) = record
                 && self.record_storage(*id, span).is_ok()
@@ -610,12 +648,25 @@ impl Checker<'_> {
                     if matches!(local_type, Type::Infer(_)) {
                         continue;
                     }
+                    let through = self.reads_through(local_name);
+                    let copyable = !through || self.copies(local_type);
                     let mut trial = search.clone();
                     let mut local_map = map.clone();
+                    // An argument takes the open parts of number literals at their defaults, as
+                    // the program would if nothing else decides them.
+                    let decided = self.with_numeric_defaults(local_type);
                     let (local_type, pending) =
-                        self.import_with_constraints(local_type, &mut trial, &mut local_map);
+                        self.import_with_constraints(&decided, &mut trial, &mut local_map);
                     let mutable = self.local(local_name).is_some_and(|local| local.mutable);
                     let text = match (&parameter, &local_type) {
+                        // A value read through a parameter's reference fills a shared `ref T`
+                        // by the call's implicit borrow, and a value parameter only when Copy.
+                        (Type::Reference(_, true), _) if through => None,
+                        (Type::Reference(inner, false), _) if through => trial
+                            .unify(&local_type, inner, &self.types, span)
+                            .is_ok()
+                            .then(|| local_name.clone()),
+                        _ if !copyable => None,
                         (
                             Type::Reference(inner, wants_mut),
                             Type::Reference(local_inner, local_mut),
@@ -639,6 +690,8 @@ impl Checker<'_> {
                         && constraints_hold(&constraints, &trial, &self.types, self.classes)
                         && constraints_hold(&pending, &trial, &self.types, self.classes)
                     {
+                        // The local's own classes hold for the arguments after it too.
+                        constraints.extend(pending);
                         search = trial;
                         map = local_map;
                         hit = text;
@@ -967,7 +1020,12 @@ impl Checker<'_> {
             if info.module == self.module {
                 pool.push(Pooled::new(last_segment(key), 1, word));
             } else if last_segment(key) == target && info.visible_from(self.module) {
-                pool.push(Pooled::qualified(declaration_display(key), target, 1, word));
+                pool.push(Pooled::qualified(
+                    self.names.source_spelling(key, &info.module),
+                    target,
+                    1,
+                    word,
+                ));
             }
         }
         for builtin in Builtin::ALL {
@@ -994,7 +1052,7 @@ impl Checker<'_> {
                 && case.info.visible_from(self.module)
             {
                 pool.push(Pooled::qualified(
-                    declaration_display(key),
+                    self.names.source_spelling(key, &case.info.module),
                     target,
                     2,
                     "union case",
@@ -1012,7 +1070,16 @@ impl Checker<'_> {
                 if self.names.module_path(self.module, stem) == Some(key.as_str()) {
                     pool.push(Pooled::new(stem, 3, "module"));
                 } else {
-                    pool.push(Pooled::qualified(namespace_display(key), stem, 3, "module"));
+                    pool.push(Pooled::qualified(
+                        if self.names.origin(key) == ModuleOrigin::Std {
+                            namespace_display(key)
+                        } else {
+                            self.names.module_display(key)
+                        },
+                        stem,
+                        3,
+                        "module",
+                    ));
                 }
             }
             for builtin in Builtin::ALL {
@@ -1061,7 +1128,7 @@ impl Checker<'_> {
         for (key, info) in &self.names.functions {
             if !hidden(key) && info.visible_from(self.module) {
                 pool.push(Pooled::new(
-                    declaration_display(key),
+                    self.names.source_spelling(key, &info.module),
                     1,
                     function_word(self.names, info.id),
                 ));
@@ -1069,7 +1136,11 @@ impl Checker<'_> {
         }
         for (key, case) in &self.names.cases {
             if case.info.visible_from(self.module) {
-                pool.push(Pooled::new(declaration_display(key), 2, "union case"));
+                pool.push(Pooled::new(
+                    self.names.source_spelling(key, &case.info.module),
+                    2,
+                    "union case",
+                ));
             }
         }
         for builtin in Builtin::ALL {
@@ -1112,6 +1183,17 @@ impl Checker<'_> {
 }
 
 impl Names {
+    /// How source code names the declaration `key` of `module`: a user declaration with its
+    /// package's namespace (`Finder::Shapes::Square.answer`), a std one as std's pages write it
+    /// (`Maybe.get`).
+    fn source_spelling(&self, key: &str, module: &str) -> String {
+        if self.origin(module) == ModuleOrigin::Std {
+            declaration_display(key)
+        } else {
+            self.spelling(key)
+        }
+    }
+
     /// Whether the unqualified case name `alias` resolves from `module`: visible and not ambiguous.
     fn resolves_case(&self, module: &str, alias: &str) -> bool {
         self.case(module, alias, Span::default())

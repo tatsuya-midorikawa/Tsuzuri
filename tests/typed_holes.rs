@@ -53,7 +53,9 @@ impl Project {
         ));
         fs::create_dir(&root).unwrap();
         for (name, text) in files {
-            fs::write(root.join(name), text).unwrap();
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
         }
         Self(root)
     }
@@ -535,6 +537,93 @@ fn edition_dependent_names_use_their_stable_spelling() {
     let names = candidate_names(&hole);
     assert!(
         !names.iter().any(|name| name.starts_with("Vec.push ")),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn user_candidates_carry_the_package_namespace() {
+    let project = Project::new(&[
+        (
+            "Tsuzuri.toml",
+            "[package]\nname = \"finder\"\nversion = \"0.1.0\"\nedition = \"2026\"\nnamespace = \"Finder\"\n",
+        ),
+        ("Main.tz", "0\n"),
+        (
+            "Shapes/Square.tz",
+            "def answer :: bool -> i64 = \\_flag -> 1\n",
+        ),
+        (
+            "Other/Use.tz",
+            "namespace Other\n\ndef f :: bool -> i64 = \\flag -> ?\n",
+        ),
+    ]);
+    let output = tsuzuri(
+        &[
+            "check".as_ref(),
+            "--json".as_ref(),
+            project.path().as_os_str(),
+        ],
+        None,
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let line: serde_json::Value = serde_json::from_str(stderr.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        line["candidates"][0]["name"],
+        "Finder::Shapes::Square.answer flag"
+    );
+}
+
+#[test]
+fn a_parameter_read_through_its_reference_has_its_value_type() {
+    // In edition 2027 a `mut i64` parameter reads as an `i64`.
+    let project = Project::new(&[(
+        "Main.tz",
+        "def f :: mut i64 -> unit = \\n -> {\n    let r: ref mut i64 = ?;\n    ()\n}\ndef g :: mut i64 -> i64 = \\n -> ?\n0\n",
+    )]);
+    let output = tsuzuri(
+        &[
+            "check".as_ref(),
+            "--json".as_ref(),
+            project.path().as_os_str(),
+        ],
+        None,
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let lines: Vec<serde_json::Value> = stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let names = |line: &serde_json::Value| -> Vec<String> {
+        line["candidates"]
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .map(|candidate| candidate["name"].as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert!(!names(&lines[0]).contains(&"n".to_owned()));
+    assert!(lines[0]["fixes"].is_null());
+    assert_eq!(lines[1]["scope"][0]["type"], "i64");
+    assert_eq!(names(&lines[1])[0], "n");
+    assert_eq!(lines[1]["fixes"][0]["title"], "Replace '?' with 'n'");
+}
+
+#[test]
+fn an_argument_keeps_the_classes_of_its_local() {
+    // `positive` takes an `i32` (its literal's default): it is no `Integer`, and `xs` of `[bool]`
+    // cannot follow it in `Array.count`.
+    let hole =
+        one("def f :: [bool] -> i64 = \\xs ->\n    let positive = \\n -> n > 0\n    ?\nf [true]\n");
+    let names = candidate_names(&hole);
+    assert!(
+        !names.iter().any(|name| name.starts_with("Int.count_ones")),
+        "{names:?}"
+    );
+    assert!(
+        !names.contains(&"Array.count positive (ref xs)"),
         "{names:?}"
     );
 }
