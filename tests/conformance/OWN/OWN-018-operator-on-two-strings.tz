@@ -1,0 +1,6 @@
+let a = "x"
+let b = a + "y"
+a.length
+
+// rule: OWN-018
+// expect: check-error E1012 line=3

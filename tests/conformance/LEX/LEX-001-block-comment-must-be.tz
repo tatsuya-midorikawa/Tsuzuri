@@ -1,0 +1,5 @@
+/* outer /* inner */ still outer */
+1 + 2
+
+// rule: LEX-001
+// expect: stdout "3\n"

@@ -1,0 +1,4 @@
+def main :: unit -> i64 = \() -> 0
+
+// rule: SYN-009
+// expect: check-error E2004 line=1

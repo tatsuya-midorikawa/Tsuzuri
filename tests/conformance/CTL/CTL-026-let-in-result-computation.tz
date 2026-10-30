@@ -1,0 +1,18 @@
+def parse_qty :: i64 -> Result<i64, string> = \qty ->
+    if qty > 0 then Ok qty else Error "quantity must be positive"
+
+def line_total :: i64 -> i64 -> Result<i64, string> = \price qty ->
+    Result {
+        let! count = parse_qty qty
+        return price * count
+    }
+
+def show :: own Result<i64, string> -> string = \result ->
+    match result with
+    | Ok n -> to_string n
+    | Error e -> e
+
+show (line_total 120 3) + " / " + show (line_total 120 0)
+
+// rule: CTL-026
+// expect: stdout "360 / quantity must be positive\n"

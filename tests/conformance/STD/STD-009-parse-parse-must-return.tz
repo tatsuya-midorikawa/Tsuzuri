@@ -1,0 +1,14 @@
+let good = "42"
+let bad = "4x2"
+let a: Maybe<i64> = Parse.parse (ref good)
+let b: Maybe<i64> = Parse.parse (ref bad)
+let sa = match a with
+| Some v -> to_string v
+| None -> "none"
+let sb = match b with
+| Some v -> to_string v
+| None -> "none"
+$"{sa} {sb}"
+
+// rule: STD-009
+// expect: stdout "42 none\n"

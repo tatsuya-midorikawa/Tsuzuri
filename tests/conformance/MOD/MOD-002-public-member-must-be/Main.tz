@@ -1,0 +1,4 @@
+Geometry.area 3 4
+
+// rule: MOD-002
+// expect: stdout "12\n"

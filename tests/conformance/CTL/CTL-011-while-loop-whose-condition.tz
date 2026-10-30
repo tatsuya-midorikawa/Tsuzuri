@@ -1,0 +1,7 @@
+let mut n = 0
+while n > 0 do
+    n = n + 100
+n
+
+// rule: CTL-011
+// expect: stdout "0\n"

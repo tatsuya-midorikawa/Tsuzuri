@@ -1,0 +1,11 @@
+let a = if true then { let x = 1; x + 1 } else 0
+let b =
+    if true then
+        let x = 1
+        x + 1
+    else
+        0
+$"{a} {b}"
+
+// rule: SYN-003
+// expect: stdout "2 2\n"

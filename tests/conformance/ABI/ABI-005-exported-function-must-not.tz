@@ -1,0 +1,5 @@
+export def f :: own string -> i64 = \s -> s.length
+0
+
+// rule: ABI-005
+// expect: check-error E1008 line=1

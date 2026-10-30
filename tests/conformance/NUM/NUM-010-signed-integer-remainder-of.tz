@@ -1,0 +1,7 @@
+def rem :: i64 -> i64 -> i64 = \a b -> a % b
+
+let minimum = -9223372036854775807i64 - 1i64
+rem minimum (-1)
+
+// rule: NUM-010
+// expect: trap kind=div_overflow

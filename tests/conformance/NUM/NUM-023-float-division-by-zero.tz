@@ -1,0 +1,8 @@
+def div :: f64 -> f64 -> f64 = \a b -> a / b
+
+test "1/0" = Test.is_true (div 1.0 0.0 > 1e308)
+test "-1/0" = Test.is_true (div (-1.0) 0.0 < -1e308)
+test "0/0" = Test.is_true (div 0.0 0.0 != div 0.0 0.0)
+
+// rule: NUM-023
+// expect: tests-pass 3

@@ -1,0 +1,4 @@
+0
+
+// rule: MOD-008
+// expect: check-error E2004 line=2 file=Lib.tz

@@ -1,0 +1,12 @@
+let a = "hello"
+let b = a
+let c = a
+c
+
+// rule: DIA-001
+// cli: check $DIR --json
+// expect: exit 1
+// expect: stderr-has "{\"severity\":\"error\",\"code\":\"E1012\",\"message\":\"use of moved or partially moved value 'a'\",\"path\":\""
+// expect: stderr-has "\",\"span\":{\"start\":34,\"end\":35,\"line\":3,\"column\":9,\"end_line\":3,\"end_column\":10},\"kind\":\""
+// expect: stdout-empty
+// expect: stderr-lines 1

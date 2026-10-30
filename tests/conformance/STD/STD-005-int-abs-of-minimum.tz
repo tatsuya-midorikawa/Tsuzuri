@@ -1,0 +1,6 @@
+def absolute :: i32 -> i32 = \x -> Int.abs x
+
+$"{absolute (-5)} {absolute (-2147483648)}"
+
+// rule: STD-005
+// expect: stdout "5 -2147483648\n"

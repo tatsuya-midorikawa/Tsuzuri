@@ -1,0 +1,8 @@
+def take :: own string -> i64 = \s -> s.length
+let s = "abc"
+for i in 0 ..= 2 do
+    let n = take s
+0
+
+// rule: OWN-015
+// expect: check-error E1012 line=4

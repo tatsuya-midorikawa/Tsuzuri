@@ -1,0 +1,5 @@
+let task = 1
+task
+
+// rule: EDN-007
+// expect: check-error E0002 line=1

@@ -1,0 +1,3 @@
+private record Hidden { x: i64 }
+
+def make :: unit -> Hidden = \() -> Hidden { x: 1 }

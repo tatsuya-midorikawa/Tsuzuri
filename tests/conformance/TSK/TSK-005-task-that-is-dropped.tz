@@ -1,0 +1,8 @@
+let _unused = task {
+    assert false
+    0
+}
+42
+
+// rule: TSK-005
+// expect: stdout "42\n"

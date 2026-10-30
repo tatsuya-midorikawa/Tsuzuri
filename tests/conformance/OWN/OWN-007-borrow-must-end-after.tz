@@ -1,0 +1,15 @@
+def length :: ref string -> i64 = \text -> text.length
+def identity :: ref string -> ref string = \text -> text
+def replace :: ref mut string -> unit = \text -> { deref text = "next"; }
+def example :: unit -> string = \() -> {
+    let mut text = "before";
+    let shared = identity text;
+    let size = length shared;
+    replace text;
+    let owned = text;
+    owned
+}
+example ()
+
+// rule: OWN-007
+// expect: stdout "next\n"

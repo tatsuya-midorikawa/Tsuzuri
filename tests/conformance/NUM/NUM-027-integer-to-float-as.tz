@@ -1,0 +1,7 @@
+def conv :: i64 -> f64 = \a -> a as f64
+
+test "tie goes to even" = Test.is_true (conv 9007199254740993i64 == 9007199254740992.0)
+test "next tie" = Test.is_true (conv 9007199254740995i64 == 9007199254740996.0)
+
+// rule: NUM-027
+// expect: tests-pass 2

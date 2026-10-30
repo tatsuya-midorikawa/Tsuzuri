@@ -1,0 +1,5 @@
+let factors = [1, 2, 3, 4]
+Array.product (ref factors)
+
+// rule: STD-008
+// expect: stdout "24\n"

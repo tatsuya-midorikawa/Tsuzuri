@@ -1,0 +1,7 @@
+def cut :: f64 -> i64 = \a -> a as i64
+
+test "3.99" = Test.equal (ref 3) (ref (cut 3.99))
+test "-3.99" = Test.equal (ref (-3)) (ref (cut (-3.99)))
+
+// rule: NUM-020
+// expect: tests-pass 2

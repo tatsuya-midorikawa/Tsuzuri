@@ -6,6 +6,7 @@ Tsuzuri におけるアクセス制御（可視性）は、モジュールの内
 
 ## この記事のポイント
 
+<!-- rule: MOD-003 --> <!-- rule: MOD-004 -->
 - Tsuzuri の宣言は既定で public です。非公開にする場合のみ `private` を明示します。
 - `private` は `def`、`record`、`union`、`type`、`const`、`extern def` に付与できます。
 - 関数の実装側（`fn`、`and`、`let`）には `private` を付けず、先行する `def` シグネチャの可視性を自動継承します。

@@ -1,0 +1,8 @@
+def double :: 'a -> 'a = \x -> x + x
+
+let i = double 21
+let f = double 2.5
+$"{i}:{f}"
+
+// rule: TYP-008
+// expect: stdout "42:5\n"

@@ -1,0 +1,7 @@
+def narrow :: i64 -> i8 = \a -> a as i8
+
+test "255 as i8" = Test.equal (ref (-1)) (ref (narrow 255))
+test "256 as i8" = Test.equal (ref 0) (ref (narrow 256))
+
+// rule: NUM-018
+// expect: tests-pass 2

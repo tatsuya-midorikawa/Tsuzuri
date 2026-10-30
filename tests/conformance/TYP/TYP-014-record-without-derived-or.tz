@@ -1,0 +1,8 @@
+record P { x: i64 }
+
+let a = P { x: 1 }
+let b = P { x: 1 }
+a == b
+
+// rule: TYP-014
+// expect: check-error E1005 line=5

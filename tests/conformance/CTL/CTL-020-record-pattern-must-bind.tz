@@ -1,0 +1,8 @@
+record Person { name: string, age: i64 }
+
+let person = Person { name: "Alice", age: 30 }
+match person with
+| Person { name = n, age = _ } -> n.length
+
+// rule: CTL-020
+// expect: stdout "5\n"

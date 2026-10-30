@@ -1,0 +1,6 @@
+let a = "x"
+let b = a
+a
+
+// rule: OWN-001
+// expect: check-error E1012 line=3

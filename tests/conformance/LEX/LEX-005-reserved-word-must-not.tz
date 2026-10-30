@@ -1,0 +1,5 @@
+let for = 1
+for
+
+// rule: LEX-005
+// expect: check-error E0002 line=1

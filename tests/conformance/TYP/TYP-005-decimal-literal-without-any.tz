@@ -1,0 +1,5 @@
+let third = 1.0 / 3.0
+third == 0.3333333333333333
+
+// rule: TYP-005
+// expect: stdout "true\n"

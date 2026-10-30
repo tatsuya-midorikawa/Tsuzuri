@@ -1,0 +1,4 @@
+Geometry::Point.area 3 4
+
+// rule: MOD-005
+// expect: stdout "12\n"

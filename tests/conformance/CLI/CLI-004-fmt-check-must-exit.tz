@@ -1,0 +1,7 @@
+let   x=1
+x
+
+// rule: CLI-004
+// cli: fmt --check $DIR
+// expect: exit 1
+// expect: stderr-has "Main.tz: not formatted"

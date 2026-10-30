@@ -1,0 +1,6 @@
+let s = "x"
+let t = $"{s}{s}"
+t + to_string s.length
+
+// rule: STR-007
+// expect: stdout "xx1\n"

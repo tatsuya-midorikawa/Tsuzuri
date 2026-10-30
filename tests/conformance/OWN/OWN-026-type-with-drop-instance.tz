@@ -1,0 +1,12 @@
+record Ticket { id: i64 }
+
+instance Drop<Ticket> {
+    fn drop value = do! IO.write_line "drop"
+}
+
+let a = Ticket { id: 1 }
+let b = a
+a.id
+
+// rule: OWN-026
+// expect: check-error E1012 line=9

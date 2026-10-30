@@ -1,0 +1,9 @@
+// rule: CLI-008
+// cli: new $DIR/app
+// expect: exit 0
+// expect: stdout-has "Tsuzuri.toml"
+// expect: stdout-has "Main.tz"
+// expect: stdout-has ".gitignore"
+// expect: file-has app/Tsuzuri.toml "name = \"app\""
+// expect: file-has app/Main.tz ""
+// expect: file-has app/.gitignore ""

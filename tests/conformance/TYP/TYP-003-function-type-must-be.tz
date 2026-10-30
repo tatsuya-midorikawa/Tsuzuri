@@ -1,0 +1,7 @@
+def add :: i64 -> i64 -> i64 = \a b -> a + b
+
+let inc = add 1
+inc 41
+
+// rule: TYP-003
+// expect: stdout "42\n"

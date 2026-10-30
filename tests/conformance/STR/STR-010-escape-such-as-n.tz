@@ -1,0 +1,5 @@
+let s = "a\tb\n"
+s.length
+
+// rule: STR-010
+// expect: stdout "4\n"

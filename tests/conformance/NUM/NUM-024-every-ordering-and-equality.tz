@@ -1,0 +1,9 @@
+def nan :: f64 -> f64 = \z -> z / z
+
+test "eq" = Test.is_true (not (nan 0.0 == nan 0.0))
+test "ne" = Test.is_true (nan 0.0 != nan 0.0)
+test "lt" = Test.is_true (not (nan 0.0 < 1.0))
+test "ge" = Test.is_true (not (nan 0.0 >= 1.0))
+
+// rule: NUM-024
+// expect: tests-pass 4

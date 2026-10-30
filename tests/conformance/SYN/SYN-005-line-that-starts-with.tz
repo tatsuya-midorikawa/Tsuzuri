@@ -1,0 +1,5 @@
+let x = 40
+(x + 2)
+
+// rule: SYN-005
+// expect: stdout "42\n"

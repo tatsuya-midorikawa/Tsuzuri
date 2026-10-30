@@ -1,0 +1,5 @@
+let jobs: [Task<i64>] = []
+Array.length ref (Task.run (Task.parallel jobs))
+
+// rule: TSK-007
+// expect: stdout "0\n"

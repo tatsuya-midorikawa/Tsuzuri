@@ -1,0 +1,7 @@
+def f :: i64 -> i64 = \n ->
+    break
+    n
+0
+
+// rule: CTL-010
+// expect: check-error E1023 line=2

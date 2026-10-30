@@ -1,0 +1,8 @@
+def add8 :: i8 -> i8 -> i8 = \a b -> a + b
+
+test "wraps" = Test.equal (ref (-128)) (ref (add8 127 1))
+
+// rule: NUM-001
+// rule: OWN-001
+// expect: tests-pass 1
+// targets: native-O0

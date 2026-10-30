@@ -1,0 +1,6 @@
+let c = 'a'
+let n = c as i64
+n
+
+// rule: TYP-016
+// expect: check-error E1005 line=2

@@ -1,0 +1,5 @@
+record Node { next: Node, value: i64 }
+0
+
+// rule: TYP-017
+// expect: check-error E1010 line=1

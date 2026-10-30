@@ -1,0 +1,5 @@
+let text = "😀"
+text.length
+
+// rule: STR-001
+// expect: stdout "2\n"

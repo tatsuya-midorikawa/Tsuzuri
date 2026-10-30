@@ -1,0 +1,9 @@
+record P { x: i64, y: string } deriving (Eq)
+
+let a = P { x: 1, y: "a" }
+let b = P { x: 1, y: "a" }
+let c = P { x: 1, y: "b" }
+$"{a == b} {a == c}"
+
+// rule: TYP-015
+// expect: stdout "true false\n"

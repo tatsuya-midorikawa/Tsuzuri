@@ -7,12 +7,26 @@
 | 規模 | 全体 L（D-50 の表）。Phase 1: M（約 4 日。形式・ハーネス・`check-spec`・OWN の 30 規則）、Phase 2: M（約 4 日。NUM・EVL・CTL・TYP の 98 規則）、Phase 3: M（約 3 日。残り 10 領域の 100 規則）、Phase 4: M（約 3 日。文書のマーカー 228 か所・カバレッジ・CI。種は S だったが、マーカーが 228 か所あるので M にした）。Phase ごとに別の PR にしてよい |
 | 依存 | なし（どの Phase も他チケットの実装を待たない）。弱い依存: G23（診断の `kind=` の照合。入るまで使わない）、A22（`// edition: 2027`。入るまで使わない） |
 | 後続 | G35（カバレッジの表を `<!-- generated:spec-coverage -->` へ流す）。言語の挙動を変える以降のすべてのチケット（規則とテストを足す。「ドキュメント」の節） |
-| 状態 | todo |
+| 状態 | done（全 Phase） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc`（main）で、差は `docs/benchmarks.md` だけ。確認: `git diff --stat a2313d19 HEAD`） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D14 はすべて承認済み |
 | 改善する劣位 | 仕様の主張が散文のままで（`docs/language.md` 4,118 行、言語リファレンス 111 ページ）、どの文がどのテストで守られているか、文とコンパイラが食い違っていないかを機械で確かめられない（D-50 の調査結論 (4)）。規則に ID がないので、AI も人も「この規則」を指して報告・検索できない |
 | 手本にする既存実装 | `scripts/check-docs.mjs` の `headings`（見出しの slug とフェンスの除き方）・`collect`・環境変数 `TSUZURI_BIN`。`tests/e2e.mjs` の `execute`（`spawnSync` の組み立て）・コンパイラを `process.argv[2]` で受ける流儀・`TSUZURI_CLANG`。`src/trap.rs` の `TrapKind::description`（トラップの種類の正本）。`src/test_runner.rs` の `tsuzuri test --json`（`type` が `test`／`summary` の行）。CI の step の形: `.github/workflows/targets.yml` の「End-to-end compiler tests」 |
 | 主な影響ファイル | Phase 1: `scripts/conformance.mjs`（新規）, `scripts/conformance/directives.mjs`・`scripts/conformance/discover.mjs`・`scripts/conformance/expect.mjs`・`scripts/conformance/run.mjs`・`scripts/conformance/spec.mjs`（すべて新規）, `scripts/check-spec.mjs`（新規）, `spec/README.md`（新規）, `spec/rules/OWN.md`（新規）, `tests/conformance/OWN/**`（新規）, `tests/conformance_harness.mjs`（新規）, `tests/fixtures/conformance_mini/**`（新規）, `README.md`, `docs/architecture.md`。Phase 2: `spec/rules/NUM.md`・`spec/rules/EVL.md`・`spec/rules/CTL.md`・`spec/rules/TYP.md`・`tests/conformance/{NUM,EVL,CTL,TYP}/**`（すべて新規）。Phase 3: `spec/rules/{LEX,SYN,STR,MOD,TSK,DIA,CLI,ABI,STD,EDN}.md`・`tests/conformance/{LEX,SYN,STR,MOD,TSK,DIA,CLI,ABI,STD,EDN}/**`（すべて新規）。Phase 4: `docs/language.md`・`docs/architecture.md`・`_tsuzuri/language-reference/**`（マーカーの行だけ）, `_tsuzuri/language-reference/compiler/conformance.md`（新規）, `_tsuzuri/language-reference/index.md`, `docs/stability.md`, `.github/workflows/targets.yml`, `.github/workflows/spec.yml`（新規）。**変更しない**: `src/`・`std/`・既存のテスト・`scripts/check-docs.mjs`・チケット・`_features/GUIDE*.md` |
+
+## 方針の最新化（2026-10-30。実装前の再検討）
+
+起票時（HEAD `a2313d19`）の後に入った A18・A21・A22・A23・D-59 などで、付録の 228 行のうち 24 行が現在のコンパイラと食い違った（停止条件 1・10）。人間の包括許可に従い、規則の趣旨を保ったまま次のとおり改めた（欠番は作らない）。
+
+| 起票時の前提 | 現状 | 改めた方針 |
+| --- | --- | --- |
+| マニフェストのない入力は edition 2026 | A22 で edition 2027 が最新になり、素の `..`・短い接尾辞（`l`・`f`）・旧ラムダ `x ->` は `E0004` | 構文が主題でない規則のテストは、両 edition が受理する正準形に書き換えた（`..=`、`start .. step ..= finish`、`i64`・`f32` の接尾辞、`\x ->`）。短い接尾辞そのものが主題の NUM-030 は `// edition: 2026` を付け、規則の文を `In edition 2026, ` で始めた。CTL-004・CTL-005 の文は `..=` の形にした |
+| 無印の引数は値渡し | A18 で 2027 の無印の引数は読み取り（借用） | 値渡し（move）が主題の OWN-003・008・015・022・024・029・ABI-005・TYP-007・CTL-026 は `own` を書いた（両 edition で同じ意味） |
+| `Array.get` は `Maybe` を返す、`Vec.push` は消費する | D-59 の後、`Array.get` はトラップし `Maybe` は `Array.try_item`。2027 の `Vec.push` は `Vec.push_mut` | STD-003 の文とテストを `Array.try_item`、STD-010 を `Vec.push_owned` にした（テストの名前も） |
+| 診断の JSON は 5 キー、対応 edition は 2026、`tsuzuri new` は 2026 | G23 の `kind` が `span` の後に続く。edition は `2026, 2027`。`new` は `edition = "2027"` | DIA-001 は 5 キーが「先頭に」この順で並ぶことを確かめる。EDN-003・EDN-005 の期待を現行にした（EDN-005 の文は「最新の edition」） |
+| `TrapKind` は 16 | A21 で `ContractRequires`・`ContractEnsures` が増えて 18 | `TRAP_KINDS` に `contract_requires`・`contract_ensures` を足した（No.16 は `src/trap.rs` の数と一致を検査） |
+| `tests-pass` は `test --json` | A23 で `tsuzuri test` は折り返した算術のテストを既定で失敗にする（NUM の折り返しの規則が落ちる） | ハーネスは `tests-pass` を `--allow-overflow` で実行する（値の規則を確かめるため。報告は警告にとどまる） |
+| マーカーは規則を述べる文の直前（リストの項目の先頭を含む） | CommonMark では項目の先頭の `<!--` が HTML ブロックになり、同じ行の本文のインラインの書式が表示されなくなる | マーカーは Doc の節の中で規則のコード（`E1012` など）とコード片を最も多く含むブロックの直前の独立した行、表なら行の先頭のセルに置く（リストは項目ではなくリスト全体の前）。インラインのコードの中の `<!-- rule: … -->` はマーカーとして数えない |
 
 ## 実装者向け早見
 
@@ -628,3 +642,12 @@ main(argv):                                        # scripts/conformance.mjs
 ## 付録
 
 詳細は次のファイル。**付録 A**（検証の方法・行からファイルへの変換・結果）と**付録 B**（OWN・NUM・EVL・CTL・TYP の 128 規則）は [G33-appendix.md](G33-appendix.md)、**付録 C**（残り 10 領域の 100 規則と各領域の棚卸しの手順）は [G33-appendix-areas.md](G33-appendix-areas.md)、**付録 D**（トラップの種類の表・ディレクティブの検証エラー・fixture・自己テストの一覧・CI の yml・出力例）は [G33-appendix-harness.md](G33-appendix-harness.md)。
+
+## 実装と検証（2026-10-30）
+
+- **範囲**: Phase 1〜4 をすべて実装した（1 つの PR）。冒頭の「方針の最新化」のとおり、起票後の変更に合わせた。
+- **Phase 1**: `scripts/conformance/{directives,discover,expect,run,spec}.mjs`、`scripts/conformance.mjs`、`scripts/check-spec.mjs`、`tests/conformance_harness.mjs`（付録 D.4 の 45 件）、`tests/fixtures/conformance_mini/good/`（付録 D.3）、`spec/README.md`、OWN の 30 規則。
+- **Phase 2・3**: 付録 B・C の残りの 198 規則（NUM 30・EVL 20・CTL 26・TYP 22、LEX・SYN・STR・MOD・TSK・DIA・CLI・ABI・STD・EDN 各 10）。行からファイルへの変換（§3）は手順どおり機械的に行い、食い違った 24 行だけを上の表のとおり直した。
+- **Phase 4**: 文書のマーカー 228 個（43 ファイル。`check-spec --strip-markers` で各ファイルが元と byte 単位で同じ）、`--require-markers`、`_tsuzuri/language-reference/compiler/conformance.md`（カバレッジの生成ブロック）、`index.md`、`docs/stability.md`、`README.md`、`docs/architecture.md`、`.github/workflows/targets.yml` の step と push の paths、`.github/workflows/spec.yml`。
+- **検証**: `node scripts/conformance.mjs target/debug/tsuzuri --jobs 4`（macOS、native と wasm32、`TSUZURI_WASM_LD`）が `conformance: 228 tests, 228 ok, 0 failed`（約 64 秒）。`node tests/conformance_harness.mjs` が 45 件。`node scripts/check-spec.mjs --require-markers` が `check-spec: ok (228 active, 0 retired, 228 tests)`。マーカーを足した 40 ページの `node scripts/check-docs.mjs` が通る（40 ページ・775 リンク・241 例・460 実行・7 テスト）。
+- **統括者への申し送り**: GUIDE の D-58 に「実装: `spec/rules/`・`tests/conformance/`・`scripts/check-spec.mjs`」、§7 の表に `node scripts/conformance.mjs target/release/tsuzuri --rule <ID>`、GUIDE-LITE の検証コマンドに `node scripts/conformance.mjs`・`node scripts/check-spec.mjs`・`node tests/conformance_harness.mjs` の 3 行を足す案。

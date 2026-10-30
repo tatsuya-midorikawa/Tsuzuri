@@ -1,0 +1,8 @@
+record A { x: i64 }
+record B { x: i64 }
+
+let a: A = B { x: 1 }
+a.x
+
+// rule: TYP-002
+// expect: check-error E1003 line=4

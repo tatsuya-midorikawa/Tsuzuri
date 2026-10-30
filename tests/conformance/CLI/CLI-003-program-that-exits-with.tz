@@ -1,0 +1,6 @@
+def main :: unit -> i32 = \() -> 7
+
+// rule: CLI-003
+// cli: run $DIR
+// expect: exit 1
+// expect: stderr-has "error[E2005]: program exited with code 7"

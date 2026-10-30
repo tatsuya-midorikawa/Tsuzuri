@@ -1,0 +1,7 @@
+record Pair { left: string, right: string }
+let p = Pair { left: "ab", right: "cde" }
+let l = p.left
+l.length + p.right.length
+
+// rule: OWN-009
+// expect: stdout "5\n"

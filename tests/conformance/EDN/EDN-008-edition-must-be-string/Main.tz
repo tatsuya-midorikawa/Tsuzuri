@@ -1,0 +1,4 @@
+1
+
+// rule: EDN-008
+// expect: check-error E0002

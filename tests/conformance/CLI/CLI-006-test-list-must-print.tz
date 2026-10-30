@@ -1,0 +1,7 @@
+test "a" = assert false
+test "b" = ()
+
+// rule: CLI-006
+// cli: test $DIR --list
+// expect: exit 0
+// expect: stdout "0 Main.a\n1 Main.b\n"

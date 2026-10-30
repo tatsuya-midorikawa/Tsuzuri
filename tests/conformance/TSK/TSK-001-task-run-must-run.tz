@@ -1,0 +1,11 @@
+def next :: i64 -> Task<i64> = \value -> task { return value + 1 }
+
+let work = task {
+    let! first = next 19
+    let! second = next 21
+    return first + second
+}
+Task.run work
+
+// rule: TSK-001
+// expect: stdout "42\n"

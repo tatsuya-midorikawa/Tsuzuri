@@ -1,5 +1,6 @@
 # 安定性と互換性の方針
 
+<!-- rule: EDN-007 -->
 コンパイラを更新しても利用者のソースが壊れないように、保つものと保たないものを先に決めておきます。このページは、安定として保つもの、保たないもの、言語版（edition）、非推奨にした宣言の扱い、既知の例外、公開 API の差分の確かめ方をまとめます。個々の機能の仕様は [言語仕様](language.md) と `_tsuzuri/language-reference/` にあり、実装の構造は [アーキテクチャ](architecture.md) にあります。
 
 ## 保証の単位
@@ -14,6 +15,7 @@
 | std の公開 API | 公開した宣言を削除せず、シグネチャも変えません。例外は [既知の例外](#既知の例外) です |
 | 公開 ABI | `export def` の `tz_<name>` シンボル、`--emit header` が出す C ヘッダー、`tsuzuri_` で始まるシンボル（`--overflow-report` の WebAssembly が export する `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` を含む）、`extern` のリンク名と WebAssembly の import 名。`--trap-info` の `.trap.json` と `--overflow-report` の `.overflow.json` のキーも同じ扱いです（キーが増えることはあります） |
 | 診断のコード・重要度・JSON のキー | コードの意味を変えず、別の条件へ再利用しません。`--json` の既存のキーを消したり改名したりしません（キーが増えることはあります）。追加の情報のキー（`kind`・`related`・`help`・`expected`・`found`・`candidates`・`scope`・`fixes`）は値があるときだけ出し、名前と順序、`related` の `role` と修正案の `applicability` の値を変えません（[診断](../_tsuzuri/language-reference/compiler/diagnostics.md#json-の-1-行-1-オブジェクト)） |
+| 仕様の規則の ID（G33） | `spec/rules/` の規則の ID（`OWN-012` など）を再利用しません。廃止した規則は行を消さずに `retired` にし、意味が変わる規則には新しい ID を付けます（[仕様の規則と適合性テスト](../_tsuzuri/language-reference/compiler/conformance.md)） |
 | 診断の kind | すべての診断が持つ `kind` の値（`use_after_move` など）。kind は足すことはあっても、消したり、名前を変えたり、別のコードへ移したりしません。1 つの kind を 2 つに分けるのは互換の変更で、元の kind は残りの条件に使い続けます。edition は kind を変えません（[kind と explain](../_tsuzuri/language-reference/compiler/diagnostics.md#kind-と-explain)） |
 | `tsuzuri guide` | サブコマンドとオプションの名前、`--json` の schema `tz-guide/1` とキーの名前と順序（キーが増えることはあります）、終了コード（出力 0、`--agents`・`--llms-txt` のマニフェストがない 1、引数の誤り 2） |
 | `tsuzuri fix --json` | `event` ごとのキー（`fix`・`file`・`summary`）の名前と順序、`status`・`reason`・`applicability`・`stop` の値を変えません（キーが増えることはあります）。終了コードは完了 0、中止 1、引数の誤り 2 です。`--applicability` の既定（`certain`）を変えません |

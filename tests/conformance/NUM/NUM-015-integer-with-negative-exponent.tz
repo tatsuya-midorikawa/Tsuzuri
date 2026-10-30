@@ -1,0 +1,7 @@
+def pow :: i64 -> i64 -> i64 = \a n -> a ** n
+
+let n = -1
+pow 2 n
+
+// rule: NUM-015
+// expect: trap kind=numeric_runtime

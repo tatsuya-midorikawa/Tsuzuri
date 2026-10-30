@@ -6,6 +6,7 @@
 
 ## この記事のポイント
 
+<!-- rule: CLI-010 --> <!-- rule: DIA-008 --> <!-- rule: EDN-005 -->
 - 配布物を使うときは、`bin/` 全体ではなく `tsuzuri` だけを PATH に足します。
 - ディレクトリを渡すと `Main.tz` が入口になります。ファイルを渡すと、その親がプロジェクトルートです。
 - `check` はコードを出しません。`run` は実行し、`build` はファイルを残します。`build` は `--target` で、ビルド機とは別の OS や CPU 向けの成果物も作れます（[対応プラットフォーム](platforms.md)）。
@@ -172,6 +173,7 @@ Windows SDK と、Visual Studio Build Tools の MSVC C++ ツールセット、�
 
 拡張機能は起動時に拡張ホストの OS／CPU を検査します。対象外では対応ホストの一覧を示すエラーで停止し、言語サーバーやコンパイラを起動しません。開発用の `compilerPath`・`toolchainPath` を設定しても対象環境は増えません。VSIX の作成と再検証も、対応する 5 環境だけで行えます。
 
+<!-- rule: CLI-008 -->
 コマンドパレットの **Tsuzuri: New Project** は、同梱コンパイラの `tsuzuri new` で `Main.tz`、`Tsuzuri.toml`、`.gitignore` を作ります。エディター右上の実行は、未保存のファイルを保存してからビルドします。検査、WebAssembly のビルド、Test Explorer、ブレークポイントも拡張側の操作です。設定の `tsuzuri.optimization` の既定は 3 で、デバッグ実行は常に 0 です。
 
 信頼していないフォルダーでは、コンパイラもユーザーのプログラムも起動しません。詳しい操作は [VS Code 拡張の README](../../../vsc/README.md) を見てください。
@@ -290,6 +292,7 @@ tsuzuri check demo
 
 `Main.tz` のトップレベルの式、または `def main` を実行します。トップレベルの式の結果が数値、`bool`、文字列（`string` / `utf8string`）、文字（`char` / `utf8char`）のときは標準出力に表示されます。`unit` のときは何も出力されません。`def main :: unit -> i32` または `def main :: Array<string> -> i32` を定義した場合は標準出力への自動表示は行われず、関数の戻り値がプロセスの終了コードになります。`Array<string>` を受け取る形式では、コマンドライン引数の配列が渡されます。`run` はプログラムへ引数を渡さないので空の配列で、引数を渡すときは [`script`](#script) を使います。
 
+<!-- rule: CLI-003 -->
 `run` は `--trap-info` が既定で有効です。トラップすると、理由とソース位置を `E2005` として報告します。最適化の既定は `-O3` で、fast-math は使いません。成果物の大きさを優先するときは `-Os` と `-Oz` も付けられます（[最適化と CPU](option.md#最適化と-cpu)）。編集と実行を繰り返すときは `--backend fast` を付けると、`-O0` の LLVM IR を Clang に渡さずコンパイラの中で機械語にします。トラップの `E2005`（signal と位置）は同じです（[コード生成器](option.md#コード生成器)）。
 
 先の `demo` を実行すると、標準出力は `Hello, Tsuzuri!` で、終了コードは 0 でした。
@@ -1046,7 +1049,7 @@ macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sec
 | コード | いつ |
 | --- | --- |
 | 0 | 成功。警告だけでも、`--deny-warnings` が無ければ 0 |
-| 1 | ソースの診断、読み書き、リンカー、実行時の失敗、テスト失敗、`fmt --check` の差分、`--deny-warnings`、`api-diff` の互換性のない変更、`fix` の中止（`E2008`） |
+| <!-- rule: CLI-004 --><!-- rule: CLI-005 -->1 | ソースの診断、読み書き、リンカー、実行時の失敗、テスト失敗、`fmt --check` の差分、`--deny-warnings`、`api-diff` の互換性のない変更、`fix` の中止（`E2008`） |
 | 2 | 引数の不足や組み合わせ。引数なしでヘルプを出したときも 2。`explain` の不明な kind やコードも 2 |
 
 `def main` が 0 以外を返した場合は、コンパイラから見ると実行の失敗 `E2005` になり、`tsuzuri run` 自体の終了コードは 1 になります。プログラム自身の戻り値がそのまま `tsuzuri run` の終了コードになるわけではありません（`tsuzuri build` で生成したバイナリを直接実行した場合は、`def main` の戻り値がプロセスの終了コードになります）。

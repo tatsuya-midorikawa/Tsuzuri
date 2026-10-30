@@ -1,0 +1,10 @@
+def say :: i64 -> i64 = \n ->
+    do! IO.write_line (to_string n)
+    n
+
+let p = (say 1, say 2)
+match p with
+| (a, b) -> a + b
+
+// rule: EVL-011
+// expect: stdout "1\n2\n3\n"

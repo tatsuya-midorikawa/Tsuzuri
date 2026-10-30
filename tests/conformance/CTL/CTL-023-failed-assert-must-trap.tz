@@ -1,0 +1,8 @@
+def f :: i64 -> i64 = \n ->
+    assert (n > 0)
+    n
+let zero = 0
+f zero
+
+// rule: CTL-023
+// expect: trap kind=assert

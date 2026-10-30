@@ -1,0 +1,5 @@
+let x: Foo = 1
+x
+
+// rule: TYP-020
+// expect: check-error E1004 line=1

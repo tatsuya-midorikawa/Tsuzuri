@@ -1,0 +1,11 @@
+let xs = [10, 20, 30]
+let a = match Array.try_item 1 (ref xs) with
+| Some v -> to_string v
+| None -> "none"
+let b = match Array.try_item 99 (ref xs) with
+| Some v -> to_string v
+| None -> "none"
+$"{a} {b}"
+
+// rule: STD-003
+// expect: stdout "20 none\n"

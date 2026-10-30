@@ -1,0 +1,5 @@
+let xs = []
+0
+
+// rule: TYP-006
+// expect: check-error E1004 line=1

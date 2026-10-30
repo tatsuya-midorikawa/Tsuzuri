@@ -1,0 +1,7 @@
+export def add :: i64 -> i64 -> i64 = \a b -> a + b
+0
+
+// rule: ABI-001
+// cli: build $DIR --emit header -o $DIR/out.h
+// expect: exit 0
+// expect: file-has out.h "int64_t tz_add(int64_t arg0, int64_t arg1);"

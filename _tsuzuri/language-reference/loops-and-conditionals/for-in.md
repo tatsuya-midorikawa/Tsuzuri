@@ -1,9 +1,11 @@
 # for...in 式
 
+<!-- rule: CTL-006 --> <!-- rule: CTL-007 --> <!-- rule: CTL-009 --> <!-- rule: CTL-022 --> <!-- rule: STD-010 -->
 `for...in` 式は、配列、リスト、`Vec`、文字列、整数範囲、遅延シーケンス（`Seq`）の要素を順番に走査するループです。要素のパターン分解や `break` / `continue` も使え、結果は `()`（`unit`）です。
 
 ## この記事のポイント
 
+<!-- rule: CTL-004 --> <!-- rule: CTL-005 -->
 - 構文は `for パターン in コレクション do 本体` です。本体も式全体も `unit` です。
 - 配列、リスト、`Vec`、`string`、`utf8string`、整数範囲、`Seq` を直接反復できます。整数範囲は終端を含む `a ..= b` と含まない `a ..< b` です。
 - `Map`、`Set`、`HashMap`、`HashSet` やユーザー定義型は、`Module.iter` で `Seq` にしてから反復します。

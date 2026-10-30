@@ -1,0 +1,4 @@
+0
+
+// rule: MOD-009
+// expect: check-error E1018

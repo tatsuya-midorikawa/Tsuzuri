@@ -1,0 +1,11 @@
+def inc :: ref mut i64 -> unit = \r -> { deref r = deref r + 1; }
+def f :: unit -> i64 = \() -> {
+    let mut n = 1;
+    inc ref mut n;
+    inc ref mut n;
+    n
+}
+f ()
+
+// rule: OWN-017
+// expect: stdout "3\n"

@@ -1,0 +1,10 @@
+def both :: ref mut i64 -> ref mut i64 -> unit = \a b -> { deref a = 1; deref b = 2; }
+def f :: unit -> i64 = \() -> {
+    let mut n = 1;
+    both (ref mut n) (ref mut n);
+    n
+}
+f ()
+
+// rule: OWN-016
+// expect: check-error E1014 line=4

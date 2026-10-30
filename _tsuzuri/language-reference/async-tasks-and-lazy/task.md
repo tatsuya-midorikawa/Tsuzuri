@@ -1,11 +1,14 @@
 # Task 式
 
+<!-- rule: TSK-005 --> <!-- rule: TSK-006 -->
 `Task<T>` は、外の所有値を捕捉して持つ、**コールド（作っただけでは始まらない）で 1 回実行**の並行タスクです。
 
+<!-- rule: TSK-001 -->
 OS のスレッドハンドルでも、JavaScript の `Promise` でもありません。`Task.run` か、別のタスクの `let!` で消費して初めて実行が始まります。F# の通常の `task` は生成時に動き出しますが、Tsuzuri の `Task` は冷たいままです。
 
 ## この記事のポイント
 
+<!-- rule: TSK-003 --> <!-- rule: TSK-004 --> <!-- rule: TSK-007 --> <!-- rule: TSK-008 --> <!-- rule: TSK-009 -->
 - `task { ... }` で `Task<T>` を作り、`Task.run` で同期実行して結果を取り出します。
 - タスクは非 Copy です。二重実行は `E1012` になります。
 - 持ち込めるのは所有値のムーブか Copy だけです。参照の持ち込みは `E1013` です。
@@ -93,6 +96,7 @@ task {
 }
 ```
 
+<!-- rule: TSK-010 -->
 `return` のあとに文を続けることもできません（`E0002`）。`and!`、`yield`、`match!` はタスクの構文ではありません（`E0002`）。`do!` の成功値は `unit` だけで、それ以外は `E1003` です。
 
 `IO` も受け取れません。`task { do! IO.write_line "hi"; }` は `E1003`（`expected Task<unit>, found IO<unit>`）です。公開の `IO.run` はなく、`IO` と `Task` の暗黙変換もありません。
@@ -111,6 +115,7 @@ error[E1015]: ambiguous polymorphic use; add a concrete type annotation or suppl
 
 ## 1 回実行と所有権
 
+<!-- rule: TSK-002 -->
 `Task<T>` は常に非 Copy です。同じタスクを 2 回実行すると `E1012` です。
 
 ```text

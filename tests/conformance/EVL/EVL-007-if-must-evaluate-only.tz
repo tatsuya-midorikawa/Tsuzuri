@@ -1,0 +1,9 @@
+def say :: i64 -> i64 = \n ->
+    do! IO.write_line (to_string n)
+    n
+
+let r = if say 1 == 1 then say 10 else say 20
+r
+
+// rule: EVL-007
+// expect: stdout "1\n10\n10\n"

@@ -1,0 +1,8 @@
+let scores = [5, 2, 9, 1, 8]
+let ascending = Array.sort (ref scores)
+match Array.binary_search (ref 5) (ref ascending) with
+| Some i -> to_string i
+| None -> "not found"
+
+// rule: STD-007
+// expect: stdout "2\n"

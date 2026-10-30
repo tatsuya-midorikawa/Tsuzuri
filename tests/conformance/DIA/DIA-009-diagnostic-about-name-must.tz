@@ -1,0 +1,7 @@
+let a = "hello"
+let b = a
+let c = a
+c
+
+// rule: DIA-009
+// expect: check-error E1012 line=3

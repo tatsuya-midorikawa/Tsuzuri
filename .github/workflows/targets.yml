@@ -23,6 +23,10 @@ on:
       - benchmarks/**
       - Cargo.*
       - scripts/toolchain/**
+      - spec/**
+      - scripts/conformance.mjs
+      - scripts/conformance/**
+      - scripts/check-spec.mjs
       - .github/workflows/targets.yml
   pull_request:
     types: [opened, reopened, synchronize, labeled]
@@ -122,6 +126,13 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/e2e.mjs target/release/tsuzuri
+      - name: Language conformance suite
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node scripts/conformance.mjs target/release/tsuzuri --jobs 2
+          node tests/conformance_harness.mjs target/release/tsuzuri
       - name: Memory and LLVM fact semantics
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         env:

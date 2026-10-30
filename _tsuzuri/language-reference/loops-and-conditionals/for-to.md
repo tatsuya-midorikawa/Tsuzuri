@@ -4,6 +4,7 @@
 
 ## この記事のポイント
 
+<!-- rule: CTL-008 -->
 - 昇順は `for i = start to finish do 本体`、降順は `for i = start downto finish do 本体` です。
 - ループ変数の型は、`start` と `finish` の型です。`i8`〜`i128` と `i8u`〜`i128u` のどの整数型でも書けます。接尾辞のない整数リテラルだけなら `i32` です。本体も式全体も `unit` です。
 - 範囲は両端（開始値と終了値）を含みます。
@@ -222,7 +223,7 @@ sum
 
 | 機能 | Tsuzuri | F# | Rust |
 | --- | --- | --- | --- |
-| 構文 | `for i = a to b do` | `for i = a to b do` | `for i in a..=b` |
+| <!-- rule: EVL-013 -->構文 | `for i = a to b do` | `for i = a to b do` | `for i in a..=b` |
 | 降順 | `for i = a downto b do` | `for i = a downto b do` | `(b..=a).rev()` |
 | ループ変数の型 | 整数型（両端から推論、既定は `i32`） | 整数型（型推論） | 範囲の型 |
 | 両端の扱い | 両端を含む（inclusive） | 両端を含む（inclusive） | `..=` で両端を含む |

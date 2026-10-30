@@ -1,0 +1,8 @@
+def neg :: f64 -> f64 = \a -> -a
+def div :: f64 -> f64 -> f64 = \a b -> a / b
+
+test "eq" = Test.is_true (neg 0.0 == 0.0)
+test "sign survives" = Test.is_true (div 1.0 (neg 0.0) < 0.0)
+
+// rule: NUM-025
+// expect: tests-pass 2

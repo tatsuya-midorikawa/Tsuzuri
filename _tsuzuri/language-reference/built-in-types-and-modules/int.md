@@ -58,7 +58,7 @@ flowchart TD
 | `Int.min` | `Integer<'a> => 'a -> 'a -> 'a` | 小さい方。比較は引数の符号に従う |
 | `Int.max` | `Integer<'a> => 'a -> 'a -> 'a` | 大きい方 |
 | `Int.clamp` | `Integer<'a> => 'a -> 'a -> 'a -> 'a` | `clamp value low high`。`low > high` ならトラップ |
-| `Int.abs` | `SignedInteger<'a> => 'a -> 'a` | 絶対値。最小値は最小値のまま（折り返し） |
+| <!-- rule: STD-005 -->`Int.abs` | `SignedInteger<'a> => 'a -> 'a` | 絶対値。最小値は最小値のまま（折り返し） |
 | `Int.unsigned_abs` | `SignedInteger<'a> => 'a ->` 同幅の符号なし | 最小値も正の大きさとして返せる |
 | `Int.abs_diff` | `Integer<'a> => 'a -> 'a ->` 同幅の符号なし | 差の絶対値 |
 

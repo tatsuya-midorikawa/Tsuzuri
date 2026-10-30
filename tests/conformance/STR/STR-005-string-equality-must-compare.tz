@@ -1,0 +1,6 @@
+let a = "a" + "b"
+let b = "ab"
+a == b
+
+// rule: STR-005
+// expect: stdout "true\n"

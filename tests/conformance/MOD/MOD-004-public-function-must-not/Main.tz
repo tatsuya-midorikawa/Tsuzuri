@@ -1,0 +1,4 @@
+0
+
+// rule: MOD-004
+// expect: check-error E1022

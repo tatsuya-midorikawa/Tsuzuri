@@ -1,0 +1,6 @@
+let text = "coffee"
+let work = task { return String.length text }
+Task.run work
+
+// rule: TSK-006
+// expect: stdout "6\n"

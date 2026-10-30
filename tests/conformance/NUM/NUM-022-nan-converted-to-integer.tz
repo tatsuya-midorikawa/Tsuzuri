@@ -1,0 +1,7 @@
+def cut :: f64 -> i64 = \a -> a as i64
+def nan :: f64 -> f64 = \z -> z / z
+
+test "nan" = Test.equal (ref 0) (ref (cut (nan 0.0)))
+
+// rule: NUM-022
+// expect: tests-pass 1

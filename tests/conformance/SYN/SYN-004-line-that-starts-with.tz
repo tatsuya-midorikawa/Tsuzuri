@@ -1,0 +1,8 @@
+def inc :: i64 -> i64 = \x -> x + 1
+let r = 40
+    |> inc
+    |> inc
+r
+
+// rule: SYN-004
+// expect: stdout "42\n"

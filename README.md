@@ -1119,6 +1119,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
 | 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
 | `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
+| 仕様の規則（`spec/rules/`）と適合性テスト（`tests/conformance/`） | — | `node scripts/conformance.mjs target/debug/tsuzuri --rule <ID>`、`node scripts/check-spec.mjs --require-markers`（規則・文書のマーカーを変えたとき）。言語の振る舞いを変えたときは、その規則のテストを直すか規則を `retired` にする（[仕様の規則と適合性テスト](_tsuzuri/language-reference/compiler/conformance.md)） |
 | AI 向けガイド（`guide/`、`tsuzuri guide`、`tsuzuri new` の `AGENTS.md`・`llms.txt`） | `tests/guide.rs`、`src/guide.rs`・`src/guide_std.rs` の test module | `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-guide.mjs`（例を全 edition で `check`・`run`・`test`。上限の検査） |
 
 表にない組み合わせは、変更した関数名を `grep -rn "<関数名>" tests/` して、それを使うテストを全部実行します。
@@ -1225,6 +1226,12 @@ node tests/gpu.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGP
 node tests/gpu_runtime.mjs target/release/tsuzuri   # TSUZURI_WEBGPU=1 と TSUZURI_WEBGPU_LIBRARY（wgpu-native 29）で実機。WASM の JSPI は Node.js 24 以降。TSUZURI_SANITIZE=1 で C 側に ASan と UBSan
 node tests/gpu_vulkan.mjs   # Vulkan のランタイム（合成ライブラリ、ASan・UBSan・TSan、実デバイス）。clang が要り、spirv-as が無ければ実デバイスの検査を飛ばす。TSUZURI_VULKAN_TEST_ICDS で他のドライバも
 node tests/gpu_vulkan_language.mjs target/release/tsuzuri   # 言語としての Vulkan と Gpu.Auto（CPU 参照との照合、WebAssembly の確認）
+
+# 仕様の規則の適合性テスト（spec/rules/ と tests/conformance/。--area・--rule・--filter・--targets native で絞る）
+node scripts/conformance.mjs target/release/tsuzuri
+# 規則表・テスト・文書のマーカーの整合（コンパイラは要らない）
+node scripts/check-spec.mjs
+node tests/conformance_harness.mjs target/release/tsuzuri
 
 # 言語リファレンス（_tsuzuri/）のリンクと例の検証（ページを指定すると、そのページだけ）
 node scripts/check-docs.mjs

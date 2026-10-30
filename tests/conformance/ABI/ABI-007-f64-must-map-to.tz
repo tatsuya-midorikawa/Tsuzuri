@@ -1,0 +1,7 @@
+export def half :: f64 -> f64 = \x -> x / 2.0
+0
+
+// rule: ABI-007
+// cli: build $DIR --emit header -o $DIR/out.h
+// expect: exit 0
+// expect: file-has out.h "double tz_half(double arg0);"

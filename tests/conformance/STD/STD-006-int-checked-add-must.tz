@@ -1,0 +1,9 @@
+def show :: i32 -> i32 -> string = \x y ->
+    match Int.checked_add x y with
+    | Some value -> to_string value
+    | None -> "none"
+
+show 20 22 + " " + show 2147483647 1
+
+// rule: STD-006
+// expect: stdout "42 none\n"
