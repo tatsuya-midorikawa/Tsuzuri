@@ -1148,6 +1148,16 @@ fn semantic_docs_follow_function_and_type_definition_targets() {
 }
 
 #[test]
+fn semantic_docs_hide_the_setup_lines_of_examples() {
+    let main = "/// Adds.\n///\n/// ```tsuzuri run=11\n/// # let base = 10\n/// Main.add base 1\n/// ```\ndef add :: i64 -> i64 -> i64\nfn add a b = a + b\ndef use_it :: i64 -> i64\nfn use_it value = add value 1";
+    let (_, index) = analyze_modules_with_semantics(&[("Main.tz", main)]).unwrap();
+    let function = index.at(0, main.find("add value").unwrap()).unwrap();
+    let doc = index.doc_for(function.target.unwrap()).unwrap();
+    assert!(!doc.contains("# let base"), "{doc}");
+    assert!(doc.contains("Output:\n\n```text\n11\n```"), "{doc}");
+}
+
+#[test]
 fn an_index_shows_its_own_type_not_the_i64_it_converts_to() {
     let main = "def read :: ref [i64] -> i32 -> i64\nfn read values n = values[n - 1]\n\
         def wide :: ref [i64] -> i128u -> i64\nfn wide values n = values[n * 2]\n\
@@ -1696,7 +1706,9 @@ fn opt_in_matrix_module_completes_and_hovers_when_named() {
     });
     assert_eq!(
         responses[0]["result"]["contents"]["value"],
-        json!("```tsuzuri\nref Matrix<i64> -> i64\n```\n\nThe number of rows."),
+        json!(
+            "```tsuzuri\nref Matrix<i64> -> i64\n```\n\nThe number of rows.\n\n```tsuzuri\nlet m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]\nMatrix.rows m\n```\n\nOutput:\n\n```text\n2\n```"
+        ),
         "{}",
         responses[0]
     );

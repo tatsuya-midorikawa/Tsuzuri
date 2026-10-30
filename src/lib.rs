@@ -25,6 +25,7 @@ pub mod diagnostic_kinds;
 pub mod diagram;
 pub mod diff;
 pub mod docgen;
+pub mod doctest;
 pub mod driver;
 pub mod edition_migration;
 pub mod explain;

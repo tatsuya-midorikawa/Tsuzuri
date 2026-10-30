@@ -59,6 +59,7 @@
 | `--list` / `--filter` / `--index` | | | | ○ | ○ | | | | |
 | `--coverage PATH` | | | | ○ | | | | | |
 | `--seed N` | | | | ○ | | | | | |
+| `--doc` | | | | ○ | | | | | |
 | `--affected BASE` | | | | ○ | | | | | |
 | `--check` | | | | | | | ○ | | |
 | `--samples N` | | | | | ○ | | | | |
@@ -536,6 +537,13 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--samples` を `bench` 以外に付ける | `--samples is only valid with bench` |
 | `--seed` を `test` 以外に付ける | `--seed is only valid with test` |
 | `--seed` が 0〜18446744073709551615 の整数でない | `property seed must be an integer between 0 and 18446744073709551615` |
+| `--doc` を `test` 以外に付ける | `--doc is only valid with test` |
+| `--doc` を 2 回付ける | `doc specified more than once` |
+| `test --doc` に `--coverage`／`--seed`／`--affected`／`--allow-overflow` | `--doc cannot be combined with --coverage`（`--seed`・`--affected`・`--allow-overflow` も同じ形） |
+| `test --doc` に `-g` か `-o` | `--doc cannot be combined with -g or -o` |
+| `test --doc` に `--target` | `--doc does not use --target; examples run on this machine` |
+| `test --doc` に `--link`・`-l`・`-L` | `--doc does not use --link, -l, or -L; list native inputs in Tsuzuri.toml` |
+| `test --doc --index N` が例の番号の範囲外（解析のあと。終了コード 1） | `doc example index is out of range; refresh the list` |
 | `--samples` が 1〜1000 の整数でない | `bench samples must be an integer between 1 and 1000` |
 | `bench` に `--target wasm32`／`wasm64` | `tsuzuri bench supports only the native target` |
 | `bench` にビルド機と違う `--target TRIPLE` | `tsuzuri bench measures the machine it runs on and cannot run <triple> benchmarks here; run 'tsuzuri bench' on a <triple> machine` |

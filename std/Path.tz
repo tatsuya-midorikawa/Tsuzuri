@@ -1,5 +1,9 @@
 /// Joins two paths with "/". An empty left path gives the right one, and an absolute right path
 /// is only appended: nothing here is a sandbox.
+///
+/// ```tsuzuri run=usr/bin%20usr/bin%20bin
+/// $"{Path.join "usr" "bin"} {Path.join "usr/" "bin"} {Path.join "" "bin"}"
+/// ```
 def join :: ref string -> ref string -> string
 fn join left right =
 	let tail = Maybe.get (String.slice 0 right.length right)
@@ -24,6 +28,12 @@ fn name_start path end =
 
 /// The path without its last name, without trailing "/" except for a lone "/".
 /// "a" and "/" and "" have none.
+///
+/// ```tsuzuri run=/usr%20none
+/// let up = Path.parent "/usr/bin/" |> Maybe.default_value "none"
+/// let top = Path.parent "a" |> Maybe.default_value "none"
+/// $"{up} {top}"
+/// ```
 def parent :: ref string -> Maybe<string>
 fn parent path =
 	let end = name_end path
@@ -37,6 +47,12 @@ fn parent path =
 			Maybe.get (String.slice 0 (if stop == 0 then 1 else stop) path) |> Maybe.Some
 
 /// The last name of a path, or `None` for "", "/", ".", and "..".
+///
+/// ```tsuzuri run=report.txt%20none
+/// let name = Path.file_name "docs/report.txt" |> Maybe.default_value "none"
+/// let dots = Path.file_name "docs/.." |> Maybe.default_value "none"
+/// $"{name} {dots}"
+/// ```
 def file_name :: ref string -> Maybe<string>
 fn file_name path =
 	let end = name_end path
@@ -47,6 +63,12 @@ fn file_name path =
 		if name == "." || name == ".." then Maybe.None else Maybe.Some name
 
 /// What follows the last "." of the last name; a name that starts with its only "." has none.
+///
+/// ```tsuzuri run=gz%20none
+/// let last = Path.extension "backup.tar.gz" |> Maybe.default_value "none"
+/// let hidden = Path.extension ".bashrc" |> Maybe.default_value "none"
+/// $"{last} {hidden}"
+/// ```
 def extension :: ref string -> Maybe<string>
 fn extension path =
 	match file_name path with

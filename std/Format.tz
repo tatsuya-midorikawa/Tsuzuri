@@ -52,6 +52,14 @@ fn kind_at text index =
 /// (`{`, `}`, `"`, `\`, CR, LF, or half of a surrogate pair), a width that starts with 0, a precision with a leading
 /// 0 (`.05`), or a number above 4096. It checks the grammar only, so a type letter that does not fit the precision
 /// (`.2x`) is not rejected. The text a `Format` instance receives is always valid.
+///
+/// ```tsuzuri run=8%202%20none
+/// let fixed = match Format.parse ">8.2f" with
+///     | Some spec -> $"{spec.width} {spec.precision}"
+///     | None -> "invalid"
+/// let padded = if Maybe.is_some (Format.parse "08") then "some" else "none"
+/// $"{fixed} {padded}"
+/// ```
 def parse :: ref string -> Maybe<Spec>
 fn parse text =
 	let fill_length = fill_units text
@@ -96,6 +104,11 @@ fn scalars text =
 
 /// `text` widened to the width of `spec` with its fill, aligned as it says (`AlignAuto` is left). A text that is
 /// already as wide is returned unchanged.
+///
+/// ```tsuzuri run=**abc**
+/// let spec = Format.parse "*^7" |> Maybe.get
+/// Format.pad spec "abc"
+/// ```
 def pad :: ref Spec -> own string -> string
 fn pad spec text =
 	let missing = spec.width - scalars (ref text)

@@ -11,6 +11,7 @@
 - `def`、`record`、`union`、`type`、`const`、`class`、型クラス内のメソッド `def` に付与できます。
 - `fn` や `let` 実装、`instance`、フィールド、ローカル束縛への配置は構文エラー `E0002` です。
 - 説明の行を `@deprecated` で始めると宣言が非推奨になり、別のパッケージ（標準ライブラリを含む）からの使用が警告 `W1005` になります。
+- 説明の中の ```` ```tsuzuri ```` のコード例は、`tsuzuri test --doc` が型検査・実行して確かめます（doc-test）。`run=出力`・`test`・`fails=コード`・`ignore` で確かめ方を選び、`# ` で始まる行は隠し行です。
 - `tsuzuri doc <input> -o <outdir>` コマンドで公開 API の Markdown ドキュメントを出力します。
 - 出力先ディレクトリは `.tsuzuri-docs` マーカーファイルによる上書き保護機構を備えています。
 
@@ -157,6 +158,156 @@ app/Main.tz:6:16: warning[W1005]: 'LegacyLib::Old.old' is deprecated: use Legacy
 
 非推奨にした宣言を取り除く手順と、警告が互換性の保証の対象外であることは、[安定性と互換性の方針](../../../docs/stability.md#非推奨の手順) にあります。
 
+## 例を書く（doc-test）
+
+説明の中に置いた ```` ```tsuzuri ```` のコードフェンスは、その宣言の**例**です。`tsuzuri test --doc` は例を 1 つずつ独立したプログラムとして型検査し、印に従って実行して確かめます。説明に書いた例が今のコンパイラで動くことを、テストと同じ手順で保てます。
+
+```tsuzuri project=doctest-example file=Geometry.tz
+/// Returns the area of a `width` by `height` rectangle.
+///
+/// ```tsuzuri run=12
+/// Geometry.area 3 4
+/// ```
+///
+/// A line that starts with `# ` runs but is not shown.
+///
+/// ```tsuzuri run=50
+/// # let side = 5
+/// Geometry.area side 10
+/// ```
+def area :: i64 -> i64 -> i64
+fn area width height = width * height
+
+/// Returns the perimeter of a `width` by `height` rectangle.
+///
+/// ```tsuzuri test
+/// test "a square" = Test.equal (ref (Geometry.perimeter 2 2)) (ref 8)
+/// ```
+///
+/// ```tsuzuri fails=E1003
+/// Geometry.perimeter "2" 2
+/// ```
+def perimeter :: i64 -> i64 -> i64
+fn perimeter width height = 2 * (width + height)
+```
+
+```tsuzuri project=doctest-example file=Main.tz run=12
+Geometry.area 3 4
+```
+
+```sh
+tsuzuri test --doc .
+```
+
+```text
+ok 1 - Geometry area#1
+ok 2 - Geometry area#2
+ok 3 - Geometry perimeter#1
+ok 4 - Geometry perimeter#2
+
+4 passed; 0 failed; 0 ignored
+```
+
+### 例の記法
+
+| 項目 | 規則 |
+| --- | --- |
+| 開きの行 | `///` の本文の 0 桁目から `` ` `` が 3 個以上並び、続く情報文字列の最初の語が `tsuzuri` の行です。`text`・`sh`・言語なしなど、ほかの言語のフェンスは例ではありません（その中の行も例として探しません）。`~~~` のフェンスも例ではありません |
+| 閉じの行 | 開きより後ろで、`` ` `` だけが開きと同じ個数以上並ぶ最初の行です |
+| 本文 | 開きと閉じの間の行です。そのまま 1 つの `Main.tz` になります（包みも補完もしません）。トップレベルの式が入口で、`let`・`def`・`test` も書けます。宣言は、ほかのモジュールからと同じように `Geometry.area` と修飾して呼びます |
+| 対象 | `tsuzuri doc` が出す宣言の説明だけです。`private` の宣言と `instance` の説明の例は集めません |
+
+`tsuzuri` の後ろに、空白で区切って確かめ方を 1 つまで書けます。
+
+| 印 | 確かめること |
+| --- | --- |
+| （なし） | 型検査が通る。実行しない（ファイル・ネットワーク・時間・乱数に触れる例に使います） |
+| `run=出力` | 型検査が通り、ネイティブで実行した標準出力が `出力` と同じ。`run=`（空）は何も出力しないこと |
+| `test` | 本文の `test` がすべて通る（1 つ以上必要） |
+| `fails=コード` | 型検査が拒否し、最初のエラーのコードが `コード`（`E` と数字 4 桁） |
+| `ignore` | 何も確かめない。`--list` には出ます |
+
+- **出力の符号化**: `run=` の値はパーセント符号化です。`%` と 16 進 2 桁が 1 バイトで、全体を UTF-8 として読みます（JavaScript の `decodeURIComponent` と同じ。`+` は `+` のまま）。`%`→`%25`、空白→`%20`、タブ→`%09`、改行→`%0A`、CR→`%0D`、`` ` ``→`%60` は必ず符号化し、ほかの文字は書いたままです。2 行の出力 `a b` と `c` は `run=a%20b%0Ac` です。
+- **出力の比べ方**: 実際の出力と期待の両方で `\r\n` を `\n` にし、末尾の空白と改行を除いて完全一致で比べます。先頭の空白は意味を持ちます。標準エラーは比べません。
+- **値は表示されるものだけ**: `Maybe`・`Result`・レコード・共用体を最後の式にしても何も出力されません。`match` や `Maybe.default_value` で表示できる値にするか、`test` にします。
+- **隠し行**: 本文の行が `#` だけ、または `# ` で始まる行は隠し行です。例を動かすときは行頭の `#` と直後の空白 1 文字を取り（`# let side = 5` → `let side = 5`）、`tsuzuri doc` とホバーには出しません。準備のための行を読者に見せずに済みます。`#x` のような行は隠し行ではありません。
+- **独立した実行**: 例はそれぞれ別のプログラムです。前の例の `let` は見えません。
+
+### tsuzuri test --doc
+
+```text
+tsuzuri test --doc PATH [--list] [--filter TEXT] [--index N]... [--json] [-O0|-O1|-O2|-O3] [--deny-warnings]
+```
+
+`PATH` はパッケージのディレクトリ、または `std` です。パッケージでは、根のパッケージのソースの例だけを集め（依存パッケージの例は走らせません）、各例をパッケージの `Main.tz` の代わりに置いて走らせます。パッケージの宣言・`Tsuzuri.toml`・依存はそのまま使えます。`std` を渡すと標準ライブラリの例を走らせます。
+
+- **選択**: `--filter TEXT` は `Geometry.area#1` のようなラベルの部分一致、`--index N` は `--list` の番号で、`tsuzuri test` と同じです。外れた例と `ignore` の例は `ignored` に数えます。
+- **最適化**: 既定は `-O0` です。`-O3` でも同じ結果になるはずの例を書きます。
+- **出力**: 結果は標準出力に `ok N - モジュール 名前#番号` か `not ok N - …` で出し、失敗の下に理由（`failure:`）と場所（`at:`）を付けます。最後に `passed; failed; ignored` の件数です。`--json` は 1 例 1 行の `{"type":"doctest",...}` と、最後の `{"type":"summary",...}` です。`--list --json` の行のキーは `index`・`kind`・`line`・`module`・`name`・`path`・`type` です。
+- **終了コード**: すべて成功（または 0 件）で 0、失敗・記法の誤り・型検査や読み込みの失敗で 1、引数の誤りで 2 です。失敗があると、最初に失敗した例の開きの行へ `E2006`（`N doc tests failed`）を出します。
+
+`area` の 1 つ目の例を `run=13` に変えると、次のように失敗します。
+
+```text
+not ok 1 - Geometry area#1
+  failure: expected output "13", found "12"
+  at: ./Geometry.tz:3
+ok 2 - Geometry area#2
+ok 3 - Geometry perimeter#1
+ok 4 - Geometry perimeter#2
+
+3 passed; 1 failed; 0 ignored
+./Geometry.tz:3:1: error[E2006]: 1 doc test failed
+```
+
+| 失敗 | `failure:` の文 |
+| --- | --- |
+| 型検査の失敗（`run=`・`test`・印なし） | `コード: メッセージ (example line L, column C)`（位置は隠し行の印を取った後の例の行と桁） |
+| 実行時のトラップや 30 秒の時間切れ | `E2005: …` |
+| 出力の不一致 | `expected output "期待", found "実際"` |
+| `test` が 0 件・失敗 | `the example declares no test`／`test "名前" failed: 理由` |
+| `fails=` の不一致 | `expected E1003, but the example was accepted`／`expected E1003, found コード: メッセージ` |
+
+- **`Main.tz` の例は走らない**: `Main.tz` の宣言の例は、`Main.tz` を置き換えると自分の宣言が見えなくなるので実行しません。`ignored` に数え、標準エラーに `N doc example(s) in Main.tz not run; move the documented declaration to another module` を 1 回出します（`--json` では警告 `W2001` の行）。例を付けたい宣言は別のモジュールへ移します。
+- **ネイティブだけ**: 例はこのマシンのネイティブで走ります。`--target`・`-g`・`-o`・`--coverage`・`--seed`・`--link`/`-l`/`-L` とは組み合わせられません（`E2000`）。ネイティブのライブラリは `Tsuzuri.toml` の `[native]` に書きます。
+- **上限**: 1 つのパッケージの例は 10,000 個までです。超えると `E1017` です。
+
+### 記法の誤り（E2011）
+
+`tsuzuri test --doc` は、例を 1 つでも走らせる前に記法を確かめます。誤りがあれば `E2011` をすべて（最大 50 件）出し、何も実行せず終了コード 1 です。
+
+| 誤り | メッセージ |
+| --- | --- |
+| 未知の印（`fail=E1003` など） | `unknown option 'fail=E1003' in a tsuzuri code fence; use run=OUTPUT, test, ignore, or fails=CODE` |
+| 同じ印を 2 回／2 種類の印 | `option 'test' is given twice; write it once`／`a tsuzuri code fence takes one of run=, test, ignore, and fails=; found 'test' and 'ignore'` |
+| `fails=` の値 | `fails= needs an error code such as E1012; found 'fails=1003'` |
+| `run=` の `%` の後ろが 16 進 2 桁でない／復号が UTF-8 でない | `'%' in run= must be followed by two hexadecimal digits; write a literal percent sign as %25`／`run= is not valid UTF-8 after decoding; encode the output as UTF-8` |
+| 字下げしたフェンス・閉じがない・空の本文 | `a tsuzuri code fence must start at column 1 of the comment; remove the indentation`／`the tsuzuri code fence is not closed; end it with a line of three backticks`／`a tsuzuri example needs at least one line of code` |
+
+`tsuzuri check`・`tsuzuri doc`・言語サーバーは `E2011` を出しません。記法の誤ったフェンスは、そのままの本文として表示します。
+
+### tsuzuri doc とホバーでの表示
+
+`tsuzuri doc` と言語サーバーのホバーは、例を読者向けに整えて表示します。
+
+- 印や隠し行のある例は、開きの行を ```` ```tsuzuri ```` にし、隠し行を除きます。
+- `run=出力` の例（出力が空でないもの）の後ろに `Output:` と出力の ```` ```text ```` ブロックを、`fails=コード` の例の後ろに ``Compile error: `コード`.`` を足します。
+- 印も隠し行もない例と、ほかの言語のフェンスは、1 バイトも変えません。
+
+上の `area` の 2 つ目の例は、隠し行を除いた 1 行 `Geometry.area side 10` の ```` ```tsuzuri ```` ブロックになり、その後ろに次が続きます。
+
+````text
+Output:
+
+```text
+50
+```
+````
+
+### 標準ライブラリの例
+
+標準ライブラリ（`std`）の公開関数には、すべてこの形式の例があります。`tsuzuri test --doc std` で確かめられ、`tsuzuri doc std` が生成するページや、ホバーで読めます。
+
 ## tsuzuri doc によるドキュメント生成
 
 `tsuzuri doc` は、公開（public）宣言だけを Markdown の API リファレンスにします。
@@ -205,14 +356,14 @@ tsuzuri doc std -o build/std-api
 
 - `--json`: コンパイル診断メッセージを標準エラー出力へ JSON lines 形式で出力します。ドキュメント本文を JSON 化するオプションではありません。
 - **ビルド専用オプションの拒否（`E2000`）**: `--target`、`--emit`、`-O`、`--cpu`、`-g` などのコード生成関連フラグを `tsuzuri doc` に渡すと引数エラー `E2000` になります。
-- **doc-test は無い**: `tsuzuri doc` はコメント内のコード例を実行しません。例の確認は `tsuzuri check` や `tsuzuri test` で行います。
+- **例の確認は `tsuzuri test --doc`**: `tsuzuri doc` はコメント内のコード例を実行しません。例を確かめるのは [`tsuzuri test --doc`](#tsuzuri-test---doc) です。
 - **サニタイズ**: コメント内の Markdown や HTML はそのまま出力されます。第三者のドキュメントをブラウザ等でレンダリングする場合は、表示側で適切なサニタイズを実施してください。
 
 ## LSP ホバーとの関係
 
 Tsuzuri の組み込み言語サーバー（`tsuzuri lsp`）は、ソースコード内の宣言に付与された `///` ドキュメントコメントを自動的に解析します。
 
-LSP 対応のエディタで名前へカーソルを合わせると、定義位置の `///` が型シグネチャとともにホバーに出ます。
+LSP 対応のエディタで名前へカーソルを合わせると、定義位置の `///` が型シグネチャとともにホバーに出ます。例は `tsuzuri doc` と同じく、隠し行を除き、`run=` の出力と `fails=` のコードを添えて表示します（[tsuzuri doc とホバーでの表示](#tsuzuri-doc-とホバーでの表示)）。
 
 ## 他の言語との比較
 
@@ -223,6 +374,7 @@ LSP 対応のエディタで名前へカーソルを合わせると、定義位�
 | 書式形式 | Markdown | Markdown | XML / Markdown | XML |
 | 誤配置のエラー | コンパイルエラー `E0002` | 警告（unused doc comment） | 無視または警告 | 警告（CS1587 等） |
 | 出力先保護 | `.tsuzuri-docs` マーカー | `target/doc` に上書き | 指定フォルダに出力 | 指定フォルダに出力 |
+| コード例の実行 | `tsuzuri test --doc`（`run=`・`test`・`fails=`・`ignore`、`# ` の隠し行） | `cargo test --doc`（`should_panic`・`compile_fail`・`ignore`、`# ` の隠し行） | なし | なし |
 
 ## まとめ
 
@@ -230,6 +382,7 @@ LSP 対応のエディタで名前へカーソルを合わせると、定義位�
 - 先頭の空白 1 文字は除かれ、複数行は改行でつながります。Markdown もそのまま出せます。
 - `def`、`record`、`union`、`type`、`const`、`class` に付けられます。実装や式へ付けると `E0002` です。
 - 説明の行を `@deprecated` で始めると、別のパッケージや標準ライブラリからの使用が `W1005` の警告になります。同じパッケージの中では出ません。
+- 説明の ```` ```tsuzuri ```` の例は `tsuzuri test --doc` が確かめます。`run=出力`・`test`・`fails=コード`・`ignore` で確かめ方を選び、記法の誤りは `E2011`、失敗は `E2006` です。
 - `tsuzuri doc` は公開宣言だけを Markdown にします。`private` は出しません。
 - 出力先は `.tsuzuri-docs` マーカーで保護されます。`Index` というモジュール名は `index.md` と衝突して `E2003` です。
 - LSP のホバーは、定義に付いた `///` を表示します。

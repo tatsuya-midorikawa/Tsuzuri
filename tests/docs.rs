@@ -174,3 +174,12 @@ fn docgen_shows_effect_attributes() {
         "{page}"
     );
 }
+
+#[test]
+fn docs_hide_setup_lines_and_show_outputs() {
+    // G34 Phase 2: the `add_one` section of appendix B's `Counter.md`.
+    let source = "/// Adds one to `n`.\n///\n/// ```tsuzuri run=3\n/// Counter.add_one 2\n/// ```\n///\n/// A hidden line sets up a value that the reader does not see.\n///\n/// ```tsuzuri run=11\n/// # let base = 10\n/// Counter.add_one base\n/// ```\n///\n/// ```tsuzuri fails=E1003\n/// Counter.add_one \"two\"\n/// ```\ndef add_one :: i64 -> i64\nfn add_one n = n + 1\n";
+    let program = parser::parse(source).unwrap();
+    let expected = "# Counter\n\n## `add_one`\n\n```tsuzuri\ndef add_one :: i64 -> i64\n```\n\nAdds one to `n`.\n\n```tsuzuri\nCounter.add_one 2\n```\n\nOutput:\n\n```text\n3\n```\n\nA hidden line sets up a value that the reader does not see.\n\n```tsuzuri\nCounter.add_one base\n```\n\nOutput:\n\n```text\n11\n```\n\n```tsuzuri\nCounter.add_one \"two\"\n```\n\nCompile error: `E1003`.\n\n";
+    assert_eq!(docgen::render_module("Counter", &program), expected);
+}

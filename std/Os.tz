@@ -5,6 +5,12 @@ union ErrorKind = NotFound | PermissionDenied | AlreadyExists | InvalidInput | I
 record Error { kind: ErrorKind, code: i32 }
 
 /// Describes an error as `not found (os error 2)`; the code is left out when it is 0.
+///
+/// ```tsuzuri run=not%20found%20(os%20error%202);%20invalid%20encoding
+/// let missing = Os.Error { kind: Os.NotFound, code: 2i32 }
+/// let local = Os.Error { kind: Os.InvalidEncoding, code: 0i32 }
+/// Os.message missing + "; " + Os.message local
+/// ```
 def message :: ref Error -> string
 fn message error =
 	let kind =
@@ -19,12 +25,23 @@ fn message error =
 	if error.code == 0i32 then kind else kind + " (os error " + to_string error.code + ")"
 
 /// Encodes a path, name, or text for the system; a lone surrogate is `InvalidEncoding`.
+///
+/// ```tsuzuri run=[104,%20195,%20169]
+/// match Os.encode "hé" with
+/// | Result.Ok text -> Utf8String.to_bytes text
+/// | Result.Error _ -> []
+/// ```
 def encode :: ref string -> Result<utf8string, Error>
 fn encode text =
 	if String.is_well_formed text then Result.Ok (Utf8String.from_string text)
 	else Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
 
 /// Decodes a status the runtime returned: `(kind <<< 32) | code`, with kind 1 to 7 in declaration order.
+///
+/// ```tsuzuri run=already%20exists%20(os%20error%2017)
+/// let error = Os.error_of_status ((3i64 <<< 32) | 17i64)
+/// Os.message error
+/// ```
 def error_of_status :: own i64 -> Error
 fn error_of_status status =
 	let kind =
@@ -40,6 +57,13 @@ fn error_of_status status =
 
 /// Splits names that each end with a NUL byte, as `Dir.list` and `Env.args` receive them.
 /// Any name that is not UTF-8 makes the whole call `InvalidEncoding`.
+///
+/// ```tsuzuri run=["a",%20"bc"]
+/// let bytes = [97ubyte, 0ubyte, 98ubyte, 99ubyte, 0ubyte]
+/// match Os.split_names bytes with
+/// | Result.Ok names -> names
+/// | Result.Error _ -> []
+/// ```
 def split_names :: ref [ubyte] -> Result<[string], Error>
 fn split_names bytes =
 	let mut count = 0
@@ -64,6 +88,12 @@ fn split_names bytes =
 	else Result.Ok (Vec.to_array names)
 
 /// Decodes the bytes a system call returned as UTF-8 text. Invalid UTF-8 is `InvalidEncoding`.
+///
+/// ```tsuzuri run=hi
+/// match Os.decode [104ubyte, 105ubyte] with
+/// | Result.Ok text -> text
+/// | Result.Error error -> Os.message error
+/// ```
 def decode :: own [ubyte] -> Result<string, Error>
 fn decode bytes =
 	match Utf8String.from_bytes bytes with
@@ -71,6 +101,11 @@ fn decode bytes =
 	| Maybe.None -> Result.Error (Error { kind: InvalidEncoding, code: 0i32 })
 
 /// Reads eight little-endian bytes at `offset` as a number, as the runtime lays out sizes, times, and codes.
+///
+/// ```tsuzuri run=513
+/// let bytes = [0ubyte, 0ubyte, 1ubyte, 2ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte, 0ubyte]
+/// Os.decode_i64 2 bytes
+/// ```
 def decode_i64 :: own i64 -> ref [ubyte] -> i64
 fn decode_i64 offset bytes =
 	let mut value = 0i64u

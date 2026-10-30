@@ -967,11 +967,13 @@ impl BuildCache {
                 };
                 Ok((size, modified))
             };
-            let (size, used) = if self.file_system_stats {
-                from_file_system(&entry)?
+            // Another build (a thread of this process, or another process) may remove its staging
+            // directory or lock between the listing and this look: such an entry is skipped.
+            let stats = if self.file_system_stats {
+                from_file_system(&entry)
             } else {
                 match self.metadata(key) {
-                    Ok(metadata) => (
+                    Ok(metadata) => Ok((
                         metadata["files"]
                             .as_object()
                             .map(|files| {
@@ -982,12 +984,14 @@ impl BuildCache {
                             })
                             .unwrap_or(0),
                         metadata["last_used_unix_ms"].as_u64().unwrap_or(0),
-                    ),
-                    Err(_) => {
-                        let (_, modified) = from_file_system(&entry)?;
-                        (0, modified)
-                    }
+                    )),
+                    Err(_) => from_file_system(&entry).map(|(_, modified)| (0, modified)),
                 }
+            };
+            let (size, used) = match stats {
+                Ok(stats) => stats,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
             };
             total = total.saturating_add(size);
             entries.push((used, key.to_owned(), size));

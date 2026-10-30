@@ -1,3 +1,8 @@
+/// The number of UTF-8 bytes in `text`.
+///
+/// ```tsuzuri run=3%202
+/// $"{Utf8String.length u8"abc"} {Utf8String.length u8"é"}"
+/// ```
 def length :: ref utf8string -> i64
 fn length text = text.length
 
@@ -22,6 +27,13 @@ fn matches_at needle text offset =
 private def boundary :: ref utf8string -> own i64 -> bool
 fn boundary text offset = offset == 0 || offset == text.length || (text[offset] & 192ubyte) != 128ubyte
 
+/// The byte offset of the first occurrence of `needle` in `text`, or `None` when there is none.
+///
+/// ```tsuzuri run=3%20-1
+/// let at = Utf8String.find u8"l" u8"héllo" |> Maybe.default_value (-1)
+/// let missing = Utf8String.find u8"x" u8"héllo" |> Maybe.default_value (-1)
+/// $"{at} {missing}"
+/// ```
 def find :: ref utf8string -> ref utf8string -> Maybe<i64>
 fn find needle text =
 	let mut offset = 0
@@ -33,6 +45,11 @@ fn find needle text =
 		offset = offset + 1
 	result
 
+/// The byte offset of the last occurrence of `needle` in `text`, or `None` when there is none.
+///
+/// ```tsuzuri run=3
+/// Utf8String.rfind u8"an" u8"banana" |> Maybe.default_value (-1)
+/// ```
 def rfind :: ref utf8string -> ref utf8string -> Maybe<i64>
 fn rfind needle text =
 	let mut offset = text.length
@@ -44,17 +61,40 @@ fn rfind needle text =
 		offset = offset - 1
 	result
 
+/// Whether `needle` occurs in `text`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Utf8String.contains u8"zu" u8"Tsuzuri"} {Utf8String.contains u8"Zu" u8"Tsuzuri"}"
+/// ```
 def contains :: ref utf8string -> ref utf8string -> bool
 fn contains needle text =
 	let result = find needle text
 	Maybe.is_some (ref result)
 
+/// Whether `text` begins with `prefix`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Utf8String.starts_with u8"Tsu" u8"Tsuzuri"} {Utf8String.starts_with u8"zu" u8"Tsuzuri"}"
+/// ```
 def starts_with :: ref utf8string -> ref utf8string -> bool
 fn starts_with prefix text = matches_at prefix text 0
 
+/// Whether `text` ends with `suffix`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Utf8String.ends_with u8"ri" u8"Tsuzuri"} {Utf8String.ends_with u8"Tsu" u8"Tsuzuri"}"
+/// ```
 def ends_with :: ref utf8string -> ref utf8string -> bool
 fn ends_with suffix text = suffix.length <= text.length && matches_at suffix text (text.length - suffix.length)
 
+/// The bytes of `text` from `first` up to, but not including, `last`; `None` when a position is negative,
+/// `last < first`, `last` is past the end, or a position falls inside a character.
+///
+/// ```tsuzuri run=hé%20?
+/// let piece = Utf8String.slice 0 3 u8"héllo" |> Maybe.default_value u8"?"
+/// let inside = Utf8String.slice 0 2 u8"héllo" |> Maybe.default_value u8"?"
+/// $"{piece} {inside}"
+/// ```
 def slice :: own i64 -> own i64 -> ref utf8string -> Maybe<utf8string>
 fn slice first last text =
 	if first < 0 || last < first || last > text.length then Maybe.None
@@ -63,10 +103,23 @@ fn slice first last text =
 		let output = append_range (Vec.with_capacity (last - first)) text first last
 		Utf8String.from_bytes (Vec.to_array output)
 
+/// The `count` bytes of `text` that start at `first`; `None` when the range is negative, not inside `text`, or
+/// does not start and end between characters.
+///
+/// ```tsuzuri run=é%20?
+/// let piece = Utf8String.sub 1 2 u8"héllo" |> Maybe.default_value u8"?"
+/// let outside = Utf8String.sub 3 9 u8"héllo" |> Maybe.default_value u8"?"
+/// $"{piece} {outside}"
+/// ```
 def sub :: own i64 -> own i64 -> ref utf8string -> Maybe<utf8string>
 fn sub first count text =
 	if first < 0 || count < 0 || first > 9223372036854775807 - count then Maybe.None else slice first (first + count) text
 
+/// The number of Unicode scalars in `text`.
+///
+/// ```tsuzuri run=5%206
+/// $"{Utf8String.char_count u8"héllo"} {Utf8String.length u8"héllo"}"
+/// ```
 def char_count :: ref utf8string -> i64
 fn char_count text =
 	let mut index = 0
@@ -76,6 +129,11 @@ fn char_count text =
 		count = count + 1
 	count
 
+/// The Unicode scalars of `text` as an array of `utf8char`.
+///
+/// ```tsuzuri run=[u8'h',%20u8'é']
+/// Utf8String.chars u8"hé"
+/// ```
 def chars :: ref utf8string -> [utf8char]
 fn chars text =
 	let mut result: Vec<utf8char> = Vec.with_capacity (char_count text)
@@ -86,6 +144,11 @@ fn chars text =
 			index = next
 	Vec.to_array result
 
+/// The elements of `parts` joined with `separator` between each two of them; an empty array gives `u8""`.
+///
+/// ```tsuzuri run=a,%20b,%20c
+/// Utf8String.join u8", " [u8"a", u8"b", u8"c"]
+/// ```
 def join :: ref utf8string -> ref [utf8string] -> utf8string
 fn join separator parts =
 	let mut size = 0
@@ -98,11 +161,22 @@ fn join separator parts =
 		output = append_range output (ref parts[index]) 0 parts[index].length
 	Maybe.get (Utf8String.from_bytes (Vec.to_array output))
 
+/// The elements of `parts` joined with nothing between them; an empty array gives `u8""`.
+///
+/// ```tsuzuri run=Tsuzuri
+/// Utf8String.concat [u8"Tsu", u8"zu", u8"ri"]
+/// ```
 def concat :: ref [utf8string] -> utf8string
 fn concat parts =
 	let empty = u8""
 	join (ref empty) parts
 
+/// Splits `text` at each `separator`; matches at the ends or next to each other give empty elements, and an empty
+/// `separator` splits between characters.
+///
+/// ```tsuzuri run=[u8"a",%20u8"",%20u8"b"]
+/// Utf8String.split u8"," u8"a,,b"
+/// ```
 def split :: ref utf8string -> ref utf8string -> [utf8string]
 fn split separator text =
 	if separator.length == 0 then
@@ -136,18 +210,33 @@ fn split separator text =
 private def whitespace :: own ubyte -> bool
 fn whitespace value = value == 32ubyte || (value >= 9ubyte && value <= 13ubyte)
 
+/// `text` without its leading ASCII whitespace (bytes 9 to 13 and 32).
+///
+/// ```tsuzuri run=[hi%20%20]
+/// $"[{Utf8String.trim_start u8"  hi  "}]"
+/// ```
 def trim_start :: ref utf8string -> utf8string
 fn trim_start text =
 	let mut first = 0
 	while first < text.length && whitespace text[first] do first = first + 1
 	Maybe.get (slice first text.length text)
 
+/// `text` without its trailing ASCII whitespace (bytes 9 to 13 and 32).
+///
+/// ```tsuzuri run=[%20%20hi]
+/// $"[{Utf8String.trim_end u8"  hi  "}]"
+/// ```
 def trim_end :: ref utf8string -> utf8string
 fn trim_end text =
 	let mut last = text.length
 	while last > 0 && whitespace text[last - 1] do last = last - 1
 	Maybe.get (slice 0 last text)
 
+/// `text` without its leading and trailing ASCII whitespace (bytes 9 to 13 and 32).
+///
+/// ```tsuzuri run=[hi]
+/// $"[{Utf8String.trim u8" \t hi\n"}]"
+/// ```
 def trim :: ref utf8string -> utf8string
 fn trim text =
 	let mut first = 0
@@ -156,12 +245,27 @@ fn trim text =
 	while last > first && whitespace text[last - 1] do last = last - 1
 	Maybe.get (slice first last text)
 
+/// `text` with the ASCII letters `A` to `Z` made lowercase; every other byte is kept.
+///
+/// ```tsuzuri run=tsuzuri%20Äb
+/// Utf8String.to_ascii_lower u8"TSUZURI ÄB"
+/// ```
 def to_ascii_lower :: ref utf8string -> utf8string
 fn to_ascii_lower text = Maybe.get (Utf8String.from_bytes (new [ubyte](text.length, \index -> if text[index] >= 65ubyte && text[index] <= 90ubyte then text[index] + 32ubyte else text[index])))
 
+/// `text` with the ASCII letters `a` to `z` made uppercase; every other byte is kept.
+///
+/// ```tsuzuri run=STRAßE
+/// Utf8String.to_ascii_upper u8"straße"
+/// ```
 def to_ascii_upper :: ref utf8string -> utf8string
 fn to_ascii_upper text = Maybe.get (Utf8String.from_bytes (new [ubyte](text.length, \index -> if text[index] >= 97ubyte && text[index] <= 122ubyte then text[index] - 32ubyte else text[index])))
 
+/// `text` repeated `count` times; a negative `count` traps.
+///
+/// ```tsuzuri run=ababab
+/// Utf8String.repeat 3 u8"ab"
+/// ```
 def repeat :: own i64 -> ref utf8string -> utf8string
 fn repeat count text =
 	assert (count >= 0)
@@ -169,6 +273,12 @@ fn repeat count text =
 		let size = Maybe.get (Int.checked_mul text.length count)
 		Maybe.get (Utf8String.from_bytes (new [ubyte](size, \index -> text[index % text.length])))
 
+/// `text` with each non-overlapping occurrence of `needle`, from the left, replaced by `replacement`; an empty
+/// `needle` inserts `replacement` between characters and at both ends.
+///
+/// ```tsuzuri run=baNANA
+/// Utf8String.replace u8"na" u8"NA" u8"banana"
+/// ```
 def replace :: ref utf8string -> ref utf8string -> ref utf8string -> utf8string
 fn replace needle replacement text =
 	let mut occurrences = 0

@@ -311,6 +311,14 @@ and parse_object text start depth =
 		| Maybe.None -> Result.Ok (Object (Vec.to_array members), index)
 
 /// Parses one JSON text (RFC 8259) with at most 128 nested arrays and objects.
+///
+/// ```tsuzuri run={"a":[1,true]}%20|%20json:%20syntax%20error%20at%20byte%203
+/// let good = match Json.parse u8"{\"a\": [1, true]}" with
+///     | Ok value -> String.from_utf8 (Json.to_utf8string value)
+///     | Error error -> Display.display error
+/// let bad = match Json.parse u8"[1,]" with | Ok _ -> "ok" | Error error -> Display.display error
+/// $"{good} | {bad}"
+/// ```
 def parse :: ref utf8string -> Result<Value, Error>
 fn parse text =
 	if text.length > 67108864 then Result.Error (failure TooLarge 0) else
@@ -328,6 +336,10 @@ fn is_numeral text =
 		| Result.Error _ -> false
 
 /// A copy of `text` as a `Numeral` when it is a JSON number with no white space around it.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Maybe.is_some (Json.numeral u8"-1.5e3")} {Maybe.is_some (Json.numeral u8"01")}"
+/// ```
 def numeral :: ref utf8string -> Maybe<Numeral>
 fn numeral text = if is_numeral text then Maybe.Some (Numeral { text: Utf8String.clone text }) else Maybe.None
 
@@ -360,10 +372,22 @@ fn rec float_of numeral =
 		| Maybe.None -> Result.Error (failure NumberRange (-1))
 
 /// The `i64` that `numeral` spells: `ExpectedType "integer"` for a fraction or exponent, `NumberRange` out of range.
+///
+/// ```tsuzuri run=-42%20|%20json:%20expected%20integer
+/// let whole = Json.numeral u8"-42" |> Maybe.get
+/// let fraction = Json.numeral u8"1.0" |> Maybe.get
+/// let message = match Json.to_i64 fraction with | Ok _ -> "ok" | Error error -> Display.display error
+/// $"{Result.default_value 0 (Json.to_i64 whole)} | {message}"
+/// ```
 def to_i64 :: ref Numeral -> Result<i64, Error>
 fn to_i64 numeral = integer_of numeral
 
 /// The nearest `f64` to `numeral`, rounded once; `NumberRange` when it overflows to infinity.
+///
+/// ```tsuzuri run=0.25
+/// let quarter = Json.numeral u8"2.5e-1" |> Maybe.get
+/// Json.to_f64 quarter |> Result.default_value 0.0
+/// ```
 def to_f64 :: ref Numeral -> Result<f64, Error>
 fn to_f64 numeral = float_of numeral
 
@@ -448,6 +472,11 @@ private def text_of :: own Vec<ubyte> -> utf8string
 fn text_of bytes = Maybe.get (Utf8String.from_bytes (Vec.to_array bytes))
 
 /// The JSON text of `value` without white space. Object members keep their order; numbers keep their text.
+///
+/// ```tsuzuri run={"name":"a\"b","n":null}
+/// let value = Json.Object [("name", Json.Text "a\"b"), ("n", Json.Null)]
+/// Json.to_utf8string value
+/// ```
 def to_utf8string :: ref Value -> utf8string
 fn to_utf8string value = text_of (emit_value (Vec.empty()) value)
 
@@ -482,6 +511,11 @@ fn rec emit_pretty output value indent level =
 
 /// The JSON text of `value` indented as `JSON.stringify(value, null, indent)` indents it: each
 /// level adds `indent` spaces (at most 10), and an `indent` below 1 writes no white space.
+///
+/// ```tsuzuri run={%0A%20%20"a":%20[%0A%20%20%20%201,%0A%20%20%20%202%0A%20%20]%0A}
+/// let value = Json.parse u8"{\"a\":[1,2]}" |> Result.get
+/// Json.to_utf8string_pretty 2 value
+/// ```
 def to_utf8string_pretty :: own i64 -> ref Value -> utf8string
 fn to_utf8string_pretty indent value =
 	let width = if indent > 10 then 10 else indent
@@ -1098,14 +1132,32 @@ instance Decode<Value> {
 }
 
 /// The JSON value of `value`, through its `Encode` instance.
+///
+/// ```tsuzuri run=["a",true]
+/// let value = Json.encode ("a", true) |> Result.get
+/// Json.to_utf8string value
+/// ```
 def rec encode :: Encode<'a> => ref 'a -> Result<Value, Error>
 fn rec encode value = Encode.encode value
 
 /// The value that `json` describes, through the `Decode` instance of the result type.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// let json = Json.parse u8"[1, 2, 3]" |> Result.get
+/// let numbers: Result<[i64], Json.Error> = Json.decode json
+/// match numbers with
+/// | Ok values -> $"{values}"
+/// | Error error -> Display.display error
+/// ```
 def rec decode :: Decode<'a> => ref Value -> Result<'a, Error>
 fn rec decode json = Decode.decode json
 
 /// `value` encoded and written as JSON text.
+///
+/// ```tsuzuri run={"x":1,"y":0.5}
+/// record Point { x: i64, y: f64 } deriving (Encode)
+/// Json.serialize (Point { x: 1, y: 0.5 }) |> Result.default_value u8"error"
+/// ```
 def rec serialize :: Encode<'a> => ref 'a -> Result<utf8string, Error>
 fn rec serialize value =
 	match Encode.encode value with
@@ -1113,6 +1165,10 @@ fn rec serialize value =
 	| Result.Error error -> Result.Error error
 
 /// `value` encoded and written as indented JSON text, as `to_utf8string_pretty` writes it.
+///
+/// ```tsuzuri run=[%0A%20%201,%0A%20%202%0A]
+/// Json.serialize_pretty 2 [1, 2] |> Result.default_value u8"error"
+/// ```
 def rec serialize_pretty :: Encode<'a> => own i64 -> ref 'a -> Result<utf8string, Error>
 fn rec serialize_pretty indent value =
 	match Encode.encode value with
@@ -1120,6 +1176,14 @@ fn rec serialize_pretty indent value =
 	| Result.Error error -> Result.Error error
 
 /// The value that the JSON text `text` describes: `parse`, then `Decode`.
+///
+/// ```tsuzuri run=x=3%20y=4
+/// record Point { x: i64, y: i64 } deriving (Decode)
+/// let point: Result<Point, Json.Error> = Json.deserialize u8"{\"y\": 4, \"x\": 3}"
+/// match point with
+/// | Ok p -> $"x={p.x} y={p.y}"
+/// | Error error -> Display.display error
+/// ```
 def rec deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 fn rec deserialize text =
 	match parse text with
@@ -1256,6 +1320,13 @@ union Event = ObjectStart | ObjectEnd | ArrayStart | ArrayEnd | KeyToken of Lexe
 record Reader { position: i64, containers: Vec<bool>, keys: Vec<Lexeme>, marks: Vec<i64>, state: i64 }
 
 /// A pull parse of `text`: `TooLarge` above 64 MiB, otherwise a reader before the first token.
+///
+/// ```tsuzuri run=true
+/// let text = u8"[true]"
+/// match Json.reader text |> Result.bind (Json.next text) with
+/// | Ok (event, _) -> $"{event == Json.ArrayStart}"
+/// | Error error -> Display.display error
+/// ```
 def reader :: ref utf8string -> Result<Reader, Error>
 fn reader text =
 	if text.length > 67108864 then Result.Error (failure TooLarge 0)
@@ -1407,6 +1478,14 @@ fn read_key text reader index =
 
 /// The next token of `text`. The reader checks the text as `parse` does and fails with the same
 /// error kinds and offsets; a repeated key is reported when its object ends or the text fails.
+///
+/// ```tsuzuri run=true
+/// let text = u8"[true]"
+/// let opened = Json.reader text |> Result.bind (Json.next text) |> Result.map (\(_, reader) -> reader)
+/// match Result.bind (Json.next text) opened with
+/// | Ok (event, _) -> $"{event == Json.BoolToken true}"
+/// | Error error -> Display.display error
+/// ```
 def next :: ref utf8string -> own Reader -> Result<(Event * Reader), Error>
 fn next text reader =
 	let index = skip_space text reader.position
@@ -1430,6 +1509,14 @@ fn next text reader =
 
 /// The text of a `KeyToken` or `TextToken` of `text` with its escapes resolved. A token that is not
 /// a string of `text` gives `Syntax` at its start.
+///
+/// ```tsuzuri run=café
+/// let text = u8"{\"caf\\u00e9\": 1}"
+/// let opened = Json.reader text |> Result.bind (Json.next text) |> Result.map (\(_, reader) -> reader)
+/// match Result.bind (Json.next text) opened with
+/// | Ok (Json.KeyToken token, _) -> Json.token_text text token |> Result.default_value "?"
+/// | _ -> "not a key"
+/// ```
 def token_text :: ref utf8string -> ref Lexeme -> Result<string, Error>
 fn token_text text token =
 	if token.start < 1 || token.finish < token.start || token.finish >= text.length || text[token.start - 1] != 34ubyte then
@@ -1440,6 +1527,14 @@ fn token_text text token =
 		| Result.Error error -> Result.Error error
 
 /// Whether the string token spells `expected`. A token without escapes is compared in place, without building its text.
+///
+/// ```tsuzuri run=true%20false
+/// let text = u8"{\"id\": 1}"
+/// let opened = Json.reader text |> Result.bind (Json.next text) |> Result.map (\(_, reader) -> reader)
+/// match Result.bind (Json.next text) opened with
+/// | Ok (Json.KeyToken token, _) -> $"{Json.token_matches "id" text token} {Json.token_matches "name" text token}"
+/// | _ -> "not a key"
+/// ```
 def token_matches :: ref string -> ref utf8string -> ref Lexeme -> bool
 fn token_matches expected text token =
 	if token.escaped || token.start < 1 || token.finish >= text.length || token.finish < token.start then
@@ -1475,6 +1570,14 @@ fn token_matches expected text token =
 		same && unit == expected.length && index == token.finish
 
 /// The number of a `NumberToken` of `text`. A token that is not a number gives `Syntax` at its start.
+///
+/// ```tsuzuri run=2.50
+/// let text = u8"[2.50]"
+/// let opened = Json.reader text |> Result.bind (Json.next text) |> Result.map (\(_, reader) -> reader)
+/// match Result.bind (Json.next text) opened with
+/// | Ok (Json.NumberToken token, _) -> Json.token_numeral text token |> Result.map (\numeral -> numeral.text) |> Result.default_value u8"?"
+/// | _ -> u8"not a number"
+/// ```
 def token_numeral :: ref utf8string -> ref Lexeme -> Result<Numeral, Error>
 fn token_numeral text token =
 	if token.start < 0 || token.finish <= token.start || token.finish > text.length then Result.Error (failure Syntax token.start) else
@@ -1486,6 +1589,11 @@ fn token_numeral text token =
 record Writer { bytes: Vec<ubyte>, containers: Vec<bool>, state: i64 }
 
 /// A writer of a new JSON text.
+///
+/// ```tsuzuri run="hi"
+/// let greeting = "hi"
+/// Json.writer () |> Json.write_text greeting |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def writer :: own unit -> Writer
 fn writer _unit = Writer { bytes: Vec.empty(), containers: Vec.empty(), state: 0 }
 
@@ -1506,6 +1614,10 @@ fn wrote containers bytes =
 	Writer { bytes: bytes, containers: containers, state: state }
 
 /// Writes `null`.
+///
+/// ```tsuzuri run=null
+/// Json.writer () |> Json.write_null |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def write_null :: own Writer -> Result<Writer, Error>
 fn write_null writer =
 	match value_slot writer with
@@ -1515,6 +1627,10 @@ fn write_null writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes `true` or `false`.
+///
+/// ```tsuzuri run=false
+/// Json.writer () |> Json.write_bool false |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def write_bool :: own bool -> own Writer -> Result<Writer, Error>
 fn write_bool flag writer =
 	match value_slot writer with
@@ -1524,6 +1640,11 @@ fn write_bool flag writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes a number. A `Numeral` whose text is not a JSON number gives `Syntax` at the end of the output.
+///
+/// ```tsuzuri run=2.50
+/// let number = Json.numeral u8"2.50" |> Maybe.get
+/// Json.writer () |> Json.write_number number |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def write_number :: ref Numeral -> own Writer -> Result<Writer, Error>
 fn write_number numeral writer =
 	if !(is_numeral (ref numeral.text)) then Result.Error (failure Syntax (Vec.length (ref writer.bytes))) else
@@ -1534,6 +1655,11 @@ fn write_number numeral writer =
 		| Result.Error error -> Result.Error error
 
 /// Writes a string with the escapes of `to_utf8string`.
+///
+/// ```tsuzuri run="say%20\"hi\""
+/// let quote = "say \"hi\""
+/// Json.writer () |> Json.write_text quote |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def write_text :: ref string -> own Writer -> Result<Writer, Error>
 fn write_text text writer =
 	match value_slot writer with
@@ -1543,6 +1669,11 @@ fn write_text text writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes a whole value as `to_utf8string` writes it.
+///
+/// ```tsuzuri run=[1,{"a":null}]
+/// let value = Json.parse u8"[1, {\"a\": null}]" |> Result.get
+/// Json.writer () |> Json.write_json value |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def write_json :: ref Value -> own Writer -> Result<Writer, Error>
 fn write_json value writer =
 	match value_slot writer with
@@ -1552,6 +1683,13 @@ fn write_json value writer =
 	| Result.Error error -> Result.Error error
 
 /// Writes the key of the next member of the innermost open object, with its `,` and `:`.
+///
+/// ```tsuzuri run={"ok":true}
+/// let key = "ok"
+/// let built = Json.writer () |> Json.open_object |> Result.bind (Json.write_key key)
+///     |> Result.bind (Json.write_bool true) |> Result.bind Json.close_object
+/// built |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def write_key :: ref string -> own Writer -> Result<Writer, Error>
 fn write_key key writer =
 	let count = Vec.length (ref writer.containers)
@@ -1584,22 +1722,54 @@ fn close_writer writer object =
 		Result.Ok (Writer { bytes: bytes, containers: containers, state: state })
 
 /// Starts an array.
+///
+/// ```tsuzuri run=[true,null]
+/// let built = Json.writer () |> Json.open_array |> Result.bind (Json.write_bool true)
+///     |> Result.bind Json.write_null |> Result.bind Json.close_array
+/// built |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def open_array :: own Writer -> Result<Writer, Error>
 fn open_array writer = open_writer writer false
 
 /// Ends the innermost open array.
+///
+/// ```tsuzuri run=[[],1]
+/// let one = Json.numeral u8"1" |> Maybe.get
+/// let built = Json.writer () |> Json.open_array |> Result.bind Json.open_array |> Result.bind Json.close_array
+///     |> Result.bind (Json.write_number one) |> Result.bind Json.close_array
+/// built |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def close_array :: own Writer -> Result<Writer, Error>
 fn close_array writer = close_writer writer false
 
 /// Starts an object.
+///
+/// ```tsuzuri run={}
+/// Json.writer () |> Json.open_object |> Result.bind Json.close_object |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def open_object :: own Writer -> Result<Writer, Error>
 fn open_object writer = open_writer writer true
 
 /// Ends the innermost open object.
+///
+/// ```tsuzuri run={"a":{}}
+/// let key = "a"
+/// let built = Json.writer () |> Json.open_object |> Result.bind (Json.write_key key)
+///     |> Result.bind Json.open_object |> Result.bind Json.close_object |> Result.bind Json.close_object
+/// built |> Result.bind Json.finish |> Result.default_value u8"error"
+/// ```
 def close_object :: own Writer -> Result<Writer, Error>
 fn close_object writer = close_writer writer true
 
 /// The JSON text once exactly one complete value is written; `UnexpectedEnd` at the end of the output otherwise.
+///
+/// ```tsuzuri run=null%20|%20json:%20unexpected%20end%20of%20input%20at%20byte%201
+/// let complete = Json.writer () |> Json.write_null |> Result.bind Json.finish |> Result.default_value u8"error"
+/// let message = match Json.writer () |> Json.open_array |> Result.bind Json.finish with
+///     | Ok _ -> "complete"
+///     | Error error -> Display.display error
+/// $"{complete} | {message}"
+/// ```
 def finish :: own Writer -> Result<utf8string, Error>
 fn finish writer =
 	if writer.state != 7 then Result.Error (failure UnexpectedEnd (Vec.length (ref writer.bytes))) else Result.Ok (text_of writer.bytes)

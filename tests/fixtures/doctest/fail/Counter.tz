@@ -1,0 +1,31 @@
+/// Adds one to `n`.
+///
+/// ```tsuzuri run=4
+/// Counter.add_one 2
+/// ```
+///
+/// ```tsuzuri
+/// let wrong: bool = Counter.add_one 1
+/// ```
+///
+/// ```tsuzuri fails=E1003
+/// let _fine = Counter.add_one 1
+/// ```
+///
+/// ```tsuzuri fails=E1003
+/// Array.sum ["a"]
+/// ```
+///
+/// ```tsuzuri test
+/// test "fails on purpose" = Test.equal (ref (Counter.add_one 1)) (ref 3)
+/// ```
+///
+/// ```tsuzuri test
+/// let _nothing = Counter.add_one 1
+/// ```
+///
+/// ```tsuzuri run=
+/// Array.sub 2 5 [1, 2, 3]
+/// ```
+def add_one :: i64 -> i64
+fn add_one n = n + 1

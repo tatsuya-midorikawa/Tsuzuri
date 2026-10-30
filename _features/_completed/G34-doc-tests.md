@@ -7,12 +7,26 @@
 | 規模 | M（Phase 1: M、Phase 2: S、Phase 3: L だが機械的で、手順 3.0〜3.24 は 1 手順ずつ独立してマージできる） |
 | 依存 | なし（Phase 2 は Phase 1、Phase 3 は Phase 1・2 に依存）。関連: G23（診断の kind。後述の「前提とする他チケットのインターフェース」）、G35（doc の構造化タグ。**本チケットは `@complexity`・`@since`・`@see` を導入しない**） |
 | 後続 | G35 Phase 2（std の doc コメントの規則を共有）、G21（ガイドが std の例を読む）、G26・G27（KB の `doc` 欄）、D14（`Text` の例） |
-| 状態 | todo |
+| 状態 | done（全 Phase） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの HEAD は `9dd0fbbc`＝`a2313d19` の親で、差は `docs/benchmarks.md` の 41 行だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
-| 改善する劣位 | Rust 比（`cargo test --doc`）・Python 比（`doctest`）: `///` の例が実行されず、書いた例が古くなっても気づけない（[docs/language.md](../docs/language.md) に「doc-test の実行は行いません」と明記）。std の公開関数 559 個のうち説明があるのは 305 個で、例は **0 個**（`grep -c '```' std/*.tz std/*.tc` が全ファイルで 0）。引数の順序は署名から読めず（`String.split "," "a,b,c"` は区切りが先で、`String.contains "hello" "ell"` は型が通って `false` を返す）、AI も人も誤る（D-50 の調査結論 (4)） |
+| 改善する劣位 | Rust 比（`cargo test --doc`）・Python 比（`doctest`）: `///` の例が実行されず、書いた例が古くなっても気づけない（[docs/language.md](../../docs/language.md) に「doc-test の実行は行いません」と明記）。std の公開関数 559 個のうち説明があるのは 305 個で、例は **0 個**（`grep -c '```' std/*.tz std/*.tc` が全ファイルで 0）。引数の順序は署名から読めず（`String.split "," "a,b,c"` は区切りが先で、`String.contains "hello" "ell"` は型が通って `false` を返す）、AI も人も誤る（D-50 の調査結論 (4)） |
 | 手本にする既存実装 | 例の枠: `src/driver.rs` の `Project::load_with_overlays`・`Project::load_from_root`（`overlays`・`all_std`）・`Project::single_main`・`Project::load_for_docs`（`std` ディレクトリの判定）。実行と出力の取得: `src/driver.rs` の `run_captured`・`run_process`（`RunStdio::Capture`）・`capture`・`relay`、`src/repl.rs` の `evaluate`。テストの実行と報告: `src/test_runner.rs` の `TestOptions::includes`・`run_tests_linked`、`src/main.rs` の `run_test_action`（text／JSON／`E2006`）・`print_output`・`output_field`。並列: `src/parallel.rs` の `Parallelism::command_line`・`ordered_for_each`。doc の描画: `src/docgen.rs` の `section`・`render_declarations`。引数: `src/main.rs` の `parse_arguments`（`--seed` の分岐）・`rejects_ambiguous_or_unused_arguments`。記法: `scripts/check-docs.mjs`（フェンスの正規表現と `run=` の `decodeURIComponent`）。テスト: `tests/docs.rs`・`tests/docgen.mjs`・`tests/bench.rs`（CLI の統合テストの型）・`tests/lsp.rs` の `semantic_docs_follow_function_and_type_definition_targets` |
 | 主な影響ファイル | **Phase 1** 新規: `src/doctest.rs`, `tests/doctest.rs`, `tests/fixtures/doctest/{pass,fail,notation,main}/`。変更: `src/lib.rs`（`pub mod doctest;`）, `src/driver.rs`（`Project::for_doc_example`・`run_captured_quiet`・`RunStdio::Capture` の `echo`・`capture`）, `src/main.rs`（`--doc`・`Arguments.test_doc`・`run_doctest_action`・`--help`）, `docs/language.md`, `README.md`, `docs/architecture.md`, `docs/stability.md`, `_tsuzuri/language-reference/` の 5 ページ（「ドキュメント」節）, `.github/workflows/targets.yml`, `_features/GUIDE.md`（D-55 に `E2011`）。**Phase 2** 変更: `src/doctest.rs`（`render_doc`）, `src/docgen.rs`（`section`）, `src/semantic.rs`（`SemanticIndex::document`）, `tests/docs.rs`, `tests/lsp.rs`, 文書。**Phase 3** 新規: `tests/std_examples.rs`。変更: `std/*.tz`・`std/*.tc` のうち `def` を持つ 42 ファイル（`///` の追加だけ）, `.github/workflows/targets.yml`, 文書 |
+
+## 方針の最新化（2026-10-30。実装前の再検討）
+
+起票時（HEAD `a2313d19`）の前提と、G23・G25・G28・A18・A22・A23・F14・C12・A21 の実装後の現状が食い違う点を、実装前と実装中に次のとおり改めた（人間の包括許可による判断。D1〜D15 の趣旨は保つ）。
+
+| 起票時の前提 | 現状 | 改めた方針 |
+| --- | --- | --- |
+| 診断は `Diagnostic::new("E2011", …)` | G23 の登録簿があり、診断は `Diagnostic::of(DiagnosticKind::…)` で作る | kind `doc_example_invalid`（`E2011`）・`doc_test_failed`（`E2006`）・`doc_example_limit`（`E1017`）を登録簿に足して `of` で出す。`explain` の `E2011` のページを足し、`E2006` のページに doc の例を足す |
+| `--doc` と併用できない旗は「CLI」の表の 6 種 | G28 の `--affected`、A23 の `--allow-overflow` が `test` に増えた | どちらも `--doc cannot be combined with …`（`E2000`）にする。`--doc` は知識グラフを書かない（例のプロジェクトは一時的なもの） |
+| std の公開 `def` は 559、目標は 507（付録 C） | F14 の `Alloc`、C12 の `chunk_count`・`invariants_hold`、A21 の `Gen.for_all_where`・`check_where` などで、大文字で始まらない公開関数は 819（免除 10 を除く）、モジュールは 48 | `FLOORS` は 48 モジュールすべてを、例を持たせた数（＝公開関数の数）で並べる。手順 3.1〜3.23 は 1 つの PR にまとめ（AGENTS.md の 1 チケット 1 PR）、手順 3.24 の `every_public_std_function_has_an_example` も同じ PR で足す。`BUILDER_FLOORS` は 4 モジュールとも 1 から始める |
+| 例は書いた edition の構文で書く | A22 で edition 2027 が正準形（`..=`・`..<`、接尾辞 `i64`・`f32`）を要し、A18 で無印の引数は借用。`std` の例はマニフェストのない `Main.tz`（最新の edition）として走る | std の例は edition 2027 の正準形と D-59 の引数の順序で書く |
+| fixture の `E2005` の文言は付録 B のとおり | 契約（A21）の追加で、トラップの文言の後半が変わった（`a contract`） | `tests/doctest.rs` は付録 B の方針どおり先頭の `E2005: ` だけを確かめる |
+| 例を足すたびに `cargo build --release` して確かめる | 819 関数を 1 つずつ再ビルドして確かめるのは遅い | 作業中は、例を 1 つずつ独立した `Main.tz` にして既存のコンパイラで `check`・`run`（`-O0`・`-O3`）・`test` する補助スクリプト（`tsuzuri test --doc` と同じ判定）で確かめ、最後に dev ビルドの `tsuzuri test --doc std -O0`・`-O3` で全件を確かめた |
+| ビルドキャッシュは並行する例のビルドで壊れない | 例を並列に走らせると、別のビルドが消したステージングの項目を `BuildCache::evict` が読みに行き、`build cache write failed` が出ることがあった | `evict` は一覧と読み取りの間に消えた項目（`NotFound`）を飛ばす（`src/cache.rs`。プロセス間の並行ビルドにも効く） |
 
 ## 実装者向け早見
 
@@ -555,3 +569,14 @@ pub struct Report { pub results: Vec<ExampleResult>, pub ignored: usize, pub dur
 
 付録: [G34-appendix.md](G34-appendix.md)（A 検証済みの例 22 件、B fixture と想定出力、C std の作業表、D 数え方）。
 
+## 実装と検証（2026-10-30）
+
+- **範囲**: Phase 1〜3（手順 3.0〜3.24）をすべて実装した（1 つの PR）。冒頭の「方針の最新化」のとおり、起票後の変更に合わせた。
+- **Phase 1**: `src/doctest.rs`（`Expectation`・`OwnerKind`・`Example`・`Options`・`ExampleResult`・`Report`、フェンスの走査 `scan`、`parse_options`・`decode_output`・隠し行、`examples_in_source`・`collect`（上限 10,000）・`run`（`parallel::ordered_for_each`、`Main.tz` の例は `ignored` と通知 1 行））、`src/driver.rs`（`Project::for_doc_example`・`run_captured_quiet`・`RunStdio::Capture { echo }`）、`src/main.rs`（`--doc` の解析と拒否、`run_doctest_action` の text・JSON・`--list`・要約・`E2006`）、`src/diagnostic_kinds.rs` の 3 つの kind、`src/explain/codes/E2011.md`。fixture は `tests/fixtures/doctest/{pass,fail,notation,main}`（付録 B）。
+- **Phase 2**: `doctest::render_doc` を `docgen::section` と `SemanticIndex::document` が使う（隠し行を除き、`Output:`・``Compile error: `CODE`.`` を足す。印も隠し行もない本文は 1 byte も変えない）。
+- **Phase 3**: std の 43 ファイルに `///` の例 823 個（公開関数 819 個に 1 個ずつと、`Maybe`・`Result`・`IO`・`Async` の `Bind` に計算式の例 1 個ずつ）と、説明のなかった関数への 1 文の説明（`///` の追加だけで、コードは変えていない）。`tests/std_examples.rs`（`FLOORS` 48 モジュール、`EXEMPT` は `Json` の 10、`BUILDER_FLOORS`、テスト 5 件）。`targets.yml` に `tsuzuri test --doc tests/fixtures/doctest/pass` と `--doc std` の `-O0`・`-O3`。種別は `run=` が大半で、OS・ファイル・ネットワーク・時間・OS の乱数・標準入力・ホストに触れる関数は検査だけ、`Gen`・`Test`・`Alloc` と、`unit` を返す `iter` の系列の一部は `test`。期待値は説明と本体から手で求め（`HashMap.sip13` は SipHash-1-3 の独立した実装、`Random.pcg_next_u32`・`pcg_next_u64` は公開されている pcg32 の値）、コンパイラの出力を写していない。ハッシュの順に依存する出力はない。
+- **検証**: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。`tests/doctest.rs` 12 件、`tests/std_examples.rs` 5 件、`src/doctest.rs` の単体 20 件、`src/main.rs`・`src/driver.rs` の追加分、`tests/docs.rs`・`tests/lsp.rs` の隠し行のテストが通る。`target/debug/tsuzuri test --doc std -O0` と `-O3` がどちらも `823 passed; 0 failed; 0 ignored`（macOS arm64、各約 2 分）。`tsuzuri test --doc` の fixture は `pass` 5 件成功・1 件 ignored、`fail` 7 件失敗、`notation` で `E2011` 6 件、`main` で 1 件成功・1 件 ignored。
+- **文書**: `documentation-comment.md`（節「例を書く（doc-test）」: 記法・印・符号化・隠し行・`tsuzuri test --doc`・失敗の文・`E2011`・`tsuzuri doc` とホバーの表示・std の例、比較の表）、`option.md`（`--doc` の列と誤りの 7 行）、`usage.md`（`test` の `--doc`、`doc` からの導線）、`test.md`（オプションの表）、`diagnostics.md`（`E2011`、`E2` の範囲、`E2006`・`E1017` の kind）、`docs/language.md`（「doc の例（doc-test）」と表示の規則）、`README.md`（テストランナー・ドキュメント生成・CLI 書式・オプション表・テスト表・検証のコマンド）、`docs/architecture.md`、`docs/stability.md`、`_features/GUIDE.md`（§4 のコードマップ、D-55 の `--doc` の行）。
+- **残作業（例を書く間に見つけた std と文書の問題）**:
+  - 直したもの: `vec.md` と `docs/language.md` は `Vec.sort_with`・`sort_range_with` が「NaN を特別に扱わない」としていたが、実装は `Array.sort_in_place_with` で並べるので `f32`・`f64` の NaN を後ろに置く（`sort_withr`・`sort_range_withr` は渡した関数のとおり）。実測に合わせて直した。`List.containsr` の説明（「`target` は借用なので `Copy` でなくてよい」。`contains` も `Copy` を要しない）を「呼び出し側が持ち続ける」に、`Array.random_sample_by` の範囲 `0 .. source.length` を `0 ..= source.length` に直した。
+  - 直していないもの: (1) `Array.zip`・`zip3`・`unzip`・`unzip3` の署名に `Copy<'a>` がないが、`Copy` でない要素（`string`）は使う側で `E1005`（`no instance for Copy<string>`）になる。署名に制約を足すのは公開 API の署名の変更なので、別のチケットで扱う。(2) `List.iter`・`iteri`・`mapi`・`fold`・`fold_back` の署名の `Copy<'a>` は edition 2026（`_owned`）の形で、2027 は借用の形に読み替わる（`list.md` には書いてある）。(3) 補間 `$"{x}"` は `x: ref i32` で `E1005`（`ref string` は通る）。(4) パイプラインで配列リテラルを借用の引数に渡す（`Vec.of_array [1, 2] |> Vec.add_range [3, 4]`）と `E1013`（`let` で束縛すれば通る）。

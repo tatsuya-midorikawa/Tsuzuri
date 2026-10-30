@@ -9,6 +9,10 @@ private const JoinControlRanges: i64 = 3
 private const SimpleFoldingRuns: i64 = 4
 
 /// The Unicode version of every table: `"17.0.0"`.
+///
+/// ```tsuzuri run=17.0.0
+/// Unicode.version ()
+/// ```
 def version :: own unit -> string
 fn version _unit = "17.0.0"
 
@@ -61,6 +65,10 @@ fn category_ranges mask =
 /// The closed ranges of the scalars that the regular-expression class `\p{name}` matches, ascending and
 /// merged: a general category such as `Lu`, a group `L`, `LC`, `M`, `N`, `P`, `S`, `Z` or `C`, or one of
 /// `Alphabetic`, `White_Space` and `Join_Control`. `None` for other names. Each call decodes the table.
+///
+/// ```tsuzuri run=[(8204,%208205)]
+/// Unicode.property_ranges "Join_Control" |> Maybe.default_value []
+/// ```
 def property_ranges :: ref string -> Maybe<[(i64 * i64)]>
 fn property_ranges name =
 	let mask = category_mask name
@@ -76,6 +84,11 @@ fn property_ranges name =
 
 /// The simple case folding of `CaseFolding.txt` (statuses C and S) as `(c, scf c)` pairs for every scalar
 /// `c` with `scf c != c`, in ascending order of `c`. Each call decodes the table.
+///
+/// ```tsuzuri run=(65,%2097)
+/// let pairs = Unicode.simple_case_folding ()
+/// pairs[0]
+/// ```
 def simple_case_folding :: own unit -> [(i64 * i64)]
 fn simple_case_folding _unit =
 	let runs = Unicode.__table_length SimpleFoldingRuns / 4
@@ -145,6 +158,10 @@ fn run_map table code =
 	if run >= 0 && offset % stride == 0 && offset / stride < Unicode.__table_entry table (run + 1) then code + Unicode.__table_entry table (run + 3) else -1
 
 /// The general category of `scalar`.
+///
+/// ```tsuzuri run=Lu%20Nd%20Lo
+/// $"{Unicode.category u8'A'} {Unicode.category u8'7'} {Unicode.category u8'あ'}"
+/// ```
 def category :: own utf8char -> Category
 fn category scalar =
 	match run_value CategoryRuns 5 (Utf8Char.to_u32 scalar as i64) with
@@ -308,6 +325,12 @@ fn normalized form codes =
 	if form == Nfc || form == Nfkc then compose ordered else ordered
 
 /// `text` in normalization form `form`; a lone surrogate stays as it is.
+///
+/// ```tsuzuri run=2%201
+/// let decomposed = Unicode.normalize Unicode.Nfd "é"
+/// let composed = Unicode.normalize Unicode.Nfc decomposed
+/// $"{String.length decomposed} {String.length composed}"
+/// ```
 def normalize :: own NormalizationForm -> ref string -> string
 fn normalize form text =
 	let none = u8""
@@ -315,6 +338,10 @@ fn normalize form text =
 	| (codes, _) -> encode16 (normalized form (ref codes))
 
 /// `normalize` on a `utf8string`.
+///
+/// ```tsuzuri run=fi1
+/// Unicode.normalize_utf8 Unicode.Nfkc u8"ﬁ①"
+/// ```
 def normalize_utf8 :: own NormalizationForm -> ref utf8string -> utf8string
 fn normalize_utf8 form text =
 	let none = ""
@@ -322,12 +349,20 @@ fn normalize_utf8 form text =
 	| (codes, _) -> encode8 (normalized form (ref codes))
 
 /// Whether `text` is already in normalization form `form`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Unicode.is_normalized Unicode.Nfc "é"} {Unicode.is_normalized Unicode.Nfd "é"}"
+/// ```
 def is_normalized :: own NormalizationForm -> ref string -> bool
 fn is_normalized form text =
 	let result = normalize form text
 	Eq.eq (ref result) text
 
 /// `is_normalized` on a `utf8string`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Unicode.is_normalized_utf8 Unicode.Nfc u8"ﬁ"} {Unicode.is_normalized_utf8 Unicode.Nfkc u8"ﬁ"}"
+/// ```
 def is_normalized_utf8 :: own NormalizationForm -> ref utf8string -> bool
 fn is_normalized_utf8 form text =
 	let result = normalize_utf8 form text
@@ -442,24 +477,40 @@ fn segment_offsets text bytes utf8 words =
 
 /// The offsets of the extended grapheme cluster boundaries of `text` (UAX #29) in code units: 0, every
 /// boundary inside the text, and the length (`[0]` for an empty text).
+///
+/// ```tsuzuri run=[0,%201,%205,%206]
+/// Unicode.grapheme_boundaries "a🇯🇵!"
+/// ```
 def grapheme_boundaries :: ref string -> [i64]
 fn grapheme_boundaries text =
 	let none = u8""
 	segment_offsets text (ref none) false false
 
 /// `grapheme_boundaries` on a `utf8string`, in bytes.
+///
+/// ```tsuzuri run=[0,%201,%209,%2010]
+/// Unicode.grapheme_boundaries_utf8 u8"a🇯🇵!"
+/// ```
 def grapheme_boundaries_utf8 :: ref utf8string -> [i64]
 fn grapheme_boundaries_utf8 text =
 	let none = ""
 	segment_offsets (ref none) text true false
 
 /// The offsets of the default word boundaries of `text` (UAX #29) in code units, like `grapheme_boundaries`.
+///
+/// ```tsuzuri run=[0,%202,%203,%204,%207]
+/// Unicode.word_boundaries "Hi, you"
+/// ```
 def word_boundaries :: ref string -> [i64]
 fn word_boundaries text =
 	let none = u8""
 	segment_offsets text (ref none) false true
 
 /// `word_boundaries` on a `utf8string`, in bytes.
+///
+/// ```tsuzuri run=[0,%204,%205,%208]
+/// Unicode.word_boundaries_utf8 u8"día uno"
+/// ```
 def word_boundaries_utf8 :: ref utf8string -> [i64]
 fn word_boundaries_utf8 text =
 	let none = ""
@@ -472,24 +523,40 @@ private def pieces_utf8 :: ref utf8string -> ref [i64] -> [utf8string]
 fn pieces_utf8 text offsets = new [utf8string](offsets.length - 1, \index -> Maybe.get (Utf8String.slice offsets[index] offsets[index + 1] text))
 
 /// The extended grapheme clusters of `text` (user-perceived characters).
+///
+/// ```tsuzuri run=["a",%20"%F0%9F%87%AF%F0%9F%87%B5",%20"!"]
+/// Unicode.graphemes "a🇯🇵!"
+/// ```
 def graphemes :: ref string -> [string]
 fn graphemes text =
 	let offsets = grapheme_boundaries text
 	pieces text (ref offsets)
 
 /// `graphemes` on a `utf8string`.
+///
+/// ```tsuzuri run=[u8"a",%20u8"%F0%9F%87%AF%F0%9F%87%B5",%20u8"!"]
+/// Unicode.graphemes_utf8 u8"a🇯🇵!"
+/// ```
 def graphemes_utf8 :: ref utf8string -> [utf8string]
 fn graphemes_utf8 text =
 	let offsets = grapheme_boundaries_utf8 text
 	pieces_utf8 text (ref offsets)
 
 /// The segments of `text` between its word boundaries: words, and the spaces and punctuation between them.
+///
+/// ```tsuzuri run=["Hi",%20",",%20"%20",%20"you"]
+/// Unicode.words "Hi, you"
+/// ```
 def words :: ref string -> [string]
 fn words text =
 	let offsets = word_boundaries text
 	pieces text (ref offsets)
 
 /// `words` on a `utf8string`.
+///
+/// ```tsuzuri run=[u8"día",%20u8"%20",%20u8"uno"]
+/// Unicode.words_utf8 u8"día uno"
+/// ```
 def words_utf8 :: ref utf8string -> [utf8string]
 fn words_utf8 text =
 	let offsets = word_boundaries_utf8 text
@@ -556,34 +623,66 @@ fn convert_utf8 text kind =
 	| (codes, _) -> encode8 (converted (ref codes) kind)
 
 /// The full lowercase of `text` (SpecialCasing.txt without locale tailoring, with final sigma).
+///
+/// ```tsuzuri run=école%20οδος
+/// Unicode.to_lower "ÉCOLE ΟΔΟΣ"
+/// ```
 def to_lower :: ref string -> string
 fn to_lower text = convert text 0
 
 /// `to_lower` on a `utf8string`.
+///
+/// ```tsuzuri run=àéî
+/// Unicode.to_lower_utf8 u8"ÀÉÎ"
+/// ```
 def to_lower_utf8 :: ref utf8string -> utf8string
 fn to_lower_utf8 text = convert_utf8 text 0
 
 /// The full uppercase of `text` (`ß` becomes `SS`).
+///
+/// ```tsuzuri run=STRASSE
+/// Unicode.to_upper "straße"
+/// ```
 def to_upper :: ref string -> string
 fn to_upper text = convert text 2
 
 /// `to_upper` on a `utf8string`.
+///
+/// ```tsuzuri run=FIX
+/// Unicode.to_upper_utf8 u8"ﬁx"
+/// ```
 def to_upper_utf8 :: ref utf8string -> utf8string
 fn to_upper_utf8 text = convert_utf8 text 2
 
 /// `text` with the first cased scalar of each word (UAX #29) in titlecase and the rest of the word in
 /// lowercase.
+///
+/// ```tsuzuri run=Hello%20World
+/// Unicode.to_title "hello wORLD"
+/// ```
 def to_title :: ref string -> string
 fn to_title text = convert text 1
 
 /// `to_title` on a `utf8string`.
+///
+/// ```tsuzuri run=Élan%20Vital
+/// Unicode.to_title_utf8 u8"élan VITAL"
+/// ```
 def to_title_utf8 :: ref utf8string -> utf8string
 fn to_title_utf8 text = convert_utf8 text 1
 
 /// The full case folding of `text` (CaseFolding.txt statuses C and F), for caseless comparison.
+///
+/// ```tsuzuri run=strasse
+/// Unicode.case_fold "Straße"
+/// ```
 def case_fold :: ref string -> string
 fn case_fold text = convert text 3
 
 /// `case_fold` on a `utf8string`.
+///
+/// ```tsuzuri run=οδοσ
+/// Unicode.case_fold_utf8 u8"ΟΔΟΣ"
+/// ```
 def case_fold_utf8 :: ref utf8string -> utf8string
 fn case_fold_utf8 text = convert_utf8 text 3

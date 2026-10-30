@@ -83,15 +83,36 @@ fn join head tail =
 		| (remaining, Maybe.None) -> rest = remaining
 	result
 
+/// An empty set.
+///
+/// ```tsuzuri run=0
+/// let set: Set<i64> = Set.empty()
+/// Set.length set
+/// ```
 def empty :: Set<'key>
 fn empty = Set { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
+/// A set of the one key `key`.
+///
+/// ```tsuzuri run=[7]
+/// Set.to_array (Set.singleton 7)
+/// ```
 def singleton :: own 'key -> Set<'key>
 fn singleton key = Set { head: Vec.push_owned key (Vec.empty()), rest: Vec.empty(), length: 1 }
 
+/// The number of keys.
+///
+/// ```tsuzuri run=2
+/// Set.empty() |> Set.insert 2 |> Set.insert 1 |> Set.insert 2 |> Set.length
+/// ```
 def length :: ref Set<'key> -> i64
 fn length set = set.length
 
+/// Whether the set has no keys.
+///
+/// ```tsuzuri run=true
+/// Set.singleton 1 |> Set.remove 1 |> Set.is_empty
+/// ```
 def is_empty :: ref Set<'key> -> bool
 fn is_empty set = set.length == 0
 
@@ -99,6 +120,12 @@ private def chunk_total :: ref Set<'key> -> i64
 fn chunk_total set = if set.length == 0 then 0 else 1 + Vec.length (ref set.rest)
 
 /// The number of chunks that hold the keys (0 for an empty set). A diagnostic for tests, like `HashSet.longest_probe`.
+///
+/// ```tsuzuri run=2
+/// let mut set: Set<i64> = Set.empty()
+/// for key in 1i64 ..= 600 do set = Set.insert key set
+/// Set.chunk_count set
+/// ```
 def chunk_count :: ref Set<'key> -> i64
 fn chunk_count set = chunk_total set
 
@@ -132,6 +159,12 @@ fn locate set key =
 			if Ord.lt (ref keys[middle]) key then start = middle + 1 else stop = middle
 		if start < size && !(Ord.lt key (ref keys[start])) then (low, start) else (low, -1 - start)
 
+/// Whether the set has `key`.
+///
+/// ```tsuzuri run=true%20false
+/// let set = Set.empty() |> Set.insert 1 |> Set.insert 3
+/// $"{Set.contains 3 set} {Set.contains 2 set}"
+/// ```
 def contains :: Ord<'key> => own 'key -> ref Set<'key> -> bool
 fn contains key set =
 	match locate set (ref key) with
@@ -186,6 +219,11 @@ fn beyond_last set key =
 		assert (Eq.eq (ref keys[last]) (ref keys[last]))
 		Ord.lt (ref keys[last]) key
 
+/// Adds `key`; a set that has it already comes back unchanged.
+///
+/// ```tsuzuri run=[1,%203]
+/// Set.empty() |> Set.insert 3 |> Set.insert 1 |> Set.insert 3 |> Set.to_array
+/// ```
 def insert :: Ord<'key> => own 'key -> own Set<'key> -> Set<'key>
 fn insert key set =
 	if beyond_last (ref set) (ref key) then
@@ -226,6 +264,12 @@ fn delete_chunk set index =
 		match remove_at set.rest (index - 1) with
 		| (others, _gone) -> Set { head: set.head, rest: others, length: count }
 
+/// Removes `key`; a set without it comes back unchanged.
+///
+/// ```tsuzuri run=[2,%203]
+/// let set = Set.empty() |> Set.insert 1 |> Set.insert 2 |> Set.insert 3
+/// set |> Set.remove 1 |> Set.remove 5 |> Set.to_array
+/// ```
 def remove :: Ord<'key> => own 'key -> own Set<'key> -> Set<'key>
 fn remove key set =
 	match locate (ref set) (ref key) with
@@ -251,6 +295,11 @@ fn append_keys output keys =
 		offset = offset + 1
 	result
 
+/// The keys in ascending order.
+///
+/// ```tsuzuri run=[1,%205,%209]
+/// Set.empty() |> Set.insert 9 |> Set.insert 1 |> Set.insert 5 |> Set.to_array
+/// ```
 def to_array :: Copy<'key> => ref Set<'key> -> ['key]
 fn to_array set =
 	let mut output = append_keys (Vec.with_capacity set.length) (ref set.head)
@@ -260,6 +309,12 @@ fn to_array set =
 		chunk = chunk + 1
 	Vec.to_array output
 
+/// Folds `folder` over the keys in ascending order, starting from `initial`.
+///
+/// ```tsuzuri run=123
+/// let set = Set.empty() |> Set.insert 3 |> Set.insert 1 |> Set.insert 2
+/// Set.fold (\digits key -> digits * 10 + deref key) 0 set
+/// ```
 def fold :: own ('state -> ref 'key -> 'state) -> own 'state -> ref Set<'key> -> 'state
 fn fold folder initial set =
 	let mut state = initial
@@ -301,6 +356,13 @@ fn from_chunks chunks total =
 		match remove_at chunks 0 with
 		| (others, first) -> Set { head: first, rest: others, length: total }
 
+/// The keys that are in `left`, in `right` or in both.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// let left = Set.empty() |> Set.insert 1 |> Set.insert 2
+/// let right = Set.empty() |> Set.insert 2 |> Set.insert 3
+/// Set.union left right |> Set.to_array
+/// ```
 def union :: Ord<'key> => own Set<'key> -> own Set<'key> -> Set<'key>
 fn union left right =
 	let left_count = left.length
@@ -404,9 +466,23 @@ fn select left right include_equal =
 	if Vec.length (ref current) > 0 then finished = Vec.push_owned current finished
 	from_chunks finished total
 
+/// The keys that are in both `left` and `right`.
+///
+/// ```tsuzuri run=[2,%203]
+/// let left = Set.empty() |> Set.insert 1 |> Set.insert 2 |> Set.insert 3
+/// let right = Set.empty() |> Set.insert 2 |> Set.insert 3 |> Set.insert 4
+/// Set.intersect left right |> Set.to_array
+/// ```
 def intersect :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> Set<'key>
 fn intersect left right = select left right true
 
+/// The keys of `left` that are not in `right`.
+///
+/// ```tsuzuri run=[1]
+/// let left = Set.empty() |> Set.insert 1 |> Set.insert 2 |> Set.insert 3
+/// let right = Set.empty() |> Set.insert 2 |> Set.insert 3 |> Set.insert 4
+/// Set.difference left right |> Set.to_array
+/// ```
 def difference :: (Ord<'key>, Copy<'key>) => ref Set<'key> -> ref Set<'key> -> Set<'key>
 fn difference left right = select left right false
 
@@ -418,11 +494,25 @@ fn rec iter_from set chunk offset = Seq.defer (\() ->
 		(next, Maybe.Some (ref keys[offset]))
 	else (Seq.empty(), Maybe.None))
 
+/// A sequence of references to the keys, in ascending order.
+///
+/// ```tsuzuri run=abc
+/// let set = Set.empty() |> Set.insert "b" |> Set.insert "c" |> Set.insert "a"
+/// let mut text = ""
+/// for key in Set.iter set do text = $"{text}{key}"
+/// text
+/// ```
 def iter :: ref Set<'key> -> Seq<ref 'key>
 fn iter set = iter_from set 0 0
 
 /// Whether the chunks obey their rules: 1 to 512 keys each, more than 256 keys in any two neighbours, strictly ascending keys, and `length`
 /// equal to the number of keys. A diagnostic for tests, like `HashSet.longest_probe`.
+///
+/// ```tsuzuri run=true
+/// let mut set: Set<i64> = Set.empty()
+/// for key in 1i64 ..= 1000 do set = Set.insert (key * 7 % 1000) set
+/// Set.invariants_hold set
+/// ```
 def invariants_hold :: Ord<'key> => ref Set<'key> -> bool
 fn invariants_hold set =
 	let total = chunk_total set

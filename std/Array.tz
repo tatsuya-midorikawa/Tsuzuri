@@ -6,118 +6,262 @@
 // so the element type must be `Copy`; the `r` forms (`mapr`, `foldr`, `existsr`, ...) borrow each element instead and
 // work for any element type.
 
+/// The number of elements of `values`.
+///
+/// ```tsuzuri run=3
+/// Array.length [10, 20, 30]
+/// ```
 def length :: ref ['a] -> i64
 fn length values = values.length
 
+/// Whether `values` has no elements.
+///
+/// ```tsuzuri run=true
+/// let none: [i64] = []
+/// Array.is_empty none
+/// ```
 def is_empty :: ref ['a] -> bool
 fn is_empty values = values.length == 0
 
 // ---- Construction ----
 
+/// An array with no elements.
+///
+/// ```tsuzuri run=0
+/// let none: [i64] = Array.empty()
+/// Array.length none
+/// ```
 def empty :: ['a]
 fn empty = []
 
+/// An array that holds only `value`.
+///
+/// ```tsuzuri run=[5]
+/// Array.singleton 5
+/// ```
 def singleton :: own 'a -> ['a]
 fn singleton value = [value]
 
+/// An array of `count` copies of `value`.
+///
+/// ```tsuzuri run=[7,%207,%207]
+/// Array.create 3 7
+/// ```
 def create :: Copy<'a> => own i64 -> own 'a -> ['a]
 fn create count value = new ['a](count, \_index -> value)
 
+/// An array of `count` copies of `value`, the same as `create`.
+///
+/// ```tsuzuri run=['x',%20'x']
+/// Array.replicate 2 'x'
+/// ```
 def replicate :: Copy<'a> => own i64 -> own 'a -> ['a]
 fn replicate count value = new ['a](count, \_index -> value)
 
+/// An array of `count` default values (`Default.default()`, which is 0 for numbers).
+///
+/// ```tsuzuri run=[0,%200,%200]
+/// let zeros: [i64] = Array.zero_create 3
+/// zeros
+/// ```
 def zero_create :: Default<'a> => own i64 -> ['a]
 fn zero_create count = new ['a](count, \_index -> Default.default())
 
+/// An array of `count` elements whose element at position `i` is `initializer i`.
+///
+/// ```tsuzuri run=[0,%201,%204,%209]
+/// Array.init 4 (\i -> i * i)
+/// ```
 def init :: own i64 -> own (i64 -> 'a) -> ['a]
 fn init count initializer = new ['a](count, initializer)
 
 // ---- Access ----
 
 /// The element at `index`; traps when `index` is out of range. F# `get`, with the array last, which makes it `item`.
+///
+/// ```tsuzuri run=20
+/// Array.get 1 [10, 20, 30]
+/// ```
 def get :: Copy<'a> => own i64 -> ref ['a] -> 'a
 fn get index values = values[index]
 
+/// The element at `index`; traps when `index` is out of range. The same as `get`.
+///
+/// ```tsuzuri run=30
+/// Array.item 2 [10, 20, 30]
+/// ```
 def item :: Copy<'a> => own i64 -> ref ['a] -> 'a
 fn item index values = values[index]
 
+/// The element at `index`, or `None` when `index` is out of range.
+///
+/// ```tsuzuri run=out%20of%20range
+/// match Array.try_item 5 [10, 20, 30] with
+/// | Some value -> $"{value}"
+/// | None -> "out of range"
+/// ```
 def try_item :: Copy<'a> => own i64 -> ref ['a] -> Maybe<'a>
 fn try_item index values =
     if index < 0 || index >= values.length then Maybe.None else Maybe.Some values[index]
 
 /// A reference to the element at `index`; traps when `index` is out of range.
+///
+/// ```tsuzuri run=20
+/// let values = [10, 20, 30]
+/// deref (Array.at 1 values)
+/// ```
 def at :: own i64 -> ref ['a] -> ref 'a
 fn at index values = ref values[index]
 
+/// The first element; traps when `values` is empty.
+///
+/// ```tsuzuri run=4
+/// Array.head [4, 5, 6]
+/// ```
 def head :: Copy<'a> => ref ['a] -> 'a
 fn head values =
     assert (values.length > 0)
     values[0]
 
+/// The first element, or `None` when `values` is empty.
+///
+/// ```tsuzuri run=first%204
+/// match Array.try_head [4, 5, 6] with
+/// | Some value -> $"first {value}"
+/// | None -> "empty"
+/// ```
 def try_head :: Copy<'a> => ref ['a] -> Maybe<'a>
 fn try_head values = if values.length == 0 then Maybe.None else Maybe.Some values[0]
 
+/// The last element; traps when `values` is empty.
+///
+/// ```tsuzuri run=6
+/// Array.last [4, 5, 6]
+/// ```
 def last :: Copy<'a> => ref ['a] -> 'a
 fn last values =
     assert (values.length > 0)
     values[values.length - 1]
 
+/// The last element, or `None` when `values` is empty.
+///
+/// ```tsuzuri run=0
+/// let none: [i64] = []
+/// Maybe.default_value 0 (Array.try_last none)
+/// ```
 def try_last :: Copy<'a> => ref ['a] -> Maybe<'a>
 fn try_last values = if values.length == 0 then Maybe.None else Maybe.Some values[values.length - 1]
 
+/// The only element; traps unless `values` has exactly one element.
+///
+/// ```tsuzuri run=7
+/// Array.exactly_one [7]
+/// ```
 def exactly_one :: Copy<'a> => ref ['a] -> 'a
 fn exactly_one values =
     assert (values.length == 1)
     values[0]
 
+/// The only element, or `None` unless `values` has exactly one element.
+///
+/// ```tsuzuri run=not%20one
+/// match Array.try_exactly_one [1, 2] with
+/// | Some value -> $"{value}"
+/// | None -> "not one"
+/// ```
 def try_exactly_one :: Copy<'a> => ref ['a] -> Maybe<'a>
 fn try_exactly_one values = if values.length == 1 then Maybe.Some values[0] else Maybe.None
 
 // ---- Slicing and filtering ----
 
+/// A copy of the `count` elements from position `start`; traps unless they all lie inside `values`.
+///
+/// ```tsuzuri run=[20,%2030]
+/// Array.sub 1 2 [10, 20, 30, 40]
+/// ```
 def sub :: Copy<'a> => own i64 -> own i64 -> ref ['a] -> ['a]
 fn sub start count values =
     assert (start >= 0 && start <= values.length && count >= 0 && count <= values.length - start)
     let selected = ref values[start..start + count]
     deref selected
 
+/// A copy of every element but the first; traps when `values` is empty.
+///
+/// ```tsuzuri run=[2,%203]
+/// Array.tail [1, 2, 3]
+/// ```
 def tail :: Copy<'a> => ref ['a] -> ['a]
 fn tail values =
     assert (values.length > 0)
     sub 1 (values.length - 1) values
 
+/// A copy of the first `count` elements; traps when `count` is negative or greater than the length.
+///
+/// ```tsuzuri run=[1,%202]
+/// Array.take 2 [1, 2, 3]
+/// ```
 def take :: Copy<'a> => own i64 -> ref ['a] -> ['a]
 fn take count values =
     assert (count >= 0 && count <= values.length)
     sub 0 count values
 
+/// A copy without the first `count` elements; a negative `count` skips none, one greater than the length traps.
+///
+/// ```tsuzuri run=[3,%204]
+/// Array.skip 2 [1, 2, 3, 4]
+/// ```
 def skip :: Copy<'a> => own i64 -> ref ['a] -> ['a]
 fn skip count values =
     assert (count <= values.length)
     let start = if count < 0 then 0 else count
     sub start (values.length - start) values
 
+/// A copy of at most the first `count` elements; unlike `take`, a larger `count` does not trap.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Array.truncate 5 [1, 2, 3]
+/// ```
 def truncate :: Copy<'a> => own i64 -> ref ['a] -> ['a]
 fn truncate count values =
     if count <= 0 then [] else sub 0 (if count < values.length then count else values.length) values
 
+/// Copies of the elements before `index` and of those from `index`; traps unless `0 <= index <= length`.
+///
+/// ```tsuzuri run=([1],%20[2,%203])
+/// Array.split_at 1 [1, 2, 3]
+/// ```
 def split_at :: Copy<'a> => own i64 -> ref ['a] -> (['a] * ['a])
 fn split_at index values =
     assert (index >= 0 && index <= values.length)
     (sub 0 index values, sub index (values.length - index) values)
 
+/// A copy of the longest prefix whose elements all satisfy `predicate`.
+///
+/// ```tsuzuri run=[1,%202]
+/// Array.take_while (\x -> x < 3) [1, 2, 3, 1]
+/// ```
 def take_while :: Copy<'a> => own ('a -> bool) -> ref ['a] -> ['a]
 fn take_while predicate values =
     let mut index = 0
     while index < values.length && predicate values[index] do index = index + 1
     sub 0 index values
 
+/// A copy of the elements after the longest prefix that satisfies `predicate`.
+///
+/// ```tsuzuri run=[3,%201]
+/// Array.skip_while (\x -> x < 3) [1, 2, 3, 1]
+/// ```
 def skip_while :: Copy<'a> => own ('a -> bool) -> ref ['a] -> ['a]
 fn skip_while predicate values =
     let mut index = 0
     while index < values.length && predicate values[index] do index = index + 1
     sub index (values.length - index) values
 
+/// The elements that satisfy `predicate`, in order. The same as `filter`.
+///
+/// ```tsuzuri run=[2,%204]
+/// Array.where (\x -> x % 2 == 0) [1, 2, 3, 4]
+/// ```
 def where :: Copy<'a> => own ('a -> bool) -> ref ['a] -> ['a]
 fn where predicate values =
     let mut selected = Vec.empty()
@@ -127,9 +271,19 @@ fn where predicate values =
         index = index + 1
     Vec.to_array selected
 
+/// The elements that satisfy `predicate`, in order.
+///
+/// ```tsuzuri run=[3,%202]
+/// Array.filter (\x -> x > 1) [3, 1, 2]
+/// ```
 def filter :: Copy<'a> => own ('a -> bool) -> ref ['a] -> ['a]
 fn filter predicate values = where predicate values
 
+/// The columns of `arrays` as rows; traps when the inner arrays have different lengths.
+///
+/// ```tsuzuri run=[[1,%204],%20[2,%205],%20[3,%206]]
+/// Array.transpose [[1, 2, 3], [4, 5, 6]]
+/// ```
 def transpose :: Copy<'a> => ref [['a]] -> [['a]]
 fn transpose arrays =
     if arrays.length == 0 then [] else
@@ -151,6 +305,12 @@ fn reverse_in_place values =
 
 // ---- Traversal: iter, map, collect, choose ----
 
+/// Calls `action` on each element, in order.
+///
+/// ```tsuzuri test
+/// test "iter calls the action on every element" =
+///     Array.iter (\x -> assert (x > 0)) [1, 2, 3]
+/// ```
 def iter :: Copy<'a> => own ('a -> unit) -> ref ['a] -> unit
 fn iter action values =
     let mut index = 0
@@ -159,6 +319,11 @@ fn iter action values =
         index = index + 1
 
 /// Like `iter`, but `action` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri test
+/// test "iterr lends each element" =
+///     Array.iterr (\word -> assert (word.length > 0)) ["a", "bb"]
+/// ```
 def iterr :: own (ref 'a -> unit) -> ref ['a] -> unit
 fn iterr action values =
     let mut index = 0
@@ -166,6 +331,12 @@ fn iterr action values =
         action (ref values[index])
         index = index + 1
 
+/// Calls `action` on the index and the value of each element, in order.
+///
+/// ```tsuzuri test
+/// test "iteri passes the index before the element" =
+///     Array.iteri (\i x -> assert (x == i * 10)) [0, 10, 20]
+/// ```
 def iteri :: Copy<'a> => own (i64 -> 'a -> unit) -> ref ['a] -> unit
 fn iteri action values =
     let mut index = 0
@@ -174,6 +345,11 @@ fn iteri action values =
         index = index + 1
 
 /// Like `iteri`, but `action` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri test
+/// test "iterir lends each element with its index" =
+///     Array.iterir (\i word -> assert (word.length == i + 1)) ["a", "bb", "ccc"]
+/// ```
 def iterir :: own (i64 -> ref 'a -> unit) -> ref ['a] -> unit
 fn iterir action values =
     let mut index = 0
@@ -181,6 +357,12 @@ fn iterir action values =
         action index (ref values[index])
         index = index + 1
 
+/// Calls `action` on the elements at each position of `left` and `right`; traps when their lengths differ.
+///
+/// ```tsuzuri test
+/// test "iter2 walks two arrays together" =
+///     Array.iter2 (\a b -> assert (b == a * 2)) [1, 2, 3] [2, 4, 6]
+/// ```
 def iter2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> unit) -> ref ['a] -> ref ['b] -> unit
 fn iter2 action left right =
     assert (left.length == right.length)
@@ -189,6 +371,12 @@ fn iter2 action left right =
         action left[index] right[index]
         index = index + 1
 
+/// Like `iter2`, but `action` also receives the index first.
+///
+/// ```tsuzuri test
+/// test "iteri2 passes the index and both elements" =
+///     Array.iteri2 (\i a b -> assert (a - b == i)) [5, 7, 9] [5, 6, 7]
+/// ```
 def iteri2 :: (Copy<'a>, Copy<'b>) => own (i64 -> 'a -> 'b -> unit) -> ref ['a] -> ref ['b] -> unit
 fn iteri2 action left right =
     assert (left.length == right.length)
@@ -197,35 +385,74 @@ fn iteri2 action left right =
         action index left[index] right[index]
         index = index + 1
 
+/// Applies `transform` to each element and returns the results in order.
+///
+/// ```tsuzuri run=[2,%204,%206]
+/// Array.map (\x -> x * 2) [1, 2, 3]
+/// ```
 def map :: Copy<'a> => own ('a -> 'b) -> ref ['a] -> ['b]
 fn map transform values = new ['b](values.length, \index -> transform values[index])
 
+/// Like `map`, but `transform` also receives the index of each element first.
+///
+/// ```tsuzuri run=[1,%20102,%20203]
+/// Array.mapi (\i x -> i * 100 + x) [1, 2, 3]
+/// ```
 def mapi :: Copy<'a> => own (i64 -> 'a -> 'b) -> ref ['a] -> ['b]
 fn mapi transform values = new ['b](values.length, \index -> transform index values[index])
 
 /// Like `map`, but `transform` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=[1,%203]
+/// Array.mapr (\word -> word.length) ["a", "bcd"]
+/// ```
 def mapr :: own (ref 'a -> 'b) -> ref ['a] -> ['b]
 fn mapr transform values = new ['b](values.length, \index -> transform (ref values[index]))
 
 /// Like `mapi`, but `transform` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=["0:a",%20"1:b"]
+/// Array.mapir (\i word -> $"{i}:{word}") ["a", "b"]
+/// ```
 def mapir :: own (i64 -> ref 'a -> 'b) -> ref ['a] -> ['b]
 fn mapir transform values = new ['b](values.length, \index -> transform index (ref values[index]))
 
+/// Applies `transform` to the elements at each position of `left` and `right`; traps when their lengths differ.
+///
+/// ```tsuzuri run=[11,%2022]
+/// Array.map2 (\a b -> a + b) [1, 2] [10, 20]
+/// ```
 def map2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> ['c]
 fn map2 transform left right =
     assert (left.length == right.length)
     new ['c](left.length, \index -> transform left[index] right[index])
 
+/// Like `map2`, but `transform` also receives the index first.
+///
+/// ```tsuzuri run=[11,%20122]
+/// Array.mapi2 (\i a b -> i * 100 + a + b) [1, 2] [10, 20]
+/// ```
 def mapi2 :: (Copy<'a>, Copy<'b>) => own (i64 -> 'a -> 'b -> 'c) -> ref ['a] -> ref ['b] -> ['c]
 fn mapi2 transform left right =
     assert (left.length == right.length)
     new ['c](left.length, \index -> transform index left[index] right[index])
 
+/// Applies `transform` to the elements at each position of three arrays; traps when their lengths differ.
+///
+/// ```tsuzuri run=[111,%20222]
+/// Array.map3 (\a b c -> a + b + c) [1, 2] [10, 20] [100, 200]
+/// ```
 def map3 :: (Copy<'a>, Copy<'b>, Copy<'c>) => own ('a -> 'b -> 'c -> 'd) -> ref ['a] -> ref ['b] -> ref ['c] -> ['d]
 fn map3 transform first second third =
     assert (first.length == second.length && second.length == third.length)
     new ['d](first.length, \index -> transform first[index] second[index] third[index])
 
+/// Maps each element with a state threaded from left to right, starting from `initial`, and returns the mapped
+/// array with the final state.
+///
+/// ```tsuzuri run=([1,%203,%206],%206)
+/// Array.map_fold (\total x -> (total + x, total + x)) 0 [1, 2, 3]
+/// ```
 def map_fold :: Copy<'a> => own ('state -> 'a -> ('b * 'state)) -> own 'state -> ref ['a] -> (['b] * 'state)
 fn map_fold mapping initial values =
     let mut state = initial
@@ -239,6 +466,11 @@ fn map_fold mapping initial values =
         index = index + 1
     (Vec.to_array mapped, state)
 
+/// Like `map_fold`, but the state runs from right to left; the mapped array keeps the order of `values`.
+///
+/// ```tsuzuri run=([6,%205,%203],%206)
+/// Array.map_fold_back (\x total -> (total + x, total + x)) 0 [1, 2, 3]
+/// ```
 def map_fold_back :: Copy<'a> => own ('a -> 'state -> ('b * 'state)) -> own 'state -> ref ['a] -> (['b] * 'state)
 fn map_fold_back mapping initial values =
     let mut state = initial
@@ -254,6 +486,11 @@ fn map_fold_back mapping initial values =
     reverse_in_place (ref mut result)
     (result, state)
 
+/// Concatenates the arrays that `mapping` returns for the elements, in order.
+///
+/// ```tsuzuri run=[1,%2010,%202,%2020]
+/// Array.collect (\x -> [x, x * 10]) [1, 2]
+/// ```
 def collect :: (Copy<'a>, Copy<'b>) => own ('a -> ['b]) -> ref ['a] -> ['b]
 fn collect mapping values =
     let mut parts = Vec.empty()
@@ -263,6 +500,11 @@ fn collect mapping values =
         index = index + 1
     Array.concat (Vec.to_array parts)
 
+/// The values in the `Some` results of `chooser`, in the order of the elements.
+///
+/// ```tsuzuri run=[20,%2030]
+/// Array.choose (\x -> if x > 1 then Maybe.Some (x * 10) else Maybe.None) [1, 2, 3]
+/// ```
 def choose :: Copy<'a> => own ('a -> Maybe<'b>) -> ref ['a] -> ['b]
 fn choose chooser values =
     let mut chosen = Vec.empty()
@@ -276,6 +518,11 @@ fn choose chooser values =
 
 // ---- Folding ----
 
+/// Combines `initial` with each element from left to right through `folder`.
+///
+/// ```tsuzuri run=123
+/// Array.fold (\acc x -> acc * 10 + x) 0 [1, 2, 3]
+/// ```
 def fold :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> ref ['a] -> 'state
 fn fold folder initial values =
     let mut state = initial
@@ -283,6 +530,10 @@ fn fold folder initial values =
     state
 
 /// Like `fold`, but `folder` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=5
+/// Array.foldr (\total word -> total + word.length) 0 ["ab", "cde"]
+/// ```
 def foldr :: own ('state -> ref 'a -> 'state) -> own 'state -> ref ['a] -> 'state
 fn foldr folder initial values =
     let mut state = initial
@@ -292,6 +543,11 @@ fn foldr folder initial values =
         index = index + 1
     state
 
+/// Like `fold`, over the elements at each position of `left` and `right`; traps when their lengths differ.
+///
+/// ```tsuzuri run=32
+/// Array.fold2 (\acc a b -> acc + a * b) 0 [1, 2, 3] [4, 5, 6]
+/// ```
 def fold2 :: (Copy<'a>, Copy<'b>) => own ('state -> 'a -> 'b -> 'state) -> own 'state -> ref ['a] -> ref ['b] -> 'state
 fn fold2 folder initial left right =
     assert (left.length == right.length)
@@ -302,6 +558,11 @@ fn fold2 folder initial left right =
         index = index + 1
     state
 
+/// Combines each element with a state from right to left through `folder`, starting from `initial`.
+///
+/// ```tsuzuri run=321
+/// Array.fold_back (\x acc -> acc * 10 + x) 0 [1, 2, 3]
+/// ```
 def fold_back :: Copy<'a> => own ('a -> 'state -> 'state) -> own 'state -> ref ['a] -> 'state
 fn fold_back folder initial values =
     let mut state = initial
@@ -312,6 +573,10 @@ fn fold_back folder initial values =
     state
 
 /// Like `fold_back`, but `folder` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=321
+/// Array.foldr_back (\word acc -> acc * 10 + word.length) 0 ["a", "bb", "ccc"]
+/// ```
 def foldr_back :: own (ref 'a -> 'state -> 'state) -> own 'state -> ref ['a] -> 'state
 fn foldr_back folder initial values =
     let mut state = initial
@@ -321,6 +586,11 @@ fn foldr_back folder initial values =
         state = folder (ref values[index]) state
     state
 
+/// Like `fold_back`, over the elements at each position of `left` and `right`; traps when their lengths differ.
+///
+/// ```tsuzuri run=83
+/// Array.fold_back2 (\a b acc -> acc * 10 + a * b) 0 [1, 2] [3, 4]
+/// ```
 def fold_back2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'state -> 'state) -> own 'state -> ref ['a] -> ref ['b] -> 'state
 fn fold_back2 folder initial left right =
     assert (left.length == right.length)
@@ -331,6 +601,11 @@ fn fold_back2 folder initial left right =
         state = folder left[index] right[index] state
     state
 
+/// Folds the elements from left to right, starting from the first one; traps when `values` is empty.
+///
+/// ```tsuzuri run=5
+/// Array.reduce (\acc x -> acc - x) [10, 2, 3]
+/// ```
 def reduce :: Copy<'a> => own ('a -> 'a -> 'a) -> ref ['a] -> 'a
 fn reduce folder values =
     assert (values.length > 0)
@@ -341,6 +616,11 @@ fn reduce folder values =
         index = index + 1
     state
 
+/// Folds the elements from right to left, starting from the last one; traps when `values` is empty.
+///
+/// ```tsuzuri run=11
+/// Array.reduce_back (\x acc -> x - acc) [10, 2, 3]
+/// ```
 def reduce_back :: Copy<'a> => own ('a -> 'a -> 'a) -> ref ['a] -> 'a
 fn reduce_back folder values =
     assert (values.length > 0)
@@ -351,6 +631,11 @@ fn reduce_back folder values =
         state = folder values[index] state
     state
 
+/// Like `fold`, but returns `initial` and every state after it.
+///
+/// ```tsuzuri run=[0,%201,%203,%206]
+/// Array.scan (\acc x -> acc + x) 0 [1, 2, 3]
+/// ```
 def scan :: (Copy<'a>, Copy<'state>) => own ('state -> 'a -> 'state) -> own 'state -> ref ['a] -> ['state]
 fn scan folder initial values =
     let mut state = initial
@@ -362,6 +647,11 @@ fn scan folder initial values =
         index = index + 1
     Vec.to_array states
 
+/// Like `fold_back`, but returns every state in the order of `values`, with `initial` last.
+///
+/// ```tsuzuri run=[6,%205,%203,%200]
+/// Array.scan_back (\x acc -> acc + x) 0 [1, 2, 3]
+/// ```
 def scan_back :: (Copy<'a>, Copy<'state>) => own ('a -> 'state -> 'state) -> own 'state -> ref ['a] -> ['state]
 fn scan_back folder initial values =
     let mut state = initial
@@ -377,6 +667,11 @@ fn scan_back folder initial values =
 
 // ---- Searching ----
 
+/// Whether `predicate` is true for at least one element.
+///
+/// ```tsuzuri run=true
+/// Array.exists (\x -> x > 2) [1, 2, 3]
+/// ```
 def exists :: Copy<'a> => own ('a -> bool) -> ref ['a] -> bool
 fn exists predicate values =
     let mut index = 0
@@ -384,12 +679,22 @@ fn exists predicate values =
     index < values.length
 
 /// Like `exists`, but `predicate` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=true
+/// Array.existsr (\word -> word.length == 0) ["a", ""]
+/// ```
 def existsr :: own (ref 'a -> bool) -> ref ['a] -> bool
 fn existsr predicate values =
     let mut index = 0
     while index < values.length && !(predicate (ref values[index])) do index = index + 1
     index < values.length
 
+/// Whether `predicate` is true for the elements at some position of `left` and `right`; traps when their lengths
+/// differ.
+///
+/// ```tsuzuri run=true
+/// Array.exists2 (\a b -> a == b) [1, 2, 3] [3, 2, 1]
+/// ```
 def exists2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> bool) -> ref ['a] -> ref ['b] -> bool
 fn exists2 predicate left right =
     assert (left.length == right.length)
@@ -397,6 +702,11 @@ fn exists2 predicate left right =
     while index < left.length && !(predicate left[index] right[index]) do index = index + 1
     index < left.length
 
+/// Whether `predicate` is true for every element; true when `values` is empty.
+///
+/// ```tsuzuri run=true
+/// Array.forall (\x -> x > 0) [1, 2, 3]
+/// ```
 def forall :: Copy<'a> => own ('a -> bool) -> ref ['a] -> bool
 fn forall predicate values =
     let mut index = 0
@@ -404,12 +714,22 @@ fn forall predicate values =
     index == values.length
 
 /// Like `forall`, but `predicate` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=false
+/// Array.forallr (\word -> word.length > 1) ["ab", "c"]
+/// ```
 def forallr :: own (ref 'a -> bool) -> ref ['a] -> bool
 fn forallr predicate values =
     let mut index = 0
     while index < values.length && predicate (ref values[index]) do index = index + 1
     index == values.length
 
+/// Whether `predicate` is true for the elements at every position of `left` and `right`; traps when their lengths
+/// differ.
+///
+/// ```tsuzuri run=true
+/// Array.forall2 (\a b -> a < b) [1, 2] [3, 4]
+/// ```
 def forall2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> bool) -> ref ['a] -> ref ['b] -> bool
 fn forall2 predicate left right =
     assert (left.length == right.length)
@@ -418,6 +738,10 @@ fn forall2 predicate left right =
     index == left.length
 
 /// The number of elements for which `predicate` is true (not in F#).
+///
+/// ```tsuzuri run=2
+/// Array.count (\x -> x % 2 == 0) [1, 2, 3, 4]
+/// ```
 def count :: Copy<'a> => own ('a -> bool) -> ref ['a] -> i64
 fn count predicate values =
     let mut found = 0
@@ -428,6 +752,10 @@ fn count predicate values =
     found
 
 /// Like `count`, but `predicate` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=2
+/// Array.countr (\word -> word.length > 1) ["ab", "c", "de"]
+/// ```
 def countr :: own (ref 'a -> bool) -> ref ['a] -> i64
 fn countr predicate values =
     let mut found = 0
@@ -437,12 +765,24 @@ fn countr predicate values =
         index = index + 1
     found
 
+/// The position of the first element that satisfies `predicate`, or `None` when none does.
+///
+/// ```tsuzuri run=at%201
+/// match Array.try_find_index (\x -> x > 1) [1, 2, 3] with
+/// | Some index -> $"at {index}"
+/// | None -> "none"
+/// ```
 def try_find_index :: Copy<'a> => own ('a -> bool) -> ref ['a] -> Maybe<i64>
 fn try_find_index predicate values =
     let mut index = 0
     while index < values.length && !(predicate values[index]) do index = index + 1
     if index < values.length then Maybe.Some index else Maybe.None
 
+/// The position of the first element that satisfies `predicate`; traps when none does.
+///
+/// ```tsuzuri run=1
+/// Array.find_index (\x -> x > 1) [1, 2, 3]
+/// ```
 def find_index :: Copy<'a> => own ('a -> bool) -> ref ['a] -> i64
 fn find_index predicate values =
     let mut index = 0
@@ -450,12 +790,22 @@ fn find_index predicate values =
     assert (index < values.length)
     index
 
+/// The position of the last element that satisfies `predicate`, or `None` when none does.
+///
+/// ```tsuzuri run=-1
+/// Maybe.default_value (-1) (Array.try_find_index_back (\x -> x > 5) [1, 2, 3])
+/// ```
 def try_find_index_back :: Copy<'a> => own ('a -> bool) -> ref ['a] -> Maybe<i64>
 fn try_find_index_back predicate values =
     let mut index = values.length
     while index > 0 && !(predicate values[index - 1]) do index = index - 1
     if index > 0 then Maybe.Some (index - 1) else Maybe.None
 
+/// The position of the last element that satisfies `predicate`; traps when none does.
+///
+/// ```tsuzuri run=1
+/// Array.find_index_back (\x -> x < 3) [1, 2, 3]
+/// ```
 def find_index_back :: Copy<'a> => own ('a -> bool) -> ref ['a] -> i64
 fn find_index_back predicate values =
     let mut index = values.length
@@ -463,12 +813,24 @@ fn find_index_back predicate values =
     assert (index > 0)
     index - 1
 
+/// The first element that satisfies `predicate`, or `None` when none does.
+///
+/// ```tsuzuri run=found%204
+/// match Array.try_find (\x -> x % 2 == 0) [1, 4, 6] with
+/// | Some value -> $"found {value}"
+/// | None -> "none"
+/// ```
 def try_find :: Copy<'a> => own ('a -> bool) -> ref ['a] -> Maybe<'a>
 fn try_find predicate values =
     let mut index = 0
     while index < values.length && !(predicate values[index]) do index = index + 1
     if index < values.length then Maybe.Some values[index] else Maybe.None
 
+/// The first element that satisfies `predicate`; traps when none does.
+///
+/// ```tsuzuri run=4
+/// Array.find (\x -> x % 2 == 0) [1, 4, 6]
+/// ```
 def find :: Copy<'a> => own ('a -> bool) -> ref ['a] -> 'a
 fn find predicate values =
     let mut index = 0
@@ -476,12 +838,22 @@ fn find predicate values =
     assert (index < values.length)
     values[index]
 
+/// The last element that satisfies `predicate`, or `None` when none does.
+///
+/// ```tsuzuri run=6
+/// Maybe.default_value 0 (Array.try_find_back (\x -> x % 2 == 0) [1, 4, 6, 7])
+/// ```
 def try_find_back :: Copy<'a> => own ('a -> bool) -> ref ['a] -> Maybe<'a>
 fn try_find_back predicate values =
     let mut index = values.length
     while index > 0 && !(predicate values[index - 1]) do index = index - 1
     if index > 0 then Maybe.Some values[index - 1] else Maybe.None
 
+/// The last element that satisfies `predicate`; traps when none does.
+///
+/// ```tsuzuri run=6
+/// Array.find_back (\x -> x % 2 == 0) [1, 4, 6, 7]
+/// ```
 def find_back :: Copy<'a> => own ('a -> bool) -> ref ['a] -> 'a
 fn find_back predicate values =
     let mut index = values.length
@@ -490,6 +862,13 @@ fn find_back predicate values =
     values[index - 1]
 
 /// Like `try_find`, but returns a reference to the element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=bc
+/// let words = ["a", "bc", "de"]
+/// match Array.try_findr (\word -> word.length > 1) words with
+/// | Some found -> $"{found}"
+/// | None -> "none"
+/// ```
 def try_findr :: own (ref 'a -> bool) -> ref ['a] -> Maybe<ref 'a>
 fn try_findr predicate values =
     let mut index = 0
@@ -497,6 +876,11 @@ fn try_findr predicate values =
     if index < values.length then Maybe.Some (ref values[index]) else Maybe.None
 
 /// Like `find`, but returns a reference to the element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=bcd
+/// let words = ["a", "bcd", "ef"]
+/// $"{Array.findr (\word -> word.length > 2) words}"
+/// ```
 def findr :: own (ref 'a -> bool) -> ref ['a] -> ref 'a
 fn findr predicate values =
     let mut index = 0
@@ -504,6 +888,13 @@ fn findr predicate values =
     assert (index < values.length)
     ref values[index]
 
+/// The first `Some` that `chooser` returns for the elements in order, or `None` when every result is `None`.
+///
+/// ```tsuzuri run=none
+/// match Array.try_pick (\x -> if x > 5 then Maybe.Some (x * 10) else Maybe.None) [1, 2, 3] with
+/// | Some value -> $"{value}"
+/// | None -> "none"
+/// ```
 def try_pick :: Copy<'a> => own ('a -> Maybe<'b>) -> ref ['a] -> Maybe<'b>
 fn try_pick chooser values =
     let mut found: Maybe<'b> = Maybe.None
@@ -513,12 +904,22 @@ fn try_pick chooser values =
         index = index + 1
     found
 
+/// The value in the first `Some` that `chooser` returns for the elements in order; traps when every result is `None`.
+///
+/// ```tsuzuri run=20
+/// Array.pick (\x -> if x > 1 then Maybe.Some (x * 10) else Maybe.None) [1, 2, 3]
+/// ```
 def pick :: Copy<'a> => own ('a -> Maybe<'b>) -> ref ['a] -> 'b
 fn pick chooser values =
     let found = try_pick chooser values
     assert (Maybe.is_some (ref found))
     Maybe.get found
 
+/// The elements that satisfy `predicate` and the others, each in order.
+///
+/// ```tsuzuri run=([2,%204],%20[1,%203])
+/// Array.partition (\x -> x % 2 == 0) [1, 2, 3, 4]
+/// ```
 def partition :: Copy<'a> => own ('a -> bool) -> ref ['a] -> (['a] * ['a])
 fn partition predicate values =
     let mut accepted = Vec.empty()
@@ -530,6 +931,12 @@ fn partition predicate values =
         index = index + 1
     (Vec.to_array accepted, Vec.to_array rejected)
 
+/// The values of the `Ok` results of `partitioner` and those of its `Error` results, each in the order of the
+/// elements.
+///
+/// ```tsuzuri run=([1,%203],%20["bad%20-2"])
+/// Array.partition_with (\x -> if x > 0 then Result.Ok x else Result.Error $"bad {x}") [1, -2, 3]
+/// ```
 def partition_with :: Copy<'a> => own ('a -> Result<'b, 'c>) -> ref ['a] -> (['b] * ['c])
 fn partition_with partitioner values =
     let mut left = Vec.empty()
@@ -544,12 +951,22 @@ fn partition_with partitioner values =
 
 // ---- Aggregates ----
 
+/// The sum of the elements, or 0 when `values` is empty.
+///
+/// ```tsuzuri run=6
+/// Array.sum [1, 2, 3]
+/// ```
 def sum :: Numeric<'a> => ref ['a] -> 'a
 fn sum values =
     let mut total = 0i64 as 'a
     for value in values do total = total + value
     total
 
+/// The sum of `projection` applied to each element, or 0 when `values` is empty.
+///
+/// ```tsuzuri run=14
+/// Array.sum_by (\x -> x * x) [1, 2, 3]
+/// ```
 def sum_by :: (Copy<'a>, Numeric<'b>) => own ('a -> 'b) -> ref ['a] -> 'b
 fn sum_by projection values =
     let mut total = 0i64 as 'b
@@ -559,16 +976,31 @@ fn sum_by projection values =
         index = index + 1
     total
 
+/// The mean of the elements; traps when `values` is empty.
+///
+/// ```tsuzuri run=2.5
+/// Array.average [1.0, 2.0, 4.5]
+/// ```
 def average :: Float<'a> => ref ['a] -> 'a
 fn average values =
     assert (values.length > 0)
     sum values / (values.length as 'a)
 
+/// The mean of `projection` applied to each element; traps when `values` is empty.
+///
+/// ```tsuzuri run=3
+/// Array.average_by (\x -> x as f64) [1, 2, 3, 6]
+/// ```
 def average_by :: (Copy<'a>, Float<'b>) => own ('a -> 'b) -> ref ['a] -> 'b
 fn average_by projection values =
     assert (values.length > 0)
     sum_by projection values / (values.length as 'b)
 
+/// The product of the elements, or 1 when `values` is empty.
+///
+/// ```tsuzuri run=24
+/// Array.product [2, 3, 4]
+/// ```
 def product :: Numeric<'a> => ref ['a] -> 'a
 fn product values =
     let mut total = 1i64 as 'a
@@ -595,28 +1027,53 @@ fn max_index values =
         index = index + 1
     best
 
+/// The smallest element (the first of equal ones); traps when `values` is empty.
+///
+/// ```tsuzuri run=1
+/// Array.min [3, 1, 2]
+/// ```
 def min :: (Ord<'a>, Copy<'a>) => ref ['a] -> 'a
 fn min values =
     assert (values.length > 0)
     values[min_index values]
 
+/// The largest element (the first of equal ones); traps when `values` is empty.
+///
+/// ```tsuzuri run=3
+/// Array.max [3, 1, 2]
+/// ```
 def max :: (Ord<'a>, Copy<'a>) => ref ['a] -> 'a
 fn max values =
     assert (values.length > 0)
     values[max_index values]
 
 /// Like `min`, but returns a reference to the element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=apple
+/// let words = ["pear", "apple", "fig"]
+/// $"{Array.minr words}"
+/// ```
 def minr :: Ord<'a> => ref ['a] -> ref 'a
 fn minr values =
     assert (values.length > 0)
     ref values[min_index values]
 
 /// Like `max`, but returns a reference to the element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=pear
+/// let words = ["pear", "apple", "fig"]
+/// $"{Array.maxr words}"
+/// ```
 def maxr :: Ord<'a> => ref ['a] -> ref 'a
 fn maxr values =
     assert (values.length > 0)
     ref values[max_index values]
 
+/// The first element whose key under `projection` is the smallest; traps when `values` is empty.
+///
+/// ```tsuzuri run=21
+/// Array.min_by (\x -> x % 10) [13, 21, 32]
+/// ```
 def min_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref ['a] -> 'a
 fn min_by projection values =
     assert (values.length > 0)
@@ -631,6 +1088,11 @@ fn min_by projection values =
         index = index + 1
     best
 
+/// The first element whose key under `projection` is the largest; traps when `values` is empty.
+///
+/// ```tsuzuri run=13
+/// Array.max_by (\x -> x % 10) [13, 21, 33]
+/// ```
 def max_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref ['a] -> 'a
 fn max_by projection values =
     assert (values.length > 0)
@@ -645,6 +1107,12 @@ fn max_by projection values =
         index = index + 1
     best
 
+/// Compares `left` and `right` element by element with `comparer` and returns its first nonzero result; when every
+/// shared position compares equal, the result is -1, 0 or 1 as `left` is shorter, as long or longer.
+///
+/// ```tsuzuri run=-1
+/// Array.compare_with (\a b -> a - b) [1, 2] [1, 2, 3]
+/// ```
 def compare_with :: Copy<'a> => own ('a -> 'a -> i64) -> ref ['a] -> ref ['a] -> i64
 fn compare_with comparer left right =
     let shared = if left.length < right.length then left.length else right.length
@@ -661,21 +1129,43 @@ fn compare_with comparer left right =
 // ---- Comparing and searching by value ----
 
 /// Like `contains`, but `target` is borrowed, so it need not be `Copy`.
+///
+/// ```tsuzuri run=true
+/// let words = ["a", "b"]
+/// Array.containsr "b" words
+/// ```
 def containsr :: Eq<'a> => ref 'a -> ref ['a] -> bool
 fn containsr target values =
     let mut index = 0
     while index < values.length && !(Eq.eq (ref values[index]) target) do index = index + 1
     index < values.length
 
+/// Whether some element equals `target`.
+///
+/// ```tsuzuri run=true
+/// Array.contains 2 [1, 2, 3]
+/// ```
 def contains :: Eq<'a> => own 'a -> ref ['a] -> bool
 fn contains target values = containsr (ref target) values
 
+/// The position of the first element equal to `target`, or `None` when there is none.
+///
+/// ```tsuzuri run=at%202
+/// match Array.index_of 30 [10, 20, 30] with
+/// | Some index -> $"at {index}"
+/// | None -> "missing"
+/// ```
 def index_of :: Eq<'a> => ref 'a -> ref ['a] -> Maybe<i64>
 fn index_of target values =
     let mut index = 0
     while index < values.length && !(Eq.eq (ref values[index]) target) do index = index + 1
     if index < values.length then Maybe.Some index else Maybe.None
 
+/// Whether `left` and `right` have the same length and equal elements at every position.
+///
+/// ```tsuzuri run=false
+/// Array.equal [1, 2] [1, 2, 3]
+/// ```
 def equal :: Eq<'a> => ref ['a] -> ref ['a] -> bool
 fn equal left right =
     if left.length != right.length then false else
@@ -683,6 +1173,14 @@ fn equal left right =
         while index < left.length && left[index] == right[index] do index = index + 1
         index == left.length
 
+/// The first position of `target` in `values`, which must be sorted in ascending order, or `None` when it is not
+/// there.
+///
+/// ```tsuzuri run=at%202
+/// match Array.binary_search 5 [1, 3, 5, 7] with
+/// | Some index -> $"at {index}"
+/// | None -> "missing"
+/// ```
 def binary_search :: Ord<'a> => ref 'a -> ref ['a] -> Maybe<i64>
 fn binary_search target values =
     let mut lower = 0
@@ -694,33 +1192,69 @@ fn binary_search target values =
 
 // ---- Combining and reshaping ----
 
+/// A new array with the elements of `values`, which may be a slice.
+///
+/// ```tsuzuri run=[2,%203]
+/// let values = [1, 2, 3, 4]
+/// Array.copy (ref values[1..3])
+/// ```
 def copy :: Copy<'a> => ref ['a] -> ['a]
 fn copy values = deref values
 
+/// The elements in reverse order.
+///
+/// ```tsuzuri run=[3,%202,%201]
+/// Array.rev [1, 2, 3]
+/// ```
 def rev :: Copy<'a> => ref ['a] -> ['a]
 fn rev values = new ['a](values.length, \index -> values[values.length - 1 - index])
 
+/// The elements of `left` followed by those of `right`.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Array.append [1, 2] [3]
+/// ```
 def append :: Copy<'a> => ref ['a] -> ref ['a] -> ['a]
 fn append left right =
     assert (left.length <= 9223372036854775807 - right.length)
     new ['a](left.length + right.length, \index -> if index < left.length then left[index] else right[index - left.length])
 
+/// The pairs of the elements at each position of `left` and `right`; traps when their lengths differ.
+///
+/// ```tsuzuri run=[(1,%20'a'),%20(2,%20'b')]
+/// Array.zip [1, 2] ['a', 'b']
+/// ```
 def zip :: ref ['a] -> ref ['b] -> [('a * 'b)]
 fn zip left right =
     assert (left.length == right.length)
     new [('a * 'b)](left.length, \index -> (left[index], right[index]))
 
+/// The triples of the elements at each position of three arrays; traps when their lengths differ.
+///
+/// ```tsuzuri run=[(1,%20'a',%20true),%20(2,%20'b',%20false)]
+/// Array.zip3 [1, 2] ['a', 'b'] [true, false]
+/// ```
 def zip3 :: ref ['a] -> ref ['b] -> ref ['c] -> [('a * 'b * 'c)]
 fn zip3 first second third =
     assert (first.length == second.length && second.length == third.length)
     new [('a * 'b * 'c)](first.length, \index -> (first[index], second[index], third[index]))
 
+/// The first items and the second items of `pairs`, as two arrays.
+///
+/// ```tsuzuri run=([1,%202],%20['a',%20'b'])
+/// Array.unzip [(1, 'a'), (2, 'b')]
+/// ```
 def unzip :: ref [('a * 'b)] -> (['a] * ['b])
 fn unzip pairs =
     let left = new ['a](pairs.length, \index -> match pairs[index] with | (item, _) -> item)
     let right = new ['b](pairs.length, \index -> match pairs[index] with | (_, item) -> item)
     (left, right)
 
+/// The first, second and third items of `triples`, as three arrays.
+///
+/// ```tsuzuri run=([1,%202],%20['a',%20'b'],%20[true,%20false])
+/// Array.unzip3 [(1, 'a', true), (2, 'b', false)]
+/// ```
 def unzip3 :: ref [('a * 'b * 'c)] -> (['a] * ['b] * ['c])
 fn unzip3 triples =
     let first = new ['a](triples.length, \index -> match triples[index] with | (item, _, _) -> item)
@@ -728,18 +1262,38 @@ fn unzip3 triples =
     let third = new ['c](triples.length, \index -> match triples[index] with | (_, _, item) -> item)
     (first, second, third)
 
+/// Every pair of an element of `left` and an element of `right`, in the order of `left` and then of `right`.
+///
+/// ```tsuzuri run=[(1,%20'a'),%20(1,%20'b'),%20(2,%20'a'),%20(2,%20'b')]
+/// Array.all_pairs [1, 2] ['a', 'b']
+/// ```
 def all_pairs :: (Copy<'a>, Copy<'b>) => ref ['a] -> ref ['b] -> [('a * 'b)]
 fn all_pairs left right =
     assert (right.length == 0 || left.length <= 9223372036854775807 / right.length)
     new [('a * 'b)](left.length * right.length, \index -> (left[index / right.length], right[index % right.length]))
 
+/// Each element paired with its position.
+///
+/// ```tsuzuri run=[(0,%20'a'),%20(1,%20'b')]
+/// Array.indexed ['a', 'b']
+/// ```
 def indexed :: Copy<'a> => ref ['a] -> [(i64 * 'a)]
 fn indexed values = new [(i64 * 'a)](values.length, \index -> (index, values[index]))
 
+/// Each element paired with the next one; empty when `values` has fewer than two elements.
+///
+/// ```tsuzuri run=[(1,%202),%20(2,%203)]
+/// Array.pairwise [1, 2, 3]
+/// ```
 def pairwise :: Copy<'a> => ref ['a] -> [('a * 'a)]
 fn pairwise values =
     if values.length < 2 then [] else new [('a * 'a)](values.length - 1, \index -> (values[index], values[index + 1]))
 
+/// Copies of every run of `size` adjacent elements, in order; traps when `size` is not positive.
+///
+/// ```tsuzuri run=[[1,%202],%20[2,%203]]
+/// Array.windowed 2 [1, 2, 3]
+/// ```
 def windowed :: Copy<'a> => own i64 -> ref ['a] -> [['a]]
 fn windowed size values =
     assert (size > 0)
@@ -750,6 +1304,11 @@ fn chunk_at values size index =
     let start = index * size
     sub start (if values.length - start < size then values.length - start else size) values
 
+/// Consecutive chunks of `size` elements, the last of which may be shorter; traps when `size` is not positive.
+///
+/// ```tsuzuri run=[[1,%202],%20[3,%204],%20[5]]
+/// Array.chunk_by_size 2 [1, 2, 3, 4, 5]
+/// ```
 def chunk_by_size :: Copy<'a> => own i64 -> ref ['a] -> [['a]]
 fn chunk_by_size size values =
     assert (size > 0)
@@ -761,6 +1320,12 @@ fn part_at values base extra index =
     let start = index * base + (if index < extra then index else extra)
     sub start (if index < extra then base + 1 else base) values
 
+/// At most `count` consecutive parts whose lengths differ by at most one, the longer parts first; traps when `count`
+/// is not positive.
+///
+/// ```tsuzuri run=[[1,%202,%203],%20[4,%205],%20[6,%207]]
+/// Array.split_into 3 [1, 2, 3, 4, 5, 6, 7]
+/// ```
 def split_into :: Copy<'a> => own i64 -> ref ['a] -> [['a]]
 fn split_into count values =
     assert (count > 0)
@@ -768,6 +1333,11 @@ fn split_into count values =
         let parts = if count < values.length then count else values.length
         new [['a]](parts, \index -> part_at values (values.length / parts) (values.length % parts) index)
 
+/// The elements that `generator` returns for `initial` and each next state, until it returns `None`.
+///
+/// ```tsuzuri run=[1,%204,%209]
+/// Array.unfold (\n -> if n > 3 then Maybe.None else Maybe.Some (n * n, n + 1)) 1
+/// ```
 def unfold :: own ('state -> Maybe<('a * 'state)>) -> own 'state -> ['a]
 fn unfold generator initial =
     let mut current = Maybe.Some initial
@@ -783,6 +1353,12 @@ fn unfold generator initial =
         | Maybe.None -> current = Maybe.None
     Vec.to_array items
 
+/// Moves the element at each position `i` to position `index_map i`; traps unless `index_map` maps the positions
+/// one to one onto themselves.
+///
+/// ```tsuzuri run=[30,%2010,%2020]
+/// Array.permute (\i -> (i + 1) % 3) [10, 20, 30]
+/// ```
 def permute :: Copy<'a> => own (i64 -> i64) -> ref ['a] -> ['a]
 fn permute index_map values =
     let mut sources = new [i64](values.length, \_target -> -1)
@@ -797,6 +1373,11 @@ fn permute index_map values =
 
 // ---- Updating ----
 
+/// A copy of `values` with `value` inserted at position `index`; traps unless `0 <= index <= length`.
+///
+/// ```tsuzuri run=[1,%209,%202,%203]
+/// Array.insert_at 1 9 [1, 2, 3]
+/// ```
 def insert_at :: Copy<'a> => own i64 -> own 'a -> ref ['a] -> ['a]
 fn insert_at index value values =
     assert (index >= 0 && index <= values.length)
@@ -805,6 +1386,11 @@ fn insert_at index value values =
         elif position == index then value
         else values[position - 1])
 
+/// A copy of `values` with the elements of `items` inserted at position `index`; traps unless `0 <= index <= length`.
+///
+/// ```tsuzuri run=[1,%208,%209,%202,%203]
+/// Array.insert_many_at 1 [8, 9] [1, 2, 3]
+/// ```
 def insert_many_at :: Copy<'a> => own i64 -> ref ['a] -> ref ['a] -> ['a]
 fn insert_many_at index items values =
     assert (index >= 0 && index <= values.length)
@@ -814,11 +1400,21 @@ fn insert_many_at index items values =
         elif position < index + items.length then items[position - index]
         else values[position - items.length])
 
+/// A copy of `values` without the element at `index`; traps when `index` is out of range.
+///
+/// ```tsuzuri run=[2,%203]
+/// Array.remove_at 0 [1, 2, 3]
+/// ```
 def remove_at :: Copy<'a> => own i64 -> ref ['a] -> ['a]
 fn remove_at index values =
     assert (index >= 0 && index < values.length)
     new ['a](values.length - 1, \position -> if position < index then values[position] else values[position + 1])
 
+/// A copy of `values` without the `count` elements from position `index`; traps unless they all lie inside `values`.
+///
+/// ```tsuzuri run=[1,%204]
+/// Array.remove_many_at 1 2 [1, 2, 3, 4]
+/// ```
 def remove_many_at :: Copy<'a> => own i64 -> own i64 -> ref ['a] -> ['a]
 fn remove_many_at index count values =
     assert (count >= 0 && index >= 0 && index <= values.length - count)
@@ -826,15 +1422,31 @@ fn remove_many_at index count values =
 
 /// A copy of `source` with the element at `index` replaced. It consumes `source`, whose buffer is reused unless
 /// `source` is used again (then it is copied first); `index` out of range traps. F# `updateAt`.
+///
+/// ```tsuzuri run=[1,%2020,%203]
+/// Array.update_at 1 20 [1, 2, 3]
+/// ```
 def update_at :: own i64 -> own 'a -> own ['a] -> ['a]
 fn update_at index value source = Array.__set index value source
 
 /// Replaces one element of an exclusive slice in place, like `write`; `index` out of range traps. F# `set`, with the
 /// slice last.
+///
+/// ```tsuzuri run=[1,%2020,%203]
+/// let mut values = [1, 2, 3]
+/// Array.set 1 20 values
+/// values
+/// ```
 def set :: own i64 -> own 'a -> ref mut ['a..] -> unit
 fn set index value values = Array.write index value values
 
 /// Sets `count` elements of an exclusive slice from `start` to `value` in place. F# `fill`, with the slice last.
+///
+/// ```tsuzuri run=[0,%207,%207,%200]
+/// let mut values = [0, 0, 0, 0]
+/// Array.fill 1 2 7 values
+/// values
+/// ```
 def fill :: Copy<'a> => own i64 -> own i64 -> own 'a -> ref mut ['a..] -> unit
 fn fill start count value target =
     assert (start >= 0 && count >= 0 && start <= target.length && count <= target.length - start)
@@ -846,6 +1458,12 @@ fn fill start count value target =
 /// Copies `count` elements of `source` from `source_index` into an exclusive slice from `target_index`.
 /// The two cannot overlap, because the slice is an exclusive borrow. F# `blit` takes the indices between the two
 /// arrays; here the indices come first and the arrays last, `source` before `target`.
+///
+/// ```tsuzuri run=[0,%200,%202,%203]
+/// let mut target = [0, 0, 0, 0]
+/// Array.blit 1 2 2 [1, 2, 3] target
+/// target
+/// ```
 def blit :: Copy<'a> => own i64 -> own i64 -> own i64 -> ref ['a] -> ref mut ['a..] -> unit
 fn blit source_index target_index count source target =
     assert (count >= 0 && source_index >= 0 && target_index >= 0)
@@ -857,9 +1475,19 @@ fn blit source_index target_index count source target =
 
 // ---- Conversions ----
 
+/// An array of the elements of `values`, in order.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Array.of_list [|1, 2, 3|]
+/// ```
 def of_list :: Copy<'a> => ref [|'a|] -> ['a]
 fn of_list values = List.to_array values
 
+/// An array of the elements that `source` yields, in order.
+///
+/// ```tsuzuri run=[10,%2020,%2030]
+/// Array.of_seq (Seq.unfold (\n -> if n > 3 then Maybe.None else Maybe.Some (n * 10, n + 1)) 1)
+/// ```
 def of_seq :: own Seq<'a> -> ['a]
 fn of_seq source = Seq.to_array source
 
@@ -868,6 +1496,12 @@ fn rec seq_from values index = Seq.defer (\() ->
     if index < values.length then (seq_from values (index + 1), Maybe.Some values[index])
     else (Seq.empty(), Maybe.None))
 
+/// A sequence that yields the elements of `values`, in order.
+///
+/// ```tsuzuri run=[2,%204,%206]
+/// let values = [1, 2, 3]
+/// Array.to_seq values |> Seq.map (\x -> x * 2) |> Seq.to_array
+/// ```
 def to_seq :: Copy<'a> => ref ['a] -> Seq<'a>
 fn to_seq values = seq_from values 0
 
@@ -877,6 +1511,13 @@ fn rec seqr_from values index = Seq.defer (\() ->
     else (Seq.empty(), Maybe.None))
 
 /// Like `to_seq`, but yields references, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=3
+/// let words = ["a", "bb"]
+/// let mut total = 0
+/// for word in Array.to_seqr words do total = total + word.length
+/// total
+/// ```
 def to_seqr :: ref ['a] -> Seq<ref 'a>
 fn to_seqr values = seqr_from values 0
 
@@ -888,6 +1529,11 @@ fn to_seqr values = seqr_from values 0
 private def reflexive :: Eq<'a> => ref 'a -> bool
 fn reflexive key = Eq.eq key key
 
+/// The elements without repeats, in order of first occurrence.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Array.distinct [1, 2, 1, 3, 2]
+/// ```
 def distinct :: (Hash<'a>, Eq<'a>, Copy<'a>) => ref ['a] -> ['a]
 fn distinct values = distinct_by (\value -> value) values
 
@@ -913,9 +1559,19 @@ fn keep_new projection known known_codes values =
         index = index + 1
     Vec.to_array kept
 
+/// The first element for each key under `projection`, in order.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Array.distinct_by (\x -> x % 3) [1, 4, 2, 5, 3]
+/// ```
 def distinct_by :: (Copy<'a>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref ['a] -> ['a]
 fn distinct_by projection values = keep_new projection (HashSet.empty()) (HashSet.empty()) values
 
+/// The elements of `values` that do not occur in `excluded`, without repeats, in order of first occurrence.
+///
+/// ```tsuzuri run=[1,%203]
+/// Array.except [2] [1, 2, 3, 1]
+/// ```
 def except :: (Hash<'a>, Eq<'a>, Copy<'a>) => ref ['a] -> ref ['a] -> ['a]
 fn except excluded values =
     let mut seen = HashSet.empty()
@@ -962,6 +1618,11 @@ fn key_groups projection values =
         index = index + 1
     (Vec.to_array owners, Vec.to_array keys)
 
+/// Each key under `projection` with the number of elements that have it, in order of first occurrence.
+///
+/// ```tsuzuri run=[(1,%203),%20(0,%201)]
+/// Array.count_by (\x -> x % 2) [1, 2, 3, 5]
+/// ```
 def count_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref ['a] -> [('key * i64)]
 fn count_by projection values =
     match key_groups projection values with
@@ -975,6 +1636,11 @@ fn count_by projection values =
 private def group_values :: Copy<'a> => ref ['a] -> ref [i64] -> own i64 -> own i64 -> ['a]
 fn group_values values order start size = new ['a](size, \offset -> values[order[start + offset]])
 
+/// Each key under `projection` with the elements that have it, in order of first occurrence.
+///
+/// ```tsuzuri run=[(1,%20[1,%203]),%20(0,%20[2,%204])]
+/// Array.group_by (\x -> x % 2) [1, 2, 3, 4]
+/// ```
 def group_by :: (Copy<'a>, Copy<'key>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref ['a] -> [('key * ['a])]
 fn group_by projection values =
     match key_groups projection values with
@@ -1002,12 +1668,28 @@ fn group_by projection values =
 
 // ---- Sorting ----
 
+/// The elements in ascending order; equal elements keep their order.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Array.sort [3, 1, 2]
+/// ```
 def sort :: Ord<'a> => ref ['a] -> ['a]
 fn sort values = Array.__sort_with (\left right -> if Ord.lt right left then 1i64 else 0i64) values
 
+/// The elements in descending order; equal elements keep their order.
+///
+/// ```tsuzuri run=[3,%202,%201]
+/// Array.sort_descending [3, 1, 2]
+/// ```
 def sort_descending :: Ord<'a> => ref ['a] -> ['a]
 fn sort_descending values = Array.__sort_with (\left right -> if Ord.lt left right then 1i64 else 0i64) values
 
+/// The elements ordered by `comparer`, which returns a negative number, zero or a positive number when its first
+/// argument goes before, with or after its second; equal elements keep their order.
+///
+/// ```tsuzuri run=[11,%2015,%2025,%2021]
+/// Array.sort_with (\a b -> a / 10 - b / 10) [25, 11, 21, 15]
+/// ```
 def sort_with :: Copy<'a> => own ('a -> 'a -> i64) -> ref ['a] -> ['a]
 fn sort_with comparer values = sort_with_borrowed (ref comparer) values
 
@@ -1045,12 +1727,22 @@ fn keys_of projection values =
         index = index + 1
     Vec.to_array keys
 
+/// The elements in ascending order of their keys under `projection`; elements with equal keys keep their order.
+///
+/// ```tsuzuri run=[11,%2021,%2032,%2023]
+/// Array.sort_by (\x -> x % 10) [23, 11, 32, 21]
+/// ```
 def sort_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by projection values =
     let keys = keys_of projection values
     let order = key_order (ref keys) false
     new ['a](values.length, \position -> values[order[position]])
 
+/// The elements in descending order of their keys under `projection`; elements with equal keys keep their order.
+///
+/// ```tsuzuri run=[23,%2032,%2011,%2021]
+/// Array.sort_by_descending (\x -> x % 10) [23, 11, 32, 21]
+/// ```
 def sort_by_descending :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref ['a] -> ['a]
 fn sort_by_descending projection values =
     let keys = keys_of projection values
@@ -1065,12 +1757,24 @@ fn overwrite target source =
         index = index + 1
 
 /// Sorts an exclusive slice in place with a comparer, stably. Unlike `sort_in_place`, it needs a temporary array.
+///
+/// ```tsuzuri run=[3,%202,%201]
+/// let mut values = [1, 3, 2]
+/// Array.sort_in_place_with (\a b -> b - a) values
+/// values
+/// ```
 def sort_in_place_with :: Copy<'a> => own ('a -> 'a -> i64) -> ref mut ['a..] -> unit
 fn sort_in_place_with comparer values =
     let sorted = sort_with comparer values
     overwrite values (ref sorted)
 
 /// Sorts an exclusive slice in place by a key, stably. Unlike `sort_in_place`, it needs a temporary array.
+///
+/// ```tsuzuri run=[11,%2032,%2023]
+/// let mut values = [23, 11, 32]
+/// Array.sort_in_place_by (\x -> x % 10) values
+/// values
+/// ```
 def sort_in_place_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref mut ['a..] -> unit
 fn sort_in_place_by projection values =
     let sorted = sort_by projection values
@@ -1079,6 +1783,12 @@ fn sort_in_place_by projection values =
 /// Sorts an exclusive slice in place, stably and without allocating: the order of `Array.sort` for arrays without NaN
 /// (it does not move a NaN last). Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge, as
 /// Go's `sort.Stable`).
+///
+/// ```tsuzuri run=[5,%201,%202,%203]
+/// let mut values = [5, 3, 1, 2]
+/// Array.sort_in_place (ref mut values[1..])
+/// values
+/// ```
 def sort_in_place :: Ord<'a> => ref mut ['a..] -> unit
 fn sort_in_place values =
     let length = values.length
@@ -1155,6 +1865,10 @@ fn sort_in_place_rotate values first middle last =
 
 /// Sums adjacent pairs in a fixed tree, carrying an odd final element unchanged.
 /// Uses one working copy. Empty input returns positive zero.
+///
+/// ```tsuzuri run=0.875
+/// Array.sum_pairwise [0.5, 0.25, 0.125]
+/// ```
 def sum_pairwise :: Float<'a> => ref ['a] -> 'a
 fn sum_pairwise values =
     if values.length == 0 then 0i64 as 'a else
@@ -1173,6 +1887,10 @@ fn sum_pairwise values =
 
 /// Computes the left-to-right Kahan-Babuska-Neumaier compensated sum.
 /// Intermediate operations are not fused or reassociated.
+///
+/// ```tsuzuri run=2
+/// Array.sum_kahan [1.0, 1e100, 1.0, -1e100]
+/// ```
 def sum_kahan :: Float<'a> => ref ['a] -> 'a
 fn sum_kahan values =
     let mut total = 0i64 as 'a
@@ -1185,6 +1903,10 @@ fn sum_kahan values =
 
 /// Computes a left-to-right dot product with separate multiply and add rounding.
 /// Unequal lengths trap before reading elements; empty inputs return positive zero.
+///
+/// ```tsuzuri run=32
+/// Array.dot [1.0, 2.0, 3.0] [4.0, 5.0, 6.0]
+/// ```
 def dot :: Float<'a> => ref ['a] -> ref ['a] -> 'a
 fn dot left right =
     assert (left.length == right.length)
@@ -1197,6 +1919,10 @@ fn dot left right =
 
 /// Computes a left-to-right dot product with one rounding per explicit FMA step.
 /// Unequal lengths trap before reading elements; empty inputs return positive zero.
+///
+/// ```tsuzuri run=3.5
+/// Array.dot_fma [1.5, 2.0] [2.0, 0.25]
+/// ```
 def dot_fma :: Float<'a> => ref ['a] -> ref ['a] -> 'a
 fn dot_fma left right =
     assert (left.length == right.length)
@@ -1227,10 +1953,20 @@ fn shuffle_by randomizer values =
 
 /// Shuffles an exclusive slice in place with Fisher-Yates. `randomizer` returns numbers in `[0, 1)`; any other
 /// number traps. F# `randomShuffleInPlaceBy`.
+///
+/// ```tsuzuri run=[4,%201,%202,%203]
+/// let mut values = [1, 2, 3, 4]
+/// Array.random_shuffle_in_place_by (\() -> 0.99) values
+/// values
+/// ```
 def random_shuffle_in_place_by :: own (unit -> f64) -> ref mut ['a..] -> unit
 fn random_shuffle_in_place_by randomizer values = shuffle_by randomizer values
 
 /// A shuffled copy of `source`. `randomizer` returns numbers in `[0, 1)`; any other number traps.
+///
+/// ```tsuzuri run=[3,%201,%202]
+/// Array.random_shuffle_by (\() -> 0.99) [1, 2, 3]
+/// ```
 def random_shuffle_by :: Copy<'a> => own (unit -> f64) -> ref ['a] -> ['a]
 fn random_shuffle_by randomizer source =
     let mut shuffled = copy source
@@ -1238,6 +1974,10 @@ fn random_shuffle_by randomizer source =
     shuffled
 
 /// A random element. `randomizer` returns numbers in `[0, 1)`; any other number traps, as does an empty `source`.
+///
+/// ```tsuzuri run=30
+/// Array.random_choice_by (\() -> 0.5) [10, 20, 30, 40]
+/// ```
 def random_choice_by :: Copy<'a> => own (unit -> f64) -> ref ['a] -> 'a
 fn random_choice_by randomizer source =
     assert (source.length > 0)
@@ -1245,12 +1985,20 @@ fn random_choice_by randomizer source =
 
 /// `count` random elements, each of which can be chosen again. A negative `count`, or a positive one with an empty
 /// `source`, traps.
+///
+/// ```tsuzuri run=[20,%2020,%2020]
+/// Array.random_choices_by (\() -> 0.5) 3 [10, 20, 30]
+/// ```
 def random_choices_by :: Copy<'a> => own (unit -> f64) -> own i64 -> ref ['a] -> ['a]
 fn random_choices_by randomizer count source =
     assert (count >= 0 && (count == 0 || source.length > 0))
     new ['a](count, \_index -> source[draw randomizer 0 source.length])
 
-/// `count` random elements, each of which is chosen at most once. `count` outside `0 .. source.length` traps.
+/// `count` random elements, each of which is chosen at most once. `count` outside `0 ..= source.length` traps.
+///
+/// ```tsuzuri run=[30,%2010]
+/// Array.random_sample_by (\() -> 0.5) 2 [10, 20, 30, 40]
+/// ```
 def random_sample_by :: Copy<'a> => own (unit -> f64) -> own i64 -> ref ['a] -> ['a]
 fn random_sample_by randomizer count source =
     assert (count >= 0 && count <= source.length)
@@ -1287,10 +2035,21 @@ fn shuffle_with generator values =
 
 /// Like `random_shuffle_in_place_by`, with a `Random.Pcg` generator in place of `randomizer`. Returns the generator
 /// to use next, since a `Random.Pcg` is a value. F# `randomShuffleInPlaceWith`.
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let mut values = [1, 2, 3, 4]
+/// let _next = Array.random_shuffle_in_place_with (Random.pcg 42i64u 54i64u) values
+/// Array.sort values
+/// ```
 def random_shuffle_in_place_with :: own Random.Pcg -> ref mut ['a..] -> Random.Pcg
 fn random_shuffle_in_place_with generator values = shuffle_with generator values
 
 /// Like `random_shuffle_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// match Array.random_shuffle_with (Random.pcg 42i64u 54i64u) [1, 2, 3, 4] with
+/// | (shuffled, _next) -> Array.sort shuffled
+/// ```
 def random_shuffle_with :: Copy<'a> => own Random.Pcg -> ref ['a] -> (['a] * Random.Pcg)
 fn random_shuffle_with generator source =
     let mut shuffled = copy source
@@ -1298,6 +2057,11 @@ fn random_shuffle_with generator source =
     (shuffled, next)
 
 /// Like `random_choice_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
+///
+/// ```tsuzuri run=true
+/// match Array.random_choice_with (Random.pcg 7i64u 54i64u) [10, 20, 30] with
+/// | (item, _next) -> Array.contains item [10, 20, 30]
+/// ```
 def random_choice_with :: Copy<'a> => own Random.Pcg -> ref ['a] -> ('a * Random.Pcg)
 fn random_choice_with generator source =
     assert (source.length > 0)
@@ -1305,6 +2069,11 @@ fn random_choice_with generator source =
     | (index, next) -> (source[index], next)
 
 /// Like `random_choices_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
+///
+/// ```tsuzuri run=5
+/// match Array.random_choices_with (Random.pcg 7i64u 54i64u) 5 [10, 20, 30] with
+/// | (items, _next) -> items.length
+/// ```
 def random_choices_with :: Copy<'a> => own Random.Pcg -> own i64 -> ref ['a] -> (['a] * Random.Pcg)
 fn random_choices_with generator count source =
     assert (count >= 0 && (count == 0 || source.length > 0))
@@ -1320,6 +2089,11 @@ fn random_choices_with generator count source =
     (Vec.to_array chosen, state)
 
 /// Like `random_sample_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
+///
+/// ```tsuzuri run=3
+/// match Array.random_sample_with (Random.pcg 7i64u 54i64u) 3 [1, 2, 3, 4, 5] with
+/// | (items, _next) -> Array.length (Array.distinct items)
+/// ```
 def random_sample_with :: Copy<'a> => own Random.Pcg -> own i64 -> ref ['a] -> (['a] * Random.Pcg)
 fn random_sample_with generator count source =
     assert (count >= 0 && count <= source.length)
@@ -1349,27 +2123,72 @@ fn shuffled_with generator source =
 
 /// Shuffles `source` in place with a generator seeded from the operating system. The array is moved in and comes
 /// back shuffled, since an action cannot hold an exclusive borrow. F# `randomShuffleInPlace`.
+///
+/// ```tsuzuri
+/// def main :: unit -> i32 = \() ->
+///     let! result = Array.random_shuffle_in_place [1, 2, 3, 4]
+///     match result with
+///     | Ok shuffled -> do! IO.write_line $"{shuffled}"
+///     | Error _ -> do! IO.write_line "no entropy"
+///     0
+/// ```
 def random_shuffle_in_place :: own ['a] -> IO<Result<['a], Os.Error>>
 fn random_shuffle_in_place source = entropy (\generator -> shuffled_with generator source)
 
 /// A shuffled copy of `source`, from a generator seeded from the operating system when the action runs.
+///
+/// ```tsuzuri
+/// def main :: unit -> i32 = \() ->
+///     let! result = Array.random_shuffle [1, 2, 3, 4]
+///     match result with
+///     | Ok shuffled -> do! IO.write_line $"{shuffled}"
+///     | Error _ -> do! IO.write_line "no entropy"
+///     0
+/// ```
 def random_shuffle :: Copy<'a> => own ['a] -> IO<Result<['a], Os.Error>>
 fn random_shuffle source = entropy (\generator -> shuffled_with generator source)
 
 /// A random element, from a generator seeded from the operating system when the action runs. An empty `source`
 /// traps then.
+///
+/// ```tsuzuri
+/// def main :: unit -> i32 = \() ->
+///     let! result = Array.random_choice [10, 20, 30]
+///     match result with
+///     | Ok item -> do! IO.write_line $"{item}"
+///     | Error _ -> do! IO.write_line "no entropy"
+///     0
+/// ```
 def random_choice :: Copy<'a> => own ['a] -> IO<Result<'a, Os.Error>>
 fn random_choice source = entropy (\generator ->
     match random_choice_with generator (ref source) with
     | (item, _) -> item)
 
 /// `count` random elements that can repeat, from a generator seeded from the operating system when the action runs.
+///
+/// ```tsuzuri
+/// def main :: unit -> i32 = \() ->
+///     let! result = Array.random_choices 5 [10, 20, 30]
+///     match result with
+///     | Ok items -> do! IO.write_line $"{items}"
+///     | Error _ -> do! IO.write_line "no entropy"
+///     0
+/// ```
 def random_choices :: Copy<'a> => own i64 -> own ['a] -> IO<Result<['a], Os.Error>>
 fn random_choices count source = entropy (\generator ->
     match random_choices_with generator count (ref source) with
     | (items, _) -> items)
 
 /// `count` distinct random elements, from a generator seeded from the operating system when the action runs.
+///
+/// ```tsuzuri
+/// def main :: unit -> i32 = \() ->
+///     let! result = Array.random_sample 2 [10, 20, 30]
+///     match result with
+///     | Ok items -> do! IO.write_line $"{items}"
+///     | Error _ -> do! IO.write_line "no entropy"
+///     0
+/// ```
 def random_sample :: Copy<'a> => own i64 -> own ['a] -> IO<Result<['a], Os.Error>>
 fn random_sample count source = entropy (\generator ->
     match random_sample_with generator count (ref source) with

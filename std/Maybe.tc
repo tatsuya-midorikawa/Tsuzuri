@@ -17,75 +17,161 @@ fn Bind2 left right next =
     | None -> None
     | Some (first, second) -> Some (next first second)
 
+/// Whether `maybe` is `Some`.
+///
+/// ```tsuzuri run=true
+/// Maybe.is_some (Maybe.Some 3)
+/// ```
 def is_some :: ref (Maybe<'a>) -> bool
 fn is_some maybe =
     match maybe with
     | Some _ -> true
     | None -> false
 
+/// Whether `maybe` is `None`.
+///
+/// ```tsuzuri run=true
+/// let missing: Maybe<i64> = Maybe.None
+/// Maybe.is_none missing
+/// ```
 def is_none :: ref (Maybe<'a>) -> bool
 fn is_none maybe = ! (is_some maybe)
 
+/// The value of a `Some`; traps on `None`.
+///
+/// ```tsuzuri run=42
+/// Maybe.get (Maybe.Some 42)
+/// ```
 def get :: own Maybe<'a> -> 'a
 fn get maybe =
     match maybe with
     | Some value -> value
     | None -> unreachable ()
 
+/// The value of `maybe`, or `fallback` when it is `None`.
+///
+/// ```tsuzuri run=5%200
+/// let missing: Maybe<i64> = Maybe.None
+/// $"{Maybe.default_value 0 (Maybe.Some 5)} {Maybe.default_value 0 missing}"
+/// ```
 def default_value :: own 'a -> own Maybe<'a> -> 'a
 fn default_value fallback maybe =
     match maybe with
     | Some value -> value
     | None -> fallback
 
+/// The value of `maybe`, or the result of `fallback ()`, which is called only when it is `None`.
+///
+/// ```tsuzuri run=7
+/// let missing: Maybe<i64> = Maybe.None
+/// Maybe.default_with (\() -> 7) missing
+/// ```
 def default_with :: own (unit -> 'a) -> own Maybe<'a> -> 'a
 fn default_with fallback maybe =
     match maybe with
     | Some value -> value
     | None -> fallback ()
 
+/// Applies `transform` to the value of a `Some`; `None` stays `None`.
+///
+/// ```tsuzuri run=40
+/// Maybe.Some 20 |> Maybe.map (\n -> n * 2) |> Maybe.default_value 0
+/// ```
 def map :: own ('a -> 'b) -> own Maybe<'a> -> Maybe<'b>
 fn map transform maybe =
     match maybe with
     | Some value -> Some (transform value)
     | None -> None
 
+/// Applies `transform` to a borrow of the value of a `Some`, leaving `maybe` as it is; `None` gives
+/// `None`.
+///
+/// ```tsuzuri run=7%20tsuzuri
+/// let name = Maybe.Some "tsuzuri"
+/// let length = Maybe.map_ref (\text -> text.length) name
+/// $"{Maybe.default_value 0 length} {Maybe.get name}"
+/// ```
 def map_ref :: own (ref 'a -> 'b) -> ref (Maybe<'a>) -> Maybe<'b>
 fn map_ref transform maybe =
     match maybe with
     | Some value -> Some (transform (ref value))
     | None -> None
 
+/// Passes the value of a `Some` to `next`, whose `Maybe` is the result; `None` stays `None`
+/// without calling `next`.
+///
+/// ```tsuzuri run=half%204
+/// let half = \n -> if n % 2 == 0 then Maybe.Some (n / 2) else Maybe.None
+/// match Maybe.bind half (Maybe.Some 8) with
+/// | Maybe.Some value -> $"half {value}"
+/// | Maybe.None -> "odd"
+/// ```
 def bind :: own ('a -> Maybe<'b>) -> own Maybe<'a> -> Maybe<'b>
 fn bind next maybe =
     match maybe with
     | Some value -> next value
     | None -> None
 
+/// Passes a borrow of the value of a `Some` to `next`, whose `Maybe` is the result, leaving
+/// `maybe` as it is; `None` gives `None` without calling `next`.
+///
+/// ```tsuzuri run=5%20hello
+/// let word = Maybe.Some "hello"
+/// let long = Maybe.bind_ref (\text -> if text.length > 3 then Maybe.Some text.length else Maybe.None) word
+/// $"{Maybe.default_value 0 long} {Maybe.get word}"
+/// ```
 def bind_ref :: own (ref 'a -> Maybe<'b>) -> ref (Maybe<'a>) -> Maybe<'b>
 fn bind_ref next maybe =
     match maybe with
     | Some value -> next (ref value)
     | None -> None
 
+/// Keeps a `Some` whose value satisfies `predicate`, and gives `None` otherwise.
+///
+/// ```tsuzuri run=4%200
+/// let kept = Maybe.filter (\n -> deref n % 2 == 0) (Maybe.Some 4)
+/// let dropped = Maybe.filter (\n -> deref n % 2 == 0) (Maybe.Some 3)
+/// $"{Maybe.default_value 0 kept} {Maybe.default_value 0 dropped}"
+/// ```
 def filter :: own (ref 'a -> bool) -> own Maybe<'a> -> Maybe<'a>
 fn filter predicate maybe =
     match maybe with
     | Some value -> if predicate (ref value) then Some value else None
     | None -> None
 
+/// `maybe` when it is `Some`, otherwise the result of `fallback ()`, which is called only then.
+///
+/// ```tsuzuri run=9
+/// let missing: Maybe<i64> = Maybe.None
+/// Maybe.or_else (\() -> Maybe.Some 9) missing |> Maybe.get
+/// ```
 def or_else :: own (unit -> Maybe<'a>) -> own Maybe<'a> -> Maybe<'a>
 fn or_else fallback maybe =
     match maybe with
     | Some value -> Some value
     | None -> fallback ()
 
+/// `Ok` with the value of a `Some`, or `Error error` for `None`.
+///
+/// ```tsuzuri run=missing
+/// let missing: Maybe<i64> = Maybe.None
+/// match Maybe.to_result "missing" missing with
+/// | Result.Ok value -> $"ok {value}"
+/// | Result.Error message -> message
+/// ```
 def to_result :: own 'e -> own Maybe<'a> -> Result<'a, 'e>
 fn to_result error maybe =
     match maybe with
     | Some value -> Result.Ok value
     | None -> Result.Error error
 
+/// `Some` with the value of an `Ok`, or `None` for an `Error`, whose value is dropped.
+///
+/// ```tsuzuri run=5%20true
+/// let parsed: Result<i64, string> = Result.Ok 5
+/// let failed: Result<i64, string> = Result.Error "bad"
+/// $"{Maybe.default_value 0 (Maybe.of_result parsed)} {Maybe.is_none (Maybe.of_result failed)}"
+/// ```
 def of_result :: own Result<'a, 'e> -> Maybe<'a>
 fn of_result result =
     match result with
@@ -98,6 +184,16 @@ fn Return value = Some value
 def ReturnFrom :: own Maybe<'a> -> Maybe<'a>
 fn ReturnFrom maybe = maybe
 
+/// Passes the value of a `Some` to `next` (`let!` and `do!` in `Maybe { }`); `None` skips `next`.
+///
+/// ```tsuzuri run=3
+/// let total = Maybe {
+///     let! first = Maybe.Some 1
+///     let! second = Maybe.Some 2
+///     return first + second
+/// }
+/// Maybe.default_value 0 total
+/// ```
 def Bind :: own Maybe<'a> -> own ('a -> Maybe<'b>) -> Maybe<'b>
 fn Bind maybe next = bind next maybe
 

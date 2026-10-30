@@ -15,7 +15,7 @@
 - .NET が例外を投げる場面（範囲外、負の個数、容量が長さより小さいなど）はトラップです。.NET が `-1` や、二分探索の補数（`~index`）を返す場面は、同じ値を返します。
 - コールバックが要素を値で受ける関数（`find_index`、`exists`、`sort_with` など）は、要素が `Copy` であることを要求します。`find_indexr`、`existsr`、`sort_withr` のように `r` を付けた関数は要素を借用するので、文字列のような `Copy` でない要素にも使えます。
 - 内部容量（capacity）は .NET と同じ規則（空なら 4、以降は 2 倍、足りなければ必要な数）で増えます。`capacity`、`set_capacity`、`ensure_capacity`、`trim_excess` の値も .NET と一致します。あらかじめ要素数が予測できる場合は `with_capacity` や `reserve` で再確保を防げます。
-- `sort` と `sort_range` は安定で、NaN を他のどの数より前に置きます（.NET と同じ）。比較関数を取る `sort_with`・`sort_range_with`・`sort_withr`・`sort_range_withr` も安定で、NaN を特別に扱わず、渡した関数のとおりに並べます。
+- `sort` と `sort_range` は安定で、NaN を他のどの数より前に置きます（.NET と同じ）。比較関数を取る `sort_with`・`sort_range_with`・`sort_withr`・`sort_range_withr` も安定です。`sort_with` と `sort_range_with` は `Array.sort_in_place_with` で並べるので、要素が `f32`・`f64` のときは NaN を通常の数値の後ろに置きます（[Array](array.md)）。`sort_withr` と `sort_range_withr` は NaN を特別に扱わず、渡した関数のとおりに並べます。
 - `pop` は `(残りのVec, Maybe<末尾要素>)` のタプルを返し、`Copy` でない要素も所有値として安全に取り出せます。
 - `Vec.to_array` と `Vec.of_array` は、所有しているバッファを移します。要素の複製はしません（.NET の `ToArray` は複製するので、そこが違います）。`Copy` 配列の引数渡しと、スタック配列のヒープ昇格は通常どおりです。
 - 要素そのものへの排他借用参照（`ref mut`）はバッファ破損を防ぐため取得できません。
