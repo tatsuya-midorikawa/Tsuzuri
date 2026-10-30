@@ -325,8 +325,14 @@ fn render_declarations(program: &Program) -> String {
         if declaration.visibility == Visibility::Private {
             continue;
         }
+        let attributes: String = program
+            .effect_attributes
+            .iter()
+            .filter(|attribute| attribute.function.text == declaration.name.text)
+            .map(|attribute| format!("@{} ", attribute.kind.name()))
+            .collect();
         let prefix = format!(
-            "{}{}def{}",
+            "{attributes}{}{}def{}",
             if declaration.exported { "export " } else { "" },
             if declaration.constant {
                 "const "

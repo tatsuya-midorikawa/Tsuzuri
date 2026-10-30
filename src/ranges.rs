@@ -147,9 +147,60 @@ impl RangeFacts {
         }
     }
 
+    /// Records what the `else` branch of `if condition` knows: `not (a || b)` is `not a && not b`.
+    /// Only the effect summary calls it (A20); the emitter does not, so no emitted check changes.
+    pub(crate) fn enter_else_condition(
+        &mut self,
+        module: &CheckedModule,
+        condition: &TypedExpr,
+    ) -> Entered {
+        let mut non_negative = BTreeSet::new();
+        let mut below = Vec::new();
+        let mut terms = vec![condition];
+        while let Some(term) = terms.pop() {
+            let TypedExprKind::Binary(operator, left, right) = &term.kind else {
+                continue;
+            };
+            if *operator == BinaryOp::Or {
+                terms.push(right);
+                terms.push(left);
+                continue;
+            }
+            let Some(negated) = negate(*operator) else {
+                continue;
+            };
+            non_negative.extend(lower_term(negated, left, right));
+            below.extend(upper_term(module, negated, left, right));
+        }
+        let before = self.guards.len();
+        for (index, array) in below {
+            if non_negative.contains(&index)
+                && self.stable.contains(&index)
+                && self.stable.contains(&array)
+            {
+                self.guards.push((index, array));
+            }
+        }
+        Entered {
+            guards: self.guards.len() - before,
+            narrowed: 0,
+        }
+    }
+
     pub(crate) fn leave_condition(&mut self, entered: Entered) {
         self.guards.truncate(self.guards.len() - entered.guards);
         self.restore(self.undo.len() - entered.narrowed);
+    }
+}
+
+/// The comparison that holds when `operator` does not.
+fn negate(operator: BinaryOp) -> Option<BinaryOp> {
+    match operator {
+        BinaryOp::Less => Some(BinaryOp::GreaterEqual),
+        BinaryOp::LessEqual => Some(BinaryOp::Greater),
+        BinaryOp::Greater => Some(BinaryOp::LessEqual),
+        BinaryOp::GreaterEqual => Some(BinaryOp::Less),
+        _ => None,
     }
 }
 
@@ -500,6 +551,75 @@ mod tests {
         });
         let function = function(&module, name);
         verdicts_with(&module, function, analyze(&module, function, true))
+    }
+
+    /// `walk`, and the facts of the `else` branch too, as the effect summary applies them (A20).
+    fn walk_else(
+        module: &CheckedModule,
+        facts: &mut RangeFacts,
+        expression: &TypedExpr,
+        verdicts: &mut Vec<bool>,
+    ) {
+        if let TypedExprKind::Index(array, index) = &expression.kind {
+            verdicts.push(facts.index_in_bounds(array, index));
+        }
+        if let TypedExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } = &expression.kind
+        {
+            walk_else(module, facts, condition, verdicts);
+            let pushed = facts.enter_condition(module, condition);
+            walk_else(module, facts, then_branch, verdicts);
+            facts.leave_condition(pushed);
+            let pushed = facts.enter_else_condition(module, condition);
+            walk_else(module, facts, else_branch, verdicts);
+            facts.leave_condition(pushed);
+            return;
+        }
+        for child in expression.children() {
+            walk_else(module, facts, child, verdicts);
+        }
+    }
+
+    fn else_verdicts(source: &str, name: &str) -> Vec<bool> {
+        let module = crate::analyze(source).unwrap_or_else(|error| {
+            panic!("{source}\n{}: {}", error.code, error.message);
+        });
+        let function = function(&module, name);
+        let mut facts = analyze(&module, function, false);
+        let mut verdicts = Vec::new();
+        walk_else(&module, &mut facts, &function.body, &mut verdicts);
+        assert!(facts.guards.is_empty(), "every condition is left again");
+        verdicts
+    }
+
+    #[test]
+    fn else_branch_of_or_proves_the_index() {
+        let source = "def guard :: ref [i64] -> i64 -> i64\n\
+            fn guard values i = if i < 0 || i >= values.length then 0 else values[i]\n\
+            def flipped :: ref [i64] -> i64 -> i64\n\
+            fn flipped values i = if values.length <= i || 0 > i then 0 else values[i]";
+        assert_eq!(else_verdicts(source, "guard"), [true]);
+        assert_eq!(else_verdicts(source, "flipped"), [true]);
+        // The emitter does not use the `else` facts: its own walk keeps the check.
+        assert_eq!(verdicts(source, "guard"), [false]);
+    }
+
+    #[test]
+    fn else_branch_keeps_weak_conditions_unproven() {
+        let source = "def weak :: ref [i64] -> i64 -> i64\n\
+            fn weak values i = if i < 0 || i > values.length then 0 else values[i]\n\
+            def half :: ref [i64] -> i64 -> i64\n\
+            fn half values i = if i >= values.length then 0 else values[i]\n\
+            def both :: ref [i64] -> i64 -> i64\n\
+            fn both values i = if i < 0 && i >= values.length then 0 else values[i]\n\
+            def then_side :: ref [i64] -> i64 -> i64\n\
+            fn then_side values i = if i < 0 || i >= values.length then values[i] else 0";
+        for name in ["weak", "half", "both", "then_side"] {
+            assert_eq!(else_verdicts(source, name), [false], "{name}");
+        }
     }
 
     #[test]

@@ -276,31 +276,16 @@ impl FunctionEmitter<'_, '_> {
     /// narrows it, which costs a second allocation and pass for every Latin-1 result. Returns
     /// whether it wrote the body of the function being emitted, whose parameters are `%p0`, ....
     pub(super) fn compact_body(&mut self) -> bool {
-        if self.globals.strings != StringForm::Compact
-            || self.function.origin.module != ModuleOrigin::Std
-            || self.function.module != "String"
-        {
+        if self.globals.strings != StringForm::Compact {
             return false;
         }
-        let signature = &self.function.signature;
-        match (signature.parameters.as_slice(), self.function.name.as_str()) {
-            ([first, last, Type::Reference(text, false)], "slice")
-                if **text == Type::String && *first == Type::I64 && *last == Type::I64 =>
-            {
-                let result = signature.result.clone();
+        match compact_replacement(self.function) {
+            Some(CompactBody::Slice) => {
+                let result = self.function.signature.result.clone();
                 self.slice_body(&result);
                 true
             }
-            (
-                [
-                    Type::Reference(separator, false),
-                    Type::Reference(parts, false),
-                ],
-                "join",
-            ) if **separator == Type::String
-                && matches!(parts.as_ref(), Type::Array(element) if **element == Type::String)
-                && signature.result == Type::String =>
-            {
+            Some(CompactBody::Join) => {
                 let text = self.value("load %tz.string, ptr %p0");
                 let data = self.value(format!("extractvalue %tz.string {text}, 0"));
                 let word = self.value(format!("extractvalue %tz.string {text}, 1"));
@@ -312,7 +297,7 @@ impl FunctionEmitter<'_, '_> {
                 self.instruction(format!("ret %tz.string {result}"));
                 true
             }
-            _ => false,
+            None => false,
         }
     }
 
@@ -822,5 +807,42 @@ mod tests {
             "define internal i1 @f.utf16(ptr %p) {\nentry:\n  ret i1 true\n}\nlayer\n"
         );
         assert_eq!(layered(ir, &[], &["f"], &["layer\n"]).unwrap(), "layer\n");
+    }
+}
+
+/// The runtime call that replaces the body of a standard library function in the compact form.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CompactBody {
+    Slice,
+    Join,
+}
+
+/// The standard library function whose body the compact form replaces with a runtime call that
+/// builds a new string (`compact_body`). The effect rule counts such a function as allocating in
+/// both forms, so that it does not depend on `TSUZURI_STRINGS`.
+pub(crate) fn compact_replacement(function: &CheckedFunction) -> Option<CompactBody> {
+    if function.origin.module != ModuleOrigin::Std || function.module != "String" {
+        return None;
+    }
+    let signature = &function.signature;
+    match (signature.parameters.as_slice(), function.name.as_str()) {
+        ([first, last, Type::Reference(text, false)], "slice")
+            if **text == Type::String && *first == Type::I64 && *last == Type::I64 =>
+        {
+            Some(CompactBody::Slice)
+        }
+        (
+            [
+                Type::Reference(separator, false),
+                Type::Reference(parts, false),
+            ],
+            "join",
+        ) if **separator == Type::String
+            && matches!(parts.as_ref(), Type::Array(element) if **element == Type::String)
+            && signature.result == Type::String =>
+        {
+            Some(CompactBody::Join)
+        }
+        _ => None,
     }
 }

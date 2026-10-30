@@ -439,6 +439,7 @@ diagnostic_kinds! {
         (ClassConstraintLimit, "class_constraint_limit", "E1017"),
         (DerivingExpressionLimit, "deriving_expression_limit", "E1017"),
         (DerivingInstanceLimit, "deriving_instance_limit", "E1017"),
+        (EffectSummaryLimit, "effect_summary_limit", "E1017"),
         (ExhaustivenessSearchLimit, "exhaustiveness_search_limit", "E1017"),
         (FixCandidateLimit, "fix_candidate_limit", "E1017"),
         (FunctionConstraintLimit, "function_constraint_limit", "E1017"),
@@ -604,6 +605,18 @@ diagnostic_kinds! {
         (PureSpecializationOwnParameter, "pure_specialization_own_parameter", "E1029"),
         (PureValueCapturesUnknownCallback, "pure_value_captures_unknown_callback", "E1029"),
         (PureValueUnprovable, "pure_value_unprovable", "E1029"),
+        // E1031
+        (EffectAllocInNoAlloc, "effect_alloc_in_no_alloc", "E1031"),
+        (EffectCopyInNoCopy, "effect_copy_in_no_copy", "E1031"),
+        (EffectDivergeInTerminates, "effect_diverge_in_terminates", "E1031"),
+        (EffectExternInAttribute, "effect_extern_in_attribute", "E1031"),
+        (EffectTrapInNoTrap, "effect_trap_in_no_trap", "E1031"),
+        (EffectUnknownCallee, "effect_unknown_callee", "E1031"),
+        // E1032
+        (EffectAttributeDuplicate, "effect_attribute_duplicate", "E1032"),
+        (EffectAttributeMisplaced, "effect_attribute_misplaced", "E1032"),
+        (EffectAttributeOnExtern, "effect_attribute_on_extern", "E1032"),
+        (EffectAttributeUnavailable, "effect_attribute_unavailable", "E1032"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (BindgenAnnotationError, "bindgen_annotation_error", "E2000"),
@@ -797,6 +810,9 @@ diagnostic_kinds! {
         (DeprecatedUse, "deprecated_use", "W1005"),
         // W1006
         (ImplicitCopyOfLargeValue, "implicit_copy_of_large_value", "W1006"),
+        // W1008
+        (EffectAttributeOnConstDef, "effect_attribute_on_const_def", "W1008"),
+        (EffectAttributeUncheckedGeneric, "effect_attribute_unchecked_generic", "W1008"),
         // W2001
         (ToolNotice, "tool_notice", "W2001"),
         // W2002

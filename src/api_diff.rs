@@ -14,8 +14,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::check::ModuleOrigin;
 use crate::check::semantic::{ResolvedApi, SemanticIndex, api_key};
+use crate::check::{Asserts, ModuleOrigin};
 use crate::diagnostic::{Diagnostic, Span, json_string};
 use crate::docgen::{
     constraints_text, json_text, parameters_text, region_text, signature, type_text,
@@ -223,6 +223,14 @@ struct Item {
     borrowing_defaults: Vec<bool>,
     /// The arity protected by the pure contract, excluding returned callable stages.
     pure: Option<usize>,
+    /// The effect attributes (A20): promises that adding keeps and removing breaks, except on a
+    /// function that may call the functions it is given (see `callbacks`).
+    asserts: Asserts,
+    /// Whether a parameter may carry a function value that the function calls, or the signature
+    /// has a type variable or a length parameter. An effect attribute added to such a function
+    /// also binds its callers, which must then pass callbacks (or instantiate it with types and
+    /// lengths) that keep it (A20 Phase 6).
+    callbacks: bool,
     contract: Option<String>,
     /// Fields, cases or methods, in declaration order.
     members: Vec<Member>,
@@ -253,6 +261,8 @@ impl Item {
             constant: false,
             borrowing_defaults: Vec::new(),
             pure: None,
+            asserts: Asserts(0),
+            callbacks: false,
             contract: None,
             members: Vec::new(),
             derives: BTreeSet::new(),
@@ -270,6 +280,11 @@ impl Item {
     /// The declaration as `tsuzuri doc` shows it, with `export` and `const` in front where it has them.
     fn text(&self) -> String {
         let mut text = String::new();
+        for kind in self.asserts.kinds() {
+            text.push('@');
+            text.push_str(kind.name());
+            text.push(' ');
+        }
         if self.exported {
             text.push_str("export ");
         }
@@ -616,6 +631,7 @@ fn add_items(
 ) {
     let fresh = || Renaming::new(canonical, resolved);
     let effective = resolved.filter(|_| canonical);
+    let lengths = Lengths::of(program);
     // Every field is named so that a new kind of declaration cannot be left out silently.
     let Program {
         source_kind: _,
@@ -636,6 +652,7 @@ fn add_items(
         entry: _,
         dyn_types: _,
         cpu_attributes: _,
+        effect_attributes,
         aliases,
         declaration_starts: _,
     } = program;
@@ -701,6 +718,18 @@ fn add_items(
         item.exported = declaration.exported;
         item.constant = declaration.constant;
         item.pure = declaration.pure.then_some(declaration.parameters.len());
+        item.callbacks = types.iter().any(|ty| may_carry_functions(ty))
+            || types
+                .iter()
+                .copied()
+                .chain([implicit.as_ref().unwrap_or(result)])
+                .any(|ty| has_type_variable(ty, &lengths));
+        for attribute in effect_attributes
+            .iter()
+            .filter(|attribute| attribute.function.text == declaration.name.text)
+        {
+            item.asserts.insert(attribute.kind);
+        }
         item.contract = effective
             .and_then(|resolved| resolved.contracts.get(&api_key(declaration.name.span)))
             .cloned();
@@ -1216,6 +1245,163 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
     }
 }
 
+/// Whether a parameter of this type may carry a function value that the function can call, or
+/// makes the attribute depend on the caller: a function, task or `dyn` type, a named type that
+/// the syntax alone cannot show to be closed (records and unions may hold functions), or a type
+/// variable (each instance is checked with the caller's type, which may be a function or copy an
+/// array; review of #63). Scalars, strings and the standard collections of closed types are
+/// closed.
+fn may_carry_functions(ty: &TypeExpr) -> bool {
+    const CLOSED: [&str; 31] = [
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "i128",
+        "i8u",
+        "i16u",
+        "i32u",
+        "i64u",
+        "i128u",
+        "byte",
+        "ubyte",
+        "sbyte",
+        "f16",
+        "f32",
+        "f64",
+        "f128",
+        "d32",
+        "d64",
+        "d128",
+        "bool",
+        "char",
+        "utf8char",
+        "string",
+        "utf8string",
+        "unit",
+        "bigint",
+        "BigInt",
+        "Json",
+        "Instant",
+        "Duration",
+    ];
+    const COLLECTIONS: [&str; 9] = [
+        "Array", "List", "Vec", "Maybe", "Result", "Map", "Set", "HashMap", "HashSet",
+    ];
+    match &ty.kind {
+        TypeExprKind::Variable(_) => true,
+        TypeExprKind::Length(_) => false,
+        TypeExprKind::Named(name) => !CLOSED.contains(&name.as_str()),
+        TypeExprKind::Apply(head, arguments) => {
+            let name = head.text.rsplit('.').next().unwrap_or(&head.text);
+            !COLLECTIONS.contains(&name) || arguments.iter().any(may_carry_functions)
+        }
+        TypeExprKind::Array(inner)
+        | TypeExprKind::ArrayView(inner)
+        | TypeExprKind::List(inner)
+        | TypeExprKind::Reference(inner, _)
+        | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner)
+        | TypeExprKind::Regions(inner, _) => may_carry_functions(inner),
+        TypeExprKind::FixedArray(inner, _) => may_carry_functions(inner),
+        TypeExprKind::Tuple(elements) => elements.iter().any(may_carry_functions),
+        _ => true,
+    }
+}
+
+/// What tells a length parameter from a length constant in the signatures of one module.
+struct Lengths<'p> {
+    /// The constants of the module, which a length may name without qualification.
+    constants: BTreeSet<&'p str>,
+    /// For each record, union and alias of the module, which of its parameters are lengths.
+    positions: BTreeMap<&'p str, Vec<bool>>,
+}
+
+impl<'p> Lengths<'p> {
+    fn of(program: &'p Program) -> Self {
+        let declared = |parameters: &[Ident]| {
+            parameters
+                .iter()
+                .map(|parameter| parameter.text.starts_with('#'))
+                .collect()
+        };
+        let mut positions = BTreeMap::new();
+        for record in &program.records {
+            positions.insert(record.name.text.as_str(), declared(&record.parameters));
+        }
+        for union in &program.unions {
+            positions.insert(union.name.text.as_str(), declared(&union.parameters));
+        }
+        for alias in &program.type_aliases {
+            positions.insert(alias.name.text.as_str(), declared(&alias.parameters));
+        }
+        Self {
+            constants: program
+                .constants
+                .iter()
+                .map(|constant| constant.name.text.as_str())
+                .collect(),
+            positions,
+        }
+    }
+
+    /// Whether a length is a parameter that each caller chooses: `#N` in a resolved signature,
+    /// or, as written, a name that is not a constant of the module (another module's constant
+    /// is qualified).
+    fn parameter(&self, length: &TypeExpr) -> bool {
+        match &length.kind {
+            TypeExprKind::Variable(_) => true,
+            TypeExprKind::Named(name) => {
+                !name.contains(['.', ':']) && !self.constants.contains(name.as_str())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether a type mentions a type variable or a length parameter: an attribute of a generic
+/// function is checked for each instance, with the types and lengths that its callers choose
+/// (`N = 0` makes `xs[0]` trap; review 3 of #63).
+fn has_type_variable(ty: &TypeExpr, lengths: &Lengths<'_>) -> bool {
+    match &ty.kind {
+        TypeExprKind::Variable(_) => true,
+        TypeExprKind::Named(_) | TypeExprKind::Length(_) | TypeExprKind::Dyn(_) => false,
+        TypeExprKind::Apply(head, arguments) => {
+            let positions = lengths.positions.get(head.text.as_str());
+            arguments.iter().enumerate().any(|(index, argument)| {
+                if positions.is_some_and(|positions| positions.get(index) == Some(&true)) {
+                    lengths.parameter(argument)
+                } else {
+                    has_type_variable(argument, lengths)
+                }
+            })
+        }
+        TypeExprKind::Regions(inner, _)
+        | TypeExprKind::Quantified(_, inner)
+        | TypeExprKind::Array(inner)
+        | TypeExprKind::ArrayView(inner)
+        | TypeExprKind::List(inner)
+        | TypeExprKind::Task(inner)
+        | TypeExprKind::Reference(inner, _)
+        | TypeExprKind::Own(inner)
+        | TypeExprKind::Mut(inner)
+        | TypeExprKind::Pure(inner) => has_type_variable(inner, lengths),
+        TypeExprKind::FixedArray(inner, length) => {
+            has_type_variable(inner, lengths) || lengths.parameter(length)
+        }
+        TypeExprKind::Tuple(elements) => elements
+            .iter()
+            .any(|element| has_type_variable(element, lengths)),
+        TypeExprKind::Function(parameters, result) => {
+            parameters
+                .iter()
+                .any(|parameter| has_type_variable(parameter, lengths))
+                || has_type_variable(result, lengths)
+        }
+    }
+}
+
 /// The changes between two versions of an item with the same name and kind.
 fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
     if old.header != new.header
@@ -1223,15 +1409,21 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         || old.constant != new.constant
         || old.borrowing_defaults != new.borrowing_defaults
         || old.pure != new.pure
+        || old.asserts != new.asserts
         || old.contract != new.contract
     {
         // Exporting or adding a const/pure contract adds a symbol or a use
-        // and changes nothing else; revoking either breaks the code that relied on it.
+        // and changes nothing else; revoking either breaks the code that relied on it. An effect
+        // attribute added to a function that calls the functions it is given requires its callers
+        // to pass callbacks that keep it, so it breaks them.
+        let added_obligation = new.callbacks && new.asserts.0 & !old.asserts.0 != 0;
         let widened = old.header == new.header
             && old.exported <= new.exported
             && old.constant <= new.constant
             && old.borrowing_defaults == new.borrowing_defaults
             && (old.pure.is_none() || old.pure == new.pure)
+            && old.asserts.0 & !new.asserts.0 == 0
+            && !added_obligation
             && old.contract == new.contract;
         changes.push(Change {
             breaking: !widened,
@@ -1242,6 +1434,8 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             new: Some(new.text()),
             note: if old.borrowing_defaults != new.borrowing_defaults {
                 "default parameter conventions change; effective signatures may differ"
+            } else if added_obligation {
+                "callers must pass functions (or instantiate it with types) that keep the new effect attribute"
             } else {
                 ""
             },

@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn staying_locals(body: &TypedExpr) -> BTreeSet<usize> {
+pub(crate) fn staying_locals(body: &TypedExpr) -> BTreeSet<usize> {
     let mut candidates = BTreeSet::new();
     let mut escaping = BTreeSet::new();
     let mut pending = vec![(body, false)];

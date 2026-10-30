@@ -560,7 +560,13 @@ fn define_declarations(
                 format!("extern def {shown}.{}", declared.text)
             } else {
                 format!(
-                    "{}def {shown}.{} :: {}",
+                    "{}{}def {shown}.{} :: {}",
+                    function
+                        .origin
+                        .asserts
+                        .kinds()
+                        .map(|kind| format!("@{} ", kind.name()))
+                        .collect::<String>(),
                     if constant {
                         "const "
                     } else if pure {
@@ -749,7 +755,13 @@ pub(super) fn collect(
                     12,
                     declaration.body.span,
                     format!(
-                        "{}def {shown}.{} :: {}",
+                        "{}{}def {shown}.{} :: {}",
+                        function
+                            .origin
+                            .asserts
+                            .kinds()
+                            .map(|kind| format!("@{} ", kind.name()))
+                            .collect::<String>(),
                         if declaration.constant {
                             "const "
                         } else if declaration.pure {

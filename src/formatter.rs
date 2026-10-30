@@ -297,6 +297,10 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
     for attribute in &mut program.cpu_attributes {
         canonical.ident(&mut attribute.function);
     }
+    for attribute in &mut program.effect_attributes {
+        canonical.ident(&mut attribute.function);
+        attribute.span = Span::default();
+    }
     for alias in &mut program.aliases {
         canonical.ident(alias);
     }

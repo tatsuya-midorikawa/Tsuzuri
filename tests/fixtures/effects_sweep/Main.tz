@@ -1,0 +1,161 @@
+/// A20 appendix F.4: the public std functions that no other program of the corpus instantiates,
+/// so that `tests/effects_alloc_conservative.rs` compares the effect rule with their IR too. The
+/// program only has to build; `main` runs none of it.
+
+export def io_actions :: i64 -> i64 = \_n ->
+    let _a = Array.random_choice [1, 2, 3]
+    let _b = Array.random_choices 2 [1, 2, 3]
+    let _c = Array.random_sample 2 [1, 2, 3]
+    let _d = Array.random_shuffle [1, 2, 3]
+    let _e = Array.random_shuffle_in_place [1, 2, 3]
+    let _f = List.random_choice [|1, 2, 3|]
+    let _g = List.random_choices 2 [|1, 2, 3|]
+    let _h = List.random_sample 2 [|1, 2, 3|]
+    let _i = List.random_shuffle [|1, 2, 3|]
+    let _j = Dir.create "d"
+    let _k = Dir.list "d"
+    let _l = Dir.remove "d"
+    let _m = Dir.walk "d"
+    let _n = Env.args ()
+    let _o = Env.current_dir ()
+    let _p = Env.var "HOME"
+    let _q = File.append_text "f" "x"
+    let _r = File.link_metadata "f"
+    let _s = File.metadata "f"
+    let _t = File.read_bytes "f"
+    let _u = File.read_text "f"
+    let _v = File.remove "f"
+    let _w = File.write_bytes "f" [1i8u]
+    let _x = File.write_text "f" "x"
+    let _y = File.with_open "f" File.Mode.Read (\handle -> File.read handle 4)
+    let _z = File.with_open "f" File.Mode.Write (\handle -> File.write handle [1i8u])
+    let _aa = File.with_open "f" File.Mode.Write (\handle -> File.flush handle)
+    let _ab = File.with_open "f" File.Mode.Read (\handle -> File.close handle)
+    let _ac = Random.bytes 4
+    let _ad = Random.next_u64 ()
+    let _ae = Time.monotonic_ns ()
+    let _af = Time.sleep_ms 1
+    let _ag = Time.unix_ns ()
+    let _ah: IO<HashMap<i64, i64>> = HashMap.randomized ()
+    let _ai: IO<Result<HashMap<i64, i64>, Os.Error>> = HashMap.try_randomized ()
+    let _aj: IO<HashSet<i64>> = HashSet.randomized ()
+    let _ak: IO<Result<HashSet<i64>, Os.Error>> = HashSet.try_randomized ()
+    let _al = IO.write_error 1
+    let _am = IO.write_error_line 1
+    let _an = IO.try_write_error 1
+    let _ao = IO.try_write_error_line 1
+    let _ap = IO.writeln 1
+    let _aq = IO.Combine (IO.writeln 1) (IO.Return 2)
+    let _ar = IO.For [1, 2] (\x -> IO.writeln x)
+    let _as = IO.MergeSources (IO.Return 1) (IO.Return 2)
+    let _at = IO.ReturnFrom (IO.Return 1)
+    let _au = IO.While (\() -> false) (IO.writeln 1)
+    let _av = IO.Using (\k -> k 1) (\x -> IO.Return (x + 1))
+    0
+
+export def pure_values :: i64 -> i64 = \_n ->
+    let map: HashMap<i64, i64> = HashMap.empty()
+    let set: HashSet<i64> = HashSet.with_capacity 4
+    let ordered: Set<i64> = Set.empty()
+    let pairs = HashMap.to_array (ref map)
+    let values = HashMap.values (ref map)
+    let names = Path.join "a" "b.txt"
+    let parent = Path.parent (ref names)
+    let file = Path.file_name (ref names)
+    let extension = Path.extension (ref names)
+    let text: utf8string = u8"  abc  "
+    let left = Utf8String.trim_start (ref text)
+    let right = Utf8String.trim_end (ref text)
+    let part = Utf8String.sub 1 2 (ref text)
+    let part16 = String.sub 1 2 "abcdef"
+    let decoded = Os.decode [97i8u]
+    let split = Os.split_names (ref [97i8u, 0i8u])
+    let version = Unicode.version ()
+    let maybe = Maybe.ReturnFrom (Maybe.Some 1)
+    let flags = (if HashMap.is_empty (ref map) then 1 else 0) + (if HashSet.is_empty (ref set) then 1 else 0) + (if Set.is_empty (ref ordered) then 1 else 0)
+    let found = [parent, file, extension]
+    let mut count = 0
+    for name in found do
+        count = count + (match name with
+            | Maybe.Some _ -> 1
+            | Maybe.None -> 0)
+    let lengths = left.length + right.length + version.length
+    let more = (match part with
+        | Maybe.Some _ -> 1
+        | Maybe.None -> 0) + (match part16 with
+        | Maybe.Some _ -> 1
+        | Maybe.None -> 0) + (match maybe with
+        | Maybe.Some value -> value
+        | Maybe.None -> 0) + (match decoded with
+        | Result.Ok _ -> 1
+        | Result.Error _ -> 0) + (match split with
+        | Result.Ok _ -> 1
+        | Result.Error _ -> 0)
+    flags + pairs.length + values.length + count + lengths + more
+export def devices :: i64 -> i64 = \_n ->
+    match Gpu.request Gpu.Backend.CpuReference with
+    | Result.Ok device ->
+        let mode = Gpu.backend (ref device)
+        let last = Gpu.last_backend ()
+        let buffer = Gpu.from_array (ref device) (ref [1i32, 2i32, 3i32])
+        let doubled = Gpu.map (ref device) (\x -> x * 2i32) buffer
+        let relaxed = Gpu.map_relaxed (ref device) (\x -> x + 1i32) doubled
+        let made = Gpu.init (ref device) 3 (\i -> i)
+        let loose = Gpu.init_relaxed (ref device) 3 (\i -> i)
+        let total = (Gpu.to_array relaxed).length + (Gpu.to_array made).length + (Gpu.to_array loose).length
+        total + (match (mode, last) with
+            | (Gpu.Backend.CpuReference, _) -> 1
+            | _ -> 0)
+    | Result.Error _ -> 0
+
+export def json_values :: i64 -> i64 = \_n ->
+    match Json.parse (ref u8"[1, 2]") with
+    | Result.Ok value ->
+        let decoded: Result<[i64], Json.Error> = Json.decode (ref value)
+        let pretty = Json.serialize_pretty 2 (ref [1, 2])
+        let number = Json.to_i64 (ref Json.Numeral { text: u8"7" })
+        (match decoded with
+            | Result.Ok items -> items.length
+            | Result.Error _ -> 0) + (match pretty with
+            | Result.Ok text -> text.length
+            | Result.Error _ -> 0) + (match number with
+            | Result.Ok n -> n
+            | Result.Error _ -> 0)
+    | Result.Error _ -> 0
+
+export def sockets :: i64 -> i64 = \_n ->
+    match Net.parse_address "127.0.0.1:0" with
+    | Maybe.Some address ->
+        let _a = Net.bind_async address
+        let _b = Net.bind_udp_async address
+        let _c = Net.with_listener address (\listener -> Net.with_accepted listener Maybe.None (\_stream -> IO.Return 1))
+        1
+    | Maybe.None -> 0
+
+export def errors :: i64 -> i64 = \_n ->
+    let error = Os.Error { kind: Os.ErrorKind.NotFound, code: 2i32 }
+    (Os.message (ref error)).length
+
+export def tensors :: i64 -> i64 = \_n ->
+    let tensor = Tensor.of_array [2, 2] [1, 2, 3, 4]
+    let view = Tensor.view (ref tensor)
+    (Tensor.data (ref view)).length
+
+test "generators" =
+    Gen.for_all (Gen.array Gen.i64()) (\xs -> xs.length >= 0)
+    Gen.for_all (Gen.map (\x -> x + 1) Gen.i32()) (\_x -> true)
+    Gen.for_all (Gen.bind (\x -> Gen.constant x) Gen.bool()) (\_x -> true)
+    Gen.for_all (Gen.map (\m -> match m with
+        | Maybe.Some _ -> 1
+        | Maybe.None -> 0) (Gen.maybe Gen.char())) (\_x -> true)
+    Gen.for_all (Gen.map (\r -> match r with
+        | Result.Ok _ -> 1
+        | Result.Error _ -> 0) (Gen.result Gen.f64() Gen.unicode_char())) (\_x -> true)
+    Gen.for_all (Gen.one_of [Gen.string(), Gen.string_of Gen.char()]) (\_x -> true)
+    Gen.for_all (Gen.element [1, 2, 3]) (\x -> x > 0)
+    Test.not_equal (ref 1) (ref 2)
+
+bench "of" = Bench.of (\() -> 1)
+bench "with input" = Bench.with_input (\() -> [1, 2]) (\xs -> xs.length)
+
+def main :: unit -> i32 = \() -> 0

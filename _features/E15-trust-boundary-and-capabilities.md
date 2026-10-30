@@ -5,7 +5,7 @@
 | ID | E15 |
 | 優先度 | P2（D-50 の表） |
 | 規模 | 全体 L。Phase 1: M（3〜5 日）、Phase 2: L（1〜2 週）、Phase 3: M（3〜5 日）、Phase 4: S（1〜2 日。A20 が済んでから） |
-| 依存 | Phase 1〜3 は**自己完結**（HEAD のコードだけで書ける）。[A20](A20-effect-summary-and-checked-attributes.md) は Phase 4 だけ（`@trusted` の性質を `pure`・`@no_*` の検査に効かせる）。[G26](_completed/G26-facts-model.md) は使わない（D-52 の `effects` の `extern` の名前だけ共有）。[G22](_completed/G22-diagnostic-v2.md) は弱い依存（未実装なら kind・related・help を出さず、コード・メッセージ・位置だけ。付録 C） |
+| 依存 | Phase 1〜3 は**自己完結**（HEAD のコードだけで書ける）。[A20](_completed/A20-effect-summary-and-checked-attributes.md) は Phase 4 だけ（`@trusted` の性質を `pure`・`@no_*` の検査に効かせる）。[G26](_completed/G26-facts-model.md) は使わない（D-52 の `effects` の `extern` の名前だけ共有）。[G22](_completed/G22-diagnostic-v2.md) は弱い依存（未実装なら kind・related・help を出さず、コード・メッセージ・位置だけ。付録 C） |
 | 後続 | なし。A20・A19・G26 は本チケットの `FunctionOrigin.trusted` を読める |
 | 状態 | todo |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの `9dd0fbbc` との差は `docs/benchmarks.md` だけ） |
@@ -239,7 +239,7 @@ summary: used=<権限を , で並べる | none> denied=<N> untrusted_externs=<N>
 | チケット | 使う名前・形 | 未実装のときの代替 |
 | --- | --- | --- |
 | [G22](_completed/G22-diagnostic-v2.md)（D-51） | `Diagnostic::with_kind(&'static str)`・`.related(RelatedRole::ViaCall \| DeclaredHere \| Note, impl Into<String>, Span)`・`.with_help(impl Into<String>)` | 呼ばない。メッセージ・コード・主スパンだけ（付録 C）。G22 が入ったら呼び出しを足すだけ |
-| [A20](A20-effect-summary-and-checked-attributes.md)（D-53）Phase 4 | `effects::summarize`・`Options`（`Options::new(scope, computed)`・`checking`。E15 が `trusted` を足す）・`Effect::Extern`・`forbidden(EffectKind)`・`FunctionEffects`（HostCall の腕が `Extern` を源にする） | Phase 4 を実装しない。`@trusted` の性質は受理して持つだけ |
+| [A20](_completed/A20-effect-summary-and-checked-attributes.md)（D-53）Phase 4 | `effects::summarize`・`Options`（`Options::new(scope, computed)`・`checking`。E15 が `trusted` を足す）・`Effect::Extern`・`forbidden(EffectKind)`・`FunctionEffects`（HostCall の腕が `Extern` を源にする） | Phase 4 を実装しない。`@trusted` の性質は受理して持つだけ |
 | [A19](_completed/A19-pure-functions.md) | `pure_rules::validate` が `extern` を不純にする | 同上（A20 の経路 A では A20 が置き換える） |
 | [G26](_completed/G26-facts-model.md) | 使わない | — |
 | D-57 | 権限の名前 9 個（閉じている）・既定（ルートは全権限、依存は空）・実効 = 積 | — |

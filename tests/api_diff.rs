@@ -1971,3 +1971,82 @@ fn a_long_report_lists_breaking_changes_first_and_counts_the_rest() {
     std::fs::remove_dir_all(old).unwrap();
     std::fs::remove_dir_all(new).unwrap();
 }
+
+#[test]
+fn api_diff_treats_attributes_as_promises() {
+    let plain = "def f :: i64 -> i64 = \\n -> n + 1\n";
+    let attributed = format!("@no_alloc\n@no_trap\n{plain}");
+    assert_eq!(
+        compare(plain, &attributed, &[]),
+        ["non-breaking changed def Main.f"]
+    );
+    assert_eq!(
+        compare(&attributed, plain, &[]),
+        ["breaking changed def Main.f"]
+    );
+    assert_eq!(
+        compare(&attributed, &attributed.replace("@no_trap\n", ""), &[]),
+        ["breaking changed def Main.f"]
+    );
+    assert!(compare(&attributed, &attributed, &[]).is_empty());
+    // Review of #63: on a function that may call what it is given, a new attribute also binds
+    // the callers, whose callbacks must keep it.
+    let apply = "def apply :: (i64 -> i64) -> i64 -> i64 = \\f x -> f x\n";
+    assert_eq!(
+        compare(apply, &format!("@no_alloc\n{apply}"), &[]),
+        ["breaking changed def Main.apply"]
+    );
+    let record = "record Box { f: i64 -> i64 }\ndef run :: ref Box -> i64 = \\b -> b.f 1\n";
+    assert!(
+        compare(record, &record.replace("def run", "@no_trap\ndef run"), &[])
+            .contains(&"breaking changed def Main.run".to_owned())
+    );
+    let closed = "def total :: ref [i64] -> Maybe<i64> -> i64 = \\xs extra -> xs.length + Maybe.get_or 0 extra\n";
+    assert_eq!(
+        compare(closed, &format!("@no_alloc\n{closed}"), &[]),
+        ["non-breaking changed def Main.total"]
+    );
+    // Review of #63: each instance of a generic function is checked with the types its callers
+    // choose, so a new attribute can reject an instantiation that compiled before (`[i64]` here).
+    let generic = "def pair :: ref 'a -> ('a * 'a) = \\x -> (deref x, deref x)\n";
+    assert_eq!(
+        compare(generic, &format!("@no_copy\n{generic}"), &[]),
+        ["breaking changed def Main.pair"]
+    );
+    assert_eq!(
+        compare_mode(generic, &format!("@no_copy\n{generic}"), &[], true),
+        ["breaking changed def Main.pair"]
+    );
+    let result_only = "def empty :: unit -> ['a] = \\() -> []\n";
+    assert_eq!(
+        compare(result_only, &format!("@no_alloc\n{result_only}"), &[]),
+        ["breaking changed def Main.empty"]
+    );
+    // Review 3 of #63: a length parameter is chosen by the callers too (`N = 0` makes `xs[0]`
+    // trap), in a parameter or only in the result. A length constant is not.
+    let first = "def first :: ref [i64; N] -> i64 = \\xs -> xs[0]\n";
+    let zeros = "def zeros :: unit -> [i64; N] = \\() -> FixedArray.init (\\_ -> 0)\n";
+    let constant = "const SIZE: i64 = 2\ndef head :: ref [i64; SIZE] -> i64 = \\xs -> xs[0]\n";
+    for effective in [false, true] {
+        assert_eq!(
+            compare_mode(first, &format!("@no_trap\n{first}"), &[], effective),
+            ["breaking changed def Main.first"],
+            "effective: {effective}"
+        );
+        assert_eq!(
+            compare_mode(zeros, &format!("@no_alloc\n{zeros}"), &[], effective),
+            ["breaking changed def Main.zeros"],
+            "effective: {effective}"
+        );
+        assert_eq!(
+            compare_mode(
+                constant,
+                &constant.replace("def head", "@no_trap\ndef head"),
+                &[],
+                effective
+            ),
+            ["non-breaking changed def Main.head"],
+            "effective: {effective}"
+        );
+    }
+}

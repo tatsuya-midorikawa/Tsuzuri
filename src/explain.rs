@@ -341,6 +341,8 @@ pub const CODE_PAGES: &[(&str, &str)] = &[
     ("E1027", include_str!("explain/codes/E1027.md")),
     ("E1028", include_str!("explain/codes/E1028.md")),
     ("E1029", include_str!("explain/codes/E1029.md")),
+    ("E1031", include_str!("explain/codes/E1031.md")),
+    ("E1032", include_str!("explain/codes/E1032.md")),
     ("E2000", include_str!("explain/codes/E2000.md")),
     ("E2001", include_str!("explain/codes/E2001.md")),
     ("E2002", include_str!("explain/codes/E2002.md")),
@@ -358,6 +360,7 @@ pub const CODE_PAGES: &[(&str, &str)] = &[
     ("W1004", include_str!("explain/codes/W1004.md")),
     ("W1005", include_str!("explain/codes/W1005.md")),
     ("W1006", include_str!("explain/codes/W1006.md")),
+    ("W1008", include_str!("explain/codes/W1008.md")),
     ("W2001", include_str!("explain/codes/W2001.md")),
     ("W2002", include_str!("explain/codes/W2002.md")),
 ];

@@ -49,6 +49,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/computation.rs` | ソース種別の検査、`.tc` ビルダーと `@alias` の収集、型検査前の関数・継続への展開（check の子モジュール） |
 | `src/polymorph.rs` | 型変数の単一化、型クラス・インスタンス、モジュール関数制約の解決、制約の伝播、単相化（check の子モジュール） |
 | `src/closures.rs` | 匿名関数の検査、自由変数の捕捉解析、lambda lifting、公開 ABI 向けの完全適用ラッパー生成 |
+| `src/effects.rs` | `check::effects`（A20）: 特殊化と `closures::lower` の後の型付き IR から関数ごとの効果の要約（D-53 の 14 個のビット集合と「たどれない呼び出し」）を推論する。関数の参照を辺とする呼び出しグラフの強連結成分は同じ要約を持ち（Kosaraju、反復）、証拠は直接の源から幅優先で伝える。組み込み関数は wildcard のない `builtin_facts` の表（A19 の `pure_rules::builtin_impure` と facts の `kg::effects::builtin_effect` と一致を単体テストで固定）。`alloc` はエミッターの `llvm::frame_bytes`・`llvm::staying_locals` を再利用する位置規則、`trap` は `ranges::analyze` と `enter_else_condition`、`copy` は `copies::sites`。関数型の引数の呼び出しは `calls_params` に移し、属性つきの関数の呼び出し側で実引数を検査する。属性（`Program.effect_attributes` → `FunctionOrigin.asserts`。特殊化のインスタンスは保ち、生成関数は持たない）がなければ何も計算しない。`validate` が `E1031`・`E1032`・`W1008` を作る。生成 IR は変えない |
 | `src/closures_rec.rs` | ローカルな `let rec`（`and` のグループを含む）のリフト。グループの捕捉の和、値渡しと借用の分類、本体ごとのフレーム（どの `let rec` 関数を直接呼べるか）、予約した id、直接呼び出しへの書き換え（closures の子モジュール） |
 | `src/numeric.rs` | プリミティブ型名、整数・浮動小数点接尾辞、binary／decimal リテラルの丸めとエンコーディング |
 | `src/constants.rs` | 定数の依存順評価、型ごとの演算とリソース上限、既存リテラルへの展開、定数・一時値の借用引数管理（`temporary_borrows`） |
@@ -89,7 +90,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/last_use.rs` | 具体化 IR の後方生存解析 `LastUses`。所有権検査の State／loan とは独立にループ・match を固定点で扱い、訪問 100,000 回・深さ 128 の予算を超えると空の結果へ fallback。生成と `copies::sites` が結果を共有。全体 Local の最後の使用と、所有する match 束縛の非重複射影を判定し、一般の Field 根には単一使用の証明だけを使う |
 | `src/llvm_sync.rs` / `std/Atomic.tz` / `std/Mutex.tz` / `std/Channel.tz` / `src/runtime/sync.ll` / `src/runtime/sync-wasm.ll` / `src/runtime/channel-wasm.ll` | F10。`Atomic` の `seq_cst` の `atomicrmw`・`cmpxchg`・`load atomic`・`store atomic`、`Mutex.create`／`with_lock`／`into_inner` の lowering（ロックの取得・解放と、入れ子・並列開始の拒否）、`Channel` の lowering（ブロックの確保と初期化、要素の drop、ランタイム関数の呼び出し）。`sync.ll` はロック中に並列開始を拒むラッパー、`sync-wasm.ll` は既定の wasm32 のロックのフラグ、`channel-wasm.ll` は既定の wasm32 の `Channel` のランタイム |
 | `src/call_specialization.rs` | エスケープしない関数引数の不動点解析、既知の継続・読み取り専用捕捉の判定、LLVM worker 関数の特殊化予算管理。予算（1,024 個）を使い切った program だけ、関数と参照先の関数を深さ優先の順に出力し、各関数の worker をその直後に出力する 2 回目の出力（`Drain::DepthFirst`）で、連鎖を完成させる |
-| `src/ranges.rs` | 型付き IR 上での配列添字の範囲証明（規則 R1–R5）と関数単位の `RangeFacts`。証明された添字のみ境界検査の分岐を省略。PR02 は同じ `RangeFacts` に整数の区間（`values`・`undo`・`steps`）を持たせる |
+| `src/ranges.rs` | 型付き IR 上での配列添字の範囲証明（規則 R1–R5）と関数単位の `RangeFacts`。証明された添字のみ境界検査の分岐を省略。PR02 は同じ `RangeFacts` に整数の区間（`values`・`undo`・`steps`）を持たせる。`enter_else_condition`（A20）は `else` 側で `not (a \|\| b)` の比較を否定した守りを積む。効果の要約だけが呼び、エミッターは呼ばない（生成 IR は変わらない） |
 | `src/interval.rs` | PR02 の整数の区間の純粋関数。端点は `i128` で、64-bit 以下の整数型だけを扱う。`+ - *` の `nsw`／`nuw` と結果の区間、`as`・`&`・`%`・`/`・シフト・`~` の区間を返す。オペランドを符号付きと符号なしの両方で読み（読みが切り替わる点をまたぐ区間は全域の hull で読む）、返す集合は常にそのとき取りうる値をすべて含む |
 | `src/ranges_intervals.rs` | `RangeFacts` の整数の区間（リテラル、型、キャスト、マスク、長さ、`if`、`let`、`for` のカウンター、`if` の条件による絞り込み）と `integer_flags`。深さ 32 と 1 関数あたり 2^20 ステップを超えた分は型の全域 |
 | `src/llvm_ranges.rs` | `TSUZURI_RANGE_FLAGS`（`RangeFlags`: `off`／`proven`／`audit`）の読み取りと旗の書き分け。audit は旗を書かず、主張した向きごとの `with.overflow` の検査と `TrapKind::Overflow` の trap を書く |

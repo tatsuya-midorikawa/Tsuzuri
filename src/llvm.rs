@@ -24,6 +24,7 @@ mod debug;
 pub(crate) mod last_use;
 pub use debug::with_codeview;
 pub use range_flags::{ENVIRONMENT_VARIABLE as RANGE_FLAGS_VARIABLE, RangeFlags};
+pub(crate) use strings::compact_replacement;
 pub use strings::{ENVIRONMENT_VARIABLE as STRINGS_VARIABLE, StringForm};
 #[path = "llvm_escape.rs"]
 mod escape;
@@ -31,6 +32,9 @@ mod escape;
 mod facts;
 #[path = "llvm_frame.rs"]
 mod frame;
+// A20: the effect summary decides `alloc` with the emitter's own rules for literals in the frame.
+pub(crate) use escape::staying_locals;
+pub(crate) use frame::frame_bytes;
 #[path = "llvm_layout.rs"]
 pub(crate) mod layout;
 #[path = "llvm_return_slot.rs"]

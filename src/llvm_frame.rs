@@ -167,7 +167,7 @@ pub(super) fn stack_size(ty: &Type, module: &CheckedModule) -> usize {
 /// a node of 16 bytes and its element for each element, as it did before a list became chunks. The
 /// chunk is a 24-byte header and the elements, which is below this estimate, except for a literal
 /// of one element whose size is a multiple of 16 (above it by at most 16 bytes).
-fn frame_bytes(expression: &TypedExpr, module: &CheckedModule) -> usize {
+pub(crate) fn frame_bytes(expression: &TypedExpr, module: &CheckedModule) -> usize {
     let sum = |values: &mut dyn Iterator<Item = &TypedExpr>| {
         values.fold(0usize, |total, value| {
             total.saturating_add(frame_bytes(value, module))

@@ -263,6 +263,7 @@ driver (src/driver.rs)        同じディレクトリの .tz/.tt/.tc をファ�
 | `src/cache.rs` | 全ビルドの cache。SHA-256、metadata、writer lock、GC（G11） |
 | `src/constants.rs`、`src/const_machine.rs`、`src/const_rules.rs`、`src/const_static.rs` | 定数の評価と型付きリテラルへの展開（D06）。`const def` の明示スタックの評価器（`Machine`）、署名と本体の規則（`Type`／`TypedExprKind` を `_ =>` なしで振り分ける）、平たいデータの定数の静的データ（D11） |
 | `src/pure_rules.rs` | A19 の署名・平たい所有データ・純粋性の検査。閉じた根からの到達可能性と D-53 の問い合わせ口 |
+| `src/effects.rs` | A20 の効果の要約（`check::effects`）と効果の属性の検査（`E1031`・`E1032`・`W1008`）。組み込み関数の分類表 `builtin_facts` |
 | `src/derive.rs` | `deriving` の instance を通常の AST として生成（A07） |
 | `src/docgen.rs` | API 文書の生成（G09） |
 | `src/exhaustiveness.rs` | match の網羅性検査（A03） |
@@ -1787,7 +1788,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 診断コード | `E2010` | G29 | MCP の致命的な誤り |
 | 診断コード | `E2011` | G34 | `tsuzuri test --doc` の例の記法の誤り（閉じのない・字下げした・空の `tsuzuri` のフェンス） |
 | 警告 | `W1007` | A22 | 非正準な表記（既定は無効） |
-| 警告 | `W1008` | A20 | 効果の属性が冗長・効かない |
+| 警告 | `W1008` | A20 | 効果の属性が検査されない（インスタンスのないジェネリック関数、`const def` の実行時の本体だけ）。kind は `effect_attribute_unchecked_generic`・`effect_attribute_on_const_def` |
 | 警告 | `W1009` | A21 | 契約が常に真・使わない束縛など |
 | 警告 | `W1010` | E15 | 信頼を表明していない `extern` の使用（`audit` が既定で警告に格上げ） |
 | 予約（未割り当て） | `E1035`・`E1040`〜`E1049`・`E2012`〜`E2015`・`W1011`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |

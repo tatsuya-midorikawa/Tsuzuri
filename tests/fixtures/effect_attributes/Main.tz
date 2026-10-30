@@ -1,0 +1,40 @@
+/// A20: functions that carry effect attributes. The attributes are only checked; the program's
+/// results must be the same as without them on every target and optimization level.
+
+@no_alloc
+@no_trap
+@terminates
+export def sum_squares :: i64 -> i64 = \n ->
+    let mut total = 0
+    for i in 0 .. n do
+        total = total + i * i
+    total
+
+@no_alloc @no_trap
+export def table_lookup :: i64 -> i64 = \n ->
+    let xs = [3, 1, 4, 1, 5, 9, 2, 6]
+    if n < 0 || n >= xs.length then -1 else xs[n]
+
+@no_copy
+@terminates
+export def clamped :: i64 -> i64 = \n -> Int.max 0 (Int.min n 100) + 1
+
+@no_alloc
+def apply :: (i64 -> i64) -> i64 -> i64 = \f x -> f x + 1
+
+@no_alloc
+@terminates
+export def applied :: i64 -> i64 = \n -> apply (\x -> x * 3 + 1) n
+
+@no_trap
+export def divided :: i64 -> i64 = \n -> if n == 0 then 0 else 1000 / 7 + n / 3 - n % 5
+
+@no_trap @no_alloc @no_copy @terminates
+export def checksum :: i64 -> i64 = \n ->
+    let bytes = [1, 2, 3, 4, 5]
+    let mut sum = n
+    for i in 0 .. bytes.length - 1 do
+        sum = sum * 31 + bytes[i]
+    sum
+
+def main :: unit -> i32 = \() -> 0
