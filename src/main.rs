@@ -1365,9 +1365,6 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         if affected.is_some() {
             return Err(conflict("--doc cannot be combined with --affected"));
         }
-        if allow_overflow {
-            return Err(conflict("--doc cannot be combined with --allow-overflow"));
-        }
         if contracts.is_some() {
             return Err(conflict(
                 "--doc does not use --contracts; examples check contracts as run does",
@@ -2333,6 +2330,7 @@ fn run_doctest_action(arguments: &Arguments, project: &Project) -> u8 {
             canonical: arguments.warn_canonical,
             untrusted_extern: arguments.warn_untrusted_extern,
         },
+        allow_overflow: arguments.allow_overflow,
     };
     let path_of = |example: &doctest::Example| {
         project.sources[example.source]

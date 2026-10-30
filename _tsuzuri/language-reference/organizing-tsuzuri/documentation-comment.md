@@ -290,6 +290,7 @@ ok 4 - Geometry perimeter#2
 
 - **`Main.tz` の例は走らない**: `Main.tz` の宣言の例は、`Main.tz` を置き換えると自分の宣言が見えなくなるので実行しません。`ignored` に数え、標準エラーに `N doc example(s) in Main.tz not run; move the documented declaration to another module` を 1 回出します（`--json` では警告 `W2001` の行）。例を付けたい宣言は別のモジュールへ移します。
 - **ネイティブだけ**: 例はこのマシンのネイティブで走ります。`--target`・`-g`・`-o`・`--coverage`・`--seed`・`--link`/`-l`/`-L`・`--contracts` とは組み合わせられません（`E2000`）。契約は `run` と同じく検査します（`check`）。
+- **整数の折り返し**: `test` の例は `tsuzuri test` と同じく、折り返した整数の演算を報告して失敗にします（`--allow-overflow` で報告だけにします）。`run=` の例は `tsuzuri run` と同じく報告しません。
 - **警告**: 例の警告は、ふだんは無視します。`--deny-warnings` を付けると、警告のある例は最初の警告で失敗します（`--warn implicit-copy` などで有効にした警告も数えます）。ネイティブのライブラリは `Tsuzuri.toml` の `[native]` に書きます。
 - **上限**: 1 つのパッケージの例は 10,000 個までです。超えると `E1017` です。
 

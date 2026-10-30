@@ -106,6 +106,8 @@ pub struct Options {
     pub filter: Option<String>,
     pub indices: Vec<usize>,
     pub warnings: Warnings,
+    /// `--allow-overflow` (A23): a `test` example whose arithmetic wraps passes, as in `tsuzuri test`.
+    pub allow_overflow: bool,
 }
 
 /// The warning settings of the command line. Without `deny`, an example's warnings are ignored;
@@ -224,9 +226,12 @@ fn scan(lines: &[&str]) -> Scan {
             continue;
         }
         if line.starts_with([' ', '\t']) {
+            // Any indented opening whose language is `tsuzuri` (`  ``` tsuzuri run=1` included).
             let rest = line.trim_start();
-            if let Some(after) = rest.strip_prefix("```tsuzuri")
-                && (after.is_empty() || after.starts_with([' ', '\t']))
+            let ticks = leading_ticks(rest);
+            if ticks >= 3
+                && !rest[ticks..].contains('`')
+                && rest[ticks..].split_whitespace().next() == Some("tsuzuri")
             {
                 found.problems.push((i, INDENTED.to_owned()));
             }
@@ -825,6 +830,11 @@ fn run_one(
                     indices,
                     backend: options.build.backend,
                     allocator: options.build.allocator,
+                    // A23: a `test` example reports wrapped arithmetic and fails, as `tsuzuri test` does.
+                    overflow: Some(driver::OverflowTests {
+                        fail: !options.allow_overflow,
+                        sources: built.overflow_sources(),
+                    }),
                     ..Default::default()
                 };
                 match driver::run_tests_linked(&module, &test_options, &built.native) {
@@ -1032,6 +1042,13 @@ mod tests {
         );
         // An unclosed fence of another language hides the rest and is no problem.
         assert_eq!(scan(&["```text", "```tsuzuri"]), Scan::default());
+        // An indented opening is found whatever the blanks before the language.
+        let spaced = scan(&["  ``` tsuzuri run=1", "x", "  ```", "\t````tsuzuri", "x"]);
+        assert_eq!(
+            spaced.problems,
+            [(0, INDENTED.to_owned()), (3, INDENTED.to_owned())]
+        );
+        assert!(scan(&["  ```text"]).problems.is_empty());
     }
 
     #[test]
