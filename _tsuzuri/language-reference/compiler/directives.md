@@ -97,7 +97,7 @@ total 20 22
 
 ## Tsuzuri.toml の設定
 
-プロジェクトルートの `Tsuzuri.toml` が、パッケージの既定です。パーサーが受け付けるセクションは 4 つだけで、`[package]` のあとに、任意の `[dependencies]`、`[wasm]`、`[native]` がそれぞれ高々 1 回です。知らないキーや、セクションの重複は `E0002` です。`#` はコメントで、指令ではありません。
+プロジェクトルートの `Tsuzuri.toml` が、パッケージの既定です。パーサーが受け付けるセクションは、`[package]` と、そのあとに任意の `[dependencies]`、`[wasm]`、`[native]`、`[registry]`、`[capabilities]` がそれぞれ高々 1 回です。知らないキーや、セクションの重複は `E0002` です。`#` はコメントで、指令ではありません。
 
 ```toml
 [package]
@@ -116,6 +116,9 @@ stack-size = "1MiB"
 link = ["host.o"]
 libraries = ["sqlite3"]
 search = ["vendor"]
+
+[capabilities]
+allow = ["ffi", "fs", "stdio"]
 ```
 
 | セクション | キー | 意味 |
@@ -124,6 +127,7 @@ search = ["vendor"]
 | `[dependencies]` | `<名前> = { path = "相対パス" [, native = true] }` | ローカルパス依存のみ対応（最大 1024 個）。`git` や版の指定は `E0002`。`native = true` を指定すると、依存側の `[native]` をこのルートのリンクへ含める |
 | `[wasm]` | `max-memory`、`stack-size` | 文字列のサイズ。コマンドラインが省略したときの既定。ルートパッケージだけが効きます |
 | `[native]` | `link`、`libraries`、`search` | 文字列の配列。各キーは 1 行。パスはパッケージからの相対パスで、絶対パスは不可 |
+| `[capabilities]` | `allow` | ルートのパッケージが使ってよい権限（`env`・`ffi`・`fs`・`gpu`・`net`・`process`・`random`・`stdio`・`time`）の 1 行の配列。依存の項目の `capabilities = [...]` と合わせて、静的な使用を検査する（`E1036`）。書かなければ検査しない（[権限](../organizing-tsuzuri/packages.md#権限capabilities)） |
 
 依存のモジュールは、依存先の名前空間を付けて参照します。名前空間の規則は [言語仕様のローカルパッケージ](../../../docs/language.md#ローカルパッケージ) と [パッケージ](../organizing-tsuzuri/packages.md) を見てください。
 
@@ -144,7 +148,7 @@ tsuzuri build Main.tz -o shop
 
 ## 警告を失敗にする
 
-`#nowarn` に当たる、警告コードを 1 つ消す構文はありません。未使用のローカルは、名前を `_` か `_name` にすると `W1001` が出なくなります。配列の暗黙コピー `W1006` は、既定では出さず、`--warn implicit-copy` を付けたときだけ出ます。
+`#nowarn` に当たる、警告コードを 1 つ消す構文はありません。未使用のローカルは、名前を `_` か `_name` にすると `W1001` が出なくなります。配列の暗黙コピー `W1006` は、既定では出さず、`--warn implicit-copy` を付けたときだけ出ます。`@trusted` のない `extern` の使用の `W1010` も、`--warn untrusted-extern` を付けたときだけ出ます。
 
 警告をビルドの失敗にしたいときは、`--deny-warnings` です。`check`、`build`、`run` に加え、実装上は `doc` と `test` の前にも効きます。警告が 1 つでもあれば終了コード 1 で、コード生成や実行には進みません。既存の成果物は残ります。
 
@@ -157,7 +161,7 @@ tsuzuri build Main.tz -o shop
 
 この警告だけの `check` は終了コード 0 ですが、`--deny-warnings` を付けると終了コード 1 になります。`--json` でも重要度は `warning` のままです。エラーがあるファイルでは、警告は出しません。
 
-シャドーイングの `W1004` は、コンパイラ内部の検査用で、コマンドラインからは出せません。ユーザーが付ける公式の警告フラグは `--warn implicit-copy` だけです。
+シャドーイングの `W1004` は、コンパイラ内部の検査用で、コマンドラインからは出せません。ユーザーが付ける公式の警告フラグは `--warn implicit-copy` と `--warn untrusted-extern` だけです。
 
 ## 他の言語との比較
 

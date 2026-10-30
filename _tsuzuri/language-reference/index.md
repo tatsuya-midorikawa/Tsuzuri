@@ -15,6 +15,7 @@
 - [名前空間](./organizing-tsuzuri/namespaces.md)
 - [モジュール](./organizing-tsuzuri/modules.md)
 - [パッケージ](./organizing-tsuzuri/packages.md)
+  - [権限（capabilities）](./organizing-tsuzuri/packages.md#権限capabilities)
 - [using 宣言](./organizing-tsuzuri/using-declarations.md)
 - [アクセス制御](./organizing-tsuzuri/access-control.md)
 - [ドキュメント コメント](./organizing-tsuzuri/documentation-comment.md)
@@ -42,6 +43,7 @@
 - [ジェネリック関数と型パラメータ制約](./values-and-functions/generics-functions.md)
 - [ラムダ式](./values-and-functions/lambda-expressions.md)
 - [属性](./values-and-functions/attributes.md)
+  - [`@trusted`（`extern` の信頼の印）](./values-and-functions/attributes.md#trusted-extern-の信頼の印)
 
 #### ループと条件
 

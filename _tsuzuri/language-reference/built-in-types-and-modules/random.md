@@ -2,6 +2,8 @@
 
 Tsuzuri には 2 種類の乱数機構があります。OS が提供する暗号論的乱数バイト列は `IO` アクションとしてのみ取得できます。一方、`Random.Pcg` は純粋な値であり、同一のシードからはネイティブでも WASM でも決定論的に同一の乱数列が得られます。暗黙のうちに参照される大域的な乱数シードは存在しません。
 
+必要な権限: `random`（`Random.bytes`・`Random.next_u64`）。`Random.pcg` などの決まった種の生成器は権限を要りません。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+
 ## この記事のポイント
 
 - `Random.bytes` と `Random.next_u64` は OS カーネルが提供する暗号論的乱数です。実行のたびに値が変わります。

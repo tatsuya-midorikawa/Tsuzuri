@@ -19,6 +19,8 @@
 | `tsuzuri fix --json` | `event` ごとのキー（`fix`・`file`・`summary`）の名前と順序、`status`・`reason`・`applicability`・`stop` の値を変えません（キーが増えることはあります）。終了コードは完了 0、中止 1、引数の誤り 2 です。`--applicability` の既定（`certain`）を変えません |
 | `tsuzuri explain` の JSON | `--json` と `--catalog --json` のキーの名前と順序を変えません（キーが増えることはあります）。終了コードは成功 0、引数の誤りと不明な対象 2 です |
 | `tsuzuri api-diff` の出力形式 | テキストの行の形と `--json` のキー（キーが増えることはあります） |
+| `tsuzuri audit`（E15） | テキストの行の形、`--json` の schema `tz-audit/1` と行の `type`（`audit`・`package`・`extern`・`summary`）、キーの名前と順序（キーが増えることはあります。読み手は知らないキーを無視します）、終了コード（違反なし 0、`E1036` か `--deny-warnings` の `W1010` 1、引数の誤り 2）。互換のない変更は `tz-audit/2` にします |
+| マニフェストの権限（E15） | `[capabilities]` の `allow` と依存の `capabilities` の書き方、権限の 9 個の名前（`env`・`ffi`・`fs`・`gpu`・`net`・`process`・`random`・`stdio`・`time`）。権限の宣言がないプロジェクトは検査しません。権限の名前は足すことはあっても、消したり意味を変えたりしません |
 | 知識グラフの schema（facts の行は `tz-facts/1`。G26・D-60） | `nodes.jsonl`・`edges.jsonl`・`tests.jsonl`・`facts/`・`layout/` の行のキーを消さず・改名せず、行の意味を変えません。キーと、`kind`・`rel`・`event`・`conv`・`layout` の語彙を足すのは互換の変更です（読み手は知らないキーと語彙を無視します）。互換のない変更は schema の番号を上げます（[知識グラフの形式](../_tsuzuri/language-reference/compiler/kg-format.md)） |
 | 知識グラフの置き場と `tsuzuri kg`（G27） | `target/tz/kg/` のファイル名、`manifest.json` の schema `tz-kg/1` とキー（`counts` の項目は増えることがあります）、`tsuzuri kg` のサブコマンド・オプション・`--json` のキー・終了コード、`E2009` の kind（[知識グラフ](../_tsuzuri/language-reference/compiler/kg.md)） |
 | `tsuzuri mcp`（G29） | ツールの名前、引数のキーと値、`structuredContent` のキー（キーは増えることがあります）、資源の URI、`E2010` と `mcp_*` の kind。`tools.json` のキーを消す・改名するのは互換のない変更です |
@@ -40,6 +42,7 @@
 | 警告が出るかどうか | 新しい警告が増えることがあります。`--deny-warnings` を付けたビルドは、コンパイラの更新や、依存パッケージが宣言を非推奨にしたことで失敗することがあります。警告を出す・出さないと `--deny-warnings` の結果は、保証の対象外です |
 | 実験的と書いた機能（GPU カーネルなど） | 仕様が固まるまで変わります |
 | `tsuzuri api-diff` が見つける変更の範囲 | 宣言の署名だけを読むので、見つけられない変更があります（[公開 API の差分](#公開-api-の差分)） |
+| std の関数が要る権限 | std の関数の本体が変わると、その権限も変わることがあります（権限は本体から導出します）。権限を新たに要るようになった std の関数を、権限を宣言したプロジェクトが使っていれば `E1036` になります。リリースノートで知らせます |
 
 ## edition
 
@@ -128,6 +131,8 @@ edition ごとに std を複製することはしません。型と instance が
 class メソッドの純粋性の追加も、既存 instance の義務が増えるため非互換です。
 効果の属性（`@no_alloc`・`@no_copy`・`@no_trap`・`@terminates`）を足すのは約束の追加で互換、外すのは約束の削除で非互換として報告します。関数を受け取りうる引数を持つ関数に足すのは、呼び出し側が渡す関数にも同じ属性を求めるので非互換です。型変数や長さパラメーター（`[i64; N]` の `N`。結果の型にだけあるものも）を含む関数に足すのも、呼び出し側が選ぶ型と長さのインスタンスごとに検査するので非互換です。属性は生成コードを変えません。
 契約の行は、`@requires` を足す（呼ぶ側の義務が増える）・`@ensures` を外す（保証が減る）のを非互換、`@requires` を外す・`@ensures` を足すのを互換として報告します。
+
+`extern` の宣言の `@trusted`（E15）は、人が確かめた印で、API には入れません。足しても外しても報告しません。外すと `--warn untrusted-extern` と `tsuzuri audit` の `W1010` が増えることがあります。
 
 既定は宣言の署名の文字列を比べます。無印の引数を持つ通常の `def` では、edition の引数の既定の差も
 保守的に breaking とします。型を解決しないので、scalar など実際には変わらない引数にも出る場合があります。

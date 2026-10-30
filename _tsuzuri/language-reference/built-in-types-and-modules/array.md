@@ -2,6 +2,8 @@
 
 `Array` は、要素を連続したメモリに置く配列です。型は `[T]` で、`Array<T>` とも書けます。作ったあとの長さは変わりません。添字 `xs[i]` にはどの整数型の値も書け、読み取りは $O(1)$ です。
 
+必要な権限: `random`（`Array.random_choice`・`random_choices`・`random_sample`・`random_shuffle`・`random_shuffle_in_place` だけ）。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+
 `Array` モジュールは、F# の `Array` モジュールと同じ関数を、同じ名前（snake_case）で提供します。配列はどの関数でも最後の引数なので、`Array.map f xs` や `xs |> Array.filter p` のように F# の書き方がそのまま使え、`Array.sort >> Array.rev` のような関数合成もできます。F# で配列が最後にない 9 つの関数だけは、同じ理由で配列を最後に移しました（[引数の順序](#引数の順序)）。所有権のために F# と違う点（失敗の扱い、`Copy`、`r` を付けた関数）は [F# の Array モジュールとの対応](#f-の-array-モジュールとの対応) にまとめました。
 
 長さを型に含む `[T; N]` は別の型です。要素を値の中に持ち、ヒープは確保しません。C スタイルの `T[]` は書けません。`Array` は予約された型名で、同名の宣言は `E1001` です。

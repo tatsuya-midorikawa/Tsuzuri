@@ -5,6 +5,8 @@
 
 ホスト側のバッファ管理 API、WebGPU・Vulkan 向けシェーダーコード生成、WebGPU と Vulkan 上の実行、実行する場所の自動選択を、実験的に検証するためのモジュールです。`CpuReference`、`WebGpu`、`Vulkan`、`Auto` 以外のバックエンド（`Cuda`、`Metal`）の要求は、すべて失敗します。`Gpu.request Gpu.WebGpu` や `Gpu.request Gpu.Vulkan` が失敗する（ライブラリがない、デバイスがない、必要な機能がない）ときも、明示的な GPU 要求を暗黙に CPU 実行へ切り替えて成功扱いにすることはありません。失敗は `Result.Error Gpu.Unavailable` で、CPU へ切り替えるかどうかはプログラムが書きます。`Gpu.Auto` だけは、使えるデバイスと CPU 参照のどちらで動かすかを呼び出しごとに選ぶバックエンドで、常に成功します。
 
+必要な権限: `gpu`（`Gpu.request`・`Gpu.init`・`Gpu.map`・`Gpu.init_relaxed`・`Gpu.map_relaxed`・`Gpu.last_backend`）。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+
 ## この記事のポイント
 
 - `Gpu.request Gpu.CpuReference` と `Gpu.request Gpu.Auto` は常に `Result.Ok` です。`Gpu.request Gpu.WebGpu` と `Gpu.request Gpu.Vulkan` は、ランタイムがデバイスを開けて、プログラムのカーネルが要る機能をデバイスが持つときだけ `Result.Ok` で、そうでなければ `Result.Error Gpu.Unavailable` です。`Cuda` と `Metal` は `Unavailable` です。

@@ -1694,6 +1694,8 @@ pub struct Project {
     /// The `[native]` link inputs of the root package and of the dependencies it marks `native = true`,
     /// each resolved against its package root.
     pub native: LinkInputs,
+    /// The capabilities that the manifests allow each package (E15); `None` without a root manifest.
+    pub capabilities: Option<crate::capabilities::Policy>,
 }
 
 #[derive(Debug)]
@@ -1829,6 +1831,9 @@ pub(crate) struct LoadedPackage {
     pub(crate) sha256: Option<String>,
     /// The selected version of a registry package.
     pub(crate) version: Option<crate::package::Version>,
+    /// The packages that the manifest's dependencies resolved to: each entry's name and the
+    /// dependency's root (E15). An entry that resolved to nothing is not here.
+    pub(crate) dependency_roots: Vec<(String, PathBuf)>,
 }
 
 impl LoadedPackage {
@@ -2038,6 +2043,7 @@ pub(crate) fn load_packages(
             active.insert(root.clone());
             pending.push((root.clone(), None, true, Origin::Local));
             let mut dependencies = Vec::new();
+            let mut dependency_roots = Vec::new();
             for (name, dependency) in &manifest.dependencies {
                 let source = match &dependency.source {
                     DependencySource::Path(_) => Source::Path,
@@ -2114,6 +2120,7 @@ pub(crate) fn load_packages(
                         (package_root, dependency_origin)
                     }
                 };
+                dependency_roots.push((name.clone(), dependency_root.clone()));
                 dependencies.push((
                     dependency_root,
                     Some((name.clone(), path.clone(), dependency.span)),
@@ -2138,6 +2145,7 @@ pub(crate) fn load_packages(
                     text,
                     sha256,
                     version,
+                    dependency_roots,
                 },
             );
         }
@@ -2682,6 +2690,7 @@ impl Project {
                 search: resolve(&inputs.search),
             });
         }
+        let capabilities = crate::capabilities::Policy::build(directory, &packages);
         let root_package = packages.iter().find(|package| package.id.root == directory);
         let root_id = root_package.map(|package| package.id.clone());
         // A lockfile belongs to the root manifest, which is there whenever the lockfile is.
@@ -2721,6 +2730,7 @@ impl Project {
             root_package: root_id,
             wasm,
             native,
+            capabilities,
         })
     }
 
@@ -2892,6 +2902,7 @@ impl Project {
             root_package: None,
             wasm: Default::default(),
             native: LinkInputs::default(),
+            capabilities: None,
         }
     }
 
@@ -3065,6 +3076,88 @@ impl Project {
                 package: self.dependency_package(source),
             })
             .collect()
+    }
+
+    /// Each source as the capability analysis sees it (E15), in the order of `Span::source`.
+    pub fn source_infos(&self) -> Vec<crate::capabilities::SourceInfo> {
+        self.sources
+            .iter()
+            .map(|source| {
+                let within = source
+                    .package
+                    .as_ref()
+                    .and_then(|package| source.path.strip_prefix(&package.root).ok())
+                    .unwrap_or(&source.relative_path);
+                crate::capabilities::SourceInfo {
+                    name: source
+                        .name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    std: source.origin == ModuleOrigin::Std,
+                    package: self.dependency_package(source).cloned(),
+                    path: within
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                }
+            })
+            .collect()
+    }
+
+    /// `E1036` for each use that the project's `[capabilities]` policy does not allow (E15).
+    /// Without an enforced policy nothing is analyzed.
+    pub fn check_capabilities(
+        &self,
+        module: &CheckedModule,
+    ) -> Result<Vec<Diagnostic>, Diagnostic> {
+        let Some(policy) = self.capabilities.as_ref().filter(|policy| policy.enforced) else {
+            return Ok(Vec::new());
+        };
+        let analysis = crate::capabilities::analyze(module, &self.source_infos())?;
+        Ok(crate::capabilities::denied(&analysis, policy))
+    }
+
+    /// The `tsuzuri audit` report of the analyzed project (E15) and its diagnostics: `E1036`
+    /// under an enforced policy and `W1010` for every package. `name` names a root package
+    /// without a manifest.
+    pub fn audit(
+        &self,
+        module: &CheckedModule,
+        name: &str,
+    ) -> Result<(crate::capabilities::Report, Vec<Diagnostic>), Diagnostic> {
+        let sources = self.source_infos();
+        let analysis = crate::capabilities::analyze(module, &sources)?;
+        let texts: Vec<&str> = self
+            .sources
+            .iter()
+            .map(|source| source.text.as_str())
+            .collect();
+        let report = crate::capabilities::Report::new(
+            self.capabilities.as_ref(),
+            name,
+            &analysis,
+            &sources,
+            &texts,
+        );
+        let mut diagnostics = match &self.capabilities {
+            Some(policy) if policy.enforced => crate::capabilities::denied(&analysis, policy),
+            _ => Vec::new(),
+        };
+        diagnostics.extend(crate::capabilities::untrusted_externs(&analysis, false));
+        Ok((report, diagnostics))
+    }
+
+    /// `W1010` for the extern functions that the root package declares and uses without
+    /// `@trusted` (E15, `--warn untrusted-extern`).
+    pub fn untrusted_extern_warnings(
+        &self,
+        module: &CheckedModule,
+    ) -> Result<Vec<Diagnostic>, Diagnostic> {
+        let analysis = crate::capabilities::analyze(module, &self.source_infos())?;
+        Ok(crate::capabilities::untrusted_externs(&analysis, true))
     }
 
     /// The dependency package that owns `source`: `None` for a source of the root package,

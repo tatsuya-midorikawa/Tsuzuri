@@ -157,6 +157,11 @@ pub fn forbidden(kind: EffectKind) -> EffectSet {
     }
 }
 
+/// E15: the `@trusted` property that vouches for an extern function under an attribute.
+pub fn trusted_property(kind: EffectKind) -> u8 {
+    crate::syntax::trusted_property_bit(kind.name()).expect("every effect attribute is a property")
+}
+
 /// The effect that an attribute promises to be absent.
 pub fn attribute_effect(kind: EffectKind) -> Effect {
     match kind {
@@ -225,6 +230,9 @@ pub struct Options {
     pub computed: EffectSet,
     /// Keep every direct source and exemption of each body (`FunctionEffects::sites`).
     pub sites: bool,
+    /// E15: a `@trusted` property bit (`syntax::TRUSTED_PROPERTIES`). An extern function whose
+    /// mark states it is not a source of `extern`; others still are.
+    pub trusted: Option<u8>,
     /// A call of a value of a `pure` function type adds nothing: `computed` holds only effects
     /// that `pure` forbids, as for A21's contract conditions.
     pub pure_values: bool,
@@ -251,6 +259,7 @@ impl Options {
             scope,
             computed: computed.intersection(SUPPORTED),
             sites: false,
+            trusted: None,
             pure_values: false,
             templates: false,
         }
@@ -1609,7 +1618,16 @@ impl<'s, 'a> Scan<'s, 'a> {
                 true
             }
             K::HostCall(..) => {
-                self.source(Effect::Extern, span, "extern-call");
+                // E15: a person vouched for this property of the extern function.
+                let vouched = self.state.options.trusted.is_some_and(|bit| {
+                    self.function
+                        .origin
+                        .trusted
+                        .is_some_and(|bits| bits & bit != 0)
+                });
+                if !vouched {
+                    self.source(Effect::Extern, span, "extern-call");
+                }
                 // The call itself may copy a string argument for the host (into UTF-16, when the
                 // program's strings are compact): an allocation of the marshalling, which no
                 // property of the C function covers.
@@ -2819,7 +2837,11 @@ impl Report<'_> {
 
     /// Phase 6: a call of an attributed function that calls some of its parameters, from a
     /// function without the same attribute, passes functions whose effects must keep it.
-    fn call_sites(&self, errors: &mut Vec<(Span, usize, EffectKind, Diagnostic)>) {
+    fn call_sites(
+        &self,
+        only: EffectKind,
+        errors: &mut Vec<(Span, usize, EffectKind, Diagnostic)>,
+    ) {
         for (caller, sites) in self.effects.calls.iter().enumerate() {
             let caller_root = family_root(self.module, caller);
             let caller_asserts = self.module.functions[caller_root].origin.asserts;
@@ -2830,7 +2852,7 @@ impl Report<'_> {
                     continue;
                 }
                 for kind in callee.origin.asserts.kinds() {
-                    if caller_asserts.contains(kind) {
+                    if kind != only || caller_asserts.contains(kind) {
                         continue;
                     }
                     let name = declared_name(callee);
@@ -2892,7 +2914,7 @@ impl Report<'_> {
     /// A reference to an attributed function that calls some of its parameters, used where the
     /// calls of the value do not supply all of them (stored, returned, passed on or captured):
     /// the functions that those calls pass are never checked, so the attribute cannot hold.
-    fn escapes(&self, errors: &mut Vec<(Span, usize, EffectKind, Diagnostic)>) {
+    fn escapes(&self, only: EffectKind, errors: &mut Vec<(Span, usize, EffectKind, Diagnostic)>) {
         for reference in self.effects.references.iter().flatten() {
             let calls_params = self.effects.summary(reference.function).calls_params;
             let unchecked = if reference.supplied >= PARAMETER_BITS {
@@ -2906,6 +2928,9 @@ impl Report<'_> {
             let function = &self.module.functions[reference.function];
             let name = declared_name(function);
             for kind in function.origin.asserts.kinds() {
+                if kind != only {
+                    continue;
+                }
                 let attribute = kind.name();
                 let help = format!(
                     "call '{name}' with the functions it calls, directly or through a 'let' that is only called"
@@ -3005,6 +3030,34 @@ pub fn validate(
     effects: Option<&FunctionEffects>,
     attributes: &[DeclaredAttribute],
 ) -> Validation {
+    validate_trusted(module, effects, &BTreeMap::new(), attributes)
+}
+
+/// The attributes whose `@trusted` property some extern function of `module` states, and
+/// which forbid `extern`: each needs its own summary (E15, D14).
+pub fn trusted_kinds(module: &CheckedModule) -> Vec<EffectKind> {
+    EffectKind::ALL
+        .into_iter()
+        .filter(|kind| {
+            forbidden(*kind).contains(Effect::Extern)
+                && module.functions.iter().any(|function| {
+                    function
+                        .origin
+                        .trusted
+                        .is_some_and(|bits| bits & trusted_property(*kind) != 0)
+                })
+        })
+        .collect()
+}
+
+/// `validate` where the attributes of a kind in `trusted` are checked against that summary,
+/// computed with the kind's `@trusted` property (E15).
+pub fn validate_trusted(
+    module: &CheckedModule,
+    effects: Option<&FunctionEffects>,
+    trusted: &BTreeMap<EffectKind, FunctionEffects>,
+    attributes: &[DeclaredAttribute],
+) -> Validation {
     let mut validation = Validation::default();
     let mut found: Vec<(Span, usize, EffectKind, Diagnostic)> = Vec::new();
     let empty = FunctionEffects {
@@ -3019,9 +3072,10 @@ pub fn validate(
         cycle_targets: BTreeMap::new(),
         empty: Summary::default(),
     };
-    let report = Report {
+    let base = effects.unwrap_or(&empty);
+    let report_of = |kind: EffectKind| Report {
         module,
-        effects: effects.unwrap_or(&empty),
+        effects: trusted.get(&kind).unwrap_or(base),
         attributes,
     };
     let mut unavailable = BTreeSet::new();
@@ -3077,13 +3131,16 @@ pub fn validate(
                 if unavailable.contains(&(function.module.clone(), name, kind)) {
                     continue;
                 }
-                if let Some(diagnostic) = report.check(id, kind) {
+                if let Some(diagnostic) = report_of(kind).check(id, kind) {
                     found.push((diagnostic.span, id, kind, diagnostic));
                 }
             }
         }
-        report.call_sites(&mut found);
-        report.escapes(&mut found);
+        for kind in EffectKind::ALL {
+            let report = report_of(kind);
+            report.call_sites(kind, &mut found);
+            report.escapes(kind, &mut found);
+        }
     }
     // One diagnostic per declaration and attribute: the first in source order, of any instance.
     found.sort_by_key(|(span, _, _, _)| position(*span));
@@ -3136,9 +3193,13 @@ pub(crate) fn impurities(
     templates: bool,
 ) -> Result<Vec<(usize, Diagnostic)>, Diagnostic> {
     let count = module.functions.len();
-    let mut options = Options::new(Scope::All, EffectSet::PURE_FORBIDDEN);
-    options.pure_values = true;
-    options.templates = templates;
+    // E15: an extern function marked `@trusted pure` is as pure as a `pure def`.
+    let options = Options {
+        trusted: crate::syntax::trusted_property_bit("pure"),
+        pure_values: true,
+        templates,
+        ..Options::new(Scope::All, EffectSet::PURE_FORBIDDEN)
+    };
     let mut state = State {
         module,
         options,

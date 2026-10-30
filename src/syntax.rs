@@ -296,6 +296,8 @@ pub struct Program {
     pub cpu_attributes: Vec<CpuAttribute>,
     /// The effect attributes (`@no_alloc` ...) of this module's functions, in source order (A20).
     pub effect_attributes: Vec<EffectAttribute>,
+    /// The `@trusted` marks of this module's extern declarations, in source order (E15).
+    pub trusted: Vec<TrustedAttribute>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
     /// the builder, so that `name { ... }` builds the same computation as `Builder { ... }`.
     pub aliases: Vec<Ident>,
@@ -381,6 +383,31 @@ impl EffectKind {
     pub fn bit(self) -> u8 {
         1 << self as u8
     }
+}
+
+/// The properties that `@trusted` may state about an extern function, bit `i` for entry `i` (E15).
+/// They are the words of A20's effect attributes and A19's `pure`.
+pub const TRUSTED_PROPERTIES: [&str; 5] = ["pure", "no_alloc", "no_copy", "no_trap", "terminates"];
+
+/// The bit of a `@trusted` property in `TrustedAttribute::properties`.
+pub fn trusted_property_bit(name: &str) -> Option<u8> {
+    TRUSTED_PROPERTIES
+        .iter()
+        .position(|property| *property == name)
+        .map(|index| 1 << index)
+}
+
+/// `@trusted [properties]` before an extern declaration (E15): a person checked the external
+/// function's ABI, ownership and lifetime contract. The compiler checks none of it; the mark
+/// changes no emitted code.
+#[derive(Clone, Debug)]
+pub struct TrustedAttribute {
+    /// The name of the extern function or type.
+    pub target: Ident,
+    /// Bit `i` for `TRUSTED_PROPERTIES[i]`.
+    pub properties: u8,
+    /// From `@trusted` through the last property.
+    pub span: Span,
 }
 
 /// A `namespace A::B` or `using A::B` declaration.

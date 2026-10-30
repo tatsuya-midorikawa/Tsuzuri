@@ -3,6 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use crate::capabilities::{Capability, CapabilitySet};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::syntax::Edition;
 
@@ -29,6 +30,9 @@ pub struct Manifest {
     pub native: Option<(crate::driver::LinkInputs, Span)>,
     /// The `[registry]` index. `tsuzuri fetch` reads only the root package's section.
     pub registry: Option<Registry>,
+    /// The `allow` of `[capabilities]` and the span of its header (E15). Only the root
+    /// package's section counts.
+    pub capabilities: Option<(CapabilitySet, Span)>,
 }
 
 /// A registry: a git repository whose `index/<name>.json` files list the
@@ -140,6 +144,8 @@ pub struct Dependency {
     pub span: Span,
     /// `native = true`: the root package lets this dependency's `[native]` link inputs into the build.
     pub native: bool,
+    /// `capabilities = [...]`: what the declaring package lets this dependency use (E15).
+    pub capabilities: Option<CapabilitySet>,
 }
 
 pub const GIT_FORM: &str =
@@ -690,6 +696,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let mut native: Option<(crate::driver::LinkInputs, Span)> = None;
     let mut native_keys = BTreeSet::new();
     let mut registry: Option<(Option<String>, Option<String>, Span)> = None;
+    let mut capabilities: Option<(Option<CapabilitySet>, Span)> = None;
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
         let span = Span::new(offset, offset + line.trim_end().len()).in_source(source_id);
@@ -711,6 +718,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 Some("wasm")
             } else if cursor.take("[registry]") {
                 Some("registry")
+            } else if cursor.take("[capabilities]") {
+                Some("capabilities")
             } else {
                 cursor.take("[native]").then_some("native")
             };
@@ -718,7 +727,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 Some(next) if sections.insert(next) => section = next,
                 _ => {
                     return Err(cursor.error(DiagnosticKind::ManifestSectionOrder,
-                        "expected [package] followed by optional [dependencies], [wasm], [native] and [registry], each once",
+                        "expected [package] followed by optional [dependencies], [wasm], [native], [registry] and [capabilities], each once",
                     ));
                 }
             }
@@ -727,6 +736,9 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             }
             if section == "registry" {
                 registry = Some((None, None, span));
+            }
+            if section == "capabilities" {
+                capabilities = Some((None, span));
             }
             cursor.finish()?;
             continue;
@@ -752,10 +764,16 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             "dependencies" => {
                 namespace(&key, span)?;
                 cursor.expect("{")?;
-                let (source, native) = match cursor.key()?.as_str() {
+                let (source, native, granted) = match cursor.key()?.as_str() {
                     "path" => cursor.path_dependency()?,
-                    "git" => (cursor.git_dependency()?, false),
-                    "version" => (cursor.registry_dependency()?, false),
+                    "git" => {
+                        let (source, granted) = cursor.git_dependency()?;
+                        (source, false, granted)
+                    }
+                    "version" => {
+                        let (source, granted) = cursor.registry_dependency()?;
+                        (source, false, granted)
+                    }
                     "rev" | "branch" | "tag" => {
                         return Err(cursor.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
                     }
@@ -773,6 +791,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                             source,
                             span,
                             native,
+                            capabilities: granted,
                         },
                     )
                     .is_some()
@@ -835,6 +854,24 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     return Err(cursor.error(
                         DiagnosticKind::DuplicateManifestKey,
                         "registry keys must occur at most once",
+                    ));
+                }
+            }
+            "capabilities" => {
+                let (allow, _) = capabilities
+                    .as_mut()
+                    .expect("the [capabilities] header precedes its keys");
+                if key != "allow" {
+                    return Err(cursor.error(
+                        DiagnosticKind::UnknownManifestKey,
+                        "unknown capabilities key; expected allow",
+                    ));
+                }
+                let names = cursor.capability_names("allow")?;
+                if allow.replace(names).is_some() {
+                    return Err(cursor.error(
+                        DiagnosticKind::DuplicateManifestKey,
+                        "capabilities keys must occur at most once",
                     ));
                 }
             }
@@ -909,6 +946,17 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             ));
         }
     };
+    let capabilities = match capabilities {
+        None => None,
+        Some((Some(allow), span)) => Some((allow, span)),
+        Some((None, span)) => {
+            return Err(Diagnostic::of(
+                DiagnosticKind::MissingCapabilitiesAllow,
+                "[capabilities] requires allow = [\"fs\", ...]",
+                span,
+            ));
+        }
+    };
     let (name, span) = fields.remove("name").ok_or_else(missing)?;
     let (version, _) = fields.remove("version").ok_or_else(missing)?;
     let edition = match fields.remove("edition") {
@@ -946,6 +994,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         wasm,
         native,
         registry,
+        capabilities,
     })
 }
 
@@ -1068,6 +1117,50 @@ impl Line<'_> {
         Ok(values)
     }
 
+    /// A one-line array of capability names after `key =` (E15): `allow` or `capabilities`.
+    fn capability_names(&mut self, key: &str) -> Result<CapabilitySet, Diagnostic> {
+        let form = format!(
+            "{key} must be an array of capability names on one line, such as [\"fs\", \"time\"]"
+        );
+        if !self.take("[") {
+            return Err(self.error(DiagnosticKind::InvalidCapabilities, &form));
+        }
+        let mut names = CapabilitySet::EMPTY;
+        while !self.take("]") {
+            self.space();
+            if !self.rest.starts_with('"') {
+                return Err(self.error(DiagnosticKind::InvalidCapabilities, &form));
+            }
+            let name = self.string()?;
+            let Some(capability) = Capability::from_name(&name) else {
+                return Err(self.error(
+                    DiagnosticKind::UnknownCapability,
+                    &format!(
+                        "unknown capability '{name}'; expected one of {}",
+                        Capability::NAMES
+                    ),
+                ));
+            };
+            if names.contains(capability) {
+                return Err(self.error(
+                    DiagnosticKind::DuplicateCapability,
+                    &format!("capability '{name}' is listed twice"),
+                ));
+            }
+            names.insert(capability);
+            if !self.take(",") && !self.rest.trim_start().starts_with(']') {
+                return Err(self.error(DiagnosticKind::InvalidCapabilities, &form));
+            }
+        }
+        Ok(names)
+    }
+
+    /// `, capabilities = [...]` after the source keys of a dependency, if present (E15).
+    fn dependency_capabilities(&mut self) -> Result<Option<CapabilitySet>, Diagnostic> {
+        self.expect("=")?;
+        self.capability_names("capabilities").map(Some)
+    }
+
     fn finish(&mut self) -> Result<(), Diagnostic> {
         self.space();
         if self.rest.is_empty() || self.rest.starts_with('#') {
@@ -1080,8 +1173,10 @@ impl Line<'_> {
         }
     }
 
-    /// The rest of `{ path = "...", native = true }` after `path`, through `}`.
-    fn path_dependency(&mut self) -> Result<(DependencySource, bool), Diagnostic> {
+    /// The rest of `{ path = "...", native = true, capabilities = [...] }` after `path`, through `}`.
+    fn path_dependency(
+        &mut self,
+    ) -> Result<(DependencySource, bool, Option<CapabilitySet>), Diagnostic> {
         self.expect("=")?;
         let path = self.string()?;
         // Windows treats `/dir` and `C:dir` as non-absolute, but both escape the package root.
@@ -1097,44 +1192,88 @@ impl Line<'_> {
             ));
         }
         let mut native = false;
+        let mut capabilities = None;
         if self.take(",") {
-            if self.key()? != "native" {
-                return Err(self.error(
-                    DiagnosticKind::UnknownManifestKey,
-                    "only the path and native keys are supported in a dependency",
-                ));
+            match self.key()?.as_str() {
+                "native" => {
+                    self.expect("=")?;
+                    native = if self.take("true") {
+                        true
+                    } else if self.take("false") {
+                        false
+                    } else {
+                        return Err(self.error(
+                            DiagnosticKind::InvalidDependencyNativeFlag,
+                            "native must be true or false",
+                        ));
+                    };
+                    // Only `capabilities` may follow `native`.
+                    if self.take(",") {
+                        match self.key()?.as_str() {
+                            "capabilities" => capabilities = self.dependency_capabilities()?,
+                            "native" => {
+                                return Err(self.error(
+                                    DiagnosticKind::DuplicateManifestKey,
+                                    "duplicate key 'native' in a dependency",
+                                ));
+                            }
+                            _ => {
+                                return Err(self.error(
+                                    DiagnosticKind::UnknownManifestKey,
+                                    "only the path, native, and capabilities keys are supported in a dependency",
+                                ));
+                            }
+                        }
+                    }
+                }
+                "capabilities" => capabilities = self.dependency_capabilities()?,
+                _ => {
+                    return Err(self.error(
+                        DiagnosticKind::UnknownManifestKey,
+                        "only the path, native, and capabilities keys are supported in a dependency",
+                    ));
+                }
             }
-            self.expect("=")?;
-            native = if self.take("true") {
-                true
-            } else if self.take("false") {
-                false
-            } else {
-                return Err(self.error(
-                    DiagnosticKind::InvalidDependencyNativeFlag,
-                    "native must be true or false",
-                ));
-            };
         }
         self.expect("}")?;
-        Ok((DependencySource::Path(path.into()), native))
+        Ok((DependencySource::Path(path.into()), native, capabilities))
     }
 
-    /// The rest of `{ version = "1.2.3" }` after `version`, through `}`.
-    fn registry_dependency(&mut self) -> Result<DependencySource, Diagnostic> {
+    /// The rest of `{ version = "1.2.3", capabilities = [...] }` after `version`, through `}`.
+    fn registry_dependency(
+        &mut self,
+    ) -> Result<(DependencySource, Option<CapabilitySet>), Diagnostic> {
         if !self.take("=") {
             return Err(self.error(DiagnosticKind::InvalidRegistryDependency, VERSION_FORM));
         }
         let version = Version::parse(&self.string()?)
             .ok_or_else(|| self.error(DiagnosticKind::InvalidRegistryDependency, VERSION_RULE))?;
+        let capabilities =
+            self.trailing_capabilities(DiagnosticKind::InvalidRegistryDependency, VERSION_FORM)?;
         if !self.take("}") {
             return Err(self.error(DiagnosticKind::InvalidRegistryDependency, VERSION_FORM));
         }
-        Ok(DependencySource::Registry(version))
+        Ok((DependencySource::Registry(version), capabilities))
     }
 
-    /// The rest of `{ git = "<url>", rev = "<commit>" }` after `git`, through `}`.
-    fn git_dependency(&mut self) -> Result<DependencySource, Diagnostic> {
+    /// The optional `, capabilities = [...]` of a git or registry dependency; any other key is
+    /// the dependency form's error.
+    fn trailing_capabilities(
+        &mut self,
+        kind: DiagnosticKind,
+        form: &str,
+    ) -> Result<Option<CapabilitySet>, Diagnostic> {
+        if !self.take(",") {
+            return Ok(None);
+        }
+        if self.key().ok().as_deref() != Some("capabilities") {
+            return Err(self.error(kind, form));
+        }
+        self.dependency_capabilities()
+    }
+
+    /// The rest of `{ git = "<url>", rev = "<commit>", capabilities = [...] }` after `git`, through `}`.
+    fn git_dependency(&mut self) -> Result<(DependencySource, Option<CapabilitySet>), Diagnostic> {
         if !self.take("=") {
             return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
         }
@@ -1149,10 +1288,12 @@ impl Line<'_> {
         if !valid_rev(&rev) {
             return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_REV_RULE));
         }
+        let capabilities =
+            self.trailing_capabilities(DiagnosticKind::InvalidGitDependency, GIT_FORM)?;
         if !self.take("}") {
             return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
         }
-        Ok(DependencySource::Git { url, rev })
+        Ok((DependencySource::Git { url, rev }, capabilities))
     }
 }
 
@@ -1306,7 +1447,7 @@ mod tests {
             ),
             (
                 "[native]\n[native]",
-                "expected [package] followed by optional [dependencies], [wasm], [native] and [registry], each once",
+                "expected [package] followed by optional [dependencies], [wasm], [native], [registry] and [capabilities], each once",
             ),
         ] {
             let error = parse_manifest(&format!("{PACKAGE}{suffix}"), 5).unwrap_err();
@@ -1347,18 +1488,157 @@ mod tests {
             ("a = { path = \"a\", native }", "expected '='"),
             (
                 "a = { path = \"a\", link = true }",
-                "only the path and native keys are supported in a dependency",
+                "only the path, native, and capabilities keys are supported in a dependency",
             ),
             ("a = { path = \"a\", native = true", "expected '}'"),
             (
                 "a = { path = \"a\", native = true, native = true }",
-                "expected '}'",
+                "duplicate key 'native' in a dependency",
+            ),
+            (
+                "a = { path = \"a\", native = true, capabilities_extra = [\"ffi\"] }",
+                "only the path, native, and capabilities keys are supported in a dependency",
             ),
         ] {
             let error =
                 parse_manifest(&format!("{PACKAGE}[dependencies]\n{entry}\n"), 0).unwrap_err();
             assert_eq!(error.code, "E0002", "{entry}");
             assert_eq!(error.message, message, "{entry}");
+        }
+    }
+
+    #[test]
+    fn parses_the_capabilities_section() {
+        use crate::capabilities::Capability::*;
+        let text = format!(
+            "{PACKAGE}\n[dependencies]\nfscache = {{ path = \"../fscache\", capabilities = [\"fs\"] }}\nhost-lib = {{ path = \"../host\", native = true, capabilities = [\"ffi\"] }}\nremote = {{ git = \"https://example.org/remote.git\", rev = \"0123456789abcdef0123456789abcdef01234567\", capabilities = [] }}\nregistered = {{ version = \"1.0.0\", capabilities = [\"net\", \"time\"] }}\nplain = {{ path = \"../plain\" }}\n\n[capabilities]\nallow = [\"fs\", \"net\", \"stdio\", \"time\"]\n"
+        );
+        let manifest = parse_manifest(&text, 0).unwrap();
+        let names = |set: CapabilitySet| set.iter().collect::<Vec<_>>();
+        let (allow, span) = manifest.capabilities.unwrap();
+        assert_eq!(names(allow), [Fs, Net, Stdio, Time]);
+        assert_eq!(&text[span.start..span.end], "[capabilities]");
+        let granted = |name: &str| manifest.dependencies[name].capabilities.map(names);
+        assert_eq!(granted("fscache"), Some(vec![Fs]));
+        assert_eq!(granted("host-lib"), Some(vec![Ffi]));
+        assert!(manifest.dependencies["host-lib"].native);
+        assert_eq!(granted("remote"), Some(vec![]));
+        assert_eq!(granted("registered"), Some(vec![Net, Time]));
+        assert_eq!(granted("plain"), None);
+        assert!(parse_manifest(PACKAGE, 0).unwrap().capabilities.is_none());
+        let empty = parse_manifest(&format!("{PACKAGE}[capabilities]\nallow = []\n"), 0).unwrap();
+        assert_eq!(empty.capabilities.unwrap().0, CapabilitySet::EMPTY);
+    }
+
+    #[test]
+    fn rejects_malformed_capabilities() {
+        for (text, kind, message) in [
+            (
+                "[capabilities]\nallow = []\n[capabilities]\nallow = []\n",
+                "manifest_section_order",
+                "expected [package] followed by optional [dependencies], [wasm], [native], [registry] and [capabilities], each once",
+            ),
+            (
+                "[capabilities]\n",
+                "missing_capabilities_allow",
+                "[capabilities] requires allow = [\"fs\", ...]",
+            ),
+            (
+                "[capabilities]\ndeny = []\n",
+                "unknown_manifest_key",
+                "unknown capabilities key; expected allow",
+            ),
+            (
+                "[capabilities]\nallow = []\nallow = [\"fs\"]\n",
+                "duplicate_manifest_key",
+                "capabilities keys must occur at most once",
+            ),
+            (
+                "[capabilities]\nallow = \"fs\"\n",
+                "invalid_capabilities",
+                "allow must be an array of capability names on one line, such as [\"fs\", \"time\"]",
+            ),
+            (
+                "[capabilities]\nallow = [1]\n",
+                "invalid_capabilities",
+                "allow must be an array of capability names on one line, such as [\"fs\", \"time\"]",
+            ),
+            (
+                "[dependencies]\na = { path = \"a\", capabilities = \"fs\" }\n",
+                "invalid_capabilities",
+                "capabilities must be an array of capability names on one line, such as [\"fs\", \"time\"]",
+            ),
+            (
+                "[capabilities]\nallow = [\"files\"]\n",
+                "unknown_capability",
+                "unknown capability 'files'; expected one of env, ffi, fs, gpu, net, process, random, stdio, time",
+            ),
+            (
+                "[capabilities]\nallow = [\"fs\", \"fs\"]\n",
+                "duplicate_capability",
+                "capability 'fs' is listed twice",
+            ),
+            (
+                "[dependencies]\na = { path = \"a\", capabilities = [], native = true }\n",
+                "manifest_syntax_error",
+                "expected '}'",
+            ),
+            (
+                "[dependencies]\na = { git = \"https://example.org/a.git\", rev = \"0123456789abcdef0123456789abcdef01234567\", native = true }\n",
+                "invalid_git_dependency",
+                GIT_FORM,
+            ),
+            (
+                "[dependencies]\na = { version = \"1.0.0\", native = true }\n",
+                "invalid_registry_dependency",
+                VERSION_FORM,
+            ),
+        ] {
+            let error = parse_manifest(&format!("{PACKAGE}{text}"), 5).unwrap_err();
+            assert_eq!(error.code, "E0002", "{text}");
+            assert_eq!(error.kind, Some(kind), "{text}");
+            assert_eq!(error.message, message, "{text}");
+            assert_eq!(error.span.source, Some(5), "{text}");
+        }
+    }
+
+    #[test]
+    fn parses_dependency_capabilities_for_every_source_kind() {
+        use crate::capabilities::Capability::*;
+        for (entry, native, granted) in [
+            ("{ path = \"a\", capabilities = [\"fs\"] }", false, vec![Fs]),
+            (
+                "{ path = \"a\", native = true, capabilities = [\"ffi\", \"fs\"] }",
+                true,
+                vec![Ffi, Fs],
+            ),
+            (
+                "{ path = \"a\", native = false , capabilities = [ ] }",
+                false,
+                vec![],
+            ),
+            (
+                "{ git = \"https://example.org/a.git\", rev = \"0123456789abcdef0123456789abcdef01234567\", capabilities = [\"net\"] }",
+                false,
+                vec![Net],
+            ),
+            (
+                "{ version = \"2.1.0\", capabilities = [\"time\", \"env\"] }",
+                false,
+                vec![Env, Time],
+            ),
+        ] {
+            let manifest =
+                parse_manifest(&format!("{PACKAGE}[dependencies]\na = {entry}\n"), 0).unwrap();
+            let dependency = &manifest.dependencies["a"];
+            assert_eq!(dependency.native, native, "{entry}");
+            assert_eq!(
+                dependency
+                    .capabilities
+                    .map(|set| set.iter().collect::<Vec<_>>()),
+                Some(granted),
+                "{entry}"
+            );
         }
     }
 

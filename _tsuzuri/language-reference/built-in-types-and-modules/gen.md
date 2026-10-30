@@ -2,6 +2,8 @@
 
 `Gen` は、プロパティテスト（性質のテスト）のための生成器と実行の標準モジュールです。`Gen.for_all 生成器 性質` は、生成器が作る 100 個の値で性質（`bool` を返す関数）を確かめ、成り立たない値が見つかると、その値を最も単純な反例まで縮小（shrinking）し、seed と何個目の値かと反例を表示してからテストを失敗させます。QuickCheck・FsCheck・proptest・Hypothesis に相当します。
 
+必要な権限: `stdio`（失敗を報告する `Gen.check`・`Gen.check_where`・`Gen.for_all`・`Gen.for_all_where`・`Gen.for_all_cases`）。テストの中の使用は検査しません。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+
 ## この記事のポイント
 
 - `test "名前" = Gen.for_all 生成器 (\値 -> 条件)` と書きます。既定は 100 個の値、`Gen.for_all_cases n` で個数を変えられます。

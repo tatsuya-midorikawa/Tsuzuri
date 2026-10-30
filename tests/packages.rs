@@ -1481,7 +1481,7 @@ fn manifest_accepts_registry_dependencies_and_index() {
         ),
         (
             "[registry]\nindex = \"https://e.org/a.git\"\n[registry]",
-            "expected [package] followed by optional [dependencies], [wasm], [native] and [registry], each once",
+            "expected [package] followed by optional [dependencies], [wasm], [native], [registry] and [capabilities], each once",
         ),
     ] {
         let error = parse_manifest(&format!("{GEOMETRY}{text}\n"), 3).unwrap_err();

@@ -15,6 +15,7 @@ pub mod bindgen;
 pub mod bindings;
 mod bundle_identity;
 pub mod cache;
+pub mod capabilities;
 pub mod check;
 pub mod copies;
 pub mod coverage;

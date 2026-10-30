@@ -2,6 +2,8 @@
 
 `HashMap<K, V>` は、オープンアドレス法に基づく高速なハッシュテーブル連想配列です。平均 **$O(1)$** の計算量で要素の検索・挿入・削除を行えます。
 
+必要な権限: `random`（`HashMap.randomized`・`HashMap.try_randomized` だけ）。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
+
 キーの順序が不要で、大量のデータをキーで頻繁に検索・更新したい場面に最適です。キーの全順序（`Ord`）による整列走査が必要な場合は [Map](./map.md) を使用してください。
 
 ## この記事のポイント

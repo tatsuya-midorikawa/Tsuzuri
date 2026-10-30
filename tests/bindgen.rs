@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 use tsuzuri::bindgen::{
     Arguments, BufferAnnotation, ConsumeAnnotation, Extras, Failure, Generated, HeaderInfo, MARKER,
-    ParameterName, Skipped, generate, generate_with, lp64_target, parse_arguments,
+    ParameterName, Skipped, TRUSTED_NOTE, generate, generate_with, lp64_target, parse_arguments,
 };
 
 const PATH: &str = "/h/main.h";
@@ -627,7 +627,7 @@ fn sanitizes_comment_text() {
     assert_eq!(
         generated.text,
         format!(
-            "{MARKER}\n// header: caf??extern \"x\" def x :: i64.h sha256=00\n// clang: clang??version\n// target: arm64-apple-darwin?\n"
+            "{MARKER}\n// header: caf??extern \"x\" def x :: i64.h sha256=00\n// clang: clang??version\n// target: arm64-apple-darwin?\n{TRUSTED_NOTE}\n"
         )
     );
     let generated = run(vec![
@@ -667,7 +667,14 @@ fn output_is_deterministic() {
     assert!(!first.text.ends_with("\n\n"));
     // A header without declarations still ends with one newline.
     let empty = generate(&unit(Vec::new()), &header()).unwrap();
-    assert!(empty.text.ends_with("darwin27.0.0\n") && empty.skipped.is_empty());
+    assert!(
+        empty
+            .text
+            .ends_with(&format!("darwin27.0.0\n{TRUSTED_NOTE}\n"))
+            && empty.skipped.is_empty()
+    );
+    // E15: bindgen never marks a declaration `@trusted`.
+    assert!(!first.text.lines().any(|line| line.starts_with("@trusted")));
 }
 
 #[test]

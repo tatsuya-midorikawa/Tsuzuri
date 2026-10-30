@@ -299,6 +299,8 @@ namespace = "Acme::App"
 geometry-core = { path = "../geometry-core" }
 ```
 
+**権限（E15）**: ルートのマニフェストの `[capabilities]` の `allow = [...]` と、依存の項目の `capabilities = [...]`（path・git・registry のすべて。`native` のあと）で、パッケージが外の世界に触れる権限を宣言できます。権限は `env`・`ffi`・`fs`・`gpu`・`net`・`process`・`random`・`stdio`・`time` の 9 個です。ルートに `[capabilities]` があるか、ルートの依存の項目のどれかに `capabilities` があるときだけ検査します（なければ解析も走らず、出力は変わらない）。ルートは `allow`（`[capabilities]` がなければ全権限）、依存はすべての入辺の「親の実効の権限 ∩ 項目の `capabilities`（なければ空）」の積です。検査は型検査・特殊化の後の型付き IR で、各パッケージの関数の本体（呼ばれない関数とインスタンス化したジェネリック関数を含む。テストとベンチマークを除く）が直接参照する std の関数と `extern` の関数（`ffi`）を数えます。コンパイラが足す入口の使う権限も数えます: 結果を表示するトップレベルのコード（`unit` でない値で終わるもの）は `stdio`、コマンドライン引数を受け取る `def main :: Array<string> -> i32` は `env`、`extern` で宣言した `main`（入口がホストの関数を呼ぶ）は `ffi` で、その宣言が使用の地点です。std の関数の権限は、本体が参照する私的な組み込み関数（`Os.__read`・`Os.__write` は参照する std のファイルで `fs` か `env`）と std の関数の推移閉包、`Gpu.request` などの明示の 5 つから決まります。許可の外は `E1036`（`capability_denied`。`check`・`build`・`run`・`test`・`bench` がコード生成の前に出す。`doc` と LSP は検査しない）です。実行時のサンドボックスではありません。
+
 依存先パッケージにも、`name` と `version` を記述した有効な `Tsuzuri.toml` マニフェストが必須であり、依存関係テーブルのキー名は依存先マニフェストの実際の `name` と完全に一致させる必要があります。`version` には空でない任意のバージョン文字列を指定しますが、ローカルパス依存においてはバージョン解決（セマンティックバージョニングによる自動選択など）には使用されません。
 パッケージ名 `name` は小文字の ASCII kebab-case（各構成要素は英字で始まり、全体で最大 255 バイト）で記述します。例えば `geometry-core` のデフォルト名前空間は `GeometryCore` となります。
 マニフェスト内の `edition` キーは任意指定で、そのパッケージのソースを読む言語版を年の文字列で指定します。対応する値は `"2026"` と `"2027"` で、省略した場合は `2026` です（新しい edition ができても、この既定は変わりません）。ほかの値は `E0002`（`unsupported edition '2030'; supported editions: 2026, 2027`）です。
@@ -446,6 +448,7 @@ WASM 環境では、モジュール名が `tsuzuri`、関数名が `<Module>.<na
 
 外部関数の呼び出しは副作用を持つ操作として扱われ、引数式は左から右へと順次評価されます。外部関数をファーストクラスの関数値として扱ったり部分適用したりすることは可能ですが、コンパイラが呼び出しを純粋計算と誤認してデッドコード削除することはありません。なお、コンパイル時定数（`const`）の初期化式の中から外部関数を呼び出すことはできません。
 ホスト環境は、共有借用として渡された入力データを変更したり、呼び出し完了後もポインタを不正に保持し続けたりしてはならず、同期呼び出しの実行中のみ安全に読み取ることができます。レコード型の受け渡しには、正規化された一時構造体が使用されます。
+`extern` の宣言（関数と `extern type`）の直前に `@trusted [性質...]` を書くと、人がその外部関数の ABI・所有権・寿命の契約を確かめた印になります（E15）。コンパイラは契約を確かめず、生成コードも変えません。同じ行の性質は `pure`・`no_alloc`・`no_copy`・`no_trap`・`terminates` で、`pure` は `pure def` と契約の条件の純粋性の検査で、`no_alloc`・`no_trap`・`terminates` は対応する効果の表明の検査で、その関数を `extern` の効果の源にしません（性質ごとに独立。性質のない印はどの検査も緩めない）。`FunctionOrigin.trusted` に性質のビットを持ちます。`extern` でない宣言への印・未知の性質・重複した性質・`extern type` の性質・印の重複は `E1037`（`trusted_wrong_target`・`trusted_unknown_property`・`trusted_duplicate_property`・`trusted_type_property`・`trusted_repeated`）です。印のない `extern` の関数を `extern` でない関数が参照すると、`--warn untrusted-extern` でルートのパッケージの宣言に、`tsuzuri audit` で全パッケージの宣言に警告 `W1010`（`untrusted_extern`）を出します。`tsuzuri bindgen` は印を付けず、生成物の 5 行目に確認を促す注意書きを置きます。
 所有buffer結果はout descriptorへ書き、`tsuzuri_alloc`で確保した独立領域の所有権をTsuzuriへ移します。借用入力・static領域を所有結果として返してはいけません。
 長さ・サイズ積・alignment・WASM範囲・UTF-8を受領時に検査しますが、nativeポインターの実確保元はホストの責任です。ホストはoutの全fieldを初期化します。
 ホストはABIを守る信頼境界です。例外unwind・非同期保持・回復不能な失敗からの復帰をTsuzuriのフレーム越しに行いません。
@@ -3266,6 +3269,7 @@ Simd.sum_lanes shifted
 - **置き場**: `def` 以外・重複・`extern`・式の位置は `E1032`（`effect_attribute_misplaced`・`effect_attribute_duplicate`・`effect_attribute_on_extern`）。ジェネリック関数はインスタンスごとに検査し、インスタンスがなければ警告 `W1008`（`effect_attribute_unchecked_generic`）、`const def` は実行時の本体を検査して `W1008`（`effect_attribute_on_const_def`）です。
 - 上限: 1 つの要約が 4,096 関数または 2,097,152 式を超えると `E1017`（`effect_summary_limit`）です。
 - `tsuzuri doc`・hover は属性を表示し、hover は推論した効果も表示します。`api-diff` は属性を足すのを互換、外すのを互換のない変更とします（関数を受け取りうる引数を持つ関数と、型変数や長さパラメーター（結果の型にだけあるものも）を含む関数に足すのは、呼び出し側の渡す関数や選ぶ型と長さに義務を課すので互換のない変更）。hover の効果は、属性が禁じる効果に限らず、すべての効果を推論した結果です。受け取った関数を呼ぶ関数では、その関数の効果を含めず `(and the effects of the functions it is given)` を添えます。`no_alloc` などは予約語ではありません。
+- `@trusted no_alloc` などの性質を持つ `extern` の関数は、その性質の属性の検査で `extern` の源になりません（E15。属性ごとに要約を作り直す）。
 
 ### 契約（`@requires`・`@ensures`）
 
@@ -4360,6 +4364,8 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1032` | 効果の属性の置き場の誤り（`def` 以外・重複・`extern`・式の位置） |
 | `E1033` | 契約の行（`@requires`・`@ensures`・`@old`）の置き場・型・純粋性・結果のラムダ・参照の結果の誤り、`const def` の契約 |
 | `E1034` | `tsuzuri prove`・`--contracts prove` の反例・非対応・時間切れ・ソルバーの失敗・ソルバーがない |
+| `E1036` | マニフェストの権限の宣言が許さない権限の使用 |
+| `E1037` | `@trusted` の置き場と性質の誤り |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |
@@ -4370,6 +4376,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1006` | コレクションサイズに比例した暗黙のディープコピーの発生（`--warn implicit-copy` 指定時のみ報告される警告） |
 | `W1008` | 効果の属性が検査されない（インスタンスのないジェネリック関数）か、`const def` の実行時の本体だけを検査する |
 | `W1009` | 契約の行が何も確かめない（常に真・使わない結果の名前）か、`--contracts test` で性質テストを作れない |
+| `W1010` | `@trusted` のない `extern` の関数の使用（`--warn untrusted-extern` 指定時と `tsuzuri audit` だけ） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
 | `E2000` | CLI コマンドライン引数・オプション・拡張子の不備、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合、`--freestanding` での `Mutex` と `Channel` |
 | `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |

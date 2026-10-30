@@ -1,0 +1,20 @@
+extern "abs" def c_abs :: i32 -> i32
+
+def probe_file :: unit -> IO<Result<string, Os.Error>> = \() -> File.read_text "a.txt"
+def probe_dir :: unit -> IO<Result<[string], Os.Error>> = \() -> Dir.walk "."
+def probe_env :: unit -> IO<Result<Maybe<string>, Os.Error>> = \() -> Env.var "HOME"
+def probe_time :: unit -> IO<Result<i64, Os.Error>> = \() -> Time.monotonic_ns ()
+def probe_random :: unit -> IO<Result<i64u, Os.Error>> = \() -> Random.next_u64 ()
+def probe_stdio :: unit -> IO<unit> = \() -> IO.write_line "x"
+def probe_debug :: unit -> unit = \() -> Debug.print (ref "x")
+def probe_net :: Net.Address -> IO<Result<Net.TcpStream, Os.Error>> = \address -> Net.connect address Maybe.None
+def probe_net_async :: Net.TcpStream -> Async<Result<[ubyte], Os.Error>> = \stream -> Net.read_async stream 16 Maybe.None
+def probe_hash :: unit -> IO<HashMap<string, i64>> = \() -> HashMap.randomized ()
+def probe_async :: own Async<i64> -> IO<i64> = \job -> Async.block_on job
+def probe_gpu :: unit -> Result<Gpu.Device, Gpu.Error> = \() -> Gpu.request Gpu.CpuReference
+def probe_process :: unit -> IO<Result<Process.Output, Os.Error>> = \() -> Process.run "true" [] []
+def probe_pure_net :: string -> Maybe<Net.Address> = \text -> Net.parse_address (ref text)
+def probe_pure_path :: string -> string = \text -> Path.join (ref text) (ref text)
+def probe_ffi :: i32 -> i32 = \value -> c_abs value
+
+def main :: unit -> i32 = \() -> 0

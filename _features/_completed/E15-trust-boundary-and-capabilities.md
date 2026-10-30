@@ -5,9 +5,9 @@
 | ID | E15 |
 | 優先度 | P2（D-50 の表） |
 | 規模 | 全体 L。Phase 1: M（3〜5 日）、Phase 2: L（1〜2 週）、Phase 3: M（3〜5 日）、Phase 4: S（1〜2 日。A20 が済んでから） |
-| 依存 | Phase 1〜3 は**自己完結**（HEAD のコードだけで書ける）。[A20](_completed/A20-effect-summary-and-checked-attributes.md) は Phase 4 だけ（`@trusted` の性質を `pure`・`@no_*` の検査に効かせる）。[G26](_completed/G26-facts-model.md) は使わない（D-52 の `effects` の `extern` の名前だけ共有）。[G22](_completed/G22-diagnostic-v2.md) は弱い依存（未実装なら kind・related・help を出さず、コード・メッセージ・位置だけ。付録 C） |
+| 依存 | Phase 1〜3 は**自己完結**（HEAD のコードだけで書ける）。[A20](A20-effect-summary-and-checked-attributes.md) は Phase 4 だけ（`@trusted` の性質を `pure`・`@no_*` の検査に効かせる）。[G26](G26-facts-model.md) は使わない（D-52 の `effects` の `extern` の名前だけ共有）。[G22](G22-diagnostic-v2.md) は弱い依存（未実装なら kind・related・help を出さず、コード・メッセージ・位置だけ。付録 C） |
 | 後続 | なし。A20・A19・G26 は本チケットの `FunctionOrigin.trusted` を読める |
-| 状態 | todo |
+| 状態 | done（全 Phase。実装と検証は末尾の節） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの `9dd0fbbc` との差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
 | 改善する劣位 | Rust 比（`unsafe` と `cargo-audit`・`cargo-geiger`、依存の権限を持たない点）と Deno 比（権限フラグ）: Tsuzuri は `extern`（C の呼び出し）を人が確かめたかを書く場所がなく、依存パッケージがファイル・ネットワーク・環境・時計に触れるかをコンパイラが報告も制限もしない。D-50 の調査結論(1)（コンパイラが知っている事実を診断にもツールにも出さない）に当たる |
@@ -238,10 +238,10 @@ summary: used=<権限を , で並べる | none> denied=<N> untrusted_externs=<N>
 
 | チケット | 使う名前・形 | 未実装のときの代替 |
 | --- | --- | --- |
-| [G22](_completed/G22-diagnostic-v2.md)（D-51） | `Diagnostic::with_kind(&'static str)`・`.related(RelatedRole::ViaCall \| DeclaredHere \| Note, impl Into<String>, Span)`・`.with_help(impl Into<String>)` | 呼ばない。メッセージ・コード・主スパンだけ（付録 C）。G22 が入ったら呼び出しを足すだけ |
-| [A20](_completed/A20-effect-summary-and-checked-attributes.md)（D-53）Phase 4 | `effects::summarize`・`Options`（`Options::new(scope, computed)`・`checking`。E15 が `trusted` を足す）・`Effect::Extern`・`forbidden(EffectKind)`・`FunctionEffects`（HostCall の腕が `Extern` を源にする） | Phase 4 を実装しない。`@trusted` の性質は受理して持つだけ |
-| [A19](_completed/A19-pure-functions.md) | `pure_rules::validate` が `extern` を不純にする | 同上（A20 の経路 A では A20 が置き換える） |
-| [G26](_completed/G26-facts-model.md) | 使わない | — |
+| [G22](G22-diagnostic-v2.md)（D-51） | `Diagnostic::with_kind(&'static str)`・`.related(RelatedRole::ViaCall \| DeclaredHere \| Note, impl Into<String>, Span)`・`.with_help(impl Into<String>)` | 呼ばない。メッセージ・コード・主スパンだけ（付録 C）。G22 が入ったら呼び出しを足すだけ |
+| [A20](A20-effect-summary-and-checked-attributes.md)（D-53）Phase 4 | `effects::summarize`・`Options`（`Options::new(scope, computed)`・`checking`。E15 が `trusted` を足す）・`Effect::Extern`・`forbidden(EffectKind)`・`FunctionEffects`（HostCall の腕が `Extern` を源にする） | Phase 4 を実装しない。`@trusted` の性質は受理して持つだけ |
+| [A19](A19-pure-functions.md) | `pure_rules::validate` が `extern` を不純にする | 同上（A20 の経路 A では A20 が置き換える） |
+| [G26](G26-facts-model.md) | 使わない | — |
 | D-57 | 権限の名前 9 個（閉じている）・既定（ルートは全権限、依存は空）・実効 = 積 | — |
 
 ## 実装手順
@@ -472,3 +472,11 @@ D1〜D15 はすべて**承認済み**。実装者は蒸し返さない。
 ## 付録
 
 [E15-appendix.md](E15-appendix.md) にある。A: std の権限の決定表（導出の規則・組み込み関数の表・47 ファイルの結果・85 関数の一覧・固定表・プローブ）。B: マニフェスト（文法・エラー・例）。C: 診断（`E1036`・`E1037`・`W1010` の完全な仕様と例）。D: `tsuzuri audit` の出力例（text と JSON、`examples/` の実プロジェクトと依存のあるプロジェクト）。E: Rust の骨格とアルゴリズム。F: 既存のテスト・文書への影響。G: テストの一覧。H: 実機で確かめたこと。
+
+## 実装と検証（2026-10-29）
+
+- **範囲**: Phase 1〜4 をすべて実装した（`@trusted`・`E1037`・`W1010`・`--warn untrusted-extern`・bindgen の注意書き、`[capabilities]`・依存の `capabilities`・実効の権限・`E1036`、`tsuzuri audit` の text と `tz-audit/1`、`@trusted` の性質の A19・A20・A21 への適用と audit の `effects`）。基盤は A21 のブランチ（`feat/a21-contracts`）の上。
+- **A20・A21 との接続**: `@trusted` は A20 の `attributes()` に足した（D-53 の経路）。Phase 4 は D14 のとおり `effects::Options.trusted` を足し、`extern` を禁じる属性（`no_alloc`・`no_trap`・`terminates`）のうち、その性質を持つ `extern` があるものだけ要約を作り直して `validate_trusted` で検査する（`no_copy` は `extern` を禁じないので作らない）。A19 の `pure_rules` は `@trusted pure` の `extern` の本体を走査しない。A21 の契約の純粋性（`effects::impurities`）は `pure` の性質のビットで呼ぶ。
+- **チケットからの逸脱**: ① **共有される `$builtin` のラッパー**: 組み込み関数を値として使うときのラッパーは `closures::lower` がプログラム全体で (instance, 型) ごとに 1 つにまとめるので、最初に作った関数の家族に属す（付録 E.2 の 2 の前提が成り立たない）。`Env.var` の `Os.__read` が `File.read_with` のラッパーに属して `fs` と判定された。ラッパーへの参照は、ラッパーの中の組み込み関数を**参照した側の関数のファイル**で分類し、辺から外した。② std の関数は利用者のコードから到達するものだけが型付き IR に残る（`polymorph::specialize` の根は利用者の非ジェネリック関数）。仕様 2 の「コンパイルしたパッケージの全関数」は利用者の関数について成り立ち、std は到達する分だけを導出する。std の表のテスト（G17）は fixture と examples の 126 プロジェクト（A20 の掃引が全公開関数を含むことを確かめている）の和で導出する。③ std は起票後に変わり、権限を持つ公開関数は 85 → **96**（`Array`・`List` の `random_*` 9 個と A21 の `Gen.check_where`・`Gen.for_all_where`）。A.5 の 85 行はすべて一致した。`std-table.txt` は名前順。A.6 の固定表（12 ファイル・61 か所）はそのまま成り立った。④ 私的な組み込み関数は 46 → 53（`Array.__set`・`__sort_with`、`Vec.__view`・`__set_capacity`・`__insert`・`__splice`、`Alloc.__counter`）。新しい 7 個は CPU とメモリだけなので権限なしの表（20 個）に足した。⑤ 付録 A.7 のプローブは edition 2027 で `probe_async` の引数に `own` が要る（読み取り既定）。`Async.block_on` の地点は 13:52 → 13:56。⑥ `E1036` の経路で同じ表示名が続く段（持ち上げたラムダ）を畳む。依存の阻んだ辺のメッセージは、深い依存のとき「どの子の項目か」を `in the entry of '{child}' in '{parent}'` で示す（`Blocker::Edge { parent, child }`）。⑦ audit の `effects.declared` は本体のある宣言（`extern`・テスト・ベンチを除く）の数。⑧ `--warn` の値の一覧は `main.rs` の定数 `WARNINGS`（D-55 追補の固定順）から作る。⑨ マニフェストの誤りの kind は `invalid_capabilities`・`unknown_capability`・`duplicate_capability`・`missing_capabilities_allow`（`E0002`）、解析の上限は `capability_analysis_limit`（`E1017`）、`audit` の引数の誤りは `audit_usage`（`E2000`）。`FRONTEND_FORMAT` 12 → 13。
+- **検証**: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。`cargo nextest run --locked` は 2,552 件が成功。新しいテストは `src/capabilities.rs` の単体 5（G1〜G5）、`src/package.rs` の 3（G6〜G8）、`tests/trusted.rs` 8（G9〜G13 と Phase 4 の 3）、`tests/capabilities.rs` 12（G15〜G26。G17 は 96 行）、`tests/audit.rs` 5（G27〜G31。付録 D.1〜D.5 の text と JSON が一致）、`src/main.rs` の `parses_audit_arguments`（G32）と `--warn` の 3 か所、`tests/bindgen.rs` と `tests/bindgen.mjs`（G14）。A21 の完了時の IR（fixture と examples の 126 プロジェクトの `--emit llvm -O0` と診断）と比べて 1 byte も違わない。node の `bindgen`・`packages`・`script`・`frontend_cache`・`docgen`・`lsp_sessions`、`features`（`effect_attributes`・`contracts`）も成功。
+- **文書**: `values-and-functions/attributes.md`（`@trusted` の節）、`compiler/native-interop.md`（信頼の印・bindgen の 5 行目）、`organizing-tsuzuri/packages.md`（権限の節）、`compiler/usage.md`（`audit`・`--warn untrusted-extern`）、`compiler/option.md`、`compiler/diagnostics.md`（`E1036`・`E1037`・`W1010` と kind の表）、`compiler/directives.md`、std の 16 ページと `async.md` の「必要な権限」、`index.md`、`docs/language.md`・`docs/architecture.md`・`docs/stability.md`・`README.md`・`_features/GUIDE.md`（§4）、explain の `E1036`・`E1037`・`W1010`。
