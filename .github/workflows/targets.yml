@@ -400,6 +400,23 @@ jobs:
           name: benchmark-correctness-${{ matrix.host }}
           path: target/perf/ci-*
           if-no-files-found: error
+      # G36: random typed programs run by the constant evaluator, native -O0/-O3 and wasm32 -O0/-O3 against an independent BigInt
+      # evaluator, and ownership programs checked for leaks. A difference is minimized and saved under target/progfuzz/failures.
+      - name: Whole-language differential fuzz (G36)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 30
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/progfuzz.mjs --self-test target/release/tsuzuri
+          node tests/progfuzz.mjs target/release/tsuzuri 200 1 4
+          TSUZURI_PROGFUZZ_KIND=owned node tests/progfuzz.mjs target/release/tsuzuri 100 1 4
+      - uses: actions/upload-artifact@v7
+        if: ${{ failure() }}
+        with:
+          name: progfuzz-failures-${{ matrix.host }}
+          path: target/progfuzz/failures
+          if-no-files-found: ignore
       # Other tickets' end-to-end steps for these three hosts go here, before the Rust tests: that step takes
       # 25-70 minutes, so it is last and a slow runner cannot cost the results above. Start each step with
       # `if: ${{ !cancelled() }}` so that a failure above does not hide it.

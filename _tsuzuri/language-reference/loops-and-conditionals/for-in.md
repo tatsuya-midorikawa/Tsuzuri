@@ -119,6 +119,9 @@ total
 > [!NOTE]
 > 演算子のない素の `..`（`for i in 1 .. 4`）は `..=` と同じ意味ですが、edition 2027 では `E0004` です（edition 2026 では受理し、`--warn canonical` で `W1007` を出します）。`tsuzuri fix --edition 2027` が `..=` に書き換えます。スライスの `xs[a..b]` の `..` は半開のままで、どの edition でも使えます。固定長配列 `[T; N]` も直接は反復できず、`E1005`（`a fixed-length array is not enumerable`）になります。添字の範囲で回して要素を読んでください。
 
+> [!WARNING]
+> 既知の不具合: 添字の角括弧 `xs[…]` の中に、範囲の `for` を含む式を書くと、ブロック `{ … }` や括弧の中であっても構文エラー `E0002`（`expected 'do' after the enumerable expression`）になります。`..=`・`..<`・素の `..` のどれでも同じです。`xs[({ let mut a = 0; for i in 0 ..= 1 do { a = a + i; () }; a })]` は通らないので、`let index = ({ let mut a = 0; for i in 0 ..= 1 do { a = a + i; () }; a })` のように式を `let` に束縛してから `xs[index]` と書いてください。
+
 ### 文字列の走査（string と utf8string）
 
 文字列の走査は、Unicode スカラー値（文字）単位ではなく、それぞれの型の内部表現単位で行われます。
