@@ -45,9 +45,11 @@ impl Report {
             && function.origin.bench.is_none()
             && (!function.module.starts_with('$')
                 || matches!(function.module.as_str(), "$lambda" | "$task"))
-            // The checker makes the top-level code of a file `$entry`, a generated function.
+            // The checker makes the top-level code of a file `$entry` and the body of a test
+            // `$test.N`, generated functions.
             && (function.origin.provenance == Provenance::User
                 || function.origin.parent.is_some()
+                || function.origin.test.is_some()
                 || function.name == "$entry")
             && !matches!(
                 function.body.kind,

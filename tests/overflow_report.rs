@@ -669,6 +669,30 @@ fn wasm_tests_report_overflow_after_a_stack_check_traps() {
     );
 }
 
+/// Review 7 of #67: the checker makes a test body a generated function, which the report covers too.
+#[test]
+fn arithmetic_in_a_test_body_is_reported() {
+    let source = "def id :: i8 -> i8 = \\a -> a\n\
+                  \n\
+                  test \"wraps in the body\" =\n\
+                  \x20   assert (id 127i8 + 1i8 == -128i8)\n";
+    let module = analyze(source).unwrap();
+    let site = "integer overflow wrapped at ./Main.tz:4:22 (i8 add)";
+    for target in [
+        tsuzuri::driver::Target::Native,
+        tsuzuri::driver::Target::Wasm32,
+    ] {
+        let options = tsuzuri::driver::TestOptions {
+            target,
+            ..overflow_tests(source, true)
+        };
+        let report = tsuzuri::driver::run_tests(&module, &options).unwrap();
+        let result = &report.results[0];
+        assert_eq!(result.failure.as_deref(), Some(site), "{target:?}");
+        assert_eq!(result.overflow, [site], "{target:?}");
+    }
+}
+
 #[test]
 fn wasm_tests_report_overflow_like_native_tests() {
     let module = analyze(WRAPPING_TESTS).unwrap();

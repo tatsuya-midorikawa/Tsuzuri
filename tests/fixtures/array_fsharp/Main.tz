@@ -419,8 +419,8 @@ test "sum sum_by average average_by product" =
 // F# `sum` and `sumBy` use `Checked.(+)` and throw on overflow. Integer addition wraps in Tsuzuri, and so do these.
 test "sum and sum_by wrap on integer overflow" =
     let largest: i64 = 9223372036854775807
-    eq (Array.sum [largest, 1]) (largest + 1)
-    eq (Array.sum_by (\x -> x) [largest, 1]) (largest + 1)
+    eq (Array.sum [largest, 1]) (Int.wrapping_add largest 1)
+    eq (Array.sum_by (\x -> x) [largest, 1]) (Int.wrapping_add largest 1)
     eq (Array.sum_by (\x -> x) [largest, 1]) (-9223372036854775807 - 1)
     let bytes: [i8u] = [200, 100]
     eq (Array.sum bytes) 44
