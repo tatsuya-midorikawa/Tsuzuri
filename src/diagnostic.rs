@@ -681,7 +681,7 @@ fn write_quote(output: &mut String, source: &str, line: usize, column: usize) {
 }
 
 /// The span object that the JSON diagnostics use: byte offsets, then lines and columns.
-fn span_json(source: &str, span: Span) -> String {
+pub(crate) fn span_json(source: &str, span: Span) -> String {
     let (line, column) = location(source, span.start);
     let (end_line, end_column) = location(source, span.end);
     format!(

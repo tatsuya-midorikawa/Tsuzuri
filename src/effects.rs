@@ -395,7 +395,8 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | IntCountOnes | IntLeadingZeros | IntTrailingZeros | IntRotateLeft | IntRotateRight
         | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo | IntCheckedAdd | IntCheckedSub
         | IntCheckedMul | IntCheckedDiv | IntCheckedRem | IntCheckedNeg | IntSaturatingAdd
-        | IntSaturatingSub | IntSaturatingMul | IntCheckedPow | IntWideningMul | OwnedDrop
+        | IntSaturatingSub | IntSaturatingMul | IntWrappingAdd | IntWrappingSub
+        | IntWrappingMul | IntWrappingNeg | IntCheckedPow | IntWideningMul | OwnedDrop
         | OwnedFunction | Not | Ignore => facts(None, false, false, false, false, false, None),
         #[cfg(test)]
         TestAdd | TestUnsigned | TestWiden => facts(None, false, false, false, false, false, None),
@@ -3422,9 +3423,9 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 254);
+        assert_eq!(Builtin::ALL.len(), 258);
         assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 91);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 163);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 167);
     }
 
     #[test]

@@ -5,14 +5,33 @@
 | ID | A23 |
 | 優先度 | P2（D-50 の表） |
 | 規模 | 全体 L（D-50 の表は M。Phase 2 の driver・WASM・test の配線を数え直して L にした）。Phase 1: S（1〜2 日）、Phase 2: L（1〜2 週）、Phase 3: M（3〜5 日） |
-| 依存 | [PR02](../_perfs/_completed/PR02-integer-ranges.md)（done。範囲の証明 `RangeFacts::integer_flags` と `RangeFlags` の `audit` の流儀を使う）。[G22](_completed/G22-diagnostic-v2.md) は**弱い依存**: 本チケットは新しい診断コードを作らず、実行時の報告だけを足すので、G22 を待たずに実装する。G22 が決める JSON のキーの順序（D-51）には、`run --json` の 1 行（`W2001`。付録 D.2）を従わせる |
-| 後続 | なし。[A20](_completed/A20-effect-summary-and-checked-attributes.md) の `@no_trap` とは無関係（折り返しは trap ではない）。[G26](_completed/G26-facts-model.md) の `trap_sites` に折り返しの地点は入れない |
-| 状態 | todo |
+| 依存 | [PR02](../../_perfs/_completed/PR02-integer-ranges.md)（done。範囲の証明 `RangeFacts::integer_flags` と `RangeFlags` の `audit` の流儀を使う）。[G22](G22-diagnostic-v2.md) は**弱い依存**: 本チケットは新しい診断コードを作らず、実行時の報告だけを足すので、G22 を待たずに実装する。G22 が決める JSON のキーの順序（D-51）には、`run --json` の 1 行（`W2001`。付録 D.2）を従わせる |
+| 後続 | なし。[A20](A20-effect-summary-and-checked-attributes.md) の `@no_trap` とは無関係（折り返しは trap ではない）。[G26](G26-facts-model.md) の `trap_sites` に折り返しの地点は入れない |
+| 状態 | done（全 Phase） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは同じコードの `9dd0fbbc`。差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D15 はすべて承認済み |
 | 改善する劣位 | Rust 比（`overflow-checks`・`wrapping_add`）: 整数の `+ - *` は常に黙って折り返し、意図した折り返し（ハッシュ・乱数）と間違い（在庫の加算）を、ソースでも実行でも区別できない。`Int.wrapping_pow` はあるが `wrapping_add`・`wrapping_sub`・`wrapping_mul`・`wrapping_neg` がない。D-50 の調査結論(1)（範囲の事実を診断にもツールにも出さない）と(2)（署名や契約として固定できない）に当たる |
 | 手本にする既存実装 | 検査してから元の演算を書く計装: `src/llvm_ranges.rs` の `arithmetic_flags`・`audit`・`audit_increment`。溢れの旗: `src/llvm.rs` の `FunctionEmitter::checked_integer_arithmetic`。範囲の証明: `src/ranges_intervals.rs` の `RangeFacts::integer_flags`、`src/interval.rs` の `Flags`。関数の述語: `src/coverage.rs` の `counted`。テストの実行: `src/test_runner.rs` の `execute_test`・`run_captured`・`read_tail`、`src/runtime/test-runner.mjs`。メッセージと `write(2)`: `src/llvm_traps.rs` の `instrument`、`src/trap.rs` の `TrapSite::message`・`side_table`。WASM の export: `src/llvm_traps.rs` の `@tsuzuri_trap_site` と `src/driver.rs` の `trap_sidecar_path`。scope: `src/target.rs` の `PlatformScope`。組み込み関数: `src/check.rs` の `Builtin::IntWrappingPow` と `src/llvm.rs` の `FunctionEmitter::integer_builtin`。inline: `src/call_specialization.rs` の `intrinsic_operation`（PR02 D10）。テスト: `tests/integer_intrinsics.mjs`・`integer_ranges.rs`・`range_flags_audit.mjs`・`test_runner.rs`・`coverage.rs` |
 | 主な影響ファイル | Phase 1: `src/check.rs`・`src/llvm.rs`、`tests/integer_wrapping.rs`（新規）。Phase 2: `src/overflow.rs`・`src/llvm_overflow.rs`（新規）、`src/llvm.rs`・`src/llvm_exception.rs`・`src/ranges_intervals.rs`・`src/driver.rs`・`src/main.rs`、`tests/overflow_report.rs`・`tests/overflow_report.mjs`・`tests/fixtures/overflow_report/`（新規）。Phase 3: `src/test_runner.rs`・`src/runtime/test-runner.mjs`・`src/main.rs`・`src/driver.rs`、`tests/fixtures/property/Props.tz`。文書は「ドキュメント」の表 |
+
+## 方針の最新化（2026-10-29。実装前の再検討）
+
+起票時（HEAD `a2313d19`）の前提と、A19〜A22・G23 の実装後の現状が食い違う点を、実装前に次のとおり改めた（人間の包括許可による判断。D1〜D15 の趣旨は保つ）。
+
+| 起票時の前提 | 現状 | 改めた方針 |
+| --- | --- | --- |
+| `Int.wrapping_add x y` の完全な適用は `callee` が `FunctionRef::Builtin` の呼び出しで、関数値のときだけ `@tz.builtin.Int.wrapping_add.i32` が登録される（手順 3 ⑥・H4） | `closures::lower` が組み込み関数の参照をすべて `$builtin` のラッパー（`@tz.fn.$builtin.Int.wrapping_add.N`）に置き換えるので、完全な適用もラッパーの呼び出しになる | D8 の inline を 2 か所で行う: ラッパーの直接の呼び出し（`call_specialization::wrapping_builtin` がラッパーを見分ける）と、ラッパー自身の本体（`FunctionRef::Builtin` の完全な適用）。関数値はラッパーで、その本体も同じ 1 命令になり、`@tz.builtin.Int.wrapping_*` は出ない。H4 の関数値の期待をそのように改める |
+| D15: 新しい `kind` を作らない（G23 の登録簿が決める） | G23 の登録簿が実装済みで、すべての診断が `kind` を持ち、`W2001` の行は `"kind":"tool_notice"` で終わる。`E1017` の上限にも `kind` が要る | 登録簿の規則に従って `kind` を 2 つ足す: `W2001` の `integer_overflow_wrapped`（`run --json` の報告の行）と `E1017` の `too_many_overflow_sites`。新しい診断コードは作らない（D15 の本体）。`run --json` の行のキーは G22・G23 の順の `severity`・`code`・`message`・`path`・`span`・`kind`（付録 D.2 に `kind` が加わる）。打ち切りの行は `path`・`span` なしの `tool_notice` |
+| 例・fixture の短い接尾辞（`100y`・`3000000000u`） | A22 で edition 2027 が最新になり、マニフェストのない入力・文書の例は短い接尾辞を `E0004` で拒否する | 文書・テスト・fixture の例は型名の接尾辞（`100i8`・`3000000000i32u`）で書く。`int.md` の接尾辞の表が A22 の後も短い接尾辞を無条件に載せていたので、A22 のブランチで直した |
+| 末尾呼び出しの引数の地点は `8:93`（`n - 1`）・`8:101`（付録 D.1・E.2。手計算） | 括弧で囲んだ式の span は括弧を含む（ほかの診断と同じ）。`argument.span` は `(n - 1)` の `(` から始まる | 地点の span はコンパイラの式の span のまま（`8:92`・`8:100`）。付録 D.1・E.2 の期待を改める（地点の数・値・どの地点が折り返すかは同じ） |
+| A21 の契約は機能として使わない | A21 の `--contracts prove` の SMT 変換は、未知の組み込み関数の呼び出しを「未対応」にする。付録 C.3 で `wrap_add` を `Int.wrapping_add` に直すと証明できなくなる | `prove_smt.rs` に `Int.wrapping_add`・`sub`・`mul` を `bvadd`・`bvsub`・`bvmul`、`wrapping_neg` を `bvneg` として足す（演算子と同じ項） |
+| 分類表（A19・A20・G26）は実装済みなら足す | `pure_rules::builtin_effect`・`effects::builtin_facts`・`kg::effects::builtin_effect` がある。`effects` の単体テストが組み込み関数の数（254）と効果なしの数（163）を固定している | 4 つを `IntSaturatingAdd` と同じ「効果なし・トラップなし」に分類し、固定した数を 258・167 にする（`IntWrappingPow` は負の指数でトラップするので、それとは別の行） |
+| 付録 D.5: 地点の byte を定数式 `getelementptr inbounds (i8, ptr @tsuzuri_overflow_hits, i64 N)` で書く | `--backend fast` の翻訳器は IR の字句を読む | 地点の byte のアドレスは `getelementptr` の命令で求める（`--backend fast` が読む形。値は同じ） |
+| 付録 G.2 の 3: 計装があれば全関数で区間の解析を有効にする | 区間の解析は旗のためだけで、報告しない関数には要らない | `overflow_counted` の関数だけ有効にする（報告しない関数の IR は同じで、解析が減る） |
+| WASM の sidecar を `trap` と同じに扱う | ビルドキャッシュの成果物の名前は `artifact`・`traps`・`dwarf`・`pdb`・`profile` の許可表で、1 項目のファイルは 3 個まで | 許可表に `overflow` を足し、上限を 4 個にする（WASM の `traps`・`overflow`・`profile` と `artifact`） |
+| メッセージの行と列は演算の式の始まり（仕様 4） | `a + b + c` の内側の `a + b` と外側は始まりが同じで、型と演算も同じなので、2 つの地点のメッセージが同じになる。`run --json` はメッセージから地点を引くので、外側だけが折り返しても内側の `span` を付けうる（PR #67 のレビュー） | メッセージの列は**演算子の位置**（`+`・`-`・`*`・`**`、`-x` の `-`。演算子のない `Add.add a b` は式の始まり）にする。地点ごとに一意になる。`span`（JSON・sidecar）は式全体のまま。地点の表を引くときは、各地点のメッセージを 1 回だけ作る（`overflow::LineIndex`） |
+| native の末尾呼び出しの遅延（`tail_arguments`）は `binary_operation` が展開した補助関数の演算も呼び出し側で検査する | 利用者の補助関数（`def plus a b = a + b`）の演算が、呼び出し側の地点と方針（依存パッケージの関数も）で報告される（PR #67 のレビュー） | 報告があるときは `$intrinsic` 以外の補助関数を展開しない（呼び出しのまま。その本体が自分の地点で報告する）。報告のないビルドの IR は変わらない |
+| 付録 C.3 の既知の影響は 2 件 | 言語リファレンス・`README.md`・ガイド（`guide/workflow.md` の `Gen.i64()` の `double n`）に、`tsuzuri test` で折り返す例がある | 手順 17 と同じく、例のソースを `Int.wrapping_*` か `Gen.range` に直す（期待値は変えない） |
 
 ## 実装者向け早見
 
@@ -314,8 +333,8 @@ reported(function) =
 
 | チケット | 使う名前・形 | 未実装のときの代替 |
 | --- | --- | --- |
-| [G22](_completed/G22-diagnostic-v2.md)（D-51） | JSON の 1 行のキーの順序 `severity`・`code`・`message`・`path`・`span`（`path`・`span` は足すだけで互換）。`kind` は付けない（G23 の登録簿が決める） | G22 がなくても同じ形で出せる（既存の 5 キーの流儀） |
-| [A19](_completed/A19-pure-functions.md)・[A20](_completed/A20-effect-summary-and-checked-attributes.md)（D-53）・[G26](_completed/G26-facts-model.md) | 機能としては使わない。`trap` 効果にも `trap_sites` にも折り返しは入らない（`Int.wrapping_*` は `alloc`・`trap` を持たない純粋な演算）。ただし分類表（`builtin_effect`・`builtin_facts`）が実装済みなら、手順 3 の「分類表」で 4 つを足す | 表がなければ足すものはない |
+| [G22](G22-diagnostic-v2.md)（D-51） | JSON の 1 行のキーの順序 `severity`・`code`・`message`・`path`・`span`（`path`・`span` は足すだけで互換）。`kind` は付けない（G23 の登録簿が決める） | G22 がなくても同じ形で出せる（既存の 5 キーの流儀） |
+| [A19](A19-pure-functions.md)・[A20](A20-effect-summary-and-checked-attributes.md)（D-53）・[G26](G26-facts-model.md) | 機能としては使わない。`trap` 効果にも `trap_sites` にも折り返しは入らない（`Int.wrapping_*` は `alloc`・`trap` を持たない純粋な演算）。ただし分類表（`builtin_effect`・`builtin_facts`）が実装済みなら、手順 3 の「分類表」で 4 つを足す | 表がなければ足すものはない |
 | PR02（done） | `RangeFacts::integer_flags`・`Flags`・`RangeFlags` | — |
 
 ## 実装手順
@@ -565,3 +584,15 @@ D1〜D15 はすべて**承認済み**。理由と、却下した案の詳しい�
 ## 付録
 
 実測・試作・出力例・fixture・Rust の骨格・テストの一覧・決定の理由は [A23-appendix.md](A23-appendix.md) にある。A: 実測（静的な数・動的な数・計装の費用・WASM の確認）。B: 整数の演算を書く箇所の全一覧。C: 既存テスト・文書への影響。D: 出力の例（native・`run --json`・`test`・WASM の sidecar・IR）。E: E2E の fixture と期待値。F: 言語リファレンスに足す例。G: 設計の骨格（Rust）。H: Rust テストの一覧。I: 決定事項の理由と却下した案の詳細。
+
+## 実装と検証（2026-10-29）
+
+- **範囲**: Phase 1〜3 をすべて実装した。冒頭の「方針の最新化」のとおり、A19〜A22・G23 の実装後の現状に合わせた。基盤は A22 のブランチ（`feat/a22-canonical-forms`）の上。
+- **Phase 1**: `Builtin::IntWrappingAdd`・`IntWrappingSub`・`IntWrappingMul`・`IntWrappingNeg`（`Integer<'a> => 'a -> 'a -> 'a`、`neg` は `SignedInteger<'a> => 'a -> 'a`）。`integer_builtin` の腕（`add`・`sub`・`mul`・`sub 0`）と、`FunctionEmitter::call` の inline（`$builtin` のラッパーの直接の呼び出しを `call_specialization::wrapping_builtin` が見分け、ラッパー自身の本体も同じ命令）。旗は付けない。`pure_rules`・`effects::builtin_facts`・`kg::effects` は効果なし、`prove_smt` は `bvadd`・`bvsub`・`bvmul`・`bvneg`。`tests/integer_intrinsics.mjs` は 4 演算を足して `301969 BigInt cases`（`-O0`・`-O3` とも）。`Int.wrapping_*` を使わない fixture と examples の IR（native と wasm32、`-O0`。252 件）は実装前と 1 byte も同じ。
+- **Phase 2**: `src/overflow.rs`（`Operation`・`Site`・`Source`・`Scope`・`side_table`・`report_lines`・`json_lines`）、`src/llvm_overflow.rs`（`Report`・`covers`・`number`・`runtime`・`publish`・`ranges_proven`・`overflow_check`）、`RangeFacts::negation_flags`。計装は `binary`・`tail_arguments`（引数の span）・単項 `-`・`power`（`**` の式 1 地点）の 4 か所で、元の演算の前に旗で分岐し、値に触れない。driver は `BuildOptions.overflow_report`・`validate` の `E2000` 2 つ・`Project::overflow_sources`・`build_complete` の scope と地点（戻り値の型 `Built`）・`overflow_sidecar_path` と WASM の 2 つの export・`run --json` の変換。ビルドキャッシュは成果物 `overflow` を受け付ける（1 項目 4 ファイルまで）。CLI は `--overflow-report`（`build`・`run`・`test`）。`DiagnosticKind` は `integer_overflow_wrapped`（`W2001`）と `too_many_overflow_sites`（`E1017`）の 2 つ。
+- **Phase 3**: `TestOptions.overflow: Option<OverflowTests { fail, sources }>`（既定 `None`）、`TestResult.overflow`、`read_tail` が末尾 64 KiB とは別に報告の行を最大 101 行（1 行 4,096 byte まで）集め、`execute_test` が成功したテストを最初の報告で失敗にする。WASM のランナーは地点の表を `test-runner.mjs` の引数（`tests.wasm overflow.json index`）に渡し、成功の後に `tsuzuri_overflow_hit` を読んで同じ行を書く。CLI の `tsuzuri test` は既定で `fail: true`、`--allow-overflow` で `fail: false`（`ok` の行の後に `  warning: `）、JSON の `overflow` キー。`-g` のデバッグ用のランナーと `bench` は計装しない。
+- **既存のテストと文書の直し（付録 C.3 と手順 17）**: 期待値と報告の機構は変えず、テストのソースの算術を `Int.wrapping_*` に直した。付録 C.3 のもの: `tests/fixtures/property/Props.tz` の `pair commutes`、`gen.md` の `addition commutes`（1 文を足した）、`matrix.md`・`matrix-view.md` のハッシュ（`run=` の期待値は同じ）、`tests/fixtures/contracts/Main.tz` の `wrap_add`（`features.mjs` の `contracts` は 13 件のまま通る）。付録 C.3 に無いもの 3 件（停止条件 9 の 5 件以内）: `tests/fixtures/property/Bounds.tz` の `-x != x`（最小値で折り返すことを確かめる性質。`Int.wrapping_neg`）、`tests/fixtures/map_set_chunks/Main.tz` の線形合同法 `next_state`（`Int.wrapping_add (Int.wrapping_mul ...)`）、`tests/contracts_property.rs` の `area` の `w + h`（任意の `i64` の和。`Int.wrapping_add`）。文書の例では `README.md` のプロパティテストと `guide/workflow.md` の `Gen.i64()` の `double n`（`Gen.range (-1000) 1000` に。D-56 の文字数の上限内）も直した。
+- **レビュー（PR #67）**: メッセージの列を演算子の位置にした（`a + b + c` の 2 地点を区別する。付録 D.1 の行は `1:51`・`2:55`・`3:47`・`4:40`・`5:51`・`6:47`・`8:107` になる）。報告のあるビルドでは末尾呼び出しの引数の利用者の補助関数を展開しない。WASM のランナーは失敗したテストでも折り返した地点を書く（native と同じ `TestResult.overflow`）。CLI のテストはパスを `Path::new(".").join("Main.tz")` で作る（Windows は `.\Main.tz`）。
+- **付録との差**: 付録 D.1・E.2 の末尾呼び出しの地点は `8:92`・`8:100`（括弧を含む式の span）。付録 D.2 の JSON の行は最後に `"kind":"integer_overflow_wrapped"` を持つ。付録 D.5 の地点の byte のアドレスは `getelementptr` の命令。H4 の関数値は `$builtin` のラッパーの本体の 1 命令。
+- **検証**: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。新しいテスト: `tests/integer_wrapping.rs` 4、`tests/overflow_report.rs` 21（H5〜H25）、`src/overflow.rs` の単体 4、`src/llvm_overflow.rs` の単体 1、`src/driver.rs` の単体 3、`src/main.rs` の `overflow_report_and_allow_overflow_arguments`。`node tests/overflow_report.mjs`（native と wasm32 の `-O0`・`-O3`、付録 E の値・標準エラー・`tsuzuri_overflow_hit`・地点の表）は `TSUZURI_RANGE_FLAGS` の `off`・`proven`・`audit` のどれでも同じ結果。`TSUZURI_CODEGEN_UNITS=split` の native と wasm32 でも報告は同じ。`--overflow-report` を付けない IR は実装前と 1 byte も同じ（252 件）。
+- **費用の再測定（付録 A.4 と同じ workload。1 台・3 回）**: `-O3` の native、実装の `--overflow-report` で user 0.36・0.36・0.37 秒 → 0.73・0.75・0.75 秒（約 2.0 倍。出力は同じ `1513211202258126784`）。試作の約 1.9 倍との差は 3 倍以内なので、文書の「約 1.9 倍」は変えない。性能の主張はしない。

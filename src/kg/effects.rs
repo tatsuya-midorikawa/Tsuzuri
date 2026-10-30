@@ -206,6 +206,10 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | IntSaturatingSub
         | IntSaturatingMul
         | IntWrappingPow
+        | IntWrappingAdd
+        | IntWrappingSub
+        | IntWrappingMul
+        | IntWrappingNeg
         | IntCheckedPow
         | IntWideningMul
         | OwnedDrop

@@ -18,13 +18,15 @@
 test "addition commutes" =
     Gen.for_all (Gen.pair (Gen.i64()) (Gen.i64())) (\pair ->
         match pair with
-        | (a, b) -> a + b == b + a)
+        | (a, b) -> Int.wrapping_add a b == Int.wrapping_add b a)
 
 test "sorted arrays keep their length" =
     Gen.for_all (Gen.array (Gen.range (-100) 100)) (\values ->
         let sorted = Array.sort (ref values)
         sorted.length == values.length)
 ```
+
+乱数の整数どうしの足し算は溢れるので、折り返すことを `Int.wrapping_add` で書きます。`tsuzuri test` は、テストの中で折り返した `+` を報告してテストを失敗にします（[Test](test.md#整数の折り返し)）。
 
 性質は値を受け取り（move）、成り立つなら `true` を返します。比較やほかの関数で値を使い切っても構いません。失敗の報告は、選択の記録から値を作り直して表示します。
 

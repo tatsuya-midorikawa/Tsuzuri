@@ -143,7 +143,7 @@ export def tensors :: i64 -> i64 = \_n ->
 
 test "generators" =
     Gen.for_all (Gen.array Gen.i64()) (\xs -> xs.length >= 0)
-    Gen.for_all (Gen.map (\x -> x + 1) Gen.i32()) (\_x -> true)
+    Gen.for_all (Gen.map (\x -> Int.wrapping_add x 1) Gen.i32()) (\_x -> true)
     Gen.for_all (Gen.bind (\x -> Gen.constant x) Gen.bool()) (\_x -> true)
     Gen.for_all (Gen.map (\m -> match m with
         | Maybe.Some _ -> 1

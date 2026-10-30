@@ -19,9 +19,9 @@ pub use crate::target::{Platform, Triple};
 mod test_runner;
 pub use test_runner::{
     BENCH_SAMPLE_NS, BENCH_TIMEOUT, BenchOptions, BenchReport, BenchResult, CoverageRun,
-    DEFAULT_BENCH_SAMPLES, DebugRunner, MAX_BENCH_ITERATIONS, TestOptions, TestReport, TestResult,
-    build_debug_runner, check_coverage_output, run_benches, run_benches_linked, run_tests,
-    run_tests_linked, write_coverage,
+    DEFAULT_BENCH_SAMPLES, DebugRunner, MAX_BENCH_ITERATIONS, OverflowTests, TestOptions,
+    TestReport, TestResult, build_debug_runner, check_coverage_output, run_benches,
+    run_benches_linked, run_tests, run_tests_linked, write_coverage,
 };
 
 #[path = "bindgen_driver.rs"]
@@ -459,6 +459,8 @@ pub struct BuildOptions {
     /// A named native target (`--target TRIPLE`); `None` is the machine the compiler runs on and
     /// every non-native target.
     pub triple: Option<Triple>,
+    /// `--overflow-report`: report the integer arithmetic that wraps (A23).
+    pub overflow_report: bool,
 }
 
 impl Default for BuildOptions {
@@ -488,6 +490,7 @@ impl Default for BuildOptions {
             strip: false,
             wasm_opt: false,
             triple: None,
+            overflow_report: false,
         }
     }
 }
@@ -669,6 +672,20 @@ impl BuildOptions {
                 "--trap-info is not valid for header output",
             ));
         }
+        if self.overflow_report
+            && (self.emit == Emit::Header || self.emit.is_kernel() || self.emit.is_bindings())
+        {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionRequiresBuild,
+                "--overflow-report is not valid for header, kernel, or bindings output",
+            ));
+        }
+        if self.overflow_report && self.freestanding {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionConflict,
+                "--overflow-report cannot be combined with --freestanding: the report is written through the C library",
+            ));
+        }
         if self.debug_output && self.emit == Emit::Header {
             return Err(driver_error_of(
                 DiagnosticKind::OptionRequiresBuild,
@@ -818,6 +835,7 @@ impl BuildOptions {
             strip: _,
             wasm_opt,
             triple,
+            overflow_report: _,
         } = self;
         if optimization != OptLevel::O0 {
             return Err(driver_error_of(
@@ -3099,6 +3117,20 @@ impl Project {
     }
 
     /// Each source as the capability analysis sees it (E15), in the order of `Span::source`.
+    /// The sources of the overflow report (A23), by the index that spans use: the path as the
+    /// build received it, and whether the file is one of the root package's own sources.
+    pub fn overflow_sources(&self) -> Vec<crate::overflow::Source> {
+        self.sources
+            .iter()
+            .map(|source| crate::overflow::Source {
+                path: source.path.to_string_lossy().into_owned(),
+                text: source.text.clone(),
+                reported: source.origin == ModuleOrigin::User
+                    && self.dependency_package(source).is_none(),
+            })
+            .collect()
+    }
+
     pub fn source_infos(&self) -> Vec<crate::capabilities::SourceInfo> {
         self.sources
             .iter()
@@ -3648,8 +3680,16 @@ pub fn build_profiled(
     profile: &Profile,
 ) -> Result<Vec<String>, Diagnostic> {
     build_complete(module, project, output, options, links, "build", profile)
-        .map(|(messages, _)| messages)
+        .map(|(messages, _, _)| messages)
 }
+
+/// What a build reports besides its outputs: the tool messages, the trap sites, and the sites of
+/// the overflow report (A23).
+type Built = (
+    Vec<String>,
+    Vec<crate::trap::TrapSite>,
+    Vec<crate::overflow::Site>,
+);
 
 fn build_complete(
     module: &CheckedModule,
@@ -3659,7 +3699,7 @@ fn build_complete(
     links: &LinkInputs,
     action: &str,
     profile: &Profile,
-) -> Result<(Vec<String>, Vec<crate::trap::TrapSite>), Diagnostic> {
+) -> Result<Built, Diagnostic> {
     options.validate()?;
     profile.validate(options)?;
     profile.require_llvm_clang()?;
@@ -3668,6 +3708,10 @@ fn build_complete(
     let platform = options.platform();
     // The IR of a native build follows the target, not the machine the compiler runs on.
     let _platform_scope = PlatformScope::enter(platform);
+    // A23: the overflow report instruments the emission below; the sites come back from the scope.
+    let overflow = options
+        .overflow_report
+        .then(|| crate::overflow::Scope::enter(project.overflow_sources()));
     // A bad TSUZURI_LINKER fails before any work, not when the link starts.
     if options.target == Target::Native && matches!(options.emit, Emit::Executable | Emit::Shared) {
         final_link_args(platform)?;
@@ -3712,7 +3756,8 @@ fn build_complete(
         ));
     }
     if options.emit.is_bindings() {
-        return build_bindings(module, project, output, options).map(|()| (Vec::new(), Vec::new()));
+        return build_bindings(module, project, output, options)
+            .map(|()| (Vec::new(), Vec::new(), Vec::new()));
     }
     let (max_memory, stack_size) = wasm_memory_limits(
         options.target,
@@ -3941,6 +3986,11 @@ fn build_complete(
             llvm::emit_with_options(module, emission)?
         }
     };
+    let overflow_sites = overflow
+        .as_ref()
+        .map(crate::overflow::Scope::sites)
+        .unwrap_or_default();
+    drop(overflow);
     // The attribute that forces known closures to inline (PM02) is for `-O1` to `-O3`; the other levels
     // leave the inlining to the compiler.
     if options.target == Target::Native
@@ -4164,6 +4214,9 @@ fn build_complete(
     protect_sources(project, output)?;
     protect_links(links, output)?;
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
+    // A23: WebAssembly cannot write the report, so its sites are described next to the module.
+    let overflow_sidecar = (options.overflow_report && options.target.is_wasm())
+        .then(|| overflow_sidecar_path(output));
     // An instrumented WebAssembly module comes with the writer that its host runs to save the counters.
     let profile_writer = (options.target.is_wasm() && matches!(profile, Profile::Generate(_)))
         .then(|| profile::wasm_writer_path(output));
@@ -4176,6 +4229,10 @@ fn build_complete(
         PathBuf::from(path)
     });
     if let Some(sidecar) = &sidecar {
+        protect_sources(project, sidecar)?;
+        protect_links(links, sidecar)?;
+    }
+    if let Some(sidecar) = &overflow_sidecar {
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
     }
@@ -4219,6 +4276,7 @@ fn build_complete(
         &mut messages,
     )?;
     let staged_sidecar = temporary.path.join("sites.json");
+    let staged_overflow = temporary.path.join("overflow.json");
     let staged_dwarf = temporary.path.join("symbols.dwarf");
     let staged_pdb = temporary.path.join("artifact.pdb");
     let staged_writer = temporary.path.join("profile.mjs");
@@ -4232,10 +4290,18 @@ fn build_complete(
         fs::write(&staged_sidecar, table)
             .map_err(|error| io_error("write trap side table", &staged_sidecar, error))?;
     }
+    if overflow_sidecar.is_some() {
+        let table = crate::overflow::side_table(&overflow_sites, &project.overflow_sources());
+        fs::write(&staged_overflow, table)
+            .map_err(|error| io_error("write overflow side table", &staged_overflow, error))?;
+    }
     let mut cache_paths =
         std::collections::BTreeMap::from([("artifact".to_owned(), artifact.clone())]);
     if sidecar.is_some() {
         cache_paths.insert("traps".into(), staged_sidecar.clone());
+    }
+    if overflow_sidecar.is_some() {
+        cache_paths.insert("overflow".into(), staged_overflow.clone());
     }
     if profile_writer.is_some() {
         cache_paths.insert("profile".into(), staged_writer.clone());
@@ -5149,6 +5215,12 @@ fn build_complete(
             if options.trap_info {
                 linker.arg("--export=tsuzuri_trap_site");
             }
+            if options.overflow_report {
+                linker.args([
+                    "--export=tsuzuri_overflow_count",
+                    "--export=tsuzuri_overflow_hit",
+                ]);
+            }
             for function in &module.functions {
                 if function.exported {
                     linker.arg(format!("--export=tz_{}", function.name));
@@ -5193,6 +5265,11 @@ fn build_complete(
         .as_ref()
         .map(|path| (&staged_sidecar, path))
         .into_iter()
+        .chain(
+            overflow_sidecar
+                .as_ref()
+                .map(|path| (&staged_overflow, path)),
+        )
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
         .chain(pdb.as_ref().map(|path| (&staged_pdb, path)))
         .chain(profile_writer.as_ref().map(|path| (&staged_writer, path)))
@@ -5206,7 +5283,7 @@ fn build_complete(
     publish_outputs(project, &artifact, output, &sidecars, &mut temporary)?;
     units::remove_files(&temporary.path.join("units"));
     temporary.close()?;
-    Ok((messages, trap_sites))
+    Ok((messages, trap_sites, overflow_sites))
 }
 
 /// The C names a shared library exports: the header's entry points that the IR defines.
@@ -5514,6 +5591,13 @@ pub fn trap_sidecar_path(output: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The side table of the overflow report of a WebAssembly build: `Main.wasm.overflow.json` (A23).
+pub fn overflow_sidecar_path(output: &Path) -> PathBuf {
+    let mut name = output.as_os_str().to_owned();
+    name.push(".overflow.json");
+    PathBuf::from(name)
+}
+
 /// What a native executable writes to stderr when its stack overflows (`src/runtime/stack.c`).
 pub(crate) const STACK_OVERFLOW_REPORT: &str = "trap: stack overflow";
 
@@ -5695,7 +5779,7 @@ fn run_process(
     } else {
         "program"
     });
-    let (mut messages, sites) = build_complete(
+    let (mut messages, sites, overflow_sites) = build_complete(
         module,
         project,
         &output,
@@ -5780,6 +5864,12 @@ fn run_process(
         return Err(Diagnostic::of(kind, message, site.unwrap_or_default()));
     }
     if json {
+        // A23: the report lines of a program that succeeded become `W2001` warnings.
+        let stderr = if options.overflow_report {
+            crate::overflow::json_lines(&stderr, &overflow_sites, &project.overflow_sources())
+        } else {
+            stderr
+        };
         io::stderr()
             .write_all(&stderr)
             .map_err(|error| io_error("relay program stderr", &output, error))?;
@@ -6507,6 +6597,87 @@ mod tests {
         }
         let project = Project::load(&directory.path.join(input)).unwrap();
         (directory, project)
+    }
+
+    #[test]
+    fn validate_rejects_the_overflow_report_with_freestanding_and_header_output() {
+        let report = BuildOptions {
+            overflow_report: true,
+            ..BuildOptions::default()
+        };
+        assert!(report.validate().is_ok());
+        for (options, message) in [
+            (
+                BuildOptions {
+                    emit: Emit::Object,
+                    freestanding: true,
+                    ..report
+                },
+                "--overflow-report cannot be combined with --freestanding: the report is written through the C library",
+            ),
+            (
+                BuildOptions {
+                    emit: Emit::Header,
+                    ..report
+                },
+                "--overflow-report is not valid for header, kernel, or bindings output",
+            ),
+            (
+                BuildOptions {
+                    emit: Emit::Wgsl,
+                    ..report
+                },
+                "--overflow-report is not valid for header, kernel, or bindings output",
+            ),
+        ] {
+            let error = options.validate().unwrap_err();
+            assert_eq!((error.code, error.message.as_str()), ("E2000", message));
+        }
+        for target in [Target::Wasm32, Target::Wasm64] {
+            for emit in [Emit::Wasm, Emit::Object, Emit::Llvm] {
+                let options = BuildOptions {
+                    target,
+                    emit,
+                    ..report
+                };
+                assert!(options.validate().is_ok(), "{target:?} {emit:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn overflow_sidecar_path_follows_the_trap_sidecar() {
+        let output = Path::new("out/Main.wasm");
+        assert_eq!(
+            overflow_sidecar_path(output),
+            Path::new("out/Main.wasm.overflow.json")
+        );
+        assert_eq!(
+            trap_sidecar_path(output),
+            Path::new("out/Main.wasm.trap.json")
+        );
+    }
+
+    #[test]
+    fn overflow_sources_report_the_root_package_only() {
+        let (_directory, project) = project(
+            &[
+                (
+                    "Main.tz",
+                    "def main :: unit -> i32 = \\_ -> Helper.one ()\n",
+                ),
+                ("Helper.tz", "def one :: unit -> i32 = \\_ -> 1\n"),
+            ],
+            "Main.tz",
+        );
+        let sources = project.overflow_sources();
+        assert_eq!(sources.len(), project.sources.len());
+        for (source, file) in sources.iter().zip(&project.sources) {
+            assert_eq!(source.path, file.path.to_string_lossy());
+            assert_eq!(source.text, file.text);
+            assert_eq!(source.reported, file.origin == ModuleOrigin::User);
+        }
+        assert!(sources.iter().filter(|source| source.reported).count() >= 2);
     }
 
     #[test]

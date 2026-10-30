@@ -741,8 +741,10 @@ tsuzuri test tests/ --seed 42
 プロパティテストは標準モジュール `Gen` で書きます。`Gen.for_all` は生成器の値で性質を確かめ、失敗すると反例を最も単純な値まで縮小し、seed・何個目の値か・反例を表示します。
 
 ```text
-test "加算は可換" = Gen.for_all (Gen.pair (Gen.i64()) (Gen.i64())) (\pair -> match pair with | (a, b) -> a + b == b + a)
+test "加算は可換" = Gen.for_all (Gen.pair (Gen.i64()) (Gen.i64())) (\pair -> match pair with | (a, b) -> Int.wrapping_add a b == Int.wrapping_add b a)
 ```
+
+`tsuzuri test` は既定で、テストの中で折り返した整数の演算を `integer overflow wrapped at ./Main.tz:2:50 (i32 mul)` のように報告し、そのテストを失敗にします。乱数の整数どうしの足し算のように折り返すことが正しい計算は、`Int.wrapping_add` などで書きます（`--allow-overflow` は報告だけにします）。
 
 テストコードは型検査されますが、通常の実行可能バイナリには含まれません。また、テスト実行時は別プロセスで隔離されるため、安全に並行テストを行えます。`tsuzuri test tests/ --index 1 -g -o runner` は 1 件のテストをデバッグ情報付きのランナーとしてビルドし、デバッガーで `runner 0` として起動できます（VS Code の Testing ビューの **Debug** も同じ仕組みです）。`--coverage PATH` はコンパイラ自身の計装で、関数・`if` の枝・`match` の節・ループの本体ごとのカウンターを数え、lcov のファイルとテスト要約の後の 1 行の要約を出します。
 
@@ -961,6 +963,8 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--edition 2026\|2027` | `Tsuzuri.toml` のないプロジェクトのソースを読む edition（既定は 2027。マニフェストがあると `E2000`）。`check`・`build`・`run`・`test`・`script` と `tsuzuri new` で使えます。 |
 | `--warn untrusted-extern` | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出します。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
+| `--overflow-report` | `build`・`run`（`test` は既定）で、範囲の証明で溢れないと示せない整数の `+ - * ** -x` に検査を足し、折り返した地点を報告します（native は標準エラー、WASM は `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` と `<出力>.overflow.json`）。値は変わりません。診断用で、配布ビルドには使いません。 |
+| `--allow-overflow` | `tsuzuri test` で、整数の演算が折り返したテストを失敗にせず、報告だけを出します。 |
 | `-g`, `--debug-info` | DWARF デバッグ情報を付与します。`test` では `--index N -g -o PATH` で 1 件のテストをデバッグ用のランナーとしてビルドします（実行しません）。 |
 | `--wasm-max-memory SIZE` | WASM の最大線形メモリサイズ（既定: 16MiB、例: `256MiB`）。 |
 | `--wasm-stack-size SIZE` | WASM のスタックサイズ（既定: 1MiB、例: `4MiB`）。 |
@@ -1101,7 +1105,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |
 | コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |
 | 文字列・文字・表示と解析 | `tests/strings.rs`、`tests/chars.rs`、`tests/display_parse.rs` | `strings.mjs`、`display_parse.mjs` |
-| 数値・数学 | `tests/integers.rs`、`tests/math.rs`、`tests/f16_hardware.rs`（f16 の `half` 経路。D10） | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`math.mjs`（重い。Node 24）、`f16_hardware.mjs`（`TSUZURI_F16_EXPECT` でホストが通る経路を固定） |
+| 数値・数学 | `tests/integers.rs`、`tests/integer_wrapping.rs`、`tests/overflow_report.rs`、`tests/math.rs`、`tests/f16_hardware.rs`（f16 の `half` 経路。D10） | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`overflow_report.mjs`、`math.mjs`（重い。Node 24）、`f16_hardware.mjs`（`TSUZURI_F16_EXPECT` でホストが通る経路を固定） |
 | コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics` |
 | 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite）、`codegen_units.mjs`（codegen unit への分割。PB07。`TSUZURI_CODEGEN_UNITS=split` で、ほかの suite も分けたビルドで確かめられます） |
 | スタックのフレーム・末尾呼び出し（PM09） | `tests/stack_frames.rs`（寿命の印と関数ごとの上限）、`tests/tail_recursion.rs`（`musttail`・drop の順序・対象外の形）、`tests/fast_backend.rs`・`tests/fast_backend_ops.rs`（`return_call` への翻訳） | `stack.mjs`（深さ 10,000,000 の相互再帰。native・`--backend fast`・`--wasm-feature tail-call`）、`control.mjs`（`TSUZURI_ASAN=1` も）、`user_drop.mjs` |
@@ -1150,6 +1154,7 @@ node tests/e2e.mjs target/release/tsuzuri
 node tests/primitives.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri   # 全ビット幅の整数・符号と f32／f64 の間の型変換を BigInt の参照と照合
 node tests/integer_intrinsics.mjs target/release/tsuzuri
+node tests/overflow_report.mjs target/release/tsuzuri   # --overflow-report（A23）: fixture を native（C のホスト）と wasm32 の -O0／-O3 で BigInt と照合し、標準エラーの報告・tsuzuri_overflow_hit・.overflow.json を確かめる。TSUZURI_RANGE_FLAGS=audit でも同じ
 node tests/math.mjs target/release/tsuzuri   # 重い。Node 24
 npx --yes --package=node@24 node tests/wasm64.mjs target/release/tsuzuri   # wasm64（memory64）。Node 24
 node tests/prebuilt_runtime.mjs target/release/tsuzuri   # runtime object の cold／warm・破損 fallback・no-cache・native／WASM O0/O3

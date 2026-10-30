@@ -208,7 +208,7 @@ let left = Matrix.init 130 70 (\i k -> (i * 7 + k * 3) % 11 - 5)
 let right = Matrix.init 70 128 (\k j -> (k * 5 + j * 2) % 13 - 6)
 let sequential = Matrix.mul (ref left) (ref right)
 let parallel = Matrix.mul_parallel (ref left) (ref right)
-let digest = Matrix.fold (\total x -> total * 31 + x) 7
+let digest = Matrix.fold (\total x -> Int.wrapping_add (Int.wrapping_mul total 31) x) 7
 $"{Matrix.rows (ref parallel)}x{Matrix.cols (ref parallel)} {digest (ref sequential) == digest (ref parallel)} {deref (Matrix.at 129 127 (ref parallel))}"
 ```
 

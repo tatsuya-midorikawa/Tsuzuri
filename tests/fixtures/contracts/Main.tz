@@ -23,8 +23,8 @@ export def at_least :: i64 -> i64 -> i64 = \a b ->
     Int.max a b
 
 export def wrap_add :: i64 -> i64 -> i64 = \a b ->
-    @ensures \r -> r == a + b
-    a + b
+    @ensures \r -> r == Int.wrapping_add a b
+    Int.wrapping_add a b
 
 export def abs_diff :: i64 -> i64 -> i64 = \a b ->
     @requires a >= b

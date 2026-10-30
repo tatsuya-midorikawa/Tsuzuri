@@ -44,6 +44,7 @@ pub mod llvm;
 pub mod lsp;
 pub mod mcp;
 pub mod numeric;
+pub mod overflow;
 pub mod ownership;
 pub mod package;
 mod parallel;

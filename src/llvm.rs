@@ -7,6 +7,7 @@ use crate::check::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::interval::Flags;
+use crate::overflow;
 use crate::syntax::{BinaryOp, StringLiteral, UnaryOp};
 use crate::trap::{TrapKind, TrapSource};
 
@@ -297,6 +298,10 @@ pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
 /// C and the appended i128 helpers, whose frames total under 1 KiB.
 const STACK_CHECK_MARGIN: u32 = 4096;
 
+/// Exports that the host calls after a trap, which can leave the stack pointer below the guard:
+/// the readers of the overflow report (A23). They only read globals, so they have no check.
+const UNCHECKED_STACK_EXPORTS: [&str; 2] = ["@tsuzuri_overflow_count(", "@tsuzuri_overflow_hit("];
+
 /// Checks every function's stack pointer, after its static frame is allocated,
 /// against its stack, so an overflow traps before the frame is used instead of
 /// wrapping below address 0 into grown memory or running into a worker stack's neighbor.
@@ -306,7 +311,12 @@ pub(crate) fn with_stack_checks(ir: String, workers: bool) -> String {
     while let Some(line) = lines.next() {
         output.push_str(line);
         let header = line.trim_end();
-        if !header.starts_with("define ") || !header.ends_with('{') {
+        if !header.starts_with("define ")
+            || !header.ends_with('{')
+            || UNCHECKED_STACK_EXPORTS
+                .iter()
+                .any(|name| header.contains(name))
+        {
             continue;
         }
         if let Some(label) = lines.next_if(|next| {
@@ -400,6 +410,8 @@ mod io;
 mod list;
 #[path = "llvm_math.rs"]
 mod math;
+#[path = "llvm_overflow.rs"]
+mod overflow_emit;
 #[path = "llvm_parallel.rs"]
 mod parallel;
 #[path = "llvm_ranges.rs"]
@@ -1405,6 +1417,7 @@ fn emit_program_in(
         },
         range_flags,
         strings: string_form,
+        overflow: crate::overflow::active().map(overflow_emit::Report::new),
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -1675,6 +1688,10 @@ fn emit_program_in(
             "@tsuzuri_coverage_counters = global [{0} x i64] zeroinitializer\n@tsuzuri_coverage_count = constant i64 {0}",
             plan.len()
         );
+    }
+    if let Some(report) = &globals.overflow {
+        output.push_str(&report.runtime(wasm)?);
+        report.publish();
     }
     for global in globals.definitions {
         output.push_str(&global);
@@ -1967,6 +1984,10 @@ fn emit_program_in(
     }
     #[cfg(debug_assertions)]
     check_copy_inventory(module, &globals.emitted_copies);
+    // The report writes through `write(2)`, declared as the trap reports declare it (A23).
+    if globals.overflow.is_some() && !wasm && !output.contains("declare i64 @write(") {
+        output.push_str("declare i64 @write(i32, ptr, i64)\n");
+    }
     Ok((facts::reuse_pure_calls(module, output), globals.traps))
 }
 
@@ -2216,6 +2237,8 @@ struct Globals {
     range_flags: RangeFlags,
     /// The form of the strings that the program makes (PM03).
     strings: StringForm,
+    /// The sites of the integer overflow report, while an `overflow::Scope` is alive (A23).
+    overflow: Option<overflow_emit::Report>,
 }
 
 impl Default for Globals {
@@ -2262,6 +2285,7 @@ impl Default for Globals {
             tail_groups: Vec::new(),
             range_flags: RangeFlags::DEFAULT,
             strings: StringForm::DEFAULT,
+            overflow: None,
         }
     }
 }
@@ -3935,6 +3959,8 @@ struct FunctionEmitter<'a, 'b> {
     clone_pending: Option<String>,
     /// Whether this body counts coverage regions: a counted user function of a covered runner.
     counted: bool,
+    /// Whether the integer overflow report covers this body's arithmetic (A23).
+    overflow_counted: bool,
     /// Whether implicit copies count for the debug inventory check: only in bodies that `emit` writes.
     #[cfg(debug_assertions)]
     note_copies: bool,
@@ -3958,6 +3984,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         specializations: &'b mut Specializations,
     ) -> Self {
         let counted = globals.coverage.is_some() && crate::coverage::counted(function);
+        let overflow_counted = globals
+            .overflow
+            .as_ref()
+            .is_some_and(|report| report.covers(function));
         let native_windows = !globals.wasm && crate::target::current_platform().windows();
         Self {
             module,
@@ -4014,6 +4044,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             frame_slots: BTreeMap::new(),
             frame_locals: BTreeMap::new(),
             counted,
+            overflow_counted,
             #[cfg(debug_assertions)]
             note_copies: false,
         }
@@ -4066,10 +4097,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         } else {
             escape::staying_locals(&self.function.body)
         };
+        // The overflow report asks the intervals too, of the bodies that it covers (A23).
         self.ranges = crate::ranges::analyze(
             self.module,
             self.function,
-            self.globals.range_flags != RangeFlags::Off,
+            self.globals.range_flags != RangeFlags::Off || self.overflow_counted,
         );
         self.block = "loop".into();
         if let TypedExprKind::DynDispatch { slot, slots } = self.function.body.kind {
@@ -4626,11 +4658,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Arithmetic(String),
         }
         let mut pending = Vec::with_capacity(arguments.len());
+        // A23: under the overflow report a helper of the program (`def plus a b = a + b`) stays a
+        // call, so its arithmetic is reported by the helper's own body and policy; the compiler's
+        // `Add.add` is the operator itself, as in `binary`.
+        let reporting = self.globals.overflow.is_some();
         for argument in arguments {
             let operation = call_specialization::binary_operation(argument, self.module).filter(
-                |(operator, _, _, _)| {
+                |(operator, _, _, helper)| {
                     argument.ty.is_integer()
                         && matches!(operator, BinaryOp::Add | BinaryOp::Subtract)
+                        && !(reporting
+                            && helper.is_some_and(|helper| {
+                                self.module.functions[helper].module != "$intrinsic"
+                            }))
                 },
             );
             if let Some((operator, left, right, helper)) = operation {
@@ -4645,6 +4685,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 } else {
                     "sub"
                 };
+                // The report's site is the argument, not the whole call (pitfall 2).
+                let proven = self.ranges_proven(operator, left, right);
+                let operation = if operator == BinaryOp::Add {
+                    overflow::Operation::Add
+                } else {
+                    overflow::Operation::Subtract
+                };
+                let symbol = if operator == BinaryOp::Add { "+" } else { "-" };
+                let anchor =
+                    self.overflow_anchor(argument.span, left.span.end, right.span.start, symbol);
+                if !proven {
+                    self.overflow_check(operation, &argument.ty, argument.span, anchor, &lhs, &rhs);
+                }
                 let words = self.arithmetic_flags(operator, left, right, &lhs, &rhs);
                 pending.push(Argument::Arithmetic(format!(
                     "{opcode} {words}{} {lhs}, {rhs}",
@@ -5078,6 +5131,22 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     return self.simd_unary(*operator, vector, &value);
                 }
                 let ty = self.ty(&operand.ty);
+                if *operator == UnaryOp::Negate && matches!(operand.ty, Type::Integer(_, true)) {
+                    let proven = self.overflow_counted
+                        && self.ranges.negation_flags(self.module, operand).nsw;
+                    let span = self.current_span;
+                    let anchor = self.overflow_anchor(span, span.start, operand.span.start, "-");
+                    if !proven {
+                        self.overflow_check(
+                            overflow::Operation::Negate,
+                            &operand.ty,
+                            span,
+                            anchor,
+                            &value,
+                            "",
+                        );
+                    }
+                }
                 self.value(match operator {
                     UnaryOp::Negate if matches!(operand.ty, Type::Binary(32 | 64)) => {
                         format!("fneg {ty} {value}")
@@ -6365,6 +6434,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             return array;
         }
+        // A23 D8: a full application of `Int.wrapping_add x y` (or `wrapping_sub`, `wrapping_mul`,
+        // `wrapping_neg`) is the operator's instruction without flags, as `Add.add` is (PR02 D10):
+        // here in the body of its `$builtin` wrapper, and below in a direct call of the wrapper.
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+            && let Some(value) = self.wrapping_call(instance.builtin, arguments)
+        {
+            return value;
+        }
         if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind {
             let function = &self.module.functions[id];
             if let TypedExprKind::HostCall(import, _) = &function.body.kind
@@ -6383,6 +6460,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             {
                 let value = self.binary(operator, &arguments[0], &arguments[1]);
                 self.cover_call(id);
+                return value;
+            }
+            if arguments.len() == function.parameters.len()
+                && let Some(builtin) = call_specialization::wrapping_builtin(function)
+                && let Some(value) = self.wrapping_call(builtin, arguments)
+            {
                 return value;
             }
         }
@@ -6880,7 +6963,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             return self.simd_binary(operator, vector, &lhs, &rhs);
         }
         if operator == Power {
-            return self.power(&left.ty, &lhs, &rhs, false);
+            let span = self.current_span;
+            let anchor = self.overflow_anchor(span, left.span.end, right.span.start, "**");
+            return self.power(&left.ty, &lhs, &rhs, false, anchor);
         }
         let ty = self.ty(&left.ty);
         if matches!(left.ty, Type::Binary(16)) && self.globals.f16.arithmetic() {
@@ -7026,6 +7111,19 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 _ => unreachable!("operator checked or handled separately"),
             }
         };
+        if matches!(operator, Add | Subtract | Multiply) && left.ty.is_integer() {
+            let proven = self.ranges_proven(operator, left, right);
+            let (operation, symbol) = match operator {
+                Add => (overflow::Operation::Add, "+"),
+                Subtract => (overflow::Operation::Subtract, "-"),
+                _ => (overflow::Operation::Multiply, "*"),
+            };
+            let span = self.current_span;
+            let anchor = self.overflow_anchor(span, left.span.end, right.span.start, symbol);
+            if !proven {
+                self.overflow_check(operation, &left.ty, span, anchor, &lhs, &rhs);
+            }
+        }
         let words = if matches!(operator, Add | Subtract | Multiply) && !left.ty.is_float() {
             self.arithmetic_flags(operator, left, right, &lhs, &rhs)
         } else {
@@ -7127,6 +7225,15 @@ fn saturating_cast(
     let source = if from == 32 { "float" } else { "double" };
     intrinsics.insert(format!("declare i{bits} @{intrinsic}({source})"));
     intrinsic
+}
+
+/// The LLVM instruction of `Int.wrapping_add`, `wrapping_sub` or `wrapping_mul`.
+fn wrapping_instruction(builtin: Builtin) -> &'static str {
+    match builtin {
+        Builtin::IntWrappingAdd => "add",
+        Builtin::IntWrappingSub => "sub",
+        _ => "mul",
+    }
 }
 
 /// The LLVM symbol of a builtin instance: `@tz.builtin.name`, followed for a
@@ -8211,12 +8318,41 @@ impl FunctionEmitter<'_, '_> {
                 let value = self.value(format!("{order}{operation} {ty} %arg0, %arg1"));
                 self.integer_some(&result, &instance.types[0], &value)
             }
+            IntWrappingAdd | IntWrappingSub | IntWrappingMul => {
+                let instruction = wrapping_instruction(instance.builtin);
+                self.value(format!("{instruction} {ty} %arg0, %arg1"))
+            }
+            IntWrappingNeg => self.value(format!("sub {ty} 0, %arg0")),
             IntWrappingPow | IntCheckedPow => self.integer_power(
                 &instance.types[0],
                 &signature.after_arguments(2),
                 instance.builtin == IntCheckedPow,
             ),
             _ => unreachable!("integer builtins only"),
+        }
+    }
+
+    /// A23 D8: the value of a full application of `Int.wrapping_add`, `wrapping_sub`,
+    /// `wrapping_mul` or `wrapping_neg`, written inline: one instruction without `nsw` or `nuw`,
+    /// operands from left to right. `None` for any other call.
+    fn wrapping_call(&mut self, builtin: Builtin, arguments: &[TypedExpr]) -> Option<String> {
+        match (builtin, arguments) {
+            (
+                Builtin::IntWrappingAdd | Builtin::IntWrappingSub | Builtin::IntWrappingMul,
+                [left, right],
+            ) => {
+                let ty = self.ty(&left.ty);
+                let left = self.expression(left);
+                let right = self.expression(right);
+                let instruction = wrapping_instruction(builtin);
+                Some(self.value(format!("{instruction} {ty} {left}, {right}")))
+            }
+            (Builtin::IntWrappingNeg, [operand]) => {
+                let ty = self.ty(&operand.ty);
+                let operand = self.expression(operand);
+                Some(self.value(format!("sub {ty} 0, {operand}")))
+            }
+            _ => None,
         }
     }
 
@@ -9795,7 +9931,7 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
 
     #[test]
     fn stack_checks_follow_static_allocas_in_every_definition() {
-        let ir = "@text = constant [8 x i8] c\"define {\"\ndeclare void @external()\ndefine internal i64 @a(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\ndefine void @b() {\n  ret void\n}\ndefine i32 @c() {\n0: ; entry\n  ret i32 0\n}\n";
+        let ir = "@text = constant [8 x i8] c\"define {\"\ndeclare void @external()\ndefine internal i64 @a(i64 %x) nounwind {\nentry:\n  ret i64 %x\n}\ndefine void @b() {\n  ret void\n}\ndefine i32 @c() {\n0: ; entry\n  ret i32 0\n}\ndefine i32 @tsuzuri_overflow_count() nounwind {\nentry:\n  ret i32 1\n}\n";
         let call = "  call void @tz.stack.check()\n";
         for workers in [false, true] {
             let checked = with_stack_checks(ir.to_owned(), workers);

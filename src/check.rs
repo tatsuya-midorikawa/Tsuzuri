@@ -1451,6 +1451,10 @@ pub enum Builtin {
     IntSaturatingSub,
     IntSaturatingMul,
     IntWrappingPow,
+    IntWrappingAdd,
+    IntWrappingSub,
+    IntWrappingMul,
+    IntWrappingNeg,
     IntCheckedPow,
     IntWideningMul,
     /// `Owned.drop :: 'a -> unit` drops its argument now (B07).
@@ -1862,6 +1866,10 @@ impl Builtin {
         Self::IntSaturatingSub,
         Self::IntSaturatingMul,
         Self::IntWrappingPow,
+        Self::IntWrappingAdd,
+        Self::IntWrappingSub,
+        Self::IntWrappingMul,
+        Self::IntWrappingNeg,
         Self::IntCheckedPow,
         Self::IntWideningMul,
         Self::OwnedDrop,
@@ -2125,6 +2133,10 @@ impl Builtin {
             Self::IntSaturatingSub => "Int.saturating_sub",
             Self::IntSaturatingMul => "Int.saturating_mul",
             Self::IntWrappingPow => "Int.wrapping_pow",
+            Self::IntWrappingAdd => "Int.wrapping_add",
+            Self::IntWrappingSub => "Int.wrapping_sub",
+            Self::IntWrappingMul => "Int.wrapping_mul",
+            Self::IntWrappingNeg => "Int.wrapping_neg",
             Self::IntCheckedPow => "Int.checked_pow",
             Self::IntWideningMul => "Int.widening_mul",
             Self::OwnedDrop => "Owned.drop",
@@ -2765,6 +2777,10 @@ impl Builtin {
             | Self::IntSaturatingSub
             | Self::IntSaturatingMul
             | Self::IntWrappingPow
+            | Self::IntWrappingAdd
+            | Self::IntWrappingSub
+            | Self::IntWrappingMul
+            | Self::IntWrappingNeg
             | Self::IntCheckedPow
             | Self::IntWideningMul => {
                 let parameters = match self {
@@ -2776,7 +2792,8 @@ impl Builtin {
                     | Self::IntSwapBytes
                     | Self::IntReverseBits
                     | Self::IntIsPowerOfTwo
-                    | Self::IntCheckedNeg => vec![a()],
+                    | Self::IntCheckedNeg
+                    | Self::IntWrappingNeg => vec![a()],
                     Self::IntRotateLeft
                     | Self::IntRotateRight
                     | Self::IntWrappingPow
@@ -2807,7 +2824,10 @@ impl Builtin {
                     _ => a(),
                 };
                 let class = match self {
-                    Self::IntAbs | Self::IntUnsignedAbs | Self::IntCheckedNeg => "SignedInteger",
+                    Self::IntAbs
+                    | Self::IntUnsignedAbs
+                    | Self::IntCheckedNeg
+                    | Self::IntWrappingNeg => "SignedInteger",
                     Self::IntIsPowerOfTwo => "UnsignedInteger",
                     _ => "Integer",
                 };

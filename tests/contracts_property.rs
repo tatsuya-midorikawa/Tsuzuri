@@ -54,7 +54,7 @@ fn arbitrary_instances_and_derivations_generate_values() {
         "arbitrary",
         "record Pt { x: i64, y: i64 } deriving (Arbitrary, Display, Eq)\n\
          union Shape =\n    | Circle of i64\n    | Rect of (i64 * i64)\n    | Empty\n    deriving (Arbitrary, Display)\n\
-         def area :: Shape -> i64 = \\s ->\n    match s with\n    | Circle r -> r\n    | Rect (w, h) -> w + h\n    | Empty -> 0\n\
+         def area :: Shape -> i64 = \\s ->\n    match s with\n    | Circle r -> r\n    | Rect (w, h) -> Int.wrapping_add w h\n    | Empty -> 0\n\
          test \"points\" = Gen.for_all (Arbitrary.arbitrary()) (\\(p: Pt) -> p == p)\n\
          test \"shapes\" = Gen.for_all (Arbitrary.arbitrary()) (\\(s: Shape) -> area s == area s)\n\
          test \"tuples\" = Gen.for_all (Arbitrary.arbitrary()) (\\(t: (i8u * bool * [i64])) -> match t with | (_, b, _) -> b || !b)\n",

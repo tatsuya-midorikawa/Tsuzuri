@@ -428,6 +428,8 @@ struct Arguments {
     /// `tsuzuri test --affected VALUE` (G28): run only the tests that the change since VALUE (a
     /// knowledge graph, a project, or a git revision) reaches.
     affected: Option<String>,
+    /// `tsuzuri test --allow-overflow` (A23): a test whose arithmetic wraps passes, with warnings.
+    allow_overflow: bool,
 }
 
 /// A diagnostic of the command line: it has no position, and the caller prints it at
@@ -470,6 +472,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             no_server: false,
             kg: Default::default(),
             affected: None,
+            allow_overflow: false,
         });
     }
     let mut position = 0;
@@ -531,6 +534,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut prove_timeout_given = false;
     let mut debug_output = false;
     let mut trap_info = false;
+    let mut overflow_report = false;
+    let mut allow_overflow = false;
     let mut trap_return = false;
     let mut allocator = None;
     let mut freestanding = false;
@@ -878,6 +883,26 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                         ));
                     }
                     trap_info = true;
+                    continue;
+                }
+                Some("--overflow-report") => {
+                    if overflow_report {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "overflow-report specified more than once",
+                        ));
+                    }
+                    overflow_report = true;
+                    continue;
+                }
+                Some("--allow-overflow") => {
+                    if allow_overflow {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "allow-overflow specified more than once",
+                        ));
+                    }
+                    allow_overflow = true;
                     continue;
                 }
                 Some("--trap-mode") => {
@@ -1323,6 +1348,24 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             "--trap-info is only valid with build or run",
         ));
     }
+    if overflow_report && !matches!(action, Action::Build | Action::Run | Action::Test) {
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--overflow-report is only valid with build, run, or test",
+        ));
+    }
+    if allow_overflow && action != Action::Test {
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--allow-overflow is only valid with test",
+        ));
+    }
+    if allow_overflow && debug_info {
+        return Err(command_line_error(
+            DiagnosticKind::OptionConflict,
+            "--allow-overflow cannot be combined with -g; a debug runner only builds",
+        ));
+    }
     if trap_return && action != Action::Build {
         return Err(command_line_error(
             DiagnosticKind::OptionInvalidForCommand,
@@ -1627,6 +1670,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         strip,
         wasm_opt,
         triple,
+        overflow_report,
     };
     // These checks report `E2000` diagnostics without a position, as the command line does.
     options.validate()?;
@@ -1683,6 +1727,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         no_server,
         kg,
         affected,
+        allow_overflow,
     })
 }
 
@@ -2000,6 +2045,12 @@ fn run_test_action(
         } else {
             Vec::new()
         },
+        // A23: the CLI reports the arithmetic that wraps and fails its tests, unless
+        // `--allow-overflow`; a debug runner only builds, and is not instrumented.
+        overflow: (!arguments.options.debug_info).then(|| driver::OverflowTests {
+            fail: !arguments.allow_overflow,
+            sources: project.overflow_sources(),
+        }),
     };
     if let Some(base) = &arguments.affected {
         match select_affected(arguments, project, base, affected_base) {
@@ -2083,13 +2134,22 @@ fn run_test_action(
     for result in &report.results {
         let case = &result.case;
         if arguments.json {
-            let failure = result.failure.as_ref().map_or_else(String::new, |failure| {
+            let mut failure = result.failure.as_ref().map_or_else(String::new, |failure| {
                 format!(
                     ",\"failure\":{}{}",
                     json_string(failure),
                     output_field(&result.output)
                 )
             });
+            // A23: the overflow reports of the test, after `failure` and `output`.
+            if !result.overflow.is_empty() {
+                let reports: Vec<_> = result
+                    .overflow
+                    .iter()
+                    .map(|report| json_string(report))
+                    .collect();
+                failure.push_str(&format!(",\"overflow\":[{}]", reports.join(",")));
+            }
             println!(
                 "{{\"type\":\"test\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"{}\"{},\"duration_ms\":{}}}",
                 case.index,
@@ -2118,6 +2178,11 @@ fn run_test_action(
             if let Some(failure) = &result.failure {
                 println!("  failure: {failure}");
                 print_output(&result.output);
+            } else {
+                // A23: `--allow-overflow` keeps the test passing and shows what wrapped.
+                for report in &result.overflow {
+                    println!("  warning: {report}");
+                }
             }
         }
     }
@@ -6517,6 +6582,134 @@ mod tests {
         }
         assert!(text.contains("TSUZURI_SYSROOT"));
         assert!(text.contains("TSUZURI_RUNNER"));
+    }
+
+    #[test]
+    fn overflow_report_and_allow_overflow_arguments() {
+        // A23: the report is for build, run and test; `--allow-overflow` only for test.
+        for (values, message) in [
+            (
+                &["check", "Main.tz", "--overflow-report"][..],
+                "--overflow-report is only valid with build, run, or test",
+            ),
+            (
+                &["fmt", "Main.tz", "--overflow-report"],
+                "--overflow-report is only valid with build, run, or test",
+            ),
+            (
+                &["doc", "Main.tz", "-o", "docs", "--overflow-report"],
+                "--overflow-report is only valid with build, run, or test",
+            ),
+            (
+                &["bench", "Main.tz", "--overflow-report"],
+                "--overflow-report is only valid with build, run, or test",
+            ),
+            (
+                &["build", "Main.tz", "--overflow-report", "--overflow-report"],
+                "overflow-report specified more than once",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--overflow-report",
+                    "--freestanding",
+                    "--emit",
+                    "object",
+                ],
+                "--overflow-report cannot be combined with --freestanding: the report is written through the C library",
+            ),
+            (
+                &["build", "Main.tz", "--overflow-report", "--emit", "header"],
+                "--overflow-report is not valid for header, kernel, or bindings output",
+            ),
+            (
+                &["build", "Main.tz", "--overflow-report", "--emit", "wgsl"],
+                "--overflow-report is not valid for header, kernel, or bindings output",
+            ),
+            (
+                &[
+                    "build",
+                    "Main.tz",
+                    "--overflow-report",
+                    "--emit",
+                    "bindings-js",
+                    "--target",
+                    "wasm32",
+                ],
+                "--overflow-report is not valid for header, kernel, or bindings output",
+            ),
+            (
+                &["build", "Main.tz", "--allow-overflow"],
+                "--allow-overflow is only valid with test",
+            ),
+            (
+                &["run", "Main.tz", "--allow-overflow"],
+                "--allow-overflow is only valid with test",
+            ),
+            (
+                &["test", "Main.tz", "--allow-overflow", "--allow-overflow"],
+                "allow-overflow specified more than once",
+            ),
+            (
+                &[
+                    "test",
+                    "Main.tz",
+                    "--index",
+                    "0",
+                    "-g",
+                    "-o",
+                    "runner",
+                    "--allow-overflow",
+                ],
+                "--allow-overflow cannot be combined with -g; a debug runner only builds",
+            ),
+        ] {
+            let error = parse_arguments(&values.iter().map(OsString::from).collect::<Vec<_>>())
+                .expect_err(&values.join(" "));
+            assert_eq!(error.code, "E2000", "{values:?}");
+            assert_eq!(error.message, message, "{values:?}");
+        }
+        for values in [
+            &["build", "Main.tz", "--overflow-report"][..],
+            &[
+                "build",
+                "Main.tz",
+                "--overflow-report",
+                "--target",
+                "wasm32",
+            ],
+            &[
+                "build",
+                "Main.tz",
+                "--overflow-report",
+                "--emit",
+                "llvm",
+                "-O0",
+            ],
+            &["run", "Main.tz", "--overflow-report"],
+            &["test", "Main.tz", "--overflow-report"],
+            &["test", "Main.tz", "--allow-overflow"],
+            &[
+                "test",
+                "Main.tz",
+                "--allow-overflow",
+                "--overflow-report",
+                "--json",
+            ],
+        ] {
+            let arguments = parse(values).unwrap_or_else(|error| panic!("{values:?}: {error:?}"));
+            assert_eq!(
+                arguments.options.overflow_report,
+                values.contains(&"--overflow-report"),
+                "{values:?}"
+            );
+            assert_eq!(
+                arguments.allow_overflow,
+                values.contains(&"--allow-overflow"),
+                "{values:?}"
+            );
+        }
     }
 
     #[test]
