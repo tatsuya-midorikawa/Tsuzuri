@@ -958,6 +958,7 @@ tsuzuri build|run|test|check ... [--contracts off|check|test|prove]
 tsuzuri check|build|run|test ... [--kg | --no-kg] [--kg-dir DIR]
 tsuzuri kg build|verify|clean|export [PATH] [--kg-dir DIR] [--std] [--force] [--nodes|--edges|--facts] [--no-refresh] [--json]
 tsuzuri kg brief|show|callers|callees|uses|tests-for|search|find|path ... [--budget N] [--path PATH] [--no-refresh] [--json]
+tsuzuri kg path FROM TO [--rel R[,R...]] [--depth N]
 tsuzuri kg impact (--git REV | --from PATH [--to PATH]) [--path PATH] [--json]
 tsuzuri kg diagram KIND [ID] [--path PATH] [--format mermaid|dot] [--max-nodes N] [--depth N] [--json]
 tsuzuri test source.tz|directory --affected BASE

@@ -44,6 +44,11 @@ test('checkCli names what a page lacks', () => {
         'README.md lacks flag --json',
         'README.md lacks command build',
     ]);
+    // A longer token does not document a shorter one.
+    assert.deepEqual(checkCli({ flags: ['--rev'], commands: [], variables: ['TSUZURI_KG'] }, { 'README.md': '--reverse TSUZURI_KG_DIR', 'option.md': '`--rev` and TSUZURI_KG.' }), [
+        'README.md lacks flag --rev',
+        'README.md lacks variable TSUZURI_KG',
+    ]);
     assert.deepEqual(checkCli(cli, { 'README.md': 'tsuzuri [build] --json', 'option.md': '--json' }), [
         'README.md lacks variable TSUZURI_SYSROOT',
         'option.md lacks variable TSUZURI_SYSROOT',
@@ -77,6 +82,8 @@ test('checkStd looks for each function on its module page', () => {
     const read = page => pages[page] ?? null;
     assert.deepEqual(checkStd({ Sample: [{ name: 'a' }, { name: 'b' }, { name: 'c' }], Empty: [] }, read), ['Sample.c is not mentioned in built-in-types-and-modules/sample.md']);
     assert.deepEqual(checkStd({ Other: [{ name: 'a' }] }, read), ['Other has 1 public functions but no page in STD_PAGES']);
+    // `Sample.bc` does not mention `Sample.b`.
+    assert.deepEqual(checkStd({ Sample: [{ name: 'b' }] }, () => 'Use `Sample.bc`.'), ['Sample.b is not mentioned in built-in-types-and-modules/sample.md']);
 });
 test('the command line reports usage errors with 2', () => {
     const script = join(root, 'scripts/check-cli-docs.mjs');

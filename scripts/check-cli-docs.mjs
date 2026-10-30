@@ -27,9 +27,11 @@ export const EXEMPT_FLAGS = { '--sysroot': 'a flag of the C compiler named in th
 /** The flags and variables that README.md or option.md lacks, and the commands that README.md lacks. */
 export function checkCli(cli, pages) {
     const messages = [];
+    // A whole token: `--rev` is not documented by `--reverse`, nor `TSUZURI_KG` by `TSUZURI_KG_DIR`.
+    const names = (text, name) => new RegExp(`(?<![\\w-])${name}(?![\\w-])`).test(text);
     for (const page of ['README.md', 'option.md']) {
-        for (const flag of cli.flags) if (!(flag in EXEMPT_FLAGS) && !pages[page].includes(flag)) messages.push(`${page} lacks flag ${flag}`);
-        for (const variable of cli.variables) if (!pages[page].includes(variable)) messages.push(`${page} lacks variable ${variable}`);
+        for (const flag of cli.flags) if (!(flag in EXEMPT_FLAGS) && !names(pages[page], flag)) messages.push(`${page} lacks flag ${flag}`);
+        for (const variable of cli.variables) if (!names(pages[page], variable)) messages.push(`${page} lacks variable ${variable}`);
     }
     for (const command of cli.commands) {
         if (!new RegExp(`tsuzuri (?:\\[${command}\\]|${command})(?![A-Za-z0-9_-])`).test(pages['README.md'])) messages.push(`README.md lacks command ${command}`);
@@ -94,7 +96,10 @@ export function checkStd(modules, readPage) {
         const page = stdPage(module);
         const text = readPage(page);
         if (text === null) { messages.push(`${module} has ${entries.length} public functions but no page in STD_PAGES`); continue; }
-        for (const { name } of entries) if (!text.includes(`\`${name}\``) && !text.includes(`${module}.${name}`)) messages.push(`${module}.${name} is not mentioned in ${page}`);
+        // `List.find_index` does not mention `List.find`: the qualified name must end there.
+        for (const { name } of entries) {
+            if (!text.includes(`\`${name}\``) && !new RegExp(`${module}\\.${name}(?![A-Za-z0-9_])`).test(text)) messages.push(`${module}.${name} is not mentioned in ${page}`);
+        }
     }
     return messages;
 }

@@ -373,9 +373,9 @@ fn remove key map = remove_ref (ref key) map
 
 /// How far the entry that sits farthest from its ideal table position is from it: 0 for an empty map.
 /// A diagnostic for tuning and tests; a map that is flooded with colliding keys has a large value.
-/// Scans the whole table, whose size follows the largest number of entries the map has held or the capacity it was made with.
+/// Scans the whole table, whose size follows the largest number of entries the map has held or the capacity it was made with. The cost is the size of that table (`k` in the tag), not the number of entries.
 ///
-/// @complexity O(n)
+/// @complexity O(k)
 ///
 /// ```tsuzuri run=0
 /// HashMap.empty() |> HashMap.insert 7 "seven" |> HashMap.longest_probe

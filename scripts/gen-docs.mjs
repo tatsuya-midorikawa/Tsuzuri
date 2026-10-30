@@ -96,7 +96,7 @@ export function parseStdPage(text) {
     for (const section of text.split('\n## `').slice(1)) {
         const name = section.slice(0, section.indexOf('`'));
         const fence = /```tsuzuri\n([\s\S]*?)\n```/.exec(section);
-        if (!fence || !/^(?:export )?(?:const )?def\b/.test(fence[1])) continue;
+        if (!fence || !/^(?:@[a-z]+ )*(?:export )?(?:const |pure )?def\b/.test(fence[1])) continue;
         entries.push({ name, doc: section.slice(fence.index + fence[0].length).trim() });
     }
     return entries;

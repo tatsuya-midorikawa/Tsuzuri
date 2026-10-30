@@ -203,7 +203,7 @@ dashed=-a-b- once=- rep=hahaha
 
 ## 計算量
 
-計算量は 1 回の呼び出しの最悪の時間です。`n` は `text`（対象の文字列）のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数、`k` は結果のコード単位数です（`join`・`concat` の `n` は部品の数）。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/String.tz` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。組み込み関数のうち `compare`・`from_utf8`・`is_well_formed`・`to_well_formed` の計算量は、各節の表の `計算量` の列にあります。
+計算量は 1 回の呼び出しの最悪の時間です（コード単位 1 つの読み書きと比較を $O(1)$ と数えます）。`n` は `text`（対象の文字列）のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数、`k` は結果のコード単位数です（`join`・`concat` の `n` は部品の数）。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/String.tz` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。組み込み関数のうち `compare`・`from_utf8`・`is_well_formed`・`to_well_formed` の計算量は、各節の表の `計算量` の列にあります。
 
 <!-- generated:complexity:String -->
 | 関数 | 計算量 |

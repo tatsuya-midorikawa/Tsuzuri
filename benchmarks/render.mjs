@@ -22,7 +22,7 @@ export function renderTable(headers, rows, { timingColumns = [] } = {}) {
         const candidates = timingColumns.filter((index) => row[index] !== '-' && Number.isFinite(Number(row[index])));
         const minimum = Math.min(...candidates.map((index) => Number(row[index])));
         const winners = candidates.filter((index) => Number(row[index]) === minimum);
-        const cells = row.map((value, index) => (index === 0 ? `\`${String(value).replaceAll('|', '\\|')}\`` : winners.includes(index) ? `**${cell(value)}**` : cell(value)));
+        const cells = row.map((value, index) => (index === 0 ? `\`${String(value).replaceAll('|', '\\|').replace(/\r?\n/g, ' ')}\`` : winners.includes(index) ? `**${cell(value)}**` : cell(value)));
         if (timingColumns.length) {
             const label = winners.length ? winners.map((index) => headers[index].replace(/ \([^)]*\)$/, '')).join(' / ') : '条件差あり';
             cells.push(cell(label + (winners.length > 1 ? '（同率）' : '')));

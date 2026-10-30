@@ -171,6 +171,9 @@ try {
     test('parseStdPage reads the def sections', () => {
         const page = readFileSync(join(root, 'tests/fixtures/gen-docs/std-doc/Sample.md'), 'utf8');
         assert.deepEqual(parseStdPage(page), std.Sample);
+        // `pure`, `export`, `const` and effect attributes come before `def` in the signature.
+        const prefixed = '# P\n\n## `p`\n\n```tsuzuri\npure def p :: i64\n```\n\nP.\n\n## `q`\n\n```tsuzuri\n@total export def q :: i64\n```\n\nQ.\n';
+        assert.deepEqual(parseStdPage(prefixed), [{ name: 'p', doc: 'P.' }, { name: 'q', doc: 'Q.' }]);
     });
     test('complexityTable adds columns only when used', () => {
         assert.deepEqual(complexityTable('Sample', std.Sample.slice(0, 1)), ['| 関数 | 計算量 |', '| --- | --- |', '| `Sample.a` | $O(1)$ |']);
