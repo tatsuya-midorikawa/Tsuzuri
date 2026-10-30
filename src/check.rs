@@ -10266,6 +10266,9 @@ struct Checker<'a> {
     function: Option<usize>,
     /// The holes of this checker that have looked for candidates (at most `MAX_HOLE_SEARCHES`).
     holes_searched: usize,
+    /// The declared constraints of the generic functions that this body instantiated, over their
+    /// fresh variables. Specialization checks them; only typed holes read them here (G25).
+    call_constraints: Vec<(usize, Type)>,
 }
 
 impl<'a> Checker<'a> {
@@ -10318,6 +10321,7 @@ impl<'a> Checker<'a> {
             dyn_callee: false,
             function: None,
             holes_searched: 0,
+            call_constraints: Vec::new(),
         }
     }
 

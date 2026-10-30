@@ -493,3 +493,48 @@ fn a_function_without_parameters_is_called() {
     assert!(found.contains(&("Main.answer()", "call")), "{found:?}");
     assert!(found.contains(&("Main.limit", "value")), "{found:?}");
 }
+
+#[test]
+fn a_hole_in_a_constant_reports_its_type() {
+    let hole = one("const answer: i64 = ?\nanswer\n");
+    assert_eq!(hole.code, "E1030");
+    assert_eq!(hole.detail.expected.as_deref(), Some("i64"));
+}
+
+#[test]
+fn the_classes_of_the_expected_type_hold() {
+    // `count_copies` needs `Copy<'a>`, which `string` lacks: only `numbers` fits.
+    let hole = one(
+        "def count_copies :: Copy<'a> => ref ['a] -> i64 = \\xs -> Array.length xs\ndef f :: ref [string] -> ref [i64] -> i64 = \\names numbers -> count_copies ?\nf (ref [\"a\"]) (ref [1])\n",
+    );
+    assert_eq!(scope_names(&hole), ["numbers", "names"]);
+    let names = candidate_names(&hole);
+    assert_eq!(names[0], "numbers");
+    assert!(
+        !names.iter().any(|name| name.contains("names")),
+        "{names:?}"
+    );
+    assert_eq!(hole.fixes[0].title, "Replace '?' with 'numbers'");
+}
+
+#[test]
+fn a_field_read_through_a_reference_is_copy() {
+    let source = |result: &str| {
+        format!(
+            "record P {{ text: string, n: i64 }}\ndef f :: ref P -> {result} = \\p -> ?\nlet p = P {{ text: \"a\", n: 1 }}\nf (ref p)\n"
+        )
+    };
+    assert!(!candidate_names(&one(&source("string"))).contains(&"p.text"));
+    assert!(candidate_names(&one(&source("i64"))).contains(&"p.n"));
+}
+
+#[test]
+fn edition_dependent_names_use_their_stable_spelling() {
+    // `Vec.push` is `Vec.push_mut` in edition 2027; the index writes `Vec.push_owned`.
+    let hole = one("def f :: Vec<i64> -> i64 -> Vec<i64> = \\v n -> ?\nf (Vec.empty()) 1\n");
+    let names = candidate_names(&hole);
+    assert!(
+        !names.iter().any(|name| name.starts_with("Vec.push ")),
+        "{names:?}"
+    );
+}

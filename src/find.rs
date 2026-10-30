@@ -127,16 +127,18 @@ impl Checker<'_> {
     fn fits(&self, ty: &Type, wanted: &Type) -> bool {
         let mut search = Inference::default();
         let mut map = BTreeMap::new();
-        let goal = import_type(&self.inference.resolve(wanted), &mut search, &mut map);
-        let (ty, pending) = self.import_with_constraints(ty, &mut search, &mut map);
+        let (goal, mut pending) = self.import_with_constraints(wanted, &mut search, &mut map);
+        let (ty, more) = self.import_with_constraints(ty, &mut search, &mut map);
+        pending.extend(more);
         search
             .unify(&ty, &goal, &self.types, Span::default())
             .is_ok()
             && constraints_hold(&pending, &search, &self.types, self.classes)
     }
 
-    /// `ty` imported into `search` (`import_type`) with the checker's pending class constraints
-    /// over its inference variables, imported through the same `map`.
+    /// `ty` imported into `search` (`import_type`) with the class constraints that wait on its
+    /// inference variables (the checker's own and those of the generic functions it instantiated),
+    /// imported through the same `map`.
     fn import_with_constraints(
         &self,
         ty: &Type,
@@ -156,15 +158,20 @@ impl Checker<'_> {
             return (imported, Vec::new());
         }
         let mut pending = Vec::new();
-        for constraint in &self.constraints {
-            let resolved = self.inference.resolve(&constraint.ty);
+        let waiting = self
+            .constraints
+            .iter()
+            .map(|constraint| (constraint.class, &constraint.ty))
+            .chain(self.call_constraints.iter().map(|(class, ty)| (*class, ty)));
+        for (class, ty) in waiting {
+            let resolved = self.inference.resolve(ty);
             let mut mentions = false;
             polymorph::map_type(&resolved, &mut |t| {
                 mentions |= matches!(t, Type::Infer(k) if open.contains(k));
                 t.clone()
             });
             if mentions {
-                pending.push((constraint.class, import_type(&resolved, search, map)));
+                pending.push((class, import_type(&resolved, search, map)));
             }
         }
         (imported, pending)
@@ -265,6 +272,16 @@ fn render(
     format!("{} => {function}", prefix.join(", "))
 }
 
+/// The spelling of `name` that means the same in every edition: a legacy entry point of
+/// `BORROWING_APIS` (`Vec.push`, `Array.map`) names another function in edition 2027, so the
+/// index writes its explicitly owning name (`Vec.push_owned`), which has the legacy type.
+fn stable_name(name: String) -> String {
+    BORROWING_APIS
+        .iter()
+        .find(|(legacy, _, _)| *legacy == name)
+        .map_or(name, |(_, _, owned)| (*owned).to_owned())
+}
+
 /// The index of every declaration that a hole may use, in the order of the checker's tables.
 pub(super) fn build(
     names: &Names,
@@ -291,7 +308,7 @@ pub(super) fn build(
         entries.push(Entry {
             call: kind == Kind::Def,
             kind,
-            name: declaration_display(key),
+            name: stable_name(declaration_display(key)),
             module: info.module.clone(),
             public: info.visibility == Visibility::Public,
             origin: names.origin(&info.module),
@@ -359,7 +376,7 @@ pub(super) fn build(
         entries.push(Entry {
             call,
             kind: Kind::Builtin,
-            name: name.to_owned(),
+            name: stable_name(name.to_owned()),
             module: name
                 .split_once('.')
                 .map_or_else(String::new, |(prefix, _)| prefix.to_owned()),
@@ -518,9 +535,9 @@ impl Checker<'_> {
                     },
                 });
             }
-            let record = match local_type {
-                Type::Reference(inner, _) => inner.as_ref(),
-                other => other,
+            let (record, borrowed) = match local_type {
+                Type::Reference(inner, _) => (inner.as_ref(), true),
+                other => (other, false),
             };
             if let Type::Record(id, arguments) = record
                 && self.record_storage(*id, span).is_ok()
@@ -528,7 +545,13 @@ impl Checker<'_> {
                 let record = &self.types.records[*id];
                 let fields = self.types.record_fields(*id, arguments);
                 for ((field, _), ty) in record.fields.iter().zip(fields) {
-                    if fits(&ty) {
+                    // `r.field` through a reference copies the field; a non-Copy one would move
+                    // out of the borrowed record.
+                    let resolved = self.inference.resolve(&ty);
+                    let readable = !borrowed
+                        || (ground(&resolved)
+                            && self.classes.holds("Copy", &resolved, &self.types));
+                    if readable && fits(&ty) {
                         let text = format!("{local_name}.{field}");
                         ranked.push(Ranked {
                             rank: 1,
@@ -568,9 +591,11 @@ impl Checker<'_> {
                 break;
             }
             let mut search = Inference::default();
-            let (parameters, result, constraints) = instantiate(entry, &mut search);
+            let (parameters, result, mut constraints) = instantiate(entry, &mut search);
             let mut map = BTreeMap::new();
-            let goal = import_type(wanted, &mut search, &mut map);
+            // The classes that the hole's own open type waits on hold for the whole call.
+            let (goal, pending) = self.import_with_constraints(wanted, &mut search, &mut map);
+            constraints.extend(pending);
             if search.unify(&result, &goal, &self.types, span).is_err()
                 || !constraints_hold(&constraints, &search, &self.types, self.classes)
             {
@@ -694,33 +719,47 @@ impl Checker<'_> {
 
 /// The Damerau-Levenshtein distance (optimal string alignment: insert, delete, replace, and swap
 /// of two neighbors each cost 1) of `a` and `b` when it is at most `limit`, else `None`. Only the
-/// band `|i - j| <= limit` is computed, in three rows of `b.len() + 1` cells, so a long name costs
-/// time and memory linear in its length.
+/// band `|i - j| <= limit` is computed: each row is `2 * limit + 3` cells (the band and a sentinel
+/// on each side), cell `j` of row `i` at `j + limit + 1 - i`, in three rolling rows. Time is linear
+/// in the length of `a`, memory is constant.
 fn distance_within(a: &[char], b: &[char], limit: usize) -> Option<usize> {
     if a.len().abs_diff(b.len()) > limit {
         return None;
     }
     let over = limit + 1;
-    let width = b.len() + 1;
+    let width = 2 * limit + 3;
+    // The column `j` of cell `k` of row `i`, if the cell is inside the matrix.
+    let column = |i: usize, k: usize| (i + k).checked_sub(limit + 1).filter(|j| *j <= b.len());
     let mut before = vec![over; width];
-    let mut previous: Vec<usize> = (0..width).map(|j| j.min(over)).collect();
+    let mut previous = vec![over; width];
+    for (k, cell) in previous.iter_mut().enumerate() {
+        if let Some(j) = column(0, k) {
+            *cell = j.min(over);
+        }
+    }
     let mut current = vec![over; width];
     for i in 1..=a.len() {
         current.fill(over);
-        current[0] = i.min(over);
-        let low = i.saturating_sub(limit).max(1);
-        let high = (i + limit).min(b.len());
-        let mut smallest = current[0];
-        for j in low..=high {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (previous[j] + 1)
-                .min(current[j - 1] + 1)
-                .min(previous[j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                best = best.min(before[j - 2] + 1);
-            }
-            current[j] = best.min(over);
-            smallest = smallest.min(current[j]);
+        let mut smallest = over;
+        for k in 1..width - 1 {
+            let Some(j) = column(i, k) else {
+                continue;
+            };
+            let value = if j == 0 {
+                i.min(over)
+            } else {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                // (i - 1, j) is at k + 1, (i, j - 1) at k - 1, (i - 1, j - 1) and (i - 2, j - 2) at k.
+                let mut best = (previous[k + 1] + 1)
+                    .min(current[k - 1] + 1)
+                    .min(previous[k] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    best = best.min(before[k] + 1);
+                }
+                best.min(over)
+            };
+            current[k] = value;
+            smallest = smallest.min(value);
         }
         if smallest > limit {
             return None;
@@ -728,7 +767,7 @@ fn distance_within(a: &[char], b: &[char], limit: usize) -> Option<usize> {
         std::mem::swap(&mut before, &mut previous);
         std::mem::swap(&mut previous, &mut current);
     }
-    let found = previous[b.len()];
+    let found = previous[b.len() + limit + 1 - a.len()];
     (found <= limit).then_some(found)
 }
 
@@ -964,8 +1003,16 @@ impl Checker<'_> {
         }
         if target.starts_with(|c: char| c.is_ascii_uppercase()) {
             for key in self.names.modules.keys() {
-                if self.names.searchable(self.module, key) {
-                    pool.push(Pooled::new(module_stem(key), 3, "module"));
+                if !self.names.searchable(self.module, key) {
+                    continue;
+                }
+                // The stem is compared with the target; it is written alone only where it names
+                // this module, and with its namespace elsewhere.
+                let stem = module_stem(key);
+                if self.names.module_path(self.module, stem) == Some(key.as_str()) {
+                    pool.push(Pooled::new(stem, 3, "module"));
+                } else {
+                    pool.push(Pooled::qualified(namespace_display(key), stem, 3, "module"));
                 }
             }
             for builtin in Builtin::ALL {
@@ -1115,6 +1162,58 @@ mod tests {
     fn distance(a: &str, b: &str) -> usize {
         let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
         distance_within(&a, &b, a.len().max(b.len())).unwrap()
+    }
+
+    /// The full-matrix optimal string alignment distance, the reference of the band.
+    fn reference(a: &[char], b: &[char]) -> usize {
+        let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+        for (i, row) in rows.iter_mut().enumerate() {
+            row[0] = i;
+        }
+        for (j, cell) in rows[0].iter_mut().enumerate() {
+            *cell = j;
+        }
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                let mut best = (rows[i - 1][j] + 1)
+                    .min(rows[i][j - 1] + 1)
+                    .min(rows[i - 1][j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    best = best.min(rows[i - 2][j - 2] + 1);
+                }
+                rows[i][j] = best;
+            }
+        }
+        rows[a.len()][b.len()]
+    }
+
+    #[test]
+    fn the_band_agrees_with_the_full_matrix() {
+        let mut words: Vec<Vec<char>> = vec![Vec::new()];
+        for length in 1..=5 {
+            for bits in 0..(3usize.pow(length)) {
+                let mut word = Vec::new();
+                let mut rest = bits;
+                for _ in 0..length {
+                    word.push(['a', 'b', 'c'][rest % 3]);
+                    rest /= 3;
+                }
+                words.push(word);
+            }
+        }
+        for a in words.iter().step_by(7) {
+            for b in words.iter().step_by(5) {
+                let expected = reference(a, b);
+                for limit in 0..=3 {
+                    assert_eq!(
+                        distance_within(a, b, limit),
+                        (expected <= limit).then_some(expected),
+                        "{a:?} {b:?} {limit}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

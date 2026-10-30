@@ -3561,6 +3561,11 @@ impl Checker<'_> {
             .cloned()
             .zip(types.clone())
             .collect();
+        // Specialization checks these; a typed hole reads them to keep its candidates sound.
+        for constraint in &scheme.constraints {
+            self.call_constraints
+                .push((constraint.class, substitute(&constraint.ty, &substitutions)));
+        }
         (
             TypedExprKind::GenericFunction(id, types),
             substitute(&scheme.as_type(), &substitutions),

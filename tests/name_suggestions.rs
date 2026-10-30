@@ -276,3 +276,28 @@ fn private_names_of_other_modules_are_not_suggested() {
         diagnostic.detail.candidates
     );
 }
+
+#[test]
+fn a_module_in_another_namespace_is_written_whole() {
+    let root =
+        std::env::temp_dir().join(format!("tsuzuri-name-suggestions-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("Other")).unwrap();
+    std::fs::write(root.join("Main.tz"), "LongUtilty.answer()\n").unwrap();
+    std::fs::write(
+        root.join("Other/LongUtility.tz"),
+        "namespace Other\n\ndef answer :: i64 = 1\n",
+    )
+    .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .args(["check", "--json"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let line: serde_json::Value = serde_json::from_str(stderr.lines().next().unwrap()).unwrap();
+    assert_eq!(line["message"], "unknown value 'LongUtilty'");
+    assert_eq!(line["candidates"][0]["name"], "Other::LongUtility");
+    assert_eq!(line["fixes"][0]["edits"][0]["text"], "Other::LongUtility");
+}

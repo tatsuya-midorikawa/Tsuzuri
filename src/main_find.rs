@@ -52,9 +52,11 @@ pub(crate) fn parse_find_arguments(arguments: &[OsString]) -> Result<FindOptions
     };
     let mut queries = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut words = arguments.iter().map(|argument| argument.to_string_lossy());
+    // Only the query and the textual options are decoded; `--project` keeps its raw path.
+    let mut arguments = arguments.iter();
     let mut paths_only = false;
-    while let Some(word) = words.next() {
+    while let Some(raw) = arguments.next() {
+        let word = raw.to_string_lossy();
         if paths_only || !word.starts_with('-') || word == "-" {
             queries.push(word.into_owned());
             continue;
@@ -79,12 +81,15 @@ pub(crate) fn parse_find_arguments(arguments: &[OsString]) -> Result<FindOptions
             options.json = true;
             continue;
         }
-        let Some(value) = words.next() else {
+        let Some(raw) = arguments.next() else {
             return Err(bad_arguments(format!("{option} needs a value")));
         };
-        let value = value.into_owned();
+        if option == "--project" {
+            options.project = Some(PathBuf::from(raw));
+            continue;
+        }
+        let value = raw.to_string_lossy().into_owned();
         match option.as_str() {
-            "--project" => options.project = Some(PathBuf::from(value)),
             "--module" => options.module = Some(value),
             "--result" => options.result = Some(value),
             "--takes" => options.takes.push(value),
@@ -251,6 +256,20 @@ mod tests {
         for words in [&[][..], &["a", "b"], &["--result", "i64", "x"]] {
             assert!(message(words).starts_with("find takes one type query"));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_arguments_keep_a_raw_project_path() {
+        use std::os::unix::ffi::OsStringExt;
+        let raw = OsString::from_vec(b"dir\xff".to_vec());
+        let arguments = [
+            OsString::from("--project"),
+            raw.clone(),
+            OsString::from("i64"),
+        ];
+        let options = parse_find_arguments(&arguments).unwrap();
+        assert_eq!(options.project, Some(PathBuf::from(raw)));
     }
 
     #[test]
