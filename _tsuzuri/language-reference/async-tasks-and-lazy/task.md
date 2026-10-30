@@ -96,10 +96,12 @@ task {
 }
 ```
 
-<!-- rule: TSK-010 -->
 `return` のあとに文を続けることもできません（`E0002`）。`and!`、`yield`、`match!` はタスクの構文ではありません（`E0002`）。`do!` の成功値は `unit` だけで、それ以外は `E1003` です。
 
 `IO` も受け取れません。`task { do! IO.write_line "hi"; }` は `E1003`（`expected Task<unit>, found IO<unit>`）です。公開の `IO.run` はなく、`IO` と `Task` の暗黙変換もありません。
+
+<!-- rule: TSK-010 -->
+`Task<T>` の値は `T` の値ではありません。`let work = task { return 1 }` の `work` を `let n: i64 = work` のように `T` を期待する場所へ置くと `E1003` です。
 
 結果型が決まらない式は `E1015` になります。`unreachable ()` は多相なので、タスクの結果型を注釈しないと次のエラーです。未使用かどうかは関係ありません。
 

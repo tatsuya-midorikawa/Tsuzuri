@@ -5,7 +5,7 @@ The rules of this area, one sentence each, with the document that states them an
 | ID | Rule | Doc | Tests | Status |
 | --- | --- | --- | --- | --- |
 | SYN-001 | Top-level statements MUST be separable by a newline or by `;`. | [language.md § アプリケーションのエントリーポイント](../../docs/language.md#アプリケーションのエントリーポイント) | SYN-001-top-level-statements-must | active |
-| SYN-002 | Statements inside a brace block MUST be separated by `;`. | [language.md § アプリケーションのエントリーポイント](../../docs/language.md#アプリケーションのエントリーポイント) | SYN-002-statements-inside-brace-block | active |
+| SYN-002 | Inside a brace block, a `let` binding and the expression that follows it on the same line MUST be separated by `;` (E0002). | [language.md § アプリケーションのエントリーポイント](../../docs/language.md#アプリケーションのエントリーポイント) | SYN-002-statements-inside-brace-block | active |
 | SYN-003 | A brace block and an indented block MUST be equivalent. | [statements.md](../../_tsuzuri/language-reference/values-and-functions/statements.md) | SYN-003-brace-block-and-indented | active |
 | SYN-004 | A line that starts with `\|>` MUST continue the previous line. | [language.md § アプリケーションのエントリーポイント](../../docs/language.md#アプリケーションのエントリーポイント) | SYN-004-line-that-starts-with | active |
 | SYN-005 | A line that starts with `(` MUST start a new expression, not continue the previous line. | [language.md § アプリケーションのエントリーポイント](../../docs/language.md#アプリケーションのエントリーポイント) | SYN-005-line-that-starts-with | active |
