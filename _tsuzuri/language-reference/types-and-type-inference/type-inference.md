@@ -12,6 +12,7 @@ Tsuzuri は、式の中から期待される型と、あとでどう使われる
 - **ラムダは他の引数のあと**: 呼び出しでは、ラムダ以外の引数を先に検査し、その型でラムダの引数を決めます。
 - **制約も推論される**: シグネチャに `Add<'a>` を書かなくても、本体の `+` から制約が付きます。
 - **ローカル `let` は単相**: 1 つの `let` は 1 つの具象型です。決まらないと `E1015` です。
+- **型つき穴 `?`**: まだ書いていない式の位置に `?` を置くと、その位置で期待される型・見える局所・使える候補を `E1030` で教えます。
 
 ## 型推論の流れ
 
@@ -200,6 +201,50 @@ error[E1015]: ambiguous polymorphic use; add a concrete type annotation or suppl
 error[E1015]: type annotation mentions a variable absent from this function's signature
 ```
 
+## 型つき穴 `?`
+
+式の位置に `?`（または `?名前`）を書くと、その位置は**型つき穴**になります。穴は必ず 1 件のエラー `E1030`（kind `typed_hole`）で、その位置で期待される型と、そこから見える局所と、その型の値を作れる候補を教えます。穴の値は型の誤りとして扱われるので、穴を使った先で別のエラーが連鎖することはありません。穴のあるプログラムは `tsuzuri build` も `run` も何も生成しません。`?` は Rust のような誤りの伝播の演算子ではありません。
+
+```text
+def f :: i64 -> i64 = \n -> n + ?
+f 1
+```
+
+`tsuzuri check` の出力は次のとおりで、終了コードは 1 です。
+
+```text
+./Main.tz:1:33: error[E1030]: typed hole '?' of type 'i64'; replace it with an expression of that type
+  1 | def f :: i64 -> i64 = \n -> n + ?
+    |                                 ^
+  help: fill the hole with a value of type 'i64'
+  fix (maybe): Replace '?' with 'n'
+```
+
+`--json` では、期待される型が `expected`、見える局所が `scope`、候補が `candidates` に入ります。
+
+```text
+{"severity":"error","code":"E1030","message":"typed hole '?' of type 'i64'; replace it with an expression of that type",…,"kind":"typed_hole","help":"fill the hole with a value of type 'i64'","expected":"i64","candidates":[{"name":"n","signature":"n: i64","how":"value"},{"name":"Int.count_ones n","signature":"Int.count_ones :: Integer<'a> => 'a -> i64","how":"call"},…],"scope":[{"name":"n","type":"i64"}],"fixes":[…]}
+```
+
+| 項目 | 内容 |
+| --- | --- |
+| `expected` | その位置で期待される型。決まっていない部分は `_`（`ref [_]`）。位置が型を決めないときは `_` で、メッセージは `typed hole '?' of unknown type; replace it with an expression` です |
+| `scope` | 利用者が書いた局所（内側が外側の同じ名前を隠します）。期待される型に合うものが先で、それぞれ宣言の順。32 件まで。接尾辞のない数値リテラルの局所は、その既定の型（`i32`・`f64`）で表示します |
+| `candidates` | その型の値を作れる式。10 件まで。順位は、局所の値、局所のレコードのフィールド（`p.x`）、引数をすべて局所で埋められる関数、一部だけ埋められる関数（残りは `?`）、引数のない定数と共用体のケース、引数を埋められない関数の順です。同じ順位の中では、結果の型が型変数だけのもの（`'a`）が後ろです。型クラスの制約を満たさない関数（`i64` の配列への `Array.sum_pairwise :: Float<'a> => …`）と、いま検査している関数自身は出ません |
+| `fixes` | 期待される型の局所がちょうど 1 つなら、穴をその名前に置き換える `maybe` の修正案（`Replace '?' with 'n'`）。`tsuzuri fix --applicability maybe --dry-run` で見られます |
+
+期待される型が決まるのは、注釈のある `let`、関数の本体の末尾、呼び出しの引数、二項演算の右辺（左辺の型が分かるとき）、`if` の枝、`match` の腕、レコードのフィールド、注釈のある配列の要素です。注釈のない `let`、タプルの要素、ラムダの本体、`? && x` の左辺、`? n` の関数の位置は `_` です。
+
+| 書き方 | 意味 |
+| --- | --- |
+| `?` | 名前のない穴 |
+| `?foo`（`?` の直後に空白なし） | 名前つきの穴。名前はメッセージ（`typed hole '?foo' …`）に出るだけで、束縛にも参照にもなりません |
+| `f ?a ?` | `f` に穴を 2 つ渡す |
+| `? foo` | 名前のない穴に `foo` を渡す呼び出し（穴は関数の位置で、`expected` は `_`） |
+| パターン・型・宣言の中の `?` | 構文の誤り（`E0002`） |
+
+候補を探すのは、1 つの関数の中の先頭から 16 個の穴だけです（17 個目からは `candidates` がありません）。`tsuzuri fmt` は穴をそのまま保ちます（`f   ?a ?` は `f ?a ?`）。型から関数を探すには [`tsuzuri find`](../compiler/usage.md#find) を使います。
+
 ## まとめ
 
 - 関数の境界、レコードのフィールド、`const` には型を書きます。関数の中の `let` は推論できます。
@@ -207,6 +252,7 @@ error[E1015]: type annotation mentions a variable absent from this function's si
 - 呼び出しのラムダは、他の引数の型検査のあとに検査されるので、引数の型を省略できます。
 - 本体の演算から型クラス制約が付きます。
 - ローカルな束縛は単相です。型が決まらないと `E1015` です。
+- `?` は型つき穴です。期待される型・見える局所・候補を `E1030` で教え、プログラムは生成しません。
 
 ## 関連項目
 

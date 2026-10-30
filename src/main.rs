@@ -13,6 +13,8 @@ use tsuzuri::driver::{
 use tsuzuri::llvm::Allocator;
 use tsuzuri::server;
 
+#[path = "main_find.rs"]
+mod find_command;
 #[path = "main_kg.rs"]
 mod kg_command;
 
@@ -67,6 +69,9 @@ Usage:
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--effective] [--json]
+  tsuzuri find [--project DIR] [--module NAME] [--limit N] [--json] QUERY
+  tsuzuri find [--project DIR] [--module NAME] [--limit N] [--json] [--result TYPE] [--takes TYPE]...
+                             Search std and, with --project, the project's declarations by type
   tsuzuri audit [PATH] [--json] [--deny-warnings]
                              Report the capabilities and extern functions of each package
   tsuzuri prove [source.tz|directory] [--function NAME]... [--prove-timeout SECONDS] [--json]
@@ -3719,6 +3724,9 @@ fn main() -> ExitCode {
     }
     if raw.first().is_some_and(|command| *command == "api-diff") {
         return api_diff_command(&raw[1..]);
+    }
+    if raw.first().is_some_and(|command| *command == "find") {
+        return find_command::find_command(&raw[1..]);
     }
     if raw.first().is_some_and(|command| *command == "prove") {
         return prove_command(&raw[1..]);

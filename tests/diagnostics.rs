@@ -342,20 +342,20 @@ fn cli_json_lists_every_recovered_error_in_order() {
 
 #[test]
 fn recovers_lexer_errors_without_splitting_utf8_or_skipping_next_line() {
-    let source = "\"unterminated\n?\n1bad ? /*";
+    let source = "\"unterminated\n`\n1bad ` /*";
     let latest = tsuzuri::syntax::Edition::LATEST;
     let (tokens, diagnostics) = lexer::lex_all(source, latest);
     assert_eq!(diagnostics.len(), 5, "{diagnostics:?}");
     assert!(diagnostics.iter().all(|d| d.code == "E0001"));
     assert_eq!(lexer::lex(source, latest).unwrap_err(), diagnostics[0]);
     assert_eq!(tokens.last().unwrap().kind, tsuzuri::syntax::TokenKind::End);
-    let (_, diagnostics) = lexer::lex_all("日 ? 1__2 \"bad\\q\"\n?", latest);
+    let (_, diagnostics) = lexer::lex_all("日 ` 1__2 \"bad\\q\"\n`", latest);
     assert_eq!(diagnostics.len(), 5);
     for diagnostic in diagnostics {
-        assert!("日 ? 1__2 \"bad\\q\"\n?".is_char_boundary(diagnostic.span.start));
-        assert!("日 ? 1__2 \"bad\\q\"\n?".is_char_boundary(diagnostic.span.end));
+        assert!("日 ` 1__2 \"bad\\q\"\n`".is_char_boundary(diagnostic.span.start));
+        assert!("日 ` 1__2 \"bad\\q\"\n`".is_char_boundary(diagnostic.span.end));
     }
-    assert_eq!(errors("? ?").diagnostics.len(), 2);
+    assert_eq!(errors("` `").diagnostics.len(), 2);
 }
 
 #[test]

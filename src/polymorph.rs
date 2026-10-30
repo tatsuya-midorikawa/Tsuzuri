@@ -576,6 +576,18 @@ impl Inference {
                 .any(|id| self.resolve(&Type::Infer(*id)) == root)
     }
 
+    /// The default that the open type of a number literal takes when nothing decides it.
+    pub(super) fn numeric_default(&self, ty: &Type) -> Option<Type> {
+        let root = self.resolve(ty);
+        if !matches!(root, Type::Infer(_)) {
+            return None;
+        }
+        self.defaults
+            .iter()
+            .find(|(id, _)| self.resolve(&Type::Infer(**id)) == root)
+            .map(|(_, default)| default.clone())
+    }
+
     fn apply_defaults(&mut self) {
         for (id, default) in self.defaults.clone() {
             if let Type::Infer(root) = self.resolve(&Type::Infer(id)) {
@@ -2212,8 +2224,13 @@ impl Classes {
 
     /// Whether the concrete type `ty` satisfies the class `name`.
     pub(super) fn holds(&self, name: &str, ty: &Type, types: &TypeContext<'_>) -> bool {
+        self.holds_class(self.names[name], ty, types)
+    }
+
+    /// Whether the class with id `class` has an instance for `ty`, a type without variables.
+    pub(super) fn holds_class(&self, class: usize, ty: &Type, types: &TypeContext<'_>) -> bool {
         let constraint = Constraint {
-            class: self.names[name],
+            class,
             ty: ty.clone(),
             span: Span::default(),
         };

@@ -40,6 +40,7 @@ Tsuzuri では、区切り文字、括弧、矢印記号、演算子、コメン
 | `" "B` | ASCII バイト配列リテラル（`[byte]`） | `"GET /"B` | [リテラル](../literals-and-strings/literals.md) |
 | `@` | コンパイラ属性（`@literal`, `@checked`, `@cpu`, `@json`, `@alias`）、制約行 | `@checked x + y`<br/>`@alias async`<br/>`@'a : Show` | [属性](./attributes.md) |
 | `#` | 制約行の関数制約 | `@'a : #hash` | [制約 と 属性](../types-and-type-inference/constraints.md) |
+| `?` | 型つき穴（式の位置だけ。常に `E1030` で、期待される型と候補を教える）。`?名前` は名前つきの穴。誤りの伝播の演算子ではない | `n + ?`<br/>`f ?a ?` | [型推論](../types-and-type-inference/type-inference.md#型つき穴-) |
 | `!` | 論理否定演算子、コンピュテーション式文 | `!flag`<br/>`let! x = task` | [演算子と式](./op-and-expressions.md)<br/>[ステートメント](./statements.md) |
 | `_` | ワイルドカード、数値区切り、未使用変数の接頭辞 | `\| _ -> 0`, `1_000` | [パターンマッチング](../pattern-matching/pattern-matching.md) |
 | `//` | 単一行コメント（行末まで） | `// 注記` | [特殊文字](./tokens.md) |

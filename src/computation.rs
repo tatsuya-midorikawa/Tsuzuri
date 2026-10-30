@@ -305,6 +305,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
         | ExprKind::Unit
         | ExprKind::Break
         | ExprKind::Continue
+        | ExprKind::Hole(_)
         | ExprKind::Name(_)
         | ExprKind::TypeFunction(..)
         | ExprKind::QualifiedFunction(_)

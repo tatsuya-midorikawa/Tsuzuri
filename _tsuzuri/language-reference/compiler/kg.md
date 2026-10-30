@@ -240,6 +240,8 @@ partial Array.average_by :: (Copy<'a>, Float<'b>) => own ('a -> 'b) -> ref ['a] 
 
 問い合わせが型として読めないとき（閉じていない `{` や `<` など）は `E2000`（`cannot parse the type query: …`、終了コード 2）です。
 
+[`tsuzuri find`](usage.md#find) は同じ照合と出力のコマンドで、既定では std だけを、`--project DIR` でそのプロジェクトも探します（カレントディレクトリは読みません）。
+
 ## 変更の影響（`kg impact`）
 
 ```text

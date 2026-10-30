@@ -24,6 +24,8 @@ mod deriving;
 mod exceptions;
 #[path = "exhaustiveness.rs"]
 mod exhaustiveness;
+#[path = "find.rs"]
+pub mod find;
 #[path = "higher_kinds.rs"]
 mod higher_kinds;
 pub use higher_kinds::{Constructor, Partial};
@@ -4760,6 +4762,8 @@ struct Names {
     length_constants: BTreeMap<usize, u64>,
     active_patterns: BTreeMap<String, (NameInfo, ActiveCase)>,
     active_aliases: BTreeMap<String, Vec<String>>,
+    /// The declarations that typed holes search (G25), built on the first hole of a check.
+    search_index: std::sync::OnceLock<Vec<find::Entry>>,
 }
 
 /// How the name before `{` of a computation expression resolves.
@@ -5535,7 +5539,14 @@ impl Names {
                 span,
             ));
         }
-        self.type_result(choice, name, span)
+        let missing = matches!(choice, Choice::Missing);
+        self.type_result(choice, name, span).map_err(|unknown| {
+            if missing {
+                find::with_suggestions(unknown, name, span, &self.type_pool())
+            } else {
+                unknown
+            }
+        })
     }
 
     /// `check_path` for a type name. A bare name is also a module name, so
@@ -7705,6 +7716,7 @@ fn check_modules_collect(
             let signature = scheme.signature.clone();
             let mut checker = Checker::new(module, &names, types, &signatures, &classes);
             checker.indexing = indexing;
+            checker.function = Some(id);
             if let Some(active) = active_results.get(&id) {
                 checker.use_active_result(&signature.result, active);
             }
@@ -10250,6 +10262,10 @@ struct Checker<'a> {
     checked_arithmetic: bool,
     /// The callee being checked is `Dyn.of` applied to one argument, the only place it may appear (A14).
     dyn_callee: bool,
+    /// The id of the function whose body is checked, which its own holes do not suggest (G25).
+    function: Option<usize>,
+    /// The holes of this checker that have looked for candidates (at most `MAX_HOLE_SEARCHES`).
+    holes_searched: usize,
 }
 
 impl<'a> Checker<'a> {
@@ -10300,6 +10316,8 @@ impl<'a> Checker<'a> {
             name_uses: Vec::new(),
             checked_arithmetic: false,
             dyn_callee: false,
+            function: None,
+            holes_searched: 0,
         }
     }
 
@@ -11262,6 +11280,9 @@ impl<'a> Checker<'a> {
             return self.finish_expression(kind, ty, expected, expression.span);
         }
         let (kind, ty) = match &expression.kind {
+            ExprKind::Hole(name) => {
+                return Err(self.typed_hole(name.as_ref(), expected, expression.span));
+            }
             ExprKind::Integer(value, suffix) => {
                 self.integer(*value, suffix.as_deref(), expected, false, expression.span)?
             }
@@ -11552,6 +11573,7 @@ impl<'a> Checker<'a> {
             {
                 let module = self.value_path(value).unwrap();
                 let spelled = namespace_display(&module);
+                let mut member = false;
                 let message = if module == "Task" {
                     format!(
                         "Task has no function '{}'; use Task.run, Task.parallel, or Task.parallel_results",
@@ -11565,16 +11587,24 @@ impl<'a> Checker<'a> {
                         field.text
                     )
                 } else {
+                    member = true;
                     format!(
                         "module '{spelled}' has no function or union case '{}'",
                         field.text
                     )
                 };
-                return Err(Diagnostic::of(
-                    DiagnosticKind::UnknownModuleMember,
-                    message,
-                    field.span,
-                ));
+                let unknown =
+                    Diagnostic::of(DiagnosticKind::UnknownModuleMember, message, field.span);
+                return Err(if member {
+                    find::with_suggestions(
+                        unknown,
+                        &field.text,
+                        field.span,
+                        &self.member_pool(&spelled),
+                    )
+                } else {
+                    unknown
+                });
             }
             ExprKind::Field(value, field) => self.field_access(value, field)?,
             ExprKind::Index(value, index) => {
@@ -12482,12 +12512,13 @@ impl<'a> Checker<'a> {
                 .iter()
                 .position(|(name, _)| name == &field.text)
                 .ok_or_else(|| {
-                    Diagnostic::of(
+                    let unknown = Diagnostic::of(
                         DiagnosticKind::RecordHasNoField,
                         format!("record '{}' has no field '{}'", record.name, field.text),
                         field.span,
                     )
-                    .with_help(field_names_help(&record.name, &record.fields))
+                    .with_help(field_names_help(&record.name, &record.fields));
+                    find::with_suggestions(unknown, &field.text, field.span, &self.field_pool(id))
                 })?;
             self.note_name(field, NameTarget::Field(id, index));
             values.push((index, self.expression(value, Some(&field_types[index]))?));
@@ -12874,12 +12905,13 @@ impl<'a> Checker<'a> {
                 .iter()
                 .position(|(name, _)| name == &field.text)
                 .ok_or_else(|| {
-                    Diagnostic::of(
+                    let unknown = Diagnostic::of(
                         DiagnosticKind::RecordHasNoField,
                         format!("record '{}' has no field '{}'", record.name, field.text),
                         field.span,
                     )
-                    .with_help(field_names_help(&record.name, &record.fields))
+                    .with_help(field_names_help(&record.name, &record.fields));
+                    find::with_suggestions(unknown, &field.text, field.span, &self.field_pool(id))
                 })?;
             self.note_name(field, NameTarget::Field(id, index));
             values.push((index, self.expression(value, Some(&field_types[index]))?));
@@ -12910,7 +12942,7 @@ impl<'a> Checker<'a> {
                     .iter()
                     .position(|(name, _)| name == &field.text)
                     .ok_or_else(|| {
-                        Diagnostic::of(
+                        let unknown = Diagnostic::of(
                             DiagnosticKind::UnknownField,
                             format!("unknown field '{}'", field.text),
                             field.span,
@@ -12918,7 +12950,9 @@ impl<'a> Checker<'a> {
                         .with_help(field_names_help(
                             &self.types.records[*id].name,
                             &self.types.records[*id].fields,
-                        ))
+                        ));
+                        let pool = self.field_pool(*id);
+                        find::with_suggestions(unknown, &field.text, field.span, &pool)
                     })?;
                 let ty = self.types.record_field(*id, args, index);
                 let id = *id;
@@ -13157,10 +13191,16 @@ impl<'a> Checker<'a> {
             .map_or_else(String::new, |spelling| {
                 format!("; join namespaces and modules with '::', as in '{spelling}'")
             });
-        Err(Diagnostic::of(
+        let unknown = Diagnostic::of(
             DiagnosticKind::UnknownFunction,
             format!("unknown function '{}'{hint}", name.text),
             name.span,
+        );
+        Err(find::with_suggestions(
+            unknown,
+            &name.text,
+            name.span,
+            &self.function_pool(),
         ))
     }
 
@@ -13208,13 +13248,14 @@ impl<'a> Checker<'a> {
                 names.join(", ")
             )
         };
-        Diagnostic::of(
+        let unknown = Diagnostic::of(
             DiagnosticKind::UnknownValue,
             format!("unknown value '{}'", name.text),
             name.span,
         )
         .with_help(help)
-        .with_scope(scope)
+        .with_scope(scope);
+        find::with_suggestions(unknown, &name.text, name.span, &self.value_pool(&name.text))
     }
 
     /// A case used as a value: a nullary case is a union value, and a case

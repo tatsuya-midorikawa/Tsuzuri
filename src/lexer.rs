@@ -1098,6 +1098,7 @@ impl Lexer<'_> {
             '.' => Dot,
             '@' => At,
             '#' => Hash,
+            '?' => Question,
             '=' => Equal,
             '+' => Plus,
             '-' => Minus,
@@ -1259,6 +1260,24 @@ mod tests {
 
     fn lex_with_trivia(source: &str) -> Result<Vec<TokenWithTrivia>, Diagnostic> {
         super::lex_with_trivia(source, Edition::LATEST)
+    }
+
+    #[test]
+    fn question_mark_is_a_token() {
+        let kinds: Vec<TokenKind> = lex("?x ?")
+            .unwrap()
+            .into_iter()
+            .map(|token| token.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                TokenKind::Question,
+                TokenKind::Ident("x".to_owned()),
+                TokenKind::Question,
+                TokenKind::End
+            ]
+        );
     }
 
     #[test]

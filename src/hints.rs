@@ -417,10 +417,10 @@ fn f _unit = 1
     Hint {
         id: "question-mark",
         title: "'?' is not an operator",
-        kind: "unexpected_character",
-        message_has: &["'?'"],
-        patterns: &[&["@?"]],
-        help: "'?' is not an operator; write 'if c then a else b', or 'match' on a Result or Maybe",
+        kind: "expected_expression",
+        message_has: &["expected an expression"],
+        patterns: &[&["?", "<any>", "@:"]],
+        help: "'?' is not an operator but a typed hole; write 'if c then a else b', or 'match' on a Result or Maybe",
         bad: r#"def f :: bool -> i64 = \c -> c ? 1 : 2
 "#,
         good: r#"def f :: bool -> i64 = \c -> if c then 1 else 2
@@ -831,11 +831,11 @@ mod tests {
 
     #[test]
     fn a_pseudo_token_needs_a_single_element_pattern() {
-        static ONE: LazyLock<[Hint; 1]> = LazyLock::new(|| [hint("one", &[], &[&["@?"]])]);
+        static ONE: LazyLock<[Hint; 1]> = LazyLock::new(|| [hint("one", &[], &[&["@`"]])]);
         static TWO: LazyLock<[Hint; 1]> =
-            LazyLock::new(|| [hint("two", &[], &[&["<ident>", "@?"]])]);
-        assert_eq!(help(&*ONE, "a ? b", 2, 3).as_deref(), Some("one"));
-        assert_eq!(help(&*TWO, "a ? b", 2, 3), None);
+            LazyLock::new(|| [hint("two", &[], &[&["<ident>", "@`"]])]);
+        assert_eq!(help(&*ONE, "a ` b", 2, 3).as_deref(), Some("one"));
+        assert_eq!(help(&*TWO, "a ` b", 2, 3), None);
     }
 
     #[test]
