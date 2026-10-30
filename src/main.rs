@@ -2372,13 +2372,22 @@ fn run_doctest_action(arguments: &Arguments, project: &Project) -> u8 {
     for result in &report.results {
         let example = &result.example;
         if json {
-            let failure = result.failure.as_ref().map_or_else(String::new, |failure| {
+            let mut failure = result.failure.as_ref().map_or_else(String::new, |failure| {
                 format!(
                     ",\"failure\":{}{}",
                     json_string(failure),
                     output_field(&result.output)
                 )
             });
+            // A23: the overflow reports of a `test` example that passed with `--allow-overflow`.
+            if !result.overflow.is_empty() {
+                let reports: Vec<_> = result
+                    .overflow
+                    .iter()
+                    .map(|report| json_string(report))
+                    .collect();
+                failure.push_str(&format!(",\"overflow\":[{}]", reports.join(",")));
+            }
             println!(
                 "{{\"type\":\"doctest\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"{}\"{},\"path\":{},\"line\":{},\"duration_ms\":{}}}",
                 example.index,
@@ -2410,6 +2419,11 @@ fn run_doctest_action(arguments: &Arguments, project: &Project) -> u8 {
                 println!("  failure: {failure}");
                 print_output(&result.output);
                 println!("  at: {}:{}", path_of(example), example.line);
+            } else {
+                // A23: `--allow-overflow` keeps the example passing and shows what wrapped.
+                for report in &result.overflow {
+                    println!("  warning: {report}");
+                }
             }
         }
     }
