@@ -423,6 +423,26 @@ fn examples_keep_the_edition_that_edition_chose() {
 }
 
 #[test]
+fn deny_warnings_fails_an_example_with_a_warning() {
+    let source = "/// One.\n///\n/// ```tsuzuri\n/// def f :: unit -> i64 = \\() -> {\n///     let unused = 1;\n///     2\n/// }\n/// let _x = f ()\n/// ```\ndef one :: i64 = 1\n";
+    let package = Package::new("deny-warnings", &[("Lib.tz", source)]);
+    let output = tsuzuri(&["test", "--doc", package.path()], &package.cache(), &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    let output = tsuzuri(
+        &["test", "--doc", package.path(), "--deny-warnings"],
+        &package.cache(),
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert!(
+        text.contains("failure: W1001: unused local 'unused'"),
+        "{text}"
+    );
+    assert!(text.contains("(example line 2, column 9)"), "{text}");
+}
+
+#[test]
 fn a_blank_between_the_backticks_and_the_language_still_opens_an_example() {
     let source = "/// One.\n///\n/// ``` tsuzuri run=1\n/// Lib.one\n/// ```\ndef one :: i64 = 1\n";
     let package = Package::new("spaced-fence", &[("Lib.tz", source)]);

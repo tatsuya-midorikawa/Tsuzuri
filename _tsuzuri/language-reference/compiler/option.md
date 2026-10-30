@@ -543,6 +543,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `test --doc` に `-g` か `-o` | `--doc cannot be combined with -g or -o` |
 | `test --doc` に `--target` | `--doc does not use --target; examples run on this machine` |
 | `test --doc` に `--link`・`-l`・`-L` | `--doc does not use --link, -l, or -L; list native inputs in Tsuzuri.toml` |
+| `test --doc` に `--contracts` | `--doc does not use --contracts; examples check contracts as run does` |
 | `test --doc --index N` が例の番号の範囲外（解析のあと。終了コード 1） | `doc example index is out of range; refresh the list` |
 | `--samples` が 1〜1000 の整数でない | `bench samples must be an integer between 1 and 1000` |
 | `bench` に `--target wasm32`／`wasm64` | `tsuzuri bench supports only the native target` |

@@ -105,6 +105,17 @@ pub struct Options {
     pub level: u8,
     pub filter: Option<String>,
     pub indices: Vec<usize>,
+    pub warnings: Warnings,
+}
+
+/// The warning settings of the command line. Without `deny`, an example's warnings are ignored;
+/// with it, an example that has a warning fails with its first one (the `--warn` warnings count).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Warnings {
+    pub deny: bool,
+    pub implicit_copy: bool,
+    pub canonical: bool,
+    pub untrusted_extern: bool,
 }
 
 impl Options {
@@ -679,6 +690,25 @@ fn example_project(
     }
 }
 
+/// The warnings of an analyzed example project, as `check` reports them under `settings`.
+fn example_warnings(
+    built: &Project,
+    module: &crate::check::CheckedModule,
+    settings: Warnings,
+) -> Result<Vec<Diagnostic>, Diagnostic> {
+    let mut warnings = module.warnings.clone();
+    if settings.implicit_copy {
+        warnings.extend(crate::copies::warnings(module));
+    }
+    if settings.canonical {
+        warnings.extend(crate::canonical::warnings(module));
+    }
+    if settings.untrusted_extern {
+        warnings.extend(built.untrusted_extern_warnings(module)?);
+    }
+    Ok(warnings)
+}
+
 fn run_one(
     input: &Path,
     example: &Example,
@@ -727,6 +757,20 @@ fn run_one(
                     .map(|first| describe(first, program, root));
             }
         };
+        if options.warnings.deny {
+            match example_warnings(&built, &module, options.warnings) {
+                Ok(warnings) => {
+                    // The package's own warnings were reported (and denied) before any example ran.
+                    if let Some(first) = warnings
+                        .iter()
+                        .find(|warning| warning.span.source.unwrap_or(root) == root)
+                    {
+                        return Some(describe(first, program, root));
+                    }
+                }
+                Err(error) => return Some(describe(&error, program, root)),
+            }
+        }
         match &example.expectation {
             Expectation::Check | Expectation::Fails(_) | Expectation::Ignore => None,
             Expectation::Run(expected) => {

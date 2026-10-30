@@ -1368,6 +1368,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         if allow_overflow {
             return Err(conflict("--doc cannot be combined with --allow-overflow"));
         }
+        if contracts.is_some() {
+            return Err(conflict(
+                "--doc does not use --contracts; examples check contracts as run does",
+            ));
+        }
     }
     // `test --index N -g -o PATH` builds the runner of one test for a debugger (G16 Phase 2).
     if action == Action::Test && (debug_info || output.is_some()) {
@@ -2322,6 +2327,12 @@ fn run_doctest_action(arguments: &Arguments, project: &Project) -> u8 {
         level: speed_level(arguments.options.optimization),
         filter: arguments.test_filter.clone(),
         indices: arguments.test_indices.clone(),
+        warnings: doctest::Warnings {
+            deny: arguments.deny_warnings,
+            implicit_copy: arguments.warn_implicit_copy,
+            canonical: arguments.warn_canonical,
+            untrusted_extern: arguments.warn_untrusted_extern,
+        },
     };
     let path_of = |example: &doctest::Example| {
         project.sources[example.source]
@@ -6953,6 +6964,7 @@ mod tests {
             vec!["test", "Lib", "--doc", "-g", "-o", "x"],
             vec!["test", "Lib", "--doc", "--target", "native"],
             vec!["test", "Lib", "--doc", "-l", "m"],
+            vec!["test", "Lib", "--doc", "--contracts", "off"],
             vec!["build", "Main.tz", "--wasm-feature", "simd128"],
             vec![
                 "build",
