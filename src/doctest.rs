@@ -182,6 +182,20 @@ fn scan(lines: &[&str]) -> Scan {
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
+        // A `~~~` fence is never an example, and its lines (a quoted ```tsuzuri sample) are not
+        // searched; without a closing line it runs to the end, as in CommonMark.
+        let tildes = line.bytes().take_while(|byte| *byte == b'~').count();
+        if tildes >= 3 {
+            let close = (i + 1..lines.len()).find(|&j| {
+                let text = lines[j].trim_end();
+                text.len() >= tildes && text.bytes().all(|byte| byte == b'~')
+            });
+            match close {
+                Some(j) => i = j + 1,
+                None => break,
+            }
+            continue;
+        }
         let ticks = leading_ticks(line);
         if ticks >= 3 && !line[ticks..].contains('`') {
             let info = line[ticks..].trim().to_owned();
@@ -865,6 +879,11 @@ pub fn render_doc(text: &str) -> String {
         let options = fence.info["tsuzuri".len()..].trim();
         let body = &lines[fence.open + 1..fence.close];
         let hidden = body.iter().any(|line| is_hidden(line));
+        // An example without code is a notation error (E2011): it stays as written.
+        if body.iter().all(|line| line.trim().is_empty()) {
+            out.extend(original.iter().map(|line| (*line).to_owned()));
+            continue;
+        }
         let expectation = match parse_options(options) {
             Ok(_) if options.is_empty() && !hidden => {
                 out.extend(original.iter().map(|line| (*line).to_owned()));
@@ -1149,9 +1168,24 @@ mod tests {
 
     #[test]
     fn render_doc_keeps_malformed_fences() {
-        for text in ["```tsuzuri run=%zz\n1\n```", "```tsuzuri sloppy\n1\n```"] {
+        for text in [
+            "```tsuzuri run=%zz\n1\n```",
+            "```tsuzuri sloppy\n1\n```",
+            "```tsuzuri run=42\n\n```",
+        ] {
             assert_eq!(render_doc(text), text);
         }
+    }
+
+    #[test]
+    fn a_tilde_fence_quotes_examples_without_running_them() {
+        let text = "Write it so:\n\n~~~markdown\n```tsuzuri run=1\n# let x = 1\nx\n```\n~~~\n";
+        assert_eq!(render_doc(text), text);
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert!(scan(&lines).fences.is_empty());
+        // An unclosed `~~~` fence runs to the end of the text.
+        let open: Vec<&str> = "~~~\n```tsuzuri\n1\n```".split('\n').collect();
+        assert!(scan(&open).fences.is_empty());
     }
 
     #[test]
