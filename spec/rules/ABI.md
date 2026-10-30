@@ -12,5 +12,5 @@ The rules of this area, one sentence each, with the document that states them an
 | ABI-006 | A `bool` MUST map to `int32_t` in the header. | [language.md § 公開 ABI](../../docs/language.md#公開-abi) | ABI-006-bool-must-map-to | active |
 | ABI-007 | An `f64` MUST map to `double` in the header. | [language.md § 公開 ABI](../../docs/language.md#公開-abi) | ABI-007-f64-must-map-to | active |
 | ABI-008 | A narrow integer such as `i8` MUST cross the C ABI as `int32_t`: truncated to its width on the way in and extended to 32 bits on the way out. | [language.md § 公開 ABI](../../docs/language.md#公開-abi) | ABI-008-narrow-integer-such-as, ABI-008-narrow-integer-wrapper | active |
-| ABI-009 | The header MUST be a C header usable from C++: `#pragma once`, `<stdint.h>` and an `extern "C"` guard. | [language.md § 公開 ABI](../../docs/language.md#公開-abi) | ABI-009-header-must-be-c | active |
+| ABI-009 | The header MUST be a C header usable from C++: `#pragma once`, `<stdint.h>` and an `extern "C"` guard. | [native-interop.md § ヘッダーとオブジェクト](../../_tsuzuri/language-reference/compiler/native-interop.md#ヘッダーとオブジェクト) | ABI-009-header-must-be-c | active |
 | ABI-010 | An `i64u` MUST map to `uint64_t` and a narrow unsigned integer such as `i16u` MUST map to `uint32_t` in the header. | [language.md § 公開 ABI](../../docs/language.md#公開-abi) | ABI-010-i64u-must-map-to | active |

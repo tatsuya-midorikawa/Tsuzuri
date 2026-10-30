@@ -46,6 +46,7 @@ tsuzuri build Main.tz --emit header -o add.h
 tsuzuri build Main.tz --emit object -o add.o
 ```
 
+<!-- rule: ABI-009 -->
 スカラーだけの `export def add` から出たヘッダーは、次のとおりでした。`tsuzuri_alloc` は、バッファを使わないモジュールには付きません。
 
 ```c

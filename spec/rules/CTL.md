@@ -21,7 +21,7 @@ The rules of this area, one sentence each, with the document that states them an
 | CTL-015 | An arm with a `when` guard MUST NOT count towards exhaustiveness. | [match.md](../../_tsuzuri/language-reference/pattern-matching/match.md) | CTL-015-arm-with-when-guard | active |
 | CTL-016 | An arm fully covered by earlier arms MUST produce warning W1003. | [match.md](../../_tsuzuri/language-reference/pattern-matching/match.md) | CTL-016-arm-fully-covered-by | active |
 | CTL-017 | All arms of a `match` MUST have the same type. | [match.md](../../_tsuzuri/language-reference/pattern-matching/match.md) | CTL-017-all-arms-of-match | active |
-| CTL-018 | A union pattern MUST bind the payload of the matched case. | [match.md](../../_tsuzuri/language-reference/pattern-matching/match.md) | CTL-018-union-pattern-must-bind | active |
+| CTL-018 | A union pattern MUST bind the payload of the matched case. | [pattern-matching.md](../../_tsuzuri/language-reference/pattern-matching/pattern-matching.md) | CTL-018-union-pattern-must-bind | active |
 | CTL-019 | An or-pattern MUST match when any alternative matches and every alternative MUST bind the same names. | [pattern-matching.md](../../_tsuzuri/language-reference/pattern-matching/pattern-matching.md) | CTL-019-or-pattern-must-match | active |
 | CTL-020 | A record pattern MUST bind fields by name and MAY ignore the others with `_`. | [pattern-matching.md](../../_tsuzuri/language-reference/pattern-matching/pattern-matching.md) | CTL-020-record-pattern-must-bind | active |
 | CTL-021 | A tuple pattern in `for` MUST destructure each element. | [pattern-matching.md](../../_tsuzuri/language-reference/pattern-matching/pattern-matching.md) | CTL-021-tuple-pattern-in-for | active |

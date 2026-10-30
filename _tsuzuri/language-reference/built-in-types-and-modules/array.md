@@ -4,14 +4,12 @@
 
 必要な権限: `random`（`Array.random_choice`・`random_choices`・`random_sample`・`random_shuffle`・`random_shuffle_in_place` だけ）。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
 
-<!-- rule: STD-002 -->
 `Array` モジュールは、F# の `Array` モジュールと同じ関数を、同じ名前（snake_case）で提供します。配列はどの関数でも最後の引数なので、`Array.map f xs` や `xs |> Array.filter p` のように F# の書き方がそのまま使え、`Array.sort >> Array.rev` のような関数合成もできます。F# で配列が最後にない 9 つの関数だけは、同じ理由で配列を最後に移しました（[引数の順序](#引数の順序)）。所有権のために F# と違う点（失敗の扱い、`Copy`、`r` を付けた関数）は [F# の Array モジュールとの対応](#f-の-array-モジュールとの対応) にまとめました。
 
 長さを型に含む `[T; N]` は別の型です。要素を値の中に持ち、ヒープは確保しません。C スタイルの `T[]` は書けません。`Array` は予約された型名で、同名の宣言は `E1001` です。
 
 ## この記事のポイント
 
-<!-- rule: STD-001 -->
 - 型は `[T]`（`Array<T>`）。長さは生成後に変わりません。空の `[]` には、要素型が分かる文脈が必要です。
 - F# の `Array` モジュールの関数（131 個。`Array.Parallel` を除く）がすべてあります。名前は snake_case です。配列は常に最後の引数で、`|>` でも `>>` でもつなげられます。F# で配列が最後にない関数（`get`、`set`、`sub`、`fill`、`blit`、`fold_back`、`fold_back2`、`scan_back`、`map_fold_back`）だけ、配列を最後に移しています。
 - F# が例外を投げる場面（空配列、範囲外、長さの不一致、見つからない `find`）はトラップです。`try_item` や `try_find` のように `try_` が付く関数は `Maybe` を返します。
@@ -484,12 +482,12 @@ $"by_score={by_score} best_first={best_first} by_id_desc={by_id_desc} desc={Arra
 by_score=[(2, 10), (4, 20), (1, 30), (3, 30)] best_first=[(1, 30), (3, 30), (4, 20), (2, 10)] by_id_desc=[(4, 20), (3, 30), (2, 10), (1, 30)] desc=[3, 2, 1]
 ```
 
-<!-- rule: STD-007 -->
+<!-- rule: STD-007 --> <!-- rule: STD-002 -->
 `Array.sort` と `sort_descending` は `Ord` による安定マージソートで、新しい配列を返します。`Array.binary_search` は、同じ順序で整列済みの配列から、重複の先頭インデックスを返します。`sort_in_place` は排他スライスを、作業領域なしの安定整列で並べます。20 要素ずつ挿入ソートしたあと、回転でマージします。NaN を含まない配列では、結果の順序は `Array.sort` と一致します。`sort_in_place_by` と `sort_in_place_with` は、新しい配列を作ってから書き戻すので、同じ長さの一時配列を使います。
 
 ### 集計関数と CPU ディスパッチ
 
-<!-- rule: STD-008 -->
+<!-- rule: STD-008 --> <!-- rule: STD-001 -->
 `Array.sum`、`Array.product`、`Array.min`、`Array.max` は配列全体を集計します。空の `sum` は 0、空の `product` は 1 です。空の `min` と `max` は、F# と同じくトラップします。
 
 ```tsuzuri run=sum%3D170%20prod%3D24%20min%3D10%20max%3D30

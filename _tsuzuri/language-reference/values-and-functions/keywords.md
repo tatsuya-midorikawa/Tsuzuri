@@ -1,6 +1,5 @@
 # キーワード
 
-<!-- rule: EDN-006 --> <!-- rule: LEX-005 -->
 Tsuzuri にはプログラムの構造を決定する 43 個の「予約語（Reserved Keywords）」と、特定の構文でのみ特別な意味を持つ「文脈キーワード（Contextual Keywords）」があります。
 
 このページでは、予約語の一覧、文脈キーワード、識別子の規則、`union`・`yield`・`new` がドットの直後に書ける例外を説明します。
@@ -31,11 +30,10 @@ extern def get :: own
 get().n
 ```
 
-<!-- rule: LEX-006 --> <!-- rule: LEX-007 -->
-- Tsuzuri には 43 個の予約語があり、原則として変数名や関数名などの識別子に使えません。予約語はソースの言語版（edition）で決まり、今ある edition `2026` の予約語がこの一覧です。
-- `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。
+- Tsuzuri には 43 個の予約語があり、原則として変数名や関数名などの識別子に使えません。予約語はソースの言語版（edition）で決まり、今ある edition `2026` の予約語がこの一覧です。 <!-- rule: LEX-005 --> <!-- rule: EDN-006 -->
+- `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。 <!-- rule: LEX-006 -->
 - 例外として、`union`・`yield`・`new` はドット直後のメンバー名（`Set.union`、`Async.yield`、`Rc.new`）として利用可能です。
-- `not`、`ignore`、`assert` は予約語ではなく、値として渡せる組み込み関数です。
+- `not`、`ignore`、`assert` は予約語ではなく、値として渡せる組み込み関数です。 <!-- rule: LEX-007 -->
 - 小文字の `task`（予約語）と大文字始まりの `Task`（組み込みモジュール名）は区別されます。
 
 ## 予約語と文脈キーワードの違い

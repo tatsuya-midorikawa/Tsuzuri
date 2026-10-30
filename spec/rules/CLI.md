@@ -12,5 +12,5 @@ The rules of this area, one sentence each, with the document that states them an
 | CLI-006 | `test --list` MUST print `index module name` lines for each test and MUST NOT run them. | [test.md](../../_tsuzuri/language-reference/built-in-types-and-modules/test.md) | CLI-006-test-list-must-print | active |
 | CLI-007 | `test --filter` with no match MUST exit with 0 and report every test as ignored. | [test.md](../../_tsuzuri/language-reference/built-in-types-and-modules/test.md) | CLI-007-test-filter-with-no | active |
 | CLI-008 | `new` MUST create `Tsuzuri.toml`, `Main.tz` and `.gitignore`. | [usage.md](../../_tsuzuri/language-reference/compiler/usage.md) | CLI-008-new-must-create-tsuzuri | active |
-| CLI-009 | `build --emit llvm` MUST produce byte-identical IR for the same input. | [architecture.md § 不変条件](../../docs/architecture.md#不変条件) | CLI-009-build-emit-llvm-must | active |
+| CLI-009 | `build --emit llvm` MUST produce byte-identical IR for the same input. | [strategy.md § AI 支援との相性](../../_tsuzuri/language-reference/languages/strategy.md#ai-支援との相性) | CLI-009-build-emit-llvm-must | active |
 | CLI-010 | `api-diff` MUST exit with 1 when a public declaration was removed. | [usage.md](../../_tsuzuri/language-reference/compiler/usage.md) | CLI-010-api-diff-must-exit | active |

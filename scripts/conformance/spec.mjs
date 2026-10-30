@@ -63,6 +63,7 @@ function fenced(text) {
 }
 
 const MARKER = /<!-- rule: (\S+) -->/g;
+const TRAILING_MARKERS = /(?: <!-- rule: \S+ -->)+$/;
 
 /** `line` with `replace` applied outside its inline code spans (`` `…` ``). */
 function outsideCode(line, replace) {
@@ -93,7 +94,8 @@ export function stripMarkers(text) {
             out.push(line);
             continue;
         }
-        const stripped = outsideCode(line, part => part.replace(MARKER, ''));
+        // A marker at the end of a line (a list item's) goes with the blank before it.
+        const stripped = outsideCode(line.replace(TRAILING_MARKERS, ''), part => part.replace(MARKER, ''));
         if (stripped !== line && stripped.trim() === '') continue;
         out.push(stripped);
     }

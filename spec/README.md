@@ -30,6 +30,6 @@ To add a rule:
 3. Write a test that ends with `// rule:` and `// expect:` lines.
 4. `node scripts/conformance.mjs target/release/tsuzuri --rule ID` passes.
 5. `node scripts/check-spec.mjs --write`, then `node scripts/check-spec.mjs` passes.
-6. Put `<!-- rule: ID -->` before the statement in the Doc file; `node scripts/check-spec.mjs --require-markers` and `node scripts/check-docs.mjs PAGE` pass.
+6. Put `<!-- rule: ID -->` on the statement in the Doc file: on its own line before a paragraph, at the start of a table cell, or at the end of a list item's first line (a line that starts with `<!--`, a list item's text included, is an HTML block in CommonMark and loses its Markdown); never inside a generated block; `node scripts/check-spec.mjs --require-markers` and `node scripts/check-docs.mjs PAGE` pass.
 
 The language reference page `compiler/conformance.md` shows the coverage of each area.
