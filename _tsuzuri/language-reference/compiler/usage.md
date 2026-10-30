@@ -21,6 +21,7 @@
 - `api-diff` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると終了コード 1 です。
 - `audit` は、パッケージごとに、コードが使う権限（`fs`・`net` など）・マニフェストが許す権限・`extern` の関数の信頼の印（`@trusted`）を報告します。許可の外の使用があると終了コード 1 です。
 - `explain` は、診断の kind（`use_after_move` など）やコード（`E1012`）の原因と、誤りの例・直した例を出します。`--catalog` は全 kind の一覧です。
+- `find` は、型から std と（`--project` で）プロジェクトの関数・定数・フィールド・ケースを探します（`tsuzuri find 'ref [i64] -> i64'`）。`kg find` と同じ照合です。
 - `guide` は、AI エージェント向けの英語の短いガイド（構文の早見、所有権の規則、落とし穴、作業の流れ。例はすべて検証済み）と std の索引を出します。`tsuzuri new` は `AGENTS.md`・`llms.txt` も作ります。
 - 引数の誤りは終了コード 2、ソースや実行の失敗は 1、成功は 0 です。
 
@@ -249,6 +250,41 @@ tsuzuri kg diagram module
 ```
 
 `tsuzuri kg build|verify|clean|export` は、知識グラフを作る・確かめる・消す・出力するコマンドです。`kg brief`・`show`・`callers`・`callees`・`uses`・`tests-for`・`search`・`find`・`path` は、ソースを読まずにグラフから宣言・呼び出し・型の使用・テスト・最短の関係の鎖を答え（`--budget N` で文字数を抑えます）、`kg impact` は 2 つの版の差と、その差に届くテストを出し、`kg diagram KIND [ID]` はモジュール・型・呼び出し・所有権・並行・配置・状態遷移の図を Mermaid・DOT・Markdown で出します（[図表の生成](diagrams.md)）。詳しくは [知識グラフ](kg.md) にあります。ファイルの形は [知識グラフの形式](kg-format.md) にあります。
+
+### find
+
+`tsuzuri find` は、型から宣言を探します。std の全モジュールの公開された `def`・`const`・`extern`・レコードのフィールド（`ref Record -> T` の読み出しとして）・共用体のケース（構築子として）を、問い合わせの型と照合します。照合は [`kg find`](kg.md) と同じ実装（std の知識グラフ。初回はコンパイラのキャッシュに作ります）で、出力も同じです。`--project DIR` を付けると、そのプロジェクトの宣言（非公開も含む）も探し、プロジェクトの知識グラフを `DIR/target/tz/kg/` に作ります（なければ、または古ければ）。付けなければカレントディレクトリは読みません。
+
+```text
+tsuzuri find [--project DIR] [--module NAME] [--limit N] [--json] QUERY
+tsuzuri find [--project DIR] [--module NAME] [--limit N] [--json] [--result TYPE] [--takes TYPE]...
+```
+
+| 引数 | 意味 |
+| --- | --- |
+| `QUERY` | 型 1 つ（シェルでは引用符で囲む）。`ref [i64] -> i64` のように宣言の署名と同じ書き方で、`'a` は型変数（同じ名前は同じ型）、`_` は任意の型です。`--result`・`--takes` とは同時に使えません |
+| `--result TYPE` | 結果の型だけを指定します（1 回まで） |
+| `--takes TYPE` | 引数のどこかにある型（順序は問わない。何回でも） |
+| `--module NAME` | 持ち主のモジュールの名前か、その最後の部分が `NAME` のものだけ。どのモジュールにも当たらない名前は `E2000`（`find_unknown_module`） |
+| `--limit N` | 表示する件数。1〜100、既定 20 |
+| `--project DIR` | プロジェクトの宣言も探します |
+| `--json` | 1 件 1 行の JSON（`event` が `result` の行と、最後の `summary` の行） |
+
+照合の段は 3 つで、上の段から並びます。`exact` は引数と結果がそのまま合うもの、`borrow` は外側の `ref` を 1 つずつ外すと合うもの、`partial` は問い合わせの引数のそれぞれが宣言の別々の引数に合い、結果も合うもので、余る引数の数を `(+n)` で示します。型変数は両側とも束縛されるので、`'a -> 'a` は `i64 -> i64` にも合います。型変数が基本の型（`i64`・`string` など）に決まった制約は、組み込みの型クラスの規則で確かめます（`i64` に `Float<'a>` の関数は出ません）。それ以外の制約は表示するだけです（[型で探す](kg.md#型で探すkg-find)）。`--result`・`--takes` は `exact` と `borrow` だけです。
+
+```text
+$ tsuzuri find 'ref [i64] -> i64'
+exact   Array.exactly_one :: Copy<'a> => ref ['a] -> 'a
+exact   Array.head :: Copy<'a> => ref ['a] -> 'a
+exact   Array.last :: Copy<'a> => ref ['a] -> 'a
+exact   Array.length :: ref ['a] -> i64
+...
+partial Array.at :: own i64 -> ref ['a] -> ref 'a  (+1)
+...
+... 32 more; raise --limit (at most 100)
+```
+
+0 件のときは `no matches` の 1 行で、終了コードは 0 です。引数の誤り（問い合わせの型が読めない場合を含む）は `E2000`（kind `find_bad_arguments`）で終了コード 2、`--project` のプロジェクトが読めない・誤りがあって知識グラフが不完全（`E2009`）なときは、その診断を出して終了コード 1 です。`find` という名前のファイルやディレクトリをビルドするときは、`tsuzuri build find` か `./find` と書きます。
 
 ### fetch
 
@@ -1047,7 +1083,7 @@ macOS は `-dead_strip`、Linux と Windows の GNU 系リンカーは `--gc-sec
 | --- | --- |
 | 0 | 成功。警告だけでも、`--deny-warnings` が無ければ 0 |
 | 1 | ソースの診断、読み書き、リンカー、実行時の失敗、テスト失敗、`fmt --check` の差分、`--deny-warnings`、`api-diff` の互換性のない変更、`fix` の中止（`E2008`） |
-| 2 | 引数の不足や組み合わせ。引数なしでヘルプを出したときも 2。`explain` の不明な kind やコードも 2 |
+| 2 | 引数の不足や組み合わせ。引数なしでヘルプを出したときも 2。`explain` の不明な kind やコードも 2。`find` の問い合わせの型が読めないときと、`--module` の名前のモジュールがないときも 2 |
 
 `def main` が 0 以外を返した場合は、コンパイラから見ると実行の失敗 `E2005` になり、`tsuzuri run` 自体の終了コードは 1 になります。プログラム自身の戻り値がそのまま `tsuzuri run` の終了コードになるわけではありません（`tsuzuri build` で生成したバイナリを直接実行した場合は、`def main` の戻り値がプロセスの終了コードになります）。
 

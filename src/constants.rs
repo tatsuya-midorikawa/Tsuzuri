@@ -51,7 +51,9 @@ pub(super) fn validate(
         | Expr::Utf8Char(_)
         | Expr::Bool(_)
         | Expr::Unit
-        | Expr::Name(_) => Ok(()),
+        | Expr::Name(_)
+        // A typed hole reaches the checker, which reports it with the constant's type (G25).
+        | Expr::Hole(_) => Ok(()),
         Expr::Unary(_, value) | Expr::Cast(value, _) | Expr::Field(value, _) => {
             validate(value, const_names)
         }

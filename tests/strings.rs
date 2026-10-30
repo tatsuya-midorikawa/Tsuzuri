@@ -207,7 +207,7 @@ fn invalid_utf8_escapes_recover_without_skipping_following_tokens() {
         r#"u8"\u{bad""#,
         "u8\"unterminated",
     ] {
-        let source = format!("{literal}\n42\n?");
+        let source = format!("{literal}\n42\n`");
         let (tokens, diagnostics) = lexer::lex_all(&source, tsuzuri::syntax::Edition::LATEST);
         assert_eq!(diagnostics.len(), 2, "{source}\n{diagnostics:?}");
         assert!(diagnostics.iter().all(|error| error.code == "E0001"));

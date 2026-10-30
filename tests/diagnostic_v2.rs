@@ -450,7 +450,8 @@ fn json_without_extras_is_byte_identical() {
             }
         }
     }
-    assert!(plain >= 8, "{plain}");
+    // NAME1's unknown type and module member have G25's candidates since G25.
+    assert!(plain >= 7, "{plain}");
 }
 
 fn first(source: &str, code: &str) -> Diagnostic {
@@ -918,10 +919,8 @@ fn unknown_value_lists_the_scope() {
             ty: "i64".into()
         }]
     );
-    assert_eq!(
-        diagnostic.help.as_deref(),
-        Some("check the spelling, or define the name with 'let' or 'def'; names in scope: count")
-    );
+    // A near name replaces the help with G25's suggestion; the scope stays.
+    assert_eq!(diagnostic.help.as_deref(), Some("did you mean 'count'?"));
     let diagnostic = errors(NAME1)
         .into_iter()
         .find(|diagnostic| diagnostic.message == "unknown value 'length_off'")
@@ -929,12 +928,31 @@ fn unknown_value_lists_the_scope() {
     assert!(diagnostic.detail.scope.is_empty());
     assert_eq!(
         diagnostic.help.as_deref(),
+        Some("did you mean 'length_of'?")
+    );
+    // Without a near name the help lists the scope.
+    let far = "def f :: i64 -> i64 = \\count -> zzz + 1\n\nf 1\n";
+    let diagnostic = first(far, "E1002");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("check the spelling, or define the name with 'let' or 'def'; names in scope: count")
+    );
+    let diagnostic = first("def f :: unit -> i64 = \\_ -> zzz + 1\n\nf ()\n", "E1002");
+    assert_eq!(
+        diagnostic.help.as_deref(),
         Some("check the spelling, or define the name with 'let' or 'def'")
     );
-    // The unknown type and the unknown module function are not changed.
+    // The unknown type and the unknown module function have no related location and no scope;
+    // their near names are G25's candidates.
     for diagnostic in errors(NAME1) {
         if diagnostic.code == "E1004" || diagnostic.message.starts_with("module 'Array'") {
-            assert!(!has_extras(&diagnostic), "{}", diagnostic.message);
+            assert!(diagnostic.related.is_empty() && diagnostic.detail.scope.is_empty());
+            assert_eq!(
+                diagnostic.detail.candidates.len(),
+                1,
+                "{}",
+                diagnostic.message
+            );
         }
     }
 }

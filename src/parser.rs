@@ -4070,7 +4070,8 @@ impl Parser<'_> {
                 | TokenKind::Deref
                 | TokenKind::LeftParen
                 | TokenKind::LeftBracket
-                | TokenKind::LeftList => true,
+                | TokenKind::LeftList
+                | TokenKind::Question => true,
                 // Never an argument; parsing it as one reports the 'ref mut' hint.
                 TokenKind::Mut => true,
                 // `f &x` and `f *r` pass prefix arguments; `f & x` and `a * b` stay binary.
@@ -4312,6 +4313,21 @@ impl Parser<'_> {
         self.make(kind, start.span.through(end), depth)
     }
 
+    /// `?` or `?name` (the name right after `?`, without a space): a typed hole (G25).
+    fn hole(&mut self) -> Result<Expr, Diagnostic> {
+        let question = self.take().span;
+        let mut end = question;
+        let mut name = None;
+        if matches!(self.current().kind, TokenKind::Ident(_))
+            && self.current().span.start == question.end
+        {
+            let ident = self.ident()?;
+            end = ident.span;
+            name = Some(ident);
+        }
+        self.make(ExprKind::Hole(name), question.through(end), 1)
+    }
+
     fn primary(&mut self, allow_record: bool, stop_at_newline: bool) -> Result<Expr, Diagnostic> {
         let start = self.current().span;
         let kind = match &self.current().kind {
@@ -4350,6 +4366,7 @@ impl Parser<'_> {
             TokenKind::True | TokenKind::False => {
                 ExprKind::Bool(self.take().kind == TokenKind::True)
             }
+            TokenKind::Question => return self.hole(),
             TokenKind::Break => {
                 self.take();
                 ExprKind::Break

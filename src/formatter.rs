@@ -733,7 +733,7 @@ fn spacing(
     if current_generic || previous_generic && previous.kind == Less {
         return "";
     }
-    if matches!(previous.kind, At | Hash) {
+    if matches!(previous.kind, At | Hash | Question) {
         return separated;
     }
     " "
@@ -1056,6 +1056,11 @@ impl Canonical {
             | Break
             | Continue
             | DynDispatch { .. } => {}
+            Hole(name) => {
+                if let Some(name) = name {
+                    self.ident(name);
+                }
+            }
         }
     }
 

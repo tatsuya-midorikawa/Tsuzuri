@@ -160,6 +160,8 @@ pub enum TokenKind {
     DotDotLess,
     At,
     Hash,
+    /// `?`: a typed hole (G25).
+    Question,
     Arrow,
     FatArrow,
     Equal,
@@ -953,6 +955,7 @@ impl Expr {
             | Unit
             | Break
             | Continue
+            | Hole(_)
             | Name(_)
             | QualifiedFunction(_)
             | TypeFunction(..)
@@ -1092,6 +1095,7 @@ impl Expr {
             | Unit
             | Break
             | Continue
+            | Hole(_)
             | Name(_)
             | QualifiedFunction(_)
             | TypeFunction(..)
@@ -1113,6 +1117,9 @@ pub enum ExprKind {
     Unit,
     Break,
     Continue,
+    /// `?` or `?name`: a typed hole (G25), always an error (`E1030`) that reports the type expected
+    /// at its position. Not the hole of an interpolated string (`InterpolationHole`).
+    Hole(Option<Ident>),
     Name(Ident),
     QualifiedFunction(Ident),
     TypeFunction(Box<Ident>, Box<Ident>),

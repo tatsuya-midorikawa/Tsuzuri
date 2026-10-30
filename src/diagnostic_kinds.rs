@@ -622,6 +622,8 @@ diagnostic_kinds! {
         (PureSpecializationOwnParameter, "pure_specialization_own_parameter", "E1029"),
         (PureValueCapturesUnknownCallback, "pure_value_captures_unknown_callback", "E1029"),
         (PureValueUnprovable, "pure_value_unprovable", "E1029"),
+        // E1030
+        (TypedHole, "typed_hole", "E1030"),
         // E1031
         (EffectAllocInNoAlloc, "effect_alloc_in_no_alloc", "E1031"),
         (EffectCopyInNoCopy, "effect_copy_in_no_copy", "E1031"),
@@ -683,6 +685,8 @@ diagnostic_kinds! {
         (FastBackendUnavailable, "fast_backend_unavailable", "E2000"),
         (FastBackendUnsupportedOption, "fast_backend_unsupported_option", "E2000"),
         (FileNotFormatted, "file_not_formatted", "E2000"),
+        (FindBadArguments, "find_bad_arguments", "E2000"),
+        (FindUnknownModule, "find_unknown_module", "E2000"),
         (FixBadArguments, "fix_bad_arguments", "E2000"),
         (FixEditionUnsupported, "fix_edition_unsupported", "E2000"),
         (FixEditionWithApplicability, "fix_edition_with_applicability", "E2000"),

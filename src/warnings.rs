@@ -706,6 +706,7 @@ impl TypeReferences<'_> {
             | Unit
             | Break
             | Continue
+            | Hole(_)
             | Name(_)
             | QualifiedFunction(_)
             | TypeFunction(..)

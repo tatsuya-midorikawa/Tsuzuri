@@ -7,12 +7,26 @@
 | 規模 | 全体 L（Phase 1: M、Phase 2: M、Phase 3: M、Phase 4: S）。Phase ごとに別の PR にする |
 | 依存 | G22 の Phase 1（診断 v2 のデータモデル: `Detail`・`Candidate`・`ScopeEntry`・`Diagnostic::with_kind`・`with_help`・`fix`、JSON の `expected`・`candidates`・`scope`・`fixes`）。弱い依存: G24（`maybe` の fix を `tsuzuri fix --applicability maybe --dry-run` で見る。なくても動く）、G23（既存の診断の kind。G25 の新しい診断は最初から kind を持つ） |
 | 後続 | G28（`kb find` は本チケットの `find::run` を呼ぶ）、G29（`tz_find`）、G21（ガイドの「関数を探す」） |
-| 状態 | todo |
+| 状態 | done（全 Phase） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc` で、差は `docs/benchmarks.md` だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D14 はすべて承認済み |
 | 改善する劣位 | Rust 比（rust-analyzer の型を手がかりにした補完）・Haskell 比（Hoogle の型検索）・Lean／Idris 比（型つき穴）: AI も人も、期待する型から使える関数・値を探す手段がなく、`unknown value 'length'` の診断は近い名前も示さない。D-50 の結論 (1)「コンパイラは事実を持つが診断・ツールに出さない」の「直す」（G22〜G25）の最後の部分 |
 | 手本にする既存実装 | 式の追加（葉の式）: `ExprKind::Break`・`ExprKind::Continue` の全出現、`src/parser.rs` の `primary`・`space_argument`、`src/check.rs` の `Checker::value_expression`・`recover_expression`・`finish_recovery`。具体化と単一化: `src/polymorph.rs` の `Inference`（`fresh`・`resolve`・`unify`）・`substitute`・`Checker::function`・`Classes::holds`・`type_expression`、`src/check.rs` の `resolve_type_with_kinds`。索引の運び手: `src/semantic.rs` の `SemanticIndex`（`src/lib.rs` の `analyze_inputs_semantic`）。署名の構文解析: `src/parser.rs` の `signature`。CLI: `src/main.rs` の `api_diff_command`。テスト: `tests/diagnostics.rs`、`tests/api_diff.rs` |
 | 主な影響ファイル | Phase 1: `src/syntax.rs`・`src/lexer.rs`・`src/parser.rs`・`src/syntax_codec.rs`・`src/frontend_cache.rs`・`src/formatter.rs`・`src/computation.rs`・`src/warnings.rs`・`src/check.rs`、新規 `tests/typed_holes.rs`、変更 `tests/modules.rs`（1 行）。Phase 2: 新規 `src/find.rs`、`src/check.rs`・`src/polymorph.rs`。Phase 3: `src/find.rs`・`src/parser.rs`・`src/semantic.rs`・`src/check.rs`・`src/main.rs`、新規 `tests/find.rs`。Phase 4: `src/find.rs`・`src/check.rs`・`src/control.rs`。文書は「ドキュメント」 |
+
+## 方針の最新化（2026-10-30。実装前の再検討）
+
+起票時（HEAD `a2313d19`）の前提と、G23・G28（D-60）・A18・A22 の実装後の現状が食い違う点を、実装前に次のとおり改めた（人間の包括許可による判断。D1〜D14 の趣旨は保つ）。
+
+| 起票時の前提 | 現状 | 改めた方針 |
+| --- | --- | --- |
+| 診断は `Diagnostic::new("E1030", …).with_kind("typed_hole")` | G23 の登録簿があり、診断は `Diagnostic::of(DiagnosticKind::…)` で作る | `DiagnosticKind::TypedHole`（`E1030`）・`FindBadArguments`・`FindUnknownModule`（`E2000`）を登録簿に足して `of` で出す。`explain` の `E1030` のページを足す |
+| Phase 3 の `tsuzuri find` は `check` の子モジュールで型つきに照合し、`kb find` がそれを呼ぶ（D7〜D9） | D-60 で G28 の `kg find`（`src/kg/find.rs`）が先に出荷され、「G25 の `tsuzuri find` は出荷するときにこの実装を呼ぶ」と決まった（D-55 の「同じ実装」） | `tsuzuri find` は `src/main_find.rs` の前段で、照合と出力は `kg::find::search`・`render` を呼ぶ。std だけ（`KgView::new(None, StdSource::Cache)`）か、`--project DIR` でそのプロジェクトの知識グラフも。`parse_type`・`parse_type_query`・`SemanticIndex.find`・`Tier`・`Request`・`check::find::search` は作らない。結果は `kg find` と同じ（field は `ref Record -> T`、case は `Module.Union.Case`、制約は基本の型だけ確かめる、プロジェクトの非公開の宣言も出る）。問い合わせの型が読めないときは `kg find` と同じくコマンドラインの誤り（`E2000` の `find_bad_arguments`、終了コード 2。D-55 の「コマンドラインの語だけで決まる誤りは 2」）で、型名の解決の誤り（`E1004`）はない（照合が名前で行う）。`--project` のプロジェクトに誤りがあると知識グラフが不完全なので `E2009`（終了コード 1）で、本体の誤りがあっても探す仕様（付録 D.2 の 13）は採らない |
+| 穴の候補は `Array.length (ref xs)`（付録 D.1 の 9） | A18 で edition 2027（マニフェストのない入力の既定）は無印の引数を借用にする。`xs` は `ref [i64]` | 候補は局所の型から作る規則のまま。edition 2026（ライブラリの `analyze_all`）は `(ref xs)`、2027 の CLI は `xs`。テストは両方を確かめる |
+| 組み込み関数はすべて索引に入る | `Int.abs_diff` などは結果の型を型族（`Checker.families`）が決め、索引の型変数 `'b` は何にでも合う | 使い捨ての `Checker` に型族が残る組み込み関数は索引から外す |
+| 数値リテラルの局所の型は `_` | 接尾辞のない整数リテラルの局所は既定（`i32`）を持つ開いた型。付録 D.3 の 1 は `total: i64` を期待 | `hole_type` は既定のある開いた型を既定（`i32`・`f64`）で表示する。期待は `total: i32`（言語の既定。`i64` は誤記） |
+| 既存のテストへの影響は `tests/modules.rs` の 1 行（停止条件 2） | `?` を「未知の文字」の例に使うテストと、候補で変わるテストがほかにもある | 意味を保つ置き換えだけをした: `tests/diagnostics.rs`・`tests/strings.rs`・`src/hints.rs` の単体テストの未知の文字を `` ` ``（`E0001` のまま）に。ヒント `question-mark`（`c ? 1 : 2`）は `?` が穴になって `E0002 expected an expression`（`:` の位置）になったので、kind と形を付け替え、`tests/diagnostic_baseline/baseline.jsonl` のその行を新しい診断にした。`tests/diagnostic_kinds.rs` の比較は `candidates` の追加を許す。`tests/diagnostic_v2.rs` は D14（候補があれば `help` を置き換える）に合わせ、G22 の `help` は近い名前のない入力で確かめる。`src/server.rs` の単体テストは `main_find.rs` を `main_kg.rs` と同じく除く |
+| Phase ごとに別の PR | AGENTS.md は 1 チケット 1 PR | 全 Phase を 1 つの PR にする |
 
 ## 実装者向け早見
 
@@ -575,3 +589,17 @@ Phase ごとに別の PR にする。各手順は「テストを先に書き、�
 ## 付録
 
 - [付録](G25-appendix.md): A 位置ごとの期待型・Phase 1 の試作の差分、B 検証済みのコード（B.1 `suggest`、B.2 索引と照合、B.3 穴の探索）、C 未解決名の発行箇所と `pool`、D テストの入力と期待値、E 実測。
+
+## 実装と検証（2026-10-30）
+
+- **範囲**: Phase 1〜4 をすべて実装した。冒頭の「方針の最新化」のとおり、G23・D-60・A18 の後の現状に合わせた。
+- **Phase 1**: `TokenKind::Question`、`ExprKind::Hole(Option<Ident>)`（`syntax_codec` の tag 46、`("ExprKind", 47)`、`FRONTEND_FORMAT` 14 → 15）、`Parser::hole`・`space_argument`、整形（`Question` の後は元の間隔、`Canonical` の `Hole`）、`value_expression` の腕が `Checker::typed_hole`（`src/find.rs`）の `E1030` を返す。誤りの回復が `Type::Error` にするので、連鎖せず、型付き IR に入らない。
+- **Phase 2**: `src/find.rs` の `Entry`・`build`（`Names.search_index: OnceLock`）・`instantiate`・`constraints_hold`・`hole_candidates`（順位 0〜5、型変数だけの結果を後ろ、10 件、200 文字、1 関数 16 個の穴、5,000 件）、`Classes::holds_class`、`Inference::numeric_default`、`Checker.function`・`holes_searched`。局所の record の field は参照の局所（`ref Record`）にも探す。
+- **Phase 3**: `src/main_find.rs`（`parse_find_arguments`・`find_command`）、`kg::find::has_module`（`--module` の存在の確認。`module_named` を `search` と共有）、`HELP`、`main` の分岐。
+- **Phase 4**: `find::distance`・`suggest`・`best`・`with_suggestions` と、`value_pool`・`member_pool`・`function_pool`・`field_pool`・`pattern_pool`・`Names::type_pool`。6 つの診断（`unknown_value`・`unknown_module_member`・`unknown_function`・`unknown_type_name`・`unknown_field`・`record_has_no_field`（2 か所）・`unknown_case_or_active_pattern`）に付けた。`message`・`code`・主スパンは変えない。
+- **検証**: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。新しいテスト 49 件: `tests/typed_holes.rs` 17（Phase 1 の 8・Phase 2 の 9）、`tests/name_suggestions.rs` 10、`tests/find.rs` 13（`find` と `kg find` の一致、誤りのあるプロジェクトを含む）、`src/find.rs` の単体 3、`src/main_find.rs` の単体 4、`src/lexer.rs` の単体 1、`tests/formatter.rs` 1。`cargo nextest run --locked` は全件成功（下の既存テストの直しの後）。`node scripts/check-docs.mjs`（変えた 7 ページ）成功。
+- **実測**（debug ビルド、`check`）: 穴 1 つのプログラムは約 0.06〜0.13 秒（索引の構築を含む）。`tsuzuri find`（std だけ、std の知識グラフをキャッシュから読む）は約 0.04 秒、キャッシュが空のときは作るので約 0.6 秒。
+- **文書**: `type-inference.md`（節「型つき穴 `?`」）、`tokens.md`、`op-and-expressions.md`、`diagnostics.md`（`E1030`、「未知の名前の候補」、`E2000` の kind、kind の一覧）、`usage.md`（`### find`、終了コード）、`option.md`、`kg.md`、`README.md`（節と CLI の表と検証の表）、`docs/language.md`、`docs/architecture.md`、`docs/stability.md`、`src/explain/codes/E1030.md` と `E1002`・`E1004`・`E1007`・`E1020` のページ、GUIDE の D-55 追補（`find` の kind と `typed_hole`）。
+- **レビュー（PR #68）**: 候補の正しさの指摘に合わせた。(1) 編集距離は長さの差で先に棄却し、帯（`|i - j| <= 上限`）と 3 行だけで計算する（長い名前でも時間・メモリが長さに線形）。(2) 利用者の generic な `def` は候補にしない（本体から推論される制約が穴の検査の時点では `Scheme` にない）。std の generic 関数は宣言した署名を使う。(3) 局所の開いた型（接尾辞のない数値リテラル）は、待っている型クラスの制約（`Integer<_>`）を同じ写像で取り込んで確かめる（`let n = 1` は `bool` の穴に合わない。`scope` の並びも同じ）。(4) 局所のフィールドは `record_storage` が許すレコードだけ。(5) 索引の `field` は穴の候補にしない（`p.x` の形は局所から作る）。(6) 引数のない関数は `Main.answer()`（`how` は `call`）。(7) 候補の別名（型・ケース・アクティブパターン）は依頼したモジュールから解決できる（見えて曖昧でない）ものだけ。(8) `--module` は知識グラフの `module` ノードで判定する（型だけのモジュールも知られている）。テストを 6 件足した（`tests/typed_holes.rs` 4、`tests/name_suggestions.rs` 1、`tests/find.rs` 1）。
+- **レビュー 2 回目（PR #68）**: (1) 定数の初期化式の穴は `constants::validate` を通し、`E1030`（期待型は定数の型）にする。(2) 期待型の開いた部分が待つ型クラスも確かめる。generic 関数を具体化したときに、宣言した制約を `Checker.call_constraints`（穴だけが読む副表。特殊化の検査は変えない）に写し、局所の照合と索引の引数の充填の両方で同じ写像で確かめる。(3) edition で読み替わる旧名（`BORROWING_APIS` の 1 列目。2027 の `Vec.push` は `Vec.push_mut`）は、どの edition でも同じ型の `_owned` の綴りで索引に入れる。(4) 参照を通したフィールド（`p.text`）は `Copy` の型だけ。(5) 編集距離は帯の幅の 3 行だけを回す（行全体を初期化しない）。全行列の OSA との一致を短い文字列の組み合わせで確かめる単体テストを足した。(6) モジュール名の候補は、依頼したモジュールから素の名前で解決できないとき `Other::LongUtility` と書く。(7) `find --project` のパスは `OsString` のまま受け取る。`tests/e2e.mjs` の `?` を未知の文字とする 2 か所をバッククォートにした。
+- **レビュー 3 回目（PR #68）**: (1) 利用者の宣言の候補名は `Names::spelling`（パッケージの名前空間を含む。`Finder::Shapes::Square.answer`）、std の宣言は従来の綴り（`Maybe.get`）。モジュール名の候補も同じ。(2) 参照を通して読む引数（`read_value_parameters`）は実効の型（参照を外した型）で照合し、`ref mut` の引数には使わず、値の引数には `Copy` の型だけ使う。(3) 引数に採った局所の制約は、以降の引数でも確かめる。(4) 引数の充填では、数値リテラルの開いた型を既定の型（`i32`・`f64`）として照合する（`let positive = \n -> n > 0` は `i32 -> bool` で、`Integer` を満たさない）。
