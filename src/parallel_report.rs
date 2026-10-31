@@ -152,6 +152,9 @@ fn merge(previous: &mut Found, entry: Option<Entry>) {
     };
     match entry {
         None => previous.entry = None,
+        // Specializations that need different replacements (`Parallel.map` for numbers, `Parallel.map_ref` for
+        // arrays) have no single edit.
+        Some(entry) if entry.replacement != kept.replacement => previous.entry = None,
         Some(entry) => {
             if kept.parallel_safe && !entry.parallel_safe {
                 kept.parallel_safe = false;
@@ -233,8 +236,9 @@ fn inspect(
                         .flatten()
                         .map(|span| (call, replacement, why, span))
                 })?;
-            let entry =
-                suggestion(module, expression, arguments, id, call).map(|parallel_safe| Entry {
+            let mut replacement = replacement;
+            let entry = suggestion(module, expression, arguments, id, call, &mut replacement).map(
+                |parallel_safe| Entry {
                     kind: EntryKind::Suggestion,
                     call,
                     replacement: Some(replacement),
@@ -243,7 +247,8 @@ fn inspect(
                     parallel_safe,
                     reason: None,
                     why: Some(why),
-                });
+                },
+            );
             Some((EntryKind::Suggestion, call, span, entry))
         }
         _ => None,
@@ -284,6 +289,15 @@ fn name_span(
             .is_none_or(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'_'));
         (text.get(span.start..end) == Some(call) && whole).then_some(Span { end, ..span })
     })
+}
+
+/// Whether `callback` is the compiler's adapter of a read callback (see `adapted`).
+fn adapter(module: &CheckedModule, callback: &TypedExpr) -> bool {
+    let mut callee = callback;
+    while let TypedExprKind::Borrow(inner, _) | TypedExprKind::BorrowOperand(inner) = &callee.kind {
+        callee = inner;
+    }
+    adapted(module, callee).is_some()
 }
 
 /// The callback itself: without borrows and the adapters of read callbacks.
@@ -369,6 +383,7 @@ fn suggestion(
     arguments: &[TypedExpr],
     id: usize,
     call: &str,
+    replacement: &mut &'static str,
 ) -> Option<bool> {
     let types = module.types();
     let input = arguments.last()?;
@@ -390,7 +405,27 @@ fn suggestion(
     if holds_function(element, &types) || holds_function(result, &types) {
         return None;
     }
+    // Edition 2027 reads `Array.map`'s elements through a reference (the call is `Array.mapr`), unless an adapter
+    // copies each one for a function that takes it by value. `Parallel.map` copies every element into its callback,
+    // so for an element that owns heap memory (`[i64]`, `string`) the reading call keeps its cost only as
+    // `Parallel.map_ref`; a plain element (a number, a record of numbers) costs the same either way.
+    if call == "Array.map"
+        && module.functions[id]
+            .qualified_name()
+            .split(".$mono.")
+            .next()
+            == Some("Array.mapr")
+        && !arguments
+            .first()
+            .is_some_and(|callback| adapter(module, callback))
+        && !(element.is_copy(&types) && !element.needs_drop(&types))
+    {
+        *replacement = "Parallel.map_ref";
+    }
     let typed = match call {
+        "Array.map" if *replacement == "Parallel.map_ref" => {
+            element.can_send(&types) && result.can_send(&types)
+        }
         "Array.map" => {
             element.is_copy(&types) && element.can_send(&types) && result.can_send(&types)
         }

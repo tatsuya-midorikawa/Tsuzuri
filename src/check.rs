@@ -1087,11 +1087,29 @@ impl Type {
     }
 
     /// Whether a value of this type holds a floating-point number (F15): a binary or decimal float, or a SIMD vector
-    /// of them, reached through fields, payloads, elements and the targets of references.
+    /// of them, reached through fields, payloads, elements and the targets of references, the elements of an
+    /// exclusive slice (`ref mut [f64..]`) included. `TypeContext::reaches` stops at a slice view for its other users,
+    /// so each view's element type is walked again here, once per distinct type.
     pub(crate) fn holds_float(&self, types: &TypeContext<'_>) -> bool {
-        types.reaches(self, |ty| {
-            ty.is_float() || matches!(ty, Type::Simd(vector) if vector.element().is_float())
-        })
+        let mut pending = vec![self.clone()];
+        let mut seen = BTreeSet::new();
+        while let Some(root) = pending.pop() {
+            if !seen.insert(root.clone()) {
+                continue;
+            }
+            let views = std::cell::RefCell::new(Vec::new());
+            let found = types.reaches(&root, |ty| {
+                if let Type::ArrayView(element) = ty {
+                    views.borrow_mut().push(element.as_ref().clone());
+                }
+                ty.is_float() || matches!(ty, Type::Simd(vector) if vector.element().is_float())
+            });
+            if found {
+                return true;
+            }
+            pending.extend(views.into_inner());
+        }
+        false
     }
 }
 

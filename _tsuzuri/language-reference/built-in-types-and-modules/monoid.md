@@ -112,7 +112,7 @@ let result = Array.fold_monoid (ref means)
 ```
 
 この `Array.fold_monoid` は `E1039` で拒否されます（`no Monoid instance for Main.Mean: it holds a floating-point number ...`）。`f64` の加算は結合的でなく、`Parallel.fold` がチャンクごとに足すと、逐次の `Array.fold_monoid` と下位のビットが違うことがあるからです。
-レコードのフィールド・union の payload・タプル・配列・リスト・`Vec`・`Maybe` の中にある浮動小数点（`f16`・`f32`・`f64`・`f128`、`d32`・`d64`・`d128`、浮動小数点のレーンの SIMD）も同じです。`Monoids.Sum { value: 1.5 }` を畳み込むと、`Monoids.Sum<f64>` の `E1039` です。位置は `Array.fold_monoid`・`Parallel.fold`・`Monoid.combine` を呼んだ式で、どの呼び出しにも使われない instance の宣言は拒否されません。
+レコードのフィールド・union の payload・タプル・配列・リスト・`Vec`・`Maybe`・排他スライス（`ref mut [f64..]`）の中にある浮動小数点（`f16`・`f32`・`f64`・`f128`、`d32`・`d64`・`d128`、浮動小数点のレーンの SIMD）も同じです。`Monoids.Sum { value: 1.5 }` を畳み込むと、`Monoids.Sum<f64>` の `E1039` です。位置は `Array.fold_monoid`・`Parallel.fold`・`Monoid.combine` を呼んだ式で、どの呼び出しにも使われない instance の宣言は拒否されません。ジェネリック関数の中の `Monoid.combine` も、型引数が浮動小数点を含む型に決まったところで `E1039` です（`record Boxed<'a> { value: 'a }` の instance を、`'a` が `f64` の `Boxed` で呼んだとき）。
 浮動小数点の合計が要るなら、[`Parallel.sum`](parallel.md)（チャンクの規則で順序が固定。逐次と違いうる）か、`Array.sum_pairwise`・`Array.sum_kahan`（[Math](math.md)）を使います。固定小数点（整数の `micros`）で持てば、整数の `Monoid` にできます。
 
 ## 作用を持つ instance

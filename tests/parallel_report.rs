@@ -190,11 +190,14 @@ fn the_flag_is_checked() {
     }
 }
 
-#[test]
-fn the_suggested_edits_compile_and_leave_no_suggestions() {
-    let mut fixed = fs::read_to_string(fixture("rules").join("Main.tz")).unwrap();
+/// Applies every suggestion of the report of `source` (in the directory `name`) and returns the replacements and the
+/// summary line of the report of the edited source, which must check.
+fn apply_suggestions(name: &str, source: &str) -> (Vec<String>, String) {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("Main.tz"), source).unwrap();
     let mut edits = Vec::new();
-    for line in report(&fixture("rules"), true).lines().skip(1) {
+    for line in report(&directory, true).lines().skip(1) {
         let value: serde_json::Value = serde_json::from_str(line).unwrap();
         if value["kind"] == "suggestion" {
             let edit = &value["fixes"][0]["edits"][0];
@@ -205,19 +208,58 @@ fn the_suggested_edits_compile_and_leave_no_suggestions() {
             ));
         }
     }
-    assert_eq!(edits.len(), 4);
+    let replacements = edits.iter().map(|(_, _, text)| text.clone()).collect();
     // From the end, so that each edit keeps the offsets of the ones before it.
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.0));
+    let mut fixed = source.to_owned();
     for (start, end, text) in edits {
         fixed.replace_range(start..end, &text);
     }
-    let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("parallel_report_fixed");
-    fs::create_dir_all(&directory).unwrap();
-    fs::write(directory.join("Main.tz"), &fixed).unwrap();
-    let json = report(&directory, true);
+    // A sibling, not a subdirectory: a project reads the sources under its directory too.
+    let fixed_directory = directory.with_file_name(format!("{name}_fixed"));
+    fs::create_dir_all(&fixed_directory).unwrap();
+    fs::write(fixed_directory.join("Main.tz"), &fixed).unwrap();
+    let json = report(&fixed_directory, true);
+    (replacements, json.lines().next().unwrap().to_owned())
+}
+
+#[test]
+fn the_suggested_edits_compile_and_leave_no_suggestions() {
+    let source = fs::read_to_string(fixture("rules").join("Main.tz")).unwrap();
+    let (replacements, summary) = apply_suggestions("parallel_report_rules", &source);
+    assert_eq!(replacements.len(), 4);
     assert_eq!(
-        json.lines().next().unwrap(),
+        summary,
         r#"{"schema":"tz-report-parallel/1","suggestions":0,"sites":7,"truncated":0}"#
+    );
+}
+
+/// PR #75 review: edition 2027 reads the elements of `Array.map` through a reference, so for elements that own heap
+/// memory the suggestion keeps that with `Parallel.map_ref`; `Parallel.map` would copy every row into its callback.
+/// Numbers keep `Parallel.map`, and the edited source checks.
+#[test]
+fn borrowed_heap_elements_are_suggested_as_map_ref() {
+    let source = "def lengths :: ref [[i64]] -> [i64]\n\
+                  fn lengths rows = Array.map Array.length rows\n\
+                  def firsts :: ref [[i64]] -> [i64]\n\
+                  fn firsts rows = Array.map (\\row -> row[0] + 1) rows\n\
+                  def sizes :: ref [string] -> [i64]\n\
+                  fn sizes texts = Array.map (\\text -> text.length) texts\n\
+                  def doubled :: ref [i64] -> [i64]\n\
+                  fn doubled values = Array.map (\\value -> value * 2) values\n";
+    let (replacements, summary) = apply_suggestions("parallel_report_rows", source);
+    assert_eq!(
+        replacements,
+        [
+            "Parallel.map_ref",
+            "Parallel.map_ref",
+            "Parallel.map_ref",
+            "Parallel.map"
+        ]
+    );
+    assert_eq!(
+        summary,
+        r#"{"schema":"tz-report-parallel/1","suggestions":0,"sites":4,"truncated":0}"#
     );
 }
 

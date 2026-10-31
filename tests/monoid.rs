@@ -86,6 +86,69 @@ fn float_monoids_are_rejected_where_they_are_used() {
     }
 }
 
+/// `Boxed<'a>` holds a float only when `'a` is one; `twice` resolves `Monoid.combine` for it where it is specialized.
+const BOXED: &str = r#"record Boxed<'a> { value: 'a }
+instance (Copy<'a>, Default<'a>) => Monoid<Boxed<'a>> {
+    let empty = \() -> Boxed { value: Default.default() }
+    fn combine left _right = left
+}
+def twice :: (Copy<'a>, Default<'a>) => Boxed<'a> -> Boxed<'a>
+fn twice boxed = Monoid.combine boxed boxed
+"#;
+
+/// PR #75 review: a float in an exclusive slice (`ref mut [f64..]`), a float next to a type variable in a generic
+/// function, and a float that only the specialization of a generic function brings are all `E1039`, at the
+/// `Monoid.combine` that needs the instance.
+#[test]
+fn float_slices_and_generic_receivers_are_rejected() {
+    let cases = [
+        (
+            r#"record Window {r} { values: ref mut {r} [f64..] }
+def rec forever :: unit -> Window
+fn rec forever u = forever u
+instance Monoid<Window> {
+    let empty = \() -> forever ()
+    fn combine _left right = right
+}
+def join :: ref mut [f64..] -> ref mut [f64..] -> i64
+fn join left right =
+    let both = Monoid.combine (Window { values: left }) (Window { values: right })
+    0
+"#
+            .to_string(),
+            "Main.Window",
+        ),
+        (
+            r#"record Wrapped<'a> { value: f64, tag: Maybe<'a> }
+instance Copy<'a> => Monoid<Wrapped<'a>> {
+    let empty = \() -> Wrapped { value: 0.0, tag: Maybe.None }
+    fn combine left right = Wrapped { value: left.value + right.value, tag: right.tag }
+}
+def twice :: Copy<'a> => Wrapped<'a> -> Wrapped<'a>
+fn twice wrapped = Monoid.combine wrapped wrapped
+let result = twice (Wrapped { value: 1.5, tag: Maybe.Some 1 })
+result.value
+"#
+            .to_string(),
+            "Main.Wrapped<'a>",
+        ),
+        (
+            format!("{BOXED}let result = twice (Boxed {{ value: 1.5 }})\nresult.value"),
+            "Main.Boxed<f64>",
+        ),
+    ];
+    for (source, ty) in cases {
+        let error = analyze(&source).expect_err(&source);
+        assert_eq!(error.code, "E1039", "{source}\n{}", error.message);
+        assert_eq!(error.message, e1039_message(ty), "{source}");
+        assert_eq!(
+            error.span.start,
+            source.find("Monoid.combine").unwrap(),
+            "{source}"
+        );
+    }
+}
+
 #[test]
 fn integer_monoids_and_unused_float_instances_are_accepted() {
     for source in [
@@ -94,6 +157,7 @@ fn integer_monoids_and_unused_float_instances_are_accepted() {
         "let values = [Monoids.Sum { value: 1 }, Monoids.Sum { value: 2 }]\nlet total = Parallel.fold (ref values)\ntotal.value".to_string(),
         "let values = [Monoids.MaxOf { value: Maybe.Some 1 }, Monoids.MaxOf { value: Maybe.None }]\nlet total = Array.fold_monoid (ref values)\nmatch total.value with\n| Maybe.Some value -> value\n| Maybe.None -> 0".to_string(),
         "let values = [Monoids.All { value: true }, Monoids.All { value: false }]\nlet total = Parallel.fold (ref values)\nif total.value then 1 else 0".to_string(),
+        format!("{BOXED}let result = twice (Boxed {{ value: 7 }})\nresult.value"),
     ] {
         emits(&source);
     }
