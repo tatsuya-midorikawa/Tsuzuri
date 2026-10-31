@@ -1,0 +1,7 @@
+/// Adds one to `n`.
+///
+/// ```tsuzuri run=3
+/// Lib.add_one 2
+/// ```
+def add_one :: i64 -> i64
+fn add_one n = n + 1

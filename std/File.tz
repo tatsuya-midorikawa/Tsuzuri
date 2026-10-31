@@ -24,10 +24,24 @@ fn write_text_with mode path text =
 		write_with mode path (ref bytes)
 
 /// Reads a whole file. The path is the system's, so a relative one starts at the working directory.
+///
+/// ```tsuzuri
+/// let! loaded = File.read_bytes "photo.png"
+/// match loaded with
+/// | Result.Ok bytes -> IO.write_line (to_string bytes.length + " bytes")
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def read_bytes :: own string -> IO<Result<[ubyte], Os.Error>>
 fn read_bytes path = IO.map (\() -> read_with (ref path)) (IO.pure ())
 
 /// Reads a whole file as UTF-8. A byte order mark is kept; invalid UTF-8 is `InvalidEncoding`.
+///
+/// ```tsuzuri
+/// let! loaded = File.read_text "notes.txt"
+/// match loaded with
+/// | Result.Ok text -> IO.write text
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def read_text :: own string -> IO<Result<string, Os.Error>>
 fn read_text path = IO.map (\() ->
 	match read_with (ref path) with
@@ -35,18 +49,46 @@ fn read_text path = IO.map (\() ->
 	| Result.Ok bytes -> Os.decode bytes) (IO.pure ())
 
 /// Creates or truncates a file and writes the bytes. A failure part way leaves a partial file.
+///
+/// ```tsuzuri
+/// let! written = File.write_bytes "data.bin" [1ubyte, 2ubyte, 3ubyte]
+/// match written with
+/// | Result.Ok _ -> IO.write_line "saved"
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def write_bytes :: own string -> own [ubyte] -> IO<Result<unit, Os.Error>>
 fn write_bytes path data = IO.map (\() -> write_with 0i32 (ref path) (ref data)) (IO.pure ())
 
 /// Creates or truncates a file and writes the text as UTF-8.
+///
+/// ```tsuzuri
+/// let! written = File.write_text "notes.txt" "first line\n"
+/// match written with
+/// | Result.Ok _ -> IO.write_line "saved"
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def write_text :: own string -> own string -> IO<Result<unit, Os.Error>>
 fn write_text path text = IO.map (\() -> write_text_with 0i32 (ref path) (ref text)) (IO.pure ())
 
 /// Appends the text as UTF-8, creating the file when it is missing.
+///
+/// ```tsuzuri
+/// let! appended = File.append_text "app.log" "started\n"
+/// match appended with
+/// | Result.Ok _ -> IO.write_line "logged"
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def append_text :: own string -> own string -> IO<Result<unit, Os.Error>>
 fn append_text path text = IO.map (\() -> write_text_with 1i32 (ref path) (ref text)) (IO.pure ())
 
 /// Removes a file or a symbolic link, not what a link points to.
+///
+/// ```tsuzuri
+/// let! removed = File.remove "old.log"
+/// match removed with
+/// | Result.Ok _ -> IO.write_line "removed"
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def remove :: own string -> IO<Result<unit, Os.Error>>
 fn remove path = IO.map (\() ->
 	let nothing: [ubyte] = []
@@ -90,22 +132,51 @@ fn no_value result =
 	| Result.Error error -> Result.Error error
 
 /// Opens a file. A file that is already open can be opened again; each handle is separate.
+///
+/// ```tsuzuri
+/// let! opened = File.open "data.bin" File.Read
+/// match opened with
+/// | Result.Ok handle -> File.close handle
+/// | Result.Error error -> IO.pure (Result.Error error)
+/// ```
 def open :: own string -> own Mode -> IO<Result<Handle, Os.Error>>
 fn open path mode = IO.map (\() -> open_with (ref path) mode) (IO.pure ())
 
 /// Reads up to `count` bytes. An empty result means the end of the file; fewer bytes than `count`
 /// does not. A negative count or one above 2^30 is `InvalidInput`, and so is reading a handle that was
 /// not opened with `Read`.
+///
+/// ```tsuzuri
+/// # let! opened = File.open "data.bin" File.Read
+/// # let handle = Result.get opened
+/// let! chunk = File.read handle 4096
+/// match chunk with
+/// | Result.Ok bytes -> IO.write_line (if bytes.length == 0 then "end of file" else to_string bytes.length + " bytes")
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def read :: own Handle -> own i64 -> IO<Result<[ubyte], Os.Error>>
 fn read handle count = IO.map (\() ->
 	let nothing: [ubyte] = []
 	handle_with 0i32 handle count (ref nothing)) (IO.pure ())
 
 /// Writes all the bytes. A handle opened with `Read` is `InvalidInput`.
+///
+/// ```tsuzuri
+/// # let! opened = File.open "app.log" File.Append
+/// # let handle = Result.get opened
+/// let! written = File.write handle (Utf8String.to_bytes u8"started\n")
+/// ```
 def write :: own Handle -> own [ubyte] -> IO<Result<unit, Os.Error>>
 fn write handle data = IO.map (\() -> no_value (handle_with 1i32 handle 0 (ref data))) (IO.pure ())
 
 /// Checks the handle. Tsuzuri buffers nothing, so every `write` has already reached the system.
+///
+/// ```tsuzuri
+/// # let! opened = File.open "app.log" File.Append
+/// # let handle = Result.get opened
+/// let! _written = File.write handle (Utf8String.to_bytes u8"done\n")
+/// let! flushed = File.flush handle
+/// ```
 def flush :: own Handle -> IO<Result<unit, Os.Error>>
 fn flush handle = IO.map (\() ->
 	let nothing: [ubyte] = []
@@ -113,6 +184,15 @@ fn flush handle = IO.map (\() ->
 
 /// Closes a file. The handle is dead afterwards even when the system reports a failure, so closing twice
 /// is `InvalidInput`.
+///
+/// ```tsuzuri
+/// # let! opened = File.open "data.bin" File.Read
+/// # let handle = Result.get opened
+/// let! closed = File.close handle
+/// match closed with
+/// | Result.Ok _ -> IO.write_line "closed"
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def close :: own Handle -> IO<Result<unit, Os.Error>>
 fn close handle = IO.map (\() ->
 	let status = Os.__close handle.id
@@ -120,6 +200,14 @@ fn close handle = IO.map (\() ->
 
 /// Opens a file, runs the action with its handle, and closes it before returning, whether or not the
 /// action's own result is an error. The action's value is returned unless closing fails.
+///
+/// ```tsuzuri
+/// let! header = File.with_open "data.bin" File.Read (\handle -> File.read handle 16)
+/// match header with
+/// | Result.Ok (Result.Ok bytes) -> IO.write_line (to_string bytes.length + " bytes")
+/// | Result.Ok (Result.Error error) -> IO.write_line (Os.message error)
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def with_open :: Capture<'a> => own string -> own Mode -> own (Handle -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_open path mode body =
 	open path mode |> IO.bind (\opened ->
@@ -156,9 +244,23 @@ fn metadata_with operation path =
 		| (status, _) -> Result.Error (Os.error_of_status status)
 
 /// Describes a path, following a symbolic link to what it points at.
+///
+/// ```tsuzuri
+/// let! described = File.metadata "notes.txt"
+/// match described with
+/// | Result.Ok info -> IO.write_line (to_string info.size + " bytes")
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def metadata :: own string -> IO<Result<Metadata, Os.Error>>
 fn metadata path = IO.map (\() -> metadata_with 4i32 (ref path)) (IO.pure ())
 
 /// Describes a path itself: a symbolic link is described, not followed.
+///
+/// ```tsuzuri
+/// let! described = File.link_metadata "current"
+/// IO.write_line (match described with
+///     | Result.Ok info -> (match info.kind with | File.Symlink -> "a symbolic link" | _ -> "not a link")
+///     | Result.Error error -> Os.message error)
+/// ```
 def link_metadata :: own string -> IO<Result<Metadata, Os.Error>>
 fn link_metadata path = IO.map (\() -> metadata_with 5i32 (ref path)) (IO.pure ())

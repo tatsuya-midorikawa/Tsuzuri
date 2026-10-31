@@ -2428,6 +2428,29 @@ impl Project {
         Self::load_from_root(&directory, None, &normalized, true, true)
     }
 
+    /// The package at `input` with its `Main.tz` replaced by `text`, or added when it has none
+    /// (G34): a doc example runs as the entry of its package. Only the opt-in std modules that the
+    /// sources name are loaded, as for `run`.
+    pub fn for_doc_example(input: &Path, text: &str) -> Result<Self, SourceError> {
+        let directory = if input.is_dir() {
+            input
+        } else {
+            input
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or(Path::new("."))
+        };
+        let directory = fs::canonicalize(directory).map_err(|error| {
+            SourceError::new(
+                directory,
+                io_error("resolve module directory", directory, error),
+            )
+        })?;
+        let overlays =
+            std::collections::BTreeMap::from([(directory.join("Main.tz"), text.to_owned())]);
+        Self::load_from_root(&directory, None, &overlays, false, true)
+    }
+
     /// Loads the package graph at `directory`. With `all_std` false, it loads only the
     /// opt-in std modules that the user sources name (`stdlib::sources_for`). With
     /// `dependencies` false, git and registry dependencies and `Tsuzuri.lock` are not read, so
@@ -5732,6 +5755,30 @@ pub fn run_captured(
         RunStdio::Capture {
             timeout,
             limit: MAX_CAPTURED_OUTPUT,
+            echo: true,
+        },
+        &Profile::None,
+    )
+}
+
+/// Like [`run_captured`], linking `links` and keeping the program's standard error to itself:
+/// doc examples run in parallel, and only a failure is reported (G34).
+pub fn run_captured_quiet(
+    module: &CheckedModule,
+    project: &Project,
+    options: BuildOptions,
+    links: &LinkInputs,
+    timeout: Option<std::time::Duration>,
+) -> Result<(Vec<String>, Vec<u8>), Diagnostic> {
+    run_process(
+        module,
+        project,
+        options,
+        links,
+        RunStdio::Capture {
+            timeout,
+            limit: MAX_CAPTURED_OUTPUT,
+            echo: false,
         },
         &Profile::None,
     )
@@ -5746,10 +5793,11 @@ enum RunStdio<'a> {
         arguments: &'a [OsString],
     },
     /// [`run_captured`]: stdin is empty, stdout is collected up to `limit` bytes, and stderr is
-    /// relayed; the program is killed past `timeout` or `limit`.
+    /// collected and, with `echo`, relayed; the program is killed past `timeout` or `limit`.
     Capture {
         timeout: Option<std::time::Duration>,
         limit: usize,
+        echo: bool,
     },
 }
 
@@ -5814,7 +5862,11 @@ fn run_process(
                 .map_err(|error| io_error("wait for executable", &output, error))?;
             (status, stderr, Vec::new())
         }
-        RunStdio::Capture { timeout, limit } => capture(runner.as_ref(), &output, timeout, limit)?,
+        RunStdio::Capture {
+            timeout,
+            limit,
+            echo,
+        } => capture(runner.as_ref(), &output, timeout, limit, echo)?,
     };
     temporary.close()?;
     if !status.success() {
@@ -5915,6 +5967,7 @@ fn capture(
     output: &Path,
     timeout: Option<std::time::Duration>,
     limit: usize,
+    echo: bool,
 ) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), Diagnostic> {
     use std::sync::mpsc::{RecvTimeoutError, channel};
     use std::time::{Duration, Instant};
@@ -5952,7 +6005,7 @@ fn capture(
     let stderr = child.stderr.take().expect("stderr is piped");
     let stderr_reader = std::thread::spawn(move || {
         let mut collected = Vec::new();
-        let end = match relay(stderr, &mut collected, true) {
+        let end = match relay(stderr, &mut collected, echo) {
             Ok(()) => StreamEnd::Closed,
             Err(error) => StreamEnd::Failed(error),
         };
@@ -6597,6 +6650,62 @@ mod tests {
         }
         let project = Project::load(&directory.path.join(input)).unwrap();
         (directory, project)
+    }
+
+    fn std_sources(project: &Project) -> usize {
+        project
+            .sources
+            .iter()
+            .filter(|source| source.origin == ModuleOrigin::Std)
+            .count()
+    }
+
+    #[test]
+    fn for_doc_example_replaces_main_and_keeps_the_other_modules() {
+        let (directory, _) = project(
+            &[
+                ("Main.tz", "def main :: unit -> i32 = \\_ -> 0\n"),
+                ("Lib.tz", "def one :: i64 = 1\n"),
+            ],
+            "Main.tz",
+        );
+        let example = Project::for_doc_example(&directory.path, "Lib.one()\n").unwrap();
+        let main = example
+            .sources
+            .iter()
+            .find(|source| source.relative_path == Path::new("Main.tz"))
+            .unwrap();
+        assert_eq!(main.text, "Lib.one()\n");
+        assert!(example.sources.iter().any(|source| source.name == "Lib"));
+        assert_eq!(
+            example.sources[example.root].relative_path,
+            Path::new("Main.tz")
+        );
+    }
+
+    #[test]
+    fn for_doc_example_adds_main_to_a_library() {
+        let directory = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        fs::write(directory.path.join("Lib.tz"), "def one :: i64 = 1\n").unwrap();
+        let example = Project::for_doc_example(&directory.path, "Lib.one()\n").unwrap();
+        assert!(!directory.path.join("Main.tz").exists());
+        assert!(
+            example
+                .sources
+                .iter()
+                .any(|source| source.relative_path == Path::new("Main.tz")
+                    && source.text == "Lib.one()\n")
+        );
+    }
+
+    #[test]
+    fn for_doc_example_loads_only_the_std_modules_it_names() {
+        let directory = TemporaryDirectory::new(&env::temp_dir()).unwrap();
+        fs::write(directory.path.join("Lib.tz"), "def one :: i64 = 1\n").unwrap();
+        let plain = Project::for_doc_example(&directory.path, "Lib.one()\n").unwrap();
+        let json =
+            Project::for_doc_example(&directory.path, "let _v = Json.Null\nLib.one()\n").unwrap();
+        assert!(std_sources(&json) > std_sources(&plain));
     }
 
     #[test]

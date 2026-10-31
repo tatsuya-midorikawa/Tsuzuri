@@ -82,15 +82,37 @@ fn join head tail =
 		| (remaining, Maybe.None) -> rest = remaining
 	result
 
+/// An empty map.
+///
+/// ```tsuzuri run=0
+/// let map: Map<string, i64> = Map.empty()
+/// Map.length map
+/// ```
 def empty :: Map<'key, 'value>
 fn empty = Map { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
+/// A map with one entry, `key` with `value`.
+///
+/// ```tsuzuri run=one
+/// let map = Map.singleton 1 "one"
+/// $"{Map.at 1 map}"
+/// ```
 def singleton :: own 'key -> own 'value -> Map<'key, 'value>
 fn singleton key value = Map { head: Vec.push_owned (Entry { key: key, value: value }) (Vec.empty()), rest: Vec.empty(), length: 1 }
 
+/// The number of entries.
+///
+/// ```tsuzuri run=2
+/// Map.empty() |> Map.insert "a" 1 |> Map.insert "b" 2 |> Map.insert "a" 3 |> Map.length
+/// ```
 def length :: ref Map<'key, 'value> -> i64
 fn length map = map.length
 
+/// Whether the map has no entries.
+///
+/// ```tsuzuri run=true
+/// Map.singleton 1 "one" |> Map.remove 1 |> Map.is_empty
+/// ```
 def is_empty :: ref Map<'key, 'value> -> bool
 fn is_empty map = map.length == 0
 
@@ -98,6 +120,12 @@ private def chunk_total :: ref Map<'key, 'value> -> i64
 fn chunk_total map = if map.length == 0 then 0 else 1 + Vec.length (ref map.rest)
 
 /// The number of chunks that hold the entries (0 for an empty map). A diagnostic for tests, like `HashMap.longest_probe`.
+///
+/// ```tsuzuri run=2
+/// let mut map: Map<i64, i64> = Map.empty()
+/// for key in 1i64 ..= 600 do map = Map.insert key (key * key) map
+/// Map.chunk_count map
+/// ```
 def chunk_count :: ref Map<'key, 'value> -> i64
 fn chunk_count map = chunk_total map
 
@@ -131,11 +159,25 @@ fn locate map key =
 			if Ord.lt (ref entries[middle].key) key then start = middle + 1 else stop = middle
 		if start < size && !(Ord.lt key (ref entries[start].key)) then (low, start) else (low, -1 - start)
 
+/// Whether an entry has `key`.
+///
+/// ```tsuzuri run=true%20false
+/// let map = Map.singleton "tea" 3
+/// $"{Map.contains_key "tea" map} {Map.contains_key "cake" map}"
+/// ```
 def contains_key :: Ord<'key> => own 'key -> ref Map<'key, 'value> -> bool
 fn contains_key key map =
 	match locate map (ref key) with
 	| (_chunk, offset) -> offset >= 0
 
+/// The value for `key`, or `None`.
+///
+/// ```tsuzuri run=3%200
+/// let prices = Map.singleton "tea" 3
+/// let tea = Map.get "tea" prices |> Maybe.default_value 0
+/// let cake = Map.get "cake" prices |> Maybe.default_value 0
+/// $"{tea} {cake}"
+/// ```
 def get :: (Ord<'key>, Copy<'value>) => own 'key -> ref Map<'key, 'value> -> Maybe<'value>
 fn get key map =
 	match locate map (ref key) with
@@ -145,6 +187,12 @@ fn get key map =
 			Maybe.Some entries[offset].value
 		else Maybe.None
 
+/// A reference to the value for `key`; traps when no entry has it.
+///
+/// ```tsuzuri run=two
+/// let names = Map.empty() |> Map.insert 2 "two" |> Map.insert 1 "one"
+/// $"{Map.at 2 names}"
+/// ```
 def at :: Ord<'key> => own 'key -> ref Map<'key, 'value> -> ref 'value
 fn at key map =
 	match locate map (ref key) with
@@ -215,6 +263,11 @@ fn beyond_last map key =
 		assert (Eq.eq (ref entries[last].key) (ref entries[last].key))
 		Ord.lt (ref entries[last].key) key
 
+/// Adds an entry for `key` with `value`, or replaces the value of the entry that has `key`.
+///
+/// ```tsuzuri run=[(1,%2010),%20(2,%2030)]
+/// Map.empty() |> Map.insert 2 20 |> Map.insert 1 10 |> Map.insert 2 30 |> Map.to_array
+/// ```
 def insert :: Ord<'key> => own 'key -> own 'value -> own Map<'key, 'value> -> Map<'key, 'value>
 fn insert key value map =
 	if beyond_last (ref map) (ref key) then
@@ -257,6 +310,12 @@ fn delete_chunk map index =
 		match remove_at map.rest (index - 1) with
 		| (others, _gone) -> Map { head: map.head, rest: others, length: count }
 
+/// Removes the entry that has `key`; a map without one comes back unchanged.
+///
+/// ```tsuzuri run=[3]
+/// let map = Map.empty() |> Map.insert 1 10 |> Map.insert 3 30
+/// map |> Map.remove 1 |> Map.remove 2 |> Map.keys
+/// ```
 def remove :: Ord<'key> => own 'key -> own Map<'key, 'value> -> Map<'key, 'value>
 fn remove key map =
 	match locate (ref map) (ref key) with
@@ -300,6 +359,11 @@ fn append_values output entries =
 		offset = offset + 1
 	result
 
+/// The entries as `(key, value)` pairs, in ascending key order.
+///
+/// ```tsuzuri run=[(1,%2010),%20(2,%2020)]
+/// Map.empty() |> Map.insert 2 20 |> Map.insert 1 10 |> Map.to_array
+/// ```
 def to_array :: (Copy<'key>, Copy<'value>) => ref Map<'key, 'value> -> [('key * 'value)]
 fn to_array map =
 	let mut output = append_pairs (Vec.with_capacity map.length) (ref map.head)
@@ -309,6 +373,11 @@ fn to_array map =
 		chunk = chunk + 1
 	Vec.to_array output
 
+/// The keys in ascending order.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Map.empty() |> Map.insert 3 "c" |> Map.insert 1 "a" |> Map.insert 2 "b" |> Map.keys
+/// ```
 def keys :: Copy<'key> => ref Map<'key, 'value> -> ['key]
 fn keys map =
 	let mut output = append_keys (Vec.with_capacity map.length) (ref map.head)
@@ -318,6 +387,11 @@ fn keys map =
 		chunk = chunk + 1
 	Vec.to_array output
 
+/// The values in ascending order of their keys.
+///
+/// ```tsuzuri run=[10,%2020,%2030]
+/// Map.empty() |> Map.insert "c" 30 |> Map.insert "a" 10 |> Map.insert "b" 20 |> Map.values
+/// ```
 def values :: Copy<'value> => ref Map<'key, 'value> -> ['value]
 fn values map =
 	let mut output = append_values (Vec.with_capacity map.length) (ref map.head)
@@ -327,6 +401,12 @@ fn values map =
 		chunk = chunk + 1
 	Vec.to_array output
 
+/// Folds `folder` over the entries in ascending key order, starting from `initial`.
+///
+/// ```tsuzuri run=a1b2
+/// let map = Map.empty() |> Map.insert "b" 2 |> Map.insert "a" 1
+/// Map.fold (\text key value -> $"{text}{key}{deref value}") "" map
+/// ```
 def fold :: own ('state -> ref 'key -> ref 'value -> 'state) -> own 'state -> ref Map<'key, 'value> -> 'state
 fn fold folder initial map =
 	let mut state = initial
@@ -350,11 +430,25 @@ fn rec iter_from map chunk offset = Seq.defer (\() ->
 		(next, Maybe.Some (ref entries[offset].key, ref entries[offset].value))
 	else (Seq.empty(), Maybe.None))
 
+/// A sequence of references to the keys and values, in ascending key order.
+///
+/// ```tsuzuri run=a=1;b=2;
+/// let map = Map.empty() |> Map.insert "b" 2 |> Map.insert "a" 1
+/// let mut text = ""
+/// for (key, value) in Map.iter map do text = $"{text}{key}={deref value};"
+/// text
+/// ```
 def iter :: ref Map<'key, 'value> -> Seq<(ref 'key * ref 'value)>
 fn iter map = iter_from map 0 0
 
 /// Whether the chunks obey their rules: 1 to 512 entries each, more than 256 entries in any two neighbours, strictly ascending keys,
 /// and `length` equal to the number of entries. A diagnostic for tests, like `HashMap.longest_probe`.
+///
+/// ```tsuzuri run=true
+/// let mut map: Map<i64, i64> = Map.empty()
+/// for key in 1i64 ..= 1000 do map = Map.insert (key * 7 % 1000) key map
+/// Map.invariants_hold map
+/// ```
 def invariants_hold :: Ord<'key> => ref Map<'key, 'value> -> bool
 fn invariants_hold map =
 	let total = chunk_total map

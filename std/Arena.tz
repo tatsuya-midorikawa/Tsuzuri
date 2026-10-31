@@ -33,14 +33,30 @@ instance Hash<Handle<'a>> {
 }
 
 /// An empty arena. It allocates nothing until the first insertion.
+///
+/// ```tsuzuri run=0
+/// let arena: Arena<string> = Arena.empty()
+/// Arena.length arena
+/// ```
 def empty :: Arena<'a>
 fn empty = Arena { id: Arena.__next_id(), values: Vec.empty(), owners: Vec.empty(), slots: Vec.empty(), free: -1 }
 
 /// An empty arena with room for `count` values; a negative count traps.
+///
+/// ```tsuzuri run=0
+/// let arena: Arena<i64> = Arena.with_capacity 16
+/// Arena.length arena
+/// ```
 def with_capacity :: own i64 -> Arena<'a>
 fn with_capacity count = Arena { id: Arena.__next_id(), values: Vec.with_capacity count, owners: Vec.with_capacity count, slots: Vec.with_capacity count, free: -1 }
 
 /// The number of values in the arena.
+///
+/// ```tsuzuri run=1
+/// let empty: Arena<string> = Arena.empty()
+/// match Arena.insert "a" empty with
+/// | (arena, _) -> Arena.length arena
+/// ```
 def length :: ref Arena<'a> -> i64
 fn length arena = Vec.length (ref arena.values)
 
@@ -54,16 +70,40 @@ fn position arena handle =
 	else -1
 
 /// Whether `handle` names a value of this arena.
+///
+/// ```tsuzuri run=true%20false
+/// let empty: Arena<i64> = Arena.empty()
+/// match Arena.insert 7 empty with
+/// | (arena, handle) ->
+///     let before = Arena.contains handle arena
+///     match Arena.remove handle arena with
+///     | (emptied, _) -> $"{before} {Arena.contains handle emptied}"
+/// ```
 def contains :: own Handle<'a> -> ref Arena<'a> -> bool
 fn contains handle arena = position arena handle >= 0
 
 /// The value that `handle` names, or `None` when the handle is removed or from another arena.
+///
+/// ```tsuzuri run=found%20node
+/// let empty: Arena<string> = Arena.empty()
+/// match Arena.insert "node" empty with
+/// | (arena, handle) ->
+///     match Arena.get handle arena with
+///     | Maybe.Some text -> $"found {text}"
+///     | Maybe.None -> "missing"
+/// ```
 def get :: own Handle<'a> -> ref Arena<'a> -> Maybe<ref 'a>
 fn get handle arena =
 	let index = position arena handle
 	if index >= 0 then Maybe.Some (ref arena.values[index]) else Maybe.None
 
 /// The value that `handle` names; traps when the handle is removed or from another arena.
+///
+/// ```tsuzuri run=42
+/// let empty: Arena<i64> = Arena.empty()
+/// match Arena.insert 42 empty with
+/// | (arena, handle) -> deref (Arena.at handle arena)
+/// ```
 def at :: own Handle<'a> -> ref Arena<'a> -> ref 'a
 fn at handle arena =
 	let index = position arena handle
@@ -71,6 +111,12 @@ fn at handle arena =
 	ref arena.values[index]
 
 /// Moves `value` into the arena and returns the arena with a handle that names it.
+///
+/// ```tsuzuri run=1%20first
+/// let empty: Arena<string> = Arena.empty()
+/// match Arena.insert "first" empty with
+/// | (arena, handle) -> $"{Arena.length arena} {Arena.at handle arena}"
+/// ```
 def insert :: own 'a -> own Arena<'a> -> (Arena<'a> * Handle<'a>)
 fn insert value arena =
 	match arena with
@@ -89,6 +135,14 @@ fn insert value arena =
 /// Moves the value that `handle` names out of the arena. The last value takes its position, and
 /// its slot is reused last-in first-out with the next generation. An invalid handle returns the
 /// arena unchanged with `None`.
+///
+/// ```tsuzuri run=0%20gone
+/// let empty: Arena<string> = Arena.empty()
+/// match Arena.insert "gone" empty with
+/// | (arena, handle) ->
+///     match Arena.remove handle arena with
+///     | (rest, removed) -> $"{Arena.length rest} {Maybe.get removed}"
+/// ```
 def remove :: own Handle<'a> -> own Arena<'a> -> (Arena<'a> * Maybe<'a>)
 fn remove handle arena =
 	let target = position (ref arena) handle
@@ -111,6 +165,14 @@ fn remove handle arena =
 
 /// Replaces the value that `handle` names with `change value`, keeping the handle valid; traps
 /// without calling `change` when the handle is removed or from another arena.
+///
+/// ```tsuzuri run=42
+/// let empty: Arena<i64> = Arena.empty()
+/// match Arena.insert 40 empty with
+/// | (arena, handle) ->
+///     let updated = Arena.update handle (\value -> value + 2) arena
+///     deref (Arena.at handle updated)
+/// ```
 def update :: own Handle<'a> -> own ('a -> 'a) -> own Arena<'a> -> Arena<'a>
 fn update handle change arena =
 	let target = position (ref arena) handle
@@ -134,5 +196,14 @@ fn rec iter_from arena index = Seq.defer (\() ->
 
 /// The handles and values of the arena in dense order: insertion order until a removal moves the
 /// last value into the removed one's position.
+///
+/// ```tsuzuri run=123
+/// let mut arena: Arena<i64> = Arena.empty()
+/// for value in 1i64 ..= 3 do
+///     match Arena.insert value arena with | (next, _) -> arena = next
+/// let mut text = ""
+/// for (_handle, value) in Arena.iter arena do text = text + to_string (deref value)
+/// text
+/// ```
 def iter :: ref Arena<'a> -> Seq<(Handle<'a> * ref 'a)>
 fn iter arena = iter_from arena 0

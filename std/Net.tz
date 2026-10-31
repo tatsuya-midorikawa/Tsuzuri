@@ -114,6 +114,12 @@ fn ascii_bytes text =
 /// ("127.1" and "0x7f.0.0.1" are not accepted) and IPv6 text are read, a port is required, and there is
 /// no room for spaces, a zone, or a leading zero in a number, so a check made on the text means the
 /// same address a connection goes to.
+///
+/// ```tsuzuri run=127.0.0.1%20port%208080
+/// match Net.parse_address "127.0.0.1:8080" with
+/// | Maybe.Some address -> Net.ip_text address + " port " + to_string (Net.port address)
+/// | Maybe.None -> "not an address"
+/// ```
 def parse_address :: ref string -> Maybe<Address>
 fn parse_address text =
 	match ascii_bytes text with
@@ -146,6 +152,12 @@ fn parse_address text =
 			else Maybe.Some (Address { v6: false, high: 0i64u, low: host as i64u, port: port })
 
 /// An IP address without a port ("127.0.0.1" or "::1", no brackets) with the port `port`, which must be 0 to 65535.
+///
+/// ```tsuzuri run=[::1]:443
+/// match Net.parse_ip 443 "::1" with
+/// | Maybe.Some address -> Net.address_text address
+/// | Maybe.None -> "not an address"
+/// ```
 def parse_ip :: own i64 -> ref string -> Maybe<Address>
 fn parse_ip port text =
 	match ascii_bytes text with
@@ -233,12 +245,22 @@ private def v4_part :: own i64u -> own i64u -> string
 fn v4_part low shift = to_string (((low >>> shift) &&& 255i64u) as i64)
 
 /// The IP address as text without its port: "127.0.0.1" or "::1".
+///
+/// ```tsuzuri run=::1
+/// let address = Maybe.get (Net.parse_address "[::1]:8080")
+/// Net.ip_text address
+/// ```
 def ip_text :: own Address -> string
 fn ip_text address =
 	if address.v6 then v6_text address
 	else v4_part address.low 24i64u + "." + v4_part address.low 16i64u + "." + v4_part address.low 8i64u + "." + v4_part address.low 0i64u
 
 /// The address as `parse_address` reads it: "127.0.0.1:80" or "[::1]:80".
+///
+/// ```tsuzuri run=[2001:db8::1]:443
+/// let address = Maybe.get (Net.parse_address "[2001:DB8:0:0:0:0:0:1]:443")
+/// Net.address_text address
+/// ```
 def address_text :: own Address -> string
 fn address_text address =
 	if address.v6 then "[" + ip_text address + "]:" + to_string address.port
@@ -249,10 +271,21 @@ instance Display<Address> {
 }
 
 /// The port, 0 to 65535.
+///
+/// ```tsuzuri run=5432
+/// let address = Maybe.get (Net.parse_address "192.0.2.10:5432")
+/// Net.port address
+/// ```
 def port :: own Address -> i64
 fn port address = address.port
 
 /// Whether the address is an IPv6 one.
+///
+/// ```tsuzuri run=true%20false
+/// let local = Maybe.get (Net.parse_address "[::1]:80")
+/// let remote = Maybe.get (Net.parse_address "192.0.2.1:80")
+/// to_string (Net.is_ipv6 local) + " " + to_string (Net.is_ipv6 remote)
+/// ```
 def is_ipv6 :: own Address -> bool
 fn is_ipv6 address = address.v6
 
@@ -264,6 +297,11 @@ union ErrorKind = TimedOut | ConnectionRefused | ConnectionReset | AddressInUse 
 /// `ConnectionRefused`, `ConnectionReset` (also an aborted connection and a broken pipe), `AddressInUse`,
 /// `AddressNotAvailable`, and `Unreachable` (network or host down or unreachable). A failure without a code
 /// (0) and any other is `Unclassified`; its `Os.ErrorKind` still says more.
+///
+/// ```tsuzuri run=Unclassified
+/// let failure = Os.Error { kind: Os.InvalidInput, code: 0i32 }
+/// to_string (Net.error_kind failure)
+/// ```
 def error_kind :: own Os.Error -> ErrorKind
 fn error_kind error =
 	match Net.__classify error.code with
@@ -457,11 +495,26 @@ fn resolve_with host port =
 /// its "xn--" form. Any other host asks the system's resolver, which may read /etc/hosts or the network and cannot be
 /// interrupted, and whose answer is not authenticated; a name that does not exist is `NotFound`. A host that is empty,
 /// longer than 253 bytes, or holds a NUL is `InvalidInput`.
+///
+/// ```tsuzuri
+/// let! found = Net.resolve "example.com" 443
+/// match found with
+/// | Result.Ok addresses -> IO.write_line (to_string addresses.length + " addresses")
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def resolve :: own string -> own i64 -> IO<Result<[Address], Os.Error>>
 fn resolve host port = IO.map (\() -> resolve_with (ref host) port) (IO.pure ())
 
 /// Connects to an address. A timeout is milliseconds (1 to 2147483647) for the whole call and `None` waits for the
 /// system; anything else is `InvalidInput`. A refused connection is `Error` with `error_kind` `ConnectionRefused`.
+///
+/// ```tsuzuri
+/// let server = Maybe.get (Net.parse_address "127.0.0.1:8080")
+/// let! connected = Net.connect server (Maybe.Some 5000)
+/// match connected with
+/// | Result.Ok stream -> IO.write_line ("connected from " + Net.address_text (Net.stream_local_addr stream))
+/// | Result.Error error -> IO.write_line ("failed: " + to_string (Net.error_kind error))
+/// ```
 def connect :: own Address -> own Maybe<i64> -> IO<Result<TcpStream, Os.Error>>
 fn connect address timeout = IO.map (\() -> connect_with address timeout) (IO.pure ())
 
@@ -469,11 +522,29 @@ fn connect address timeout = IO.map (\() -> connect_with address timeout) (IO.pu
 /// normal. An empty result means the peer ended its sending (the end of the stream). The timeout is for the whole
 /// call and, when it passes with nothing to read, the result is `Error` with `error_kind` `TimedOut` and the
 /// stream is still good.
+///
+/// ```tsuzuri
+/// # let! connected = Net.connect (Maybe.get (Net.parse_address "127.0.0.1:8080")) (Maybe.Some 5000)
+/// # let stream = Result.get connected
+/// let! received = Net.read stream 4096 (Maybe.Some 5000)
+/// match received with
+/// | Result.Ok bytes -> IO.write_line (if bytes.length == 0 then "end of stream" else to_string bytes.length + " bytes")
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def read :: own TcpStream -> own i64 -> own Maybe<i64> -> IO<Result<[ubyte], Os.Error>>
 fn read stream count timeout = IO.map (\() -> read_with stream count timeout) (IO.pure ())
 
 /// Writes all the bytes, however many sends that takes, within the timeout of the whole call. A failure
 /// part way does not say how much was sent.
+///
+/// ```tsuzuri
+/// # let! connected = Net.connect (Maybe.get (Net.parse_address "127.0.0.1:8080")) (Maybe.Some 5000)
+/// # let stream = Result.get connected
+/// let! sent = Net.write stream (Utf8String.to_bytes u8"ping") (Maybe.Some 5000)
+/// match sent with
+/// | Result.Ok _ -> IO.write_line "sent"
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def write :: own TcpStream -> own [ubyte] -> own Maybe<i64> -> IO<Result<unit, Os.Error>>
 fn write stream data timeout = IO.map (\() -> write_with stream (ref data) timeout) (IO.pure ())
 
@@ -485,63 +556,163 @@ fn shutdown_number how =
 	| Both -> 3i32
 
 /// Ends reading, writing, or both on a stream without closing it. `Write` tells the peer that no more data comes.
+///
+/// ```tsuzuri
+/// # let! connected = Net.connect (Maybe.get (Net.parse_address "127.0.0.1:8080")) (Maybe.Some 5000)
+/// # let stream = Result.get connected
+/// let! _sent = Net.write stream (Utf8String.to_bytes u8"last request") (Maybe.Some 5000)
+/// let! ended = Net.shutdown stream Net.Write
+/// let! reply = Net.read stream 4096 (Maybe.Some 5000)
+/// ```
 def shutdown :: own TcpStream -> own Shutdown -> IO<Result<unit, Os.Error>>
 fn shutdown stream how = IO.map (\() -> no_value (Net.__close (shutdown_number how) stream.id)) (IO.pure ())
 
 /// Closes a stream. The handle is dead afterwards even when the system reports a failure, so closing twice is `InvalidInput`.
+///
+/// ```tsuzuri
+/// # let! connected = Net.connect (Maybe.get (Net.parse_address "127.0.0.1:8080")) (Maybe.Some 5000)
+/// # let stream = Result.get connected
+/// let! closed = Net.close stream
+/// match closed with
+/// | Result.Ok _ -> IO.write_line "closed"
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def close :: own TcpStream -> IO<Result<unit, Os.Error>>
 fn close stream = IO.map (\() -> no_value (Net.__close 0i32 stream.id)) (IO.pure ())
 
 /// The address of this end of the connection.
+///
+/// ```tsuzuri
+/// # let! connected = Net.connect (Maybe.get (Net.parse_address "127.0.0.1:8080")) (Maybe.Some 5000)
+/// # let stream = Result.get connected
+/// IO.write_line ("this end is " + Net.address_text (Net.stream_local_addr stream))
+/// ```
 def stream_local_addr :: own TcpStream -> Address
 fn stream_local_addr stream = stream.local
 
 /// The address of the other end of the connection.
+///
+/// ```tsuzuri
+/// # let! connected = Net.connect (Maybe.get (Net.parse_address "127.0.0.1:8080")) (Maybe.Some 5000)
+/// # let stream = Result.get connected
+/// IO.write_line ("connected to " + Net.address_text (Net.peer_addr stream))
+/// ```
 def peer_addr :: own TcpStream -> Address
 fn peer_addr stream = stream.peer
 
 /// Starts listening on an address, with `SO_REUSEADDR` and the system's longest backlog. Port 0 takes a free port,
 /// which `local_addr` tells. Listening on "0.0.0.0" or "::" is open to the network; use "127.0.0.1" or "::1"
 /// for the machine itself.
+///
+/// ```tsuzuri
+/// let loopback = Maybe.get (Net.parse_address "127.0.0.1:0")
+/// let! bound = Net.bind loopback
+/// match bound with
+/// | Result.Ok listener -> IO.write_line ("listening on " + Net.address_text (Net.local_addr listener))
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def bind :: own Address -> IO<Result<TcpListener, Os.Error>>
 fn bind address = IO.map (\() -> bind_with address) (IO.pure ())
 
 /// Waits for a connection and returns it. A timeout is as for `connect`.
+///
+/// ```tsuzuri
+/// # let! bound = Net.bind (Maybe.get (Net.parse_address "127.0.0.1:8080"))
+/// # let listener = Result.get bound
+/// let! accepted = Net.accept listener (Maybe.Some 30000)
+/// match accepted with
+/// | Result.Ok stream -> IO.write_line ("connection from " + Net.address_text (Net.peer_addr stream))
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def accept :: own TcpListener -> own Maybe<i64> -> IO<Result<TcpStream, Os.Error>>
 fn accept listener timeout = IO.map (\() -> accept_with listener timeout) (IO.pure ())
 
 /// The address a listener is bound to, with the real port when it was bound to port 0.
+///
+/// ```tsuzuri
+/// # let! bound = Net.bind (Maybe.get (Net.parse_address "127.0.0.1:0"))
+/// # let listener = Result.get bound
+/// IO.write_line ("port " + to_string (Net.port (Net.local_addr listener)))
+/// ```
 def local_addr :: own TcpListener -> Address
 fn local_addr listener = listener.local
 
 /// Closes a listener; the handle is dead afterwards, as for `close`.
+///
+/// ```tsuzuri
+/// # let! bound = Net.bind (Maybe.get (Net.parse_address "127.0.0.1:8080"))
+/// # let listener = Result.get bound
+/// let! closed = Net.close_listener listener
+/// ```
 def close_listener :: own TcpListener -> IO<Result<unit, Os.Error>>
 fn close_listener listener = IO.map (\() -> no_value (Net.__close 0i32 listener.id)) (IO.pure ())
 
 /// Binds a UDP socket to an address; port 0 takes a free port, which `udp_local_addr` tells.
+///
+/// ```tsuzuri
+/// let loopback = Maybe.get (Net.parse_address "127.0.0.1:0")
+/// let! bound = Net.bind_udp loopback
+/// match bound with
+/// | Result.Ok socket -> IO.write_line ("bound to " + Net.address_text (Net.udp_local_addr socket))
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def bind_udp :: own Address -> IO<Result<UdpSocket, Os.Error>>
 fn bind_udp address = IO.map (\() -> bind_udp_with address) (IO.pure ())
 
 /// Sends all the bytes as one datagram. A datagram the system finds too large is `InvalidInput`.
+///
+/// ```tsuzuri
+/// # let! bound = Net.bind_udp (Maybe.get (Net.parse_address "127.0.0.1:0"))
+/// # let socket = Result.get bound
+/// let target = Maybe.get (Net.parse_address "127.0.0.1:9000")
+/// let! sent = Net.send_to socket (Utf8String.to_bytes u8"ping") target
+/// ```
 def send_to :: own UdpSocket -> own [ubyte] -> own Address -> IO<Result<unit, Os.Error>>
 fn send_to socket data target = IO.map (\() -> no_value (Net.__write 1i32 socket.id (ref data) (meta_of target) (high_of target) (low_of target) (-1))) (IO.pure ())
 
 /// Receives one datagram of at most `count` bytes (1 to 16777216) and where it came from. A datagram that is longer
 /// than `count` is dropped and the result is `InvalidInput`, never a shortened datagram. The source address is not
 /// authenticated. The timeout is as for `read`.
+///
+/// ```tsuzuri
+/// # let! bound = Net.bind_udp (Maybe.get (Net.parse_address "127.0.0.1:9000"))
+/// # let socket = Result.get bound
+/// let! received = Net.recv_from socket 1500 (Maybe.Some 1000)
+/// match received with
+/// | Result.Ok (bytes, sender) -> IO.write_line (to_string bytes.length + " bytes from " + Net.address_text sender)
+/// | Result.Error error -> IO.write_line (Os.message error)
+/// ```
 def recv_from :: own UdpSocket -> own i64 -> own Maybe<i64> -> IO<Result<([ubyte] * Address), Os.Error>>
 fn recv_from socket count timeout = IO.map (\() -> recv_with socket count timeout) (IO.pure ())
 
 /// The address a UDP socket is bound to, with the real port when it was bound to port 0.
+///
+/// ```tsuzuri
+/// # let! bound = Net.bind_udp (Maybe.get (Net.parse_address "127.0.0.1:0"))
+/// # let socket = Result.get bound
+/// IO.write_line ("port " + to_string (Net.port (Net.udp_local_addr socket)))
+/// ```
 def udp_local_addr :: own UdpSocket -> Address
 fn udp_local_addr socket = socket.local
 
 /// Closes a UDP socket; the handle is dead afterwards, as for `close`.
+///
+/// ```tsuzuri
+/// # let! bound = Net.bind_udp (Maybe.get (Net.parse_address "127.0.0.1:0"))
+/// # let socket = Result.get bound
+/// let! closed = Net.close_udp socket
+/// ```
 def close_udp :: own UdpSocket -> IO<Result<unit, Os.Error>>
 fn close_udp socket = IO.map (\() -> no_value (Net.__close 0i32 socket.id)) (IO.pure ())
 
 /// Connects, runs the action with the stream, and closes it before returning, whether or not the action's own
 /// result is an error. The action's value is returned unless closing fails.
+///
+/// ```tsuzuri
+/// let server = Maybe.get (Net.parse_address "127.0.0.1:8080")
+/// let! reply = Net.with_connection server (Maybe.Some 5000) (\stream ->
+///     Net.read stream 4096 (Maybe.Some 5000))
+/// ```
 def with_connection :: Capture<'a> => own Address -> own Maybe<i64> -> own (TcpStream -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_connection address timeout body =
 	connect address timeout |> IO.bind (\opened ->
@@ -555,6 +726,13 @@ fn with_connection address timeout body =
 					| Result.Error error -> Result.Error error)))
 
 /// Waits for a connection, runs the action with the stream, and closes it, as `with_connection` does.
+///
+/// ```tsuzuri
+/// # let! bound = Net.bind (Maybe.get (Net.parse_address "127.0.0.1:8080"))
+/// # let listener = Result.get bound
+/// let! served = Net.with_accepted listener (Maybe.Some 30000) (\stream ->
+///     Net.write stream (Utf8String.to_bytes u8"hello\n") (Maybe.Some 5000))
+/// ```
 def with_accepted :: Capture<'a> => own TcpListener -> own Maybe<i64> -> own (TcpStream -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_accepted listener timeout body =
 	accept listener timeout |> IO.bind (\accepted ->
@@ -568,6 +746,13 @@ fn with_accepted listener timeout body =
 					| Result.Error error -> Result.Error error)))
 
 /// Binds a listener, runs the action with it, and closes it, as `with_connection` does.
+///
+/// ```tsuzuri
+/// let address = Maybe.get (Net.parse_address "127.0.0.1:8080")
+/// let! served = Net.with_listener address (\listener ->
+///     Net.with_accepted listener Maybe.None (\stream ->
+///         Net.write stream (Utf8String.to_bytes u8"hello\n") (Maybe.Some 5000)))
+/// ```
 def with_listener :: Capture<'a> => own Address -> own (TcpListener -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_listener address body =
 	bind address |> IO.bind (\opened ->
@@ -581,6 +766,12 @@ fn with_listener address body =
 					| Result.Error error -> Result.Error error)))
 
 /// Binds a UDP socket, runs the action with it, and closes it, as `with_connection` does.
+///
+/// ```tsuzuri
+/// let local = Maybe.get (Net.parse_address "127.0.0.1:0")
+/// let target = Maybe.get (Net.parse_address "127.0.0.1:9000")
+/// let! sent = Net.with_udp local (\socket -> Net.send_to socket (Utf8String.to_bytes u8"ping") target)
+/// ```
 def with_udp :: Capture<'a> => own Address -> own (UdpSocket -> IO<'a>) -> IO<Result<'a, Os.Error>>
 fn with_udp address body =
 	bind_udp address |> IO.bind (\opened ->
@@ -648,6 +839,15 @@ fn connected outcome =
 /// Connects to an address without blocking the executor. The timeout is for the whole connect and `None` waits for
 /// the system, as for `connect`. The socket belongs to the operation until the connect ends: cancelling it closes the
 /// socket.
+///
+/// ```tsuzuri
+/// def probe :: own Net.Address -> Async<Result<unit, Os.Error>>
+/// fn probe server = Async {
+///     match! Net.connect_async server (Maybe.Some 1000) with
+///     | Result.Error error -> return Result.Error error
+///     | Result.Ok stream -> return! Net.close_async stream
+/// }
+/// ```
 def connect_async :: own Address -> own Maybe<i64> -> Async<Result<TcpStream, Os.Error>>
 fn connect_async address timeout =
 	let wait = wait_of timeout
@@ -671,6 +871,15 @@ fn rec accept_loop listener deadline =
 			else Async.Return (failed (0 - handle)))
 
 /// Waits for a connection without blocking the executor and returns it. A timeout is as for `connect_async`.
+///
+/// ```tsuzuri
+/// def greet_one :: own Net.TcpListener -> Async<Result<unit, Os.Error>>
+/// fn greet_one listener = Async {
+///     match! Net.accept_async listener (Maybe.Some 30000) with
+///     | Result.Error error -> return Result.Error error
+///     | Result.Ok stream -> return! Net.write_async stream (Utf8String.to_bytes u8"hello\n") (Maybe.Some 5000)
+/// }
+/// ```
 def accept_async :: own TcpListener -> own Maybe<i64> -> Async<Result<TcpStream, Os.Error>>
 fn accept_async listener timeout =
 	let wait = wait_of timeout
@@ -692,6 +901,15 @@ fn rec read_loop stream count deadline =
 
 /// Reads what has arrived without blocking the executor, at most `count` bytes (1 to 16777216): the same result as
 /// `read`, an empty result at the end of the stream, and `TimedOut` when the timeout passes first.
+///
+/// ```tsuzuri
+/// def echo :: own Net.TcpStream -> Async<Result<unit, Os.Error>>
+/// fn echo stream = Async {
+///     match! Net.read_async stream 4096 (Maybe.Some 5000) with
+///     | Result.Error error -> return Result.Error error
+///     | Result.Ok bytes -> return! Net.write_async stream bytes (Maybe.Some 5000)
+/// }
+/// ```
 def read_async :: own TcpStream -> own i64 -> own Maybe<i64> -> Async<Result<[ubyte], Os.Error>>
 fn read_async stream count timeout =
 	let wait = wait_of timeout
@@ -712,6 +930,15 @@ fn rec write_loop stream data offset deadline =
 
 /// Writes all the bytes without blocking the executor, however many sends that takes, within the timeout of the
 /// whole call.
+///
+/// ```tsuzuri
+/// def ask :: own Net.TcpStream -> Async<Result<[ubyte], Os.Error>>
+/// fn ask stream = Async {
+///     match! Net.write_async stream (Utf8String.to_bytes u8"ping") (Maybe.Some 5000) with
+///     | Result.Error error -> return Result.Error error
+///     | Result.Ok _ -> return! Net.read_async stream 4096 (Maybe.Some 5000)
+/// }
+/// ```
 def write_async :: own TcpStream -> own [ubyte] -> own Maybe<i64> -> Async<Result<unit, Os.Error>>
 fn write_async stream data timeout =
 	let wait = wait_of timeout
@@ -732,6 +959,15 @@ fn rec recv_loop socket count deadline =
 			else Async.Return (failed status))
 
 /// Receives one datagram without blocking the executor, as `recv_from` does.
+///
+/// ```tsuzuri
+/// def echo_datagram :: own Net.UdpSocket -> Async<Result<unit, Os.Error>>
+/// fn echo_datagram socket = Async {
+///     match! Net.recv_from_async socket 1500 (Maybe.Some 5000) with
+///     | Result.Error error -> return Result.Error error
+///     | Result.Ok (bytes, sender) -> return! Net.send_to_async socket bytes sender
+/// }
+/// ```
 def recv_from_async :: own UdpSocket -> own i64 -> own Maybe<i64> -> Async<Result<([ubyte] * Address), Os.Error>>
 fn recv_from_async socket count timeout =
 	let wait = wait_of timeout
@@ -755,30 +991,79 @@ fn rec send_loop socket data target =
 		else Async.Return (failed (0 - sent)))
 
 /// Sends all the bytes as one datagram without blocking the executor, as `send_to` does.
+///
+/// ```tsuzuri
+/// def ping :: own Net.UdpSocket -> own Net.Address -> Async<Result<unit, Os.Error>>
+/// fn ping socket target = Net.send_to_async socket (Utf8String.to_bytes u8"ping") target
+/// ```
 def send_to_async :: own UdpSocket -> own [ubyte] -> own Address -> Async<Result<unit, Os.Error>>
 fn send_to_async socket data target = send_loop socket data target
 
 /// Binds a listener for an async computation, as `bind` does. It never waits.
+///
+/// ```tsuzuri
+/// let loopback = Maybe.get (Net.parse_address "127.0.0.1:0")
+/// let! bound = Async.block_on (Net.bind_async loopback)
+/// ```
 def bind_async :: own Address -> Async<Result<TcpListener, Os.Error>>
 fn bind_async address = Async.Delay (\() -> Async.Return (bind_with address))
 
 /// Binds a UDP socket for an async computation, as `bind_udp` does. It never waits.
+///
+/// ```tsuzuri
+/// let loopback = Maybe.get (Net.parse_address "127.0.0.1:0")
+/// let! bound = Async.block_on (Net.bind_udp_async loopback)
+/// ```
 def bind_udp_async :: own Address -> Async<Result<UdpSocket, Os.Error>>
 fn bind_udp_async address = Async.Delay (\() -> Async.Return (bind_udp_with address))
 
 /// Closes a stream for an async computation, as `close` does. A computation that waits on the stream resumes with
 /// `InvalidInput`.
+///
+/// ```tsuzuri
+/// def say_bye :: own Net.TcpStream -> Async<Result<unit, Os.Error>>
+/// fn say_bye stream = Async {
+///     let! _sent = Net.write_async stream (Utf8String.to_bytes u8"bye\n") (Maybe.Some 1000)
+///     return! Net.close_async stream
+/// }
+/// ```
 def close_async :: own TcpStream -> Async<Result<unit, Os.Error>>
 fn close_async stream = Async.Delay (\() -> Async.Return (no_value (Net.__close 0i32 stream.id)))
 
 /// Closes a listener for an async computation, as `close_listener` does.
+///
+/// ```tsuzuri
+/// def accept_last :: own Net.TcpListener -> Async<Result<Net.TcpStream, Os.Error>>
+/// fn accept_last listener = Async {
+///     let! accepted = Net.accept_async listener (Maybe.Some 30000)
+///     let! _closed = Net.close_listener_async listener
+///     return accepted
+/// }
+/// ```
 def close_listener_async :: own TcpListener -> Async<Result<unit, Os.Error>>
 fn close_listener_async listener = Async.Delay (\() -> Async.Return (no_value (Net.__close 0i32 listener.id)))
 
 /// Closes a UDP socket for an async computation, as `close_udp` does.
+///
+/// ```tsuzuri
+/// def send_once :: own Net.UdpSocket -> own Net.Address -> Async<Result<unit, Os.Error>>
+/// fn send_once socket target = Async {
+///     let! sent = Net.send_to_async socket (Utf8String.to_bytes u8"ping") target
+///     let! _closed = Net.close_udp_async socket
+///     return sent
+/// }
+/// ```
 def close_udp_async :: own UdpSocket -> Async<Result<unit, Os.Error>>
 fn close_udp_async socket = Async.Delay (\() -> Async.Return (no_value (Net.__close 0i32 socket.id)))
 
 /// Ends reading, writing, or both on a stream for an async computation, as `shutdown` does.
+///
+/// ```tsuzuri
+/// def finish :: own Net.TcpStream -> Async<Result<unit, Os.Error>>
+/// fn finish stream = Async {
+///     let! _sent = Net.write_async stream (Utf8String.to_bytes u8"done") (Maybe.Some 1000)
+///     return! Net.shutdown_async stream Net.Write
+/// }
+/// ```
 def shutdown_async :: own TcpStream -> own Shutdown -> Async<Result<unit, Os.Error>>
 fn shutdown_async stream how = Async.Delay (\() -> Async.Return (no_value (Net.__close (shutdown_number how) stream.id)))

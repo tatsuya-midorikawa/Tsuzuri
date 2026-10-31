@@ -17,81 +17,179 @@ fn Bind2 left right next =
     | Error error -> Error error
     | Ok (first, second) -> Ok (next first second)
 
+/// Whether `result` is `Ok`.
+///
+/// ```tsuzuri run=true
+/// let parsed: Result<i64, string> = Result.Ok 3
+/// Result.is_ok parsed
+/// ```
 def is_ok :: ref (Result<'a, 'e>) -> bool
 fn is_ok result =
     match result with
     | Ok _ -> true
     | Error _ -> false
 
+/// Whether `result` is `Error`.
+///
+/// ```tsuzuri run=true
+/// let failed: Result<i64, string> = Result.Error "bad"
+/// Result.is_error failed
+/// ```
 def is_error :: ref (Result<'a, 'e>) -> bool
 fn is_error result = ! (is_ok result)
 
+/// The value of an `Ok`; traps on an `Error`.
+///
+/// ```tsuzuri run=42
+/// let parsed: Result<i64, string> = Result.Ok 42
+/// Result.get parsed
+/// ```
 def get :: own Result<'a, 'e> -> 'a
 fn get result =
     match result with
     | Ok value -> value
     | Error _ -> unreachable ()
 
+/// The value of an `Error`; traps on an `Ok`.
+///
+/// ```tsuzuri run=bad%20input
+/// let failed: Result<i64, string> = Result.Error "bad input"
+/// Result.get_error failed
+/// ```
 def get_error :: own Result<'a, 'e> -> 'e
 fn get_error result =
     match result with
     | Error error -> error
     | Ok _ -> unreachable ()
 
+/// The value of an `Ok`, or `fallback` for an `Error`.
+///
+/// ```tsuzuri run=5%200
+/// let parsed: Result<i64, string> = Result.Ok 5
+/// let failed: Result<i64, string> = Result.Error "bad"
+/// $"{Result.default_value 0 parsed} {Result.default_value 0 failed}"
+/// ```
 def default_value :: own 'a -> own Result<'a, 'e> -> 'a
 fn default_value fallback result =
     match result with
     | Ok value -> value
     | Error _ -> fallback
 
+/// The value of an `Ok`, or the result of `fallback ()`, which is called only for an `Error`.
+///
+/// ```tsuzuri run=-1
+/// let failed: Result<i64, string> = Result.Error "bad"
+/// Result.default_with (\() -> -1) failed
+/// ```
 def default_with :: own (unit -> 'a) -> own Result<'a, 'e> -> 'a
 fn default_with fallback result =
     match result with
     | Ok value -> value
     | Error _ -> fallback ()
 
+/// Applies `transform` to the value of an `Ok`; an `Error` stays as it is.
+///
+/// ```tsuzuri run=21
+/// let parsed: Result<i64, string> = Result.Ok 20
+/// parsed |> Result.map (\n -> n + 1) |> Result.default_value 0
+/// ```
 def map :: own ('a -> 'b) -> own Result<'a, 'e> -> Result<'b, 'e>
 fn map transform result =
     match result with
     | Ok value -> Ok (transform value)
     | Error error -> Error error
 
+/// Applies `transform` to a borrow of the value of an `Ok`, leaving `result` as it is; an `Error`
+/// gives a copy of its value.
+///
+/// ```tsuzuri run=5%20hello
+/// let parsed: Result<string, i64> = Result.Ok "hello"
+/// let length = Result.map_ref (\text -> text.length) parsed
+/// $"{Result.default_value 0 length} {Result.get parsed}"
+/// ```
 def map_ref :: Copy<'e> => own (ref 'a -> 'b) -> ref (Result<'a, 'e>) -> Result<'b, 'e>
 fn map_ref transform result =
     match result with
     | Ok value -> Ok (transform (ref value))
     | Error error -> Error error
 
+/// Applies `transform` to the value of an `Error`; an `Ok` stays as it is.
+///
+/// ```tsuzuri run=code%20404
+/// let failed: Result<i64, i64> = Result.Error 404
+/// match Result.map_error (\code -> $"code {code}") failed with
+/// | Result.Ok _ -> "ok"
+/// | Result.Error message -> message
+/// ```
 def map_error :: own ('e -> 'f) -> own Result<'a, 'e> -> Result<'a, 'f>
 fn map_error transform result =
     match result with
     | Ok value -> Ok value
     | Error error -> Error (transform error)
 
+/// Passes the value of an `Ok` to `next`, whose `Result` is the result; an `Error` stays as it is
+/// without calling `next`.
+///
+/// ```tsuzuri run=half%204
+/// let half = \n -> if n % 2 == 0 then Result.Ok (n / 2) else Result.Error "odd"
+/// let parsed: Result<i64, string> = Result.Ok 8
+/// match Result.bind half parsed with
+/// | Result.Ok value -> $"half {value}"
+/// | Result.Error message -> message
+/// ```
 def bind :: own ('a -> Result<'b, 'e>) -> own Result<'a, 'e> -> Result<'b, 'e>
 fn bind next result =
     match result with
     | Ok value -> next value
     | Error error -> Error error
 
+/// Passes a borrow of the value of an `Ok` to `next`, whose `Result` is the result, leaving
+/// `result` as it is; an `Error` gives a copy of its value without calling `next`.
+///
+/// ```tsuzuri run=5%20hello
+/// let parsed: Result<string, i64> = Result.Ok "hello"
+/// let long = Result.bind_ref (\text -> if text.length > 3 then Result.Ok text.length else Result.Error 1) parsed
+/// $"{Result.default_value 0 long} {Result.get parsed}"
+/// ```
 def bind_ref :: Copy<'e> => own (ref 'a -> Result<'b, 'e>) -> ref (Result<'a, 'e>) -> Result<'b, 'e>
 fn bind_ref next result =
     match result with
     | Ok value -> next (ref value)
     | Error error -> Error error
 
+/// `result` when it is `Ok`, otherwise the result of `fallback ()`, which is called only then.
+///
+/// ```tsuzuri run=7
+/// let failed: Result<i64, string> = Result.Error "bad"
+/// Result.or_else (\() -> Result.Ok 7) failed |> Result.get
+/// ```
 def or_else :: own (unit -> Result<'a, 'e>) -> own Result<'a, 'e> -> Result<'a, 'e>
 fn or_else fallback result =
     match result with
     | Ok value -> Ok value
     | Error _ -> fallback ()
 
+/// `Some` with the value of an `Ok`, or `None` for an `Error`, whose value is dropped.
+///
+/// ```tsuzuri run=5%20true
+/// let parsed: Result<i64, string> = Result.Ok 5
+/// let failed: Result<i64, string> = Result.Error "bad"
+/// $"{Maybe.default_value 0 (Result.to_maybe parsed)} {Maybe.is_none (Result.to_maybe failed)}"
+/// ```
 def to_maybe :: own Result<'a, 'e> -> Maybe<'a>
 fn to_maybe result =
     match result with
     | Ok value -> Maybe.Some value
     | Error _ -> Maybe.None
 
+/// `Ok` with the value of a `Some`, or `Error error` for `None`.
+///
+/// ```tsuzuri run=missing
+/// let missing: Maybe<i64> = Maybe.None
+/// match Result.of_maybe "missing" missing with
+/// | Result.Ok value -> $"ok {value}"
+/// | Result.Error message -> message
+/// ```
 def of_maybe :: own 'e -> own Maybe<'a> -> Result<'a, 'e>
 fn of_maybe error maybe =
     match maybe with
@@ -104,6 +202,17 @@ fn Return value = Ok value
 def ReturnFrom :: own Result<'a, 'e> -> Result<'a, 'e>
 fn ReturnFrom result = result
 
+/// Passes the value of an `Ok` to `next` (`let!` and `do!` in `Result { }`); an `Error` skips
+/// `next` and is the result.
+///
+/// ```tsuzuri run=3
+/// let total: Result<i64, string> = Result {
+///     let! first = Result.Ok 1
+///     let! second = Result.Ok 2
+///     return first + second
+/// }
+/// Result.default_value 0 total
+/// ```
 def Bind :: own Result<'a, 'e> -> own ('a -> Result<'b, 'e>) -> Result<'b, 'e>
 fn Bind result next = bind next result
 

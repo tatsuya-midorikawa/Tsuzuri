@@ -8,38 +8,73 @@ fn checked_count rows cols =
     rows * cols
 
 /// Takes a row-major array without copying; traps unless its length is rows * cols.
+///
+/// ```tsuzuri run=4
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// deref (Matrix.at 1 0 m)
+/// ```
 def of_array :: own i64 -> own i64 -> own ['a] -> Matrix<'a>
 fn of_array rows cols values =
     assert (values.length == checked_count rows cols)
     Matrix { rows: rows, cols: cols, data: values }
 
 /// Calls `initializer row col` once per element in row-major order.
+///
+/// ```tsuzuri run=12
+/// let m = Matrix.init 2 3 (\row col -> row * 10 + col)
+/// deref (Matrix.at 1 2 m)
+/// ```
 def init :: own i64 -> own i64 -> own (i64 -> i64 -> 'a) -> Matrix<'a>
 fn init rows cols initializer =
     let count = checked_count rows cols
     Matrix { rows: rows, cols: cols, data: new ['a](count, \index -> initializer (index / cols) (index % cols)) }
 
 /// The number of rows.
+///
+/// ```tsuzuri run=2
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// Matrix.rows m
+/// ```
 def rows :: ref Matrix<'a> -> i64
 fn rows matrix = matrix.rows
 
 /// The number of columns.
+///
+/// ```tsuzuri run=3
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// Matrix.cols m
+/// ```
 def cols :: ref Matrix<'a> -> i64
 fn cols matrix = matrix.cols
 
 /// Borrows one element; traps when the row or the column is out of range.
+///
+/// ```tsuzuri run=6
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// deref (Matrix.at 1 2 m)
+/// ```
 def at :: own i64 -> own i64 -> ref Matrix<'a> -> ref 'a
 fn at row col matrix =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
     ref matrix.data[row * matrix.cols + col]
 
 /// Copies one element, or `None` when the row or the column is out of range.
+///
+/// ```tsuzuri run=2%20true
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// $"{Maybe.default_value 0 (Matrix.get 0 1 m)} {Maybe.is_none (Matrix.get 2 0 m)}"
+/// ```
 def get :: Copy<'a> => own i64 -> own i64 -> ref Matrix<'a> -> Maybe<'a>
 fn get row col matrix =
     if row < 0 || row >= matrix.rows || col < 0 || col >= matrix.cols then Maybe.None
     else Maybe.Some matrix.data[row * matrix.cols + col]
 
 /// Borrows one row as a slice without copying; traps when the row is out of range.
+///
+/// ```tsuzuri run=[4,%205,%206]
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// $"{Matrix.row 1 m}"
+/// ```
 def row :: own i64 -> ref Matrix<'a> -> ref ['a]
 fn row index matrix =
     assert (index >= 0 && index < matrix.rows)
@@ -47,14 +82,28 @@ fn row index matrix =
     ref matrix.data[start .. start + matrix.cols]
 
 /// Borrows all elements in row-major order.
+///
+/// ```tsuzuri run=[0,%201,%202,%2010,%2011,%2012]
+/// let m = Matrix.init 2 3 (\row col -> row * 10 + col)
+/// $"{Matrix.as_array m}"
+/// ```
 def as_array :: ref Matrix<'a> -> ref ['a]
 fn as_array matrix = ref matrix.data
 
 /// Consumes the matrix and returns its row-major buffer without copying.
+///
+/// ```tsuzuri run=[0,%201,%201,%202]
+/// Matrix.to_array (Matrix.init 2 2 (\row col -> row + col))
+/// ```
 def to_array :: own Matrix<'a> -> ['a]
 fn to_array matrix = matrix.data
 
 /// Consumes the matrix and replaces one element in place; traps when the row or the column is out of range.
+///
+/// ```tsuzuri run=[1,%209,%203,%204]
+/// let m = Matrix.set 0 1 9 (Matrix.of_array 2 2 [1, 2, 3, 4])
+/// Matrix.to_array m
+/// ```
 def set :: own i64 -> own i64 -> own 'a -> own Matrix<'a> -> Matrix<'a>
 fn set row col value matrix =
     assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
@@ -62,14 +111,30 @@ fn set row col value matrix =
     Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.__set index value matrix.data }
 
 /// Applies `transform` to every element in row-major order.
+///
+/// ```tsuzuri run=[10,%2020,%2030,%2040]
+/// let m = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// Matrix.to_array (Matrix.map (\x -> x * 10) m)
+/// ```
 def map :: Copy<'a> => own ('a -> 'b) -> ref Matrix<'a> -> Matrix<'b>
 fn map transform matrix = Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.map_owned transform (ref matrix.data) }
 
 /// Folds the elements left to right in row-major order.
+///
+/// ```tsuzuri run=1234
+/// let m = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// Matrix.fold (\text x -> text + to_string x) "" m
+/// ```
 def fold :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> ref Matrix<'a> -> 'state
 fn fold folder initial matrix = Array.fold_owned folder initial (ref matrix.data)
 
 /// Returns a new cols x rows matrix whose element (j, i) is the input element (i, j).
+///
+/// ```tsuzuri run=3x2%20[1,%204,%202,%205,%203,%206]
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// let t = Matrix.transpose m
+/// $"{Matrix.rows t}x{Matrix.cols t} {Matrix.as_array t}"
+/// ```
 def transpose :: Copy<'a> => ref Matrix<'a> -> Matrix<'a>
 fn transpose matrix =
     let out_rows = matrix.cols
@@ -77,6 +142,12 @@ fn transpose matrix =
     Matrix { rows: out_rows, cols: out_cols, data: new ['a](matrix.data.length, \index -> matrix.data[(index % out_cols) * out_rows + index / out_cols]) }
 
 /// Element-wise sum; traps unless both shapes are equal.
+///
+/// ```tsuzuri run=[11,%2022,%2033,%2044]
+/// let a = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// let b = Matrix.of_array 2 2 [10, 20, 30, 40]
+/// Matrix.to_array (Matrix.add a b)
+/// ```
 def add :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
 fn add left right =
     assert (left.rows == right.rows && left.cols == right.cols)
@@ -125,6 +196,12 @@ fn rows_per_chunk inner cols =
 /// Row-major product. Each element sums k = 0, 1, ... left to right from +0,
 /// rounding every multiply and add separately (no FMA contraction).
 /// Traps unless left.cols == right.rows.
+///
+/// ```tsuzuri run=[19,%2022,%2043,%2050]
+/// let a = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// let b = Matrix.of_array 2 2 [5, 6, 7, 8]
+/// Matrix.to_array (Matrix.mul a b)
+/// ```
 def mul :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
 fn mul left right =
     assert (left.cols == right.rows)
@@ -136,6 +213,12 @@ fn mul left right =
 /// Product with one explicit fused multiply-add per step: each element is fma(a, b, total) with k
 /// ascending from +0 (the order of `Array.dot_fma`). The bits differ from `mul`.
 /// Traps unless left.cols == right.rows.
+///
+/// ```tsuzuri run=[0.5,%201,%201.5,%202]
+/// let a = Matrix.of_array 2 2 [1.0, 2.0, 3.0, 4.0]
+/// let half = Matrix.of_array 2 2 [0.5, 0.0, 0.0, 0.5]
+/// Matrix.to_array (Matrix.mul_fma a half)
+/// ```
 def mul_fma :: Float<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
 fn mul_fma left right =
     assert (left.cols == right.rows)
@@ -148,6 +231,12 @@ fn mul_fma left right =
 /// and every element is computed exactly as in `mul`, so the result has the same bits for any number
 /// of threads. A product of more than one chunk copies both operands once so that the threads can
 /// share them; a single chunk runs on the calling thread without copying.
+///
+/// ```tsuzuri run=[19,%2022,%2043,%2050]
+/// let a = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// let b = Matrix.of_array 2 2 [5, 6, 7, 8]
+/// Matrix.to_array (Matrix.mul_parallel a b)
+/// ```
 def mul_parallel :: (Numeric<'a>, Send<'a>) => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
 fn mul_parallel left right =
     assert (left.cols == right.rows)
@@ -164,6 +253,12 @@ fn mul_parallel left right =
     Matrix { rows: left.rows, cols: cols, data: out }
 
 /// `mul_fma` computed by several threads, with the chunking and the sharing of `mul_parallel`.
+///
+/// ```tsuzuri run=[0.5,%201,%201.5,%202]
+/// let a = Matrix.of_array 2 2 [1.0, 2.0, 3.0, 4.0]
+/// let half = Matrix.of_array 2 2 [0.5, 0.0, 0.0, 0.5]
+/// Matrix.to_array (Matrix.mul_fma_parallel a half)
+/// ```
 def mul_fma_parallel :: (Float<'a>, Send<'a>) => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
 fn mul_fma_parallel left right =
     assert (left.cols == right.rows)

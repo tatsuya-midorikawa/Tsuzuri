@@ -97,7 +97,7 @@ it runs 0 tests: check `running N tests`.
 
 ## CI
 
-- A pull request gets `ci.yml` (about 20 minutes: fmt, clippy, a type check of the Windows targets, the Rust tests, the core
+- A pull request gets `ci.yml` (30 to 50 minutes: fmt, clippy, a type check of the Windows targets, the Rust tests, the core
   end-to-end suites) and, when it changes the language reference, `reference.yml` (the changed pages). `targets.yml`,
   `windows.yml` and `vscode.yml` run after every merge to `main` and on a pull request with the label `ci:full`; add it when
   the change can behave differently per OS or toolchain (`src/runtime/`, `scripts/toolchain/`, caches, paths, child

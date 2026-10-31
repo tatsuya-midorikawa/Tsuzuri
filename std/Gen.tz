@@ -116,22 +116,41 @@ fn integer low high scaled bounds source =
 
 /// Integers in [low, high], nearly uniform, shrinking toward the value nearest 0.
 /// An empty range traps.
+///
+/// ```tsuzuri test
+/// test "a die roll is from 1 to 6" =
+///     Gen.for_all (Gen.range 1 6) (\n -> n >= 1 && n <= 6)
+/// ```
 def range :: own i64 -> own i64 -> Gen<i64>
 fn range low high =
 	assert (low <= high)
 	Gen { run: \source -> integer low high false false source }
 
 /// Any i64, favoring small magnitudes and the bounds, shrinking toward 0.
+///
+/// ```tsuzuri test
+/// test "adding and subtracting one wraps back" =
+///     Gen.for_all (Gen.i64()) (\n -> Int.wrapping_sub (Int.wrapping_add n 1) 1 == n)
+/// ```
 def i64 :: Gen<i64>
 fn i64 = Gen { run: \source -> integer (-9223372036854775807 - 1) 9223372036854775807 true true source }
 
 /// Any i32, favoring small magnitudes and the bounds, shrinking toward 0.
+///
+/// ```tsuzuri test
+/// test "an i32 survives a round trip through i64" =
+///     Gen.for_all (Gen.i32()) (\n -> ((n as i64) as i32) == n)
+/// ```
 def i32 :: Gen<i32>
 fn i32 = Gen { run: \source ->
 	match integer (-2147483648) 2147483647 true true source with
 	| (value, rest) -> (value as i32, rest) }
 
 /// `false` or `true`, shrinking toward `false`.
+///
+/// ```tsuzuri test
+/// test "double negation" = Gen.for_all (Gen.bool()) (\b -> !(!b) == b)
+/// ```
 def bool :: Gen<bool>
 fn bool = Gen { run: \source ->
 	match uniform source 1i64u with
@@ -139,6 +158,10 @@ fn bool = Gen { run: \source ->
 
 /// Finite f64 values with up to 52 integral bits and 20 fractional bits, shrinking toward 0.0,
 /// integers, and simple fractions. They never are NaN, infinite, or -0.0.
+///
+/// ```tsuzuri test
+/// test "values are finite" = Gen.for_all (Gen.f64()) (\x -> x - x == 0.0)
+/// ```
 def f64 :: Gen<f64>
 fn f64 = Gen { run: \source ->
 	match uniform source 1i64u with
@@ -157,12 +180,24 @@ fn cycled first count offset =
 	Char.of_u16 ((first + index) as i16u)
 
 /// Printable ASCII characters (' ' to '~'), shrinking toward 'a'.
+///
+/// ```tsuzuri test
+/// test "printable ASCII" =
+///     Gen.for_all (Gen.char()) (\c -> Char.to_u16 c >= 32i16u && Char.to_u16 c <= 126i16u)
+/// ```
 def char :: Gen<char>
 fn char = Gen { run: \source ->
 	match uniform source 94i64u with
 	| (offset, rest) -> (cycled 32 95 (offset as i64), rest) }
 
 /// UTF-16 code units that are not surrogates, shrinking toward 'a'.
+///
+/// ```tsuzuri test
+/// test "never a surrogate" =
+///     Gen.for_all (Gen.unicode_char()) (\c ->
+///         let unit = Char.to_u16 c
+///         unit < 55296i16u || unit > 57343i16u)
+/// ```
 def unicode_char :: Gen<char>
 fn unicode_char = Gen { run: \source ->
 	match uniform source 63487i64u with
@@ -174,6 +209,11 @@ fn unicode_char = Gen { run: \source ->
 /// Arrays of at most `limit` values of `element`, shrinking toward fewer and simpler values.
 /// Before each value the generator chooses whether to go on, so shrinking can drop any value.
 /// A negative limit traps.
+///
+/// ```tsuzuri test
+/// test "at most three values" =
+///     Gen.for_all (Gen.array_up_to 3 (Gen.range 0 9)) (\values -> values.length <= 3)
+/// ```
 def array_up_to :: own i64 -> own Gen<'a> -> Gen<['a]>
 fn array_up_to limit element =
 	assert (limit >= 0)
@@ -201,20 +241,41 @@ fn array_up_to limit element =
 
 /// Arrays of at most 32 values of `element` (about 7 on average), shrinking toward fewer and
 /// simpler values.
+///
+/// ```tsuzuri test
+/// test "at most 32 values" =
+///     Gen.for_all (Gen.array (Gen.range (-100) 100)) (\values -> values.length <= 32)
+/// ```
 def array :: own Gen<'a> -> Gen<['a]>
 fn array element = array_up_to 32 element
 
 /// Strings of the characters of `character`, at most 32 code units long.
+///
+/// ```tsuzuri test
+/// test "only a and b" =
+///     Gen.for_all (Gen.string_of (Gen.element ['a', 'b'])) (\text ->
+///         String.replace "a" "" (String.replace "b" "" text) == "")
+/// ```
 def string_of :: own Gen<char> -> Gen<string>
 fn string_of character = Gen { run: \source ->
 	match (array_up_to 32 character).run source with
 	| (characters, rest) -> (String.from_code_units (Array.map_owned Char.to_u16 (ref characters)), rest) }
 
 /// Strings of printable ASCII characters, at most 32 long, shrinking toward "".
+///
+/// ```tsuzuri test
+/// test "at most 32 characters" = Gen.for_all (Gen.string()) (\text -> text.length <= 32)
+/// ```
 def string :: Gen<string>
 fn string = string_of (Gen.char())
 
 /// `Maybe.None` or `Maybe.Some` of `value`, shrinking toward `Maybe.None`.
+///
+/// ```tsuzuri test
+/// test "a missing value becomes zero" =
+///     let values = Gen.map (\value -> Maybe.default_value 0 value) (Gen.maybe (Gen.range 1 9))
+///     Gen.for_all values (\n -> n >= 0 && n <= 9)
+/// ```
 def maybe :: own Gen<'a> -> Gen<Maybe<'a>>
 fn maybe value = Gen { run: \source ->
 	match random_bits source with
@@ -226,6 +287,14 @@ fn maybe value = Gen { run: \source ->
 			| (inner, last) -> (Maybe.Some inner, last) }
 
 /// `Result.Ok` of `ok` or `Result.Error` of `error`, shrinking toward `Result.Ok`.
+///
+/// ```tsuzuri test
+/// test "an Ok holds a digit" =
+///     Gen.check (\_ -> "a result") 100 (Gen.result (Gen.range 0 9) (Gen.string())) (\result ->
+///         match result with
+///         | Result.Ok n -> n >= 0 && n <= 9
+///         | Result.Error text -> text.length <= 32)
+/// ```
 def result :: own Gen<'a> -> own Gen<'e> -> Gen<Result<'a, 'e>>
 fn result ok error = Gen { run: \source ->
 	match uniform source 1i64u with
@@ -237,22 +306,42 @@ fn result ok error = Gen { run: \source ->
 		| (value, last) -> (Result.Error value, last) }
 
 /// Always `value`.
+///
+/// ```tsuzuri test
+/// test "always seven" = Gen.for_all (Gen.constant 7) (\n -> n == 7)
+/// ```
 def constant :: Copy<'a> => own 'a -> Gen<'a>
 fn constant value = Gen { run: \source -> (value, source) }
 
 /// Applies `transform` to the values of `generator`; they shrink as the values they come from.
+///
+/// ```tsuzuri test
+/// test "doubled values are even" =
+///     Gen.for_all (Gen.map (\n -> n * 2) (Gen.range 0 50)) (\n -> n % 2 == 0)
+/// ```
 def map :: own ('a -> 'b) -> own Gen<'a> -> Gen<'b>
 fn map transform generator = Gen { run: \source ->
 	match generator.run source with
 	| (value, rest) -> (transform value, rest) }
 
 /// A value of the generator that `next` makes from a value of `generator`.
+///
+/// ```tsuzuri test
+/// test "the second value is at most the first" =
+///     let pairs = Gen.bind (\high -> Gen.map (\low -> (low, high)) (Gen.range 0 high)) (Gen.range 0 10)
+///     Gen.for_all pairs (\pair -> match pair with | (low, high) -> low <= high)
+/// ```
 def bind :: own ('a -> Gen<'b>) -> own Gen<'a> -> Gen<'b>
 fn bind next generator = Gen { run: \source ->
 	match generator.run source with
 	| (value, rest) -> (next value).run rest }
 
 /// Pairs of values of `first` and `second`.
+///
+/// ```tsuzuri test
+/// test "the first is smaller" =
+///     Gen.for_all (Gen.pair (Gen.range 0 9) (Gen.range 10 19)) (\pair -> match pair with | (a, b) -> a < b)
+/// ```
 def pair :: own Gen<'a> -> own Gen<'b> -> Gen<('a * 'b)>
 fn pair first second = Gen { run: \source ->
 	match first.run source with
@@ -261,6 +350,11 @@ fn pair first second = Gen { run: \source ->
 		| (right, last) -> ((left, right), last) }
 
 /// A value of one of `generators`, shrinking toward the first. An empty array traps.
+///
+/// ```tsuzuri test
+/// test "small or large" =
+///     Gen.for_all (Gen.one_of [Gen.range 0 9, Gen.range 100 109]) (\n -> n <= 9 || n >= 100)
+/// ```
 def one_of :: own [Gen<'a>] -> Gen<'a>
 fn one_of generators =
 	assert (generators.length > 0)
@@ -269,6 +363,11 @@ fn one_of generators =
 		| (index, rest) -> generators[index as i64].run rest }
 
 /// One of `values`, shrinking toward the first. An empty array traps.
+///
+/// ```tsuzuri test
+/// test "a small prime" =
+///     Gen.for_all (Gen.element [2, 3, 5, 7]) (\p -> p == 2 || p == 3 || p == 5 || p == 7)
+/// ```
 def element :: Copy<'a> => own ['a] -> Gen<'a>
 fn element values =
 	assert (values.length > 0)
@@ -362,6 +461,11 @@ fn describe show generator choices =
 /// false, after shrinking it and printing the seed, the case, and both values with `show` to
 /// stderr. The cases use the seed of `tsuzuri test --seed`, or a fixed one, so every run tries
 /// the same values. A property that traps itself ends the test without shrinking.
+///
+/// ```tsuzuri test
+/// test "squares are not negative" =
+///     Gen.check (\n -> $"n = {n}") 50 (Gen.range (-1000) 1000) (\n -> n * n >= 0)
+/// ```
 def check :: own (ref 'a -> string) -> own i64 -> own Gen<'a> -> own ('a -> bool) -> unit
 fn check show cases generator property =
 	assert (cases > 0)
@@ -387,10 +491,21 @@ fn check show cases generator property =
 			assert false
 
 /// Checks `property` on 100 values of `generator`, as `check` with `Display.display`.
+///
+/// ```tsuzuri test
+/// test "wrapping addition commutes" =
+///     Gen.for_all (Gen.pair (Gen.i64()) (Gen.i64())) (\pair ->
+///         match pair with
+///         | (a, b) -> Int.wrapping_add a b == Int.wrapping_add b a)
+/// ```
 def for_all :: Display<'a> => own Gen<'a> -> own ('a -> bool) -> unit
 fn for_all generator property = check (\value -> Display.display value) (default_cases()) generator property
 
 /// Checks `property` on `cases` values of `generator`, as `check` with `Display.display`.
+///
+/// ```tsuzuri test
+/// test "twenty digits" = Gen.for_all_cases 20 (Gen.range 0 9) (\n -> n < 10)
+/// ```
 def for_all_cases :: Display<'a> => own i64 -> own Gen<'a> -> own ('a -> bool) -> unit
 fn for_all_cases cases generator property = check (\value -> Display.display value) cases generator property
 
@@ -404,6 +519,12 @@ fn attempt_where generator property source =
 /// Checks `property` on values of `generator` until `cases` of them are valid (the property is
 /// not `None`), and traps on the first value where it is `Some false`, as `check` does. More than
 /// nine discarded values per valid one end the test with a failure.
+///
+/// ```tsuzuri test
+/// test "halving an even number" =
+///     Gen.check_where (\n -> $"{n}") 50 (Gen.range 0 100) (\n ->
+///         if n % 2 == 0 then Maybe.Some ((n / 2) * 2 == n) else Maybe.None)
+/// ```
 def check_where :: own (ref 'a -> string) -> own i64 -> own Gen<'a> -> own ('a -> Maybe<bool>) -> unit
 fn check_where show cases generator property =
 	assert (cases > 0)
@@ -442,6 +563,12 @@ fn check_where show cases generator property =
 		assert false
 
 /// Checks `property` on 100 valid values of `generator`, as `check_where` with `Display.display`.
+///
+/// ```tsuzuri test
+/// test "nonzero squares are positive" =
+///     Gen.for_all_where (Gen.range (-50) 50) (\n ->
+///         if n == 0 then Maybe.None else Maybe.Some (n * n > 0))
+/// ```
 def for_all_where :: Display<'a> => own Gen<'a> -> own ('a -> Maybe<bool>) -> unit
 fn for_all_where generator property = check_where (\value -> Display.display value) (default_cases()) generator property
 

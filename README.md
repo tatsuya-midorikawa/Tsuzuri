@@ -736,6 +736,9 @@ tsuzuri test tests/ --coverage coverage.info
 
 # プロパティテストの seed を変える（既定は固定の 11400714819323198485）
 tsuzuri test tests/ --seed 42
+
+# /// の中の tsuzuri の例を確かめる（doc-test。std を渡すと標準ライブラリの例）
+tsuzuri test --doc src/
 ```
 
 プロパティテストは標準モジュール `Gen` で書きます。`Gen.for_all` は生成器の値で性質を確かめ、失敗すると反例を最も単純な値まで縮小し、seed・何個目の値か・反例を表示します。
@@ -780,6 +783,12 @@ tsuzuri bench benches/ --allocs --json
 # 公開 API ドキュメントを生成
 tsuzuri doc src/ -o docs/api
 ```
+
+説明の中の ```` ```tsuzuri ```` のフェンスは例で、`tsuzuri test --doc` が確かめます。
+
+- ```` ```tsuzuri run=3 ```` は実行して標準出力が `3` であること（空白や改行は `%20`・`%0A`）、```` ```tsuzuri test ```` は中の `test` が通ること、```` ```tsuzuri fails=E1003 ```` は型検査が `E1003` で拒否すること、印なしは型検査が通ることを確かめます（`ignore` は確かめません）。
+- `# ` で始まる行は隠し行で、例を動かすときだけ使い、`tsuzuri doc` とホバーには出しません。生成する文書は `run=` の出力を `Output:` として添えます。
+- 標準ライブラリの公開関数にはすべて例があり、`tsuzuri test --doc std` で確かめられます。
 
 宣言の説明を `@deprecated` で始めると（`/// @deprecated use next instead`）、その宣言は非推奨になります。別のパッケージや標準ライブラリがそれを使うと、警告 `W1005` が出ます。同じパッケージの中の使用には出ません。
 
@@ -952,6 +961,7 @@ tsuzuri kg brief|show|callers|callees|uses|tests-for|search|find|path ... [--bud
 tsuzuri kg impact (--git REV | --from PATH [--to PATH]) [--path PATH] [--json]
 tsuzuri kg diagram KIND [ID] [--path PATH] [--format mermaid|dot] [--max-nodes N] [--depth N] [--json]
 tsuzuri test source.tz|directory --affected BASE
+tsuzuri test --doc directory|std [--list] [--filter TEXT] [--index N]... [--json] [-O0..-O3]
 tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] source.tz|directory
 tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] source.tz|directory
 tsuzuri explain TARGET [--json]
@@ -985,6 +995,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--samples N` | `tsuzuri bench` の標本数（1〜1000、既定 11）。 |
 | `--allocs` | `tsuzuri bench` の時間測定後、別の counting 実行器で `alloc_calls`・`alloc_bytes` を報告します。指定しない出力は変わりません。 |
 | `--seed N` | `tsuzuri test` のプロパティテスト（`Gen.for_all`）の seed（既定は固定の `11400714819323198485`）。 |
+| `--doc` | `tsuzuri test` で、テストの代わりに `///` の中の ```` ```tsuzuri ```` の例を確かめます（`run=`・`test`・`fails=`・`ignore`。記法の誤りは `E2011`）。 |
 | `--contracts off\|check\|test\|prove` | 契約の行（`@requires`・`@ensures`）の使い方（既定: `build` は `off`、`run`・`test` は `check`）。`test` は `tsuzuri test` で性質テストを作り、`prove` は SMT ソルバーで証明してから `check` として続けます。 |
 | `--prove-timeout SECONDS`, `--function NAME` | `--contracts prove` と `tsuzuri prove` の問いごとの時間（既定 10 秒）と、証明する関数。 |
 | `--wasm-host wasi` | wasm32 において、標準入出力および OS API を WASI preview1 のインポートへ接続します。 |
@@ -1129,7 +1140,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs` | `host_imports.mjs` |
 | driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs`、`tests/targets.rs`（`--target TRIPLE`・クロスの引数・実行器。G15）、`tests/api_diff.rs`（`tsuzuri api-diff`。G19）、`tests/find.rs`（`tsuzuri find`。G25） | `cache.mjs`、`examples.mjs`、`targets.mjs`（triple ごとに executed／linked／object を表示。`TSUZURI_CROSS_LINK=1`、`TSUZURI_CROSS_EXECUTE=1`） |
 | 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs`（W1005 を含む）、`tests/typed_holes.rs`・`tests/name_suggestions.rs`（型つき穴と未解決名の候補。G25） | — |
-| LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
+| LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/doctest.rs`（`tsuzuri test --doc`。G34）、`tests/std_examples.rs`（std の公開関数の例の数と記法）、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
 | 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
 | `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
 | 仕様の規則（`spec/rules/`）と適合性テスト（`tests/conformance/`） | — | `node scripts/conformance.mjs target/debug/tsuzuri --rule <ID>`、`node scripts/check-spec.mjs --require-markers`（規則・文書のマーカーを変えたとき）。言語の振る舞いを変えたときは、その規則のテストを直すか規則を `retired` にする（[仕様の規則と適合性テスト](_tsuzuri/language-reference/compiler/conformance.md)） |
@@ -1165,6 +1176,7 @@ TSUZURI_FAST_OPS_EXPORT=DIR TSUZURI_FAST_OPS_TARGET=x86_64-unknown-linux-gnu car
 # 統合 E2E テスト・言語機能テスト（target/release/tsuzuri は、内側のループでは target/debug/tsuzuri に読み替えてよい）
 node tests/slot.mjs   # scripts/slot.mjs：スロットの数を超えて同時に走らないこと、死んだ持ち主のスロットの引き継ぎ、終了コードの引き渡し（コンパイラは不要）
 node tests/e2e.mjs target/release/tsuzuri
+target/release/tsuzuri test --doc std -O0 && target/release/tsuzuri test --doc std -O3   # std の全公開関数の例（G34）。std を変えたら、先に cargo build（std は埋め込み）
 node tests/primitives.mjs target/release/tsuzuri
 node tests/numeric_casts.mjs target/release/tsuzuri   # 全ビット幅の整数・符号と f32／f64 の間の型変換を BigInt の参照と照合
 node tests/integer_intrinsics.mjs target/release/tsuzuri

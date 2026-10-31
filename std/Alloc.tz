@@ -4,11 +4,28 @@
 record Stats { allocs: i64, reallocs: i64, frees: i64, bytes: i64 }
 
 /// The counters of the whole program so far. Subtract two snapshots, or use `since`.
+///
+/// ```tsuzuri test
+/// test "a new array is one block" =
+///     let start = Alloc.snapshot ()
+///     let values = new [i64](4, \i -> i)
+///     let used = Alloc.since start
+///     Test.is_true (used.allocs == 1 && used.bytes == 32 && values.length == 4)
+/// ```
 def snapshot :: unit -> Stats
 fn snapshot _unit =
     Stats { allocs: Alloc.__counter 0, reallocs: Alloc.__counter 1, frees: Alloc.__counter 2, bytes: Alloc.__counter 3 }
 
 /// The events since `start`, which `snapshot` returned earlier.
+///
+/// ```tsuzuri test
+/// test "copying an array allocates one block" =
+///     let values = [1i64, 2i64, 3i64]
+///     let start = Alloc.snapshot ()
+///     let copy = Array.copy values
+///     let used = start |> Alloc.since
+///     Test.is_true (used.allocs == 1 && used.frees == 0 && copy.length == 3)
+/// ```
 def since :: Stats -> Stats
 fn since start =
     let now = snapshot ()
@@ -16,6 +33,12 @@ fn since start =
 
 /// Runs `run` once and returns its events and result. Captured owners are not unique inside
 /// the closure: measure consuming operations with `snapshot` and `since` instead.
+///
+/// ```tsuzuri test
+/// test "measure gives the events and the result" =
+///     match Alloc.measure (\() -> new [i64](10, \i -> i)) with
+///     | (used, values) -> Test.is_true (used.allocs == 1 && used.bytes == 80 && values.length == 10)
+/// ```
 def measure :: (unit -> 'a) -> Stats * 'a
 fn measure run =
     let start = snapshot ()

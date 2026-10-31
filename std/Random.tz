@@ -23,10 +23,22 @@ fn word bytes =
 	| Result.Error error -> Result.Error error
 
 /// Random bytes from the operating system. A negative count or one above 2^30 is `InvalidInput`.
+///
+/// ```tsuzuri
+/// let! sample = Random.bytes 16
+/// do! IO.write_line (match sample with
+///     | Result.Ok bytes -> $"{bytes.length} bytes"
+///     | Result.Error error -> Os.message error)
+/// ```
 def bytes :: own i64 -> IO<Result<[ubyte], Os.Error>>
 fn bytes count = IO.map (\() -> gather count) (IO.pure ())
 
 /// Eight operating-system random bytes as a little-endian number.
+///
+/// ```tsuzuri
+/// let! word = Random.next_u64 ()
+/// do! IO.write_line (Result.default_value 0i64u word)
+/// ```
 def next_u64 :: own unit -> IO<Result<i64u, Os.Error>>
 fn next_u64 _unit = IO.map (\() -> word (gather 8)) (IO.pure ())
 
@@ -34,6 +46,12 @@ private pure def advance :: own i64u -> own i64u -> i64u
 fn advance state increment = state * 6364136223846793005i64u + increment
 
 /// A generator from a seed and a stream number (pcg32_srandom_r of pcg-c-basic).
+///
+/// ```tsuzuri run=2707161783
+/// let generator = Random.pcg 42i64u 54i64u
+/// match Random.pcg_next_u32 generator with
+/// | (first, _) -> first
+/// ```
 pure def pcg :: own i64u -> own i64u -> Pcg
 fn pcg seed sequence =
 	let increment = (sequence <<< 1) | 1i64u
@@ -41,6 +59,13 @@ fn pcg seed sequence =
 	Pcg { state: advance (started + seed) increment, increment: increment }
 
 /// The next 32 bits and the following generator (pcg32_random_r).
+///
+/// ```tsuzuri run=2707161783%202068313097
+/// match Random.pcg_next_u32 (Random.pcg 42i64u 54i64u) with
+/// | (first, next) ->
+///     match Random.pcg_next_u32 next with
+///     | (second, _) -> $"{first} {second}"
+/// ```
 pure def pcg_next_u32 :: own Pcg -> (i32u * Pcg)
 fn pcg_next_u32 generator =
 	let old = generator.state
@@ -49,6 +74,11 @@ fn pcg_next_u32 generator =
 	(Int.rotate_right shifted rotation, Pcg { state: advance old generator.increment, increment: generator.increment })
 
 /// 64 bits from two outputs, the first as the high half, and the following generator.
+///
+/// ```tsuzuri run=11627171325034361865
+/// match Random.pcg_next_u64 (Random.pcg 42i64u 54i64u) with
+/// | (value, _) -> value
+/// ```
 pure def pcg_next_u64 :: own Pcg -> (i64u * Pcg)
 fn pcg_next_u64 generator =
 	match pcg_next_u32 generator with

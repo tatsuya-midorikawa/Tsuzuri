@@ -133,6 +133,14 @@ jobs:
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node scripts/conformance.mjs target/release/tsuzuri --jobs 2
           node tests/conformance_harness.mjs target/release/tsuzuri
+      # G34: the examples of `///` (the fixture of tests/doctest.rs, and every public std function).
+      - name: Documentation examples
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          target/release/tsuzuri test --doc tests/fixtures/doctest/pass
+          target/release/tsuzuri test --doc std -O0
+          target/release/tsuzuri test --doc std -O3
       - name: Memory and LLVM fact semantics
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         env:

@@ -1,5 +1,19 @@
+/// Writes the `Display` text of a borrowed value to standard error as one line, leaving the value with the
+/// caller. On WebAssembly the text goes to the host only in a build with `--debug-output`.
+///
+/// ```tsuzuri run=247
+/// let scores = [90, 72, 85]
+/// Debug.print scores  // standard error: [90, 72, 85]
+/// IO.write_line (Array.sum scores)
+/// ```
 def print :: Display<'a> => ref 'a -> unit
 fn print value = Debug.__print_string (Display.display value)
 
+/// Writes `value` as `print` does and returns it, so it can be watched in the middle of an expression.
+///
+/// ```tsuzuri run=43
+/// let answer = Debug.trace (6 * 7)  // standard error: 42
+/// answer + 1
+/// ```
 def trace :: Display<'a> => own 'a -> 'a
 fn trace value = { Debug.print (ref value); value }

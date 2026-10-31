@@ -1,5 +1,10 @@
 private def identity_f64 :: own f64 -> f64
 fn identity_f64 value = value
 
+/// The `f64` zero, kept for compatibility; call it as `Math.zero()`.
+///
+/// ```tsuzuri run=2.5
+/// Math.zero() + 2.5
+/// ```
 def zero :: f64
 fn zero = identity_f64 0.0
