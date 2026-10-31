@@ -1,25 +1,10 @@
-# G36 付録: `tests/progfuzz.mjs` の参照実装と実測
-
-本文は [G36-language-differential-fuzz.md](G36-language-differential-fuzz.md)。この付録は次の 6 節からなる。
-
-- A: `tests/progfuzz.mjs` の全文。ブリーフが用意したビルド済みの `target/release/tsuzuri` で実行して確かめた参照実装で、実装者はこの文面を土台にする。
-- B: 実測のコマンドと結果。
-- C: `const def` の受理の実測（43 件）。
-- D: 見つけた既知のバグ KB1 の最小の再現。
-- E: 生成される `.tz` の例。
-- F: 位相ごとのファイルを作る手順（`strip.mjs`）。
-
-## A. `tests/progfuzz.mjs` の全文
-
-`// <<< phase N` から `// >>> phase N` までの行は、位相 N（本文の「Phase 分割」）で足す行である。位相 1 のファイルは、位相 2 と 3 の行を除いたもの。入れ子の印（位相 2 の中の位相 3）もある。印の行そのものはファイルに残してよい（コメント）。位相 1 から 3 までを足したファイルは、付録 B の実測をこの全文で取った。
-
-````js
 // Differential test of the whole language (G36): random typed programs of integer arithmetic, aggregates and
 // control flow, run by the compiler's constant evaluator (`const def`), by native -O0 and -O3 and by wasm32 -O0
 // and -O3, against an independent BigInt evaluator of the same syntax tree. The expected values come from that
 // evaluator, which follows the documented semantics (wrapping + - *, truncating / and %, shift counts taken
-// modulo the bit width, wrapping casts, inclusive ranges that stop at the end of the type), never from the
-// compiler. Programs that own a Vec or a string are also checked for leaks (TSUZURI_PROGFUZZ_KIND=owned).
+// modulo the bit width, wrapping casts, `..=` and `..<` ranges that stop at the end of the type), never from
+// the compiler. Programs that own a Vec or a string are also checked for leaks (TSUZURI_PROGFUZZ_KIND=owned).
+// The programs are written in the canonical forms of edition 2027, the edition of a source without a manifest.
 //
 //   node tests/progfuzz.mjs [compiler] [programs] [first seed] [depth]
 //   node tests/progfuzz.mjs --self-test [compiler]
@@ -37,7 +22,8 @@ const compiler = resolve(argv[0] ?? "target/release/tsuzuri");
 const programs = Number(argv[1] ?? 20);
 const firstSeed = Number(argv[2] ?? 1);
 const depth = Number(argv[3] ?? 4);
-assert.ok([programs, firstSeed, depth].every(Number.isSafeInteger) && programs > 0 && firstSeed >= 0 && depth >= 1 && depth <= 8,
+// The last seed must be a safe integer too, or two workers would share a seed (and its directory).
+assert.ok([programs, firstSeed, depth].every(Number.isSafeInteger) && programs > 0 && firstSeed >= 0 && programs - 1 <= Number.MAX_SAFE_INTEGER - firstSeed && depth >= 1 && depth <= 8,
   "usage: node tests/progfuzz.mjs [compiler] [programs] [first seed] [depth 1..8]");
 const allPaths = ["const", "o0", "o3"];
 // <<< phase 2
@@ -54,12 +40,22 @@ if (kind === "owned" && !process.env.TSUZURI_PROGFUZZ_PATHS) paths = allPaths.fi
 // >>> phase 3
 assert.ok(paths.every((path) => allPaths.includes(path)), `TSUZURI_PROGFUZZ_PATHS names ${allPaths.join(", ")}`);
 const jobs = Number(process.env.TSUZURI_PROGFUZZ_JOBS ?? Math.min(4, availableParallelism()));
+// With no worker no seed would be checked, and the run would report zero differences.
+assert.ok(Number.isSafeInteger(jobs) && jobs > 0, "TSUZURI_PROGFUZZ_JOBS is a positive integer");
 const mutantName = process.env.TSUZURI_PROGFUZZ_MUTANT ?? "";
 let mutant = mutantName;
 const outputRoot = resolve(process.env.TSUZURI_PROGFUZZ_DIR ?? "target/progfuzz", selfTest ? "self-test" : ".");
 const STEP_LIMIT = 20000;
+// Nested evaluations (expressions and calls) of one run. Generated programs reach about 70; a candidate of the
+// minimizer whose recursion lost its guard reaches the limit and is rejected (Limit) long before the JavaScript
+// stack overflows (near 2,900 on Node 20).
+const DEPTH_LIMIT = 500;
 // <<< phase 2
 let minimizeBudget = Number(process.env.TSUZURI_PROGFUZZ_BUDGET ?? 150);
+assert.ok(Number.isSafeInteger(minimizeBudget) && minimizeBudget >= 0, "TSUZURI_PROGFUZZ_BUDGET is a nonnegative integer");
+// A fuzz run also stops a minimization after ten minutes; the self test uses the budget alone, so that its result
+// does not depend on how loaded the machine is.
+let minimizeSeconds = 600;
 // >>> phase 2
 const exeSuffix = process.platform === "win32" ? ".exe" : "";
 let generator = generate;
@@ -414,11 +410,14 @@ function generate(seed, maxDepth) {
         const it = intOf();
         const i = fresh("i");
         const bounds = loopBounds(it, sc, d);
+        // Edition 2027 spells the end of a range `..=` (inclusive) or `..<` (half-open); the bare `..` is E0004.
+        const op = chance(0.3) ? "..<" : "..=";
+        if (op === "..<") tags.add("loop_half_open");
         const scope = [...inner, { n: i, ty: it }];
         const exit = chance(0.3) ? { kind: pick(["break", "continue"]), cond: genBool(scope, d - 2) } : null;
         if (exit) tags.add(`loop_${exit.kind}`);
         tags.add("for_loop");
-        return { t: "for", ty, acc, i, it, init, ...bounds, exit, body: gen(ty, scope, d - 1) };
+        return { t: "for", ty, acc, i, it, init, ...bounds, op, exit, body: gen(ty, scope, d - 1) };
       }
       const exit = chance(0.3) ? { kind: pick(["break", "continue"]), cond: genBool(inner, d - 2) } : null;
       if (exit) tags.add(`loop_${exit.kind}`);
@@ -604,7 +603,9 @@ function render(n, ctx) {
     }
     case "call": return `(${n.f} ${n.args.map(r).join(" ")})`;
     case "for": {
-      const range = n.step ? `${r(n.lo)} .. ${r(n.step)} .. ${r(n.hi)}` : `${r(n.lo)} .. ${r(n.hi)}`;
+      // The step is marked by a bare `..`; the end by `..=` or `..<` (edition 2027).
+      const op = n.op ?? "..=";
+      const range = n.step ? `${r(n.lo)} .. ${r(n.step)} ${op} ${r(n.hi)}` : `${r(n.lo)} ${op} ${r(n.hi)}`;
       const exit = n.exit ? `if ${r(n.exit.cond)} then ${n.exit.kind} else (); ` : "";
       return `({ let mut ${n.acc}: ${showTy(n.ty)} = ${r(n.init)}; for ${n.i} in ${range} do { ${exit}${n.acc} = ${r(n.body)}; () }; ${n.acc} })`;
     }
@@ -660,6 +661,7 @@ function evaluate(program, input) {
   if (program.kind === "owned") return evaluateOwned(program, input);
   // >>> phase 3
   let steps = 0;
+  let depth = 0;
   const functions = new Map(program.functions.map((f) => [f.name, f]));
   const call = (f, args) => {
     const env = new Map();
@@ -671,6 +673,14 @@ function evaluate(program, input) {
     return mutant === "shift-saturating" ? Math.min(Number(BigInt.asUintN(t.bits, c)), 1024) : masked;
   };
   const ev = (n, env) => {
+    if (++depth > DEPTH_LIMIT) throw new Limit();
+    try {
+      return evaluateNode(n, env);
+    } finally {
+      depth--;
+    }
+  };
+  const evaluateNode = (n, env) => {
     if (++steps > STEP_LIMIT) throw new Limit();
     switch (n.t) {
       case "lit": return n.v;
@@ -768,7 +778,8 @@ function evaluate(program, input) {
         const last = ev(n.hi, env);
         check(step !== 0n, "range step is zero");
         const up = step > 0n;
-        const inclusive = mutant !== "loop-exclusive";
+        // `..=` includes the end and `..<` excludes it; the mutant swaps the two.
+        const inclusive = (n.op === "..<") === (mutant === "loop-exclusive");
         for (let i = first; up ? (inclusive ? i <= last : i < last) : (inclusive ? i >= last : i > last);) {
           if (++steps > STEP_LIMIT) throw new Limit();
           const frame = new Map(env).set(n.acc, acc).set(n.i, i);
@@ -811,14 +822,15 @@ function evaluate(program, input) {
 
 const OWNED_HELPERS = [
   "def h_len :: ref Vec<i32> -> i64\nfn h_len v = (Vec.length v)",
-  "def h_sum :: ref Vec<i32> -> i64\nfn h_sum v = ({ let mut acc: i64 = 0i64; for i in 0i64 .. ((Vec.length v) - 1i64) do { acc = (acc + ((v[i]) as i64)); () }; acc })",
-  "def h_grow :: Vec<i32> -> i32 -> Vec<i32>\nfn h_grow v x = (Vec.push (x + 1i32) (Vec.push x v))",
-  "def h_pop :: Vec<i32> -> Vec<i32>\nfn h_pop v = (match Vec.pop v with | (rest, _) -> rest)",
-  "def h_drop :: Vec<i32> -> i64\nfn h_drop v = (Vec.length (ref v))",
-  "def h_arr :: Vec<i32> -> i64\nfn h_arr v =\n    let a: [i32] = Vec.to_array v\n    ((Array.sum (ref a)) as i64)",
-  "def h_cat :: string -> string -> string\nfn h_cat a b = (a + b)",
+  "def h_sum :: ref Vec<i32> -> i64\nfn h_sum v = ({ let mut acc: i64 = 0i64; for i in 0i64 ..< (Vec.length v) do { acc = (acc + ((v[i]) as i64)); () }; acc })",
+  // Edition 2027 reads an unmarked parameter that owns memory as a borrow (A18); `own` takes it by value.
+  "def h_grow :: own Vec<i32> -> i32 -> Vec<i32>\nfn h_grow v x = (Vec.push_owned (x + 1i32) (Vec.push_owned x v))",
+  "def h_pop :: own Vec<i32> -> Vec<i32>\nfn h_pop v = (match Vec.pop v with | (rest, _) -> rest)",
+  "def h_drop :: own Vec<i32> -> i64\nfn h_drop v = (Vec.length (ref v))",
+  "def h_arr :: own Vec<i32> -> i64\nfn h_arr v =\n    let a: [i32] = Vec.to_array v\n    ((Array.sum (ref a)) as i64)",
+  "def h_cat :: own string -> own string -> string\nfn h_cat a b = (a + b)",
   "def h_slen :: ref string -> i64\nfn h_slen s = (String.length s)",
-  "def h_take :: string -> i64\nfn h_take s = (String.length (ref s))",
+  "def h_take :: own string -> i64\nfn h_take s = (String.length (ref s))",
   "def h_qlen :: ref Vec<string> -> i64\nfn h_qlen q = (Vec.length q)",
 ].join("\n\n");
 
@@ -929,10 +941,12 @@ function sourceOwned(program, tail) {
         case "newvec": return `let mut ${s.n}: Vec<i32> = ${s.init === "empty" ? "Vec.empty()" : s.init === "capacity" ? "Vec.with_capacity 4" : `Vec.of_array [${s.items.map((v) => literalText(I32, v)).join(", ")}]`}`;
         case "newstr": return `let mut ${s.n}: string = ${t}`;
         case "newq": return `let mut ${s.n}: Vec<string> = Vec.empty()`;
-        case "push": return `${s.n} = Vec.push ${e32Text(s.e)} ${s.n}`;
+        // Edition 2027: `Vec.push` updates the Vec in place through an exclusive borrow and returns unit (h_grow
+        // keeps the consuming `Vec.push_owned`).
+        case "push": return `Vec.push ${e32Text(s.e)} ${s.n}`;
         case "grow": return `${s.n} = h_grow ${s.n} ${e32Text(s.e)}`;
         case "pop": return `${s.n} = h_pop ${s.n}`;
-        case "loop": return `for ${s.i} in 0i64 .. ${literalText(I64, BigInt(s.count))} do { ${s.n} = Vec.push (${s.i} as i32) ${s.n}; () }`;
+        case "loop": return `for ${s.i} in 0i64 ..= ${literalText(I64, BigInt(s.count))} do { Vec.push (${s.i} as i32) ${s.n}; () }`;
         case "whilepop": return `while ((Vec.length (ref ${s.n})) > 1i64) do { ${s.n} = h_pop ${s.n}; () }`;
         case "len": return `let ${s.out} = h_len (ref ${s.n})`;
         case "sum": return `let ${s.out} = h_sum (ref ${s.n})`;
@@ -946,8 +960,8 @@ function sourceOwned(program, tail) {
         case "slen": return `let ${s.out} = h_slen (ref ${s.n})`;
         case "take": return `let ${s.out} = h_take ${s.n}`;
         case "cat": return `let mut ${s.n}: string = h_cat ${s.a} ${s.b}`;
-        case "qpush": return `${s.n} = Vec.push ${t} ${s.n}`;
-        case "qpushs": return `${s.n} = Vec.push ${s.s} ${s.n}`;
+        case "qpush": return `Vec.push ${t} ${s.n}`;
+        case "qpushs": return `Vec.push ${s.s} ${s.n}`;
         case "qpop": return `${s.n} = (match Vec.pop ${s.n} with | (rest, _) -> rest)`;
         case "qclear": return `${s.n} = Vec.clear ${s.n}`;
         case "qlen": return `let ${s.out} = h_qlen (ref ${s.n})`;
@@ -970,6 +984,9 @@ function sourceOwned(program, tail) {
 }
 
 function evaluateOwned(program, input) {
+  // Replayed first, so that a step that uses a dead variable or an unbound scalar (a candidate of the minimizer
+  // that lost the step binding it) is a Trap before anything reads the missing value.
+  const { live, scalars } = replay(program);
   const values = new Map([["k", input]]);
   const owned = new Map();
   const get = (n, kind) => { check(owned.has(n) && owned.get(n).kind === kind, `${n} is not a live ${kind}`); return owned.get(n).value; };
@@ -1008,7 +1025,6 @@ function evaluateOwned(program, input) {
     }
   }
   let acc = 0n;
-  const { live, scalars } = replay(program);
   for (const name of scalars) acc = wrap(I64, acc * 31n + values.get(name));
   for (const [n, kind] of live) acc = wrap(I64, acc * 31n + BigInt(get(n, kind).length));
   return acc;
@@ -1178,7 +1194,30 @@ function prune(program) {
   return { ...program, functions: program.functions.filter((f) => used.has(f.name)) };
 }
 
+// Whether every variable of a node is bound where it is used, in every branch. Replacing a binding node (`let`,
+// `match`, a loop, `new`) by a child can leave a variable of an untaken branch unbound: the evaluator does not see
+// it, but the compiler rejects the program (E1002), which could pass for the failure being minimized.
+function bound(n, scope) {
+  const all = (nodes, names = []) => {
+    const inner = names.length ? new Set([...scope, ...names]) : scope;
+    return nodes.every((node) => !node || bound(node, inner));
+  };
+  switch (n.t) {
+    case "var": return scope.has(n.n);
+    case "let": return all([n.e]) && all([n.body], [n.n]);
+    case "matchint": return all([n.s, n.dflt, ...n.arms.map((arm) => arm.body)]) && (!n.guard || all([n.guard.cond, n.guard.body], [n.guard.bind]));
+    case "matchtuple": return all([n.s]) && all([n.body], n.names);
+    case "matchuni": return all([n.s]) && n.arms.every((arm) => all([arm.body], arm.names));
+    case "matchmaybe": return all([n.s, n.none]) && all([n.some], [n.n]);
+    case "newarray": return all([n.body], [n.i]);
+    case "for": return all([n.init, n.lo, n.step, n.hi]) && all([n.exit?.cond, n.body], [n.acc, n.i]);
+    case "while": return all([n.init]) && all([n.extra, n.exit?.cond, n.body], [n.acc]);
+    default: return all(directChildren(n));
+  }
+}
+
 function valid(program) {
+  if (program.kind !== "owned" && !program.functions.every((f) => bound(f.body, new Set(f.params.map((p) => p.n))))) return false;
   try {
     for (const k of program.inputs) evaluate(program, k);
     return true;
@@ -1254,15 +1293,23 @@ const tailOf = (path) => (path === "const" ? "const" : path.startsWith("wasm") ?
 
 // Shrinks the program while the same path keeps failing in the same way, and saves it under failures/.
 async function minimizeFailure(program, failure) {
-  const reduced = failure.at === undefined ? program : { ...program, inputs: [program.inputs[failure.at]] };
   const same = (difference) => difference && difference.kind === failure.kind && (failure.kind !== "compile" || errorCode(difference.detail) === errorCode(failure.detail));
   const work = join(outputRoot, `minimize-${program.seed}-${failure.path}`);
   const stillFails = async (candidate) => {
     writeSources(candidate, work);
     return same(compare(await runPath(failure.path, work, candidate), wantedLines(candidate, failure.path, candidate.inputs.map((k) => evaluate(candidate, k)))));
   };
+  // The first input that differed, alone, if it still fails alone. It may not: a call can fail because of what an
+  // earlier call left behind (allocator state, say), and then the whole sequence of inputs is kept.
+  let reduced = program;
+  let probes = 0;
+  if (failure.at !== undefined && program.inputs.length > 1) {
+    const single = { ...program, inputs: [program.inputs[failure.at]] };
+    probes++;
+    if (await stillFails(single)) reduced = single;
+  }
   const before = weightOf(reduced)[0];
-  const result = await minimize(reduced, stillFails, { budget: minimizeBudget });
+  const result = await minimize(reduced, stillFails, { budget: minimizeBudget, seconds: minimizeSeconds });
   rmSync(work, { recursive: true, force: true });
   const saved = join(outputRoot, "failures", `seed-${program.seed}-${failure.path}`);
   rmSync(saved, { recursive: true, force: true });
@@ -1271,16 +1318,18 @@ async function minimizeFailure(program, failure) {
   writeFileSync(join(saved, "Main.tz"), source(min, tailOf(failure.path)));
   writeFileSync(join(saved, "original.txt"), source(program, tailOf(failure.path)));
   const expected = min.inputs.map((k) => evaluate(min, k));
+  // The settings that decide the program and the expected values, so that the command works in a clean shell.
+  const settings = [`TSUZURI_PROGFUZZ_KIND=${program.kind === "owned" ? "owned" : "values"}`, `TSUZURI_PROGFUZZ_PATHS=${failure.path}`, ...(mutant ? [`TSUZURI_PROGFUZZ_MUTANT=${mutant}`] : [])];
   writeFileSync(join(saved, "info.txt"), [
     `seed ${program.seed}  depth ${program.depth}  path ${failure.path}  kind ${failure.kind}`,
     `inputs ${min.inputs.join(" ")}`,
     `expected ${expected.join(" ")}`,
     `actual ${failure.actual ?? "-"} (first difference in the original), ${failure.detail.split("\n")[0]}`,
-    `nodes ${before} -> ${result.nodes} after ${result.attempts} compiler runs`,
-    `reproduce: node tests/progfuzz.mjs ${compiler} 1 ${program.seed} ${program.depth}`,
+    `nodes ${before} -> ${result.nodes} after ${result.attempts + probes} compiler runs`,
+    `reproduce: ${settings.join(" ")} node tests/progfuzz.mjs ${compiler} 1 ${program.seed} ${program.depth}`,
     "",
   ].join("\n"));
-  return { directory: saved, nodes: result.nodes, before, attempts: result.attempts };
+  return { directory: saved, nodes: result.nodes, before, attempts: result.attempts + probes, inputs: min.inputs.length };
 }
 // >>> phase 2
 
@@ -1288,6 +1337,8 @@ async function minimizeFailure(program, failure) {
 // One line per case: kind, type(s), operator, operands, result. Every result was worked out by hand from
 // docs/language.md and the language reference (wrapping + - *, truncating / and %, shift counts taken
 // modulo the bit width, arithmetic >>> for signed types), and the self test runs each line on the compiler too.
+// A `for` line is: for, type, first, step (`-` for none), end, the sum of the values as an i64; the end is
+// inclusive (`..=`), or half-open (`..<`) when it starts with `<`.
 const TABLE = `
 bin i8 + 127 1 -128
 bin i8u + 255 1 0
@@ -1405,6 +1456,16 @@ for i8 127 -1 125 378
 for i64 9223372036854775805 - 9223372036854775807 9223372036854775802
 for i64u 18446744073709551613 - 18446744073709551615 -6
 for i16 -32768 3 -32760 -98295
+for i32 0 - <3 3
+for i32 3 - <3 0
+for i32 0 2 <6 6
+for i32 10 -3 <1 21
+for i8 125 2 <127 125
+for i8 -128 - <-126 -255
+for i8u 250 - <255 1260
+for i64 9223372036854775806 - <9223372036854775807 9223372036854775806
+for i64 -9223372036854775808 - <-9223372036854775808 0
+for i64u 18446744073709551613 - <18446744073709551615 -5
 `;
 
 // The table as a program: one function per line, and `run k` returns line k as an i64.
@@ -1452,8 +1513,10 @@ function tableProgram() {
       want = BigInt(w[5]);
       result = I64;
       const acc = v("acc", I64);
+      const halfOpen = w[4].startsWith("<");
       body = {
-        t: "for", ty: I64, acc: "acc", i: "i", it, init: lit(I64, 0n), lo: lit(it, BigInt(w[2])), step: w[3] === "-" ? null : lit(it, BigInt(w[3])), hi: lit(it, BigInt(w[4])), exit: null,
+        t: "for", ty: I64, acc: "acc", i: "i", it, init: lit(I64, 0n), lo: lit(it, BigInt(w[2])), step: w[3] === "-" ? null : lit(it, BigInt(w[3])),
+        hi: lit(it, BigInt(halfOpen ? w[4].slice(1) : w[4])), op: halfOpen ? "..<" : "..=", exit: null,
         body: { t: "bin", ty: I64, op: "+", a: acc, b: { t: "cast", ty: I64, a: v("i", it) } },
       };
     }
@@ -1531,15 +1594,23 @@ async function fuzz() {
 
 const REQUIRED_TAGS = {
   values: ["array_index", "array_length", "call", "cast_narrow", "cast_sign", "cast_widen", "div_dynamic_signed", "div_dynamic_unsigned", "div_literal_signed", "div_literal_unsigned",
-    "for_loop", "while_loop", "loop_break", "loop_continue", "loop_descending", "loop_empty", "loop_to_type_edge", "loop_from_type_edge", "loop_dynamic_bound",
+    "for_loop", "while_loop", "loop_break", "loop_continue", "loop_descending", "loop_empty", "loop_half_open", "loop_to_type_edge", "loop_from_type_edge", "loop_dynamic_bound",
     "match_guard", "match_int", "match_maybe", "match_tuple", "match_union", "new_array", "record_update", "recursive_function", "self_call",
     "shift_count_dynamic", "shift_count_negative", "shift_count_over_width", "shift_right_signed"],
 };
+// Every required tag occurs in the first COVERAGE_SEEDS seeds at depth COVERAGE_DEPTH (the window of the CI smoke runs;
+// the self test checks it), so a run that includes that window fails when the generator stops making a construct.
+// Other runs only print their coverage: no loop fits in depth 1, and a rare tag can be absent from another window of
+// 100 seeds (the loop tags at depth 2 and 3, `cat` of the owned programs).
+const COVERAGE_SEEDS = 100;
+const COVERAGE_DEPTH = 4;
 // <<< phase 3
 REQUIRED_TAGS.owned = ["newvec", "newstr", "newq", "push", "grow", "pop", "loop", "whilepop", "len", "sum", "clone", "drop", "arr", "branch", "cdrop", "mdrop", "append", "slen", "take", "cat", "qpush", "qpushs", "qpop", "qclear", "qlen"];
 // >>> phase 3
 
 function report(results) {
+  // A run that checked fewer programs than it was asked for has not tested what it reports.
+  assert.equal(results.length, programs, `checked ${results.length} of ${programs} programs`);
   const failed = results.filter((r) => r.failures?.length);
   const discarded = results.filter((r) => r.discarded).length;
   const limited = results.reduce((sum, r) => sum + (r.limited ?? 0), 0);
@@ -1555,7 +1626,9 @@ function report(results) {
   }
   // A generator that stopped producing a construct, or that is thrown away by the size limit, tests nothing.
   assert.ok(discarded * 4 <= results.length, `${discarded} of ${results.length} programs were discarded for their size`);
-  if (results.length >= 100) for (const tag of REQUIRED_TAGS[kind]) assert.ok(coverage[tag] > 0, `the generator never produced "${tag}" in ${results.length} programs`);
+  if (depth === COVERAGE_DEPTH && firstSeed <= 1 && firstSeed + programs > COVERAGE_SEEDS) {
+    for (const tag of REQUIRED_TAGS[kind]) assert.ok(coverage[tag] > 0, `the generator never produced "${tag}" in ${results.length} programs`);
+  }
   console.log(`progfuzz ${kind}: ${results.length - discarded} programs (${discarded} discarded for their size, ${limited} constant evaluations over budget), ${executions} executions on ${paths.join(", ")}, seed ${firstSeed}, depth ${depth}; zero differences`);
   console.log(JSON.stringify(Object.fromEntries(Object.entries(coverage).sort())));
 }
@@ -1570,7 +1643,7 @@ const OWNED_MUTANTS = ["owned-pop-ignored", "owned-clone-aliased"];
 const KNOWN_BUGS = [
   {
     id: "KB1",
-    source: "def f :: [i64] -> i64\nfn f xs = xs[({ let mut a: i64 = 0i64; for i in 0i64 .. 1i64 do { a = (a + i); () }; a })]\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (to_string (f [10i64, 20i64, 30i64]))\n    0\n",
+    source: "def f :: [i64] -> i64\nfn f xs = xs[({ let mut a: i64 = 0i64; for i in 0i64 ..= 1i64 do { a = (a + i); () }; a })]\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.write_line (to_string (f [10i64, 20i64, 30i64]))\n    0\n",
     error: "error[E0002]: expected 'do' after the enumerable expression",
   },
 ];
@@ -1626,29 +1699,73 @@ async function selfTesting() {
       console.log(`self test: mutant ${name} changes the answer of ${changed} of 200 programs`);
     }
   }
+  // The window whose coverage a fuzz run enforces produces every required tag.
+  const coverageSets = [["values", generate]];
+  // <<< phase 3
+  coverageSets.push(["owned", generateOwned]);
+  // >>> phase 3
+  for (const [name, make] of coverageSets) {
+    const seen = new Set();
+    for (let seed = 1; seed <= COVERAGE_SEEDS; seed++) for (const tag of make(seed, COVERAGE_DEPTH).tags) seen.add(tag);
+    const missing = REQUIRED_TAGS[name].filter((tag) => !seen.has(tag));
+    assert.deepEqual(missing, [], `seeds 1..${COVERAGE_SEEDS} at depth ${COVERAGE_DEPTH} never produce these ${name} tags`);
+  }
+  console.log(`self test: seeds 1..${COVERAGE_SEEDS} at depth ${COVERAGE_DEPTH} produce every required tag (${coverageSets.map(([name]) => `${REQUIRED_TAGS[name].length} ${name}`).join(", ")})`);
   // <<< phase 2
   // 4. The minimizer on a made-up property that needs no compiler: a shift by at least the bit width.
   const wide = (program) => program.functions.some((f) => [...positions(f.body)].some(([, n]) => n.t === "shift" && n.c.t === "lit" && n.c.v >= BigInt(n.ty.bits)));
   let big = null;
   for (let seed = 1; seed < 300 && !big; seed++) { const program = generate(seed, 5); if (wide(program) && valid(program)) big = program; }
   assert.ok(big, "no program with a wide shift in 300 seeds");
-  const small = await minimize(big, async (program) => wide(program), { budget: 5000, seconds: 120 });
+  const small = await minimize(big, async (program) => wide(program), { budget: 5000, seconds: Infinity });
   assert.ok(wide(small.program) && small.nodes <= 30 && small.nodes * 10 <= weightOf(big)[0], `the minimizer left ${small.nodes} of ${weightOf(big)[0]} nodes\n${source(small.program, "lib")}`);
   console.log(`self test: the minimizer cut ${weightOf(big)[0]} nodes to ${small.nodes} in ${small.attempts} tries`);
+  // Replacing the guard `if fuel <= 0 then 0 else f0 (fuel - 1)` by its recursive branch is a candidate; the evaluator
+  // must reject it (Limit at DEPTH_LIMIT nested evaluations) instead of overflowing the JavaScript stack, also when
+  // every call goes through a deep body (40 nested lets).
+  const fuel = { n: "fuel", ty: I64 };
+  const recursive = {
+    name: "f0", params: [fuel], result: I64, rec: true,
+    body: { t: "if", ty: I64, c: { t: "cmp", ty: BOOL, op: "<=", a: variable(fuel), b: lit(I64, 0n) }, a: lit(I64, 0n), b: { t: "call", ty: I64, f: "f0", args: [{ t: "bin", ty: I64, op: "-", a: variable(fuel), b: lit(I64, 1n) }] } },
+  };
+  const guarded = { seed: 0, depth: 0, records: [], unions: [], inputs: [0n], tags: new Set(), functions: [recursive, { name: "run", params: [{ n: "k", ty: I64 }], result: I64, rec: false, body: { t: "call", ty: I64, f: "f0", args: [lit(I64, 3n)] } }] };
+  const unguarded = [...candidates(guarded)].find((candidate) => candidate.functions[0].body.t === "call");
+  assert.ok(unguarded, "the minimizer offers no candidate that replaces the guard by its recursive branch");
+  let deep = unguarded.functions[0].body;
+  for (let j = 0; j < 40; j++) deep = { t: "let", ty: I64, n: `v${j}`, e: lit(I64, BigInt(j)), body: deep };
+  const deepUnguarded = replaceAt(unguarded, ["functions", 0, "body"], deep);
+  assert.ok(valid(guarded) && !valid(unguarded) && !valid(deepUnguarded), "the minimizer must reject a recursion that lost its guard");
+  console.log(`self test: the minimizer rejects a recursion that lost its guard (${DEPTH_LIMIT} nested evaluations)`);
+  // Replacing `let x = 1i64; if false then x else 0i64` by its body leaves x unbound in the branch that is not taken: the
+  // evaluator never reads it, but the compiler rejects the program (E1002), so the candidate must be invalid. Putting
+  // the bound value in place of x is fine.
+  const x = { n: "x", ty: I64 };
+  const binding = { t: "let", ty: I64, n: "x", e: lit(I64, 1n), body: { t: "if", ty: I64, c: lit(BOOL, false), a: variable(x), b: lit(I64, 0n) } };
+  const scope = { seed: 0, depth: 0, records: [], unions: [], inputs: [0n], tags: new Set(), functions: [{ name: "run", params: [{ n: "k", ty: I64 }], result: I64, rec: false, body: binding }] };
+  const exposed = [...candidates(scope)].find((candidate) => candidate.functions[0].body.t === "if" && candidate.functions[0].body.a.t === "var");
+  const substituted = [...candidates(scope)].find((candidate) => candidate.functions[0].body.t === "if" && candidate.functions[0].body.a.t === "lit");
+  assert.ok(exposed && substituted, "the minimizer offers no candidate that drops or substitutes the binding");
+  assert.ok(valid(scope) && !valid(exposed) && valid(substituted), "the minimizer must reject a candidate that leaves a variable unbound in an untaken branch");
+  console.log("self test: the minimizer rejects a candidate that leaves a variable unbound in a branch it does not take");
   // >>> phase 2
   // 5. The compiler against the semantics table, on every configured path.
   const directory = join(outputRoot, "table");
   writeSources(table.program, directory);
   for (const path of paths) {
-    const difference = compare(await runPath(path, directory, table.program), table.expected);
+    const result = await runPath(path, directory, table.program);
+    // A random program over the constant evaluator's budget is skipped (`limit`); the fixed table must finish.
+    assert.notEqual(result.kind, "limit", `the table on ${path} ran out of the constant evaluation budget:\n${result.detail}`);
+    const difference = compare(result, table.expected);
     assert.equal(difference, null, `the table on ${path}: ${JSON.stringify(difference)}`);
   }
   console.log(`self test: the compiler matches the semantics table on ${paths.join(", ")}`);
   // <<< phase 2
   // 6. The whole machine on a wrong evaluator: it must find, minimize and save a difference.
   const savedBudget = minimizeBudget;
+  minimizeSeconds = Infinity;
   paths = ["o0"];
   minimizeBudget = 60;
+  const foundBy = {};
   try {
     for (const name of ["div-floor", "shift-saturating"]) {
       mutant = name;
@@ -1662,12 +1779,30 @@ async function selfTesting() {
       assert.ok(readFileSync(join(found.saved.directory, "Main.tz"), "utf8").includes("def main"));
       // `tsuzuri run <directory>` reads every .tz file of the directory, so the copy of the original program is a .txt.
       assert.deepEqual(readdirSync(found.saved.directory).filter((name) => name.endsWith(".tz")), ["Main.tz"]);
+      const reproduce = `TSUZURI_PROGFUZZ_KIND=values TSUZURI_PROGFUZZ_PATHS=o0 TSUZURI_PROGFUZZ_MUTANT=${name} node tests/progfuzz.mjs ${compiler} 1 ${found.seed} 4`;
+      assert.ok(readFileSync(join(found.saved.directory, "info.txt"), "utf8").includes(`reproduce: ${reproduce}\n`), "info.txt must give the settings of the failure");
+      assert.equal(found.saved.inputs, 1, "the minimized program keeps the one input that differed");
       console.log(`self test: mutant ${name} caught by seed ${found.seed}, minimized to ${found.saved.nodes} nodes`);
+      foundBy[name] = found;
     }
+    // A failure whose input differs only after the earlier calls (an earlier call corrupts state that a later one
+    // reads): made here by pointing the failure at an input that, alone, matches the wrong evaluator. The minimizer
+    // must notice that this input alone passes and keep the whole sequence instead of saving a passing reproducer.
+    const sequence = generate(foundBy["div-floor"].seed, depth);
+    const right = answers(sequence, "");
+    const wrong = answers(sequence, "div-floor");
+    const alone = right.findIndex((v, j) => v === wrong[j]);
+    assert.ok(alone >= 0 && right.some((v, j) => v !== wrong[j]), `seed ${sequence.seed} has no input that alone matches div-floor`);
+    mutant = "div-floor";
+    minimizeBudget = 2;
+    const kept = await minimizeFailure(sequence, { ...foundBy["div-floor"], at: alone });
+    assert.equal(kept.inputs, sequence.inputs.length, "a failure that needs the earlier inputs must keep all of them");
+    console.log(`self test: a failure that does not reproduce on its one input keeps all ${kept.inputs} inputs`);
   } finally {
     mutant = mutantName;
     paths = savedPaths;
     minimizeBudget = savedBudget;
+    minimizeSeconds = 600;
   }
   // >>> phase 2
   // 7. The constants really are computed by the compiler: `main` of the const text calls no user function,
@@ -1707,8 +1842,15 @@ async function selfTesting() {
       ownedTexts.add(text);
     }
     assert.equal(ownedTexts.size, 40);
+    // Deleting the `take` step that binds n2 (seed 14, depth 4) leaves a later step reading n2: the candidate is invalid.
+    const owned14 = generateOwned(14, 4);
+    const take = owned14.steps.findIndex((step) => step.op === "take" && step.out === "n2");
+    const unbound = [...candidates(owned14)].find((candidate) => candidate.steps.length === owned14.steps.length - 1 && !candidate.steps.includes(owned14.steps[take]));
+    assert.ok(take >= 0 && valid(owned14) && unbound && !valid(unbound), "the minimizer must reject an owned candidate that lost the step binding n2");
+    console.log("self test: the minimizer rejects an owned candidate that lost the step binding a scalar (seed 14, depth 4)");
     paths = ["o0"];
     minimizeBudget = 40;
+    minimizeSeconds = Infinity;
     mutant = "owned-pop-ignored";
     let caught = null;
     for (let seed = 1; seed <= 60 && !caught; seed++) {
@@ -1716,6 +1858,8 @@ async function selfTesting() {
       if (result.failures?.length) caught = result.failures[0];
     }
     assert.ok(caught?.kind === "value" && caught.saved && caught.saved.nodes <= 12, `the mutant owned-pop-ignored was not caught and minimized: ${JSON.stringify(caught?.saved)}`);
+    const reproduceOwned = `TSUZURI_PROGFUZZ_KIND=owned TSUZURI_PROGFUZZ_PATHS=o0 TSUZURI_PROGFUZZ_MUTANT=owned-pop-ignored node tests/progfuzz.mjs ${compiler} 1 ${caught.seed} 4`;
+    assert.ok(readFileSync(join(caught.saved.directory, "info.txt"), "utf8").includes(`reproduce: ${reproduceOwned}\n`), "info.txt must give the settings of the owned failure");
     console.log(`self test: mutant owned-pop-ignored caught by seed ${caught.seed}, minimized to ${caught.saved.nodes} steps`);
     mutant = mutantName;
     const probeOwned = generateOwned(1, 4);
@@ -1734,6 +1878,7 @@ async function selfTesting() {
     if (kind === "owned") generator = generateOwned;
     paths = savedPaths;
     minimizeBudget = savedBudget;
+    minimizeSeconds = 600;
     nativeLeaks = false;
     delete process.env.TSUZURI_PROGFUZZ_INJECT_LEAK;
   }
@@ -1744,242 +1889,3 @@ async function selfTesting() {
 
 if (selfTest) await selfTesting();
 else report(await fuzz());
-````
-
-## B. 実測
-
-測った機械: Apple M1 Max（10 コア）、macOS（Darwin arm64）、Node v20.19.6、ビルド済みの `target/release/tsuzuri`（ファイルの日時は 10 月 17 日 22:00）、ジョブ数は既定の 4。すべて付録 A の全文（位相 1〜3）で取った。コマンドは、リポジトリの直下で `tests/progfuzz.mjs` として実行する形に直して書く。
-
-| # | コマンド | 結果 |
-| --- | --- | --- |
-| B1 | `node tests/progfuzz.mjs target/release/tsuzuri 30 1 3` | 30 本・1,200 回（5 経路）・29 秒・差 0。1 本あたり、native `-O0` 約 0.5 秒、`-O3` 約 0.7 秒、wasm32 `-O0` 約 0.1 秒、`-O3` 約 0.35 秒（`--no-cache`） |
-| B2 | `node tests/progfuzz.mjs target/release/tsuzuri 100 1 4` | 100 本・4,000 回・2 分 3 秒・差 0 |
-| B3 | `node tests/progfuzz.mjs target/release/tsuzuri 300 1000 5`（索引の回避の前） | 18 本が全経路でコンパイルできない。90 行（18 本 × 5 経路）がすべて `error[E0002]: expected 'do' after the enumerable expression`。残り 282 本は差 0。原因は付録 D の KB1 |
-| B4 | 同じ（索引の回避の後） | 300 本・12,000 回・差 0・約 7 分（B3 と同時に別の実行が走っていた） |
-| B5 | `node tests/progfuzz.mjs target/release/tsuzuri 200 1 4` | 200 本・8,000 回・2 分 24 秒・差 0・打ち切り 0・定数評価の予算超過 0。CI の smoke の見積もり |
-| B6 | `TSUZURI_PROGFUZZ_KIND=owned node tests/progfuzz.mjs target/release/tsuzuri 100 1 4` | 100 本・3,200 回（o0・o3・wasm0・wasm3）・1 分 8 秒・差 0。`Alloc` がないので native の漏れの検査は無効（「F14 がありません」の 1 行が出る） |
-| B7 | `TSUZURI_PROGFUZZ_KIND=owned node tests/progfuzz.mjs target/release/tsuzuri 300 1 5` | 300 本・9,600 回・差 0 |
-| B8 | B6 と同じで、F14 の試作のコンパイラ（`Alloc.snapshot`／`Alloc.since` がある）を指定、30 本・depth 4 | 960 回・差 0。native の漏れの検査（1 呼び出しごとの `allocs - frees` が 0）も有効だった |
-| B9 | `node tests/progfuzz.mjs --self-test target/release/tsuzuri` | 全部が通る。81 秒（位相 1 だけの版は 3.7 秒、位相 1 と 2 の版は 72 秒） |
-| B10 | B3 の seed 1034 を `TSUZURI_PROGFUZZ_PATHS=o0` で最小化 | 1,500 節点が 72 節点になった（150 回のコンパイラの実行、約 2 分）。残りの形は「配列の添字の中の範囲 `for`」 |
-
-B9 の内訳（位相 1〜3 の全文）:
-
-```text
-self test: xorshift64* gives the known words for 3 seeds
-self test: the evaluator matches all 116 lines of the semantics table
-self test: 40 seeds give 40 distinct programs, each the same on a second generation
-self test: mutant shift-saturating changes the answer of 122 of 200 programs
-self test: mutant mul-unwrapped changes the answer of 65 of 200 programs
-self test: mutant div-floor changes the answer of 67 of 200 programs
-self test: mutant shr-logical changes the answer of 99 of 200 programs
-self test: mutant cast-saturate changes the answer of 164 of 200 programs
-self test: mutant loop-exclusive changes the answer of 37 of 200 programs
-self test: mutant owned-pop-ignored changes the answer of 27 of 200 programs
-self test: mutant owned-clone-aliased changes the answer of 16 of 200 programs
-self test: the minimizer cut 750 nodes to 20 in 109 tries
-self test: the compiler matches the semantics table on const, o0, o3, wasm0, wasm3
-self test: mutant div-floor caught by seed 2, minimized to 3 nodes
-self test: mutant shift-saturating caught by seed 1, minimized to 56 nodes
-self test: main of the const text calls no user function; main of the run text calls run
-self test: known bug KB1 still reproduces
-self test: mutant owned-pop-ignored caught by seed 2, minimized to 2 steps
-self test: the leak measurement reads 0 for a clean run and counts every injected 16-byte block
-progfuzz self test: ok
-```
-
-既存の差分ファズ（HEAD）: `tests/last_use_fuzz.mjs`（200 行）・`tests/integer_ranges_fuzz.mjs`（491 行）・`tests/local_recursion_fuzz.mjs`（456 行）は、どれも `node tests/<名前>.mjs [コンパイラ] [件数] [最初の seed] [深さ]` の位置引数で、乱数は `mulberry32`（2 本）または線形合同（1 本）、失敗は例外で終了コード 1、成功は 1 行（`last_use_fuzz` は続けて JSON の被覆）を出す。`.github/workflows/targets.yml` の「Last-use differential fuzz smoke」（`40 1 4`）と「Integer range proofs …」（`20 1 3`）の段が手本。
-
-## C. `const def` の受理の実測
-
-`src/const_rules.rs` の `validate_function` が受理する範囲を、`tsuzuri check` で 43 件の本体に当てた結果（`const def probe` の本体だけを変えた。`check` は定数から呼ばれなくても本体を検査する）。生成器が使う構文は、すべて「受理」の側にある。
-
-| 本体 | 結果 | 診断（先頭） |
-| --- | --- | --- |
-| 整数の `+ - * / % & \| ^ <<< >>>`・単項 `-`・`~` | 受理 | |
-| 整数・整数の `as` | 受理 | |
-| `&&`・`\|\|`・`!`・比較 | 受理 | |
-| `if`・`let`・`let mut` と再代入 | 受理 | |
-| 整数の `match`（ガードつき） | 受理 | |
-| union・record・`Maybe`・タプルの `match` | 受理 | |
-| 範囲の `for`（刻みつき） | 受理 | |
-| 配列の `for` | 受理 | |
-| `while`・`break`・`continue` | 受理 | |
-| タプル・record の構築と `{ r with f = v }` | 受理 | |
-| 配列リテラル・`new [T](n, \i -> …)`・`xs[i]`・`xs.length` | 受理 | |
-| `const def` の呼び出し | 受理 | |
-| 文字列の `.length`・`s[0]`・`==` | 受理 | |
-| `f64` の算術・`f64` から整数への `as` | 受理 | |
-| `**`・`char`・`unit`・`i128`・固定長配列 `[T; N]`・`Maybe.Some` | 受理 | |
-| `x / 0`（定義の検査） | 受理 | 呼び出して評価したときに `E1026`（`const division trapped on zero or signed overflow`） |
-| `const` でない `def` の呼び出し | 拒否 | `E1026` `'plain' is not a const def; mark it 'const def' or compute the value at runtime` |
-| std の関数（`Array.get`） | 拒否 | `E1026` `'get' is not a const def; …` |
-| `Vec.empty()` | 拒否 | `E1026` `'Vec.empty' is not a const def; …` |
-| タプル・配列の `==` | 拒否 | `E1026` `an operator on a record, tuple, array, or union is not allowed in a const def; apply it to their fields` |
-| 文字列補間 `$"{x}"` | 拒否 | `E1026` `this operation is not allowed in a const def; move it to a runtime def` |
-| パイプ `\|>` | 拒否 | `E1026` `the pipe operator is not allowed in a const def; write the call` |
-| `@checked` | 拒否 | `E1026` `an '@checked' operation raises an exception that has no compile-time form; …` |
-| ラムダ（`new [T](n, f)` の外） | 拒否 | `E1026` `a function value is not allowed in a const def; only new [T](n, f) takes one` |
-| `ref` の借用 | 拒否 | `E1026` `a borrow is not allowed in a const def; read the value directly` |
-| decimal の算術 | 拒否 | `E1026` `this const arithmetic is unsupported; keep decimal arithmetic and overloaded operations in runtime code` |
-| 型変数つきの署名 | 拒否 | `E1026` `a const def must have a concrete signature; remove type variables and constraints` |
-| スライス `xs[0..1]` | 拒否 | `E0002` `array slices must be borrows; …`（構文の規則） |
-| record の `==`（`Eq` の実装なし） | 拒否 | `E1005` `no instance for Eq<Main.R>`（言語の規則。`const` の規則ではない） |
-| フィールド・要素への代入 | 拒否 | `E1012` `assignment replaces a mutable binding; …`（言語の規則） |
-| 同じ文字列引数を 2 回使う `s + s` | 拒否 | `E1012` `use of moved or partially moved value 's'`（言語の規則） |
-
-評価の上限（実測）: 呼び出しの深さ 128 を超えると `E1026` `const evaluation exceeds the compiler limit of 128 nested const def calls; reduce the recursion depth or compute the value at runtime`（`fib` 型の再帰 `f 200`）。300 万回の `for` は `E1026` `const evaluation exceeds the compiler limit; split or simplify the constants`。生成した 300 本（depth 5）で、予算の超過は 0 件だった。
-
-## D. 見つけた既知のバグ KB1
-
-`xs[...]` の角括弧の中に、範囲の `for` を含む式を書くと、`E0002` になる。最小の再現（HEAD の `target/release/tsuzuri build` で確かめた）:
-
-```tsuzuri
-def f :: [i64] -> i64
-fn f xs = xs[({ let mut a: i64 = 0i64; for i in 0i64 .. 1i64 do { a = (a + i); () }; a })]
-
-def main :: unit -> i32 = \() ->
-    do! IO.write_line (to_string (f [10i64, 20i64, 30i64]))
-    0
-```
-
-```text
-Main.tz:2:54: error[E0002]: expected 'do' after the enumerable expression
-  2 | ({ let mut a: i64 = 0i64; for i in 0i64 .. 1i64 do { a = (a + i); () }; a })]
-    |                                         ^
-```
-
-原因の場所（`src/parser.rs`）: `index_or_slice` は、`xs[a..b]` の `..` を範囲の式として読まないために `stop_at_slice_dotdot` を `true` にして添字の式を読む。この旗は、角括弧の中の `{ … }` や `( … )` に入っても `false` に戻らない。二項演算子を読む `expression` の中の `minimum == 0 && !self.stop_at_slice_dotdot && self.eat(&TokenKind::DotDot)` が `..` を拒み、`for` の見出しが `do` の前で止まる。直す場所の候補は、括弧とブロックに入るときにこの旗を保存して `false` にし、出るときに戻すこと（`stop_at_arm`・`stop_at_arrow` と同じ扱い）。この直しは G36 の対象外（本文の「対象外」）。
-
-付録 A の `index` は、添字の式を括弧の外の `let` に束縛して回避している（`let ix0j: i64u = ((e) as i64u); ix0[(ix0j % …) as i64]`）。`--self-test` が、この再現が今も失敗することを確かめる。直ったら、`--self-test` が「KB1 は直った」と言って止まるので、回避と `KNOWN_BUGS` の項目を消す。
-
-## E. 生成される `.tz` の例
-
-`node tests/progfuzz.mjs target/release/tsuzuri 1 5 2`（seed 5・depth 2）が書く `exe/Main.tz`（`TSUZURI_PROGFUZZ_KEEP=1`）:
-
-```tsuzuri
-union U0 = K0_0 of i16 | K0_1 of i64u
-
-const def f0 :: bool -> i8 -> bool
-fn f0 p0 p1 = (((p1 as i8u) as i64u) == ({ let v0: [i32u] = [2134666360i32u, 256i32u]; 13452433348025490985i64u }))
-
-const def f1 :: i16u -> Maybe<i16u> -> i32u
-fn f1 p0 p1 = 16i32u
-
-const def run :: i64 -> i64
-fn run k = ({ let x0: i8u = ((k >>> 14i64) as i8u); ({ let x1: i64u = ((k >>> 3i64) as i64u); (((((if (f0 ({ let v1: i64 = k; ((x1 as i8) < (-3i8)) }) ({ let g2: i8 = (x0 as i8); ((-118i8) / (if ((g2 == 0i8) || (g2 == (-1i8))) then 1i8 else g2)) })) then 1i64 else 0i64) * 31i64) + ((f1 (match 65536i32u with | 4i32u -> 127i16u | _ -> 25628i16u) ({ let ix0: Maybe<i16u> = Maybe.None; ix0 })) as i64)) * 31i64) + k) }) })
-
-def main :: [string] -> i32 = \args ->
-    let z = args.length
-    do! IO.write_line (to_string (run (0i64 + z)))
-    do! IO.write_line (to_string (run (1i64 + z)))
-    do! IO.write_line (to_string (run ((-1i64) + z)))
-    do! IO.write_line (to_string (run (9223372036854775807i64 + z)))
-    do! IO.write_line (to_string (run ((-9223372036854775808i64) + z)))
-    do! IO.write_line (to_string (run ((-702017493991926302i64) + z)))
-    do! IO.write_line (to_string (run (8938910063984227991i64 + z)))
-    do! IO.write_line (to_string (run (338i64 + z)))
-    0
-```
-
-`const/Main.tz` は同じ本体で、`main` の代わりに次を持つ（`run` の呼び出しは定数の初期化式にだけある）。`lib/Main.tz` は同じ本体で、`run` の署名が `export const def run :: i64 -> i64` になり、`main` がない（wasm32 の `tz_run`）。
-
-```tsuzuri
-const C0: i64 = run 0i64
-const C1: i64 = run 1i64
-const C2: i64 = run (-1i64)
-…
-def main :: unit -> i32 = \() ->
-    do! IO.write_line (to_string C0)
-    …
-    0
-```
-
-`TSUZURI_PROGFUZZ_MUTANT=div-floor TSUZURI_PROGFUZZ_PATHS=o0 node tests/progfuzz.mjs target/release/tsuzuri 5 1 4` が保存する `failures/seed-2-o0/info.txt` と `Main.tz`（実物。パスは省略。評価器を故意に誤らせたので、`expected` は誤った評価器の値）:
-
-```text
-seed 2  depth 4  path o0  kind value
-inputs -1
-expected 4294967294
-actual -55522 (first difference in the original), input 2
-nodes 320 -> 3 after 150 compiler runs
-reproduce: node tests/progfuzz.mjs /…/target/release/tsuzuri 1 2 4
-```
-
-```tsuzuri
-record R0 { f0: (i32u * i64), f1: i16, f2: i16, f3: (i64 * i32) }
-union U0 = K0_0 of bool | K0_1 of (i8u * i32)
-union U1 = K1_0 | K1_1 | K1_2 of (i8u * i64u)
-
-const def run :: i64 -> i64
-fn run k = (k % 4294967295i64)
-
-def main :: [string] -> i32 = \args ->
-    let z = args.length
-    do! IO.write_line (to_string (run ((-1i64) + z)))
-    0
-```
-
-最小化は節点の置換だけなので、使われない型の宣言は残る。実行ファイルの `-1 % 4294967295` は `-1`、床の剰余（誤った評価器）は `4294967294`。
-
-## F. 位相ごとのファイルを作る手順
-
-位相 N までのファイルは、付録 A の全文から、位相 N より大きい位相の印の間の行を落とせば作れる。次の短い script は確認用で、リポジトリに置かない（`target/` の下で使う）。`node strip.mjs tests/progfuzz.mjs 1 target/progfuzz-phase1.mjs` で位相 1 だけの版ができ、`node --check` が通り、`--self-test` が通る（実測: 位相 1 の版 1,170 行・3.7 秒、位相 1 と 2 の版 1,371 行・72 秒、位相 1〜3 の版 1,675 行・81 秒。印の行を含む付録 A の全文は 1,731 行）。
-
-```js
-import { readFileSync, writeFileSync } from "node:fs";
-
-const [input, phaseText, output] = process.argv.slice(2);
-const phase = Number(phaseText);
-const stack = [];
-const kept = [];
-for (const line of readFileSync(input, "utf8").split("\n")) {
-  const open = /^\s*\/\/ <<< phase (\d)$/.exec(line);
-  const close = /^\s*\/\/ >>> phase (\d)$/.exec(line);
-  if (open) { stack.push(Number(open[1])); continue; }
-  if (close) {
-    if (stack.pop() !== Number(close[1])) throw new Error(`unbalanced marker: ${line}`);
-    continue;
-  }
-  if (stack.every((p) => p <= phase)) kept.push(line);
-}
-if (stack.length) throw new Error("unclosed marker");
-writeFileSync(output, kept.join("\n"));
-```
-
-### 位相の印の領域と、足す手順
-
-位相 2 の印（`// <<< phase 2`）は 9 つ、位相 3 の印は 19 つある。ファイルの上から数えた順に名前を付ける。手順 2.x・3.x が足すのは、次の表の領域。手順 1.2〜1.7 は位相 1 の行だけ（印の外）を、手順の「内容」にある関数の名前で足す。
-
-| 領域 | 場所 | 内容 | 手順 |
-| --- | --- | --- | --- |
-| 2a | 設定の `allPaths` の直後 | `allPaths.push("wasm0", "wasm3")` | 2.1 |
-| 2b | 設定の `STEP_LIMIT` の直後 | `minimizeBudget` | 2.2 |
-| 2c | `exec` の後 | `wasmCall` | 2.1 |
-| 2d | `runPath` の先頭 | wasm の経路の分岐 | 2.1 |
-| 2e | `compare` の後 | 最小化の節（`SKIP` から `errorCode` まで） | 2.2 |
-| 2f | `writeSources` の後 | `tailOf`・`minimizeFailure` | 2.3 |
-| 2g | `checkProgram` の中 | `minimizeFailure` を呼ぶ 1 行 | 2.3 |
-| 2h | `selfTesting` の step 4 | 最小化の検査 | 2.2 |
-| 2i | `selfTesting` の step 6 | 変異の検出・最小化・保存 | 2.3 |
-| 3a | 設定 | `kind` の読み込み | 3.1 |
-| 3b | 設定 | owned のときの `paths` の絞り込み | 3.1 |
-| 3c | 設定 | `generator`・`nativeLeaks`・`wantedLines` | 3.1 |
-| 3d | `source` の先頭 | owned なら `sourceOwned` | 3.1 |
-| 3e | `evaluate` の先頭 | owned なら `evaluateOwned` | 3.1 |
-| 3f | 所有権の節 | `OWNED_HELPERS` から `evaluateOwned` まで | 3.1 |
-| 3g | `wasmCall` の後 | `wasmOwnedCall` | 3.2 |
-| 3h | 領域 2d の中 | `--allocator counting` と `wasmOwnedCall` の選択 | 3.2 |
-| 3i | `runPath` の native の部分 | `nativeLeaks` のとき `--allocator counting` | 3.3 |
-| 3j | `weightOf` の中 | owned の重み | 3.1 |
-| 3k | `prune` の中 | owned は関数を捨てない | 3.1 |
-| 3l | `candidates` の中 | owned のステップの削除の候補 | 3.1 |
-| 3m | `writeSources` の中 | owned は `const` の文面を作らない | 3.1 |
-| 3n | `checkProgram` の後 | `supportsAlloc` | 3.2 |
-| 3o | `fuzz` の中 | owned の native の漏れの検査の有効化 | 3.3 |
-| 3p | `REQUIRED_TAGS` の後 | `REQUIRED_TAGS.owned` | 3.1 |
-| 3q | `MUTANTS` の後 | `OWNED_MUTANTS` | 3.1 |
-| 3r | `selfTesting` の step 3 | `mutantSets.push(...)` | 3.1 |
-| 3s | `selfTesting` の step 9 | 所有権のプログラムの検査 | 3.2 |
-
-この表と手順の「内容」のとおりに作った段階版（手順 1.2〜1.7・2.1〜2.3・3.1〜3.2 の各終わり）で、各手順の「確認」の出力が出ることを実測した（手順 1.5 は変異の名前の配列 `MUTANTS` を足さないと `ReferenceError` になる。手順 3.2 は `supportsAlloc` を足さないと step 9 が `ReferenceError` になる）。手順 3.3 の終わりは付録 A の全文と同じ。
