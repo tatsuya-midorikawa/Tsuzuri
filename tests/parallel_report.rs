@@ -22,7 +22,12 @@ fn run(directory: &Path, arguments: &[&str]) -> Output {
 }
 
 fn report(directory: &Path, json: bool) -> String {
-    let mut arguments = vec!["check", "Main.tz", "--report", "parallel"];
+    report_of(directory, "Main.tz", json)
+}
+
+/// The report of `check TARGET --report parallel` in `directory`.
+fn report_of(directory: &Path, target: &str, json: bool) -> String {
+    let mut arguments = vec!["check", target, "--report", "parallel"];
     if json {
         arguments.push("--json");
     }
@@ -190,37 +195,59 @@ fn the_flag_is_checked() {
     }
 }
 
-/// Applies every suggestion of the report of `source` (in the directory `name`) and returns the replacements and the
-/// summary line of the report of the edited source, which must check.
-fn apply_suggestions(name: &str, source: &str) -> (Vec<String>, String) {
+/// Writes `files` into a fresh directory `name` under the test's temporary directory.
+fn project(name: &str, files: &[(String, String)]) -> PathBuf {
     let directory = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
-    fs::create_dir_all(&directory).unwrap();
-    fs::write(directory.join("Main.tz"), source).unwrap();
+    let _ = fs::remove_dir_all(&directory);
+    for (path, text) in files {
+        let path = directory.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    directory
+}
+
+/// Applies every suggestion of the report of `check TARGET` over the project `files` (in the directory `name`), and
+/// returns the replacements in the order of the report and the summary line of the report of the edited project, which
+/// must check.
+fn apply_suggestions_in(name: &str, files: &[(&str, &str)], target: &str) -> (Vec<String>, String) {
+    let mut files: Vec<(String, String)> = files
+        .iter()
+        .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()))
+        .collect();
+    let directory = project(name, &files);
     let mut edits = Vec::new();
-    for line in report(&directory, true).lines().skip(1) {
+    for line in report_of(&directory, target, true).lines().skip(1) {
         let value: serde_json::Value = serde_json::from_str(line).unwrap();
         if value["kind"] == "suggestion" {
             let edit = &value["fixes"][0]["edits"][0];
+            let path = edit["path"].as_str().unwrap();
             edits.push((
+                path.replace('\\', "/").trim_start_matches("./").to_owned(),
                 edit["span"]["start"].as_u64().unwrap() as usize,
                 edit["span"]["end"].as_u64().unwrap() as usize,
                 edit["text"].as_str().unwrap().to_string(),
             ));
         }
     }
-    let replacements = edits.iter().map(|(_, _, text)| text.clone()).collect();
-    // From the end, so that each edit keeps the offsets of the ones before it.
-    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0));
-    let mut fixed = source.to_owned();
-    for (start, end, text) in edits {
-        fixed.replace_range(start..end, &text);
+    let replacements = edits.iter().map(|edit| edit.3.clone()).collect();
+    // From the end, so that each edit keeps the offsets of the ones before it in its file.
+    edits.sort_by(|left, right| (&left.0, right.1).cmp(&(&right.0, left.1)));
+    for (path, start, end, text) in edits {
+        let file = files
+            .iter_mut()
+            .find(|(name, _)| *name == path)
+            .unwrap_or_else(|| panic!("{path}"));
+        file.1.replace_range(start..end, &text);
     }
     // A sibling, not a subdirectory: a project reads the sources under its directory too.
-    let fixed_directory = directory.with_file_name(format!("{name}_fixed"));
-    fs::create_dir_all(&fixed_directory).unwrap();
-    fs::write(fixed_directory.join("Main.tz"), &fixed).unwrap();
-    let json = report(&fixed_directory, true);
+    let fixed = project(&format!("{name}_fixed"), &files);
+    let json = report_of(&fixed, target, true);
     (replacements, json.lines().next().unwrap().to_owned())
+}
+
+fn apply_suggestions(name: &str, source: &str) -> (Vec<String>, String) {
+    apply_suggestions_in(name, &[("Main.tz", source)], "Main.tz")
 }
 
 #[test]
@@ -235,32 +262,63 @@ fn the_suggested_edits_compile_and_leave_no_suggestions() {
 }
 
 /// PR #75 review: edition 2027 reads the elements of `Array.map` through a reference, so for elements that own heap
-/// memory the suggestion keeps that with `Parallel.map_ref`; `Parallel.map` would copy every row into its callback.
-/// Numbers keep `Parallel.map`, and the edited source checks.
+/// memory the suggestion keeps that with `Parallel.map_ref`, which `Parallel.map` would copy into its callback. Its
+/// callback gets a `ref` parameter, so only a function whose parameter is already a shared reference keeps its type;
+/// a lambda (`\row -> row` would return `ref [i64]`) is not suggested. Numbers keep `Parallel.map`, and the edited
+/// source checks.
 #[test]
 fn borrowed_heap_elements_are_suggested_as_map_ref() {
     let source = "def lengths :: ref [[i64]] -> [i64]\n\
                   fn lengths rows = Array.map Array.length rows\n\
+                  def sizes :: ref [string] -> [i64]\n\
+                  fn sizes texts = Array.map String.length texts\n\
+                  def copies :: ref [[i64]] -> [[i64]]\n\
+                  fn copies rows = Array.map (\\row -> row) rows\n\
                   def firsts :: ref [[i64]] -> [i64]\n\
                   fn firsts rows = Array.map (\\row -> row[0] + 1) rows\n\
-                  def sizes :: ref [string] -> [i64]\n\
-                  fn sizes texts = Array.map (\\text -> text.length) texts\n\
                   def doubled :: ref [i64] -> [i64]\n\
                   fn doubled values = Array.map (\\value -> value * 2) values\n";
     let (replacements, summary) = apply_suggestions("parallel_report_rows", source);
     assert_eq!(
         replacements,
-        [
-            "Parallel.map_ref",
-            "Parallel.map_ref",
-            "Parallel.map_ref",
-            "Parallel.map"
-        ]
+        ["Parallel.map_ref", "Parallel.map_ref", "Parallel.map"]
     );
     assert_eq!(
         summary,
-        r#"{"schema":"tz-report-parallel/1","suggestions":0,"sites":4,"truncated":0}"#
+        r#"{"schema":"tz-report-parallel/1","suggestions":0,"sites":3,"truncated":0}"#
     );
+}
+
+/// PR #75 review: a user module `Parallel` (here `Tools/Parallel.tz`) comes before std's in its namespace, so the
+/// edits spell `std::Parallel.*`; the edited project calls std's functions (they are sites of the report).
+#[test]
+fn a_user_module_parallel_gets_qualified_edits() {
+    let files = [
+        (
+            "Tools/Parallel.tz",
+            "def sum :: ref [i64] -> i64\nfn sum _values = 42\n",
+        ),
+        (
+            "Tools/Use.tz",
+            "def total :: ref [i64] -> i64\n\
+             fn total values = Array.sum values\n\
+             def doubled :: ref [i64] -> [i64]\n\
+             fn doubled values = Array.map (\\value -> value * 2) values\n",
+        ),
+        (
+            "Main.tz",
+            "let values = new [i64](5000, \\index -> index)\nTools::Use.total (ref values)\n",
+        ),
+    ];
+    let (replacements, summary) = apply_suggestions_in("parallel_report_shadowed", &files, ".");
+    assert_eq!(replacements, ["std::Parallel.sum", "std::Parallel.map"]);
+    assert_eq!(
+        summary,
+        r#"{"schema":"tz-report-parallel/1","suggestions":0,"sites":2,"truncated":0}"#
+    );
+    // Without a user module `Parallel`, the edits keep the short spelling.
+    let (replacements, _) = apply_suggestions("parallel_report_unshadowed", files[1].1);
+    assert_eq!(replacements, ["Parallel.sum", "Parallel.map"]);
 }
 
 #[test]

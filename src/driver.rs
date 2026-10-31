@@ -2382,6 +2382,17 @@ impl crate::parallel_report::Sources for Project {
             .to_string_lossy()
             .into_owned()
     }
+
+    fn user_module(&self, name: &str) -> bool {
+        self.sources.iter().any(|source| {
+            source.origin == ModuleOrigin::User
+                && source
+                    .relative_path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    == Some(name)
+        })
+    }
 }
 
 impl Project {

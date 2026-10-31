@@ -318,7 +318,7 @@ tsuzuri check demo
 
 警告があっても、既定では終了コードは 0 のままです。`--deny-warnings` を付けると、警告だけで終了コード 1 になり、その後の処理へ進みません。
 
-`--report parallel` を付けると、検査が通ったあと、標準出力に並列化の報告を出します（診断と警告は従来どおり標準エラー出力）。報告は 2 種類の行の一覧です。**提案**（`suggestion`）は、`Array.map`・`Array.mapr`・`Array.fold_monoid`・整数の `Array.sum` の呼び出しのうち、`Parallel.map`・`Parallel.map_ref`・`Parallel.fold`・`Parallel.sum` に置き換えても結果が変わらないものです。edition 2027 の `Array.map` は要素を参照で読むので、要素がヒープを持つ（配列・文字列など）ときは、各要素を複製する `Parallel.map` ではなく `Parallel.map_ref` を提案します。**呼び出し地点**（`site`）は、既存の `Parallel` の呼び出しごとに、コールバック（`fold`・`sum` では `Monoid` の関数や加算）が純粋と示せるか（`parallel_safe`）です。提案は自動では適用されません。
+`--report parallel` を付けると、検査が通ったあと、標準出力に並列化の報告を出します（診断と警告は従来どおり標準エラー出力）。報告は 2 種類の行の一覧です。**提案**（`suggestion`）は、`Array.map`・`Array.mapr`・`Array.fold_monoid`・整数の `Array.sum` の呼び出しのうち、`Parallel.map`・`Parallel.map_ref`・`Parallel.fold`・`Parallel.sum` に置き換えても結果が変わらないものです。edition 2027 の `Array.map` は要素を参照で読むので、要素がヒープを持つ（配列・文字列など）ときは、各要素を複製する `Parallel.map` ではなく `Parallel.map_ref` を提案します。`Parallel.map_ref` はコールバックに `ref` の引数を渡すので、提案するのは、引数がもともと共有参照の名前のある関数（`Array.length`・`String.length` など）のときだけです（ラムダはそのままでは型が変わることがあるので提案しません）。プロジェクトに利用者のモジュール `Parallel` があると、名前空間によってはそちらが std より先に見つかるので、修正案は `std::Parallel.sum` のように修飾して書きます。**呼び出し地点**（`site`）は、既存の `Parallel` の呼び出しごとに、コールバック（`fold`・`sum` では `Monoid` の関数や加算）が純粋と示せるか（`parallel_safe`）です。提案は自動では適用されません。
 
 ```text
 $ tsuzuri check Main.tz --report parallel

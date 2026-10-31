@@ -61,6 +61,22 @@ pub struct Report {
 pub trait Sources {
     fn text(&self, span: Span) -> &str;
     fn path(&self, span: Span) -> String;
+    /// Whether a module of the program (not of std) is named `name`. A user module `Parallel` takes precedence over
+    /// std's where its namespace is searched first, so the suggested edits then spell `std::Parallel.map`.
+    fn user_module(&self, _name: &str) -> bool {
+        false
+    }
+}
+
+/// `replacement` as an edit spells it when a user module `Parallel` may shadow std's: `std::Parallel.sum`.
+fn qualified(replacement: &'static str) -> &'static str {
+    match replacement {
+        "Parallel.map" => "std::Parallel.map",
+        "Parallel.map_ref" => "std::Parallel.map_ref",
+        "Parallel.fold" => "std::Parallel.fold",
+        "Parallel.sum" => "std::Parallel.sum",
+        other => other,
+    }
 }
 
 /// The `Array` functions that have a `Parallel` replacement, with the replacement and why it keeps the result.
@@ -139,9 +155,16 @@ pub(crate) fn entries(module: &CheckedModule, sources: &dyn Sources) -> Vec<Entr
             }
         }
     }
+    let shadowed = sources.user_module("Parallel");
     found
         .into_values()
         .filter_map(|found| found.entry)
+        .map(|mut entry| {
+            if shadowed {
+                entry.replacement = entry.replacement.map(qualified);
+            }
+            entry
+        })
         .collect()
 }
 
@@ -291,6 +314,19 @@ fn name_span(
     })
 }
 
+/// Whether `callback` is a named function (not a lambda) of one parameter that is a shared reference: its type is the
+/// same as a callback of `Parallel.map_ref`.
+fn reads_by_reference(callback: &TypedExpr) -> bool {
+    let mut callee = callback;
+    while let TypedExprKind::Borrow(inner, _) | TypedExprKind::BorrowOperand(inner) = &callee.kind {
+        callee = inner;
+    }
+    matches!(callee.kind, TypedExprKind::Function(_))
+        && matches!(&callee.ty, Type::Function(parameters, _)
+            if parameters.len() == 1
+                && parameters.iter().all(|ty| matches!(ty, Type::Reference(_, false))))
+}
+
 /// Whether `callback` is the compiler's adapter of a read callback (see `adapted`).
 fn adapter(module: &CheckedModule, callback: &TypedExpr) -> bool {
     let mut callee = callback;
@@ -420,6 +456,13 @@ fn suggestion(
             .is_some_and(|callback| adapter(module, callback))
         && !(element.is_copy(&types) && !element.needs_drop(&types))
     {
+        // `Parallel.map_ref` gives its callback a `ref` parameter, where the read callback of `Array.map` sees a value:
+        // the unchanged body of a lambda may then not check (`\row -> row` would return `ref [i64]`). Only a function
+        // whose parameter is already a shared reference (`Array.length`, `String.length`) keeps its type; for any
+        // other callback nothing is suggested.
+        if !arguments.first().is_some_and(reads_by_reference) {
+            return None;
+        }
         *replacement = "Parallel.map_ref";
     }
     let typed = match call {
