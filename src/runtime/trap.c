@@ -3,13 +3,29 @@
    allocation made since the call is freed, and the host gets status 1. Tsuzuri code never
    unwinds, so no destructor is skipped; the runtime releases its own locks before any callback
    runs, and the one lock that Tsuzuri code holds while it runs, Mutex.with_lock's, is released
-   by the boundary through `tsuzuri_sync_hooks` (F10). */
+   by the boundary through `tsuzuri_sync_hooks` (F10). A domain (B10, `Domain.run`) is the same
+   frame for the call of a pure closure; it nests inside a boundary, an item, or another domain. */
 #include <pthread.h>
 #include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* A trap leaves a boundary or a domain by a jump that must not touch the signal mask: the setjmp
+   of macOS saves it with a system call (370 ns for an empty domain against 40 ns, measured), so
+   macOS uses sigsetjmp(env, 0). The setjmp of glibc and musl already leaves the mask alone, and
+   their sigsetjmp needs feature macros that a host which includes this file after its own headers
+   may not have; Windows has no sigsetjmp. */
+#if defined(__APPLE__)
+typedef sigjmp_buf tz_jump;
+#define TZ_SETJMP(env) sigsetjmp(env, 0)
+#define TZ_LONGJMP(env) siglongjmp(env, 1)
+#else
+typedef jmp_buf tz_jump;
+#define TZ_SETJMP(env) setjmp(env)
+#define TZ_LONGJMP(env) longjmp(env, 1)
+#endif
 
 #ifndef TZ_TRAP_API
 #if defined(_WIN32)
@@ -85,7 +101,7 @@ struct tz_block {
 };
 
 struct tz_frame {
-    jmp_buf env;
+    tz_jump env;
     struct tz_boundary *owner;
     struct tz_frame *outer;
     volatile uint32_t site;
@@ -100,7 +116,7 @@ void tsuzuri_trap_raise(uint32_t site, uint32_t kind) {
     if (!frame) return;
     frame->site = site;
     frame->kind = kind;
-    longjmp(frame->env, 1);
+    TZ_LONGJMP(frame->env);
 }
 
 /* The boundary a Task.parallel group submitted from this thread belongs to, or NULL. */
@@ -138,7 +154,7 @@ int32_t tsuzuri_boundary_item(void *owner, void (*run)(void *, uint64_t),
     frame.kind = 0;
     tz_frame = &frame;
     int32_t trapped = 0;
-    if (setjmp(frame.env) == 0) {
+    if (TZ_SETJMP(frame.env) == 0) {
         if (run_result) *failed = run_result(context, index);
         else run(context, index);
     } else {
@@ -179,7 +195,7 @@ int32_t tsuzuri_boundary_run(void (*thunk)(void *), void *argument, tsuzuri_trap
     frame.kind = 0;
     tz_frame = &frame;
     int32_t trapped = 0;
-    if (setjmp(frame.env) == 0) thunk(argument);
+    if (TZ_SETJMP(frame.env) == 0) thunk(argument);
     else trapped = 1;
     tz_frame = NULL;
     if (trapped && tsuzuri_sync_hooks.abandon) tsuzuri_sync_hooks.abandon();
@@ -254,6 +270,63 @@ static struct tz_block *tz_block_untrack(struct tz_boundary *owner, void *pointe
     return block;
 }
 
+/* B10: what a finished domain leaves behind (the result of its closure) becomes the property of
+   the boundary or domain that encloses it, so that a later trap there frees it; with none around,
+   the blocks are plain heap blocks of the program. */
+static void tz_domain_hand_over(struct tz_boundary *domain, struct tz_boundary *outer) {
+    struct tz_block *block = domain->blocks;
+    domain->blocks = NULL;
+    while (block) {
+        struct tz_block *next = block->next;
+        if (outer) {
+            pthread_mutex_lock(&outer->lock);
+            struct tz_block *moved = tz_block_track(outer, block->pointer);
+            pthread_mutex_unlock(&outer->lock);
+            if (!moved) abort();
+        }
+        TZ_TRAP_FREE(block);
+        block = next;
+    }
+    TZ_TRAP_FREE(domain->buckets);
+    domain->buckets = NULL;
+}
+
+/* B10: 0: the closure finished (the blocks that are left belong to the caller), 1: it trapped
+   (`trap` is filled and every block allocated inside is freed). Unlike tsuzuri_boundary_run it
+   nests: a domain may run inside a boundary, a worker item, or another domain, and a trap goes to
+   the innermost frame. It never calls tsuzuri_sync_hooks.abandon: a lock that the caller holds
+   is not the domain's to release (a pure closure takes none). */
+TZ_TRAP_API
+int32_t tsuzuri_domain_run(void (*thunk)(void *), void *argument, tsuzuri_trap_info *trap) {
+    /* Off the stack, for the reason given in tsuzuri_boundary_run. */
+    struct tz_boundary *volatile domain = TZ_TRAP_STATE_MALLOC(sizeof *domain);
+    if (!domain) abort();
+    pthread_mutex_init(&domain->lock, NULL);
+    domain->blocks = NULL;
+    domain->buckets = NULL;
+    domain->capacity = 0;
+    domain->count = 0;
+    struct tz_frame frame;
+    frame.owner = domain;
+    frame.outer = tz_frame;
+    frame.site = 0;
+    frame.kind = 0;
+    tz_frame = &frame;
+    int32_t trapped = 0;
+    if (TZ_SETJMP(frame.env) == 0) thunk(argument);
+    else trapped = 1;
+    tz_frame = frame.outer;
+    if (trapped) tz_boundary_release(domain, 1);
+    else tz_domain_hand_over(domain, frame.outer ? frame.outer->owner : NULL);
+    pthread_mutex_destroy(&domain->lock);
+    TZ_TRAP_STATE_FREE(domain);
+    if (trapped && trap) {
+        trap->site = frame.site;
+        trap->kind = frame.kind;
+    }
+    return trapped;
+}
+
 TZ_TRAP_API
 void *tsuzuri_tracked_malloc(size_t size) {
     void *pointer = TZ_TRAP_MALLOC(size);
@@ -271,16 +344,22 @@ void *tsuzuri_tracked_malloc(size_t size) {
     return pointer;
 }
 
-TZ_TRAP_API
-void tsuzuri_tracked_free(void *pointer) {
-    if (!pointer) return;
-    struct tz_boundary *owner = tz_frame ? tz_frame->owner : NULL;
-    if (owner) {
+/* B10: the tracking block of `pointer` in the innermost frame that tracks it, removed from its owner. */
+static struct tz_block *tz_untrack_chain(void *pointer) {
+    for (struct tz_frame *frame = tz_frame; frame; frame = frame->outer) {
+        struct tz_boundary *owner = frame->owner;
         pthread_mutex_lock(&owner->lock);
         struct tz_block *block = tz_block_untrack(owner, pointer);
         pthread_mutex_unlock(&owner->lock);
-        TZ_TRAP_FREE(block);
+        if (block) return block;
     }
+    return NULL;
+}
+
+TZ_TRAP_API
+void tsuzuri_tracked_free(void *pointer) {
+    if (!pointer) return;
+    if (tz_frame) TZ_TRAP_FREE(tz_untrack_chain(pointer));
     TZ_TRAP_FREE(pointer);
 }
 
@@ -293,6 +372,16 @@ void *tsuzuri_tracked_realloc(void *pointer, size_t size) {
     }
     struct tz_boundary *owner = tz_frame ? tz_frame->owner : NULL;
     if (!owner) return TZ_TRAP_REALLOC(pointer, size);
+    /* B10: the block belongs to the innermost owner that tracks it; one that nobody tracks joins the innermost. */
+    for (struct tz_frame *frame = tz_frame; frame; frame = frame->outer) {
+        pthread_mutex_lock(&frame->owner->lock);
+        int tracked = frame->owner->capacity != 0 && *tz_block_slot(frame->owner, pointer) != NULL;
+        pthread_mutex_unlock(&frame->owner->lock);
+        if (tracked) {
+            owner = frame->owner;
+            break;
+        }
+    }
     pthread_mutex_lock(&owner->lock);
     struct tz_block *block = owner->capacity ? *tz_block_slot(owner, pointer) : NULL;
     int added = block == NULL;

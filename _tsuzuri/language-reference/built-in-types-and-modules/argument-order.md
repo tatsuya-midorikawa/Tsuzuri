@@ -107,7 +107,7 @@ values |> Array.write 0 (values[1] * 10)
 | コンパイラが呼ぶ関数 | 計算式ビルダーの大文字で始まる操作（`Bind`、`Return`、`For` など）、`derive` が生成するコードが呼ぶ `Json.decode_field` と `Json.case_index` | プロトコルが決めます | 利用者は直接呼びません。 |
 | テストとベンチマークの入口 | [Gen](./gen.md) の `for_all`・`for_all_cases`・`check`、[Test](./test.md)、[Bench](./bench.md) | 生成器や準備が先で、本体のラムダが最後です | 結果を返さないので、パイプでつなぎません。 |
 
-引数が 1 つの関数や、対象を取らない関数は、順序の問題が起こりません。
+引数が 1 つの関数や、対象を取らない関数は、順序の問題が起こりません（[Domain](./domain.md) の `run` など）。
 
 ## 自分の関数を書くとき
 

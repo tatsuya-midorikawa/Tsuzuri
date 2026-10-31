@@ -159,7 +159,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | B07 | [ユーザー定義の解放処理（Drop）とリソース型](_completed/B07-user-drop.md) | P1 | L | A06 | done |
 | B08 | [非同期計算（Async）とホスト駆動の実行](_completed/B08-async.md) | P3 | XL | B05, B07, (E08), (E13) | done |
 | B09 | [ローカルな再帰関数（let rec）](_completed/B09-local-let-rec.md) | P2 | L | – | done |
-| B10 | [トラップのバックトレースとクラッシュレポート、純粋関数の失敗の閉じ込め（`Domain`）](B10-trap-backtrace-and-domains.md) | P2 | XL | E14, (A19) | todo（承認済み） |
+| B10 | [トラップのバックトレースとクラッシュレポート、純粋関数の失敗の閉じ込め（`Domain`）](_completed/B10-trap-backtrace-and-domains.md) | P2 | XL | E14, (A19) | done（全 Phase） |
 
 ### C. コレクション・データ
 
@@ -547,7 +547,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | [A21](_completed/A21-contracts-requires-ensures.md) | 契約 | `@requires`・`@ensures` を `def` の本体の先頭に書き、`--contracts off`／`check`／`test`／`prove` で、実行時検査（`run`・`test` の既定）・性質テスト（`Arbitrary`・`Gen.for_all_where`）・静的検証（外部ソルバー。`E1034`）につなぐ。契約を最適化の前提に使うモード（assume）は作らない | done（全 Phase） |
 | [A22](_completed/A22-edition-2027-canonical-forms.md) | edition | 同じ意味の複数の書き方を edition `2027` の正準形に絞る: `for` の範囲は `..<`・`..=`、数値の接尾辞は型名、借用は `ref`／`ref mut`／`deref`、旧ラムダ `x -> e` は廃止。正準形は全 edition が受理し、2026 では `W1007`（既定は無効）、2027 では `E0004` で拒否する。`tsuzuri fix --edition 2027` が移行する。`..` の意味は edition で変えず、`LATEST` は `2026` のまま | done（全 Phase） |
 | [A23](_completed/A23-integer-overflow-intent.md) | 数値 | `Int.wrapping_add`・`wrapping_sub`・`wrapping_mul`・`wrapping_neg`（折り返しの意図を明示）と、範囲の証明で溢れないと示せない整数演算を計装する `--overflow-report`（報告して、折り返した値で続ける。意味は変えない）。`tsuzuri test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告にとどめる） | done（全 Phase） |
-| [B10](B10-trap-backtrace-and-domains.md) | 失敗の可観測性 | `E2005` にトラップのバックトレース（`at Main.level2 (./Main.tz:5:15)`。`llvm-symbolizer` で解決）と、配布した実行ファイルのクラッシュレポート（`TSUZURI_TRAP_REPORT`）を足す（Phase 1）。純粋関数の失敗を値として受ける `Domain`（E14 の追跡確保と `sigsetjmp` で、計算 1 件の失敗をプロセスを失わずに閉じ込める。Phase 2。`E1038`） | 承認済み |
+| [B10](_completed/B10-trap-backtrace-and-domains.md) | 失敗の可観測性 | `E2005` にトラップのバックトレース（`at Main.level2 (./Main.tz:5:15)`。`llvm-symbolizer` で解決）と、配布した実行ファイルのクラッシュレポート（`TSUZURI_TRAP_REPORT`）を足す（Phase 1）。純粋関数の失敗を値として受ける `Domain`（E14 の追跡確保と `sigsetjmp` で、計算 1 件の失敗をプロセスを失わずに閉じ込める。Phase 2。`E1038`） | done（全 Phase） |
 | [C12](_completed/C12-ordered-map-set-chunked.md) | 性能 | **Phase 1・2 完了**。`std/Map.tz`・`std/Set.tz` をチャンク化したソート配列へ置き換え、回帰検査・実 LLDB での表示検査・比較計測を実施した。Rust のコンパイラと既存の公開 API は維持した。更新の計算量と高負荷時の測定結果は完了チケットの仕様・計測表を参照し、厳密な O(log n) やすべての負荷での高速化は保証しない | 承認済み |
 | [D13](_completed/D13-interpolation-hole-temporaries.md) | 不具合（修正済み） | 補間の穴を型付けした場所・参照・一時値に分類し、`$"len = {s.length}"`・文字列の添字・呼び出し結果の射影を受理する。明示の不正な借用と所有権の拒否規則は維持し、既存コーパス 114 件の IR は byte 一致 | done（2026-10-23） |
 | [D14](D14-text-class.md) | 標準ライブラリ | 型クラス `Text`（21 メソッド）を `String`／`Utf8String` の instance にして、同名の 20 関数を 1 つの名前で書けるようにする。ジェネリックな関数が両方の型を受けられ、単相化で直接呼び出しになる（ゼロコスト）。opt-in の `RegexText` も足す。既存の `String.*`・`Utf8String.*` は非推奨にしない | 承認済み |

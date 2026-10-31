@@ -18,7 +18,7 @@
 
 ## どのサブコマンドが受け付けるか
 
-`lsp` は引数を取りません。`mcp` は `--root DIR` と `--kg-dir DIR`（それぞれ 1 回）だけを受け付け、ほかの引数は `E2000` です（[MCP サーバー](mcp.md)）。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`watch` は、次の語（`check`・`build`・`test`）の列と同じオプションを受け付けます。`watch` 自体のオプションはなく、それ以外のコマンドは `E2000` です。`serve` はプロジェクトのディレクトリ 1 つと `--idle-timeout SECONDS`（1〜86400）、または `--status` か `--stop` とディレクトリ 1 つだけを受け付けます（`--status` と `--stop` は同時に使えず、`--idle-timeout` とも組み合わせられません）。`api-diff` は古い版と新しい版の入力 2 つと、`--json`・`--effective` だけを受け付けます。`find` は型の問い合わせ 1 つか、`--result TYPE`（1 回）と `--takes TYPE`（繰り返し可）と、`--project DIR`・`--module NAME`・`--limit N`（1〜100）・`--json`（それぞれ 1 回）だけを受け付けます（[find](usage.md#find)）。`prove` はプロジェクト 1 つ（省略時はカレントディレクトリ）と、`--function NAME`（繰り返し可）、`--prove-timeout SECONDS`（1〜3600）、`--json` だけを受け付けます。`audit` はプロジェクト 1 つ（省略時はカレントディレクトリ）と、`--json`・`--deny-warnings`（それぞれ 1 回）だけを受け付けます。`--effective` は依存込みで型検査して解決後の契約を比較します。既定は構文比較です。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`fetch` はディレクトリと `--json` だけ、`publish` はディレクトリと `--git URL`・`--rev COMMIT`・`--json` だけを受け付けます。`explain` は対象 1 つか `--catalog` と、`--json` だけを受け付けます。`kg build` は `--force`（新しくても書き直す）と `--std`（std の知識グラフ）、`kg clean` は `--std`、`kg export` は `--nodes`・`--edges`・`--facts` のどれか 1 つを受け付けます（[知識グラフ](kg.md)）。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
+`lsp` は引数を取りません。`mcp` は `--root DIR` と `--kg-dir DIR`（それぞれ 1 回）だけを受け付け、ほかの引数は `E2000` です（[MCP サーバー](mcp.md)）。`new` はディレクトリと `--namespace` だけ、`toolchain info` は 2 語ぴったりです。`watch` は、次の語（`check`・`build`・`test`）の列と同じオプションを受け付けます。`watch` 自体のオプションはなく、それ以外のコマンドは `E2000` です。`serve` はプロジェクトのディレクトリ 1 つと `--idle-timeout SECONDS`（1〜86400）、または `--status` か `--stop` とディレクトリ 1 つだけを受け付けます（`--status` と `--stop` は同時に使えず、`--idle-timeout` とも組み合わせられません）。`api-diff` は古い版と新しい版の入力 2 つと、`--json`・`--effective` だけを受け付けます。`find` は型の問い合わせ 1 つか、`--result TYPE`（1 回）と `--takes TYPE`（繰り返し可）と、`--project DIR`・`--module NAME`・`--limit N`（1〜100）・`--json`（それぞれ 1 回）だけを受け付けます（[find](usage.md#find)）。`prove` はプロジェクト 1 つ（省略時はカレントディレクトリ）と、`--function NAME`（繰り返し可）、`--prove-timeout SECONDS`（1〜3600）、`--json` だけを受け付けます。`audit` はプロジェクト 1 つ（省略時はカレントディレクトリ）と、`--json`・`--deny-warnings`（それぞれ 1 回）だけを受け付けます。`--effective` は依存込みで型検査して解決後の契約を比較します。既定は構文比較です。`bindgen` はヘッダー 1 つと、`-o`（必須、`.tz`）、`--include-dir DIR`、`--buffer FUNCTION:POINTER:LENGTH`、`--consume FUNCTION:PARAMETER`（この 3 つは繰り返し可）、`--json` だけを受け付けます。`fetch` はディレクトリと `--json` だけ、`publish` はディレクトリと `--git URL`・`--rev COMMIT`・`--json` だけを受け付けます。`explain` は対象 1 つか `--catalog` と、`--json` だけを受け付けます。`kg build` は `--force`（新しくても書き直す）と `--std`（std の知識グラフ）、`kg clean` は `--std`、`kg export` は `--nodes`・`--edges`・`--facts` のどれか 1 つを受け付けます。`kg path` は `--rel`（たどる辺の種類）と `--depth`、`kg impact` は `--git REV` か `--from PATH [--to PATH]` を受け付けます（[知識グラフ](kg.md)）。`repl` はパスを取らず、`-O0`〜`-O3`、`--cpu`、`--no-cache`、`--timeout SECONDS` だけを受け付けます。`script` は、ファイルより前に置いたものだけをオプションとして読み、ファイルより後ろはすべてプログラムの引数です。それ以外は、次の表のとおりです。`○` が受け付け、空欄は `E2000` です。
 
 | オプション | check | build | run | test | bench | doc | fmt | repl | script |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -378,7 +378,7 @@ IR に unit が持てない形があると、`split` のビルドも 1 つのモ
 | `--function NAME` | すべて | `--contracts prove` と `prove` で、証明する関数（`Module.name`。繰り返し可） |
 | `-g` / `--debug-info` | オフ | ソースレベルの DWARF。`header` では不可。Windows の MSVC のリンカーでは CodeView も出し、実行ファイルの隣に PDB を書く。表示とステップ実行は [デバッグ](debugging.md)。`--backend fast` では関数と行だけ（[fast のデバッグ情報](#fast-のデバッグ情報)） |
 | `--debug-output` | オフ | WASM の `Debug` 出力 import を有効にする。native は常に書く |
-| `--trap-info` | `run` はオン、`build` はオフ | トラップ位置と `<output>.trap.json`。`header` では不可 |
+| `--trap-info` | `run` はオン、`build` はオフ | トラップ位置と `<output>.trap.json`。`header` では不可。macOS と Linux のネイティブの実行ファイルでは、関数が frame pointer を保ち、`TSUZURI_TRAP_REPORT` があればトラップの呼び出しの連鎖を書く（[トラップのバックトレース](debugging.md#トラップのバックトレース)） |
 | `--trap-mode return` | オフ | native の `object` / `llvm` / `header` / `shared` / `bitcode` と C#・Python・C++ のバインディング。各 export に `tsuzuri_try_<name>` を足す |
 | `--overflow-report` | `test` はオン、`build`・`run` はオフ | 範囲の証明で溢れないと示せない整数の `+ - * ** -x` に検査を足し、折り返した地点を報告する（native は標準エラー、WebAssembly は export と `<output>.overflow.json`）。値は変わらない。`header`・カーネル・バインディングと `--freestanding` では不可（[整数の折り返しの報告](usage.md#整数の折り返しの報告)） |
 | `--allow-overflow` | オフ | `test` だけ。折り返したテストを失敗にせず、報告だけを出す |
@@ -545,7 +545,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--seed` が 0〜18446744073709551615 の整数でない | `property seed must be an integer between 0 and 18446744073709551615` |
 | `--doc` を `test` 以外に付ける | `--doc is only valid with test` |
 | `--doc` を 2 回付ける | `doc specified more than once` |
-| `test --doc` に `--coverage`／`--seed`／`--affected`／`--allow-overflow` | `--doc cannot be combined with --coverage`（`--seed`・`--affected`・`--allow-overflow` も同じ形） |
+| `test --doc` に `--coverage`／`--seed`／`--affected` | `--doc cannot be combined with --coverage`（`--seed`・`--affected` も同じ形） |
 | `test --doc` に `-g` か `-o` | `--doc cannot be combined with -g or -o` |
 | `test --doc` に `--target` | `--doc does not use --target; examples run on this machine` |
 | `test --doc` に `--link`・`-l`・`-L` | `--doc does not use --link, -l, or -L; list native inputs in Tsuzuri.toml` |
@@ -605,6 +605,7 @@ flowchart TD
 | `TSUZURI_WASM_LD` | `wasm-ld` | `wasm-ld` | WebAssembly のリンク |
 | `TSUZURI_LLVM_LINK` | `llvm-link` | `llvm-link`（macOS の配布物だけ） | macOS で、タスクを含むデバッグ用オブジェクト。`--emit bitcode` で、C ランタイムを IR のまま 1 つにまとめる（探す順は環境変数、配布物、Clang と同じディレクトリ、PATH）。Clang と同じ LLVM のものを使う |
 | `TSUZURI_DSYMUTIL` | `dsymutil` | `dsymutil` | macOS のデバッグ実行ファイル |
+| `TSUZURI_LLVM_SYMBOLIZER` | `llvm-symbolizer` | なし（同梱しない） | `run` のトラップの呼び出しの連鎖に関数名と行を付ける。起動できなければ名前のないアドレスだけになり、エラーにはしない（[トラップのバックトレース](debugging.md#トラップのバックトレース)） |
 | `TSUZURI_WASM_OPT` | `wasm-opt` | なし（同梱しない） | `--wasm-opt` が実行する Binaryen の `wasm-opt`。この変数だけでは何も実行しない |
 | `TSUZURI_LLVM_PROFDATA` | Clang の隣、Clang の toolchain の `llvm-profdata`（PATH は探さない） | なし（同梱しない） | `--profile-use` にディレクトリを渡すとき、`.profraw` を merge する `llvm-profdata`。`TSUZURI_CLANG` の Clang と同じ LLVM のものを使う |
 | `TSUZURI_LINKER` | 未設定（Clang の既定のリンカー） | なし | ネイティブ実行ファイルと共有ライブラリの最終リンクのリンカー。`lld` は Clang に `-fuse-ld=lld` を渡す（下記）。`default`・空・未設定は Clang に任せる |
@@ -618,6 +619,7 @@ flowchart TD
 | `TSUZURI_SMT` | `z3`、なければ `cvc5` | なし（同梱しない） | `prove` と `--contracts prove` の SMT ソルバー。見つからなければ `E1034`（[契約](../values-and-functions/contracts.md#証明tsuzuri-prove--contracts-prove)） |
 | `TSUZURI_THREADS` | 使える core 数（最大 8） | なし | コンパイラ自身が使うスレッド数の上限（1 から 32 の整数）。`1` は 1 スレッド。範囲外や整数でない値は `E2000`（`lsp`・`mcp` も起動の前に検査する）。成果物・診断・終了コードは変わらない |
 | `TSUZURI_CODEGEN_UNITS` | `single` | なし | `auto`・`single`・`split`。`-O0` のビルドを codegen unit に分けるか（[コード生成の単位](#コード生成の単位codegen-unit)）。未設定と空は `single`、ほかの値は `E2000`。成果物の意味は変わらない。`auto` か `split` のときだけ、whole-build キャッシュのキーに入る |
+| `TSUZURI_TRAP_REPORT` | 未設定（書かない） | なし | コンパイラではなく、`--trap-info` で作ったネイティブの実行ファイルが読む。空でなければ、トラップのたびに呼び出しの連鎖の 1 行をそのファイルへ追記する。`run` は自分で設定する（[クラッシュレポート](debugging.md#クラッシュレポートtsuzuri_trap_report)） |
 | `TSUZURI_NMEDIT` / `TSUZURI_OBJCOPY` | `nmedit`（macOS）/ `llvm-objcopy`、なければ `objcopy` | なし | codegen unit に分けた `--emit object` が、unit が `hidden` にした定義を局所化する道具。macOS は Xcode の `nmedit`、ほかは `objcopy`（GNU でも LLVM でも）。見つからなければ、その `--emit object` は 1 つのモジュールで作る |
 
 ### コンパイラのスレッド数

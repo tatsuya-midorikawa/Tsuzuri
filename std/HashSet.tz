@@ -154,9 +154,9 @@ def contains :: (Hash<'key>, Eq<'key>) => own 'key -> ref HashSet<'key> -> bool
 fn contains key set = HashMap.contains_key key (ref set.map)
 
 /// The longest probe of the underlying table; see `HashMap.longest_probe`.
-/// Scans the whole table of the underlying map, whose size follows the largest number of entries it has held or the capacity it was made with.
+/// Scans the whole table of the underlying map, whose size follows the largest number of entries it has held or the capacity it was made with. The cost is the size of that table (`k` in the tag), not the number of entries.
 ///
-/// @complexity O(n)
+/// @complexity O(k)
 ///
 /// ```tsuzuri run=0
 /// HashSet.empty() |> HashSet.insert 7 |> HashSet.longest_probe

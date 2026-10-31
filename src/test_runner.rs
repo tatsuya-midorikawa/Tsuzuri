@@ -613,6 +613,13 @@ fn native_runtime_sources(
     platform: Platform,
 ) -> Result<Vec<(&'static str, String)>, Diagnostic> {
     let mut sources = vec![("main.c", include_str!("runtime/test-runner.c").to_owned())];
+    // B10: the failure domains of `Domain.run` and the tracked heap they free.
+    if text.contains(TRAP_RUNTIME_DECLARATION) {
+        if !platform.unix() {
+            return Err(domain_on_windows());
+        }
+        sources.push(("trap.c", include_str!("runtime/trap.c").to_owned()));
+    }
     if text.contains("declare void @tsuzuri_task_parallel(") {
         if !platform.threads() {
             return Err(driver_error_of(
@@ -946,6 +953,10 @@ fn compile_native_runner(
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let async_runtime = llvm::uses_reactor(&text);
     let gpu_runtime = text.contains("declare i32 @tsuzuri_gpu_");
+    let trap_runtime = text.contains(TRAP_RUNTIME_DECLARATION);
+    if trap_runtime && !platform.unix() {
+        return Err(domain_on_windows());
+    }
     let gpu_source = if gpu_runtime {
         llvm::gpu_runtime_source(&text)
     } else {
@@ -1024,6 +1035,7 @@ fn compile_native_runner(
         (io_runtime, "io.c", include_str!("runtime/io.c")),
         (async_runtime, "async.c", include_str!("runtime/async.c")),
         (gpu_runtime, "gpu.c", gpu_source.as_str()),
+        (trap_runtime, "trap.c", include_str!("runtime/trap.c")),
     ] {
         if needed {
             let runtime = directory.join(name);
@@ -1032,7 +1044,10 @@ fn compile_native_runner(
             clang.arg(&runtime);
         }
     }
-    if (async_runtime || net_runtime || gpu_runtime) && !task_runtime && !platform.windows() {
+    if (async_runtime || net_runtime || gpu_runtime || trap_runtime)
+        && !task_runtime
+        && !platform.windows()
+    {
         clang.arg("-pthread");
     }
     // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
@@ -1048,6 +1063,21 @@ fn compile_native_runner(
         run_tool(&mut clang, &cross_hint(platform, runner.tools_hint))?,
     );
     Ok(artifact)
+}
+
+/// What the IR of a runner of a program with failure domains declares (B10): the report of every trap raises it to
+/// the innermost domain first. A runner always has it, even when the selected tests or benches reach no call of
+/// `Domain.run` and its `@tsuzuri_domain_run` is pruned with the call, and it needs src/runtime/trap.c then too
+/// (the raise and the tracked heap).
+const TRAP_RUNTIME_DECLARATION: &str = "declare void @tsuzuri_trap_raise(";
+
+/// The `E1038` of a native Windows runner of a program with `Domain.run`: the trap runtime is POSIX's.
+fn domain_on_windows() -> Diagnostic {
+    Diagnostic::of(
+        DiagnosticKind::DomainTargetUnsupported,
+        "'Domain.run' needs a native POSIX build with the system allocator: Windows is not supported",
+        Span::default(),
+    )
 }
 
 /// The time that one bench sample aims for: the runner doubles the iteration count up to it.

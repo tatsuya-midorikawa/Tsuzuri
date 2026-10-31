@@ -3197,6 +3197,15 @@ impl Checker<'_> {
                 span,
             ));
         }
+        if matches!(builtin, Builtin::DomainRun | Builtin::DomainMessage)
+            && !(self.module == "Domain" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
+                "the failure-domain primitives are private to the standard Domain module; call Domain.run",
+                span,
+            ));
+        }
         if matches!(
             builtin,
             Builtin::AsyncResume

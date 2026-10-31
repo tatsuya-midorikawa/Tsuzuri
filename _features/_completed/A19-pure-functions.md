@@ -1313,7 +1313,7 @@ def main :: unit -> i32 = \() ->
 - [_features/_completed/A20-effect-summary-and-checked-attributes.md](A20-effect-summary-and-checked-attributes.md)
 - [_features/A21-contracts-requires-ensures.md](A21-contracts-requires-ensures.md)
 - [_features/_completed/A23-integer-overflow-intent.md](A23-integer-overflow-intent.md)
-- [_features/B10-trap-backtrace-and-domains.md](../B10-trap-backtrace-and-domains.md)
+- [_features/_completed/B10-trap-backtrace-and-domains.md](B10-trap-backtrace-and-domains.md)
 - [_features/E15-trust-boundary-and-capabilities.md](E15-trust-boundary-and-capabilities.md)
 - [_features/_completed/F15-sequential-equivalent-data-parallel.md](F15-sequential-equivalent-data-parallel.md)
 - [_features/GUIDE.md](../GUIDE.md)

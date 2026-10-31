@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createBoundary } from "../src/runtime/trap-boundary.mjs";
+import { createBoundary, wasmFrames } from "../src/runtime/trap-boundary.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
@@ -22,6 +22,46 @@ function build(fixture, name, optimization, ...flags) {
 const compile = (path) => new WebAssembly.Module(readFileSync(path));
 // d(0) = 0, d(n) = 3 d(n - 1) + n, the recursion in the fixture's `depth`.
 const depth = (n) => { let value = 0n; for (let k = 1n; k <= n; k++) value = 3n * value + k; return value; };
+
+// B10: the frame names of a V8 stack. The module's name, which may be absent or contain dots, comes before the linkage
+// name; joints of calls, unnamed frames and JavaScript frames keep an index and an offset or are left out.
+{
+  const at = (name, index, offset) => name === undefined
+    ? `    at wasm://wasm/0a1b2c3d:wasm-function[${index}]:0x${offset.toString(16)}`
+    : `    at ${name} (wasm://wasm/0a1b2c3d:wasm-function[${index}]:0x${offset.toString(16)})`;
+  const stack = (...lines) => ({ stack: ["RuntimeError: divide by zero", ...lines].join("\n") });
+  const named = [
+    ["artifact.tz.fn.Main.div", "Main.div"],
+    ["my.app.tz.fn.Main.div", "Main.div"],
+    ["tz.fn.Main.div", "Main.div"],
+    ["tz_lib.tz.fn.Main.div", "Main.div"],
+    ["my.app.tz_div", "div"],
+    ["tz_div", "div"],
+    ["artifact.tz.fn.Main.twice.$mono.2", "Main.twice"],
+    ["artifact.tz.fn.$lambda.3", "$lambda.3"],
+    ["artifact.tz.specialized.12", "tz.specialized.12"],
+  ];
+  for (const [name, shown] of named) {
+    assert.deepEqual(wasmFrames(stack(at(name, 4, 0xdb))), [{ function: shown, index: 4, offset: 0xdb }], name);
+  }
+  for (const name of ["artifact.tz.apply.i64.i64", "my.app.tsuzuri_main", "main", "artifact.tz_"]) {
+    assert.deepEqual(wasmFrames(stack(at(name, 1, 16))), [{ index: 1, offset: 16 }], name);
+  }
+  assert.deepEqual(wasmFrames(stack(
+    at(undefined, 0, 219),
+    "    at Object.call (file:///host.mjs:12:5)",
+    at("my.app.tz_entry.cold.1", 2, 300),
+    at("my.app.tz_entry", 3, 306),
+    at("artifact.tz.fn.Main.rec", 5, 10),
+    at("artifact.tz.fn.Main.rec", 5, 10),
+  )), [
+    { index: 0, offset: 219 },
+    { function: "entry", index: 3, offset: 306 },
+    { function: "Main.rec", index: 5, offset: 10 },
+    { function: "Main.rec", index: 5, offset: 10 },
+  ]);
+  console.log(`Trap boundary frame names: ${named.length + 5} cases`);
+}
 
 try {
   for (const optimization of ["-O0", "-O3"]) {
@@ -81,7 +121,31 @@ try {
     assert.ok(WebAssembly.Module.imports(threads).some(({ module: namespace }) => namespace === "tsuzuri_threads"));
     assert.throws(() => createBoundary(threads), { message: "createBoundary does not support modules built with --wasm-feature threads; use createThreadPool" }); cases++;
 
-    assert.equal(cases, 17);
+    // B10: with `frames: true` a trap carries the WebAssembly frames, innermost first. A module built with -g names
+    // them (`div` is the export's entry `tz_div`); without -g they are a function index and an offset only.
+    const named = build("trap_boundary", "named", optimization, "--trap-info", "-g");
+    const framed = createBoundary(compile(named), { sites: JSON.parse(readFileSync(`${named}.trap.json`, "utf8")).sites, frames: true });
+    const traced = framed.call("tz_div", 7n, 0n);
+    assert.equal(traced.ok, false);
+    assert.equal(traced.trap.kind, "integer division by zero");
+    assert.ok(traced.trap.frames.length >= 1, JSON.stringify(traced));
+    for (const frame of traced.trap.frames) {
+      assert.equal(typeof frame.index, "number");
+      assert.equal(typeof frame.offset, "number");
+    }
+    assert.equal(traced.trap.frames.at(-1).function, "div", JSON.stringify(traced));
+    if (optimization === "-O0") assert.equal(traced.trap.frames[0].function, "Main.div", JSON.stringify(traced));
+    assert.deepEqual(framed.call("tz_div", 7n, 2n), { ok: true, value: 3n }); cases++;
+    const unnamed = createBoundary(module, { sites, frames: true }).call("tz_div", 7n, 0n);
+    assert.ok(unnamed.trap.frames.length >= 1, JSON.stringify(unnamed));
+    for (const frame of unnamed.trap.frames) assert.deepEqual(Object.keys(frame), ["index", "offset"]);
+    cases++;
+    // The stack trace limit is the host's again after the call; a stack exhaustion carries no frames.
+    const limit = Error.stackTraceLimit;
+    assert.deepEqual(createBoundary(module, { sites, frames: true }).call("tz_deep", 100000000n), { ok: false, trap: { reason: "stack", site: 0 } });
+    assert.equal(Error.stackTraceLimit, limit); cases++;
+
+    assert.equal(cases, 20);
     console.log(`Trap boundary ${optimization}: ${cases} cases`);
   }
 } finally { rmSync(root, { recursive: true, force: true }); }

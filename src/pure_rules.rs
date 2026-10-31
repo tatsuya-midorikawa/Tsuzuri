@@ -106,6 +106,12 @@ fn own_violation_with(ty: &Type, types: &TypeContext<'_>, template: bool) -> Opt
     found.into_inner()
 }
 
+/// The first part of a concrete `ty` that is not plain data (A19's rule for an `own` parameter), or `None`. B10 asks
+/// it of the captures and the result of `Domain.run`.
+pub(crate) fn own_violation(ty: &Type, types: &TypeContext<'_>) -> Option<Type> {
+    own_violation_with(ty, types, false)
+}
+
 pub(crate) fn what(ty: &Type, types: &TypeContext<'_>) -> &'static str {
     match ty {
         Type::Reference(..) => "a reference",
@@ -169,6 +175,8 @@ pub(crate) enum Category {
     State,
     Gpu,
     Dyn,
+    /// B10: `Domain.run` inside a pure body would nest failure domains, whose meaning v1 leaves open (D8).
+    Domain,
 }
 
 fn builtin_effect(builtin: Builtin) -> Option<Category> {
@@ -225,6 +233,7 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | ArenaNextId => Some(State),
         GpuOpen | GpuFeatures | GpuRun | GpuSelect | GpuLast => Some(Gpu),
         DynOf => Some(Dyn),
+        DomainRun => Some(Category::Domain),
         Sqrt
         | Floor
         | Ceil
@@ -387,6 +396,7 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | OwnedDrop
         | OwnedFunction
         | OwnedCall
+        | DomainMessage
         | Not
         | Ignore => None,
         #[cfg(test)]
@@ -448,6 +458,7 @@ impl Effect {
                     Category::State => format!("uses shared mutable state ('{name}')"),
                     Category::Gpu => format!("uses the GPU ('{name}')"),
                     Category::Dyn => "uses dyn dispatch".into(),
+                    Category::Domain => "runs a failure domain ('Domain.run')".into(),
                 }
             }
             Self::Concurrency => "starts or waits for a task or a parallel operation".into(),
@@ -1222,7 +1233,6 @@ pub(crate) fn reachable_effect_of_chunk_body(
         .map(|witness| witness.map(|(effect, _)| effect))
 }
 
-#[allow(dead_code)]
 pub(crate) fn impurity_of_roots(
     module: &CheckedModule,
     roots: &[usize],
@@ -1479,7 +1489,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            91
+            92
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

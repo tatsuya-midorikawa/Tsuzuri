@@ -315,6 +315,8 @@ pub struct DiagnosticData {
     pub help: Option<String>,
     pub fixes: Vec<Fix>,
     pub detail: Detail,
+    /// B10: the frames of a trap that `run` saw (`E2005`); its JSON key comes last.
+    pub trap: Option<Box<crate::trap::TrapReport>>,
 }
 
 impl Diagnostic {
@@ -355,6 +357,7 @@ impl Diagnostic {
             help: None,
             fixes: Vec::new(),
             detail: Detail::default(),
+            trap: None,
         }))
     }
 
@@ -401,6 +404,12 @@ impl Diagnostic {
                 span,
             });
         }
+    }
+
+    /// B10: the trap that ended the program, rendered after the quote and as the last JSON key.
+    pub fn with_trap(mut self, report: crate::trap::TrapReport) -> Self {
+        self.trap = Some(Box::new(report));
+        self
     }
 
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
@@ -486,6 +495,12 @@ impl Diagnostic {
             self.code, self.message
         );
         write_quote(&mut output, source, line, column);
+        if let Some(trap) = &self.trap {
+            for line in trap.lines() {
+                output.push('\n');
+                output.push_str(&line);
+            }
+        }
         for related in &self.related {
             let note = self.with_source(related.span, path, source, lookup, |path, source| {
                 let (line, column) = location(source, related.span.start);
@@ -531,7 +546,7 @@ impl Diagnostic {
     }
 
     /// `json_with_severity` plus the keys that the diagnostic has values for, in the order
-    /// `kind`, `related`, `help`, `expected`, `found`, `candidates`, `scope`, `fixes`.
+    /// `kind`, `related`, `help`, `expected`, `found`, `candidates`, `scope`, `fixes`, `trap`.
     pub fn json_with(
         &self,
         severity: &str,
@@ -637,6 +652,9 @@ impl Diagnostic {
             .collect();
         if !fixes.is_empty() {
             let _ = write!(json, ",\"fixes\":[{}]", fixes.join(","));
+        }
+        if let Some(trap) = &self.trap {
+            let _ = write!(json, ",\"trap\":{}", trap.json());
         }
         json.push('}');
         json
@@ -791,6 +809,65 @@ mod tests {
         assert_eq!(
             error.render_with("error", "A.tz", "x", &|_| None),
             "A.tz:1:1: error[E0001]: bad\n  1 | x\n    | ^"
+        );
+    }
+
+    /// B10: an `E2005` without a trap report is the text and JSON it was before the report existed.
+    #[test]
+    fn a_diagnostic_without_a_trap_keeps_its_json_and_text() {
+        let source = "fn level3 x = 100 / x\n";
+        let error = Diagnostic::of(
+            DiagnosticKind::ProgramTerminated,
+            "program terminated with signal: 5 (SIGTRAP)",
+            Span::new(14, 21),
+        );
+        assert!(error.trap.is_none());
+        assert_eq!(
+            error.render("Main.tz", source),
+            "Main.tz:1:15: error[E2005]: program terminated with signal: 5 (SIGTRAP)\n  1 | fn level3 x = 100 / x\n    |               ^"
+        );
+        assert_eq!(
+            error.json("Main.tz", source),
+            r#"{"severity":"error","code":"E2005","message":"program terminated with signal: 5 (SIGTRAP)","path":"Main.tz","span":{"start":14,"end":21,"line":1,"column":15,"end_line":1,"end_column":22},"kind":"program_terminated"}"#
+        );
+    }
+
+    #[test]
+    fn a_trap_report_follows_the_span_in_json_and_text() {
+        use crate::trap::{TrapFrame, TrapReport};
+        let source = "fn level3 x = 100 / x\n";
+        let frame = |function: &str, address| TrapFrame {
+            function: Some(function.into()),
+            path: None,
+            line: None,
+            column: None,
+            address,
+        };
+        let mut error = Diagnostic::of(
+            DiagnosticKind::ProgramTerminated,
+            "terminated",
+            Span::new(14, 21),
+        )
+        .with_trap(TrapReport {
+            kind: "integer division by zero",
+            site: 2,
+            frames: vec![
+                frame("Main.level3", 0x1000004e4),
+                frame("Main.main", 0x10000061c),
+            ],
+            resolved: true,
+            truncated: false,
+        })
+        .with_help("h");
+        assert_eq!(
+            error.render("Main.tz", source),
+            "Main.tz:1:15: error[E2005]: terminated\n  1 | fn level3 x = 100 / x\n    |               ^\n  at Main.level3\n  at Main.main\n  help: h"
+        );
+        error.kind = None;
+        error.help = None;
+        assert_eq!(
+            error.json("Main.tz", source),
+            r#"{"severity":"error","code":"E2005","message":"terminated","path":"Main.tz","span":{"start":14,"end":21,"line":1,"column":15,"end_line":1,"end_column":22},"trap":{"kind":"integer division by zero","site":2,"frames":[{"function":"Main.level3","address":"0x1000004e4"},{"function":"Main.main","address":"0x10000061c"}]}}"#
         );
     }
 

@@ -3807,6 +3807,27 @@ fn build_complete(
         return build_bindings(module, project, output, options)
             .map(|()| (Vec::new(), Vec::new(), Vec::new()));
     }
+    // B10: a program that calls `Domain.run` runs on the tracked heap of src/runtime/trap.c, whose
+    // frames contain its traps; a build that cannot hold them is rejected at the first call.
+    let domain = !crate::check::domain_calls(module).is_empty();
+    if domain {
+        let why = if options.target.is_wasm() {
+            Some("WebAssembly cannot return from a trap into the module")
+        } else if options.freestanding {
+            Some("--freestanding has no trap runtime")
+        } else if options.allocator != llvm::Allocator::System {
+            Some("the allocator is not the system allocator")
+        } else if platform.windows() {
+            Some("Windows is not supported")
+        } else if options.emit == Emit::Llvm && !options.trap_return {
+            Some("--emit llvm needs --trap-mode return")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            return Err(llvm::domain_unsupported(module, why));
+        }
+    }
     let (max_memory, stack_size) = wasm_memory_limits(
         options.target,
         options.wasm_max_memory,
@@ -3873,6 +3894,7 @@ fn build_complete(
     let fast = options.backend == Backend::Fast;
     let f16 = f16_path_for(options.backend, platform, options.target, options.cpu);
     let runtime_objects = options.cache
+        && !domain
         && !options.debug_info
         && !options.trap_info
         && !options.trap_return
@@ -4167,8 +4189,15 @@ fn build_complete(
     let wasi_runtime = options.wasm_host == Some(WasmHost::Wasi)
         && (io_runtime || os_runtime || arguments_runtime || wasi_command);
     // Only objects, libraries and bitcode embed it: a host that links the LLVM output provides src/runtime/trap.c itself.
-    let trap_runtime = options.trap_return
-        && matches!(options.emit, Emit::Object | Emit::Shared | Emit::Bitcode)
+    // B10: so do the executables, objects and libraries of a program with failure domains.
+    let trap_runtime = ((options.trap_return
+        && matches!(options.emit, Emit::Object | Emit::Shared | Emit::Bitcode))
+        || (domain
+            && options.target == Target::Native
+            && matches!(
+                options.emit,
+                Emit::Executable | Emit::Object | Emit::Shared | Emit::Bitcode
+            )))
         && [
             "tsuzuri_trap_raise",
             "tsuzuri_boundary_run",
@@ -4188,6 +4217,10 @@ fn build_complete(
         && options.emit == Emit::Executable
         && platform.unix()
         && llvm::has_recursion(&text);
+    // B10: the report of an executable built with --trap-info writes the chain of frames when
+    // TSUZURI_TRAP_REPORT names a file (src/runtime/backtrace.c); only the executable's IR asks for it.
+    let backtrace_runtime = options.emit == Emit::Executable
+        && text.contains(&format!("{}\n", llvm::BACKTRACE_DECLARATION));
     let debug_import = options.target.is_wasm() && runtime_symbols.contains("tsuzuri_debug_write");
     // A callback's address is a table index the host resolves through the exported table.
     let callback_table = options.target.is_wasm() && runtime_symbols.prefix("tz.callback.");
@@ -4541,15 +4574,18 @@ fn build_complete(
             // The IR is translated in memory and never written.
             translate_fast(&text, platform, &object)?;
         } else {
-            if units::eligible(
-                options,
-                platform,
-                profile,
-                units::Facts {
-                    stable_trap_sites: stable_traps,
-                    ..facts
-                },
-            ) && units::wanted(codegen_mode, text.len())
+            // A program with failure domains is instrumented like `--trap-mode return`, which is one module.
+            if !domain
+                && units::eligible(
+                    options,
+                    platform,
+                    profile,
+                    units::Facts {
+                        stable_trap_sites: stable_traps,
+                        ..facts
+                    },
+                )
+                && units::wanted(codegen_mode, text.len())
             {
                 let mut args: Vec<OsString> = ["-x", "ir", "-Wno-override-module"]
                     .into_iter()
@@ -4780,6 +4816,43 @@ fn build_complete(
             fs::write(&stack_source, include_str!("runtime/stack.c"))
                 .map_err(|error| io_error("write stack runtime", &stack_source, error))?;
         }
+        let backtrace_source = temporary.path.join("backtrace.c");
+        let mut backtrace_object = temporary.path.join("backtrace.o");
+        if backtrace_runtime {
+            fs::write(&backtrace_source, include_str!("runtime/backtrace.c"))
+                .map_err(|error| io_error("write backtrace runtime", &backtrace_source, error))?;
+        }
+        if backtrace_runtime && options.debug_info {
+            // Its own object without debug information, like the stack guard's below.
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .args(["-std=c11", "-c", "-O1"])
+                .args(compile_args(platform))
+                .args(sdk_args(platform)?);
+            let hint = cross_hint(
+                platform,
+                "native runtime requires Clang and the platform C/OS SDK headers",
+            );
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                backtrace_object = compile_runtime_object(
+                    "backtrace-debug",
+                    include_str!("runtime/backtrace.c"),
+                    "backtrace.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    &hint,
+                    &mut messages,
+                )?;
+            } else {
+                runtime
+                    .arg(&backtrace_source)
+                    .arg("-o")
+                    .arg(&backtrace_object);
+                collect_message(&mut messages, run_tool(&mut runtime, &hint)?);
+            }
+        }
         if stack_runtime && options.debug_info {
             // Its own object, without debug information: the guard is not source a debugger should show.
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
@@ -4976,7 +5049,7 @@ fn build_complete(
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
-            if (task_runtime || net_runtime) && !platform.windows() {
+            if (task_runtime || net_runtime || trap_runtime) && !platform.windows() {
                 clang.arg("-pthread");
             }
             // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
@@ -4996,6 +5069,13 @@ fn build_complete(
                 clang.args(["-x", "c", "-std=c11"]).arg(&stack_source);
             }
             clang.arg("-pthread");
+        }
+        if backtrace_runtime && dwarf_sidecar.is_none() {
+            if options.debug_info {
+                clang.args(["-x", "none"]).arg(&backtrace_object);
+            } else {
+                clang.args(["-x", "c", "-std=c11"]).arg(&backtrace_source);
+            }
         }
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             links.add_to(&mut clang);
@@ -5085,7 +5165,7 @@ fn build_complete(
             }
             if native_runtime {
                 linker.arg(&runtime_object);
-                if task_runtime || net_runtime {
+                if task_runtime || net_runtime || trap_runtime {
                     linker.arg("-pthread");
                 }
                 if gpu_runtime && platform.linux() {
@@ -5094,6 +5174,9 @@ fn build_complete(
             }
             if stack_runtime {
                 linker.arg(&stack_object).arg("-pthread");
+            }
+            if backtrace_runtime {
+                linker.arg(&backtrace_object);
             }
             links.add_to(&mut linker);
             linker.arg("-o").arg(&artifact);
@@ -5866,9 +5949,12 @@ fn run_process(
     )?;
     let started = std::time::SystemTime::now();
     let json = matches!(stdio, RunStdio::Inherit { json: true, .. });
+    // B10: the program appends the chain of frames of a trap to this file (src/runtime/backtrace.c).
+    let report = temporary.path.join("trap-report");
     let (status, stderr, stdout) = match stdio {
         RunStdio::Inherit { json, arguments } => {
             let mut child = program_command(runner.as_ref(), &output)
+                .env(TRAP_REPORT_VARIABLE, &report)
                 .args(arguments)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
@@ -5891,20 +5977,31 @@ fn run_process(
             timeout,
             limit,
             echo,
-        } => capture(runner.as_ref(), &output, timeout, limit, echo)?,
+        } => capture(runner.as_ref(), &output, &report, timeout, limit, echo)?,
     };
+    // The first line is the program's own: a child process that inherited the variable writes after it.
+    let raw = (!status.success())
+        .then(|| fs::read_to_string(&report).ok())
+        .flatten()
+        .and_then(|text| text.lines().find_map(crate::trap::parse_report_line));
+    let symbolized = raw.as_ref().map(|raw| {
+        let mut binary = output.clone().into_os_string();
+        if platform.mach_o() && options.debug_info {
+            binary.push(".dwarf");
+        }
+        symbolize(Path::new(&binary), raw, module)
+    });
     temporary.close()?;
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
-        let site = project.with_trap_sources(|sources| {
-            sites
-                .iter()
-                .find(|site| {
-                    site.message(sources)
-                        .is_ok_and(|message| stderr.contains(&message))
-                })
-                .map(|site| (site.span, site.kind))
+        let found = project.with_trap_sources(|sources| {
+            sites.iter().find(|site| {
+                site.message(sources)
+                    .is_ok_and(|message| stderr.contains(&message))
+            })
         });
+        let trap = trap_report(found, raw.as_ref(), symbolized.flatten(), &sites, &stderr);
+        let site = found.map(|site| (site.span, site.kind));
         if let Some(code) = returned_code(&status, site.is_some(), llvm::exit_code_entry(module)) {
             let message = if json && !stderr.trim().is_empty() {
                 format!("program exited with code {code}:\n{}", stderr.trim_end())
@@ -5938,7 +6035,11 @@ fn run_process(
         } else {
             format!("program terminated with {}:\n{}", status, stderr.trim_end())
         };
-        return Err(Diagnostic::of(kind, message, site.unwrap_or_default()));
+        let diagnostic = Diagnostic::of(kind, message, site.unwrap_or_default());
+        return Err(match trap {
+            Some(trap) => diagnostic.with_trap(trap),
+            None => diagnostic,
+        });
     }
     if json {
         // A23: the report lines of a program that succeeded become `W2001` warnings.
@@ -5957,6 +6058,105 @@ fn run_process(
         messages.push(message);
     }
     Ok((messages, stdout))
+}
+
+/// The variable that names the file a native executable built with `--trap-info` appends the chain of frames of a
+/// trap to (B10, `src/runtime/backtrace.c`); `tsuzuri run` sets it for the program.
+pub(crate) const TRAP_REPORT_VARIABLE: &str = "TSUZURI_TRAP_REPORT";
+
+/// The `trap` object of the `E2005` of a program that failed (B10): the site that its stderr names, or else the one
+/// of its crash report, or else a stack overflow; and the frames of the report, named by `symbolized` when a
+/// symbolizer ran. `None` when nothing says that the program trapped.
+fn trap_report(
+    found: Option<&crate::trap::TrapSite>,
+    raw: Option<&crate::trap::RawTrapReport>,
+    symbolized: Option<Vec<crate::trap::TrapFrame>>,
+    sites: &[crate::trap::TrapSite],
+    stderr: &str,
+) -> Option<crate::trap::TrapReport> {
+    use crate::trap::{MAX_TRAP_FRAMES, TrapFrame, TrapKind, TrapReport};
+    let (kind, site) = if let Some(site) = found {
+        (site.kind.description(), site.id)
+    } else if let Some(raw) = raw.filter(|raw| raw.site != 0) {
+        let kind = sites
+            .iter()
+            .find(|site| site.id == raw.site)
+            .map(|site| site.kind)
+            .unwrap_or(TrapKind::ALL[((raw.site - 1) % TrapKind::ALL.len() as u32) as usize]);
+        (kind.description(), raw.site)
+    } else if stderr.contains(STACK_OVERFLOW_REPORT) {
+        (TrapKind::StackOverflow.description(), 0)
+    } else {
+        return None;
+    };
+    let mut truncated = raw.is_some_and(|raw| raw.truncated);
+    let resolved = symbolized.is_some();
+    let mut frames = match (symbolized, raw) {
+        (Some(frames), _) => frames,
+        (None, Some(raw)) => raw
+            .addresses
+            .iter()
+            .map(|address| TrapFrame {
+                function: None,
+                path: None,
+                line: None,
+                column: None,
+                address: address.wrapping_sub(raw.slide),
+            })
+            .collect(),
+        (None, None) => Vec::new(),
+    };
+    // Inlined functions can make more frames than addresses.
+    if frames.len() > MAX_TRAP_FRAMES {
+        frames.truncate(MAX_TRAP_FRAMES);
+        truncated = true;
+    }
+    Some(TrapReport {
+        kind,
+        site,
+        frames,
+        resolved,
+        truncated,
+    })
+}
+
+/// Names the frames of a crash report with `llvm-symbolizer` (`TSUZURI_LLVM_SYMBOLIZER`), run once for all of them;
+/// `None` when it cannot run or says something else than the JSON it writes.
+fn symbolize(
+    binary: &Path,
+    raw: &crate::trap::RawTrapReport,
+    module: &CheckedModule,
+) -> Option<Vec<crate::trap::TrapFrame>> {
+    if raw.addresses.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut object = OsString::from("--obj=");
+    object.push(binary);
+    let mut command = Command::new(tool("TSUZURI_LLVM_SYMBOLIZER", "llvm-symbolizer"));
+    command
+        .arg(object)
+        .args(["--output-style=JSON", "--inlining", "--functions=linkage"])
+        // A return address is the instruction after the call; the one before it is in the call's line.
+        .args(
+            raw.addresses
+                .iter()
+                .map(|address| format!("0x{:x}", address.wrapping_sub(raw.slide).wrapping_sub(1))),
+        )
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let exports: BTreeSet<&str> = module
+        .functions
+        .iter()
+        .filter(|function| function.exported)
+        .map(|function| function.name.as_str())
+        .collect();
+    crate::trap::frames_from_symbolizer(&String::from_utf8_lossy(&output.stdout), raw, &|name| {
+        exports.contains(name)
+    })
 }
 
 /// Copies `stream` into `collected` until it ends, also writing it to stderr when `echo`.
@@ -5990,6 +6190,7 @@ enum StreamEnd {
 fn capture(
     runner: Option<&ForeignRunner>,
     output: &Path,
+    report: &Path,
     timeout: Option<std::time::Duration>,
     limit: usize,
     echo: bool,
@@ -5997,6 +6198,7 @@ fn capture(
     use std::sync::mpsc::{RecvTimeoutError, channel};
     use std::time::{Duration, Instant};
     let mut child = program_command(runner, output)
+        .env(TRAP_REPORT_VARIABLE, report)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

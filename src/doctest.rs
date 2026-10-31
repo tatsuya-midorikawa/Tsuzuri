@@ -106,6 +106,8 @@ pub struct Options {
     pub filter: Option<String>,
     pub indices: Vec<usize>,
     pub warnings: Warnings,
+    /// `--allow-overflow` (A23): a `test` example whose arithmetic wraps passes, as in `tsuzuri test`.
+    pub allow_overflow: bool,
 }
 
 /// The warning settings of the command line. Without `deny`, an example's warnings are ignored;
@@ -135,6 +137,8 @@ pub struct ExampleResult {
     pub failure: Option<String>,
     /// The standard error of a failed `test` example.
     pub output: String,
+    /// The overflow reports (A23) of a `test` example that passed with `--allow-overflow`.
+    pub overflow: Vec<String>,
     pub duration_ms: u128,
 }
 
@@ -182,6 +186,20 @@ fn scan(lines: &[&str]) -> Scan {
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
+        // A `~~~` fence is never an example, and its lines (a quoted ```tsuzuri sample) are not
+        // searched; without a closing line it runs to the end, as in CommonMark.
+        let tildes = line.bytes().take_while(|byte| *byte == b'~').count();
+        if tildes >= 3 {
+            let close = (i + 1..lines.len()).find(|&j| {
+                let text = lines[j].trim_end();
+                text.len() >= tildes && text.bytes().all(|byte| byte == b'~')
+            });
+            match close {
+                Some(j) => i = j + 1,
+                None => break,
+            }
+            continue;
+        }
         let ticks = leading_ticks(line);
         if ticks >= 3 && !line[ticks..].contains('`') {
             let info = line[ticks..].trim().to_owned();
@@ -210,9 +228,12 @@ fn scan(lines: &[&str]) -> Scan {
             continue;
         }
         if line.starts_with([' ', '\t']) {
+            // Any indented opening whose language is `tsuzuri` (`  ``` tsuzuri run=1` included).
             let rest = line.trim_start();
-            if let Some(after) = rest.strip_prefix("```tsuzuri")
-                && (after.is_empty() || after.starts_with([' ', '\t']))
+            let ticks = leading_ticks(rest);
+            if ticks >= 3
+                && !rest[ticks..].contains('`')
+                && rest[ticks..].split_whitespace().next() == Some("tsuzuri")
             {
                 found.problems.push((i, INDENTED.to_owned()));
             }
@@ -719,6 +740,7 @@ fn run_one(
     let started = Instant::now();
     let mut messages = Vec::new();
     let mut output = String::new();
+    let mut overflow = Vec::new();
     let failure = (|| -> Option<String> {
         let built = match example_project(input, &example.program, std_mode, edition) {
             Ok(built) => built,
@@ -811,21 +833,35 @@ fn run_one(
                     indices,
                     backend: options.build.backend,
                     allocator: options.build.allocator,
+                    // A23: a `test` example reports wrapped arithmetic and fails, as `tsuzuri test` does.
+                    overflow: Some(driver::OverflowTests {
+                        fail: !options.allow_overflow,
+                        sources: built.overflow_sources(),
+                    }),
                     ..Default::default()
                 };
                 match driver::run_tests_linked(&module, &test_options, &built.native) {
                     Ok(test_report) => {
                         messages.extend(test_report.messages);
-                        let failed = test_report
+                        if let Some(failed) = test_report
+                            .results
+                            .iter()
+                            .find(|result| result.failure.is_some())
+                        {
+                            output = failed.output.clone();
+                            return Some(format!(
+                                "test {:?} failed: {}",
+                                failed.case.name,
+                                failed.failure.clone().unwrap_or_default()
+                            ));
+                        }
+                        // `--allow-overflow`: the tests pass and their reports are shown.
+                        overflow = test_report
                             .results
                             .into_iter()
-                            .find(|result| result.failure.is_some())?;
-                        output = failed.output;
-                        Some(format!(
-                            "test {:?} failed: {}",
-                            failed.case.name,
-                            failed.failure.unwrap_or_default()
-                        ))
+                            .flat_map(|result| result.overflow)
+                            .collect();
+                        None
                     }
                     Err(error) => Some(describe(&error, program, root)),
                 }
@@ -837,6 +873,7 @@ fn run_one(
             example: example.clone(),
             failure,
             output,
+            overflow,
             duration_ms: started.elapsed().as_millis(),
         },
         messages,
@@ -865,6 +902,11 @@ pub fn render_doc(text: &str) -> String {
         let options = fence.info["tsuzuri".len()..].trim();
         let body = &lines[fence.open + 1..fence.close];
         let hidden = body.iter().any(|line| is_hidden(line));
+        // An example without code is a notation error (E2011): it stays as written.
+        if body.iter().all(|line| line.trim().is_empty()) {
+            out.extend(original.iter().map(|line| (*line).to_owned()));
+            continue;
+        }
         let expectation = match parse_options(options) {
             Ok(_) if options.is_empty() && !hidden => {
                 out.extend(original.iter().map(|line| (*line).to_owned()));
@@ -1013,6 +1055,13 @@ mod tests {
         );
         // An unclosed fence of another language hides the rest and is no problem.
         assert_eq!(scan(&["```text", "```tsuzuri"]), Scan::default());
+        // An indented opening is found whatever the blanks before the language.
+        let spaced = scan(&["  ``` tsuzuri run=1", "x", "  ```", "\t````tsuzuri", "x"]);
+        assert_eq!(
+            spaced.problems,
+            [(0, INDENTED.to_owned()), (3, INDENTED.to_owned())]
+        );
+        assert!(scan(&["  ```text"]).problems.is_empty());
     }
 
     #[test]
@@ -1149,9 +1198,24 @@ mod tests {
 
     #[test]
     fn render_doc_keeps_malformed_fences() {
-        for text in ["```tsuzuri run=%zz\n1\n```", "```tsuzuri sloppy\n1\n```"] {
+        for text in [
+            "```tsuzuri run=%zz\n1\n```",
+            "```tsuzuri sloppy\n1\n```",
+            "```tsuzuri run=42\n\n```",
+        ] {
             assert_eq!(render_doc(text), text);
         }
+    }
+
+    #[test]
+    fn a_tilde_fence_quotes_examples_without_running_them() {
+        let text = "Write it so:\n\n~~~markdown\n```tsuzuri run=1\n# let x = 1\nx\n```\n~~~\n";
+        assert_eq!(render_doc(text), text);
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert!(scan(&lines).fences.is_empty());
+        // An unclosed `~~~` fence runs to the end of the text.
+        let open: Vec<&str> = "~~~\n```tsuzuri\n1\n```".split('\n').collect();
+        assert!(scan(&open).fences.is_empty());
     }
 
     #[test]
