@@ -26,7 +26,8 @@ fn user_functions(module: &CheckedModule) -> impl Iterator<Item = &CheckedFuncti
     })
 }
 
-/// A reference to `Domain.run` and whether it is the callee of a call with one argument.
+/// A reference to `Domain.run`: the callee of a call with one argument (or of a pipe, `argument |> Domain.run`), with
+/// the call and its argument, or any other use.
 enum Use<'a> {
     Call(&'a TypedExpr, &'a TypedExpr),
     Other(Span),
@@ -51,6 +52,15 @@ fn uses<'a>(module: &'a CheckedModule, runs: &BTreeSet<usize>) -> Vec<Use<'a>> {
                     _ => found.push(Use::Other(expression.span)),
                 }
                 pending.extend(arguments);
+                continue;
+            }
+            // `argument |> Domain.run` applies the function to one argument, as a call does.
+            if let TypedExprKind::Binary(BinaryOp::Pipe, argument, callee) = &expression.kind
+                && let TypedExprKind::Function(FunctionRef::User(id)) = &callee.kind
+                && runs.contains(id)
+            {
+                found.push(Use::Call(expression, argument));
+                pending.push(argument);
                 continue;
             }
             if let TypedExprKind::Function(FunctionRef::User(id)) = &expression.kind
@@ -116,8 +126,10 @@ pub(super) fn validate(module: &CheckedModule) -> Vec<Diagnostic> {
         }
         let (body, captures, checked) = match &value.kind {
             TypedExprKind::Closure(id, _) => (*id, module.functions[*id].capture_count, false),
+            // A lambda without captures, lowered to its function. A named def, an instance of a generic one
+            // included, must be a `pure def`.
             TypedExprKind::Function(FunctionRef::User(id))
-                if module.functions[*id].origin.parent.is_some() =>
+                if module.functions[*id].module == "$lambda" =>
             {
                 (*id, 0, false)
             }

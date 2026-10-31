@@ -722,7 +722,7 @@ fn emit_native(
     // B10: a program that calls `Domain.run` runs on the tracked heap of the trap runtime, and its traps
     // return to the innermost failure domain.
     if !crate::check::domain_calls(module).is_empty() {
-        return emit_trap_mode(
+        let output = emit_trap_mode(
             module,
             options,
             sources,
@@ -734,7 +734,9 @@ fn emit_native(
                 executable_roots,
                 backtrace,
             },
-        );
+        )?;
+        domain_without_callbacks(module, &output.ir)?;
+        return Ok(output);
     }
     let trusted_array = sources.iter().any(|source| {
         source.path == "std/Array.tz" && source.text == include_str!("../std/Array.tz")
@@ -1170,22 +1172,28 @@ pub fn emit_test_runner_with(
     let sources = traps
         .or_else(|| options.debug.map(|(sources, _)| sources))
         .unwrap_or_default();
-    match marks {
-        Some(marks) => traps::instrument_with(
-            ir,
-            module,
-            marks,
-            sources,
-            traps::InstrumentOptions {
-                wasm: false,
-                raise: domain,
-                backtrace: false,
-            },
-            TrapNumbering::Dense,
-        )
-        .map(|output| output.ir),
-        None => Ok(ir),
+    let ir = match marks {
+        Some(marks) => {
+            traps::instrument_with(
+                ir,
+                module,
+                marks,
+                sources,
+                traps::InstrumentOptions {
+                    wasm: false,
+                    raise: domain,
+                    backtrace: false,
+                },
+                TrapNumbering::Dense,
+            )?
+            .ir
+        }
+        None => ir,
+    };
+    if domain {
+        domain_without_callbacks(module, &ir)?;
     }
+    Ok(ir)
 }
 
 /// The native runner of the selected benches for `tsuzuri bench` (G18). `@tsuzuri_bench_sample`
@@ -1248,21 +1256,43 @@ fn emit_bench_runner_in(
         },
     )?;
     match marks {
-        Some(marks) => traps::instrument_with(
-            ir,
-            module,
-            marks,
-            &[],
-            traps::InstrumentOptions {
-                wasm: false,
-                raise: true,
-                backtrace: false,
-            },
-            TrapNumbering::Dense,
-        )
-        .map(|output| output.ir),
+        Some(marks) => {
+            let ir = traps::instrument_with(
+                ir,
+                module,
+                marks,
+                &[],
+                traps::InstrumentOptions {
+                    wasm: false,
+                    raise: true,
+                    backtrace: false,
+                },
+                TrapNumbering::Dense,
+            )?
+            .ir;
+            domain_without_callbacks(module, &ir)?;
+            Ok(ir)
+        }
         None => Ok(ir),
     }
+}
+
+/// B10: a program with failure domains has the trap path of `--trap-mode return`, which cannot run under a callback
+/// that the host calls: a trap would jump across the host's frames, and the trap context that the instrumentation
+/// adds to the callbacks' wrappers is not in their C ABI. The driver rejects extern callbacks for `--trap-mode return`
+/// the same way.
+fn domain_without_callbacks(module: &CheckedModule, ir: &str) -> Result<(), Diagnostic> {
+    if ir.contains("@tz.callback.") {
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionConflict,
+            "Domain.run cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+            crate::check::domain_calls(module)
+                .first()
+                .copied()
+                .unwrap_or_default(),
+        ));
+    }
+    Ok(())
 }
 
 /// B10: the `E1038` of a build that cannot hold a failure domain, at the first call of `Domain.run`.
@@ -1863,6 +1893,17 @@ fn emit_program_in(
             &roots,
             RestrictedKind::Counter,
             entry,
+        ));
+    }
+    // B10: a failure domain frees the blocks of a trapped closure in src/runtime/trap.c, past the counters of the
+    // counting heap, so a test runner whose tests read them cannot hold one (the domain's `trap_return`).
+    if reads_counters
+        && instrumentation.trap_return
+        && !crate::check::domain_calls(module).is_empty()
+    {
+        return Err(domain_unsupported(
+            module,
+            "the allocator is not the system allocator: the tests read the allocation counters (Alloc), which a domain's freeing would bypass",
         ));
     }
     let allocator = if reads_counters {

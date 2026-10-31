@@ -4,7 +4,7 @@
    it wrote the site's message. Nothing is written unless TSUZURI_TRAP_REPORT names a file; `tsuzuri run`
    sets it. The code walks the chain of frame pointers: every function that Tsuzuri generates keeps one in
    such a build ("frame-pointer"="all"), and a frame record is the saved frame pointer followed by the
-   return address on arm64 and x86-64. Every record is checked to be mapped before it is read. */
+   return address on arm64 and x86-64. Every record is read through a pipe, which cannot fault. */
 #if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
 #define _DARWIN_C_SOURCE
 #endif
@@ -15,7 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/mman.h>
+#include <string.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -44,16 +44,50 @@ static uintptr_t tz_backtrace_slide(void) {
 #endif
 }
 
-/* Whether the `length` bytes at `address` are mapped, so that reading them cannot fault. */
-static int tz_backtrace_readable(uintptr_t address, size_t length) {
-    long page = sysconf(_SC_PAGESIZE);
-    if (page <= 0) return 0;
-    uintptr_t mask = (uintptr_t)page - 1;
-    uintptr_t start = address & ~mask;
-    uintptr_t end = (address + length + mask) & ~mask;
-    char vector[2];
-    if (end <= start || (end - start) / (uintptr_t)page > sizeof vector) return 0;
-    return mincore((void *)start, (size_t)(end - start), (void *)vector) == 0;
+/* Reads the frame record (the saved frame pointer and the return address) at `address` without a
+   fault. The words pass through a pipe: write() fails with EFAULT for memory that the process cannot
+   read, unmapped or PROT_NONE alike, where a load would end the process before the report is written
+   (mincore() says only that a page is mapped). A record that runs into an unreadable page is written
+   in part; what was written is drained, and the record is not read. 1 when both words were read. */
+static int tz_backtrace_read(const int pipe_fds[2], uintptr_t address, uintptr_t record[2]) {
+    const size_t size = 2 * sizeof(uintptr_t);
+    if (address == 0 || (address & (sizeof(uintptr_t) - 1)) != 0) return 0;
+    ssize_t written = write(pipe_fds[1], (const void *)address, size);
+    if (written <= 0) return 0;
+    unsigned char bytes[2 * sizeof(uintptr_t)];
+    ssize_t drained = read(pipe_fds[0], bytes, (size_t)written);
+    if (written != (ssize_t)size || drained != written) return 0;
+    memcpy(record, bytes, size);
+    return 1;
+}
+
+/* Follows the chain of frame records from `record`: the first `skip` return addresses are left out,
+   the next `capacity` are stored innermost first, and `*truncated` says that more were left. The chain
+   ends at a return address of 0, a record that cannot be read or is not aligned, or a caller's record
+   that is not above its callee's (a stack grows down). Returns the number stored. */
+static unsigned tz_backtrace_walk(uintptr_t record, unsigned skip, uintptr_t *frames, unsigned capacity,
+                                  int *truncated) {
+    int pipe_fds[2];
+    unsigned count = 0;
+    *truncated = 0;
+    if (pipe(pipe_fds) != 0) return 0;
+    uintptr_t words[2];
+    while (tz_backtrace_read(pipe_fds, record, words)) {
+        uintptr_t next = words[0];
+        uintptr_t address = words[1];
+        if (address == 0) break;
+        if (skip) --skip;
+        else if (count < capacity) frames[count++] = address;
+        else {
+            *truncated = 1;
+            break;
+        }
+        if (next <= record) break;
+        record = next;
+    }
+    (void)close(pipe_fds[0]);
+    (void)close(pipe_fds[1]);
+    return count;
 }
 
 /* Appends one line `tz-trap/1 <site> <slide> <truncated> <address>...` (hexadecimal with 0x, the
@@ -63,26 +97,10 @@ void tsuzuri_trap_backtrace(uint32_t site) {
     const char *path = getenv("TSUZURI_TRAP_REPORT");
     if (!path || !*path) return;
     uintptr_t frames[TZ_BACKTRACE_FRAMES];
-    unsigned count = 0;
     int truncated = 0;
-    int skipped = 0;
-    uintptr_t *record = (uintptr_t *)__builtin_frame_address(0);
-    while (record && ((uintptr_t)record & (sizeof(uintptr_t) - 1)) == 0
-           && tz_backtrace_readable((uintptr_t)record, 2 * sizeof(uintptr_t))) {
-        uintptr_t next = record[0];
-        uintptr_t address = record[1];
-        if (address == 0) break;
-        /* The first return address is into @tz.trap.report itself. */
-        if (!skipped) skipped = 1;
-        else if (count < TZ_BACKTRACE_FRAMES) frames[count++] = address;
-        else {
-            truncated = 1;
-            break;
-        }
-        /* A stack grows down, so the record of a caller lies above its callee's. */
-        if (next <= (uintptr_t)record) break;
-        record = (uintptr_t *)next;
-    }
+    /* The first return address is into @tz.trap.report itself. */
+    unsigned count = tz_backtrace_walk((uintptr_t)__builtin_frame_address(0), 1, frames,
+                                       TZ_BACKTRACE_FRAMES, &truncated);
     char line[1024];
     int length = snprintf(line, sizeof line, "tz-trap/1 %u 0x%lx %d", (unsigned)site,
                           (unsigned long)tz_backtrace_slide(), truncated);

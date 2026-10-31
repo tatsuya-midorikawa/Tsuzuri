@@ -31,6 +31,9 @@ fn domain_accepts_lambdas_pure_defs_and_plain_captures() {
     accepts(
         "record Point { x: i64, y: i64 }\nlet name = \"p\"\nlet r = Domain.run (\\() -> (Point { x: name.length, y: 2 }, name + \"!\"))\n",
     );
+    // A pipe applies `Domain.run` to its one argument as a call does (review of PR #74).
+    accepts("let r = (\\() -> 1) |> Domain.run\n");
+    accepts("let n = 4\nlet r = (\\() -> 100 / n) |> Domain.run\n");
     // A program that does not name Domain does not load it.
     accepts("let r = 1\n");
 }
@@ -76,6 +79,28 @@ fn domain_rejects_each_rule_with_e1038() {
     assert!(
         message.ends_with("move that work out of the closure"),
         "{message}"
+    );
+    // Rule 1: an instance of a generic def that is not pure, whatever its type arguments (review of PR #74).
+    rejects(
+        "def empty :: unit -> ['a] = \\() -> []\nlet r: Result<[i64], Domain.Failure> = Domain.run empty\n",
+        "domain_argument_not_closure",
+        "must be a lambda or the name of a pure def",
+    );
+    rejects(
+        "def empty :: unit -> [i64] = \\() -> []\nlet r = Domain.run empty\n",
+        "domain_argument_not_closure",
+        "must be a lambda or the name of a pure def",
+    );
+    // The rules see a pipe's argument as a call's.
+    rejects(
+        "let b = (\\() -> { Debug.print \"x\"; 1 }) |> Domain.run\n",
+        "domain_body_not_pure",
+        "must be pure: it prints debug output",
+    );
+    rejects(
+        "let log = \\(text: string) -> Debug.print text\nlet c = (\\() -> { log \"x\"; 1 }) |> Domain.run\n",
+        "domain_capture_not_plain",
+        "captures 'log'",
     );
     // Rule 3: a domain inside a domain (D8).
     rejects(
@@ -273,6 +298,77 @@ fn domain_target_errors() {
         String::from_utf8_lossy(&checked.stderr)
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A program with failure domains has the trap path of `--trap-mode return`, which a callback that the host calls cannot
+/// hold (review of PR #74): the builds and the runners reject extern callbacks as `--trap-mode return` does.
+#[test]
+fn domain_rejects_extern_callbacks_in_builds_and_runners() {
+    let _scope = PlatformScope::enter(Platform::new(Triple::parse("x86_64-unknown-linux-gnu")));
+    const CALLBACKS: &str = "extern \"host_apply\" def apply :: (i64 -> i64) -> i64 -> i64\n\ndef triple :: i64 -> i64 = \\x -> x * 3\n\ndef main :: unit -> i32 = \\() ->\n    let n = 2\n    let r = Domain.run (\\() -> 10 / n)\n    let k = match r with\n        | Result.Ok v -> v\n        | Result.Error _ -> 0\n    (apply triple k) as i32\n\ntest \"calls back\" =\n    Test.is_true (main () == 15)\n";
+    let module = tsuzuri::analyze(CALLBACKS).unwrap();
+    let sources = sources(CALLBACKS);
+    let check = |result: Result<String, tsuzuri::diagnostic::Diagnostic>, what: &str| {
+        let error = result.expect_err(what);
+        assert_eq!(error.code, "E2000", "{what}: {}", error.message);
+        assert_eq!(error.kind, Some("option_conflict"), "{what}");
+        assert!(
+            error.message
+                == "Domain.run cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+            "{what}: {}",
+            error.message
+        );
+        // At the call of Domain.run (line 7).
+        let line = CALLBACKS[..error.span.start].matches('\n').count() + 1;
+        assert_eq!(line, 7, "{what}");
+    };
+    for entry in [Entry::Console, Entry::Library] {
+        for trap_info in [false, true] {
+            check(
+                llvm::emit_native_build(&module, options(entry), &sources, None, trap_info)
+                    .map(|output| output.ir),
+                &format!("{entry:?} trap info {trap_info}"),
+            );
+        }
+    }
+    check(
+        llvm::emit_test_runner_with(&module, &[0], llvm::TestRunnerOptions::default()),
+        "test runner",
+    );
+    // The same callbacks without Domain build as before.
+    let plain = CALLBACKS.replace(
+        "let r = Domain.run (\\() -> 10 / n)",
+        "let r: Result<i64, i64> = Result.Ok (10 / n)",
+    );
+    let module = tsuzuri::analyze(&plain).unwrap();
+    let ir = llvm::emit_native_build(&module, options(Entry::Console), &sources, None, false)
+        .unwrap()
+        .ir;
+    assert!(ir.contains("@tz.callback."));
+}
+
+/// A failure domain frees a trapped closure's blocks past the counting heap's counters, so a runner whose tests read
+/// them (`Alloc`, which selects the counting heap by itself) cannot hold one (review of PR #74).
+#[test]
+fn domain_rejects_the_counting_heap_that_alloc_selects() {
+    let _scope = PlatformScope::enter(Platform::new(Triple::parse("x86_64-unknown-linux-gnu")));
+    const COUNTED: &str = "test \"counts and contains\" =\n    let start = Alloc.snapshot ()\n    let numbers = [1, 2, 3]\n    let outcome = Domain.run (\\() -> numbers[5])\n    let used = Alloc.since start\n    match outcome with\n    | Result.Error failure -> Test.is_true (failure.kind == 3 && used.frees >= 0)\n    | Result.Ok _ -> Test.is_true false\n";
+    let module = tsuzuri::analyze(COUNTED).unwrap();
+    let error = llvm::emit_test_runner_with(&module, &[0], llvm::TestRunnerOptions::default())
+        .expect_err("a counted runner with a domain");
+    assert_eq!(error.code, "E1038", "{}", error.message);
+    assert_eq!(error.kind, Some("domain_target_unsupported"));
+    assert!(
+        error
+            .message
+            .contains("the allocator is not the system allocator"),
+        "{}",
+        error.message
+    );
+    // Without Domain the same test reads the counters as before.
+    let plain = "test \"counts\" =\n    let start = Alloc.snapshot ()\n    let numbers = [1, 2, 3]\n    let used = Alloc.since start\n    Test.is_true (numbers[1] == 2 && used.frees >= 0)\n";
+    let module = tsuzuri::analyze(plain).unwrap();
+    assert!(llvm::emit_test_runner_with(&module, &[0], llvm::TestRunnerOptions::default()).is_ok());
 }
 
 #[test]

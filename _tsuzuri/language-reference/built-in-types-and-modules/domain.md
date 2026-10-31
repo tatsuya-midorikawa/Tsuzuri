@@ -19,7 +19,7 @@ record Failure { site: i64, kind: i64, message: string }
 Domain.run :: (unit -> 'a) -> Result<'a, Domain.Failure>
 ```
 
-- `run body` は `body ()` を領域の中で一度呼びます。中で呼ぶ関数のトラップも含めて閉じ込めます。
+- `run body` は `body ()` を領域の中で一度呼びます。中で呼ぶ関数のトラップも含めて閉じ込めます。`(\() -> 計算) |> Domain.run` とパイプで書いても同じです。
 - 成功すると、結果が持つ確保は呼び出し元の物になります。トラップすると、領域の中で確保した block をすべて解放します。利用者の `Drop` と `try … finally` は走りません（巻き戻しはしません。純粋な本体は `Drop` を持つ値を作れません）。
 
 ### 引数の順序
@@ -129,7 +129,8 @@ let c = Domain.run (\() -> { log "x"; 1 })               // E1038: captures 'log
 | --- | --- |
 | macOS・Linux のネイティブで、システムの allocator の `build`（実行ファイル・`object`・`shared`・`bitcode`・`header`）・`run`・`script`・`test`・`bench` | 動く |
 | `--emit llvm` | `--trap-mode return` が要る。IR を自分でリンクするホストが `src/runtime/trap.c` を用意する（[トラップ位置](../../../docs/language.md#トラップ位置)） |
-| `--target wasm32`・`wasm64`（`tsuzuri test` の WebAssembly を含む）、`--freestanding`、`--allocator host`・`counting`・`small`、`bench --allocs`、Windows のネイティブ | `E1038` |
+| `--target wasm32`・`wasm64`（`tsuzuri test` の WebAssembly を含む）、`--freestanding`、`--allocator host`・`counting`・`small`、`bench --allocs`、`Alloc` で確保数を読むテスト（計数の allocator になる）、Windows のネイティブ | `E1038` |
+| extern の関数へ関数値を渡す（コールバック）プログラム | `E2000`（`Domain.run cannot be combined with extern callbacks`。`--trap-mode return` と同じく、ホストが呼ぶコールバックの中のトラップはホストの frame を飛び越えるため） |
 
 `--trap-mode return` の `tsuzuri_try_<name>` の境界の中でも動きます。領域は境界の中に入れ子になり、領域のトラップは境界の確保に触れません。
 

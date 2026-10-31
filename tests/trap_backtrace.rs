@@ -266,6 +266,55 @@ mod native {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// The walk reads every frame record through a pipe, so a chain that runs into memory the process cannot read
+    /// (unmapped or `PROT_NONE`, which `mincore` reports as mapped) ends there instead of faulting (review of PR #74).
+    #[test]
+    fn the_walk_stops_at_unreadable_records_without_a_fault() {
+        let root = scratch("walk");
+        let clang = std::env::var_os("TSUZURI_CLANG").unwrap_or_else(|| "clang".into());
+        for optimization in ["-O0", "-O2"] {
+            let program = root.join(format!("backtrace-runtime{optimization}"));
+            let built = Command::new(&clang)
+                .args([
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-fno-omit-frame-pointer",
+                ])
+                .arg(optimization)
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/backtrace_runtime.c"
+                ))
+                .arg("-o")
+                .arg(&program)
+                .output()
+                .unwrap();
+            assert!(
+                built.status.success(),
+                "{}",
+                String::from_utf8_lossy(&built.stderr)
+            );
+            let report = root.join(format!("report{optimization}"));
+            let run = Command::new(&program).arg(&report).output().unwrap();
+            assert!(
+                run.status.success(),
+                "{:?}\n{}",
+                run.status,
+                String::from_utf8_lossy(&run.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(run.stdout).unwrap(),
+                "backtrace runtime: 20 checks passed\n"
+            );
+            let fields = report_fields(&report);
+            assert_eq!(&fields[..2], ["tz-trap/1", "7"]);
+            assert_eq!(fields[3], "0");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn symbolizer() -> bool {
         let tool =
             std::env::var_os("TSUZURI_LLVM_SYMBOLIZER").unwrap_or_else(|| "llvm-symbolizer".into());
