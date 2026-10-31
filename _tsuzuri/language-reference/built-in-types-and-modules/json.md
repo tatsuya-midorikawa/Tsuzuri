@@ -490,6 +490,8 @@ match built with
 
 一部だけ渡す関数に文字列リテラルの借用 `ref "name"` を渡すと `E1013` です。上の例のように、先に `let` へ束縛した値を借ります。
 
+`Json` に [Text](text.md) を受ける版はありません。文書は `utf8string`、キーと文字列の値は `string` に固定されていて、同じ操作の 2 つの版がないためです。`Json.Value` の case の `Text` は型クラスの `Text` と関係なく、`Json.Text "a"` と修飾して書きます。
+
 ## 他の言語との比較
 
 | 観点 | Tsuzuri `Json` | Rust serde_json | C# System.Text.Json |

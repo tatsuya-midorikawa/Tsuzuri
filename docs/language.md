@@ -363,19 +363,19 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 明示的に `using std` と記述する必要はありませんが、記述した場合は他の `using` と同様に std モジュール群をモジュール名単体でスコープへ導入します。
 ユーザー定義のソースファイルにおいて、名前空間 `std` またはその配下の階層を明示的に宣言することは禁止されています（`E1011`）。
 標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
-ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`、`Domain`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
-`build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
+ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`、`RegexText`、`Domain`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
+`build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` と `RegexText` を、`RegexText` は `Regex` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
 標準ライブラリは外部への `export` 関数を持ちません。IO のエントリーポイントおよびランタイム境界には専用の内部シンボルが追加されます。WASM 出力における外部インポートは、実際に到達した IO／extern 呼び出し、明示的な Debug 出力、ならびに `--wasm-host wasi` 指定時の WASI preview1 関数にのみ限定して追加されます。
 標準ライブラリ内の `private` 関数は std の内部からのみ呼び出し可能であり、ユーザーコードから参照した場合は `E1022` エラーとなります。
 
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Alloc`、`Text`、`RegexText`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`Channel.Sender<T>` のように書いて区別します。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`Channel.Sender<T>` のように書いて区別します。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Alloc`、`Text`、`RegexText` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -1842,6 +1842,8 @@ let len4 = text |> String.length
 なお、この自動補完機構は「関数呼び出しの実引数」に対してのみ作用するものであり、ローカル変数の代入文（例: `let r: ref T = value`）や関数の戻り値に対して暗黙の借用を勝手に捏造することはありません。
 共有参照 `ref T` を要求する仮引数に対しては、一時的な計算結果の所有値を直接渡すことも可能です（例: `Array.sum (Array.map f (ref xs))`、`xs |> Array.map double |> Array.sum`、`String.length "text"`、`List.length [|1, 2, 3|]` など）。
 このような一時値は、呼び出した関数から制御が戻るまでの期間だけ一時的にスタック上で安全に借用され、関数呼び出しの完了直後に安全に解放されます（ただし、関数の戻り値がその借用参照を保持して外部へ返却するシグネチャになっている場合は、寿命切れ参照の脱出を防ぐため一時値を直接渡すことはできません。その場合は事前に `let` で明示的にローカル変数へ束縛してください）。
+型クラスのメソッド（`Text.find "a" text` の形）にも同じ規則が働きます。対象は、引数をすべてそろえた呼び出しのうち、型から決まる instance の実装（定義しなければクラスの既定の実装）が、関数と同じくすべての引数を一度に受け取るものだけです。部分適用、`fn pick text = { ...; \n -> ... }` のように最初の段階を先に実行する実装（後の引数を最初の段階より前に評価しないため）、instance がまだ決まらないジェネリックな本体の中の呼び出しは `E1013` のままです。
+なお、結果の型が型変数そのもの（`Maybe.get :: own Maybe<'a> -> 'a` や `Text.trim :: ref 's -> 's`）の呼び出しを `ref T` の仮引数へそのまま渡すと、型変数が `ref T` に決まり、引数が合わずに `E1003` になります（`String.length (Maybe.get m)`、`Text.length (Text.trim text)`）。結果を `let` で束縛するか、`ref (Text.trim text)` のように `ref` を明示してください。
 
 <!-- rule: SYN-006 -->
 `ref`、`ref mut`、および `deref` のオペランドは単一の「構文項（term）」として解釈されます。項とは、識別子名、リテラル、丸括弧で囲まれた式、ならびにそれに後続する `.field` アクセス、`[index]` 添字アクセス、隣接した `(...)` 関数適用、またはネストした前置単項演算（例: `ref deref r`）などを指します。
@@ -2086,6 +2088,8 @@ Tsuzuri におけるインデックスアクセスは境界検査を伴う厳格
 | `replace needle replacement text` | 左から右へ走査して重複しない一致部分を置換。置換後テキストの再解釈は行わない |
 | `repeat count text` | 文字列を `count` 回繰り返した連結文字列。負数は空文字列に対してもトラップ |
 | `compare left right` | 比較演算子と同様に辞書順比較を行い、`-1`／`0`／`1`（`i64`）を返却 |
+
+`Text<'s>`（`string` と `utf8string`）は、この表の操作のうち `decode_at`・`chars`・`char_count` を除いたものと `length`・`clone`・`is_empty` を、同じ名前のメソッド（21 個）にした標準の型クラスです（`std/Text.tt`。`class Ord<'s> => Text<'s>`）。メソッドの意味は `String.f`・`Utf8String.f` と同じで、呼び出しは instance のメソッドへの直接の呼び出し（その本体は `String.f`・`Utf8String.f`・`clone_string`・`Utf8String.clone` の 1 回の呼び出し）です。単位・境界・空のパターン・順序の違いは型ごとにそのまま残ります。`is_empty` は既定の実装（`Text.length text == 0`）で、利用者の型の instance は `Ord`・`Eq` の instance と残りの 20 メソッドを書きます。`Text` は常に読み込まれ、使わないプログラムの IR には出ません。利用者が `class Text` か `union Text` を宣言すると、無修飾の `Text.length` はそちらを指すので、標準のクラスは `Text.Text` と書きます。詳細は [言語リファレンスの Text](../_tsuzuri/language-reference/built-in-types-and-modules/text.md) にあります。
 
 `slice` および `sub` は、負数の指定、開始・終了位置の逆転、範囲外アクセス、および加算オーバーフローが発生した場合に安全に `None` を返します。`String` においてはサロゲートペアの途中インデックスであっても有効な位置として受け入れられ、サロゲートコード単位がそのまま抽出されます。
 一方 `Utf8String` では、開始・終了位置が妥当な UTF-8 スカラー境界に合致していることが厳格に要求され、後続バイト（continuation byte）の途中に位置する場合は、空区間のスライスであっても `None` が返却されます。
@@ -2755,6 +2759,7 @@ total
 ステップ幅に `0` を指定した場合は安全に言語トラップが発生します。次の値が整数型の表現範囲を超える場合はそこで正常に列挙を終了し、数値のオーバーフロー折り返しによって再列挙されることはありません。
 例えば `125i8 .. 2i8 ..= 127i8` は、`125` と `127` の 2 要素のみを列挙して安全に停止します（`..< 127i8` なら `125` だけ）。配列のスライスは `ref xs[a..b]`・`ref xs[a..<b]`（半開）と `ref xs[a..=b]`（閉。終端は巻き戻る足し算の `b + 1` として既存の符号なしの境界検査に渡る）で、`..=`・`..<` は終端を省けません（`E0002`）。
 この範囲記法は通常の `for…in` ループ専用の列挙構文であり、変数に格納可能な第一級のシーケンスオブジェクトや浮動小数点数の範囲を生成するものではありません。
+既知の不具合（G36 の KB1）: 添字の角括弧 `xs[…]` の中では、ブロック `{ … }` や括弧の中にある範囲の `for` も `E0002`（`expected 'do' after the enumerable expression`）になります（`index_or_slice` がスライスの `..` を読むための旗 `stop_at_slice_dotdot` を、内側のブロックと括弧にも持ち越すためです）。`..=`・`..<`・素の `..` のどれでも同じです。式を `let` に束縛してから添字にしてください。
 なお、カスタムコンピュテーション式の `For` 操作に渡される値は、従来どおりそのビルダー操作が要求する引数型に従います。
 
 <!-- rule: CTL-010 -->
@@ -3686,6 +3691,7 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 - 一致は leftmost-first（RE2・Rust の `regex` と同じ）です。範囲 `(start, end)` は半開区間で、`string` は UTF-16 コード単位、`utf8string`（関数名に `_utf8`）は byte です。`find_at` は `start` より前の文字も `^`・`\b` の判定に使い、範囲外やスカラーの内部の `start` は `None` です。
 - `captures` の要素 0 は全体、要素 k は k 番目の group で、参加しなかった group は `(-1, -1)`、繰り返しの中の group は最後に参加した繰り返しの値です。`find_all` の次の探索は、空でない一致の後はその終わり、空の一致の後は次のスカラーから始めます。`split` は一致の間の部分文字列です。`replace_all` の置換文字列は `${n}` と `$$` だけを展開します。
 - 後方参照、先読み・後読み、名前付き group、atomic group、所有的量指定子、`\G`・`\Z`・`\X`・`\R`・`\K` は `Unsupported` です。資源上限（パターン 65,536 コード単位、繰り返し回数 1,000、group の入れ子 64、命令 10,000、class の区間の合計 65,536（`[...]` は併合・畳み込み・否定の後の区間で数える）、命令数 × 2 ×（group 数 + 1）が 262,144）を超えると `TooLarge` で、どちらもトラップしません。
+- `is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text` は、テキストの型（`string` か `utf8string`）に応じて `is_match`・… か `is_match_utf8`・… を呼ぶ薄い関数です（型クラス `RegexText`。`std/RegexText.tt` の opt-in のモジュールなので、ユーザーのコードでは `RegexText.RegexText<'s>` と修飾します）。`replace_all_text` の置換文字列は本文と同じ型です。
 - `Regex` は不透明な非 Copy の record で、構築・フィールド・パターン分解・更新は `E1022` です。照合では変化しないので、共有借用で何度でも使え、`task` へ move できます。誤りの一覧と message は [言語リファレンスの Regex](../_tsuzuri/language-reference/built-in-types-and-modules/regex.md) にあります。
 
 ### Unicode

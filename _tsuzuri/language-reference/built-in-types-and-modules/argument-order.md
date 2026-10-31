@@ -21,7 +21,7 @@
 | [Array](./array.md)、[List](./list.md)、[Vec](./vec.md) | 配列、リスト、`Vec` | `Array.sub 1 2 xs`、`Vec.add 1 v` |
 | [Map](./map.md)、[Set](./set.md)、[HashMap](./hashmap.md)、[HashSet](./hashset.md) | マップ、集合 | `Map.insert key value map`、`Set.contains key set` |
 | [Arena](./arena.md) | アリーナ | `Arena.insert value arena`、`Arena.get handle arena` |
-| [String](./string.md)、[Utf8String](./utf8string.md)、[Unicode](./unicode.md)、[Regex](./regex.md) | 文字列（`Regex` では調べる文字列で、正規表現は先に取ります） | `String.slice first last text`、`Regex.find_at re start text` |
+| [String](./string.md)、[Utf8String](./utf8string.md)、[Text](./text.md)、[Unicode](./unicode.md)、[Regex](./regex.md) | 文字列（`Regex` では調べる文字列で、正規表現は先に取ります） | `String.slice first last text`、`Text.find needle text`、`Regex.find_at re start text` |
 | [Matrix](./matrix.md)、[MatrixView](./matrix-view.md)、[Tensor](./tensor.md) | 行列、窓、テンソルの view | `Matrix.get row col m`、`MatrixView.write row col value window` |
 | [Maybe](./maybe.md)、[Result](./result.md)、[IO](./io.md) | `Maybe`、`Result`、`IO` の値 | `Maybe.bind f maybe`、`IO.bind f action` |
 | [Json](./json.md) | 値、書き込み器、読み取り器 | `Json.write_bool flag writer`、`Json.to_utf8string_pretty indent value` |

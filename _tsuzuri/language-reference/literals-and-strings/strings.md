@@ -201,6 +201,8 @@ flowchart TD
 
 `string` のスライスは、サロゲートペアの途中でも切れます。`utf8string` のスライスは、スカラーの境界でなければ `None` です。文字の境界を API に任せたいときは UTF-8 側、外部の UTF-16 をそのまま保持したいときは UTF-16 側、と覚えると迷いません。
 
+型を選ばずに同じ名前で検索・切り出し・分割をしたいときは、[Text](../built-in-types-and-modules/text.md) を使います。ジェネリックな関数は `Text<'s> =>` と書くと、`string` と `utf8string` の両方を受けられます。
+
 ## 他の言語との比較
 
 | 言語 | 近い型 | Tsuzuri との差 |
@@ -236,4 +238,5 @@ flowchart TD
 - [Utf8String](../built-in-types-and-modules/utf8string.md)
 - [Char](../built-in-types-and-modules/char.md)
 - [Utf8Char](../built-in-types-and-modules/utf8char.md)
+- [Text](../built-in-types-and-modules/text.md)
 - [言語リファレンスの目次](../index.md)

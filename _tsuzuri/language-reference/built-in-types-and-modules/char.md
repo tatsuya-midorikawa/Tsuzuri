@@ -94,6 +94,9 @@ A
 > [!NOTE]
 > 補助平面の絵文字を 1 つの文字として持ちたいときは `char` には入りません。[Utf8Char](utf8char.md) の `utf8char` を使います。
 
+> [!NOTE]
+> `Char` には `Text` のような型クラスはありません。`Text` から文字を取り出す手段がなく、文字の型クラスだけでは使い道がないためです（[Text](text.md#入っていないもの)）。
+
 ## まとめ
 
 - `of_u16` と `to_u16` は全コード単位で往復できます。
@@ -105,6 +108,7 @@ A
 
 - [文字列](../literals-and-strings/strings.md)
 - [Utf8Char](utf8char.md)
+- [Text](text.md)
 - [String](string.md)
 - [Format](format.md)
 - [言語リファレンスの目次](../index.md)

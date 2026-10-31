@@ -1,0 +1,3 @@
+class Stage<'s> {
+    def pick :: ref 's -> i64 -> i64
+}
