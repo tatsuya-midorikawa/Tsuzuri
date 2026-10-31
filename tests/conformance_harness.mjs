@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { parseTest, splitFooter, tokens, TRAP_KINDS } from '../scripts/conformance/directives.mjs';
 import { discoverTests } from '../scripts/conformance/discover.mjs';
 import { checkCli, matchDiagnostic, summaryOf, trapLine } from '../scripts/conformance/expect.mjs';
-import { headingsOf, readRules } from '../scripts/conformance/spec.mjs';
+import { headingsOf, markersIn, readRules, stripMarkers } from '../scripts/conformance/spec.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compiler = resolve(process.argv[2] ?? process.env.TSUZURI_BIN ?? join(root, 'target/release/tsuzuri'));
@@ -523,6 +523,17 @@ test('spec_markers', () => {
     assert.deepEqual(names(specErrors(dir, ['--require-markers'])), ['marker_missing']);
     dir = mutate('spec/rules/OWN.md', '| NUM-001-i8-wraps, OWN-001-use-after-move | active |', '| NUM-001-i8-wraps, OWN-001-use-after-move | retired |');
     assert.deepEqual(names(specErrors(dir)).sort(), ['marker_rule', 'rule_retired_tested', 'test_rule', 'test_rule']);
+});
+
+test('spec_markers_in_code_spans', () => {
+    // A code span opens and closes with runs of the same length, so a marker written as an example in code is no
+    // marker; a run without a closing run is literal text.
+    assert.deepEqual(markersIn('A `` <!-- rule: OWN-001 --> `` b'), []);
+    assert.deepEqual(markersIn('p ```` `x` <!-- rule: OWN-005 --> ```` q <!-- rule: OWN-006 -->').map(marker => marker.id), ['OWN-006']);
+    assert.deepEqual(markersIn('`a <!-- rule: OWN-003 -->').map(marker => marker.id), ['OWN-003']);
+    assert.equal(stripMarkers('A `` <!-- rule: OWN-001 --> `` b'), 'A `` <!-- rule: OWN-001 --> `` b');
+    // A list item's marker at the end of its line goes with the blank before it.
+    assert.equal(stripMarkers('- item text <!-- rule: OWN-001 --> <!-- rule: OWN-002 -->'), '- item text');
 });
 
 test('spec_coverage_formats', () => {

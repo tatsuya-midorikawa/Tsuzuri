@@ -150,7 +150,8 @@ get_x p
 42
 ```
 
-<!-- rule: TYP-001 --> `let v: Vector2 = p` のように別のレコードへ代入すると、`E1003` になります。診断の型名にはモジュール名が付きます。
+<!-- rule: TYP-001 -->
+`let v: Vector2 = p` のように別のレコードへ代入すると、`E1003` になります。診断の型名にはモジュール名が付きます。
 
 ```text
 error[E1003]: expected Main.Vector2, found Main.Point

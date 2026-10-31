@@ -65,12 +65,44 @@ function fenced(text) {
 const MARKER = /<!-- rule: (\S+) -->/g;
 const TRAILING_MARKERS = /(?: <!-- rule: \S+ -->)+$/;
 
-/** `line` with `replace` applied outside its inline code spans (`` `…` ``). */
+/**
+ * `line` with `replace` applied outside its inline code spans. A span opens with a run of backticks and closes
+ * at the next run of the same length (CommonMark), so ```` `` <!-- rule: X --> `` ```` is code; a run without
+ * a closing run is literal text.
+ */
 function outsideCode(line, replace) {
-    return line
-        .split(/(`[^`]*`)/)
-        .map((part, index) => (index % 2 ? part : replace(part)))
-        .join('');
+    let out = '';
+    let text = '';
+    let index = 0;
+    while (index < line.length) {
+        if (line[index] !== '`') {
+            text += line[index++];
+            continue;
+        }
+        let end = index;
+        while (line[end] === '`') end++;
+        const run = line.slice(index, end);
+        let close = end;
+        let found = -1;
+        while ((close = line.indexOf(run, close)) >= 0) {
+            const before = close > 0 && line[close - 1] === '`';
+            const after = line[close + run.length] === '`';
+            if (!before && !after) {
+                found = close;
+                break;
+            }
+            while (line[close] === '`') close++;
+        }
+        if (found < 0) {
+            text += run;
+            index = end;
+            continue;
+        }
+        out += replace(text) + line.slice(index, found + run.length);
+        text = '';
+        index = found + run.length;
+    }
+    return out + replace(text);
 }
 
 /** The rule markers outside code fences and inline code: `{ id, line }`. */
