@@ -110,8 +110,9 @@ const MODULES: &[(&str, Kind)] = &[
     ("Matrix", subject(&["Matrix"])),
     ("MatrixView", subject(&["MatrixView", "Mut"])),
     ("Maybe", subject(&["Maybe"])),
-    // A class and the records of its instances: no `def` line.
-    ("Monoid", SingleArgument),
+    // A class: both values of `combine left right` are subjects, in the order of the operation (like `append`).
+    ("Monoid", subject(&["'m"])),
+    // The records of the instances of `Monoid`: no `def` line.
     ("Monoids", SingleArgument),
     ("Mutex", Exempt(BUILTIN_HANDLE)),
     ("Net", Exempt(HANDLE)),
