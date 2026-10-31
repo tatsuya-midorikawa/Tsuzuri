@@ -2,6 +2,7 @@
 //! `trap` object that `tsuzuri run` adds to an `E2005`. The expected frames come from the call chain of the fixture,
 //! which `nm` and a separate `llvm-symbolizer` run confirmed (ticket appendix A), not from the compiler's output.
 use tsuzuri::llvm::{self, Allocator, EmitOptions, Entry, F16Path};
+use tsuzuri::target::{Platform, PlatformScope, Triple};
 use tsuzuri::trap::TrapSource;
 
 const CHAIN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/trap_backtrace");
@@ -31,6 +32,8 @@ fn define_lines(ir: &str) -> Vec<&str> {
 
 #[test]
 fn backtrace_instrumentation_is_only_for_trap_info_executables() {
+    // The crash report is POSIX's: the IR is the one for x86-64 Linux whatever the host is.
+    let _scope = PlatformScope::enter(Platform::new(Triple::parse("x86_64-unknown-linux-gnu")));
     let source = std::fs::read_to_string(format!("{CHAIN}/Main.tz")).unwrap();
     let module = tsuzuri::analyze(&source).unwrap();
     let sources = [TrapSource {
@@ -89,7 +92,15 @@ fn backtrace_instrumentation_is_only_for_trap_info_executables() {
     let boundary = llvm::emit_trap_return(&module, options(Entry::Library), &sources, None, true)
         .unwrap()
         .ir;
+    // A Windows executable has no crash report.
+    let windows = {
+        let _windows = PlatformScope::enter(Platform::new(Triple::parse("x86_64-pc-windows-msvc")));
+        llvm::emit_native_build(&module, options(Entry::Console), &sources, None, true)
+            .unwrap()
+            .ir
+    };
     for (name, ir) in [
+        ("windows", &windows),
         ("library", &library),
         ("plain", &plain),
         ("trap info", &traced),

@@ -2,8 +2,8 @@
 // `failed (kind 1)` (1 is integer division by zero: 27 / 3 = 9, and an empty array divides by its length 0),
 // through `run` and through a built executable; `tsuzuri test` catches an out-of-range index (kind 3); and a C
 // host of `--emit llvm --trap-mode return` alternates 10,000 successes and traps with no block left alive,
-// with a domain inside its own boundary. Every case runs at -O0 and -O3.
-// Usage: node tests/domain.mjs [path/to/tsuzuri]
+// with a domain inside its own boundary. Every case runs at -O0 and -O3; the host also runs under ASan+UBSan unless
+// TSUZURI_NO_SANITIZERS=1. Usage: node tests/domain.mjs [path/to/tsuzuri]
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -45,7 +45,12 @@ try {
 
     const ir = join(root, `host${optimization}.ll`);
     execute(compiler, ["build", host, "--emit", "llvm", "--trap-mode", "return", optimization, "--no-cache", "-o", ir]);
-    for (const [name, flags] of [["plain", [optimization]], ["asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]]]) {
+    const builds = [["plain", [optimization]]];
+    // TSUZURI_NO_SANITIZERS=1 leaves the ASan build out (tests/trap_return.mjs does the same).
+    if (process.env.TSUZURI_NO_SANITIZERS !== "1") {
+      builds.push(["asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]]);
+    }
+    for (const [name, flags] of builds) {
       const program = join(root, `host-${name}${optimization}`);
       execute(clang, ["-std=c11", ...flags, "-Wno-override-module", "-pthread", "tests/domain_host.c", ir, "-o", program]);
       assert.equal(execute(program, []).stdout, "domain host: ok, live 0\n"); cases++;

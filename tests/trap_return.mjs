@@ -167,8 +167,13 @@ fn ordinary_parallel count = Task.run task {
   };
   unit("unit-O0", ["-O0"], ["0", "1", "2", "4", "32"]);
   unit("unit-O3", ["-O3"], ["0", "1", "2", "4", "32"]);
-  unit("unit-asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"], ["0", "1", "4"]);
-  unit("unit-tsan", ["-g", "-O1", "-fsanitize=thread"], ["0", "2"]);
+  // TSUZURI_NO_SANITIZERS=1 leaves the sanitizer builds out, for a clang whose sanitizer runtime does not start (the
+  // Homebrew LLVM of the macOS CI; tests/small_allocator.mjs does the same). The plain and -O3 builds always run.
+  const sanitizers = process.env.TSUZURI_NO_SANITIZERS !== "1";
+  if (sanitizers) {
+    unit("unit-asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"], ["0", "1", "4"]);
+    unit("unit-tsan", ["-g", "-O1", "-fsanitize=thread"], ["0", "2"]);
+  }
   // B10: the failure domains of Domain.run, nested in boundaries, items and one another.
   const domain = (name, flags) => {
     const program = join(root, name);
@@ -177,10 +182,12 @@ fn ordinary_parallel count = Task.run task {
   };
   domain("domain-O0", ["-O0"]);
   domain("domain-O3", ["-O3"]);
-  domain("domain-asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]);
-  domain("domain-tsan", ["-g", "-O1", "-fsanitize=thread"]);
+  if (sanitizers) {
+    domain("domain-asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]);
+    domain("domain-tsan", ["-g", "-O1", "-fsanitize=thread"]);
+  }
 
-  console.log("trap_return: 2 optimization levels x (object, counted object, linked IR, both mixed link orders with/without counting), 4 runtime builds, 4 domain runtime builds, option errors, header");
+  console.log(`trap_return: 2 optimization levels x (object, counted object, linked IR, both mixed link orders with/without counting), ${sanitizers ? "4" : "2 (no sanitizers)"} runtime builds, ${sanitizers ? "4" : "2"} domain runtime builds, option errors, header`);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

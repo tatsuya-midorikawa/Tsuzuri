@@ -1,6 +1,7 @@
 //! B10 Phase 2: `Domain.run` and the rules of its calls (`E1038`). The expected codes and words come from the
 //! ticket's table of rules (2.2); the IR checks look for the runtime calls that the design names.
 use tsuzuri::llvm::{self, Allocator, EmitOptions, Entry, F16Path};
+use tsuzuri::target::{Platform, PlatformScope, Triple};
 use tsuzuri::trap::TrapSource;
 
 fn accepts(source: &str) {
@@ -123,6 +124,8 @@ fn sources(text: &'static str) -> Vec<TrapSource<'static>> {
 
 #[test]
 fn domain_ir_is_deterministic_and_marks_the_runtime() {
+    // Failure domains are POSIX's: the IR is the one for x86-64 Linux whatever the host is.
+    let _scope = PlatformScope::enter(Platform::new(Triple::parse("x86_64-unknown-linux-gnu")));
     let module = tsuzuri::analyze(PROGRAM).unwrap();
     let sources = sources(PROGRAM);
     let first = llvm::emit_native_build(&module, options(Entry::Console), &sources, None, false)
@@ -274,6 +277,7 @@ fn domain_target_errors() {
 
 #[test]
 fn programs_without_domain_keep_their_ir() {
+    let _scope = PlatformScope::enter(Platform::new(Triple::parse("x86_64-unknown-linux-gnu")));
     let source =
         "def main :: unit -> i32 = \\() ->\n    let numbers = [1, 2, 3]\n    numbers[1] as i32\n";
     let module = tsuzuri::analyze(source).unwrap();

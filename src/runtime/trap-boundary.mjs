@@ -18,15 +18,31 @@ function displayName(linkage) {
   return rest === "" ? undefined : rest;
 }
 
-// The frames of the stack of a WebAssembly.RuntimeError, innermost first. V8 puts the module's
-// name before a function's name (`artifact.tz.fn.Main.div`); JavaScript frames are left out.
-function wasmFrames(error) {
+// The linkage name in a frame's name and the name to show for it, or undefined. V8 puts the module's name
+// before the function's name when the name section has one (`artifact.tz.fn.Main.div`, `my.app.tz_div`), and the
+// module's name may contain dots, so the linkage name is the first suffix after a dot (or the whole name) that the
+// table names. An export's entry `tz_<name>` has no dot of its own besides the clone suffixes.
+function linkageOf(name) {
+  for (let start = 0; ; ) {
+    const rest = name.slice(start);
+    const shown = displayName(rest);
+    if (shown !== undefined && !(rest.startsWith("tz_") && shown.includes("."))) return { linkage: rest, shown };
+    const dot = name.indexOf(".", start);
+    if (dot < 0) return undefined;
+    start = dot + 1;
+  }
+}
+
+// The frames of the stack of a WebAssembly.RuntimeError, innermost first; JavaScript frames are left out.
+// Exported for hosts that catch the error themselves.
+export function wasmFrames(error) {
   const frames = [];
   for (const line of String(error.stack).split("\n")) {
     const match = FRAME.exec(line);
     if (!match) continue;
-    const linkage = match[1] === undefined ? undefined : /^[^.]*\.(tz[._].*)$/.exec(match[1])?.[1];
-    const name = linkage === undefined ? undefined : displayName(linkage);
+    const found = match[1] === undefined ? undefined : linkageOf(match[1]);
+    const linkage = found?.linkage;
+    const name = found?.shown;
     const frame = { index: Number(match[2]), offset: parseInt(match[3], 16) };
     if (name === undefined) {
       frames.push(frame);
