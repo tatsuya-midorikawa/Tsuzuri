@@ -11,6 +11,8 @@ Rust のような `?` 演算子は存在せず、記述すると字句解析エ�
 - ゼロ除算、境界外アクセス、`assert` の失敗、パターン不一致はトラップです。`try` では捕捉できません。 <!-- rule: CTL-023 --> <!-- rule: CTL-024 -->
 - `@checked` の整数演算だけが `OverflowException` を送出し、`try` がそれを `Result` に変えます。
 - トラップはスタックを巻き戻しません。残っている `Drop` も実行しません。
+- 純粋な計算のトラップは、`Domain.run` で `Result.Error` に変えられます（[失敗を閉じ込める](#失敗を閉じ込めるdomainrun)）。
+- トラップのとき何が走り、何が走らないかは [トラップの後始末](#トラップの後始末) の表にあります。
 
 ## 失敗の種類
 
@@ -19,7 +21,7 @@ Rust のような `?` 演算子は存在せず、記述すると字句解析エ�
 | 値が存在しない | `Maybe<'a>` | 可能（`match` または `let!`） |
 | 理由を伴う失敗 | `Result<'a, 'e>` | 可能（`match` または `let!`） |
 | 整数オーバーフローの回復 | `@checked` と `try` | 可能（結果は `Result`） |
-| 言語の契約違反 | トラップ | 不可（プロセスが停止） |
+| 言語の契約違反 | トラップ | 不可（プロセスが停止）。純粋な計算は `Domain.run` で `Result` にできる |
 
 `Maybe` と `Result` は標準ライブラリの共用体です。特別なインポートは要りません。
 
@@ -136,7 +138,7 @@ show (payable 1000 10) + " / " + show (payable 1000 0)
 trap: assertion failed at Main.tz:4:5
 ```
 
-ドライバは同じ位置に `E2005` も出します。終了コードは 0 ではありません。`run --json` では、この `trap:` 行を `E2005` のメッセージに入れ、生のトラップログを別に流しません。
+ドライバは同じ位置に `E2005` も出します。終了コードは 0 ではありません。`run --json` では、この `trap:` 行を `E2005` のメッセージに入れ、生のトラップログを別に流しません。`E2005` の下には、トラップした関数から入口までの呼び出しの連鎖が `  at Main.level2` の行で続きます（`--json` では `trap` オブジェクト。[トラップのバックトレース](../compiler/debugging.md#トラップのバックトレース)）。
 
 `tsuzuri build` は既定では位置情報を入れません。`--trap-info` を付けると、ネイティブでは標準エラーのレポーターを、WASM では `tsuzuri_trap_site` を追加し、成果物の隣に `<output>.trap.json` を出します。中身は `version` と `sites` です。各サイトは `id`、`kind`、`path`、`span` を持ちます。これは発生しうる位置の表であり、実行して落ちた回数ではありません。
 
@@ -150,6 +152,39 @@ WASM では追加のインポートはありません。トラップのあと、
 > トラップはスタックを巻き戻しません。まだ実行していない `Drop` は呼ばれません。トラップしたインスタンスのヒープは不完全なままなので、WASM の境界ではそのインスタンスを再利用しません。
 
 通常の `match` は網羅していないとコンパイルエラー `E1021` です。実行時の `pattern mismatch` は、たとえば `for [only] in [[1, 2]]` のように、要素数が合わないパターンで走査したときに起きます。
+
+### 失敗を閉じ込める（`Domain.run`）
+
+純粋な計算は、`Domain.run` に包むとトラップしてもプロセスが続きます。中でトラップすると実行を捨てて `Result.Error failure` を返し、領域の中で確保したものは解放されます。`failure.kind` はトラップの種類の番号です。
+
+```tsuzuri run=ok%2025%20%2F%20failed%20(kind%203)
+def at :: [i64] -> i64 -> i64 = \xs i -> xs[i]
+
+def show :: Result<i64, Domain.Failure> -> string = \outcome ->
+    match outcome with
+    | Result.Ok value -> $"ok {value}"
+    | Result.Error failure -> $"failed (kind {failure.kind})"
+
+let squares = [1, 4, 9, 16, 25]
+show (Domain.run (\() -> at squares 4)) + " / " + show (Domain.run (\() -> at squares 5))
+```
+
+本体は純粋で、捕捉する値と結果は平たいデータでなければなりません（`E1038`）。スタック枯渇と領域の外のトラップは閉じ込めません。macOS と Linux のネイティブだけです（[Domain](../built-in-types-and-modules/domain.md)）。
+
+### トラップの後始末
+
+トラップのとき何が走り、何が走らないかです。「測定」の欄に確かめ方を書きました。
+
+| 事象 | 境界なし（プロセスが終わる） | `Domain.run` の中 | `tsuzuri_try_*` の中（`--trap-mode return`） | 測定 |
+| --- | --- | --- | --- | --- |
+| 利用者の `Drop` | 走らない | 本体が `Drop` を持つ値を作れない（純粋性の検査） | 走らない | `Drop` を持つ束縛のあと `/ 0` で、`drop` の出力がない（`run`） |
+| `try … finally` | 走らない（`try` は `OverflowException` だけを扱う字句的な構文） | 走らない | 走らない | `finally` で `Debug.print` する `try` の本体で `x / 0`: `trap:` の行と `E2005` だけが出る（`run`、`-O0`） |
+| 標準出力 `IO.write_line` | トラップの前に書いた行は残る（毎回 `fflush` する） | 本体が書けない（純粋でない） | 残る | 標準出力をファイルとパイプへ向けて、トラップの前の行が出る |
+| `File` の書き込み | 書いた分は残る（1 回ごとに `write`） | 本体が書けない | 残る | 同上（`write` を直接呼ぶ） |
+| ロック（`Mutex.with_lock`） | プロセスごと終わる | 本体が取れない | 境界が解放する | E14 の仕様 |
+| ヒープ | OS が回収する | 領域の中で確保した block をすべて解放する。成功なら結果の block が残る | 境界の中で確保した block をすべて解放する。成功なら結果はホストの物 | `tests/domain_runtime.c`・`tests/trap_return.mjs`（生きた block が 0） |
+| `Task.parallel` の仲間 | プロセスごと終わる | 本体が使えない | worker のトラップは投入した呼び出しの status 1 になる | E14 の仕様 |
+| stack | プロセスごと終わる | 捨てる | 捨てる | `tests/domain_runtime.c` |
 
 ## 検査付き算術だけが例外になる
 
@@ -254,6 +289,7 @@ C# や F# の `try` でゼロ除算を捕捉するような書き方は、Tsuzur
 - `tsuzuri run` はトラップ位置を既定で報告します。`build` では `--trap-info` が必要です。
 - `@checked` は整数の加減乗とべき乗、単項マイナスだけを例外にします。
 - トラップは `Drop` を実行しません。リソースの後始末をトラップに頼らないでください。
+- 純粋な計算のトラップは `Domain.run` で `Result.Error` にできます。
 
 ## 関連項目
 
@@ -261,6 +297,7 @@ C# や F# の `try` でゼロ除算を捕捉するような書き方は、Tsuzur
 - [use キーワード](use.md)
 - [assert 式](assert.md)
 - [Exception](../built-in-types-and-modules/exception.md)
+- [Domain](../built-in-types-and-modules/domain.md)
 - [Result](../built-in-types-and-modules/result.md)
 - [Maybe](../built-in-types-and-modules/maybe.md)
 - [Int](../built-in-types-and-modules/int.md)

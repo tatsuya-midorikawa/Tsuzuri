@@ -1231,7 +1231,7 @@ function generator(name) {
 
 **`docs/language.md`**（「ドキュメントコメント」の節の、`@deprecated` の 2 段落のあと・`tsuzuri doc <file|directory> -o <outdir> [--json]` の段落の前に 1 段落）:
 
-> 説明の行を `@complexity`・`@since`・`@see` で始めると、宣言に計算量・版・関連する宣言を付けられます（新しい構文ではありません。`@deprecated` と同じ「行頭のタグ」の規則です）。各行の先頭の空白を除いた最初の語がタグそのもので、直後は行末か空白（スペースかタブ）です。`@complexityX` はタグではありません。値は、タグの後ろから行末までの前後の空白を除いたもの（空でもよい）です。`@complexity` と `@since` は最初の 1 行だけが有効で、`@see` は何行でも書けます。`tsuzuri doc` と LSP のホバーは、これらの行も説明として表示します。コンパイラは値を検査せず、診断も出さず、生成される IR も変わりません。標準ライブラリの値は `node scripts/gen-docs.mjs` と `cargo test --test std_tags` が検査し、標準コレクションの計算量の表（[標準コレクションの計算量](#標準コレクションの計算量)）は `@complexity` から作られます。書き方と規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) です。
+> 説明の行を `@complexity`・`@since`・`@see` で始めると、宣言に計算量・版・関連する宣言を付けられます（新しい構文ではありません。`@deprecated` と同じ「行頭のタグ」の規則です）。各行の先頭の空白を除いた最初の語がタグそのもので、直後は行末か空白（スペースかタブ）です。`@complexityX` はタグではありません。値は、タグの後ろから行末までの前後の空白を除いたもの（空でもよい）です。`@complexity` と `@since` は最初の 1 行だけが有効で、`@see` は何行でも書けます。`tsuzuri doc` と LSP のホバーは、これらの行も説明として表示します。コンパイラは値を検査せず、診断も出さず、生成される IR も変わりません。標準ライブラリの値は `node scripts/gen-docs.mjs` と `cargo test --test std_tags` が検査し、標準コレクションの計算量の表（[標準コレクションの計算量](#標準コレクションの計算量)）は `@complexity` から作られます。書き方と規則は [構造化タグ](../../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) です。
 
 **`documentation-comment.md`**（`### 警告 W1005` の節のあと・`## tsuzuri doc によるドキュメント生成` の前に、新しい節）:
 
@@ -1291,7 +1291,7 @@ def copy :: Copy<'a> => ref ['a] -> ['a]
 | `hashset.md` | 同（旧の表と、その次の「※ ハッシュ値が一様に分散している場合の計算量です。…」の 1 行） | L2・マーカー（`HashSet`） |
 | `list.md` | 同（`## 所有権と借用` の前まで） | L1・マーカー（`List`）・見出し `### 構文と組み込みの操作`・「次の操作は `std/List.tz` の `def` ではないので、表は手書きです。」・旧の 10 行から std の `def` の行（`is_empty`・`length`・`fold`）を除き、`xs.length` を足した 9 行（`List.cons`・`match xs with head :: _`・`List.tail`・`xs[i]` の `$O(index + 1)$`・`xs.length`・`List.map` / `map_ref`・`List.fold_ref`・`List.reverse`・`List.to_array`）。値と備考は旧の行のまま |
 | `string.md` | 新しい節を `## 注意点` の直前に | 見出し `## 計算量`・「計算量は 1 回の呼び出しの最悪の時間です。`n` は `text`（対象の文字列）のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数、`k` は結果のコード単位数です（`join`・`concat` の `n` は部品の数）。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/String.tz` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。組み込み関数のうち `compare`・`from_utf8`・`is_well_formed`・`to_well_formed` の計算量は、各節の表の `計算量` の列にあります。」・マーカー（`String`） |
-| `docs/language.md` | 新しい節 `### 標準コレクションの計算量` を `### 配列・リスト API` の後・`### 演算子` の前に。`### HashMap / HashSet` の旧の表（5 行）は削除 | 凡例（E.3 の L2 に、組み込み操作は各ページの手書きの表にあること、[構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) へのリンクを足したもの）、続けて 8 モジュールを `**Array**`・`**Vec**`・`**Map**`・`**Set**`・`**HashMap**`・`**HashSet**`・`**List**`・`**String**` の太字の行とマーカーの対で。`### HashMap / HashSet` は、削除した表の位置に「計算量は [標準コレクションの計算量](#標準コレクションの計算量) の表のとおりです。」と書き、次の `※ 上記は…` の行を「※ 平均・償却の値は、ハッシュ値が一様に分散している場合のものです。`Hash.hash` や `Eq.eq` の実行コスト（例えば長い文字列キーの比較に要する計算量）は除外しています。」に直す |
+| `docs/language.md` | 新しい節 `### 標準コレクションの計算量` を `### 配列・リスト API` の後・`### 演算子` の前に。`### HashMap / HashSet` の旧の表（5 行）は削除 | 凡例（E.3 の L2 に、組み込み操作は各ページの手書きの表にあること、[構造化タグ](../../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) へのリンクを足したもの）、続けて 8 モジュールを `**Array**`・`**Vec**`・`**Map**`・`**Set**`・`**HashMap**`・`**HashSet**`・`**List**`・`**String**` の太字の行とマーカーの対で。`### HashMap / HashSet` は、削除した表の位置に「計算量は [標準コレクションの計算量](#標準コレクションの計算量) の表のとおりです。」と書き、次の `※ 上記は…` の行を「※ 平均・償却の値は、ハッシュ値が一様に分散している場合のものです。`Hash.hash` や `Eq.eq` の実行コスト（例えば長い文字列キーの比較に要する計算量）は除外しています。」に直す |
 
 ### E.4 `_specs/`（手順 4.1）
 
@@ -1302,15 +1302,15 @@ def copy :: Copy<'a> => ref ['a] -> ['a]
 
 **歴史的資料。現行の仕様ではない。** Tsuzuri の初期設計のメモで、2026-10-04〜05 に言語の実装をこれに合わせるときに使った。その後の変更（`try` の戻り値型、シフト量の型、既定の名前空間、`utf8string` の文字コードの説明、配列型の表記 `byte[]`、ラムダの `when` ガード）は反映していない。`_archive/` のファイルは書き換えずにそのまま残す。
 
-現行の仕様は [言語リファレンス](../_tsuzuri/language-reference/index.md) にある。
+現行の仕様は [言語リファレンス](../../_tsuzuri/language-reference/index.md) にある。
 
 | 元のファイル | 現行のページ |
 | --- | --- |
-| `_archive/error-handling.md` | [try ... with ... finally](../_tsuzuri/language-reference/exception-handling/try-with-finally.md) |
-| `_archive/functions.md` | [関数](../_tsuzuri/language-reference/values-and-functions/functions.md)・[ラムダ式](../_tsuzuri/language-reference/values-and-functions/lambda-expressions.md)・[ジェネリック関数](../_tsuzuri/language-reference/values-and-functions/generics-functions.md) |
-| `_archive/literals.md` | [リテラル](../_tsuzuri/language-reference/literals-and-strings/literals.md) |
-| `_archive/namespace-and-module.md` | [名前空間](../_tsuzuri/language-reference/organizing-tsuzuri/namespaces.md)・[モジュール](../_tsuzuri/language-reference/organizing-tsuzuri/modules.md)・[using 宣言](../_tsuzuri/language-reference/organizing-tsuzuri/using-declarations.md) |
-| `_archive/operators.md` | [演算子と式](../_tsuzuri/language-reference/values-and-functions/op-and-expressions.md) |
+| `_archive/error-handling.md` | [try ... with ... finally](../../_tsuzuri/language-reference/exception-handling/try-with-finally.md) |
+| `_archive/functions.md` | [関数](../../_tsuzuri/language-reference/values-and-functions/functions.md)・[ラムダ式](../../_tsuzuri/language-reference/values-and-functions/lambda-expressions.md)・[ジェネリック関数](../../_tsuzuri/language-reference/values-and-functions/generics-functions.md) |
+| `_archive/literals.md` | [リテラル](../../_tsuzuri/language-reference/literals-and-strings/literals.md) |
+| `_archive/namespace-and-module.md` | [名前空間](../../_tsuzuri/language-reference/organizing-tsuzuri/namespaces.md)・[モジュール](../../_tsuzuri/language-reference/organizing-tsuzuri/modules.md)・[using 宣言](../../_tsuzuri/language-reference/organizing-tsuzuri/using-declarations.md) |
+| `_archive/operators.md` | [演算子と式](../../_tsuzuri/language-reference/values-and-functions/op-and-expressions.md) |
 ````
 
 `try-with-finally.md` の「注意点」の 3 つ目の箇条（`- 設計メモの `_specs/error-handling.md` には、…` の 1 行）を次に置き換える:

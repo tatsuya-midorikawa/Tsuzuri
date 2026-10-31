@@ -5,7 +5,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { arch, cpus, platform, release, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { escape, renderTable, writeAtomically } from "./report.mjs";
+import { replaceNamedBlock } from "../scripts/gen-docs.mjs";
+import { renderMetricsBlock, serializeJson, validateMetrics } from "./render.mjs";
+import { writeAtomically } from "./report.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const SCHEMA = 1;
@@ -398,7 +400,7 @@ export function renderComparison(rows) {
   return lines.join("\n");
 }
 
-export function renderMetricsSummary(records) {
+export function summarizeRecords(records) {
   assert.ok(records.length > 0);
   records.forEach(validateRecord);
   const first = records[0], host = first.host;
@@ -409,7 +411,7 @@ export function renderMetricsSummary(records) {
   }
   assert.equal(new Set(records.map(key)).size, records.length, "duplicate record key");
   const date = records.map((record) => record.date).sort()[0];
-  const lines = [`<p>run: <code>${escape(first.run_id)}</code> / ${escape(date)} / commit: <code>${escape(first.commit.slice(0, 12))}</code>${first.dirty ? "（未コミットの変更を含む）" : ""}<br>CPU: ${escape(host.cpu)} / ${escape(host.arch)} / ${host.cores} cores / ${escape(host.os)} ${escape(host.os_version)}<br>Clang: ${escape(host.clang ?? "未記録")} / rustc: ${escape(host.rustc ?? "未記録")} / Node: ${escape(host.node)}<br>Tsuzuri SHA-256: <code>${escape(host.tsuzuri_sha256)}</code></p>`];
+  const tables = [];
   const groups = new Map();
   for (const record of records) {
     const id = JSON.stringify([record.metric, record.target, record.opt, record.cpu_mode]);
@@ -424,27 +426,28 @@ export function renderMetricsSummary(records) {
       const id = JSON.stringify([record.suite, record.workload, record.size, record.phase]);
       if (!rows.has(id)) rows.set(id, [
         `${record.suite}/${record.workload}${record.phase ? ` [${record.phase}]` : ""}`,
-        record.size ?? "-", ...columns.map(() => "-"),
+        String(record.size ?? "-"), ...columns.map(() => "-"),
       ]);
       const column = columns.findIndex(([language, variant]) => record.language === language && record.variant === variant);
       rows.get(id)[column + 2] = record.unit === "ms" ? record.median.toFixed(3) : String(record.median);
     }
     const { metric, unit, target, opt, cpu_mode } = group[0];
-    lines.push(renderTable(["種目", "仕事量", ...columns.map(([language, variant]) =>
-      `${labels[LANGUAGES.indexOf(language)]}${variant === "default" ? "" : ` ${variant}`}`)], [...rows.values()],
-    { caption: `${metric} (${unit}) / ${target} / ${opt} / ${cpu_mode} / 中央値` }));
+    tables.push({ caption: `${metric} (${unit}) / ${target} / ${opt} / ${cpu_mode} / 中央値`,
+      headers: ["種目", "仕事量", ...columns.map(([language, variant]) => `${labels[LANGUAGES.indexOf(language)]}${variant === "default" ? "" : ` ${variant}`}`)],
+      rows: [...rows.values()] });
   }
-  return lines.join("\n");
+  return { run_id: first.run_id, date, commit: first.commit.slice(0, 12), dirty: Boolean(first.dirty),
+    host: { cpu: host.cpu, arch: host.arch, cores: host.cores, os: host.os, os_version: host.os_version, clang: host.clang ?? null, rustc: host.rustc ?? null, node: host.node, tsuzuri_sha256: host.tsuzuri_sha256 },
+    tables };
 }
 
-export function updateMetricsSummary(document, runs) {
-  const start = "<!-- perf-metrics:start -->", end = "<!-- perf-metrics:end -->";
-  assert.equal(document.split(start).length, 2, "add the perf-metrics markers to docs/benchmarks.md first");
-  assert.equal(document.split(end).length, 2, "add the perf-metrics markers to docs/benchmarks.md first");
-  assert.ok(document.indexOf(start) < document.indexOf(end), "reversed perf-metrics markers");
+export function publishMetrics(runs, { document = join(root, "docs/benchmarks.md"), data = join(root, "docs/benchmarks-data/metrics.json") } = {}) {
   assert.ok(runs.length > 0);
-  return document.slice(0, document.indexOf(start) + start.length) + "\n" +
-    runs.map(renderMetricsSummary).join("\n") + "\n" + document.slice(document.indexOf(end));
+  const metrics = validateMetrics({ schema: "tz-bench-metrics/1", runs: runs.map(summarizeRecords) });
+  const updated = replaceNamedBlock(readFileSync(document, "utf8"), "perf-metrics", renderMetricsBlock(metrics), document);
+  mkdirSync(dirname(data), { recursive: true });
+  writeAtomically(data, serializeJson(metrics));
+  writeAtomically(document, updated);
 }
 
 function processSuite(compiler, out, projects, quick) {
@@ -550,8 +553,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     assert.ok(positional.length > 0 && !(publish && options["--baseline"]), usage);
     const runs = positional.map(readRecords);
     if (publish) {
-      const path = join(root, "docs/benchmarks.md");
-      writeAtomically(path, updateMetricsSummary(readFileSync(path, "utf8"), runs));
+      publishMetrics(runs);
       console.log("Metrics summary updated");
     } else if (options["--baseline"]) {
       assert.equal(runs.length, 1, usage);

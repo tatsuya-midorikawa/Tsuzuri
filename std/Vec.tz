@@ -14,6 +14,8 @@ fn rec iter_from values index = Seq.defer (\() ->
 
 /// A sequence of references to the elements, in index order.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=6
 /// let words = Vec.of_array ["a", "bb", "ccc"]
 /// let mut total = 0
@@ -27,6 +29,8 @@ fn iter values = iter_from values 0
 
 /// A `Vec` of the elements of a sequence, as `new List<T>(IEnumerable<T>)`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[1,%204,%209]
 /// let numbers = [1, 2, 3]
 /// Vec.of_seq (Seq.map (\n -> n * n) (Array.to_seq (ref numbers))) |> Vec.to_array
@@ -35,6 +39,8 @@ def of_seq :: own Seq<'a> -> Vec<'a>
 fn of_seq items = add_range_seq items (Vec.empty())
 
 /// A `Vec` of the elements of a list, which are copied.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[4,%205,%206]
 /// Vec.of_list [|4, 5, 6|] |> Vec.to_array
@@ -55,6 +61,8 @@ fn grown_capacity capacity required =
 
 /// Sets the capacity (`Capacity = value`), which must not be less than the length.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=10
 /// Vec.of_array [1, 2, 3] |> Vec.set_capacity 10 |> Vec.capacity
 /// ```
@@ -63,6 +71,8 @@ fn set_capacity capacity values = Vec.__set_capacity capacity values
 
 /// Makes the capacity at least `capacity` elements in all (not additional ones, unlike `Vec.reserve`); the new
 /// capacity is `Vec.capacity` of the result.
+///
+/// @complexity O(k)
 ///
 /// ```tsuzuri run=6
 /// Vec.of_array [1, 2, 3] |> Vec.ensure_capacity 5 |> Vec.capacity
@@ -74,6 +84,8 @@ fn ensure_capacity capacity values =
     if current < capacity then Vec.__set_capacity (grown_capacity current capacity) values else values
 
 /// Shrinks the capacity to the length when the length is below 90% of the capacity.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=3
 /// Vec.of_array [1, 2, 3] |> Vec.set_capacity 10 |> Vec.trim_excess |> Vec.capacity
@@ -89,6 +101,8 @@ fn trim_excess values =
 
 /// Adds `item` at the end.
 ///
+/// @complexity amortized O(1), worst O(n)
+///
 /// ```tsuzuri run=[1,%202,%203]
 /// Vec.of_array [1, 2] |> Vec.add 3 |> Vec.to_array
 /// ```
@@ -96,6 +110,8 @@ def add :: own 'a -> own Vec<'a> -> Vec<'a>
 fn add item values = Vec.push_owned item values
 
 /// Adds copies of the elements of an array at the end.
+///
+/// @complexity amortized O(m), worst O(n + m)
 ///
 /// ```tsuzuri run=[1,%202,%203,%204]
 /// let more = [3, 4]
@@ -107,6 +123,8 @@ fn add_range items values =
     Vec.__splice length 0 (deref items) values
 
 /// Adds the elements of a sequence at the end, which may be any type, as the sequence gives them up one by one.
+///
+/// @complexity amortized O(m), worst O(n + m)
 ///
 /// ```tsuzuri run=["a",%20"b"]
 /// Vec.of_array ["a"] |> Vec.add_range_seq (Seq.once "b") |> Vec.to_array
@@ -120,6 +138,8 @@ fn add_range_seq items values =
 /// Moves all the elements of `other` to the end of `values`, so `values |> Vec.append other` puts `other` behind
 /// `values`; the elements need not be `Copy`.
 ///
+/// @complexity amortized O(m), worst O(n + m)
+///
 /// ```tsuzuri run=["a",%20"b",%20"c"]
 /// Vec.of_array ["a"] |> Vec.append (Vec.of_array ["b", "c"]) |> Vec.to_array
 /// ```
@@ -130,6 +150,8 @@ fn append other values =
 
 /// Inserts an element at `index`, which may be the length, and moves the later elements up.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[1,%202,%203]
 /// Vec.of_array [1, 3] |> Vec.insert 1 2 |> Vec.to_array
 /// ```
@@ -137,6 +159,8 @@ def insert :: own i64 -> own 'a -> own Vec<'a> -> Vec<'a>
 fn insert index item values = Vec.__insert index item values
 
 /// Inserts copies of the elements of `items` at `index`, which may be the length, and moves the later elements up.
+///
+/// @complexity O(n + m)
 ///
 /// ```tsuzuri run=[1,%202,%203,%204]
 /// let middle = [2, 3]
@@ -147,6 +171,8 @@ fn insert_range index items values = Vec.__splice index 0 (deref items) values
 
 /// Inserts the elements of a sequence at `index`. The capacity grows as for one insertion after another: it doubles
 /// until the elements fit, unlike `insert_range`, which grows by one step to the number that is needed.
+///
+/// @complexity O(n + m)
 ///
 /// ```tsuzuri run=["a",%20"b",%20"c"]
 /// Vec.of_array ["a", "c"] |> Vec.insert_range_seq 1 (Seq.once "b") |> Vec.to_array
@@ -162,6 +188,8 @@ fn insert_range_seq index items values =
 
 /// Removes the element at `index` and moves the later elements down.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[10,%2030]
 /// Vec.of_array [10, 20, 30] |> Vec.remove_at 1 |> Vec.to_array
 /// ```
@@ -170,6 +198,8 @@ fn remove_at index values = Vec.__splice index 1 [] values
 
 /// Removes `count` elements from `index` on and moves the later elements down.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[1,%205]
 /// Vec.of_array [1, 2, 3, 4, 5] |> Vec.remove_range 1 3 |> Vec.to_array
 /// ```
@@ -177,6 +207,9 @@ def remove_range :: own i64 -> own i64 -> own Vec<'a> -> Vec<'a>
 fn remove_range index count values = Vec.__splice index count [] values
 
 /// Removes the first element equal to `item`; the result says whether there was one.
+///
+/// @complexity O(n)
+/// @see Vec.remove
 ///
 /// ```tsuzuri run=["a",%20"c",%20"b"]%20true
 /// let word = "b"
@@ -189,6 +222,9 @@ fn remover item values =
     if index >= 0 then (remove_at index values, true) else (values, false)
 
 /// Removes the first element equal to `item`; the result says whether there was one.
+///
+/// @complexity O(n)
+/// @see Vec.remover
 ///
 /// ```tsuzuri run=[1,%203,%202]%20true
 /// match Vec.remove 2 (Vec.of_array [1, 2, 3, 2]) with
@@ -226,6 +262,9 @@ fn compact_values predicate view =
 /// Removes every element that the predicate accepts and returns how many there were. The remaining elements keep their
 /// order; the removed ones are dropped after the last call of the predicate, in no particular order.
 ///
+/// @complexity O(n)
+/// @see Vec.remove_all
+///
 /// ```tsuzuri run=["a",%20"c"]%202
 /// match Vec.remove_allr (\word -> word.length > 1) (Vec.of_array ["a", "bb", "c", "dd"]) with
 /// | (rest, removed) -> $"{Vec.to_array rest} {removed}"
@@ -239,6 +278,9 @@ fn remove_allr predicate values =
 
 /// Removes every element that the predicate accepts and returns how many there were; the remaining elements keep
 /// their order.
+///
+/// @complexity O(n)
+/// @see Vec.remove_allr
 ///
 /// ```tsuzuri run=[1,%203,%205]%202
 /// match Vec.remove_all (\n -> n % 2 == 0) (Vec.of_array [1, 2, 3, 4, 5]) with
@@ -264,6 +306,8 @@ fn reverse_slice view first count =
 
 /// Reverses the order of the elements.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[3,%202,%201]
 /// Vec.of_array [1, 2, 3] |> Vec.reverse |> Vec.to_array
 /// ```
@@ -275,6 +319,8 @@ fn reverse values =
     owned
 
 /// Reverses the order of `count` elements from `index` on.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[1,%204,%203,%202,%205]
 /// Vec.of_array [1, 2, 3, 4, 5] |> Vec.reverse_range 1 3 |> Vec.to_array
@@ -321,6 +367,8 @@ fn sort_view view index count =
 
 /// Sorts a range in place, stably, with `Ord`; a NaN comes first, as in .NET.
 ///
+/// @complexity O(n log^2 n)
+///
 /// ```tsuzuri run=[5,%202,%203,%204,%201]
 /// Vec.of_array [5, 4, 3, 2, 1] |> Vec.sort_range 1 3 |> Vec.to_array
 /// ```
@@ -332,6 +380,8 @@ fn sort_range index count values =
     owned
 
 /// Sorts the elements in place, stably, with `Ord`; a NaN comes first, as in .NET.
+///
+/// @complexity O(n log^2 n)
 ///
 /// ```tsuzuri run=[nan,%20-1,%202.5]
 /// let nan = 0.0 / 0.0
@@ -348,6 +398,9 @@ fn sort_view_with comparison view index count =
 
 /// Sorts a range in place, stably, with a comparison that returns a negative number, zero or a positive number.
 ///
+/// @complexity O(n log n)
+/// @see Vec.sort_range_withr
+///
 /// ```tsuzuri run=[1,%205,%204,%203,%202]
 /// Vec.of_array [1i64, 5, 3, 4, 2] |> Vec.sort_range_with 1 3 (\a b -> b - a) |> Vec.to_array
 /// ```
@@ -359,6 +412,9 @@ fn sort_range_with index count comparison values =
     owned
 
 /// Sorts the elements in place, stably, with a comparison that returns a negative number, zero or a positive number.
+///
+/// @complexity O(n log n)
+/// @see Vec.sort_withr
 ///
 /// ```tsuzuri run=[3,%202,%201]
 /// Vec.of_array [2i64, 3, 1] |> Vec.sort_with (\a b -> b - a) |> Vec.to_array
@@ -372,6 +428,9 @@ fn sort_with comparison values =
 /// Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge), so it is stable and takes no
 /// extra memory.
 ///
+/// @complexity O(n log^2 n)
+/// @see Vec.sort_range_with
+///
 /// ```tsuzuri run=["pear",%20"fig",%20"kiwi",%20"banana"]
 /// let words = Vec.of_array ["pear", "fig", "banana", "kiwi"]
 /// words |> Vec.sort_range_withr 1 3 (\a b -> a.length - b.length) |> Vec.to_array
@@ -384,6 +443,9 @@ fn sort_range_withr index count comparison values =
     owned
 
 /// Sorts the elements in place, stably, with a comparison that borrows them, so they need not be `Copy`.
+///
+/// @complexity O(n log^2 n)
+/// @see Vec.sort_with
 ///
 /// ```tsuzuri run=["fig",%20"pear",%20"kiwi",%20"banana"]
 /// let words = Vec.of_array ["pear", "fig", "banana", "kiwi"]
@@ -476,6 +538,9 @@ fn rotate_slice values first middle last =
 
 /// The index of the first element equal to `item`, which is borrowed, or `-1`.
 ///
+/// @complexity O(n)
+/// @see Vec.index_of
+///
 /// ```tsuzuri run=1
 /// let word = "b"
 /// Vec.index_ofr (ref word) (Vec.of_array ["a", "b", "b"])
@@ -499,6 +564,9 @@ fn last_index values item start count =
 
 /// The index of the first element equal to `item`, or `-1`.
 ///
+/// @complexity O(n)
+/// @see Vec.index_ofr
+///
 /// ```tsuzuri run=1%20-1
 /// let values = Vec.of_array [1, 3, 5, 3]
 /// $"{Vec.index_of 3 values} {Vec.index_of 4 values}"
@@ -507,6 +575,8 @@ def index_of :: Eq<'a> => own 'a -> ref Vec<'a> -> i64
 fn index_of item values = first_index values (ref item) 0 (Vec.length values)
 
 /// Looks from `index` on; `index` may be the length.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=2
 /// Vec.index_of_from 3 1 (Vec.of_array [3, 1, 3, 1])
@@ -517,6 +587,8 @@ fn index_of_from item index values =
     first_index values (ref item) index (Vec.length values - index)
 
 /// Looks at `count` elements from `index` on.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=-1%203
 /// let values = Vec.of_array [3, 1, 2, 3]
@@ -530,6 +602,9 @@ fn index_of_range item index count values =
 
 /// The index of the last element equal to `item`, which is borrowed, or `-1`.
 ///
+/// @complexity O(n)
+/// @see Vec.last_index_of
+///
 /// ```tsuzuri run=2
 /// let word = "b"
 /// Vec.last_index_ofr (ref word) (Vec.of_array ["b", "a", "b", "c"])
@@ -541,6 +616,9 @@ fn last_index_ofr item values =
 
 /// The index of the last element equal to `item`, or `-1`.
 ///
+/// @complexity O(n)
+/// @see Vec.last_index_ofr
+///
 /// ```tsuzuri run=2
 /// Vec.last_index_of 3 (Vec.of_array [3, 1, 3, 1])
 /// ```
@@ -548,6 +626,8 @@ def last_index_of :: Eq<'a> => own 'a -> ref Vec<'a> -> i64
 fn last_index_of item values = last_index_ofr (ref item) values
 
 /// Looks backward from `index` to the front. An empty `Vec` takes `-1` as `index`, as in .NET.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=0
 /// Vec.last_index_of_from 3 1 (Vec.of_array [3, 1, 3, 1])
@@ -558,6 +638,8 @@ fn last_index_of_from item index values =
     last_index_of_range item index (index + 1) values
 
 /// Looks backward from `index` at `count` elements.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=2%20-1
 /// let values = Vec.of_array [3, 1, 3, 1, 3]
@@ -574,6 +656,9 @@ fn last_index_of_range item index count values =
 
 /// Whether an element equals `item`, which is borrowed.
 ///
+/// @complexity O(n)
+/// @see Vec.contains
+///
 /// ```tsuzuri run=true
 /// let word = "kiwi"
 /// Vec.containsr (ref word) (Vec.of_array ["fig", "kiwi"])
@@ -583,6 +668,9 @@ fn containsr item values = index_ofr item values >= 0
 
 /// Whether an element equals `item`.
 ///
+/// @complexity O(n)
+/// @see Vec.containsr
+///
 /// ```tsuzuri run=true%20false
 /// let values = Vec.of_array [1, 2, 3]
 /// $"{Vec.contains 2 values} {Vec.contains 4 values}"
@@ -591,6 +679,9 @@ def contains :: Eq<'a> => own 'a -> ref Vec<'a> -> bool
 fn contains item values = index_ofr (ref item) values >= 0
 
 /// Like `find_index`, but `predicate` borrows each element, so the elements need not be `Copy`.
+///
+/// @complexity O(n)
+/// @see Vec.find_index
 ///
 /// ```tsuzuri run=1
 /// Vec.find_indexr (\word -> word.length > 3) (Vec.of_array ["fig", "pear", "kiwi"])
@@ -604,6 +695,9 @@ fn find_indexr predicate values =
 
 /// The index of the first element that the predicate accepts, or `-1`.
 ///
+/// @complexity O(n)
+/// @see Vec.find_indexr
+///
 /// ```tsuzuri run=2
 /// Vec.find_index (\n -> n > 2) (Vec.of_array [1, 2, 3, 4])
 /// ```
@@ -611,6 +705,8 @@ def find_index :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_index predicate values = find_index_range 0 (Vec.length values) predicate values
 
 /// The index of the first element from `start` on that the predicate accepts, or `-1`; `start` may be the length.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=3
 /// Vec.find_index_from 1 (\n -> n % 2 == 0) (Vec.of_array [2, 3, 5, 6])
@@ -621,6 +717,8 @@ fn find_index_from start predicate values =
     find_index_range start (Vec.length values - start) predicate values
 
 /// The index of the first element that the predicate accepts among `count` elements from `start` on, or `-1`.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=2
 /// Vec.find_index_range 1 2 (\n -> n % 2 == 0) (Vec.of_array [2, 3, 4, 6])
@@ -636,6 +734,9 @@ fn find_index_range start count predicate values =
 
 /// Like `find_last_index`, but `predicate` borrows each element, so the elements need not be `Copy`.
 ///
+/// @complexity O(n)
+/// @see Vec.find_last_index
+///
 /// ```tsuzuri run=2
 /// Vec.find_last_indexr (\word -> word.length == 4) (Vec.of_array ["pear", "fig", "kiwi", "banana"])
 /// ```
@@ -647,6 +748,9 @@ fn find_last_indexr predicate values =
 
 /// The index of the last element that the predicate accepts, or `-1`.
 ///
+/// @complexity O(n)
+/// @see Vec.find_last_indexr
+///
 /// ```tsuzuri run=3
 /// Vec.find_last_index (\n -> n < 3) (Vec.of_array [1, 2, 3, 2, 5])
 /// ```
@@ -656,6 +760,8 @@ fn find_last_index predicate values =
 
 /// Looks backward from `start` to the front. An empty `Vec` takes `-1` as `start`, as in .NET.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=0
 /// Vec.find_last_index_from 2 (\n -> n % 2 == 0) (Vec.of_array [2, 3, 5, 6])
 /// ```
@@ -664,6 +770,8 @@ fn find_last_index_from start predicate values =
     find_last_index_range start (start + 1) predicate values
 
 /// Looks backward from `start` at `count` elements.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=1
 /// Vec.find_last_index_range 2 2 (\n -> n % 2 == 0) (Vec.of_array [2, 4, 5, 6])
@@ -680,6 +788,9 @@ fn find_last_index_range start count predicate values =
 
 /// Whether `predicate`, which borrows each element, accepts an element.
 ///
+/// @complexity O(n)
+/// @see Vec.exists
+///
 /// ```tsuzuri run=true
 /// Vec.existsr (\word -> word.length > 5) (Vec.of_array ["fig", "banana"])
 /// ```
@@ -688,6 +799,9 @@ fn existsr predicate values = find_indexr predicate values >= 0
 
 /// Whether the predicate accepts an element.
 ///
+/// @complexity O(n)
+/// @see Vec.existsr
+///
 /// ```tsuzuri run=false
 /// Vec.exists (\n -> n < 0) (Vec.of_array [1, 2, 3])
 /// ```
@@ -695,6 +809,9 @@ def exists :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> bool
 fn exists predicate values = find_index predicate values >= 0
 
 /// Whether `predicate`, which borrows each element, accepts every element; it does for an empty `Vec`.
+///
+/// @complexity O(n)
+/// @see Vec.true_for_all
 ///
 /// ```tsuzuri run=true
 /// Vec.true_for_allr (\word -> word.length >= 3) (Vec.of_array ["fig", "kiwi"])
@@ -708,6 +825,9 @@ fn true_for_allr predicate values =
 
 /// Whether the predicate accepts every element; it does for an empty `Vec`.
 ///
+/// @complexity O(n)
+/// @see Vec.true_for_allr
+///
 /// ```tsuzuri run=false
 /// Vec.true_for_all (\n -> n > 0) (Vec.of_array [1, 2, -3])
 /// ```
@@ -719,6 +839,9 @@ fn true_for_all predicate values =
     index == length
 
 /// The first element that the predicate accepts. .NET returns the default value when there is none; this returns `None`.
+///
+/// @complexity O(n)
+/// @see Vec.find
 ///
 /// ```tsuzuri run=pear
 /// let words = Vec.of_array ["fig", "pear", "kiwi"]
@@ -733,6 +856,9 @@ fn findr predicate values =
 
 /// The first element that the predicate accepts, or `None`.
 ///
+/// @complexity O(n)
+/// @see Vec.findr
+///
 /// ```tsuzuri run=3
 /// Vec.of_array [1, 2, 3, 4] |> Vec.find (\n -> n > 2) |> Maybe.default_value 0
 /// ```
@@ -742,6 +868,9 @@ fn find predicate values =
     if index >= 0 then Maybe.Some values[index] else Maybe.None
 
 /// The last element that `predicate`, which borrows each element, accepts, or `None`.
+///
+/// @complexity O(n)
+/// @see Vec.find_last
 ///
 /// ```tsuzuri run=kiwi
 /// let words = Vec.of_array ["pear", "fig", "kiwi"]
@@ -756,6 +885,9 @@ fn find_lastr predicate values =
 
 /// The last element that the predicate accepts, or `None`.
 ///
+/// @complexity O(n)
+/// @see Vec.find_lastr
+///
 /// ```tsuzuri run=4
 /// Vec.of_array [2, 4, 5] |> Vec.find_last (\n -> n % 2 == 0) |> Maybe.default_value 0
 /// ```
@@ -765,6 +897,8 @@ fn find_last predicate values =
     if index >= 0 then Maybe.Some values[index] else Maybe.None
 
 /// A `Vec` of the elements that the predicate accepts, in order.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[2,%204]
 /// Vec.of_array [1, 2, 3, 4] |> Vec.find_all (\n -> n % 2 == 0) |> Vec.to_array
@@ -814,6 +948,9 @@ fn ordering left right =
 /// The index of `item`, which is borrowed, in a `Vec` sorted by `Ord`, or the complement (`-1 - place`) of the index
 /// where it would go.
 ///
+/// @complexity O(log n)
+/// @see Vec.binary_search
+///
 /// ```tsuzuri run=1
 /// let word = "kiwi"
 /// Vec.binary_searchr (ref word) (Vec.of_array ["fig", "kiwi", "pear"])
@@ -823,6 +960,9 @@ fn binary_searchr item values = search values 0 (Vec.length values) (\element ->
 
 /// The index of `item` in a `Vec` sorted by `Ord`, or the complement (`-1 - place`) of the index where it would go.
 ///
+/// @complexity O(log n)
+/// @see Vec.binary_searchr
+///
 /// ```tsuzuri run=2%20-3
 /// let values = Vec.of_array [1, 3, 5, 7]
 /// $"{Vec.binary_search 5 values} {Vec.binary_search 4 values}"
@@ -831,6 +971,9 @@ def binary_search :: Ord<'a> => own 'a -> ref Vec<'a> -> i64
 fn binary_search item values = binary_searchr (ref item) values
 
 /// Like `binary_search_with`, but `comparison` borrows the elements and `item`, so they need not be `Copy`.
+///
+/// @complexity O(log n)
+/// @see Vec.binary_search_with
 ///
 /// ```tsuzuri run=1
 /// let word = "pear"
@@ -844,6 +987,9 @@ fn binary_search_withr item comparison values =
 /// The index of `item` in a `Vec` sorted by `comparison`, or the complement (`-1 - place`) of the index where it would
 /// go; `comparison` gets an element first and `item` second.
 ///
+/// @complexity O(log n)
+/// @see Vec.binary_search_withr
+///
 /// ```tsuzuri run=2
 /// Vec.binary_search_with 5 (\a b -> b - a) (Vec.of_array [9i64, 7, 5, 3])
 /// ```
@@ -852,6 +998,8 @@ fn binary_search_with item comparison values =
     binary_search_range 0 (Vec.length values) item comparison values
 
 /// Searches `count` elements from `index` on, like `binary_search_with`; the result counts from the start of the `Vec`.
+///
+/// @complexity O(log n)
 ///
 /// ```tsuzuri run=4
 /// Vec.binary_search_range 2 3 9 (\a b -> a - b) (Vec.of_array [1i64, 3, 5, 7, 9])
@@ -864,6 +1012,9 @@ fn binary_search_range index count item comparison values =
 // ---- Visiting and converting ----
 
 /// Calls `action` with a reference to each element, in order.
+///
+/// @complexity O(n)
+/// @see Vec.for_each
 ///
 /// ```tsuzuri run=6
 /// let cell = Atomic.create 0i64
@@ -882,6 +1033,9 @@ fn for_eachr action values =
 
 /// Calls `action` with each element, in order.
 ///
+/// @complexity O(n)
+/// @see Vec.for_eachr
+///
 /// ```tsuzuri run=123
 /// let cell = Atomic.create 0i64
 /// let digits = ref cell
@@ -898,6 +1052,9 @@ fn for_each action values =
 
 /// A `Vec` of the values that `converter` makes from references to the elements, with a capacity of its length.
 ///
+/// @complexity O(n)
+/// @see Vec.convert_all
+///
 /// ```tsuzuri run=[3,%204]
 /// Vec.convert_allr (\word -> word.length) (Vec.of_array ["fig", "pear"]) |> Vec.to_array
 /// ```
@@ -912,6 +1069,9 @@ fn convert_allr converter values =
     converted
 
 /// A `Vec` of the converted elements, with a capacity of its length.
+///
+/// @complexity O(n)
+/// @see Vec.convert_allr
 ///
 /// ```tsuzuri run=[1,%204,%209]
 /// Vec.convert_all (\n -> n * n) (Vec.of_array [1, 2, 3]) |> Vec.to_array
@@ -930,6 +1090,8 @@ fn convert_all converter values =
 
 /// A `Vec` of copies of `count` elements from `index` on, with a capacity of `count`.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=[20,%2030]
 /// Vec.get_range 1 2 (Vec.of_array [10, 20, 30, 40]) |> Vec.to_array
 /// ```
@@ -940,6 +1102,8 @@ fn get_range index count values =
 
 /// A `Vec` of copies of `length` elements from `start` on; the same as `get_range`.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=[30,%2040]
 /// Vec.slice 2 2 (Vec.of_array [10, 20, 30, 40]) |> Vec.to_array
 /// ```
@@ -947,6 +1111,8 @@ def slice :: Copy<'a> => own i64 -> own i64 -> ref Vec<'a> -> Vec<'a>
 fn slice start length values = get_range start length values
 
 /// Copies `count` elements from `index` on into `target` from `target_index` on.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[0,%200,%208,%209]
 /// let mut target = [0, 0, 0, 0]
@@ -964,6 +1130,8 @@ fn copy_to_range index target target_index count values =
 
 /// Copies all the elements into `target` from `target_index` on.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[0,%207,%208,%200]
 /// let mut target = [0, 0, 0, 0]
 /// Vec.copy_to_at (ref mut target) 1 (Vec.of_array [7, 8])
@@ -974,6 +1142,8 @@ fn copy_to_at target target_index values =
     copy_to_range 0 target target_index (Vec.length values) values
 
 /// Copies all the elements into `target` from its start.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[7,%208,%200]
 /// let mut target = [0, 0, 0]

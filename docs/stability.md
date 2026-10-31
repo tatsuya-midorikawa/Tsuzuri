@@ -13,7 +13,7 @@
 | edition ごとの構文と意味 | 型、値、評価順序、所有権と借用、数値のオーバーフロー・丸め・NaN・トラップ。バグの修正は除きます |
 | std の公開 API | 公開した宣言を削除せず、シグネチャも変えません。例外は [既知の例外](#既知の例外) です |
 | 公開 ABI | `export def` の `tz_<name>` シンボル、`--emit header` が出す C ヘッダー、`tsuzuri_` で始まるシンボル（`--overflow-report` の WebAssembly が export する `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` を含む）、`extern` のリンク名と WebAssembly の import 名。`--trap-info` の `.trap.json` と `--overflow-report` の `.overflow.json` のキーも同じ扱いです（キーが増えることはあります） |
-| 診断のコード・重要度・JSON のキー | コードの意味を変えず、別の条件へ再利用しません。`--json` の既存のキーを消したり改名したりしません（キーが増えることはあります）。追加の情報のキー（`kind`・`related`・`help`・`expected`・`found`・`candidates`・`scope`・`fixes`）は値があるときだけ出し、名前と順序、`related` の `role` と修正案の `applicability` の値を変えません（[診断](../_tsuzuri/language-reference/compiler/diagnostics.md#json-の-1-行-1-オブジェクト)） |
+| 診断のコード・重要度・JSON のキー | コードの意味を変えず、別の条件へ再利用しません。`--json` の既存のキーを消したり改名したりしません（キーが増えることはあります）。追加の情報のキー（`kind`・`related`・`help`・`expected`・`found`・`candidates`・`scope`・`fixes`、`run` のトラップの `E2005` の `trap`）は値があるときだけ出し、名前と順序、`related` の `role` と修正案の `applicability` の値を変えません（[診断](../_tsuzuri/language-reference/compiler/diagnostics.md#json-の-1-行-1-オブジェクト)） |
 | 仕様の規則の ID（G33） | `spec/rules/` の規則の ID（`OWN-012` など）を再利用しません。廃止した規則は行を消さずに `retired` にし、意味が変わる規則には新しい ID を付けます（[仕様の規則と適合性テスト](../_tsuzuri/language-reference/compiler/conformance.md)） |
 | 診断の kind | すべての診断が持つ `kind` の値（`use_after_move` など）。kind は足すことはあっても、消したり、名前を変えたり、別のコードへ移したりしません。1 つの kind を 2 つに分けるのは互換の変更で、元の kind は残りの条件に使い続けます。edition は kind を変えません（[kind と explain](../_tsuzuri/language-reference/compiler/diagnostics.md#kind-と-explain)） |
 | `tsuzuri guide` | サブコマンドとオプションの名前、`--json` の schema `tz-guide/1` とキーの名前と順序（キーが増えることはあります）、終了コード（出力 0、`--agents`・`--llms-txt` のマニフェストがない 1、引数の誤り 2） |
@@ -130,7 +130,7 @@ edition ごとに std を複製することはしません。型と instance が
 `tsuzuri api-diff OLD NEW [--json] [--effective]` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると、終了コードは 1 です。使い方と出力は [コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#api-diff) にあります。
 
 - 互換性のない変更: 公開宣言の削除、署名の変更（型、制約、region、`export` と `const`（`const def`）の取り消し。別のモジュールの `const` の初期化式が `const def` を呼べるので、`const` を外すとそれが壊れます）、record への field の追加（構築式が壊れます）、union への case の追加（網羅的な `match` が壊れます）、既定のない class メソッドの追加、`deriving` の削除。
-- 互換性を保つ変更: 宣言の追加、説明の変更、`@deprecated` の追加、`export` の追加。
+- 互換性を保つ変更: 宣言の追加、説明の変更、`@deprecated` の追加、`export` の追加。説明の構造化タグ（`@complexity`・`@since`・`@see`）の追加と変更も説明の変更です（G35）。
 
 `pure def` の `pure` を加えるのは契約の追加、取り消すのは非互換な契約の削除として報告します。
 ただし、共有借用の補完で署名が変わる場合や、保証する呼び出し段階を変える場合は非互換です。

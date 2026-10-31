@@ -383,23 +383,17 @@ fn ir_lines(ir: &str) -> impl Iterator<Item = &str> {
         .flatten()
 }
 
-pub(super) fn instrument(
-    ir: String,
-    module: &CheckedModule,
-    marks: Marks,
-    sources: &[TrapSource<'_>],
-    wasm: bool,
-    raise: bool,
-) -> Result<EmitOutput, Diagnostic> {
-    instrument_numbered(
-        ir,
-        module,
-        marks,
-        sources,
-        wasm,
-        raise,
-        TrapNumbering::Dense,
-    )
+/// How [`instrument_with`] reports a trap.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct InstrumentOptions {
+    /// A WebAssembly module: the report keeps the site for the host instead of writing a message.
+    pub wasm: bool,
+    /// Inside a trap boundary or a failure domain the report returns to it (`tsuzuri_trap_raise`).
+    pub raise: bool,
+    /// B10: a native executable whose report also writes the chain of frames (`src/runtime/backtrace.c`) when
+    /// `TSUZURI_TRAP_REPORT` names a file. The caller gives every function a frame pointer
+    /// ([`with_frame_pointers`]) after its last pass that adds functions.
+    pub backtrace: bool,
 }
 
 pub(super) fn instrument_numbered(
@@ -411,7 +405,80 @@ pub(super) fn instrument_numbered(
     raise: bool,
     numbering: TrapNumbering,
 ) -> Result<EmitOutput, Diagnostic> {
-    if sources.is_empty() {
+    instrument_with(
+        ir,
+        module,
+        marks,
+        sources,
+        InstrumentOptions {
+            wasm,
+            raise,
+            backtrace: false,
+        },
+        numbering,
+    )
+}
+
+/// The declaration of the crash report of `src/runtime/backtrace.c`, which the driver links when an executable's IR
+/// has it.
+pub(crate) const BACKTRACE_DECLARATION: &str = "declare void @tsuzuri_trap_backtrace(i32)";
+
+/// The report's first line, and the same line of a report that writes the frames too: `noinline` keeps the call
+/// that the chain of frames starts from.
+const REPORT_HEAD: &str = "define internal void @tz.trap.report(i32 %site) cold nounwind {\n";
+const BACKTRACE_HEAD: &str =
+    "define internal void @tz.trap.report(i32 %site) cold nounwind noinline {\n";
+
+/// `"frame-pointer"="all"` on every function that `ir` defines (B10): the only form of the request that a Clang
+/// compile of IR follows, which lets `src/runtime/backtrace.c` walk the chain of frame records. It goes before the
+/// debug location, or else before the body's brace.
+pub(super) fn with_frame_pointers(ir: &str) -> String {
+    let mut output = String::with_capacity(ir.len() + ir.len() / 16);
+    for line in ir.split_inclusive('\n') {
+        let start = if line.starts_with("define ") {
+            Some(0)
+        } else if line.starts_with("}define ") {
+            Some(1)
+        } else {
+            None
+        };
+        let index = start.and_then(|start| {
+            line[start..]
+                .find(" !dbg ")
+                .or_else(|| line[start..].rfind(" {"))
+                .map(|index| start + index)
+        });
+        match index {
+            Some(index) => {
+                output.push_str(&line[..index]);
+                output.push_str(" \"frame-pointer\"=\"all\"");
+                output.push_str(&line[index..]);
+            }
+            None => output.push_str(line),
+        }
+    }
+    output
+}
+
+pub(super) fn instrument_with(
+    ir: String,
+    module: &CheckedModule,
+    marks: Marks,
+    sources: &[TrapSource<'_>],
+    options: InstrumentOptions,
+    numbering: TrapNumbering,
+) -> Result<EmitOutput, Diagnostic> {
+    let InstrumentOptions {
+        wasm,
+        raise,
+        backtrace,
+    } = options;
+    debug_assert!(
+        !(wasm && backtrace),
+        "a WebAssembly module has no crash report"
+    );
+    // A runner of tests or benches with failure domains (B10) has no source map: a site's text is its reason.
+    if sources.is_empty() && !raise {
         return Err(Diagnostic::of(
             DiagnosticKind::TrapInfoWithoutSourceMap,
             "trap information requires a source map",
@@ -506,6 +573,7 @@ pub(super) fn instrument_numbered(
                 && !name.starts_with("@__")
                 && !name.starts_with("@tz.task.item.")
                 && !name.starts_with("@tz.parallel.chunk.")
+                && !name.starts_with("@tz.domain.thunk.")
         })
         .cloned()
         .collect();
@@ -678,9 +746,14 @@ pub(super) fn instrument_numbered(
             output.push_str("done:\n  ret void\n}\n");
             names.insert(*block, name);
         }
+        output.push_str(if backtrace {
+            BACKTRACE_HEAD
+        } else {
+            REPORT_HEAD
+        });
         let _ = write!(
             output,
-            "define internal void @tz.trap.report(i32 %site) cold nounwind {{\nentry:\n  %offset = sub i32 %site, 1\n  %block = udiv i32 %offset, {STABLE_SPAN}\n  switch i32 %block, label %done [\n"
+            "entry:\n  %offset = sub i32 %site, 1\n  %block = udiv i32 %offset, {STABLE_SPAN}\n  switch i32 %block, label %done [\n"
         );
         for block in names.keys() {
             let _ = writeln!(output, "    i32 {block}, label %block{block}");
@@ -692,14 +765,14 @@ pub(super) fn instrument_numbered(
                 "block{block}:\n  call void @tz.trap.report.{name}(i32 %site)\n  br label %done"
             );
         }
-        output.push_str("done:\n  ret void\n}\n");
+        output.push_str(report_done(backtrace));
         output.push_str(TRAP_WRITE);
     } else {
         if !output.contains("declare i64 @write(") {
             output.push_str("\ndeclare i64 @write(i32, ptr, i64)\n");
         }
         for site in &trap_sites {
-            let text = format!("{}\n", site.message(sources)?);
+            let text = format!("{}\n", site_message(site, sources)?);
             let bytes = text
                 .bytes()
                 .map(|byte| format!("\\{byte:02X}"))
@@ -721,30 +794,98 @@ pub(super) fn instrument_numbered(
         } else {
             String::new()
         };
+        output.push_str(if backtrace {
+            BACKTRACE_HEAD
+        } else {
+            REPORT_HEAD
+        });
         let _ = write!(
             output,
-            "define internal void @tz.trap.report(i32 %site) cold nounwind {{\nentry:\n{boundary}  switch i32 %site, label %done [\n"
+            "entry:\n{boundary}  switch i32 %site, label %done [\n"
         );
         for site in &trap_sites {
             let _ = writeln!(output, "    i32 {}, label %site{}", site.id, site.id);
         }
         output.push_str("  ]\n");
         for site in &trap_sites {
-            let length = site.message(sources)?.len() + 1;
+            let length = site_message(site, sources)?.len() + 1;
             let _ = writeln!(
                 output,
                 "site{}:\n  call void @tz.trap.write(ptr @tz.trap.message.{}, i64 {length})\n  br label %done",
                 site.id, site.id
             );
         }
-        output.push_str("done:\n  ret void\n}\n");
+        output.push_str(report_done(backtrace));
         output.push_str(TRAP_WRITE);
+    }
+    // B10: `Domain.__message` reads the text of a site from a table that only a program that asks for it has.
+    if output.contains("call ptr @tz.trap.text(") {
+        output.push_str(&text_table(&trap_sites, sources));
+    }
+    if backtrace {
+        output.push_str(BACKTRACE_DECLARATION);
+        output.push('\n');
     }
     Ok(EmitOutput {
         ir: output,
         trap_sites,
         stable_sites: stable && !raise,
     })
+}
+
+/// The message that a site's report writes; without a source map (a runner with failure domains), its reason.
+fn site_message(site: &TrapSite, sources: &[TrapSource<'_>]) -> Result<String, Diagnostic> {
+    if sources.is_empty() {
+        Ok(format!("trap: {}", site.kind.description()))
+    } else {
+        site.message(sources)
+    }
+}
+
+/// `@tz.trap.text(i32 site, ptr length) -> ptr`: the text of each site (`TrapSite::text`) and its length in bytes,
+/// or null and 0 for a number that is no site (B10, `Domain.__message`).
+fn text_table(sites: &[TrapSite], sources: &[TrapSource<'_>]) -> String {
+    let mut output = String::new();
+    for site in sites {
+        let text = site.text(sources);
+        let bytes = text
+            .bytes()
+            .map(|byte| format!("\\{byte:02X}"))
+            .collect::<String>();
+        let _ = writeln!(
+            output,
+            "@tz.trap.text.{} = private unnamed_addr constant [{} x i8] c\"{bytes}\"",
+            site.id,
+            text.len()
+        );
+    }
+    output.push_str(
+        "define internal ptr @tz.trap.text(i32 %site, ptr %length) cold nounwind {\nentry:\n  switch i32 %site, label %none [\n",
+    );
+    for site in sites {
+        let _ = writeln!(output, "    i32 {}, label %text{}", site.id, site.id);
+    }
+    output.push_str("  ]\n");
+    for site in sites {
+        let _ = writeln!(
+            output,
+            "text{}:\n  store i64 {}, ptr %length\n  ret ptr @tz.trap.text.{}",
+            site.id,
+            site.text(sources).len(),
+            site.id
+        );
+    }
+    output.push_str("none:\n  store i64 0, ptr %length\n  ret ptr null\n}\n");
+    output
+}
+
+/// The end of `@tz.trap.report`: with a crash report, the frames are written after the site's message.
+fn report_done(backtrace: bool) -> &'static str {
+    if backtrace {
+        "done:\n  notail call void @tsuzuri_trap_backtrace(i32 %site)\n  ret void\n}\n"
+    } else {
+        "done:\n  ret void\n}\n"
+    }
 }
 
 /// The function that writes a site's message to the standard error, one `write` after another.

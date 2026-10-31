@@ -1,0 +1,27 @@
+/// The failure of a closure that trapped inside `Domain.run`: where (`site`, the `id` of a site of the
+/// `.trap.json` side table), what (`kind`, the number of the trap kind; see docs/language.md, "トラップ位置")
+/// and a text (the reason, with the place where the build knows it).
+record Failure { site: i64, kind: i64, message: string }
+
+/// `Domain.run body` calls `body ()` inside a failure domain: a trap in the call, or in anything it calls,
+/// ends it with `Result.Error`, and what the call allocated is freed; the program goes on. `body` is a lambda
+/// or the name of a `pure def`, it captures plain data only, and its result is plain data (E1038). A stack
+/// overflow is not contained. Native macOS and Linux builds only, so the example is checked, not run (on macOS and
+/// Linux it shows `average 9, failed (kind 1)`; tests/domain.mjs runs the same program).
+///
+/// @since 0.1.0
+///
+/// ```tsuzuri
+/// def average :: [i64] -> i64 = \xs -> Array.sum (ref xs) / xs.length
+/// def describe :: Result<i64, Domain.Failure> -> string = \outcome ->
+///     match outcome with
+///     | Result.Ok value -> $"average {value}"
+///     | Result.Error failure -> $"failed (kind {failure.kind})"
+/// let data = [4, 8, 15]
+/// let empty: [i64] = []
+/// describe (Domain.run (\() -> average data)) + ", " + describe (Domain.run (\() -> average empty))
+/// ```
+def run :: own (unit -> 'a) -> Result<'a, Failure>
+fn run body = match Domain.__run body with
+    | Result.Ok value -> Result.Ok value
+    | Result.Error (site, kind) -> Result.Error (Failure { site: site, kind: kind, message: Domain.__message site })

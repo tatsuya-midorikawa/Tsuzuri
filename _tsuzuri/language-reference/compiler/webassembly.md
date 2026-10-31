@@ -588,6 +588,14 @@ console.log(instance.exports.tz_with_tax(200n).toString());
 
 リポジトリの `src/runtime/trap-boundary.mjs` は、1 回の呼び出しを境界で包みます。成功は `{ ok: true, value }`、トラップは `{ ok: false, trap: { reason, site, kind, path, line, column } }` です。`kind` 以下は、サイドテーブルに ID があるときだけ付きます。スタック枯渇は `reason: "stack"`、`site: 0` です。threads 付きモジュールは、この境界では拒否します。ワーカーごとではなく、プール全体を捨てます。
 
+`createBoundary(module, { imports, sites, frames: true })` にすると、`reason: "trap"` の結果に、トラップに至った WebAssembly の呼び出しの連鎖 `trap.frames` が付きます（最も内側が先。`frames` の既定は `false` で、そのときの結果は今までと同じです）。要素は `{ function, index, offset }` で、`index` は関数の番号、`offset` はモジュールの中のバイト位置です。`function` は `-g` でビルドしたモジュール（関数名の name section を持つ）だけに付き、ネイティブの [トラップのバックトレース](debugging.md#トラップのバックトレース) と同じ名前（`Main.div`、export の入口は `div`）です。V8 が関数名の前に付けるモジュール名（`artifact.`。無いことも、`my.app.` のように `.` を含むこともあります）は外します。自分で `WebAssembly.RuntimeError` を捕まえるホストは、同じ解析の `wasmFrames(error)` を import できます。境界は呼び出しのあいだだけ `Error.stackTraceLimit` を 33 以上にし、終わったら戻します。スタック枯渇（`reason: "stack"`）には付きません。
+
+```js
+const boundary = createBoundary(module, { sites, frames: true });
+boundary.call("tz_div", 7n, 0n).trap.frames;
+// -g -O0: [{ function: "Main.div", index: 0, offset: 219 }, { function: "div", index: 2, offset: 306 }]
+```
+
 > [!WARNING]
 > トラップ後のインスタンスで `tz_` 関数を続けると、壊れたヒープを読みます。境界がインスタンスを作り直すのは、そのためです。
 

@@ -663,6 +663,13 @@ diagnostic_kinds! {
         (TrustedTypeProperty, "trusted_type_property", "E1037"),
         (TrustedUnknownProperty, "trusted_unknown_property", "E1037"),
         (TrustedWrongTarget, "trusted_wrong_target", "E1037"),
+        // E1038
+        (DomainArgumentNotClosure, "domain_argument_not_closure", "E1038"),
+        (DomainBodyNotPure, "domain_body_not_pure", "E1038"),
+        (DomainCaptureNotPlain, "domain_capture_not_plain", "E1038"),
+        (DomainNotCalledDirectly, "domain_not_called_directly", "E1038"),
+        (DomainResultNotPlain, "domain_result_not_plain", "E1038"),
+        (DomainTargetUnsupported, "domain_target_unsupported", "E1038"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (AuditUsage, "audit_usage", "E2000"),

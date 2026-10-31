@@ -131,6 +131,12 @@ interop, documented performance characteristics, and known limitations or bugs.
   anchors, type-checks every example, runs `run=` examples natively at `-O0`
   and `-O3`, and runs examples that contain tests. `reference.yml` runs it for the
   pages a pull request changes, and every night for all pages.
+- A block between `<!-- generated:NAME -->` and `<!-- /generated:NAME -->` (the diagnostic kinds, the
+  complexity tables of the std collections, the benchmark tables) is made by `node scripts/gen-docs.mjs`:
+  do not edit it by hand. After changing its source (`std/` tags, the diagnostic registry,
+  `docs/benchmarks-data/*.json`), run `node scripts/gen-docs.mjs`; `node scripts/gen-docs.mjs --check` and
+  `node scripts/check-cli-docs.mjs` (flags, commands, variables, codes, versions and std functions that the
+  documents miss) run in `docs.yml`.
 - Keep `docs/language.md` consistent in the same pull request. `README.md`
   states the quickstart, the feature list, the CLI synopsis and the validation
   commands: change it when the change makes one of those wrong. Pages

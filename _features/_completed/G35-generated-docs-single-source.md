@@ -7,7 +7,7 @@
 | 規模 | L（Phase 1: S、Phase 2: M、Phase 3: M、Phase 4: M。種の「M」は 1 Phase の大きさで、4 Phase の合計は 2 週間ほど） |
 | 依存 | G23（Phase 1 の `diagnostic-kinds` の生成と Phase 4 の診断コード表の検査が `tsuzuri explain --catalog --json` を使う。**未実装でも全 Phase を出荷できる**: 「前提とする他チケットのインターフェース」）。G26（種の依存だが、本チケットは使わない。`Documentation` の読み取り関数を G26 が呼べるように出すだけ） |
 | 後続 | G21（`guide std` が `Documentation::complexity` を読める）、G26・G27（KB が `complexity`・`since`・`see` の欄を持てる）、C12（Map・Set の `@complexity` を更新する）、G33（規則 ID。マーカーは `<!-- rule:` で、本チケットの `<!-- generated:` と衝突しない） |
-| 状態 | todo |
+| 状態 | done（全 Phase） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーの HEAD は `9dd0fbbc`＝`a2313d19` の親で、差は `docs/benchmarks.md` の 41 行（第 4 フェーズの `<!-- phase4:… -->` の枠）だけ） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D20 はすべて承認済み |
 | 改善する劣位 | 手書きと生成物の二重管理で文書が実装からずれる（D-50 の調査結論 (4)）。`docs/benchmarks.md` は 952,255 byte のうち 2 つの HTML ブロックが 495,437 byte（52.0%）を占め、diff もレビューも読めない。計算量の表は 7 ページと `docs/language.md` に手書きで、`Array.sort_in_place` の行は実装と合わない。README は旗・サブコマンド・環境変数を 6 つ欠く。`_specs/`（初期設計）は現行と食い違ったまま残る |
@@ -15,6 +15,22 @@
 | 主な影響ファイル | **Phase 1** 新規: `scripts/gen-docs.mjs`, `tests/gen_docs.mjs`, `.github/workflows/docs.yml`。変更: `scripts/check-docs.mjs`, `README.md`, `AGENTS.md`。**Phase 2** 新規: `tests/doc_tags.rs`, `tests/std_tags.rs`。変更: `src/syntax.rs`, `scripts/gen-docs.mjs`, `std/{Array,Vec,Map,Set,HashMap,HashSet,List,String}.tz`（`///` だけ）, 言語リファレンス 9 ページ, `docs/language.md`。**Phase 3** 新規: `benchmarks/render.mjs`, `docs/benchmarks-data/{summary,metrics}.json`, `scripts/check-links.mjs`, `tests/check_links.mjs`, `tests/benchmark_render.mjs`（一時: `benchmarks/migrate-html.mjs`・`benchmarks/legacy-report.mjs`）。変更: `benchmarks/{report,metrics}.mjs`, `scripts/gen-docs.mjs`, `tests/benchmark_report.mjs`, `docs/benchmarks.md`, `.github/workflows/docs.yml`。**Phase 4** 新規: `scripts/check-cli-docs.mjs`, `tests/check_cli_docs.mjs`, `_specs/README.md`。移動: `_specs/*.md` → `_specs/_archive/`。変更: `README.md`, `compiler/option.md`, `try-with-finally.md`, `docs/language.md` |
 
 付録は [G35-appendix.md](G35-appendix.md)（A 実測・B 初期の `@complexity` 表 134 行・C `_specs` の決定表）、[G35-appendix-spec.md](G35-appendix-spec.md)（S 描画・関数の対応・移行の決定表・ドリフト検査の規則・`gen-docs.mjs` の出力）、[G35-appendix-code.md](G35-appendix-code.md)（D 参照コード・E 文書の文面・F テストの期待値）。
+
+## 方針の最新化（2026-10-31。実装前・実装中の再検討）
+
+起票時（HEAD `a2313d19`）の前提と、G23・C12・F14・A21・G34 などの実装後の現状が食い違う点を、次のとおり改めた（人間の包括許可による判断。D1〜D20 の趣旨は保つ）。
+
+| 起票時の前提 | 現状 | 改めた方針 |
+| --- | --- | --- |
+| G23 が無ければ `diagnostic-kinds` は休眠 | G23 が出荷済みで、`diagnostics.md` に同じ見出し・区切りのブロックがある | 置き場は有効。`gen-docs.mjs --check` と `the_docs_list_every_kind` の両方が同じ本体を要求する。「kind の一覧」の更新手順を `node scripts/gen-docs.mjs` に書き換えた |
+| 8 モジュールの公開 `def` は 134（付録 B） | 441（Array 154・Vec 68・Map 16・Set 15・HashMap 24・HashSet 17・List 126・String 21）。名前も変わった（`map_ref` → `mapr`、`any`/`all` → `exists`/`forall`、`reverse` → `rev`） | 停止条件 4 の A: 全 441 関数の値を「仕様 3.3」の規則で実装から決めた（付録 B の値は名前が残る関数でそのまま使った）。`@see` は付録 B の和・内積の対に加えて、同じ意味の値渡し版と借用版の対（`x`・`xr`、`x`・`x_ref`、`fold_back`・`foldr_back`）をすべて両方向に付けた（108 行）。`@since` は 0 |
+| 付録 B の値 | 実装を読むと違う値がある | `Array.iter`・`List.iter` は行動を呼ぶ関数になったので $O(n)$（`Seq` を返すのは `to_seq`・`to_seqr` で $O(1)$。`List.iter` の説明文は `List.to_seq` に付けた）。`HashMap.insert`・`HashSet.insert` は、表を広げるときに全エントリを入れ直し、全キーが衝突すると 1 回の呼び出しが二乗になるので `amortized O(1), worst O(n * n)`（`hashmap.md` に 1 文）。Map・Set は C12 のチャンク表現で、値は同じ（`insert`・`remove` は $O(n)$）だが理由が変わったので、`Map.insert` の説明文とページの文をチャンクの分割・併合に合わせた。`longest_probe` の文に「`with_capacity` の容量」を足した |
+| タグは説明の後ろ | G34 が各関数に例を足した | 順序は「説明、`///`、タグ、`///`、例」 |
+| `docs/benchmarks.md` は移行後 520,000 byte 以下 | 手書きの節が増え、移行前 1,174,790 byte（2 ブロックは起票時と同じ） | 移行の削減量は試作と同じ 463,044 byte で、移行後 711,746 byte。上限 520,000 は満たさない（ブロックの外を変えない規則を優先）。リンクの基線は 116 リンク（断片つき 85、28 種）・0 broken |
+| ドリフトの基線（旗 38・サブコマンド 16・環境変数 10、失敗 9） | 旗 84・サブコマンド 26・環境変数 16、診断コード 64。不足は README 5・`option.md` 8・サブコマンド 1・`docs/language.md` の `W2001`・`E2011` | 停止条件 8 の 5 以上だが、すべて文書の補完で直せる不足なので直した（README の `toolchain info`・`--debug-output`・`--version`・`TSUZURI_DSYMUTIL`・`TSUZURI_KG_DIR`・`TSUZURI_SMT`、`option.md` の `fetch`・`publish`・`explain --catalog`・`kg` の旗、`docs/language.md` の `W2001`・`E2011` の行） |
+| `docs.yml` は release ビルド | AGENTS.md: dev profile（opt-level 1）で足りる | `cargo build --locked` と `TSUZURI_BIN=target/debug/tsuzuri` |
+| `tests/benchmark_report.mjs` は 34 行 | 起票後に 1 件のテストが増えた | 書き換え後も 35 行（`Benchmark report:` 1 行と `Metrics:` 34 行）で終了コード 0 |
+| Phase ごとに PR | AGENTS.md は 1 チケット 1 PR | 全 Phase を 1 つの PR にする（G34 の std の `///` に行を足すので、G34 のブランチの上に作った） |
 
 ## 実装者向け早見
 
@@ -497,4 +513,15 @@ def copy :: Copy<'a> => ref ['a] -> ['a]
 - [G35-appendix-spec.md](G35-appendix-spec.md): **S** 本文から移した仕様の表（S.1 描画の規則、S.2 関数の対応、S.3 移行の決定表、S.4 ドリフト検査の規則と基線、S.5 `tests/benchmark_report.mjs` の書き換え表、S.6 現状の詳細、S.7 `gen-docs.mjs` の出力）。
 - [G35-appendix-code.md](G35-appendix-code.md): **D** 参照コード（D.1 `Documentation` と `tests/doc_tags.rs`、D.2 `gen-docs.mjs`、D.3 `render.mjs`、D.4 移行の解析、D.5 `docs.yml`、D.6 `check-links.mjs`、D.7 `check-cli-docs.mjs`、D.8 `report.mjs` の全文、D.9 `metrics.mjs` の 4 か所、D.10 `tests/benchmark_report.mjs` の書き換え、D.11 `gen-docs.mjs` への Phase 3 の追加）、**E** 文書の文面（E.1 タグの仕様、E.2 README・`option.md`・`language.md` の補完、E.3 ページごとの置き換え、E.4 `_specs`、E.5 benchmarks の文）、**F** テストの期待値（F.1〜F.8）。
 
+## 実装と検証（2026-10-31）
 
+- **範囲**: Phase 1〜4 をすべて実装した（1 つの PR）。冒頭の「方針の最新化」のとおり、起票後の変更に合わせた。
+- **Phase 1**: `scripts/gen-docs.mjs`（`scanBlocks`・`bodyOf`・`replaceBlock`・`replaceNamedBlock`・`diagnosticKindsTable`・`planBlocks`・`checkBlocks`・`writeBlocks`・`createContext`・`readStd`・`main`）、`tests/gen_docs.mjs`、`scripts/check-docs.mjs` からの `checkBlocks`（最後の行に `N generated blocks`）、`.github/workflows/docs.yml`、`diagnostics.md` の更新手順。
+- **Phase 2**: `Documentation::{complexity, since, see}` と共通の `tag_notes`（`deprecation()` も寄せた）、`tests/doc_tags.rs`（3 件）・`tests/std_tags.rs`（3 件、`TAGGED` は 8 モジュール）、`gen-docs.mjs` の `tagNotes`・`parseComplexity`・`renderComplexity`・`parseStdPage`・`complexityTable`。std 8 モジュールの全公開関数 441 に `@complexity`、`@see` 108 行、説明の 5 文（`///` の追加だけ。995 行・削除 0）。置き場 16（8 ページと `docs/language.md` の新しい「標準コレクションの計算量」）。各ページの手書きの表は、std の `def` でない組み込み操作の行と、実装の補足の文だけ残した。`documentation-comment.md` の「構造化タグ」、`docs/language.md`・`docs/stability.md`・`docs/architecture.md`。
+- **Phase 3**: `benchmarks/render.mjs`・`tests/benchmark_render.mjs`（8 件）、`benchmarks/report.mjs`（`summarizeResults`・`publishSummary` が JSON を書いてからブロックを置き換える）・`metrics.mjs`（`summarizeRecords`・`publishMetrics`）、`tests/benchmark_report.mjs`、`scripts/check-links.mjs`・`tests/check_links.mjs`。移行は一回限りのスクリプトで、2 ブロックを解析して旧 `renderTable` で作り直し、現物と 1 byte も違わないこと（`summary: headers 8 rows 38`・`metrics: runs 2 tables 36 rows 314 cells 2109`）とブロックの外が変わらないことを確かめてから、`docs/benchmarks-data/summary.json`・`metrics.json` と文書を書いた（スクリプトと旧版の複製は消した）。見出しの一覧は移行の前後で同一。散文 3 か所。
+- **Phase 4**: `_specs/*.md` を `_specs/_archive/` へ（rename 100%）、`_specs/README.md`、`try-with-finally.md` の 1 箇条。`scripts/check-cli-docs.mjs`（`cli`・`codes`・`version`・`std`）・`tests/check_cli_docs.mjs`（8 件）と、上の文書の補完。`docs.yml` に 7 つの検査。
+- **検証**: `cargo fmt --all -- --check`・`cargo clippy --all-targets -- -D warnings` 成功。`cargo nextest run --locked` 2780 件成功。`node tests/gen_docs.mjs`（22 件）・`tests/check_links.mjs`（3 件）・`tests/check_cli_docs.mjs`（8 件）・`tests/benchmark_render.mjs`（8 件）・`tests/benchmark_report.mjs`（35 行）が緑。`node scripts/gen-docs.mjs --check` が `19 blocks checked, 0 stale`（書き込みは 2 回目が `0 updated`）。`node scripts/check-cli-docs.mjs` が `ok cli: 84 flags, 26 commands, 16 variables`・`ok codes: 64 codes`・`ok version: 0.1.0 (24 mentions)`・`ok std: 862 public functions in 42 modules`。`node scripts/check-links.mjs` が 116 リンク・0 broken。変えた言語リファレンスのページの `node scripts/check-docs.mjs` が通る。
+- **統括者への申し送り**: 新しい名前（`scripts/gen-docs.mjs`・`check-links.mjs`・`check-cli-docs.mjs`・`benchmarks/render.mjs`、マーカー `<!-- generated:NAME -->`、タグ `@complexity`・`@since`・`@see`、スキーマ `tz-bench-summary/1`・`tz-bench-metrics/1`、`.github/workflows/docs.yml`、`_specs/_archive/`）の D-55 への追記。
+- **残作業（タグ付けで見つけたこと。直していない）**: (1) `HashMap`・`HashSet` の既定の表（`empty()`）は鍵なしで、全キーを衝突させる入力では `insert` の拡張が二乗になる（`with_seed`・`randomized` で鍵付けできる。`distinct`・`count_by`・`group_by`・`except` も既定の表を使う）。(2) `Vec.sort_with`・`sort_range_with` は一時配列を確保し、借用版と既定の `sort` はその場で $O(n \log^2 n)$ の移動をする。(3) `Vec.add_range`・`insert_range` は借用した配列を一度複製してから移す。(4) `String.find` などは素朴な $O(n \cdot m)$ の探索。
+- **レビュー（PR #71）**: (1) `check-cli-docs` は旗・環境変数を語の単位で照合する（`--reverse` は `--rev` を、`TSUZURI_KG_DIR` は `TSUZURI_KG` を記述したことにならない）。std の名前も `Module.name` の後ろに識別子の文字が続かないものだけを数える（`List.find_index` は `List.find` の、`HashMap.get` は `Map.get` の言及ではない）。厳しくした照合で見つかった `kg path --rel`・`kg impact --to` を README と `option.md` に足した。(2) `parseStdPage` は `pure def`・`@属性`・`export`・`const` の署名を受け付ける（`Char` の 6 関数と `Random` の 3 関数が std の検査に入った）。(3) 表の 1 列目の改行を空白にする。(4) 計算量の凡例と「構造化タグ」に、`Copy` の複製を 1 要素 $O(1)$ と数えること、入れ子の結果の `k` は入れ子の要素もすべて数えること（`transpose`・`windowed`）、`longest_probe` の `k` は表の大きさであることを書いた。`HashMap.longest_probe`・`HashSet.longest_probe` は `O(k)` にした。
+- **レビュー 2 回目（PR #71）**: 凡例と「構造化タグ」の `k` に、容量を指定する関数（`with_capacity`・`with_capacity_and_seed`・`Vec.set_capacity` など）では確保する容量であることを足した。

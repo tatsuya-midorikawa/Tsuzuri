@@ -1352,6 +1352,14 @@ impl Repl {
                 // The other locations are in the generated program, not in the input (G22 D8).
                 located.related.clear();
                 located.fixes.clear();
+                // B10: the frames name the session's functions; their lines are the generated program's.
+                if let Some(trap) = &mut located.trap {
+                    for frame in &mut trap.frames {
+                        frame.path = None;
+                        frame.line = None;
+                        frame.column = None;
+                    }
+                }
                 (located, path, text)
             })
             .collect();

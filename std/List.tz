@@ -11,6 +11,8 @@
 
 /// The number of elements in `values`.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=3
 /// List.length [|10, 20, 30|]
 /// ```
@@ -18,6 +20,8 @@ def length :: ref [|'a|] -> i64
 fn length values = values.length
 
 /// Whether `values` has no elements.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=(true,%20false)
 /// let none: [|i32|] = [||]
@@ -27,6 +31,8 @@ def is_empty :: ref [|'a|] -> bool
 fn is_empty values = values.length == 0
 
 /// Returns a new list with a copy of every element, the explicit form of an implicit list copy.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|1,%202,%203|]
 /// List.copy [|1, 2, 3|]
@@ -64,6 +70,8 @@ fn common_length left right = if left < right then left else right
 
 /// The list with no elements.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=0
 /// let none: [|i32|] = List.empty()
 /// List.length none
@@ -73,6 +81,8 @@ fn empty = [||]
 
 /// A list whose only element is `value`.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=[|7|]
 /// List.singleton 7
 /// ```
@@ -81,6 +91,8 @@ fn singleton value = [|value|]
 
 /// A list of `count` copies of `value`.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=[|7,%207,%207|]
 /// List.replicate 3 7
 /// ```
@@ -88,6 +100,8 @@ def replicate :: Copy<'a> => own i64 -> own 'a -> [|'a|]
 fn replicate count value = new [|'a|](count, \_index -> value)
 
 /// A list of `count` elements in which the element at index `i` is `initializer i`.
+///
+/// @complexity O(k)
 ///
 /// ```tsuzuri run=[|0,%201,%204,%209|]
 /// List.init 4 (\i -> i * i)
@@ -99,6 +113,8 @@ fn init count initializer = new [|'a|](count, initializer)
 
 /// The first element of `values`; an empty list traps.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=10
 /// List.head [|10, 20, 30|]
 /// ```
@@ -109,6 +125,8 @@ fn head values =
 
 /// The first element of `values`, or `None` when it is empty.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=10
 /// Maybe.default_value 0 (List.try_head [|10, 20, 30|])
 /// ```
@@ -116,6 +134,8 @@ def try_head :: Copy<'a> => ref [|'a|] -> Maybe<'a>
 fn try_head values = if values.length == 0 then Maybe.None else Maybe.Some values[0]
 
 /// The element at `index` in `values`; an index outside the list traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=20
 /// List.item 1 [|10, 20, 30|]
@@ -125,6 +145,8 @@ fn item index values = values[index]
 
 /// The element at `index` in `values`, or `None` when `index` is outside the list.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=-1
 /// Maybe.default_value (-1) (List.try_item 5 [|10, 20, 30|])
 /// ```
@@ -133,6 +155,8 @@ fn try_item index values =
     if index < 0 || index >= values.length then Maybe.None else Maybe.Some values[index]
 
 /// The last element of `values`; an empty list traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=30
 /// List.last [|10, 20, 30|]
@@ -144,6 +168,8 @@ fn last values =
 
 /// The last element of `values`, or `None` when it is empty.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=0
 /// let none: [|i32|] = [||]
 /// Maybe.default_value 0 (List.try_last none)
@@ -152,6 +178,8 @@ def try_last :: Copy<'a> => ref [|'a|] -> Maybe<'a>
 fn try_last values = if values.length == 0 then Maybe.None else Maybe.Some values[values.length - 1]
 
 /// The only element of `values`; a list of any other length traps.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=42
 /// List.exactly_one [|42|]
@@ -162,6 +190,8 @@ fn exactly_one values =
     values[0]
 
 /// The only element of `values`, or `None` when its length is not 1.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=0
 /// Maybe.default_value 0 (List.try_exactly_one [|1, 2|])
@@ -185,6 +215,8 @@ fn prefix count values =
 
 /// The first `count` elements of `values`; a negative `count` or one above the length traps.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=[|1,%202|]
 /// List.take 2 [|1, 2, 3, 4|]
 /// ```
@@ -194,6 +226,8 @@ fn take count values =
     prefix count values
 
 /// The elements of `values` after the first `count`; a `count` above the length traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|3,%204|]
 /// List.skip 2 [|1, 2, 3, 4|]
@@ -205,6 +239,8 @@ fn skip count values =
 
 /// The first `count` elements of `values`, or all of them when `count` is above the length.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=[|1,%202,%203|]
 /// List.truncate 5 [|1, 2, 3|]
 /// ```
@@ -213,6 +249,8 @@ fn truncate count values =
     if count <= 0 then [||] else prefix (if count < values.length then count else values.length) values
 
 /// The first `index` elements of `values` and the rest, as a pair; a negative `index` or one above the length traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=([|1|],%20[|2,%203|])
 /// List.split_at 1 [|1, 2, 3|]
@@ -234,6 +272,8 @@ fn leading predicate values =
 
 /// The leading elements of `values` for which `predicate` is true.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|1,%202|]
 /// List.take_while (\x -> x < 3) [|1, 2, 3, 1|]
 /// ```
@@ -242,6 +282,8 @@ fn take_while predicate values = prefix (leading predicate values) values
 
 /// The elements of `values` after the leading ones for which `predicate` is true.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|3,%201|]
 /// List.skip_while (\x -> x < 3) [|1, 2, 3, 1|]
 /// ```
@@ -249,6 +291,8 @@ def skip_while :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> [|'a|]
 fn skip_while predicate values = skip (leading predicate values) values
 
 /// The elements of `values` for which `predicate` is true, in order.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|2,%204|]
 /// List.where (\x -> x % 2 == 0) [|1, 2, 3, 4|]
@@ -262,6 +306,8 @@ fn where predicate values =
 
 /// The elements of `values` for which `predicate` is true, in order; the same as `where`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|3,%202|]
 /// List.filter (\x -> x > 1) [|3, 1, 2|]
 /// ```
@@ -270,6 +316,8 @@ fn filter predicate values = where predicate values
 
 /// The lists of `lists` turned so that result list `i` holds element `i` of every list; lists of different lengths
 /// trap.
+///
+/// @complexity O(n + k)
 ///
 /// ```tsuzuri run=[|[|1,%204|],%20[|2,%205|],%20[|3,%206|]|]
 /// List.transpose [|[|1, 2, 3|], [|4, 5, 6|]|]
@@ -284,6 +332,9 @@ fn transpose lists =
 
 /// Calls `action` on each element of `values`, in order.
 ///
+/// @complexity O(n)
+/// @see List.iterr
+///
 /// ```tsuzuri run=
 /// List.iter (\x -> assert (x > 0)) [|1, 2, 3|]
 /// ```
@@ -292,6 +343,9 @@ fn iter action values = for value in values do action value
 
 /// Like `iter`, but `action` borrows each element, so the elements need not be `Copy`.
 ///
+/// @complexity O(n)
+/// @see List.iter
+///
 /// ```tsuzuri run=
 /// List.iterr (\s -> assert (s.length > 0)) [|"a", "bc"|]
 /// ```
@@ -299,6 +353,9 @@ def iterr :: own (ref 'a -> unit) -> ref [|'a|] -> unit
 fn iterr action values = for value in values do action (ref value)
 
 /// Calls `action` on the index and the value of each element of `values`, in order.
+///
+/// @complexity O(n)
+/// @see List.iterir
 ///
 /// ```tsuzuri run=
 /// List.iteri (\i x -> assert (x == i * 10)) [|0, 10, 20|]
@@ -312,6 +369,9 @@ fn iteri action values =
 
 /// Like `iteri`, but `action` borrows each element, so the elements need not be `Copy`.
 ///
+/// @complexity O(n)
+/// @see List.iteri
+///
 /// ```tsuzuri run=
 /// List.iterir (\i s -> assert (s.length == i + 1)) [|"a", "bc", "def"|]
 /// ```
@@ -324,6 +384,8 @@ fn iterir action values =
 
 /// Calls `action` on the elements at the same index of `left` and `right`, in order; lists of different lengths trap
 /// after the shared elements.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=
 /// List.iter2 (\a b -> assert (b == a * 2)) [|1, 2, 3|] [|2, 4, 6|]
@@ -340,6 +402,8 @@ fn iter2 action left right =
     assert (first.length == second.length)
 
 /// Like `iter2`, but `action` also takes the index.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=
 /// List.iteri2 (\i a b -> assert (a - b == i)) [|5, 6, 7|] [|5, 5, 5|]
@@ -362,6 +426,9 @@ fn iteri2 action left right =
 /// copies its environment. The results need not be `Copy`, so they cannot go through an array: `of_vec` builds the
 /// list, a chain of chunks.
 ///
+/// @complexity O(n)
+/// @see List.mapir
+///
 /// ```tsuzuri run=[|1,%2012,%2023|]
 /// List.mapi (\i x -> i * 10 + x) [|1, 2, 3|]
 /// ```
@@ -376,6 +443,9 @@ fn mapi transform values =
 
 /// Like `mapi`, but `transform` borrows each element, so the elements need not be `Copy`.
 ///
+/// @complexity O(n)
+/// @see List.mapi
+///
 /// ```tsuzuri run=[|(0,%202),%20(1,%201)|]
 /// List.mapir (\i s -> (i, s.length)) [|"ab", "c"|]
 /// ```
@@ -389,6 +459,8 @@ fn mapir transform values =
     of_vec mapped
 
 /// Applies `transform` to the elements at the same index of `left` and `right`; lists of different lengths trap.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|11,%2022,%2033|]
 /// List.map2 (\a b -> a + b) [|1, 2, 3|] [|10, 20, 30|]
@@ -408,6 +480,8 @@ fn map2 transform left right =
 
 /// Like `map2`, but `transform` also takes the index.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|(0,%203),%20(1,%208)|]
 /// List.mapi2 (\i a b -> (i, a * b)) [|1, 2|] [|3, 4|]
 /// ```
@@ -425,6 +499,8 @@ fn mapi2 transform left right =
     of_vec mapped
 
 /// Applies `transform` to the elements at the same index of three lists; lists of different lengths trap.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|111,%20222|]
 /// List.map3 (\a b c -> a + b + c) [|1, 2|] [|10, 20|] [|100, 200|]
@@ -446,6 +522,8 @@ fn map3 transform first second third =
 /// Maps each element with `mapping`, which also carries a state from `initial` through the list; returns the mapped
 /// list and the final state.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=([|1,%203,%206|],%206)
 /// List.map_fold (\total x -> (total + x, total + x)) 0 [|1, 2, 3|]
 /// ```
@@ -461,6 +539,8 @@ fn map_fold mapping initial values =
     (of_vec mapped, state)
 
 /// Like `map_fold`, but from the last element to the first; the mapped list keeps the order of `values`.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=([|6,%205,%203|],%206)
 /// List.map_fold_back (\x total -> (total + x, total + x)) 0 [|1, 2, 3|]
@@ -481,6 +561,8 @@ fn map_fold_back mapping initial values =
 
 /// Applies `mapping` to each element and joins the resulting lists, in order.
 ///
+/// @complexity O(n + k)
+///
 /// ```tsuzuri run=[|1,%2010,%202,%2020|]
 /// List.collect (\x -> [|x, x * 10|]) [|1, 2|]
 /// ```
@@ -493,6 +575,8 @@ fn collect mapping values =
     Array.to_list (Vec.to_array items)
 
 /// The values of the `Some` results of `chooser` on the elements, in order.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|20,%2030|]
 /// List.choose (\x -> if x > 1 then Maybe.Some (x * 10) else Maybe.None) [|1, 2, 3|]
@@ -510,6 +594,8 @@ fn choose chooser values =
 
 /// Combines the elements from the first to the last with `folder`, starting from `initial`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=123
 /// List.fold (\acc x -> acc * 10 + x) 0 [|1, 2, 3|]
 /// ```
@@ -520,6 +606,8 @@ fn fold folder initial values =
     state
 
 /// Like `fold`, over the elements at the same index of `left` and `right`; lists of different lengths trap.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=32
 /// List.fold2 (\acc a b -> acc + a * b) 0 [|1, 2, 3|] [|4, 5, 6|]
@@ -539,6 +627,9 @@ fn fold2 folder initial left right =
 
 /// Combines the elements from the last to the first with `folder`, starting from `initial`.
 ///
+/// @complexity O(n)
+/// @see List.foldr_back
+///
 /// ```tsuzuri run=321
 /// List.fold_back (\x acc -> acc * 10 + x) 0 [|1, 2, 3|]
 /// ```
@@ -550,6 +641,9 @@ private def references :: ref [|'a|] -> Vec<ref 'a>
 fn references values = List.foldr (\collected value -> Vec.push_owned value collected) (Vec.empty()) values
 
 /// Like `fold_back`, but `folder` borrows each element, so the elements need not be `Copy`.
+///
+/// @complexity O(n)
+/// @see List.fold_back
 ///
 /// ```tsuzuri run=12
 /// List.foldr_back (\s acc -> acc * 10 + s.length) 0 [|"ab", "c"|]
@@ -566,6 +660,8 @@ fn foldr_back folder initial values =
 
 /// Like `fold_back`, over the elements at the same index of `left` and `right`; lists of different lengths trap.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=83
 /// List.fold_back2 (\a b acc -> acc * 10 + a * b) 0 [|1, 2|] [|3, 4|]
 /// ```
@@ -574,6 +670,8 @@ fn fold_back2 folder initial left right = Array.fold_back2 folder initial (List.
 
 /// Combines the elements from the first to the last with `folder`, starting from the first element; an empty list
 /// traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=3
 /// List.reduce (\a b -> a - b) [|10, 4, 3|]
@@ -591,6 +689,8 @@ fn reduce folder values =
 /// Combines the elements from the last to the first with `folder`, starting from the last element; an empty list
 /// traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=9
 /// List.reduce_back (\a b -> a - b) [|10, 4, 3|]
 /// ```
@@ -598,6 +698,8 @@ def reduce_back :: Copy<'a> => own ('a -> 'a -> 'a) -> ref [|'a|] -> 'a
 fn reduce_back folder values = Array.reduce_back folder (List.to_array values)
 
 /// The states of `fold`: `initial`, then the state after each element.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|0,%201,%203,%206|]
 /// List.scan (\acc x -> acc + x) 0 [|1, 2, 3|]
@@ -613,6 +715,8 @@ fn scan folder initial values =
 
 /// The states of `fold_back`, in the order of the elements and ending with `initial`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|6,%205,%203,%200|]
 /// List.scan_back (\x acc -> acc + x) 0 [|1, 2, 3|]
 /// ```
@@ -622,6 +726,9 @@ fn scan_back folder initial values = Array.to_list (Array.scan_back folder initi
 // ---- Searching ----
 
 /// Whether `predicate` is true for some element of `values`; it is not called after the first true result.
+///
+/// @complexity O(n)
+/// @see List.existsr
 ///
 /// ```tsuzuri run=true
 /// List.exists (\x -> x > 2) [|1, 2, 3|]
@@ -636,6 +743,9 @@ fn exists predicate values =
     found
 
 /// Like `exists`, but `predicate` borrows each element, so the elements need not be `Copy`.
+///
+/// @complexity O(n)
+/// @see List.exists
 ///
 /// ```tsuzuri run=false
 /// List.existsr (\s -> s.length > 2) [|"ab", "cd"|]
@@ -652,6 +762,8 @@ fn existsr predicate values =
 /// Whether `predicate` is true for some pair of elements at the same index of `left` and `right`; lists of different
 /// lengths trap unless some shared pair satisfies it.
 ///
+/// @complexity O(n + m)
+///
 /// ```tsuzuri run=true
 /// List.exists2 (\a b -> a == b) [|1, 2, 3|] [|3, 2, 1|]
 /// ```
@@ -667,6 +779,9 @@ fn exists2 predicate left right =
 
 /// Whether `predicate` is true for every element of `values`; it is not called after the first false result.
 ///
+/// @complexity O(n)
+/// @see List.forallr
+///
 /// ```tsuzuri run=true
 /// List.forall (\x -> x > 0) [|1, 2, 3|]
 /// ```
@@ -680,6 +795,9 @@ fn forall predicate values =
     all
 
 /// Like `forall`, but `predicate` borrows each element, so the elements need not be `Copy`.
+///
+/// @complexity O(n)
+/// @see List.forall
 ///
 /// ```tsuzuri run=false
 /// List.forallr (\s -> s.length > 1) [|"ab", "c"|]
@@ -695,6 +813,8 @@ fn forallr predicate values =
 
 /// Whether `predicate` is true for every pair of elements at the same index of `left` and `right`; lists of different
 /// lengths trap unless some shared pair fails it.
+///
+/// @complexity O(n + m)
 ///
 /// ```tsuzuri run=true
 /// List.forall2 (\a b -> a < b) [|1, 2|] [|3, 4|]
@@ -729,6 +849,8 @@ fn positionr predicate values =
 
 /// The index of the first element for which `predicate` is true, or `None` when there is none.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=1
 /// Maybe.default_value (-1) (List.try_find_index (\x -> x > 1) [|1, 5, 7|])
 /// ```
@@ -738,6 +860,8 @@ fn try_find_index predicate values =
     if found < values.length then Maybe.Some found else Maybe.None
 
 /// The index of the first element for which `predicate` is true; it traps when there is none.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=1
 /// List.find_index (\x -> x > 1) [|1, 5, 7|]
@@ -750,6 +874,8 @@ fn find_index predicate values =
 
 /// The index of the last element for which `predicate` is true, or `None` when there is none.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=-1
 /// Maybe.default_value (-1) (List.try_find_index_back (\x -> x > 9) [|1, 5, 7|])
 /// ```
@@ -758,6 +884,8 @@ fn try_find_index_back predicate values = Array.try_find_index_back predicate (L
 
 /// The index of the last element for which `predicate` is true; it traps when there is none.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=2
 /// List.find_index_back (\x -> x > 1) [|1, 5, 7|]
 /// ```
@@ -765,6 +893,9 @@ def find_index_back :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> i64
 fn find_index_back predicate values = Array.find_index_back predicate (List.to_array values)
 
 /// The first element for which `predicate` is true, or `None` when there is none.
+///
+/// @complexity O(n)
+/// @see List.try_findr
 ///
 /// ```tsuzuri run=5
 /// Maybe.default_value 0 (List.try_find (\x -> x > 1) [|1, 5, 7|])
@@ -775,6 +906,9 @@ fn try_find predicate values =
     if found < values.length then Maybe.Some values[found] else Maybe.None
 
 /// The first element for which `predicate` is true; it traps when there is none.
+///
+/// @complexity O(n)
+/// @see List.findr
 ///
 /// ```tsuzuri run=5
 /// List.find (\x -> x > 1) [|1, 5, 7|]
@@ -787,6 +921,8 @@ fn find predicate values =
 
 /// The last element for which `predicate` is true, or `None` when there is none.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=7
 /// Maybe.default_value 0 (List.try_find_back (\x -> x > 1) [|1, 5, 7|])
 /// ```
@@ -795,6 +931,8 @@ fn try_find_back predicate values = Array.try_find_back predicate (List.to_array
 
 /// The last element for which `predicate` is true; it traps when there is none.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=5
 /// List.find_back (\x -> x < 7) [|1, 5, 7|]
 /// ```
@@ -802,6 +940,9 @@ def find_back :: Copy<'a> => own ('a -> bool) -> ref [|'a|] -> 'a
 fn find_back predicate values = Array.find_back predicate (List.to_array values)
 
 /// Like `try_find`, but returns a reference to the element, so the elements need not be `Copy`.
+///
+/// @complexity O(n)
+/// @see List.try_find
 ///
 /// ```tsuzuri run=found%20bc
 /// let words = [|"a", "bc", "de"|]
@@ -815,6 +956,9 @@ fn try_findr predicate values =
     if found < values.length then Maybe.Some (ref values[found]) else Maybe.None
 
 /// Like `find`, but returns a reference to the element, so the elements need not be `Copy`.
+///
+/// @complexity O(n)
+/// @see List.find
 ///
 /// ```tsuzuri run=bc
 /// let words = [|"a", "bc", "de"|]
@@ -830,6 +974,8 @@ fn findr predicate values =
 /// The first `Some` result of `chooser` on the elements, or `None` when every result is `None`; `chooser` is not
 /// called after the first `Some`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=20
 /// let tens = \x -> if x > 1 then Maybe.Some (x * 10) else Maybe.None
 /// Maybe.default_value 0 (List.try_pick tens [|1, 2, 3|])
@@ -844,6 +990,8 @@ fn try_pick chooser values =
 
 /// The first `Some` result of `chooser` on the elements; it traps when every result is `None`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=20
 /// List.pick (\x -> if x > 1 then Maybe.Some (x * 10) else Maybe.None) [|1, 2, 3|]
 /// ```
@@ -854,6 +1002,8 @@ fn pick chooser values =
     Maybe.get found
 
 /// The elements for which `predicate` is true and those for which it is false, each in order.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=([|2,%204|],%20[|1,%203|])
 /// List.partition (\x -> x % 2 == 0) [|1, 2, 3, 4|]
@@ -868,6 +1018,8 @@ fn partition predicate values =
     (Array.to_list (Vec.to_array accepted), Array.to_list (Vec.to_array rejected))
 
 /// The `Ok` values and the `Error` values of `partitioner` on the elements, each in order.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=([|1,%203|],%20[|2|])
 /// List.partition_with (\x -> if x > 0 then Result.Ok x else Result.Error (-x)) [|1, -2, 3|]
@@ -886,6 +1038,8 @@ fn partition_with partitioner values =
 
 /// The sum of the elements of `values`, 0 for an empty list.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=6
 /// List.sum [|1, 2, 3|]
 /// ```
@@ -896,6 +1050,8 @@ fn sum values =
     total
 
 /// The sum of `projection` applied to each element of `values`.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=14
 /// List.sum_by (\x -> x * x) [|1, 2, 3|]
@@ -908,6 +1064,8 @@ fn sum_by projection values =
 
 /// The mean of the elements of `values`; an empty list traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=2.5
 /// List.average [|1.0, 2.0, 4.5|]
 /// ```
@@ -917,6 +1075,8 @@ fn average values =
     sum values / (values.length as 'a)
 
 /// The mean of `projection` applied to each element of `values`; an empty list traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=2.5
 /// List.average_by (\x -> x as f64) [|1, 2, 3, 4|]
@@ -943,6 +1103,9 @@ fn greater best value =
 
 /// The smallest element of `values`; an empty list traps.
 ///
+/// @complexity O(n)
+/// @see List.minr
+///
 /// ```tsuzuri run=1
 /// List.min [|3, 1, 2|]
 /// ```
@@ -955,6 +1118,9 @@ fn min values =
     best
 
 /// The largest element of `values`; an empty list traps.
+///
+/// @complexity O(n)
+/// @see List.maxr
 ///
 /// ```tsuzuri run=3
 /// List.max [|3, 1, 2|]
@@ -969,6 +1135,9 @@ fn max values =
 
 /// Like `min`, but returns a reference to the element, so the elements need not be `Copy`.
 ///
+/// @complexity O(n)
+/// @see List.min
+///
 /// ```tsuzuri run=apple
 /// let words = [|"pear", "apple", "fig"|]
 /// let first = List.minr words
@@ -981,6 +1150,9 @@ fn minr values =
 
 /// Like `max`, but returns a reference to the element, so the elements need not be `Copy`.
 ///
+/// @complexity O(n)
+/// @see List.max
+///
 /// ```tsuzuri run=pear
 /// let words = [|"pear", "apple", "fig"|]
 /// let last = List.maxr words
@@ -992,6 +1164,8 @@ fn maxr values =
     Maybe.get (List.foldr greater Maybe.None values)
 
 /// The first element of `values` with the smallest `projection`; an empty list traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=-2
 /// List.min_by (\x -> x * x) [|-2, 3, 2|]
@@ -1012,6 +1186,8 @@ fn min_by projection values =
     best
 
 /// The first element of `values` with the largest `projection`; an empty list traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=-3
 /// List.max_by (\x -> x * x) [|2, -3, 3|]
@@ -1034,6 +1210,8 @@ fn max_by projection values =
 /// Compares `left` with `right` element by element with `comparer`: the first nonzero result, or else -1, 0 or 1 as
 /// `left` is shorter than, as long as, or longer than `right`.
 ///
+/// @complexity O(n + m)
+///
 /// ```tsuzuri run=2
 /// List.compare_with (\a b -> a - b) [|1, 5|] [|1, 3, 9|]
 /// ```
@@ -1043,6 +1221,9 @@ fn compare_with comparer left right = Array.compare_with comparer (List.to_array
 // ---- Comparing and searching by value ----
 
 /// Like `contains`, but `target` is borrowed, so the caller keeps it.
+///
+/// @complexity O(n)
+/// @see List.contains
 ///
 /// ```tsuzuri run=true
 /// List.containsr "b" [|"a", "b"|]
@@ -1058,6 +1239,9 @@ fn containsr target values =
 
 /// Whether `values` has an element equal to `target`.
 ///
+/// @complexity O(n)
+/// @see List.containsr
+///
 /// ```tsuzuri run=true
 /// List.contains 2 [|1, 2, 3|]
 /// ```
@@ -1068,6 +1252,8 @@ fn contains target values = containsr (ref target) values
 
 /// The elements of `left` followed by those of `right`.
 ///
+/// @complexity O(n + m)
+///
 /// ```tsuzuri run=[|1,%202,%203,%204|]
 /// List.append [|1, 2|] [|3, 4|]
 /// ```
@@ -1075,6 +1261,8 @@ def append :: Copy<'a> => ref [|'a|] -> ref [|'a|] -> [|'a|]
 fn append left right = Array.to_list (Array.append (List.to_array left) (List.to_array right))
 
 /// The elements of every list in `lists`, in order.
+///
+/// @complexity O(n + k)
 ///
 /// ```tsuzuri run=[|1,%202,%203,%204|]
 /// List.concat [|[|1|], [|2, 3|], [|4|]|]
@@ -1087,6 +1275,8 @@ fn concat lists =
 
 /// The pairs of the elements at the same index of `left` and `right`; lists of different lengths trap.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|(1,%20true),%20(2,%20false)|]
 /// List.zip [|1, 2|] [|true, false|]
 /// ```
@@ -1094,6 +1284,8 @@ def zip :: (Copy<'a>, Copy<'b>) => ref [|'a|] -> ref [|'b|] -> [|('a * 'b)|]
 fn zip left right = Array.to_list (Array.zip (List.to_array left) (List.to_array right))
 
 /// The triples of the elements at the same index of three lists; lists of different lengths trap.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|(1,%20true,%201.5),%20(2,%20false,%202.5)|]
 /// List.zip3 [|1, 2|] [|true, false|] [|1.5, 2.5|]
@@ -1103,6 +1295,8 @@ fn zip3 first second third =
     Array.to_list (Array.zip3 (List.to_array first) (List.to_array second) (List.to_array third))
 
 /// The first items and the second items of `pairs`, as two lists.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=([|1,%202|],%20[|true,%20false|])
 /// List.unzip [|(1, true), (2, false)|]
@@ -1114,6 +1308,8 @@ fn unzip pairs =
 
 /// The first, the second and the third items of `triples`, as three lists.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=([|1,%202|],%20[|true,%20false|],%20[|1.5,%202.5|])
 /// List.unzip3 [|(1, true, 1.5), (2, false, 2.5)|]
 /// ```
@@ -1124,6 +1320,8 @@ fn unzip3 triples =
 
 /// Every pair of an element of `left` and an element of `right`, ordered by `left` first.
 ///
+/// @complexity O(n * m)
+///
 /// ```tsuzuri run=[|(1,%203),%20(1,%204),%20(2,%203),%20(2,%204)|]
 /// List.all_pairs [|1, 2|] [|3, 4|]
 /// ```
@@ -1132,6 +1330,8 @@ fn all_pairs left right = Array.to_list (Array.all_pairs (List.to_array left) (L
 
 /// Each element of `values` paired with its index.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|(0,%2010),%20(1,%2020)|]
 /// List.indexed [|10, 20|]
 /// ```
@@ -1139,6 +1339,8 @@ def indexed :: Copy<'a> => ref [|'a|] -> [|(i64 * 'a)|]
 fn indexed values = Array.to_list (Array.indexed (List.to_array values))
 
 /// Each element of `values` paired with the next one.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|(1,%202),%20(2,%203)|]
 /// List.pairwise [|1, 2, 3|]
@@ -1155,6 +1357,8 @@ fn windows_of size source =
     if size > source.length then [||] else new [|[|'a|]|](source.length - size + 1, \start -> slice_list source start size)
 
 /// Every run of `size` consecutive elements of `values`, in order; a `size` below 1 traps.
+///
+/// @complexity O(n + k)
 ///
 /// ```tsuzuri run=[|[|1,%202|],%20[|2,%203|]|]
 /// List.windowed 2 [|1, 2, 3|]
@@ -1174,6 +1378,8 @@ fn chunks_of size source =
     new [|[|'a|]|](source.length / size + (if source.length % size == 0 then 0 else 1), \index -> chunk_at source size index)
 
 /// Cuts `values` into lists of `size` elements, the last of which may be shorter; a `size` below 1 traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|[|1,%202|],%20[|3,%204|],%20[|5|]|]
 /// List.chunk_by_size 2 [|1, 2, 3, 4, 5|]
@@ -1196,6 +1402,8 @@ fn parts_of count source =
 /// Splits `values` into at most `count` lists whose lengths differ by at most 1, the longer ones first; a `count`
 /// below 1 traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|[|1,%202,%203|],%20[|4,%205|],%20[|6,%207|]|]
 /// List.split_into 3 [|1, 2, 3, 4, 5, 6, 7|]
 /// ```
@@ -1205,6 +1413,8 @@ fn split_into count values =
     parts_of count (List.to_array values)
 
 /// The elements that `generator` yields from the state `initial` until it returns `None`.
+///
+/// @complexity O(k)
 ///
 /// ```tsuzuri run=[|1,%202,%204,%208,%2016,%2032,%2064|]
 /// List.unfold (\n -> if n > 100 then Maybe.None else Maybe.Some (n, n * 2)) 1
@@ -1227,6 +1437,8 @@ fn unfold generator initial =
 /// Moves the element at each index `i` of `values` to index `index_map i`; an `index_map` that is not a permutation of
 /// the indices traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|3,%201,%202|]
 /// List.permute (\i -> (i + 1) % 3) [|1, 2, 3|]
 /// ```
@@ -1237,6 +1449,8 @@ fn permute index_map values = Array.to_list (Array.permute index_map (List.to_ar
 
 /// A copy of `values` with `value` inserted at `index`; a negative `index` or one above the length traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|1,%209,%202,%203|]
 /// List.insert_at 1 9 [|1, 2, 3|]
 /// ```
@@ -1245,6 +1459,8 @@ fn insert_at index value values = Array.to_list (Array.insert_at index value (Li
 
 /// A copy of `values` with the elements of `items` inserted at `index`; a negative `index` or one above the length
 /// traps.
+///
+/// @complexity O(n + m)
 ///
 /// ```tsuzuri run=[|1,%208,%209,%202|]
 /// List.insert_many_at 1 [|8, 9|] [|1, 2|]
@@ -1255,6 +1471,8 @@ fn insert_many_at index items values =
 
 /// A copy of `values` without the element at `index`; an index outside the list traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|2,%203|]
 /// List.remove_at 0 [|1, 2, 3|]
 /// ```
@@ -1263,6 +1481,8 @@ fn remove_at index values = Array.to_list (Array.remove_at index (List.to_array 
 
 /// A copy of `values` without the `count` elements from `index`; a range outside the list traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|1,%204|]
 /// List.remove_many_at 1 2 [|1, 2, 3, 4|]
 /// ```
@@ -1270,6 +1490,8 @@ def remove_many_at :: Copy<'a> => own i64 -> own i64 -> ref [|'a|] -> [|'a|]
 fn remove_many_at index count values = Array.to_list (Array.remove_many_at index count (List.to_array values))
 
 /// A copy of `values` with the element at `index` replaced by `value`; an index outside the list traps.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|1,%209,%203|]
 /// List.update_at 1 9 [|1, 2, 3|]
@@ -1281,6 +1503,8 @@ fn update_at index value values = Array.to_list (Array.update_at index value (Li
 
 /// A list of the elements of the array `values`, in order.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|1,%202,%203|]
 /// List.of_array [1, 2, 3]
 /// ```
@@ -1288,6 +1512,8 @@ def of_array :: Copy<'a> => ref ['a] -> [|'a|]
 fn of_array values = Array.to_list values
 
 /// A list of the elements of `source`, in order.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|0,%2010,%2020|]
 /// let tens = Seq.unfold (\n -> if n > 2 then Maybe.None else Maybe.Some (n * 10, n + 1)) 0
@@ -1300,6 +1526,9 @@ fn of_seq source =
     of_vec items
 
 /// Like `to_seq`, but yields references, so the elements need not be `Copy`.
+///
+/// @complexity O(n)
+/// @see List.to_seq
 ///
 /// ```tsuzuri run=5
 /// let words = [|"ab", "cde"|]
@@ -1316,6 +1545,10 @@ fn to_seqr values =
             else Maybe.None) (references values, 0)
 
 /// A sequence of the elements of `values`, in order.
+/// Collects a reference to every element first; each step of the returned `Seq` then takes O(1).
+///
+/// @complexity O(n)
+/// @see List.to_seqr
 ///
 /// ```tsuzuri run=[2,%204,%206]
 /// let values = [|1, 2, 3|]
@@ -1333,6 +1566,8 @@ fn to_seq values =
 
 /// The elements of `values` without repeats, in the order of their first appearance.
 ///
+/// @complexity expected O(n), worst O(n * n)
+///
 /// ```tsuzuri run=[|1,%202,%203|]
 /// List.distinct [|1, 2, 1, 3, 2|]
 /// ```
@@ -1341,6 +1576,8 @@ fn distinct values = Array.to_list (Array.distinct (List.to_array values))
 
 /// The elements of `values` whose `projection` no earlier element has, in order.
 ///
+/// @complexity expected O(n), worst O(n * n)
+///
 /// ```tsuzuri run=[|1,%202,%203|]
 /// List.distinct_by (\x -> x % 3) [|1, 4, 2, 5, 3|]
 /// ```
@@ -1348,6 +1585,8 @@ def distinct_by :: (Copy<'a>, Hash<'key>, Eq<'key>) => own ('a -> 'key) -> ref [
 fn distinct_by projection values = Array.to_list (Array.distinct_by projection (List.to_array values))
 
 /// The elements of `values` that are not in `excluded`, without repeats, in order.
+///
+/// @complexity expected O(n + m), worst O(n * n + n * m + m * m)
 ///
 /// ```tsuzuri run=[|1,%203|]
 /// List.except [|2|] [|1, 2, 3, 1|]
@@ -1358,6 +1597,8 @@ fn except excluded values = Array.to_list (Array.except (List.to_array excluded)
 /// Each distinct key that `projection` gives the elements of `values`, in the order of first appearance, with the
 /// number of elements that have it.
 ///
+/// @complexity expected O(n), worst O(n * n)
+///
 /// ```tsuzuri run=[|(1,%202),%20(0,%201)|]
 /// List.count_by (\x -> x % 2) [|1, 2, 3|]
 /// ```
@@ -1366,6 +1607,8 @@ fn count_by projection values = Array.to_list (Array.count_by projection (List.t
 
 /// Each distinct key that `projection` gives the elements of `values`, in the order of first appearance, with the list
 /// of the elements that have it, in order.
+///
+/// @complexity expected O(n), worst O(n * n)
 ///
 /// ```tsuzuri run=[|(1,%20[|1,%203|]),%20(0,%20[|2|])|]
 /// List.group_by (\x -> x % 2) [|1, 2, 3|]
@@ -1381,6 +1624,8 @@ fn group_by projection values =
 
 /// The elements of `values` in ascending order.
 ///
+/// @complexity O(n log n)
+///
 /// ```tsuzuri run=[|1,%202,%203|]
 /// List.sort [|3, 1, 2|]
 /// ```
@@ -1388,6 +1633,8 @@ def sort :: (Ord<'a>, Copy<'a>) => ref [|'a|] -> [|'a|]
 fn sort values = Array.to_list (Array.sort (List.to_array values))
 
 /// The elements of `values` in descending order.
+///
+/// @complexity O(n log n)
 ///
 /// ```tsuzuri run=[|3,%202,%201|]
 /// List.sort_descending [|1, 3, 2|]
@@ -1398,6 +1645,8 @@ fn sort_descending values = Array.to_list (Array.sort_descending (List.to_array 
 /// The elements of `values` ordered by `comparer`, which returns a negative number, 0 or a positive number as its first
 /// argument comes before, ties with, or comes after its second.
 ///
+/// @complexity O(n log n)
+///
 /// ```tsuzuri run=[|3,%202,%201|]
 /// List.sort_with (\a b -> b - a) [|1, 3, 2|]
 /// ```
@@ -1406,6 +1655,8 @@ fn sort_with comparer values = Array.to_list (Array.sort_with comparer (List.to_
 
 /// The elements of `values` in ascending order of `projection`.
 ///
+/// @complexity O(n log n)
+///
 /// ```tsuzuri run=[|1,%202,%20-3|]
 /// List.sort_by (\x -> x * x) [|-3, 1, 2|]
 /// ```
@@ -1413,6 +1664,8 @@ def sort_by :: (Copy<'a>, Ord<'key>) => own ('a -> 'key) -> ref [|'a|] -> [|'a|]
 fn sort_by projection values = Array.to_list (Array.sort_by projection (List.to_array values))
 
 /// The elements of `values` in descending order of `projection`.
+///
+/// @complexity O(n log n)
 ///
 /// ```tsuzuri run=[|-3,%202,%201|]
 /// List.sort_by_descending (\x -> x * x) [|1, -3, 2|]
@@ -1424,6 +1677,8 @@ fn sort_by_descending projection values = Array.to_list (Array.sort_by_descendin
 
 /// A shuffled copy of `values`. `randomizer` returns numbers in `[0, 1)`; any other number traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|3,%201,%202|]
 /// List.random_shuffle_by (\() -> 0.99) [|1, 2, 3|]
 /// ```
@@ -1431,6 +1686,8 @@ def random_shuffle_by :: Copy<'a> => own (unit -> f64) -> ref [|'a|] -> [|'a|]
 fn random_shuffle_by randomizer values = Array.to_list (Array.random_shuffle_by randomizer (List.to_array values))
 
 /// Like `random_shuffle_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[|1,%202,%203|]
 /// let generator = Random.pcg 42i64u 54i64u
@@ -1444,6 +1701,8 @@ fn random_shuffle_with generator values =
 
 /// A random element. `randomizer` returns numbers in `[0, 1)`; any other number traps, as does an empty `values`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=20
 /// List.random_choice_by (\() -> 0.5) [|10, 20, 30|]
 /// ```
@@ -1451,6 +1710,8 @@ def random_choice_by :: Copy<'a> => own (unit -> f64) -> ref [|'a|] -> 'a
 fn random_choice_by randomizer values = Array.random_choice_by randomizer (List.to_array values)
 
 /// Like `random_choice_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=true
 /// let generator = Random.pcg 42i64u 54i64u
@@ -1463,6 +1724,8 @@ fn random_choice_with generator values = Array.random_choice_with generator (Lis
 /// `count` random elements, each of which can be chosen again. A negative `count`, or a positive one with an empty
 /// `values`, traps.
 ///
+/// @complexity O(n + k)
+///
 /// ```tsuzuri run=[|20,%2020|]
 /// List.random_choices_by (\() -> 0.5) 2 [|10, 20, 30|]
 /// ```
@@ -1471,6 +1734,8 @@ fn random_choices_by randomizer count values =
     Array.to_list (Array.random_choices_by randomizer count (List.to_array values))
 
 /// Like `random_choices_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
+///
+/// @complexity O(n + k)
 ///
 /// ```tsuzuri run=5
 /// let generator = Random.pcg 42i64u 54i64u
@@ -1484,6 +1749,8 @@ fn random_choices_with generator count values =
 
 /// `count` random elements, each of which is chosen at most once. `count` outside `0 .. values.length` traps.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[|30,%2010|]
 /// List.random_sample_by (\() -> 0.5) 2 [|10, 20, 30, 40|]
 /// ```
@@ -1492,6 +1759,8 @@ fn random_sample_by randomizer count values =
     Array.to_list (Array.random_sample_by randomizer count (List.to_array values))
 
 /// Like `random_sample_by`, with a `Random.Pcg` generator; the result comes with the generator to use next.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=3
 /// let generator = Random.pcg 42i64u 54i64u
@@ -1512,6 +1781,8 @@ fn listed action = IO.map (\outcome ->
 
 /// A shuffled copy of `values`, from a generator seeded from the operating system when the action runs.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri
 /// def main :: unit -> i32 = \() ->
 ///     let! shuffled = List.random_shuffle [|1, 2, 3|]
@@ -1526,6 +1797,8 @@ fn random_shuffle values = listed (Array.random_shuffle (List.to_array values))
 /// A random element, from a generator seeded from the operating system when the action runs. An empty `values` traps
 /// then.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri
 /// def main :: unit -> i32 = \() ->
 ///     let! chosen = List.random_choice [|10, 20, 30|]
@@ -1539,6 +1812,8 @@ fn random_choice values = Array.random_choice (List.to_array values)
 
 /// `count` random elements that can repeat, from a generator seeded from the operating system when the action runs.
 ///
+/// @complexity O(n + k)
+///
 /// ```tsuzuri
 /// def main :: unit -> i32 = \() ->
 ///     let! chosen = List.random_choices 2 [|10, 20, 30|]
@@ -1551,6 +1826,8 @@ def random_choices :: Copy<'a> => own i64 -> own [|'a|] -> IO<Result<[|'a|], Os.
 fn random_choices count values = listed (Array.random_choices count (List.to_array values))
 
 /// `count` distinct random elements, from a generator seeded from the operating system when the action runs.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri
 /// def main :: unit -> i32 = \() ->

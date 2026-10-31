@@ -84,6 +84,8 @@ fn join head tail =
 
 /// An empty map.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=0
 /// let map: Map<string, i64> = Map.empty()
 /// Map.length map
@@ -92,6 +94,8 @@ def empty :: Map<'key, 'value>
 fn empty = Map { head: Vec.empty(), rest: Vec.empty(), length: 0 }
 
 /// A map with one entry, `key` with `value`.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=one
 /// let map = Map.singleton 1 "one"
@@ -102,6 +106,8 @@ fn singleton key value = Map { head: Vec.push_owned (Entry { key: key, value: va
 
 /// The number of entries.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=2
 /// Map.empty() |> Map.insert "a" 1 |> Map.insert "b" 2 |> Map.insert "a" 3 |> Map.length
 /// ```
@@ -109,6 +115,8 @@ def length :: ref Map<'key, 'value> -> i64
 fn length map = map.length
 
 /// Whether the map has no entries.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=true
 /// Map.singleton 1 "one" |> Map.remove 1 |> Map.is_empty
@@ -120,6 +128,8 @@ private def chunk_total :: ref Map<'key, 'value> -> i64
 fn chunk_total map = if map.length == 0 then 0 else 1 + Vec.length (ref map.rest)
 
 /// The number of chunks that hold the entries (0 for an empty map). A diagnostic for tests, like `HashMap.longest_probe`.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=2
 /// let mut map: Map<i64, i64> = Map.empty()
@@ -161,6 +171,8 @@ fn locate map key =
 
 /// Whether an entry has `key`.
 ///
+/// @complexity O(log n)
+///
 /// ```tsuzuri run=true%20false
 /// let map = Map.singleton "tea" 3
 /// $"{Map.contains_key "tea" map} {Map.contains_key "cake" map}"
@@ -171,6 +183,8 @@ fn contains_key key map =
 	| (_chunk, offset) -> offset >= 0
 
 /// The value for `key`, or `None`.
+///
+/// @complexity O(log n)
 ///
 /// ```tsuzuri run=3%200
 /// let prices = Map.singleton "tea" 3
@@ -188,6 +202,8 @@ fn get key map =
 		else Maybe.None
 
 /// A reference to the value for `key`; traps when no entry has it.
+///
+/// @complexity O(log n)
 ///
 /// ```tsuzuri run=two
 /// let names = Map.empty() |> Map.insert 2 "two" |> Map.insert 1 "one"
@@ -264,6 +280,9 @@ fn beyond_last map key =
 		Ord.lt (ref entries[last].key) key
 
 /// Adds an entry for `key` with `value`, or replaces the value of the entry that has `key`.
+/// Replacing the value of an existing key takes O(log n); a new key shifts the entries after it in its chunk, and a full chunk that splits also shifts the chunks after it.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[(1,%2010),%20(2,%2030)]
 /// Map.empty() |> Map.insert 2 20 |> Map.insert 1 10 |> Map.insert 2 30 |> Map.to_array
@@ -311,6 +330,8 @@ fn delete_chunk map index =
 		| (others, _gone) -> Map { head: map.head, rest: others, length: count }
 
 /// Removes the entry that has `key`; a map without one comes back unchanged.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[3]
 /// let map = Map.empty() |> Map.insert 1 10 |> Map.insert 3 30
@@ -361,6 +382,8 @@ fn append_values output entries =
 
 /// The entries as `(key, value)` pairs, in ascending key order.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[(1,%2010),%20(2,%2020)]
 /// Map.empty() |> Map.insert 2 20 |> Map.insert 1 10 |> Map.to_array
 /// ```
@@ -374,6 +397,8 @@ fn to_array map =
 	Vec.to_array output
 
 /// The keys in ascending order.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[1,%202,%203]
 /// Map.empty() |> Map.insert 3 "c" |> Map.insert 1 "a" |> Map.insert 2 "b" |> Map.keys
@@ -389,6 +414,8 @@ fn keys map =
 
 /// The values in ascending order of their keys.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[10,%2020,%2030]
 /// Map.empty() |> Map.insert "c" 30 |> Map.insert "a" 10 |> Map.insert "b" 20 |> Map.values
 /// ```
@@ -402,6 +429,8 @@ fn values map =
 	Vec.to_array output
 
 /// Folds `folder` over the entries in ascending key order, starting from `initial`.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=a1b2
 /// let map = Map.empty() |> Map.insert "b" 2 |> Map.insert "a" 1
@@ -432,6 +461,8 @@ fn rec iter_from map chunk offset = Seq.defer (\() ->
 
 /// A sequence of references to the keys and values, in ascending key order.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=a=1;b=2;
 /// let map = Map.empty() |> Map.insert "b" 2 |> Map.insert "a" 1
 /// let mut text = ""
@@ -443,6 +474,8 @@ fn iter map = iter_from map 0 0
 
 /// Whether the chunks obey their rules: 1 to 512 entries each, more than 256 entries in any two neighbours, strictly ascending keys,
 /// and `length` equal to the number of entries. A diagnostic for tests, like `HashMap.longest_probe`.
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=true
 /// let mut map: Map<i64, i64> = Map.empty()
