@@ -12,16 +12,33 @@ fn rec iter_from values index = Seq.defer (\() ->
     if index < Vec.length values then (iter_from values (index + 1), Maybe.Some (ref values[index]))
     else (Seq.empty(), Maybe.None))
 
+/// A sequence of references to the elements, in index order.
+///
+/// ```tsuzuri run=6
+/// let words = Vec.of_array ["a", "bb", "ccc"]
+/// let mut total = 0
+/// for word in Vec.iter words do total = total + word.length
+/// total
+/// ```
 def iter :: ref Vec<'a> -> Seq<ref 'a>
 fn iter values = iter_from values 0
 
 // ---- Construction ----
 
 /// A `Vec` of the elements of a sequence, as `new List<T>(IEnumerable<T>)`.
+///
+/// ```tsuzuri run=[1,%204,%209]
+/// let numbers = [1, 2, 3]
+/// Vec.of_seq (Seq.map (\n -> n * n) (Array.to_seq (ref numbers))) |> Vec.to_array
+/// ```
 def of_seq :: own Seq<'a> -> Vec<'a>
 fn of_seq items = add_range_seq items (Vec.empty())
 
 /// A `Vec` of the elements of a list, which are copied.
+///
+/// ```tsuzuri run=[4,%205,%206]
+/// Vec.of_list [|4, 5, 6|] |> Vec.to_array
+/// ```
 def of_list :: Copy<'a> => ref [|'a|] -> Vec<'a>
 fn of_list items = Vec.of_array (List.to_array items)
 
@@ -37,11 +54,19 @@ fn grown_capacity capacity required =
     if required > doubled then required else doubled
 
 /// Sets the capacity (`Capacity = value`), which must not be less than the length.
+///
+/// ```tsuzuri run=10
+/// Vec.of_array [1, 2, 3] |> Vec.set_capacity 10 |> Vec.capacity
+/// ```
 def set_capacity :: own i64 -> own Vec<'a> -> Vec<'a>
 fn set_capacity capacity values = Vec.__set_capacity capacity values
 
 /// Makes the capacity at least `capacity` elements in all (not additional ones, unlike `Vec.reserve`); the new
 /// capacity is `Vec.capacity` of the result.
+///
+/// ```tsuzuri run=6
+/// Vec.of_array [1, 2, 3] |> Vec.ensure_capacity 5 |> Vec.capacity
+/// ```
 def ensure_capacity :: own i64 -> own Vec<'a> -> Vec<'a>
 fn ensure_capacity capacity values =
     assert (capacity >= 0)
@@ -49,6 +74,10 @@ fn ensure_capacity capacity values =
     if current < capacity then Vec.__set_capacity (grown_capacity current capacity) values else values
 
 /// Shrinks the capacity to the length when the length is below 90% of the capacity.
+///
+/// ```tsuzuri run=3
+/// Vec.of_array [1, 2, 3] |> Vec.set_capacity 10 |> Vec.trim_excess |> Vec.capacity
+/// ```
 def trim_excess :: own Vec<'a> -> Vec<'a>
 fn trim_excess values =
     let capacity = Vec.capacity (ref values)
@@ -58,16 +87,30 @@ fn trim_excess values =
 
 // ---- Adding ----
 
+/// Adds `item` at the end.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Vec.of_array [1, 2] |> Vec.add 3 |> Vec.to_array
+/// ```
 def add :: own 'a -> own Vec<'a> -> Vec<'a>
 fn add item values = Vec.push_owned item values
 
 /// Adds copies of the elements of an array at the end.
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let more = [3, 4]
+/// Vec.of_array [1, 2] |> Vec.add_range more |> Vec.to_array
+/// ```
 def add_range :: Copy<'a> => ref ['a] -> own Vec<'a> -> Vec<'a>
 fn add_range items values =
     let length = Vec.length (ref values)
     Vec.__splice length 0 (deref items) values
 
 /// Adds the elements of a sequence at the end, which may be any type, as the sequence gives them up one by one.
+///
+/// ```tsuzuri run=["a",%20"b"]
+/// Vec.of_array ["a"] |> Vec.add_range_seq (Seq.once "b") |> Vec.to_array
+/// ```
 def add_range_seq :: own Seq<'a> -> own Vec<'a> -> Vec<'a>
 fn add_range_seq items values =
     let mut result = values
@@ -76,20 +119,38 @@ fn add_range_seq items values =
 
 /// Moves all the elements of `other` to the end of `values`, so `values |> Vec.append other` puts `other` behind
 /// `values`; the elements need not be `Copy`.
+///
+/// ```tsuzuri run=["a",%20"b",%20"c"]
+/// Vec.of_array ["a"] |> Vec.append (Vec.of_array ["b", "c"]) |> Vec.to_array
+/// ```
 def append :: own Vec<'a> -> own Vec<'a> -> Vec<'a>
 fn append other values =
     let length = Vec.length (ref values)
     Vec.__splice length 0 (Vec.to_array other) values
 
 /// Inserts an element at `index`, which may be the length, and moves the later elements up.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// Vec.of_array [1, 3] |> Vec.insert 1 2 |> Vec.to_array
+/// ```
 def insert :: own i64 -> own 'a -> own Vec<'a> -> Vec<'a>
 fn insert index item values = Vec.__insert index item values
 
+/// Inserts copies of the elements of `items` at `index`, which may be the length, and moves the later elements up.
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let middle = [2, 3]
+/// Vec.of_array [1, 4] |> Vec.insert_range 1 middle |> Vec.to_array
+/// ```
 def insert_range :: Copy<'a> => own i64 -> ref ['a] -> own Vec<'a> -> Vec<'a>
 fn insert_range index items values = Vec.__splice index 0 (deref items) values
 
 /// Inserts the elements of a sequence at `index`. The capacity grows as for one insertion after another: it doubles
 /// until the elements fit, unlike `insert_range`, which grows by one step to the number that is needed.
+///
+/// ```tsuzuri run=["a",%20"b",%20"c"]
+/// Vec.of_array ["a", "c"] |> Vec.insert_range_seq 1 (Seq.once "b") |> Vec.to_array
+/// ```
 def insert_range_seq :: own i64 -> own Seq<'a> -> own Vec<'a> -> Vec<'a>
 fn insert_range_seq index items values =
     assert (index >= 0 && index <= Vec.length (ref values))
@@ -99,18 +160,40 @@ fn insert_range_seq index items values =
 
 // ---- Removing ----
 
+/// Removes the element at `index` and moves the later elements down.
+///
+/// ```tsuzuri run=[10,%2030]
+/// Vec.of_array [10, 20, 30] |> Vec.remove_at 1 |> Vec.to_array
+/// ```
 def remove_at :: own i64 -> own Vec<'a> -> Vec<'a>
 fn remove_at index values = Vec.__splice index 1 [] values
 
+/// Removes `count` elements from `index` on and moves the later elements down.
+///
+/// ```tsuzuri run=[1,%205]
+/// Vec.of_array [1, 2, 3, 4, 5] |> Vec.remove_range 1 3 |> Vec.to_array
+/// ```
 def remove_range :: own i64 -> own i64 -> own Vec<'a> -> Vec<'a>
 fn remove_range index count values = Vec.__splice index count [] values
 
 /// Removes the first element equal to `item`; the result says whether there was one.
+///
+/// ```tsuzuri run=["a",%20"c",%20"b"]%20true
+/// let word = "b"
+/// match Vec.remover (ref word) (Vec.of_array ["a", "b", "c", "b"]) with
+/// | (rest, found) -> $"{Vec.to_array rest} {found}"
+/// ```
 def remover :: Eq<'a> => ref 'a -> own Vec<'a> -> (Vec<'a> * bool)
 fn remover item values =
     let index = index_ofr item (ref values)
     if index >= 0 then (remove_at index values, true) else (values, false)
 
+/// Removes the first element equal to `item`; the result says whether there was one.
+///
+/// ```tsuzuri run=[1,%203,%202]%20true
+/// match Vec.remove 2 (Vec.of_array [1, 2, 3, 2]) with
+/// | (rest, found) -> $"{Vec.to_array rest} {found}"
+/// ```
 def remove :: Eq<'a> => own 'a -> own Vec<'a> -> (Vec<'a> * bool)
 fn remove item values = remover (ref item) values
 
@@ -142,6 +225,11 @@ fn compact_values predicate view =
 
 /// Removes every element that the predicate accepts and returns how many there were. The remaining elements keep their
 /// order; the removed ones are dropped after the last call of the predicate, in no particular order.
+///
+/// ```tsuzuri run=["a",%20"c"]%202
+/// match Vec.remove_allr (\word -> word.length > 1) (Vec.of_array ["a", "bb", "c", "dd"]) with
+/// | (rest, removed) -> $"{Vec.to_array rest} {removed}"
+/// ```
 def remove_allr :: own (ref 'a -> bool) -> own Vec<'a> -> (Vec<'a> * i64)
 fn remove_allr predicate values =
     let mut owned = values
@@ -149,6 +237,13 @@ fn remove_allr predicate values =
     let removed = Vec.length (ref owned) - kept
     (Vec.truncate kept owned, removed)
 
+/// Removes every element that the predicate accepts and returns how many there were; the remaining elements keep
+/// their order.
+///
+/// ```tsuzuri run=[1,%203,%205]%202
+/// match Vec.remove_all (\n -> n % 2 == 0) (Vec.of_array [1, 2, 3, 4, 5]) with
+/// | (rest, removed) -> $"{Vec.to_array rest} {removed}"
+/// ```
 def remove_all :: Copy<'a> => own ('a -> bool) -> own Vec<'a> -> (Vec<'a> * i64)
 fn remove_all predicate values =
     let mut owned = values
@@ -167,6 +262,11 @@ fn reverse_slice view first count =
         low = low + 1
         high = high - 1
 
+/// Reverses the order of the elements.
+///
+/// ```tsuzuri run=[3,%202,%201]
+/// Vec.of_array [1, 2, 3] |> Vec.reverse |> Vec.to_array
+/// ```
 def reverse :: own Vec<'a> -> Vec<'a>
 fn reverse values =
     let mut owned = values
@@ -174,6 +274,11 @@ fn reverse values =
     reverse_slice (Vec.__view (ref mut owned)) 0 length
     owned
 
+/// Reverses the order of `count` elements from `index` on.
+///
+/// ```tsuzuri run=[1,%204,%203,%202,%205]
+/// Vec.of_array [1, 2, 3, 4, 5] |> Vec.reverse_range 1 3 |> Vec.to_array
+/// ```
 def reverse_range :: own i64 -> own i64 -> own Vec<'a> -> Vec<'a>
 fn reverse_range index count values =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
@@ -215,6 +320,10 @@ fn sort_view view index count =
     Array.sort_in_place (ref mut window[numbers .. window.length])
 
 /// Sorts a range in place, stably, with `Ord`; a NaN comes first, as in .NET.
+///
+/// ```tsuzuri run=[5,%202,%203,%204,%201]
+/// Vec.of_array [5, 4, 3, 2, 1] |> Vec.sort_range 1 3 |> Vec.to_array
+/// ```
 def sort_range :: Ord<'a> => own i64 -> own i64 -> own Vec<'a> -> Vec<'a>
 fn sort_range index count values =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
@@ -222,6 +331,12 @@ fn sort_range index count values =
     sort_view (Vec.__view (ref mut owned)) index count
     owned
 
+/// Sorts the elements in place, stably, with `Ord`; a NaN comes first, as in .NET.
+///
+/// ```tsuzuri run=[nan,%20-1,%202.5]
+/// let nan = 0.0 / 0.0
+/// Vec.of_array [2.5, nan, -1.0] |> Vec.sort |> Vec.to_array
+/// ```
 def sort :: Ord<'a> => own Vec<'a> -> Vec<'a>
 fn sort values =
     let length = Vec.length (ref values)
@@ -232,6 +347,10 @@ fn sort_view_with comparison view index count =
     Array.sort_in_place_with comparison (ref mut view[index .. index + count])
 
 /// Sorts a range in place, stably, with a comparison that returns a negative number, zero or a positive number.
+///
+/// ```tsuzuri run=[1,%205,%204,%203,%202]
+/// Vec.of_array [1i64, 5, 3, 4, 2] |> Vec.sort_range_with 1 3 (\a b -> b - a) |> Vec.to_array
+/// ```
 def sort_range_with :: Copy<'a> => own i64 -> own i64 -> own ('a -> 'a -> i64) -> own Vec<'a> -> Vec<'a>
 fn sort_range_with index count comparison values =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
@@ -239,6 +358,11 @@ fn sort_range_with index count comparison values =
     sort_view_with comparison (Vec.__view (ref mut owned)) index count
     owned
 
+/// Sorts the elements in place, stably, with a comparison that returns a negative number, zero or a positive number.
+///
+/// ```tsuzuri run=[3,%202,%201]
+/// Vec.of_array [2i64, 3, 1] |> Vec.sort_with (\a b -> b - a) |> Vec.to_array
+/// ```
 def sort_with :: Copy<'a> => own ('a -> 'a -> i64) -> own Vec<'a> -> Vec<'a>
 fn sort_with comparison values =
     let length = Vec.length (ref values)
@@ -247,6 +371,11 @@ fn sort_with comparison values =
 /// Sorts a range in place, like `sort_range_with`, but the comparison borrows the elements, so they need not be `Copy`.
 /// Insertion sorts blocks of 20 elements, then merges them by rotation (SymMerge), so it is stable and takes no
 /// extra memory.
+///
+/// ```tsuzuri run=["pear",%20"fig",%20"kiwi",%20"banana"]
+/// let words = Vec.of_array ["pear", "fig", "banana", "kiwi"]
+/// words |> Vec.sort_range_withr 1 3 (\a b -> a.length - b.length) |> Vec.to_array
+/// ```
 def sort_range_withr :: own i64 -> own i64 -> own (ref 'a -> ref 'a -> i64) -> own Vec<'a> -> Vec<'a>
 fn sort_range_withr index count comparison values =
     assert (index >= 0 && count >= 0 && Vec.length (ref values) - index >= count)
@@ -254,6 +383,12 @@ fn sort_range_withr index count comparison values =
     sort_view_by comparison (Vec.__view (ref mut owned)) index count
     owned
 
+/// Sorts the elements in place, stably, with a comparison that borrows them, so they need not be `Copy`.
+///
+/// ```tsuzuri run=["fig",%20"pear",%20"kiwi",%20"banana"]
+/// let words = Vec.of_array ["pear", "fig", "banana", "kiwi"]
+/// words |> Vec.sort_withr (\a b -> a.length - b.length) |> Vec.to_array
+/// ```
 def sort_withr :: own (ref 'a -> ref 'a -> i64) -> own Vec<'a> -> Vec<'a>
 fn sort_withr comparison values =
     let length = Vec.length (ref values)
@@ -339,6 +474,12 @@ fn rotate_slice values first middle last =
 
 // ---- Searching ----
 
+/// The index of the first element equal to `item`, which is borrowed, or `-1`.
+///
+/// ```tsuzuri run=1
+/// let word = "b"
+/// Vec.index_ofr (ref word) (Vec.of_array ["a", "b", "b"])
+/// ```
 def index_ofr :: Eq<'a> => ref 'a -> ref Vec<'a> -> i64
 fn index_ofr item values = first_index values item 0 (Vec.length values)
 
@@ -357,38 +498,71 @@ fn last_index values item start count =
     if index > stop then index else -1
 
 /// The index of the first element equal to `item`, or `-1`.
+///
+/// ```tsuzuri run=1%20-1
+/// let values = Vec.of_array [1, 3, 5, 3]
+/// $"{Vec.index_of 3 values} {Vec.index_of 4 values}"
+/// ```
 def index_of :: Eq<'a> => own 'a -> ref Vec<'a> -> i64
 fn index_of item values = first_index values (ref item) 0 (Vec.length values)
 
 /// Looks from `index` on; `index` may be the length.
+///
+/// ```tsuzuri run=2
+/// Vec.index_of_from 3 1 (Vec.of_array [3, 1, 3, 1])
+/// ```
 def index_of_from :: Eq<'a> => own 'a -> own i64 -> ref Vec<'a> -> i64
 fn index_of_from item index values =
     assert (index >= 0 && index <= Vec.length values)
     first_index values (ref item) index (Vec.length values - index)
 
 /// Looks at `count` elements from `index` on.
+///
+/// ```tsuzuri run=-1%203
+/// let values = Vec.of_array [3, 1, 2, 3]
+/// $"{Vec.index_of_range 3 1 2 values} {Vec.index_of_range 3 1 3 values}"
+/// ```
 def index_of_range :: Eq<'a> => own 'a -> own i64 -> own i64 -> ref Vec<'a> -> i64
 fn index_of_range item index count values =
     assert (index >= 0 && index <= Vec.length values)
     assert (count >= 0 && index <= Vec.length values - count)
     first_index values (ref item) index count
 
+/// The index of the last element equal to `item`, which is borrowed, or `-1`.
+///
+/// ```tsuzuri run=2
+/// let word = "b"
+/// Vec.last_index_ofr (ref word) (Vec.of_array ["b", "a", "b", "c"])
+/// ```
 def last_index_ofr :: Eq<'a> => ref 'a -> ref Vec<'a> -> i64
 fn last_index_ofr item values =
     let length = Vec.length values
     if length == 0 then -1 else last_index values item (length - 1) length
 
 /// The index of the last element equal to `item`, or `-1`.
+///
+/// ```tsuzuri run=2
+/// Vec.last_index_of 3 (Vec.of_array [3, 1, 3, 1])
+/// ```
 def last_index_of :: Eq<'a> => own 'a -> ref Vec<'a> -> i64
 fn last_index_of item values = last_index_ofr (ref item) values
 
 /// Looks backward from `index` to the front. An empty `Vec` takes `-1` as `index`, as in .NET.
+///
+/// ```tsuzuri run=0
+/// Vec.last_index_of_from 3 1 (Vec.of_array [3, 1, 3, 1])
+/// ```
 def last_index_of_from :: Eq<'a> => own 'a -> own i64 -> ref Vec<'a> -> i64
 fn last_index_of_from item index values =
     assert (index < Vec.length values)
     last_index_of_range item index (index + 1) values
 
 /// Looks backward from `index` at `count` elements.
+///
+/// ```tsuzuri run=2%20-1
+/// let values = Vec.of_array [3, 1, 3, 1, 3]
+/// $"{Vec.last_index_of_range 3 3 2 values} {Vec.last_index_of_range 3 3 1 values}"
+/// ```
 def last_index_of_range :: Eq<'a> => own 'a -> own i64 -> own i64 -> ref Vec<'a> -> i64
 fn last_index_of_range item index count values =
     let length = Vec.length values
@@ -398,13 +572,29 @@ fn last_index_of_range item index count values =
         assert (count <= index + 1)
         last_index values (ref item) index count
 
+/// Whether an element equals `item`, which is borrowed.
+///
+/// ```tsuzuri run=true
+/// let word = "kiwi"
+/// Vec.containsr (ref word) (Vec.of_array ["fig", "kiwi"])
+/// ```
 def containsr :: Eq<'a> => ref 'a -> ref Vec<'a> -> bool
 fn containsr item values = index_ofr item values >= 0
 
+/// Whether an element equals `item`.
+///
+/// ```tsuzuri run=true%20false
+/// let values = Vec.of_array [1, 2, 3]
+/// $"{Vec.contains 2 values} {Vec.contains 4 values}"
+/// ```
 def contains :: Eq<'a> => own 'a -> ref Vec<'a> -> bool
 fn contains item values = index_ofr (ref item) values >= 0
 
 /// Like `find_index`, but `predicate` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=1
+/// Vec.find_indexr (\word -> word.length > 3) (Vec.of_array ["fig", "pear", "kiwi"])
+/// ```
 def find_indexr :: own (ref 'a -> bool) -> ref Vec<'a> -> i64
 fn find_indexr predicate values =
     let length = Vec.length values
@@ -413,14 +603,28 @@ fn find_indexr predicate values =
     if index < length then index else -1
 
 /// The index of the first element that the predicate accepts, or `-1`.
+///
+/// ```tsuzuri run=2
+/// Vec.find_index (\n -> n > 2) (Vec.of_array [1, 2, 3, 4])
+/// ```
 def find_index :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_index predicate values = find_index_range 0 (Vec.length values) predicate values
 
+/// The index of the first element from `start` on that the predicate accepts, or `-1`; `start` may be the length.
+///
+/// ```tsuzuri run=3
+/// Vec.find_index_from 1 (\n -> n % 2 == 0) (Vec.of_array [2, 3, 5, 6])
+/// ```
 def find_index_from :: Copy<'a> => own i64 -> own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_index_from start predicate values =
     assert (start >= 0 && start <= Vec.length values)
     find_index_range start (Vec.length values - start) predicate values
 
+/// The index of the first element that the predicate accepts among `count` elements from `start` on, or `-1`.
+///
+/// ```tsuzuri run=2
+/// Vec.find_index_range 1 2 (\n -> n % 2 == 0) (Vec.of_array [2, 3, 4, 6])
+/// ```
 def find_index_range :: Copy<'a> => own i64 -> own i64 -> own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_index_range start count predicate values =
     assert (start >= 0 && start <= Vec.length values)
@@ -430,6 +634,11 @@ fn find_index_range start count predicate values =
     while index < last && !(predicate values[index]) do index = index + 1
     if index < last then index else -1
 
+/// Like `find_last_index`, but `predicate` borrows each element, so the elements need not be `Copy`.
+///
+/// ```tsuzuri run=2
+/// Vec.find_last_indexr (\word -> word.length == 4) (Vec.of_array ["pear", "fig", "kiwi", "banana"])
+/// ```
 def find_last_indexr :: own (ref 'a -> bool) -> ref Vec<'a> -> i64
 fn find_last_indexr predicate values =
     let mut index = Vec.length values - 1
@@ -437,16 +646,28 @@ fn find_last_indexr predicate values =
     index
 
 /// The index of the last element that the predicate accepts, or `-1`.
+///
+/// ```tsuzuri run=3
+/// Vec.find_last_index (\n -> n < 3) (Vec.of_array [1, 2, 3, 2, 5])
+/// ```
 def find_last_index :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_last_index predicate values =
     find_last_index_range (Vec.length values - 1) (Vec.length values) predicate values
 
 /// Looks backward from `start` to the front. An empty `Vec` takes `-1` as `start`, as in .NET.
+///
+/// ```tsuzuri run=0
+/// Vec.find_last_index_from 2 (\n -> n % 2 == 0) (Vec.of_array [2, 3, 5, 6])
+/// ```
 def find_last_index_from :: Copy<'a> => own i64 -> own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_last_index_from start predicate values =
     find_last_index_range start (start + 1) predicate values
 
 /// Looks backward from `start` at `count` elements.
+///
+/// ```tsuzuri run=1
+/// Vec.find_last_index_range 2 2 (\n -> n % 2 == 0) (Vec.of_array [2, 4, 5, 6])
+/// ```
 def find_last_index_range :: Copy<'a> => own i64 -> own i64 -> own ('a -> bool) -> ref Vec<'a> -> i64
 fn find_last_index_range start count predicate values =
     let length = Vec.length values
@@ -457,12 +678,27 @@ fn find_last_index_range start count predicate values =
     while index > stop && !(predicate values[index]) do index = index - 1
     if index > stop then index else -1
 
+/// Whether `predicate`, which borrows each element, accepts an element.
+///
+/// ```tsuzuri run=true
+/// Vec.existsr (\word -> word.length > 5) (Vec.of_array ["fig", "banana"])
+/// ```
 def existsr :: own (ref 'a -> bool) -> ref Vec<'a> -> bool
 fn existsr predicate values = find_indexr predicate values >= 0
 
+/// Whether the predicate accepts an element.
+///
+/// ```tsuzuri run=false
+/// Vec.exists (\n -> n < 0) (Vec.of_array [1, 2, 3])
+/// ```
 def exists :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> bool
 fn exists predicate values = find_index predicate values >= 0
 
+/// Whether `predicate`, which borrows each element, accepts every element; it does for an empty `Vec`.
+///
+/// ```tsuzuri run=true
+/// Vec.true_for_allr (\word -> word.length >= 3) (Vec.of_array ["fig", "kiwi"])
+/// ```
 def true_for_allr :: own (ref 'a -> bool) -> ref Vec<'a> -> bool
 fn true_for_allr predicate values =
     let length = Vec.length values
@@ -471,6 +707,10 @@ fn true_for_allr predicate values =
     index == length
 
 /// Whether the predicate accepts every element; it does for an empty `Vec`.
+///
+/// ```tsuzuri run=false
+/// Vec.true_for_all (\n -> n > 0) (Vec.of_array [1, 2, -3])
+/// ```
 def true_for_all :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> bool
 fn true_for_all predicate values =
     let length = Vec.length values
@@ -479,28 +719,56 @@ fn true_for_all predicate values =
     index == length
 
 /// The first element that the predicate accepts. .NET returns the default value when there is none; this returns `None`.
+///
+/// ```tsuzuri run=pear
+/// let words = Vec.of_array ["fig", "pear", "kiwi"]
+/// match Vec.findr (\word -> word.length == 4) words with
+/// | Maybe.Some word -> $"{word}"
+/// | Maybe.None -> "none"
+/// ```
 def findr :: own (ref 'a -> bool) -> ref Vec<'a> -> Maybe<ref 'a>
 fn findr predicate values =
     let index = find_indexr predicate values
     if index >= 0 then Maybe.Some (ref values[index]) else Maybe.None
 
+/// The first element that the predicate accepts, or `None`.
+///
+/// ```tsuzuri run=3
+/// Vec.of_array [1, 2, 3, 4] |> Vec.find (\n -> n > 2) |> Maybe.default_value 0
+/// ```
 def find :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> Maybe<'a>
 fn find predicate values =
     let index = find_index predicate values
     if index >= 0 then Maybe.Some values[index] else Maybe.None
 
+/// The last element that `predicate`, which borrows each element, accepts, or `None`.
+///
+/// ```tsuzuri run=kiwi
+/// let words = Vec.of_array ["pear", "fig", "kiwi"]
+/// match Vec.find_lastr (\word -> word.length == 4) words with
+/// | Maybe.Some word -> $"{word}"
+/// | Maybe.None -> "none"
+/// ```
 def find_lastr :: own (ref 'a -> bool) -> ref Vec<'a> -> Maybe<ref 'a>
 fn find_lastr predicate values =
     let index = find_last_indexr predicate values
     if index >= 0 then Maybe.Some (ref values[index]) else Maybe.None
 
 /// The last element that the predicate accepts, or `None`.
+///
+/// ```tsuzuri run=4
+/// Vec.of_array [2, 4, 5] |> Vec.find_last (\n -> n % 2 == 0) |> Maybe.default_value 0
+/// ```
 def find_last :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> Maybe<'a>
 fn find_last predicate values =
     let index = find_last_index predicate values
     if index >= 0 then Maybe.Some values[index] else Maybe.None
 
 /// A `Vec` of the elements that the predicate accepts, in order.
+///
+/// ```tsuzuri run=[2,%204]
+/// Vec.of_array [1, 2, 3, 4] |> Vec.find_all (\n -> n % 2 == 0) |> Vec.to_array
+/// ```
 def find_all :: Copy<'a> => own ('a -> bool) -> ref Vec<'a> -> Vec<'a>
 fn find_all predicate values =
     let length = Vec.length values
@@ -543,20 +811,51 @@ fn ordering left right =
     elif Eq.eq right right then -1
     else 0
 
+/// The index of `item`, which is borrowed, in a `Vec` sorted by `Ord`, or the complement (`-1 - place`) of the index
+/// where it would go.
+///
+/// ```tsuzuri run=1
+/// let word = "kiwi"
+/// Vec.binary_searchr (ref word) (Vec.of_array ["fig", "kiwi", "pear"])
+/// ```
 def binary_searchr :: Ord<'a> => ref 'a -> ref Vec<'a> -> i64
 fn binary_searchr item values = search values 0 (Vec.length values) (\element -> ordering element item)
 
+/// The index of `item` in a `Vec` sorted by `Ord`, or the complement (`-1 - place`) of the index where it would go.
+///
+/// ```tsuzuri run=2%20-3
+/// let values = Vec.of_array [1, 3, 5, 7]
+/// $"{Vec.binary_search 5 values} {Vec.binary_search 4 values}"
+/// ```
 def binary_search :: Ord<'a> => own 'a -> ref Vec<'a> -> i64
 fn binary_search item values = binary_searchr (ref item) values
 
+/// Like `binary_search_with`, but `comparison` borrows the elements and `item`, so they need not be `Copy`.
+///
+/// ```tsuzuri run=1
+/// let word = "pear"
+/// let words = Vec.of_array ["fig", "kiwi", "banana"]
+/// Vec.binary_search_withr (ref word) (\a b -> a.length - b.length) words
+/// ```
 def binary_search_withr :: ref 'a -> own (ref 'a -> ref 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_withr item comparison values =
     search values 0 (Vec.length values) (\element -> comparison element item)
 
+/// The index of `item` in a `Vec` sorted by `comparison`, or the complement (`-1 - place`) of the index where it would
+/// go; `comparison` gets an element first and `item` second.
+///
+/// ```tsuzuri run=2
+/// Vec.binary_search_with 5 (\a b -> b - a) (Vec.of_array [9i64, 7, 5, 3])
+/// ```
 def binary_search_with :: Copy<'a> => own 'a -> own ('a -> 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_with item comparison values =
     binary_search_range 0 (Vec.length values) item comparison values
 
+/// Searches `count` elements from `index` on, like `binary_search_with`; the result counts from the start of the `Vec`.
+///
+/// ```tsuzuri run=4
+/// Vec.binary_search_range 2 3 9 (\a b -> a - b) (Vec.of_array [1i64, 3, 5, 7, 9])
+/// ```
 def binary_search_range :: Copy<'a> => own i64 -> own i64 -> own 'a -> own ('a -> 'a -> i64) -> ref Vec<'a> -> i64
 fn binary_search_range index count item comparison values =
     assert (index >= 0 && count >= 0 && Vec.length values - index >= count)
@@ -564,6 +863,15 @@ fn binary_search_range index count item comparison values =
 
 // ---- Visiting and converting ----
 
+/// Calls `action` with a reference to each element, in order.
+///
+/// ```tsuzuri run=6
+/// let cell = Atomic.create 0i64
+/// let total = ref cell
+/// let words = Vec.of_array ["a", "bb", "ccc"]
+/// Vec.for_eachr (\word -> Atomic.store total (Atomic.load total + word.length)) words
+/// Atomic.load total
+/// ```
 def for_eachr :: own (ref 'a -> unit) -> ref Vec<'a> -> unit
 fn for_eachr action values =
     let length = Vec.length values
@@ -572,6 +880,14 @@ fn for_eachr action values =
         action (ref values[index])
         index = index + 1
 
+/// Calls `action` with each element, in order.
+///
+/// ```tsuzuri run=123
+/// let cell = Atomic.create 0i64
+/// let digits = ref cell
+/// Vec.for_each (\n -> Atomic.store digits (Atomic.load digits * 10 + n)) (Vec.of_array [1i64, 2, 3])
+/// Atomic.load digits
+/// ```
 def for_each :: Copy<'a> => own ('a -> unit) -> ref Vec<'a> -> unit
 fn for_each action values =
     let length = Vec.length values
@@ -580,6 +896,11 @@ fn for_each action values =
         action values[index]
         index = index + 1
 
+/// A `Vec` of the values that `converter` makes from references to the elements, with a capacity of its length.
+///
+/// ```tsuzuri run=[3,%204]
+/// Vec.convert_allr (\word -> word.length) (Vec.of_array ["fig", "pear"]) |> Vec.to_array
+/// ```
 def convert_allr :: own (ref 'a -> 'b) -> ref Vec<'a> -> Vec<'b>
 fn convert_allr converter values =
     let length = Vec.length values
@@ -591,6 +912,10 @@ fn convert_allr converter values =
     converted
 
 /// A `Vec` of the converted elements, with a capacity of its length.
+///
+/// ```tsuzuri run=[1,%204,%209]
+/// Vec.convert_all (\n -> n * n) (Vec.of_array [1, 2, 3]) |> Vec.to_array
+/// ```
 def convert_all :: Copy<'a> => own ('a -> 'b) -> ref Vec<'a> -> Vec<'b>
 fn convert_all converter values =
     let length = Vec.length values
@@ -604,15 +929,30 @@ fn convert_all converter values =
 // ---- Ranges and copies ----
 
 /// A `Vec` of copies of `count` elements from `index` on, with a capacity of `count`.
+///
+/// ```tsuzuri run=[20,%2030]
+/// Vec.get_range 1 2 (Vec.of_array [10, 20, 30, 40]) |> Vec.to_array
+/// ```
 def get_range :: Copy<'a> => own i64 -> own i64 -> ref Vec<'a> -> Vec<'a>
 fn get_range index count values =
     assert (index >= 0 && count >= 0 && Vec.length values - index >= count)
     Vec.of_array (new ['a](count, \position -> values[index + position]))
 
+/// A `Vec` of copies of `length` elements from `start` on; the same as `get_range`.
+///
+/// ```tsuzuri run=[30,%2040]
+/// Vec.slice 2 2 (Vec.of_array [10, 20, 30, 40]) |> Vec.to_array
+/// ```
 def slice :: Copy<'a> => own i64 -> own i64 -> ref Vec<'a> -> Vec<'a>
 fn slice start length values = get_range start length values
 
 /// Copies `count` elements from `index` on into `target` from `target_index` on.
+///
+/// ```tsuzuri run=[0,%200,%208,%209]
+/// let mut target = [0, 0, 0, 0]
+/// Vec.copy_to_range 1 (ref mut target) 2 2 (Vec.of_array [7, 8, 9])
+/// target
+/// ```
 def copy_to_range :: Copy<'a> => own i64 -> ref mut ['a..] -> own i64 -> own i64 -> ref Vec<'a> -> unit
 fn copy_to_range index target target_index count values =
     assert (index >= 0 && count >= 0 && Vec.length values - index >= count)
@@ -622,9 +962,23 @@ fn copy_to_range index target target_index count values =
         Array.write (target_index + offset) values[index + offset] target
         offset = offset + 1
 
+/// Copies all the elements into `target` from `target_index` on.
+///
+/// ```tsuzuri run=[0,%207,%208,%200]
+/// let mut target = [0, 0, 0, 0]
+/// Vec.copy_to_at (ref mut target) 1 (Vec.of_array [7, 8])
+/// target
+/// ```
 def copy_to_at :: Copy<'a> => ref mut ['a..] -> own i64 -> ref Vec<'a> -> unit
 fn copy_to_at target target_index values =
     copy_to_range 0 target target_index (Vec.length values) values
 
+/// Copies all the elements into `target` from its start.
+///
+/// ```tsuzuri run=[7,%208,%200]
+/// let mut target = [0, 0, 0]
+/// Vec.copy_to (ref mut target) (Vec.of_array [7, 8])
+/// target
+/// ```
 def copy_to :: Copy<'a> => ref mut ['a..] -> ref Vec<'a> -> unit
 fn copy_to target values = copy_to_range 0 target 0 (Vec.length values) values

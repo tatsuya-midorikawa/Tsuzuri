@@ -454,6 +454,7 @@ diagnostic_kinds! {
         (ContractLineLimit, "contract_line_limit", "E1017"),
         (DerivingExpressionLimit, "deriving_expression_limit", "E1017"),
         (DerivingInstanceLimit, "deriving_instance_limit", "E1017"),
+        (DocExampleLimit, "doc_example_limit", "E1017"),
         (EffectSummaryLimit, "effect_summary_limit", "E1017"),
         (ExhaustivenessSearchLimit, "exhaustiveness_search_limit", "E1017"),
         (FixCandidateLimit, "fix_candidate_limit", "E1017"),
@@ -800,6 +801,7 @@ diagnostic_kinds! {
         (ProgramTerminated, "program_terminated", "E2005"),
         (ProgramTimeLimitExceeded, "program_time_limit_exceeded", "E2005"),
         // E2006
+        (DocTestFailed, "doc_test_failed", "E2006"),
         (TestsFailed, "tests_failed", "E2006"),
         // E2007
         (FileUrlAfterHttps, "file_url_after_https", "E2007"),
@@ -849,6 +851,8 @@ diagnostic_kinds! {
         (McpIoFailed, "mcp_io_failed", "E2010"),
         (McpRootUnusable, "mcp_root_unusable", "E2010"),
         (McpWorkerFailed, "mcp_worker_failed", "E2010"),
+        // E2011
+        (DocExampleInvalid, "doc_example_invalid", "E2011"),
         // W1001
         (UnusedLocal, "unused_local", "W1001"),
         // W1002

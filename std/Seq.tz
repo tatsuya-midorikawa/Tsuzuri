@@ -3,27 +3,62 @@ record Seq<'a> {
     step: Maybe<unit -> (Seq<'a> * Maybe<'a>)>
 }
 
+/// A sequence without elements.
+///
+/// ```tsuzuri run=[]
+/// let values: [i64] = Seq.to_array (Seq.empty())
+/// values
+/// ```
 def empty :: Seq<'a>
 fn empty = Seq { head: Maybe.None, step: Maybe.None }
 
+/// A sequence of the one element `value`.
+///
+/// ```tsuzuri run=["only"]
+/// Seq.to_array (Seq.once "only")
+/// ```
 def once :: own 'a -> Seq<'a>
 fn once value = Seq { head: Maybe.Some value, step: Maybe.None }
 
+/// A sequence that calls `step` when it is first read; `step` returns the rest of the sequence and the next element,
+/// or `None` at the end.
+///
+/// ```tsuzuri run=[1,%202]
+/// Seq.to_array (Seq.defer (\() -> (Seq.once 2, Maybe.Some 1)))
+/// ```
 def defer :: own (unit -> (Seq<'a> * Maybe<'a>)) -> Seq<'a>
 fn defer step = Seq { head: Maybe.None, step: Maybe.Some step }
 
+/// The sequence that `generator` makes from `state`: each call returns the next element and the next state, or `None`
+/// at the end.
+///
+/// ```tsuzuri run=[1,%202,%204,%208,%2016]
+/// Seq.to_array (Seq.unfold (\n -> if n <= 16 then Maybe.Some (n, n * 2) else Maybe.None) 1)
+/// ```
 def rec unfold :: Capture<'state> => own ('state -> Maybe<('a * 'state)>) -> own 'state -> Seq<'a>
 fn rec unfold generator state = defer (\() ->
     match generator state with
     | Maybe.Some (value, remaining) -> (unfold generator remaining, Maybe.Some value)
     | Maybe.None -> (empty(), Maybe.None))
 
+/// Applies `transform` to each element of `sequence` when the element is read.
+///
+/// ```tsuzuri run=[10,%2020,%2030]
+/// let numbers = [1, 2, 3]
+/// Array.to_seq (ref numbers) |> Seq.map (\n -> n * 10) |> Seq.to_array
+/// ```
 def rec map :: Capture<'a> => own ('a -> 'b) -> own Seq<'a> -> Seq<'b>
 fn rec map transform sequence = defer (\() ->
     match Seq.next sequence with
     | (remaining, Maybe.Some value) -> (map transform remaining, Maybe.Some (transform value))
     | (_, Maybe.None) -> (empty(), Maybe.None))
 
+/// Keeps the elements of `sequence` that `predicate` accepts; the predicate borrows each element.
+///
+/// ```tsuzuri run=[2,%204,%206]
+/// let numbers = [1, 2, 3, 4, 5, 6]
+/// Array.to_seq (ref numbers) |> Seq.filter (\n -> (deref n) % 2 == 0) |> Seq.to_array
+/// ```
 def rec filter :: Capture<'a> => own (ref 'a -> bool) -> own Seq<'a> -> Seq<'a>
 fn rec filter predicate sequence = defer (\() ->
     let mut current = sequence
@@ -42,6 +77,11 @@ fn rec filter predicate sequence = defer (\() ->
     let remaining = if Maybe.is_some (ref selected) then filter predicate current else empty()
     (remaining, selected))
 
+/// Reads every element of `sequence` into an array, in order.
+///
+/// ```tsuzuri run=[0,%201,%202,%203]
+/// Seq.to_array (Seq.unfold (\n -> if n < 4 then Maybe.Some (n, n + 1) else Maybe.None) 0)
+/// ```
 def to_array :: own Seq<'a> -> ['a]
 fn to_array sequence =
     let mut values = Vec.empty()

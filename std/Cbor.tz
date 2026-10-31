@@ -188,6 +188,13 @@ fn rec item output value =
 /// `value` in the core deterministic encoding of RFC 8949 §4.2.1: the shortest heads, definite
 /// lengths, the shortest exact float, and map keys sorted by their encoded bytes. A repeated key
 /// gives `DuplicateKey`, a lone surrogate `LoneSurrogate`, and a number that overflows `f64` `NumberRange`.
+///
+/// ```tsuzuri run=[162,%2097,%2097,%202,%2097,%2098,%201]
+/// let value = Json.parse u8"{\"b\": 1, \"a\": 2}" |> Result.get
+/// match Cbor.encode value with
+/// | Ok bytes -> $"{bytes}"
+/// | Error error -> Display.display error
+/// ```
 def encode :: ref Json.Value -> Result<[ubyte], Json.Error>
 fn encode value =
 	match item (Vec.empty()) value with
@@ -388,6 +395,13 @@ and members_at bytes start count depth =
 /// keys, booleans, and null, with definite lengths and at most 128 nested arrays and maps. Other
 /// items give `Unsupported`, invalid UTF-8 `InvalidUtf8`, a repeated key `DuplicateKey`, and a
 /// cut input `UnexpectedEnd` at the input length; every other error carries the byte offset of the item.
+///
+/// ```tsuzuri run=[1,-1,1.5]
+/// let bytes: [ubyte] = [131, 1, 32, 249, 62, 0]
+/// match Cbor.decode bytes with
+/// | Ok value -> String.from_utf8 (Json.to_utf8string value)
+/// | Error error -> Display.display error
+/// ```
 def decode :: ref [ubyte] -> Result<Json.Value, Json.Error>
 fn decode bytes =
 	if bytes.length > 67108864 then Result.Error (failure Json.TooLarge 0) else
@@ -396,6 +410,12 @@ fn decode bytes =
 		| Result.Error error -> Result.Error error
 
 /// `value` encoded and written as CBOR.
+///
+/// ```tsuzuri run=[130,%2097,%2097,%20245]
+/// match Cbor.serialize ("a", true) with
+/// | Ok bytes -> $"{bytes}"
+/// | Error error -> Display.display error
+/// ```
 def rec serialize :: Encode<'a> => ref 'a -> Result<[ubyte], Json.Error>
 fn rec serialize value =
 	match Encode.encode value with
@@ -403,6 +423,14 @@ fn rec serialize value =
 	| Result.Error error -> Result.Error error
 
 /// The value that the CBOR bytes describe: `decode`, then `Decode`.
+///
+/// ```tsuzuri run=1%20100
+/// let bytes: [ubyte] = [130, 1, 24, 100]
+/// let pair: Result<(i64 * i64), Json.Error> = Cbor.deserialize bytes
+/// match pair with
+/// | Ok (first, second) -> $"{first} {second}"
+/// | Error error -> Display.display error
+/// ```
 def rec deserialize :: Decode<'a> => ref [ubyte] -> Result<'a, Json.Error>
 fn rec deserialize bytes =
 	match decode bytes with

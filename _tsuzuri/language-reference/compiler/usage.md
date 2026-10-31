@@ -525,6 +525,22 @@ WASM のテストは PATH の `node` を使います。配布物の `bin/` か�
 
 失敗したテストが標準エラーに書いた内容は、失敗理由の下に字下げして出ます（成功したテストの出力は出ません）。プロパティテスト（[Gen](../built-in-types-and-modules/gen.md)）の反例もここに出ます。`--seed N` はプロパティテストの seed を変えます。既定は固定の `11400714819323198485` で、同じ seed なら同じ値を試します。
 
+`--doc` は、テストの代わりに `///` の中の ```` ```tsuzuri ```` の例を 1 つずつ独立したプログラムとして確かめます（doc-test）。`run=出力` の例は実行して標準出力を比べ、`test` の例は中の `test` を走らせ、`fails=コード` の例は型検査が拒否することを、印のない例は型検査が通ることを確かめます。パッケージを渡すと根のパッケージの例を、`std` を渡すと標準ライブラリの例を走らせます。`--list`・`--filter`・`--index`・`--json` と最適化は `test` と同じ使い方で、既定は `-O0` です。ネイティブだけで、`--target`・`-g`・`-o`・`--coverage`・`--seed`・`--affected`・`--contracts`・`--link` とは組み合わせられません（`E2000`）。`test` の例は `tsuzuri test` と同じく、整数の折り返しを報告して失敗にします（`--allow-overflow` で報告だけにできます）。
+
+```sh
+tsuzuri test --doc .
+tsuzuri test --doc std -O3
+```
+
+```text
+ok 1 - Geometry area#1
+ok 2 - Geometry area#2
+
+2 passed; 0 failed; 0 ignored
+```
+
+記法の誤りは何も実行せずに `E2011`、例の失敗は `E2006` で、どちらも終了コード 1 です。記法と出力の全体は [ドキュメント コメントの例](../organizing-tsuzuri/documentation-comment.md#例を書くdoc-test) にあります。
+
 `test` は既定で、テストの中で折り返した整数の演算を報告し、そのテストを失敗にします。失敗理由は最初の報告の行（`warning: ` を除いたもの）です。トラップや `assert` で失敗したテストの理由は変わりません。意図した折り返しは `Int.wrapping_add` などで書きます（[Test の整数の折り返し](../built-in-types-and-modules/test.md#整数の折り返し)）。`--allow-overflow` は、折り返したテストを成功のままにして、`ok` の行のあとに `  warning: ...` で報告を出します。`--allow-overflow` は `test` 以外と、`-g` のデバッグ用のランナーでは `E2000` です。`--overflow-report` は `test` では既定と同じなので付けなくて構いません。
 
 ```text
@@ -565,6 +581,8 @@ tsuzuri doc demo -o demo-docs
 ```
 
 `demo-docs/index.md` がモジュール一覧、`demo-docs/Main.md` が各宣言です。印の `.tsuzuri-docs` も置きます。`Main.tz` がないライブラリディレクトリでも生成できます。
+
+説明の中の ```` ```tsuzuri ```` の例は、隠し行（`# ` で始まる行）を除き、`run=` の出力を `Output:` として添えて出します。例を実行して確かめるのは `tsuzuri test --doc` です（[例を書く](../organizing-tsuzuri/documentation-comment.md#例を書くdoc-test)）。
 
 ### fix
 

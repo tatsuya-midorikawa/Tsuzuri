@@ -34,48 +34,96 @@ private def dense_strides :: ref [i64] -> [i64]
 fn dense_strides shape = new [i64](shape.length, \axis -> stride_of shape axis)
 
 /// Takes a row-major array without copying; traps unless its length is the product of the shape.
+///
+/// ```tsuzuri run=6
+/// let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+/// let v = Tensor.view t
+/// deref (Tensor.at [1, 2] v)
+/// ```
 def of_array :: own [i64] -> own ['a] -> Tensor<'a>
 fn of_array shape values =
     assert (values.length == volume (ref shape))
     Tensor { shape: shape, data: values }
 
 /// Calls `initializer index` once per element in row-major order, with the flat row-major index.
+///
+/// ```tsuzuri run=[0,%2010,%2020,%2030]
+/// Tensor.to_array (Tensor.init [2, 2] (\i -> i * 10))
+/// ```
 def init :: own [i64] -> own (i64 -> 'a) -> Tensor<'a>
 fn init shape initializer =
     let count = volume (ref shape)
     Tensor { shape: shape, data: new ['a](count, initializer) }
 
 /// Turns a matrix into a rank 2 tensor without copying.
+///
+/// ```tsuzuri run=[2,%202]%20[1,%202,%203,%204]
+/// let t = Tensor.of_matrix (Matrix.of_array 2 2 [1, 2, 3, 4])
+/// let v = Tensor.view t
+/// $"{Tensor.shape v} {Tensor.as_array t}"
+/// ```
 def of_matrix :: own Matrix<'a> -> Tensor<'a>
 fn of_matrix matrix =
     let shape = [Matrix.rows (ref matrix), Matrix.cols (ref matrix)]
     Tensor { shape: shape, data: Matrix.to_array matrix }
 
 /// Turns a rank 2 tensor into a matrix without copying; traps unless the rank is 2.
+///
+/// ```tsuzuri run=2x3%203
+/// let m = Tensor.to_matrix (Tensor.init [2, 3] (\i -> i))
+/// $"{Matrix.rows m}x{Matrix.cols m} {deref (Matrix.at 1 0 m)}"
+/// ```
 def to_matrix :: own Tensor<'a> -> Matrix<'a>
 fn to_matrix tensor =
     assert (tensor.shape.length == 2)
     Matrix.of_array tensor.shape[0] tensor.shape[1] tensor.data
 
 /// Borrows all elements in row-major order.
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let t = Tensor.init [2, 2] (\i -> i + 1)
+/// $"{Tensor.as_array t}"
+/// ```
 def as_array :: ref Tensor<'a> -> ref ['a]
 fn as_array tensor = ref tensor.data
 
 /// Consumes the tensor and returns its row-major buffer without copying.
+///
+/// ```tsuzuri run=[0,%201,%204,%209]
+/// Tensor.to_array (Tensor.init [2, 2] (\i -> i * i))
+/// ```
 def to_array :: own Tensor<'a> -> ['a]
 fn to_array tensor = tensor.data
 
 /// Gives the elements a new shape without copying; traps unless the product of the shape is unchanged.
+///
+/// ```tsuzuri run=[3,%202]%204
+/// let t = Tensor.reshape [3, 2] (Tensor.init [2, 3] (\i -> i))
+/// let v = Tensor.view t
+/// $"{Tensor.shape v} {deref (Tensor.at [2, 0] v)}"
+/// ```
 def reshape :: own [i64] -> own Tensor<'a> -> Tensor<'a>
 fn reshape shape tensor =
     assert (volume (ref shape) == tensor.data.length)
     Tensor { shape: shape, data: tensor.data }
 
 /// Borrows a tensor as a window.
+///
+/// ```tsuzuri run=[2,%203]%20[3,%201]
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// $"{Tensor.shape v} {Tensor.strides v}"
+/// ```
 def view { r } :: ref { r } Tensor<'a> -> View<'a> { r }
 fn view tensor = View { data: ref tensor.data, offset: 0, shape: Array.copy (ref tensor.shape), strides: dense_strides (ref tensor.shape) }
 
 /// Borrows a row-major array as a window of the given shape; traps unless its length is the product of the shape.
+///
+/// ```tsuzuri run=6
+/// let data = [1, 2, 3, 4, 5, 6]
+/// let v = Tensor.borrow [3, 2] data
+/// deref (Tensor.at [2, 1] v)
+/// ```
 def borrow { r } :: own [i64] -> ref { r } ['a] -> View<'a> { r }
 fn borrow shape data =
     assert (data.length == volume (ref shape))
@@ -83,26 +131,61 @@ fn borrow shape data =
     View { data: data, offset: 0, shape: shape, strides: strides }
 
 /// The number of axes.
+///
+/// ```tsuzuri run=3
+/// let t = Tensor.init [2, 3, 4] (\i -> i)
+/// Tensor.rank (Tensor.view t)
+/// ```
 def rank :: ref View<'a> -> i64
 fn rank view = view.shape.length
 
 /// The extent of every axis.
+///
+/// ```tsuzuri run=[2,%203,%204]
+/// let t = Tensor.init [2, 3, 4] (\i -> i)
+/// let v = Tensor.view t
+/// $"{Tensor.shape v}"
+/// ```
 def shape :: ref View<'a> -> ref [i64]
 fn shape view = ref view.shape
 
 /// The number of elements.
+///
+/// ```tsuzuri run=24
+/// let t = Tensor.init [2, 3, 4] (\i -> i)
+/// Tensor.count (Tensor.view t)
+/// ```
 def count :: ref View<'a> -> i64
 fn count view = volume (ref view.shape)
 
 /// The distance in `data` between two consecutive positions of every axis.
+///
+/// ```tsuzuri run=[12,%204,%201]
+/// let t = Tensor.init [2, 3, 4] (\i -> i)
+/// let v = Tensor.view t
+/// $"{Tensor.strides v}"
+/// ```
 def strides :: ref View<'a> -> ref [i64]
 fn strides view = ref view.strides
 
 /// The index of the first element in `data`.
+///
+/// ```tsuzuri run=2
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// Tensor.offset (Tensor.narrow 1 2 1 v)
+/// ```
 def offset :: ref View<'a> -> i64
 fn offset view = view.offset
 
 /// The whole backing slice, including elements outside the window.
+///
+/// ```tsuzuri run=3%20[0,%201,%202,%203,%204,%205]
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// let row = Tensor.index_axis 0 1 v
+/// $"{Tensor.count row} {Tensor.data row}"
+/// ```
 def data { r } :: ref View<'a> { r } -> ref { r } ['a]
 fn data view = view.data
 
@@ -116,10 +199,24 @@ fn offset_of view index =
     offset
 
 /// Borrows one element; traps unless the index has one entry per axis, each inside its extent.
+///
+/// ```tsuzuri run=50
+/// let t = Tensor.init [2, 3] (\i -> i * 10)
+/// let v = Tensor.view t
+/// deref (Tensor.at [1, 2] v)
+/// ```
 def at { r } :: own [i64] -> ref View<'a> { r } -> ref { r } 'a
 fn at index view = ref view.data[offset_of view (ref index)]
 
 /// Copies one element, or `None` unless the index has one entry per axis, each inside its extent.
+///
+/// ```tsuzuri run=4%20-1
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// let inside = Maybe.default_value (-1) (Tensor.get [1, 1] v)
+/// let outside = Maybe.default_value (-1) (Tensor.get [2, 0] v)
+/// $"{inside} {outside}"
+/// ```
 def get :: Copy<'a> => own [i64] -> ref View<'a> -> Maybe<'a>
 fn get index view =
     let mut inside = index.length == view.shape.length
@@ -130,6 +227,13 @@ fn get index view =
 
 /// Reorders the axes without touching the data: axis i of the result is axis axes[i] of the view.
 /// Traps unless `axes` is a permutation of 0 .. rank - 1.
+///
+/// ```tsuzuri run=[3,%202]%205
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// let p = Tensor.permute [1, 0] v
+/// $"{Tensor.shape p} {deref (Tensor.at [2, 1] p)}"
+/// ```
 def permute { r } :: own [i64] -> ref View<'a> { r } -> View<'a> { r }
 fn permute axes view =
     let rank = view.shape.length
@@ -140,6 +244,13 @@ fn permute axes view =
     View { data: view.data, offset: view.offset, shape: new [i64](rank, \axis -> view.shape[axes[axis]]), strides: new [i64](rank, \axis -> view.strides[axes[axis]]) }
 
 /// Fixes one axis at a position, which removes that axis; traps unless the position is inside its extent.
+///
+/// ```tsuzuri run=[2,%205]
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// let column = Tensor.index_axis 1 2 v
+/// Tensor.to_array (Tensor.to_tensor column)
+/// ```
 def index_axis { r } :: own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn index_axis axis position view =
     let rank = view.shape.length
@@ -147,6 +258,13 @@ fn index_axis axis position view =
     View { data: view.data, offset: view.offset + position * view.strides[axis], shape: new [i64](rank - 1, \d -> if d < axis then view.shape[d] else view.shape[d + 1]), strides: new [i64](rank - 1, \d -> if d < axis then view.strides[d] else view.strides[d + 1]) }
 
 /// Keeps `length` positions of one axis starting at `start`; traps unless they lie inside the extent.
+///
+/// ```tsuzuri run=[1,%202,%205,%206]
+/// let t = Tensor.init [2, 4] (\i -> i)
+/// let v = Tensor.view t
+/// let middle = Tensor.narrow 1 1 2 v
+/// Tensor.to_array (Tensor.to_tensor middle)
+/// ```
 def narrow { r } :: own i64 -> own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn narrow axis start length view =
     let rank = view.shape.length
@@ -154,6 +272,13 @@ fn narrow axis start length view =
     View { data: view.data, offset: view.offset + start * view.strides[axis], shape: new [i64](rank, \d -> if d == axis then length else view.shape[d]), strides: Array.copy (ref view.strides) }
 
 /// Whether the elements are one run of `data` in row-major order (a window without elements is contiguous).
+///
+/// ```tsuzuri run=true%20false
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// let flipped = Tensor.permute [1, 0] v
+/// $"{Tensor.is_contiguous v} {Tensor.is_contiguous flipped}"
+/// ```
 def is_contiguous :: ref View<'a> -> bool
 fn is_contiguous view =
     let mut expected = 1
@@ -167,6 +292,13 @@ fn is_contiguous view =
 
 /// Gives a contiguous window a new shape without copying; traps unless the window is contiguous and
 /// the product of the shape is unchanged.
+///
+/// ```tsuzuri run=[6]%204
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// let flat = Tensor.reshape_view [6] v
+/// $"{Tensor.shape flat} {deref (Tensor.at [4] flat)}"
+/// ```
 def reshape_view { r } :: own [i64] -> ref View<'a> { r } -> View<'a> { r }
 fn reshape_view shape view =
     assert (is_contiguous view && volume (ref shape) == volume (ref view.shape))
@@ -185,6 +317,12 @@ fn rec fold_axis folder data shape strides axis offset state =
     result
 
 /// Folds the elements left to right in row-major order of the window.
+///
+/// ```tsuzuri run=1324
+/// let t = Tensor.init [2, 2] (\i -> i + 1)
+/// let v = Tensor.view t
+/// Tensor.fold (\text x -> text + to_string x) "" (Tensor.permute [1, 0] v)
+/// ```
 def fold :: Copy<'a> => own ('state -> 'a -> 'state) -> own 'state -> ref View<'a> -> 'state
 fn fold folder initial view =
     if volume (ref view.shape) == 0 then initial
@@ -205,6 +343,12 @@ fn rec gather data shape strides axis offset out position =
     next
 
 /// Copies the elements into a new contiguous tensor.
+///
+/// ```tsuzuri run=[0,%203,%201,%204,%202,%205]
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// Tensor.to_array (Tensor.to_tensor (Tensor.permute [1, 0] v))
+/// ```
 def to_tensor :: Copy<'a> => ref View<'a> -> Tensor<'a>
 fn to_tensor view =
     let total = volume (ref view.shape)
@@ -217,6 +361,12 @@ fn to_tensor view =
         Tensor { shape: Array.copy (ref view.shape), data: out }
 
 /// Applies `transform` to every element in row-major order of the window.
+///
+/// ```tsuzuri run=[0,%2010,%2020,%2030]
+/// let t = Tensor.init [2, 2] (\i -> i)
+/// let v = Tensor.view t
+/// Tensor.to_array (Tensor.map (\x -> x * 10) v)
+/// ```
 def map :: Copy<'a> => own ('a -> 'b) -> ref View<'a> -> Tensor<'b>
 fn map transform view =
     let total = volume (ref view.shape)
@@ -227,12 +377,26 @@ fn map transform view =
         Tensor { shape: Array.copy (ref packed.shape), data: Array.map_owned transform (ref packed.data) }
 
 /// Views a rank 2 window as a matrix window without copying; traps unless the rank is 2.
+///
+/// ```tsuzuri run=2x3%205
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// let window = Tensor.as_matrix_view v
+/// $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 1 2 window)}"
+/// ```
 def as_matrix_view { r } :: ref View<'a> { r } -> MatrixView<'a> { r }
 fn as_matrix_view view =
     assert (view.shape.length == 2)
     MatrixView.strided view.offset view.shape[0] view.shape[1] view.strides[0] view.strides[1] view.data
 
 /// Views a matrix window as a rank 2 window without copying.
+///
+/// ```tsuzuri run=[1,%202]%203
+/// let m = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// let window = MatrixView.transpose (MatrixView.of_matrix m)
+/// let v = Tensor.of_matrix_view window
+/// $"{Tensor.strides v} {deref (Tensor.at [0, 1] v)}"
+/// ```
 def of_matrix_view { r } :: MatrixView<'a> { r } -> View<'a> { r }
 fn of_matrix_view window =
     let shape = [MatrixView.rows window, MatrixView.cols window]

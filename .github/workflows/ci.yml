@@ -1,6 +1,6 @@
 name: Tsuzuri CI
 
-# The gate of a pull request, on one Linux host in about 20 minutes: formatting, lints, the Rust tests (cargo-nextest; the
+# The gate of a pull request, on one Linux host in 30 to 50 minutes: formatting, lints, the Rust tests (cargo-nextest; the
 # dev profile of Cargo.toml is opt-level 1), a type check of all five supported platforms, and the end-to-end suites that a compiler
 # change breaks most often, run on the dev binary. targets.yml, windows.yml and vscode.yml are the slow matrices: they run
 # after every merge to main and, on a pull request, with the label `ci:full`. reference.yml checks the language reference.
@@ -31,7 +31,9 @@ concurrency:
 jobs:
   rust:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # A hosted runner of ubuntu-24.04 runs the Rust tests in 21 to 26 minutes or, on slower hardware, in about 37
+    # (October 2026); the job then needs about 50. The limit only stops a hung job: it is not a speed check.
+    timeout-minutes: 60
     env:
       TSUZURI_CLANG: /usr/lib/llvm-21/bin/clang
       TSUZURI_WASM_LD: /usr/lib/llvm-21/bin/wasm-ld

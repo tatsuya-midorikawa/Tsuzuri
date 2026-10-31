@@ -3,27 +3,76 @@ union Error = Unavailable
 record Device { backend: Backend }
 record Buffer<'a> { values: ['a] }
 
+/// Requests a device for `backend`. `CpuReference` and `Auto` always succeed; `WebGpu` and `Vulkan` succeed
+/// only when the runtime opens such a device and it has what the program's kernels need; `Cuda` and `Metal`
+/// are `Error Unavailable`. A failed request is never replaced by the CPU.
+///
+/// ```tsuzuri run=ok,%20unavailable
+/// def status :: own Gpu.Backend -> string
+/// fn status backend = match Gpu.request backend with
+///     | Result.Ok _ -> "ok"
+///     | Result.Error Gpu.Unavailable -> "unavailable"
+/// status Gpu.CpuReference + ", " + status Gpu.Cuda
+/// ```
 def request :: own Backend -> Result<Device, Error>
 fn request backend = match backend with
     | CpuReference -> Result.Ok (Device { backend: backend })
     | _ -> Result.Error Unavailable
 
+/// The backend that `device` was requested for; an `Auto` device is `Auto`, whatever runs its calls.
+///
+/// ```tsuzuri run=CPU%20reference
+/// let device = Result.get (Gpu.request Gpu.CpuReference)
+/// match Gpu.backend device with
+/// | Gpu.CpuReference -> "CPU reference"
+/// | _ -> "another backend"
+/// ```
 def backend :: ref Device -> Backend
 fn backend device = device.backend
 
+/// Makes a buffer of `count` elements on `device`, element `i` being `initializer i`. A `count` outside 0 to
+/// 2147483647 traps.
+///
+/// ```tsuzuri run=[0,%201,%204,%209,%2016]
+/// let device = Result.get (Gpu.request Gpu.CpuReference)
+/// Gpu.to_array (Gpu.init device 5 (\index -> index * index))
+/// ```
 def init :: ref Device -> own i64 -> own (i32 -> 'a) -> Buffer<'a>
 fn init _device count initializer =
     assert (count >= 0 && count <= 2147483647)
     Buffer { values: Array.init count (\index -> initializer (index as i32)) }
 
+/// Applies `transform` to each element of `buffer` on `device`, consuming the buffer, and returns the results
+/// as a new buffer.
+///
+/// ```tsuzuri run=[10,%2020,%2030]
+/// let device = Result.get (Gpu.request Gpu.CpuReference)
+/// let buffer = Gpu.from_array device [1, 2, 3]
+/// Gpu.to_array (Gpu.map device (\value -> value * 10) buffer)
+/// ```
 def map :: Copy<'a> => ref Device -> own ('a -> 'b) -> own Buffer<'a> -> Buffer<'b>
 fn map _device transform buffer =
     let values = buffer.values
     Buffer { values: Array.map_owned transform (ref values) }
 
+/// Makes a buffer as `init` does, but a GPU device may compute `f32` and `f16` lanes with relaxed precision;
+/// the CPU reference gives the exact result of `init`.
+///
+/// ```tsuzuri run=[0,%200.5,%201,%201.5]
+/// let device = Result.get (Gpu.request Gpu.CpuReference)
+/// Gpu.to_array (Gpu.init_relaxed device 4 (\index -> (index as f32) * 0.5f32))
+/// ```
 def init_relaxed :: ref Device -> own i64 -> own (i32 -> 'a) -> Buffer<'a>
 fn init_relaxed device count initializer = init device count initializer
 
+/// Transforms a buffer as `map` does, but a GPU device may compute `f32` and `f16` lanes with relaxed
+/// precision; the CPU reference gives the exact result of `map`.
+///
+/// ```tsuzuri run=[0.25,%200.5,%201]
+/// let device = Result.get (Gpu.request Gpu.CpuReference)
+/// let buffer = Gpu.from_array device [1.0f32, 2.0f32, 4.0f32]
+/// Gpu.to_array (Gpu.map_relaxed device (\value -> value * 0.25f32) buffer)
+/// ```
 def map_relaxed :: Copy<'a> => ref Device -> own ('a -> 'b) -> own Buffer<'a> -> Buffer<'b>
 fn map_relaxed device transform buffer = map device transform buffer
 
@@ -76,14 +125,36 @@ fn map_on device transform buffer kernel =
 /// The backend that served the most recent `Gpu.init` or `Gpu.map` call (relaxed or not) of a program
 /// that names a non-CPU backend: `CpuReference` before any such call, and the backend that actually ran
 /// the call when the device was a `Gpu.Auto` one. Calls of other threads can come in any order.
+///
+/// ```tsuzuri
+/// let device = Result.get (Gpu.request Gpu.Auto)
+/// let _doubled = Gpu.init device 1000000 (\index -> index * 2)
+/// match Gpu.last_backend () with
+/// | Gpu.Vulkan -> IO.write_line "ran on Vulkan"
+/// | _ -> IO.write_line "ran on the CPU reference"
+/// ```
 def last_backend :: own unit -> Backend
 fn last_backend _unit = match Gpu.__last() with
     | 1 -> WebGpu
     | 2 -> Vulkan
     | _ -> CpuReference
 
+/// Copies the array `values` into a new buffer on `device`.
+///
+/// ```tsuzuri run=[7,%208,%209]
+/// let device = Result.get (Gpu.request Gpu.CpuReference)
+/// let buffer = Gpu.from_array device [7, 8, 9]
+/// Gpu.to_array buffer
+/// ```
 def from_array :: Copy<'a> => ref Device -> ref ['a] -> Buffer<'a>
 fn from_array _device values = Buffer { values: deref values }
 
+/// The elements of `buffer` as an array; the buffer is consumed.
+///
+/// ```tsuzuri run=6
+/// let device = Result.get (Gpu.request Gpu.CpuReference)
+/// let values = Gpu.to_array (Gpu.init device 3 (\index -> index + 1))
+/// Array.sum values
+/// ```
 def to_array :: own Buffer<'a> -> ['a]
 fn to_array buffer = buffer.values

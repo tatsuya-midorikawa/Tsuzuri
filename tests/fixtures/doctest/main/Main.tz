@@ -1,0 +1,9 @@
+/// The value that this program prints. Its example is not run: it would replace this `Main.tz`.
+///
+/// ```tsuzuri run=1
+/// 1
+/// ```
+def one :: i64
+fn one = 1
+
+one()

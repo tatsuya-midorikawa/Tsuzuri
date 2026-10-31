@@ -435,6 +435,8 @@ struct Arguments {
     affected: Option<String>,
     /// `tsuzuri test --allow-overflow` (A23): a test whose arithmetic wraps passes, with warnings.
     allow_overflow: bool,
+    /// `tsuzuri test --doc` (G34): check the examples of the doc comments instead of the tests.
+    test_doc: bool,
 }
 
 /// A diagnostic of the command line: it has no position, and the caller prints it at
@@ -478,6 +480,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             kg: Default::default(),
             affected: None,
             allow_overflow: false,
+            test_doc: false,
         });
     }
     let mut position = 0;
@@ -541,6 +544,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut trap_info = false;
     let mut overflow_report = false;
     let mut allow_overflow = false;
+    let mut test_doc = false;
     let mut trap_return = false;
     let mut allocator = None;
     let mut freestanding = false;
@@ -898,6 +902,16 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                         ));
                     }
                     overflow_report = true;
+                    continue;
+                }
+                Some("--doc") => {
+                    if test_doc {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "doc specified more than once",
+                        ));
+                    }
+                    test_doc = true;
                     continue;
                 }
                 Some("--allow-overflow") => {
@@ -1320,6 +1334,43 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             "--debug-info is only valid with build, run, or test",
         ));
     }
+    // G34: `test --doc` runs doc examples on this machine, one program each.
+    if test_doc {
+        let conflict = |message: &str| command_line_error(DiagnosticKind::OptionConflict, message);
+        if action != Action::Test {
+            return Err(command_line_error(
+                DiagnosticKind::OptionInvalidForCommand,
+                "--doc is only valid with test",
+            ));
+        }
+        if coverage.is_some() {
+            return Err(conflict("--doc cannot be combined with --coverage"));
+        }
+        if test_seed.is_some() {
+            return Err(conflict("--doc cannot be combined with --seed"));
+        }
+        if debug_info || output.is_some() {
+            return Err(conflict("--doc cannot be combined with -g or -o"));
+        }
+        if target.is_some() || triple.is_some() {
+            return Err(conflict(
+                "--doc does not use --target; examples run on this machine",
+            ));
+        }
+        if !links.is_empty() {
+            return Err(conflict(
+                "--doc does not use --link, -l, or -L; list native inputs in Tsuzuri.toml",
+            ));
+        }
+        if affected.is_some() {
+            return Err(conflict("--doc cannot be combined with --affected"));
+        }
+        if contracts.is_some() {
+            return Err(conflict(
+                "--doc does not use --contracts; examples check contracts as run does",
+            ));
+        }
+    }
     // `test --index N -g -o PATH` builds the runner of one test for a debugger (G16 Phase 2).
     if action == Action::Test && (debug_info || output.is_some()) {
         if !debug_info || output.is_none() {
@@ -1733,6 +1784,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         kg,
         affected,
         allow_overflow,
+        test_doc,
     })
 }
 
@@ -2236,6 +2288,180 @@ fn run_test_action(
     } else {
         EXIT_SUCCESS
     }
+}
+
+/// `tsuzuri test --doc` (G34): collects the examples of the doc comments of the package (or of
+/// `std`), lists or checks them, and reports them like tests.
+fn run_doctest_action(arguments: &Arguments, project: &Project) -> u8 {
+    use tsuzuri::doctest;
+    let json = arguments.json;
+    let examples = match doctest::collect(project) {
+        Ok(examples) => examples,
+        Err(errors) => {
+            print_diagnostics(&errors, project, json);
+            return EXIT_FAILURE;
+        }
+    };
+    if arguments
+        .test_indices
+        .iter()
+        .any(|index| *index >= examples.len())
+    {
+        print_diagnostic(
+            &Diagnostic::of(
+                DiagnosticKind::IndexOutOfRange,
+                "doc example index is out of range; refresh the list",
+                Span::default(),
+            ),
+            project.input(),
+            "",
+            json,
+        );
+        return EXIT_FAILURE;
+    }
+    let options = doctest::Options {
+        build: arguments.options,
+        level: speed_level(arguments.options.optimization),
+        filter: arguments.test_filter.clone(),
+        indices: arguments.test_indices.clone(),
+        warnings: doctest::Warnings {
+            deny: arguments.deny_warnings,
+            implicit_copy: arguments.warn_implicit_copy,
+            canonical: arguments.warn_canonical,
+            untrusted_extern: arguments.warn_untrusted_extern,
+        },
+        allow_overflow: arguments.allow_overflow,
+    };
+    let path_of = |example: &doctest::Example| {
+        project.sources[example.source]
+            .path
+            .to_string_lossy()
+            .into_owned()
+    };
+    if arguments.test_list {
+        for example in examples.iter().filter(|example| options.includes(example)) {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "type": "doctest", "index": example.index,
+                        "kind": example.expectation.kind(), "line": example.line,
+                        "module": example.module, "name": example.name(),
+                        "path": path_of(example),
+                    })
+                );
+            } else {
+                println!(
+                    "{} {} [{}]",
+                    example.index,
+                    example.label(),
+                    example.expectation.kind()
+                );
+            }
+        }
+        return EXIT_SUCCESS;
+    }
+    let report = doctest::run(project, &arguments.input, &examples, &options);
+    for message in &report.messages {
+        if json {
+            eprintln!("{}", tool_notice_json(message));
+        } else {
+            eprintln!("{}", message.trim());
+        }
+    }
+    for result in &report.results {
+        let example = &result.example;
+        if json {
+            let mut failure = result.failure.as_ref().map_or_else(String::new, |failure| {
+                format!(
+                    ",\"failure\":{}{}",
+                    json_string(failure),
+                    output_field(&result.output)
+                )
+            });
+            // A23: the overflow reports of a `test` example that passed with `--allow-overflow`.
+            if !result.overflow.is_empty() {
+                let reports: Vec<_> = result
+                    .overflow
+                    .iter()
+                    .map(|report| json_string(report))
+                    .collect();
+                failure.push_str(&format!(",\"overflow\":[{}]", reports.join(",")));
+            }
+            println!(
+                "{{\"type\":\"doctest\",\"index\":{},\"module\":{},\"name\":{},\"status\":\"{}\"{},\"path\":{},\"line\":{},\"duration_ms\":{}}}",
+                example.index,
+                json_string(&example.module),
+                json_string(&example.name()),
+                if result.failure.is_some() {
+                    "failed"
+                } else {
+                    "passed"
+                },
+                failure,
+                json_string(&path_of(example)),
+                example.line,
+                result.duration_ms
+            );
+        } else {
+            println!(
+                "{} {} - {} {}",
+                if result.failure.is_some() {
+                    "not ok"
+                } else {
+                    "ok"
+                },
+                example.index + 1,
+                example.module,
+                example.name()
+            );
+            if let Some(failure) = &result.failure {
+                println!("  failure: {failure}");
+                print_output(&result.output);
+                println!("  at: {}:{}", path_of(example), example.line);
+            } else {
+                // A23: `--allow-overflow` keeps the example passing and shows what wrapped.
+                for report in &result.overflow {
+                    println!("  warning: {report}");
+                }
+            }
+        }
+    }
+    let failed = report
+        .results
+        .iter()
+        .filter(|result| result.failure.is_some())
+        .count();
+    let passed = report.results.len() - failed;
+    if json {
+        println!(
+            "{{\"type\":\"summary\",\"passed\":{passed},\"failed\":{failed},\"ignored\":{},\"duration_ms\":{}}}",
+            report.ignored, report.duration_ms
+        );
+    } else {
+        println!(
+            "\n{passed} passed; {failed} failed; {} ignored",
+            report.ignored
+        );
+    }
+    let Some(first) = report
+        .results
+        .iter()
+        .find(|result| result.failure.is_some())
+    else {
+        return EXIT_SUCCESS;
+    };
+    let diagnostic = Diagnostic::of(
+        DiagnosticKind::DocTestFailed,
+        format!(
+            "{failed} doc test{} failed",
+            if failed == 1 { "" } else { "s" }
+        ),
+        first.example.span,
+    );
+    let source = project.source_for(&diagnostic);
+    print_diagnostic(&diagnostic, &source.path, &source.text, json);
+    EXIT_FAILURE
 }
 
 /// Builds the runner of one test for a debugger and prints how to start it (G16 Phase 2).
@@ -3803,10 +4029,12 @@ fn cli(
     }
     // G27: the knowledge graph of check, build, run and test (not of a script). The settings are
     // checked before any source is read.
+    // `test --doc` analyzes the package to run its doc examples; it writes no knowledge graph.
     let kg_settings = if matches!(
         arguments.action,
         Action::Check | Action::Build | Action::Run | Action::Test
     ) && program_arguments.is_none()
+        && !arguments.test_doc
     {
         match tsuzuri::kg::settings::resolve(
             &arguments.kg,
@@ -3858,7 +4086,9 @@ fn cli(
         return response.exit;
     }
     let load_time = tsuzuri::timings::Phase::start("load");
-    let loaded = if matches!(arguments.action, Action::Test | Action::Bench) {
+    let loaded = if arguments.test_doc {
+        Project::load_for_docs(&arguments.input)
+    } else if matches!(arguments.action, Action::Test | Action::Bench) {
         Project::load_for_tests(&arguments.input)
     } else if arguments.action == Action::Doc {
         Project::load_for_docs(&arguments.input)
@@ -3899,6 +4129,7 @@ fn cli(
         return EXIT_FAILURE;
     }
     let kind = match arguments.action {
+        Action::Test if arguments.test_doc => driver::AnalysisKind::Docs,
         // bench loads the same sources as test (`Project::load_for_tests`).
         Action::Test | Action::Bench => driver::AnalysisKind::Tests,
         Action::Doc => driver::AnalysisKind::Docs,
@@ -4015,6 +4246,9 @@ fn cli(
     write_messages(err, kg_notice.as_slice(), arguments.json);
     if arguments.deny_warnings && !warnings.is_empty() {
         return EXIT_FAILURE;
+    }
+    if arguments.action == Action::Test && arguments.test_doc {
+        return run_doctest_action(&arguments, &project);
     }
     if arguments.action == Action::Test {
         return run_test_action(&arguments, &project, &module, &links, affected_base);
@@ -6721,8 +6955,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_test_doc_options() {
+        let arguments = parse(&[
+            "test", "Lib", "--doc", "--filter", "x", "--list", "--json", "-O3",
+        ])
+        .unwrap();
+        assert!(arguments.test_doc && arguments.test_list && arguments.json);
+        assert_eq!(arguments.test_filter.as_deref(), Some("x"));
+        assert_eq!(speed_level(arguments.options.optimization), 3);
+        assert!(!parse(&["test", "Lib"]).unwrap().test_doc);
+    }
+
+    #[test]
     fn rejects_ambiguous_or_unused_arguments() {
         for values in [
+            vec!["check", "Lib", "--doc"],
+            vec!["test", "Lib", "--doc", "--doc"],
+            vec!["test", "Lib", "--doc", "--coverage", "x"],
+            vec!["test", "Lib", "--doc", "--seed", "1"],
+            vec!["test", "Lib", "--doc", "-g", "-o", "x"],
+            vec!["test", "Lib", "--doc", "--target", "native"],
+            vec!["test", "Lib", "--doc", "-l", "m"],
+            vec!["test", "Lib", "--doc", "--contracts", "off"],
             vec!["build", "Main.tz", "--wasm-feature", "simd128"],
             vec![
                 "build",
@@ -8416,6 +8670,7 @@ mod tests {
             "publish_package",
             "repl_command",
             "run_bench_action",
+            "run_doctest_action",
             "run_formatter",
             "run_test_action",
             "select_affected",

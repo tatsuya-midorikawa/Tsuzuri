@@ -1,0 +1,25 @@
+/// Notation errors, one per example: `tsuzuri test --doc` reports all six and runs none.
+///
+/// ```tsuzuri sloppy
+/// Counter.id 1
+/// ```
+///
+/// ```tsuzuri run=%zz
+/// Counter.id 1
+/// ```
+///
+/// ```tsuzuri run=1 test
+/// Counter.id 1
+/// ```
+///
+///  ```tsuzuri
+///  Counter.id 1
+///  ```
+///
+/// ```tsuzuri
+/// ```
+///
+/// ```tsuzuri
+/// Counter.id 1
+def id :: i64 -> i64
+fn id n = n
