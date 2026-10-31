@@ -199,7 +199,8 @@ impl SemanticIndex {
 
     fn document(&mut self, name: &Ident, doc: Option<&Documentation>) {
         if let Some(doc) = doc {
-            self.documentation.push((name.span, doc.text.clone()));
+            self.documentation
+                .push((name.span, crate::doctest::render_doc(&doc.text)));
         }
     }
 

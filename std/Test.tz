@@ -1,8 +1,23 @@
+/// Passes when `expected` equals `actual`, and traps like `assert` otherwise.
+///
+/// ```tsuzuri test
+/// test "three times four" = Test.equal (ref 12) (ref (3 * 4))
+/// ```
 def equal :: Eq<'a> => ref 'a -> ref 'a -> unit
 fn equal expected actual = assert (Eq.eq expected actual)
 
+/// Passes when `expected` differs from `actual`, and traps like `assert` otherwise.
+///
+/// ```tsuzuri test
+/// test "names differ" = Test.not_equal "tea" "coffee"
+/// ```
 def not_equal :: Eq<'a> => ref 'a -> ref 'a -> unit
 fn not_equal expected actual = assert (Eq.ne expected actual)
 
+/// Passes when `value` is `true`, and traps like `assert` otherwise.
+///
+/// ```tsuzuri test
+/// test "stock covers the order" = Test.is_true (5 >= 2)
+/// ```
 def is_true :: own bool -> unit
 fn is_true value = assert value

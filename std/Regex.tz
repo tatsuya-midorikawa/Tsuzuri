@@ -823,6 +823,14 @@ fn rec emit tree code node pc =
 			next
 
 /// Compiles a pattern, or explains why it is rejected (the error tables are in the language reference).
+///
+/// ```tsuzuri run=true%20Syntax
+/// let accepted = Result.is_ok (Regex.compile "[a-z]+")
+/// let kind = match Regex.compile "a(b" with
+///     | Result.Ok _ -> "accepted"
+///     | Result.Error error -> $"{error.kind}"
+/// $"{accepted} {kind}"
+/// ```
 def compile :: ref string -> Result<Regex, Error>
 fn compile pattern =
 	if pattern.length > 65536 then Result.Error (failure TooLarge 0 "pattern is longer than 65536 code units") else
@@ -846,6 +854,10 @@ fn compile pattern =
 
 /// `text` with a `\` before each of the 14 syntax characters `^ $ \ . * + ? ( ) [ ] { } |`, so that the
 /// pattern matches `text` literally.
+///
+/// ```tsuzuri run=1\+1=2\?
+/// Regex.escape "1+1=2?"
+/// ```
 def escape :: ref string -> string
 fn escape text =
 	let mut output: Vec<i16u> = Vec.with_capacity text.length
@@ -857,6 +869,11 @@ fn escape text =
 	String.from_code_units (Vec.to_array output)
 
 /// The number of capture groups, group 0 (the whole match) excluded.
+///
+/// ```tsuzuri run=1
+/// let re = Regex.compile "(\\w+)@(?:\\w+)" |> Result.get
+/// Regex.group_count re
+/// ```
 def group_count :: ref Regex -> i64
 fn group_count re = re.groups
 
@@ -1145,6 +1162,11 @@ fn group_span flat base group which =
 	if first < 0 || last < 0 then -1 elif which == 0 then first else last
 
 /// True when `text` matches the pattern somewhere.
+///
+/// ```tsuzuri run=true%20false
+/// let re = Regex.compile "^\\d+$" |> Result.get
+/// $"{Regex.is_match re "2026"} {Regex.is_match re "20x6"}"
+/// ```
 def is_match :: ref Regex -> ref string -> bool
 fn is_match re text =
 	let bytes = u8""
@@ -1152,6 +1174,11 @@ fn is_match re text =
 	search re text (ref bytes) false (ref mut ws) 0 0 true
 
 /// The range `(start, end)` in UTF-16 code units of the leftmost-first match, or `None`.
+///
+/// ```tsuzuri run=(6,%208)
+/// let re = Regex.compile "\\d+" |> Result.get
+/// Regex.find re "order 66 shipped" |> Maybe.default_value (-1, -1)
+/// ```
 def find :: ref Regex -> ref string -> Maybe<(i64 * i64)>
 fn find re text =
 	let bytes = u8""
@@ -1159,12 +1186,22 @@ fn find re text =
 
 /// `find` from `start`; the scalars before `start` still decide `^`, `\b` and `\B`. `None` when `start` is
 /// outside the text or between the units of a surrogate pair.
+///
+/// ```tsuzuri run=(7,%209)
+/// let re = Regex.compile "\\b\\d+" |> Result.get
+/// Regex.find_at re 1 "66 and 77" |> Maybe.default_value (-1, -1)
+/// ```
 def find_at :: ref Regex -> own i64 -> ref string -> Maybe<(i64 * i64)>
 fn find_at re start text =
 	let bytes = u8""
 	locate re text (ref bytes) false start
 
 /// The ranges of all successive matches. After an empty match the next search starts one scalar later.
+///
+/// ```tsuzuri run=[(0,%201),%20(3,%205),%20(7,%2010)]
+/// let re = Regex.compile "\\d+" |> Result.get
+/// Regex.find_all re "1, 22, 333"
+/// ```
 def find_all :: ref Regex -> ref string -> [(i64 * i64)]
 fn find_all re text =
 	let bytes = u8""
@@ -1172,6 +1209,11 @@ fn find_all re text =
 
 /// The ranges of the whole match (element 0) and of each group of the leftmost-first match; `(-1, -1)` for
 /// a group that took no part.
+///
+/// ```tsuzuri run=[(6,%208),%20(6,%208),%20(-1,%20-1)]
+/// let re = Regex.compile "(\\d+)(px)?" |> Result.get
+/// Regex.captures re "width 42" |> Maybe.default_value []
+/// ```
 def captures :: ref Regex -> ref string -> Maybe<[(i64 * i64)]>
 fn captures re text =
 	let bytes = u8""
@@ -1179,6 +1221,11 @@ fn captures re text =
 
 /// `text` with every match replaced by `replacement`, where `${n}` is the text of group n (empty when the
 /// group took no part or does not exist) and `$$` is `$`.
+///
+/// ```tsuzuri run=example:alice%20and%20test:bob
+/// let re = Regex.compile "(\\w+)@(\\w+)" |> Result.get
+/// Regex.replace_all re "${2}:${1}" "alice@example and bob@test"
+/// ```
 def replace_all :: ref Regex -> ref string -> ref string -> string
 fn replace_all re replacement text =
 	let bytes = u8""
@@ -1203,6 +1250,11 @@ fn replace_all re replacement text =
 
 /// The pieces of `text` between the matches (`find_all`), including the pieces before the first match and
 /// after the last one.
+///
+/// ```tsuzuri run=["a",%20"b",%20"c"]
+/// let re = Regex.compile ",\\s*" |> Result.get
+/// Regex.split re "a, b,c"
+/// ```
 def split :: ref Regex -> ref string -> [string]
 fn split re text =
 	let bytes = u8""
@@ -1220,6 +1272,11 @@ fn split re text =
 
 /// The number of VM steps of `find` on `text`: threads explored plus threads stepped. It grows linearly
 /// with the input for a fixed pattern, which the tests check.
+///
+/// ```tsuzuri run=12%2020
+/// let re = Regex.compile "a" |> Result.get
+/// $"{Regex.search_steps re "bb"} {Regex.search_steps re "bbbb"}"
+/// ```
 def search_steps :: ref Regex -> ref string -> i64
 fn search_steps re text =
 	let bytes = u8""
@@ -1228,6 +1285,11 @@ fn search_steps re text =
 	ws[0]
 
 /// `is_match` on a `utf8string`.
+///
+/// ```tsuzuri run=true%20false
+/// let re = Regex.compile "^\\d+$" |> Result.get
+/// $"{Regex.is_match_utf8 re u8"2026"} {Regex.is_match_utf8 re u8"20x6"}"
+/// ```
 def is_match_utf8 :: ref Regex -> ref utf8string -> bool
 fn is_match_utf8 re text =
 	let units = ""
@@ -1235,30 +1297,57 @@ fn is_match_utf8 re text =
 	search re (ref units) text true (ref mut ws) 0 0 true
 
 /// `find` on a `utf8string`; the range is in bytes.
+///
+/// ```tsuzuri run=(7,%2010)
+/// let re = Regex.compile "[a-z]+" |> Result.get
+/// Regex.find_utf8 re u8"日本 abc" |> Maybe.default_value (-1, -1)
+/// ```
 def find_utf8 :: ref Regex -> ref utf8string -> Maybe<(i64 * i64)>
 fn find_utf8 re text =
 	let units = ""
 	locate re (ref units) text true 0
 
 /// `find_at` on a `utf8string`; `None` when `start` is outside the text or a continuation byte.
+///
+/// ```tsuzuri run=(4,%205)%20(-1,%20-1)
+/// let re = Regex.compile "[a-z]" |> Result.get
+/// let found = Regex.find_at_utf8 re 1 u8"aé b" |> Maybe.default_value (-1, -1)
+/// let inside = Regex.find_at_utf8 re 2 u8"aé b" |> Maybe.default_value (-1, -1)
+/// $"{found} {inside}"
+/// ```
 def find_at_utf8 :: ref Regex -> own i64 -> ref utf8string -> Maybe<(i64 * i64)>
 fn find_at_utf8 re start text =
 	let units = ""
 	locate re (ref units) text true start
 
 /// `find_all` on a `utf8string`; the ranges are in bytes.
+///
+/// ```tsuzuri run=[(2,%203),%20(4,%206)]
+/// let re = Regex.compile "\\d+" |> Result.get
+/// Regex.find_all_utf8 re u8"é1 22"
+/// ```
 def find_all_utf8 :: ref Regex -> ref utf8string -> [(i64 * i64)]
 fn find_all_utf8 re text =
 	let units = ""
 	spans (all_matches re (ref units) text true 2)
 
 /// `captures` on a `utf8string`; the ranges are in bytes.
+///
+/// ```tsuzuri run=[(8,%2012),%20(8,%209),%20(10,%2012)]
+/// let re = Regex.compile "(\\w+)=(\\d+)" |> Result.get
+/// Regex.captures_utf8 re u8"größe x=42" |> Maybe.default_value []
+/// ```
 def captures_utf8 :: ref Regex -> ref utf8string -> Maybe<[(i64 * i64)]>
 fn captures_utf8 re text =
 	let units = ""
 	spans_of re (ref units) text true
 
 /// `replace_all` on a `utf8string`.
+///
+/// ```tsuzuri run=é<1>%20<22>
+/// let re = Regex.compile "\\d+" |> Result.get
+/// Regex.replace_all_utf8 re u8"<${0}>" u8"é1 22"
+/// ```
 def replace_all_utf8 :: ref Regex -> ref utf8string -> ref utf8string -> utf8string
 fn replace_all_utf8 re replacement text =
 	let units = ""
@@ -1282,6 +1371,11 @@ fn replace_all_utf8 re replacement text =
 	Maybe.get (Utf8String.from_bytes (Vec.to_array output))
 
 /// `split` on a `utf8string`.
+///
+/// ```tsuzuri run=[u8"é",%20u8"b",%20u8"c"]
+/// let re = Regex.compile "\\s*;\\s*" |> Result.get
+/// Regex.split_utf8 re u8"é ; b;c"
+/// ```
 def split_utf8 :: ref Regex -> ref utf8string -> [utf8string]
 fn split_utf8 re text =
 	let units = ""

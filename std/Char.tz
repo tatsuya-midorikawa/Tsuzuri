@@ -1,17 +1,47 @@
+/// Whether `value` is an ASCII digit, `'0'` to `'9'`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Char.is_ascii_digit '7'} {Char.is_ascii_digit 'x'}"
+/// ```
 pure def is_ascii_digit :: own char -> bool
 fn is_ascii_digit value = value >= '0' && value <= '9'
 
+/// Whether `value` is an ASCII lowercase letter, `'a'` to `'z'`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Char.is_ascii_lower 'q'} {Char.is_ascii_lower 'Q'}"
+/// ```
 pure def is_ascii_lower :: own char -> bool
 fn is_ascii_lower value = value >= 'a' && value <= 'z'
 
+/// Whether `value` is an ASCII uppercase letter, `'A'` to `'Z'`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Char.is_ascii_upper 'Q'} {Char.is_ascii_upper 'q'}"
+/// ```
 pure def is_ascii_upper :: own char -> bool
 fn is_ascii_upper value = value >= 'A' && value <= 'Z'
 
+/// Whether `value` is an ASCII letter, lowercase or uppercase.
+///
+/// ```tsuzuri run=true%20true%20false
+/// $"{Char.is_ascii_alphabetic 'g'} {Char.is_ascii_alphabetic 'G'} {Char.is_ascii_alphabetic '5'}"
+/// ```
 pure def is_ascii_alphabetic :: own char -> bool
 fn is_ascii_alphabetic value = is_ascii_lower value || is_ascii_upper value
 
+/// The uppercase form of an ASCII lowercase letter; any other `value` is returned unchanged.
+///
+/// ```tsuzuri run=A%201%20é
+/// $"{Char.to_ascii_upper 'a'} {Char.to_ascii_upper '1'} {Char.to_ascii_upper 'é'}"
+/// ```
 pure def to_ascii_upper :: own char -> char
 fn to_ascii_upper value = if is_ascii_lower value then Char.of_u16 (Char.to_u16 value - 32i16u) else value
 
+/// The lowercase form of an ASCII uppercase letter; any other `value` is returned unchanged.
+///
+/// ```tsuzuri run=z%20?%20É
+/// $"{Char.to_ascii_lower 'Z'} {Char.to_ascii_lower '?'} {Char.to_ascii_lower 'É'}"
+/// ```
 pure def to_ascii_lower :: own char -> char
 fn to_ascii_lower value = if is_ascii_upper value then Char.of_u16 (Char.to_u16 value + 32i16u) else value

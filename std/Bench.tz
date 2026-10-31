@@ -1,5 +1,9 @@
 /// Runs `setup` once, then `run` on a borrow of its value `iterations` times, and returns the
 /// nanoseconds the runs took. Neither `setup` nor the drop of its value is timed.
+///
+/// ```tsuzuri
+/// bench "sum of 1e6" = Bench.with_input (\_ -> new [i64](1000000, \i -> i)) (\values -> Array.sum values)
+/// ```
 def with_input :: own (unit -> 'a) -> own (ref 'a -> 'b) -> own i64 -> i64
 fn with_input setup run iterations =
     let value = setup ()
@@ -11,6 +15,10 @@ fn with_input setup run iterations =
     Bench.now() - start
 
 /// Calls `run` `iterations` times and returns the nanoseconds the calls took.
+///
+/// ```tsuzuri
+/// bench "format a number" = Bench.of (\_ -> to_string 123456789)
+/// ```
 def of :: own (unit -> 'b) -> own i64 -> i64
 fn of run iterations =
     let start = Bench.now()

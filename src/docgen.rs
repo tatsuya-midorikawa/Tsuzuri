@@ -242,7 +242,7 @@ fn section(name: &str, code: &str, doc: Option<&Documentation>, level: usize) ->
     );
     if let Some(doc) = doc {
         text.push('\n');
-        text.push_str(&doc.text);
+        text.push_str(&crate::doctest::render_doc(&doc.text));
         text.push('\n');
     }
     text.push('\n');

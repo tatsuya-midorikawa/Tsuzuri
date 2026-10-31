@@ -1,3 +1,8 @@
+/// The number of UTF-16 code units in `text`; a character outside the BMP counts twice.
+///
+/// ```tsuzuri run=3%202
+/// $"{String.length "abc"} {String.length "😀"}"
+/// ```
 def length :: ref string -> i64
 fn length text = text.length
 
@@ -19,6 +24,13 @@ fn matches_at needle text offset =
 		while index < needle.length && needle[index] == text[offset + index] do index = index + 1
 		index == needle.length
 
+/// The offset of the first occurrence of `needle` in `text`, or `None` when there is none.
+///
+/// ```tsuzuri run=3%20-1
+/// let at = String.find "zu" "Tsuzuri" |> Maybe.default_value (-1)
+/// let missing = String.find "x" "Tsuzuri" |> Maybe.default_value (-1)
+/// $"{at} {missing}"
+/// ```
 def find :: ref string -> ref string -> Maybe<i64>
 fn find needle text =
 	let mut offset = 0
@@ -30,6 +42,11 @@ fn find needle text =
 		offset = offset + 1
 	result
 
+/// The offset of the last occurrence of `needle` in `text`, or `None` when there is none.
+///
+/// ```tsuzuri run=3
+/// String.rfind "an" "banana" |> Maybe.default_value (-1)
+/// ```
 def rfind :: ref string -> ref string -> Maybe<i64>
 fn rfind needle text =
 	let mut offset = text.length
@@ -41,36 +58,87 @@ fn rfind needle text =
 		offset = offset - 1
 	result
 
+/// Whether `needle` occurs in `text`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{String.contains "zu" "Tsuzuri"} {String.contains "Zu" "Tsuzuri"}"
+/// ```
 def contains :: ref string -> ref string -> bool
 fn contains needle text =
 	let result = find needle text
 	Maybe.is_some (ref result)
 
+/// Whether `text` begins with `prefix`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{String.starts_with "Tsu" "Tsuzuri"} {String.starts_with "zu" "Tsuzuri"}"
+/// ```
 def starts_with :: ref string -> ref string -> bool
 fn starts_with prefix text = matches_at prefix text 0
 
+/// Whether `text` ends with `suffix`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{String.ends_with "ri" "Tsuzuri"} {String.ends_with "Tsu" "Tsuzuri"}"
+/// ```
 def ends_with :: ref string -> ref string -> bool
 fn ends_with suffix text = suffix.length <= text.length && matches_at suffix text (text.length - suffix.length)
 
+/// The code units of `text` from `first` up to, but not including, `last`; `None` when a position is negative,
+/// `last < first`, or `last` is past the end.
+///
+/// ```tsuzuri run=suz%20?
+/// let piece = String.slice 1 4 "Tsuzuri" |> Maybe.default_value "?"
+/// let reversed = String.slice 4 1 "Tsuzuri" |> Maybe.default_value "?"
+/// $"{piece} {reversed}"
+/// ```
 def slice :: own i64 -> own i64 -> ref string -> Maybe<string>
 fn slice first last text =
 	if first < 0 || last < first || last > text.length then Maybe.None else
 		let output = append_range (Vec.with_capacity (last - first)) text first last
 		Maybe.Some (String.from_code_units (Vec.to_array output))
 
+/// The `count` code units of `text` that start at `first`; `None` when the range is negative or not inside `text`.
+///
+/// ```tsuzuri run=zu%20?
+/// let piece = String.sub 3 2 "Tsuzuri" |> Maybe.default_value "?"
+/// let outside = String.sub 5 9 "Tsuzuri" |> Maybe.default_value "?"
+/// $"{piece} {outside}"
+/// ```
 def sub :: own i64 -> own i64 -> ref string -> Maybe<string>
 fn sub first count text =
 	if first < 0 || count < 0 || first > 9223372036854775807 - count then Maybe.None else slice first (first + count) text
 
+/// The code unit of `text` at `offset` as a `char`, paired with the offset that follows it; an `offset` outside
+/// `text` traps.
+///
+/// ```tsuzuri run=('b',%202)
+/// String.decode_at 1 "abc"
+/// ```
 def decode_at :: own i64 -> ref string -> (char * i64)
 fn decode_at offset text = (Char.of_u16 text[offset], offset + 1)
 
+/// The number of `char` values in `text`, which is its number of UTF-16 code units.
+///
+/// ```tsuzuri run=3%202
+/// $"{String.char_count "abc"} {String.char_count "😀"}"
+/// ```
 def char_count :: ref string -> i64
 fn char_count text = text.length
 
+/// The code units of `text` as an array of `char`.
+///
+/// ```tsuzuri run=['a',%20'b',%20'c']
+/// String.chars "abc"
+/// ```
 def chars :: ref string -> [char]
 fn chars text = new [char](text.length, \index -> Char.of_u16 text[index])
 
+/// The elements of `parts` joined with `separator` between each two of them; an empty array gives `""`.
+///
+/// ```tsuzuri run=a,%20b,%20c
+/// String.join ", " ["a", "b", "c"]
+/// ```
 def join :: ref string -> ref [string] -> string
 fn join separator parts =
 	let mut size = 0
@@ -83,11 +151,22 @@ fn join separator parts =
 		output = append_range output (ref parts[index]) 0 parts[index].length
 	String.from_code_units (Vec.to_array output)
 
+/// The elements of `parts` joined with nothing between them; an empty array gives `""`.
+///
+/// ```tsuzuri run=Tsuzuri
+/// String.concat ["Tsu", "zu", "ri"]
+/// ```
 def concat :: ref [string] -> string
 fn concat parts =
 	let empty = ""
 	join (ref empty) parts
 
+/// Splits `text` at each `separator`; matches at the ends or next to each other give empty elements, and an empty
+/// `separator` splits between code units.
+///
+/// ```tsuzuri run=["a",%20"",%20"b"]
+/// String.split "," "a,,b"
+/// ```
 def split :: ref string -> ref string -> [string]
 fn split separator text =
 	if separator.length == 0 then
@@ -115,18 +194,33 @@ fn split separator text =
 private def whitespace :: own i16u -> bool
 fn whitespace value = value == 32i16u || (value >= 9i16u && value <= 13i16u)
 
+/// `text` without its leading ASCII whitespace (code units 9 to 13 and 32).
+///
+/// ```tsuzuri run=[hi%20%20]
+/// $"[{String.trim_start "  hi  "}]"
+/// ```
 def trim_start :: ref string -> string
 fn trim_start text =
 	let mut first = 0
 	while first < text.length && whitespace text[first] do first = first + 1
 	Maybe.get (slice first text.length text)
 
+/// `text` without its trailing ASCII whitespace (code units 9 to 13 and 32).
+///
+/// ```tsuzuri run=[%20%20hi]
+/// $"[{String.trim_end "  hi  "}]"
+/// ```
 def trim_end :: ref string -> string
 fn trim_end text =
 	let mut last = text.length
 	while last > 0 && whitespace text[last - 1] do last = last - 1
 	Maybe.get (slice 0 last text)
 
+/// `text` without its leading and trailing ASCII whitespace (code units 9 to 13 and 32).
+///
+/// ```tsuzuri run=[hi]
+/// $"[{String.trim " \t hi\n"}]"
+/// ```
 def trim :: ref string -> string
 fn trim text =
 	let mut first = 0
@@ -135,12 +229,27 @@ fn trim text =
 	while last > first && whitespace text[last - 1] do last = last - 1
 	Maybe.get (slice first last text)
 
+/// `text` with the ASCII letters `A` to `Z` made lowercase; every other code unit is kept.
+///
+/// ```tsuzuri run=tsuzuri%20Äb
+/// String.to_ascii_lower "TSUZURI ÄB"
+/// ```
 def to_ascii_lower :: ref string -> string
 fn to_ascii_lower text = String.from_code_units (new [i16u](text.length, \index -> Char.to_u16 (Char.to_ascii_lower (Char.of_u16 text[index]))))
 
+/// `text` with the ASCII letters `a` to `z` made uppercase; every other code unit is kept.
+///
+/// ```tsuzuri run=STRAßE
+/// String.to_ascii_upper "straße"
+/// ```
 def to_ascii_upper :: ref string -> string
 fn to_ascii_upper text = String.from_code_units (new [i16u](text.length, \index -> Char.to_u16 (Char.to_ascii_upper (Char.of_u16 text[index]))))
 
+/// `text` repeated `count` times; a negative `count` traps.
+///
+/// ```tsuzuri run=ababab
+/// String.repeat 3 "ab"
+/// ```
 def repeat :: own i64 -> ref string -> string
 fn repeat count text =
 	assert (count >= 0)
@@ -149,6 +258,11 @@ fn repeat count text =
 		assert (size <= 9007199254740991)
 		String.from_code_units (new [i16u](size, \index -> text[index % text.length]))
 
+/// `text` with each non-overlapping occurrence of `needle`, from the left, replaced by `replacement`.
+///
+/// ```tsuzuri run=baNANA
+/// String.replace "na" "NA" "banana"
+/// ```
 def replace :: ref string -> ref string -> ref string -> string
 fn replace needle replacement text =
 	let mut occurrences = 0

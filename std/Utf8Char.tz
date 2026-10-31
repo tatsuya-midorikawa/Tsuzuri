@@ -1,17 +1,47 @@
+/// Whether `value` is an ASCII digit, `u8'0'` to `u8'9'`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Utf8Char.is_ascii_digit u8'7'} {Utf8Char.is_ascii_digit u8'x'}"
+/// ```
 def is_ascii_digit :: own utf8char -> bool
 fn is_ascii_digit value = value >= u8'0' && value <= u8'9'
 
+/// Whether `value` is an ASCII lowercase letter, `u8'a'` to `u8'z'`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Utf8Char.is_ascii_lower u8'q'} {Utf8Char.is_ascii_lower u8'Q'}"
+/// ```
 def is_ascii_lower :: own utf8char -> bool
 fn is_ascii_lower value = value >= u8'a' && value <= u8'z'
 
+/// Whether `value` is an ASCII uppercase letter, `u8'A'` to `u8'Z'`.
+///
+/// ```tsuzuri run=true%20false
+/// $"{Utf8Char.is_ascii_upper u8'Q'} {Utf8Char.is_ascii_upper u8'q'}"
+/// ```
 def is_ascii_upper :: own utf8char -> bool
 fn is_ascii_upper value = value >= u8'A' && value <= u8'Z'
 
+/// Whether `value` is an ASCII letter, lowercase or uppercase.
+///
+/// ```tsuzuri run=true%20true%20false
+/// $"{Utf8Char.is_ascii_alphabetic u8'g'} {Utf8Char.is_ascii_alphabetic u8'G'} {Utf8Char.is_ascii_alphabetic u8'5'}"
+/// ```
 def is_ascii_alphabetic :: own utf8char -> bool
 fn is_ascii_alphabetic value = is_ascii_lower value || is_ascii_upper value
 
+/// The uppercase form of an ASCII lowercase letter; any other `value` is returned unchanged.
+///
+/// ```tsuzuri run=A%201%20é
+/// $"{Utf8Char.to_ascii_upper u8'a'} {Utf8Char.to_ascii_upper u8'1'} {Utf8Char.to_ascii_upper u8'é'}"
+/// ```
 def to_ascii_upper :: own utf8char -> utf8char
 fn to_ascii_upper value = if is_ascii_lower value then Utf8Char.of_u32_unchecked (Utf8Char.to_u32 value - 32i32u) else value
 
+/// The lowercase form of an ASCII uppercase letter; any other `value` is returned unchanged.
+///
+/// ```tsuzuri run=z%20?%20É
+/// $"{Utf8Char.to_ascii_lower u8'Z'} {Utf8Char.to_ascii_lower u8'?'} {Utf8Char.to_ascii_lower u8'É'}"
+/// ```
 def to_ascii_lower :: own utf8char -> utf8char
 fn to_ascii_lower value = if is_ascii_upper value then Utf8Char.of_u32_unchecked (Utf8Char.to_u32 value + 32i32u) else value

@@ -1,0 +1,34 @@
+/// Adds one to `n`.
+///
+/// ```tsuzuri run=3
+/// Counter.add_one 2
+/// ```
+///
+/// A hidden line sets up a value that the reader does not see.
+///
+/// ```tsuzuri run=11
+/// # let base = 10
+/// Counter.add_one base
+/// ```
+///
+/// ```tsuzuri fails=E1003
+/// Counter.add_one "two"
+/// ```
+def add_one :: i64 -> i64
+fn add_one n = n + 1
+
+/// Doubles `n`.
+///
+/// ```tsuzuri test
+/// test "doubles" = Test.equal (ref (Counter.double 4)) (ref 8)
+/// ```
+///
+/// ```tsuzuri
+/// let _answer = Counter.double 21
+/// ```
+///
+/// ```tsuzuri ignore
+/// Counter.double
+/// ```
+def double :: i64 -> i64
+fn double n = n * 2

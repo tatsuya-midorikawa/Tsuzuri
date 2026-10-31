@@ -17,6 +17,10 @@ fn trim digits =
     if length == digits.length then digits else Array.sub 0 length (ref digits)
 
 /// The bigint of `value`.
+///
+/// ```tsuzuri run=9223372036854775808
+/// BigInt.of_i64 9223372036854775807i64 + BigInt.of_i64 1i64
+/// ```
 def of_i64 :: own i64 -> BigInt
 fn of_i64 value =
     let mut digits = Vec.empty()
@@ -28,6 +32,14 @@ fn of_i64 value =
     make (value < 0) (Vec.to_array digits)
 
 /// The `i64` that `value` holds, or `None` when it is out of range.
+///
+/// ```tsuzuri run=-12345%20none
+/// let small = match BigInt.to_i64 (-12345I) with
+///     | Some value -> to_string value
+///     | None -> "none"
+/// let huge = if Maybe.is_some (BigInt.to_i64 9223372036854775808I) then "some" else "none"
+/// $"{small} {huge}"
+/// ```
 def to_i64 :: ref BigInt -> Maybe<i64>
 fn to_i64 value =
     if value.limbs.length > 3 then Maybe.None else
@@ -41,6 +53,12 @@ fn to_i64 value =
         if fits then Maybe.Some (signed as i64) else Maybe.None
 
 /// The bigint that `text` spells: an optional `-` and decimal digits.
+///
+/// ```tsuzuri run=-123456789012345678901234567890%200
+/// let parsed = BigInt.of_string "-123456789012345678901234567890" |> Maybe.default_value 0I
+/// let invalid = BigInt.of_string "12a" |> Maybe.default_value 0I
+/// $"{parsed} {invalid}"
+/// ```
 def of_string :: ref string -> Maybe<BigInt>
 fn of_string text =
     let characters = String.chars text
@@ -176,6 +194,10 @@ fn divide left right =
     | (quotient, remainder) -> (make (left.negative != right.negative) quotient, make left.negative remainder)
 
 /// -1, 0, or 1 as `left` is below, equal to, or above `right`.
+///
+/// ```tsuzuri run=-1%200%201
+/// $"{BigInt.compare 1I 2I} {BigInt.compare 2I 2I} {BigInt.compare 2I (-10I)}"
+/// ```
 def compare :: ref BigInt -> ref BigInt -> i64
 fn compare left right =
     if left.negative != right.negative then (if left.negative then -1 else 1) else

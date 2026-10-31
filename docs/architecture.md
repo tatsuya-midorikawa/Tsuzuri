@@ -38,6 +38,7 @@ UTF-8 .tz / .tt / .tc files below one project root (application entry: root/Main
 | `src/syntax.rs` | トークン定義、構文木（AST）、言語版 `Edition`、説明の `@deprecated` の読み取り（`Documentation::deprecation`）、構文リソース上限の管理 |
 | `src/lexer.rs` | UTF-8 を壊さない字句走査、コメント処理（ファイル先頭の `#!` 行も行コメントとして飛ばし、位置はファイル全体のまま。`shebang_length`）、数値リテラルの切り出し、edition ごとの予約語（`EDITION_KEYWORDS`、`reserved_in`。`lex*` は edition を必須の引数に取る） |
 | `src/docgen.rs` | 宣言 AST からの公開 API ドキュメント（Markdown）生成、型・制約・region の描画、決定的なページソート |
+| `src/doctest.rs` | doc の例（G34）。`examples_in_source` が `///` の本文から ```` ```tsuzuri ```` のフェンスを読み（記法の誤りは `E2011`）、`collect` が `tsuzuri doc` と同じ宣言から通しの番号つきで集め（上限 10,000、`E1017`）、`run` が例ごとに `Project::for_doc_example`（パッケージの `Main.tz` を例で置き換える）か `Project::single_main`（`std`）で `analyze_all` し、`run=` は `driver::run_captured_quiet`（30 秒、標準エラーを捨てる）、`test` は例の `Main` のテストだけを走らせる。例は `parallel::ordered_for_each` で並べ、結果の順は入力の順。`render_doc` は `tsuzuri doc` とホバーのために隠し行を除き `Output:`・`Compile error:` を足す（印も隠し行もない本文は 1 byte も変えない）。`tests/doctest.rs` が fixture（`tests/fixtures/doctest/`）で CLI を、`tests/std_examples.rs` が std の公開関数の例の数（`FLOORS`）と記法を検査する |
 | `src/api_diff.rs`・`src/semantic_api.rs` | `tsuzuri api-diff`（G19・A19）。既定は root の公開宣言の構文比較。`--effective` は型検査中の解決済み署名・実際の引数規約・純粋性の段階・region の対応を明示的に収集し、安定した公開名で比較。breaking と non-breaking を決定的な順で出力（テキストと JSON Lines） |
 | `src/parser.rs` | Pratt パーサー、宣言と式、トップレベルのエントリーコード、再帰深度の制限 |
 | `src/parse_control.rs` | インデントによるブロック構文、for／while／match、関数ガード、ラムダ式、パターンおよびアクティブパターン認識器名 |
