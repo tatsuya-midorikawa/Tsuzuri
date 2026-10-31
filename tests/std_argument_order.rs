@@ -73,6 +73,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("Char", SingleArgument),
     ("Debug", SingleArgument),
     ("Dir", SingleArgument),
+    ("Domain", SingleArgument),
     ("Env", SingleArgument),
     ("Exception", SingleArgument),
     ("File", Exempt(HANDLE)),

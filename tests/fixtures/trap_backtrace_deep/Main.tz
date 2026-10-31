@@ -1,0 +1,5 @@
+def rec depth :: i64 -> i64
+fn rec depth n = if n == 0 then 100 / n else depth (n - 1) + 1
+
+def main :: Array<string> -> i32
+fn main args = if depth (100 + args.length) > 0 then 1 else 0

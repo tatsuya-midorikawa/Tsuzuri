@@ -2343,6 +2343,10 @@ entry:
                 let Ok(module) = crate::analyze_modules(&sources) else {
                     continue;
                 };
+                // A program with failure domains (B10) is instrumented like `--trap-mode return` and never cut.
+                if !crate::check::domain_calls(&module).is_empty() {
+                    continue;
+                }
                 // A program with an entry is built for an executable with and without trap information; the others
                 // are libraries (an object of exports) and are cut without.
                 let numberings: &[Option<TrapNumbering>] = if module.entry.is_some() {

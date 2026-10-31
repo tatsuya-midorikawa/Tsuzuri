@@ -1,0 +1,27 @@
+def average :: [i64] -> i64 = \xs -> Array.sum (ref xs) / xs.length
+
+def describe :: Result<i64, Domain.Failure> -> string = \outcome ->
+    match outcome with
+    | Result.Ok value -> $"average {value}"
+    | Result.Error failure -> $"failed (kind {failure.kind})"
+
+def at :: [i64] -> i64 -> i64 = \xs i -> xs[i]
+
+def main :: unit -> i32 = \() ->
+    let data = [4, 8, 15]
+    let empty: [i64] = []
+    do! IO.write_line (describe (Domain.run (\() -> average data)))
+    do! IO.write_line (describe (Domain.run (\() -> average empty)))
+    0
+
+test "an out-of-range index is caught by the domain" =
+    let numbers = [1, 2, 3]
+    match Domain.run (\() -> at numbers 5) with
+    | Result.Error failure -> Test.is_true (failure.kind == 3)
+    | Result.Ok _ -> Test.is_true false
+
+test "a closure that finishes gives its value" =
+    let numbers = [1, 2, 3]
+    match Domain.run (\() -> at numbers 2) with
+    | Result.Ok value -> Test.is_true (value == 3)
+    | Result.Error _ -> Test.is_true false

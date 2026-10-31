@@ -113,6 +113,7 @@
 - [Rc と Arc](./built-in-types-and-modules/rc.md)
 - [Atomic](./built-in-types-and-modules/atomic.md)
 - [Mutex](./built-in-types-and-modules/mutex.md)
+- [Domain](./built-in-types-and-modules/domain.md) — 純粋な計算のトラップを `Result.Error` にする失敗の領域
 - [Channel](./built-in-types-and-modules/channel.md)
 - [Seq](./built-in-types-and-modules/seq.md)
 - [Maybe](./built-in-types-and-modules/maybe.md)

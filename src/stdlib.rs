@@ -15,6 +15,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Dir.tz", include_str!("../std/Dir.tz")),
+    ("std/Domain.tz", include_str!("../std/Domain.tz")),
     ("std/Env.tz", include_str!("../std/Env.tz")),
     ("std/Exception.tz", include_str!("../std/Exception.tz")),
     ("std/File.tz", include_str!("../std/File.tz")),
@@ -114,6 +115,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Channel",
     "Text",
     "RegexText",
+    "Domain",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -295,6 +297,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["RegexText"],
         aliases: &[],
         uses: &["Regex"],
+    },
+    OptIn {
+        module: "Domain",
+        names: &["Domain"],
+        aliases: &[],
+        uses: &[],
     },
 ];
 
@@ -615,6 +623,7 @@ mod tests {
         assert_eq!(loaded("record Hits { count: Atomic<i64> }"), ["Atomic"]);
         assert_eq!(loaded("let m = Mutex.create 0i64"), ["Mutex"]);
         assert_eq!(loaded("let (s, r) = Channel.bounded 4"), ["Channel"]);
+        assert_eq!(loaded("let r = Domain.run (\\() -> 1)"), ["Domain"]);
         assert_eq!(loaded("let s: Channel.Sender<i64> = x"), ["Channel"]);
         assert_eq!(
             loaded("Task.scope (ref 1) 2 (s -> i -> i)"),
@@ -640,7 +649,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 56);
+        assert_eq!(RESERVED_MODULES.len(), 57);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

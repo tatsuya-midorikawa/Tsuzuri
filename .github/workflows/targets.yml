@@ -164,6 +164,21 @@ jobs:
           node tests/primitives.mjs target/release/tsuzuri
           node tests/tasks.mjs target/release/tsuzuri
           if [ "$RUNNER_OS" = macOS ]; then node tests/debugger_static.mjs target/release/tsuzuri; fi
+      # E14 and B10: trap boundaries and failure domains. trap_return.mjs builds C hosts of --trap-mode return objects and IR
+      # and the runtime's own unit tests (tests/trap_boundary_runtime.c, tests/domain_runtime.c); domain.mjs runs Domain.run
+      # through run, build and test and a C host that alternates 10,000 successes and traps with no block left alive;
+      # trap_boundary.mjs runs the WebAssembly boundary and its frames in Node. The sanitizer builds are left out on macOS,
+      # whose Homebrew LLVM builds sanitizer programs that never start (see the size-class allocator step below).
+      - name: Trap boundaries and failure domains (E14, B10)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        timeout-minutes: 30
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          if [ "$RUNNER_OS" = macOS ]; then export TSUZURI_NO_SANITIZERS=1; fi
+          node tests/trap_return.mjs target/release/tsuzuri
+          node tests/domain.mjs target/release/tsuzuri
+          node tests/trap_boundary.mjs target/release/tsuzuri
       # PM09: the calls between the functions of one recursion are guaranteed tail calls. tests/stack.mjs runs a mutual recursion of ten
       # million calls natively and in V8 (with --wasm-feature tail-call), and checks that the default WebAssembly build has no tail call.
       # llvm-objdump counts the return_call instructions. The same suite runs again with the fast backend below.
