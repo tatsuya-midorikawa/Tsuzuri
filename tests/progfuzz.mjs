@@ -39,6 +39,8 @@ if (kind === "owned" && !process.env.TSUZURI_PROGFUZZ_PATHS) paths = allPaths.fi
 // >>> phase 3
 assert.ok(paths.every((path) => allPaths.includes(path)), `TSUZURI_PROGFUZZ_PATHS names ${allPaths.join(", ")}`);
 const jobs = Number(process.env.TSUZURI_PROGFUZZ_JOBS ?? Math.min(4, availableParallelism()));
+// With no worker no seed would be checked, and the run would report zero differences.
+assert.ok(Number.isSafeInteger(jobs) && jobs > 0, "TSUZURI_PROGFUZZ_JOBS is a positive integer");
 const mutantName = process.env.TSUZURI_PROGFUZZ_MUTANT ?? "";
 let mutant = mutantName;
 const outputRoot = resolve(process.env.TSUZURI_PROGFUZZ_DIR ?? "target/progfuzz", selfTest ? "self-test" : ".");
@@ -49,6 +51,7 @@ const STEP_LIMIT = 20000;
 const DEPTH_LIMIT = 500;
 // <<< phase 2
 let minimizeBudget = Number(process.env.TSUZURI_PROGFUZZ_BUDGET ?? 150);
+assert.ok(Number.isSafeInteger(minimizeBudget) && minimizeBudget >= 0, "TSUZURI_PROGFUZZ_BUDGET is a nonnegative integer");
 // A fuzz run also stops a minimization after ten minutes; the self test uses the budget alone, so that its result
 // does not depend on how loaded the machine is.
 let minimizeSeconds = 600;
@@ -1563,11 +1566,19 @@ const REQUIRED_TAGS = {
     "match_guard", "match_int", "match_maybe", "match_tuple", "match_union", "new_array", "record_update", "recursive_function", "self_call",
     "shift_count_dynamic", "shift_count_negative", "shift_count_over_width", "shift_right_signed"],
 };
+// Every required tag occurs in the first COVERAGE_SEEDS seeds at depth COVERAGE_DEPTH (the window of the CI smoke runs;
+// the self test checks it), so a run that includes that window fails when the generator stops making a construct.
+// Other runs only print their coverage: no loop fits in depth 1, and a rare tag can be absent from another window of
+// 100 seeds (the loop tags at depth 2 and 3, `cat` of the owned programs).
+const COVERAGE_SEEDS = 100;
+const COVERAGE_DEPTH = 4;
 // <<< phase 3
 REQUIRED_TAGS.owned = ["newvec", "newstr", "newq", "push", "grow", "pop", "loop", "whilepop", "len", "sum", "clone", "drop", "arr", "branch", "cdrop", "mdrop", "append", "slen", "take", "cat", "qpush", "qpushs", "qpop", "qclear", "qlen"];
 // >>> phase 3
 
 function report(results) {
+  // A run that checked fewer programs than it was asked for has not tested what it reports.
+  assert.equal(results.length, programs, `checked ${results.length} of ${programs} programs`);
   const failed = results.filter((r) => r.failures?.length);
   const discarded = results.filter((r) => r.discarded).length;
   const limited = results.reduce((sum, r) => sum + (r.limited ?? 0), 0);
@@ -1583,7 +1594,9 @@ function report(results) {
   }
   // A generator that stopped producing a construct, or that is thrown away by the size limit, tests nothing.
   assert.ok(discarded * 4 <= results.length, `${discarded} of ${results.length} programs were discarded for their size`);
-  if (results.length >= 100) for (const tag of REQUIRED_TAGS[kind]) assert.ok(coverage[tag] > 0, `the generator never produced "${tag}" in ${results.length} programs`);
+  if (depth === COVERAGE_DEPTH && firstSeed <= 1 && firstSeed + programs > COVERAGE_SEEDS) {
+    for (const tag of REQUIRED_TAGS[kind]) assert.ok(coverage[tag] > 0, `the generator never produced "${tag}" in ${results.length} programs`);
+  }
   console.log(`progfuzz ${kind}: ${results.length - discarded} programs (${discarded} discarded for their size, ${limited} constant evaluations over budget), ${executions} executions on ${paths.join(", ")}, seed ${firstSeed}, depth ${depth}; zero differences`);
   console.log(JSON.stringify(Object.fromEntries(Object.entries(coverage).sort())));
 }
@@ -1654,6 +1667,18 @@ async function selfTesting() {
       console.log(`self test: mutant ${name} changes the answer of ${changed} of 200 programs`);
     }
   }
+  // The window whose coverage a fuzz run enforces produces every required tag.
+  const coverageSets = [["values", generate]];
+  // <<< phase 3
+  coverageSets.push(["owned", generateOwned]);
+  // >>> phase 3
+  for (const [name, make] of coverageSets) {
+    const seen = new Set();
+    for (let seed = 1; seed <= COVERAGE_SEEDS; seed++) for (const tag of make(seed, COVERAGE_DEPTH).tags) seen.add(tag);
+    const missing = REQUIRED_TAGS[name].filter((tag) => !seen.has(tag));
+    assert.deepEqual(missing, [], `seeds 1..${COVERAGE_SEEDS} at depth ${COVERAGE_DEPTH} never produce these ${name} tags`);
+  }
+  console.log(`self test: seeds 1..${COVERAGE_SEEDS} at depth ${COVERAGE_DEPTH} produce every required tag (${coverageSets.map(([name]) => `${REQUIRED_TAGS[name].length} ${name}`).join(", ")})`);
   // <<< phase 2
   // 4. The minimizer on a made-up property that needs no compiler: a shift by at least the bit width.
   const wide = (program) => program.functions.some((f) => [...positions(f.body)].some(([, n]) => n.t === "shift" && n.c.t === "lit" && n.c.v >= BigInt(n.ty.bits)));
