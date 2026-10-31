@@ -411,11 +411,15 @@ jobs:
           node tests/progfuzz.mjs --self-test target/release/tsuzuri
           node tests/progfuzz.mjs target/release/tsuzuri 200 1 4
           TSUZURI_PROGFUZZ_KIND=owned node tests/progfuzz.mjs target/release/tsuzuri 100 1 4
+      # A failed --self-test keeps its sources and minimized failures under target/progfuzz/self-test (and the fuzz runs after it
+      # do not start), so that subtree is kept too.
       - uses: actions/upload-artifact@v7
         if: ${{ failure() }}
         with:
           name: progfuzz-failures-${{ matrix.host }}
-          path: target/progfuzz/failures
+          path: |
+            target/progfuzz/failures
+            target/progfuzz/self-test
           if-no-files-found: ignore
       # Other tickets' end-to-end steps for these three hosts go here, before the Rust tests: that step takes
       # 25-70 minutes, so it is last and a slow runner cannot cost the results above. Start each step with

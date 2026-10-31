@@ -43,6 +43,10 @@ const mutantName = process.env.TSUZURI_PROGFUZZ_MUTANT ?? "";
 let mutant = mutantName;
 const outputRoot = resolve(process.env.TSUZURI_PROGFUZZ_DIR ?? "target/progfuzz", selfTest ? "self-test" : ".");
 const STEP_LIMIT = 20000;
+// Nested evaluations (expressions and calls) of one run. Generated programs reach about 70; a candidate of the
+// minimizer whose recursion lost its guard reaches the limit and is rejected (Limit) long before the JavaScript
+// stack overflows (near 2,900 on Node 20).
+const DEPTH_LIMIT = 500;
 // <<< phase 2
 let minimizeBudget = Number(process.env.TSUZURI_PROGFUZZ_BUDGET ?? 150);
 // A fuzz run also stops a minimization after ten minutes; the self test uses the budget alone, so that its result
@@ -653,6 +657,7 @@ function evaluate(program, input) {
   if (program.kind === "owned") return evaluateOwned(program, input);
   // >>> phase 3
   let steps = 0;
+  let depth = 0;
   const functions = new Map(program.functions.map((f) => [f.name, f]));
   const call = (f, args) => {
     const env = new Map();
@@ -664,6 +669,14 @@ function evaluate(program, input) {
     return mutant === "shift-saturating" ? Math.min(Number(BigInt.asUintN(t.bits, c)), 1024) : masked;
   };
   const ev = (n, env) => {
+    if (++depth > DEPTH_LIMIT) throw new Limit();
+    try {
+      return evaluateNode(n, env);
+    } finally {
+      depth--;
+    }
+  };
+  const evaluateNode = (n, env) => {
     if (++steps > STEP_LIMIT) throw new Limit();
     switch (n.t) {
       case "lit": return n.v;
@@ -967,6 +980,9 @@ function sourceOwned(program, tail) {
 }
 
 function evaluateOwned(program, input) {
+  // Replayed first, so that a step that uses a dead variable or an unbound scalar (a candidate of the minimizer
+  // that lost the step binding it) is a Trap before anything reads the missing value.
+  const { live, scalars } = replay(program);
   const values = new Map([["k", input]]);
   const owned = new Map();
   const get = (n, kind) => { check(owned.has(n) && owned.get(n).kind === kind, `${n} is not a live ${kind}`); return owned.get(n).value; };
@@ -1005,7 +1021,6 @@ function evaluateOwned(program, input) {
     }
   }
   let acc = 0n;
-  const { live, scalars } = replay(program);
   for (const name of scalars) acc = wrap(I64, acc * 31n + values.get(name));
   for (const [n, kind] of live) acc = wrap(I64, acc * 31n + BigInt(get(n, kind).length));
   return acc;
@@ -1268,13 +1283,15 @@ async function minimizeFailure(program, failure) {
   writeFileSync(join(saved, "Main.tz"), source(min, tailOf(failure.path)));
   writeFileSync(join(saved, "original.txt"), source(program, tailOf(failure.path)));
   const expected = min.inputs.map((k) => evaluate(min, k));
+  // The settings that decide the program and the expected values, so that the command works in a clean shell.
+  const settings = [`TSUZURI_PROGFUZZ_KIND=${program.kind === "owned" ? "owned" : "values"}`, `TSUZURI_PROGFUZZ_PATHS=${failure.path}`, ...(mutant ? [`TSUZURI_PROGFUZZ_MUTANT=${mutant}`] : [])];
   writeFileSync(join(saved, "info.txt"), [
     `seed ${program.seed}  depth ${program.depth}  path ${failure.path}  kind ${failure.kind}`,
     `inputs ${min.inputs.join(" ")}`,
     `expected ${expected.join(" ")}`,
     `actual ${failure.actual ?? "-"} (first difference in the original), ${failure.detail.split("\n")[0]}`,
     `nodes ${before} -> ${result.nodes} after ${result.attempts} compiler runs`,
-    `reproduce: node tests/progfuzz.mjs ${compiler} 1 ${program.seed} ${program.depth}`,
+    `reproduce: ${settings.join(" ")} node tests/progfuzz.mjs ${compiler} 1 ${program.seed} ${program.depth}`,
     "",
   ].join("\n"));
   return { directory: saved, nodes: result.nodes, before, attempts: result.attempts };
@@ -1646,12 +1663,31 @@ async function selfTesting() {
   const small = await minimize(big, async (program) => wide(program), { budget: 5000, seconds: Infinity });
   assert.ok(wide(small.program) && small.nodes <= 30 && small.nodes * 10 <= weightOf(big)[0], `the minimizer left ${small.nodes} of ${weightOf(big)[0]} nodes\n${source(small.program, "lib")}`);
   console.log(`self test: the minimizer cut ${weightOf(big)[0]} nodes to ${small.nodes} in ${small.attempts} tries`);
+  // Replacing the guard `if fuel <= 0 then 0 else f0 (fuel - 1)` by its recursive branch is a candidate; the evaluator
+  // must reject it (Limit at DEPTH_LIMIT nested evaluations) instead of overflowing the JavaScript stack, also when
+  // every call goes through a deep body (40 nested lets).
+  const fuel = { n: "fuel", ty: I64 };
+  const recursive = {
+    name: "f0", params: [fuel], result: I64, rec: true,
+    body: { t: "if", ty: I64, c: { t: "cmp", ty: BOOL, op: "<=", a: variable(fuel), b: lit(I64, 0n) }, a: lit(I64, 0n), b: { t: "call", ty: I64, f: "f0", args: [{ t: "bin", ty: I64, op: "-", a: variable(fuel), b: lit(I64, 1n) }] } },
+  };
+  const guarded = { seed: 0, depth: 0, records: [], unions: [], inputs: [0n], tags: new Set(), functions: [recursive, { name: "run", params: [{ n: "k", ty: I64 }], result: I64, rec: false, body: { t: "call", ty: I64, f: "f0", args: [lit(I64, 3n)] } }] };
+  const unguarded = [...candidates(guarded)].find((candidate) => candidate.functions[0].body.t === "call");
+  assert.ok(unguarded, "the minimizer offers no candidate that replaces the guard by its recursive branch");
+  let deep = unguarded.functions[0].body;
+  for (let j = 0; j < 40; j++) deep = { t: "let", ty: I64, n: `v${j}`, e: lit(I64, BigInt(j)), body: deep };
+  const deepUnguarded = replaceAt(unguarded, ["functions", 0, "body"], deep);
+  assert.ok(valid(guarded) && !valid(unguarded) && !valid(deepUnguarded), "the minimizer must reject a recursion that lost its guard");
+  console.log(`self test: the minimizer rejects a recursion that lost its guard (${DEPTH_LIMIT} nested evaluations)`);
   // >>> phase 2
   // 5. The compiler against the semantics table, on every configured path.
   const directory = join(outputRoot, "table");
   writeSources(table.program, directory);
   for (const path of paths) {
-    const difference = compare(await runPath(path, directory, table.program), table.expected);
+    const result = await runPath(path, directory, table.program);
+    // A random program over the constant evaluator's budget is skipped (`limit`); the fixed table must finish.
+    assert.notEqual(result.kind, "limit", `the table on ${path} ran out of the constant evaluation budget:\n${result.detail}`);
+    const difference = compare(result, table.expected);
     assert.equal(difference, null, `the table on ${path}: ${JSON.stringify(difference)}`);
   }
   console.log(`self test: the compiler matches the semantics table on ${paths.join(", ")}`);
@@ -1674,6 +1710,8 @@ async function selfTesting() {
       assert.ok(readFileSync(join(found.saved.directory, "Main.tz"), "utf8").includes("def main"));
       // `tsuzuri run <directory>` reads every .tz file of the directory, so the copy of the original program is a .txt.
       assert.deepEqual(readdirSync(found.saved.directory).filter((name) => name.endsWith(".tz")), ["Main.tz"]);
+      const reproduce = `TSUZURI_PROGFUZZ_KIND=values TSUZURI_PROGFUZZ_PATHS=o0 TSUZURI_PROGFUZZ_MUTANT=${name} node tests/progfuzz.mjs ${compiler} 1 ${found.seed} 4`;
+      assert.ok(readFileSync(join(found.saved.directory, "info.txt"), "utf8").includes(`reproduce: ${reproduce}\n`), "info.txt must give the settings of the failure");
       console.log(`self test: mutant ${name} caught by seed ${found.seed}, minimized to ${found.saved.nodes} nodes`);
     }
   } finally {
@@ -1720,6 +1758,12 @@ async function selfTesting() {
       ownedTexts.add(text);
     }
     assert.equal(ownedTexts.size, 40);
+    // Deleting the `take` step that binds n2 (seed 14, depth 4) leaves a later step reading n2: the candidate is invalid.
+    const owned14 = generateOwned(14, 4);
+    const take = owned14.steps.findIndex((step) => step.op === "take" && step.out === "n2");
+    const unbound = [...candidates(owned14)].find((candidate) => candidate.steps.length === owned14.steps.length - 1 && !candidate.steps.includes(owned14.steps[take]));
+    assert.ok(take >= 0 && valid(owned14) && unbound && !valid(unbound), "the minimizer must reject an owned candidate that lost the step binding n2");
+    console.log("self test: the minimizer rejects an owned candidate that lost the step binding a scalar (seed 14, depth 4)");
     paths = ["o0"];
     minimizeBudget = 40;
     minimizeSeconds = Infinity;
@@ -1730,6 +1774,8 @@ async function selfTesting() {
       if (result.failures?.length) caught = result.failures[0];
     }
     assert.ok(caught?.kind === "value" && caught.saved && caught.saved.nodes <= 12, `the mutant owned-pop-ignored was not caught and minimized: ${JSON.stringify(caught?.saved)}`);
+    const reproduceOwned = `TSUZURI_PROGFUZZ_KIND=owned TSUZURI_PROGFUZZ_PATHS=o0 TSUZURI_PROGFUZZ_MUTANT=owned-pop-ignored node tests/progfuzz.mjs ${compiler} 1 ${caught.seed} 4`;
+    assert.ok(readFileSync(join(caught.saved.directory, "info.txt"), "utf8").includes(`reproduce: ${reproduceOwned}\n`), "info.txt must give the settings of the owned failure");
     console.log(`self test: mutant owned-pop-ignored caught by seed ${caught.seed}, minimized to ${caught.saved.nodes} steps`);
     mutant = mutantName;
     const probeOwned = generateOwned(1, 4);
