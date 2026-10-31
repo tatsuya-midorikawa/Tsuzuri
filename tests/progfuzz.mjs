@@ -22,7 +22,8 @@ const compiler = resolve(argv[0] ?? "target/release/tsuzuri");
 const programs = Number(argv[1] ?? 20);
 const firstSeed = Number(argv[2] ?? 1);
 const depth = Number(argv[3] ?? 4);
-assert.ok([programs, firstSeed, depth].every(Number.isSafeInteger) && programs > 0 && firstSeed >= 0 && depth >= 1 && depth <= 8,
+// The last seed must be a safe integer too, or two workers would share a seed (and its directory).
+assert.ok([programs, firstSeed, depth].every(Number.isSafeInteger) && programs > 0 && firstSeed >= 0 && programs - 1 <= Number.MAX_SAFE_INTEGER - firstSeed && depth >= 1 && depth <= 8,
   "usage: node tests/progfuzz.mjs [compiler] [programs] [first seed] [depth 1..8]");
 const allPaths = ["const", "o0", "o3"];
 // <<< phase 2
