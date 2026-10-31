@@ -346,11 +346,17 @@ impl Checker<'_> {
             TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
                 instance.builtin.scheme().parameters.len() == arguments.len()
             }
-            // A class method (`Text.find "a" text`): its type is the method's curried signature at the instance.
-            TypedExprKind::Method(..) => matches!(
-                &callee.ty,
-                Type::Function(parameters, _) if parameters.len() == arguments.len()
-            ),
+            // A class method (`Text.find "a" text`): the implementation that the instance chose takes its
+            // arguments in stages of its own, as a user function does (`fn pick text = { ...; \n -> ... }`
+            // runs its first stage before the second argument is evaluated), so the call applies them at once
+            // only when that implementation names every argument. While the instance is unknown (an open type,
+            // a type parameter of a generic body, a builtin instance) the rule of other callees applies.
+            TypedExprKind::Method(class, method, ty) => self
+                .classes
+                .resolved_method(*class, *method, &self.inference.resolve(ty), &self.types)
+                .map_or(arguments.len() == 1, |(function, _)| {
+                    self.signatures[function].signature.parameters.len() == arguments.len()
+                }),
             _ => arguments.len() == 1,
         };
         if !single_stage || !self.loan_free(result) {

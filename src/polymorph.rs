@@ -2259,7 +2259,10 @@ impl Classes {
         Ok(expressions)
     }
 
-    fn resolved_method(
+    /// The function that implements `method` of `class` for the closed type `ty` (an instance's method, or the
+    /// class's default when the instance does not define it), and its type arguments; `None` when `ty` is still open
+    /// or no declared instance matches (a builtin instance, or a type parameter of a generic body).
+    pub(super) fn resolved_method(
         &self,
         class: usize,
         method: usize,

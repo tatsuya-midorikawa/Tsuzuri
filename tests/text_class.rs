@@ -129,6 +129,43 @@ fn partial_application_and_loan_returning_methods_still_need_a_let() {
     rejects_modules(&[("Main.tz", &kept), ("Traits.tt", class)], "E1013", borrow);
 }
 
+const STAGES_CLASS: &str = include_str!("fixtures/text_class_stages/Traits.tt");
+const STAGES: &str = include_str!("fixtures/text_class_stages/Main.tz");
+
+/// Review of PR #73: whether a method call applies every argument at once is a property of the implementation that
+/// the instance chose, as it is of a function. An implementation that runs a first stage before it takes the rest
+/// (`fn pick text = { ...; \n -> ... }`) must see that stage run before the later arguments are evaluated, so a
+/// temporary borrowed by its first argument needs a `let`, as it does for such a function. The order that the
+/// fixture prints at run time is checked by `node tests/text_class.mjs`.
+#[test]
+fn a_staged_instance_method_still_needs_a_let_for_a_temporary() {
+    let borrow = "borrow requires a local place";
+    analyze_modules(&[("Main.tz", STAGES), ("Traits.tt", STAGES_CLASS)]).unwrap();
+    let staged = STAGES.replace(
+        "let word = \"ab\"\nlet staged = Stage.pick word",
+        "let staged = Stage.pick \"ab\"",
+    );
+    assert_ne!(staged, STAGES);
+    rejects_modules(
+        &[("Main.tz", &staged), ("Traits.tt", STAGES_CLASS)],
+        "E1013",
+        borrow,
+    );
+    // The same staged body in a function, for comparison.
+    rejects(
+        "def pick :: ref string -> i64 -> i64\nfn pick text = { let first = Debug.trace 1; \\n -> text.length + n + first }\n\nlet total = pick \"ab\" (Debug.trace 2)\ntotal\n",
+        "E1013",
+        borrow,
+    );
+    // In a generic body the instance is not known yet, so a temporary needs a `let` for a method of two arguments.
+    let generic = "def has :: Text<'s> => ref 's -> ref 's -> bool\nfn has needle text = Text.contains (ref (Text.trim needle)) text\n\n0\n";
+    rejects(generic, "E1013", borrow);
+    checks(&generic.replace(
+        "fn has needle text = Text.contains (ref (Text.trim needle)) text",
+        "fn has needle text =\n    let trimmed = Text.trim needle\n    Text.contains trimmed text",
+    ));
+}
+
 #[test]
 fn a_user_type_can_be_a_text() {
     checks(USER_INSTANCE);

@@ -195,6 +195,7 @@ word=suz loud=SUZ at=2
 > 結果の型が `'s` のメソッド（`Text.trim`・`Text.clone` など）の呼び出しを、借用を取る引数へそのまま渡すと、`'s` が参照の型に決まってしまい `E1003` になります（`Text.length (Text.trim text)`、`String.length (Text.clone text)`）。`Maybe.get` などほかのジェネリックな関数の結果と同じ制限です。結果を `let` で束縛するか、`Text.length (ref (Text.trim text))` と `ref` を明示します。
 
 - 引数を全部そろえない部分適用で一時値を借用すると、直接の関数と同じく `E1013` です。`let f = Text.find "a"` は、先に `let` で束縛してください。
+- `Text<'s> =>` のジェネリックな関数の中では、どの instance が呼ばれるかがまだ決まらないので、引数が 2 つ以上のメソッドへ一時値を借用で渡すと `E1013` です（`Text.contains (ref (Text.trim needle)) text`）。`let trimmed = Text.trim needle` と束縛してから渡します。`string` と `utf8string` に直接使う呼び出しは、この制限を受けません。
 - ユーザーの型にも instance を書けます。`Ord` の instance（`deriving (Eq, Ord)` で作れます）と、`is_empty` 以外のすべてのメソッドを実装します。足りないメソッドは `E1016`（`missing method 'Text.Text.trim_end'`）、`Ord`・`Eq` の instance がなければ `E1027` です。
 - instance のない型に使うと `E1005`（`no instance for Text.Text<i32>`）、`string` と `utf8string` を混ぜると `E1003` です。
 - `Text` に `dyn` は使えません（`E1028`）。ジェネリックな関数を使ってください。

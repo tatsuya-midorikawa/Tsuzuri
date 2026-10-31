@@ -5,6 +5,7 @@
 // With `--objects` it also builds both programs at the optimization levels and prints whether the object code (native)
 // and the WebAssembly module are byte-identical. That table is a measurement, not an assertion: LLVM's inlining
 // decisions can move a few instructions in a large program.
+// It also runs tests/fixtures/text_class_stages at -O0 and -O3 and checks the order of its steps.
 // Usage: node tests/text_class.mjs [compiler] [--objects]
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -46,6 +47,19 @@ assert.doesNotMatch(ir, /@tz\.dyn\.|%tz\.hkt/, 'Text calls are resolved at compi
 const directIr = build('text_class_direct', join(scratch, 'direct.ll'), ['--emit', 'llvm', '-O0']).toString('utf8');
 assert.doesNotMatch(directIr, /\$instance\.\d+\.length/, 'the direct program calls no instance method');
 console.log(`text class: ${bodies.length} instance methods, each one call; no indirect call`);
+
+// An instance may take a method's arguments in stages (tests/fixtures/text_class_stages): its first stage runs before
+// the later arguments are evaluated, as for a function (docs/language.md, "関数の宣言と適用"); an implementation that
+// names every argument evaluates them all before its body. Debug.trace writes each step to standard error.
+for (const level of ['-O0', '-O3']) {
+  const result = spawnSync(compiler, ['run', resolve('tests/fixtures/text_class_stages'), level], { encoding: 'utf8', timeout: 180000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `text_class_stages ${level}\n${result.stdout}\n${result.stderr}`);
+  assert.equal(result.stdout.trim(), '221 343', `text_class_stages ${level}`);
+  const steps = result.stderr.split('\n').filter((line) => /^\d+$/.test(line.trim())).map((line) => line.trim());
+  assert.deepEqual(steps, ['1', '2', '4', '3'], `text_class_stages ${level}: the order of the steps`);
+}
+console.log('text class: a staged instance method runs its first stage before the later arguments at -O0 and -O3');
 
 if (process.argv.includes('--objects')) {
   for (const [kind, extension, extra, levels] of [
