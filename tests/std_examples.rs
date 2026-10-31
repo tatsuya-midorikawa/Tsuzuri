@@ -27,6 +27,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Char", 6),
     ("Debug", 2),
     ("Dir", 4),
+    ("Domain", 1),
     ("Env", 3),
     ("Exception", 0),
     ("File", 14),

@@ -501,6 +501,7 @@ def main :: unit -> i32 = \() ->
 | `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena`, `Matrix`, `MatrixView`, `Tensor` | 各種コレクションおよびデータ構造 |
 | `Rc`, `Arc` | 参照カウントによる共有所有 |
 | `Atomic`, `Mutex` | 共有借用から更新できる整数・`bool` のセルと、ロックで守る値（`Task.scope`、`Arc` と組み合わせる） |
+| `Domain` | 純粋な計算のトラップを `Result.Error` にする失敗の領域（macOS・Linux のネイティブ） |
 | `Channel` | 容量付きの MPMC キュー。`Sender`／`Receiver`、`bounded`・`send`・`recv`・`clone_sender`。最後の `Sender` の drop で閉じ、全スレッドが待ったらデッドロックのトラップ |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
 | `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
@@ -862,7 +863,8 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 ### デバッグ情報と出力仕様
 
 - **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。呼び出し履歴の関数名は `Main.show` のような Tsuzuri の名前で、ステップ実行はランタイムとコンパイラーが生成した補助関数に入りません。LLDB に `scripts/lldb/tsuzuri_lldb.py`（配布物では `share/lldb/tsuzuri_lldb.py`）を `command script import` で読み込むと、文字列・配列・リスト・union・`Map` などを Tsuzuri の値として表示します。VS Code 拡張は自動で読み込みます。Windows で MSVC のリンカーを使う場合は CodeView も出し、実行ファイルの隣に PDB を書いて natvis の表示を埋め込みます（[デバッグ](_tsuzuri/language-reference/compiler/debugging.md)）。
-- **実行時トラップ報告**: 配布ビルドでは `--trap-info` を指定することで、トラップ発生時の正確なソース位置情報を出力に含めることができます。WASM では `.trap.json` 表との連動に対応しています。
+- **実行時トラップ報告**: 配布ビルドでは `--trap-info` を指定することで、トラップ発生時の正確なソース位置情報を出力に含めることができます。WASM では `.trap.json` 表との連動に対応しています。`tsuzuri run` のトラップは、`E2005` の下にトラップした関数から入口までの呼び出しの連鎖（`  at Main.level2` の行、`--json` では `trap`）を出します。`--trap-info` の macOS・Linux の実行ファイルは、環境変数 `TSUZURI_TRAP_REPORT` が指すファイルへ同じ連鎖を書き、関数名は `llvm-symbolizer`（`TSUZURI_LLVM_SYMBOLIZER`）で引きます（[デバッグ](./_tsuzuri/language-reference/compiler/debugging.md#トラップのバックトレース)）。
+- **失敗の閉じ込め（`Domain`）**: 純粋な計算を `Domain.run (\() -> ...)` に包むと、中のトラップ（範囲外・ゼロ除算・`assert` など）が `Result.Error` になり、確保した値は解放されてプロセスが続きます。本体の純粋性と、捕捉・結果が平たいデータであることを `E1038` で検査します。macOS・Linux のネイティブだけです（[Domain](./_tsuzuri/language-reference/built-in-types-and-modules/domain.md)）。
 - **コンソールの出力とフォーマット**: トップレベルの結果式が評価された場合、その型が `Display` を実装していれば文字列表現が標準出力に表示されます。浮動小数点数は最短で往復可能な十進表現で出力され、ネイティブと WASM で完全に一致します。
 
 ---
@@ -988,7 +990,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--warn canonical` | edition 2026 のソースの、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に `W1007` を出し、正準形への書き換えを修正案として示します。 |
 | `--edition 2026\|2027` | `Tsuzuri.toml` のないプロジェクトのソースを読む edition（既定は 2027。マニフェストがあると `E2000`）。`check`・`build`・`run`・`test`・`script` と `tsuzuri new` で使えます。 |
 | `--warn untrusted-extern` | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出します。 |
-| `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
+| `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。macOS・Linux の実行ファイルは、`TSUZURI_TRAP_REPORT` があればトラップの呼び出しの連鎖も書きます。 |
 | `--overflow-report` | `build`・`run`（`test` は既定）で、範囲の証明で溢れないと示せない整数の `+ - * ** -x` に検査を足し、折り返した地点を報告します（native は標準エラー、WASM は `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` と `<出力>.overflow.json`）。値は変わりません。診断用で、配布ビルドには使いません。 |
 | `--allow-overflow` | `tsuzuri test` で、整数の演算が折り返したテストを失敗にせず、報告だけを出します。 |
 | `-g`, `--debug-info` | DWARF デバッグ情報を付与します。`test` では `--index N -g -o PATH` で 1 件のテストをデバッグ用のランナーとしてビルドします（実行しません）。 |
@@ -1022,7 +1024,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 - **整数の範囲証明の旗**: 整数の `+ - *` は常に型の幅で折り返します。`TSUZURI_RANGE_FLAGS` は、コンパイラが範囲を証明できた演算に LLVM の `nsw`／`nuw` を書くかを選びます。`off`（既定）は何も書かず、`proven` は証明のある命令に書き、`audit` は旗の代わりに、証明が誤っていれば trap する検査を書く試験用です。ほかの値は `E2000`、結果の値は変わりません（[変数の表](./_tsuzuri/language-reference/compiler/option.md#環境変数)）。
 - **コンパクト文字列（opt-in）**: `TSUZURI_STRINGS=compact` は、全コード単位が 0xFF 以下（ASCII と Latin-1）の `string` を 1 単位 1 byte で保存し、そうでない文字列は UTF-16 のままにします（長さの語の bit 62 が印で、`Maybe<string>` の niche は変わりません）。ASCII・Latin-1 の文字列の確保量は約半分になり、native と `--wasm-feature simd128` の WebAssembly では Latin-1 の走査・比較・変換に 128-bit vector の kernel を使います。長さ・添字・順序・hash・表示・host との ABI（常に UTF-16）は変わりません。既定の `utf16` は PM03 より前と byte 単位で同じ IR を出し、ほかの値は `E2000` です。runtime の IR・小さな WebAssembly・ビルド時間が増え、host へ短い文字列を返す呼び出しが遅くなるので、既定は `utf16` のままです（[測定と判断](./docs/benchmarks.md#pm03-コンパクト文字列)、[使い方](./_tsuzuri/language-reference/compiler/option.md#コンパクト文字列の旗)）。
 - **スレッド数**: コンパイラ自身が使うスレッド数の上限は環境変数 `TSUZURI_THREADS`（1 から 32 の整数）で決まります。未設定または空のとき、CLI は使える core 数（最大 8）、ライブラリ API は 1 です。`1` は呼び出したスレッドだけで解析し、範囲外や整数でない値は `E2000`（終了コード 2）です。並列に実行する段は、現在はソースの構文解析（`parse`。frontend cache の照合を含む）、関数ごとの本体の型検査と仕上げ、所有権の検査（`check` の一部と `ownership`）で、ソースや関数が少ない入力は 1 スレッドのままです。診断（順序・重複の除去・上限）、IR、終了コードはスレッド数で変わらず、キャッシュのキーにもスレッド数は入りません（[詳細](./_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
-- **デバッグ用のツール**: macOS で、タスクを含むデバッグ用オブジェクトを作る `llvm-link` は環境変数 `TSUZURI_LLVM_LINK`（既定 `llvm-link`）、デバッグ実行ファイルを作る `dsymutil` は `TSUZURI_DSYMUTIL`（既定 `dsymutil`）で指定できます。空の値も「設定済み」で、配布物や `PATH` を探しません（[option.md](./_tsuzuri/language-reference/compiler/option.md#環境変数)）。
+- **デバッグ用のツール**: macOS で、タスクを含むデバッグ用オブジェクトを作る `llvm-link` は環境変数 `TSUZURI_LLVM_LINK`（既定 `llvm-link`）、デバッグ実行ファイルを作る `dsymutil` は `TSUZURI_DSYMUTIL`（既定 `dsymutil`）、`run` のトラップの呼び出しの連鎖に名前を付ける `llvm-symbolizer` は `TSUZURI_LLVM_SYMBOLIZER`（既定 `llvm-symbolizer`。なければアドレスだけ）で指定できます。空の値も「設定済み」で、配布物や `PATH` を探しません（[option.md](./_tsuzuri/language-reference/compiler/option.md#環境変数)）。
 - **知識グラフと証明の道具**: 知識グラフの置き場は `--kg-dir`、なければ環境変数 `TSUZURI_KG_DIR`（未設定は `<根>/target/tz/kg`。`tsuzuri mcp` は読みません）です。`tsuzuri prove` と `--contracts prove` の SMT ソルバーは `TSUZURI_SMT`（名前か経路。未設定なら PATH の `z3`、なければ `cvc5`。同梱しません）です。
 - **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します（`watch` は 1 回ごと、`serve` が引き受けた要求は 1 要求ごとに、その回の分だけです）。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](./_tsuzuri/language-reference/compiler/option.md#コンパイルの段階別時間)）。
 

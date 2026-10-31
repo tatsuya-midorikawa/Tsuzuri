@@ -147,6 +147,7 @@ main_value ()
 | `candidates` | 候補の配列（`name`、`signature`、`how`）。現在の診断には付きません |
 | `scope` | 見えるローカル変数の配列（`name`、`type`）。内側のスコープから、32 件まで |
 | `fixes` | 修正案の配列。要素は `title`、`applicability`（`certain`・`likely`・`maybe`）、`edits`。`edits` の要素は `path`、`span`、`text` で、`span` の範囲（UTF-8 バイト、`end` は排他）を `text` に置き換えます。`start` と `end` が同じなら挿入です |
+| `trap` | `run` のプログラムがトラップした `E2005` だけ。トラップの種類と呼び出しの連鎖（[トラップの報告](#トラップの報告trap)） |
 
 `role` は `moved_here`（ムーブした位置）、`borrowed_here`（借用を作った位置）、`borrow_used_here`（借用がまだ生きている理由になる使用）、`declared_here`（宣言）、`expected_because`（期待する型を決めた宣言）、`first_defined_here`（最初の定義）、`via_call`、`required_by`、`note` のどれかです。先のムーブの診断は、次の 1 行です。
 
@@ -155,6 +156,26 @@ main_value ()
 ```
 
 キーの名前と順序、`kind` と `role` と `applicability` の値は安定しています。`related` の `message`、`help`、修正案の `title` と `text` の文言は変わることがあります（[安定性と互換性の方針](../../../docs/stability.md#安定として保たないもの)）。
+
+### トラップの報告（`trap`）
+
+`run`（`script`・REPL を含む）のプログラムが失敗し、トラップの位置か、スタック枯渇の報告（`trap: stack overflow`）が分かったとき、`E2005` の最後に `trap` オブジェクトが付きます。人間向けの表示では、引用の下の `  at <関数>` の行です（[トラップのバックトレース](debugging.md#トラップのバックトレース)）。
+
+```text
+{"severity":"error","code":"E2005","message":"program terminated with signal: 5 (SIGTRAP):\ntrap: integer division by zero at tests/fixtures/trap_backtrace/Main.tz:2:15","path":"tests/fixtures/trap_backtrace/Main.tz","span":{"start":39,"end":46,"line":2,"column":15,"end_line":2,"end_column":22},"kind":"program_terminated","trap":{"kind":"integer division by zero","site":2,"frames":[{"function":"Main.level3","address":"0x10000057c"},{"function":"Main.level2","address":"0x1000005ec"},{"function":"Main.level1","address":"0x100000628"},{"function":"Main.main","address":"0x10000066c"}]}}
+```
+
+| キー | 型 | 規則 |
+| --- | --- | --- |
+| `kind` | 文字列 | トラップの種類。`.trap.json` の `kind` と同じ文字列（`integer division by zero` など）。スタック枯渇は `stack overflow` |
+| `site` | 数 | `.trap.json` の `id`。スタック枯渇は 0 |
+| `frames` | 配列 | 呼び出しの連鎖。最も内側が先で、32 個まで。無ければ `[]` |
+| `frames[].function` | 文字列 | 関数名を引けたときだけ。Tsuzuri の名前（`Main.level2`） |
+| `frames[].path`・`line`・`column` | 文字列・数・数 | `-g` で行が分かったときだけ。`line` と `column` は 1 始まり |
+| `frames[].address` | 文字列 | 常にある。`"0x…"` のリンク時のアドレス（戻りアドレスから slide を引いたもの） |
+| `truncated` | `true` | 32 個で打ち切ったときだけ |
+
+`llvm-symbolizer` を起動できないと、`frames` の要素は `address` だけです。`-O3` では関数が inline されて `frames` は `[]` になります。`trap` の無い診断の JSON は変わりません。
 
 `fmt --check --json` だけ、形が少し違います。スパンは無く、パスと「整形されていない」ことだけです。終了コードは 1 でした。
 
@@ -260,7 +281,7 @@ flowchart TD
 
 ## エラーコード
 
-エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0004`）は字句解析と構文解析、`E1`（`E1001`〜`E1037`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2011`）は CLI 引数・I/O・リンカー・実行時・依存の取得・edition の移行・知識グラフ・MCP サーバー・doc の例の記法などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1010`）およびツールの警告 `W2001`・`W2002` です。
+エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0004`）は字句解析と構文解析、`E1`（`E1001`〜`E1038`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2011`）は CLI 引数・I/O・リンカー・実行時・依存の取得・edition の移行・知識グラフ・MCP サーバー・doc の例の記法などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1010`）およびツールの警告 `W2001`・`W2002` です。
 
 | コード | 何を報告するか |
 | --- | --- |
@@ -295,12 +316,13 @@ flowchart TD
 | `E1034` | `tsuzuri prove`・`--contracts prove` が証明できない。反例・非対応の構文・時間切れ・ソルバーの失敗・ソルバーがない |
 | `E1036` | マニフェストの権限の宣言（`[capabilities]`・依存の `capabilities`）が許さない権限を、パッケージのコードが使う。位置は使用の地点で、std の中の呼び出しの連鎖を添える（[権限](../organizing-tsuzuri/packages.md#権限capabilities)） |
 | `E1037` | `@trusted` の誤り。`extern` でない宣言・未知の性質・重複した性質・`extern type` の性質・`@trusted` の重複（[信頼の印](../values-and-functions/attributes.md#trusted-extern-の信頼の印)） |
+| `E1038` | `Domain.run` の使い方の誤り。直接呼んでいない・引数がラムダでも `pure def` の名前でもない・平たいデータでない値の捕捉・純粋でない本体・平たいデータでない結果・領域を持てないビルド（[Domain](../built-in-types-and-modules/domain.md#e1038)） |
 | `E2000` | 引数（`tsuzuri api-diff` の入力が 2 つでない場合を含む）、拡張子、組み合わせ、`--target` の名前が一覧にないこと（32-bit と対応する 5 環境以外を含む）、ビルド機で動かせない target の `run`・`test` に `TSUZURI_RUNNER` がないこと、その target の `test --coverage`・`test -g`・`bench`（[対応プラットフォーム](platforms.md#診断)）、`--allocator small` と WASM の target・`--trap-mode return`・`--freestanding` の組み合わせ（native の 64-bit のサイズ区分 allocator です）、`--wasm-feature net` の条件の不備（wasm32 の object・LLVM IR・WASM・bindings-js でない、`jspi` がない、threads や WASI との併用）、`net` なしの既定 wasm32 で OS API や `Net` のソケットに到達したビルド、`Async.block_on` なしで `Net` の非同期操作（`connect_async` など）に到達した native のビルド、Async 実行器に必要な opt-in の不足・threads との組み合わせ、`--freestanding` での `Mutex` と `Channel`（タスクのランタイムが要ります）、`--wasm-feature webgpu` の対象外の出力や threads・`--wasm-host`・JavaScript バインディングとの組み合わせ、`--wasm-feature tail-call` の対象外の出力（wasm32 と wasm64 の object・LLVM IR・WASM 以外）や `--backend fast` の wasm32 との組み合わせ、WGSL と SPIR-V の出力（`--emit wgsl`、`wgsl-relaxed`、`spirv`、`spirv-relaxed`）と `--target`・`-O`・`--cpu`・デバッグ・WASM 機能・`--allocator` との組み合わせ、環境変数 `TSUZURI_RANGE_FLAGS` が `off`・`proven`・`audit` のどれでもないこと（IR を出すコマンドだけ。`check` と `lsp` は読みません）、環境変数 `TSUZURI_STRINGS` が `utf16`・`compact` のどれでもないこと（同じく IR を出すコマンドだけ）、`tsuzuri watch` にコマンド名（`check`・`build`・`test`）がないこと、`tsuzuri serve` の引数（ディレクトリが 1 つでない、`--idle-timeout` が 1 から 86400 の整数でない、`--status` と `--stop` の同時指定）と設定（`TSUZURI_SERVER_DIR` が相対パスか空、ソケットのパスが長すぎる、Unix 以外）、`--no-server` を `check`・`build` 以外に付けること、`tsuzuri kg` の照会の ID が曖昧・未知なこと（`kg_ambiguous_id`・`kg_unknown_id`。終了コード 1。[知識グラフ](kg.md#id-の解決)）と `kg impact --git`・`test --affected` の git のリビジョンが不正・未知なこと（未知は `unknown_git_revision`。終了コード 1）、`tsuzuri kg diagram` の引数・ID の誤り・図に要る事実がないこと・図が大きすぎること（`diagram_*`。[図表の生成](diagrams.md#誤り)）、`tsuzuri mcp` の引数の誤り（`mcp_bad_arguments`）、`tsuzuri find` の引数と読めない問い合わせの型（`find_bad_arguments`）・どのモジュールにも当たらない `--module`（`find_unknown_module`。どちらも終了コード 2。[find](usage.md#find)） |
 | `E2001` | ファイルの読み書き。ディレクトリを渡して `Main.tz` が無いときもこれです。`TSUZURI_RUNNER` のプログラムを起動できないときもこれで、メッセージにその名前が入ります。`tsuzuri serve` では、ソケットのディレクトリがほかの利用者に開かれている・シンボリックリンク・他人のものであること、同じプロジェクトのサーバーがすでに動いていること、ソケットの場所にソケットでないものがあること、`--status`・`--stop` の相手のサーバーがないこと、`--stop` の相手が要求を実行中で、終わるまで止まらないこともこれです |
 | `E2002` | LLVM やリンカーの失敗。未解決シンボル、Windows の target で OS API に到達した場合、同梱ツールチェーンが扱わない組み合わせ（Windows 以外のホストからの MSVC のリンク、sysroot）を含む |
 | `E2003` | 出力ファイルの保護。既存の成果物を壊さないための失敗 |
 | `E2004` | 入口の要件。`Main.tz` が無い実行ファイル、export も `main` も無い WASM、`export def` の無いバインディングと共有ライブラリ、`export` が 1 つでない WGSL・SPIR-V の出力、`main` のシグネチャ違反、`def main` とトップレベル実行の併用、`Main.tz` 以外のモジュールでのトップレベル実行 |
-| `E2005` | 実行時の異常終了。トラップ位置、0 以外の `def main`、スタック枯渇の推定、`tsuzuri bench` の失敗（トラップ、時間切れ、負の時間）を含む。契約の違反は kind `contract_requires`・`contract_ensures` で、位置は契約の行 |
+| `E2005` | 実行時の異常終了。トラップ位置、0 以外の `def main`、スタック枯渇の推定、`tsuzuri bench` の失敗（トラップ、時間切れ、負の時間）を含む。契約の違反は kind `contract_requires`・`contract_ensures` で、位置は契約の行。`run` のトラップは `trap`（呼び出しの連鎖）を持つ |
 | `E2006` | 言語内テストの失敗（`tests_failed`）と、`tsuzuri test --doc` の doc の例の失敗（`doc_test_failed`。位置は最初に失敗した例の開きの行。[例を書く](../organizing-tsuzuri/documentation-comment.md#例を書くdoc-test)） |
 | `E2007` | 依存の取得と検証の失敗。`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存や内容が SHA-256 と違う依存、`git` の欠落・失敗、取得したリポジトリのシンボリックリンク・submodule・危険なパス・大文字小文字だけ違うパス、registry の index にない版、index の項目と違うパッケージ、`publish` で commit とディレクトリの内容が違うこと（[パッケージ](../organizing-tsuzuri/packages.md#git-依存と-tsuzurilock)） |
 | `E2008` | `tsuzuri fix` の中止（修正案を適用すると診断が増える `fix_verification_failed`、実行中にファイルが変わった `fix_source_changed`、置き換えの失敗 `fix_write_failed`。どれもファイルは書かないか元に戻します）と、`tsuzuri fix --edition` による edition の移行の失敗。`--from` とマニフェストの版の食い違い、古い版への移行、移行後のソースが大きすぎること、マニフェストの更新や置き換えの失敗（[コンパイラの使い方](usage.md#fix)） |
@@ -357,6 +379,7 @@ flowchart TD
 | `E1034` | `prove_counterexample`, `prove_solver_error`, `prove_solver_missing`, `prove_unknown`, `prove_unsupported` |
 | `E1036` | `capability_denied` |
 | `E1037` | `trusted_duplicate_property`, `trusted_repeated`, `trusted_type_property`, `trusted_unknown_property`, `trusted_wrong_target` |
+| `E1038` | `domain_argument_not_closure`, `domain_body_not_pure`, `domain_capture_not_plain`, `domain_not_called_directly`, `domain_result_not_plain`, `domain_target_unsupported` |
 | `E2000` | `alloc_needs_counting_allocator`, `audit_usage`, `bindgen_annotation_error`, `bindgen_argument_error`, `cannot_derive_namespace`, `debug_info_without_source_map`, `diagram_bad_option`, `diagram_format_unsupported`, `diagram_needs_id`, `diagram_too_large`, `diagram_unavailable`, `diagram_unknown_id`, `diagram_unknown_kind`, `diagram_usage`, `diagram_wrong_id_kind`, `duplicate_link_input`, `duplicate_option`, `edition_option_with_manifest`, `environment_setting_invalid`, `fast_backend_unavailable`, `fast_backend_unsupported_option`, `file_not_formatted`, `find_bad_arguments`, `find_unknown_module`, `fix_bad_arguments`, `fix_edition_unsupported`, `fix_edition_with_applicability`, `fix_maybe_needs_dry_run`, `foreign_target_not_runnable`, `formatter_changed_semantics`, `formatter_invalid_output`, `guide_bad_arguments`, `guide_edition_unsupported`, `guide_manifest_missing`, `guide_unknown_std_module`, `guide_unknown_topic`, `index_out_of_range`, `input_count_invalid`, `input_extension_invalid`, `invalid_library_name`, `invalid_namespace_argument`, `invalid_publish_git_rev`, `invalid_publish_git_url`, `invalid_range_flag_setting`, `invalid_thread_setting`, `invalid_trap_source_map`, `kg_ambiguous_id`, `kg_unknown_id`, `link_input_limit`, `mcp_bad_arguments`, `missing_input`, `native_link_setting_not_allowed`, `net_async_needs_block_on`, `new_project_folder_not_empty`, `new_project_io_failure`, `no_sources_found`, `option_conflict`, `option_invalid_for_command`, `option_invalid_value`, `option_missing_value`, `option_requires_build`, `option_requires_option`, `option_unsupported_platform`, `output_extension_invalid`, `project_manifest_missing`, `prove_unknown_function`, `repl_command_usage`, `repl_declaration_not_allowed`, `repl_unknown_command`, `script_wrong_file_kind`, `trap_info_without_source_map`, `unknown_explain_target`, `unknown_git_revision`, `unknown_option`, `unknown_target`, `usage_error`, `wasm_net_needs_opt_in`, `wasm_os_api_needs_opt_in`, `wasm_test_runner_async` |
 | `E2001` | `build_server_control_failed`, `build_server_start_failed`, `foreign_runner_not_startable`, `input_not_regular_file`, `input_not_utf8`, `input_path_not_utf8`, `input_too_large`, `io_failure`, `link_input_unreadable`, `repl_stream_failure`, `temp_directory_failed` |
 | `E2002` | `bindgen_unreadable_ast`, `bindgen_unsupported_target`, `bitcode_symbol_not_kept`, `external_tool_failed`, `external_tool_not_runnable`, `external_tool_output_too_large`, `external_tool_read_failed`, `external_tool_wait_failed`, `fast_backend_unsupported_construct`, `invalid_coverage_counters`, `platform_unsupported_api`, `target_attributes_not_applicable`, `target_attributes_unreadable`, `toolchain_missing_feature` |

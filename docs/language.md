@@ -363,7 +363,7 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 明示的に `using std` と記述する必要はありませんが、記述した場合は他の `using` と同様に std モジュール群をモジュール名単体でスコープへ導入します。
 ユーザー定義のソースファイルにおいて、名前空間 `std` またはその配下の階層を明示的に宣言することは禁止されています（`E1011`）。
 標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
-ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
+ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`、`Domain`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
 `build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
 標準ライブラリは外部への `export` 関数を持ちません。IO のエントリーポイントおよびランタイム境界には専用の内部シンボルが追加されます。WASM 出力における外部インポートは、実際に到達した IO／extern 呼び出し、明示的な Debug 出力、ならびに `--wasm-host wasi` 指定時の WASI preview1 関数にのみ限定して追加されます。
 標準ライブラリ内の `private` 関数は std の内部からのみ呼び出し可能であり、ユーザーコードから参照した場合は `E1022` エラーとなります。
@@ -1457,7 +1457,7 @@ WASM 環境では外部インポートを追加することなく、トラップ
 地点は（ソース、範囲、演算、型）で決まり、特殊化した複本は同じ地点を共有します。native は、地点が初めて溢れたときに `warning: integer overflow wrapped at <パス>:<行>:<列> (<型> <演算>)`（行と列は演算子の位置）を標準エラーへ 1 回の `write` で書き、100 地点のあとは `warning: integer overflow reports stop after 100 sites` を 1 回だけ書きます。WebAssembly は import を足さず、地点ごとの 1 byte を立てて `tsuzuri_overflow_count()`・`tsuzuri_overflow_hit(i)` を export し、`<output>.overflow.json`（`version`・`sites` の `id`・`operation`・`type`・`path`・`span`・`message`）を書きます。`run --json` は、成功したプログラムの報告を `W2001`（kind `integer_overflow_wrapped`、`path`・`span` 付き）に変えます。報告は改行で終わっていない出力の続きにもなりうるので、`run --json` と `tsuzuri test` は行の中の最後の報告の始まりを探し、`run --json` はその前の byte をそのまま 1 行にします。WebAssembly のテストがエンジンのスタックの上限（Node の `RangeError`）で止まっても、テストは失敗し、それまでの報告は出ます。地点は 65,536 までで、超えると `E1017`（`too_many_overflow_sites`）です。`--freestanding`、`--emit header`・カーネル・バインディングとの組み合わせは `E2000` です。
 位置情報を付与しない場合の生成 IR は従来と完全に同一であり、ネイティブおよび WASM の公開 ABI シグネチャを変更することもありません。
 `-Os`・`-Oz`（サイズ重視の最適化。IR は `-O3` と同じで、native の関数値の inline 属性だけが外れる）、`--strip`、`--wasm-opt` を付けても、トラップの種別・報告・`<output>.trap.json`・`tsuzuri_trap_site` は変わりません。
-`run --json` 実行時の失敗においては、子プロセスの標準エラー出力を JSON 診断メッセージ内部に適切に格納し、生のトラップログがコンソールを汚染するのを防ぎます（正常終了時の標準出力・標準エラー出力は従来どおりリアルタイム転送されます。なお、本機能は完全なスタックトレースや例外巻き戻し機構を提供するものではありません）。
+`run --json` 実行時の失敗においては、子プロセスの標準エラー出力を JSON 診断メッセージ内部に適切に格納し、生のトラップログがコンソールを汚染するのを防ぎます（正常終了時の標準出力・標準エラー出力は従来どおりリアルタイム転送されます。なお、本機能は例外巻き戻し機構を提供するものではありません。呼び出しの連鎖は次の「トラップのバックトレース」です）。
 
 WASM ホスト環境においては、同梱の JavaScript 実装 `src/runtime/trap-boundary.mjs` に用意された `createBoundary(module, { imports, sites })` を利用することで、エクスポート関数の呼び出しを 1 回ごとに安全な境界で保護できます。
 `call(name, ...args)` の呼び出しは、成功時には `{ ok: true, value }` を返し、`WebAssembly.RuntimeError` が発生した場合は `{ ok: false, trap: { reason: "trap", site, kind, path, line, column } }` を返します。
@@ -1466,6 +1466,37 @@ WASM ホスト環境においては、同梱の JavaScript 実装 `src/runtime/t
 Tsuzuri はトラップ時にスタックの巻き戻しを行わないため、例外が発生したインスタンス内部のヒープやシャドウスタックは不完全な状態のまま残存します。境界ラッパーはそのインスタンスを二度と再利用せず、次回の `call` 実行時には同一モジュールから新しくインスタンスを再生成します。
 古いインスタンスの生ポインタ、`memory.buffer` の TypedArray ビュー、および未解放の所有結果バッファは無効化されるため、所有結果は次回の `call` を呼び出す前にホスト側で複製したうえで `tsuzuri_free` で解放してください。
 なお、マルチスレッド（threads）モジュールはこの境界ラッパーでは拒否されます（スレッドプール全体の単位で管理され、ワーカーが障害を起こした場合はプール全体が再利用されずに破棄されます）。
+
+### トラップのバックトレース
+
+`--trap-info` で作る macOS・Linux のネイティブの実行ファイル（`build --emit exe --trap-info`・`run`・`script`・REPL）では、生成するすべての関数が frame pointer を保ち（各 `define` の `"frame-pointer"="all"`）、`@tz.trap.report` は位置の行を書いたあと `src/runtime/backtrace.c` の `tsuzuri_trap_backtrace(site)` を呼びます。環境変数 `TSUZURI_TRAP_REPORT` が空でなければ、frame record の鎖（各 record は `mincore` で読めることを確かめてから読む）をたどり、`tz-trap/1 <site> <slide> <truncated> <address>…` の 1 行（`\n` で終わる ASCII、1,024 byte 以内）を `open(O_WRONLY|O_CREAT|O_APPEND, 0600)` と 1 回の `write` で追記します。`<slide>` は読み込み位置とリンク時の位置の差（macOS は `_dyld_get_image_vmaddr_slide(0)`、Linux は `dl_iterate_phdr` の最初の `dlpi_addr`）、`<address>` は戻りアドレス（最も内側が先、`tz.trap.report` 自身への戻りは含めない）で最大 32 個、それを超えたら `<truncated>` が `1` です。鎖は、戻りアドレスが 0、record が読めない・8 byte 境界でない、次の frame pointer が現在の record 以下、32 個に達した、のどれかで止まります。変数がなければ何もせず、標準エラーの出力は変わりません。ヒープは使いません。`--trap-info` なしのビルドと、実行ファイル以外の出力（`--emit object`・`shared`・`llvm`・`bitcode`、WebAssembly）は 1 byte も変わりません。
+
+`tsuzuri run` は子にこの変数を設定し、子が失敗したら報告の最初の行を読んで、`llvm-symbolizer`（`TSUZURI_LLVM_SYMBOLIZER`。`--obj=<実行ファイル>`、macOS の `-g` は `<実行ファイル>.dwarf`、`--output-style=JSON --inlining --functions=linkage`、各アドレスは `address − slide − 1`）を 1 回だけ起動して名前と行を引き、`E2005` に `trap` を付けます。人間向けには主の位置の引用のあと frame ごとに `  at <関数>` か `  at <関数> (<パス>:<行>:<列>)` を出し、打ち切ったら `  ... (more frames omitted)` を足します。symbolizer が起動できない・失敗した・JSON が読めないときはエラーにせず、frame の行の代わりに `  note: frames are not resolved; install llvm-symbolizer or set TSUZURI_LLVM_SYMBOLIZER` の 1 行を出し、JSON の `frames` はアドレスだけです。`--json` の `trap` は既存のキー（`kind`・`related`・`help`・`fixes` などを含む）の後ろの最後のキーで、`kind`（`TrapKind::description()`、`.trap.json` の `kind` と同じ文字列。スタック枯渇は `stack overflow`）・`site`（スタック枯渇は 0）・`frames`（`function`・`path`・`line`・`column`・`address`。`address` は常にあり、戻りアドレス − slide の `"0x…"`）・打ち切ったときだけの `truncated` です。`trap` は、子が失敗し、トラップの位置（標準エラーの位置の行か報告の `site`）か `trap: stack overflow` が分かったときだけ付き、`E2005` の既存のメッセージ・位置・終了コードは変わりません。
+
+関数名の扱い: `tz.fn.<名前>` と `tz_<名前>`（`export def` の入口。プログラムの export の名前だけ）は接頭辞を外し、末尾の `.$mono.<数>`・`.cold.<数>`・`.cpu.<名前>` を外します（ラムダは `$lambda.3` のまま）。`tz.specialized.<数>` はそのままです。`tz.apply.`・`tz.env.`・`tz.closure.`、`tsuzuri_main`・`main`・C のランタイムは出しません。inline された関数は 1 つの戻りアドレスに複数の名前があり、内側から順にすべてを frame にします。連続する同名の 2 frame のうち `.cold.` の部分は捨てます。`-O3` では関数が入口へ inline されるので、名前のある frame は 0 個です。トラップした子が起動した孫プロセスが変数を引き継いで先に書くことがあり、`run` は最初の行を使います（既知の制限）。`tsuzuri test`・`bench` の実行ファイル、Windows、スタック枯渇の frame は対象外です。WebAssembly では `createBoundary` の `frames: true` が `error.stack` の wasm の frame を `{ function?, index, offset }` にします（名前は `-g` の name section のときだけ）。
+
+### 失敗の閉じ込め（`Domain`）
+
+opt-in の std モジュール `Domain`（`std/Domain.tz`）の `Domain.run :: (unit -> 'a) -> Result<'a, Domain.Failure>` は、`body ()` を失敗の領域の中で呼び、値が返れば `Ok`、中（呼ぶ関数を含む）でトラップしたら実行を捨てて `Error (Failure { site, kind, message })` を返します。`site` は `.trap.json` の `id`、`kind` は `TrapKind` の番号（`tsuzuri_trap_info.kind` と同じ。下の表）、`message` は `<理由> at <パス>:<行>:<列>`（位置の表を持たない実行ファイル、つまり `bench` と契約の行のないプログラムの `tsuzuri test` では `<理由>` だけ）です。領域は `src/runtime/trap.c` の `tsuzuri_domain_run(thunk, context, info)` で、呼び出したスレッドの frame の鎖に自分の frame を積んで入ります（境界・item・領域の jump はすべて信号マスクを保存しない形で、macOS は `sigsetjmp(env, 0)`／`siglongjmp`、glibc・musl・Windows は `setjmp`／`longjmp`）。トラップは `@tz.trap.report` の先頭の `tsuzuri_trap_raise` で最も内側の frame へ jump し、領域の中で追跡した block（`@tz.alloc` は `tsuzuri_tracked_malloc`）をすべて解放します。成功すると残った block（結果が持つもの）は外側の境界か領域の owner へ移り（`tz_domain_hand_over`）、外側がなければ普通の block になります。`free`・`realloc` は frame の鎖を内側からたどって block を追跡する owner を探します（`tz_untrack_chain`）。領域は境界（`tsuzuri_boundary_run`）・`Task.parallel` の item・ほかの領域の中に入れ子になり、境界の中の領域のトラップは境界の block に触れません。`tsuzuri_sync_hooks.abandon` は呼びません。巻き戻しはなく、`Drop`・`finally` は走りません。
+
+安全性は呼び出し地点の検査（`E1038`、`src/domain_rules.rs`）に依ります。呼び出しごとに順に、`Domain.run` を引数 1 つで直接呼んでいる（`domain_not_called_directly`）、引数がラムダか `pure def` の名前（`domain_argument_not_closure`）、捕捉した変数の型（`ref` は 1 段外す）が平たいデータ（A19 の `own` 引数と同じ規則。`domain_capture_not_plain`）、本体が A19 の効果の源に到達しない（`domain_body_not_pure`。`Domain.run` 自体も不純で、入れ子は拒否）、結果型が平たいデータ（`domain_result_not_plain`）を調べ、最初の違反だけを報告します。ターゲットの検査（`domain_target_unsupported`）は `build`・`run`・`test`・`bench` が行い、`--target wasm32`・`wasm64`、`--freestanding`、`--allocator host`・`counting`・`small`、Windows のネイティブ、`--trap-mode return` のない `--emit llvm` を拒否します（`check` と LSP はターゲットを見ません）。`Domain.run` を呼ぶプログラムは `--trap-mode return` と同じ追跡付きのヒープとトラップの経路で作り（`emit_trap_mode`。`tsuzuri_try_` は足さない）、実行ファイル・object・shared・bitcode に `trap.c` を埋め込み、codegen unit に分けません。`Domain` を書かないプログラムの IR は変わりません。閉じ込めないもの: スタック枯渇、停止しない計算、確保量の上限、領域の外のトラップ。
+
+`TrapKind` の番号（`Failure.kind`、`tsuzuri_trap_info.kind`。site は `1 + n × 18 + kind`）: 0 `assertion failed`、1 `integer division by zero`、2 `integer division overflow`、3 `index out of bounds`、4 `allocation size overflow`、5 `allocation failed`、6 `range step is zero`、7 `non-exhaustive match`、8 `pattern mismatch`、9 `string length overflow`、10 `numeric runtime trap`、11 `wasm runtime trap`、12 `invalid Unicode encoding`、13 `debug output failed`、14 `stack overflow`（閉じ込めないので `Failure` には現れない）、15 `unhandled OverflowException: arithmetic operation resulted in an overflow`、16 `contract requires failed`、17 `contract ensures failed`。
+
+### トラップの後始末
+
+| 事象 | 境界なし | `Domain.run` の中 | `tsuzuri_try_*` の中 |
+| --- | --- | --- | --- |
+| 利用者の `Drop` | 走らない | 本体が `Drop` 型の値を持てない（A19） | 走らない |
+| `try … finally` | 走らない（`try` は `OverflowException` だけを扱う） | 走らない | 走らない |
+| 標準出力 `IO.write_line` | トラップの前の行は残る（毎回 `fflush`） | 本体が書けない | 残る |
+| `File` の書き込み | 書いた分は残る（1 回ごとに `write`） | 本体が書けない | 残る |
+| ロック（`Mutex.with_lock`） | プロセスごと終わる | 本体が取れない | 境界が `tsuzuri_sync_hooks.abandon` で解放する |
+| ヒープ | OS が回収する | 領域の中の block をすべて解放する。成功なら結果の block が残る | 境界の中の block をすべて解放する。成功なら結果はホストの物 |
+| `Task.parallel` の仲間 | プロセスごと終わる | 本体が使えない | worker のトラップは投入した呼び出しの status 1 |
+| stack | プロセスごと終わる | 捨てる | 捨てる |
+
+`E2005` の `trap.kind` と `.trap.json` の `kind` は同じ文字列（`TrapKind::description()`）です。知識グラフの facts の `trap_sites[].kind` は別の snake_case の語彙で、対応は `assert`↔`assertion failed`、`unreachable`↔`non-exhaustive match`、`integer_division_by_zero`↔`integer division by zero`、`integer_division_overflow`↔`integer division overflow`、`bounds_check`↔`index out of bounds`、`range_step_zero`↔`range step is zero`、`overflow`↔`unhandled OverflowException: arithmetic operation resulted in an overflow` です。
 
 ネイティブ環境の `tsuzuri run` および `tsuzuri test` は、子プロセスがトラップ報告を出力することなく SIGSEGV や SIGBUS シグナルによって突然終了した場合、深い再帰によるスタック枯渇の可能性が高いと推定し、`E2005` またはテスト失敗の理由として報告します（これは親プロセスによる外部シグナル推定です）。
 
@@ -4884,6 +4915,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1034` | `tsuzuri prove`・`--contracts prove` の反例・非対応・時間切れ・ソルバーの失敗・ソルバーがない |
 | `E1036` | マニフェストの権限の宣言が許さない権限の使用 |
 | `E1037` | `@trusted` の置き場と性質の誤り |
+| `E1038` | `Domain.run` の使い方の誤り（直接呼んでいない・引数がラムダでも `pure def` の名前でもない・平たいデータでない捕捉・純粋でない本体・平たいデータでない結果・領域を持てないビルド） |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |

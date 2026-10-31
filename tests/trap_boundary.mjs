@@ -81,7 +81,31 @@ try {
     assert.ok(WebAssembly.Module.imports(threads).some(({ module: namespace }) => namespace === "tsuzuri_threads"));
     assert.throws(() => createBoundary(threads), { message: "createBoundary does not support modules built with --wasm-feature threads; use createThreadPool" }); cases++;
 
-    assert.equal(cases, 17);
+    // B10: with `frames: true` a trap carries the WebAssembly frames, innermost first. A module built with -g names
+    // them (`div` is the export's entry `tz_div`); without -g they are a function index and an offset only.
+    const named = build("trap_boundary", "named", optimization, "--trap-info", "-g");
+    const framed = createBoundary(compile(named), { sites: JSON.parse(readFileSync(`${named}.trap.json`, "utf8")).sites, frames: true });
+    const traced = framed.call("tz_div", 7n, 0n);
+    assert.equal(traced.ok, false);
+    assert.equal(traced.trap.kind, "integer division by zero");
+    assert.ok(traced.trap.frames.length >= 1, JSON.stringify(traced));
+    for (const frame of traced.trap.frames) {
+      assert.equal(typeof frame.index, "number");
+      assert.equal(typeof frame.offset, "number");
+    }
+    assert.equal(traced.trap.frames.at(-1).function, "div", JSON.stringify(traced));
+    if (optimization === "-O0") assert.equal(traced.trap.frames[0].function, "Main.div", JSON.stringify(traced));
+    assert.deepEqual(framed.call("tz_div", 7n, 2n), { ok: true, value: 3n }); cases++;
+    const unnamed = createBoundary(module, { sites, frames: true }).call("tz_div", 7n, 0n);
+    assert.ok(unnamed.trap.frames.length >= 1, JSON.stringify(unnamed));
+    for (const frame of unnamed.trap.frames) assert.deepEqual(Object.keys(frame), ["index", "offset"]);
+    cases++;
+    // The stack trace limit is the host's again after the call; a stack exhaustion carries no frames.
+    const limit = Error.stackTraceLimit;
+    assert.deepEqual(createBoundary(module, { sites, frames: true }).call("tz_deep", 100000000n), { ok: false, trap: { reason: "stack", site: 0 } });
+    assert.equal(Error.stackTraceLimit, limit); cases++;
+
+    assert.equal(cases, 20);
     console.log(`Trap boundary ${optimization}: ${cases} cases`);
   }
 } finally { rmSync(root, { recursive: true, force: true }); }

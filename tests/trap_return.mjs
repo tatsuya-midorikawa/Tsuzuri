@@ -169,8 +169,18 @@ fn ordinary_parallel count = Task.run task {
   unit("unit-O3", ["-O3"], ["0", "1", "2", "4", "32"]);
   unit("unit-asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"], ["0", "1", "4"]);
   unit("unit-tsan", ["-g", "-O1", "-fsanitize=thread"], ["0", "2"]);
+  // B10: the failure domains of Domain.run, nested in boundaries, items and one another.
+  const domain = (name, flags) => {
+    const program = join(root, name);
+    execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", ...flags, "-pthread", "tests/domain_runtime.c", "-o", program]);
+    assert.match(execute(program, []).stdout, /^domain runtime: \d+ checks passed\n$/);
+  };
+  domain("domain-O0", ["-O0"]);
+  domain("domain-O3", ["-O3"]);
+  domain("domain-asan", ["-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]);
+  domain("domain-tsan", ["-g", "-O1", "-fsanitize=thread"]);
 
-  console.log("trap_return: 2 optimization levels x (object, counted object, linked IR, both mixed link orders with/without counting), 4 runtime builds, option errors, header");
+  console.log("trap_return: 2 optimization levels x (object, counted object, linked IR, both mixed link orders with/without counting), 4 runtime builds, 4 domain runtime builds, option errors, header");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

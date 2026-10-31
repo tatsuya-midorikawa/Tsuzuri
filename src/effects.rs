@@ -637,6 +637,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         }
         // B37
         GpuRun => facts(Some(Effect::Gpu), true, false, false, false, false, None),
+        // B10: the closure's traps stay inside the domain, so the call itself never traps (D-53).
+        DomainRun => facts(Some(Effect::Task), true, false, false, true, false, None),
+        DomainMessage => facts(None, true, false, false, false, false, None),
         // B38: the growing `Vec` operations, which check their index or length.
         VecSetCapacity | VecInsert | VecSplice => {
             facts(None, true, true, false, false, false, None)
@@ -3423,9 +3426,9 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 258);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 91);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 167);
+        assert_eq!(Builtin::ALL.len(), 260);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 92);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 168);
     }
 
     #[test]
@@ -3434,7 +3437,7 @@ mod tests {
         assert_eq!(by(Effect::Io), 10);
         assert_eq!(by(Effect::Os), 12);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 9);
+        assert_eq!(by(Effect::Task), 10);
         assert_eq!(by(Effect::Atomic), 21);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
@@ -3444,7 +3447,7 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 57);
+        assert_eq!(count(|facts| facts.alloc), 59);
     }
 
     #[test]
@@ -3460,7 +3463,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 16);
+        assert_eq!(count(|facts| facts.callbacks), 17);
     }
 
     fn checked(source: &str) -> CheckedModule {

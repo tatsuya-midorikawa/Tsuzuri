@@ -1,0 +1,11 @@
+def level3 :: i64 -> i64
+fn level3 x = 100 / x
+
+def level2 :: i64 -> i64
+fn level2 x = level3 (x - 3) + 1
+
+def level1 :: i64 -> i64
+fn level1 x = level2 (x + 3) + 1
+
+def main :: Array<string> -> i32
+fn main args = if level1 args.length > 0 then 1 else 0

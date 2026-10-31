@@ -183,7 +183,9 @@ pub fn corpus() -> Vec<std::path::PathBuf> {
 }
 
 /// `tsuzuri build <dir> --emit llvm --trap-info`: the IR and the trap table's JSON. Every project
-/// of the corpus emits; one that stops compiling fails the check instead of leaving it.
+/// of the corpus emits; one that stops compiling fails the check instead of leaving it. A program
+/// with failure domains (B10, `Domain.run`) is LLVM IR only with `--trap-mode return`, whose host
+/// provides the trap runtime.
 pub fn emit(directory: &std::path::Path, scratch: &std::path::Path) -> (String, String) {
     let name = directory
         .file_name()
@@ -191,11 +193,19 @@ pub fn emit(directory: &std::path::Path, scratch: &std::path::Path) -> (String, 
         .to_string_lossy()
         .into_owned();
     let output = scratch.join(format!("{name}.ll"));
+    let domain = std::fs::read_to_string(directory.join("Main.tz"))
+        .is_ok_and(|text| text.contains("Domain.run"));
     let status = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
         .arg("build")
         .arg(directory)
         .args(["--emit", "llvm", "--trap-info", "-o"])
         .arg(&output)
+        .args(
+            domain
+                .then_some(["--trap-mode", "return"])
+                .into_iter()
+                .flatten(),
+        )
         .output()
         .expect("run tsuzuri");
     assert!(
