@@ -1133,14 +1133,14 @@ cargo test --locked honors_the_exact_specialization_limit
 | --- | --- | --- |
 | 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs`、`tests/editions.rs`（edition ごとの予約語・manifest の `edition`） | `examples.mjs`、`features.mjs`（関係する suite） |
 | 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
-| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs` |
+| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs` | `features.mjs borrowed_records`、`control.mjs`、`TSUZURI_PROGFUZZ_KIND=owned progfuzz.mjs` |
 | 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
 | 計算式・IO | `tests/computations.rs` | `computations.mjs`、`io.mjs` |
 | コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |
 | 文字列・文字・表示と解析 | `tests/strings.rs`、`tests/chars.rs`、`tests/display_parse.rs` | `strings.mjs`、`display_parse.mjs` |
 | 数値・数学 | `tests/integers.rs`、`tests/integer_wrapping.rs`、`tests/overflow_report.rs`、`tests/math.rs`、`tests/f16_hardware.rs`（f16 の `half` 経路。D10） | `numeric_casts.mjs`、`integer_intrinsics.mjs`、`overflow_report.mjs`、`math.mjs`（重い。Node 24）、`f16_hardware.mjs`（`TSUZURI_F16_EXPECT` でホストが通る経路を固定） |
-| コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics` |
-| 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite）、`codegen_units.mjs`（codegen unit への分割。PB07。`TSUZURI_CODEGEN_UNITS=split` で、ほかの suite も分けたビルドで確かめられます） |
+| コンパイル時評価（`const`・`const def`・静的データ） | `tests/constants.rs` | `features.mjs constants`・`const_functions`・`const_statics`、`progfuzz.mjs`（const と実行時の一致） |
+| 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite）、`codegen_units.mjs`（codegen unit への分割。PB07。`TSUZURI_CODEGEN_UNITS=split` で、ほかの suite も分けたビルドで確かめられます）、`progfuzz.mjs`（言語全体の差分ファズ。G36） |
 | スタックのフレーム・末尾呼び出し（PM09） | `tests/stack_frames.rs`（寿命の印と関数ごとの上限）、`tests/tail_recursion.rs`（`musttail`・drop の順序・対象外の形）、`tests/fast_backend.rs`・`tests/fast_backend_ops.rs`（`return_call` への翻訳） | `stack.mjs`（深さ 10,000,000 の相互再帰。native・`--backend fast`・`--wasm-feature tail-call`）、`control.mjs`（`TSUZURI_ASAN=1` も）、`user_drop.mjs` |
 | Task・並列・WASM threads・同期 | `tests/tasks.rs`、`tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`Channel`・`Task.scope`） | `tasks.mjs`、`wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`channel`、`TSUZURI_TSAN=1` の実行 |
 | トラップの報告・境界・`Domain`（E14・B10） | `tests/trap_locations.rs`、`tests/trap_backtrace.rs`（バックトレースとクラッシュレポート）、`tests/domain.rs`（`E1038` と IR） | `trap_return.mjs`（C の境界と `tests/domain_runtime.c`）、`domain.mjs`、`trap_boundary.mjs`、`stack_overflow.mjs`、`trap_return_sync.mjs`（`TSUZURI_NO_SANITIZERS=1` で sanitizer の build を外す） |
@@ -1220,6 +1220,9 @@ node tests/small_allocator.mjs target/release/tsuzuri   # --allocator small（PM
 node tests/local_recursion_fuzz.mjs target/release/tsuzuri 100   # ローカルな let rec の差分テスト（B09）。乱数で作った入れ子のグループ・クロージャ・借用の捕捉のプログラムを、独立した JS の評価器と照合する。引数は [コンパイラ] [件数] [最初の seed] [深さ]。リフト（src/closures_rec.rs）を変えたときに回す
 node tests/last_use_fuzz.mjs target/release/tsuzuri 300 1000 4   # 最後の使用の move（A17 Phase 1・2）を独立した AST 評価器と native O0/O3 で照合。引数は [コンパイラ] [件数] [最初の seed] [深さ]
 node tests/integer_ranges_fuzz.mjs target/release/tsuzuri 300 1 4   # 整数の範囲証明（PR02）の差分テスト。型の端に定数を合わせた乱数のプログラムを、独立した BigInt の評価器と、audit（-O0）・proven・off（-O3）の wasm32 で照合する。TSUZURI_FUZZ_NATIVE=1 で native も。引数は [コンパイラ] [件数] [最初の seed] [深さ]。型付き IR や emitter を変えた後に回す
+node tests/progfuzz.mjs target/release/tsuzuri 200 1 4   # 言語全体の差分ファズ（G36）。型つきの乱数のプログラム（整数の演算・タプル・record・union・Maybe・配列・範囲の for と while・再帰）を、コンパイル時評価（const）と native・wasm32 の -O0／-O3 の 5 経路で動かし、独立した BigInt の評価器と照合する。差は構文木のまま最小化して target/progfuzz/failures/ に保存する。引数は [コンパイラ] [件数] [最初の seed] [深さ]。型検査・生成・最適化を変えた後に回す
+TSUZURI_PROGFUZZ_KIND=owned node tests/progfuzz.mjs target/release/tsuzuri 100 1 4   # 同じ道具で所有権のプログラム（Vec・string・Vec<string> の move・借用・drop）を native と wasm32 の -O0／-O3 で動かし、値と解放の漏れ（wasm32 は --allocator counting の live bytes、native は Alloc の allocs - frees）を確かめる
+node tests/progfuzz.mjs --self-test target/release/tsuzuri   # progfuzz の自己検査: 乱数の既知の値、評価器と意味の表（126 行）、その表を 5 経路のコンパイラで、変異させた評価器を検出できること、最小化と保存、漏れの測定、既知の不具合 KB1 が今も再現すること
 node tests/range_flags_audit.mjs target/release/tsuzuri quick   # 既存の node の suite を TSUZURI_RANGE_FLAGS=audit と proven で実行し、fuzz も回す（quick は整数の suite だけで、負荷のある機械で 20 分ほど。full はすべての suite で 1 時間以上）。Rust のテストは TSUZURI_RANGE_FLAGS=audit cargo test --locked
 node benchmarks/run-range-flags.mjs target/release/tsuzuri   # 旗が asm を変えるか: 12 の corpus を off と proven で arm64・x86_64（-O1〜-O3）と wasm32 に出して比べる（PR02 Gate A。asm はコメントだけを除いて行の順序のまま、即値も含めて比べる）
 node tests/json.mjs target/release/tsuzuri
