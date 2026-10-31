@@ -1,0 +1,11 @@
+export def risky :: own i64 -> own i64 -> i64
+fn risky count divisor =
+    let values = new [i64](count, \i -> i * 3 + 1)
+    let text = "buffer" + to_string count
+    values[count - 1] / divisor + text.length
+
+export def guarded :: own i64 -> own i64 -> i64
+fn guarded count divisor =
+    match Domain.run (\() -> risky count divisor) with
+    | Result.Ok value -> value
+    | Result.Error failure -> 0 - failure.kind

@@ -14,6 +14,7 @@
 - `tsuzuri test --index N -g -o PATH` で 1 件のテストをデバッグ用にビルドできます。VS Code では Testing ビューの **Debug** です。
 - Windows で MSVC のリンカーを使うビルドは、実行ファイルの隣に PDB を書き、Visual Studio の natvis の表示を埋め込みます。
 - 表示を保証するのは `-O0` のネイティブだけです。`-O3` では変数が消えることがあり、WebAssembly は DWARF を保持するだけです。
+- `tsuzuri run` でトラップすると、`E2005` の下にトラップした関数から入口までの呼び出しの連鎖（`  at Main.level2` の行）が出ます。`--trap-info` で作った実行ファイルは、環境変数 `TSUZURI_TRAP_REPORT` が指すファイルへ同じ連鎖のアドレスを書きます（[トラップのバックトレース](#トラップのバックトレース)）。
 - `--backend fast`（`-O0` を速く作るコード生成器）のビルドも、`--trap-info` の位置表と `run` の `E2005` の報告は同じです。`-g` は関数の名前と行の対応だけを書きます（変数と型はありません。変数を見るときは `--backend llvm`）。macOS で `lldb` が `breakpoint set -f Main.tz -l 5` と `breakpoint set -n Main.sum` を `llvm` のビルドと同じ行に解決します（[fast のデバッグ情報](option.md#fast-のデバッグ情報)）。
 
 ## デバッグ情報付きでビルドする
@@ -171,6 +172,41 @@ PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれま
 
 配布物と VS Code 拡張は MinGW の `ld.lld` でリンクするので、PDB を書かず、実行ファイルの DWARF を CodeLLDB と LLDB で読みます（このページの LLDB の表示）。
 
+## トラップのバックトレース
+
+`tsuzuri run`（`script` と REPL を含む）のプログラムがトラップすると、`E2005` の引用の下に、トラップした関数から入口までの呼び出しの連鎖が 1 行ずつ出ます。最も内側（トラップした関数）が先です。
+
+```text
+trap: integer division by zero at tests/fixtures/trap_backtrace/Main.tz:2:15
+tests/fixtures/trap_backtrace/Main.tz:2:15: error[E2005]: program terminated with signal: 5 (SIGTRAP); integer division, indexing, assert, a contract, or allocation may have trapped
+  2 | fn level3 x = 100 / x
+    |               ^
+  at Main.level3
+  at Main.level2
+  at Main.level1
+  at Main.main
+```
+
+`-g` を付けると、呼び出し側の frame に呼び出しの位置が付きます（`  at Main.level2 (tests/fixtures/trap_backtrace/Main.tz:5:15)`）。最も内側の frame の位置は主の位置が示すので付きません。`--json` では、診断の最後のキー `trap` に同じ内容が入ります（キーの一覧は [診断](diagnostics.md#トラップの報告trap) にあります）。
+
+- 関数名は `llvm-symbolizer` で引きます。`TSUZURI_LLVM_SYMBOLIZER` でその実行ファイルを指定できます（既定は `PATH` の `llvm-symbolizer`）。起動できないときは frame の行を出さず、`  note: frames are not resolved; install llvm-symbolizer or set TSUZURI_LLVM_SYMBOLIZER` の 1 行だけを出します。`--json` の `frames` は、名前のないアドレス（リンク時のアドレス）だけになります。
+- 名前は Tsuzuri の関数名（`Main.level2`）です。ジェネリックな関数の実体と `@cpu` の版は元の関数の名前、ラムダ式は `$lambda.3` の形、`export def` の入口は `div` のような公開名です。関数値の呼び出しの継ぎ手、`tsuzuri_main`、C の `main` とランタイムは出ません。
+- `-O3` では、inline された関数は自分の frame を持ちません。上の例の `level1`〜`level3` と `main` はすべて入口へ inline されるので、何も出ません（`frames` は `[]`）。inline されない関数（再帰する関数や大きな関数）は、最適化しても frame が残って出ます。frame は 32 個までで、それより深い呼び出しは `  ... (more frames omitted)`（`"truncated":true`）になります。
+- スタック枯渇（`trap: stack overflow`）は frame を持ちません（`"trap":{"kind":"stack overflow","site":0,"frames":[]}`）。
+- macOS と Linux のネイティブの実行ファイルだけです。Windows、WebAssembly（`createBoundary` の `frames` は [WebAssembly への出力](webassembly.md#トラップと-trapjson) にあります）、`tsuzuri test`・`bench` の実行ファイルにはありません。失敗したテストは `tsuzuri run` で再現します。
+
+### クラッシュレポート（`TSUZURI_TRAP_REPORT`）
+
+`--trap-info` で作ったネイティブの実行ファイル（`build --emit exe --trap-info` と `run`）は、環境変数 `TSUZURI_TRAP_REPORT` が空でないとき、トラップのたびにそのファイルへ 1 行を追記します。`tsuzuri run` はこの変数を自分で設定し、結果を読んで上の `at` の行にします。配布した実行ファイルでも、利用者がこの変数を設定すれば同じ行が残ります。変数がなければ何も書かず、標準エラーの出力は今までと同じです。
+
+```text
+tz-trap/1 2 0x2188000 0 0x1021884e4 0x10218856c 0x1021885c0 0x10218861c 0x102188774 0x10218cd24 0x180d23e80
+```
+
+欄は順に、形式の版、トラップ位置の番号（`.trap.json` の `id`）、読み込み位置とリンク時の位置の差（slide）、32 個で打ち切ったら `1`、戻りアドレス（最も内側が先）です。名前は、slide と 1 を引いたアドレスを `llvm-symbolizer --obj=<実行ファイル>`（macOS の `-g` なら `<実行ファイル>.dwarf`）に渡すと分かります。
+
+この行を書くために、`--trap-info` の実行ファイルのすべての関数は frame pointer を保ちます（関数ごとに数命令の費用）。`--trap-info` を付けないビルドと、実行ファイル以外の出力（`--emit object`・`shared`・`llvm`、WebAssembly）は変わりません。トラップした実行ファイルが起動した子プロセスが同じ変数を引き継いで先に書くことがあります。`run` は最初の行を使います。
+
 ## 最適化と WebAssembly
 
 - `-O3` でも DWARF は正しく、`llvm-dwarfdump --verify` を通ります。ただし最適化で変数や行が消えることがあります。消えた変数は LLDB の既定の表示（`<variable not available>` など）になります。
@@ -178,6 +214,7 @@ PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれま
 
 ## まとめ
 
+- `tsuzuri run` のトラップは、`E2005` の下に `at` の行で呼び出しの連鎖を出します。`--trap-info` の実行ファイルは `TSUZURI_TRAP_REPORT` のファイルに同じ連鎖を書きます。
 - `-g -O0` でビルドし、LLDB で `command script import .../tsuzuri_lldb.py` を実行すると Tsuzuri の値で表示されます。VS Code では自動です。
 - 関数名は `Main.show` の形で、ジェネリックな関数の実体は同じ名前です。
 - ステップ実行は束縛で前の行へ戻らず、ランタイムと補助関数に入りません。

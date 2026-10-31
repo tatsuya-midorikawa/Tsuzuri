@@ -88,6 +88,13 @@ try {
     assert.match(run.stderr, /E2005.*stack overflow: the stack was exhausted by deep recursion; reduce the recursion depth or use a loop/s);
     assert.doesNotMatch(run.stderr, /probably/);
     cases++;
+    // B10: the JSON diagnostic carries the trap, a stack overflow without a site or frames.
+    const json = execute(compiler, ["run", projects.deep, optimization, "--json"], false);
+    assert.equal(json.status, 1);
+    const line = json.stderr.split("\n").find((text) => text.includes('"code":"E2005"'));
+    assert.ok(line, json.stderr);
+    assert.deepEqual(JSON.parse(line).trap, { kind: "stack overflow", site: 0, frames: [] });
+    cases++;
 
     // A debug executable keeps its report (its own object, without debug information).
     const debug = join(root, `debug${optimization}`);

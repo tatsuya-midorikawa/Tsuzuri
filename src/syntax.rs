@@ -475,11 +475,34 @@ impl Documentation {
     /// The note of the `@deprecated` tag (G19): the rest of the first line that starts with the
     /// tag, which may be empty. `@deprecatedX` is not the tag.
     pub fn deprecation(&self) -> Option<&str> {
-        if !self.text.contains("@deprecated") {
-            return None;
-        }
-        self.text.lines().find_map(|line| {
-            let rest = line.trim_start().strip_prefix("@deprecated")?;
+        self.tag_notes("@deprecated").next()
+    }
+
+    /// The value of the first `@complexity` line (G35), which may be empty.
+    pub fn complexity(&self) -> Option<&str> {
+        self.tag_notes("@complexity").next()
+    }
+
+    /// The value of the first `@since` line (G35), which may be empty.
+    pub fn since(&self) -> Option<&str> {
+        self.tag_notes("@since").next()
+    }
+
+    /// The value of every `@see` line (G35), in order.
+    pub fn see(&self) -> Vec<&str> {
+        self.tag_notes("@see").collect()
+    }
+
+    /// The rest of every line whose first word is exactly `tag` (leading blanks ignored; the tag
+    /// ends the line or is followed by a space or a tab, so `@deprecatedX` is not `@deprecated`).
+    fn tag_notes<'a>(&'a self, tag: &'static str) -> impl Iterator<Item = &'a str> + 'a {
+        let text = if self.text.contains(tag) {
+            self.text.as_str()
+        } else {
+            ""
+        };
+        text.lines().filter_map(move |line| {
+            let rest = line.trim_start().strip_prefix(tag)?;
             (rest.is_empty() || rest.starts_with([' ', '\t'])).then(|| rest.trim())
         })
     }

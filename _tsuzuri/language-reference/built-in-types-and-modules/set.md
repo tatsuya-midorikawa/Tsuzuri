@@ -198,15 +198,29 @@ sum=60
 
 ## 計算量
 
-| 操作 | 計算量 | 備考 |
-| --- | --- | --- |
-| 包含判定 `Set.contains` | $O(\log n)$ | チャンクとチャンク内の二分探索。確保なし |
-| 挿入 `Set.insert` | $O(\log n)$ 回の比較 + 1 チャンク内の移動 | 移動は最大 511 要素。満ちたチャンクは分割（さらに $O(c)$）。最大キーより大きい挿入は最後のチャンクへの追加 |
-| 削除 `Set.remove` | $O(\log n)$ 回の比較 + 1 チャンク内の移動 | 隣り合う 2 つのチャンクの合計が 256 以下になれば併合（さらに $O(c)$）。チャンクの個数 $c \le 2n/257 + 1$ |
-| 和集合 `Set.union` | $O(n + m)$ | 両辺のチャンクの末尾から比較して要素を移動し、384 要素ずつの新しいチャンクを作る |
-| 積集合 / 差集合 `intersect` / `difference` | $O(n + m)$ | 2 本のカーソルを進めて要素をコピーし、384 要素ずつの新しいチャンクを作る |
-| 長さの参照 `length` / `is_empty` / `chunk_count` | $O(1)$ | 長さのフィールドの参照 |
-| 反復・配列化 `fold` / `to_array` | $O(n)$ | 全要素を昇順に 1 回走査 |
+計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`with_capacity` などの容量を指定する関数では確保する容量、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。
+
+<!-- generated:complexity:Set -->
+| 関数 | 計算量 |
+| --- | --- |
+| `Set.empty` | $O(1)$ |
+| `Set.singleton` | $O(1)$ |
+| `Set.length` | $O(1)$ |
+| `Set.is_empty` | $O(1)$ |
+| `Set.chunk_count` | $O(1)$ |
+| `Set.contains` | $O(\log n)$ |
+| `Set.insert` | $O(n)$ |
+| `Set.remove` | $O(n)$ |
+| `Set.to_array` | $O(n)$ |
+| `Set.fold` | $O(n)$ |
+| `Set.union` | $O(n + m)$ |
+| `Set.intersect` | $O(n + m)$ |
+| `Set.difference` | $O(n + m)$ |
+| `Set.iter` | $O(1)$ |
+| `Set.invariants_hold` | $O(n)$ |
+<!-- /generated:complexity:Set -->
+
+包含判定は、チャンクとチャンク内の二分探索です（確保なし）。`insert` と `remove` の要素の移動は 1 つのチャンクの中（最大 511 要素）で済みますが、チャンクの分割・併合・削除は後ろのチャンクをずらすので最悪 $O(n)$ です（チャンクの個数 $c \le 2n/257 + 1$）。`union`・`intersect`・`difference` は整列済みの 2 つの列を 1 回ずつ走査し、384 要素ずつの新しいチャンクを作ります。
 
 ## まとめ
 

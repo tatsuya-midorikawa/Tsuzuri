@@ -20,6 +20,9 @@ mod constants;
 mod control;
 #[path = "derive.rs"]
 mod deriving;
+#[path = "domain_rules.rs"]
+mod domain_rules;
+pub(crate) use domain_rules::domain_calls;
 #[path = "exceptions.rs"]
 mod exceptions;
 #[path = "exhaustiveness.rs"]
@@ -1507,6 +1510,13 @@ pub enum Builtin {
     /// `Gpu.__last :: i32`, called as `Gpu.__last()`: the backend tag that `Gpu.__select` chose
     /// for the most recent device call (0 before any) (F09 Phase 3).
     GpuLast,
+    /// `Domain.__run :: (unit -> 'a) -> Result<'a, (i64 * i64)>` calls the closure inside a failure
+    /// domain (`tsuzuri_domain_run` of src/runtime/trap.c): `Ok` with its value, or `Error (site, kind)`
+    /// when it trapped (B10 Phase 2). Only `Domain.run` calls it.
+    DomainRun,
+    /// `Domain.__message :: i64 -> string`: the text of a trap site, `<reason> at <path>:<line>:<column>`
+    /// where the build has the place, the reason alone where it does not (B10 Phase 2).
+    DomainMessage,
     /// `Rc.new :: 'a -> Rc<'a>` moves a value into a new reference-counted block (C10 Phase 2).
     RcNew,
     /// `Rc.share :: ref Rc<'a> -> Rc<'a>` adds a strong pointer to the same block.
@@ -1889,6 +1899,8 @@ impl Builtin {
         Self::GpuRun,
         Self::GpuSelect,
         Self::GpuLast,
+        Self::DomainRun,
+        Self::DomainMessage,
         Self::RcNew,
         Self::RcShare,
         Self::RcGet,
@@ -2185,6 +2197,8 @@ impl Builtin {
             Self::GpuRun => "Gpu.__run",
             Self::GpuSelect => "Gpu.__select",
             Self::GpuLast => "Gpu.__last",
+            Self::DomainRun => "Domain.__run",
+            Self::DomainMessage => "Domain.__message",
             Self::RcNew => "Rc.new",
             Self::RcShare => "Rc.share",
             Self::RcGet => "Rc.get",
@@ -3148,6 +3162,26 @@ impl Builtin {
                 Vec::new(),
             ),
             Self::GpuLast => (Vec::new(), Concrete(Type::Integer(32, true)), Vec::new()),
+            Self::DomainRun => (
+                vec![BuiltinType::Function(
+                    vec![Concrete(Type::Unit)],
+                    Box::new(a()),
+                )],
+                BuiltinType::Std {
+                    module: "Result",
+                    name: "Result",
+                    args: vec![
+                        a(),
+                        BuiltinType::Tuple(vec![Concrete(Type::I64), Concrete(Type::I64)]),
+                    ],
+                },
+                Vec::new(),
+            ),
+            Self::DomainMessage => (
+                vec![Concrete(Type::I64)],
+                Concrete(Type::String),
+                Vec::new(),
+            ),
             Self::RcNew
             | Self::RcShare
             | Self::RcGet
@@ -8203,6 +8237,8 @@ fn check_modules_collect(
     if let Err(error) = validate_cpu_functions(&module) {
         diagnostics.push(error);
     }
+    // B10: each call of `Domain.run` passes a pure closure of plain data.
+    diagnostics.extend(domain_rules::validate(&module));
     // A20: the effect attributes are checked against the inferred summaries; a program without
     // them computes nothing.
     if !declared_attributes.is_empty() {

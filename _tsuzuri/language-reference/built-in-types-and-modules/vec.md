@@ -766,27 +766,93 @@ has_long=true position=1 found=3
 
 ## 計算量
 
-$n$ は `Vec` の長さ、$k$ は対象にする要素数です。
+計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`with_capacity` などの容量を指定する関数では確保する容量、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。
+
+<!-- generated:complexity:Vec -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `Vec.iter` | $O(1)$ | - |
+| `Vec.of_seq` | $O(n)$ | - |
+| `Vec.of_list` | $O(n)$ | - |
+| `Vec.set_capacity` | $O(k)$ | - |
+| `Vec.ensure_capacity` | $O(k)$ | - |
+| `Vec.trim_excess` | $O(n)$ | - |
+| `Vec.add` | 償却 $O(1)$、最悪 $O(n)$ | - |
+| `Vec.add_range` | 償却 $O(m)$、最悪 $O(n + m)$ | - |
+| `Vec.add_range_seq` | 償却 $O(m)$、最悪 $O(n + m)$ | - |
+| `Vec.append` | 償却 $O(m)$、最悪 $O(n + m)$ | - |
+| `Vec.insert` | $O(n)$ | - |
+| `Vec.insert_range` | $O(n + m)$ | - |
+| `Vec.insert_range_seq` | $O(n + m)$ | - |
+| `Vec.remove_at` | $O(n)$ | - |
+| `Vec.remove_range` | $O(n)$ | - |
+| `Vec.remover` | $O(n)$ | `Vec.remove` |
+| `Vec.remove` | $O(n)$ | `Vec.remover` |
+| `Vec.remove_allr` | $O(n)$ | `Vec.remove_all` |
+| `Vec.remove_all` | $O(n)$ | `Vec.remove_allr` |
+| `Vec.reverse` | $O(n)$ | - |
+| `Vec.reverse_range` | $O(n)$ | - |
+| `Vec.sort_range` | $O(n \log^2 n)$ | - |
+| `Vec.sort` | $O(n \log^2 n)$ | - |
+| `Vec.sort_range_with` | $O(n \log n)$ | `Vec.sort_range_withr` |
+| `Vec.sort_with` | $O(n \log n)$ | `Vec.sort_withr` |
+| `Vec.sort_range_withr` | $O(n \log^2 n)$ | `Vec.sort_range_with` |
+| `Vec.sort_withr` | $O(n \log^2 n)$ | `Vec.sort_with` |
+| `Vec.index_ofr` | $O(n)$ | `Vec.index_of` |
+| `Vec.index_of` | $O(n)$ | `Vec.index_ofr` |
+| `Vec.index_of_from` | $O(n)$ | - |
+| `Vec.index_of_range` | $O(n)$ | - |
+| `Vec.last_index_ofr` | $O(n)$ | `Vec.last_index_of` |
+| `Vec.last_index_of` | $O(n)$ | `Vec.last_index_ofr` |
+| `Vec.last_index_of_from` | $O(n)$ | - |
+| `Vec.last_index_of_range` | $O(n)$ | - |
+| `Vec.containsr` | $O(n)$ | `Vec.contains` |
+| `Vec.contains` | $O(n)$ | `Vec.containsr` |
+| `Vec.find_indexr` | $O(n)$ | `Vec.find_index` |
+| `Vec.find_index` | $O(n)$ | `Vec.find_indexr` |
+| `Vec.find_index_from` | $O(n)$ | - |
+| `Vec.find_index_range` | $O(n)$ | - |
+| `Vec.find_last_indexr` | $O(n)$ | `Vec.find_last_index` |
+| `Vec.find_last_index` | $O(n)$ | `Vec.find_last_indexr` |
+| `Vec.find_last_index_from` | $O(n)$ | - |
+| `Vec.find_last_index_range` | $O(n)$ | - |
+| `Vec.existsr` | $O(n)$ | `Vec.exists` |
+| `Vec.exists` | $O(n)$ | `Vec.existsr` |
+| `Vec.true_for_allr` | $O(n)$ | `Vec.true_for_all` |
+| `Vec.true_for_all` | $O(n)$ | `Vec.true_for_allr` |
+| `Vec.findr` | $O(n)$ | `Vec.find` |
+| `Vec.find` | $O(n)$ | `Vec.findr` |
+| `Vec.find_lastr` | $O(n)$ | `Vec.find_last` |
+| `Vec.find_last` | $O(n)$ | `Vec.find_lastr` |
+| `Vec.find_all` | $O(n)$ | - |
+| `Vec.binary_searchr` | $O(\log n)$ | `Vec.binary_search` |
+| `Vec.binary_search` | $O(\log n)$ | `Vec.binary_searchr` |
+| `Vec.binary_search_withr` | $O(\log n)$ | `Vec.binary_search_with` |
+| `Vec.binary_search_with` | $O(\log n)$ | `Vec.binary_search_withr` |
+| `Vec.binary_search_range` | $O(\log n)$ | - |
+| `Vec.for_eachr` | $O(n)$ | `Vec.for_each` |
+| `Vec.for_each` | $O(n)$ | `Vec.for_eachr` |
+| `Vec.convert_allr` | $O(n)$ | `Vec.convert_all` |
+| `Vec.convert_all` | $O(n)$ | `Vec.convert_allr` |
+| `Vec.get_range` | $O(k)$ | - |
+| `Vec.slice` | $O(k)$ | - |
+| `Vec.copy_to_range` | $O(n)$ | - |
+| `Vec.copy_to_at` | $O(n)$ | - |
+| `Vec.copy_to` | $O(n)$ | - |
+<!-- /generated:complexity:Vec -->
+
+### 組み込みの操作
+
+次の操作は `std/Vec.tz` の `def` ではないので、表は手書きです。
 
 | 操作 | 計算量 | 備考 |
 | --- | --- | --- |
-| 末尾への追加 `Vec.add` / `Vec.push` | 償却 $O(1)$ | 容量超過時のみメモリ再確保とコピー（倍増） |
+| 末尾への追加 `Vec.push` | 償却 $O(1)$ | 容量超過時のみメモリ再確保とコピー（倍増） |
 | 末尾からの取り出し `Vec.pop` | $O(1)$ | 末尾の要素を `Maybe` の所有値として呼び出し元へ移す。要素の解放処理は実行しない |
 | 添字アクセス `xs[i]` / `at` | $O(1)$ | 連続メモリへの直接アクセス |
 | 要素の置換 `set` / `swap` | $O(1)$ | インデックス指定の即時更新 |
 | 長さ・容量の取得 `length` / `capacity` | $O(1)$ | メタデータ参照 |
 | 配列との相互変換 `to_array` / `of_array` | $O(1)$ | 所有バッファの移送。引数渡しのコピーとは別 |
-| 途中への挿入 `insert` / `insert_range` / `insert_range_seq` | $O(n - \text{位置} + k)$ | 後ろの要素を、連続した領域の 1 回の移動でずらします |
-| 途中の削除 `remove_at` / `remove_range` | $O(n - \text{位置})$ | 後ろの要素を前へ 1 回の移動で詰めます。消す要素の解放が加わります |
-| 範囲の追加 `add_range` / `append` | $O(k)$ | 容量超過時は再確保が加わります |
-| 探索 `index_of` / `contains` / `find_index` / `exists` / `true_for_all` / `find_all` | $O(n)$ | 見つかった時点で止まる関数は、そこまでです |
-| 削除 `remove` / `remove_all` | $O(n)$ | `remove_all` は述語を各要素に 1 回だけ呼びます |
-| 反転 `reverse` | $O(n)$ | |
-| 二分探索 `binary_search` | $O(\log n)$ | |
-| 並べ替え `sort` / `sort_withr` | 比較 $O(n \log n)$、入れ替え $O(n \log^2 n)$ | その場で行い、追加の領域を使いません |
-| 並べ替え `sort_with` | $O(n \log n)$ | 長さ $n$ の一時的な配列を使います |
-| 範囲の複製・変換 `get_range` / `copy_to` / `convert_all` | $O(k)$ | |
-| 容量の変更 `set_capacity` / `ensure_capacity` / `trim_excess` | 再確保するとき $O(n)$ | 容量が変わらなければ $O(1)$ |
 | 全削除 `clear` / 短縮 `truncate` | $O(k)$ | 削除対象の $k$ 要素のデストラクタ実行 |
 | 複製 `clone` | $O(n)$ | 要素のディープコピー |
 
