@@ -1,0 +1,16 @@
+def square :: i64 -> i64
+fn square value = value * value
+
+def pure_total :: ref [i64] -> i64
+fn pure_total values =
+    let squares = Array.map square values
+    Array.sum (ref squares)
+
+def traced :: ref [i64] -> [i64]
+fn traced values = Array.map (\value -> Debug.trace value) values
+
+def doubled :: ref [i64] -> [i64]
+fn doubled values = Parallel.map (\value -> value * 2) values
+
+def shown :: ref [i64] -> [i64]
+fn shown values = Parallel.map (\value -> Debug.trace value) values

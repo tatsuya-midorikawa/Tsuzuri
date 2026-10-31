@@ -109,6 +109,9 @@ const MODULES: &[(&str, Kind)] = &[
     ("Matrix", subject(&["Matrix"])),
     ("MatrixView", subject(&["MatrixView", "Mut"])),
     ("Maybe", subject(&["Maybe"])),
+    // A class and the records of its instances: no `def` line.
+    ("Monoid", SingleArgument),
+    ("Monoids", SingleArgument),
     ("Mutex", Exempt(BUILTIN_HANDLE)),
     ("Net", Exempt(HANDLE)),
     ("Os", subject(&["[ubyte]"])),

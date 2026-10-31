@@ -5,3 +5,16 @@
 /// ```
 def sum :: (Numeric<'a>, Add<'a>, Copy<'a>, Send<'a>) => ref ['a] -> 'a
 fn sum values = Parallel.reduce (0i64 as 'a) (\left right -> left + right) values
+
+/// Folds `values` with `Monoid.combine` in chunks (see `Parallel.reduce`) and returns the same value as `Array.fold_monoid`, for any chunks, when the
+/// instance obeys the laws of `Monoid` and `empty` and `combine` have no side effects.
+///
+/// @since 0.1.0
+/// @see Array.fold_monoid
+///
+/// ```tsuzuri run=10
+/// let total = Parallel.fold [Monoids.Sum { value: 1 }, Monoids.Sum { value: 2 }, Monoids.Sum { value: 3 }, Monoids.Sum { value: 4 }]
+/// total.value
+/// ```
+def fold :: (Monoid<'m>, Copy<'m>, Send<'m>) => ref ['m] -> 'm
+fn fold values = Parallel.reduce (Monoid.empty ()) (\left right -> Monoid.combine left right) values

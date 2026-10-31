@@ -1315,7 +1315,7 @@ def main :: unit -> i32 = \() ->
 - [_features/_completed/A23-integer-overflow-intent.md](A23-integer-overflow-intent.md)
 - [_features/B10-trap-backtrace-and-domains.md](../B10-trap-backtrace-and-domains.md)
 - [_features/E15-trust-boundary-and-capabilities.md](E15-trust-boundary-and-capabilities.md)
-- [_features/F15-sequential-equivalent-data-parallel.md](../F15-sequential-equivalent-data-parallel.md)
+- [_features/_completed/F15-sequential-equivalent-data-parallel.md](F15-sequential-equivalent-data-parallel.md)
 - [_features/GUIDE.md](../GUIDE.md)
 - [_features/README.md](../README.md)
 - [_features/_completed/A18-parameter-conventions.md](A18-parameter-conventions.md)

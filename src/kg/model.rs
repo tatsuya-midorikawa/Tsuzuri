@@ -13,7 +13,7 @@ use crate::check::kg_capture::Capture;
 use crate::diagnostic::Span;
 
 /// The facts keys that this build writes, in their order (`KgModel::fact_keys`).
-pub const FACT_KEYS: [&str; 13] = [
+pub const FACT_KEYS: [&str; 14] = [
     "id",
     "effects",
     "effect_sites",
@@ -26,6 +26,7 @@ pub const FACT_KEYS: [&str; 13] = [
     "recursion",
     "loops",
     "specializations",
+    "parallel",
     "truncated",
 ];
 
@@ -104,6 +105,12 @@ impl<'a> SpanTable<'a> {
     pub(crate) fn text(&self, span: Span) -> Option<&'a str> {
         let (_, text, _) = self.sources.get(span.source?)?;
         text.get(span.start..span.end)
+    }
+
+    /// The path and the whole text of the source that `span` points into.
+    pub(crate) fn source(&self, span: Span) -> Option<(&str, &'a str)> {
+        let (path, text, _) = self.sources.get(span.source?)?;
+        Some((path.as_str(), *text))
     }
 }
 
@@ -311,6 +318,47 @@ pub struct LoopRow {
     pub kind: &'static str,
 }
 
+/// An entry of `check --report parallel` (F15) in the function that holds the call: a suggestion
+/// (`span` is the name of the call) or a `Parallel` call (`span` is the whole call).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParallelRow {
+    pub span: Location,
+    pub kind: &'static str,
+    pub call: &'static str,
+    pub parallel_safe: bool,
+    pub reason: Option<String>,
+}
+
+impl Ord for ParallelRow {
+    /// The order of the report: source order, a suggestion before a site at one position.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (
+            &self.span.path,
+            self.span.start,
+            self.span.end,
+            self.kind != "suggestion",
+            self.call,
+            self.parallel_safe,
+            &self.reason,
+        )
+            .cmp(&(
+                &other.span.path,
+                other.span.start,
+                other.span.end,
+                other.kind != "suggestion",
+                other.call,
+                other.parallel_safe,
+                &other.reason,
+            ))
+    }
+}
+
+impl PartialOrd for ParallelRow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// The facts of one function-like node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FactsRow {
@@ -326,6 +374,8 @@ pub struct FactsRow {
     pub recursion: &'static str,
     pub loops: Vec<LoopRow>,
     pub specializations: usize,
+    /// F15: the entries of `check --report parallel` in the node's functions.
+    pub parallel: Vec<ParallelRow>,
     pub truncated: BTreeMap<String, usize>,
 }
 
@@ -375,6 +425,17 @@ impl FactsRow {
                 .raw("span", &row.span.json())
                 .finish()
         }));
+        let parallel = json::array(self.parallel.iter().map(|row| {
+            let object = Object::new()
+                .string("call", row.call)
+                .string("kind", row.kind)
+                .boolean("parallel_safe", row.parallel_safe);
+            let object = match &row.reason {
+                Some(reason) => object.string("reason", reason),
+                None => object,
+            };
+            object.raw("span", &row.span.json()).finish()
+        }));
         let truncated = self
             .truncated
             .iter()
@@ -395,6 +456,7 @@ impl FactsRow {
             .string("recursion", self.recursion)
             .raw("loops", &loops)
             .uint("specializations", self.specializations)
+            .raw("parallel", &parallel)
             .raw("truncated", &truncated)
             .finish()
     }

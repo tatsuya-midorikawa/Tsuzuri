@@ -29,6 +29,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Map.tz", include_str!("../std/Map.tz")),
     ("std/Math.tz", include_str!("../std/Math.tz")),
     ("std/Maybe.tc", include_str!("../std/Maybe.tc")),
+    ("std/Monoid.tt", include_str!("../std/Monoid.tt")),
+    ("std/Monoids.tz", include_str!("../std/Monoids.tz")),
     ("std/Mutex.tz", include_str!("../std/Mutex.tz")),
     ("std/Net.tz", include_str!("../std/Net.tz")),
     ("std/Os.tz", include_str!("../std/Os.tz")),
@@ -110,6 +112,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "MatrixView",
     "Tensor",
     "Channel",
+    "Monoid",
+    "Monoids",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -283,6 +287,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "Channel",
         names: &["Channel"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Monoids",
+        names: &["Monoids"],
         aliases: &[],
         uses: &[],
     },
@@ -622,7 +632,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 54);
+        assert_eq!(RESERVED_MODULES.len(), 56);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

@@ -632,6 +632,23 @@ fn fold folder initial values =
     for value in values do state = folder state value
     state
 
+/// Folds `values` from the left with `Monoid.combine`, starting from `Monoid.empty ()`. `Parallel.fold` returns the same value.
+///
+/// @complexity O(n)
+/// @since 0.1.0
+/// @see Array.fold
+/// @see Parallel.fold
+///
+/// ```tsuzuri run=6
+/// let total = Array.fold_monoid [Monoids.Sum { value: 1 }, Monoids.Sum { value: 2 }, Monoids.Sum { value: 3 }]
+/// total.value
+/// ```
+def fold_monoid :: (Monoid<'m>, Copy<'m>) => ref ['m] -> 'm
+fn fold_monoid values =
+    let mut state = Monoid.empty ()
+    for value in values do state = Monoid.combine state value
+    state
+
 /// Like `fold`, but `folder` borrows each element, so the elements need not be `Copy`.
 ///
 /// @complexity O(n)

@@ -49,6 +49,7 @@ pub mod overflow;
 pub mod ownership;
 pub mod package;
 mod parallel;
+pub mod parallel_report;
 pub mod parser;
 pub mod prove;
 mod ranges;

@@ -363,7 +363,7 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 明示的に `using std` と記述する必要はありませんが、記述した場合は他の `using` と同様に std モジュール群をモジュール名単体でスコープへ導入します。
 ユーザー定義のソースファイルにおいて、名前空間 `std` またはその配下の階層を明示的に宣言することは禁止されています（`E1011`）。
 標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
-ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
+ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`、`Monoids`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
 `build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
 標準ライブラリは外部への `export` 関数を持ちません。IO のエントリーポイントおよびランタイム境界には専用の内部シンボルが追加されます。WASM 出力における外部インポートは、実際に到達した IO／extern 呼び出し、明示的な Debug 出力、ならびに `--wasm-host wasi` 指定時の WASI preview1 関数にのみ限定して追加されます。
 標準ライブラリ内の `private` 関数は std の内部からのみ呼び出し可能であり、ユーザーコードから参照した場合は `E1022` エラーとなります。
@@ -371,11 +371,11 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`
+`Alloc`、`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Monoid`、`Monoids`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`Channel.Sender<T>` のように書いて区別します。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`Channel.Sender<T>` のように書いて区別します。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Monoid`、`Monoids` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -3135,7 +3135,7 @@ Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 ### データ並列 API
 
 `Parallel.init length initializer` は並列に初期化された新しい配列を生成し、`Parallel.map mapper input` および `Parallel.map_ref mapper input` は共有配列またはスライス参照を受け取って並列要素変換を実行します。
-`Parallel.reduce identity reducer input` および `Parallel.sum input` は、固定のチャンク分割順序に従って決定論的な並列集約を行います。`Parallel.for_each_chunk size body values` は排他スライスを `size` 要素ずつの互いに素な排他スライスへ分け、各チャンクの開始添字とスライスを `body` へ並列に渡します。これらはすべて同期的な API であり、呼び出し元へ制御が戻った時点で、すべてのワーカースレッドのタスクが完全に完了していることが保証されます。
+`Parallel.reduce identity reducer input`、`Parallel.sum input`、および `Parallel.fold input`（`Monoid` の instance による還元。下の「逐次との同一と `Monoid`」）は、固定のチャンク分割順序に従って決定論的な並列集約を行います。`Parallel.for_each_chunk size body values` は排他スライスを `size` 要素ずつの互いに素な排他スライスへ分け、各チャンクの開始添字とスライスを `body` へ並列に渡します。これらはすべて同期的な API であり、呼び出し元へ制御が戻った時点で、すべてのワーカースレッドのタスクが完全に完了していることが保証されます。
 
 | 提供 API | 型シグネチャおよびトレイト制約 |
 |---|---|
@@ -3144,6 +3144,7 @@ Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 | `map_ref` | `(Send<'a>, Send<'b>) => (ref 'a -> 'b) -> ref ['a] -> ['b]` |
 | `reduce` | `(Copy<'a>, Send<'a>) => 'a -> ('a -> 'a -> 'a) -> ref ['a] -> 'a` |
 | `sum` | `(Numeric<'a>, Add<'a>, Copy<'a>, Send<'a>) => ref ['a] -> 'a` |
+| `fold` | `(Monoid<'m>, Copy<'m>, Send<'m>) => ref ['m] -> 'm` |
 | `for_each_chunk` | `Send<'a> => i64 -> (i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit` |
 
 `for_each_chunk` のチャンク境界は利用者が指定した `size` だけで決まり（最後のチャンクだけが短くなります）、`size` が 0 以下の場合はトラップし、空の入力に対しては `body` を呼びません。各 `body` が触れられるのは自分のチャンクだけであり、入力への排他借用はフォーク・ジョインの実行区間に閉じ込められます。
@@ -3162,6 +3163,24 @@ Json.deserialize :: Decode<'a> => ref utf8string -> Result<'a, Error>
 空データが渡された場合は単位元 `identity` がそのまま返却され、`sum` における単位元は対象数値型の正のゼロとなります。非結合的な演算や浮動小数点演算においては、演算順序の相違によって逐次実行の `Array.reduce` や `Array.sum` とわずかに異なるビット結果となる場合があります。
 なお、コンパイラが `fast-math`、恣意的な式の再結合、または暗黙の FMA を勝手に有効化することはありません。ネイティブ環境では常駐スレッドプール、WASM 環境では同一チャンク順序による外部インポート不要の逐次フォールバックが使用されます。
 チャンク間における並列処理の開始順序および完了順序は未規定であり、途中で言語トラップが発生した場合の部分結果の即時解放や処理の強制キャンセルは保証されません。
+
+#### 逐次との同一と `Monoid`
+
+標準ライブラリの型クラス `Monoid<'m>`（`std/Monoid.tt`。`empty :: unit -> 'm` と `combine :: 'm -> 'm -> 'm`）の instance が、結合律と単位元の法則（ビットまで同じ）を満たすとき、`Parallel.fold values`（`Parallel.reduce (Monoid.empty ()) (\left right -> Monoid.combine left right) values` と同じ）は、チャンクの分け方によらず `Array.fold_monoid values`（`Monoid.empty ()` から添字の昇順に `combine` を重ねる）とビット単位で同じ値を返します。左単位元で各チャンクと全体の先頭の `empty ()` が消え、結合律で括弧を付け替えられるので、どの境界で分けても同じ式になります（境界の値を使わないので、チャンクの規則が変わっても成り立ちます）。
+コンパイラは法則を検査しません。条件は、法則が成り立つこと、途中で `combine` がトラップしないこと（トラップする入力では、トラップすること自体は同じですが、どの要素のトラップが報告されるかは未規定）、浮動小数点を含まないこと、`empty`・`combine` が外から見える作用（出力・共有状態への書き込み・時刻・乱数）を持たないことです。作用を持つと `combine` を呼ぶ回数・順序・組み合わせが `Array.fold_monoid` と違い、結果の値も違いえます。作用は型検査では拒否しません（`check --report parallel` の `parallel_safe` が示します）。
+浮動小数点の数（`f16`・`f32`・`f64`・`f128`・`d32`・`d64`・`d128`、浮動小数点のレーンの SIMD。record のフィールド・union の payload・タプル・配列・リスト・`Vec`・`Maybe` の中身を辿って届くもの）を含む具象な型への `Monoid` の制約は、その制約を作った呼び出し（`Array.fold_monoid`・`Parallel.fold`・`Monoid.combine`）の位置で `E1039`（kind `monoid_float_instance`）です。型変数を含む制約と、どの呼び出しにも使われない instance の宣言は検査しません。
+整数向けの型 `Sum`・`Product`・`MaxOf`・`MinOf`・`BitAnd`・`BitOr`・`BitXor`・`All`・`Any`（中身は `value`）は opt-in の `Monoids` モジュールにあり、`Monoids.Sum` のように修飾して書きます。`Sum`・`Product` は演算子と同じく折り返し、折り返しも結合的なので逐次と同一です。`MaxOf`・`MinOf` の中身は `Maybe` で、空は `Maybe.None`、同じ値なら左を残します。
+
+他の API の保証は表のとおりです。コールバックが純粋（`pure def` と同じ効果の規則で、外界・時計と乱数・並行・共有可変状態・GPU・動的ディスパッチ・利用者の `Drop` に届かない）でなければ、副作用の回数・順序・実行するスレッドは未規定で、複数の要素がトラップするとき、どれが報告されるかも未規定です。
+
+| API | 結果 | 条件 |
+|---|---|---|
+| `fold` | `Array.fold_monoid` と同一 | `Monoid` の法則と、`empty`・`combine` に作用がないこと |
+| `map`・`map_ref`・`init` | `Array.map`・`Array.mapr`・`new [T](n, f)` と同一 | コールバックが純粋 |
+| `for_each_chunk` | チャンクを先頭から順に処理する逐次のループと同一 | `body` が純粋 |
+| `sum`（整数） | `Array.sum` と同一 | 整数の加算は折り返しても結合的 |
+| `sum`（浮動小数点） | 決定的だが `Array.sum` と異なりうる | `Array.sum_pairwise`・`Array.sum_kahan` が順序を固定する |
+| `reduce` | 決定的 | 結合律と単位元が成り立てば `fold` と同じ |
 
 ### GPU Kernel（実験的）
 
@@ -3720,162 +3739,163 @@ let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 **Array**
 
 <!-- generated:complexity:Array -->
-| 関数 | 計算量 | 関連 |
-| --- | --- | --- |
-| `Array.length` | $O(1)$ | - |
-| `Array.is_empty` | $O(1)$ | - |
-| `Array.empty` | $O(1)$ | - |
-| `Array.singleton` | $O(1)$ | - |
-| `Array.create` | $O(k)$ | - |
-| `Array.replicate` | $O(k)$ | - |
-| `Array.zero_create` | $O(k)$ | - |
-| `Array.init` | $O(k)$ | - |
-| `Array.get` | $O(1)$ | - |
-| `Array.item` | $O(1)$ | - |
-| `Array.try_item` | $O(1)$ | - |
-| `Array.at` | $O(1)$ | - |
-| `Array.head` | $O(1)$ | - |
-| `Array.try_head` | $O(1)$ | - |
-| `Array.last` | $O(1)$ | - |
-| `Array.try_last` | $O(1)$ | - |
-| `Array.exactly_one` | $O(1)$ | - |
-| `Array.try_exactly_one` | $O(1)$ | - |
-| `Array.sub` | $O(k)$ | - |
-| `Array.tail` | $O(n)$ | - |
-| `Array.take` | $O(k)$ | - |
-| `Array.skip` | $O(n)$ | - |
-| `Array.truncate` | $O(k)$ | - |
-| `Array.split_at` | $O(n)$ | - |
-| `Array.take_while` | $O(k)$ | - |
-| `Array.skip_while` | $O(n)$ | - |
-| `Array.where` | $O(n)$ | - |
-| `Array.filter` | $O(n)$ | - |
-| `Array.transpose` | $O(n + k)$ | - |
-| `Array.iter` | $O(n)$ | `Array.iterr` |
-| `Array.iterr` | $O(n)$ | `Array.iter` |
-| `Array.iteri` | $O(n)$ | `Array.iterir` |
-| `Array.iterir` | $O(n)$ | `Array.iteri` |
-| `Array.iter2` | $O(n)$ | - |
-| `Array.iteri2` | $O(n)$ | - |
-| `Array.map` | $O(n)$ | `Array.mapr` |
-| `Array.mapi` | $O(n)$ | `Array.mapir` |
-| `Array.mapr` | $O(n)$ | `Array.map` |
-| `Array.mapir` | $O(n)$ | `Array.mapi` |
-| `Array.map2` | $O(n)$ | - |
-| `Array.mapi2` | $O(n)$ | - |
-| `Array.map3` | $O(n)$ | - |
-| `Array.map_fold` | $O(n)$ | - |
-| `Array.map_fold_back` | $O(n)$ | - |
-| `Array.collect` | $O(n + k)$ | - |
-| `Array.choose` | $O(n)$ | - |
-| `Array.fold` | $O(n)$ | `Array.foldr` |
-| `Array.foldr` | $O(n)$ | `Array.fold` |
-| `Array.fold2` | $O(n)$ | - |
-| `Array.fold_back` | $O(n)$ | `Array.foldr_back` |
-| `Array.foldr_back` | $O(n)$ | `Array.fold_back` |
-| `Array.fold_back2` | $O(n)$ | - |
-| `Array.reduce` | $O(n)$ | - |
-| `Array.reduce_back` | $O(n)$ | - |
-| `Array.scan` | $O(n)$ | - |
-| `Array.scan_back` | $O(n)$ | - |
-| `Array.exists` | $O(n)$ | `Array.existsr` |
-| `Array.existsr` | $O(n)$ | `Array.exists` |
-| `Array.exists2` | $O(n)$ | - |
-| `Array.forall` | $O(n)$ | `Array.forallr` |
-| `Array.forallr` | $O(n)$ | `Array.forall` |
-| `Array.forall2` | $O(n)$ | - |
-| `Array.count` | $O(n)$ | `Array.countr` |
-| `Array.countr` | $O(n)$ | `Array.count` |
-| `Array.try_find_index` | $O(n)$ | - |
-| `Array.find_index` | $O(n)$ | - |
-| `Array.try_find_index_back` | $O(n)$ | - |
-| `Array.find_index_back` | $O(n)$ | - |
-| `Array.try_find` | $O(n)$ | `Array.try_findr` |
-| `Array.find` | $O(n)$ | `Array.findr` |
-| `Array.try_find_back` | $O(n)$ | - |
-| `Array.find_back` | $O(n)$ | - |
-| `Array.try_findr` | $O(n)$ | `Array.try_find` |
-| `Array.findr` | $O(n)$ | `Array.find` |
-| `Array.try_pick` | $O(n)$ | - |
-| `Array.pick` | $O(n)$ | - |
-| `Array.partition` | $O(n)$ | - |
-| `Array.partition_with` | $O(n)$ | - |
-| `Array.sum` | $O(n)$ | `Array.sum_pairwise`, `Array.sum_kahan` |
-| `Array.sum_by` | $O(n)$ | - |
-| `Array.average` | $O(n)$ | - |
-| `Array.average_by` | $O(n)$ | - |
-| `Array.product` | $O(n)$ | - |
-| `Array.min` | $O(n)$ | `Array.minr` |
-| `Array.max` | $O(n)$ | `Array.maxr` |
-| `Array.minr` | $O(n)$ | `Array.min` |
-| `Array.maxr` | $O(n)$ | `Array.max` |
-| `Array.min_by` | $O(n)$ | - |
-| `Array.max_by` | $O(n)$ | - |
-| `Array.compare_with` | $O(n)$ | - |
-| `Array.containsr` | $O(n)$ | `Array.contains` |
-| `Array.contains` | $O(n)$ | `Array.containsr` |
-| `Array.index_of` | $O(n)$ | - |
-| `Array.equal` | $O(n)$ | - |
-| `Array.binary_search` | $O(\log n)$ | - |
-| `Array.copy` | $O(n)$ | - |
-| `Array.rev` | $O(n)$ | - |
-| `Array.append` | $O(n + m)$ | - |
-| `Array.zip` | $O(n)$ | - |
-| `Array.zip3` | $O(n)$ | - |
-| `Array.unzip` | $O(n)$ | - |
-| `Array.unzip3` | $O(n)$ | - |
-| `Array.all_pairs` | $O(n \cdot m)$ | - |
-| `Array.indexed` | $O(n)$ | - |
-| `Array.pairwise` | $O(n)$ | - |
-| `Array.windowed` | $O(k)$ | - |
-| `Array.chunk_by_size` | $O(k)$ | - |
-| `Array.split_into` | $O(k)$ | - |
-| `Array.unfold` | $O(k)$ | - |
-| `Array.permute` | $O(n)$ | - |
-| `Array.insert_at` | $O(n)$ | - |
-| `Array.insert_many_at` | $O(n + m)$ | - |
-| `Array.remove_at` | $O(n)$ | - |
-| `Array.remove_many_at` | $O(n)$ | - |
-| `Array.update_at` | $O(1)$ | - |
-| `Array.set` | $O(1)$ | - |
-| `Array.fill` | $O(n)$ | - |
-| `Array.blit` | $O(n)$ | - |
-| `Array.of_list` | $O(n)$ | - |
-| `Array.of_seq` | $O(n)$ | - |
-| `Array.to_seq` | $O(1)$ | `Array.to_seqr` |
-| `Array.to_seqr` | $O(1)$ | `Array.to_seq` |
-| `Array.distinct` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
-| `Array.distinct_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
-| `Array.except` | 平均 $O(n + m)$、最悪 $O(n \cdot n + m \cdot m)$ | - |
-| `Array.count_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
-| `Array.group_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
-| `Array.sort` | $O(n \log n)$ | - |
-| `Array.sort_descending` | $O(n \log n)$ | - |
-| `Array.sort_with` | $O(n \log n)$ | - |
-| `Array.sort_by` | $O(n \log n)$ | - |
-| `Array.sort_by_descending` | $O(n \log n)$ | - |
-| `Array.sort_in_place_with` | $O(n \log n)$ | - |
-| `Array.sort_in_place_by` | $O(n \log n)$ | - |
-| `Array.sort_in_place` | $O(n \log^2 n)$ | - |
-| `Array.sum_pairwise` | $O(n)$ | `Array.sum`, `Array.sum_kahan` |
-| `Array.sum_kahan` | $O(n)$ | `Array.sum`, `Array.sum_pairwise` |
-| `Array.dot` | $O(n)$ | `Array.dot_fma` |
-| `Array.dot_fma` | $O(n)$ | `Array.dot` |
-| `Array.random_shuffle_in_place_by` | $O(n)$ | - |
-| `Array.random_shuffle_by` | $O(n)$ | - |
-| `Array.random_choice_by` | $O(1)$ | - |
-| `Array.random_choices_by` | $O(k)$ | - |
-| `Array.random_sample_by` | $O(n)$ | - |
-| `Array.random_shuffle_in_place_with` | $O(n)$ | - |
-| `Array.random_shuffle_with` | $O(n)$ | - |
-| `Array.random_choice_with` | $O(1)$ | - |
-| `Array.random_choices_with` | $O(k)$ | - |
-| `Array.random_sample_with` | $O(n)$ | - |
-| `Array.random_shuffle_in_place` | $O(n)$ | - |
-| `Array.random_shuffle` | $O(n)$ | - |
-| `Array.random_choice` | $O(1)$ | - |
-| `Array.random_choices` | $O(k)$ | - |
-| `Array.random_sample` | $O(n)$ | - |
+| 関数 | 計算量 | 版 | 関連 |
+| --- | --- | --- | --- |
+| `Array.length` | $O(1)$ | - | - |
+| `Array.is_empty` | $O(1)$ | - | - |
+| `Array.empty` | $O(1)$ | - | - |
+| `Array.singleton` | $O(1)$ | - | - |
+| `Array.create` | $O(k)$ | - | - |
+| `Array.replicate` | $O(k)$ | - | - |
+| `Array.zero_create` | $O(k)$ | - | - |
+| `Array.init` | $O(k)$ | - | - |
+| `Array.get` | $O(1)$ | - | - |
+| `Array.item` | $O(1)$ | - | - |
+| `Array.try_item` | $O(1)$ | - | - |
+| `Array.at` | $O(1)$ | - | - |
+| `Array.head` | $O(1)$ | - | - |
+| `Array.try_head` | $O(1)$ | - | - |
+| `Array.last` | $O(1)$ | - | - |
+| `Array.try_last` | $O(1)$ | - | - |
+| `Array.exactly_one` | $O(1)$ | - | - |
+| `Array.try_exactly_one` | $O(1)$ | - | - |
+| `Array.sub` | $O(k)$ | - | - |
+| `Array.tail` | $O(n)$ | - | - |
+| `Array.take` | $O(k)$ | - | - |
+| `Array.skip` | $O(n)$ | - | - |
+| `Array.truncate` | $O(k)$ | - | - |
+| `Array.split_at` | $O(n)$ | - | - |
+| `Array.take_while` | $O(k)$ | - | - |
+| `Array.skip_while` | $O(n)$ | - | - |
+| `Array.where` | $O(n)$ | - | - |
+| `Array.filter` | $O(n)$ | - | - |
+| `Array.transpose` | $O(n + k)$ | - | - |
+| `Array.iter` | $O(n)$ | - | `Array.iterr` |
+| `Array.iterr` | $O(n)$ | - | `Array.iter` |
+| `Array.iteri` | $O(n)$ | - | `Array.iterir` |
+| `Array.iterir` | $O(n)$ | - | `Array.iteri` |
+| `Array.iter2` | $O(n)$ | - | - |
+| `Array.iteri2` | $O(n)$ | - | - |
+| `Array.map` | $O(n)$ | - | `Array.mapr` |
+| `Array.mapi` | $O(n)$ | - | `Array.mapir` |
+| `Array.mapr` | $O(n)$ | - | `Array.map` |
+| `Array.mapir` | $O(n)$ | - | `Array.mapi` |
+| `Array.map2` | $O(n)$ | - | - |
+| `Array.mapi2` | $O(n)$ | - | - |
+| `Array.map3` | $O(n)$ | - | - |
+| `Array.map_fold` | $O(n)$ | - | - |
+| `Array.map_fold_back` | $O(n)$ | - | - |
+| `Array.collect` | $O(n + k)$ | - | - |
+| `Array.choose` | $O(n)$ | - | - |
+| `Array.fold` | $O(n)$ | - | `Array.foldr` |
+| `Array.fold_monoid` | $O(n)$ | 0.1.0 | `Array.fold`, `Parallel.fold` |
+| `Array.foldr` | $O(n)$ | - | `Array.fold` |
+| `Array.fold2` | $O(n)$ | - | - |
+| `Array.fold_back` | $O(n)$ | - | `Array.foldr_back` |
+| `Array.foldr_back` | $O(n)$ | - | `Array.fold_back` |
+| `Array.fold_back2` | $O(n)$ | - | - |
+| `Array.reduce` | $O(n)$ | - | - |
+| `Array.reduce_back` | $O(n)$ | - | - |
+| `Array.scan` | $O(n)$ | - | - |
+| `Array.scan_back` | $O(n)$ | - | - |
+| `Array.exists` | $O(n)$ | - | `Array.existsr` |
+| `Array.existsr` | $O(n)$ | - | `Array.exists` |
+| `Array.exists2` | $O(n)$ | - | - |
+| `Array.forall` | $O(n)$ | - | `Array.forallr` |
+| `Array.forallr` | $O(n)$ | - | `Array.forall` |
+| `Array.forall2` | $O(n)$ | - | - |
+| `Array.count` | $O(n)$ | - | `Array.countr` |
+| `Array.countr` | $O(n)$ | - | `Array.count` |
+| `Array.try_find_index` | $O(n)$ | - | - |
+| `Array.find_index` | $O(n)$ | - | - |
+| `Array.try_find_index_back` | $O(n)$ | - | - |
+| `Array.find_index_back` | $O(n)$ | - | - |
+| `Array.try_find` | $O(n)$ | - | `Array.try_findr` |
+| `Array.find` | $O(n)$ | - | `Array.findr` |
+| `Array.try_find_back` | $O(n)$ | - | - |
+| `Array.find_back` | $O(n)$ | - | - |
+| `Array.try_findr` | $O(n)$ | - | `Array.try_find` |
+| `Array.findr` | $O(n)$ | - | `Array.find` |
+| `Array.try_pick` | $O(n)$ | - | - |
+| `Array.pick` | $O(n)$ | - | - |
+| `Array.partition` | $O(n)$ | - | - |
+| `Array.partition_with` | $O(n)$ | - | - |
+| `Array.sum` | $O(n)$ | - | `Array.sum_pairwise`, `Array.sum_kahan` |
+| `Array.sum_by` | $O(n)$ | - | - |
+| `Array.average` | $O(n)$ | - | - |
+| `Array.average_by` | $O(n)$ | - | - |
+| `Array.product` | $O(n)$ | - | - |
+| `Array.min` | $O(n)$ | - | `Array.minr` |
+| `Array.max` | $O(n)$ | - | `Array.maxr` |
+| `Array.minr` | $O(n)$ | - | `Array.min` |
+| `Array.maxr` | $O(n)$ | - | `Array.max` |
+| `Array.min_by` | $O(n)$ | - | - |
+| `Array.max_by` | $O(n)$ | - | - |
+| `Array.compare_with` | $O(n)$ | - | - |
+| `Array.containsr` | $O(n)$ | - | `Array.contains` |
+| `Array.contains` | $O(n)$ | - | `Array.containsr` |
+| `Array.index_of` | $O(n)$ | - | - |
+| `Array.equal` | $O(n)$ | - | - |
+| `Array.binary_search` | $O(\log n)$ | - | - |
+| `Array.copy` | $O(n)$ | - | - |
+| `Array.rev` | $O(n)$ | - | - |
+| `Array.append` | $O(n + m)$ | - | - |
+| `Array.zip` | $O(n)$ | - | - |
+| `Array.zip3` | $O(n)$ | - | - |
+| `Array.unzip` | $O(n)$ | - | - |
+| `Array.unzip3` | $O(n)$ | - | - |
+| `Array.all_pairs` | $O(n \cdot m)$ | - | - |
+| `Array.indexed` | $O(n)$ | - | - |
+| `Array.pairwise` | $O(n)$ | - | - |
+| `Array.windowed` | $O(k)$ | - | - |
+| `Array.chunk_by_size` | $O(k)$ | - | - |
+| `Array.split_into` | $O(k)$ | - | - |
+| `Array.unfold` | $O(k)$ | - | - |
+| `Array.permute` | $O(n)$ | - | - |
+| `Array.insert_at` | $O(n)$ | - | - |
+| `Array.insert_many_at` | $O(n + m)$ | - | - |
+| `Array.remove_at` | $O(n)$ | - | - |
+| `Array.remove_many_at` | $O(n)$ | - | - |
+| `Array.update_at` | $O(1)$ | - | - |
+| `Array.set` | $O(1)$ | - | - |
+| `Array.fill` | $O(n)$ | - | - |
+| `Array.blit` | $O(n)$ | - | - |
+| `Array.of_list` | $O(n)$ | - | - |
+| `Array.of_seq` | $O(n)$ | - | - |
+| `Array.to_seq` | $O(1)$ | - | `Array.to_seqr` |
+| `Array.to_seqr` | $O(1)$ | - | `Array.to_seq` |
+| `Array.distinct` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - | - |
+| `Array.distinct_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - | - |
+| `Array.except` | 平均 $O(n + m)$、最悪 $O(n \cdot n + m \cdot m)$ | - | - |
+| `Array.count_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - | - |
+| `Array.group_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - | - |
+| `Array.sort` | $O(n \log n)$ | - | - |
+| `Array.sort_descending` | $O(n \log n)$ | - | - |
+| `Array.sort_with` | $O(n \log n)$ | - | - |
+| `Array.sort_by` | $O(n \log n)$ | - | - |
+| `Array.sort_by_descending` | $O(n \log n)$ | - | - |
+| `Array.sort_in_place_with` | $O(n \log n)$ | - | - |
+| `Array.sort_in_place_by` | $O(n \log n)$ | - | - |
+| `Array.sort_in_place` | $O(n \log^2 n)$ | - | - |
+| `Array.sum_pairwise` | $O(n)$ | - | `Array.sum`, `Array.sum_kahan` |
+| `Array.sum_kahan` | $O(n)$ | - | `Array.sum`, `Array.sum_pairwise` |
+| `Array.dot` | $O(n)$ | - | `Array.dot_fma` |
+| `Array.dot_fma` | $O(n)$ | - | `Array.dot` |
+| `Array.random_shuffle_in_place_by` | $O(n)$ | - | - |
+| `Array.random_shuffle_by` | $O(n)$ | - | - |
+| `Array.random_choice_by` | $O(1)$ | - | - |
+| `Array.random_choices_by` | $O(k)$ | - | - |
+| `Array.random_sample_by` | $O(n)$ | - | - |
+| `Array.random_shuffle_in_place_with` | $O(n)$ | - | - |
+| `Array.random_shuffle_with` | $O(n)$ | - | - |
+| `Array.random_choice_with` | $O(1)$ | - | - |
+| `Array.random_choices_with` | $O(k)$ | - | - |
+| `Array.random_sample_with` | $O(n)$ | - | - |
+| `Array.random_shuffle_in_place` | $O(n)$ | - | - |
+| `Array.random_shuffle` | $O(n)$ | - | - |
+| `Array.random_choice` | $O(1)$ | - | - |
+| `Array.random_choices` | $O(k)$ | - | - |
+| `Array.random_sample` | $O(n)$ | - | - |
 <!-- /generated:complexity:Array -->
 
 **Vec**
@@ -4821,6 +4841,7 @@ Tsuzuri コンパイラは、コンパイル成功時には終了コード 0 を
 このオプションによって生成されるマシンコードに差異が生じることはなく、同一のソース位置が複数のジェネリック特殊化によってコピーされた場合であっても警告は 1 件のみに集約されます。
 単一使用・最後の使用・非重複の match 束縛によって move する位置には、`W1006` も複製のインレイヒントも出ません。
 なお `--json` 指定時における警告の重要度は `warning` のまま維持され、ソースコードにエラーが存在する場合は警告は出力されません。
+`tsuzuri check PATH --report parallel [--json]`（`--report` は `check` だけ。値は `parallel` だけで、ほかのサブコマンド・値なし・未知の値・2 回目は終了コード 2 の `E2000`）は、検査が通ったあと、警告を従来どおり標準エラーに出してから、並列化の報告を標準出力に出して終了コード 0 で終わります（検査の失敗と `--deny-warnings` で終了コード 1 になるときは報告を出しません。`--report` のない `check` の出力は変わりません）。報告の提案（`suggestion`）は、利用者のモジュールの関数の中の `Array.map`・`Array.mapr`・`Array.fold_monoid`・整数の `Array.sum` の完全な呼び出しで、名前がソースにそのまま書かれ、コールバックが純粋（`pure def` と同じ効果の規則。引数・結果・捕捉に関数値を持つもの、局所の関数値は純粋としない）、要素・結果の型が `Send`（`map` は要素が Copy）、ラムダが借用・`Atomic`・`Mutex` を捕捉せず、入力の長さが静的に 4,096 未満（配列リテラル・整数リテラルの長さの `new`）でないものを、`Parallel.map`・`Parallel.map_ref`・`Parallel.fold`・`Parallel.sum` に置き換える `maybe` の修正案です。浮動小数点の `Array.sum` は提案しません。呼び出し地点（`site`）は既存の `Parallel.init`・`map`・`map_ref`・`reduce`・`for_each_chunk`・`sum`・`fold` の呼び出しで、`parallel_safe` はそのコールバック（`for_each_chunk` の本体は自分のチャンクへの書き込みを除く。`sum`・`fold` は std の本体の reducer と、届く `Monoid` の関数）が純粋と示せるかです。`false` の理由は閉じた文（`the callback reaches 'NAME' (effect: EFFECT)` など。効果の名前は D-53 か `dyn`・`unresolved`・`unknown_call`・`analysis_limit`）です。テキストは要約の行 `parallel report: N suggestions, M sites` と 1 件 1 行（提案は次の行に `  fix (maybe): replace 'A' with 'B'`）、`--json` は `tz-report-parallel/1` の JSON Lines（要約の行 `schema`・`suggestions`・`sites`・`truncated` と、`kind`・`call`・`replacement`・`parallel_safe`・`reason`・`path`・`span`・`fixes`）です。エントリは（パス・位置・種類）の順で決定的で、特殊化の複製は 1 件にまとめ、1,000 件を超えた分は `truncated` に数えます。
 未使用のローカル変数は、識別子名を `_` または `_name` のようにアンダースコアで開始することで警告を抑制できます（所有権の move、借用、ガード条件、およびクロージャへのキャプチャも正当な使用としてカウントされます）。
 標準ライブラリの内部変数およびコンパイラが自動生成した内部束縛に対する未使用警告は自動的に抑制されます。非公開宣言の到達性は、公開 API、エントリーポイント、型クラスインスタンス、およびアクティブパターンからの静的コールグラフに基づいて判定されます。
 静的検証コマンド `tsuzuri check` は、エントリーポイントの有無、戻り値型、および LLVM のバックエンドコード生成を伴わずに、
@@ -4884,6 +4905,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1034` | `tsuzuri prove`・`--contracts prove` の反例・非対応・時間切れ・ソルバーの失敗・ソルバーがない |
 | `E1036` | マニフェストの権限の宣言が許さない権限の使用 |
 | `E1037` | `@trusted` の置き場と性質の誤り |
+| `E1039` | 浮動小数点の数を含む型への `Monoid` の制約（`Parallel.fold` が `Array.fold_monoid` と違いうる） |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |

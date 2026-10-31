@@ -9,6 +9,8 @@
 - `init`、`map`、`map_ref`、`reduce`、`for_each_chunk` は、その場で全部の引数を渡して呼ぶ必要があります。関数値にはできません。
 - チャンクの境界は CPU 数では変わりません。同じ入力なら、ネイティブでも WASM の逐次経路でも同じ分割です。
 - `reduce` の結合順はチャンク順で固定です。浮動小数点では `Array.reduce` とビットが違うことがあります。
+- `fold` は、`Monoid` の法則（結合律と単位元）が成り立ち、`empty`・`combine` が出力や共有状態への書き込みなどの作用を持たなければ、`Array.fold_monoid` とビットまで同じ値を返します。浮動小数点を含む型の `Monoid` は `E1039` で拒否されます。[Monoid](monoid.md) を見てください。
+- コールバックが純粋なら、`map`・`map_ref`・`init`・`for_each_chunk` と整数の `sum` は逐次の対応する関数と同じ結果です（[逐次と同じ結果になる条件](#逐次と同じ結果になる条件)）。
 - 既定の WASM は逐次です。スレッドが欲しいときは `--wasm-feature threads` を明示します。
 
 ## 添字から配列を作る
@@ -37,6 +39,7 @@ Parallel.sum ref squares
 | `Parallel.map_ref` | `(Send<'a>, Send<'b>) => (ref 'a -> 'b) -> ref ['a] -> ['b]` | 要素も共有借用のまま渡す |
 | `Parallel.reduce` | `(Copy<'a>, Send<'a>) => 'a -> ('a -> 'a -> 'a) -> ref ['a] -> 'a` | 単位元は複製される。入力は共有借用 |
 | `Parallel.sum` | `(Numeric<'a>, Add<'a>, Copy<'a>, Send<'a>) => ref ['a] -> 'a` | `reduce` の薄いラッパー |
+| `Parallel.fold` | `(Monoid<'m>, Copy<'m>, Send<'m>) => ref ['m] -> 'm` | `Monoid.empty ()` と `Monoid.combine` による `reduce`。入力は共有借用 |
 | `Parallel.for_each_chunk` | `Send<'a> => i64 -> (i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit` | 入力は呼び出しの間だけ排他借用 |
 
 `map` の関数が先、配列が後なのは `Array.map` と同じです。Copy 型でも、配列や関数値の複製は深いコピーです。大きい要素や非 Copy の要素は `map_ref` にしてください。
@@ -111,6 +114,48 @@ Parallel.reduce 7 (\left right -> left + right) (ref empty)
 7
 ```
 
+## 逐次と同じ結果になる条件
+
+| API | 結果 | 条件 |
+| --- | --- | --- |
+| `fold` | `Array.fold_monoid` と同一（ビットまで） | `Monoid` の法則が成り立つ。`empty`・`combine` に作用がない。浮動小数点を含む型は `E1039` |
+| `map`・`map_ref` | `Array.map`・`Array.mapr` と同一（各要素の値と添字の順） | コールバックが純粋。純粋でなければ、副作用の回数・順序・実行するスレッドは未規定 |
+| `init` | `new [T](n, f)` と同一 | `f` が純粋 |
+| `for_each_chunk` | チャンクを先頭から順に処理する逐次のループと同一 | `body` が純粋（自分のチャンクだけを書く。型が保証します） |
+| `sum`（整数） | `Array.sum` と同一 | 整数の加算は折り返しても結合的 |
+| `sum`（浮動小数点） | 決定的だが `Array.sum` と異なりうる | 同じ順序が要るなら `Array.sum_pairwise`・`Array.sum_kahan` |
+| `reduce` | 決定的。結合律と単位元が成り立てば `fold` と同じ | 成り立たなければ `Array.fold`・`Array.reduce` と異なる |
+
+純粋なコールバックとは、外界・時計と乱数・並行・共有可変状態・GPU・動的ディスパッチ・利用者の `Drop` に届かない関数です（[`pure def`](../values-and-functions/functions.md#純粋関数pure-def) と同じ規則）。どの API も、複数の要素がトラップするとき、どれが報告されるかは未規定です。
+
+`fold` が逐次と同じになる理由は、`Monoid` の法則です。`Parallel.fold` は各チャンクを `empty ()` から畳み込み、部分結果を `empty ()` からチャンク順に結合します。左単位元で先頭の `empty ()` が消え、結合律で括弧を付け替えられるので、どの境界で分けても `Array.fold_monoid` と同じ式になります。この理由は境界の値を使わないので、チャンクの規則が将来変わっても成り立ちます。
+
+整数の和は、チャンクの分け方によらず `Array.sum` と同じです。浮動小数点の和は、チャンクの境界で足す順序が変わるので、同じ列でも結果が違うことがあります。8193 要素は 3 チャンクに分かれます。
+
+```tsuzuri run=true
+let values = new [i64](8193, \index -> (index * 7919 + 13) % 1009)
+Array.sum (ref values) == Parallel.sum (ref values)
+```
+
+実行結果:
+
+```text
+true
+```
+
+```tsuzuri run=false
+let values = new [f64](8193, \index -> (((index * 7919 + 13) % 1009) as f64) / 10.0 + 0.1)
+Array.sum (ref values) == Parallel.sum (ref values)
+```
+
+実行結果:
+
+```text
+false
+```
+
+`tsuzuri check PATH --report parallel` は、`Array.map`・`Array.mapr`・`Array.fold_monoid`・整数の `Array.sum` のうち `Parallel` に置き換えられる呼び出しを提案として一覧にし、既存の `Parallel` の呼び出しごとにコールバックが純粋と示せるか（`parallel_safe`）を出します。提案だけで、書き換えは自動では行いません（[check](../compiler/usage.md#check)）。
+
 ## Task.parallel との使い分け
 
 ```mermaid
@@ -174,6 +219,7 @@ tsuzuri build --target wasm32 --emit wasm --wasm-feature threads -o app.wasm
 - [Atomic](atomic.md)
 - [Mutex](mutex.md)
 - [Array](array.md)
+- [Monoid](monoid.md) — `Parallel.fold` と `Array.fold_monoid` が返す値の同一の条件
 - [Matrix](matrix.md) — `mul_parallel` は `for_each_chunk` で行を分けます。チャンクの境界は形だけで決まります
 - [Simd](simd.md)
 - [Math](math.md)

@@ -663,6 +663,8 @@ diagnostic_kinds! {
         (TrustedTypeProperty, "trusted_type_property", "E1037"),
         (TrustedUnknownProperty, "trusted_unknown_property", "E1037"),
         (TrustedWrongTarget, "trusted_wrong_target", "E1037"),
+        // E1039
+        (MonoidFloatInstance, "monoid_float_instance", "E1039"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (AuditUsage, "audit_usage", "E2000"),

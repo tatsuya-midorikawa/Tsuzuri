@@ -1085,6 +1085,14 @@ impl Type {
                 || ty.is_owned_function(types)
         })
     }
+
+    /// Whether a value of this type holds a floating-point number (F15): a binary or decimal float, or a SIMD vector
+    /// of them, reached through fields, payloads, elements and the targets of references.
+    pub(crate) fn holds_float(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches(self, |ty| {
+            ty.is_float() || matches!(ty, Type::Simd(vector) if vector.element().is_float())
+        })
+    }
 }
 
 /// The declarations that give meaning to named types. Type properties,

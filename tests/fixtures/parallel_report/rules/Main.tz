@@ -1,0 +1,35 @@
+def total_ints :: ref [i64] -> i64
+fn total_ints values = Array.sum values
+
+def total_floats :: ref [f64] -> f64
+fn total_floats values = Array.sum values
+
+def small_literal :: unit -> i64
+fn small_literal _unit = Array.sum (ref [1, 2, 3])
+
+def lookup :: ref [i64] -> ref [i64] -> [i64]
+fn lookup table indexes = Array.map (\index -> table[index]) indexes
+
+def shifted :: i64 -> ref [i64] -> [i64]
+fn shifted offset values = Array.map (\value -> value + offset) values
+
+def lengths :: ref [string] -> [i64]
+fn lengths texts = Array.mapr String.length texts
+
+def sums :: ref [Monoids.Sum<i64>] -> Monoids.Sum<i64>
+fn sums values = Array.fold_monoid values
+
+def apply :: (i64 -> i64) -> ref [i64] -> [i64]
+fn apply transform values = Array.map transform values
+
+def chunked :: ref [i64] -> i64
+fn chunked values = Parallel.sum values
+
+def folded :: ref [Monoids.Sum<i64>] -> Monoids.Sum<i64>
+fn folded values = Parallel.fold values
+
+def filled :: i64 -> [i64]
+fn filled count = Parallel.init count (\index -> index * 2)
+
+def main :: unit -> i32
+fn main _unit = 0

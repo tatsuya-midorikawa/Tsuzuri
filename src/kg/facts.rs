@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 
 use super::effects::{self, Evidence};
 use super::model::{
-    AllocSite, CopySiteRow, EffectSite, FactsRow, LoopRow, OwnershipRow, SpanTable, TrapSite,
+    AllocSite, CopySiteRow, EffectSite, FactsRow, LoopRow, OwnershipRow, ParallelRow, SpanTable,
+    TrapSite,
 };
 use super::sites;
 use crate::check::kg_capture::{Capture, FUNCTION_NODES, VIEW_NODES};
@@ -109,7 +110,23 @@ struct Collected {
     /// Position, type, kind, cost, and the copied variable (`$value` for another expression).
     copies: Vec<(Span, String, &'static str, &'static str, String)>,
     specializations: usize,
+    parallel: Vec<ParallelRow>,
     truncated: bool,
+}
+
+/// The sources of `check --report parallel` as the graph sees them: paths relative to the root.
+struct ReportSources<'t, 'a>(&'t SpanTable<'a>);
+
+impl crate::parallel_report::Sources for ReportSources<'_, '_> {
+    fn text(&self, span: Span) -> &str {
+        self.0.source(span).map_or("", |(_, text)| text)
+    }
+
+    fn path(&self, span: Span) -> String {
+        self.0
+            .source(span)
+            .map_or_else(String::new, |(path, _)| path.to_owned())
+    }
 }
 
 /// Sorts, removes duplicates and keeps at most `ARRAY_LIMIT` elements, counting the dropped ones
@@ -188,6 +205,26 @@ pub(crate) fn build(
                 var,
             ));
         }
+    }
+    // F15: the parallel report's entries, by the node of the function that holds the call.
+    for entry in crate::parallel_report::entries(module, &ReportSources(table)) {
+        let (Some(root), Some(span)) = (&roots[entry.function], table.locate(entry.span)) else {
+            continue;
+        };
+        collected
+            .entry(root.as_str())
+            .or_default()
+            .parallel
+            .push(ParallelRow {
+                span,
+                kind: match entry.kind {
+                    crate::parallel_report::EntryKind::Suggestion => "suggestion",
+                    crate::parallel_report::EntryKind::Site => "site",
+                },
+                call: entry.call,
+                parallel_safe: entry.parallel_safe,
+                reason: entry.reason,
+            });
     }
     let mut rows = BTreeMap::new();
     for node in &capture.nodes {
@@ -322,6 +359,7 @@ pub(crate) fn build(
             recursion: capture.recursion.get(&node.id).copied().unwrap_or("none"),
             loops: limit(loops, "loops", &mut truncated),
             specializations: found.specializations,
+            parallel: limit(found.parallel.clone(), "parallel", &mut truncated),
             truncated,
         };
         rows.insert(node.id.clone(), row);

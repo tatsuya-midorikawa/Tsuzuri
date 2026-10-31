@@ -2338,6 +2338,24 @@ impl Classes {
             bounded_type(&current.ty, current.span)?;
             pending.push((current.clone(), depth, true));
             let class = &self.declarations[current.class];
+            // F15: a concrete `Monoid<T>` is checked here, before its instance is matched, because a found
+            // instance (`Monoids.Sum<f64>`) goes on to its context and never reaches `validate_instance`.
+            if class.name == "Monoid.Monoid"
+                && variables(&current.ty).is_empty()
+                && current.ty.holds_float(types)
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::MonoidFloatInstance,
+                    format!(
+                        "no Monoid instance for {}: it holds a floating-point number, whose operations are not associative, so Parallel.fold could differ from Array.fold_monoid; accumulate in integers (fixed point) or use Parallel.sum for a documented order",
+                        current.ty.display(types)
+                    ),
+                    current.span,
+                )
+                .with_help(
+                    "accumulate in integers (fixed point), or use 'Parallel.sum' or 'Array.sum_pairwise' for floating-point sums",
+                ));
+            }
             let substitutions = BTreeMap::from([(class.variable.clone(), current.ty.clone())]);
             for superclass in &class.superclasses {
                 pending.push((

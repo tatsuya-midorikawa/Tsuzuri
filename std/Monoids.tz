@@ -1,0 +1,79 @@
+/// The sum of integers: `empty` is 0 and `combine` is `+`, which wraps around like the operator.
+record Sum<'a> { value: 'a }
+
+/// The product of integers: `empty` is 1 and `combine` is `*`, which wraps around like the operator.
+record Product<'a> { value: 'a }
+
+/// The largest of the integers seen so far. `empty` has no value (`Maybe.None`); `combine` keeps the left one when the two are equal.
+record MaxOf<'a> { value: Maybe<'a> }
+
+/// The smallest of the integers seen so far. `empty` has no value (`Maybe.None`); `combine` keeps the left one when the two are equal.
+record MinOf<'a> { value: Maybe<'a> }
+
+/// The bitwise and of integers: `empty` has every bit set.
+record BitAnd<'a> { value: 'a }
+
+/// The bitwise or of integers: `empty` is 0.
+record BitOr<'a> { value: 'a }
+
+/// The bitwise exclusive or of integers: `empty` is 0.
+record BitXor<'a> { value: 'a }
+
+/// Whether every `bool` is `true`: `empty` is `true`.
+record All { value: bool }
+
+/// Whether some `bool` is `true`: `empty` is `false`.
+record Any { value: bool }
+
+instance (Integer<'a>, Numeric<'a>, Add<'a>, Copy<'a>) => Monoid<Sum<'a>> {
+    let empty = \() -> Sum { value: 0i64 as 'a }
+    fn combine left right = Sum { value: left.value + right.value }
+}
+
+instance (Integer<'a>, Numeric<'a>, Mul<'a>, Copy<'a>) => Monoid<Product<'a>> {
+    let empty = \() -> Product { value: 1i64 as 'a }
+    fn combine left right = Product { value: left.value * right.value }
+}
+
+instance (Integer<'a>, Ord<'a>, Copy<'a>) => Monoid<MaxOf<'a>> {
+    let empty = \() -> MaxOf { value: Maybe.None }
+    fn combine left right =
+        match (left.value, right.value) with
+        | (Maybe.None, _) -> right
+        | (_, Maybe.None) -> left
+        | (Maybe.Some a, Maybe.Some b) -> if Ord.lt (ref a) (ref b) then right else left
+}
+
+instance (Integer<'a>, Ord<'a>, Copy<'a>) => Monoid<MinOf<'a>> {
+    let empty = \() -> MinOf { value: Maybe.None }
+    fn combine left right =
+        match (left.value, right.value) with
+        | (Maybe.None, _) -> right
+        | (_, Maybe.None) -> left
+        | (Maybe.Some a, Maybe.Some b) -> if Ord.lt (ref b) (ref a) then right else left
+}
+
+instance (Integer<'a>, Numeric<'a>, Bits<'a>, Copy<'a>) => Monoid<BitAnd<'a>> {
+    let empty = \() -> BitAnd { value: Bits.bit_not (0i64 as 'a) }
+    fn combine left right = BitAnd { value: Bits.bit_and left.value right.value }
+}
+
+instance (Integer<'a>, Numeric<'a>, Bits<'a>, Copy<'a>) => Monoid<BitOr<'a>> {
+    let empty = \() -> BitOr { value: 0i64 as 'a }
+    fn combine left right = BitOr { value: Bits.bit_or left.value right.value }
+}
+
+instance (Integer<'a>, Numeric<'a>, Bits<'a>, Copy<'a>) => Monoid<BitXor<'a>> {
+    let empty = \() -> BitXor { value: 0i64 as 'a }
+    fn combine left right = BitXor { value: Bits.bit_xor left.value right.value }
+}
+
+instance Monoid<All> {
+    let empty = \() -> All { value: true }
+    fn combine left right = All { value: left.value && right.value }
+}
+
+instance Monoid<Any> {
+    let empty = \() -> Any { value: false }
+    fn combine left right = Any { value: left.value || right.value }
+}

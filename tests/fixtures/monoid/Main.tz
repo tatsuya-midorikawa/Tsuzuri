@@ -1,0 +1,178 @@
+// F15: Parallel.fold returns the value of Array.fold_monoid, bit for bit, for every Monoid of std and for the monoids of this file.
+// The E2E suite `monoid` calls the `export def` functions; `tsuzuri test` runs the laws at the end. Every expected value is worked out by an
+// independent loop in tests/features.mjs, not by this program.
+
+// Any value of the E2E functions that is not a total: the parallel and the sequential fold differ.
+const Mismatch: i64 = 9223372036854775807
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Monoids that std does not have. Composing the functions x -> scale * x + shift is associative but not commutative, so a wrong chunk order shows.
+
+record Affine { scale: i64, shift: i64 }
+
+instance Monoid<Affine> {
+    let empty = \() -> Affine { scale: 1, shift: 0 }
+    fn combine left right = Affine { scale: right.scale * left.scale, shift: right.scale * left.shift + right.shift }
+}
+
+record Stats { count: i64, total: i64, largest: Maybe<i64> }
+
+instance Monoid<Stats> {
+    let empty = \() -> Stats { count: 0, total: 0, largest: Maybe.None }
+    fn combine left right =
+        let largest =
+            match (left.largest, right.largest) with
+            | (Maybe.None, _) -> right.largest
+            | (_, Maybe.None) -> left.largest
+            | (Maybe.Some a, Maybe.Some b) -> if a < b then right.largest else left.largest
+        Stats { count: left.count + right.count, total: left.total + right.total, largest: largest }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The elements: a deterministic pseudo-random number for each index, between -500000 and 500002.
+
+def mix :: i64 -> i64
+fn mix index = (index * 2654435761 + 12345) % 1000003 - 500000
+
+// The parallel fold and the sequential fold of `values`.
+def both :: (Monoid<'m>, Copy<'m>, Send<'m>) => ref ['m] -> ('m * 'm)
+fn both values = (Parallel.fold values, Array.fold_monoid values)
+
+def value_or :: Maybe<i64> -> i64 -> i64
+fn value_or maybe fallback = match maybe with | Maybe.Some value -> value | Maybe.None -> fallback
+
+def flag :: bool -> i64
+fn flag value = if value then 1 else 0
+
+// ---------------------------------------------------------------------------------------------------------------------
+// One function for each Monoid. The result is the folded value as an i64, or Mismatch when the two folds differ.
+
+export def sum_total :: i64 -> i64
+fn sum_total count =
+    let values = new [Monoids.Sum<i64>](count, \index -> Monoids.Sum { value: mix index })
+    match both (ref values) with
+    | (parallel, sequential) -> if parallel.value == sequential.value then parallel.value else Mismatch
+
+export def product_total :: i64 -> i64
+fn product_total count =
+    let values = new [Monoids.Product<i32>](count, \index -> Monoids.Product { value: Bits.bit_or ((mix index) as i32) 1 })
+    match both (ref values) with
+    | (parallel, sequential) -> if parallel.value == sequential.value then parallel.value as i64 else Mismatch
+
+export def max_total :: i64 -> i64
+fn max_total count =
+    let values = new [Monoids.MaxOf<i64>](count, \index -> Monoids.MaxOf { value: Maybe.Some (mix index) })
+    match both (ref values) with
+    | (parallel, sequential) -> if value_or parallel.value (-1) == value_or sequential.value (-1) then value_or parallel.value (-1000000) else Mismatch
+
+export def min_total :: i64 -> i64
+fn min_total count =
+    let values = new [Monoids.MinOf<i8>](count, \index -> Monoids.MinOf { value: Maybe.Some ((mix index) as i8) })
+    match both (ref values) with
+    | (parallel, sequential) ->
+        let left = match parallel.value with | Maybe.Some value -> value as i64 | Maybe.None -> 1000
+        let right = match sequential.value with | Maybe.Some value -> value as i64 | Maybe.None -> 1000
+        if left == right then left else Mismatch
+
+export def and_total :: i64 -> i64
+fn and_total count =
+    let values = new [Monoids.BitAnd<i32u>](count, \index -> Monoids.BitAnd { value: Bits.bit_or ((mix index) as i32u) 4042322160 })
+    match both (ref values) with
+    | (parallel, sequential) -> if parallel.value == sequential.value then parallel.value as i64 else Mismatch
+
+export def or_total :: i64 -> i64
+fn or_total count =
+    let values = new [Monoids.BitOr<i64>](count, \index -> Monoids.BitOr { value: Bits.bit_and (mix index) 1048575 })
+    match both (ref values) with
+    | (parallel, sequential) -> if parallel.value == sequential.value then parallel.value else Mismatch
+
+export def xor_total :: i64 -> i64
+fn xor_total count =
+    let values = new [Monoids.BitXor<i64>](count, \index -> Monoids.BitXor { value: mix index })
+    match both (ref values) with
+    | (parallel, sequential) -> if parallel.value == sequential.value then parallel.value else Mismatch
+
+export def all_total :: i64 -> i64
+fn all_total count =
+    let values = new [Monoids.All](count, \index -> Monoids.All { value: index != 1000002 })
+    match both (ref values) with
+    | (parallel, sequential) -> if parallel.value == sequential.value then flag parallel.value else Mismatch
+
+export def any_total :: i64 -> i64
+fn any_total count =
+    let values = new [Monoids.Any](count, \index -> Monoids.Any { value: index % 4099 == 4098 })
+    match both (ref values) with
+    | (parallel, sequential) -> if parallel.value == sequential.value then flag parallel.value else Mismatch
+
+export def affine_total :: i64 -> i64
+fn affine_total count =
+    let values = new [Affine](count, \index -> Affine { scale: index % 5 + 1, shift: mix index % 17 })
+    match both (ref values) with
+    | (parallel, sequential) ->
+        if parallel.scale == sequential.scale && parallel.shift == sequential.shift then parallel.scale * 1000003 + parallel.shift else Mismatch
+
+export def stats_total :: i64 -> i64
+fn stats_total count =
+    let values = new [Stats](count, \index -> Stats { count: 1, total: mix index, largest: Maybe.Some (mix index) })
+    match both (ref values) with
+    | (parallel, sequential) ->
+        let same = parallel.count == sequential.count && parallel.total == sequential.total && value_or parallel.largest (-1000000) == value_or sequential.largest (-1000000)
+        if same then parallel.count * 1000003 + parallel.total + value_or parallel.largest 0 else Mismatch
+
+// 4,194,304 elements fill 1,024 chunks of 4,096; one more element makes the chunk count stop at 1,024, with chunks of 4,096 and 4,097 elements.
+export def cap_xor :: i64 -> i64
+fn cap_xor count =
+    let values = new [Monoids.BitXor<i8u>](count, \index -> Monoids.BitXor { value: (index % 251) as i8u })
+    match both (ref values) with
+    | (parallel, sequential) -> if parallel.value == sequential.value then parallel.value as i64 else Mismatch
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The laws, as property tests: associativity, and the identity on both sides. `same` compares two values bit for bit.
+
+def laws :: (Monoid<'m>, Copy<'m>) => ('m -> 'm -> bool) -> ('m * ('m * 'm)) -> bool
+fn laws same triple =
+    match triple with
+    | (a, (b, c)) ->
+        let associative = same (Monoid.combine (Monoid.combine a b) c) (Monoid.combine a (Monoid.combine b c))
+        let left = same (Monoid.combine (Monoid.empty ()) a) a
+        let right = same (Monoid.combine a (Monoid.empty ())) a
+        associative && left && right
+
+def numbers :: Gen<(i64 * (i64 * i64))>
+fn numbers = Gen.pair (Gen.i64()) (Gen.pair (Gen.i64()) (Gen.i64()))
+
+def bytes :: Gen<(i64 * (i64 * i64))>
+fn bytes = Gen.pair (Gen.range 0 255) (Gen.pair (Gen.range 0 255) (Gen.range 0 255))
+
+def flags :: Gen<(bool * (bool * bool))>
+fn flags = Gen.pair (Gen.bool()) (Gen.pair (Gen.bool()) (Gen.bool()))
+
+def pair_of_numbers :: Gen<(i64 * i64)>
+fn pair_of_numbers = Gen.pair (Gen.i64()) (Gen.i64())
+
+def affines :: Gen<((i64 * i64) * ((i64 * i64) * (i64 * i64)))>
+fn affines = Gen.pair (pair_of_numbers()) (Gen.pair (pair_of_numbers()) (pair_of_numbers()))
+
+def maybe_of :: bool -> i64 -> Maybe<i64>
+fn maybe_of has value = if has then Maybe.Some value else Maybe.None
+
+def maybe_pair :: Gen<(bool * i64)>
+fn maybe_pair = Gen.pair (Gen.bool()) (Gen.range (-5) 5)
+
+def maybe_numbers :: Gen<((bool * i64) * ((bool * i64) * (bool * i64)))>
+fn maybe_numbers = Gen.pair (maybe_pair()) (Gen.pair (maybe_pair()) (maybe_pair()))
+
+def same_maybe :: Maybe<i64> -> Maybe<i64> -> bool
+fn same_maybe left right = value_or left 100 == value_or right 100 && flag (Maybe.is_some left) == flag (Maybe.is_some right)
+
+test "Sum<i64> obeys the laws" = Gen.for_all_cases 200 (numbers()) (\t -> match t with | (a, (b, c)) -> laws (\x y -> x.value == y.value) (Monoids.Sum { value: a }, (Monoids.Sum { value: b }, Monoids.Sum { value: c })))
+test "Sum<i8u> obeys the laws" = Gen.for_all_cases 200 (bytes()) (\t -> match t with | (a, (b, c)) -> laws (\x y -> x.value == y.value) (Monoids.Sum { value: a as i8u }, (Monoids.Sum { value: b as i8u }, Monoids.Sum { value: c as i8u })))
+test "Product<i32> obeys the laws" = Gen.for_all_cases 200 (numbers()) (\t -> match t with | (a, (b, c)) -> laws (\x y -> x.value == y.value) (Monoids.Product { value: a as i32 }, (Monoids.Product { value: b as i32 }, Monoids.Product { value: c as i32 })))
+test "BitAnd<i8u> obeys the laws" = Gen.for_all_cases 200 (bytes()) (\t -> match t with | (a, (b, c)) -> laws (\x y -> x.value == y.value) (Monoids.BitAnd { value: a as i8u }, (Monoids.BitAnd { value: b as i8u }, Monoids.BitAnd { value: c as i8u })))
+test "BitOr<i64> obeys the laws" = Gen.for_all_cases 200 (numbers()) (\t -> match t with | (a, (b, c)) -> laws (\x y -> x.value == y.value) (Monoids.BitOr { value: a }, (Monoids.BitOr { value: b }, Monoids.BitOr { value: c })))
+test "BitXor<i64> obeys the laws" = Gen.for_all_cases 200 (numbers()) (\t -> match t with | (a, (b, c)) -> laws (\x y -> x.value == y.value) (Monoids.BitXor { value: a }, (Monoids.BitXor { value: b }, Monoids.BitXor { value: c })))
+test "MaxOf<i64> obeys the laws" = Gen.for_all_cases 200 (maybe_numbers()) (\t -> match t with | ((ha, a), ((hb, b), (hc, c))) -> laws (\x y -> same_maybe x.value y.value) (Monoids.MaxOf { value: maybe_of ha a }, (Monoids.MaxOf { value: maybe_of hb b }, Monoids.MaxOf { value: maybe_of hc c })))
+test "MinOf<i64> obeys the laws" = Gen.for_all_cases 200 (maybe_numbers()) (\t -> match t with | ((ha, a), ((hb, b), (hc, c))) -> laws (\x y -> same_maybe x.value y.value) (Monoids.MinOf { value: maybe_of ha a }, (Monoids.MinOf { value: maybe_of hb b }, Monoids.MinOf { value: maybe_of hc c })))
+test "All obeys the laws" = Gen.for_all_cases 50 (flags()) (\t -> match t with | (a, (b, c)) -> laws (\x y -> x.value == y.value) (Monoids.All { value: a }, (Monoids.All { value: b }, Monoids.All { value: c })))
+test "Any obeys the laws" = Gen.for_all_cases 50 (flags()) (\t -> match t with | (a, (b, c)) -> laws (\x y -> x.value == y.value) (Monoids.Any { value: a }, (Monoids.Any { value: b }, Monoids.Any { value: c })))
+test "Affine obeys the laws" = Gen.for_all_cases 200 (affines()) (\t -> match t with | ((a, b), ((c, d), (e, f))) -> laws (\x y -> x.scale == y.scale && x.shift == y.shift) (Affine { scale: a, shift: b }, (Affine { scale: c, shift: d }, Affine { scale: e, shift: f })))

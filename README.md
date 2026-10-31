@@ -357,7 +357,7 @@ Task.run computation
 - **安全なスレッド分離**: タスクが捕捉する値は所有権の移動（move）または Copy に限定され、参照と `Rc` の持ち込みはコンパイル時に拒否されます。これにより、共有可変状態によるデータ競合の発生を根本から防ぎます。共有して書き換える状態は、`Atomic`（整数と `bool`）と `Mutex`（ほかの値）に限られ、`Arc<Atomic<T>>`、`Arc<Mutex<T>>`、または次の `Task.scope` の共有借用でタスク間に渡します。値の受け渡しは、容量付きの `Channel`（最後の `Sender` の drop で閉じ、全スレッドが待ったらデッドロックのトラップ）です。`Channel` の要素は借用を持てず（関数値は、環境が借用を持たないものだけ）、`Send` の検査は、ジェネリック関数を通しても、使う型ごとに行われます。`Sync` でない値（`Rc`、ホストのハンドルなど）は共有できません。
 - **借用を共有する並列区間 (`Task.scope`)**: `Task.scope (ref shared) count callback` は、`Sync` な値の共有借用を `count` 個の子どもに貸し、`callback shared index` の結果を添字順に返します。すべての子どもが終わってから戻るので、外の値を持ち込まずに共有できます。
 - **並列実行とスレッドプール**: `Task.parallel` はタスクの配列を受け取り、入力順と同一の結果配列を返します。ネイティブ環境では POSIX threads を基盤とした常駐スレッドプール（最大 32 スレッド）をオンデマンドで起動し、効率よくタスクを分散します。
-- **データ並列 API**: タスクオブジェクトの生成オーバーヘッドを抑えたい大量のデータ処理には、`Parallel.init`、`Parallel.map`、`Parallel.map_ref`、`Parallel.reduce`、`Parallel.sum` を使用します。配列を固定チャンクに分割し、最小限の同期コストで高速に処理します。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。実行例は `tsuzuri run examples/tasks` で確認できます。
+- **データ並列 API**: タスクオブジェクトの生成オーバーヘッドを抑えたい大量のデータ処理には、`Parallel.init`、`Parallel.map`、`Parallel.map_ref`、`Parallel.reduce`、`Parallel.sum`、`Parallel.fold` を使用します。配列を固定チャンクに分割し、最小限の同期コストで高速に処理します。結合的な還元を `Monoid`（`Monoids.Sum`・`Monoids.MaxOf`）で書くと、`Parallel.fold` は逐次の `Array.fold_monoid` とビットまで同じ値を返します（浮動小数点を含む型は `E1039` で拒否されます）。`tsuzuri check PATH --report parallel` は、`Parallel` に置き換えられる `Array` の呼び出しを提案として一覧にします（自動では書き換えません）。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。実行例は `tsuzuri run examples/tasks` で確認できます。
 - **エラー短絡 (`Task.parallel_results`)**: 複数の `Task<Result<T, E>>` を並列実行し、いずれかが失敗した時点で未開始のタスクを即座にキャンセルして最小インデックスのエラーを返します。
 
 ```text
@@ -932,7 +932,7 @@ target の一覧、CI が確かめている範囲（tier）、制限は [対応�
 ### コマンド書式
 
 ```text
-tsuzuri check source.tz|source.tt|source.tc|directory [--json]
+tsuzuri check source.tz|source.tt|source.tc|directory [--json] [--report parallel]
 tsuzuri [build] source.tz|source.tt|source.tc|directory [options]
 tsuzuri run Main.tz|directory [-O0|-O1|-O2|-O3|-Os|-Oz] [--cpu generic|native] [--target native|TRIPLE] [--json]
 tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
@@ -988,6 +988,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--warn canonical` | edition 2026 のソースの、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に `W1007` を出し、正準形への書き換えを修正案として示します。 |
 | `--edition 2026\|2027` | `Tsuzuri.toml` のないプロジェクトのソースを読む edition（既定は 2027。マニフェストがあると `E2000`）。`check`・`build`・`run`・`test`・`script` と `tsuzuri new` で使えます。 |
 | `--warn untrusted-extern` | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出します。 |
+| `--report parallel` | `check` だけ。検査が通ったあと、`Parallel` に置き換えられる `Array` の呼び出しの提案と、`Parallel` の呼び出しのコールバックが純粋か（`parallel_safe`）を標準出力に出します（`--json` で JSON Lines。自動では書き換えません）。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。 |
 | `--overflow-report` | `build`・`run`（`test` は既定）で、範囲の証明で溢れないと示せない整数の `+ - * ** -x` に検査を足し、折り返した地点を報告します（native は標準エラー、WASM は `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` と `<出力>.overflow.json`）。値は変わりません。診断用で、配布ビルドには使いません。 |
 | `--allow-overflow` | `tsuzuri test` で、整数の演算が折り返したテストを失敗にせず、報告だけを出します。 |

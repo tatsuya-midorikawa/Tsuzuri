@@ -44,7 +44,7 @@ Tsuzuri - a statically typed language with ownership, powered by LLVM
 Usage:
     tsuzuri lsp
     tsuzuri mcp [--root DIR] [--kg-dir DIR]
-  tsuzuri check source.tz|source.tt|source.tc|directory [--json]
+  tsuzuri check source.tz|source.tt|source.tc|directory [--json] [--report parallel]
     tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
     tsuzuri fmt [--check] source.tz|source.tt|source.tc|directory [--json]
     tsuzuri test source.tz|directory [--list] [--filter TEXT] [--index N] [--json] [-O0|-O1|-O2|-O3]
@@ -286,6 +286,8 @@ Build options:
     --edition 2026|2027    Read the sources of a project without a Tsuzuri.toml with this edition
     --warn untrusted-extern
                          Report W1010 at extern functions that are used but not marked '@trusted'
+    --report parallel      check only: print the Array calls that Parallel can replace and whether the
+                           callbacks of the Parallel calls are pure, on stdout
     --contracts off|check|test|prove
                          How build, run, test, and check use @requires and @ensures lines: off emits
                          no checks (build default), check traps when one is false (run and test
@@ -407,6 +409,8 @@ struct Arguments {
     warn_canonical: bool,
     /// E15: report W1010 at the root package's used extern functions without `@trusted`.
     warn_untrusted_extern: bool,
+    /// F15 `check --report parallel`: print the parallel report on stdout after a successful check.
+    report_parallel: bool,
     format_check: bool,
     test_filter: Option<String>,
     test_list: bool,
@@ -465,6 +469,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             warn_implicit_copy: false,
             warn_canonical: false,
             warn_untrusted_extern: false,
+            report_parallel: false,
             format_check: false,
             test_filter: None,
             test_list: false,
@@ -528,6 +533,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut warn_implicit_copy = false;
     let mut warn_untrusted_extern = false;
     let mut warn_canonical = false;
+    let mut report_parallel = false;
     let mut format_check = false;
     let mut test_filter = None;
     let mut test_list = false;
@@ -692,6 +698,32 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                         ));
                     }
                     *flag = true;
+                    continue;
+                }
+                Some("--report") => {
+                    let Some(name) = arguments.get(position) else {
+                        return Err(command_line_error(
+                            DiagnosticKind::OptionMissingValue,
+                            "--report requires a report name; supported: parallel",
+                        ));
+                    };
+                    position += 1;
+                    if name.to_str() != Some("parallel") {
+                        return Err(command_line_error(
+                            DiagnosticKind::OptionInvalidValue,
+                            format!(
+                                "unknown report '{}' for --report; supported: parallel",
+                                name.to_string_lossy()
+                            ),
+                        ));
+                    }
+                    if report_parallel {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "report parallel specified more than once",
+                        ));
+                    }
+                    report_parallel = true;
                     continue;
                 }
                 Some("--check") => {
@@ -1473,6 +1505,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             "--check is only valid with fmt",
         ));
     }
+    if report_parallel && action != Action::Check {
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--report is only valid with check",
+        ));
+    }
     if action == Action::Fmt
         && (optimization.is_some()
             || cpu.is_some()
@@ -1772,6 +1810,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         warn_implicit_copy,
         warn_canonical,
         warn_untrusted_extern,
+        report_parallel,
         format_check,
         test_filter,
         test_list,
@@ -3990,9 +4029,9 @@ fn main() -> ExitCode {
 
 /// Runs the command line `raw` that is a project command: everything after the commands that need
 /// no project (`--help`, `new`, `repl`, ...), from `parse_arguments` on. Its diagnostics and
-/// warnings go to `err`. `out` is the stream of the result that a command prints: `check` and
-/// `build` print none, and `test`, `bench`, `fmt`, and `run` write to the process's own standard
-/// output, so a caller that captures `out` serves `check` and `build` only.
+/// warnings go to `err`. `out` is the stream of the result that a command prints: `check` prints
+/// only its `--report`, `build` prints none, and `test`, `bench`, `fmt`, and `run` write to the
+/// process's own standard output, so a caller that captures `out` serves `check` and `build` only.
 fn cli(
     raw: &[OsString],
     program_arguments: Option<&[OsString]>,
@@ -4234,6 +4273,16 @@ fn cli(
     write_messages(err, kg_notice.as_slice(), arguments.json);
     if arguments.deny_warnings && !warnings.is_empty() {
         return EXIT_FAILURE;
+    }
+    // F15: the report of a check that passed goes to stdout; diagnostics stay on stderr.
+    if arguments.report_parallel {
+        let report = tsuzuri::parallel_report::build(&module, &project);
+        let text = if arguments.json {
+            tsuzuri::parallel_report::render_json(&report, &project)
+        } else {
+            tsuzuri::parallel_report::render_text(&report, &project)
+        };
+        let _ = out.write_all(text.as_bytes());
     }
     if arguments.action == Action::Test && arguments.test_doc {
         return run_doctest_action(&arguments, &project);
@@ -6446,6 +6495,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_report_parallel() {
+        let arguments = parse(&["check", "Main.tz", "--report", "parallel"]).unwrap();
+        assert!(arguments.report_parallel);
+        assert!(!parse(&["check", "Main.tz"]).unwrap().report_parallel);
+        for (values, message) in [
+            (
+                vec!["check", "Main.tz", "--report"],
+                "--report requires a report name; supported: parallel",
+            ),
+            (
+                vec!["check", "Main.tz", "--report", "copies"],
+                "unknown report 'copies' for --report; supported: parallel",
+            ),
+            (
+                vec![
+                    "check", "Main.tz", "--report", "parallel", "--report", "parallel",
+                ],
+                "report parallel specified more than once",
+            ),
+            (
+                vec!["build", "Main.tz", "--report", "parallel"],
+                "--report is only valid with check",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+    }
+
+    #[test]
     fn parses_warn_implicit_copy() {
         for action in ["check", "build", "run", "test"] {
             let arguments = parse(&[action, "Main.tz", "--warn", "implicit-copy"]).unwrap();
@@ -6996,6 +7074,9 @@ mod tests {
             ],
             vec!["check", "Main.tz", "--wasm-feature", "simd128"],
             vec!["run", "Main.tz", "--wasm-feature", "simd128"],
+            vec!["run", "Main.tz", "--report", "parallel"],
+            vec!["test", "Main.tz", "--report", "parallel"],
+            vec!["fmt", "Main.tz", "--report", "parallel"],
         ] {
             assert!(parse(&values).is_err(), "{values:?}");
         }
