@@ -175,7 +175,7 @@ main_value ()
 | `frames[].address` | 文字列 | 常にある。`"0x…"` のリンク時のアドレス（戻りアドレスから slide を引いたもの） |
 | `truncated` | `true` | 32 個で打ち切ったときだけ |
 
-`llvm-symbolizer` を起動できないと、`frames` の要素は `address` だけです。`-O3` では関数が inline されて `frames` は `[]` になります。`trap` の無い診断の JSON は変わりません。
+`llvm-symbolizer` を起動できないと、`frames` の要素は `address` だけです。`-O3` では inline された関数が frame を持たないので、`frames` が短くなり、すべて inline されると `[]` になります。`trap` の無い診断の JSON は変わりません。
 
 `fmt --check --json` だけ、形が少し違います。スパンは無く、パスと「整形されていない」ことだけです。終了コードは 1 でした。
 

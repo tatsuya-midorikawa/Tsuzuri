@@ -191,7 +191,7 @@ tests/fixtures/trap_backtrace/Main.tz:2:15: error[E2005]: program terminated wit
 
 - 関数名は `llvm-symbolizer` で引きます。`TSUZURI_LLVM_SYMBOLIZER` でその実行ファイルを指定できます（既定は `PATH` の `llvm-symbolizer`）。起動できないときは frame の行を出さず、`  note: frames are not resolved; install llvm-symbolizer or set TSUZURI_LLVM_SYMBOLIZER` の 1 行だけを出します。`--json` の `frames` は、名前のないアドレス（リンク時のアドレス）だけになります。
 - 名前は Tsuzuri の関数名（`Main.level2`）です。ジェネリックな関数の実体と `@cpu` の版は元の関数の名前、ラムダ式は `$lambda.3` の形、`export def` の入口は `div` のような公開名です。関数値の呼び出しの継ぎ手、`tsuzuri_main`、C の `main` とランタイムは出ません。
-- `-O3` では関数が入口へ inline されるので、名前のある frame がなくなり、何も出ません（`frames` は `[]`）。frame は 32 個までで、それより深い呼び出しは `  ... (more frames omitted)`（`"truncated":true`）になります。
+- `-O3` では、inline された関数は自分の frame を持ちません。上の例の `level1`〜`level3` と `main` はすべて入口へ inline されるので、何も出ません（`frames` は `[]`）。inline されない関数（再帰する関数や大きな関数）は、最適化しても frame が残って出ます。frame は 32 個までで、それより深い呼び出しは `  ... (more frames omitted)`（`"truncated":true`）になります。
 - スタック枯渇（`trap: stack overflow`）は frame を持ちません（`"trap":{"kind":"stack overflow","site":0,"frames":[]}`）。
 - macOS と Linux のネイティブの実行ファイルだけです。Windows、WebAssembly（`createBoundary` の `frames` は [WebAssembly への出力](webassembly.md#トラップと-trapjson) にあります）、`tsuzuri test`・`bench` の実行ファイルにはありません。失敗したテストは `tsuzuri run` で再現します。
 
