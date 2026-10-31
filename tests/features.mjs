@@ -1642,6 +1642,29 @@ const suites = {
     ],
     traps: [["active_trap", []]],
   },
+  // D14: Text.f gives the values of the direct String.f and Utf8String.f calls. The cases of string_library, and the
+  // cases below the loops that fill string_library, are the references.
+  text_class: {
+    cases: [
+      ["literal_arguments", [], 22607n],
+    ],
+    traps: [["trap_repeat_negative", []], ["trap_repeat_negative_utf8", []]],
+    inspect(ir) {
+      // Instances are chosen at compile time: no dictionary, no vtable, and the Text instance methods are direct functions.
+      assert.doesNotMatch(ir, /%tz\.hkt|dictionary|@tz\.dyn\./);
+      for (const type of ["String", "Utf8String"]) {
+        const methods = new Set([...ir.matchAll(new RegExp(`^define internal [^\\n]*@tz\\.fn\\.${type}\\.\\$instance\\.\\d+\\.(\\w+)\\(`, "gm"))].map((match) => match[1]));
+        for (const method of ["length", "compare", "clone", "find", "rfind", "contains", "starts_with", "ends_with", "slice", "sub", "join", "concat", "split", "trim", "trim_start", "trim_end", "to_ascii_lower", "to_ascii_upper", "repeat", "replace"]) {
+          assert.ok(methods.has(method), `${type} instance method ${method}`);
+        }
+      }
+    },
+  },
+  // D14 Phase 2: Regex.*_text gives the values of the direct Regex.* and Regex.*_utf8 calls; the references are JavaScript RegExp.
+  regex_text: {
+    cases: [],
+    traps: [],
+  },
   string_library: {
     cases: [
       ["character_units", [], 55357n + 4n + 128512n + 13n + 5n + 4n],
@@ -2565,6 +2588,61 @@ for (const utf8 of [false, true]) {
       suites.string_library.cases.push([utf8 ? "utf8_slice" : "text_slice", [BigInt(which), BigInt(first), BigInt(last)], expected]);
     }
   }
+}
+
+// D14: tests/fixtures/text_class/Main.tz runs the string_library operations through Text, so those references apply.
+{
+  suites.text_class.cases.push(...suites.string_library.cases.filter(([name]) => /^(text|utf8)_(operation|slice)$/.test(name)));
+  const whitespace = "[\\t\\n\\v\\f\\r ]";
+  for (const utf8 of [false, true]) {
+    const indices = stringSamples.map((_, index) => index).filter((index) => !utf8 || ![7, 8].includes(index));
+    const units = (text) => (utf8 ? Buffer.byteLength(text, "utf8") : text.length);
+    const prefix = utf8 ? "utf8" : "text";
+    for (const which of indices) {
+      const text = stringSamples[which];
+      const bytes = Buffer.from(text, "utf8");
+      const trimmedStart = text.replace(new RegExp(`^${whitespace}+`), "");
+      const trimmedEnd = text.replace(new RegExp(`${whitespace}+$`), "");
+      const trimmed = text.replace(new RegExp(`^${whitespace}+|${whitespace}+$`, "g"), "");
+      const extra = [units(text), Number(text === ""), textHash(trimmedStart, utf8), textHash(trimmedEnd, utf8), textHash(text, utf8), 0, units(trimmed)];
+      for (const [operation, expected] of extra.entries()) suites.text_class.cases.push([`${prefix}_extra`, [operation, BigInt(which)], BigInt(expected)]);
+      const length = units(text);
+      for (let first = -1; first <= length + 1; first++) for (let count = -1; count <= length + 1; count++) {
+        const boundary = (offset) => offset === 0 || offset === length || (bytes[offset] & 0xc0) !== 0x80;
+        const last = first + count;
+        const valid = first >= 0 && count >= 0 && last <= length && (!utf8 || (boundary(first) && boundary(last)));
+        const expected = valid ? textHash(utf8 ? bytes.subarray(first, last).toString("utf8") : text.slice(first, last), utf8) : -1n;
+        suites.text_class.cases.push([`${prefix}_sub`, [BigInt(which), BigInt(first), BigInt(count)], expected]);
+      }
+    }
+    for (const first of indices) for (const second of indices) {
+      const text = stringSamples[first], other = stringSamples[second];
+      const less = utf8 ? Buffer.compare(Buffer.from(text, "utf8"), Buffer.from(other, "utf8")) < 0 : text < other;
+      suites.text_class.cases.push([`${prefix}_order`, [BigInt(first), BigInt(second)], BigInt(Number(less) + 2 * Number(text === other))]);
+      const parts = other === "" && utf8 ? Array.from(text) : text.split(other);
+      suites.text_class.cases.push([`${prefix}_pieces`, [BigInt(first), BigInt(second)], BigInt(parts.length)]);
+    }
+  }
+}
+// D14 Phase 2: independent references for tests/fixtures/regex_text/Main.tz. A span is in UTF-16 units for string and
+// in bytes for utf8string.
+{
+  const samples = ["", "abc", "a1b22c333", "\u{1f600}7\u{1f600}", "007 and 42", "x"];
+  for (const utf8 of [false, true]) {
+    const prefix = utf8 ? "utf8" : "text";
+    const offset = (text, index) => (utf8 ? Buffer.byteLength(text.slice(0, index), "utf8") : index);
+    for (const [which, text] of samples.entries()) {
+      const spans = [...text.matchAll(/\d+/g)].map((found) => [offset(text, found.index), offset(text, found.index + found[0].length)]);
+      const spanHash = spans.reduce((total, [first, last]) => wrapHash(total * 31n + BigInt(first * 7 + last)), BigInt(spans.length));
+      const first = spans.length ? BigInt(spans[0][0] * 1000 + spans[0][1]) : -1n;
+      suites.regex_text.cases.push([`${prefix}_spans`, [BigInt(which)], spanHash]);
+      suites.regex_text.cases.push([`${prefix}_first`, [BigInt(which)], first]);
+      suites.regex_text.cases.push([`${prefix}_replaced`, [BigInt(which)], textHash(text.replace(/\d+/g, "<$&>"), utf8)]);
+      suites.regex_text.cases.push([`${prefix}_pieces`, [BigInt(which)], BigInt(text.split(/\d+/).length)]);
+      suites.regex_text.cases.push([`${prefix}_groups`, [BigInt(which)], /(\d)(\d*)/.test(text) ? 3n : -1n]);
+    }
+  }
+  for (const which of samples.keys()) suites.regex_text.cases.push(["same_as_direct", [BigInt(which)], 1n]);
 }
 
 function hashBytes(bytes) {

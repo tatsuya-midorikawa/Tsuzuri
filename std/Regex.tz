@@ -1390,3 +1390,118 @@ fn split_utf8 re text =
 		index = index + 1
 	output = Vec.push_owned (Maybe.get (Utf8String.slice start text.length text)) output
 	Vec.to_array output
+
+// `string` and `utf8string` are `RegexText`s: each method calls the function for that text type.
+instance RegexText<string> {
+	fn is_match re text = Regex.is_match re text
+	fn find re text = Regex.find re text
+	fn find_at re start text = Regex.find_at re start text
+	fn find_all re text = Regex.find_all re text
+	fn captures re text = Regex.captures re text
+	fn replace_all re replacement text = Regex.replace_all re replacement text
+	fn split re text = Regex.split re text
+}
+
+instance RegexText<utf8string> {
+	fn is_match re text = Regex.is_match_utf8 re text
+	fn find re text = Regex.find_utf8 re text
+	fn find_at re start text = Regex.find_at_utf8 re start text
+	fn find_all re text = Regex.find_all_utf8 re text
+	fn captures re text = Regex.captures_utf8 re text
+	fn replace_all re replacement text = Regex.replace_all_utf8 re replacement text
+	fn split re text = Regex.split_utf8 re text
+}
+
+/// `is_match` for a `string` or `is_match_utf8` for a `utf8string`, chosen by the type of `text`.
+///
+/// @since 0.1.0
+/// @see Regex.is_match
+/// @see Regex.is_match_utf8
+///
+/// ```tsuzuri run=true%20false
+/// let re = Regex.compile "^\\d+$" |> Result.get
+/// $"{Regex.is_match_text re "2026"} {Regex.is_match_text re u8"20x6"}"
+/// ```
+def is_match_text :: RegexText<'s> => ref Regex -> ref 's -> bool
+fn is_match_text re text = RegexText.is_match re text
+
+/// `find` for a `string` or `find_utf8` for a `utf8string`: the range is in code units of a `string` and in bytes of
+/// a `utf8string`.
+///
+/// @since 0.1.0
+/// @see Regex.find
+/// @see Regex.find_utf8
+///
+/// ```tsuzuri run=[(2,%204),%20(3,%205)]
+/// let re = Regex.compile "\\d+" |> Result.get
+/// let units = Regex.find_text re "é 42" |> Maybe.default_value (-1, -1)
+/// let bytes = Regex.find_text re u8"é 42" |> Maybe.default_value (-1, -1)
+/// [units, bytes]
+/// ```
+def find_text :: RegexText<'s> => ref Regex -> ref 's -> Maybe<(i64 * i64)>
+fn find_text re text = RegexText.find re text
+
+/// `find_at` for a `string` or `find_at_utf8` for a `utf8string`.
+///
+/// @since 0.1.0
+/// @see Regex.find_at
+/// @see Regex.find_at_utf8
+///
+/// ```tsuzuri run=(7,%209)
+/// let re = Regex.compile "\\b\\d+" |> Result.get
+/// Regex.find_at_text re 1 u8"66 and 77" |> Maybe.default_value (-1, -1)
+/// ```
+def find_at_text :: RegexText<'s> => ref Regex -> i64 -> ref 's -> Maybe<(i64 * i64)>
+fn find_at_text re start text = RegexText.find_at re start text
+
+/// `find_all` for a `string` or `find_all_utf8` for a `utf8string`.
+///
+/// @since 0.1.0
+/// @see Regex.find_all
+/// @see Regex.find_all_utf8
+///
+/// ```tsuzuri run=[(0,%201),%20(3,%205)]
+/// let re = Regex.compile "\\d+" |> Result.get
+/// Regex.find_all_text re u8"1, 22"
+/// ```
+def find_all_text :: RegexText<'s> => ref Regex -> ref 's -> [(i64 * i64)]
+fn find_all_text re text = RegexText.find_all re text
+
+/// `captures` for a `string` or `captures_utf8` for a `utf8string`.
+///
+/// @since 0.1.0
+/// @see Regex.captures
+/// @see Regex.captures_utf8
+///
+/// ```tsuzuri run=[(6,%208),%20(6,%208),%20(-1,%20-1)]
+/// let re = Regex.compile "(\\d+)(px)?" |> Result.get
+/// Regex.captures_text re "width 42" |> Maybe.default_value []
+/// ```
+def captures_text :: RegexText<'s> => ref Regex -> ref 's -> Maybe<[(i64 * i64)]>
+fn captures_text re text = RegexText.captures re text
+
+/// `replace_all` for a `string` or `replace_all_utf8` for a `utf8string`; the replacement has the type of the text.
+///
+/// @since 0.1.0
+/// @see Regex.replace_all
+/// @see Regex.replace_all_utf8
+///
+/// ```tsuzuri run=é<1>%20<22>
+/// let re = Regex.compile "\\d+" |> Result.get
+/// Regex.replace_all_text re u8"<${0}>" u8"é1 22"
+/// ```
+def replace_all_text :: RegexText<'s> => ref Regex -> ref 's -> ref 's -> 's
+fn replace_all_text re replacement text = RegexText.replace_all re replacement text
+
+/// `split` for a `string` or `split_utf8` for a `utf8string`.
+///
+/// @since 0.1.0
+/// @see Regex.split
+/// @see Regex.split_utf8
+///
+/// ```tsuzuri run=["a",%20"b",%20"c"]
+/// let re = Regex.compile "\\s*;\\s*" |> Result.get
+/// Regex.split_text re "a ; b;c"
+/// ```
+def split_text :: RegexText<'s> => ref Regex -> ref 's -> ['s]
+fn split_text re text = RegexText.split re text

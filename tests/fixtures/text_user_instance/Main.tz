@@ -1,0 +1,31 @@
+// A user type can be a Text too: it needs Ord and every method (is_empty has a default).
+record Name { value: string } deriving (Eq, Ord)
+
+instance Text<Name> {
+	fn length text = text.value.length
+	fn compare left right = String.compare (ref left.value) (ref right.value)
+	fn clone text = Name { value: clone_string (ref text.value) }
+	fn find needle text = String.find (ref needle.value) (ref text.value)
+	fn rfind needle text = String.rfind (ref needle.value) (ref text.value)
+	fn contains needle text = String.contains (ref needle.value) (ref text.value)
+	fn starts_with prefix text = String.starts_with (ref prefix.value) (ref text.value)
+	fn ends_with suffix text = String.ends_with (ref suffix.value) (ref text.value)
+	fn slice first last text = match String.slice first last (ref text.value) with | Some part -> Some (Name { value: part }) | None -> None
+	fn sub first count text = match String.sub first count (ref text.value) with | Some part -> Some (Name { value: part }) | None -> None
+	fn join separator parts = Name { value: String.join (ref separator.value) (ref (Array.mapr (\part -> clone_string (ref part.value)) parts)) }
+	fn concat parts = Name { value: String.concat (ref (Array.mapr (\part -> clone_string (ref part.value)) parts)) }
+	fn split separator text =
+		let pieces = String.split (ref separator.value) (ref text.value)
+		new [Name](pieces.length, \index -> Name { value: clone_string (ref pieces[index]) })
+	fn trim text = Name { value: String.trim (ref text.value) }
+	fn trim_start text = Name { value: String.trim_start (ref text.value) }
+	fn trim_end text = Name { value: String.trim_end (ref text.value) }
+	fn to_ascii_lower text = Name { value: String.to_ascii_lower (ref text.value) }
+	fn to_ascii_upper text = Name { value: String.to_ascii_upper (ref text.value) }
+	fn repeat count text = Name { value: String.repeat count (ref text.value) }
+	fn replace needle replacement text = Name { value: String.replace (ref needle.value) (ref replacement.value) (ref text.value) }
+}
+
+let name = Name { value: "  Ada  " }
+let trimmed = Text.trim name
+$"{Text.length trimmed} {Text.is_empty trimmed} {trimmed.value}"

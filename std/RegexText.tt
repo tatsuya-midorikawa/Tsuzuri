@@ -1,0 +1,35 @@
+/// The text types that a `Regex` searches: `string` (UTF-16) and `utf8string` (UTF-8). A method is the function of the
+/// same name in `Regex` for a `string` and the function with the suffix `_utf8` for a `utf8string`; the instances only
+/// delegate. `Regex.is_match_text` and its six siblings call these methods, so write those. Ranges are in code units of
+/// a `string` and in bytes of a `utf8string`. User code names the class `RegexText.RegexText`, since `RegexText` is an
+/// opt-in std module.
+///
+/// ```tsuzuri run=2%202
+/// def count :: RegexText.RegexText<'s> => ref Regex -> ref 's -> i64
+/// fn count re text = (Regex.find_all_text re text).length
+///
+/// let re = Regex.compile "\\d+" |> Result.get
+/// $"{count re "a1b22"} {count re u8"a1b22"}"
+/// ```
+class RegexText<'s> {
+    /// `Regex.is_match` or `Regex.is_match_utf8`.
+    def is_match :: ref Regex -> ref 's -> bool
+
+    /// `Regex.find` or `Regex.find_utf8`.
+    def find :: ref Regex -> ref 's -> Maybe<(i64 * i64)>
+
+    /// `Regex.find_at` or `Regex.find_at_utf8`.
+    def find_at :: ref Regex -> i64 -> ref 's -> Maybe<(i64 * i64)>
+
+    /// `Regex.find_all` or `Regex.find_all_utf8`.
+    def find_all :: ref Regex -> ref 's -> [(i64 * i64)]
+
+    /// `Regex.captures` or `Regex.captures_utf8`.
+    def captures :: ref Regex -> ref 's -> Maybe<[(i64 * i64)]>
+
+    /// `Regex.replace_all` or `Regex.replace_all_utf8`; the replacement has the type of the text.
+    def replace_all :: ref Regex -> ref 's -> ref 's -> 's
+
+    /// `Regex.split` or `Regex.split_utf8`.
+    def split :: ref Regex -> ref 's -> ['s]
+}

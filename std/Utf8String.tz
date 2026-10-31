@@ -311,3 +311,27 @@ fn replace needle replacement text =
 			if index < text.length then output = Vec.push_owned text[index] output
 			index = index + 1
 	Maybe.get (Utf8String.from_bytes (Vec.to_array output))
+
+// `utf8string` is a `Text`: each method calls the function of the same name in `Utf8String`.
+instance Text<utf8string> {
+	fn length text = Utf8String.length text
+	fn compare left right = Utf8String.compare left right
+	fn clone text = Utf8String.clone text
+	fn find needle text = Utf8String.find needle text
+	fn rfind needle text = Utf8String.rfind needle text
+	fn contains needle text = Utf8String.contains needle text
+	fn starts_with prefix text = Utf8String.starts_with prefix text
+	fn ends_with suffix text = Utf8String.ends_with suffix text
+	fn slice first last text = Utf8String.slice first last text
+	fn sub first count text = Utf8String.sub first count text
+	fn join separator parts = Utf8String.join separator parts
+	fn concat parts = Utf8String.concat parts
+	fn split separator text = Utf8String.split separator text
+	fn trim text = Utf8String.trim text
+	fn trim_start text = Utf8String.trim_start text
+	fn trim_end text = Utf8String.trim_end text
+	fn to_ascii_lower text = Utf8String.to_ascii_lower text
+	fn to_ascii_upper text = Utf8String.to_ascii_upper text
+	fn repeat count text = Utf8String.repeat count text
+	fn replace needle replacement text = Utf8String.replace needle replacement text
+}

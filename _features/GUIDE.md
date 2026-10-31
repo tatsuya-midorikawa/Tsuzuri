@@ -1848,7 +1848,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 環境変数 | `TSUZURI_PROGFUZZ_*`（`KIND`・`PATHS`・`BUDGET`・`DIR`・`JOBS`・`KEEP`・`MINIMIZE`・`MUTANT`・`INJECT_LEAK`） | G36 | 差分ファズ（`tests/`・`scripts/` だけが読む。コンパイラは読まない） |
 | std | `Arbitrary`（組み込みクラス）・`Gen.for_all_where`・`Gen.check_where` | A21 | 契約の性質テスト |
 | std | `Int.wrapping_*` | A23 | 折り返しの意図（`Int` は組み込みモジュール） |
-| std | `Text`（常に読み込む型クラス）・`RegexText` | D14 | 文字列の API の統一。`RESERVED_MODULES` の数は現在値から増やす |
+| std | `Text`（常に読み込む型クラス）・`RegexText`（opt-in の型クラス）・`Regex.*_text`（`is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text`） | D14 | 文字列の API の統一。`RESERVED_MODULES` は 54 → 56（done） |
 | std | `Monoid`（型クラス。常に読み込む）・`Monoids`（opt-in の newtype 群。`Monoids.Sum` のように修飾して書く）・`Array.fold_monoid`・`Parallel.fold` | F15 | 還元の保証。浮動小数点を含む型の `Monoid` は `E1039`（kind `monoid_float_instance`）。`RESERVED_MODULES` へ `Monoid`・`Monoids`（現在値から 2 増やす） |
 | std | `Map.chunk_count`・`Map.invariants_hold`・`Set.chunk_count`・`Set.invariants_hold` | C12 | 診断・テスト用の公開関数（チャンクの数と不変条件の検査）。`Map`／`Set` の計算量の表は C12 の仕様 §5 が正（G35 が `@complexity` を生成するときに合わせる） |
 | 生成物 | `target/tz/kg/`・`target/progfuzz/`・`target/ai-cost/` | G27・G36・G31 | すべて `target/` の下（コミットしない） |

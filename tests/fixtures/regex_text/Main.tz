@@ -1,0 +1,131 @@
+def sample :: i64 -> string
+fn sample index = match index with
+    | 0 -> ""
+    | 1 -> "abc"
+    | 2 -> "a1b22c333"
+    | 3 -> "\u{1F600}7\u{1F600}"
+    | 4 -> "007 and 42"
+    | _ -> "x"
+
+def utf8_sample :: i64 -> utf8string
+fn utf8_sample index =
+    let text = sample index
+    Utf8String.from_string (ref text)
+
+def hash :: own string -> i64
+fn hash text =
+    let mut value = text.length
+    for unit in text do value = value * 31 + unit as i64
+    value
+
+def hash_utf8 :: own utf8string -> i64
+fn hash_utf8 text =
+    let mut value = text.length
+    for byte in text do value = value * 31 + byte as i64
+    value
+
+def digits :: unit -> Regex
+fn digits _ = Result.get (Regex.compile (ref "\\d+"))
+
+def pairs :: unit -> Regex
+fn pairs _ = Result.get (Regex.compile (ref "(\\d)(\\d*)"))
+
+def span_hash :: ref [(i64 * i64)] -> i64
+fn span_hash spans =
+    let mut total = spans.length
+    for index in 0 ..< spans.length do
+        match spans[index] with | (first, last) -> total = total * 31 + first * 7 + last
+    total
+
+def first_span :: Maybe<(i64 * i64)> -> i64
+fn first_span found = match found with | Some (first, last) -> first * 1000 + last | None -> -1
+
+def group_count :: Maybe<[(i64 * i64)]> -> i64
+fn group_count found = match found with | Some spans -> spans.length | None -> -1
+
+export def text_spans :: i64 -> i64
+fn text_spans which =
+    let re = digits ()
+    let text = sample which
+    span_hash (ref (Regex.find_all_text (ref re) (ref text)))
+
+export def utf8_spans :: i64 -> i64
+fn utf8_spans which =
+    let re = digits ()
+    let text = utf8_sample which
+    span_hash (ref (Regex.find_all_text (ref re) (ref text)))
+
+export def text_first :: i64 -> i64
+fn text_first which =
+    let re = digits ()
+    let text = sample which
+    first_span (Regex.find_text (ref re) (ref text))
+
+export def utf8_first :: i64 -> i64
+fn utf8_first which =
+    let re = digits ()
+    let text = utf8_sample which
+    first_span (Regex.find_text (ref re) (ref text))
+
+export def text_replaced :: i64 -> i64
+fn text_replaced which =
+    let re = digits ()
+    let text = sample which
+    hash (Regex.replace_all_text (ref re) "<${0}>" (ref text))
+
+export def utf8_replaced :: i64 -> i64
+fn utf8_replaced which =
+    let re = digits ()
+    let text = utf8_sample which
+    hash_utf8 (Regex.replace_all_text (ref re) u8"<${0}>" (ref text))
+
+export def text_pieces :: i64 -> i64
+fn text_pieces which =
+    let re = digits ()
+    let text = sample which
+    (Regex.split_text (ref re) (ref text)).length
+
+export def utf8_pieces :: i64 -> i64
+fn utf8_pieces which =
+    let re = digits ()
+    let text = utf8_sample which
+    (Regex.split_text (ref re) (ref text)).length
+
+export def text_groups :: i64 -> i64
+fn text_groups which =
+    let re = pairs ()
+    let text = sample which
+    group_count (Regex.captures_text (ref re) (ref text))
+
+export def utf8_groups :: i64 -> i64
+fn utf8_groups which =
+    let re = pairs ()
+    let text = utf8_sample which
+    group_count (Regex.captures_text (ref re) (ref text))
+
+// Every *_text function gives what the function for the same text type gives.
+export def same_as_direct :: i64 -> i64
+fn same_as_direct which =
+    let re = digits ()
+    let both = pairs ()
+    let text = sample which
+    let bytes = utf8_sample which
+    let dash = "-"
+    let dash8 = u8"-"
+    let strings =
+        Regex.is_match_text (ref re) (ref text) == Regex.is_match (ref re) (ref text)
+        && first_span (Regex.find_text (ref re) (ref text)) == first_span (Regex.find (ref re) (ref text))
+        && first_span (Regex.find_at_text (ref re) 1 (ref text)) == first_span (Regex.find_at (ref re) 1 (ref text))
+        && span_hash (ref (Regex.find_all_text (ref re) (ref text))) == span_hash (ref (Regex.find_all (ref re) (ref text)))
+        && group_count (Regex.captures_text (ref both) (ref text)) == group_count (Regex.captures (ref both) (ref text))
+        && hash (Regex.replace_all_text (ref re) (ref dash) (ref text)) == hash (Regex.replace_all (ref re) (ref dash) (ref text))
+        && (Regex.split_text (ref re) (ref text)).length == (Regex.split (ref re) (ref text)).length
+    let utf8 =
+        Regex.is_match_text (ref re) (ref bytes) == Regex.is_match_utf8 (ref re) (ref bytes)
+        && first_span (Regex.find_text (ref re) (ref bytes)) == first_span (Regex.find_utf8 (ref re) (ref bytes))
+        && first_span (Regex.find_at_text (ref re) 1 (ref bytes)) == first_span (Regex.find_at_utf8 (ref re) 1 (ref bytes))
+        && span_hash (ref (Regex.find_all_text (ref re) (ref bytes))) == span_hash (ref (Regex.find_all_utf8 (ref re) (ref bytes)))
+        && group_count (Regex.captures_text (ref both) (ref bytes)) == group_count (Regex.captures_utf8 (ref both) (ref bytes))
+        && hash_utf8 (Regex.replace_all_text (ref re) (ref dash8) (ref bytes)) == hash_utf8 (Regex.replace_all_utf8 (ref re) (ref dash8) (ref bytes))
+        && (Regex.split_text (ref re) (ref bytes)).length == (Regex.split_utf8 (ref re) (ref bytes)).length
+    if strings && utf8 then 1 else 0

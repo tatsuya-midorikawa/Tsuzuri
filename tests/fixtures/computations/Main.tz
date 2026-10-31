@@ -147,7 +147,7 @@ fn stamp counter = {
 export def evaluation_order :: i64
 fn evaluation_order = {
     let mut counter = 0;
-    let value = Text {
+    let value = Phrase {
         yield stamp (ref mut counter)
         yield! stamp (ref mut counter)
         return stamp (ref mut counter)
@@ -166,7 +166,7 @@ fn borrowed = {
 export def type_classes :: i64
 fn type_classes = {
     let value = Identity { return 37i64 };
-    let text = Text { return "owned" };
+    let text = Phrase { return "owned" };
     Traits.Score.score (ref value) + Traits.Size.size (ref text)
 }
 
@@ -222,7 +222,7 @@ fn rec heap_loop count total =
             return values[0] + values[255] + offset
         };
         let value = work ();
-        let text = Text { yield "owned"; yield " values" };
+        let text = Phrase { yield "owned"; yield " values" };
         let unused: unit -> i64 = Lazy { assert false; return text.length };
         heap_loop (count - 1) (total + value)
     }

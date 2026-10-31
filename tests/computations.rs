@@ -4,7 +4,7 @@ const IDENTITY: &str = include_str!("fixtures/computations/Identity.tc");
 const CHOICE: &str = include_str!("fixtures/computations/Choice.tc");
 const FLOW: &str = include_str!("fixtures/computations/Flow.tc");
 const LAZY: &str = include_str!("fixtures/computations/Lazy.tc");
-const TEXT: &str = include_str!("fixtures/computations/Text.tc");
+const PHRASE: &str = include_str!("fixtures/computations/Phrase.tc");
 
 #[test]
 fn parses_implicit_computation_bodies() {
@@ -527,7 +527,7 @@ fn sources(main: &str) -> [(&str, &str); 6] {
         ("Choice.tc", CHOICE),
         ("Flow.tc", FLOW),
         ("Lazy.tc", LAZY),
-        ("Text.tc", TEXT),
+        ("Phrase.tc", PHRASE),
         ("Main.tz", main),
     ]
 }
@@ -660,7 +660,7 @@ fn supports_nested_builders_records_and_builtin_tasks() {
 fn preserves_owned_values_and_borrow_lifetimes() {
     accepts(
         "let text = \"hello\"
-         let result = Text { let! prefix = text; return prefix + \" world\" }
+         let result = Phrase { let! prefix = text; return prefix + \" world\" }
          result.length",
     );
     accepts(
@@ -673,7 +673,7 @@ fn preserves_owned_values_and_borrow_lifetimes() {
         "let n = 42\nlet r = &n\nlet result: &i64 = Identity { let! value = r; return value }\n*result",
     );
     rejects(
-        "let text = \"owned\"\nlet _ = Text { return text }\ntext",
+        "let text = \"owned\"\nlet _ = Phrase { return text }\ntext",
         "E1012",
     );
     rejects(
@@ -1021,7 +1021,7 @@ fn deterministic_computation_mutations_do_not_panic() {
         "Identity { let! value: i64 = 20; do! (); return value + 22 }",
         "Flow { for n in [1, 2] { yield n }; while false { yield 3 }; return 4 }",
         "Choice { if true { return 42 } else { let! n = Choice {}; return n } }",
-        "let body = Lazy { return Text { yield \"a\"; yield! \"b\" } }\n(body ()).length",
+        "let body = Lazy { return Phrase { yield \"a\"; yield! \"b\" } }\n(body ()).length",
     ] {
         for _ in 0..500 {
             let mut bytes = original.as_bytes().to_vec();

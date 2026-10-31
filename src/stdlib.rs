@@ -54,6 +54,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Matrix.tz", include_str!("../std/Matrix.tz")),
     ("std/MatrixView.tz", include_str!("../std/MatrixView.tz")),
     ("std/Tensor.tz", include_str!("../std/Tensor.tz")),
+    ("std/Text.tt", include_str!("../std/Text.tt")),
+    ("std/RegexText.tt", include_str!("../std/RegexText.tt")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -113,6 +115,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "MatrixView",
     "Tensor",
     "Channel",
+    "Text",
+    "RegexText",
     "Domain",
     "Monoid",
     "Monoids",
@@ -210,9 +214,9 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     },
     OptIn {
         module: "Regex",
-        names: &["Regex"],
+        names: &["Regex", "RegexText"],
         aliases: &[],
-        uses: &["Unicode"],
+        uses: &["Unicode", "RegexText"],
     },
     OptIn {
         module: "Unicode",
@@ -291,6 +295,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["Channel"],
         aliases: &[],
         uses: &[],
+    },
+    OptIn {
+        module: "RegexText",
+        names: &["RegexText"],
+        aliases: &[],
+        uses: &["Regex"],
     },
     OptIn {
         module: "Domain",
@@ -606,7 +616,15 @@ mod tests {
             loaded("let JsonText = 1\nlet regex_count = Arenas"),
             Vec::<&str>::new()
         );
-        assert_eq!(loaded("Regex.compile (ref text)"), ["Regex", "Unicode"]);
+        assert_eq!(
+            loaded("Regex.compile (ref text)"),
+            ["Regex", "Unicode", "RegexText"]
+        );
+        // D14 Phase 2: the class that `Regex.*_text` uses comes with `Regex`, and reaches it.
+        assert_eq!(
+            loaded("RegexText.RegexText.find_all"),
+            ["Regex", "Unicode", "RegexText"]
+        );
         assert_eq!(loaded("x |> Cbor.encode"), ["Cbor", "Json"]);
         assert_eq!(loaded("record P { x: i64 } deriving (Encode)"), ["Json"]);
         assert_eq!(loaded("let a: Arena<i64> = Arena.empty()"), ["Arena"]);
@@ -626,7 +644,7 @@ mod tests {
             loaded("match c with | Lu -> 1 | Null -> 0 | _ -> 2"),
             Vec::<&str>::new()
         );
-        assert_eq!(loaded("let x = 1Regex"), ["Regex", "Unicode"]);
+        assert_eq!(loaded("let x = 1Regex"), ["Regex", "Unicode", "RegexText"]);
         assert_eq!(loaded("42"), Vec::<&str>::new());
         // A builder alias is a lowercase mention of the module; only the exact word counts.
         assert_eq!(loaded("let _ = async { return 1 }"), ["Async"]);
@@ -641,11 +659,13 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 57);
+        assert_eq!(RESERVED_MODULES.len(), 59);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
         assert!(is_reserved_module("Tensor"));
+        assert!(is_reserved_module("Text"));
+        assert!(is_reserved_module("RegexText"));
         assert!(!is_reserved_module("Task"));
         assert!(!is_reserved_module("Main"));
         assert!(!is_reserved_module("math"));

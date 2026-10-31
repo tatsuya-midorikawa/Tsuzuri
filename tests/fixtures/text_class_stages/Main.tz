@@ -1,0 +1,15 @@
+// An instance may take the arguments of a method in stages, as a function may: the first stage of this one runs
+// (and writes 1) before the second argument is evaluated (and writes 2).
+instance Stage<string> {
+	fn pick text = { let first = Debug.trace 1; \n -> text.length * 100 + n * 10 + first }
+}
+
+// This one names both arguments, so they are evaluated (4) before its body runs (3).
+instance Stage<utf8string> {
+	fn pick text n = text.length * 100 + n * 10 + Debug.trace 3
+}
+
+let word = "ab"
+let staged = Stage.pick word (Debug.trace 2)
+let single = Stage.pick u8"abc" (Debug.trace 4)
+$"{staged} {single}"

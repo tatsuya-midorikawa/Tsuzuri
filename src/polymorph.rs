@@ -2277,7 +2277,10 @@ impl Classes {
         Ok(expressions)
     }
 
-    fn resolved_method(
+    /// The function that implements `method` of `class` for the closed type `ty` (an instance's method, or the
+    /// class's default when the instance does not define it), and its type arguments; `None` when `ty` is still open
+    /// or no declared instance matches (a builtin instance, or a type parameter of a generic body).
+    pub(super) fn resolved_method(
         &self,
         class: usize,
         method: usize,
@@ -5613,6 +5616,40 @@ mod tests {
     #[test]
     fn hash_containers_leave_the_specialization_budget_to_users() {
         reaches_the_specialization_limit();
+    }
+
+    /// D14: `Text.length "abc"` specializes the instance method of `string` and the `String.length` that it calls,
+    /// one more than the direct call; the `Text` class that every program loads costs nothing unused.
+    #[test]
+    fn a_text_method_costs_one_more_specialization_than_the_direct_call() {
+        use std::fmt::Write;
+        let program = |records: usize, call: &str| {
+            let mut source = String::from("def id :: 'a -> 'a\nfn id x = x\n");
+            for index in 0..records {
+                writeln!(
+                    source,
+                    "record R{index} {{ value: i8 }}\nfn f{index}(x: R{index}) -> R{index} {{ id x }}"
+                )
+                .unwrap();
+            }
+            writeln!(source, "let a = {call}\na").unwrap();
+            source
+        };
+        let total = SMALL.total;
+        let direct = program(total - 1, "String.length \"abc\"");
+        assert_eq!(analyze_within(&[("Main", &direct)]), Ok(()));
+        let one_too_many_direct = program(total, "String.length \"abc\"");
+        assert_eq!(
+            analyze_within(&[("Main", &one_too_many_direct)])
+                .unwrap_err()
+                .0,
+            "E1017"
+        );
+        let through_text = program(total - 2, "Text.length \"abc\"");
+        assert_eq!(analyze_within(&[("Main", &through_text)]), Ok(()));
+        let one_too_many = program(total - 1, "Text.length \"abc\"");
+        let (code, _) = analyze_within(&[("Main", &one_too_many)]).unwrap_err();
+        assert_eq!(code, "E1017");
     }
 
     #[test]

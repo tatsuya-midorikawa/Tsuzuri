@@ -204,6 +204,7 @@ $n$ は入力のスカラー数、$t$ は表の項目数です。結果と作業
 
 - [Regex](./regex.md) — `\p{...}`、`\w`、大文字小文字を区別しない照合
 - [String](./string.md) と [Utf8String](./utf8string.md) — コード単位とバイトでの検索・切り出し
+- [Text](./text.md) — `string` と `utf8string` に共通の検索・切り出し。`Unicode` の `_utf8` の対は、まだ型クラスにしていません
 - [文字列](../literals-and-strings/strings.md) — 長さの単位と比較
 - [Utf8Char](./utf8char.md) — Unicode スカラー
 - [言語リファレンスの目次](../index.md)
