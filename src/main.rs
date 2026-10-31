@@ -1511,6 +1511,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             "--report is only valid with check",
         ));
     }
+    // Both print on stdout: the proof's records would come before the report's header.
+    if report_parallel && contracts == Some(ContractMode::Prove) {
+        return Err(command_line_error(
+            DiagnosticKind::OptionConflict,
+            "--report parallel cannot be combined with --contracts prove; run them separately",
+        ));
+    }
     if action == Action::Fmt
         && (optimization.is_some()
             || cpu.is_some()
@@ -6517,6 +6524,17 @@ mod tests {
             (
                 vec!["build", "Main.tz", "--report", "parallel"],
                 "--report is only valid with check",
+            ),
+            (
+                vec![
+                    "check",
+                    "Main.tz",
+                    "--report",
+                    "parallel",
+                    "--contracts",
+                    "prove",
+                ],
+                "--report parallel cannot be combined with --contracts prove; run them separately",
             ),
         ] {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");

@@ -32,7 +32,14 @@ fn report(directory: &Path, json: bool) -> String {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8(output.stdout).unwrap()
+    with_slashes(&String::from_utf8(output.stdout).unwrap())
+}
+
+/// `text` with the path of the fixture written with `/`: the report shows the path as the diagnostics do, which is
+/// `.\Main.tz` on Windows (`.\\Main.tz` in JSON), and the expectations below were written with `./Main.tz`.
+fn with_slashes(text: &str) -> String {
+    text.replace(r".\\Main.tz", "./Main.tz")
+        .replace(r".\Main.tz", "./Main.tz")
 }
 
 const BASIC_TEXT: &str = "parallel report: 2 suggestions, 2 sites
@@ -64,6 +71,35 @@ const RULES_TEXT: &str = "parallel report: 4 suggestions, 3 sites
 ./Main.tz:29:20: site: Parallel.fold callback is pure (parallel_safe: true)
 ./Main.tz:32:19: site: Parallel.init callback is pure (parallel_safe: true)
 ";
+
+/// PR #75 review: the Windows spelling of the fixture's path, in text and in JSON, compares with the expectations.
+#[test]
+fn windows_paths_compare_with_slashes() {
+    assert_eq!(
+        with_slashes(
+            ".\\Main.tz:6:19: suggestion: Array.map can be Parallel.map: the callback is pure\n"
+        ),
+        "./Main.tz:6:19: suggestion: Array.map can be Parallel.map: the callback is pure\n"
+    );
+    assert_eq!(
+        with_slashes(r#"{"path":".\\Main.tz","span":{"start":134}}"#),
+        r#"{"path":"./Main.tz","span":{"start":134}}"#
+    );
+    assert_eq!(with_slashes(BASIC_JSON), BASIC_JSON);
+}
+
+/// The byte offsets and columns of the expectations are those of the fixtures with LF line ends, as the repository
+/// stores them (the Windows workflow checks out with `core.autocrlf=false`); say so instead of a confusing diff.
+#[test]
+fn the_fixtures_have_lf_line_ends() {
+    for name in ["basic", "rules", "error"] {
+        let text = fs::read_to_string(fixture(name).join("Main.tz")).unwrap();
+        assert!(
+            !text.contains('\r'),
+            "{name}/Main.tz has CR line ends; check out with core.autocrlf=false"
+        );
+    }
+}
 
 #[test]
 fn the_basic_report_in_text_and_json() {
@@ -131,6 +167,19 @@ fn the_flag_is_checked() {
                 "check", "Main.tz", "--report", "parallel", "--report", "parallel",
             ],
             "report parallel specified more than once",
+        ),
+        // PR #75 review: the proof's records would come before the report's header on stdout.
+        (
+            vec![
+                "check",
+                "Main.tz",
+                "--contracts",
+                "prove",
+                "--report",
+                "parallel",
+                "--json",
+            ],
+            "--report parallel cannot be combined with --contracts prove",
         ),
     ] {
         let output = run(&directory, &arguments);

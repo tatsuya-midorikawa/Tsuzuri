@@ -15,6 +15,7 @@ use crate::check::{
     Builtin, CheckedModule, FunctionRef, ModuleOrigin, Type, TypeContext, TypedExpr, TypedExprKind,
 };
 use crate::diagnostic::{Span, json_string, location};
+use crate::syntax::Provenance;
 
 /// The most entries that a report holds; the ones after them in the order of the report are counted in `truncated`.
 pub const MAX_ENTRIES: usize = 1000;
@@ -207,7 +208,12 @@ fn inspect(
             if let Some(call) = STD_SITES.iter().copied().find(|call| *call == name) {
                 let purity = match reducer(module, id) {
                     Some(callback) => {
-                        purity(module, callback, arguments.iter(), &expression.ty, false)
+                        match purity(module, callback, arguments.iter(), &expression.ty, false) {
+                            // The rest of the std body runs too: `Parallel.fold` evaluates `Monoid.empty ()`
+                            // before `Parallel.reduce`, outside the reducer.
+                            Purity::Pure => effect_purity(pure_rules::reachable_effect(module, id)),
+                            impure => impure,
+                        }
                     }
                     None => Purity::Impure(unknown_call()),
                 };
@@ -311,16 +317,35 @@ fn adapted<'a>(module: &CheckedModule, callback: &'a TypedExpr) -> Option<&'a Ty
     let [capture] = captures.as_slice() else {
         return None;
     };
-    if !matches!(capture.kind, TypedExprKind::Local(captured) if captured == local.id) {
+    // Only the compiler names a local `$convention.N`; a block that a program writes has the same shape but may
+    // compute an effect before it calls the function it binds.
+    if local.provenance != Provenance::Generated
+        || !local.name.starts_with("$convention.")
+        || !matches!(capture.kind, TypedExprKind::Local(captured) if captured == local.id)
+    {
         return None;
     }
     let adapter = &module.functions[*id];
-    let parameter = adapter.parameters.first()?;
-    let TypedExprKind::Call(called, _) = &adapter.body.kind else {
+    let (captured, parameters) = adapter.parameters.split_first()?;
+    let TypedExprKind::Call(called, arguments) = &adapter.body.kind else {
         return None;
     };
+    // The adapter passes its own parameters on, borrowed or read through: nothing else is evaluated.
+    let forwarded = arguments.iter().all(|argument| {
+        let mut argument = argument;
+        while let TypedExprKind::Borrow(inner, _)
+        | TypedExprKind::BorrowOperand(inner)
+        | TypedExprKind::Dereference(inner)
+        | TypedExprKind::Cast(inner) = &argument.kind
+        {
+            argument = inner;
+        }
+        matches!(argument.kind, TypedExprKind::Local(local)
+            if parameters.iter().any(|parameter| parameter.id == local))
+    });
     (adapter.capture_count == 1
-        && matches!(called.kind, TypedExprKind::Local(local) if local == parameter.id))
+        && forwarded
+        && matches!(called.kind, TypedExprKind::Local(local) if local == captured.id))
     .then_some(value)
 }
 
@@ -455,11 +480,9 @@ fn purity<'a>(
             {
                 return Purity::Impure(unknown_call());
             }
-            effect_purity(reachable(module, *id, chunk))
+            staged_purity(module, *id, chunk)
         }
-        TypedExprKind::Function(FunctionRef::User(id)) => {
-            effect_purity(reachable(module, *id, chunk))
-        }
+        TypedExprKind::Function(FunctionRef::User(id)) => staged_purity(module, *id, chunk),
         TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
             if pure_rules::builtin_impure(instance.builtin) {
                 let dynamic = builtin_facts(instance.builtin).dynamic;
@@ -470,6 +493,16 @@ fn purity<'a>(
         }
         _ => Purity::Impure(unknown_call()),
     }
+}
+
+/// The purity of the function `id` as a callback. A function that returns a function value is applied in stages, and
+/// the later stages run code that the first one only builds as a closure (`\left -> \right -> Debug.trace right`):
+/// A19's reachability does not follow returned closures, so such a root is not proven pure.
+fn staged_purity(module: &CheckedModule, id: usize, chunk: bool) -> Purity {
+    if holds_function(&module.functions[id].signature.result, &module.types()) {
+        return Purity::Impure(reason(&Effect::Unresolved));
+    }
+    effect_purity(reachable(module, id, chunk))
 }
 
 fn reachable(
@@ -650,32 +683,48 @@ mod tests {
         build(&module, &One(source))
     }
 
+    /// The byte range of `text` in `source`, found from the source so that the expectations do not depend on its
+    /// line endings.
+    fn range(source: &str, text: &str, length: usize) -> (usize, usize) {
+        let start = source.find(text).unwrap_or_else(|| panic!("{text}"));
+        (start, start + length)
+    }
+
     #[test]
     fn builds_the_basic_report() {
-        let entries: Vec<_> = report(include_str!(
-            "../tests/fixtures/parallel_report/basic/Main.tz"
-        ))
-        .entries
-        .into_iter()
-        .map(|entry| {
-            (
-                entry.kind,
-                entry.call,
-                entry.span.start,
-                entry.span.end,
-                entry.parallel_safe,
-            )
-        })
-        .collect();
+        let source = include_str!("../tests/fixtures/parallel_report/basic/Main.tz");
+        let at = |text: &str, length: usize| range(source, text, length);
+        let ((map, map_end), (sum, sum_end)) = (at("Array.map square", 9), at("Array.sum", 9));
+        let doubled = "Parallel.map (\\value -> value * 2) values";
+        let shown = "Parallel.map (\\value -> Debug.trace value) values";
+        let ((pure, pure_end), (traced, traced_end)) =
+            (at(doubled, doubled.len()), at(shown, shown.len()));
+        let entries: Vec<_> = report(source)
+            .entries
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.kind,
+                    entry.call,
+                    entry.span.start,
+                    entry.span.end,
+                    entry.parallel_safe,
+                )
+            })
+            .collect();
         assert_eq!(
             entries,
             [
-                (EntryKind::Suggestion, "Array.map", 134, 143, true),
-                (EntryKind::Suggestion, "Array.sum", 162, 171, true),
-                (EntryKind::Site, "Parallel.map", 341, 382, true),
-                (EntryKind::Site, "Parallel.map", 434, 483, false),
+                (EntryKind::Suggestion, "Array.map", map, map_end, true),
+                (EntryKind::Suggestion, "Array.sum", sum, sum_end, true),
+                (EntryKind::Site, "Parallel.map", pure, pure_end, true),
+                (EntryKind::Site, "Parallel.map", traced, traced_end, false),
             ]
         );
+        // The offsets of the specification (§7.5 of F15) for the file as checked out with LF.
+        if !source.contains('\r') {
+            assert_eq!((map, sum, pure, traced), (134, 162, 341, 434));
+        }
     }
 
     #[test]
@@ -697,6 +746,86 @@ mod tests {
                 (EntryKind::Site, "Parallel.fold", 29),
                 (EntryKind::Site, "Parallel.init", 32),
             ]
+        );
+    }
+
+    /// `(kind, call, parallel_safe, reason)` of every entry of the report of `source`.
+    fn summary(source: &'static str) -> Vec<(EntryKind, &'static str, bool, Option<String>)> {
+        report(source)
+            .entries
+            .into_iter()
+            .map(|entry| (entry.kind, entry.call, entry.parallel_safe, entry.reason))
+            .collect()
+    }
+
+    const PRINT: &str = "the callback reaches 'Debug.__print_string' (effect: debug)";
+
+    /// PR #75 review: `Parallel.fold` evaluates `Monoid.empty ()` too, outside the reducer; an instance whose `empty`
+    /// prints is not `parallel_safe`, and `Array.fold_monoid` over it is not suggested.
+    #[test]
+    fn an_effectful_empty_makes_the_fold_impure() {
+        let entries = summary(
+            "record Noisy { value: i64 }\n\
+             instance Monoid<Noisy> {\n\
+             \x20   let empty = \\() -> { let zero = 0; Debug.print (ref zero); Noisy { value: zero } }\n\
+             \x20   fn combine left right = Noisy { value: left.value + right.value }\n\
+             }\n\
+             def folded :: ref [Noisy] -> Noisy\n\
+             fn folded values = Parallel.fold values\n\
+             def sequential :: ref [Noisy] -> Noisy\n\
+             fn sequential values = Array.fold_monoid values\n",
+        );
+        assert_eq!(
+            entries,
+            [(
+                EntryKind::Site,
+                "Parallel.fold",
+                false,
+                Some(PRINT.to_owned())
+            )]
+        );
+    }
+
+    /// PR #75 review: a block that a program writes, `({ let f = square; \index -> f (Debug.trace index) })`, has the
+    /// shape of the compiler's callback adapter but evaluates an effect before it calls `f`; it is not unwrapped.
+    #[test]
+    fn only_compiler_adapters_are_unwrapped() {
+        let entries = summary(
+            "def square :: i64 -> i64\n\
+             fn square value = value * value\n\
+             def wrapped :: ref [i64] -> [i64]\n\
+             fn wrapped values = Array.map ({ let f = square; \\index -> f (Debug.trace index) }) values\n\
+             def site :: ref [i64] -> [i64]\n\
+             fn site values = Parallel.map ({ let f = square; \\index -> f (Debug.trace index) }) values\n\
+             def plain :: ref [i64] -> [i64]\n\
+             fn plain values = Array.map square values\n",
+        );
+        assert_eq!(
+            entries,
+            [
+                (EntryKind::Site, "Parallel.map", false, Some(unknown_call())),
+                (EntryKind::Suggestion, "Array.map", true, None),
+            ],
+            "only `plain` is suggested, and the site is not pure"
+        );
+    }
+
+    /// PR #75 review: a callback applied in stages runs its effect when a later argument is supplied; the closure
+    /// that the first stage returns is not a call, so a root that returns a function is not proven pure.
+    #[test]
+    fn a_callback_that_returns_a_function_is_not_proven_pure() {
+        let entries = summary(
+            "def staged :: ref [i64] -> i64\n\
+             fn staged values = Parallel.reduce 0 (\\left -> { let offset = left; \\right -> Debug.trace (offset + right) }) values\n",
+        );
+        assert_eq!(
+            entries,
+            [(
+                EntryKind::Site,
+                "Parallel.reduce",
+                false,
+                Some("the callback cannot be proven pure (effect: unresolved)".to_owned())
+            )]
         );
     }
 

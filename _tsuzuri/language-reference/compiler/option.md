@@ -466,6 +466,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--kg` と `--no-kg` を両方付ける | `--kg and --no-kg cannot be used together` |
 | `--affected` を `test` 以外に付ける | `--affected is only valid with test` |
 | `--report` を `check` 以外に付ける | `--report is only valid with check` |
+| `--report parallel` と `--contracts prove`（どちらも標準出力に書くため） | `--report parallel cannot be combined with --contracts prove; run them separately` |
 | `--report` の値がない・`parallel` でない | `--report requires a report name; supported: parallel`、`unknown report 'X' for --report; supported: parallel` |
 | `--report parallel` を 2 回付ける | `report parallel specified more than once` |
 | `--overflow-report` を `check`・`bench`・`doc`・`fmt` に付ける | `--overflow-report is only valid with build, run, or test` |
