@@ -167,7 +167,7 @@ def answer :: i64 = 42
 doc コメントの本文の 0 桁目から始まる `` ``` ``（3 個以上）のフェンスで、情報文字列の最初の語が `tsuzuri` のものが例です（`~~~` と、ほかの言語のフェンスの中の行は例になりません）。閉じは、開きより後ろで `` ` `` だけが同じ個数以上並ぶ最初の行です。本文の行をそのまま `\n` でつないだものが、1 つの独立したプログラムの `Main.tz` になります。本文の行が `#` だけか `# ` で始まるなら隠し行で、行頭の `#` と直後の空白 1 文字を取って使い、表示では除きます。
 情報文字列の `tsuzuri` の後ろには印を高々 1 つ書けます。印なしは型検査だけ、`run=OUT` は native で実行して標準出力が OUT と一致すること（両方の `\r\n` を `\n` にし、末尾の空白を除いて完全一致）、`test` は本文の `test` が 1 件以上あってすべて通ること、`fails=CODE`（`E` と数字 4 桁）は型検査が拒否して最初の error のコードが CODE であること、`ignore` は検査しないことを表します。OUT はパーセント符号化で（`decodeURIComponent` と同じ。`%`・空白・タブ・LF・CR・`` ` `` は必ず `%25`・`%20`・`%09`・`%0A`・`%0D`・`%60`）、復号した byte 列は UTF-8 でなければなりません。
 `tsuzuri test --doc PATH [--list] [--filter TEXT] [--index N]... [--json] [-O0|-O1|-O2|-O3] [--deny-warnings] [--warn implicit-copy]` が例を集めて走らせます。集めるのは `tsuzuri doc` が出す宣言（`private` でない `def`・`extern def`・`extern type`・`record`・`union`・`type`・`const`、`class`、説明のあるメソッド）の例で、`PATH` がパッケージなら根のパッケージのソース（依存パッケージは除く）、`std` なら標準ライブラリのソースです。順序は `Project.sources` の順・ソース内の位置の順で、通しの 0 始まりの番号が `--index` と `--list` の番号、`{module}.{owner}#{number}` がラベル（`--filter` の部分一致の対象）です。例は 10,000 個までで、超えると `E1017`（`doc_example_limit`）です。
-各例は独立して走ります。パッケージの例は、パッケージの全ソース・マニフェスト・依存を読み、`Main.tz` を例で置き換えたプロジェクトで、`std` の例は標準ライブラリだけのプロジェクトで型検査します。`Main.tz` の宣言の例は実行できない（置き換えると自分の宣言が見えない）ので `ignored` に数え、標準エラーに通知 1 行（`--json` では `W2001`）を出します。`run=` は 30 秒で打ち切ります。結果は `ok N - Module owner#number`／`not ok …`（失敗の下に `failure:` と `at: path:line`）、要約は `P passed; F failed; I ignored` で、`--json` は `{"type":"doctest",...}` と `{"type":"summary",...}` の行です。失敗があれば最初に失敗した例の開きの行に `E2006`（`doc_test_failed`）を出して終了コード 1、引数の誤りは `E2000` で終了コード 2 です。`--doc` は `test` だけで受け付け、`--coverage`・`--seed`・`--affected`・`--allow-overflow`・`--contracts`・`-g`・`-o`・`--target`・`--link`/`-l`/`-L` とは組み合わせられません。例の契約は `run` と同じく検査し、例の警告は無視しますが、`--deny-warnings` のときは例の `Main` に出た最初の警告（`--warn` で有効にしたものを含む）で失敗します。
+各例は独立して走ります。パッケージの例は、パッケージの全ソース・マニフェスト・依存を読み、`Main.tz` を例で置き換えたプロジェクトで、`std` の例は標準ライブラリだけのプロジェクトで型検査します。`Main.tz` の宣言の例は実行できない（置き換えると自分の宣言が見えない）ので `ignored` に数え、標準エラーに通知 1 行（`--json` では `W2001`）を出します。`run=` は 30 秒で打ち切ります。結果は `ok N - Module owner#number`／`not ok …`（失敗の下に `failure:` と `at: path:line`）、要約は `P passed; F failed; I ignored` で、`--json` は `{"type":"doctest",...}` と `{"type":"summary",...}` の行です。失敗があれば最初に失敗した例の開きの行に `E2006`（`doc_test_failed`）を出して終了コード 1、引数の誤りは `E2000` で終了コード 2 です。`--doc` は `test` だけで受け付け、`--coverage`・`--seed`・`--affected`・`--contracts`・`-g`・`-o`・`--target`・`--link`/`-l`/`-L` とは組み合わせられません。`test` の例は `tsuzuri test` と同じく、折り返した整数の演算を報告して失敗にします（`--allow-overflow` で警告にとどめます。`run=` の例は `run` と同じく報告しません）。例の契約は `run` と同じく検査し、例の警告は無視しますが、`--deny-warnings` のときは例の `Main` に出た最初の警告（`--warn` で有効にしたものを含む）で失敗します。
 記法の誤り（未知・重複・併用の印、`fails=` の値、`run=` の符号化、字下げしたフェンス、閉じのないフェンス、空の本文）は `E2011`（`doc_example_invalid`）です。`tsuzuri test --doc` は `E2011` を最大 50 件集めて出し、例を 1 つも実行せずに終了コード 1 になります。`check`・`doc`・LSP は `E2011` を出さず、そのフェンスを素の本文として扱います。
 標準ライブラリの公開関数（大文字で始まるビルダー操作と、`Json` の derive の 10 関数を除く）には例があり、`tests/std_examples.rs` が数を検査します。新しい公開関数を std に足すときは、同じ形式の例を付けます。
 ドキュメントコメント内の Markdown、コードフェンス、HTML はそのままエスケープせずに出力されるため、外部からの信頼できないコメントを表示するビューア側で適切なサニタイズを実施してください。
@@ -3746,7 +3746,7 @@ let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 
 ### 標準コレクションの計算量
 
-計算量は 1 回の呼び出しの最悪の時間です。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。組み込みの操作（`Vec.push`・`Array.write`・`List.cons` など）は、各モジュールのページの手書きの表にあります。`String` の `n` は `text` のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数です。
+計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`with_capacity` などの容量を指定する関数では確保する容量、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。組み込みの操作（`Vec.push`・`Array.write`・`List.cons` など）は、各モジュールのページの手書きの表にあります。`String` の `n` は `text` のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数です。
 
 **Array**
 
@@ -4052,7 +4052,7 @@ let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 | `HashMap.insert` | 償却 $O(1)$、最悪 $O(n \cdot n)$ | - |
 | `HashMap.remove_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove` |
 | `HashMap.remove` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove_ref` |
-| `HashMap.longest_probe` | $O(n)$ | - |
+| `HashMap.longest_probe` | $O(k)$ | - |
 | `HashMap.to_array` | $O(n)$ | - |
 | `HashMap.keys` | $O(n)$ | - |
 | `HashMap.values` | $O(n)$ | - |
@@ -4078,7 +4078,7 @@ let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 | `HashSet.remove` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.remove_ref` |
 | `HashSet.contains_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.contains` |
 | `HashSet.contains` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.contains_ref` |
-| `HashSet.longest_probe` | $O(n)$ | - |
+| `HashSet.longest_probe` | $O(k)$ | - |
 | `HashSet.to_array` | $O(n)$ | - |
 | `HashSet.fold` | $O(n)$ | - |
 | `HashSet.iter` | $O(1)$ | - |

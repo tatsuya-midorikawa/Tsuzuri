@@ -25,6 +25,7 @@ test('plain table and escaping', () => {
     assert.equal(cell('a|b<c>&'), 'a\\|b&lt;c&gt;&amp;');
     assert.throws(() => renderTable(['x', 'y'], [['a']]), /Table column count mismatch/);
     assert.throws(() => renderTable(['x'], [['a`b']]), /Row name contains a backtick/);
+    assert.equal(renderTable(['x', 'y'], [['a\nb', '1']])[2], '| `a b` | 1 |');
 });
 
 const summary = {

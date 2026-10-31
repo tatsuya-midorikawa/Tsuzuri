@@ -443,6 +443,53 @@ fn deny_warnings_fails_an_example_with_a_warning() {
 }
 
 #[test]
+fn a_test_example_reports_wrapped_arithmetic_as_tsuzuri_test_does() {
+    // A23: `tsuzuri test` fails a test whose integer arithmetic wraps, unless `--allow-overflow`.
+    let source = "/// One.\n///\n/// ```tsuzuri test\n/// def twice :: i32 -> i32 = \\n -> n * 2\n/// test \"wraps\" = Test.equal (ref (twice 2000000000)) (ref (-294967296))\n/// ```\ndef one :: i64 = 1\n";
+    let package = Package::new("overflow", &[("Lib.tz", source)]);
+    let output = tsuzuri(&["test", "--doc", package.path()], &package.cache(), &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("integer overflow wrapped at"),
+        "{}",
+        stdout(&output)
+    );
+    let output = tsuzuri(
+        &["test", "--doc", package.path(), "--allow-overflow"],
+        &package.cache(),
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
+    let text = stdout(&output);
+    assert!(text.ends_with("1 passed; 0 failed; 0 ignored\n"), "{text}");
+    // The example passes and its report stays visible, in text and in JSON.
+    assert!(
+        text.contains("ok 1 - Lib one#1\n  warning: integer overflow wrapped at"),
+        "{text}"
+    );
+    let output = tsuzuri(
+        &[
+            "test",
+            "--doc",
+            package.path(),
+            "--allow-overflow",
+            "--json",
+        ],
+        &package.cache(),
+        &[],
+    );
+    let line = stdout(&output)
+        .lines()
+        .find(|line| line.contains("\"type\":\"doctest\""))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        line.contains("\"status\":\"passed\",\"overflow\":[\"integer overflow wrapped at"),
+        "{line}"
+    );
+}
+
+#[test]
 fn a_blank_between_the_backticks_and_the_language_still_opens_an_example() {
     let source = "/// One.\n///\n/// ``` tsuzuri run=1\n/// Lib.one\n/// ```\ndef one :: i64 = 1\n";
     let package = Package::new("spaced-fence", &[("Lib.tz", source)]);

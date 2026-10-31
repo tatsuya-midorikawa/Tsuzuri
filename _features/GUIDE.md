@@ -1838,7 +1838,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | CLI（`build`・`run`・`test`） | `--overflow-report`（`build`・`run`・`test`）・`--allow-overflow`（`test` だけ） | A23 | 折り返しの報告。`test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告のまま通す）。`--no-overflow-report` は作らない |
 | CLI（`--contracts prove`・`prove`） | `--prove-timeout SECONDS`（1〜3600）・`--function NAME` | A21 | 契約の静的検証（`prove` のときだけ使える） |
 | CLI（`--warn` の値） | `untrusted-extern` | E15 | `W1010` を有効にする。**`--warn` の値の一覧とエラー文の `supported:` は、実装済みの値だけを固定の順序 `implicit-copy, canonical, untrusted-extern` で並べる**（`main.rs` の 1 つの定数から解析・`--help`・エラー文を作る。先に入ったチケットが作り、後のチケットは順序の位置に足す） |
-| CLI（`test`） | `--doc`（`--list`・`--filter`・`--index`・`--json` と併用できる。`test` 以外・`--coverage`・`--seed`・`--affected`・`--allow-overflow`・`-g`・`-o`・`--target`・`--link`/`-l`/`-L` との併用は `E2000`） | G34 | `///` の例の検査。`E2011` を出す。kind は `doc_example_invalid`（`E2011`）・`doc_test_failed`（`E2006`）・`doc_example_limit`（`E1017`） |
+| CLI（`test`） | `--doc`（`--list`・`--filter`・`--index`・`--json` と併用できる。`test` 以外・`--coverage`・`--seed`・`--affected`・`--contracts`・`-g`・`-o`・`--target`・`--link`/`-l`/`-L` との併用は `E2000`） | G34 | `///` の例の検査。`E2011` を出す。kind は `doc_example_invalid`（`E2011`）・`doc_test_failed`（`E2006`）・`doc_example_limit`（`E1017`） |
 | 終了コード | `E2000` | 全チケット | コマンドラインの語だけで決まる誤りは 2。入力（マニフェスト・ソース）を読んだあとに分かる誤り（A22 の `--edition` とマニフェストの衝突など）は 1（既存の読み込みの誤りと同じ） |
 | CLI（`bench`） | `--allocs` | F14 | bench ごとの確保数 |
 | CLI（`check`） | `--report parallel`（`check` だけ。ほかのサブコマンドは引数エラー。`--json` と併用できる。報告は stdout、提案だけで自動では適用しない） | F15 | 並列化の提案と、既存の `Parallel.*` の呼び出しの純粋さ。JSON の schema は `tz-report-parallel/1`。付けない `check` の出力は 1 byte も変わらない |
