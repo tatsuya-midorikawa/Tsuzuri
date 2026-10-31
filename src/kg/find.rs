@@ -720,6 +720,27 @@ fn tier_of_parts(
     None
 }
 
+/// Whether `--module NAME` names the module `display`: its full name, with `::` or `.`, or its
+/// last part.
+fn module_named(display: &str, module: &str) -> bool {
+    display == module
+        || display.rsplit("::").next() == Some(module)
+        || display.replace("::", ".") == module
+}
+
+/// Whether the project's or std's graph has a module node that `--module NAME` names (a module
+/// that declares only types counts; `search` decides what it holds).
+pub fn has_module(view: &KgView, module: &str) -> bool {
+    [view.project(), view.std()]
+        .into_iter()
+        .flatten()
+        .any(|data| {
+            data.nodes
+                .iter()
+                .any(|node| node.kind == "module" && module_named(&node.module, module))
+        })
+}
+
 /// The matches of `query` among the project's and std's function-like nodes, and the number of
 /// entries searched.
 pub fn search(view: &KgView, query: &Query) -> Result<(Vec<Match>, usize), QueryTypeError> {
@@ -751,12 +772,7 @@ pub fn search(view: &KgView, query: &Query) -> Result<(Vec<Match>, usize), Query
     }
     let module_matches = |entry: &Entry<'_>| match &query.module {
         None => true,
-        Some(module) => {
-            let display = entry.node.module.as_str();
-            display == module
-                || display.rsplit("::").next() == Some(module.as_str())
-                || display.replace("::", ".") == *module
-        }
+        Some(module) => module_named(&entry.node.module, module),
     };
     let mut searched = 0;
     let mut matches: BTreeMap<(usize, usize, String, usize), Match> = BTreeMap::new();

@@ -1793,6 +1793,10 @@ impl Wire for ExprKind {
                 slot.put(out)?;
                 slots.put(out)
             }
+            Hole(name) => {
+                out.tag("ExprKind", 46);
+                name.put(out)
+            }
         }
     }
 
@@ -1949,7 +1953,8 @@ impl Wire for ExprKind {
                     slots: u32::get(input)?,
                 })
             }),
-            46..=u8::MAX => Err(Invalid),
+            46 => variant(input, |input| Ok(Hole(Option::<Ident>::get(input)?))),
+            47..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -2598,6 +2603,7 @@ mod tests {
             .unwrap(),
         );
         seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
+        seen.extend(round_trips("let hole = f ?a ?\nhole\n", 0).unwrap());
         seen.extend(
             round_trips(
                 "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
@@ -2644,7 +2650,7 @@ mod tests {
             ("Kind", 2),
             ("TypeExprKind", 18),
             ("StringLiteral", 2),
-            ("ExprKind", 46),
+            ("ExprKind", 47),
             ("PatternKind", 14),
             ("ComputationStatementKind", 9),
             ("SourceKind", 0),

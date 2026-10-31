@@ -687,3 +687,21 @@ fn formats_effect_attributes_and_round_trips() {
     assert_eq!(after.effect_attributes.len(), 3);
     assert_eq!(ast_fingerprint(before), ast_fingerprint(after));
 }
+
+#[test]
+fn holes_keep_their_spacing() {
+    // G25: `?name` stays one hole, `? name` passes `name` to a hole, and other spacing is canonical.
+    for (source, expected) in [
+        ("let x = f   ?a ?\nx\n", "let x = f ?a ?\nx\n"),
+        ("let y = ? b\ny\n", "let y = ? b\ny\n"),
+    ] {
+        let first = format_source("Main.tz", source, SourceKind::Code).unwrap();
+        assert_eq!(first.formatted, expected);
+        let second = format_source("Main.tz", &first.formatted, SourceKind::Code).unwrap();
+        assert_eq!(second.formatted, expected);
+        assert_eq!(
+            ast_fingerprint(parser::parse(source).unwrap()),
+            ast_fingerprint(parser::parse(expected).unwrap())
+        );
+    }
+}

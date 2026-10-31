@@ -1828,7 +1828,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 種別 | 名前 | チケット | 用途 |
 | --- | --- | --- | --- |
 | CLI（`guide`・`new`） | `--level`・`--topic`・`--list`・`--agents`・`--llms-txt`・`--edition`（`guide` の中だけ）・`--no-agent-files`（`new` の中だけ） | G21 | AI 向けの案内。JSON の schema は `tz-guide/1` |
-| CLI（`find`・`kb find`） | `--project`・`--result`・`--takes`・`--module`・`--limit` | G25 | 型でのシグネチャ検索 |
+| CLI（`find`・`kb find`） | `--project`・`--result`・`--takes`・`--module`・`--limit` | G25 | 型でのシグネチャ検索。照合は `kg find` と同じ実装（D-60）。`E2000` の kind は `find_bad_arguments`（引数・読めない問い合わせ）・`find_unknown_module`（どちらも終了コード 2）。`E1030` の kind は `typed_hole` |
 | CLI（`kg build`・`kg clean`、`kg export`） | `--std`・`--force`、`--nodes`・`--edges`・`--facts` | G27 | std の KG・古くなくても作り直す・書き出すファイル（D-60） |
 | CLI（`kg` の照会・`impact`・`path`） | `--path`・`--depth`・`--budget`・`--no-refresh`・`--git`・`--from`・`--to`・`--affected`・`--rel` | G28 | 照会の範囲・文字数の上限・差分の指定・最短路の関係（`--rel` は D-60） |
 | CLI（`kg diagram`） | `--format mermaid\|dot`・`--max-nodes N`（5〜200）・`--depth N`・`--path`（この 4 つは `kg diagram` の中だけ。`--kg-dir`・`--no-refresh` は G28 と同じ意味） | G30 | 図の出力形式と大きさの上限。誤りは `E2000` の kind `diagram_usage`・`diagram_unknown_kind`・`diagram_needs_id`・`diagram_format_unsupported`・`diagram_bad_option`・`diagram_unknown_id`・`diagram_wrong_id_kind`・`diagram_unavailable`・`diagram_too_large`（すべて終了コード 2） |

@@ -286,7 +286,7 @@ function multipleDiagnosticChecks() {
   }
   for (const [source, code] of [
     ["fn first =\nrecord R { x: i64 }\nfn second =\n", "E0002"],
-    ["? ?", "E0001"],
+    ["` `", "E0001"],
     ['def consume :: own string -> unit\nfn consume s = ()\ndef a :: unit\nfn a = { let s = "a"; consume s; consume s }\ndef b :: unit\nfn b = { let s = "b"; consume s; consume s }', "E1012"],
   ]) {
     writeFileSync(main, source);
@@ -645,7 +645,7 @@ int main(void) {
   const broken = join(directory, "Broken.tz");
   for (const [source, code, line] of [
     ["// 日本語\nfn broken() -> i64 { false }", "E1003", 2],
-    ["fn broken() -> i64 { ? }", "E0001", 1],
+    ["fn broken() -> i64 { ` }", "E0001", 1],
     ["fn broken() -> i64 {", "E0002", 1],
   ]) {
     writeFileSync(broken, source);

@@ -99,7 +99,7 @@ C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であ�
 | 最適化 | 既定で LLVM `-O3`、自動 SIMD 化、基本数値変換の直接 lowering。所有権・借用から証明した内部参照属性、scoped alias、限定した scalar TBAA・値・memory effects の情報を付与（public wrapper・slice ABI は維持）。`--cpu native` によるビルド機向け最適化。直接の自己末尾再帰は `-O0` でもループ化し、同じ再帰グループへの末尾呼び出しは native で保証された末尾呼び出し（`musttail`）。 |
 | 安全性 | ゼロ除算や配列・リスト境界アクセスの実行時検査。LLVM の未定義動作に依存しない数値仕様。`@checked` による整数オーバーフローは `try` で `Result` に変換可能。 |
 | ホスト連携 | スカラー・バッファ・レコードの C ABI 連携および WebAssembly（WASM）のエクスポート／インポート。`extern` のリンク名指定・不透明ハンドル・静的コールバック、ネイティブのホストリンク。標準入出力と OS API は `IO`、協調的な待ちは `Async`、UI やネットワークのイベントはホスト側に委譲。 |
-| 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断（原因の識別子 kind、関連する位置・直し方・修正案を含む）、診断の説明（`tsuzuri explain`）とよくある誤りのヒント、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行）。 |
+| 開発・AI 支援 | 明示的な関数シグネチャ、暗黙の型変換の排除、位置情報付き JSON 診断（原因の識別子 kind、関連する位置・直し方・修正案を含む）、型つき穴 `?` と型での検索（`tsuzuri find`）、診断の説明（`tsuzuri explain`）とよくある誤りのヒント、決定的な IR 出力。公式 LSP、フォーマッター、テストランナー、REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行）。 |
 
 ---
 
@@ -818,6 +818,18 @@ tsuzuri audit app --json --deny-warnings
 
 `check`・`build`・`run`・`test` は、プロジェクトの知識グラフ（宣言をノード、呼び出し・型の使用・テストなどの関係を辺にした JSON Lines、関数ごとの効果・トラップ・所有権の事実、型のレイアウト、短い英語の要約カード）を `target/tz/kg/` に書きます。ソースが変わっていなければ書き直さず、`--no-kg` か `TSUZURI_KG=0` で止められます。`tsuzuri kg build|verify|clean|export` で明示的に作る・確かめる・消す・出力でき、`tsuzuri kg show|callers|callees|uses|tests-for|search|find|path|brief` でソースを読まずに宣言・呼び出し・テスト・型での検索・最短の関係の鎖を引けます。`tsuzuri kg impact --git REV` は前の版との差（公開 API・効果・警告）とその差に届くテストを出し、`tsuzuri test --affected REV` はそのテストだけを実行します。`tsuzuri kg diagram module|types|calls|ownership|concurrency|layout|transitions` は、その知識グラフからモジュールの依存・型・呼び出し・所有権の流れ・並行・メモリの配置・状態遷移の図を Mermaid・DOT・Markdown で出し、ID の要らない図は `views/*.mmd` として知識グラフに入ります（[図表の生成](_tsuzuri/language-reference/compiler/diagrams.md)、[知識グラフ](_tsuzuri/language-reference/compiler/kg.md)、[形式](_tsuzuri/language-reference/compiler/kg-format.md)）。
 
+### 型つき穴と型での検索 (`?`、`tsuzuri find`)
+
+まだ書いていない式の位置に `?`（`?名前`）を置くと、`check` はその位置で期待される型・見える局所・その型の値を作れる候補（局所、`Array.length (ref xs)` のような呼び出し、共用体のケースなど）を `E1030` で出します。穴は誤りなので、プログラムは生成しません。期待される型の局所が 1 つだけなら、その名前に置き換える `maybe` の修正案も付きます（[型つき穴](_tsuzuri/language-reference/types-and-type-inference/type-inference.md#型つき穴-)）。未知の名前（`E1002`・`E1004`・`E1007`・`E1020`）には、近い名前と、モジュールを付ければ解決する名前（`length` に `Array.length`）が候補として付きます。
+
+`tsuzuri find` は、型から std と（`--project DIR` で）プロジェクトの宣言を探します。照合は `tsuzuri kg find` と同じです（[find](_tsuzuri/language-reference/compiler/usage.md#find)）。
+
+```sh
+tsuzuri find 'ref [i64] -> i64'
+tsuzuri find --result bool --takes string
+tsuzuri find --project . --module Main 'i64 -> i64'
+```
+
 ### 診断の説明 (`tsuzuri explain`)
 
 すべての診断は、原因を表す安定した識別子 kind（`use_after_move`、`type_mismatch` など）を持ち、`--json` の `kind` キーと LSP の `data.kind` に出ます。`tsuzuri explain` は、kind の原因と、テストで検査した誤りの例・直した例を出します。コードを渡すと、そのコードの kind の一覧と直し方を出します。説明はコンパイラに埋め込まれた英語です。
@@ -930,6 +942,7 @@ tsuzuri guide std [MODULE] | --agents [DIR] | --llms-txt [DIR]
 tsuzuri fetch directory [--json]
 tsuzuri publish directory --git URL --rev COMMIT [--json]
 tsuzuri api-diff old new [--json] [--effective]
+tsuzuri find [--project DIR] [--module NAME] [--limit N] [--json] QUERY | [--result TYPE] [--takes TYPE]...
 tsuzuri audit [PATH] [--json] [--deny-warnings]
 tsuzuri prove [source.tz|directory] [--function NAME]... [--prove-timeout SECONDS] [--json]
 tsuzuri build|run|test|check ... [--contracts off|check|test|prove]
@@ -1114,8 +1127,8 @@ cargo test --locked honors_the_exact_specialization_limit
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
 | ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |
 | host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs` | `host_imports.mjs` |
-| driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs`、`tests/targets.rs`（`--target TRIPLE`・クロスの引数・実行器。G15）、`tests/api_diff.rs`（`tsuzuri api-diff`。G19） | `cache.mjs`、`examples.mjs`、`targets.mjs`（triple ごとに executed／linked／object を表示。`TSUZURI_CROSS_LINK=1`、`TSUZURI_CROSS_EXECUTE=1`） |
-| 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs`（W1005 を含む） | — |
+| driver・CLI・cache | `src/main.rs` の test module、`tests/modules.rs`、`tests/targets.rs`（`--target TRIPLE`・クロスの引数・実行器。G15）、`tests/api_diff.rs`（`tsuzuri api-diff`。G19）、`tests/find.rs`（`tsuzuri find`。G25） | `cache.mjs`、`examples.mjs`、`targets.mjs`（triple ごとに executed／linked／object を表示。`TSUZURI_CROSS_LINK=1`、`TSUZURI_CROSS_EXECUTE=1`） |
+| 診断・警告 | `tests/diagnostics.rs`、`tests/warnings.rs`（W1005 を含む）、`tests/typed_holes.rs`・`tests/name_suggestions.rs`（型つき穴と未解決名の候補。G25） | — |
 | LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
 | 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
 | `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |

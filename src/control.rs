@@ -947,11 +947,12 @@ impl Checker<'_> {
         matched: TypedExpr,
     ) -> Result<(Vec<Alternative>, CoveragePat), Diagnostic> {
         let (id, active_case) = self.active_recognizer(name)?.ok_or_else(|| {
-            Diagnostic::of(
+            let unknown = Diagnostic::of(
                 DiagnosticKind::UnknownCaseOrActivePattern,
                 format!("unknown union case or active pattern '{}'", name.text),
                 name.span,
-            )
+            );
+            find::with_suggestions(unknown, &name.text, name.span, &self.pattern_pool())
         })?;
         let (kind, ty) = self.function(id);
         if ty.contains_error() {

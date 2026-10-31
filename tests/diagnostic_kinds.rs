@@ -140,7 +140,9 @@ fn baseline_root() -> &'static Path {
     ))
 }
 
-/// (case, diagnostics) of `baseline.jsonl`, written by the compiler before G23.
+/// (case, diagnostics) of `baseline.jsonl`, written by the compiler before G23. The case
+/// `question-mark` was rewritten by G25, which made `?` a typed hole: `c ? 1 : 2` is now a syntax
+/// error at `:`.
 fn baseline() -> Vec<(String, Vec<serde_json::Value>)> {
     std::fs::read_to_string(baseline_root().join("baseline.jsonl"))
         .unwrap()
@@ -204,8 +206,9 @@ const KEY_ORDER: &[&str] = &[
 ];
 
 /// Checks one current line against its baseline: the same values except `kind` (added), `help`
-/// (kept when the baseline has one, else possibly added by a hint), and `fixes` (the baseline's
-/// fixes first); the keys in the order of D-51.
+/// (kept when the baseline has one, else possibly added by a hint or a near name), `candidates`
+/// (the near names of an unresolved name, G25), and `fixes` (the baseline's fixes first); the keys
+/// in the order of D-51.
 fn assert_same_but_added(case: &str, before: &serde_json::Value, line: &str) {
     let keys = top_level_keys(line);
     let positions: Vec<usize> = keys
@@ -226,6 +229,9 @@ fn assert_same_but_added(case: &str, before: &serde_json::Value, line: &str) {
     let after = after.as_object_mut().unwrap();
     let before = before.as_object_mut().unwrap();
     after.remove("kind");
+    if !before.contains_key("candidates") {
+        after.remove("candidates");
+    }
     let added_help = after.remove("help");
     if let Some(help) = before.remove("help") {
         assert!(

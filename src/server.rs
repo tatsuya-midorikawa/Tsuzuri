@@ -2202,9 +2202,13 @@ mod tests {
     fn only_known_code_writes_to_the_streams_of_the_process() {
         let mut found = BTreeMap::new();
         for (file, text) in sources() {
-            // `main_kg.rs` is part of the command line binary, like `main.rs`, and a server never
-            // runs `tsuzuri kg`.
-            if file == "main.rs" || file == "main_kg.rs" || file == "server.rs" {
+            // `main_kg.rs` and `main_find.rs` are part of the command line binary, like `main.rs`,
+            // and a server never runs `tsuzuri kg` or `tsuzuri find`.
+            if file == "main.rs"
+                || file == "main_kg.rs"
+                || file == "main_find.rs"
+                || file == "server.rs"
+            {
                 continue;
             }
             let lines = text
