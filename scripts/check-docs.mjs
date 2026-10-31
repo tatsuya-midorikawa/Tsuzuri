@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { checkBlocks, createContext } from './gen-docs.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compiler = resolve(process.env.TSUZURI_BIN ?? join(root, 'target/release/tsuzuri'));
 const temporary = mkdtempSync(join(tmpdir(), 'tsuzuri-docs-'));
@@ -114,7 +116,10 @@ try {
         }
     }
     assert.ok(!requested.length || requested.every(path => pages.includes(path)), 'Requested page not found');
-    console.log(`Docs: ${requested.length || pages.length} pages, ${links} links, ${examples} checked examples, ${executions} native runs (O0/O3), ${tests} test projects.`);
+    // G35: the generated blocks of the requested pages (of every placement without a page) match their generator.
+    const blocks = checkBlocks(createContext({ root, compiler }), { files: requested.length ? requested : undefined });
+    assert.equal(blocks.stale.length, 0, `${blocks.stale.join('\n')}\nrun 'node scripts/gen-docs.mjs' to update`);
+    console.log(`Docs: ${requested.length || pages.length} pages, ${links} links, ${examples} checked examples, ${executions} native runs (O0/O3), ${tests} test projects, ${blocks.checked} generated blocks.`);
 } finally {
     rmSync(temporary, { recursive: true, force: true });
 }

@@ -257,486 +257,61 @@ kernel を一つの accumulator で書いた途中の版は、同じ条件の di
 
 ## ベンチマーク サマリー
 
-<!-- benchmark-summary:start -->
-<p><strong>処理時間は小さいほど高速です。</strong> 緑色・太字は各行の表示値で最速の実装です。同じ表示値は同率扱いです。僅差は一般的な優位性を示しません。</p>
-<p><strong>Tsuzuri 相対性能は大きいほど良好です。</strong> 最速を <code>1.00000</code> とし、最速の処理時間を Tsuzuri の処理時間で割ります。<code>0.50000</code> は最速の半分の性能（処理時間は2倍）、<code>0.80000</code> は最速の80%の性能です。小数第5位に丸めるため、ごく僅かな差は <code>1.00000</code> になります。比較できない行は <code>-</code> です。</p>
-<p>最終測定: <code>2026-10-13T16:17:59.295Z</code><br>CPU: Apple M1 Max / arm64 / generic<br>Tsuzuri: <code style="overflow-wrap:anywhere">659cf1ad87e8e3dace10ded0d5b82ece98765cd496a155b51f343d55ed5f77dc</code><br>C#: .NET 10.0.2 / JavaScript: v24.21.0</p>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">38種目 / generic / scale 0.1 / 1回の中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri (ms)</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C (ms)</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++ (ms)</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust (ms)</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C# (ms)</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">JavaScript (ms)</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">観測最速</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap" title="この行の最速時間 / Tsuzuriの処理時間。大きいほど高速です">Tsuzuri 相対性能<br><small>最速 = 1.00000</small></th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/while_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.304265</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.297156</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.301656</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.299912</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.522135</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.420292</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9945494205548718" title="最速時間 / Tsuzuri時間 = 0.9945494205548718"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99455</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/for_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.296941</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.292906</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.293412</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 2.066091</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.520627</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.481063</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9968888330309553" title="最速時間 / Tsuzuri時間 = 0.9968888330309553"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99689</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.295676</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.296471</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.301088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.296219</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.523621</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.358250</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_if_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.293844</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.289031</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.294156</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.289625</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.532079</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.088938</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9962800770417454" title="最速時間 / Tsuzuri時間 = 0.9962800770417454"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99628</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_builtin_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.282156</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.286133</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.281469</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.288344</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.518446</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.141062</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.99946418376547" title="最速時間 / Tsuzuri時間 = 0.99946418376547"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99946</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/match_dispatch</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.254525</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.413710</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.412740</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.255019</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.498443</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">46.159875</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.168405</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.167898</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.168111</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.167399</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.585724</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.010989</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9940263056322556" title="最速時間 / Tsuzuri時間 = 0.9940263056322556"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99403</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_index_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.167339</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.168329</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.169123</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.167975</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.586143</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.757771</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_copy</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.132825</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.133114</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.136928</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.136883</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.405095</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.303771</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/list_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.177414</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.181234</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.181495</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.181871</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.238629</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.546143</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.190829</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.191157</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.190705</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.190288</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.196644</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 5.039344</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9971650011266632" title="最速時間 / Tsuzuri時間 = 0.9971650011266632"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99717</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_churn</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.639636</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.630047</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.635172</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.907217</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 2.342278</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.750188</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9850086611760439" title="最速時間 / Tsuzuri時間 = 0.9850086611760439"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98501</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/record_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.273294</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.270156</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.273750</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.275467</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.526908</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36.805333</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9975355259665091" title="最速時間 / Tsuzuri時間 = 0.9975355259665091"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99754</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/integer128_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.513073</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.515268</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.510841</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.530436</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.705369</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.214396</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9956497418496003" title="最速時間 / Tsuzuri時間 = 0.9956497418496003"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99565</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float32_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.884917</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.885455</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.892370</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.887304</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.884898</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 2.417373</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9999785290597876" title="最速時間 / Tsuzuri時間 = 0.9999785290597876"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99998</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float64_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.889196</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.886348</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.891000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.889326</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.888113</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.821212</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9967971065996698" title="最速時間 / Tsuzuri時間 = 0.9967971065996698"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99680</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/integer_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.235531</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.209047</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.240446</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 3.173179</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">65.800626</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9807289746258034" title="最速時間 / Tsuzuri時間 = 0.9807289746258034"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98073</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/mandelbrot</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">243 x 243</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.317229</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.362167</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.388583</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.518100</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.197739</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.343201</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.346706</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.344674</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.180267</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.660854</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_scan</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.006654</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.007205</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.007398</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.030164</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.068435</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_compare</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.017352</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.040798</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.019514</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.019363</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.008560</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">JavaScript</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.49331489165514064" title="最速時間 / Tsuzuri時間 = 0.49331489165514064"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.49331</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_validate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.053580</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.053743</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.110524</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.077807</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.351490</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="1" title="最速時間 / Tsuzuri時間 = 1"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.00000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf8_roundtrip</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.164200</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.089272</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.106033</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.110761</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.404166</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.5436784409257004" title="最速時間 / Tsuzuri時間 = 0.5436784409257004"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.54368</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/format_parse</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.373869</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.325875</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.182429</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.271777</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.706008</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.7269310908366299" title="最速時間 / Tsuzuri時間 = 0.7269310908366299"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.72693</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/math_intrinsics</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.509317</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.507890</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.514595</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.508265</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.509357</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.997198208581296" title="最速時間 / Tsuzuri時間 = 0.997198208581296"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99720</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequence</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.079550</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.080077</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.079247</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.632582</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.835684</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.996191074795726" title="最速時間 / Tsuzuri時間 = 0.996191074795726"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99619</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequential</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.273271</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.270806</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.272396</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 1.270294</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26.393937</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9976619274294317" title="最速時間 / Tsuzuri時間 = 0.9976619274294317"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99766</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_parallel</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.240655</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.292850</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.300255</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.226232</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">41.392771</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9400677318152542" title="最速時間 / Tsuzuri時間 = 0.9400677318152542"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.94007</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.323081</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.324612</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.388171</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.317519</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 9.425278</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9827845029574627" title="最速時間 / Tsuzuri時間 = 0.9827845029574627"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98278</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/checked</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.523800</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.516428</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.528233</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.816778</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.402646</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9859259259259259" title="最速時間 / Tsuzuri時間 = 0.9859259259259259"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98593</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/delayed</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.130580</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.130538</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.148901</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.182638</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 7.591097</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9996783580946546" title="最速時間 / Tsuzuri時間 = 0.9996783580946546"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.99968</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_for</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000621</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000609</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000606</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.001205</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.077196</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9758454106280192" title="最速時間 / Tsuzuri時間 = 0.9758454106280192"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.97585</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000607</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000613</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.000589</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.001210</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.076176</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9703459637561779" title="最速時間 / Tsuzuri時間 = 0.9703459637561779"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.97035</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/owned_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.002648</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.002612</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.002704</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.003083</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.063521</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.986404833836858" title="最速時間 / Tsuzuri時間 = 0.986404833836858"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98640</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.515467</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.446133</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.445270</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.548111</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.879719</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.8638186343645665" title="最速時間 / Tsuzuri時間 = 0.8638186343645665"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.86382</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_result</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.515581</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.506539</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.522129</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.753402</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.560500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9824625034669625" title="最速時間 / Tsuzuri時間 = 0.9824625034669625"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98246</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_owned</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.017647</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.033147</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.001838</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.017951</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.059832</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.10415368051226838" title="最速時間 / Tsuzuri時間 = 0.10415368051226838"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.10415</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_length</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.391212</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">        -</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right;background-color:#dcfce7;color:#14532d;font-weight:700" title="この行の観測最小値" data-fastest="true"><strong><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.384712</code></strong></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.459892</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.574329</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.124146</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right" data-tsuzuri-performance="0.9833849677412758" title="最速時間 / Tsuzuri時間 = 0.9833849677412758"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit"> 0.98338</code></td>
-</tr>
-</tbody></table>
-</div>
-<p><code>-</code> は未測定です。すべて wall time（ms/呼び出し）で、起動時間は含みません。C#/JavaScript は別プロセス、管理メモリの回収条件は言語ごとに異なります。詳細な比較条件は後述します。</p>
-<!-- benchmark-summary:end -->
+<!-- generated:benchmark-summary -->
+**処理時間は小さいほど高速です。** 太字は各行の表示値で最速の実装です。同じ表示値は同率扱いです。僅差は一般的な優位性を示しません。
+
+**Tsuzuri 相対性能は大きいほど良好です。** 最速を `1.00000` とし、最速の処理時間を Tsuzuri の処理時間で割ります。`0.50000` は最速の半分の性能（処理時間は2倍）、`0.80000` は最速の80%の性能です。小数第5位に丸めるため、ごく僅かな差は `1.00000` になります。比較できない行は `-` です。
+
+- 最終測定: `2026-10-13T16:17:59.295Z`
+- CPU: Apple M1 Max / arm64 / generic
+- Tsuzuri: `659cf1ad87e8e3dace10ded0d5b82ece98765cd496a155b51f343d55ed5f77dc`
+- C#: .NET 10.0.2 / JavaScript: v24.21.0
+
+**38種目 / generic / scale 0.1 / 1回の中央値**
+
+| 種目 | 仕事量 | Tsuzuri (ms) | C (ms) | C++ (ms) | Rust (ms) | C# (ms) | JavaScript (ms) | 観測最速 | Tsuzuri 相対性能 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| `control/while_mix` | 800000 | 1.304265 | **1.297156** | 1.301656 | 1.299912 | 1.522135 | 37.420292 | C | 0.99455 |
+| `control/for_mix` | 800000 | 1.296941 | **1.292906** | 1.293412 | 2.066091 | 1.520627 | 37.481063 | C | 0.99689 |
+| `control/tail_mix` | 800000 | **1.295676** | 1.296471 | 1.301088 | 1.296219 | 1.523621 | 37.358250 | Tsuzuri | 1.00000 |
+| `control/tail_if_mix` | 800000 | 1.293844 | **1.289031** | 1.294156 | 1.289625 | 1.532079 | 37.088938 | C | 0.99628 |
+| `control/tail_builtin_mix` | 800000 | 1.282156 | 1.286133 | **1.281469** | 1.288344 | 1.518446 | 37.141062 | C++ | 0.99946 |
+| `control/match_dispatch` | 800000 | **0.254525** | 0.413710 | 0.412740 | 0.255019 | 1.498443 | 46.159875 | Tsuzuri | 1.00000 |
+| `control/array_sum` | 400000 | 0.168405 | 0.167898 | 0.168111 | **0.167399** | 0.585724 | 14.010989 | Rust | 0.99403 |
+| `control/array_index_sum` | 400000 | **0.167339** | 0.168329 | 0.169123 | 0.167975 | 0.586143 | 13.757771 | Tsuzuri | 1.00000 |
+| `control/array_copy` | 200000 | **0.132825** | 0.133114 | 0.136928 | 0.136883 | 0.405095 | 11.303771 | Tsuzuri | 1.00000 |
+| `control/list_sum` | 10000 | **0.177414** | 0.181234 | 0.181495 | 0.181871 | 0.238629 | 0.546143 | Tsuzuri | 1.00000 |
+| `control/closure_capture` | 100000 | 0.190829 | 0.191157 | 0.190705 | **0.190288** | 0.196644 | 5.039344 | Rust | 0.99717 |
+| `control/closure_churn` | 100000 | 0.639636 | **0.630047** | 0.635172 | 0.907217 | 2.342278 | 11.750188 | C | 0.98501 |
+| `control/record_pipeline` | 800000 | 1.273294 | **1.270156** | 1.273750 | 1.275467 | 1.526908 | 36.805333 | C | 0.99754 |
+| `control/integer128_mix` | 200000 | 0.513073 | 0.515268 | **0.510841** | 0.530436 | 0.705369 | 12.214396 | C++ | 0.99565 |
+| `control/float32_mix` | 400000 | 0.884917 | 0.885455 | 0.892370 | 0.887304 | **0.884898** | 2.417373 | C# | 0.99998 |
+| `control/float64_mix` | 400000 | 0.889196 | **0.886348** | 0.891000 | 0.889326 | 0.888113 | 3.821212 | C | 0.99680 |
+| `cpp/integer_mix` | 2000000 | 3.235531 | - | 3.209047 | 3.240446 | **3.173179** | 65.800626 | C# | 0.98073 |
+| `cpp/mandelbrot` | 243 x 243 | **13.317229** | - | 13.362167 | 13.388583 | 15.518100 | 14.197739 | Tsuzuri | 1.00000 |
+| `cpp/array_sum` | 800000 | **0.343201** | - | 0.346706 | 0.344674 | 1.180267 | 27.660854 | Tsuzuri | 1.00000 |
+| `cpp/utf16_scan` | 26215 | **0.006654** | - | 0.007205 | 0.007398 | 0.030164 | 0.068435 | Tsuzuri | 1.00000 |
+| `cpp/utf16_compare` | 26215 | 0.017352 | - | 0.040798 | 0.019514 | 0.019363 | **0.008560** | JavaScript | 0.49331 |
+| `cpp/utf16_validate` | 26215 | **0.053580** | - | 0.053743 | 0.110524 | 0.077807 | 0.351490 | Tsuzuri | 1.00000 |
+| `cpp/utf8_roundtrip` | 26215 | 0.164200 | - | **0.089272** | 0.106033 | 0.110761 | 0.404166 | C++ | 0.54368 |
+| `cpp/format_parse` | 5000 | 0.373869 | - | 0.325875 | 1.182429 | **0.271777** | 0.706008 | C# | 0.72693 |
+| `cpp/math_intrinsics` | 50000 | 0.509317 | - | **0.507890** | 0.514595 | 0.508265 | 0.509357 | C++ | 0.99720 |
+| `cpp/task_sequence` | 50000 | 0.079550 | - | 0.080077 | **0.079247** | 0.632582 | 1.835684 | Rust | 0.99619 |
+| `cpp/task_sequential` | 50000 | 1.273271 | - | 1.270806 | 1.272396 | **1.270294** | 26.393937 | C# | 0.99766 |
+| `cpp/task_parallel` | 50000 | 0.240655 | - | 0.292850 | 0.300255 | **0.226232** | 41.392771 | C# | 0.94007 |
+| `computations/bind` | 200000 | 0.323081 | - | 0.324612 | 0.388171 | **0.317519** | 9.425278 | C# | 0.98278 |
+| `computations/checked` | 200000 | 0.523800 | - | **0.516428** | 0.528233 | 0.816778 | 14.402646 | C++ | 0.98593 |
+| `computations/delayed` | 50000 | 0.130580 | - | **0.130538** | 0.148901 | 0.182638 | 7.591097 | C++ | 0.99968 |
+| `computations/array_for` | 820 | 0.000621 | - | 0.000609 | **0.000606** | 0.001205 | 0.077196 | Rust | 0.97585 |
+| `computations/array_bind` | 820 | 0.000607 | - | 0.000613 | **0.000589** | 0.001210 | 0.076176 | Rust | 0.97035 |
+| `computations/owned_capture` | 820 | 0.002648 | - | **0.002612** | 0.002704 | 0.003083 | 0.063521 | C++ | 0.98640 |
+| `computations/std_option` | 200000 | 0.515467 | - | 0.446133 | **0.445270** | 0.548111 | 13.879719 | Rust | 0.86382 |
+| `computations/std_result` | 200000 | 0.515581 | - | **0.506539** | 0.522129 | 0.753402 | 15.560500 | C++ | 0.98246 |
+| `computations/std_option_owned` | 820 | 0.017647 | - | 0.033147 | **0.001838** | 0.017951 | 0.059832 | Rust | 0.10415 |
+| `computations/std_option_length` | 200000 | 0.391212 | - | **0.384712** | 0.459892 | 0.574329 | 14.124146 | C++ | 0.98338 |
+
+`-` は未測定です。すべて wall time（ms/呼び出し）で、起動時間は含みません。C#/JavaScript は別プロセス、管理メモリの回収条件は言語ごとに異なります。詳細な比較条件は後述します。
+<!-- /generated:benchmark-summary -->
 
 ## C/C++・Rust・C#・JavaScript の横断比較
 
@@ -762,8 +337,7 @@ node benchmarks/report.mjs result-1.json result-2.json result-3.json
 node tests/benchmark_report.mjs
 ```
 
-サマリー表は HTML テーブル形式で記述されています。画面幅に収まらない場合は横スクロールが可能であり、数値データは等幅フォントかつ右揃えで整列表示されます。
-表示環境の設定で HTML の背景色や文字色が反映されない場合でも、太字装飾および「観測最速」の列情報によって最速実装を一目で判別できるよう配慮しています。
+サマリー表は `docs/benchmarks-data/summary.json` から `node scripts/gen-docs.mjs` が作る Markdown の表です。数値は右揃えで、各行の最速の表示値は太字、「観測最速」の列にもその言語名が入ります。表を手で直さず、JSON を直して作り直してください。
 
 現在、control 系列 15 種目、cpp 系列 12 種目、computations 系列 9 種目の計 36 種目について、同一の入力データおよびチェックサム検証を用いて比較を行っています。
 C 言語は control 系列の 15 種目に対応し、C++、Rust、C#、JavaScript は全 36 種目に対応しています。
@@ -2335,7 +1909,7 @@ Task は cold と warm を別 variant にし、SIMD・dispatch の標本は反�
 `run.mjs` の native は wall と CPU、WASM は wall を記録します。
 既定の stdout は変えず、9 標本が必要な runner は metrics 指定時だけ標本を増やします。
 
-`node benchmarks/metrics.mjs report <dir>... --publish` は、下のマーカーの間だけに本計測の要約を公開します。
+`node benchmarks/metrics.mjs report <dir>... --publish` は、`docs/benchmarks-data/metrics.json` を書き、下のマーカーの間の表をそこから作り直します。
 指標の表は中央値で、最小値の強調や言語の相対性能の列は付けません。
 
 2026-10-14 の初回記録は Apple M1 Max・macOS 27.0.1・AC 電源、Apple Clang 21.0.0、
@@ -2350,3194 +1924,513 @@ process は `emit` の target IR の計上漏れ、apps は Zig の必要な com
 process／build が 8.85、apps が 7.09 です。条件は `target/perf/px03-formal-emit-v4{,-apps}-env.txt` に残します。
 旧 run の `emit` の値とは計上範囲が違うため、速度の比較に使いません。
 
-<!-- perf-metrics:start -->
-<p>run: <code>PX02-formal-managed</code> / 2026-10-13T16:16:29.786Z / commit: <code>dadc6d8b0a78</code>（未コミットの変更を含む）<br>CPU: Apple M1 Max / arm64 / 10 cores / darwin 27.0.1<br>Clang: Apple clang version 21.0.0 (clang-2100.3.34.2) / rustc: rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew) / Node: v24.21.0<br>Tsuzuri SHA-256: <code>659cf1ad87e8e3dace10ded0d5b82ece98765cd496a155b51f343d55ed5f77dc</code></p>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri direct</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C#</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">JavaScript</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.322</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.323</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.325</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.388</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/checked</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.512</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.524</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.516</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.528</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/delayed</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.131</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.131</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.131</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.149</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_for</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/owned_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.446</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.515</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.446</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.445</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_result</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.518</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.516</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.507</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.522</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_owned</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.017</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.018</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.033</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_length</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.391</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.391</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.385</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.460</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/while_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.304</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.297</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.302</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.300</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/for_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.297</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.293</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.293</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.066</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.296</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.296</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.301</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.296</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_if_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.294</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.289</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.294</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.290</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_builtin_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.282</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.286</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.281</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.288</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/match_dispatch</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.255</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.414</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.413</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.255</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_index_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.169</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_copy</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.133</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.133</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.137</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.137</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/list_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.177</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.182</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.191</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.191</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.191</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_churn</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.640</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.630</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.635</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.907</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/record_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.273</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.270</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.274</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.275</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/integer128_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.513</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.515</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.511</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.530</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float32_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.885</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.885</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.892</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.887</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float64_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.889</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.886</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.891</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.889</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/integer_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.236</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.209</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.240</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/mandelbrot</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">243</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.317</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.362</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.389</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.343</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.347</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.345</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_scan</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_compare</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.017</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.041</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.020</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_validate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.054</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.054</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.111</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf8_roundtrip</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.164</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.089</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.106</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/format_parse</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.374</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.326</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.182</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/math_intrinsics</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.509</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.508</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.515</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequence</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.080</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.080</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.079</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequential</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.273</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.271</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.272</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_parallel</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.241</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.293</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.300</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-while_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.522</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.420</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-for_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.521</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.481</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-tail_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.524</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.358</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-tail_if_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.532</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.089</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-tail_builtin_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.518</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">37.141</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-match_dispatch</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.498</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">46.160</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.586</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.011</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-array_index_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.586</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.758</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-array_copy</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.405</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.304</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-list_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.239</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.546</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-closure_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.197</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.039</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-closure_churn</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.342</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.750</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-record_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.527</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36.805</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-integer128_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.705</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.214</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-float32_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.885</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.417</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/control-float64_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.888</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.821</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-integer_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.173</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">65.801</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-mandelbrot</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">243</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.518</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.198</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.180</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.661</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-utf16_scan</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.030</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.068</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-utf16_compare</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.019</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.009</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-utf16_validate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.078</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.351</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-utf8_roundtrip</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.111</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.404</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-format_parse</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.272</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.706</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-math_intrinsics</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.508</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.509</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-task_sequence</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.633</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.836</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-task_sequential</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.270</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26.394</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/cpp-task_parallel</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.226</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">41.393</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.318</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.425</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-checked</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.817</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.403</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-delayed</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.183</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.591</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-array_for</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.077</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-array_bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.076</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-owned_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.064</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-std_option</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.548</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.880</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-std_result</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.753</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.561</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-std_option_owned</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.018</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.060</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">managed/computations-std_option_length</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.574</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.124</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">cpu_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri direct</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.321</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.322</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.323</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.387</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/checked</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.510</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.521</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.515</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.526</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/delayed</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.130</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.130</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.130</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.148</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_for</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/owned_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.444</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.513</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.445</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.444</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_result</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.516</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.513</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.505</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.521</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_owned</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.017</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.018</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.033</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_length</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.390</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.390</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.384</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.458</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/while_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.296</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.288</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.294</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.294</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/for_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.293</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.286</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.289</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.055</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.293</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.292</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.289</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.291</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_if_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.287</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.283</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.288</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.284</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_builtin_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.279</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.282</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.278</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.286</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/match_dispatch</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.254</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.413</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.411</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.254</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_index_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.167</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.168</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_copy</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.133</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.133</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.137</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.137</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/list_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.177</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.181</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.190</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_churn</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.638</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.628</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.634</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.904</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/record_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.268</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.266</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.269</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.270</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/integer128_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.511</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.514</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.509</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.527</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float32_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.882</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.883</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.889</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.884</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float64_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.886</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.884</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.887</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.887</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/integer_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.221</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.199</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.230</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/mandelbrot</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">243</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.270</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.274</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.307</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.342</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.345</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.343</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_scan</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.007</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_compare</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.017</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.041</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.019</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_validate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.053</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.054</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.110</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf8_roundtrip</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.164</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.089</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.106</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/format_parse</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.373</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.325</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.180</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/math_intrinsics</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.507</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.506</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.512</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequence</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.079</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.080</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.079</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequential</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.269</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.261</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.268</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_parallel</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.475</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.609</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1.645</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">alloc_calls (count) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri direct</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/checked</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/delayed</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_for</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/owned_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_result</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_owned</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">55</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">55</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_length</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/while_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/for_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_if_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_builtin_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/match_dispatch</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_index_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_copy</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/list_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_churn</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/record_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/integer128_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float32_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float64_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/integer_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/mandelbrot</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">243</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_scan</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">24</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_compare</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_validate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf8_roundtrip</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/format_parse</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/math_intrinsics</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequence</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequential</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_parallel</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">alloc_bytes (bytes) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri direct</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/checked</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/delayed</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_for</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">512</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">512</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">512</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">512</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/owned_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2048</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2048</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_result</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_owned</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1210</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1210</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_length</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">64</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/while_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/for_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_if_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/tail_builtin_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/match_dispatch</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3200000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_index_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3200000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/array_copy</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3200000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/list_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">160000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/closure_churn</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/record_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/integer128_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float32_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">control/float64_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/integer_mix</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/mandelbrot</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">243</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/array_sum</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6400000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_scan</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">196560</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_compare</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">393172</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf16_validate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">327636</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/utf8_roundtrip</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26215</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">294864</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/format_parse</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">193948</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/math_intrinsics</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequence</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_sequential</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">cpp/task_parallel</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri direct</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/checked</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/delayed</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_for</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/array_bind</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.001</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/owned_capture</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.003</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_result</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_owned</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.011</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.012</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/std_option_length</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1024</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.002</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wasm_bytes (bytes) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri computation</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">computations/module</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10908</code></td>
-</tr>
-</tbody></table>
-</div>
-<p>run: <code>PX03-formal-emit-v4</code> / 2026-10-13T23:18:32.615Z / commit: <code>59a4f1de6bb6</code>（未コミットの変更を含む）<br>CPU: Apple M1 Max / arm64 / 10 cores / darwin 27.0.1<br>Clang: Apple clang version 21.0.0 (clang-2100.3.34.2) / rustc: rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew) / Node: v24.21.0<br>Tsuzuri SHA-256: <code>ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc</code></p>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.890</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12.057</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.837</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.447</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.489</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.142</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.398</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17.141</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.288</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.465</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">22.365</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.212</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.367</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.764</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.683</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.734</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">33.635</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.623</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.870</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.980</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.845</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.551</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.829</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.322</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.548</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.820</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.573</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.449</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.426</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.957</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.796</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.236</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.811</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.846</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.742</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.528</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.869</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.754</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">56.138</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">43.025</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.466</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">21.047</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.880</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.409</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.113</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.399</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.033</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.888</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.065</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.741</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.803</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.823</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.221</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.690</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.388</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.983</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.992</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.093</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.924</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.592</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">714.640</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">735.382</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">59.858</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">cpu_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13.779</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.995</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.794</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.344</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15.326</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.988</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.262</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17.018</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.243</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.412</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">22.229</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.353</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">27.155</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.575</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.631</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.608</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">33.444</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18.447</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.827</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.970</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.819</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.532</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.779</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11.346</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10.508</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.814</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.559</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.418</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.380</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">6.203</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.700</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.124</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.646</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.768</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19.637</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14.798</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">25.776</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">39.657</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">55.823</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">42.794</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.311</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">24.192</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.866</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.393</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.094</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.389</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7.995</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.132</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.047</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.745</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.786</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3.802</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.168</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.027</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.328</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.943</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8.939</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.053</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.886</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9.617</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">670.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">610.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">peak_rss (bytes) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">C++</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Rust</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Zig</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Go</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17055744</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12582912</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12517376</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">20774912</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15908864</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14352384</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">18776064</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11845632</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">8617984</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16924672</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">29753344</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13451264</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9994240</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7487488</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7438336</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12517376</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9224192</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14204928</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4407296</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11386880</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11386880</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11403264</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11468800</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11452416</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">14614528</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1949696</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1851392</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1884160</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1933312</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1900544</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">10780672</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1900544</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1802240</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1835008</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1884160</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1867776</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">11157504</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17776640</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17760256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17776640</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17858560</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">17809408</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">21020672</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15351808</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15351808</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15368192</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15433728</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15450112</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">19021824</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1769472</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1753088</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1835008</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1785856</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4521984</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">53215232</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">53313536</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1720320</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">alloc_calls (count) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">400003</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200003</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">800005</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">3</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">792564</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1018000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">7</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">41</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">alloc_bytes (bytes) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tokenize</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">12500022</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/format_join</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">15038726</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/csv_aggregate</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13880746</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/map_count</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">36768</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/record_sort</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">200000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">9600000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/tree_transform</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">256</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">38043072</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/binary_trees</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">48864000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/closure_pipeline</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1000000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">16000192</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/graph_bfs</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">100000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">13600008</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">apps/spectral_norm</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">500</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">164000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / native / none / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri check</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">91.201</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">cpu_time (ms) / native / none / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri check</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">user_time (ms) / native / none / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri check</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">40.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">sys_time (ms) / native / none / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri check</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">peak_rss (bytes) / native / none / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri check</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">26296320</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">phase_time (ms) / native / none / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri check</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [load]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.297</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [cache]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.037</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [parse]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.889</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [check]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">32.490</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [specialize]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.459</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [closures]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.045</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [ownership]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.108</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [total]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">44.210</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / native / O0 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">265.296</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">58.704</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">cpu_time (ms) / native / O0 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">210.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">user_time (ms) / native / O0 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">160.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">sys_time (ms) / native / O0 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">peak_rss (bytes) / native / O0 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">43728896</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">1703936</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">phase_time (ms) / native / O0 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [load]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.309</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [cache]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [parse]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.878</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [check]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">32.167</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [specialize]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.598</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [closures]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.042</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [ownership]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.110</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [emit]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.631</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [tool.clang]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">172.526</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [total]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">223.443</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">executable_bytes (bytes) / native / O0 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">138008</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">user_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">610.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">570.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">sys_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri execute</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">60.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">50.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">phase_time (ms) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [load]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.300</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.312</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [cache]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [parse]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.015</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.988</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [check]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">32.003</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.306</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [specialize]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.916</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.765</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [closures]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.044</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.043</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [ownership]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.116</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.120</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [emit]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.654</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.671</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [tool.clang]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">633.582</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">643.894</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [total]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">684.001</code></td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">699.796</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">executable_bytes (bytes) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">84616</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">object_bytes (bytes) / native / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-object</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">48200</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wall_time (ms) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">796.216</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">cpu_time (ms) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">640.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">user_time (ms) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">610.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">sys_time (ms) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">30.000</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">peak_rss (bytes) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">62095360</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">phase_time (ms) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [load]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.312</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [cache]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.000</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [parse]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">4.972</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [check]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">31.717</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [specialize]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">5.643</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [closures]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.045</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [ownership]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">0.119</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [emit]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">2.497</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [tool.clang]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">635.124</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [tool.wasm-ld]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">49.870</code></td>
-</tr>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello [total]</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">760.190</code></td>
-</tr>
-</tbody></table>
-</div>
-<div style="overflow-x:auto;max-width:100%">
-<table style="border-collapse:collapse;width:100%;font-size:13px">
-<caption style="text-align:left;padding:8px 0;font-weight:600">wasm_bytes (bytes) / wasm32 / O3 / generic / 中央値</caption>
-<thead><tr>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">種目</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">仕事量</th>
-<th scope="col" style="padding:8px 12px;border:1px solid #94a3b8;white-space:nowrap">Tsuzuri build-wasm</th>
-</tr></thead>
-<tbody>
-<tr>
-<th scope="row" style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">process/examples/hello</th>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:left">-</td>
-<td style="padding:8px 12px;border:1px solid #94a3b8;text-align:right"><code style="font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-variant-numeric:tabular-nums;white-space:pre;letter-spacing:0;background:transparent;color:inherit">24864</code></td>
-</tr>
-</tbody></table>
-</div>
-<!-- perf-metrics:end -->
+<!-- generated:perf-metrics -->
+**run `PX02-formal-managed`** / 2026-10-13T16:16:29.786Z / commit `dadc6d8b0a78`（未コミットの変更を含む）
+
+- CPU: Apple M1 Max / arm64 / 10 cores / darwin 27.0.1
+- Clang: Apple clang version 21.0.0 (clang-2100.3.34.2) / rustc: rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew) / Node: v24.21.0
+- Tsuzuri SHA-256: `659cf1ad87e8e3dace10ded0d5b82ece98765cd496a155b51f343d55ed5f77dc`
+
+**wall_time (ms) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri direct | Tsuzuri computation | Tsuzuri | C | C++ | Rust | C# | JavaScript |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `computations/bind` | 200000 | 0.322 | 0.323 | - | - | 0.325 | 0.388 | - | - |
+| `computations/checked` | 200000 | 0.512 | 0.524 | - | - | 0.516 | 0.528 | - | - |
+| `computations/delayed` | 50000 | 0.131 | 0.131 | - | - | 0.131 | 0.149 | - | - |
+| `computations/array_for` | 820 | 0.001 | 0.001 | - | - | 0.001 | 0.001 | - | - |
+| `computations/array_bind` | 820 | 0.001 | 0.001 | - | - | 0.001 | 0.001 | - | - |
+| `computations/owned_capture` | 820 | 0.003 | 0.003 | - | - | 0.003 | 0.003 | - | - |
+| `computations/std_option` | 200000 | 0.446 | 0.515 | - | - | 0.446 | 0.445 | - | - |
+| `computations/std_result` | 200000 | 0.518 | 0.516 | - | - | 0.507 | 0.522 | - | - |
+| `computations/std_option_owned` | 820 | 0.017 | 0.018 | - | - | 0.033 | 0.002 | - | - |
+| `computations/std_option_length` | 200000 | 0.391 | 0.391 | - | - | 0.385 | 0.460 | - | - |
+| `control/while_mix` | 800000 | - | - | 1.304 | 1.297 | 1.302 | 1.300 | - | - |
+| `control/for_mix` | 800000 | - | - | 1.297 | 1.293 | 1.293 | 2.066 | - | - |
+| `control/tail_mix` | 800000 | - | - | 1.296 | 1.296 | 1.301 | 1.296 | - | - |
+| `control/tail_if_mix` | 800000 | - | - | 1.294 | 1.289 | 1.294 | 1.290 | - | - |
+| `control/tail_builtin_mix` | 800000 | - | - | 1.282 | 1.286 | 1.281 | 1.288 | - | - |
+| `control/match_dispatch` | 800000 | - | - | 0.255 | 0.414 | 0.413 | 0.255 | - | - |
+| `control/array_sum` | 400000 | - | - | 0.168 | 0.168 | 0.168 | 0.167 | - | - |
+| `control/array_index_sum` | 400000 | - | - | 0.167 | 0.168 | 0.169 | 0.168 | - | - |
+| `control/array_copy` | 200000 | - | - | 0.133 | 0.133 | 0.137 | 0.137 | - | - |
+| `control/list_sum` | 10000 | - | - | 0.177 | 0.181 | 0.181 | 0.182 | - | - |
+| `control/closure_capture` | 100000 | - | - | 0.191 | 0.191 | 0.191 | 0.190 | - | - |
+| `control/closure_churn` | 100000 | - | - | 0.640 | 0.630 | 0.635 | 0.907 | - | - |
+| `control/record_pipeline` | 800000 | - | - | 1.273 | 1.270 | 1.274 | 1.275 | - | - |
+| `control/integer128_mix` | 200000 | - | - | 0.513 | 0.515 | 0.511 | 0.530 | - | - |
+| `control/float32_mix` | 400000 | - | - | 0.885 | 0.885 | 0.892 | 0.887 | - | - |
+| `control/float64_mix` | 400000 | - | - | 0.889 | 0.886 | 0.891 | 0.889 | - | - |
+| `cpp/integer_mix` | 2000000 | - | - | 3.236 | - | 3.209 | 3.240 | - | - |
+| `cpp/mandelbrot` | 243 | - | - | 13.317 | - | 13.362 | 13.389 | - | - |
+| `cpp/array_sum` | 800000 | - | - | 0.343 | - | 0.347 | 0.345 | - | - |
+| `cpp/utf16_scan` | 26215 | - | - | 0.007 | - | 0.007 | 0.007 | - | - |
+| `cpp/utf16_compare` | 26215 | - | - | 0.017 | - | 0.041 | 0.020 | - | - |
+| `cpp/utf16_validate` | 26215 | - | - | 0.054 | - | 0.054 | 0.111 | - | - |
+| `cpp/utf8_roundtrip` | 26215 | - | - | 0.164 | - | 0.089 | 0.106 | - | - |
+| `cpp/format_parse` | 5000 | - | - | 0.374 | - | 0.326 | 1.182 | - | - |
+| `cpp/math_intrinsics` | 50000 | - | - | 0.509 | - | 0.508 | 0.515 | - | - |
+| `cpp/task_sequence` | 50000 | - | - | 0.080 | - | 0.080 | 0.079 | - | - |
+| `cpp/task_sequential` | 50000 | - | - | 1.273 | - | 1.271 | 1.272 | - | - |
+| `cpp/task_parallel` | 50000 | - | - | 0.241 | - | 0.293 | 0.300 | - | - |
+| `managed/control-while_mix` | 800000 | - | - | - | - | - | - | 1.522 | 37.420 |
+| `managed/control-for_mix` | 800000 | - | - | - | - | - | - | 1.521 | 37.481 |
+| `managed/control-tail_mix` | 800000 | - | - | - | - | - | - | 1.524 | 37.358 |
+| `managed/control-tail_if_mix` | 800000 | - | - | - | - | - | - | 1.532 | 37.089 |
+| `managed/control-tail_builtin_mix` | 800000 | - | - | - | - | - | - | 1.518 | 37.141 |
+| `managed/control-match_dispatch` | 800000 | - | - | - | - | - | - | 1.498 | 46.160 |
+| `managed/control-array_sum` | 400000 | - | - | - | - | - | - | 0.586 | 14.011 |
+| `managed/control-array_index_sum` | 400000 | - | - | - | - | - | - | 0.586 | 13.758 |
+| `managed/control-array_copy` | 200000 | - | - | - | - | - | - | 0.405 | 11.304 |
+| `managed/control-list_sum` | 10000 | - | - | - | - | - | - | 0.239 | 0.546 |
+| `managed/control-closure_capture` | 100000 | - | - | - | - | - | - | 0.197 | 5.039 |
+| `managed/control-closure_churn` | 100000 | - | - | - | - | - | - | 2.342 | 11.750 |
+| `managed/control-record_pipeline` | 800000 | - | - | - | - | - | - | 1.527 | 36.805 |
+| `managed/control-integer128_mix` | 200000 | - | - | - | - | - | - | 0.705 | 12.214 |
+| `managed/control-float32_mix` | 400000 | - | - | - | - | - | - | 0.885 | 2.417 |
+| `managed/control-float64_mix` | 400000 | - | - | - | - | - | - | 0.888 | 3.821 |
+| `managed/cpp-integer_mix` | 2000000 | - | - | - | - | - | - | 3.173 | 65.801 |
+| `managed/cpp-mandelbrot` | 243 | - | - | - | - | - | - | 15.518 | 14.198 |
+| `managed/cpp-array_sum` | 800000 | - | - | - | - | - | - | 1.180 | 27.661 |
+| `managed/cpp-utf16_scan` | 26215 | - | - | - | - | - | - | 0.030 | 0.068 |
+| `managed/cpp-utf16_compare` | 26215 | - | - | - | - | - | - | 0.019 | 0.009 |
+| `managed/cpp-utf16_validate` | 26215 | - | - | - | - | - | - | 0.078 | 0.351 |
+| `managed/cpp-utf8_roundtrip` | 26215 | - | - | - | - | - | - | 0.111 | 0.404 |
+| `managed/cpp-format_parse` | 5000 | - | - | - | - | - | - | 0.272 | 0.706 |
+| `managed/cpp-math_intrinsics` | 50000 | - | - | - | - | - | - | 0.508 | 0.509 |
+| `managed/cpp-task_sequence` | 50000 | - | - | - | - | - | - | 0.633 | 1.836 |
+| `managed/cpp-task_sequential` | 50000 | - | - | - | - | - | - | 1.270 | 26.394 |
+| `managed/cpp-task_parallel` | 50000 | - | - | - | - | - | - | 0.226 | 41.393 |
+| `managed/computations-bind` | 200000 | - | - | - | - | - | - | 0.318 | 9.425 |
+| `managed/computations-checked` | 200000 | - | - | - | - | - | - | 0.817 | 14.403 |
+| `managed/computations-delayed` | 50000 | - | - | - | - | - | - | 0.183 | 7.591 |
+| `managed/computations-array_for` | 820 | - | - | - | - | - | - | 0.001 | 0.077 |
+| `managed/computations-array_bind` | 820 | - | - | - | - | - | - | 0.001 | 0.076 |
+| `managed/computations-owned_capture` | 820 | - | - | - | - | - | - | 0.003 | 0.064 |
+| `managed/computations-std_option` | 200000 | - | - | - | - | - | - | 0.548 | 13.880 |
+| `managed/computations-std_result` | 200000 | - | - | - | - | - | - | 0.753 | 15.561 |
+| `managed/computations-std_option_owned` | 820 | - | - | - | - | - | - | 0.018 | 0.060 |
+| `managed/computations-std_option_length` | 200000 | - | - | - | - | - | - | 0.574 | 14.124 |
+
+**cpu_time (ms) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri direct | Tsuzuri computation | Tsuzuri | C | C++ | Rust |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `computations/bind` | 200000 | 0.321 | 0.322 | - | - | 0.323 | 0.387 |
+| `computations/checked` | 200000 | 0.510 | 0.521 | - | - | 0.515 | 0.526 |
+| `computations/delayed` | 50000 | 0.130 | 0.130 | - | - | 0.130 | 0.148 |
+| `computations/array_for` | 820 | 0.001 | 0.001 | - | - | 0.001 | 0.001 |
+| `computations/array_bind` | 820 | 0.001 | 0.001 | - | - | 0.001 | 0.001 |
+| `computations/owned_capture` | 820 | 0.003 | 0.003 | - | - | 0.003 | 0.003 |
+| `computations/std_option` | 200000 | 0.444 | 0.513 | - | - | 0.445 | 0.444 |
+| `computations/std_result` | 200000 | 0.516 | 0.513 | - | - | 0.505 | 0.521 |
+| `computations/std_option_owned` | 820 | 0.017 | 0.018 | - | - | 0.033 | 0.002 |
+| `computations/std_option_length` | 200000 | 0.390 | 0.390 | - | - | 0.384 | 0.458 |
+| `control/while_mix` | 800000 | - | - | 1.296 | 1.288 | 1.294 | 1.294 |
+| `control/for_mix` | 800000 | - | - | 1.293 | 1.286 | 1.289 | 2.055 |
+| `control/tail_mix` | 800000 | - | - | 1.293 | 1.292 | 1.289 | 1.291 |
+| `control/tail_if_mix` | 800000 | - | - | 1.287 | 1.283 | 1.288 | 1.284 |
+| `control/tail_builtin_mix` | 800000 | - | - | 1.279 | 1.282 | 1.278 | 1.286 |
+| `control/match_dispatch` | 800000 | - | - | 0.254 | 0.413 | 0.411 | 0.254 |
+| `control/array_sum` | 400000 | - | - | 0.168 | 0.168 | 0.167 | 0.167 |
+| `control/array_index_sum` | 400000 | - | - | 0.167 | 0.168 | 0.168 | 0.168 |
+| `control/array_copy` | 200000 | - | - | 0.133 | 0.133 | 0.137 | 0.137 |
+| `control/list_sum` | 10000 | - | - | 0.177 | 0.181 | 0.181 | 0.181 |
+| `control/closure_capture` | 100000 | - | - | 0.190 | 0.190 | 0.190 | 0.190 |
+| `control/closure_churn` | 100000 | - | - | 0.638 | 0.628 | 0.634 | 0.904 |
+| `control/record_pipeline` | 800000 | - | - | 1.268 | 1.266 | 1.269 | 1.270 |
+| `control/integer128_mix` | 200000 | - | - | 0.511 | 0.514 | 0.509 | 0.527 |
+| `control/float32_mix` | 400000 | - | - | 0.882 | 0.883 | 0.889 | 0.884 |
+| `control/float64_mix` | 400000 | - | - | 0.886 | 0.884 | 0.887 | 0.887 |
+| `cpp/integer_mix` | 2000000 | - | - | 3.221 | - | 3.199 | 3.230 |
+| `cpp/mandelbrot` | 243 | - | - | 13.270 | - | 13.274 | 13.307 |
+| `cpp/array_sum` | 800000 | - | - | 0.342 | - | 0.345 | 0.343 |
+| `cpp/utf16_scan` | 26215 | - | - | 0.007 | - | 0.007 | 0.007 |
+| `cpp/utf16_compare` | 26215 | - | - | 0.017 | - | 0.041 | 0.019 |
+| `cpp/utf16_validate` | 26215 | - | - | 0.053 | - | 0.054 | 0.110 |
+| `cpp/utf8_roundtrip` | 26215 | - | - | 0.164 | - | 0.089 | 0.106 |
+| `cpp/format_parse` | 5000 | - | - | 0.373 | - | 0.325 | 1.180 |
+| `cpp/math_intrinsics` | 50000 | - | - | 0.507 | - | 0.506 | 0.512 |
+| `cpp/task_sequence` | 50000 | - | - | 0.079 | - | 0.080 | 0.079 |
+| `cpp/task_sequential` | 50000 | - | - | 1.269 | - | 1.261 | 1.268 |
+| `cpp/task_parallel` | 50000 | - | - | 1.475 | - | 1.609 | 1.645 |
+
+**alloc_calls (count) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri direct | Tsuzuri computation | Tsuzuri |
+| --- | ---: | ---: | ---: | ---: |
+| `computations/bind` | 64 | 0 | 0 | - |
+| `computations/checked` | 64 | 0 | 0 | - |
+| `computations/delayed` | 64 | 0 | 0 | - |
+| `computations/array_for` | 64 | 1 | 1 | - |
+| `computations/array_bind` | 64 | 1 | 1 | - |
+| `computations/owned_capture` | 64 | 1 | 1 | - |
+| `computations/std_option` | 64 | 0 | 0 | - |
+| `computations/std_result` | 64 | 0 | 0 | - |
+| `computations/std_option_owned` | 64 | 55 | 55 | - |
+| `computations/std_option_length` | 64 | 0 | 0 | - |
+| `control/while_mix` | 800000 | - | - | 0 |
+| `control/for_mix` | 800000 | - | - | 0 |
+| `control/tail_mix` | 800000 | - | - | 0 |
+| `control/tail_if_mix` | 800000 | - | - | 0 |
+| `control/tail_builtin_mix` | 800000 | - | - | 0 |
+| `control/match_dispatch` | 800000 | - | - | 0 |
+| `control/array_sum` | 400000 | - | - | 1 |
+| `control/array_index_sum` | 400000 | - | - | 1 |
+| `control/array_copy` | 200000 | - | - | 2 |
+| `control/list_sum` | 10000 | - | - | 10000 |
+| `control/closure_capture` | 100000 | - | - | 0 |
+| `control/closure_churn` | 100000 | - | - | 0 |
+| `control/record_pipeline` | 800000 | - | - | 0 |
+| `control/integer128_mix` | 200000 | - | - | 0 |
+| `control/float32_mix` | 400000 | - | - | 0 |
+| `control/float64_mix` | 400000 | - | - | 0 |
+| `cpp/integer_mix` | 2000000 | - | - | 0 |
+| `cpp/mandelbrot` | 243 | - | - | 0 |
+| `cpp/array_sum` | 800000 | - | - | 1 |
+| `cpp/utf16_scan` | 26215 | - | - | 24 |
+| `cpp/utf16_compare` | 26215 | - | - | 27 |
+| `cpp/utf16_validate` | 26215 | - | - | 26 |
+| `cpp/utf8_roundtrip` | 26215 | - | - | 26 |
+| `cpp/format_parse` | 5000 | - | - | 5000 |
+| `cpp/math_intrinsics` | 50000 | - | - | 0 |
+| `cpp/task_sequence` | 50000 | - | - | 0 |
+| `cpp/task_sequential` | 50000 | - | - | 0 |
+| `cpp/task_parallel` | 50000 | - | - | 18 |
+
+**alloc_bytes (bytes) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri direct | Tsuzuri computation | Tsuzuri |
+| --- | ---: | ---: | ---: | ---: |
+| `computations/bind` | 64 | 0 | 0 | - |
+| `computations/checked` | 64 | 0 | 0 | - |
+| `computations/delayed` | 64 | 0 | 0 | - |
+| `computations/array_for` | 64 | 512 | 512 | - |
+| `computations/array_bind` | 64 | 512 | 512 | - |
+| `computations/owned_capture` | 64 | 2048 | 2048 | - |
+| `computations/std_option` | 64 | 0 | 0 | - |
+| `computations/std_result` | 64 | 0 | 0 | - |
+| `computations/std_option_owned` | 64 | 1210 | 1210 | - |
+| `computations/std_option_length` | 64 | 0 | 0 | - |
+| `control/while_mix` | 800000 | - | - | 0 |
+| `control/for_mix` | 800000 | - | - | 0 |
+| `control/tail_mix` | 800000 | - | - | 0 |
+| `control/tail_if_mix` | 800000 | - | - | 0 |
+| `control/tail_builtin_mix` | 800000 | - | - | 0 |
+| `control/match_dispatch` | 800000 | - | - | 0 |
+| `control/array_sum` | 400000 | - | - | 3200000 |
+| `control/array_index_sum` | 400000 | - | - | 3200000 |
+| `control/array_copy` | 200000 | - | - | 3200000 |
+| `control/list_sum` | 10000 | - | - | 160000 |
+| `control/closure_capture` | 100000 | - | - | 0 |
+| `control/closure_churn` | 100000 | - | - | 0 |
+| `control/record_pipeline` | 800000 | - | - | 0 |
+| `control/integer128_mix` | 200000 | - | - | 0 |
+| `control/float32_mix` | 400000 | - | - | 0 |
+| `control/float64_mix` | 400000 | - | - | 0 |
+| `cpp/integer_mix` | 2000000 | - | - | 0 |
+| `cpp/mandelbrot` | 243 | - | - | 0 |
+| `cpp/array_sum` | 800000 | - | - | 6400000 |
+| `cpp/utf16_scan` | 26215 | - | - | 196560 |
+| `cpp/utf16_compare` | 26215 | - | - | 393172 |
+| `cpp/utf16_validate` | 26215 | - | - | 327636 |
+| `cpp/utf8_roundtrip` | 26215 | - | - | 294864 |
+| `cpp/format_parse` | 5000 | - | - | 193948 |
+| `cpp/math_intrinsics` | 50000 | - | - | 0 |
+| `cpp/task_sequence` | 50000 | - | - | 0 |
+| `cpp/task_sequential` | 50000 | - | - | 0 |
+| `cpp/task_parallel` | 50000 | - | - | 1024 |
+
+**wall_time (ms) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri direct | Tsuzuri computation |
+| --- | ---: | ---: | ---: |
+| `computations/bind` | 1024 | 0.002 | 0.002 |
+| `computations/checked` | 1024 | 0.002 | 0.002 |
+| `computations/delayed` | 1024 | 0.003 | 0.003 |
+| `computations/array_for` | 820 | 0.001 | 0.001 |
+| `computations/array_bind` | 820 | 0.001 | 0.001 |
+| `computations/owned_capture` | 820 | 0.003 | 0.003 |
+| `computations/std_option` | 1024 | 0.002 | 0.002 |
+| `computations/std_result` | 1024 | 0.002 | 0.002 |
+| `computations/std_option_owned` | 820 | 0.011 | 0.012 |
+| `computations/std_option_length` | 1024 | 0.002 | 0.002 |
+
+**wasm_bytes (bytes) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri computation |
+| --- | ---: | ---: |
+| `computations/module` | - | 10908 |
+
+**run `PX03-formal-emit-v4`** / 2026-10-13T23:18:32.615Z / commit `59a4f1de6bb6`（未コミットの変更を含む）
+
+- CPU: Apple M1 Max / arm64 / 10 cores / darwin 27.0.1
+- Clang: Apple clang version 21.0.0 (clang-2100.3.34.2) / rustc: rustc 1.98.1 (48a229cea 2026-09-01) (Homebrew) / Node: v24.21.0
+- Tsuzuri SHA-256: `ecbee0901ee678999a612a329018cfafaddc73a75183925a1db3e5770555d0dc`
+
+**wall_time (ms) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri | Tsuzuri build | Tsuzuri build-object | Tsuzuri execute | C | C++ | Rust | Zig | Go |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `apps/tokenize` | 200000 | 13.890 | - | - | - | 12.057 | 3.837 | 11.447 | 15.489 | 9.142 |
+| `apps/format_join` | 100000 | 19.398 | - | - | - | 17.141 | 6.288 | 9.465 | 22.365 | 9.212 |
+| `apps/csv_aggregate` | 100000 | 27.367 | - | - | - | 31.764 | 9.683 | 19.734 | 33.635 | 15.623 |
+| `apps/map_count` | 200000 | 8.870 | - | - | - | 4.980 | 4.845 | 3.551 | 7.829 | 11.322 |
+| `apps/record_sort` | 200000 | 10.548 | - | - | - | 3.820 | 3.573 | 5.449 | 8.426 | 5.957 |
+| `apps/tree_transform` | 256 | 19.796 | - | - | - | 19.236 | 25.811 | 19.846 | 19.742 | 11.528 |
+| `apps/binary_trees` | 2000 | 25.869 | - | - | - | 39.754 | 56.138 | 43.025 | 40.466 | 21.047 |
+| `apps/closure_pipeline` | 1000000 | 2.880 | - | - | - | 2.409 | 3.113 | 2.399 | 8.033 | 2.888 |
+| `apps/graph_bfs` | 100000 | 4.065 | - | - | - | 3.741 | 3.803 | 3.823 | 8.221 | 4.690 |
+| `apps/spectral_norm` | 500 | 9.388 | - | - | - | 8.983 | 8.992 | 9.093 | 9.924 | 9.592 |
+| `process/examples/hello` | - | - | 714.640 | 735.382 | 59.858 | - | - | - | - | - |
+
+**cpu_time (ms) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri | Tsuzuri build | Tsuzuri build-object | Tsuzuri execute | C | C++ | Rust | Zig | Go |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `apps/tokenize` | 200000 | 13.779 | - | - | - | 11.995 | 3.794 | 11.344 | 15.326 | 10.988 |
+| `apps/format_join` | 100000 | 19.262 | - | - | - | 17.018 | 6.243 | 9.412 | 22.229 | 11.353 |
+| `apps/csv_aggregate` | 100000 | 27.155 | - | - | - | 31.575 | 9.631 | 19.608 | 33.444 | 18.447 |
+| `apps/map_count` | 200000 | 8.827 | - | - | - | 4.970 | 4.819 | 3.532 | 7.779 | 11.346 |
+| `apps/record_sort` | 200000 | 10.508 | - | - | - | 3.814 | 3.559 | 5.418 | 8.380 | 6.203 |
+| `apps/tree_transform` | 256 | 19.700 | - | - | - | 19.124 | 25.646 | 19.768 | 19.637 | 14.798 |
+| `apps/binary_trees` | 2000 | 25.776 | - | - | - | 39.657 | 55.823 | 42.794 | 40.311 | 24.192 |
+| `apps/closure_pipeline` | 1000000 | 2.866 | - | - | - | 2.393 | 3.094 | 2.389 | 7.995 | 3.132 |
+| `apps/graph_bfs` | 100000 | 4.047 | - | - | - | 3.745 | 3.786 | 3.802 | 8.168 | 5.027 |
+| `apps/spectral_norm` | 500 | 9.328 | - | - | - | 8.943 | 8.939 | 9.053 | 9.886 | 9.617 |
+| `process/examples/hello` | - | - | 670.000 | 610.000 | 0.000 | - | - | - | - | - |
+
+**peak_rss (bytes) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri | Tsuzuri build | Tsuzuri build-object | Tsuzuri execute | C | C++ | Rust | Zig | Go |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `apps/tokenize` | 200000 | 17055744 | - | - | - | 12582912 | 12517376 | 20774912 | 15908864 | 14352384 |
+| `apps/format_join` | 100000 | 18776064 | - | - | - | 11845632 | 8617984 | 16924672 | 29753344 | 13451264 |
+| `apps/csv_aggregate` | 100000 | 9994240 | - | - | - | 7487488 | 7438336 | 12517376 | 9224192 | 14204928 |
+| `apps/map_count` | 200000 | 1753088 | - | - | - | 1753088 | 1753088 | 1851392 | 1851392 | 4407296 |
+| `apps/record_sort` | 200000 | 11386880 | - | - | - | 11386880 | 11403264 | 11468800 | 11452416 | 14614528 |
+| `apps/tree_transform` | 256 | 1949696 | - | - | - | 1851392 | 1884160 | 1933312 | 1900544 | 10780672 |
+| `apps/binary_trees` | 2000 | 1900544 | - | - | - | 1802240 | 1835008 | 1884160 | 1867776 | 11157504 |
+| `apps/closure_pipeline` | 1000000 | 17776640 | - | - | - | 17760256 | 17776640 | 17858560 | 17809408 | 21020672 |
+| `apps/graph_bfs` | 100000 | 15351808 | - | - | - | 15351808 | 15368192 | 15433728 | 15450112 | 19021824 |
+| `apps/spectral_norm` | 500 | 1769472 | - | - | - | 1753088 | 1753088 | 1835008 | 1785856 | 4521984 |
+| `process/examples/hello` | - | - | 53215232 | 53313536 | 1720320 | - | - | - | - | - |
+
+**alloc_calls (count) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri |
+| --- | ---: | ---: |
+| `apps/tokenize` | 200000 | 400003 |
+| `apps/format_join` | 100000 | 200003 |
+| `apps/csv_aggregate` | 100000 | 800005 |
+| `apps/map_count` | 200000 | 16 |
+| `apps/record_sort` | 200000 | 3 |
+| `apps/tree_transform` | 256 | 792564 |
+| `apps/binary_trees` | 2000 | 1018000 |
+| `apps/closure_pipeline` | 1000000 | 7 |
+| `apps/graph_bfs` | 100000 | 7 |
+| `apps/spectral_norm` | 500 | 41 |
+
+**alloc_bytes (bytes) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri |
+| --- | ---: | ---: |
+| `apps/tokenize` | 200000 | 12500022 |
+| `apps/format_join` | 100000 | 15038726 |
+| `apps/csv_aggregate` | 100000 | 13880746 |
+| `apps/map_count` | 200000 | 36768 |
+| `apps/record_sort` | 200000 | 9600000 |
+| `apps/tree_transform` | 256 | 38043072 |
+| `apps/binary_trees` | 2000 | 48864000 |
+| `apps/closure_pipeline` | 1000000 | 16000192 |
+| `apps/graph_bfs` | 100000 | 13600008 |
+| `apps/spectral_norm` | 500 | 164000 |
+
+**wall_time (ms) / native / none / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri check |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 91.201 |
+
+**cpu_time (ms) / native / none / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri check |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 40.000 |
+
+**user_time (ms) / native / none / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri check |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 40.000 |
+
+**sys_time (ms) / native / none / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri check |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 0.000 |
+
+**peak_rss (bytes) / native / none / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri check |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 26296320 |
+
+**phase_time (ms) / native / none / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri check |
+| --- | ---: | ---: |
+| `process/examples/hello [load]` | - | 0.297 |
+| `process/examples/hello [cache]` | - | 0.037 |
+| `process/examples/hello [parse]` | - | 4.889 |
+| `process/examples/hello [check]` | - | 32.490 |
+| `process/examples/hello [specialize]` | - | 5.459 |
+| `process/examples/hello [closures]` | - | 0.045 |
+| `process/examples/hello [ownership]` | - | 0.108 |
+| `process/examples/hello [total]` | - | 44.210 |
+
+**wall_time (ms) / native / O0 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build | Tsuzuri execute |
+| --- | ---: | ---: | ---: |
+| `process/examples/hello` | - | 265.296 | 58.704 |
+
+**cpu_time (ms) / native / O0 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build | Tsuzuri execute |
+| --- | ---: | ---: | ---: |
+| `process/examples/hello` | - | 210.000 | 0.000 |
+
+**user_time (ms) / native / O0 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build | Tsuzuri execute |
+| --- | ---: | ---: | ---: |
+| `process/examples/hello` | - | 160.000 | 0.000 |
+
+**sys_time (ms) / native / O0 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build | Tsuzuri execute |
+| --- | ---: | ---: | ---: |
+| `process/examples/hello` | - | 50.000 | 0.000 |
+
+**peak_rss (bytes) / native / O0 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build | Tsuzuri execute |
+| --- | ---: | ---: | ---: |
+| `process/examples/hello` | - | 43728896 | 1703936 |
+
+**phase_time (ms) / native / O0 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build |
+| --- | ---: | ---: |
+| `process/examples/hello [load]` | - | 0.309 |
+| `process/examples/hello [cache]` | - | 0.000 |
+| `process/examples/hello [parse]` | - | 4.878 |
+| `process/examples/hello [check]` | - | 32.167 |
+| `process/examples/hello [specialize]` | - | 5.598 |
+| `process/examples/hello [closures]` | - | 0.042 |
+| `process/examples/hello [ownership]` | - | 0.110 |
+| `process/examples/hello [emit]` | - | 2.631 |
+| `process/examples/hello [tool.clang]` | - | 172.526 |
+| `process/examples/hello [total]` | - | 223.443 |
+
+**executable_bytes (bytes) / native / O0 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 138008 |
+
+**user_time (ms) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build | Tsuzuri build-object | Tsuzuri execute |
+| --- | ---: | ---: | ---: | ---: |
+| `process/examples/hello` | - | 610.000 | 570.000 | 0.000 |
+
+**sys_time (ms) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build | Tsuzuri build-object | Tsuzuri execute |
+| --- | ---: | ---: | ---: | ---: |
+| `process/examples/hello` | - | 60.000 | 50.000 | 0.000 |
+
+**phase_time (ms) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build | Tsuzuri build-object |
+| --- | ---: | ---: | ---: |
+| `process/examples/hello [load]` | - | 0.300 | 0.312 |
+| `process/examples/hello [cache]` | - | 0.000 | 0.000 |
+| `process/examples/hello [parse]` | - | 5.015 | 4.988 |
+| `process/examples/hello [check]` | - | 32.003 | 31.306 |
+| `process/examples/hello [specialize]` | - | 5.916 | 5.765 |
+| `process/examples/hello [closures]` | - | 0.044 | 0.043 |
+| `process/examples/hello [ownership]` | - | 0.116 | 0.120 |
+| `process/examples/hello [emit]` | - | 2.654 | 2.671 |
+| `process/examples/hello [tool.clang]` | - | 633.582 | 643.894 |
+| `process/examples/hello [total]` | - | 684.001 | 699.796 |
+
+**executable_bytes (bytes) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 84616 |
+
+**object_bytes (bytes) / native / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build-object |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 48200 |
+
+**wall_time (ms) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build-wasm |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 796.216 |
+
+**cpu_time (ms) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build-wasm |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 640.000 |
+
+**user_time (ms) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build-wasm |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 610.000 |
+
+**sys_time (ms) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build-wasm |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 30.000 |
+
+**peak_rss (bytes) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build-wasm |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 62095360 |
+
+**phase_time (ms) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build-wasm |
+| --- | ---: | ---: |
+| `process/examples/hello [load]` | - | 0.312 |
+| `process/examples/hello [cache]` | - | 0.000 |
+| `process/examples/hello [parse]` | - | 4.972 |
+| `process/examples/hello [check]` | - | 31.717 |
+| `process/examples/hello [specialize]` | - | 5.643 |
+| `process/examples/hello [closures]` | - | 0.045 |
+| `process/examples/hello [ownership]` | - | 0.119 |
+| `process/examples/hello [emit]` | - | 2.497 |
+| `process/examples/hello [tool.clang]` | - | 635.124 |
+| `process/examples/hello [tool.wasm-ld]` | - | 49.870 |
+| `process/examples/hello [total]` | - | 760.190 |
+
+**wasm_bytes (bytes) / wasm32 / O3 / generic / 中央値**
+
+| 種目 | 仕事量 | Tsuzuri build-wasm |
+| --- | ---: | ---: |
+| `process/examples/hello` | - | 24864 |
+<!-- /generated:perf-metrics -->
 
 ## ビルド速度
 

@@ -1,5 +1,7 @@
 /// The number of UTF-16 code units in `text`; a character outside the BMP counts twice.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=3%202
 /// $"{String.length "abc"} {String.length "😀"}"
 /// ```
@@ -26,6 +28,8 @@ fn matches_at needle text offset =
 
 /// The offset of the first occurrence of `needle` in `text`, or `None` when there is none.
 ///
+/// @complexity O(n * m)
+///
 /// ```tsuzuri run=3%20-1
 /// let at = String.find "zu" "Tsuzuri" |> Maybe.default_value (-1)
 /// let missing = String.find "x" "Tsuzuri" |> Maybe.default_value (-1)
@@ -44,6 +48,8 @@ fn find needle text =
 
 /// The offset of the last occurrence of `needle` in `text`, or `None` when there is none.
 ///
+/// @complexity O(n * m)
+///
 /// ```tsuzuri run=3
 /// String.rfind "an" "banana" |> Maybe.default_value (-1)
 /// ```
@@ -60,6 +66,8 @@ fn rfind needle text =
 
 /// Whether `needle` occurs in `text`.
 ///
+/// @complexity O(n * m)
+///
 /// ```tsuzuri run=true%20false
 /// $"{String.contains "zu" "Tsuzuri"} {String.contains "Zu" "Tsuzuri"}"
 /// ```
@@ -70,6 +78,8 @@ fn contains needle text =
 
 /// Whether `text` begins with `prefix`.
 ///
+/// @complexity O(m)
+///
 /// ```tsuzuri run=true%20false
 /// $"{String.starts_with "Tsu" "Tsuzuri"} {String.starts_with "zu" "Tsuzuri"}"
 /// ```
@@ -77,6 +87,8 @@ def starts_with :: ref string -> ref string -> bool
 fn starts_with prefix text = matches_at prefix text 0
 
 /// Whether `text` ends with `suffix`.
+///
+/// @complexity O(m)
 ///
 /// ```tsuzuri run=true%20false
 /// $"{String.ends_with "ri" "Tsuzuri"} {String.ends_with "Tsu" "Tsuzuri"}"
@@ -86,6 +98,8 @@ fn ends_with suffix text = suffix.length <= text.length && matches_at suffix tex
 
 /// The code units of `text` from `first` up to, but not including, `last`; `None` when a position is negative,
 /// `last < first`, or `last` is past the end.
+///
+/// @complexity O(k)
 ///
 /// ```tsuzuri run=suz%20?
 /// let piece = String.slice 1 4 "Tsuzuri" |> Maybe.default_value "?"
@@ -100,6 +114,8 @@ fn slice first last text =
 
 /// The `count` code units of `text` that start at `first`; `None` when the range is negative or not inside `text`.
 ///
+/// @complexity O(k)
+///
 /// ```tsuzuri run=zu%20?
 /// let piece = String.sub 3 2 "Tsuzuri" |> Maybe.default_value "?"
 /// let outside = String.sub 5 9 "Tsuzuri" |> Maybe.default_value "?"
@@ -112,6 +128,8 @@ fn sub first count text =
 /// The code unit of `text` at `offset` as a `char`, paired with the offset that follows it; an `offset` outside
 /// `text` traps.
 ///
+/// @complexity O(1)
+///
 /// ```tsuzuri run=('b',%202)
 /// String.decode_at 1 "abc"
 /// ```
@@ -119,6 +137,8 @@ def decode_at :: own i64 -> ref string -> (char * i64)
 fn decode_at offset text = (Char.of_u16 text[offset], offset + 1)
 
 /// The number of `char` values in `text`, which is its number of UTF-16 code units.
+///
+/// @complexity O(1)
 ///
 /// ```tsuzuri run=3%202
 /// $"{String.char_count "abc"} {String.char_count "😀"}"
@@ -128,6 +148,8 @@ fn char_count text = text.length
 
 /// The code units of `text` as an array of `char`.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=['a',%20'b',%20'c']
 /// String.chars "abc"
 /// ```
@@ -135,6 +157,8 @@ def chars :: ref string -> [char]
 fn chars text = new [char](text.length, \index -> Char.of_u16 text[index])
 
 /// The elements of `parts` joined with `separator` between each two of them; an empty array gives `""`.
+///
+/// @complexity O(n + k)
 ///
 /// ```tsuzuri run=a,%20b,%20c
 /// String.join ", " ["a", "b", "c"]
@@ -153,6 +177,8 @@ fn join separator parts =
 
 /// The elements of `parts` joined with nothing between them; an empty array gives `""`.
 ///
+/// @complexity O(n + k)
+///
 /// ```tsuzuri run=Tsuzuri
 /// String.concat ["Tsu", "zu", "ri"]
 /// ```
@@ -163,6 +189,8 @@ fn concat parts =
 
 /// Splits `text` at each `separator`; matches at the ends or next to each other give empty elements, and an empty
 /// `separator` splits between code units.
+///
+/// @complexity O(n * m)
 ///
 /// ```tsuzuri run=["a",%20"",%20"b"]
 /// String.split "," "a,,b"
@@ -196,6 +224,8 @@ fn whitespace value = value == 32i16u || (value >= 9i16u && value <= 13i16u)
 
 /// `text` without its leading ASCII whitespace (code units 9 to 13 and 32).
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[hi%20%20]
 /// $"[{String.trim_start "  hi  "}]"
 /// ```
@@ -207,6 +237,8 @@ fn trim_start text =
 
 /// `text` without its trailing ASCII whitespace (code units 9 to 13 and 32).
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=[%20%20hi]
 /// $"[{String.trim_end "  hi  "}]"
 /// ```
@@ -217,6 +249,8 @@ fn trim_end text =
 	Maybe.get (slice 0 last text)
 
 /// `text` without its leading and trailing ASCII whitespace (code units 9 to 13 and 32).
+///
+/// @complexity O(n)
 ///
 /// ```tsuzuri run=[hi]
 /// $"[{String.trim " \t hi\n"}]"
@@ -231,6 +265,8 @@ fn trim text =
 
 /// `text` with the ASCII letters `A` to `Z` made lowercase; every other code unit is kept.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=tsuzuri%20Äb
 /// String.to_ascii_lower "TSUZURI ÄB"
 /// ```
@@ -239,6 +275,8 @@ fn to_ascii_lower text = String.from_code_units (new [i16u](text.length, \index 
 
 /// `text` with the ASCII letters `a` to `z` made uppercase; every other code unit is kept.
 ///
+/// @complexity O(n)
+///
 /// ```tsuzuri run=STRAßE
 /// String.to_ascii_upper "straße"
 /// ```
@@ -246,6 +284,8 @@ def to_ascii_upper :: ref string -> string
 fn to_ascii_upper text = String.from_code_units (new [i16u](text.length, \index -> Char.to_u16 (Char.to_ascii_upper (Char.of_u16 text[index]))))
 
 /// `text` repeated `count` times; a negative `count` traps.
+///
+/// @complexity O(k)
 ///
 /// ```tsuzuri run=ababab
 /// String.repeat 3 "ab"
@@ -259,6 +299,8 @@ fn repeat count text =
 		String.from_code_units (new [i16u](size, \index -> text[index % text.length]))
 
 /// `text` with each non-overlapping occurrence of `needle`, from the left, replaced by `replacement`.
+///
+/// @complexity O(n * m + k)
 ///
 /// ```tsuzuri run=baNANA
 /// String.replace "na" "NA" "banana"

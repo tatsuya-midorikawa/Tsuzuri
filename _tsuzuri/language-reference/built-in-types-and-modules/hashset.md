@@ -210,15 +210,29 @@ seed を付けても走査順は変わりません。同じ操作列なら、see
 
 ## 計算量
 
-| 操作 | 期待計算量（平均） | 最悪計算量（全キー衝突時） |
-| --- | --- | --- |
-| 包含判定 `HashSet.contains` | $O(1)$ | $O(n)$ |
-| 要素追加 `HashSet.insert`（新規） | 償却 $O(1)$ | $O(n)$ |
-| 要素削除 `HashSet.remove`（swap-remove） | $O(1)$ | $O(n)$ |
-| 要素数の参照 `length` / `is_empty` | $O(1)$ | $O(1)$ |
-| 全走査・配列化 `fold` / `to_array` | $O(n)$ | $O(n)$ |
+計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`with_capacity` などの容量を指定する関数では確保する容量、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。
 
-※ ハッシュ値が一様に分散している場合の計算量です。キー型のハッシュ計算や等値比較の計算量は除きます。
+<!-- generated:complexity:HashSet -->
+| 関数 | 計算量 | 関連 |
+| --- | --- | --- |
+| `HashSet.empty` | $O(1)$ | - |
+| `HashSet.with_capacity` | $O(k)$ | - |
+| `HashSet.length` | $O(1)$ | - |
+| `HashSet.is_empty` | $O(1)$ | - |
+| `HashSet.with_seed` | $O(1)$ | - |
+| `HashSet.with_capacity_and_seed` | $O(k)$ | - |
+| `HashSet.try_randomized` | $O(1)$ | - |
+| `HashSet.randomized` | $O(1)$ | - |
+| `HashSet.insert` | 償却 $O(1)$、最悪 $O(n \cdot n)$ | - |
+| `HashSet.remove_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.remove` |
+| `HashSet.remove` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.remove_ref` |
+| `HashSet.contains_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.contains` |
+| `HashSet.contains` | 平均 $O(1)$、最悪 $O(n)$ | `HashSet.contains_ref` |
+| `HashSet.longest_probe` | $O(k)$ | - |
+| `HashSet.to_array` | $O(n)$ | - |
+| `HashSet.fold` | $O(n)$ | - |
+| `HashSet.iter` | $O(1)$ | - |
+<!-- /generated:complexity:HashSet -->
 
 ## まとめ
 
