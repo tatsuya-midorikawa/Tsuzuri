@@ -118,13 +118,17 @@ const MODULES: &[(&str, Kind)] = &[
     ("Path", subject(&["string"])),
     ("Process", Exempt(HANDLE)),
     ("Random", subject(&["Pcg"])),
-    ("Regex", text(&["string", "utf8string"], &["text"])),
+    // `'s` is the text of the `*_text` functions, a `string` or a `utf8string` chosen by `RegexText`.
+    ("Regex", text(&["string", "utf8string", "'s"], &["text"])),
+    ("RegexText", text(&["'s"], &["text"])),
     ("Result", subject(&["Result"])),
     ("Seq", subject(&["Seq"])),
     ("Set", subject(&["Set"])),
     ("String", text(&["string", "[string]"], &["text", "parts"])),
     ("Tensor", subject(&["Tensor", "View"])),
     ("Test", Exempt(HARNESS)),
+    // The methods of the class take the text, `'s`, last; they have no `fn` lines, so no names are read.
+    ("Text", text(&["'s", "['s]"], &["text", "parts"])),
     ("Time", SingleArgument),
     ("Unicode", subject(&["string", "utf8string"])),
     ("Utf8Char", SingleArgument),
@@ -195,11 +199,20 @@ fn header(line: &str) -> Option<(&str, Vec<&str>)> {
     Some((name, words.take_while(|word| *word != "=").collect()))
 }
 
-/// The public functions of a module, in the order of their `def` lines.
+/// The public functions of a module, in the order of their `def` lines. The methods of a class (`std/Text.tt`) are
+/// its indented `def` lines: `Text.find` is called like a function of the module.
 fn functions(source: &str) -> Vec<Function> {
     let headers: HashMap<&str, Vec<&str>> = source.lines().filter_map(header).collect();
     source
         .lines()
+        .map(|line| {
+            let method = line.trim_start();
+            if method.len() < line.len() && method.starts_with("def ") {
+                method
+            } else {
+                line
+            }
+        })
         .filter_map(|line| {
             line.strip_prefix("pure ")
                 .unwrap_or(line)
@@ -591,6 +604,17 @@ fn the_function_reader_pairs_the_def_line_with_the_fn_line() {
     assert_eq!(functions[0].names, ["needle", "text"]);
     assert_eq!(functions[1].name, "sub");
     assert_eq!(functions[1].types, ["i64", "i64", "ref string"]);
+    // The methods of a class are indented, and a default implementation follows ` = `.
+    let class = "class Ord<'s> => Text<'s> {\n    /// doc\n    def is_empty :: ref 's -> bool = \\text -> true\n\n    \
+                 def repeat :: i64 -> ref 's -> 's\n}\n";
+    let methods = self::functions(class);
+    assert_eq!(methods.len(), 2);
+    assert_eq!(methods[0].name, "is_empty");
+    assert_eq!(methods[0].types, ["ref 's"]);
+    assert_eq!(methods[1].name, "repeat");
+    assert_eq!(methods[1].types, ["i64", "ref 's"]);
+    let (checked, found) = misplaced("Text", class, &["'s"], &[], &[]);
+    assert_eq!((checked, found.len()), (2, 0), "{found:?}");
 }
 
 fn accepts(source: &str) {
@@ -836,6 +860,8 @@ fn pipelines_pass_the_other_subjects_on() {
         "let text = \"hello world\"\nlet word = text |> String.sub 6 5\nMaybe.get word",
         "let text = \"ab\"\ntext |> String.repeat 3",
         "let bytes = u8\"hello\"\nlet part = bytes |> Utf8String.slice 1 3\nMaybe.get part",
+        "let text = \"hello world\"\nlet o = \"o\"\nlet found = text |> Text.find o\nMaybe.get found",
+        "let bytes = u8\"ab\"\nlet a = u8\"a\"\nlet dash = u8\"-\"\nlet repeated = bytes |> Text.repeat 3\nrepeated |> Text.replace a dash",
         "let matrix = Matrix.of_array 2 2 [1, 2, 3, 4]\nlet cell = matrix |> Matrix.get 1 1\nMaybe.get cell",
         "let matrix = Matrix.of_array 2 2 [1, 2, 3, 4] |> Matrix.set 0 0 9\nMatrix.rows (ref matrix)",
         "let found = Maybe.Some 3 |> Maybe.bind (\\x -> if x > 2 then Maybe.Some (x * 2) else Maybe.None)\nMaybe.get found",

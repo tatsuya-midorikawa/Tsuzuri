@@ -11,6 +11,7 @@
 - 空の区切りによる `split` と `replace` は、バイトではなくスカラーのあいだで切ります。
 - `from_bytes` は不正な UTF-8 を `None` にします。値になった `utf8string` は常に妥当です。
 - 複製は `Utf8String.clone` です。`clone_string` ではありません。
+- `string` と `utf8string` を書き分けずに `find` や `split` を呼びたいときは、[Text](text.md) の `Text.find` を使います。同じ結果で、呼び出しは `Utf8String.find` への直接の呼び出しになります。
 
 > [!WARNING]
 > `Utf8String.find u8"zu" title` です。本文を先に書きません。`split` も区切りが先です。
@@ -190,6 +191,7 @@ letter=い twice=いい bytes=6
 
 - [Unicode](unicode.md) — 正規化、書記素クラスター、単語境界、完全な大文字小文字の変換
 - [Regex](regex.md) — 正規表現による検索・置換・分割（`_utf8` の関数）
+- [Text](text.md) — `string` と `utf8string` に同じ名前で呼べる共通の操作（型クラス）
 - [文字列](../literals-and-strings/strings.md)
 - [String](string.md)
 - [Utf8Char](utf8char.md)

@@ -143,7 +143,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 ```
 
 - **ライフタイムとリソース解放 (RAII)**: 所有者より長生きする参照や、借用中の移動、共有借用と排他借用の競合はコンパイル時に拒否されます。レコードには region を付けた共有・排他の借用フィールド（`ref {r} T`／`ref mut {r} T`）を置けます。レコードや共用体に `instance Drop<T> { fn drop value = ... }` を実装すると、値がスコープを抜ける際や再代入時に自動的に `drop` が一度だけ呼び出されます。ファイルやホストハンドルの確実なクローズに活用できます。`use` 束縛は、対象の値が `Drop` を実装していることを静的に検査します。
-- **一時値の借用**: 関数呼び出しの中間結果など、呼び出し後に借用が残らない一時値は、安全に共有借用として渡せます（例: `Array.sum (Array.map f (ref xs))`）。
+- **一時値の借用**: 関数呼び出しの中間結果など、呼び出し後に借用が残らない一時値は、安全に共有借用として渡せます（例: `Array.sum (Array.map f (ref xs))`）。型クラスのメソッド（`Text.find "a" text`）も同じです。
 
 ### 基本データ型とコレクション
 
@@ -159,7 +159,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **既定の `string` (UTF-16)**: [ECMA-262 の String 値モデル](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-string-type) に従う UTF-16 コード単位列です。文字型は UTF-16 コード単位を表す `char`（`'A'`）です。
 - **バイト列 `utf8string` (UTF-8)**: 従来の UTF-8 文字列は `utf8string` 型および `u8"..."` リテラルで扱います。文字型は Unicode スカラー値を表す `utf8char`（`u8'😀'`）です。
 - **文字列補間**: `$"x = {x}, y = {y:.2}"`（UTF-8 は `u8$"..."`）と記述し、波括弧自体は `{{`／`}}` でエスケープします。書式指定は `[[fill]align][+][width][.precision][type]` に対応し、ネイティブと WASM で完全に一致する丸め処理を行います。
-- **正規表現 (`Regex`)**: `Regex.compile (ref "\\d+")` でパターンをコンパイルし、`is_match`・`find`・`captures`・`find_all`・`replace_all`・`split`（UTF-8 は `_utf8` 版）で使います。後戻りしない Pike VM なので、1 回の探索は入力の長さに線形です。`\w`・`\p{Lu}`・大文字小文字を区別しない照合は Unicode 17.0.0 の表（`Unicode` モジュール）に従います。詳細は [Regex](_tsuzuri/language-reference/built-in-types-and-modules/regex.md) を参照してください。
+- **正規表現 (`Regex`)**: `Regex.compile (ref "\\d+")` でパターンをコンパイルし、`is_match`・`find`・`captures`・`find_all`・`replace_all`・`split`（UTF-8 は `_utf8` 版、型を選ばない `is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text` もあります）で使います。後戻りしない Pike VM なので、1 回の探索は入力の長さに線形です。`\w`・`\p{Lu}`・大文字小文字を区別しない照合は Unicode 17.0.0 の表（`Unicode` モジュール）に従います。詳細は [Regex](_tsuzuri/language-reference/built-in-types-and-modules/regex.md) を参照してください。
 - **Unicode のテキスト処理 (`Unicode`)**: 一般カテゴリー、正規化（`Unicode.normalize Unicode.Nfc (ref text)` など）、書記素クラスターと単語の境界（UAX #29）、完全な大文字小文字の変換（`to_upper`・`to_lower`・`to_title`・`case_fold`）を提供します。詳細は [Unicode](_tsuzuri/language-reference/built-in-types-and-modules/unicode.md) を参照してください。
 - 詳細は [文字列の仕様](docs/language.md#string-と-utf8string) を参照してください。
 
@@ -504,6 +504,7 @@ def main :: unit -> i32 = \() ->
 | `Domain` | 純粋な計算のトラップを `Result.Error` にする失敗の領域（macOS・Linux のネイティブ） |
 | `Channel` | 容量付きの MPMC キュー。`Sender`／`Receiver`、`bounded`・`send`・`recv`・`clone_sender`。最後の `Sender` の drop で閉じ、全スレッドが待ったらデッドロックのトラップ |
 | `String`, `Utf8String`, `Char` | UTF-16 / UTF-8 文字列および文字操作 |
+| `Text`, `RegexText` | `string` と `utf8string` に共通の操作の型クラス（`Text.find`・`Text.split`・`Text.trim` の形。`String`・`Utf8String` の同名の関数への直接の呼び出し）。opt-in の `RegexText` は `Regex.*_text` が使う |
 | `Regex`, `Unicode` | 線形時間の正規表現、Unicode 17.0.0 の文字データ |
 | `Math`, `Int` | 高精度数学関数、浮動小数点超越関数、整数組み込み演算 |
 | `Debug`, `Test` | デバッグ出力およびテストフレームワーク |

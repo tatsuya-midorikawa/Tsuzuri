@@ -130,6 +130,16 @@ jobs:
           target/release/tsuzuri test --doc tests/fixtures/doctest/pass
           target/release/tsuzuri test --doc std -O0
           target/release/tsuzuri test --doc std -O3
+      # D14: Text.f and Regex.*_text give the values of the direct calls (JavaScript references), and each Text
+      # instance method is a single direct call.
+      - name: Text class (D14) - values against JavaScript references, instance methods are single direct calls
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/features.mjs target/release/tsuzuri text_class
+          node tests/features.mjs target/release/tsuzuri regex_text
+          node tests/text_class.mjs target/release/tsuzuri
       - name: Memory and LLVM fact semantics
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         env:

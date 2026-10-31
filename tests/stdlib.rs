@@ -226,6 +226,12 @@ fn rejects_reserved_modules_and_invalid_std_sources() {
         ("Debug.tc", ""),
         ("Result.tz", ""),
         ("Utf8String.tz", ""),
+        ("Text.tz", ""),
+        ("Text.tt", ""),
+        ("Text.tc", ""),
+        ("RegexText.tz", ""),
+        ("RegexText.tt", ""),
+        ("RegexText.tc", ""),
     ] {
         for sources in [vec![(path, source)], vec![("Main.tz", "0"), (path, source)]] {
             let error = rejects(&sources, &[], "E1011", "reserved for the standard library");
