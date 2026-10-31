@@ -614,7 +614,7 @@ fn native_runtime_sources(
 ) -> Result<Vec<(&'static str, String)>, Diagnostic> {
     let mut sources = vec![("main.c", include_str!("runtime/test-runner.c").to_owned())];
     // B10: the failure domains of `Domain.run` and the tracked heap they free.
-    if text.contains(DOMAIN_DECLARATION) {
+    if text.contains(TRAP_RUNTIME_DECLARATION) {
         if !platform.unix() {
             return Err(domain_on_windows());
         }
@@ -953,7 +953,7 @@ fn compile_native_runner(
     let io_runtime = text.contains("declare i32 @tsuzuri_io_");
     let async_runtime = llvm::uses_reactor(&text);
     let gpu_runtime = text.contains("declare i32 @tsuzuri_gpu_");
-    let trap_runtime = text.contains(DOMAIN_DECLARATION);
+    let trap_runtime = text.contains(TRAP_RUNTIME_DECLARATION);
     if trap_runtime && !platform.unix() {
         return Err(domain_on_windows());
     }
@@ -1065,8 +1065,11 @@ fn compile_native_runner(
     Ok(artifact)
 }
 
-/// What the IR of a runner of a program with failure domains declares (B10).
-const DOMAIN_DECLARATION: &str = "declare i32 @tsuzuri_domain_run(";
+/// What the IR of a runner of a program with failure domains declares (B10): the report of every trap raises it to
+/// the innermost domain first. A runner always has it, even when the selected tests or benches reach no call of
+/// `Domain.run` and its `@tsuzuri_domain_run` is pruned with the call, and it needs src/runtime/trap.c then too
+/// (the raise and the tracked heap).
+const TRAP_RUNTIME_DECLARATION: &str = "declare void @tsuzuri_trap_raise(";
 
 /// The `E1038` of a native Windows runner of a program with `Domain.run`: the trap runtime is POSIX's.
 fn domain_on_windows() -> Diagnostic {

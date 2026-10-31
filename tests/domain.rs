@@ -300,6 +300,67 @@ fn domain_target_errors() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A runner of a program with `Domain.run` raises every trap to the innermost domain and links src/runtime/trap.c, also
+/// when the selected tests and benches reach no call of it (`main`, an unselected test): the call and its declaration are
+/// pruned, the raise and the tracked heap are not (review of PR #74).
+#[cfg(unix)]
+#[test]
+fn runners_link_the_trap_runtime_when_no_selected_code_calls_domain_run() {
+    let in_main = project(
+        "runner-main",
+        "def main :: unit -> i32 = \\() ->\n    let n = 0\n    match Domain.run (\\() -> 10 / n) with\n    | Result.Ok v -> v as i32\n    | Result.Error failure -> failure.kind as i32\n\ndef twice :: i64 -> i64 = \\x -> x * 2\n\ntest \"doubles\" =\n    Test.is_true (twice 21 == 42)\n\nbench \"doubles\" = Bench.of (\\() -> twice 21)\n",
+    );
+    let unselected = project(
+        "runner-unselected",
+        "def twice :: i64 -> i64 = \\x -> x * 2\n\ntest \"doubles\" =\n    Test.is_true (twice 21 == 42)\n\ntest \"contains\" =\n    let n = 0\n    match Domain.run (\\() -> 10 / n) with\n    | Result.Error failure -> Test.is_true (failure.kind == 1)\n    | Result.Ok _ -> Test.is_true false\n",
+    );
+    let succeeds = |arguments: &[&str]| {
+        let result = tsuzuri(arguments);
+        assert!(
+            result.status.success(),
+            "{arguments:?}\n{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        String::from_utf8(result.stdout).unwrap()
+    };
+    for root in [&in_main, &unselected] {
+        let directory = root.to_str().unwrap();
+        // The ordinary runner of the test that does not call Domain.run.
+        let tested = succeeds(&["test", directory, "--filter", "doubles"]);
+        assert!(tested.contains("1 passed; 0 failed"), "{tested}");
+        // The debug runner of the same test, which runs the test with its argument 0.
+        let runner = root.join("runner");
+        succeeds(&[
+            "test",
+            directory,
+            "--index",
+            "0",
+            "-g",
+            "-o",
+            runner.to_str().unwrap(),
+        ]);
+        let ran = std::process::Command::new(&runner)
+            .arg("0")
+            .output()
+            .unwrap();
+        assert!(
+            ran.status.success(),
+            "{:?}\n{}",
+            ran.status,
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    // The bench runner of a bench that does not call Domain.run.
+    let benched = succeeds(&["bench", in_main.to_str().unwrap(), "--samples", "1"]);
+    assert!(benched.contains("doubles"), "{benched}");
+    // All the tests, the one with a domain included.
+    let all = succeeds(&["test", unselected.to_str().unwrap()]);
+    assert!(all.contains("2 passed; 0 failed"), "{all}");
+    std::fs::remove_dir_all(in_main).unwrap();
+    std::fs::remove_dir_all(unselected).unwrap();
+}
+
 /// A program with failure domains has the trap path of `--trap-mode return`, which a callback that the host calls cannot
 /// hold (review of PR #74): the builds and the runners reject extern callbacks as `--trap-mode return` does.
 #[test]
