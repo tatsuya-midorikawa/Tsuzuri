@@ -1,0 +1,176 @@
+/// The operations that `string` (UTF-16) and `utf8string` (UTF-8) have in common. A method means exactly what the
+/// function of the same name in `String` or `Utf8String` means, and `Text.f` on a `string` or a `utf8string` is that
+/// call: the instances only delegate. A unit is a UTF-16 code unit for a `string` and a byte for a `utf8string`; every
+/// length, offset, and range counts units, and every text argument is borrowed. The two types differ in these places,
+/// and the instances keep each difference: `slice` and `sub` of a `utf8string` need offsets on a scalar boundary,
+/// `split` and `replace` with an empty pattern work between the units of a `string` and between the scalars of a
+/// `utf8string`, and `compare` and `<` order by UTF-16 code unit or by byte.
+///
+/// ```tsuzuri run=2%204%20true
+/// def earlier :: Text<'s> => ref 's -> ref 's -> bool
+/// fn earlier left right = deref left < deref right
+///
+/// $"{Text.length "😀"} {Text.length u8"😀"} {earlier u8"apple" u8"banana"}"
+/// ```
+class Ord<'s> => Text<'s> {
+    /// The number of units of the text; the same as `.length`.
+    ///
+    /// ```tsuzuri run=2%204
+    /// $"{Text.length "😀"} {Text.length u8"😀"}"
+    /// ```
+    def length :: ref 's -> i64
+
+    /// True when the text has no units.
+    ///
+    /// ```tsuzuri run=true%20false
+    /// $"{Text.is_empty ""} {Text.is_empty u8"a"}"
+    /// ```
+    def is_empty :: ref 's -> bool = \text -> Text.length text == 0
+
+    /// -1, 0, or 1 by the order of the units: by UTF-16 code unit for a `string`, by byte for a `utf8string`.
+    ///
+    /// ```tsuzuri run=-1%200%201
+    /// $"{Text.compare "a" "b"} {Text.compare u8"b" u8"b"} {Text.compare "\u{FF5E}" "😀"}"
+    /// ```
+    def compare :: ref 's -> ref 's -> i64
+
+    /// A copy of the text.
+    ///
+    /// ```tsuzuri run=Tsuzuri
+    /// let name = u8"Tsuzuri"
+    /// Text.clone name
+    /// ```
+    def clone :: ref 's -> 's
+
+    /// The offset in units of the first match of the pattern (the first argument) in the text, or `None`.
+    ///
+    /// ```tsuzuri run=2%204
+    /// let wide = Text.find "b" "😀b" |> Maybe.default_value (-1)
+    /// let bytes = Text.find u8"b" u8"😀b" |> Maybe.default_value (-1)
+    /// $"{wide} {bytes}"
+    /// ```
+    def find :: ref 's -> ref 's -> Maybe<i64>
+
+    /// The offset in units of the last match of the pattern (the first argument) in the text, or `None`.
+    ///
+    /// ```tsuzuri run=5%20-1
+    /// let last = Text.rfind "a" "banana" |> Maybe.default_value (-1)
+    /// let none = Text.rfind u8"x" u8"banana" |> Maybe.default_value (-1)
+    /// $"{last} {none}"
+    /// ```
+    def rfind :: ref 's -> ref 's -> Maybe<i64>
+
+    /// True when the pattern (the first argument) occurs in the text; an empty pattern always does.
+    ///
+    /// ```tsuzuri run=true%20false
+    /// $"{Text.contains "zu" "Tsuzuri"} {Text.contains u8"ZU" u8"Tsuzuri"}"
+    /// ```
+    def contains :: ref 's -> ref 's -> bool
+
+    /// True when the text starts with the prefix (the first argument).
+    ///
+    /// ```tsuzuri run=true%20false
+    /// $"{Text.starts_with "Tsu" "Tsuzuri"} {Text.starts_with u8"ri" u8"Tsuzuri"}"
+    /// ```
+    def starts_with :: ref 's -> ref 's -> bool
+
+    /// True when the text ends with the suffix (the first argument).
+    ///
+    /// ```tsuzuri run=true%20false
+    /// $"{Text.ends_with "ri" "Tsuzuri"} {Text.ends_with u8"Tsu" u8"Tsuzuri"}"
+    /// ```
+    def ends_with :: ref 's -> ref 's -> bool
+
+    /// The units of the text from `first` up to, not including, `last`, or `None` for a bad range; for a
+    /// `utf8string`, both ends must also be on a scalar boundary.
+    ///
+    /// ```tsuzuri run=suz%20?
+    /// let wide = Text.slice 1 4 "Tsuzuri" |> Maybe.default_value "?"
+    /// let bytes = Text.slice 1 2 u8"é" |> Maybe.default_value u8"?"
+    /// $"{wide} {bytes}"
+    /// ```
+    def slice :: i64 -> i64 -> ref 's -> Maybe<'s>
+
+    /// `count` units of the text from `first`, or `None` for a bad range; for a `utf8string`, both ends must also be
+    /// on a scalar boundary.
+    ///
+    /// ```tsuzuri run=zu
+    /// Text.sub 3 2 u8"Tsuzuri" |> Maybe.default_value u8"?"
+    /// ```
+    def sub :: i64 -> i64 -> ref 's -> Maybe<'s>
+
+    /// The parts joined with the separator (the first argument) between each two of them.
+    ///
+    /// ```tsuzuri run=a,%20b,%20c
+    /// Text.join ", " ["a", "b", "c"]
+    /// ```
+    def join :: ref 's -> ref ['s] -> 's
+
+    /// The parts joined with no separator.
+    ///
+    /// ```tsuzuri run=abc
+    /// Text.concat [u8"a", u8"b", u8"c"]
+    /// ```
+    def concat :: ref ['s] -> 's
+
+    /// The pieces of the text between the matches of the separator (the first argument); an empty separator splits
+    /// between the code units of a `string` and between the scalars of a `utf8string`.
+    ///
+    /// ```tsuzuri run=3%202%201
+    /// let pieces = (Text.split "," "a,,b").length
+    /// let units = (Text.split "" "😀").length
+    /// let scalars = (Text.split u8"" u8"😀").length
+    /// $"{pieces} {units} {scalars}"
+    /// ```
+    def split :: ref 's -> ref 's -> ['s]
+
+    /// The text without leading and trailing ASCII white space.
+    ///
+    /// ```tsuzuri run=[a%20b]
+    /// $"[{Text.trim "  a b\t\n"}]"
+    /// ```
+    def trim :: ref 's -> 's
+
+    /// The text without leading ASCII white space.
+    ///
+    /// ```tsuzuri run=[a%20]
+    /// $"[{Text.trim_start u8"  a "}]"
+    /// ```
+    def trim_start :: ref 's -> 's
+
+    /// The text without trailing ASCII white space.
+    ///
+    /// ```tsuzuri run=[%20a]
+    /// $"[{Text.trim_end " a  "}]"
+    /// ```
+    def trim_end :: ref 's -> 's
+
+    /// The text with `A` to `Z` changed to `a` to `z`; other characters stay.
+    ///
+    /// ```tsuzuri run=tsuzuri%20É
+    /// Text.to_ascii_lower u8"TSUZURI É"
+    /// ```
+    def to_ascii_lower :: ref 's -> 's
+
+    /// The text with `a` to `z` changed to `A` to `Z`; other characters stay.
+    ///
+    /// ```tsuzuri run=TSUZURI%20é
+    /// Text.to_ascii_upper "tsuzuri é"
+    /// ```
+    def to_ascii_upper :: ref 's -> 's
+
+    /// The text repeated `count` times; a negative `count` traps.
+    ///
+    /// ```tsuzuri run=ababab
+    /// Text.repeat 3 u8"ab"
+    /// ```
+    def repeat :: i64 -> ref 's -> 's
+
+    /// The text with every non-overlapping match of the pattern (the first argument), from the left, replaced by the
+    /// replacement (the second argument).
+    ///
+    /// ```tsuzuri run=baNANA
+    /// Text.replace "na" "NA" "banana"
+    /// ```
+    def replace :: ref 's -> ref 's -> ref 's -> 's
+}

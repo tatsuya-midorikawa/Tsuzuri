@@ -11,6 +11,7 @@
 - 見つからない、範囲が不正、という失敗は `None` です。範囲外の添字と負の `repeat` はトラップします。
 - 検索は素朴な走査で、最悪計算量は本文の長さとパターンの長さの積です。SIMD は保証しません。パターンで探すときは [Regex](regex.md) です。
 - `clone_string` だけは `String.clone` ではありません。
+- `string` と `utf8string` を書き分けずに `find` や `split` を呼びたいときは、[Text](text.md) の `Text.find` を使います。同じ結果で、呼び出しは `String.find` への直接の呼び出しになります。
 
 > [!WARNING]
 > `String.find "zu" title` です。`String.find title "zu"` ではありません。`split`、`starts_with`、`replace` も、パターンが本文より前です。
@@ -273,6 +274,7 @@ word=suz loud=SUZ twice=suzsuz
 
 - [Unicode](unicode.md) — 正規化、書記素クラスター、単語境界、完全な大文字小文字の変換
 - [Regex](regex.md) — 正規表現による検索・置換・分割
+- [Text](text.md) — `string` と `utf8string` に同じ名前で呼べる共通の操作（型クラス）
 - [文字列](../literals-and-strings/strings.md)
 - [Utf8String](utf8string.md)
 - [Char](char.md)

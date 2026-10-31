@@ -346,6 +346,11 @@ impl Checker<'_> {
             TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
                 instance.builtin.scheme().parameters.len() == arguments.len()
             }
+            // A class method (`Text.find "a" text`): its type is the method's curried signature at the instance.
+            TypedExprKind::Method(..) => matches!(
+                &callee.ty,
+                Type::Function(parameters, _) if parameters.len() == arguments.len()
+            ),
             _ => arguments.len() == 1,
         };
         if !single_stage || !self.loan_free(result) {

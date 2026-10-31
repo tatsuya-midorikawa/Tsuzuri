@@ -115,6 +115,8 @@ flowchart TD
     unique -->|no| ambiguous["E1004 か未定義"]
 ```
 
+標準ライブラリが `.tt` で宣言するクラスもあります。`Text`（[Text](../built-in-types-and-modules/text.md)）は `string` と `utf8string` に共通の操作で、無修飾の `Text` は段 5 で標準ライブラリのクラスに解決します。利用者が同じ名前のクラスを宣言すると段 2 か段 4 でそちらが選ばれるので、標準のクラスは `Text.Text` と修飾します。
+
 ## 組み込み型クラス
 
 次の 31 個は言語に組み込まれています。印だけのクラスはメソッドを持たず、利用者のインスタンスで上書きできません（`E1016`）。
@@ -321,6 +323,7 @@ dyn 値は `{ data, vtable }` の 2 ポインタです。`export` と `extern` �
 
 ## 関連項目
 
+- [Text](../built-in-types-and-modules/text.md) — 標準ライブラリの型クラスの例（`string` と `utf8string`）
 - [制約 と 属性](./constraints.md)
 - [ジェネリック](./generics.md)
 - [ジェネリック関数と型パラメータ制約](../values-and-functions/generics-functions.md)

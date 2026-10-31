@@ -327,3 +327,27 @@ fn replace needle replacement text =
 			if index < text.length then output = Vec.push_owned text[index] output
 			index = index + 1
 	String.from_code_units (Vec.to_array output)
+
+// `string` is a `Text`: each method calls the function of the same name in `String` (`clone` calls `clone_string`).
+instance Text<string> {
+	fn length text = String.length text
+	fn compare left right = String.compare left right
+	fn clone text = clone_string text
+	fn find needle text = String.find needle text
+	fn rfind needle text = String.rfind needle text
+	fn contains needle text = String.contains needle text
+	fn starts_with prefix text = String.starts_with prefix text
+	fn ends_with suffix text = String.ends_with suffix text
+	fn slice first last text = String.slice first last text
+	fn sub first count text = String.sub first count text
+	fn join separator parts = String.join separator parts
+	fn concat parts = String.concat parts
+	fn split separator text = String.split separator text
+	fn trim text = String.trim text
+	fn trim_start text = String.trim_start text
+	fn trim_end text = String.trim_end text
+	fn to_ascii_lower text = String.to_ascii_lower text
+	fn to_ascii_upper text = String.to_ascii_upper text
+	fn repeat count text = String.repeat count text
+	fn replace needle replacement text = String.replace needle replacement text
+}

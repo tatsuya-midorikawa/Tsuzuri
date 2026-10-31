@@ -97,6 +97,9 @@ match parsed with
 > [!TIP]
 > 外部の `i32u` を文字にするときは `of_u32` です。`of_u32_unchecked` は、すでに検査済みの値を戻すときに限ってください。
 
+> [!NOTE]
+> `Utf8Char` には `Text` のような型クラスはありません。`Text` から文字を取り出す手段がなく、文字の型クラスだけでは使い道がないためです（[Text](text.md#入っていないもの)）。
+
 ## まとめ
 
 - `utf8char` はサロゲートを含まないスカラー 1 個です。
@@ -108,6 +111,7 @@ match parsed with
 
 - [文字列](../literals-and-strings/strings.md)
 - [Char](char.md)
+- [Text](text.md)
 - [Utf8String](utf8string.md)
 - [Format](format.md)
 - [言語リファレンスの目次](../index.md)

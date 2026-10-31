@@ -13,6 +13,7 @@
 - `\d`、`\w`、`\s`、`\b` と大文字小文字の畳み込みは既定で Unicode（Unicode 17.0.0）です。`(?-u)` で ASCII だけにできます。
 - `Regex` は不透明で非 Copy の値です。照合では変化しないので、共有借用で何度でも使えます。
 - 後方参照、先読み・後読み、名前付き group、atomic group はありません（線形時間を保証するため）。
+- `string` と `utf8string` を型で選ぶ呼び分けが要らないときは、`is_match_text` などを使います（[型を選ばずに使う](#型を選ばずに使う)）。
 
 ## コンパイルと検索
 
@@ -99,6 +100,37 @@ $"bytes={bytes} units={units}"
 ```text
 bytes=(4, 5) units=(2, 3)
 ```
+
+### 型を選ばずに使う
+
+`Regex.is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text` は、テキストの型が `string` なら `_text` を除いた名前の関数（`is_match`・`find`・…）、`utf8string` なら `_utf8` のついた名前の関数（`is_match_utf8`・`find_utf8`・…）を呼びます。引数の順番、意味、範囲の単位（`string` はコード単位、`utf8string` は byte）は、呼ばれる関数と同じです。`_utf8` のないパターンは、どちらの型にも同じ `Regex` を使います。
+
+```tsuzuri run=%281%2C%202%29%20%285%2C%206%29%20a-b-%20%F0%9F%98%80a-b-%202%202%20true
+def match_count :: RegexText.RegexText<'s> => ref Regex -> ref 's -> i64
+fn match_count re text = (Regex.find_all_text re text).length
+
+let re = Result.get (Regex.compile (ref "\\d+"))
+let text = "a1b22"
+let bytes = u8"😀a1b22"
+let first = match Regex.find_text (ref re) text with
+    | Maybe.Some (start, stop) -> $"({start}, {stop})"
+    | Maybe.None -> "none"
+let first8 = match Regex.find_text (ref re) bytes with
+    | Maybe.Some (start, stop) -> $"({start}, {stop})"
+    | Maybe.None -> "none"
+let dashed = Regex.replace_all_text (ref re) "-" text
+let dashed8 = Regex.replace_all_text (ref re) u8"-" bytes
+let counts = $"{match_count (ref re) text} {match_count (ref re) bytes}"
+$"{first} {first8} {dashed} {dashed8} {counts} {Regex.is_match_text (ref re) bytes}"
+```
+
+実行結果:
+
+```text
+(1, 2) (5, 6) a-b- 😀a-b- 2 2 true
+```
+
+`*_text` は型クラス `RegexText`（`std/RegexText.tt`）の instance を通して、`_text` のない関数か `_utf8` の関数を 1 回呼ぶだけです。辞書や間接呼び出しはなく、`-O1` 以上では呼び出しに組み込まれます。ジェネリックな関数に制約を書くときの型クラスは `RegexText` です。`RegexText` は opt-in の標準モジュールなので、ユーザーのコードでは `RegexText.RegexText<'s>` と修飾します（無修飾の `RegexText<'s>` は `E1016`）。メソッドを直接呼ぶときは `RegexText.RegexText.find_all` のように書きますが、普通は `Regex.find_all_text` を使います。`Regex` も `RegexText` も名前を書かないプログラムには、どちらも読み込まれません。
 
 ## 構文
 
@@ -224,13 +256,20 @@ JavaScript は、最小回数を超えた繰り返しの本体が空文字列に
 | `captures` / `captures_utf8` | `ref Regex -> ref string -> Maybe<[(i64 * i64)]>` | 最初の一致の全体と各 group の範囲 |
 | `replace_all` / `replace_all_utf8` | `ref Regex -> ref string -> ref string -> string` | 置換文字列、テキストの順に取り、すべての一致を置換文字列で置き換えます |
 | `split` / `split_utf8` | `ref Regex -> ref string -> [string]` | 一致の間の部分文字列 |
+| `is_match_text` | `RegexText<'s> => ref Regex -> ref 's -> bool` | `is_match` か `is_match_utf8`（`'s` が `string` か `utf8string`） |
+| `find_text` | `RegexText<'s> => ref Regex -> ref 's -> Maybe<(i64 * i64)>` | `find` か `find_utf8` |
+| `find_at_text` | `RegexText<'s> => ref Regex -> i64 -> ref 's -> Maybe<(i64 * i64)>` | `find_at` か `find_at_utf8` |
+| `find_all_text` | `RegexText<'s> => ref Regex -> ref 's -> [(i64 * i64)]` | `find_all` か `find_all_utf8` |
+| `captures_text` | `RegexText<'s> => ref Regex -> ref 's -> Maybe<[(i64 * i64)]>` | `captures` か `captures_utf8` |
+| `replace_all_text` | `RegexText<'s> => ref Regex -> ref 's -> ref 's -> 's` | `replace_all` か `replace_all_utf8`。置換文字列は本文と同じ型 |
+| `split_text` | `RegexText<'s> => ref Regex -> ref 's -> ['s]` | `split` か `split_utf8` |
 | `search_steps` | `ref Regex -> ref string -> i64` | `find` と同じ探索の VM の手数。線形時間の試験のための関数です |
 
 ### 引数の順序
 
 標準ライブラリ全体の規則は、[標準ライブラリの引数の順序](./argument-order.md)にまとめてあります。
 
-対象のテキストは、必ず最後の引数です。`ref text |> Regex.find (ref re)` のようにパイプで渡せ、`Regex.find_all (ref re) >> Array.length` のように一部だけ渡した関数を合成できます。ほかの引数は、`find_at re start text` や `replace_all re replacement text` のように、テキストの前に置きます。`_utf8` の関数も同じ順序です。`replace_all` は置換文字列とテキストがどちらも `ref string` なので、順序を取り違えても型検査を通ります。
+対象のテキストは、必ず最後の引数です。`ref text |> Regex.find (ref re)` のようにパイプで渡せ、`Regex.find_all (ref re) >> Array.length` のように一部だけ渡した関数を合成できます。ほかの引数は、`find_at re start text` や `replace_all re replacement text` のように、テキストの前に置きます。`_utf8` と `_text` の関数も同じ順序です。`replace_all` は置換文字列とテキストがどちらも `ref string` なので、順序を取り違えても型検査を通ります。
 
 ```tsuzuri run=%2817%2C%2018%29%20order%20%23%20shipped%20%23%202
 let re = Result.get (Regex.compile (ref "\\d+"))
@@ -267,6 +306,7 @@ $"{later} {masked} {count}"
 
 - [String](./string.md) — 部分文字列の検索と分割
 - [Utf8String](./utf8string.md)
+- [Text](./text.md) — `string` と `utf8string` に共通の文字列操作（型クラス）
 - [Unicode](./unicode.md) — 一般カテゴリーと大文字小文字の表
 - [Result](./result.md)
 - [言語リファレンスの目次](../index.md)

@@ -1,0 +1,201 @@
+def sample :: i64 -> string
+fn sample index = match index with
+    | 0 -> ""
+    | 1 -> "hello hello"
+    | 2 -> "l"
+    | 3 -> "a\0b"
+    | 4 -> "\u{1F600}"
+    | 5 -> "\uE000"
+    | 6 -> " \tAbC\r\n"
+    | 7 -> "\uD800"
+    | 8 -> "\uDE00"
+    | _ -> "aa"
+
+def utf8_sample :: i64 -> utf8string
+fn utf8_sample index =
+    let text = sample index
+    Utf8String.from_string (ref text)
+
+def hash :: own string -> i64
+fn hash text =
+    let mut value = text.length
+    for unit in text do value = value * 31 + unit as i64
+    value
+
+def hash_utf8 :: own utf8string -> i64
+fn hash_utf8 text =
+    let mut value = text.length
+    for byte in text do value = value * 31 + byte as i64
+    value
+
+def position :: Maybe<i64> -> i64
+fn position found = Maybe.default_value (-1) found
+
+def flag :: bool -> i64
+fn flag value = if value then 1 else 0
+
+// Generic code over Text: one body, two instantiations (string and utf8string).
+def order_flags :: Text<'s> => ref 's -> ref 's -> i64
+fn order_flags left right =
+    (if deref left < deref right then 1 else 0) + (if deref left == deref right then 2 else 0)
+
+def trimmed_length :: Text<'s> => ref 's -> i64
+fn trimmed_length text =
+    let trimmed = Text.trim text
+    Text.length (ref trimmed)
+
+def piece_count :: Text<'s> => ref 's -> ref 's -> i64
+fn piece_count separator text = (Text.split separator text).length
+
+export def text_operation :: i32 -> i64 -> i64 -> i64
+fn text_operation operation first second =
+    let text = sample first
+    let needle = sample second
+    let replacement = "-"
+    match operation with
+    | 0 -> position (Text.find (ref needle) (ref text))
+    | 1 -> position (Text.rfind (ref needle) (ref text))
+    | 2 -> flag (Text.contains (ref needle) (ref text))
+    | 3 -> flag (Text.starts_with (ref needle) (ref text))
+    | 4 -> flag (Text.ends_with (ref needle) (ref text))
+    | 5 -> hash (Text.replace (ref needle) (ref replacement) (ref text))
+    | 6 ->
+        let parts = Text.split (ref needle) (ref text)
+        let mut total = parts.length
+        for part in parts do total = total * 31 + hash (Text.clone (ref part))
+        total
+    | 7 ->
+        let parts = [text, needle]
+        hash (Text.concat (ref parts))
+    | 8 ->
+        let parts = [text, needle]
+        hash (Text.join (ref replacement) (ref parts))
+    | 9 -> hash (Text.trim (ref text))
+    | 10 -> hash (Text.to_ascii_lower (ref text))
+    | 11 -> hash (Text.to_ascii_upper (ref text))
+    | 12 -> Text.compare (ref text) (ref needle)
+    | 13 -> hash (Text.repeat 2 (ref text))
+    | _ -> 0
+
+export def utf8_operation :: i32 -> i64 -> i64 -> i64
+fn utf8_operation operation first second =
+    let text = utf8_sample first
+    let needle = utf8_sample second
+    let replacement = u8"-"
+    match operation with
+    | 0 -> position (Text.find (ref needle) (ref text))
+    | 1 -> position (Text.rfind (ref needle) (ref text))
+    | 2 -> flag (Text.contains (ref needle) (ref text))
+    | 3 -> flag (Text.starts_with (ref needle) (ref text))
+    | 4 -> flag (Text.ends_with (ref needle) (ref text))
+    | 5 -> hash_utf8 (Text.replace (ref needle) (ref replacement) (ref text))
+    | 6 ->
+        let parts = Text.split (ref needle) (ref text)
+        let mut total = parts.length
+        for part in parts do total = total * 31 + hash_utf8 (Text.clone (ref part))
+        total
+    | 7 ->
+        let parts = [text, needle]
+        hash_utf8 (Text.concat (ref parts))
+    | 8 ->
+        let parts = [text, needle]
+        hash_utf8 (Text.join (ref replacement) (ref parts))
+    | 9 -> hash_utf8 (Text.trim (ref text))
+    | 10 -> hash_utf8 (Text.to_ascii_lower (ref text))
+    | 11 -> hash_utf8 (Text.to_ascii_upper (ref text))
+    | 12 ->
+        let order = Text.compare (ref text) (ref needle)
+        assert ((order < 0) == (text < needle) && (order > 0) == (text > needle))
+        order
+    | 13 -> hash_utf8 (Text.repeat 2 (ref text))
+    | _ -> 0
+
+export def text_slice :: i64 -> i64 -> i64 -> i64
+fn text_slice which first last =
+    let text = sample which
+    match Text.slice first last (ref text) with | Some value -> hash value | None -> -1
+
+export def utf8_slice :: i64 -> i64 -> i64 -> i64
+fn utf8_slice which first last =
+    let text = utf8_sample which
+    match Text.slice first last (ref text) with | Some value -> hash_utf8 value | None -> -1
+
+export def text_sub :: i64 -> i64 -> i64 -> i64
+fn text_sub which first count =
+    let text = sample which
+    match Text.sub first count (ref text) with | Some value -> hash value | None -> -1
+
+export def utf8_sub :: i64 -> i64 -> i64 -> i64
+fn utf8_sub which first count =
+    let text = utf8_sample which
+    match Text.sub first count (ref text) with | Some value -> hash_utf8 value | None -> -1
+
+export def text_extra :: i32 -> i64 -> i64
+fn text_extra operation which =
+    let text = sample which
+    match operation with
+    | 0 -> Text.length (ref text)
+    | 1 -> flag (Text.is_empty (ref text))
+    | 2 -> hash (Text.trim_start (ref text))
+    | 3 -> hash (Text.trim_end (ref text))
+    | 4 -> hash (Text.clone (ref text))
+    | 5 -> Text.compare (ref text) (ref text)
+    | 6 -> trimmed_length (ref text)
+    | _ -> 0
+
+export def utf8_extra :: i32 -> i64 -> i64
+fn utf8_extra operation which =
+    let text = utf8_sample which
+    match operation with
+    | 0 -> Text.length (ref text)
+    | 1 -> flag (Text.is_empty (ref text))
+    | 2 -> hash_utf8 (Text.trim_start (ref text))
+    | 3 -> hash_utf8 (Text.trim_end (ref text))
+    | 4 -> hash_utf8 (Text.clone (ref text))
+    | 5 -> Text.compare (ref text) (ref text)
+    | 6 -> trimmed_length (ref text)
+    | _ -> 0
+
+export def text_order :: i64 -> i64 -> i64
+fn text_order first second =
+    let left = sample first
+    let right = sample second
+    order_flags (ref left) (ref right)
+
+export def utf8_order :: i64 -> i64 -> i64
+fn utf8_order first second =
+    let left = utf8_sample first
+    let right = utf8_sample second
+    order_flags (ref left) (ref right)
+
+export def text_pieces :: i64 -> i64 -> i64
+fn text_pieces first second =
+    let text = sample first
+    let separator = sample second
+    piece_count (ref separator) (ref text)
+
+export def utf8_pieces :: i64 -> i64 -> i64
+fn utf8_pieces first second =
+    let text = utf8_sample first
+    let separator = utf8_sample second
+    piece_count (ref separator) (ref text)
+
+// A literal or another temporary as an argument of a method that takes two or more arguments.
+export def literal_arguments :: i64
+fn literal_arguments =
+    let found = position (Text.find "l" "hello")
+    let contained = flag (Text.contains "ell" "hello") + flag (Text.contains u8"ell" u8"hello")
+    let repeated = (Text.repeat 3 "ab").length + (Text.repeat 2 u8"ab").length
+    let replaced = (Text.replace "l" "LL" "hello").length
+    let joined = (Text.join "," ["a", "b", "c"]).length
+    found * 10000 + contained * 1000 + joined * 100 + repeated * 10 + replaced
+
+export def trap_repeat_negative :: i64
+fn trap_repeat_negative =
+    let text = ""
+    (Text.repeat (-1) (ref text)).length
+
+export def trap_repeat_negative_utf8 :: i64
+fn trap_repeat_negative_utf8 =
+    let text = u8""
+    (Text.repeat (-1) (ref text)).length

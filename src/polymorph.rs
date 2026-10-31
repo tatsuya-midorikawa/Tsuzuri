@@ -5574,6 +5574,40 @@ mod tests {
         reaches_the_specialization_limit();
     }
 
+    /// D14: `Text.length "abc"` specializes the instance method of `string` and the `String.length` that it calls,
+    /// one more than the direct call; the `Text` class that every program loads costs nothing unused.
+    #[test]
+    fn a_text_method_costs_one_more_specialization_than_the_direct_call() {
+        use std::fmt::Write;
+        let program = |records: usize, call: &str| {
+            let mut source = String::from("def id :: 'a -> 'a\nfn id x = x\n");
+            for index in 0..records {
+                writeln!(
+                    source,
+                    "record R{index} {{ value: i8 }}\nfn f{index}(x: R{index}) -> R{index} {{ id x }}"
+                )
+                .unwrap();
+            }
+            writeln!(source, "let a = {call}\na").unwrap();
+            source
+        };
+        let total = SMALL.total;
+        let direct = program(total - 1, "String.length \"abc\"");
+        assert_eq!(analyze_within(&[("Main", &direct)]), Ok(()));
+        let one_too_many_direct = program(total, "String.length \"abc\"");
+        assert_eq!(
+            analyze_within(&[("Main", &one_too_many_direct)])
+                .unwrap_err()
+                .0,
+            "E1017"
+        );
+        let through_text = program(total - 2, "Text.length \"abc\"");
+        assert_eq!(analyze_within(&[("Main", &through_text)]), Ok(()));
+        let one_too_many = program(total - 1, "Text.length \"abc\"");
+        let (code, _) = analyze_within(&[("Main", &one_too_many)]).unwrap_err();
+        assert_eq!(code, "E1017");
+    }
+
     #[test]
     fn stops_type_growing_recursion_before_the_global_limit() {
         let growth = |source: &str| {
