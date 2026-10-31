@@ -38,7 +38,7 @@ first.length
 | 期待 | 合格の条件 |
 | --- | --- |
 | `check-ok` | `check` が誤りなく終わる |
-| `check-error E1012 [line=N [column=N]] [file=NAME] [kind=K] [message "…"]` | `check` が終了コード 1 で、そのコード（と行・桁・ファイル・kind）の誤りを出す。`message` は最後に置き、メッセージの一部と一致する |
+| `check-error E1012 [line=N [column=N]] [file=NAME] [kind=K] [message "…"]` | `check` が終了コード 1 で、最初の誤りがそのコード（と行・桁・ファイル・kind）である。`message` は最後に置き、メッセージの一部と一致する |
 | `check-warning W1001 …` | 終了コード 0 で、その警告を出す |
 | `stdout "…"` | `run` の `-O0` と `-O3` の標準出力がその文字列（JSON の文字列）と等しい |
 | `trap kind=K [line=N] [stdout "…"]` | `run` がトラップし、標準エラーに `trap: <説明> at <場所>` の行がある |

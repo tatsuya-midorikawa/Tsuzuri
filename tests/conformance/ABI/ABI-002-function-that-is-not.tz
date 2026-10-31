@@ -5,4 +5,5 @@ def hidden :: i64 -> i64 = \a -> a
 // rule: ABI-002
 // cli: build $DIR --emit header -o $DIR/out.h
 // expect: exit 0
+// expect: file-has out.h "tz_add("
 // expect: file-lacks out.h "hidden"

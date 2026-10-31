@@ -226,6 +226,12 @@ export async function runTest(test, ctx) {
             };
             if (result.status !== status) {
                 details.push(`${expect.raw}: exit ${result.status}, expected ${status}; got ${describeDiagnostics(diagnostics)}`);
+            } else if (severity === 'error') {
+                // `check-error` promises the first error: a recovery error after it does not count.
+                const first = diagnostics.find(d => d.severity === 'error');
+                if (!first || !matchDiagnostic(first, wanted)) {
+                    details.push(`${expect.raw}: the first error does not match; got ${describeDiagnostics(diagnostics)}`);
+                }
             } else if (!diagnostics.some(d => matchDiagnostic(d, wanted))) {
                 details.push(`${expect.raw}: no ${severity} diagnostic matches; got ${describeDiagnostics(diagnostics)}`);
             }

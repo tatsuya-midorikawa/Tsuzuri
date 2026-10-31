@@ -314,7 +314,7 @@ test('run_check_expectations', () => {
 test('run_failure_reports_detail', () => {
     let result = runTree({ 'OWN/OWN-001-wrong-code.tz': `${OWN_BODY}// expect: check-error E1003\n` });
     assert.equal(result.status, 1);
-    assert.match(result.stdout, /check-error E1003: no error diagnostic matches; got E1012@Main.tz:3:1/);
+    assert.match(result.stdout, /check-error E1003: the first error does not match; got E1012@Main.tz:3:1/);
     result = conformance(['--root', good, '--targets', 'native', '--area', 'OWN', '--timeout', '0.01']);
     assert.equal(result.status, 1);
     assert.match(result.stdout, /timed out after 0\.01 s/);
