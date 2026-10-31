@@ -9,7 +9,7 @@
 - E: 生成される `.tz` の例。
 - F: 位相ごとのファイルを作る手順（`strip.mjs`）。
 
-出荷した `tests/progfuzz.mjs`（2026-10-31）は、A の全文に、本文の「方針の最新化（2026-10-31。実装前の再検討）」の差を加えたものです: edition 2027 の正準形（範囲の `..=` と `..<`、所有権の補助関数の `own`、2027 の `Vec.push` と `Vec.push_owned`）、半開の範囲の 10 行を足した 126 行の表、被覆のタグ `loop_half_open`、自己検査の最小化を回数だけで止める `minimizeSeconds`。さらにレビュー（PR #72）で、評価器の入れ子の上限 `DEPTH_LIMIT`、所有権のプログラムを評価する前の `replay`、`info.txt` の再現コマンドの設定（`TSUZURI_PROGFUZZ_KIND`・`PATHS`・`MUTANT`）、表の const 経路の予算切れを失敗にする検査を足しました。B〜E の数と文面は起票時（HEAD `a2313d19`）の実測で、出荷版の実測は本文の「実装と検証（2026-10-31）」にあります。
+出荷した `tests/progfuzz.mjs`（2026-10-31）は、A の全文に、本文の「方針の最新化（2026-10-31。実装前の再検討）」の差を加えたものです: edition 2027 の正準形（範囲の `..=` と `..<`、所有権の補助関数の `own`、2027 の `Vec.push` と `Vec.push_owned`）、半開の範囲の 10 行を足した 126 行の表、被覆のタグ `loop_half_open`、自己検査の最小化を回数だけで止める `minimizeSeconds`。さらにレビュー（PR #72）で、評価器の入れ子の上限 `DEPTH_LIMIT`、所有権のプログラムを評価する前の `replay`、`info.txt` の再現コマンドの設定（`TSUZURI_PROGFUZZ_KIND`・`PATHS`・`MUTANT`）、表の const 経路の予算切れを失敗にする検査、`TSUZURI_PROGFUZZ_JOBS`・`BUDGET` の検査、被覆を CI の窓（seed 1〜100・depth 4）だけで確かめること、候補の束縛の検査 `bound`、入力を 1 つに絞る前の確認を足しました。B〜E の数と文面は起票時（HEAD `a2313d19`）の実測で、出荷版の実測は本文の「実装と検証（2026-10-31）」にあります。
 
 ## A. `tests/progfuzz.mjs` の全文
 

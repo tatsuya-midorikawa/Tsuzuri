@@ -1193,7 +1193,30 @@ function prune(program) {
   return { ...program, functions: program.functions.filter((f) => used.has(f.name)) };
 }
 
+// Whether every variable of a node is bound where it is used, in every branch. Replacing a binding node (`let`,
+// `match`, a loop, `new`) by a child can leave a variable of an untaken branch unbound: the evaluator does not see
+// it, but the compiler rejects the program (E1002), which could pass for the failure being minimized.
+function bound(n, scope) {
+  const all = (nodes, names = []) => {
+    const inner = names.length ? new Set([...scope, ...names]) : scope;
+    return nodes.every((node) => !node || bound(node, inner));
+  };
+  switch (n.t) {
+    case "var": return scope.has(n.n);
+    case "let": return all([n.e]) && all([n.body], [n.n]);
+    case "matchint": return all([n.s, n.dflt, ...n.arms.map((arm) => arm.body)]) && (!n.guard || all([n.guard.cond, n.guard.body], [n.guard.bind]));
+    case "matchtuple": return all([n.s]) && all([n.body], n.names);
+    case "matchuni": return all([n.s]) && n.arms.every((arm) => all([arm.body], arm.names));
+    case "matchmaybe": return all([n.s, n.none]) && all([n.some], [n.n]);
+    case "newarray": return all([n.body], [n.i]);
+    case "for": return all([n.init, n.lo, n.step, n.hi]) && all([n.exit?.cond, n.body], [n.acc, n.i]);
+    case "while": return all([n.init]) && all([n.extra, n.exit?.cond, n.body], [n.acc]);
+    default: return all(directChildren(n));
+  }
+}
+
 function valid(program) {
+  if (program.kind !== "owned" && !program.functions.every((f) => bound(f.body, new Set(f.params.map((p) => p.n))))) return false;
   try {
     for (const k of program.inputs) evaluate(program, k);
     return true;
@@ -1269,13 +1292,21 @@ const tailOf = (path) => (path === "const" ? "const" : path.startsWith("wasm") ?
 
 // Shrinks the program while the same path keeps failing in the same way, and saves it under failures/.
 async function minimizeFailure(program, failure) {
-  const reduced = failure.at === undefined ? program : { ...program, inputs: [program.inputs[failure.at]] };
   const same = (difference) => difference && difference.kind === failure.kind && (failure.kind !== "compile" || errorCode(difference.detail) === errorCode(failure.detail));
   const work = join(outputRoot, `minimize-${program.seed}-${failure.path}`);
   const stillFails = async (candidate) => {
     writeSources(candidate, work);
     return same(compare(await runPath(failure.path, work, candidate), wantedLines(candidate, failure.path, candidate.inputs.map((k) => evaluate(candidate, k)))));
   };
+  // The first input that differed, alone, if it still fails alone. It may not: a call can fail because of what an
+  // earlier call left behind (allocator state, say), and then the whole sequence of inputs is kept.
+  let reduced = program;
+  let probes = 0;
+  if (failure.at !== undefined && program.inputs.length > 1) {
+    const single = { ...program, inputs: [program.inputs[failure.at]] };
+    probes++;
+    if (await stillFails(single)) reduced = single;
+  }
   const before = weightOf(reduced)[0];
   const result = await minimize(reduced, stillFails, { budget: minimizeBudget, seconds: minimizeSeconds });
   rmSync(work, { recursive: true, force: true });
@@ -1293,11 +1324,11 @@ async function minimizeFailure(program, failure) {
     `inputs ${min.inputs.join(" ")}`,
     `expected ${expected.join(" ")}`,
     `actual ${failure.actual ?? "-"} (first difference in the original), ${failure.detail.split("\n")[0]}`,
-    `nodes ${before} -> ${result.nodes} after ${result.attempts} compiler runs`,
+    `nodes ${before} -> ${result.nodes} after ${result.attempts + probes} compiler runs`,
     `reproduce: ${settings.join(" ")} node tests/progfuzz.mjs ${compiler} 1 ${program.seed} ${program.depth}`,
     "",
   ].join("\n"));
-  return { directory: saved, nodes: result.nodes, before, attempts: result.attempts };
+  return { directory: saved, nodes: result.nodes, before, attempts: result.attempts + probes, inputs: min.inputs.length };
 }
 // >>> phase 2
 
@@ -1704,6 +1735,17 @@ async function selfTesting() {
   const deepUnguarded = replaceAt(unguarded, ["functions", 0, "body"], deep);
   assert.ok(valid(guarded) && !valid(unguarded) && !valid(deepUnguarded), "the minimizer must reject a recursion that lost its guard");
   console.log(`self test: the minimizer rejects a recursion that lost its guard (${DEPTH_LIMIT} nested evaluations)`);
+  // Replacing `let x = 1i64; if false then x else 0i64` by its body leaves x unbound in the branch that is not taken: the
+  // evaluator never reads it, but the compiler rejects the program (E1002), so the candidate must be invalid. Putting
+  // the bound value in place of x is fine.
+  const x = { n: "x", ty: I64 };
+  const binding = { t: "let", ty: I64, n: "x", e: lit(I64, 1n), body: { t: "if", ty: I64, c: lit(BOOL, false), a: variable(x), b: lit(I64, 0n) } };
+  const scope = { seed: 0, depth: 0, records: [], unions: [], inputs: [0n], tags: new Set(), functions: [{ name: "run", params: [{ n: "k", ty: I64 }], result: I64, rec: false, body: binding }] };
+  const exposed = [...candidates(scope)].find((candidate) => candidate.functions[0].body.t === "if" && candidate.functions[0].body.a.t === "var");
+  const substituted = [...candidates(scope)].find((candidate) => candidate.functions[0].body.t === "if" && candidate.functions[0].body.a.t === "lit");
+  assert.ok(exposed && substituted, "the minimizer offers no candidate that drops or substitutes the binding");
+  assert.ok(valid(scope) && !valid(exposed) && valid(substituted), "the minimizer must reject a candidate that leaves a variable unbound in an untaken branch");
+  console.log("self test: the minimizer rejects a candidate that leaves a variable unbound in a branch it does not take");
   // >>> phase 2
   // 5. The compiler against the semantics table, on every configured path.
   const directory = join(outputRoot, "table");
@@ -1722,6 +1764,7 @@ async function selfTesting() {
   minimizeSeconds = Infinity;
   paths = ["o0"];
   minimizeBudget = 60;
+  const foundBy = {};
   try {
     for (const name of ["div-floor", "shift-saturating"]) {
       mutant = name;
@@ -1737,8 +1780,23 @@ async function selfTesting() {
       assert.deepEqual(readdirSync(found.saved.directory).filter((name) => name.endsWith(".tz")), ["Main.tz"]);
       const reproduce = `TSUZURI_PROGFUZZ_KIND=values TSUZURI_PROGFUZZ_PATHS=o0 TSUZURI_PROGFUZZ_MUTANT=${name} node tests/progfuzz.mjs ${compiler} 1 ${found.seed} 4`;
       assert.ok(readFileSync(join(found.saved.directory, "info.txt"), "utf8").includes(`reproduce: ${reproduce}\n`), "info.txt must give the settings of the failure");
+      assert.equal(found.saved.inputs, 1, "the minimized program keeps the one input that differed");
       console.log(`self test: mutant ${name} caught by seed ${found.seed}, minimized to ${found.saved.nodes} nodes`);
+      foundBy[name] = found;
     }
+    // A failure whose input differs only after the earlier calls (an earlier call corrupts state that a later one
+    // reads): made here by pointing the failure at an input that, alone, matches the wrong evaluator. The minimizer
+    // must notice that this input alone passes and keep the whole sequence instead of saving a passing reproducer.
+    const sequence = generate(foundBy["div-floor"].seed, depth);
+    const right = answers(sequence, "");
+    const wrong = answers(sequence, "div-floor");
+    const alone = right.findIndex((v, j) => v === wrong[j]);
+    assert.ok(alone >= 0 && right.some((v, j) => v !== wrong[j]), `seed ${sequence.seed} has no input that alone matches div-floor`);
+    mutant = "div-floor";
+    minimizeBudget = 2;
+    const kept = await minimizeFailure(sequence, { ...foundBy["div-floor"], at: alone });
+    assert.equal(kept.inputs, sequence.inputs.length, "a failure that needs the earlier inputs must keep all of them");
+    console.log(`self test: a failure that does not reproduce on its one input keeps all ${kept.inputs} inputs`);
   } finally {
     mutant = mutantName;
     paths = savedPaths;
