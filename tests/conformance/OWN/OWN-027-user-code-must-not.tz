@@ -1,0 +1,14 @@
+record Ticket { id: i64 }
+
+instance Drop<Ticket> {
+    fn drop value = do! IO.write_line "drop"
+}
+
+def f :: unit -> unit = \() -> {
+    let mut t = Ticket { id: 1 };
+    Drop.drop (ref mut t)
+}
+0
+
+// rule: OWN-027
+// expect: check-error E1016 line=9

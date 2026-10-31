@@ -1,0 +1,7 @@
+def mul32 :: i32 -> i32 -> i32 = \a b -> a * b
+
+test "65536 * 65536" = Test.equal (ref 0) (ref (mul32 65536 65536))
+test "i32 max * 2" = Test.equal (ref (-2)) (ref (mul32 2147483647 2))
+
+// rule: NUM-004
+// expect: tests-pass 2

@@ -1,0 +1,6 @@
+let first = "data"
+let second = first
+first.length
+
+// rule: OWN-001
+// expect: check-error E1012 line=3

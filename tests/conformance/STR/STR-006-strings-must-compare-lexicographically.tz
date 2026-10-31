@@ -1,0 +1,4 @@
+$"{"apple" < "banana"} {"b" < "a"}"
+
+// rule: STR-006
+// expect: stdout "true false\n"

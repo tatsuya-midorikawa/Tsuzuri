@@ -1,0 +1,7 @@
+namespace App
+using Lib
+
+Point.area 3 4
+
+// rule: MOD-006
+// expect: stdout "12\n"

@@ -1,0 +1,5 @@
+let p = Point { x: 3 }
+Point.double p
+
+// rule: MOD-010
+// expect: stdout "6\n"

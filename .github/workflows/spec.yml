@@ -1,0 +1,39 @@
+name: Tsuzuri spec rules
+
+# G33: the rule tables, the directives of the conformance tests and the document markers. No compiler is needed.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - spec/**
+      - tests/conformance/**
+      - scripts/check-spec.mjs
+      - scripts/conformance/**
+      - docs/**
+      - _tsuzuri/**
+      - README.md
+      - .github/workflows/spec.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spec-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-spec:
+    name: check-spec (node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 24]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Rule tables, tests and document markers
+        run: node scripts/check-spec.mjs --require-markers

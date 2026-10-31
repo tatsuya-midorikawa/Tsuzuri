@@ -1,0 +1,7 @@
+let mut text = ""
+for n in [3, 1, 2] do
+    text = text + to_string n
+text
+
+// rule: CTL-007
+// expect: stdout "312\n"

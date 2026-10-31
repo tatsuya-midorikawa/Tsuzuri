@@ -1,0 +1,9 @@
+export def one :: i64 -> i64 = \x -> x
+0
+
+// rule: ABI-009
+// cli: build $DIR --emit header -o $DIR/out.h
+// expect: exit 0
+// expect: file-has out.h "#pragma once"
+// expect: file-has out.h "#include <stdint.h>"
+// expect: file-has out.h "extern \"C\" {"

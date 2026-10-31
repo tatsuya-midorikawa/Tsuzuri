@@ -6,14 +6,14 @@ OS のスレッドハンドルでも、JavaScript の `Promise` でもありま�
 
 ## この記事のポイント
 
-- `task { ... }` で `Task<T>` を作り、`Task.run` で同期実行して結果を取り出します。
+- `task { ... }` で `Task<T>` を作り、`Task.run` で同期実行して結果を取り出します。 <!-- rule: TSK-001 -->
 - タスクは非 Copy です。二重実行は `E1012` になります。
-- 持ち込めるのは所有値のムーブか Copy だけです。参照の持ち込みは `E1013` です。
+- 持ち込めるのは所有値のムーブか Copy だけです。参照の持ち込みは `E1013` です。 <!-- rule: TSK-003 --> <!-- rule: TSK-006 -->
 - 読み取り専用のデータを複数のタスクで共有するときは、[Arc](../built-in-types-and-modules/rc.md) をタスクごとに `Arc.share` して渡します。`Rc` は持ち込めません（`E1013`）。
 - 外の値を借用したまま子どもたちに共有させるときは `Task.scope` を使います。共有した状態を書き換えるときは、[Atomic](../built-in-types-and-modules/atomic.md)（整数と `bool`）か [Mutex](../built-in-types-and-modules/mutex.md)（ほかの値）に入れます（[共有状態と Task.scope](#共有状態と-taskscope)）。
-- 実行せずに捨てたタスクは、本体を走らせず、捕捉した所有値だけを解放します。
-- `Task.parallel` の結果配列は、入力の並び順です。
-- `Task.parallel_results` は、未開始のタスクを止め、入力インデックスが最小の `Error` を返します。
+- 実行せずに捨てたタスクは、本体を走らせず、捕捉した所有値だけを解放します。 <!-- rule: TSK-005 -->
+- `Task.parallel` の結果配列は、入力の並び順です。 <!-- rule: TSK-004 -->
+- `Task.parallel_results` は、未開始のタスクを止め、入力インデックスが最小の `Error` を返します。 <!-- rule: TSK-009 -->
 - ネイティブの追加ワーカーは `min(オンライン CPU 数, 32) - 1` までです。既定の WASM は逐次です。
 - 待ち時間をほかの計算へ譲るなら [Async 式](async.md) を使います。`Async` は CPU コアを増やさず、`Task` はスレッドプールで計算を分けます。
 
@@ -97,6 +97,9 @@ task {
 
 `IO` も受け取れません。`task { do! IO.write_line "hi"; }` は `E1003`（`expected Task<unit>, found IO<unit>`）です。公開の `IO.run` はなく、`IO` と `Task` の暗黙変換もありません。
 
+<!-- rule: TSK-010 -->
+`Task<T>` の値は `T` の値ではありません。`let work = task { return 1 }` の `work` を `let n: i64 = work` のように `T` を期待する場所へ置くと `E1003` です。
+
 結果型が決まらない式は `E1015` になります。`unreachable ()` は多相なので、タスクの結果型を注釈しないと次のエラーです。未使用かどうかは関係ありません。
 
 ```text
@@ -111,6 +114,7 @@ error[E1015]: ambiguous polymorphic use; add a concrete type annotation or suppl
 
 ## 1 回実行と所有権
 
+<!-- rule: TSK-002 -->
 `Task<T>` は常に非 Copy です。同じタスクを 2 回実行すると `E1012` です。
 
 ```text
@@ -217,6 +221,7 @@ Array.sum ref results
 
 個々のタスクが始まる順と終わる順は決まっていません。結果配列の添字は、入力配列の並びと一致します。結果型が違うタスクを同じ配列には混ぜられません。
 
+<!-- rule: TSK-007 -->
 空配列は、型を付ければ本体を走らせず空配列を返します。型がない `[]` は `E1015` です。
 
 ```tsuzuri run=0
@@ -263,6 +268,7 @@ partial=1225,1250,1275,1300 total=5050
 
 4 つの子どもが、同じ配列 `numbers` を借用して 4 つおきに足します。配列はコピーされず、結果は `index` の順です。
 
+<!-- rule: TSK-008 -->
 `shared` を読むだけでなく、共有した状態を書き換えるには、書き換えを許す型に入れます。整数と `bool` は [Atomic](../built-in-types-and-modules/atomic.md)、そのほかの値と、複数の値を 1 つの不変条件で守る状態は [Mutex](../built-in-types-and-modules/mutex.md) です。どちらも共有借用 `ref` から更新できるので、`Task.scope` の `shared` にそのまま使えます。
 
 ```tsuzuri run=36

@@ -1,0 +1,6 @@
+let a = "ab"
+let b = "cd"
+a + b
+
+// rule: STR-004
+// expect: stdout "abcd\n"

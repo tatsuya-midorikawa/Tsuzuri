@@ -1,0 +1,5 @@
+let a = 2 ** 3 ** 2
+a
+
+// rule: NUM-013
+// expect: stdout "512\n"

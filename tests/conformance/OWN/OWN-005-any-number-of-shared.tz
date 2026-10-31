@@ -1,0 +1,6 @@
+def both :: ref string -> ref string -> i64 = \a b -> a.length + b.length
+let s = "abcd"
+both s s
+
+// rule: OWN-005
+// expect: stdout "8\n"

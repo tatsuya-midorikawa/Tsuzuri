@@ -1802,6 +1802,7 @@ PX01 の記録と PX03 のビルド比較は、この同じ JSON を使います
 コンパイラの健全性を検証するコマンドと、変更の種類ごとに回す範囲は、[README の「検証と性能測定」](../README.md#検証と性能測定)にまとめています。ここには、各テストが何を確かめるかを書きます。
 `node tests/ai_cost.mjs target/release/tsuzuri` は、コンパイラを変更せず AI 作業コストの定義・独立 golden・37 タスク・診断ループ・外部実測・能力に応じた静的サイズと KB/MCP を検査します（[AI 作業コスト](ai-cost.md)）。
 
+`node scripts/conformance.mjs target/release/tsuzuri` は、`spec/rules/<AREA>.md` の規則（ID `AREA-NNN`、D-58）ごとの適合性テスト（`tests/conformance/<AREA>/`。`Main.tz` の末尾の `// rule:`・`// expect:` の行が期待を書く）を、`check --json`・`run -O0`/`-O3`・`test --json`（native と wasm32）・任意のコマンドで実行して照合し、`node scripts/check-spec.mjs` はコンパイラを使わずに、規則表・テスト・文書のマーカー（`<!-- rule: ID -->`）の整合と、言語リファレンスのカバレッジの表を検査します（`scripts/conformance/` の `directives`・`discover`・`expect`・`run`・`spec`。自己テストは `tests/conformance_harness.mjs`）。
 Rust レベルの単体テストは、LLVM がインストールされていない軽量環境でも完全に実行可能です。字句解析、型検査、エラー発生ケース、メモリレイアウト計算、IR の不変条件検証、および 6,500 パターンに及ぶ決定論的なソースコード変異テスト（mutation test）を網羅的に実行します。
 `tests/diagnostics.rs` および CLI E2E テストは、複数ファイル構成、宣言境界の判定、括弧内行頭の `let`、不正なシグネチャや認識器のエラー抑制、関数内部での型・所有権エラーからの回復、スコープの復元、エラー関数から返された参照による二次エラーの抑制、50 件を超える正確な省略件数表示と 1000 件の収集上限、デフォルトスタックでの深い回復処理、JSON lines 形式の出力、ならびにファイル出力保護の堅牢性を検証します。
 所有権テストでは、正常な move、共有借用、排他借用の検査に加え、move 後の不正使用、部分 move、条件分岐や短絡評価における追跡、再借用の整合性、生存期間の満了検出、およびオペランド評価中における参照先の早期無効化を厳格に検出します。

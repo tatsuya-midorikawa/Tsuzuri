@@ -1,0 +1,10 @@
+def replace :: ref mut string -> unit = \text -> { deref text = "next"; }
+def main2 :: unit -> i64 = \() -> {
+    let mut text = "abc";
+    let shared = ref text;
+    replace ref mut text;
+    shared.length
+}
+
+// rule: OWN-006
+// expect: check-error E1014 line=5

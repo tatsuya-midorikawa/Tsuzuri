@@ -1,0 +1,8 @@
+def f :: unit -> i64 = \() -> {
+    let unused = 1;
+    2
+}
+f ()
+
+// rule: DIA-004
+// expect: check-warning W1001 line=2 column=9 message "prefix it with '_'"

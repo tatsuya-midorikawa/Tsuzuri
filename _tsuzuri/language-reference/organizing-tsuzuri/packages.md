@@ -24,8 +24,9 @@ Tsuzuri のパッケージシステムは、決定論的なビルドと安全性
 
 - `#` の行コメント、空行、CRLF / LF
 - ダブルクォートの UTF-8 文字列と、エスケープ `\"`、`\\`、`\n`、`\r`、`\t`
-- `[package]` を最初に置き、そのあとに `[dependencies]`、`[wasm]`、`[native]`、`[registry]`、`[capabilities]` を任意の順で、それぞれ 1 回まで
+- `[package]` を最初に置き、そのあとに `[dependencies]`、`[wasm]`、`[native]`、`[registry]`、`[capabilities]` を任意の順で、それぞれ 1 回まで <!-- rule: EDN-009 -->
 
+<!-- rule: EDN-004 -->
 複数行の配列、未知のセクションやキー、対応していない TOML は `E0002` です。マニフェストは最大 1 MiB で、超えると `E1017` です（ソースの上限の 4 MiB を超えるファイルは、読み込みの `E0003` です）。シンボリックリンクのマニフェストは `E1011` です。
 
 ## [package] セクション
@@ -46,7 +47,7 @@ namespace = "GeometryTools"
 | --- | --- | --- | --- |
 | `name` | 必須 | 文字列 | 小文字の ASCII kebab-case。各要素は英小文字で始まり、続きは英小文字か数字。全体で最大 255 バイト。`app2` は可、`Demo` は `E1011`。 |
 | `version` | 必須 | 文字列 | 空でない版の文字列（例: `"0.1.0"`）。registry に公開するパッケージは `MAJOR.MINOR.PATCH`（先頭の 0 なし）でなければなりません。パス依存と git 依存では版の選択に使いません。 |
-| `edition` | 任意 | 文字列 | 言語版。対応する値は `"2026"` と `"2027"` です。省略すると `2026` です。ほかの値は `E0002`（`unsupported edition '2030'; supported editions: 2026, 2027`）です。 |
+| <!-- rule: EDN-001 --><!-- rule: EDN-002 --><!-- rule: EDN-008 -->`edition` | 任意 | 文字列 | 言語版。対応する値は `"2026"` と `"2027"` です。省略すると `2026` です。ほかの値は `E0002`（`unsupported edition '2030'; supported editions: 2026, 2027`）です。 |
 | `namespace` | 任意 | 文字列 | 既定名前空間。`::` でつないだ ASCII 識別子（最大 16 階層、255 バイト）。 |
 
 `namespace` を省略すると、`name` を PascalCase にした名前が既定になります。`geometry-tools` なら `GeometryTools` です。PascalCase は自動変換の形であり、書いた名前が小文字でも、識別子なら受理されます。
@@ -70,6 +71,7 @@ version = "0.1.0"
 edition = "2030"
 ```
 
+<!-- rule: EDN-003 --> <!-- rule: EDN-010 -->
 対応していない値は `E0002` です。ソースは読みません。メッセージが、対応する値を示します。
 
 ```text

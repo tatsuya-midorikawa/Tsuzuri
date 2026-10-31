@@ -1,0 +1,6 @@
+def id :: own 'a -> 'a = \x -> x
+
+$"{id 41 + 1} {id "s"}"
+
+// rule: TYP-007
+// expect: stdout "42 s\n"

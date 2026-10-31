@@ -1,0 +1,10 @@
+def take :: own string -> i64 = \s -> s.length
+let mut s = "abc"
+let mut total = 0
+for i in 0 ..= 2 do
+    total = total + take s
+    s = "de"
+total
+
+// rule: OWN-022
+// expect: stdout "7\n"

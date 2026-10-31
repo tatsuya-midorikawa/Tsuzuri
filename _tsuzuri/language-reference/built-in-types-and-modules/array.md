@@ -155,7 +155,7 @@ $"{values[small]} {values[unsigned]} {values[wide]} {values[0]}"
 
 | トラップする | `Maybe` を返す | 取り出すもの |
 | --- | --- | --- |
-| `Array.get i xs`、`Array.item i xs` | `Array.try_item i xs` | 添字 `i` の要素（`get` と `item` は同じ関数です） |
+| <!-- rule: STD-003 -->`Array.get i xs`、`Array.item i xs` | `Array.try_item i xs` | 添字 `i` の要素（`get` と `item` は同じ関数です） |
 | `Array.head xs` | `Array.try_head xs` | 先頭 |
 | `Array.last xs` | `Array.try_last xs` | 末尾 |
 | `Array.exactly_one xs` | `Array.try_exactly_one xs` | 要素が 1 つだけのときのその要素 |
@@ -389,6 +389,7 @@ match Array.split_at_mut 1 values with
 
 ### 不変配列の関数的更新
 
+<!-- rule: STD-004 -->
 所有権を渡して、指定位置を更新した新しい配列を受け取る関数も用意されています。F# の `Array.updateAt` に当たる `Array.update_at index value source` です。
 
 ```tsuzuri run=original%3D%5B1%2C%202%2C%203%5D%20modified%3D%5B1%2C%2020%2C%203%5D
@@ -481,10 +482,12 @@ $"by_score={by_score} best_first={best_first} by_id_desc={by_id_desc} desc={Arra
 by_score=[(2, 10), (4, 20), (1, 30), (3, 30)] best_first=[(1, 30), (3, 30), (4, 20), (2, 10)] by_id_desc=[(4, 20), (3, 30), (2, 10), (1, 30)] desc=[3, 2, 1]
 ```
 
+<!-- rule: STD-007 --> <!-- rule: STD-002 -->
 `Array.sort` と `sort_descending` は `Ord` による安定マージソートで、新しい配列を返します。`Array.binary_search` は、同じ順序で整列済みの配列から、重複の先頭インデックスを返します。`sort_in_place` は排他スライスを、作業領域なしの安定整列で並べます。20 要素ずつ挿入ソートしたあと、回転でマージします。NaN を含まない配列では、結果の順序は `Array.sort` と一致します。`sort_in_place_by` と `sort_in_place_with` は、新しい配列を作ってから書き戻すので、同じ長さの一時配列を使います。
 
 ### 集計関数と CPU ディスパッチ
 
+<!-- rule: STD-008 --> <!-- rule: STD-001 -->
 `Array.sum`、`Array.product`、`Array.min`、`Array.max` は配列全体を集計します。空の `sum` は 0、空の `product` は 1 です。空の `min` と `max` は、F# と同じくトラップします。
 
 ```tsuzuri run=sum%3D170%20prod%3D24%20min%3D10%20max%3D30

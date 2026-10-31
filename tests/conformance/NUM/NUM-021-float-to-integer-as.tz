@@ -1,0 +1,7 @@
+def cut :: f64 -> i8 = \a -> a as i8
+
+test "high" = Test.equal (ref 127) (ref (cut 1e30))
+test "low" = Test.equal (ref (-128)) (ref (cut (-1e30)))
+
+// rule: NUM-021
+// expect: tests-pass 2

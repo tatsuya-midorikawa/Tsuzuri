@@ -1,0 +1,5 @@
+let xs = [10, 20, 30]
+Array.sum (ref xs)
+
+// rule: STD-001
+// expect: stdout "60\n"

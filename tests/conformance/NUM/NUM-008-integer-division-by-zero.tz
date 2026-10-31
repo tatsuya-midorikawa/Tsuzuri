@@ -1,0 +1,7 @@
+def div :: i64 -> i64 -> i64 = \a b -> a / b
+
+let zero = 0
+div 10 zero
+
+// rule: NUM-008
+// expect: trap kind=div_zero

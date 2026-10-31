@@ -1,0 +1,10 @@
+def rate :: i64 -> i64 = \amount ->
+    if amount >= 10000 then 20
+    elif amount >= 5000 then 10
+    elif amount >= 2000 then 5
+    else 0
+
+$"{rate 12000} {rate 6000} {rate 2500} {rate 100}"
+
+// rule: CTL-003
+// expect: stdout "20 10 5 0\n"

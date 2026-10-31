@@ -1,0 +1,10 @@
+def take :: own string -> i64 = \s -> s.length
+def f :: bool -> i64 = \flag -> {
+    let s = "abc";
+    if flag then { take s } else { 0 };
+    s.length
+}
+f true
+
+// rule: OWN-008
+// expect: check-error E1012 line=5

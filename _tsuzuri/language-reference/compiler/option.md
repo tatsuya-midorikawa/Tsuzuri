@@ -73,6 +73,7 @@
 
 同じオプションを 2 回以上指定すると `E2000` になります。複数回の指定が許可されているのは `--link`、`-l`、`-L`、`--index`、および異なる機能名を指定した `--wasm-feature` のみです。`--link`、`-l`、`-L` の合計は最大 256 個までです。
 
+<!-- rule: CLI-001 -->
 未知のフラグは `unknown option '...'; use --help` です。値を取り忘れると `--output needs a value` のように、そのフラグの名前で止まります。
 
 `guide` の専用オプションは `--level 0|1`・`--topic NAME`・`--list`・`--json`・`--edition YEAR`・`--agents [DIR]`・`--llms-txt [DIR]` と位置引数 `std [MODULE]` で（[コンパイラの使い方](usage.md#guide)）、`new` は `--namespace NAME` と `--no-agent-files` を受け付けます。

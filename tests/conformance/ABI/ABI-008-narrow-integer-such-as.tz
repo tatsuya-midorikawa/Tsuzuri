@@ -1,0 +1,7 @@
+export def neg :: i8 -> i8 = \x -> -x
+0
+
+// rule: ABI-008
+// cli: build $DIR --emit header -o $DIR/out.h
+// expect: exit 0
+// expect: file-has out.h "int32_t tz_neg(int32_t arg0);"

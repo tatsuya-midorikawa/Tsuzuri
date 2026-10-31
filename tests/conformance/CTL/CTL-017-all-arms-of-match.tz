@@ -1,0 +1,7 @@
+let n = 1
+match n with
+| 1 -> "one"
+| _ -> 0
+
+// rule: CTL-017
+// expect: check-error E1003 line=4

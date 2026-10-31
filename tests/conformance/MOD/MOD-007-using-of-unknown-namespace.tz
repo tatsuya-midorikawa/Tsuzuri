@@ -1,0 +1,7 @@
+namespace App
+using Nowhere
+
+0
+
+// rule: MOD-007
+// expect: check-error E1011 line=2

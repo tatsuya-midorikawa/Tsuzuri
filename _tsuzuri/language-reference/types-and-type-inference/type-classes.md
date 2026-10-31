@@ -6,10 +6,11 @@
 
 ## この記事のポイント
 
+<!-- rule: TYP-022 -->
 - クラス宣言は `.tt`、インスタンスは `.tz` または `.tc` に置きます。
 - メソッドの型はクラス側に書き、インスタンス側では書き直しません。
-- 同じクラスと型のインスタンスは、プロジェクトに 1 つだけです。
-- `deriving` は `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode`、`Arbitrary` を構造から作ります。
+- 同じクラスと型のインスタンスは、プロジェクトに 1 つだけです。 <!-- rule: TYP-021 -->
+- `deriving` は `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode`、`Arbitrary` を構造から作ります。 <!-- rule: TYP-015 -->
 - `dyn C` は、異なる型の値を一つのコレクションへ入れ、vtable でメソッドを呼びます。
 
 ## クラスとインスタンス
@@ -142,6 +143,7 @@ flowchart TD
 | `Encode` `Decode` | `encode :: ref 'a -> Result<Json.Value, Json.Error>`、`decode :: ref Json.Value -> Result<'a, Json.Error>`。JSON との変換。インスタンスは [Json](../built-in-types-and-modules/json.md) と利用者のソースだけ |
 | `SimdVector` `SimdNumeric` `SimdMask` | SIMD 値の印。詳細は [Simd](../built-in-types-and-modules/simd.md) |
 
+<!-- rule: TYP-014 -->
 `==`、`+`、`**` などの演算子は、対応するクラスのメソッドです。配列、リスト、タプルの `Eq`、`Ord`、`Hash`、`Display` は要素の制約から構造的に作られます。`Default` はタプルにも構造的にあります。レコードと共用体は、手書きのインスタンスか `deriving` が必要です。無い比較は `E1005`（no instance）です。
 
 `Drop.drop` を自分で呼ぶことはできません。`E1016` で、値をスコープから出すか、消費する関数へ渡すよう案内されます。`Drop` のインスタンスは、このプログラムで宣言したレコードか共用体に限り、すべての型引数を別々の型変数で書いた head だけです。制約も `deriving (Drop)` も使えません。詳細は [Drop](../ownership-and-memory/drop.md) です。

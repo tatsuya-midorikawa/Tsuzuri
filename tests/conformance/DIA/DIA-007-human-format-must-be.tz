@@ -1,0 +1,8 @@
+let x: i64 = "s"
+x
+
+// rule: DIA-007
+// cli: check $DIR
+// expect: exit 1
+// expect: stderr-has "Main.tz:1:14: error[E1003]: "
+// expect: stderr-has "\n  1 | let x: i64 = \"s\"\n    |              ^"

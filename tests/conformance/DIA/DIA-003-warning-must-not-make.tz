@@ -1,0 +1,10 @@
+def f :: unit -> i64 = \() -> {
+    let unused = 1;
+    2
+}
+f ()
+
+// rule: DIA-003
+// cli: check $DIR --json
+// expect: exit 0
+// expect: stderr-has "\"severity\":\"warning\",\"code\":\"W1001\""

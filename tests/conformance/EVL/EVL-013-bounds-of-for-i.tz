@@ -1,0 +1,11 @@
+def bound :: i32 -> i32 = \n ->
+    do! IO.write_line ("bound " + to_string n)
+    n
+
+let mut sum = 0
+for i = bound 1 to bound 3 do
+    sum = sum + i
+sum
+
+// rule: EVL-013
+// expect: stdout "bound 1\nbound 3\n6\n"

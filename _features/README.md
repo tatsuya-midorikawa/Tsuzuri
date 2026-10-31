@@ -273,7 +273,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G30 | [図表の生成（Mermaid。モジュール・型・呼び出し・所有権・並行・レイアウト・状態遷移）](_completed/G30-diagrams.md) | P2 | L | G26, G27 | done（Phase 1〜5。D-60 の KG） |
 | G31 | [AI 作業コスト指標（入力量と往復数を決定的に測る）](_completed/G31-ai-cost-metrics.md) | P1 | M | (G21), (G22), (G24), (G27), (G28), (G29) | done（Phase 1〜3） |
 | G32 | [開発リポジトリの KB と `ticket-brief`（小さいモデルへ渡す文脈の自動生成）](G32-repo-kb-and-ticket-brief.md) | P0 | M | – | todo（承認済み） |
-| G33 | [仕様の規則 ID と適合性スイート](G33-spec-rule-ids-conformance.md) | P2 | L | – | todo（承認済み） |
+| G33 | [仕様の規則 ID と適合性スイート](_completed/G33-spec-rule-ids-conformance.md) | P2 | L | – | done（全 Phase。228 規則） |
 | G34 | [doc-test（`///` の例を実行する）と std の例](_completed/G34-doc-tests.md) | P2 | M | – | done（全 Phase。std の公開関数 819 個に例） |
 | G35 | [生成物による文書の単一情報源化（診断コード表・std 索引・benchmarks の JSON 化）](_completed/G35-generated-docs-single-source.md) | P2 | L | (G23) | done（全 Phase。std 8 モジュール 441 関数に `@complexity`） |
 | G36 | [言語全体の差分ファズ（プログラム生成型。コンパイル時評価を参照実装に）](_completed/G36-language-differential-fuzz.md) | P2 | L | D11, (F14) | done（全 Phase。edition 2027 の正準形で生成） |
@@ -554,7 +554,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 | [E15](_completed/E15-trust-boundary-and-capabilities.md) | 信頼 | `extern` の信頼を人が表明する `@trusted`（`E1037`・`W1010`・`--warn untrusted-extern`）、依存パッケージの権限を `Tsuzuri.toml` の `[capabilities]` で制限して検査する（`E1036`。語彙は `stdio`・`fs`・`env`・`time`・`random`・`process`・`net`・`gpu`・`ffi`）、`tsuzuri audit`。宣言がなければ何も変わらない（opt-in） | done（全 Phase） |
 | [F14](_completed/F14-structural-performance-assertions.md) | 性能の保証 | 確保数をテストで確かめる `Alloc`（`snapshot`・`since`・`measure`）、`tsuzuri test` の自動の counting heap、`tsuzuri bench --allocs`、std の確保の契約 42 件。時間でなく構造（確保しない・償却で対数）を表明し、共有 CI に速度の閾値を置かない。**Phase 1・2・3 完了** | 承認済み |
 | [F15](_completed/F15-sequential-equivalent-data-parallel.md) | 性能・安全 | 逐次と同じ結果を保証するデータ並列: 型クラス `Monoid` による還元（浮動小数点の instance は `E1039`）、逐次との等価のテスト、並列化できる箇所を**提案するだけ**の `--report parallel`。黙った自動並列化は採らない | done |
-| [G33](G33-spec-rule-ids-conformance.md) | 仕様 | 仕様の規則に ID（`OWN-012` の形、15 領域）を付け、規則・文書のマーカー・適合性テストの対応を `scripts/check-spec.mjs` で検査する。適合性スイートは規則ごとのプログラムと期待（`spec/`・`tests/conformance/`）。OWN から始め、全 228 規則を Phase で足す | 承認済み |
+| [G33](_completed/G33-spec-rule-ids-conformance.md) | 仕様 | 仕様の規則に ID（`OWN-012` の形、15 領域）を付け、規則・文書のマーカー・適合性テストの対応を `scripts/check-spec.mjs` で検査する。適合性スイートは規則ごとのプログラムと期待（`spec/`・`tests/conformance/`）。OWN から始め、全 228 規則を Phase で足す | done（全 Phase） |
 | [G34](_completed/G34-doc-tests.md) | 仕様・文書 | `///` の中の `tsuzuri` のフェンスを実行する `tsuzuri test --doc`（記法の誤りは `E2011`）と、例が 1 つもない std の公開関数への例の追加（Phase 3） | done |
 | [G35](_completed/G35-generated-docs-single-source.md) | 文書 | 手書きと生成物の二重管理をなくす: 診断コード表・std 索引・計算量の表（`@complexity`・`@since`・`@see`）を生成物にし、`docs/benchmarks.md`（952 KB のうち 52% が HTML の 2 ブロック）を JSON 化して diff・レビューできる形にし、README の旗・サブコマンドの表を検査する。`_specs/`（初期設計）は `_specs/_archive/` へ移す | done |
 | [G36](_completed/G36-language-differential-fuzz.md) | テスト | `tests/progfuzz.mjs`: 乱数から型つきのプログラムを作り、コンパイル時評価・native と wasm32 の `-O0`／`-O3` の結果を、JS の BigInt の評価器と突き合わせる差分ファズ。所有権つきの値の解放の漏れ（`owned`）も見る。壊した評価器（変異）を検出できることを自己テストで確かめる | done（全 Phase） |

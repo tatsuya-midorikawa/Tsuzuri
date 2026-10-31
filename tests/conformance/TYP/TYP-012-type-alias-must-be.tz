@@ -1,0 +1,9 @@
+type Id = i64
+
+def next :: Id -> i64 = \n -> n + 1
+
+let n: i64 = 41
+next n
+
+// rule: TYP-012
+// expect: stdout "42\n"

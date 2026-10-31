@@ -1,0 +1,8 @@
+let s = "abcd"
+let r = ref s
+let a = r
+let b = r
+a.length + b.length
+
+// rule: OWN-019
+// expect: stdout "8\n"

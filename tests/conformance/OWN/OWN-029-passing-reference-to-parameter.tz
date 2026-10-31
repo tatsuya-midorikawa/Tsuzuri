@@ -1,0 +1,6 @@
+def take :: own string -> i64 = \s -> s.length
+def f :: ref string -> i64 = \r -> take r
+0
+
+// rule: OWN-029
+// expect: check-error E1012 line=2

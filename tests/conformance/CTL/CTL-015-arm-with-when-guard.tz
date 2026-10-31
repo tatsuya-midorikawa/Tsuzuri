@@ -1,0 +1,8 @@
+def sign :: i64 -> i64 = \n ->
+    match n with
+    | v when v >= 0 -> 1
+    | v when v < 0 -> -1
+0
+
+// rule: CTL-015
+// expect: check-error E1021 line=2

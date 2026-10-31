@@ -1,0 +1,8 @@
+let points = [(1, 2), (3, 4)]
+let mut sum = 0
+for (x, y) in points do
+    sum = sum + x * y
+sum
+
+// rule: CTL-021
+// expect: stdout "14\n"

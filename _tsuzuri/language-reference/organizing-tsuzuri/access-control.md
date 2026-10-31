@@ -9,7 +9,7 @@ Tsuzuri におけるアクセス制御（可視性）は、モジュールの内
 - Tsuzuri の宣言は既定で public です。非公開にする場合のみ `private` を明示します。
 - `private` は `def`、`record`、`union`、`type`、`const`、`extern def` に付与できます。
 - 関数の実装側（`fn`、`and`、`let`）には `private` を付けず、先行する `def` シグネチャの可視性を自動継承します。
-- public な関数や型から同一モジュール内の private 型を漏洩させることは禁止されています（`E1022`）。
+- public な関数や型から同一モジュール内の private 型を漏洩させることは禁止されています（`E1022`）。 <!-- rule: MOD-004 -->
 - `export` は C ABI や WASM ホスト環境に対する公開指定であり、モジュール間の可視性制御とは無関係です。
 - 型クラス（`class`）とインスタンス（`instance`）は言語仕様上常に public です。
 
@@ -51,6 +51,7 @@ id
 5042
 ```
 
+<!-- rule: MOD-003 -->
 他のモジュールから `Auth::Token.create_token` や `Auth::Token.Token` を直接参照しようとすると、コンパイルエラー `E1022`（`only visible inside module 'Auth::Token'`）になります。
 
 ## 許可される宣言と禁止される組み合わせ

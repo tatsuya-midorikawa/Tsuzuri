@@ -138,10 +138,12 @@ ok 2 - Main hashes
 
 ライブラリ API の `driver::run_tests`（`TestOptions::default()`）は報告しません。`--index N -g -o PATH` のデバッグ用のランナーと `tsuzuri bench` も計装しません。
 
+<!-- rule: CLI-007 -->
 フィルターは正規表現ではありません。`Checks.tz` の `adds integers` は、一覧では `Checks.adds integers` です。`--filter "Checks.adds"` はこの 1 件に一致し、ほかは `ignored` になります。一致が 0 件でも終了コードは 0 です。
 
 サブディレクトリ `Geometry/Point.tz` は、パッケージの名前空間を書いていなければモジュール名 `Geometry::Point` です。一覧は `0 Geometry::Point.origin is zero`、フィルターは `Geometry::Point.origin` のように、`::` を含めた部分文字列で一致します。
 
+<!-- rule: CLI-006 -->
 `--list` の人が読む形式は、`index`、モジュール名、テスト名を空白でつなぎます。
 
 ```text

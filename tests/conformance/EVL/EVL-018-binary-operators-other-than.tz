@@ -1,0 +1,6 @@
+let a = 10 - 4 - 3
+let b = 100 / 10 / 5
+$"{a} {b}"
+
+// rule: EVL-018
+// expect: stdout "3 2\n"

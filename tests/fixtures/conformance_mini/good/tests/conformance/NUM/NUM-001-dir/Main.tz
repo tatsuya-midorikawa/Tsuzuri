@@ -1,0 +1,4 @@
+Lib.add 1 2
+
+// rule: NUM-001
+// expect: stdout "3\n"

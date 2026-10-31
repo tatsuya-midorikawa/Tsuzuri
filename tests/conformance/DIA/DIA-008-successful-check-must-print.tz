@@ -1,0 +1,7 @@
+1
+
+// rule: DIA-008
+// cli: check $DIR
+// expect: exit 0
+// expect: stdout-empty
+// expect: stderr-empty

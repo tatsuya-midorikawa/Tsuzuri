@@ -1,0 +1,7 @@
+def length_of :: ref string -> i64 = \s -> s.length
+let s = "abc"
+let n = length_of s
+n + s.length
+
+// rule: OWN-004
+// expect: stdout "6\n"

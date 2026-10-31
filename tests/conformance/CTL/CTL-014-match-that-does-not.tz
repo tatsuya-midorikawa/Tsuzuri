@@ -1,0 +1,10 @@
+union Status = Success of i64 | NotFound | Error of string
+
+def handle :: Status -> i64 = \status ->
+    match status with
+    | Success code -> code
+    | NotFound -> 404
+0
+
+// rule: CTL-014
+// expect: check-error E1021 line=4

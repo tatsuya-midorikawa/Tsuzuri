@@ -1,0 +1,6 @@
+let a = 5
+let b = a
+a + b
+
+// rule: OWN-002
+// expect: stdout "10\n"

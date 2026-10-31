@@ -1,0 +1,8 @@
+def bits :: i32 -> i32 -> i32 = \a b -> ((a &&& b) ||| 8) ^^^ 1
+def inv :: i32 -> i32 = \a -> ~~~a
+
+test "and or xor" = Test.equal (ref 11) (ref (bits 6 3))
+test "not" = Test.equal (ref (-11)) (ref (inv 10))
+
+// rule: NUM-016
+// expect: tests-pass 2

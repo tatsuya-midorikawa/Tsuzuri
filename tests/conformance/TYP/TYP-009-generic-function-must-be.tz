@@ -1,0 +1,9 @@
+record P { x: i64 }
+
+def double :: 'a -> 'a = \x -> x + x
+
+let p = double (P { x: 1 })
+0
+
+// rule: TYP-009
+// expect: check-error E1005 line=5

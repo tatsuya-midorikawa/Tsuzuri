@@ -1,0 +1,9 @@
+let x: i64 = "s"
+x
+
+// rule: EDN-010
+// cli: check $DIR --json
+// expect: exit 1
+// expect: stderr-has "\"code\":\"E0002\""
+// expect: stderr-lacks "\"code\":\"E1003\""
+// expect: stderr-lines 1

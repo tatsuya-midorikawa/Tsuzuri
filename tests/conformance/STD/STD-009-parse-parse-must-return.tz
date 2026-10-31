@@ -1,0 +1,13 @@
+def show :: Maybe<i64> -> string = \m -> match m with
+    | Some v -> to_string v
+    | None -> "none"
+let good = "42"
+let bad = "4x2"
+let big = "9223372036854775808"
+let a: Maybe<i64> = Parse.parse (ref good)
+let b: Maybe<i64> = Parse.parse (ref bad)
+let c: Maybe<i64> = Parse.parse (ref big)
+$"{show a} {show b} {show c}"
+
+// rule: STD-009
+// expect: stdout "42 none none\n"

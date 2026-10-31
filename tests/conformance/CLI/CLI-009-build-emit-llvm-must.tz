@@ -1,0 +1,7 @@
+def add :: i64 -> i64 -> i64 = \a b -> a + b
+export def total :: i64 -> i64 = \n -> add n 1
+0
+
+// rule: CLI-009
+// cli: build $DIR --emit llvm -o $OUT
+// expect: deterministic

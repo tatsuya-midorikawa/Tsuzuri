@@ -1,0 +1,7 @@
+export def touch :: i64 -> unit = \_a -> ()
+0
+
+// rule: ABI-003
+// cli: build $DIR --emit header -o $DIR/out.h
+// expect: exit 0
+// expect: file-has out.h "void tz_touch(int64_t arg0);"

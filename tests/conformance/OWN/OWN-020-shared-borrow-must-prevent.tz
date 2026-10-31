@@ -1,0 +1,7 @@
+let s = "abc"
+let r = ref s
+let t = s
+r.length
+
+// rule: OWN-020
+// expect: check-error E1014 line=3

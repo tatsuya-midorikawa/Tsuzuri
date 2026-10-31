@@ -1,0 +1,8 @@
+let x = 1
+x
+
+// rule: CLI-005
+// cli: fmt --check $DIR
+// expect: exit 0
+// expect: stdout-empty
+// expect: stderr-empty

@@ -1,0 +1,4 @@
+0
+
+// rule: MOD-001
+// expect: check-error E1011

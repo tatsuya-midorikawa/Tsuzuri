@@ -1,0 +1,14 @@
+def safe_add :: i32 -> i32 -> Result<i32, Exception> = \x y ->
+    try
+        @checked (x + y)
+    with
+    | e is OverflowException -> e
+
+let text =
+    match safe_add 2147483647 1 with
+    | Ok _ -> "ok"
+    | Error _ -> "overflow"
+text
+
+// rule: NUM-029
+// expect: stdout "overflow\n"

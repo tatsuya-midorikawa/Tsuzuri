@@ -1,0 +1,7 @@
+let x = 40
+x + 2
+
+// rule: CLI-002
+// cli: run $DIR
+// expect: exit 0
+// expect: stdout "42\n"

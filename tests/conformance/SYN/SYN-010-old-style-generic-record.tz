@@ -1,0 +1,5 @@
+record Pair 'a 'b { first: 'a, second: 'b }
+0
+
+// rule: SYN-010
+// expect: check-error E0002 line=1

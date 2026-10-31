@@ -1,0 +1,4 @@
+// rule: CLI-010
+// cli: api-diff $DIR/old $DIR/new
+// expect: exit 1
+// expect: stdout-has "two"

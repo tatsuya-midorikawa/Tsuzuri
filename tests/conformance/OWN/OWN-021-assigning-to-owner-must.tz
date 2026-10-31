@@ -1,0 +1,7 @@
+let mut s = "abc"
+let r = ref s
+s = "xyz"
+r.length
+
+// rule: OWN-021
+// expect: check-error E1014 line=3

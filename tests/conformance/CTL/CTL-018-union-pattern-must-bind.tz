@@ -1,0 +1,12 @@
+union Status = Success of i64 | NotFound | Error of string
+
+def handle :: Status -> i64 = \status ->
+    match status with
+    | Success code -> code
+    | NotFound -> 404
+    | Error _ -> 500
+
+$"{handle (Success 200)} {handle NotFound} {handle (Error "x")}"
+
+// rule: CTL-018
+// expect: stdout "200 404 500\n"

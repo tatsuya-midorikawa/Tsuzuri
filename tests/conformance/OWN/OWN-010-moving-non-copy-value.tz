@@ -1,0 +1,5 @@
+def steal :: ref string -> string = \r -> deref r
+0
+
+// rule: OWN-010
+// expect: check-error E1012 line=1

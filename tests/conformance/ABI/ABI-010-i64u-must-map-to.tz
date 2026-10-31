@@ -1,0 +1,9 @@
+export def big :: i64u -> i64u = \x -> x
+export def narrow :: i16u -> i16u = \x -> x
+0
+
+// rule: ABI-010
+// cli: build $DIR --emit header -o $DIR/out.h
+// expect: exit 0
+// expect: file-has out.h "uint64_t tz_big(uint64_t arg0);"
+// expect: file-has out.h "uint32_t tz_narrow(uint32_t arg0);"

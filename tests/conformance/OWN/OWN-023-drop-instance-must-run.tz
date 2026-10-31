@@ -1,0 +1,14 @@
+record Ticket { id: i64 }
+
+instance Drop<Ticket> {
+    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+}
+
+def main :: unit -> i32 = \() ->
+    let first = Ticket { id: 1 }
+    let second = Ticket { id: 2 }
+    do! IO.write_line (to_string (first.id + second.id))
+    0
+
+// rule: OWN-023
+// expect: stdout "3\ndrop 2\ndrop 1\n"

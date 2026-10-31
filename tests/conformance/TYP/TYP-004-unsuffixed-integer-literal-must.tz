@@ -1,0 +1,7 @@
+def accept_i64 :: i64 -> i64 = \x -> x + 2
+
+let a = 40
+accept_i64 a
+
+// rule: TYP-004
+// expect: stdout "42\n"
