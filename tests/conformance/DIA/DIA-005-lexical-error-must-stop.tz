@@ -1,0 +1,9 @@
+let a = "x
+let = = 1
+
+// rule: DIA-005
+// cli: check $DIR --json
+// expect: exit 1
+// expect: stderr-has "\"code\":\"E0001\""
+// expect: stderr-lacks "\"code\":\"E0002\""
+// expect: stderr-lines 1

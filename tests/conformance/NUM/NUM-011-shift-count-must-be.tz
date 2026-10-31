@@ -1,0 +1,7 @@
+def shl :: i32 -> i32 -> i32 = \a n -> a <<< n
+
+test "1 <<< 33 on i32" = Test.equal (ref 2) (ref (shl 1 33))
+test "1 <<< 32 on i32" = Test.equal (ref 1) (ref (shl 1 32))
+
+// rule: NUM-011
+// expect: tests-pass 2

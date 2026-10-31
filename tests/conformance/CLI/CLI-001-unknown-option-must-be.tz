@@ -1,0 +1,6 @@
+0
+
+// rule: CLI-001
+// cli: check $DIR --bogus
+// expect: exit 2
+// expect: stderr-has "error[E2000]: unknown option '--bogus'"

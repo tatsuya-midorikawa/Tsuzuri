@@ -1,0 +1,8 @@
+let step = 0
+let mut count = 0
+for n in 1 .. step ..= 5 do
+    count = count + 1
+count
+
+// rule: CTL-006
+// expect: trap kind=range_step

@@ -1,0 +1,6 @@
+record R { a: i64, s: string }
+export def f :: R -> i64 = \r -> r.a
+0
+
+// rule: ABI-004
+// expect: check-error E1008 line=2

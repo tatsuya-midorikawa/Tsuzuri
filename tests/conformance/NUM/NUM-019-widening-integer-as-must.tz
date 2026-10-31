@@ -1,0 +1,8 @@
+def wide :: i8 -> i64 = \a -> a as i64
+def wideu :: i8u -> i64 = \a -> a as i64
+
+test "signed" = Test.equal (ref (-1)) (ref (wide (-1)))
+test "unsigned" = Test.equal (ref 255) (ref (wideu 255i8u))
+
+// rule: NUM-019
+// expect: tests-pass 2

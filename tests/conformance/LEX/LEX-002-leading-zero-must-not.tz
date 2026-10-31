@@ -1,0 +1,4 @@
+0123
+
+// rule: LEX-002
+// expect: stdout "123\n"

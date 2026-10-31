@@ -1,0 +1,8 @@
+def sar :: i32 -> i32 -> i32 = \a n -> a >>> n
+def shr :: i8u -> i8u -> i8u = \a n -> a >>> n
+
+test "signed" = Test.equal (ref (-4)) (ref (sar (-8) 1))
+test "unsigned" = Test.equal (ref 100i8u) (ref (shr 200i8u 1i8u))
+
+// rule: NUM-012
+// expect: tests-pass 2

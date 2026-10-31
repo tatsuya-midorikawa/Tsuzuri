@@ -1,0 +1,8 @@
+let values = Vec.push_owned 40 (Vec.push_owned 20 (Vec.empty()))
+let mut text = ""
+for item in values do
+    text = text + to_string item
+text
+
+// rule: STD-010
+// expect: stdout "2040\n"

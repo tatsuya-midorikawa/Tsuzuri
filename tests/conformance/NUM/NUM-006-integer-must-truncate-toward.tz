@@ -1,0 +1,8 @@
+def div :: i64 -> i64 -> i64 = \a b -> a / b
+
+test "-7 / 2" = Test.equal (ref (-3)) (ref (div (-7) 2))
+test "7 / -2" = Test.equal (ref (-3)) (ref (div 7 (-2)))
+test "-7 / -2" = Test.equal (ref 3) (ref (div (-7) (-2)))
+
+// rule: NUM-006
+// expect: tests-pass 3

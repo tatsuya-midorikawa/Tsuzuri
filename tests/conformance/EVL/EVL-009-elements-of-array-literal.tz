@@ -1,0 +1,9 @@
+def say :: i64 -> i64 = \n ->
+    do! IO.write_line (to_string n)
+    n
+
+let xs = [say 1, say 2, say 3]
+xs.length
+
+// rule: EVL-009
+// expect: stdout "1\n2\n3\n3\n"

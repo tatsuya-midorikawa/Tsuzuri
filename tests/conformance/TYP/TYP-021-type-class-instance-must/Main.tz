@@ -1,0 +1,13 @@
+record Amount { value: i64 }
+
+instance Traits.Score<Amount> {
+    fn score amount = amount.value
+}
+
+instance Traits.Score<Amount> {
+    fn score amount = amount.value + 1
+}
+0
+
+// rule: TYP-021
+// expect: check-error E1016 line=7

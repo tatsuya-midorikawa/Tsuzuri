@@ -1,0 +1,7 @@
+let mut n: i64 = 3
+while n do
+    n = n - 1
+n
+
+// rule: CTL-012
+// expect: check-error E1003 line=2

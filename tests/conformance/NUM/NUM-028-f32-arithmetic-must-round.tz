@@ -1,0 +1,10 @@
+def add :: f32 -> f32 -> f32 = \a b -> a + b
+
+test "2^24 + 1" = Test.is_true (add 16777216f32 1f32 == 16777216f32)
+test "2^24 + 2" = Test.is_true (add 16777216f32 2f32 == 16777218f32)
+// With an f64 intermediate, (x + 1) - x would be 1: each f32 operation rounds.
+def chain :: f32 -> f32 = \x -> (x + 1f32) - x
+test "chained" = Test.is_true (chain 16777216f32 == 0f32)
+
+// rule: NUM-028
+// expect: tests-pass 3

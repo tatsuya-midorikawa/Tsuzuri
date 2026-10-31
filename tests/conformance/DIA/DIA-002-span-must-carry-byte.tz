@@ -1,0 +1,7 @@
+let x: i64 = "s"
+x
+
+// rule: DIA-002
+// cli: check $DIR --json
+// expect: exit 1
+// expect: stderr-has "\"span\":{\"start\":13,\"end\":16,\"line\":1,\"column\":14,\"end_line\":1,\"end_column\":17}"

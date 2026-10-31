@@ -1,0 +1,7 @@
+record Point { x: i64, y: i64 }
+let p = Point { x: 3, y: 4 }
+let q = p
+p.x + q.y
+
+// rule: OWN-012
+// expect: stdout "7\n"

@@ -1,0 +1,5 @@
+record Box<'a> { v: i64 }
+0
+
+// rule: TYP-010
+// expect: check-error E1024 line=1

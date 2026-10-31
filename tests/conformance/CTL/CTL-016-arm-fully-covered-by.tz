@@ -1,0 +1,9 @@
+def f :: bool -> i64 = \b ->
+    match b with
+    | true -> 1
+    | false -> 0
+    | _ -> 2
+f true
+
+// rule: CTL-016
+// expect: check-warning W1003 line=5

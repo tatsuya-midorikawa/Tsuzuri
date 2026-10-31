@@ -1,0 +1,1 @@
+def area :: i64 -> i64 -> i64 = \w h -> w * h

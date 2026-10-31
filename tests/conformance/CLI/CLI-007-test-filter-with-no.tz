@@ -1,0 +1,7 @@
+test "a" = ()
+test "b" = ()
+
+// rule: CLI-007
+// cli: test $DIR --filter zzz
+// expect: exit 0
+// expect: stdout-has "0 passed; 0 failed; 2 ignored"

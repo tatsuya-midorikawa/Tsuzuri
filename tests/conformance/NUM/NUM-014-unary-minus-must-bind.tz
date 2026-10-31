@@ -1,0 +1,5 @@
+let b = -2 ** 2
+b
+
+// rule: NUM-014
+// expect: stdout "4\n"

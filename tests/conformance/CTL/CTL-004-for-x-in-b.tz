@@ -1,0 +1,7 @@
+let mut sum = 0
+for i in 1 ..= 4 do
+    sum = sum + i
+sum
+
+// rule: CTL-004
+// expect: stdout "10\n"

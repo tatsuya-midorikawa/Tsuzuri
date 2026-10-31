@@ -1,0 +1,10 @@
+union NumberOrPair = Single of i64 | Pair of i64 * i64
+
+def extract :: NumberOrPair -> i64 = \val ->
+    match val with
+    | Single n | Pair (n, _) -> n
+
+$"{extract (Single 7)} {extract (Pair (42, 10))}"
+
+// rule: CTL-019
+// expect: stdout "7 42\n"

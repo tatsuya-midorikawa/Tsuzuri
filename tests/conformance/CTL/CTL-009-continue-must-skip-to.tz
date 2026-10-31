@@ -1,0 +1,11 @@
+let mut sum = 0
+for n in 1 ..= 10 do
+    if n % 2 == 1 then
+        continue
+    if n > 6 then
+        break
+    sum = sum + n
+sum
+
+// rule: CTL-009
+// expect: stdout "12\n"

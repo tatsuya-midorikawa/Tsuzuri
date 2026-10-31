@@ -1,0 +1,7 @@
+union Status = Active of i64 | Done
+
+let s = Active "x"
+0
+
+// rule: TYP-018
+// expect: check-error E1003 line=3

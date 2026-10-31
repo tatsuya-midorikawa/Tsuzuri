@@ -1,0 +1,8 @@
+def bad :: unit -> ref string = \() -> {
+    let s = "abc";
+    ref s
+}
+0
+
+// rule: OWN-014
+// expect: check-error E1013 line=3

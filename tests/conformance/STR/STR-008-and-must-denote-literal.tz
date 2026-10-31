@@ -1,0 +1,4 @@
+$"{{x}}"
+
+// rule: STR-008
+// expect: stdout "{x}\n"

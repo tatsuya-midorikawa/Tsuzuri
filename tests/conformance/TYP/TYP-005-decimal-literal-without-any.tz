@@ -1,0 +1,6 @@
+let third = 1.0 / 3.0
+// f64 shows 0.3333333333333333; an f32 default would show 0.33333334.
+third
+
+// rule: TYP-005
+// expect: stdout "0.3333333333333333\n"

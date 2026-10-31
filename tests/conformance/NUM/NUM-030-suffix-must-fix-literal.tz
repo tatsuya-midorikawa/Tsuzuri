@@ -1,0 +1,9 @@
+def big :: i64 -> i64 = \a -> a
+
+test "l" = Test.equal (ref 3000000000) (ref (big 3000000000l))
+test "y wraps as i8" = Test.equal (ref (-128)) (ref (127y + 1y))
+test "u is unsigned" = Test.equal (ref 4294967295u) (ref (0u - 1u))
+
+// rule: NUM-030
+// edition: 2026
+// expect: tests-pass 3

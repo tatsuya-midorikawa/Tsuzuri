@@ -1,0 +1,8 @@
+let items = [Some 1, None]
+let mut sum = 0
+for Some x in items do
+    sum = sum + x
+sum
+
+// rule: CTL-022
+// expect: trap kind=pattern_mismatch

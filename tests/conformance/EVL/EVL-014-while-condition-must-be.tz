@@ -1,0 +1,11 @@
+def below :: i64 -> bool = \n ->
+    do! IO.write_line "check"
+    n < 2
+
+let mut i = 0
+while below i do
+    i = i + 1
+i
+
+// rule: EVL-014
+// expect: stdout "check\ncheck\ncheck\n2\n"

@@ -1,0 +1,7 @@
+let zero = 0
+let safe_and = false && (1 / zero == 0)
+let safe_or = true || (1 / zero == 0)
+$"{not safe_and} {safe_or}"
+
+// rule: EVL-006
+// expect: stdout "true true\n"

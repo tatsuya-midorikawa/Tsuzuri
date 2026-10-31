@@ -1,0 +1,11 @@
+record Amount { value: i64 }
+
+instance Traits.Score<Amount> {
+    fn score amount = amount.value
+}
+
+let amount = Amount { value: 5 }
+Traits.Score.score ref amount
+
+// rule: TYP-022
+// expect: stdout "5\n"

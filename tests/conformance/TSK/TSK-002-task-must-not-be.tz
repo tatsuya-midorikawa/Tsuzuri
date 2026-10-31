@@ -1,0 +1,7 @@
+let work = task { return 1 }
+let a = Task.run work
+let b = Task.run work
+a + b
+
+// rule: TSK-002
+// expect: check-error E1012 line=3

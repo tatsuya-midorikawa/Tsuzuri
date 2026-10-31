@@ -1,0 +1,7 @@
+let text = "coffee"
+let r = ref text
+let work = task { return String.length r }
+Task.run work
+
+// rule: TSK-003
+// expect: check-error E1013 line=3

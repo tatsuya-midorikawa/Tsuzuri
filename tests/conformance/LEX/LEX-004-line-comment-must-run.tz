@@ -1,0 +1,5 @@
+let x = 1 // + 2
+x
+
+// rule: LEX-004
+// expect: stdout "1\n"

@@ -92,6 +92,7 @@ flowchart LR
 
 ## ムーブ後の使用エラー（E1012）
 
+<!-- rule: OWN-001 -->
 ムーブによって所有権を手放した変数を後続のコードで使用しようとすると、コンパイラは `E1012` エラーを出力します。
 
 ```text
@@ -121,6 +122,7 @@ error[E1012]: use of moved or partially moved value 'first'
 
 ムーブがループの前の反復で起きたときは `value moved here, in the previous iteration of the loop`、フィールドだけをムーブしたときは `part of the value moved here` です。分岐の両方でムーブしたときは、ソース上で後ろのムーブを示します。`--json` では `related` の `moved_here` になります（[診断](../compiler/diagnostics.md#関連する位置help修正案)）。
 
+<!-- rule: OWN-008 -->
 条件分岐の一方でのみムーブした場合でも、合流後にその変数を使うことはできません。
 
 ```text

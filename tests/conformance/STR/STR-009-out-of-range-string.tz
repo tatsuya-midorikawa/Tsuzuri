@@ -1,0 +1,6 @@
+let s = "ab"
+let i = 5
+s[i] as i64
+
+// rule: STR-009
+// expect: trap kind=bounds

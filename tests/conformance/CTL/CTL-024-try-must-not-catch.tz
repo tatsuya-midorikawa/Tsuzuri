@@ -1,0 +1,13 @@
+def div :: i32 -> i32 -> Result<i32, Exception> = \x y ->
+    try
+        @checked (x / y)
+    with
+    | e is OverflowException -> e
+
+let zero = 0
+match div 10 zero with
+| Ok v -> v
+| Error _ -> -1
+
+// rule: CTL-024
+// expect: trap kind=div_zero

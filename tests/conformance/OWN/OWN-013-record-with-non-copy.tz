@@ -1,0 +1,7 @@
+record Named { name: string, id: i64 }
+let p = Named { name: "a", id: 1 }
+let q = p
+p.id
+
+// rule: OWN-013
+// expect: check-error E1012 line=4

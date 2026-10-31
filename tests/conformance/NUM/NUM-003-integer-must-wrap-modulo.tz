@@ -1,0 +1,8 @@
+def sub8 :: i8 -> i8 -> i8 = \a b -> a - b
+def sub8u :: i8u -> i8u -> i8u = \a b -> a - b
+
+test "i8 min - 1" = Test.equal (ref 127) (ref (sub8 (-128) 1))
+test "i8u 0 - 1" = Test.equal (ref 255i8u) (ref (sub8u 0i8u 1i8u))
+
+// rule: NUM-003
+// expect: tests-pass 2

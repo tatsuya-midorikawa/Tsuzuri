@@ -1,0 +1,4 @@
+Geometry.secret 3
+
+// rule: MOD-003
+// expect: check-error E1022 line=1

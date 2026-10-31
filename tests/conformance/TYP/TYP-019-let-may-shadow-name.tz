@@ -1,0 +1,6 @@
+let x = 1
+let x = "a"
+x
+
+// rule: TYP-019
+// expect: stdout "a\n"

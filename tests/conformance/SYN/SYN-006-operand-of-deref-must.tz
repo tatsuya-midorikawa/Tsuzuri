@@ -1,0 +1,7 @@
+def id :: ref i64 -> ref i64 = \x -> x
+let n = 5
+let v = deref id ref n
+v
+
+// rule: SYN-006
+// expect: check-error E0002 line=3

@@ -1,0 +1,5 @@
+let text = u8"é"
+text.length
+
+// rule: STR-002
+// expect: stdout "2\n"

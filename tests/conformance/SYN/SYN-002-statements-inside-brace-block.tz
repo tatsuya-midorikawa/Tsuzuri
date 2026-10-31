@@ -1,0 +1,5 @@
+def f :: unit -> i64 = \() -> { let a = 1 a }
+0
+
+// rule: SYN-002
+// expect: check-error E0002 line=1

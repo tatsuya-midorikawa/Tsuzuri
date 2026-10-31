@@ -1,0 +1,5 @@
+let a = 1; let b = 2
+a + b
+
+// rule: SYN-001
+// expect: stdout "3\n"

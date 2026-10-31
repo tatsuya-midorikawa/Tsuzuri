@@ -1,0 +1,3 @@
+record Point { x: i64 }
+
+def double :: Point -> i64 = \p -> p.x * 2

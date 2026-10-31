@@ -1,0 +1,16 @@
+record Ticket { id: i64 }
+
+instance Drop<Ticket> {
+    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+}
+
+def consume :: own Ticket -> unit = \t -> ()
+
+def main :: unit -> i32 = \() ->
+    let t = Ticket { id: 7 }
+    consume t
+    do! IO.write_line "after"
+    0
+
+// rule: OWN-024
+// expect: stdout "drop 7\nafter\n"

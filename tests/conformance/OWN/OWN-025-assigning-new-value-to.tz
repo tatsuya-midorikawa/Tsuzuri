@@ -1,0 +1,14 @@
+record Ticket { id: i64 }
+
+instance Drop<Ticket> {
+    fn drop value = do! IO.write_line ("drop " + to_string value.id)
+}
+
+def main :: unit -> i32 = \() ->
+    let mut t = Ticket { id: 1 }
+    t = Ticket { id: 2 }
+    do! IO.write_line "assigned"
+    0
+
+// rule: OWN-025
+// expect: stdout "drop 1\nassigned\ndrop 2\n"

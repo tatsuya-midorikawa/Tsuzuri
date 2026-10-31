@@ -1,0 +1,7 @@
+def neg :: i32 -> i32 = \a -> -a
+
+test "neg i32 min" = Test.equal (ref (-2147483648)) (ref (neg (-2147483648)))
+test "neg 5" = Test.equal (ref (-5)) (ref (neg 5))
+
+// rule: NUM-005
+// expect: tests-pass 2

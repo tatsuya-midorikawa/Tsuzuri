@@ -1,0 +1,7 @@
+def add :: f64 -> f64 -> f64 = \a b -> a + b
+
+test "sum" = Test.is_true (add 0.1 0.2 == 0.30000000000000004)
+test "not 0.3" = Test.is_true (add 0.1 0.2 != 0.3)
+
+// rule: NUM-026
+// expect: tests-pass 2

@@ -1,0 +1,10 @@
+def check :: i64 -> string = \age ->
+    match age with
+    | n when n < 0 -> "invalid"
+    | n when n < 20 -> "minor"
+    | _ -> "adult"
+
+$"{check (-3)} {check 15} {check 25}"
+
+// rule: CTL-013
+// expect: stdout "invalid minor adult\n"

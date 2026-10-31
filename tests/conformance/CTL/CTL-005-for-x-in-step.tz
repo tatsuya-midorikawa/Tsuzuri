@@ -1,0 +1,7 @@
+let mut result = 0
+for n in 10 .. -2 ..= 4 do
+    result = result + n
+result
+
+// rule: CTL-005
+// expect: stdout "28\n"

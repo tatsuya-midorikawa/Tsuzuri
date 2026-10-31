@@ -1,0 +1,5 @@
+let of = 3
+of + 1
+
+// rule: LEX-006
+// expect: stdout "4\n"

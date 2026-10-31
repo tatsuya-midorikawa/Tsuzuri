@@ -1,0 +1,7 @@
+record Box<'a> { value: 'a }
+
+let boxed = Box { value: 42 }
+boxed.value
+
+// rule: TYP-011
+// expect: stdout "42\n"

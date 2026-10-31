@@ -1,0 +1,5 @@
+let f = not
+f true
+
+// rule: LEX-007
+// expect: stdout "false\n"

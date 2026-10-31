@@ -1,0 +1,6 @@
+let hits = Atomic.create 0i64
+let _seen = Task.scope (ref hits) 8 (\shared index -> Atomic.fetch_add shared (index + 1))
+Atomic.load (ref hits)
+
+// rule: TSK-008
+// expect: stdout "36\n"

@@ -1,0 +1,7 @@
+let p = ("ab", 1)
+let q = p
+match p with
+| (s, _) -> s.length
+
+// rule: OWN-030
+// expect: check-error E1012 line=3

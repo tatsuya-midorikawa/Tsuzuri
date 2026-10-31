@@ -1,0 +1,4 @@
+fn main () = 0
+
+// rule: SYN-008
+// expect: check-error E0002 line=1

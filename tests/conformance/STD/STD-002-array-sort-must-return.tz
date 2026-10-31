@@ -1,0 +1,5 @@
+let xs = [5, 2, 9]
+$"{Array.sort (ref xs)} {xs}"
+
+// rule: STD-002
+// expect: stdout "[2, 5, 9] [5, 2, 9]\n"
