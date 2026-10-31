@@ -13,6 +13,7 @@ use crate::trap::{TrapKind, TrapSource};
 
 #[path = "llvm_traps.rs"]
 mod traps;
+pub(crate) use traps::BACKTRACE_DECLARATION;
 pub use traps::{EmitOutput, TrapNumbering};
 
 #[path = "call_specialization.rs"]
@@ -394,6 +395,8 @@ mod compare;
 mod cpu;
 #[path = "llvm_display.rs"]
 mod display;
+#[path = "llvm_domain.rs"]
+mod domain;
 #[path = "llvm_exception.rs"]
 mod exception;
 #[path = "llvm_gpu.rs"]
@@ -712,6 +715,29 @@ fn emit_native(
             Span::default(),
         ));
     }
+    // B10: the report of an executable's trap also writes the chain of frames, which every function keeps
+    // (pruned to the functions that the entry reaches or not, as `emit_native_build_for` keeps them all).
+    let backtrace =
+        trap_info && options.entry == Entry::Console && crate::target::current_platform().unix();
+    // B10: a program that calls `Domain.run` runs on the tracked heap of the trap runtime, and its traps
+    // return to the innermost failure domain.
+    if !crate::check::domain_calls(module).is_empty() {
+        let output = emit_trap_mode(
+            module,
+            options,
+            sources,
+            debug,
+            TrapMode {
+                cpu_dispatch: true,
+                levels,
+                wrappers: false,
+                executable_roots,
+                backtrace,
+            },
+        )?;
+        domain_without_callbacks(module, &output.ir)?;
+        return Ok(output);
+    }
     let trusted_array = sources.iter().any(|source| {
         source.path == "std/Array.tz" && source.text == include_str!("../std/Array.tz")
     });
@@ -736,7 +762,18 @@ fn emit_native(
     )?;
     let mut output = if let Some(marks) = marks {
         let numbering = numbering(ir.len());
-        traps::instrument_numbered(ir, module, marks, sources, false, false, numbering)?
+        traps::instrument_with(
+            ir,
+            module,
+            marks,
+            sources,
+            traps::InstrumentOptions {
+                wasm: false,
+                raise: false,
+                backtrace,
+            },
+            numbering,
+        )?
     } else {
         EmitOutput {
             ir,
@@ -745,6 +782,9 @@ fn emit_native(
         }
     };
     output.ir = cpu::multiversion(output.ir, module, levels, options.f16)?;
+    if backtrace {
+        output.ir = traps::with_frame_pointers(&output.ir);
+    }
     Ok(output)
 }
 
@@ -757,6 +797,43 @@ pub fn emit_trap_return(
     debug: Option<bool>,
     cpu_dispatch: bool,
 ) -> Result<EmitOutput, Diagnostic> {
+    emit_trap_mode(
+        module,
+        options,
+        sources,
+        debug,
+        TrapMode {
+            cpu_dispatch,
+            levels: cpu::host_levels(),
+            wrappers: true,
+            executable_roots: false,
+            backtrace: false,
+        },
+    )
+}
+
+/// How [`emit_trap_mode`] builds a program whose traps return to a boundary or a failure domain.
+struct TrapMode {
+    cpu_dispatch: bool,
+    /// The CPU levels that `@cpu` functions get versions for.
+    levels: u8,
+    /// The `tsuzuri_try_<name>` wrappers of `--trap-mode return`.
+    wrappers: bool,
+    executable_roots: bool,
+    /// The crash report of a `--trap-info` executable (B10 Phase 1).
+    backtrace: bool,
+}
+
+/// The build of `--trap-mode return` (E14) and of a program with `Domain.run` (B10): the heap is the trap
+/// runtime's tracked one, and the report of a trap raises it to the innermost boundary or domain first.
+fn emit_trap_mode(
+    module: &CheckedModule,
+    options: EmitOptions,
+    sources: &[TrapSource<'_>],
+    debug: Option<bool>,
+    mode: TrapMode,
+) -> Result<EmitOutput, Diagnostic> {
+    let cpu_dispatch = mode.cpu_dispatch;
     if options.wasm {
         return Err(Diagnostic::of(
             DiagnosticKind::OptionRequiresBuild,
@@ -784,13 +861,30 @@ pub fn emit_trap_return(
             allocator: options.allocator,
             f16: options.f16,
             multiversion: cpu_dispatch,
+            executable_roots: mode.executable_roots,
             ..Instrumentation::default()
         },
     )?;
-    let mut output = traps::instrument(ir, module, marks.unwrap(), sources, false, true)?;
-    output.ir = cpu::multiversion(output.ir, module, cpu::host_levels(), options.f16)?;
-    let wrappers = host_abi::try_wrappers(&output.ir, module);
-    output.ir.push_str(&wrappers);
+    let mut output = traps::instrument_with(
+        ir,
+        module,
+        marks.unwrap(),
+        sources,
+        traps::InstrumentOptions {
+            wasm: false,
+            raise: true,
+            backtrace: mode.backtrace,
+        },
+        TrapNumbering::Dense,
+    )?;
+    output.ir = cpu::multiversion(output.ir, module, mode.levels, options.f16)?;
+    if mode.wrappers {
+        let wrappers = host_abi::try_wrappers(&output.ir, module);
+        output.ir.push_str(&wrappers);
+    }
+    if mode.backtrace {
+        output.ir = traps::with_frame_pointers(&output.ir);
+    }
     Ok(output)
 }
 
@@ -1042,6 +1136,21 @@ pub fn emit_test_runner_with(
         ));
     }
     let traps = options.trap_sources.filter(|_| !options.wasm);
+    // B10: a runner of a program with `Domain.run` runs on the tracked heap, and its traps return to the
+    // innermost domain; without a source map a site's text is its reason.
+    let domain = !crate::check::domain_calls(module).is_empty();
+    if domain && options.wasm {
+        return Err(domain_unsupported(
+            module,
+            "WebAssembly cannot return from a trap into the module",
+        ));
+    }
+    if domain && options.allocator != Allocator::System {
+        return Err(domain_unsupported(
+            module,
+            "the allocator is not the system allocator",
+        ));
+    }
     let (ir, marks) = emit_program(
         module,
         Entry::TestRunner,
@@ -1055,23 +1164,36 @@ pub fn emit_test_runner_with(
             seed: options.seed,
             f16: options.f16,
             allocator: options.allocator,
-            traps: traps.is_some(),
+            traps: traps.is_some() || domain,
+            trap_return: domain,
             ..Instrumentation::default()
         },
     )?;
-    match (traps, marks) {
-        (Some(sources), Some(marks)) => traps::instrument_numbered(
-            ir,
-            module,
-            marks,
-            sources,
-            false,
-            false,
-            TrapNumbering::Dense,
-        )
-        .map(|output| output.ir),
-        _ => Ok(ir),
+    let sources = traps
+        .or_else(|| options.debug.map(|(sources, _)| sources))
+        .unwrap_or_default();
+    let ir = match marks {
+        Some(marks) => {
+            traps::instrument_with(
+                ir,
+                module,
+                marks,
+                sources,
+                traps::InstrumentOptions {
+                    wasm: false,
+                    raise: domain,
+                    backtrace: false,
+                },
+                TrapNumbering::Dense,
+            )?
+            .ir
+        }
+        None => ir,
+    };
+    if domain {
+        domain_without_callbacks(module, &ir)?;
     }
+    Ok(ir)
 }
 
 /// The native runner of the selected benches for `tsuzuri bench` (G18). `@tsuzuri_bench_sample`
@@ -1111,7 +1233,15 @@ fn emit_bench_runner_in(
             Span::default(),
         ));
     }
-    emit_program(
+    // B10: as a test runner, a bench runner of a program with `Domain.run` keeps the domains' runtime.
+    let domain = !crate::check::domain_calls(module).is_empty();
+    if domain && allocator != Allocator::System {
+        return Err(domain_unsupported(
+            module,
+            "the allocator is not the system allocator",
+        ));
+    }
+    let (ir, marks) = emit_program(
         module,
         Entry::BenchRunner,
         false,
@@ -1120,10 +1250,61 @@ fn emit_bench_runner_in(
         Instrumentation {
             f16,
             allocator,
+            traps: domain,
+            trap_return: domain,
             ..Instrumentation::default()
         },
+    )?;
+    match marks {
+        Some(marks) => {
+            let ir = traps::instrument_with(
+                ir,
+                module,
+                marks,
+                &[],
+                traps::InstrumentOptions {
+                    wasm: false,
+                    raise: true,
+                    backtrace: false,
+                },
+                TrapNumbering::Dense,
+            )?
+            .ir;
+            domain_without_callbacks(module, &ir)?;
+            Ok(ir)
+        }
+        None => Ok(ir),
+    }
+}
+
+/// B10: a program with failure domains has the trap path of `--trap-mode return`, which cannot run under a callback
+/// that the host calls: a trap would jump across the host's frames, and the trap context that the instrumentation
+/// adds to the callbacks' wrappers is not in their C ABI. The driver rejects extern callbacks for `--trap-mode return`
+/// the same way.
+fn domain_without_callbacks(module: &CheckedModule, ir: &str) -> Result<(), Diagnostic> {
+    if ir.contains("@tz.callback.") {
+        return Err(Diagnostic::of(
+            DiagnosticKind::OptionConflict,
+            "Domain.run cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+            crate::check::domain_calls(module)
+                .first()
+                .copied()
+                .unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
+/// B10: the `E1038` of a build that cannot hold a failure domain, at the first call of `Domain.run`.
+pub(crate) fn domain_unsupported(module: &CheckedModule, why: &str) -> Diagnostic {
+    Diagnostic::of(
+        DiagnosticKind::DomainTargetUnsupported,
+        format!("'Domain.run' needs a native POSIX build with the system allocator: {why}"),
+        crate::check::domain_calls(module)
+            .first()
+            .copied()
+            .unwrap_or_default(),
     )
-    .map(|(ir, _)| ir)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1712,6 +1893,17 @@ fn emit_program_in(
             &roots,
             RestrictedKind::Counter,
             entry,
+        ));
+    }
+    // B10: a failure domain frees the blocks of a trapped closure in src/runtime/trap.c, past the counters of the
+    // counting heap, so a test runner whose tests read them cannot hold one (the domain's `trap_return`).
+    if reads_counters
+        && instrumentation.trap_return
+        && !crate::check::domain_calls(module).is_empty()
+    {
+        return Err(domain_unsupported(
+            module,
+            "the allocator is not the system allocator: the tests read the allocation counters (Alloc), which a domain's freeing would bypass",
         ));
     }
     let allocator = if reads_counters {
@@ -7305,6 +7497,9 @@ fn emit_builtin(
         | Builtin::GpuRun
         | Builtin::GpuSelect
         | Builtin::GpuLast => gpu_host::emit(instance, module, intrinsics, globals, &symbol),
+        Builtin::DomainRun | Builtin::DomainMessage => {
+            emit_typed_builtin(instance, ty, module, intrinsics, globals)
+        }
         Builtin::Hash
         | Builtin::HashMix
         | Builtin::DisplayQuoted
@@ -7675,6 +7870,10 @@ fn emit_typed_builtin(
         emitter.value(format!(
             "insertvalue {owned} zeroinitializer, %tz.closure %arg0, 0"
         ))
+    } else if instance.builtin == Builtin::DomainRun {
+        emitter.domain_run(instance, ty)
+    } else if instance.builtin == Builtin::DomainMessage {
+        emitter.domain_message()
     } else if matches!(instance.builtin, Builtin::AsyncTake | Builtin::AsyncPut) {
         emitter.async_slot_builtin(instance, ty)
     } else if instance.builtin == Builtin::AsyncResume {
