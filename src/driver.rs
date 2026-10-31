@@ -2370,6 +2370,31 @@ fn offline_package(
     }))
 }
 
+/// `check --report parallel` reads the sources and shows their paths as the diagnostics do (F15).
+impl crate::parallel_report::Sources for Project {
+    fn text(&self, span: Span) -> &str {
+        &self.source_for_span(span).text
+    }
+
+    fn path(&self, span: Span) -> String {
+        self.source_for_span(span)
+            .path
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn user_module(&self, name: &str) -> bool {
+        self.sources.iter().any(|source| {
+            source.origin == ModuleOrigin::User
+                && source
+                    .relative_path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    == Some(name)
+        })
+    }
+}
+
 impl Project {
     pub fn load_with_overlays(
         input: &Path,

@@ -321,6 +321,21 @@ tsuzuri check demo
 
 警告があっても、既定では終了コードは 0 のままです。`--deny-warnings` を付けると、警告だけで終了コード 1 になり、その後の処理へ進みません。
 
+`--report parallel` を付けると、検査が通ったあと、標準出力に並列化の報告を出します（診断と警告は従来どおり標準エラー出力）。報告は 2 種類の行の一覧です。**提案**（`suggestion`）は、`Array.map`・`Array.mapr`・`Array.fold_monoid`・整数の `Array.sum` の呼び出しのうち、`Parallel.map`・`Parallel.map_ref`・`Parallel.fold`・`Parallel.sum` に置き換えても結果が変わらないものです。edition 2027 の `Array.map` は要素を参照で読むので、要素がヒープを持つ（配列・文字列など）ときは、各要素を複製する `Parallel.map` ではなく `Parallel.map_ref` を提案します。`Parallel.map_ref` はコールバックに `ref` の引数を渡すので、提案するのは、引数がもともと共有参照の名前のある関数（`Array.length`・`String.length` など）のときだけです（ラムダはそのままでは型が変わることがあるので提案しません）。プロジェクトに利用者のモジュール `Parallel` があると、名前空間によってはそちらが std より先に見つかるので、修正案は `std::Parallel.sum` のように修飾して書きます。**呼び出し地点**（`site`）は、既存の `Parallel` の呼び出しごとに、コールバック（`fold`・`sum` では `Monoid` の関数や加算）が純粋と示せるか（`parallel_safe`）です。提案は自動では適用されません。
+
+```text
+$ tsuzuri check Main.tz --report parallel
+parallel report: 2 suggestions, 2 sites
+./Main.tz:6:19: suggestion: Array.map can be Parallel.map: the callback is pure
+  fix (maybe): replace 'Array.map' with 'Parallel.map'
+./Main.tz:7:5: suggestion: Array.sum can be Parallel.sum: integer sums are the same in any order
+  fix (maybe): replace 'Array.sum' with 'Parallel.sum'
+./Main.tz:13:21: site: Parallel.map callback is pure (parallel_safe: true)
+./Main.tz:16:19: site: Parallel.map callback is not pure (parallel_safe: false): the callback reaches 'Debug.__print_string' (effect: debug)
+```
+
+提案するのは、呼び出しを含む関数が自分のモジュールのもので、ソースに `Array.map` のように名前をそのまま書いた完全な呼び出し（パイプや別名は対象外）で、コールバックが純粋で（`pure def` と同じ規則。外から渡された関数値は純粋とみなしません）、要素と結果の型がスレッドへ渡せて、コールバックが借用・`Atomic`・`Mutex` を捕捉せず、入力の長さが静的に 4,096 未満と分かる（要素が 4,096 個未満の配列リテラル、整数リテラルの長さの `new`）ものでないときだけです。浮動小数点の `Array.sum` は、和の順序が変わってビットが違いうるので提案しません。`--json` を付けると、報告は `tz-report-parallel/1` の JSON Lines になります。1 行目が要約（`schema`・`suggestions`・`sites`・`truncated`）で、各行は `kind`・`call`・`replacement`（提案だけ）・`parallel_safe`・`reason`（純粋でない地点だけ）・`path`・`span`・`fixes`（提案だけ。`applicability` は常に `maybe`）です。行は（パス・位置）の順で、1,000 行を超えた分は捨てて `truncated` に数えます。検査が失敗したときと、`--deny-warnings` で終了コード 1 になるときは報告を出しません。`--report` は `check` だけが受け付け、標準出力に証明の結果を書く `--contracts prove` とは組み合わせられません（`E2000`）（[Parallel](../built-in-types-and-modules/parallel.md#逐次と同じ結果になる条件)）。
+
 `--warn canonical` を付けると、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に、正準形への書き換えを修正案として持つ警告 `W1007` を出します（edition 2026 のソースだけに出ます）。`--edition 2026` は、`Tsuzuri.toml` のないプロジェクトのソースを edition 2026 で読みます（`build`・`run`・`test`・`script` でも同じ。マニフェストがあると `E2000`）。
 
 `--warn untrusted-extern` を付けると、ルートのパッケージで宣言して使っている `extern` の関数のうち、`@trusted` のないものに警告 `W1010` を出します（`build`・`run`・`test` でも同じ。[属性](../values-and-functions/attributes.md#trusted-extern-の信頼の印)）。ルートのマニフェストに権限の宣言があれば、許可の外の使用を `E1036` で報告し、終了コード 1 です（[パッケージ](../organizing-tsuzuri/packages.md#権限capabilities)）。

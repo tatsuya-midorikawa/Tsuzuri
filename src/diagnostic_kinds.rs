@@ -670,6 +670,8 @@ diagnostic_kinds! {
         (DomainNotCalledDirectly, "domain_not_called_directly", "E1038"),
         (DomainResultNotPlain, "domain_result_not_plain", "E1038"),
         (DomainTargetUnsupported, "domain_target_unsupported", "E1038"),
+        // E1039
+        (MonoidFloatInstance, "monoid_float_instance", "E1039"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (AuditUsage, "audit_usage", "E2000"),

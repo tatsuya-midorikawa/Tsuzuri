@@ -92,6 +92,7 @@
 | `recursion` | `none`・`self`・`self_tail`（自分を末尾でだけ呼ぶ）・`mutual` |
 | `loops` | `{"kind","span"}`。`kind` は `while`・`for_range`・`for_each` |
 | `specializations` | ジェネリック関数の特殊化した実体の数 |
+| `parallel` | `tsuzuri check --report parallel` の行のうち、この関数の中の呼び出し `{"call","kind","parallel_safe","reason","span"}`。`kind` は `suggestion`（`Parallel` に置き換えられる `Array` の呼び出し。`span` は名前）か `site`（`Parallel` の呼び出し。`span` は呼び出し式の全体）、`reason` は純粋と示せない `site` だけです。ないときは `[]`、100 件を超えた分は `truncated` の `parallel` に数えます（[check](usage.md#check)） |
 | `truncated` | 配列を切った件数（キー名 → 件数） |
 
 ## `layout/<モジュール>.jsonl`

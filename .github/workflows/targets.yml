@@ -163,6 +163,16 @@ jobs:
           node tests/features.mjs target/release/tsuzuri param_facts
           node tests/features.mjs target/release/tsuzuri list_chunks
           node tests/features.mjs target/release/tsuzuri map_set_chunks
+      # F15: Parallel.fold returns Array.fold_monoid's value around the chunk boundaries (a non-commutative monoid and
+      # 4,194,305 elements included), and the Parallel functions with pure callbacks return what their sequential
+      # counterparts return, native and WASM at -O0/-O3. tests/monoid.rs runs only the native law tests.
+      - name: Sequential-equivalent data parallelism (F15)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/features.mjs target/release/tsuzuri monoid
+          node tests/features.mjs target/release/tsuzuri parallel_equivalence
       # PM02: a function value or a Task is { descriptor, environment }. primitives.mjs runs the four kinds of function value
       # through a C host that asserts live == 0; debugger_static.mjs asks the LLDB formatter about the DWARF types of a -g build
       # without running a process (LLDB is on the macOS runners only).

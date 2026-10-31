@@ -44,6 +44,8 @@ const FLOORS: &[(&str, usize)] = &[
     ("Matrix", 18),
     ("MatrixView", 29),
     ("Maybe", 13),
+    ("Monoid", 0),
+    ("Monoids", 0),
     ("Mutex", 0),
     ("Net", 40),
     ("Os", 6),

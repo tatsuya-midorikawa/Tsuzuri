@@ -976,6 +976,69 @@ const suites = {
       for (const [, body] of lookups) assert.doesNotMatch(body, /@tz\.(?:alloc|realloc)\(/);
     },
   },
+  // The references loop over up to 4,194,305 elements in BigInt: computed only when the suite runs.
+  monoid: {
+    get cases() {
+      return (this.computed ??= (() => {
+        // Independent references: plain loops over BigInt, with the wrapping of each element type.
+        const mix = (index) => (index * 2654435761n + 12345n) % 1000003n - 500000n;
+        const loop = (count, initial, step) => {
+          let state = initial;
+          for (let index = 0n; index < count; index++) state = step(state, index);
+          return state;
+        };
+        const references = {
+          sum_total: (count) => loop(count, 0n, (total, index) => total + mix(index)),
+          product_total: (count) => loop(count, 1n, (total, index) => BigInt.asIntN(32, total * (BigInt.asIntN(32, mix(index)) | 1n))),
+          max_total: (count) => count === 0n ? -1000000n : loop(count, mix(0n), (best, index) => mix(index) > best ? mix(index) : best),
+          min_total: (count) => count === 0n ? 1000n : loop(count, BigInt.asIntN(8, mix(0n)), (best, index) => BigInt.asIntN(8, mix(index)) < best ? BigInt.asIntN(8, mix(index)) : best),
+          and_total: (count) => loop(count, 4294967295n, (total, index) => total & ((BigInt.asUintN(32, mix(index)) | 4042322160n))),
+          or_total: (count) => loop(count, 0n, (total, index) => total | (mix(index) & 1048575n)),
+          xor_total: (count) => loop(count, 0n, (total, index) => total ^ mix(index)),
+          all_total: (count) => count <= 1000002n ? 1n : 0n,
+          any_total: (count) => count > 4098n ? 1n : 0n,
+          affine_total: (count) => {
+            const [scale, shift] = loop(count, [1n, 0n], ([scale, shift], index) => {
+              const next = [index % 5n + 1n, mix(index) % 17n];
+              return [BigInt.asIntN(64, next[0] * scale), BigInt.asIntN(64, next[0] * shift + next[1])];
+            });
+            return BigInt.asIntN(64, scale * 1000003n + shift);
+          },
+          stats_total: (count) => count === 0n ? 0n : count * 1000003n + loop(count, 0n, (total, index) => total + mix(index)) + loop(count, mix(0n), (best, index) => mix(index) > best ? mix(index) : best),
+        };
+        const sizes = [0n, 1n, 4095n, 4096n, 4097n, 8193n, 12288n, 100000n];
+        return [
+          ...Object.entries(references).flatMap(([name, reference]) => sizes.map((count) => [name, [count], reference(count)])),
+          ...[4194304n, 4194305n].map((count) => ["cap_xor", [count], loop(count, 0n, (total, index) => total ^ (index % 251n))]),
+        ];
+      })());
+    },
+    traps: [],
+  },
+  parallel_equivalence: {
+    get cases() {
+      return (this.computed ??= (() => {
+        const sizes = [0n, 1n, 4095n, 4096n, 4097n, 8193n, 12288n, 100000n];
+        // The sum of f64 by the chunk rule of docs/language.md and by one running total, in IEEE double arithmetic.
+        const decimals = (count) => Array.from({ length: Number(count) }, (_, index) => ((index * 7919 + 13) % 1009) / 10 + 0.1);
+        const sequential = (values) => values.reduce((total, value) => total + value, 0);
+        const chunked = (values) => {
+          const length = values.length;
+          if (length === 0) return 0;
+          const chunks = Math.min(1024, Math.ceil(length / 4096));
+          const start = (chunk) => Math.floor(length / chunks) * chunk + Math.floor(((length % chunks) * chunk) / chunks);
+          let total = 0;
+          for (let chunk = 0; chunk < chunks; chunk++) total += values.slice(start(chunk), start(chunk + 1)).reduce((part, value) => part + value, 0);
+          return total;
+        };
+        return [
+          ...["map_equal", "map_ref_equal", "init_equal", "for_each_chunk_equal", "sum_equal"].flatMap((name) => sizes.map((count) => [name, [count], 1n])),
+          ...sizes.map((count) => ["float_sum_equal", [count], sequential(decimals(count)) === chunked(decimals(count)) ? 1n : 0n]),
+        ];
+      })());
+    },
+    traps: [],
+  },
   arena: {
     cases: [
       ["arena_cycle", [], 143n], ["arena_order", [], 42351n], ["arena_foreign", [], 110n],
@@ -3248,6 +3311,10 @@ for (const [name, suite] of Object.entries(suites)) {
   if (name === "chars") characterConsoleChecks();
   if (name === "debug_output") debugOutputChecks();
   console.log(`${name}: native/WASM at O0/O3 passed`);
+}
+// The expensive references are computed only for the suites that run (PR #75 review).
+for (const name of ["monoid", "parallel_equivalence"]) {
+  if (only && only !== name) assert.equal(suites[name].computed, undefined, `${name} computed its cases for ${only}`);
 }
 assert.ok(total > 0, "no feature suite ran");
 console.log(`features: ${total} cases passed`);

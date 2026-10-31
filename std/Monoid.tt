@@ -1,0 +1,8 @@
+/// An associative operation with an identity element. For every `a`, `b` and `c` of the type, `combine (combine a b) c` and `combine a (combine b c)`
+/// are equal, and so are `combine (empty ()) a`, `combine a (empty ())` and `a`, bit for bit. `Array.fold_monoid` and `Parallel.fold` then return the
+/// same value whatever the chunks of `Parallel.fold` are. The compiler cannot check the laws; it rejects an instance for a type that holds a
+/// floating-point number (`E1039`), because floating-point addition is not associative.
+class Monoid<'m> {
+    def empty :: unit -> 'm
+    def combine :: 'm -> 'm -> 'm
+}

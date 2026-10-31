@@ -708,6 +708,24 @@ pub(super) const BUILTIN_CLASSES: [&str; 34] = [
     "AtomicValue",
 ];
 
+/// The qualified name of std's `Monoid` class (F15); a program cannot declare a module `Monoid`.
+const MONOID_CLASS: &str = "Monoid.Monoid";
+
+/// `E1039`: a `Monoid` of a type that holds a floating-point number (F15).
+fn monoid_float(ty: &Type, types: &TypeContext<'_>, span: Span) -> Diagnostic {
+    Diagnostic::of(
+        DiagnosticKind::MonoidFloatInstance,
+        format!(
+            "no Monoid instance for {}: it holds a floating-point number, whose operations are not associative, so Parallel.fold could differ from Array.fold_monoid; accumulate in integers (fixed point) or use Parallel.sum for a documented order",
+            ty.display(types)
+        ),
+        span,
+    )
+    .with_help(
+        "accumulate in integers (fixed point), or use 'Parallel.sum' or 'Array.sum_pairwise' for floating-point sums",
+    )
+}
+
 /// An instance as the knowledge graph reads it (G26): its class, head, where its class name is
 /// written, and the function of each method with the method's name.
 pub(super) struct InstanceView<'a> {
@@ -2341,6 +2359,14 @@ impl Classes {
             bounded_type(&current.ty, current.span)?;
             pending.push((current.clone(), depth, true));
             let class = &self.declarations[current.class];
+            // F15: `Monoid<T>` is checked here, before its instance is matched, because a found instance
+            // (`Monoids.Sum<f64>`) goes on to its context and never reaches `validate_instance`. A type with
+            // variables is rejected when a float is already in it (`Wrapped<'a> { value: f64, .. }`); one whose
+            // floats can only come from its variables is checked again where a specialization resolves the
+            // method (`Specializer::lower`).
+            if class.name == MONOID_CLASS && current.ty.holds_float(types) {
+                return Err(monoid_float(&current.ty, types, current.span));
+            }
             let substitutions = BTreeMap::from([(class.variable.clone(), current.ty.clone())]);
             for superclass in &class.superclasses {
                 pending.push((
@@ -4976,6 +5002,12 @@ impl Specializer<'_> {
                     expression.span,
                 )?))),
                 Method(class, method, ty) => {
+                    // F15: a generic function's `Monoid` method gets its concrete receiver only here.
+                    if self.classes.declarations[*class].name == MONOID_CLASS
+                        && ty.holds_float(&self.types)
+                    {
+                        return Err(monoid_float(ty, &self.types, expression.span));
+                    }
                     if let Some((function, arguments)) =
                         self.classes
                             .resolved_method(*class, *method, ty, &self.types)

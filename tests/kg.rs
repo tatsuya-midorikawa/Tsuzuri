@@ -834,6 +834,94 @@ fn layout_union_kinds() {
     assert_eq!(layouts, expected);
 }
 
+/// F15 Phase 4: the entries of `check --report parallel`, in the row of the function that holds the call.
+#[test]
+fn facts_rows_carry_parallel_entries() {
+    let source = include_str!("fixtures/parallel_report/basic/Main.tz");
+    let model = one(source);
+    // Positions from the source, so that the expectations do not depend on its line endings.
+    let at = |text: &str| source.find(text).unwrap_or_else(|| panic!("{text}"));
+    let doubled = "Parallel.map (\\value -> value * 2) values";
+    let shown = "Parallel.map (\\value -> Debug.trace value) values";
+    let entries = |id: &str| -> Vec<(String, String, bool, usize, usize)> {
+        facts_of(&model, "Main", id)["parallel"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry["kind"].as_str().unwrap().to_owned(),
+                    entry["call"].as_str().unwrap().to_owned(),
+                    entry["parallel_safe"].as_bool().unwrap(),
+                    entry["span"]["start"].as_u64().unwrap() as usize,
+                    entry["span"]["end"].as_u64().unwrap() as usize,
+                )
+            })
+            .collect()
+    };
+    let entry = |kind: &str, call: &str, safe: bool, start: usize, end: usize| {
+        (kind.to_owned(), call.to_owned(), safe, start, end)
+    };
+    assert_eq!(
+        entries("Main.pure_total"),
+        [
+            entry(
+                "suggestion",
+                "Array.map",
+                true,
+                at("Array.map square"),
+                at("Array.map square") + 9
+            ),
+            entry(
+                "suggestion",
+                "Array.sum",
+                true,
+                at("Array.sum"),
+                at("Array.sum") + 9
+            ),
+        ]
+    );
+    assert_eq!(
+        entries("Main.doubled"),
+        [entry(
+            "site",
+            "Parallel.map",
+            true,
+            at(doubled),
+            at(doubled) + doubled.len()
+        )]
+    );
+    assert_eq!(
+        entries("Main.shown"),
+        [entry(
+            "site",
+            "Parallel.map",
+            false,
+            at(shown),
+            at(shown) + shown.len()
+        )]
+    );
+    let shown = facts_of(&model, "Main", "Main.shown");
+    assert_eq!(
+        shown["parallel"][0]["reason"],
+        "the callback reaches 'Debug.__print_string' (effect: debug)"
+    );
+    assert_eq!(shown["parallel"][0]["span"]["path"], "Main.tz");
+    for id in ["Main.square", "Main.traced"] {
+        assert_eq!(entries(id), [], "{id}");
+    }
+    // The key comes after `specializations` and before `truncated`, and a row without entries has `[]`.
+    let line = text(|o| model.write_facts("Main", o));
+    let square = line
+        .lines()
+        .find(|line| line.contains("\"id\":\"Main.square\""))
+        .unwrap();
+    assert!(
+        square.contains(",\"specializations\":0,\"parallel\":[],\"truncated\":{}}"),
+        "{square}"
+    );
+}
+
 #[test]
 fn specializations_count() {
     let model = kg_basic();

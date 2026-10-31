@@ -765,6 +765,7 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 | `fold_back` | `Copy<'a> => ('a -> 'state -> 'state) -> 'state -> ref ['a] -> 'state` | 末尾から右畳み込みを行います |
 | `fold2`、`fold_back2` | `(Copy<'a>, Copy<'b>) => ('state -> 'a -> 'b -> 'state) -> 'state -> ref ['a] -> ref ['b] -> 'state` | 2 つの配列を同時に畳み込みます。`fold_back2` は `('a -> 'b -> 'state -> 'state) -> 'state -> ref ['a] -> ref ['b] -> 'state` |
 | `foldr`、`foldr_back` | `('state -> ref 'a -> 'state) -> 'state -> ref ['a] -> 'state` | 要素の参照を受け取る `fold`、`fold_back` です（`foldr_back` は `(ref 'a -> 'state -> 'state) -> 'state -> ref ['a] -> 'state`） |
+| `fold_monoid` | `(Monoid<'m>, Copy<'m>) => ref ['m] -> 'm` | `Monoid.empty ()` から `Monoid.combine` で左畳み込みを行います。空なら `Monoid.empty ()` です。`Parallel.fold` と同じ値を返します（[Monoid](monoid.md)） |
 | `reduce`、`reduce_back` | `Copy<'a> => ('a -> 'a -> 'a) -> ref ['a] -> 'a` | 先頭の要素を初期値にして畳み込みます。空配列はトラップします |
 | `scan`、`scan_back` | `(Copy<'a>, Copy<'state>) => ('state -> 'a -> 'state) -> 'state -> ref ['a] -> ['state]` | 途中の状態も含めて返します。長さは `n + 1` です。`scan_back` は `('a -> 'state -> 'state) -> 'state -> ref ['a] -> ['state]` で、末尾から畳み込みます |
 
@@ -855,162 +856,163 @@ F# の配列は参照で、`Array.set` や `Array.fill` はその配列を書き
 計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`with_capacity` などの容量を指定する関数では確保する容量、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。
 
 <!-- generated:complexity:Array -->
-| 関数 | 計算量 | 関連 |
-| --- | --- | --- |
-| `Array.length` | $O(1)$ | - |
-| `Array.is_empty` | $O(1)$ | - |
-| `Array.empty` | $O(1)$ | - |
-| `Array.singleton` | $O(1)$ | - |
-| `Array.create` | $O(k)$ | - |
-| `Array.replicate` | $O(k)$ | - |
-| `Array.zero_create` | $O(k)$ | - |
-| `Array.init` | $O(k)$ | - |
-| `Array.get` | $O(1)$ | - |
-| `Array.item` | $O(1)$ | - |
-| `Array.try_item` | $O(1)$ | - |
-| `Array.at` | $O(1)$ | - |
-| `Array.head` | $O(1)$ | - |
-| `Array.try_head` | $O(1)$ | - |
-| `Array.last` | $O(1)$ | - |
-| `Array.try_last` | $O(1)$ | - |
-| `Array.exactly_one` | $O(1)$ | - |
-| `Array.try_exactly_one` | $O(1)$ | - |
-| `Array.sub` | $O(k)$ | - |
-| `Array.tail` | $O(n)$ | - |
-| `Array.take` | $O(k)$ | - |
-| `Array.skip` | $O(n)$ | - |
-| `Array.truncate` | $O(k)$ | - |
-| `Array.split_at` | $O(n)$ | - |
-| `Array.take_while` | $O(k)$ | - |
-| `Array.skip_while` | $O(n)$ | - |
-| `Array.where` | $O(n)$ | - |
-| `Array.filter` | $O(n)$ | - |
-| `Array.transpose` | $O(n + k)$ | - |
-| `Array.iter` | $O(n)$ | `Array.iterr` |
-| `Array.iterr` | $O(n)$ | `Array.iter` |
-| `Array.iteri` | $O(n)$ | `Array.iterir` |
-| `Array.iterir` | $O(n)$ | `Array.iteri` |
-| `Array.iter2` | $O(n)$ | - |
-| `Array.iteri2` | $O(n)$ | - |
-| `Array.map` | $O(n)$ | `Array.mapr` |
-| `Array.mapi` | $O(n)$ | `Array.mapir` |
-| `Array.mapr` | $O(n)$ | `Array.map` |
-| `Array.mapir` | $O(n)$ | `Array.mapi` |
-| `Array.map2` | $O(n)$ | - |
-| `Array.mapi2` | $O(n)$ | - |
-| `Array.map3` | $O(n)$ | - |
-| `Array.map_fold` | $O(n)$ | - |
-| `Array.map_fold_back` | $O(n)$ | - |
-| `Array.collect` | $O(n + k)$ | - |
-| `Array.choose` | $O(n)$ | - |
-| `Array.fold` | $O(n)$ | `Array.foldr` |
-| `Array.foldr` | $O(n)$ | `Array.fold` |
-| `Array.fold2` | $O(n)$ | - |
-| `Array.fold_back` | $O(n)$ | `Array.foldr_back` |
-| `Array.foldr_back` | $O(n)$ | `Array.fold_back` |
-| `Array.fold_back2` | $O(n)$ | - |
-| `Array.reduce` | $O(n)$ | - |
-| `Array.reduce_back` | $O(n)$ | - |
-| `Array.scan` | $O(n)$ | - |
-| `Array.scan_back` | $O(n)$ | - |
-| `Array.exists` | $O(n)$ | `Array.existsr` |
-| `Array.existsr` | $O(n)$ | `Array.exists` |
-| `Array.exists2` | $O(n)$ | - |
-| `Array.forall` | $O(n)$ | `Array.forallr` |
-| `Array.forallr` | $O(n)$ | `Array.forall` |
-| `Array.forall2` | $O(n)$ | - |
-| `Array.count` | $O(n)$ | `Array.countr` |
-| `Array.countr` | $O(n)$ | `Array.count` |
-| `Array.try_find_index` | $O(n)$ | - |
-| `Array.find_index` | $O(n)$ | - |
-| `Array.try_find_index_back` | $O(n)$ | - |
-| `Array.find_index_back` | $O(n)$ | - |
-| `Array.try_find` | $O(n)$ | `Array.try_findr` |
-| `Array.find` | $O(n)$ | `Array.findr` |
-| `Array.try_find_back` | $O(n)$ | - |
-| `Array.find_back` | $O(n)$ | - |
-| `Array.try_findr` | $O(n)$ | `Array.try_find` |
-| `Array.findr` | $O(n)$ | `Array.find` |
-| `Array.try_pick` | $O(n)$ | - |
-| `Array.pick` | $O(n)$ | - |
-| `Array.partition` | $O(n)$ | - |
-| `Array.partition_with` | $O(n)$ | - |
-| `Array.sum` | $O(n)$ | `Array.sum_pairwise`, `Array.sum_kahan` |
-| `Array.sum_by` | $O(n)$ | - |
-| `Array.average` | $O(n)$ | - |
-| `Array.average_by` | $O(n)$ | - |
-| `Array.product` | $O(n)$ | - |
-| `Array.min` | $O(n)$ | `Array.minr` |
-| `Array.max` | $O(n)$ | `Array.maxr` |
-| `Array.minr` | $O(n)$ | `Array.min` |
-| `Array.maxr` | $O(n)$ | `Array.max` |
-| `Array.min_by` | $O(n)$ | - |
-| `Array.max_by` | $O(n)$ | - |
-| `Array.compare_with` | $O(n)$ | - |
-| `Array.containsr` | $O(n)$ | `Array.contains` |
-| `Array.contains` | $O(n)$ | `Array.containsr` |
-| `Array.index_of` | $O(n)$ | - |
-| `Array.equal` | $O(n)$ | - |
-| `Array.binary_search` | $O(\log n)$ | - |
-| `Array.copy` | $O(n)$ | - |
-| `Array.rev` | $O(n)$ | - |
-| `Array.append` | $O(n + m)$ | - |
-| `Array.zip` | $O(n)$ | - |
-| `Array.zip3` | $O(n)$ | - |
-| `Array.unzip` | $O(n)$ | - |
-| `Array.unzip3` | $O(n)$ | - |
-| `Array.all_pairs` | $O(n \cdot m)$ | - |
-| `Array.indexed` | $O(n)$ | - |
-| `Array.pairwise` | $O(n)$ | - |
-| `Array.windowed` | $O(k)$ | - |
-| `Array.chunk_by_size` | $O(k)$ | - |
-| `Array.split_into` | $O(k)$ | - |
-| `Array.unfold` | $O(k)$ | - |
-| `Array.permute` | $O(n)$ | - |
-| `Array.insert_at` | $O(n)$ | - |
-| `Array.insert_many_at` | $O(n + m)$ | - |
-| `Array.remove_at` | $O(n)$ | - |
-| `Array.remove_many_at` | $O(n)$ | - |
-| `Array.update_at` | $O(1)$ | - |
-| `Array.set` | $O(1)$ | - |
-| `Array.fill` | $O(n)$ | - |
-| `Array.blit` | $O(n)$ | - |
-| `Array.of_list` | $O(n)$ | - |
-| `Array.of_seq` | $O(n)$ | - |
-| `Array.to_seq` | $O(1)$ | `Array.to_seqr` |
-| `Array.to_seqr` | $O(1)$ | `Array.to_seq` |
-| `Array.distinct` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
-| `Array.distinct_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
-| `Array.except` | 平均 $O(n + m)$、最悪 $O(n \cdot n + m \cdot m)$ | - |
-| `Array.count_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
-| `Array.group_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - |
-| `Array.sort` | $O(n \log n)$ | - |
-| `Array.sort_descending` | $O(n \log n)$ | - |
-| `Array.sort_with` | $O(n \log n)$ | - |
-| `Array.sort_by` | $O(n \log n)$ | - |
-| `Array.sort_by_descending` | $O(n \log n)$ | - |
-| `Array.sort_in_place_with` | $O(n \log n)$ | - |
-| `Array.sort_in_place_by` | $O(n \log n)$ | - |
-| `Array.sort_in_place` | $O(n \log^2 n)$ | - |
-| `Array.sum_pairwise` | $O(n)$ | `Array.sum`, `Array.sum_kahan` |
-| `Array.sum_kahan` | $O(n)$ | `Array.sum`, `Array.sum_pairwise` |
-| `Array.dot` | $O(n)$ | `Array.dot_fma` |
-| `Array.dot_fma` | $O(n)$ | `Array.dot` |
-| `Array.random_shuffle_in_place_by` | $O(n)$ | - |
-| `Array.random_shuffle_by` | $O(n)$ | - |
-| `Array.random_choice_by` | $O(1)$ | - |
-| `Array.random_choices_by` | $O(k)$ | - |
-| `Array.random_sample_by` | $O(n)$ | - |
-| `Array.random_shuffle_in_place_with` | $O(n)$ | - |
-| `Array.random_shuffle_with` | $O(n)$ | - |
-| `Array.random_choice_with` | $O(1)$ | - |
-| `Array.random_choices_with` | $O(k)$ | - |
-| `Array.random_sample_with` | $O(n)$ | - |
-| `Array.random_shuffle_in_place` | $O(n)$ | - |
-| `Array.random_shuffle` | $O(n)$ | - |
-| `Array.random_choice` | $O(1)$ | - |
-| `Array.random_choices` | $O(k)$ | - |
-| `Array.random_sample` | $O(n)$ | - |
+| 関数 | 計算量 | 版 | 関連 |
+| --- | --- | --- | --- |
+| `Array.length` | $O(1)$ | - | - |
+| `Array.is_empty` | $O(1)$ | - | - |
+| `Array.empty` | $O(1)$ | - | - |
+| `Array.singleton` | $O(1)$ | - | - |
+| `Array.create` | $O(k)$ | - | - |
+| `Array.replicate` | $O(k)$ | - | - |
+| `Array.zero_create` | $O(k)$ | - | - |
+| `Array.init` | $O(k)$ | - | - |
+| `Array.get` | $O(1)$ | - | - |
+| `Array.item` | $O(1)$ | - | - |
+| `Array.try_item` | $O(1)$ | - | - |
+| `Array.at` | $O(1)$ | - | - |
+| `Array.head` | $O(1)$ | - | - |
+| `Array.try_head` | $O(1)$ | - | - |
+| `Array.last` | $O(1)$ | - | - |
+| `Array.try_last` | $O(1)$ | - | - |
+| `Array.exactly_one` | $O(1)$ | - | - |
+| `Array.try_exactly_one` | $O(1)$ | - | - |
+| `Array.sub` | $O(k)$ | - | - |
+| `Array.tail` | $O(n)$ | - | - |
+| `Array.take` | $O(k)$ | - | - |
+| `Array.skip` | $O(n)$ | - | - |
+| `Array.truncate` | $O(k)$ | - | - |
+| `Array.split_at` | $O(n)$ | - | - |
+| `Array.take_while` | $O(k)$ | - | - |
+| `Array.skip_while` | $O(n)$ | - | - |
+| `Array.where` | $O(n)$ | - | - |
+| `Array.filter` | $O(n)$ | - | - |
+| `Array.transpose` | $O(n + k)$ | - | - |
+| `Array.iter` | $O(n)$ | - | `Array.iterr` |
+| `Array.iterr` | $O(n)$ | - | `Array.iter` |
+| `Array.iteri` | $O(n)$ | - | `Array.iterir` |
+| `Array.iterir` | $O(n)$ | - | `Array.iteri` |
+| `Array.iter2` | $O(n)$ | - | - |
+| `Array.iteri2` | $O(n)$ | - | - |
+| `Array.map` | $O(n)$ | - | `Array.mapr` |
+| `Array.mapi` | $O(n)$ | - | `Array.mapir` |
+| `Array.mapr` | $O(n)$ | - | `Array.map` |
+| `Array.mapir` | $O(n)$ | - | `Array.mapi` |
+| `Array.map2` | $O(n)$ | - | - |
+| `Array.mapi2` | $O(n)$ | - | - |
+| `Array.map3` | $O(n)$ | - | - |
+| `Array.map_fold` | $O(n)$ | - | - |
+| `Array.map_fold_back` | $O(n)$ | - | - |
+| `Array.collect` | $O(n + k)$ | - | - |
+| `Array.choose` | $O(n)$ | - | - |
+| `Array.fold` | $O(n)$ | - | `Array.foldr` |
+| `Array.fold_monoid` | $O(n)$ | 0.1.0 | `Array.fold`, `Parallel.fold` |
+| `Array.foldr` | $O(n)$ | - | `Array.fold` |
+| `Array.fold2` | $O(n)$ | - | - |
+| `Array.fold_back` | $O(n)$ | - | `Array.foldr_back` |
+| `Array.foldr_back` | $O(n)$ | - | `Array.fold_back` |
+| `Array.fold_back2` | $O(n)$ | - | - |
+| `Array.reduce` | $O(n)$ | - | - |
+| `Array.reduce_back` | $O(n)$ | - | - |
+| `Array.scan` | $O(n)$ | - | - |
+| `Array.scan_back` | $O(n)$ | - | - |
+| `Array.exists` | $O(n)$ | - | `Array.existsr` |
+| `Array.existsr` | $O(n)$ | - | `Array.exists` |
+| `Array.exists2` | $O(n)$ | - | - |
+| `Array.forall` | $O(n)$ | - | `Array.forallr` |
+| `Array.forallr` | $O(n)$ | - | `Array.forall` |
+| `Array.forall2` | $O(n)$ | - | - |
+| `Array.count` | $O(n)$ | - | `Array.countr` |
+| `Array.countr` | $O(n)$ | - | `Array.count` |
+| `Array.try_find_index` | $O(n)$ | - | - |
+| `Array.find_index` | $O(n)$ | - | - |
+| `Array.try_find_index_back` | $O(n)$ | - | - |
+| `Array.find_index_back` | $O(n)$ | - | - |
+| `Array.try_find` | $O(n)$ | - | `Array.try_findr` |
+| `Array.find` | $O(n)$ | - | `Array.findr` |
+| `Array.try_find_back` | $O(n)$ | - | - |
+| `Array.find_back` | $O(n)$ | - | - |
+| `Array.try_findr` | $O(n)$ | - | `Array.try_find` |
+| `Array.findr` | $O(n)$ | - | `Array.find` |
+| `Array.try_pick` | $O(n)$ | - | - |
+| `Array.pick` | $O(n)$ | - | - |
+| `Array.partition` | $O(n)$ | - | - |
+| `Array.partition_with` | $O(n)$ | - | - |
+| `Array.sum` | $O(n)$ | - | `Array.sum_pairwise`, `Array.sum_kahan` |
+| `Array.sum_by` | $O(n)$ | - | - |
+| `Array.average` | $O(n)$ | - | - |
+| `Array.average_by` | $O(n)$ | - | - |
+| `Array.product` | $O(n)$ | - | - |
+| `Array.min` | $O(n)$ | - | `Array.minr` |
+| `Array.max` | $O(n)$ | - | `Array.maxr` |
+| `Array.minr` | $O(n)$ | - | `Array.min` |
+| `Array.maxr` | $O(n)$ | - | `Array.max` |
+| `Array.min_by` | $O(n)$ | - | - |
+| `Array.max_by` | $O(n)$ | - | - |
+| `Array.compare_with` | $O(n)$ | - | - |
+| `Array.containsr` | $O(n)$ | - | `Array.contains` |
+| `Array.contains` | $O(n)$ | - | `Array.containsr` |
+| `Array.index_of` | $O(n)$ | - | - |
+| `Array.equal` | $O(n)$ | - | - |
+| `Array.binary_search` | $O(\log n)$ | - | - |
+| `Array.copy` | $O(n)$ | - | - |
+| `Array.rev` | $O(n)$ | - | - |
+| `Array.append` | $O(n + m)$ | - | - |
+| `Array.zip` | $O(n)$ | - | - |
+| `Array.zip3` | $O(n)$ | - | - |
+| `Array.unzip` | $O(n)$ | - | - |
+| `Array.unzip3` | $O(n)$ | - | - |
+| `Array.all_pairs` | $O(n \cdot m)$ | - | - |
+| `Array.indexed` | $O(n)$ | - | - |
+| `Array.pairwise` | $O(n)$ | - | - |
+| `Array.windowed` | $O(k)$ | - | - |
+| `Array.chunk_by_size` | $O(k)$ | - | - |
+| `Array.split_into` | $O(k)$ | - | - |
+| `Array.unfold` | $O(k)$ | - | - |
+| `Array.permute` | $O(n)$ | - | - |
+| `Array.insert_at` | $O(n)$ | - | - |
+| `Array.insert_many_at` | $O(n + m)$ | - | - |
+| `Array.remove_at` | $O(n)$ | - | - |
+| `Array.remove_many_at` | $O(n)$ | - | - |
+| `Array.update_at` | $O(1)$ | - | - |
+| `Array.set` | $O(1)$ | - | - |
+| `Array.fill` | $O(n)$ | - | - |
+| `Array.blit` | $O(n)$ | - | - |
+| `Array.of_list` | $O(n)$ | - | - |
+| `Array.of_seq` | $O(n)$ | - | - |
+| `Array.to_seq` | $O(1)$ | - | `Array.to_seqr` |
+| `Array.to_seqr` | $O(1)$ | - | `Array.to_seq` |
+| `Array.distinct` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - | - |
+| `Array.distinct_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - | - |
+| `Array.except` | 平均 $O(n + m)$、最悪 $O(n \cdot n + m \cdot m)$ | - | - |
+| `Array.count_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - | - |
+| `Array.group_by` | 平均 $O(n)$、最悪 $O(n \cdot n)$ | - | - |
+| `Array.sort` | $O(n \log n)$ | - | - |
+| `Array.sort_descending` | $O(n \log n)$ | - | - |
+| `Array.sort_with` | $O(n \log n)$ | - | - |
+| `Array.sort_by` | $O(n \log n)$ | - | - |
+| `Array.sort_by_descending` | $O(n \log n)$ | - | - |
+| `Array.sort_in_place_with` | $O(n \log n)$ | - | - |
+| `Array.sort_in_place_by` | $O(n \log n)$ | - | - |
+| `Array.sort_in_place` | $O(n \log^2 n)$ | - | - |
+| `Array.sum_pairwise` | $O(n)$ | - | `Array.sum`, `Array.sum_kahan` |
+| `Array.sum_kahan` | $O(n)$ | - | `Array.sum`, `Array.sum_pairwise` |
+| `Array.dot` | $O(n)$ | - | `Array.dot_fma` |
+| `Array.dot_fma` | $O(n)$ | - | `Array.dot` |
+| `Array.random_shuffle_in_place_by` | $O(n)$ | - | - |
+| `Array.random_shuffle_by` | $O(n)$ | - | - |
+| `Array.random_choice_by` | $O(1)$ | - | - |
+| `Array.random_choices_by` | $O(k)$ | - | - |
+| `Array.random_sample_by` | $O(n)$ | - | - |
+| `Array.random_shuffle_in_place_with` | $O(n)$ | - | - |
+| `Array.random_shuffle_with` | $O(n)$ | - | - |
+| `Array.random_choice_with` | $O(1)$ | - | - |
+| `Array.random_choices_with` | $O(k)$ | - | - |
+| `Array.random_sample_with` | $O(n)$ | - | - |
+| `Array.random_shuffle_in_place` | $O(n)$ | - | - |
+| `Array.random_shuffle` | $O(n)$ | - | - |
+| `Array.random_choice` | $O(1)$ | - | - |
+| `Array.random_choices` | $O(k)$ | - | - |
+| `Array.random_sample` | $O(n)$ | - | - |
 <!-- /generated:complexity:Array -->
 
 ### 構文と組み込みの操作

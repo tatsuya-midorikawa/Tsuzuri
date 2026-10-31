@@ -1212,6 +1212,27 @@ pub(crate) fn reachable_effect(
         .map(|witness| witness.map(|(effect, _)| effect))
 }
 
+/// `reachable_effect` for the body of a `Parallel.for_each_chunk` callback (F15): its last parameter is the exclusive
+/// chunk that the fork-join lends to that call alone, so writing it is the body's job and not an impure source. The
+/// other parameters and the captures are checked as `witness` checks every parameter.
+pub(crate) fn reachable_effect_of_chunk_body(
+    module: &CheckedModule,
+    root: usize,
+) -> Result<Option<Effect>, LimitExceeded> {
+    let parameters = &module.functions[root].signature.parameters;
+    let types = module.types();
+    if parameters
+        .iter()
+        .take(parameters.len().saturating_sub(1))
+        .any(|ty| opaque_input(ty, &types, matches!(ty, Type::Reference(_, false))))
+    {
+        return Ok(Some(Effect::Unresolved));
+    }
+    Scanner::new(module, LIMITS)
+        .witness_from(root, None)
+        .map(|witness| witness.map(|(effect, _)| effect))
+}
+
 pub(crate) fn impurity_of_roots(
     module: &CheckedModule,
     roots: &[usize],
@@ -1516,5 +1537,86 @@ mod tests {
             ));
             assert!(impurity_of_roots(&module, &[root]).contains_key(&root));
         }
+    }
+
+    fn root(module: &CheckedModule, name: &str) -> usize {
+        module
+            .functions
+            .iter()
+            .position(|function| function.name == name)
+            .unwrap()
+    }
+
+    #[test]
+    fn reachable_effect_finds_the_print_builtin() {
+        let module = crate::analyze(
+            "def shout :: i64 -> i64\nfn shout value = { Debug.print (ref value); value }\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            reachable_effect(&module, root(&module, "shout")),
+            Ok(Some(Effect::Builtin(
+                Builtin::DebugPrintString,
+                Category::Debug
+            )))
+        ));
+    }
+
+    #[test]
+    fn reachable_effect_accepts_a_pure_function() {
+        let module = crate::analyze(
+            "def square :: i64 -> i64\nfn square value = value * value\n\
+             def total :: ref [i64] -> i64\nfn total values = Array.sum (ref (Array.map square values))\n",
+        )
+        .unwrap();
+        for name in ["square", "total"] {
+            assert!(matches!(
+                reachable_effect(&module, root(&module, name)),
+                Ok(None)
+            ));
+        }
+    }
+
+    #[test]
+    fn reachable_effect_reports_the_limit() {
+        let module =
+            crate::analyze("def square :: i64 -> i64\nfn square value = value * value\n").unwrap();
+        let id = root(&module, "square");
+        for limits in [
+            Limits {
+                functions: 0,
+                nodes: 100,
+            },
+            Limits {
+                functions: 100,
+                nodes: 0,
+            },
+        ] {
+            assert!(Scanner::new(&module, limits).witness(id).is_err());
+        }
+    }
+
+    #[test]
+    fn a_chunk_body_may_write_its_chunk() {
+        let module = crate::analyze(
+            "def scale :: i64 -> ref mut [i64..] -> unit\n\
+             fn scale start chunk =\n    for index in 0i64 ..< chunk.length do\n        Array.write index (start + index) chunk\n\
+             def noisy :: i64 -> ref mut [i64..] -> unit\n\
+             fn noisy start chunk = Debug.print (ref start)\n",
+        )
+        .unwrap();
+        let scale = root(&module, "scale");
+        assert!(matches!(
+            reachable_effect(&module, scale),
+            Ok(Some(Effect::Unresolved))
+        ));
+        assert!(matches!(
+            reachable_effect_of_chunk_body(&module, scale),
+            Ok(None)
+        ));
+        assert!(matches!(
+            reachable_effect_of_chunk_body(&module, root(&module, "noisy")),
+            Ok(Some(Effect::Builtin(Builtin::DebugPrintString, _)))
+        ));
     }
 }

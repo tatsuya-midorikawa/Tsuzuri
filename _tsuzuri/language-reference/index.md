@@ -123,6 +123,7 @@
 - [BigInt](./built-in-types-and-modules/bigint.md)
 - [Debug](./built-in-types-and-modules/debug.md)
 - [Parallel](./built-in-types-and-modules/parallel.md)
+- [Monoid](./built-in-types-and-modules/monoid.md)
 - [Simd](./built-in-types-and-modules/simd.md)
 - [Test](./built-in-types-and-modules/test.md)
 - [Bench](./built-in-types-and-modules/bench.md)
