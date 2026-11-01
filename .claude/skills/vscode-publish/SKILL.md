@@ -20,7 +20,7 @@ argument-hint: "[version | patch] [prepare-only]"
 
 ## 最初に読むもの
 
-[作業規約](../../../AGENTS.md)、[CI の注意](../../instructions/ci.instructions.md)、[公開手順](../../../vsc/Publishing.md)、[IDE ワークフロー](../../workflows/vscode.yml) を読む。手順が変わっていたら、古い run ID や 0.1.2 の成果物を流用せず、現在の契約と照合する。
+[作業規約](../../../AGENTS.md)、[CI の注意](../../../.github/instructions/ci.instructions.md)、[公開手順](../../../vsc/Publishing.md)、[IDE ワークフロー](../../../.github/workflows/vscode.yml) を読む。手順が変わっていたら、古い run ID や 0.1.2 の成果物を流用せず、現在の契約と照合する。
 
 以下のコマンドはリポジトリのルートから実行する。`VERSION`、`SOURCE_SHA`、`RUN_ID`、`ARTIFACT_ID`、`HOST` などは、そのリリースについて検証した値に置換する。シェルの値はツール呼び出しをまたいで保持されないので、毎回設定するかリテラルを使う。重い処理は `node scripts/slot.mjs --` で包む。
 
@@ -68,7 +68,7 @@ git push --atomic --set-upstream origin "release/vscode-$VERSION" "refs/tags/vsc
 4. 各 target について同梱の読み取り専用チェッカーを実行する。
 
 ```sh
-node .github/skills/vscode-publish/scripts/verify-release.mjs vsix "$VERSION" "$HOST" "$VSIX"
+node .claude/skills/vscode-publish/scripts/verify-release.mjs vsix "$VERSION" "$HOST" "$VSIX"
 ```
 
 チェッカーは VSIX の SHA-256 と sidecar、publisher/name/version、XML の `TargetPlatform`、ツールチェーンの OS/CPU、必須ツール、CodeLLDB の有無、リリースノートを照合する。VSCE が CHANGELOG を `extension/changelog.md` として格納することにも対応する。これは CI の実行試験や、GitHub の artifact digest の照合を代替しない。
@@ -97,7 +97,7 @@ vsc/node_modules/.bin/vsce publish --packagePath \
 **`Published` の表示や公開カタログに版が見えることだけでは完了ではない。** 5 target それぞれの `ExtensionVersionFlags.Validated`（ビットマスク `1`）が必要。
 
 ```sh
-node .github/skills/vscode-publish/scripts/verify-release.mjs marketplace "$VERSION"
+node .claude/skills/vscode-publish/scripts/verify-release.mjs marketplace "$VERSION"
 ```
 
 - このコマンドは認証なしの公開カタログの 5 target と各版の Validated フラグを検査し、ログインやトークンの取得は行わない。1 つでも未検証なら失敗する。
@@ -112,5 +112,5 @@ node .github/skills/vscode-publish/scripts/verify-release.mjs marketplace "$VERS
 チェッカーや対応表を変えたら、ネットワーク・認証・公開を使わない回帰チェックを実行する。
 
 ```sh
-node --test .github/skills/vscode-publish/scripts/verify-release.test.mjs
+node --test .claude/skills/vscode-publish/scripts/verify-release.test.mjs
 ```
