@@ -145,6 +145,9 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A21 | [契約 `@requires`／`@ensures`（off／check／test／prove）](_completed/A21-contracts-requires-ensures.md) | P2 | XL | A19, (A20), (G22) | done（全 Phase） |
 | A22 | [edition 2027 の正準形（`..<`／`..=`・接尾辞・借用の表記・旧ラムダ）と移行](_completed/A22-edition-2027-canonical-forms.md) | P1 | L | (G22), (G24) | done（全 Phase） |
 | A23 | [整数の折り返しの意図（`Int.wrapping_*`・`--overflow-report`・`tsuzuri test` の既定）](_completed/A23-integer-overflow-intent.md) | P2 | L | PR02, (G22) | done（全 Phase） |
+| A24 | [匿名共用体 `(A \| B)`（型で区別する共用体・期待型での注入・型テストのパターン `:?`）](A24-anonymous-unions.md) | P1 | L | A02, A03, A05 | todo |
+| A25 | [匿名共用体どうしの変換（部分集合からの拡大と `:? (A \| B)` の絞り込み）](A25-anonymous-union-conversions.md) | P2 | M | A24 | todo |
+| A26 | [匿名共用体の型クラス（`Eq`・`Ord`・`Hash`・`Display`）と JSON（`Encode`・`Decode`）](A26-anonymous-union-classes.md) | P2 | M | A24, A06, A07 | todo |
 
 ### B. エラー処理・制御
 
@@ -315,6 +318,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 10. 追加（2026-10-13） | 暗黙の複製のコストを減らし、読むだけの引数に `ref` を書かずに済むようにし、副作用のない関数を署名で保証する | A17 → A18（全 Phase 承認・実装済み、PR48 は未マージ）。A19（`pure def`。承認済み）は A17・A18 から独立 |
 | 11. 追加（2026-10-18） | AI と人間が少ない暗黙ルールで堅牢かつ高速に書けるようにする（引く: 知識を決定的に渡す／縛る: 性質を署名と検査で固定する／直す: 診断から機械的に直す） | ① G32・D13・C12・F14・G31 → ② G22 → G23・G24・G21 → ③ G26 → G27 → G28 → G30・G29 → ④ A19（既存）→ A20 → A21・E15、A22、A23 → ⑤ G25・G33〜G36・D14・B10・F15。詳細は [追加チケット（2026-10-18）](#追加チケット2026-10-18) |
 | 12. 第4期（2026-11-01） | Task・Async を廃止し、Go の goroutine に相当する tzroutine と、チャンネル・`select`・同期・時間・取り消しを揃える | ① TZ01 → TZ02 → TZ03 → TZ04 → ② TZ05・TZ06 → TZ07、TZ11 → ③ TZ08 → ④ TZ12 → TZ13 → ⑤ TZ09・TZ10。詳細は [第4期](#第4期-tzroutinego-の-goroutine-に相当する並行処理) |
+| 13. 追加（2026-11-02） | F# の Anonymous Type-tagged Unions（FS-1092）に相当する匿名共用体 `(A \| B)` を入れる | A24 → A25・A26。詳細は [追加チケット（2026-11-02。匿名共用体）](#追加チケット2026-11-02匿名共用体) |
 
 ## 依存関係図
 
@@ -694,4 +698,60 @@ graph LR
   TZ11 --> TZ12
   TZ08 --> TZ13
   TZ12 --> TZ13
+```
+
+
+## 追加チケット（2026-11-02。匿名共用体）
+
+利用者の依頼「F# の [Anonymous Type-tagged Unions](https://github.com/fsharp/fslang-design/blob/main/RFCs/FS-1092-anonymous-type-tagged-unions.md) と同様の機能の実装計画も追加して」から、A24〜A26 を起票しました（HEAD `2f556480`）。
+共通の決定は [GUIDE D-62](GUIDE.md#d-62-匿名共用体f-の-anonymous-type-tagged-unions-に相当a24a26)、再現の結果と行番号は各チケットの「現状」にあります。
+
+```text
+def font_size :: (f64 | i64 | string) -> string = \size ->
+    match size with
+    | :? f64 as points -> $"{points}pt"
+    | :? i64 as pixels -> $"{pixels}px"
+    | :? string as text -> text
+
+font_size 12.0      // 期待型が (f64 | i64 | string) なので、12.0 はそのまま渡せる
+```
+
+### 利用者が決めた点（D-62）
+
+| 項目 | 決定 |
+| --- | --- |
+| 値の作り方 | 期待型が匿名共用体の位置で、式の型が要素の 1 つに決まれば自動で包む（F# と同じ）。GUIDE §1 の規則 2（暗黙の変換をしない）の、範囲を限った唯一の例外として記録した。明示の `Union.of`（`Dyn.of` と同じ形）は採らなかった |
+| 要素数の上限 | 32 個（A24 の D9） |
+| 注入と所有権 | 注入は `Some x` と同じ値の使用。読み取りの引数へ渡した変数は共用体へ move され、非 Copy の読み取りの引数はそのまま渡せない（A24 の D10） |
+| `Ord` の順 | 書いた順ではなく正準順（表示の順）で要素を比べる（A26 の D2） |
+| `Decode` | 要素の JSON の種類が互いに素なときだけ（A26 の D5。Phase 2） |
+
+### F# の FS-1092 との対応
+
+| F# | Tsuzuri | チケット |
+| --- | --- | --- |
+| `(int \| string)`（括弧は必須、平坦化、可換・結合的） | 同じ。要素は正準順に並べ、表示もその順 | A24 |
+| 期待型による暗黙の変換（`let x: (int \| string) = 1`） | 同じ。曖昧なら既定を選ばずエラー（`(i32 \| i64)` の `16` など） | A24 |
+| `:? int`・`:? string as s`、網羅性 | 同じ。`missing: :? string` と修正候補 | A24 |
+| 重なる要素・裸の型変数の拒否（`(int \| int)`、`('T \| int)`、`(list<'T> \| list<int>)`） | 同じ（型変数に先に出会って順序を決められない組を拒否）。借用を含む要素も拒否。要素は 32 個まで | A24 |
+| `obj` などへの消去（値型は box する） | 消去しない。タグとペイロードの値（名前付きの union と同じレイアウト、確保なし） | A24 |
+| `(A \| B) :> C`（共通の基底型） | 部分型はない。代わりに部分集合の匿名共用体からの拡大と `:? (A \| B) as x` の絞り込み | A25 |
+| equality・comparison は自動では付かない | `Eq`・`Ord`・`Hash`・`Display` を要素から構造的に持つ（タグがあるので比べられる） | A26 |
+| 値を要素にする型（`(int \| "auto")`。未解決事項） | 採らない | – |
+
+### 進め方
+
+- A24 が核（構文・正規化・注入・`:?`・網羅性・名前の隠蔽）で、A25 と A26 は A24 の後に互いに独立に進められる。
+- どのチケットも、匿名共用体を書かないプログラムの IR・診断・`kg`・`doc`・`api-diff` の出力を 1 byte も変えない（A24 の停止条件）。
+- 診断コードは `E1041`（D-55）。借用・上限・型の不一致・構文は既存のコード（`E1013`・`E1017`・`E1003`・`E0002`）の新しい kind で表す。
+
+```mermaid
+graph LR
+  A02 --> A24
+  A03 --> A24
+  A05 --> A24
+  A24 --> A25
+  A24 --> A26
+  A06 --> A26
+  A07 --> A26
 ```
