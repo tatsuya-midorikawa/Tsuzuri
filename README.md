@@ -1091,6 +1091,11 @@ Markdown の節は「次の同じ以下のレベルの見出しの直前まで�
 [_features/README.md](_features/README.md) の依存関係図に明示された辺を優先して補います。
 セルの原文も索引に残すため、Phase ごとの条件は `deps_raw` で確認できます。
 `section <ID> commands` は関連する検証コマンドを、`section <ID> symbols` は関連ファイルから選んだ公開宣言を省略せず表示します。
+検証コマンドは T2 と同じ dev バイナリ（`target/debug/tsuzuri`。先に `cargo build`）で示します。
+診断の索引は G23 の kind の登録簿（`src/diagnostic_kinds.rs`）を読み、行ごとに `kinds` を持ちます。
+`DiagnosticKind::<名前>` の参照も発行箇所として kind つきで数え、登録簿の宣言そのものは発行箇所に数えません。
+`diag` はコード（`E1012`）と kind（`use_after_move`）のどちらも受け付けます。
+意味の列は `compiler/diagnostics.md` で各コードが最初に現れる表の行から取り、生成ブロック（kind の一覧）は使いません。
 子プロセス専用のヘルパーと、比較対象の旧ランタイムや明示的なワークロードを必要とする手動比較ランナーには、自動実行コマンドを生成しません。
 検証スイートの `cases:` と `get cases()` はどちらも静的に検出し、索引のために JavaScript を実行しません。
 8 MiB を超える入力は索引だけでなく、参照検査・公開宣言の照会・brief でも読み込み対象から除外します。必須の GUIDE 入力が過大な場合はエラーで止め、規則を黙って省いた brief は生成しません。

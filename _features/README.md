@@ -272,7 +272,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G29 | [`tsuzuri mcp`（MCP サーバー）](_completed/G29-mcp-server.md) | P2 | L | (G21), (G23), (G26), (G27), (G28) | done（Phase 1〜4。D-60 の KG。12 ツール） |
 | G30 | [図表の生成（Mermaid。モジュール・型・呼び出し・所有権・並行・レイアウト・状態遷移）](_completed/G30-diagrams.md) | P2 | L | G26, G27 | done（Phase 1〜5。D-60 の KG） |
 | G31 | [AI 作業コスト指標（入力量と往復数を決定的に測る）](_completed/G31-ai-cost-metrics.md) | P1 | M | (G21), (G22), (G24), (G27), (G28), (G29) | done（Phase 1〜3） |
-| G32 | [開発リポジトリの KB と `ticket-brief`（小さいモデルへ渡す文脈の自動生成）](G32-repo-kb-and-ticket-brief.md) | P0 | M | – | todo（承認済み） |
+| G32 | [開発リポジトリの KB と `ticket-brief`（小さいモデルへ渡す文脈の自動生成）](_completed/G32-repo-kb-and-ticket-brief.md) | P0 | M | – | done（Phase 1〜3。2026-11-01 に G23 の kind・G33・G35 の文書の形へ追従） |
 | G33 | [仕様の規則 ID と適合性スイート](_completed/G33-spec-rule-ids-conformance.md) | P2 | L | – | done（全 Phase。228 規則） |
 | G34 | [doc-test（`///` の例を実行する）と std の例](_completed/G34-doc-tests.md) | P2 | M | – | done（全 Phase。std の公開関数 819 個に例） |
 | G35 | [生成物による文書の単一情報源化（診断コード表・std 索引・benchmarks の JSON 化）](_completed/G35-generated-docs-single-source.md) | P2 | L | (G23) | done（全 Phase。std 8 モジュール 441 関数に `@complexity`） |
@@ -531,7 +531,7 @@ A17・A18 は HEAD `2282fd96`、A19 は HEAD `cef6c67f` の実装と突き合わ
 
 | チケット | 種別 | 概要 | 承認 |
 | --- | --- | --- | --- |
-| [G32](G32-repo-kb-and-ticket-brief.md) | ツール（P0） | `scripts/repo-kb.mjs`: チケット・GUIDE の決定・診断コード・名前を決定的に索引し、`brief <ID>` が実装に要る文脈（要点・停止条件・仕様・指定 Phase の手順・テスト・受け入れ条件・依存先のインターフェース・GUIDE-LITE）を 24,000 字以内で出す。GUIDE-LITE と台帳の食い違いも検査する。小さいモデルが GUIDE（約 15.5 万字）とチケット全体を読まずに着手できる。**第3期で最初に入れる** | 承認済み |
+| [G32](_completed/G32-repo-kb-and-ticket-brief.md) | ツール（P0） | **Phase 1〜3 実装済み**。`scripts/repo-kb.mjs`: チケット・GUIDE の決定・診断コード（G23 の kind と `DiagnosticKind::<名前>` の発行箇所を含む）・名前を決定的に索引し、`brief <ID>` が実装に要る文脈（要点・停止条件・仕様・指定 Phase の手順・テスト・受け入れ条件・依存先のインターフェース・GUIDE-LITE）を 24,000 字以内で出す。GUIDE-LITE と台帳の食い違いも検査する。小さいモデルが GUIDE（約 15.5 万字）とチケット全体を読まずに着手できる。**第3期で最初に入れる** | 承認済み・実装済み（Phase 1〜3） |
 | [G22](_completed/G22-diagnostic-v2.md) | 診断（P0・基盤） | 診断に関連位置（移動元・借用元・期待の原因など）・`help`・`fixes`・`expected`／`found`・`candidates`・`scope` を足す。JSON はキーを足すだけで、追加の情報を持たない診断は 1 byte も変わらない。`Diagnostic` を 8 bytes の `Box` にして stack の余裕を保つ（フィールドを直に足すと GUIDE §3.1 の stack の回帰テストが溢れることを実測）。所有権の 7 か所と型の不一致に付け、LSP の `relatedInformation`・`quickfix` に接続する | 承認済み・実装済み（Phase 1〜4） |
 | [G21](_completed/G21-ai-guide-pack.md) | 知識 | `tsuzuri guide`（L0 6,000 字・L1 20,000 字・std のページと 1 行索引。英語。コンパイラの表と実行を通った例から生成。`--json` あり）と、`tsuzuri new` が書く `AGENTS.md`・`llms.txt`。落とし穴の表は G23 のヒント DB と共有する | 承認済み・実装済み（Phase 1〜4。edition ブロックで 2026／2027 を書き分け） |
 | [G23](_completed/G23-diagnostic-kinds-explain-hints.md) | 診断 | 粗い 47 コードを原因ごとの kind（653）に分け（enum とマクロの登録簿。`Diagnostic::of`）、`tsuzuri explain`（47 コードと厳選した 84 kind のページ、`--catalog --json`）と、`pair.0`・`Display.to_string` のように AI が繰り返す誤りに「どう書くか」を返すヒント DB を足す。発行 1,077 か所を `#[deprecated]` とモジュールごとの `deny` で段階的に移行する | 承認済み・実装済み（Phase 1〜4。kind 693・コードのページ 49） |
