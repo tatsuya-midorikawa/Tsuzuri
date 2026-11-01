@@ -7,7 +7,7 @@
 | 規模 | 全体 M（D-50 の表）。Phase 1: M（約 3 日）、Phase 2: M（約 3 日）、Phase 3: S（約 1 日）。Phase ごとに別の PR にしてよい（合計は約 7 日で、D-50 の M は Phase 1〜2 を 1 人で続けたときの見積り） |
 | 依存 | なし（第3期のどのチケットの実装も待たない。**最初に実装してよい**）。弱い依存: G23（done。その kind の登録簿から `diagnostics.jsonl` に `kinds` を足した。「前提とする他チケットのインターフェース」） |
 | 後続 | 第3期の全チケットの実装（`brief` が入力になる）。G31（done。`brief` の出力量を入力量に使う案は、G31 が「対象外」とした）、G35（`check-guide-lite` と同じ流儀の検査を足す） |
-| 状態 | done（Phase 1〜3。2026-11-01 に、G23 の kind・G35 の生成ブロック・現行の検証の段（dev バイナリ）へ追従。「実装と検証」） |
+| 状態 | done（Phase 1〜3。[PR #44](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/44) で実装。2026-11-01 に [PR #77](https://github.com/tatsuya-midorikawa/Tsuzuri/pull/77) で、G23 の kind・G35 の生成ブロック・現行の検証の段（dev バイナリ）へ追従。「実装と検証」） |
 | 起票 | 2026-10-18（D-50。HEAD `a2313d19` で確認。作業ツリーは `9dd0fbbc`（main）で、差は `docs/benchmarks.md` だけ。確認: `git diff --stat a2313d19 HEAD`） |
 | 承認 | 承認済み（D-50: 人間の包括許可 2026-10-18）。決定事項 D1〜D16 はすべて承認済み |
 | 改善する劣位 | 小さいモデルは GUIDE.md（15.5 万字）・チケット（125 件で 412 万字）・`docs/architecture.md`（24.7 万字）を読めず、読んでも要点を拾えない。KB も検索もない（D-50 の調査結論 (4)「文書が 1,000 万字を超え、食い違いを機械で検出できない」。GUIDE-LITE の参照も検査されない） |
@@ -725,7 +725,7 @@ render(caps): 順 0..14 の部分を cut(.., caps[key]) で作り、CONTENTS は
 
 ## 実装と検証（2026-11-01）
 
-- Phase 1〜3 は 2026-10-23 に main へ入った（`cab570e2` が Phase 1、`6e8e744e` が Phase 2・3）。続く修正（`3ae55151`・`4cbf9149`・`7e5f91b5`・`4f4b5926`・`e9cee54b`・`4e7e7f12`・`0b5e010f`・`76a88432`・`18aa625a`。2026-10-23〜24）で、並行する再構築のロック、8 MiB の読み取りの上限とハッシュの一致、包んだ suite と getter の `cases`、引用した公開シンボルの優先、手動専用の runner にコマンドを出さないことを足した。チケットは `todo` のまま `_features/` に残っていた。
+- Phase 1〜3 は 2026-10-23 に PR #44 で main へ入った（`cab570e2` が Phase 1、`6e8e744e` が Phase 2・3）。続く修正（`3ae55151`・`4cbf9149`・`7e5f91b5`・`4f4b5926`・`e9cee54b`・`4e7e7f12`・`0b5e010f`・`76a88432`・`18aa625a`。2026-10-23〜24）で、並行する再構築のロック、8 MiB の読み取りの上限とハッシュの一致、包んだ suite と getter の `cases`、引用した公開シンボルの優先、手動専用の runner にコマンドを出さないことを足した。チケットは `todo` のまま `_features/` に残っていた。
 - 2026-11-01 に、その後に入ったチケットの仕様と照らし、次の 4 点のずれを直した（仕様の表は同じ日付の注記つきで改訂した）。
   1. **G23 の kind**: コンパイラは診断を `DiagnosticKind::<Variant>` で出すようになり、コードの文字列はおもに登録簿 `src/diagnostic_kinds.rs` の宣言になった。直す前の `diag E1012` は箇所 12 のうち 10 が登録簿の宣言で、`src/ownership.rs` の発行箇所が出なかった。登録簿の 807 kind（66 コード）を読み、`DiagnosticKind::<Variant>` の参照 1,419 か所と文字列 105 か所（77 ファイル。テスト領域と登録簿を除く）を箇所にした。`E1012` は 15 か所（`src/check.rs`・`closures.rs`・`closures_rec.rs`・`explain.rs`・`ownership.rs`）。`diagnostics.jsonl` に `kinds`、`sites` に `kind` を足した（`tz-repo-kb/1` のまま）。`diag` は kind の `id` も受け、`search` は kind も探し、`check-guide-lite` の C4・C8 は登録された kind を認める。`src/explain.rs` の `CODE_PAGES`・`KIND_PAGES`、`src/canonical.rs` の表の文字列はモジュールの直下にあり、`function` は `null`（T8 の規則どおり文字列の箇所として残した。起票時の「`function` が `null` は 0」は G23 より前の値）。
   2. **G35 の生成ブロック**: `compiler/diagnostics.md` の kind の一覧（`<!-- generated:diagnostic-kinds -->`）が同じ形の表の行なので、後に現れる行が勝ち、`E1012` などの `meaning` が kind の一覧になっていた（確保数の診断の表の行も上書きしていた）。生成ブロックの外で最初に現れる行を使う。
