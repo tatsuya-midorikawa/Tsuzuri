@@ -278,6 +278,24 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G35 | [生成物による文書の単一情報源化（診断コード表・std 索引・benchmarks の JSON 化）](_completed/G35-generated-docs-single-source.md) | P2 | L | (G23) | done（全 Phase。std 8 モジュール 441 関数に `@complexity`） |
 | G36 | [言語全体の差分ファズ（プログラム生成型。コンパイル時評価を参照実装に）](_completed/G36-language-differential-fuzz.md) | P2 | L | D11, (F14) | done（全 Phase。edition 2027 の正準形で生成） |
 
+### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
+
+| ID | チケット | 優先 | 規模 | 依存 | 状態 |
+|---|---|---|---|---|---|
+| TZ01 | [tzroutine のランタイムの核（M:N スケジューラー・スタック・文脈切り替え・待ち・チャンネル・select）](TZ01-tzroutine-runtime.md) | P0 | XL | – | todo |
+| TZ02 | [`tzroutine { }` 構文・`Routine` モジュール・終了の待ち](TZ02-tzroutine-spawn.md) | P0 | L | TZ01 | todo |
+| TZ03 | [旧 `Channel` を `DataChannel` に改名し、Go と同じ双方向の `Channel<T>` を入れる（`for x in ch`・既定の WASM の 1 本の実行を含む）](TZ03-channel.md) | P0 | L | TZ02 | todo |
+| TZ04 | [`select` 式](TZ04-select.md) | P0 | L | TZ03 | todo |
+| TZ05 | [時間（`Time.sleep`・`Time.after`・`Time.tick`・`Timer`・`Ticker`・`Time.after_func`）](TZ05-timers.md) | P1 | M | TZ03 | todo |
+| TZ06 | [同期（`Mutex` の移設・`RwMutex`・`WaitGroup`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`）](TZ06-sync.md) | P1 | L | TZ02 | todo |
+| TZ07 | [`Context`（取り消し・期限）と `ErrGroup`](TZ07-context-errgroup.md) | P1 | M | TZ04, TZ05, TZ06 | todo |
+| TZ08 | [ブロッキング呼び出しの P の引き継ぎ（sysmon）と netpoller](TZ08-blocking-calls-netpoller.md) | P1 | XL | TZ02, TZ05 | todo |
+| TZ09 | [WebAssembly（JSPI）の tzroutine](TZ09-wasm-jspi.md) | P2 | L | TZ04, TZ05, TZ06 | todo |
+| TZ10 | [プリエンプション（長く走る tzroutine の横取り）](TZ10-preemption.md) | P2 | L | TZ08 | todo |
+| TZ11 | [`Parallel` と `Routine.scope` を tzroutine のスケジューラーへ移す](TZ11-parallel-on-scheduler.md) | P1 | M | TZ06 | todo |
+| TZ12 | [`Task`・`task { }` の削除と移行（`DataChannel` の待ちの移設を含む）](TZ12-remove-task.md) | P1 | L | TZ04, TZ07, TZ11 | todo |
+| TZ13 | [`Async` と Net の `_async` の削除と移行](TZ13-remove-async.md) | P1 | M | TZ08, TZ12 | todo |
+
 ## 推奨フェーズ
 
 依存関係と価値の順に並べています。同じフェーズ内でも、上に書いたものから着手してください。
@@ -296,6 +314,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 9. 追加（2026-10-07） | 言語リファレンスの執筆で見つけた不具合を直し、ローカルな再帰を書けるようにする | D12、B09（すべて完了） |
 | 10. 追加（2026-10-13） | 暗黙の複製のコストを減らし、読むだけの引数に `ref` を書かずに済むようにし、副作用のない関数を署名で保証する | A17 → A18（全 Phase 承認・実装済み、PR48 は未マージ）。A19（`pure def`。承認済み）は A17・A18 から独立 |
 | 11. 追加（2026-10-18） | AI と人間が少ない暗黙ルールで堅牢かつ高速に書けるようにする（引く: 知識を決定的に渡す／縛る: 性質を署名と検査で固定する／直す: 診断から機械的に直す） | ① G32・D13・C12・F14・G31 → ② G22 → G23・G24・G21 → ③ G26 → G27 → G28 → G30・G29 → ④ A19（既存）→ A20 → A21・E15、A22、A23 → ⑤ G25・G33〜G36・D14・B10・F15。詳細は [追加チケット（2026-10-18）](#追加チケット2026-10-18) |
+| 12. 第4期（2026-11-01） | Task・Async を廃止し、Go の goroutine に相当する tzroutine と、チャンネル・`select`・同期・時間・取り消しを揃える | ① TZ01 → TZ02 → TZ03 → TZ04 → ② TZ05・TZ06 → TZ07、TZ11 → ③ TZ08 → ④ TZ12 → TZ13 → ⑤ TZ09・TZ10。詳細は [第4期](#第4期-tzroutinego-の-goroutine-に相当する並行処理) |
 
 ## 依存関係図
 
@@ -599,3 +618,80 @@ graph LR
 - `_tsuzuri/language-reference/built-in-types-and-modules/gpu.md` の Mermaid のノード ID `call` が予約語で、Mermaid 12.1.0 で parse できない（文書の 76 個のうち 1 個。G30）。
 - `_completed/` の G13・G16・G17・G18 は、チケット自身の状態の欄が `todo` のまま（この README の一覧は `done`。G32 の検査が報告する）。
 - `tsuzuri new` の `.gitignore` は `.tsuzuri/` だけで `target/` がない（G27 が足す）。
+
+## 第4期: tzroutine（Go の goroutine に相当する並行処理）
+
+2026-11-01、利用者の依頼「Task / Async を廃止し、Go 言語の goroutine のような非同期の仕組みを実装する。名称は `tzroutine` とし、goroutine に関連する機能（channel や sync など）を全て追加する」を、13 件のチケット（TZ01〜TZ13）にまとめました。起票時の HEAD は `9a76d8ac`、設計の決定は [GUIDE の D-61](GUIDE.md#d-61-第4期-taskasync-の廃止と-tzroutinego-の-goroutine-に相当する並行処理の導入tz01tz13) です。
+
+### なぜ置き換えるか
+
+- `Task` は OS スレッドのプール（`src/runtime/task.c`、追加ワーカーは `min(CPU 数, 32) - 1`）の上の同期フォーク・ジョインで、`Channel` の待ちは OS スレッドを止める。待つタスクの数がスレッド数を超えると完了せず（[channel.md の待ちの規則](../_tsuzuri/language-reference/built-in-types-and-modules/channel.md#待ちの規則)）、生産者・変換・消費のパイプラインの段数をスレッド数に合わせて設計する必要がある。
+- `Async` は 1 スレッドの協調的な中断で、継続のクロージャを中断のたびに作る（非末尾の `let!` の入れ子は O(n²)）。`Task` と型も実行器も別で、CPU 並列と I/O の待ちを 1 つのプログラムで混ぜにくい。
+- tzroutine は、tzroutine ごとに専用のスタックを持ち、少数の OS スレッドで多数（10 万単位）を走らせる M:N の実行。待つのは tzroutine だけで OS スレッドは止まらないので、待つ数とスレッド数の関係が消え、I/O の待ちも同じ書き方になる。
+
+### 利用者が決めた 4 点（D-61）
+
+| 論点 | 決定 |
+| --- | --- |
+| `main`・`export` の呼び出し・`test` が終わるとき、まだ動いている tzroutine | **すべての終了を待つ**（Go と違う）。`Drop` と確保の追跡を守る。全員が待ちに入ればデッドロックの判定でトラップ |
+| WebAssembly | **`--wasm-feature jspi` を必須**にする。既定の WASM で tzroutine を生成するプログラムは `E2000` |
+| チャンネル | **Go と同じ双方向型**の `Channel<T>` を入れる（TZ03） |
+| 名前（追加の指示） | モジュールは **`Routine` と `Channel`**（起票時の案は `TzRoutine`・`TzChannel`）。生成の構文 `tzroutine { }` と概念の名前「tzroutine」はそのまま |
+| 旧 `Channel`（追加の指示） | 削除せず **`DataChannel` に改名して維持**する。API と意味は変えない（TZ03 で改名、TZ12 で待ちを tzroutine のランタイムへ移す） |
+| Task・Async の廃止 | **即削除**（非推奨の期間なし）。書かれていれば `E1040` で移行先を示す |
+
+### Go の機能との対応
+
+| Go | Tsuzuri | チケット |
+| --- | --- | --- |
+| `go f(x)` | `tzroutine { f x }`（文脈キーワード。型は `unit`。捕捉はムーブ） | TZ02 |
+| `runtime.Gosched`・`NumGoroutine`・`GOMAXPROCS`・`NumCPU` | `Routine.yield`・`count`・`max_procs`・`cpu_count`（`TSUZURI_MAXPROCS`） | TZ02 |
+| `chan T`・`make(chan T, n)` | `Channel<T>`・`Channel.make n`（0 はバッファなし） | TZ03 |
+| `ch <- v`・`v, ok := <-ch`・`close`・`len`・`cap` | `Channel.send ch v`・`Channel.recv ch`（`Maybe`）・`close`・`length`・`capacity` | TZ03 |
+| `for v := range ch` | `for v in ch do` | TZ03 |
+| `chan<- T`・`<-chan T` | `Channel.SendOnly<T>`・`Channel.ReceiveOnly<T>`（TZ03 の Phase 2。`DataChannel.Sender`・`Receiver` とは別の型） | TZ03 |
+| （Go にない）送り手と受け手の端が分かれ、最後の送り手の drop で閉じるチャンネル | `DataChannel`（旧 `Channel` の改名。`--wasm-feature threads` でも使える） | TZ03・TZ12 |
+| `select`（`default`、nil チャンネルで腕を無効にする） | `select`（`\| default ->`、腕の `when`） | TZ04 |
+| `time.Sleep`・`After`・`Tick`・`NewTimer`・`NewTicker`・`AfterFunc` | `Time.sleep`・`after`・`tick`・`Timer`・`Ticker`・`Time.after_func` | TZ05 |
+| `sync.Mutex`・`RWMutex` | `Mutex<T>`（既存。新しいスケジューラーの上へ移す）・`RwMutex<T>`。どちらも値を持ち、ロックの中でだけ触れる | TZ06 |
+| `sync.WaitGroup`（`Go` を含む）・`Once`・`OnceFunc`・`OnceValue`・`Cond`・`Map` | `WaitGroup`・`Once`・`OnceValue<T>`・`Cond`・`SyncMap<K, V>` | TZ06 |
+| `sync/atomic` | `Atomic<T>`（既存のまま） | — |
+| `golang.org/x/sync/semaphore`・`errgroup` | `Semaphore`・`ErrGroup<E>` | TZ06・TZ07 |
+| `context`（`WithCancel`・`WithTimeout`・`WithDeadline`・`Done`・`Err`・`AfterFunc`） | `Context` | TZ07 |
+| 全 goroutine が眠ったときの `fatal error: all goroutines are asleep - deadlock!` | `Tsuzuri runtime: all tzroutines are asleep - deadlock! (…)` とトラップ | TZ01 |
+| システムコール中の P の引き継ぎ（sysmon）・netpoller・`runtime.LockOSThread` | `extern`・ファイル・プロセス・標準入力の呼び出しの引き継ぎ、Net の待ちを kqueue／epoll へ、`Routine.with_locked_thread` | TZ08 |
+| 非同期プリエンプション | sysmon と信号による横取り | TZ10 |
+| `GOOS=js`・`wasip1` | wasm32 + `--wasm-feature jspi` | TZ09 |
+| `sync.Pool`・`atomic.Value`・`runtime.Goexit`・`recover`・`context.WithValue`・`-race`・`singleflight` | 採用しない（D-61。GC がない、巻き戻しがない、型がない、データ競合は型で拒む、`OnceValue` と `SyncMap` で書ける） | — |
+
+### 進め方
+
+- ① ランタイムの核（TZ01）を C だけで作って単体で検査し、② 構文（TZ02）・チャンネル（TZ03。旧 `Channel` をここで `DataChannel` に改名する）・`select`（TZ04）で言語に接続し、③ 時間・同期・取り消し（TZ05〜TZ07）と既存の並列 API の移設（TZ11）で揃え、④ ブロッキング呼び出しと I/O（TZ08）を入れてから Task・Async を削除し（TZ12・TZ13）、⑤ WASM（TZ09）とプリエンプション（TZ10）を足す。
+- TZ12 までは Task と tzroutine が共存する。共存中に tzroutine の中で `Task.run`・`Task.parallel` を使うと、その OS スレッドを止める（TZ02 の仕様。文書に書く）。TZ03 の後、Task のワーカーの中の新しい `Channel` の待ちは、そのワーカーの OS スレッドを止めて待つ（擬似 G）。`DataChannel` の待ちは TZ12 まで今の規則（手伝い・スレッド数による行き詰まり）のままで、TZ12 から tzroutine だけが待つ。
+- 旧 `Channel` を使う既存のプログラムは、TZ03 から `E1040` で `DataChannel` の名前を示され、`tsuzuri fix` で機械的に直せる（`Channel.bounded` → `DataChannel.bounded` など。意味は同じ）。
+- どのチケットも、tzroutine を使わないプログラムの IR・object・import・ABI を 1 byte も変えない（TZ12・TZ13 の削除そのものを除く）。
+- 試作（TZ01 の付録 B）は、Apple M3（macOS 27.2）の arm64 と Rosetta の x86-64、P の数 1〜8、`-O0`〜`-O3`、TSan、ASan + UBSan で検査済み。Linux と Windows は CI で確かめる（TZ01 の停止条件）。
+
+```mermaid
+graph LR
+  TZ01 --> TZ02
+  TZ02 --> TZ03
+  TZ03 --> TZ04
+  TZ03 --> TZ05
+  TZ02 --> TZ06
+  TZ04 --> TZ07
+  TZ05 --> TZ07
+  TZ06 --> TZ07
+  TZ02 --> TZ08
+  TZ05 --> TZ08
+  TZ04 --> TZ09
+  TZ05 --> TZ09
+  TZ06 --> TZ09
+  TZ08 --> TZ10
+  TZ06 --> TZ11
+  TZ04 --> TZ12
+  TZ07 --> TZ12
+  TZ11 --> TZ12
+  TZ08 --> TZ13
+  TZ12 --> TZ13
+```

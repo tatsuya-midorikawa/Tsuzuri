@@ -1797,7 +1797,11 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 警告 | `W1008` | A20 | 効果の属性が検査されない（インスタンスのないジェネリック関数、`const def` の実行時の本体だけ）。kind は `effect_attribute_unchecked_generic`・`effect_attribute_on_const_def` |
 | 警告 | `W1009` | A21 | 契約が常に真・使わない束縛など |
 | 警告 | `W1010` | E15 | 信頼を表明していない `extern` の使用（`audit` が既定で警告に格上げ） |
-| 予約（未割り当て） | `E1035`・`E1040`〜`E1049`・`E2012`〜`E2015`・`W1011`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |
+| 診断コード | `E1040` | TZ03・TZ12・TZ13 | 削除・改名した並行処理の機能（`DataChannel` へ改名した旧 `Channel` の `bounded`・`clone_sender`・`Sender`・`Receiver`、削除した `task { }`・`Task.*`・`Task<T>`・`Async`・`async { }`）の使用。help に移行先、改名は `fixes` も（D-61） |
+| 予約（未割り当て） | `E1035`・`E1041`〜`E1049`・`E2012`〜`E2015`・`W1011`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |
+| 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default` | TZ02・TZ04 | 予約語ではない（識別子として使える） |
+| 環境変数 | `TSUZURI_MAXPROCS`（1〜256。既定はオンラインの CPU 数）・`TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576。既定 1024） | TZ01 | 生成したプログラムが起動時に読む（コンパイラは読まない）。範囲外・数でない値は無視して既定値 |
+| std | `Routine`・`DataChannel`（旧 `Channel` の改名）・`WaitGroup`・`RwMutex`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`・`Context`・`ErrGroup`・`Timer`・`Ticker`（新規）と、新しい中身の `Channel` | TZ02〜TZ07 | D-61。`Routine` は組み込みのモジュール、ほかは opt-in。`RESERVED_MODULES` は現在値から 13 増え（`Channel` は予約済み）、TZ13 で `Async` の 1 つが減る |
 | サブコマンド | `guide` | G21 | AI 向けの案内の出力 |
 | サブコマンド | `explain` | G23 | 診断コード・kind の説明 |
 | サブコマンド | `fix` | G24 | 機械的な修正の適用 |
@@ -1916,6 +1920,27 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   | brief カードの L0 の行 `tz-kb/1 \| … \| symbols S \| …`、`next:` の `symbols.jsonl, graph.jsonl` | `tz-kg/1 \| … \| nodes N \| edges E \| …`（`edges` は `edges.jsonl` があるとき）、`nodes.jsonl, edges.jsonl` |
 - **G25 との関係**: G28 Phase 2 の `kg find` は、G25 の完了を待たず、KG の関数のノード（プロジェクトと std の KG）の署名を型で照合する検索として実装する（グラフの問い合わせの 1 つ）。G25 の `tsuzuri find` は、出荷するときにこの実装を呼ぶ（D-55 の「同じ実装」のまま）。G29 の `tz_find` はこの実装を使う。
 - **変えないもの**: `check`・`build`・`run`・`test` の出力・終了コード・IR、診断コード `E2009`・`E2010`・`W2001` の扱い、facts の規則（G26 の付録）、カードの文字数の上限（L0 2,400・L1 1,600・L2 700）、決定性（同じソースと同じコンパイラから byte 単位で同じ）。
+
+### D-61 第4期: Task・Async の廃止と tzroutine（Go の goroutine に相当する並行処理）の導入（TZ01〜TZ13）
+
+- **経緯**: 2026-11-01、利用者の依頼「Task / Async を廃止し、Go 言語の goroutine のような非同期の仕組みを実装して欲しい。名称は `tzroutine` とし、goroutine に関連する機能（channel や sync など）を全て追加して欲しい」。起票時の HEAD は `9a76d8ac`。計画は [README の第4期](README.md#第4期-tzroutinego-の-goroutine-に相当する並行処理) と TZ01〜TZ13。
+- **利用者が決めた 4 点**（2026-11-01 の回答。承認済み。チケットはこれを変えない）:
+  1. **終了は待つ**: `main`（トップレベルのコード・`def main`）、`export` 関数の 1 回の呼び出し、`test` と `bench` の 1 件は、その中で生まれたすべての tzroutine（孫を含む）が終わるまで戻らない。Go の「main が返ればほかの goroutine を待たずに終了」とは違う。理由は、`Drop`（ファイルの flush など）を必ず走らせ、確保の追跡（`live == 0`）と `--trap-mode return` の境界を保つため。全員が待ちに入れば、デッドロックの判定でトラップする。
+  2. **WASM は JSPI**: wasm32 の tzroutine は `--wasm-feature jspi` を要る（TZ09）。付けずに tzroutine を生成するプログラムを WASM へ出すと `E2000`。既定の WASM の import なし（D-18）は変えない。`Channel`・`Mutex` などの同期の型は、既定の WASM でも 1 本の実行（main だけ）として動き、待てば即座にデッドロックの判定になる。
+  3. **チャンネルは Go と同じ双方向の `Channel<T>`**: 容量 0 はバッファなし（受け渡しの同期）、明示の `close`、閉じたチャンネルへの `send` と 2 回目の `close` はトラップ（Go の panic）、閉じて空なら `recv` は `None`。旧 `Channel`（`Sender`／`Receiver`、drop で閉じる）は削除せず、`DataChannel` に改名して残す（決定 6）。
+  4. **即削除**: 非推奨の期間は置かない（0.x のため）。旧 `Channel` は削除しない（決定 6）。tzroutine 一式（TZ01〜TZ08・TZ11）が揃った時点で、`task { }`・`Task.*`・`Task<T>`・`Async`（`async { }` を含む）を削除し（TZ12・TZ13）、書かれていれば `E1040` で移行先を示す。
+  5. **名前**（2026-11-01 の追加の指示「Channel を削除する前提であれば、名称は `Routine` と `Channel` にして」）: モジュールは `Routine`（起票時の案は `TzRoutine`）と `Channel`（同 `TzChannel`）。その後の決定 6 で、旧 `Channel` は削除せず `DataChannel` として残すことになった。生成の構文 `tzroutine { }`、概念の名前「tzroutine」、ランタイムの C の名前（`src/runtime/tzroutine.c`、記号の接頭辞 `tsuzuri_tz_`、内部の `tzr_`）は変えない。
+  6. **旧 `Channel` は `DataChannel` として残す**（2026-11-01 の追加の指示「旧 Channel を別名で維持するようにして。別名は `DataChannel` のようなものが良い」）: API（`bounded`・`send`・`recv`・`clone_sender`・`Sender`・`Receiver`）と意味（最後の `Sender` の drop で閉じる、`send` は受け手がいなければ `Error item`）は変えない。TZ03 で名前だけを変え（旧の名前は `E1040` と `tsuzuri fix` で移す）、TZ12 で `task.c` を消すときに、待ちを tzroutine のランタイムへ移す（C の ABI は同じ）。`select`・`for` は新しい `Channel` だけ。`--wasm-feature threads` では `DataChannel` だけが使える。
+- **実行モデル**（TZ01）: stackful な M:N。G（tzroutine 1 つ）、M（スケジューラーの OS スレッド）、P（G を走らせる権利。既定は CPU 数、`TSUZURI_MAXPROCS` で 1〜256）。P ごとの run queue（256 の環、`runnext`）、全体の run queue、仕事の盗み、spinning の M、idle の M。G は専用のスタック（既定 1 MiB の予約。触れたページだけが実メモリ。下端に 128 KiB のガード）を持ち、文脈切り替えは POSIX の aarch64・x86-64 では callee-saved レジスタだけを保存する naked 関数、Windows では Fiber。tzroutine でない OS スレッド（`main` のスレッド、export を呼んだホストのスレッド）は **擬似 G** として待ちに参加し、待つときは自分の OS スレッドを止める（P を持たない）。プリエンプションは TZ10、ブロッキング呼び出しの P の引き継ぎと netpoller は TZ08、WASM は TZ09。
+- **構文**: 新しい予約語は足さない（D-55）。`tzroutine` は直後が `{` のときだけの文脈キーワード（`tzroutine { 文 }`、型は `unit`、その場で生成して戻る）。本体は型 `unit` の通常のブロックで、`do!`／`let!` は IO をその場で実行する（関数の本体と同じ。`task { }` の `let!` とは違う）。捕捉は `task { }` と同じ規則（所有値のムーブか Copy、`Send`、借用は `E1013`）。`select` は直後の行が `|` で始まるときだけの文脈キーワード（TZ04。`| recv x from ch ->`・`| send v to ch ->`・`| default ->`、腕に `when` を書ける）。`for x in ch do` は `Channel` を直接回す（閉じて空になるまで）。
+- **std の名前**（`Routine` は std のファイルを持たない組み込みのモジュール。ほかは opt-in の std モジュールで `stdlib::OPT_IN` へ足す。すべて `RESERVED_MODULES` へ足す）: `Routine`（`go`・`yield`・`count`・`max_procs`・`cpu_count`・`scope`。TZ02・TZ11）、`Channel`（TZ03。Go と同じ双方向）、`DataChannel`（TZ03。旧 `Channel` の改名）、`WaitGroup`・`RwMutex`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`（TZ06）、`Context`・`ErrGroup`（TZ07）、`Timer`・`Ticker`（TZ05）。`Time` に `sleep`・`after`・`tick`・`after_func` と時間の定数を足す（TZ05）。`Mutex`・`Atomic`・`Arc`・`Parallel` は残す（`Mutex` と `Parallel` は新しいスケジューラーの上へ移す。TZ06・TZ11）。削除: `Task`（予約語・型・組み込み。TZ12）、`Async`（TZ13）。
+- **引数の順序（D-59）**: `Channel`・`WaitGroup`・`RwMutex`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`・`Context`・`ErrGroup`・`Timer`・`Ticker` は資源のハンドル（`Mutex` と同じく、ハンドルが先頭）。`tests/std_argument_order.rs` の `MODULES` に `Exempt(BUILTIN_HANDLE)` で足す（`Channel` の行は既存。`DataChannel` も同じ分類）。`Routine` は対象を取らない関数だけ（`SingleArgument`）。
+- **ランタイム**: `src/runtime/tzroutine.c`（C11。POSIX と Windows。Windows の差は `src/runtime/tzroutine-windows.h`）。生成コードが呼ぶ記号の接頭辞は `tsuzuri_tz_`。ドライバーは IR に `tsuzuri_tz_` の記号があるときだけ連結する。使わないプログラムの IR・object・import・ABI は 1 byte も変えない。
+- **失敗**: ランタイムが見つける誤り（閉じたチャンネルへの `send`、2 回目の `close`、負の `WaitGroup` の数、全員が眠ったデッドロック、`Mutex.with_lock` の入れ子）は、native では理由を標準エラーへ書いてから、生成コードの呼び出し地点で `TrapKind::Assert` のトラップ（`DataChannel`（旧 `Channel`）の判定と同じ）。`TrapKind` は増やさない。デッドロックの文は `Tsuzuri runtime: all tzroutines are asleep - deadlock! (<n> waiting: <理由>, ...)`。
+- **組み合わせの拒否**（`E2000`。既存の kind を使う）: tzroutine を生成するプログラムと `--freestanding`・`--trap-mode return`・`--wasm-feature threads`・既定の WASM（`jspi` なし）。`E2000` の kind は `option_conflict`（オプション同士）と `option_requires_option`（`jspi` が要る）。
+- **診断コード**: `E1040`（削除した並行処理の機能を使った。kind は TZ12・TZ13 が登録する）。tzroutine と `select` の誤りは既存のコード（`E0002` 構文、`E1003` 型、`E1005` 捕捉、`E1012` ムーブ、`E1013` 借用・`Send`、`E1023` `break` の境界）で表す。D-51 のとおり、Task・Async の kind は登録簿から消さない（出さなくなるだけ）。
+- **採用しないもの**: GC を前提にした `sync.Pool`（Tsuzuri は GC を持たない。再利用は `Vec`・`Arena`）、型のない `atomic.Value`・`atomic.Pointer`（`Mutex<T>`・`Arc<T>` で表す）、`runtime.Goexit` と `recover`（巻き戻しを持たない。D-10）、型のない `context.WithValue`（値は引数で渡す）、`main` より長く生きる切り離した tzroutine（決定 1）、Go の `-race`（データ競合は `Send`／`Sync` の型検査で静的に拒む。ランタイム自身は TSan で検査する）、`GODEBUG`・実行トレーサー。
+- **1 チケット 1 PR**。推奨順は README の第4期の表。各チケットの「決定事項」で `既定案` とした項目は、この決定の範囲で実装者が従う。
 
 ## 10. 完了の定義（全チケット共通）
 
