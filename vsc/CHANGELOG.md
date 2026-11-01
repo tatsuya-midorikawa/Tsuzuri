@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.6 - 2026-11-01
+
+- Refresh the bundled compiler, standard library, completions, and offline handbook with the merged language and tooling updates.
+- **Compatibility:** edition 2027, the default for new projects, now accepts only the canonical spellings: `..=` / `..<` ranges, type-name literal suffixes such as `86i8u`, `ref` / `ref mut` / `deref` / `ref T`, and `\x -> e` lambdas. The other spellings are `E0004`; edition 2026 still accepts them and reports `W1007` with `--warn canonical`. `tsuzuri fix --edition 2027` rewrites them.
+- **Compatibility:** `tsuzuri test` and the Testing view now fail a test whose integer arithmetic wraps. Write intended wrapping with `Int.wrapping_add`, `wrapping_sub`, `wrapping_mul`, or `wrapping_neg`, or pass `--allow-overflow` to report it as a warning instead.
+- Diagnostics carry related locations, `help` lines, fixes, and a stable kind. The Problems panel and hovers show the related locations, the error hover names the kind for `tsuzuri explain`, quick fixes offer the fixes that the language server verified, and **Fix all auto-fixable problems** (`source.fixAll.tsuzuri`) applies a document's `certain` fixes. The CLI adds `tsuzuri explain` and `tsuzuri fix`.
+- New Project also writes `AGENTS.md` and `llms.txt` for AI agents, and its `.gitignore` excludes `target/`, where the knowledge graph is built. The bundled compiler adds `tsuzuri guide`, the knowledge-graph commands (`tsuzuri kg`, `tsuzuri find`, `tsuzuri test --affected`), and the read-only MCP server `tsuzuri mcp`.
+- Include the language and library additions: typed holes `?` with suggested candidates, `@requires` / `@ensures` contracts (`--contracts off|check|test|prove`), the checked effect attributes `@no_alloc`, `@no_copy`, `@no_trap`, and `@terminates`, `@trusted` externs with `[capabilities]` policies and `tsuzuri audit`, `--overflow-report`, any integer type for counted loops, indexes, and slice bounds, the `Text` class for `string` and `utf8string`, `Monoid` with a sequential-equivalent `Parallel.fold`, and trap backtraces with `Domain.run`.
+- Hovers show inferred effects, contract lines, and the rendered examples of `///` comments; `tsuzuri test --doc` runs those examples.
+- New Project reserves the `Text`, `RegexText`, `Domain`, `Monoid`, and `Monoids` namespaces consistently with the compiler.
+- Fix lending casts, unary operators, `@checked`, and `if` / `match` / `try` / block values to `ref` parameters, which reported `E1003`.
+
 ## 0.1.5 - 2026-10-25
 
 - Refresh the bundled compiler, standard library, completions, and offline handbook with the merged language and tooling updates.
