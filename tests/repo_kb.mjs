@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseMarkdown, splitRow } from '../scripts/repo-kb/markdown.mjs';
 import { cp, inputText, MAX_INPUT_BYTES, slug } from '../scripts/repo-kb/text.mjs';
 import { inputFiles, listFiles } from '../scripts/repo-kb/repo.mjs';
-import { scanRust, diagSites, publicItems } from '../scripts/repo-kb/rust.mjs';
+import { scanRust, diagSites, kindRegistry, publicItems } from '../scripts/repo-kb/rust.mjs';
 import { classify, filterPhase, parseDeps, parseFilesCell, parseTicket, roleHeading } from '../scripts/repo-kb/tickets.mjs';
 import { mentions, parseDecisions } from '../scripts/repo-kb/decisions.mjs';
 import { parseModuleTables } from '../scripts/repo-kb/modules.mjs';
@@ -151,7 +151,8 @@ test('files_cell_forms', () => {
     const ctx = context();
     assert.deepEqual(parseFilesCell('`src/check.rs` `src/new.rs` `src/*.rs` `tests/fixtures/` `Checker::name`', ctx),
         [{ path: 'src/check.rs', exists: true }, { path: 'src/new.rs', exists: false }, { path: 'src/control.rs', exists: true },
-            { path: 'src/lib.rs', exists: true }, { path: 'src/recursion.rs', exists: true }, { path: 'tests/fixtures/', exists: true }]);
+            { path: 'src/diagnostic_kinds.rs', exists: true }, { path: 'src/lib.rs', exists: true }, { path: 'src/ownership.rs', exists: true },
+            { path: 'src/recursion.rs', exists: true }, { path: 'tests/fixtures/', exists: true }]);
     assert.deepEqual(parseFilesCell('`src/{check,lib}.rs`', ctx).map(f => f.path), ['src/check.rs', 'src/lib.rs']);
 });
 test('ticket_sections_roles_and_aliases', () => {
@@ -196,11 +197,59 @@ test('docs_index_headings_and_anchors', () => {
 });
 test('diagnostics_index_merges_sites_docs_and_mentions', () => {
     const row = collect(mini).diagnostics.find(d => d.code === 'E1012');
-    assert.equal(row.site_count, 1);
+    assert.equal(row.site_count, 3);
     assert.equal(row.meaning, 'ムーブ後の使用');
     assert.ok(row.tickets.includes('A01'));
     assert.ok(row.decisions.includes('D-02'));
 });
+test('kind_registry_reads_rows_outside_comments_and_tests', () => {
+    assert.deepEqual(kindRegistry(readFileSync(resolve(mini, 'src/diagnostic_kinds.rs'), 'utf8')), [
+        { variant: 'UseAfterMove', id: 'use_after_move', code: 'E1012' },
+        { variant: 'AssignToImmutablePlace', id: 'assign_to_immutable_place', code: 'E1012' },
+        { variant: 'BorrowConflict', id: 'borrow_conflict', code: 'E1014' }]);
+});
+test('kind_sites_name_functions_and_skip_comments', () => {
+    const variants = new Map([['UseAfterMove', { id: 'use_after_move', code: 'E1012' }],
+        ['AssignToImmutablePlace', { id: 'assign_to_immutable_place', code: 'E1012' }]]);
+    assert.deepEqual(diagSites(readFileSync(resolve(mini, 'src/ownership.rs'), 'utf8'), variants).map(s => [s.code, s.kind, s.line, s.function, s.test]),
+        [['E1012', 'use_after_move', 5, 'read_place', false], ['E1012', 'assign_to_immutable_place', 9, 'write_place', false],
+            ['E1012', 'use_after_move', 20, 'reports', true]]);
+});
+test('diagnostics_follow_the_kind_registry', () => {
+    const kb = collect(mini);
+    const row = kb.diagnostics.find(d => d.code === 'E1012');
+    assert.deepEqual(Object.keys(row), ['code', 'meaning', 'site_count', 'sites', 'pages', 'tickets', 'decisions', 'kinds']);
+    assert.equal(row.meaning, 'ムーブ後の使用');
+    assert.deepEqual(row.kinds, ['assign_to_immutable_place', 'use_after_move']);
+    assert.deepEqual(row.sites, [
+        { path: 'src/check.rs', function: 'Checker::value_expression', line: 16, kind: '' },
+        { path: 'src/ownership.rs', function: 'read_place', line: 5, kind: 'use_after_move' },
+        { path: 'src/ownership.rs', function: 'write_place', line: 9, kind: 'assign_to_immutable_place' }]);
+    const registered = kb.diagnostics.find(d => d.code === 'E1014');
+    assert.deepEqual([registered.meaning, registered.kinds, registered.site_count], ['', ['borrow_conflict'], 0]);
+    assert.ok(!kb.diagnostics.some(d => d.code === 'E1015'));
+    assert.deepEqual(['E1001', 'E1002', 'E1003', 'E1004'].map(code => kb.diagnostics.find(d => d.code === code)?.meaning),
+        ['名前と型', '名前と型', '名前と型', '']);
+});
+test('diag_and_search_accept_kind_ids', () => scratch(dir => {
+    const kb = fixtureKb();
+    const text = diagText(kb, 'E1012');
+    assert.equal(diagText(kb, 'use_after_move'), text);
+    assert.match(text, /^E1012 ムーブ後の使用\nkinds: assign_to_immutable_place use_after_move\nsites \(3\):\n/);
+    assert.match(text, /\n  src\/ownership\.rs:read_place L5 use_after_move\n/);
+    assert.match(diagText(kb, 'E1014'), /^E1014 \(no row in compiler\/diagnostics\.md\)\nkinds: borrow_conflict\nsites \(0\):\n/);
+    assert.equal(diagText(kb, 'commented_out'), null);
+    assert.match(searchText(kb, ['borrow_conflict']), /^diagnostic\tE1014\tborrow_conflict$/m);
+    const json = cli('diag', 'assign_to_immutable_place', '--json', '--root', mini, '--out', dir);
+    assert.equal(json.status, 0, json.stderr);
+    assert.equal(JSON.parse(json.stdout).code, 'E1012');
+}));
+test('guide_lite_check_accepts_registered_kinds', () => scratch(dir => {
+    cpSync(mini, dir, { recursive: true });
+    writeFileSync(resolve(dir, '_features/GUIDE-LITE.md'), '# Guide\n`E1014` `assign_to_immutable_place` `commented_out_kind`\n');
+    assert.deepEqual(checkGuideLite({ root: dir }, collect(dir)).failures,
+        ['FAIL symbol commented_out_kind — no fn, mjs mention or diagnostic kind (line 2)']);
+}));
 
 async function scratch(run) {
     const base = resolve(root, 'target/scratch');
@@ -258,6 +307,28 @@ test('build_real_repo_invariants', () => {
     const suites = kb.tests.filter(t => t.kind === 'suite').map(t => t.name);
     assert.deepEqual(suites, [...suites].sort());
     assert.ok(kb.modules.every(m => !m.missing.length));
+});
+test('real_diagnostics_match_the_kind_catalog', () => {
+    const kb = real();
+    // The generated block is `tsuzuri explain --catalog` as a table; gen-docs --check keeps it equal to the registry.
+    const page = readFileSync(resolve(root, '_tsuzuri/language-reference/compiler/diagnostics.md'), 'utf8').replace(/\r\n/g, '\n');
+    const block = /^<!-- generated:diagnostic-kinds -->\n([\s\S]*?)^<!-- \/generated:diagnostic-kinds -->$/m.exec(page)[1];
+    const catalog = new Map([...block.matchAll(/^\| `([EW][0-9]{4})` \| (.+) \|$/gm)].map(m => [m[1], { row: m[2], kinds: [...m[2].matchAll(/`([a-z0-9_]+)`/g)].map(k => k[1]) }]));
+    assert.ok(catalog.size >= 60, `${catalog.size} codes in the catalog`);
+    assert.deepEqual(kb.diagnostics.filter(d => d.kinds.length).map(d => d.code), [...catalog.keys()].sort());
+    for (const [code, { row, kinds }] of catalog) {
+        const d = kb.diagnostics.find(d => d.code === code);
+        assert.deepEqual(d.kinds, kinds, code);
+        assert.notEqual(d.meaning, row, `${code}: the kind list is not a meaning`);
+        assert.ok(d.meaning && !d.meaning.includes('<!--'), `${code}: the reference table gives every registered code a meaning`);
+    }
+    assert.ok(!kb.diagnostics.some(d => d.sites.some(s => s.path === 'src/diagnostic_kinds.rs')));
+    const e1012 = kb.diagnostics.find(d => d.code === 'E1012');
+    assert.match(e1012.meaning, /ムーブ後の使用/);
+    assert.ok(e1012.sites.some(s => s.path === 'src/ownership.rs' && s.kind === 'use_after_move' && s.function), JSON.stringify(e1012.sites.slice(0, 5)));
+    const kindSites = kb.diagnostics.flatMap(d => d.sites.filter(s => s.kind));
+    assert.ok(kindSites.length >= 500, `${kindSites.length} kind sites`);
+    assert.ok(kindSites.every(s => s.function !== null), 'every kind site is inside a function');
 });
 
 const fixtureKb = () => collect(mini);
@@ -544,7 +615,7 @@ test('compiler_paths_are_detected_in_find_and_slice_runners', () => {
     for (const path of ['tests/compact_strings.mjs', 'tests/compact_strings_raw.mjs', 'tests/small_allocator.mjs']) {
         const row = real().tests.find(t => t.path === path);
         assert.equal(row.compiler_arg, true, path);
-        assert.equal(row.command, `node ${path} target/release/tsuzuri`);
+        assert.equal(row.command, `node ${path} target/debug/tsuzuri`);
     }
 });
 test('indexed_target_selector_runner_uses_valid_default', () => {
@@ -636,7 +707,7 @@ test('wrapped_suite_and_returned_metadata_are_indexed', () => {
     assert.equal(suite.traps, true);
     assert.equal(suite.inspect, true);
     assert.equal(suite.fixture, 'tests/fixtures/list_chunks');
-    assert.equal(suite.command, 'node tests/features.mjs target/release/tsuzuri list_chunks');
+    assert.equal(suite.command, 'node tests/features.mjs target/debug/tsuzuri list_chunks');
 });
 test('checker_skips_oversized_rust_and_javascript', () => scratch(async dir => {
     cpSync(mini, dir, { recursive: true });
@@ -708,7 +779,7 @@ test('command_recovery_returns_complete_generated_list', () => {
     const kb = fixtureKb();
     const text = sectionText(ctx, kb, 'A01', 'commands');
     assert.match(text, /cargo test --locked --test alpha/);
-    assert.match(text, /node tests\/features\.mjs target\/release\/tsuzuri storage/);
+    assert.match(text, /node tests\/features\.mjs target\/debug\/tsuzuri storage/);
 });
 
 let passed = 0;
