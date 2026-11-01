@@ -132,11 +132,11 @@ node scripts/repo-kb.mjs <コマンド> [引数] [共通オプション]
 
 | コマンド | 引数 | 働き | Phase |
 | --- | --- | --- | --- |
-| `build` | なし | 索引 6 種と `manifest.json` を `--out` に書く。標準出力に 1 行 `repo-kb: tickets=125 decisions=58 modules=… diagnostics=… tests=… docs=… warnings=4 -> target/repo-kb`（実際の件数） | 1 |
+| `build` | なし | 索引 6 種と `manifest.json` を `--out` に書く。標準出力に 1 行 `repo-kb: tickets=152 decisions=60 modules=177 diagnostics=81 tests=340 docs=128 warnings=4 -> target/repo-kb`（実際の件数。例は 2026-11-01 の `main`。起票時は `tickets=125 decisions=58`） | 1 |
 | `verify` | なし | 入力の SHA-256 を計算し直して `manifest.json` と比べる。同じなら `repo-kb: fresh`（終了コード 0）、違う・無いなら `repo-kb: stale (run: node scripts/repo-kb.mjs build)`（終了コード 1） | 1 |
 | `brief` | `<ID>` | 文脈パックを標準出力へ（「`brief` の出力」） | 2 |
 | `ticket` | `<ID>` | チケットのメタ情報・依存先の状態・逆向きの依存・見出しの索引 | 2 |
-| `section` | `<ID> <名前>` | チケットの 1 節の全文。名前は役割名（`quick`・`purpose`・`start`・`current`・`frozen`・`spec`・`design`・`steps`・`tests`・`docs`・`accept`・`pitfalls`・`nongoals`・`decisions`・`needs`・`gives`）か、見出しの文字列（括弧の注釈を除いたもの。完全一致） | 2 |
+| `section` | `<ID> <名前>` | チケットの 1 節の全文。名前は役割名（`quick`・`purpose`・`start`・`current`・`frozen`・`spec`・`design`・`steps`・`tests`・`docs`・`accept`・`pitfalls`・`nongoals`・`decisions`・`needs`・`gives`）、生成する一覧 `commands`（関連テストのコマンドの全部）・`symbols`（公開シンボルの全部）、または見出しの文字列（括弧の注釈を除いたもの。完全一致。レベル 2 か 3。役割の別名なら同じ Phase の切り分けを使う）（2026-11-01 改訂: `commands`・`symbols` を追記） | 2 |
 | `decision` | `<D-n または n>` | 決定の題名・本文・言及するチケットと診断コード。`D-45`・`d-45`・`45`・`D-5`（`D-05` として）を受ける | 2 |
 | `files` | `<パス>` | そのパスを言及するチケットと決定。パスが `/` で終わるときは前方一致 | 2 |
 | `diag` | `<コード または kind>` | 診断コード（`E1012`・`W1006`）か kind（`use_after_move`。そのコードの行を出す）の kind・発行箇所・言語リファレンスの表の行・言及するページ・チケット・決定 | 2 |
@@ -149,7 +149,7 @@ node scripts/repo-kb.mjs <コマンド> [引数] [共通オプション]
 | 0 | 成功 |
 | 1 | 見つからない（ID・決定・コード）、`verify` が古い、`--no-refresh` で古い、`brief` が段 6 まで進んでも `--max-chars` に入らない |
 | 2 | 使い方の誤り（未知のコマンド・オプション、引数の不足・過剰、`--max-chars` の範囲外、数値でない値） |
-| 3 | 失敗（読めない `--root`、`--out` が `.repo-kb` のない空でないディレクトリ、チケット ID の重複、`git` が使えず walk も失敗） |
+| 3 | 失敗（読めない `--root`、`--out` が `.repo-kb` のない空でないディレクトリか `--root` そのもの、チケット ID の重複、`git` が使えず walk も失敗、出力のロックが 2 分で取れない、`brief` が読む GUIDE-LITE が 8 MiB を超える）（2026-11-01 改訂: 後の 3 つを追記） |
 
 エラーは標準エラーに `repo-kb: <メッセージ>` の 1 行（診断 JSON ではない）。警告は `repo-kb: warning: <slug> <対象>: <説明>`（`build` が出し、`manifest.json` の `warnings` にも入る）。標準出力に出すのは結果だけ。
 
@@ -169,9 +169,9 @@ node scripts/repo-kb.mjs <コマンド> [引数] [共通オプション]
 | 文書 | `_tsuzuri/language-reference/**/*.md`・`docs/*.md`・`README.md` |
 | 自分自身 | `scripts/repo-kb.mjs`・`scripts/repo-kb/*.mjs`（どちらも新規。鮮度の対象。解析器を直すと KB が作り直される） |
 
-ファイルの一覧は `git ls-files --cached --others --exclude-standard -z`（`cwd` が `--root`）で作る。`git` が失敗したら、`.git`・`target`・`node_modules` を除いてディレクトリを再帰で歩く。どちらも `/` 区切りの相対パスを UTF-16 コード単位の昇順に整列する。1 ファイルが 8 MiB を超えたら読まず、警告 `file_too_large` を出す。読むときは UTF-8 で読み、`\r\n` を `\n` にする。
+ファイルの一覧は、`--root` が git の作業ツリーの根なら `git ls-files --cached --others --exclude-standard -z`（`cwd` が `--root`。通常のファイルだけ）で作る。`git` が使えない、または `--root` が根でない（別のリポジトリの中の fixture）なら、`.git`・`target`・`node_modules` を除いてディレクトリを再帰で歩く。どちらも `/` 区切りの相対パスを UTF-16 コード単位の昇順に整列する。`--out` とそのロック（`<out>.repo-kb-lock/`）が `--root` の下にあれば、一覧から除く。1 ファイルが 8 MiB（UTF-8 のバイト数）を超えたら読まず、警告 `file_too_large` を出す（2026-11-01 改訂: 根の判定・出力の除外・バイト数を追記）。読むときは UTF-8 で読み、`\r\n` を `\n` にする。
 
-**入力のハッシュ。** `input_sha256` は、次の行を `\n` でつないだ文字列の SHA-256（16 進小文字）。(1) 一覧の全ファイルについて `F <パス>`、(2) 上の表の入力ファイルについて `H <ファイル内容の SHA-256> <パス>`。どちらもパスの昇順。
+**入力のハッシュ。** `input_sha256` は、次の行を `\n` でつないだ文字列の SHA-256（16 進小文字）。(1) 一覧の全ファイルについて `F <パス>`、(2) 上の表の入力ファイルのうち読んだもの（8 MiB 以下）について `H <ファイル内容の SHA-256> <パス>`。どちらもパスの昇順。ハッシュと索引は同じ読み取りの結果から作る（読んだ後に大きさが 8 MiB をまたいでも、次の鮮度の検査で古いと分かる）（2026-11-01 改訂）。
 
 ### 決定表 T1: ファイルの分類（チケット）
 
@@ -194,9 +194,9 @@ node scripts/repo-kb.mjs <コマンド> [引数] [共通オプション]
 
 | 名前 | 規則 | 結果（キー） | 不正なとき |
 | --- | --- | --- | --- |
-| `優先度` | 値が `^P[0-3]$` | `priority` | 警告 `ticket_field_invalid priority`、`null` |
+| `優先度` | 値が `^P[0-3]$`、または全角括弧の注記つき（`P1（D-50 の表）`。2026-11-01 改訂） | `priority` | 警告 `ticket_field_invalid priority`、`null` |
 | `規模` | 値の中の最初の `/(?<![A-Za-z])(XL\|S\|M\|L)(?![A-Za-z])/` | `size`。値がそのトークンだけでなければ `size_note` に値（200 字まで）、そうでなければ `""` | 警告、`size` は `null` |
-| `状態` | 値の先頭が `todo` か `done` | `state_cell`（その語。ほかは `unknown`）。`state_raw` は値の先頭 160 字 | `unknown` なら警告 `ticket_field_invalid state` |
+| `状態` | 値の先頭が `todo`・`doing`・`done`・`blocked` のどれか（2026-11-01 改訂: `doing`・`blocked` を追記） | `state_cell`（その語。ほかは `unknown`）。`state_raw` は値の先頭 160 字 | `unknown` なら警告 `ticket_field_invalid state` |
 | 場所と状態 | `completed` が真なら `state = "done"`、偽なら `state = state_cell` | `state` | `completed` と `state_cell` が食い違う（`completed` で `todo`、または未完了で `done`）と警告 `state_conflict <ID>: cell '<語>', but the file is <under _completed/ / not under _completed/>`（**場所を優先**） |
 | `依存` | 決定表 T3a | `deps`・`deps_raw`（値の先頭 600 字） | `ID` 以外の名前が欠ける（`ID`・`優先度`・`規模`・`依存`・`状態`）と警告 `ticket_field_missing <名前>` |
 | `後続` | 値をそのまま | `followers_raw`（先頭 600 字。なければ `""`） | — |
@@ -221,7 +221,7 @@ parseDeps(cell, known):                       # known = 索引の全チケット
   stripped = list の全角括弧（…）（入れ子なし）を同じ長さの空白に置換
   deps = 順序つき map
   for m in /(?<![A-Za-z0-9])([A-Z]{1,2}[0-9]{2})(?![A-Za-z0-9])/g in stripped:
-    before = stripped[max(0, m.index-6) : m.index]
+    before = stripped[max(0, m.index-8) : m.index]
     weak = before が "(" で終わる または /弱依存\s*$/ または /弱い依存[:：]\s*$/ に一致
     deps.setdefault(m[1], weak)               # 最初に現れた判定を使う
   for m in /弱い依存[:：]\s*\[?([A-Z]{1,2}[0-9]{2})(?![A-Za-z0-9])/g in note:
@@ -240,6 +240,8 @@ parseDeps(cell, known):                       # known = 索引の全チケット
 | `A15（done）、G19（done。edition）、(A17)。A17 は弱い依存: …`（A18） | A15・G19 強い、A17 弱い。`。` の後の `[A19](…)` は注記なので依存にならない |
 | `[D11](_completed/D11-…md)（done。…）、…。弱い依存: [A17](…)（…）。[A18](…) とは…（D16）…`（A19） | D11・A15・B07・F10・C10 強い、A17 弱い。A18 と `D16`（決定の番号）は依存にならない |
 | `G22 の Phase 1（…）。… 弱い依存: G23（…）`（G24） | G22 強い、G23 弱い |
+
+**README の依存図による補完**（2026-11-01 改訂）: `collect` は、`_features/README.md` の `^\s*(ID)\s*(-->|-\.->)\s*(ID)` を辺として読み、矢印の先のチケットの `deps` に元を足す（すでにあれば `weak` を辺の種類で上書きする。`-.->` が弱い）。両端が索引のチケットである辺だけを使う。第3期の Phase ごとの依存は、セルの文章だけでは強弱を決められないため（`deps_raw` に原文が残る）。
 
 ### 決定表 T3b: 影響ファイルのセル
 
@@ -310,7 +312,7 @@ N が Phase 0 または `--phase` の値のブロックだけを残す。除い�
 
 ### 決定表 T7: 表（`modules.jsonl`）
 
-対象のファイル（`docs/architecture.md`・`_features/GUIDE.md`）から、フェンスの外の Markdown 表（`|` で始まる行と、次行が `^\|\s*:?-{3,}`）のうち**ヘッダの最初のセルが `ファイル`** のものを集める（HEAD は 4 つ: architecture 1、GUIDE §4.1〜§4.3）。セルの分割は T2 と同じだが、**バッククォートの中の `|` は分けない**。第 1 列のセルは ` / ` で分け、各断片の**最初のバッククォートのトークン**を取る。
+対象のファイル（`docs/architecture.md`・`_features/GUIDE.md`）から、フェンスの外の Markdown 表（`|` で始まる行と、次行が `^\|\s*:?-{3,}`）のうち**ヘッダの最初のセルが `ファイル`** のものを集める（4 つ: architecture 1、GUIDE §4.1〜§4.3。2026-11-01 の `main` で 104・21・9・43 行、`missing` 0）。セルの分割は T2 と同じだが、**バッククォートの中の `|` は分けない**。第 1 列のセルは ` / ` で分け、各断片の**最初のバッククォートのトークン**を取る。
 
 | トークン | 規則 |
 | --- | --- |
@@ -336,19 +338,19 @@ N が Phase 0 または `--phase` の値のブロックだけを残す。除い�
 
 `annotate` は、マスクしたコードを 1 回なぞり、波括弧のスタックに `fn`・`impl`（`trait` を含む）・`mod`・`block` を積む。`fn 名前` の後ろを `(`/`[` の深さで数え、深さ 0 の `;` が先なら本体なし、深さ 0 の `{` が先なら `fn` を積む。`impl` は、ヘッダ（`{` か `;` まで）から先頭の `<…>` を除き、`for` があればその後ろの最初の識別子（`::` の最後の部分）を型名とする。`#[cfg(test)]`（マスク後のコードで）に続く `mod 名前 {` はテスト領域として積み、その中はすべて `test`。文字列リテラルごとに、その位置のスタックから `function`（最も内側の `fn`。内側に `impl` があれば `型::名前`）と `test` を決める。
 
-**診断の箇所**: 文字列リテラルの値が `^[EW][0-9]{4}$` に完全一致し、`test` でないもの。`{code, path, function, line}`。HEAD の期待（試作）: 757 か所、46 種、`function` が `null` のもの 0。例: `E1012` は `src/ownership.rs` の `Checker::access`（3）・`Checker::read_places`（4）・`Checker::eval_value`（3）、`src/check.rs` の `Checker::value_expression`、`src/closures.rs` の `lower_expression`、`src/closures_rec.rs` の `lower_group`。
+**診断の箇所**: 文字列リテラルの値が `^[EW][0-9]{4}$` に完全一致し、`test` でないもの。`{code, path, function, line, kind}`（文字列の箇所の `kind` は `""`）。起票時の HEAD の期待（試作。G23 より前）: 757 か所、46 種、`function` が `null` のもの 0。2026-11-01 の `main` は、下の kind の箇所と合わせて 1,524 か所（kind 1,419・文字列 105。77 ファイル）、66 種。`function` が `null` なのは、`src/explain.rs` の `CODE_PAGES`・`KIND_PAGES` と `src/canonical.rs` の表のような、モジュール直下の文字列（索引の `sites` で 77 か所）。例: `E1012` は 15 か所で、`src/ownership.rs` の `Checker::access`（3）・`Checker::read_places`（4）・`Checker::eval_value`（3）・`default_parameter_hint`、`src/check.rs` の `Checker::value_expression`、`src/closures.rs` の `lower_expression`、`src/closures_rec.rs` の `lower_group`、`src/explain.rs` のモジュール直下（`CODE_PAGES`）。
 
 **kind の登録簿と kind の発行箇所**（2026-11-01 追記。G23 の完了後、コンパイラは診断を `Diagnostic::of(DiagnosticKind::UseAfterMove, …)` の形で出し、コードの文字列はおもに登録簿にある）: `rust.mjs` の `kindRegistry(text)` は、`KIND_REGISTRY`（`src/diagnostic_kinds.rs`）の `/\(\s*([A-Z][A-Za-z0-9]*)\s*,\s*"([a-z][a-z0-9_]*)"\s*,\s*"([EW][0-9]{4})"\s*\)/` のうち、開き括弧がマスクしたコードに残り（コメント・文字列の中でない）テスト領域でないものを、出現順に `{variant, id, code}` で返す。`diagSites(text, variants)` は、上の文字列の箇所（`kind` は `""`）に、マスクしたコードの `DiagnosticKind::<Variant>` のうち登録簿にある `Variant` の箇所（`code` と `kind`（その `id`））を足し、位置の順に返す（`DiagnosticKind::ALL` のような登録簿にない名前は箇所でない）。**`collect` は登録簿のファイル自身を箇所の走査から除く**（その文字列は kind の宣言で、診断を出す所ではない）。
 
-**公開項目**（`brief` の公開シンボル）: マスクしたコードの行のうち `^\s*pub(\([^)]*\))?\s+(const\s+\|async\s+\|unsafe\s+\|extern\s+("[^"]*"\s+)?)*(fn\|struct\|enum\|trait\|type\|const\|static\|mod\|union)\s+([A-Za-z_][A-Za-z0-9_]*)` に一致し、`test` でないもの。出力は**元の行**の前後の空白を除いたもの（140 字まで。超えたら 137 字 + `...`）。HEAD: `src/` 全体で 1,356 行。
+**公開項目**（`brief` の公開シンボル）: マスクしたコードの行のうち `^\s*pub(\([^)]*\))?\s+(const\s+\|async\s+\|unsafe\s+\|extern\s+("[^"]*"\s+)?)*(fn\|struct\|enum\|trait\|type\|const\|static\|mod\|union)\s+([A-Za-z_][A-Za-z0-9_]*)` に一致し、`test` でないもの。出力は**元の行**の前後の空白を除いたもの（140 字まで。超えたら 137 字 + `...`）。`src/` 全体で、起票時の HEAD は 1,356 行、2026-11-01 の `main` は 3,149 行。
 
 ### 決定表 T9: テストと文書の索引
 
 | 行の `kind` | 対象 | 規則 |
 | --- | --- | --- |
-| `rust_test` | `tests/*.rs`（101） | `count` は `#[test]` の行数（マスクしたコードの `^\s*#\[test\]`）、`names` は直後の `fn` 名（300 まで）、`command` は `cargo test --locked --test <stem>` |
-| `mjs_test` | `tests/*.mjs`（80） | `compiler_arg` は本文に `argv[2]`、`helper` は別の `tests/*.mjs` が `from "./<名前>.mjs"` で読むもの、`command` は helper なら `""`、`compiler_arg` なら `node tests/<名前>.mjs target/debug/tsuzuri`（2026-11-01 改訂: `AGENTS.md` の T2 は `cargo build` が作る dev バイナリで回す。起票時は `target/release/tsuzuri`）、なければ `node tests/<名前>.mjs`。`tests/features.mjs` も 1 行 |
-| `suite` | `tests/features.mjs` の `const suites = {` から最初の `^};$` まで | 2 字下げの `^  ([A-Za-z_][A-Za-z0-9_]*): \{` が suite 名。次の suite までの `^    input: "([^"]+)"` で `input`。`fixture = tests/fixtures/<input の値。なければ suite 名>`（なければ警告 `suite_fixture_missing`）。`traps`・`inspect`・`cases` は `^    traps:`・`^    inspect(`・`^    cases:` の有無。`command` は `node tests/features.mjs target/debug/tsuzuri <名前>`（同上） |
+| `rust_test` | `tests/*.rs`（起票時 101、2026-11-01 は 165） | `count` は `#[test]` の行数（マスクしたコードの `^\s*#\[test\]`）、`names` は直後の `fn` 名（300 まで）、`command` は `cargo test --locked --test <stem>` |
+| `mjs_test` | `tests/*.mjs`（起票時 80、2026-11-01 は 104） | `compiler_arg` は本文に `argv[2]` か `const compiler = resolve(process.argv.find(`（`args.find(` も）があるもの。ただし `tests/repo_kb.mjs`（引数はテスト名の絞り込み）と `tests/wasm_heap.mjs`（引数は target の選択）は偽。`helper` は別の `tests/*.mjs` が `from "./<名前>.mjs"` で読むものと、子プロセスとしてだけ動く `tests/os-wasi-host.mjs`。`command` は helper と、比較する入力を手で渡す `tests/display_parse_exhaustive.mjs` なら `""`（2026-11-01 改訂: 例外を追記）、`compiler_arg` なら `node tests/<名前>.mjs target/debug/tsuzuri`（2026-11-01 改訂: `AGENTS.md` の T2 は `cargo build` が作る dev バイナリで回す。起票時は `target/release/tsuzuri`）、なければ `node tests/<名前>.mjs`。`tests/features.mjs` も 1 行 |
+| `suite` | `tests/features.mjs` の `const suites = {` から最初の `^};$` まで（2026-11-01 は 71。`input` を持つのは `storage` だけ） | 2 字下げの `^  ([A-Za-z_][A-Za-z0-9_]*): \{` が suite 名。即時関数で包んだ `^  (名前): \(\(\) => \{` も suite で、その中の `^    return \{` から `^    \};` までを、字下げを 6 として読む（2026-11-01 改訂）。次の suite までの `^    input: "([^"]+)"` で `input`。`fixture = tests/fixtures/<input の値。なければ suite 名>`（なければ警告 `suite_fixture_missing`）。`traps`・`inspect`・`cases` は `^    traps:`・`^    inspect(`・`^    cases:` か `^    get cases(`（getter。2026-11-01 改訂）の有無。JavaScript は実行しない。`command` は `node tests/features.mjs target/debug/tsuzuri <名前>`（同上） |
 | 文書 | `_tsuzuri/language-reference/**/*.md`（`kind: reference`）・`docs/*.md`（`docs`）・`README.md`（`readme`） | `title` は最初の H1、`chars`、`headings`（レベル 2〜3。最大 200）に `anchor`（`check-docs.mjs` の `headings` と同じ slug: 小文字化 → `[^\p{L}\p{M}\p{N}\s_-]` を除く → 空白を `-` → 重複は `-1`・`-2`） |
 
 **診断の索引**（`diagnostics.jsonl`）: 次のいずれかに現れるコードの集合を行にする: T8 の箇所、登録簿の kind、`_tsuzuri/language-reference/compiler/diagnostics.md` の表の行（`^\| \`([EW][0-9]{4})\` \| (.+) \|$`）、チケット・決定・文書の言及。`meaning` は、生成ブロック（`<!-- generated:NAME -->` から `<!-- /generated:NAME -->` まで。G35）の外で、そのコードが**最初に**現れる表の行の 2 列目（なければ `""`。2026-11-01 改訂: 生成ブロックの kind の一覧と、後の節の個別の表（確保数の診断など）は意味ではない）、`pages` は文書で言及するページ（最大 30）、`tickets`・`decisions` は言及、`kinds` は登録簿でそのコードに属す kind の `id`（昇順）。
@@ -367,9 +369,9 @@ N が Phase 0 または `--phase` の値のブロックだけを残す。除い�
 | `tests.jsonl` | 共通 `kind`・`path`・`name`。`rust_test`: `count`・`names`・`command`。`mjs_test`: `compiler_arg`・`helper`・`command`。`suite`: `input`・`fixture`・`fixture_exists`・`traps`・`inspect`・`cases`・`command`（`kind` の順は `rust_test`・`mjs_test`・`suite`、同じ kind は `path`／`name` の昇順） |
 | `docs.jsonl` | `path`・`kind`・`title`・`chars`・`headings`（`[{"level","title","anchor"}]`） |
 
-**書き込み。** `<out>` が存在し、空でなく、`.repo-kb` がなければ終了コード 3。作るときは各ファイルを `<名前>.tmp` に書いて `rename` する（同じディレクトリ内）。最後に `manifest.json` を書く（`verify` はこれを見る）。
+**書き込み。** `<out>` が存在し、空でなく、`.repo-kb` がなければ終了コード 3。構築・鮮度の検査・照会の読み取りは、出力の隣のロック `<out>.repo-kb-lock/`（`mkdir` で取り、中の `owner` に PID を書く。2 分で取れなければエラー）で直列化し、異なる入力の索引を混ぜない。作るときは先に古い `manifest.json` を消し、各ファイルを `<名前>.<PID>.<連番>.tmp` に書いて `rename` する（同じディレクトリ内）。最後に `manifest.json` を書く（`verify` はこれを見る。途中で止まっても、部分的な索引を fresh としない）（2026-11-01 改訂: ロックと一時ファイルの名前を追記）。
 
-**警告の slug（閉じた集合）**: `file_skipped`・`file_too_large`・`ticket_id_mismatch`・`ticket_table_missing`・`ticket_field_missing`・`ticket_field_invalid`・`state_conflict`・`dep_unknown`・`decision_gap`・`table_path_missing`・`suite_fixture_missing`。`dup_ticket_id` は警告でなくエラー（終了コード 3）。HEAD の期待: `state_conflict` が 4 件（G13・G16・G17・G18）だけ。
+**警告の slug（閉じた集合）**: `file_skipped`・`file_too_large`・`ticket_id_mismatch`・`ticket_table_missing`・`ticket_field_missing`・`ticket_field_invalid`・`state_conflict`・`dep_unknown`・`decision_gap`・`table_path_missing`・`suite_fixture_missing`。`dup_ticket_id` は警告でなくエラー（終了コード 3）。HEAD の期待: `state_conflict` が 4 件（G13・G16・G17・G18）だけ（2026-11-01 の `main` も同じ）。
 
 ### `brief` の出力
 
@@ -381,10 +383,10 @@ N が Phase 0 または `--phase` の値のブロックだけを残す。除い�
 | 1 | `=== CONTENTS ===` | 部分ごとに 1 行 `<key> <見出し> <表示文字数>/<全文字数> <full\|shortened\|omitted>`（最大 24 行） |
 | 2〜8 | `=== TICKET <ID> / <role>: <見出し> (<path>:<開始行>-<終了行>) ===` | 役割 `quick`・`start`・`spec`・`design`・`steps`・`tests`・`accept` の本文（T4・T4b）。ない役割は出さず、CONTENTS に `omitted`（`absent`）と書く。`--with` の役割は `accept` の後に指定順で |
 | 9 | `=== INTERFACES ===` | `needs` の節（自分の「前提とする他チケットのインターフェース」）と、強い依存先で `gives` の節を持つものの本文（`=== INTERFACE PROVIDED BY <ID> ===` で区切る） |
-| 10 | `=== DECISION D-NN <題名> (_features/GUIDE.md:<行>) ===` | チケットの本文（メタ表の値と取り出した節）で**最初に言及された順**の決定（T5） |
+| 10 | `=== DECISION D-NN <題名> (_features/GUIDE.md:<行>) ===` | チケットの本文（メタ表の値と取り出した節）で**最初に言及された順**の決定（T5）。段の件数を超えた決定は、`=== DECISIONS ===` の 1 行 `[omitted: D-aa, D-bb; rest: node scripts/repo-kb.mjs decision D-aa; repeat for each ID]` にまとめる（2026-11-01 改訂） |
 | 11 | `=== PUBLIC SYMBOLS <path> ===` | `files` のうち実在する `.rs` ごとに、公開項目（T8）。チケット本文に名前が出るものを先に、残りは行の昇順。1 ファイル 10 件まで。各行 `L<行> <署名>` |
-| 12 | `=== TESTS AND COMMANDS ===` | 関連テスト（下の規則）ごとに `<コマンド>   # <根拠>`（最大 12 行） |
-| 13 | `=== GUIDE-LITE (_features/GUIDE-LITE.md) ===` | 全文。ファイルがなければこの部分を出さず CONTENTS にも書かない |
+| 12 | `=== TESTS AND COMMANDS ===` | 関連テスト（下の規則）ごとに `<コマンド>   # <根拠>`（最大 12 行。超えたら `[omitted: <n> more commands; rest: node scripts/repo-kb.mjs section <ID> commands]`。2026-11-01 改訂） |
+| 13 | `=== GUIDE-LITE (_features/GUIDE-LITE.md) ===` | 全文。ファイルがなければこの部分を出さず CONTENTS にも書かない。8 MiB を超えるなら黙って省かず、エラーで止める（2026-11-01 改訂） |
 | 14 | `=== END ===` | 最後の行 |
 
 **固定文**（`HOW TO USE THIS PACK` の 3 行。そのまま）:
@@ -397,7 +399,7 @@ N が Phase 0 または `--phase` の値のブロックだけを残す。除い�
 
 **関連テスト**: `files` と `refs.files` のうち `tests/<名前>.rs` は `cargo test --locked --test <名前>`、`tests/<名前>.mjs` は `tests.jsonl` の `command`（helper は出さない）、`tests/fixtures/<dir>/` は `fixture` がその `<dir>` の suite の `command`。本文のバッククォートのトークンが suite 名に完全一致するものも suite の `command`。実在しないパスは `# <path> (new)`。重複は除く（出現順）。
 
-**切り詰め。** `cut(text, cap)` は、`text` が `cap` 字以下ならそのまま。超えるときは**行単位**で `cap` 字以内に入る行までを残し（最初の行が `cap` を超えるなら先頭の `cap` 字）、次の 1 行を足す: `[shortened: <残した字数> of <全体の字数> chars; rest: node scripts/repo-kb.mjs section <ID> <役割>]`（決定は `decision D-NN`、公開シンボルは `files <path>`、GUIDE-LITE は `[shortened: …; rest: _features/GUIDE-LITE.md]`）。落とした部分が丸ごと（上限 0）のときは `[omitted: <全体の字数> chars; …同じ形…]` 1 行だけ。
+**切り詰め。** `cut(text, cap)` は、`text` が `cap` 字以下ならそのまま。超えるときは**行単位**で `cap` 字以内に入る行までを残し（最初の行が `cap` を超えるなら先頭の `cap` 字）、次の 1 行を足す: `[shortened: <残した字数> of <全体の字数> chars; rest: node scripts/repo-kb.mjs section <ID> <役割>]`（役割の節は `section <ID> <役割> --phase <N>`、決定は `decision D-NN`、公開シンボルは `section <ID> symbols`、関連テストは `section <ID> commands`、INTERFACES は寄与した節ごとの `node scripts/repo-kb.mjs section <ID> needs`・`… section <依存先> gives` を `; ` でつないだもの、GUIDE-LITE は `rest: cat _features/GUIDE-LITE.md`）。落とした部分が丸ごと（上限 0）のときは `[omitted: rest: <同じコマンド>]` 1 行だけ（2026-11-01 改訂: 実装の形に合わせた）。
 
 **段の表**（`B` に入るまで、0 から 6 へ段を進める。各段は前の段の上限を上書きする。空欄はそのまま。`cap` は字数。`—` は上限なし）:
 
@@ -411,7 +413,7 @@ N が Phase 0 または `--phase` の値のブロックだけを残す。除い�
 | 5 | 2,000 | 1,500 | 800 | 600 | 1,800 | 400 | 600 | | | | 300 | |
 | 6 | | | | | | | | | | | | 残りの字数（3,000 以上。足りなければ終了コード 1） |
 
-段 `k` の上限で全体を組み立て直し、長さが `B` 以下になった最初の段を出力する。**試作の見積り**（作業ツリーの 149 件に表を当てた。付録 A.4）: `B = 24000` で全件が入り、段 0〜6 の件数は 9・11・6・16・62・45・0。`B = 16000` でも全件が入り（段 6 が 113 件）、`B = 60000` では 126 件が段 0。`B = 12000` は 149 件のどれも入らない（`--max-chars` の下限を 16000 にした理由）。実装後は同じ確認を `brief_real_repo_all_tickets_default_and_16000` が行う。
+段 `k` の上限で全体を組み立て直し、長さが `B` 以下になった最初の段を出力する。**試作の見積り**（作業ツリーの 149 件に表を当てた。付録 A.4）: `B = 24000` で全件が入り、段 0〜6 の件数は 9・11・6・16・62・45・0。`B = 16000` でも全件が入り（段 6 が 113 件）、`B = 60000` では 126 件が段 0。`B = 12000` は 149 件のどれも入らない（`--max-chars` の下限を 16000 にした理由）。実装後は同じ確認を `brief_real_repo_all_tickets_default_and_16000` が行う（2026-11-01 の `main` の 152 件は、`B = 24000`・`16000` とも全件が入る）。
 
 ### 照会コマンドの出力（text。`--json` は索引の行）
 
@@ -422,7 +424,7 @@ N が Phase 0 または `--phase` の値のブロックだけを残す。除い�
 | `files <path>` | `tickets:` の後に `  <ID> (<path>) cell`（影響ファイルの表）か `mention`（本文）、`decisions:` の後に `  D-NN mention`、`modules:` の後に `  <source> table <n> row <m>`。見つからなければ各見出しの下に `  (none)` |
 | `diag E1012`（`diag use_after_move` も同じ行） | `E1012 <meaning または (no row in compiler/diagnostics.md)>`／`kinds: <id> …`／`sites (<n>):` の後に `  <path>:<function> L<line>[ <kind>]`／`pages: <path>; …`／`tickets: <ID> …`／`decisions: D-NN …`（なければ `(none)`） |
 | `search <語>` | `<kind>\t<key>\t<text>`（`kind` は `ticket`・`decision`・`diagnostic`・`module`・`test`・`doc`。`text` は 100 字まで）。ID・コードの完全一致を先頭に、残りは `kind`・`key` の昇順。0 件でも終了コード 0 で `(no matches)` |
-| `section <ID> <名前>` | `=== SECTION <ID> <見出し> (<path>:<開始行>-<終了行>, <n> chars) ===` の後に本文（見つからなければ終了コード 1 と `repo-kb: no such section: <名前> (have: <役割と見出し>)`） |
+| `section <ID> <名前>` | `=== SECTION <ID> <見出し> (<path>:<開始行>-<終了行>, <n> chars) ===` の後に本文。`commands`・`symbols` は `=== SECTION <ID> COMMANDS (generated, <n> chars) ===`（`SYMBOLS` も同じ形）の後に一覧の全部（2026-11-01 改訂）（見つからなければ終了コード 1 と `repo-kb: no such section: <名前> (have: <役割と見出し>)`） |
 
 ### `check-guide-lite`（Phase 2）
 
@@ -441,7 +443,7 @@ N が Phase 0 または `--phase` の値のブロックだけを残す。除い�
 | C8 記号 | `^([A-Z][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)$`、`^[A-Z][A-Z0-9_]{3,}$`、`^[a-z][a-z0-9]*(_[a-z0-9]+){2,}$` | Rust のマスク済みコード（`src/**/*.rs`・`tests/*.rs`）に: 型は `(struct\|enum\|trait\|type\|union)\s+<型>\b` か `impl…<型>`、項目は `(fn\|const\|static)\s+<名>\b` か識別子としての出現（列挙子）／定数は `(const\|static)\s+<名>\b`／関数・テスト名は `fn\s+<名>\b` か `tests/*.mjs` の文字列か登録簿の kind の `id`（2026-11-01 追加） | `type <T> not found`／`item <i> not found`／`no const/static with this name`／`no fn, mjs mention or diagnostic kind` |
 | C9 チケット ID | 全文の `(?<![A-Za-z0-9-])([A-Z]{1,2}[0-9]{2})(?![A-Za-z0-9])` | チケットの索引にある | `no such ticket` |
 
-`SECTION_KEYWORDS = {"1": "絶対に守る規則", "3.1": "テスト選択", "6.7": "診断コード", "6.9": "走査箇所", "8": "ドキュメント更新規約", "11.1": "落とし穴", "12": "構文の早見表", "13.1": "止めて報告する条件"}`（GUIDE-LITE が引く 8 節）。**`PLANNED = ["guide/"]`**（G21 が作る予定のディレクトリ。C2 の対象で、実在しない間だけ許す。**実在するようになったら `now exists; remove it from PLANNED` で失敗させる**＝許可リストの腐敗を防ぐ）。出力は失敗の行のあと `check-guide-lite: <n> references checked, <m> failed`。終了コード 0（失敗なし）・1（失敗あり）・2（使い方）。**HEAD の期待（試作）**: 統括者の修正後の GUIDE-LITE で 99 件を調べて失敗 0 件（`check-guide-lite: 99 references checked, 0 failed`。件数は GUIDE-LITE を直すと変わる）。修正前の GUIDE-LITE（`Options::validate` を載せていた版）の複製では失敗 1 件（`FAIL symbol Options::validate — type Options not found`）。
+`SECTION_KEYWORDS = {"1": "絶対に守る規則", "3.1": "テスト選択", "6.7": "診断コード", "6.9": "走査箇所", "8": "ドキュメント更新規約", "11.1": "落とし穴", "12": "構文の早見表", "13.1": "止めて報告する条件"}`（GUIDE-LITE が引く 8 節）。**`PLANNED`**（起票時は `["guide/"]`。G21 が作る予定のディレクトリで、C2 の対象として実在しない間だけ許す。**実在するようになったら `now exists; remove it from PLANNED` で失敗させる**＝許可リストの腐敗を防ぐ。G21 が `guide/` を作ったので、2026-11-01 の `main` では `[]`）。8 MiB を超える Rust・JavaScript は照合に使わず、GUIDE・GUIDE-LITE が 8 MiB を超えるとエラー（終了コード 1）。出力は失敗の行のあと `check-guide-lite: <n> references checked, <m> failed`。終了コード 0（失敗なし）・1（失敗あり）・2（使い方）。**HEAD の期待（試作）**: 統括者の修正後の GUIDE-LITE で 99 件を調べて失敗 0 件（`check-guide-lite: 99 references checked, 0 failed`。件数は GUIDE-LITE を直すと変わる）。修正前の GUIDE-LITE（`Options::validate` を載せていた版）の複製では失敗 1 件（`FAIL symbol Options::validate — type Options not found`）。2026-11-01 の `main`（§1 に `brief` を足した GUIDE-LITE）は 87 件を調べて失敗 0 件。
 
 ### 決定性・上限・互換
 
