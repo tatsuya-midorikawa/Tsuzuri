@@ -60,7 +60,7 @@ export function checkGuideLite(ctx, kb, file = '_features/GUIDE-LITE.md', planne
             if (/^(?:cargo|node|npx|sh|python3|git) /.test(token)) command(token, line);
             if (/^[EW][0-9]{4}$/.test(token)) {
                 const d = kb.diagnostics.find(d => d.code === token);
-                check('diagnostic', token, line, d && (d.site_count || d.meaning) ? null : 'not emitted in src and not in the language-reference table');
+                check('diagnostic', token, line, d && (d.site_count || d.meaning || d.kinds.length) ? null : 'not emitted in src and not in the language-reference table');
                 continue;
             }
             const symbol = /^([A-Z][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)$/.exec(token);
@@ -71,7 +71,8 @@ export function checkGuideLite(ctx, kb, file = '_features/GUIDE-LITE.md', planne
             } else if (/^[A-Z][A-Z0-9_]{3,}$/.test(token)) {
                 check('symbol', token, line, new RegExp(`\\b(?:const|static)\\s+${escaped(token)}\\b`).test(rust) ? null : 'no const/static with this name');
             } else if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+){2,}$/.test(token)) {
-                check('symbol', token, line, new RegExp(`\\bfn\\s+${escaped(token)}\\b`).test(rust) || js.includes(token) ? null : 'no fn or mjs mention');
+                const known = new RegExp(`\\bfn\\s+${escaped(token)}\\b`).test(rust) || js.includes(token) || kb.diagnostics.some(d => d.kinds.includes(token));
+                check('symbol', token, line, known ? null : 'no fn, mjs mention or diagnostic kind');
             }
         }
         for (const m of text.matchAll(/D-[0-9]{2,3}(?![0-9])/g)) check('decision', m[0], line, kb.decisions.some(d => d.id === m[0]) ? null : 'no such decision in GUIDE.md');

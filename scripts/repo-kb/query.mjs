@@ -44,18 +44,20 @@ export function filesText(kb, path) {
     lines.push('modules:', ...(found.modules.length ? found.modules.map(m => `  ${m.source} table ${m.table} row ${m.row}`) : ['  (none)']));
     return lines.join('\n');
 }
-export function diagText(kb, code) {
-    const d = kb.diagnostics.find(d => d.code === code);
+// A code (`E1012`) or one of its kinds (`use_after_move`).
+export const diagnosticRow = (kb, value) => kb.diagnostics.find(d => d.code === value) ?? kb.diagnostics.find(d => d.kinds.includes(value));
+export function diagText(kb, value) {
+    const d = diagnosticRow(kb, value);
     if (!d) return null;
-    return [`${d.code} ${d.meaning || '(no row in compiler/diagnostics.md)'}`, `sites (${d.site_count}):`,
-        ...d.sites.map(s => `  ${s.path}:${s.function ?? '(module)'} L${s.line}`),
+    return [`${d.code} ${d.meaning || '(no row in compiler/diagnostics.md)'}`, `kinds: ${joinOrNone(d.kinds, ' ')}`, `sites (${d.site_count}):`,
+        ...d.sites.map(s => `  ${s.path}:${s.function ?? '(module)'} L${s.line}${s.kind ? ` ${s.kind}` : ''}`),
         `pages: ${joinOrNone(d.pages)}`, `tickets: ${joinOrNone(d.tickets, ' ')}`, `decisions: ${joinOrNone(d.decisions, ' ')}`].join('\n');
 }
 export function searchText(kb, words) {
     const entries = [
         ...kb.tickets.map(t => ({ kind: 'ticket', key: t.id, text: `${t.title} ${t.headings.map(h => h.title).join(' ')}` })),
         ...kb.decisions.map(d => ({ kind: 'decision', key: d.id, text: d.title })),
-        ...kb.diagnostics.map(d => ({ kind: 'diagnostic', key: d.code, text: d.meaning })),
+        ...kb.diagnostics.map(d => ({ kind: 'diagnostic', key: d.code, text: [d.meaning, ...d.kinds].filter(Boolean).join(' ') })),
         ...kb.modules.map(m => ({ kind: 'module', key: `${m.source}:${m.table}:${m.row}`, text: m.text })),
         ...kb.tests.map(t => ({ kind: 'test', key: `${t.path}:${t.name}`, text: t.name })),
         ...kb.docs.map(d => ({ kind: 'doc', key: d.path, text: `${d.title} ${d.headings.map(h => h.title).join(' ')}` })),

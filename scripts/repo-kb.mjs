@@ -1,7 +1,7 @@
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, ensureFresh, isFresh } from './repo-kb/build.mjs';
-import { decisionId, decisionText, diagText, fileMatches, filesText, searchText, sectionText, ticketText } from './repo-kb/query.mjs';
+import { decisionId, decisionText, diagnosticRow, diagText, fileMatches, filesText, searchText, sectionText, ticketText } from './repo-kb/query.mjs';
 import { brief } from './repo-kb/brief.mjs';
 
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,7 +71,7 @@ export async function main(argv) {
             ticket: () => o.json ? kb.tickets.find(t => t.id === id) : ticketText(kb, id),
             decision: () => o.json ? kb.decisions.find(d => d.id === decisionId(id)) : decisionText(kb, id),
             files: () => o.json ? fileMatches(kb, id) : filesText(kb, id),
-            diag: () => o.json ? kb.diagnostics.find(d => d.code === id) : diagText(kb, id),
+            diag: () => o.json ? diagnosticRow(kb, id) : diagText(kb, id),
             search: () => searchText(kb, o.args),
             section: () => sectionText(ctx, kb, id, name, o.phase),
             brief: () => brief(ctx, kb, id, o),

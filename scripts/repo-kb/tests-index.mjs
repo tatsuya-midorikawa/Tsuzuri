@@ -34,7 +34,7 @@ export function indexTests(ctx) {
         const helper = path === 'tests/os-wasi-host.mjs' || [...contents].some(([other, text]) => other !== path
             && [...text.matchAll(/\bfrom\s+["']\.\/([^"']+\.mjs)["']/g)].some(m => m[1] === `${name}.mjs`));
         result.push({ kind: 'mjs_test', path, name, compiler_arg, helper,
-            command: helper || path === 'tests/display_parse_exhaustive.mjs' ? '' : `node ${path}${compiler_arg ? ' target/release/tsuzuri' : ''}` });
+            command: helper || path === 'tests/display_parse_exhaustive.mjs' ? '' : `node ${path}${compiler_arg ? ' target/debug/tsuzuri' : ''}` });
     }
     const path = 'tests/features.mjs';
     if (contents.has(path)) {
@@ -44,7 +44,7 @@ export function indexTests(ctx) {
             if (!fixture_exists) ctx.warnings.push(`suite_fixture_missing ${suite.name}: ${fixture}`);
             result.push({ kind: 'suite', path, name: suite.name, input: suite.input, fixture, fixture_exists,
                 traps: suite.traps, inspect: suite.inspect, cases: suite.cases,
-                command: `node tests/features.mjs target/release/tsuzuri ${suite.name}` });
+                command: `node tests/features.mjs target/debug/tsuzuri ${suite.name}` });
         }
     }
     const order = { rust_test: 0, mjs_test: 1, suite: 2 };

@@ -130,10 +130,39 @@ export function annotate(text) {
     };
     return { ...scanned, at };
 }
-export function diagSites(text) {
+// The registry of diagnostic kinds (G23, D-51): its `(Variant, "id", "CODE")` rows declare the kinds, and a
+// `DiagnosticKind::Variant` path elsewhere is where the compiler reports one.
+export const KIND_REGISTRY = 'src/diagnostic_kinds.rs';
+export function kindRegistry(text) {
     const scanned = annotate(text);
-    return scanned.literals.filter(l => /^[EW][0-9]{4}$/.test(l.value)).map(l => ({
-        code: l.value, function: scanned.at(l.offset).function, line: l.line, test: scanned.at(l.offset).test,
+    const kinds = [];
+    for (const m of text.matchAll(/\(\s*([A-Z][A-Za-z0-9]*)\s*,\s*"([a-z][a-z0-9_]*)"\s*,\s*"([EW][0-9]{4})"\s*\)/g)) {
+        if (scanned.code[m.index] === '(' && !scanned.at(m.index).test) kinds.push({ variant: m[1], id: m[2], code: m[3] });
+    }
+    return kinds;
+}
+export function diagSites(text, variants = new Map()) {
+    const scanned = annotate(text);
+    const found = scanned.literals.filter(l => /^[EW][0-9]{4}$/.test(l.value)).map(l => ({ code: l.value, kind: '', offset: l.offset }));
+    if (variants.size) {
+        for (const m of scanned.code.matchAll(/\bDiagnosticKind\s*::\s*([A-Z][A-Za-z0-9]*)\b/g)) {
+            const kind = variants.get(m[1]);
+            if (kind) found.push({ code: kind.code, kind: kind.id, offset: m.index });
+        }
+    }
+    const newlines = [...scanned.code.matchAll(/\n/g)].map(m => m.index);
+    const lineOf = offset => {
+        let lo = 0;
+        let hi = newlines.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (newlines[mid] < offset) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo + 1;
+    };
+    return found.sort((a, b) => a.offset - b.offset).map(s => ({
+        code: s.code, kind: s.kind, function: scanned.at(s.offset).function, line: lineOf(s.offset), test: scanned.at(s.offset).test,
     }));
 }
 export function publicItems(text) {

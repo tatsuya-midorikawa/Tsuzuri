@@ -6,7 +6,7 @@ import { listFiles, inputFiles, inputHash } from './repo.mjs';
 import { classify, parseTicket } from './tickets.mjs';
 import { mentions, parseDecisions } from './decisions.mjs';
 import { parseModuleTables } from './modules.mjs';
-import { diagSites } from './rust.mjs';
+import { diagSites, KIND_REGISTRY, kindRegistry } from './rust.mjs';
 import { indexTests } from './tests-index.mjs';
 import { indexDocs } from './docs-index.mjs';
 import { admittedText, cmp, inputText, jsonl, MAX_INPUT_BYTES, readText } from './text.mjs';
@@ -106,25 +106,43 @@ export function collect(root, prepared) {
     }
     const modules = ['docs/architecture.md', '_features/GUIDE.md'].flatMap(path => texts.has(path) ? parseModuleTables(path, texts.get(path), ctx) : [])
         .sort((a, b) => cmp(a.source, b.source) || a.table - b.table || a.row - b.row);
-    const sites = files.filter(p => /^src\/.*\.rs$/.test(p) && texts.has(p)).flatMap(path =>
-        diagSites(texts.get(path)).filter(s => !s.test).map(s => ({ code: s.code, path, function: s.function, line: s.line })));
+    const kinds = texts.has(KIND_REGISTRY) ? kindRegistry(texts.get(KIND_REGISTRY)) : [];
+    const variants = new Map();
+    for (const kind of kinds) if (!variants.has(kind.variant)) variants.set(kind.variant, kind);
+    // The registry declares kinds; its literals are not places that report a diagnostic.
+    const sites = files.filter(p => /^src\/.*\.rs$/.test(p) && p !== KIND_REGISTRY && texts.has(p)).flatMap(path =>
+        diagSites(texts.get(path), variants).filter(s => !s.test).map(s => ({ code: s.code, path, function: s.function, line: s.line, kind: s.kind })));
     const tests = indexTests({ ...ctx, files: files.filter(p => !inputs.includes(p) || texts.has(p)) });
     const docs = indexDocs({ ...ctx, files: files.filter(p => texts.has(p)) });
+    // The first row of a code outside the generated blocks (G35) is its meaning; the generated kind list and the
+    // later tables of single topics are not. A row may start with rule markers (G33) and name a range of codes.
     const meanings = new Map();
-    for (const m of (texts.get('_tsuzuri/language-reference/compiler/diagnostics.md') ?? '').matchAll(/^\| `([EW][0-9]{4})` \| (.+) \|$/gm)) {
-        meanings.set(m[1], m[2].split(' | ')[0]);
+    let generated = false;
+    for (const line of (texts.get('_tsuzuri/language-reference/compiler/diagnostics.md') ?? '').split('\n')) {
+        if (/^<!-- generated:[^ ]+ -->$/.test(line.trim())) generated = true;
+        else if (/^<!-- \/generated:[^ ]+ -->$/.test(line.trim())) generated = false;
+        const m = !generated && /^\| (?:<!--[^>]*-->\s*)*`([EW])([0-9]{4})`(?:\s*[–〜~-]\s*`\1([0-9]{4})`)? \| (.+) \|$/.exec(line);
+        if (!m) continue;
+        const first = Number(m[2]);
+        const last = m[3] && Number(m[3]) >= first && Number(m[3]) - first <= 60 ? Number(m[3]) : first;
+        const meaning = m[4].split(' | ')[0].replace(/<!--[^>]*-->/g, '').trim();
+        for (let n = first; n <= last; n++) {
+            const code = `${m[1]}${String(n).padStart(4, '0')}`;
+            if (!meanings.has(code)) meanings.set(code, meaning);
+        }
     }
-    const codes = new Set([...sites.map(s => s.code), ...meanings.keys()]);
+    const codes = new Set([...sites.map(s => s.code), ...meanings.keys(), ...kinds.map(k => k.code)]);
     for (const t of tickets) for (const code of t.refs.diags) codes.add(code);
     for (const d of decisions) for (const code of d.diags) codes.add(code);
     for (const d of docs) for (const m of texts.get(d.path).matchAll(/\b[EW][0-9]{4}\b/g)) codes.add(m[0]);
     const diagnostics = [...codes].sort(cmp).map(code => {
-        const allSites = sites.filter(s => s.code === code).sort((a, b) => cmp(a.path, b.path) || a.line - b.line);
+        const allSites = sites.filter(s => s.code === code).sort((a, b) => cmp(a.path, b.path) || a.line - b.line || cmp(a.kind, b.kind));
         return { code, meaning: meanings.get(code) ?? '', site_count: allSites.length,
-            sites: allSites.slice(0, 100).map(({ path, function: fn, line }) => ({ path, function: fn, line })),
+            sites: allSites.slice(0, 100).map(({ path, function: fn, line, kind }) => ({ path, function: fn, line, kind })),
             pages: docs.filter(d => new RegExp(`\\b${code}\\b`).test(texts.get(d.path))).map(d => d.path).slice(0, 30),
             tickets: tickets.filter(t => t.refs.diags.includes(code)).map(t => t.id),
-            decisions: decisions.filter(d => d.diags.includes(code)).map(d => d.id) };
+            decisions: decisions.filter(d => d.diags.includes(code)).map(d => d.id),
+            kinds: [...new Set(kinds.filter(k => k.code === code).map(k => k.id))].sort(cmp) };
     });
     const manifest = { schema: 'tz-repo-kb/1', input_sha256: inputHash(files, texts), inputs: texts.size,
         counts: { tickets: tickets.length, appendices: appendices.length, decisions: decisions.length, modules: modules.length,
