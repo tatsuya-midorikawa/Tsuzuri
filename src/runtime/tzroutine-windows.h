@@ -13,6 +13,7 @@
 #endif
 #include <windows.h>
 #include <errno.h>
+#include <fenv.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>

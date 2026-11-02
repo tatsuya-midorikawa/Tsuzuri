@@ -19,11 +19,11 @@ const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-tzroutine-"));
 const source = "tests/tzroutine_runtime.c";
 const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", "waitgroup", "sleep",
   "external", "deep", "fp", "stack_size", "failures", "fp_mode", "wake_many", "count_after_join", "detector",
-  "boundary", "long_sleep"];
+  "starvation", "select_same", "boundary", "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows
   ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"]
-  : ["-pthread"];
+  : ["-pthread", "-lm"]; // glibc keeps fegetround and fesetround in libm
 // The cases whose children end by a signal, which a sanitizer reports in its own way.
 const signalled = new Set(["stack_size", "failures"]);
 
