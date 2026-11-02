@@ -482,7 +482,6 @@ struct tzr_g {
     int doomed;        /* pseudo-G only: woken by the deadlock detector */
     int idle;          /* pseudo-G only: not counted as running (an M's thread outside a blocking call, or
                         * a thread that waits for the items it gave the task runtime) */
-    const void *item_batch; /* pseudo-G only: the batch whose item the thread runs (TZ03) */
     uint64_t rand;
     tzr_sudog *param;   /* the sudog that completed this G's wait */
     _Atomic uint32_t select_done;
@@ -1637,12 +1636,21 @@ TZR_API int64_t tsuzuri_tz_cpu_count(void) {
  * (src/runtime/task.c), which join this runtime as pseudo-Gs only when they first call in. The
  * generated code announces each batch of items before it hands them over, so that the deadlock
  * detector counts an item that has not started as running (it may still wake a waiter), and each
- * item marks its thread as running only while it runs: the thread that waits for the batch, and a
- * worker between items, are idle and do not hide a deadlock. A batch is known by its context
- * pointer, which is in the caller's frame: no other call of the moment has the same one. A G that
- * calls in is on an M, which counts as running however long the call takes. */
+ * item marks its thread as running while it runs: the thread that waits for the batch, and a worker
+ * between items, are idle and do not hide a deadlock. A batch is known by its context pointer, which
+ * is in the caller's frame: no other call of the moment has the same one. A G that calls in is on an
+ * M, which counts as running however long the call takes.
+ *
+ * A trap that a failure domain recovers from skips the end of each batch that the trapping thread
+ * announced on the way (the task runtime has joined their items: it raises an item's trap in the
+ * submitting thread only after the join). Every place that catches such a trap drops what this
+ * thread announced after its mark: the item callback, which catches the trap of its item and raises
+ * it again (so an item always ends, and its thread goes back to the state it had before), and the
+ * failure domain. Batches are numbered in the order of announcement, and a mark is the last number:
+ * a batch that another thread announced, or one that this thread announced before the mark, stays. */
 typedef struct tzr_batch {
     const void *context;
+    uint64_t seq;        /* the order of announcement */
     int64_t unstarted;   /* items that have not started */
     int64_t running;     /* items that have started and not ended */
     tzr_g *submitter;    /* the pseudo-G that waits for the batch, idle while items remain */
@@ -1651,7 +1659,14 @@ typedef struct tzr_batch {
 } tzr_batch;
 
 static tzr_batch *tzr_batches; /* tzr_sched.lock */
+static uint64_t tzr_batch_seq; /* tzr_sched.lock: the number of the last batch announced */
 
+/* What an item's callback keeps in its frame between the start and the end of the item. */
+typedef struct {
+    uint64_t mark; /* the last batch announced when the item started */
+    int32_t idle;  /* the thread's state before the item */
+    int32_t unused;
+} tzr_item_frame;
 
 /* The thread that runs the caller, whatever G or pseudo-G it acts as: a G inside a blocking call
  * stays on its M. */
@@ -1661,10 +1676,31 @@ static const void *tzr_thread_owner(void) {
     return tzr_pseudo();
 }
 
+/* Whether this thread has called in before (a pool worker has not, before its first item). */
+static TZR_NOINLINE int tzr_known_thread(void) { return tzr_this_m() != NULL || tzr_tls_pseudo != NULL; }
+
 static tzr_batch *tzr_batch_of(const void *context) {
     for (tzr_batch *batch = tzr_batches; batch; batch = batch->next)
         if (batch->context == context) return batch;
     return NULL;
+}
+
+/* Drops the batches that `owner` announced after `mark` (tzr_sched.lock held): their items no
+ * longer hold off the deadlock verdict. Returns whether there was one. */
+static int tzr_drop_batches(uint64_t mark, const void *owner) {
+    int dropped = 0;
+    for (tzr_batch **link = &tzr_batches; *link != NULL;) {
+        tzr_batch *batch = *link;
+        if (batch->seq <= mark || batch->owner != owner) {
+            link = &batch->next;
+            continue;
+        }
+        *link = batch->next;
+        tzr_sched.npending -= batch->unstarted;
+        free(batch);
+        dropped = 1;
+    }
+    return dropped;
 }
 
 /* Before the task runtime takes the n items of `context`. */
@@ -1679,6 +1715,7 @@ TZR_API void tsuzuri_tz_parallel_begin(const void *context, int64_t n) {
     batch->submitter = g->kind == TZR_KIND_THREAD ? g : NULL;
     batch->owner = tzr_thread_owner();
     tzr_mutex_lock(&tzr_sched.lock);
+    batch->seq = ++tzr_batch_seq;
     batch->next = tzr_batches;
     tzr_batches = batch;
     tzr_sched.npending += n;
@@ -1705,49 +1742,28 @@ TZR_API void tsuzuri_tz_parallel_end(const void *context, int64_t n) {
     free(batch);
 }
 
-/* The batches that a failure domain is entered with, and dropping those of this thread that a trap
- * left announced (the task runtime has joined their items): the thread counts as running again, a
- * worker whose item of such a batch trapped counts as back in the pool, and the items no longer
- * hold off the deadlock verdict. */
-TZR_API const void *tsuzuri_tz_parallel_mark(void) {
+/* The mark of a failure domain, and dropping after it what this thread announced inside the domain
+ * that a trap left: the thread then counts as running again. */
+TZR_API uint64_t tsuzuri_tz_parallel_mark(void) {
     tzr_mutex_lock(&tzr_sched.lock);
-    const void *mark = tzr_batches;
+    uint64_t mark = tzr_batch_seq;
     tzr_mutex_unlock(&tzr_sched.lock);
     return mark;
 }
 
-TZR_API void tsuzuri_tz_parallel_reset(const void *mark) {
+TZR_API void tsuzuri_tz_parallel_reset(uint64_t mark) {
     const void *owner = tzr_thread_owner();
     tzr_g *g = tzr_current();
-    int dropped = 0;
     tzr_mutex_lock(&tzr_sched.lock);
-    for (tzr_batch **link = &tzr_batches; *link != NULL && *link != mark;) {
-        tzr_batch *batch = *link;
-        if (batch->owner != owner) {
-            link = &batch->next;
-            continue;
-        }
-        *link = batch->next;
-        tzr_sched.npending -= batch->unstarted;
-        /* A worker whose item of the batch trapped skipped its leave: it is back in the pool. */
-        tzr_lock_acquire(&tzr_pseudo_lock);
-        for (tzr_g *other = tzr_pseudo_list; other != NULL; other = other->link) {
-            if (other->item_batch == batch && other != g) {
-                other->item_batch = NULL;
-                tzr_set_running(other, 0);
-            }
-        }
-        tzr_lock_release(&tzr_pseudo_lock);
-        if (g->item_batch == batch) g->item_batch = NULL;
-        free(batch);
-        dropped = 1;
-    }
-    if (dropped) tzr_set_running(g, 1);
+    if (tzr_drop_batches(mark, owner)) tzr_set_running(g, 1);
     tzr_mutex_unlock(&tzr_sched.lock);
 }
 
-/* The start of an item of `context`, on whichever thread runs it. */
-TZR_API void tsuzuri_tz_task_enter(const void *context) {
+/* The start of an item of `context`, on whichever thread runs it: a pool worker, the thread that
+ * submitted the batch, or one that runs it while it waits (a DataChannel wait runs an item of any
+ * batch, inside an item of its own). */
+TZR_API void tsuzuri_tz_task_enter(const void *context, tzr_item_frame *frame) {
+    int known = tzr_known_thread();
     tzr_g *g = tzr_current();
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_batch *batch = tzr_batch_of(context);
@@ -1756,19 +1772,22 @@ TZR_API void tsuzuri_tz_task_enter(const void *context) {
         batch->running++;
         tzr_sched.npending--;
     }
-    g->item_batch = batch;
+    frame->mark = tzr_batch_seq;
+    frame->idle = !known || g->idle; /* a new pseudo-G counts as running, but a worker came from the pool */
     tzr_set_running(g, 1);
     tzr_mutex_unlock(&tzr_sched.lock);
 }
 
-/* The end of an item: its thread goes back to the task runtime. When it was the last item of the
+/* The end of an item, also of one that trapped: its thread goes back to the state it had before,
+ * and the batches that a trap in the item left are dropped. When it was the last item of the
  * batch, the thread that waits for the batch is about to go on, and counts as running at once:
  * there is no moment in which neither counts. */
-TZR_API void tsuzuri_tz_task_leave(const void *context) {
+TZR_API void tsuzuri_tz_task_leave(const void *context, const tzr_item_frame *frame) {
+    const void *owner = tzr_thread_owner();
     tzr_g *g = tzr_current();
     tzr_mutex_lock(&tzr_sched.lock);
-    tzr_set_running(g, 0);
-    g->item_batch = NULL;
+    (void)tzr_drop_batches(frame->mark, owner);
+    tzr_set_running(g, !frame->idle);
     tzr_batch *batch = tzr_batch_of(context);
     if (batch != NULL && batch->running > 0 && --batch->running == 0 && batch->unstarted == 0)
         tzr_set_running(batch->submitter, 1);
