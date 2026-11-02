@@ -7,7 +7,7 @@
 | 規模 | XL。Phase 1（POSIX: macOS・Linux の aarch64・x86-64。付録 B の参照実装を置き、C の単体テストで検査する）L、Phase 2（Windows x64・Arm64。Fiber と Win32 の待ち）L |
 | 依存 | – |
 | 後続 | TZ02（生成コードから呼ぶ）、TZ03（チャンネル）、TZ04（`select`）、TZ05（タイマー）、TZ06（同期）、TZ08（sysmon・netpoller）、TZ09（WASM）、TZ10（プリエンプション） |
-| 状態 | todo |
+| 状態 | done（2026-11-02） |
 | 起票 | 2026-11-01（D-61。HEAD `9a76d8ac` で確認） |
 | 承認 | 承認済み（D-61: 利用者の回答 2026-11-01）。決定事項 D1〜D9 は既定案（実装者はこの案に従う） |
 | 手本にする既存実装 | `src/runtime/task.c`（weak hidden の公開、`TZ_STACK_GUARD` のときの `tsuzuri_stack_thread()`、テスト用のマクロの差し替え）、`src/runtime/task-windows.h`（pthread の Win32 への写像）、`tests/task_runtime.c`・`tests/tasks.mjs`（ランタイムの C を `#include` して単体で検査する形）、`src/runtime/stack.c`（ガードページと SIGSEGV の報告） |
@@ -351,3 +351,17 @@ HEAD で測った数字（付録 A。Apple M3、macOS 27.2、参照実装、`-O2
 ## 付録
 
 [TZ01-appendix.md](TZ01-appendix.md): A 実測、B 参照実装（`tzroutine.c`・`tzroutine_runtime.c`・`tzroutine_runtime.mjs`・`stack.c` の差分）、C Windows の設計、D アルゴリズムの説明。
+
+## 実装と検証（2026-11-02）
+
+- **範囲**: Phase 1・Phase 2 をすべて実装した（1 つの PR）。着手時に GUIDE・D-61・HEAD（`73d4e881`）と照合し、チケットとの食い違いはなかった（起票後のコミットは文書だけ）。
+- **Phase 1**: 付録 B-1〜B-3 を `src/runtime/tzroutine.c`・`tests/tzroutine_runtime.c`・`tests/tzroutine_runtime.mjs` に置き、B-4 の 2 か所を `src/runtime/stack.c` に足した。`node tests/tzroutine_runtime.mjs` は付録どおり `112 runs passed`、`TSUZURI_TSAN=1 TSUZURI_ASAN=1` で `136 runs passed`（macOS 27.2、Apple M3、Homebrew clang 23.1.4、Rosetta の x86-64 を含む）。手順 3 は手元に Linux のヘッダーがないので、配布物の VS Code 拡張に入っている zig 0.16 の `zig cc` で、`x86_64`／`aarch64` の `linux-gnu`・`linux-musl` へ `-std=c11 -Wall -Wextra -Werror -pthread` で通した（警告・誤りなし。gnu は連結まで）。CI の手順は `targets.yml` の「tzroutine runtime (TZ01)」（`TSUZURI_TSAN=1 TSUZURI_ASAN=1` は Linux だけ。macOS の Homebrew LLVM 21 は sanitizer のプログラムが起動しないため、ほかの手順と同じ扱い）。
+- **Phase 2**: `src/runtime/tzroutine-windows.h`（新規）に、SRW ロックの `tzr_lock`・`tzr_mutex`、`CONDITION_VARIABLE` の `tzr_note`・`tzr_cond`、`InitOnceExecuteOnce`、`QueryPerformanceCounter` の時計、`CreateThread` の切り離したスレッド、Fiber の切り替えのマクロ `TZR_TO_G`／`TZR_TO_G0` と `CreateFiberEx` を置いた。`tzroutine.c` は付録 C-2 のとおり、切り替えの 5 か所を `TZR_TO_G`／`TZR_TO_G0` にし（POSIX では `tzr_switch` に展開）、G の開始を Fiber の中で繰り返す `tzr_fiber_start`、スタックの mapping を `CreateFiberEx`（終わった G を全体の空きリストにも置けないときは `DeleteFiber`）、擬似 G の解放を `FlsAlloc` のコールバックにした。`tests/tzroutine_runtime.c` の子プロセスは Windows では `CreateProcessA`（`TSUZURI_TZROUTINE_STACK_KIB` は `SetEnvironmentVariableA` で渡して戻す）、`external` は `CreateThread`。溢れの確認は Windows では NTSTATUS の誤りのコード（`STATUS_STACK_OVERFLOW`）で終わることだけを見る。`tests/tzroutine_runtime.mjs` は Windows で `--target=<arch>-pc-windows-msvc -fuse-ld=lld`、`.exe` の名前。`windows.yml` の x64・Arm64 の両方のジョブに「tzroutine runtime (TZ01)」を足した。手元では zig の `x86_64`／`aarch64-windows-gnu`（mingw のヘッダー）で `-Wall -Wextra -Werror` の連結まで通した。実行の確認は CI。
+- **チケットから外れた判断**:
+  1. POSIX の pthread・`sysconf`・`sched_yield` の呼び出しを、`tzr_mutex_lock`・`tzr_cond_wait_for`・`tzr_run_once`・`tzr_thread_start`・`tzr_os_yield`・`tzr_online_cpus`・`tzr_page_size` の小さな関数に移した（Windows の版を `tzroutine-windows.h` に置くため。TZ09 の注意「OS の呼び出しを小さな関数に閉じ込めた形」とも合う）。規則 R1〜R4・spinning・`select` の 3 段の論理は変えていない。`tzr_m` の使っていない `thread` の欄は消した。
+  2. Fiber の commit は、予約が小さいとき（`TSUZURI_TZROUTINE_STACK_KIB=64`）に OS が予約を 1 MiB へ切り上げないよう、`min(予約 / 4, 64 KiB)` にした（仕様の `64 * 1024` は予約が 256 KiB 以上のとき同じ）。
+  3. Windows の FLS のコールバックは、プロセスの終了中（`ExitProcess` がほかのスレッドを止めた後）にも走りうるので、`atexit` で立てる印があるときは何も解放しない。COFF では `TZR_API` を空にした（`task.c` と同じ）。
+- **見つけた不具合（S3）**: タイマーのスレッドが待つ期限 `CLOCK_REALTIME + (next - now)` が、飽和した `sleep`（`INT64_MAX`）で `int64_t` を溢れていた（未定義動作）。先に `tests/tzroutine_runtime.c` に `long_sleep`（`INT64_MAX` 眠る G の横で短い sleep を 2 回）を足し、参照実装の UBSan の build で `runtime error: signed integer overflow: 1793577017496669000 + 9222983332253943807` で落ちることを確かめてから、1 回の待ちを最大 1 日にする（`tzr_cond_wait_for`。タイマーのスレッドは起きるたびに時計を見直す）ように直した。テストのケースは 15 個になった。
+- **検証**: `node tests/tzroutine_runtime.mjs` `112 runs passed`（新しいケースの後は 120）、`TSUZURI_TSAN=1 TSUZURI_ASAN=1` で `146 runs passed`。`cargo nextest run --locked` 2,851 件すべて成功（4 件 skip。Rust は変えていない）。`cargo build` のあと `node tests/stack_overflow.mjs target/debug/tsuzuri` `22 cases`。`sh scripts/check-runtime-includes.sh` `59 files`（`tzroutine.c` はまだ `include_str!` されない）。
+- **文書**: `docs/architecture.md` に節「tzroutine のランタイム（TZ01）」、`README.md` の検証の表（変更の種類の表と T2 のコマンドの一覧）。言語リファレンスの更新なし（利用者から見える変化なし。TZ02 で書く）。
+- **変更したファイル**: `src/runtime/tzroutine.c`（新規）、`src/runtime/tzroutine-windows.h`（新規）、`src/runtime/stack.c`、`tests/tzroutine_runtime.c`（新規）、`tests/tzroutine_runtime.mjs`（新規）、`.github/workflows/targets.yml`、`.github/workflows/windows.yml`、`docs/architecture.md`、`README.md`、`_features/README.md`、このチケットと付録（`_completed/` へ移した）。

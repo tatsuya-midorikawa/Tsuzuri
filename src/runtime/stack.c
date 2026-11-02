@@ -29,11 +29,22 @@ static struct {
 } tz_stack_windows[TZ_STACK_THREADS];
 static atomic_uint tz_stack_count;
 
+/* TZ01: src/runtime/tzroutine.c sets this to tsuzuri_tz_stack_guard_hit before its first scheduler
+   thread starts, so that a fault in the guard of a tzroutine's own stack is an overflow too. */
+__attribute__((visibility("hidden")))
+int32_t (*volatile tsuzuri_stack_guard_hook)(uintptr_t);
+
 /* The report is written before anything can end the process, by every thread that overflows, so
    it is never lost to a second thread that overflows at the same time. */
 static void tz_stack_fault(int signal, siginfo_t *info, void *context) {
     (void)context;
     uintptr_t address = (uintptr_t)info->si_addr;
+    int32_t (*guard)(uintptr_t) = tsuzuri_stack_guard_hook;
+    if (guard != 0 && guard(address)) {
+        static const char message[] = "trap: stack overflow\n";
+        (void)!write(2, message, sizeof message - 1);
+        abort();
+    }
     unsigned count = atomic_load_explicit(&tz_stack_count, memory_order_acquire);
     if (count > TZ_STACK_THREADS) count = TZ_STACK_THREADS;
     for (unsigned slot = 0; slot < count; ++slot) {

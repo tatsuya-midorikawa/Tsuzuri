@@ -1149,6 +1149,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | 生成 IR・ランタイム・閉包 | 変更した機能の Rust テスト、IR の決定性の確認 | `primitives.mjs`、`e2e.mjs`、`features.mjs`（全 suite）、`codegen_units.mjs`（codegen unit への分割。PB07。`TSUZURI_CODEGEN_UNITS=split` で、ほかの suite も分けたビルドで確かめられます）、`progfuzz.mjs`（言語全体の差分ファズ。G36） |
 | スタックのフレーム・末尾呼び出し（PM09） | `tests/stack_frames.rs`（寿命の印と関数ごとの上限）、`tests/tail_recursion.rs`（`musttail`・drop の順序・対象外の形）、`tests/fast_backend.rs`・`tests/fast_backend_ops.rs`（`return_call` への翻訳） | `stack.mjs`（深さ 10,000,000 の相互再帰。native・`--backend fast`・`--wasm-feature tail-call`）、`control.mjs`（`TSUZURI_ASAN=1` も）、`user_drop.mjs` |
 | Task・並列・WASM threads・同期 | `tests/tasks.rs`、`tests/parallel.rs`、`tests/concurrency.rs`（`Atomic`・`Mutex`・`Channel`・`Task.scope`） | `tasks.mjs`、`wasm_threads.mjs`、`wasm_threads_stress.mjs`、`trap_return_sync.mjs`、`features.mjs concurrency`・`channel`、`TSUZURI_TSAN=1` の実行 |
+| tzroutine のランタイム（TZ01） | —（C だけ） | `tzroutine_runtime.mjs`（`src/runtime/tzroutine.c` の C の単体テスト。`TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` で sanitizer も） |
 | トラップの報告・境界・`Domain`（E14・B10） | `tests/trap_locations.rs`、`tests/trap_backtrace.rs`（バックトレースとクラッシュレポート）、`tests/domain.rs`（`E1038` と IR） | `trap_return.mjs`（C の境界と `tests/domain_runtime.c`）、`domain.mjs`、`trap_boundary.mjs`、`stack_overflow.mjs`、`trap_return_sync.mjs`（`TSUZURI_NO_SANITIZERS=1` で sanitizer の build を外す） |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
@@ -1217,6 +1218,7 @@ node tests/compact_strings_modes.mjs target/release/tsuzuri quick compact utf16 
 python3 tests/lldb_strings.py   # LLDB の formatter（scripts/lldb/tsuzuri_lldb.py）が UTF-16 と Latin-1 の string を読むことを、LLDB のセッションなしで確かめる
 python3 tests/lldb_lists.py   # PM04: 同じ formatter の `ListProvider` が、`head` から `next` の連鎖をたどって各要素の address を返すこと（先頭側の空き slot、短い length の view、alignment 16 の要素の slot の offset 32）、chunk を二分探索で見つけて読んだ chunk を覚えていること、壊れたメモリ（範囲外の head、循環する `next`、合わない header、不正な長さ）で例外にならないことを、LLDB のセッションなしで確かめる（python3 だけで動く）
 node tests/tasks.mjs target/release/tsuzuri   # Task・Channel・Mutex の native／WASM と、pool の C 検査（task_runtime.c の lock・signal の数と、最初の添字・worker の完了の数え方の順序、task_stress.c の複数 host の stress）。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
+node tests/tzroutine_runtime.mjs   # tzroutine のランタイム（TZ01）の C の単体テスト。-O0／-O3 × P 1・2・4、stack.c との連結（溢れの報告）、Apple silicon では Rosetta の x86-64、Windows では Fiber。TSUZURI_TSAN=1・TSUZURI_ASAN=1 で sanitizer も
 node tests/async.mjs target/release/tsuzuri   # JSPI の検証には Node.js 24 以降
 node tests/features.mjs target/release/tsuzuri
 ASAN_OPTIONS=detect_stack_use_after_return=1 TSUZURI_ASAN=1 node tests/features.mjs target/release/tsuzuri storage   # 連結のスタック領域・捕捉環境・移送・再利用
