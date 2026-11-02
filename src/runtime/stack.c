@@ -112,25 +112,18 @@ static uintptr_t tz_stack_low(int main_thread) {
 
 /* Gives the calling thread a stack the handler can run on, and registers its guard.
    Returns 1 if the thread is covered. */
+static int tz_stack_alternate(void);
+
 static int tz_stack_prepare(int main_thread) {
     uintptr_t low = tz_stack_low(main_thread);
-    if (low == 0) return 0;
-    void *memory = malloc(TZ_STACK_ALTSTACK);
-    if (!memory) return 0;
-    stack_t alternate = { .ss_sp = memory, .ss_size = TZ_STACK_ALTSTACK, .ss_flags = 0 };
-    if (sigaltstack(&alternate, NULL) != 0) {
-        free(memory);
-        return 0;
-    }
+    if (low == 0 || !tz_stack_alternate()) return 0;
     tz_stack_register(low);
     return 1;
 }
 
-static atomic_int tz_stack_handled;
+static pthread_once_t tz_stack_handled = PTHREAD_ONCE_INIT;
 
-/* Installs the handler once, for every thread. */
-static void tz_stack_handle(void) {
-    if (atomic_exchange_explicit(&tz_stack_handled, 1, memory_order_acq_rel) != 0) return;
+static void tz_stack_handle_now(void) {
     struct sigaction action;
     memset(&action, 0, sizeof action);
     action.sa_sigaction = tz_stack_fault;
@@ -140,17 +133,29 @@ static void tz_stack_handle(void) {
     (void)sigaction(SIGBUS, &action, NULL);
 }
 
+/* Installs the handler once, for every thread; a second caller returns after the first is done. */
+static void tz_stack_handle(void) { (void)pthread_once(&tz_stack_handled, tz_stack_handle_now); }
+
+/* Gives the calling thread an alternate stack for the handler. Returns 1 if it has one. */
+static int tz_stack_alternate(void) {
+    void *memory = malloc(TZ_STACK_ALTSTACK);
+    if (!memory) return 0;
+    stack_t alternate = { .ss_sp = memory, .ss_size = TZ_STACK_ALTSTACK, .ss_flags = 0 };
+    if (sigaltstack(&alternate, NULL) != 0) {
+        free(memory);
+        return 0;
+    }
+    return 1;
+}
+
 /* Called first by every scheduler thread of src/runtime/tzroutine.c (TZ01). Its tzroutines'
-   guards are known to the hook even when this thread's own stack is not, so the thread gets an
-   alternate stack and the handler is installed in any case (also when the constructor below found
-   no bounds for the main thread, as under an unlimited stack limit on Linux). */
+   guards are known to the hook, so the thread gets an alternate stack, but no window of its own
+   (its stack only runs the scheduler, and the 64 windows stay for the task workers), and the
+   handler is installed in any case (also when the constructor below found no bounds for the main
+   thread, as under an unlimited stack limit on Linux). */
 __attribute__((visibility("hidden")))
 void tsuzuri_stack_scheduler_thread(void) {
-    if (!tz_stack_prepare(0)) {
-        void *memory = malloc(TZ_STACK_ALTSTACK);
-        stack_t alternate = { .ss_sp = memory, .ss_size = TZ_STACK_ALTSTACK, .ss_flags = 0 };
-        if (memory && sigaltstack(&alternate, NULL) != 0) free(memory);
-    }
+    (void)tz_stack_alternate();
     tz_stack_handle();
 }
 

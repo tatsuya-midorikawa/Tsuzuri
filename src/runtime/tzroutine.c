@@ -68,15 +68,15 @@ static void tzr_fatal(const char *message);
 #if defined(__SANITIZE_ADDRESS__) && !defined(TZR_ASAN)
 #define TZR_ASAN 1
 #endif
+#if defined(TZR_ASAN) && defined(_WIN32)
+#error "tzroutine: AddressSanitizer is supported on POSIX only (a fiber's stack bounds are the OS's)"
+#endif
 #if defined(TZR_ASAN)
 /* ASan keeps a fake stack per stack (detect_stack_use_after_return): each switch tells it which stack
  * runs next, and the context that resumes takes its own fake stack back. */
 #include <sanitizer/common_interface_defs.h>
 #define TZR_ASAN_START(save, bottom, size) __sanitizer_start_switch_fiber((save), (bottom), (size))
 #define TZR_ASAN_FINISH(save, bottom, size) __sanitizer_finish_switch_fiber((save), (bottom), (size))
-#else
-#define TZR_ASAN_START(save, bottom, size) ((void)(save), (void)(bottom), (void)(size))
-#define TZR_ASAN_FINISH(save, bottom, size) ((void)(save), (void)(bottom), (void)(size))
 #endif
 
 #if !defined(__aarch64__) && !defined(__x86_64__)
@@ -830,10 +830,14 @@ static void tzr_execute(tzr_m *m, tzr_g *g) {
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(g->tsan_fiber);
 #endif
+#if defined(TZR_ASAN)
     void *fake = NULL;
     TZR_ASAN_START(&fake, g->stack + TZR_GUARD, g->stack_size);
+#endif
     TZR_TO_G(m, g);
+#if defined(TZR_ASAN)
     TZR_ASAN_FINISH(fake, NULL, NULL);
+#endif
     /* back on g0: the G parked, yielded or exited */
     tzr_g *prev = m->curg;
     m->curg = NULL;
@@ -1001,31 +1005,19 @@ static void tzr_pseudo_destroy(void *arg) {
 }
 
 #if defined(_WIN32)
-/* The callback of a fiber-local slot runs when its thread ends, like a pthread key's destructor. It
- * may also run while the process exits, after ExitProcess has stopped the other threads (one of them
- * may hold a lock): then nothing is freed, whether exit() ran tzr_pseudo_exiting or the loader says
- * the process is shutting down. */
-static DWORD tzr_pseudo_key;
-static _Atomic int tzr_pseudo_exit;
-static BOOLEAN (NTAPI *tzr_dll_shutdown)(void); /* ntdll's RtlDllShutdownInProgress, if it has one */
-static void tzr_pseudo_exiting(void) { atomic_store(&tzr_pseudo_exit, 1); }
-static void NTAPI tzr_pseudo_fls(void *arg) {
-    /* exit() sets the flag; ExitProcess and _exit skip it, and then the loader reports the shutdown */
-    if (arg == NULL || atomic_load(&tzr_pseudo_exit) || (tzr_dll_shutdown != NULL && tzr_dll_shutdown())) return;
-    tzr_pseudo_destroy(arg);
+/* The pseudo-G of a thread goes when the thread ends: the loader calls the TLS callbacks of the
+ * module with DLL_THREAD_DETACH on the ending thread, whatever fibers the thread ran (a pseudo-G is
+ * the thread's). It does not call them when the process exits (that is DLL_PROCESS_DETACH, after
+ * ExitProcess has stopped the other threads, one of which may hold a lock), so nothing is freed
+ * then. The section is in the TLS directory of the CRT, which _Thread_local links in. */
+static void NTAPI tzr_tls_callback(PVOID module, DWORD reason, PVOID reserved) {
+    (void)module;
+    (void)reserved;
+    if (reason == DLL_THREAD_DETACH && tzr_tls_pseudo != NULL) tzr_pseudo_destroy(tzr_tls_pseudo);
 }
-static void tzr_pseudo_key_init(void) {
-    FARPROC query = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlDllShutdownInProgress");
-    if (query != NULL) memcpy(&tzr_dll_shutdown, &query, sizeof query);
-    tzr_pseudo_key = FlsAlloc(tzr_pseudo_fls);
-    if (tzr_pseudo_key == FLS_OUT_OF_INDEXES || atexit(tzr_pseudo_exiting) != 0) tzr_fatal("cannot create a thread key");
-}
-/* A pseudo-G is the thread's (one count of a running participant for all its fibers). The slot of a
- * thread that is not a fiber ends with the thread; a fiber's slot would end with the fiber, so a
- * host thread that runs fibers keeps its pseudo-G (and its count) until the process ends. */
-static void tzr_pseudo_key_set(tzr_g *g) {
-    if (!IsThreadAFiber()) FlsSetValue(tzr_pseudo_key, g);
-}
+__attribute__((section(".CRT$XLB"), used)) static const PIMAGE_TLS_CALLBACK tzr_tls_callback_entry = tzr_tls_callback;
+static void tzr_pseudo_key_init(void) {}
+static void tzr_pseudo_key_set(tzr_g *g) { (void)g; }
 #else
 static pthread_key_t tzr_pseudo_key;
 static void tzr_pseudo_key_init(void) {
@@ -1071,8 +1063,8 @@ static void tzr_after_park(tzr_m *m, tzr_g *g) {
 /* G -> g0 for a G that will be resumed (park, yield). Under ASan the context that resumes takes its
  * fake stack back and learns the stack of the g0 that resumed it, which may be another M's (R2). */
 static void tzr_switch_out(tzr_m *m, tzr_g *g) {
-    void *fake = NULL;
 #if defined(TZR_ASAN)
+    void *fake = NULL;
     TZR_ASAN_START(&fake, m->g0_bottom, m->g0_size);
 #endif
     TZR_TO_G0(m, g);
@@ -1080,7 +1072,6 @@ static void tzr_switch_out(tzr_m *m, tzr_g *g) {
     m = tzr_this_m();
     TZR_ASAN_FINISH(fake, &m->g0_bottom, &m->g0_size);
 #endif
-    (void)fake;
 }
 
 /* Parks the current G until tzr_ready. `unlock(arg)` runs once the G is off its stack (R1).
