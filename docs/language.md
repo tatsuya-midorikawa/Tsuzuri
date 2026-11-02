@@ -122,7 +122,7 @@ native と `--wasm-feature simd128` の WebAssembly は Latin-1 の走査・比�
   `bench` は G18 で追加された予約語です。以前に識別子 `bench` を使っていたコードは `E0002` となるため、`benchmark` などへの改名が必要です（互換性を破る変更点です）。
   予約語の集合は、ソースを読む言語版（edition）で決まります。edition `2026` の予約語が上の一覧です。`Tsuzuri.toml` の `[package]` の `edition` でパッケージごとに選び、省略すると `2026`、マニフェストのないプロジェクトと標準ライブラリは最新の edition です（[安定性と互換性の方針](stability.md#edition)）。
   `of` は `union` の case 宣言の内部でのみ予約される文脈キーワードであり、それ以外の場所では通常の識別子として扱われます。
-  `where` も関数ガードの後置束縛を開始する位置でのみ認識される文脈キーワードです。`namespace` および `using` はファイル先頭の宣言位置でのみ認識される文脈キーワードです。
+  `where` も関数ガードの後置束縛を開始する位置でのみ認識される文脈キーワードです。`namespace` および `using` はファイル先頭の宣言位置でのみ認識される文脈キーワードです。`tzroutine` は直後が同じ行の `{` のときだけ式を始める文脈キーワードです（[tzroutine](#tzroutine)）。
   `pure` は `def` の直前、`own` は引数型全体の前でだけ印として読み、それ以外では識別子に使えます。
   コロン記号の連続 `::` は、`def` の宣言名と型シグネチャの区切り、リストのコンス演算子 `head :: tail`、および名前空間・モジュールのパス（例: `Sample::Features::Shape.area`）として使用されます。
   識別子同士を空白を挟まずに連結し、末尾の要素が大文字で始まる（モジュールを指す）場合、または行頭の `namespace`／`using` 宣言内に現れる `::` がパス区切り文字として認識されます。パターンマッチにおける `x::xs` はリストのコンスとして解釈されます。
@@ -371,11 +371,11 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`Channel.Sender<T>` のように書いて区別します。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`Channel.Sender<T>` のように書いて区別します。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -2652,6 +2652,18 @@ POSIX または Windows 以外の未対応プラットフォームに対する�
 タスク本体の内部で発生した言語トラップ、メモリ不足、および無限ループに関する規則は通常式とまったく同一であり、
 失敗時におけるスタックの巻き戻し、キャプチャされた所有変数のクリーンアップ、および兄弟タスクの強制キャンセルは保証されません。
 すべてのタスクが正常終了した場合、使用されたすべての所有メモリは漏れなく回収され、ガベージコレクションに依存することのないクリーンなメモリ管理が達成されます（`Arc` で共有した値は、最後の所有者を解放したタスクがその場で解放します）。
+
+## tzroutine
+
+`tzroutine { body }` は、ブロックを新しい tzroutine（専用のスタックを持つ軽量な実行単位。Go の goroutine に相当）として起動し、`()` を返す式です（TZ02、D-61）。`tzroutine` は直後が同じ行の `{` のときだけの文脈キーワードで、ほかの位置では識別子です。
+
+- **型**: 本体は型 `unit` の通常のブロックで、ほかの型は `E1003` です。`let!`・`do!` は関数の本体と同じく IO をその場で実行し、`let` は改行でも終わります。`return` は関数の本体と同じ扱いです。式の型は `unit` です。
+- **捕捉**: `task { }` と同じ規則です。所有値はムーブ、Copy の値は複製で、捕捉は `Send` でなければなりません（`Rc` などは `E1013`）。借用（`ref`、借用した関数の環境）の捕捉は `E1013`、ムーブした値の外での使用は `E1012`、外の `let mut` への代入は `E1014`、本体から外のループへの `break`・`continue` は `E1023` です。`pure def` の中では `E1029`、`const` の初期化では `E1026` です。
+- **評価**: `tzroutine { … }` を評価すると捕捉を環境へ移し、tzroutine を作ってから次の式へ進みます。親の続きと子の本体の間に順序はありません。本体はちょうど 1 回走り、使わなかった捕捉は本体の終わりに 1 回だけ drop されます。本体のトラップはプロセス全体の失敗です。
+- **終了の待ち**: 実行ファイルの `main`（トップレベルのコード、`def main`、IO の入口）、`export def` の 1 回の呼び出し、`tsuzuri test` の 1 件、`tsuzuri bench` の 1 回の計測は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。待つのは本体が戻った直後で、トップレベルの最後の式の値はその前に計算され、待った後に表示されます。全員が待ちに入れば、ランタイムが `Tsuzuri runtime: all tzroutines are asleep - deadlock! (<n> waiting: <理由>, ...)` を書いてトラップします。
+- **`Routine`**: 組み込みのモジュール。`Routine.go :: own Owned.Function<unit, unit> -> unit`（所有する関数を新しい tzroutine で 1 回呼び、drop する）、`Routine.yield :: unit -> unit`、`Routine.count :: unit -> i64`（生きている tzroutine の数 + 1）、`Routine.max_procs :: unit -> i64`、`Routine.cpu_count :: unit -> i64`。
+- **実行**: ランタイムは `src/runtime/tzroutine.c` の M:N のスケジューラーです。P の数は `TSUZURI_MAXPROCS`（1〜256、既定はオンラインの CPU 数）、各 tzroutine のスタックの予約は `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576、既定 1024）で、下端の 128 KiB がガードです。プリエンプションはなく、`extern` 関数とファイルの I/O はその間 OS スレッドを止めます。
+- **ターゲット**: native の macOS・Linux・Windows（aarch64・x86-64）で動きます。WebAssembly は `E2000`（`option_requires_option`、`jspi` を付けても `option_conflict`）、`--wasm-feature threads`・`--freestanding` と、tzroutine を起動するプログラムの `--trap-mode return` も `E2000` です。`--emit llvm`・`header` は拒否しません。tzroutine を使わないプログラムの IR・オブジェクト・実行ファイルは変わりません。
 
 ## 非同期計算（Async）
 

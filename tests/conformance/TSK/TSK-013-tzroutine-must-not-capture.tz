@@ -1,0 +1,9 @@
+let x = 5
+let r = ref x
+tzroutine {
+    let _y = deref r
+}
+0
+
+// rule: TSK-013
+// expect: check-error E1013 line=3
