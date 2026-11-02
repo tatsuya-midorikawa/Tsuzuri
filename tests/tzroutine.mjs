@@ -24,6 +24,8 @@ function execute(program, args, success = true, environment = {}) {
   return result;
 }
 const cli = (args, success, environment) => execute(compiler, args, success, environment);
+// Windows's console text mode writes CRLF.
+const lines = (text) => text.replace(/\r\n/g, "\n");
 
 // One project per directory: a project reads every source below its root.
 let projects = 0;
@@ -70,6 +72,20 @@ $"sum={Atomic.load (Arc.get (ref total))}"
 }))
 7
 `, "go\n7\n"],
+  // A tzroutine spawned by a child of Task.scope on a pool worker is waited for by that child, so
+  // Task.scope returns after it.
+  [`let counter = Arc.new (Atomic.create 0i64)
+let _seen = Task.scope (ref counter) 4 (\\shared index -> {
+    let mine = Arc.share shared;
+    tzroutine {
+        for _i in 0 ..< 2000 do
+            Routine.yield ()
+        let _n = Atomic.fetch_add (Arc.get (ref mine)) 1i64
+    };
+    index
+})
+Atomic.load (Arc.get (ref counter))
+`, "4\n"],
   // The IO entry waits in tsuzuri_main.
   [`do! IO.write_line "first"
 tzroutine {
@@ -85,7 +101,7 @@ try {
     for (const optimization of ["-O0", "-O3"]) {
       for (const procs of ["1", "4"]) {
         const run = cli(["run", directory, optimization], true, { TSUZURI_MAXPROCS: procs });
-        assert.equal(run.stdout, expected, `${source}\n${optimization} P${procs}`);
+        assert.equal(lines(run.stdout), expected, `${source}\n${optimization} P${procs}`);
         runs++;
       }
     }
@@ -123,6 +139,21 @@ tzroutine {
       assert.match(run.stderr, /^trap: stack overflow$/m, `${optimization}\n${run.stderr}`);
       runs++;
     }
+  }
+
+  // A tzroutine cannot switch away inside Mutex.with_lock, whose lock belongs to the thread.
+  const locked = project(`let lock = Mutex.create 0i64
+tzroutine { () }
+Mutex.with_lock (ref lock) (\\value -> {
+    Routine.yield ();
+    deref value
+})
+`);
+  for (const optimization of ["-O0", "-O3"]) {
+    const run = cli(["run", locked, optimization], false);
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /a tzroutine cannot yield or wait inside Mutex.with_lock/);
+    runs++;
   }
 
   // A test waits for the tzroutines it spawned.

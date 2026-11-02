@@ -247,6 +247,68 @@ fn probes_the_stack_only_when_the_program_spawns() {
             .unwrap()
             .contains("probe-stack")
     );
+    // The entry block's allocas come before its calls: inlining a call would otherwise move an
+    // alloca out of the entry block, and a probed dynamic alloca can be misaligned on AArch64.
+    let printing = accepts("tzroutine { () }\n42\n");
+    let console = llvm::emit(&printing, llvm::Entry::Console).unwrap();
+    let main = definition(&console, "main");
+    let entry: Vec<&str> = main
+        .lines()
+        .skip(2)
+        .take_while(|line| !line.trim_start().starts_with("ret"))
+        .collect();
+    let first_call = entry
+        .iter()
+        .position(|line| line.contains(" call "))
+        .unwrap();
+    let last_alloca = entry
+        .iter()
+        .rposition(|line| line.contains(" = alloca "))
+        .unwrap();
+    assert!(last_alloca < first_call, "{main}");
+}
+
+#[test]
+fn pool_workers_wait_for_their_tzroutines() {
+    // A child of Task.scope (and a task of Task.parallel) runs on a pool worker, outside every
+    // boundary: the function that the worker runs waits for the tzroutines it spawned.
+    let module = accepts(
+        "let counter = Arc.new (Atomic.create 0i64)\nlet _seen = Task.scope (ref counter) 4 (\\shared index -> {\n    let mine = Arc.share shared;\n    tzroutine {\n        let _n = Atomic.fetch_add (Arc.get (ref mine)) 1i64\n    };\n    index\n})\n0\n",
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    let call = ir
+        .lines()
+        .find(|line| line.contains("@tsuzuri_task_parallel(ptr @"))
+        .unwrap_or_else(|| panic!("{ir}"));
+    let callback: String = call[call.find("(ptr @").unwrap() + 6..]
+        .chars()
+        .take_while(|c| !matches!(c, ',' | ')' | ' '))
+        .collect();
+    assert_wrapped(definition(&ir, &callback));
+}
+
+#[test]
+fn a_tzroutine_cannot_yield_inside_a_mutex() {
+    // A program that spawns marks the thread inside Mutex.with_lock; Routine.yield traps there.
+    let module = accepts(
+        "let lock = Mutex.create 0i64\ntzroutine { () }\nMutex.with_lock (ref lock) (\\value -> {\n    Routine.yield ();\n    deref value\n})\n",
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    assert!(
+        ir.contains("@tz.mutex.locked = internal thread_local global i32 0"),
+        "{ir}"
+    );
+    assert!(ir.contains("store i32 1, ptr @tz.mutex.locked"), "{ir}");
+    assert!(ir.contains("call i1 @tz.routine.unlocked()"), "{ir}");
+    // Without a spawn, nothing changes for Mutex.
+    let plain = accepts(
+        "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)\n",
+    );
+    assert!(
+        !llvm::emit(&plain, llvm::Entry::Console)
+            .unwrap()
+            .contains("tz.mutex.locked")
+    );
 }
 
 #[test]

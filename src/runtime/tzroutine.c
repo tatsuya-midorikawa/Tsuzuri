@@ -1401,6 +1401,23 @@ TZR_API void tsuzuri_tz_boundary_leave(void *scope) {
     if (tsuzuri_tz_scope_leave(scope)) __builtin_trap();
 }
 
+/* The message of a failure that the generated code traps for (TZ02, TZ03, TZ06). The numbers are
+ * fixed: a new message goes at the end. */
+TZR_API void tsuzuri_tz_report(int32_t what) {
+    static const char *const messages[] = {
+        "",
+        "send on closed Channel",
+        "close of closed Channel",
+        "negative WaitGroup counter",
+        "Mutex.with_lock cannot be nested",
+        "a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section",
+    };
+    if (what > 0 && what < (int32_t)(sizeof messages / sizeof messages[0])) {
+        fprintf(stderr, "Tsuzuri runtime: %s\n", messages[what]);
+        fflush(stderr);
+    }
+}
+
 /* Routine.count: the tzroutines that exist, counting the caller's thread as one (Go counts main). */
 TZR_API int64_t tsuzuri_tz_count(void) { return atomic_load(&tzr_sched.ngoroutines) + 1; }
 

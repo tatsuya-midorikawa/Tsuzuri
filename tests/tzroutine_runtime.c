@@ -482,6 +482,16 @@ static void test_fp(void) {
 }
 
 /* 16. the end of a boundary (TZ02): an empty scope returns at once, a full one after its tzroutines */
+/* 23. the messages of the generated code's traps (TZ02, TZ03): a child writes them all */
+static void report_body(void) {
+    for (int32_t what = 0; what <= 6; what++) tsuzuri_tz_report(what); /* 0 and 6 write nothing */
+    _exit(47);
+}
+static void test_report(void) {
+    CHECK(exited_with(run_child("child-report"), 47));
+    printf("report: ok\n");
+}
+
 static void test_boundary(void) {
     tsuzuri_tz_boundary_leave(tsuzuri_tz_scope_enter());
     atomic_store(&counter, 0);
@@ -853,6 +863,7 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-exit-deadlock") == 0) exit_deadlock_body();
     if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
     if (only && strcmp(only, "child-recover") == 0) recover_body();
+    if (only && strcmp(only, "child-report") == 0) report_body();
     if (only && strcmp(only, "child-big-select") == 0) { big_select_body(); return 0; }
     if (only && strcmp(only, "child-deep-100") == 0) { stack_body(100); return 0; }
     if (only && strcmp(only, "child-deep-900") == 0) { stack_body(900); return 0; }
@@ -882,6 +893,7 @@ int main(int argc, char **argv) {
     RUN("starvation", test_starvation());
     RUN("select_same", test_select_same());
     RUN("boundary", test_boundary());
+    RUN("report", test_report());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

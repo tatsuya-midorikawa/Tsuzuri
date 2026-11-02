@@ -1413,6 +1413,10 @@ fn native_ir_cpu_args(arch: &str, f16: llvm::F16Path) -> Result<Vec<&'static str
     Ok(args)
 }
 
+/// The feature macros of src/runtime/tzroutine.c (and os.c), for the head of a runtime unit that
+/// holds the scheduler.
+const TZROUTINE_FEATURES: &str = "#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)\n#define _DARWIN_C_SOURCE\n#endif\n#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n";
+
 /// The tzroutine runtime (TZ01) with its Win32 half inlined for a Windows target, as
 /// `task_runtime_source_for` does for the pool.
 pub(crate) fn tzroutine_runtime_source_for(platform: Platform) -> String {
@@ -4776,8 +4780,10 @@ fn build_complete(
                 }
             );
             // After the nine parts, and only when used: the prebuilt runtimes are matched by the text
-            // of the other programs' units (TZ02).
+            // of the other programs' units (TZ02). The scheduler's feature macros go before every
+            // include of the unit, as glibc fixes its features at the first header.
             if tzroutine_runtime {
+                source.insert_str(0, TZROUTINE_FEATURES);
                 source.push('\n');
                 source.push_str(&tzroutine_runtime_source_for(platform));
             }
