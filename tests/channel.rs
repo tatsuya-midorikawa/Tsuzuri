@@ -253,7 +253,10 @@ fn an_item_that_traps_in_a_failure_domain_sets_its_thread_back() {
     );
     // A batch announced inside the item, by any thread, and the item that announced it: before
     // the guards, the trap left the worker's batch, or the worker counted as running, and the
-    // deadlock after the domain hung.
+    // deadlock after the domain hung. Domain.run needs a POSIX build (Windows: E1038).
+    if !cfg!(unix) {
+        return;
+    }
     for (name, item) in [
         ("nested-batches", "    return inner (n + index)\n"),
         (
@@ -529,6 +532,8 @@ fn the_items_of_a_task_batch_are_announced_once() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
+// Domain.run needs a POSIX build: Windows refuses it (E1038).
+#[cfg(unix)]
 #[test]
 fn a_failure_domain_drops_the_batches_that_a_trap_left() {
     // A pool item traps inside Domain.run: its batch never ends. Without the domain's reset, the

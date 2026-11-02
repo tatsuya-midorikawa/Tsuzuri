@@ -129,9 +129,21 @@ static void tzr_thread_start(void *(*run)(void *), void *arg, size_t stack, cons
     CloseHandle(thread);
 }
 
-/* g0 -> G and G -> g0. The fiber saves its own registers; sp is unused. */
-#define TZR_TO_G(m, g) ((void)(m), SwitchToFiber((g)->fiber))
-#define TZR_TO_G0(m, g) ((void)(g), SwitchToFiber((m)->g0_fiber))
+/* g0 -> G and G -> g0. The fiber saves its own registers; sp is unused. FIBER_FLAG_FLOAT_SWITCH
+ * switches the control words (MXCSR, the x87 control word), not the x87 status word, so on x64
+ * each context keeps its x87 environment (its exception flags) here, as tzr_switch does elsewhere. */
+static inline void tzr_fiber_switch(void *fiber) {
+#if defined(_M_X64) || defined(__x86_64__)
+    struct { unsigned char bytes[28]; } x87;
+    __asm__ volatile("fnstenv %0" : "=m"(x87));
+    SwitchToFiber(fiber);
+    __asm__ volatile("fldenv %0" : : "m"(x87));
+#else
+    SwitchToFiber(fiber);
+#endif
+}
+#define TZR_TO_G(m, g) ((void)(m), tzr_fiber_switch((g)->fiber))
+#define TZR_TO_G0(m, g) ((void)(g), tzr_fiber_switch((m)->g0_fiber))
 
 /* A G's fiber: `reserve` bytes of address space, committed as the stack grows. A commit as large
  * as the reserve would make the OS round the reserve up to 1 MiB, so it stays below it. */

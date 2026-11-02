@@ -214,6 +214,8 @@ $"total={total}"
 let runs = 0;
 try {
   for (const [source, expected] of programs) {
+    // Domain.run needs a POSIX build: Windows refuses it (E1038).
+    if (process.platform === "win32" && source.includes("Domain.run")) continue;
     const directory = project(source);
     for (const optimization of ["-O0", "-O3"]) {
       for (const procs of ["1", "4"]) {
