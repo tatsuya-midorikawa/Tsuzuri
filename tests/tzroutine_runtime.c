@@ -888,6 +888,37 @@ static void test_select_same(void) {
     free(feed.c);
 }
 
+/* TZ02: a G inside a blocking call acts as its thread's pseudo-G. With one P, the tzroutines that
+ * it spawns there run (the P went away), its wait there stops the thread instead of switching the G
+ * away, the calls nest, and afterwards the G has a P again and can switch. */
+static _Atomic int64_t blocking_hits;
+static void blocking_child(void *env) {
+    (void)env;
+    atomic_fetch_add(&blocking_hits, 1);
+}
+static void blocking_routine(void *env) {
+    (void)env;
+    tsuzuri_tz_block_enter();
+    void *scope = tsuzuri_tz_scope_enter(); /* as a pool callback on the joining thread does */
+    for (int i = 0; i < 4; i++) tsuzuri_tz_go(blocking_child, NULL);
+    tsuzuri_tz_yield(); /* the thread's yield: the G stays */
+    join(scope);
+    tsuzuri_tz_block_enter();
+    tsuzuri_tz_block_leave();
+    tsuzuri_tz_block_leave();
+    tsuzuri_tz_yield();
+    atomic_fetch_add(&blocking_hits, 100);
+}
+static void test_blocking(void) {
+    for (int round = 0; round < 50; round++) {
+        atomic_store(&blocking_hits, 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        for (int i = 0; i < 8; i++) tsuzuri_tz_go(blocking_routine, NULL);
+        join(scope);
+        CHECK(atomic_load(&blocking_hits) == 8 * 104);
+    }
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -928,6 +959,7 @@ int main(int argc, char **argv) {
     RUN("select_same", test_select_same());
     RUN("boundary", test_boundary());
     RUN("report", test_report());
+    RUN("blocking", test_blocking());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

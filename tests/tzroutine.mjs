@@ -92,6 +92,71 @@ tzroutine {
     do! IO.write_line "second"
 }
 `, "first\nsecond\n"],
+  // A tzroutine that joins Task.parallel gives its P away: with one P, the children that the
+  // items spawn (one item runs on the joining thread, one on a pool worker) still run.
+  [`let done = Arc.new (Atomic.create 0i64)
+let outer = Arc.share (ref done)
+tzroutine {
+    let shared = Arc.share (ref outer)
+    let jobs = new [Task<i64>](2, \\index -> task {
+        let mine = Arc.share (ref shared)
+        tzroutine {
+            let _added = Atomic.fetch_add (Arc.get (ref mine)) 1i64
+        }
+        return index
+    })
+    let _results = Task.run (Task.parallel jobs)
+    let _last = Atomic.fetch_add (Arc.get (ref outer)) 10i64
+}
+while Atomic.load (Arc.get (ref done)) < 12i64 do
+    Routine.yield ()
+$"done={Atomic.load (Arc.get (ref done))}"
+`, "done=12\n"],
+  // A trap in a pool item of a failure domain skips the item's scope leave; the domain restores
+  // the scope, so main still waits for the tzroutine spawned after it.
+  [`def explode :: i64 -> i64
+fn explode n =
+    let jobs = new [Task<i64>](1, \\index -> task {
+        let zero = n - n
+        return index / zero
+    })
+    let results = Task.run (Task.parallel jobs)
+    results[0]
+
+let failed = match Domain.run (\\() -> explode 3) with
+    | Result.Ok _ -> 0
+    | Result.Error _ -> 1
+tzroutine {
+    let mut spin = 0i64
+    while spin < 200000i64 do
+        spin = spin + 1
+    do! IO.write_line "child"
+}
+$"failed={failed}"
+`, "child\nfailed=1\n"],
+  // The lock mark is per thread and a tzroutine moves between threads at its yields: optimized
+  // code must not keep the mark's address across them (no false trap, every lock counted).
+  [`def work :: ref Arc<Mutex<i64>> -> ref Arc<Atomic<i64>> -> unit
+fn work lock done =
+    for _round in 0 ..< 200 do
+        Routine.yield ()
+        let _value = Mutex.with_lock (Arc.get lock) (\\value -> { deref value = deref value + 1; deref value })
+        Routine.yield ()
+    let _finished = Atomic.fetch_add (Arc.get done) 1i64
+
+let lock = Arc.new (Mutex.create 0i64)
+let done = Arc.new (Atomic.create 0i64)
+for _i in 0 ..< 16 do
+    let mine = Arc.share (ref lock)
+    let finished = Arc.share (ref done)
+    tzroutine {
+        work (ref mine) (ref finished)
+    }
+while Atomic.load (Arc.get (ref done)) < 16i64 do
+    Routine.yield ()
+let total = Mutex.with_lock (Arc.get (ref lock)) (\\value -> deref value)
+$"total={total}"
+`, "total=3200\n"],
 ];
 
 let runs = 0;

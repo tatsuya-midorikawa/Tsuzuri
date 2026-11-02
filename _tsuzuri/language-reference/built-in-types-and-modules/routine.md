@@ -8,7 +8,7 @@
 - `Routine.yield ()` は、実行をほかの tzroutine に譲ります（Go の `runtime.Gosched`）。
 - `Routine.count ()` は、生きている tzroutine の数に、呼んだスレッドの 1 を足した数です（Go の `runtime.NumGoroutine` は `main` を数えます）。
 - `Routine.max_procs ()` は同時に tzroutine を走らせる OS スレッドの数、`Routine.cpu_count ()` はオンラインの CPU 数です。
-- どれも関数値として渡せます（`let f: unit -> unit = Routine.yield`）。`pure def` の中では使えません（`E1029`）。
+- どれも関数値として渡せます（`let f: unit -> unit = Routine.yield`）。`pure def` の中では使えません（`E1029`）。`Routine.yield` は `Mutex.with_lock` の中でトラップしうるので、`@no_trap` の関数からは呼べません（`E1031`）。
 
 ## 提供 API 一覧
 

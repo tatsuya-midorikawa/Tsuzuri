@@ -565,7 +565,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ParallelForEachChunk => facts(Some(Effect::Task), true, true, false, true, false, None),
         // TZ02: `Routine.go` spawns a tzroutine that calls the owned function it takes.
         RoutineGo => facts(Some(Effect::Task), true, false, false, true, false, None),
-        RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
+        // A yield inside `Mutex.with_lock` traps in a program that spawns.
+        RoutineYield => facts(Some(Effect::Task), false, true, false, false, false, None),
+        RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
             facts(Some(Effect::Task), false, false, false, false, false, None)
         }
         // B25
@@ -3473,7 +3475,7 @@ mod tests {
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 36);
+        assert_eq!(count(|facts| facts.trap), 37);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 

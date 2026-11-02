@@ -76,9 +76,21 @@ impl FunctionEmitter<'_, '_> {
             "getelementptr {context_type}, ptr {context}, i32 0, i32 0"
         ));
         self.instruction(format!("store %tz.closure %arg0, ptr {closure_slot}"));
+        // TZ02: a trap skips the scope leave of a pool callback that ran on this thread, so the
+        // spawn scope goes back to the one the domain was entered with.
+        let scope = self.globals.spawns.then(|| {
+            self.intrinsics
+                .insert("declare ptr @tsuzuri_tz_scope_current()".into());
+            self.intrinsics
+                .insert("declare void @tsuzuri_tz_scope_reset(ptr)".into());
+            self.value("call ptr @tsuzuri_tz_scope_current()")
+        });
         let status = self.value(format!(
             "call i32 @tsuzuri_domain_run(ptr {thunk}, ptr {context}, ptr {info})"
         ));
+        if let Some(scope) = scope {
+            self.instruction(format!("call void @tsuzuri_tz_scope_reset(ptr {scope})"));
+        }
         let output = self.spill(&result, "zeroinitializer");
         let success = self.value(format!("icmp eq i32 {status}, 0"));
         let ok = self.label();

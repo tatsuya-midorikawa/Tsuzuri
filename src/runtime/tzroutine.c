@@ -470,7 +470,8 @@ struct tzr_g {
     const char *wait_reason;
     tzr_note note;      /* pseudo-G only */
     int doomed;        /* pseudo-G only: woken by the deadlock detector */
-    int idle;          /* pseudo-G only: its thread waits in the task runtime (not counted as running) */
+    int idle;          /* pseudo-G only: not counted as running (an M's thread outside a blocking call, or
+                        * a thread that waits for the items it gave the task runtime) */
     uint64_t rand;
     tzr_sudog *param;   /* the sudog that completed this G's wait */
     _Atomic uint32_t select_done;
@@ -503,6 +504,7 @@ struct tzr_m {
     tzr_note park;
     tzr_m *link;
     int spinning;
+    int blocked;   /* inside a blocking call of curg: the thread acts as a pseudo-G */
     void (*after)(tzr_m *, tzr_g *);
     void (*after_unlock)(void *);
     void *after_arg;
@@ -528,6 +530,8 @@ static struct {
     _Atomic int npidle;
     tzr_m *midle;
     int nmidle;
+    tzr_m *pwait;                 /* Ms back from a blocking call, waiting for a P */
+    int nmblocked;                /* Ms in a blocking call: their threads count as pseudo-Gs */
     int mcount;
     _Atomic int nmspinning;
     tzr_p *allp[TZR_MAXPROCS];
@@ -567,9 +571,11 @@ static uint64_t tzr_rand(uint64_t *state) {
 static void tzr_start(void);
 static tzr_g *tzr_pseudo(void);
 
+/* The G of the calling code: the G of the M, or the pseudo-G of a thread that is not an M or is
+ * an M inside a blocking call (whose code runs as the thread's, never switching the G away). */
 static TZR_NOINLINE tzr_g *tzr_current(void) {
     tzr_m *m = tzr_this_m();
-    if (m != NULL && m->curg != NULL) return m->curg;
+    if (m != NULL && m->curg != NULL && !m->blocked) return m->curg;
     return tzr_pseudo();
 }
 
@@ -757,7 +763,16 @@ static tzr_p *tzr_pidleget(void) {
     return p;
 }
 
+/* tzr_sched.lock held (or the scheduler not started). An M that is back from a blocking call and
+ * waits for a P takes it first. */
 static void tzr_pidleput(tzr_p *p) {
+    tzr_m *waiter = tzr_sched.pwait;
+    if (waiter) {
+        tzr_sched.pwait = waiter->link;
+        waiter->nextp = p;
+        tzr_note_wake(&waiter->park);
+        return;
+    }
     p->link = tzr_sched.pidle;
     tzr_sched.pidle = p;
     atomic_fetch_add(&tzr_sched.npidle, 1);
@@ -854,7 +869,7 @@ static void tzr_report_deadlock(void) {
 /* Called with tzr_sched.lock held whenever an M goes idle or a pseudo-G parks. */
 static void tzr_checkdead(void) {
     if (tzr_sched.deadlocked) return;
-    int running = tzr_sched.mcount - tzr_sched.nmidle + tzr_sched.npseudo_running;
+    int running = tzr_sched.mcount - tzr_sched.nmidle - tzr_sched.nmblocked + tzr_sched.npseudo_running;
     if (running > 0) return;
     if (atomic_load(&tzr_sched.runq_size) > 0) return;
     if (atomic_load(&tzr_sched.ntimers) > 0) return;
@@ -1220,7 +1235,7 @@ static void tzr_after_yield(tzr_m *m, tzr_g *g) {
 
 TZR_API void tsuzuri_tz_yield(void) {
     tzr_m *m = tzr_this_m();
-    if (m == NULL || m->curg == NULL) {
+    if (m == NULL || m->curg == NULL || m->blocked) {
         tzr_os_yield();
         return;
     }
@@ -1455,6 +1470,67 @@ TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
 TZR_API void tsuzuri_tz_boundary_leave(void *scope) {
     if (tsuzuri_tz_scope_leave(scope)) __builtin_trap();
 }
+
+/* ---------------------------------------------------------------- blocking calls */
+
+/* A G that calls into code which blocks its OS thread without this runtime's knowledge (the join
+ * of the task runtime's Task.parallel, Task.scope and Parallel.*) gives its P away for the call, as
+ * Go's entersyscallblock does, so that what is queued, and the work that the call waits for (the
+ * child tzroutine of a pool worker), runs even with one P. That code may call back into Tsuzuri on
+ * this thread (the task runtime runs an item on the thread that submits it): until the call
+ * returns, the thread acts as a pseudo-G, whose waits stop the thread and never switch the G away,
+ * so the code of the call stays on its thread. After the call the M takes an idle P, or waits until
+ * an M gives one back. Calls nest; a pseudo-G does nothing here. */
+TZR_API void tsuzuri_tz_block_enter(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked++ > 0) return;
+    tzr_p *p = m->p;
+    m->p = NULL;
+    tzr_g *thread = tzr_pseudo(); /* counted as running from here; a new one is */
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_sched.nmblocked++;
+    if (thread->idle) {
+        thread->idle = 0;
+        tzr_sched.npseudo_running++;
+    }
+    if (!tzr_runq_empty(p) || atomic_load(&tzr_sched.runq_size) > 0) {
+        tzr_mutex_unlock(&tzr_sched.lock);
+        tzr_startm(p, 0);
+        return;
+    }
+    tzr_pidleput(p);
+    tzr_mutex_unlock(&tzr_sched.lock);
+    /* a G queued before the P was seen idle would wait for nobody */
+    if (atomic_load(&tzr_sched.runq_size) > 0) tzr_wakep();
+}
+
+TZR_API void tsuzuri_tz_block_leave(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || --m->blocked > 0) return;
+    tzr_g *thread = tzr_pseudo();
+    tzr_mutex_lock(&tzr_sched.lock);
+    thread->idle = 1;
+    tzr_sched.npseudo_running--;
+    tzr_sched.nmblocked--; /* the M counts again, as running */
+    tzr_p *p = tzr_pidleget();
+    if (p == NULL) {
+        m->link = tzr_sched.pwait;
+        tzr_sched.pwait = m;
+        tzr_mutex_unlock(&tzr_sched.lock);
+        tzr_note_sleep(&m->park);
+        p = m->nextp;
+        m->nextp = NULL;
+    } else {
+        tzr_mutex_unlock(&tzr_sched.lock);
+    }
+    m->p = p;
+}
+
+/* The spawn scope of the calling G, and setting it back: a failure domain that a trap left
+ * restores the scope that it was entered with (TZ02), since the trap skipped the scope leave of the
+ * code between. */
+TZR_API void *tsuzuri_tz_scope_current(void) { return tzr_current()->spawn_scope; }
+TZR_API void tsuzuri_tz_scope_reset(void *scope) { tzr_current()->spawn_scope = scope; }
 
 /* The message of a failure that the generated code traps for (TZ02, TZ03, TZ06). The numbers are
  * fixed: a new message goes at the end. */

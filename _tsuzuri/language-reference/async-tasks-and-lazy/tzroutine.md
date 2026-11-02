@@ -141,6 +141,7 @@ tzroutine は M:N のスケジューラーで走ります。
 - 同時に tzroutine を走らせる OS スレッドの数（P の数）は、既定でオンラインの CPU 数（256 まで）です。環境変数 `TSUZURI_MAXPROCS`（1〜256 の 10 進）で、起動時に 1 回だけ決められます。`Routine.max_procs ()` がその値です。
 - 待つ tzroutine（`Routine.yield`・境界の待ちなど）は OS スレッドを止めないので、待つ tzroutine の数はスレッド数に縛られません。
 - プリエンプションはまだありません。待たずに計算し続ける tzroutine は、その OS スレッドを離しません。長い計算では、ときどき `Routine.yield ()` を呼びます。`extern` 関数やファイルの I/O など、OS で待つ呼び出しも、その間 OS スレッドを止めます。
+- tzroutine の中の `Task.run (Task.parallel …)`・`Task.scope`・`Parallel.*` は、終わりを待つ間、P を手放します。`TSUZURI_MAXPROCS=1` でも、ほかの tzroutine と、そのタスクの中で起動した tzroutine は走ります。待っている間に呼び出したスレッドで走るタスクは、tzroutine でないスレッドと同じく、そのスレッドを止めて待ちます。
 - 各 tzroutine のスタックは、既定で 1 MiB の予約です（触れたページだけが実メモリになります）。下端の 128 KiB はガードで、溢れると `trap: stack overflow` と報告して終わります（Windows では理由なしで終わります）。tzroutine を起動するプログラムは、すべての関数が大きな frame のページを確保の時に順に触れる（stack probe）ので、ガードより大きな frame もガードを飛び越えません。深い再帰には `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576 の 10 進、KiB）で予約を増やします。範囲外の値は無視して既定値を使います。
 - Linux では、1 つのスタックが mapping を 2 つ使うので、同時に生きる tzroutine はおよそ 3 万個（`vm.max_map_count` の既定 65,530 の半分）が上限です。超えると `Tsuzuri runtime: cannot allocate a tzroutine stack (out of memory or address space)` と書いて終わります。
 
@@ -148,7 +149,7 @@ tzroutine は M:N のスケジューラーで走ります。
 
 - tzroutine の本体のトラップ（`assert`、範囲外の添字、0 での除算など）は、ほかのトラップと同じく、プロセス全体の失敗です。報告は、トラップした tzroutine の OS スレッドが標準エラーへ書きます（`--trap-info` なら位置を含みます）。
 - `--trap-mode return` とは組み合わせられません（`E2000`）。ある tzroutine のトラップを、それを起動した呼び出しから返せないからです。
-- tzroutine を起動するプログラムでは、`Mutex.with_lock` の中で `Routine.yield` を呼ぶとトラップします（`Tsuzuri runtime: a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section`）。ロックの持ち主は OS スレッドなので、ロックを持ったまま tzroutine が別の OS スレッドへ移れないからです。
+- tzroutine を起動するプログラムでは、`Mutex.with_lock` の中で `Routine.yield` を呼ぶとトラップします（`Tsuzuri runtime: a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section`）。ロックの持ち主は OS スレッドなので、ロックを持ったまま tzroutine が別の OS スレッドへ移れないからです。このため、`Routine.yield` を呼ぶ関数には `@no_trap` を付けられません（`E1031`）。
 
 ## ターゲット
 

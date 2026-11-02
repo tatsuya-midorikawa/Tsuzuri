@@ -99,7 +99,7 @@ impl FunctionEmitter<'_, '_> {
                 // wait for a `Channel` (TZ03), trap.
                 if self.globals.waits {
                     self.intrinsics.insert(super::MUTEX_LOCKED.into());
-                    self.instruction("store i32 1, ptr @tz.mutex.locked");
+                    self.instruction("call void @tz.mutex.mark(i32 1)");
                 }
                 let pointer = self.value(format!(
                     "getelementptr inbounds {}, ptr {cell}, i32 0, i32 1",
@@ -109,7 +109,7 @@ impl FunctionEmitter<'_, '_> {
                 let (output, _) =
                     self.apply_value("%arg1", &parameters[1], Some((&borrow, &pointer)), false);
                 if self.globals.waits {
-                    self.instruction("store i32 0, ptr @tz.mutex.locked");
+                    self.instruction("call void @tz.mutex.mark(i32 0)");
                 }
                 self.instruction(format!("call void @tsuzuri_mutex_unlock(ptr {cell})"));
                 output

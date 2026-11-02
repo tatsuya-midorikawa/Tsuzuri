@@ -298,7 +298,7 @@ fn a_tzroutine_cannot_yield_inside_a_mutex() {
         ir.contains("@tz.mutex.locked = internal thread_local global i32 0"),
         "{ir}"
     );
-    assert!(ir.contains("store i32 1, ptr @tz.mutex.locked"), "{ir}");
+    assert!(ir.contains("call void @tz.mutex.mark(i32 1)"), "{ir}");
     assert!(ir.contains("call i1 @tz.routine.unlocked()"), "{ir}");
     // Without a spawn, nothing changes for Mutex.
     let plain = accepts(
@@ -426,4 +426,66 @@ fn rejects_unsupported_targets() {
         );
     }
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn routine_yield_is_a_trap_of_the_effect_rules() {
+    // In a program that spawns, a yield inside `Mutex.with_lock` traps, so `@no_trap` refuses it.
+    let error = analyze("@no_trap\ndef pause :: unit -> unit = \\() -> Routine.yield ()\n\n0\n")
+        .expect_err("a yield can trap");
+    assert_eq!(error.code, "E1031", "{}", error.message);
+    assert!(error.message.contains("Routine.yield"), "{}", error.message);
+}
+
+#[test]
+fn only_noinline_helpers_touch_the_lock_mark() {
+    // The mark is thread-local and a tzroutine resumes on another thread after a yield, so the IR
+    // reads and writes it only inside two functions that are never inlined (R2).
+    let module = accepts(
+        "let lock = Mutex.create 0i64\ntzroutine { () }\nlet n = Mutex.with_lock (ref lock) (\\value -> deref value)\nRoutine.yield ()\nn\n",
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    let mut function = "";
+    for line in ir.lines() {
+        if line.starts_with("define ") {
+            function = line;
+        }
+        if line.contains("@tz.mutex.locked") && !line.starts_with("@tz.mutex.locked =") {
+            assert!(
+                function.contains("@tz.mutex.mark(") || function.contains("@tz.routine.unlocked("),
+                "{function}\n{line}"
+            );
+            assert!(function.contains("noinline"), "{function}");
+        }
+    }
+    assert!(ir.contains("call void @tz.mutex.mark(i32 1)"));
+    assert!(ir.contains("call void @tz.mutex.mark(i32 0)"));
+}
+
+#[test]
+fn a_join_of_the_task_runtime_is_a_blocking_call() {
+    // A tzroutine gives its P away while it joins pool items, and a failure domain restores the
+    // spawn scope that a trap in an item left behind.
+    let module = accepts(
+        "def joined :: i64 -> i64\nfn joined n =\n    let jobs = new [Task<i64>](2, \\index -> task { return index + n })\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\ntzroutine { () }\nlet failed = match Domain.run (\\() -> joined 1) with\n    | Result.Ok value -> value\n    | Result.Error _ -> 0\nfailed\n",
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    let lines: Vec<&str> = ir.lines().collect();
+    let joins: Vec<usize> = (0..lines.len())
+        .filter(|&at| {
+            lines[at].contains("@tsuzuri_task_parallel(ptr @")
+                || lines[at].contains("@tsuzuri_task_parallel_results(ptr @")
+        })
+        .collect();
+    assert!(!joins.is_empty());
+    for at in joins {
+        assert_eq!(lines[at - 1].trim(), "call void @tsuzuri_tz_block_enter()");
+        assert_eq!(lines[at + 1].trim(), "call void @tsuzuri_tz_block_leave()");
+    }
+    let run = ir.find("@tsuzuri_domain_run(ptr").expect("a domain");
+    let before = &ir[..run];
+    assert!(
+        before[before.rfind("define ").unwrap()..].contains("call ptr @tsuzuri_tz_scope_current()")
+    );
+    assert!(ir[run..].contains("call void @tsuzuri_tz_scope_reset(ptr"));
 }
