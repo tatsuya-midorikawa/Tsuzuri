@@ -72,7 +72,6 @@ pub(crate) fn annotate(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
 /// mismatch of the builtin's own argument counts (the checker names it): a function `recv` of a
 /// module `Channel` of the program keeps its `E1003`.
 fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
-    let mut lexed: BTreeMap<usize, Vec<Token>> = BTreeMap::new();
     for diagnostic in &mut set.diagnostics {
         if diagnostic.kind != Some("type_mismatch") {
             continue;
@@ -90,52 +89,56 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
         } else {
             continue;
         };
-        if diagnostic.detail.builtin
-            != Some(if function == "send" {
-                "Channel.send"
-            } else {
-                "Channel.recv"
-            })
-        {
+        let builtin = if function == "send" {
+            "Channel.send"
+        } else {
+            "Channel.recv"
+        };
+        let Some((_, callee)) = diagnostic
+            .detail
+            .builtin
+            .filter(|(name, _)| *name == builtin)
+        else {
             continue;
-        }
+        };
         if !expected.starts_with("Channel<") {
             continue;
         }
-        let source = diagnostic.span.source.unwrap_or(0);
+        let source = callee.source.or(diagnostic.span.source).unwrap_or(0);
         let Some(input) = inputs
             .get(source)
             .filter(|input| input.origin == ModuleOrigin::User)
         else {
             continue;
         };
-        let tokens = lexed
-            .entry(source)
-            .or_insert_with(|| lexer::lex_all(input.text, input.edition).0);
-        let Some(mut index) = main_token(tokens, diagnostic) else {
+        // The callee as written, also after `|>`: `Channel.recv`, or `std::Channel.recv`; the
+        // span of `(Channel.recv)` holds its parentheses.
+        let (mut start, mut end) = (callee.start, callee.end);
+        while let Some(written) = input.text.get(start..end) {
+            let inner = written.trim();
+            start += written.len() - written.trim_start().len();
+            end = start + inner.len();
+            if inner.len() >= 2 && inner.starts_with('(') && inner.ends_with(')') {
+                start += 1;
+                end -= 1;
+            } else {
+                break;
+            }
+        }
+        let Some(spelled) = input.text.get(start..end) else {
             continue;
         };
-        let spelled = |token: &Token| {
-            input
-                .text
-                .get(token.span.start..token.span.end)
-                .unwrap_or("")
+        let Some(prefix) = spelled.strip_suffix(builtin) else {
+            continue;
         };
-        // `Channel.recv (ref receiver)`: the argument may open with `(` and `ref`.
-        while index > 0 && matches!(spelled(&tokens[index - 1]), "(" | "ref") {
-            index -= 1;
-        }
-        let [module, dot, name] = match index.checked_sub(3).map(|first| &tokens[first..index]) {
-            Some([module, dot, name]) => [module, dot, name],
-            _ => continue,
-        };
-        if spelled(module) != "Channel" || spelled(dot) != "." || spelled(name) != function {
+        if !(prefix.is_empty() || prefix.ends_with("::")) {
             continue;
         }
-        let mut span = module.span;
-        span.end = name.span.end;
-        span.source = diagnostic.span.source;
-        let text = format!("DataChannel.{function}");
+        let mut span = callee;
+        span.start = start;
+        span.end = end;
+        span.source = Some(source);
+        let text = format!("{prefix}DataChannel.{function}");
         let end = if function == "send" {
             "Sender"
         } else {
@@ -143,7 +146,7 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
         };
         *diagnostic = Diagnostic::of(
             crate::diagnostic_kinds::DiagnosticKind::RenamedToDataChannel,
-            format!("'Channel.{function}' of a DataChannel.{end} is now '{text}'"),
+            format!("'Channel.{function}' of a DataChannel.{end} is now 'DataChannel.{function}'"),
             span,
         )
         .with_help("the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)")

@@ -11007,19 +11007,20 @@ impl<'a> Checker<'a> {
     ) {
         // A mismatch of a builtin's argument names the builtin, for the hints that must know
         // which function it is.
-        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind {
-            let builtin = instance.builtin.name();
+        if matches!(
+            callee.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(_))
+        ) {
             let tails = tail_spans(argument);
-            let mark = |diagnostic: &mut Diagnostic| {
-                if diagnostic.code == "E1003" && tails.contains(&diagnostic.span) {
-                    diagnostic.detail.builtin = Some(builtin);
-                }
-            };
             for diagnostic in self.recovered.iter_mut().skip(from) {
-                mark(diagnostic);
+                if tails.contains(&diagnostic.span) {
+                    Self::name_builtin(callee, diagnostic);
+                }
             }
-            if let Some(diagnostic) = &mut error {
-                mark(diagnostic);
+            if let Some(diagnostic) = &mut error
+                && tails.contains(&diagnostic.span)
+            {
+                Self::name_builtin(callee, diagnostic);
             }
         }
         if let Some((message, span)) = self.declared_parameter(callee, index) {
@@ -11031,6 +11032,15 @@ impl<'a> Checker<'a> {
                 &format!("{message} is declared here"),
                 span,
             );
+        }
+    }
+
+    /// Notes on an `E1003` of an argument which builtin `callee` is and where its name is.
+    fn name_builtin(callee: &TypedExpr, diagnostic: &mut Diagnostic) {
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+            && diagnostic.code == "E1003"
+        {
+            diagnostic.detail.builtin = Some((instance.builtin.name(), callee.span));
         }
     }
 
@@ -11705,7 +11715,13 @@ impl<'a> Checker<'a> {
             if let Some(expected) = expected {
                 self.same(&result, expected, expression.span)?;
             }
-            (self.coerce_argument(left, &parameters[0])?, right)
+            let left = self
+                .coerce_argument(left, &parameters[0])
+                .map_err(|mut error| {
+                    Self::name_builtin(&right, &mut error);
+                    error
+                })?;
+            (left, right)
         } else {
             let hint = expected.filter(|_| {
                 !matches!(
@@ -11734,7 +11750,11 @@ impl<'a> Checker<'a> {
         let result = if *operator == BinaryOp::Pipe {
             let signature = self.call_signature(&right.ty, 1, right.span);
             let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
-            self.same(&left.ty, &parameters[0], left.span)?;
+            self.same(&left.ty, &parameters[0], left.span)
+                .map_err(|mut error| {
+                    Self::name_builtin(&right, &mut error);
+                    error
+                })?;
             self.solve_families(false)?;
             result
         } else {
