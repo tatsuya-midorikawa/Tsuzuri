@@ -68,7 +68,9 @@ pub(crate) fn annotate(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
 /// written for the channel that is `DataChannel` now, which the end's type proves, so the `E1003`
 /// of the argument becomes the `E1040` of the name before it, with the fix that writes
 /// `DataChannel.send` or `DataChannel.recv`. Unlike a hint, the fix is certain: the types decide
-/// it, and `tsuzuri fix` then moves an old program round by round through `E1040` alone.
+/// it, and `tsuzuri fix` then moves an old program round by round through `E1040` alone. Only a
+/// mismatch of the builtin's own argument counts (the checker names it): a function `recv` of a
+/// module `Channel` of the program keeps its `E1003`.
 fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
     let mut lexed: BTreeMap<usize, Vec<Token>> = BTreeMap::new();
     for diagnostic in &mut set.diagnostics {
@@ -88,6 +90,15 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
         } else {
             continue;
         };
+        if diagnostic.detail.builtin
+            != Some(if function == "send" {
+                "Channel.send"
+            } else {
+                "Channel.recv"
+            })
+        {
+            continue;
+        }
         if !expected.starts_with("Channel<") {
             continue;
         }

@@ -574,3 +574,47 @@ fn trap_mode_return_refuses_a_channel() {
     );
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn a_partial_try_send_borrows_the_channel() {
+    // `Channel.try_send ch` is a function that borrows `ch`: it cannot leave the channel's scope,
+    // and is fine where the channel lives. Only a full call gives back an item without a borrow.
+    rejects(
+        "def make :: unit -> (i64 -> Result<unit, Channel.SendError<i64>>)\nfn make _u =\n    let ch: Channel<i64> = Channel.make 1\n    Channel.try_send ch\n\nlet send = make ()\nmatch send 3 with\n| Result.Ok _ -> 1\n| Result.Error _ -> 0\n",
+        "E1013",
+        "borrow_outlives_block",
+    );
+    accepts(
+        "let ch: Channel<i64> = Channel.make 1\nlet send = Channel.try_send ch\nmatch send 3 with\n| Result.Ok _ -> Channel.length ch\n| Result.Error _ -> 0\n",
+    );
+}
+
+#[test]
+fn objects_link_the_one_thread_channels() {
+    // An object for the default WebAssembly targets has the one-thread channels in it (wasm64
+    // links as wasm64).
+    let directory = project(
+        "wasm-object",
+        "export def f :: i64 -> i64\nfn f n =\n    let ch: Channel<i64> = Channel.make 1\n    Channel.send ch n\n    Channel.length ch\n",
+    );
+    for target in ["wasm32", "wasm64"] {
+        let output = directory.join(format!("{target}.o"));
+        let build = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .arg("build")
+            .arg(&directory)
+            .args(["--target", target, "--emit", "object", "-o"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        assert!(
+            std::fs::read(&output).unwrap().starts_with(b"\0asm"),
+            "{target}"
+        );
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+}

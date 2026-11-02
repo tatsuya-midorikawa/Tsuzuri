@@ -2693,19 +2693,21 @@ impl<'a> Checker<'a, '_> {
         let locked = self.locked_result(callee).filter(|_| arguments.len() >= 2);
         let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
         // What comes out of a channel was checked when it went in; `Channel.try_send` gives back
-        // the item that it checked.
-        let received = matches!(
-            self.builtin_called(callee),
+        // the item that it checked. Only a full call gives that: `Channel.try_send ch` is a function
+        // that borrows the channel.
+        let received = match self.builtin_called(callee) {
             Some(
                 crate::check::Builtin::DataChannelRecv
-                    | crate::check::Builtin::ChannelRecv
-                    | crate::check::Builtin::ChannelTryRecv
-                    | crate::check::Builtin::ChannelTrySend
-                    | crate::check::Builtin::ReceiveOnlyRecv
-                    | crate::check::Builtin::ReceiveOnlyTryRecv
-                    | crate::check::Builtin::SendOnlyTrySend
-            )
-        );
+                | crate::check::Builtin::ChannelRecv
+                | crate::check::Builtin::ChannelTryRecv
+                | crate::check::Builtin::ReceiveOnlyRecv
+                | crate::check::Builtin::ReceiveOnlyTryRecv,
+            ) => !arguments.is_empty(),
+            Some(
+                crate::check::Builtin::ChannelTrySend | crate::check::Builtin::SendOnlyTrySend,
+            ) => arguments.len() >= 2,
+            _ => false,
+        };
         let value = if locked.is_some() || sent.is_some() {
             Value::default()
         } else {

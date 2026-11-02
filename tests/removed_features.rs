@@ -144,3 +144,32 @@ fn tsuzuri_fix_writes_the_data_channel_names() {
     }
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+#[test]
+fn a_function_of_the_program_keeps_its_mismatch() {
+    // A function `recv` of the program's own module `Channel` given an end of a DataChannel is a
+    // plain mismatch: only the arguments of the builtin become E1040.
+    let directory =
+        std::env::temp_dir().join(format!("tsuzuri-removed-own-{}", std::process::id()));
+    std::fs::create_dir_all(directory.join("App")).unwrap();
+    std::fs::write(
+        directory.join("App/Channel.tz"),
+        "namespace App\n\ndef recv :: ref std::Channel<i64> -> i64\nfn recv ch = std::Channel.length ch\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("Main.tz"),
+        "namespace App\n\ndef f :: own DataChannel.Receiver<i64> -> i64\nfn f receiver = Channel.recv (ref receiver)\n\n0\n",
+    )
+    .unwrap();
+    let check = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&directory)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert!(!check.status.success());
+    assert!(stderr.contains("error[E1003]"), "{stderr}");
+    assert!(!stderr.contains("E1040"), "{stderr}");
+    std::fs::remove_dir_all(&directory).unwrap();
+}
