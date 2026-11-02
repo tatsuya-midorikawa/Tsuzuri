@@ -23,7 +23,9 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
 const windows = process.platform === "win32";
 const platformFlags = windows
   ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"]
-  : ["-pthread", "-lm"]; // glibc keeps fegetround and fesetround in libm
+  : ["-pthread"];
+// After the inputs, for linkers with --as-needed: glibc keeps fegetround and fesetround in libm.
+const libraries = windows ? [] : ["-lm"];
 // The cases whose children end by a signal, which a sanitizer reports in its own way.
 const signalled = new Set(["stack_size", "failures"]);
 
@@ -39,7 +41,7 @@ function execute(program, args, environment = {}, success = true) {
 
 function build(name, flags, extra = []) {
   const binary = join(temporary, windows ? `${name}.exe` : name);
-  execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", ...flags, ...platformFlags, source, ...extra, "-o", binary]);
+  execute(clang, ["-std=c11", "-Wall", "-Wextra", "-Werror", ...flags, ...platformFlags, source, ...extra, ...libraries, "-o", binary]);
   return binary;
 }
 
