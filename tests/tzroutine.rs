@@ -479,8 +479,11 @@ fn a_join_of_the_task_runtime_is_a_blocking_call() {
         .collect();
     assert!(!joins.is_empty());
     for at in joins {
-        assert_eq!(lines[at - 1].trim(), "call void @tsuzuri_tz_block_enter()");
-        assert_eq!(lines[at + 1].trim(), "call void @tsuzuri_tz_block_leave()");
+        // TZ03: the items are announced inside the blocking call.
+        assert_eq!(lines[at - 2].trim(), "call void @tsuzuri_tz_block_enter()");
+        assert!(lines[at - 1].contains("call void @tsuzuri_tz_parallel_begin(ptr %"));
+        assert!(lines[at + 1].contains("call void @tsuzuri_tz_parallel_end(ptr %"));
+        assert_eq!(lines[at + 2].trim(), "call void @tsuzuri_tz_block_leave()");
     }
     let run = ir.find("@tsuzuri_domain_run(ptr").expect("a domain");
     let before = &ir[..run];
