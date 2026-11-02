@@ -258,14 +258,16 @@ Atomic.load (Arc.get (ref counter))
     runs++;
   }
 
-  // A frame larger than the 128 KiB guard is probed, so the overflow is reported (POSIX).
+  // A frame larger than the 128 KiB guard is probed, so the overflow is reported (POSIX). Twenty
+  // arrays of 8 KiB make a frame of about 330 KiB at -O3 too; three of 64 KiB took AArch64's
+  // instruction selection over a minute at -O3 (DAG combining of the aggregate stores), more than
+  // a CI runner gives a command.
   if (process.platform !== "win32") {
+    const arrays = Array.from({ length: 20 }, (_, j) => j);
     const frames = project(`def rec deep :: i64 -> i64
 fn rec deep n =
-    let a: [[i64; 1024]; 8] = FixedArray.init (\\i -> FixedArray.init (\\k -> k + i + n))
-    let b: [[i64; 1024]; 8] = FixedArray.init (\\i -> FixedArray.init (\\k -> k * i + n))
-    let c: [[i64; 1024]; 8] = FixedArray.init (\\i -> FixedArray.init (\\k -> k - i + n))
-    if n == 0 then a[1][2] + b[3][4] + c[5][6] else deep (n - 1) + a[7][n % 1024] + b[0][1] + c[2][3]
+${arrays.map((j) => `    let a${j}: [i64; 1024] = FixedArray.init (\\k -> k * ${j + 1} + n)\n`).join("")}\
+    if n == 0 then ${arrays.map((j) => `a${j}[${j}]`).join(" + ")} else deep (n - 1) + ${arrays.map((j) => `a${j}[(n + ${j}) % 1024]`).join(" + ")}
 
 let done = Arc.new (Atomic.create 0i64)
 let mine = Arc.share (ref done)
