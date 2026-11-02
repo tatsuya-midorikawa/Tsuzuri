@@ -101,6 +101,30 @@ try {
     runs++;
   }
 
+  // A frame larger than the 128 KiB guard is probed, so the overflow is reported (POSIX).
+  if (process.platform !== "win32") {
+    const frames = project(`def rec deep :: i64 -> i64
+fn rec deep n =
+    let a: [[i64; 1024]; 8] = FixedArray.init (\\i -> FixedArray.init (\\k -> k + i + n))
+    let b: [[i64; 1024]; 8] = FixedArray.init (\\i -> FixedArray.init (\\k -> k * i + n))
+    let c: [[i64; 1024]; 8] = FixedArray.init (\\i -> FixedArray.init (\\k -> k - i + n))
+    if n == 0 then a[1][2] + b[3][4] + c[5][6] else deep (n - 1) + a[7][n % 1024] + b[0][1] + c[2][3]
+
+let done = Arc.new (Atomic.create 0i64)
+let mine = Arc.share (ref done)
+tzroutine {
+    let _r = Atomic.fetch_add (Arc.get (ref mine)) (deep 100)
+}
+0
+`);
+    for (const optimization of ["-O0", "-O3"]) {
+      const run = cli(["run", frames, optimization], false);
+      assert.notEqual(run.status, 0);
+      assert.match(run.stderr, /^trap: stack overflow$/m, `${optimization}\n${run.stderr}`);
+      runs++;
+    }
+  }
+
   // A test waits for the tzroutines it spawned.
   const tested = project(`def bump :: unit -> i64 = \\() ->
     let shared = Arc.new (Atomic.create 0i64)

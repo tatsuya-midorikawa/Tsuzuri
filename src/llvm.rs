@@ -1384,7 +1384,10 @@ fn emit_program(
     // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
     // thrown away.
     let output = if spawns(module) {
-        with_tzroutine_scopes(output, &tzroutine_boundaries(module))
+        with_stack_probes(with_tzroutine_scopes(
+            output,
+            &tzroutine_boundaries(module),
+        ))
     } else {
         output
     };
@@ -1407,6 +1410,30 @@ fn tzroutine_boundaries(module: &CheckedModule) -> BTreeSet<String> {
         boundaries.insert(format!("tz_{}", function.name));
     }
     boundaries
+}
+
+/// Makes every function of a program that spawns probe the pages of a frame larger than a page as
+/// it allocates the frame (TZ02). A frame can be larger than the 128 KiB guard of a tzroutine's
+/// stack (the slots of the locals are outside `MAX_FRAME_BYTES`); probed, it faults in the guard,
+/// which `stack.c` reports, instead of jumping over it into another mapping.
+pub(crate) fn with_stack_probes(ir: String) -> String {
+    const PROBE: &str = " \"probe-stack\"=\"inline-asm\"";
+    let mut output = String::with_capacity(ir.len() + ir.len() / 16);
+    for line in ir.split_inclusive('\n') {
+        let header = line.trim_end();
+        let at = (header.starts_with("define ") && header.ends_with('{'))
+            .then(|| header.find(" !dbg ").or_else(|| header.rfind(" {")))
+            .flatten();
+        match at {
+            Some(at) if !header.contains("\"probe-stack\"") => {
+                output.push_str(&line[..at]);
+                output.push_str(PROBE);
+                output.push_str(&line[at..]);
+            }
+            _ => output.push_str(line),
+        }
+    }
+    output
 }
 
 /// Makes each of `boundaries` that the IR defines wait for its tzroutines (TZ02): a scope opens at

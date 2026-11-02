@@ -223,6 +223,23 @@ fn wraps_every_boundary() {
 }
 
 #[test]
+fn probes_the_stack_only_when_the_program_spawns() {
+    // A frame can be larger than a tzroutine's guard: every function of a spawning program probes
+    // its frame, and no other program changes.
+    let spawning = accepts("tzroutine { () }\n0\n");
+    for entry in [llvm::Entry::Library, llvm::Entry::Console] {
+        let ir = llvm::emit(&spawning, entry).unwrap();
+        let defines: Vec<&str> = ir.lines().filter(|line| line.starts_with("define ")).collect();
+        assert!(!defines.is_empty());
+        for define in defines {
+            assert!(define.contains(" \"probe-stack\"=\"inline-asm\" "), "{define}");
+        }
+    }
+    let plain = accepts("Routine.yield ()\n0\n");
+    assert!(!llvm::emit(&plain, llvm::Entry::Console).unwrap().contains("probe-stack"));
+}
+
+#[test]
 fn programs_without_tzroutine_keep_their_ir() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     for fixture in ["tasks", "concurrency", "channel", "control", "async"] {

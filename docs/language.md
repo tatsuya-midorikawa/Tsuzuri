@@ -2662,7 +2662,7 @@ POSIX または Windows 以外の未対応プラットフォームに対する�
 - **評価**: `tzroutine { … }` を評価すると捕捉を環境へ移し、tzroutine を作ってから次の式へ進みます。親の続きと子の本体の間に順序はありません。本体はちょうど 1 回走り、使わなかった捕捉は本体の終わりに 1 回だけ drop されます。本体のトラップはプロセス全体の失敗です。
 - **終了の待ち**: 実行ファイルの `main`（トップレベルのコード、`def main`、IO の入口）、`export def` の 1 回の呼び出し、`tsuzuri test` の 1 件、`tsuzuri bench` の 1 回の計測は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。待つのは本体が戻った直後で、トップレベルの最後の式の値はその前に計算され、待った後に表示されます。全員が待ちに入れば、ランタイムが `Tsuzuri runtime: all tzroutines are asleep - deadlock! (<n> waiting: <理由>, ...)` を書いてトラップします。
 - **`Routine`**: 組み込みのモジュール。`Routine.go :: own Owned.Function<unit, unit> -> unit`（所有する関数を新しい tzroutine で 1 回呼び、drop する）、`Routine.yield :: unit -> unit`、`Routine.count :: unit -> i64`（生きている tzroutine の数 + 1）、`Routine.max_procs :: unit -> i64`、`Routine.cpu_count :: unit -> i64`。
-- **実行**: ランタイムは `src/runtime/tzroutine.c` の M:N のスケジューラーです。P の数は `TSUZURI_MAXPROCS`（1〜256、既定はオンラインの CPU 数）、各 tzroutine のスタックの予約は `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576、既定 1024）で、下端の 128 KiB がガードです。プリエンプションはなく、`extern` 関数とファイルの I/O はその間 OS スレッドを止めます。
+- **実行**: ランタイムは `src/runtime/tzroutine.c` の M:N のスケジューラーです。P の数は `TSUZURI_MAXPROCS`（1〜256、既定はオンラインの CPU 数）、各 tzroutine のスタックの予約は `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576、既定 1024）で、下端の 128 KiB がガードです。プリエンプションはなく、`extern` 関数とファイルの I/O はその間 OS スレッドを止めます。tzroutine を起動するプログラムは、すべての関数が大きな frame に stack probe を使います。
 - **ターゲット**: native の macOS・Linux・Windows（aarch64・x86-64）で動きます。WebAssembly は `E2000`（`option_requires_option`、`jspi` を付けても `option_conflict`）、`--wasm-feature threads`・`--freestanding` と、tzroutine を起動するプログラムの `--trap-mode return` も `E2000` です。`--emit llvm`・`header` は拒否しません。tzroutine を使わないプログラムの IR・オブジェクト・実行ファイルは変わりません。
 
 ## 非同期計算（Async）

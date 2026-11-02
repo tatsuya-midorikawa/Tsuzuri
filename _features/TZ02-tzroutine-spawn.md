@@ -380,3 +380,19 @@ TZR_API void tsuzuri_tz_boundary_leave(void *scope) {
 | D6 | 終了の待ちは境界の関数の IR を後処理して入れる（`@main` だけ生成側で入れる） | 境界の生成の箇所が多く、形が単純（`with_stack_checks` と同じ手法）。最後の式の表示の前に待つため `@main` は別 | 既定案 |
 | D7 | 境界のデッドロックはランタイムでトラップ（`tsuzuri_tz_boundary_leave`） | 境界にはソースの位置がない。理由はランタイムが先に書いている | 既定案 |
 | D8 | Task との共存を拒否しない（TZ12 まで） | 混ぜても正しく動く（遅くなるだけ）。拒否は TZ12 で消す仮の規則を増やすだけ | 既定案 |
+
+## 実装と検証（2026-11-02）
+
+- **範囲**: 仕様 1〜5 をすべて実装した（1 つの PR。TZ01 の PR #79 のブランチの上）。着手時に HEAD と照合し、次の「チケットから外れた判断」のとおり合わせた。共有の数は起票時と同じだった（`FRONTEND_FORMAT` 15 → 16、`ExprKind` の tag 46 → 47 は 47 番、`Builtin::ALL` 260 → 265、`RESERVED_MODULES` 59 → 60、`CONTEXTUAL_KEYWORDS` 8 → 9）。
+- **構文**: `ExprKind::Routine`（`src/syntax.rs`、codec の tag 47、`FRONTEND_FORMAT` 16）、`CONTEXTUAL_KEYWORDS` に `tzroutine`。`src/parser.rs` の `primary` が `tzroutine_ahead`（次の字句が同じ行の `{`）のときだけ `fn tzroutine` を読む。本体は `in_task = false` の通常のブロック。formatter・`computation.rs`・`warnings.rs` の歩き。
+- **型検査**: `composed_expression` の `ExprKind::Routine` が本体を `LambdaKind::Task` の `Task<unit>` として検査し、`TypedExprKind::RoutineGo` を作る（捕捉の規則は `task { }` と同じ）。組み込み `Builtin::{RoutineGo, RoutineYield, RoutineCount, RoutineMaxProcs, RoutineCpuCount}`、`is_routine`・`spawns`。`RESERVED_MODULES` に `Routine`。効果（`effects.rs`・`pure_rules.rs`・`kg/effects.rs`）、所有権（`ownership.rs` の消費）、const・SMT の拒否、KG の `calls` の辺（`Routine.go`）、図の並行の区間。
+- **生成**: `routine_go`（`src/llvm.rs`）、`Routine.*` の本体（`routine_builtin`、`@tz.tzroutine.owned`）、`llvm::spawns`、`with_tzroutine_scopes`（`tsuzuri_main`・`tsuzuri_test_run`・`tsuzuri_bench_sample`・`tz_<名前>`）と `console_main`／`console_def_main` の待ち。ランタイムに `tsuzuri_tz_boundary_leave`（`tests/tzroutine_runtime.c` の `boundary`）。
+- **ドライバー**: `tzroutine_symbols`・`tzroutine_runtime`、翻訳単位の末尾に `tzroutine_runtime_source_for(platform)`、`-pthread`、`stack_runtime` の条件、WebAssembly・`--wasm-feature threads`・`--freestanding`・`--trap-mode return`（spawn するとき）の `E2000`、aarch64・x86-64 以外の `E2002`。`src/test_runner.rs` のネイティブの実行器 2 つと WebAssembly の実行器の拒否。
+- **チケットから外れた判断**:
+  1. **Windows を拒否しない**: TZ01 の Phase 2 を同じ一連の作業で入れたので、仕様 5 の「Windows は `E2002`」の行は入れず（仕様 5 のとおり「Phase 2 のあとはこの行を消す」）、ドライバーは `tzroutine-windows.h` を展開した翻訳単位を作る。実行の確認は `windows.yml`。
+  2. **unit の adapter は `i8` を返す**: 現状の節の「結果が unit の adapter は `void (ptr)`」は誤りで、`llvm_type(Type::Unit)` は `i8`（`c_type` が `void`）。TZ01 のランタイムは `void (*)(void *)` を呼ぶので、関数の型を合わせるため、場所ごとに adapter へ転送するだけの `void @tz.tzroutine.start.$task.N.<count>(ptr %env)` を作り、それを `tsuzuri_tz_go` に渡す（`Routine.go` の補助関数も `i8` を受けて捨てる）。
+  3. **`let` は改行でも終わる**: 通常のブロックでは `let` の後に `;` が要るが、チケットの例（早見・TZ03・TZ04）は改行で区切っている。`task { }` と同じく、`tzroutine { }` の本体（`in_routine`）では改行でも `let` が終わるようにした。`let!`・`do!` は IO をその場で実行する（D2）。
+  4. **`return` は関数の本体と同じ扱い**: 仕様 1 は `return` を `E0002` としたが、通常のブロックの `return` は暗黙のコンピュテーション式として読まれ、関数の本体でも `return ()` は通る。D2（本体は関数の本体と同じ通常のブロック）に合わせ、`return ()` は通り、`return 1` は `E1003` にした。
+  5. **予約名は module のファイルで検査する**: 仕様 4 の「`record Routine` は `E1011`」は今の言語と違う（`record Mutex` なども通る。予約名はルートのファイル名とパスの先頭に使えない規則）。`Routine.tz` が `E1011` になることを検査した。
+  6. **`Routine.go (\() -> ())` は `E1005`**: 所有する関数でない関数値を渡すと、既存の規則で `E1005`（`only a function value can be called`）。
+  7. **`features.mjs` の native だけの suite**: 既存の native だけの suite がなかったので（手順 9 の「なければ止めて報告」）、suite の `nativeOnly: true` を足して WebAssembly の段を飛ばす（最小の変更。TZ09 で外す）。
