@@ -482,6 +482,7 @@ struct tzr_g {
     int doomed;        /* pseudo-G only: woken by the deadlock detector */
     int idle;          /* pseudo-G only: not counted as running (an M's thread outside a blocking call, or
                         * a thread that waits for the items it gave the task runtime) */
+    const void *item_batch; /* pseudo-G only: the batch whose item the thread runs (TZ03) */
     uint64_t rand;
     tzr_sudog *param;   /* the sudog that completed this G's wait */
     _Atomic uint32_t select_done;
@@ -541,6 +542,7 @@ static struct {
     tzr_m *midle;
     int nmidle;
     tzr_m *pwait;                 /* Ms back from a blocking call, waiting for a P */
+    _Atomic int npwait;           /* their number, read without the lock by the scheduling loop */
     int nmblocked;                /* Ms in a blocking call: their threads count as pseudo-Gs */
     int mcount;
     _Atomic int nmspinning;
@@ -779,6 +781,7 @@ static void tzr_pidleput(tzr_p *p) {
     tzr_m *waiter = tzr_sched.pwait;
     if (waiter) {
         tzr_sched.pwait = waiter->link;
+        atomic_fetch_sub(&tzr_sched.npwait, 1);
         waiter->nextp = p;
         tzr_note_wake(&waiter->park);
         return;
@@ -1005,8 +1008,29 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
     }
 }
 
+/* An M back from a blocking call waits for a P, which only an M that runs out of work gives back:
+ * one that keeps finding work, say a tzroutine that yields until the waiting one sets a flag, would
+ * keep its P for ever. So between two Gs an M hands its P (with its queue) to a waiting M and
+ * stops; the G it ran last is in a queue already. With tzr_sched.lock not held. */
+static void tzr_serve_pwait(tzr_m *m) {
+    if (atomic_load(&tzr_sched.npwait) == 0) return;
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_m *waiter = tzr_sched.pwait;
+    if (waiter == NULL) {
+        tzr_mutex_unlock(&tzr_sched.lock);
+        return;
+    }
+    tzr_sched.pwait = waiter->link;
+    atomic_fetch_sub(&tzr_sched.npwait, 1);
+    waiter->nextp = m->p;
+    m->p = NULL;
+    tzr_note_wake(&waiter->park);
+    tzr_stopm(m); /* returns with a P */
+}
+
 static void tzr_schedule(tzr_m *m) {
     for (;;) {
+        tzr_serve_pwait(m);
         tzr_g *g = tzr_findrunnable(m);
         if (m->spinning) {
             m->spinning = 0;
@@ -1483,6 +1507,14 @@ TZR_API void tsuzuri_tz_boundary_leave(void *scope) {
 
 /* ---------------------------------------------------------------- blocking calls */
 
+/* With tzr_sched.lock held: a pseudo-G counts as running or not. A G is on an M, which counts. */
+static void tzr_set_running(tzr_g *g, int running) {
+    if (g == NULL || g->kind != TZR_KIND_THREAD || g->idle == !running) return;
+    g->idle = !running;
+    tzr_sched.npseudo_running += running ? 1 : -1;
+}
+
+
 /* A G that calls into code which blocks its OS thread without this runtime's knowledge (the join
  * of the task runtime's Task.parallel, Task.scope and Parallel.*) gives its P away for the call, as
  * Go's entersyscallblock does, so that what is queued, and the work that the call waits for (the
@@ -1499,10 +1531,7 @@ TZR_API void tsuzuri_tz_block_enter(void) {
     tzr_g *thread = tzr_pseudo(); /* counted as running from here; a new one is */
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_sched.nmblocked++;
-    if (thread->idle) {
-        thread->idle = 0;
-        tzr_sched.npseudo_running++;
-    }
+    tzr_set_running(thread, 1);
     if (!tzr_runq_empty(p) || atomic_load(&tzr_sched.runq_size) > 0) {
         tzr_mutex_unlock(&tzr_sched.lock);
         tzr_startm(p, 0);
@@ -1519,13 +1548,13 @@ TZR_API void tsuzuri_tz_block_leave(void) {
     if (m == NULL || m->curg == NULL || --m->blocked > 0) return;
     tzr_g *thread = tzr_pseudo();
     tzr_mutex_lock(&tzr_sched.lock);
-    thread->idle = 1;
-    tzr_sched.npseudo_running--;
+    tzr_set_running(thread, 0);
     tzr_sched.nmblocked--; /* the M counts again, as running */
     tzr_p *p = tzr_pidleget();
     if (p == NULL) {
         m->link = tzr_sched.pwait;
         tzr_sched.pwait = m;
+        atomic_fetch_add(&tzr_sched.npwait, 1);
         tzr_mutex_unlock(&tzr_sched.lock);
         tzr_note_sleep(&m->park);
         p = m->nextp;
@@ -1534,6 +1563,21 @@ TZR_API void tsuzuri_tz_block_leave(void) {
         tzr_mutex_unlock(&tzr_sched.lock);
     }
     m->p = p;
+}
+
+/* The depth of the blocking calls of the calling G, and leaving those that a trap skipped: a failure
+ * domain restores the depth it was entered with, so that its M runs tzroutines again (TZ02). */
+TZR_API int32_t tsuzuri_tz_block_depth(void) {
+    tzr_m *m = tzr_this_m();
+    return m != NULL && m->curg != NULL ? m->blocked : 0;
+}
+
+TZR_API void tsuzuri_tz_block_restore(int32_t depth) {
+    for (;;) {
+        tzr_m *m = tzr_this_m();
+        if (m == NULL || m->curg == NULL || m->blocked <= depth) return;
+        tsuzuri_tz_block_leave();
+    }
 }
 
 /* The spawn scope of the calling G, and setting it back: a failure domain that a trap left
@@ -1589,16 +1633,19 @@ typedef struct tzr_batch {
     int64_t unstarted;   /* items that have not started */
     int64_t running;     /* items that have started and not ended */
     tzr_g *submitter;    /* the pseudo-G that waits for the batch, idle while items remain */
+    const void *owner;   /* the thread that announced it: its M, or its pseudo-G */
     struct tzr_batch *next;
 } tzr_batch;
 
 static tzr_batch *tzr_batches; /* tzr_sched.lock */
 
-/* With tzr_sched.lock held: a pseudo-G counts as running or not. A G is on an M, which counts. */
-static void tzr_set_running(tzr_g *g, int running) {
-    if (g == NULL || g->kind != TZR_KIND_THREAD || g->idle == !running) return;
-    g->idle = !running;
-    tzr_sched.npseudo_running += running ? 1 : -1;
+
+/* The thread that runs the caller, whatever G or pseudo-G it acts as: a G inside a blocking call
+ * stays on its M. */
+static const void *tzr_thread_owner(void) {
+    tzr_m *m = tzr_this_m();
+    if (m != NULL) return m;
+    return tzr_pseudo();
 }
 
 static tzr_batch *tzr_batch_of(const void *context) {
@@ -1617,6 +1664,7 @@ TZR_API void tsuzuri_tz_parallel_begin(const void *context, int64_t n) {
     batch->unstarted = n;
     batch->running = 0;
     batch->submitter = g->kind == TZR_KIND_THREAD ? g : NULL;
+    batch->owner = tzr_thread_owner();
     tzr_mutex_lock(&tzr_sched.lock);
     batch->next = tzr_batches;
     tzr_batches = batch;
@@ -1644,6 +1692,47 @@ TZR_API void tsuzuri_tz_parallel_end(const void *context, int64_t n) {
     free(batch);
 }
 
+/* The batches that a failure domain is entered with, and dropping those of this thread that a trap
+ * left announced (the task runtime has joined their items): the thread counts as running again, a
+ * worker whose item of such a batch trapped counts as back in the pool, and the items no longer
+ * hold off the deadlock verdict. */
+TZR_API const void *tsuzuri_tz_parallel_mark(void) {
+    tzr_mutex_lock(&tzr_sched.lock);
+    const void *mark = tzr_batches;
+    tzr_mutex_unlock(&tzr_sched.lock);
+    return mark;
+}
+
+TZR_API void tsuzuri_tz_parallel_reset(const void *mark) {
+    const void *owner = tzr_thread_owner();
+    tzr_g *g = tzr_current();
+    int dropped = 0;
+    tzr_mutex_lock(&tzr_sched.lock);
+    for (tzr_batch **link = &tzr_batches; *link != NULL && *link != mark;) {
+        tzr_batch *batch = *link;
+        if (batch->owner != owner) {
+            link = &batch->next;
+            continue;
+        }
+        *link = batch->next;
+        tzr_sched.npending -= batch->unstarted;
+        /* A worker whose item of the batch trapped skipped its leave: it is back in the pool. */
+        tzr_lock_acquire(&tzr_pseudo_lock);
+        for (tzr_g *other = tzr_pseudo_list; other != NULL; other = other->link) {
+            if (other->item_batch == batch && other != g) {
+                other->item_batch = NULL;
+                tzr_set_running(other, 0);
+            }
+        }
+        tzr_lock_release(&tzr_pseudo_lock);
+        if (g->item_batch == batch) g->item_batch = NULL;
+        free(batch);
+        dropped = 1;
+    }
+    if (dropped) tzr_set_running(g, 1);
+    tzr_mutex_unlock(&tzr_sched.lock);
+}
+
 /* The start of an item of `context`, on whichever thread runs it. */
 TZR_API void tsuzuri_tz_task_enter(const void *context) {
     tzr_g *g = tzr_current();
@@ -1654,6 +1743,7 @@ TZR_API void tsuzuri_tz_task_enter(const void *context) {
         batch->running++;
         tzr_sched.npending--;
     }
+    g->item_batch = batch;
     tzr_set_running(g, 1);
     tzr_mutex_unlock(&tzr_sched.lock);
 }
@@ -1665,6 +1755,7 @@ TZR_API void tsuzuri_tz_task_leave(const void *context) {
     tzr_g *g = tzr_current();
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_set_running(g, 0);
+    g->item_batch = NULL;
     tzr_batch *batch = tzr_batch_of(context);
     if (batch != NULL && batch->running > 0 && --batch->running == 0 && batch->unstarted == 0)
         tzr_set_running(batch->submitter, 1);

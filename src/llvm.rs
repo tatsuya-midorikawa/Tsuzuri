@@ -303,7 +303,7 @@ const STACK_CHECK_MARGIN: u32 = 4096;
 /// one function that writes it. A tzroutine may resume on another thread after it yields, and LLVM
 /// treats the address of a thread-local as fixed in a function, so every read and write of the
 /// mark is in a function of its own that is never inlined (the rule R2 of src/runtime/tzroutine.c).
-pub(crate) const MUTEX_LOCKED: &str = "@tz.mutex.locked = internal thread_local global i32 0\ndefine internal void @tz.mutex.mark(i32 %held) noinline nounwind {\nentry:\n  store i32 %held, ptr @tz.mutex.locked\n  ret void\n}\n";
+pub(crate) const MUTEX_LOCKED: &str = "@tz.mutex.locked = internal thread_local global i32 0\ndefine internal void @tz.mutex.mark(i32 %held) noinline nounwind {\nentry:\n  store i32 %held, ptr @tz.mutex.locked\n  ret void\n}\ndefine internal i32 @tz.mutex.held() noinline nounwind {\nentry:\n  %held = load i32, ptr @tz.mutex.locked\n  ret i32 %held\n}\n";
 
 /// Whether the thread holds no `Mutex.with_lock`; otherwise the runtime writes why (report 5).
 const ROUTINE_UNLOCKED: &str = "define internal i1 @tz.routine.unlocked() noinline {\nentry:\n  %held = load i32, ptr @tz.mutex.locked\n  %free = icmp eq i32 %held, 0\n  br i1 %free, label %ok, label %refuse\nrefuse:\n  call void @tsuzuri_tz_report(i32 5)\n  br label %ok\nok:\n  ret i1 %free\n}\n";
@@ -1559,11 +1559,10 @@ pub(crate) fn with_tzroutine_scopes(ir: String, boundaries: &BTreeSet<String>) -
 /// items to the pool and joins them is between `tsuzuri_tz_block_enter` and `_leave`, so the work
 /// that the join waits for (a pool worker's child tzroutine) runs even with one P.
 pub(crate) fn with_blocking_calls(ir: String) -> String {
-    const CALLS: [&str; 4] = [
+    // The runtime's own calls: the `tz.mutex.parallel*` wrappers of a program with a Mutex make them.
+    const CALLS: [&str; 2] = [
         "call void @tsuzuri_task_parallel(",
         "call i64 @tsuzuri_task_parallel_results(",
-        "call void @tz.mutex.parallel(",
-        "call i64 @tz.mutex.parallel_results(",
     ];
     let mut output = String::with_capacity(ir.len() + 256);
     let mut wrapped = false;
@@ -1592,11 +1591,11 @@ pub(crate) fn with_blocking_calls(ir: String) -> String {
 /// `_leave`). Without it, a `Channel` wait in one item could be judged a deadlock before the item
 /// that would wake it has started on another thread.
 pub(crate) fn with_task_accounting(ir: String) -> String {
-    const CALLS: [&str; 4] = [
+    // The runtime's own calls only: the `tz.mutex.parallel*` wrappers of a program with a Mutex make
+    // them, so announcing the wrapper's call too would count the batch twice.
+    const CALLS: [&str; 2] = [
         "call void @tsuzuri_task_parallel(",
         "call i64 @tsuzuri_task_parallel_results(",
-        "call void @tz.mutex.parallel(",
-        "call i64 @tz.mutex.parallel_results(",
     ];
     let callbacks = worker_callbacks(&ir);
     let mut output = String::with_capacity(ir.len() + 256);
