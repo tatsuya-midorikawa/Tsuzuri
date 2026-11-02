@@ -98,7 +98,7 @@ impl FunctionEmitter<'_, '_> {
                 // TZ02: the lock belongs to this thread; a tzroutine that would switch away traps.
                 if self.globals.spawns {
                     self.intrinsics.insert(super::MUTEX_LOCKED.into());
-                    self.instruction("store i32 1, ptr @tz.mutex.locked");
+                    self.instruction("call void @tz.mutex.mark(i32 1)");
                 }
                 let pointer = self.value(format!(
                     "getelementptr inbounds {}, ptr {cell}, i32 0, i32 1",
@@ -108,7 +108,7 @@ impl FunctionEmitter<'_, '_> {
                 let (output, _) =
                     self.apply_value("%arg1", &parameters[1], Some((&borrow, &pointer)), false);
                 if self.globals.spawns {
-                    self.instruction("store i32 0, ptr @tz.mutex.locked");
+                    self.instruction("call void @tz.mutex.mark(i32 0)");
                 }
                 self.instruction(format!("call void @tsuzuri_mutex_unlock(ptr {cell})"));
                 output
