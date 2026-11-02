@@ -1049,3 +1049,55 @@ fn measure_kg_cost_for_shipped_projects() {
         eprintln!("slowest check: {name}\tcheck {check:.1} ms\tkg {collect:.1} ms");
     }
 }
+
+/// TZ04: a select synchronizes (also for its callers), what `recv _` receives is dropped there,
+/// and a send arm passes its value.
+#[test]
+fn select_records_its_channel_operations() {
+    let model = one(concat!(
+        "record Res { id: i64 }\n",
+        "instance Drop<Res> {\n",
+        "    fn drop _value = ()\n",
+        "}\n",
+        "def wait :: ref Channel<string> -> i64\n",
+        "fn wait ch =\n",
+        "    select\n",
+        "    | recv _ from ch -> 1\n",
+        "    | default -> 0\n",
+        "def caller :: ref Channel<string> -> i64\n",
+        "fn caller ch = wait ch\n",
+        "def drain :: ref Channel<Res> -> i64\n",
+        "fn drain ch =\n",
+        "    select\n",
+        "    | recv _ from ch -> 1\n",
+        "    | default -> 0\n",
+        "def give :: ref Channel<string> -> own string -> i64\n",
+        "fn give ch text =\n",
+        "    select\n",
+        "    | send text to ch -> 1\n",
+        "    | default -> 0\n",
+    ));
+    for name in ["Main.wait", "Main.give"] {
+        let row = facts_of(&model, "Main", name);
+        assert_eq!(row["effects"], serde_json::json!(["atomic"]), "{name}");
+    }
+    // The caller has the effect through the call (and `user_drop` from the channel that its
+    // argument names, as any call that passes a reference on).
+    let row = facts_of(&model, "Main", "Main.caller");
+    assert!(
+        row["effects"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("atomic")),
+        "{row}"
+    );
+    let row = facts_of(&model, "Main", "Main.drain");
+    assert_eq!(row["effects"], serde_json::json!(["atomic", "user_drop"]));
+    let sends: Vec<serde_json::Value> = rows(&text(|o| model.write_edges(o)))
+        .into_iter()
+        .filter(|edge| edge["rel"] == "calls" && edge["from"] == "Main.give")
+        .map(|edge| edge["args"].clone())
+        .collect();
+    // The channel is a reference passed on (a copy of it), and the value moves.
+    assert_eq!(sends, [serde_json::json!(["copy", "own"])]);
+}

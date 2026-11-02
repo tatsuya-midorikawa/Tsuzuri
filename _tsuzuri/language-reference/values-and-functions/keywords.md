@@ -31,7 +31,7 @@ get().n
 ```
 
 - Tsuzuri には 43 個の予約語があり、原則として変数名や関数名などの識別子に使えません。予約語はソースの言語版（edition）で決まり、今ある edition `2026` の予約語がこの一覧です。 <!-- rule: LEX-005 --> <!-- rule: EDN-006 -->
-- `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise`、`tzroutine` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。 <!-- rule: LEX-006 -->
+- `of`、`where`、`namespace`、`using`、`use`、`try`、`finally`、`is`、`otherwise`、`tzroutine`、`select` は文脈キーワードであり、所定の構文以外では通常の変数名として利用できます。 <!-- rule: LEX-006 -->
 - 例外として、`union`・`yield`・`new` はドット直後のメンバー名（`Set.union`、`Async.yield`、`Rc.new`）として利用可能です。
 - `not`、`ignore`、`assert` は予約語ではなく、値として渡せる組み込み関数です。 <!-- rule: LEX-007 -->
 - 小文字の `task`（予約語）と大文字始まりの `Task`（組み込みモジュール名）は区別されます。
@@ -159,6 +159,8 @@ Tsuzuri の全 43 個の予約語を用途別に分けて示します。
 | `try` | 同じ括弧の深さに `with` が続くとき | 例外を捕捉する式の開始。`with` がなければ変数名 | [try 式](../exception-handling/try-with-finally.md) |
 | `finally` | `try ... with` の末尾 | 例外の有無にかかわらず実行される後処理節 | [try 式](../exception-handling/try-with-finally.md) |
 | `tzroutine` | 直後が同じ行の `{` のとき | ブロックを新しい tzroutine として起動する式。ほかの位置では変数名 | [tzroutine 式](../async-tasks-and-lazy/tzroutine.md) |
+| `select` | 直後が `\|` で、その次が `recv`・`send`・`default` のとき | 複数のチャンネルの送受信を待つ式。ほかの位置では変数名 | [select 式](../async-tasks-and-lazy/select.md) |
+| `recv`・`send`・`default`・`from` | `select` の腕の頭 | 腕の種類（受け取る・送る・待たない）と、受け取るチャンネルの前置き（送る腕は既存の `to`）。ほかの位置では変数名 | [select 式](../async-tasks-and-lazy/select.md) |
 | `is` | `try ... with` のハンドラー節 | 例外型（`OverflowException` など）の判定 | [例外処理](../exception-handling/exception-handling.md) |
 | `otherwise` | パターンの位置（`match` やラムダ引数） | ワイルドカード `_` と同じ。その名前では束縛されない | [パターンマッチング](../pattern-matching/pattern-matching.md) |
 

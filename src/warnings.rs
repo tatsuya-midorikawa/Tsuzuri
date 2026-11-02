@@ -234,6 +234,7 @@ fn collect_locals<'a>(
         | Closure(..)
         | TaskRun(_)
         | RoutineGo(_)
+        | SelectWait(_)
         | TaskParallel(_)
         | TaskParallelResults(_)
         | If { .. }
@@ -617,6 +618,13 @@ impl TypeReferences<'_> {
                 }
                 if let Some(finally) = &handled.finally {
                     self.expression(finally);
+                }
+            }
+            Select(arms) => {
+                for arm in arms {
+                    for expression in arm.expressions() {
+                        self.expression(expression);
+                    }
                 }
             }
             Record { name, fields } => {

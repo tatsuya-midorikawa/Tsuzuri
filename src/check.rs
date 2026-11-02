@@ -22,6 +22,8 @@ mod control;
 mod deriving;
 #[path = "domain_rules.rs"]
 mod domain_rules;
+#[path = "select.rs"]
+mod select;
 pub(crate) use domain_rules::domain_calls;
 #[path = "exceptions.rs"]
 mod exceptions;
@@ -4264,6 +4266,63 @@ impl PatternStep {
     }
 }
 
+/// The waiting part of a `select` (TZ04). It evaluates the arms in order (a false guard skips the
+/// arm's channel and value), waits for one of them, or for none with a `default`, and gives the
+/// tuple `(arm, Maybe<item> of each kept receive)`: the arm's number in the
+/// source, or -1 for `default`. A send arm that is not chosen drops its value; a receive into `_`
+/// drops what it received.
+#[derive(Clone, Debug)]
+pub struct SelectWait {
+    pub arms: Vec<SelectWaitArm>,
+    /// The number of the `default` arm; without one the select waits.
+    pub default: Option<usize>,
+}
+
+impl SelectWait {
+    /// The cases that a select keeps in its frame; one with more arms takes them from the heap, so
+    /// that a select of many arms cannot step over the guard of a tzroutine's stack.
+    pub const FRAME_CASES: usize = 64;
+
+    /// Whether the select allocates its cases (the effect `alloc`).
+    pub fn allocates(&self) -> bool {
+        self.arms.len() > Self::FRAME_CASES
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SelectWaitArm {
+    /// The arm's number among all the arms of the `select`.
+    pub arm: usize,
+    pub guard: Option<TypedExpr>,
+    /// A shared borrow of a `Channel`, `SendOnly` or `ReceiveOnly`.
+    pub channel: TypedExpr,
+    /// The value of a send arm.
+    pub send: Option<TypedExpr>,
+    pub item: Type,
+    /// The field of the result that holds what a receive arm got; `None` for `recv _`.
+    pub field: Option<usize>,
+}
+
+impl SelectWait {
+    pub fn children(&self) -> impl Iterator<Item = &TypedExpr> {
+        self.arms.iter().flat_map(|arm| {
+            arm.guard
+                .iter()
+                .chain(std::iter::once(&arm.channel))
+                .chain(arm.send.iter())
+        })
+    }
+
+    pub fn children_mut(&mut self) -> impl Iterator<Item = &mut TypedExpr> {
+        self.arms.iter_mut().flat_map(|arm| {
+            arm.guard
+                .iter_mut()
+                .chain(std::iter::once(&mut arm.channel))
+                .chain(arm.send.iter_mut())
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TypedMatchArm {
     pub alternatives: Vec<PatternAlternative>,
@@ -4343,6 +4402,8 @@ pub enum TypedExprKind {
     TaskRun(Box<TypedExpr>),
     /// `tzroutine { body }` (TZ02): spawns the `Task<unit>` lambda as a new tzroutine; the value is `()`.
     RoutineGo(Box<TypedExpr>),
+    /// The waiting part of a `select` (TZ04); the arms' bodies are a `match` on its value.
+    SelectWait(Box<SelectWait>),
     TaskParallel(Box<TypedExpr>),
     TaskParallelResults(Box<TypedExpr>),
     Parallel(Builtin, Vec<TypedExpr>),
@@ -4700,6 +4761,7 @@ impl TypedExpr {
                 .iter()
                 .flat_map(|hole| std::iter::once(&hole.operand).chain(hole.method.iter()))
                 .collect(),
+            SelectWait(wait) => wait.children().collect(),
             Break | Continue => Vec::new(),
             _ => Vec::new(),
         }
@@ -4856,6 +4918,7 @@ impl TypedExpr {
                 }
                 Ok(())
             }
+            SelectWait(wait) => wait.children().try_for_each(f),
             _ => Ok(()),
         }
     }
@@ -4969,6 +5032,7 @@ impl TypedExpr {
                 .iter_mut()
                 .flat_map(|hole| std::iter::once(&mut hole.operand).chain(hole.method.iter_mut()))
                 .try_for_each(f),
+            SelectWait(wait) => wait.children_mut().try_for_each(f),
             _ => Ok(()),
         }
     }
@@ -11131,6 +11195,7 @@ impl<'a> Checker<'a> {
             ExprKind::Lambda(..)
             | ExprKind::Task(_)
             | ExprKind::Routine(_)
+            | ExprKind::Select(_)
             | ExprKind::Call(..)
             | ExprKind::Block { .. } => self.composed_expression(expression, expected),
             _ => self.value_expression(expression, expected),
@@ -11317,6 +11382,7 @@ impl<'a> Checker<'a> {
             ExprKind::Task(body) => {
                 return self.lambda(&[], body, expected, expression.span, LambdaKind::Task, &[]);
             }
+            ExprKind::Select(arms) => return self.select(arms, expected, expression.span),
             ExprKind::Routine(body) => {
                 // The body is the one-shot lambda of a `Task<unit>`: its captures follow the rules of
                 // `task { }` (moved or copied, `Send`, no borrow), and the `unit` result checks the
@@ -12266,6 +12332,7 @@ impl<'a> Checker<'a> {
             | ExprKind::Lambda(..)
             | ExprKind::Task(_)
             | ExprKind::Routine(_)
+            | ExprKind::Select(_)
             | ExprKind::Call(..)
             | ExprKind::ComputationBoundary(_)
             | ExprKind::Block { .. } => unreachable!("composed expressions use their own checker"),

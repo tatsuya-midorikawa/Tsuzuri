@@ -436,6 +436,8 @@ mod parallel;
 mod range_flags;
 #[path = "llvm_recursive.rs"]
 mod recursive;
+#[path = "llvm_select.rs"]
+mod select;
 #[path = "llvm_shared.rs"]
 mod shared;
 #[path = "llvm_simd.rs"]
@@ -4223,6 +4225,10 @@ fn named_types(module: &CheckedModule, emitted: &[bool]) -> BTreeSet<Type> {
                 captures,
                 ..
             } => parameters.iter().chain(captures).for_each(local),
+            // An arm's item has a slot, also when its type is only in a borrowed channel (TZ04).
+            TypedExprKind::SelectWait(wait) => {
+                wait.arms.iter().for_each(|arm| visit(&arm.item, pending))
+            }
             _ => {}
         }
         for child in expression.children() {
@@ -4392,7 +4398,7 @@ pub fn waits(module: &CheckedModule) -> bool {
 
 fn expression_waits(expression: &TypedExpr) -> bool {
     match &expression.kind {
-        TypedExprKind::RoutineGo(_) => true,
+        TypedExprKind::RoutineGo(_) | TypedExprKind::SelectWait(_) => true,
         TypedExprKind::Function(FunctionRef::Builtin(instance))
             if instance.builtin.spawns() || instance.builtin.is_channel() =>
         {
@@ -5035,6 +5041,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         // trip count to unroll by.
         fn waits(expression: &TypedExpr, module: &CheckedModule) -> bool {
             let channel = match &expression.kind {
+                TypedExprKind::SelectWait(_) => true,
                 TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
                     instance.builtin.is_channel()
                 }
@@ -5876,6 +5883,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 ))
             }
             TypedExprKind::RoutineGo(task) => self.routine_go(task),
+            TypedExprKind::SelectWait(wait) => self.select_wait(wait, &expression.ty),
             TypedExprKind::TaskParallel(tasks) => self.parallel_tasks(tasks, &expression.ty),
             TypedExprKind::TaskParallelResults(tasks) => {
                 self.parallel_result_tasks(tasks, &expression.ty)

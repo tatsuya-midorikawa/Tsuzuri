@@ -288,7 +288,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | TZ01 | [tzroutine のランタイムの核（M:N スケジューラー・スタック・文脈切り替え・待ち・チャンネル・select）](_completed/TZ01-tzroutine-runtime.md) | P0 | XL | – | done（Phase 1・2。POSIX と Windows の Fiber） |
 | TZ02 | [`tzroutine { }` 構文・`Routine` モジュール・終了の待ち](_completed/TZ02-tzroutine-spawn.md) | P0 | L | TZ01 | done（native の macOS・Linux・Windows。WebAssembly は TZ09） |
 | TZ03 | [旧 `Channel` を `DataChannel` に改名し、Go と同じ双方向の `Channel<T>` を入れる（`for x in ch`・既定の WASM の 1 本の実行を含む）](_completed/TZ03-channel.md) | P0 | L | TZ02 | done（Phase 1・2。向きのあるハンドルは `SendOnly`・`ReceiveOnly`） |
-| TZ04 | [`select` 式](TZ04-select.md) | P0 | L | TZ03 | todo |
+| TZ04 | [`select` 式](_completed/TZ04-select.md) | P0 | L | TZ03 | done（native と既定の WebAssembly） |
 | TZ05 | [時間（`Time.sleep`・`Time.after`・`Time.tick`・`Timer`・`Ticker`・`Time.after_func`）](TZ05-timers.md) | P1 | M | TZ03 | todo |
 | TZ06 | [同期（`Mutex` の移設・`RwMutex`・`WaitGroup`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`）](TZ06-sync.md) | P1 | L | TZ02 | todo |
 | TZ07 | [`Context`（取り消し・期限）と `ErrGroup`](TZ07-context-errgroup.md) | P1 | M | TZ04, TZ05, TZ06 | todo |

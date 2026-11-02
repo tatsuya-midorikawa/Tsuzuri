@@ -887,6 +887,14 @@ impl Canonical {
                     .insert(arm.pattern.span.start, expression.span.start);
             }
         }
+        // A select's arms line up like a match's (TZ04); an arm starts at its head word.
+        if let ExprKind::Select(arms) = &expression.kind {
+            for arm in arms {
+                self.hints
+                    .arm_owners
+                    .insert(arm.span.start, expression.span.start);
+            }
+        }
         if matches!(
             expression.kind,
             ExprKind::Unary(..) | ExprKind::Borrow(..) | ExprKind::Dereference(..)
@@ -935,6 +943,17 @@ impl Canonical {
                         self.expression(guard);
                     }
                     self.expression(&mut arm.body);
+                }
+            }
+            Select(arms) => {
+                for arm in arms {
+                    arm.span = Span::default();
+                    if let SelectHead::Recv { name, .. } = &mut arm.head {
+                        self.ident(name);
+                    }
+                    for expression in arm.expressions_mut() {
+                        self.expression(expression);
+                    }
                 }
             }
             Try(handled) => {

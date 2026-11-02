@@ -1696,6 +1696,27 @@ impl<'s, 'a> Scan<'s, 'a> {
                 self.source(Effect::Alloc, span, "tzroutine");
                 false
             }
+            // The channel operations of a select (TZ04): those of Channel.send and Channel.recv,
+            // and the cases of a select of more than 64 arms on the heap.
+            K::SelectWait(wait) => {
+                self.source(Effect::Atomic, span, "select");
+                if wait.allocates() {
+                    self.source(Effect::Alloc, span, "select");
+                }
+                // What `recv _` receives is dropped by the select: its type is in no expression.
+                if !self.state.module.user_drops.is_empty() {
+                    for arm in &wait.arms {
+                        if arm.send.is_none() && arm.field.is_none() {
+                            self.user_drop(&arm.item, span);
+                        }
+                    }
+                }
+                self.source_why(Effect::Trap, span, builtin_why(Builtin::ChannelSend));
+                if wait.default.is_none() {
+                    self.source(Effect::Diverge, span, "blocking");
+                }
+                false
+            }
             K::Parallel(builtin, arguments) => {
                 let facts = builtin_facts(*builtin);
                 if let Some(effect) = facts.effect {

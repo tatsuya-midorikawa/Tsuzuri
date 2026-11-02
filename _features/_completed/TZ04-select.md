@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | TZ03 |
 | 後続 | TZ05（`Time.after` との組み合わせ）、TZ07（`Context.done`）、TZ09、TZ12 |
-| 状態 | todo |
+| 状態 | done（2026-11-02） |
 | 起票 | 2026-11-01（D-61。HEAD `9a76d8ac` で確認） |
 | 承認 | 承認済み（D-61: 構文の形）。決定事項 D1〜D7 は既定案 |
 | 手本にする既存実装 | 構文: `src/parse_control.rs` の `match_expression`・`match_arms`（1148〜1220 行。腕の列、`when`、`->`、`body_expression`）。型: `src/check.rs` の `match_value`（腕の本体の型の合流）。所有権: `src/ownership.rs` の `match` の枝の合流。生成: `src/llvm.rs` の `match` の `switch` と、TZ03 の `Channel.send`／`recv` の生成（`alloca` の位置、状態の分岐） |
@@ -264,3 +264,25 @@ entry:   %cases = alloca [N x { ptr, ptr, i32, i32, [6 x i64] }]   ; N = 送受�
 | D5 | 有効な腕がなく `default` もない `select` は永久に待つ | Go と同じ。デッドロックの判定が見つける | 既定案 |
 | D6 | 準備のできた腕は一様乱数で選ぶ | Go と同じ。飢餓を防ぐ | 既定案 |
 | D7 | 腕の数の上限 65,535（`E1017`） | ランタイムが並びを `uint16_t` に置く | 既定案 |
+
+## 実装と検証（2026-11-02）
+
+- **範囲**: 仕様 1〜4 をすべて実装した（1 つの PR。TZ03 の PR #81 のブランチの上）。共有の数は `FRONTEND_FORMAT` 16 → 17、`ExprKind` の tag 48、`CONTEXTUAL_KEYWORDS` 9 → 10（`select`）。S1 の `grep` の当たり（`std/Set.tz` の `select left right …`、`Simd.select`）はどれも `select` の直後が `|` でなく、読み方は変わらない。
+- **構文**: `ExprKind::Select(Vec<SelectArm>)`、`SelectHead::{Recv, Send, Default}`（codec、`SelectArm::expressions`）。`parser.rs` の `select_ahead`（2 字句）、`parse_control.rs` の `select_expression`・`select_arms`。formatter は `match` と同じく腕をそろえる。診断の kind `select_arm_expected`・`select_default_repeated`（`E0002`）、`select_arm_limit`（`E1017`）と、前の 2 つの `src/explain/` のページ。
+- **型と下ろし方**: `src/select.rs`。腕のチャンネルの操作を 1 つの葉 `TypedExprKind::SelectWait` にし、本体はその結果の組 `(番号, Maybe<'a> ...)` への `match` にした。所有権の合流・流れの解析・本体の生成は `match` のものを使う。
+- **生成**: `src/llvm_select.rs`（`select_wait`）。`tzr_scase` の並びと番号の並びを入口の `alloca` に置き、`tsuzuri_tz_select` を呼ぶ。`TZR_SINGLE` の `tsuzuri_tz_select` を `tzroutine.c` に足した。
+- **効果・ツール**: 効果（Atomic・trap、待つなら diverge）、`pure`・`const`・SMT の拒否、KG の `calls`（腕ごとに `Channel.send`・`Channel.recv`）、`warnings`、VS Code の文法。
+- **チケットから外れた判断**:
+  1. **型付きの木**: 設計の `TypedExprKind::Select { arms, default }`（本体を持つ新しい制御の節）ではなく、葉の `SelectWait` と既存の `match` にした。本体を持つ節を足すと、所有権の合流・流れ・last-use・範囲・const・生成など 19 のファイルが `match` と同じ扱いを要るが、組への `match` なら葉の 1 つで済み、`match` の検査と生成をそのまま使える（S2 も `match` の合流の仕組みで表せた）。
+  2. **`default` に `when` は付けない**: 仕様 1 の文法は許すが、偽の `default` は「待つ」と同じで意味がない。`E0002`（`select_arm_expected`、`a 'default' arm takes no 'when' guard`）にした。
+  3. **その場で作ったチャンネル**: 腕のチャンネルはほかの腕の評価と待ちの間ずっと借りるので、関数の戻り値などの一時の値は `E1013`（`borrow_of_temporary`、`bind the channel to a name first`）にした。場所と参照は書ける。
+  4. **向きのあるハンドル**: TZ03 の Phase 2 の `ReceiveOnly`（受け取る腕）・`SendOnly`（送る腕）も腕に書ける。
+  5. **大きな select**: 腕の情報は入口の `alloca` だが、65 個以上の腕はヒープに置く（72 バイト × 65,535 は tzroutine のスタックのガードを越えうる）。
+  6. **既定の WebAssembly**: 仕様にはないが、spawn しないプログラムの `select` を `TZR_SINGLE` で動かす（`select_single` の suite）。待つべき `select` はトラップ。
+  7. **`select_arm_limit` の説明のページ**は作らない（悪い例が 65,536 個の腕になる）。
+- **レビュー（PR #82 の 1 回目）**: 6 件を確かめて直した。(1) `when` のある腕のチャンネルと値の所有権の変化を無条件に適用していたので、偽の `when` で走らない値の式の中の代入が、移した変数を使えるものに戻した（再現: 移した `text` を値の式の中で代入し直すと、`select` の後の `String.length text` が通った）。`&&` の右辺と同じく、評価しない場合と合流する（`E1012`）。(2) 腕のチャンネルの借用を捨てていたので、後の腕の値の式がそのチャンネルを移して drop できた（`tsuzuri_tz_select` には解放した block が渡る）。借用を腕の評価の終わりまで `held` に残す（`E1014`。同じ場所の 2 つ目からは足さず、1 本のチャンネルに 20,000 の腕でも線形）。(3) 排他参照（`ref mut ch` や `ref mut` の引数）をそのまま渡していたので、生成が共有参照を前提にして panic した（どちらも再現）。共有として借り直す。(4) 65 個以上の腕はヒープを確保するのに効果に `alloc` がなく、`@no_alloc` の関数で通った。`SelectWait::allocates`（生成と同じ閾値）で `alloc` を足す（`E1031`）。(5) 送る値を一時値から外した後と、ヒープの並びは、後の腕の式からの `break`・`continue`・例外の脱出で解放されなかった。ループか `try` の中では、ヒープの並びを空の `[u32]` として一時値に、送る値のゼロにした slot をスコープに登録し、待つ前に外す（features の `jump_drops`: 抜ける回の前の腕の値が 1 回だけ drop される）。(6) 名前のある受け取る腕ごとに組の欄を作り、腕ごとの型に全欄を書いていたので、腕の数の 2 乗の型の要素ができた（型検査の `combine` が束縛を複製するので実際は 3 乗に近い。800 腕で 10 秒）。組を 1 つの腕の型で隠れた局所に分け、番号への `match` の腕で `let 名前 = 局所` にした。同じ要素の型の受け取る腕は欄と slot を共有し（選ばれた腕の欄だけが `Some`）、要素の型は 256 種類まで（`E1017`、`select_arm_limit`）。5,000 の名前のある受け取る腕は同じ大きさの `match` と同じ時間で検査できる（`the_lowering_grows_with_the_arms`）。
+- **レビュー（PR #82 の 2 回目）**: 4 件を直した。(1) `recv _` が受け取った値は `select` が drop するが、その型はどの式にもないので、効果の要約にその `Drop` の効果がなかった（`Drop` が確保する型の `recv _` が `@no_alloc` で通った）。`SelectWait` の効果に `recv _` の要素の型の `user_drop` を足す（`a_dropped_receive_runs_its_drop`、`E1031`）。(2) KG の効果の走査（`kg/effects.rs::scan`）に `SelectWait` がなく、`select` だけで同期する関数とその呼び出し元に `atomic` がなかった。`atomic` と、`recv _` の要素の `user_drop` を記録する。(3) KG の送る腕の `calls` の引数がチャンネルだけだった。送る値の慣習を足す（チャンネルの引数は渡す参照の写しで `["copy", "own"]`。`tests/kg.rs` の `select_records_its_channel_operations`）。(4) スコープから送る値の slot を外す処理が `Vec::contains` で腕の数の 2 乗だった。集合にした。
+- **レビュー（PR #82 の 3 回目）**: 3 件を直した。(1) 借りたチャンネルの型 `Channel<R<i64>>` にしか現れない総称 record の要素は、slot の型の定義が IR になかった（`named_types` がチャンネルの型引数を見ない。再現: clang が `base element of getelementptr must be sized`）。`SelectWait` の腕の要素の型も見る（features の `generic_items`）。(2) 選ばれた閉じたチャンネルへの送る腕は、後ろの腕の選ばれなかった送る値を drop する前にトラップしていた。すべての腕を片付けてから 1 回だけ判定してトラップする（`a_closed_send_traps_after_the_arms_settle`）。(3) VS Code の文法の送る腕の規則が値の文字列の中の `to` まで食べ、文字列の色付けが壊れた。腕の頭だけを規則にし（`to` は既にキーワード）、受け取る腕の `from` は名前 1 つの後だけを見る（`vsc/src/test/grammar.test.ts`）。
+- **レビュー（PR #82 の 4 回目）**: 指摘はなく、概要の 2 点を直した。`select.md` の費用は、ロックの順を決めるヒープソートで O(n log n)（「腕の数に比例」は誤り）。VS Code の文法は、行末の `select`（腕が次の行から始まる、formatter の書き方）を色付けしていなかった。行末・コメントの前・同じ行の腕の前の `select` をキーワードにする（変数の `select` はそのまま。`grammar.test.ts`）。
+- **検証**: `cargo fmt`・`cargo clippy --all-targets -- -D warnings`。`tests/select.rs` 6 件（3 つの頭と `when` と `default` の位置、`select` を識別子にする 5 例、`E0002` の 2 つの kind と `E1017`、formatter、型の受理と 7 つの拒否、送る値のムーブと借用、入口の `alloca`）。E2E: `features.mjs select`（native、`-O0`／`-O3`、P 1・4。早見の例 `321`、`fairness`（10,000 回で両方が 3,000 回以上）、`send_and_recv`、`guards`（数えが 0）、`closed_recv`、`drops_unchosen`（2 回）、`same_channel_twice`、`in_loop` 100,000 回、トラップ 2 つ）、`select_single`（native と wasm32、import なし、7 件とトラップ 2 つ）。適合性 `TSK-020`〜`022`（`conformance.mjs --area TSK` 22 件）、`check-spec --require-markers`、`gen-docs --check`、`check-cli-docs`、変更した全ページの `check-docs`。
+- **文書**: 新規 `async-tasks-and-lazy/select.md`。`index.md`、`values-and-functions/keywords.md`、`built-in-types-and-modules/channel.md`、`compiler/diagnostics.md`・`conformance.md`（生成）、`docs/language.md`（節「select」と文脈キーワード）、`docs/architecture.md`（`### select（TZ04）`）、`README.md`、`spec/rules/TSK.md`、`vsc/syntaxes/tsuzuri.tmLanguage.json`。

@@ -4265,6 +4265,12 @@ fn expression_types(
                     f(&mut local.ty, local.span)?;
                 }
             }
+            // TZ04: the item types of a select's arms.
+            TypedExprKind::SelectWait(wait) => {
+                for arm in &mut wait.arms {
+                    f(&mut arm.item, expression.span)?;
+                }
+            }
             _ => {}
         }
         Ok(())
