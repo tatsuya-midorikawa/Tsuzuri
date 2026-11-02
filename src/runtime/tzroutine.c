@@ -1001,7 +1001,10 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
 /* An M back from a blocking call waits for a P, which only an M that runs out of work gives back:
  * one that keeps finding work, say a tzroutine that yields until the waiting one sets a flag, would
  * keep its P for ever. So between two Gs an M hands its P (with its queue) to a waiting M and
- * stops; the G it ran last is in a queue already. With tzr_sched.lock not held. */
+ * stops; the G it ran last is in a queue already. An M that tzr_wakep started is still spinning
+ * here: it stops spinning before it parks, or tzr_wakep would never start an M again, and as the
+ * last spinner it wakes another for the work that it was started for, as tzr_schedule does. With
+ * tzr_sched.lock not held. */
 static void tzr_serve_pwait(tzr_m *m) {
     if (atomic_load(&tzr_sched.npwait) == 0) return;
     tzr_mutex_lock(&tzr_sched.lock);
@@ -1015,6 +1018,16 @@ static void tzr_serve_pwait(tzr_m *m) {
     waiter->nextp = m->p;
     m->p = NULL;
     tzr_note_wake(&waiter->park);
+    if (m->spinning) {
+        m->spinning = 0;
+        if (atomic_fetch_sub(&tzr_sched.nmspinning, 1) == 1) {
+            /* tzr_startm takes the lock; meanwhile this M, neither idle nor blocked, counts as
+             * running for tzr_checkdead */
+            tzr_mutex_unlock(&tzr_sched.lock);
+            tzr_wakep();
+            tzr_mutex_lock(&tzr_sched.lock);
+        }
+    }
     tzr_stopm(m); /* returns with a P */
 }
 

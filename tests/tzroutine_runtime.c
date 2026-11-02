@@ -919,6 +919,45 @@ static void test_blocking(void) {
     }
 }
 
+/* TZ02: the spawn of the main thread gives the idle P of a blocking call to an M that tzr_wakep starts
+ * spinning, and the G leaves its call before that M runs, so it waits for the P. The M hands the P
+ * over and parks: it stops spinning, or tzr_wakep would never start an M again and the next spawn of
+ * the main thread would wait for nobody. With one P, the first round sets this up. */
+static _Atomic int donor_inside;
+static _Atomic int donor_leave;
+static _Atomic int64_t donor_hits;
+static void donor_child(void *env) {
+    (void)env;
+    atomic_fetch_add(&donor_hits, 1);
+}
+static void donor_blocker(void *env) {
+    (void)env;
+    tsuzuri_tz_block_enter();
+    atomic_store(&donor_inside, 1);
+    while (!atomic_load(&donor_leave)) {
+    }
+    tsuzuri_tz_block_leave();
+    atomic_fetch_add(&donor_hits, 100);
+}
+static void test_donor(void) {
+    for (int round = 0; round < 100; round++) {
+        atomic_store(&donor_inside, 0);
+        atomic_store(&donor_leave, 0);
+        atomic_store(&donor_hits, 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(donor_blocker, NULL);
+        while (!atomic_load(&donor_inside)) tzr_os_yield();
+        tsuzuri_tz_go(donor_child, NULL);
+        atomic_store(&donor_leave, 1);
+        join(scope);
+        CHECK(atomic_load(&donor_hits) == 101);
+        /* the Ms that looked for work park within microseconds */
+        double t = seconds();
+        while (atomic_load(&tzr_sched.nmspinning) != 0 && seconds() - t < 2.0) tzr_os_yield();
+        CHECK(atomic_load(&tzr_sched.nmspinning) == 0);
+    }
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -960,6 +999,7 @@ int main(int argc, char **argv) {
     RUN("boundary", test_boundary());
     RUN("report", test_report());
     RUN("blocking", test_blocking());
+    RUN("donor", test_donor());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;
