@@ -194,6 +194,7 @@ jobs:
         timeout-minutes: 20
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           if [ "$RUNNER_OS" = Linux ]; then export TSUZURI_TSAN=1 TSUZURI_ASAN=1; fi
           node tests/tzroutine_runtime.mjs
           unset TSUZURI_TSAN TSUZURI_ASAN
