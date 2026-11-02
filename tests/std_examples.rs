@@ -23,6 +23,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Bench", 2),
     ("BigInt", 4),
     ("Cbor", 4),
+    ("Channel", 0),
     ("Char", 6),
     ("DataChannel", 0),
     ("Debug", 2),

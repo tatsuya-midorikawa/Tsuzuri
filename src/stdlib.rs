@@ -294,19 +294,19 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         aliases: &[],
         uses: &["Matrix", "MatrixView"],
     },
+    // The old names of DataChannel are `Channel.bounded` and the like (TZ03): they resolve as their
+    // replacements while they are reported (E1040), so a program that names Channel loads it too.
     OptIn {
         module: "DataChannel",
-        names: &["DataChannel"],
+        names: &["DataChannel", "Channel"],
         aliases: &[],
         uses: &[],
     },
-    // The old names of DataChannel (`Channel.bounded`) resolve as their replacements while they
-    // are reported (E1040, TZ03), so a program that names Channel loads DataChannel too.
     OptIn {
         module: "Channel",
         names: &["Channel"],
         aliases: &[],
-        uses: &["DataChannel"],
+        uses: &[],
     },
     OptIn {
         module: "RegexText",

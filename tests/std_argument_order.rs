@@ -69,6 +69,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("Bench", Exempt(HARNESS)),
     ("BigInt", subject(&["BigInt"])),
     ("Cbor", SingleArgument),
+    ("Channel", Exempt(BUILTIN_HANDLE)),
     ("Char", SingleArgument),
     ("DataChannel", Exempt(BUILTIN_HANDLE)),
     ("Debug", SingleArgument),

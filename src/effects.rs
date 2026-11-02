@@ -3447,8 +3447,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 265);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 97);
+        assert_eq!(Builtin::ALL.len(), 275);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 107);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 168);
     }
 
@@ -3459,7 +3459,7 @@ mod tests {
         assert_eq!(by(Effect::Os), 12);
         assert_eq!(by(Effect::Net), 12);
         assert_eq!(by(Effect::Task), 15);
-        assert_eq!(by(Effect::Atomic), 21);
+        assert_eq!(by(Effect::Atomic), 31);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3468,18 +3468,18 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 60);
+        assert_eq!(count(|facts| facts.alloc), 62);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 32);
+        assert_eq!(count(|facts| facts.trap), 36);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 16);
+        assert_eq!(count(|facts| facts.diverge), 18);
     }
 
     #[test]
