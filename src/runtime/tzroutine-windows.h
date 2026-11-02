@@ -30,6 +30,8 @@ typedef CONDITION_VARIABLE tzr_cond;
 static inline void tzr_mutex_lock(tzr_mutex *m) { AcquireSRWLockExclusive(m); }
 static inline void tzr_mutex_unlock(tzr_mutex *m) { ReleaseSRWLockExclusive(m); }
 static inline void tzr_cond_signal(tzr_cond *c) { WakeConditionVariable(c); }
+/* The timer thread's wakeup needs nothing more: the timeout below is relative. */
+static inline void tzr_timer_cond_init(tzr_cond *c) { (void)c; }
 /* Waits at most `ns` nanoseconds (rounded up to whole milliseconds and at most one day; the caller
  * looks at the clock again), or until signalled when ns < 0. */
 static inline void tzr_cond_wait_for(tzr_cond *c, tzr_mutex *m, int64_t ns) {
@@ -96,9 +98,8 @@ static void tzr_note_sleep(tzr_note *n) {
 static inline void tzr_note_destroy(tzr_note *n) { (void)n; }
 
 static int64_t tzr_nanotime(void) {
-    static LARGE_INTEGER frequency;
-    LARGE_INTEGER counter;
-    if (frequency.QuadPart == 0) QueryPerformanceFrequency(&frequency); /* the same value on every thread */
+    LARGE_INTEGER frequency, counter;
+    QueryPerformanceFrequency(&frequency);
     QueryPerformanceCounter(&counter);
     /* Whole seconds and the rest apart, so that the product stays far below 2^63 (async.c does the same). */
     int64_t seconds = counter.QuadPart / frequency.QuadPart;

@@ -86,7 +86,7 @@ static void tzr_fatal(const char *message) {
 #if defined(TZ_STACK_GUARD)
 /* src/runtime/stack.c: the alternate signal stack of a thread, and the hook its handler asks first. */
 void tsuzuri_stack_thread(void);
-extern int32_t (*volatile tsuzuri_stack_guard_hook)(uintptr_t);
+extern _Atomic(int32_t (*)(uintptr_t)) tsuzuri_stack_guard_hook;
 #endif
 TZR_API int32_t tsuzuri_tz_stack_guard_hit(uintptr_t address);
 
@@ -101,6 +101,20 @@ typedef pthread_cond_t tzr_cond;
 static inline void tzr_mutex_lock(tzr_mutex *m) { pthread_mutex_lock(m); }
 static inline void tzr_mutex_unlock(tzr_mutex *m) { pthread_mutex_unlock(m); }
 static inline void tzr_cond_signal(tzr_cond *c) { pthread_cond_signal(c); }
+/* The timer thread's wakeup measures its timeouts on the monotonic clock, so that a change of the
+ * wall clock cannot delay a timer. Linux sets the clock of the condition variable (which is then
+ * not statically initialized); macOS waits for a relative time. */
+static inline void tzr_timer_cond_init(tzr_cond *c) {
+#if defined(__linux__)
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(c, &attr);
+    pthread_condattr_destroy(&attr);
+#else
+    (void)c;
+#endif
+}
 /* Waits at most `ns` nanoseconds (at most one day; the caller looks at the clock again), or until
  * signalled when ns < 0. */
 static inline void tzr_cond_wait_for(tzr_cond *c, tzr_mutex *m, int64_t ns) {
@@ -110,12 +124,17 @@ static inline void tzr_cond_wait_for(tzr_cond *c, tzr_mutex *m, int64_t ns) {
     }
     const int64_t day = 86400 * (int64_t)1000000000;
     if (ns > day) ns = day; /* the deadline of a saturated sleep would overflow the sum below */
+#if defined(__APPLE__)
+    struct timespec relative = {(time_t)(ns / 1000000000), (long)(ns % 1000000000)};
+    pthread_cond_timedwait_relative_np(c, m, &relative);
+#else
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     int64_t abs = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec + ns;
     ts.tv_sec = abs / 1000000000;
     ts.tv_nsec = abs % 1000000000;
     pthread_cond_timedwait(c, m, &ts);
+#endif
 }
 
 typedef pthread_once_t tzr_once;
@@ -227,8 +246,10 @@ static int64_t tzr_nanotime(void) {
 #define TZR_SYM(name) #name
 #endif
 __attribute__((naked, noinline)) static void tzr_switch(void **save_sp, void *load_sp) {
+    /* FPCR (rounding mode, exception traps) is part of each context; it is written back only when
+     * it differs, because writing it can stall. */
     __asm__ volatile(
-        "sub sp, sp, #160\n"
+        "sub sp, sp, #176\n"
         "stp d8, d9, [sp, #0]\n"
         "stp d10, d11, [sp, #16]\n"
         "stp d12, d13, [sp, #32]\n"
@@ -239,6 +260,8 @@ __attribute__((naked, noinline)) static void tzr_switch(void **save_sp, void *lo
         "stp x25, x26, [sp, #112]\n"
         "stp x27, x28, [sp, #128]\n"
         "stp x29, x30, [sp, #144]\n"
+        "mrs x9, fpcr\n"
+        "str x9, [sp, #160]\n"
         "mov x9, sp\n"
         "str x9, [x0]\n"
         "mov sp, x1\n"
@@ -252,15 +275,22 @@ __attribute__((naked, noinline)) static void tzr_switch(void **save_sp, void *lo
         "ldp x25, x26, [sp, #112]\n"
         "ldp x27, x28, [sp, #128]\n"
         "ldp x29, x30, [sp, #144]\n"
-        "add sp, sp, #160\n"
+        "ldr x9, [sp, #160]\n"
+        "mrs x10, fpcr\n"
+        "cmp x9, x10\n"
+        "b.eq 1f\n"
+        "msr fpcr, x9\n"
+        "1:\n"
+        "add sp, sp, #176\n"
         "ret\n");
 }
-#define TZR_FRAME_BYTES 160
+#define TZR_FRAME_BYTES 176
 static void *tzr_initial_frame(char *top, void (*start)(void)) {
     uint64_t *frame = (uint64_t *)(top - TZR_FRAME_BYTES);
     memset(frame, 0, TZR_FRAME_BYTES);
     frame[18] = 0;                        /* x29: ends the frame-pointer chain */
     frame[19] = (uint64_t)(uintptr_t)start; /* x30: where the first switch returns */
+    frame[20] = 0;                        /* FPCR: round to nearest, no traps */
     return frame;
 }
 #else /* x86-64 System V */
@@ -412,7 +442,9 @@ static struct {
 } tzr_sched = {.lock = TZR_MUTEX_INIT, .once = TZR_ONCE_INIT};
 
 static _Thread_local tzr_m *tzr_tls_m;
-static _Thread_local tzr_g *tzr_tls_pseudo;
+#if !defined(_WIN32)
+static _Thread_local tzr_g *tzr_tls_pseudo; /* Windows keeps it in a fiber-local slot (tzr_pseudo) */
+#endif
 
 /* R2: every TLS read goes through these noinline functions. */
 static TZR_NOINLINE tzr_m *tzr_this_m(void) { return tzr_tls_m; }
@@ -867,7 +899,7 @@ static void tzr_init(void) {
     tzr_sched.stack_size = (stack + page - 1) / page * page;
     tzr_sched.nprocs = nprocs;
 #if defined(TZ_STACK_GUARD)
-    tsuzuri_stack_guard_hook = tsuzuri_tz_stack_guard_hit;
+    atomic_store_explicit(&tsuzuri_stack_guard_hook, tsuzuri_tz_stack_guard_hit, memory_order_release);
 #endif
     for (int i = nprocs - 1; i >= 0; i--) {
         tzr_p *p = calloc(1, sizeof *p);
@@ -898,15 +930,17 @@ static void tzr_pseudo_destroy(void *arg) {
     tzr_lock_release(&tzr_pseudo_lock);
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_sched.npseudo_running--;
+    tzr_checkdead(); /* the last running thread may leave only parked participants */
     tzr_mutex_unlock(&tzr_sched.lock);
     tzr_note_destroy(&g->note);
     free(g);
 }
 
 #if defined(_WIN32)
-/* The callback of a fiber-local slot runs when the thread ends, like a pthread key's destructor.
- * It may also run while the process exits, after ExitProcess has stopped the other threads (one of
- * them may hold a lock): exit() runs tzr_pseudo_exiting first, and then nothing is freed. */
+/* The callback of a fiber-local slot runs when the fiber or its thread ends, like a pthread key's
+ * destructor. It may also run while the process exits, after ExitProcess has stopped the other
+ * threads (one of them may hold a lock): exit() runs tzr_pseudo_exiting first, and then nothing is
+ * freed. */
 static DWORD tzr_pseudo_key;
 static volatile LONG tzr_pseudo_exit;
 static void tzr_pseudo_exiting(void) { tzr_pseudo_exit = 1; }
@@ -927,10 +961,19 @@ static void tzr_pseudo_key_set(tzr_g *g) { pthread_setspecific(tzr_pseudo_key, g
 #endif
 
 static tzr_g *tzr_pseudo(void) {
+#if defined(_WIN32)
+    /* The slot is fiber-local, like its cleanup: a host fiber that is deleted takes its pseudo-G
+     * with it, and no thread-local pointer outlives it. */
+    tzr_start();
+    tzr_run_once(&tzr_pseudo_key_once, tzr_pseudo_key_init);
+    tzr_g *g = FlsGetValue(tzr_pseudo_key);
+    if (g) return g;
+#else
     tzr_g *g = tzr_tls_pseudo;
     if (g) return g;
     tzr_start();
     tzr_run_once(&tzr_pseudo_key_once, tzr_pseudo_key_init);
+#endif
     g = calloc(1, sizeof *g);
     if (g == NULL) tzr_fatal("out of memory");
     g->kind = TZR_KIND_THREAD;
@@ -945,7 +988,9 @@ static tzr_g *tzr_pseudo(void) {
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_sched.npseudo_running++;
     tzr_mutex_unlock(&tzr_sched.lock);
+#if !defined(_WIN32)
     tzr_tls_pseudo = g;
+#endif
     tzr_pseudo_key_set(g);
     return g;
 }
@@ -1083,12 +1128,13 @@ static void tzr_after_exit(tzr_m *m, tzr_g *g) {
     }
     tzr_g *waiter = NULL;
     tzr_lock_acquire(&scope->lock);
+    /* Before the scope can be seen empty: a join that returns sees the exact count. */
+    atomic_fetch_sub(&tzr_sched.ngoroutines, 1);
     if (--scope->live == 0) {
         waiter = scope->waiter;
         scope->waiter = NULL;
     }
     tzr_lock_release(&scope->lock);
-    atomic_fetch_sub(&tzr_sched.ngoroutines, 1);
     if (waiter) tzr_ready(waiter);
 }
 
@@ -1282,18 +1328,21 @@ static int tzr_addr_wait(_Atomic uint64_t *addr, uint64_t expected, const char *
     return tzr_park(tzr_unlock_bucket, (void *)(uintptr_t)b, reason);
 }
 
-static int tzr_addr_wake(_Atomic uint64_t *addr, int n) {
+/* Wakes up to n waiters of addr (all of them when n < 0) with the bucket locked (R3 allows it), so
+ * that a waiter that wakes and waits again cannot join the same wake. A waiter is on its own stack,
+ * so it is unlinked before it is woken and never read after. */
+static int64_t tzr_addr_wake(_Atomic uint64_t *addr, int64_t n) {
     size_t b = tzr_bucket((void *)addr);
-    tzr_g *woken[64];
-    int count = 0;
+    int64_t count = 0;
     tzr_lock_acquire(&tzr_buckets[b].lock);
     tzr_waiter **link = &tzr_buckets[b].first;
     tzr_waiter *last = NULL;
-    while (*link && (n < 0 || count < n) && count < 64) {
+    while (*link && (n < 0 || count < n)) {
         tzr_waiter *w = *link;
         if (w->addr == (void *)addr) {
             *link = w->next;
-            woken[count++] = w->g;
+            count++;
+            tzr_ready(w->g);
         } else {
             last = w;
             link = &w->next;
@@ -1301,8 +1350,7 @@ static int tzr_addr_wake(_Atomic uint64_t *addr, int n) {
     }
     if (*link == NULL) tzr_buckets[b].last = last;
     tzr_lock_release(&tzr_buckets[b].lock);
-    for (int i = 0; i < count; i++) tzr_ready(woken[i]);
-    return count == 64 && n < 0 ? 64 + tzr_addr_wake(addr, n) : count;
+    return count;
 }
 
 /* The parking lot for the sync types that TZ06 writes in C (RwMutex, Once, Cond, Semaphore). */
@@ -1311,7 +1359,7 @@ TZR_API int32_t tsuzuri_tz_addr_wait(_Atomic uint64_t *addr, uint64_t expected) 
 }
 
 TZR_API int64_t tsuzuri_tz_addr_wake(_Atomic uint64_t *addr, int64_t n) {
-    return tzr_addr_wake(addr, n < 0 ? -1 : (int)(n > 1000000 ? 1000000 : n));
+    return tzr_addr_wake(addr, n < 0 ? -1 : n);
 }
 
 /* Mutex: the word is 0 free, 1 held, 2 held with waiters (Drepper's three states). */
@@ -1334,8 +1382,9 @@ TZR_API void tsuzuri_tz_mutex_unlock(_Atomic uint64_t *word) {
 
 /* WaitGroup: the word is the counter. */
 TZR_API int32_t tsuzuri_tz_waitgroup_add(_Atomic uint64_t *word, int64_t delta) {
-    int64_t v = (int64_t)atomic_fetch_add(word, (uint64_t)delta) + delta;
-    if (v < 0) return 1; /* the generated code traps: negative WaitGroup counter */
+    /* Unsigned arithmetic: a counter outside [0, INT64_MAX] is an error, not an overflow. */
+    uint64_t v = atomic_fetch_add(word, (uint64_t)delta) + (uint64_t)delta;
+    if (v > (uint64_t)INT64_MAX) return 1; /* the generated code traps: negative WaitGroup counter */
     if (v == 0) tzr_addr_wake(word, -1);
     return 0;
 }
@@ -1366,7 +1415,12 @@ static struct {
     tzr_mutex wake_mutex;
     tzr_cond wake;
     int kicked;
-} tzr_timers = {.wake_mutex = TZR_MUTEX_INIT, .wake = TZR_COND_INIT};
+} tzr_timers = {
+    .wake_mutex = TZR_MUTEX_INIT,
+#if !defined(__linux__)
+    .wake = TZR_COND_INIT, /* Linux initializes it with the monotonic clock (tzr_timer_cond_init) */
+#endif
+};
 
 static void tzr_heap_up(size_t i) {
     while (i > 0) {
@@ -1402,7 +1456,13 @@ static void *tzr_timerproc(void *arg) {
             tzr_timers.heap[0] = tzr_timers.heap[--tzr_timers.count];
             tzr_heap_down(0);
             tzr_ready(top->g); /* the G may run and leave `top` (its stack frame) at once */
-            atomic_fetch_sub(&tzr_sched.ntimers, 1);
+            if (atomic_fetch_sub(&tzr_sched.ntimers, 1) == 1) {
+                /* The G may have run and parked again before this, when the detector still saw a
+                 * timer: look again now that none is left (R3 allows the order of the locks). */
+                tzr_mutex_lock(&tzr_sched.lock);
+                tzr_checkdead();
+                tzr_mutex_unlock(&tzr_sched.lock);
+            }
         }
         int64_t next = tzr_timers.count > 0 ? tzr_timers.heap[0]->when : -1;
         tzr_lock_release(&tzr_timers.lock);
@@ -1429,6 +1489,7 @@ TZR_API int32_t tsuzuri_tz_sleep(int64_t ns) {
     tzr_timer t = {now > INT64_MAX - ns ? INT64_MAX : now + ns, tzr_current()};
     tzr_lock_acquire(&tzr_timers.lock);
     if (!tzr_timers.started) {
+        tzr_timer_cond_init(&tzr_timers.wake);
         tzr_thread_start(tzr_timerproc, NULL, 0, "cannot start the timer thread");
         tzr_timers.started = 1;
     }
@@ -1715,8 +1776,24 @@ static void tzr_selunlock_arg(void *arg) {
  * `default` arm). *ok is 1 when a recv case got an item and 0 when its channel was closed; a send
  * case on a closed channel returns with *ok = 0 and the generated code traps. Returns -2 for a
  * doomed pseudo-G. n == 0 with block parks forever. n <= 65535. */
+static int64_t tzr_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *ok, uint16_t *pollorder, uint16_t *lockorder);
+
 TZR_API int64_t tsuzuri_tz_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *ok) {
-    uint16_t pollorder[n > 0 ? n : 1], lockorder[n > 0 ? n : 1];
+    /* The two orders take 4 bytes a case: a few cases on the stack, more on the heap, so that a
+     * select of 65,535 cases fits a 64 KiB stack and cannot jump over its guard. */
+    enum { TZR_SELECT_STACK = 64 };
+    if (n <= TZR_SELECT_STACK) {
+        uint16_t orders[2 * TZR_SELECT_STACK];
+        return tzr_select(cases, n, block, ok, orders, orders + TZR_SELECT_STACK);
+    }
+    uint16_t *orders = malloc((size_t)n * 2 * sizeof *orders);
+    if (orders == NULL) tzr_fatal("out of memory");
+    int64_t chosen = tzr_select(cases, n, block, ok, orders, orders + n);
+    free(orders);
+    return chosen;
+}
+
+static int64_t tzr_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *ok, uint16_t *pollorder, uint16_t *lockorder) {
     tzr_g *g = tzr_current();
     *ok = 0;
     if (n == 0) {
