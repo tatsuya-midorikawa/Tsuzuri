@@ -246,6 +246,7 @@ sum=5050
 
 - 待つのは tzroutine だけです。待っている間、その OS スレッドはほかの tzroutine を走らせます。
 - `main` や `export` を呼んだスレッド、`Task.parallel` のタスクのような tzroutine でないスレッドが待つと、そのスレッドが止まります。
+- `Task.parallel`・`Task.scope`・`Parallel.*` の項目がまだ始まっていない間は、判定をしません（始まった項目がほかの待ちを起こしうるため）。タスクのプールのスレッドがすべて `Channel` で待ち、残りの項目を始めるスレッドがないときや、CPU が 1 つで項目が呼んだスレッドで順に走るときは、トラップせずに待ち続けます（プールの待ち行列はランタイムから見えません。Task は TZ12 で tzroutine に置き換わります）。
 - 誰も起こせない待ち（すべての tzroutine とスレッドが待っていて、走るものもタイマーもない）は、`Tsuzuri runtime: all tzroutines are asleep - deadlock! (1 waiting: Channel.recv)` を書き、待っていた呼び出しの位置でトラップします。`--trap-info` の `tsuzuri run` は、その行を `E2005` の位置にします。
 
 ```text
@@ -265,6 +266,7 @@ match Channel.recv ch with      // ← ここでトラップする
 | 既定の wasm32・wasm64（import なし） | tzroutine を起動しないプログラムは、1 本の実行として使える。待つべき操作（空のバッファなしの `recv` など）はトラップする |
 | `--wasm-feature threads` | `E2000`（`Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend`） |
 | `--freestanding` | `E2000` |
+| `--trap-mode return` | `E2000`（`--trap-mode return cannot be combined with Channel: ...`。トラップがランタイムの状態を残すため） |
 
 既定の WebAssembly では、モジュールにランタイムのチャンネルの部分（`src/runtime/tzroutine.c` を 1 本の実行向けに作ったもの）が入り、import は増えません。誰も起こせないので、待つべき操作はすぐにトラップします（`DataChannel` の既定の WebAssembly と同じです）。
 

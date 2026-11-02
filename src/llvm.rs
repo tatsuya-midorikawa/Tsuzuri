@@ -1590,11 +1590,11 @@ pub(crate) fn with_blocking_calls(ir: String) -> String {
 /// `_leave`). Without it, a `Channel` wait in one item could be judged a deadlock before the item
 /// that would wake it has started on another thread.
 pub(crate) fn with_task_accounting(ir: String) -> String {
-    const CALLS: [&str; 4] = [
+    // The runtime's own calls only: the `tz.mutex.parallel*` wrappers of a program with a Mutex make
+    // them, so announcing the wrapper's call too would count the batch twice.
+    const CALLS: [&str; 2] = [
         "call void @tsuzuri_task_parallel(",
         "call i64 @tsuzuri_task_parallel_results(",
-        "call void @tz.mutex.parallel(",
-        "call i64 @tz.mutex.parallel_results(",
     ];
     let callbacks = worker_callbacks(&ir);
     let mut output = String::with_capacity(ir.len() + 256);

@@ -369,3 +369,107 @@ fn direction_handles_send_or_receive_only() {
         assert_eq!(analyze(source).expect_err(source).code, code, "{source}");
     }
 }
+
+/// Runs the program of `directory` and returns its status and standard error, or fails when it does
+/// not end within 60 seconds (a deadlock that the runtime missed).
+fn run_bounded(directory: &Path) -> (std::process::ExitStatus, String) {
+    let binary = directory.join("program");
+    let build = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("build")
+        .arg(directory)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let mut child = Command::new(&binary)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            let mut stderr = String::new();
+            use std::io::Read;
+            child
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            return (status, stderr);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            child.kill().unwrap();
+            panic!("{} did not end", directory.display());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn the_items_of_a_task_batch_are_announced_once() {
+    // With a Mutex the program calls the task runtime through a wrapper; announcing the wrapper's
+    // call as well kept the batch pending for ever, and these waits hung.
+    let directory = project(
+        "announce-once",
+        "let lock = Mutex.create 0i64\nlet _x = Mutex.with_lock (ref lock) (\\value -> deref value)\nlet ch: Channel<i64> = Channel.make 0\nlet a = Channel.share ch\nlet b = Channel.share ch\nlet first = task {\n    return match Channel.recv a with\n        | Maybe.Some v -> v\n        | Maybe.None -> 0\n}\nlet second = task {\n    return match Channel.recv b with\n        | Maybe.Some v -> v\n        | Maybe.None -> 0\n}\nlet results = Task.run (Task.parallel [first, second])\nresults[0]\n",
+    );
+    let (status, stderr) = run_bounded(&directory);
+    assert!(!status.success());
+    assert!(
+        stderr.contains("all tzroutines are asleep - deadlock!"),
+        "{stderr}"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_failure_domain_drops_the_batches_that_a_trap_left() {
+    // A pool item traps inside Domain.run: its batch never ends. Without the domain's reset, the
+    // batch held off the verdict, and the deadlock after it hung.
+    let directory = project(
+        "domain-batches",
+        "def explode :: i64 -> i64\nfn explode n =\n    let jobs = new [Task<i64>](2, \\index -> task {\n        let zero = n - n\n        return index / zero\n    })\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\nlet failed = match Domain.run (\\() -> explode 3) with\n    | Result.Ok _ -> 0\n    | Result.Error _ -> 1\nlet ch: Channel<i64> = Channel.make 0\nmatch Channel.recv ch with\n| Maybe.Some v -> v + failed\n| Maybe.None -> failed\n",
+    );
+    let (status, stderr) = run_bounded(&directory);
+    assert!(!status.success());
+    assert!(
+        stderr.contains("all tzroutines are asleep - deadlock! (1 waiting: Channel.recv)"),
+        "{stderr}"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn trap_mode_return_refuses_a_channel() {
+    let directory = project(
+        "trap-return",
+        "export def f :: i64 -> i64\nfn f n =\n    let ch: Channel<i64> = Channel.make 1\n    Channel.send ch n\n    Channel.length ch\n",
+    );
+    let output = directory.join("out.o");
+    let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("build")
+        .arg(&directory)
+        .args(["--trap-mode", "return", "--emit", "object", "-o"])
+        .arg(&output)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(!run.status.success());
+    let error = last_diagnostic(&run);
+    assert_eq!(error["code"], "E2000", "{error}");
+    assert_eq!(error["kind"], "option_conflict", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("--trap-mode return cannot be combined with Channel"),
+        "{error}"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
