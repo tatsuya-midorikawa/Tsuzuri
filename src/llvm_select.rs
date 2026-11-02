@@ -179,7 +179,10 @@ impl FunctionEmitter<'_, '_> {
         for empty in &buffers {
             self.forget_temporary(empty);
         }
-        if let Some(scope) = self.scopes.last_mut() {
+        if !pending.is_empty()
+            && let Some(scope) = self.scopes.last_mut()
+        {
+            let pending: BTreeSet<String> = pending.into_iter().collect();
             scope.retain(|(slot, _)| !pending.contains(slot));
         }
         if wait.default.is_none() {

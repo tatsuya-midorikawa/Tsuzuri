@@ -1703,6 +1703,14 @@ impl<'s, 'a> Scan<'s, 'a> {
                 if wait.allocates() {
                     self.source(Effect::Alloc, span, "select");
                 }
+                // What `recv _` receives is dropped by the select: its type is in no expression.
+                if !self.state.module.user_drops.is_empty() {
+                    for arm in &wait.arms {
+                        if arm.send.is_none() && arm.field.is_none() {
+                            self.user_drop(&arm.item, span);
+                        }
+                    }
+                }
                 self.source_why(Effect::Trap, span, builtin_why(Builtin::ChannelSend));
                 if wait.default.is_none() {
                     self.source(Effect::Diverge, span, "blocking");

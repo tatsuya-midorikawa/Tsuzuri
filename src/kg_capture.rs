@@ -1079,7 +1079,12 @@ fn function_edges(builder: &mut Builder<'_, '_>, budget: &mut usize) {
                             rel: "calls",
                             from: id.clone(),
                             to: builtin.name().to_owned(),
-                            args: Some(vec![argument_conv(&arm.channel, &types)]),
+                            args: Some(
+                                std::iter::once(&arm.channel)
+                                    .chain(&arm.send)
+                                    .map(|argument| argument_conv(argument, &types))
+                                    .collect(),
+                            ),
                             span: arm.channel.span,
                         });
                     }

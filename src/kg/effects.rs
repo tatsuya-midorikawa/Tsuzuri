@@ -317,6 +317,21 @@ pub(crate) fn scan(
             | TypedExprKind::TaskParallel(_)
             | TypedExprKind::TaskParallelResults(_)
             | TypedExprKind::Parallel(..) => note("task", expression.span, &mut found),
+            // TZ04: the channel operations of a select, and the drop of what `recv _` receives,
+            // whose type is in no expression.
+            TypedExprKind::SelectWait(wait) => {
+                note("atomic", expression.span, &mut found);
+                for arm in &wait.arms {
+                    if arm.send.is_none()
+                        && arm.field.is_none()
+                        && *drops
+                            .entry(arm.item.clone())
+                            .or_insert_with(|| arm.item.holds_user_drop(&types))
+                    {
+                        note("user_drop", expression.span, &mut found);
+                    }
+                }
+            }
             _ => {}
         }
         let holds_drop = *drops

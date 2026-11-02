@@ -280,3 +280,13 @@ fn the_lowering_grows_with_the_arms() {
     let message = rejects(&typed(257), "E1017", "select_arm_limit");
     assert!(message.contains("at most 256 item types"), "{message}");
 }
+
+#[test]
+fn a_dropped_receive_runs_its_drop() {
+    // What `recv _` receives is dropped by the select: its Drop's effects are the function's.
+    rejects(
+        "record R { v: i64 }\ninstance Drop<R> {\n    fn drop _r =\n        let _xs = new [i64](2, \\i -> i)\n        ()\n}\n\n@no_alloc\ndef take :: ref Channel<R> -> i64\nfn take ch =\n    select\n    | recv _ from ch -> 1\n    | default -> 0\n\nlet ch: Channel<R> = Channel.make 1\ntake (ref ch)\n",
+        "E1031",
+        "effect_alloc_in_no_alloc",
+    );
+}
