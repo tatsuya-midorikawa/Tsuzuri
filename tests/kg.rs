@@ -1098,5 +1098,6 @@ fn select_records_its_channel_operations() {
         .filter(|edge| edge["rel"] == "calls" && edge["from"] == "Main.give")
         .map(|edge| edge["args"].clone())
         .collect();
-    assert_eq!(sends, [serde_json::json!(["ref", "own"])]);
+    // The channel is a reference passed on (a copy of it), and the value moves.
+    assert_eq!(sends, [serde_json::json!(["copy", "own"])]);
 }
