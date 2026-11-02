@@ -991,13 +991,17 @@ impl<'a> Checker<'a, '_> {
         }
     }
 
-    /// The type of the item that `callee` puts in a channel when it is `DataChannel.send`, or the
-    /// generated function that calls it (F10). The item stays in the channel after the call.
+    /// The type of the item that `callee` puts in a channel when it is `DataChannel.send` (F10),
+    /// `Channel.send` or `Channel.try_send` (TZ03), or the generated function that calls one. The
+    /// item stays in the channel after the call.
     fn sent_item(&self, callee: &TypedExpr) -> Option<Type> {
+        use crate::check::Builtin::{ChannelSend, ChannelTrySend, DataChannelSend};
         match &callee.ty {
             Type::Function(parameters, _)
-                if self.builtin_called(callee) == Some(crate::check::Builtin::DataChannelSend)
-                    && parameters.len() >= 2 =>
+                if matches!(
+                    self.builtin_called(callee),
+                    Some(DataChannelSend | ChannelSend | ChannelTrySend)
+                ) && parameters.len() >= 2 =>
             {
                 Some(parameters[1].clone())
             }
@@ -2679,7 +2683,17 @@ impl<'a> Checker<'a, '_> {
         // checked where it is evaluated.
         let locked = self.locked_result(callee).filter(|_| arguments.len() >= 2);
         let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
-        let received = self.builtin_called(callee) == Some(crate::check::Builtin::DataChannelRecv);
+        // What comes out of a channel was checked when it went in; `Channel.try_send` gives back
+        // the item that it checked.
+        let received = matches!(
+            self.builtin_called(callee),
+            Some(
+                crate::check::Builtin::DataChannelRecv
+                    | crate::check::Builtin::ChannelRecv
+                    | crate::check::Builtin::ChannelTryRecv
+                    | crate::check::Builtin::ChannelTrySend
+            )
+        );
         let value = if locked.is_some() || sent.is_some() {
             Value::default()
         } else {
@@ -2932,14 +2946,16 @@ impl<'a> Checker<'a, '_> {
                     expression.span,
                 ));
             }
-            // The same for the item of `DataChannel.send`.
+            // The same for the item of `DataChannel.send`, `Channel.send` and `Channel.try_send`.
             E::Function(_)
                 if self
                     .sent_item(expression)
                     .is_some_and(|item| item.carries_loans(&self.module.types())) =>
             {
+                let builtin = self.builtin_called(expression).expect("a send builtin");
+                let end = if builtin.is_data_channel() { "sender" } else { "channel" };
                 return Err(error(DiagnosticKind::MustApplyDirectly,
-                    "DataChannel.send must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the sender and the item together",
+                    &format!("{} must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the {end} and the item together", builtin.name()),
                     expression.span,
                 ));
             }

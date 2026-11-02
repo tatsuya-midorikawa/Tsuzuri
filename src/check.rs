@@ -723,6 +723,19 @@ impl Type {
         !types.stored_all(self, |part| !part.has_user_drop(types))
     }
 
+    /// The item type of the std `Channel<'a>` (TZ03), which `for x in ch` receives from.
+    pub(crate) fn channel_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
+        match self {
+            Self::Record(id, arguments)
+                if types.records[*id].origin == ModuleOrigin::Std
+                    && types.records[*id].name == "Channel.Channel" =>
+            {
+                arguments.first()
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn sequence_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
         match self {
             Self::Record(id, arguments)
@@ -4934,6 +4947,9 @@ struct DeclaredFunction {
 
 #[derive(Default)]
 struct Names {
+    /// The `E1040`s of old type names that `type_head` resolved as their replacements (TZ03); each
+    /// stage moves them into the diagnostics before it checks them (`flush_renamed`).
+    renamed: std::sync::Mutex<Vec<Diagnostic>>,
     /// By function id; the declarations of tests and benches stay empty.
     declared: Vec<DeclaredFunction>,
     warning_options: warnings::WarningOptions,
@@ -5081,6 +5097,39 @@ fn key_path(qualified: &str) -> String {
 
 /// A dotted full name or namespace as source code writes it, as
 /// `Sample::Features::Shape` for `Sample.Features.Shape`.
+/// A name that the language had and has no longer (TZ03; TZ12 and TZ13 add theirs): the kind of
+/// its `E1040`, the message, the help, and the name to write instead. It is asked only when
+/// `module.name` resolves to nothing, so a definition of the program with that name wins.
+pub(crate) fn removed_feature(
+    module: &str,
+    name: &str,
+) -> Option<(DiagnosticKind, String, &'static str, Option<String>)> {
+    match (module, name) {
+        ("Channel", "bounded" | "clone_sender" | "Sender" | "Receiver") => Some((
+            DiagnosticKind::RenamedToDataChannel,
+            format!("'Channel.{name}' is now 'DataChannel.{name}'"),
+            "the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)",
+            Some(format!("DataChannel.{name}")),
+        )),
+        _ => None,
+    }
+}
+
+/// The `E1040` of a removed name at `span`, which covers the whole qualified name, with the fix
+/// that writes its replacement.
+fn removed_name(module: &str, name: &str, span: Span) -> Option<Diagnostic> {
+    let (kind, message, help, replacement) = removed_feature(module, name)?;
+    let diagnostic = Diagnostic::of(kind, message, span).with_help(help);
+    Some(match replacement {
+        Some(text) => diagnostic.fix(
+            format!("write '{text}'"),
+            crate::diagnostic::Applicability::Certain,
+            vec![crate::diagnostic::Edit { span, text }],
+        ),
+        None => diagnostic,
+    })
+}
+
 fn namespace_display(dotted: &str) -> String {
     dotted.replace('.', "::")
 }
@@ -5227,6 +5276,14 @@ fn entry_signature(signature: &Signature) -> bool {
 }
 
 impl Names {
+    /// Moves the `E1040`s of `renamed` into `diagnostics`.
+    fn flush_renamed<'d>(&self, diagnostics: &'d mut Diagnostics) -> &'d mut Diagnostics {
+        for error in self.renamed.lock().expect("renamed names").drain(..) {
+            diagnostics.push(error);
+        }
+        diagnostics
+    }
+
     fn local_function(&self, module: &str, name: &str) -> Option<usize> {
         let module = self.symbols.lookup(module)?;
         let name = self.symbols.lookup(name)?;
@@ -5688,6 +5745,38 @@ impl Names {
             (_, named @ (Choice::Ambiguous(..) | Choice::Hidden(_))) => self
                 .type_result(named, &head.text, head.span)
                 .map(TypeHead::Type),
+            _ if head
+                .text
+                .rsplit_once('.')
+                .and_then(|(module, name)| removed_feature(module, name))
+                .is_some() =>
+            {
+                let (removed_module, name) = head.text.rsplit_once('.').expect("a qualified name");
+                let removed =
+                    removed_name(removed_module, name, head.span).expect("a removed name");
+                // The name that replaced it resolves in its place, and the `E1040` waits in
+                // `renamed`, so that one analysis finds every use of the old names.
+                let replacement = removed_feature(removed_module, name)
+                    .and_then(|(_, _, _, replacement)| replacement);
+                let Some(text) = replacement else {
+                    return Err(removed);
+                };
+                let replaced = Ident {
+                    text,
+                    span: head.span,
+                    provenance: head.provenance,
+                };
+                match self.type_head(module, &replaced) {
+                    Ok(TypeHead::Type(named)) => {
+                        let mut renamed = self.renamed.lock().expect("renamed names");
+                        if !renamed.iter().any(|known| known.span == removed.span) {
+                            renamed.push(removed);
+                        }
+                        Ok(TypeHead::Type(named))
+                    }
+                    _ => Err(removed),
+                }
+            }
             _ => Err(Diagnostic::of(
                 DiagnosticKind::UnknownTypeName,
                 format!(
@@ -6680,7 +6769,7 @@ fn check_modules_collect(
             .module_namespaces
             .insert(name.to_owned(), module.namespace.to_owned());
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     for (source, module) in modules.iter().enumerate() {
         let mut imported: Vec<String> = Vec::new();
         for using in &module.program.usings {
@@ -6711,9 +6800,9 @@ fn check_modules_collect(
             names.module_usings.insert(module.name.to_owned(), imported);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     (names.builders, names.builder_aliases) = computation::collect_all(modules, diagnostics);
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let record_declarations: Vec<_> = modules
         .iter()
         .flat_map(|module| {
@@ -7064,7 +7153,7 @@ fn check_modules_collect(
                 .push(qualified);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let union_declarations: Vec<_> = modules
         .iter()
         .flat_map(|module| {
@@ -7106,7 +7195,7 @@ fn check_modules_collect(
                 .push(qualified);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     for module in modules {
         for alias in &module.program.type_aliases {
             if diagnostics.is_full() {
@@ -7151,7 +7240,7 @@ fn check_modules_collect(
                 .push(qualified);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     for (info, alias) in names.type_aliases.values() {
         if diagnostics.is_full() {
             break;
@@ -7208,7 +7297,7 @@ fn check_modules_collect(
             diagnostics.push(error);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let mut records = Vec::new();
     for (module, record) in &record_declarations {
         if diagnostics.is_full() {
@@ -7324,7 +7413,7 @@ fn check_modules_collect(
             Err(error) => diagnostics.push(error),
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     mark_exclusive_regions(&mut records);
     // Generic declarations are measured with their own parameters as opaque
     // leaves, which rejects every recursive layout before any instance exists.
@@ -7362,7 +7451,7 @@ fn check_modules_collect(
             break;
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let record_sizes: Vec<_> = (0..records.len())
         .map(|id| {
             layouts
@@ -7409,7 +7498,7 @@ fn check_modules_collect(
             break;
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let mut export_names = BTreeSet::new();
     // The function type and WASM module of each explicit extern symbol; a symbol may be declared again only identically.
     let mut explicit_symbols: BTreeMap<String, (Type, String)> = BTreeMap::new();
@@ -7478,7 +7567,7 @@ fn check_modules_collect(
             diagnostics.push(duplicate(&function.name));
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let entry_module = modules
         .iter()
         .find(|module| {
@@ -7489,7 +7578,7 @@ fn check_modules_collect(
         .map(|module| module.name);
     for (id, (module, function)) in function_declarations.iter().enumerate() {
         if diagnostics.is_full() {
-            diagnostics.check()?;
+            names.flush_renamed(diagnostics).check()?;
         }
         let checked = (|| {
             // Instance methods are reached only through class dispatch, so an
@@ -7796,7 +7885,7 @@ fn check_modules_collect(
     {
         for active in &program.active_patterns {
             if diagnostics.is_full() {
-                diagnostics.check()?;
+                names.flush_renamed(diagnostics).check()?;
             }
             let function = names.functions[&format!("{module}.{}", active.function)].clone();
             let id = function.id;
@@ -8189,7 +8278,7 @@ fn check_modules_collect(
             Err(error) => diagnostics.push(error),
         }
     }
-    if diagnostics.check().is_ok() {
+    if names.flush_renamed(diagnostics).check().is_ok() {
         polymorph::solve_members(&mut functions, &mut pending)?;
     }
     let mut name_uses = Vec::new();
@@ -8248,7 +8337,7 @@ fn check_modules_collect(
             ControlFlow::Continue(())
         },
     );
-    if let Err(error) = diagnostics.check() {
+    if let Err(error) = names.flush_renamed(diagnostics).check() {
         if !diagnostics.is_full() {
             let recovered: Vec<_> = recovered_functions
                 .into_iter()
@@ -8273,7 +8362,7 @@ fn check_modules_collect(
         ids[..declaration_count],
         (0..declaration_count).collect::<Vec<_>>()
     );
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let resolve_api = semantic
         .as_ref()
         .is_some_and(|index| index.resolved_api.is_some());
@@ -8343,7 +8432,7 @@ fn check_modules_collect(
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
     diagnostics.extend(contracts::validate_templates(&module));
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
     crate::gpu_devices::retarget_calls(&mut module);
@@ -8467,7 +8556,7 @@ fn check_modules_collect(
         }
         module.effects = summary;
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     // F09 Phase 2: the calls are validated, so their callbacks are known functions.
     crate::gpu_devices::lower_kernels(&mut module)?;
     Ok(module)
@@ -11834,6 +11923,47 @@ impl<'a> Checker<'a> {
                         field.text
                     )
                 } else {
+                    let whole = Span {
+                        start: value.span.start,
+                        end: field.span.end,
+                        source: field.span.source,
+                    };
+                    if let Some(removed) = removed_name(&spelled, &field.text, whole) {
+                        // Recovery checks the name that replaced it, so that one analysis finds
+                        // every use of the old names and `tsuzuri fix` moves a program in a round.
+                        let replacement = removed_feature(&spelled, &field.text)
+                            .and_then(|(_, _, _, replacement)| replacement);
+                        let Some((module, member)) = replacement
+                            .as_deref()
+                            .and_then(|text| text.rsplit_once('.'))
+                            .filter(|_| self.recovering)
+                        else {
+                            return Err(removed);
+                        };
+                        let replaced = Expr {
+                            kind: ExprKind::Field(
+                                Box::new(Expr {
+                                    kind: ExprKind::Name(Ident {
+                                        text: module.to_owned(),
+                                        span: value.span,
+                                        provenance: field.provenance,
+                                    }),
+                                    span: value.span,
+                                    depth: value.depth,
+                                }),
+                                Ident {
+                                    text: member.to_owned(),
+                                    span: field.span,
+                                    provenance: field.provenance,
+                                },
+                            ),
+                            span: expression.span,
+                            depth: expression.depth,
+                        };
+                        self.recovered.push(removed);
+                        self.poisoned = true;
+                        return self.value_expression(&replaced, expected);
+                    }
                     member = true;
                     format!(
                         "module '{spelled}' has no function or union case '{}'",

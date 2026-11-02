@@ -979,7 +979,8 @@ fn channel_ends_are_opaque_owned_and_sync() {
         "E1022",
     );
     assert!(
-        message.contains("the channel close primitive is private to the standard DataChannel module")
+        message
+            .contains("the channel close primitive is private to the standard DataChannel module")
             && message.contains("closes when it is dropped"),
         "{message}"
     );

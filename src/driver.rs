@@ -3044,13 +3044,30 @@ impl Project {
     /// Adds the opt-in std module `module` (and the modules it uses) when the sources did not
     /// name it.
     fn require_std(&mut self, module: &str) {
+        self.add_std(crate::stdlib::sources_for([module]));
+    }
+
+    /// Adds the opt-in std modules that the user sources name now but did not when the project
+    /// was loaded: a fix that writes `DataChannel.bounded` names `DataChannel` (TZ03).
+    pub fn require_named_std(&mut self) {
+        let named = crate::stdlib::sources_for(
+            self.sources
+                .iter()
+                .filter(|source| source.origin != ModuleOrigin::Std)
+                .map(|source| source.text.as_str()),
+        );
+        self.add_std(named);
+    }
+
+    /// Adds the std sources of `wanted` that the project does not have.
+    fn add_std(&mut self, wanted: Vec<(&'static str, &'static str)>) {
         let present: std::collections::BTreeSet<PathBuf> = self
             .sources
             .iter()
             .filter(|source| source.origin == ModuleOrigin::Std)
             .map(|source| source.path.clone())
             .collect();
-        let added: Vec<SourceFile> = crate::stdlib::sources_for([module])
+        let added: Vec<SourceFile> = wanted
             .into_iter()
             .filter(|(path, _)| !present.contains(Path::new(path)))
             .map(|(path, text)| SourceFile {

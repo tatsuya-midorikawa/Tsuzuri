@@ -300,11 +300,13 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         aliases: &[],
         uses: &[],
     },
+    // The old names of DataChannel (`Channel.bounded`) resolve as their replacements while they
+    // are reported (E1040, TZ03), so a program that names Channel loads DataChannel too.
     OptIn {
         module: "Channel",
         names: &["Channel"],
         aliases: &[],
-        uses: &[],
+        uses: &["DataChannel"],
     },
     OptIn {
         module: "RegexText",

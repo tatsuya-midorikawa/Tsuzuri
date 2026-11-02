@@ -4911,11 +4911,32 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 .into_iter()
                 .all(|child| small(child, remaining))
         }
+        // A loop that waits on a `Channel` (TZ03) runs until a receive or a send says so: it has no
+        // trip count to unroll by.
+        fn waits(expression: &TypedExpr, module: &CheckedModule) -> bool {
+            let channel = match &expression.kind {
+                TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
+                    instance.builtin.is_channel()
+                }
+                // Every use of a builtin calls its `$builtin` wrapper.
+                TypedExprKind::Function(FunctionRef::User(id)) => {
+                    let function = &module.functions[*id];
+                    function.module == "$builtin" && function.name.starts_with("Channel.")
+                }
+                _ => false,
+            };
+            channel
+                || expression
+                    .children()
+                    .into_iter()
+                    .any(|child| waits(child, module))
+        }
         // Without a bounds check, the hint makes LLVM unroll before it vectorizes; let the vectorizer go first.
         if self.proven_reads != reads
             || !small(body, &mut 64)
             || assignments(body) != 1
             || !reduction(body, self.module)
+            || waits(body, self.module)
         {
             return;
         }

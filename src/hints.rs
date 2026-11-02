@@ -60,7 +60,88 @@ static BY_KIND: LazyLock<Index> = LazyLock::new(|| index(TABLE));
 
 /// Attaches the first matching hint of `TABLE` to each diagnostic of a user source.
 pub(crate) fn annotate(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
+    renamed_channel_calls(set, inputs);
     annotate_with(set, inputs, &BY_KIND);
+}
+
+/// `Channel.send` or `Channel.recv` given an end of a `DataChannel` (TZ03): the program was
+/// written for the channel that is `DataChannel` now, which the end's type proves, so the `E1003`
+/// of the argument becomes the `E1040` of the name before it, with the fix that writes
+/// `DataChannel.send` or `DataChannel.recv`. Unlike a hint, the fix is certain: the types decide
+/// it, and `tsuzuri fix` then moves an old program round by round through `E1040` alone.
+fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
+    let mut lexed: BTreeMap<usize, Vec<Token>> = BTreeMap::new();
+    for diagnostic in &mut set.diagnostics {
+        if diagnostic.kind != Some("type_mismatch") {
+            continue;
+        }
+        let (Some(expected), Some(found)) = (&diagnostic.detail.expected, &diagnostic.detail.found)
+        else {
+            continue;
+        };
+        let unref = |ty: &str| ty.strip_prefix("ref ").unwrap_or(ty).to_owned();
+        let (expected, found) = (unref(expected), unref(found));
+        let function = if found.starts_with("DataChannel.Sender<") {
+            "send"
+        } else if found.starts_with("DataChannel.Receiver<") {
+            "recv"
+        } else {
+            continue;
+        };
+        if !expected.starts_with("Channel<") {
+            continue;
+        }
+        let source = diagnostic.span.source.unwrap_or(0);
+        let Some(input) = inputs
+            .get(source)
+            .filter(|input| input.origin == ModuleOrigin::User)
+        else {
+            continue;
+        };
+        let tokens = lexed
+            .entry(source)
+            .or_insert_with(|| lexer::lex_all(input.text, input.edition).0);
+        let Some(mut index) = main_token(tokens, diagnostic) else {
+            continue;
+        };
+        let spelled = |token: &Token| {
+            input
+                .text
+                .get(token.span.start..token.span.end)
+                .unwrap_or("")
+        };
+        // `Channel.recv (ref receiver)`: the argument may open with `(` and `ref`.
+        while index > 0 && matches!(spelled(&tokens[index - 1]), "(" | "ref") {
+            index -= 1;
+        }
+        let [module, dot, name] = match index.checked_sub(3).map(|first| &tokens[first..index]) {
+            Some([module, dot, name]) => [module, dot, name],
+            _ => continue,
+        };
+        if spelled(module) != "Channel" || spelled(dot) != "." || spelled(name) != function {
+            continue;
+        }
+        let mut span = module.span;
+        span.end = name.span.end;
+        span.source = diagnostic.span.source;
+        let text = format!("DataChannel.{function}");
+        let end = if function == "send" {
+            "Sender"
+        } else {
+            "Receiver"
+        };
+        *diagnostic = Diagnostic::of(
+            crate::diagnostic_kinds::DiagnosticKind::RenamedToDataChannel,
+            format!("'Channel.{function}' of a DataChannel.{end} is now '{text}'"),
+            span,
+        )
+        .with_help("the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)")
+        .fix(
+            format!("write '{text}'"),
+            Applicability::Certain,
+            vec![Edit { span, text }],
+        );
+    }
 }
 
 /// A hint with token patterns replaces the help of the emission site, which does not look at
