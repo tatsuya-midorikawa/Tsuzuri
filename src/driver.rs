@@ -5178,7 +5178,8 @@ fn build_complete(
         clang.arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
                 || dwarf_sidecar.is_some()
-                || ((options.wasm_threads || wasi_runtime) && options.emit == Emit::Object)
+                || ((options.wasm_threads || wasi_runtime || tzroutine_single)
+                    && options.emit == Emit::Object)
                 || (native_runtime && options.emit == Emit::Object && !merge_debug_ir)
             {
                 &object
@@ -5424,6 +5425,9 @@ fn build_complete(
         {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
             linker.arg("-r").arg(&object);
+            if options.target == Target::Wasm64 {
+                linker.arg("-mwasm64");
+            }
             if options.wasm_threads {
                 linker.arg(&threads_object);
             }
@@ -5438,7 +5442,7 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    "WASM threads and the WASI host require wasm-ld relocatable linking",
+                    "WASM threads, the WASI host and the one-thread channels require wasm-ld relocatable linking",
                 )?,
             );
         }

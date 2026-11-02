@@ -355,7 +355,7 @@ api.tsuzuri_free(out);
 
 COOP / COEP が使えないからといって、スレッド要求を黙って逐次実行へ置き換えないでください。WASI と threads、`--allocator host` と threads は、同時には指定できません。
 
-共有状態と `DataChannel`・`Channel` の型は、既定の wasm32 では import を増やしません（`Channel` は `src/runtime/tzroutine.c` を 1 本の実行向けに作ったものが入ります。待つべき操作はその場でトラップします。`--wasm-feature threads` では `Channel` は `E2000` で、`DataChannel` を使います）。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Task.scope` の子どもは `index` の昇順の逐次実行で、`DataChannel` の操作はモジュールの中の IR です（満たされない待ちはその場でトラップします）。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Task.scope` の子どもは Workers で動きます。`Mutex` と `DataChannel` も使えます。
+共有状態と `DataChannel`・`Channel` の型は、既定の wasm32 では import を増やしません（`Channel` は `src/runtime/tzroutine.c` を 1 本の実行向けに作ったものが入ります。`--emit object` でもオブジェクトに入り、wasm64 では wasm64 として連結します。待つべき操作はその場でトラップします。`--wasm-feature threads` では `Channel` は `E2000` で、`DataChannel` を使います）。`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグ、`Task.scope` の子どもは `index` の昇順の逐次実行で、`DataChannel` の操作はモジュールの中の IR です（満たされない待ちはその場でトラップします）。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令（`i64.atomic.rmw.add` など）になり、`Task.scope` の子どもは Workers で動きます。`Mutex` と `DataChannel` も使えます。
 
 - ランタイムは `task-wasm-threads.c` の C で、`tsuzuri_mutex_lock`・`tsuzuri_mutex_unlock`・`tsuzuri_mutex_parallel_ok`・`tsuzuri_mutex_wait_ok` と `tsuzuri_channel_send`・`recv`・`clone_sender`・`close` を定義します。import は増えず、ホストのグルー（`wasm-threads.mjs`、`bindings-threads.mjs`）は変わりません。
 - `Mutex` のロックの語は、セルの先頭にあります（0 解放、1 保持、2 保持して待ちがいる）。待つスレッドは、プール共有の `epoch` の語で `memory.atomic.wait32` します。ロックを解放して待ちがいたとき、`epoch` を進めて全員を起こします。ホストが失敗を伝えるときも、同じ語を進めて起こすので、ロックを待つスレッドも、失敗したプールでは待ち続けずにトラップします。

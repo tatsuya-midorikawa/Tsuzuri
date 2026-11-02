@@ -293,6 +293,9 @@ pub struct Detail {
     pub found: Option<String>,
     pub candidates: Vec<Candidate>,
     pub scope: Vec<ScopeEntry>,
+    /// The builtin whose argument a mismatch is about, for a hint that must know the function
+    /// (TZ03: `Channel.recv` given an end of a DataChannel). Not written to JSON.
+    pub builtin: Option<&'static str>,
 }
 
 /// Finds the path and text of the source that a `Span::source` index names.

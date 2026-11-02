@@ -10939,8 +10939,25 @@ impl<'a> Checker<'a> {
         argument: &Expr,
         parameter: &Type,
         from: usize,
-        error: Option<&mut Diagnostic>,
+        mut error: Option<&mut Diagnostic>,
     ) {
+        // A mismatch of a builtin's argument names the builtin, for the hints that must know
+        // which function it is.
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind {
+            let builtin = instance.builtin.name();
+            let tails = tail_spans(argument);
+            let mark = |diagnostic: &mut Diagnostic| {
+                if diagnostic.code == "E1003" && tails.contains(&diagnostic.span) {
+                    diagnostic.detail.builtin = Some(builtin);
+                }
+            };
+            for diagnostic in self.recovered.iter_mut().skip(from) {
+                mark(diagnostic);
+            }
+            if let Some(diagnostic) = &mut error {
+                mark(diagnostic);
+            }
+        }
         if let Some((message, span)) = self.declared_parameter(callee, index) {
             self.expected_because(
                 error,

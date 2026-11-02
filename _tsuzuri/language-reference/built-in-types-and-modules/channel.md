@@ -197,7 +197,7 @@ fn push ch data =
 error[E1013]: a channel item cannot hold a borrow, including a borrowed function environment: it is received later, perhaps after the borrowed data is gone; send an owned value, or a function that captures a copy, or an Owned.Function built where it is sent
 ```
 
-要素の型が借用を持ちうる（関数値を含む）ときは、`Channel.send ch` のような部分適用や関数値にすることも `E1013`（`Channel.send must be fully applied directly when its item may hold a borrow, ...`。`try_send` では `Channel.try_send ...`）です。受け取った要素は借用を持たず、チャンネルを借りてもいません。
+要素の型が借用を持ちうる（関数値を含む）ときは、`Channel.send ch` のような部分適用や関数値にすることも `E1013`（`Channel.send must be fully applied directly when its item may hold a borrow, ...`。`try_send` では `Channel.try_send ...`）です。受け取った要素は借用を持たず、チャンネルを借りてもいません。要素の型が借用を持たないときの部分適用 `Channel.try_send ch` は、`ch` を借りる関数です（`ch` の有効範囲の外へは出せません。`E1013`）。
 
 ## 向きのあるハンドル
 
