@@ -72,6 +72,7 @@ pub(crate) fn annotate(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
 /// mismatch of the builtin's own argument counts (the checker names it): a function `recv` of a
 /// module `Channel` of the program keeps its `E1003`.
 fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
+    let mut lexed: BTreeMap<usize, Vec<Token>> = BTreeMap::new();
     for diagnostic in &mut set.diagnostics {
         if diagnostic.kind != Some("type_mismatch") {
             continue;
@@ -111,34 +112,41 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
         else {
             continue;
         };
-        // The callee as written, also after `|>`: `Channel.recv`, or `std::Channel.recv`; the
-        // span of `(Channel.recv)` holds its parentheses.
-        let (mut start, mut end) = (callee.start, callee.end);
-        while let Some(written) = input.text.get(start..end) {
-            let inner = written.trim();
-            start += written.len() - written.trim_start().len();
-            end = start + inner.len();
-            if inner.len() >= 2 && inner.starts_with('(') && inner.ends_with(')') {
-                start += 1;
-                end -= 1;
-            } else {
-                break;
-            }
-        }
-        let Some(spelled) = input.text.get(start..end) else {
+        // The callee's tokens, whatever their spacing: `Channel.recv`, `Channel . recv`, a path
+        // before it (`std::Channel.recv`), and parentheses around it (its span holds those).
+        let tokens = lexed
+            .entry(source)
+            .or_insert_with(|| lexer::lex_all(input.text, input.edition).0);
+        let inside: Vec<&Token> = tokens
+            .iter()
+            .filter(|token| token.span.start >= callee.start && token.span.end <= callee.end)
+            .filter(|token| !matches!(token.kind, TokenKind::LeftParen | TokenKind::RightParen))
+            .collect();
+        let [path @ .., module, dot, name] = inside.as_slice() else {
             continue;
         };
-        let Some(prefix) = spelled.strip_suffix(builtin) else {
-            continue;
-        };
-        if !(prefix.is_empty() || prefix.ends_with("::")) {
+        let is = |token: &Token, text: &str| matches!(&token.kind, TokenKind::Ident(word) if word == text);
+        let qualified = path.len() % 2 == 0
+            && path.chunks(2).all(|pair| {
+                matches!(pair[0].kind, TokenKind::Ident(_))
+                    && matches!(pair[1].kind, TokenKind::PathSep)
+            });
+        if !qualified
+            || !is(module, "Channel")
+            || !matches!(dot.kind, TokenKind::Dot)
+            || !is(name, function)
+        {
             continue;
         }
-        let mut span = callee;
-        span.start = start;
-        span.end = end;
+        let mut span = path.first().unwrap_or(module).span;
+        span.end = name.span.end;
         span.source = Some(source);
-        let text = format!("{prefix}DataChannel.{function}");
+        // The name as written, with `DataChannel` for `Channel`.
+        let text = format!(
+            "{}DataChannel{}",
+            &input.text[span.start..module.span.start],
+            &input.text[module.span.end..span.end]
+        );
         let end = if function == "send" {
             "Sender"
         } else {
@@ -151,7 +159,7 @@ fn renamed_channel_calls(set: &mut DiagnosticSet, inputs: &[SourceInput<'_>]) {
         )
         .with_help("the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)")
         .fix(
-            format!("write '{text}'"),
+            format!("write 'DataChannel.{function}'"),
             Applicability::Certain,
             vec![Edit { span, text }],
         );
