@@ -4,6 +4,7 @@
 #include "../src/runtime/tzroutine.c"
 
 #include <assert.h>
+#include <fenv.h>
 #if !defined(_WIN32)
 #include <signal.h>
 #include <sys/wait.h>
@@ -495,12 +496,184 @@ static void test_long_sleep(void) {
     printf("long sleep: ok\n");
 }
 
+/* 17. each tzroutine keeps its own rounding mode across switches (MXCSR on x86-64, FPCR on
+ * aarch64), and a new one starts with round-to-nearest */
+static void fp_mode_routine(void *env) {
+    int mode = (int)(intptr_t)env;
+    CHECK(fegetround() == FE_TONEAREST);
+    CHECK(fesetround(mode) == 0);
+    for (int i = 0; i < 200; i++) {
+        tsuzuri_tz_yield();
+        CHECK(fegetround() == mode);
+    }
+    fesetround(FE_TONEAREST);
+}
+static void test_fp_mode(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 64; i++) tsuzuri_tz_go(fp_mode_routine, (void *)(intptr_t)(i % 2 ? FE_UPWARD : FE_TONEAREST));
+    join(scope);
+    printf("fp rounding modes: ok\n");
+}
+
+/* 18. a finite wake of more than 64 waiters wakes that many; the rest stay */
+static _Atomic uint64_t wake_word;
+static void wake_waiter(void *env) {
+    (void)env;
+    CHECK(tsuzuri_tz_addr_wait(&wake_word, 0) == 0);
+    atomic_fetch_add(&counter, 1);
+}
+static int64_t queued_waiters(void *addr) {
+    size_t b = tzr_bucket(addr);
+    int64_t n = 0;
+    tzr_lock_acquire(&tzr_buckets[b].lock);
+    for (tzr_waiter *w = tzr_buckets[b].first; w; w = w->next) n += w->addr == addr;
+    tzr_lock_release(&tzr_buckets[b].lock);
+    return n;
+}
+static void test_wake_many(void) {
+    atomic_store(&counter, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 200; i++) tsuzuri_tz_go(wake_waiter, NULL);
+    while (queued_waiters((void *)&wake_word) < 200) tsuzuri_tz_yield();
+    atomic_store(&wake_word, 1);
+    CHECK(tsuzuri_tz_addr_wake(&wake_word, 150) == 150);
+    CHECK(queued_waiters((void *)&wake_word) == 50);
+    CHECK(tsuzuri_tz_addr_wake(&wake_word, -1) == 50);
+    join(scope);
+    CHECK(atomic_load(&counter) == 200);
+    /* a WaitGroup counter that would pass INT64_MAX is an error, not an overflow (UBSan checks) */
+    _Atomic uint64_t group = 0;
+    CHECK(tsuzuri_tz_waitgroup_add(&group, INT64_MAX) == 0);
+    CHECK(tsuzuri_tz_waitgroup_add(&group, 1) == 1);
+    printf("wake many: ok\n");
+}
+
+/* 19. Routine.count is exact as soon as a join returns */
+static void test_count_after_join(void) {
+    for (int round = 0; round < 2000; round++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        for (int i = 0; i < 4; i++) tsuzuri_tz_go(incr, (void *)(intptr_t)1);
+        join(scope);
+        CHECK(tsuzuri_tz_count() == 1);
+    }
+    printf("count after join: ok\n");
+}
+
+/* 20. the deadlock detector sees the end of the last running thread and the last timer, and a
+ * select over many cases fits in a small stack (children with a watchdog) */
+static void watchdog_sleep(void) {
+#if defined(_WIN32)
+    Sleep(20000);
+#else
+    sleep(20);
+#endif
+}
+#if defined(_WIN32)
+static DWORD WINAPI watchdog(LPVOID arg) {
+    (void)arg;
+    watchdog_sleep();
+    _exit(97);
+}
+static void start_watchdog(void) { CloseHandle(CreateThread(NULL, 0, watchdog, NULL, 0, NULL)); }
+#else
+static void *watchdog(void *arg) {
+    (void)arg;
+    watchdog_sleep();
+    _exit(97);
+}
+static void start_watchdog(void) {
+    pthread_t thread;
+    pthread_create(&thread, NULL, watchdog, NULL);
+    pthread_detach(thread);
+}
+#endif
+static void *leaving_thread(void *arg) {
+    tsuzuri_tz_count(); /* becomes a pseudo-G, running */
+    (void)tzr_current();
+    atomic_store((_Atomic int *)arg, 1);
+    for (int i = 0; i < 100; i++) tsuzuri_tz_yield();
+    return NULL; /* its exit leaves only parked participants */
+}
+#if defined(_WIN32)
+static DWORD WINAPI leaving_entry(LPVOID arg) {
+    leaving_thread(arg);
+    return 0;
+}
+#endif
+static void exit_deadlock_body(void) {
+    start_watchdog();
+    tzr_chan *c = chan_make(8, 0);
+    _Atomic int started = 0;
+#if defined(_WIN32)
+    HANDLE thread = CreateThread(NULL, 0, leaving_entry, (void *)&started, 0, NULL);
+    CloseHandle(thread);
+#else
+    pthread_t thread;
+    pthread_create(&thread, NULL, leaving_thread, (void *)&started);
+    pthread_detach(thread);
+#endif
+    while (!atomic_load(&started)) tsuzuri_tz_yield();
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(blocked, c);
+    _exit(tsuzuri_tz_scope_leave(scope) == 1 ? 44 : 1);
+    (void)thread;
+}
+static void sleep_then_block(void *env) {
+    CHECK(tsuzuri_tz_sleep(5000000) == 0);
+    blocked(env);
+}
+static void timer_deadlock_body(void) {
+    start_watchdog();
+    tzr_chan *c = chan_make(8, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 8; i++) tsuzuri_tz_go(sleep_then_block, c);
+    _exit(tsuzuri_tz_scope_leave(scope) == 1 ? 45 : 1);
+}
+static void big_select_routine(void *env) {
+    (void)env;
+    int64_t n = 40000;
+    tzr_chan **channels = calloc((size_t)n, sizeof *channels);
+    tzr_scase *cases = calloc((size_t)n, sizeof *cases);
+    int64_t values[1];
+    for (int64_t i = 0; i < n; i++) {
+        channels[i] = chan_make(8, 1);
+        cases[i] = (tzr_scase){.c = channels[i], .elem = values};
+    }
+    int64_t one = 7;
+    CHECK(tsuzuri_tz_chan_send(channels[n / 2], &one, 0) == TZR_OK);
+    int32_t ok;
+    CHECK(tsuzuri_tz_select(cases, n, 1, &ok) == n / 2 && ok == 1 && values[0] == 7);
+    CHECK(tsuzuri_tz_select(cases, n, 0, &ok) == -1);
+    for (int64_t i = 0; i < n; i++) free(channels[i]);
+    free(channels);
+    free(cases);
+}
+static void big_select_body(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(big_select_routine, NULL);
+    join(scope);
+}
+static void test_detector(void) {
+    int s = run_child("child-exit-deadlock");
+    CHECK(exited_with(s, 44));
+    for (int i = 0; i < 4; i++) {
+        s = run_child("child-timer-deadlock");
+        CHECK(exited_with(s, 45));
+    }
+    s = run_child_with("child-big-select", "64"); /* 64 KiB stacks */
+    CHECK(exited_with(s, 0));
+    printf("detector and large select: ok\n");
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
     if (only && strcmp(only, "child-deadlock") == 0) deadlock_body();
     if (only && strcmp(only, "child-deadlock-scope") == 0) deadlock_scope_body();
     if (only && strcmp(only, "child-overflow") == 0) overflow_body();
+    if (only && strcmp(only, "child-exit-deadlock") == 0) exit_deadlock_body();
+    if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
+    if (only && strcmp(only, "child-big-select") == 0) { big_select_body(); return 0; }
     if (only && strcmp(only, "child-deep-100") == 0) { stack_body(100); return 0; }
     if (only && strcmp(only, "child-deep-900") == 0) { stack_body(900); return 0; }
     if (only && strcmp(only, "child-deep-3500") == 0) { stack_body(3500); return 0; }
@@ -522,6 +695,10 @@ int main(int argc, char **argv) {
     RUN("fp", test_fp());
     RUN("stack_size", test_stack_size());
     RUN("failures", test_failures());
+    RUN("fp_mode", test_fp_mode());
+    RUN("wake_many", test_wake_many());
+    RUN("count_after_join", test_count_after_join());
+    RUN("detector", test_detector());
     RUN("boundary", test_boundary());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
