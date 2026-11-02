@@ -299,6 +299,10 @@ pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
 /// C and the appended i128 helpers, whose frames total under 1 KiB.
 const STACK_CHECK_MARGIN: u32 = 4096;
 
+/// The start function of `Routine.go` (TZ02): runs the boxed owned function once, as `Owned.call`
+/// does (the environment is borrowed), then drops it and frees the box.
+const ROUTINE_OWNED_START: &str = "define internal void @tz.tzroutine.owned(ptr %box) {\nentry:\n  %closure = load %tz.closure, ptr %box\n  %desc = extractvalue %tz.closure %closure, 0\n  %code = load ptr, ptr %desc\n  %env = extractvalue %tz.closure %closure, 1\n  %unit = call i8 %code(i8 0, ptr %env, i1 true)\n  call void @tz.closure.drop(%tz.closure %closure)\n  call void @tz.free(ptr %box)\n  ret void\n}\n";
+
 /// Exports that the host calls after a trap, which can leave the stack pointer below the guard:
 /// the readers of the overflow report (A23). They only read globals, so they have no check.
 const UNCHECKED_STACK_EXPORTS: [&str; 2] = ["@tsuzuri_overflow_count(", "@tsuzuri_overflow_hit("];
@@ -1379,10 +1383,72 @@ fn emit_program(
     // The passes over the whole text run once, on the program that is kept: the text of a large
     // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
     // thrown away.
+    let output = if spawns(module) {
+        with_tzroutine_scopes(output, &tzroutine_boundaries(module))
+    } else {
+        output
+    };
     Ok((
         simd::with_vector_alignment(unique_declarations(limit_worker_inlining(output))),
         marks,
     ))
+}
+
+/// The functions that a host or a runner calls and that must not return before the tzroutines
+/// spawned in them have finished (D-61 decision 1): `tsuzuri_main`, the test and bench runners and
+/// every export. `@main` waits in `console_main`, before it prints the result.
+fn tzroutine_boundaries(module: &CheckedModule) -> BTreeSet<String> {
+    let mut boundaries: BTreeSet<String> =
+        ["tsuzuri_main", "tsuzuri_test_run", "tsuzuri_bench_sample"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+    for function in module.functions.iter().filter(|function| function.exported) {
+        boundaries.insert(format!("tz_{}", function.name));
+    }
+    boundaries
+}
+
+/// Makes each of `boundaries` that the IR defines wait for its tzroutines (TZ02): a scope opens at
+/// the end of the `entry` block's label and every `ret` of the function leaves it first. A deadlock
+/// in the wait traps in `tsuzuri_tz_boundary_leave`.
+pub(crate) fn with_tzroutine_scopes(ir: String, boundaries: &BTreeSet<String>) -> String {
+    let mut output = String::with_capacity(ir.len() + 256);
+    let mut lines = ir.split_inclusive('\n');
+    let mut wrapped = false;
+    while let Some(line) = lines.next() {
+        output.push_str(line);
+        let header = line.trim_end();
+        let boundary = header.starts_with("define ")
+            && header.ends_with('{')
+            && header.split_once('@').is_some_and(|(_, rest)| {
+                rest.split_once('(')
+                    .is_some_and(|(name, _)| boundaries.contains(name))
+            });
+        if !boundary {
+            continue;
+        }
+        wrapped = true;
+        let Some(label) = lines.next() else { break };
+        output.push_str(label);
+        output.push_str("  %tz.scope = call ptr @tsuzuri_tz_scope_enter()\n");
+        for line in lines.by_ref() {
+            let body = line.trim_start();
+            if body.starts_with("ret ") || body.trim_end() == "ret void" {
+                output.push_str("  call void @tsuzuri_tz_boundary_leave(ptr %tz.scope)\n");
+            }
+            output.push_str(line);
+            if line.trim_end() == "}" {
+                break;
+            }
+        }
+    }
+    if wrapped {
+        output.push_str(
+            "declare ptr @tsuzuri_tz_scope_enter()\ndeclare void @tsuzuri_tz_boundary_leave(ptr)\n",
+        );
+    }
+    output
 }
 
 /// Emits the program once, up to the passes over its whole text. `exhausted` tells whether a worker
@@ -1787,7 +1853,7 @@ fn emit_program_in(
     }
     if entry == Entry::Console {
         output.push_str(&debug::wrapper(
-            console_main(module, uses_args),
+            console_main(module, uses_args, spawns(module)),
             module,
             &module.functions[module.entry.unwrap()],
             "@main",
@@ -3982,6 +4048,28 @@ pub fn reaches_net(module: &CheckedModule) -> bool {
 
 /// Whether the program can reach `Async.block_on`, whose native runtime defines
 /// `tsuzuri_async_post`.
+/// Whether the program can start a tzroutine (TZ02): a user function (tests and benches included)
+/// or a std function that the program reaches holds a `tzroutine { }` or refers to a builtin that
+/// spawns (`Builtin::spawns`). Only then do the boundaries wait for the tzroutines spawned in them,
+/// so the IR of every other program stays the same.
+pub fn spawns(module: &CheckedModule) -> bool {
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && expression_spawns(&function.body)
+    })
+}
+
+fn expression_spawns(expression: &TypedExpr) -> bool {
+    match &expression.kind {
+        TypedExprKind::RoutineGo(_) => true,
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin.spawns() => {
+            true
+        }
+        _ => expression.children().into_iter().any(expression_spawns),
+    }
+}
+
 pub fn reaches_reactor(module: &CheckedModule) -> bool {
     let reachable = reachable_functions(module, None, false);
     module
@@ -5431,6 +5519,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     self.ty(&expression.ty)
                 ))
             }
+            TypedExprKind::RoutineGo(task) => self.routine_go(task),
             TypedExprKind::TaskParallel(tasks) => self.parallel_tasks(tasks, &expression.ty),
             TypedExprKind::TaskParallelResults(tasks) => {
                 self.parallel_result_tasks(tasks, &expression.ty)
@@ -6479,6 +6568,75 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         ));
         self.instruction(format!("call void @tz.free(ptr {source})"));
         array
+    }
+
+    /// `tzroutine { body }` (TZ02): moves the captures into the closure of the lifted `Task<unit>`
+    /// body and hands it to the runtime, which runs it once on a tzroutine and returns at once. The
+    /// task's adapter returns the `i8` of `unit` and frees the environment, and the runtime calls a
+    /// `void (ptr)`, so each site has a start function that forwards to its adapter.
+    fn routine_go(&mut self, task: &TypedExpr) -> String {
+        let closure = self.expression(task);
+        let (code, environment) = self.closure_parts(&closure);
+        // The lowering turns every lambda into a `Closure` of its lifted function; anything else
+        // would still run through the adapter it points to.
+        let start = if let TypedExprKind::Closure(id, captures) = &task.kind {
+            let name = self.module.functions[*id].qualified_name();
+            let count = captures.len();
+            self.intrinsics.insert(format!(
+                "define internal void @tz.tzroutine.start.{name}.{count}(ptr %env) {{\nentry:\n  %unit = call i8 @tz.apply.{name}.{count}(ptr %env)\n  ret void\n}}\n"
+            ));
+            format!("@tz.tzroutine.start.{name}.{count}")
+        } else {
+            code
+        };
+        self.intrinsics
+            .insert("declare void @tsuzuri_tz_go(ptr, ptr)".into());
+        self.instruction(format!(
+            "call void @tsuzuri_tz_go(ptr {start}, ptr {environment})"
+        ));
+        "0".into()
+    }
+
+    /// The `Routine` builtins (TZ02). `Routine.go` boxes the owned function's closure for
+    /// `@tz.tzroutine.owned`, which calls it once with the environment borrowed (as `Owned.call`),
+    /// then drops the closure and frees the box.
+    fn routine_builtin(&mut self, builtin: Builtin, ty: &Type) -> String {
+        let (declaration, call) = match builtin {
+            Builtin::RoutineGo => {
+                let Type::Function(parameters, _) = ty else {
+                    unreachable!("builtin has function type")
+                };
+                let owned = self.ty(&parameters[0]);
+                let closure = self.value(format!("extractvalue {owned} %arg0, 0"));
+                let slot = self.value("call ptr @tz.alloc(i64 16)");
+                self.instruction(format!("store %tz.closure {closure}, ptr {slot}"));
+                self.intrinsics.insert(ROUTINE_OWNED_START.into());
+                self.intrinsics
+                    .insert("declare void @tsuzuri_tz_go(ptr, ptr)".into());
+                self.instruction(format!(
+                    "call void @tsuzuri_tz_go(ptr @tz.tzroutine.owned, ptr {slot})"
+                ));
+                return "0".into();
+            }
+            Builtin::RoutineYield => {
+                self.intrinsics
+                    .insert("declare void @tsuzuri_tz_yield()".into());
+                self.instruction("call void @tsuzuri_tz_yield()");
+                return "0".into();
+            }
+            Builtin::RoutineCount => ("declare i64 @tsuzuri_tz_count()", "@tsuzuri_tz_count"),
+            Builtin::RoutineMaxProcs => (
+                "declare i64 @tsuzuri_tz_max_procs()",
+                "@tsuzuri_tz_max_procs",
+            ),
+            Builtin::RoutineCpuCount => (
+                "declare i64 @tsuzuri_tz_cpu_count()",
+                "@tsuzuri_tz_cpu_count",
+            ),
+            _ => unreachable!("not a Routine builtin"),
+        };
+        self.intrinsics.insert(declaration.into());
+        self.value(format!("call i64 {call}()"))
     }
 
     /// The code pointer and the environment of the function value `closure`. The code is the first
@@ -7735,6 +7893,9 @@ fn emit_builtin(
         builtin if builtin.shared_kind().is_some() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
+        builtin if builtin.is_routine() => {
+            emit_typed_builtin(instance, ty, module, intrinsics, globals)
+        }
         builtin
             if builtin.is_atomic()
                 || builtin.is_channel()
@@ -7865,6 +8026,8 @@ fn emit_typed_builtin(
         "0".to_owned()
     } else if instance.builtin == Builtin::Not {
         emitter.value("xor i1 %arg0, 1")
+    } else if instance.builtin.is_routine() {
+        emitter.routine_builtin(instance.builtin, ty)
     } else if instance.builtin == Builtin::OwnedFunction {
         let owned = emitter.ty(&ty.after_arguments(1));
         emitter.value(format!(
@@ -9076,7 +9239,9 @@ fn test_builtin(
 
 /// The C `main` of a `def main` entry, which returns `main`'s value as the exit code.
 /// `Array<string> -> i32` receives the arguments that `src/runtime/arguments.c` reads.
-fn console_def_main(module: &CheckedModule, uses_args: bool) -> String {
+/// `@main` for a `def main`. When the program spawns (TZ02), it waits for the tzroutines spawned
+/// during `main` before it returns the exit code.
+fn console_def_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> String {
     let main = &module.functions[module.entry.unwrap()];
     let mut body = String::new();
     if uses_args {
@@ -9097,13 +9262,28 @@ fn console_def_main(module: &CheckedModule, uses_args: bool) -> String {
     } else {
         "i32 %argc, ptr %argv"
     };
+    let (enter, leave) = if spawns {
+        (TZROUTINE_SCOPE_ENTER, TZROUTINE_SCOPE_LEAVE)
+    } else {
+        ("", "")
+    };
     let _ = write!(
         output,
-        "define i32 @main({parameters}) {{\nentry:\n{body}  %code = call i32 @tz.fn.{}({argument})\n  ret i32 %code\n}}\n",
+        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}  %code = call i32 @tz.fn.{}({argument})\n{leave}  ret i32 %code\n}}\n",
         main.qualified_name()
     );
+    if spawns {
+        output.push_str(TZROUTINE_SCOPE_DECLARATIONS);
+    }
     output
 }
+
+/// The wait of a console `@main` for its tzroutines (TZ02): it opens at the entry and closes right
+/// after the entry function returns, before the result is printed.
+const TZROUTINE_SCOPE_ENTER: &str = "  %tz.scope = call ptr @tsuzuri_tz_scope_enter()\n";
+const TZROUTINE_SCOPE_LEAVE: &str = "  call void @tsuzuri_tz_boundary_leave(ptr %tz.scope)\n";
+const TZROUTINE_SCOPE_DECLARATIONS: &str =
+    "declare ptr @tsuzuri_tz_scope_enter()\ndeclare void @tsuzuri_tz_boundary_leave(ptr)\n";
 
 /// The `tsuzuri_main` that a host calls to run a `def main` from a library or a WASM
 /// module. A WASI module reads its arguments in `src/runtime/arguments.c`, which replaces the
@@ -9138,9 +9318,9 @@ fn library_def_main(module: &CheckedModule, wasm: bool) -> String {
     output
 }
 
-fn console_main(module: &CheckedModule, uses_args: bool) -> String {
+fn console_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> String {
     if main_entry(module) {
-        return console_def_main(module, uses_args);
+        return console_def_main(module, uses_args, spawns);
     }
     if io_entry(module) {
         if uses_args {
@@ -9160,12 +9340,21 @@ fn console_main(module: &CheckedModule, uses_args: bool) -> String {
     if *ty != Type::Unit {
         output.push_str(include_str!("runtime/console.ll"));
     }
+    let enter = if spawns {
+        output.push_str(TZROUTINE_SCOPE_DECLARATIONS);
+        TZROUTINE_SCOPE_ENTER
+    } else {
+        ""
+    };
     let _ = writeln!(
         output,
-        "define i32 @main() {{\nentry:\n  %result = call {} @tz.fn.{}()",
+        "define i32 @main() {{\nentry:\n{enter}  %result = call {} @tz.fn.{}()",
         llvm_type(ty, module),
         main.qualified_name()
     );
+    if spawns {
+        output.push_str(TZROUTINE_SCOPE_LEAVE);
+    }
     match ty {
         Type::Char | Type::Utf8Char => {
             output.push_str("  %buffer = alloca [4 x i8], align 4\n");

@@ -233,6 +233,7 @@ fn collect_locals<'a>(
         | HostCall(..)
         | Closure(..)
         | TaskRun(_)
+        | RoutineGo(_)
         | TaskParallel(_)
         | TaskParallelResults(_)
         | If { .. }
@@ -634,6 +635,7 @@ impl TypeReferences<'_> {
             Unary(_, value)
             | Lambda(_, value)
             | Task(value)
+            | Routine(value)
             | TaskRun(value)
             | ComputationBoundary(value)
             | Checked(value)

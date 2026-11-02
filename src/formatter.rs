@@ -981,6 +981,7 @@ impl Canonical {
             }
             Unary(_, value)
             | Task(value)
+            | Routine(value)
             | TaskRun(value)
             | ComputationBoundary(value)
             | Checked(value)

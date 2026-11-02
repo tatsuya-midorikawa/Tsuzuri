@@ -18,7 +18,7 @@ const clang = process.env.TSUZURI_CLANG ?? "clang";
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-tzroutine-"));
 const source = "tests/tzroutine_runtime.c";
 const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", "waitgroup", "sleep",
-  "external", "deep", "fp", "stack_size", "failures", "long_sleep"];
+  "external", "deep", "fp", "stack_size", "failures", "boundary", "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows
   ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"]

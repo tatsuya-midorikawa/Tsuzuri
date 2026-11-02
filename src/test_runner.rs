@@ -605,6 +605,18 @@ pub fn build_debug_runner(
     })
 }
 
+/// TZ02: the tzroutine runtime switches stacks on aarch64 and x86-64 under POSIX and Windows.
+fn tzroutine_platform(platform: Platform) -> Result<(), Diagnostic> {
+    if platform.threads() && matches!(platform.arch_name(), "aarch64" | "x86_64") {
+        Ok(())
+    } else {
+        Err(driver_error_of(
+            DiagnosticKind::ToolchainMissingFeature,
+            "tzroutine requires a POSIX or Windows toolchain on aarch64 or x86-64",
+        ))
+    }
+}
+
 /// The C sources of a native test runner for its IR `text`: the entry and the runtimes that the
 /// IR declares. A test may build IO actions without running them; their primitives still need
 /// the runtime.
@@ -628,6 +640,13 @@ fn native_runtime_sources(
             ));
         }
         sources.push(("task.c", crate::driver::task_runtime_source_for(platform)));
+    }
+    if text.contains("@tsuzuri_tz_") {
+        tzroutine_platform(platform)?;
+        sources.push((
+            "tzroutine.c",
+            crate::driver::tzroutine_runtime_source_for(platform),
+        ));
     }
     if text.contains("declare i64 @tsuzuri_os_") {
         if !platform.os_apis() {
@@ -796,6 +815,13 @@ fn build_runner(
             overflow_fails,
         });
     }
+    // TZ02: the tzroutines of WebAssembly will suspend through JSPI (TZ09).
+    if text.contains("@tsuzuri_tz_") {
+        return Err(driver_error_of(
+            DiagnosticKind::OptionRequiresOption,
+            "tzroutine on WebAssembly needs --wasm-feature jspi",
+        ));
+    }
     // WebAssembly cannot write the report: the Node runner reads the hits and writes the lines of
     // the side table.
     let overflow_table = match (&overflow, &options.overflow) {
@@ -947,6 +973,11 @@ fn compile_native_runner(
             "native parallel tasks require POSIX or Windows threads",
         ));
     }
+    // TZ02: a test that spawns waits for its tzroutines in the scheduler of src/runtime/tzroutine.c.
+    let tzroutine_runtime = text.contains("@tsuzuri_tz_");
+    if tzroutine_runtime {
+        tzroutine_platform(platform)?;
+    }
     // A test may build IO actions without running them; their primitives still need the runtime.
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
     let net_runtime = llvm::uses_net(&text);
@@ -1044,7 +1075,16 @@ fn compile_native_runner(
             clang.arg(&runtime);
         }
     }
-    if (async_runtime || net_runtime || gpu_runtime || trap_runtime)
+    if tzroutine_runtime {
+        let runtime = directory.join("tzroutine.c");
+        fs::write(
+            &runtime,
+            crate::driver::tzroutine_runtime_source_for(platform),
+        )
+        .map_err(|error| io_error("write tzroutine runtime", &runtime, error))?;
+        clang.arg(&runtime);
+    }
+    if (async_runtime || net_runtime || gpu_runtime || trap_runtime || tzroutine_runtime)
         && !task_runtime
         && !platform.windows()
     {

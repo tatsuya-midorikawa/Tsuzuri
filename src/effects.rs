@@ -563,6 +563,11 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         }
         // B24
         ParallelForEachChunk => facts(Some(Effect::Task), true, true, false, true, false, None),
+        // TZ02: `Routine.go` spawns a tzroutine that calls the owned function it takes.
+        RoutineGo => facts(Some(Effect::Task), true, false, false, true, false, None),
+        RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
+            facts(Some(Effect::Task), false, false, false, false, false, None)
+        }
         // B25
         AtomicLoad
         | AtomicStore
@@ -1660,6 +1665,11 @@ impl<'s, 'a> Scan<'s, 'a> {
             K::TaskParallel(_) | K::TaskParallelResults(_) => {
                 self.source(Effect::Task, span, "task");
                 self.source(Effect::Alloc, span, "task");
+                false
+            }
+            K::RoutineGo(_) => {
+                self.source(Effect::Task, span, "tzroutine");
+                self.source(Effect::Alloc, span, "tzroutine");
                 false
             }
             K::Parallel(builtin, arguments) => {
@@ -3426,8 +3436,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 260);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 92);
+        assert_eq!(Builtin::ALL.len(), 265);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 97);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 168);
     }
 
@@ -3437,7 +3447,7 @@ mod tests {
         assert_eq!(by(Effect::Io), 10);
         assert_eq!(by(Effect::Os), 12);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 10);
+        assert_eq!(by(Effect::Task), 15);
         assert_eq!(by(Effect::Atomic), 21);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
@@ -3447,7 +3457,7 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 59);
+        assert_eq!(count(|facts| facts.alloc), 60);
     }
 
     #[test]
@@ -3463,7 +3473,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 17);
+        assert_eq!(count(|facts| facts.callbacks), 18);
     }
 
     fn checked(source: &str) -> CheckedModule {

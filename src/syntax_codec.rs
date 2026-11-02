@@ -1797,6 +1797,10 @@ impl Wire for ExprKind {
                 out.tag("ExprKind", 46);
                 name.put(out)
             }
+            Routine(body) => {
+                out.tag("ExprKind", 47);
+                body.put(out)
+            }
         }
     }
 
@@ -1954,7 +1958,8 @@ impl Wire for ExprKind {
                 })
             }),
             46 => variant(input, |input| Ok(Hole(Option::<Ident>::get(input)?))),
-            47..=u8::MAX => Err(Invalid),
+            47 => variant(input, |input| Ok(Routine(Box::get(input)?))),
+            48..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -2604,6 +2609,7 @@ mod tests {
         );
         seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
         seen.extend(round_trips("let hole = f ?a ?\nhole\n", 0).unwrap());
+        seen.extend(round_trips("tzroutine {\n    ()\n}\n", 0).unwrap());
         seen.extend(
             round_trips(
                 "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
@@ -2650,7 +2656,7 @@ mod tests {
             ("Kind", 2),
             ("TypeExprKind", 18),
             ("StringLiteral", 2),
-            ("ExprKind", 47),
+            ("ExprKind", 48),
             ("PatternKind", 14),
             ("ComputationStatementKind", 9),
             ("SourceKind", 0),

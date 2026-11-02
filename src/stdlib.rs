@@ -120,6 +120,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Domain",
     "Monoid",
     "Monoids",
+    "Routine",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -659,7 +660,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 59);
+        assert_eq!(RESERVED_MODULES.len(), 60);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

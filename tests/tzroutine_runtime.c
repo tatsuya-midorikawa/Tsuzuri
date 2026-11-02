@@ -469,6 +469,18 @@ static void test_fp(void) {
     printf("fp registers: ok\n");
 }
 
+/* 16. the end of a boundary (TZ02): an empty scope returns at once, a full one after its tzroutines */
+static void test_boundary(void) {
+    tsuzuri_tz_boundary_leave(tsuzuri_tz_scope_enter());
+    atomic_store(&counter, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 100; i++) tsuzuri_tz_go(incr, (void *)(intptr_t)1);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&counter) == 100);
+    CHECK(tsuzuri_tz_count() == 1);
+    printf("boundary: ok\n");
+}
+
 /* 15. a sleep whose deadline saturates at INT64_MAX, next to short ones: the timer thread then
  * waits for at most a day at a time instead of computing a deadline that overflows (UBSan checks) */
 static void forever_sleeper(void *env) {
@@ -510,6 +522,7 @@ int main(int argc, char **argv) {
     RUN("fp", test_fp());
     RUN("stack_size", test_stack_size());
     RUN("failures", test_failures());
+    RUN("boundary", test_boundary());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

@@ -348,6 +348,7 @@ pub(super) fn validate_function(
             | K::TypeFunction { .. }
             | K::HostCall(..)
             | K::TaskRun(_)
+            | K::RoutineGo(_)
             | K::TaskParallel(_)
             | K::TaskParallelResults(_)
             | K::Parallel(..)

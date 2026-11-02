@@ -334,13 +334,14 @@ pub const CPU_TARGETS: [(&str, u8); 5] = [
 
 /// Words that are keywords only in their own syntax and identifiers elsewhere. A builder alias
 /// (`@alias`) cannot take one of them.
-pub const CONTEXTUAL_KEYWORDS: [&str; 8] = [
+pub const CONTEXTUAL_KEYWORDS: [&str; 9] = [
     "finally",
     "is",
     "namespace",
     "of",
     "pure",
     "try",
+    "tzroutine",
     "using",
     "where",
 ];
@@ -853,6 +854,7 @@ impl Expr {
             Unary(_, value)
             | Lambda(_, value)
             | Task(value)
+            | Routine(value)
             | TaskRun(value)
             | ComputationBoundary(value)
             | Checked(value)
@@ -993,6 +995,7 @@ impl Expr {
             Unary(_, value)
             | Lambda(_, value)
             | Task(value)
+            | Routine(value)
             | TaskRun(value)
             | ComputationBoundary(value)
             | Checked(value)
@@ -1151,6 +1154,8 @@ pub enum ExprKind {
     Call(Box<Expr>, Vec<Expr>),
     Lambda(Vec<(Ident, bool)>, Box<Expr>),
     Task(Box<Expr>),
+    /// `tzroutine { body }`: spawns the block as a new tzroutine and returns `()` (TZ02).
+    Routine(Box<Expr>),
     TaskRun(Box<Expr>),
     Computation(Ident, Box<ComputationBlock>),
     ComputationBoundary(Box<Expr>),

@@ -1234,6 +1234,13 @@ TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
     return doomed;
 }
 
+/* The end of a boundary (main, an export call, a test, a bench sample): waits for the scope's
+ * tzroutines (TZ02). A deadlock is reported by tsuzuri_tz_scope_leave's detector; the boundary has no
+ * source position of its own, so it traps here. */
+TZR_API void tsuzuri_tz_boundary_leave(void *scope) {
+    if (tsuzuri_tz_scope_leave(scope)) __builtin_trap();
+}
+
 /* Routine.count: the tzroutines that exist, counting the caller's thread as one (Go counts main). */
 TZR_API int64_t tsuzuri_tz_count(void) { return atomic_load(&tzr_sched.ngoroutines) + 1; }
 
