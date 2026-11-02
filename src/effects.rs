@@ -565,14 +565,13 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ParallelForEachChunk => facts(Some(Effect::Task), true, true, false, true, false, None),
         // TZ02: `Routine.go` spawns a tzroutine that calls the owned function it takes.
         RoutineGo => facts(Some(Effect::Task), true, false, false, true, false, None),
-        // A yield inside `Mutex.with_lock` traps in a program that spawns.
-        RoutineYield => facts(Some(Effect::Task), false, true, false, false, false, None),
+        // TZ06: a yield inside `Mutex.with_lock` is allowed (the lock is the G's).
+        RoutineYield => facts(Some(Effect::Task), false, false, false, false, false, None),
         RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
             facts(Some(Effect::Task), false, false, false, false, false, None)
         }
-        // TZ05: the timers read the clock. A sleep inside `Mutex.with_lock` traps in a program that
-        // spawns, as a yield does; a period of 0 or less traps; a timer's channel is allocated.
-        TimeSleepNs => facts(Some(Effect::Os), false, true, false, false, false, None),
+        // TZ05: the timers read the clock; a period of 0 or less traps; a timer's channel is allocated.
+        TimeSleepNs => facts(Some(Effect::Os), false, false, false, false, false, None),
         TimeAfter | TimerCreate => facts(Some(Effect::Os), true, false, false, false, false, None),
         TimeTick | TickerCreate => facts(Some(Effect::Os), true, true, false, false, false, None),
         TimerReset => facts(Some(Effect::Os), false, false, false, false, false, None),
@@ -595,6 +594,31 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // The drop of an after_func's `Timer` drops the function that has not run.
         TimerFree | TickerFree => {
             facts(Some(Effect::Atomic), false, false, false, true, false, None)
+        }
+        // TZ06: the handles and cells of the sync types are allocated; a wait may last for ever
+        // and traps at a deadlock; a lock taken again, a negative counter and a weight out of range
+        // trap.
+        WaitGroupCreate | OnceCreate | OnceValueCreate | RwMutexCreate | CondCreate
+        | WaitGroupShare | OnceShare | CondShare | SemaphoreShare => {
+            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+        }
+        SemaphoreCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
+        WaitGroupWait | OnceBegin | SemaphoreAcquire => {
+            facts(Some(Effect::Atomic), false, true, true, false, false, None)
+        }
+        WaitGroupAdd | SemaphoreTryAcquire | SemaphoreRelease => {
+            facts(Some(Effect::Atomic), false, true, false, false, false, None)
+        }
+        OnceEnd | OnceDone | CondSignal | CondBroadcast | WaitGroupDrop | OnceDrop | CondDrop
+        | SemaphoreDrop | OnceValueIntoInner | RwMutexIntoInner => {
+            facts(Some(Effect::Atomic), false, false, false, false, false, None)
+        }
+        // A swap of two values in place.
+        SyncMapReplace => facts(None, false, false, false, false, false, None),
+        // Like `Routine.go`, after the count.
+        WaitGroupGo => facts(Some(Effect::Task), true, true, false, true, false, None),
+        OnceValueGet | RwMutexWithRead | RwMutexWithWrite | CondWaitWith => {
+            facts(Some(Effect::Atomic), false, true, true, true, false, None)
         }
         // B25
         AtomicLoad

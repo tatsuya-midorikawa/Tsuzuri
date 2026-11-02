@@ -20,7 +20,8 @@ const source = "tests/tzroutine_runtime.c";
 const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", "waitgroup", "sleep",
   "external", "deep", "fp", "stack_size", "failures", "fp_mode", "wake_many", "count_after_join", "detector",
   "starvation", "select_same", "boundary", "report", "blocking", "donor", "batches", "timer_channel", "timer_stop",
-  "ticker", "ticker_drop", "after_func", "boundary_timers", "sleep_ms_hook", "long_sleep"];
+  "ticker", "ticker_drop", "after_func", "boundary_timers", "sleep_ms_hook", "mutex32", "rwmutex", "once", "cond",
+  "semaphore", "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows
   ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"]
@@ -65,7 +66,9 @@ try {
     assert.equal(reported.status, 47);
     assert.deepEqual(reported.stderr.trim().split("\n"), ["send on closed Channel", "close of closed Channel",
       "negative WaitGroup counter", "Mutex.with_lock cannot be nested",
-      "a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section"]
+      "a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section",
+      "RwMutex cannot be locked again by the tzroutine that holds it", "Semaphore released more than it acquired",
+      "Semaphore weight is negative or larger than its capacity"]
       .map(message => `Tsuzuri runtime: ${message}`));
     const overflow = execute(guarded, ["child-overflow"], {}, false);
     assert.equal(overflow.signal, "SIGABRT", `${overflow.status} ${overflow.signal}\n${overflow.stderr}`);

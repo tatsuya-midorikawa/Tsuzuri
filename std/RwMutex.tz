@@ -1,0 +1,5 @@
+/// A value that many tzroutines read at once inside `RwMutex.with_read` and one at a time updates
+/// inside `RwMutex.with_write` (Go's `sync.RWMutex` with the value it guards, TZ06). The first part
+/// of the cell is the lock word of the runtime. Share it with `Arc<RwMutex<T>>`. It is not Copy and
+/// no function value can capture it.
+record RwMutex<'a> { cell: [(i64u * 'a)] }

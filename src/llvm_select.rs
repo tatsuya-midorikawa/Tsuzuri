@@ -187,7 +187,6 @@ impl FunctionEmitter<'_, '_> {
         }
         if wait.default.is_none() {
             // A select that waits is a wait (TZ02: never inside Mutex.with_lock).
-            self.routine_unlocked();
         }
         self.intrinsics
             .insert("declare i64 @tsuzuri_tz_select(ptr, i64, i32, ptr)".into());

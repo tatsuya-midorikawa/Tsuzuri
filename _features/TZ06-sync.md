@@ -13,6 +13,20 @@
 | 手本にする既存実装 | `std/Mutex.tz`・`std/Atomic.tz`（セルを配列に置く不透明な record）、`src/llvm_sync.rs` の `MutexCreate`・`MutexWith`・`MutexIntoInner`（60〜107 行）、`src/ownership.rs` の `Mutex.with_lock` の結果の借用の検査（`MutexResultRetainsBorrow`・`MustApplyDirectly`）、`Builtin::ArcGet` の型（借用を返す組み込み。`SharedOperation::Get`）、TZ01 の parking lot（`tsuzuri_tz_addr_wait`／`addr_wake`）・`tsuzuri_tz_mutex_*`・`tsuzuri_tz_waitgroup_*`、TZ03 の `Channel` のハンドルの作り（参照数・`share`・`Drop`） |
 | 主な影響ファイル | `std/WaitGroup.tz`・`std/RwMutex.tz`・`std/Once.tz`・`std/OnceValue.tz`・`std/Cond.tz`・`std/Semaphore.tz`・`std/SyncMap.tz`（新規）、`src/check.rs`・`src/llvm_sync.rs`・`src/llvm.rs`・`src/ownership.rs`・`src/stdlib.rs`・`src/effects.rs`・`src/pure_rules.rs`・`src/kg/effects.rs`・`src/capabilities.rs`・`src/diagram/concurrency.rs`・`src/runtime/tzroutine.c`・`tests/tzroutine_runtime.c`・`tests/sync_types.rs`（新規）・`tests/fixtures/sync_types/Main.tz`（新規）・`tests/tzroutine.mjs`・`tests/std_argument_order.rs`・`tests/std_examples.rs`・`vsc/src/core.ts`・文書 |
 
+## 着手時の再検討（2026-11-03、TZ05 の上）
+
+TZ02〜TZ05 の実装と照合し、次のとおり直してから実装した。以下が本文より優先する。
+
+1. **`tsuzuri_tz_report` の番号**: 5 は TZ02 が「`Mutex.with_lock` の中で yield・待ちはできない」に使った（`@tz.mutex.locked` の印）。番号は固定なので、新しい文は末尾の 6（`RwMutex cannot be locked again by the tzroutine that holds it`）・7（`Semaphore released more than it acquired`）・8（`Semaphore weight is negative or larger than its capacity`）に置く。5 の文は残す（このチケットの後、どのプログラムも出さない）。
+2. **TZ02・TZ03 のスレッドの印を新しいロックで置き換える**: tzroutine のランタイムを使うプログラムでは、`Mutex.with_lock` がランタイムのロックになり、ロックを持ったまま待てる（仕様 1）。そのため、TZ02・TZ03 が足した「スレッドの印 `@tz.mutex.locked` と、印があれば `Routine.yield`・`Channel.send`・`recv`・`select`・`Time.sleep` をトラップ（文 5）」は要らなくなり、消す。既存のテスト（`a_wait_inside_a_lock_traps_in_a_program_with_channels`・`tzroutine.mjs` の yield のトラップ）は、この仕様の変更（`mutex_hold_across_wait`）に合わせて期待を変える。`Domain.run` と `Task` の項目の守りが戻していた印は、新しい「G が持つロックの深さ」（`tsuzuri_tz_held_depth`・`tsuzuri_tz_held_restore`。トラップが残したロックを解放する）に置き換える。
+3. **持っているロックの一覧は G の記録**: 仕様の「生成コードの `alloca` の節」は、`Domain.run` がトラップから戻ったとき、その節のある frame が消えているので、解放に使えない。G（擬似 G を含む）が持つ配列（`malloc`。種類を下位ビットに持つ）にし、`tsuzuri_tz_mutex32_lock(word)` などは節を取らない。
+4. **`uses_tzroutine` は `llvm::waits` を広げたもの**: `waits`（spawn・`Channel`・`select`）に、TZ05 のタイマーとこのチケットの同期の型の組み込みを足す。`Routine.count` などだけのプログラムは含めない（ロックを替える理由がない）。`globals.tzroutine` に置く。
+5. **語は 64 bit**: 新しい型の語は 64 bit（既存の `tzr_addr_wait`）。32 bit は既存の `Mutex` のセル `(i32u * 'a)` だけで、parking lot の待ちに幅の引数を足す。`OnceValue` のセルは `(i64u * Maybe<'a>)`。
+6. **ハンドルは生成コードが作る**: `WaitGroup`・`Once`・`Cond`・`Semaphore` のブロック `{ refs, word }`（`Semaphore` は容量も持つ 24 バイト）は、生成コードが `@tz.alloc` で確保し、`share` と drop は IR の atomic の加減算と `@tz.free`（ランタイムは参照数に触れない。TZ05 の再検討 2 と同じ理由で `tsuzuri_alloc` を参照しない）。`tsuzuri_tz_handle_*` と `tsuzuri_tz_waitgroup_go` は作らない。`WaitGroup.done`・`WaitGroup.go`・`Once.call` は std の Tsuzuri で書く（`go` は `tzroutine { }` で、`Builtin::spawns` は std の関数の `tzroutine` を見る）。
+7. **既定の WebAssembly**: tzroutine を起動しないプログラムの新しい型は `TZR_SINGLE` で動く（待つべき操作はトラップ）。そのため `Mutex` も、tzroutine のランタイムを使うプログラムでは既定の WebAssembly でも新しいロック（`TZR_SINGLE` の 1 本の実行の版）にする（`Cond.wait_with` が同じ語の規則を使う）。使わないプログラムは今までどおり `sync-wasm.ll`。
+8. **`--trap-mode return`** は、`Channel` と同じく新しい同期の型とも組み合わせない（`E2000`）。トラップが残したロックや `Once` の状態を `trap.c` の境界は戻せない。
+9. **Drop の私的な組み込みの名前**: `Semaphore.release` は公開の関数なので、ハンドルの drop の組み込みは 4 つとも `__drop`（`WaitGroup.__drop` など）にする。
+
 ## 実装者向け早見
 
 - 範囲: Go の `sync`（`Mutex`・`RWMutex`・`WaitGroup`・`Once`・`OnceValue`・`Cond`・`Map`）と `x/sync/semaphore`。待つのは tzroutine だけ。値を守るロックは、値を持つ型（`Mutex<T>`・`RwMutex<T>`）で、ロックの中でだけ値に触れる（Go の `sync.Mutex` は値を持たないが、Tsuzuri は型で競合を拒むため）。

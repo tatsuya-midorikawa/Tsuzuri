@@ -14,7 +14,7 @@ impl FunctionEmitter<'_, '_> {
     /// The cell of an `Atomic` or `Mutex` that the shared borrow `reference` points to: the data
     /// pointer of the record's one-element array. The cell lives in the buffer, so it stays where
     /// it is however the record is copied or moved (F10 D3).
-    fn shared_cell(&mut self, record: &Type, reference: &str) -> String {
+    pub(super) fn shared_cell(&mut self, record: &Type, reference: &str) -> String {
         let record = self.ty(record);
         let field = self.value(format!(
             "getelementptr inbounds {record}, ptr {reference}, i32 0, i32 0"
@@ -89,17 +89,17 @@ impl FunctionEmitter<'_, '_> {
                 };
                 let tuple = Type::Tuple(vec![Type::Integer(32, false), value.clone()]);
                 let cell = self.shared_cell(record, "%arg0");
-                // The status is zero unless this thread holds a mutex already; the runtime has
-                // told the user why, and the trap goes through the usual path so that a
-                // boundary of `--trap-mode return` still catches it.
-                let status = self.value(format!("call i32 @tsuzuri_mutex_lock(ptr {cell})"));
-                let acquired = self.value(format!("icmp eq i32 {status}, 0"));
-                self.guard(&acquired, TrapKind::Assert);
-                // TZ02: the lock belongs to this thread; a tzroutine that would switch away, and a
-                // wait for a `Channel` (TZ03), trap.
-                if self.globals.waits {
-                    self.intrinsics.insert(super::MUTEX_LOCKED.into());
-                    self.instruction("call void @tz.mutex.mark(i32 1)");
+                // TZ06: a program that uses the tzroutine runtime locks with the runtime's lock,
+                // which belongs to the G: a holder may wait, and only the same mutex again traps.
+                if self.globals.tzroutine {
+                    self.runtime_lock("tsuzuri_tz_mutex32_lock", &cell, 4);
+                } else {
+                    // The status is zero unless this thread holds a mutex already; the runtime has
+                    // told the user why, and the trap goes through the usual path so that a
+                    // boundary of `--trap-mode return` still catches it.
+                    let status = self.value(format!("call i32 @tsuzuri_mutex_lock(ptr {cell})"));
+                    let acquired = self.value(format!("icmp eq i32 {status}, 0"));
+                    self.guard(&acquired, TrapKind::Assert);
                 }
                 let pointer = self.value(format!(
                     "getelementptr inbounds {}, ptr {cell}, i32 0, i32 1",
@@ -108,10 +108,11 @@ impl FunctionEmitter<'_, '_> {
                 let borrow = Type::Reference(Box::new(value), true);
                 let (output, _) =
                     self.apply_value("%arg1", &parameters[1], Some((&borrow, &pointer)), false);
-                if self.globals.waits {
-                    self.instruction("call void @tz.mutex.mark(i32 0)");
+                if self.globals.tzroutine {
+                    self.runtime_unlock("tsuzuri_tz_mutex32_unlock", &cell);
+                } else {
+                    self.instruction(format!("call void @tsuzuri_mutex_unlock(ptr {cell})"));
                 }
-                self.instruction(format!("call void @tsuzuri_mutex_unlock(ptr {cell})"));
                 output
             }
             _ => unreachable!("not an Atomic or Mutex builtin"),

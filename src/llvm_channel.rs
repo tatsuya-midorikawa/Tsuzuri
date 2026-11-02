@@ -31,7 +31,6 @@ impl FunctionEmitter<'_, '_> {
         };
         match operation {
             Builtin::ChannelSend => {
-                self.routine_unlocked();
                 declare(self, "declare i32 @tsuzuri_tz_chan_send(ptr, ptr, i32)");
                 let slot = self.spill(&item, "%arg1");
                 let status = self.value(format!(
@@ -41,7 +40,6 @@ impl FunctionEmitter<'_, '_> {
                 "0".to_owned()
             }
             Builtin::ChannelRecv => {
-                self.routine_unlocked();
                 declare(self, "declare i32 @tsuzuri_tz_chan_recv(ptr, ptr, i32)");
                 let slot = self.slot(&item);
                 let status = self.value(format!(
@@ -222,7 +220,7 @@ impl FunctionEmitter<'_, '_> {
 
     /// Traps unless the runtime's `status` is 0. A closed channel (1) first has the runtime write
     /// the message `report`; a deadlock (2) was reported by the detector.
-    fn channel_trap_unless_ok(&mut self, status: &str, report: u32) {
+    pub(super) fn channel_trap_unless_ok(&mut self, status: &str, report: u32) {
         self.intrinsics
             .insert("declare void @tsuzuri_tz_report(i32)".into());
         let closed = self.value(format!("icmp eq i32 {status}, 1"));

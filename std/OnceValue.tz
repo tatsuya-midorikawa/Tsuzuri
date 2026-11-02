@@ -1,0 +1,4 @@
+/// A value that a function makes once and every caller then borrows (Go's `sync.OnceValue`, TZ06).
+/// The first part of the cell is the state of the runtime; the value is in a `Maybe`. Share it
+/// with `Arc<OnceValue<T>>`. It is not Copy and no function value can capture it.
+record OnceValue<'a> { cell: [(i64u * Maybe<'a>)] }

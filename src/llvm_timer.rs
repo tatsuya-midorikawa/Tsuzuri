@@ -123,7 +123,6 @@ impl FunctionEmitter<'_, '_> {
             self.value(format!("call i64 @tsuzuri_os_sleep(i64 {milliseconds})"));
             return;
         }
-        self.routine_unlocked();
         self.intrinsics
             .insert("declare i32 @tsuzuri_tz_sleep(i64)".into());
         self.value("call i32 @tsuzuri_tz_sleep(i64 %arg0)");

@@ -577,6 +577,9 @@ pub(super) fn instrument_with(
                 // TZ02: the tzroutine runtime calls these as `void (*)(void *)`.
                 && !name.starts_with("@tz.tzroutine.start.")
                 && name.as_str() != "@tz.tzroutine.owned"
+                // TZ05 and TZ06: the timers and WaitGroup.go call these too.
+                && name.as_str() != "@tz.tzroutine.owned.drop"
+                && name.as_str() != "@tz.waitgroup.go"
         })
         .cloned()
         .collect();

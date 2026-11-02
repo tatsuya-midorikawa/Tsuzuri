@@ -1,0 +1,324 @@
+// TZ06: the sync types between tzroutines. Every export ends its boundary after its tzroutines.
+
+// The ticket's example: 0 + 1 + ... + (n - 1) under one Mutex, waited for with a WaitGroup.
+export def wait_group_sum :: i64 -> i64
+fn wait_group_sum n =
+    let group = WaitGroup.create ()
+    let total = Arc.new (Mutex.create 0i64)
+    for i in 0 ..< n do
+        WaitGroup.add (ref group) 1
+        let done = WaitGroup.share (ref group)
+        let mine = Arc.share (ref total)
+        tzroutine {
+            Mutex.with_lock (Arc.get (ref mine)) (\value -> deref value = deref value + i)
+            WaitGroup.done (ref done)
+        }
+    WaitGroup.wait (ref group)
+    Mutex.with_lock (Arc.get (ref total)) (\value -> deref value)
+
+// WaitGroup.go counts, runs and finishes each function itself.
+export def wait_group_go :: i64 -> i64
+fn wait_group_go n =
+    let group = WaitGroup.create ()
+    let total = Arc.new (Atomic.create 0i64)
+    for i in 1 ..= n do
+        let mine = Arc.share (ref total)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            let _old = Atomic.fetch_add (Arc.get (ref mine)) i;
+            ()
+        }))
+    WaitGroup.wait (ref group)
+    Atomic.load (Arc.get (ref total))
+
+// One done more than the count: the counter goes below zero.
+export def negative_counter :: i64
+fn negative_counter =
+    let group = WaitGroup.create ()
+    WaitGroup.add (ref group) 1
+    WaitGroup.done (ref group)
+    WaitGroup.done (ref group)
+    0
+
+// A tzroutine that holds a Mutex waits for a channel: the lock is the tzroutine's (the old Mutex trapped).
+export def mutex_hold_across_wait :: i64
+fn mutex_hold_across_wait =
+    let lock = Arc.new (Mutex.create 0i64)
+    let values: Channel<i64> = Channel.make 0
+    let sender = Channel.share values
+    tzroutine {
+        for i in 1 ..= 10 do
+            Channel.send sender i
+    }
+    let receiver = ref values
+    let received = Mutex.with_lock (Arc.get (ref lock)) (\value -> {
+        let mut sum = 0i64;
+        for _ in 1 ..= 10 do
+            sum = sum + (match Channel.recv receiver with
+                | Maybe.Some item -> item
+                | Maybe.None -> 0);
+        deref value = sum;
+        sum
+    })
+    received
+
+// The same Mutex again in the tzroutine that holds it.
+export def mutex_same_nested :: i64
+fn mutex_same_nested =
+    let lock = Mutex.create 1i64
+    let borrowed = ref lock
+    Mutex.with_lock borrowed (\_outer -> Mutex.with_lock borrowed (\inner -> deref inner))
+
+// Two Mutexes nested in the same order everywhere.
+export def mutex_different_nested :: i64
+fn mutex_different_nested =
+    let first = Arc.new (Mutex.create 0i64)
+    let second = Arc.new (Mutex.create 0i64)
+    let group = WaitGroup.create ()
+    for _ in 1 ..= 8 do
+        let a = Arc.share (ref first)
+        let b = Arc.share (ref second)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            for _ in 1 ..= 100 do
+                let inner = Arc.get (ref b);
+                Mutex.with_lock (Arc.get (ref a)) (\x -> {
+                    let added = Mutex.with_lock inner (\y -> {
+                        deref y = deref y + 2;
+                        1i64
+                    });
+                    deref x = deref x + added
+                });
+            ()
+        }))
+    WaitGroup.wait (ref group)
+    let x = Mutex.with_lock (Arc.get (ref first)) (\value -> deref value)
+    let y = Mutex.with_lock (Arc.get (ref second)) (\value -> deref value)
+    x + y
+
+// Two tzroutines take two Mutexes in the opposite orders, each after the other took its first one.
+export def mutex_order_deadlock :: i64
+fn mutex_order_deadlock =
+    let first = Arc.new (Mutex.create 0i64)
+    let second = Arc.new (Mutex.create 0i64)
+    let ready: Channel<unit> = Channel.make 0
+    let a1 = Arc.share (ref first)
+    let b1 = Arc.share (ref second)
+    let signal = Channel.share ready
+    tzroutine {
+        let told = ref signal
+        let inner = Arc.get (ref b1)
+        let _sum = Mutex.with_lock (Arc.get (ref a1)) (\_x -> {
+            Channel.send told ();
+            Mutex.with_lock inner (\y -> deref y)
+        })
+    }
+    let a2 = Arc.share (ref first)
+    let b2 = Arc.share (ref second)
+    let waiting = ref ready
+    let inner = Arc.get (ref a2)
+    Mutex.with_lock (Arc.get (ref b2)) (\_y -> {
+        let _ready = Channel.recv waiting;
+        Mutex.with_lock inner (\x -> deref x)
+    })
+
+// 32 tzroutines call one Once: the function runs once, and each sees it done when its call returns.
+export def once_once :: i64
+fn once_once =
+    let once = Once.create ()
+    let runs = Arc.new (Atomic.create 0i64)
+    let seen = Arc.new (Atomic.create 0i64)
+    let group = WaitGroup.create ()
+    for _ in 1 ..= 32 do
+        let mine = Once.share (ref once)
+        let counter = Arc.share (ref runs)
+        let after = Arc.share (ref seen)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            let counting = Arc.get (ref counter);
+            Once.call (ref mine) (\() -> {
+                for _ in 1 ..= 50 do
+                    Routine.yield ();
+                let _old = Atomic.fetch_add counting 1i64;
+                ()
+            });
+            if Once.done (ref mine) && Atomic.load (Arc.get (ref counter)) == 1i64 then {
+                let _old = Atomic.fetch_add (Arc.get (ref after)) 1i64;
+                ()
+            } else ()
+        }))
+    WaitGroup.wait (ref group)
+    Atomic.load (Arc.get (ref runs)) * 100 + Atomic.load (Arc.get (ref seen))
+
+// Every tzroutine reads the value that one OnceValue.get made.
+export def once_value :: i64
+fn once_value =
+    let cell: Arc<OnceValue<i64>> = Arc.new (OnceValue.create ())
+    let makes = Arc.new (Atomic.create 0i64)
+    let total = Arc.new (Atomic.create 0i64)
+    let group = WaitGroup.create ()
+    for i in 1 ..= 16 do
+        let mine = Arc.share (ref cell)
+        let made = Arc.share (ref makes)
+        let sum = Arc.share (ref total)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            let making = Arc.get (ref made);
+            let value = OnceValue.get (Arc.get (ref mine)) (\() -> {
+                let _old = Atomic.fetch_add making 1i64;
+                i * 0 + 7
+            });
+            let _old = Atomic.fetch_add (Arc.get (ref sum)) (deref value);
+            ()
+        }))
+    WaitGroup.wait (ref group)
+    Atomic.load (Arc.get (ref makes)) * 1000 + Atomic.load (Arc.get (ref total))
+
+// 8 readers and 2 writers of 1,000 rounds each: no reader while a writer writes; the final value.
+export def rw_readers :: i64
+fn rw_readers =
+    let lock = Arc.new (RwMutex.create 0i64)
+    let readers = Arc.new (Atomic.create 0i64)
+    let violations = Arc.new (Atomic.create 0i64)
+    let group = WaitGroup.create ()
+    for _ in 1 ..= 8 do
+        let mine = Arc.share (ref lock)
+        let inside = Arc.share (ref readers)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            let count = Arc.get (ref inside);
+            for round in 1 ..= 1000 do
+                RwMutex.with_read (Arc.get (ref mine)) (\value -> {
+                    let _in = Atomic.fetch_add count 1i64;
+                    if round % 64 == 0 then Routine.yield () else ();
+                    let _out = Atomic.fetch_sub count 1i64;
+                    deref value
+                });
+            ()
+        }))
+    for _ in 1 ..= 2 do
+        let mine = Arc.share (ref lock)
+        let inside = Arc.share (ref readers)
+        let wrong = Arc.share (ref violations)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            let count = Arc.get (ref inside);
+            let bad = Arc.get (ref wrong);
+            for round in 1 ..= 1000 do
+                RwMutex.with_write (Arc.get (ref mine)) (\value -> {
+                    if Atomic.load count != 0i64 then {
+                        let _bad = Atomic.fetch_add bad 1i64;
+                        ()
+                    } else ();
+                    if round % 64 == 0 then Routine.yield () else ();
+                    deref value = deref value + 1
+                });
+            ()
+        }))
+    WaitGroup.wait (ref group)
+    let value = RwMutex.with_read (Arc.get (ref lock)) (\value -> deref value)
+    value * 1000 + Atomic.load (Arc.get (ref violations))
+
+// The same RwMutex again inside its read lock.
+export def rw_nested :: i64
+fn rw_nested =
+    let lock = RwMutex.create 1i64
+    let borrowed = ref lock
+    RwMutex.with_read borrowed (\_outer -> RwMutex.with_read borrowed (\inner -> deref inner))
+
+// Phase 2: four consumers wait on a Cond until the queue (a count under a Mutex) is not empty; two
+// producers add 250 each and signal.
+export def cond_queue :: i64
+fn cond_queue =
+    let queue = Arc.new (Mutex.create 0i64)
+    let ready = Cond.create ()
+    let taken = Arc.new (Atomic.create 0i64)
+    let group = WaitGroup.create ()
+    for _ in 1 ..= 4 do
+        let mine = Arc.share (ref queue)
+        let wake = Cond.share (ref ready)
+        let count = Arc.share (ref taken)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            let counting = Arc.get (ref count);
+            for _ in 1 ..= 125 do
+                Cond.wait_with (ref wake) (Arc.get (ref mine)) (\items -> deref items > 0i64) (\items -> {
+                    deref items = deref items - 1;
+                    let _old = Atomic.fetch_add counting 1i64;
+                    ()
+                });
+            ()
+        }))
+    for producer in 1 ..= 2 do
+        let mine = Arc.share (ref queue)
+        let wake = Cond.share (ref ready)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            for i in 1 ..= 250 do
+                Mutex.with_lock (Arc.get (ref mine)) (\items -> deref items = deref items + 1);
+                if (i + producer) % 2 == 0 then Cond.signal (ref wake) else Cond.broadcast (ref wake);
+                if i % 16 == 0 then Routine.yield () else ();
+            ()
+        }))
+    WaitGroup.wait (ref group)
+    let left = Mutex.with_lock (Arc.get (ref queue)) (\items -> deref items)
+    Atomic.load (Arc.get (ref taken)) * 10 + left
+
+// Phase 2: a Semaphore of 3 and 20 tzroutines: at most 3 hold a weight at once.
+export def semaphore_limit :: i64
+fn semaphore_limit =
+    let slots = Semaphore.create 3
+    let inside = Arc.new (Atomic.create 0i64)
+    let most = Arc.new (Atomic.create 0i64)
+    let group = WaitGroup.create ()
+    for _ in 1 ..= 20 do
+        let mine = Semaphore.share (ref slots)
+        let now = Arc.share (ref inside)
+        let peak = Arc.share (ref most)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            for _ in 1 ..= 20 do
+                Semaphore.acquire (ref mine) 1;
+                let count = Atomic.fetch_add (Arc.get (ref now)) 1i64 + 1i64;
+                let mut seen = Atomic.load (Arc.get (ref peak));
+                while count > seen do
+                    seen = match Atomic.compare_exchange (Arc.get (ref peak)) seen count with
+                        | Result.Ok _ -> count
+                        | Result.Error current -> current;
+                Routine.yield ();
+                let _out = Atomic.fetch_sub (Arc.get (ref now)) 1i64;
+                Semaphore.release (ref mine) 1;
+            ()
+        }))
+    WaitGroup.wait (ref group)
+    let free = if Semaphore.try_acquire (ref slots) 3 then 1 else 0
+    let peak = Atomic.load (Arc.get (ref most))
+    (if peak <= 3i64 && peak >= 1i64 then 1 else 0) * 10 + free
+
+// A Semaphore released more than it acquired.
+export def semaphore_over :: i64
+fn semaphore_over =
+    let slots = Semaphore.create 2
+    Semaphore.release (ref slots) 1
+    0
+
+// A weight larger than the capacity.
+export def semaphore_weight :: i64
+fn semaphore_weight =
+    let slots = Semaphore.create 2
+    Semaphore.acquire (ref slots) 3
+    0
+
+// Phase 3: 8 tzroutines store 100 keys each in one SyncMap; every key is then there.
+export def sync_map :: i64
+fn sync_map =
+    let map: Arc<SyncMap<i64, i64>> = Arc.new (SyncMap.create ())
+    let group = WaitGroup.create ()
+    for worker in 0 ..< 8 do
+        let mine = Arc.share (ref map)
+        WaitGroup.go (ref group) (Owned.function (\() -> {
+            for i in 0 ..< 100 do
+                let key = worker * 100 + i;
+                SyncMap.store (Arc.get (ref mine)) key (key * 2);
+                if i % 32 == 0 then Routine.yield () else ();
+            ()
+        }))
+    WaitGroup.wait (ref group)
+    let shared = Arc.get (ref map)
+    let mut sum = 0i64
+    for key in 0 ..< 800 do
+        sum = sum + (match SyncMap.load shared (ref key) with
+            | Maybe.Some value -> value
+            | Maybe.None -> -1000000)
+    sum * 1000 + SyncMap.length shared

@@ -78,12 +78,13 @@ impl FunctionEmitter<'_, '_> {
         self.instruction(format!("store %tz.closure %arg0, ptr {closure_slot}"));
         // TZ02: a trap skips what the code between the domain and the trap would have undone: the
         // end of a batch of the task runtime (TZ03), the leave of a blocking call, the scope leave of
-        // a pool callback that ran on this thread, the mark of a Mutex.with_lock. In a program that
-        // waits, the domain goes back to how it was entered: the batches that this thread announced
-        // after the mark (the last batch number) first, so that the thread counts as running, then
-        // the blocking depth (it gives the M its P back), then the spawn scope of the G, then the
-        // mark. An item that trapped has set back its own thread already (`with_task_accounting`).
-        let saved = self.globals.waits.then(|| {
+        // a pool callback that ran on this thread, the unlock of a Mutex.with_lock (TZ06). In a
+        // program that uses the tzroutine runtime, the domain goes back to how it was entered: the
+        // batches that this thread announced after the mark (the last batch number) first, so that
+        // the thread counts as running, then the blocking depth (it gives the M its P back), then the
+        // spawn scope of the G, then the locks that the G took inside (released). An item that
+        // trapped has set back its own thread already (`with_task_accounting`).
+        let saved = self.globals.tzroutine.then(|| {
             for declaration in [
                 "declare i64 @tsuzuri_tz_parallel_mark()",
                 "declare void @tsuzuri_tz_parallel_reset(i64)",
@@ -91,14 +92,15 @@ impl FunctionEmitter<'_, '_> {
                 "declare void @tsuzuri_tz_block_restore(i32)",
                 "declare ptr @tsuzuri_tz_scope_current()",
                 "declare void @tsuzuri_tz_scope_reset(ptr)",
+                "declare i32 @tsuzuri_tz_held_depth()",
+                "declare void @tsuzuri_tz_held_restore(i32)",
             ] {
                 self.intrinsics.insert(declaration.into());
             }
-            self.intrinsics.insert(super::MUTEX_LOCKED.into());
             let batches = self.value("call i64 @tsuzuri_tz_parallel_mark()");
             let depth = self.value("call i32 @tsuzuri_tz_block_depth()");
             let scope = self.value("call ptr @tsuzuri_tz_scope_current()");
-            let held = self.value("call i32 @tz.mutex.held()");
+            let held = self.value("call i32 @tsuzuri_tz_held_depth()");
             (batches, depth, scope, held)
         });
         let status = self.value(format!(
@@ -110,7 +112,7 @@ impl FunctionEmitter<'_, '_> {
             ));
             self.instruction(format!("call void @tsuzuri_tz_block_restore(i32 {depth})"));
             self.instruction(format!("call void @tsuzuri_tz_scope_reset(ptr {scope})"));
-            self.instruction(format!("call void @tz.mutex.mark(i32 {held})"));
+            self.instruction(format!("call void @tsuzuri_tz_held_restore(i32 {held})"));
         }
         let output = self.spill(&result, "zeroinitializer");
         let success = self.value(format!("icmp eq i32 {status}, 0"));

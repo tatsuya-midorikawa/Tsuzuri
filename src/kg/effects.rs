@@ -26,7 +26,7 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         NetResolve | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify
         | NetWatch | NetUnwatch | NetConnect | NetNames | NetSend => Some("net"),
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
-        | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun | RoutineGo
+        | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun | RoutineGo | WaitGroupGo
         | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc => {
             Some("task")
         }
@@ -35,6 +35,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some("atomic")
         }
+        WaitGroupCreate | WaitGroupAdd | WaitGroupWait | WaitGroupShare | WaitGroupDrop | OnceCreate | OnceBegin | OnceEnd | OnceDone | OnceShare | OnceDrop | OnceValueCreate | OnceValueGet | OnceValueIntoInner | RwMutexCreate | RwMutexWithRead | RwMutexWithWrite | RwMutexIntoInner | CondCreate | CondWaitWith | CondSignal | CondBroadcast | CondShare | CondDrop | SemaphoreCreate | SemaphoreAcquire | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop => Some("atomic"),
+        SyncMapReplace => None,
         AtomicCreate
         | AtomicLoad
         | AtomicStore

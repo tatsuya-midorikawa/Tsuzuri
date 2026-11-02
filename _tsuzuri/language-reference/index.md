@@ -114,6 +114,11 @@
 - [Atomic](./built-in-types-and-modules/atomic.md)
 - [Mutex](./built-in-types-and-modules/mutex.md)
 - [Domain](./built-in-types-and-modules/domain.md) — 純粋な計算のトラップを `Result.Error` にする失敗の領域
+- [WaitGroup](./built-in-types-and-modules/waitgroup.md) — 終わりを待つ仕事の数（Go の `sync.WaitGroup`）
+- [Once](./built-in-types-and-modules/once.md)・[OnceValue](./built-in-types-and-modules/oncevalue.md) — 1 回だけの呼び出しと値
+- [RwMutex](./built-in-types-and-modules/rwmutex.md) — 読みを分け合うロック
+- [Cond](./built-in-types-and-modules/cond.md)・[Semaphore](./built-in-types-and-modules/semaphore.md) — 条件の待ちと重み付きのセマフォ
+- [SyncMap](./built-in-types-and-modules/syncmap.md) — 並行のマップ（Go の `sync.Map`）
 - [Channel](./built-in-types-and-modules/channel.md) — tzroutine の間の Go の双方向のチャンネル
 - [DataChannel](./built-in-types-and-modules/datachannel.md)
 - [Seq](./built-in-types-and-modules/seq.md)

@@ -3826,12 +3826,13 @@ fn build_complete(
             "--trap-mode return cannot be combined with tzroutine: a trap in one tzroutine cannot be returned from the call that spawned it",
         ));
     }
-    // TZ03: a trap that returns to the host skips the ends of the waits and the lock marks that
-    // the tzroutine runtime keeps for a Channel, and the boundary of trap.c cannot undo them.
-    if options.trap_return && llvm::waits(module) {
+    // TZ03: a trap that returns to the host skips the ends of the waits that the tzroutine runtime
+    // keeps for a Channel, and the boundary of trap.c cannot undo them; TZ06: nor the locks and the
+    // Once states of the sync types.
+    if options.trap_return && llvm::uses_tzroutine(module) {
         return Err(driver_error_of(
             DiagnosticKind::OptionConflict,
-            "--trap-mode return cannot be combined with Channel: a trap would leave the channel runtime's state of the call behind",
+            "--trap-mode return cannot be combined with Channel or the sync types of the tzroutine runtime (WaitGroup, Once, OnceValue, RwMutex, Cond, Semaphore, SyncMap): a trap would leave the runtime's state of the call behind",
         ));
     }
     if options.trap_return && !llvm::host_entries(module).is_empty() {

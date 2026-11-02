@@ -3168,6 +3168,27 @@ impl Checker<'_> {
             Builtin::TickerCreate | Builtin::TickerFree => Some("Ticker"),
             _ => None,
         };
+        // TZ06: what the std sources of the sync types build on.
+        let sync_module = match builtin {
+            Builtin::WaitGroupDrop => Some("WaitGroup"),
+            Builtin::OnceBegin | Builtin::OnceEnd | Builtin::OnceDrop => Some("Once"),
+            Builtin::CondDrop => Some("Cond"),
+            Builtin::SemaphoreDrop => Some("Semaphore"),
+            Builtin::SyncMapReplace => Some("SyncMap"),
+            _ => None,
+        };
+        if let Some(module) = sync_module
+            && !(self.module == module && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
+                format!(
+                    "{} is private to the standard {module} module; use its public API, and drop a handle to release it",
+                    builtin.name()
+                ),
+                span,
+            ));
+        }
         if let Some(module) = timer_module
             && !(self.module == module && self.names.origin(self.module) == ModuleOrigin::Std)
         {

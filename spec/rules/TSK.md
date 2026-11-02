@@ -29,3 +29,6 @@ The rules of this area, one sentence each, with the document that states them an
 | TSK-023 | `Time.sleep` in a tzroutine MUST NOT stop other tzroutines. | [time.md](../../_tsuzuri/language-reference/built-in-types-and-modules/time.md) | TSK-023-time-sleep-in-tzroutine | active |
 | TSK-024 | A stopped `Timer` MUST NOT send. | [timer.md](../../_tsuzuri/language-reference/built-in-types-and-modules/timer.md) | TSK-024-stopped-timer-must-not | active |
 | TSK-025 | A boundary MUST NOT wait for pending timers, and MUST release them. | [time.md](../../_tsuzuri/language-reference/built-in-types-and-modules/time.md) | TSK-025-boundary-must-not-wait | active |
+| TSK-026 | `WaitGroup.wait` MUST return only after the counter is zero. | [waitgroup.md](../../_tsuzuri/language-reference/built-in-types-and-modules/waitgroup.md) | TSK-026-waitgroup-wait-must-return | active |
+| TSK-027 | `Once.call` MUST run its function at most once. | [once.md](../../_tsuzuri/language-reference/built-in-types-and-modules/once.md) | TSK-027-once-call-must-run | active |
+| TSK-028 | A tzroutine MAY wait while it holds a `Mutex`. | [mutex.md](../../_tsuzuri/language-reference/built-in-types-and-modules/mutex.md) | TSK-028-tzroutine-may-wait-while | active |

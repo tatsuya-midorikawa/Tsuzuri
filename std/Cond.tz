@@ -1,0 +1,8 @@
+/// A condition that tzroutines wait for under a `Mutex` (Go's `sync.Cond`, TZ06 Phase 2).
+/// `Cond.wait_with` waits until a predicate of the locked value holds; `Cond.signal` wakes one
+/// waiter and `Cond.broadcast` all of them, after the change that the predicate looks at. The
+/// handle counts its owners: `Cond.share` makes another one, and the last drop frees it.
+record Cond { block: i64 }
+instance Drop<Cond> {
+    fn drop cond = Cond.__drop cond
+}

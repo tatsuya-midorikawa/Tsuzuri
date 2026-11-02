@@ -1,0 +1,7 @@
+/// A weighted semaphore (`golang.org/x/sync/semaphore.Weighted`, TZ06 Phase 2): `Semaphore.acquire`
+/// waits until the weight is free and takes it, `Semaphore.release` gives it back. The handle counts
+/// its owners: `Semaphore.share` makes another one, and the last drop frees it.
+record Semaphore { block: i64 }
+instance Drop<Semaphore> {
+    fn drop semaphore = Semaphore.__drop semaphore
+}

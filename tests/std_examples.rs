@@ -25,6 +25,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Cbor", 4),
     ("Channel", 0),
     ("Char", 6),
+    ("Cond", 0),
     ("DataChannel", 0),
     ("Debug", 2),
     ("Dir", 4),
@@ -49,6 +50,8 @@ const FLOORS: &[(&str, usize)] = &[
     ("Monoids", 0),
     ("Mutex", 0),
     ("Net", 40),
+    ("Once", 1),
+    ("OnceValue", 0),
     ("Os", 6),
     ("Owned", 0),
     ("Parallel", 1),
@@ -59,10 +62,13 @@ const FLOORS: &[(&str, usize)] = &[
     ("Regex", 25),
     ("RegexText", 0),
     ("Result", 14),
+    ("RwMutex", 0),
+    ("Semaphore", 0),
     ("SendOnly", 0),
     ("Seq", 7),
     ("Set", 15),
     ("String", 21),
+    ("SyncMap", 8),
     ("Tensor", 27),
     ("Test", 3),
     ("Text", 0),
@@ -73,6 +79,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Utf8Char", 6),
     ("Utf8String", 20),
     ("Vec", 68),
+    ("WaitGroup", 1),
 ];
 
 /// Public functions that need no example, with the reason.

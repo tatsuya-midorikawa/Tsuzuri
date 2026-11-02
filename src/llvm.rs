@@ -299,15 +299,6 @@ pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
 /// C and the appended i128 helpers, whose frames total under 1 KiB.
 const STACK_CHECK_MARGIN: u32 = 4096;
 
-/// The mark of a thread that holds a `Mutex.with_lock` in a program that spawns (TZ02), and the
-/// one function that writes it. A tzroutine may resume on another thread after it yields, and LLVM
-/// treats the address of a thread-local as fixed in a function, so every read and write of the
-/// mark is in a function of its own that is never inlined (the rule R2 of src/runtime/tzroutine.c).
-pub(crate) const MUTEX_LOCKED: &str = "@tz.mutex.locked = internal thread_local global i32 0\ndefine internal void @tz.mutex.mark(i32 %held) noinline nounwind {\nentry:\n  store i32 %held, ptr @tz.mutex.locked\n  ret void\n}\ndefine internal i32 @tz.mutex.held() noinline nounwind {\nentry:\n  %held = load i32, ptr @tz.mutex.locked\n  ret i32 %held\n}\n";
-
-/// Whether the thread holds no `Mutex.with_lock`; otherwise the runtime writes why (report 5).
-const ROUTINE_UNLOCKED: &str = "define internal i1 @tz.routine.unlocked() noinline {\nentry:\n  %held = load i32, ptr @tz.mutex.locked\n  %free = icmp eq i32 %held, 0\n  br i1 %free, label %ok, label %refuse\nrefuse:\n  call void @tsuzuri_tz_report(i32 5)\n  br label %ok\nok:\n  ret i1 %free\n}\n";
-
 /// The start function of `Routine.go` (TZ02): runs the boxed owned function once, as `Owned.call`
 /// does (the environment is borrowed), then drops it and frees the box.
 const ROUTINE_OWNED_START: &str = "define internal void @tz.tzroutine.owned(ptr %box) {\nentry:\n  %closure = load %tz.closure, ptr %box\n  %desc = extractvalue %tz.closure %closure, 0\n  %code = load ptr, ptr %desc\n  %env = extractvalue %tz.closure %closure, 1\n  %unit = call i8 %code(i8 0, ptr %env, i1 true)\n  call void @tz.closure.drop(%tz.closure %closure)\n  call void @tz.free(ptr %box)\n  ret void\n}\n";
@@ -450,6 +441,8 @@ mod sync;
 mod task;
 #[path = "llvm_timer.rs"]
 mod timer;
+#[path = "llvm_wait.rs"]
+mod wait;
 pub(crate) use gpu_host::{runtime_source as gpu_runtime_source, with_wasm_gpu_host};
 pub(crate) use host_abi::uses_host_abi;
 
@@ -1617,7 +1610,8 @@ pub(crate) fn with_task_accounting(ir: String, spawning: bool) -> String {
     ];
     let callbacks = worker_callbacks(&ir);
     let domain = ir.contains("@tsuzuri_domain_run(");
-    let mutex = ir.contains("define internal i32 @tz.mutex.held()");
+    // TZ06: the locks of the tzroutine runtime that a trap left held are released.
+    let locks = ir.contains("@tsuzuri_tz_mutex32_lock(") || ir.contains("@tsuzuri_tz_rw_");
     let mut results = BTreeSet::new();
     let mut output = String::with_capacity(ir.len() + 256 + callbacks.len() * 1024);
     let mut wrapped = false;
@@ -1671,7 +1665,7 @@ pub(crate) fn with_task_accounting(ir: String, spawning: bool) -> String {
             results.contains(callback),
             domain,
             spawning,
-            mutex,
+            locks,
         ));
     }
     if wrapped {
@@ -1688,6 +1682,11 @@ pub(crate) fn with_task_accounting(ir: String, spawning: bool) -> String {
                 "declare i32 @tsuzuri_tz_block_depth()\ndeclare void @tsuzuri_tz_block_restore(i32)\ndeclare ptr @tsuzuri_tz_scope_current()\ndeclare void @tsuzuri_tz_scope_reset(ptr)\n",
             );
         }
+        if locks && !output.contains("declare i32 @tsuzuri_tz_held_depth()") {
+            output.push_str(
+                "declare i32 @tsuzuri_tz_held_depth()\ndeclare void @tsuzuri_tz_held_restore(i32)\n",
+            );
+        }
     }
     output
 }
@@ -1695,7 +1694,7 @@ pub(crate) fn with_task_accounting(ir: String, spawning: bool) -> String {
 /// The guard that the task runtime calls instead of the worker callback `name` (see
 /// [`with_task_accounting`]). The state of the item, `{ i64, i32, i32 }`, is `tzr_item_frame` of
 /// src/runtime/tzroutine.c.
-fn item_guard(name: &str, result: bool, domain: bool, spawning: bool, mutex: bool) -> String {
+fn item_guard(name: &str, result: bool, domain: bool, spawning: bool, locks: bool) -> String {
     let ty = if result { "i32" } else { "void" };
     let mut text = format!(
         "define internal {ty} @{name}.guard(ptr %context, i64 %index) nounwind {{\nentry:\n  %item = alloca {{ i64, i32, i32 }}, align 8\n"
@@ -1726,9 +1725,9 @@ fn item_guard(name: &str, result: bool, domain: bool, spawning: bool, mutex: boo
                 "  call void @tsuzuri_tz_block_restore(i32 %depth)\n  call void @tsuzuri_tz_scope_reset(ptr %scope)\n",
             );
         }
-        if mutex {
-            text.push_str("  %held = call i32 @tz.mutex.held()\n");
-            restore.push_str("  call void @tz.mutex.mark(i32 %held)\n");
+        if locks {
+            text.push_str("  %held = call i32 @tsuzuri_tz_held_depth()\n");
+            restore.push_str("  call void @tsuzuri_tz_held_restore(i32 %held)\n");
         }
         let (run, run_result) = if result {
             ("null".to_owned(), format!("@{name}"))
@@ -1944,6 +1943,7 @@ fn emit_program_in(
         wasm,
         spawns: spawns(module),
         waits: waits(module),
+        tzroutine: uses_tzroutine(module),
         async_reactor: module
             .functions
             .iter()
@@ -2765,10 +2765,11 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
 struct Globals {
     /// The program can start a tzroutine (TZ02).
     spawns: bool,
-    /// The program can start a tzroutine or wait for a `Channel` (`waits`, TZ03): a
-    /// `Mutex.with_lock` marks this thread while it holds the lock, and a tzroutine that would
-    /// yield there, or a wait for a channel, traps instead.
+    /// The program can start a tzroutine or wait for a `Channel` (`waits`, TZ03).
     waits: bool,
+    /// The program uses the waits of the tzroutine runtime (`uses_tzroutine`, TZ06):
+    /// `Mutex.with_lock` takes the runtime's lock.
+    tzroutine: bool,
     definitions: Vec<String>,
     next_metadata: usize,
     facts: facts::Metadata,
@@ -2832,6 +2833,7 @@ impl Default for Globals {
         Self {
             spawns: false,
             waits: false,
+            tzroutine: false,
             definitions: Vec::new(),
             next_metadata,
             facts: facts::Metadata::default(),
@@ -4396,6 +4398,36 @@ pub fn waits(module: &CheckedModule) -> bool {
         (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
             && expression_waits(&function.body)
     })
+}
+
+/// Whether the program uses the waits of the tzroutine runtime (TZ06): it waits (`waits`), or a
+/// function that it reaches uses a timer (TZ05) or a sync type of TZ06. Then `Mutex.with_lock` is
+/// the runtime's lock, which a tzroutine may hold while it waits; every other program keeps the
+/// thread's lock of the task runtime (TZ12 moves them all).
+pub fn uses_tzroutine(module: &CheckedModule) -> bool {
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && expression_uses_tzroutine(&function.body)
+    })
+}
+
+fn expression_uses_tzroutine(expression: &TypedExpr) -> bool {
+    match &expression.kind {
+        TypedExprKind::RoutineGo(_) | TypedExprKind::SelectWait(_) => true,
+        TypedExprKind::Function(FunctionRef::Builtin(instance))
+            if instance.builtin.spawns()
+                || instance.builtin.is_channel()
+                || instance.builtin.is_timer()
+                || instance.builtin.is_wait() =>
+        {
+            true
+        }
+        _ => expression
+            .children()
+            .into_iter()
+            .any(expression_uses_tzroutine),
+    }
 }
 
 fn expression_waits(expression: &TypedExpr) -> bool {
@@ -6963,22 +6995,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         "0".into()
     }
 
-    /// Traps, with the runtime's message, when this thread holds a `Mutex.with_lock` (TZ02): the
-    /// lock's owner is the thread, so a tzroutine must not switch away from it in a critical section,
-    /// and no thread waits for a `Channel` in one (TZ03). Only a program that spawns or uses a
-    /// `Channel` has the mark (the other ones never switch or wait in the tzroutine runtime).
-    pub(crate) fn routine_unlocked(&mut self) {
-        if !self.globals.waits {
-            return;
-        }
-        self.intrinsics.insert(MUTEX_LOCKED.into());
-        self.intrinsics.insert(ROUTINE_UNLOCKED.into());
-        self.intrinsics
-            .insert("declare void @tsuzuri_tz_report(i32)".into());
-        let free = self.value("call i1 @tz.routine.unlocked()");
-        self.guard(&free, TrapKind::Assert);
-    }
-
     /// The `Routine` builtins (TZ02). `Routine.go` boxes the owned function's closure for
     /// `@tz.tzroutine.owned`, which calls it once with the environment borrowed (as `Owned.call`),
     /// then drops the closure and frees the box.
@@ -7001,7 +7017,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 return "0".into();
             }
             Builtin::RoutineYield => {
-                self.routine_unlocked();
                 self.intrinsics
                     .insert("declare void @tsuzuri_tz_yield()".into());
                 self.instruction("call void @tsuzuri_tz_yield()");
@@ -8276,7 +8291,12 @@ fn emit_builtin(
         builtin if builtin.shared_kind().is_some() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
-        builtin if builtin.is_routine() || builtin.is_channel() || builtin.is_timer() => {
+        builtin
+            if builtin.is_routine()
+                || builtin.is_channel()
+                || builtin.is_timer()
+                || builtin.is_wait() =>
+        {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         builtin
@@ -8357,6 +8377,7 @@ fn emit_typed_builtin(
         strings: shared_globals.strings,
         spawns: shared_globals.spawns,
         waits: shared_globals.waits,
+        tzroutine: shared_globals.tzroutine,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();
@@ -8417,6 +8438,8 @@ fn emit_typed_builtin(
         emitter.go_channel_builtin(instance, ty)
     } else if instance.builtin.is_timer() {
         emitter.timer_builtin(instance.builtin, ty)
+    } else if instance.builtin.is_wait() {
+        emitter.wait_builtin(instance, ty)
     } else if instance.builtin == Builtin::OwnedFunction {
         let owned = emitter.ty(&ty.after_arguments(1));
         emitter.value(format!(

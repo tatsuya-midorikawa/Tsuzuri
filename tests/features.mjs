@@ -2581,6 +2581,47 @@ const suites = {
       }
     },
   },
+  // TZ06: the sync types between tzroutines, at one and at four Ps (native only).
+  sync_types: {
+    nativeOnly: true,
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    cases: [
+      ...[0n, 1n, 100n, 10000n].map((n) => ["wait_group_sum", [n], n * (n - 1n) / 2n]),
+      ["wait_group_go", [1000n], 1000n * 1001n / 2n],
+      ["mutex_hold_across_wait", [], 55n],
+      ["mutex_different_nested", [], 8n * 100n * 3n],
+      ["once_once", [], 100n + 32n],
+      ["once_value", [], 1000n + 16n * 7n],
+      ["rw_readers", [], 2000n * 1000n],
+      ["cond_queue", [], 500n * 10n],
+      ["semaphore_limit", [], 11n],
+      ["sync_map", [], 2n * (799n * 800n / 2n) * 1000n + 800n],
+    ],
+    traps: [["negative_counter", []], ["mutex_same_nested", []], ["mutex_order_deadlock", []], ["rw_nested", []],
+      ["semaphore_over", []], ["semaphore_weight", []]],
+    inspect(ir) {
+      for (const declaration of ["declare i32 @tsuzuri_tz_mutex32_lock(ptr)", "declare void @tsuzuri_tz_mutex32_unlock(ptr)",
+        "declare i32 @tsuzuri_tz_rw_read_lock(ptr)", "declare i32 @tsuzuri_tz_waitgroup_wait(ptr)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+      assert.doesNotMatch(ir, /@tsuzuri_mutex_lock\(/);
+    },
+  },
+  // TZ06: the sync types without a second tzroutine, native and default WebAssembly (TZR_SINGLE: no import).
+  sync_single: {
+    cases: [
+      ["once_single", [], 11n],
+      ["once_value_single", [], 700n + 70n + 7n + 1000n],
+      ["semaphore_try", [], 101n],
+      ["rw_single", [], 30n],
+      ["mutex_single", [], 5n],
+      ["wait_group_single", [], 1n],
+      ["cond_ready", [], 2n],
+      ["sync_map_single", [], 201n + 100n],
+    ],
+    traps: [["mutex_nested_single", []], ["once_waits_for_itself", []], ["wait_group_waits", []], ["cond_waits", []],
+      ["semaphore_waits", []]],
+  },
   // TZ04: select without a second thread, native and default WebAssembly (TZR_SINGLE: no import).
   select_single: {
     cases: [

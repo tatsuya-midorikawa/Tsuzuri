@@ -678,13 +678,14 @@ impl Type {
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
         self.has_user_drop(types)
-            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Async.Async" | "Async.Next" | "Matrix.Matrix" | "Tensor.Tensor" | "Tensor.View" | "Atomic.Atomic" | "Mutex.Mutex"))
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Async.Async" | "Async.Next" | "Matrix.Matrix" | "Tensor.Tensor" | "Tensor.View" | "Atomic.Atomic" | "Mutex.Mutex" | "RwMutex.RwMutex" | "OnceValue.OnceValue"))
     }
 
-    /// The std `Atomic.Atomic` and `Mutex.Mutex`, whose cell changes under a shared borrow (F10).
-    /// Copying one would make an independent cell, so neither is Copy or Capture.
+    /// The std `Atomic.Atomic`, `Mutex.Mutex` and, since TZ06, `RwMutex.RwMutex` and
+    /// `OnceValue.OnceValue`, whose cell changes under a shared borrow (F10). Copying one would make
+    /// an independent cell, so none is Copy or Capture.
     pub(crate) fn is_shared_cell(&self, types: &TypeContext<'_>) -> bool {
-        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Atomic.Atomic" | "Mutex.Mutex"))
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Atomic.Atomic" | "Mutex.Mutex" | "RwMutex.RwMutex" | "OnceValue.OnceValue"))
     }
 
     /// The std `Mutex.Mutex`. `Mutex.create` needs `Send` of its value, so a `Mutex<T>` exists
@@ -1748,6 +1749,76 @@ pub enum Builtin {
     TickerReset,
     /// `Ticker.__free`, the body of the `Drop` instance in `std/Ticker.tz`.
     TickerFree,
+    /// `WaitGroup.create :: unit -> WaitGroup` (TZ06): Go's `sync.WaitGroup`, a counter that
+    /// `WaitGroup.wait` waits to see at zero. The handle is a counted block; `share` makes another.
+    WaitGroupCreate,
+    /// `WaitGroup.add :: ref WaitGroup -> i64 -> unit`: a counter below zero traps.
+    WaitGroupAdd,
+    /// `WaitGroup.wait :: ref WaitGroup -> unit`.
+    WaitGroupWait,
+    /// `WaitGroup.share :: ref WaitGroup -> WaitGroup`.
+    WaitGroupShare,
+    /// `WaitGroup.go :: ref WaitGroup -> Owned.Function<unit, unit> -> unit` (Go 1.25's `wg.Go`):
+    /// counts one, runs the function on a new tzroutine and takes the one away when it returns. A
+    /// builtin, as `Routine.go` is, so that the function's environment is checked where it is made.
+    WaitGroupGo,
+    /// `WaitGroup.__drop`, the body of the `Drop` instance in `std/WaitGroup.tz`.
+    WaitGroupDrop,
+    /// `Once.create :: unit -> Once`: Go's `sync.Once`; `Once.call` (std) runs a function once.
+    OnceCreate,
+    /// `Once.__begin :: ref Once -> bool`: true for the one caller that runs the function; the
+    /// others wait until it is done. Private to `std/Once.tz`.
+    OnceBegin,
+    /// `Once.__end :: ref Once -> unit`: the function is done.
+    OnceEnd,
+    /// `Once.done :: ref Once -> bool`.
+    OnceDone,
+    /// `Once.share :: ref Once -> Once`.
+    OnceShare,
+    /// `Once.__drop`, the body of the `Drop` instance in `std/Once.tz`.
+    OnceDrop,
+    /// `OnceValue.create :: unit -> OnceValue<'a>`: a cell that a function fills once.
+    OnceValueCreate,
+    /// `OnceValue.get :: (Send<'a>, Sync<'a>) => ref OnceValue<'a> -> (unit -> 'a) -> ref 'a`:
+    /// the first caller makes the value; every caller borrows it (Go's `sync.OnceValue`).
+    OnceValueGet,
+    /// `OnceValue.into_inner :: OnceValue<'a> -> Maybe<'a>`.
+    OnceValueIntoInner,
+    /// `RwMutex.create :: Send<'a> => 'a -> RwMutex<'a>`: Go's `sync.RWMutex` with its value.
+    RwMutexCreate,
+    /// `RwMutex.with_read :: Send<'b> => ref RwMutex<'a> -> (ref 'a -> 'b) -> 'b`: readers share.
+    RwMutexWithRead,
+    /// `RwMutex.with_write :: Send<'b> => ref RwMutex<'a> -> (ref mut 'a -> 'b) -> 'b`.
+    RwMutexWithWrite,
+    /// `RwMutex.into_inner :: RwMutex<'a> -> 'a`.
+    RwMutexIntoInner,
+    /// `Cond.create :: unit -> Cond` (TZ06 Phase 2): a condition to wait for with any `Mutex`.
+    CondCreate,
+    /// `Cond.wait_with :: Send<'b> => ref Cond -> ref Mutex<'a> -> (ref 'a -> bool) -> (ref mut 'a -> 'b) -> 'b`:
+    /// locks, waits until the predicate holds, and calls the body under the lock.
+    CondWaitWith,
+    /// `Cond.signal :: ref Cond -> unit` and `Cond.broadcast`.
+    CondSignal,
+    CondBroadcast,
+    /// `Cond.share :: ref Cond -> Cond`.
+    CondShare,
+    /// `Cond.__drop`, the body of the `Drop` instance in `std/Cond.tz`.
+    CondDrop,
+    /// `Semaphore.create :: i64 -> Semaphore`: `x/sync/semaphore.Weighted` of the capacity.
+    SemaphoreCreate,
+    /// `Semaphore.acquire :: ref Semaphore -> i64 -> unit`, `try_acquire` (`-> bool`) and
+    /// `release`.
+    SemaphoreAcquire,
+    SemaphoreTryAcquire,
+    SemaphoreRelease,
+    /// `Semaphore.share :: ref Semaphore -> Semaphore`.
+    SemaphoreShare,
+    /// `Semaphore.__drop`, the body of the `Drop` instance in `std/Semaphore.tz`.
+    SemaphoreDrop,
+    /// `SyncMap.__replace :: 'a -> ref mut 'a -> 'a` (TZ06 Phase 3): puts the value in the place
+    /// and returns what was there, so that `std/SyncMap.tz` rebuilds the map under the write lock
+    /// while the place always holds a whole map. Private to that module.
+    SyncMapReplace,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -2120,6 +2191,38 @@ impl Builtin {
         Self::TickerStop,
         Self::TickerReset,
         Self::TickerFree,
+        Self::WaitGroupCreate,
+        Self::WaitGroupAdd,
+        Self::WaitGroupWait,
+        Self::WaitGroupShare,
+        Self::WaitGroupGo,
+        Self::WaitGroupDrop,
+        Self::OnceCreate,
+        Self::OnceBegin,
+        Self::OnceEnd,
+        Self::OnceDone,
+        Self::OnceShare,
+        Self::OnceDrop,
+        Self::OnceValueCreate,
+        Self::OnceValueGet,
+        Self::OnceValueIntoInner,
+        Self::RwMutexCreate,
+        Self::RwMutexWithRead,
+        Self::RwMutexWithWrite,
+        Self::RwMutexIntoInner,
+        Self::CondCreate,
+        Self::CondWaitWith,
+        Self::CondSignal,
+        Self::CondBroadcast,
+        Self::CondShare,
+        Self::CondDrop,
+        Self::SemaphoreCreate,
+        Self::SemaphoreAcquire,
+        Self::SemaphoreTryAcquire,
+        Self::SemaphoreRelease,
+        Self::SemaphoreShare,
+        Self::SemaphoreDrop,
+        Self::SyncMapReplace,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -2404,6 +2507,38 @@ impl Builtin {
             Self::TickerStop => "Ticker.stop",
             Self::TickerReset => "Ticker.reset",
             Self::TickerFree => "Ticker.__free",
+            Self::WaitGroupCreate => "WaitGroup.create",
+            Self::WaitGroupAdd => "WaitGroup.add",
+            Self::WaitGroupWait => "WaitGroup.wait",
+            Self::WaitGroupShare => "WaitGroup.share",
+            Self::WaitGroupGo => "WaitGroup.go",
+            Self::WaitGroupDrop => "WaitGroup.__drop",
+            Self::OnceCreate => "Once.create",
+            Self::OnceBegin => "Once.__begin",
+            Self::OnceEnd => "Once.__end",
+            Self::OnceDone => "Once.done",
+            Self::OnceShare => "Once.share",
+            Self::OnceDrop => "Once.__drop",
+            Self::OnceValueCreate => "OnceValue.create",
+            Self::OnceValueGet => "OnceValue.get",
+            Self::OnceValueIntoInner => "OnceValue.into_inner",
+            Self::RwMutexCreate => "RwMutex.create",
+            Self::RwMutexWithRead => "RwMutex.with_read",
+            Self::RwMutexWithWrite => "RwMutex.with_write",
+            Self::RwMutexIntoInner => "RwMutex.into_inner",
+            Self::CondCreate => "Cond.create",
+            Self::CondWaitWith => "Cond.wait_with",
+            Self::CondSignal => "Cond.signal",
+            Self::CondBroadcast => "Cond.broadcast",
+            Self::CondShare => "Cond.share",
+            Self::CondDrop => "Cond.__drop",
+            Self::SemaphoreCreate => "Semaphore.create",
+            Self::SemaphoreAcquire => "Semaphore.acquire",
+            Self::SemaphoreTryAcquire => "Semaphore.try_acquire",
+            Self::SemaphoreRelease => "Semaphore.release",
+            Self::SemaphoreShare => "Semaphore.share",
+            Self::SemaphoreDrop => "Semaphore.__drop",
+            Self::SyncMapReplace => "SyncMap.__replace",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::AllocCounter => "Alloc.__counter",
@@ -3566,6 +3701,38 @@ impl Builtin {
             | Self::TickerStop
             | Self::TickerReset
             | Self::TickerFree => self.timer_scheme(),
+            Self::WaitGroupCreate
+            | Self::WaitGroupAdd
+            | Self::WaitGroupWait
+            | Self::WaitGroupShare
+            | Self::WaitGroupGo
+            | Self::WaitGroupDrop
+            | Self::OnceCreate
+            | Self::OnceBegin
+            | Self::OnceEnd
+            | Self::OnceDone
+            | Self::OnceShare
+            | Self::OnceDrop
+            | Self::OnceValueCreate
+            | Self::OnceValueGet
+            | Self::OnceValueIntoInner
+            | Self::RwMutexCreate
+            | Self::RwMutexWithRead
+            | Self::RwMutexWithWrite
+            | Self::RwMutexIntoInner
+            | Self::CondCreate
+            | Self::CondWaitWith
+            | Self::CondSignal
+            | Self::CondBroadcast
+            | Self::CondShare
+            | Self::CondDrop
+            | Self::SemaphoreCreate
+            | Self::SemaphoreAcquire
+            | Self::SemaphoreTryAcquire
+            | Self::SemaphoreRelease
+            | Self::SemaphoreShare
+            | Self::SemaphoreDrop
+            | Self::SyncMapReplace => self.wait_scheme(),
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -3840,7 +4007,113 @@ impl Builtin {
     /// operations of the timers count too: only the scheduler has the timers (not the one thread of
     /// the default WebAssembly target, until TZ09).
     pub(crate) fn spawns(self) -> bool {
-        self == Self::RoutineGo || (self.is_timer() && self != Self::TimeSleepNs)
+        matches!(self, Self::RoutineGo | Self::WaitGroupGo)
+            || (self.is_timer() && self != Self::TimeSleepNs)
+    }
+
+    /// Whether this builtin is an operation of the sync types of TZ06 (`WaitGroup`, `Once`,
+    /// `OnceValue`, `RwMutex`, `Cond`, `Semaphore`), which only a program that uses the tzroutine
+    /// runtime reaches.
+    pub(crate) fn is_wait(self) -> bool {
+        matches!(
+            self.name().split('.').next(),
+            Some("WaitGroup" | "Once" | "OnceValue" | "RwMutex" | "Cond" | "Semaphore" | "SyncMap")
+        )
+    }
+
+    /// The schemes of the sync types of TZ06, kept out of `scheme` so that its frame stays small.
+    #[inline(never)]
+    fn wait_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
+        use BuiltinType::{Concrete, Reference, Var};
+        let a = || Var("a");
+        let b = || Var("b");
+        let constraint = |class, ty| BuiltinConstraint { class, ty };
+        let std = |module: &'static str, name: &'static str, args| BuiltinType::Std {
+            module,
+            name,
+            args,
+        };
+        let module = self.name().split('.').next().expect("a qualified name");
+        // The handle of the module: its record, of 'a for the cells.
+        let handle = || match module {
+            "WaitGroup" => std("WaitGroup", "WaitGroup", Vec::new()),
+            "Once" => std("Once", "Once", Vec::new()),
+            "OnceValue" => std("OnceValue", "OnceValue", vec![a()]),
+            "RwMutex" => std("RwMutex", "RwMutex", vec![a()]),
+            "Cond" => std("Cond", "Cond", Vec::new()),
+            _ => std("Semaphore", "Semaphore", Vec::new()),
+        };
+        let borrowed = || Reference(Box::new(handle()), false);
+        let unit = || Concrete(Type::Unit);
+        let int = || Concrete(Type::I64);
+        let callback = |argument: BuiltinType, result: BuiltinType| {
+            BuiltinType::Function(vec![argument], Box::new(result))
+        };
+        match self {
+            Self::WaitGroupCreate
+            | Self::OnceCreate
+            | Self::OnceValueCreate
+            | Self::CondCreate => (vec![unit()], handle(), Vec::new()),
+            Self::SemaphoreCreate => (vec![int()], handle(), Vec::new()),
+            Self::WaitGroupAdd | Self::SemaphoreAcquire | Self::SemaphoreRelease => {
+                (vec![borrowed(), int()], unit(), Vec::new())
+            }
+            Self::SemaphoreTryAcquire => {
+                (vec![borrowed(), int()], Concrete(Type::Bool), Vec::new())
+            }
+            Self::WaitGroupWait
+            | Self::WaitGroupDrop
+            | Self::OnceEnd
+            | Self::OnceDrop
+            | Self::CondSignal
+            | Self::CondBroadcast
+            | Self::CondDrop
+            | Self::SemaphoreDrop => (vec![borrowed()], unit(), Vec::new()),
+            Self::OnceBegin | Self::OnceDone => {
+                (vec![borrowed()], Concrete(Type::Bool), Vec::new())
+            }
+            Self::WaitGroupShare | Self::OnceShare | Self::CondShare | Self::SemaphoreShare => {
+                (vec![borrowed()], handle(), Vec::new())
+            }
+            Self::WaitGroupGo => (
+                vec![
+                    borrowed(),
+                    std("Owned", "Function", vec![unit(), unit()]),
+                ],
+                unit(),
+                Vec::new(),
+            ),
+            Self::OnceValueGet => (
+                vec![borrowed(), callback(unit(), a())],
+                Reference(Box::new(a()), false),
+                vec![constraint("Send", a()), constraint("Sync", a())],
+            ),
+            Self::OnceValueIntoInner => (vec![handle()], std("Maybe", "Maybe", vec![a()]), Vec::new()),
+            Self::RwMutexCreate => (vec![a()], handle(), vec![constraint("Send", a())]),
+            Self::RwMutexWithRead => (
+                vec![borrowed(), callback(Reference(Box::new(a()), false), b())],
+                b(),
+                vec![constraint("Send", b())],
+            ),
+            Self::RwMutexWithWrite => (
+                vec![borrowed(), callback(Reference(Box::new(a()), true), b())],
+                b(),
+                vec![constraint("Send", b())],
+            ),
+            Self::RwMutexIntoInner => (vec![handle()], a(), Vec::new()),
+            Self::CondWaitWith => (
+                vec![
+                    borrowed(),
+                    Reference(Box::new(std("Mutex", "Mutex", vec![a()])), false),
+                    callback(Reference(Box::new(a()), false), Concrete(Type::Bool)),
+                    callback(Reference(Box::new(a()), true), b()),
+                ],
+                b(),
+                vec![constraint("Send", b())],
+            ),
+            Self::SyncMapReplace => (vec![a(), Reference(Box::new(a()), true)], a(), Vec::new()),
+            _ => unreachable!("not a sync builtin of TZ06"),
+        }
     }
 
     /// The schemes of the timers (TZ05), kept out of `scheme` so that its frame stays small.

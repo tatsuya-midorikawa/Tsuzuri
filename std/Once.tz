@@ -1,0 +1,28 @@
+/// A function run at most once (Go's `sync.Once`, TZ06). `Once.call` runs it for the first caller;
+/// the others wait until it has returned. The handle counts its owners: `Once.share` makes another
+/// one, and the last drop frees it.
+record Once { block: i64 }
+instance Drop<Once> {
+    fn drop once = Once.__drop once
+}
+
+/// Calls the function if no call of this `Once` has; a call that comes while the first one runs
+/// waits for it to return (Go's `once.Do(f)`). A function that calls its own `Once` waits for itself.
+///
+/// ```tsuzuri run=1
+/// let once = Once.create ()
+/// let count = Arc.new (Atomic.create 0i64)
+/// for _ in 1 ..= 3 do
+///     let mine = Arc.share (ref count)
+///     Once.call once (\() -> {
+///         let _old = Atomic.fetch_add (Arc.get (ref mine)) 1i64;
+///         ()
+///     })
+/// Atomic.load (Arc.get (ref count))
+/// ```
+def call :: ref Once -> (unit -> unit) -> unit
+fn call once function =
+    if Once.__begin once then {
+        function ();
+        Once.__end once
+    } else ()

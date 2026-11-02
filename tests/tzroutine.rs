@@ -290,27 +290,22 @@ fn pool_workers_wait_for_their_tzroutines() {
 }
 
 #[test]
-fn a_tzroutine_cannot_yield_inside_a_mutex() {
-    // A program that spawns marks the thread inside Mutex.with_lock; Routine.yield traps there.
+fn a_tzroutine_may_yield_inside_a_mutex() {
+    // TZ06: a program that spawns takes the runtime's lock, which belongs to the G, so a tzroutine
+    // may switch away inside Mutex.with_lock; the thread's mark of TZ02 is gone.
     let module = accepts(
         "let lock = Mutex.create 0i64\ntzroutine { () }\nMutex.with_lock (ref lock) (\\value -> {\n    Routine.yield ();\n    deref value\n})\n",
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    assert!(
-        ir.contains("@tz.mutex.locked = internal thread_local global i32 0"),
-        "{ir}"
-    );
-    assert!(ir.contains("call void @tz.mutex.mark(i32 1)"), "{ir}");
-    assert!(ir.contains("call i1 @tz.routine.unlocked()"), "{ir}");
+    assert!(ir.contains("call i32 @tsuzuri_tz_mutex32_lock(ptr"), "{ir}");
+    assert!(ir.contains("call void @tsuzuri_tz_mutex32_unlock(ptr"), "{ir}");
+    assert!(!ir.contains("tz.mutex.locked") && !ir.contains("tz.routine.unlocked"), "{ir}");
     // Without a spawn, nothing changes for Mutex.
     let plain = accepts(
         "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)\n",
     );
-    assert!(
-        !llvm::emit(&plain, llvm::Entry::Console)
-            .unwrap()
-            .contains("tz.mutex.locked")
-    );
+    let ir = llvm::emit(&plain, llvm::Entry::Console).unwrap();
+    assert!(ir.contains("call i32 @tsuzuri_mutex_lock(ptr") && !ir.contains("tsuzuri_tz_"));
 }
 
 #[test]
@@ -440,30 +435,16 @@ fn routine_yield_is_a_trap_of_the_effect_rules() {
 }
 
 #[test]
-fn only_noinline_helpers_touch_the_lock_mark() {
-    // The mark is thread-local and a tzroutine resumes on another thread after a yield, so the IR
-    // reads and writes it only inside two functions that are never inlined (R2).
+fn the_lock_list_of_the_g_replaces_the_thread_mark() {
+    // TZ06: the runtime keeps the locks that a G holds, so no thread-local mark is read across a
+    // yield (R2); a failure domain releases the locks that a trap left with the depth it saved.
     let module = accepts(
-        "let lock = Mutex.create 0i64\ntzroutine { () }\nlet n = Mutex.with_lock (ref lock) (\\value -> deref value)\nRoutine.yield ()\nn\n",
+        "def work :: unit -> i64\nfn work _ =\n    let lock = Mutex.create 0i64\n    Mutex.with_lock (ref lock) (\\value -> deref value)\nlet failed = match Domain.run work with\n    | Result.Ok n -> n\n    | Result.Error _ -> 1\ntzroutine { () }\nRoutine.yield ()\nfailed\n",
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
-    let mut function = "";
-    for line in ir.lines() {
-        if line.starts_with("define ") {
-            function = line;
-        }
-        if line.contains("@tz.mutex.locked") && !line.starts_with("@tz.mutex.locked =") {
-            assert!(
-                function.contains("@tz.mutex.mark(")
-                    || function.contains("@tz.mutex.held(")
-                    || function.contains("@tz.routine.unlocked("),
-                "{function}\n{line}"
-            );
-            assert!(function.contains("noinline"), "{function}");
-        }
-    }
-    assert!(ir.contains("call void @tz.mutex.mark(i32 1)"));
-    assert!(ir.contains("call void @tz.mutex.mark(i32 0)"));
+    assert!(!ir.contains("tz.mutex.locked"), "{ir}");
+    assert!(ir.contains("call i32 @tsuzuri_tz_held_depth()"), "{ir}");
+    assert!(ir.contains("call void @tsuzuri_tz_held_restore(i32"), "{ir}");
 }
 
 #[test]

@@ -485,7 +485,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | WebAssembly で `tzroutine` と `--wasm-feature jspi` | `tzroutine with --wasm-feature jspi is not implemented yet` |
 | `tzroutine` と `--wasm-feature threads` | `tzroutine cannot be combined with --wasm-feature threads: the tzroutine runtime has no WebAssembly threads backend` |
 | `Channel` と `--wasm-feature threads` | `Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend` |
-| `Channel` を使うプログラムと `--trap-mode return` | `--trap-mode return cannot be combined with Channel: a trap would leave the channel runtime's state of the call behind` |
+| `Channel` か TZ06 の同期の型（`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`）を使うプログラムと `--trap-mode return` | `--trap-mode return cannot be combined with Channel or the sync types of the tzroutine runtime (WaitGroup, Once, OnceValue, RwMutex, Cond, Semaphore, SyncMap): a trap would leave the runtime's state of the call behind` |
 | `tzroutine` を起動するプログラムと `--trap-mode return` | `--trap-mode return cannot be combined with tzroutine: a trap in one tzroutine cannot be returned from the call that spawned it` |
 | `tzroutine` と `--freestanding` | `--freestanding cannot use tzroutine: its runtime needs the C library; keep it in the host and pass the results to the exports` |
 | `jspi` と threads / WASI | `--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host` |

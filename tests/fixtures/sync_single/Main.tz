@@ -1,0 +1,121 @@
+// TZ06: the sync types without a second tzroutine, natively and on the default WebAssembly target
+// (tzroutine.c built with TZR_SINGLE: no import). An operation that would wait is a deadlock there.
+
+export def once_single :: i64
+fn once_single =
+    let once = Once.create ()
+    let runs = Atomic.create 0i64
+    let counting = ref runs
+    for _ in 1 ..= 3 do
+        Once.call (ref once) (\() -> {
+            let _old = Atomic.fetch_add counting 1i64;
+            ()
+        })
+    let done = if Once.done (ref once) then 10 else 0
+    Atomic.load (ref runs) + done
+
+export def once_value_single :: i64
+fn once_value_single =
+    let cell: OnceValue<i64> = OnceValue.create ()
+    let makes = Atomic.create 0i64
+    let counting = ref makes
+    let first = deref (OnceValue.get (ref cell) (\() -> {
+        let _old = Atomic.fetch_add counting 1i64;
+        7
+    }))
+    let second = deref (OnceValue.get (ref cell) (\() -> 8))
+    let kept = match OnceValue.into_inner cell with
+        | Maybe.Some value -> value
+        | Maybe.None -> 0
+    first * 100 + second * 10 + kept + Atomic.load (ref makes) * 1000
+
+export def semaphore_try :: i64
+fn semaphore_try =
+    let slots = Semaphore.create 2
+    let a = if Semaphore.try_acquire (ref slots) 1 then 1 else 0
+    let b = if Semaphore.try_acquire (ref slots) 2 then 1 else 0
+    Semaphore.release (ref slots) 1
+    let c = if Semaphore.try_acquire (ref slots) 2 then 1 else 0
+    let other = Semaphore.share (ref slots)
+    Semaphore.acquire (ref other) 0
+    a * 100 + b * 10 + c
+
+export def rw_single :: i64
+fn rw_single =
+    let lock = RwMutex.create 5i64
+    RwMutex.with_write (ref lock) (\value -> deref value = deref value * 3)
+    let read = RwMutex.with_read (ref lock) (\value -> deref value)
+    read + RwMutex.into_inner lock
+
+export def mutex_single :: i64
+fn mutex_single =
+    let _once = Once.create ()
+    let lock = Mutex.create 4i64
+    Mutex.with_lock (ref lock) (\value -> deref value = deref value + 1)
+    Mutex.with_lock (ref lock) (\value -> deref value)
+
+export def wait_group_single :: i64
+fn wait_group_single =
+    let group = WaitGroup.create ()
+    WaitGroup.add (ref group) 2
+    let other = WaitGroup.share (ref group)
+    WaitGroup.done (ref other)
+    WaitGroup.done (ref group)
+    WaitGroup.wait (ref group)
+    1
+
+export def cond_ready :: i64
+fn cond_ready =
+    let cond = Cond.create ()
+    let lock = Mutex.create 3i64
+    Cond.signal (ref cond)
+    Cond.broadcast (ref cond)
+    Cond.wait_with (ref cond) (ref lock) (\value -> deref value > 0i64) (\value -> {
+        deref value = deref value - 1;
+        deref value
+    })
+
+export def sync_map_single :: i64
+fn sync_map_single =
+    let map: SyncMap<i64, i64> = SyncMap.create ()
+    SyncMap.store (ref map) 1 10
+    SyncMap.store (ref map) 2 20
+    let removed = if SyncMap.delete (ref map) (ref 1) then 1 else 0
+    let found = match SyncMap.load (ref map) (ref 2) with
+        | Maybe.Some value -> value
+        | Maybe.None -> 0
+    found * 10 + removed + SyncMap.length (ref map) * 100
+
+export def mutex_nested_single :: i64
+fn mutex_nested_single =
+    let _once = Once.create ()
+    let lock = Mutex.create 1i64
+    let borrowed = ref lock
+    Mutex.with_lock borrowed (\_outer -> Mutex.with_lock borrowed (\inner -> deref inner))
+
+export def once_waits_for_itself :: i64
+fn once_waits_for_itself =
+    let once = Once.create ()
+    let again = ref once
+    Once.call (ref once) (\() -> Once.call again (\() -> ()))
+    0
+
+export def wait_group_waits :: i64
+fn wait_group_waits =
+    let group = WaitGroup.create ()
+    WaitGroup.add (ref group) 1
+    WaitGroup.wait (ref group)
+    0
+
+export def cond_waits :: i64
+fn cond_waits =
+    let cond = Cond.create ()
+    let lock = Mutex.create 0i64
+    Cond.wait_with (ref cond) (ref lock) (\value -> deref value > 0i64) (\value -> deref value)
+
+export def semaphore_waits :: i64
+fn semaphore_waits =
+    let slots = Semaphore.create 1
+    Semaphore.acquire (ref slots) 1
+    Semaphore.acquire (ref slots) 1
+    0

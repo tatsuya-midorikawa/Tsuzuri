@@ -52,6 +52,13 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Time.tz", include_str!("../std/Time.tz")),
     ("std/Timer.tz", include_str!("../std/Timer.tz")),
     ("std/Ticker.tz", include_str!("../std/Ticker.tz")),
+    ("std/WaitGroup.tz", include_str!("../std/WaitGroup.tz")),
+    ("std/Once.tz", include_str!("../std/Once.tz")),
+    ("std/OnceValue.tz", include_str!("../std/OnceValue.tz")),
+    ("std/RwMutex.tz", include_str!("../std/RwMutex.tz")),
+    ("std/Cond.tz", include_str!("../std/Cond.tz")),
+    ("std/Semaphore.tz", include_str!("../std/Semaphore.tz")),
+    ("std/SyncMap.tz", include_str!("../std/SyncMap.tz")),
     ("std/Unicode.tz", include_str!("../std/Unicode.tz")),
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
@@ -133,6 +140,14 @@ pub const RESERVED_MODULES: &[&str] = &[
     // TZ05: the handles of the timers.
     "Timer",
     "Ticker",
+    // TZ06: the sync types.
+    "WaitGroup",
+    "Once",
+    "OnceValue",
+    "RwMutex",
+    "Cond",
+    "Semaphore",
+    "SyncMap",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -187,6 +202,13 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "ReceiveOnly.ReceiveOnly"
             | "Timer.Timer"
             | "Ticker.Ticker"
+            | "WaitGroup.WaitGroup"
+            | "Once.Once"
+            | "OnceValue.OnceValue"
+            | "RwMutex.RwMutex"
+            | "Cond.Cond"
+            | "Semaphore.Semaphore"
+            | "SyncMap.SyncMap"
     )
 }
 
@@ -355,6 +377,49 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["Ticker"],
         aliases: &[],
         uses: &["Channel"],
+    },
+    OptIn {
+        module: "WaitGroup",
+        names: &["WaitGroup"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Once",
+        names: &["Once"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "OnceValue",
+        names: &["OnceValue"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "RwMutex",
+        names: &["RwMutex"],
+        aliases: &[],
+        uses: &[],
+    },
+    // `Cond.wait_with` takes a Mutex: a program that waits with one names Mutex too.
+    OptIn {
+        module: "Cond",
+        names: &["Cond"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Semaphore",
+        names: &["Semaphore"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "SyncMap",
+        names: &["SyncMap"],
+        aliases: &[],
+        uses: &["RwMutex"],
     },
     OptIn {
         module: "RegexText",
@@ -725,7 +790,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 65);
+        assert_eq!(RESERVED_MODULES.len(), 72);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

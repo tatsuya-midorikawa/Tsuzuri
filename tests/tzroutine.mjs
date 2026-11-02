@@ -338,7 +338,7 @@ tzroutine {
     }
   }
 
-  // A tzroutine cannot switch away inside Mutex.with_lock, whose lock belongs to the thread.
+  // TZ06: a tzroutine may switch away inside Mutex.with_lock: the lock is the G's (TZ02 trapped).
   const locked = project(`let lock = Mutex.create 0i64
 tzroutine { () }
 Mutex.with_lock (ref lock) (\\value -> {
@@ -347,9 +347,48 @@ Mutex.with_lock (ref lock) (\\value -> {
 })
 `);
   for (const optimization of ["-O0", "-O3"]) {
-    const run = cli(["run", locked, optimization], false);
-    assert.notEqual(run.status, 0);
-    assert.match(run.stderr, /a tzroutine cannot yield or wait inside Mutex.with_lock/);
+    const run = cli(["run", locked, optimization]);
+    assert.equal(lines(run.stdout), "0\n");
+    runs++;
+  }
+
+  // TZ06: the messages of the sync types' traps, and the deadlock of two locks taken in opposite
+  // orders (the detector names the waits).
+  const failing = [
+    [`let group = WaitGroup.create ()\nWaitGroup.done (ref group)\n0\n`, /negative WaitGroup counter/],
+    [`let _once = Once.create ()\nlet lock = Mutex.create 1i64\nlet borrowed = ref lock\nMutex.with_lock borrowed (\\_outer -> Mutex.with_lock borrowed (\\inner -> deref inner))\n`,
+      /Mutex.with_lock cannot be nested/],
+    [`let lock = RwMutex.create 1i64\nlet borrowed = ref lock\nRwMutex.with_read borrowed (\\_outer -> RwMutex.with_write borrowed (\\inner -> deref inner))\n`,
+      /RwMutex cannot be locked again by the tzroutine that holds it/],
+    [`let slots = Semaphore.create 1\nSemaphore.release (ref slots) 1\n0\n`, /Semaphore released more than it acquired/],
+    [`let slots = Semaphore.create 1\nSemaphore.acquire (ref slots) 2\n0\n`, /Semaphore weight is negative or larger than its capacity/],
+    [`let first = Arc.new (Mutex.create 0i64)
+let second = Arc.new (Mutex.create 0i64)
+let ready: Channel<unit> = Channel.make 0
+let a1 = Arc.share (ref first)
+let b1 = Arc.share (ref second)
+let signal = Channel.share ready
+tzroutine {
+    let told = ref signal
+    let inner = Arc.get (ref b1)
+    let _sum = Mutex.with_lock (Arc.get (ref a1)) (\\_x -> {
+        Channel.send told ();
+        Mutex.with_lock inner (\\y -> deref y)
+    })
+}
+let waiting = ref ready
+let inner = Arc.get (ref first)
+Mutex.with_lock (Arc.get (ref second)) (\\_y -> {
+    let _ready = Channel.recv waiting;
+    Mutex.with_lock inner (\\x -> deref x)
+})
+`, /all tzroutines are asleep - deadlock! .*Mutex lock/],
+  ];
+  for (const [source, message] of failing) {
+    const directory = project(source);
+    const run = cli(["run", directory, "-O0"], false);
+    assert.notEqual(run.status, 0, source);
+    assert.match(run.stderr, message, `${source}\n${run.stderr}`);
     runs++;
   }
 
