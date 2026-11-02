@@ -574,6 +574,9 @@ pub(super) fn instrument_with(
                 && !name.starts_with("@tz.task.item.")
                 && !name.starts_with("@tz.parallel.chunk.")
                 && !name.starts_with("@tz.domain.thunk.")
+                // TZ02: the tzroutine runtime calls these as `void (*)(void *)`.
+                && !name.starts_with("@tz.tzroutine.start.")
+                && name.as_str() != "@tz.tzroutine.owned"
         })
         .cloned()
         .collect();

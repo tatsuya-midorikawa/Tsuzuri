@@ -1,0 +1,9 @@
+tzroutine {
+    tzroutine {
+        do! IO.write_line "grandchild"
+    }
+}
+42
+
+// rule: TSK-012
+// expect: stdout "grandchild\n42\n"

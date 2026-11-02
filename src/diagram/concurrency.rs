@@ -99,7 +99,7 @@ pub fn graph(
         }
         if matches!(
             edge.to.as_str(),
-            "Task.parallel" | "Task.parallel_results" | "Task.scope"
+            "Task.parallel" | "Task.parallel_results" | "Task.scope" | "Routine.go"
         ) || edge.to.starts_with("Parallel.")
         {
             region

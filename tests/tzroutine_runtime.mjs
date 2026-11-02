@@ -19,7 +19,7 @@ const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-tzroutine-"));
 const source = "tests/tzroutine_runtime.c";
 const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", "waitgroup", "sleep",
   "external", "deep", "fp", "stack_size", "failures", "fp_mode", "wake_many", "count_after_join", "detector",
-  "starvation", "select_same", "long_sleep"];
+  "starvation", "select_same", "boundary", "report", "blocking", "donor", "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows
   ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"]
@@ -59,6 +59,13 @@ try {
   if (!windows) {
     // With stack.c, a tzroutine that overflows its stack is reported like any other thread.
     const guarded = build("tzroutine-guarded", ["-O2", "-DTZ_STACK_GUARD"], ["-x", "c", "src/runtime/stack.c"]);
+    // The messages that the generated code's traps print (tsuzuri_tz_report).
+    const reported = execute(guarded, ["child-report"], {}, false);
+    assert.equal(reported.status, 47);
+    assert.deepEqual(reported.stderr.trim().split("\n"), ["send on closed Channel", "close of closed Channel",
+      "negative WaitGroup counter", "Mutex.with_lock cannot be nested",
+      "a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section"]
+      .map(message => `Tsuzuri runtime: ${message}`));
     const overflow = execute(guarded, ["child-overflow"], {}, false);
     assert.equal(overflow.signal, "SIGABRT", `${overflow.status} ${overflow.signal}\n${overflow.stderr}`);
     assert.match(overflow.stderr, /^trap: stack overflow$/m);

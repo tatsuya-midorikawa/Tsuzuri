@@ -1,0 +1,9 @@
+tzroutine {
+    do! IO.write_line "first"
+    let! line = IO.pure "second"
+    do! IO.write_line line
+}
+0
+
+// rule: TSK-015
+// expect: stdout "first\nsecond\n0\n"

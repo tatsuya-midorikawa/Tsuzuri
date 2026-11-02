@@ -515,6 +515,28 @@ static void test_fp(void) {
     printf("fp registers: ok\n");
 }
 
+/* 16. the end of a boundary (TZ02): an empty scope returns at once, a full one after its tzroutines */
+/* 23. the messages of the generated code's traps (TZ02, TZ03): a child writes them all */
+static void report_body(void) {
+    for (int32_t what = 0; what <= 6; what++) tsuzuri_tz_report(what); /* 0 and 6 write nothing */
+    _exit(47);
+}
+static void test_report(void) {
+    CHECK(exited_with(run_child("child-report"), 47));
+    printf("report: ok\n");
+}
+
+static void test_boundary(void) {
+    tsuzuri_tz_boundary_leave(tsuzuri_tz_scope_enter());
+    atomic_store(&counter, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 100; i++) tsuzuri_tz_go(incr, (void *)(intptr_t)1);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&counter) == 100);
+    CHECK(tsuzuri_tz_count() == 1);
+    printf("boundary: ok\n");
+}
+
 /* 15. a sleep whose deadline saturates at INT64_MAX, next to short ones: the timer thread then
  * waits for at most a day at a time instead of computing a deadline that overflows (UBSan checks) */
 static void forever_sleeper(void *env) {
@@ -866,6 +888,76 @@ static void test_select_same(void) {
     free(feed.c);
 }
 
+/* TZ02: a G inside a blocking call acts as its thread's pseudo-G. With one P, the tzroutines that
+ * it spawns there run (the P went away), its wait there stops the thread instead of switching the G
+ * away, the calls nest, and afterwards the G has a P again and can switch. */
+static _Atomic int64_t blocking_hits;
+static void blocking_child(void *env) {
+    (void)env;
+    atomic_fetch_add(&blocking_hits, 1);
+}
+static void blocking_routine(void *env) {
+    (void)env;
+    tsuzuri_tz_block_enter();
+    void *scope = tsuzuri_tz_scope_enter(); /* as a pool callback on the joining thread does */
+    for (int i = 0; i < 4; i++) tsuzuri_tz_go(blocking_child, NULL);
+    tsuzuri_tz_yield(); /* the thread's yield: the G stays */
+    join(scope);
+    tsuzuri_tz_block_enter();
+    tsuzuri_tz_block_leave();
+    tsuzuri_tz_block_leave();
+    tsuzuri_tz_yield();
+    atomic_fetch_add(&blocking_hits, 100);
+}
+static void test_blocking(void) {
+    for (int round = 0; round < 50; round++) {
+        atomic_store(&blocking_hits, 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        for (int i = 0; i < 8; i++) tsuzuri_tz_go(blocking_routine, NULL);
+        join(scope);
+        CHECK(atomic_load(&blocking_hits) == 8 * 104);
+    }
+}
+
+/* TZ02: the spawn of the main thread gives the idle P of a blocking call to an M that tzr_wakep starts
+ * spinning, and the G leaves its call before that M runs, so it waits for the P. The M hands the P
+ * over and parks: it stops spinning, or tzr_wakep would never start an M again and the next spawn of
+ * the main thread would wait for nobody. With one P, the first round sets this up. */
+static _Atomic int donor_inside;
+static _Atomic int donor_leave;
+static _Atomic int64_t donor_hits;
+static void donor_child(void *env) {
+    (void)env;
+    atomic_fetch_add(&donor_hits, 1);
+}
+static void donor_blocker(void *env) {
+    (void)env;
+    tsuzuri_tz_block_enter();
+    atomic_store(&donor_inside, 1);
+    while (!atomic_load(&donor_leave)) {
+    }
+    tsuzuri_tz_block_leave();
+    atomic_fetch_add(&donor_hits, 100);
+}
+static void test_donor(void) {
+    for (int round = 0; round < 100; round++) {
+        atomic_store(&donor_inside, 0);
+        atomic_store(&donor_leave, 0);
+        atomic_store(&donor_hits, 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(donor_blocker, NULL);
+        while (!atomic_load(&donor_inside)) tzr_os_yield();
+        tsuzuri_tz_go(donor_child, NULL);
+        atomic_store(&donor_leave, 1);
+        join(scope);
+        CHECK(atomic_load(&donor_hits) == 101);
+        /* the Ms that looked for work park within microseconds */
+        double t = seconds();
+        while (atomic_load(&tzr_sched.nmspinning) != 0 && seconds() - t < 2.0) tzr_os_yield();
+        CHECK(atomic_load(&tzr_sched.nmspinning) == 0);
+    }
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -875,6 +967,7 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-exit-deadlock") == 0) exit_deadlock_body();
     if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
     if (only && strcmp(only, "child-recover") == 0) recover_body();
+    if (only && strcmp(only, "child-report") == 0) report_body();
     if (only && strcmp(only, "child-big-select") == 0) { big_select_body(); return 0; }
     if (only && strcmp(only, "child-deep-100") == 0) { stack_body(100); return 0; }
     if (only && strcmp(only, "child-deep-900") == 0) { stack_body(900); return 0; }
@@ -903,6 +996,10 @@ int main(int argc, char **argv) {
     RUN("detector", test_detector());
     RUN("starvation", test_starvation());
     RUN("select_same", test_select_same());
+    RUN("boundary", test_boundary());
+    RUN("report", test_report());
+    RUN("blocking", test_blocking());
+    RUN("donor", test_donor());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

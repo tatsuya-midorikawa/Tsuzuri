@@ -2496,6 +2496,19 @@ const suites = {
   },
   // F10 Phase 2: Channel. The exports need no second thread: up to the capacity a channel is a ring,
   // and everything that can wait traps the same way on every target.
+  // TZ02: tzroutine { } and Routine. Native only until TZ09; every export waits for its children.
+  tzroutine: {
+    nativeOnly: true,
+    cases: [
+      ...[0n, 1n, 100n, 10000n].map((n) => ["sum_atomic", [n], n * (n - 1n) / 2n]),
+      ...[0n, 10n].map((depth) => ["nested", [depth], 2n ** (depth + 1n) - 1n]),
+      ["moves_owned", [], BigInt("tzroutine".length + 4)],
+      ["drops_unused_capture", [], 1n],
+      ...[1n, 64n, 1000n].map((count) => ["yields", [count], 3n * count]),
+      ["go_owned", [], 11n],
+      ["counts", [], 1n],
+    ],
+  },
   channel: {
     cases: [
       ...[1n, 2n, 3n, 10n, 257n, 4096n].map((n) => ["roundtrip", [n], n * (n + 1n) / 2n]),
@@ -3012,7 +3025,10 @@ int main(int argc, char **argv) {
     for (const optimization of ["0", "3"]) {
       const native = join(temporary, `${name}-O${optimization}${executableSuffix}`);
       execute(clang, [`-O${optimization}`, "-Wno-override-module", "-ffp-contract=off", ...sanitizer, ...nativeOptions,
-        `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []), ...nativeLibraries, "-o", native]);
+        `-I${temporary}`, ir, host, ...(sourceIr.includes("declare void @tsuzuri_task_parallel(") ? [join(root, "src/runtime/task.c"), "-pthread"] : []),
+        // TZ02: the scheduler of the tzroutines.
+        ...(sourceIr.includes("@tsuzuri_tz_") ? [join(root, "src/runtime/tzroutine.c"), ...(process.platform === "win32" ? [] : ["-pthread"])] : []),
+        ...nativeLibraries, "-o", native]);
       execute(native, []);
       for (const [index, [exported]] of bounded.entries()) {
         const result = executeBounded(native, [String(traps.length + index)]);
@@ -3032,6 +3048,8 @@ int main(int argc, char **argv) {
         const result = execute(native, [String(index)], false);
         assert.ok(result.status !== 0 || result.signal, `${name} native O${optimization}: ${traps[index][0]} must trap`);
       }
+      // A suite of tzroutines is native until WebAssembly has them (TZ09).
+      if (suite.nativeOnly) continue;
       const wasm = join(temporary, `${name}-O${optimization}.wasm`);
       cli(["build", fixture, ...(suite.options ?? []), "--target", wasmTarget, ...wasmOptions, `-O${optimization}`, "-o", wasm]);
       const module = new WebAssembly.Module(readFileSync(wasm));
@@ -3310,7 +3328,7 @@ for (const [name, suite] of Object.entries(suites)) {
   if (name === "vec") { wasmReallocationChecks(); await wasmHeapChecks(); }
   if (name === "chars") characterConsoleChecks();
   if (name === "debug_output") debugOutputChecks();
-  console.log(`${name}: native/WASM at O0/O3 passed`);
+  console.log(`${name}: ${suites[name]?.nativeOnly ? "native" : "native/WASM"} at O0/O3 passed`);
 }
 // The expensive references are computed only for the suites that run (PR #75 review).
 for (const name of ["monoid", "parallel_equivalence"]) {

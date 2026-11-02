@@ -1,0 +1,125 @@
+// TZ02: tzroutine { } and the Routine module. An export's value is computed before the export
+// waits for its tzroutines, so every export counts its children's work in an Atomic and waits for
+// the count with Routine.yield before it reads the result; the result never depends on the schedule.
+
+// An item that counts its drops.
+record Token { counter: Arc<Atomic<i64>> }
+
+def count_drop :: ref Token -> unit
+fn count_drop token =
+    let _before = Atomic.fetch_add (Arc.get (ref token.counter)) 1i64
+    ()
+
+instance Drop<Token> {
+    fn drop token = count_drop token
+}
+
+// Yields until the counter reaches `target`.
+def wait_for :: ref Arc<Atomic<i64>> -> i64 -> unit
+fn wait_for counter target =
+    while Atomic.load (Arc.get counter) < target do
+        Routine.yield ()
+
+// n tzroutines add 0, 1, ..., n - 1.
+export def sum_atomic :: i64 -> i64
+fn sum_atomic n =
+    let total = Arc.new (Atomic.create 0i64)
+    let done = Arc.new (Atomic.create 0i64)
+    for i in 0 ..< n do
+        let mine = Arc.share (ref total)
+        let finished = Arc.share (ref done)
+        tzroutine {
+            let _sum = Atomic.fetch_add (Arc.get (ref mine)) i
+            let _count = Atomic.fetch_add (Arc.get (ref finished)) 1i64
+        }
+    wait_for (ref done) n
+    Atomic.load (Arc.get (ref total))
+
+// A binary tree of tzroutines `depth` levels below the root, each adding 1.
+def rec grow :: own Arc<Atomic<i64>> -> i64 -> unit
+fn rec grow counter depth =
+    let _node = Atomic.fetch_add (Arc.get (ref counter)) 1i64
+    if depth > 0 then
+        let left = Arc.share (ref counter)
+        let right = Arc.share (ref counter)
+        tzroutine {
+            grow left (depth - 1)
+        }
+        tzroutine {
+            grow right (depth - 1)
+        }
+
+export def nested :: i64 -> i64
+fn nested depth =
+    let counter = Arc.new (Atomic.create 0i64)
+    let child = Arc.share (ref counter)
+    tzroutine {
+        grow child depth
+    }
+    let mut all = 1i64
+    for _level in 0 ..= depth do
+        all = all * 2i64
+    wait_for (ref counter) (all - 1i64)
+    Atomic.load (Arc.get (ref counter))
+
+// The captures move: a string and an array, whose lengths the child adds.
+export def moves_owned :: i64
+fn moves_owned =
+    let lengths = Arc.new (Atomic.create 0i64)
+    let mine = Arc.share (ref lengths)
+    let text = "tzroutine"
+    let items = [1, 2, 3, 4]
+    tzroutine {
+        let _text = Atomic.fetch_add (Arc.get (ref mine)) (String.length (ref text))
+        let _items = Atomic.fetch_add (Arc.get (ref mine)) (Array.length (ref items))
+    }
+    wait_for (ref lengths) 13i64
+    Atomic.load (Arc.get (ref lengths))
+
+// A capture that the body does not use is dropped once, at the end of the body.
+export def drops_unused_capture :: i64
+fn drops_unused_capture =
+    let drops = Arc.new (Atomic.create 0i64)
+    let token = Token { counter: Arc.share (ref drops) }
+    tzroutine {
+        let _keep = ref token
+    }
+    wait_for (ref drops) 1i64
+    Atomic.load (Arc.get (ref drops))
+
+// `count` tzroutines that yield between their two additions.
+export def yields :: i64 -> i64
+fn yields count =
+    let total = Arc.new (Atomic.create 0i64)
+    for _i in 0 ..< count do
+        let mine = Arc.share (ref total)
+        tzroutine {
+            let _first = Atomic.fetch_add (Arc.get (ref mine)) 1i64
+            Routine.yield ()
+            let _second = Atomic.fetch_add (Arc.get (ref mine)) 2i64
+        }
+    wait_for (ref total) (3i64 * count)
+    Atomic.load (Arc.get (ref total))
+
+// Routine.go runs an owned function once and then drops it (and the Token it captures).
+export def go_owned :: i64
+fn go_owned =
+    let calls = Arc.new (Atomic.create 0i64)
+    let drops = Arc.new (Atomic.create 0i64)
+    let mine = Arc.share (ref calls)
+    let token = Token { counter: Arc.share (ref drops) }
+    Routine.go (Owned.function (\() -> {
+        let _held = ref token;
+        let _call = Atomic.fetch_add (Arc.get (ref mine)) 1i64;
+        ()
+    }))
+    wait_for (ref drops) 1i64
+    Atomic.load (Arc.get (ref calls)) * 10i64 + Atomic.load (Arc.get (ref drops))
+
+// No other tzroutine is alive here: the count is the calling thread alone.
+export def counts :: i64
+fn counts =
+    let alone = Routine.count () == 1i64
+    let procs = Routine.max_procs () >= 1i64
+    let cpus = Routine.cpu_count () >= 1i64
+    if alone && procs && cpus then 1 else 0

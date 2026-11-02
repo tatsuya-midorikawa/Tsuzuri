@@ -224,6 +224,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
         ExprKind::Unary(_, value)
         | ExprKind::Lambda(_, value)
         | ExprKind::Task(value)
+        | ExprKind::Routine(value)
         | ExprKind::TaskRun(value)
         | ExprKind::Checked(value)
         | ExprKind::Field(value, _)

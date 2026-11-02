@@ -1,4 +1,4 @@
-# TSK: Tasks
+# TSK: Tasks and tzroutines
 
 The rules of this area, one sentence each, with the document that states them and the conformance tests that check them (`tests/conformance/TSK/`). See `spec/README.md` for the format.
 
@@ -14,3 +14,8 @@ The rules of this area, one sentence each, with the document that states them an
 | TSK-008 | Tasks of `Task.scope` that add to a shared `Atomic` with `Atomic.fetch_add` MUST produce the same total on every run. | [task.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/task.md) | TSK-008-tasks-sharing-atomic-through | active |
 | TSK-009 | A `Task.parallel_results` that contains an `Error` MUST return the `Error` of the smallest input index. | [task.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/task.md) | TSK-009-task-parallel-results-that | active |
 | TSK-010 | A `Task<T>` value MUST NOT be used where a `T` is expected (E1003). | [task.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/task.md) | TSK-010-task-t-value-must | active |
+| TSK-011 | `tzroutine { }` MUST return before its body finishes, and the body MUST run exactly once. | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-011-tzroutine-must-return-before | active |
+| TSK-012 | A boundary (`main`, an export call, a test or a bench sample) MUST NOT return before every tzroutine spawned in it has finished. | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-012-boundary-must-not-return | active |
+| TSK-013 | A tzroutine MUST NOT capture a borrow (E1013). | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-013-tzroutine-must-not-capture | active |
+| TSK-014 | The body of a tzroutine MUST have type `unit` (E1003). | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-014-body-of-tzroutine-must | active |
+| TSK-015 | `let!` and `do!` in a tzroutine body MUST run the IO action at that point. | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-015-let-and-do-in | active |

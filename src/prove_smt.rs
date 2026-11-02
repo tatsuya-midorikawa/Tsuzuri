@@ -586,9 +586,11 @@ impl<'a> Translator<'a> {
                 Err(unsupported("a loop", span))
             }
             K::Lambda { .. } | K::Closure(..) => Err(unsupported("a closure", span)),
-            K::TaskRun(_) | K::TaskParallel(_) | K::TaskParallelResults(_) | K::Parallel(..) => {
-                Err(unsupported("a task", span))
-            }
+            K::TaskRun(_)
+            | K::RoutineGo(_)
+            | K::TaskParallel(_)
+            | K::TaskParallelResults(_)
+            | K::Parallel(..) => Err(unsupported("a task", span)),
             K::HostCall(..) => Err(unsupported("an extern call", span)),
             K::Static(_) => Err(unsupported("a static value", span)),
             K::Array(_)

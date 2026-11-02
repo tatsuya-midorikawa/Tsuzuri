@@ -191,7 +191,8 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         BenchNow | BenchConsume | GenSeed => Some(Clock),
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | AsyncResume | AsyncTake
-        | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted | AsyncRetire => Some(Task),
+        | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted | AsyncRetire
+        | RoutineGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount => Some(Task),
         AtomicCreate
         | AtomicLoad
         | AtomicStore
@@ -848,6 +849,8 @@ impl<'a> Scanner<'a> {
                 match &expression.kind {
                     K::HostCall(import, _) => Some(Effect::Host(import.native_symbol.clone())),
                     K::TaskRun(_) | K::TaskParallel(_) | K::TaskParallelResults(_) => None,
+                    // Spawning outlives the call, unlike the closed task operations (TZ02).
+                    K::RoutineGo(_) => Some(Effect::Builtin(Builtin::RoutineGo, Category::Task)),
                     K::Parallel(_, arguments) => {
                         let mut closed = true;
                         for argument in arguments
@@ -1489,7 +1492,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            92
+            97
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

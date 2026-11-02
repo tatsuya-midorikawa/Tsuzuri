@@ -455,6 +455,7 @@ impl<'a> Run<'a, '_> {
             | K::Lambda { .. }
             | K::Closure(..)
             | K::TaskRun(_)
+            | K::RoutineGo(_)
             | K::TaskParallel(_)
             | K::TaskParallelResults(_)
             | K::Parallel(..)

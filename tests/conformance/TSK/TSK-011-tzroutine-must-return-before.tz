@@ -1,0 +1,16 @@
+let go = Arc.new (Atomic.create false)
+let ran = Arc.new (Atomic.create 0i64)
+let signal = Arc.share (ref go)
+let count = Arc.share (ref ran)
+tzroutine {
+    while not (Atomic.load (Arc.get (ref signal))) do
+        Routine.yield ()
+    let _n = Atomic.fetch_add (Arc.get (ref count)) 1i64
+}
+Atomic.store (Arc.get (ref go)) true
+while Atomic.load (Arc.get (ref ran)) < 1i64 do
+    Routine.yield ()
+Atomic.load (Arc.get (ref ran))
+
+// rule: TSK-011
+// expect: stdout "1\n"

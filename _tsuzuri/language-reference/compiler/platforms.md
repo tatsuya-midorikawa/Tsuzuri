@@ -82,6 +82,8 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 | Linux x64・Arm64（glibc、musl） | `*-unknown-linux-*` | なし | `.o` | `.so` | 受け付ける | 受け付ける |
 | Windows x64・Arm64（MinGW、MSVC） | `*-pc-windows-*` | `.exe` | `.obj` | なし（`E2000`） | `E2002` | 受け付ける |
 
+[tzroutine](../async-tasks-and-lazy/tzroutine.md) は、表のすべての native の target（aarch64・x86-64）で動き、Windows では Fiber で実行します。WebAssembly の target では `E2000` です。
+
 「OS API」は `File`、`Dir`、`Env`、`Time`、`Random`、`Process` です。Windows 向けの実装がないため、これらに到達するビルドは、ランタイムの C をコンパイルする前に `E2002` です。対応するホストでも、すべての API が使えるという意味ではありません。
 
 `-g` のデバッグ情報は、Mach-O の実行ファイルと共有ライブラリの dSYM を `dsymutil` が、MSVC の実行ファイルの PDB を MSVC のリンカーが作るので、それぞれ macOS と Windows のホストだけです。ほかのホストで付けると `E2000` です。オブジェクトと LLVM IR の DWARF は、どの対応ホストでも出ます。MSVC の target は CodeView も付けます（同梱の `tsuzuri-clang` は MinGW でリンクするので DWARF だけです）。

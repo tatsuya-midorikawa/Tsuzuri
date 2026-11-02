@@ -481,6 +481,11 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `threads` なのに wasm32 の object / wasm でない | `--wasm-feature threads requires wasm32 object or WASM output` |
 | `jspi` なのに WASM の object / llvm / wasm / bindings-js でない | `--wasm-feature jspi requires wasm32 or wasm64 object, LLVM IR, WASM, or JavaScript bindings output` |
 | `Async.block_on` に `jspi` がない | `Async.block_on on WebAssembly needs --wasm-feature jspi` |
+| WebAssembly で `tzroutine` を使う（`jspi` なし） | `tzroutine on WebAssembly needs --wasm-feature jspi` |
+| WebAssembly で `tzroutine` と `--wasm-feature jspi` | `tzroutine with --wasm-feature jspi is not implemented yet` |
+| `tzroutine` と `--wasm-feature threads` | `tzroutine cannot be combined with --wasm-feature threads: the tzroutine runtime has no WebAssembly threads backend` |
+| `tzroutine` を起動するプログラムと `--trap-mode return` | `--trap-mode return cannot be combined with tzroutine: a trap in one tzroutine cannot be returned from the call that spawned it` |
+| `tzroutine` と `--freestanding` | `--freestanding cannot use tzroutine: its runtime needs the C library; keep it in the host and pass the results to the exports` |
 | `jspi` と threads / WASI | `--wasm-feature jspi cannot be combined with --wasm-feature threads or --wasm-host` |
 | `webgpu` なのに wasm32 の object / llvm / wasm でない | `--wasm-feature webgpu requires wasm32 object, LLVM IR, or WASM output; the JavaScript bindings do not provide the WebGPU imports, so instantiate the module with createGpuImports of src/runtime/webgpu.mjs` |
 | `webgpu` と threads / WASI | `--wasm-feature webgpu cannot be combined with --wasm-feature threads or --wasm-host: its imports suspend the WebAssembly stack with JavaScript Promise Integration` |

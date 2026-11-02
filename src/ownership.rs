@@ -598,6 +598,7 @@ fn closed(
         | E::Method(..)
         | E::TypeFunction { .. }
         | E::TaskRun(_)
+        | E::RoutineGo(_)
         | E::TaskParallel(_)
         | E::TaskParallelResults(_)
         | E::Parallel(..) => true,
@@ -3093,7 +3094,10 @@ impl<'a> Checker<'a, '_> {
                     result.loans.extend(value.loans);
                 }
             }
-            E::TaskRun(value) | E::TaskParallel(value) | E::TaskParallelResults(value) => {
+            E::TaskRun(value)
+            | E::RoutineGo(value)
+            | E::TaskParallel(value)
+            | E::TaskParallelResults(value) => {
                 self.eval(value, Use::Consume, &during)?;
             }
             E::StructuralCompare(_, arguments)

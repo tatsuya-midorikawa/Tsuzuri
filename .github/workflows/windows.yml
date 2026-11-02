@@ -153,6 +153,10 @@ jobs:
       - name: W5 Windows MSVC end-to-end
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/windows.mjs target/release/tsuzuri.exe
+      # TZ02: tzroutine { } end to end on fibers.
+      - name: tzroutine end to end (TZ02)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/tzroutine.mjs target/release/tsuzuri.exe
       - name: W6 build cache
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/cache.mjs target/release/tsuzuri.exe

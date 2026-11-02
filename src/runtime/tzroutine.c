@@ -409,6 +409,7 @@ struct tzr_g {
     const char *wait_reason;
     tzr_note note;      /* pseudo-G only */
     int doomed;        /* pseudo-G only: woken by the deadlock detector */
+    int idle;          /* pseudo-G only: the thread of an M outside a blocking call (not counted) */
     uint64_t rand;
     tzr_sudog *param;   /* the sudog that completed this G's wait */
     _Atomic uint32_t select_done;
@@ -441,6 +442,7 @@ struct tzr_m {
     tzr_note park;
     tzr_m *link;
     int spinning;
+    int blocked;   /* inside a blocking call of curg: the thread acts as a pseudo-G */
     void (*after)(tzr_m *, tzr_g *);
     void (*after_unlock)(void *);
     void *after_arg;
@@ -466,6 +468,9 @@ static struct {
     _Atomic int npidle;
     tzr_m *midle;
     int nmidle;
+    tzr_m *pwait;                 /* Ms back from a blocking call, waiting for a P */
+    _Atomic int npwait;           /* their number, read without the lock by the scheduling loop */
+    int nmblocked;                /* Ms in a blocking call: their threads count as pseudo-Gs */
     int mcount;
     _Atomic int nmspinning;
     tzr_p *allp[TZR_MAXPROCS];
@@ -504,9 +509,11 @@ static uint64_t tzr_rand(uint64_t *state) {
 static void tzr_start(void);
 static tzr_g *tzr_pseudo(void);
 
+/* The G of the calling code: the G of the M, or the pseudo-G of a thread that is not an M or is
+ * an M inside a blocking call (whose code runs as the thread's, never switching the G away). */
 static TZR_NOINLINE tzr_g *tzr_current(void) {
     tzr_m *m = tzr_this_m();
-    if (m != NULL && m->curg != NULL) return m->curg;
+    if (m != NULL && m->curg != NULL && !m->blocked) return m->curg;
     return tzr_pseudo();
 }
 
@@ -694,7 +701,17 @@ static tzr_p *tzr_pidleget(void) {
     return p;
 }
 
+/* tzr_sched.lock held (or the scheduler not started). An M that is back from a blocking call and
+ * waits for a P takes it first. */
 static void tzr_pidleput(tzr_p *p) {
+    tzr_m *waiter = tzr_sched.pwait;
+    if (waiter) {
+        tzr_sched.pwait = waiter->link;
+        atomic_fetch_sub(&tzr_sched.npwait, 1);
+        waiter->nextp = p;
+        tzr_note_wake(&waiter->park);
+        return;
+    }
     p->link = tzr_sched.pidle;
     tzr_sched.pidle = p;
     atomic_fetch_add(&tzr_sched.npidle, 1);
@@ -791,7 +808,7 @@ static void tzr_report_deadlock(void) {
 /* Called with tzr_sched.lock held whenever an M goes idle or a pseudo-G parks. */
 static void tzr_checkdead(void) {
     if (tzr_sched.deadlocked) return;
-    int running = tzr_sched.mcount - tzr_sched.nmidle + tzr_sched.npseudo_running;
+    int running = tzr_sched.mcount - tzr_sched.nmidle - tzr_sched.nmblocked + tzr_sched.npseudo_running;
     if (running > 0) return;
     if (atomic_load(&tzr_sched.runq_size) > 0) return;
     if (atomic_load(&tzr_sched.ntimers) > 0) return;
@@ -916,8 +933,42 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
     }
 }
 
+/* An M back from a blocking call waits for a P, which only an M that runs out of work gives back:
+ * one that keeps finding work, say a tzroutine that yields until the waiting one sets a flag, would
+ * keep its P for ever. So between two Gs an M hands its P (with its queue) to a waiting M and
+ * stops; the G it ran last is in a queue already. An M that tzr_wakep started is still spinning
+ * here: it stops spinning before it parks, or tzr_wakep would never start an M again, and as the
+ * last spinner it wakes another for the work that it was started for, as tzr_schedule does. With
+ * tzr_sched.lock not held. */
+static void tzr_serve_pwait(tzr_m *m) {
+    if (atomic_load(&tzr_sched.npwait) == 0) return;
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_m *waiter = tzr_sched.pwait;
+    if (waiter == NULL) {
+        tzr_mutex_unlock(&tzr_sched.lock);
+        return;
+    }
+    tzr_sched.pwait = waiter->link;
+    atomic_fetch_sub(&tzr_sched.npwait, 1);
+    waiter->nextp = m->p;
+    m->p = NULL;
+    tzr_note_wake(&waiter->park);
+    if (m->spinning) {
+        m->spinning = 0;
+        if (atomic_fetch_sub(&tzr_sched.nmspinning, 1) == 1) {
+            /* tzr_startm takes the lock; meanwhile this M, neither idle nor blocked, counts as
+             * running for tzr_checkdead */
+            tzr_mutex_unlock(&tzr_sched.lock);
+            tzr_wakep();
+            tzr_mutex_lock(&tzr_sched.lock);
+        }
+    }
+    tzr_stopm(m); /* returns with a P */
+}
+
 static void tzr_schedule(tzr_m *m) {
     for (;;) {
+        tzr_serve_pwait(m);
         tzr_g *g = tzr_findrunnable(m);
         if (m->spinning) {
             m->spinning = 0;
@@ -997,7 +1048,7 @@ static void tzr_pseudo_destroy(void *arg) {
     }
     tzr_lock_release(&tzr_pseudo_lock);
     tzr_mutex_lock(&tzr_sched.lock);
-    tzr_sched.npseudo_running--;
+    if (!g->idle) tzr_sched.npseudo_running--;
     tzr_checkdead(); /* the last running thread may leave only parked participants */
     tzr_mutex_unlock(&tzr_sched.lock);
     tzr_note_destroy(&g->note);
@@ -1156,7 +1207,7 @@ static void tzr_after_yield(tzr_m *m, tzr_g *g) {
 
 TZR_API void tsuzuri_tz_yield(void) {
     tzr_m *m = tzr_this_m();
-    if (m == NULL || m->curg == NULL) {
+    if (m == NULL || m->curg == NULL || m->blocked) {
         tzr_os_yield();
         return;
     }
@@ -1386,6 +1437,107 @@ TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
     tzr_current()->spawn_scope = scope->outer;
     if (!doomed) free(scope);
     return doomed;
+}
+
+/* The end of a boundary (main, an export call, a test, a bench sample): waits for the scope's
+ * tzroutines (TZ02). A deadlock is reported by tsuzuri_tz_scope_leave's detector; the boundary has no
+ * source position of its own, so it traps here. */
+TZR_API void tsuzuri_tz_boundary_leave(void *scope) {
+    if (tsuzuri_tz_scope_leave(scope)) __builtin_trap();
+}
+
+/* ---------------------------------------------------------------- blocking calls */
+
+/* A G that calls into code which blocks its OS thread without this runtime's knowledge (the join
+ * of the task runtime's Task.parallel, Task.scope and Parallel.*) gives its P away for the call, as
+ * Go's entersyscallblock does, so that what is queued, and the work that the call waits for (the
+ * child tzroutine of a pool worker), runs even with one P. That code may call back into Tsuzuri on
+ * this thread (the task runtime runs an item on the thread that submits it): until the call
+ * returns, the thread acts as a pseudo-G, whose waits stop the thread and never switch the G away,
+ * so the code of the call stays on its thread. After the call the M takes an idle P, or waits until
+ * an M gives one back. Calls nest; a pseudo-G does nothing here. */
+TZR_API void tsuzuri_tz_block_enter(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked++ > 0) return;
+    tzr_p *p = m->p;
+    m->p = NULL;
+    tzr_g *thread = tzr_pseudo(); /* counted as running from here; a new one is */
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_sched.nmblocked++;
+    if (thread->idle) {
+        thread->idle = 0;
+        tzr_sched.npseudo_running++;
+    }
+    if (!tzr_runq_empty(p) || atomic_load(&tzr_sched.runq_size) > 0) {
+        tzr_mutex_unlock(&tzr_sched.lock);
+        tzr_startm(p, 0);
+        return;
+    }
+    tzr_pidleput(p);
+    tzr_mutex_unlock(&tzr_sched.lock);
+    /* a G queued before the P was seen idle would wait for nobody */
+    if (atomic_load(&tzr_sched.runq_size) > 0) tzr_wakep();
+}
+
+TZR_API void tsuzuri_tz_block_leave(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || --m->blocked > 0) return;
+    tzr_g *thread = tzr_pseudo();
+    tzr_mutex_lock(&tzr_sched.lock);
+    thread->idle = 1;
+    tzr_sched.npseudo_running--;
+    tzr_sched.nmblocked--; /* the M counts again, as running */
+    tzr_p *p = tzr_pidleget();
+    if (p == NULL) {
+        m->link = tzr_sched.pwait;
+        tzr_sched.pwait = m;
+        atomic_fetch_add(&tzr_sched.npwait, 1);
+        tzr_mutex_unlock(&tzr_sched.lock);
+        tzr_note_sleep(&m->park);
+        p = m->nextp;
+        m->nextp = NULL;
+    } else {
+        tzr_mutex_unlock(&tzr_sched.lock);
+    }
+    m->p = p;
+}
+
+/* The depth of the blocking calls of the calling G, and leaving those that a trap skipped: a failure
+ * domain restores the depth it was entered with, so that its M runs tzroutines again (TZ02). */
+TZR_API int32_t tsuzuri_tz_block_depth(void) {
+    tzr_m *m = tzr_this_m();
+    return m != NULL && m->curg != NULL ? m->blocked : 0;
+}
+
+TZR_API void tsuzuri_tz_block_restore(int32_t depth) {
+    for (;;) {
+        tzr_m *m = tzr_this_m();
+        if (m == NULL || m->curg == NULL || m->blocked <= depth) return;
+        tsuzuri_tz_block_leave();
+    }
+}
+
+/* The spawn scope of the calling G, and setting it back: a failure domain that a trap left
+ * restores the scope that it was entered with (TZ02), since the trap skipped the scope leave of the
+ * code between. */
+TZR_API void *tsuzuri_tz_scope_current(void) { return tzr_current()->spawn_scope; }
+TZR_API void tsuzuri_tz_scope_reset(void *scope) { tzr_current()->spawn_scope = scope; }
+
+/* The message of a failure that the generated code traps for (TZ02, TZ03, TZ06). The numbers are
+ * fixed: a new message goes at the end. */
+TZR_API void tsuzuri_tz_report(int32_t what) {
+    static const char *const messages[] = {
+        "",
+        "send on closed Channel",
+        "close of closed Channel",
+        "negative WaitGroup counter",
+        "Mutex.with_lock cannot be nested",
+        "a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section",
+    };
+    if (what > 0 && what < (int32_t)(sizeof messages / sizeof messages[0])) {
+        fprintf(stderr, "Tsuzuri runtime: %s\n", messages[what]);
+        fflush(stderr);
+    }
 }
 
 /* Routine.count: the tzroutines that exist, counting the caller's thread as one (Go counts main). */

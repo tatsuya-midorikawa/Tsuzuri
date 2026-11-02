@@ -254,6 +254,8 @@ struct Parser<'a> {
     previous_end: usize,
     nesting: usize,
     in_task: bool,
+    /// Inside the block of a `tzroutine { }` (TZ02): as in a task block, a newline ends a `let`.
+    in_routine: bool,
     stop_at_arm: bool,
     stop_at_arrow: bool,
     active_patterns: BTreeMap<String, ActivePattern>,
@@ -300,6 +302,7 @@ impl<'a> Parser<'a> {
             previous_end: 0,
             nesting: 0,
             in_task: false,
+            in_routine: false,
             stop_at_arm: false,
             stop_at_arrow: false,
             active_patterns: BTreeMap::new(),
@@ -1106,6 +1109,7 @@ impl Parser<'_> {
         self.previous_end = self.tokens[self.position.saturating_sub(1)].span.end;
         self.nesting = 0;
         self.in_task = false;
+        self.in_routine = false;
         self.stop_at_arm = false;
         self.stop_at_arrow = false;
         self.pattern_type_arrow = false;
@@ -2817,7 +2821,8 @@ impl Parser<'_> {
             let checked = first.is_none() && self.checked_attribute();
             let member = first.is_none() && self.continues_group(bindings.last());
             if first.is_none() && (member || self.eat(&TokenKind::Let)) {
-                let mut binding = self.binding(self.in_task, false, member, checked)?;
+                let mut binding =
+                    self.binding(self.in_task || self.in_routine, false, member, checked)?;
                 if checked {
                     binding.value = self.checked(binding.value)?;
                 }
@@ -2825,7 +2830,8 @@ impl Parser<'_> {
                 bindings.push(binding);
             } else if first.is_none() && self.use_binding_ahead() {
                 self.take();
-                let mut binding = self.binding(self.in_task, true, false, false)?;
+                let mut binding =
+                    self.binding(self.in_task || self.in_routine, true, false, false)?;
                 if checked {
                     binding.value = self.checked(binding.value)?;
                 }
@@ -2915,13 +2921,36 @@ impl Parser<'_> {
 
     fn task(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.take().span;
-        let outer = self.in_task;
-        self.in_task = true;
+        let outer = (self.in_task, self.in_routine);
+        (self.in_task, self.in_routine) = (true, false);
         let body = self.block()?;
-        self.in_task = outer;
+        (self.in_task, self.in_routine) = outer;
         let span = start.through(body.span);
         let depth = body.depth + 1;
         self.make(ExprKind::Task(Box::new(body)), span, depth)
+    }
+
+    /// Whether the `tzroutine` at the position starts a `tzroutine { ... }` expression: a `{` follows on
+    /// the same line (TZ02). Anywhere else the word is an ordinary identifier.
+    fn tzroutine_ahead(&self) -> bool {
+        let Some(next) = self.tokens.get(self.position + 1) else {
+            return false;
+        };
+        next.kind == TokenKind::LeftBrace
+            && !self.source[self.current().span.end..next.span.start].contains(['\n', '\r'])
+    }
+
+    /// `tzroutine { body }`: the body is an ordinary block, where `let!` and `do!` run IO at once
+    /// as in a function body, not the binds of a task (TZ02).
+    fn tzroutine(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.take().span;
+        let outer = (self.in_task, self.in_routine);
+        (self.in_task, self.in_routine) = (false, true);
+        let body = self.block()?;
+        (self.in_task, self.in_routine) = outer;
+        let span = start.through(body.span);
+        let depth = body.depth + 1;
+        self.make(ExprKind::Routine(Box::new(body)), span, depth)
     }
 
     fn task_return(&mut self) -> Result<Expr, Diagnostic> {
@@ -3216,10 +3245,10 @@ impl Parser<'_> {
     }
 
     fn computation(&mut self, builder: Ident) -> Result<Expr, Diagnostic> {
-        let outer = self.in_task;
-        self.in_task = false;
+        let outer = (self.in_task, self.in_routine);
+        (self.in_task, self.in_routine) = (false, false);
         let body = self.computation_block()?;
-        self.in_task = outer;
+        (self.in_task, self.in_routine) = outer;
         let span = builder.span.through(body.span);
         let depth = body.depth + 1;
         self.make(ExprKind::Computation(builder, Box::new(body)), span, depth)
@@ -4376,6 +4405,9 @@ impl Parser<'_> {
                 ExprKind::Continue
             }
             TokenKind::TypeVariable(_) => return self.type_function_expression(),
+            TokenKind::Ident(name) if name == "tzroutine" && self.tzroutine_ahead() => {
+                return self.tzroutine();
+            }
             TokenKind::Ident(name) if name == "try" && self.try_clause_ahead() => {
                 return self.try_expression();
             }
@@ -4636,14 +4668,14 @@ impl Parser<'_> {
         arrow: Span,
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
-        let outer = self.in_task;
-        self.in_task = false;
+        let outer = (self.in_task, self.in_routine);
+        (self.in_task, self.in_routine) = (false, false);
         let body = if self.implicit_computation_ahead(Some(self.column(self.current().span))) {
             self.body_expression()?
         } else {
             self.expression_inner(0, true, stop_at_newline)?
         };
-        self.in_task = outer;
+        (self.in_task, self.in_routine) = outer;
         self.record_legacy_lambda(&name, arrow, &body);
         let span = name.span.through(body.span);
         let depth = body.depth + 1;

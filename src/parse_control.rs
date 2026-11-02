@@ -626,8 +626,8 @@ impl Parser<'_> {
                 "a lambda requires at least one parameter; use '\\() -> ...' for unit",
             ));
         }
-        let outer = self.in_task;
-        self.in_task = false;
+        let outer = (self.in_task, self.in_routine);
+        (self.in_task, self.in_routine) = (false, false);
         // A21: the innermost lambda of a function's body holds its contract lines, unless it
         // destructures or guards its parameters.
         if at_site && guard.is_none() && patterns.is_empty() {
@@ -639,7 +639,7 @@ impl Parser<'_> {
         } else {
             self.body_expression()?
         };
-        self.in_task = outer;
+        (self.in_task, self.in_routine) = outer;
         if let Some(guard) = guard {
             // The guard sees the destructured names, so it wraps the body inside the patterns.
             let span = guard.span.through(body.span);

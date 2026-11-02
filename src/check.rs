@@ -1646,6 +1646,17 @@ pub enum Builtin {
     /// `std/Channel.tz`: private to that module.
     ChannelCloseSender,
     ChannelCloseReceiver,
+    /// `Routine.go :: own Owned.Function<unit, unit> -> unit` runs the owned function once in a new
+    /// tzroutine and then drops it: `tzroutine { }` as a function value (TZ02).
+    RoutineGo,
+    /// `Routine.yield :: unit -> unit` gives the processor to another tzroutine (Go's `runtime.Gosched`).
+    RoutineYield,
+    /// `Routine.count :: unit -> i64`: the tzroutines alive, plus one for the calling thread.
+    RoutineCount,
+    /// `Routine.max_procs :: unit -> i64`: the OS threads that run tzroutines at once (`TSUZURI_MAXPROCS`).
+    RoutineMaxProcs,
+    /// `Routine.cpu_count :: unit -> i64`: the online CPUs.
+    RoutineCpuCount,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -1974,6 +1985,11 @@ impl Builtin {
         Self::ChannelCloneSender,
         Self::ChannelCloseSender,
         Self::ChannelCloseReceiver,
+        Self::RoutineGo,
+        Self::RoutineYield,
+        Self::RoutineCount,
+        Self::RoutineMaxProcs,
+        Self::RoutineCpuCount,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -2214,6 +2230,11 @@ impl Builtin {
             Self::ChannelCloneSender => "Channel.clone_sender",
             Self::ChannelCloseSender => "Channel.__close_sender",
             Self::ChannelCloseReceiver => "Channel.__close_receiver",
+            Self::RoutineGo => "Routine.go",
+            Self::RoutineYield => "Routine.yield",
+            Self::RoutineCount => "Routine.count",
+            Self::RoutineMaxProcs => "Routine.max_procs",
+            Self::RoutineCpuCount => "Routine.cpu_count",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::AllocCounter => "Alloc.__counter",
@@ -3324,6 +3345,19 @@ impl Builtin {
             | Self::ChannelCloneSender
             | Self::ChannelCloseSender
             | Self::ChannelCloseReceiver => self.sync_scheme(),
+            Self::RoutineGo => (
+                vec![BuiltinType::Std {
+                    module: "Owned",
+                    name: "Function",
+                    args: vec![Concrete(Type::Unit), Concrete(Type::Unit)],
+                }],
+                Concrete(Type::Unit),
+                Vec::new(),
+            ),
+            Self::RoutineYield => (vec![Concrete(Type::Unit)], Concrete(Type::Unit), Vec::new()),
+            Self::RoutineCount | Self::RoutineMaxProcs | Self::RoutineCpuCount => {
+                (vec![Concrete(Type::Unit)], Concrete(Type::I64), Vec::new())
+            }
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -3457,6 +3491,17 @@ impl Builtin {
     /// (F10 Phase 2).
     pub(crate) fn is_channel(self) -> bool {
         self.name().starts_with("Channel.")
+    }
+
+    /// Whether this builtin is a `Routine` operation, lowered to calls of the tzroutine runtime (TZ02).
+    pub(crate) fn is_routine(self) -> bool {
+        self.name().starts_with("Routine.")
+    }
+
+    /// Whether a reference to this builtin can start a tzroutine, so that the boundaries of the
+    /// program wait for the tzroutines spawned in them (TZ02; TZ05, TZ06 and TZ07 add theirs).
+    pub(crate) fn spawns(self) -> bool {
+        self == Self::RoutineGo
     }
 
     /// The schemes of `Task.scope`, `Atomic.*`, and `Mutex.*` (F10), kept out of `scheme` so
@@ -4058,6 +4103,8 @@ pub enum TypedExprKind {
     },
     Closure(usize, Vec<TypedExpr>),
     TaskRun(Box<TypedExpr>),
+    /// `tzroutine { body }` (TZ02): spawns the `Task<unit>` lambda as a new tzroutine; the value is `()`.
+    RoutineGo(Box<TypedExpr>),
     TaskParallel(Box<TypedExpr>),
     TaskParallelResults(Box<TypedExpr>),
     Parallel(Builtin, Vec<TypedExpr>),
@@ -4334,6 +4381,7 @@ impl TypedExpr {
             | Length(value)
             | StringLength(value)
             | TaskRun(value)
+            | RoutineGo(value)
             | TaskParallel(value)
             | TaskParallelResults(value)
             | NewLiteral(value)
@@ -4436,6 +4484,7 @@ impl TypedExpr {
             | Length(value)
             | StringLength(value)
             | TaskRun(value)
+            | RoutineGo(value)
             | TaskParallel(value)
             | TaskParallelResults(value)
             | NewLiteral(value)
@@ -4590,6 +4639,7 @@ impl TypedExpr {
             | Length(value)
             | StringLength(value)
             | TaskRun(value)
+            | RoutineGo(value)
             | TaskParallel(value)
             | TaskParallelResults(value)
             | NewLiteral(value)
@@ -10739,6 +10789,7 @@ impl<'a> Checker<'a> {
             ExprKind::Binary(..) => self.binary_expression(expression, expected),
             ExprKind::Lambda(..)
             | ExprKind::Task(_)
+            | ExprKind::Routine(_)
             | ExprKind::Call(..)
             | ExprKind::Block { .. } => self.composed_expression(expression, expected),
             _ => self.value_expression(expression, expected),
@@ -10924,6 +10975,27 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Task(body) => {
                 return self.lambda(&[], body, expected, expression.span, LambdaKind::Task, &[]);
+            }
+            ExprKind::Routine(body) => {
+                // The body is the one-shot lambda of a `Task<unit>`: its captures follow the rules of
+                // `task { }` (moved or copied, `Send`, no borrow), and the `unit` result checks the
+                // body against `unit`, so that `let!` and `do!` run IO at once (TZ02).
+                let closure = self.lambda(
+                    &[],
+                    body,
+                    Some(&Type::Task(Box::new(Type::Unit))),
+                    expression.span,
+                    LambdaKind::Task,
+                    &[],
+                )?;
+                if let Some(expected) = expected {
+                    self.same(&Type::Unit, expected, expression.span)?;
+                }
+                return Ok(TypedExpr {
+                    ty: Type::Unit,
+                    kind: TypedExprKind::RoutineGo(Box::new(closure)),
+                    span: expression.span,
+                });
             }
             ExprKind::Call(..) => return self.call_expression(expression, expected, false),
             ExprKind::Block { bindings, result } => {
@@ -11801,6 +11873,7 @@ impl<'a> Checker<'a> {
             ExprKind::Binary(..)
             | ExprKind::Lambda(..)
             | ExprKind::Task(_)
+            | ExprKind::Routine(_)
             | ExprKind::Call(..)
             | ExprKind::ComputationBoundary(_)
             | ExprKind::Block { .. } => unreachable!("composed expressions use their own checker"),

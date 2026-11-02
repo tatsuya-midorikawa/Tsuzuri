@@ -1068,10 +1068,12 @@ fn function_edges(builder: &mut Builder<'_, '_>, budget: &mut usize) {
                     span: expression.span,
                 }),
                 TypedExprKind::TaskRun(argument)
+                | TypedExprKind::RoutineGo(argument)
                 | TypedExprKind::TaskParallel(argument)
                 | TypedExprKind::TaskParallelResults(argument) => {
                     let builtin = match &expression.kind {
                         TypedExprKind::TaskRun(_) => crate::check::Builtin::TaskRun,
+                        TypedExprKind::RoutineGo(_) => crate::check::Builtin::RoutineGo,
                         TypedExprKind::TaskParallel(_) => crate::check::Builtin::TaskParallel,
                         _ => crate::check::Builtin::TaskParallelResults,
                     };

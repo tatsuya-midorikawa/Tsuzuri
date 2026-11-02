@@ -1413,6 +1413,25 @@ fn native_ir_cpu_args(arch: &str, f16: llvm::F16Path) -> Result<Vec<&'static str
     Ok(args)
 }
 
+/// The feature macros of src/runtime/tzroutine.c (and os.c), for the head of a runtime unit that
+/// holds the scheduler.
+const TZROUTINE_FEATURES: &str = "#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)\n#define _DARWIN_C_SOURCE\n#endif\n#if defined(__linux__) && !defined(_GNU_SOURCE)\n#define _GNU_SOURCE\n#endif\n";
+
+/// The tzroutine runtime (TZ01) with its Win32 half inlined for a Windows target, as
+/// `task_runtime_source_for` does for the pool.
+pub(crate) fn tzroutine_runtime_source_for(platform: Platform) -> String {
+    let source = include_str!("runtime/tzroutine.c");
+    if platform.windows() {
+        source.replacen(
+            "#include \"tzroutine-windows.h\"",
+            include_str!("runtime/tzroutine-windows.h"),
+            1,
+        )
+    } else {
+        source.to_owned()
+    }
+}
+
 /// Inlines the Win32 adapter: Clang cannot resolve quoted includes next to
 /// verbatim (`\\?\`) source paths, and canonical temporary paths are verbatim. A Windows target
 /// needs it on any host: the temporary directory has no `task-windows.h` for a quoted include.
@@ -3783,6 +3802,13 @@ fn build_complete(
     }
     // The executor of `Async.start` and `Async.block_on` keeps its state across calls (B08), so the
     // blocks that a trapped call allocated and the trap boundary frees could still be reachable from it.
+    // A trap in a tzroutine happens on a scheduler thread, far from the call that spawned it (TZ02).
+    if options.trap_return && llvm::spawns(module) {
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
+            "--trap-mode return cannot be combined with tzroutine: a trap in one tzroutine cannot be returned from the call that spawned it",
+        ));
+    }
     if options.trap_return && !llvm::host_entries(module).is_empty() {
         return Err(driver_error_of(
             DiagnosticKind::OptionConflict,
@@ -4118,6 +4144,9 @@ fn build_complete(
     let runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&text);
     let task_runtime =
         options.target == Target::Native && runtime_symbols.contains("tsuzuri_task_parallel");
+    // tzroutine (TZ02): src/runtime/tzroutine.c is linked when the IR names one of its symbols.
+    let tzroutine_symbols = runtime_symbols.prefix("tsuzuri_tz_");
+    let tzroutine_runtime = options.target == Target::Native && tzroutine_symbols;
     // A kernel call or a multiversioned function's stub declares a `tsuzuri_cpu_` function (F08).
     let cpu_runtime = options.target == Target::Native && runtime_symbols.prefix("tsuzuri_cpu_");
     let io_runtime = runtime_symbols.prefix("tsuzuri_io_");
@@ -4160,6 +4189,7 @@ fn build_complete(
             ("declare i32 @tsuzuri_mutex_lock(", "Mutex"),
             ("declare i32 @tsuzuri_channel_send(", "Channel"),
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
+            ("@tsuzuri_tz_", "tzroutine"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
             ("@tsuzuri_net_", "the Net socket API"),
@@ -4206,6 +4236,7 @@ fn build_complete(
         .iter()
         .any(|symbol| runtime_symbols.prefix(symbol));
     let native_runtime = task_runtime
+        || tzroutine_runtime
         || cpu_runtime
         || trap_runtime
         || gpu_runtime
@@ -4213,10 +4244,12 @@ fn build_complete(
             && (io_runtime || os_runtime || net_runtime || arguments_runtime || async_reactor));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
+    // A tzroutine's stack is smaller than a thread's, so a program with tzroutines reports its
+    // overflows too (TZ02).
     let stack_runtime = options.target == Target::Native
         && options.emit == Emit::Executable
         && platform.unix()
-        && llvm::has_recursion(&text);
+        && (llvm::has_recursion(&text) || tzroutine_runtime);
     // B10: the report of an executable built with --trap-info writes the chain of frames when
     // TSUZURI_TRAP_REPORT names a file (src/runtime/backtrace.c); only the executable's IR asks for it.
     let backtrace_runtime = options.emit == Emit::Executable
@@ -4229,6 +4262,34 @@ fn build_complete(
             DiagnosticKind::ToolchainMissingFeature,
             "native parallel tasks require a POSIX or Windows toolchain; wasm32 provides the portable sequential backend",
         ));
+    }
+    // TZ02: the tzroutine runtime switches stacks on aarch64 and x86-64 under POSIX and Windows.
+    // On WebAssembly it will suspend through JSPI (TZ09).
+    if tzroutine_symbols && !matches!(options.emit, Emit::Llvm | Emit::Header) {
+        if options.target.is_wasm() {
+            return Err(if options.wasm_threads {
+                driver_error_of(
+                    DiagnosticKind::OptionConflict,
+                    "tzroutine cannot be combined with --wasm-feature threads: the tzroutine runtime has no WebAssembly threads backend",
+                )
+            } else if options.wasm_jspi {
+                driver_error_of(
+                    DiagnosticKind::OptionConflict,
+                    "tzroutine with --wasm-feature jspi is not implemented yet",
+                )
+            } else {
+                driver_error_of(
+                    DiagnosticKind::OptionRequiresOption,
+                    "tzroutine on WebAssembly needs --wasm-feature jspi",
+                )
+            });
+        }
+        if !platform.threads() || !matches!(platform.arch_name(), "aarch64" | "x86_64") {
+            return Err(driver_error_of(
+                DiagnosticKind::ToolchainMissingFeature,
+                "tzroutine requires a POSIX or Windows toolchain on aarch64 or x86-64",
+            ));
+        }
     }
     // The OS-API errors come first: `os_runtime` is part of `native_runtime`, and the generic message below
     // would send a Windows user to link a POSIX runtime that cannot be linked there.
@@ -4672,7 +4733,7 @@ fn build_complete(
         let merge_runtime_ir = merge_debug_ir || options.emit == Emit::Bitcode;
         if native_runtime {
             let runtime_source = temporary.path.join("task.c");
-            let source = format!(
+            let mut source = format!(
                 "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 // The feature macros of os.c and net.c are the same and must precede every include, so
                 // they come first.
@@ -4718,6 +4779,14 @@ fn build_complete(
                     ""
                 }
             );
+            // After the nine parts, and only when used: the prebuilt runtimes are matched by the text
+            // of the other programs' units (TZ02). The scheduler's feature macros go before every
+            // include of the unit, as glibc fixes its features at the first header.
+            if tzroutine_runtime {
+                source.insert_str(0, TZROUTINE_FEATURES);
+                source.push('\n');
+                source.push_str(&tzroutine_runtime_source_for(platform));
+            }
             fs::write(&runtime_source, &source)
                 .map_err(|error| io_error("write task runtime", &runtime_source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
@@ -4730,7 +4799,12 @@ fn build_complete(
                 .args(compile_args(platform))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
-            if (task_runtime || trap_runtime || async_reactor || net_runtime || gpu_runtime)
+            if (task_runtime
+                || tzroutine_runtime
+                || trap_runtime
+                || async_reactor
+                || net_runtime
+                || gpu_runtime)
                 && !platform.windows()
             {
                 runtime.arg("-pthread");
@@ -5049,7 +5123,9 @@ fn build_complete(
         }
         if native_runtime && options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             clang.args(["-x", "none"]).arg(&runtime_object);
-            if (task_runtime || net_runtime || trap_runtime) && !platform.windows() {
+            if (task_runtime || tzroutine_runtime || net_runtime || trap_runtime)
+                && !platform.windows()
+            {
                 clang.arg("-pthread");
             }
             // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.
@@ -5165,7 +5241,7 @@ fn build_complete(
             }
             if native_runtime {
                 linker.arg(&runtime_object);
-                if task_runtime || net_runtime || trap_runtime {
+                if task_runtime || tzroutine_runtime || net_runtime || trap_runtime {
                     linker.arg("-pthread");
                 }
                 if gpu_runtime && platform.linux() {
