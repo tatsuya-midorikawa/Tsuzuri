@@ -1285,6 +1285,9 @@ static VOID CALLBACK tzr_fiber_start(LPVOID arg) {
     tzr_g *g = arg;
     for (;;) {
         fesetenv(FE_DFL_ENV); /* each routine starts with the default rounding and exception masks */
+#if defined(_M_X64) || defined(__x86_64__)
+        __asm__ volatile("fnclex"); /* and no x87 exception flag of the routine before */
+#endif
         g->code(g->env);
         tzr_m *m = tzr_this_m(); /* R2: the body may have moved this G to another M */
         m->after = tzr_after_exit;
