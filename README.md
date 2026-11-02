@@ -16,7 +16,7 @@
 - **直感的で表現力豊かな関数型構文**: カリー化、強力な型推論、代数的データ型（`union`）、網羅性を検証するパターンマッチ、パイプライン演算子（`|>`）、関数合成（`>>` / `<<`）をサポートしています。
 - **ゼロコストの型クラス**: 型クラスはコンパイル時に静的に単相化（モノモーフィゼーション）され、動的ディスパッチやランタイム辞書のオーバーヘッドを生じさせません。異なる型の値を一つのコレクションへ入れるときだけ、`dyn` 型で実行時のディスパッチを明示できます。
 - **拡張可能なコンピュテーション式**: `.tc` ファイルでビルダーを定義することで、`Result` や `Maybe`、非同期処理などのモナディックな制御フローを言語本来の構文のように扱えます。
-- **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。Go の goroutine に相当する `tzroutine { ... }`（専用のスタックを持つ M:N のスケジューリング。`main` や `export` の呼び出しは、その中で起動した tzroutine の終了を待ちます）と、Go の `chan T` に当たる `Channel<T>`（`for x in ch`、`close`、バッファなしの受け渡し）も使えます。
+- **安全で軽量な並列処理**: 遅延評価・一回実行のタスク（`task { ... }`）と常駐スレッドプールにより、データ競合のない安全な並列計算を提供します。Go の goroutine に相当する `tzroutine { ... }`（専用のスタックを持つ M:N のスケジューリング。`main` や `export` の呼び出しは、その中で起動した tzroutine の終了を待ちます）と、Go の `chan T` に当たる `Channel<T>`（`for x in ch`、`close`、バッファなしの受け渡し）、複数のチャンネルを同時に待つ `select` 式も使えます。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
 - **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです。`--target` は、Linux の glibc/musl と Windows の MSVC/MinGW を区別した 9 個の native triple を受け付け、同梱ツールチェーンか `TSUZURI_SYSROOT` でクロスリンクします。検証範囲と機能の制限は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
@@ -360,6 +360,7 @@ Task.run computation
 - **データ並列 API**: タスクオブジェクトの生成オーバーヘッドを抑えたい大量のデータ処理には、`Parallel.init`、`Parallel.map`、`Parallel.map_ref`、`Parallel.reduce`、`Parallel.sum`、`Parallel.fold` を使用します。配列を固定チャンクに分割し、最小限の同期コストで高速に処理します。結合的な還元を `Monoid`（`Monoids.Sum`・`Monoids.MaxOf`）で書くと、`Parallel.fold` は逐次の `Array.fold_monoid` とビットまで同じ値を返します（浮動小数点を含む型は `E1039` で拒否されます）。`tsuzuri check PATH --report parallel` は、`Parallel` に置き換えられる `Array` の呼び出しを提案として一覧にします（自動では書き換えません）。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。実行例は `tsuzuri run examples/tasks` で確認できます。
 - **tzroutine (`tzroutine { ... }`)**: ブロックを Go の goroutine に相当する軽量な実行単位として起動し、`()` を返します。捕捉の規則は `task { }` と同じで、`main`・`export` の呼び出し・`test`・`bench` は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。`Routine.go`・`yield`・`count`・`max_procs`・`cpu_count` を持つ組み込みの `Routine` モジュールがあり、P の数は `TSUZURI_MAXPROCS` で決めます。ネイティブの macOS・Linux・Windows だけで、WebAssembly は未対応です（[tzroutine 式](./_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md)）。
 - **Channel (`Channel<T>`)**: tzroutine の間で値を受け渡す Go と同じ双方向のチャンネルです。`Channel.make n`（0 はバッファなし）・`send`・`recv`（`Maybe`）・`try_send`・`try_recv`・`close`・`length`・`capacity`・`share` と `for x in ch` があり、閉じるのは `close` だけ、閉じた後の `send` はトラップです。待つのは tzroutine だけで、誰も起こせない待ちはその場所でトラップします。tzroutine を起動しないプログラムは、既定の WebAssembly でも 1 本の実行として使えます。旧 `Channel`（送り手と受け手の端が分かれたもの）は `DataChannel` に改名し、旧の名前は `E1040` と `tsuzuri fix` で直せます（[Channel](./_tsuzuri/language-reference/built-in-types-and-modules/channel.md)）。
+- **select 式**: `select | recv x from ch -> … | send v to ch -> … | default -> …` で複数のチャンネルの送受信を同時に待ち、すぐにできる腕を一様乱数で 1 つ選びます。`when` で腕を止め（Go の nil チャンネルの代わり）、`default` で待たずに試します。選ばれなかった送る値は drop されます（[select 式](./_tsuzuri/language-reference/async-tasks-and-lazy/select.md)）。
 - **エラー短絡 (`Task.parallel_results`)**: 複数の `Task<Result<T, E>>` を並列実行し、いずれかが失敗した時点で未開始のタスクを即座にキャンセルして最小インデックスのエラーを返します。
 
 ```text
@@ -1156,6 +1157,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | tzroutine のランタイム（TZ01） | —（C だけ） | `tzroutine_runtime.mjs`（`src/runtime/tzroutine.c` の C の単体テスト。`TSUZURI_TSAN=1`・`TSUZURI_ASAN=1` で sanitizer も） |
 | tzroutine 式・`Routine`（TZ02） | `tests/tzroutine.rs` | `tzroutine.mjs`、`features.mjs tzroutine`（native だけ）、`tzroutine_runtime.mjs` |
 | `Channel`・`E1040`（TZ03） | `tests/channel.rs`、`tests/removed_features.rs` | `features.mjs channel`（native、P 1・4）・`channel_single`（native と既定の WebAssembly）、`tzroutine_runtime.mjs` |
+| `select` 式（TZ04） | `tests/select.rs` | `features.mjs select`（native、P 1・4）・`select_single`（native と既定の WebAssembly） |
 | トラップの報告・境界・`Domain`（E14・B10） | `tests/trap_locations.rs`、`tests/trap_backtrace.rs`（バックトレースとクラッシュレポート）、`tests/domain.rs`（`E1038` と IR） | `trap_return.mjs`（C の境界と `tests/domain_runtime.c`）、`domain.mjs`、`trap_boundary.mjs`、`stack_overflow.mjs`、`trap_return_sync.mjs`（`TSUZURI_NO_SANITIZERS=1` で sanitizer の build を外す） |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |

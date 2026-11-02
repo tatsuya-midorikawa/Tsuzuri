@@ -1,0 +1,15 @@
+def counted :: ref Arc<Atomic<i64>> -> ref Channel<i64> -> ref Channel<i64>
+fn counted counter channel =
+    let _before = Atomic.fetch_add (Arc.get counter) 1i64
+    channel
+
+let counter = Arc.new (Atomic.create 0i64)
+let ready: Channel<i64> = Channel.make 1
+Channel.send ready 4
+let picked = select
+    | recv x from counted (ref counter) (ref ready) when false -> 100
+    | default -> 5
+picked * 10 + Atomic.load (Arc.get (ref counter))
+
+// rule: TSK-021
+// expect: stdout "50\n"

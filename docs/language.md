@@ -122,7 +122,7 @@ native と `--wasm-feature simd128` の WebAssembly は Latin-1 の走査・比�
   `bench` は G18 で追加された予約語です。以前に識別子 `bench` を使っていたコードは `E0002` となるため、`benchmark` などへの改名が必要です（互換性を破る変更点です）。
   予約語の集合は、ソースを読む言語版（edition）で決まります。edition `2026` の予約語が上の一覧です。`Tsuzuri.toml` の `[package]` の `edition` でパッケージごとに選び、省略すると `2026`、マニフェストのないプロジェクトと標準ライブラリは最新の edition です（[安定性と互換性の方針](stability.md#edition)）。
   `of` は `union` の case 宣言の内部でのみ予約される文脈キーワードであり、それ以外の場所では通常の識別子として扱われます。
-  `where` も関数ガードの後置束縛を開始する位置でのみ認識される文脈キーワードです。`namespace` および `using` はファイル先頭の宣言位置でのみ認識される文脈キーワードです。`tzroutine` は直後が同じ行の `{` のときだけ式を始める文脈キーワードです（[tzroutine](#tzroutine)）。
+  `where` も関数ガードの後置束縛を開始する位置でのみ認識される文脈キーワードです。`namespace` および `using` はファイル先頭の宣言位置でのみ認識される文脈キーワードです。`tzroutine` は直後が同じ行の `{` のときだけ式を始める文脈キーワードです（[tzroutine](#tzroutine)）。`select` は直後が `|` で、その次が `recv`・`send`・`default` のときだけ式を始める文脈キーワードで、`recv`・`send`・`default`・`from` はその腕の頭の中だけの語です（[select](#select)）。
   `pure` は `def` の直前、`own` は引数型全体の前でだけ印として読み、それ以外では識別子に使えます。
   コロン記号の連続 `::` は、`def` の宣言名と型シグネチャの区切り、リストのコンス演算子 `head :: tail`、および名前空間・モジュールのパス（例: `Sample::Features::Shape.area`）として使用されます。
   識別子同士を空白を挟まずに連結し、末尾の要素が大文字で始まる（モジュールを指す）場合、または行頭の `namespace`／`using` 宣言内に現れる `::` がパス区切り文字として認識されます。パターンマッチにおける `x::xs` はリストのコンスとして解釈されます。
@@ -2664,6 +2664,16 @@ POSIX または Windows 以外の未対応プラットフォームに対する�
 - **`Routine`**: 組み込みのモジュール。`Routine.go :: own Owned.Function<unit, unit> -> unit`（所有する関数を新しい tzroutine で 1 回呼び、drop する）、`Routine.yield :: unit -> unit`、`Routine.count :: unit -> i64`（生きている tzroutine の数 + 1）、`Routine.max_procs :: unit -> i64`、`Routine.cpu_count :: unit -> i64`。
 - **実行**: ランタイムは `src/runtime/tzroutine.c` の M:N のスケジューラーです。P の数は `TSUZURI_MAXPROCS`（1〜256、既定はオンラインの CPU 数）、各 tzroutine のスタックの予約は `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576、既定 1024）で、下端の 128 KiB がガードです。プリエンプションはなく、`extern` 関数とファイルの I/O はその間 OS スレッドを止めます。tzroutine を起動するプログラムは、すべての関数が大きな frame に stack probe を使います。
 - **ターゲット**: native の macOS・Linux・Windows（aarch64・x86-64）で動きます。WebAssembly で tzroutine を起動するプログラムは `E2000`（`option_requires_option`、`jspi` を付けても `option_conflict`）です。起動しないプログラムの `Channel` と `Routine` の問い合わせ（`count`・`max_procs`・`cpu_count` は 1、`yield` は何もしない）は、既定の WebAssembly で 1 本の実行として動きます。`--wasm-feature threads`・`--freestanding` と、tzroutine を起動するプログラムの `--trap-mode return` も `E2000` です。`--emit llvm`・`header` は拒否しません。tzroutine を使わないプログラムの IR・オブジェクト・実行ファイルは変わりません。
+
+## select
+
+`select | head [when guard] -> body ...` は、複数の `Channel` の送受信を同時に待ち、先にできる 1 つの腕を実行する式です（TZ04、D-61）。腕の頭は `recv NAME from CHANNEL`（`NAME` は `_` でもよい）、`send VALUE to CHANNEL`、`default` で、腕は `match` と同じ桁にそろえます。
+
+- **構文**: 腕は 1 つ以上、`default` は 0 か 1 つ（2 つ以上は `E0002` の `select_default_repeated`）で位置は自由、`default` に `when` は付けられません。ほかの頭は `E0002`（`select_arm_expected`）、腕は 65,535 個まで（`E1017`、`select_arm_limit`）。
+- **型**: `recv` のチャンネルは `Channel<'a>` か `ReceiveOnly<'a>`、`send` のチャンネルは `Channel<'a>` か `SendOnly<'a>` の場所か参照（暗黙の借用。その場で作った値は `E1013` の `borrow_of_temporary`）、送る値は `'a`。`recv x` の `x` は `Maybe<'a>`。`when` は `bool`。すべての腕の本体の型が同じで、それが式の型です。
+- **意味**: 腕を上から順に、`when` → チャンネル → 送る値の順に評価し、偽の `when` の腕はチャンネルと値を評価しません。有効な腕のうちすぐにできるものから一様乱数で 1 つを選び、なければ `default`、それもなければ待ちます（有効な腕がなければ永久に待ち、判定の理由は `select (no cases)`）。選ばれなかった送る腕の値は drop され、`recv _` が受け取った値は本体の前に drop されます。閉じたチャンネルへの送る腕が選ばれると `send on closed Channel` でトラップします。
+- **所有権**: 送る値は `select` に移り（以後の使用は `E1012`）、`Channel.send` の要素と同じく借用を持てません（`E1013`、`channel_item_holds_borrow`）。本体は `match` の腕と同じく合流します。
+- **下ろし方**: 型検査が、腕のチャンネルの操作を 1 つの `TypedExprKind::SelectWait`（腕の番号と、名前のある受け取る腕ごとの `Maybe<'a>` の組を返す）にし、本体をその組への `match` にします。生成は `tsuzuri_tz_select`（TZ01）。腕の情報は関数の入口の `alloca` に置きます（65 個以上はヒープ）。既定の WebAssembly では、spawn しないプログラムの `select` が `TZR_SINGLE` の 1 本の実行で動き、待つべき `select` はトラップします。
 
 ## 非同期計算（Async）
 

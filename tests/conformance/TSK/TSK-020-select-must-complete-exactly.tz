@@ -1,0 +1,15 @@
+let empty: Channel<i64> = Channel.make 1
+let full: Channel<i64> = Channel.make 1
+Channel.send full 7
+let first = select
+    | recv x from empty -> 0
+    | recv y from full -> match y with | Maybe.Some v -> v | Maybe.None -> 0
+    | default -> 1
+let second = select
+    | recv x from empty -> 0
+    | recv y from full -> 2
+    | default -> 3
+first * 10 + second + Channel.length full
+
+// rule: TSK-020
+// expect: stdout "73\n"

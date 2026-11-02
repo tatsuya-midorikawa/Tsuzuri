@@ -171,7 +171,7 @@ $"full={full} {state}"
 full=bcd empty
 ```
 
-Go では `select` と `default` で書く操作です。複数のチャンネルから選ぶ `select` は TZ04 です。
+Go では `select` と `default` で書く操作です。複数のチャンネルを同時に待つには [select 式](../async-tasks-and-lazy/select.md) を使います。
 
 ## ハンドルと所有権
 
@@ -328,6 +328,7 @@ TZ03 より前の `Channel.bounded`・`Channel.clone_sender`・`Channel.Sender`�
 ## 関連項目
 
 - [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
+- [select 式](../async-tasks-and-lazy/select.md)
 - [Routine](./routine.md)
 - [DataChannel](./datachannel.md)
 - [Mutex](./mutex.md)

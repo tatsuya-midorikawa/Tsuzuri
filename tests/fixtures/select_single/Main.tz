@@ -1,0 +1,82 @@
+// TZ04: select without a second thread, the same on native and on the default WebAssembly target.
+
+export def default_when_idle :: i64
+fn default_when_idle =
+    let values: Channel<i64> = Channel.make 0
+    select
+    | recv _ from values -> 1
+    | default -> 42
+
+export def picks_the_ready_arm :: i64
+fn picks_the_ready_arm =
+    let empty: Channel<i64> = Channel.make 1
+    let full: Channel<i64> = Channel.make 1
+    Channel.send full 8
+    select
+    | recv x from empty -> 0
+    | recv y from full -> match y with | Maybe.Some v -> v | Maybe.None -> 0
+    | default -> 99
+
+export def buffered_send :: i64
+fn buffered_send =
+    let values: Channel<string> = Channel.make 1
+    let sent = select
+        | send "abc" to values -> 1
+        | default -> 0
+    let length = match Channel.try_recv values with
+        | Channel.Received.Item text -> String.length text
+        | _ -> 0
+    sent * 10 + length
+
+export def closed_recv :: i64
+fn closed_recv =
+    let values: Channel<i64> = Channel.make 1
+    Channel.close values
+    select
+    | recv x from values -> match x with | Maybe.Some _ -> 0 | Maybe.None -> 1
+    | default -> 2
+
+export def guards :: i64
+fn guards =
+    let values: Channel<i64> = Channel.make 1
+    Channel.send values 4
+    select
+    | recv x from values when false -> 1
+    | default -> 2
+
+export def direction_handles :: i64
+fn direction_handles =
+    let values: Channel<i64> = Channel.make 1
+    let out = Channel.send_only values
+    let input = Channel.receive_only values
+    let first = select
+        | send 6 to out -> 1
+        | default -> 0
+    let second = select
+        | recv x from input -> match x with | Maybe.Some v -> v | Maybe.None -> 0
+        | default -> 0
+    first * 10 + second
+
+export def in_loop :: i64
+fn in_loop =
+    let values: Channel<i64> = Channel.make 1
+    let mut sum = 0i64
+    for i in 0 ..< 100000 do
+        select
+        | send (i as i64) to values -> ()
+        | recv x from values -> match x with | Maybe.Some v -> sum = sum + v | Maybe.None -> ()
+    sum + Channel.length values
+
+export def send_closed :: i64
+fn send_closed =
+    let values: Channel<i64> = Channel.make 1
+    Channel.close values
+    select
+    | send 1 to values -> 0
+    | default -> 1
+
+export def blocked :: i64
+fn blocked =
+    let values: Channel<i64> = Channel.make 0
+    select
+    | recv x from values -> 0

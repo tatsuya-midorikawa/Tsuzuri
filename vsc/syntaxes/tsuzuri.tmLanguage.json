@@ -15,6 +15,8 @@
     { "name": "keyword.control.tsuzuri", "match": "\\b(?:if|then|elif|else|match|with|when|where|for|in|to|downto|while|break|continue|return|yield|do|and|let|try|finally|is)(?:!)?\\b|\\b(?:return|yield|do|and|let|match)!" },
     { "name": "keyword.control.tsuzuri", "match": "\\buse\\b(?=\\s*!?\\s*(?:mut\\b|[A-Za-z_][A-Za-z_0-9]*\\s*(?:=(?!=)|:(?!:))))!?" },
     { "name": "keyword.control.tsuzuri", "match": "\\btzroutine\\b(?=[ \\t]*\\{)" },
+    { "name": "keyword.control.tsuzuri", "match": "\\bselect\\b(?=\\s*\\|\\s*(?:recv|send|default)\\b)" },
+    { "match": "^\\s*(\\|)\\s*(recv|send|default)\\b(?:[^\\n]*?\\b(from|to)\\b)?", "captures": { "2": { "name": "keyword.control.tsuzuri" }, "3": { "name": "keyword.control.tsuzuri" } } },
     { "name": "keyword.declaration.tsuzuri", "match": "\\b(?:def|fn|rec|export|extern|private|record|union|type|const|test|bench|class|instance|deriving|dyn|task|mut|ref|deref|new|as|of)\\b" },
     { "match": "(@alias)[ \\t]+([a-z][A-Za-z_0-9]*)", "captures": { "1": { "name": "storage.modifier.attribute.tsuzuri" }, "2": { "name": "entity.name.namespace.tsuzuri" } } },
     { "name": "storage.modifier.attribute.tsuzuri", "match": "@(?:alias|checked|cpu|literal)\\b" },

@@ -69,6 +69,16 @@ static void tzr_ready_unlock(tzr_g *g, tzr_lock *lock) {
 /* No standard error: the trap at the call site is the report. */
 TZR_API void tsuzuri_tz_report(int32_t what) { (void)what; }
 
+/* xorshift64*, as the scheduler's: the choice among the ready cases of a select. */
+static uint64_t tzr_rand(uint64_t *state) {
+    uint64_t x = *state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    return x * 0x2545F4914F6CDD1DULL;
+}
+
 /* Routine's questions: one thread, and no tzroutine but the caller's. */
 TZR_API void tsuzuri_tz_yield(void) {}
 TZR_API int64_t tsuzuri_tz_count(void) { return 1; }
@@ -2338,4 +2348,47 @@ static int64_t tzr_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *o
     *ok = won->success;
     return chosen;
 }
-#endif /* !TZR_SINGLE */
+#else
+/* ---------------------------------------------------------------- select (one thread) */
+
+/* A case as the generated code lays it out, `{ ptr, ptr, i32, i32, [6 x i64] }`, whatever the
+ * size of a pointer. */
+typedef struct tzr_scase {
+    tzr_chan *c;
+    void *elem;
+    int32_t send;
+    int32_t pad;
+    uint64_t scratch[6];
+} tzr_scase;
+
+/* With one thread no queue holds a waiter, so a case is ready when it can complete at once; among
+ * the ready cases one is chosen uniformly (reservoir sampling, as the native select's random order
+ * does). A select that would wait returns -2, the deadlock status, and the generated code traps. */
+TZR_API int64_t tsuzuri_tz_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *ok) {
+    tzr_g *g = tzr_current();
+    *ok = 0;
+    int64_t chosen = -1;
+    uint64_t ready = 0;
+    for (int64_t i = 0; i < n; i++) {
+        tzr_chan *c = cases[i].c;
+        int now = cases[i].send ? (c->closed || c->count < c->capacity) : (c->count > 0 || c->closed);
+        if (now && tzr_rand(&g->rand) % ++ready == 0) chosen = i;
+    }
+    if (chosen < 0) return block ? -2 : -1;
+    tzr_scase *cs = &cases[chosen];
+    tzr_chan *c = cs->c;
+    if (cs->send) {
+        if (c->closed) return chosen; /* *ok == 0: the generated code traps */
+        memcpy(TZR_CHAN_BUF(c, c->sendx), cs->elem, c->elem_size);
+        c->sendx = (c->sendx + 1) % c->capacity;
+        c->count++;
+        *ok = 1;
+    } else if (c->count > 0) {
+        memcpy(cs->elem, TZR_CHAN_BUF(c, c->recvx), c->elem_size);
+        c->recvx = (c->recvx + 1) % c->capacity;
+        c->count--;
+        *ok = 1;
+    }
+    return chosen; /* a receive from a closed and empty channel: *ok == 0 */
+}
+#endif /* TZR_SINGLE */

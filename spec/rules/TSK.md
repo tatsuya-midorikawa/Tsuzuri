@@ -23,3 +23,6 @@ The rules of this area, one sentence each, with the document that states them an
 | TSK-017 | A `send` on a closed `Channel` MUST trap. | [channel.md](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md) | TSK-017-send-on-closed-channel | active |
 | TSK-018 | Items of one `Channel` MUST be received in the order their sends completed. | [channel.md](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md) | TSK-018-items-of-one-channel | active |
 | TSK-019 | `for x in ch` MUST end when `ch` is closed and empty. | [channel.md](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md) | TSK-019-for-x-in-ch | active |
+| TSK-020 | A `select` MUST complete exactly one ready arm, or run `default` when none is ready. | [select.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/select.md) | TSK-020-select-must-complete-exactly | active |
+| TSK-021 | An arm whose `when` guard is false MUST NOT be chosen, and its channel and value MUST NOT be evaluated. | [select.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/select.md) | TSK-021-arm-whose-when-guard | active |
+| TSK-022 | A send value of an arm that is not chosen MUST be dropped exactly once. | [select.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/select.md) | TSK-022-send-value-of-arm | active |

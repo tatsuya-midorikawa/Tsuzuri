@@ -1067,6 +1067,23 @@ fn function_edges(builder: &mut Builder<'_, '_>, budget: &mut usize) {
                     ),
                     span: expression.span,
                 }),
+                // TZ04: each arm of a select is a send or a receive on its channel.
+                TypedExprKind::SelectWait(wait) => {
+                    for arm in &wait.arms {
+                        let builtin = if arm.send.is_some() {
+                            crate::check::Builtin::ChannelSend
+                        } else {
+                            crate::check::Builtin::ChannelRecv
+                        };
+                        edges.push(CapturedEdge {
+                            rel: "calls",
+                            from: id.clone(),
+                            to: builtin.name().to_owned(),
+                            args: Some(vec![argument_conv(&arm.channel, &types)]),
+                            span: arm.channel.span,
+                        });
+                    }
+                }
                 TypedExprKind::TaskRun(argument)
                 | TypedExprKind::RoutineGo(argument)
                 | TypedExprKind::TaskParallel(argument)

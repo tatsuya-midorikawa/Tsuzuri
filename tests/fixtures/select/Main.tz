@@ -1,0 +1,185 @@
+// TZ04: select between tzroutines. Every export computes its result on the calling thread from what
+// it received, so the result does not depend on which ready arm was chosen.
+
+// An item that counts its drops.
+record Token { counter: Arc<Atomic<i64>> }
+
+def count_drop :: ref Token -> unit
+fn count_drop token =
+    let _before = Atomic.fetch_add (Arc.get (ref token.counter)) 1i64
+    ()
+
+instance Drop<Token> {
+    fn drop token = count_drop token
+}
+
+// The example of the ticket: three channels, the last one closed to stop.
+export def three_channels :: i64
+fn three_channels =
+    let a: Channel<i64> = Channel.make 0
+    let b: Channel<i64> = Channel.make 0
+    let quit: Channel<unit> = Channel.make 0
+    let a2 = Channel.share a
+    let b2 = Channel.share b
+    let quit2 = Channel.share quit
+    tzroutine {
+        for i in 1 ..= 3 do
+            Channel.send a2 (i as i64)
+        for i in 1 ..= 2 do
+            Channel.send b2 (i as i64)
+        Channel.close quit2
+    }
+    let mut last_a = 0i64
+    let mut last_b = 0i64
+    let mut running = true
+    while running do
+        select
+        | recv x from a -> match x with | Maybe.Some v -> last_a = v | Maybe.None -> ()
+        | recv y from b -> match y with | Maybe.Some v -> last_b = v | Maybe.None -> ()
+        | recv _ from quit -> running = false
+    last_a * 100 + last_b * 10 + 1
+
+// Two senders that are always ready: in 10,000 selects each is chosen at least 3,000 times.
+def keep_sending :: own Channel<i64> -> own Channel<unit> -> unit
+fn keep_sending out stop =
+    let mut running = true
+    while running do
+        select
+        | send 1 to out -> ()
+        | recv _ from stop -> running = false
+
+export def fairness :: i64
+fn fairness =
+    let a: Channel<i64> = Channel.make 0
+    let b: Channel<i64> = Channel.make 0
+    let stop: Channel<unit> = Channel.make 0
+    let a_out = Channel.share a
+    let a_stop = Channel.share stop
+    tzroutine {
+        keep_sending a_out a_stop
+    }
+    let b_out = Channel.share b
+    let b_stop = Channel.share stop
+    tzroutine {
+        keep_sending b_out b_stop
+    }
+    let mut from_a = 0i64
+    let mut from_b = 0i64
+    for _i in 0 ..< 10000 do
+        select
+        | recv _ from a -> from_a = from_a + 1
+        | recv _ from b -> from_b = from_b + 1
+    Channel.close stop
+    if from_a >= 3000 && from_b >= 3000 && from_a + from_b == 10000 then 1 else 0
+
+// A send arm and a receive arm in one select: n items through a forwarding tzroutine.
+export def send_and_recv :: i64 -> i64
+fn send_and_recv n =
+    let input: Channel<i64> = Channel.make 0
+    let output: Channel<i64> = Channel.make 0
+    let from_main = Channel.share input
+    let to_main = Channel.share output
+    tzroutine {
+        for value in from_main do
+            Channel.send to_main value
+        Channel.close to_main
+    }
+    let mut sent = 0i64
+    let mut got = 0i64
+    let mut sum = 0i64
+    while got < n do
+        select
+        | send sent + 1 to input when sent < n -> sent = sent + 1
+        | recv value from output -> match value with
+            | Maybe.Some v ->
+                sum = sum + v
+                got = got + 1
+            | Maybe.None -> got = n
+    Channel.close input
+    sum
+
+// A false guard: the arm is never chosen and its channel expression is not evaluated.
+def counted :: ref Arc<Atomic<i64>> -> ref Channel<i64> -> ref Channel<i64>
+fn counted counter channel =
+    let _before = Atomic.fetch_add (Arc.get counter) 1i64
+    channel
+
+export def guards :: i64
+fn guards =
+    let counter = Arc.new (Atomic.create 0i64)
+    let ready: Channel<i64> = Channel.make 1
+    let other: Channel<i64> = Channel.make 1
+    Channel.send ready 5
+    Channel.send other 7
+    let mut picked = 0i64
+    select
+    | recv x from counted (ref counter) (ref other) when false -> picked = 100
+    | recv y from ready -> match y with | Maybe.Some v -> picked = v | Maybe.None -> ()
+    picked * 10 + Atomic.load (Arc.get (ref counter))
+
+// A closed channel's receive arm is chosen with None.
+export def closed_recv :: i64
+fn closed_recv =
+    let values: Channel<i64> = Channel.make 0
+    let closer = Channel.share values
+    tzroutine {
+        Channel.close closer
+    }
+    select
+    | recv x from values -> match x with | Maybe.Some _ -> 0 | Maybe.None -> 1
+
+// The values of the send arms that are not chosen are dropped once each.
+export def drops_unchosen :: i64
+fn drops_unchosen =
+    let counter = Arc.new (Atomic.create 0i64)
+    let full_a: Channel<Token> = Channel.make 1
+    let full_b: Channel<Token> = Channel.make 1
+    Channel.send full_a (Token { counter: Arc.share (ref counter) })
+    Channel.send full_b (Token { counter: Arc.share (ref counter) })
+    let ready: Channel<i64> = Channel.make 1
+    Channel.send ready 3
+    let mut got = 0i64
+    select
+    | send Token { counter: Arc.share (ref counter) } to full_a -> got = 100
+    | send Token { counter: Arc.share (ref counter) } to full_b -> got = 200
+    | recv x from ready -> match x with | Maybe.Some v -> got = v | Maybe.None -> ()
+    got * 10 + Atomic.load (Arc.get (ref counter))
+
+// The same channel in two receive arms: one item, one receive.
+export def same_channel_twice :: i64
+fn same_channel_twice =
+    let values: Channel<i64> = Channel.make 1
+    let out = Channel.share values
+    tzroutine {
+        Channel.send out 9
+    }
+    let mut got = 0i64
+    select
+    | recv x from values -> match x with | Maybe.Some v -> got = got + v | Maybe.None -> ()
+    | recv y from values -> match y with | Maybe.Some v -> got = got + v | Maybe.None -> ()
+    got * 10 + Channel.length values
+
+// A select in a loop, 100,000 times: the frame does not grow.
+export def in_loop :: i64
+fn in_loop =
+    let values: Channel<i64> = Channel.make 1
+    let mut sum = 0i64
+    for i in 0 ..< 100000 do
+        select
+        | send (i as i64) to values -> ()
+        | recv x from values -> match x with | Maybe.Some v -> sum = sum + v | Maybe.None -> ()
+    sum + Channel.length values
+
+// A chosen send to a closed channel traps; a select with no enabled arm and no default waits for ever.
+export def send_closed :: i64
+fn send_closed =
+    let values: Channel<i64> = Channel.make 1
+    Channel.close values
+    select
+    | send 1 to values -> 0
+
+export def no_arm :: i64
+fn no_arm =
+    let values: Channel<i64> = Channel.make 1
+    select
+    | recv x from values when false -> 0

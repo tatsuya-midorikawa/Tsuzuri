@@ -189,7 +189,7 @@ jobs:
       # 1, 2 and 4 Ps, the build with src/runtime/stack.c that reports a tzroutine's overflow, and on Linux the ThreadSanitizer
       # and AddressSanitizer + UBSan builds (the Homebrew LLVM 21 of the macOS runners builds sanitizer programs that never
       # start; see the size-class allocator step below).
-      - name: tzroutine and Channel (TZ01, TZ02, TZ03)
+      - name: tzroutine, Channel and select (TZ01, TZ02, TZ03, TZ04)
         if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
         timeout-minutes: 20
         run: |
@@ -201,6 +201,8 @@ jobs:
           node tests/features.mjs target/release/tsuzuri tzroutine
           node tests/features.mjs target/release/tsuzuri channel
           node tests/features.mjs target/release/tsuzuri channel_single
+          node tests/features.mjs target/release/tsuzuri select
+          node tests/features.mjs target/release/tsuzuri select_single
       # E14 and B10: trap boundaries and failure domains. trap_return.mjs builds C hosts of --trap-mode return objects and IR
       # and the runtime's own unit tests (tests/trap_boundary_runtime.c, tests/domain_runtime.c); domain.mjs runs Domain.run
       # through run, build and test and a C host that alternates 10,000 successes and traps with no block left alive;

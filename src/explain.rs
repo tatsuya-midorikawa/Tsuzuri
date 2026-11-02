@@ -226,6 +226,14 @@ pub const KIND_PAGES: &[(&str, &str)] = &[
         "reserved_std_namespace",
         include_str!("explain/reserved_std_namespace.md"),
     ),
+    (
+        "select_arm_expected",
+        include_str!("explain/select_arm_expected.md"),
+    ),
+    (
+        "select_default_repeated",
+        include_str!("explain/select_default_repeated.md"),
+    ),
     ("shadowed_local", include_str!("explain/shadowed_local.md")),
     (
         "signature_uses_def",

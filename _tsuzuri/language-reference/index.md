@@ -154,6 +154,7 @@
 - [Async 式（協調的な中断とホスト駆動）](./async-tasks-and-lazy/async.md)
 - [Task 式](./async-tasks-and-lazy/task.md)
 - [tzroutine 式](./async-tasks-and-lazy/tzroutine.md)
+- [select 式](./async-tasks-and-lazy/select.md) — 複数のチャンネルの送受信を同時に待つ
 - [Lazy 式](./async-tasks-and-lazy/lazy.md)
 
 #### コンピュテーション式

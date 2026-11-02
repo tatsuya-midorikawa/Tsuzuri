@@ -1,0 +1,21 @@
+record Token { counter: Arc<Atomic<i64>> }
+
+def count_drop :: ref Token -> unit
+fn count_drop token =
+    let _before = Atomic.fetch_add (Arc.get (ref token.counter)) 1i64
+    ()
+
+instance Drop<Token> {
+    fn drop token = count_drop token
+}
+
+let counter = Arc.new (Atomic.create 0i64)
+let full: Channel<Token> = Channel.make 1
+Channel.send full (Token { counter: Arc.share (ref counter) })
+let chosen = select
+    | send Token { counter: Arc.share (ref counter) } to full -> 1
+    | default -> 2
+chosen * 10 + Atomic.load (Arc.get (ref counter))
+
+// rule: TSK-022
+// expect: stdout "21\n"

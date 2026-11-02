@@ -7,7 +7,7 @@
 | 規模 | L |
 | 依存 | TZ03 |
 | 後続 | TZ05（`Time.after` との組み合わせ）、TZ07（`Context.done`）、TZ09、TZ12 |
-| 状態 | todo |
+| 状態 | done（2026-11-02） |
 | 起票 | 2026-11-01（D-61。HEAD `9a76d8ac` で確認） |
 | 承認 | 承認済み（D-61: 構文の形）。決定事項 D1〜D7 は既定案 |
 | 手本にする既存実装 | 構文: `src/parse_control.rs` の `match_expression`・`match_arms`（1148〜1220 行。腕の列、`when`、`->`、`body_expression`）。型: `src/check.rs` の `match_value`（腕の本体の型の合流）。所有権: `src/ownership.rs` の `match` の枝の合流。生成: `src/llvm.rs` の `match` の `switch` と、TZ03 の `Channel.send`／`recv` の生成（`alloca` の位置、状態の分岐） |
@@ -264,3 +264,21 @@ entry:   %cases = alloca [N x { ptr, ptr, i32, i32, [6 x i64] }]   ; N = 送受�
 | D5 | 有効な腕がなく `default` もない `select` は永久に待つ | Go と同じ。デッドロックの判定が見つける | 既定案 |
 | D6 | 準備のできた腕は一様乱数で選ぶ | Go と同じ。飢餓を防ぐ | 既定案 |
 | D7 | 腕の数の上限 65,535（`E1017`） | ランタイムが並びを `uint16_t` に置く | 既定案 |
+
+## 実装と検証（2026-11-02）
+
+- **範囲**: 仕様 1〜4 をすべて実装した（1 つの PR。TZ03 の PR #81 のブランチの上）。共有の数は `FRONTEND_FORMAT` 16 → 17、`ExprKind` の tag 48、`CONTEXTUAL_KEYWORDS` 9 → 10（`select`）。S1 の `grep` の当たり（`std/Set.tz` の `select left right …`、`Simd.select`）はどれも `select` の直後が `|` でなく、読み方は変わらない。
+- **構文**: `ExprKind::Select(Vec<SelectArm>)`、`SelectHead::{Recv, Send, Default}`（codec、`SelectArm::expressions`）。`parser.rs` の `select_ahead`（2 字句）、`parse_control.rs` の `select_expression`・`select_arms`。formatter は `match` と同じく腕をそろえる。診断の kind `select_arm_expected`・`select_default_repeated`（`E0002`）、`select_arm_limit`（`E1017`）と、前の 2 つの `src/explain/` のページ。
+- **型と下ろし方**: `src/select.rs`。腕のチャンネルの操作を 1 つの葉 `TypedExprKind::SelectWait` にし、本体はその結果の組 `(番号, Maybe<'a> ...)` への `match` にした。所有権の合流・流れの解析・本体の生成は `match` のものを使う。
+- **生成**: `src/llvm_select.rs`（`select_wait`）。`tzr_scase` の並びと番号の並びを入口の `alloca` に置き、`tsuzuri_tz_select` を呼ぶ。`TZR_SINGLE` の `tsuzuri_tz_select` を `tzroutine.c` に足した。
+- **効果・ツール**: 効果（Atomic・trap、待つなら diverge）、`pure`・`const`・SMT の拒否、KG の `calls`（腕ごとに `Channel.send`・`Channel.recv`）、`warnings`、VS Code の文法。
+- **チケットから外れた判断**:
+  1. **型付きの木**: 設計の `TypedExprKind::Select { arms, default }`（本体を持つ新しい制御の節）ではなく、葉の `SelectWait` と既存の `match` にした。本体を持つ節を足すと、所有権の合流・流れ・last-use・範囲・const・生成など 19 のファイルが `match` と同じ扱いを要るが、組への `match` なら葉の 1 つで済み、`match` の検査と生成をそのまま使える（S2 も `match` の合流の仕組みで表せた）。
+  2. **`default` に `when` は付けない**: 仕様 1 の文法は許すが、偽の `default` は「待つ」と同じで意味がない。`E0002`（`select_arm_expected`、`a 'default' arm takes no 'when' guard`）にした。
+  3. **その場で作ったチャンネル**: 腕のチャンネルはほかの腕の評価と待ちの間ずっと借りるので、関数の戻り値などの一時の値は `E1013`（`borrow_of_temporary`、`bind the channel to a name first`）にした。場所と参照は書ける。
+  4. **向きのあるハンドル**: TZ03 の Phase 2 の `ReceiveOnly`（受け取る腕）・`SendOnly`（送る腕）も腕に書ける。
+  5. **大きな select**: 腕の情報は入口の `alloca` だが、65 個以上の腕はヒープに置く（72 バイト × 65,535 は tzroutine のスタックのガードを越えうる）。
+  6. **既定の WebAssembly**: 仕様にはないが、spawn しないプログラムの `select` を `TZR_SINGLE` で動かす（`select_single` の suite）。待つべき `select` はトラップ。
+  7. **`select_arm_limit` の説明のページ**は作らない（悪い例が 65,536 個の腕になる）。
+- **検証**: `cargo fmt`・`cargo clippy --all-targets -- -D warnings`。`tests/select.rs` 6 件（3 つの頭と `when` と `default` の位置、`select` を識別子にする 5 例、`E0002` の 2 つの kind と `E1017`、formatter、型の受理と 7 つの拒否、送る値のムーブと借用、入口の `alloca`）。E2E: `features.mjs select`（native、`-O0`／`-O3`、P 1・4。早見の例 `321`、`fairness`（10,000 回で両方が 3,000 回以上）、`send_and_recv`、`guards`（数えが 0）、`closed_recv`、`drops_unchosen`（2 回）、`same_channel_twice`、`in_loop` 100,000 回、トラップ 2 つ）、`select_single`（native と wasm32、import なし、7 件とトラップ 2 つ）。適合性 `TSK-020`〜`022`（`conformance.mjs --area TSK` 22 件）、`check-spec --require-markers`、`gen-docs --check`、`check-cli-docs`、変更した全ページの `check-docs`。
+- **文書**: 新規 `async-tasks-and-lazy/select.md`。`index.md`、`values-and-functions/keywords.md`、`built-in-types-and-modules/channel.md`、`compiler/diagnostics.md`・`conformance.md`（生成）、`docs/language.md`（節「select」と文脈キーワード）、`docs/architecture.md`（`### select（TZ04）`）、`README.md`、`spec/rules/TSK.md`、`vsc/syntaxes/tsuzuri.tmLanguage.json`。

@@ -2537,6 +2537,38 @@ const suites = {
       }
     },
   },
+  // TZ04: select between tzroutines, at one and at four Ps (native only).
+  select: {
+    nativeOnly: true,
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    cases: [
+      ["three_channels", [], 321n],
+      ["fairness", [], 1n],
+      ...[1n, 10000n].map((n) => ["send_and_recv", [n], n * (n + 1n) / 2n]),
+      ["guards", [], 50n],
+      ["closed_recv", [], 1n],
+      ["drops_unchosen", [], 32n],
+      ["same_channel_twice", [], 90n],
+      ["in_loop", [], 49999n * 50000n],
+    ],
+    traps: [["send_closed", []], ["no_arm", []]],
+    inspect(ir) {
+      assert.equal(ir.split("\n").filter((line) => line === "declare i64 @tsuzuri_tz_select(ptr, i64, i32, ptr)").length, 1);
+    },
+  },
+  // TZ04: select without a second thread, native and default WebAssembly (TZR_SINGLE: no import).
+  select_single: {
+    cases: [
+      ["default_when_idle", [], 42n],
+      ["picks_the_ready_arm", [], 8n],
+      ["buffered_send", [], 13n],
+      ["closed_recv", [], 1n],
+      ["guards", [], 2n],
+      ["direction_handles", [], 16n],
+      ["in_loop", [], 49999n * 50000n],
+    ],
+    traps: [["send_closed", []], ["blocked", []]],
+  },
   // TZ03: the operations of Channel that need no second thread, native and default WebAssembly
   // (tzroutine.c built with TZR_SINGLE: no import).
   channel_single: {
