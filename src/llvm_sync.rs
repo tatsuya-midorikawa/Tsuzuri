@@ -95,8 +95,9 @@ impl FunctionEmitter<'_, '_> {
                 let status = self.value(format!("call i32 @tsuzuri_mutex_lock(ptr {cell})"));
                 let acquired = self.value(format!("icmp eq i32 {status}, 0"));
                 self.guard(&acquired, TrapKind::Assert);
-                // TZ02: the lock belongs to this thread; a tzroutine that would switch away traps.
-                if self.globals.spawns {
+                // TZ02: the lock belongs to this thread; a tzroutine that would switch away, and a
+                // wait for a `Channel` (TZ03), trap.
+                if self.globals.waits {
                     self.intrinsics.insert(super::MUTEX_LOCKED.into());
                     self.instruction("store i32 1, ptr @tz.mutex.locked");
                 }
@@ -107,7 +108,7 @@ impl FunctionEmitter<'_, '_> {
                 let borrow = Type::Reference(Box::new(value), true);
                 let (output, _) =
                     self.apply_value("%arg1", &parameters[1], Some((&borrow, &pointer)), false);
-                if self.globals.spawns {
+                if self.globals.waits {
                     self.instruction("store i32 0, ptr @tz.mutex.locked");
                 }
                 self.instruction(format!("call void @tsuzuri_mutex_unlock(ptr {cell})"));
@@ -216,7 +217,7 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// A value of the std `Maybe` or `Result` union `result` with the named case.
-    fn channel_case(
+    pub(super) fn channel_case(
         &mut self,
         result: &Type,
         case: &str,
@@ -253,7 +254,7 @@ impl FunctionEmitter<'_, '_> {
 
     /// The block of the channel that the `Sender` or `Receiver` behind the pointer `reference`
     /// holds: the address is the record's one field.
-    fn channel_block(&mut self, record: &Type, reference: &str) -> (String, String) {
+    pub(super) fn channel_block(&mut self, record: &Type, reference: &str) -> (String, String) {
         let record = self.ty(record);
         let field = self.value(format!(
             "getelementptr inbounds {record}, ptr {reference}, i32 0, i32 0"
@@ -272,7 +273,7 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// Traps when the runtime found that every task is waiting (status 2).
-    fn channel_not_deadlocked(&mut self, status: &str) {
+    pub(super) fn channel_not_deadlocked(&mut self, status: &str) {
         let progress = self.value(format!("icmp ne i32 {status}, 2"));
         self.guard(&progress, TrapKind::Assert);
     }

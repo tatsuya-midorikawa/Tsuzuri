@@ -12,6 +12,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
     ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
     ("std/DataChannel.tz", include_str!("../std/DataChannel.tz")),
+    ("std/Channel.tz", include_str!("../std/Channel.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Dir.tz", include_str!("../std/Dir.tz")),
@@ -171,6 +172,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Tensor.View"
             | "DataChannel.Sender"
             | "DataChannel.Receiver"
+            | "Channel.Channel"
     )
 }
 
@@ -295,6 +297,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "DataChannel",
         names: &["DataChannel"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Channel",
+        names: &["Channel"],
         aliases: &[],
         uses: &[],
     },
@@ -634,9 +642,15 @@ mod tests {
         assert_eq!(loaded("let c = Atomic.create 0i64"), ["Atomic"]);
         assert_eq!(loaded("record Hits { count: Atomic<i64> }"), ["Atomic"]);
         assert_eq!(loaded("let m = Mutex.create 0i64"), ["Mutex"]);
-        assert_eq!(loaded("let (s, r) = DataChannel.bounded 4"), ["DataChannel"]);
+        assert_eq!(
+            loaded("let (s, r) = DataChannel.bounded 4"),
+            ["DataChannel"]
+        );
         assert_eq!(loaded("let r = Domain.run (\\() -> 1)"), ["Domain"]);
-        assert_eq!(loaded("let s: DataChannel.Sender<i64> = x"), ["DataChannel"]);
+        assert_eq!(
+            loaded("let s: DataChannel.Sender<i64> = x"),
+            ["DataChannel"]
+        );
         assert_eq!(
             loaded("Task.scope (ref 1) 2 (s -> i -> i)"),
             Vec::<&str>::new()

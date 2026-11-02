@@ -213,6 +213,16 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | DataChannelCloneSender
         | DataChannelCloseSender
         | DataChannelCloseReceiver
+        | ChannelMake
+        | ChannelSend
+        | ChannelRecv
+        | ChannelTrySend
+        | ChannelTryRecv
+        | ChannelClose
+        | ChannelLength
+        | ChannelCapacity
+        | ChannelShare
+        | ChannelRelease
         | RcNew
         | RcShare
         | RcGet

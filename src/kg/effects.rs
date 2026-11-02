@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 96;
+const IMPURE_BUILTINS: usize = 106;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -48,6 +48,16 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | DataChannelCloneSender
         | DataChannelCloseSender
         | DataChannelCloseReceiver
+        | ChannelMake
+        | ChannelSend
+        | ChannelRecv
+        | ChannelTrySend
+        | ChannelTryRecv
+        | ChannelClose
+        | ChannelLength
+        | ChannelCapacity
+        | ChannelShare
+        | ChannelRelease
         | ArenaNextId => Some("atomic"),
         RcNew | RcShare | RcGet | RcStrongCount | RcWeakCount | RcTryUnwrap | RcDowngrade
         | RcUpgrade | RcPtrEq | ArcNew | ArcShare | ArcGet | ArcStrongCount | ArcWeakCount

@@ -399,6 +399,8 @@ pub(crate) fn with_stack_checks(ir: String, workers: bool) -> String {
 
 #[path = "llvm_bulk.rs"]
 mod bulk;
+#[path = "llvm_channel.rs"]
+mod channel;
 #[path = "llvm_compare.rs"]
 mod compare;
 #[path = "llvm_cpu.rs"]
@@ -1389,10 +1391,21 @@ fn emit_program(
     // The passes over the whole text run once, on the program that is kept: the text of a large
     // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
     // thrown away.
-    let output = if spawns(module) {
+    let spawning = spawns(module);
+    let output = if spawning {
         let mut boundaries = tzroutine_boundaries(module);
         boundaries.extend(worker_callbacks(&output));
-        with_stack_probes(with_tzroutine_scopes(output, &boundaries))
+        with_tzroutine_scopes(output, &boundaries)
+    } else {
+        output
+    };
+    let output = if !wasm && output.contains("@tsuzuri_tz_") {
+        with_task_accounting(output)
+    } else {
+        output
+    };
+    let output = if spawning {
+        with_stack_probes(output)
     } else {
         output
     };
@@ -1531,6 +1544,88 @@ pub(crate) fn with_tzroutine_scopes(ir: String, boundaries: &BTreeSet<String>) -
     if wrapped {
         output.push_str(
             "declare ptr @tsuzuri_tz_scope_enter()\ndeclare void @tsuzuri_tz_boundary_leave(ptr)\n",
+        );
+    }
+    output
+}
+
+/// Tells the deadlock detector of the tzroutine runtime about the items of the task runtime, in a
+/// native program that uses the tzroutine runtime (TZ03): each call that hands items to the task
+/// runtime announces them (`tsuzuri_tz_parallel_begin` and `_end`, by the call's context), and each
+/// worker callback marks its thread as running while it runs an item (`tsuzuri_tz_task_enter` and
+/// `_leave`). Without it, a `Channel` wait in one item could be judged a deadlock before the item
+/// that would wake it has started on another thread.
+pub(crate) fn with_task_accounting(ir: String) -> String {
+    const CALLS: [&str; 4] = [
+        "call void @tsuzuri_task_parallel(",
+        "call i64 @tsuzuri_task_parallel_results(",
+        "call void @tz.mutex.parallel(",
+        "call i64 @tz.mutex.parallel_results(",
+    ];
+    let callbacks = worker_callbacks(&ir);
+    let mut output = String::with_capacity(ir.len() + 256);
+    let mut lines = ir.split_inclusive('\n');
+    let mut wrapped = false;
+    while let Some(line) = lines.next() {
+        let body = line.trim_start();
+        let call = CALLS
+            .iter()
+            .find_map(|call| body.find(call).map(|at| &body[at + call.len()..]));
+        if let Some(arguments) = call {
+            // `(ptr @callback, ptr %context, i64 <items>)`
+            let arguments: Vec<&str> = arguments
+                .split_once(')')
+                .map_or("", |(inside, _)| inside)
+                .split(", ")
+                .collect();
+            if let [_, context, items] = arguments[..] {
+                wrapped = true;
+                let _ = writeln!(
+                    output,
+                    "  call void @tsuzuri_tz_parallel_begin({context}, {items})"
+                );
+                output.push_str(line);
+                let _ = writeln!(
+                    output,
+                    "  call void @tsuzuri_tz_parallel_end({context}, {items})"
+                );
+                continue;
+            }
+        }
+        output.push_str(line);
+        let header = line.trim_end();
+        let callback = (header.starts_with("define ") && header.ends_with('{'))
+            .then(|| header.split_once('@')?.1.split_once('('))
+            .flatten()
+            .filter(|(name, _)| callbacks.contains(*name));
+        let Some((_, parameters)) = callback else {
+            continue;
+        };
+        // The first parameter is the context: `ptr %context`.
+        let context = parameters
+            .split([',', ')'])
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        wrapped = true;
+        let Some(label) = lines.next() else { break };
+        output.push_str(label);
+        let _ = writeln!(output, "  call void @tsuzuri_tz_task_enter({context})");
+        for line in lines.by_ref() {
+            let body = line.trim_start();
+            if body.starts_with("ret ") || body.trim_end() == "ret void" {
+                output.push_str("  call void @tsuzuri_tz_task_leave()\n");
+            }
+            output.push_str(line);
+            if line.trim_end() == "}" {
+                break;
+            }
+        }
+    }
+    if wrapped {
+        output.push_str(
+            "declare void @tsuzuri_tz_parallel_begin(ptr, i64)\ndeclare void @tsuzuri_tz_parallel_end(ptr, i64)\ndeclare void @tsuzuri_tz_task_enter(ptr)\ndeclare void @tsuzuri_tz_task_leave()\n",
         );
     }
     output
@@ -1724,6 +1819,7 @@ fn emit_program_in(
     let mut globals = Globals {
         wasm,
         spawns: spawns(module),
+        waits: waits(module),
         async_reactor: module
             .functions
             .iter()
@@ -2543,9 +2639,12 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
 }
 
 struct Globals {
-    /// The program can start a tzroutine (TZ02): a `Mutex.with_lock` marks this thread while it
-    /// holds the lock, and a tzroutine that would yield there traps instead.
+    /// The program can start a tzroutine (TZ02).
     spawns: bool,
+    /// The program can start a tzroutine or wait for a `Channel` (`waits`, TZ03): a
+    /// `Mutex.with_lock` marks this thread while it holds the lock, and a tzroutine that would
+    /// yield there, or a wait for a channel, traps instead.
+    waits: bool,
     definitions: Vec<String>,
     next_metadata: usize,
     facts: facts::Metadata,
@@ -2608,6 +2707,7 @@ impl Default for Globals {
         });
         Self {
             spawns: false,
+            waits: false,
             definitions: Vec::new(),
             next_metadata,
             facts: facts::Metadata::default(),
@@ -4157,6 +4257,28 @@ fn expression_spawns(expression: &TypedExpr) -> bool {
             true
         }
         _ => expression.children().into_iter().any(expression_spawns),
+    }
+}
+
+/// Whether a thread of the program can wait in the tzroutine runtime (TZ03): it spawns, or a
+/// function that it reaches uses a `Channel`.
+pub fn waits(module: &CheckedModule) -> bool {
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && expression_waits(&function.body)
+    })
+}
+
+fn expression_waits(expression: &TypedExpr) -> bool {
+    match &expression.kind {
+        TypedExprKind::RoutineGo(_) => true,
+        TypedExprKind::Function(FunctionRef::Builtin(instance))
+            if instance.builtin.spawns() || instance.builtin.is_channel() =>
+        {
+            true
+        }
+        _ => expression.children().into_iter().any(expression_waits),
     }
 }
 
@@ -6688,10 +6810,11 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     /// Traps, with the runtime's message, when this thread holds a `Mutex.with_lock` (TZ02): the
-    /// lock's owner is the thread, so a tzroutine must not switch away from it in a critical section.
-    /// Only a program that spawns has the mark (the other ones never switch).
+    /// lock's owner is the thread, so a tzroutine must not switch away from it in a critical section,
+    /// and no thread waits for a `Channel` in one (TZ03). Only a program that spawns or uses a
+    /// `Channel` has the mark (the other ones never switch or wait in the tzroutine runtime).
     pub(crate) fn routine_unlocked(&mut self) {
-        if !self.globals.spawns {
+        if !self.globals.waits {
             return;
         }
         self.intrinsics.insert(MUTEX_LOCKED.into());
@@ -7999,7 +8122,7 @@ fn emit_builtin(
         builtin if builtin.shared_kind().is_some() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
-        builtin if builtin.is_routine() => {
+        builtin if builtin.is_routine() || builtin.is_channel() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         builtin
@@ -8079,6 +8202,7 @@ fn emit_typed_builtin(
         range_flags: shared_globals.range_flags,
         strings: shared_globals.strings,
         spawns: shared_globals.spawns,
+        waits: shared_globals.waits,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();
@@ -8135,6 +8259,8 @@ fn emit_typed_builtin(
         emitter.value("xor i1 %arg0, 1")
     } else if instance.builtin.is_routine() {
         emitter.routine_builtin(instance.builtin, ty)
+    } else if instance.builtin.is_channel() {
+        emitter.go_channel_builtin(instance, ty)
     } else if instance.builtin == Builtin::OwnedFunction {
         let owned = emitter.ty(&ty.after_arguments(1));
         emitter.value(format!(

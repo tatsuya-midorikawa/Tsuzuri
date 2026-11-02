@@ -3239,11 +3239,21 @@ impl Checker<'_> {
         if matches!(
             builtin,
             Builtin::DataChannelCloseSender | Builtin::DataChannelCloseReceiver
-        ) && !(self.module == "DataChannel" && self.names.origin(self.module) == ModuleOrigin::Std)
+        ) && !(self.module == "DataChannel"
+            && self.names.origin(self.module) == ModuleOrigin::Std)
         {
             return Err(Diagnostic::of(
                 DiagnosticKind::PrivateStdPrimitive,
                 "the channel close primitive is private to the standard DataChannel module; a Sender or Receiver closes when it is dropped",
+                span,
+            ));
+        }
+        if builtin == Builtin::ChannelRelease
+            && !(self.module == "Channel" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
+                "the channel release primitive is private to the standard Channel module; a Channel handle releases the channel when it is dropped, and Channel.close closes it",
                 span,
             ));
         }

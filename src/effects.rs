@@ -582,7 +582,12 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | MutexIntoInner
         | DataChannelCloneSender
         | DataChannelCloseSender
-        | DataChannelCloseReceiver => facts(
+        | DataChannelCloseReceiver
+        | ChannelTrySend
+        | ChannelTryRecv
+        | ChannelLength
+        | ChannelCapacity
+        | ChannelRelease => facts(
             Some(Effect::Atomic),
             false,
             false,
@@ -602,9 +607,13 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             Some("runtime_internal"),
         ),
         // B27
-        DataChannelSend | DataChannelRecv => {
+        DataChannelSend | DataChannelRecv | ChannelSend | ChannelRecv => {
             facts(Some(Effect::Atomic), false, true, true, false, false, None)
         }
+        // A second close traps; nothing waits.
+        ChannelClose => facts(Some(Effect::Atomic), false, true, false, false, false, None),
+        // A new handle that its drop releases.
+        ChannelShare => facts(Some(Effect::Atomic), true, false, false, false, false, None),
         // B28
         MutexWith => facts(Some(Effect::Atomic), false, true, true, true, false, None),
         // B29
@@ -612,7 +621,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             facts(Some(Effect::Atomic), true, false, false, false, false, None)
         }
         // B30
-        DataChannelBounded => facts(Some(Effect::Atomic), true, true, false, false, false, None),
+        DataChannelBounded | ChannelMake => {
+            facts(Some(Effect::Atomic), true, true, false, false, false, None)
+        }
         // B31
         RcGet | RcStrongCount | RcWeakCount | RcTryUnwrap | RcPtrEq | ArcGet | ArcStrongCount
         | ArcWeakCount | ArcTryUnwrap | ArcPtrEq => {

@@ -1657,6 +1657,26 @@ pub enum Builtin {
     RoutineMaxProcs,
     /// `Routine.cpu_count :: unit -> i64`: the online CPUs.
     RoutineCpuCount,
+    /// `Channel.make :: Send<'a> => i64 -> Channel<'a>` (TZ03): Go's `make(chan T, n)`; 0 is unbuffered.
+    ChannelMake,
+    /// `Channel.send :: ref Channel<'a> -> 'a -> unit`: waits for a receiver or room; traps on a
+    /// closed channel.
+    ChannelSend,
+    /// `Channel.recv :: ref Channel<'a> -> Maybe<'a>`: waits for an item; `None` once closed and empty.
+    ChannelRecv,
+    /// `Channel.try_send :: ref Channel<'a> -> 'a -> Result<unit, Channel.SendError<'a>>`: never waits.
+    ChannelTrySend,
+    /// `Channel.try_recv :: ref Channel<'a> -> Channel.Received<'a>`: never waits.
+    ChannelTryRecv,
+    /// `Channel.close :: ref Channel<'a> -> unit`: traps when it is closed already.
+    ChannelClose,
+    /// `Channel.length :: ref Channel<'a> -> i64` and `Channel.capacity`.
+    ChannelLength,
+    ChannelCapacity,
+    /// `Channel.share :: ref Channel<'a> -> Channel<'a>`: one more handle of the same channel.
+    ChannelShare,
+    /// `Channel.__release`, the body of the `Drop` instance in `std/Channel.tz`: private to that module.
+    ChannelRelease,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -1990,6 +2010,16 @@ impl Builtin {
         Self::RoutineCount,
         Self::RoutineMaxProcs,
         Self::RoutineCpuCount,
+        Self::ChannelMake,
+        Self::ChannelSend,
+        Self::ChannelRecv,
+        Self::ChannelTrySend,
+        Self::ChannelTryRecv,
+        Self::ChannelClose,
+        Self::ChannelLength,
+        Self::ChannelCapacity,
+        Self::ChannelShare,
+        Self::ChannelRelease,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -2235,6 +2265,16 @@ impl Builtin {
             Self::RoutineCount => "Routine.count",
             Self::RoutineMaxProcs => "Routine.max_procs",
             Self::RoutineCpuCount => "Routine.cpu_count",
+            Self::ChannelMake => "Channel.make",
+            Self::ChannelSend => "Channel.send",
+            Self::ChannelRecv => "Channel.recv",
+            Self::ChannelTrySend => "Channel.try_send",
+            Self::ChannelTryRecv => "Channel.try_recv",
+            Self::ChannelClose => "Channel.close",
+            Self::ChannelLength => "Channel.length",
+            Self::ChannelCapacity => "Channel.capacity",
+            Self::ChannelShare => "Channel.share",
+            Self::ChannelRelease => "Channel.__release",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::AllocCounter => "Alloc.__counter",
@@ -3358,6 +3398,16 @@ impl Builtin {
             Self::RoutineCount | Self::RoutineMaxProcs | Self::RoutineCpuCount => {
                 (vec![Concrete(Type::Unit)], Concrete(Type::I64), Vec::new())
             }
+            Self::ChannelMake
+            | Self::ChannelSend
+            | Self::ChannelRecv
+            | Self::ChannelTrySend
+            | Self::ChannelTryRecv
+            | Self::ChannelClose
+            | Self::ChannelLength
+            | Self::ChannelCapacity
+            | Self::ChannelShare
+            | Self::ChannelRelease => self.channel_scheme(),
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -3492,6 +3542,64 @@ impl Builtin {
     /// (F10 Phase 2).
     pub(crate) fn is_data_channel(self) -> bool {
         self.name().starts_with("DataChannel.")
+    }
+
+    /// Whether this builtin is an operation of Go's `Channel` (TZ03), lowered to calls of the
+    /// tzroutine runtime.
+    pub(crate) fn is_channel(self) -> bool {
+        self.name().starts_with("Channel.")
+    }
+
+    /// The schemes of `Channel.*` (TZ03), kept out of `scheme` so that its frame stays small.
+    #[inline(never)]
+    fn channel_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
+        use BuiltinType::{Concrete, Reference, Var};
+        let a = || Var("a");
+        let std = |module: &'static str, name: &'static str, args| BuiltinType::Std {
+            module,
+            name,
+            args,
+        };
+        let channel = || std("Channel", "Channel", vec![a()]);
+        let borrowed = || Reference(Box::new(channel()), false);
+        match self {
+            Self::ChannelMake => (
+                vec![Concrete(Type::I64)],
+                channel(),
+                vec![BuiltinConstraint {
+                    class: "Send",
+                    ty: a(),
+                }],
+            ),
+            Self::ChannelSend => (vec![borrowed(), a()], Concrete(Type::Unit), Vec::new()),
+            Self::ChannelRecv => (
+                vec![borrowed()],
+                std("Maybe", "Maybe", vec![a()]),
+                Vec::new(),
+            ),
+            Self::ChannelTrySend => (
+                vec![borrowed(), a()],
+                std(
+                    "Result",
+                    "Result",
+                    vec![Concrete(Type::Unit), std("Channel", "SendError", vec![a()])],
+                ),
+                Vec::new(),
+            ),
+            Self::ChannelTryRecv => (
+                vec![borrowed()],
+                std("Channel", "Received", vec![a()]),
+                Vec::new(),
+            ),
+            Self::ChannelClose | Self::ChannelRelease => {
+                (vec![borrowed()], Concrete(Type::Unit), Vec::new())
+            }
+            Self::ChannelLength | Self::ChannelCapacity => {
+                (vec![borrowed()], Concrete(Type::I64), Vec::new())
+            }
+            Self::ChannelShare => (vec![borrowed()], channel(), Vec::new()),
+            _ => unreachable!("not a Channel builtin"),
+        }
     }
 
     /// Whether this builtin is a `Routine` operation, lowered to calls of the tzroutine runtime (TZ02).
