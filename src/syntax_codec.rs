@@ -1964,7 +1964,7 @@ impl Wire for ExprKind {
             46 => variant(input, |input| Ok(Hole(Option::<Ident>::get(input)?))),
             47 => variant(input, |input| Ok(Routine(Box::get(input)?))),
             48 => variant(input, |input| Ok(Select(Vec::get(input)?))),
-            48..=u8::MAX => Err(Invalid),
+            49..=u8::MAX => Err(Invalid),
         }
     }
 }
