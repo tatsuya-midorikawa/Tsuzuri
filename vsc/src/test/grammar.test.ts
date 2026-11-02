@@ -154,6 +154,13 @@ test('a select arm keeps the tokens of its value', async () => {
 		assert.ok(scopesAt(recv, 'from').includes('keyword.control.tsuzuri'));
 		assert.ok(!scopesAt(recv, 'item').includes('keyword.control.tsuzuri'));
 		assert.ok(scopesAt('    | default -> 0', 'default').includes('keyword.control.tsuzuri'));
+		// `select` at the end of its line, with the arms on the next lines, as the formatter writes it.
+		for (const line of ['let got = select', 'select', 'select // wait', 'select | recv x from a -> x']) {
+			assert.ok(scopesAt(line, 'select').includes('keyword.control.tsuzuri'), line);
+		}
+		for (const line of ['let select = 1', 'select + 1', 'f select xs']) {
+			assert.ok(!scopesAt(line, 'select').includes('keyword.control.tsuzuri'), line);
+		}
 	} finally { registry.dispose(); }
 });
 

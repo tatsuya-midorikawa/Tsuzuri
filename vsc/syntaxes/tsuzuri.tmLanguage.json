@@ -15,7 +15,7 @@
     { "name": "keyword.control.tsuzuri", "match": "\\b(?:if|then|elif|else|match|with|when|where|for|in|to|downto|while|break|continue|return|yield|do|and|let|try|finally|is)(?:!)?\\b|\\b(?:return|yield|do|and|let|match)!" },
     { "name": "keyword.control.tsuzuri", "match": "\\buse\\b(?=\\s*!?\\s*(?:mut\\b|[A-Za-z_][A-Za-z_0-9]*\\s*(?:=(?!=)|:(?!:))))!?" },
     { "name": "keyword.control.tsuzuri", "match": "\\btzroutine\\b(?=[ \\t]*\\{)" },
-    { "name": "keyword.control.tsuzuri", "match": "\\bselect\\b(?=\\s*\\|\\s*(?:recv|send|default)\\b)" },
+    { "name": "keyword.control.tsuzuri", "match": "\\bselect\\b(?=\\s*(?:$|//|\\|\\s*(?:recv|send|default)\\b))" },
     { "match": "^\\s*(\\|)\\s*(recv)\\s+([A-Za-z_][A-Za-z_0-9']*)\\s+(from)\\b", "captures": { "2": { "name": "keyword.control.tsuzuri" }, "4": { "name": "keyword.control.tsuzuri" } } },
     { "match": "^\\s*(\\|)\\s*(recv|send|default)\\b", "captures": { "2": { "name": "keyword.control.tsuzuri" } } },
     { "name": "keyword.declaration.tsuzuri", "match": "\\b(?:def|fn|rec|export|extern|private|record|union|type|const|test|bench|class|instance|deriving|dyn|task|mut|ref|deref|new|as|of)\\b" },
