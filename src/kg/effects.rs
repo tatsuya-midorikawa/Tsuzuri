@@ -27,7 +27,14 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | NetWatch | NetUnwatch | NetConnect | NetNames | NetSend => Some("net"),
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun | RoutineGo
-        | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount => Some("task"),
+        | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc => {
+            Some("task")
+        }
+        TimeSleepNs | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
+        | TickerReset => Some("os"),
+        TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
+            Some("atomic")
+        }
         AtomicCreate
         | AtomicLoad
         | AtomicStore

@@ -50,6 +50,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/String.tz", include_str!("../std/String.tz")),
     ("std/Test.tz", include_str!("../std/Test.tz")),
     ("std/Time.tz", include_str!("../std/Time.tz")),
+    ("std/Timer.tz", include_str!("../std/Timer.tz")),
+    ("std/Ticker.tz", include_str!("../std/Ticker.tz")),
     ("std/Unicode.tz", include_str!("../std/Unicode.tz")),
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
@@ -128,6 +130,9 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Monoid",
     "Monoids",
     "Routine",
+    // TZ05: the handles of the timers.
+    "Timer",
+    "Ticker",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -180,6 +185,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Channel.Channel"
             | "SendOnly.SendOnly"
             | "ReceiveOnly.ReceiveOnly"
+            | "Timer.Timer"
+            | "Ticker.Ticker"
     )
 }
 
@@ -328,6 +335,26 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["ReceiveOnly", "Channel"],
         aliases: &[],
         uses: &[],
+    },
+    // TZ05: `Time.after` and `Time.tick` return a Channel and `Time.after_func` a Timer, so Time is
+    // loaded only for a program that names it (an always-loaded module names no opt-in one).
+    OptIn {
+        module: "Time",
+        names: &["Time"],
+        aliases: &[],
+        uses: &["Channel", "Timer"],
+    },
+    OptIn {
+        module: "Timer",
+        names: &["Timer"],
+        aliases: &[],
+        uses: &["Channel"],
+    },
+    OptIn {
+        module: "Ticker",
+        names: &["Ticker"],
+        aliases: &[],
+        uses: &["Channel"],
     },
     OptIn {
         module: "RegexText",
@@ -698,7 +725,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 63);
+        assert_eq!(RESERVED_MODULES.len(), 65);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

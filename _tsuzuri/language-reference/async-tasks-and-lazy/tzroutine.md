@@ -157,7 +157,7 @@ Routine.go (Owned.function (\() -> {
 tzroutine は M:N のスケジューラーで走ります。
 
 - 同時に tzroutine を走らせる OS スレッドの数（P の数）は、既定でオンラインの CPU 数（256 まで）です。環境変数 `TSUZURI_MAXPROCS`（1〜256 の 10 進）で、起動時に 1 回だけ決められます。`Routine.max_procs ()` がその値です。
-- 待つ tzroutine（`Routine.yield`・境界の待ちなど）は OS スレッドを止めないので、待つ tzroutine の数はスレッド数に縛られません。
+- 待つ tzroutine（`Routine.yield`・`Time.sleep`・`Time.sleep_ms`・境界の待ちなど）は OS スレッドを止めないので、待つ tzroutine の数はスレッド数に縛られません。周期の処理は [Ticker](../built-in-types-and-modules/ticker.md#周期の処理を止める)、遅らせた処理は [`Time.after_func`](../built-in-types-and-modules/time.md#遅らせて呼ぶtimeafter_func) で書きます。
 - プリエンプションはまだありません。待たずに計算し続ける tzroutine は、その OS スレッドを離しません。長い計算では、ときどき `Routine.yield ()` を呼びます。`extern` 関数やファイルの I/O など、OS で待つ呼び出しも、その間 OS スレッドを止めます。
 - tzroutine の中の `Task.run (Task.parallel …)`・`Task.scope`・`Parallel.*` は、終わりを待つ間、P を手放します。`TSUZURI_MAXPROCS=1` でも、ほかの tzroutine と、そのタスクの中で起動した tzroutine は走ります。待っている間に呼び出したスレッドで走るタスクは、tzroutine でないスレッドと同じく、そのスレッドを止めて待ちます。
 - 各 tzroutine のスタックは、既定で 1 MiB の予約です（触れたページだけが実メモリになります）。下端の 128 KiB はガードで、溢れると `trap: stack overflow` と報告して終わります（Windows では理由なしで終わります）。tzroutine を起動するプログラムは、すべての関数が大きな frame のページを確保の時に順に触れる（stack probe）ので、ガードより大きな frame もガードを飛び越えません。深い再帰には `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576 の 10 進、KiB）で予約を増やします。範囲外の値は無視して既定値を使います。

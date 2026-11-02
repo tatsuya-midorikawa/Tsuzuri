@@ -570,6 +570,32 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
             facts(Some(Effect::Task), false, false, false, false, false, None)
         }
+        // TZ05: the timers read the clock. A sleep inside `Mutex.with_lock` traps in a program that
+        // spawns, as a yield does; a period of 0 or less traps; a timer's channel is allocated.
+        TimeSleepNs => facts(Some(Effect::Os), false, true, false, false, false, None),
+        TimeAfter | TimerCreate => facts(Some(Effect::Os), true, false, false, false, false, None),
+        TimeTick | TickerCreate => facts(Some(Effect::Os), true, true, false, false, false, None),
+        TimerReset => facts(Some(Effect::Os), false, false, false, false, false, None),
+        TickerReset => facts(Some(Effect::Os), false, true, false, false, false, None),
+        // `Time.after_func` spawns a tzroutine that calls the owned function it takes.
+        TimeAfterFunc => facts(Some(Effect::Task), true, false, false, true, false, None),
+        // A new handle of the timer's channel, which its drop releases.
+        TimerChannel | TickerChannel => {
+            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+        }
+        TimerStop | TickerStop => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        // The drop of an after_func's `Timer` drops the function that has not run.
+        TimerFree | TickerFree => {
+            facts(Some(Effect::Atomic), false, false, false, true, false, None)
+        }
         // B25
         AtomicLoad
         | AtomicStore

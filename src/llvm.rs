@@ -448,6 +448,8 @@ mod strings;
 mod sync;
 #[path = "llvm_task.rs"]
 mod task;
+#[path = "llvm_timer.rs"]
+mod timer;
 pub(crate) use gpu_host::{runtime_source as gpu_runtime_source, with_wasm_gpu_host};
 pub(crate) use host_abi::uses_host_abi;
 
@@ -8274,7 +8276,7 @@ fn emit_builtin(
         builtin if builtin.shared_kind().is_some() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
-        builtin if builtin.is_routine() || builtin.is_channel() => {
+        builtin if builtin.is_routine() || builtin.is_channel() || builtin.is_timer() => {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
         builtin
@@ -8413,6 +8415,8 @@ fn emit_typed_builtin(
         emitter.routine_builtin(instance.builtin, ty)
     } else if instance.builtin.is_channel() {
         emitter.go_channel_builtin(instance, ty)
+    } else if instance.builtin.is_timer() {
+        emitter.timer_builtin(instance.builtin, ty)
     } else if instance.builtin == Builtin::OwnedFunction {
         let owned = emitter.ty(&ty.after_arguments(1));
         emitter.value(format!(

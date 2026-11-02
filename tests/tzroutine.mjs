@@ -209,6 +209,60 @@ while Atomic.load (Arc.get (ref done)) < 16i64 do
 let total = Mutex.with_lock (Arc.get (ref lock)) (\\value -> deref value)
 $"total={total}"
 `, "total=3200\n"],
+  // TZ05: the ticket's example of a timeout (the timer is bound before the channel that the rest
+  // of the program owns).
+  [`let! deadline = Time.after (50 * Time.millisecond)
+let never: Channel<i64> = Channel.make 0
+let result =
+    select
+    | recv _ from never -> "value"
+    | recv _ from deadline -> "timeout"
+do! IO.write_line result
+`, "timeout\n"],
+  // A ticker and a quit channel in one select loop; main sleeps (stopping its thread) and quits it.
+  [`def worker :: ref Channel<unit> -> ref Channel<i64> -> unit
+fn worker quit report =
+    let! ticker = Ticker.create (2 * Time.millisecond)
+    let ticks = Ticker.channel ticker
+    let mut count = 0i64
+    let mut running = true
+    while running do
+        select
+        | recv _ from ticks -> count = count + 1
+        | recv _ from quit -> running = false
+    Channel.send report count
+
+def run :: unit -> string
+fn run _ =
+    let quit: Channel<unit> = Channel.make 0
+    let reports: Channel<i64> = Channel.make 1
+    let worker_quit = Channel.share quit
+    let worker_report = Channel.share reports
+    tzroutine {
+        worker (ref worker_quit) (ref worker_report)
+    }
+    do! Time.sleep (20 * Time.millisecond)
+    Channel.send quit ()
+    match Channel.recv reports with
+    | Maybe.Some count -> if count >= 1 then "stopped after ticks" else "no tick"
+    | Maybe.None -> "closed"
+
+run ()
+`, "stopped after ticks\n"],
+  // The end of main stops the timers an hour away without waiting for them.
+  [`def leave :: unit -> i64
+fn leave _ =
+    let! _after = Time.after Time.hour
+    let! _ticks = Time.tick Time.hour
+    let! _timer = Timer.create Time.hour
+    let _func = Time.after_func Time.hour (Owned.function (\\() -> ()))
+    tzroutine {
+        let! _inner = Time.after Time.hour
+    }
+    7
+
+leave ()
+`, "7\n"],
 ];
 
 let runs = 0;
@@ -320,6 +374,85 @@ bump ()
     assert.match(test.stdout, /1 passed; 0 failed/);
     runs++;
   }
+
+  // TZ05: Time.sleep_ms in a tzroutine waits without its thread (the hook of os.c): with one P, two
+  // tzroutines finish 1,000 round trips while a third sleeps 200 ms. Time.after's value is on
+  // Time.monotonic_ns's clock, and not early. os.c is POSIX only.
+  if (process.platform !== "win32") {
+    const sleeping = project(`def run :: unit -> string
+fn run _ =
+    let reports: Channel<string> = Channel.make 2
+    let sleeper = Channel.share reports
+    tzroutine {
+        let! _slept = Time.sleep_ms 200
+        Channel.send sleeper "sleeper"
+    }
+    let pings: Channel<i64> = Channel.make 0
+    let pongs: Channel<i64> = Channel.make 0
+    let server_pings = Channel.share pings
+    let server_pongs = Channel.share pongs
+    tzroutine {
+        for value in server_pings do
+            Channel.send server_pongs value
+    }
+    let client_pings = Channel.share pings
+    let client_pongs = Channel.share pongs
+    let worker = Channel.share reports
+    tzroutine {
+        for round in 1 ..= 1000 do
+            Channel.send client_pings (round as i64)
+            let _pong = Channel.recv client_pongs
+        Channel.close client_pings
+        Channel.send worker "worker"
+    }
+    let first = match Channel.recv reports with
+        | Maybe.Some who -> who
+        | Maybe.None -> "none"
+    let second = match Channel.recv reports with
+        | Maybe.Some who -> who
+        | Maybe.None -> "none"
+    $"{first} {second}"
+
+run ()
+`);
+    const valued = project(`def run :: unit -> string
+fn run _ =
+    let! before = Time.monotonic_ns ()
+    let! deadline = Time.after (10 * Time.millisecond)
+    let sent = match Channel.recv deadline with
+        | Maybe.Some time -> time
+        | Maybe.None -> 0
+    let! after = Time.monotonic_ns ()
+    match (before, after) with
+    | (Result.Ok first, Result.Ok last) -> if first + 10 * Time.millisecond <= sent && sent <= last then "in order" else $"{first} {sent} {last}"
+    | _ -> "no clock"
+
+run ()
+`);
+    for (const optimization of ["-O0", "-O3"]) {
+      for (const procs of ["1", "4"]) {
+        const run = cli(["run", sleeping, optimization], true, { TSUZURI_MAXPROCS: procs });
+        assert.equal(lines(run.stdout), "worker sleeper\n", `Time.sleep_ms ${optimization} P${procs}`);
+        runs++;
+      }
+      const run = cli(["run", valued, optimization]);
+      assert.equal(lines(run.stdout), "in order\n", `Time.after's value ${optimization}`);
+      runs++;
+    }
+  }
+
+  // A timer is the scheduler's: WebAssembly waits for JSPI (TZ09), and --trap-mode return refuses it
+  // as it refuses a tzroutine. Time.sleep alone is Time.sleep_ms's wait there, an OS API.
+  const timed = project("export def f :: i64 -> i64\nfn f n =\n    let! _deadline = Time.after Time.second\n    n\n");
+  const timedWasm = cli(["build", timed, "--target", "wasm32", "-o", join(temporary, "timed.wasm"), "--json"], false);
+  assert.match(timedWasm.stderr, /"code":"E2000"/);
+  assert.match(timedWasm.stderr, /tzroutine on WebAssembly needs --wasm-feature jspi/);
+  const timedReturn = cli(["build", timed, "--emit", "shared", "--trap-mode", "return", "-o", join(temporary, "timed.so"), "--json"], false);
+  assert.match(timedReturn.stderr, /"code":"E2000"/);
+  const slept = project("export def f :: i64 -> i64\nfn f n =\n    do! Time.sleep Time.millisecond\n    n\n");
+  const sleptWasm = cli(["build", slept, "--target", "wasm32", "-o", join(temporary, "slept.wasm"), "--json"], false);
+  assert.match(sleptWasm.stderr, /operating-system APIs|--wasm-host/);
+  runs += 3;
 
   // WebAssembly waits for JSPI (TZ09); the error is E2000 before any build.
   const exported = project("export def f :: i64 -> i64\nfn f n =\n    tzroutine { () }\n    n\n");

@@ -1,0 +1,25 @@
+/// A ticker that sends the time to its channel every period (Go's `time.Ticker`, TZ05).
+/// `Ticker.create` makes one, `Ticker.channel` gives a handle of its channel, `Ticker.stop` stops it
+/// and `Ticker.reset` changes the period. The channel holds one time: while the receiver has not
+/// taken the last one, the next is dropped. Dropping the ticker stops it; the end of the `main`,
+/// `export`, `test` or `bench` that made it stops it too.
+record Ticker { handle: i64 }
+instance Drop<Ticker> {
+    fn drop ticker = Ticker.__free ticker
+}
+
+/// A ticker that sends the time (`Time.monotonic_ns`'s clock) to its channel every period, the
+/// first time one period from now (Go's `time.NewTicker`). A period of 0 or less traps.
+///
+/// ```tsuzuri run=true
+/// let! ticker = Ticker.create (2 * Time.millisecond)
+/// let ticks = Ticker.channel ticker
+/// let first = Channel.recv ticks
+/// let second = Channel.recv ticks
+/// Ticker.stop ticker
+/// match (first, second) with
+/// | (Maybe.Some earlier, Maybe.Some later) -> IO.write_line (later > earlier)
+/// | _ -> IO.write_line "closed"
+/// ```
+def create :: own i64 -> IO<Ticker>
+fn create period = IO.map (\() -> Ticker.__create period) (IO.pure ())

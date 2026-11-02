@@ -192,7 +192,13 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | AsyncResume | AsyncTake
         | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted | AsyncRetire
-        | RoutineGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount => Some(Task),
+        | RoutineGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount
+        | TimeAfterFunc => Some(Task),
+        TimeSleepNs | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
+        | TickerReset => Some(Clock),
+        TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
+            Some(State)
+        }
         AtomicCreate
         | AtomicLoad
         | AtomicStore

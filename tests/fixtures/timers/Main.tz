@@ -1,0 +1,164 @@
+// TZ05: the timers of Time, Timer and Ticker. A check of time looks at order and at "not early"
+// only, never at an upper bound. Every export ends its boundary, which stops the timers it made.
+
+// The ticket's example: nobody sends on `never`, so the deadline's arm is chosen.
+export def after_is_a_timeout :: i64 -> i64
+fn after_is_a_timeout milliseconds =
+    let! deadline = Time.after (milliseconds * Time.millisecond)
+    let never: Channel<i64> = Channel.make 0
+    select
+    | recv _ from never -> 0
+    | recv _ from deadline -> 1
+
+// Three tzroutines sleep 60, 20 and 40 ms and then send their number: they arrive as 2, 3, 1.
+export def sleep_order :: i64
+fn sleep_order =
+    let arrivals: Channel<i64> = Channel.make 3
+    for number in 1 ..= 3 do
+        let out = Channel.share arrivals
+        let nap = match number with
+            | 1 -> 60
+            | 2 -> 20
+            | _ -> 40
+        tzroutine {
+            do! Time.sleep (nap * Time.millisecond)
+            Channel.send out (number as i64)
+        }
+    let mut order = 0i64
+    for _ in 1 ..= 3 do
+        order = order * 10 + (match Channel.recv arrivals with
+            | Maybe.Some number -> number
+            | Maybe.None -> 0)
+    order
+
+// One tzroutine sleeps 200 ms while two others finish 1,000 round trips (with one P too): the round
+// trips report first (2), the sleeper second (1).
+export def sleep_does_not_block_others :: i64
+fn sleep_does_not_block_others =
+    let reports: Channel<i64> = Channel.make 2
+    let sleeper = Channel.share reports
+    tzroutine {
+        do! Time.sleep (200 * Time.millisecond)
+        Channel.send sleeper 1
+    }
+    let pings: Channel<i64> = Channel.make 0
+    let pongs: Channel<i64> = Channel.make 0
+    let server_pings = Channel.share pings
+    let server_pongs = Channel.share pongs
+    tzroutine {
+        for value in server_pings do
+            Channel.send server_pongs value
+    }
+    let client_pings = Channel.share pings
+    let client_pongs = Channel.share pongs
+    let worker = Channel.share reports
+    tzroutine {
+        for round in 1 ..= 1000 do
+            Channel.send client_pings (round as i64)
+            let _pong = Channel.recv client_pongs
+        Channel.close client_pings
+        Channel.send worker 2
+    }
+    let first = match Channel.recv reports with
+        | Maybe.Some who -> who
+        | Maybe.None -> 0
+    let second = match Channel.recv reports with
+        | Maybe.Some who -> who
+        | Maybe.None -> 0
+    first * 10 + second
+
+// Timer.stop and Timer.reset: stop a pending timer (true), stop it again (false), reset the
+// stopped one (false), receive its time, stop the fired one (false): 1, 0, 0, 1, 0.
+export def timer_stop_reset :: i64
+fn timer_stop_reset =
+    let! timer = Timer.create Time.hour
+    let fired = Timer.channel timer
+    let digit = \flag -> if flag then 1i64 else 0i64
+    let first = digit (Timer.stop timer)
+    let second = digit (Timer.stop timer)
+    let third = digit (Timer.reset timer (2 * Time.millisecond))
+    let fourth = match Channel.recv fired with
+        | Maybe.Some _ -> 1i64
+        | Maybe.None -> 0i64
+    let fifth = digit (Timer.stop timer)
+    first * 10000 + second * 1000 + third * 100 + fourth * 10 + fifth
+
+// A ticker received five times and stopped sends nothing more, and keeps nothing it sent before.
+export def ticker_five :: i64
+fn ticker_five =
+    let! ticker = Ticker.create (2 * Time.millisecond)
+    let ticks = Ticker.channel ticker
+    let mut count = 0i64
+    let mut last = 0i64
+    for _ in 1 ..= 5 do
+        match Channel.recv ticks with
+        | Maybe.Some time ->
+            if time > last then count = count + 1
+            last = time
+        | Maybe.None -> ()
+    Ticker.stop ticker
+    do! Time.sleep (30 * Time.millisecond)
+    match Channel.try_recv ticks with
+    | Channel.Empty -> count
+    | _ -> -1
+
+// Time.tick's channel dropped while it ticks: the boundary still frees everything (live == 0).
+export def tick_dropped :: i64
+fn tick_dropped =
+    let! ticks = Time.tick Time.millisecond
+    let mut seen = 0i64
+    for _ in 1 ..= 2 do
+        match Channel.recv ticks with
+        | Maybe.Some _ -> seen = seen + 1
+        | Maybe.None -> ()
+    seen
+
+// after_func calls the function once on another tzroutine, which tells the caller.
+export def after_func_runs :: i64
+fn after_func_runs =
+    let called: Channel<i64> = Channel.make 1
+    let signal = Channel.share called
+    let _timer = Time.after_func (2 * Time.millisecond) (Owned.function (\() -> Channel.send signal (Routine.count () - 1)))
+    match Channel.recv called with
+    | Maybe.Some others -> if others >= 1 then 1 else 0
+    | Maybe.None -> 0
+
+// A stopped after_func's function is dropped without a call when its Timer goes.
+record Witness { counter: Arc<Atomic<i64>> }
+instance Drop<Witness> {
+    fn drop witness =
+        let _previous = Atomic.fetch_add (Arc.get (ref witness.counter)) 1i64
+}
+
+export def after_func_stopped :: i64
+fn after_func_stopped =
+    let drops = Arc.new (Atomic.create 0i64)
+    let witness = Witness { counter: Arc.share (ref drops) }
+    let calls = Arc.new (Atomic.create 0i64)
+    let mine = Arc.share (ref calls)
+    let timer = Time.after_func Time.millisecond (Owned.function (\() -> {
+        let _keep = Atomic.load (Arc.get (ref witness.counter));
+        let _call = Atomic.fetch_add (Arc.get (ref mine)) 1i64;
+        ()
+    }))
+    let stopped = Timer.stop timer
+    let _late = Timer.stop timer
+    Owned.drop timer
+    let dropped = Atomic.load (Arc.get (ref drops))
+    let called = Atomic.load (Arc.get (ref calls))
+    if stopped && dropped == 1i64 && called == 0i64 then 1 else 0
+
+// Timers an hour away when the export ends: the boundary stops them without waiting and frees
+// their channels (live == 0); the function of the after_func is dropped.
+export def pending_at_exit :: i64
+fn pending_at_exit =
+    let! _after = Time.after Time.hour
+    let! _ticks = Time.tick Time.hour
+    let! timer = Timer.create Time.hour
+    let _ticker_channel = Timer.channel timer
+    let! _ticker = Ticker.create Time.hour
+    let _func = Time.after_func Time.hour (Owned.function (\() -> ()))
+    tzroutine {
+        let! _inner = Time.after Time.hour
+    }
+    1

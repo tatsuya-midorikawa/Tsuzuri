@@ -445,7 +445,9 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
         "Os.__args" => Env,
         "Os.__random" => Random,
         "Os.__clock" | "Os.__sleep" | "Async.__clock" | "Async.__wait" | "Async.__posted"
-        | "Bench.now" => Time,
+        | "Bench.now" | "Time.__sleep_ns" | "Time.__after" | "Time.__tick"
+        | "Time.__after_func" | "Timer.__create" | "Ticker.__create" | "Timer.reset"
+        | "Ticker.reset" => Time,
         "Os.__spawn" => Process,
         "Net.__resolve" | "Net.__open" | "Net.__accept" | "Net.__read" | "Net.__write"
         | "Net.__close" | "Net.__watch" | "Net.__unwatch" | "Net.__connect" | "Net.__names"
@@ -456,7 +458,7 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
 }
 
 /// The private builtins that touch only the CPU and memory (appendix A.2 and the ones added since).
-pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 25] = [
+pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 27] = [
     "Net.__classify",
     "Unicode.__table_length",
     "Unicode.__table_entry",
@@ -477,6 +479,8 @@ pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 25] = [
     "Channel.__release",
     "SendOnly.__release",
     "ReceiveOnly.__release",
+    "Timer.__free",
+    "Ticker.__free",
     "Bench.consume",
     "Alloc.__counter",
     "Gen.__seed",

@@ -1,0 +1,21 @@
+/// A timer that sends the time to its channel once (Go's `time.Timer`, TZ05). `Timer.create` makes
+/// one, `Timer.channel` gives a handle of its channel, `Timer.stop` stops it and `Timer.reset`
+/// starts it again. `Time.after_func` returns one whose channel is closed. Dropping the timer stops
+/// it; the end of the `main`, `export`, `test` or `bench` that made it stops it too.
+record Timer { handle: i64 }
+instance Drop<Timer> {
+    fn drop timer = Timer.__free timer
+}
+
+/// A timer that sends the time (`Time.monotonic_ns`'s clock) to its channel once, the given
+/// nanoseconds from now (Go's `time.NewTimer`).
+///
+/// ```tsuzuri run=fired
+/// let! timer = Timer.create (5 * Time.millisecond)
+/// let fired = Timer.channel timer
+/// match Channel.recv fired with
+/// | Maybe.Some _ -> IO.write_line "fired"
+/// | Maybe.None -> IO.write_line "closed"
+/// ```
+def create :: own i64 -> IO<Timer>
+fn create nanoseconds = IO.map (\() -> Timer.__create nanoseconds) (IO.pure ())

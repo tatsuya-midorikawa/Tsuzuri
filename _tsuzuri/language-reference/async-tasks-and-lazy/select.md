@@ -131,6 +131,28 @@ sent=3 sum=6
 - 本体の中の `break`・`continue` は、外のループのものです（`select` 自体はループではありません）。
 - `select` は tzroutine の待ちです。tzroutine を起動するか `Channel` を使うプログラムでは、`Mutex.with_lock` の中の `default` のない `select` はトラップします。
 
+## タイムアウト
+
+[`Time.after`](../built-in-types-and-modules/time.md#タイムアウトtimeafter) のチャンネルを腕に書くと、ほかの腕を待つのをあきらめる時刻になります（Go の `case <-time.After(d):`）。周期の処理には [Ticker](../built-in-types-and-modules/ticker.md) のチャンネルを書きます。
+
+```tsuzuri run=timeout
+def wait :: ref Channel<i64> -> string
+fn wait input =
+    let! deadline = Time.after (20 * Time.millisecond)
+    select
+    | recv value from input -> $"value {value}"
+    | recv _ from deadline -> "timeout"
+
+let never: Channel<i64> = Channel.make 0
+wait (ref never)
+```
+
+実行結果:
+
+```text
+timeout
+```
+
 ## 公平さ
 
 すぐにできる腕は、同じ確率で選ばれます（再現用の種はありません）。いつも準備のできた 2 つのチャンネルからの `select` は、どちらも半分ほど選びます。

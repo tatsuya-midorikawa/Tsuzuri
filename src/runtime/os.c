@@ -18,6 +18,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -834,9 +835,18 @@ TZ_OS_API int64_t tsuzuri_os_clock(int32_t operation) {
     return (int64_t)now.tv_sec * INT64_C(1000000000) + (int64_t)now.tv_nsec;
 }
 
+/* The tzroutine runtime (src/runtime/tzroutine.c, TZ05) sets this when it starts: on a tzroutine
+ * it waits without stopping the thread and returns 1. Both files define it when both are used. */
+#ifndef TSUZURI_OS_SLEEP_HOOK_DEFINED
+#define TSUZURI_OS_SLEEP_HOOK_DEFINED
+__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_os_sleep_hook)(int64_t);
+#endif
+
 TZ_OS_API int64_t tsuzuri_os_sleep(int64_t milliseconds) {
     if (milliseconds < 0) return tz_os_invalid_input();
     if (milliseconds == 0) return 0;
+    int32_t (*hook)(int64_t) = atomic_load_explicit(&tsuzuri_os_sleep_hook, memory_order_acquire);
+    if (hook != NULL && hook(milliseconds > INT64_MAX / 1000000 ? INT64_MAX : milliseconds * 1000000)) return 0;
     struct timespec remaining;
     remaining.tv_sec = (time_t)(milliseconds / 1000);
     remaining.tv_nsec = (long)(milliseconds % 1000) * 1000000L;

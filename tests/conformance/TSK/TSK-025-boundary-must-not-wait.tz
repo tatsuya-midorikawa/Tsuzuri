@@ -1,0 +1,17 @@
+// An hour of timers when main ends: the program ends at once, and the function of the after_func is
+// dropped without a call.
+def leave :: unit -> string
+fn leave _ =
+    let! _after = Time.after Time.hour
+    let! _ticks = Time.tick Time.hour
+    let! _timer = Timer.create Time.hour
+    let _func = Time.after_func Time.hour (Owned.function (\() -> {
+        do! IO.write_line "called";
+        ()
+    }))
+    "done"
+
+leave ()
+
+// rule: TSK-025
+// expect: stdout "done\n"

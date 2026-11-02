@@ -13,6 +13,21 @@
 | 手本にする既存実装 | `std/Time.tz`（`IO` を返す関数、`Os.__clock`・`Os.__sleep`、`Os.Error`）、`src/runtime/os.c` の `tsuzuri_os_sleep`（837 行）、TZ01 の `tzr_timers`（タイマーのヒープとスレッド。付録 B-1）、TZ03 の `Channel`、TZ02 の `Routine.go` の補助関数 `@tz.tzroutine.owned`、`std/Channel.tz` の不透明な record と `Drop` |
 | 主な影響ファイル | `std/Time.tz`・`std/Timer.tz`（新規）・`std/Ticker.tz`（新規）・`src/check.rs`・`src/llvm_io.rs`（または `src/llvm_channel.rs`）・`src/stdlib.rs`・`src/capabilities.rs`・`src/effects.rs`・`src/pure_rules.rs`・`src/kg/effects.rs`・`src/runtime/tzroutine.c`・`src/runtime/os.c`・`tests/tzroutine_runtime.c`・`tests/timers.rs`（新規）・`tests/fixtures/timers/Main.tz`（新規）・`tests/tzroutine.mjs`・`tests/std_argument_order.rs`・`tests/std_examples.rs`・`tests/fixtures/capabilities/std-table.txt`・文書 |
 
+## 着手時の再検討（2026-11-03、HEAD `d3ca1f5c`）
+
+TZ01〜TZ04 の実装（`_completed/` の「実装と検証」）と HEAD を照合し、次の食い違いを、意図を保つ形で直してから実装した。以下が本文より優先する。
+
+1. **`Time` を opt-in のモジュールにする**: 常に読み込む std のモジュールは opt-in のモジュールを名指しできない（`src/stdlib.rs` の `opt_in_modules_are_reached_only_through_their_names`）。`Time.after` などは `Channel` と `Timer` を返すので、`Time` を `OptIn { names: ["Time"], uses: ["Channel", "Timer"] }` にする（`Time` の関数はもとから名前でしか届かない）。`Timer`・`Ticker` も opt-in（`uses: ["Channel"]`）。
+2. **S1 は案 A**: `tzroutine.c` はすべての tzroutine のプログラムに 1 つの目的ファイルとして連結されるので、そこから `tsuzuri_alloc` を無条件に参照すると、`tsuzuri_alloc` を定義しない IR（タイマーを使わないプログラム）と連結できない。チャンネルのブロック（`128 + 8` バイト）は生成コードが `@tz.alloc` で確保し（`live` で数える）、解放の関数 `@tz.free` と一緒にランタイムへ渡す。ランタイムの関数は `tsuzuri_tz_timer_new(block, release, ns, period, kind, handle, run, drop, box)`・`tsuzuri_tz_timer_chan`・`_stop`・`_reset`・`_free` にまとめる。
+3. **タイマーを作る組み込みは `Builtin::spawns()` が真**: まだ発火していないタイマーは境界のスコープにつなぐので、境界を持つ（spawn する）プログラムでなければならない（境界がないと `pending_at_exit` の `live == 0` を満たせない）。そのため WebAssembly は TZ02 の `E2000`（TZ09 まで）、`--trap-mode return` も `E2000`。
+4. **`Time.sleep` は spawn しない**: ネイティブは `tsuzuri_tz_sleep`。既定の WebAssembly（`TZR_SINGLE`）には時計もタイマーもないので、`Time.sleep_ms` と同じ `tsuzuri_os_sleep` へミリ秒に切り上げて下ろす（`--wasm-host` が要るのも同じ。TZ09 まで）。Windows では `Time.sleep`・`after` などはタイマーのランタイムで動く（`monotonic_ns`・`sleep_ms` の `os.c` は今までどおり Windows にない）。
+5. **公開の組み込み**: `Timer.channel`・`stop`・`reset` と `Ticker.channel`・`stop`・`reset` は `IO` を返さないので、`Channel.*` と同じく公開の組み込みにする。`create` と `Time.*` は私的な組み込みを `IO` で包む std の関数（既存の `reading`・`pause` と同じ `IO.map (\() -> …) (IO.pure ())` の書き方）。
+6. **`after_func` の関数の寿命**: Go の「`Stop` の後の `Reset` は `f` を予定し直す」に合わせ、`stop` は関数を drop せずに持ち続け、`reset` で予定し直せる。関数は、呼ばれるか、境界で止められるか、`Timer` が drop されたときに drop される。所有する関数は 1 回しか呼べないので、**一度呼んだ後の `reset` は偽を返して何も予定しない**（Go は `f` をもう一度呼ぶ。文書に書く）。
+7. **境界の解放の順序**: `after_func` の発火は、`tzr_timers.lock` の下でタイマーのスコープへ tzroutine を作る。境界は、スコープの tzroutine の終わりを待ってから、スコープのタイマーを止めて外し、外したタイマーの片付け（関数の drop・チャンネルの参照）を終えた後、その間に tzroutine かタイマーが増えていれば、もう一度待つ。タイマーのスレッドは擬似 G にならない（`tzr_current()` を呼ばない内部の送信と生成を使う）。
+8. **ハンドルの記録**: `Timer`・`Ticker`（`after_func` の `Timer` も）の記録は、境界では止めてスコープから外すだけで、解放はハンドルの `Drop`（`tsuzuri_tz_timer_free`）。ハンドルは境界の外へ出られる（`export` の戻り値など）。`reset` は呼んだ G の境界のスコープへつなぎ直す。
+9. **`tsuzuri_os_sleep_hook`**: `os.c` と `tzroutine.c` は同じ翻訳単位に入るので、定義を `TSUZURI_OS_SLEEP_HOOK_DEFINED` の印で 1 つにする（`tsuzuri_trap_hooks` と同じ書き方）。変数は `_Atomic`（`tsuzuri_stack_guard_hook` と同じ）。
+10. **`Ticker.reset` の `d <= 0` はトラップ**（Go の panic）。`Timer.reset` の `d <= 0` はすぐ発火する。
+
 ## 実装者向け早見
 
 - 範囲: Go の `time.Sleep`・`time.After`・`time.Tick`・`time.NewTimer`・`time.NewTicker`・`time.AfterFunc` と時間の定数。待つのは tzroutine だけ（`main` の擬似 G はスレッドを止める）。既存の `Time.sleep_ms` も、tzroutine の中ではスレッドを止めずに待つようにする。
