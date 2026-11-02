@@ -285,7 +285,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| TZ01 | [tzroutine のランタイムの核（M:N スケジューラー・スタック・文脈切り替え・待ち・チャンネル・select）](TZ01-tzroutine-runtime.md) | P0 | XL | – | todo |
+| TZ01 | [tzroutine のランタイムの核（M:N スケジューラー・スタック・文脈切り替え・待ち・チャンネル・select）](_completed/TZ01-tzroutine-runtime.md) | P0 | XL | – | done（Phase 1・2。POSIX と Windows の Fiber） |
 | TZ02 | [`tzroutine { }` 構文・`Routine` モジュール・終了の待ち](TZ02-tzroutine-spawn.md) | P0 | L | TZ01 | todo |
 | TZ03 | [旧 `Channel` を `DataChannel` に改名し、Go と同じ双方向の `Channel<T>` を入れる（`for x in ch`・既定の WASM の 1 本の実行を含む）](TZ03-channel.md) | P0 | L | TZ02 | todo |
 | TZ04 | [`select` 式](TZ04-select.md) | P0 | L | TZ03 | todo |

@@ -29,11 +29,22 @@ static struct {
 } tz_stack_windows[TZ_STACK_THREADS];
 static atomic_uint tz_stack_count;
 
+/* TZ01: src/runtime/tzroutine.c sets this to tsuzuri_tz_stack_guard_hit before its first scheduler
+   thread starts, so that a fault in the guard of a tzroutine's own stack is an overflow too. */
+__attribute__((visibility("hidden")))
+_Atomic(int32_t (*)(uintptr_t)) tsuzuri_stack_guard_hook;
+
 /* The report is written before anything can end the process, by every thread that overflows, so
    it is never lost to a second thread that overflows at the same time. */
 static void tz_stack_fault(int signal, siginfo_t *info, void *context) {
     (void)context;
     uintptr_t address = (uintptr_t)info->si_addr;
+    int32_t (*guard)(uintptr_t) = atomic_load_explicit(&tsuzuri_stack_guard_hook, memory_order_acquire);
+    if (guard != 0 && guard(address)) {
+        static const char message[] = "trap: stack overflow\n";
+        (void)!write(2, message, sizeof message - 1);
+        abort();
+    }
     unsigned count = atomic_load_explicit(&tz_stack_count, memory_order_acquire);
     if (count > TZ_STACK_THREADS) count = TZ_STACK_THREADS;
     for (unsigned slot = 0; slot < count; ++slot) {
@@ -101,9 +112,32 @@ static uintptr_t tz_stack_low(int main_thread) {
 
 /* Gives the calling thread a stack the handler can run on, and registers its guard.
    Returns 1 if the thread is covered. */
+static int tz_stack_alternate(void);
+
 static int tz_stack_prepare(int main_thread) {
     uintptr_t low = tz_stack_low(main_thread);
-    if (low == 0) return 0;
+    if (low == 0 || !tz_stack_alternate()) return 0;
+    tz_stack_register(low);
+    return 1;
+}
+
+static pthread_once_t tz_stack_handled = PTHREAD_ONCE_INIT;
+
+static void tz_stack_handle_now(void) {
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_sigaction = tz_stack_fault;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, NULL) != 0) return;
+    (void)sigaction(SIGBUS, &action, NULL);
+}
+
+/* Installs the handler once, for every thread; a second caller returns after the first is done. */
+static void tz_stack_handle(void) { (void)pthread_once(&tz_stack_handled, tz_stack_handle_now); }
+
+/* Gives the calling thread an alternate stack for the handler. Returns 1 if it has one. */
+static int tz_stack_alternate(void) {
     void *memory = malloc(TZ_STACK_ALTSTACK);
     if (!memory) return 0;
     stack_t alternate = { .ss_sp = memory, .ss_size = TZ_STACK_ALTSTACK, .ss_flags = 0 };
@@ -111,8 +145,18 @@ static int tz_stack_prepare(int main_thread) {
         free(memory);
         return 0;
     }
-    tz_stack_register(low);
     return 1;
+}
+
+/* Called first by every scheduler thread of src/runtime/tzroutine.c (TZ01). Its tzroutines'
+   guards are known to the hook, so the thread gets an alternate stack, but no window of its own
+   (its stack only runs the scheduler, and the 64 windows stay for the task workers), and the
+   handler is installed in any case (also when the constructor below found no bounds for the main
+   thread, as under an unlimited stack limit on Linux). */
+__attribute__((visibility("hidden")))
+void tsuzuri_stack_scheduler_thread(void) {
+    (void)tz_stack_alternate();
+    tz_stack_handle();
 }
 
 /* Called first by every thread the task runtime starts. */
@@ -124,12 +168,6 @@ void tsuzuri_stack_thread(void) {
 __attribute__((constructor))
 static void tz_stack_install(void) {
     if (!tz_stack_prepare(1)) return;
-    struct sigaction action;
-    memset(&action, 0, sizeof action);
-    action.sa_sigaction = tz_stack_fault;
-    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigemptyset(&action.sa_mask);
-    if (sigaction(SIGSEGV, &action, NULL) != 0) return;
-    (void)sigaction(SIGBUS, &action, NULL);
+    tz_stack_handle();
 }
 #endif
