@@ -113,6 +113,8 @@ String.length (ref s)     // E1012: use of moved or partially moved value 's'
 
 Go と違って待つのは、`Drop`（ファイルの flush など）を必ず走らせ、確保した値を残さないためです。
 
+`Task.parallel` のタスク、`Task.scope` の子ども、`Parallel.*` のコールバックはスレッドプールのワーカーで走り、どの境界の中でもありません。そこで起動した tzroutine は、そのタスク（子ども、コールバックの 1 回）が終わる前に待たれます。したがって、それらの呼び出しが戻るのは、中で起動した tzroutine が終わった後です。
+
 > **Go から来た人への注意**: 終わらない tzroutine（無限ループ、来ない値を待つもの）を残すと、境界が待ち続けます。全員が待ちに入って誰も起こせなくなったときは、デッドロックの判定が次の文を標準エラーへ書いて、プロセスを終えます。
 >
 > ```text
@@ -146,6 +148,7 @@ tzroutine は M:N のスケジューラーで走ります。
 
 - tzroutine の本体のトラップ（`assert`、範囲外の添字、0 での除算など）は、ほかのトラップと同じく、プロセス全体の失敗です。報告は、トラップした tzroutine の OS スレッドが標準エラーへ書きます（`--trap-info` なら位置を含みます）。
 - `--trap-mode return` とは組み合わせられません（`E2000`）。ある tzroutine のトラップを、それを起動した呼び出しから返せないからです。
+- tzroutine を起動するプログラムでは、`Mutex.with_lock` の中で `Routine.yield` を呼ぶとトラップします（`Tsuzuri runtime: a tzroutine cannot yield or wait inside Mutex.with_lock; move the call outside the critical section`）。ロックの持ち主は OS スレッドなので、ロックを持ったまま tzroutine が別の OS スレッドへ移れないからです。
 
 ## ターゲット
 

@@ -126,6 +126,34 @@ static int tz_stack_prepare(int main_thread) {
     return 1;
 }
 
+static atomic_int tz_stack_handled;
+
+/* Installs the handler once, for every thread. */
+static void tz_stack_handle(void) {
+    if (atomic_exchange_explicit(&tz_stack_handled, 1, memory_order_acq_rel) != 0) return;
+    struct sigaction action;
+    memset(&action, 0, sizeof action);
+    action.sa_sigaction = tz_stack_fault;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, NULL) != 0) return;
+    (void)sigaction(SIGBUS, &action, NULL);
+}
+
+/* Called first by every scheduler thread of src/runtime/tzroutine.c (TZ01). Its tzroutines'
+   guards are known to the hook even when this thread's own stack is not, so the thread gets an
+   alternate stack and the handler is installed in any case (also when the constructor below found
+   no bounds for the main thread, as under an unlimited stack limit on Linux). */
+__attribute__((visibility("hidden")))
+void tsuzuri_stack_scheduler_thread(void) {
+    if (!tz_stack_prepare(0)) {
+        void *memory = malloc(TZ_STACK_ALTSTACK);
+        stack_t alternate = { .ss_sp = memory, .ss_size = TZ_STACK_ALTSTACK, .ss_flags = 0 };
+        if (memory && sigaltstack(&alternate, NULL) != 0) free(memory);
+    }
+    tz_stack_handle();
+}
+
 /* Called first by every thread the task runtime starts. */
 __attribute__((visibility("hidden")))
 void tsuzuri_stack_thread(void) {
@@ -135,12 +163,6 @@ void tsuzuri_stack_thread(void) {
 __attribute__((constructor))
 static void tz_stack_install(void) {
     if (!tz_stack_prepare(1)) return;
-    struct sigaction action;
-    memset(&action, 0, sizeof action);
-    action.sa_sigaction = tz_stack_fault;
-    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigemptyset(&action.sa_mask);
-    if (sigaction(SIGSEGV, &action, NULL) != 0) return;
-    (void)sigaction(SIGBUS, &action, NULL);
+    tz_stack_handle();
 }
 #endif

@@ -299,6 +299,12 @@ pub(crate) fn with_wasm_heap_limit(ir: String, limit: u64) -> String {
 /// C and the appended i128 helpers, whose frames total under 1 KiB.
 const STACK_CHECK_MARGIN: u32 = 4096;
 
+/// The mark of a thread that holds a `Mutex.with_lock` in a program that spawns (TZ02).
+pub(crate) const MUTEX_LOCKED: &str = "@tz.mutex.locked = internal thread_local global i32 0";
+
+/// Whether the thread holds no `Mutex.with_lock`; otherwise the runtime writes why (report 5).
+const ROUTINE_UNLOCKED: &str = "define internal i1 @tz.routine.unlocked() {\nentry:\n  %held = load i32, ptr @tz.mutex.locked\n  %free = icmp eq i32 %held, 0\n  br i1 %free, label %ok, label %refuse\nrefuse:\n  call void @tsuzuri_tz_report(i32 5)\n  br label %ok\nok:\n  ret i1 %free\n}\n";
+
 /// The start function of `Routine.go` (TZ02): runs the boxed owned function once, as `Owned.call`
 /// does (the environment is borrowed), then drops it and frees the box.
 const ROUTINE_OWNED_START: &str = "define internal void @tz.tzroutine.owned(ptr %box) {\nentry:\n  %closure = load %tz.closure, ptr %box\n  %desc = extractvalue %tz.closure %closure, 0\n  %code = load ptr, ptr %desc\n  %env = extractvalue %tz.closure %closure, 1\n  %unit = call i8 %code(i8 0, ptr %env, i1 true)\n  call void @tz.closure.drop(%tz.closure %closure)\n  call void @tz.free(ptr %box)\n  ret void\n}\n";
@@ -1384,7 +1390,9 @@ fn emit_program(
     // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
     // thrown away.
     let output = if spawns(module) {
-        with_stack_probes(with_tzroutine_scopes(output, &tzroutine_boundaries(module)))
+        let mut boundaries = tzroutine_boundaries(module);
+        boundaries.extend(worker_callbacks(&output));
+        with_stack_probes(with_tzroutine_scopes(output, &boundaries))
     } else {
         output
     };
@@ -1409,6 +1417,29 @@ fn tzroutine_boundaries(module: &CheckedModule) -> BTreeSet<String> {
     boundaries
 }
 
+/// The functions that the task runtime runs on its pool workers (the tasks of `Task.parallel`, the
+/// children of `Task.scope`, the chunks of `Parallel.*`). A worker belongs to no boundary, so each of
+/// them waits, before it returns, for the tzroutines that it spawned (TZ02): the parallel call, and so
+/// the boundary around it, ends after them.
+fn worker_callbacks(ir: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    for callee in [
+        "@tsuzuri_task_parallel(ptr @",
+        "@tsuzuri_task_parallel_results(ptr @",
+        "@tz.mutex.parallel(ptr @",
+        "@tz.mutex.parallel_results(ptr @",
+    ] {
+        for (at, _) in ir.match_indices(callee) {
+            let name: String = ir[at + callee.len()..]
+                .chars()
+                .take_while(|c| !matches!(c, ',' | ')' | ' '))
+                .collect();
+            found.insert(name);
+        }
+    }
+    found
+}
+
 /// Makes every function of a program that spawns probe the pages of a frame larger than a page as
 /// it allocates the frame (TZ02). A frame can be larger than the 128 KiB guard of a tzroutine's
 /// stack (the slots of the locals are outside `MAX_FRAME_BYTES`); probed, it faults in the guard,
@@ -1416,19 +1447,49 @@ fn tzroutine_boundaries(module: &CheckedModule) -> BTreeSet<String> {
 pub(crate) fn with_stack_probes(ir: String) -> String {
     const PROBE: &str = " \"probe-stack\"=\"inline-asm\"";
     let mut output = String::with_capacity(ir.len() + ir.len() / 16);
-    for line in ir.split_inclusive('\n') {
+    let mut lines = ir.split_inclusive('\n').peekable();
+    while let Some(line) = lines.next() {
         let header = line.trim_end();
         let at = (header.starts_with("define ") && header.ends_with('{'))
             .then(|| header.find(" !dbg ").or_else(|| header.rfind(" {")))
             .flatten();
-        match at {
-            Some(at) if !header.contains("\"probe-stack\"") => {
-                output.push_str(&line[..at]);
-                output.push_str(PROBE);
-                output.push_str(&line[at..]);
-            }
-            _ => output.push_str(line),
+        let Some(at) = at.filter(|_| !header.contains("\"probe-stack\"")) else {
+            output.push_str(line);
+            continue;
+        };
+        output.push_str(&line[..at]);
+        output.push_str(PROBE);
+        output.push_str(&line[at..]);
+        // The constant allocas of the entry block go to its top. One after a call would leave the
+        // entry block when the call is inlined and become a dynamic alloca, which the probed
+        // lowering of AArch64 can leave misaligned.
+        if let Some(label) = lines.next_if(|next| {
+            let label = next.split(';').next().unwrap_or_default().trim_end();
+            !label.starts_with([' ', '\t']) && label.ends_with(':')
+        }) {
+            output.push_str(label);
         }
+        let (mut allocas, mut rest) = (String::new(), String::new());
+        for next in lines.by_ref() {
+            let body = next.trim_start();
+            if body.split_once(" = ").is_some_and(|(_, value)| {
+                value.starts_with("alloca ")
+                    && !value.contains(", i32 %")
+                    && !value.contains(", i64 %")
+            }) {
+                allocas.push_str(next);
+                continue;
+            }
+            rest.push_str(next);
+            if ["br ", "ret", "switch ", "unreachable", "indirectbr ", "}"]
+                .iter()
+                .any(|end| body.starts_with(end))
+            {
+                break;
+            }
+        }
+        output.push_str(&allocas);
+        output.push_str(&rest);
     }
     output
 }
@@ -1662,6 +1723,7 @@ fn emit_program_in(
     let tail_calls = !wasm || instrumentation.wasm_tail_call;
     let mut globals = Globals {
         wasm,
+        spawns: spawns(module),
         async_reactor: module
             .functions
             .iter()
@@ -2481,6 +2543,9 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
 }
 
 struct Globals {
+    /// The program can start a tzroutine (TZ02): a `Mutex.with_lock` marks this thread while it
+    /// holds the lock, and a tzroutine that would yield there traps instead.
+    spawns: bool,
     definitions: Vec<String>,
     next_metadata: usize,
     facts: facts::Metadata,
@@ -2542,6 +2607,7 @@ impl Default for Globals {
                 .map_or(0, |id| id + 1)
         });
         Self {
+            spawns: false,
             definitions: Vec::new(),
             next_metadata,
             facts: facts::Metadata::default(),
@@ -6621,6 +6687,21 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         "0".into()
     }
 
+    /// Traps, with the runtime's message, when this thread holds a `Mutex.with_lock` (TZ02): the
+    /// lock's owner is the thread, so a tzroutine must not switch away from it in a critical section.
+    /// Only a program that spawns has the mark (the other ones never switch).
+    pub(crate) fn routine_unlocked(&mut self) {
+        if !self.globals.spawns {
+            return;
+        }
+        self.intrinsics.insert(MUTEX_LOCKED.into());
+        self.intrinsics.insert(ROUTINE_UNLOCKED.into());
+        self.intrinsics
+            .insert("declare void @tsuzuri_tz_report(i32)".into());
+        let free = self.value("call i1 @tz.routine.unlocked()");
+        self.guard(&free, TrapKind::Assert);
+    }
+
     /// The `Routine` builtins (TZ02). `Routine.go` boxes the owned function's closure for
     /// `@tz.tzroutine.owned`, which calls it once with the environment borrowed (as `Owned.call`),
     /// then drops the closure and frees the box.
@@ -6643,6 +6724,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 return "0".into();
             }
             Builtin::RoutineYield => {
+                self.routine_unlocked();
                 self.intrinsics
                     .insert("declare void @tsuzuri_tz_yield()".into());
                 self.instruction("call void @tsuzuri_tz_yield()");
@@ -7996,6 +8078,7 @@ fn emit_typed_builtin(
         f16: shared_globals.f16,
         range_flags: shared_globals.range_flags,
         strings: shared_globals.strings,
+        spawns: shared_globals.spawns,
         ..Globals::default()
     };
     let separate = shared_globals.traps.is_none();

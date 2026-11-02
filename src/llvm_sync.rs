@@ -95,6 +95,11 @@ impl FunctionEmitter<'_, '_> {
                 let status = self.value(format!("call i32 @tsuzuri_mutex_lock(ptr {cell})"));
                 let acquired = self.value(format!("icmp eq i32 {status}, 0"));
                 self.guard(&acquired, TrapKind::Assert);
+                // TZ02: the lock belongs to this thread; a tzroutine that would switch away traps.
+                if self.globals.spawns {
+                    self.intrinsics.insert(super::MUTEX_LOCKED.into());
+                    self.instruction("store i32 1, ptr @tz.mutex.locked");
+                }
                 let pointer = self.value(format!(
                     "getelementptr inbounds {}, ptr {cell}, i32 0, i32 1",
                     self.ty(&tuple)
@@ -102,6 +107,9 @@ impl FunctionEmitter<'_, '_> {
                 let borrow = Type::Reference(Box::new(value), true);
                 let (output, _) =
                     self.apply_value("%arg1", &parameters[1], Some((&borrow, &pointer)), false);
+                if self.globals.spawns {
+                    self.instruction("store i32 0, ptr @tz.mutex.locked");
+                }
                 self.instruction(format!("call void @tsuzuri_mutex_unlock(ptr {cell})"));
                 output
             }
