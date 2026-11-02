@@ -6,7 +6,7 @@ fn run _ =
     for _ in 1 ..= Routine.max_procs () do
         let sleeper = Channel.share reports
         tzroutine {
-            do! Time.sleep (300 * Time.millisecond)
+            Time.sleep (300 * Time.millisecond())
             Channel.send sleeper "sleeper"
         }
     let worker = Channel.share reports

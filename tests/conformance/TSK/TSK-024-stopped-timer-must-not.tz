@@ -1,9 +1,9 @@
 def run :: unit -> i64
 fn run _ =
-    let! timer = Timer.create Time.millisecond
+    let timer = Timer.create Time.millisecond()
     let fired = Timer.channel timer
     let stopped = Timer.stop timer
-    do! Time.sleep (20 * Time.millisecond)
+    Time.sleep (20 * Time.millisecond())
     match Channel.try_recv fired with
     | Channel.Empty -> if stopped then 1 else 2
     | _ -> 0

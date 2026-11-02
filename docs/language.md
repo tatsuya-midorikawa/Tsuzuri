@@ -1376,7 +1376,7 @@ def main :: unit -> i32 = \() ->
 - `Env.args ()` は、実行プログラム名（`argv[0]`）を除いたコマンドライン引数の配列を返します。ライブラリ出力、`tsuzuri test` ランナー、および `tsuzuri run`（追加引数を渡さない）の実行環境では空配列となります。`tsuzuri build` でコンパイルした実行バイナリで使用します。
   `def main :: Array<string> -> i32` の引数受け渡し（[エントリーポイント](#アプリケーションのエントリーポイント) 参照）とは異なり、引数文字列が正当な UTF-8 でない場合でも置換を行わず、`InvalidEncoding` エラーを返します。
 - `Env.var name` は指定された環境変数の値を取得し、未設定の場合は `Ok None` を返します。変数名が空、等号記号 `=` を含む、あるいは NUL 文字を含む場合は `InvalidInput`、変数値が UTF-8 でない場合は `InvalidEncoding` エラーとなります。`Env.current_dir ()` は OS から報告された現在のカレントワーキングディレクトリを返します。
-- `Time.monotonic_ns ()` は単調増加するシステム時計のナノ秒を返します。起点は未規定であるため、2 点間の時間差分を計算する用途にのみ使用します。`Time.unix_ns ()` は 1970-01-01 UTC からの経過ナノ秒を返し、`i64` に収まらない場合は `Other` エラーとなります。`Time.sleep_ms count` は指定されたミリ秒数だけ現在のスレッドをスリープさせます（負数は `InvalidInput`、0 は OS コールを行わずに `Ok ()` を即座に返します）。tzroutine の中では、スレッドを止めずにその tzroutine だけを待たせます（TZ05）。`Time` は TZ05 から opt-in のモジュールで、名前が現れたプログラムだけが読み込みます（`Channel`・`Timer` も一緒に読み込みます）。タイマーは[タイマー](#タイマー)を見てください。
+- `Time.monotonic_ns ()` は単調増加するシステム時計のナノ秒を返します。起点は未規定であるため、2 点間の時間差分を計算する用途にのみ使用します。`Time.unix_ns ()` は 1970-01-01 UTC からの経過ナノ秒を返し、`i64` に収まらない場合は `Other` エラーとなります。`Time.sleep_ms count` は指定されたミリ秒数だけ現在のスレッドをスリープさせます（負数は `InvalidInput`、0 は OS コールを行わずに `Ok ()` を即座に返します）。tzroutine の中では、スレッドを止めずにその tzroutine だけを待たせます（TZ05）。タイマーは[タイマー](#タイマー)を見てください。
 - `Random.bytes count`（0 以上 $2^{30}$ 以下、範囲外は `InvalidInput`）および `Random.next_u64 ()`（8 バイトを little-endian で読み出した `i64u`）は、OS カーネルが提供する暗号論的乱数を取得します。
 - `Random.pcg seed sequence` は、PCG-XSH-RR 64/32 アルゴリズムに基づく純粋な乱数生成器 `Random.Pcg` を構築します。生成器は不変な値であり、`Random.pcg_next_u32` は `(i32u * Random.Pcg)` のタプルを、`Random.pcg_next_u64` は 2 回の出力を結合して `(i64u * Random.Pcg)` を返します。
   同一のシード値およびストリームシーケンスからは、ネイティブ環境でも WASM 環境でも完全に同一の乱数列が決定論的に得られ、外部インポートも不要です。`Random.Pcg` は不透明型として保護されており、コンストラクタ内でストリームから奇数のインクリメント値を自動合成するため、利用者が誤って偶数の不適切なインクリメントを指定してしまう事故を防ぎます。
@@ -3720,27 +3720,28 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 
 ### タイマー
 
-TZ05 は Go の `time` パッケージのタイマーを入れます。長さはナノ秒の `i64`（Go の `time.Duration`）で、定数 `Time.nanosecond`（1）・`microsecond`（10³）・`millisecond`（10⁶）・`second`（10⁹）・`minute`（6×10¹⁰）・`hour`（3.6×10¹²）と掛けて書きます。時刻は `Time.monotonic_ns` と同じ単調時計のナノ秒です（Windows は `QueryPerformanceCounter`）。
+TZ05 は Go の `time` パッケージのタイマーを入れます。長さはナノ秒の `i64`（Go の `time.Duration`）で、引数のない組み込みの関数 `Time.nanosecond()`（1）・`microsecond()`（10³）・`millisecond()`（10⁶）・`second()`（10⁹）・`minute()`（6×10¹⁰）・`hour()`（3.6×10¹²）と掛けて書きます（`Math.pi()` と同じ呼び方。`()` の前に空白を入れると `E1006`）。時刻は `Time.monotonic_ns` と同じ単調時計のナノ秒です（Windows は `QueryPerformanceCounter`）。
 
 | API | 型 | 意味 |
 |---|---|---|
-| `Time.sleep d` | `i64 -> IO<unit>` | 少なくとも `d` 待つ。tzroutine の中ではその tzroutine だけが待つ。0 以下は `Routine.yield` と同じ |
-| `Time.after d` | `i64 -> IO<Channel<i64>>` | `d` 後に時刻を 1 つ受け取る容量 1 のチャンネル |
-| `Time.tick d` | `i64 -> IO<Channel<i64>>` | `d` ごとに時刻を送る容量 1 のチャンネル。受け手が前の時刻を受け取っていない回は捨てる。返したハンドルがすべて drop されたら次の回に止まる。0 以下はトラップ |
+| `Time.sleep d` | `i64 -> unit` | 少なくとも `d` 待つ。tzroutine の中ではその tzroutine だけが待つ。0 以下は `Routine.yield` と同じ |
+| `Time.after d` | `i64 -> Channel<i64>` | `d` 後に時刻を 1 つ受け取る容量 1 のチャンネル |
+| `Time.tick d` | `i64 -> Channel<i64>` | `d` ごとに時刻を送る容量 1 のチャンネル。受け手が前の時刻を受け取っていない回は捨てる。返したハンドルがすべて drop されたら次の回に止まる。0 以下はトラップ |
 | `Time.after_func d f` | `i64 -> Owned.Function<unit, unit> -> Timer` | `d` 後に `f` を新しい tzroutine で 1 回呼ぶ |
-| `Timer.create d` | `i64 -> IO<Timer>` | `d` 後に時刻を 1 回送るタイマー |
+| `Timer.create d` | `i64 -> Timer` | `d` 後に時刻を 1 回送るタイマー |
 | `Timer.channel t`・`Ticker.channel t` | `ref Timer -> Channel<i64>`・`ref Ticker -> Channel<i64>` | チャンネルのハンドル（`share`）。`after_func` の `Timer` は閉じた空のチャンネル |
 | `Timer.stop t` | `ref Timer -> bool` | 止める。まだ待っていたなら真 |
 | `Timer.reset t d` | `ref Timer -> i64 -> bool` | 今から `d` 後に送り直す。まだ待っていたなら真 |
-| `Ticker.create d` | `i64 -> IO<Ticker>` | `d` ごとに時刻を送るティッカー。0 以下はトラップ |
+| `Ticker.create d` | `i64 -> Ticker` | `d` ごとに時刻を送るティッカー。0 以下はトラップ |
 | `Ticker.stop t`・`Ticker.reset t d` | `ref Ticker -> unit`・`ref Ticker -> i64 -> unit` | 止める・周期を変えて今から数え直す（0 以下はトラップ） |
 
 - 期限は「今 + d」（`INT64_MAX` で飽和）で、早く送る・起こすことはありません。周期は `when += d` で、遅れて期限を過ぎていれば「今 + d」です。
 - `stop` と `reset` の後のチャンネルには、その前に送った時刻は残りません（Go 1.23 以降と同じ）。`after_func` の関数は、`stop` しても持ち続け、`reset` で予定し直せます。呼ばれるか、境界で止められるか、`Timer` が drop されたときに drop されます。一度呼んだ後の `reset` は偽を返して何も予定しません（所有する関数は 1 回しか呼べない。Go はもう一度呼ぶ）。
-- `IO` と `after_func`: 時計を読む操作は `IO` です（`Time` の既存の関数と同じ）。`IO` は何度も実行できる値なので、1 回しか呼べない所有する関数を持てず、`after_func` は `Routine.go` と同じく呼んだ時点で始まり、`Timer` を直接返します。トップレベルの `let!` の後ろの文は継続の関数になり、所有値を捕捉できない（`E1005`）ので、タイマーを先に `let!` するか関数の中に書きます。ビルダーのない関数の本体の `let!`・`do!` はその場で実行します。
+- `IO` でない理由: タイマーは `Routine.go`・`Channel.send`・`select` と同じく、呼んだ時点で働く組み込みの関数です。`IO` は何度も実行できる値なので、1 回しか呼べない `after_func` の関数を持てず、`IO` のチャンネルはトップレベルの `let!` の継続（何度も呼べる関数）へ捕捉できません（`E1005`）。また `Time` の std のソースは変えないので（下の「読み込み」）、組み込みの関数にしています。時計を読む OS の効果（`os`）と権限 `time` は `IO` の関数と同じで、`pure` の関数からは呼べません。
 - 境界: `main`・`export`・`test`・`bench`（とプールの項目）の終わりは、その中の tzroutine の終わりを待ってから、そこで作ったまだ発火していないタイマーを待たずに止め、ランタイムの参照を離します（`Time.after`・`Time.tick` のチャンネルはここで解放され、`after_func` の関数は呼ばれずに drop されます）。`Timer`・`Ticker` のハンドルは境界の外へ出られ、止められたまま drop を待ちます。
-- `Timer`・`Ticker` は非 Copy の不透明な record（`{ handle: i64 }`。構築・フィールド参照・分解は `E1022`）で、`Drop` で止めてランタイムの記録を解放します。`Send`・`Sync` で、関数値への捕捉は `E1005` です。ハンドルを先に取ります（D-59 の資源のハンドルの例外）。私的な組み込み `Time.__sleep_ns`・`__after`・`__tick`・`__after_func`・`Timer.__create`・`__free`・`Ticker.__create`・`__free` はそれぞれの std のモジュールの外では `E1022`（`private_std_primitive`）です。
-- 権限は `time`（時計を読む `Time.*`・`create`・`reset`）。効果は `os`（`after_func` は `task`）、作るものは `alloc`、`tick`・`Ticker` の 0 以下と、tzroutine を起動するプログラムの `Mutex.with_lock` の中の `Time.sleep` は `trap` です。
+- `Timer`・`Ticker` は非 Copy の不透明な record（`{ handle: i64 }`。構築・フィールド参照・分解は `E1022`）で、`Drop` で止めてランタイムの記録を解放します。`Send`・`Sync` で、関数値への捕捉は `E1005` です。ハンドルを先に取ります（D-59 の資源のハンドルの例外）。私的な組み込み `Timer.__create`・`__channel`・`__stop`・`__reset`・`__free` と `Ticker` の同じ名前のものは、それぞれの std のモジュールの外では `E1022`（`private_std_primitive`）です。
+- 権限は `time`（時計を読む `Time.sleep`・`after`・`tick`・`after_func` と `create`・`reset`。長さの関数は権限も効果もない）。効果は `os`（`after_func` は `task`）、作るものは `alloc`、`tick`・`Ticker` の 0 以下と、tzroutine を起動するプログラムの `Mutex.with_lock` の中の `Time.sleep` は `trap` です。
+- 読み込み: `Time` は今までどおり常に読み込むモジュールで、`std/Time.tz` は変えていません（関数を足すと、ほかのすべてのプログラムの生成コードの内部の名前の番号がずれるため）。`Time.after`・`Time.tick` の型は `Channel` を、`Time.after_func` は `Timer` を名指すので、ソースに `Time.after`・`Time.tick`・`Time.after_func`（ドットの前後の空白は問わない）が現れたプログラムは、`Channel`・`Timer` も読み込みます（`stdlib::MEMBER_TRIGGERS`）。`Timer`・`Ticker` は opt-in のモジュールで、`create`・`channel`・`stop`・`reset` は私的な組み込み（`Timer.__create` など）を呼ぶ std の関数です。
 - 実装: タイマーは TZ01 のタイマーのヒープとスレッドに `SEND`・`TICK`・`FUNC` の種類を足したものです。チャンネルのブロック（128 + 8 バイト）は生成コードが確保し（確保の追跡で数える）、ランタイムが最後の参照で `@tz.free` で解放します。`Time.sleep_ms` は `os.c` のフックで、tzroutine の中なら `Time.sleep` と同じ待ちになります。
 - ターゲット: ネイティブの macOS・Linux・Windows。タイマーを作る操作はスケジューラーの境界を要るので（tzroutine の起動と同じ扱い）、WebAssembly と `--trap-mode return` は `E2000` です。`Time.sleep` だけは起動しない操作で、WebAssembly では `Time.sleep_ms` と同じ OS の待ち（ミリ秒に切り上げ、`--wasm-host` が必要）に下がります。
 

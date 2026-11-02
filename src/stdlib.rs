@@ -336,14 +336,6 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         aliases: &[],
         uses: &[],
     },
-    // TZ05: `Time.after` and `Time.tick` return a Channel and `Time.after_func` a Timer, so Time is
-    // loaded only for a program that names it (an always-loaded module names no opt-in one).
-    OptIn {
-        module: "Time",
-        names: &["Time"],
-        aliases: &[],
-        uses: &["Channel", "Timer"],
-    },
     OptIn {
         module: "Timer",
         names: &["Timer"],
@@ -376,6 +368,16 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     },
 ];
 
+/// The builtins of an always-loaded module whose types name an opt-in module (TZ05): a program
+/// that refers to one, as `Time.after` (with or without spaces around the dot), loads that module
+/// as if it named it. `Time` itself stays always loaded and unchanged, so a program that uses none
+/// of them loads what it loaded before.
+const MEMBER_TRIGGERS: &[(&str, &str, &str)] = &[
+    ("Time", "after", "Channel"),
+    ("Time", "tick", "Channel"),
+    ("Time", "after_func", "Timer"),
+];
+
 /// Whether `module` is an opt-in std module, whose declarations user code names
 /// only qualified (D-40).
 pub(crate) fn is_opt_in(module: &str) -> bool {
@@ -393,9 +395,12 @@ pub fn sources_for<'a>(
         .flat_map(|module| module.aliases.iter().copied())
         .collect();
     let mut words = std::collections::BTreeSet::new();
+    let mut triggered = Vec::new();
     for text in texts {
         let bytes = text.as_bytes();
         let mut index = 0;
+        // The last word and whether a dot has followed it, for `MEMBER_TRIGGERS`.
+        let mut qualifier: Option<(&str, bool)> = None;
         while index < bytes.len() {
             // Every identifier token is a maximal run of these bytes, or the part of a
             // run after leading digits; scanning both over-approximates the tokens.
@@ -409,13 +414,27 @@ pub fn sources_for<'a>(
                 {
                     index += 1;
                 }
+                let word = &text[start..index];
+                if let Some((owner, true)) = qualifier {
+                    for (module, member, opt_in) in MEMBER_TRIGGERS {
+                        if owner == *module && word == *member && !triggered.contains(opt_in) {
+                            triggered.push(*opt_in);
+                        }
+                    }
+                }
+                qualifier = (start < index).then_some((word, false));
                 // Module names are capitalized; the lowercase words that matter are builder aliases.
                 if start < index
                     && (bytes[start].is_ascii_uppercase() || aliases.contains(&&text[start..index]))
                 {
-                    words.insert(&text[start..index]);
+                    words.insert(word);
                 }
             } else {
+                qualifier = match (qualifier, bytes[index]) {
+                    (Some((word, false)), b'.') => Some((word, true)),
+                    (Some(found), b' ' | b'\t') => Some(found),
+                    _ => None,
+                };
                 index += 1;
             }
         }
@@ -431,6 +450,11 @@ pub fn sources_for<'a>(
         })
         .map(|module| module.module)
         .collect();
+    for module in triggered {
+        if !needed.contains(&module) {
+            needed.push(module);
+        }
+    }
     let mut next = 0;
     while next < needed.len() {
         let module = OPT_IN

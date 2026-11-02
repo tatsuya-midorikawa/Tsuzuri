@@ -194,8 +194,11 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted | AsyncRetire
         | RoutineGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount
         | TimeAfterFunc => Some(Task),
-        TimeSleepNs | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
+        TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset => Some(Clock),
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
+            None
+        }
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some(State)
         }
@@ -1527,7 +1530,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            122
+            136
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

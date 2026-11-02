@@ -137,8 +137,7 @@ const MODULES: &[(&str, Kind)] = &[
     // The methods of the class take the text, `'s`, last; they have no `fn` lines, so no names are read.
     ("Text", text(&["'s", "['s]"], &["text", "parts"])),
     ("Ticker", Exempt(BUILTIN_HANDLE)),
-    // `after_func` takes the function last (Go's `AfterFunc(d, f)`); the others take one argument.
-    ("Time", subject(&["Owned.Function"])),
+    ("Time", SingleArgument),
     ("Timer", Exempt(BUILTIN_HANDLE)),
     ("Unicode", subject(&["string", "utf8string"])),
     ("Utf8Char", SingleArgument),

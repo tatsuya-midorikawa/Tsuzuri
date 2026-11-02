@@ -572,7 +572,10 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         }
         // TZ05: the timers read the clock. A sleep inside `Mutex.with_lock` traps in a program that
         // spawns, as a yield does; a period of 0 or less traps; a timer's channel is allocated.
-        TimeSleepNs => facts(Some(Effect::Os), false, true, false, false, false, None),
+        TimeSleep => facts(Some(Effect::Os), false, true, false, false, false, None),
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
+            facts(None, false, false, false, false, false, None)
+        }
         TimeAfter | TimerCreate => facts(Some(Effect::Os), true, false, false, false, false, None),
         TimeTick | TickerCreate => facts(Some(Effect::Os), true, true, false, false, false, None),
         TimerReset => facts(Some(Effect::Os), false, false, false, false, false, None),
@@ -3507,19 +3510,19 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 290);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 122);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 168);
+        assert_eq!(Builtin::ALL.len(), 310);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 136);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 174);
     }
 
     #[test]
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
         assert_eq!(by(Effect::Io), 10);
-        assert_eq!(by(Effect::Os), 12);
+        assert_eq!(by(Effect::Os), 19);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 15);
-        assert_eq!(by(Effect::Atomic), 46);
+        assert_eq!(by(Effect::Task), 16);
+        assert_eq!(by(Effect::Atomic), 52);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3528,12 +3531,12 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 66);
+        assert_eq!(count(|facts| facts.alloc), 73);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 40);
+        assert_eq!(count(|facts| facts.trap), 44);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 
@@ -3544,7 +3547,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 18);
+        assert_eq!(count(|facts| facts.callbacks), 21);
     }
 
     fn checked(source: &str) -> CheckedModule {
