@@ -58,6 +58,17 @@ fn names_the_data_channel_names() {
             "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'",
             "DataChannel.recv",
         ),
+        // The name in parentheses, and after `|>`.
+        (
+            "def f :: own DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match (Channel.recv) (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n",
+            "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'",
+            "DataChannel.recv",
+        ),
+        (
+            "def f :: own DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match (ref receiver) |> Channel.recv with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n",
+            "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'",
+            "DataChannel.recv",
+        ),
     ] {
         assert_eq!(
             renamed(source),
