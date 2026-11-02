@@ -1649,7 +1649,7 @@ pub(crate) fn with_task_accounting(ir: String) -> String {
         for line in lines.by_ref() {
             let body = line.trim_start();
             if body.starts_with("ret ") || body.trim_end() == "ret void" {
-                output.push_str("  call void @tsuzuri_tz_task_leave()\n");
+                let _ = writeln!(output, "  call void @tsuzuri_tz_task_leave({context})");
             }
             output.push_str(line);
             if line.trim_end() == "}" {
@@ -1659,7 +1659,7 @@ pub(crate) fn with_task_accounting(ir: String) -> String {
     }
     if wrapped {
         output.push_str(
-            "declare void @tsuzuri_tz_parallel_begin(ptr, i64)\ndeclare void @tsuzuri_tz_parallel_end(ptr, i64)\ndeclare void @tsuzuri_tz_task_enter(ptr)\ndeclare void @tsuzuri_tz_task_leave()\n",
+            "declare void @tsuzuri_tz_parallel_begin(ptr, i64)\ndeclare void @tsuzuri_tz_parallel_end(ptr, i64)\ndeclare void @tsuzuri_tz_task_enter(ptr)\ndeclare void @tsuzuri_tz_task_leave(ptr)\n",
         );
     }
     output

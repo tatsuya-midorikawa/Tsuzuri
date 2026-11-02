@@ -1576,22 +1576,25 @@ TZR_API int64_t tsuzuri_tz_cpu_count(void) {
  * calls in is on an M, which counts as running however long the call takes. */
 typedef struct tzr_batch {
     const void *context;
-    int64_t unstarted;
+    int64_t unstarted;   /* items that have not started */
+    int64_t running;     /* items that have started and not ended */
+    tzr_g *submitter;    /* the pseudo-G that waits for the batch, idle while items remain */
     struct tzr_batch *next;
 } tzr_batch;
 
 static tzr_batch *tzr_batches; /* tzr_sched.lock */
 
-/* With tzr_sched.lock held. Going idle may leave only parked participants. */
-static void tzr_thread_running(tzr_g *g, int running) {
-    if (g->kind != TZR_KIND_THREAD || g->idle == !running) return;
+/* With tzr_sched.lock held: a pseudo-G counts as running or not. A G is on an M, which counts. */
+static void tzr_set_running(tzr_g *g, int running) {
+    if (g == NULL || g->kind != TZR_KIND_THREAD || g->idle == !running) return;
     g->idle = !running;
-    if (running) {
-        tzr_sched.npseudo_running++;
-    } else {
-        tzr_sched.npseudo_running--;
-        tzr_checkdead();
-    }
+    tzr_sched.npseudo_running += running ? 1 : -1;
+}
+
+static tzr_batch *tzr_batch_of(const void *context) {
+    for (tzr_batch *batch = tzr_batches; batch; batch = batch->next)
+        if (batch->context == context) return batch;
+    return NULL;
 }
 
 /* Before the task runtime takes the n items of `context`. */
@@ -1602,11 +1605,13 @@ TZR_API void tsuzuri_tz_parallel_begin(const void *context, int64_t n) {
     if (batch == NULL) tzr_fatal("out of memory");
     batch->context = context;
     batch->unstarted = n;
+    batch->running = 0;
+    batch->submitter = g->kind == TZR_KIND_THREAD ? g : NULL;
     tzr_mutex_lock(&tzr_sched.lock);
     batch->next = tzr_batches;
     tzr_batches = batch;
     tzr_sched.npending += n;
-    tzr_thread_running(g, 0); /* no verdict: the items are pending */
+    tzr_set_running(g, 0); /* no verdict: the items are pending */
     tzr_mutex_unlock(&tzr_sched.lock);
 }
 
@@ -1624,7 +1629,7 @@ TZR_API void tsuzuri_tz_parallel_end(const void *context, int64_t n) {
         }
     }
     if (batch != NULL) tzr_sched.npending -= batch->unstarted; /* skipped after a failure */
-    tzr_thread_running(g, 1);
+    tzr_set_running(g, 1);
     tzr_mutex_unlock(&tzr_sched.lock);
     free(batch);
 }
@@ -1633,22 +1638,27 @@ TZR_API void tsuzuri_tz_parallel_end(const void *context, int64_t n) {
 TZR_API void tsuzuri_tz_task_enter(const void *context) {
     tzr_g *g = tzr_current();
     tzr_mutex_lock(&tzr_sched.lock);
-    for (tzr_batch *batch = tzr_batches; batch; batch = batch->next) {
-        if (batch->context == context && batch->unstarted > 0) {
-            batch->unstarted--;
-            tzr_sched.npending--;
-            break;
-        }
+    tzr_batch *batch = tzr_batch_of(context);
+    if (batch != NULL && batch->unstarted > 0) {
+        batch->unstarted--;
+        batch->running++;
+        tzr_sched.npending--;
     }
-    tzr_thread_running(g, 1);
+    tzr_set_running(g, 1);
     tzr_mutex_unlock(&tzr_sched.lock);
 }
 
-/* The end of an item: its thread goes back to the task runtime. */
-TZR_API void tsuzuri_tz_task_leave(void) {
+/* The end of an item: its thread goes back to the task runtime. When it was the last item of the
+ * batch, the thread that waits for the batch is about to go on, and counts as running at once:
+ * there is no moment in which neither counts. */
+TZR_API void tsuzuri_tz_task_leave(const void *context) {
     tzr_g *g = tzr_current();
     tzr_mutex_lock(&tzr_sched.lock);
-    tzr_thread_running(g, 0);
+    tzr_set_running(g, 0);
+    tzr_batch *batch = tzr_batch_of(context);
+    if (batch != NULL && batch->running > 0 && --batch->running == 0 && batch->unstarted == 0)
+        tzr_set_running(batch->submitter, 1);
+    tzr_checkdead();
     tzr_mutex_unlock(&tzr_sched.lock);
 }
 
