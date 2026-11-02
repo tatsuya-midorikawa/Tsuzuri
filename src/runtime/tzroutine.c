@@ -60,6 +60,25 @@ static void tzr_fatal(const char *message);
 #define TZR_TSAN_SWITCH(fiber) ((void)0)
 #endif
 
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define TZR_ASAN 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) && !defined(TZR_ASAN)
+#define TZR_ASAN 1
+#endif
+#if defined(TZR_ASAN)
+/* ASan keeps a fake stack per stack (detect_stack_use_after_return): each switch tells it which stack
+ * runs next, and the context that resumes takes its own fake stack back. */
+#include <sanitizer/common_interface_defs.h>
+#define TZR_ASAN_START(save, bottom, size) __sanitizer_start_switch_fiber((save), (bottom), (size))
+#define TZR_ASAN_FINISH(save, bottom, size) __sanitizer_finish_switch_fiber((save), (bottom), (size))
+#else
+#define TZR_ASAN_START(save, bottom, size) ((void)(save), (void)(bottom), (void)(size))
+#define TZR_ASAN_FINISH(save, bottom, size) ((void)(save), (void)(bottom), (void)(size))
+#endif
+
 #if !defined(__aarch64__) && !defined(__x86_64__)
 #error "tzroutine: unsupported architecture"
 #endif
@@ -80,6 +99,7 @@ static void tzr_fatal(const char *message);
 #define TZR_STACK_CACHE 1024
 #endif
 #define TZR_P_GFREE 64
+#define TZR_LOCAL_CACHE 256 /* finished Gs kept untrimmed in all the Ps' lists together */
 #define TZR_RUNNEXT_TURNS 61 /* takes from runnext in a row before the local ring gets a turn */
 
 /* ---------------------------------------------------------------- failure */
@@ -92,7 +112,7 @@ static void tzr_fatal(const char *message) {
 
 #if defined(TZ_STACK_GUARD)
 /* src/runtime/stack.c: the alternate signal stack of a thread, and the hook its handler asks first. */
-void tsuzuri_stack_thread(void);
+void tsuzuri_stack_scheduler_thread(void);
 extern _Atomic(int32_t (*)(uintptr_t)) tsuzuri_stack_guard_hook;
 #endif
 TZR_API int32_t tsuzuri_tz_stack_guard_hit(uintptr_t address);
@@ -253,8 +273,8 @@ static int64_t tzr_nanotime(void) {
 #define TZR_SYM(name) #name
 #endif
 __attribute__((naked, noinline)) static void tzr_switch(void **save_sp, void *load_sp) {
-    /* FPCR (rounding mode, exception traps) is part of each context; it is written back only when
-     * it differs, because writing it can stall. */
+    /* FPCR (rounding mode, exception traps) and FPSR (exception flags) are part of each context;
+     * they are written back only when they differ, because writing them can stall. */
     __asm__ volatile(
         "sub sp, sp, #176\n"
         "stp d8, d9, [sp, #0]\n"
@@ -268,7 +288,8 @@ __attribute__((naked, noinline)) static void tzr_switch(void **save_sp, void *lo
         "stp x27, x28, [sp, #128]\n"
         "stp x29, x30, [sp, #144]\n"
         "mrs x9, fpcr\n"
-        "str x9, [sp, #160]\n"
+        "mrs x10, fpsr\n"
+        "stp x9, x10, [sp, #160]\n"
         "mov x9, sp\n"
         "str x9, [x0]\n"
         "mov sp, x1\n"
@@ -282,12 +303,17 @@ __attribute__((naked, noinline)) static void tzr_switch(void **save_sp, void *lo
         "ldp x25, x26, [sp, #112]\n"
         "ldp x27, x28, [sp, #128]\n"
         "ldp x29, x30, [sp, #144]\n"
-        "ldr x9, [sp, #160]\n"
-        "mrs x10, fpcr\n"
-        "cmp x9, x10\n"
+        "ldp x9, x10, [sp, #160]\n"
+        "mrs x11, fpcr\n"
+        "cmp x9, x11\n"
         "b.eq 1f\n"
         "msr fpcr, x9\n"
         "1:\n"
+        "mrs x11, fpsr\n"
+        "cmp x10, x11\n"
+        "b.eq 2f\n"
+        "msr fpsr, x10\n"
+        "2:\n"
         "add sp, sp, #176\n"
         "ret\n");
 }
@@ -298,6 +324,7 @@ static void *tzr_initial_frame(char *top, void (*start)(void)) {
     frame[18] = 0;                        /* x29: ends the frame-pointer chain */
     frame[19] = (uint64_t)(uintptr_t)start; /* x30: where the first switch returns */
     frame[20] = 0;                        /* FPCR: round to nearest, no traps */
+    frame[21] = 0;                        /* FPSR: no exception flag */
     return frame;
 }
 #else /* x86-64 System V */
@@ -309,14 +336,16 @@ __attribute__((naked, noinline)) static void tzr_switch(void **save_sp, void *lo
         "pushq %r13\n"
         "pushq %r14\n"
         "pushq %r15\n"
-        "subq $8, %rsp\n"
+        /* MXCSR and the x87 environment (control, status and tag words): rounding, masks and the
+         * exception flags of each context stay its own */
+        "subq $40, %rsp\n"
         "stmxcsr (%rsp)\n"
-        "fnstcw 4(%rsp)\n"
+        "fnstenv 4(%rsp)\n"
         "movq %rsp, (%rdi)\n"
         "movq %rsi, %rsp\n"
         "ldmxcsr (%rsp)\n"
-        "fldcw 4(%rsp)\n"
-        "addq $8, %rsp\n"
+        "fldenv 4(%rsp)\n"
+        "addq $40, %rsp\n"
         "popq %r15\n"
         "popq %r14\n"
         "popq %r13\n"
@@ -330,10 +359,12 @@ static void *tzr_initial_frame(char *top, void (*start)(void)) {
     uint64_t *slot = (uint64_t *)(top - 16);
     slot[1] = 0;                              /* fake return address of `start` */
     slot[0] = (uint64_t)(uintptr_t)start;     /* popped by ret */
-    uint64_t *frame = slot - 7;
-    memset(frame, 0, 7 * sizeof(uint64_t));   /* r15 r14 r13 r12 rbx rbp = 0 */
-    uint32_t control[2] = {0x1F80u, 0x037Fu}; /* default MXCSR and x87 control word */
-    memcpy(frame, control, sizeof control);
+    uint64_t *frame = slot - 11;
+    memset(frame, 0, 11 * sizeof(uint64_t));  /* the environments, then r15 r14 r13 r12 rbx rbp = 0 */
+    /* The default MXCSR, then the x87 environment of fninit: control 0x037F, status 0, every
+     * register empty (tag 0xFFFF). */
+    uint32_t defaults[4] = {0x1F80u, 0x037Fu, 0u, 0xFFFFu};
+    memcpy(frame, defaults, sizeof defaults);
     return frame;
 }
 #endif
@@ -420,6 +451,10 @@ struct tzr_m {
 #if defined(_WIN32)
     void *g0_fiber;
 #endif
+#if defined(TZR_ASAN)
+    const void *g0_bottom; /* the bounds of this M's own stack, for ASan's switches */
+    size_t g0_size;
+#endif
 };
 
 static struct {
@@ -439,6 +474,7 @@ static struct {
     int npseudo_running;          /* pseudo-Gs that are not parked */
     int npseudo_parked;
     _Atomic int64_t ntimers;      /* timers that will still fire */
+    _Atomic int local_cached;     /* finished Gs in the Ps' lists (at most TZR_LOCAL_CACHE) */
     _Atomic uint64_t next_id;
     tzr_g *allgs;                  /* every G with a stack, for the deadlock report */
     tzr_lock allgs_lock;
@@ -450,9 +486,7 @@ static struct {
 } tzr_sched = {.lock = TZR_MUTEX_INIT, .once = TZR_ONCE_INIT};
 
 static _Thread_local tzr_m *tzr_tls_m;
-#if !defined(_WIN32)
-static _Thread_local tzr_g *tzr_tls_pseudo; /* Windows keeps it in a fiber-local slot (tzr_pseudo) */
-#endif
+static _Thread_local tzr_g *tzr_tls_pseudo;
 
 /* R2: every TLS read goes through these noinline functions. */
 static TZR_NOINLINE tzr_m *tzr_this_m(void) { return tzr_tls_m; }
@@ -674,8 +708,8 @@ static void tzr_startm(tzr_p *p, int spinning) {
     if (p == NULL) {
         p = tzr_pidleget();
         if (p == NULL) {
+            if (spinning) atomic_fetch_sub(&tzr_sched.nmspinning, 1); /* before another P can be seen idle */
             tzr_mutex_unlock(&tzr_sched.lock);
-            if (spinning) atomic_fetch_sub(&tzr_sched.nmspinning, 1);
             return;
         }
     }
@@ -796,7 +830,10 @@ static void tzr_execute(tzr_m *m, tzr_g *g) {
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(g->tsan_fiber);
 #endif
+    void *fake = NULL;
+    TZR_ASAN_START(&fake, g->stack + TZR_GUARD, g->stack_size);
     TZR_TO_G(m, g);
+    TZR_ASAN_FINISH(fake, NULL, NULL);
     /* back on g0: the G parked, yielded or exited */
     tzr_g *prev = m->curg;
     m->curg = NULL;
@@ -897,7 +934,7 @@ static void *tzr_mstart(void *arg) {
     if (m->g0_fiber == NULL) tzr_fatal("cannot make a scheduler thread a fiber");
 #endif
 #if defined(TZ_STACK_GUARD)
-    tsuzuri_stack_thread(); /* the alternate stack on which stack.c reports an overflow */
+    tsuzuri_stack_scheduler_thread(); /* the alternate stack on which stack.c reports an overflow */
 #endif
     m->p = m->nextp;
     m->nextp = NULL;
@@ -946,9 +983,7 @@ static tzr_once tzr_pseudo_key_once = TZR_ONCE_INIT;
  * host thread returns from the export only after tsuzuri_tz_scope_leave. */
 static void tzr_pseudo_destroy(void *arg) {
     tzr_g *g = arg;
-#if !defined(_WIN32)
     tzr_tls_pseudo = NULL; /* a later destructor of this thread that calls in gets a fresh pseudo-G */
-#endif
     tzr_lock_acquire(&tzr_pseudo_lock);
     for (tzr_g **link = &tzr_pseudo_list; *link; link = &(*link)->link) {
         if (*link == g) {
@@ -966,10 +1001,10 @@ static void tzr_pseudo_destroy(void *arg) {
 }
 
 #if defined(_WIN32)
-/* The callback of a fiber-local slot runs when the fiber or its thread ends, like a pthread key's
- * destructor. It may also run while the process exits, after ExitProcess has stopped the other
- * threads (one of them may hold a lock): then nothing is freed, whether exit() ran
- * tzr_pseudo_exiting or the loader says the process is shutting down. */
+/* The callback of a fiber-local slot runs when its thread ends, like a pthread key's destructor. It
+ * may also run while the process exits, after ExitProcess has stopped the other threads (one of them
+ * may hold a lock): then nothing is freed, whether exit() ran tzr_pseudo_exiting or the loader says
+ * the process is shutting down. */
 static DWORD tzr_pseudo_key;
 static _Atomic int tzr_pseudo_exit;
 static BOOLEAN (NTAPI *tzr_dll_shutdown)(void); /* ntdll's RtlDllShutdownInProgress, if it has one */
@@ -985,7 +1020,12 @@ static void tzr_pseudo_key_init(void) {
     tzr_pseudo_key = FlsAlloc(tzr_pseudo_fls);
     if (tzr_pseudo_key == FLS_OUT_OF_INDEXES || atexit(tzr_pseudo_exiting) != 0) tzr_fatal("cannot create a thread key");
 }
-static void tzr_pseudo_key_set(tzr_g *g) { FlsSetValue(tzr_pseudo_key, g); }
+/* A pseudo-G is the thread's (one count of a running participant for all its fibers). The slot of a
+ * thread that is not a fiber ends with the thread; a fiber's slot would end with the fiber, so a
+ * host thread that runs fibers keeps its pseudo-G (and its count) until the process ends. */
+static void tzr_pseudo_key_set(tzr_g *g) {
+    if (!IsThreadAFiber()) FlsSetValue(tzr_pseudo_key, g);
+}
 #else
 static pthread_key_t tzr_pseudo_key;
 static void tzr_pseudo_key_init(void) {
@@ -995,19 +1035,10 @@ static void tzr_pseudo_key_set(tzr_g *g) { pthread_setspecific(tzr_pseudo_key, g
 #endif
 
 static tzr_g *tzr_pseudo(void) {
-#if defined(_WIN32)
-    /* The slot is fiber-local, like its cleanup: a host fiber that is deleted takes its pseudo-G
-     * with it, and no thread-local pointer outlives it. */
-    tzr_start();
-    tzr_run_once(&tzr_pseudo_key_once, tzr_pseudo_key_init);
-    tzr_g *g = FlsGetValue(tzr_pseudo_key);
-    if (g) return g;
-#else
     tzr_g *g = tzr_tls_pseudo;
     if (g) return g;
     tzr_start();
     tzr_run_once(&tzr_pseudo_key_once, tzr_pseudo_key_init);
-#endif
     g = calloc(1, sizeof *g);
     if (g == NULL) tzr_fatal("out of memory");
     g->kind = TZR_KIND_THREAD;
@@ -1022,9 +1053,7 @@ static tzr_g *tzr_pseudo(void) {
     tzr_mutex_lock(&tzr_sched.lock);
     tzr_sched.npseudo_running++;
     tzr_mutex_unlock(&tzr_sched.lock);
-#if !defined(_WIN32)
     tzr_tls_pseudo = g;
-#endif
     tzr_pseudo_key_set(g);
     return g;
 }
@@ -1037,6 +1066,21 @@ static void tzr_after_park(tzr_m *m, tzr_g *g) {
     void *arg = m->after_arg;
     m->after_unlock = NULL;
     if (unlock) unlock(arg);
+}
+
+/* G -> g0 for a G that will be resumed (park, yield). Under ASan the context that resumes takes its
+ * fake stack back and learns the stack of the g0 that resumed it, which may be another M's (R2). */
+static void tzr_switch_out(tzr_m *m, tzr_g *g) {
+    void *fake = NULL;
+#if defined(TZR_ASAN)
+    TZR_ASAN_START(&fake, m->g0_bottom, m->g0_size);
+#endif
+    TZR_TO_G0(m, g);
+#if defined(TZR_ASAN)
+    m = tzr_this_m();
+    TZR_ASAN_FINISH(fake, &m->g0_bottom, &m->g0_size);
+#endif
+    (void)fake;
 }
 
 /* Parks the current G until tzr_ready. `unlock(arg)` runs once the G is off its stack (R1).
@@ -1067,7 +1111,7 @@ static int tzr_park(void (*unlock)(void *), void *arg, const char *reason) {
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(m->tsan_g0);
 #endif
-    TZR_TO_G0(m, g);
+    tzr_switch_out(m, g);
     return 0;
 }
 
@@ -1130,7 +1174,7 @@ TZR_API void tsuzuri_tz_yield(void) {
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(m->tsan_g0);
 #endif
-    TZR_TO_G0(m, g);
+    tzr_switch_out(m, g);
 }
 
 /* ---------------------------------------------------------------- spawn and exit */
@@ -1144,7 +1188,12 @@ static void tzr_after_exit(tzr_m *m, tzr_g *g) {
     g->env = NULL;
     /* keep the G and its stack for the next spawn */
     tzr_p *p = m->p;
-    if (p->gfree_count < TZR_P_GFREE) {
+    int local = 0;
+    if (p->gfree_count < TZR_P_GFREE) { /* untrimmed: bounded for the whole process */
+        local = atomic_fetch_add(&tzr_sched.local_cached, 1) < TZR_LOCAL_CACHE;
+        if (!local) atomic_fetch_sub(&tzr_sched.local_cached, 1);
+    }
+    if (local) {
         g->link = p->gfree;
         p->gfree = g;
         p->gfree_count++;
@@ -1203,12 +1252,18 @@ static VOID CALLBACK tzr_fiber_start(LPVOID arg) {
 #else
 static void tzr_gstart(void) {
     tzr_m *m = tzr_this_m();
+#if defined(TZR_ASAN)
+    TZR_ASAN_FINISH(NULL, &m->g0_bottom, &m->g0_size); /* first entry: learn the stack of g0 */
+#endif
     tzr_g *g = m->curg;
     g->code(g->env);
     m = tzr_this_m(); /* R2: the body may have moved this G to another M */
     m->after = tzr_after_exit;
 #if defined(TZR_TSAN)
     TZR_TSAN_SWITCH(m->tsan_g0);
+#endif
+#if defined(TZR_ASAN)
+    TZR_ASAN_START(NULL, m->g0_bottom, m->g0_size); /* this use of the stack ends here */
 #endif
     TZR_TO_G0(m, g);
     __builtin_trap();
@@ -1224,6 +1279,7 @@ static tzr_g *tzr_galloc(void) {
         g = m->p->gfree;
         m->p->gfree = g->link;
         m->p->gfree_count--;
+        atomic_fetch_sub(&tzr_sched.local_cached, 1);
         return g;
     }
     tzr_lock_acquire(&tzr_sched.gfree_lock);

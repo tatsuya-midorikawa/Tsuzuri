@@ -62,6 +62,13 @@ try {
     const overflow = execute(guarded, ["child-overflow"], {}, false);
     assert.equal(overflow.signal, "SIGABRT", `${overflow.status} ${overflow.signal}\n${overflow.stderr}`);
     assert.match(overflow.stderr, /^trap: stack overflow$/m);
+    if (process.platform === "linux") {
+      // With an unlimited stack the main thread's bounds are unknown, and the scheduler still installs
+      // the handler that reports a tzroutine's overflow.
+      const unlimited = execute("sh", ["-c", 'ulimit -s unlimited && exec "$0" child-overflow', guarded], {}, false);
+      assert.equal(unlimited.signal, "SIGABRT", `${unlimited.status} ${unlimited.signal}\n${unlimited.stderr}`);
+      assert.match(unlimited.stderr, /^trap: stack overflow$/m);
+    }
     for (const name of cases) {
       execute(guarded, [name], { TSUZURI_MAXPROCS: "4" });
       runs++;

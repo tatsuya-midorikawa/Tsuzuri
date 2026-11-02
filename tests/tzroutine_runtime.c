@@ -147,6 +147,17 @@ static void test_select(void) {
     tsuzuri_tz_go(feeder, b);
     int64_t hits[2] = {0, 0};
     for (int i = 0; i < 20000; i++) {
+        /* both cases ready at each choice: a feeder waits in each send queue */
+        for (;;) {
+            tzr_lock_acquire(&a->lock);
+            int ready_a = a->sendq.first != NULL;
+            tzr_lock_release(&a->lock);
+            tzr_lock_acquire(&b->lock);
+            int ready_b = b->sendq.first != NULL;
+            tzr_lock_release(&b->lock);
+            if (ready_a && ready_b) break;
+            tsuzuri_tz_yield();
+        }
         int64_t va = 0, vb = 0;
         tzr_scase cases[2] = {{.c = a, .elem = &va}, {.c = b, .elem = &vb}};
         int32_t ok;
@@ -516,6 +527,51 @@ static void fp_check_default(void *env) {
     (void)env;
     CHECK(fegetround() == FE_TONEAREST);
 }
+/* the exception flags are per routine too: x87's status word and MXCSR's flags on x86-64, FPSR on
+ * aarch64 (fetestexcept reads them all) */
+static void fp_flag_raiser(void *env) {
+    (void)env;
+    feclearexcept(FE_ALL_EXCEPT);
+    feraiseexcept(FE_INVALID);
+    for (int i = 0; i < 100; i++) {
+        tsuzuri_tz_yield();
+        CHECK(fetestexcept(FE_INVALID) != 0);
+    }
+    feclearexcept(FE_ALL_EXCEPT);
+}
+static void fp_flag_clean(void *env) {
+    (void)env;
+    CHECK(fetestexcept(FE_ALL_EXCEPT) == 0);
+    for (int i = 0; i < 100; i++) {
+        tsuzuri_tz_yield();
+        CHECK(fetestexcept(FE_ALL_EXCEPT) == 0);
+    }
+}
+#if defined(__x86_64__)
+/* x87 alone: 0/0 sets the invalid flag (masked) of the x87 status word */
+static unsigned x87_status(void) {
+    unsigned short status;
+    __asm__ volatile("fnstsw %0" : "=m"(status));
+    return status & 0x3f;
+}
+static void x87_raiser(void *env) {
+    (void)env;
+    __asm__ volatile("fnclex\n fldz\n fldz\n fdivrp\n fstp %%st(0)" ::: "memory");
+    for (int i = 0; i < 100; i++) {
+        tsuzuri_tz_yield();
+        CHECK(x87_status() & 1);
+    }
+    __asm__ volatile("fnclex");
+}
+static void x87_clean(void *env) {
+    (void)env;
+    CHECK(x87_status() == 0);
+    for (int i = 0; i < 100; i++) {
+        tsuzuri_tz_yield();
+        CHECK(x87_status() == 0);
+    }
+}
+#endif
 static void test_fp_mode(void) {
     void *scope = tsuzuri_tz_scope_enter();
     for (int i = 0; i < 64; i++) tsuzuri_tz_go(fp_mode_routine, (void *)(intptr_t)(i % 2 ? FE_UPWARD : FE_TONEAREST));
@@ -529,6 +585,14 @@ static void test_fp_mode(void) {
         for (int i = 0; i < 64; i++) tsuzuri_tz_go(fp_check_default, NULL);
         join(scope);
     }
+    scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 64; i++) tsuzuri_tz_go(i % 2 ? fp_flag_raiser : fp_flag_clean, NULL);
+    join(scope);
+#if defined(__x86_64__)
+    scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 64; i++) tsuzuri_tz_go(i % 2 ? x87_raiser : x87_clean, NULL);
+    join(scope);
+#endif
     printf("fp rounding modes: ok\n");
 }
 
