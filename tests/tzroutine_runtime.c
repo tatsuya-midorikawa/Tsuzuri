@@ -298,6 +298,35 @@ static DWORD WINAPI external_thread(LPVOID arg) {
     external(arg);
     return 0;
 }
+/* A host thread that registers and then runs fibers keeps its pseudo-G, which is the thread's: the
+ * fiber where it registered can go away, the thread calls in from another one, and the pseudo-G goes
+ * when the thread ends (the TLS callback). */
+static void *fiber_registered;
+static VOID CALLBACK fiber_other(LPVOID arg) {
+    (void)arg;
+    DeleteFiber(fiber_registered);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 100; i++) tsuzuri_tz_go(incr, (void *)(intptr_t)1);
+    join(scope);
+    ExitThread(0);
+}
+static DWORD WINAPI fiber_thread(LPVOID arg) {
+    (void)arg;
+    (void)tsuzuri_tz_count(); /* registers this thread */
+    (void)tzr_current();
+    fiber_registered = ConvertThreadToFiber(NULL);
+    CHECK(fiber_registered != NULL);
+    void *other = CreateFiber(0, fiber_other, NULL);
+    CHECK(other != NULL);
+    SwitchToFiber(other);
+    return 1; /* not reached: the other fiber ends the thread */
+}
+static int pseudo_running(void) {
+    tzr_mutex_lock(&tzr_sched.lock);
+    int n = tzr_sched.npseudo_running;
+    tzr_mutex_unlock(&tzr_sched.lock);
+    return n;
+}
 #endif
 static void test_external(void) {
     atomic_store(&counter, 0);
@@ -305,6 +334,11 @@ static void test_external(void) {
     HANDLE t[4];
     for (int i = 0; i < 4; i++) CHECK((t[i] = CreateThread(NULL, 0, external_thread, NULL, 0, NULL)) != NULL);
     for (int i = 0; i < 4; i++) CHECK(WaitForSingleObject(t[i], INFINITE) == WAIT_OBJECT_0 && CloseHandle(t[i]));
+    int before = pseudo_running();
+    HANDLE f = CreateThread(NULL, 0, fiber_thread, NULL, 0, NULL);
+    CHECK(f != NULL && WaitForSingleObject(f, INFINITE) == WAIT_OBJECT_0 && CloseHandle(f));
+    CHECK(pseudo_running() == before); /* the ended thread's pseudo-G is gone */
+    atomic_fetch_sub(&counter, 100);
 #else
     pthread_t t[4];
     for (int i = 0; i < 4; i++) pthread_create(&t[i], NULL, external, NULL);
