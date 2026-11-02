@@ -1546,11 +1546,10 @@ pub(crate) fn with_tzroutine_scopes(ir: String, boundaries: &BTreeSet<String>) -
 /// items to the pool and joins them is between `tsuzuri_tz_block_enter` and `_leave`, so the work
 /// that the join waits for (a pool worker's child tzroutine) runs even with one P.
 pub(crate) fn with_blocking_calls(ir: String) -> String {
-    const CALLS: [&str; 4] = [
+    // The runtime's own calls: the `tz.mutex.parallel*` wrappers of a program with a Mutex make them.
+    const CALLS: [&str; 2] = [
         "call void @tsuzuri_task_parallel(",
         "call i64 @tsuzuri_task_parallel_results(",
-        "call void @tz.mutex.parallel(",
-        "call i64 @tz.mutex.parallel_results(",
     ];
     let mut output = String::with_capacity(ir.len() + 256);
     let mut wrapped = false;
