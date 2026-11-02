@@ -917,7 +917,7 @@ impl Type {
             // arguments (`'f<i64>`). `false` keeps `Send<'a>` as a constraint on a generic
             // function, which is checked again for every type that it is used at (as `Sync<'a>`
             // is); `true` would discharge it where the function is written and let an `Rc` through
-            // a wrapper of `Channel.bounded`, `Mutex.create` or `Parallel.init`. Every kind of type
+            // a wrapper of `DataChannel.bounded`, `Mutex.create` or `Parallel.init`. Every kind of type
             // is named here and below, so that a new one has to be judged.
             Self::Variable(_)
             | Self::Infer(_)
@@ -1631,21 +1631,21 @@ pub enum Builtin {
     MutexWith,
     /// `Mutex.into_inner :: Mutex<'a> -> 'a`.
     MutexIntoInner,
-    /// `Channel.bounded :: Send<'a> => i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)`
+    /// `DataChannel.bounded :: Send<'a> => i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>)`
     /// makes a channel that holds up to the given number of items (F10 Phase 2).
-    ChannelBounded,
-    /// `Channel.send :: ref Channel.Sender<'a> -> 'a -> Result<unit, 'a>`: waits while the channel
+    DataChannelBounded,
+    /// `DataChannel.send :: ref DataChannel.Sender<'a> -> 'a -> Result<unit, 'a>`: waits while the channel
     /// is full; `Error item` when no receiver is left.
-    ChannelSend,
-    /// `Channel.recv :: ref Channel.Receiver<'a> -> Maybe<'a>`: waits while the channel is empty
+    DataChannelSend,
+    /// `DataChannel.recv :: ref DataChannel.Receiver<'a> -> Maybe<'a>`: waits while the channel is empty
     /// and a sender is left; `None` when it is empty and closed.
-    ChannelRecv,
-    /// `Channel.clone_sender :: ref Channel.Sender<'a> -> Channel.Sender<'a>`.
-    ChannelCloneSender,
-    /// `Channel.__close_sender` and `__close_receiver`, the bodies of the `Drop` instances in
-    /// `std/Channel.tz`: private to that module.
-    ChannelCloseSender,
-    ChannelCloseReceiver,
+    DataChannelRecv,
+    /// `DataChannel.clone_sender :: ref DataChannel.Sender<'a> -> DataChannel.Sender<'a>`.
+    DataChannelCloneSender,
+    /// `DataChannel.__close_sender` and `__close_receiver`, the bodies of the `Drop` instances in
+    /// `std/DataChannel.tz`: private to that module.
+    DataChannelCloseSender,
+    DataChannelCloseReceiver,
     /// `Routine.go :: own Owned.Function<unit, unit> -> unit` runs the owned function once in a new
     /// tzroutine and then drops it: `tzroutine { }` as a function value (TZ02).
     RoutineGo,
@@ -1979,12 +1979,12 @@ impl Builtin {
         Self::MutexCreate,
         Self::MutexWith,
         Self::MutexIntoInner,
-        Self::ChannelBounded,
-        Self::ChannelSend,
-        Self::ChannelRecv,
-        Self::ChannelCloneSender,
-        Self::ChannelCloseSender,
-        Self::ChannelCloseReceiver,
+        Self::DataChannelBounded,
+        Self::DataChannelSend,
+        Self::DataChannelRecv,
+        Self::DataChannelCloneSender,
+        Self::DataChannelCloseSender,
+        Self::DataChannelCloseReceiver,
         Self::RoutineGo,
         Self::RoutineYield,
         Self::RoutineCount,
@@ -2224,12 +2224,12 @@ impl Builtin {
             Self::MutexCreate => "Mutex.create",
             Self::MutexWith => "Mutex.with_lock",
             Self::MutexIntoInner => "Mutex.into_inner",
-            Self::ChannelBounded => "Channel.bounded",
-            Self::ChannelSend => "Channel.send",
-            Self::ChannelRecv => "Channel.recv",
-            Self::ChannelCloneSender => "Channel.clone_sender",
-            Self::ChannelCloseSender => "Channel.__close_sender",
-            Self::ChannelCloseReceiver => "Channel.__close_receiver",
+            Self::DataChannelBounded => "DataChannel.bounded",
+            Self::DataChannelSend => "DataChannel.send",
+            Self::DataChannelRecv => "DataChannel.recv",
+            Self::DataChannelCloneSender => "DataChannel.clone_sender",
+            Self::DataChannelCloseSender => "DataChannel.__close_sender",
+            Self::DataChannelCloseReceiver => "DataChannel.__close_receiver",
             Self::RoutineGo => "Routine.go",
             Self::RoutineYield => "Routine.yield",
             Self::RoutineCount => "Routine.count",
@@ -3339,12 +3339,12 @@ impl Builtin {
             | Self::MutexCreate
             | Self::MutexWith
             | Self::MutexIntoInner
-            | Self::ChannelBounded
-            | Self::ChannelSend
-            | Self::ChannelRecv
-            | Self::ChannelCloneSender
-            | Self::ChannelCloseSender
-            | Self::ChannelCloseReceiver => self.sync_scheme(),
+            | Self::DataChannelBounded
+            | Self::DataChannelSend
+            | Self::DataChannelRecv
+            | Self::DataChannelCloneSender
+            | Self::DataChannelCloseSender
+            | Self::DataChannelCloseReceiver => self.sync_scheme(),
             Self::RoutineGo => (
                 vec![BuiltinType::Std {
                     module: "Owned",
@@ -3487,10 +3487,11 @@ impl Builtin {
         self.name().starts_with("Atomic.")
     }
 
-    /// Whether this builtin is a `Channel` operation, lowered to calls of the channel runtime
+    /// Whether this builtin is a `DataChannel` operation (the `Channel` of F10, renamed in TZ03),
+    /// lowered to calls of the channel runtime
     /// (F10 Phase 2).
-    pub(crate) fn is_channel(self) -> bool {
-        self.name().starts_with("Channel.")
+    pub(crate) fn is_data_channel(self) -> bool {
+        self.name().starts_with("DataChannel.")
     }
 
     /// Whether this builtin is a `Routine` operation, lowered to calls of the tzroutine runtime (TZ02).
@@ -3522,12 +3523,12 @@ impl Builtin {
             args: vec![a()],
         };
         let sender = || BuiltinType::Std {
-            module: "Channel",
+            module: "DataChannel",
             name: "Sender",
             args: vec![a()],
         };
         let receiver = || BuiltinType::Std {
-            module: "Channel",
+            module: "DataChannel",
             name: "Receiver",
             args: vec![a()],
         };
@@ -3583,12 +3584,12 @@ impl Builtin {
                 vec![constraint("Send", Var("b"))],
             ),
             Self::MutexIntoInner => (vec![mutex()], a(), Vec::new()),
-            Self::ChannelBounded => (
+            Self::DataChannelBounded => (
                 vec![Concrete(Type::I64)],
                 BuiltinType::Tuple(vec![sender(), receiver()]),
                 vec![constraint("Send", a())],
             ),
-            Self::ChannelSend => (
+            Self::DataChannelSend => (
                 vec![borrowed(sender()), a()],
                 BuiltinType::Std {
                     module: "Result",
@@ -3597,7 +3598,7 @@ impl Builtin {
                 },
                 Vec::new(),
             ),
-            Self::ChannelRecv => (
+            Self::DataChannelRecv => (
                 vec![borrowed(receiver())],
                 BuiltinType::Std {
                     module: "Maybe",
@@ -3606,11 +3607,11 @@ impl Builtin {
                 },
                 Vec::new(),
             ),
-            Self::ChannelCloneSender => (vec![borrowed(sender())], sender(), Vec::new()),
-            Self::ChannelCloseSender => {
+            Self::DataChannelCloneSender => (vec![borrowed(sender())], sender(), Vec::new()),
+            Self::DataChannelCloseSender => {
                 (vec![borrowed(sender())], Concrete(Type::Unit), Vec::new())
             }
-            Self::ChannelCloseReceiver => {
+            Self::DataChannelCloseReceiver => {
                 (vec![borrowed(receiver())], Concrete(Type::Unit), Vec::new())
             }
             _ => unreachable!("not a concurrency builtin"),
@@ -13967,8 +13968,8 @@ mod allocation_tests {
              def atomic :: ref Atomic<i64> -> unit = \\_value -> ()\n\
              def nested :: ref Nested -> unit = \\_value -> ()\n\
              def mutex :: ref Mutex<i64> -> unit = \\_value -> ()\n\
-             def sender :: ref Channel.Sender<i64> -> unit = \\_value -> ()\n\
-             def receiver :: ref Channel.Receiver<i64> -> unit = \\_value -> ()",
+             def sender :: ref DataChannel.Sender<i64> -> unit = \\_value -> ()\n\
+             def receiver :: ref DataChannel.Receiver<i64> -> unit = \\_value -> ()",
         )
         .unwrap();
         for function in &module.functions {

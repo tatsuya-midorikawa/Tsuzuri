@@ -2494,7 +2494,7 @@ const suites = {
       assert.match(ir, /call void @tz\.mutex\.parallel\(ptr @tz\.parallel\.chunk\.\d+/);
     },
   },
-  // F10 Phase 2: Channel. The exports need no second thread: up to the capacity a channel is a ring,
+  // F10 Phase 2: DataChannel (the Channel of F10, renamed in TZ03). The exports need no second thread: up to the capacity a channel is a ring,
   // and everything that can wait traps the same way on every target.
   // TZ02: tzroutine { } and Routine. Native only until TZ09; every export waits for its children.
   tzroutine: {
@@ -2509,7 +2509,7 @@ const suites = {
       ["counts", [], 1n],
     ],
   },
-  channel: {
+  data_channel: {
     cases: [
       ...[1n, 2n, 3n, 10n, 257n, 4096n].map((n) => ["roundtrip", [n], n * (n + 1n) / 2n]),
       ["fifo", [], 123456n],

@@ -2780,7 +2780,7 @@ fn head_constructor(ty: &Type) -> Option<HeadKey> {
 /// A `Drop` instance covers every instantiation of a record or union declared in user code, so
 /// whether a type runs a user drop never depends on its type arguments (B07 D1). A std module may
 /// also implement `Drop` for the records and unions that it declares itself, which is how
-/// `Channel.Sender` closes its channel (F10); a program cannot add one to a std type.
+/// `DataChannel.Sender` closes its channel (F10); a program cannot add one to a std type.
 fn validate_drop_instance(
     head: &Type,
     constrained: bool,
@@ -3238,12 +3238,12 @@ impl Checker<'_> {
         }
         if matches!(
             builtin,
-            Builtin::ChannelCloseSender | Builtin::ChannelCloseReceiver
-        ) && !(self.module == "Channel" && self.names.origin(self.module) == ModuleOrigin::Std)
+            Builtin::DataChannelCloseSender | Builtin::DataChannelCloseReceiver
+        ) && !(self.module == "DataChannel" && self.names.origin(self.module) == ModuleOrigin::Std)
         {
             return Err(Diagnostic::of(
                 DiagnosticKind::PrivateStdPrimitive,
-                "the channel close primitive is private to the standard Channel module; a Sender or Receiver closes when it is dropped",
+                "the channel close primitive is private to the standard DataChannel module; a Sender or Receiver closes when it is dropped",
                 span,
             ));
         }

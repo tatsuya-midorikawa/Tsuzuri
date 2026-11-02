@@ -11,7 +11,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Bench.tz", include_str!("../std/Bench.tz")),
     ("std/BigInt.tz", include_str!("../std/BigInt.tz")),
     ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
-    ("std/Channel.tz", include_str!("../std/Channel.tz")),
+    ("std/DataChannel.tz", include_str!("../std/DataChannel.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Dir.tz", include_str!("../std/Dir.tz")),
@@ -115,6 +115,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "MatrixView",
     "Tensor",
     "Channel",
+    "DataChannel",
     "Text",
     "RegexText",
     "Domain",
@@ -168,8 +169,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "MatrixView.Mut"
             | "Tensor.Tensor"
             | "Tensor.View"
-            | "Channel.Sender"
-            | "Channel.Receiver"
+            | "DataChannel.Sender"
+            | "DataChannel.Receiver"
     )
 }
 
@@ -292,8 +293,8 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         uses: &["Matrix", "MatrixView"],
     },
     OptIn {
-        module: "Channel",
-        names: &["Channel"],
+        module: "DataChannel",
+        names: &["DataChannel"],
         aliases: &[],
         uses: &[],
     },
@@ -633,9 +634,9 @@ mod tests {
         assert_eq!(loaded("let c = Atomic.create 0i64"), ["Atomic"]);
         assert_eq!(loaded("record Hits { count: Atomic<i64> }"), ["Atomic"]);
         assert_eq!(loaded("let m = Mutex.create 0i64"), ["Mutex"]);
-        assert_eq!(loaded("let (s, r) = Channel.bounded 4"), ["Channel"]);
+        assert_eq!(loaded("let (s, r) = DataChannel.bounded 4"), ["DataChannel"]);
         assert_eq!(loaded("let r = Domain.run (\\() -> 1)"), ["Domain"]);
-        assert_eq!(loaded("let s: Channel.Sender<i64> = x"), ["Channel"]);
+        assert_eq!(loaded("let s: DataChannel.Sender<i64> = x"), ["DataChannel"]);
         assert_eq!(
             loaded("Task.scope (ref 1) 2 (s -> i -> i)"),
             Vec::<&str>::new()
@@ -660,7 +661,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 60);
+        assert_eq!(RESERVED_MODULES.len(), 61);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

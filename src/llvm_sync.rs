@@ -28,7 +28,7 @@ impl FunctionEmitter<'_, '_> {
     /// instruction, so the portable result is the same on every target; the default WASM
     /// target lowers them to plain operations because it runs one thread.
     pub(super) fn sync_builtin(&mut self, instance: &BuiltinInstance, ty: &Type) -> String {
-        if instance.builtin.is_channel() {
+        if instance.builtin.is_data_channel() {
             return self.channel_builtin(instance, ty);
         }
         let Type::Function(parameters, _) = ty else {
@@ -269,7 +269,7 @@ impl FunctionEmitter<'_, '_> {
         self.guard(&progress, TrapKind::Assert);
     }
 
-    /// Defines the bodies of `Channel.*` (F10 Phase 2). A channel is one block that the runtime
+    /// Defines the bodies of `DataChannel.*` (F10 Phase 2; the `Channel` of then, renamed in TZ03). A channel is one block that the runtime
     /// of the target operates on under its own lock: a header of nine words, then the ring of
     /// items, which the runtime copies in and out. This code allocates and initializes the
     /// block, moves items through stack slots, and drops what is left when the last owner of
@@ -282,10 +282,10 @@ impl FunctionEmitter<'_, '_> {
         let result = ty.after_arguments(count);
         let item = instance.types[0].clone();
         match instance.builtin {
-            Builtin::ChannelBounded => self.channel_bounded(&item, &result),
-            Builtin::ChannelSend => {
+            Builtin::DataChannelBounded => self.channel_bounded(&item, &result),
+            Builtin::DataChannelSend => {
                 let Type::Reference(record, false) = &parameters[0] else {
-                    unreachable!("Channel.send borrows the sender")
+                    unreachable!("DataChannel.send borrows the sender")
                 };
                 let (block, _) = self.channel_block(record, "%arg0");
                 self.channel_unlocked();
@@ -315,9 +315,9 @@ impl FunctionEmitter<'_, '_> {
                     self.ty(&result)
                 ))
             }
-            Builtin::ChannelRecv => {
+            Builtin::DataChannelRecv => {
                 let Type::Reference(record, false) = &parameters[0] else {
-                    unreachable!("Channel.recv borrows the receiver")
+                    unreachable!("DataChannel.recv borrows the receiver")
                 };
                 let (block, _) = self.channel_block(record, "%arg0");
                 self.channel_unlocked();
@@ -346,9 +346,9 @@ impl FunctionEmitter<'_, '_> {
                     self.ty(&result)
                 ))
             }
-            Builtin::ChannelCloneSender => {
+            Builtin::DataChannelCloneSender => {
                 let Type::Reference(record, false) = &parameters[0] else {
-                    unreachable!("Channel.clone_sender borrows the sender")
+                    unreachable!("DataChannel.clone_sender borrows the sender")
                 };
                 let (block, address) = self.channel_block(record, "%arg0");
                 self.instruction(format!(
@@ -361,20 +361,20 @@ impl FunctionEmitter<'_, '_> {
                 // A new value of a type with a `Drop` instance is live, so that its drop runs.
                 self.mark_live(&result, sender)
             }
-            Builtin::ChannelCloseSender | Builtin::ChannelCloseReceiver => {
+            Builtin::DataChannelCloseSender | Builtin::DataChannelCloseReceiver => {
                 let Type::Reference(record, false) = &parameters[0] else {
                     unreachable!("a close primitive borrows the end")
                 };
-                let kind = u32::from(instance.builtin == Builtin::ChannelCloseReceiver);
+                let kind = u32::from(instance.builtin == Builtin::DataChannelCloseReceiver);
                 let (block, _) = self.channel_block(record, "%arg0");
                 self.channel_close(&item, &block, kind);
                 "0".to_owned()
             }
-            _ => unreachable!("not a Channel builtin"),
+            _ => unreachable!("not a DataChannel builtin"),
         }
     }
 
-    /// `Channel.bounded`: the block and its header, and the two ends that hold its address.
+    /// `DataChannel.bounded`: the block and its header, and the two ends that hold its address.
     fn channel_bounded(&mut self, item: &Type, result: &Type) -> String {
         let positive = self.value("icmp sgt i64 %arg0, 0".to_owned());
         self.guard(&positive, TrapKind::Assert);
@@ -407,7 +407,7 @@ impl FunctionEmitter<'_, '_> {
         }
         let address = self.value(format!("ptrtoint ptr {block} to i64"));
         let Type::Tuple(ends) = result else {
-            unreachable!("Channel.bounded returns the two ends")
+            unreachable!("DataChannel.bounded returns the two ends")
         };
         let sender = self.value(format!(
             "insertvalue {} zeroinitializer, i64 {address}, 0",

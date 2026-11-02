@@ -991,12 +991,12 @@ impl<'a> Checker<'a, '_> {
         }
     }
 
-    /// The type of the item that `callee` puts in a channel when it is `Channel.send`, or the
+    /// The type of the item that `callee` puts in a channel when it is `DataChannel.send`, or the
     /// generated function that calls it (F10). The item stays in the channel after the call.
     fn sent_item(&self, callee: &TypedExpr) -> Option<Type> {
         match &callee.ty {
             Type::Function(parameters, _)
-                if self.builtin_called(callee) == Some(crate::check::Builtin::ChannelSend)
+                if self.builtin_called(callee) == Some(crate::check::Builtin::DataChannelSend)
                     && parameters.len() >= 2 =>
             {
                 Some(parameters[1].clone())
@@ -2675,11 +2675,11 @@ impl<'a> Checker<'a, '_> {
         let mut result = Value::default();
         let start = self.held.len();
         // A direct call of `Mutex.with_lock` checks its callback's result with its arguments below,
-        // and one of `Channel.send` checks its item; any other use of either builtin as a value is
+        // and one of `DataChannel.send` checks its item; any other use of either builtin as a value is
         // checked where it is evaluated.
         let locked = self.locked_result(callee).filter(|_| arguments.len() >= 2);
         let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
-        let received = self.builtin_called(callee) == Some(crate::check::Builtin::ChannelRecv);
+        let received = self.builtin_called(callee) == Some(crate::check::Builtin::DataChannelRecv);
         let value = if locked.is_some() || sent.is_some() {
             Value::default()
         } else {
@@ -2932,14 +2932,14 @@ impl<'a> Checker<'a, '_> {
                     expression.span,
                 ));
             }
-            // The same for the item of `Channel.send`.
+            // The same for the item of `DataChannel.send`.
             E::Function(_)
                 if self
                     .sent_item(expression)
                     .is_some_and(|item| item.carries_loans(&self.module.types())) =>
             {
                 return Err(error(DiagnosticKind::MustApplyDirectly,
-                    "Channel.send must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the sender and the item together",
+                    "DataChannel.send must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the sender and the item together",
                     expression.span,
                 ));
             }

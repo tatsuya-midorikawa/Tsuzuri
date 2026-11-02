@@ -1568,7 +1568,7 @@ fn emit_program_in(
         .map(|id| reachable.contains(&id))
         .collect();
     // An executable defines the types of the program that it would be without pruning. A drop or a builtin
-    // loads types that no emitted body names (the drop of a `Channel.Sender<'a>` loads `'a`), the unpruned
+    // loads types that no emitted body names (the drop of a `DataChannel.Sender<'a>` loads `'a`), the unpruned
     // program has them defined by the functions that are now gone, and a definition costs a line (PB03 D1).
     let named = if pruned {
         let unpruned = program_reach(module, None, entry == Entry::BenchRunner).1;
@@ -7922,7 +7922,7 @@ fn emit_builtin(
         }
         builtin
             if builtin.is_atomic()
-                || builtin.is_channel()
+                || builtin.is_data_channel()
                 || matches!(
                     builtin,
                     Builtin::MutexCreate | Builtin::MutexWith | Builtin::MutexIntoInner
@@ -8149,7 +8149,7 @@ fn emit_typed_builtin(
     } else if instance.builtin.shared_kind().is_some() {
         emitter.shared_builtin(instance, ty)
     } else if instance.builtin.is_atomic()
-        || instance.builtin.is_channel()
+        || instance.builtin.is_data_channel()
         || matches!(
             instance.builtin,
             Builtin::MutexCreate | Builtin::MutexWith | Builtin::MutexIntoInner

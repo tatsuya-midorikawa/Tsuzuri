@@ -1,5 +1,5 @@
 //! `concurrency` (G30, D8): an approximation of what runs in parallel and what it shares, from the
-//! signatures (`Channel.Sender<T>`, `Channel.Receiver<T>`, `Mutex<T>`, `Atomic<T>`) and the calls
+//! signatures (`DataChannel.Sender<T>`, `DataChannel.Receiver<T>`, `Mutex<T>`, `Atomic<T>`) and the calls
 //! (`Task.scope`, `Task.parallel`, `Task.parallel_results`, `Parallel.*`, the creators of the
 //! cells). A note says so.
 
@@ -13,13 +13,13 @@ use super::input::Input;
 pub const NOTE: &str = "note";
 
 const CELL_EVIDENCE: [(&str, &str, &str); 4] = [
-    ("Channel.Sender<", "send", "Channel"),
-    ("Channel.Receiver<", "recv", "Channel"),
+    ("DataChannel.Sender<", "send", "DataChannel"),
+    ("DataChannel.Receiver<", "recv", "DataChannel"),
     ("Mutex<", "lock", "Mutex"),
     ("Atomic<", "atomic", "Atomic"),
 ];
 const CREATORS: [(&str, &str); 3] = [
-    ("Channel.bounded", "Channel"),
+    ("DataChannel.bounded", "DataChannel"),
     ("Mutex.create", "Mutex"),
     ("Atomic.create", "Atomic"),
 ];

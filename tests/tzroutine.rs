@@ -252,7 +252,7 @@ fn probes_the_stack_only_when_the_program_spawns() {
 #[test]
 fn programs_without_tzroutine_keep_their_ir() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    for fixture in ["tasks", "concurrency", "channel", "control", "async"] {
+    for fixture in ["tasks", "concurrency", "data_channel", "control", "async"] {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(root.join(fixture)).unwrap() {
             let path = entry.unwrap().path();

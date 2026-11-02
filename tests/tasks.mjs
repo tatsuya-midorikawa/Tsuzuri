@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
     // depends on the schedule; an export that needs more threads than there are traps with the
     // deadlock message instead of hanging, which the one-thread pool shows for every export.
     const channelIr = join(temporary, `channel-threads-${optimization}.ll`);
-    cli(["build", join(root, "tests/fixtures/channel_threads"), "--emit", "llvm", `-O${optimization}`, "-o", channelIr]);
+    cli(["build", join(root, "tests/fixtures/data_channel_threads"), "--emit", "llvm", `-O${optimization}`, "-o", channelIr]);
     const channelCases = [
       ["pipeline", [3, 1000], "500500", 2], ["pipeline", [1, 257], String(257 * 258 / 2), 2],
       ["ping_pong", [2000], "2000002000", 2], ["tokens_across", [200], "200200001", 2],

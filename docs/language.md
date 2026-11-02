@@ -363,7 +363,7 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 明示的に `using std` と記述する必要はありませんが、記述した場合は他の `using` と同様に std モジュール群をモジュール名単体でスコープへ導入します。
 ユーザー定義のソースファイルにおいて、名前空間 `std` またはその配下の階層を明示的に宣言することは禁止されています（`E1011`）。
 標準ライブラリのソースコードは、プロジェクト内で使用されていない場合であっても型検査の対象となりますが、実際のコードから到達しない std の関数、レコード、union、および組み込み関数のラッパーは、最終的な LLVM IR から安全に間引かれます。
-ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`Channel`、`RegexText`、`Domain`、`Monoids`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
+ただし、後発の std モジュール `Arena`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Net`、`Atomic`、`Mutex`、`DataChannel`、`RegexText`、`Domain`、`Monoids`（opt-in std モジュール）は、ユーザーのコードから修飾した名前（`Json.Value`、`Json.Null`、`Arena.Handle`、`Regex.ErrorKind`、`Unicode.Lu`）でだけ参照でき、無修飾の型・case・型クラスの解決の候補になりません。ただし、モジュールと同じ名前の型（`Arena<T>`、`Matrix<T>`、`MatrixView<T>`、`Tensor<T>`、`Atomic<T>`、`Mutex<T>`）は無修飾で書けます。そのため、無修飾の `ErrorKind` や `Handle` は従来どおり `Os.ErrorKind` や `File.Handle` を指します。
 `build`・`check`・`run`・`test`・`doc` は、ユーザーのソースがモジュール名（`Json` については、そのインスタンスを使う組み込みクラス `Encode`・`Decode` も）を識別子として含むときだけ、そのモジュールを読み込みます（コメントや文字列の中に現れても読み込みます）。`Regex` は `Unicode` と `RegexText` を、`RegexText` は `Regex` を、`Cbor` は `Json` を伴います。名前を書かないプログラムはこれらを型検査せず、生成コードも変わりません。言語サーバーは補完のため常にすべてを読み込みます。
 標準ライブラリは外部への `export` 関数を持ちません。IO のエントリーポイントおよびランタイム境界には専用の内部シンボルが追加されます。WASM 出力における外部インポートは、実際に到達した IO／extern 呼び出し、明示的な Debug 出力、ならびに `--wasm-host wasi` 指定時の WASI preview1 関数にのみ限定して追加されます。
 標準ライブラリ内の `private` 関数は std の内部からのみ呼び出し可能であり、ユーザーコードから参照した場合は `E1022` エラーとなります。
@@ -371,11 +371,11 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`Channel.Sender<T>` のように書いて区別します。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -2595,7 +2595,7 @@ Task インスタンス自身およびキャプチャされた所有変数は、
 クロージャの環境内部に隠蔽された借用参照も厳格に拒否されます。
 所有権を持つ完全な所有値をキャプチャしたうえで、そのタスクの内部スコープでのみ局所的に借用参照を作成して処理を行うことは完全に合法です。
 `Rc`／`Rc.Weak` とそれを持つ値は所有値でも `Send` でないため、タスクへ持ち込めません（`E1013`）。複数のタスクで共有するときは、タスクごとに `Arc.share` した `Arc` を持ち込みます。`Arc<T>` は `T` が `Send` かつ `Sync` のとき `Send` です（[Rc / Arc](#rc--arc)）。
-型変数は `Send` かどうか分からないので、`Send` を求める操作（`Parallel.*`、`Task.scope` の結果、`Mutex.create`、`Channel.bounded`、`dyn (C, Send)` への `Dyn.of`）を本体に持つジェネリック関数は、その要求を制約として持ち続け、使う型ごとに検査します。`Sync` と同じ扱いです。関数が `Send<'a>` を書いていなくても、`'a` を `Rc<i64>` で使えば `E1013` です。`Channel.bounded` や `Mutex.create` を包んだ関数を通しても、`Rc` を運ぶチャンネルや `Mutex` は作れません。利用者が `def need :: Send<'a> => 'a -> i64` のように書いた制約も、同じく使う型ごとに検査されます。型変数に型引数を適用した型（高カインドの型変数 `'f` の `'f<i64>`、型構築子の一部の適用）も、まだ分かっていない型として同じに扱い、`'f` に `Holder` が決まった使用箇所で `Holder<i64>` を検査します（`Rc` を持つ `Holder<'a>` は `E1013`、`Send`・`Sync` を求めない関数は影響を受けません）。
+型変数は `Send` かどうか分からないので、`Send` を求める操作（`Parallel.*`、`Task.scope` の結果、`Mutex.create`、`DataChannel.bounded`、`dyn (C, Send)` への `Dyn.of`）を本体に持つジェネリック関数は、その要求を制約として持ち続け、使う型ごとに検査します。`Sync` と同じ扱いです。関数が `Send<'a>` を書いていなくても、`'a` を `Rc<i64>` で使えば `E1013` です。`DataChannel.bounded` や `Mutex.create` を包んだ関数を通しても、`Rc` を運ぶチャンネルや `Mutex` は作れません。利用者が `def need :: Send<'a> => 'a -> i64` のように書いた制約も、同じく使う型ごとに検査されます。型変数に型引数を適用した型（高カインドの型変数 `'f` の `'f<i64>`、型構築子の一部の適用）も、まだ分かっていない型として同じに扱い、`'f` に `Holder` が決まった使用箇所で `Holder<i64>` を検査します（`Rc` を持つ `Holder<'a>` は `E1013`、`Send`・`Sync` を求めない関数は影響を受けません）。
 通常の関数ポインタ値は、そのキャプチャ環境に一切の借用が含まれていないことが静的に証明できる場合に限り、タスク内へキャプチャしたり戻り値として返却したりできます。
 高階関数の引数として渡された未知の関数値は借用参照を保持している可能性があるため、引数の関数値をそのままタスク内へキャプチャすることは保守的に禁止されています（静的な名前付き関数をタスク内から直接呼び出すか、必要な所有データを引数経由で明示的に渡してください）。
 なお、Copy 型の配列や関数ポインタ値をタスク内へキャプチャする際は、既存の所有権規則に従って独立した完全なスナップショットがディープコピーされるため、巨大なデータ構造のキャプチャには相応のコピーコストが伴います。
@@ -2642,7 +2642,7 @@ WASM ターゲットにおいては、デフォルトでは同一の静的型、
 ホスト側は各ワーカーインスタンスにおいて、エントリポイント `tsuzuri_thread_entry` の呼び出し前にグローバル変数 `__stack_pointer` をスタック上端アドレスに、`tsuzuri_stack_base` および `tsuzuri_stack_top` をスタックの有効範囲へと正しく初期化します（両方が 0 の場合はメインスレッドのスタックを意味するため、範囲が未設定のワーカーは最初の関数呼び出しで安全にトラップします）。
 `--emit object` で出力されたオブジェクトファイルを独自にリンクする場合は、これらのグローバル変数、`__stack_pointer`、およびスレッドランタイム関数を忘れずに `--export` してください。
 並列グループが戻るまで、すべてのコールバック関数の完了と結果データの同期公開が確実に待機されます。正常終了時は所有ヒープ領域が完全に回収されます（ワーカースレッドのスタックはプールの寿命に従い、トラップが発生したプールは再利用されずに安全に破棄・クローズされます）。
-既定の WASM では、`Task.scope` の子どもは `index` の昇順に 1 つずつ実行され、`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグになり、`Channel` の操作はモジュールの中の IR（満たされない待ちはその場でトラップ）で、import は増えません。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になり、`Task.scope` の子どもは Workers で動きます。`Mutex` と `Channel` も使えます（ロックの語と待ちは共有メモリの atomic 命令と `memory.atomic.wait32` で、スレッドごとの状態はインスタンスごとの WebAssembly のグローバルです。ホストのグルーは変わりません）。`--freestanding` では、`Mutex` と `Channel` は `E2000` で、`Task.scope` も並列タスクとして `E2000` です。`Atomic` はランタイムを使わないので通ります。
+既定の WASM では、`Task.scope` の子どもは `index` の昇順に 1 つずつ実行され、`Atomic` は通常の命令、`Mutex` はロックを示す 1 つのフラグになり、`DataChannel` の操作はモジュールの中の IR（満たされない待ちはその場でトラップ）で、import は増えません。`--wasm-feature threads` では、`Atomic` は WASM の atomic 命令になり、`Task.scope` の子どもは Workers で動きます。`Mutex` と `DataChannel` も使えます（ロックの語と待ちは共有メモリの atomic 命令と `memory.atomic.wait32` で、スレッドごとの状態はインスタンスごとの WebAssembly のグローバルです。ホストのグルーは変わりません）。`--freestanding` では、`Mutex` と `DataChannel` は `E2000` で、`Task.scope` も並列タスクとして `E2000` です。`Atomic` はランタイムを使わないので通ります。
 extern 関数を使用するワーカーには同一のホスト環境定義が必要であり、`createThreadPool` の `importsModule` が各インスタンス用の `createImports({memory, workerId, data})` を返却します。
 なお Web ブラウザ環境で動作させる場合は、HTTP レスポンスヘッダーに `Cross-Origin-Opener-Policy: same-origin`（COOP）および `Cross-Origin-Embedder-Policy: require-corp`（COEP）を設定して cross-origin isolation を有効化し、専用の Web Worker ホストスクリプトを別途用意する必要があります（Node.js 用のホストコードをそのままブラウザ環境へインポートすることはできません）。
 ブラウザ向けの統合グルーコード、GPU 連携、およびホスト側の非同期 I/O・イベントループとの統合機能は、`Task` の機能には含まれません。待ち時間をほかの計算へ譲るには、次の `Async` を使います。
@@ -3683,26 +3683,26 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - 循環: `Arc` は `Mutex` の中に入れられるので、`Arc<Node>` の中の `Mutex` が別の `Arc<Node>` を指す循環を作れます。サイクルコレクターはなく、循環のブロックは解放されません。循環の一方は `Arc.Weak` で持ちます（[Rc / Arc](#rc--arc)）。
 - ターゲット: `Mutex` は、ネイティブ、既定の wasm32、`--wasm-feature threads`（Worker 間で待ちます）で使え、`--freestanding` では `E2000` です。`Atomic` は、既定の wasm32、`--wasm-feature threads`、`--freestanding`、`--target wasm64`、`--allocator host`・`counting`・`small` で使えます。
 
-### Channel
+### DataChannel
 
-`Channel` は、容量の決まった MPMC のキューです（F10 Phase 2）。予約モジュール `Channel` として、ソースに名前が現れたプログラムだけに読み込まれます。`Channel.Sender<'a>` と `Channel.Receiver<'a>` は、どちらも非 Copy の不透明な record（`{ block: i64 }`）で、`std/Channel.tz` が宣言し、drop でチャンネルを閉じる `Drop` の instance も書きます（std のモジュールが自分で宣言した型にだけ、std が `Drop` の instance を書けます。利用者が std の型に書くことは `E1016` のままです）。
+`DataChannel` は、容量の決まった MPMC のキューです（F10 Phase 2）。予約モジュール `DataChannel` として、ソースに名前が現れたプログラムだけに読み込まれます。`DataChannel.Sender<'a>` と `DataChannel.Receiver<'a>` は、どちらも非 Copy の不透明な record（`{ block: i64 }`）で、`std/DataChannel.tz` が宣言し、drop でチャンネルを閉じる `Drop` の instance も書きます（std のモジュールが自分で宣言した型にだけ、std が `Drop` の instance を書けます。利用者が std の型に書くことは `E1016` のままです）。
 
 | API | 型 | 意味 |
 |---|---|---|
-| `Channel.bounded n` | `Send<'a> => i64 -> (Sender<'a> * Receiver<'a>)` | 容量 `n`（1 以上）のチャンネルを作る。`n` が 0 以下ならトラップ |
-| `Channel.send sender item` | `ref Sender<'a> -> 'a -> Result<unit, 'a>` | 要素を入れる。満杯なら待つ。受け手が 1 つも残っていないときは、待たずに `Error item` |
-| `Channel.recv receiver` | `ref Receiver<'a> -> Maybe<'a>` | 要素を取る。空なら待つ。すべての `Sender` が drop されて空なら `None` |
-| `Channel.clone_sender sender` | `ref Sender<'a> -> Sender<'a>` | 独立した所有者の `Sender` を作る |
+| `DataChannel.bounded n` | `Send<'a> => i64 -> (Sender<'a> * Receiver<'a>)` | 容量 `n`（1 以上）のチャンネルを作る。`n` が 0 以下ならトラップ |
+| `DataChannel.send sender item` | `ref Sender<'a> -> 'a -> Result<unit, 'a>` | 要素を入れる。満杯なら待つ。受け手が 1 つも残っていないときは、待たずに `Error item` |
+| `DataChannel.recv receiver` | `ref Receiver<'a> -> Maybe<'a>` | 要素を取る。空なら待つ。すべての `Sender` が drop されて空なら `None` |
+| `DataChannel.clone_sender sender` | `ref Sender<'a> -> Sender<'a>` | 独立した所有者の `Sender` を作る |
 
-- 閉じる: 最後の `Sender` の drop で、受け手は残りの要素を読み、そのあと `None` を受け取ります。最後の `Receiver` の drop で、以後の `send` は `Error` を返します。最後の端が drop されるとき、残っている要素を 1 回ずつ drop して、ブロックを解放します。`Channel.__close_sender`・`__close_receiver` は std 専用で、利用者が呼ぶと `E1022` です。
-- 型: `Channel.bounded` が `Send<'a>` を求めるので、`Rc` などを運ぶチャンネルは作れません（`E1013`）。`Channel.bounded` を包んだジェネリック関数を通しても同じです（型変数の `Send` は、関数を使う型ごとに検査されます）。両端は `Sync` で、`Task.scope` の `shared` か `Arc` に入れて共有できます。両端は関数値に捕捉できません（`E1005`）。借用 `ref` なら捕捉できます。構築、フィールド参照、パターン分解は `E1022`、`export def` と `extern def` は `E1008`、`const` は `E1026` です。
-- 要素と借用: 要素は `send` が戻ったあともチャンネルに残り、別のスレッドで、借用元のデータがなくなったあとに受け取られうるので、借用を持てません。`Sender<'a>` は整数 1 つの不透明な record で、`carries_loans` は型の引数を辿らず、型から要素の型が見えないので、所有権の検査が `Channel.send` の呼び出しで要素の借用（`Value` の loan）を調べます。要素の型が借用を持ちうる（関数値を含む）のに要素が借用を持つと `E1013`（`a channel item cannot hold a borrow`）で、引数で借りたデータを捕捉した関数も、`ref` した局所値を捕捉した関数も同じです。直接呼びで、送り手と要素を一度に渡す形だけが検査できるので、部分適用、関数値化、`|>` は、要素の型が借用を持ちうるときに `E1013`（`Channel.send must be fully applied directly`）です。生成した関数の引数（`$builtin` の薄い関数）は呼び出し側が検査され、利用者の関数が引数で受け取った関数値は借用を持たないと分からないので `E1013` です（引数の関数値を `task` に持ち込むのと同じ扱いです）。`recv` が返す要素は、入れるときに検査済みで、チャンネルから移されたものなので、借用を持ちません（受け手も借りません）。`Mutex.create` は、型（`Mutex<'a>` は `'a` を持つ配列）に関数型が見えるので、借用がロックの loan として残り、戻り値や `Task.scope` の共有には出せません。
+- 閉じる: 最後の `Sender` の drop で、受け手は残りの要素を読み、そのあと `None` を受け取ります。最後の `Receiver` の drop で、以後の `send` は `Error` を返します。最後の端が drop されるとき、残っている要素を 1 回ずつ drop して、ブロックを解放します。`DataChannel.__close_sender`・`__close_receiver` は std 専用で、利用者が呼ぶと `E1022` です。
+- 型: `DataChannel.bounded` が `Send<'a>` を求めるので、`Rc` などを運ぶチャンネルは作れません（`E1013`）。`DataChannel.bounded` を包んだジェネリック関数を通しても同じです（型変数の `Send` は、関数を使う型ごとに検査されます）。両端は `Sync` で、`Task.scope` の `shared` か `Arc` に入れて共有できます。両端は関数値に捕捉できません（`E1005`）。借用 `ref` なら捕捉できます。構築、フィールド参照、パターン分解は `E1022`、`export def` と `extern def` は `E1008`、`const` は `E1026` です。
+- 要素と借用: 要素は `send` が戻ったあともチャンネルに残り、別のスレッドで、借用元のデータがなくなったあとに受け取られうるので、借用を持てません。`Sender<'a>` は整数 1 つの不透明な record で、`carries_loans` は型の引数を辿らず、型から要素の型が見えないので、所有権の検査が `DataChannel.send` の呼び出しで要素の借用（`Value` の loan）を調べます。要素の型が借用を持ちうる（関数値を含む）のに要素が借用を持つと `E1013`（`a channel item cannot hold a borrow`）で、引数で借りたデータを捕捉した関数も、`ref` した局所値を捕捉した関数も同じです。直接呼びで、送り手と要素を一度に渡す形だけが検査できるので、部分適用、関数値化、`|>` は、要素の型が借用を持ちうるときに `E1013`（`DataChannel.send must be fully applied directly`）です。生成した関数の引数（`$builtin` の薄い関数）は呼び出し側が検査され、利用者の関数が引数で受け取った関数値は借用を持たないと分からないので `E1013` です（引数の関数値を `task` に持ち込むのと同じ扱いです）。`recv` が返す要素は、入れるときに検査済みで、チャンネルから移されたものなので、借用を持ちません（受け手も借りません）。`Mutex.create` は、型（`Mutex<'a>` は `'a` を持つ配列）に関数型が見えるので、借用がロックの loan として残り、戻り値や `Task.scope` の共有には出せません。
 - 待ちの規則: `send` が満杯、`recv` が空のスレッドは、先にプールの未着手の仕事（`Task.parallel` と `Task.scope` の子ども）を自分のスタックの上で走らせます（空いているワーカー、つまり仕事を取っていないワーカーがいないときだけ。最も古いグループから取り、深さは 16 まで）。グループを始めたスレッドは、公開する前に最初の子どもを自分のものにし、結合を待つあいだは自分のグループの子どもだけを走らせます（ほかのグループの仕事を結合のフレームの上に載せると、その仕事が結合のあとのコードの作るものを待ちうるからです）。手伝う仕事がなければ眠り、チャンネルが変わると、その待ちだけが起きます。すべてのスレッドが待ち（チャンネル、結合、仕事待ちのワーカー）、動かせる仕事もないとき、待ちスレッドすべてを起こし、native では `Tsuzuri runtime: deadlock: every task is waiting on a channel` を標準エラーに出して、トラップ（assert）します。既定の wasm32 と CPU が 1 つの native では、子どもは `index` の順に 1 つのスレッドで走るので、満たされない待ちはその場でトラップになります。
 - スレッド数への依存: プールは固定の大きさで、子どもごとの専用スレッドは保証されません。生産者と消費者が容量不足で互いを待つパイプラインは 2 スレッド以上、3 段のパイプラインは 3 スレッド以上が必要で、足りないとハングせずに判定のトラップになります。
-- `Mutex.with_lock` の中: `Channel.send` と `Channel.recv` は、待つかどうかにかかわらず、トラップします（native では `a Channel operation may wait; move it outside Mutex.with_lock` を出します）。待つ操作をロックの中に置かないためです。
+- `Mutex.with_lock` の中: `DataChannel.send` と `DataChannel.recv` は、待つかどうかにかかわらず、トラップします（native では `a Channel operation may wait; move it outside Mutex.with_lock` を出します）。待つ操作をロックの中に置かないためです。
 - `--trap-mode return`: 判定は呼び出しのトラップとして境界へ返ります。待っていたスレッドは全員起き、グループは終わり、境界はチャンネルのブロックを解放し、次の呼び出しは通常どおり動きます。
 - 実装: チャンネルは、先頭の 80 バイト（容量、要素の大きさ、先頭の位置、要素数、送り手・受け手・所有者の数）と、リングバッファの 1 つのブロックです。IR がブロックを確保して初期化し、要素の drop を生成します。要素のコピー、待ち、起こし、判定は、ターゲットのランタイム（native の `task.c`、threads の `task-wasm-threads.c`、既定の wasm32 の `channel-wasm.ll`）です。native は、プールの mutex 1 つで全チャンネルの操作と待ちの数え上げを守り、待つスレッドごとの条件変数で 1 つだけを起こします。性能の限界は、この 1 つの mutex です。threads は、共有の `epoch` で眠り、新しい仕事、グループの終わり、チャンネルの変化、競合したロックの解放のときだけ、全員が起きて条件を見直します。
-- ターゲット: `Channel` は、ネイティブ、既定の wasm32、`--wasm-feature threads` で使えます。`--freestanding` では `E2000` です。`Channel` を書かないプログラムの IR は変わりません。
+- ターゲット: `DataChannel` は、ネイティブ、既定の wasm32、`--wasm-feature threads` で使えます。`--freestanding` では `E2000` です。`DataChannel` を書かないプログラムの IR は変わりません。
 
 ### Regex
 
@@ -3745,7 +3745,7 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 - 対象を持たない関数（`empty`・`init`・`of_array`・`parse` など）は、この規則の外です。借用版の関数（`get_ref`・`foldr` など）は、値渡し版と同じ順序です。
 - 対象は最後に移動または借用されるので、それより前の引数の式は対象を読めます（`Array.write 0 (v[1] * 10) v`）。パイプは対象を先に借りるので、`v |> Array.write 0 (v[1] * 10)` は `E1014` です。
 - `Regex.replace_all` は `re replacement text` の順です。置換文字列とテキストはどちらも `ref string` なので、取り違えても型検査を通ります。`String.replace needle replacement text` も、3 つとも `ref string` です。
-- 例外は次の 4 種類だけです。(1) 資源のハンドルを先に取る関数（`File`・`Net`・`Process`・`Atomic`・`Mutex`・`Channel`・`Rc`・`Arc`・`Owned`・`Task`）。.NET のメソッドの受け手と同じです。(2) 数式の被演算子の順で書く数値の関数（`Int`・`Math`・`Simd`・`Char`）。(3) コンパイラが呼ぶ関数（計算式ビルダーの大文字の操作と、`derive` が生成するコードが呼ぶ `Json.decode_field`・`Json.case_index`）。(4) テストとベンチマークの入口（`Gen.for_all`・`Test.*`・`Bench.*`）。
+- 例外は次の 4 種類だけです。(1) 資源のハンドルを先に取る関数（`File`・`Net`・`Process`・`Atomic`・`Mutex`・`DataChannel`・`Rc`・`Arc`・`Owned`・`Task`）。.NET のメソッドの受け手と同じです。(2) 数式の被演算子の順で書く数値の関数（`Int`・`Math`・`Simd`・`Char`）。(3) コンパイラが呼ぶ関数（計算式ビルダーの大文字の操作と、`derive` が生成するコードが呼ぶ `Json.decode_field`・`Json.case_index`）。(4) テストとベンチマークの入口（`Gen.for_all`・`Test.*`・`Bench.*`）。
 
 規則は `tests/std_argument_order.rs` が検査します。`std/` の `def` 行と、`Array`・`List`・`Vec`・`String`・`Utf8String` の組み込み関数の型を調べ、分類していない新しい `std/` のファイルがあると失敗します。モジュールごとの表と例は [標準ライブラリの引数の順序](../_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md) にあります。
 
@@ -4950,7 +4950,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1001`–`E1010` | 識別子名（複数のビルダーが宣言する別名の曖昧さを含む）、型シグネチャ、演算子、引数構成、レコードフィールド、公開 ABI、リテラル、インラインレイアウト |
 | `E1011` | 無効または重複したモジュール名、予約モジュール名・予約名前空間 `std` の不正使用、不正な標準ライブラリパス |
 | `E1012` | 所有権 move 後の不正な再利用、不正な代入先（Drop 型からのフィールド・共用体ペイロードの部分 move および更新、`Owned.function` 本体でのキャプチャ値の不正 move を含む） |
-| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Async の開始・中断点や Task 境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む）、Task へ持ち込む `Rc`／`Rc.Weak`（`tasks require Send values; ... holds an Rc or Rc.Weak`）、`Sync` でない値の `Arc`、`Task.scope` で共有する `Sync` でない値（`tasks can share only Sync values; ... is not Sync`）、`Mutex.with_lock` の結果に含まれる借用、`Channel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Send` でない型で使われた、`Channel.bounded`・`Mutex.create` などを包むジェネリック関数 |
+| `E1013` | 所有者の生存期間を超越した借用、サポートされていないライフタイム表現、Async の開始・中断点や Task 境界を跨ぐ不正な借用（`Owned.function` によるラムダ内での参照キャプチャを含む）、Task へ持ち込む `Rc`／`Rc.Weak`（`tasks require Send values; ... holds an Rc or Rc.Weak`）、`Sync` でない値の `Arc`、`Task.scope` で共有する `Sync` でない値（`tasks can share only Sync values; ... is not Sync`）、`Mutex.with_lock` の結果に含まれる借用、`DataChannel.send` の要素が持つ借用（`a channel item cannot hold a borrow`）、`Send` でない型で使われた、`DataChannel.bounded`・`Mutex.create` などを包むジェネリック関数 |
 | `E1014` | 借用の競合（共有借用中の排他アクセス）、不変な値に対する不正な可変アクセス |
 | `E1015` | 曖昧な型変数、無限型の検出、不適切な多相性、型検査時点で参照型か未確定な `ref` オペランド |
 | `E1016` | 型クラスまたはインスタンスの不正宣言や重複定義（`Drop` インスタンスおよび `Drop.drop` への直接参照を含む） |
@@ -4988,7 +4988,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1010` | `@trusted` のない `extern` の関数の使用（`--warn untrusted-extern` 指定時と `tsuzuri audit` だけ） |
 | `W2001` | キャッシュや知識グラフを使えなかったときのツール警告（ソースの警告ではない。`--json` のときだけ、このコードの JSON オブジェクトになる） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
-| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備（`tsuzuri find` の引数・読めない問い合わせの型 `find_bad_arguments` と、どのモジュールにも当たらない `--module` の `find_unknown_module` を含む）、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合、`--freestanding` での `Mutex` と `Channel` |
+| `E2000` | CLI コマンドライン引数・オプション・拡張子の不備（`tsuzuri find` の引数・読めない問い合わせの型 `find_bad_arguments` と、どのモジュールにも当たらない `--module` の `find_unknown_module` を含む）、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`Async.block_on` を使わない native のプログラムが `Net` の非同期操作に到達した場合、`--freestanding` での `Mutex` と `DataChannel` |
 | `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |

@@ -4183,7 +4183,7 @@ fn build_complete(
         };
         if let Some((_, feature)) = [
             ("declare i32 @tsuzuri_mutex_lock(", "Mutex"),
-            ("declare i32 @tsuzuri_channel_send(", "Channel"),
+            ("declare i32 @tsuzuri_channel_send(", "DataChannel"),
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("@tsuzuri_tz_", "tzroutine"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),

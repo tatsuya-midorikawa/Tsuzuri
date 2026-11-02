@@ -42,12 +42,12 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | MutexCreate
         | MutexWith
         | MutexIntoInner
-        | ChannelBounded
-        | ChannelSend
-        | ChannelRecv
-        | ChannelCloneSender
-        | ChannelCloseSender
-        | ChannelCloseReceiver
+        | DataChannelBounded
+        | DataChannelSend
+        | DataChannelRecv
+        | DataChannelCloneSender
+        | DataChannelCloseSender
+        | DataChannelCloseReceiver
         | ArenaNextId => Some("atomic"),
         RcNew | RcShare | RcGet | RcStrongCount | RcWeakCount | RcTryUnwrap | RcDowngrade
         | RcUpgrade | RcPtrEq | ArcNew | ArcShare | ArcGet | ArcStrongCount | ArcWeakCount

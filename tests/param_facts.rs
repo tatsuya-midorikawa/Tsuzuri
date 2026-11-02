@@ -114,7 +114,7 @@ def nested :: ref Nested -> i64 = \value -> Atomic.load (ref value.cells[0])
 def mutex :: ref Mutex<i64> -> i64 = \value -> Mutex.with_lock value (\inner -> deref inner)
 def counted :: ref Arc<i64> -> i64 = \value -> Arc.strong_count value
 def closure :: ref (i64 -> i64) -> i64 = \value -> (deref value) 1
-def channel :: ref Channel.Sender<i64> -> i64 = \value -> { let sent = Channel.send value 1; 1 }
+def channel :: ref DataChannel.Sender<i64> -> i64 = \value -> { let sent = DataChannel.send value 1; 1 }
 "#;
     for wasm in [false, true] {
         let ir = emit(source, wasm);

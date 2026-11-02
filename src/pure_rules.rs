@@ -207,12 +207,12 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | MutexCreate
         | MutexWith
         | MutexIntoInner
-        | ChannelBounded
-        | ChannelSend
-        | ChannelRecv
-        | ChannelCloneSender
-        | ChannelCloseSender
-        | ChannelCloseReceiver
+        | DataChannelBounded
+        | DataChannelSend
+        | DataChannelRecv
+        | DataChannelCloneSender
+        | DataChannelCloseSender
+        | DataChannelCloseReceiver
         | RcNew
         | RcShare
         | RcGet
