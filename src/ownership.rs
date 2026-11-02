@@ -2966,7 +2966,7 @@ impl<'a> Checker<'a, '_> {
                 let builtin = self.builtin_called(expression).expect("a send builtin");
                 let end = if builtin.is_data_channel() { "sender" } else { "channel" };
                 return Err(error(DiagnosticKind::MustApplyDirectly,
-                    &format!("{} must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the {end} and the item together", builtin.name()),
+                    format!("{} must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the {end} and the item together", builtin.name()),
                     expression.span,
                 ));
             }

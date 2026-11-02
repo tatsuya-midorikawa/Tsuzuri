@@ -1508,6 +1508,52 @@ mod tests {
         );
     }
 
+    /// An `E1040` for each letter of the main source with the fix that the table gives it, as a
+    /// rename that lets the checker see further does (TZ03).
+    fn renames(project: &Project, table: &[(char, &str)]) -> Analysis {
+        let text = &project.sources[0].text;
+        let errors = text
+            .char_indices()
+            .filter_map(|(at, letter)| {
+                table
+                    .iter()
+                    .find(|(from, _)| *from == letter)
+                    .map(|(_, to)| {
+                        fixed(
+                            DiagnosticKind::RenamedToDataChannel,
+                            0,
+                            at,
+                            at + 1,
+                            to,
+                            Applicability::Certain,
+                        )
+                    })
+            })
+            .collect();
+        analysis(errors, 0, Vec::new())
+    }
+
+    #[test]
+    fn a_round_may_bring_to_light_what_the_next_one_fixes() {
+        // One error becomes two that the next round fixes, and then none.
+        let mut growing = project("a");
+        let report = run(&mut growing, &options(Scope::Project), &mut |project| {
+            renames(project, &[('a', "bb"), ('b', "c")])
+        })
+        .unwrap();
+        assert_eq!(report.files[0].fixed, "cc");
+        // The two edits of `bb` touch, so they take a round each.
+        assert_eq!(report.rounds, 3);
+        // Errors that keep growing until the round limit end worse than the start.
+        let mut endless = project("a");
+        let error = run(&mut endless, &options(Scope::Project), &mut |project| {
+            renames(project, &[('a', "aa")])
+        })
+        .unwrap_err();
+        assert_eq!(error.diagnostic.kind, Some("fix_verification_failed"));
+        assert_eq!(endless.sources[0].text, "a");
+    }
+
     #[test]
     fn a_round_that_adds_an_error_aborts_without_changes() {
         let mut project = project("x");
