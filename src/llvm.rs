@@ -436,6 +436,8 @@ mod parallel;
 mod range_flags;
 #[path = "llvm_recursive.rs"]
 mod recursive;
+#[path = "llvm_select.rs"]
+mod select;
 #[path = "llvm_shared.rs"]
 mod shared;
 #[path = "llvm_simd.rs"]
@@ -4306,7 +4308,7 @@ pub fn waits(module: &CheckedModule) -> bool {
 
 fn expression_waits(expression: &TypedExpr) -> bool {
     match &expression.kind {
-        TypedExprKind::RoutineGo(_) => true,
+        TypedExprKind::RoutineGo(_) | TypedExprKind::SelectWait(_) => true,
         TypedExprKind::Function(FunctionRef::Builtin(instance))
             if instance.builtin.spawns() || instance.builtin.is_channel() =>
         {
@@ -4949,6 +4951,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         // trip count to unroll by.
         fn waits(expression: &TypedExpr, module: &CheckedModule) -> bool {
             let channel = match &expression.kind {
+                TypedExprKind::SelectWait(_) => true,
                 TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
                     instance.builtin.is_channel()
                 }
@@ -5790,6 +5793,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 ))
             }
             TypedExprKind::RoutineGo(task) => self.routine_go(task),
+            TypedExprKind::SelectWait(wait) => self.select_wait(wait, &expression.ty),
             TypedExprKind::TaskParallel(tasks) => self.parallel_tasks(tasks, &expression.ty),
             TypedExprKind::TaskParallelResults(tasks) => {
                 self.parallel_result_tasks(tasks, &expression.ty)

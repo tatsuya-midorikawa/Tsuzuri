@@ -1801,6 +1801,10 @@ impl Wire for ExprKind {
                 out.tag("ExprKind", 47);
                 body.put(out)
             }
+            Select(arms) => {
+                out.tag("ExprKind", 48);
+                arms.put(out)
+            }
         }
     }
 
@@ -1959,6 +1963,7 @@ impl Wire for ExprKind {
             }),
             46 => variant(input, |input| Ok(Hole(Option::<Ident>::get(input)?))),
             47 => variant(input, |input| Ok(Routine(Box::get(input)?))),
+            48 => variant(input, |input| Ok(Select(Vec::get(input)?))),
             48..=u8::MAX => Err(Invalid),
         }
     }
@@ -2069,6 +2074,66 @@ impl Wire for MatchArm {
             body: Expr::get(input)?,
             span: Span::get(input)?,
         })
+    }
+}
+
+impl Wire for SelectArm {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let SelectArm {
+            head,
+            guard,
+            body,
+            span,
+        } = self;
+        head.put(out)?;
+        guard.put(out)?;
+        body.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(SelectArm {
+            head: SelectHead::get(input)?,
+            guard: Option::get(input)?,
+            body: Expr::get(input)?,
+            span: Span::get(input)?,
+        })
+    }
+}
+
+impl Wire for SelectHead {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        match self {
+            SelectHead::Recv { name, channel } => {
+                out.tag("SelectHead", 0);
+                name.put(out)?;
+                channel.put(out)
+            }
+            SelectHead::Send { value, channel } => {
+                out.tag("SelectHead", 1);
+                value.put(out)?;
+                channel.put(out)
+            }
+            SelectHead::Default => {
+                out.tag("SelectHead", 2);
+                Ok(())
+            }
+        }
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        match input.byte()? {
+            0 => Ok(SelectHead::Recv {
+                name: Ident::get(input)?,
+                channel: Box::get(input)?,
+            }),
+            1 => Ok(SelectHead::Send {
+                value: Box::get(input)?,
+                channel: Box::get(input)?,
+            }),
+            2 => Ok(SelectHead::Default),
+            _ => Err(Invalid),
+        }
     }
 }
 
@@ -2612,6 +2677,13 @@ mod tests {
         seen.extend(round_trips("tzroutine {\n    ()\n}\n", 0).unwrap());
         seen.extend(
             round_trips(
+                "let ch: Channel<i64> = Channel.make 1\nselect\n| recv x from ch when true -> 1\n| send 2 to ch -> 2\n| default -> 3\n",
+                0,
+            )
+            .unwrap(),
+        );
+        seen.extend(
+            round_trips(
                 "pure def apply :: pure (i64 -> i64) -> i64 -> i64 = \\f value -> f value\n\
                  class Measure<'a> { pure def size :: 'a -> i64 }\n",
                 0,
@@ -2656,7 +2728,8 @@ mod tests {
             ("Kind", 2),
             ("TypeExprKind", 18),
             ("StringLiteral", 2),
-            ("ExprKind", 48),
+            ("ExprKind", 49),
+            ("SelectHead", 3),
             ("PatternKind", 14),
             ("ComputationStatementKind", 9),
             ("SourceKind", 0),

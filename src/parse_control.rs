@@ -1145,6 +1145,123 @@ impl Parser<'_> {
         )
     }
 
+    /// `select | head [when guard] -> body ...` (TZ04): the arms line up as a match's do.
+    pub(super) fn select_expression(&mut self) -> Result<Expr, Diagnostic> {
+        self.enter()?;
+        let start = self.take().span;
+        let arms = self.select_arms()?;
+        self.nesting -= 1;
+        let span = start.through(arms.last().map_or(start, |arm| arm.span));
+        let depth = arms
+            .iter()
+            .flat_map(|arm| arm.expressions())
+            .map(|expression| expression.depth)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        self.make(ExprKind::Select(arms), span, depth)
+    }
+
+    fn select_arms(&mut self) -> Result<Vec<SelectArm>, Diagnostic> {
+        let outer_arm = self.stop_at_arm;
+        let outer_arrow = self.stop_at_arrow;
+        let column = self.column(self.current().span);
+        let mut arms: Vec<SelectArm> = Vec::new();
+        while self.at(&TokenKind::Pipe)
+            && (!self.newline_before_current() || self.column(self.current().span) == column)
+        {
+            self.take();
+            // The arm starts at its head word, which the formatter aligns the arms by.
+            let start = self.current().span;
+            self.stop_at_arm = true;
+            self.stop_at_arrow = true;
+            let word = match &self.current().kind {
+                TokenKind::Ident(word) => word.clone(),
+                _ => String::new(),
+            };
+            let head = match word.as_str() {
+                "recv" => {
+                    self.take();
+                    let name = self.ident()?;
+                    if !matches!(&self.current().kind, TokenKind::Ident(word) if word == "from") {
+                        return Err(self.error_of(
+                            DiagnosticKind::SelectArmExpected,
+                            "expected 'from' and the channel after 'recv NAME'",
+                        ));
+                    }
+                    self.take();
+                    let channel = self.expression_inner(0, true, true)?;
+                    SelectHead::Recv {
+                        name,
+                        channel: Box::new(channel),
+                    }
+                }
+                "send" => {
+                    self.take();
+                    let value = self.expression_inner(0, true, true)?;
+                    self.expect(&TokenKind::To, "'to' and the channel after 'send VALUE'")?;
+                    let channel = self.expression_inner(0, true, true)?;
+                    SelectHead::Send {
+                        value: Box::new(value),
+                        channel: Box::new(channel),
+                    }
+                }
+                "default" => {
+                    if arms
+                        .iter()
+                        .any(|arm| matches!(arm.head, SelectHead::Default))
+                    {
+                        return Err(self.error_of(
+                            DiagnosticKind::SelectDefaultRepeated,
+                            "a select has at most one 'default' arm",
+                        ));
+                    }
+                    self.take();
+                    SelectHead::Default
+                }
+                _ => {
+                    return Err(self.error_of(
+                        DiagnosticKind::SelectArmExpected,
+                        "a select arm starts with 'recv NAME from CHANNEL', 'send VALUE to CHANNEL', or 'default'",
+                    ));
+                }
+            };
+            let guard = if self.at(&TokenKind::When) && matches!(head, SelectHead::Default) {
+                return Err(self.error_of(
+                    DiagnosticKind::SelectArmExpected,
+                    "a 'default' arm takes no 'when' guard",
+                ));
+            } else if self.eat(&TokenKind::When) {
+                Some(self.expression_inner(0, true, true)?)
+            } else {
+                None
+            };
+            self.expect(
+                &TokenKind::Arrow,
+                "'->' after the select arm and optional guard",
+            )?;
+            self.stop_at_arrow = false;
+            let body = self.body_expression()?;
+            let span = start.through(body.span);
+            arms.push(SelectArm {
+                head,
+                guard,
+                body,
+                span,
+            });
+        }
+        self.stop_at_arm = outer_arm;
+        self.stop_at_arrow = outer_arrow;
+        if arms.len() > 65_535 {
+            return Err(Diagnostic::of(
+                DiagnosticKind::SelectArmLimit,
+                "a select has at most 65,535 arms; split it",
+                arms[0].span,
+            ));
+        }
+        Ok(arms)
+    }
+
     fn match_arms(
         &mut self,
         function_parameters: Option<&[(Ident, bool)]>,

@@ -599,6 +599,7 @@ fn closed(
         | E::TypeFunction { .. }
         | E::TaskRun(_)
         | E::RoutineGo(_)
+        | E::SelectWait(_)
         | E::TaskParallel(_)
         | E::TaskParallelResults(_)
         | E::Parallel(..) => true,
@@ -3126,6 +3127,27 @@ impl<'a> Checker<'a, '_> {
             | E::TaskParallel(value)
             | E::TaskParallelResults(value) => {
                 self.eval(value, Use::Consume, &during)?;
+            }
+            // A select (TZ04): the arms in order. A channel is lent for the wait, and a send's
+            // value goes into the select (it is dropped there when its arm is not chosen), so it
+            // holds no borrow, as the item of `Channel.send` does. What comes out holds none.
+            E::SelectWait(wait) => {
+                for arm in &wait.arms {
+                    if let Some(guard) = &arm.guard {
+                        self.eval(guard, Use::Consume, &during)?;
+                    }
+                    self.eval(&arm.channel, Use::Consume, &during)?;
+                    if let Some(value) = &arm.send {
+                        let sent = self.eval(value, Use::Consume, &during)?;
+                        if arm.item.carries_loans(&self.module.types()) && !sent.loans.is_empty() {
+                            return Err(error(
+                                DiagnosticKind::ChannelItemHoldsBorrow,
+                                "a channel item cannot hold a borrow, including a borrowed function environment: it is received later, perhaps after the borrowed data is gone; send an owned value, or a function that captures a copy, or an Owned.Function built where it is sent",
+                                value.span,
+                            ));
+                        }
+                    }
+                }
             }
             E::StructuralCompare(_, arguments)
             | E::StructuralHash(arguments)

@@ -591,6 +591,7 @@ impl<'a> Translator<'a> {
             | K::TaskParallel(_)
             | K::TaskParallelResults(_)
             | K::Parallel(..) => Err(unsupported("a task", span)),
+            K::SelectWait(_) => Err(unsupported("a select", span)),
             K::HostCall(..) => Err(unsupported("an extern call", span)),
             K::Static(_) => Err(unsupported("a static value", span)),
             K::Array(_)

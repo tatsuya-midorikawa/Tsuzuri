@@ -2932,6 +2932,20 @@ impl Parser<'_> {
 
     /// Whether the `tzroutine` at the position starts a `tzroutine { ... }` expression: a `{` follows on
     /// the same line (TZ02). Anywhere else the word is an ordinary identifier.
+    /// Whether `select` starts a select expression (TZ04): the next token is `|` and the one after it
+    /// is `recv`, `send` or `default`. Two tokens, so that a variable `select` at the end of a match
+    /// arm does not take the next arm.
+    fn select_ahead(&self) -> bool {
+        matches!(
+            (
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                self.tokens.get(self.position + 2).map(|token| &token.kind),
+            ),
+            (Some(TokenKind::Pipe), Some(TokenKind::Ident(word)))
+                if matches!(word.as_str(), "recv" | "send" | "default")
+        )
+    }
+
     fn tzroutine_ahead(&self) -> bool {
         let Some(next) = self.tokens.get(self.position + 1) else {
             return false;
@@ -4407,6 +4421,9 @@ impl Parser<'_> {
             TokenKind::TypeVariable(_) => return self.type_function_expression(),
             TokenKind::Ident(name) if name == "tzroutine" && self.tzroutine_ahead() => {
                 return self.tzroutine();
+            }
+            TokenKind::Ident(name) if name == "select" && self.select_ahead() => {
+                return self.select_expression();
             }
             TokenKind::Ident(name) if name == "try" && self.try_clause_ahead() => {
                 return self.try_expression();

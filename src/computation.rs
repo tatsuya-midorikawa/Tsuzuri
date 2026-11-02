@@ -277,6 +277,10 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
             values
         }
         ExprKind::Try(handled) => try_children(handled, names, module, &mut pattern_depth)?,
+        ExprKind::Select(arms) => arms
+            .iter_mut()
+            .flat_map(SelectArm::expressions_mut)
+            .collect(),
         ExprKind::Block { bindings, result } => bindings
             .iter_mut()
             .map(|binding| &mut binding.value)

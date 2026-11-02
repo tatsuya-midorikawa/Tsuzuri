@@ -1696,6 +1696,15 @@ impl<'s, 'a> Scan<'s, 'a> {
                 self.source(Effect::Alloc, span, "tzroutine");
                 false
             }
+            // The channel operations of a select (TZ04): those of Channel.send and Channel.recv.
+            K::SelectWait(wait) => {
+                self.source(Effect::Atomic, span, "select");
+                self.source_why(Effect::Trap, span, builtin_why(Builtin::ChannelSend));
+                if wait.default.is_none() {
+                    self.source(Effect::Diverge, span, "blocking");
+                }
+                false
+            }
             K::Parallel(builtin, arguments) => {
                 let facts = builtin_facts(*builtin);
                 if let Some(effect) = facts.effect {

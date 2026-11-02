@@ -19,7 +19,7 @@ fn local_value(local: &Local) -> TypedExpr {
 
 /// Matches the place classification of ownership and LLVM lowering, which
 /// view such a match subject in place instead of binding a temporary.
-fn is_place(expression: &TypedExpr) -> bool {
+pub(super) fn is_place(expression: &TypedExpr) -> bool {
     match &expression.kind {
         TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
         TypedExprKind::Field(value, _)

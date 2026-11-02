@@ -876,6 +876,10 @@ impl<'a> Scanner<'a> {
                     K::TaskRun(_) | K::TaskParallel(_) | K::TaskParallelResults(_) => None,
                     // Spawning outlives the call, unlike the closed task operations (TZ02).
                     K::RoutineGo(_) => Some(Effect::Builtin(Builtin::RoutineGo, Category::Task)),
+                    // A select waits on channels (TZ04), as Channel.recv does.
+                    K::SelectWait(_) => {
+                        Some(Effect::Builtin(Builtin::ChannelRecv, Category::State))
+                    }
                     K::Parallel(_, arguments) => {
                         let mut closed = true;
                         for argument in arguments

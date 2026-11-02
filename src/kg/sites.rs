@@ -47,6 +47,7 @@ pub(crate) fn bears_facts(kind: &TypedExprKind) -> bool {
         | Closure(..)
         | TaskRun(_)
         | RoutineGo(_)
+        | SelectWait(_)
         | TaskParallel(_)
         | TaskParallelResults(_)
         | Parallel(..)

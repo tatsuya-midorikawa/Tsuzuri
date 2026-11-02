@@ -334,12 +334,13 @@ pub const CPU_TARGETS: [(&str, u8); 5] = [
 
 /// Words that are keywords only in their own syntax and identifiers elsewhere. A builder alias
 /// (`@alias`) cannot take one of them.
-pub const CONTEXTUAL_KEYWORDS: [&str; 9] = [
+pub const CONTEXTUAL_KEYWORDS: [&str; 10] = [
     "finally",
     "is",
     "namespace",
     "of",
     "pure",
+    "select",
     "try",
     "tzroutine",
     "using",
@@ -921,6 +922,13 @@ impl Expr {
                     arm.body.visit_mut(visitor);
                 }
             }
+            Select(arms) => {
+                for arm in arms {
+                    for expression in arm.expressions_mut() {
+                        expression.visit_mut(visitor);
+                    }
+                }
+            }
             Try(handled) => {
                 handled.body.visit_mut(visitor);
                 for arm in &mut handled.arms {
@@ -1062,6 +1070,13 @@ impl Expr {
                     arm.body.visit(visitor);
                 }
             }
+            Select(arms) => {
+                for arm in arms {
+                    for expression in arm.expressions() {
+                        expression.visit(visitor);
+                    }
+                }
+            }
             Try(handled) => {
                 handled.body.visit(visitor);
                 for arm in &handled.arms {
@@ -1156,6 +1171,9 @@ pub enum ExprKind {
     Task(Box<Expr>),
     /// `tzroutine { body }`: spawns the block as a new tzroutine and returns `()` (TZ02).
     Routine(Box<Expr>),
+    /// `select | recv x from ch -> e | send v to ch -> e | default -> e` (TZ04): waits for one of
+    /// the arms' channel operations.
+    Select(Vec<SelectArm>),
     TaskRun(Box<Expr>),
     Computation(Ident, Box<ComputationBlock>),
     ComputationBoundary(Box<Expr>),
@@ -1423,6 +1441,61 @@ pub struct MatchArm {
     pub guard: Option<Expr>,
     pub body: Expr,
     pub span: Span,
+}
+
+/// One arm of a `select` (TZ04): its head, the optional `when` guard, and the body.
+#[derive(Clone, Debug)]
+pub struct SelectArm {
+    pub head: SelectHead,
+    pub guard: Option<Expr>,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum SelectHead {
+    /// `recv name from channel`; the name is `_` to drop what was received.
+    Recv {
+        name: Ident,
+        channel: Box<Expr>,
+    },
+    /// `send value to channel`.
+    Send {
+        value: Box<Expr>,
+        channel: Box<Expr>,
+    },
+    Default,
+}
+
+impl SelectArm {
+    /// The expressions of the arm in evaluation order: the guard, the channel, the value, the body.
+    pub fn expressions(&self) -> Vec<&Expr> {
+        let mut found: Vec<&Expr> = self.guard.iter().collect();
+        match &self.head {
+            SelectHead::Recv { channel, .. } => found.push(channel),
+            SelectHead::Send { value, channel } => {
+                found.push(channel);
+                found.push(value);
+            }
+            SelectHead::Default => {}
+        }
+        found.push(&self.body);
+        found
+    }
+
+    pub fn expressions_mut(&mut self) -> Vec<&mut Expr> {
+        let mut found: Vec<&mut Expr> = self.guard.iter_mut().collect();
+        match &mut self.head {
+            SelectHead::Recv { channel, .. } => found.push(channel),
+            SelectHead::Send { value, channel } => {
+                found.push(channel);
+                found.push(value);
+            }
+            SelectHead::Default => {}
+        }
+        found.push(&mut self.body);
+        found
+    }
 }
 
 /// How a binding takes part in a recursive group (B09).
