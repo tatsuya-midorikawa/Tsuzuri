@@ -218,8 +218,109 @@ fn announces_the_items_of_the_task_runtime() {
         .expect("a parallel call");
     assert!(lines[call - 1].contains("call void @tsuzuri_tz_parallel_begin(ptr %"));
     assert!(lines[call + 1].contains("call void @tsuzuri_tz_parallel_end(ptr %"));
-    assert!(ir.contains("call void @tsuzuri_tz_task_enter(ptr %context)"));
-    assert!(ir.contains("call void @tsuzuri_tz_task_leave(ptr %context)"));
+    // The task runtime calls the callback's guard, which marks the item.
+    assert!(
+        lines[call].contains("(ptr @tz.task.item.") && lines[call].contains(".guard, ptr %"),
+        "{}",
+        lines[call]
+    );
+    assert!(ir.contains("call void @tsuzuri_tz_task_enter(ptr %context, ptr %item)"));
+    assert!(ir.contains("call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)"));
+    // Without a failure domain no trap returns, and src/runtime/trap.c is not needed.
+    assert!(!ir.contains("@tsuzuri_boundary_item"));
+}
+
+#[test]
+fn an_item_that_traps_in_a_failure_domain_sets_its_thread_back() {
+    // In a program with a failure domain, the guard of an item catches its trap, ends the item and
+    // raises the trap again.
+    let module = accepts(
+        "let ch: Channel<i64> = Channel.make 1\nlet r = Domain.run (\\() -> 1)\nlet jobs = new [Task<i64>](2, \\index -> task { return index })\nlet results = Task.run (Task.parallel jobs)\nChannel.send ch results[1]\nmatch r with\n| Result.Ok v -> v\n| Result.Error _ -> 0\n",
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    let guard = ir
+        .split("\ndefine ")
+        .find(|function| function.contains(".guard(ptr %context, i64 %index)"))
+        .expect("a guard");
+    assert!(guard.contains("call i32 @tsuzuri_boundary_item(ptr %owner, ptr @tz.task.item."));
+    assert!(guard.contains("call void @tsuzuri_boundary_resume(ptr %trap)"));
+    assert_eq!(
+        guard
+            .matches("call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)")
+            .count(),
+        2,
+        "{guard}"
+    );
+    // A batch announced inside the item, by any thread, and the item that announced it: before
+    // the guards, the trap left the worker's batch, or the worker counted as running, and the
+    // deadlock after the domain hung.
+    for (name, item) in [
+        ("nested-batches", "    return inner (n + index)\n"),
+        (
+            "nested-items",
+            "    let base = fine (n + index)\n    let zero = n - n\n    return base / zero\n",
+        ),
+    ] {
+        let directory = project(
+            name,
+            &format!(
+                "def inner :: i64 -> i64\nfn inner n =\n    let jobs = new [Task<i64>](2, \\index -> task {{\n        let zero = n - n\n        return index / zero\n    }})\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\ndef fine :: i64 -> i64\nfn fine n =\n    let jobs = new [Task<i64>](2, \\index -> task {{ return n + index }})\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\ndef outer :: i64 -> i64\nfn outer n =\n    let jobs = new [Task<i64>](8, \\index -> task {{\n{item}    }})\n    let results = Task.run (Task.parallel jobs)\n    results[0]\n\nlet failed = match Domain.run (\\() -> outer 3) with\n    | Result.Ok _ -> 0\n    | Result.Error _ -> 1\nlet ch: Channel<i64> = Channel.make 0\nmatch Channel.recv ch with\n| Maybe.Some v -> v + failed\n| Maybe.None -> failed\n"
+            ),
+        );
+        let (status, stderr) = run_bounded(&directory);
+        assert!(!status.success(), "{name}");
+        assert!(
+            stderr.contains("all tzroutines are asleep - deadlock! (1 waiting: Channel.recv)"),
+            "{name}: {stderr}"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+}
+
+#[test]
+fn a_for_loop_receives_with_the_standard_channel() {
+    // A module Channel of the program, and two that `using` declarations make visible, do not
+    // change what `for v in ch` calls.
+    let main = "let ch: std::Channel<i64> = std::Channel.make 2\nstd::Channel.send ch 4\nstd::Channel.close ch\nlet mut total = 0i64\nfor v in ch do\n    total = total + v\ntotal\n";
+    let user = |namespace: &str| {
+        format!("namespace {namespace}\n\ndef recv :: i64 -> i64\nfn recv x = x\n")
+    };
+    for (name, files) in [
+        (
+            "namespace",
+            vec![
+                ("Main.tz", format!("namespace App\n\n{main}")),
+                ("App/Channel.tz", user("App")),
+            ],
+        ),
+        (
+            "usings",
+            vec![
+                ("Main.tz", format!("using A\nusing B\n\n{main}")),
+                ("A/Channel.tz", user("A")),
+                ("B/Channel.tz", user("B")),
+            ],
+        ),
+    ] {
+        let directory = project(name, "");
+        for (path, text) in files {
+            let path = directory.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let run = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .arg("run")
+            .arg(&directory)
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "4", "{name}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 }
 
 fn project(name: &str, source: &str) -> std::path::PathBuf {

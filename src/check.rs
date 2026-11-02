@@ -724,13 +724,15 @@ impl Type {
     }
 
     /// The function that `for x in ch` receives with and the item type, when `ch` is the std
-    /// `Channel<'a>` or its receiving handle `ReceiveOnly<'a>` (TZ03).
+    /// `Channel<'a>` or its receiving handle `ReceiveOnly<'a>` (TZ03). The name is the standard
+    /// library's (`std::`): a module `Channel` of the program, or two that `using` declarations make
+    /// visible, does not change what the loop calls.
     pub(crate) fn channel_element(&self, types: &TypeContext<'_>) -> Option<(&'static str, &Type)> {
         match self {
             Self::Record(id, arguments) if types.records[*id].origin == ModuleOrigin::Std => {
                 let receive = match types.records[*id].name.as_str() {
-                    "Channel.Channel" => "Channel.recv",
-                    "ReceiveOnly.ReceiveOnly" => "ReceiveOnly.recv",
+                    "Channel.Channel" => "std::Channel.recv",
+                    "ReceiveOnly.ReceiveOnly" => "std::ReceiveOnly.recv",
                     _ => return None,
                 };
                 arguments.first().map(|item| (receive, item))

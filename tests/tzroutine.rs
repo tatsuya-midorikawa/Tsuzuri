@@ -284,7 +284,9 @@ fn pool_workers_wait_for_their_tzroutines() {
         .chars()
         .take_while(|c| !matches!(c, ',' | ')' | ' '))
         .collect();
-    assert_wrapped(definition(&ir, &callback));
+    // The runtime calls the callback's guard (TZ03), which calls the callback.
+    let callback = callback.strip_suffix(".guard").unwrap_or(&callback);
+    assert_wrapped(definition(&ir, callback));
 }
 
 #[test]

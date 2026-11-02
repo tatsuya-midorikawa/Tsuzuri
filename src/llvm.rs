@@ -1404,7 +1404,7 @@ fn emit_program(
     };
     // After `with_blocking_calls`, so that a join announces its items inside the blocking call.
     let output = if !wasm && output.contains("@tsuzuri_tz_") {
-        with_task_accounting(output)
+        with_task_accounting(output, spawning)
     } else {
         output
     };
@@ -1584,22 +1584,55 @@ pub(crate) fn with_blocking_calls(ir: String) -> String {
 
 /// Tells the deadlock detector of the tzroutine runtime about the items of the task runtime, in a
 /// native program that uses the tzroutine runtime (TZ03): each call that hands items to the task
-/// runtime announces them (`tsuzuri_tz_parallel_begin` and `_end`, by the call's context), and each
-/// worker callback marks its thread as running while it runs an item (`tsuzuri_tz_task_enter` and
-/// `_leave`). Without it, a `Channel` wait in one item could be judged a deadlock before the item
-/// that would wake it has started on another thread.
-pub(crate) fn with_task_accounting(ir: String) -> String {
+/// runtime announces them (`tsuzuri_tz_parallel_begin` and `_end`, by the call's context), and the
+/// task runtime calls a guard of each worker callback instead of the callback, which marks its
+/// thread as running while it runs an item (`tsuzuri_tz_task_enter` and `_leave`). Without it, a
+/// `Channel` wait in one item could be judged a deadlock before the item that would wake it has
+/// started on another thread.
+///
+/// In a program with a failure domain, the guard of an item that runs under a trap frame (one whose
+/// call was made inside a domain) catches the item's trap (`tsuzuri_boundary_item` of
+/// src/runtime/trap.c, with the frame's owner), sets back what the trap skipped (in a spawning
+/// program the blocking depth and the spawn scope, then the mark of a `Mutex.with_lock`), ends the
+/// item, which drops the batches announced in it, and raises the trap again
+/// (`tsuzuri_boundary_resume`): the task runtime sees it as before, and the thread is as before the
+/// item.
+pub(crate) fn with_task_accounting(ir: String, spawning: bool) -> String {
     // The runtime's own calls only: the `tz.mutex.parallel*` wrappers of a program with a Mutex make
     // them, so announcing the wrapper's call too would count the batch twice.
     const CALLS: [&str; 2] = [
         "call void @tsuzuri_task_parallel(",
         "call i64 @tsuzuri_task_parallel_results(",
     ];
+    // The references that hand a callback to the task runtime, and whether it returns a failure.
+    const REFERENCES: [(&str, bool); 4] = [
+        ("@tsuzuri_task_parallel(ptr @", false),
+        ("@tsuzuri_task_parallel_results(ptr @", true),
+        ("@tz.mutex.parallel(ptr @", false),
+        ("@tz.mutex.parallel_results(ptr @", true),
+    ];
     let callbacks = worker_callbacks(&ir);
-    let mut output = String::with_capacity(ir.len() + 256);
-    let mut lines = ir.split_inclusive('\n');
+    let domain = ir.contains("@tsuzuri_domain_run(");
+    let mutex = ir.contains("define internal i32 @tz.mutex.held()");
+    let mut results = BTreeSet::new();
+    let mut output = String::with_capacity(ir.len() + 256 + callbacks.len() * 1024);
     let mut wrapped = false;
-    while let Some(line) = lines.next() {
+    for line in ir.split_inclusive('\n') {
+        let mut line = std::borrow::Cow::Borrowed(line);
+        for (reference, result) in REFERENCES {
+            let Some(at) = line.find(reference) else {
+                continue;
+            };
+            let name_at = at + reference.len();
+            let name: String = line[name_at..]
+                .chars()
+                .take_while(|c| !matches!(c, ',' | ')' | ' '))
+                .collect();
+            if result {
+                results.insert(name.clone());
+            }
+            line.to_mut().insert_str(name_at + name.len(), ".guard");
+        }
         let body = line.trim_start();
         let call = CALLS
             .iter()
@@ -1617,7 +1650,7 @@ pub(crate) fn with_task_accounting(ir: String) -> String {
                     output,
                     "  call void @tsuzuri_tz_parallel_begin({context}, {items})"
                 );
-                output.push_str(line);
+                output.push_str(&line);
                 let _ = writeln!(
                     output,
                     "  call void @tsuzuri_tz_parallel_end({context}, {items})"
@@ -1625,43 +1658,97 @@ pub(crate) fn with_task_accounting(ir: String) -> String {
                 continue;
             }
         }
-        output.push_str(line);
-        let header = line.trim_end();
-        let callback = (header.starts_with("define ") && header.ends_with('{'))
-            .then(|| header.split_once('@')?.1.split_once('('))
-            .flatten()
-            .filter(|(name, _)| callbacks.contains(*name));
-        let Some((_, parameters)) = callback else {
-            continue;
-        };
-        // The first parameter is the context: `ptr %context`.
-        let context = parameters
-            .split([',', ')'])
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
+        output.push_str(&line);
+    }
+    for callback in &callbacks {
         wrapped = true;
-        let Some(label) = lines.next() else { break };
-        output.push_str(label);
-        let _ = writeln!(output, "  call void @tsuzuri_tz_task_enter({context})");
-        for line in lines.by_ref() {
-            let body = line.trim_start();
-            if body.starts_with("ret ") || body.trim_end() == "ret void" {
-                let _ = writeln!(output, "  call void @tsuzuri_tz_task_leave({context})");
-            }
-            output.push_str(line);
-            if line.trim_end() == "}" {
-                break;
-            }
-        }
+        output.push_str(&item_guard(
+            callback,
+            results.contains(callback),
+            domain,
+            spawning,
+            mutex,
+        ));
     }
     if wrapped {
         output.push_str(
-            "declare void @tsuzuri_tz_parallel_begin(ptr, i64)\ndeclare void @tsuzuri_tz_parallel_end(ptr, i64)\ndeclare void @tsuzuri_tz_task_enter(ptr)\ndeclare void @tsuzuri_tz_task_leave(ptr)\n",
+            "declare void @tsuzuri_tz_parallel_begin(ptr, i64)\ndeclare void @tsuzuri_tz_parallel_end(ptr, i64)\ndeclare void @tsuzuri_tz_task_enter(ptr, ptr)\ndeclare void @tsuzuri_tz_task_leave(ptr, ptr)\n",
         );
     }
+    if domain && !callbacks.is_empty() {
+        output.push_str(
+            "declare ptr @tsuzuri_boundary_owner()\ndeclare i32 @tsuzuri_boundary_item(ptr, ptr, ptr, ptr, i64, ptr, ptr)\ndeclare void @tsuzuri_boundary_resume(ptr)\n",
+        );
+        if spawning {
+            output.push_str(
+                "declare i32 @tsuzuri_tz_block_depth()\ndeclare void @tsuzuri_tz_block_restore(i32)\ndeclare ptr @tsuzuri_tz_scope_current()\ndeclare void @tsuzuri_tz_scope_reset(ptr)\n",
+            );
+        }
+    }
     output
+}
+
+/// The guard that the task runtime calls instead of the worker callback `name` (see
+/// [`with_task_accounting`]). The state of the item, `{ i64, i32, i32 }`, is `tzr_item_frame` of
+/// src/runtime/tzroutine.c.
+fn item_guard(name: &str, result: bool, domain: bool, spawning: bool, mutex: bool) -> String {
+    let ty = if result { "i32" } else { "void" };
+    let mut text = format!(
+        "define internal {ty} @{name}.guard(ptr %context, i64 %index) nounwind {{\nentry:\n  %item = alloca {{ i64, i32, i32 }}, align 8\n"
+    );
+    if result || domain {
+        text.push_str("  %failed = alloca i32, align 4\n");
+    }
+    if domain {
+        text.push_str(
+            "  %trap = alloca { i32, i32 }, align 4\n  store i32 0, ptr %failed, align 4\n",
+        );
+    }
+    text.push_str("  call void @tsuzuri_tz_task_enter(ptr %context, ptr %item)\n");
+    let call = if result {
+        format!(
+            "  %value = call i32 @{name}(ptr %context, i64 %index)\n  store i32 %value, ptr %failed, align 4\n"
+        )
+    } else {
+        format!("  call void @{name}(ptr %context, i64 %index)\n")
+    };
+    if domain {
+        let mut restore = String::new();
+        if spawning {
+            text.push_str(
+                "  %depth = call i32 @tsuzuri_tz_block_depth()\n  %scope = call ptr @tsuzuri_tz_scope_current()\n",
+            );
+            restore.push_str(
+                "  call void @tsuzuri_tz_block_restore(i32 %depth)\n  call void @tsuzuri_tz_scope_reset(ptr %scope)\n",
+            );
+        }
+        if mutex {
+            text.push_str("  %held = call i32 @tz.mutex.held()\n");
+            restore.push_str("  call void @tz.mutex.mark(i32 %held)\n");
+        }
+        let (run, run_result) = if result {
+            ("null".to_owned(), format!("@{name}"))
+        } else {
+            (format!("@{name}"), "null".to_owned())
+        };
+        let _ = write!(
+            text,
+            "  %owner = call ptr @tsuzuri_boundary_owner()\n  %framed = icmp ne ptr %owner, null\n  br i1 %framed, label %guarded, label %direct\n\
+             direct:\n{call}  br label %done\n\
+             guarded:\n  %trapped = call i32 @tsuzuri_boundary_item(ptr %owner, ptr {run}, ptr {run_result}, ptr %context, i64 %index, ptr %failed, ptr %trap)\n  %caught = icmp ne i32 %trapped, 0\n  br i1 %caught, label %raise, label %done\n\
+             raise:\n{restore}  call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)\n  call void @tsuzuri_boundary_resume(ptr %trap)\n  unreachable\n\
+             done:\n"
+        );
+    } else {
+        text.push_str(&call);
+    }
+    text.push_str("  call void @tsuzuri_tz_task_leave(ptr %context, ptr %item)\n");
+    text.push_str(if result {
+        "  %failure = load i32, ptr %failed, align 4\n  ret i32 %failure\n}\n"
+    } else {
+        "  ret void\n}\n"
+    });
+    text
 }
 
 /// Emits the program once, up to the passes over its whole text. `exhausted` tells whether a worker

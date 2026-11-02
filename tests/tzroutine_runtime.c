@@ -958,6 +958,72 @@ static void test_donor(void) {
     }
 }
 
+/* TZ03: the mark of a failure domain is the number of the last batch announced. A batch that
+ * another thread announced before the mark and ended before the reset, and one that this thread
+ * announced before the mark (the enclosing batch of an item that calls Domain.run), stay; what this
+ * thread announced after the mark, which a trap left, goes. An item's end drops what was announced
+ * in the item in the same way, and puts its thread back in the state it had before the item. */
+static char batch_outer, batch_other, batch_inner, batch_item;
+static void (*batch_step)(void);
+static void batch_other_begin(void) { tsuzuri_tz_parallel_begin(&batch_other, 1); }
+static void batch_other_end(void) { tsuzuri_tz_parallel_end(&batch_other, 1); }
+#if defined(_WIN32)
+static DWORD WINAPI batch_thread(LPVOID arg) {
+    (void)arg;
+    batch_step();
+    return 0;
+}
+#else
+static void *batch_thread(void *arg) {
+    (void)arg;
+    batch_step();
+    return NULL;
+}
+#endif
+static void on_other_thread(void (*step)(void)) {
+    batch_step = step;
+#if defined(_WIN32)
+    HANDLE thread = CreateThread(NULL, 0, batch_thread, NULL, 0, NULL);
+    CHECK(thread != NULL && WaitForSingleObject(thread, INFINITE) == WAIT_OBJECT_0 && CloseHandle(thread));
+#else
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, batch_thread, NULL) == 0 && pthread_join(thread, NULL) == 0);
+#endif
+}
+static int64_t pending(void) {
+    tzr_mutex_lock(&tzr_sched.lock);
+    int64_t n = tzr_sched.npending;
+    tzr_mutex_unlock(&tzr_sched.lock);
+    return n;
+}
+static void test_batches(void) {
+    tsuzuri_tz_parallel_begin(&batch_outer, 2); /* this thread waits for the batch */
+    /* it runs one item, which announces a batch and traps: the item's end drops that batch */
+    tzr_item_frame frame;
+    tsuzuri_tz_task_enter(&batch_outer, &frame);
+    CHECK(frame.idle && pending() == 1);
+    tsuzuri_tz_parallel_begin(&batch_item, 4);
+    tsuzuri_tz_task_leave(&batch_outer, &frame);
+    CHECK(pending() == 1);
+    tzr_mutex_lock(&tzr_sched.lock);
+    CHECK(tzr_batch_of(&batch_item) == NULL && tzr_pseudo()->idle); /* waiting for the batch again */
+    tzr_mutex_unlock(&tzr_sched.lock);
+    /* a failure domain inside the wait, while another thread's batch comes and goes */
+    on_other_thread(batch_other_begin);
+    uint64_t mark = tsuzuri_tz_parallel_mark();
+    on_other_thread(batch_other_end);
+    tsuzuri_tz_parallel_begin(&batch_inner, 3);
+    CHECK(pending() == 4);
+    tsuzuri_tz_parallel_reset(mark);
+    CHECK(pending() == 1);
+    tzr_mutex_lock(&tzr_sched.lock);
+    CHECK(tzr_batch_of(&batch_outer) != NULL && tzr_batch_of(&batch_inner) == NULL);
+    CHECK(!tzr_pseudo()->idle); /* it runs again */
+    tzr_mutex_unlock(&tzr_sched.lock);
+    tsuzuri_tz_parallel_end(&batch_outer, 2);
+    CHECK(pending() == 0);
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -1000,6 +1066,7 @@ int main(int argc, char **argv) {
     RUN("report", test_report());
     RUN("blocking", test_blocking());
     RUN("donor", test_donor());
+    RUN("batches", test_batches());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

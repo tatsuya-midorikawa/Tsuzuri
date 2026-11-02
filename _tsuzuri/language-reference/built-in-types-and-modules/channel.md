@@ -114,7 +114,7 @@ $"{a}-{b}-{c}-{d}"
 
 ## for で受け取る
 
-`for x in ch do body` は、`ch` が閉じて空になるまで受け取ります。`ch` の型は `Channel<T>` か `ref Channel<T>` で、`x` は `T` です。要素は受け取った側のものなので、`string` のような Copy でない要素も受け取れます。`break` で `for` を抜け、`continue` で次の受信へ進みます。`for` のあとも `ch` は使えます（場所にあるチャンネルは借用されるだけです）。
+`for x in ch do body` は、`ch` が閉じて空になるまで受け取ります。`ch` の型は `Channel<T>` か `ref Channel<T>` で、`x` は `T` です。要素は受け取った側のものなので、`string` のような Copy でない要素も受け取れます。`break` で `for` を抜け、`continue` で次の受信へ進みます。`for` のあとも `ch` は使えます（場所にあるチャンネルは借用されるだけです）。受け取りはいつも標準の `std::Channel.recv`（`ReceiveOnly<T>` なら `std::ReceiveOnly.recv`）で、プログラムに `Channel` という名前の module があっても、`using` で 2 つ見えていても変わりません。
 
 ```tsuzuri run=picked%3D16%20rest%3D10
 let values: Channel<i64> = Channel.make 0
