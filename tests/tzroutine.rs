@@ -229,14 +229,24 @@ fn probes_the_stack_only_when_the_program_spawns() {
     let spawning = accepts("tzroutine { () }\n0\n");
     for entry in [llvm::Entry::Library, llvm::Entry::Console] {
         let ir = llvm::emit(&spawning, entry).unwrap();
-        let defines: Vec<&str> = ir.lines().filter(|line| line.starts_with("define ")).collect();
+        let defines: Vec<&str> = ir
+            .lines()
+            .filter(|line| line.starts_with("define "))
+            .collect();
         assert!(!defines.is_empty());
         for define in defines {
-            assert!(define.contains(" \"probe-stack\"=\"inline-asm\" "), "{define}");
+            assert!(
+                define.contains(" \"probe-stack\"=\"inline-asm\" "),
+                "{define}"
+            );
         }
     }
     let plain = accepts("Routine.yield ()\n0\n");
-    assert!(!llvm::emit(&plain, llvm::Entry::Console).unwrap().contains("probe-stack"));
+    assert!(
+        !llvm::emit(&plain, llvm::Entry::Console)
+            .unwrap()
+            .contains("probe-stack")
+    );
 }
 
 #[test]

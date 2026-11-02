@@ -1384,10 +1384,7 @@ fn emit_program(
     // program has hundreds of thousands of lines, and the first pass of an exhausted budget is
     // thrown away.
     let output = if spawns(module) {
-        with_stack_probes(with_tzroutine_scopes(
-            output,
-            &tzroutine_boundaries(module),
-        ))
+        with_stack_probes(with_tzroutine_scopes(output, &tzroutine_boundaries(module)))
     } else {
         output
     };
