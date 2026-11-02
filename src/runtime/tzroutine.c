@@ -531,6 +531,7 @@ static struct {
     tzr_m *midle;
     int nmidle;
     tzr_m *pwait;                 /* Ms back from a blocking call, waiting for a P */
+    _Atomic int npwait;           /* their number, read without the lock by the scheduling loop */
     int nmblocked;                /* Ms in a blocking call: their threads count as pseudo-Gs */
     int mcount;
     _Atomic int nmspinning;
@@ -769,6 +770,7 @@ static void tzr_pidleput(tzr_p *p) {
     tzr_m *waiter = tzr_sched.pwait;
     if (waiter) {
         tzr_sched.pwait = waiter->link;
+        atomic_fetch_sub(&tzr_sched.npwait, 1);
         waiter->nextp = p;
         tzr_note_wake(&waiter->park);
         return;
@@ -995,8 +997,29 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
     }
 }
 
+/* An M back from a blocking call waits for a P, which only an M that runs out of work gives back:
+ * one that keeps finding work, say a tzroutine that yields until the waiting one sets a flag, would
+ * keep its P for ever. So between two Gs an M hands its P (with its queue) to a waiting M and
+ * stops; the G it ran last is in a queue already. With tzr_sched.lock not held. */
+static void tzr_serve_pwait(tzr_m *m) {
+    if (atomic_load(&tzr_sched.npwait) == 0) return;
+    tzr_mutex_lock(&tzr_sched.lock);
+    tzr_m *waiter = tzr_sched.pwait;
+    if (waiter == NULL) {
+        tzr_mutex_unlock(&tzr_sched.lock);
+        return;
+    }
+    tzr_sched.pwait = waiter->link;
+    atomic_fetch_sub(&tzr_sched.npwait, 1);
+    waiter->nextp = m->p;
+    m->p = NULL;
+    tzr_note_wake(&waiter->park);
+    tzr_stopm(m); /* returns with a P */
+}
+
 static void tzr_schedule(tzr_m *m) {
     for (;;) {
+        tzr_serve_pwait(m);
         tzr_g *g = tzr_findrunnable(m);
         if (m->spinning) {
             m->spinning = 0;
@@ -1516,6 +1539,7 @@ TZR_API void tsuzuri_tz_block_leave(void) {
     if (p == NULL) {
         m->link = tzr_sched.pwait;
         tzr_sched.pwait = m;
+        atomic_fetch_add(&tzr_sched.npwait, 1);
         tzr_mutex_unlock(&tzr_sched.lock);
         tzr_note_sleep(&m->park);
         p = m->nextp;
@@ -1524,6 +1548,21 @@ TZR_API void tsuzuri_tz_block_leave(void) {
         tzr_mutex_unlock(&tzr_sched.lock);
     }
     m->p = p;
+}
+
+/* The depth of the blocking calls of the calling G, and leaving those that a trap skipped: a failure
+ * domain restores the depth it was entered with, so that its M runs tzroutines again (TZ02). */
+TZR_API int32_t tsuzuri_tz_block_depth(void) {
+    tzr_m *m = tzr_this_m();
+    return m != NULL && m->curg != NULL ? m->blocked : 0;
+}
+
+TZR_API void tsuzuri_tz_block_restore(int32_t depth) {
+    for (;;) {
+        tzr_m *m = tzr_this_m();
+        if (m == NULL || m->curg == NULL || m->blocked <= depth) return;
+        tsuzuri_tz_block_leave();
+    }
 }
 
 /* The spawn scope of the calling G, and setting it back: a failure domain that a trap left

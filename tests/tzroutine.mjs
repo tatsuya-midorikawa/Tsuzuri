@@ -134,6 +134,58 @@ tzroutine {
 }
 $"failed={failed}"
 `, "child\nfailed=1\n"],
+  // A tzroutine back from Task.parallel gets a P even when the only one keeps running a tzroutine
+  // that yields until the returning one sets a flag.
+  [`let flag = Arc.new (Atomic.create 0i64)
+let done = Arc.new (Atomic.create 0i64)
+let setter = Arc.share (ref flag)
+let first = Arc.share (ref done)
+tzroutine {
+    let jobs = new [Task<i64>](2, \\index -> task { return index })
+    let _results = Task.run (Task.parallel jobs)
+    Atomic.store (Arc.get (ref setter)) 1i64
+    let _n = Atomic.fetch_add (Arc.get (ref first)) 1i64
+}
+let watcher = Arc.share (ref flag)
+let second = Arc.share (ref done)
+tzroutine {
+    while Atomic.load (Arc.get (ref watcher)) == 0i64 do
+        Routine.yield ()
+    let _n = Atomic.fetch_add (Arc.get (ref second)) 1i64
+}
+while Atomic.load (Arc.get (ref done)) < 2i64 do
+    Routine.yield ()
+$"done={Atomic.load (Arc.get (ref done))}"
+`, "done=2\n"],
+  // A failure domain inside a tzroutine whose pool items trap: the blocking call that the trap left
+  // is left, so the tzroutine yields and spawns again.
+  [`def explode :: i64 -> i64
+fn explode n =
+    let jobs = new [Task<i64>](2, \\index -> task {
+        let zero = n - n
+        return index / zero
+    })
+    let results = Task.run (Task.parallel jobs)
+    results[0]
+
+let done = Arc.new (Atomic.create 0i64)
+let outer = Arc.share (ref done)
+tzroutine {
+    let failed = match Domain.run (\\() -> explode 3) with
+        | Result.Ok _ -> 0i64
+        | Result.Error _ -> 1i64
+    for _i in 0 ..< 10 do
+        Routine.yield ()
+    let mine = Arc.share (ref outer)
+    tzroutine {
+        let _n = Atomic.fetch_add (Arc.get (ref mine)) 10i64
+    }
+    let _n = Atomic.fetch_add (Arc.get (ref outer)) failed
+}
+while Atomic.load (Arc.get (ref done)) < 11i64 do
+    Routine.yield ()
+$"done={Atomic.load (Arc.get (ref done))}"
+`, "done=11\n"],
   // The lock mark is per thread and a tzroutine moves between threads at its yields: optimized
   // code must not keep the mark's address across them (no false trap, every lock counted).
   [`def work :: ref Arc<Mutex<i64>> -> ref Arc<Atomic<i64>> -> unit
@@ -170,6 +222,28 @@ try {
         runs++;
       }
     }
+  }
+
+  // With trap information, the start functions of tzroutine { } and Routine.go keep the ABI that
+  // the runtime calls them with.
+  const informed = project(`let counter = Arc.new (Atomic.create 0i64)
+let mine = Arc.share (ref counter)
+tzroutine {
+    let _n = Atomic.fetch_add (Arc.get (ref mine)) 1i64
+}
+let other = Arc.share (ref counter)
+Routine.go (Owned.function (\\() -> {
+    let _n = Atomic.fetch_add (Arc.get (ref other)) 1i64;
+    ()
+}))
+while Atomic.load (Arc.get (ref counter)) < 2i64 do
+    Routine.yield ()
+Atomic.load (Arc.get (ref counter))
+`);
+  for (const optimization of ["-O0", "-O3"]) {
+    const run = cli(["run", informed, "--trap-info", optimization]);
+    assert.equal(lines(run.stdout), "2\n", `--trap-info ${optimization}`);
+    runs++;
   }
 
   // A trap in a tzroutine ends the process with the trap's report.

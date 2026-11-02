@@ -452,7 +452,9 @@ fn only_noinline_helpers_touch_the_lock_mark() {
         }
         if line.contains("@tz.mutex.locked") && !line.starts_with("@tz.mutex.locked =") {
             assert!(
-                function.contains("@tz.mutex.mark(") || function.contains("@tz.routine.unlocked("),
+                function.contains("@tz.mutex.mark(")
+                    || function.contains("@tz.mutex.held(")
+                    || function.contains("@tz.routine.unlocked("),
                 "{function}\n{line}"
             );
             assert!(function.contains("noinline"), "{function}");

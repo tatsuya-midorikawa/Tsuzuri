@@ -76,20 +76,32 @@ impl FunctionEmitter<'_, '_> {
             "getelementptr {context_type}, ptr {context}, i32 0, i32 0"
         ));
         self.instruction(format!("store %tz.closure %arg0, ptr {closure_slot}"));
-        // TZ02: a trap skips the scope leave of a pool callback that ran on this thread, so the
-        // spawn scope goes back to the one the domain was entered with.
-        let scope = self.globals.spawns.then(|| {
-            self.intrinsics
-                .insert("declare ptr @tsuzuri_tz_scope_current()".into());
-            self.intrinsics
-                .insert("declare void @tsuzuri_tz_scope_reset(ptr)".into());
-            self.value("call ptr @tsuzuri_tz_scope_current()")
+        // TZ02: a trap skips what the code between the domain and the trap would have undone: the
+        // leave of a blocking call, the scope leave of a pool callback that ran on this thread, the
+        // mark of a Mutex.with_lock. The domain goes back to how it was entered: the blocking depth
+        // first (it gives the M its P back), then the spawn scope of the G, then the mark.
+        let saved = self.globals.spawns.then(|| {
+            for declaration in [
+                "declare i32 @tsuzuri_tz_block_depth()",
+                "declare void @tsuzuri_tz_block_restore(i32)",
+                "declare ptr @tsuzuri_tz_scope_current()",
+                "declare void @tsuzuri_tz_scope_reset(ptr)",
+            ] {
+                self.intrinsics.insert(declaration.into());
+            }
+            self.intrinsics.insert(super::MUTEX_LOCKED.into());
+            let depth = self.value("call i32 @tsuzuri_tz_block_depth()");
+            let scope = self.value("call ptr @tsuzuri_tz_scope_current()");
+            let held = self.value("call i32 @tz.mutex.held()");
+            (depth, scope, held)
         });
         let status = self.value(format!(
             "call i32 @tsuzuri_domain_run(ptr {thunk}, ptr {context}, ptr {info})"
         ));
-        if let Some(scope) = scope {
+        if let Some((depth, scope, held)) = saved {
+            self.instruction(format!("call void @tsuzuri_tz_block_restore(i32 {depth})"));
             self.instruction(format!("call void @tsuzuri_tz_scope_reset(ptr {scope})"));
+            self.instruction(format!("call void @tz.mutex.mark(i32 {held})"));
         }
         let output = self.spill(&result, "zeroinitializer");
         let success = self.value(format!("icmp eq i32 {status}, 0"));

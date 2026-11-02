@@ -303,7 +303,7 @@ const STACK_CHECK_MARGIN: u32 = 4096;
 /// one function that writes it. A tzroutine may resume on another thread after it yields, and LLVM
 /// treats the address of a thread-local as fixed in a function, so every read and write of the
 /// mark is in a function of its own that is never inlined (the rule R2 of src/runtime/tzroutine.c).
-pub(crate) const MUTEX_LOCKED: &str = "@tz.mutex.locked = internal thread_local global i32 0\ndefine internal void @tz.mutex.mark(i32 %held) noinline nounwind {\nentry:\n  store i32 %held, ptr @tz.mutex.locked\n  ret void\n}\n";
+pub(crate) const MUTEX_LOCKED: &str = "@tz.mutex.locked = internal thread_local global i32 0\ndefine internal void @tz.mutex.mark(i32 %held) noinline nounwind {\nentry:\n  store i32 %held, ptr @tz.mutex.locked\n  ret void\n}\ndefine internal i32 @tz.mutex.held() noinline nounwind {\nentry:\n  %held = load i32, ptr @tz.mutex.locked\n  ret i32 %held\n}\n";
 
 /// Whether the thread holds no `Mutex.with_lock`; otherwise the runtime writes why (report 5).
 const ROUTINE_UNLOCKED: &str = "define internal i1 @tz.routine.unlocked() noinline {\nentry:\n  %held = load i32, ptr @tz.mutex.locked\n  %free = icmp eq i32 %held, 0\n  br i1 %free, label %ok, label %refuse\nrefuse:\n  call void @tsuzuri_tz_report(i32 5)\n  br label %ok\nok:\n  ret i1 %free\n}\n";
