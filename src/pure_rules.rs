@@ -223,6 +223,21 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | ChannelCapacity
         | ChannelShare
         | ChannelRelease
+        | ChannelSendOnly
+        | ChannelReceiveOnly
+        | SendOnlySend
+        | SendOnlyTrySend
+        | SendOnlyClose
+        | SendOnlyLength
+        | SendOnlyCapacity
+        | SendOnlyShare
+        | SendOnlyRelease
+        | ReceiveOnlyRecv
+        | ReceiveOnlyTryRecv
+        | ReceiveOnlyLength
+        | ReceiveOnlyCapacity
+        | ReceiveOnlyShare
+        | ReceiveOnlyRelease
         | RcNew
         | RcShare
         | RcGet
@@ -1502,7 +1517,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            107
+            122
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

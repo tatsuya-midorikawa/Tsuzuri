@@ -12,8 +12,10 @@ use super::input::Input;
 /// The key of the note node.
 pub const NOTE: &str = "note";
 
-const CELL_EVIDENCE: [(&str, &str, &str); 5] = [
+const CELL_EVIDENCE: [(&str, &str, &str); 7] = [
     ("Channel<", "channel", "Channel"),
+    ("SendOnly<", "send", "Channel"),
+    ("ReceiveOnly<", "recv", "Channel"),
     ("DataChannel.Sender<", "send", "DataChannel"),
     ("DataChannel.Receiver<", "recv", "DataChannel"),
     ("Mutex<", "lock", "Mutex"),

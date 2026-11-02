@@ -13,6 +13,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Cbor.tz", include_str!("../std/Cbor.tz")),
     ("std/DataChannel.tz", include_str!("../std/DataChannel.tz")),
     ("std/Channel.tz", include_str!("../std/Channel.tz")),
+    ("std/SendOnly.tz", include_str!("../std/SendOnly.tz")),
+    ("std/ReceiveOnly.tz", include_str!("../std/ReceiveOnly.tz")),
     ("std/Char.tz", include_str!("../std/Char.tz")),
     ("std/Debug.tz", include_str!("../std/Debug.tz")),
     ("std/Dir.tz", include_str!("../std/Dir.tz")),
@@ -117,6 +119,9 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Tensor",
     "Channel",
     "DataChannel",
+    // TZ03 Phase 2: the direction handles of Channel.
+    "SendOnly",
+    "ReceiveOnly",
     "Text",
     "RegexText",
     "Domain",
@@ -173,6 +178,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "DataChannel.Sender"
             | "DataChannel.Receiver"
             | "Channel.Channel"
+            | "SendOnly.SendOnly"
+            | "ReceiveOnly.ReceiveOnly"
     )
 }
 
@@ -302,9 +309,23 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         aliases: &[],
         uses: &[],
     },
+    // A direction handle's try operations return the unions of Channel, and `Channel.send_only`
+    // returns a SendOnly: the three modules load together (TZ03 Phase 2).
     OptIn {
         module: "Channel",
-        names: &["Channel"],
+        names: &["Channel", "SendOnly", "ReceiveOnly"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "SendOnly",
+        names: &["SendOnly", "Channel"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "ReceiveOnly",
+        names: &["ReceiveOnly", "Channel"],
         aliases: &[],
         uses: &[],
     },
@@ -677,7 +698,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 61);
+        assert_eq!(RESERVED_MODULES.len(), 63);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

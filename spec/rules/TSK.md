@@ -19,3 +19,7 @@ The rules of this area, one sentence each, with the document that states them an
 | TSK-013 | A tzroutine MUST NOT capture a borrow (E1013). | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-013-tzroutine-must-not-capture | active |
 | TSK-014 | The body of a tzroutine MUST have type `unit` (E1003). | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-014-body-of-tzroutine-must | active |
 | TSK-015 | `let!` and `do!` in a tzroutine body MUST run the IO action at that point. | [tzroutine.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md) | TSK-015-let-and-do-in | active |
+| TSK-016 | `Channel.recv` MUST return `None` only after the channel is closed and every item sent before the close has been received. | [channel.md](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md) | TSK-016-channel-recv-must-return | active |
+| TSK-017 | A `send` on a closed `Channel` MUST trap. | [channel.md](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md) | TSK-017-send-on-closed-channel | active |
+| TSK-018 | Items of one `Channel` MUST be received in the order their sends completed. | [channel.md](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md) | TSK-018-items-of-one-channel | active |
+| TSK-019 | `for x in ch` MUST end when `ch` is closed and empty. | [channel.md](../../_tsuzuri/language-reference/built-in-types-and-modules/channel.md) | TSK-019-for-x-in-ch | active |

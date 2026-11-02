@@ -1,0 +1,9 @@
+let values: Channel<i64> = Channel.make 1
+Channel.close values
+Channel.send values 1
+0
+
+// rule: TSK-017
+// cli: run $DIR
+// expect: exit 1
+// expect: stderr-has "Tsuzuri runtime: send on closed Channel"

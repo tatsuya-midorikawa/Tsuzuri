@@ -17,7 +17,9 @@ impl FunctionEmitter<'_, '_> {
         let count = instance.builtin.scheme().parameters.len();
         let result = ty.after_arguments(count);
         let item = instance.types[0].clone();
-        if instance.builtin == Builtin::ChannelMake {
+        // A direction handle holds the same block as the channel (TZ03 Phase 2).
+        let operation = instance.builtin.channel_operation();
+        if operation == Builtin::ChannelMake {
             return self.channel_make(&item, &result);
         }
         let Type::Reference(record, false) = &parameters[0] else {
@@ -27,7 +29,7 @@ impl FunctionEmitter<'_, '_> {
         let declare = |emitter: &mut Self, declaration: &str| {
             emitter.intrinsics.insert(declaration.into());
         };
-        match instance.builtin {
+        match operation {
             Builtin::ChannelSend => {
                 self.routine_unlocked();
                 declare(self, "declare i32 @tsuzuri_tz_chan_send(ptr, ptr, i32)");
@@ -126,7 +128,7 @@ impl FunctionEmitter<'_, '_> {
                 "0".to_owned()
             }
             Builtin::ChannelLength | Builtin::ChannelCapacity => {
-                let function = if instance.builtin == Builtin::ChannelLength {
+                let function = if operation == Builtin::ChannelLength {
                     "tsuzuri_tz_chan_length"
                 } else {
                     "tsuzuri_tz_chan_capacity"

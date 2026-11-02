@@ -723,14 +723,17 @@ impl Type {
         !types.stored_all(self, |part| !part.has_user_drop(types))
     }
 
-    /// The item type of the std `Channel<'a>` (TZ03), which `for x in ch` receives from.
-    pub(crate) fn channel_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
+    /// The function that `for x in ch` receives with and the item type, when `ch` is the std
+    /// `Channel<'a>` or its receiving handle `ReceiveOnly<'a>` (TZ03).
+    pub(crate) fn channel_element(&self, types: &TypeContext<'_>) -> Option<(&'static str, &Type)> {
         match self {
-            Self::Record(id, arguments)
-                if types.records[*id].origin == ModuleOrigin::Std
-                    && types.records[*id].name == "Channel.Channel" =>
-            {
-                arguments.first()
+            Self::Record(id, arguments) if types.records[*id].origin == ModuleOrigin::Std => {
+                let receive = match types.records[*id].name.as_str() {
+                    "Channel.Channel" => "Channel.recv",
+                    "ReceiveOnly.ReceiveOnly" => "ReceiveOnly.recv",
+                    _ => return None,
+                };
+                arguments.first().map(|item| (receive, item))
             }
             _ => None,
         }
@@ -1690,6 +1693,25 @@ pub enum Builtin {
     ChannelShare,
     /// `Channel.__release`, the body of the `Drop` instance in `std/Channel.tz`: private to that module.
     ChannelRelease,
+    /// `Channel.send_only :: ref Channel<'a> -> SendOnly<'a>` and `Channel.receive_only` (TZ03
+    /// Phase 2): one more handle of the channel that can only send, or only receive (Go's `chan<- T`
+    /// and `<-chan T`). The operations of the two handles are the `SendOnly.*` and `ReceiveOnly.*`
+    /// below; the block and the code are the channel's.
+    ChannelSendOnly,
+    ChannelReceiveOnly,
+    SendOnlySend,
+    SendOnlyTrySend,
+    SendOnlyClose,
+    SendOnlyLength,
+    SendOnlyCapacity,
+    SendOnlyShare,
+    SendOnlyRelease,
+    ReceiveOnlyRecv,
+    ReceiveOnlyTryRecv,
+    ReceiveOnlyLength,
+    ReceiveOnlyCapacity,
+    ReceiveOnlyShare,
+    ReceiveOnlyRelease,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -2033,6 +2055,21 @@ impl Builtin {
         Self::ChannelCapacity,
         Self::ChannelShare,
         Self::ChannelRelease,
+        Self::ChannelSendOnly,
+        Self::ChannelReceiveOnly,
+        Self::SendOnlySend,
+        Self::SendOnlyTrySend,
+        Self::SendOnlyClose,
+        Self::SendOnlyLength,
+        Self::SendOnlyCapacity,
+        Self::SendOnlyShare,
+        Self::SendOnlyRelease,
+        Self::ReceiveOnlyRecv,
+        Self::ReceiveOnlyTryRecv,
+        Self::ReceiveOnlyLength,
+        Self::ReceiveOnlyCapacity,
+        Self::ReceiveOnlyShare,
+        Self::ReceiveOnlyRelease,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -2288,6 +2325,21 @@ impl Builtin {
             Self::ChannelCapacity => "Channel.capacity",
             Self::ChannelShare => "Channel.share",
             Self::ChannelRelease => "Channel.__release",
+            Self::ChannelSendOnly => "Channel.send_only",
+            Self::ChannelReceiveOnly => "Channel.receive_only",
+            Self::SendOnlySend => "SendOnly.send",
+            Self::SendOnlyTrySend => "SendOnly.try_send",
+            Self::SendOnlyClose => "SendOnly.close",
+            Self::SendOnlyLength => "SendOnly.length",
+            Self::SendOnlyCapacity => "SendOnly.capacity",
+            Self::SendOnlyShare => "SendOnly.share",
+            Self::SendOnlyRelease => "SendOnly.__release",
+            Self::ReceiveOnlyRecv => "ReceiveOnly.recv",
+            Self::ReceiveOnlyTryRecv => "ReceiveOnly.try_recv",
+            Self::ReceiveOnlyLength => "ReceiveOnly.length",
+            Self::ReceiveOnlyCapacity => "ReceiveOnly.capacity",
+            Self::ReceiveOnlyShare => "ReceiveOnly.share",
+            Self::ReceiveOnlyRelease => "ReceiveOnly.__release",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::AllocCounter => "Alloc.__counter",
@@ -3420,7 +3472,22 @@ impl Builtin {
             | Self::ChannelLength
             | Self::ChannelCapacity
             | Self::ChannelShare
-            | Self::ChannelRelease => self.channel_scheme(),
+            | Self::ChannelRelease
+            | Self::ChannelSendOnly
+            | Self::ChannelReceiveOnly
+            | Self::SendOnlySend
+            | Self::SendOnlyTrySend
+            | Self::SendOnlyClose
+            | Self::SendOnlyLength
+            | Self::SendOnlyCapacity
+            | Self::SendOnlyShare
+            | Self::SendOnlyRelease
+            | Self::ReceiveOnlyRecv
+            | Self::ReceiveOnlyTryRecv
+            | Self::ReceiveOnlyLength
+            | Self::ReceiveOnlyCapacity
+            | Self::ReceiveOnlyShare
+            | Self::ReceiveOnlyRelease => self.channel_scheme(),
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -3557,13 +3624,37 @@ impl Builtin {
         self.name().starts_with("DataChannel.")
     }
 
-    /// Whether this builtin is an operation of Go's `Channel` (TZ03), lowered to calls of the
-    /// tzroutine runtime.
+    /// Whether this builtin is an operation of Go's `Channel` or of one of its direction handles
+    /// `SendOnly` and `ReceiveOnly` (TZ03), lowered to calls of the tzroutine runtime.
     pub(crate) fn is_channel(self) -> bool {
-        self.name().starts_with("Channel.")
+        let name = self.name();
+        name.starts_with("Channel.")
+            || name.starts_with("SendOnly.")
+            || name.starts_with("ReceiveOnly.")
     }
 
-    /// The schemes of `Channel.*` (TZ03), kept out of `scheme` so that its frame stays small.
+    /// The operation of `Channel` that a `SendOnly` or `ReceiveOnly` builtin is (TZ03 Phase 2): the
+    /// three handles hold the same block, so their code is the same; a conversion is a share.
+    pub(crate) fn channel_operation(self) -> Self {
+        match self {
+            Self::SendOnlySend => Self::ChannelSend,
+            Self::SendOnlyTrySend => Self::ChannelTrySend,
+            Self::SendOnlyClose => Self::ChannelClose,
+            Self::SendOnlyLength | Self::ReceiveOnlyLength => Self::ChannelLength,
+            Self::SendOnlyCapacity | Self::ReceiveOnlyCapacity => Self::ChannelCapacity,
+            Self::SendOnlyShare
+            | Self::ReceiveOnlyShare
+            | Self::ChannelSendOnly
+            | Self::ChannelReceiveOnly => Self::ChannelShare,
+            Self::SendOnlyRelease | Self::ReceiveOnlyRelease => Self::ChannelRelease,
+            Self::ReceiveOnlyRecv => Self::ChannelRecv,
+            Self::ReceiveOnlyTryRecv => Self::ChannelTryRecv,
+            other => other,
+        }
+    }
+
+    /// The schemes of `Channel.*`, `SendOnly.*` and `ReceiveOnly.*` (TZ03), kept out of `scheme` so
+    /// that its frame stays small.
     #[inline(never)]
     fn channel_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
         use BuiltinType::{Concrete, Reference, Var};
@@ -3574,7 +3665,19 @@ impl Builtin {
             args,
         };
         let channel = || std("Channel", "Channel", vec![a()]);
-        let borrowed = || Reference(Box::new(channel()), false);
+        let send_only = || std("SendOnly", "SendOnly", vec![a()]);
+        let receive_only = || std("ReceiveOnly", "ReceiveOnly", vec![a()]);
+        // The handle that the operation borrows: a `SendOnly.*` builtin takes a `SendOnly`.
+        let handle = || {
+            if self.name().starts_with("SendOnly.") {
+                send_only()
+            } else if self.name().starts_with("ReceiveOnly.") {
+                receive_only()
+            } else {
+                channel()
+            }
+        };
+        let borrowed = || Reference(Box::new(handle()), false);
         match self {
             Self::ChannelMake => (
                 vec![Concrete(Type::I64)],
@@ -3584,13 +3687,15 @@ impl Builtin {
                     ty: a(),
                 }],
             ),
-            Self::ChannelSend => (vec![borrowed(), a()], Concrete(Type::Unit), Vec::new()),
-            Self::ChannelRecv => (
+            Self::ChannelSend | Self::SendOnlySend => {
+                (vec![borrowed(), a()], Concrete(Type::Unit), Vec::new())
+            }
+            Self::ChannelRecv | Self::ReceiveOnlyRecv => (
                 vec![borrowed()],
                 std("Maybe", "Maybe", vec![a()]),
                 Vec::new(),
             ),
-            Self::ChannelTrySend => (
+            Self::ChannelTrySend | Self::SendOnlyTrySend => (
                 vec![borrowed(), a()],
                 std(
                     "Result",
@@ -3599,18 +3704,27 @@ impl Builtin {
                 ),
                 Vec::new(),
             ),
-            Self::ChannelTryRecv => (
+            Self::ChannelTryRecv | Self::ReceiveOnlyTryRecv => (
                 vec![borrowed()],
                 std("Channel", "Received", vec![a()]),
                 Vec::new(),
             ),
-            Self::ChannelClose | Self::ChannelRelease => {
-                (vec![borrowed()], Concrete(Type::Unit), Vec::new())
+            Self::ChannelClose
+            | Self::ChannelRelease
+            | Self::SendOnlyClose
+            | Self::SendOnlyRelease
+            | Self::ReceiveOnlyRelease => (vec![borrowed()], Concrete(Type::Unit), Vec::new()),
+            Self::ChannelLength
+            | Self::ChannelCapacity
+            | Self::SendOnlyLength
+            | Self::SendOnlyCapacity
+            | Self::ReceiveOnlyLength
+            | Self::ReceiveOnlyCapacity => (vec![borrowed()], Concrete(Type::I64), Vec::new()),
+            Self::ChannelShare | Self::SendOnlyShare | Self::ReceiveOnlyShare => {
+                (vec![borrowed()], handle(), Vec::new())
             }
-            Self::ChannelLength | Self::ChannelCapacity => {
-                (vec![borrowed()], Concrete(Type::I64), Vec::new())
-            }
-            Self::ChannelShare => (vec![borrowed()], channel(), Vec::new()),
+            Self::ChannelSendOnly => (vec![borrowed()], send_only(), Vec::new()),
+            Self::ChannelReceiveOnly => (vec![borrowed()], receive_only(), Vec::new()),
             _ => unreachable!("not a Channel builtin"),
         }
     }

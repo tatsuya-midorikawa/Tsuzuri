@@ -118,11 +118,11 @@ impl Checker<'_> {
                         }
                         return self.sequence_loop(source, pattern, body, expression.span);
                     }
-                    if source.ty.channel_element(&self.types).is_some() {
+                    if let Some((receive, _)) = source.ty.channel_element(&self.types) {
                         if let Some(expected) = expected {
                             self.same(&Type::Unit, expected, expression.span)?;
                         }
-                        return self.channel_loop(source, pattern, body, expression.span);
+                        return self.channel_loop(source, receive, pattern, body, expression.span);
                     }
                     let element = match &source.ty {
                         Type::Array(element) | Type::List(element) | Type::Vec(element) => {
@@ -140,7 +140,7 @@ impl Checker<'_> {
                         _ => {
                             return Err(Diagnostic::of(
                                 DiagnosticKind::ForSourceNotIterable,
-                                "for...in expects an array, list, string, utf8string, integer range, Seq, or Channel; call Module.iter explicitly for user-defined types",
+                                "for...in expects an array, list, string, utf8string, integer range, Seq, Channel, or ReceiveOnly; call Module.iter explicitly for user-defined types",
                                 source.span,
                             ));
                         }
@@ -234,7 +234,8 @@ impl Checker<'_> {
         Ok(value(kind, Type::Unit, expression.span))
     }
 
-    /// `for x in ch` over a `Channel` (TZ03), Go's `for x := range ch`: receives until the channel
+    /// `for x in ch` over a `Channel` or a `ReceiveOnly` (TZ03), Go's `for x := range ch`, with the
+    /// `receive` function of its type: receives until the channel
     /// is closed and empty. Like `sequence_loop`, it checks a generated `while`, so `break` and
     /// `continue` keep their meaning:
     ///
@@ -250,6 +251,7 @@ impl Checker<'_> {
     fn channel_loop(
         &mut self,
         source: TypedExpr,
+        receive: &str,
         pattern: &Pattern,
         body: &Expr,
         span: Span,
@@ -287,7 +289,7 @@ impl Checker<'_> {
             origin: MatchOrigin::ComputationDestructuring,
         });
         let receive = make(ExprKind::Call(
-            Box::new(make(ExprKind::QualifiedFunction(named("Channel.recv")))),
+            Box::new(make(ExprKind::QualifiedFunction(named(receive)))),
             vec![channel],
         ));
         let arms = vec![

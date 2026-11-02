@@ -270,3 +270,23 @@ fn recv_deadlock =
     match Channel.recv values with
     | Maybe.Some value -> value
     | Maybe.None -> 0
+
+// A producer with a send-only handle and a consumer with a receive-only one (TZ03 Phase 2).
+def produce :: own SendOnly<i64> -> i64 -> unit
+fn produce out n =
+    for i in 1 ..= n do
+        SendOnly.send out (i as i64)
+    SendOnly.close out
+
+export def directions :: i64 -> i64
+fn directions n =
+    let numbers: Channel<i64> = Channel.make 0
+    let out = Channel.send_only numbers
+    let input = Channel.receive_only numbers
+    tzroutine {
+        produce out n
+    }
+    let mut sum = 0i64
+    for value in input do
+        sum = sum + value
+    sum

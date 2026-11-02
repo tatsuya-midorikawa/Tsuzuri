@@ -3248,8 +3248,12 @@ impl Checker<'_> {
                 span,
             ));
         }
-        if builtin == Builtin::ChannelRelease
-            && !(self.module == "Channel" && self.names.origin(self.module) == ModuleOrigin::Std)
+        if let Some(owner) = match builtin {
+            Builtin::ChannelRelease => Some("Channel"),
+            Builtin::SendOnlyRelease => Some("SendOnly"),
+            Builtin::ReceiveOnlyRelease => Some("ReceiveOnly"),
+            _ => None,
+        } && !(self.module == owner && self.names.origin(self.module) == ModuleOrigin::Std)
         {
             return Err(Diagnostic::of(
                 DiagnosticKind::PrivateStdPrimitive,

@@ -995,12 +995,20 @@ impl<'a> Checker<'a, '_> {
     /// `Channel.send` or `Channel.try_send` (TZ03), or the generated function that calls one. The
     /// item stays in the channel after the call.
     fn sent_item(&self, callee: &TypedExpr) -> Option<Type> {
-        use crate::check::Builtin::{ChannelSend, ChannelTrySend, DataChannelSend};
+        use crate::check::Builtin::{
+            ChannelSend, ChannelTrySend, DataChannelSend, SendOnlySend, SendOnlyTrySend,
+        };
         match &callee.ty {
             Type::Function(parameters, _)
                 if matches!(
                     self.builtin_called(callee),
-                    Some(DataChannelSend | ChannelSend | ChannelTrySend)
+                    Some(
+                        DataChannelSend
+                            | ChannelSend
+                            | ChannelTrySend
+                            | SendOnlySend
+                            | SendOnlyTrySend
+                    )
                 ) && parameters.len() >= 2 =>
             {
                 Some(parameters[1].clone())
@@ -2692,6 +2700,9 @@ impl<'a> Checker<'a, '_> {
                     | crate::check::Builtin::ChannelRecv
                     | crate::check::Builtin::ChannelTryRecv
                     | crate::check::Builtin::ChannelTrySend
+                    | crate::check::Builtin::ReceiveOnlyRecv
+                    | crate::check::Builtin::ReceiveOnlyTryRecv
+                    | crate::check::Builtin::SendOnlyTrySend
             )
         );
         let value = if locked.is_some() || sent.is_some() {

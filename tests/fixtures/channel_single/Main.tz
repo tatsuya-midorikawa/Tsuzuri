@@ -119,3 +119,24 @@ fn send_full =
     Channel.send values 1
     Channel.send values 2
     0
+
+// The direction handles on one thread (TZ03 Phase 2).
+export def direction_ops :: i64
+fn direction_ops =
+    let values: Channel<string> = Channel.make 2
+    let out = Channel.send_only values
+    let input = Channel.receive_only values
+    SendOnly.send out "ab"
+    let full = match SendOnly.try_send out "cde" with
+        | Result.Ok _ -> 1
+        | Result.Error _ -> 0
+    let other = SendOnly.share out
+    let sizes = SendOnly.length other * 10 + ReceiveOnly.capacity input
+    SendOnly.close other
+    let mut length = 0i64
+    for text in input do
+        length = length + String.length text
+    let closed = match ReceiveOnly.try_recv input with
+        | Channel.Received.Disconnected -> 1
+        | _ -> 0
+    full * 10000 + sizes * 100 + length * 10 + closed

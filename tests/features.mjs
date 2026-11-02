@@ -2526,6 +2526,7 @@ const suites = {
       ["both_kinds", [], 3n * 10n + 5n * 26n],
       ["task_worker", [], 5050n],
       ["routine_tasks", [], 1275n],
+      ...[0n, 1n, 1000n].map((n) => ["directions", [n], n * (n + 1n) / 2n]),
     ],
     traps: [["send_closed", []], ["close_twice", []], ["recv_deadlock", []]],
     inspect(ir) {
@@ -2546,6 +2547,7 @@ const suites = {
       ["length_capacity", [], 252n],
       ["unit_signals", [], 100n],
       ["dropped_items", [], 2n],
+      ["direction_ops", [], 10000n + 22n * 100n + 5n * 10n + 1n],
     ],
     traps: [["make_negative", []], ["send_closed", []], ["close_twice", []], ["recv_empty", []], ["send_full", []]],
   },

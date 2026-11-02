@@ -1,6 +1,8 @@
 # DataChannel
 
-> **旧 `Channel`**: TZ03 で `DataChannel` に改名しました。API と意味は変わりません。
+> **旧 `Channel`**: TZ03 で `DataChannel` に改名しました。API と意味は変わりません。今の `Channel` は Go と同じ双方向のチャンネル（[Channel](./channel.md)）です。旧の名前で書いたプログラムは `E1040` になり、`tsuzuri fix` で `DataChannel` の名前に直せます。使い分けは [Channel と DataChannel](./channel.md#datachannel-との使い分け) を見てください。
+>
+> `DataChannel` の待ちは Task のプールの規則のままで、tzroutine を数えません。tzroutine が送るのを `DataChannel.recv` で待つと（送る側が tzroutine だけのとき）、`deadlock: every task is waiting on a channel` と誤って判定されることがあります。tzroutine の間では `Channel` を使います。
 
 `DataChannel.bounded` は、容量の決まったキューを作り、送る側 `Sender` と受ける側 `Receiver` を返します。タスクの間で、所有する値を 1 つずつ受け渡すときに使います。共有した 1 つの値を書き換えるなら [Mutex](./mutex.md) や [Atomic](./atomic.md)、結果を集めるだけなら `Task.parallel` の戻り値で足ります。
 

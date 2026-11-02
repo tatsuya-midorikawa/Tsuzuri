@@ -589,7 +589,15 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | ChannelTryRecv
         | ChannelLength
         | ChannelCapacity
-        | ChannelRelease => facts(
+        | ChannelRelease
+        | SendOnlyTrySend
+        | SendOnlyLength
+        | SendOnlyCapacity
+        | SendOnlyRelease
+        | ReceiveOnlyTryRecv
+        | ReceiveOnlyLength
+        | ReceiveOnlyCapacity
+        | ReceiveOnlyRelease => facts(
             Some(Effect::Atomic),
             false,
             false,
@@ -609,13 +617,16 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             Some("runtime_internal"),
         ),
         // B27
-        DataChannelSend | DataChannelRecv | ChannelSend | ChannelRecv => {
-            facts(Some(Effect::Atomic), false, true, true, false, false, None)
-        }
+        DataChannelSend | DataChannelRecv | ChannelSend | ChannelRecv | SendOnlySend
+        | ReceiveOnlyRecv => facts(Some(Effect::Atomic), false, true, true, false, false, None),
         // A second close traps; nothing waits.
-        ChannelClose => facts(Some(Effect::Atomic), false, true, false, false, false, None),
+        ChannelClose | SendOnlyClose => {
+            facts(Some(Effect::Atomic), false, true, false, false, false, None)
+        }
         // A new handle that its drop releases.
-        ChannelShare => facts(Some(Effect::Atomic), true, false, false, false, false, None),
+        ChannelShare | ChannelSendOnly | ChannelReceiveOnly | SendOnlyShare | ReceiveOnlyShare => {
+            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+        }
         // B28
         MutexWith => facts(Some(Effect::Atomic), false, true, true, true, false, None),
         // B29
@@ -3449,8 +3460,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 275);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 107);
+        assert_eq!(Builtin::ALL.len(), 290);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 122);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 168);
     }
 
@@ -3461,7 +3472,7 @@ mod tests {
         assert_eq!(by(Effect::Os), 12);
         assert_eq!(by(Effect::Net), 12);
         assert_eq!(by(Effect::Task), 15);
-        assert_eq!(by(Effect::Atomic), 31);
+        assert_eq!(by(Effect::Atomic), 46);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3470,18 +3481,18 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 62);
+        assert_eq!(count(|facts| facts.alloc), 66);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 37);
+        assert_eq!(count(|facts| facts.trap), 40);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 18);
+        assert_eq!(count(|facts| facts.diverge), 20);
     }
 
     #[test]

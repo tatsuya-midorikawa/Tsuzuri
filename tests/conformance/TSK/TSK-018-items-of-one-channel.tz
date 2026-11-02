@@ -1,0 +1,14 @@
+let values: Channel<i64> = Channel.make 0
+let out = Channel.share values
+tzroutine {
+    for i in 1 ..= 5 do
+        Channel.send out (i as i64)
+    Channel.close out
+}
+let mut code = 0i64
+for value in values do
+    code = code * 10 + value
+code
+
+// rule: TSK-018
+// expect: stdout "12345\n"

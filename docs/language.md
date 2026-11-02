@@ -373,9 +373,9 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 
 `Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -2663,7 +2663,7 @@ POSIX または Windows 以外の未対応プラットフォームに対する�
 - **終了の待ち**: 実行ファイルの `main`（トップレベルのコード、`def main`、IO の入口）、`export def` の 1 回の呼び出し、`tsuzuri test` の 1 件、`tsuzuri bench` の 1 回の計測は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。待つのは本体が戻った直後で、トップレベルの最後の式の値はその前に計算され、待った後に表示されます。全員が待ちに入れば、ランタイムが `Tsuzuri runtime: all tzroutines are asleep - deadlock! (<n> waiting: <理由>, ...)` を書いてトラップします。
 - **`Routine`**: 組み込みのモジュール。`Routine.go :: own Owned.Function<unit, unit> -> unit`（所有する関数を新しい tzroutine で 1 回呼び、drop する）、`Routine.yield :: unit -> unit`、`Routine.count :: unit -> i64`（生きている tzroutine の数 + 1）、`Routine.max_procs :: unit -> i64`、`Routine.cpu_count :: unit -> i64`。
 - **実行**: ランタイムは `src/runtime/tzroutine.c` の M:N のスケジューラーです。P の数は `TSUZURI_MAXPROCS`（1〜256、既定はオンラインの CPU 数）、各 tzroutine のスタックの予約は `TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576、既定 1024）で、下端の 128 KiB がガードです。プリエンプションはなく、`extern` 関数とファイルの I/O はその間 OS スレッドを止めます。tzroutine を起動するプログラムは、すべての関数が大きな frame に stack probe を使います。
-- **ターゲット**: native の macOS・Linux・Windows（aarch64・x86-64）で動きます。WebAssembly は `E2000`（`option_requires_option`、`jspi` を付けても `option_conflict`）、`--wasm-feature threads`・`--freestanding` と、tzroutine を起動するプログラムの `--trap-mode return` も `E2000` です。`--emit llvm`・`header` は拒否しません。tzroutine を使わないプログラムの IR・オブジェクト・実行ファイルは変わりません。
+- **ターゲット**: native の macOS・Linux・Windows（aarch64・x86-64）で動きます。WebAssembly で tzroutine を起動するプログラムは `E2000`（`option_requires_option`、`jspi` を付けても `option_conflict`）です。起動しないプログラムの `Channel` と `Routine` の問い合わせ（`count`・`max_procs`・`cpu_count` は 1、`yield` は何もしない）は、既定の WebAssembly で 1 本の実行として動きます。`--wasm-feature threads`・`--freestanding` と、tzroutine を起動するプログラムの `--trap-mode return` も `E2000` です。`--emit llvm`・`header` は拒否しません。tzroutine を使わないプログラムの IR・オブジェクト・実行ファイルは変わりません。
 
 ## 非同期計算（Async）
 
@@ -3683,9 +3683,34 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - 循環: `Arc` は `Mutex` の中に入れられるので、`Arc<Node>` の中の `Mutex` が別の `Arc<Node>` を指す循環を作れます。サイクルコレクターはなく、循環のブロックは解放されません。循環の一方は `Arc.Weak` で持ちます（[Rc / Arc](#rc--arc)）。
 - ターゲット: `Mutex` は、ネイティブ、既定の wasm32、`--wasm-feature threads`（Worker 間で待ちます）で使え、`--freestanding` では `E2000` です。`Atomic` は、既定の wasm32、`--wasm-feature threads`、`--freestanding`、`--target wasm64`、`--allocator host`・`counting`・`small` で使えます。
 
+### Channel
+
+`Channel<'a>` は Go の `chan T` に当たる双方向のチャンネルです（TZ03、D-61）。予約モジュール `Channel` として、ソースに名前が現れたプログラムだけに読み込まれます（`DataChannel` も一緒に読み込まれます。旧の名前の `E1040` が置き換えの名前で検査を続けるため）。`Channel<'a>` は非 Copy の不透明な record（`{ block: i64 }`）で、`std/Channel.tz` が宣言し、最後のハンドルの drop でブロックを解放する `Drop` の instance（`Channel.__release`。std 専用で、利用者が呼ぶと `E1022`）も書きます。
+
+| API | 型 | 意味 |
+|---|---|---|
+| `Channel.make n` | `Send<'a> => i64 -> Channel<'a>` | 容量 `n` のチャンネル。0 はバッファなし。負はトラップ（assert）。`128 + n × 要素の大きさ` が `i64` に入らなければトラップ（allocation size） |
+| `Channel.send ch item` | `ref Channel<'a> -> 'a -> unit` | 受け手が待っていれば直接渡し、空きがあれば入れ、なければ待つ。閉じていれば（待つ間に閉じられても）`Tsuzuri runtime: send on closed Channel` を書いてトラップ |
+| `Channel.recv ch` | `ref Channel<'a> -> Maybe<'a>` | 要素があれば `Some`。空なら送り手か `close` を待つ。閉じて空なら `None` |
+| `Channel.try_send ch item` | `ref Channel<'a> -> 'a -> Result<unit, Channel.SendError<'a>>` | 待たない。入れられなければ `Error (Full item)`、閉じていれば `Error (Closed item)` |
+| `Channel.try_recv ch` | `ref Channel<'a> -> Channel.Received<'a>` | 待たない。`Item v`・`Empty`（開いていて空）・`Disconnected`（閉じて空） |
+| `Channel.close ch` | `ref Channel<'a> -> unit` | 閉じる。待っている受け手は `None`、送り手はトラップで起きる。2 回目は `Tsuzuri runtime: close of closed Channel` を書いてトラップ |
+| `Channel.length ch`・`Channel.capacity ch` | `ref Channel<'a> -> i64` | 入っている要素の数・容量 |
+| `Channel.share ch` | `ref Channel<'a> -> Channel<'a>` | 同じチャンネルのハンドルをもう 1 つ作る |
+
+- `union SendError<'a> = Full of 'a | Closed of 'a`、`union Received<'a> = Item of 'a | Empty | Disconnected`（1 つのモジュールの中で case の名前は一意なので、`try_recv` の「閉じて空」は `Disconnected`）。
+- 閉じるのは `close` だけです（drop では閉じない）。最後のハンドルの drop で、残っていた要素を 1 回ずつ drop して、ブロックを解放します。
+- 型: `make` は `Send<'a>` を求めます。要素の型が決まらない `Channel.make 0` は `E1015` です。`Channel<'a>` は `Send` かつ `Sync` で、`Capture` ではありません（関数値への捕捉は `E1005`）。構築・フィールド参照・パターン分解・更新構文は `E1022`、`export def`・`extern def` の境界は `E1008`、`const` は `E1026` です。
+- `for x in ch do body`: `ch` が `Channel<'a>` か `ref Channel<'a>` なら、型検査で `while true do match Channel.recv <ch> with | Maybe.Some $item -> (match $item with | x -> body) | Maybe.None -> break` に脱糖します。場所にある `ch` はループの間 1 つの共有借用として、一時の値はループの局所として持ち、`for` のあとも `ch` は使えます。`break`・`continue` は `for` のものです。
+- 要素と借用: `Channel.send`・`Channel.try_send` の要素は `DataChannel.send` と同じ規則で検査します（`E1013`、`channel_item_holds_borrow`。部分適用・関数値・pipe は `must_apply_directly` で、文は `Channel.send must be fully applied directly ...`・`Channel.try_send ...`）。受け取った要素と `try_send` が返した要素は借用を持ちません。
+- 待ち: 待つのは tzroutine（擬似 G を含む）だけです。誰も起こせない待ちは TZ01 の判定が `Tsuzuri runtime: all tzroutines are asleep - deadlock! (<n> waiting: Channel.recv, ...)` を書き、待ちの関数が状態 2 を返して、生成コードがその呼び出しの位置でトラップします。`Task.parallel`・`Task.scope`・`Parallel.*` の項目を走らせるスレッドも判定に入ります（呼び出しが項目を知らせ、未着手の項目があるうちは判定しない）。tzroutine を起動するか `Channel` を使うプログラムでは、`Mutex.with_lock` の中の待つ操作（`send`・`recv`・`for`）はトラップします。
+- ターゲット: native の macOS・Linux・Windows。既定の wasm32・wasm64 では、tzroutine を起動しないプログラムが 1 本の実行として使います（待つべき操作はトラップ、import なし）。`--wasm-feature threads` は `E2000`（`Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend`）、`--freestanding` も `E2000` です。
+- 向きのあるハンドル（TZ03 Phase 2）: `Channel.send_only :: ref Channel<'a> -> SendOnly<'a>`・`Channel.receive_only :: ref Channel<'a> -> ReceiveOnly<'a>` は同じブロックのハンドルを 1 つ増やします（`Channel` へは戻せない）。`SendOnly<'a>`（`std/SendOnly.tz`）の操作は `SendOnly.send`・`try_send`・`close`・`length`・`capacity`・`share`、`ReceiveOnly<'a>`（`std/ReceiveOnly.tz`）の操作は `ReceiveOnly.recv`・`try_recv`・`length`・`capacity`・`share` と `for x in handle` で、型と意味は `Channel` の同じ名前の関数と同じです。向きの違う操作は名前がない（`E1002`）か、型が違います（`E1003`）。3 つのモジュールは一緒に読み込まれます。
+- 旧の名前: `Channel.bounded`・`Channel.clone_sender`・型 `Channel.Sender`・`Channel.Receiver` は `E1040`（kind `renamed_to_data_channel`、`'Channel.bounded' is now 'DataChannel.bounded'`）で、確かな修正案（`tsuzuri fix`）を持ちます。名前の解決の後で、新しい `Channel` にも利用者の定義にも解決しないときだけです。`DataChannel.Sender`・`Receiver` を `Channel.send`・`Channel.recv` に渡した `E1003` も、`E1040`（`'Channel.send' of a DataChannel.Sender is now 'DataChannel.send'`）に置き換えます。どれも置き換えの名前で検査を続けるので、1 回の解析がすべての旧の名前を見つけます。
+
 ### DataChannel
 
-`DataChannel` は、容量の決まった MPMC のキューです（F10 Phase 2）。予約モジュール `DataChannel` として、ソースに名前が現れたプログラムだけに読み込まれます。`DataChannel.Sender<'a>` と `DataChannel.Receiver<'a>` は、どちらも非 Copy の不透明な record（`{ block: i64 }`）で、`std/DataChannel.tz` が宣言し、drop でチャンネルを閉じる `Drop` の instance も書きます（std のモジュールが自分で宣言した型にだけ、std が `Drop` の instance を書けます。利用者が std の型に書くことは `E1016` のままです）。
+`DataChannel` は、容量の決まった MPMC のキューです（F10 Phase 2。TZ03 より前の名前は `Channel`）。予約モジュール `DataChannel` として、ソースに名前が現れたプログラムだけに読み込まれます。`DataChannel.Sender<'a>` と `DataChannel.Receiver<'a>` は、どちらも非 Copy の不透明な record（`{ block: i64 }`）で、`std/DataChannel.tz` が宣言し、drop でチャンネルを閉じる `Drop` の instance も書きます（std のモジュールが自分で宣言した型にだけ、std が `Drop` の instance を書けます。利用者が std の型に書くことは `E1016` のままです）。
 
 | API | 型 | 意味 |
 |---|---|---|
@@ -4974,6 +4999,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1037` | `@trusted` の置き場と性質の誤り |
 | `E1038` | `Domain.run` の使い方の誤り（直接呼んでいない・引数がラムダでも `pure def` の名前でもない・平たいデータでない捕捉・純粋でない本体・平たいデータでない結果・領域を持てないビルド） |
 | `E1039` | 浮動小数点の数を含む型への `Monoid` の制約（`Parallel.fold` が `Array.fold_monoid` と違いうる） |
+| `E1040` | 消えた・改名された名前（`renamed_to_data_channel`: 旧 `Channel.bounded` などは `DataChannel` の名前）。確かな修正案を持つ |
 | `E1025` | 自動導出（deriving）がサポートされていない型クラスまたは要素型、停止しない再帰的 `Default` 定義 |
 | `E1026` | コンパイル時定数評価（`const` の初期化式と `const def` の本体）におけるトラップ発生、循環参照、計算ステップ上限超過、未対応の定数式、`const def` の署名・本体の規則違反、静的データの合計が 4 MiB を超える定数 |
 | `W1001` | 未使用のローカル変数、引数、またはパターン束縛変数（警告） |

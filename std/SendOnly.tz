@@ -1,0 +1,8 @@
+/// A handle of a Channel that can only send (TZ03 Phase 2, Go's `chan<- T`): `Channel.send_only`
+/// makes one from a channel, and `SendOnly.send`, `try_send` and `close` act on the same channel.
+/// It cannot receive, and no function turns it back into a Channel. Dropping it releases its share
+/// of the channel; it does not close the channel.
+record SendOnly<'a> { block: i64 }
+instance Drop<SendOnly<'a>> {
+    fn drop handle = SendOnly.__release handle
+}

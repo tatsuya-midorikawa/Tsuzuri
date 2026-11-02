@@ -4955,7 +4955,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 // Every use of a builtin calls its `$builtin` wrapper.
                 TypedExprKind::Function(FunctionRef::User(id)) => {
                     let function = &module.functions[*id];
-                    function.module == "$builtin" && function.name.starts_with("Channel.")
+                    function.module == "$builtin"
+                        && ["Channel.", "SendOnly.", "ReceiveOnly."]
+                            .iter()
+                            .any(|module| function.name.starts_with(module))
                 }
                 _ => false,
             };

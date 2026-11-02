@@ -22,6 +22,8 @@
 
 `Routine.go` で起動した tzroutine も、`tzroutine { }` と同じく、それを起動した境界（`main`・`export` の呼び出し・`test`・`bench`）が終わりを待ちます。
 
+既定の WebAssembly では、tzroutine を起動しないプログラムの `Routine.count ()`・`Routine.max_procs ()`・`Routine.cpu_count ()` は 1 で、`Routine.yield ()` は何もしません（1 本の実行）。`Routine.go` を含むプログラムは `E2000` です。
+
 ## 使い方
 
 `Routine.yield` は、待っているほかの tzroutine に実行を譲ります。子の完了を数えて待つときに使います。
