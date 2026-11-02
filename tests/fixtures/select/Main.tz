@@ -170,6 +170,20 @@ fn in_loop =
         | recv x from values -> match x with | Maybe.Some v -> sum = sum + v | Maybe.None -> ()
     sum + Channel.length values
 
+// An item type that only a borrowed channel names still has a definition for its slot.
+record Boxed<'a> { value: 'a }
+
+def drain_boxed :: ref Channel<Boxed<i64>> -> i64
+fn drain_boxed ch =
+    select
+    | recv _ from ch -> 1
+    | default -> 0
+
+export def generic_items :: i64
+fn generic_items =
+    let ch: Channel<Boxed<i64>> = Channel.make 1
+    drain_boxed (ref ch) + 7
+
 // A jump out of an arm's expression drops the values of the sends before it, once: two tokens of
 // the first round, which no full channel takes, and the first token of the round that breaks.
 export def jump_drops :: i64

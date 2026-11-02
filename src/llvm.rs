@@ -4225,6 +4225,10 @@ fn named_types(module: &CheckedModule, emitted: &[bool]) -> BTreeSet<Type> {
                 captures,
                 ..
             } => parameters.iter().chain(captures).for_each(local),
+            // An arm's item has a slot, also when its type is only in a borrowed channel (TZ04).
+            TypedExprKind::SelectWait(wait) => {
+                wait.arms.iter().for_each(|arm| visit(&arm.item, pending))
+            }
             _ => {}
         }
         for child in expression.children() {

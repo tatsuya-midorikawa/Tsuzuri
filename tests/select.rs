@@ -290,3 +290,26 @@ fn a_dropped_receive_runs_its_drop() {
         "effect_alloc_in_no_alloc",
     );
 }
+
+#[test]
+fn a_closed_send_traps_after_the_arms_settle() {
+    // The values of the sends that were not chosen are dropped before a chosen send to a closed
+    // channel traps, whatever the order of the arms: one trap, after every drop.
+    let module = accepts(
+        "record Token { id: i64 }\ninstance Drop<Token> {\n    fn drop _token = ()\n}\n\nlet closed: Channel<Token> = Channel.make 1\nChannel.close closed\nlet full: Channel<Token> = Channel.make 0\nselect\n| send Token { id: 1 } to closed -> 1\n| send Token { id: 2 } to full -> 2\n| default -> 0\n",
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    let lines: Vec<&str> = ir.lines().collect();
+    let reports: Vec<usize> = (0..lines.len())
+        .filter(|&at| lines[at].contains("call void @tsuzuri_tz_report(i32 1)"))
+        .collect();
+    assert_eq!(reports.len(), 1, "{ir}");
+    let wait = lines
+        .iter()
+        .position(|line| line.contains("call i64 @tsuzuri_tz_select("))
+        .unwrap();
+    let drops = (wait..reports[0])
+        .filter(|&at| lines[at].contains("call ") && lines[at].contains(".drop("))
+        .count();
+    assert!(drops >= 2, "both values settle before the trap\n{ir}");
+}

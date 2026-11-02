@@ -2551,6 +2551,7 @@ const suites = {
       ["same_channel_twice", [], 90n],
       ["in_loop", [], 49999n * 50000n],
       ["jump_drops", [], 3n],
+      ["generic_items", [], 7n],
     ],
     traps: [["send_closed", []], ["no_arm", []]],
     inspect(ir) {

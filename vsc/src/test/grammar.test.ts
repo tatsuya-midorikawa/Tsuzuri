@@ -132,6 +132,31 @@ test('a builder alias is an attribute and a module-like name', async () => {
 	} finally { registry.dispose(); }
 });
 
+test('a select arm keeps the tokens of its value', async () => {
+	const { grammar, registry } = await loadGrammar();
+	try {
+		const scopesAt = (line: string, text: string) => {
+			const start = line.indexOf(text);
+			const token = grammar.tokenizeLine(line, INITIAL).tokens.find(candidate => candidate.startIndex <= start && start < candidate.endIndex);
+			assert.ok(token, `${line}: ${text}`);
+			return token.scopes;
+		};
+		const send = '    | send "hello to world" to ch -> ()';
+		assert.ok(scopesAt(send, 'send').includes('keyword.control.tsuzuri'));
+		assert.ok(scopesAt(send, '"hello').includes('string.quoted.double.tsuzuri'));
+		assert.ok(scopesAt(send, 'world"').includes('string.quoted.double.tsuzuri'));
+		assert.ok(scopesAt(send, 'to ch').includes('keyword.control.tsuzuri'));
+		// The line after the arm is not inside a string.
+		const after = grammar.tokenizeLine('let x = 1', grammar.tokenizeLine(send, INITIAL).ruleStack);
+		assert.ok(!after.tokens.some(token => token.scopes.includes('string.quoted.double.tsuzuri')));
+		const recv = '    | recv item from jobs when ready -> item';
+		assert.ok(scopesAt(recv, 'recv').includes('keyword.control.tsuzuri'));
+		assert.ok(scopesAt(recv, 'from').includes('keyword.control.tsuzuri'));
+		assert.ok(!scopesAt(recv, 'item').includes('keyword.control.tsuzuri'));
+		assert.ok(scopesAt('    | default -> 0', 'default').includes('keyword.control.tsuzuri'));
+	} finally { registry.dispose(); }
+});
+
 async function loadGrammar() {
 	const root = path.resolve(__dirname, '../..');
 	oniguruma ??= readFile(require.resolve('vscode-oniguruma/release/onig.wasm')).then(data => loadWASM(data));

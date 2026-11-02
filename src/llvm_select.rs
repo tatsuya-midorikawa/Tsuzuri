@@ -213,6 +213,10 @@ impl FunctionEmitter<'_, '_> {
             self.instruction(format!("call void @tz.free(ptr {numbers})"));
         }
         let status = self.value(format!("load i32, ptr {ok}"));
+        // The arms that were not chosen settle first: their send values and what `recv _` got
+        // are dropped, whatever the order of the arms, before a chosen send to a closed channel
+        // traps (TSK-022).
+        let mut chosen_send: Option<String> = None;
         for (position, arm) in wait.arms.iter().enumerate() {
             let this = self.value(format!("icmp eq i64 {chosen}, {}", arm.arm));
             if let Some(flag) = &sent[position] {
@@ -221,25 +225,31 @@ impl FunctionEmitter<'_, '_> {
                 let other = self.value(format!("xor i1 {this}, true"));
                 let drop = self.value(format!("and i1 {filled}, {other}"));
                 self.select_drop_if(&drop, &arm.item, &slots[position]);
-                // A chosen send to a closed channel traps, as Channel.send does.
-                let closed = self.value(format!("icmp eq i32 {status}, 0"));
-                let failed = self.value(format!("and i1 {this}, {closed}"));
-                let tell = self.label();
-                let fine = self.label();
-                self.branch(&failed, &tell, &fine);
-                self.begin(&tell);
-                self.intrinsics
-                    .insert("declare void @tsuzuri_tz_report(i32)".into());
-                self.instruction("call void @tsuzuri_tz_report(i32 1)");
-                self.emit_trap(TrapKind::Assert);
-                self.instruction("unreachable");
-                self.begin(&fine);
+                chosen_send = Some(match chosen_send {
+                    Some(previous) => self.value(format!("or i1 {previous}, {this}")),
+                    None => this,
+                });
             } else if arm.field.is_none() {
                 // `recv _`: what came is dropped before the body.
                 let got = self.value(format!("icmp eq i32 {status}, 1"));
                 let drop = self.value(format!("and i1 {this}, {got}"));
                 self.select_drop_if(&drop, &arm.item, &slots[position]);
             }
+        }
+        if let Some(chosen_send) = chosen_send {
+            // A chosen send to a closed channel traps, as Channel.send does.
+            let closed = self.value(format!("icmp eq i32 {status}, 0"));
+            let failed = self.value(format!("and i1 {chosen_send}, {closed}"));
+            let tell = self.label();
+            let fine = self.label();
+            self.branch(&failed, &tell, &fine);
+            self.begin(&tell);
+            self.intrinsics
+                .insert("declare void @tsuzuri_tz_report(i32)".into());
+            self.instruction("call void @tsuzuri_tz_report(i32 1)");
+            self.emit_trap(TrapKind::Assert);
+            self.instruction("unreachable");
+            self.begin(&fine);
         }
         (chosen, status, slots)
     }
