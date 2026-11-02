@@ -58,7 +58,17 @@ fn names_the_data_channel_names() {
             "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'",
             "DataChannel.recv",
         ),
-        // The name in parentheses, and after `|>`.
+        // The name with spaces in it, in parentheses, and after `|>`.
+        (
+            "def f :: own DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match Channel . recv (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n",
+            "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'",
+            "DataChannel . recv",
+        ),
+        (
+            "def f :: ref DataChannel.Sender<i64> -> i64\nfn f sender =\n    match Channel. send sender 1 with\n    | Result.Ok _ -> 1\n    | Result.Error _ -> 0\n\n0\n",
+            "'Channel.send' of a DataChannel.Sender is now 'DataChannel.send'",
+            "DataChannel. send",
+        ),
         (
             "def f :: own DataChannel.Receiver<i64> -> i64\nfn f receiver =\n    match (Channel.recv) (ref receiver) with\n    | Maybe.Some v -> v\n    | Maybe.None -> 0\n\n0\n",
             "'Channel.recv' of a DataChannel.Receiver is now 'DataChannel.recv'",
