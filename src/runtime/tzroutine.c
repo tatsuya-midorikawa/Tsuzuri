@@ -72,7 +72,13 @@ static void tzr_fatal(const char *message);
 #define TZR_RUNQ 256
 #define TZR_GUARD (128u * 1024u)
 #define TZR_DEFAULT_STACK (1024u * 1024u)
+#if defined(_WIN32)
+/* A fiber's committed stack cannot be given back (tzr_stack_trim is a no-op), so the global cache of
+ * finished Gs stays small there. */
+#define TZR_STACK_CACHE 64
+#else
 #define TZR_STACK_CACHE 1024
+#endif
 #define TZR_P_GFREE 64
 #define TZR_RUNNEXT_TURNS 61 /* takes from runnext in a row before the local ring gets a turn */
 
@@ -474,8 +480,9 @@ static TZR_NOINLINE tzr_g *tzr_current(void) {
 
 #if !defined(_WIN32)
 /* A stack is one private mapping: TZR_GUARD bytes of PROT_NONE at the low end, then stack_size
- * usable bytes. The OS commits pages only when they are touched. The guard is larger than the
- * largest frame the compiler allows (MAX_FRAME_BYTES = 64 KiB), so no frame can jump over it. */
+ * usable bytes. The OS commits pages only when they are touched. A frame can be larger than the
+ * guard, so the compiler builds the code of a program that spawns with stack probes (TZ02): a
+ * frame touches the guard instead of jumping over it. */
 static char *tzr_stack_map(size_t size) {
     size_t total = TZR_GUARD + size;
     void *map = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -775,6 +782,9 @@ static void tzr_checkdead(void) {
     }
     tzr_lock_release(&tzr_pseudo_lock);
     if (!woke) __builtin_trap();
+    /* The woken pseudo-Gs run now; a host that handles the status may wait again, and a later
+     * deadlock must be found again. */
+    tzr_sched.deadlocked = 0;
 }
 
 /* ---------------------------------------------------------------- scheduling */
@@ -838,11 +848,11 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
         }
         tzr_pidleput(p);
         m->p = NULL;
-        tzr_mutex_unlock(&tzr_sched.lock);
-        if (m->spinning) {
+        if (m->spinning) { /* before the P can be seen idle */
             m->spinning = 0;
             atomic_fetch_sub(&tzr_sched.nmspinning, 1);
         }
+        tzr_mutex_unlock(&tzr_sched.lock);
         /* A G may have been queued after our last look: before nmspinning dropped, or by the last
          * spinner, which looked for an idle P before this one was published. Look again, spinning
          * or not, or nobody would wake for it. */
@@ -1045,7 +1055,9 @@ static int tzr_park(void (*unlock)(void *), void *arg, const char *reason) {
         tzr_checkdead();
         tzr_mutex_unlock(&tzr_sched.lock);
         tzr_note_sleep(&g->note);
-        return g->doomed;
+        int doomed = g->doomed;
+        g->doomed = 0; /* observed: the next wait starts afresh */
+        return doomed;
     }
     tzr_m *m = tzr_this_m();
     atomic_store(&g->status, TZR_G_WAITING);
@@ -1084,6 +1096,19 @@ static void tzr_ready(tzr_g *g) {
         tzr_mutex_unlock(&tzr_sched.lock);
     }
     tzr_wakep();
+}
+
+/* Wakes g, which a waker took out of a queue that `lock` guards, and releases the lock. A pseudo-G
+ * is woken with the lock still held (R3 allows it): one that the deadlock detector woke meanwhile
+ * takes the lock to cancel its wait, and so cannot go on before this wake, which is then a no-op. */
+static void tzr_ready_unlock(tzr_g *g, tzr_lock *lock) {
+    if (g->kind == TZR_KIND_THREAD) {
+        tzr_ready(g);
+        tzr_lock_release(lock);
+    } else {
+        tzr_lock_release(lock);
+        tzr_ready(g);
+    }
 }
 
 static void tzr_after_yield(tzr_m *m, tzr_g *g) {
@@ -1158,8 +1183,8 @@ static void tzr_after_exit(tzr_m *m, tzr_g *g) {
         waiter = scope->waiter;
         scope->waiter = NULL;
     }
-    tzr_lock_release(&scope->lock);
-    if (waiter) tzr_ready(waiter);
+    if (waiter) tzr_ready_unlock(waiter, &scope->lock);
+    else tzr_lock_release(&scope->lock);
 }
 
 #if defined(_WIN32)
@@ -1294,10 +1319,18 @@ TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
             tzr_lock_release(&scope->lock);
             break;
         }
-        scope->waiter = tzr_current();
+        tzr_g *g = tzr_current();
+        scope->waiter = g;
         if (tzr_park(tzr_unlock_scope, scope, "end of scope (waiting for tzroutines)")) {
-            doomed = 1;
-            break;
+            /* the detector woke it: cancel the wait, unless the last tzroutine ended meanwhile */
+            tzr_lock_acquire(&scope->lock);
+            if (scope->waiter == g) scope->waiter = NULL;
+            int ended = scope->live == 0;
+            tzr_lock_release(&scope->lock);
+            if (!ended) {
+                doomed = 1;
+                break;
+            }
         }
     }
     tzr_current()->spawn_scope = scope->outer;
@@ -1338,6 +1371,20 @@ static struct {
 static size_t tzr_bucket(void *addr) { return ((uintptr_t)addr >> 3) % TZR_BUCKETS; }
 static void tzr_unlock_bucket(void *arg) { tzr_lock_release(&tzr_buckets[(size_t)(uintptr_t)arg].lock); }
 
+/* Takes `target` out of bucket b, if it is there (the bucket locked). */
+static int tzr_bucket_unlink(size_t b, tzr_waiter *target) {
+    tzr_waiter *last = NULL;
+    for (tzr_waiter **link = &tzr_buckets[b].first; *link; link = &(*link)->next) {
+        if (*link == target) {
+            *link = target->next;
+            if (*link == NULL) tzr_buckets[b].last = last;
+            return 1;
+        }
+        last = *link;
+    }
+    return 0;
+}
+
 /* Returns 1 for a doomed pseudo-G (deadlock). */
 static int tzr_addr_wait(_Atomic uint64_t *addr, uint64_t expected, const char *reason) {
     size_t b = tzr_bucket((void *)addr);
@@ -1350,7 +1397,13 @@ static int tzr_addr_wait(_Atomic uint64_t *addr, uint64_t expected, const char *
     if (tzr_buckets[b].last) tzr_buckets[b].last->next = &w;
     else tzr_buckets[b].first = &w;
     tzr_buckets[b].last = &w;
-    return tzr_park(tzr_unlock_bucket, (void *)(uintptr_t)b, reason);
+    if (!tzr_park(tzr_unlock_bucket, (void *)(uintptr_t)b, reason)) return 0;
+    /* The detector woke it: cancel the wait, unless a waker took it first (that wake happened with
+     * the bucket locked, so it is over, and the wait ended normally). */
+    tzr_lock_acquire(&tzr_buckets[b].lock);
+    int queued = tzr_bucket_unlink(b, &w);
+    tzr_lock_release(&tzr_buckets[b].lock);
+    return queued;
 }
 
 /* Wakes up to n waiters of addr (all of them when n < 0) with the bucket locked (R3 allows it), so
@@ -1384,11 +1437,13 @@ TZR_API int32_t tsuzuri_tz_addr_wait(_Atomic uint64_t *addr, uint64_t expected) 
 }
 
 TZR_API int64_t tsuzuri_tz_addr_wake(_Atomic uint64_t *addr, int64_t n) {
+    (void)tzr_current(); /* a host thread counts as running while it wakes (the detector) */
     return tzr_addr_wake(addr, n < 0 ? -1 : n);
 }
 
 /* Mutex: the word is 0 free, 1 held, 2 held with waiters (Drepper's three states). */
 TZR_API int32_t tsuzuri_tz_mutex_lock(_Atomic uint64_t *word) {
+    (void)tzr_current(); /* a host thread that holds the lock counts as running (the detector) */
     uint64_t c = 0;
     if (atomic_compare_exchange_strong_explicit(word, &c, 1, memory_order_acquire, memory_order_relaxed)) return 0;
     for (int spin = 0; spin < 32; spin++) {
@@ -1402,11 +1457,13 @@ TZR_API int32_t tsuzuri_tz_mutex_lock(_Atomic uint64_t *word) {
 }
 
 TZR_API void tsuzuri_tz_mutex_unlock(_Atomic uint64_t *word) {
+    (void)tzr_current();
     if (atomic_exchange_explicit(word, 0, memory_order_release) == 2) tzr_addr_wake(word, 1);
 }
 
 /* WaitGroup: the word is the counter. */
 TZR_API int32_t tsuzuri_tz_waitgroup_add(_Atomic uint64_t *word, int64_t delta) {
+    (void)tzr_current();
     /* Unsigned arithmetic: a counter outside [0, INT64_MAX] is an error, not an overflow. */
     uint64_t v = atomic_fetch_add(word, (uint64_t)delta) + (uint64_t)delta;
     if (v > (uint64_t)INT64_MAX) return 1; /* the generated code traps: negative WaitGroup counter */
@@ -1415,6 +1472,7 @@ TZR_API int32_t tsuzuri_tz_waitgroup_add(_Atomic uint64_t *word, int64_t delta) 
 }
 
 TZR_API int32_t tsuzuri_tz_waitgroup_wait(_Atomic uint64_t *word) {
+    (void)tzr_current();
     for (;;) {
         uint64_t v = atomic_load(word);
         if (v == 0) return 0;
@@ -1659,9 +1717,20 @@ static void tzr_recv_from(tzr_chan *c, tzr_sudog *s, void *out) {
     s->g->param = s;
 }
 
+/* After the detector woke a waiting pseudo-G: takes its sudog out of q and returns 1, or returns 0
+ * when a waker took it first (that wake happened with the channel locked: the operation is done). */
+static int tzr_cancel(tzr_chan *c, tzr_waitq *q, tzr_sudog *s) {
+    tzr_lock_acquire(&c->lock);
+    int queued = s->prev != NULL || q->first == s;
+    if (queued) tzr_unlink(q, s);
+    tzr_lock_release(&c->lock);
+    return queued;
+}
+
 /* block = 0 is try_send. Returns TZR_OK, TZR_CLOSED (the generated code traps for send),
  * TZR_WOULD_BLOCK (try only) or TZR_DEADLOCK. */
 TZR_API int32_t tsuzuri_tz_chan_send(tzr_chan *c, const void *elem, int32_t block) {
+    (void)tzr_current(); /* a host thread counts as running while it hands over (the detector) */
     tzr_lock_acquire(&c->lock);
     if (c->closed) {
         tzr_lock_release(&c->lock);
@@ -1670,8 +1739,7 @@ TZR_API int32_t tsuzuri_tz_chan_send(tzr_chan *c, const void *elem, int32_t bloc
     tzr_sudog *s = tzr_dequeue(&c->recvq);
     if (s) {
         tzr_send_to(c, s, elem);
-        tzr_lock_release(&c->lock);
-        tzr_ready(s->g);
+        tzr_ready_unlock(s->g, &c->lock);
         return TZR_OK;
     }
     if (c->count < c->capacity) {
@@ -1688,18 +1756,18 @@ TZR_API int32_t tsuzuri_tz_chan_send(tzr_chan *c, const void *elem, int32_t bloc
     tzr_sudog me = {.g = tzr_current(), .elem = (void *)elem, .c = c};
     me.g->param = NULL;
     tzr_enqueue(&c->sendq, &me);
-    if (tzr_park(tzr_unlock_chan, c, "Channel.send")) return TZR_DEADLOCK;
+    if (tzr_park(tzr_unlock_chan, c, "Channel.send") && tzr_cancel(c, &c->sendq, &me)) return TZR_DEADLOCK;
     return me.success ? TZR_OK : TZR_CLOSED;
 }
 
 /* Returns TZR_OK (out holds the item), TZR_CLOSED (closed and empty), TZR_WOULD_BLOCK or TZR_DEADLOCK. */
 TZR_API int32_t tsuzuri_tz_chan_recv(tzr_chan *c, void *out, int32_t block) {
+    (void)tzr_current();
     tzr_lock_acquire(&c->lock);
     tzr_sudog *s = tzr_dequeue(&c->sendq);
     if (s) {
         tzr_recv_from(c, s, out);
-        tzr_lock_release(&c->lock);
-        tzr_ready(s->g);
+        tzr_ready_unlock(s->g, &c->lock);
         return TZR_OK;
     }
     if (c->count > 0) {
@@ -1720,36 +1788,30 @@ TZR_API int32_t tsuzuri_tz_chan_recv(tzr_chan *c, void *out, int32_t block) {
     tzr_sudog me = {.g = tzr_current(), .elem = out, .c = c};
     me.g->param = NULL;
     tzr_enqueue(&c->recvq, &me);
-    if (tzr_park(tzr_unlock_chan, c, "Channel.recv")) return TZR_DEADLOCK;
+    if (tzr_park(tzr_unlock_chan, c, "Channel.recv") && tzr_cancel(c, &c->recvq, &me)) return TZR_DEADLOCK;
     return me.success ? TZR_OK : TZR_CLOSED;
 }
 
 /* Returns TZR_OK, or TZR_CLOSED when it was closed already (the generated code traps). */
 TZR_API int32_t tsuzuri_tz_chan_close(tzr_chan *c) {
-    tzr_g *wake[64];
-    int n = 0;
+    (void)tzr_current();
     tzr_lock_acquire(&c->lock);
     if (c->closed) {
         tzr_lock_release(&c->lock);
         return TZR_CLOSED;
     }
     c->closed = 1;
+    /* Every waiter wakes with the lock held (R3 allows it; see tzr_ready_unlock). A sudog is on its
+     * waiter's stack, so it is not read after the wake. */
     for (;;) {
-        while (n < 64) {
-            tzr_sudog *s = tzr_dequeue(&c->recvq);
-            if (s == NULL) s = tzr_dequeue(&c->sendq);
-            if (s == NULL) break;
-            s->success = 0;
-            s->g->param = s;
-            wake[n++] = s->g;
-        }
-        if (n < 64) break;
-        /* more than 64 waiters: wake this batch with the lock held (R3 allows it) and go on */
-        for (int i = 0; i < n; i++) tzr_ready(wake[i]);
-        n = 0;
+        tzr_sudog *s = tzr_dequeue(&c->recvq);
+        if (s == NULL) s = tzr_dequeue(&c->sendq);
+        if (s == NULL) break;
+        s->success = 0;
+        s->g->param = s;
+        tzr_ready(s->g);
     }
     tzr_lock_release(&c->lock);
-    for (int i = 0; i < n; i++) tzr_ready(wake[i]);
     return TZR_OK;
 }
 
@@ -1797,6 +1859,17 @@ static void tzr_selunlock(tzr_scase *cases, uint16_t *lockorder, int64_t n) {
         tzr_chan *c = cases[lockorder[i]].c;
         if (i > 0 && cases[lockorder[i - 1]].c == c) continue;
         tzr_lock_release(&c->lock);
+    }
+}
+
+/* tzr_ready_unlock for the locks of a select. */
+static void tzr_ready_selunlock(tzr_g *g, tzr_scase *cases, uint16_t *lockorder, int64_t n) {
+    if (g->kind == TZR_KIND_THREAD) {
+        tzr_ready(g);
+        tzr_selunlock(cases, lockorder, n);
+    } else {
+        tzr_selunlock(cases, lockorder, n);
+        tzr_ready(g);
     }
 }
 
@@ -1880,8 +1953,7 @@ static int64_t tzr_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *o
             tzr_sudog *s = tzr_dequeue(&c->recvq);
             if (s) {
                 tzr_send_to(c, s, cs->elem);
-                tzr_selunlock(cases, lockorder, n);
-                tzr_ready(s->g);
+                tzr_ready_selunlock(s->g, cases, lockorder, n);
                 *ok = 1;
                 return i;
             }
@@ -1897,8 +1969,7 @@ static int64_t tzr_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *o
             tzr_sudog *s = tzr_dequeue(&c->sendq);
             if (s) {
                 tzr_recv_from(c, s, cs->elem);
-                tzr_selunlock(cases, lockorder, n);
-                tzr_ready(s->g);
+                tzr_ready_selunlock(s->g, cases, lockorder, n);
                 *ok = 1;
                 return i;
             }
@@ -1931,10 +2002,15 @@ static int64_t tzr_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *o
     }
     tzr_selock arg = {cases, lockorder, n};
     if (tzr_park(tzr_selunlock_arg, &arg, "select")) {
+        /* The detector woke it: cancel every case, unless a waker chose one first (with its channel
+         * locked, so that wake is over and pass 3 below finishes the select normally). */
         tzr_sellock(cases, lockorder, n);
-        for (int64_t i = 0; i < n; i++) tzr_unlink(cases[i].send ? &cases[i].c->sendq : &cases[i].c->recvq, &cases[i].sudog);
+        if (g->param == NULL) {
+            for (int64_t i = 0; i < n; i++) tzr_unlink(cases[i].send ? &cases[i].c->sendq : &cases[i].c->recvq, &cases[i].sudog);
+            tzr_selunlock(cases, lockorder, n);
+            return -2;
+        }
         tzr_selunlock(cases, lockorder, n);
-        return -2;
     }
     /* pass 3: the waker set g->param to the winning sudog; leave the other queues */
     tzr_sellock(cases, lockorder, n);

@@ -658,6 +658,28 @@ static void big_select_body(void) {
     tsuzuri_tz_go(big_select_routine, NULL);
     join(scope);
 }
+/* A host thread that handles a deadlock status (as --trap-mode return lets it) can wait again: the
+ * verdict is retired, its wait records are gone, and a later deadlock is found again. */
+static void recover_body(void) {
+    start_watchdog();
+    tzr_chan *c = chan_make(8, 0);
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_DEADLOCK);
+    CHECK(c->recvq.first == NULL); /* the record of the wait is not left in the queue */
+    CHECK(tsuzuri_tz_chan_send(c, &v, 1) == TZR_DEADLOCK);
+    CHECK(c->sendq.first == NULL);
+    static _Atomic uint64_t word = 1;
+    CHECK(tsuzuri_tz_addr_wait(&word, 1) == 2);
+    CHECK(queued_waiters((void *)&word) == 0);
+    CHECK(tsuzuri_tz_addr_wake(&word, -1) == 0);
+    /* and an ordinary wait still works */
+    tzr_chan *buffered = chan_make(8, 1);
+    v = 7;
+    CHECK(tsuzuri_tz_chan_send(buffered, &v, 1) == TZR_OK);
+    CHECK(tsuzuri_tz_chan_recv(buffered, &v, 1) == TZR_OK && v == 7);
+    CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    _exit(46);
+}
 static void test_detector(void) {
     int s = run_child("child-exit-deadlock");
     CHECK(exited_with(s, 44));
@@ -665,6 +687,8 @@ static void test_detector(void) {
         s = run_child("child-timer-deadlock");
         CHECK(exited_with(s, 45));
     }
+    s = run_child("child-recover");
+    CHECK(exited_with(s, 46));
     s = run_child_with("child-big-select", "64"); /* 64 KiB stacks */
     CHECK(exited_with(s, 0));
     printf("detector and large select: ok\n");
@@ -752,6 +776,7 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-overflow") == 0) overflow_body();
     if (only && strcmp(only, "child-exit-deadlock") == 0) exit_deadlock_body();
     if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
+    if (only && strcmp(only, "child-recover") == 0) recover_body();
     if (only && strcmp(only, "child-big-select") == 0) { big_select_body(); return 0; }
     if (only && strcmp(only, "child-deep-100") == 0) { stack_body(100); return 0; }
     if (only && strcmp(only, "child-deep-900") == 0) { stack_body(900); return 0; }
