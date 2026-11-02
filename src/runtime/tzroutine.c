@@ -74,6 +74,7 @@ static void tzr_fatal(const char *message);
 #define TZR_DEFAULT_STACK (1024u * 1024u)
 #define TZR_STACK_CACHE 1024
 #define TZR_P_GFREE 64
+#define TZR_RUNNEXT_TURNS 61 /* takes from runnext in a row before the local ring gets a turn */
 
 /* ---------------------------------------------------------------- failure */
 
@@ -390,6 +391,7 @@ struct tzr_p {
     _Atomic(tzr_g *) runnext;
     tzr_p *link;
     uint32_t schedtick;
+    uint32_t runnext_streak; /* owner only: tzr_runqget's takes from runnext in a row */
     tzr_g *gfree;
     int gfree_count;
 };
@@ -558,17 +560,30 @@ static void tzr_runqput(tzr_p *p, tzr_g *g, int next) {
     tzr_runqput_slow(p, g, head, tail);
 }
 
-static tzr_g *tzr_runqget(tzr_p *p) {
+static tzr_g *tzr_runnext_take(tzr_p *p) {
     tzr_g *next = atomic_load_explicit(&p->runnext, memory_order_relaxed);
     if (next != NULL && atomic_compare_exchange_strong_explicit(&p->runnext, &next, NULL, memory_order_acq_rel, memory_order_relaxed))
         return next;
+    return NULL;
+}
+
+/* runnext first, but after TZR_RUNNEXT_TURNS takes in a row the ring goes first once: two routines
+ * that keep waking each other into runnext (a rendezvous on one P) cannot starve the ring. */
+static tzr_g *tzr_runqget(tzr_p *p) {
+    tzr_g *next;
+    if (p->runnext_streak < TZR_RUNNEXT_TURNS && (next = tzr_runnext_take(p))) {
+        p->runnext_streak++;
+        return next;
+    }
+    p->runnext_streak = 0;
     for (;;) {
         uint32_t head = atomic_load_explicit(&p->head, memory_order_acquire);
         uint32_t tail = atomic_load_explicit(&p->tail, memory_order_relaxed);
-        if (tail == head) return NULL;
+        if (tail == head) break;
         tzr_g *g = atomic_load_explicit(&p->runq[head % TZR_RUNQ], memory_order_relaxed);
         if (atomic_compare_exchange_weak_explicit(&p->head, &head, head + 1, memory_order_acq_rel, memory_order_relaxed)) return g;
     }
+    return tzr_runnext_take(p); /* the ring was empty */
 }
 
 static int tzr_runq_empty(tzr_p *p) {
@@ -827,23 +842,24 @@ static tzr_g *tzr_findrunnable(tzr_m *m) {
         if (m->spinning) {
             m->spinning = 0;
             atomic_fetch_sub(&tzr_sched.nmspinning, 1);
-            /* A G may have been queued after our last look and before nmspinning dropped: look
-             * again, or nobody would wake for it. */
-            for (int i = 0; i < tzr_sched.nprocs; i++) {
-                if (!tzr_runq_empty(tzr_sched.allp[i]) || atomic_load(&tzr_sched.runq_size) > 0) {
-                    tzr_mutex_lock(&tzr_sched.lock);
-                    tzr_p *again = tzr_pidleget();
-                    tzr_mutex_unlock(&tzr_sched.lock);
-                    if (again) {
-                        m->p = again;
-                        m->spinning = 1;
-                        atomic_fetch_add(&tzr_sched.nmspinning, 1);
-                    }
-                    break;
-                }
-            }
-            if (m->p) continue;
         }
+        /* A G may have been queued after our last look: before nmspinning dropped, or by the last
+         * spinner, which looked for an idle P before this one was published. Look again, spinning
+         * or not, or nobody would wake for it. */
+        for (int i = 0; i < tzr_sched.nprocs; i++) {
+            if (!tzr_runq_empty(tzr_sched.allp[i]) || atomic_load(&tzr_sched.runq_size) > 0) {
+                tzr_mutex_lock(&tzr_sched.lock);
+                tzr_p *again = tzr_pidleget();
+                tzr_mutex_unlock(&tzr_sched.lock);
+                if (again) {
+                    m->p = again;
+                    m->spinning = 1;
+                    atomic_fetch_add(&tzr_sched.nmspinning, 1);
+                }
+                break;
+            }
+        }
+        if (m->p) continue;
         tzr_mutex_lock(&tzr_sched.lock);
         tzr_stopm(m); /* returns with m->p set */
     }
@@ -920,6 +936,9 @@ static tzr_once tzr_pseudo_key_once = TZR_ONCE_INIT;
  * host thread returns from the export only after tsuzuri_tz_scope_leave. */
 static void tzr_pseudo_destroy(void *arg) {
     tzr_g *g = arg;
+#if !defined(_WIN32)
+    tzr_tls_pseudo = NULL; /* a later destructor of this thread that calls in gets a fresh pseudo-G */
+#endif
     tzr_lock_acquire(&tzr_pseudo_lock);
     for (tzr_g **link = &tzr_pseudo_list; *link; link = &(*link)->link) {
         if (*link == g) {
@@ -939,15 +958,20 @@ static void tzr_pseudo_destroy(void *arg) {
 #if defined(_WIN32)
 /* The callback of a fiber-local slot runs when the fiber or its thread ends, like a pthread key's
  * destructor. It may also run while the process exits, after ExitProcess has stopped the other
- * threads (one of them may hold a lock): exit() runs tzr_pseudo_exiting first, and then nothing is
- * freed. */
+ * threads (one of them may hold a lock): then nothing is freed, whether exit() ran
+ * tzr_pseudo_exiting or the loader says the process is shutting down. */
 static DWORD tzr_pseudo_key;
-static volatile LONG tzr_pseudo_exit;
-static void tzr_pseudo_exiting(void) { tzr_pseudo_exit = 1; }
+static _Atomic int tzr_pseudo_exit;
+static BOOLEAN (NTAPI *tzr_dll_shutdown)(void); /* ntdll's RtlDllShutdownInProgress, if it has one */
+static void tzr_pseudo_exiting(void) { atomic_store(&tzr_pseudo_exit, 1); }
 static void NTAPI tzr_pseudo_fls(void *arg) {
-    if (arg != NULL && !tzr_pseudo_exit) tzr_pseudo_destroy(arg);
+    /* exit() sets the flag; ExitProcess and _exit skip it, and then the loader reports the shutdown */
+    if (arg == NULL || atomic_load(&tzr_pseudo_exit) || (tzr_dll_shutdown != NULL && tzr_dll_shutdown())) return;
+    tzr_pseudo_destroy(arg);
 }
 static void tzr_pseudo_key_init(void) {
+    FARPROC query = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlDllShutdownInProgress");
+    if (query != NULL) memcpy(&tzr_dll_shutdown, &query, sizeof query);
     tzr_pseudo_key = FlsAlloc(tzr_pseudo_fls);
     if (tzr_pseudo_key == FLS_OUT_OF_INDEXES || atexit(tzr_pseudo_exiting) != 0) tzr_fatal("cannot create a thread key");
 }
@@ -1144,6 +1168,7 @@ static void tzr_after_exit(tzr_m *m, tzr_g *g) {
 static VOID CALLBACK tzr_fiber_start(LPVOID arg) {
     tzr_g *g = arg;
     for (;;) {
+        fesetenv(FE_DFL_ENV); /* each routine starts with the default rounding and exception masks */
         g->code(g->env);
         tzr_m *m = tzr_this_m(); /* R2: the body may have moved this G to another M */
         m->after = tzr_after_exit;
@@ -1467,7 +1492,15 @@ static void *tzr_timerproc(void *arg) {
         int64_t next = tzr_timers.count > 0 ? tzr_timers.heap[0]->when : -1;
         tzr_lock_release(&tzr_timers.lock);
         tzr_mutex_lock(&tzr_timers.wake_mutex);
-        if (!tzr_timers.kicked) tzr_cond_wait_for(&tzr_timers.wake, &tzr_timers.wake_mutex, next < 0 ? -1 : next - now);
+        if (!tzr_timers.kicked) {
+            if (next < 0) {
+                tzr_cond_wait_for(&tzr_timers.wake, &tzr_timers.wake_mutex, -1);
+            } else {
+                /* the clock again: firing the batch above took time, and an overdue deadline waits not at all */
+                int64_t left = next - tzr_nanotime();
+                if (left > 0) tzr_cond_wait_for(&tzr_timers.wake, &tzr_timers.wake_mutex, left);
+            }
+        }
         tzr_timers.kicked = 0;
         tzr_mutex_unlock(&tzr_timers.wake_mutex);
     }
@@ -1806,15 +1839,33 @@ static int64_t tzr_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *o
         pollorder[i] = pollorder[j];
         pollorder[j] = (uint16_t)i;
     }
-    /* lockorder: by channel address (insertion sort; n is small) */
+    /* lockorder: by channel address, with a heap sort (O(n log n) in place, as Go does) built from
+     * pollorder; cases of one channel end up next to each other */
+#define TZR_CASE_KEY(k) ((uintptr_t)cases[k].c)
     for (int64_t i = 0; i < n; i++) {
         int64_t j = i;
-        while (j > 0 && (uintptr_t)cases[lockorder[j - 1]].c > (uintptr_t)cases[i].c) {
-            lockorder[j] = lockorder[j - 1];
-            j--;
+        uint16_t k = pollorder[i];
+        while (j > 0 && TZR_CASE_KEY(lockorder[(j - 1) / 2]) < TZR_CASE_KEY(k)) {
+            lockorder[j] = lockorder[(j - 1) / 2];
+            j = (j - 1) / 2;
         }
-        lockorder[j] = (uint16_t)i;
+        lockorder[j] = k;
     }
+    for (int64_t i = n - 1; i > 0; i--) {
+        uint16_t k = lockorder[i];
+        lockorder[i] = lockorder[0];
+        int64_t j = 0;
+        for (;;) {
+            int64_t child = 2 * j + 1;
+            if (child >= i) break;
+            if (child + 1 < i && TZR_CASE_KEY(lockorder[child]) < TZR_CASE_KEY(lockorder[child + 1])) child++;
+            if (TZR_CASE_KEY(k) >= TZR_CASE_KEY(lockorder[child])) break;
+            lockorder[j] = lockorder[child];
+            j = child;
+        }
+        lockorder[j] = k;
+    }
+#undef TZR_CASE_KEY
     tzr_sellock(cases, lockorder, n);
     /* pass 1: a ready case */
     for (int64_t k = 0; k < n; k++) {
@@ -1873,7 +1924,7 @@ static int64_t tzr_select(tzr_scase *cases, int64_t n, int32_t block, int32_t *o
     atomic_store(&g->select_done, 0);
     g->param = NULL;
     for (int64_t k = 0; k < n; k++) {
-        int64_t i = lockorder[k];
+        int64_t i = pollorder[k]; /* random, so that cases on one channel are woken alike */
         tzr_scase *cs = &cases[i];
         cs->sudog = (tzr_sudog){.g = g, .elem = cs->elem, .c = cs->c, .is_select = 1};
         tzr_enqueue(cs->send ? &cs->c->sendq : &cs->c->recvq, &cs->sudog);

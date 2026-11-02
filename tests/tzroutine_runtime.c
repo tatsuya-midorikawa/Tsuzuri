@@ -334,9 +334,9 @@ static void blocked(void *env) {
 }
 static const char *self_path;
 #if defined(_WIN32)
-/* On Windows a stack overflow ends a child with STATUS_STACK_OVERFLOW, an NTSTATUS error code (the
- * reason is not reported: stack.c is Unix only). */
-static int overflowed(int status) { return (uint32_t)status >= 0xC0000000u; }
+/* On Windows a stack overflow ends a child with STATUS_STACK_OVERFLOW (the reason is not reported:
+ * stack.c is Unix only); any other crash is not an overflow. */
+static int overflowed(int status) { return (DWORD)status == (DWORD)STATUS_STACK_OVERFLOW; }
 static int exited_with(int status, int code) { return status == code; }
 /* A fresh process with TSUZURI_TZROUTINE_STACK_KIB set to stack_kib (NULL: inherited). */
 static int run_child_with(const char *name, const char *stack_kib) {
@@ -496,10 +496,27 @@ static void fp_mode_routine(void *env) {
     }
     fesetround(FE_TONEAREST);
 }
+static void fp_leave_upward(void *env) {
+    (void)env;
+    CHECK(fesetround(FE_UPWARD) == 0); /* returns without restoring it */
+}
+static void fp_check_default(void *env) {
+    (void)env;
+    CHECK(fegetround() == FE_TONEAREST);
+}
 static void test_fp_mode(void) {
     void *scope = tsuzuri_tz_scope_enter();
     for (int i = 0; i < 64; i++) tsuzuri_tz_go(fp_mode_routine, (void *)(intptr_t)(i % 2 ? FE_UPWARD : FE_TONEAREST));
     join(scope);
+    /* a reused G (or Windows fiber) does not keep the mode its last routine left */
+    for (int round = 0; round < 4; round++) {
+        scope = tsuzuri_tz_scope_enter();
+        for (int i = 0; i < 64; i++) tsuzuri_tz_go(fp_leave_upward, NULL);
+        join(scope);
+        scope = tsuzuri_tz_scope_enter();
+        for (int i = 0; i < 64; i++) tsuzuri_tz_go(fp_check_default, NULL);
+        join(scope);
+    }
     printf("fp rounding modes: ok\n");
 }
 
@@ -653,6 +670,80 @@ static void test_detector(void) {
     printf("detector and large select: ok\n");
 }
 
+/* 21. a routine queued behind two routines that hand off to each other through runnext still runs
+ * (with one P, the hand-off would otherwise keep the local ring waiting forever) */
+static _Atomic int starve_stop;
+typedef struct { tzr_chan *ping, *pong; } starve_pair;
+static void starve_flag(void *env) {
+    (void)env;
+    atomic_store(&starve_stop, 1);
+}
+static void starve_ponger(void *env) {
+    starve_pair *pair = env;
+    int64_t v;
+    while (tsuzuri_tz_chan_recv(pair->ping, &v, 1) == TZR_OK && v >= 0) CHECK(tsuzuri_tz_chan_send(pair->pong, &v, 1) == TZR_OK);
+}
+static void starve_pinger(void *env) {
+    starve_pair *pair = env;
+    for (int64_t round = 0; !atomic_load(&starve_stop); round++) {
+        int64_t v = round, w;
+        CHECK(tsuzuri_tz_chan_send(pair->ping, &v, 1) == TZR_OK);
+        /* spawned into runnext, then pushed to the ring when the receive below wakes the partner */
+        if (round == 10) tsuzuri_tz_go(starve_flag, NULL);
+        CHECK(tsuzuri_tz_chan_recv(pair->pong, &w, 1) == TZR_OK && w == round);
+    }
+    int64_t stop = -1;
+    CHECK(tsuzuri_tz_chan_send(pair->ping, &stop, 1) == TZR_OK);
+}
+static void starve_root(void *env) {
+    tsuzuri_tz_go(starve_ponger, env);
+    tsuzuri_tz_go(starve_pinger, env);
+}
+static void test_starvation(void) {
+    start_watchdog();
+    starve_pair pair = {chan_make(8, 0), chan_make(8, 0)};
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(starve_root, &pair);
+    join(scope);
+    free(pair.ping);
+    free(pair.pong);
+    printf("no starvation behind runnext: ok\n");
+}
+
+/* 22. two receive cases on the same channel are both chosen when the select has to wait */
+typedef struct { tzr_chan *c; int64_t rounds; } same_feed;
+static void same_feeder(void *env) {
+    same_feed *feed = env;
+    for (int64_t i = 0; i < feed->rounds; i++) {
+        for (;;) { /* send once the select is waiting on both cases */
+            tzr_lock_acquire(&feed->c->lock);
+            int waiting = feed->c->recvq.first != NULL && feed->c->recvq.first != feed->c->recvq.last;
+            tzr_lock_release(&feed->c->lock);
+            if (waiting) break;
+            tsuzuri_tz_yield();
+        }
+        CHECK(tsuzuri_tz_chan_send(feed->c, &i, 1) == TZR_OK);
+    }
+}
+static void test_select_same(void) {
+    same_feed feed = {chan_make(8, 0), 4000};
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(same_feeder, &feed);
+    int64_t hits[2] = {0, 0};
+    for (int64_t i = 0; i < feed.rounds; i++) {
+        int64_t a = -1, b = -1;
+        tzr_scase cases[2] = {{.c = feed.c, .elem = &a}, {.c = feed.c, .elem = &b}};
+        int32_t ok;
+        int64_t k = tsuzuri_tz_select(cases, 2, 1, &ok);
+        CHECK((k == 0 || k == 1) && ok == 1 && (k == 0 ? a : b) == i);
+        hits[k]++;
+    }
+    join(scope);
+    CHECK(hits[0] > 1000 && hits[1] > 1000);
+    printf("select on one channel twice: %lld / %lld\n", (long long)hits[0], (long long)hits[1]);
+    free(feed.c);
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -687,6 +778,8 @@ int main(int argc, char **argv) {
     RUN("wake_many", test_wake_many());
     RUN("count_after_join", test_count_after_join());
     RUN("detector", test_detector());
+    RUN("starvation", test_starvation());
+    RUN("select_same", test_select_same());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;
