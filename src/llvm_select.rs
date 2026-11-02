@@ -5,9 +5,6 @@ use crate::check::{SelectWait, SelectWaitArm};
 /// whether it sends, padding, and the runtime's sudog.
 const CASE: &str = "{ ptr, ptr, i32, i32, [6 x i64] }";
 const CASE_BYTES: usize = 72;
-/// Cases of a select kept in the frame; a larger select takes them from the heap, so that a select
-/// of many arms cannot step over the guard of a tzroutine's stack.
-const FRAME_CASES: usize = 64;
 
 impl FunctionEmitter<'_, '_> {
     /// The waiting part of a `select` (TZ04): evaluates the arms in order, waits in the tzroutine
@@ -33,13 +30,16 @@ impl FunctionEmitter<'_, '_> {
             return result;
         }
         for (field, maybe) in fields.iter().enumerate().skip(1) {
-            let position = wait
+            // The named receives of one item type share the field and the slot.
+            let arms: Vec<(usize, &SelectWaitArm)> = wait
                 .arms
                 .iter()
-                .position(|arm| arm.field == Some(field))
-                .expect("a field belongs to a receive arm");
-            let arm = &wait.arms[position];
-            let value = self.select_received(arm, maybe, &chosen, &status, &slots[position]);
+                .enumerate()
+                .filter(|(_, arm)| arm.field == Some(field))
+                .collect();
+            let (position, _) = *arms.first().expect("a field belongs to a receive arm");
+            let arms: Vec<&SelectWaitArm> = arms.into_iter().map(|(_, arm)| arm).collect();
+            let value = self.select_received(&arms, maybe, &chosen, &status, &slots[position]);
             result = self.value(format!(
                 "insertvalue {tuple} {result}, {} {value}, {field}",
                 self.ty(maybe)
@@ -52,7 +52,8 @@ impl FunctionEmitter<'_, '_> {
     /// number as an `i64`, the runtime's `ok` and the arms' item slots.
     fn select_cases(&mut self, wait: &SelectWait) -> (String, String, Vec<String>) {
         let count = wait.arms.len();
-        let heap = count > FRAME_CASES;
+        // More cases than `SelectWait::FRAME_CASES` come from the heap.
+        let heap = wait.allocates();
         let (cases, numbers) = if heap {
             let cases = self.value(format!("call ptr @tz.alloc(i64 {})", count * CASE_BYTES));
             let numbers = self.value(format!("call ptr @tz.alloc(i64 {})", count * 4));
@@ -70,17 +71,57 @@ impl FunctionEmitter<'_, '_> {
         let ok = self.fresh();
         self.allocas.push(format!("{ok} = alloca i32, align 4"));
         self.instruction(format!("store i64 0, ptr {filled}"));
+        // A jump out of an arm's expression (a `break` or `continue`, a raise) leaves the select
+        // before the wait. What it holds by then is dropped with the jump: the heap's cases and
+        // numbers, held as empty arrays, and the values of the sends so far, in zeroed slots that
+        // join the scope (zero storage drops nothing).
+        let jumps = self.can_jump_out();
+        let buffers: Vec<String> = if heap && jumps {
+            let words = Type::Array(Box::new(Type::Integer(32, false)));
+            [&cases, &numbers]
+                .into_iter()
+                .map(|buffer| {
+                    let empty = self.value(format!(
+                        "insertvalue %tz.array zeroinitializer, ptr {buffer}, 0"
+                    ));
+                    self.remember_temporary(&words, &empty, &[]);
+                    empty
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Each arm's item slot, and whether a send arm's value is in its slot.
         let mut slots = Vec::with_capacity(count);
         let mut sent = Vec::with_capacity(count);
+        let mut pending = Vec::new();
+        let mut shared: BTreeMap<usize, String> = BTreeMap::new();
         for arm in &wait.arms {
-            slots.push(self.slot(&arm.item));
+            // Only the chosen case's slot is written, so the named receives of a field share one.
+            let slot = match arm.field {
+                Some(field) => shared
+                    .entry(field)
+                    .or_insert_with(|| self.slot(&arm.item))
+                    .clone(),
+                None => self.slot(&arm.item),
+            };
             sent.push(arm.send.as_ref().map(|_| {
                 let flag = self.fresh();
                 self.allocas.push(format!("{flag} = alloca i1, align 1"));
                 self.instruction(format!("store i1 false, ptr {flag}"));
                 flag
             }));
+            if jumps && arm.send.is_some() && arm.item.needs_drop(&self.module.types()) {
+                self.instruction(format!(
+                    "store {} zeroinitializer, ptr {slot}",
+                    self.ty(&arm.item)
+                ));
+                if let Some(scope) = self.scopes.last_mut() {
+                    scope.push((slot.clone(), arm.item.clone()));
+                    pending.push(slot.clone());
+                }
+            }
+            slots.push(slot);
         }
         for (position, arm) in wait.arms.iter().enumerate() {
             let next = self.label();
@@ -133,6 +174,13 @@ impl FunctionEmitter<'_, '_> {
             self.jump(&next);
             self.temporaries.truncate(temporaries);
             self.begin(&next);
+        }
+        // The arms are done: the select itself frees the cases and settles the sends' values.
+        for empty in &buffers {
+            self.forget_temporary(empty);
+        }
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.retain(|(slot, _)| !pending.contains(slot));
         }
         if wait.default.is_none() {
             // A select that waits is a wait (TZ02: never inside Mutex.with_lock).
@@ -217,16 +265,26 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&done);
     }
 
-    /// What a kept receive arm gives: `Some item` when it was chosen and got one, else `None`.
+    /// What the kept receive arms of one field give: `Some item` when one of them was chosen and
+    /// got one, else `None`.
     fn select_received(
         &mut self,
-        arm: &SelectWaitArm,
+        arms: &[&SelectWaitArm],
         maybe: &Type,
         chosen: &str,
         status: &str,
         slot: &str,
     ) -> String {
-        let this = self.value(format!("icmp eq i64 {chosen}, {}", arm.arm));
+        let mut this = String::new();
+        for arm in arms {
+            let is = self.value(format!("icmp eq i64 {chosen}, {}", arm.arm));
+            this = if this.is_empty() {
+                is
+            } else {
+                self.value(format!("or i1 {this}, {is}"))
+            };
+        }
+        let item_type = &arms[0].item;
         let got = self.value(format!("icmp eq i32 {status}, 1"));
         let received = self.value(format!("and i1 {this}, {got}"));
         let some = self.label();
@@ -234,8 +292,8 @@ impl FunctionEmitter<'_, '_> {
         let done = self.label();
         self.branch(&received, &some, &none);
         self.begin(&some);
-        let item = self.value(format!("load {}, ptr {slot}", self.ty(&arm.item)));
-        let present = self.channel_case(maybe, "Some", Some((&arm.item, &item)));
+        let item = self.value(format!("load {}, ptr {slot}", self.ty(item_type)));
+        let present = self.channel_case(maybe, "Some", Some((item_type, &item)));
         let some_block = self.block.clone();
         self.jump(&done);
         self.begin(&none);

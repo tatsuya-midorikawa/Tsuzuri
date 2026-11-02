@@ -113,7 +113,7 @@ fn guards =
     Channel.send other 7
     let mut picked = 0i64
     select
-    | recv x from counted (ref counter) (ref other) when false -> picked = 100
+    | recv _x from counted (ref counter) (ref other) when false -> picked = 100
     | recv y from ready -> match y with | Maybe.Some v -> picked = v | Maybe.None -> ()
     picked * 10 + Atomic.load (Arc.get (ref counter))
 
@@ -169,6 +169,20 @@ fn in_loop =
         | send (i as i64) to values -> ()
         | recv x from values -> match x with | Maybe.Some v -> sum = sum + v | Maybe.None -> ()
     sum + Channel.length values
+
+// A jump out of an arm's expression drops the values of the sends before it, once: two tokens of
+// the first round, which no full channel takes, and the first token of the round that breaks.
+export def jump_drops :: i64
+fn jump_drops =
+    let counter = Arc.new (Atomic.create 0i64)
+    let full: Channel<Token> = Channel.make 1
+    Channel.send full (Token { counter: Arc.share (ref counter) })
+    for i in 0 ..< 3 do
+        select
+        | send Token { counter: Arc.share (ref counter) } to full -> ()
+        | send Token { counter: Arc.share (ref counter) } to full when (if i == 1 then { break; true } else true) -> ()
+        | default -> ()
+    Atomic.load (Arc.get (ref counter))
 
 // A chosen send to a closed channel traps; a select with no enabled arm and no default waits for ever.
 export def send_closed :: i64

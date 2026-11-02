@@ -1696,9 +1696,13 @@ impl<'s, 'a> Scan<'s, 'a> {
                 self.source(Effect::Alloc, span, "tzroutine");
                 false
             }
-            // The channel operations of a select (TZ04): those of Channel.send and Channel.recv.
+            // The channel operations of a select (TZ04): those of Channel.send and Channel.recv,
+            // and the cases of a select of more than 64 arms on the heap.
             K::SelectWait(wait) => {
                 self.source(Effect::Atomic, span, "select");
+                if wait.allocates() {
+                    self.source(Effect::Alloc, span, "select");
+                }
                 self.source_why(Effect::Trap, span, builtin_why(Builtin::ChannelSend));
                 if wait.default.is_none() {
                     self.source(Effect::Diverge, span, "blocking");

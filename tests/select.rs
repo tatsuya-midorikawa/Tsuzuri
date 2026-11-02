@@ -197,3 +197,86 @@ fn a_select_keeps_its_cases_in_the_frame() {
         "the cases are in the entry block"
     );
 }
+
+#[test]
+fn an_exclusive_reference_is_borrowed_again() {
+    // `ref mut` channels are lent shared for the wait, as places are.
+    accepts(
+        "let mut ch: Channel<i64> = Channel.make 1\nChannel.send ch 5\nlet r = select\n    | recv x from (ref mut ch) -> match x with | Maybe.Some v -> v | Maybe.None -> 0\n    | default -> 0\nr\n",
+    );
+    accepts(
+        "def take :: ref mut Channel<i64> -> i64\nfn take ch =\n    select\n    | recv x from ch -> match x with | Maybe.Some v -> v | Maybe.None -> 0\n    | send 1 to ch -> 1\n    | default -> 0\n\nlet mut ch: Channel<i64> = Channel.make 1\ntake (ref mut ch)\n",
+    );
+}
+
+#[test]
+fn a_false_guard_skips_its_arm_for_ownership() {
+    // The value of a guarded arm may not run, so what it gives back is not given back after the
+    // select, and what it moves may be moved.
+    rejects(
+        "let a: Channel<i64> = Channel.make 1\nlet mut text = \"abc\"\nlet moved = text\nlet off = String.length moved > 10\nselect\n| send { text = \"new\"; 1i64 } to a when off -> ()\n| default -> ()\nString.length text\n",
+        "E1012",
+        "use_after_move",
+    );
+    rejects(
+        "let a: Channel<string> = Channel.make 1\nlet text = \"abc\"\nlet on = String.length text > 1\nselect\n| send text to a when on -> ()\n| default -> ()\nString.length text\n",
+        "E1012",
+        "use_after_move",
+    );
+}
+
+#[test]
+fn a_channel_stays_lent_until_the_wait() {
+    // A later arm cannot consume a channel that an earlier arm waits on.
+    rejects(
+        "let a: Channel<i64> = Channel.make 1\nlet b: Channel<i64> = Channel.make 1\nselect\n| recv _ from a -> ()\n| send { let _gone = a; 1i64 } to b -> ()\n| default -> ()\n0\n",
+        "E1014",
+        "borrow_conflict",
+    );
+}
+
+#[test]
+fn a_select_of_many_arms_allocates() {
+    // More than 64 channel arms keep their cases on the heap: the effect is `alloc`.
+    let arms = |count: usize| "    | recv _ from ch -> 0\n".repeat(count);
+    let function = |count: usize| {
+        format!(
+            "@no_alloc\ndef many :: ref Channel<i64> -> i64\nfn many ch =\n    select\n{}    | default -> 1\n\nlet ch: Channel<i64> = Channel.make 1\nmany (ref ch)\n",
+            arms(count)
+        )
+    };
+    accepts(&function(64));
+    rejects(&function(65), "E1031", "effect_alloc_in_no_alloc");
+}
+
+#[test]
+fn the_lowering_grows_with_the_arms() {
+    // The named receives of one item type share a field, and each arm's pattern is its number:
+    // 5,000 named receives check like a match of 5,000 arms (each used to add a field to every
+    // arm's pattern).
+    let mut source = String::from("let ch: Channel<i64> = Channel.make 1\nlet r = select\n");
+    for _ in 0..5_000 {
+        source.push_str("    | recv _x from ch -> 1\n");
+    }
+    source.push_str("    | default -> 0\nr\n");
+    analyze(&source).unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    // Each item type of the named receives is a field: at most 256.
+    let typed = |count: usize| {
+        let mut source = String::new();
+        for n in 1..=count {
+            source.push_str(&format!("record R{n} {{ v: i64 }}\n"));
+        }
+        for n in 1..=count {
+            source.push_str(&format!("let c{n}: Channel<R{n}> = Channel.make 1\n"));
+        }
+        source.push_str("let r = select\n");
+        for n in 1..=count {
+            source.push_str(&format!("    | recv _x from c{n} -> {n}\n"));
+        }
+        source.push_str("    | default -> 0\nr\n");
+        source
+    };
+    analyze(&typed(256)).unwrap_or_else(|e| panic!("{}: {}", e.code, e.message));
+    let message = rejects(&typed(257), "E1017", "select_arm_limit");
+    assert!(message.contains("at most 256 item types"), "{message}");
+}

@@ -2669,11 +2669,11 @@ POSIX または Windows 以外の未対応プラットフォームに対する�
 
 `select | head [when guard] -> body ...` は、複数の `Channel` の送受信を同時に待ち、先にできる 1 つの腕を実行する式です（TZ04、D-61）。腕の頭は `recv NAME from CHANNEL`（`NAME` は `_` でもよい）、`send VALUE to CHANNEL`、`default` で、腕は `match` と同じ桁にそろえます。
 
-- **構文**: 腕は 1 つ以上、`default` は 0 か 1 つ（2 つ以上は `E0002` の `select_default_repeated`）で位置は自由、`default` に `when` は付けられません。ほかの頭は `E0002`（`select_arm_expected`）、腕は 65,535 個まで（`E1017`、`select_arm_limit`）。
-- **型**: `recv` のチャンネルは `Channel<'a>` か `ReceiveOnly<'a>`、`send` のチャンネルは `Channel<'a>` か `SendOnly<'a>` の場所か参照（暗黙の借用。その場で作った値は `E1013` の `borrow_of_temporary`）、送る値は `'a`。`recv x` の `x` は `Maybe<'a>`。`when` は `bool`。すべての腕の本体の型が同じで、それが式の型です。
+- **構文**: 腕は 1 つ以上、`default` は 0 か 1 つ（2 つ以上は `E0002` の `select_default_repeated`）で位置は自由、`default` に `when` は付けられません。ほかの頭は `E0002`（`select_arm_expected`）、腕は 65,535 個まで、名前で受け取る腕の要素の型は 256 種類まで（どちらも `E1017`、`select_arm_limit`）。
+- **型**: `recv` のチャンネルは `Channel<'a>` か `ReceiveOnly<'a>`、`send` のチャンネルは `Channel<'a>` か `SendOnly<'a>` の場所か参照（暗黙の共有の借用。排他参照も共有として借りる。その場で作った値は `E1013` の `borrow_of_temporary`）、送る値は `'a`。`recv x` の `x` は `Maybe<'a>`。`when` は `bool`。すべての腕の本体の型が同じで、それが式の型です。
 - **意味**: 腕を上から順に、`when` → チャンネル → 送る値の順に評価し、偽の `when` の腕はチャンネルと値を評価しません。有効な腕のうちすぐにできるものから一様乱数で 1 つを選び、なければ `default`、それもなければ待ちます（有効な腕がなければ永久に待ち、判定の理由は `select (no cases)`）。選ばれなかった送る腕の値は drop され、`recv _` が受け取った値は本体の前に drop されます。閉じたチャンネルへの送る腕が選ばれると `send on closed Channel` でトラップします。
-- **所有権**: 送る値は `select` に移り（以後の使用は `E1012`）、`Channel.send` の要素と同じく借用を持てません（`E1013`、`channel_item_holds_borrow`）。本体は `match` の腕と同じく合流します。
-- **下ろし方**: 型検査が、腕のチャンネルの操作を 1 つの `TypedExprKind::SelectWait`（腕の番号と、名前のある受け取る腕ごとの `Maybe<'a>` の組を返す）にし、本体をその組への `match` にします。生成は `tsuzuri_tz_select`（TZ01）。腕の情報は関数の入口の `alloca` に置きます（65 個以上はヒープ）。既定の WebAssembly では、spawn しないプログラムの `select` が `TZR_SINGLE` の 1 本の実行で動き、待つべき `select` はトラップします。
+- **所有権**: 送る値は `select` に移り（以後の使用は `E1012`）、`Channel.send` の要素と同じく借用を持てません（`E1013`、`channel_item_holds_borrow`）。`when` のある腕のチャンネルと値の式は `&&` の右辺と同じく評価されないかもしれない分岐で、腕のチャンネルは待ちが終わるまで借りられたままです（後の腕の式が移すと `E1014`）。本体は `match` の腕と同じく合流します。
+- **下ろし方**: 型検査が、腕のチャンネルの操作を 1 つの `TypedExprKind::SelectWait`（腕の番号と、名前のある受け取る腕ごとの `Maybe<'a>` の組を返す）にし、本体をその組への `match` にします。生成は `tsuzuri_tz_select`（TZ01）。腕の情報は関数の入口の `alloca` に置きます（65 個以上はヒープで、効果は `alloc`）。腕の式から `break`・`continue`・例外で抜けると、それまでの送る値とヒープの領域を解放します。既定の WebAssembly では、spawn しないプログラムの `select` が `TZR_SINGLE` の 1 本の実行で動き、待つべき `select` はトラップします。
 
 ## 非同期計算（Async）
 

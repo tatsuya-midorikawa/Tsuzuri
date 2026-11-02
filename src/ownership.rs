@@ -3128,15 +3128,32 @@ impl<'a> Checker<'a, '_> {
             | E::TaskParallelResults(value) => {
                 self.eval(value, Use::Consume, &during)?;
             }
-            // A select (TZ04): the arms in order. A channel is lent for the wait, and a send's
-            // value goes into the select (it is dropped there when its arm is not chosen), so it
-            // holds no borrow, as the item of `Channel.send` does. What comes out holds none.
+            // A select (TZ04): the arms in order. A channel is lent until the wait, so a later
+            // arm cannot consume it, and a send's value goes into the select (it is dropped there
+            // when its arm is not chosen), so it holds no borrow, as the item of `Channel.send`
+            // does. A false guard skips its arm's channel and value, which are then a branch, as
+            // the right of `&&` is. What comes out holds none.
             E::SelectWait(wait) => {
+                let start = self.held.len();
+                // A place stays lent through one loan of it: an arm on a channel that an earlier
+                // arm lends adds no loan, so a select of many arms on one channel stays linear.
+                let mut lent = BTreeSet::new();
                 for arm in &wait.arms {
                     if let Some(guard) = &arm.guard {
                         self.eval(guard, Use::Consume, &during)?;
                     }
-                    self.eval(&arm.channel, Use::Consume, &during)?;
+                    let skipped = arm
+                        .guard
+                        .is_some()
+                        .then(|| (self.state.clone(), self.reachable));
+                    let mut channel = self.eval(&arm.channel, Use::Consume, &during)?;
+                    channel.loans.retain(|id| {
+                        let loan = &self.loans[*id];
+                        lent.insert((loan.place.clone(), loan.mutable))
+                    });
+                    if !channel.loans.is_empty() {
+                        self.held.push(channel);
+                    }
                     if let Some(value) = &arm.send {
                         let sent = self.eval(value, Use::Consume, &during)?;
                         if arm.item.carries_loans(&self.module.types()) && !sent.loans.is_empty() {
@@ -3147,7 +3164,11 @@ impl<'a> Checker<'a, '_> {
                             ));
                         }
                     }
+                    if let Some((before, before_reachable)) = skipped {
+                        self.merge_reachable(&before, before_reachable);
+                    }
                 }
+                self.held.truncate(start);
             }
             E::StructuralCompare(_, arguments)
             | E::StructuralHash(arguments)

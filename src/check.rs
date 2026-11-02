@@ -4276,6 +4276,17 @@ pub struct SelectWait {
     pub default: Option<usize>,
 }
 
+impl SelectWait {
+    /// The cases that a select keeps in its frame; one with more arms takes them from the heap, so
+    /// that a select of many arms cannot step over the guard of a tzroutine's stack.
+    pub const FRAME_CASES: usize = 64;
+
+    /// Whether the select allocates its cases (the effect `alloc`).
+    pub fn allocates(&self) -> bool {
+        self.arms.len() > Self::FRAME_CASES
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SelectWaitArm {
     /// The arm's number among all the arms of the `select`.

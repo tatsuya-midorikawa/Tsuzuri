@@ -2550,6 +2550,7 @@ const suites = {
       ["drops_unchosen", [], 32n],
       ["same_channel_twice", [], 90n],
       ["in_loop", [], 49999n * 50000n],
+      ["jump_drops", [], 3n],
     ],
     traps: [["send_closed", []], ["no_arm", []]],
     inspect(ir) {
