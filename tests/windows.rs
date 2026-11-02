@@ -56,11 +56,11 @@ fn cross_links_with_microsoft_sdk_when_requested() {
         return;
     };
     let sdk = std::path::PathBuf::from(sdk);
-    // The task runtime, and the Mutex and Channel runtime that task.c holds too (F10).
+    // The task runtime, and the Mutex and DataChannel runtime that task.c holds too (F10).
     for source in [
         "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); let jobs: [Task<Result<i64, string>>] = [task { Result.Ok value }]; let values = Result.get (Task.run (Task.parallel_results jobs)); values[0] }",
         "export def answer :: i64\nfn answer =\n    let lock = Mutex.create 40i64\n    let seen = Task.scope (ref lock) 2 (\\shared index -> Mutex.with_lock shared (\\value -> { deref value = deref value + 1; index }))\n    Mutex.into_inner lock + Array.length (ref seen) - 2",
-        "export def answer :: i64\nfn answer =\n    match Channel.bounded 2 with\n    | (sender, receiver) ->\n        let _sent = Channel.send (ref sender) 42\n        match Channel.recv (ref receiver) with\n        | Maybe.Some item -> item\n        | Maybe.None -> 0",
+        "export def answer :: i64\nfn answer =\n    match DataChannel.bounded 2 with\n    | (sender, receiver) ->\n        let _sent = DataChannel.send (ref sender) 42\n        match DataChannel.recv (ref receiver) with\n        | Maybe.Some item -> item\n        | Maybe.None -> 0",
     ] {
         cross_link(&sdk, source);
     }

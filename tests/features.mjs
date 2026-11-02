@@ -34,9 +34,10 @@ const allocatorOptions = hostAllocator ? ["--allocator", "host"] : smallAllocato
 const min = -(1n << 63n);
 const max = (1n << 63n) - 1n;
 
-function execute(program, args, success = true) {
+function execute(program, args, success = true, environment = {}) {
   const result = spawnSync(program, args, {
     cwd: root, encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, ...environment },
   });
   if (result.error) throw result.error;
   if (success) assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
@@ -2494,7 +2495,7 @@ const suites = {
       assert.match(ir, /call void @tz\.mutex\.parallel\(ptr @tz\.parallel\.chunk\.\d+/);
     },
   },
-  // F10 Phase 2: Channel. The exports need no second thread: up to the capacity a channel is a ring,
+  // F10 Phase 2: DataChannel (the Channel of F10, renamed in TZ03). The exports need no second thread: up to the capacity a channel is a ring,
   // and everything that can wait traps the same way on every target.
   // TZ02: tzroutine { } and Routine. Native only until TZ09; every export waits for its children.
   tzroutine: {
@@ -2509,7 +2510,48 @@ const suites = {
       ["counts", [], 1n],
     ],
   },
+  // TZ03: Go's channel between tzroutines and Task workers, at one and at four Ps (native only:
+  // every export spawns or may wait for another thread).
   channel: {
+    nativeOnly: true,
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    cases: [
+      ...[0n, 1n, 10000n].map((n) => ["ping_pong", [n], n]),
+      ["pipeline", [1000n], 1000n * 1001n],
+      ["fan_in", [], 8n * 1000n * 1001n / 2n],
+      ["fan_out", [], 1000n * 1000000n + 1000n * 1001n / 2n],
+      ["owned_items", [], 53n],
+      ["for_break", [], 1610n],
+      ["unit_channel", [], 100n],
+      ["both_kinds", [], 3n * 10n + 5n * 26n],
+      ["task_worker", [], 5050n],
+      ["routine_tasks", [], 1275n],
+      ...[0n, 1n, 1000n].map((n) => ["directions", [n], n * (n + 1n) / 2n]),
+    ],
+    traps: [["send_closed", []], ["close_twice", []], ["recv_deadlock", []]],
+    inspect(ir) {
+      for (const declaration of ["declare i32 @tsuzuri_tz_chan_send(ptr, ptr, i32)", "declare i32 @tsuzuri_tz_chan_recv(ptr, ptr, i32)",
+        "declare void @tsuzuri_tz_chan_init(ptr, i64, i64)", "declare i32 @tsuzuri_tz_chan_release(ptr)",
+        "declare i32 @tsuzuri_tz_chan_close(ptr)", "declare void @tsuzuri_tz_report(i32)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+    },
+  },
+  // TZ03: the operations of Channel that need no second thread, native and default WebAssembly
+  // (tzroutine.c built with TZR_SINGLE: no import).
+  channel_single: {
+    cases: [
+      ["buffered_order", [], 1234n],
+      ["closed_drain", [], 1277n],
+      ["try_ops", [], 131121n],
+      ["length_capacity", [], 252n],
+      ["unit_signals", [], 100n],
+      ["dropped_items", [], 2n],
+      ["direction_ops", [], 10000n + 22n * 100n + 5n * 10n + 1n],
+    ],
+    traps: [["make_negative", []], ["send_closed", []], ["close_twice", []], ["recv_empty", []], ["send_full", []]],
+  },
+  data_channel: {
     cases: [
       ...[1n, 2n, 3n, 10n, 257n, 4096n].map((n) => ["roundtrip", [n], n * (n + 1n) / 2n]),
       ["fifo", [], 123456n],
@@ -3029,7 +3071,7 @@ int main(int argc, char **argv) {
         // TZ02: the scheduler of the tzroutines.
         ...(sourceIr.includes("@tsuzuri_tz_") ? [join(root, "src/runtime/tzroutine.c"), ...(process.platform === "win32" ? [] : ["-pthread"])] : []),
         ...nativeLibraries, "-o", native]);
-      execute(native, []);
+      for (const environment of suite.environments ?? [{}]) execute(native, [], true, environment);
       for (const [index, [exported]] of bounded.entries()) {
         const result = executeBounded(native, [String(traps.length + index)]);
         assert.equal(result.status, 0, `${name} native O${optimization}: ${exported} returned a wrong value or leaked`);

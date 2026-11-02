@@ -137,4 +137,4 @@ Call std functions qualified, subject last: `Map.insert k v m`. Signatures: `tsu
 - `Maybe`, `Result`, `Seq` (lazy). `Map`, `Set` (ordered), `HashMap`, `HashSet`: `insert`, `get` or `contains`, `remove`, `iter`.
 - `Int` (`abs`, `min`, `checked_add`), `Math` (`sqrt`, `pi`), `BigInt`, `Random`.
 - `IO`, `File` (`read_text`, `write_text`), `Dir`, `Path`, `Env` (`args`), `Process`, `Time`, `Json`, `Regex`, `Format`, `Debug`.
-- `Task`, `Parallel`, `Async`, `Atomic`, `Mutex`, `Channel`, `Rc`, `Arc`, `Arena`, `Owned`; `Test`, `Gen`, `Bench`.
+- `Task`, `Parallel`, `Async`, `Atomic`, `Mutex`, `DataChannel`, `Rc`, `Arc`, `Arena`, `Owned`; `Test`, `Gen`, `Bench`.

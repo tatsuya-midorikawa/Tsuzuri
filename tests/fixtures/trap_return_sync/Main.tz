@@ -46,26 +46,26 @@ fn lock_again =
 // Channels under --trap-mode return (F10 Phase 2). A deadlock is a trap like any other: the verdict
 // wakes every waiter with the failure, the group completes, and the boundary reports the trap and frees
 // what the call allocated, the channels included. The pool and the thread are usable afterwards.
-def produce :: own Channel.Sender<i64> -> own i64 -> Task<i64>
+def produce :: own DataChannel.Sender<i64> -> own i64 -> Task<i64>
 fn produce sender count = task {
     let mut index = 0
     while index < count do
-        let _sent = Channel.send (ref sender) (index + 1)
+        let _sent = DataChannel.send (ref sender) (index + 1)
         index = index + 1
     return count
 }
 
-def drain :: ref Channel.Receiver<i64> -> i64
+def drain :: ref DataChannel.Receiver<i64> -> i64
 fn drain receiver =
     let mut sum = 0
     let mut open = true
     while open do
-        match Channel.recv receiver with
+        match DataChannel.recv receiver with
         | Maybe.Some value -> sum = sum + value
         | Maybe.None -> open = false
     sum
 
-def consume :: own Channel.Receiver<i64> -> Task<i64>
+def consume :: own DataChannel.Receiver<i64> -> Task<i64>
 fn consume receiver = task { return drain (ref receiver) }
 
 def quick :: own i64 -> Task<i64>
@@ -74,7 +74,7 @@ fn quick value = task { return value }
 // Room for every item, so the producer never waits and any pool size completes.
 export def channel_ok :: own i64 -> i64
 fn channel_ok count =
-    match Channel.bounded count with
+    match DataChannel.bounded count with
     | (sender, receiver) ->
         let results = Task.run (Task.parallel [produce sender count, consume receiver])
         results[1]
@@ -83,17 +83,17 @@ fn channel_ok count =
 // close; the other task is done, and every thread waits: the verdict.
 export def channel_deadlock :: i64
 fn channel_deadlock =
-    match Channel.bounded 2 with
+    match DataChannel.bounded 2 with
     | (sender, receiver) ->
         let results = Task.run (Task.parallel [consume receiver, quick 7])
         Owned.drop sender
         results[0] + results[1]
 
-def produce_then_divide :: own Channel.Sender<i64> -> own i64 -> own i64 -> Task<i64>
+def produce_then_divide :: own DataChannel.Sender<i64> -> own i64 -> own i64 -> Task<i64>
 fn produce_then_divide sender count divisor = task {
     let mut index = 0
     while index < count do
-        let _sent = Channel.send (ref sender) (index + 1)
+        let _sent = DataChannel.send (ref sender) (index + 1)
         index = index + 1
     return 100 / divisor
 }
@@ -102,7 +102,7 @@ fn produce_then_divide sender count divisor = task {
 // waits for a close that never comes. The trap of the producer, the lower item, is the call's.
 export def channel_producer_trap :: own i64 -> own i64 -> i64
 fn channel_producer_trap count divisor =
-    match Channel.bounded count with
+    match DataChannel.bounded count with
     | (sender, receiver) ->
         let results = Task.run (Task.parallel [produce_then_divide sender count divisor, consume receiver])
         results[1]
@@ -110,9 +110,9 @@ fn channel_producer_trap count divisor =
 // A channel operation inside a critical section is refused, and the lock is released by the boundary.
 export def channel_in_lock :: i64
 fn channel_in_lock =
-    match Channel.bounded 2 with
+    match DataChannel.bounded 2 with
     | (sender, receiver) ->
         let lock = Mutex.create 0i64
         let borrowed = ref sender
-        let held = Mutex.with_lock (ref lock) (\_value -> match Channel.send borrowed 1 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
-        held + (match Channel.recv (ref receiver) with | Maybe.Some value -> value | Maybe.None -> 0)
+        let held = Mutex.with_lock (ref lock) (\_value -> match DataChannel.send borrowed 1 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
+        held + (match DataChannel.recv (ref receiver) with | Maybe.Some value -> value | Maybe.None -> 0)

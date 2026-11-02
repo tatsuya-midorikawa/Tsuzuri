@@ -3044,13 +3044,30 @@ impl Project {
     /// Adds the opt-in std module `module` (and the modules it uses) when the sources did not
     /// name it.
     fn require_std(&mut self, module: &str) {
+        self.add_std(crate::stdlib::sources_for([module]));
+    }
+
+    /// Adds the opt-in std modules that the user sources name now but did not when the project
+    /// was loaded: a fix that writes `DataChannel.bounded` names `DataChannel` (TZ03).
+    pub fn require_named_std(&mut self) {
+        let named = crate::stdlib::sources_for(
+            self.sources
+                .iter()
+                .filter(|source| source.origin != ModuleOrigin::Std)
+                .map(|source| source.text.as_str()),
+        );
+        self.add_std(named);
+    }
+
+    /// Adds the std sources of `wanted` that the project does not have.
+    fn add_std(&mut self, wanted: Vec<(&'static str, &'static str)>) {
         let present: std::collections::BTreeSet<PathBuf> = self
             .sources
             .iter()
             .filter(|source| source.origin == ModuleOrigin::Std)
             .map(|source| source.path.clone())
             .collect();
-        let added: Vec<SourceFile> = crate::stdlib::sources_for([module])
+        let added: Vec<SourceFile> = wanted
             .into_iter()
             .filter(|(path, _)| !present.contains(Path::new(path)))
             .map(|(path, text)| SourceFile {
@@ -3809,6 +3826,14 @@ fn build_complete(
             "--trap-mode return cannot be combined with tzroutine: a trap in one tzroutine cannot be returned from the call that spawned it",
         ));
     }
+    // TZ03: a trap that returns to the host skips the ends of the waits and the lock marks that
+    // the tzroutine runtime keeps for a Channel, and the boundary of trap.c cannot undo them.
+    if options.trap_return && llvm::waits(module) {
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
+            "--trap-mode return cannot be combined with Channel: a trap would leave the channel runtime's state of the call behind",
+        ));
+    }
     if options.trap_return && !llvm::host_entries(module).is_empty() {
         return Err(driver_error_of(
             DiagnosticKind::OptionConflict,
@@ -4147,6 +4172,12 @@ fn build_complete(
     // tzroutine (TZ02): src/runtime/tzroutine.c is linked when the IR names one of its symbols.
     let tzroutine_symbols = runtime_symbols.prefix("tsuzuri_tz_");
     let tzroutine_runtime = options.target == Target::Native && tzroutine_symbols;
+    // TZ03: on the default WebAssembly target, a program that uses a `Channel` (or asks `Routine`)
+    // without spawning links the channels of the same file built for one thread (`TZR_SINGLE`).
+    let tzroutine_single = options.target.is_wasm()
+        && !options.wasm_threads
+        && tzroutine_symbols
+        && !llvm::spawns(module);
     // A kernel call or a multiversioned function's stub declares a `tsuzuri_cpu_` function (F08).
     let cpu_runtime = options.target == Target::Native && runtime_symbols.prefix("tsuzuri_cpu_");
     let io_runtime = runtime_symbols.prefix("tsuzuri_io_");
@@ -4187,7 +4218,7 @@ fn build_complete(
         };
         if let Some((_, feature)) = [
             ("declare i32 @tsuzuri_mutex_lock(", "Mutex"),
-            ("declare i32 @tsuzuri_channel_send(", "Channel"),
+            ("declare i32 @tsuzuri_channel_send(", "DataChannel"),
             ("declare void @tsuzuri_task_parallel(", "parallel tasks"),
             ("@tsuzuri_tz_", "tzroutine"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
@@ -4266,13 +4297,21 @@ fn build_complete(
     // TZ02: the tzroutine runtime switches stacks on aarch64 and x86-64 under POSIX and Windows.
     // On WebAssembly it will suspend through JSPI (TZ09).
     if tzroutine_symbols && !matches!(options.emit, Emit::Llvm | Emit::Header) {
-        if options.target.is_wasm() {
-            return Err(if options.wasm_threads {
+        if options.target.is_wasm() && options.wasm_threads {
+            return Err(if runtime_symbols.prefix("tsuzuri_tz_chan_") {
+                driver_error_of(
+                    DiagnosticKind::OptionConflict,
+                    "Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend",
+                )
+            } else {
                 driver_error_of(
                     DiagnosticKind::OptionConflict,
                     "tzroutine cannot be combined with --wasm-feature threads: the tzroutine runtime has no WebAssembly threads backend",
                 )
-            } else if options.wasm_jspi {
+            });
+        }
+        if options.target.is_wasm() && !tzroutine_single {
+            return Err(if options.wasm_jspi {
                 driver_error_of(
                     DiagnosticKind::OptionConflict,
                     "tzroutine with --wasm-feature jspi is not implemented yet",
@@ -5006,6 +5045,52 @@ fn build_complete(
                 collect_message(&mut messages, run_tool(&mut runtime, hint)?);
             }
         }
+        let single_object = temporary.path.join("tzroutine-single.o");
+        if tzroutine_single {
+            let source = temporary.path.join("tzroutine-single.c");
+            fs::write(&source, include_str!("runtime/tzroutine.c")).map_err(|error| {
+                io_error("write the one-thread tzroutine runtime", &source, error)
+            })?;
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .arg(if options.target == Target::Wasm64 {
+                    "--target=wasm64-unknown-unknown"
+                } else {
+                    "--target=wasm32-unknown-unknown"
+                })
+                .args([
+                    "-std=c11",
+                    "-ffreestanding",
+                    "-fno-stack-protector",
+                    "-mbulk-memory",
+                    "-DTZR_SINGLE",
+                    "-c",
+                ])
+                .arg(options.optimization.flag());
+            let hint =
+                "Channel on WebAssembly needs Clang with WebAssembly and bulk-memory support";
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                let cached = compile_runtime_object(
+                    "wasm-tzroutine-single",
+                    include_str!("runtime/tzroutine.c"),
+                    "tzroutine-single.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    hint,
+                    &mut messages,
+                )?;
+                stage_runtime_object(
+                    &cached,
+                    &single_object,
+                    "stage the one-thread tzroutine runtime",
+                )?;
+            } else {
+                runtime.arg(&source).arg("-o").arg(&single_object);
+                collect_message(&mut messages, run_tool(&mut runtime, hint)?);
+            }
+        }
         let threads_object = temporary.path.join("threads.o");
         if options.wasm_threads {
             let source = temporary.path.join("threads.c");
@@ -5093,7 +5178,8 @@ fn build_complete(
         clang.arg("-o").arg(
             if matches!(options.emit, Emit::Wasm | Emit::Shared)
                 || dwarf_sidecar.is_some()
-                || ((options.wasm_threads || wasi_runtime) && options.emit == Emit::Object)
+                || ((options.wasm_threads || wasi_runtime || tzroutine_single)
+                    && options.emit == Emit::Object)
                 || (native_runtime && options.emit == Emit::Object && !merge_debug_ir)
             {
                 &object
@@ -5334,11 +5420,19 @@ fn build_complete(
                 )?;
             }
         }
-        if (options.wasm_threads || wasi_runtime) && options.emit == Emit::Object {
+        if (options.wasm_threads || wasi_runtime || tzroutine_single)
+            && options.emit == Emit::Object
+        {
             let mut linker = Command::new(tool("TSUZURI_WASM_LD", "wasm-ld"));
             linker.arg("-r").arg(&object);
+            if options.target == Target::Wasm64 {
+                linker.arg("-mwasm64");
+            }
             if options.wasm_threads {
                 linker.arg(&threads_object);
+            }
+            if tzroutine_single {
+                linker.arg(&single_object);
             }
             if wasi_runtime {
                 linker.arg(&wasi_object);
@@ -5348,7 +5442,7 @@ fn build_complete(
                 &mut messages,
                 run_tool(
                     &mut linker,
-                    "WASM threads and the WASI host require wasm-ld relocatable linking",
+                    "WASM threads, the WASI host and the one-thread channels require wasm-ld relocatable linking",
                 )?,
             );
         }
@@ -5383,6 +5477,9 @@ fn build_complete(
             }
             if stack_checks && options.wasm_threads {
                 linker.args(["--export=tsuzuri_stack_base", "--export=tsuzuri_stack_top"]);
+            }
+            if tzroutine_single {
+                linker.arg(&single_object);
             }
             if !options.debug_info {
                 linker.arg("--strip-all");

@@ -1,0 +1,11 @@
+let values: Channel<i64> = Channel.make 3
+Channel.send values 4
+Channel.send values 5
+Channel.close values
+let mut sum = 0i64
+for value in values do
+    sum = sum + value
+sum
+
+// rule: TSK-019
+// expect: stdout "9\n"

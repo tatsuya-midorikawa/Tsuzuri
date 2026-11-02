@@ -63,6 +63,7 @@ Tsuzuri の `for...in` が直接受理するコレクションは以下の通り
 | `string` | UTF-16 コード単位 | `i16u` | 16 bit（`.length` と同じ単位） |
 | `utf8string` | UTF-8 バイト | `ubyte` | 8 bit のバイト |
 | `Seq<'a>` | 遅延列挙される要素 | `'a` | `Seq.next` で 1 つずつ |
+| [`Channel<T>`](../built-in-types-and-modules/channel.md#for-で受け取る)・`ReceiveOnly<T>`（`ref` も） | 受け取った要素（閉じて空になるまで） | `T`（受け手の所有値） | `Channel.recv` で 1 つずつ。空なら待つ |
 
 ### 整数範囲の反復
 

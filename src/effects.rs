@@ -582,9 +582,22 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | AtomicFetchXor
         | AtomicIntoInner
         | MutexIntoInner
-        | ChannelCloneSender
-        | ChannelCloseSender
-        | ChannelCloseReceiver => facts(
+        | DataChannelCloneSender
+        | DataChannelCloseSender
+        | DataChannelCloseReceiver
+        | ChannelTrySend
+        | ChannelTryRecv
+        | ChannelLength
+        | ChannelCapacity
+        | ChannelRelease
+        | SendOnlyTrySend
+        | SendOnlyLength
+        | SendOnlyCapacity
+        | SendOnlyRelease
+        | ReceiveOnlyTryRecv
+        | ReceiveOnlyLength
+        | ReceiveOnlyCapacity
+        | ReceiveOnlyRelease => facts(
             Some(Effect::Atomic),
             false,
             false,
@@ -604,8 +617,15 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             Some("runtime_internal"),
         ),
         // B27
-        ChannelSend | ChannelRecv => {
-            facts(Some(Effect::Atomic), false, true, true, false, false, None)
+        DataChannelSend | DataChannelRecv | ChannelSend | ChannelRecv | SendOnlySend
+        | ReceiveOnlyRecv => facts(Some(Effect::Atomic), false, true, true, false, false, None),
+        // A second close traps; nothing waits.
+        ChannelClose | SendOnlyClose => {
+            facts(Some(Effect::Atomic), false, true, false, false, false, None)
+        }
+        // A new handle that its drop releases.
+        ChannelShare | ChannelSendOnly | ChannelReceiveOnly | SendOnlyShare | ReceiveOnlyShare => {
+            facts(Some(Effect::Atomic), true, false, false, false, false, None)
         }
         // B28
         MutexWith => facts(Some(Effect::Atomic), false, true, true, true, false, None),
@@ -614,7 +634,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             facts(Some(Effect::Atomic), true, false, false, false, false, None)
         }
         // B30
-        ChannelBounded => facts(Some(Effect::Atomic), true, true, false, false, false, None),
+        DataChannelBounded | ChannelMake => {
+            facts(Some(Effect::Atomic), true, true, false, false, false, None)
+        }
         // B31
         RcGet | RcStrongCount | RcWeakCount | RcTryUnwrap | RcPtrEq | ArcGet | ArcStrongCount
         | ArcWeakCount | ArcTryUnwrap | ArcPtrEq => {
@@ -3438,8 +3460,8 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 265);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 97);
+        assert_eq!(Builtin::ALL.len(), 290);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 122);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 168);
     }
 
@@ -3450,7 +3472,7 @@ mod tests {
         assert_eq!(by(Effect::Os), 12);
         assert_eq!(by(Effect::Net), 12);
         assert_eq!(by(Effect::Task), 15);
-        assert_eq!(by(Effect::Atomic), 21);
+        assert_eq!(by(Effect::Atomic), 46);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3459,18 +3481,18 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 60);
+        assert_eq!(count(|facts| facts.alloc), 66);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 33);
+        assert_eq!(count(|facts| facts.trap), 40);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 16);
+        assert_eq!(count(|facts| facts.diverge), 20);
     }
 
     #[test]

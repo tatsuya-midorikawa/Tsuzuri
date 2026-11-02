@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 96;
+const IMPURE_BUILTINS: usize = 121;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -42,12 +42,37 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | MutexCreate
         | MutexWith
         | MutexIntoInner
-        | ChannelBounded
+        | DataChannelBounded
+        | DataChannelSend
+        | DataChannelRecv
+        | DataChannelCloneSender
+        | DataChannelCloseSender
+        | DataChannelCloseReceiver
+        | ChannelMake
         | ChannelSend
         | ChannelRecv
-        | ChannelCloneSender
-        | ChannelCloseSender
-        | ChannelCloseReceiver
+        | ChannelTrySend
+        | ChannelTryRecv
+        | ChannelClose
+        | ChannelLength
+        | ChannelCapacity
+        | ChannelShare
+        | ChannelRelease
+        | ChannelSendOnly
+        | ChannelReceiveOnly
+        | SendOnlySend
+        | SendOnlyTrySend
+        | SendOnlyClose
+        | SendOnlyLength
+        | SendOnlyCapacity
+        | SendOnlyShare
+        | SendOnlyRelease
+        | ReceiveOnlyRecv
+        | ReceiveOnlyTryRecv
+        | ReceiveOnlyLength
+        | ReceiveOnlyCapacity
+        | ReceiveOnlyShare
+        | ReceiveOnlyRelease
         | ArenaNextId => Some("atomic"),
         RcNew | RcShare | RcGet | RcStrongCount | RcWeakCount | RcTryUnwrap | RcDowngrade
         | RcUpgrade | RcPtrEq | ArcNew | ArcShare | ArcGet | ArcStrongCount | ArcWeakCount

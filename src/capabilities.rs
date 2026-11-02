@@ -456,7 +456,7 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
 }
 
 /// The private builtins that touch only the CPU and memory (appendix A.2 and the ones added since).
-pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 22] = [
+pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 25] = [
     "Net.__classify",
     "Unicode.__table_length",
     "Unicode.__table_entry",
@@ -472,8 +472,11 @@ pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 22] = [
     "Async.__put",
     "Async.__next_id",
     "Async.__retire",
-    "Channel.__close_sender",
-    "Channel.__close_receiver",
+    "DataChannel.__close_sender",
+    "DataChannel.__close_receiver",
+    "Channel.__release",
+    "SendOnly.__release",
+    "ReceiveOnly.__release",
     "Bench.consume",
     "Alloc.__counter",
     "Gen.__seed",

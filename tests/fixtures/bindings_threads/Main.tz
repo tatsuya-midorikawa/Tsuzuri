@@ -64,21 +64,21 @@ fn locked_total n =
     }))
     Mutex.into_inner total + Array.sum (ref indices)
 
-def produce :: own Channel.Sender<i64> -> own i64 -> Task<i64>
+def produce :: own DataChannel.Sender<i64> -> own i64 -> Task<i64>
 fn produce sender count = task {
     let mut index = 0
     while index < count do
-        let _sent = Channel.send (ref sender) (index + 1)
+        let _sent = DataChannel.send (ref sender) (index + 1)
         index = index + 1
     return count
 }
 
-def consume :: own Channel.Receiver<i64> -> Task<i64>
+def consume :: own DataChannel.Receiver<i64> -> Task<i64>
 fn consume receiver = task {
     let mut sum = 0
     let mut open = true
     while open do
-        match Channel.recv (ref receiver) with
+        match DataChannel.recv (ref receiver) with
         | Maybe.Some value -> sum = sum + value
         | Maybe.None -> open = false
     return sum
@@ -86,7 +86,7 @@ fn consume receiver = task {
 
 export def piped :: own i64 -> own i64 -> i64
 fn piped capacity count =
-    match Channel.bounded capacity with
+    match DataChannel.bounded capacity with
     | (sender, receiver) ->
         let results = Task.run (Task.parallel [produce sender count, consume receiver])
         results[1]

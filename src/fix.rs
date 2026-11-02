@@ -588,9 +588,52 @@ fn worsened<'a>(
     None
 }
 
+/// `analysis` without the diagnostics that the next round fixes: their fix passes the options and
+/// edits the project. A round may bring such diagnostics to light, as a rename that lets the
+/// checker go further finds more uses of the old name (`E1040`, TZ03); `run` compares the end
+/// with the start as well.
+fn without_fixable(project: &Project, analysis: &Analysis, options: &Options) -> Analysis {
+    let fixable = |diagnostic: &Diagnostic| {
+        options
+            .only_codes
+            .is_none_or(|codes| codes.contains(&diagnostic.code))
+            && diagnostic
+                .fixes
+                .iter()
+                .find(|fix| options.threshold.admits(fix.applicability))
+                .is_some_and(|fix| validate(project, fix, options.scope).is_ok())
+    };
+    let mut errors = analysis.errors.clone();
+    errors.diagnostics.retain(|diagnostic| !fixable(diagnostic));
+    Analysis {
+        errors,
+        warnings: analysis
+            .warnings
+            .iter()
+            .filter(|diagnostic| !fixable(diagnostic))
+            .cloned()
+            .collect(),
+    }
+}
+
+/// The `E2008` of a fix that would leave `diagnostic`.
+fn verification_failed(project: &Project, diagnostic: &Diagnostic) -> SourceError {
+    let source = diagnostic.span.source.unwrap_or(project.root);
+    let text = project.sources.get(source).map_or("", |file| &file.text);
+    let message = format!(
+        "the fixes would introduce {} in '{}' at line {}: {}; no file was changed; review the fixes with tsuzuri check --json",
+        diagnostic.code,
+        display_path(project, source),
+        location(text, diagnostic.span.start).0,
+        diagnostic.message
+    );
+    command_line_error(DiagnosticKind::FixVerificationFailed, message)
+}
+
 /// Applies fixes round by round until none applies or `MAX_ROUNDS`; `analyze` analyzes the
-/// project's current texts. A round that makes the diagnostics worse restores every text and
-/// fails with `E2008`. The project's texts are the fixed ones afterwards; no file is written.
+/// project's current texts. A round that makes the diagnostics worse, apart from the ones that the
+/// next round fixes, restores every text and fails with `E2008`, and so does an end that is worse
+/// than the start. The project's texts are the fixed ones afterwards; no file is written.
 pub fn run(
     project: &mut Project,
     options: &Options,
@@ -599,6 +642,7 @@ pub fn run(
     let mut saved = BTreeMap::new();
     let mut applied: Vec<(FixRecord, Vec<ResolvedEdit>)> = Vec::new();
     let mut current = analyze(project);
+    let original = current.clone();
     let mut rounds = 0;
     let (stop, skipped) = loop {
         let (chosen, mut skipped) = collect(project, &current, options)?;
@@ -613,22 +657,15 @@ pub fn run(
             break (Stop::RoundLimit, skipped);
         }
         apply(project, &chosen, &mut saved);
+        // A fix may name an opt-in std module that the sources did not (`DataChannel`, TZ03).
+        project.require_named_std();
         let next = analyze(project);
-        if let Some(diagnostic) = worsened(project, &current, &next) {
-            let source = diagnostic.span.source.unwrap_or(project.root);
-            let text = project.sources.get(source).map_or("", |file| &file.text);
-            let message = format!(
-                "the fixes would introduce {} in '{}' at line {}: {}; no file was changed; review the fixes with tsuzuri check --json",
-                diagnostic.code,
-                display_path(project, source),
-                location(text, diagnostic.span.start).0,
-                diagnostic.message
-            );
+        if let Some(diagnostic) =
+            worsened(project, &current, &without_fixable(project, &next, options))
+        {
+            let error = verification_failed(project, diagnostic);
             restore(project, &saved);
-            return Err(command_line_error(
-                DiagnosticKind::FixVerificationFailed,
-                message,
-            ));
+            return Err(error);
         }
         rounds += 1;
         applied.extend(chosen.into_iter().map(|candidate| {
@@ -642,6 +679,13 @@ pub fn run(
         }));
         current = next;
     };
+    if rounds > 0
+        && let Some(diagnostic) = worsened(project, &original, &current)
+    {
+        let error = verification_failed(project, diagnostic);
+        restore(project, &saved);
+        return Err(error);
+    }
     let files = saved
         .into_iter()
         .filter(|(source, original)| project.sources[*source].text != *original)
@@ -1462,6 +1506,52 @@ mod tests {
             rounds,
             [Status::Applied { round: 1 }, Status::Applied { round: 2 }]
         );
+    }
+
+    /// An `E1040` for each letter of the main source with the fix that the table gives it, as a
+    /// rename that lets the checker see further does (TZ03).
+    fn renames(project: &Project, table: &[(char, &str)]) -> Analysis {
+        let text = &project.sources[0].text;
+        let errors = text
+            .char_indices()
+            .filter_map(|(at, letter)| {
+                table
+                    .iter()
+                    .find(|(from, _)| *from == letter)
+                    .map(|(_, to)| {
+                        fixed(
+                            DiagnosticKind::RenamedToDataChannel,
+                            0,
+                            at,
+                            at + 1,
+                            to,
+                            Applicability::Certain,
+                        )
+                    })
+            })
+            .collect();
+        analysis(errors, 0, Vec::new())
+    }
+
+    #[test]
+    fn a_round_may_bring_to_light_what_the_next_one_fixes() {
+        // One error becomes two that the next round fixes, and then none.
+        let mut growing = project("a");
+        let report = run(&mut growing, &options(Scope::Project), &mut |project| {
+            renames(project, &[('a', "bb"), ('b', "c")])
+        })
+        .unwrap();
+        assert_eq!(report.files[0].fixed, "cc");
+        // The two edits of `bb` touch, so they take a round each.
+        assert_eq!(report.rounds, 3);
+        // Errors that keep growing until the round limit end worse than the start.
+        let mut endless = project("a");
+        let error = run(&mut endless, &options(Scope::Project), &mut |project| {
+            renames(project, &[('a', "aa")])
+        })
+        .unwrap_err();
+        assert_eq!(error.diagnostic.kind, Some("fix_verification_failed"));
+        assert_eq!(endless.sources[0].text, "a");
     }
 
     #[test]

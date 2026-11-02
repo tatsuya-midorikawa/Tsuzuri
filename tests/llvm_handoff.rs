@@ -284,11 +284,11 @@ use_resource 41
 const CHANNEL: &str = "\
 def helper :: i64
 fn helper =
-    let pair: (Channel.Sender<Maybe<i64>> * Channel.Receiver<Maybe<i64>>) = Channel.bounded 2
+    let pair: (DataChannel.Sender<Maybe<i64>> * DataChannel.Receiver<Maybe<i64>>) = DataChannel.bounded 2
     match pair with
     | (sender, receiver) ->
-        let _sent = Channel.send (ref sender) (Maybe.Some 41i64)
-        match Channel.recv (ref receiver) with
+        let _sent = DataChannel.send (ref sender) (Maybe.Some 41i64)
+        match DataChannel.recv (ref receiver) with
         | Maybe.Some (Maybe.Some v) -> v + 1
         | _ -> 0
 
@@ -301,11 +301,11 @@ record Cased<'a> { value: 'a }
 
 def helper :: i64
 fn helper =
-    let pair: (Channel.Sender<Cased<i64>> * Channel.Receiver<Cased<i64>>) = Channel.bounded 2
+    let pair: (DataChannel.Sender<Cased<i64>> * DataChannel.Receiver<Cased<i64>>) = DataChannel.bounded 2
     match pair with
     | (sender, receiver) ->
-        let _sent = Channel.send (ref sender) (Cased { value: 41i64 })
-        match Channel.recv (ref receiver) with
+        let _sent = DataChannel.send (ref sender) (Cased { value: 41i64 })
+        match DataChannel.recv (ref receiver) with
         | Maybe.Some held -> held.value + 1
         | Maybe.None -> 0
 

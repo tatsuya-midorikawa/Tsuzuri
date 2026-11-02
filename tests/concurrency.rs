@@ -312,7 +312,7 @@ fn arc_shares_only_sync_values_between_tasks() {
 
 // A type variable is not known to be Send, so `Send<'a>` is no answer for the function that is
 // generic over it: the constraint stays on the function and is checked at every type that the
-// function is used at, as `Sync<'a>` is. A wrapper of `Channel.bounded`, `Mutex.create` or a
+// function is used at, as `Sync<'a>` is. A wrapper of `DataChannel.bounded`, `Mutex.create` or a
 // parallel operation, and a constraint that a program writes, must not let an `Rc` through.
 #[test]
 fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
@@ -321,11 +321,11 @@ fn send_is_checked_at_the_types_a_generic_function_is_used_at() {
         [
             // The channel is made by a wrapper, and the item is sent where the type is known.
             format!(
-                "def make :: i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)\nfn make capacity = Channel.bounded capacity\nmatch make 2 with\n| (sender, _receiver) ->\n    let _sent = Channel.send (ref sender) ({item})\n    0"
+                "def make :: i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>)\nfn make capacity = DataChannel.bounded capacity\nmatch make 2 with\n| (sender, _receiver) ->\n    let _sent = DataChannel.send (ref sender) ({item})\n    0"
             ),
             // The wrapper of a wrapper, with the ends kept in a record that tasks may share.
             format!(
-                "record Pipe<'a> {{ sender: Channel.Sender<'a>, receiver: Channel.Receiver<'a> }}\ndef make :: i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)\nfn make capacity = Channel.bounded capacity\ndef open :: i64 -> Pipe<'a>\nfn open capacity =\n    match make capacity with\n    | (sender, receiver) -> Pipe {{ sender: sender, receiver: receiver }}\nlet pipe = open 4\nlet _sent = Channel.send (ref pipe.sender) ({item})\n0"
+                "record Pipe<'a> {{ sender: DataChannel.Sender<'a>, receiver: DataChannel.Receiver<'a> }}\ndef make :: i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>)\nfn make capacity = DataChannel.bounded capacity\ndef open :: i64 -> Pipe<'a>\nfn open capacity =\n    match make capacity with\n    | (sender, receiver) -> Pipe {{ sender: sender, receiver: receiver }}\nlet pipe = open 4\nlet _sent = DataChannel.send (ref pipe.sender) ({item})\n0"
             ),
             format!(
                 "def wrap :: 'a -> Mutex<'a>\nfn wrap value = Mutex.create value\nlet _lock = wrap ({item})\n0"
@@ -415,7 +415,7 @@ fn send_and_sync_are_checked_at_the_types_that_a_constructor_variable_stands_for
     let programs = [
         (
             "the items of a channel",
-            "def mk :: Cell.Cell<'f> => i64 -> (Channel.Sender<'f<i64>> * Channel.Receiver<'f<i64>>)\nfn mk n = Channel.bounded n\nlet _pair: (Channel.Sender<Holder<i64>> * Channel.Receiver<Holder<i64>>) = mk 1\n0",
+            "def mk :: Cell.Cell<'f> => i64 -> (DataChannel.Sender<'f<i64>> * DataChannel.Receiver<'f<i64>>)\nfn mk n = DataChannel.bounded n\nlet _pair: (DataChannel.Sender<Holder<i64>> * DataChannel.Receiver<Holder<i64>>) = mk 1\n0",
         ),
         (
             "Parallel.init",
@@ -427,7 +427,7 @@ fn send_and_sync_are_checked_at_the_types_that_a_constructor_variable_stands_for
         ),
         (
             "a send through a channel made here",
-            "def ship :: Cell.Cell<'f> => 'f<i64> -> i64\nfn ship value = match Channel.bounded 1 with\n    | (sender, _receiver) ->\n        let _sent = Channel.send (ref sender) value\n        0\nlet value: Holder<i64> = Cell.wrap 1i64\nship value",
+            "def ship :: Cell.Cell<'f> => 'f<i64> -> i64\nfn ship value = match DataChannel.bounded 1 with\n    | (sender, _receiver) ->\n        let _sent = DataChannel.send (ref sender) value\n        0\nlet value: Holder<i64> = Cell.wrap 1i64\nship value",
         ),
         (
             "a constraint that the program writes",
@@ -677,12 +677,12 @@ fn mutex_programs_type_check_and_the_closure_result_is_owned() {
 #[test]
 fn a_channel_item_never_holds_a_borrow() {
     let held = "a channel item cannot hold a borrow";
-    let staged = "Channel.send must be fully applied directly";
-    let borrowing = "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let table = [40i64, 41i64]\n    let view = ref table\n";
-    let received = "    match Channel.recv (ref receiver) with\n    | Maybe.Some _item -> 1\n    | Maybe.None -> 0";
+    let staged = "DataChannel.send must be fully applied directly";
+    let borrowing = "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let table = [40i64, 41i64]\n    let view = ref table\n";
+    let received = "    match DataChannel.recv (ref receiver) with\n    | Maybe.Some _item -> 1\n    | Maybe.None -> 0";
     let sends = |item: &str| {
         format!(
-            "record Reader {{ read: i64 -> i64 }}\n{borrowing}    let _sent = Channel.send (ref sender) ({item})\n{received}"
+            "record Reader {{ read: i64 -> i64 }}\n{borrowing}    let _sent = DataChannel.send (ref sender) ({item})\n{received}"
         )
     };
     // A function, alone or in a container, that reads borrowed data after the data is gone.
@@ -700,17 +700,17 @@ fn a_channel_item_never_holds_a_borrow() {
     // The function bound to a name first, and a borrow of a parameter, which a caller lent.
     let message = rejects(
         &format!(
-            "{borrowing}    let f = \\x -> x + view[0]\n    let _sent = Channel.send (ref sender) f\n{received}"
+            "{borrowing}    let f = \\x -> x + view[0]\n    let _sent = DataChannel.send (ref sender) f\n{received}"
         ),
         "E1013",
     );
     assert!(message.contains(held), "{message}");
-    let reaching = "def work :: ref Channel.Sender<i64 -> i64> -> ref [i64] -> i64\nfn work sender data =\n    match Channel.send sender (\\x -> x + data[0]) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\n\ndef producer :: ref Channel.Sender<i64 -> i64> -> i64\nfn producer sender =\n    let local = [40, 41]\n    work sender (ref local)\n\ndef clobber :: i64 -> i64\nfn clobber n =\n    let a = [n, n, n, n]\n    let b = [n + 1, n + 1, n + 1, n + 1]\n    a[0] + b[1]\n\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let _produced = producer (ref sender)\n    let _clobbered = clobber 1000\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> -1";
+    let reaching = "def work :: ref DataChannel.Sender<i64 -> i64> -> ref [i64] -> i64\nfn work sender data =\n    match DataChannel.send sender (\\x -> x + data[0]) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\n\ndef producer :: ref DataChannel.Sender<i64 -> i64> -> i64\nfn producer sender =\n    let local = [40, 41]\n    work sender (ref local)\n\ndef clobber :: i64 -> i64\nfn clobber n =\n    let a = [n, n, n, n]\n    let b = [n + 1, n + 1, n + 1, n + 1]\n    a[0] + b[1]\n\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _produced = producer (ref sender)\n    let _clobbered = clobber 1000\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> -1";
     let message = rejects(reaching, "E1013");
     assert!(message.contains(held), "{message}");
     // The function is a child's own, and the record that holds the end looks loan-free.
     let message = rejects(
-        "record Pipe { sender: Channel.Sender<i64 -> i64>, receiver: Channel.Receiver<i64 -> i64> }\ndef child :: ref Pipe -> i64 -> i64\nfn child shared index =\n    let local = [index, 1]\n    let view = ref local\n    match Channel.send (ref shared.sender) (\\x -> x + view[0]) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let pipe = Pipe { sender: sender, receiver: receiver }\n    let seen = Task.scope (ref pipe) 2 child\n    Array.sum (ref seen)",
+        "record Pipe { sender: DataChannel.Sender<i64 -> i64>, receiver: DataChannel.Receiver<i64 -> i64> }\ndef child :: ref Pipe -> i64 -> i64\nfn child shared index =\n    let local = [index, 1]\n    let view = ref local\n    match DataChannel.send (ref shared.sender) (\\x -> x + view[0]) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let pipe = Pipe { sender: sender, receiver: receiver }\n    let seen = Task.scope (ref pipe) 2 child\n    Array.sum (ref seen)",
         "E1013",
     );
     assert!(message.contains(held), "{message}");
@@ -719,18 +719,18 @@ fn a_channel_item_never_holds_a_borrow() {
     let delayed = |statement: &str| format!("{borrowing}{statement}\n    0");
     for source in [
         delayed(
-            "    let send = Channel.send (ref sender)\n    let _sent = send (\\x -> x + view[0])",
+            "    let send = DataChannel.send (ref sender)\n    let _sent = send (\\x -> x + view[0])",
         ),
         delayed(
-            "    let send = Channel.send\n    let _sent = send (ref sender) (\\x -> x + view[0])",
+            "    let send = DataChannel.send\n    let _sent = send (ref sender) (\\x -> x + view[0])",
         ),
-        delayed("    let _sent = (\\x -> x + view[0]) |> Channel.send (ref sender)"),
+        delayed("    let _sent = (\\x -> x + view[0]) |> DataChannel.send (ref sender)"),
     ] {
         let message = rejects(&source, "E1013");
         assert!(message.contains(staged), "{source}\n{message}");
     }
     // A function that forwards the item of its parameter may be given a borrow.
-    let push = "def push :: ref Channel.Sender<'a> -> 'a -> bool\nfn push sender item =\n    match Channel.send sender item with\n    | Result.Ok _unit -> true\n    | Result.Error _item -> false\n";
+    let push = "def push :: ref DataChannel.Sender<'a> -> 'a -> bool\nfn push sender item =\n    match DataChannel.send sender item with\n    | Result.Ok _unit -> true\n    | Result.Error _item -> false\n";
     let message = rejects(
         &format!("{push}{borrowing}    if push (ref sender) (\\x -> x + view[0]) then 1 else 0"),
         "E1013",
@@ -739,27 +739,27 @@ fn a_channel_item_never_holds_a_borrow() {
     // What holds no borrow still goes through: data, a function that captured copies, one that
     // captures nothing or is named, and one that an Owned.Function owns, however the call is made.
     for source in [
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = Channel.send (ref sender) (\\x -> x + k)\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) (\\x -> x + 1)\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
-        "def add_one :: i64 -> i64\nfn add_one x = x + 1\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) add_one\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
-        "def offer :: ref Channel.Sender<i64 -> i64> -> i64 -> i64\nfn offer sender k =\n    match Channel.send sender (\\x -> x + k) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let _offered = offer (ref sender) 41\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = Channel.send (ref sender) (Owned.function (\\x -> x + k))\n    match Channel.recv (ref receiver) with\n    | Maybe.Some f -> Owned.call (ref f) 1\n    | Maybe.None -> 0",
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) (Maybe.Some \"text\")\n    match Channel.recv (ref receiver) with\n    | Maybe.Some (Maybe.Some text) -> text.length\n    | _ -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = DataChannel.send (ref sender) (\\x -> x + k)\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) (\\x -> x + 1)\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "def add_one :: i64 -> i64\nfn add_one x = x + 1\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) add_one\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "def offer :: ref DataChannel.Sender<i64 -> i64> -> i64 -> i64\nfn offer sender k =\n    match DataChannel.send sender (\\x -> x + k) with\n    | Result.Ok _unit -> 0\n    | Result.Error _item -> 1\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _offered = offer (ref sender) 41\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = DataChannel.send (ref sender) (Owned.function (\\x -> x + k))\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some f -> Owned.call (ref f) 1\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) (Maybe.Some \"text\")\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some (Maybe.Some text) -> text.length\n    | _ -> 0",
         // A generic function that forwards an item that is not a function.
         &format!(
-            "{push}match Channel.bounded 2 with\n| (sender, _receiver) ->\n    if push (ref sender) 5i64 then 1 else 0"
+            "{push}match DataChannel.bounded 2 with\n| (sender, _receiver) ->\n    if push (ref sender) 5i64 then 1 else 0"
         ),
         // The item of a call through a function value, when it cannot hold a borrow.
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let send = Channel.send (ref sender)\n    let _sent = send 3i64\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let send = DataChannel.send (ref sender)\n    let _sent = send 3i64\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
     ] {
         emits(source);
     }
     // What a channel returns holds no borrow either, so it may be sent on or returned.
     emits(
-        "match Channel.bounded 2 with\n| (first, middle) ->\n    match Channel.bounded 2 with\n    | (second, last) ->\n        let k = 41i64\n        let _sent = Channel.send (ref first) (\\x -> x + k)\n        let _moved = match Channel.recv (ref middle) with\n            | Maybe.Some f -> Channel.send (ref second) f\n            | Maybe.None -> Result.Ok ()\n        match Channel.recv (ref last) with\n        | Maybe.Some f -> f 1\n        | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (first, middle) ->\n    match DataChannel.bounded 2 with\n    | (second, last) ->\n        let k = 41i64\n        let _sent = DataChannel.send (ref first) (\\x -> x + k)\n        let _moved = match DataChannel.recv (ref middle) with\n            | Maybe.Some f -> DataChannel.send (ref second) f\n            | Maybe.None -> Result.Ok ()\n        match DataChannel.recv (ref last) with\n        | Maybe.Some f -> f 1\n        | Maybe.None -> 0",
     );
     emits(
-        "def next :: ref Channel.Receiver<i64 -> i64> -> Maybe<i64 -> i64>\nfn next receiver = Channel.recv receiver\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = Channel.send (ref sender) (\\x -> x + k)\n    match next (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
+        "def next :: ref DataChannel.Receiver<i64 -> i64> -> Maybe<i64 -> i64>\nfn next receiver = DataChannel.recv receiver\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let k = 41i64\n    let _sent = DataChannel.send (ref sender) (\\x -> x + k)\n    match next (ref receiver) with\n    | Maybe.Some f -> f 1\n    | Maybe.None -> 0",
     );
     // A lock keeps its value as long as it lives, so a borrow in it stays on the lock, which
     // cannot be returned or shared by a scope, as with any other value that holds a function.
@@ -932,28 +932,28 @@ fn task_scope_is_one_group_of_children() {
     }
 }
 
-// F10 Phase 2: Channel.
+// F10 Phase 2: DataChannel (the Channel of F10, renamed in TZ03).
 
-const CHANNEL_ROUNDTRIP: &str = "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 7i64\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0";
+const CHANNEL_ROUNDTRIP: &str = "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) 7i64\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0";
 
 #[test]
 fn channel_programs_type_check_and_emit() {
     for source in [
         CHANNEL_ROUNDTRIP,
         // A sender that is cloned, and a send that is refused hands the item back.
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let clone = Channel.clone_sender (ref sender)\n    let _sent = Channel.send (ref clone) 7i64\n    match Channel.send (ref sender) 8i64 with\n    | Result.Ok _unit -> 1\n    | Result.Error item -> item",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let clone = DataChannel.clone_sender (ref sender)\n    let _sent = DataChannel.send (ref clone) 7i64\n    match DataChannel.send (ref sender) 8i64 with\n    | Result.Ok _unit -> 1\n    | Result.Error item -> item",
         // Items that own memory, are unit, or are tuples.
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) \"text\"\n    match Channel.recv (ref receiver) with\n    | Maybe.Some text -> text.length\n    | Maybe.None -> 0",
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) ()\n    match Channel.recv (ref receiver) with\n    | Maybe.Some _signal -> 1\n    | Maybe.None -> 0",
-        "match Channel.bounded 3 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) (1i64, \"text\")\n    match Channel.recv (ref receiver) with\n    | Maybe.Some _pair -> 1\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) \"text\"\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some text -> text.length\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) ()\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some _signal -> 1\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 3 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) (1i64, \"text\")\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some _pair -> 1\n    | Maybe.None -> 0",
         // The ends in a record, and a task that owns an end.
-        "record Ends { sender: Channel.Sender<i64>, receiver: Channel.Receiver<i64> }\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let ends = Ends { sender: sender, receiver: receiver }\n    let _sent = Channel.send (ref ends.sender) 3i64\n    match Channel.recv (ref ends.receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
-        "def produce :: Channel.Sender<i64> -> Task<i64>\nfn produce sender = task {\n    let _sent = Channel.send (ref sender) 5i64\n    return 1\n}\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let results = Task.run (Task.parallel [produce sender])\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value + results[0]\n    | Maybe.None -> 0",
+        "record Ends { sender: DataChannel.Sender<i64>, receiver: DataChannel.Receiver<i64> }\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let ends = Ends { sender: sender, receiver: receiver }\n    let _sent = DataChannel.send (ref ends.sender) 3i64\n    match DataChannel.recv (ref ends.receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+        "def produce :: DataChannel.Sender<i64> -> Task<i64>\nfn produce sender = task {\n    let _sent = DataChannel.send (ref sender) 5i64\n    return 1\n}\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let results = Task.run (Task.parallel [produce sender])\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value + results[0]\n    | Maybe.None -> 0",
         // Both ends are Sync: a scope borrows them, and an Arc of an end goes to tasks.
-        "match Channel.bounded 4 with\n| (sender, receiver) ->\n    let seen = Task.scope (ref sender) 2 (\\shared index -> match Channel.send shared index with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    let _first = Channel.recv (ref receiver)\n    Array.sum (ref seen)",
-        "def count :: Arc<Channel.Receiver<i64>> -> Task<i64>\nfn count receiver = task {\n    match Channel.recv (Arc.get (ref receiver)) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0\n}\nmatch Channel.bounded 2 with\n| (sender, receiver) ->\n    let shared = Arc.new receiver\n    let _sent = Channel.send (ref sender) 4i64\n    let results = Task.run (Task.parallel [count (Arc.share (ref shared))])\n    results[0]",
+        "match DataChannel.bounded 4 with\n| (sender, receiver) ->\n    let seen = Task.scope (ref sender) 2 (\\shared index -> match DataChannel.send shared index with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    let _first = DataChannel.recv (ref receiver)\n    Array.sum (ref seen)",
+        "def count :: Arc<DataChannel.Receiver<i64>> -> Task<i64>\nfn count receiver = task {\n    match DataChannel.recv (Arc.get (ref receiver)) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0\n}\nmatch DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let shared = Arc.new receiver\n    let _sent = DataChannel.send (ref sender) 4i64\n    let results = Task.run (Task.parallel [count (Arc.share (ref shared))])\n    results[0]",
         // A channel operation inside a lock type-checks, and traps when it runs: a critical section never waits.
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let lock = Mutex.create 0i64\n    let borrowed = ref sender\n    let _seen = Mutex.with_lock (ref lock) (\\_value -> match Channel.send borrowed 1i64 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let lock = Mutex.create 0i64\n    let borrowed = ref sender\n    let _seen = Mutex.with_lock (ref lock) (\\_value -> match DataChannel.send borrowed 1i64 with | Result.Ok _unit -> 1 | Result.Error _item -> 0)\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
     ] {
         emits(source);
     }
@@ -962,11 +962,11 @@ fn channel_programs_type_check_and_emit() {
 #[test]
 fn channel_ends_are_opaque_owned_and_sync() {
     // The representation is not the program's: a handle cannot be made, read or updated, and the
-    // primitive that closes a channel is the Channel module's alone.
+    // primitive that closes a channel is the DataChannel module's alone.
     for source in [
-        "let sender = Channel.Sender { block: 1 }\n0",
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    sender.block",
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    let other = { sender with block: 3 }\n    0",
+        "let sender = DataChannel.Sender { block: 1 }\n0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) 1i64\n    let _taken = DataChannel.recv (ref receiver)\n    sender.block",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) 1i64\n    let _taken = DataChannel.recv (ref receiver)\n    let other = { sender with block: 3 }\n    0",
     ] {
         let message = rejects(source, "E1022");
         assert!(
@@ -975,18 +975,19 @@ fn channel_ends_are_opaque_owned_and_sync() {
         );
     }
     let message = rejects(
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    let _closed = Channel.__close_sender (ref sender)\n    0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) 1i64\n    let _taken = DataChannel.recv (ref receiver)\n    let _closed = DataChannel.__close_sender (ref sender)\n    0",
         "E1022",
     );
     assert!(
-        message.contains("the channel close primitive is private to the standard Channel module")
+        message
+            .contains("the channel close primitive is private to the standard DataChannel module")
             && message.contains("closes when it is dropped"),
         "{message}"
     );
-    // A user Drop instance for a type of the standard library stays refused: the Channel module
+    // A user Drop instance for a type of the standard library stays refused: the DataChannel module
     // alone closes the ends it declares.
     let message = rejects(
-        "instance Drop<Channel.Sender<i64>> {\n    fn drop sender = ()\n}\n0",
+        "instance Drop<DataChannel.Sender<i64>> {\n    fn drop sender = ()\n}\n0",
         "E1016",
     );
     assert!(
@@ -996,31 +997,31 @@ fn channel_ends_are_opaque_owned_and_sync() {
     // An end is owned: a copy would close the channel twice, so it moves, and a function value
     // (which may be copied) holds a borrow of it, never the end.
     rejects(
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let other = sender\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let other = sender\n    let _sent = DataChannel.send (ref sender) 1i64\n    let _taken = DataChannel.recv (ref receiver)\n    0",
         "E1012",
     );
     for end in ["sender", "receiver"] {
         let source = format!(
-            "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    let use = \\_x -> {end}\n    0"
+            "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) 1i64\n    let _taken = DataChannel.recv (ref receiver)\n    let use = \\_x -> {end}\n    0"
         );
         let message = rejects(&source, "E1005");
         assert!(
-            message.contains("cannot capture Channel."),
+            message.contains("cannot capture DataChannel."),
             "{end}: {message}"
         );
     }
     emits(
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let borrowed = ref sender\n    let send = \\x -> Channel.send borrowed x\n    let _taken = Channel.recv (ref receiver)\n    match send 1i64 with\n    | Result.Ok _unit -> 1\n    | Result.Error _item -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let borrowed = ref sender\n    let send = \\x -> DataChannel.send borrowed x\n    let _taken = DataChannel.recv (ref receiver)\n    match send 1i64 with\n    | Result.Ok _unit -> 1\n    | Result.Error _item -> 0",
     );
     // Only what may move between tasks goes in: an Rc has no atomic count.
     let message = rejects(
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) (Rc.new 1i64)\n    0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) (Rc.new 1i64)\n    0",
         "E1013",
     );
     assert!(message.contains("tasks require Send values"), "{message}");
     // Sync: both ends may be shared by tasks.
     emits(&format!(
-        "{SYNC_PARAMETER}match Channel.bounded 3 with\n| (sender, receiver) ->\n    let _sent = Channel.send (ref sender) 1i64\n    let _taken = Channel.recv (ref receiver)\n    share (ref sender) + share (ref receiver)"
+        "{SYNC_PARAMETER}match DataChannel.bounded 3 with\n| (sender, receiver) ->\n    let _sent = DataChannel.send (ref sender) 1i64\n    let _taken = DataChannel.recv (ref receiver)\n    share (ref sender) + share (ref receiver)"
     ));
     // The name is taken only by the module: a program may declare its own Channel record.
     emits("record Channel { x: i64 }\nlet channel = Channel { x: 1 }\nchannel.x");
@@ -1071,13 +1072,13 @@ fn channel_lowering_calls_the_runtime_and_closes_by_drop() {
         assert!(ir.contains("call i32 @tsuzuri_channel_recv("), "{ir}");
     }
     let [native, _] = emits(
-        "match Channel.bounded 2 with\n| (sender, receiver) ->\n    let clone = Channel.clone_sender (ref sender)\n    let _sent = Channel.send (ref clone) 7i64\n    match Channel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
+        "match DataChannel.bounded 2 with\n| (sender, receiver) ->\n    let clone = DataChannel.clone_sender (ref sender)\n    let _sent = DataChannel.send (ref clone) 7i64\n    match DataChannel.recv (ref receiver) with\n    | Maybe.Some value -> value\n    | Maybe.None -> 0",
     );
     assert!(
         native.contains("call void @tsuzuri_channel_clone_sender("),
         "{native}"
     );
-    // Without a mention of Channel, no runtime and no lowering is added, whatever else is used.
+    // Without a mention of DataChannel, no runtime and no lowering is added, whatever else is used.
     for source in [
         "let values = Task.run (Task.parallel [task { return 1 }, task { return 2 }])\nArray.sum (ref values)",
         "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)",
@@ -1086,7 +1087,7 @@ fn channel_lowering_calls_the_runtime_and_closes_by_drop() {
         for ir in emits(source) {
             assert!(
                 !ir.contains("tsuzuri_channel") && !ir.contains("tz.channel"),
-                "no Channel, no channel runtime\n{ir}"
+                "no DataChannel, no channel runtime\n{ir}"
             );
         }
     }

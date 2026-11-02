@@ -212,12 +212,12 @@ const NO3: &str = r#"let lock = Mutex.create 5i64
 let kept = Mutex.with_lock (ref lock) (\value -> { let view = ref (deref value); \x -> deref view + x })
 0
 "#;
-const NO4: &str = r#"match Channel.bounded 2 with
+const NO4: &str = r#"match DataChannel.bounded 2 with
 | (sender, receiver) ->
     let table = [40i64, 41i64]
     let view = ref table
-    let _sent = Channel.send (ref sender) (\x -> x + view[0])
-    match Channel.recv (ref receiver) with
+    let _sent = DataChannel.send (ref sender) (\x -> x + view[0])
+    match DataChannel.recv (ref receiver) with
     | Maybe.Some _item -> 1
     | Maybe.None -> 0
 "#;

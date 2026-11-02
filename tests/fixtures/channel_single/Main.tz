@@ -1,0 +1,142 @@
+// TZ03: the operations of Channel that need no second thread, the same on native and on the default
+// WebAssembly target (one thread: a wait that nobody can end traps at once).
+
+// Capacity 3: send 1, 2, 3, receive one, send 4, receive the rest, in order.
+export def buffered_order :: i64
+fn buffered_order =
+    let values: Channel<i64> = Channel.make 3
+    Channel.send values 1
+    Channel.send values 2
+    Channel.send values 3
+    let mut code = match Channel.recv values with
+        | Maybe.Some value -> value
+        | Maybe.None -> 9
+    Channel.send values 4
+    for _i in 0 ..< 3 do
+        code = code * 10 + (match Channel.recv values with
+            | Maybe.Some value -> value
+            | Maybe.None -> 9)
+    code
+
+// Two items, then close: receivers take both, then get None, and keep getting it.
+export def closed_drain :: i64
+fn closed_drain =
+    let values: Channel<i64> = Channel.make 4
+    Channel.send values 1
+    Channel.send values 2
+    Channel.close values
+    let mut code = 0i64
+    for _i in 0 ..< 4 do
+        code = code * 10 + (match Channel.recv values with
+            | Maybe.Some value -> value
+            | Maybe.None -> 7)
+    code
+
+// try_send and try_recv on capacity 1, and after the close.
+export def try_ops :: i64
+fn try_ops =
+    let values: Channel<string> = Channel.make 1
+    let first = match Channel.try_send values "a" with
+        | Result.Ok _ -> 1
+        | Result.Error _ -> 0
+    let full = match Channel.try_send values "bcd" with
+        | Result.Error (Channel.SendError.Full item) -> String.length item
+        | _ -> 0
+    let item = match Channel.try_recv values with
+        | Channel.Received.Item text -> String.length text
+        | _ -> 0
+    let empty = match Channel.try_recv values with
+        | Channel.Received.Empty -> 1
+        | _ -> 0
+    Channel.close values
+    let closed = match Channel.try_send values "ef" with
+        | Result.Error (Channel.SendError.Closed item) -> String.length item
+        | _ -> 0
+    let disconnected = match Channel.try_recv values with
+        | Channel.Received.Disconnected -> 1
+        | _ -> 0
+    first * 100000 + full * 10000 + item * 1000 + empty * 100 + closed * 10 + disconnected
+
+// length and capacity, and a shared handle that sees the same channel.
+export def length_capacity :: i64
+fn length_capacity =
+    let values: Channel<i64> = Channel.make 5
+    let other = Channel.share values
+    Channel.send values 1
+    Channel.send other 2
+    Channel.length values * 100 + Channel.capacity other * 10 + Channel.length other
+
+// `for` over a buffered channel of unit that was closed.
+export def unit_signals :: i64
+fn unit_signals =
+    let signals: Channel<unit> = Channel.make 100
+    for _i in 0 ..< 100 do
+        Channel.send signals ()
+    Channel.close signals
+    let mut count = 0i64
+    for _signal in signals do
+        count = count + 1
+    count
+
+// Items left in the channel are dropped with its last handle, once.
+export def dropped_items :: i64
+fn dropped_items =
+    let texts: Channel<string> = Channel.make 3
+    let other = Channel.share texts
+    Channel.send texts "left"
+    Channel.send other "behind"
+    Channel.length texts
+
+export def make_negative :: i64
+fn make_negative =
+    let values: Channel<i64> = Channel.make (-1)
+    Channel.capacity values
+
+export def send_closed :: i64
+fn send_closed =
+    let values: Channel<i64> = Channel.make 1
+    Channel.close values
+    Channel.send values 1
+    0
+
+export def close_twice :: i64
+fn close_twice =
+    let values: Channel<i64> = Channel.make 1
+    Channel.close values
+    Channel.close values
+    0
+
+export def recv_empty :: i64
+fn recv_empty =
+    let values: Channel<i64> = Channel.make 0
+    match Channel.recv values with
+    | Maybe.Some value -> value
+    | Maybe.None -> 0
+
+export def send_full :: i64
+fn send_full =
+    let values: Channel<i64> = Channel.make 1
+    Channel.send values 1
+    Channel.send values 2
+    0
+
+// The direction handles on one thread (TZ03 Phase 2).
+export def direction_ops :: i64
+fn direction_ops =
+    let values: Channel<string> = Channel.make 2
+    let out = Channel.send_only values
+    let input = Channel.receive_only values
+    SendOnly.send out "ab"
+    let full = match SendOnly.try_send out "cde" with
+        | Result.Ok _ -> 1
+        | Result.Error _ -> 0
+    let other = SendOnly.share out
+    let sizes = SendOnly.length other * 10 + ReceiveOnly.capacity input
+    SendOnly.close other
+    let mut length = 0i64
+    for text in input do
+        length = length + String.length text
+    let closed = match ReceiveOnly.try_recv input with
+        | Channel.Received.Disconnected -> 1
+        | _ -> 0
+    full * 10000 + sizes * 100 + length * 10 + closed

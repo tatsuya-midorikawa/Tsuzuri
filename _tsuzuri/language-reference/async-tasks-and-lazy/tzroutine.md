@@ -13,7 +13,8 @@
 - 境界（`main`・`export` の呼び出し・`test`・`bench`）は、その中で起動した tzroutine がすべて終わるまで戻りません。 <!-- rule: TSK-012 -->
 - ただし、トップレベルの最後の式や `export` の戻り値は、**待つ前に**計算されます。子の結果を読むときは、子の完了を数えて待ってから読みます。
 - `Routine` モジュール（`go`・`yield`・`count`・`max_procs`・`cpu_count`）で、関数値の起動、実行の譲渡、数の問い合わせができます（[Routine](../built-in-types-and-modules/routine.md)）。
-- 対応するのはネイティブの macOS・Linux・Windows（aarch64・x86-64）です。WebAssembly は `E2000` です。
+- tzroutine の間の値の受け渡しには [Channel](../built-in-types-and-modules/channel.md) を使います（Go の `chan T`）。
+- 対応するのはネイティブの macOS・Linux・Windows（aarch64・x86-64）です。WebAssembly で tzroutine を起動するプログラムは `E2000` です。
 
 ## 基本の書き方
 
@@ -113,6 +114,23 @@ String.length (ref s)     // E1012: use of moved or partially moved value 's'
 
 Go と違って待つのは、`Drop`（ファイルの flush など）を必ず走らせ、確保した値を残さないためです。
 
+子の結果は、[Channel](../built-in-types-and-modules/channel.md) で受け取ると、数えて待つ必要がありません。受け取ること自体が待ち合わせです。
+
+```tsuzuri run=total%3D30
+let results: Channel<i64> = Channel.make 0
+for i in 1 ..= 4 do
+    let out = Channel.share results
+    tzroutine {
+        Channel.send out ((i as i64) * 3)
+    }
+let mut total = 0i64
+for _i in 0 ..< 4 do
+    total = total + (match Channel.recv results with
+        | Maybe.Some value -> value
+        | Maybe.None -> 0)
+$"total={total}"
+```
+
 `Task.parallel` のタスク、`Task.scope` の子ども、`Parallel.*` のコールバックはスレッドプールのワーカーで走り、どの境界の中でもありません。そこで起動した tzroutine は、そのタスク（子ども、コールバックの 1 回）が終わる前に待たれます。したがって、それらの呼び出しが戻るのは、中で起動した tzroutine が終わった後です。
 
 > **Go から来た人への注意**: 終わらない tzroutine（無限ループ、来ない値を待つもの）を残すと、境界が待ち続けます。全員が待ちに入って誰も起こせなくなったときは、デッドロックの判定が次の文を標準エラーへ書いて、プロセスを終えます。
@@ -156,7 +174,7 @@ tzroutine は M:N のスケジューラーで走ります。
 | 構成 | 結果 |
 | --- | --- |
 | native の macOS・Linux・Windows（aarch64・x86-64） | 動く |
-| wasm32・wasm64 | `E2000`（`tzroutine on WebAssembly needs --wasm-feature jspi`） |
+| wasm32・wasm64 | tzroutine を起動するプログラムは `E2000`（`tzroutine on WebAssembly needs --wasm-feature jspi`）。起動しないプログラムの `Channel` と `Routine` の問い合わせは 1 本の実行として動く（`Routine.count ()`・`max_procs ()`・`cpu_count ()` は 1、`Routine.yield ()` は何もしない） |
 | wasm32 + `--wasm-feature jspi` | `E2000`（`tzroutine with --wasm-feature jspi is not implemented yet`） |
 | `--wasm-feature threads` | `E2000`（`option_conflict`） |
 | `--freestanding` | `E2000`（`--freestanding cannot use tzroutine: ...`） |

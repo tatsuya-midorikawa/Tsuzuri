@@ -672,6 +672,8 @@ diagnostic_kinds! {
         (DomainTargetUnsupported, "domain_target_unsupported", "E1038"),
         // E1039
         (MonoidFloatInstance, "monoid_float_instance", "E1039"),
+        // E1040
+        (RenamedToDataChannel, "renamed_to_data_channel", "E1040"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (AuditUsage, "audit_usage", "E2000"),

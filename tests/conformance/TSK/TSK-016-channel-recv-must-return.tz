@@ -1,0 +1,17 @@
+let values: Channel<i64> = Channel.make 4
+Channel.send values 1
+Channel.send values 2
+Channel.close values
+let first = match Channel.recv values with
+    | Maybe.Some value -> value
+    | Maybe.None -> 0
+let second = match Channel.recv values with
+    | Maybe.Some value -> value
+    | Maybe.None -> 0
+let third = match Channel.recv values with
+    | Maybe.Some value -> value
+    | Maybe.None -> 9
+first * 100 + second * 10 + third
+
+// rule: TSK-016
+// expect: stdout "129\n"

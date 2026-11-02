@@ -1,15 +1,15 @@
-/// The sending end of a bounded channel. `Channel.send` borrows it, so several tasks may share one
-/// through a `Task.scope` or an `Arc`, and `Channel.clone_sender` makes an owner of its own. The
-/// channel closes for its receivers when the last `Sender` is dropped; the drop glue below is what
-/// closes it, so a `Sender` that is never dropped keeps the channel open.
-record Sender<'a> { block: i64 }
-/// The receiving end of a bounded channel. `Channel.recv` borrows it, so several tasks may take
-/// items from one receiver (an item reaches exactly one of them). Dropping it makes every later
-/// `Channel.send` return its item in an `Error`.
-record Receiver<'a> { block: i64 }
-instance Drop<Sender<'a>> {
-    fn drop sender = Channel.__close_sender sender
+/// A channel of Go (TZ03): a queue of `capacity` items that tzroutines send to and receive from,
+/// with one kind of handle for both ends. `Channel.make 0` hands each item from a sender to a
+/// receiver when the two meet; a larger capacity buffers that many items. `Channel.close` closes
+/// it: receivers take what is left and then get `None`, and a send traps. `Channel.share` makes one
+/// more handle; the block goes with the last one. Dropping a handle never closes the channel.
+record Channel<'a> { block: i64 }
+instance Drop<Channel<'a>> {
+    fn drop channel = Channel.__release channel
 }
-instance Drop<Receiver<'a>> {
-    fn drop receiver = Channel.__close_receiver receiver
-}
+/// What `Channel.try_send` gives back when it cannot send now: the item, in `Full` while the buffer
+/// has no room and no receiver waits, and in `Closed` when the channel is closed.
+union SendError<'a> = Full of 'a | Closed of 'a
+/// What `Channel.try_recv` found: an `Item`, `Empty` while the channel is open and holds none, or
+/// `Disconnected` once it is closed and drained.
+union Received<'a> = Item of 'a | Empty | Disconnected

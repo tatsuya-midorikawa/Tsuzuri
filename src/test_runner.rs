@@ -815,8 +815,10 @@ fn build_runner(
             overflow_fails,
         });
     }
-    // TZ02: the tzroutines of WebAssembly will suspend through JSPI (TZ09).
-    if text.contains("@tsuzuri_tz_") {
+    // TZ02: the tzroutines of WebAssembly will suspend through JSPI (TZ09). A test program that
+    // only uses a `Channel` links the channels built for one thread (TZ03, `TZR_SINGLE`).
+    let tzroutine_single = text.contains("@tsuzuri_tz_");
+    if tzroutine_single && llvm::spawns(module) {
         return Err(driver_error_of(
             DiagnosticKind::OptionRequiresOption,
             "tzroutine on WebAssembly needs --wasm-feature jspi",
@@ -908,9 +910,41 @@ fn build_runner(
         // exports it by default; like `build --debug-output`, do not rely on that.
         .args(debug_output.then_some("--export-memory"))
         .args(memory64.then_some("-mwasm64"))
-        .arg(&object)
-        .arg("-o")
-        .arg(&artifact);
+        .arg(&object);
+    if tzroutine_single {
+        let source = directory.join("tzroutine-single.c");
+        let single = directory.join("tzroutine-single.o");
+        fs::write(&source, include_str!("runtime/tzroutine.c"))
+            .map_err(|error| io_error("write the one-thread tzroutine runtime", &source, error))?;
+        let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+        runtime
+            .arg(if memory64 {
+                "--target=wasm64-unknown-unknown"
+            } else {
+                "--target=wasm32-unknown-unknown"
+            })
+            .args([
+                "-std=c11",
+                "-ffreestanding",
+                "-fno-stack-protector",
+                "-mbulk-memory",
+                "-DTZR_SINGLE",
+                "-c",
+            ])
+            .arg(format!("-O{}", options.optimization))
+            .arg(&source)
+            .arg("-o")
+            .arg(&single);
+        collect_message(
+            messages,
+            run_tool(
+                &mut runtime,
+                "tests require LLVM/Clang 17+ or TSUZURI_CLANG",
+            )?,
+        );
+        linker.arg(&single);
+    }
+    linker.arg("-o").arg(&artifact);
     collect_message(
         messages,
         run_tool(

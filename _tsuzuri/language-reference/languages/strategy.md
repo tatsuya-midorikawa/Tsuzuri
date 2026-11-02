@@ -177,7 +177,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | 共有所有の `Rc` / `Arc` / `Weak`、循環する構造の `Arena` | 実装済み | C10。共有した値の書き換えは F10 の `Atomic` / `Mutex` |
 | 多次元配列 `Matrix`・借用の窓 `MatrixView`・N 次元の `Tensor`（行優先の連続バッファ、行列積の演算順序を固定、FMA 版と行分割の並列版は別名） | 実装済み | [Matrix](../built-in-types-and-modules/matrix.md)・[MatrixView](../built-in-types-and-modules/matrix-view.md)・[Tensor](../built-in-types-and-modules/tensor.md)、C11。行列積の GPU カーネルと、x86-64 の速度は含まない |
 | `Atomic`、`Mutex`、`Task.scope`、`Sync` | 実装済み。`--wasm-feature threads` でも使える（Worker でロックを待つ） | F10 の Phase 1 |
-| `Channel`（容量付きの MPMC、待ちとデッドロックのトラップ） | 実装済み | F10 の Phase 2 |
+| `DataChannel`（容量付きの MPMC、待ちとデッドロックのトラップ） | 実装済み | F10 の Phase 2 |
 | REPL（`tsuzuri repl`）、スクリプト実行（`tsuzuri script`、shebang 行） | 実装済み | G13。入力ごとに `Main.tz` を作り直して検査・実行する。JIT はない |
 | ベンチマーク（`tsuzuri bench`）、カバレッジ（`tsuzuri test --coverage`）、プロパティテスト（`Gen`） | 実装済み | G18。ネイティブだけ。速さの合否の閾値はない |
 | デバッガーでの Tsuzuri の値の表示（LLDB の formatter、テストのデバッグ、Windows の PDB と natvis） | 実装済み | G16。`-O0` のネイティブ。WASM と `-O3` の変数の表示は保証しない |

@@ -284,7 +284,9 @@ fn pool_workers_wait_for_their_tzroutines() {
         .chars()
         .take_while(|c| !matches!(c, ',' | ')' | ' '))
         .collect();
-    assert_wrapped(definition(&ir, &callback));
+    // The runtime calls the callback's guard (TZ03), which calls the callback.
+    let callback = callback.strip_suffix(".guard").unwrap_or(&callback);
+    assert_wrapped(definition(&ir, callback));
 }
 
 #[test]
@@ -314,7 +316,7 @@ fn a_tzroutine_cannot_yield_inside_a_mutex() {
 #[test]
 fn programs_without_tzroutine_keep_their_ir() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    for fixture in ["tasks", "concurrency", "channel", "control", "async"] {
+    for fixture in ["tasks", "concurrency", "data_channel", "control", "async"] {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(root.join(fixture)).unwrap() {
             let path = entry.unwrap().path();
@@ -481,8 +483,11 @@ fn a_join_of_the_task_runtime_is_a_blocking_call() {
         .collect();
     assert!(!joins.is_empty());
     for at in joins {
-        assert_eq!(lines[at - 1].trim(), "call void @tsuzuri_tz_block_enter()");
-        assert_eq!(lines[at + 1].trim(), "call void @tsuzuri_tz_block_leave()");
+        // TZ03: the items are announced inside the blocking call.
+        assert_eq!(lines[at - 2].trim(), "call void @tsuzuri_tz_block_enter()");
+        assert!(lines[at - 1].contains("call void @tsuzuri_tz_parallel_begin(ptr %"));
+        assert!(lines[at + 1].contains("call void @tsuzuri_tz_parallel_end(ptr %"));
+        assert_eq!(lines[at + 2].trim(), "call void @tsuzuri_tz_block_leave()");
     }
     let run = ir.find("@tsuzuri_domain_run(ptr").expect("a domain");
     let before = &ir[..run];

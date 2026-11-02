@@ -55,7 +55,7 @@ const stacks = (workers) => BigInt(workers) * (262144n + 16n);
 
 try {
   for (const optimization of [0, 3]) {
-    const tasks = build("tasks", optimization), shared = build("concurrency_threads", optimization), piped = build("channel_threads", optimization);
+    const tasks = build("tasks", optimization), shared = build("concurrency_threads", optimization), piped = build("data_channel_threads", optimization);
     for (const workers of [1, 2, 3, 5, 7]) {
       const pool = await createThreadPool(tasks, { workers });
       try {

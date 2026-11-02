@@ -991,13 +991,25 @@ impl<'a> Checker<'a, '_> {
         }
     }
 
-    /// The type of the item that `callee` puts in a channel when it is `Channel.send`, or the
-    /// generated function that calls it (F10). The item stays in the channel after the call.
+    /// The type of the item that `callee` puts in a channel when it is `DataChannel.send` (F10),
+    /// `Channel.send` or `Channel.try_send` (TZ03), or the generated function that calls one. The
+    /// item stays in the channel after the call.
     fn sent_item(&self, callee: &TypedExpr) -> Option<Type> {
+        use crate::check::Builtin::{
+            ChannelSend, ChannelTrySend, DataChannelSend, SendOnlySend, SendOnlyTrySend,
+        };
         match &callee.ty {
             Type::Function(parameters, _)
-                if self.builtin_called(callee) == Some(crate::check::Builtin::ChannelSend)
-                    && parameters.len() >= 2 =>
+                if matches!(
+                    self.builtin_called(callee),
+                    Some(
+                        DataChannelSend
+                            | ChannelSend
+                            | ChannelTrySend
+                            | SendOnlySend
+                            | SendOnlyTrySend
+                    )
+                ) && parameters.len() >= 2 =>
             {
                 Some(parameters[1].clone())
             }
@@ -2675,11 +2687,26 @@ impl<'a> Checker<'a, '_> {
         let mut result = Value::default();
         let start = self.held.len();
         // A direct call of `Mutex.with_lock` checks its callback's result with its arguments below,
-        // and one of `Channel.send` checks its item; any other use of either builtin as a value is
+        // and one of `DataChannel.send` checks its item; any other use of either builtin as a value is
         // checked where it is evaluated.
         let locked = self.locked_result(callee).filter(|_| arguments.len() >= 2);
         let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
-        let received = self.builtin_called(callee) == Some(crate::check::Builtin::ChannelRecv);
+        // What comes out of a channel was checked when it went in; `Channel.try_send` gives back
+        // the item that it checked. Only a full call gives that: `Channel.try_send ch` is a function
+        // that borrows the channel.
+        let received = match self.builtin_called(callee) {
+            Some(
+                crate::check::Builtin::DataChannelRecv
+                | crate::check::Builtin::ChannelRecv
+                | crate::check::Builtin::ChannelTryRecv
+                | crate::check::Builtin::ReceiveOnlyRecv
+                | crate::check::Builtin::ReceiveOnlyTryRecv,
+            ) => !arguments.is_empty(),
+            Some(
+                crate::check::Builtin::ChannelTrySend | crate::check::Builtin::SendOnlyTrySend,
+            ) => arguments.len() >= 2,
+            _ => false,
+        };
         let value = if locked.is_some() || sent.is_some() {
             Value::default()
         } else {
@@ -2932,14 +2959,16 @@ impl<'a> Checker<'a, '_> {
                     expression.span,
                 ));
             }
-            // The same for the item of `Channel.send`.
+            // The same for the item of `DataChannel.send`, `Channel.send` and `Channel.try_send`.
             E::Function(_)
                 if self
                     .sent_item(expression)
                     .is_some_and(|item| item.carries_loans(&self.module.types())) =>
             {
+                let builtin = self.builtin_called(expression).expect("a send builtin");
+                let end = if builtin.is_data_channel() { "sender" } else { "channel" };
                 return Err(error(DiagnosticKind::MustApplyDirectly,
-                    "Channel.send must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the sender and the item together",
+                    format!("{} must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the {end} and the item together", builtin.name()),
                     expression.span,
                 ));
             }

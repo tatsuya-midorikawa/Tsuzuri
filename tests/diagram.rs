@@ -327,9 +327,9 @@ fn concurrency_unique_element_type_attaches_creators() {
         )
     };
     let creator = "{\"id\":\"M.make\",\"kind\":\"def\",\"module\":\"M\",\"name\":\"make\",\"params\":[],\"result\":\"i64\",\"origin\":\"project\",\"span\":{\"path\":\"M.tz\",\"line\":1,\"column\":1}}\n";
-    let edges = "{\"rel\":\"calls\",\"from\":\"M.make\",\"to\":\"Channel.bounded\",\"args\":[],\"span\":{\"line\":3,\"column\":1}}\n";
+    let edges = "{\"rel\":\"calls\",\"from\":\"M.make\",\"to\":\"DataChannel.bounded\",\"args\":[],\"span\":{\"line\":3,\"column\":1}}\n";
     let one = Input::from_texts(
-        &(symbol("send", "ref Channel.Sender<i64>") + creator),
+        &(symbol("send", "ref DataChannel.Sender<i64>") + creator),
         edges,
         &[],
         &[],
@@ -338,12 +338,12 @@ fn concurrency_unique_element_type_attaches_creators() {
     .unwrap();
     let text = draw(&one, &request(Kind::Concurrency, None));
     assert!(
-        text.contains("(\"Channel#lt;i64#gt;\")") && !text.contains('?'),
+        text.contains("(\"DataChannel#lt;i64#gt;\")") && !text.contains('?'),
         "{text}"
     );
     let two = Input::from_texts(
-        &(symbol("send", "ref Channel.Sender<i64>")
-            + &symbol("other", "ref Channel.Sender<string>")
+        &(symbol("send", "ref DataChannel.Sender<i64>")
+            + &symbol("other", "ref DataChannel.Sender<string>")
             + creator),
         edges,
         &[],
@@ -351,7 +351,7 @@ fn concurrency_unique_element_type_attaches_creators() {
         "",
     )
     .unwrap();
-    assert!(draw(&two, &request(Kind::Concurrency, None)).contains("(\"Channel#lt;?#gt;\")"));
+    assert!(draw(&two, &request(Kind::Concurrency, None)).contains("(\"DataChannel#lt;?#gt;\")"));
 }
 
 /// A test's name may hold a backslash or a control character; its label still validates.
@@ -407,7 +407,7 @@ fn concurrency_reads_every_cell_of_a_signature() {
     assert_eq!(validate_mermaid(&text), Ok(()));
     // The `>` of a function arrow closes nothing.
     let input = Input::from_texts(
-        &symbol("map", "ref Channel.Sender<(i64 -> i64)>"),
+        &symbol("map", "ref DataChannel.Sender<(i64 -> i64)>"),
         "",
         &[],
         &[],
@@ -416,7 +416,7 @@ fn concurrency_reads_every_cell_of_a_signature() {
     .unwrap();
     let text = draw(&input, &request(Kind::Concurrency, None));
     assert!(
-        text.contains("(\"Channel#lt;(i64 -#gt; i64)#gt;\")"),
+        text.contains("(\"DataChannel#lt;(i64 -#gt; i64)#gt;\")"),
         "{text}"
     );
     assert_eq!(validate_mermaid(&text), Ok(()));

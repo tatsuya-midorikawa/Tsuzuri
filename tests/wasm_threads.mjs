@@ -319,7 +319,7 @@ fn bulk = {
       // F10 Phase 2: channels between tasks that run at the same time, on 2 to 4 threads. The tasks
       // that wait on each other need a thread each, so the exports that need 3 are run from 3 up.
       const piped = join(directory, `channel-threads-${optimization}.wasm`);
-      cli(["build", resolve("tests/fixtures/channel_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", piped]);
+      cli(["build", resolve("tests/fixtures/data_channel_threads/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", piped]);
       const pipedBytes = readFileSync(piped);
       // What nested_then_send returns: `parts` sums of index % 7 over the n indexes below n.
       const nestedSum = (parts, n) => parts * (n / 7n * 21n + (n % 7n) * ((n % 7n) - 1n) / 2n);
@@ -419,7 +419,7 @@ fn bulk = {
       console.log(`WASM threads O${optimization}: pipelines, fan-in, job queue and ping-pong on 2 to 4 threads, drops once, and deadlocks trap`);
       // The single-task exports of the channel suite on a pool, and the refusals inside a lock.
       const sequential = join(directory, `channel-${optimization}.wasm`);
-      cli(["build", resolve("tests/fixtures/channel/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", sequential]);
+      cli(["build", resolve("tests/fixtures/data_channel/Main.tz"), "--target", "wasm32", "--wasm-feature", "threads", `-O${optimization}`, "-o", sequential]);
       const sequentialBytes = readFileSync(sequential);
       const channelPool = await createThreadPool(sequentialBytes, { workers: 2 });
       try {
@@ -443,7 +443,7 @@ fn bulk = {
           await trapped.close();
         }
       }
-      console.log(`WASM threads O${optimization}: the Channel exports of one task and the refusals inside a lock`);
+      console.log(`WASM threads O${optimization}: the DataChannel exports of one task and the refusals inside a lock`);
       // PM05: the heap under its lock. Each task allocates blocks of many sizes (a Vec that grows by
       // reallocation, strings, arrays of 4, 12, 75 and 625 elements) and returns an array that the
       // caller frees on another thread than the one that allocated it. Whatever the schedule, the

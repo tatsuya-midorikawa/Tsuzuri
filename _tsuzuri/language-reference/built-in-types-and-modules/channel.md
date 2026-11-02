@@ -1,348 +1,337 @@
 # Channel
 
-`Channel.bounded` は、容量の決まったキューを作り、送る側 `Sender` と受ける側 `Receiver` を返します。タスクの間で、所有する値を 1 つずつ受け渡すときに使います。共有した 1 つの値を書き換えるなら [Mutex](./mutex.md) や [Atomic](./atomic.md)、結果を集めるだけなら `Task.parallel` の戻り値で足ります。
+`Channel<T>` は、Go の `chan T` に当たる双方向のチャンネルです。[tzroutine](../async-tasks-and-lazy/tzroutine.md) の間で、所有する値を 1 つずつ受け渡します。1 つのハンドルで送りも受けもし、`Channel.share` でハンドルを増やして、ほかの tzroutine へ移します。容量 0 のチャンネルは、送り手と受け手が出会うまで両方を待たせ（受け渡しの同期）、容量のあるチャンネルはキューになります。
+
+> 送り手と受け手の端が分かれ、最後の送り手の drop で閉じるチャンネルは [DataChannel](./datachannel.md)（TZ03 より前の名前は `Channel`）です。[使い分け](#datachannel-との使い分け)を見てください。
 
 ## この記事のポイント
 
-- `Channel.bounded capacity` は `(Sender<T> * Receiver<T>)` を返します。容量は 1 以上で、0 以下はトラップです。要素の型 `T` は、タスクへ渡せる（`Send`）ものに限ります。
-- `Channel.send (ref sender) item` は、キューに空きがなければ待ち、`Ok ()` を返します。受け手が 1 つも残っていないときは、待たずに `Error item` で要素を返します。
-- `Channel.recv (ref receiver)` は、要素があれば `Some item` を返し、空なら送り手が来るのを待ちます。すべての `Sender` が drop され、残りの要素も取り尽くしたら `None` です。
-- `Channel.clone_sender (ref sender)` は、独立した所有者の `Sender` を作ります。**最後の `Sender` が drop されると、チャンネルは閉じます**。最後の `Receiver` が drop されると、以後の `send` は `Error` を返します。
-- 要素は FIFO で、1 つの要素は 1 つの受け手だけに届きます。どちらの端も `Sync` で、`ref` を共有してもよく、`Arc` に入れてもかまいません。複数の送り手と複数の受け手（MPMC）が使えます。
-- 両端は所有値です。関数値には捕捉できません（`E1005`）。借用 `ref sender` なら捕捉できます。
-- 要素は借用を持てません。関数値は、環境が借用を持たないときだけ送れます（`E1013`、[要素と借用](#要素と借用)）。
-- 待つスレッドは、先にプールの未着手の仕事を手伝い、それでも進めなければ眠ります。**どのスレッドも待っていて、動かせる仕事もないとき**は、無限に待たず、`deadlock: every task is waiting on a channel` というトラップになります。完了するかどうかは、スレッド数に左右されます（[待ちの規則](#待ちの規則)）。
-- チャンネルに残った要素は、最後の端が drop されるとき、ちょうど 1 回ずつ drop されます。
+- `Channel.make n` は容量 `n` のチャンネルを作ります。`0` はバッファなし（Go の `make(chan T)`）です。負の容量はトラップです。要素の型は、tzroutine へ渡せる（`Send`）ものに限ります。
+- `Channel.send ch item` は、受け手が待っていれば直接渡し、空きがあれば入れ、どちらもなければ待ちます。`Channel.recv ch` は、要素があれば `Some item` を返し、空なら待ちます。閉じて空なら `None` です（Go の `v, ok := <-ch`）。 <!-- rule: TSK-016 -->
+- **閉じるのは `Channel.close` だけ**です。ハンドルを drop しても閉じません。閉じたチャンネルへの `send` と、2 回目の `close` はトラップです（Go の panic）。 <!-- rule: TSK-017 -->
+- `for x in ch do ...` は、閉じて空になるまで受け取り続けます（Go の `for x := range ch`）。`break` と `continue` も使えます。 <!-- rule: TSK-019 -->
+- `Channel.try_send` と `Channel.try_recv` は待ちません。入れられなかった要素は `Error` の中に戻ります。
+- 待つのは tzroutine だけで、OS スレッドは止まりません。待っている tzroutine の数はスレッド数に縛られません。誰も起こせない待ちは、`Tsuzuri runtime: all tzroutines are asleep - deadlock!` を書いて、その呼び出しの位置でトラップします。
+- 要素は FIFO（送りが終わった順）で、1 つの要素は 1 つの受け手だけに届きます。要素は借用を持てません（`E1013`）。 <!-- rule: TSK-018 -->
+- 送るだけのハンドル `SendOnly<T>`（Go の `chan<- T`）と、受け取るだけのハンドル `ReceiveOnly<T>`（`<-chan T`）を、`Channel.send_only`・`Channel.receive_only` で作れます（[向きのあるハンドル](#向きのあるハンドル)）。
 
 ## 基本の書き方
 
-要素は先に入れたものから順に出ます。容量の範囲内なら、2 つ目のスレッドは要りません。
+生産者の tzroutine が 1 から 100 までを送って閉じ、`main` が `for` で受け取って足します。
 
-```tsuzuri run=first%3D10%20rest%3D90
-def take :: ref Channel.Receiver<i64> -> i64
-fn take receiver =
-    match Channel.recv receiver with
+```tsuzuri run=sum%3D5050
+let jobs: Channel<i64> = Channel.make 0
+let producer = Channel.share jobs
+tzroutine {
+    for i in 1 ..= 100 do
+        Channel.send producer (i as i64)
+    Channel.close producer
+}
+let mut sum = 0i64
+for job in jobs do
+    sum = sum + job
+$"sum={sum}"
+```
+
+実行結果:
+
+```text
+sum=5050
+```
+
+- 要素の型が決まらない `Channel.make 0` は `E1015` です。`let jobs: Channel<i64> = ...` のように型を書きます。
+- `Channel.share jobs` は、同じチャンネルのハンドルをもう 1 つ作ります。tzroutine へは、そのハンドルをムーブします。
+- 引数の型が `ref Channel<'a>` なので、呼び出しでは `ref` を省けます（`Channel.send producer 1`）。
+
+## バッファなしとバッファあり
+
+容量 0 では、`send` は受け手が来るまで、`recv` は送り手が来るまで待ちます。値は、出会った瞬間に送り手から受け手へ直接渡ります。
+
+```text
+容量 0:   send ──待つ──┐
+                      ├─ 出会う: 値が渡り、両方が進む
+          recv ──待つ──┘
+
+容量 n:   send → [ 1 | 2 | 3 ] → recv     満杯の send と空の recv だけが待つ
+```
+
+容量があれば、満杯になるまで `send` は待たず、2 つ目の tzroutine がなくても使えます。
+
+```tsuzuri run=1234
+let values: Channel<i64> = Channel.make 3
+Channel.send values 1
+Channel.send values 2
+Channel.send values 3
+let mut code = match Channel.recv values with
     | Maybe.Some value -> value
-    | Maybe.None -> -1
-
-match Channel.bounded 3 with
-| (sender, receiver) ->
-    let _a = Channel.send (ref sender) 10
-    let _b = Channel.send (ref sender) 20
-    let _c = Channel.send (ref sender) 30
-    let first = take (ref receiver)
-    let _d = Channel.send (ref sender) 40
-    let rest = take (ref receiver) + take (ref receiver) + take (ref receiver)
-    $"first={first} rest={rest}"
+    | Maybe.None -> 0
+Channel.send values 4
+for _i in 0 ..< 3 do
+    code = code * 10 + (match Channel.recv values with
+        | Maybe.Some value -> value
+        | Maybe.None -> 0)
+code
 ```
 
 実行結果:
 
 ```text
-first=10 rest=90
+1234
 ```
 
-3 つの要素は、満杯になった時点で、受け手が 1 つ取るまで次を入れられません。リングバッファなので、`10` を取ったあとに入れた `40` は最後に出ます。
+## 閉じる
 
-### 閉じる
+`Channel.close` で閉じると、受け手は残りの要素を受け取り、そのあとは `None` を受け取り続けます。閉じるのは送る側の仕事です。受け手は閉じません。
 
-`Sender` が drop されると、キューに残っている要素は読めて、そのあとは `None` を返し続けます。drop は、スコープの終わりでも、`Owned.drop` でも起きます。
+```tsuzuri run=1-2-none-none
+def show :: Maybe<i64> -> string
+fn show item =
+    match item with
+    | Maybe.Some value -> $"{value}"
+    | Maybe.None -> "none"
 
-```tsuzuri run=1%202%20-1%20-1
-def take :: ref Channel.Receiver<i64> -> i64
-fn take receiver =
-    match Channel.recv receiver with
-    | Maybe.Some value -> value
-    | Maybe.None -> -1
-
-match Channel.bounded 4 with
-| (sender, receiver) ->
-    let _a = Channel.send (ref sender) 1
-    let _b = Channel.send (ref sender) 2
-    Owned.drop sender
-    let first = take (ref receiver)
-    let second = take (ref receiver)
-    let ended = take (ref receiver)
-    let again = take (ref receiver)
-    $"{first} {second} {ended} {again}"
+let values: Channel<i64> = Channel.make 4
+Channel.send values 1
+Channel.send values 2
+Channel.close values
+let a = show (Channel.recv values)
+let b = show (Channel.recv values)
+let c = show (Channel.recv values)
+let d = show (Channel.recv values)
+$"{a}-{b}-{c}-{d}"
 ```
 
 実行結果:
 
 ```text
-1 2 -1 -1
+1-2-none-none
 ```
 
-受け手がいなくなると、送るほうが気づきます。`send` は待たずに、渡した要素を `Error` に入れて返します。
+- 閉じたチャンネルへの `send` は、`Tsuzuri runtime: send on closed Channel` を書いてトラップします。送っている途中で閉じられた場合も同じです。
+- 2 回目の `close` は、`Tsuzuri runtime: close of closed Channel` を書いてトラップします。
+- 閉じたときに待っている受け手は `None` で、送り手はトラップで起きます。
+- ハンドルを drop しても閉じません。すべてのハンドルが drop されると、チャンネルのブロックは解放され、残っていた要素はちょうど 1 回ずつ drop されます。
 
-```tsuzuri run=refused%2041
-match Channel.bounded 2 with
-| (sender, receiver) ->
-    Owned.drop receiver
-    match Channel.send (ref sender) 41 with
-    | Result.Ok _unit -> "sent"
-    | Result.Error item -> $"refused {item}"
-```
+## for で受け取る
 
-実行結果:
+`for x in ch do body` は、`ch` が閉じて空になるまで受け取ります。`ch` の型は `Channel<T>` か `ref Channel<T>` で、`x` は `T` です。要素は受け取った側のものなので、`string` のような Copy でない要素も受け取れます。`break` で `for` を抜け、`continue` で次の受信へ進みます。`for` のあとも `ch` は使えます（場所にあるチャンネルは借用されるだけです）。受け取りはいつも標準の `std::Channel.recv`（`ReceiveOnly<T>` なら `std::ReceiveOnly.recv`）で、プログラムに `Channel` という名前の module があっても、`using` で 2 つ見えていても変わりません。
 
-```text
-refused 41
-```
-
-`Channel.clone_sender` で作った `Sender` は、元の `Sender` と対等な所有者です。元を drop しても、複製が残っているあいだ、チャンネルは開いています。
-
-```tsuzuri run=first%3D5%20second%3D-1
-def take :: ref Channel.Receiver<i64> -> i64
-fn take receiver =
-    match Channel.recv receiver with
-    | Maybe.Some value -> value
-    | Maybe.None -> -1
-
-match Channel.bounded 3 with
-| (sender, receiver) ->
-    let other = Channel.clone_sender (ref sender)
-    Owned.drop sender
-    let _sent = Channel.send (ref other) 5
-    Owned.drop other
-    let first = take (ref receiver)
-    let second = take (ref receiver)
-    $"first={first} second={second}"
-```
-
-実行結果:
-
-```text
-first=5 second=-1
-```
-
-## タスクの間で使う
-
-### 生産者と消費者
-
-端を所有するタスクを `Task.parallel` に渡すのが、最も素直な書き方です。タスクが終わると、タスクが持つ `Sender` が drop され、最後の 1 つなら受け手に終わりが伝わります。
-
-```tsuzuri run=sent%3D100%20sum%3D5050
-def produce :: own Channel.Sender<i64> -> i64 -> Task<i64>
-fn produce sender count = task {
-    let mut index = 1
-    while index <= count do
-        let _sent = Channel.send (ref sender) index
-        index = index + 1
-    return count
+```tsuzuri run=picked%3D16%20rest%3D10
+let values: Channel<i64> = Channel.make 0
+let out = Channel.share values
+tzroutine {
+    for i in 1 ..= 10 do
+        Channel.send out (i as i64)
+    Channel.close out
 }
-
-def consume :: own Channel.Receiver<i64> -> Task<i64>
-fn consume receiver = task {
-    let mut sum = 0
-    let mut open = true
-    while open do
-        match Channel.recv (ref receiver) with
-        | Maybe.Some value -> sum = sum + value
-        | Maybe.None -> open = false
-    return sum
-}
-
-match Channel.bounded 100 with
-| (sender, receiver) ->
-    let results = Task.run (Task.parallel [produce sender 100, consume receiver])
-    $"sent={results[0]} sum={results[1]}"
+let mut picked = 0i64
+for value in values do
+    if value % 2 == 0 then
+        continue
+    if value > 7 then
+        break
+    picked = picked + value
+let mut rest = 0i64
+for value in values do
+    rest = rest + value
+$"picked={picked} rest={rest}"
 ```
 
 実行結果:
 
 ```text
-sent=100 sum=5050
+picked=16 rest=10
 ```
 
-容量が要素の数以上なので、生産者は待たずに終わります。スレッドが 1 つでも、先頭のタスクから順に走るので完了します。容量が要素の数より小さいと、生産者は空きを待ち、消費者は要素を待ちます。2 つのタスクが同時に走る必要があり、スレッドが 2 つ以上ないと完了しません（[待ちの規則](#待ちの規則)）。
+`DataChannel.Receiver` は `for` の対象になりません（`E1005`）。
 
-### 作業キュー
+## 待たない送受信
 
-受け手は `Sync` なので、`Arc` に入れると、複数のタスクが 1 つの `Receiver` から取れます。要素は 1 つのワーカーにだけ届きます。ワーカーの結果は、`Arc<Mutex<T>>` に集めます。
+`Channel.try_send ch item` は、すぐに入れられれば `Ok ()`、満杯で待っている受け手もいなければ `Error (Channel.SendError.Full item)`、閉じていれば `Error (Channel.SendError.Closed item)` です。どちらの `Error` にも要素が戻るので、値は失われません。閉じていてもトラップしません。
 
-```tsuzuri run=jobs%3D20%20squares%3D2870
-def produce :: own Channel.Sender<i64> -> i64 -> Task<i64>
-fn produce sender count = task {
-    let mut index = 1
-    while index <= count do
-        let _sent = Channel.send (ref sender) index
-        index = index + 1
-    return count
-}
+`Channel.try_recv ch` は、`Channel.Received.Item value`、開いていて空なら `Channel.Received.Empty`、閉じて空なら `Channel.Received.Disconnected` です。
 
-def work :: own Arc<Channel.Receiver<i64>> -> own Arc<Mutex<i64>> -> Task<i64>
-fn work receiver total = task {
-    let mut done = 0
-    let mut open = true
-    while open do
-        match Channel.recv (Arc.get (ref receiver)) with
-        | Maybe.Some job ->
-            let _seen = Mutex.with_lock (Arc.get (ref total)) (\value -> {
-                deref value = deref value + job * job;
-                0
-            })
-            done = done + 1
-        | Maybe.None -> open = false
-    return done
-}
-
-match Channel.bounded 64 with
-| (sender, receiver) ->
-    let shared = Arc.new receiver
-    let total = Arc.new (Mutex.create 0i64)
-    let results = Task.run (Task.parallel [produce sender 20, work (Arc.share (ref shared)) (Arc.share (ref total)), work (Arc.share (ref shared)) (Arc.share (ref total))])
-    let squares = Mutex.with_lock (Arc.get (ref total)) (\value -> deref value)
-    $"jobs={results[1] + results[2]} squares={squares}"
+```tsuzuri run=full%3Dbcd%20empty
+let values: Channel<string> = Channel.make 1
+let _first = Channel.try_send values "a"
+let full = match Channel.try_send values "bcd" with
+    | Result.Error (Channel.SendError.Full item) -> item
+    | _ -> ""
+let _taken = Channel.try_recv values
+let state = match Channel.try_recv values with
+    | Channel.Received.Item _ -> "item"
+    | Channel.Received.Empty -> "empty"
+    | Channel.Received.Disconnected -> "disconnected"
+$"full={full} {state}"
 ```
 
 実行結果:
 
 ```text
-jobs=20 squares=2870
+full=bcd empty
 ```
 
-2 つのワーカーが何件ずつ処理するかは、実行ごとに変わります。合計は変わりません。`Mutex.with_lock` の中では `Channel` の操作はできないので（[ロックの中](#ロックの中)）、`recv` はロックの外で行い、受け取った値だけをロックの中で使います。
+Go では `select` と `default` で書く操作です。複数のチャンネルから選ぶ `select` は TZ04 です。
 
-### 端を共有する
+## ハンドルと所有権
 
-`Task.scope` の `shared` に端を入れると、全員が `ref` で同じ端を使えます。1 つの端を複数の子どもが使うときは、子どもが `Sender` を所有できないので、チャンネルを閉じる drop は、`Task.scope` を呼んだ側で行います。
-
-```tsuzuri run=total%3D36
-match Channel.bounded 8 with
-| (sender, receiver) ->
-    let _sent = Task.scope (ref sender) 8 (\shared index -> match Channel.send shared (index + 1) with | Result.Ok _unit -> 1 | Result.Error _item -> 0)
-    Owned.drop sender
-    let mut total = 0
-    let mut open = true
-    while open do
-        match Channel.recv (ref receiver) with
-        | Maybe.Some value -> total = total + value
-        | Maybe.None -> open = false
-    $"total={total}"
-```
-
-実行結果:
-
-```text
-total=36
-```
-
-`Task.scope` の子どもが受け取る側で待つとき、閉じるのは `Task.scope` が返ったあとなので、子どもは閉じるのを待てません。そのときは、受け取る件数を決めて受ける（`recv` を件数だけ呼ぶ）か、端を所有するタスクを `Task.parallel` で使います。
-
-## 待ちの規則
-
-`send` が満杯、`recv` が空のときに、スレッドは次の順で動きます。
-
-1. **手伝う**: プールに、どのスレッドも始めていない仕事（`Task.parallel` や `Task.scope` の子ども）があれば、その 1 つを自分のスタックの上で走らせます。仕事は、最も古いグループの、まだ始まっていない子どもから取ります。仕事が終わったら、チャンネルをもう一度見ます。ただし、空いているワーカー（仕事を取っていないワーカー）がいるときは手伝いません。空いているワーカーが引き受けるからです。手伝いを重ねる深さは 16 までです。
-2. **眠る**: 手伝う仕事がなければ、チャンネルが変わるまで眠ります。要素が入る、空きができる、端が drop される、のどれかで起こされます。
-3. **見つける**: スレッドがすべて待っていて（チャンネルの待ち、`Task.parallel` や `Task.scope` の結合の待ち、仕事を待つワーカー）、動かせる仕事もないとき、もうチャンネルを変えられるスレッドはいません。待っているスレッドすべてを起こし、標準エラーへ `Tsuzuri runtime: deadlock: every task is waiting on a channel` と出して、トラップします（種類は assert）。待ちを止められない `Sender` を drop し忘れた場合も、ここで見つかります。
-
-`Task.parallel` や `Task.scope` でグループを始めたスレッドは、グループを公開するときに、最初の子どもを自分で取ります（ワーカーに先を越されません）。そのあとは、**自分のグループの子どもだけ** を走らせ、終わりを待つあいだも、ほかのグループの仕事は取りません。取った仕事は、結合を待っているフレームの上に載ります。その仕事が、結合のあとのコード（同じスタックの下にあるコード）しか作れないものを待つと、先へ進めなくなるからです（たとえば、生産者の中の `Task.parallel` を待つスレッドが、その生産者に送られるのを待つ消費者を取ると、行き詰まります）。native とスレッド付きの wasm32 は、この規則も、グループを古い順に取ることも、同じです。
-
-| 環境 | 待ちが満たされないとき |
-| --- | --- |
-| native（CPU が複数） | 上の規則どおり。最後の待ちスレッドが、判定を出す |
-| native（CPU が 1 つ） | 子どもは `index` の順に 1 つのスレッドで走り、待ちはすぐ判定になる（トラップ） |
-| 既定の wasm32 | 子どもは `index` の順に 1 つずつ走り、満たされない待ちは、すぐトラップする（コンソールがないので、メッセージは出ない） |
-| `--wasm-feature threads` | native と同じ規則で、メインとワーカーのスレッドを数える。トラップは `RuntimeError` |
-
-**完了するかどうかは、スレッド数に左右されます。** プールのスレッド数は固定で、子どもごとの専用スレッドは保証されません。待っている仕事の数がスレッド数を超えると、足りない分の仕事は、待っているスレッドのスタックの上で走るか、走れないままになります。
-
-- 生産者と消費者の 2 つのタスクで、容量が足りないとき: スレッドが 2 つ以上必要です。
-- 生産者、変換、消費の 3 段のパイプラインで、どの段も隣を待つとき: スレッドが 3 つ以上必要です。
-- 1 つのスレッドでは、容量が足りない生産者は、消費者が動く前に満杯で待つので、判定になります。
-
-スレッドが足りないとトラップになるだけで、ハングもデータの破損もありません。ただし、別の理由でトラップするより見つけにくいので、パイプラインの段数と、各段が待ちうるチャンネルの数は、スレッド数に合わせて設計します。たとえば、`Task.parallel` に渡すタスクの数を CPU 数以下にします。
-
-```text
-Tsuzuri runtime: deadlock: every task is waiting on a channel
-```
-
-### ロックの中
-
-`Mutex.with_lock` の中で `Channel.send`・`Channel.recv` を呼ぶと、待つことになるかどうかにかかわらず、トラップします。ロックを持ったまま待つと、ロックを待つスレッドと、ロックの持ち主が待つチャンネルの相手が、互いを待つ形になりうるからです。native では、トラップの前に `a Channel operation may wait; move it outside Mutex.with_lock` と出します。
-
-### トラップ
-
-- 既定（`--trap-mode abort`）では、判定はプロセスを終わらせます。
-- `--trap-mode return` では、判定は、呼び出しの境界へ返るトラップになります。待っていたスレッドは全員起き、グループは終わり、境界は、その呼び出しが確保したもの（チャンネルのブロックを含む）を解放します。次の呼び出しは、普通に動きます。端を持つタスクがトラップしたときは、その端の drop が走らないので、待っている受け手は、判定で終わります。呼び出しに返るのは、`index` が最小のトラップです。
+- `Channel<T>` は非 Copy の所有値です。代入や引数渡しはムーブで、複製は `Channel.share` です。参照の数を数え、最後のハンドルの drop でブロックを解放します。
+- `Channel<T>` は `Send` かつ `Sync` です。tzroutine や `Owned.function` へ移せます。
+- 関数値には捕捉できません（`Drop` を持つので `Capture` でない。`E1005`）。`ref ch` を捕捉するか、`Channel.share` したハンドルを tzroutine へ移します。
+- 中身は不透明です。`Channel { block: ... }` の構築、`ch.block`、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はありません。`Channel.__release` を std の外から呼ぶことも `E1022` です。
 
 ## 要素と借用
 
-要素は、`Channel.send` が戻ったあともチャンネルに残り、あとで、別のスレッドで、借用元のデータがなくなったあとに受け取られることがあります。そのため、要素は借用を持てません。コンパイラーは、`Channel.send` の呼び出しで、要素が借用を持たないことを調べます。整数、文字列、配列などの所有値は、いつも通ります。関数値（と、それを含む `Maybe`・タプル・配列・レコード・`Seq`）は、環境が借用を持たないときだけ通ります。`Sender<T>` は整数 1 つの不透明な値で、型からは要素の型が見えないので、この呼び出しが唯一の検査です。
+要素は、`send` が戻ったあともチャンネルに残り、あとで別の tzroutine に受け取られます。そのため、要素は借用を持てません。`Channel.send` と `Channel.try_send` の呼び出しで、要素が借用を持たないことを調べます（[DataChannel](./datachannel.md#要素と借用) と同じ規則）。
 
-- 通るもの: 値のコピーを捕捉した関数、何も捕捉しない関数、名前を付けた関数、その場で作った `Owned.function`。
-- `E1013` になるもの: `ref` で借りた値（引数で受け取った `ref` も含む）を捕捉した関数と、それを含む値。
-
-```tsuzuri run=42
-match Channel.bounded 2 with
-| (sender, receiver) ->
-    let k = 41i64
-    let _sent = Channel.send (ref sender) (\x -> x + k)
-    match Channel.recv (ref receiver) with
-    | Maybe.Some f -> f 1
-    | Maybe.None -> 0
-```
-
-実行結果:
+- 通るもの: 整数・文字列・配列などの所有値、値のコピーを捕捉した関数、何も捕捉しない関数、その場で作った `Owned.function`。
+- `E1013`（`a channel item cannot hold a borrow, ...`）になるもの: `ref` で借りた値を捕捉した関数と、それを含む値。
 
 ```text
-42
-```
-
-次のように、引数で借りたデータを捕捉した関数を送ると、`E1013` です。この関数は、`work` が戻ったあとの `data` を読むことになります。
-
-```text
-def work :: ref Channel.Sender<i64 -> i64> -> ref [i64] -> i64
-fn work sender data =
-    match Channel.send sender (x -> x + data[0]) with
-    | Result.Ok _unit -> 0
-    | Result.Error _item -> 1
+def push :: ref Channel<i64 -> i64> -> ref [i64] -> unit
+fn push ch data =
+    Channel.send ch (\x -> x + data[0])
 ```
 
 ```text
 error[E1013]: a channel item cannot hold a borrow, including a borrowed function environment: it is received later, perhaps after the borrowed data is gone; send an owned value, or a function that captures a copy, or an Owned.Function built where it is sent
 ```
 
-- 呼び出しは、送り手と要素を一度に渡す直接の形で行います。要素の型が借用を持ちうる（関数値を含む）ときは、`Channel.send (ref sender)` のように引数を一部だけ渡すことも、`Channel.send` 自体を関数値にすることも、`item |> Channel.send (ref sender)` も、`E1013`（`Channel.send must be fully applied directly when its item may hold a borrow`）です。要素が整数や文字列などなら、どの形でも書けます。
-- 関数値を引数で受け取って送る関数（`def push :: ref Channel.Sender<'a> -> 'a -> bool`）は、`'a` が関数型のとき、呼び出し側の関数が借用を持つかどうかを本体からは知れないので、`E1013` です。引数の関数値を `task` に持ち込むのと同じ扱いです。関数は、送る場所で作ります。`'a` が整数や文字列などなら、`push` は書けます。
-- 受け手が取り出した要素は、借用を持たず、受け手を借りてもいません。取り出した関数を別のチャンネルへ送ることも、関数から返すこともできます。
-- `Mutex.create` に借用を捕捉した関数を入れると、借用はロックの値に残り、そのロックは借用元より長く生きる場所へ出せません（[Mutex](./mutex.md)）。
+要素の型が借用を持ちうる（関数値を含む）ときは、`Channel.send ch` のような部分適用や関数値にすることも `E1013`（`Channel.send must be fully applied directly when its item may hold a borrow, ...`。`try_send` では `Channel.try_send ...`）です。受け取った要素は借用を持たず、チャンネルを借りてもいません。要素の型が借用を持たないときの部分適用 `Channel.try_send ch` は、`ch` を借りる関数です（`ch` の有効範囲の外へは出せません。`E1013`）。
 
-## 型の規則
+## 向きのあるハンドル
 
-- `Channel.bounded` は `Send<'a>` を要求します。`Rc` を運ぶチャンネルは作れません（`E1013`、`tasks require Send values`）。型変数は `Send` かどうか分からないので、`Channel.bounded` を包んだジェネリック関数は、その要求を制約として持ち続け、関数を使う型ごとに検査されます。`make :: i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)` を `Rc<i64>` で使うのも `E1013` です。型変数に型引数を適用した型（高カインドの型変数の `'f<i64>`）が要素のときも同じで、`'f` に `Rc` を持つ型が決まった使用箇所で `E1013` です（[制約](../types-and-type-inference/constraints.md)）。
-- `Sender<T>` と `Receiver<T>` は、どちらも `Sync` で、`Send` です（`T` が `Send` の間だけ作れるので）。共有借用から使う操作は、ランタイムのロックで守られます。
-- 両端は非 Copy の所有値です。複製できず、代入や引数渡しはムーブです（`E1012`）。関数値は複製されることがあるので、端そのものの捕捉は `E1005` です。借用 `ref sender` を捕捉するか、`Arc` に入れるか、引数で渡します。
-- 両端は中身が不透明です。構築、フィールド参照、パターン分解、更新構文は `E1022`、`export def` と `extern def` の境界は `E1008`、`const` の初期化は `E1026` です。`Eq`・`Ord`・`Hash`・`Display` の instance はありません。
-- drop で閉じるのは、std の `Channel` モジュールが両端に書いた `Drop` の instance です。利用者が std の型に `Drop` の instance を書くことは `E1016` のままで、`Channel.__close_sender` などの内部の関数を呼ぶことは `E1022` です。
-- 要素の drop: 閉じたあとにキューに残った要素は、最後の端が drop されるときに、1 つずつ drop されます。受け取った要素は受け取った側のものです。
+関数の引数に、送るだけ・受け取るだけの役割を型で書けます。`Channel.send_only ch` は送るだけの `SendOnly<T>`、`Channel.receive_only ch` は受け取るだけの `ReceiveOnly<T>` を作ります。どちらも同じチャンネルのハンドルを 1 つ増やし（`share` と同じ）、drop で手放します。`Channel` へは戻せません。
+
+```tsuzuri run=sum%3D5050
+def produce :: own SendOnly<i64> -> i64 -> unit
+fn produce out n =
+    for i in 1 ..= n do
+        SendOnly.send out (i as i64)
+    SendOnly.close out
+
+def total :: ref ReceiveOnly<i64> -> i64
+fn total input =
+    let mut sum = 0i64
+    for value in input do
+        sum = sum + value
+    sum
+
+let numbers: Channel<i64> = Channel.make 0
+let out = Channel.send_only numbers
+let input = Channel.receive_only numbers
+tzroutine {
+    produce out 100
+}
+$"sum={total (ref input)}"
+```
+
+実行結果:
+
+```text
+sum=5050
+```
+
+| ハンドル | 使える操作 |
+| --- | --- |
+| `Channel<T>` | `Channel.send`・`try_send`・`recv`・`try_recv`・`close`・`length`・`capacity`・`share`・`send_only`・`receive_only`、`for` |
+| `SendOnly<T>` | `SendOnly.send`・`try_send`・`close`・`length`・`capacity`・`share` |
+| `ReceiveOnly<T>` | `ReceiveOnly.recv`・`try_recv`・`length`・`capacity`・`share`、`for` |
+
+- 操作は、ハンドルのモジュールの関数です（`SendOnly.send out 1`・`ReceiveOnly.recv input`）。意味は `Channel` の同じ名前の関数と同じで、`try_send`・`try_recv` の結果も `Channel.SendError`・`Channel.Received` です。要素の借用の規則も同じです。
+- 向きの違う操作はありません。`SendOnly.recv` は `E1002`（`module 'SendOnly' has no function or union case 'recv'`）、`Channel.recv` に `SendOnly<T>` を渡すと `E1003`（`expected Channel<...>, found SendOnly<i64>`）です。
+- `SendOnly`・`ReceiveOnly` も予約モジュール名で、不透明な所有値です（`Channel` と同じ規則。関数値への捕捉は `E1005`、構築やフィールド参照は `E1022`）。
+
+## 待ちとデッドロック
+
+- 待つのは tzroutine だけです。待っている間、その OS スレッドはほかの tzroutine を走らせます。
+- `main` や `export` を呼んだスレッド、`Task.parallel` のタスクのような tzroutine でないスレッドが待つと、そのスレッドが止まります。
+- `Task.parallel`・`Task.scope`・`Parallel.*` の項目がまだ始まっていない間は、判定をしません（始まった項目がほかの待ちを起こしうるため）。タスクのプールのスレッドがすべて `Channel` で待ち、残りの項目を始めるスレッドがないときや、CPU が 1 つで項目が呼んだスレッドで順に走るときは、トラップせずに待ち続けます（プールの待ち行列はランタイムから見えません。Task は TZ12 で tzroutine に置き換わります）。
+- 誰も起こせない待ち（すべての tzroutine とスレッドが待っていて、走るものもタイマーもない）は、`Tsuzuri runtime: all tzroutines are asleep - deadlock! (1 waiting: Channel.recv)` を書き、待っていた呼び出しの位置でトラップします。`--trap-info` の `tsuzuri run` は、その行を `E2005` の位置にします。
+
+```text
+let ch: Channel<i64> = Channel.make 0
+match Channel.recv ch with      // ← ここでトラップする
+| Maybe.Some value -> value
+| Maybe.None -> 0
+```
+
+- tzroutine を起動するプログラムでも、`Channel` を使うプログラムでも、`Mutex.with_lock` の中で待つ操作（`send`・`recv`・`for`）を呼ぶとトラップします（`Tsuzuri runtime: a tzroutine cannot yield or wait inside Mutex.with_lock; ...`）。ロックの持ち主は OS スレッドだからです。`try_send`・`try_recv`・`close`・`length`・`capacity` は待たないので使えます。
+
+## ターゲット
+
+| 構成 | `Channel` |
+| --- | --- |
+| native の macOS・Linux・Windows | 動く |
+| 既定の wasm32・wasm64（import なし） | tzroutine を起動しないプログラムは、1 本の実行として使える。待つべき操作（空のバッファなしの `recv` など）はトラップする |
+| `--wasm-feature threads` | `E2000`（`Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend`） |
+| `--freestanding` | `E2000` |
+| `--trap-mode return` | `E2000`（`--trap-mode return cannot be combined with Channel: ...`。トラップがランタイムの状態を残すため） |
+
+既定の WebAssembly では、モジュールにランタイムのチャンネルの部分（`src/runtime/tzroutine.c` を 1 本の実行向けに作ったもの）が入り、import は増えません。誰も起こせないので、待つべき操作はすぐにトラップします（`DataChannel` の既定の WebAssembly と同じです）。
 
 ## 表現と性能
 
-- チャンネルは 1 つのブロックです。先頭の 80 バイトに容量、要素の大きさ、先頭の位置、要素数、送り手・受け手・所有者の数があり、その後ろにリングバッファ（要素 × 容量）が続きます。確保は `Channel.bounded` で 1 回、解放は最後の端の drop で 1 回です。
-- 要素は、ランタイムがバイト列としてコピーします。要素の型ごとの drop は、コンパイラーが、ブロックを解放するときに生成します。大きい要素はコピーされるので、小さい値か、所有する配列や文字列のように、小さな表現の値を送ります。
-- ネイティブのランタイム（`task.c`）は、スレッドプールの mutex 1 つで、すべてのチャンネルの操作と、待ちの数え上げを守ります。待ちは、スレッドごとの条件変数で、チャンネルの変化を知る 1 つのスレッドだけを起こします。チャンネルの数が多く、操作が非常に頻繁なプログラムでは、この 1 つの mutex が競合します。
-- `--wasm-feature threads` のランタイムは、同じ規則を WebAssembly の atomic 命令で実装します。待つスレッドは、プール共有の `epoch` の語で眠ります。起こすのは、新しい仕事、グループの終わり、チャンネルの変化（待っている者がいるとき）、競合したロックの解放のときだけで、そのとき全員が起きて、条件を見直します。グループのほかのアイテムがまだ走っているあいだに 1 つが終わっても、だれも起こしません。スレッドごとの状態は、インスタンスごとの WebAssembly のグローバルで、TLS は要りません。
-- 既定の wasm32 は 1 スレッドで、`Channel` の操作はモジュール内の IR です。ネイティブの C のランタイムも、threads の C のランタイムも使いません。
-- `Channel` は、ソースに名前が現れたプログラムだけに読み込まれます。`Channel` を書かないプログラムの出力は変わりません。`--freestanding` で `Channel` を使うと `E2000` です（タスクのランタイムが要ります）。
+- チャンネルは 1 つのブロックです。128 バイトのヘッダー（ロック、ハンドルの数、要素の大きさ、容量、要素数、送り手と受け手の待ち行列）の後ろに、容量 × 要素の大きさのリングバッファが続きます。確保は `Channel.make` で 1 回、解放は最後のハンドルの drop で 1 回です。
+- 要素は、ランタイムがバイト列としてコピーします（バッファなしの受け渡しは、送り手のスタックから受け手のスタックへ 1 回）。要素の型ごとの drop は、コンパイラーが生成します。
+- ロックはチャンネルごとに 1 つです。ほかのチャンネルの操作とは競合しません。
+- 待ちと起床は tzroutine のスケジューラーが行い、OS のスレッドを起こすのは、待っていた tzroutine を走らせる M が眠っていたときだけです。
 
 ## API リファレンス
 
-| 関数 | シグネチャ | 説明 |
-| --- | --- | --- |
-| `bounded` | `Send<'a> => i64 -> (Sender<'a> * Receiver<'a>)` | 容量 `n`（1 以上）のチャンネルを作る。0 以下はトラップ |
-| `send` | `ref Sender<'a> -> 'a -> Result<unit, 'a>` | 要素を入れる。満杯なら待つ。受け手がいなければ `Error 要素` |
-| `recv` | `ref Receiver<'a> -> Maybe<'a>` | 要素を取る。空なら待つ。閉じて空なら `None` |
-| `clone_sender` | `ref Sender<'a> -> Sender<'a>` | 独立した所有者の `Sender` を作る |
+| 関数 | シグネチャ | 説明 | Go |
+| --- | --- | --- | --- |
+| `make` | `Send<'a> => i64 -> Channel<'a>` | 容量 `n` のチャンネル。0 はバッファなし。負はトラップ | `make(chan T, n)` |
+| `send` | `ref Channel<'a> -> 'a -> unit` | 送る。受け手も空きもなければ待つ。閉じていればトラップ | `ch <- v` |
+| `recv` | `ref Channel<'a> -> Maybe<'a>` | 受け取る。空なら待つ。閉じて空なら `None` | `v, ok := <-ch` |
+| `try_send` | `ref Channel<'a> -> 'a -> Result<unit, Channel.SendError<'a>>` | 待たずに送る。`Full item`・`Closed item` で要素を返す | `select` + `default` |
+| `try_recv` | `ref Channel<'a> -> Channel.Received<'a>` | 待たずに受け取る。`Item v`・`Empty`・`Disconnected` | `select` + `default` |
+| `close` | `ref Channel<'a> -> unit` | 閉じる。2 回目はトラップ | `close(ch)` |
+| `length` | `ref Channel<'a> -> i64` | 入っている要素の数 | `len(ch)` |
+| `capacity` | `ref Channel<'a> -> i64` | 容量 | `cap(ch)` |
+| `share` | `ref Channel<'a> -> Channel<'a>` | 同じチャンネルのハンドルをもう 1 つ作る | （ポインタの共有） |
+| `send_only` | `ref Channel<'a> -> SendOnly<'a>` | 送るだけのハンドルを作る | `chan<- T` |
+| `receive_only` | `ref Channel<'a> -> ReceiveOnly<'a>` | 受け取るだけのハンドルを作る | `<-chan T` |
+| `SendOnly.send`・`try_send`・`close`・`length`・`capacity`・`share` | `ref SendOnly<'a> -> …`（`Channel` の同じ名前の関数と同じ型） | `SendOnly` の操作 | |
+| `ReceiveOnly.recv`・`try_recv`・`length`・`capacity`・`share` | `ref ReceiveOnly<'a> -> …`（同上） | `ReceiveOnly` の操作 | |
 
-- 型名は `Channel.Sender<T>` と `Channel.Receiver<T>` で、型引数は 1 つです。モジュール名 `Channel` は予約されていて、同じ名前のモジュールは `E1011` です。同じ名前のレコードも宣言できますが、std のものとは別の型です。
-- `send` が値を返すのは、受け手が消えたときに、要素を失わないためです。`Result` を無視するときは、`let _sent = ...` と書きます。
+- 型は `Channel<T>`（モジュールと同じ名前の record）、`Channel.SendError<T> = Full of T | Closed of T`、`Channel.Received<T> = Item of T | Empty | Disconnected` です。
+- `for x in ch` は Go の `for x := range ch` です。
+
+## 引数の順序
+
+`Channel` は資源のハンドルの例外で、ハンドルが先頭の引数です（`Channel.send ch item`。.NET のメソッドの受け手と同じ）。[引数の順序](./argument-order.md)を見てください。
+
+## DataChannel との使い分け
+
+| | `Channel<T>` | `DataChannel`（旧 `Channel`） |
+| --- | --- | --- |
+| 形 | 1 つのハンドルで送受信（Go の `chan T`）。`share` で複製 | 送り手 `Sender` と受け手 `Receiver` に分かれる。`clone_sender` |
+| 閉じ方 | `close` だけ（drop では閉じない） | 最後の `Sender` の drop で閉じる |
+| 閉じた後の `send` | トラップ（Go の panic）。`try_send` は要素を返す | `Error item`（要素を返す） |
+| 受け手がいないときの `send` | 待つ（受け手を数えない） | `Error item` |
+| バッファなし | 容量 0 | なし（容量は 1 以上） |
+| `for` | 使える | 使えない |
+| 待ち | tzroutine だけが待つ | OS スレッドを止める（Task のプールの規則） |
+| `--wasm-feature threads` | 使えない | 使える |
+
+tzroutine の間の受け渡しには `Channel` を使います。`DataChannel` の待ちは Task のプールの規則のままで、tzroutine を数えません。
+
+## 旧 Channel のプログラム
+
+TZ03 より前の `Channel.bounded`・`Channel.clone_sender`・`Channel.Sender`・`Channel.Receiver` は、`E1040`（kind `renamed_to_data_channel`、`'Channel.bounded' is now 'DataChannel.bounded'`）です。`DataChannel` の送り手や受け手に `Channel.send`・`Channel.recv` を使った呼び出しも `E1040` で、`DataChannel.send`・`DataChannel.recv` を示します。どれも確かな（`certain`）修正案を持ち、`tsuzuri fix` がまとめて `DataChannel` の名前に直します。直したプログラムの意味は、旧と同じです。
 
 ## まとめ
 
-- タスクの間で所有値を受け渡すときは `Channel` を使い、端を所有するタスクを `Task.parallel` に渡します。
-- 最後の `Sender` の drop が、チャンネルを閉じます。drop し忘れた `Sender` は、受け手を待たせ続けますが、すべてのスレッドが待った時点で、判定のトラップになります。
-- 待つタスクの数がスレッド数を超えるパイプラインは、完了しないことがあります。判定のトラップは、そのときの合図です。
-- `Mutex.with_lock` の中では `Channel` を使えません。
+- `Channel.make n` で作り、`send`・`recv`・`close`・`for` で使います。容量 0 は受け渡しの同期です。
+- 閉じるのは `close` だけで、閉じた後の `send` と 2 回目の `close` はトラップです。
+- 待つのは tzroutine だけで、誰も起こせない待ちはその場所でトラップします。
+
+## 関連項目
+
+- [tzroutine 式](../async-tasks-and-lazy/tzroutine.md)
+- [Routine](./routine.md)
+- [DataChannel](./datachannel.md)
+- [Mutex](./mutex.md)
+- [for...in](../loops-and-conditionals/for-in.md)
+- [言語リファレンスの目次](../index.md)

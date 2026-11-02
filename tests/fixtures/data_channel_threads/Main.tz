@@ -18,45 +18,45 @@ instance Drop<Token> {
 
 // The task owns its sender: the end of the task drops it, and the drop of the last sender closes
 // the channel for the receivers.
-def produce :: own Channel.Sender<i64> -> own i64 -> own i64 -> Task<i64>
+def produce :: own DataChannel.Sender<i64> -> own i64 -> own i64 -> Task<i64>
 fn produce sender first count = task {
     let mut index = 0
     while index < count do
-        let _sent = Channel.send (ref sender) (first + index)
+        let _sent = DataChannel.send (ref sender) (first + index)
         index = index + 1
     return count
 }
 
-def drain :: ref Channel.Receiver<i64> -> i64
+def drain :: ref DataChannel.Receiver<i64> -> i64
 fn drain receiver =
     let mut sum = 0
     let mut open = true
     while open do
-        match Channel.recv receiver with
+        match DataChannel.recv receiver with
         | Maybe.Some value -> sum = sum + value
         | Maybe.None -> open = false
     sum
 
-def consume :: own Channel.Receiver<i64> -> Task<i64>
+def consume :: own DataChannel.Receiver<i64> -> Task<i64>
 fn consume receiver = task { return drain (ref receiver) }
 
 // One producer and one consumer, with room for fewer items than there are: the producer waits for
 // room while the consumer waits for items (2 threads or more).
 export def pipeline :: own i64 -> own i64 -> i64
 fn pipeline capacity count =
-    match Channel.bounded capacity with
+    match DataChannel.bounded capacity with
     | (sender, receiver) ->
         let results = Task.run (Task.parallel [produce sender 1 count, consume receiver])
         results[1]
 
-def double_all :: own Channel.Receiver<i64> -> own Channel.Sender<i64> -> Task<i64>
+def double_all :: own DataChannel.Receiver<i64> -> own DataChannel.Sender<i64> -> Task<i64>
 fn double_all input output = task {
     let mut taken = 0
     let mut open = true
     while open do
-        match Channel.recv (ref input) with
+        match DataChannel.recv (ref input) with
         | Maybe.Some value ->
-            let _sent = Channel.send (ref output) (value * 2)
+            let _sent = DataChannel.send (ref output) (value * 2)
             taken = taken + 1
         | Maybe.None -> open = false
     return taken
@@ -65,16 +65,16 @@ fn double_all input output = task {
 // Producer, doubler and summer each wait on a neighbor, so each needs a thread of its own (3 or more).
 export def three_stages :: own i64 -> i64
 fn three_stages count =
-    match Channel.bounded 2 with
+    match DataChannel.bounded 2 with
     | (first_sender, first_receiver) ->
-        match Channel.bounded 2 with
+        match DataChannel.bounded 2 with
         | (second_sender, second_receiver) ->
             let results = Task.run (Task.parallel [produce first_sender 1 count, double_all first_receiver second_sender, consume second_receiver])
             results[2]
 
-def producers :: ref Channel.Sender<i64> -> own i64 -> own i64 -> [Task<i64>]
+def producers :: ref DataChannel.Sender<i64> -> own i64 -> own i64 -> [Task<i64>]
 fn producers sender count items =
-    new [Task<i64>](count, \index -> produce (Channel.clone_sender sender) (index * items + 1) items)
+    new [Task<i64>](count, \index -> produce (DataChannel.clone_sender sender) (index * items + 1) items)
 
 def joined :: own [Task<i64>] -> Task<i64>
 fn joined tasks = task {
@@ -87,7 +87,7 @@ fn joined tasks = task {
 // (3 threads or more).
 export def fan_in :: own i64 -> own i64 -> own i64 -> i64
 fn fan_in count items capacity =
-    match Channel.bounded capacity with
+    match DataChannel.bounded capacity with
     | (sender, receiver) ->
         let producing = producers (ref sender) count items
         Owned.drop sender
@@ -96,12 +96,12 @@ fn fan_in count items capacity =
 
 // Workers share one receiver through an Arc and add their results under a shared lock: every job
 // is received by exactly one worker (3 threads or more).
-def work :: own Arc<Channel.Receiver<i64>> -> own Arc<Mutex<i64>> -> Task<i64>
+def work :: own Arc<DataChannel.Receiver<i64>> -> own Arc<Mutex<i64>> -> Task<i64>
 fn work receiver total = task {
     let mut done = 0
     let mut open = true
     while open do
-        match Channel.recv (Arc.get (ref receiver)) with
+        match DataChannel.recv (Arc.get (ref receiver)) with
         | Maybe.Some job ->
             let _seen = Mutex.with_lock (Arc.get (ref total)) (\value -> {
                 deref value = deref value + job * job;
@@ -114,7 +114,7 @@ fn work receiver total = task {
 
 export def job_queue :: own i64 -> own i64 -> i64
 fn job_queue count capacity =
-    match Channel.bounded capacity with
+    match DataChannel.bounded capacity with
     | (sender, receiver) ->
         let shared = Arc.new receiver
         let total = Arc.new (Mutex.create 0i64)
@@ -123,10 +123,10 @@ fn job_queue count capacity =
         squares * 1000 + results[1] + results[2]
 
 record Link {
-    forward_sender: Channel.Sender<i64>,
-    forward_receiver: Channel.Receiver<i64>,
-    back_sender: Channel.Sender<i64>,
-    back_receiver: Channel.Receiver<i64>
+    forward_sender: DataChannel.Sender<i64>,
+    forward_receiver: DataChannel.Receiver<i64>,
+    back_sender: DataChannel.Sender<i64>,
+    back_receiver: DataChannel.Receiver<i64>
 }
 
 def ping :: ref Link -> own i64 -> i64
@@ -134,8 +134,8 @@ fn ping link rounds =
     let mut correct = 0
     let mut round = 0
     while round < rounds do
-        let _sent = Channel.send (ref link.forward_sender) round
-        match Channel.recv (ref link.back_receiver) with
+        let _sent = DataChannel.send (ref link.forward_sender) round
+        match DataChannel.recv (ref link.back_receiver) with
         | Maybe.Some answer -> correct = correct + (if answer == round + 1 then 1 else 0)
         | Maybe.None -> correct = correct
         round = round + 1
@@ -145,9 +145,9 @@ def pong :: ref Link -> own i64 -> i64
 fn pong link rounds =
     let mut served = 0
     while served < rounds do
-        match Channel.recv (ref link.forward_receiver) with
+        match DataChannel.recv (ref link.forward_receiver) with
         | Maybe.Some value ->
-            let _sent = Channel.send (ref link.back_sender) (value + 1)
+            let _sent = DataChannel.send (ref link.back_sender) (value + 1)
             served = served + 1
         | Maybe.None -> served = rounds
     served
@@ -156,29 +156,29 @@ fn pong link rounds =
 // channels of one slot, so each round needs both of them to run at the same time (2 threads or more).
 export def ping_pong :: own i64 -> i64
 fn ping_pong rounds =
-    match Channel.bounded 1 with
+    match DataChannel.bounded 1 with
     | (forward_sender, forward_receiver) ->
-        match Channel.bounded 1 with
+        match DataChannel.bounded 1 with
         | (back_sender, back_receiver) ->
             let link = Link { forward_sender: forward_sender, forward_receiver: forward_receiver, back_sender: back_sender, back_receiver: back_receiver }
             let results = Task.scope (ref link) 2 (\shared index -> if index == 0 then ping shared rounds else pong shared rounds)
             results[0] * 1000000 + results[1]
 
-def send_tokens :: own Channel.Sender<Token> -> own Arc<Atomic<i64>> -> own i64 -> Task<i64>
+def send_tokens :: own DataChannel.Sender<Token> -> own Arc<Atomic<i64>> -> own i64 -> Task<i64>
 fn send_tokens sender counter count = task {
     let mut index = 0
     while index < count do
-        let _sent = Channel.send (ref sender) (Token { counter: Arc.share (ref counter) })
+        let _sent = DataChannel.send (ref sender) (Token { counter: Arc.share (ref counter) })
         index = index + 1
     return count
 }
 
-def take_tokens :: own Channel.Receiver<Token> -> Task<i64>
+def take_tokens :: own DataChannel.Receiver<Token> -> Task<i64>
 fn take_tokens receiver = task {
     let mut taken = 0
     let mut open = true
     while open do
-        match Channel.recv (ref receiver) with
+        match DataChannel.recv (ref receiver) with
         | Maybe.Some _token -> taken = taken + 1
         | Maybe.None -> open = false
     return taken
@@ -189,7 +189,7 @@ fn take_tokens receiver = task {
 export def tokens_across :: own i64 -> i64
 fn tokens_across n =
     let counter = Arc.new (Atomic.create 0i64)
-    match Channel.bounded 3 with
+    match DataChannel.bounded 3 with
     | (sender, receiver) ->
         let results = Task.run (Task.parallel [send_tokens sender (Arc.share (ref counter)) n, take_tokens receiver])
         results[1] * 1000000 + Atomic.load (Arc.get (ref counter)) * 1000 + Arc.strong_count (ref counter)
@@ -201,17 +201,17 @@ fn quick value = task { return value }
 // the consumer waits for ever, and every thread is waiting (any number of threads: a trap).
 export def leaked_sender :: i64
 fn leaked_sender =
-    match Channel.bounded 2 with
+    match DataChannel.bounded 2 with
     | (sender, receiver) ->
         let results = Task.run (Task.parallel [consume receiver, quick 7])
         Owned.drop sender
         results[0] + results[1]
 
-def relay :: own Channel.Receiver<i64> -> own Channel.Sender<i64> -> Task<i64>
+def relay :: own DataChannel.Receiver<i64> -> own DataChannel.Sender<i64> -> Task<i64>
 fn relay input output = task {
-    match Channel.recv (ref input) with
+    match DataChannel.recv (ref input) with
     | Maybe.Some value ->
-        let _sent = Channel.send (ref output) value
+        let _sent = DataChannel.send (ref output) value
         value
     | Maybe.None -> 0 - 1
 }
@@ -219,9 +219,9 @@ fn relay input output = task {
 // Each task waits for the other to send first (any number of threads: a trap).
 export def deadlock_pair :: i64
 fn deadlock_pair =
-    match Channel.bounded 1 with
+    match DataChannel.bounded 1 with
     | (first_sender, first_receiver) ->
-        match Channel.bounded 1 with
+        match DataChannel.bounded 1 with
         | (second_sender, second_receiver) ->
             let results = Task.run (Task.parallel [relay first_receiver second_sender, relay second_receiver first_sender])
             results[0] + results[1]
@@ -238,16 +238,16 @@ fn spin n = task {
 }
 
 // The task starts a group of its own, then sends what the group computed.
-def nested_producer :: own Channel.Sender<i64> -> own i64 -> own i64 -> Task<i64>
+def nested_producer :: own DataChannel.Sender<i64> -> own i64 -> own i64 -> Task<i64>
 fn nested_producer sender parts n = task {
     let! sums = Task.parallel (new [Task<i64>](parts, \_index -> spin n))
-    let _sent = Channel.send (ref sender) (Array.sum (ref sums))
+    let _sent = DataChannel.send (ref sender) (Array.sum (ref sums))
     return 0
 }
 
-def nested_consumer :: own Channel.Receiver<i64> -> Task<i64>
+def nested_consumer :: own DataChannel.Receiver<i64> -> Task<i64>
 fn nested_consumer receiver = task {
-    match Channel.recv (ref receiver) with
+    match DataChannel.recv (ref receiver) with
     | Maybe.Some value -> value
     | Maybe.None -> 0 - 1
 }
@@ -258,7 +258,7 @@ fn nested_consumer receiver = task {
 // (2 threads or more, for any number of parts).
 export def nested_then_send :: own i64 -> own i64 -> i64
 fn nested_then_send parts n =
-    match Channel.bounded 1 with
+    match DataChannel.bounded 1 with
     | (sender, receiver) ->
         let results = Task.run (Task.parallel [nested_producer sender parts n, nested_consumer receiver])
         results[1]

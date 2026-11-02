@@ -1,15 +1,15 @@
-def feed :: ref Channel.Sender<i64> -> i64 -> i64
+def feed :: ref DataChannel.Sender<i64> -> i64 -> i64
 fn feed sender n =
-    match Channel.send sender n with
+    match DataChannel.send sender n with
     | Result.Ok _unit -> 1
     | Result.Error _item -> 0
 
-def drain :: ref Channel.Receiver<i64> -> i64
+def drain :: ref DataChannel.Receiver<i64> -> i64
 fn drain receiver =
     let mut total = 0
     let mut open = true
     while open do
-        match Channel.recv receiver with
+        match DataChannel.recv receiver with
         | Maybe.Some value -> total = total + value
         | Maybe.None -> open = false
     total

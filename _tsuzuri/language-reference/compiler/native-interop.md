@@ -368,7 +368,7 @@ int main() {
 4
 ```
 
-`--trap-mode return` で作ったライブラリとバインディングでは、トラップが例外になり、次の呼び出しは普通に動きます。`site` の値は `.trap.json` の ID です。`Mutex.with_lock` の中でトラップしたときは、境界がそのスレッドの持つロックを解放してから状態を返します。同じ呼び出しの別の子どもがそのロックを待っていても、グループは完了し、次の呼び出しは通常どおりロックを取れます（[Mutex](../built-in-types-and-modules/mutex.md#トラップとロック)）。`Channel` で待つタスクが互いを待つデッドロックも、呼び出しのトラップとして返り、境界がチャンネルのブロックを解放します。次の呼び出しは通常どおり動きます（[Channel](../built-in-types-and-modules/channel.md#トラップ)）。
+`--trap-mode return` で作ったライブラリとバインディングでは、トラップが例外になり、次の呼び出しは普通に動きます。`site` の値は `.trap.json` の ID です。`Mutex.with_lock` の中でトラップしたときは、境界がそのスレッドの持つロックを解放してから状態を返します。同じ呼び出しの別の子どもがそのロックを待っていても、グループは完了し、次の呼び出しは通常どおりロックを取れます（[Mutex](../built-in-types-and-modules/mutex.md#トラップとロック)）。`DataChannel` で待つタスクが互いを待つデッドロックも、呼び出しのトラップとして返り、境界がチャンネルのブロックを解放します。次の呼び出しは通常どおり動きます（[DataChannel](../built-in-types-and-modules/datachannel.md#トラップ)）。
 
 ```sh
 tsuzuri build quote --emit shared --trap-mode return -o libquote_trap.dylib
@@ -531,7 +531,7 @@ Tsuzuri のコードからは [Alloc](../built-in-types-and-modules/alloc.md) �
 
 `--allocator small` は、native の 64-bit のサイズ区分 allocator です（`--emit exe`、`object`、`llvm`、`header`、`shared`。WASM、`--trap-mode return`、`--freestanding` とは排他で、`E2000` です）。512 バイト以下を区分から、それより大きいブロックを C ライブラリの `malloc` から取ります。`tsuzuri_alloc` が返すバッファも同じなので、ホストへ返した所有バッファは、これまでどおり `tsuzuri_free` で解放し、C の `free` へは渡さないでください。区分の状態は、1 つのプログラムにリンクした Tsuzuri のオブジェクトで共有されます（macOS と Linux）。`--allocator` はオブジェクトごとに混ぜないでください。設計は [スタックとヒープ](../ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) にあります。
 
-`--freestanding` は、C ライブラリ無しの native object / LLVM IR / header です。`--allocator host` が必須で、参照してよい外部はホストの allocator、宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Mutex`、`Channel`、`Debug`、プログラム引数は `E2000` です。トラップは `llvm.trap` だけで、`--trap-info` や `--debug-output` は使えません。
+`--freestanding` は、C ライブラリ無しの native object / LLVM IR / header です。`--allocator host` が必須で、参照してよい外部はホストの allocator、宣言した `extern`、`memcpy` / `memmove` / `memset` / `memcmp`、compiler-rt の整数ヘルパーだけです。IO、OS API、タスク、`Mutex`、`DataChannel`、`Debug`、プログラム引数は `E2000` です。トラップは `llvm.trap` だけで、`--trap-info` や `--debug-output` は使えません。
 
 契約の詳細は [言語仕様のホスト提供の allocator](../../../docs/language.md#ホスト提供の-allocator) を見てください。
 

@@ -1,0 +1,8 @@
+/// A handle of a Channel that can only receive (TZ03 Phase 2, Go's `<-chan T`):
+/// `Channel.receive_only` makes one from a channel, and `ReceiveOnly.recv`, `try_recv` and
+/// `for x in handle` take from the same channel. It cannot send or close, and no function turns it
+/// back into a Channel. Dropping it releases its share of the channel.
+record ReceiveOnly<'a> { block: i64 }
+instance Drop<ReceiveOnly<'a>> {
+    fn drop handle = ReceiveOnly.__release handle
+}

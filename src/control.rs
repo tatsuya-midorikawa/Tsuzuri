@@ -118,6 +118,12 @@ impl Checker<'_> {
                         }
                         return self.sequence_loop(source, pattern, body, expression.span);
                     }
+                    if let Some((receive, _)) = source.ty.channel_element(&self.types) {
+                        if let Some(expected) = expected {
+                            self.same(&Type::Unit, expected, expression.span)?;
+                        }
+                        return self.channel_loop(source, receive, pattern, body, expression.span);
+                    }
                     let element = match &source.ty {
                         Type::Array(element) | Type::List(element) | Type::Vec(element) => {
                             (**element).clone()
@@ -134,7 +140,7 @@ impl Checker<'_> {
                         _ => {
                             return Err(Diagnostic::of(
                                 DiagnosticKind::ForSourceNotIterable,
-                                "for...in expects an array, list, string, utf8string, integer range, or Seq; call Module.iter explicitly for user-defined types",
+                                "for...in expects an array, list, string, utf8string, integer range, Seq, Channel, or ReceiveOnly; call Module.iter explicitly for user-defined types",
                                 source.span,
                             ));
                         }
@@ -226,6 +232,122 @@ impl Checker<'_> {
             self.same(&Type::Unit, expected, expression.span)?;
         }
         Ok(value(kind, Type::Unit, expression.span))
+    }
+
+    /// `for x in ch` over a `Channel` or a `ReceiveOnly` (TZ03), Go's `for x := range ch`, with the
+    /// `receive` function of its type: receives until the channel
+    /// is closed and empty. Like `sequence_loop`, it checks a generated `while`, so `break` and
+    /// `continue` keep their meaning:
+    ///
+    /// ```text
+    /// while true do
+    ///     match Channel.recv <channel> with
+    ///     | Maybe.Some $item -> match $item with | <pattern> -> <body>
+    ///     | Maybe.None -> break
+    /// ```
+    ///
+    /// `<channel>` is a local of the loop: a shared borrow of a channel in a place, which stays
+    /// usable after the loop, or a temporary channel, which the loop holds and drops after it.
+    fn channel_loop(
+        &mut self,
+        source: TypedExpr,
+        receive: &str,
+        pattern: &Pattern,
+        body: &Expr,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let depth = body.depth.max(pattern.depth) + 12 * (self.normal_loop_depth + 1);
+        if depth > MAX_NESTING {
+            return Err(Diagnostic::of(
+                DiagnosticKind::SequenceLoopDepthLimit,
+                "sequence loop expansion exceeds the compiler depth limit; extract the body into a function",
+                span,
+            ));
+        }
+        let ident = |name: &str| Ident {
+            text: format!("$channel_{name}_{}", span.start),
+            span,
+            provenance: Provenance::Generated,
+        };
+        let named = |text: &str| Ident {
+            text: text.into(),
+            span,
+            provenance: Provenance::Generated,
+        };
+        let make = |kind| Expr { kind, span, depth };
+        let owner_name = ident("owner");
+        let item_name = ident("item");
+        let channel = make(ExprKind::Name(owner_name.clone()));
+        let item_body = make(ExprKind::Match {
+            value: Box::new(make(ExprKind::Name(item_name.clone()))),
+            arms: vec![MatchArm {
+                pattern: pattern.clone(),
+                guard: None,
+                body: body.clone(),
+                span: body.span,
+            }],
+            origin: MatchOrigin::ComputationDestructuring,
+        });
+        let receive = make(ExprKind::Call(
+            Box::new(make(ExprKind::QualifiedFunction(named(receive)))),
+            vec![channel],
+        ));
+        let arms = vec![
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Apply(
+                        named("::Maybe.Maybe.Some"),
+                        vec![Pattern {
+                            kind: PatternKind::Binding(item_name),
+                            span,
+                            depth: 1,
+                        }],
+                    ),
+                    span,
+                    depth: 2,
+                },
+                guard: None,
+                body: item_body,
+                span,
+            },
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Binding(named("::Maybe.Maybe.None")),
+                    span,
+                    depth: 1,
+                },
+                guard: None,
+                body: make(ExprKind::Break),
+                span,
+            },
+        ];
+        let loop_expression = make(ExprKind::While {
+            condition: Box::new(make(ExprKind::Bool(true))),
+            body: Box::new(make(ExprKind::Match {
+                value: Box::new(receive),
+                arms,
+                origin: MatchOrigin::ComputationDestructuring,
+            })),
+        });
+        let source = if is_place(&source) {
+            let ty = Type::Reference(Box::new(source.ty.clone()), false);
+            let span = source.span;
+            value(TypedExprKind::Borrow(Box::new(source), false), ty, span)
+        } else {
+            source
+        };
+        self.scopes.push(BTreeMap::new());
+        let owner = self.bind(&owner_name, source.ty.clone(), false);
+        let result = self.expression(&loop_expression, Some(&Type::Unit));
+        self.scopes.pop();
+        Ok(value(
+            TypedExprKind::Block {
+                bindings: vec![(owner, source)],
+                result: Box::new(result?),
+            },
+            Type::Unit,
+            span,
+        ))
     }
 
     fn sequence_loop(

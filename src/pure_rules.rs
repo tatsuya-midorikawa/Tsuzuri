@@ -207,12 +207,37 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | MutexCreate
         | MutexWith
         | MutexIntoInner
-        | ChannelBounded
+        | DataChannelBounded
+        | DataChannelSend
+        | DataChannelRecv
+        | DataChannelCloneSender
+        | DataChannelCloseSender
+        | DataChannelCloseReceiver
+        | ChannelMake
         | ChannelSend
         | ChannelRecv
-        | ChannelCloneSender
-        | ChannelCloseSender
-        | ChannelCloseReceiver
+        | ChannelTrySend
+        | ChannelTryRecv
+        | ChannelClose
+        | ChannelLength
+        | ChannelCapacity
+        | ChannelShare
+        | ChannelRelease
+        | ChannelSendOnly
+        | ChannelReceiveOnly
+        | SendOnlySend
+        | SendOnlyTrySend
+        | SendOnlyClose
+        | SendOnlyLength
+        | SendOnlyCapacity
+        | SendOnlyShare
+        | SendOnlyRelease
+        | ReceiveOnlyRecv
+        | ReceiveOnlyTryRecv
+        | ReceiveOnlyLength
+        | ReceiveOnlyCapacity
+        | ReceiveOnlyShare
+        | ReceiveOnlyRelease
         | RcNew
         | RcShare
         | RcGet
@@ -1492,7 +1517,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            97
+            122
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

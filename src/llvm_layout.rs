@@ -451,7 +451,7 @@ pub(crate) fn drop_flag(ty: &Type, module: &CheckedModule) -> Option<usize> {
 /// A record of the user's program stores its fields by decreasing alignment when that makes the
 /// model of its size (`layout_bound`) strictly smaller; fields of one alignment keep their declared
 /// order, and the live flag of a Drop record stays last. A record of the standard library keeps its
-/// order: the runtime and hand-written IR index it (`Seq`, `Mutex`, `Channel`, `Matrix`, ...).
+/// order: the runtime and hand-written IR index it (`Seq`, `Mutex`, `DataChannel`, `Matrix`, ...).
 pub(crate) fn record_slots(
     id: usize,
     arguments: &[Type],

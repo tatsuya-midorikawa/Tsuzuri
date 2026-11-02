@@ -151,7 +151,7 @@ stateDiagram-v2
 
 ### `concurrency`
 
-並行の近似です。値の流れは知識グラフにないので、署名の型（`Channel.Sender<T>`・`Channel.Receiver<T>`・`Mutex<T>`・`Atomic<T>`）と呼び出し（`Task.scope`・`Task.parallel`・`Task.parallel_results`・`Parallel.*`・`Channel.bounded`・`Mutex.create`・`Atomic.create`）から作り、図に「approximate」の注記を必ず付けます。並行の区画を作る関数は二重枠、共有するセルは紫です。生成の呼び出しの型 `T` は、署名に同じ種類のセルの型が 1 つしかないときだけ書き、2 つ以上なら `?` です（`Channel.Sender<(i64 -> i64)>` の `->` の `>` は型の終わりではありません）。ID にモジュールを渡すと、そのモジュールの関数だけを描きます（ほかのモジュールの区画からの呼び出しは描きません）。区画とセルはまとめません: `--max-nodes` に区画とセル、ほかの関数のまとめ 1 つ、注記が収まらなければ `diagram_too_large` です。
+並行の近似です。値の流れは知識グラフにないので、署名の型（`DataChannel.Sender<T>`・`DataChannel.Receiver<T>`・`Mutex<T>`・`Atomic<T>`）と呼び出し（`Task.scope`・`Task.parallel`・`Task.parallel_results`・`Parallel.*`・`DataChannel.bounded`・`Mutex.create`・`Atomic.create`）から作り、図に「approximate」の注記を必ず付けます。並行の区画を作る関数は二重枠、共有するセルは紫です。生成の呼び出しの型 `T` は、署名に同じ種類のセルの型が 1 つしかないときだけ書き、2 つ以上なら `?` です（`DataChannel.Sender<(i64 -> i64)>` の `->` の `>` は型の終わりではありません）。ID にモジュールを渡すと、そのモジュールの関数だけを描きます（ほかのモジュールの区画からの呼び出しは描きません）。区画とセルはまとめません: `--max-nodes` に区画とセル、ほかの関数のまとめ 1 つ、注記が収まらなければ `diagram_too_large` です。
 
 ```mermaid
 flowchart LR
@@ -159,7 +159,7 @@ flowchart LR
     n2["Flow::Worker.bump"]
     n3["Flow::Worker.drain"]
     n4["Flow::Worker.feed"]
-    n5("Channel#lt;i64#gt;")
+    n5("DataChannel#lt;i64#gt;")
     n6("Mutex#lt;i64#gt;")
     n7["approximate: from signatures and call sites"]
     n1 -.->|"calls"| n2

@@ -86,7 +86,8 @@ export function checkVersion(version, versionOutput, mentions) {
 }
 
 // ---- std ------------------------------------------------------------------------------------------
-export const STD_PAGES = { MatrixView: 'built-in-types-and-modules/matrix-view.md', Async: 'async-tasks-and-lazy/async.md' };
+export const STD_PAGES = { MatrixView: 'built-in-types-and-modules/matrix-view.md', Async: 'async-tasks-and-lazy/async.md',
+  SendOnly: 'built-in-types-and-modules/channel.md', ReceiveOnly: 'built-in-types-and-modules/channel.md' };
 export const stdPage = (module) => STD_PAGES[module] ?? `built-in-types-and-modules/${module.toLowerCase()}.md`;
 /** The public std functions that their module's reference page does not mention; `readPage` returns null for no page. */
 export function checkStd(modules, readPage) {

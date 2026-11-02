@@ -723,6 +723,24 @@ impl Type {
         !types.stored_all(self, |part| !part.has_user_drop(types))
     }
 
+    /// The function that `for x in ch` receives with and the item type, when `ch` is the std
+    /// `Channel<'a>` or its receiving handle `ReceiveOnly<'a>` (TZ03). The name is the standard
+    /// library's (`std::`): a module `Channel` of the program, or two that `using` declarations make
+    /// visible, does not change what the loop calls.
+    pub(crate) fn channel_element(&self, types: &TypeContext<'_>) -> Option<(&'static str, &Type)> {
+        match self {
+            Self::Record(id, arguments) if types.records[*id].origin == ModuleOrigin::Std => {
+                let receive = match types.records[*id].name.as_str() {
+                    "Channel.Channel" => "std::Channel.recv",
+                    "ReceiveOnly.ReceiveOnly" => "std::ReceiveOnly.recv",
+                    _ => return None,
+                };
+                arguments.first().map(|item| (receive, item))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn sequence_element(&self, types: &TypeContext<'_>) -> Option<&Type> {
         match self {
             Self::Record(id, arguments)
@@ -917,7 +935,7 @@ impl Type {
             // arguments (`'f<i64>`). `false` keeps `Send<'a>` as a constraint on a generic
             // function, which is checked again for every type that it is used at (as `Sync<'a>`
             // is); `true` would discharge it where the function is written and let an `Rc` through
-            // a wrapper of `Channel.bounded`, `Mutex.create` or `Parallel.init`. Every kind of type
+            // a wrapper of `DataChannel.bounded`, `Mutex.create` or `Parallel.init`. Every kind of type
             // is named here and below, so that a new one has to be judged.
             Self::Variable(_)
             | Self::Infer(_)
@@ -1631,21 +1649,21 @@ pub enum Builtin {
     MutexWith,
     /// `Mutex.into_inner :: Mutex<'a> -> 'a`.
     MutexIntoInner,
-    /// `Channel.bounded :: Send<'a> => i64 -> (Channel.Sender<'a> * Channel.Receiver<'a>)`
+    /// `DataChannel.bounded :: Send<'a> => i64 -> (DataChannel.Sender<'a> * DataChannel.Receiver<'a>)`
     /// makes a channel that holds up to the given number of items (F10 Phase 2).
-    ChannelBounded,
-    /// `Channel.send :: ref Channel.Sender<'a> -> 'a -> Result<unit, 'a>`: waits while the channel
+    DataChannelBounded,
+    /// `DataChannel.send :: ref DataChannel.Sender<'a> -> 'a -> Result<unit, 'a>`: waits while the channel
     /// is full; `Error item` when no receiver is left.
-    ChannelSend,
-    /// `Channel.recv :: ref Channel.Receiver<'a> -> Maybe<'a>`: waits while the channel is empty
+    DataChannelSend,
+    /// `DataChannel.recv :: ref DataChannel.Receiver<'a> -> Maybe<'a>`: waits while the channel is empty
     /// and a sender is left; `None` when it is empty and closed.
-    ChannelRecv,
-    /// `Channel.clone_sender :: ref Channel.Sender<'a> -> Channel.Sender<'a>`.
-    ChannelCloneSender,
-    /// `Channel.__close_sender` and `__close_receiver`, the bodies of the `Drop` instances in
-    /// `std/Channel.tz`: private to that module.
-    ChannelCloseSender,
-    ChannelCloseReceiver,
+    DataChannelRecv,
+    /// `DataChannel.clone_sender :: ref DataChannel.Sender<'a> -> DataChannel.Sender<'a>`.
+    DataChannelCloneSender,
+    /// `DataChannel.__close_sender` and `__close_receiver`, the bodies of the `Drop` instances in
+    /// `std/DataChannel.tz`: private to that module.
+    DataChannelCloseSender,
+    DataChannelCloseReceiver,
     /// `Routine.go :: own Owned.Function<unit, unit> -> unit` runs the owned function once in a new
     /// tzroutine and then drops it: `tzroutine { }` as a function value (TZ02).
     RoutineGo,
@@ -1657,6 +1675,45 @@ pub enum Builtin {
     RoutineMaxProcs,
     /// `Routine.cpu_count :: unit -> i64`: the online CPUs.
     RoutineCpuCount,
+    /// `Channel.make :: Send<'a> => i64 -> Channel<'a>` (TZ03): Go's `make(chan T, n)`; 0 is unbuffered.
+    ChannelMake,
+    /// `Channel.send :: ref Channel<'a> -> 'a -> unit`: waits for a receiver or room; traps on a
+    /// closed channel.
+    ChannelSend,
+    /// `Channel.recv :: ref Channel<'a> -> Maybe<'a>`: waits for an item; `None` once closed and empty.
+    ChannelRecv,
+    /// `Channel.try_send :: ref Channel<'a> -> 'a -> Result<unit, Channel.SendError<'a>>`: never waits.
+    ChannelTrySend,
+    /// `Channel.try_recv :: ref Channel<'a> -> Channel.Received<'a>`: never waits.
+    ChannelTryRecv,
+    /// `Channel.close :: ref Channel<'a> -> unit`: traps when it is closed already.
+    ChannelClose,
+    /// `Channel.length :: ref Channel<'a> -> i64` and `Channel.capacity`.
+    ChannelLength,
+    ChannelCapacity,
+    /// `Channel.share :: ref Channel<'a> -> Channel<'a>`: one more handle of the same channel.
+    ChannelShare,
+    /// `Channel.__release`, the body of the `Drop` instance in `std/Channel.tz`: private to that module.
+    ChannelRelease,
+    /// `Channel.send_only :: ref Channel<'a> -> SendOnly<'a>` and `Channel.receive_only` (TZ03
+    /// Phase 2): one more handle of the channel that can only send, or only receive (Go's `chan<- T`
+    /// and `<-chan T`). The operations of the two handles are the `SendOnly.*` and `ReceiveOnly.*`
+    /// below; the block and the code are the channel's.
+    ChannelSendOnly,
+    ChannelReceiveOnly,
+    SendOnlySend,
+    SendOnlyTrySend,
+    SendOnlyClose,
+    SendOnlyLength,
+    SendOnlyCapacity,
+    SendOnlyShare,
+    SendOnlyRelease,
+    ReceiveOnlyRecv,
+    ReceiveOnlyTryRecv,
+    ReceiveOnlyLength,
+    ReceiveOnlyCapacity,
+    ReceiveOnlyShare,
+    ReceiveOnlyRelease,
     /// Test-only `Int.test_add : Integer<'a> => 'a -> 'a -> 'a` exercises
     /// multi-argument, constrained builtins.
     #[cfg(test)]
@@ -1979,17 +2036,42 @@ impl Builtin {
         Self::MutexCreate,
         Self::MutexWith,
         Self::MutexIntoInner,
-        Self::ChannelBounded,
-        Self::ChannelSend,
-        Self::ChannelRecv,
-        Self::ChannelCloneSender,
-        Self::ChannelCloseSender,
-        Self::ChannelCloseReceiver,
+        Self::DataChannelBounded,
+        Self::DataChannelSend,
+        Self::DataChannelRecv,
+        Self::DataChannelCloneSender,
+        Self::DataChannelCloseSender,
+        Self::DataChannelCloseReceiver,
         Self::RoutineGo,
         Self::RoutineYield,
         Self::RoutineCount,
         Self::RoutineMaxProcs,
         Self::RoutineCpuCount,
+        Self::ChannelMake,
+        Self::ChannelSend,
+        Self::ChannelRecv,
+        Self::ChannelTrySend,
+        Self::ChannelTryRecv,
+        Self::ChannelClose,
+        Self::ChannelLength,
+        Self::ChannelCapacity,
+        Self::ChannelShare,
+        Self::ChannelRelease,
+        Self::ChannelSendOnly,
+        Self::ChannelReceiveOnly,
+        Self::SendOnlySend,
+        Self::SendOnlyTrySend,
+        Self::SendOnlyClose,
+        Self::SendOnlyLength,
+        Self::SendOnlyCapacity,
+        Self::SendOnlyShare,
+        Self::SendOnlyRelease,
+        Self::ReceiveOnlyRecv,
+        Self::ReceiveOnlyTryRecv,
+        Self::ReceiveOnlyLength,
+        Self::ReceiveOnlyCapacity,
+        Self::ReceiveOnlyShare,
+        Self::ReceiveOnlyRelease,
         #[cfg(test)]
         Self::TestAdd,
         #[cfg(test)]
@@ -2224,17 +2306,42 @@ impl Builtin {
             Self::MutexCreate => "Mutex.create",
             Self::MutexWith => "Mutex.with_lock",
             Self::MutexIntoInner => "Mutex.into_inner",
-            Self::ChannelBounded => "Channel.bounded",
-            Self::ChannelSend => "Channel.send",
-            Self::ChannelRecv => "Channel.recv",
-            Self::ChannelCloneSender => "Channel.clone_sender",
-            Self::ChannelCloseSender => "Channel.__close_sender",
-            Self::ChannelCloseReceiver => "Channel.__close_receiver",
+            Self::DataChannelBounded => "DataChannel.bounded",
+            Self::DataChannelSend => "DataChannel.send",
+            Self::DataChannelRecv => "DataChannel.recv",
+            Self::DataChannelCloneSender => "DataChannel.clone_sender",
+            Self::DataChannelCloseSender => "DataChannel.__close_sender",
+            Self::DataChannelCloseReceiver => "DataChannel.__close_receiver",
             Self::RoutineGo => "Routine.go",
             Self::RoutineYield => "Routine.yield",
             Self::RoutineCount => "Routine.count",
             Self::RoutineMaxProcs => "Routine.max_procs",
             Self::RoutineCpuCount => "Routine.cpu_count",
+            Self::ChannelMake => "Channel.make",
+            Self::ChannelSend => "Channel.send",
+            Self::ChannelRecv => "Channel.recv",
+            Self::ChannelTrySend => "Channel.try_send",
+            Self::ChannelTryRecv => "Channel.try_recv",
+            Self::ChannelClose => "Channel.close",
+            Self::ChannelLength => "Channel.length",
+            Self::ChannelCapacity => "Channel.capacity",
+            Self::ChannelShare => "Channel.share",
+            Self::ChannelRelease => "Channel.__release",
+            Self::ChannelSendOnly => "Channel.send_only",
+            Self::ChannelReceiveOnly => "Channel.receive_only",
+            Self::SendOnlySend => "SendOnly.send",
+            Self::SendOnlyTrySend => "SendOnly.try_send",
+            Self::SendOnlyClose => "SendOnly.close",
+            Self::SendOnlyLength => "SendOnly.length",
+            Self::SendOnlyCapacity => "SendOnly.capacity",
+            Self::SendOnlyShare => "SendOnly.share",
+            Self::SendOnlyRelease => "SendOnly.__release",
+            Self::ReceiveOnlyRecv => "ReceiveOnly.recv",
+            Self::ReceiveOnlyTryRecv => "ReceiveOnly.try_recv",
+            Self::ReceiveOnlyLength => "ReceiveOnly.length",
+            Self::ReceiveOnlyCapacity => "ReceiveOnly.capacity",
+            Self::ReceiveOnlyShare => "ReceiveOnly.share",
+            Self::ReceiveOnlyRelease => "ReceiveOnly.__release",
             Self::BenchNow => "Bench.now",
             Self::BenchConsume => "Bench.consume",
             Self::AllocCounter => "Alloc.__counter",
@@ -3339,12 +3446,12 @@ impl Builtin {
             | Self::MutexCreate
             | Self::MutexWith
             | Self::MutexIntoInner
-            | Self::ChannelBounded
-            | Self::ChannelSend
-            | Self::ChannelRecv
-            | Self::ChannelCloneSender
-            | Self::ChannelCloseSender
-            | Self::ChannelCloseReceiver => self.sync_scheme(),
+            | Self::DataChannelBounded
+            | Self::DataChannelSend
+            | Self::DataChannelRecv
+            | Self::DataChannelCloneSender
+            | Self::DataChannelCloseSender
+            | Self::DataChannelCloseReceiver => self.sync_scheme(),
             Self::RoutineGo => (
                 vec![BuiltinType::Std {
                     module: "Owned",
@@ -3358,6 +3465,31 @@ impl Builtin {
             Self::RoutineCount | Self::RoutineMaxProcs | Self::RoutineCpuCount => {
                 (vec![Concrete(Type::Unit)], Concrete(Type::I64), Vec::new())
             }
+            Self::ChannelMake
+            | Self::ChannelSend
+            | Self::ChannelRecv
+            | Self::ChannelTrySend
+            | Self::ChannelTryRecv
+            | Self::ChannelClose
+            | Self::ChannelLength
+            | Self::ChannelCapacity
+            | Self::ChannelShare
+            | Self::ChannelRelease
+            | Self::ChannelSendOnly
+            | Self::ChannelReceiveOnly
+            | Self::SendOnlySend
+            | Self::SendOnlyTrySend
+            | Self::SendOnlyClose
+            | Self::SendOnlyLength
+            | Self::SendOnlyCapacity
+            | Self::SendOnlyShare
+            | Self::SendOnlyRelease
+            | Self::ReceiveOnlyRecv
+            | Self::ReceiveOnlyTryRecv
+            | Self::ReceiveOnlyLength
+            | Self::ReceiveOnlyCapacity
+            | Self::ReceiveOnlyShare
+            | Self::ReceiveOnlyRelease => self.channel_scheme(),
             #[cfg(test)]
             Self::TestAdd => (vec![a(), a()], a(), vec![integer()]),
             #[cfg(test)]
@@ -3487,10 +3619,116 @@ impl Builtin {
         self.name().starts_with("Atomic.")
     }
 
-    /// Whether this builtin is a `Channel` operation, lowered to calls of the channel runtime
+    /// Whether this builtin is a `DataChannel` operation (the `Channel` of F10, renamed in TZ03),
+    /// lowered to calls of the channel runtime
     /// (F10 Phase 2).
+    pub(crate) fn is_data_channel(self) -> bool {
+        self.name().starts_with("DataChannel.")
+    }
+
+    /// Whether this builtin is an operation of Go's `Channel` or of one of its direction handles
+    /// `SendOnly` and `ReceiveOnly` (TZ03), lowered to calls of the tzroutine runtime.
     pub(crate) fn is_channel(self) -> bool {
-        self.name().starts_with("Channel.")
+        let name = self.name();
+        name.starts_with("Channel.")
+            || name.starts_with("SendOnly.")
+            || name.starts_with("ReceiveOnly.")
+    }
+
+    /// The operation of `Channel` that a `SendOnly` or `ReceiveOnly` builtin is (TZ03 Phase 2): the
+    /// three handles hold the same block, so their code is the same; a conversion is a share.
+    pub(crate) fn channel_operation(self) -> Self {
+        match self {
+            Self::SendOnlySend => Self::ChannelSend,
+            Self::SendOnlyTrySend => Self::ChannelTrySend,
+            Self::SendOnlyClose => Self::ChannelClose,
+            Self::SendOnlyLength | Self::ReceiveOnlyLength => Self::ChannelLength,
+            Self::SendOnlyCapacity | Self::ReceiveOnlyCapacity => Self::ChannelCapacity,
+            Self::SendOnlyShare
+            | Self::ReceiveOnlyShare
+            | Self::ChannelSendOnly
+            | Self::ChannelReceiveOnly => Self::ChannelShare,
+            Self::SendOnlyRelease | Self::ReceiveOnlyRelease => Self::ChannelRelease,
+            Self::ReceiveOnlyRecv => Self::ChannelRecv,
+            Self::ReceiveOnlyTryRecv => Self::ChannelTryRecv,
+            other => other,
+        }
+    }
+
+    /// The schemes of `Channel.*`, `SendOnly.*` and `ReceiveOnly.*` (TZ03), kept out of `scheme` so
+    /// that its frame stays small.
+    #[inline(never)]
+    fn channel_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
+        use BuiltinType::{Concrete, Reference, Var};
+        let a = || Var("a");
+        let std = |module: &'static str, name: &'static str, args| BuiltinType::Std {
+            module,
+            name,
+            args,
+        };
+        let channel = || std("Channel", "Channel", vec![a()]);
+        let send_only = || std("SendOnly", "SendOnly", vec![a()]);
+        let receive_only = || std("ReceiveOnly", "ReceiveOnly", vec![a()]);
+        // The handle that the operation borrows: a `SendOnly.*` builtin takes a `SendOnly`.
+        let handle = || {
+            if self.name().starts_with("SendOnly.") {
+                send_only()
+            } else if self.name().starts_with("ReceiveOnly.") {
+                receive_only()
+            } else {
+                channel()
+            }
+        };
+        let borrowed = || Reference(Box::new(handle()), false);
+        match self {
+            Self::ChannelMake => (
+                vec![Concrete(Type::I64)],
+                channel(),
+                vec![BuiltinConstraint {
+                    class: "Send",
+                    ty: a(),
+                }],
+            ),
+            Self::ChannelSend | Self::SendOnlySend => {
+                (vec![borrowed(), a()], Concrete(Type::Unit), Vec::new())
+            }
+            Self::ChannelRecv | Self::ReceiveOnlyRecv => (
+                vec![borrowed()],
+                std("Maybe", "Maybe", vec![a()]),
+                Vec::new(),
+            ),
+            Self::ChannelTrySend | Self::SendOnlyTrySend => (
+                vec![borrowed(), a()],
+                std(
+                    "Result",
+                    "Result",
+                    vec![Concrete(Type::Unit), std("Channel", "SendError", vec![a()])],
+                ),
+                Vec::new(),
+            ),
+            Self::ChannelTryRecv | Self::ReceiveOnlyTryRecv => (
+                vec![borrowed()],
+                std("Channel", "Received", vec![a()]),
+                Vec::new(),
+            ),
+            Self::ChannelClose
+            | Self::ChannelRelease
+            | Self::SendOnlyClose
+            | Self::SendOnlyRelease
+            | Self::ReceiveOnlyRelease => (vec![borrowed()], Concrete(Type::Unit), Vec::new()),
+            Self::ChannelLength
+            | Self::ChannelCapacity
+            | Self::SendOnlyLength
+            | Self::SendOnlyCapacity
+            | Self::ReceiveOnlyLength
+            | Self::ReceiveOnlyCapacity => (vec![borrowed()], Concrete(Type::I64), Vec::new()),
+            Self::ChannelShare | Self::SendOnlyShare | Self::ReceiveOnlyShare => {
+                (vec![borrowed()], handle(), Vec::new())
+            }
+            Self::ChannelSendOnly => (vec![borrowed()], send_only(), Vec::new()),
+            Self::ChannelReceiveOnly => (vec![borrowed()], receive_only(), Vec::new()),
+            _ => unreachable!("not a Channel builtin"),
+        }
     }
 
     /// Whether this builtin is a `Routine` operation, lowered to calls of the tzroutine runtime (TZ02).
@@ -3522,12 +3760,12 @@ impl Builtin {
             args: vec![a()],
         };
         let sender = || BuiltinType::Std {
-            module: "Channel",
+            module: "DataChannel",
             name: "Sender",
             args: vec![a()],
         };
         let receiver = || BuiltinType::Std {
-            module: "Channel",
+            module: "DataChannel",
             name: "Receiver",
             args: vec![a()],
         };
@@ -3583,12 +3821,12 @@ impl Builtin {
                 vec![constraint("Send", Var("b"))],
             ),
             Self::MutexIntoInner => (vec![mutex()], a(), Vec::new()),
-            Self::ChannelBounded => (
+            Self::DataChannelBounded => (
                 vec![Concrete(Type::I64)],
                 BuiltinType::Tuple(vec![sender(), receiver()]),
                 vec![constraint("Send", a())],
             ),
-            Self::ChannelSend => (
+            Self::DataChannelSend => (
                 vec![borrowed(sender()), a()],
                 BuiltinType::Std {
                     module: "Result",
@@ -3597,7 +3835,7 @@ impl Builtin {
                 },
                 Vec::new(),
             ),
-            Self::ChannelRecv => (
+            Self::DataChannelRecv => (
                 vec![borrowed(receiver())],
                 BuiltinType::Std {
                     module: "Maybe",
@@ -3606,11 +3844,11 @@ impl Builtin {
                 },
                 Vec::new(),
             ),
-            Self::ChannelCloneSender => (vec![borrowed(sender())], sender(), Vec::new()),
-            Self::ChannelCloseSender => {
+            Self::DataChannelCloneSender => (vec![borrowed(sender())], sender(), Vec::new()),
+            Self::DataChannelCloseSender => {
                 (vec![borrowed(sender())], Concrete(Type::Unit), Vec::new())
             }
-            Self::ChannelCloseReceiver => {
+            Self::DataChannelCloseReceiver => {
                 (vec![borrowed(receiver())], Concrete(Type::Unit), Vec::new())
             }
             _ => unreachable!("not a concurrency builtin"),
@@ -4825,6 +5063,9 @@ struct DeclaredFunction {
 
 #[derive(Default)]
 struct Names {
+    /// The `E1040`s of old type names that `type_head` resolved as their replacements (TZ03); each
+    /// stage moves them into the diagnostics before it checks them (`flush_renamed`).
+    renamed: std::sync::Mutex<Vec<Diagnostic>>,
     /// By function id; the declarations of tests and benches stay empty.
     declared: Vec<DeclaredFunction>,
     warning_options: warnings::WarningOptions,
@@ -4972,6 +5213,39 @@ fn key_path(qualified: &str) -> String {
 
 /// A dotted full name or namespace as source code writes it, as
 /// `Sample::Features::Shape` for `Sample.Features.Shape`.
+/// A name that the language had and has no longer (TZ03; TZ12 and TZ13 add theirs): the kind of
+/// its `E1040`, the message, the help, and the name to write instead. It is asked only when
+/// `module.name` resolves to nothing, so a definition of the program with that name wins.
+pub(crate) fn removed_feature(
+    module: &str,
+    name: &str,
+) -> Option<(DiagnosticKind, String, &'static str, Option<String>)> {
+    match (module, name) {
+        ("Channel", "bounded" | "clone_sender" | "Sender" | "Receiver") => Some((
+            DiagnosticKind::RenamedToDataChannel,
+            format!("'Channel.{name}' is now 'DataChannel.{name}'"),
+            "the channel with separate Sender and Receiver ends was renamed to DataChannel; the name Channel is now Go's two-way channel (Channel.make)",
+            Some(format!("DataChannel.{name}")),
+        )),
+        _ => None,
+    }
+}
+
+/// The `E1040` of a removed name at `span`, which covers the whole qualified name, with the fix
+/// that writes its replacement.
+fn removed_name(module: &str, name: &str, span: Span) -> Option<Diagnostic> {
+    let (kind, message, help, replacement) = removed_feature(module, name)?;
+    let diagnostic = Diagnostic::of(kind, message, span).with_help(help);
+    Some(match replacement {
+        Some(text) => diagnostic.fix(
+            format!("write '{text}'"),
+            crate::diagnostic::Applicability::Certain,
+            vec![crate::diagnostic::Edit { span, text }],
+        ),
+        None => diagnostic,
+    })
+}
+
 fn namespace_display(dotted: &str) -> String {
     dotted.replace('.', "::")
 }
@@ -5118,6 +5392,14 @@ fn entry_signature(signature: &Signature) -> bool {
 }
 
 impl Names {
+    /// Moves the `E1040`s of `renamed` into `diagnostics`.
+    fn flush_renamed<'d>(&self, diagnostics: &'d mut Diagnostics) -> &'d mut Diagnostics {
+        for error in self.renamed.lock().expect("renamed names").drain(..) {
+            diagnostics.push(error);
+        }
+        diagnostics
+    }
+
     fn local_function(&self, module: &str, name: &str) -> Option<usize> {
         let module = self.symbols.lookup(module)?;
         let name = self.symbols.lookup(name)?;
@@ -5579,6 +5861,38 @@ impl Names {
             (_, named @ (Choice::Ambiguous(..) | Choice::Hidden(_))) => self
                 .type_result(named, &head.text, head.span)
                 .map(TypeHead::Type),
+            _ if head
+                .text
+                .rsplit_once('.')
+                .and_then(|(module, name)| removed_feature(module, name))
+                .is_some() =>
+            {
+                let (removed_module, name) = head.text.rsplit_once('.').expect("a qualified name");
+                let removed =
+                    removed_name(removed_module, name, head.span).expect("a removed name");
+                // The name that replaced it resolves in its place, and the `E1040` waits in
+                // `renamed`, so that one analysis finds every use of the old names.
+                let replacement = removed_feature(removed_module, name)
+                    .and_then(|(_, _, _, replacement)| replacement);
+                let Some(text) = replacement else {
+                    return Err(removed);
+                };
+                let replaced = Ident {
+                    text,
+                    span: head.span,
+                    provenance: head.provenance,
+                };
+                match self.type_head(module, &replaced) {
+                    Ok(TypeHead::Type(named)) => {
+                        let mut renamed = self.renamed.lock().expect("renamed names");
+                        if !renamed.iter().any(|known| known.span == removed.span) {
+                            renamed.push(removed);
+                        }
+                        Ok(TypeHead::Type(named))
+                    }
+                    _ => Err(removed),
+                }
+            }
             _ => Err(Diagnostic::of(
                 DiagnosticKind::UnknownTypeName,
                 format!(
@@ -6571,7 +6885,7 @@ fn check_modules_collect(
             .module_namespaces
             .insert(name.to_owned(), module.namespace.to_owned());
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     for (source, module) in modules.iter().enumerate() {
         let mut imported: Vec<String> = Vec::new();
         for using in &module.program.usings {
@@ -6602,9 +6916,9 @@ fn check_modules_collect(
             names.module_usings.insert(module.name.to_owned(), imported);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     (names.builders, names.builder_aliases) = computation::collect_all(modules, diagnostics);
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let record_declarations: Vec<_> = modules
         .iter()
         .flat_map(|module| {
@@ -6955,7 +7269,7 @@ fn check_modules_collect(
                 .push(qualified);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let union_declarations: Vec<_> = modules
         .iter()
         .flat_map(|module| {
@@ -6997,7 +7311,7 @@ fn check_modules_collect(
                 .push(qualified);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     for module in modules {
         for alias in &module.program.type_aliases {
             if diagnostics.is_full() {
@@ -7042,7 +7356,7 @@ fn check_modules_collect(
                 .push(qualified);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     for (info, alias) in names.type_aliases.values() {
         if diagnostics.is_full() {
             break;
@@ -7099,7 +7413,7 @@ fn check_modules_collect(
             diagnostics.push(error);
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let mut records = Vec::new();
     for (module, record) in &record_declarations {
         if diagnostics.is_full() {
@@ -7215,7 +7529,7 @@ fn check_modules_collect(
             Err(error) => diagnostics.push(error),
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     mark_exclusive_regions(&mut records);
     // Generic declarations are measured with their own parameters as opaque
     // leaves, which rejects every recursive layout before any instance exists.
@@ -7253,7 +7567,7 @@ fn check_modules_collect(
             break;
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let record_sizes: Vec<_> = (0..records.len())
         .map(|id| {
             layouts
@@ -7300,7 +7614,7 @@ fn check_modules_collect(
             break;
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let mut export_names = BTreeSet::new();
     // The function type and WASM module of each explicit extern symbol; a symbol may be declared again only identically.
     let mut explicit_symbols: BTreeMap<String, (Type, String)> = BTreeMap::new();
@@ -7369,7 +7683,7 @@ fn check_modules_collect(
             diagnostics.push(duplicate(&function.name));
         }
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let entry_module = modules
         .iter()
         .find(|module| {
@@ -7380,7 +7694,7 @@ fn check_modules_collect(
         .map(|module| module.name);
     for (id, (module, function)) in function_declarations.iter().enumerate() {
         if diagnostics.is_full() {
-            diagnostics.check()?;
+            names.flush_renamed(diagnostics).check()?;
         }
         let checked = (|| {
             // Instance methods are reached only through class dispatch, so an
@@ -7687,7 +8001,7 @@ fn check_modules_collect(
     {
         for active in &program.active_patterns {
             if diagnostics.is_full() {
-                diagnostics.check()?;
+                names.flush_renamed(diagnostics).check()?;
             }
             let function = names.functions[&format!("{module}.{}", active.function)].clone();
             let id = function.id;
@@ -8080,7 +8394,7 @@ fn check_modules_collect(
             Err(error) => diagnostics.push(error),
         }
     }
-    if diagnostics.check().is_ok() {
+    if names.flush_renamed(diagnostics).check().is_ok() {
         polymorph::solve_members(&mut functions, &mut pending)?;
     }
     let mut name_uses = Vec::new();
@@ -8139,7 +8453,7 @@ fn check_modules_collect(
             ControlFlow::Continue(())
         },
     );
-    if let Err(error) = diagnostics.check() {
+    if let Err(error) = names.flush_renamed(diagnostics).check() {
         if !diagnostics.is_full() {
             let recovered: Vec<_> = recovered_functions
                 .into_iter()
@@ -8164,7 +8478,7 @@ fn check_modules_collect(
         ids[..declaration_count],
         (0..declaration_count).collect::<Vec<_>>()
     );
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     let resolve_api = semantic
         .as_ref()
         .is_some_and(|index| index.resolved_api.is_some());
@@ -8234,7 +8548,7 @@ fn check_modules_collect(
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
     diagnostics.extend(contracts::validate_templates(&module));
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     regions::validate_contract_calls(&module)?;
     // F09 Phase 2: a program that names a non-CPU `Gpu.Backend` calls the device-aware std functions.
     crate::gpu_devices::retarget_calls(&mut module);
@@ -8358,7 +8672,7 @@ fn check_modules_collect(
         }
         module.effects = summary;
     }
-    diagnostics.check()?;
+    names.flush_renamed(diagnostics).check()?;
     // F09 Phase 2: the calls are validated, so their callbacks are known functions.
     crate::gpu_devices::lower_kernels(&mut module)?;
     Ok(module)
@@ -10625,8 +10939,26 @@ impl<'a> Checker<'a> {
         argument: &Expr,
         parameter: &Type,
         from: usize,
-        error: Option<&mut Diagnostic>,
+        mut error: Option<&mut Diagnostic>,
     ) {
+        // A mismatch of a builtin's argument names the builtin, for the hints that must know
+        // which function it is.
+        if matches!(
+            callee.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(_))
+        ) {
+            let tails = tail_spans(argument);
+            for diagnostic in self.recovered.iter_mut().skip(from) {
+                if tails.contains(&diagnostic.span) {
+                    Self::name_builtin(callee, diagnostic);
+                }
+            }
+            if let Some(diagnostic) = &mut error
+                && tails.contains(&diagnostic.span)
+            {
+                Self::name_builtin(callee, diagnostic);
+            }
+        }
         if let Some((message, span)) = self.declared_parameter(callee, index) {
             self.expected_because(
                 error,
@@ -10636,6 +10968,15 @@ impl<'a> Checker<'a> {
                 &format!("{message} is declared here"),
                 span,
             );
+        }
+    }
+
+    /// Notes on an `E1003` of an argument which builtin `callee` is and where its name is.
+    fn name_builtin(callee: &TypedExpr, diagnostic: &mut Diagnostic) {
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+            && diagnostic.code == "E1003"
+        {
+            diagnostic.detail.builtin = Some((instance.builtin.name(), callee.span));
         }
     }
 
@@ -11308,7 +11649,13 @@ impl<'a> Checker<'a> {
             if let Some(expected) = expected {
                 self.same(&result, expected, expression.span)?;
             }
-            (self.coerce_argument(left, &parameters[0])?, right)
+            let left = self
+                .coerce_argument(left, &parameters[0])
+                .map_err(|mut error| {
+                    Self::name_builtin(&right, &mut error);
+                    error
+                })?;
+            (left, right)
         } else {
             let hint = expected.filter(|_| {
                 !matches!(
@@ -11337,7 +11684,11 @@ impl<'a> Checker<'a> {
         let result = if *operator == BinaryOp::Pipe {
             let signature = self.call_signature(&right.ty, 1, right.span);
             let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
-            self.same(&left.ty, &parameters[0], left.span)?;
+            self.same(&left.ty, &parameters[0], left.span)
+                .map_err(|mut error| {
+                    Self::name_builtin(&right, &mut error);
+                    error
+                })?;
             self.solve_families(false)?;
             result
         } else {
@@ -11725,6 +12076,47 @@ impl<'a> Checker<'a> {
                         field.text
                     )
                 } else {
+                    let whole = Span {
+                        start: value.span.start,
+                        end: field.span.end,
+                        source: field.span.source,
+                    };
+                    if let Some(removed) = removed_name(&spelled, &field.text, whole) {
+                        // Recovery checks the name that replaced it, so that one analysis finds
+                        // every use of the old names and `tsuzuri fix` moves a program in a round.
+                        let replacement = removed_feature(&spelled, &field.text)
+                            .and_then(|(_, _, _, replacement)| replacement);
+                        let Some((module, member)) = replacement
+                            .as_deref()
+                            .and_then(|text| text.rsplit_once('.'))
+                            .filter(|_| self.recovering)
+                        else {
+                            return Err(removed);
+                        };
+                        let replaced = Expr {
+                            kind: ExprKind::Field(
+                                Box::new(Expr {
+                                    kind: ExprKind::Name(Ident {
+                                        text: module.to_owned(),
+                                        span: value.span,
+                                        provenance: field.provenance,
+                                    }),
+                                    span: value.span,
+                                    depth: value.depth,
+                                }),
+                                Ident {
+                                    text: member.to_owned(),
+                                    span: field.span,
+                                    provenance: field.provenance,
+                                },
+                            ),
+                            span: expression.span,
+                            depth: expression.depth,
+                        };
+                        self.recovered.push(removed);
+                        self.poisoned = true;
+                        return self.value_expression(&replaced, expected);
+                    }
                     member = true;
                     format!(
                         "module '{spelled}' has no function or union case '{}'",
@@ -13967,8 +14359,8 @@ mod allocation_tests {
              def atomic :: ref Atomic<i64> -> unit = \\_value -> ()\n\
              def nested :: ref Nested -> unit = \\_value -> ()\n\
              def mutex :: ref Mutex<i64> -> unit = \\_value -> ()\n\
-             def sender :: ref Channel.Sender<i64> -> unit = \\_value -> ()\n\
-             def receiver :: ref Channel.Receiver<i64> -> unit = \\_value -> ()",
+             def sender :: ref DataChannel.Sender<i64> -> unit = \\_value -> ()\n\
+             def receiver :: ref DataChannel.Receiver<i64> -> unit = \\_value -> ()",
         )
         .unwrap();
         for function in &module.functions {

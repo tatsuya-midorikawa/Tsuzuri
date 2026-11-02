@@ -114,7 +114,8 @@
 - [Atomic](./built-in-types-and-modules/atomic.md)
 - [Mutex](./built-in-types-and-modules/mutex.md)
 - [Domain](./built-in-types-and-modules/domain.md) — 純粋な計算のトラップを `Result.Error` にする失敗の領域
-- [Channel](./built-in-types-and-modules/channel.md)
+- [Channel](./built-in-types-and-modules/channel.md) — tzroutine の間の Go の双方向のチャンネル
+- [DataChannel](./built-in-types-and-modules/datachannel.md)
 - [Seq](./built-in-types-and-modules/seq.md)
 - [Maybe](./built-in-types-and-modules/maybe.md)
 - [Result](./built-in-types-and-modules/result.md)
