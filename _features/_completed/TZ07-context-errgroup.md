@@ -7,7 +7,7 @@
 | 規模 | M。Phase 1（`Context`）M、Phase 2（`ErrGroup`）S、Phase 3（`Context.after_func`）S |
 | 依存 | TZ04, TZ05, TZ06 |
 | 後続 | TZ08（Net の待ちを `Context` で止める）、TZ12（`Task.parallel_results` の移行先） |
-| 状態 | todo |
+| 状態 | done（2026-11-03。native の macOS・Linux・Windows。WebAssembly は TZ09。下の「実装と検証」） |
 | 起票 | 2026-11-01（D-61。HEAD `9a76d8ac` で確認） |
 | 承認 | 承認済み（D-61）。決定事項 D1〜D6 は既定案 |
 | 手本にする既存実装 | TZ06 の `tsuzuri_tz_handle_*`（参照数のハンドル）と `WaitGroup`、TZ05 の `tzr_timer`（期限）とスコープへのつなぎ、TZ03 のランタイムが作るチャンネル（`Time.after` と同じく `tsuzuri_alloc` で確保し、要素の drop が要らない型）、`std/Time.tz` の `IO` の包み方 |
@@ -250,3 +250,13 @@ static tzr_lock tzr_ctx_lock;    /* one lock for every context tree (S1: no lock
 | D4 | `ErrGroup` は std の Tsuzuri で書く | TZ06 までの部品で書け、ランタイムを増やさない | 既定案 |
 | D5 | `ErrGroup.wait` は完了の時刻で最初の誤り | Go と同じ | 既定案 |
 | D6 | `with_timeout`・`with_deadline` は `IO` | 時計を読む OS の効果（TZ05 の D2 と同じ） | 既定案 |
+
+## 実装と検証（2026-11-03）
+
+- **範囲**: Phase 1〜3 をすべて実装した（1 つの PR。TZ06 の PR のブランチの上）。着手時の再検討（上の節）のとおり合わせた。
+- **ランタイム**（`src/runtime/tzroutine.c` の contexts の節）: `tzr_ctx`（参照数とハンドルの数、親、子の一覧、`done`、`err`、`armed`、期限、埋め込みのタイマー、`AfterFunc` の一覧）と `tzr_ctx_lock`。`tsuzuri_tz_ctx_new`・`_timeout`・`_cancel`・`_err`・`_deadline`・`_done`・`_share`・`_release`・`_after`・`_stop_after`・`_free_after`。タイマーに種類 `CTX` と状態 `DORMANT`、`tzr_timer_record`・`tzr_timer_arm`・`tzr_timer_take`・`tzr_timer_wake` を足し、境界の終わり（`tzr_boundary_settle`）は期限のタイマーも止めて参照を離す。取り消しは明示のスタックで子孫をたどり、止める期限と起こす `AfterFunc` を集めてからロックを外して処理する（`tzr_ctx_lock` と `tzr_timers.lock` を入れ子にしない）。
+- **コンパイラ**: 私的な組み込み 13 個（`Context.__background` など。`Builtin::is_context`、すべて `spawns()`）、生成は新しい `src/llvm_context.rs`（`done` のブロックは `@tz.alloc(128)`、`AfterFunc` の関数は TZ05 の `@tz.tzroutine.owned`・`.drop`）。`std/Context.tz`（`Context`・`Context.Error`・`Context.AfterFunc` と 12 の公開関数）、`std/ErrGroup.tz`（Tsuzuri で書いた 8 の公開関数）。私的な組み込みの `E1022`、効果・純粋・KG・権限（`with_timeout`・`with_deadline` は `time`）の分類と件数の pin（`Builtin::ALL` 342 → 355、不純 167 → 180、`Os` 19 → 21、`Task` 17 → 18、`Atomic` 82 → 92、`alloc` 84 → 91、`callbacks` 26 → 28、KG 166 → 179、権限の世界 37 → 39 と私的な無権限 38 → 49、予約名 72 → 74、std の権限の表 100 → 102 行）。図の並行の区間に `Context.after_func`・`ErrGroup.go`・`try_go`。VS Code のモジュール名。
+- **検証**: `cargo fmt`・`cargo clippy --all-targets -- -D warnings`。`cargo nextest run --locked`（TZ06 との合流の前 2,925 件、合流の後は PR の本文）。`tests/context.rs` 6 件。`TSUZURI_TSAN=1 TSUZURI_ASAN=1 node tests/tzroutine_runtime.mjs` 446 runs（新しい C のケース: `context_tree`（10 万段の鎖の取り消しと解放を含む）・`context_deadline`・`context_release`・`context_deadline_race`（1 ms の期限の子を 1 万個作ってすぐ離す）・`context_after`）。`features.mjs context`（native、`-O0`／`-O3`、P 1・4、13 件と `set_limit` のトラップ、`live == 0`）と `timers`・`sync_types`・`sync_single`。`node tests/tzroutine.mjs` 98 runs（早見の例、最初の誤りで残りが止まる `ErrGroup`、1 時間の期限で `main` が待たないこと、WebAssembly・`--trap-mode return` の `E2000`）。std の例 `tsuzuri test --doc std`（`Context` 12・`ErrGroup` 8、`-O0`／`-O3`）。適合性 `TSK-029`・`030`（`conformance.mjs --area TSK` 30 件）、`check-spec --require-markers`、`gen-docs --check`、`check-cli-docs`、変更した 7 ページの `check-docs`。tzroutine を使わないプログラムの IR は `main` と同じ（PR の本文）。
+- **文書**: 新規 `built-in-types-and-modules/context.md`・`errgroup.md`、`async-tasks-and-lazy/tzroutine.md`（終わらない tzroutine を止める節）・`select.md`（取り消しの腕）、`index.md`、`organizing-tsuzuri/modules.md`（予約名 74 個）、`compiler/conformance.md`（生成）、`docs/language.md`（節「取り消しと ErrGroup」と予約名）、`docs/architecture.md`、`README.md`、`spec/rules/TSK.md`（`TSK-029`・`030`）。
+- **新しく予約した std モジュール名**: `Context`、`ErrGroup`（release notes に載せる）。
+- **変更したファイル**: `src/runtime/tzroutine.c`、`src/check.rs`・`src/llvm.rs`・`src/llvm_context.rs`（新規）・`src/llvm_timer.rs`・`src/polymorph.rs`・`src/effects.rs`・`src/pure_rules.rs`・`src/kg/effects.rs`・`src/capabilities.rs`・`src/stdlib.rs`・`src/diagram/concurrency.rs`、`std/Context.tz`・`std/ErrGroup.tz`（新規）、`tests/context.rs`（新規）・`tests/fixtures/context/Main.tz`（新規）・`tests/features.mjs`・`tests/tzroutine.mjs`・`tests/tzroutine_runtime.c`・`tests/tzroutine_runtime.mjs`・`tests/std_argument_order.rs`・`tests/std_examples.rs`・`tests/capabilities.rs`・`tests/fixtures/capabilities/std-table.txt`・`tests/conformance/TSK/TSK-029`・`030`、`.github/workflows/ci.yml`・`targets.yml`、`vsc/src/core.ts`、上の文書。
