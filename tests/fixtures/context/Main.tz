@@ -1,0 +1,260 @@
+// TZ07: Context and ErrGroup between tzroutines. A check of time looks at "not early" only, never at
+// an upper bound: a deadline is compared with the time that a later Time.after sends (the same
+// monotonic clock).
+
+// The ticket's example: a worker sends until its context is cancelled; the boundary does not wait
+// for ever.
+export def stop_a_worker :: i64
+fn stop_a_worker =
+    let root = Context.background ()
+    let ctx = Context.with_cancel root
+    let ticks: Channel<i64> = Channel.make 0
+    let worker_ctx = Context.share ctx
+    let out = Channel.share ticks
+    tzroutine {
+        let done = Context.done worker_ctx
+        let mut n = 0i64
+        let mut running = true
+        while running do
+            select
+            | recv _ from done -> running = false
+            | send n to out -> n = n + 1
+    }
+    let mut seen = 0i64
+    for _ in 1 ..= 3 do
+        match Channel.recv ticks with
+        | Maybe.Some _ -> seen = seen + 1
+        | Maybe.None -> ()
+    Context.cancel ctx
+    seen
+
+// A parent with 10 grandchildren, each watched by a tzroutine: cancelling the parent stops them all.
+export def cancel_tree :: i64
+fn cancel_tree =
+    let root = Context.background ()
+    let parent = Context.with_cancel root
+    let stopped: Channel<i64> = Channel.make 10
+    for _ in 1 ..= 10 do
+        let child = Context.with_cancel parent
+        let grandchild = Context.with_cancel child
+        let out = Channel.share stopped
+        tzroutine {
+            let done = Context.done grandchild
+            let _closed = Channel.recv done
+            match Context.err grandchild with
+            | Maybe.Some Context.Canceled -> Channel.send out 1
+            | _ -> Channel.send out 0
+        }
+    Context.cancel parent
+    let mut total = 0i64
+    for _ in 1 ..= 10 do
+        total = total + (match Channel.recv stopped with
+            | Maybe.Some n -> n
+            | Maybe.None -> 0)
+    total
+
+// The time that a timer fired now sends: a time of the clock of the deadlines.
+def now :: unit -> i64
+fn now _ =
+    let fired = Time.after 0
+    match Channel.recv fired with
+    | Maybe.Some time -> time
+    | Maybe.None -> 0
+
+// with_timeout of 30 ms: its done closes, not before the deadline, with DeadlineExceeded.
+export def timeout :: i64
+fn timeout =
+    let root = Context.background ()
+    let ctx = Context.with_timeout root (30 * Time.millisecond())
+    let done = Context.done ctx
+    let never: Channel<i64> = Channel.make 0
+    select
+    | recv _ from done -> ()
+    | recv _ from never -> ()
+    let late = match Context.deadline ctx with
+        | Maybe.Some deadline -> now () >= deadline
+        | Maybe.None -> false
+    match Context.err ctx with
+    | Maybe.Some Context.DeadlineExceeded -> if late then 1 else 2
+    | _ -> 0
+
+// A parent's deadline of 20 ms wins over a child's hour.
+export def parent_deadline_wins :: i64
+fn parent_deadline_wins =
+    let root = Context.background ()
+    let parent = Context.with_timeout root (20 * Time.millisecond())
+    let child = Context.with_timeout parent Time.hour()
+    let done = Context.done child
+    let _closed = Channel.recv done
+    let inherited = match (Context.deadline parent, Context.deadline child) with
+        | (Maybe.Some mine, Maybe.Some theirs) -> mine == theirs && now () >= theirs
+        | _ -> false
+    match Context.err child with
+    | Maybe.Some Context.DeadlineExceeded -> if inherited then 1 else 2
+    | _ -> 0
+
+// A second cancel, and a deadline after a cancel, keep the first reason.
+export def cancel_idempotent :: i64
+fn cancel_idempotent =
+    let root = Context.background ()
+    let ctx = Context.with_timeout root Time.millisecond()
+    Context.cancel ctx
+    Context.cancel ctx
+    Time.sleep (5 * Time.millisecond())
+    let background = if Context.is_done root then 0 else 1
+    match Context.err ctx with
+    | Maybe.Some Context.Canceled -> background
+    | _ -> 0
+
+// A chain of 10,000 contexts: cancelling the first closes the last (no recursion).
+export def deep_cancel :: i64
+fn deep_cancel =
+    let root = Context.background ()
+    let first = Context.with_cancel root
+    let mut chain: Vec<Context> = Vec.empty ()
+    chain = Vec.push (Context.with_cancel first) chain
+    for index in 1 ..< 10000 do
+        let next = Context.with_cancel (ref chain[index - 1])
+        chain = Vec.push next chain
+    Context.cancel first
+    let last = Context.done (ref chain[9999])
+    match Channel.recv last with
+    | Maybe.Some _ -> 0
+    | Maybe.None -> Vec.length (ref chain)
+
+// after_func runs on cancel; a stopped one never runs.
+export def after_func_on_cancel :: i64
+fn after_func_on_cancel =
+    let root = Context.background ()
+    let ctx = Context.with_cancel root
+    let calls: Channel<i64> = Channel.make 2
+    let first = Channel.share calls
+    let second = Channel.share calls
+    let _runs = Context.after_func ctx (Owned.function (\() -> Channel.send first 1))
+    let stopped = Context.after_func ctx (Owned.function (\() -> Channel.send second 10))
+    let halted = Context.stop_after stopped
+    Context.cancel ctx
+    let called = match Channel.recv calls with
+        | Maybe.Some n -> n
+        | Maybe.None -> 0
+    Time.sleep (5 * Time.millisecond())
+    let extra = match Channel.try_recv calls with
+        | Channel.Item n -> n
+        | _ -> 0
+    if halted then called + extra else 100
+
+// 100 functions, all Ok.
+export def errgroup_ok :: i64
+fn errgroup_ok =
+    let group: ErrGroup<i64> = ErrGroup.create ()
+    let total = Arc.new (Atomic.create 0i64)
+    for i in 1 ..= 100 do
+        let mine = Arc.share (ref total)
+        ErrGroup.go group (Owned.function (\() -> {
+            let _old = Atomic.fetch_add (Arc.get (ref mine)) i;
+            Result.Ok ()
+        }))
+    match ErrGroup.wait group with
+    | Result.Ok _ -> Atomic.load (Arc.get (ref total))
+    | Result.Error e -> 0 - e
+
+// The third returns Error 3; the other nine wait for the group's context and stop when it is cancelled.
+export def errgroup_first_error :: i64
+fn errgroup_first_error =
+    let group: ErrGroup<i64> = ErrGroup.create ()
+    let stopped = Arc.new (Atomic.create 0i64)
+    for i in 1 ..= 10 do
+        let ctx = ErrGroup.context group
+        let mine = Arc.share (ref stopped)
+        ErrGroup.go group (Owned.function (\() ->
+            if i == 3 then Result.Error i
+            else {
+                let done = Context.done ctx;
+                let _closed = Channel.recv done;
+                let _old = Atomic.fetch_add (Arc.get (ref mine)) 1;
+                Result.Ok ()
+            }))
+    match ErrGroup.wait group with
+    | Result.Ok _ -> 0
+    | Result.Error e -> e * 100 + Atomic.load (Arc.get (ref stopped))
+
+// set_limit 2 with 20 functions: never more than two at once.
+export def errgroup_limit :: i64
+fn errgroup_limit =
+    let group: ErrGroup<i64> = ErrGroup.create ()
+    ErrGroup.set_limit group 2
+    let counts = Arc.new (Mutex.create (0, 0))
+    for _ in 1 ..= 20 do
+        let mine = Arc.share (ref counts)
+        ErrGroup.go group (Owned.function (\() -> {
+            Mutex.with_lock (Arc.get (ref mine)) (\c -> deref c = match deref c with
+                | (now, most) -> (now + 1, Int.max most (now + 1)));
+            Time.sleep (Time.millisecond());
+            Mutex.with_lock (Arc.get (ref mine)) (\c -> deref c = match deref c with
+                | (now, most) -> (now - 1, most));
+            Result.Ok ()
+        }))
+    let _done = ErrGroup.wait group
+    Mutex.with_lock (Arc.get (ref counts)) (\c -> match deref c with
+        | (now, most) -> if now == 0 && most >= 1 && most <= 2 then 1 else 0)
+
+// With a limit of 1 and one function running, try_go gives the function back, which can be called.
+export def errgroup_try_go :: i64
+fn errgroup_try_go =
+    let group: ErrGroup<i64> = ErrGroup.create ()
+    ErrGroup.set_limit group 1
+    let gate: Channel<unit> = Channel.make 0
+    let held = Channel.share gate
+    ErrGroup.go group (Owned.function (\() -> {
+        let _open = Channel.recv held;
+        Result.Ok ()
+    }))
+    let refused = match ErrGroup.try_go group (Owned.function (\() -> Result.Error 7)) with
+        | Result.Ok _ -> 0
+        | Result.Error f -> match Owned.call (ref f) () with
+            | Result.Error n -> n
+            | Result.Ok _ -> 0
+    Channel.close gate
+    let waited = match ErrGroup.wait group with
+        | Result.Ok _ -> 1
+        | Result.Error _ -> 0
+    let started = match ErrGroup.try_go group (Owned.function (\() -> Result.Error 5)) with
+        | Result.Ok _ -> 10
+        | Result.Error _ -> 0
+    match ErrGroup.wait group with
+    | Result.Error n -> refused * 1000 + started * 10 + waited + n * 100
+    | Result.Ok _ -> 0
+
+// Handles dropped in every order: parents before children, shared handles, done channels kept
+// longer than their context, an ErrGroup's shares.
+export def release_order :: i64
+fn release_order =
+    let kept = {
+        let root = Context.background ();
+        let parent = Context.with_timeout (ref root) Time.hour();
+        let child = Context.with_cancel (ref parent);
+        let other = Context.share (ref child);
+        Context.done (ref other)
+    }
+    let group: ErrGroup<i64> = ErrGroup.create ()
+    let shared = ErrGroup.share group
+    ErrGroup.go shared (Owned.function (\() -> Result.Ok ()))
+    let outcome = match ErrGroup.wait group with
+        | Result.Ok _ -> 1
+        | Result.Error _ -> 0
+    match Channel.try_recv kept with
+    | Channel.Empty -> outcome
+    | _ -> 0
+
+// Changing the limit while a function runs traps (Go panics).
+export def errgroup_limit_while_running :: i64
+fn errgroup_limit_while_running =
+    let group: ErrGroup<i64> = ErrGroup.create ()
+    let gate: Channel<unit> = Channel.make 0
+    let held = Channel.share gate
+    ErrGroup.go group (Owned.function (\() -> {
+        let _open = Channel.recv held;
+        Result.Ok ()
+    }))
+    ErrGroup.set_limit group 1
+    0

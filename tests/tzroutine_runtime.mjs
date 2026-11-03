@@ -21,7 +21,8 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
   "external", "deep", "fp", "stack_size", "failures", "fp_mode", "wake_many", "count_after_join", "detector",
   "starvation", "select_same", "boundary", "report", "blocking", "donor", "batches", "timer_channel", "timer_stop",
   "ticker", "ticker_drop", "after_func", "boundary_timers", "sleep_ms_hook", "mutex32", "rwmutex", "once", "cond",
-  "semaphore", "long_sleep"];
+  "semaphore", "context_tree", "context_deadline", "context_release", "context_deadline_race", "context_after",
+  "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows
   ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"]

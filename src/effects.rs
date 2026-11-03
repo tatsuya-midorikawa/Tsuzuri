@@ -629,6 +629,25 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         OnceValueGet | RwMutexWithRead | RwMutexWithWrite | CondWaitWith => {
             facts(Some(Effect::Atomic), false, true, true, true, false, None)
         }
+        // TZ07: a context and its done channel are allocated; a deadline reads the clock.
+        ContextBackground | ContextWithCancel | ContextShare | ContextDone => {
+            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+        }
+        ContextWithTimeout | ContextWithDeadline => {
+            facts(Some(Effect::Os), true, false, false, false, false, None)
+        }
+        ContextCancel | ContextErr | ContextDeadline | ContextRelease | ContextStopAfter => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        // Like `Time.after_func`, and its drop drops the function that has not run.
+        ContextAfterFunc => facts(Some(Effect::Task), true, false, false, true, false, None),
+        ContextFreeAfter => facts(Some(Effect::Atomic), false, false, false, true, false, None),
         // B25
         AtomicLoad
         | AtomicStore

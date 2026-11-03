@@ -13,6 +13,18 @@
 | 手本にする既存実装 | TZ06 の `tsuzuri_tz_handle_*`（参照数のハンドル）と `WaitGroup`、TZ05 の `tzr_timer`（期限）とスコープへのつなぎ、TZ03 のランタイムが作るチャンネル（`Time.after` と同じく `tsuzuri_alloc` で確保し、要素の drop が要らない型）、`std/Time.tz` の `IO` の包み方 |
 | 主な影響ファイル | `std/Context.tz`・`std/ErrGroup.tz`（新規）、`src/check.rs`・`src/llvm_sync.rs`・`src/stdlib.rs`・`src/capabilities.rs`・`src/effects.rs`・`src/pure_rules.rs`・`src/kg/effects.rs`・`src/runtime/tzroutine.c`・`tests/tzroutine_runtime.c`・`tests/context.rs`（新規）・`tests/fixtures/context/Main.tz`（新規）・`tests/tzroutine.mjs`・`tests/std_argument_order.rs`・`tests/std_examples.rs`・`tests/fixtures/capabilities/std-table.txt`・文書 |
 
+## 着手時の再検討（2026-11-03、TZ06 の上）
+
+TZ05・TZ06 の実装と照合し、次のとおり直してから実装した。以下が本文より優先する。
+
+1. **`with_timeout`・`with_deadline` は `IO` を返さない（D6 を変更）**: TZ05 の再検討 1 と同じ理由（`IO` のトップレベルの `let!` の継続は所有する `Context` を捕捉できない。タイマーの `Time.after` なども `IO` を返さない）。時計を読む効果（`os`）と権限（`time`）は D6 のとおり。
+2. **記録とブロック**: `tzr_ctx` はランタイムの記録（`malloc`。TZ05 のタイマーの記録と同じ）。`done` のチャンネルのブロック（128 バイト）は生成コードが `@tz.alloc` で確保して `@tz.free` と一緒に渡し（`live` で数える。TZ05 の再検討 3 と同じ理由）、ランタイムが最後の参照で解放する。要素は `unit`（`i8`、1 バイト）。
+3. **期限のタイマーは `tzr_ctx` に埋め込む**（種類 `CTX`）: 記録の寿命を `Context` の参照数に任せ、取り消しとタイマーのスレッドの発火が同じ記録を二重に解放しないようにする。まだ発火していない間、タイマーは `Context` の参照を 1 つ持ち、発火（スレッドが `tzr_timers.lock` の外で `cancel` する）・停止（取り消し、境界、利用者のハンドルがすべて drop されたとき）のどちらか一方だけがその参照を離す。子は親の期限を受け継いで自分のタイマーを持つので、親のハンドルがなくなって親のタイマーを止めても、子は同じ期限で取り消される。
+4. **`tzr_ctx_lock` と `tzr_timers.lock` は入れ子にしない**（D3）。取り消しは `tzr_ctx_lock` の下で子孫に印を付けて `done` を閉じ（チャンネルのロックはその内側。R3）、止めるタイマーと呼ぶ `after_func` を集めて参照を 1 つずつ足し、ロックを外してから処理する。
+5. **`Context.after_func`（Phase 3）は TZ05 の `FUNC` のタイマーを使う**: 期限のない「眠った」（`DORMANT`）タイマーとして作り、境界の一覧に入れる（境界はまだ呼ばれていない関数を drop する。TZ05 の規則）。取り消しで「今」に入れ直して発火させる（タイマーのスレッドが新しい tzroutine で呼ぶ）。`DORMANT` はヒープになく `ntimers` に数えないので、デッドロックの判定を妨げない。`stop_after` は `Timer.stop` と同じ。`AfterFunc` は記録と `Context` の参照を持つハンドル。
+6. **`ErrGroup` の最初の誤り**: `Arc<Mutex<Maybe<'e>>>` から値を取り出すには `ref mut` からのムーブが要るので、容量 1 の `Channel<'e>` に `try_send` する（最初に終わった誤りだけが入り、2 つ目以降は `Full` で返って drop される）。`wait` は `try_recv` で取り出す（2 回目の `wait` は `Ok`）。同時に走る数の上限は `Semaphore`（容量が作ったときに決まる）ではなく、`Mutex<i64>` の走っている数と `Cond` で待つ（`set_limit` は走っている数が 0 でなければトラップ）。`go` は `WaitGroup.go` で関数を包む（std の `tzroutine { }` が `own Owned.Function` の引数を捕捉すると `E1013` になる。TZ06 の実装と検証）。
+7. **`err` の型**: `union Error = Canceled | DeadlineExceeded` は `Context.Error`。
+
 ## 実装者向け早見
 
 - 範囲: Go の `context`（`Background`・`WithCancel`・`WithTimeout`・`WithDeadline`・`Done`・`Err`・`Deadline`・`AfterFunc`）と `golang.org/x/sync/errgroup`（`Group`・`WithContext`・`Go`・`TryGo`・`SetLimit`・`Wait`）。終わらない tzroutine を止める標準の手段（D-61 の決定 1 で境界が待つため、止め方が要る）。

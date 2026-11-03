@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 166;
+const IMPURE_BUILTINS: usize = 179;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -28,9 +28,9 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun | RoutineGo
         | WaitGroupGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount
-        | TimeAfterFunc => Some("task"),
+        | TimeAfterFunc | ContextAfterFunc => Some("task"),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
-        | TickerReset => Some("os"),
+        | TickerReset | ContextWithTimeout | ContextWithDeadline => Some("os"),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
             None
         }
@@ -42,7 +42,11 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | OnceValueGet | OnceValueIntoInner | RwMutexCreate | RwMutexWithRead
         | RwMutexWithWrite | RwMutexIntoInner | CondCreate | CondWaitWith | CondSignal
         | CondBroadcast | CondShare | CondDrop | SemaphoreCreate | SemaphoreAcquire
-        | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop => Some("atomic"),
+        | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop
+        | ContextBackground | ContextWithCancel | ContextCancel | ContextDone | ContextErr
+        | ContextDeadline | ContextShare | ContextRelease | ContextStopAfter | ContextFreeAfter => {
+            Some("atomic")
+        }
         SyncMapReplace => None,
         AtomicCreate
         | AtomicLoad

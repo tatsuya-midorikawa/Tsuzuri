@@ -446,7 +446,8 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
         "Os.__random" => Random,
         "Os.__clock" | "Os.__sleep" | "Async.__clock" | "Async.__wait" | "Async.__posted"
         | "Bench.now" | "Time.sleep" | "Time.after" | "Time.tick" | "Time.after_func"
-        | "Timer.__create" | "Ticker.__create" | "Timer.__reset" | "Ticker.__reset" => Time,
+        | "Timer.__create" | "Ticker.__create" | "Timer.__reset" | "Ticker.__reset"
+        | "Context.__with_timeout" | "Context.__with_deadline" => Time,
         "Os.__spawn" => Process,
         "Net.__resolve" | "Net.__open" | "Net.__accept" | "Net.__read" | "Net.__write"
         | "Net.__close" | "Net.__watch" | "Net.__unwatch" | "Net.__connect" | "Net.__names"
@@ -457,7 +458,7 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
 }
 
 /// The private builtins that touch only the CPU and memory (appendix A.2 and the ones added since).
-pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 38] = [
+pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 49] = [
     "Net.__classify",
     "Unicode.__table_length",
     "Unicode.__table_entry",
@@ -491,6 +492,17 @@ pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 38] = [
     "Cond.__drop",
     "Semaphore.__drop",
     "SyncMap.__replace",
+    "Context.__background",
+    "Context.__with_cancel",
+    "Context.__cancel",
+    "Context.__done",
+    "Context.__err",
+    "Context.__deadline",
+    "Context.__share",
+    "Context.__release",
+    "Context.__after_func",
+    "Context.__stop_after",
+    "Context.__free_after",
     "Bench.consume",
     "Alloc.__counter",
     "Gen.__seed",

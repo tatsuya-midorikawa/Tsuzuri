@@ -1,7 +1,7 @@
 use super::*;
 
 /// The bytes of a timer's channel: the runtime's 128-byte header and the ring of one `i64`.
-const TIMER_CHANNEL_BYTES: u64 = 128 + 8;
+pub(super) const TIMER_CHANNEL_BYTES: u64 = 128 + 8;
 
 /// The kinds of `tzr_timer` in `src/runtime/tzroutine.c`.
 const SEND: u32 = 1;
@@ -10,7 +10,7 @@ const FUNC: u32 = 3;
 
 /// Drops an owned function that a timer never called, and frees its box: the counterpart of
 /// `@tz.tzroutine.owned`, which calls it.
-const ROUTINE_OWNED_DROP: &str = "define internal void @tz.tzroutine.owned.drop(ptr %box) {\nentry:\n  %closure = load %tz.closure, ptr %box\n  call void @tz.closure.drop(%tz.closure %closure)\n  call void @tz.free(ptr %box)\n  ret void\n}\n";
+pub(super) const ROUTINE_OWNED_DROP: &str = "define internal void @tz.tzroutine.owned.drop(ptr %box) {\nentry:\n  %closure = load %tz.closure, ptr %box\n  call void @tz.closure.drop(%tz.closure %closure)\n  call void @tz.free(ptr %box)\n  ret void\n}\n";
 
 const TIMER_NEW: &str =
     "declare ptr @tsuzuri_tz_timer_new(ptr, ptr, i64, i64, i32, i32, ptr, ptr, ptr)";
@@ -165,7 +165,7 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// The `Channel<i64>` handle of a timer's channel block.
-    fn channel_handle(&mut self, result: &Type, block: &str) -> String {
+    pub(super) fn channel_handle(&mut self, result: &Type, block: &str) -> String {
         let address = self.value(format!("ptrtoint ptr {block} to i64"));
         let handle = self.value(format!(
             "insertvalue {} zeroinitializer, i64 {address}, 0",
@@ -176,7 +176,7 @@ impl FunctionEmitter<'_, '_> {
     }
 
     /// The `Timer` or `Ticker` record of a runtime timer.
-    fn timer_handle(&mut self, result: &Type, timer: &str) -> String {
+    pub(super) fn timer_handle(&mut self, result: &Type, timer: &str) -> String {
         let address = self.value(format!("ptrtoint ptr {timer} to i64"));
         let handle = self.value(format!(
             "insertvalue {} zeroinitializer, i64 {address}, 0",
@@ -185,8 +185,9 @@ impl FunctionEmitter<'_, '_> {
         self.mark_live(result, handle)
     }
 
-    /// The runtime's timer of the borrowed `Timer` or `Ticker` `%arg0`.
-    fn timer_of(&mut self, parameter: &Type) -> String {
+    /// The runtime's timer of the borrowed `Timer` or `Ticker` `%arg0` (or the record of another
+    /// runtime handle: a `Context` or an `AfterFunc`).
+    pub(super) fn timer_of(&mut self, parameter: &Type) -> String {
         let Type::Reference(record, false) = parameter else {
             unreachable!("a timer operation borrows the handle")
         };

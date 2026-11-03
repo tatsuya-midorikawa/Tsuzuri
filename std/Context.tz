@@ -1,0 +1,181 @@
+/// A tree of cancellation and deadlines (Go's `context`, TZ07). `Context.background` makes the
+/// root, `with_cancel`, `with_timeout` and `with_deadline` make children, and `cancel` cancels a
+/// context and every descendant: their `done` channels close and `err` tells why. Cancellation is
+/// cooperative: a tzroutine that watches `done` stops itself. The handle counts its owners, and
+/// `Context.share` makes another one for a tzroutine.
+record Context { handle: i64 }
+instance Drop<Context> {
+    fn drop context = Context.__release context
+}
+
+/// Why a context ended (Go's `context.Canceled` and `context.DeadlineExceeded`).
+union Error = Canceled | DeadlineExceeded deriving (Eq, Display)
+
+/// A function that `Context.after_func` runs once its context is cancelled. Dropping it stops it.
+record AfterFunc { handle: i64 }
+instance Drop<AfterFunc> {
+    fn drop after = Context.__free_after after
+}
+
+/// The root of a tree, never cancelled and without a deadline (Go's `context.Background()`).
+///
+/// ```tsuzuri run=false
+/// let root = Context.background ()
+/// Context.is_done root
+/// ```
+def background :: own unit -> Context
+fn background _ = Context.__background ()
+
+/// A child that is cancelled when its parent is or when `Context.cancel` cancels it (Go's
+/// `context.WithCancel`). Cancelling the child does not cancel the parent.
+///
+/// ```tsuzuri run=true%0Afalse
+/// let root = Context.background ()
+/// let child = Context.with_cancel root
+/// Context.cancel child
+/// $"{Context.is_done child}\n{Context.is_done root}"
+/// ```
+def with_cancel :: ref Context -> Context
+fn with_cancel parent = Context.__with_cancel parent
+
+/// A child whose deadline is the given nanoseconds from now, or the parent's when that is earlier
+/// (Go's `context.WithTimeout`). At the deadline it is cancelled with `DeadlineExceeded`.
+///
+/// ```tsuzuri run=DeadlineExceeded
+/// let root = Context.background ()
+/// let ctx = Context.with_timeout root (2 * Time.millisecond())
+/// let done = Context.done ctx
+/// let _closed = Channel.recv done
+/// match Context.err ctx with
+/// | Maybe.Some why -> $"{why}"
+/// | Maybe.None -> "running"
+/// ```
+def with_timeout :: ref Context -> own i64 -> Context
+fn with_timeout parent nanoseconds = Context.__with_timeout parent nanoseconds
+
+/// A child whose deadline is the given time of `Time.monotonic_ns`'s clock, or the parent's when
+/// that is earlier (Go's `context.WithDeadline`). A time that has passed cancels it at once.
+///
+/// ```tsuzuri run=expired
+/// let root = Context.background ()
+/// let ctx = Context.with_deadline root 0
+/// match Context.err ctx with
+/// | Maybe.Some Context.DeadlineExceeded -> "expired"
+/// | _ -> "running"
+/// ```
+def with_deadline :: ref Context -> own i64 -> Context
+fn with_deadline parent time = Context.__with_deadline parent time
+
+/// Cancels the context and its descendants with `Canceled` (Go's `cancel()`). A context that has
+/// ended already keeps its reason.
+///
+/// ```tsuzuri run=Canceled
+/// let root = Context.background ()
+/// let ctx = Context.with_cancel root
+/// Context.cancel ctx
+/// Context.cancel ctx
+/// match Context.err ctx with
+/// | Maybe.Some why -> $"{why}"
+/// | Maybe.None -> "running"
+/// ```
+def cancel :: ref Context -> unit
+fn cancel context = Context.__cancel context
+
+/// A handle of the channel that closes when the context ends (Go's `ctx.Done()`); nothing is ever
+/// sent on it. The channel of `Context.background` never closes. Each call makes one more handle:
+/// take it once, before a loop.
+///
+/// ```tsuzuri run=closed
+/// let root = Context.background ()
+/// let ctx = Context.with_cancel root
+/// let done = Context.done ctx
+/// Context.cancel ctx
+/// match Channel.recv done with
+/// | Maybe.Some _ -> "sent"
+/// | Maybe.None -> "closed"
+/// ```
+def done :: ref Context -> Channel<unit>
+fn done context = Context.__done context
+
+/// Why the context ended, or `None` while it runs (Go's `ctx.Err()`).
+///
+/// ```tsuzuri run=running
+/// let root = Context.background ()
+/// match Context.err root with
+/// | Maybe.Some why -> $"{why}"
+/// | Maybe.None -> "running"
+/// ```
+def err :: ref Context -> Maybe<Error>
+fn err context =
+    match Context.__err context with
+    | 0 -> Maybe.None
+    | 1 -> Maybe.Some Canceled
+    | _ -> Maybe.Some DeadlineExceeded
+
+/// Whether the context has ended: `Context.err` is `Some`.
+///
+/// ```tsuzuri run=true
+/// let root = Context.background ()
+/// let ctx = Context.with_cancel root
+/// Context.cancel ctx
+/// Context.is_done ctx
+/// ```
+def is_done :: ref Context -> bool
+fn is_done context = Context.__err context != 0
+
+/// The deadline (a time of `Time.monotonic_ns`'s clock), if the context has one (Go's
+/// `ctx.Deadline()`). A child inherits an earlier deadline of its parent.
+///
+/// ```tsuzuri run=true
+/// let root = Context.background ()
+/// let ctx = Context.with_timeout root Time.hour()
+/// let child = Context.with_cancel ctx
+/// match (Context.deadline ctx, Context.deadline child, Context.deadline root) with
+/// | (Maybe.Some mine, Maybe.Some inherited, Maybe.None) -> mine == inherited
+/// | _ -> false
+/// ```
+def deadline :: ref Context -> Maybe<i64>
+fn deadline context =
+    let time = Context.__deadline context
+    if time == 9223372036854775807 then Maybe.None else Maybe.Some time
+
+/// Another handle of the same context, for a tzroutine. Either handle can cancel it.
+///
+/// ```tsuzuri run=true
+/// let root = Context.background ()
+/// let ctx = Context.with_cancel root
+/// let other = Context.share ctx
+/// Context.cancel other
+/// Context.is_done ctx
+/// ```
+def share :: ref Context -> Context
+fn share context = Context.__share context
+
+/// Runs the function on a new tzroutine once the context is cancelled, at once when it has ended
+/// already (Go's `context.AfterFunc`). The end of the `main`, `export`, `test` or `bench` that made
+/// it drops a function that has not run.
+///
+/// ```tsuzuri run=called
+/// let root = Context.background ()
+/// let ctx = Context.with_cancel root
+/// let called: Channel<string> = Channel.make 1
+/// let out = Channel.share called
+/// let _after = Context.after_func ctx (Owned.function (\() -> Channel.send out "called"))
+/// Context.cancel ctx
+/// match Channel.recv called with
+/// | Maybe.Some text -> text
+/// | Maybe.None -> "closed"
+/// ```
+def after_func :: ref Context -> own Owned.Function<unit, unit> -> AfterFunc
+fn after_func context f = Context.__after_func context f
+
+/// Stops the function of `Context.after_func` (Go's `stop()`): true when it had not started.
+///
+/// ```tsuzuri run=true
+/// let root = Context.background ()
+/// let ctx = Context.with_cancel root
+/// let after = Context.after_func ctx (Owned.function (\() -> ()))
+/// Context.stop_after after
+/// ```
+def stop_after :: ref AfterFunc -> bool
+fn stop_after after = Context.__stop_after after

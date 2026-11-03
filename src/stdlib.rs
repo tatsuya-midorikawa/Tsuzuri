@@ -59,6 +59,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Cond.tz", include_str!("../std/Cond.tz")),
     ("std/Semaphore.tz", include_str!("../std/Semaphore.tz")),
     ("std/SyncMap.tz", include_str!("../std/SyncMap.tz")),
+    ("std/Context.tz", include_str!("../std/Context.tz")),
+    ("std/ErrGroup.tz", include_str!("../std/ErrGroup.tz")),
     ("std/Unicode.tz", include_str!("../std/Unicode.tz")),
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
@@ -148,6 +150,9 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Cond",
     "Semaphore",
     "SyncMap",
+    // TZ07: cancellation and groups of work.
+    "Context",
+    "ErrGroup",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -209,6 +214,9 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Cond.Cond"
             | "Semaphore.Semaphore"
             | "SyncMap.SyncMap"
+            | "Context.Context"
+            | "Context.AfterFunc"
+            | "ErrGroup.ErrGroup"
     )
 }
 
@@ -412,6 +420,18 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["SyncMap"],
         aliases: &[],
         uses: &["RwMutex"],
+    },
+    OptIn {
+        module: "Context",
+        names: &["Context"],
+        aliases: &[],
+        uses: &["Channel"],
+    },
+    OptIn {
+        module: "ErrGroup",
+        names: &["ErrGroup"],
+        aliases: &[],
+        uses: &["WaitGroup", "Mutex", "Cond", "Channel", "Context"],
     },
     OptIn {
         module: "RegexText",
@@ -814,7 +834,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 72);
+        assert_eq!(RESERVED_MODULES.len(), 74);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
