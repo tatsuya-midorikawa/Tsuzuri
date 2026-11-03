@@ -278,7 +278,8 @@ fn at_ref key map =
 	ref map.entries[index].value
 
 /// A reference to the value for `key`, which is borrowed, or `None` when no entry has it: one
-/// lookup, where `contains_key_ref` and then `at_ref` take two.
+/// lookup, where `contains_key_ref` and then `at_ref` take two. A borrow inside a `Maybe` takes no
+/// region, so the result borrows the key too and cannot outlive it (`at_ref` names the map alone).
 ///
 /// @complexity expected O(1), worst O(n)
 /// @see HashMap.at_ref

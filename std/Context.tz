@@ -64,7 +64,9 @@ fn with_timeout parent nanoseconds = Context.__with_timeout parent nanoseconds
 /// | _ -> "running"
 /// ```
 def with_deadline :: ref Context -> own i64 -> Context
-fn with_deadline parent time = Context.__with_deadline parent time
+fn with_deadline parent time =
+    // The runtime's `i64` max is "no deadline": the latest time is one before it.
+    Context.__with_deadline parent (if time == 9223372036854775807 then 9223372036854775806 else time)
 
 /// Cancels the context and its descendants with `Canceled` (Go's `cancel()`). A context that has
 /// ended already keeps its reason, and the root of `Context.background` is never cancelled.

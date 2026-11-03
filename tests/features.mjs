@@ -2627,6 +2627,7 @@ const suites = {
       ["errgroup_try_go", [], 7601n],
       ["release_order", [], 1n],
       ["errgroup_limit_raised", [], 9n],
+      ["deadline_max", [], 1n],
     ],
     traps: [["errgroup_limit_while_running", []]],
     inspect(ir) {

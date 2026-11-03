@@ -306,3 +306,12 @@ fn errgroup_limit_raised =
     | Result.Error n -> n
     | Result.Ok _ -> 0
 
+
+// The latest deadline is a deadline: i64's max is the runtime's "none", so it becomes one before it.
+export def deadline_max :: i64
+fn deadline_max =
+    let root = Context.background ()
+    let ctx = Context.with_deadline root 9223372036854775807
+    match Context.deadline ctx with
+    | Maybe.Some time -> if time == 9223372036854775806 then 1 else 2
+    | Maybe.None -> 0

@@ -1654,13 +1654,17 @@ static void test_context_deadline(void) {
     CHECK(tsuzuri_tz_ctx_err(past) == 2 && ctx_closed(past));
     void *saturated = tsuzuri_tz_ctx_timeout(root, INT64_MAX, ctx_block(), ctx_block_free);
     CHECK(tsuzuri_tz_ctx_deadline(saturated) == INT64_MAX - 1 && tsuzuri_tz_ctx_err(saturated) == 0);
-    int64_t before = pending_timers();
+    void *contexts[4] = {timed, child, past, saturated};
+    for (int i = 0; i < 4; i++) tsuzuri_tz_ctx_release(contexts[i]);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(pending_timers() == 0);
+    /* in a fresh boundary, so that no deadline above is still being stopped */
+    scope = tsuzuri_tz_scope_enter();
     void *far = ctx_new(root, tzr_nanotime() + 3600 * (int64_t)1000000000);
-    CHECK(pending_timers() == before + 1);
+    CHECK(pending_timers() == 1);
     tsuzuri_tz_ctx_release(far);
-    CHECK(pending_timers() == before);
-    void *contexts[5] = {root, timed, child, past, saturated};
-    for (int i = 0; i < 5; i++) tsuzuri_tz_ctx_release(contexts[i]);
+    CHECK(pending_timers() == 0);
+    tsuzuri_tz_ctx_release(root);
     tsuzuri_tz_boundary_leave(scope);
     CHECK(atomic_load(&ctx_blocks) == 0 && pending_timers() == 0);
     printf("context deadline: ok\n");
