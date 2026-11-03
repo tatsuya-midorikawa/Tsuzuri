@@ -378,6 +378,71 @@ const MEMBER_TRIGGERS: &[(&str, &str, &str)] = &[
     ("Time", "after_func", "Timer"),
 ];
 
+/// The opt-in modules of `MEMBER_TRIGGERS` that `text` refers to: a word of the table, a dot and the
+/// member, with whitespace, newlines and comments (`//`, nested `/* */`) between them. A string
+/// literal is skipped. Like the scan of the words, it may find more than the program refers to,
+/// which only loads a module more.
+fn member_triggers(text: &str, triggered: &mut Vec<&'static str>) {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    // The last word, and whether a dot has followed it.
+    let mut qualifier: Option<(&str, bool)> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte.is_ascii_alphanumeric() || byte == b'_' {
+            let start = index;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
+                index += 1;
+            }
+            let word = &text[start..index];
+            if let Some((owner, true)) = qualifier {
+                for (module, member, opt_in) in MEMBER_TRIGGERS {
+                    if owner == *module && word == *member && !triggered.contains(opt_in) {
+                        triggered.push(opt_in);
+                    }
+                }
+            }
+            qualifier = Some((word, false));
+        } else if bytes[index..].starts_with(b"//") {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+        } else if bytes[index..].starts_with(b"/*") {
+            let mut depth = 0usize;
+            while index < bytes.len() {
+                if bytes[index..].starts_with(b"/*") {
+                    depth += 1;
+                    index += 2;
+                } else if bytes[index..].starts_with(b"*/") {
+                    depth -= 1;
+                    index += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+        } else if byte == b'"' {
+            index += 1;
+            while index < bytes.len() && bytes[index] != b'"' {
+                index += if bytes[index] == b'\\' { 2 } else { 1 };
+            }
+            index += 1;
+            qualifier = None;
+        } else {
+            qualifier = match (qualifier, byte) {
+                (Some((word, false)), b'.') => Some((word, true)),
+                (Some(found), b' ' | b'\t' | b'\r' | b'\n') => Some(found),
+                _ => None,
+            };
+            index += 1;
+        }
+    }
+}
+
 /// Whether `module` is an opt-in std module, whose declarations user code names
 /// only qualified (D-40).
 pub(crate) fn is_opt_in(module: &str) -> bool {
@@ -397,10 +462,9 @@ pub fn sources_for<'a>(
     let mut words = std::collections::BTreeSet::new();
     let mut triggered = Vec::new();
     for text in texts {
+        member_triggers(text, &mut triggered);
         let bytes = text.as_bytes();
         let mut index = 0;
-        // The last word and whether a dot has followed it, for `MEMBER_TRIGGERS`.
-        let mut qualifier: Option<(&str, bool)> = None;
         while index < bytes.len() {
             // Every identifier token is a maximal run of these bytes, or the part of a
             // run after leading digits; scanning both over-approximates the tokens.
@@ -414,27 +478,13 @@ pub fn sources_for<'a>(
                 {
                     index += 1;
                 }
-                let word = &text[start..index];
-                if let Some((owner, true)) = qualifier {
-                    for (module, member, opt_in) in MEMBER_TRIGGERS {
-                        if owner == *module && word == *member && !triggered.contains(opt_in) {
-                            triggered.push(*opt_in);
-                        }
-                    }
-                }
-                qualifier = (start < index).then_some((word, false));
                 // Module names are capitalized; the lowercase words that matter are builder aliases.
                 if start < index
                     && (bytes[start].is_ascii_uppercase() || aliases.contains(&&text[start..index]))
                 {
-                    words.insert(word);
+                    words.insert(&text[start..index]);
                 }
             } else {
-                qualifier = match (qualifier, bytes[index]) {
-                    (Some((word, false)), b'.') => Some((word, true)),
-                    (Some(found), b' ' | b'\t') => Some(found),
-                    _ => None,
-                };
                 index += 1;
             }
         }

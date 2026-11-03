@@ -176,12 +176,18 @@ fn the_timers_load_what_their_types_name() {
         ("Time . tick 1\n", &["Channel"]),
         ("Time.after_func 1 f\n", &["Timer", "Channel"]),
         ("Ticker.create 1\n", &["Ticker", "Channel"]),
+        ("Time /* wait */ .after 1\n", &["Channel"]),
+        ("Time // the clock\n    .after 1\n", &["Channel"]),
+        ("Time\n    .after_func 1 f\n", &["Timer", "Channel"]),
     ] {
         let loaded = named(text);
         for module in modules {
             assert!(loaded.contains(module), "{text}: {module}: {loaded:?}");
         }
     }
+    // A member named inside a string literal loads nothing.
+    let loaded = named("\"Time.after\" 1\n");
+    assert!(!loaded.contains(&"Channel"), "{loaded:?}");
     // The examples of the ticket, which name no Channel.
     accepts("let deadline = Time.after Time.millisecond()\nselect\n| recv _ from deadline -> 1\n");
     accepts("let _timer = Time.after_func Time.millisecond() (Owned.function (\\() -> ()))\n0\n");
@@ -205,4 +211,24 @@ fn programs_without_timers_keep_their_ir() {
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     assert!(!ir.contains("tsuzuri_tz_"), "{ir}");
     assert!(ir.contains("call i64 @tsuzuri_os_sleep(i64 %arg0)"), "{ir}");
+}
+
+#[test]
+fn a_sleep_ms_in_a_waiting_program_checks_the_lock() {
+    // On a tzroutine, os.c's sleep waits through the scheduler's hook, so a positive one in a
+    // program that waits traps inside the thread's Mutex.with_lock, as Time.sleep does.
+    let module = accepts(
+        "tzroutine { () }\nlet! slept = Time.sleep_ms 1\nmatch slept with\n| Result.Ok _ -> 0\n| Result.Error _ -> 1\n",
+    );
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    let sleep = ir
+        .lines()
+        .position(|line| line.contains("call i64 @tsuzuri_os_sleep(i64 %arg0)"))
+        .expect("the sleep");
+    let check = ir
+        .lines()
+        .position(|line| line.contains("call i1 @tz.routine.unlocked()"))
+        .expect("the check of the lock");
+    assert!(check < sleep, "{ir}");
+    assert!(ir.contains("icmp sgt i64 %arg0, 0"), "{ir}");
 }
