@@ -983,13 +983,30 @@ impl<'a> Checker<'a, '_> {
     /// the locks of TZ06, `RwMutex.with_read`, `RwMutex.with_write` and the body of
     /// `Cond.wait_with`. Also the index of that callback among the arguments.
     fn locked_result(&self, callee: &TypedExpr) -> Option<(Type, usize)> {
-        use crate::check::Builtin::{CondWaitWith, MutexWith, RwMutexWithRead, RwMutexWithWrite};
-        let callback = match self.builtin_called(callee)? {
-            MutexWith | RwMutexWithRead | RwMutexWithWrite => 1,
+        use crate::check::Builtin::{
+            CondWaitWith, MutexWith, OnceValueGet, RwMutexWithRead, RwMutexWithWrite,
+        };
+        let builtin = self.builtin_called(callee)?;
+        let callback = match builtin {
+            MutexWith | RwMutexWithRead | RwMutexWithWrite | OnceValueGet => 1,
             CondWaitWith => 3,
             _ => return None,
         };
         match &callee.ty {
+            // `OnceValue.get` keeps what its initializer returns in the cell, which outlives the
+            // call: that value, the `'a` of the borrowed `OnceValue<'a>`, is the one checked (TZ06;
+            // a curried initializer's own type is flattened).
+            Type::Function(parameters, _) if builtin == OnceValueGet && parameters.len() > 1 => {
+                match &parameters[0] {
+                    Type::Reference(cell, _) => match cell.as_ref() {
+                        Type::Record(_, arguments) if arguments.len() == 1 => {
+                            Some((arguments[0].clone(), callback))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
             Type::Function(parameters, _) if parameters.len() > callback => {
                 Some((callee.ty.after_arguments(callback + 1), callback))
             }
@@ -2745,20 +2762,29 @@ impl<'a> Checker<'a, '_> {
             // written by another task, by then. Only a result that is proven free of borrows made
             // inside the callback may hold borrows at all (F10). The generated function that
             // applies the builtin to its own parameters proves nothing: its callers are checked.
+            // `OnceValue.get` keeps the value in the cell, which outlives any borrow: its
+            // initializer may hold none, from outside either (TZ06).
+            let kept = self.builtin_called(callee) == Some(crate::check::Builtin::OnceValueGet);
             if let Some((returned, callback)) = &locked
                 && index == *callback
                 && returned.carries_loans(&self.module.types())
-                && !value.closed_result[0]
+                && (!value.closed_result[0] || (kept && !value.loans.is_empty()))
                 && !self.is_generated_parameter(argument)
             {
-                let name = self
-                    .builtin_called(callee)
-                    .map_or("Mutex.with_lock", |b| b.name());
-                return Err(error(
-                    DiagnosticKind::MutexResultRetainsBorrow,
+                let builtin = self.builtin_called(callee);
+                let name = builtin.map_or("Mutex.with_lock", |b| b.name());
+                let message = if builtin == Some(crate::check::Builtin::OnceValueGet) {
+                    format!(
+                        "{name} initializers must return values proven free of borrowed environments: the cell keeps the value after the borrowed data is gone; return an owned value, or a function that captures a copy"
+                    )
+                } else {
                     format!(
                         "{name} results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy"
-                    ),
+                    )
+                };
+                return Err(error(
+                    DiagnosticKind::MutexResultRetainsBorrow,
+                    message,
                     argument.span,
                 ));
             }

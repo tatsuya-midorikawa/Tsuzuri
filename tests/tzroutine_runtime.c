@@ -1041,7 +1041,15 @@ static void timer_block_free(void *block) {
 static void timer_chan_drop(tzr_chan *c) {
     if (tsuzuri_tz_chan_release(c)) timer_block_free(c);
 }
-static int64_t pending_timers(void) { return atomic_load(&tzr_sched.ntimers); }
+/* The timers in the heap. Not tzr_sched.ntimers: the timer thread lowers it after it has started a
+ * fired after_func's tzroutine (so that the detector never sees neither), which may have run and
+ * ended by then. */
+static int64_t pending_timers(void) {
+    tzr_lock_acquire(&tzr_timers.lock);
+    int64_t count = (int64_t)tzr_timers.count;
+    tzr_lock_release(&tzr_timers.lock);
+    return count;
+}
 static void *timer_after(int64_t ns, tzr_chan *block) {
     return tsuzuri_tz_timer_new(block, timer_block_free, ns, 0, TZR_TIMER_SEND, 0, NULL, NULL, NULL);
 }
@@ -1116,6 +1124,40 @@ static void test_timer_stop(void) {
     timer_chan_drop(c);
     CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
     printf("timer stop: ok\n");
+}
+
+/* A program may send on a timer's channel too: a stop or a reset that empties the full buffer lets a
+ * sender that waits for room put its item in, as a receive would, and the next receive takes it. */
+static void timer_chan_sender(void *env) {
+    int64_t v = 42;
+    CHECK(tsuzuri_tz_chan_send(env, &v, 1) == TZR_OK);
+}
+static int sender_queued(tzr_chan *c) {
+    tzr_lock_acquire(&c->lock);
+    int queued = c->sendq.first != NULL;
+    tzr_lock_release(&c->lock);
+    return queued;
+}
+static void test_timer_senders(void) {
+    for (int reset = 0; reset < 2; reset++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        void *t = timer_handle(TZR_TIMER_SEND, INT64_MAX);
+        tzr_chan *c = tsuzuri_tz_timer_chan(t);
+        int64_t v = 7;
+        CHECK(tsuzuri_tz_chan_send(c, &v, 0) == TZR_OK); /* the buffer of one is full */
+        tsuzuri_tz_go(timer_chan_sender, c);
+        while (!sender_queued(c)) CHECK(tsuzuri_tz_sleep(100000) == 0);
+        if (reset) CHECK(tsuzuri_tz_timer_reset(t, INT64_MAX) == 1);
+        else CHECK(tsuzuri_tz_timer_stop(t) == 1);
+        CHECK(!sender_queued(c) && tsuzuri_tz_chan_length(c) == 1);
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_OK && v == 42);
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_WOULD_BLOCK);
+        tsuzuri_tz_timer_free(t);
+        tsuzuri_tz_boundary_leave(scope);
+        timer_chan_drop(c);
+    }
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    printf("timer senders: ok\n");
 }
 
 /* Ticker: five times in order; a tick that the receiver has not taken the last one of is dropped;
@@ -1388,6 +1430,40 @@ static void test_rwmutex(void) {
     CHECK(rw_value == 2000);
     CHECK(atomic_load(&rw_word) == 0);
     printf("rwmutex: ok (%lld shared reads)\n", (long long)atomic_load(&rw_shared));
+}
+
+/* Writer preference with two writers queued: a reader that comes while they wait goes after both,
+ * also after the first one has taken the lock and let it go. */
+static _Atomic uint64_t pref_word;
+static int pref_order[3];
+static _Atomic int pref_count;
+static void pref_writer(void *env) {
+    CHECK(tsuzuri_tz_rw_write_lock(&pref_word) == 0);
+    pref_order[atomic_fetch_add(&pref_count, 1)] = (int)(intptr_t)env;
+    tsuzuri_tz_rw_write_unlock(&pref_word);
+}
+static void pref_reader(void *env) {
+    (void)env;
+    CHECK(tsuzuri_tz_rw_read_lock(&pref_word) == 0);
+    pref_order[atomic_fetch_add(&pref_count, 1)] = 0;
+    tsuzuri_tz_rw_read_unlock(&pref_word);
+}
+static void test_rw_writers_first(void) {
+    for (int round = 0; round < 20; round++) {
+        atomic_store(&pref_count, 0);
+        CHECK(tsuzuri_tz_rw_read_lock(&pref_word) == 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(pref_writer, (void *)(intptr_t)1);
+        tsuzuri_tz_go(pref_writer, (void *)(intptr_t)2);
+        while ((atomic_load(&pref_word) & TZR_RW_WAITERS) != 2 * TZR_RW_WAITER) CHECK(tsuzuri_tz_sleep(100000) == 0);
+        tsuzuri_tz_go(pref_reader, NULL);
+        CHECK(tsuzuri_tz_sleep(1000000) == 0);
+        tsuzuri_tz_rw_read_unlock(&pref_word);
+        join(scope);
+        CHECK(atomic_load(&pref_count) == 3 && pref_order[2] == 0);
+        CHECK(atomic_load(&pref_word) == 0);
+    }
+    printf("rw writers first: ok\n");
 }
 
 /* Once: 16 callers at once, the function runs once and everyone returns after it */
@@ -1712,6 +1788,7 @@ int main(int argc, char **argv) {
     RUN("batches", test_batches());
     RUN("timer_channel", test_timer_channel());
     RUN("timer_stop", test_timer_stop());
+    RUN("timer_senders", test_timer_senders());
     RUN("ticker", test_ticker());
     RUN("ticker_drop", test_ticker_drop());
     RUN("after_func", test_after_func());
@@ -1719,6 +1796,7 @@ int main(int argc, char **argv) {
     RUN("sleep_ms_hook", test_sleep_ms_hook());
     RUN("mutex32", test_mutex32());
     RUN("rwmutex", test_rwmutex());
+    RUN("rw_writers_first", test_rw_writers_first());
     RUN("once", test_once());
     RUN("cond", test_cond());
     RUN("semaphore", test_semaphore());

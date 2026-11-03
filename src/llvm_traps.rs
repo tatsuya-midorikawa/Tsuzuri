@@ -566,6 +566,9 @@ pub(super) fn instrument_with(
         .into_iter()
         .map(str::to_owned),
     );
+    // TZ05: a program with timers hands `@tz.free` to the runtime, which frees a channel's block with
+    // it as `void (*)(void *)`; every other program keeps its instrumented `@tz.free`.
+    let free_handed = ir.contains("ptr @tz.free,") || ir.contains("ptr @tz.free)");
     let managed: BTreeSet<_> = functions
         .keys()
         .filter(|name| {
@@ -580,6 +583,7 @@ pub(super) fn instrument_with(
                 // TZ05 and TZ06: the timers and WaitGroup.go call these too.
                 && name.as_str() != "@tz.tzroutine.owned.drop"
                 && name.as_str() != "@tz.waitgroup.go"
+                && !(free_handed && name.as_str() == "@tz.free")
         })
         .cloned()
         .collect();

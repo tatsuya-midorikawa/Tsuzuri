@@ -322,3 +322,19 @@ fn sync_map =
             | Maybe.Some value -> value
             | Maybe.None -> -1000000)
     sum * 1000 + SyncMap.length shared
+
+// An array in a cell: a shared borrow of it (with_read, a predicate of Cond.wait_with, the value
+// of OnceValue.get) is its slice value, an exclusive one (with_write, the body) is its place.
+export def sync_arrays :: i64
+fn sync_arrays =
+    let rw = RwMutex.create [1i64, 2i64, 3i64]
+    let total = RwMutex.with_read (ref rw) (\values -> Array.sum values)
+    RwMutex.with_write (ref rw) (\values -> deref values = [10i64, 20i64])
+    let length = RwMutex.with_read (ref rw) (\values -> values.length)
+    let once: OnceValue<[i64]> = OnceValue.create ()
+    let cached = OnceValue.get (ref once) (\() -> [4i64, 5i64])
+    let first = cached[0] + cached.length
+    let lock = Mutex.create [7i64]
+    let cond = Cond.create ()
+    let seen = Cond.wait_with (ref cond) (ref lock) (\values -> values.length == 1) (\values -> values.length)
+    total * 1000 + length * 100 + first * 10 + seen

@@ -234,9 +234,15 @@ impl FunctionEmitter<'_, '_> {
                     "getelementptr inbounds {}, ptr {cell}, i32 0, i32 1",
                     self.ty(&tuple)
                 ));
+                // A shared borrow of an array is its slice value; an exclusive one is its place.
+                let lent = if write {
+                    pointer
+                } else {
+                    self.borrowed_element(&value, &pointer)
+                };
                 let borrow = Type::Reference(Box::new(value), write);
                 let (output, _) =
-                    self.apply_value("%arg1", &parameters[1], Some((&borrow, &pointer)), false);
+                    self.apply_value("%arg1", &parameters[1], Some((&borrow, &lent)), false);
                 self.runtime_unlock(unlock, &cell);
                 output
             }
@@ -390,7 +396,8 @@ impl FunctionEmitter<'_, '_> {
         let slot = self.value(format!(
             "getelementptr inbounds {tuple_type}, ptr {cell}, i32 0, i32 1"
         ));
-        self.payload_pointer(&maybe, &slot)
+        let payload = self.payload_pointer(&maybe, &slot);
+        self.borrowed_element(&value, &payload)
     }
 
     /// `Cond.wait_with cond lock ready body`: under the lock, reads the condition's sequence
@@ -417,7 +424,8 @@ impl FunctionEmitter<'_, '_> {
         self.begin(&check);
         let observed = self.value(format!("load atomic i64, ptr {sequence} acquire, align 8"));
         let shared = Type::Reference(Box::new(value.clone()), false);
-        let (holds, _) = self.apply_value("%arg2", &parameters[2], Some((&shared, &pointer)), true);
+        let viewed = self.borrowed_element(&value, &pointer);
+        let (holds, _) = self.apply_value("%arg2", &parameters[2], Some((&shared, &viewed)), true);
         self.branch(&holds, &run, &wait);
         self.begin(&wait);
         self.declare_wait("declare i32 @tsuzuri_tz_cond_wait(ptr, ptr, i64)");

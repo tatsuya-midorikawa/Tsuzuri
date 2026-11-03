@@ -2596,6 +2596,7 @@ const suites = {
       ["cond_queue", [], 500n * 10n],
       ["semaphore_limit", [], 11n],
       ["sync_map", [], 2n * (799n * 800n / 2n) * 1000n + 800n],
+      ["sync_arrays", [], 6n * 1000n + 2n * 100n + 6n * 10n + 1n],
     ],
     traps: [["negative_counter", []], ["mutex_same_nested", []], ["mutex_order_deadlock", []], ["rw_nested", []],
       ["semaphore_over", []], ["semaphore_weight", []]],
