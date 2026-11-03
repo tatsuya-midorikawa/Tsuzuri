@@ -1173,6 +1173,16 @@ static void func_drop(void *box) {
     CHECK(box == &func_runs);
     atomic_fetch_add(&func_drops, 1);
 }
+static void *timer_after(int64_t ns, tzr_chan *block);
+static void func_waits_for_timer(void *box) {
+    CHECK(box == &func_runs);
+    tzr_chan *c = timer_block();
+    timer_after(2000000, c);
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK);
+    timer_chan_drop(c);
+    atomic_fetch_add(&func_runs, 1);
+}
 static void *timer_func(int64_t ns) {
     return tsuzuri_tz_timer_new(timer_block(), timer_block_free, ns, 0, TZR_TIMER_FUNC, 1, func_run, func_drop,
                                 &func_runs);
@@ -1248,6 +1258,33 @@ static void test_boundary_timers(void) {
         CHECK(atomic_load(&func_runs) + atomic_load(&func_drops) == N);
     }
     CHECK(atomic_load(&timer_blocks) == 0);
+    /* a stopped after_func whose Timer outlives the boundary: the boundary drops its function, and
+     * a later reset has nothing to start */
+    atomic_store(&func_runs, 0);
+    atomic_store(&func_drops, 0);
+    scope = tsuzuri_tz_scope_enter();
+    void *kept = timer_func(INT64_MAX);
+    CHECK(tsuzuri_tz_timer_stop(kept) == 1);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&func_drops) == 1 && atomic_load(&func_runs) == 0);
+    CHECK(tsuzuri_tz_timer_reset(kept, 1) == 0);
+    CHECK(tsuzuri_tz_sleep(5000000) == 0);
+    CHECK(atomic_load(&func_runs) == 0 && pending_timers() == 0);
+    tsuzuri_tz_timer_free(kept);
+    CHECK(atomic_load(&func_drops) == 1 && atomic_load(&timer_blocks) == 0);
+    /* an after_func that fires as the boundary ends and waits for a timer of its own: the boundary
+     * waits for it instead of stopping the timer it waits for */
+    for (int round = 0; round < 200; round++) {
+        atomic_store(&func_runs, 0);
+        atomic_store(&func_drops, 0);
+        scope = tsuzuri_tz_scope_enter();
+        void *later = tsuzuri_tz_timer_new(timer_block(), timer_block_free, round % 2, 0, TZR_TIMER_FUNC, 1,
+                                           func_waits_for_timer, func_drop, &func_runs);
+        tsuzuri_tz_boundary_leave(scope);
+        CHECK(atomic_load(&func_runs) + atomic_load(&func_drops) == 1);
+        tsuzuri_tz_timer_free(later);
+    }
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
     printf("boundary timers: ok\n");
 }
 

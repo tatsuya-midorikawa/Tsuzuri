@@ -2782,14 +2782,15 @@ static void tzr_timer_arm(tzr_timer *t, tzr_scope *scope, int dormant) {
 }
 
 /* Takes the waiting timer t out of the heap or out of its dormancy (tzr_timers.lock) and leaves it
- * STOPPED and unlisted. Returns 0 when it was not waiting, 1 when it was dormant and 2 when it
- * pended (and counted in ntimers). */
+ * STOPPED. It is unlisted too, unless it is a FUNC timer: that one keeps its function for a reset,
+ * and so stays listed in its boundary, whose end drops the function that never ran. Returns 0 when
+ * it was not waiting, 1 when it was dormant and 2 when it pended (and counted in ntimers). */
 static int tzr_timer_take(tzr_timer *t) {
     int taken = t->state == TZR_TIMER_PENDING ? 2 : t->state == TZR_TIMER_DORMANT ? 1 : 0;
     if (taken == 2) tzr_heap_remove(t);
     if (taken) {
         t->state = TZR_TIMER_STOPPED;
-        tzr_timer_unlist(t);
+        if (t->kind != TZR_TIMER_FUNC) tzr_timer_unlist(t);
     }
     return taken;
 }
@@ -2839,7 +2840,8 @@ TZR_API void *tsuzuri_tz_timer_chan(void *timer) {
 }
 
 /* Timer.stop and Ticker.stop: returns 1 when the timer was pending. Its channel keeps no time that
- * it sent before (Go 1.23); a FUNC timer keeps its function for a reset. */
+ * it sent before (Go 1.23); a FUNC timer keeps its function for a reset, and so stays listed in its
+ * boundary, whose end drops the function that never ran. */
 TZR_API int32_t tsuzuri_tz_timer_stop(void *timer) {
     tzr_timer *t = timer;
     tzr_lock_acquire(&tzr_timers.lock);
@@ -2904,49 +2906,42 @@ TZR_API void tsuzuri_tz_timer_free(void *timer) {
 
 static void tzr_ctx_unref(void *ctx);
 
-/* Takes one timer out of the boundary `scope`'s list and stops it, then lets go of what the
- * runtime holds for it: a timer without a handle is freed with its reference to the channel, and a
- * FUNC timer's function is dropped (a handle keeps its stopped record). Returns 0 when the list
- * was empty. */
-static int tzr_boundary_stop_one(tzr_scope *scope) {
-    tzr_lock_acquire(&tzr_timers.lock);
-    tzr_timer *t = scope->timers;
-    if (t == NULL) {
-        tzr_lock_release(&tzr_timers.lock);
-        return 0;
-    }
-    int taken = tzr_timer_take(t);
-    tzr_timer_unlist(t);
-    void *box = t->box;
-    void (*drop)(void *) = t->drop;
-    t->box = NULL;
-    /* a context's deadline lets go of its reference to the context, which owns the record */
-    void *expired = t->kind == TZR_TIMER_CTX && taken ? t->ctx : NULL;
-    /* after the lock goes, a handle's record may be freed by its drop on another G */
-    tzr_timer *owned = t->handle || t->kind == TZR_TIMER_CTX ? NULL : t;
-    tzr_lock_release(&tzr_timers.lock);
-    if (taken == 2) tzr_timers_gone(1);
-    if (expired) tzr_ctx_unref(expired);
-    if (box) drop(box);
-    if (owned) {
-        tzr_timer_unref(owned->chan, owned->release);
-        free(owned);
-    }
-    return 1;
-}
-
-/* After the boundary's tzroutines have finished: stops its timers and returns 1 when the scope must
- * be waited for again (a fired after_func spawned into it, or a dropped function made a timer). */
+/* After the boundary's tzroutines have finished: stops its timers one at a time and lets go of
+ * what the runtime holds for each (a timer without a handle is freed with its reference to the
+ * channel, a FUNC timer's function is dropped, a context's deadline lets go of its reference to the
+ * context, which owns the record; a handle keeps its stopped record). The scope is looked at under
+ * the timers' lock before each timer: a fired after_func reserves its tzroutine under that lock,
+ * and the timers of a tzroutine that runs again must stay (it may wait for one), so the scope is
+ * waited for again first. Returns 1 when it must be waited for again, 0 when its list is empty with
+ * nothing left running (a dropped function may have spawned or made a timer). */
 static int tzr_boundary_settle(tzr_scope *scope) {
-    while (tzr_boundary_stop_one(scope)) {
+    for (;;) {
+        tzr_lock_acquire(&tzr_timers.lock);
+        tzr_lock_acquire(&scope->lock);
+        int live = scope->live != 0;
+        tzr_lock_release(&scope->lock);
+        tzr_timer *t = scope->timers;
+        if (live || t == NULL) {
+            tzr_lock_release(&tzr_timers.lock);
+            return live;
+        }
+        int taken = tzr_timer_take(t);
+        tzr_timer_unlist(t);
+        void *box = t->box;
+        void (*drop)(void *) = t->drop;
+        t->box = NULL;
+        void *expired = t->kind == TZR_TIMER_CTX && taken ? t->ctx : NULL;
+        /* after the lock goes, a handle's record may be freed by its drop on another G */
+        tzr_timer *owned = t->handle || t->kind == TZR_TIMER_CTX ? NULL : t;
+        tzr_lock_release(&tzr_timers.lock);
+        if (taken == 2) tzr_timers_gone(1);
+        if (expired) tzr_ctx_unref(expired);
+        if (box) drop(box);
+        if (owned) {
+            tzr_timer_unref(owned->chan, owned->release);
+            free(owned);
+        }
     }
-    tzr_lock_acquire(&scope->lock);
-    int again = scope->live != 0;
-    tzr_lock_release(&scope->lock);
-    tzr_lock_acquire(&tzr_timers.lock);
-    again |= scope->timers != NULL;
-    tzr_lock_release(&tzr_timers.lock);
-    return again;
 }
 
 /* ---------------------------------------------------------------- contexts (TZ07) */
