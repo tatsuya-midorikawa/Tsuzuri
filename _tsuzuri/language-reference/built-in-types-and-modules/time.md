@@ -223,7 +223,7 @@ done
 | `Time.after` | `i64 -> Channel<i64>` | そのナノ秒後に時刻を 1 つ受け取れる容量 1 のチャンネル |
 | `Time.tick` | `i64 -> Channel<i64>` | 周期ごとに時刻を送るチャンネル。ハンドルがすべてなくなれば止まる。0 以下はトラップ |
 | `Time.after_func` | `i64 -> Owned.Function<unit, unit> -> Timer` | そのナノ秒後に関数を新しい tzroutine で 1 回呼ぶ |
-| `Time.nanosecond` ～ `Time.hour` | `unit -> i64`（`Time.hour()` と呼ぶ） | 長さ |
+| `Time.nanosecond` ～ `Time.hour` | `i64`（引数のない関数。`Math.pi` と同じく `Time.hour()` と呼ぶ） | 長さ |
 
 呼び出しは `Time.sleep_ms 0` や `Time.monotonic_ns ()` のように記述し、`unit` 引数には `()` を渡します。長さだけは `Time.hour()` と空白なしで呼びます。
 
