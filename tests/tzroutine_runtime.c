@@ -1660,9 +1660,9 @@ static void test_context_deadline(void) {
     CHECK(pending_timers() == 0);
     /* in a fresh boundary, so that no deadline above is still being stopped */
     scope = tsuzuri_tz_scope_enter();
-    void *far = ctx_new(root, tzr_nanotime() + 3600 * (int64_t)1000000000);
+    void *distant = ctx_new(root, tzr_nanotime() + 3600 * (int64_t)1000000000);
     CHECK(pending_timers() == 1);
-    tsuzuri_tz_ctx_release(far);
+    tsuzuri_tz_ctx_release(distant);
     CHECK(pending_timers() == 0);
     tsuzuri_tz_ctx_release(root);
     tsuzuri_tz_boundary_leave(scope);
