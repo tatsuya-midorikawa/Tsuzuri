@@ -136,15 +136,11 @@ sent=3 sum=6
 [`Time.after`](../built-in-types-and-modules/time.md#タイムアウトtimeafter) のチャンネルを腕に書くと、ほかの腕を待つのをあきらめる時刻になります（Go の `case <-time.After(d):`）。周期の処理には [Ticker](../built-in-types-and-modules/ticker.md) のチャンネルを書きます。
 
 ```tsuzuri run=timeout
-def wait :: ref Channel<i64> -> string
-fn wait input =
-    let! deadline = Time.after (20 * Time.millisecond)
-    select
-    | recv value from input -> $"value {value}"
-    | recv _ from deadline -> "timeout"
-
 let never: Channel<i64> = Channel.make 0
-wait (ref never)
+let deadline = Time.after (20 * Time.millisecond())
+select
+| recv _ from never -> "value"
+| recv _ from deadline -> "timeout"
 ```
 
 実行結果:

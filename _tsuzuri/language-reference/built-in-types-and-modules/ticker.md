@@ -14,14 +14,14 @@
 ## 基本の書き方
 
 ```tsuzuri run=true
-let! ticker = Ticker.create (2 * Time.millisecond)
+let ticker = Ticker.create (2 * Time.millisecond())
 let ticks = Ticker.channel ticker
 let first = Channel.recv ticks
 let second = Channel.recv ticks
 Ticker.stop ticker
 match (first, second) with
-| (Maybe.Some earlier, Maybe.Some later) -> IO.write_line (later > earlier)
-| _ -> IO.write_line "closed"
+| (Maybe.Some earlier, Maybe.Some later) -> later > earlier
+| _ -> false
 ```
 
 実行結果:
@@ -37,7 +37,7 @@ true
 ```tsuzuri run=stopped
 def worker :: ref Channel<unit> -> ref Channel<i64> -> unit
 fn worker quit report =
-    let! ticker = Ticker.create (2 * Time.millisecond)
+    let ticker = Ticker.create (2 * Time.millisecond())
     let ticks = Ticker.channel ticker
     let mut count = 0i64
     let mut running = true
@@ -56,7 +56,7 @@ fn run _ =
     tzroutine {
         worker (ref worker_quit) (ref worker_report)
     }
-    do! Time.sleep (10 * Time.millisecond)
+    Time.sleep (10 * Time.millisecond())
     Channel.send quit ()
     match Channel.recv reports with
     | Maybe.Some _ -> "stopped"
@@ -85,7 +85,7 @@ stopped
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `Ticker.create` | `i64 -> IO<Ticker>` | そのナノ秒ごとに時刻を送るティッカー。0 以下はトラップ |
+| `Ticker.create` | `i64 -> Ticker` | そのナノ秒ごとに時刻を送るティッカー。0 以下はトラップ |
 | `Ticker.channel` | `ref Ticker -> Channel<i64>` | ティッカーのチャンネルのハンドル |
 | `Ticker.stop` | `ref Ticker -> unit` | 止める。送った時刻も捨てる |
 | `Ticker.reset` | `ref Ticker -> i64 -> unit` | 周期を変えて今から数え直す。0 以下はトラップ |
@@ -98,7 +98,7 @@ stopped
 
 | Go | Tsuzuri |
 | --- | --- |
-| `t := time.NewTicker(d)` | `let! t = Ticker.create d` |
+| `t := time.NewTicker(d)` | `let t = Ticker.create d` |
 | `<-t.C` | `Channel.recv (Ticker.channel t)` |
 | `t.Stop()` | `Ticker.stop t` |
 | `t.Reset(d)` | `Ticker.reset t d` |

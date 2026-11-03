@@ -2751,10 +2751,14 @@ impl<'a> Checker<'a, '_> {
                 && !value.closed_result[0]
                 && !self.is_generated_parameter(argument)
             {
-                let name = self.builtin_called(callee).map_or("Mutex.with_lock", |b| b.name());
+                let name = self
+                    .builtin_called(callee)
+                    .map_or("Mutex.with_lock", |b| b.name());
                 return Err(error(
                     DiagnosticKind::MutexResultRetainsBorrow,
-                    format!("{name} results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy"),
+                    format!(
+                        "{name} results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy"
+                    ),
                     argument.span,
                 ));
             }

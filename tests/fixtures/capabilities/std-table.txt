@@ -91,6 +91,10 @@ Net.write_async: net
 Process.run: process
 Random.bytes: random
 Random.next_u64: random
+Ticker.create: time
+Ticker.reset: time
 Time.monotonic_ns: time
 Time.sleep_ms: time
 Time.unix_ns: time
+Timer.create: time
+Timer.reset: time

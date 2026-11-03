@@ -1,6 +1,6 @@
 # Timer
 
-`Timer` は、一定時間後に時刻をチャンネルへ 1 回送るタイマーです（Go の `time.Timer`）。`Timer.create` で作り、`Timer.channel` でチャンネルのハンドルを取り、`Timer.stop` で止め、`Timer.reset` で送り直します。[`Time.after_func`](./time.md#遅らせて呼ぶtimeafter_func) が返すのも `Timer` です。
+`Timer` は、一定時間後に時刻をチャンネルへ 1 回送るタイマーです（Go の `time.Timer`）。`Time` のタイマーと同じく、呼んだ時点で働く関数です（`IO` を返しません）。`Timer.create` で作り、`Timer.channel` でチャンネルのハンドルを取り、`Timer.stop` で止め、`Timer.reset` で送り直します。[`Time.after_func`](./time.md#遅らせて呼ぶtimeafter_func) が返すのも `Timer` です。
 
 必要な権限: `time`（`Timer.create` と `Timer.reset`。時計を読みます）。
 
@@ -14,11 +14,11 @@
 ## 基本の書き方
 
 ```tsuzuri run=fired
-let! timer = Timer.create (5 * Time.millisecond)
+let timer = Timer.create (5 * Time.millisecond())
 let fired = Timer.channel timer
 match Channel.recv fired with
-| Maybe.Some _ -> IO.write_line "fired"
-| Maybe.None -> IO.write_line "closed"
+| Maybe.Some _ -> "fired"
+| Maybe.None -> "closed"
 ```
 
 実行結果:
@@ -34,12 +34,12 @@ fired
 ```tsuzuri run=10010
 def steps :: unit -> i64
 fn steps _ =
-    let! timer = Timer.create Time.hour
+    let timer = Timer.create Time.hour()
     let fired = Timer.channel timer
     let digit = \flag -> if flag then 1i64 else 0i64
     let first = digit (Timer.stop timer)
     let second = digit (Timer.stop timer)
-    let third = digit (Timer.reset timer (2 * Time.millisecond))
+    let third = digit (Timer.reset timer (2 * Time.millisecond()))
     let fourth = match Channel.recv fired with
         | Maybe.Some _ -> 1i64
         | Maybe.None -> 0i64
@@ -75,7 +75,7 @@ drop すると、まだ発火していなければ止め、`after_func` の関�
 
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
-| `Timer.create` | `i64 -> IO<Timer>` | そのナノ秒後に 1 回だけ時刻を送るタイマー |
+| `Timer.create` | `i64 -> Timer` | そのナノ秒後に 1 回だけ時刻を送るタイマー |
 | `Timer.channel` | `ref Timer -> Channel<i64>` | タイマーのチャンネルのハンドル。`after_func` のタイマーでは閉じた空のチャンネル |
 | `Timer.stop` | `ref Timer -> bool` | 止める。まだ送っていなければ真 |
 | `Timer.reset` | `ref Timer -> i64 -> bool` | 今からそのナノ秒後に送り直す。まだ待っていたなら真。0 以下はすぐ送る |
@@ -88,7 +88,7 @@ drop すると、まだ発火していなければ止め、`after_func` の関�
 
 | Go | Tsuzuri |
 | --- | --- |
-| `t := time.NewTimer(d)` | `let! t = Timer.create d` |
+| `t := time.NewTimer(d)` | `let t = Timer.create d` |
 | `<-t.C` | `Channel.recv (Timer.channel t)` |
 | `t.Stop()` | `Timer.stop t` |
 | `t.Reset(d)` | `Timer.reset t d` |

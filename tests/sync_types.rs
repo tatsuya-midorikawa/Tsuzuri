@@ -87,14 +87,18 @@ if finished && tried then got + inner else 0
 
 #[test]
 fn the_mutex_of_a_program_without_the_tzroutine_runtime_keeps_its_ir() {
-    let old = ir("let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)\n");
+    let old =
+        ir("let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)\n");
     assert!(old.contains("call i32 @tsuzuri_mutex_lock(ptr"), "{old}");
     assert!(!old.contains("tsuzuri_tz_"), "{old}");
     // A program that uses the runtime takes the runtime's lock, and the thread's mark is gone.
     let new = ir(
         "let lock = Mutex.create 0i64\nlet group = WaitGroup.create ()\nMutex.with_lock (ref lock) (\\value -> deref value)\n",
     );
-    assert!(new.contains("call i32 @tsuzuri_tz_mutex32_lock(ptr"), "{new}");
+    assert!(
+        new.contains("call i32 @tsuzuri_tz_mutex32_lock(ptr"),
+        "{new}"
+    );
     assert!(!new.contains("@tsuzuri_mutex_lock("), "{new}");
     assert!(!new.contains("tz.mutex.mark"), "{new}");
     let waiting = ir(
@@ -163,7 +167,10 @@ fn a_result_of_a_lock_holds_no_borrow_of_the_locked_value() {
         "let lock = RwMutex.create 5i64\nlet reader = RwMutex.with_read (ref lock)\nlet kept = reader (\\value -> \\x -> deref value + x)\n0",
         "E1013",
     );
-    assert!(message.contains("RwMutex.with_read must be fully applied directly"), "{message}");
+    assert!(
+        message.contains("RwMutex.with_read must be fully applied directly"),
+        "{message}"
+    );
 }
 
 #[test]

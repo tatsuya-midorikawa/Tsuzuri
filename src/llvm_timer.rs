@@ -27,8 +27,11 @@ impl FunctionEmitter<'_, '_> {
         };
         let count = builtin.scheme().parameters.len();
         let result = ty.after_arguments(count);
+        if let Some(nanoseconds) = builtin.length_nanoseconds() {
+            return nanoseconds.to_string();
+        }
         match builtin {
-            Builtin::TimeSleepNs => {
+            Builtin::TimeSleep => {
                 self.time_sleep();
                 "0".to_owned()
             }

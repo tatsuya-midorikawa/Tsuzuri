@@ -298,8 +298,14 @@ fn a_tzroutine_may_yield_inside_a_mutex() {
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     assert!(ir.contains("call i32 @tsuzuri_tz_mutex32_lock(ptr"), "{ir}");
-    assert!(ir.contains("call void @tsuzuri_tz_mutex32_unlock(ptr"), "{ir}");
-    assert!(!ir.contains("tz.mutex.locked") && !ir.contains("tz.routine.unlocked"), "{ir}");
+    assert!(
+        ir.contains("call void @tsuzuri_tz_mutex32_unlock(ptr"),
+        "{ir}"
+    );
+    assert!(
+        !ir.contains("tz.mutex.locked") && !ir.contains("tz.routine.unlocked"),
+        "{ir}"
+    );
     // Without a spawn, nothing changes for Mutex.
     let plain = accepts(
         "let lock = Mutex.create 0i64\nMutex.with_lock (ref lock) (\\value -> deref value)\n",
@@ -444,7 +450,10 @@ fn the_lock_list_of_the_g_replaces_the_thread_mark() {
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     assert!(!ir.contains("tz.mutex.locked"), "{ir}");
     assert!(ir.contains("call i32 @tsuzuri_tz_held_depth()"), "{ir}");
-    assert!(ir.contains("call void @tsuzuri_tz_held_restore(i32"), "{ir}");
+    assert!(
+        ir.contains("call void @tsuzuri_tz_held_restore(i32"),
+        "{ir}"
+    );
 }
 
 #[test]

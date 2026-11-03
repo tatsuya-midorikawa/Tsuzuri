@@ -1001,7 +1001,10 @@ fn runtime_fixture_lowers_deterministically_for_both_targets() {
         ("Skew.tc", include_str!("fixtures/computations/Skew.tc")),
         ("Traits.tt", include_str!("fixtures/computations/Traits.tt")),
         ("First.tc", include_str!("fixtures/computations/First.tc")),
-        ("Once.tc", include_str!("fixtures/computations/Once.tc")),
+        (
+            "JustOnce.tc",
+            include_str!("fixtures/computations/JustOnce.tc"),
+        ),
         (
             "RunOnly.tc",
             include_str!("fixtures/computations/RunOnly.tc"),

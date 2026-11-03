@@ -571,7 +571,10 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             facts(Some(Effect::Task), false, false, false, false, false, None)
         }
         // TZ05: the timers read the clock; a period of 0 or less traps; a timer's channel is allocated.
-        TimeSleepNs => facts(Some(Effect::Os), false, false, false, false, false, None),
+        TimeSleep => facts(Some(Effect::Os), false, false, false, false, false, None),
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
+            facts(None, false, false, false, false, false, None)
+        }
         TimeAfter | TimerCreate => facts(Some(Effect::Os), true, false, false, false, false, None),
         TimeTick | TickerCreate => facts(Some(Effect::Os), true, true, false, false, false, None),
         TimerReset => facts(Some(Effect::Os), false, false, false, false, false, None),
@@ -610,9 +613,15 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             facts(Some(Effect::Atomic), false, true, false, false, false, None)
         }
         OnceEnd | OnceDone | CondSignal | CondBroadcast | WaitGroupDrop | OnceDrop | CondDrop
-        | SemaphoreDrop | OnceValueIntoInner | RwMutexIntoInner => {
-            facts(Some(Effect::Atomic), false, false, false, false, false, None)
-        }
+        | SemaphoreDrop | OnceValueIntoInner | RwMutexIntoInner => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
         // A swap of two values in place.
         SyncMapReplace => facts(None, false, false, false, false, false, None),
         // Like `Routine.go`, after the count.
@@ -3531,19 +3540,19 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 290);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 122);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 168);
+        assert_eq!(Builtin::ALL.len(), 342);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 167);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
     }
 
     #[test]
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
         assert_eq!(by(Effect::Io), 10);
-        assert_eq!(by(Effect::Os), 12);
+        assert_eq!(by(Effect::Os), 19);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 15);
-        assert_eq!(by(Effect::Atomic), 46);
+        assert_eq!(by(Effect::Task), 17);
+        assert_eq!(by(Effect::Atomic), 82);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3552,23 +3561,23 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 66);
+        assert_eq!(count(|facts| facts.alloc), 84);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 40);
+        assert_eq!(count(|facts| facts.trap), 54);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 20);
+        assert_eq!(count(|facts| facts.diverge), 27);
     }
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 18);
+        assert_eq!(count(|facts| facts.callbacks), 26);
     }
 
     fn checked(source: &str) -> CheckedModule {

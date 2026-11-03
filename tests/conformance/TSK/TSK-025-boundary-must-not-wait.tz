@@ -2,10 +2,10 @@
 // dropped without a call.
 def leave :: unit -> string
 fn leave _ =
-    let! _after = Time.after Time.hour
-    let! _ticks = Time.tick Time.hour
-    let! _timer = Timer.create Time.hour
-    let _func = Time.after_func Time.hour (Owned.function (\() -> {
+    let _after = Time.after Time.hour()
+    let _ticks = Time.tick Time.hour()
+    let _timer = Timer.create Time.hour()
+    let _func = Time.after_func Time.hour() (Owned.function (\() -> {
         do! IO.write_line "called";
         ()
     }))

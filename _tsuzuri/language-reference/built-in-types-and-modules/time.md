@@ -1,6 +1,6 @@
 # Time
 
-`Time` は、単調時計、UNIX 時刻、スリープと、Go の `time` パッケージと同じタイマー（`Time.after`・`Time.tick`・`Time.after_func`）を扱うモジュールです。時計を読む操作は `IO` アクションとして提供され、純粋関数の中から暗黙のうちに現在時刻を読み取ることはできません（`Time.after_func` だけは関数を 1 回しか呼ばないので、`Routine.go` と同じく呼んだ時点で始まります）。
+`Time` は、単調時計、UNIX 時刻、スリープと、Go の `time` パッケージと同じタイマー（`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`）を扱うモジュールです。`monotonic_ns`・`unix_ns`・`sleep_ms` は `IO` アクションです。タイマーは `Routine.go` や `Channel.send` と同じく、呼んだ時点で働く組み込みの関数です（`IO` を返しません）。どちらも時計を読む OS の効果（`os`）を持つので、`pure` の関数からは呼べません。
 
 必要な権限: `time`（すべての関数）。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。止められるタイマーは [Timer](./timer.md) と [Ticker](./ticker.md) です。
 
@@ -10,7 +10,7 @@
 - `unix_ns` は 1970-01-01 UTC からの経過ナノ秒です。`i64` の表現範囲に収まらない場合は `Other` エラーとなります。
 - `sleep_ms 0` は待機せずに `Ok ()` を返します。負の値を渡すと `InvalidInput` エラーとなります。
 - 時刻の数値そのものは実行のたびに変化するため、テストや照合では差分や大小関係を検証します。
-- 長さはナノ秒の `i64` です（Go の `time.Duration`）。`50 * Time.millisecond` のように定数と掛けて書きます。
+- 長さはナノ秒の `i64` です（Go の `time.Duration`）。`50 * Time.millisecond()` のように、長さの関数（`Math.pi()` と同じく引数のない関数）と掛けて書きます。
 - `Time.sleep` は tzroutine の中では、その tzroutine だけを待たせます（ほかの tzroutine はそのスレッドで走り続けます）。`Time.sleep_ms` も tzroutine の中では同じ待ち方です。 <!-- rule: TSK-023 -->
 - `Time.after` は一定時間後に時刻を 1 つ受け取るチャンネルで、`select` に書いてタイムアウトにします。`Time.tick` は周期ごとに時刻を送るチャンネルで、ハンドルがなくなれば止まります。
 - `main`・`export`・`test`・`bench` の終わりは、その中で作ったまだ発火していないタイマーを待たずに止め、解放します。 <!-- rule: TSK-025 -->
@@ -67,19 +67,19 @@ invalid input
 
 ## 長さの定数
 
-長さはナノ秒の `i64` です。定数と掛けて書きます。
+長さはナノ秒の `i64` です。長さの関数と掛けて書きます。`Math.pi()` と同じく引数のない組み込みの関数なので、`Time.millisecond()` と呼びます（`()` の前に空白を入れると、`unit` を 1 つ渡す呼び出しになり `E1006` です）。
 
-| 定数 | 値（ナノ秒） | Go |
+| 関数 | 値（ナノ秒） | Go |
 | --- | --- | --- |
-| `Time.nanosecond` | 1 | `time.Nanosecond` |
-| `Time.microsecond` | 1,000 | `time.Microsecond` |
-| `Time.millisecond` | 1,000,000 | `time.Millisecond` |
-| `Time.second` | 1,000,000,000 | `time.Second` |
-| `Time.minute` | 60,000,000,000 | `time.Minute` |
-| `Time.hour` | 3,600,000,000,000 | `time.Hour` |
+| `Time.nanosecond()` | 1 | `time.Nanosecond` |
+| `Time.microsecond()` | 1,000 | `time.Microsecond` |
+| `Time.millisecond()` | 1,000,000 | `time.Millisecond` |
+| `Time.second()` | 1,000,000,000 | `time.Second` |
+| `Time.minute()` | 60,000,000,000 | `time.Minute` |
+| `Time.hour()` | 3,600,000,000,000 | `time.Hour` |
 
 ```tsuzuri run=1500
-Time.second / Time.millisecond + 500
+Time.second() / Time.millisecond() + 500
 ```
 
 実行結果:
@@ -105,7 +105,7 @@ fn order _ =
             | 2 -> 10
             | _ -> 20
         tzroutine {
-            do! Time.sleep (nap * Time.millisecond)
+            Time.sleep (nap * Time.millisecond())
             Channel.send out (number as i64)
         }
     let mut result = 0i64
@@ -124,8 +124,6 @@ order ()
 231
 ```
 
-普通の関数の本体（ビルダーのない本体）に書いた `let!`・`do!` は、その場でアクションを実行します。上の `order` は `IO` を返さない関数のまま、tzroutine の中で `Time.sleep` を待てます。
-
 既存の `Time.sleep_ms` も、tzroutine の中では `Time.sleep` と同じく、その tzroutine だけを待たせます（スレッドを止めません）。結果の型と、負の数が `InvalidInput` になることは変わりません。
 
 ## タイムアウト（Time.after）
@@ -133,13 +131,11 @@ order ()
 `Time.after d` は、`d` ナノ秒後にそのときの時刻（`monotonic_ns` と同じ時計のナノ秒）を 1 つ受け取れる、容量 1 のチャンネルを作ります（Go の `time.After`）。[select](../async-tasks-and-lazy/select.md) の腕に書くと、ほかの腕を待つのをあきらめる時刻になります。
 
 ```tsuzuri run=timeout
-let! deadline = Time.after (20 * Time.millisecond)
 let never: Channel<i64> = Channel.make 0
-let result =
-    select
-    | recv _ from never -> "value"
-    | recv _ from deadline -> "timeout"
-IO.write_line result
+let deadline = Time.after (20 * Time.millisecond())
+select
+| recv _ from never -> "value"
+| recv _ from deadline -> "timeout"
 ```
 
 実行結果:
@@ -148,19 +144,19 @@ IO.write_line result
 timeout
 ```
 
-`Time.after` は `IO` を返すので、`select` の腕に直接は書けません。`let! deadline = Time.after d` で受けてから腕に書きます。トップレベルでは、`let!` の後ろの文は継続の関数になり、その関数は所有値（`Channel` など）を捕捉できません（`E1005`）。上の例のように、タイマーを先に `let!` するか、関数の中に書きます。
+`select` の腕のチャンネルはその場で作った値ではなく名前にするので（`E1013`）、`let deadline = Time.after d` で受けてから腕に書きます。プログラムが `Channel` と書かなくても、`Time.after`・`Time.tick` を書けば `Channel` のモジュールが読み込まれます。
 
 ## 周期（Time.tick）
 
 `Time.tick d` は、`d` ナノ秒ごとに時刻を送るチャンネルを作ります（Go の `time.Tick`）。チャンネルは 1 つだけ時刻を持ち、受け手が前の時刻を受け取っていなければ、その回は捨てられます。返したチャンネルのハンドルがすべて drop されると、次の周期で止まり、チャンネルを解放します。`d` が 0 以下ならトラップします。止めたり周期を変えたりするには [Ticker](./ticker.md) を使います。
 
 ```tsuzuri run=true
-let! ticks = Time.tick (2 * Time.millisecond)
+let ticks = Time.tick (2 * Time.millisecond())
 let first = Channel.recv ticks
 let second = Channel.recv ticks
 match (first, second) with
-| (Maybe.Some earlier, Maybe.Some later) -> IO.write_line (later > earlier)
-| _ -> IO.write_line "closed"
+| (Maybe.Some earlier, Maybe.Some later) -> later > earlier
+| _ -> false
 ```
 
 実行結果:
@@ -171,12 +167,12 @@ true
 
 ## 遅らせて呼ぶ（Time.after_func）
 
-`Time.after_func d f` は、`d` ナノ秒後に、所有する関数 `f`（[Owned](./owned.md)）を新しい tzroutine で 1 回呼びます（Go の `time.AfterFunc`）。返した [Timer](./timer.md) で止められます。関数は 1 回しか呼べないので、`IO` を返さずに呼んだ時点で始まります（`Routine.go` と同じ）。
+`Time.after_func d f` は、`d` ナノ秒後に、所有する関数 `f`（[Owned](./owned.md)）を新しい tzroutine で 1 回呼びます（Go の `time.AfterFunc`）。返した [Timer](./timer.md) で止められます。
 
 ```tsuzuri run=called
 let done: Channel<i64> = Channel.make 1
 let signal = Channel.share done
-let _timer = Time.after_func (5 * Time.millisecond) (Owned.function (\() -> Channel.send signal 1))
+let _timer = Time.after_func (5 * Time.millisecond()) (Owned.function (\() -> Channel.send signal 1))
 match Channel.recv done with
 | Maybe.Some _ -> "called"
 | Maybe.None -> "not called"
@@ -197,9 +193,9 @@ called
 ```tsuzuri run=done
 def leave :: unit -> string
 fn leave _ =
-    let! _after = Time.after Time.hour
-    let! _ticks = Time.tick Time.hour
-    let _func = Time.after_func Time.hour (Owned.function (\() -> ()))
+    let _after = Time.after Time.hour()
+    let _ticks = Time.tick Time.hour()
+    let _func = Time.after_func Time.hour() (Owned.function (\() -> ()))
     "done"
 
 leave ()
@@ -218,13 +214,13 @@ done
 | `Time.monotonic_ns` | `unit -> IO<Result<i64, Os.Error>>` | 戻らない時計のナノ秒。差だけを使う |
 | `Time.unix_ns` | `unit -> IO<Result<i64, Os.Error>>` | 1970-01-01 UTC からのナノ秒。範囲外は `Other` |
 | `Time.sleep_ms` | `i64 -> IO<Result<unit, Os.Error>>` | 少なくともそのミリ秒待つ。`0` は即 `Ok`。負は `InvalidInput`。tzroutine の中ではその tzroutine だけが待つ |
-| `Time.sleep` | `i64 -> IO<unit>` | 少なくともそのナノ秒待つ。0 以下は 1 回譲る |
-| `Time.after` | `i64 -> IO<Channel<i64>>` | そのナノ秒後に時刻を 1 つ受け取れる容量 1 のチャンネル |
-| `Time.tick` | `i64 -> IO<Channel<i64>>` | 周期ごとに時刻を送るチャンネル。ハンドルがすべてなくなれば止まる。0 以下はトラップ |
+| `Time.sleep` | `i64 -> unit` | 少なくともそのナノ秒待つ。0 以下は 1 回譲る |
+| `Time.after` | `i64 -> Channel<i64>` | そのナノ秒後に時刻を 1 つ受け取れる容量 1 のチャンネル |
+| `Time.tick` | `i64 -> Channel<i64>` | 周期ごとに時刻を送るチャンネル。ハンドルがすべてなくなれば止まる。0 以下はトラップ |
 | `Time.after_func` | `i64 -> Owned.Function<unit, unit> -> Timer` | そのナノ秒後に関数を新しい tzroutine で 1 回呼ぶ |
-| `Time.nanosecond` ～ `Time.hour` | `i64` | 長さの定数 |
+| `Time.nanosecond` ～ `Time.hour` | `unit -> i64`（`Time.hour()` と呼ぶ） | 長さ |
 
-呼び出しは `Time.sleep_ms 0` や `Time.monotonic_ns ()` のように記述し、`unit` 引数には `()` を渡します。
+呼び出しは `Time.sleep_ms 0` や `Time.monotonic_ns ()` のように記述し、`unit` 引数には `()` を渡します。長さだけは `Time.hour()` と空白なしで呼びます。
 
 ## 引数の順序
 
@@ -240,7 +236,7 @@ done
 | `time.AfterFunc(d, f)` | `Time.after_func d f` |
 | `time.NewTimer(d)` | [`Timer.create d`](./timer.md) |
 | `time.NewTicker(d)` | [`Ticker.create d`](./ticker.md) |
-| `time.Millisecond` など | `Time.millisecond` など |
+| `time.Millisecond` など | `Time.millisecond()` など |
 
 Go の `time.Time`（壁時計の時刻・書式・時差）に当たる型はありません。時刻はナノ秒の `i64` です。
 
@@ -271,8 +267,8 @@ Windows のネイティブビルドは、`monotonic_ns`・`unix_ns`・`sleep_ms`
 - 日時を扱うなら `unix_ns` です。調整で戻ることがあります。
 - `sleep_ms` の `0` は待たず、負は `InvalidInput` です。
 - 数値そのものは毎回変わるので、比較や差で確認します。
-- 時計の読み取りは `IO` の実行時だけです。
-- 長さはナノ秒の `i64` で、`Time.millisecond` などの定数と掛けて書きます。
+- `monotonic_ns`・`unix_ns`・`sleep_ms` の時計の読み取りは `IO` の実行時だけです。タイマーは呼んだ時点で働きます。
+- 長さはナノ秒の `i64` で、`Time.millisecond()` などと掛けて書きます。
 - `Time.after` を `select` に書くとタイムアウト、`Time.tick` は周期の処理です。境界はまだ発火していないタイマーを待たずに止めます。
 
 ## 関連項目

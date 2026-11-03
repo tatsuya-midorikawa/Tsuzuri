@@ -130,7 +130,11 @@ impl FunctionEmitter<'_, '_> {
             Builtin::CondSignal | Builtin::CondBroadcast => {
                 let word = self.handle_word(&parameters[0]);
                 self.declare_wait("declare void @tsuzuri_tz_cond_wake(ptr, i64)");
-                let woken = if builtin == Builtin::CondSignal { 1 } else { -1 };
+                let woken = if builtin == Builtin::CondSignal {
+                    1
+                } else {
+                    -1
+                };
                 self.instruction(format!(
                     "call void @tsuzuri_tz_cond_wake(ptr {word}, i64 {woken})"
                 ));
@@ -319,7 +323,9 @@ impl FunctionEmitter<'_, '_> {
         self.branch(&valid, &check, &tell);
         self.begin(&tell);
         self.declare_wait("declare void @tsuzuri_tz_report(i32)");
-        self.instruction(format!("call void @tsuzuri_tz_report(i32 {SEMAPHORE_WEIGHT})"));
+        self.instruction(format!(
+            "call void @tsuzuri_tz_report(i32 {SEMAPHORE_WEIGHT})"
+        ));
         self.jump(&check);
         self.begin(&check);
         self.guard(&valid, TrapKind::Assert);
@@ -371,8 +377,7 @@ impl FunctionEmitter<'_, '_> {
         let first = self.value(format!("icmp eq i32 {status}, 1"));
         self.branch(&first, &make, &ready);
         self.begin(&make);
-        let (made, _) =
-            self.apply_value("%arg1", &parameters[1], Some((&Type::Unit, "0")), true);
+        let (made, _) = self.apply_value("%arg1", &parameters[1], Some((&Type::Unit, "0")), true);
         let some = self.channel_case(&maybe, "Some", Some((&value, &made)));
         let slot = self.value(format!(
             "getelementptr inbounds {tuple_type}, ptr {cell}, i32 0, i32 1"
@@ -410,12 +415,9 @@ impl FunctionEmitter<'_, '_> {
         let run = self.label();
         self.jump(&check);
         self.begin(&check);
-        let observed = self.value(format!(
-            "load atomic i64, ptr {sequence} acquire, align 8"
-        ));
+        let observed = self.value(format!("load atomic i64, ptr {sequence} acquire, align 8"));
         let shared = Type::Reference(Box::new(value.clone()), false);
-        let (holds, _) =
-            self.apply_value("%arg2", &parameters[2], Some((&shared, &pointer)), true);
+        let (holds, _) = self.apply_value("%arg2", &parameters[2], Some((&shared, &pointer)), true);
         self.branch(&holds, &run, &wait);
         self.begin(&wait);
         self.declare_wait("declare i32 @tsuzuri_tz_cond_wait(ptr, ptr, i64)");

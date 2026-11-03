@@ -184,7 +184,10 @@ fn a_wait_inside_a_lock_waits_in_a_program_with_channels() {
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     assert!(ir.contains("call i32 @tsuzuri_tz_mutex32_lock(ptr"), "{ir}");
-    assert!(!ir.contains("tz.mutex.mark") && !ir.contains("tz.routine.unlocked"), "{ir}");
+    assert!(
+        !ir.contains("tz.mutex.mark") && !ir.contains("tz.routine.unlocked"),
+        "{ir}"
+    );
 }
 
 #[test]

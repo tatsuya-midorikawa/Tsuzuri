@@ -1717,35 +1717,45 @@ pub enum Builtin {
     ReceiveOnlyCapacity,
     ReceiveOnlyShare,
     ReceiveOnlyRelease,
-    /// `Time.__sleep_ns :: i64 -> unit` (TZ05): Go's `time.Sleep`. A tzroutine waits without its
-    /// thread; 0 or less yields. Private to `std/Time.tz`, which wraps it in an `IO`.
-    TimeSleepNs,
-    /// `Time.__after :: i64 -> Channel<i64>`: Go's `time.After`, a channel of one item that receives
+    /// `Time.sleep :: i64 -> unit` (TZ05): Go's `time.Sleep`. A tzroutine waits without its
+    /// thread; 0 or less yields. The timers are builtins of the always-loaded `Time`, whose std
+    /// source stays as it was, so that a program without them loads and emits what it did.
+    TimeSleep,
+    /// `Time.after :: i64 -> Channel<i64>`: Go's `time.After`, a channel of one item that receives
     /// the time once the nanoseconds have passed.
     TimeAfter,
-    /// `Time.__tick :: i64 -> Channel<i64>`: Go's `time.Tick`; it stops once the runtime holds the
+    /// `Time.tick :: i64 -> Channel<i64>`: Go's `time.Tick`; it stops once the runtime holds the
     /// channel's only handle. A period of 0 or less traps.
     TimeTick,
-    /// `Time.__after_func :: i64 -> Owned.Function<unit, unit> -> Timer`: Go's `time.AfterFunc`.
+    /// `Time.after_func :: i64 -> Owned.Function<unit, unit> -> Timer`: Go's `time.AfterFunc`.
     TimeAfterFunc,
+    /// `Time.nanosecond`, `microsecond`, `millisecond`, `second`, `minute` and `hour :: i64`: the
+    /// lengths in nanoseconds (Go's `time.Duration` constants).
+    TimeNanosecond,
+    TimeMicrosecond,
+    TimeMillisecond,
+    TimeSecond,
+    TimeMinute,
+    TimeHour,
     /// `Timer.__create :: i64 -> Timer`: Go's `time.NewTimer`. Private to `std/Timer.tz`.
     TimerCreate,
-    /// `Timer.channel :: ref Timer -> Channel<i64>`: a handle of the timer's channel.
+    /// `Timer.__channel :: ref Timer -> Channel<i64>`: a handle of the timer's channel, behind
+    /// `Timer.channel` (std), whose source names `Channel` so that a program naming `Timer` loads it.
     TimerChannel,
-    /// `Timer.stop :: ref Timer -> bool`: true when the timer had not fired.
+    /// `Timer.__stop :: ref Timer -> bool`: true when the timer had not fired.
     TimerStop,
-    /// `Timer.reset :: ref Timer -> i64 -> bool`: fires the nanoseconds from now; true when it had
-    /// not fired.
+    /// `Timer.__reset :: ref Timer -> i64 -> bool`: fires the nanoseconds from now; true when it
+    /// had not fired.
     TimerReset,
     /// `Timer.__free`, the body of the `Drop` instance in `std/Timer.tz`.
     TimerFree,
     /// `Ticker.__create :: i64 -> Ticker`: Go's `time.NewTicker`; a period of 0 or less traps.
     TickerCreate,
-    /// `Ticker.channel :: ref Ticker -> Channel<i64>`.
+    /// `Ticker.__channel :: ref Ticker -> Channel<i64>`, behind `Ticker.channel` (std).
     TickerChannel,
-    /// `Ticker.stop :: ref Ticker -> unit`.
+    /// `Ticker.__stop :: ref Ticker -> unit`.
     TickerStop,
-    /// `Ticker.reset :: ref Ticker -> i64 -> unit`: the new period, counted from now.
+    /// `Ticker.__reset :: ref Ticker -> i64 -> unit`: the new period, counted from now.
     TickerReset,
     /// `Ticker.__free`, the body of the `Drop` instance in `std/Ticker.tz`.
     TickerFree,
@@ -2177,10 +2187,16 @@ impl Builtin {
         Self::ReceiveOnlyCapacity,
         Self::ReceiveOnlyShare,
         Self::ReceiveOnlyRelease,
-        Self::TimeSleepNs,
+        Self::TimeSleep,
         Self::TimeAfter,
         Self::TimeTick,
         Self::TimeAfterFunc,
+        Self::TimeNanosecond,
+        Self::TimeMicrosecond,
+        Self::TimeMillisecond,
+        Self::TimeSecond,
+        Self::TimeMinute,
+        Self::TimeHour,
         Self::TimerCreate,
         Self::TimerChannel,
         Self::TimerStop,
@@ -2493,19 +2509,25 @@ impl Builtin {
             Self::ReceiveOnlyCapacity => "ReceiveOnly.capacity",
             Self::ReceiveOnlyShare => "ReceiveOnly.share",
             Self::ReceiveOnlyRelease => "ReceiveOnly.__release",
-            Self::TimeSleepNs => "Time.__sleep_ns",
-            Self::TimeAfter => "Time.__after",
-            Self::TimeTick => "Time.__tick",
-            Self::TimeAfterFunc => "Time.__after_func",
+            Self::TimeSleep => "Time.sleep",
+            Self::TimeAfter => "Time.after",
+            Self::TimeTick => "Time.tick",
+            Self::TimeAfterFunc => "Time.after_func",
+            Self::TimeNanosecond => "Time.nanosecond",
+            Self::TimeMicrosecond => "Time.microsecond",
+            Self::TimeMillisecond => "Time.millisecond",
+            Self::TimeSecond => "Time.second",
+            Self::TimeMinute => "Time.minute",
+            Self::TimeHour => "Time.hour",
             Self::TimerCreate => "Timer.__create",
-            Self::TimerChannel => "Timer.channel",
-            Self::TimerStop => "Timer.stop",
-            Self::TimerReset => "Timer.reset",
+            Self::TimerChannel => "Timer.__channel",
+            Self::TimerStop => "Timer.__stop",
+            Self::TimerReset => "Timer.__reset",
             Self::TimerFree => "Timer.__free",
             Self::TickerCreate => "Ticker.__create",
-            Self::TickerChannel => "Ticker.channel",
-            Self::TickerStop => "Ticker.stop",
-            Self::TickerReset => "Ticker.reset",
+            Self::TickerChannel => "Ticker.__channel",
+            Self::TickerStop => "Ticker.__stop",
+            Self::TickerReset => "Ticker.__reset",
             Self::TickerFree => "Ticker.__free",
             Self::WaitGroupCreate => "WaitGroup.create",
             Self::WaitGroupAdd => "WaitGroup.add",
@@ -3687,10 +3709,16 @@ impl Builtin {
             | Self::ReceiveOnlyCapacity
             | Self::ReceiveOnlyShare
             | Self::ReceiveOnlyRelease => self.channel_scheme(),
-            Self::TimeSleepNs
+            Self::TimeSleep
             | Self::TimeAfter
             | Self::TimeTick
             | Self::TimeAfterFunc
+            | Self::TimeNanosecond
+            | Self::TimeMicrosecond
+            | Self::TimeMillisecond
+            | Self::TimeSecond
+            | Self::TimeMinute
+            | Self::TimeHour
             | Self::TimerCreate
             | Self::TimerChannel
             | Self::TimerStop
@@ -3979,15 +4007,22 @@ impl Builtin {
         self.name().starts_with("Routine.")
     }
 
-    /// Whether this builtin is an operation of the timers (TZ05): `Time.*`'s private builtins and
-    /// the `Timer` and `Ticker` handles, lowered to calls of the tzroutine runtime's timers.
+    /// Whether this builtin is an operation of the timers (TZ05): `Time.sleep`, `after`, `tick`,
+    /// `after_func` and the lengths, and the `Timer` and `Ticker` handles, lowered to calls of the
+    /// tzroutine runtime's timers.
     pub(crate) fn is_timer(self) -> bool {
         matches!(
             self,
-            Self::TimeSleepNs
+            Self::TimeSleep
                 | Self::TimeAfter
                 | Self::TimeTick
                 | Self::TimeAfterFunc
+                | Self::TimeNanosecond
+                | Self::TimeMicrosecond
+                | Self::TimeMillisecond
+                | Self::TimeSecond
+                | Self::TimeMinute
+                | Self::TimeHour
                 | Self::TimerCreate
                 | Self::TimerChannel
                 | Self::TimerStop
@@ -4008,7 +4043,20 @@ impl Builtin {
     /// the default WebAssembly target, until TZ09).
     pub(crate) fn spawns(self) -> bool {
         matches!(self, Self::RoutineGo | Self::WaitGroupGo)
-            || (self.is_timer() && self != Self::TimeSleepNs)
+            || (self.is_timer() && self != Self::TimeSleep && self.length_nanoseconds().is_none())
+    }
+
+    /// The value in nanoseconds of the lengths `Time.nanosecond` .. `Time.hour` (TZ05).
+    pub(crate) fn length_nanoseconds(self) -> Option<i64> {
+        Some(match self {
+            Self::TimeNanosecond => 1,
+            Self::TimeMicrosecond => 1_000,
+            Self::TimeMillisecond => 1_000_000,
+            Self::TimeSecond => 1_000_000_000,
+            Self::TimeMinute => 60_000_000_000,
+            Self::TimeHour => 3_600_000_000_000,
+            _ => return None,
+        })
     }
 
     /// Whether this builtin is an operation of the sync types of TZ06 (`WaitGroup`, `Once`,
@@ -4050,10 +4098,9 @@ impl Builtin {
             BuiltinType::Function(vec![argument], Box::new(result))
         };
         match self {
-            Self::WaitGroupCreate
-            | Self::OnceCreate
-            | Self::OnceValueCreate
-            | Self::CondCreate => (vec![unit()], handle(), Vec::new()),
+            Self::WaitGroupCreate | Self::OnceCreate | Self::OnceValueCreate | Self::CondCreate => {
+                (vec![unit()], handle(), Vec::new())
+            }
             Self::SemaphoreCreate => (vec![int()], handle(), Vec::new()),
             Self::WaitGroupAdd | Self::SemaphoreAcquire | Self::SemaphoreRelease => {
                 (vec![borrowed(), int()], unit(), Vec::new())
@@ -4076,10 +4123,7 @@ impl Builtin {
                 (vec![borrowed()], handle(), Vec::new())
             }
             Self::WaitGroupGo => (
-                vec![
-                    borrowed(),
-                    std("Owned", "Function", vec![unit(), unit()]),
-                ],
+                vec![borrowed(), std("Owned", "Function", vec![unit(), unit()])],
                 unit(),
                 Vec::new(),
             ),
@@ -4088,7 +4132,9 @@ impl Builtin {
                 Reference(Box::new(a()), false),
                 vec![constraint("Send", a()), constraint("Sync", a())],
             ),
-            Self::OnceValueIntoInner => (vec![handle()], std("Maybe", "Maybe", vec![a()]), Vec::new()),
+            Self::OnceValueIntoInner => {
+                (vec![handle()], std("Maybe", "Maybe", vec![a()]), Vec::new())
+            }
             Self::RwMutexCreate => (vec![a()], handle(), vec![constraint("Send", a())]),
             Self::RwMutexWithRead => (
                 vec![borrowed(), callback(Reference(Box::new(a()), false), b())],
@@ -4137,7 +4183,8 @@ impl Builtin {
         };
         let nanoseconds = || Concrete(Type::I64);
         match self {
-            Self::TimeSleepNs => (vec![nanoseconds()], Concrete(Type::Unit), Vec::new()),
+            _ if self.length_nanoseconds().is_some() => (Vec::new(), nanoseconds(), Vec::new()),
+            Self::TimeSleep => (vec![nanoseconds()], Concrete(Type::Unit), Vec::new()),
             Self::TimeAfter | Self::TimeTick => (vec![nanoseconds()], channel(), Vec::new()),
             Self::TimeAfterFunc => (
                 vec![

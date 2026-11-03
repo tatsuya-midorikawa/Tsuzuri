@@ -21,20 +21,19 @@ fn rejects(source: &str, code: &str) -> String {
 }
 
 const EVERY_OPERATION: &str = "\
-let sleep: IO<unit> = Time.sleep Time.millisecond
-let after: IO<Channel<i64>> = Time.after Time.second
-let tick: IO<Channel<i64>> = Time.tick Time.minute
-let created: IO<Timer> = Timer.create Time.nanosecond
-let ticking: IO<Ticker> = Ticker.create Time.microsecond
-let timer: Timer = Time.after_func Time.hour (Owned.function (\\() -> ()))
+let slept: unit = Time.sleep Time.millisecond()
+let after: Channel<i64> = Time.after Time.second()
+let tick: Channel<i64> = Time.tick Time.minute()
+let created: Timer = Timer.create Time.nanosecond()
+let timer: Timer = Time.after_func Time.hour() (Owned.function (\\() -> ()))
 let channel: Channel<i64> = Timer.channel timer
 let stopped: bool = Timer.stop timer
 let again: bool = Timer.reset timer 5
-let! ticker = Ticker.create Time.millisecond
+let ticker: Ticker = Ticker.create Time.microsecond()
 let ticks: Channel<i64> = Ticker.channel ticker
 let halted: unit = Ticker.stop ticker
 let restarted: unit = Ticker.reset ticker 7
-Time.hour / Time.minute + Time.minute / Time.second + Time.second / Time.millisecond + Time.millisecond / Time.microsecond + Time.microsecond / Time.nanosecond
+Time.hour() / Time.minute() + Time.minute() / Time.second() + Time.second() / Time.millisecond() + Time.millisecond() / Time.microsecond() + Time.microsecond() / Time.nanosecond()
 ";
 
 #[test]
@@ -62,19 +61,17 @@ fn the_operations_have_their_types() {
     // A timer belongs to a boundary: the program waits and stops its timers at the end of main.
     assert!(llvm::spawns(&module));
     assert!(ir.contains("call void @tsuzuri_tz_boundary_leave(ptr %tz.scope)"));
-    // 60 + 60 + 1000 + 1000 + 1000
-    assert!(EVERY_OPERATION.ends_with("Time.microsecond / Time.nanosecond\n"));
 }
 
 #[test]
 fn the_constants_count_nanoseconds() {
     for (expression, value) in [
-        ("Time.nanosecond", 1i64),
-        ("Time.microsecond", 1_000),
-        ("Time.millisecond", 1_000_000),
-        ("Time.second", 1_000_000_000),
-        ("Time.minute", 60_000_000_000),
-        ("Time.hour", 3_600_000_000_000),
+        ("Time.nanosecond()", 1i64),
+        ("Time.microsecond()", 1_000),
+        ("Time.millisecond()", 1_000_000),
+        ("Time.second()", 1_000_000_000),
+        ("Time.minute()", 60_000_000_000),
+        ("Time.hour()", 3_600_000_000_000),
     ] {
         accepts(&format!(
             "let check: bool = {expression} == {value}\nassert check\n0\n"
@@ -85,9 +82,8 @@ fn the_constants_count_nanoseconds() {
 #[test]
 fn the_runtime_parts_are_private_and_opaque() {
     for source in [
-        "Time.__after 5\n",
-        "Time.__sleep_ns 5\n",
         "Timer.__create 5\n",
+        "Ticker.__create 5\n",
         "let t = Timer { handle: 0 }\n0\n",
         "let t = Ticker { handle: 0 }\n0\n",
     ] {
@@ -106,19 +102,19 @@ fn the_runtime_parts_are_private_and_opaque() {
 #[test]
 fn a_timer_is_not_captured_by_a_reusable_function() {
     let message = rejects(
-        "let timer = Time.after_func Time.hour (Owned.function (\\() -> ()))\nlet stop = \\() -> Timer.stop timer\nstop ()\n",
+        "let timer = Time.after_func Time.hour() (Owned.function (\\() -> ()))\nlet stop = \\() -> Timer.stop timer\nstop ()\n",
         "E1005",
     );
     assert!(message.contains("Timer"), "{message}");
     // A function value takes a borrow of it.
     accepts(
-        "def halt :: ref Timer -> bool\nfn halt timer = Timer.stop timer\nlet timer = Time.after_func Time.hour (Owned.function (\\() -> ()))\nhalt (ref timer)\n",
+        "def halt :: ref Timer -> bool\nfn halt timer = Timer.stop timer\nlet timer = Time.after_func Time.hour() (Owned.function (\\() -> ()))\nhalt (ref timer)\n",
     );
 }
 
 #[test]
 fn the_period_of_a_tick_must_be_positive() {
-    let module = accepts("let! ticks = Time.tick 0\nChannel.length ticks\n");
+    let module = accepts("let ticks = Time.tick 0\nChannel.length (ref ticks)\n");
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     assert!(ir.contains("icmp sgt i64 %arg0, 0"), "{ir}");
 }
@@ -126,14 +122,14 @@ fn the_period_of_a_tick_must_be_positive() {
 #[test]
 fn the_operations_that_read_the_clock_need_time() {
     for name in [
-        "Time.__sleep_ns",
-        "Time.__after",
-        "Time.__tick",
-        "Time.__after_func",
+        "Time.sleep",
+        "Time.after",
+        "Time.tick",
+        "Time.after_func",
         "Timer.__create",
         "Ticker.__create",
-        "Timer.reset",
-        "Ticker.reset",
+        "Timer.__reset",
+        "Ticker.__reset",
     ] {
         assert_eq!(
             capabilities::primitive(name, "Time"),
@@ -141,30 +137,59 @@ fn the_operations_that_read_the_clock_need_time() {
             "{name}"
         );
     }
-    for name in ["Timer.__free", "Ticker.__free"] {
+    for name in [
+        "Timer.__channel",
+        "Timer.__stop",
+        "Timer.__free",
+        "Ticker.__channel",
+        "Ticker.__stop",
+        "Ticker.__free",
+    ] {
         assert!(capabilities::PRIVATE_WITHOUT_CAPABILITY.contains(&name));
     }
 }
 
 #[test]
-fn time_is_an_opt_in_module() {
+fn the_timers_load_what_their_types_name() {
     let named = |text: &str| -> Vec<&'static str> {
         tsuzuri::stdlib::sources_for([text])
             .iter()
             .filter_map(|(path, _)| tsuzuri::stdlib::module_name(path))
             .collect()
     };
-    let without = named("0\n");
-    assert!(!without.contains(&"Time") && !without.contains(&"Channel"));
-    let with = named("Time.sleep 1\n");
-    for module in ["Time", "Timer", "Channel"] {
-        assert!(with.contains(&module), "{module}: {with:?}");
+    // Time stays always loaded; a program of its old functions or of a sleep loads nothing more.
+    for text in [
+        "0\n",
+        "Time.sleep_ms 1\n",
+        "Time.sleep 1\n",
+        "Time.after_all\n",
+    ] {
+        let loaded = named(text);
+        assert!(loaded.contains(&"Time"), "{text}");
+        assert!(
+            !loaded.contains(&"Channel") && !loaded.contains(&"Timer"),
+            "{text}: {loaded:?}"
+        );
     }
+    for (text, modules) in [
+        ("Time.after 1\n", &["Channel"][..]),
+        ("Time . tick 1\n", &["Channel"]),
+        ("Time.after_func 1 f\n", &["Timer", "Channel"]),
+        ("Ticker.create 1\n", &["Ticker", "Channel"]),
+    ] {
+        let loaded = named(text);
+        for module in modules {
+            assert!(loaded.contains(module), "{text}: {module}: {loaded:?}");
+        }
+    }
+    // The examples of the ticket, which name no Channel.
+    accepts("let deadline = Time.after Time.millisecond()\nselect\n| recv _ from deadline -> 1\n");
+    accepts("let _timer = Time.after_func Time.millisecond() (Owned.function (\\() -> ()))\n0\n");
 }
 
 #[test]
 fn a_sleep_alone_does_not_spawn() {
-    let module = accepts("do! Time.sleep Time.millisecond\n");
+    let module = accepts("Time.sleep Time.millisecond()\n");
     assert!(!llvm::spawns(&module));
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     assert!(ir.contains("call i32 @tsuzuri_tz_sleep(i64 %arg0)"), "{ir}");
