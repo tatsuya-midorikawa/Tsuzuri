@@ -1535,6 +1535,25 @@ static void tzr_spawn_reserve(tzr_scope *scope) {
     atomic_fetch_add(&tzr_sched.ngoroutines, 1);
 }
 
+/* Counts work that is not a tzroutine in `scope`, whose end waits for it (TZ07: a deadline that
+ * expires), and takes it off again, waking the waiter of the scope as the end of a G does. */
+static void tzr_scope_hold(tzr_scope *scope) {
+    tzr_lock_acquire(&scope->lock);
+    scope->live++;
+    tzr_lock_release(&scope->lock);
+}
+
+static void tzr_scope_release(tzr_scope *scope) {
+    tzr_g *waiter = NULL;
+    tzr_lock_acquire(&scope->lock);
+    if (--scope->live == 0) {
+        waiter = scope->waiter;
+        scope->waiter = NULL;
+    }
+    if (waiter) tzr_ready_unlock(waiter, &scope->lock);
+    else tzr_lock_release(&scope->lock);
+}
+
 /* Starts `code(env)` on a new G counted in `scope` (already counted when `reserved`). It does not
  * ask for the caller's G, so the timer thread spawns without becoming a pseudo-G. */
 static void tzr_spawn(tzr_scope *scope, void (*code)(void *), void *env, int reserved) {
@@ -2798,6 +2817,7 @@ static void *tzr_timerproc(void *arg) {
         void (*spawn_code)(void *) = NULL;
         void *spawn_env = NULL;
         void *expired = NULL;
+        tzr_scope *expired_scope = NULL;
         while (tzr_timers.count > 0 && tzr_timers.heap[0]->when <= now && spawn_code == NULL && expired == NULL) {
             tzr_timer *top = tzr_timers.heap[0];
             tzr_heap_remove(top);
@@ -2830,7 +2850,11 @@ static void *tzr_timerproc(void *arg) {
                 gone--;
                 break;
             case TZR_TIMER_CTX:
-                /* cancelled outside the timers' lock (D3 of TZ07), with the timer's reference */
+                /* cancelled outside the timers' lock (D3 of TZ07), with the timer's reference; until
+                 * that is over, the expiry counts in the boundary, whose end waits for it (the done
+                 * channel's block is the program's) */
+                expired_scope = top->scope;
+                if (expired_scope) tzr_scope_hold(expired_scope);
                 tzr_timer_unlist(top);
                 expired = top->ctx;
                 break;
@@ -2855,6 +2879,7 @@ static void *tzr_timerproc(void *arg) {
         }
         if (expired != NULL) {
             tzr_ctx_expire(expired);
+            if (expired_scope) tzr_scope_release(expired_scope);
             tzr_timers_gone(gone);
             continue;
         }
@@ -3277,7 +3302,9 @@ TZR_API void *tsuzuri_tz_ctx_timeout(void *parent, int64_t nanoseconds, void *bl
     return tsuzuri_tz_ctx_new(parent, deadline, block, release);
 }
 
+/* Context.cancel: a root (Context.background) is never cancelled, so the call does nothing to it. */
 TZR_API void tsuzuri_tz_ctx_cancel(void *ctx) {
+    if (((tzr_ctx *)ctx)->parent == NULL) return;
     (void)tzr_current(); /* a host thread counts as running while it wakes (the detector) */
     tzr_ctx_cancel(ctx, 1);
 }

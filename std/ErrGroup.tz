@@ -109,10 +109,13 @@ fn try_go group f =
 ///     | (_now, most) -> most <= 2)
 /// ```
 def set_limit :: ref ErrGroup<'e> -> own i64 -> unit
-fn set_limit group limit = Mutex.with_lock (Arc.get (ref group.slots)) (\slots -> {
-    assert (running (deref slots) == 0);
-    deref slots = (0, limit)
-})
+fn set_limit group limit =
+    Mutex.with_lock (Arc.get (ref group.slots)) (\slots -> {
+        assert (running (deref slots) == 0);
+        deref slots = (0, limit)
+    })
+    // A go that waits for room (a limit of 0 before) looks again.
+    Cond.broadcast (ref group.room)
 
 /// Waits until every function of the group has returned, cancels the group's context, and returns
 /// the first error, or `Ok` (Go's `g.Wait()`). A second wait returns `Ok` unless another function

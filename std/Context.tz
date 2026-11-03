@@ -67,7 +67,7 @@ def with_deadline :: ref Context -> own i64 -> Context
 fn with_deadline parent time = Context.__with_deadline parent time
 
 /// Cancels the context and its descendants with `Canceled` (Go's `cancel()`). A context that has
-/// ended already keeps its reason.
+/// ended already keeps its reason, and the root of `Context.background` is never cancelled.
 ///
 /// ```tsuzuri run=Canceled
 /// let root = Context.background ()

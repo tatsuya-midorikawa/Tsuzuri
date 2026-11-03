@@ -1611,6 +1611,8 @@ static void test_context_tree(void) {
     CHECK(tsuzuri_tz_ctx_err(a) == 1 && tsuzuri_tz_ctx_err(b) == 1 && tsuzuri_tz_ctx_err(c) == 1);
     CHECK(ctx_closed(a) && ctx_closed(b) && ctx_closed(c));
     CHECK(tsuzuri_tz_ctx_err(root) == 0 && tsuzuri_tz_ctx_err(other) == 0 && !ctx_closed(other));
+    tsuzuri_tz_ctx_cancel(root); /* a root is never cancelled */
+    CHECK(tsuzuri_tz_ctx_err(root) == 0 && !ctx_closed(root) && tsuzuri_tz_ctx_err(other) == 0);
     tsuzuri_tz_ctx_cancel(c);
     CHECK(tsuzuri_tz_ctx_err(c) == 1);
     void *late = ctx_new(b, INT64_MAX);
@@ -1706,6 +1708,23 @@ static void test_context_deadline_race(void) {
     CHECK(pending_timers() == 0);
     while (atomic_load(&ctx_blocks) != 0) CHECK(tsuzuri_tz_sleep(1000000) == 0);
     printf("context deadline race: ok\n");
+}
+
+/* A deadline that expires as its boundary ends counts in the boundary until its cancel and its
+ * reference are over: right after the end of the boundary, only the root's block is left. */
+static void test_context_expire_boundary(void) {
+    void *root = ctx_new(NULL, INT64_MAX);
+    for (int round = 0; round < 2000; round++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        void *child = tsuzuri_tz_ctx_timeout(root, (int64_t)(round % 4) * 50000, ctx_block(), ctx_block_free);
+        if (round % 2) CHECK(tsuzuri_tz_sleep((int64_t)(round % 3) * 50000) == 0);
+        tsuzuri_tz_ctx_release(child);
+        tsuzuri_tz_boundary_leave(scope);
+        CHECK(atomic_load(&ctx_blocks) == 1);
+    }
+    tsuzuri_tz_ctx_release(root);
+    CHECK(atomic_load(&ctx_blocks) == 0 && pending_timers() == 0);
+    printf("context expire boundary: ok\n");
 }
 
 /* Context.after_func: the function runs on a new tzroutine once the context is cancelled (at once
@@ -1896,6 +1915,7 @@ int main(int argc, char **argv) {
     RUN("context_release", test_context_release());
     RUN("context_deadline_race", test_context_deadline_race());
     RUN("context_after", test_context_after());
+    RUN("context_expire_boundary", test_context_expire_boundary());
     RUN("parallel", test_parallel());
     RUN("scope_run", test_scope_run());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */

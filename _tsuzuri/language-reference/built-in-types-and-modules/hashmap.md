@@ -13,7 +13,7 @@
 - キー型には `Hash` と `Eq` 型クラスの実装が必要です（`deriving (Eq, Hash)` で自動導出可能）。`Ord` は不要です。
 - 反射性（`k == k`）が検証されるため、NaN など比較不能なキーは安全にトラップします。
 - 走査順は挿入順ですが、`remove` は末尾の要素を削除位置へ移します（swap-remove）。削除すると、そのあとの順序は挿入順ではなくなります。
-- 借用版 API（`contains_key_ref`, `get_ref`, `at_ref`, `remove_ref`）により、検索キーを消費せずに借用したまま操作できます。
+- 借用版 API（`contains_key_ref`, `get_ref`, `at_ref`, `try_at_ref`, `remove_ref`）により、検索キーを消費せずに借用したまま操作できます。
 - HashDoS 攻撃対策として、SipHash-1-3 で暗号論的にハッシュを混合する `with_seed` や、OS 乱数からシードを取得する `randomized ()` が提供されています。
 
 ## 基本の書き方と生成
@@ -121,6 +121,7 @@ keys=[10, 40, 30]
 | `contains_key key (ref m)` | `contains_key_ref (ref key) (ref m)` | キーの存在判定 |
 | `get key (ref m)` | `get_ref (ref key) (ref m)` | `Maybe<V>` を返す（`Copy<V>` が必要） |
 | `at key (ref m)` | `at_ref (ref key) (ref m)` | 共有参照 `ref V` を返す（存在しないとトラップ） |
+| — | `try_at_ref (ref key) (ref m)` | `Maybe<ref V>` を返す（存在しなければ `None`。`contains_key_ref` と `at_ref` の 2 回の検索が 1 回になる） |
 | `remove key m` | `remove_ref (ref key) m` | エントリの削除 |
 
 所有文字列など非 Copy なキーを検索する際、値渡し版を使うとキーの所有権が消費されてしまいます。検索後もキーを手元に残したい場合は **`*_ref` 版** を使用します。
@@ -211,6 +212,7 @@ seed を付けても走査順は変わりません。同じ操作列なら、see
 | `get_ref` | `(Hash<'key>, Eq<'key>, Copy<'value>) => ref 'key -> ref HashMap<'key, 'value> -> Maybe<'value>` | 値を `Some` で取得（借用） |
 | `at` | `(Hash<'key>, Eq<'key>) => 'key -> ref HashMap<'key, 'value> -> ref 'value` | 値への参照を取得（存在しないとトラップ） |
 | `at_ref` | `{r s} :: (Hash<'key>, Eq<'key>) => ref {s} 'key -> ref {r} HashMap<'key, 'value> -> ref {r} 'value` | キー借用で値への参照を取得 |
+| `try_at_ref` | `(Hash<'key>, Eq<'key>) => ref 'key -> ref HashMap<'key, 'value> -> Maybe<ref 'value>` | キー借用で値への参照を取得（なければ `None`） |
 
 ### 更新・削除
 
@@ -251,6 +253,7 @@ seed を付けても走査順は変わりません。同じ操作列なら、see
 | `HashMap.get_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get` |
 | `HashMap.get` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get_ref` |
 | `HashMap.at_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at` |
+| `HashMap.try_at_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at_ref` |
 | `HashMap.at` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at_ref` |
 | `HashMap.insert` | 償却 $O(1)$、最悪 $O(n \cdot n)$ | - |
 | `HashMap.remove_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove` |

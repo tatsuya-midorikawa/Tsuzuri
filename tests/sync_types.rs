@@ -1,7 +1,10 @@
 //! The sync types of TZ06 (`WaitGroup`, `Once`, `OnceValue`, `RwMutex`, `Cond`, `Semaphore`,
 //! `SyncMap`) and the runtime's `Mutex`: types, privacy, captures, the borrows of the results and the
 //! generated code. The schedules are in `node tests/features.mjs <bin> sync_types` and `sync_single`.
-use tsuzuri::{analyze, llvm};
+use tsuzuri::{
+    analyze, llvm,
+    trap::{TrapKind, TrapSource},
+};
 
 fn accepts(source: &str) -> tsuzuri::check::CheckedModule {
     let module = analyze(source).unwrap_or_else(|e| panic!("{source}\n{}: {}", e.code, e.message));
@@ -276,4 +279,42 @@ fn the_types_load_their_modules() {
         assert!(named(&format!("{module}.create ()\n")).contains(&module));
     }
     assert!(named("SyncMap.create ()\n").contains(&"RwMutex"));
+}
+
+#[test]
+fn a_negative_count_after_go_is_an_assertion_at_the_call() {
+    // The child takes its one off after the call has returned: with trap information, its trap
+    // names the call of WaitGroup.go, as an assertion.
+    let source = "let group = WaitGroup.create ()\nWaitGroup.go (ref group) (Owned.function (\\() -> ()))\nWaitGroup.wait (ref group)\n0\n";
+    let module = accepts(source);
+    let sources = [TrapSource {
+        path: "Main.tz",
+        text: source,
+    }];
+    let options = llvm::EmitOptions {
+        entry: llvm::Entry::Console,
+        wasm: false,
+        wasm_simd128: false,
+        debug_output: false,
+        runtime_objects: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    let output = llvm::emit_with_trap_info(&module, options, &sources).unwrap();
+    assert!(
+        output
+            .ir
+            .contains("call void @tsuzuri_tz_go(ptr @tz.waitgroup.go.0, ptr"),
+        "{}",
+        output.ir
+    );
+    let call = source.find("WaitGroup.go").unwrap();
+    assert!(
+        output
+            .trap_sites
+            .iter()
+            .any(|site| site.kind == TrapKind::Assert && site.span.start == call),
+        "{:?}",
+        output.trap_sites
+    );
 }

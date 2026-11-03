@@ -36,7 +36,9 @@ fn load map key = RwMutex.with_read (ref map.inner) (\table -> HashMap.get_ref k
 /// ```
 def with_value :: (Hash<'k>, Eq<'k>, Send<'b>) => ref SyncMap<'k, 'v> -> ref 'k -> own (ref 'v -> 'b) -> Maybe<'b>
 fn with_value map key reader = RwMutex.with_read (ref map.inner) (\table ->
-    if HashMap.contains_key_ref key table then Maybe.Some (reader (HashMap.at_ref key table)) else Maybe.None)
+    match HashMap.try_at_ref key table with
+    | Maybe.Some value -> Maybe.Some (reader value)
+    | Maybe.None -> Maybe.None)
 
 /// Sets the value of the key (Go's `m.Store(key, value)`).
 ///

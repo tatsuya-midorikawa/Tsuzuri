@@ -4198,6 +4198,7 @@ let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 | `HashMap.get_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get` |
 | `HashMap.get` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.get_ref` |
 | `HashMap.at_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at` |
+| `HashMap.try_at_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at_ref` |
 | `HashMap.at` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.at_ref` |
 | `HashMap.insert` | 償却 $O(1)$、最悪 $O(n \cdot n)$ | - |
 | `HashMap.remove_ref` | 平均 $O(1)$、最悪 $O(n)$ | `HashMap.remove` |
