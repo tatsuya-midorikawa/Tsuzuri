@@ -136,7 +136,7 @@ fn after_func_stopped =
     let witness = Witness { counter: Arc.share (ref drops) }
     let calls = Arc.new (Atomic.create 0i64)
     let mine = Arc.share (ref calls)
-    let timer = Time.after_func Time.millisecond() (Owned.function (\() -> {
+    let timer = Time.after_func Time.hour() (Owned.function (\() -> {
         let _keep = Atomic.load (Arc.get (ref witness.counter));
         let _call = Atomic.fetch_add (Arc.get (ref mine)) 1i64;
         ()
