@@ -664,7 +664,10 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ContextWithTimeout | ContextWithDeadline => {
             facts(Some(Effect::Os), true, false, false, false, false, None)
         }
-        ContextCancel | ContextErr | ContextDeadline | ContextRelease | ContextStopAfter => facts(
+        // A cancel walks the tree with a stack (and lists of deadlines and functions) that it
+        // allocates.
+        ContextCancel => facts(Some(Effect::Atomic), true, false, false, false, false, None),
+        ContextErr | ContextDeadline | ContextRelease | ContextStopAfter => facts(
             Some(Effect::Atomic),
             false,
             false,
@@ -3616,7 +3619,7 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 79);
+        assert_eq!(count(|facts| facts.alloc), 80);
     }
 
     #[test]
