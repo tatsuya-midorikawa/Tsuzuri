@@ -2104,21 +2104,24 @@ TZR_API void tsuzuri_tz_mutex32_unlock(_Atomic uint32_t *word) {
     if (atomic_exchange_explicit(word, 0, memory_order_release) == 2) tzr_addr_wake(word, 1);
 }
 
-/* RwMutex (TZ06): the low 62 bits of the word count the readers, bit 62 says that a writer waits and
- * bit 63 that a writer holds it. A writer that waits keeps new readers out, so readers cannot starve
- * it (Go's policy). Every change that can let a waiter in wakes them all: the last reader when a
- * writer waits, and the writer's release; a woken waiter looks again. 1 means the G holds this lock
- * already in some mode (reported 6), 2 a deadlock. */
+/* RwMutex (TZ06): the low 32 bits of the word count the readers, bits 32 to 62 the writers that wait
+ * and bit 63 says that a writer holds it. While a writer waits, new readers stay out, so readers
+ * cannot starve the writers (Go's policy): a waiting writer counts itself once and takes itself off
+ * the count when it takes the lock, and a release keeps the count. Every change that can let a
+ * waiter in wakes them all: the last reader when writers wait, and the writer's release; a woken
+ * waiter looks again. 1 means the G holds this lock already in some mode (reported 6), 2 a
+ * deadlock. */
 #define TZR_RW_WRITER (UINT64_C(1) << 63)
-#define TZR_RW_WAITING (UINT64_C(1) << 62)
-#define TZR_RW_READERS (TZR_RW_WAITING - 1)
+#define TZR_RW_WAITER (UINT64_C(1) << 32)
+#define TZR_RW_WAITERS (TZR_RW_WRITER - TZR_RW_WAITER)
+#define TZR_RW_READERS (TZR_RW_WAITER - 1)
 
 TZR_API int32_t tsuzuri_tz_rw_read_lock(_Atomic uint64_t *word) {
     tzr_g *g = tzr_current();
     if (tzr_held_has(g, word)) return 1;
     for (;;) {
         uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
-        if ((s & (TZR_RW_WRITER | TZR_RW_WAITING)) == 0) {
+        if ((s & (TZR_RW_WRITER | TZR_RW_WAITERS)) == 0) {
             if (atomic_compare_exchange_weak_explicit(word, &s, s + 1, memory_order_acquire, memory_order_relaxed)) break;
             continue;
         }
@@ -2131,25 +2134,30 @@ TZR_API int32_t tsuzuri_tz_rw_read_lock(_Atomic uint64_t *word) {
 TZR_API void tsuzuri_tz_rw_read_unlock(_Atomic uint64_t *word) {
     tzr_held_pop(tzr_current(), word);
     uint64_t s = atomic_fetch_sub_explicit(word, 1, memory_order_release) - 1;
-    if ((s & TZR_RW_READERS) == 0 && (s & TZR_RW_WAITING)) tzr_addr_wake(word, -1);
+    if ((s & TZR_RW_READERS) == 0 && (s & TZR_RW_WAITERS)) tzr_addr_wake(word, -1);
 }
 
 TZR_API int32_t tsuzuri_tz_rw_write_lock(_Atomic uint64_t *word) {
     tzr_g *g = tzr_current();
     if (tzr_held_has(g, word)) return 1;
+    int counted = 0;
     for (;;) {
         uint64_t s = atomic_load_explicit(word, memory_order_relaxed);
         if ((s & (TZR_RW_WRITER | TZR_RW_READERS)) == 0) {
-            if (atomic_compare_exchange_weak_explicit(word, &s, (s & ~TZR_RW_WAITING) | TZR_RW_WRITER,
-                                                      memory_order_acquire, memory_order_relaxed)) break;
+            uint64_t taken = (s | TZR_RW_WRITER) - (counted ? TZR_RW_WAITER : 0);
+            if (atomic_compare_exchange_weak_explicit(word, &s, taken, memory_order_acquire, memory_order_relaxed)) break;
             continue;
         }
-        if ((s & TZR_RW_WAITING) == 0) {
-            if (!atomic_compare_exchange_weak_explicit(word, &s, s | TZR_RW_WAITING, memory_order_relaxed,
+        if (!counted) {
+            if (!atomic_compare_exchange_weak_explicit(word, &s, s + TZR_RW_WAITER, memory_order_relaxed,
                                                        memory_order_relaxed)) continue;
-            s |= TZR_RW_WAITING;
+            s += TZR_RW_WAITER;
+            counted = 1;
         }
-        if (tzr_addr_wait(word, s, 1, "RwMutex.with_write")) return 2;
+        if (tzr_addr_wait(word, s, 1, "RwMutex.with_write")) {
+            atomic_fetch_sub_explicit(word, TZR_RW_WAITER, memory_order_relaxed);
+            return 2;
+        }
     }
     tzr_held_push(g, word, TZR_HELD_WRITE);
     return 0;
@@ -2157,7 +2165,7 @@ TZR_API int32_t tsuzuri_tz_rw_write_lock(_Atomic uint64_t *word) {
 
 TZR_API void tsuzuri_tz_rw_write_unlock(_Atomic uint64_t *word) {
     tzr_held_pop(tzr_current(), word);
-    atomic_store_explicit(word, 0, memory_order_release);
+    atomic_fetch_and_explicit(word, ~TZR_RW_WRITER, memory_order_release);
     tzr_addr_wake(word, -1);
 }
 

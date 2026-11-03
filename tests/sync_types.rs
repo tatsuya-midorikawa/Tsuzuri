@@ -186,6 +186,45 @@ fn a_once_value_lends_for_as_long_as_its_cell() {
 }
 
 #[test]
+fn a_once_value_keeps_no_borrow_in_its_cell() {
+    // The cell outlives the data that an initializer's function may borrow.
+    let message = rejects(
+        "let cell: OnceValue<i64 -> i64> = OnceValue.create ()\nlet first = {\n    let data = [1i64, 2i64];\n    let view = ref data;\n    let f = OnceValue.get (ref cell) (\\() -> \\x -> x + view[0]);\n    (deref f) 1\n}\nlet g = OnceValue.get (ref cell) (\\() -> \\x -> x)\nfirst + (deref g) 5\n",
+        "E1013",
+    );
+    assert!(
+        message.contains(
+            "OnceValue.get initializers must return values proven free of borrowed environments"
+        ),
+        "{message}"
+    );
+    // A function made inside from values of its own is kept.
+    accepts(
+        "let cell: OnceValue<i64 -> i64> = OnceValue.create ()\nlet f = OnceValue.get (ref cell) (\\_unit -> {\n    let step = 3i64;\n    \\x -> x + step\n})\n(deref f) 1\n",
+    );
+    // A partial application cannot be checked where the value is made.
+    let message = rejects(
+        "let cell: OnceValue<i64 -> i64> = OnceValue.create ()\nlet getter = OnceValue.get (ref cell)\n0\n",
+        "E1013",
+    );
+    assert!(
+        message.contains("OnceValue.get must be fully applied directly"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_length_alone_uses_no_scheduler() {
+    // `Time.second()` is a constant: the Mutex stays the task runtime's lock, and --trap-mode
+    // return stays allowed.
+    let text = ir(
+        "let lock = Mutex.create 0i64\nlet wait = Time.second()\nMutex.with_lock (ref lock) (\\value -> deref value + wait)\n",
+    );
+    assert!(text.contains("call i32 @tsuzuri_mutex_lock(ptr"), "{text}");
+    assert!(!text.contains("tsuzuri_tz_"), "{text}");
+}
+
+#[test]
 fn the_types_load_their_modules() {
     let named = |text: &str| -> Vec<&'static str> {
         tsuzuri::stdlib::sources_for([text])

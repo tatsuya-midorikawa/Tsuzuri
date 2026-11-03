@@ -20,7 +20,7 @@ const source = "tests/tzroutine_runtime.c";
 const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", "waitgroup", "sleep",
   "external", "deep", "fp", "stack_size", "failures", "fp_mode", "wake_many", "count_after_join", "detector",
   "starvation", "select_same", "boundary", "report", "blocking", "donor", "batches", "timer_channel", "timer_stop",
-  "ticker", "ticker_drop", "after_func", "boundary_timers", "sleep_ms_hook", "mutex32", "rwmutex", "once", "cond",
+  "ticker", "ticker_drop", "after_func", "boundary_timers", "sleep_ms_hook", "mutex32", "rwmutex", "rw_writers_first", "once", "cond",
   "semaphore", "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows

@@ -1390,6 +1390,40 @@ static void test_rwmutex(void) {
     printf("rwmutex: ok (%lld shared reads)\n", (long long)atomic_load(&rw_shared));
 }
 
+/* Writer preference with two writers queued: a reader that comes while they wait goes after both,
+ * also after the first one has taken the lock and let it go. */
+static _Atomic uint64_t pref_word;
+static int pref_order[3];
+static _Atomic int pref_count;
+static void pref_writer(void *env) {
+    CHECK(tsuzuri_tz_rw_write_lock(&pref_word) == 0);
+    pref_order[atomic_fetch_add(&pref_count, 1)] = (int)(intptr_t)env;
+    tsuzuri_tz_rw_write_unlock(&pref_word);
+}
+static void pref_reader(void *env) {
+    (void)env;
+    CHECK(tsuzuri_tz_rw_read_lock(&pref_word) == 0);
+    pref_order[atomic_fetch_add(&pref_count, 1)] = 0;
+    tsuzuri_tz_rw_read_unlock(&pref_word);
+}
+static void test_rw_writers_first(void) {
+    for (int round = 0; round < 20; round++) {
+        atomic_store(&pref_count, 0);
+        CHECK(tsuzuri_tz_rw_read_lock(&pref_word) == 0);
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(pref_writer, (void *)(intptr_t)1);
+        tsuzuri_tz_go(pref_writer, (void *)(intptr_t)2);
+        while ((atomic_load(&pref_word) & TZR_RW_WAITERS) != 2 * TZR_RW_WAITER) CHECK(tsuzuri_tz_sleep(100000) == 0);
+        tsuzuri_tz_go(pref_reader, NULL);
+        CHECK(tsuzuri_tz_sleep(1000000) == 0);
+        tsuzuri_tz_rw_read_unlock(&pref_word);
+        join(scope);
+        CHECK(atomic_load(&pref_count) == 3 && pref_order[2] == 0);
+        CHECK(atomic_load(&pref_word) == 0);
+    }
+    printf("rw writers first: ok\n");
+}
+
 /* Once: 16 callers at once, the function runs once and everyone returns after it */
 static _Atomic uint64_t once_word;
 static _Atomic int64_t once_runs, once_after;
@@ -1531,6 +1565,7 @@ int main(int argc, char **argv) {
     RUN("sleep_ms_hook", test_sleep_ms_hook());
     RUN("mutex32", test_mutex32());
     RUN("rwmutex", test_rwmutex());
+    RUN("rw_writers_first", test_rw_writers_first());
     RUN("once", test_once());
     RUN("cond", test_cond());
     RUN("semaphore", test_semaphore());
