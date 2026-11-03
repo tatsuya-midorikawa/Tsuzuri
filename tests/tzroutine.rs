@@ -432,12 +432,10 @@ fn rejects_unsupported_targets() {
 }
 
 #[test]
-fn routine_yield_is_a_trap_of_the_effect_rules() {
-    // In a program that spawns, a yield inside `Mutex.with_lock` traps, so `@no_trap` refuses it.
-    let error = analyze("@no_trap\ndef pause :: unit -> unit = \\() -> Routine.yield ()\n\n0\n")
-        .expect_err("a yield can trap");
-    assert_eq!(error.code, "E1031", "{}", error.message);
-    assert!(error.message.contains("Routine.yield"), "{}", error.message);
+fn routine_yield_is_not_a_trap_of_the_effect_rules() {
+    // TZ06: a yield inside `Mutex.with_lock` is allowed (the lock is the G's), so `@no_trap`
+    // accepts one.
+    accepts("@no_trap\ndef pause :: unit -> unit = \\() -> Routine.yield ()\n\n0\n");
 }
 
 #[test]
@@ -445,7 +443,7 @@ fn the_lock_list_of_the_g_replaces_the_thread_mark() {
     // TZ06: the runtime keeps the locks that a G holds, so no thread-local mark is read across a
     // yield (R2); a failure domain releases the locks that a trap left with the depth it saved.
     let module = accepts(
-        "def work :: unit -> i64\nfn work _ =\n    let lock = Mutex.create 0i64\n    Mutex.with_lock (ref lock) (\\value -> deref value)\nlet failed = match Domain.run work with\n    | Result.Ok n -> n\n    | Result.Error _ -> 1\ntzroutine { () }\nRoutine.yield ()\nfailed\n",
+        "def work :: i64 -> i64\nfn work n = n + 1\nlet lock = Mutex.create 0i64\nlet held = Mutex.with_lock (ref lock) (\\value -> deref value)\nlet failed = match Domain.run (\\() -> work held) with\n    | Result.Ok n -> n\n    | Result.Error _ -> 1\ntzroutine { () }\nRoutine.yield ()\nfailed\n",
     );
     let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
     assert!(!ir.contains("tz.mutex.locked"), "{ir}");
