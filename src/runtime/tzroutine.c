@@ -2353,12 +2353,24 @@ static void tzr_timer_offer(tzr_chan *c, int64_t now) {
 }
 
 /* Empties a timer's channel: after a stop or a reset, no time sent before is received (Go 1.23).
- * The item is an i64, which needs no drop. */
+ * The item is an i64, which needs no drop. The channel is a program's Channel<i64>, which it may
+ * send on too: a sender that waits for room (the buffer of one was full) puts its item in the freed
+ * slot and goes on, as a receive would let it, so that no sender waits on a buffer with room. */
 static void tzr_timer_discard(tzr_chan *c) {
     tzr_lock_acquire(&c->lock);
     c->count = 0;
     c->sendx = c->recvx = 0;
-    tzr_lock_release(&c->lock);
+    tzr_sudog *s = tzr_dequeue(&c->sendq);
+    if (s == NULL) {
+        tzr_lock_release(&c->lock);
+        return;
+    }
+    memcpy(TZR_CHAN_BUF(c, 0), s->elem, c->elem_size);
+    c->sendx = 1 % c->capacity;
+    c->count = 1;
+    s->success = 1;
+    s->g->param = s;
+    tzr_ready_unlock(s->g, &c->lock);
 }
 
 /* Drops the timer's reference to its channel; the last one frees the block. */

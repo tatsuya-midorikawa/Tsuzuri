@@ -1,7 +1,7 @@
 //! The timers of `Time`, `Timer` and `Ticker` (TZ05): types, privacy, captures, capabilities and the
 //! generated code. The schedules are in `node tests/features.mjs <bin> timers`, the programs in
 //! `node tests/tzroutine.mjs` and the runtime in `node tests/tzroutine_runtime.mjs`.
-use tsuzuri::{analyze, capabilities, llvm};
+use tsuzuri::{analyze, capabilities, llvm, trap::TrapSource};
 
 fn accepts(source: &str) -> tsuzuri::check::CheckedModule {
     let module = analyze(source).unwrap_or_else(|e| panic!("{source}\n{}: {}", e.code, e.message));
@@ -188,6 +188,19 @@ fn the_timers_load_what_their_types_name() {
     // A member named inside a string literal loads nothing.
     let loaded = named("\"Time.after\" 1\n");
     assert!(!loaded.contains(&"Channel"), "{loaded:?}");
+    // A character literal is not a string, and the hole of an interpolated string is code.
+    for (text, module) in [
+        ("let quote = '\"'\nTime.after 1\n", "Channel"),
+        ("$\"{Time.after 1}\"\n", "Channel"),
+        (
+            "$\"a {{b}} {Channel.length (ref (Time.tick 1))} c\"\n",
+            "Channel",
+        ),
+        ("$\"{\"x\"}{Time.after_func 1 f}\"\n", "Timer"),
+    ] {
+        let loaded = named(text);
+        assert!(loaded.contains(&module), "{text}: {loaded:?}");
+    }
     // The examples of the ticket, which name no Channel.
     accepts("let deadline = Time.after Time.millisecond()\nselect\n| recv _ from deadline -> 1\n");
     accepts("let _timer = Time.after_func Time.millisecond() (Owned.function (\\() -> ()))\n0\n");
@@ -231,4 +244,52 @@ fn a_sleep_ms_in_a_waiting_program_checks_the_lock() {
         .expect("the check of the lock");
     assert!(check < sleep, "{ir}");
     assert!(ir.contains("icmp sgt i64 %arg0, 0"), "{ir}");
+}
+
+#[test]
+fn trap_info_keeps_the_signature_of_the_free_that_the_runtime_calls() {
+    // The runtime frees a timer's channel with the `@tz.free` that the program hands it, as
+    // `void (*)(void *)`: the trap instrumentation must not give it a context parameter.
+    let source = "let fired = Time.after Time.millisecond()\nmatch Channel.recv fired with\n| Maybe.Some _ -> 1\n| Maybe.None -> 0\n";
+    let module = accepts(source);
+    let sources = [TrapSource {
+        path: "Main.tz",
+        text: source,
+    }];
+    let options = llvm::EmitOptions {
+        entry: llvm::Entry::Console,
+        wasm: false,
+        wasm_simd128: false,
+        debug_output: false,
+        runtime_objects: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    let output = llvm::emit_with_trap_info(&module, options, &sources).unwrap();
+    assert!(output.ir.contains("ptr @tz.free, i64"), "{}", output.ir);
+    let definition = output
+        .ir
+        .lines()
+        .find(|line| line.starts_with("define internal void @tz.free("))
+        .expect("the definition of @tz.free");
+    assert!(!definition.contains("%tz.context"), "{definition}");
+    assert!(
+        !output.ir.contains("call void @tz.free(ptr %box, i32"),
+        "{}",
+        output.ir
+    );
+    // A program without timers keeps its instrumented `@tz.free`.
+    let plain = "let values = [1, 2, 3]\nArray.sum values\n";
+    let module = accepts(plain);
+    let sources = [TrapSource {
+        path: "Main.tz",
+        text: plain,
+    }];
+    let output = llvm::emit_with_trap_info(&module, options, &sources).unwrap();
+    let definition = output
+        .ir
+        .lines()
+        .find(|line| line.starts_with("define internal void @tz.free("))
+        .expect("the definition of @tz.free");
+    assert!(definition.contains("%tz.context"), "{definition}");
 }

@@ -1041,7 +1041,15 @@ static void timer_block_free(void *block) {
 static void timer_chan_drop(tzr_chan *c) {
     if (tsuzuri_tz_chan_release(c)) timer_block_free(c);
 }
-static int64_t pending_timers(void) { return atomic_load(&tzr_sched.ntimers); }
+/* The timers in the heap. Not tzr_sched.ntimers: the timer thread lowers it after it has started a
+ * fired after_func's tzroutine (so that the detector never sees neither), which may have run and
+ * ended by then. */
+static int64_t pending_timers(void) {
+    tzr_lock_acquire(&tzr_timers.lock);
+    int64_t count = (int64_t)tzr_timers.count;
+    tzr_lock_release(&tzr_timers.lock);
+    return count;
+}
 static void *timer_after(int64_t ns, tzr_chan *block) {
     return tsuzuri_tz_timer_new(block, timer_block_free, ns, 0, TZR_TIMER_SEND, 0, NULL, NULL, NULL);
 }
@@ -1116,6 +1124,40 @@ static void test_timer_stop(void) {
     timer_chan_drop(c);
     CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
     printf("timer stop: ok\n");
+}
+
+/* A program may send on a timer's channel too: a stop or a reset that empties the full buffer lets a
+ * sender that waits for room put its item in, as a receive would, and the next receive takes it. */
+static void timer_chan_sender(void *env) {
+    int64_t v = 42;
+    CHECK(tsuzuri_tz_chan_send(env, &v, 1) == TZR_OK);
+}
+static int sender_queued(tzr_chan *c) {
+    tzr_lock_acquire(&c->lock);
+    int queued = c->sendq.first != NULL;
+    tzr_lock_release(&c->lock);
+    return queued;
+}
+static void test_timer_senders(void) {
+    for (int reset = 0; reset < 2; reset++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        void *t = timer_handle(TZR_TIMER_SEND, INT64_MAX);
+        tzr_chan *c = tsuzuri_tz_timer_chan(t);
+        int64_t v = 7;
+        CHECK(tsuzuri_tz_chan_send(c, &v, 0) == TZR_OK); /* the buffer of one is full */
+        tsuzuri_tz_go(timer_chan_sender, c);
+        while (!sender_queued(c)) CHECK(tsuzuri_tz_sleep(100000) == 0);
+        if (reset) CHECK(tsuzuri_tz_timer_reset(t, INT64_MAX) == 1);
+        else CHECK(tsuzuri_tz_timer_stop(t) == 1);
+        CHECK(!sender_queued(c) && tsuzuri_tz_chan_length(c) == 1);
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_OK && v == 42);
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_WOULD_BLOCK);
+        tsuzuri_tz_timer_free(t);
+        tsuzuri_tz_boundary_leave(scope);
+        timer_chan_drop(c);
+    }
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    printf("timer senders: ok\n");
 }
 
 /* Ticker: five times in order; a tick that the receiver has not taken the last one of is dropped;
@@ -1358,6 +1400,7 @@ int main(int argc, char **argv) {
     RUN("batches", test_batches());
     RUN("timer_channel", test_timer_channel());
     RUN("timer_stop", test_timer_stop());
+    RUN("timer_senders", test_timer_senders());
     RUN("ticker", test_ticker());
     RUN("ticker_drop", test_ticker_drop());
     RUN("after_func", test_after_func());

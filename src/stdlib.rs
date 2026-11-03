@@ -1,5 +1,7 @@
 //! Standard library sources embedded in the compiler (GUIDE D-07).
 
+use crate::syntax::TokenKind;
+
 /// Embedded std sources as `(virtual path, text)` in load order. Programs
 /// always see them after the user sources.
 pub const SOURCES: &[(&str, &str)] = &[
@@ -379,66 +381,31 @@ const MEMBER_TRIGGERS: &[(&str, &str, &str)] = &[
 ];
 
 /// The opt-in modules of `MEMBER_TRIGGERS` that `text` refers to: a word of the table, a dot and the
-/// member, with whitespace, newlines and comments (`//`, nested `/* */`) between them. A string
-/// literal is skipped. Like the scan of the words, it may find more than the program refers to,
-/// which only loads a module more.
+/// member, as the lexer reads them. So they may stand apart (spaces, newlines and comments between
+/// them), they count in the holes of an interpolated string, and they never count in a string or a
+/// character literal. The lexer recovers from an error, so a text that does not lex still finds them.
 fn member_triggers(text: &str, triggered: &mut Vec<&'static str>) {
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    // The last word, and whether a dot has followed it.
-    let mut qualifier: Option<(&str, bool)> = None;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if byte.is_ascii_alphanumeric() || byte == b'_' {
-            let start = index;
-            while index < bytes.len()
-                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
-            {
-                index += 1;
+    // Most programs name no member of the table, and need no tokens.
+    if !MEMBER_TRIGGERS
+        .iter()
+        .any(|(_, member, _)| text.contains(member))
+    {
+        return;
+    }
+    let (tokens, _) = crate::lexer::lex_all(text, crate::syntax::Edition::LATEST);
+    for window in tokens.windows(3) {
+        let [owner, dot, member] = window else {
+            continue;
+        };
+        let (TokenKind::Ident(owner), TokenKind::Dot, TokenKind::Ident(member)) =
+            (&owner.kind, &dot.kind, &member.kind)
+        else {
+            continue;
+        };
+        for (module, name, opt_in) in MEMBER_TRIGGERS {
+            if owner == module && member == name && !triggered.contains(opt_in) {
+                triggered.push(opt_in);
             }
-            let word = &text[start..index];
-            if let Some((owner, true)) = qualifier {
-                for (module, member, opt_in) in MEMBER_TRIGGERS {
-                    if owner == *module && word == *member && !triggered.contains(opt_in) {
-                        triggered.push(opt_in);
-                    }
-                }
-            }
-            qualifier = Some((word, false));
-        } else if bytes[index..].starts_with(b"//") {
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
-        } else if bytes[index..].starts_with(b"/*") {
-            let mut depth = 0usize;
-            while index < bytes.len() {
-                if bytes[index..].starts_with(b"/*") {
-                    depth += 1;
-                    index += 2;
-                } else if bytes[index..].starts_with(b"*/") {
-                    depth -= 1;
-                    index += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                } else {
-                    index += 1;
-                }
-            }
-        } else if byte == b'"' {
-            index += 1;
-            while index < bytes.len() && bytes[index] != b'"' {
-                index += if bytes[index] == b'\\' { 2 } else { 1 };
-            }
-            index += 1;
-            qualifier = None;
-        } else {
-            qualifier = match (qualifier, byte) {
-                (Some((word, false)), b'.') => Some((word, true)),
-                (Some(found), b' ' | b'\t' | b'\r' | b'\n') => Some(found),
-                _ => None,
-            };
-            index += 1;
         }
     }
 }
