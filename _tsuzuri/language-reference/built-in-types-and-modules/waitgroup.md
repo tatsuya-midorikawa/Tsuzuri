@@ -1,6 +1,6 @@
 # WaitGroup
 
-`WaitGroup` は、終わりを待つ仕事の数を数えるカウンターです（Go の `sync.WaitGroup`、TZ06）。`WaitGroup.add` で始める前に数え、`WaitGroup.done` で終わりを知らせ、`WaitGroup.wait` で数が 0 になるまで待ちます。`WaitGroup.go` は、関数を新しい tzroutine で呼び、この 3 つをまとめて行います。
+`WaitGroup` は、終わりを待つ仕事の数を数えるカウンターです（Go の `sync.WaitGroup`、TZ06）。`WaitGroup.add` で始める前に数え、`WaitGroup.done` で終わりを知らせ、`WaitGroup.wait` で数が 0 になるまで待ちます。`WaitGroup.go` は、数に 1 を足し、関数を新しい tzroutine で呼び、関数が戻ったら 1 を引きます（待つのは呼んだ側の `WaitGroup.wait` です）。
 
 ## この記事のポイント
 

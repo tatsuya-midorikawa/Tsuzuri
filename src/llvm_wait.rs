@@ -95,10 +95,26 @@ impl FunctionEmitter<'_, '_> {
                 self.instruction(format!("store %tz.closure {closure}, ptr {boxed}"));
                 let field = self.block_field(&boxed, 16);
                 self.instruction(format!("store ptr {block}, ptr {field}"));
-                self.intrinsics.insert(WAIT_GROUP_GO_START.into());
+                // With trap information, each call has a start function of its own, whose trap (a
+                // count below zero) is reported at the call as an assertion.
+                let start = if let Some(marks) = &mut self.globals.traps {
+                    let id = self.globals.parallel_kernels;
+                    self.globals.parallel_kernels += 1;
+                    let symbol = format!("@tz.waitgroup.go.{id}");
+                    marks
+                        .sources
+                        .insert(symbol.clone(), (self.current_span, false));
+                    self.intrinsics.insert(
+                        WAIT_GROUP_GO_START.replace("@tz.waitgroup.go(", &format!("{symbol}(")),
+                    );
+                    symbol
+                } else {
+                    self.intrinsics.insert(WAIT_GROUP_GO_START.into());
+                    "@tz.waitgroup.go".to_owned()
+                };
                 self.declare_wait("declare void @tsuzuri_tz_go(ptr, ptr)");
                 self.instruction(format!(
-                    "call void @tsuzuri_tz_go(ptr @tz.waitgroup.go, ptr {boxed})"
+                    "call void @tsuzuri_tz_go(ptr {start}, ptr {boxed})"
                 ));
                 "0".to_owned()
             }
