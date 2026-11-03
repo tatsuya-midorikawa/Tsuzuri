@@ -297,10 +297,10 @@ fn corpus_table() -> BTreeMap<String, CapabilitySet> {
 }
 
 #[test]
-fn std_table_file_lists_the_100_functions() {
+fn std_table_file_lists_the_102_functions() {
     let expected = std::fs::read_to_string("tests/fixtures/capabilities/std-table.txt").unwrap();
     let lines: Vec<&str> = expected.lines().collect();
-    assert_eq!(lines.len(), 100);
+    assert_eq!(lines.len(), 102);
     let derived: Vec<String> = corpus_table()
         .into_iter()
         .map(|(name, set)| {

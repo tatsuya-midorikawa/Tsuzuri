@@ -93,6 +93,21 @@ fn parent_deadline_wins =
     | Maybe.Some Context.DeadlineExceeded -> if inherited then 1 else 2
     | _ -> 0
 
+// A deadline that has passed cancels at once; an ErrGroup of that context sees it cancelled.
+export def deadline_passed :: i64
+fn deadline_passed =
+    let root = Context.background ()
+    let expired = Context.with_deadline root 0
+    let group: ErrGroup<i64> = ErrGroup.with_context expired
+    let ctx = ErrGroup.context group
+    let own = match Context.err expired with
+        | Maybe.Some Context.DeadlineExceeded -> 1
+        | _ -> 0
+    let inherited = match Context.err ctx with
+        | Maybe.Some Context.DeadlineExceeded -> 10
+        | _ -> 0
+    own + inherited
+
 // A second cancel, and a deadline after a cancel, keep the first reason.
 export def cancel_idempotent :: i64
 fn cancel_idempotent =
@@ -111,11 +126,11 @@ export def deep_cancel :: i64
 fn deep_cancel =
     let root = Context.background ()
     let first = Context.with_cancel root
-    let mut chain: Vec<Context> = Vec.empty ()
-    chain = Vec.push (Context.with_cancel first) chain
+    let mut chain: Vec<Context> = Vec.empty()
+    chain = Vec.push_owned (Context.with_cancel first) chain
     for index in 1 ..< 10000 do
         let next = Context.with_cancel (ref chain[index - 1])
-        chain = Vec.push next chain
+        chain = Vec.push_owned next chain
     Context.cancel first
     let last = Context.done (ref chain[9999])
     match Channel.recv last with

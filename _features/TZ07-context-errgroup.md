@@ -23,7 +23,10 @@ TZ05・TZ06 の実装と照合し、次のとおり直してから実装した�
 4. **`tzr_ctx_lock` と `tzr_timers.lock` は入れ子にしない**（D3）。取り消しは `tzr_ctx_lock` の下で子孫に印を付けて `done` を閉じ（チャンネルのロックはその内側。R3）、止めるタイマーと呼ぶ `after_func` を集めて参照を 1 つずつ足し、ロックを外してから処理する。
 5. **`Context.after_func`（Phase 3）は TZ05 の `FUNC` のタイマーを使う**: 期限のない「眠った」（`DORMANT`）タイマーとして作り、境界の一覧に入れる（境界はまだ呼ばれていない関数を drop する。TZ05 の規則）。取り消しで「今」に入れ直して発火させる（タイマーのスレッドが新しい tzroutine で呼ぶ）。`DORMANT` はヒープになく `ntimers` に数えないので、デッドロックの判定を妨げない。`stop_after` は `Timer.stop` と同じ。`AfterFunc` は記録と `Context` の参照を持つハンドル。
 6. **`ErrGroup` の最初の誤り**: `Arc<Mutex<Maybe<'e>>>` から値を取り出すには `ref mut` からのムーブが要るので、容量 1 の `Channel<'e>` に `try_send` する（最初に終わった誤りだけが入り、2 つ目以降は `Full` で返って drop される）。`wait` は `try_recv` で取り出す（2 回目の `wait` は `Ok`）。同時に走る数の上限は `Semaphore`（容量が作ったときに決まる）ではなく、`Mutex<i64>` の走っている数と `Cond` で待つ（`set_limit` は走っている数が 0 でなければトラップ）。`go` は `WaitGroup.go` で関数を包む（std の `tzroutine { }` が `own Owned.Function` の引数を捕捉すると `E1013` になる。TZ06 の実装と検証）。
-7. **`err` の型**: `union Error = Canceled | DeadlineExceeded` は `Context.Error`。
+7. **`err` の型**: `union Error = Canceled | DeadlineExceeded` は `Context.Error`（`deriving (Eq, Display)`）。`AfterFunc` は `Context.AfterFunc`。
+8. **組み込みと std**: 私的な組み込み 13 個（`Context.__background`・`__with_cancel`・`__with_timeout`・`__with_deadline`・`__cancel`・`__done`・`__err`・`__deadline`・`__share`・`__release`・`__after_func`・`__stop_after`・`__free_after`）を `std/Context.tz` が包む。`__err` は整数（0・1・2）、`__deadline` は `i64` の最大値で「なし」を返し、`Maybe` への変換は std の Tsuzuri で書く（生成コードに union を組ませない）。ランタイムの入口は、設計の表の `_background`・`_child` の代わりに `tsuzuri_tz_ctx_new(parent, deadline, block, release)`（親が `NULL` なら根）と `tsuzuri_tz_ctx_timeout`（時計をランタイムで読む。足してあふれる期限は `INT64_MAX - 1`。`INT64_MAX` は「なし」）。
+9. **`Context` のすべての操作は `Builtin::spawns()` が真**: 期限はスケジューラーのタイマーで境界の一覧に入る（TZ05 のタイマーと同じ）。そのため WebAssembly と `--trap-mode return` は `E2000`（TZ02 と同じ）。
+10. **`ErrGroup`**: 中身は `group: WaitGroup`・`first: Channel<'e>`（容量 1）・`slots: Arc<Mutex<(i64 * i64)>>`（走っている数と上限）・`room: Cond`・`context: Context`。`wait` もグループの `Context` を取り消す（Go の `Wait` と同じ）。`set_limit` は走っている数が 0 でなければ `assert` でトラップする。
 
 ## 実装者向け早見
 

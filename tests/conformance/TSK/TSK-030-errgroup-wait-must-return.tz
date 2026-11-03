@@ -1,0 +1,15 @@
+// Every function sleeps before it counts: the count is read right after the wait.
+let group: ErrGroup<string> = ErrGroup.create ()
+let finished = Arc.new (Atomic.create 0i64)
+for _ in 1 ..= 50 do
+    let mine = Arc.share (ref finished)
+    ErrGroup.go group (Owned.function (\() -> {
+        Time.sleep (2 * Time.millisecond());
+        let _old = Atomic.fetch_add (Arc.get (ref mine)) 1;
+        Result.Ok ()
+    }))
+let _waited = ErrGroup.wait group
+Atomic.load (Arc.get (ref finished))
+
+// rule: TSK-030
+// expect: stdout "50\n"

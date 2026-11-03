@@ -119,6 +119,8 @@
 - [RwMutex](./built-in-types-and-modules/rwmutex.md) — 読みを分け合うロック
 - [Cond](./built-in-types-and-modules/cond.md)・[Semaphore](./built-in-types-and-modules/semaphore.md) — 条件の待ちと重み付きのセマフォ
 - [SyncMap](./built-in-types-and-modules/syncmap.md) — 並行のマップ（Go の `sync.Map`）
+- [Context](./built-in-types-and-modules/context.md) — 取り消しと期限の木（Go の `context`）
+- [ErrGroup](./built-in-types-and-modules/errgroup.md) — 最初の誤りで残りを止める tzroutine のグループ（Go の `errgroup`）
 - [Channel](./built-in-types-and-modules/channel.md) — tzroutine の間の Go の双方向のチャンネル
 - [DataChannel](./built-in-types-and-modules/datachannel.md)
 - [Seq](./built-in-types-and-modules/seq.md)

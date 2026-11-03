@@ -444,10 +444,22 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
         "Os.__open" | "Os.__handle" | "Os.__close" => Fs,
         "Os.__args" => Env,
         "Os.__random" => Random,
-        "Os.__clock" | "Os.__sleep" | "Async.__clock" | "Async.__wait" | "Async.__posted"
-        | "Bench.now" | "Time.sleep" | "Time.after" | "Time.tick" | "Time.after_func"
-        | "Timer.__create" | "Ticker.__create" | "Timer.__reset" | "Ticker.__reset"
-        | "Context.__with_timeout" | "Context.__with_deadline" => Time,
+        "Os.__clock"
+        | "Os.__sleep"
+        | "Async.__clock"
+        | "Async.__wait"
+        | "Async.__posted"
+        | "Bench.now"
+        | "Time.sleep"
+        | "Time.after"
+        | "Time.tick"
+        | "Time.after_func"
+        | "Timer.__create"
+        | "Ticker.__create"
+        | "Timer.__reset"
+        | "Ticker.__reset"
+        | "Context.__with_timeout"
+        | "Context.__with_deadline" => Time,
         "Os.__spawn" => Process,
         "Net.__resolve" | "Net.__open" | "Net.__accept" | "Net.__read" | "Net.__write"
         | "Net.__close" | "Net.__watch" | "Net.__unwatch" | "Net.__connect" | "Net.__names"
@@ -1649,10 +1661,10 @@ mod tests {
             assert!(touches != quiet, "{name} must be in exactly one table");
             world += usize::from(touches);
         }
-        // Appendix A.2: 37 builtins reach the host (4 of them the timers of TZ05); the rest touch
-        // only the CPU and memory.
-        assert_eq!(world, 37);
-        assert_eq!(private.len(), 37 + PRIVATE_WITHOUT_CAPABILITY.len());
+        // Appendix A.2: 39 builtins reach the host (4 of them the timers of TZ05, 2 the deadlines
+        // of TZ07); the rest touch only the CPU and memory.
+        assert_eq!(world, 39);
+        assert_eq!(private.len(), 39 + PRIVATE_WITHOUT_CAPABILITY.len());
         // The multiplexed builtins follow their file.
         assert_eq!(primitive("Os.__read", "Env"), Some(Capability::Env));
         assert_eq!(primitive("Os.__read", "Dir"), Some(Capability::Fs));

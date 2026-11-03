@@ -159,7 +159,14 @@ fn programs_without_contexts_keep_their_ir() {
     let loaded = named("0\n");
     assert!(!loaded.contains(&"Context") && !loaded.contains(&"ErrGroup"));
     let loaded = named("ErrGroup.create ()\n");
-    for module in ["ErrGroup", "Context", "Channel", "WaitGroup", "Mutex", "Cond"] {
+    for module in [
+        "ErrGroup",
+        "Context",
+        "Channel",
+        "WaitGroup",
+        "Mutex",
+        "Cond",
+    ] {
         assert!(loaded.contains(&module), "{module}: {loaded:?}");
     }
 }

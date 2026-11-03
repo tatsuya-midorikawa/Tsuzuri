@@ -149,6 +149,37 @@ select
 timeout
 ```
 
+## 取り消し
+
+[Context](../built-in-types-and-modules/context.md) の `done` のチャンネルは、取り消されると閉じます。閉じたチャンネルの `recv` の腕はいつでも選べるので、`done` の腕は「取り消されたら止める」になります（Go の `case <-ctx.Done():`）。`Context.done` はハンドルを 1 つ作るので、ループの前に 1 回取ります。
+
+```tsuzuri run=canceled%20after%205
+let root = Context.background ()
+let ctx = Context.with_cancel root
+let done = Context.done ctx
+let work: Channel<i64> = Channel.make 10
+for i in 1 ..= 5 do
+    Channel.send work i
+let mut handled = 0i64
+let mut running = true
+while running do
+    select
+    | recv _ from done -> running = false
+    | recv item from work -> {
+        handled = handled + 1;
+        match item with
+        | Maybe.Some 5 -> Context.cancel ctx
+        | _ -> ()
+    }
+$"canceled after {handled}"
+```
+
+実行結果:
+
+```text
+canceled after 5
+```
+
 ## 公平さ
 
 すぐにできる腕は、同じ確率で選ばれます（再現用の種はありません）。いつも準備のできた 2 つのチャンネルからの `select` は、どちらも半分ほど選びます。
@@ -180,6 +211,7 @@ timeout
 ## 関連項目
 
 - [Channel](../built-in-types-and-modules/channel.md)
+- [Context](../built-in-types-and-modules/context.md)
 - [tzroutine 式](./tzroutine.md)
 - [match 式](../pattern-matching/match.md)
 - [言語リファレンスの目次](../index.md)

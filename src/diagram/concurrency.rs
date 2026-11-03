@@ -116,6 +116,9 @@ pub fn graph(
                 | "Routine.go"
                 | "Time.after_func"
                 | "WaitGroup.go"
+                | "Context.after_func"
+                | "ErrGroup.go"
+                | "ErrGroup.try_go"
         ) || edge.to.starts_with("Parallel.")
         {
             region
