@@ -130,3 +130,33 @@ fn routine_scope_is_refused_where_tzroutines_are() {
     .expect_err("a pure function cannot spawn");
     assert!(error.message.contains("Routine.scope"), "{}", error.message);
 }
+
+#[test]
+fn helpers_without_a_spawn_are_instrumented() {
+    // A Channel makes the program use the tzroutine runtime without a spawn of its own: the helper
+    // tzroutines of Parallel still get the stack probes, and the pool's call (inside a trap
+    // boundary) the blocking wrapper.
+    let module = accepts(
+        "let ch: Channel<i64> = Channel.make 1\nChannel.send ch 1\nlet values = Parallel.init 10 (\\index -> index)\nParallel.sum (ref values)\n",
+    );
+    assert!(!llvm::spawns(&module));
+    let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    assert!(
+        ir.contains("call i32 @tsuzuri_tz_parallel(ptr @tz.parallel.chunk."),
+        "{ir}"
+    );
+    assert!(ir.contains("\"probe-stack\"=\"inline-asm\""), "{ir}");
+    let lines: Vec<&str> = ir.lines().collect();
+    let pool = lines
+        .iter()
+        .position(|line| line.contains("@tsuzuri_task_parallel(ptr @tz.parallel.chunk."))
+        .expect("the pool's call");
+    assert!(
+        lines[..pool]
+            .iter()
+            .rev()
+            .take(3)
+            .any(|line| line.contains("call void @tsuzuri_tz_block_enter()")),
+        "{ir}"
+    );
+}

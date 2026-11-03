@@ -49,7 +49,7 @@ stopped after 3
 
 ## 期限
 
-`Context.with_timeout parent d` は、今から `d` ナノ秒の期限を持つ子です。`Context.with_deadline parent t` の `t` は `Time.monotonic_ns` の時計の時刻です。親の期限のほうが早ければ、子の期限は親の期限です。過ぎた時刻なら、子はすぐに取り消されています。
+`Context.with_timeout parent d` は、今から `d` ナノ秒の期限を持つ子です。`Context.with_deadline parent t` の `t` は `Time.monotonic_ns` の時計の時刻です。親の期限のほうが早ければ、子の期限は親の期限です。過ぎた時刻なら、子はすぐに取り消されています。`i64` の最大値（ランタイムの「期限なし」）は、その 1 つ前の時刻として扱います。
 
 ```tsuzuri run=DeadlineExceeded
 let root = Context.background ()

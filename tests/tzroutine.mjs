@@ -572,11 +572,14 @@ let trapped = match Domain.run (\\() -> (Parallel.init 8192 (\\index -> { assert
     | Result.Error _ -> "trapped"
 $"{sum} {trapped}"
 `);
-  for (const optimization of ["-O0", "-O3"]) {
-    for (const procs of ["1", "4"]) {
-      const run = cli(["run", domained, optimization], true, { TSUZURI_MAXPROCS: procs });
-      assert.equal(lines(run.stdout), "49995000 trapped\n", `Parallel in Domain.run ${optimization} P${procs}`);
-      runs++;
+  // Failure domains are POSIX only (Domain.run is refused on Windows).
+  if (process.platform !== "win32") {
+    for (const optimization of ["-O0", "-O3"]) {
+      for (const procs of ["1", "4"]) {
+        const run = cli(["run", domained, optimization], true, { TSUZURI_MAXPROCS: procs });
+        assert.equal(lines(run.stdout), "49995000 trapped\n", `Parallel in Domain.run ${optimization} P${procs}`);
+        runs++;
+      }
     }
   }
 

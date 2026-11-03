@@ -2652,6 +2652,7 @@ const suites = {
       ["errgroup_try_go", [], 7601n],
       ["release_order", [], 1n],
       ["errgroup_limit_raised", [], 9n],
+      ["deadline_max", [], 1n],
     ],
     traps: [["errgroup_limit_while_running", []]],
     inspect(ir) {
@@ -2755,9 +2756,12 @@ for (const count of [0, 1, 4095, 4096, 4097, 8192]) {
     }
     return partials.reduce(combine, identity);
   };
-  suites.parallel.cases.push(["parallel_subtract", [BigInt(count)], fold(10n, 10n, (index) => BigInt(index % 7), (left, right) => BigInt.asIntN(64, left - right))]);
-  suites.parallel.cases.push(["parallel_copy_reduce", [BigInt(count)], fold(1n, 1n, BigInt, (left, right) => left + right)]);
-  suites.parallel.cases.push(["parallel_float", [BigInt(count)], BigInt(fold(0, 0, (index) => index % 3 === 0 ? 1e16 : index % 3 === 1 ? 1 : -1e16, (left, right) => left + right))]);
+  // TZ11: the scheduler's suite checks the same reductions.
+  for (const suite of [suites.parallel, suites.parallel_scheduler]) {
+    suite.cases.push(["parallel_subtract", [BigInt(count)], fold(10n, 10n, (index) => BigInt(index % 7), (left, right) => BigInt.asIntN(64, left - right))]);
+    suite.cases.push(["parallel_copy_reduce", [BigInt(count)], fold(1n, 1n, BigInt, (left, right) => left + right)]);
+    suite.cases.push(["parallel_float", [BigInt(count)], BigInt(fold(0, 0, (index) => index % 3 === 0 ? 1e16 : index % 3 === 1 ? 1 : -1e16, (left, right) => left + right))]);
+  }
 }
 const wrapHash = (value) => BigInt.asIntN(64, value);
 function textHash(text, utf8) {

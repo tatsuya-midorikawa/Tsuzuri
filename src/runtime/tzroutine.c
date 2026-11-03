@@ -2071,8 +2071,10 @@ static void tzr_parallel_helper(void *arg) {
 
 /* Parallel.* in a program that uses the tzroutine runtime: cb(ctx, i) once for each i < n, on the
  * caller and on min(n, P) - 1 helper tzroutines (min(n, P) when a pseudo-G calls, since it holds no
- * P); returns when every call has returned. Returns 0, 2 when the deadlock detector ended the wait,
- * or 3 inside a trap boundary, where the generated code calls the task runtime instead. */
+ * P); returns when every call has returned. Returns 0, or 3 inside a trap boundary, where the
+ * generated code calls the task runtime instead. Only a callback that waits can leave the wait to
+ * the deadlock detector, which has reported it: the call has no source position, so it traps here
+ * (as the end of a boundary does), and the logic trap stays the callback's. */
 TZR_API int32_t tsuzuri_tz_parallel(void (*cb)(void *, uint64_t), void *ctx, uint64_t n) {
     if (n == 0) return 0;
     if (tzr_trap_boundary()) return 3;
@@ -2085,7 +2087,7 @@ TZR_API int32_t tsuzuri_tz_parallel(void (*cb)(void *, uint64_t), void *ctx, uin
     for (uint64_t k = 0; k < helpers; k++) tzr_spawn(scope, tzr_parallel_helper, &job, 0);
     tzr_parallel_work(&job);
     for (uint64_t r; (r = atomic_load_explicit(&job.remaining, memory_order_acquire)) != 0;)
-        if (tzr_addr_wait(&job.remaining, r, 1, "Parallel")) return 2;
+        if (tzr_addr_wait(&job.remaining, r, 1, "Parallel")) __builtin_trap();
     return 0;
 }
 
@@ -3378,7 +3380,9 @@ TZR_API int32_t tsuzuri_tz_ctx_stop_after(void *after) {
     return tsuzuri_tz_timer_stop(((tzr_ctx_after *)after)->timer);
 }
 
-/* The drop of an AfterFunc: it never runs after this; a function that has not run is dropped. */
+/* The drop of an AfterFunc: it never runs after this; a function that has not run is dropped here,
+ * on the thread that drops the handle. The last pin may be a cancel's on the timer thread, which
+ * then frees the records only: a drop there could run code that waits for that thread. */
 TZR_API void tsuzuri_tz_ctx_free_after(void *opaque) {
     tzr_ctx_after *after = opaque;
     tzr_lock_acquire(&tzr_ctx_lock);
@@ -3390,6 +3394,12 @@ TZR_API void tsuzuri_tz_ctx_free_after(void *opaque) {
     }
     tzr_lock_release(&tzr_ctx_lock);
     (void)tsuzuri_tz_timer_stop(after->timer);
+    tzr_timer *t = after->timer;
+    tzr_lock_acquire(&tzr_timers.lock);
+    void *box = t->box;
+    t->box = NULL;
+    tzr_lock_release(&tzr_timers.lock);
+    if (box) t->drop(box);
     tzr_ctx_after_unpin(after);
 }
 

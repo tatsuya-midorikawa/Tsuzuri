@@ -238,7 +238,8 @@ impl FunctionEmitter<'_, '_> {
     /// runtime's pool, or, in a native program that uses the tzroutine runtime, on its scheduler
     /// (TZ11), whose `tsuzuri_tz_parallel` has the caller and helper tzroutines claim the chunks.
     /// Inside a trap boundary it answers 3, and the pool runs them, each item under the boundary. A
-    /// `Routine.scope` gives each child a tzroutine of its own; `Task.scope` stays on the pool (TZ12).
+    /// `Routine.scope` gives each child a tzroutine of its own, whose children may wait for each
+    /// other, so a deadlock among them traps at the call; `Task.scope` stays on the pool (TZ12).
     fn parallel_call(&mut self, operation: Builtin, symbol: &str, context: &str, chunks: &str) {
         let pool =
             format!("call void @tsuzuri_task_parallel(ptr {symbol}, ptr {context}, i64 {chunks})");
@@ -268,7 +269,6 @@ impl FunctionEmitter<'_, '_> {
         self.instruction(pool);
         self.jump(&after);
         self.begin(&after);
-        self.channel_not_deadlocked(&status);
     }
 
     /// One job of `Parallel.for_each_chunk`: a contiguous range of chunks, run in order. Chunk `c` holds

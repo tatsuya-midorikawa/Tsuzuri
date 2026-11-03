@@ -559,9 +559,11 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             facts(Some(Effect::Task), true, false, false, false, false, None)
         }
         // B23
-        ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce | TaskScope | RoutineScope => {
+        ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce | TaskScope => {
             facts(Some(Effect::Task), true, false, false, true, false, None)
         }
+        // TZ11: the children may wait for each other, and a deadlock among them traps at the call.
+        RoutineScope => facts(Some(Effect::Task), true, true, true, true, false, None),
         // B24
         ParallelForEachChunk => facts(Some(Effect::Task), true, true, false, true, false, None),
         // TZ02: `Routine.go` spawns a tzroutine that calls the owned function it takes.
@@ -3619,13 +3621,13 @@ mod tests {
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 54);
+        assert_eq!(count(|facts| facts.trap), 55);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 27);
+        assert_eq!(count(|facts| facts.diverge), 28);
     }
 
     #[test]

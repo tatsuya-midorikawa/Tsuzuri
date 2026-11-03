@@ -121,7 +121,7 @@ keys=[10, 40, 30]
 | `contains_key key (ref m)` | `contains_key_ref (ref key) (ref m)` | キーの存在判定 |
 | `get key (ref m)` | `get_ref (ref key) (ref m)` | `Maybe<V>` を返す（`Copy<V>` が必要） |
 | `at key (ref m)` | `at_ref (ref key) (ref m)` | 共有参照 `ref V` を返す（存在しないとトラップ） |
-| — | `try_at_ref (ref key) (ref m)` | `Maybe<ref V>` を返す（存在しなければ `None`。`contains_key_ref` と `at_ref` の 2 回の検索が 1 回になる） |
+| — | `try_at_ref (ref key) (ref m)` | `Maybe<ref V>` を返す（存在しなければ `None`。`contains_key_ref` と `at_ref` の 2 回の検索が 1 回になる）。`Maybe` の中の借用には領域を書けないので、結果はキーの借用も持ち、キーより長くは使えない（そのときは `at_ref`） |
 | `remove key m` | `remove_ref (ref key) m` | エントリの削除 |
 
 所有文字列など非 Copy なキーを検索する際、値渡し版を使うとキーの所有権が消費されてしまいます。検索後もキーを手元に残したい場合は **`*_ref` 版** を使用します。
