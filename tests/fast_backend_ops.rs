@@ -1337,6 +1337,17 @@ fn atomic_cases(suite: &mut Suite) {
                 int_fold(width, "%z")
             ),
         );
+        suite.add(
+            group,
+            format!("{ty} atomics without a result name"),
+            Kind::Int,
+            vec![],
+            format!(
+                "{}  %p = alloca {ty}, align 8\n  store {ty} %x, ptr %p, align {align}\n  atomicrmw add ptr %p, {ty} %y monotonic\n  cmpxchg ptr %p, {ty} %x, {ty} %y seq_cst seq_cst\n  %z = load atomic {ty}, ptr %p seq_cst, align {align}\n{}  ret i64 %o\n",
+                int_prelude(width),
+                int_fold(width, "%z")
+            ),
+        );
     }
 }
 

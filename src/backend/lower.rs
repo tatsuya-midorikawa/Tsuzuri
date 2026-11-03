@@ -1128,7 +1128,9 @@ impl<'w, 'a> Lower<'w, 'a> {
                 let pointer = self.val(ptr, Ty::Ptr)?;
                 let operand = self.val(val, ty)?;
                 let value = self.atomic_rmw(op, ty, pointer, operand)?;
-                self.vals[dst as usize] = Some(value);
+                if dst != NONE {
+                    self.vals[dst as usize] = Some(value);
+                }
             }
             Inst::CmpXchg {
                 dst,
@@ -1140,7 +1142,9 @@ impl<'w, 'a> Lower<'w, 'a> {
                 let pointer = self.val(ptr, Ty::Ptr)?;
                 let (expected, replacement) = (self.val(cmp, ty)?, self.val(new, ty)?);
                 let value = self.cmpxchg(ty, pointer, expected, replacement)?;
-                self.vals[dst as usize] = Some(value);
+                if dst != NONE {
+                    self.vals[dst as usize] = Some(value);
+                }
             }
             Inst::Fence => {
                 self.b.ins().fence();
