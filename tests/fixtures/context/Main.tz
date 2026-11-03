@@ -108,18 +108,25 @@ fn deadline_passed =
         | _ -> 0
     own + inherited
 
-// A second cancel, and a deadline after a cancel, keep the first reason.
+// A second cancel keeps the first reason, and so does a cancel after a deadline (one that has passed
+// when the context is made, so that no schedule decides the order); a cancel of a root does nothing.
 export def cancel_idempotent :: i64
 fn cancel_idempotent =
     let root = Context.background ()
-    let ctx = Context.with_timeout root Time.millisecond()
+    let ctx = Context.with_cancel root
     Context.cancel ctx
     Context.cancel ctx
-    Time.sleep (5 * Time.millisecond())
-    let background = if Context.is_done root then 0 else 1
-    match Context.err ctx with
-    | Maybe.Some Context.Canceled -> background
-    | _ -> 0
+    let expired = Context.with_deadline root 0
+    Context.cancel expired
+    Context.cancel root
+    let first = match Context.err ctx with
+        | Maybe.Some Context.Canceled -> 1
+        | _ -> 0
+    let kept = match Context.err expired with
+        | Maybe.Some Context.DeadlineExceeded -> 10
+        | _ -> 0
+    let background = if Context.is_done root then 0 else 100
+    first + kept + background
 
 // A chain of 10,000 contexts: cancelling the first closes the last (no recursion).
 export def deep_cancel :: i64
@@ -273,3 +280,29 @@ fn errgroup_limit_while_running =
     }))
     ErrGroup.set_limit group 1
     0
+
+// A go that waits for room under a limit of 0 starts when the limit is raised.
+export def errgroup_limit_raised :: i64
+fn errgroup_limit_raised =
+    let group: ErrGroup<i64> = ErrGroup.create ()
+    ErrGroup.set_limit group 0
+    let other = ErrGroup.share group
+    let started: Channel<unit> = Channel.make 1
+    let ran: Channel<unit> = Channel.make 1
+    let signal = Channel.share started
+    let done = Channel.share ran
+    tzroutine {
+        Channel.send signal ()
+        ErrGroup.go other (Owned.function (\() -> {
+            Channel.send done ();
+            Result.Error 9
+        }))
+    }
+    let _started = Channel.recv started
+    Time.sleep (5 * Time.millisecond())
+    ErrGroup.set_limit group 1
+    let _ran = Channel.recv ran
+    match ErrGroup.wait group with
+    | Result.Error n -> n
+    | Result.Ok _ -> 0
+

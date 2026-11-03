@@ -2618,7 +2618,7 @@ const suites = {
       ["timeout", [], 1n],
       ["parent_deadline_wins", [], 1n],
       ["deadline_passed", [], 11n],
-      ["cancel_idempotent", [], 1n],
+      ["cancel_idempotent", [], 111n],
       ["deep_cancel", [], 10000n],
       ["after_func_on_cancel", [], 1n],
       ["errgroup_ok", [], 5050n],
@@ -2626,6 +2626,7 @@ const suites = {
       ["errgroup_limit", [], 1n],
       ["errgroup_try_go", [], 7601n],
       ["release_order", [], 1n],
+      ["errgroup_limit_raised", [], 9n],
     ],
     traps: [["errgroup_limit_while_running", []]],
     inspect(ir) {

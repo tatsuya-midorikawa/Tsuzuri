@@ -7,7 +7,7 @@
 - 取り消しは協調的です。取り消された `Context` を見ている tzroutine が自分で止まります。ランタイムが tzroutine を強制的に止めることはありません。
 - 境界（`main`・`export`・`test`・`bench` の終わり）は、そこで起動した tzroutine の終わりを待ちます。終わらない tzroutine（サーバーのループ、周期の処理）は、`Context` の `done` を `select` で見て止めます。
 - 取り消すと、自分と子孫の `done` が閉じます。親は取り消されません。 <!-- rule: TSK-029 -->
-- 一度取り消された `Context` は取り消しのままで、`err` は最初の理由（`Context.Canceled` か `Context.DeadlineExceeded`）のまま変わりません。
+- 一度取り消された `Context` は取り消しのままで、`err` は最初の理由（`Context.Canceled` か `Context.DeadlineExceeded`）のまま変わりません。`Context.background ()` の根は取り消されず、`Context.cancel` しても何も起きません（子を作って取り消します）。
 - 期限は TZ05 のタイマーです。期限の時刻に `DeadlineExceeded` で取り消されます。子は親の早い期限を受け継ぎます。
 - ハンドルは持ち主の数を数え、`Context.share` でもう 1 つ作って tzroutine へ移します。どのハンドルからでも取り消せます。取り消す権利を渡したくないときは、`with_cancel` で子を作って渡します。
 
@@ -100,7 +100,7 @@ called
 | `Context.with_cancel` | `ref Context -> Context` | 子。親か自分が取り消されると取り消される |
 | `Context.with_timeout` | `ref Context -> i64 -> Context` | 今から `d` ナノ秒の期限を持つ子 |
 | `Context.with_deadline` | `ref Context -> i64 -> Context` | 単調時計の時刻 `t` の期限を持つ子 |
-| `Context.cancel` | `ref Context -> unit` | 自分と子孫を `Canceled` で取り消す（終わっていれば何もしない） |
+| `Context.cancel` | `ref Context -> unit` | 自分と子孫を `Canceled` で取り消す（終わっていれば何もしない。`background` には何もしない） |
 | `Context.done` | `ref Context -> Channel<unit>` | 取り消されると閉じるチャンネル（何も送られない） |
 | `Context.err` | `ref Context -> Maybe<Context.Error>` | 取り消されていれば理由 |
 | `Context.is_done` | `ref Context -> bool` | `err` が `Some` か |
