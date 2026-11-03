@@ -10,62 +10,66 @@ fn after_is_a_timeout milliseconds =
     | recv _ from never -> 0
     | recv _ from deadline -> 1
 
-// Three tzroutines sleep 60, 20 and 40 ms and then send their number: they arrive as 2, 3, 1.
-export def sleep_order :: i64
-fn sleep_order =
+// The time that a timer fired now sends: a time of the clock of the sleeps.
+def now :: unit -> i64
+fn now _ =
+    let fired = Time.after 0
+    match Channel.recv fired with
+    | Maybe.Some time -> time
+    | Maybe.None -> 0
+
+// Three tzroutines sleep 20, 40 and 60 ms and send their number when they woke no earlier than
+// that (100 when early): all three arrive, in whatever order the scheduler gives (6).
+export def sleeps_are_not_early :: i64
+fn sleeps_are_not_early =
     let arrivals: Channel<i64> = Channel.make 3
     for number in 1 ..= 3 do
         let out = Channel.share arrivals
-        let nap = match number with
-            | 1 -> 60
-            | 2 -> 20
-            | _ -> 40
+        let nap = (number as i64) * 20 * Time.millisecond()
         tzroutine {
-            Time.sleep (nap * Time.millisecond())
-            Channel.send out (number as i64)
+            let start = now ()
+            Time.sleep nap
+            Channel.send out (if now () - start >= nap then number as i64 else 100)
         }
-    let mut order = 0i64
+    let mut total = 0i64
     for _ in 1 ..= 3 do
-        order = order * 10 + (match Channel.recv arrivals with
+        total = total + (match Channel.recv arrivals with
             | Maybe.Some number -> number
             | Maybe.None -> 0)
-    order
+    total
 
-// One tzroutine sleeps 200 ms while two others finish 1,000 round trips (with one P too): the round
-// trips report first (2), the sleeper second (1).
+// A watcher sees a sleeper asleep (1): while the sleeper sleeps, the watcher runs (with one P too),
+// which a sleep that held its thread would not let it. The sleeper waits for the watcher to start,
+// and the watcher yields until the sleeper has woken.
 export def sleep_does_not_block_others :: i64
 fn sleep_does_not_block_others =
-    let reports: Channel<i64> = Channel.make 2
-    let sleeper = Channel.share reports
+    let state = Arc.new (Atomic.create 0i64)
+    let ready: Channel<unit> = Channel.make 0
+    let reports: Channel<i64> = Channel.make 1
+    let sleeper_state = Arc.share (ref state)
+    let start = Channel.share ready
     tzroutine {
-        Time.sleep (200 * Time.millisecond())
-        Channel.send sleeper 1
+        let _go = Channel.recv start
+        Atomic.store (Arc.get (ref sleeper_state)) 1
+        Time.sleep (100 * Time.millisecond())
+        Atomic.store (Arc.get (ref sleeper_state)) 2
     }
-    let pings: Channel<i64> = Channel.make 0
-    let pongs: Channel<i64> = Channel.make 0
-    let server_pings = Channel.share pings
-    let server_pongs = Channel.share pongs
+    let watcher_state = Arc.share (ref state)
+    let go = Channel.share ready
+    let report = Channel.share reports
     tzroutine {
-        for value in server_pings do
-            Channel.send server_pongs value
+        Channel.send go ()
+        let mut seen = 0i64
+        let mut current = Atomic.load (Arc.get (ref watcher_state))
+        while current != 2 do
+            if current == 1 then seen = 1
+            Routine.yield ()
+            current = Atomic.load (Arc.get (ref watcher_state))
+        Channel.send report seen
     }
-    let client_pings = Channel.share pings
-    let client_pongs = Channel.share pongs
-    let worker = Channel.share reports
-    tzroutine {
-        for round in 1 ..= 1000 do
-            Channel.send client_pings (round as i64)
-            let _pong = Channel.recv client_pongs
-        Channel.close client_pings
-        Channel.send worker 2
-    }
-    let first = match Channel.recv reports with
-        | Maybe.Some who -> who
-        | Maybe.None -> 0
-    let second = match Channel.recv reports with
-        | Maybe.Some who -> who
-        | Maybe.None -> 0
-    first * 10 + second
+    match Channel.recv reports with
+    | Maybe.Some seen -> seen
+    | Maybe.None -> 0
 
 // Timer.stop and Timer.reset: stop a pending timer (true), stop it again (false), reset the
 // stopped one (false), receive its time, stop the fired one (false): 1, 0, 0, 1, 0.

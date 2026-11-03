@@ -3832,7 +3832,7 @@ fn build_complete(
     if options.trap_return && llvm::uses_tzroutine(module) {
         return Err(driver_error_of(
             DiagnosticKind::OptionConflict,
-            "--trap-mode return cannot be combined with Channel or the sync types of the tzroutine runtime (WaitGroup, Once, OnceValue, RwMutex, Cond, Semaphore, SyncMap): a trap would leave the runtime's state of the call behind",
+            "--trap-mode return cannot be combined with Channel, Time.sleep or the sync types of the tzroutine runtime (WaitGroup, Once, OnceValue, RwMutex, Cond, Semaphore, SyncMap): a trap would leave the runtime's state of the call behind",
         ));
     }
     if options.trap_return && !llvm::host_entries(module).is_empty() {

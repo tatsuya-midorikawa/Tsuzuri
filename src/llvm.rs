@@ -4420,10 +4420,12 @@ fn expression_uses_tzroutine(expression: &TypedExpr) -> bool {
     match &expression.kind {
         TypedExprKind::RoutineGo(_) | TypedExprKind::SelectWait(_) => true,
         TypedExprKind::Parallel(operation, _) if operation.spawns() => true,
+        // The lengths (`Time.second()`) are constants, which use no scheduler.
         TypedExprKind::Function(FunctionRef::Builtin(instance))
             if instance.builtin.spawns()
                 || instance.builtin.is_channel()
-                || instance.builtin.is_timer()
+                || (instance.builtin.is_timer()
+                    && instance.builtin.length_nanoseconds().is_none())
                 || instance.builtin.is_wait() =>
         {
             true

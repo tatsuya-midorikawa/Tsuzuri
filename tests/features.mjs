@@ -2590,8 +2590,8 @@ const suites = {
     environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
     cases: [
       ["after_is_a_timeout", [30n], 1n],
-      ["sleep_order", [], 231n],
-      ["sleep_does_not_block_others", [], 21n],
+      ["sleeps_are_not_early", [], 6n],
+      ["sleep_does_not_block_others", [], 1n],
       ["timer_stop_reset", [], 10010n],
       ["ticker_five", [], 5n],
       ["tick_dropped", [], 2n],
@@ -2621,6 +2621,7 @@ const suites = {
       ["cond_queue", [], 500n * 10n],
       ["semaphore_limit", [], 11n],
       ["sync_map", [], 2n * (799n * 800n / 2n) * 1000n + 800n],
+      ["sync_arrays", [], 6n * 1000n + 2n * 100n + 6n * 10n + 1n],
     ],
     traps: [["negative_counter", []], ["mutex_same_nested", []], ["mutex_order_deadlock", []], ["rw_nested", []],
       ["semaphore_over", []], ["semaphore_weight", []]],

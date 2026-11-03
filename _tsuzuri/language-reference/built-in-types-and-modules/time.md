@@ -92,36 +92,41 @@ Time.second() / Time.millisecond() + 500
 
 `Time.sleep d` は、少なくとも `d` ナノ秒待ちます（Go の `time.Sleep`）。[tzroutine](../async-tasks-and-lazy/tzroutine.md) の中では、その tzroutine だけが待ち、OS スレッドはほかの tzroutine を走らせます。`main` などのスレッドでは、そのスレッドが止まります。`d` が 0 以下なら、`Routine.yield` と同じく 1 回だけ譲ります。
 
-次の例では、3 つの tzroutine が 30・10・20 ms 眠ってから自分の番号を送ります。受け取る順は眠る時間の順です。
+次の例では、3 つの tzroutine が 10・20・30 ms 眠り、眠る前と起きた後の時刻（[`Time.after`](#タイムアウトtimeafter) の値と同じ単調時計）の差が眠った時間以上なら自分の番号を送ります。届く順はスケジューラーしだいですが、どれも早く起きることはありません。
 
-```tsuzuri run=231
-def order :: unit -> i64
-fn order _ =
+```tsuzuri run=6
+def now :: unit -> i64
+fn now _ =
+    let fired = Time.after 0
+    match Channel.recv fired with
+    | Maybe.Some time -> time
+    | Maybe.None -> 0
+
+def woke :: unit -> i64
+fn woke _ =
     let arrivals: Channel<i64> = Channel.make 3
     for number in 1 ..= 3 do
         let out = Channel.share arrivals
-        let nap = match number with
-            | 1 -> 30
-            | 2 -> 10
-            | _ -> 20
+        let nap = (number as i64) * 10 * Time.millisecond()
         tzroutine {
-            Time.sleep (nap * Time.millisecond())
-            Channel.send out (number as i64)
+            let start = now ()
+            Time.sleep nap
+            Channel.send out (if now () - start >= nap then number as i64 else 100)
         }
-    let mut result = 0i64
+    let mut total = 0i64
     for _ in 1 ..= 3 do
-        result = result * 10 + (match Channel.recv arrivals with
+        total = total + (match Channel.recv arrivals with
             | Maybe.Some number -> number
             | Maybe.None -> 0)
-    result
+    total
 
-order ()
+woke ()
 ```
 
 実行結果:
 
 ```text
-231
+6
 ```
 
 既存の `Time.sleep_ms` も、tzroutine の中では `Time.sleep` と同じく、その tzroutine だけを待たせます（スレッドを止めません）。結果の型と、負の数が `InvalidInput` になることは変わりません。
@@ -218,7 +223,7 @@ done
 | `Time.after` | `i64 -> Channel<i64>` | そのナノ秒後に時刻を 1 つ受け取れる容量 1 のチャンネル |
 | `Time.tick` | `i64 -> Channel<i64>` | 周期ごとに時刻を送るチャンネル。ハンドルがすべてなくなれば止まる。0 以下はトラップ |
 | `Time.after_func` | `i64 -> Owned.Function<unit, unit> -> Timer` | そのナノ秒後に関数を新しい tzroutine で 1 回呼ぶ |
-| `Time.nanosecond` ～ `Time.hour` | `unit -> i64`（`Time.hour()` と呼ぶ） | 長さ |
+| `Time.nanosecond` ～ `Time.hour` | `i64`（引数のない関数。`Math.pi` と同じく `Time.hour()` と呼ぶ） | 長さ |
 
 呼び出しは `Time.sleep_ms 0` や `Time.monotonic_ns ()` のように記述し、`unit` 引数には `()` を渡します。長さだけは `Time.hour()` と空白なしで呼びます。
 
@@ -244,7 +249,7 @@ Go の `time.Time`（壁時計の時刻・書式・時差）に当たる型は�
 
 戻り値の `i64` は `Copy` です。アクション自体は実行するまで時計を読みません。同じ `IO` 値を 2 回実行すると、その都度時計を読み取ります。
 
-既定の wasm32 で `monotonic_ns`・`unix_ns`・`sleep_ms` に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では WASI の時計とポーリングに下がります。`Time.sleep` は WebAssembly では `sleep_ms` と同じ待ち（ミリ秒に切り上げ、`--wasm-host` が必要）です。`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のスケジューラーのタイマーを使うので、WebAssembly では tzroutine と同じく `E2000`（`--wasm-feature jspi` が必要。まだ実装されていません）、`--trap-mode return` とも組み合わせられません（`E2000`）。
+既定の wasm32 で `monotonic_ns`・`unix_ns`・`sleep_ms` に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では WASI の時計とポーリングに下がります。`Time.sleep` は WebAssembly では `sleep_ms` と同じ待ち（ミリ秒に切り上げ、`--wasm-host` が必要）です。`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のスケジューラーのタイマーを使うので、WebAssembly では tzroutine と同じく `E2000`（`--wasm-feature jspi` が必要。まだ実装されていません）、`--trap-mode return` とも組み合わせられません（`E2000`）。`Time.sleep` もスケジューラーで待つので、ネイティブの `--trap-mode return` とは組み合わせられません（`E2000`。メッセージは `Channel` と同期の型と同じ）。
 
 Windows のネイティブビルドは、`monotonic_ns`・`unix_ns`・`sleep_ms` の OS API に到達すると `E2002` で失敗します。`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のランタイムで動くので、Windows でも使えます（時計は `QueryPerformanceCounter`）。
 

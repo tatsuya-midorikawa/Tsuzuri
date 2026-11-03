@@ -1,19 +1,35 @@
-// As many sleepers as there are processors: a sleep that held its processor would keep the yielding
-// tzroutine from running until the sleepers wake.
+// As many sleepers as there are processors, and a watcher that sees them all asleep at once: a
+// sleep that held its processor would keep the watcher from running until one of them woke. The
+// sleepers start when the watcher runs, and the watcher yields until they have all woken.
 def run :: unit -> string
 fn run _ =
-    let reports: Channel<string> = Channel.make 512
-    for _ in 1 ..= Routine.max_procs () do
-        let sleeper = Channel.share reports
+    let sleepers = Routine.max_procs ()
+    let asleep = Arc.new (Atomic.create 0i64)
+    let woken = Arc.new (Atomic.create 0i64)
+    let start: Channel<unit> = Channel.make 0
+    for _ in 1 ..= sleepers do
+        let go = Channel.share start
+        let mine = Arc.share (ref asleep)
+        let done = Arc.share (ref woken)
         tzroutine {
+            let _go = Channel.recv go
+            let _before = Atomic.fetch_add (Arc.get (ref mine)) 1
             Time.sleep (300 * Time.millisecond())
-            Channel.send sleeper "sleeper"
+            let _after = Atomic.fetch_sub (Arc.get (ref mine)) 1
+            let _count = Atomic.fetch_add (Arc.get (ref done)) 1
         }
-    let worker = Channel.share reports
+    let reports: Channel<string> = Channel.make 1
+    let report = Channel.share reports
+    let opener = Channel.share start
+    let seen_asleep = Arc.share (ref asleep)
+    let seen_woken = Arc.share (ref woken)
     tzroutine {
-        for _ in 1 ..= 100 do
+        Channel.close opener
+        let mut all = false
+        while Atomic.load (Arc.get (ref seen_woken)) < sleepers do
+            if Atomic.load (Arc.get (ref seen_asleep)) == sleepers then all = true
             Routine.yield ()
-        Channel.send worker "worker"
+        Channel.send report (if all then "worker" else "blocked")
     }
     match Channel.recv reports with
     | Maybe.Some first -> first

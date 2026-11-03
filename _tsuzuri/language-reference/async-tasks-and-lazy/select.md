@@ -129,7 +129,7 @@ sent=3 sum=6
 - 送る値は `select` に移されるので、`select` のあとでは使えません（`E1012`）。`when` のある腕のチャンネルと値の式は、`&&` の右辺と同じく、評価されないかもしれない分岐として扱います（値の式の中で代入し直した変数も、`select` のあとでは移動済みかもしれません）。
 - 腕のチャンネルは待ちが終わるまで借りられたままなので、後の腕の式はそれを移せません（`E1014`）。送る値は、`Channel.send` の要素と同じく借用を持てません（`E1013`、`channel_item_holds_borrow`）。
 - 本体の中の `break`・`continue` は、外のループのものです（`select` 自体はループではありません）。
-- `select` は tzroutine の待ちです。tzroutine を起動するか `Channel` を使うプログラムでは、`Mutex.with_lock` の中の `default` のない `select` はトラップします。
+- `select` は tzroutine の待ちです。`Channel` を使うプログラムの `Mutex.with_lock` は tzroutine のロックなので、ロックを持ったまま `select` で待てます（TZ06。TZ05 まではトラップ）。
 
 ## タイムアウト
 

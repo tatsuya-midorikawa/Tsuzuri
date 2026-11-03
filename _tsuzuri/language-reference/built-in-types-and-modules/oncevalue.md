@@ -6,6 +6,7 @@
 
 - `OnceValue.create ()` で空のセルを作り、`OnceValue.get cell make` で値を借ります。最初の呼び出しが `make` で値を作り、同時に来たほかの呼び出しは、その終わりを待ちます。`make` は最大 1 回だけ呼ばれます。
 - `get` の結果は `ref T` で、セルの借用と同じ寿命です（`Arc.get` と同じ規則。セルより長く持つと `E1013`）。`T` は `Send` かつ `Sync` です。
+- 初期化の関数が返す値はセルに残るので、借用を持てる型（関数など）のときは、借用を持たないと示せる値だけを返せます。外の変数を借りる関数や、外の値を借りる初期化の関数は `E1013`（`mutex_result_retains_borrow`）です。関数を入れるときは、初期化の関数の中で自分の値から作ります（`\_unit -> { let step = 3; \x -> x + step }`）。
 - 値は、書いてから状態を release で公開し、読む側は acquire で読むので、どの tzroutine も作られた値をそのまま見ます。
 - 複数の tzroutine で共有するときは `Arc<OnceValue<T>>` にします。`OnceValue.into_inner` は作られていれば値を `Some` で返します。
 

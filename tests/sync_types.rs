@@ -186,6 +186,75 @@ fn a_once_value_lends_for_as_long_as_its_cell() {
 }
 
 #[test]
+fn a_once_value_keeps_no_borrow_in_its_cell() {
+    // The cell outlives the data that an initializer's function may borrow.
+    let message = rejects(
+        "let cell: OnceValue<i64 -> i64> = OnceValue.create ()\nlet first = {\n    let data = [1i64, 2i64];\n    let view = ref data;\n    let f = OnceValue.get (ref cell) (\\() -> \\x -> x + view[0]);\n    (deref f) 1\n}\nlet g = OnceValue.get (ref cell) (\\() -> \\x -> x)\nfirst + (deref g) 5\n",
+        "E1013",
+    );
+    assert!(
+        message.contains(
+            "OnceValue.get initializers must return values proven free of borrowed environments"
+        ),
+        "{message}"
+    );
+    // A function made inside from values of its own is kept.
+    accepts(
+        "let cell: OnceValue<i64 -> i64> = OnceValue.create ()\nlet f = OnceValue.get (ref cell) (\\_unit -> {\n    let step = 3i64;\n    \\x -> x + step\n})\n(deref f) 1\n",
+    );
+    // A partial application cannot be checked where the value is made.
+    let message = rejects(
+        "let cell: OnceValue<i64 -> i64> = OnceValue.create ()\nlet getter = OnceValue.get (ref cell)\n0\n",
+        "E1013",
+    );
+    assert!(
+        message.contains("OnceValue.get must be fully applied directly"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_once_value_lends_only_its_cell() {
+    // The reference points into the cell: what the initializer borrowed may go before it.
+    accepts(
+        "let cell: OnceValue<i64> = OnceValue.create ()\nlet kept = {\n    let data = [7i64];\n    let view = ref data;\n    OnceValue.get (ref cell) (\\() -> view[0])\n}\nderef kept\n",
+    );
+}
+
+#[test]
+fn a_sync_map_stores_values_that_no_function_may_capture() {
+    accepts(
+        "let map: SyncMap<i64, Mutex<i64>> = SyncMap.create ()\nSyncMap.store (ref map) 1 (Mutex.create 5i64)\nSyncMap.with_value (ref map) (ref 1) (\\lock -> Mutex.with_lock lock (\\value -> deref value))\n",
+    );
+}
+
+#[test]
+fn another_handle_is_no_allocation() {
+    for (create, share) in [
+        ("WaitGroup.create ()", "WaitGroup.share"),
+        ("Once.create ()", "Once.share"),
+        ("Cond.create ()", "Cond.share"),
+        ("Semaphore.create 2", "Semaphore.share"),
+    ] {
+        let module = create.split('.').next().unwrap();
+        accepts(&format!(
+            "@no_alloc\ndef again :: ref {module} -> {module}\nfn again handle = {share} handle\nlet first = {create}\nlet _second = again (ref first)\n0\n"
+        ));
+    }
+}
+
+#[test]
+fn a_length_alone_uses_no_scheduler() {
+    // `Time.second()` is a constant: the Mutex stays the task runtime's lock, and --trap-mode
+    // return stays allowed.
+    let text = ir(
+        "let lock = Mutex.create 0i64\nlet wait = Time.second()\nMutex.with_lock (ref lock) (\\value -> deref value + wait)\n",
+    );
+    assert!(text.contains("call i32 @tsuzuri_mutex_lock(ptr"), "{text}");
+    assert!(!text.contains("tsuzuri_tz_"), "{text}");
+}
+
+#[test]
 fn the_types_load_their_modules() {
     let named = |text: &str| -> Vec<&'static str> {
         tsuzuri::stdlib::sources_for([text])
