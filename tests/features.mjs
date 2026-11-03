@@ -1628,6 +1628,31 @@ const suites = {
     ],
     traps: [["parallel_large_length", [-1n]], ["parallel_trap", []]],
   },
+  // TZ11: the cases of `parallel` in a program that uses the tzroutine runtime, where Parallel runs on its scheduler
+  // (the same expected values), and Routine.scope, at one and at four Ps.
+  parallel_scheduler: {
+    nativeOnly: true,
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    cases: [
+      ...[0n, 1n, 4095n, 4096n, 4097n, 8192n].map((count) => ["parallel_init_sum", [count], count * (count + 1n) / 2n]),
+      ...[4194303n, 4194304n, 4194305n].map((count) => ["parallel_large_length", [count], count]),
+      ["parallel_slice", [], 19n], ["parallel_strings", [4097n], 20485n],
+      ["parallel_copy_arrays", [4097n], 4097n * 4098n / 2n], ["parallel_copy_functions", [], 22n],
+      ["parallel_callback_snapshots", [4097n], 8194n], ["parallel_float_special", [], 1n], ["parallel_order", [], 1203n],
+      ["parallel_capture_order", [], 53n],
+      ["parallel_wrapping", [], -16n],
+      ["scope_ring", [], 2143n],
+      ["scope_shares_borrow", [], 1225130000n],
+      ["scope_shares_an_atomic", [], 36n],
+      ["scope_empty", [], 0n],
+    ],
+    traps: [["parallel_large_length", [-1n]], ["parallel_trap", []]],
+    inspect(ir) {
+      for (const declaration of ["declare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)", "declare i32 @tsuzuri_tz_scope_run(ptr, ptr, i64)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+    },
+  },
   debug_output: {
     cases: [["debug_answer", [], 42n], ["debug_owned", [0n], 0n], ["debug_owned", [1000n], 5000n]],
     traps: [["debug_display_trap", []]],

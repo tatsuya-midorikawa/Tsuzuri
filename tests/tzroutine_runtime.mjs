@@ -22,6 +22,7 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
   "starvation", "select_same", "boundary", "report", "blocking", "donor", "batches", "timer_channel", "timer_stop",
   "ticker", "ticker_drop", "after_func", "boundary_timers", "sleep_ms_hook", "mutex32", "rwmutex", "once", "cond",
   "semaphore", "context_tree", "context_deadline", "context_release", "context_deadline_race", "context_after",
+  "parallel", "scope_run",
   "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows

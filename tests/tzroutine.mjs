@@ -559,6 +559,12 @@ run ()
   assert.match(contextReturn.stderr, /"code":"E2000"/);
   runs += 2;
 
+  // TZ11: Routine.scope spawns a tzroutine for each child: E2000 on WebAssembly too.
+  const scoped = project("export def f :: i64 -> i64\nfn f n =\n    let values = [n, n]\n    let doubled = Routine.scope (ref values) 2 (\\shared index -> shared[index] * 2)\n    doubled[0]\n");
+  const scopedWasm = cli(["build", scoped, "--target", "wasm32", "-o", join(temporary, "scoped.wasm"), "--json"], false);
+  assert.match(scopedWasm.stderr, /"code":"E2000"/);
+  runs++;
+
   // WebAssembly waits for JSPI (TZ09); the error is E2000 before any build.
   const exported = project("export def f :: i64 -> i64\nfn f n =\n    tzroutine { () }\n    n\n");
   const wasm = cli(["build", exported, "--target", "wasm32", "-o", join(temporary, "out.wasm"), "--json"], false);

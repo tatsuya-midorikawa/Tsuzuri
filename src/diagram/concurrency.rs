@@ -113,6 +113,7 @@ pub fn graph(
             "Task.parallel"
                 | "Task.parallel_results"
                 | "Task.scope"
+                | "Routine.scope"
                 | "Routine.go"
                 | "Time.after_func"
                 | "WaitGroup.go"

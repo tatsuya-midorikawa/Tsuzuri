@@ -4388,6 +4388,8 @@ fn expression_spawns(expression: &TypedExpr) -> bool {
         TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin.spawns() => {
             true
         }
+        // TZ11: `Routine.scope`, whose calls are parallel operations.
+        TypedExprKind::Parallel(operation, _) if operation.spawns() => true,
         _ => expression.children().into_iter().any(expression_spawns),
     }
 }
@@ -4417,6 +4419,7 @@ pub fn uses_tzroutine(module: &CheckedModule) -> bool {
 fn expression_uses_tzroutine(expression: &TypedExpr) -> bool {
     match &expression.kind {
         TypedExprKind::RoutineGo(_) | TypedExprKind::SelectWait(_) => true,
+        TypedExprKind::Parallel(operation, _) if operation.spawns() => true,
         TypedExprKind::Function(FunctionRef::Builtin(instance))
             if instance.builtin.spawns()
                 || instance.builtin.is_channel()
@@ -4435,6 +4438,7 @@ fn expression_uses_tzroutine(expression: &TypedExpr) -> bool {
 fn expression_waits(expression: &TypedExpr) -> bool {
     match &expression.kind {
         TypedExprKind::RoutineGo(_) | TypedExprKind::SelectWait(_) => true,
+        TypedExprKind::Parallel(operation, _) if operation.spawns() => true,
         TypedExprKind::Function(FunctionRef::Builtin(instance))
             if instance.builtin.spawns() || instance.builtin.is_channel() =>
         {

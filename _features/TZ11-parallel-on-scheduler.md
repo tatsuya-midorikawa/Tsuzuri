@@ -13,6 +13,15 @@
 | 手本にする既存実装 | `src/llvm_parallel.rs` の `parallel_launch`（97〜238 行。文脈を呼び出し元の `alloca` に置き、`@tsuzuri_task_parallel(ptr cb, ptr ctx, i64 chunks)` を呼ぶ）・`parallel_scope_child`（283 行）・`Task.scope` の生成（579〜641 行）、`src/runtime/task.c` の `tz_task_submit`（421 行。呼んだスレッドも仕事をする）、`src/check.rs` の `Builtin::TaskScope`（1604 行・`sync_scheme` 3492 行）と `is_parallel`・`parallel_callback`（3429〜3448 行）、`src/ownership.rs` の `E::Parallel` の腕（3106〜3172 行） |
 | 主な影響ファイル | `src/runtime/tzroutine.c`・`src/llvm_parallel.rs`・`src/llvm.rs`・`src/check.rs`・`src/ownership.rs`・`src/effects.rs`・`src/pure_rules.rs`・`src/kg/effects.rs`・`src/kg_capture.rs`・`src/diagram/concurrency.rs`・`tests/tzroutine_runtime.c`・`tests/parallel_scheduler.rs`（新規）・`tests/fixtures/parallel_scheduler/Main.tz`（新規）・`tests/tzroutine.mjs`・`tests/features.mjs`・文書 |
 
+## 着手時の再検討（2026-11-03、TZ07 の上）
+
+TZ06・TZ07 の実装と照合し、次のとおり直してから実装した。以下が本文より優先する。
+
+1. **トラップの境界の中の `Parallel` はプールに残す**: トラップの枠（`src/runtime/trap.c` の `tz_frame`）はスレッドのもの（`_Thread_local`）。`Domain.run`（純粋な本体）の中の `Parallel.*` が tzroutine の上で待つと、その M で走るほかの G（手伝いを含む）が同じ枠を見て、トラップで別のスタックへ `longjmp` しうる。プールは項目ごとに境界の下で走らせ、項目のトラップを呼び出し元で投げ直す（B10）。そこで `tsuzuri_tz_parallel` は、呼んだスレッドがトラップの境界の中なら（`tsuzuri_trap_hooks.owner()` が `NULL` でない。`task.c` と同じ弱いフック）何もせず 3 を返し、生成コードはそのときだけ今の `tsuzuri_task_parallel` を呼ぶ（`with_blocking_calls`・`with_task_accounting` もそのまま掛かる）。境界の外では、ticket の設計どおり呼んだ G も待ち（parking lot）、手伝いの G の枠は常に空。テストとベンチマークの実行器は境界を使わない（子のプロセス）ので、境界は `Domain.run` だけ（`--trap-mode return` は tzroutine のプログラムでは `E2000`）。TZ12 でプールを消すときは、枠を G ごとにするか、同じ判断をし直す。
+2. **WebAssembly は対象外**: 分岐は `globals.tzroutine && !globals.wasm` のときだけ（既定の WebAssembly の tzroutine のプログラムは `TZR_SINGLE` で、`tsuzuri_tz_parallel` を持たない）。
+3. **`Routine.scope` のスコープは境界でない**: `tsuzuri_tz_scope_run` は、呼んだ G のスコープの `boundary` を受け継ぐ非境界のスコープを作る（`tsuzuri_tz_scope_enter` は境界を作るので使わない）。子が作るタイマーは呼び出し元の境界のもの。子と、子が起動した tzroutine を待つ。手伝いの tzroutine（`Parallel`）は呼んだ G のスコープで数える。
+4. **`Routine.scope` の呼び出しは並列の操作の式**: 完全に適用した呼び出しは `TypedExprKind::Parallel` なので、`llvm::spawns`・`uses_tzroutine`・`waits` は `Function` の参照に加えて `Parallel(op, _)` の `op.spawns()` を見る。`Builtin::is_routine` は `Routine.scope` を除く（`Routine` の生成へ行かない）。`Builtin::is_scope`（`Task.scope`・`Routine.scope`）を足した。
+
 ## 実装者向け早見
 
 - 範囲: tzroutine を使うプログラムで、`Parallel.init`・`map`・`map_ref`・`reduce`・`for_each_chunk`（と `Parallel.sum`・`fold`）を `task.c` のプールではなく tzroutine の上で走らせる（1 つのプロセスに 2 つのスレッドの集まりを持たない）。`Task.scope` の後継の `Routine.scope` を足す（子ごとに 1 つの tzroutine。子は待ってよい）。tzroutine を使わないプログラムは TZ12 まで今のまま。
