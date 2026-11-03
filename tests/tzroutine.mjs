@@ -559,6 +559,25 @@ run ()
   assert.match(contextReturn.stderr, /"code":"E2000"/);
   runs += 2;
 
+  // TZ11: inside Domain.run, Parallel stays on the pool, which runs each chunk under the boundary:
+  // the sum is the same, and a trap in a chunk is the domain's Result.Error.
+  const domained = project(`tzroutine { () }
+let sum = match Domain.run (\\() -> Parallel.sum (ref (Parallel.init 10000 (\\index -> index)))) with
+    | Result.Ok total -> total
+    | Result.Error _ -> -1
+let trapped = match Domain.run (\\() -> (Parallel.init 8192 (\\index -> { assert (index != 4096); index })).length) with
+    | Result.Ok _ -> "no trap"
+    | Result.Error _ -> "trapped"
+$"{sum} {trapped}"
+`);
+  for (const optimization of ["-O0", "-O3"]) {
+    for (const procs of ["1", "4"]) {
+      const run = cli(["run", domained, optimization], true, { TSUZURI_MAXPROCS: procs });
+      assert.equal(lines(run.stdout), "49995000 trapped\n", `Parallel in Domain.run ${optimization} P${procs}`);
+      runs++;
+    }
+  }
+
   // TZ11: Routine.scope spawns a tzroutine for each child: E2000 on WebAssembly too.
   const scoped = project("export def f :: i64 -> i64\nfn f n =\n    let values = [n, n]\n    let doubled = Routine.scope (ref values) 2 (\\shared index -> shared[index] * 2)\n    doubled[0]\n");
   const scopedWasm = cli(["build", scoped, "--target", "wasm32", "-o", join(temporary, "scoped.wasm"), "--json"], false);
