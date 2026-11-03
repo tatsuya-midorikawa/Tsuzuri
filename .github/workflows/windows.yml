@@ -157,6 +157,10 @@ jobs:
       - name: tzroutine end to end (TZ02)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/tzroutine.mjs target/release/tsuzuri.exe
+      # TZ05: the schedules of the timers on fibers, at 1 and 4 Ps (stop, reset, drop and live == 0).
+      - name: timers end to end (TZ05)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/features.mjs target/release/tsuzuri.exe timers
       - name: W6 build cache
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/cache.mjs target/release/tsuzuri.exe
