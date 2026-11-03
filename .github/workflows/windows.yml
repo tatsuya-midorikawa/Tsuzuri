@@ -161,6 +161,15 @@ jobs:
       - name: timers end to end (TZ05)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/features.mjs target/release/tsuzuri.exe timers
+      # TZ06: the sync types on fibers, at 1 and 4 Ps, and without a second tzroutine (native and the default
+      # WebAssembly target).
+      - name: sync types end to end (TZ06)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tests/features.mjs target/release/tsuzuri.exe sync_types
+          if ($LASTEXITCODE -ne 0) { throw "sync_types failed: $LASTEXITCODE" }
+          node tests/features.mjs target/release/tsuzuri.exe sync_single
+          if ($LASTEXITCODE -ne 0) { throw "sync_single failed: $LASTEXITCODE" }
       - name: W6 build cache
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/cache.mjs target/release/tsuzuri.exe

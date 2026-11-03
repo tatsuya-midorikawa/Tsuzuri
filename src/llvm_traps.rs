@@ -166,7 +166,10 @@ fn runtime_kind(function: &str) -> TrapKind {
         TrapKind::ContractRequires
     } else if function.contains("builtin.$ensures") {
         TrapKind::ContractEnsures
-    } else if function.contains("builtin.assert") || function.starts_with("@tz.mutex.") {
+    } else if function.contains("builtin.assert")
+        || function.starts_with("@tz.mutex.")
+        || function.starts_with("@tz.waitgroup.")
+    {
         TrapKind::Assert
     } else if function.contains("builtin.unreachable") {
         TrapKind::MatchFailure
@@ -582,7 +585,7 @@ pub(super) fn instrument_with(
                 && name.as_str() != "@tz.tzroutine.owned"
                 // TZ05 and TZ06: the timers and WaitGroup.go call these too.
                 && name.as_str() != "@tz.tzroutine.owned.drop"
-                && name.as_str() != "@tz.waitgroup.go"
+                && !name.starts_with("@tz.waitgroup.go")
                 && !(free_handed && name.as_str() == "@tz.free")
         })
         .cloned()

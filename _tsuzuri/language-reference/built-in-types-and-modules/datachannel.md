@@ -206,7 +206,7 @@ match DataChannel.bounded 64 with
 jobs=20 squares=2870
 ```
 
-2 つのワーカーが何件ずつ処理するかは、実行ごとに変わります。合計は変わりません。`Mutex.with_lock` の中では `DataChannel` の操作はできないので（[ロックの中](#ロックの中)）、`recv` はロックの外で行い、受け取った値だけをロックの中で使います。
+2 つのワーカーが何件ずつ処理するかは、実行ごとに変わります。合計は変わりません。`Mutex.with_lock` の中の `DataChannel` の操作はトラップするか（[ロックの中](#ロックの中)）、スレッドを止めたまま待つので、`recv` はロックの外で行い、受け取った値だけをロックの中で使います。
 
 ### 端を共有する
 
@@ -265,7 +265,9 @@ Tsuzuri runtime: deadlock: every task is waiting on a channel
 
 ### ロックの中
 
-`Mutex.with_lock` の中で `DataChannel.send`・`DataChannel.recv` を呼ぶと、待つことになるかどうかにかかわらず、トラップします。ロックを持ったまま待つと、ロックを待つスレッドと、ロックの持ち主が待つチャンネルの相手が、互いを待つ形になりうるからです。native では、トラップの前に `a Channel operation may wait; move it outside Mutex.with_lock` と出します。
+tzroutine のランタイムを使わないプログラムでは、`Mutex.with_lock`（タスクのランタイムのロック）の中で `DataChannel.send`・`DataChannel.recv` を呼ぶと、待つことになるかどうかにかかわらず、トラップします。ロックを持ったまま待つと、ロックを待つスレッドと、ロックの持ち主が待つチャンネルの相手が、互いを待つ形になりうるからです。native では、トラップの前に `a Channel operation may wait; move it outside Mutex.with_lock` と出します。
+
+tzroutine のランタイムを使うプログラム（`Channel`・`select`・タイマー・同期の型を使うもの）の `Mutex.with_lock` は tzroutine のロックで（[Mutex](./mutex.md#tzroutine-のプログラムのロック)）、この検査はなく、トラップしません。ただし `DataChannel` の待ちはそのスレッドを止めるので、ロックを持ったまま `DataChannel` で待つと、同じ形の待ち合いになりえます。ロックの外で待ちます。
 
 ### トラップ
 
@@ -349,4 +351,4 @@ error[E1013]: a channel item cannot hold a borrow, including a borrowed function
 - タスクの間で所有値を受け渡すときは `DataChannel` を使い、端を所有するタスクを `Task.parallel` に渡します。
 - 最後の `Sender` の drop が、チャンネルを閉じます。drop し忘れた `Sender` は、受け手を待たせ続けますが、すべてのスレッドが待った時点で、判定のトラップになります。
 - 待つタスクの数がスレッド数を超えるパイプラインは、完了しないことがあります。判定のトラップは、そのときの合図です。
-- `Mutex.with_lock` の中では `DataChannel` を使えません。
+- tzroutine のランタイムを使わないプログラムの `Mutex.with_lock` の中では `DataChannel` を使えません（トラップ）。使うプログラムでもロックの外で待ちます。
