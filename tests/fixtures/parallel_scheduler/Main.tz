@@ -142,3 +142,58 @@ export def scope_empty :: i64
 fn scope_empty =
     let values = [1i64]
     (Routine.scope (ref values) 0 (\shared index -> shared[0] + index)).length
+
+// Parallel.for_each_chunk on the scheduler: the cases of tests/fixtures/mutable_slices, with the same
+// expected values (exclusive slices written in place, a callback chosen at run time, partial last
+// chunks and more chunks than the 1,024 jobs).
+def total :: ref [i64] -> i64
+fn total values =
+    let mut sum = 0i64
+    for value in values do sum = sum + value
+    sum
+
+def double_chunk :: own i64 -> ref mut [i64..] -> unit
+fn double_chunk start chunk =
+    for index in 0i64 ..= (chunk.length - 1) do
+        let value = chunk[index]
+        Array.write index (value * 2 + (start + index) % 3) chunk
+
+export def chunk_double :: own i64 -> own i64 -> i64
+fn chunk_double count size =
+    let mut values = new [i64](count, \index -> index)
+    Parallel.for_each_chunk size double_chunk (ref mut values)
+    total values
+
+export def chunk_captured :: own i64 -> own i64 -> i64
+fn chunk_captured count size =
+    let mut values = new [i64](count, \_index -> 0)
+    let offset = count * 10
+    Parallel.for_each_chunk size (\start chunk ->
+        for index in 0i64 ..= (chunk.length - 1) do Array.write index (start + index + offset) chunk) (ref mut values)
+    total values
+
+export def chunk_strings :: own i64 -> i64
+fn chunk_strings count =
+    let mut words = new [string](count, \index -> to_string (count - index))
+    Parallel.for_each_chunk 7 (\_start chunk -> Array.sort_in_place chunk) (ref mut words)
+    let mut sum = 0i64
+    for word in words do sum = sum * 31 + word.length
+    sum
+
+def mark :: ref mut [i64..] -> own i64 -> own i64 -> unit
+fn mark chunk start offset =
+    for index in 0i64 ..= (chunk.length - 1) do Array.write index (start + index + offset) chunk
+
+export def chunk_dynamic :: own i64 -> own i64 -> i64
+fn chunk_dynamic count size =
+    let mut values = new [i64](count, \_index -> 0)
+    let offset = count * 10
+    let body: i64 -> ref mut [i64..] -> unit = if size % 2 == 0 then (\start chunk -> mark chunk start offset) else (\start chunk -> mark chunk start (offset + 1))
+    Parallel.for_each_chunk size body (ref mut values)
+    total values
+
+export def chunk_size_zero :: i64
+fn chunk_size_zero =
+    let mut values: [i64] = [1, 2, 3]
+    Parallel.for_each_chunk 0 (\_start chunk -> Array.write 0 1 chunk) (ref mut values)
+    values[0]

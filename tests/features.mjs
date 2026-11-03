@@ -1645,8 +1645,20 @@ const suites = {
       ["scope_shares_borrow", [], 1225130000n],
       ["scope_shares_an_atomic", [], 36n],
       ["scope_empty", [], 0n],
+      // The for_each_chunk cases of mutable_slices, with its expected values.
+      ...[[0n, 1n], [1n, 1n], [10n, 3n], [10000n, 4096n], [10000n, 1n], [5n, 100n]].map(([count, size]) => ["chunk_double", [count, size],
+        Array.from({ length: Number(count) }, (_, index) => 2n * BigInt(index) + BigInt(index % 3)).reduce((sum, value) => sum + value, 0n)]),
+      ...[[0n, 2n], [9n, 4n], [5000n, 333n]].map(([count, size]) => ["chunk_captured", [count, size], count * (count - 1n) / 2n + 10n * count * count]),
+      ...[0n, 1n, 7n, 20n, 100n].map((count) => {
+        const words = Array.from({ length: Number(count) }, (_, index) => String(count - BigInt(index)));
+        const sorted = [];
+        for (let start = 0; start < words.length; start += 7) sorted.push(...words.slice(start, start + 7).sort());
+        return ["chunk_strings", [count], sorted.reduce((sum, word) => BigInt.asIntN(64, sum * 31n + BigInt(word.length)), 0n)];
+      }),
+      ...[[0n, 1n], [1n, 1n], [10n, 4n], [2049n, 1n], [4098n, 2n], [5000n, 1n], [5000n, 3n], [100n, 1000n]].map(([count, size]) =>
+        ["chunk_dynamic", [count, size], count * (count - 1n) / 2n + count * (10n * count + size % 2n)]),
     ],
-    traps: [["parallel_large_length", [-1n]], ["parallel_trap", []]],
+    traps: [["parallel_large_length", [-1n]], ["parallel_trap", []], ["chunk_size_zero", []]],
     inspect(ir) {
       for (const declaration of ["declare i32 @tsuzuri_tz_parallel(ptr, ptr, i64)", "declare i32 @tsuzuri_tz_scope_run(ptr, ptr, i64)"]) {
         assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
