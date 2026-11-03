@@ -2816,6 +2816,9 @@ impl<'a> Checker<'a, '_> {
                 Some(sources) => {
                     self.argument_regions(sources, slots, index, argument, &value, &mut current)
                 }
+                // The reference of `OnceValue.get` points into the cell, never into what its
+                // initializer borrowed: that was checked above to stay out of the cell.
+                None if kept && index == 1 => {}
                 None => current.loans.extend(&value.loans),
             }
             self.held.push(value);

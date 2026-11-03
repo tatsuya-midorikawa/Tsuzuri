@@ -413,7 +413,7 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "SyncMap",
         names: &["SyncMap"],
         aliases: &[],
-        uses: &["RwMutex"],
+        uses: &["RwMutex", "Mutex"],
     },
     OptIn {
         module: "RegexText",

@@ -581,10 +581,16 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         TickerReset => facts(Some(Effect::Os), false, true, false, false, false, None),
         // `Time.after_func` spawns a tzroutine that calls the owned function it takes.
         TimeAfterFunc => facts(Some(Effect::Task), true, false, false, true, false, None),
-        // A new handle of the timer's channel, which its drop releases.
-        TimerChannel | TickerChannel => {
-            facts(Some(Effect::Atomic), true, false, false, false, false, None)
-        }
+        // A new handle of the timer's channel, which its drop releases (no allocation).
+        TimerChannel | TickerChannel => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
         TimerStop | TickerStop => facts(
             Some(Effect::Atomic),
             false,
@@ -601,10 +607,19 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // TZ06: the handles and cells of the sync types are allocated; a wait may last for ever
         // and traps at a deadlock; a lock taken again, a negative counter and a weight out of range
         // trap.
-        WaitGroupCreate | OnceCreate | OnceValueCreate | RwMutexCreate | CondCreate
-        | WaitGroupShare | OnceShare | CondShare | SemaphoreShare => {
+        WaitGroupCreate | OnceCreate | OnceValueCreate | RwMutexCreate | CondCreate => {
             facts(Some(Effect::Atomic), true, false, false, false, false, None)
         }
+        // Another handle of the same block: one more in its count, no allocation.
+        WaitGroupShare | OnceShare | CondShare | SemaphoreShare => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
         SemaphoreCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
         WaitGroupWait | OnceBegin | SemaphoreAcquire => {
             facts(Some(Effect::Atomic), false, true, true, false, false, None)
@@ -682,9 +697,17 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ChannelClose | SendOnlyClose => {
             facts(Some(Effect::Atomic), false, true, false, false, false, None)
         }
-        // A new handle that its drop releases.
+        // A new handle that its drop releases: one more in the channel's count, no allocation.
         ChannelShare | ChannelSendOnly | ChannelReceiveOnly | SendOnlyShare | ReceiveOnlyShare => {
-            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+            facts(
+                Some(Effect::Atomic),
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+            )
         }
         // B28
         MutexWith => facts(Some(Effect::Atomic), false, true, true, true, false, None),
@@ -3561,7 +3584,7 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 84);
+        assert_eq!(count(|facts| facts.alloc), 73);
     }
 
     #[test]

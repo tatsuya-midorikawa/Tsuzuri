@@ -47,11 +47,19 @@ fn with_value map key reader = RwMutex.with_read (ref map.inner) (\table ->
 /// SyncMap.store (ref map) "a" 3
 /// SyncMap.length (ref map)
 /// ```
-def store :: (Hash<'k>, Eq<'k>) => ref SyncMap<'k, 'v> -> own 'k -> own 'v -> unit
-fn store map key value = RwMutex.with_write (ref map.inner) (\table -> {
-    let old = SyncMap.__replace (HashMap.empty()) table;
-    deref table = HashMap.insert key value old
-})
+def store :: (Hash<'k>, Eq<'k>, Send<'k>, Send<'v>) => ref SyncMap<'k, 'v> -> own 'k -> own 'v -> unit
+fn store map key value =
+    // The callback can run more than once as far as its type says, so it borrows the pair in a
+    // cell and takes it out once, instead of capturing values that a function cannot hold.
+    let pending = Mutex.create (Maybe.Some (key, value))
+    let slot = ref pending
+    RwMutex.with_write (ref map.inner) (\table ->
+        match take slot with
+        | Maybe.Some (key, value) -> {
+            let old = SyncMap.__replace (HashMap.empty()) table;
+            deref table = HashMap.insert key value old
+        }
+        | Maybe.None -> ())
 
 /// The value that the key has, with `true`, or the given value, which it stores, with `false` (Go's
 /// `m.LoadOrStore(key, value)`).
@@ -64,15 +72,22 @@ fn store map key value = RwMutex.with_write (ref map.inner) (\table -> {
 /// | ((stored, false), (found, true)) -> stored * 10 + found
 /// | _ -> 0
 /// ```
-def load_or_store :: (Hash<'k>, Eq<'k>, Copy<'v>) => ref SyncMap<'k, 'v> -> own 'k -> own 'v -> ('v * bool)
-fn load_or_store map key value = RwMutex.with_write (ref map.inner) (\table ->
-    match HashMap.get_ref (ref key) (deref table) with
-    | Maybe.Some found -> (found, true)
-    | Maybe.None -> {
-        let old = SyncMap.__replace (HashMap.empty()) table;
-        deref table = HashMap.insert key value old;
-        (value, false)
-    })
+def load_or_store :: (Hash<'k>, Eq<'k>, Copy<'v>, Send<'k>, Send<'v>) => ref SyncMap<'k, 'v> -> own 'k -> own 'v -> ('v * bool)
+fn load_or_store map key value =
+    let fallback = value
+    let pending = Mutex.create (Maybe.Some (key, value))
+    let slot = ref pending
+    RwMutex.with_write (ref map.inner) (\table ->
+        match take slot with
+        | Maybe.Some (key, value) ->
+            match HashMap.get_ref (ref key) (deref table) with
+            | Maybe.Some found -> (found, true)
+            | Maybe.None -> {
+                let old = SyncMap.__replace (HashMap.empty()) table;
+                deref table = HashMap.insert key value old;
+                (value, false)
+            }
+        | Maybe.None -> (fallback, false))
 
 /// Removes the key; true when it was there (Go's `m.Delete(key)`).
 ///
@@ -83,12 +98,14 @@ fn load_or_store map key value = RwMutex.with_write (ref map.inner) (\table ->
 /// $"{removed}\n{SyncMap.length (ref map)}"
 /// ```
 def delete :: (Hash<'k>, Eq<'k>) => ref SyncMap<'k, 'v> -> ref 'k -> bool
-fn delete map key = RwMutex.with_write (ref map.inner) (\table ->
-    if HashMap.contains_key_ref key (deref table) then {
-        let old = SyncMap.__replace (HashMap.empty()) table;
-        deref table = HashMap.remove_ref key old;
-        true
-    } else false)
+fn delete map key = RwMutex.with_write (ref map.inner) (\table -> {
+    let old = SyncMap.__replace (HashMap.empty()) table;
+    let before = HashMap.length (ref old);
+    let left = HashMap.remove_ref key old;
+    let removed = HashMap.length (ref left) < before;
+    deref table = left;
+    removed
+})
 
 /// The number of keys.
 ///
@@ -117,3 +134,7 @@ fn length map = RwMutex.with_read (ref map.inner) (\table -> HashMap.length tabl
 /// ```
 def for_each :: ref SyncMap<'k, 'v> -> own (ref 'k -> ref 'v -> unit) -> unit
 fn for_each map visit = RwMutex.with_read (ref map.inner) (\table -> HashMap.fold (\_state key value -> visit key value) () table)
+
+/// Takes the pair out of its cell, once: `store` and `load_or_store` lend it to their callback.
+private def take :: Send<'a> => ref Mutex<Maybe<'a>> -> Maybe<'a>
+fn take pending = Mutex.with_lock pending (\slot -> SyncMap.__replace Maybe.None slot)

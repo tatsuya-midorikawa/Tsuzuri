@@ -244,7 +244,7 @@ Go の `time.Time`（壁時計の時刻・書式・時差）に当たる型は�
 
 戻り値の `i64` は `Copy` です。アクション自体は実行するまで時計を読みません。同じ `IO` 値を 2 回実行すると、その都度時計を読み取ります。
 
-既定の wasm32 で `monotonic_ns`・`unix_ns`・`sleep_ms` に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では WASI の時計とポーリングに下がります。`Time.sleep` は WebAssembly では `sleep_ms` と同じ待ち（ミリ秒に切り上げ、`--wasm-host` が必要）です。`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のスケジューラーのタイマーを使うので、WebAssembly では tzroutine と同じく `E2000`（`--wasm-feature jspi` が必要。まだ実装されていません）、`--trap-mode return` とも組み合わせられません（`E2000`）。
+既定の wasm32 で `monotonic_ns`・`unix_ns`・`sleep_ms` に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では WASI の時計とポーリングに下がります。`Time.sleep` は WebAssembly では `sleep_ms` と同じ待ち（ミリ秒に切り上げ、`--wasm-host` が必要）です。`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のスケジューラーのタイマーを使うので、WebAssembly では tzroutine と同じく `E2000`（`--wasm-feature jspi` が必要。まだ実装されていません）、`--trap-mode return` とも組み合わせられません（`E2000`）。`Time.sleep` もスケジューラーで待つので、ネイティブの `--trap-mode return` とは組み合わせられません（`E2000`。メッセージは `Channel` と同期の型と同じ）。
 
 Windows のネイティブビルドは、`monotonic_ns`・`unix_ns`・`sleep_ms` の OS API に到達すると `E2002` で失敗します。`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のランタイムで動くので、Windows でも使えます（時計は `QueryPerformanceCounter`）。
 

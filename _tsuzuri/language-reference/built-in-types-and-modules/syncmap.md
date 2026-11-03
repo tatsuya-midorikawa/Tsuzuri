@@ -34,8 +34,8 @@ match SyncMap.load (ref map) (ref 2) with
 | `SyncMap.create` | `(Send<'k>, Send<'v>) => unit -> SyncMap<'k, 'v>` | 空のマップ |
 | `SyncMap.load` | `(Hash<'k>, Eq<'k>, Copy<'v>, Send<'v>) => ref SyncMap<'k, 'v> -> ref 'k -> Maybe<'v>` | 値のコピー（Go の `Load`） |
 | `SyncMap.with_value` | `(Hash<'k>, Eq<'k>, Send<'b>) => ref SyncMap<'k, 'v> -> ref 'k -> (ref 'v -> 'b) -> Maybe<'b>` | 値を借りた関数の結果 |
-| `SyncMap.store` | `(Hash<'k>, Eq<'k>) => ref SyncMap<'k, 'v> -> 'k -> 'v -> unit` | 値を置く（Go の `Store`） |
-| `SyncMap.load_or_store` | `(Hash<'k>, Eq<'k>, Copy<'v>) => ref SyncMap<'k, 'v> -> 'k -> 'v -> ('v * bool)` | あれば今の値と `true`、なければ置いて渡した値と `false`（Go の `LoadOrStore`） |
+| `SyncMap.store` | `(Hash<'k>, Eq<'k>, Send<'k>, Send<'v>) => ref SyncMap<'k, 'v> -> 'k -> 'v -> unit` | 値を置く（Go の `Store`）。関数値に捕捉できない値（`Mutex` など）も置ける |
+| `SyncMap.load_or_store` | `(Hash<'k>, Eq<'k>, Copy<'v>, Send<'k>, Send<'v>) => ref SyncMap<'k, 'v> -> 'k -> 'v -> ('v * bool)` | あれば今の値と `true`、なければ置いて渡した値と `false`（Go の `LoadOrStore`） |
 | `SyncMap.delete` | `(Hash<'k>, Eq<'k>) => ref SyncMap<'k, 'v> -> ref 'k -> bool` | 取り除く。あったなら真（Go の `Delete`） |
 | `SyncMap.length` | `ref SyncMap<'k, 'v> -> i64` | キーの数 |
 | `SyncMap.for_each` | `ref SyncMap<'k, 'v> -> (ref 'k -> ref 'v -> unit) -> unit` | すべてのキーと値（Go の `Range`。順序は決まらない） |
