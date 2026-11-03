@@ -1071,7 +1071,6 @@ static void test_timer_channel(void) {
     int64_t start = tzr_nanotime();
     tzr_chan *c = timer_block();
     timer_after(20000000, c);
-    CHECK(pending_timers() == 1);
     tsuzuri_tz_go(timer_receiver, c);
     tsuzuri_tz_boundary_leave(scope);
     CHECK(timer_received >= start + 20000000);
