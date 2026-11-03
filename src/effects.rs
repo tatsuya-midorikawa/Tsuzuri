@@ -483,6 +483,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // B14
         BenchNow | GenSeed => facts(Some(Effect::Os), false, false, false, false, false, None),
         // B15
+        // TZ06: a sleep may hold the G's lock, so no sleep traps (TZ05's guard is gone).
         OsClock | OsSleep | OsClose => facts(
             Some(Effect::Os),
             false,
