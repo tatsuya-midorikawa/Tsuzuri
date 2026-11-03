@@ -218,16 +218,19 @@ let result =
     | recv _ from deadline -> "timeout"
 do! IO.write_line result
 `, "timeout\n"],
-  // A ticker and a quit channel in one select loop; main sleeps (stopping its thread) and quits it.
-  [`def worker :: ref Channel<unit> -> ref Channel<i64> -> unit
-fn worker quit report =
+  // A ticker and a quit channel in one select loop; main waits for the worker's first tick and quits it.
+  [`def worker :: ref Channel<unit> -> ref Channel<i64> -> ref Channel<unit> -> unit
+fn worker quit report first =
     let ticker = Ticker.create (2 * Time.millisecond())
     let ticks = Ticker.channel ticker
     let mut count = 0i64
     let mut running = true
     while running do
         select
-        | recv _ from ticks -> count = count + 1
+        | recv _ from ticks -> {
+            count = count + 1;
+            if count == 1 then Channel.send first ()
+        }
         | recv _ from quit -> running = false
     Channel.send report count
 
@@ -235,12 +238,14 @@ def run :: unit -> string
 fn run _ =
     let quit: Channel<unit> = Channel.make 0
     let reports: Channel<i64> = Channel.make 1
+    let firsts: Channel<unit> = Channel.make 1
     let worker_quit = Channel.share quit
     let worker_report = Channel.share reports
+    let worker_first = Channel.share firsts
     tzroutine {
-        worker (ref worker_quit) (ref worker_report)
+        worker (ref worker_quit) (ref worker_report) (ref worker_first)
     }
-    Time.sleep (20 * Time.millisecond())
+    let _ticked = Channel.recv firsts
     Channel.send quit ()
     match Channel.recv reports with
     | Maybe.Some count -> if count >= 1 then "stopped after ticks" else "no tick"
@@ -388,43 +393,40 @@ bump ()
     runs++;
   }
 
-  // TZ05: Time.sleep_ms in a tzroutine waits without its thread (the hook of os.c): with one P, two
-  // tzroutines finish 1,000 round trips while a third sleeps 200 ms. Time.after's value is on
+  // TZ05: Time.sleep_ms in a tzroutine waits without its thread (the hook of os.c): a watcher sees
+  // the sleeper asleep, which needs the thread while it sleeps (with one P too). The sleeper starts
+  // when the watcher runs, and the watcher yields until it has woken. Time.after's value is on
   // Time.monotonic_ns's clock, and not early. os.c is POSIX only.
   if (process.platform !== "win32") {
     const sleeping = project(`def run :: unit -> string
 fn run _ =
-    let reports: Channel<string> = Channel.make 2
-    let sleeper = Channel.share reports
+    let state = Arc.new (Atomic.create 0i64)
+    let ready: Channel<unit> = Channel.make 0
+    let reports: Channel<string> = Channel.make 1
+    let sleeper_state = Arc.share (ref state)
+    let start = Channel.share ready
     tzroutine {
-        let! _slept = Time.sleep_ms 200
-        Channel.send sleeper "sleeper"
+        let _go = Channel.recv start
+        Atomic.store (Arc.get (ref sleeper_state)) 1
+        let! _slept = Time.sleep_ms 100
+        Atomic.store (Arc.get (ref sleeper_state)) 2
     }
-    let pings: Channel<i64> = Channel.make 0
-    let pongs: Channel<i64> = Channel.make 0
-    let server_pings = Channel.share pings
-    let server_pongs = Channel.share pongs
+    let watcher_state = Arc.share (ref state)
+    let go = Channel.share ready
+    let report = Channel.share reports
     tzroutine {
-        for value in server_pings do
-            Channel.send server_pongs value
+        Channel.send go ()
+        let mut seen = false
+        let mut current = Atomic.load (Arc.get (ref watcher_state))
+        while current != 2 do
+            if current == 1 then seen = true
+            Routine.yield ()
+            current = Atomic.load (Arc.get (ref watcher_state))
+        Channel.send report (if seen then "worker ran" else "blocked")
     }
-    let client_pings = Channel.share pings
-    let client_pongs = Channel.share pongs
-    let worker = Channel.share reports
-    tzroutine {
-        for round in 1 ..= 1000 do
-            Channel.send client_pings (round as i64)
-            let _pong = Channel.recv client_pongs
-        Channel.close client_pings
-        Channel.send worker "worker"
-    }
-    let first = match Channel.recv reports with
-        | Maybe.Some who -> who
-        | Maybe.None -> "none"
-    let second = match Channel.recv reports with
-        | Maybe.Some who -> who
-        | Maybe.None -> "none"
-    $"{first} {second}"
+    match Channel.recv reports with
+    | Maybe.Some who -> who
+    | Maybe.None -> "none"
 
 run ()
 `);
@@ -445,7 +447,7 @@ run ()
     for (const optimization of ["-O0", "-O3"]) {
       for (const procs of ["1", "4"]) {
         const run = cli(["run", sleeping, optimization], true, { TSUZURI_MAXPROCS: procs });
-        assert.equal(lines(run.stdout), "worker sleeper\n", `Time.sleep_ms ${optimization} P${procs}`);
+        assert.equal(lines(run.stdout), "worker ran\n", `Time.sleep_ms ${optimization} P${procs}`);
         runs++;
       }
       const run = cli(["run", valued, optimization]);

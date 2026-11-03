@@ -2565,8 +2565,8 @@ const suites = {
     environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
     cases: [
       ["after_is_a_timeout", [30n], 1n],
-      ["sleep_order", [], 231n],
-      ["sleep_does_not_block_others", [], 21n],
+      ["sleeps_are_not_early", [], 6n],
+      ["sleep_does_not_block_others", [], 1n],
       ["timer_stop_reset", [], 10010n],
       ["ticker_five", [], 5n],
       ["tick_dropped", [], 2n],

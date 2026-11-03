@@ -92,36 +92,41 @@ Time.second() / Time.millisecond() + 500
 
 `Time.sleep d` は、少なくとも `d` ナノ秒待ちます（Go の `time.Sleep`）。[tzroutine](../async-tasks-and-lazy/tzroutine.md) の中では、その tzroutine だけが待ち、OS スレッドはほかの tzroutine を走らせます。`main` などのスレッドでは、そのスレッドが止まります。`d` が 0 以下なら、`Routine.yield` と同じく 1 回だけ譲ります。
 
-次の例では、3 つの tzroutine が 30・10・20 ms 眠ってから自分の番号を送ります。受け取る順は眠る時間の順です。
+次の例では、3 つの tzroutine が 10・20・30 ms 眠り、眠る前と起きた後の時刻（[`Time.after`](#タイムアウトtimeafter) の値と同じ単調時計）の差が眠った時間以上なら自分の番号を送ります。届く順はスケジューラーしだいですが、どれも早く起きることはありません。
 
-```tsuzuri run=231
-def order :: unit -> i64
-fn order _ =
+```tsuzuri run=6
+def now :: unit -> i64
+fn now _ =
+    let fired = Time.after 0
+    match Channel.recv fired with
+    | Maybe.Some time -> time
+    | Maybe.None -> 0
+
+def woke :: unit -> i64
+fn woke _ =
     let arrivals: Channel<i64> = Channel.make 3
     for number in 1 ..= 3 do
         let out = Channel.share arrivals
-        let nap = match number with
-            | 1 -> 30
-            | 2 -> 10
-            | _ -> 20
+        let nap = (number as i64) * 10 * Time.millisecond()
         tzroutine {
-            Time.sleep (nap * Time.millisecond())
-            Channel.send out (number as i64)
+            let start = now ()
+            Time.sleep nap
+            Channel.send out (if now () - start >= nap then number as i64 else 100)
         }
-    let mut result = 0i64
+    let mut total = 0i64
     for _ in 1 ..= 3 do
-        result = result * 10 + (match Channel.recv arrivals with
+        total = total + (match Channel.recv arrivals with
             | Maybe.Some number -> number
             | Maybe.None -> 0)
-    result
+    total
 
-order ()
+woke ()
 ```
 
 実行結果:
 
 ```text
-231
+6
 ```
 
 既存の `Time.sleep_ms` も、tzroutine の中では `Time.sleep` と同じく、その tzroutine だけを待たせます（スレッドを止めません）。結果の型と、負の数が `InvalidInput` になることは変わりません。

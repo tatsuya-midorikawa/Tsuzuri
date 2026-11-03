@@ -483,7 +483,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // B14
         BenchNow | GenSeed => facts(Some(Effect::Os), false, false, false, false, false, None),
         // B15
-        OsClock | OsSleep | OsClose => facts(
+        OsClock | OsClose => facts(
             Some(Effect::Os),
             false,
             false,
@@ -492,6 +492,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             false,
             Some("host_status"),
         ),
+        // TZ05: in a program that waits, a positive sleep inside the thread's Mutex.with_lock
+        // traps, as Time.sleep does.
+        OsSleep => facts(Some(Effect::Os), false, true, false, false, false, None),
         // B16
         OsArgs | OsRandom => facts(
             Some(Effect::Os),
@@ -3536,8 +3539,8 @@ mod tests {
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 44);
-        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
+        assert_eq!(count(|facts| facts.trap), 45);
+        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 36);
     }
 
     #[test]
