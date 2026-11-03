@@ -566,6 +566,9 @@ pub(super) fn instrument_with(
         .into_iter()
         .map(str::to_owned),
     );
+    // TZ05: a program with timers hands `@tz.free` to the runtime, which frees a channel's block with
+    // it as `void (*)(void *)`; every other program keeps its instrumented `@tz.free`.
+    let free_handed = ir.contains("ptr @tz.free,") || ir.contains("ptr @tz.free)");
     let managed: BTreeSet<_> = functions
         .keys()
         .filter(|name| {
@@ -577,6 +580,9 @@ pub(super) fn instrument_with(
                 // TZ02: the tzroutine runtime calls these as `void (*)(void *)`.
                 && !name.starts_with("@tz.tzroutine.start.")
                 && name.as_str() != "@tz.tzroutine.owned"
+                // TZ05: the timers call this too.
+                && name.as_str() != "@tz.tzroutine.owned.drop"
+                && !(free_handed && name.as_str() == "@tz.free")
         })
         .cloned()
         .collect();

@@ -1,0 +1,67 @@
+/// A ticker that sends the time to its channel every period (Go's `time.Ticker`, TZ05).
+/// `Ticker.create` makes one, `Ticker.channel` gives a handle of its channel, `Ticker.stop` stops it
+/// and `Ticker.reset` changes the period. The channel holds one time: while the receiver has not
+/// taken the last one, the next is dropped. Dropping the ticker stops it; the end of the `main`,
+/// `export`, `test` or `bench` that made it stops it too.
+record Ticker { handle: i64 }
+instance Drop<Ticker> {
+    fn drop ticker = Ticker.__free ticker
+}
+
+/// A ticker that sends the time (`Time.monotonic_ns`'s clock) to its channel every period, the
+/// first time one period from now (Go's `time.NewTicker`). A period of 0 or less traps.
+///
+/// ```tsuzuri run=true
+/// let ticker = Ticker.create (2 * Time.millisecond())
+/// let ticks = Ticker.channel ticker
+/// let first = Channel.recv ticks
+/// let second = Channel.recv ticks
+/// Ticker.stop ticker
+/// match (first, second) with
+/// | (Maybe.Some earlier, Maybe.Some later) -> later > earlier
+/// | _ -> false
+/// ```
+def create :: own i64 -> Ticker
+fn create period = Ticker.__create period
+
+/// A handle of the ticker's channel (Go's `t.C`). Each call makes one more handle: take it once,
+/// before a loop.
+///
+/// ```tsuzuri run=true
+/// let ticker = Ticker.create Time.millisecond()
+/// let ticks = Ticker.channel ticker
+/// match Channel.recv ticks with
+/// | Maybe.Some time -> time > 0
+/// | Maybe.None -> false
+/// ```
+def channel :: ref Ticker -> Channel<i64>
+fn channel ticker = Ticker.__channel ticker
+
+/// Stops the ticker (Go's `t.Stop()`). After it, the channel holds no time sent before, and gets
+/// none until a reset.
+///
+/// ```tsuzuri run=empty
+/// let ticker = Ticker.create Time.millisecond()
+/// let ticks = Ticker.channel ticker
+/// let _first = Channel.recv ticks
+/// Ticker.stop ticker
+/// match Channel.try_recv ticks with
+/// | Channel.Empty -> "empty"
+/// | _ -> "a time"
+/// ```
+def stop :: ref Ticker -> unit
+fn stop ticker = Ticker.__stop ticker
+
+/// Changes the period and counts it from now (Go's `t.Reset(d)`); it starts a stopped ticker too.
+/// A period of 0 or less traps.
+///
+/// ```tsuzuri run=ticks%20again
+/// let ticker = Ticker.create Time.hour()
+/// let ticks = Ticker.channel ticker
+/// Ticker.reset ticker Time.millisecond()
+/// match Channel.recv ticks with
+/// | Maybe.Some _ -> "ticks again"
+/// | Maybe.None -> "closed"
+/// ```
+def reset :: ref Ticker -> own i64 -> unit
+fn reset ticker period = Ticker.__reset ticker period

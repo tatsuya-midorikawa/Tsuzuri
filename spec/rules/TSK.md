@@ -26,3 +26,6 @@ The rules of this area, one sentence each, with the document that states them an
 | TSK-020 | A `select` MUST complete exactly one ready arm, or run `default` when none is ready. | [select.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/select.md) | TSK-020-select-must-complete-exactly | active |
 | TSK-021 | An arm whose `when` guard is false MUST NOT be chosen, and its channel and value MUST NOT be evaluated. | [select.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/select.md) | TSK-021-arm-whose-when-guard | active |
 | TSK-022 | A send value of an arm that is not chosen MUST be dropped exactly once. | [select.md](../../_tsuzuri/language-reference/async-tasks-and-lazy/select.md) | TSK-022-send-value-of-arm | active |
+| TSK-023 | `Time.sleep` in a tzroutine MUST NOT stop other tzroutines. | [time.md](../../_tsuzuri/language-reference/built-in-types-and-modules/time.md) | TSK-023-time-sleep-in-tzroutine | active |
+| TSK-024 | A stopped `Timer` MUST NOT send. | [timer.md](../../_tsuzuri/language-reference/built-in-types-and-modules/timer.md) | TSK-024-stopped-timer-must-not | active |
+| TSK-025 | A boundary MUST NOT wait for pending timers, and MUST release them. | [time.md](../../_tsuzuri/language-reference/built-in-types-and-modules/time.md) | TSK-025-boundary-must-not-wait | active |

@@ -456,11 +456,15 @@ typedef struct tzr_p tzr_p;
 typedef struct tzr_sudog tzr_sudog;
 typedef struct tzr_chan tzr_chan;
 
+typedef struct tzr_timer tzr_timer;
+
 typedef struct tzr_scope {
     tzr_lock lock;
     int64_t live;  /* tzroutines spawned in this scope that have not finished */
     tzr_g *waiter;  /* the G waiting in tsuzuri_tz_scope_leave */
     struct tzr_scope *outer; /* the thread's scope before tsuzuri_tz_scope_enter */
+    struct tzr_scope *boundary; /* the boundary whose end stops the timers made in this scope (TZ05) */
+    tzr_timer *timers; /* the timers listed in this boundary (tzr_timers.lock) */
 } tzr_scope;
 
 struct tzr_g {
@@ -1082,6 +1086,17 @@ static long tzr_env(const char *name, long low, long high, long fallback) {
     return n;
 }
 
+/* Time.sleep_ms (src/runtime/os.c) on a tzroutine waits like Time.sleep instead of stopping the M's
+ * thread (TZ05). os.c and this file are in one translation unit when both are used, so the hook has
+ * one definition; a program without tzroutines leaves it null. os.c has no Windows version. */
+#if !defined(_WIN32)
+#ifndef TSUZURI_OS_SLEEP_HOOK_DEFINED
+#define TSUZURI_OS_SLEEP_HOOK_DEFINED
+__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_os_sleep_hook)(int64_t);
+#endif
+static int32_t tzr_sleep_if_routine(int64_t ns);
+#endif
+
 static void tzr_init(void) {
     long cpus = tzr_online_cpus();
     int nprocs = cpus < 1 ? 1 : (cpus > TZR_MAXPROCS ? TZR_MAXPROCS : (int)cpus);
@@ -1092,6 +1107,9 @@ static void tzr_init(void) {
     tzr_sched.nprocs = nprocs;
 #if defined(TZ_STACK_GUARD)
     atomic_store_explicit(&tsuzuri_stack_guard_hook, tsuzuri_tz_stack_guard_hit, memory_order_release);
+#endif
+#if !defined(_WIN32)
+    atomic_store_explicit(&tsuzuri_os_sleep_hook, tzr_sleep_if_routine, memory_order_release);
 #endif
     for (int i = nprocs - 1; i >= 0; i--) {
         tzr_p *p = calloc(1, sizeof *p);
@@ -1389,7 +1407,7 @@ static void tzr_gstart(void) {
 }
 #endif
 
-static tzr_scope tzr_root_scope;
+static tzr_scope tzr_root_scope = {.boundary = &tzr_root_scope};
 
 static tzr_g *tzr_galloc(void) {
     tzr_m *m = tzr_this_m();
@@ -1439,11 +1457,24 @@ static tzr_g *tzr_galloc(void) {
     return g;
 }
 
-TZR_API void tsuzuri_tz_go(void (*code)(void *), void *env) {
-    tzr_start();
-    tzr_g *parent = tzr_current();
-    tzr_scope *scope = parent->spawn_scope ? parent->spawn_scope : parent->scope;
-    if (scope == NULL) scope = &tzr_root_scope;
+/* The scope that counts what `g` spawns: its spawn scope, the scope it is counted in, or the root. */
+static tzr_scope *tzr_spawn_scope(tzr_g *g) {
+    tzr_scope *scope = g->spawn_scope ? g->spawn_scope : g->scope;
+    return scope ? scope : &tzr_root_scope;
+}
+
+/* Counts one tzroutine in `scope` before it exists: an after_func timer that fires reserves its
+ * tzroutine under the timers' lock, so that a boundary that stops the timers next sees it (TZ05). */
+static void tzr_spawn_reserve(tzr_scope *scope) {
+    tzr_lock_acquire(&scope->lock);
+    scope->live++;
+    tzr_lock_release(&scope->lock);
+    atomic_fetch_add(&tzr_sched.ngoroutines, 1);
+}
+
+/* Starts `code(env)` on a new G counted in `scope` (already counted when `reserved`). It does not
+ * ask for the caller's G, so the timer thread spawns without becoming a pseudo-G. */
+static void tzr_spawn(tzr_scope *scope, void (*code)(void *), void *env, int reserved) {
     tzr_g *g = tzr_galloc();
     if (g == NULL) tzr_fatal("cannot allocate a tzroutine stack (out of memory or address space)");
     g->code = code;
@@ -1454,10 +1485,7 @@ TZR_API void tsuzuri_tz_go(void (*code)(void *), void *env) {
 #if !defined(_WIN32)
     g->sp = tzr_initial_frame(g->stack + TZR_GUARD + g->stack_size, tzr_gstart);
 #endif
-    tzr_lock_acquire(&scope->lock);
-    scope->live++;
-    tzr_lock_release(&scope->lock);
-    atomic_fetch_add(&tzr_sched.ngoroutines, 1);
+    if (!reserved) tzr_spawn_reserve(scope);
     atomic_store(&g->status, TZR_G_RUNNABLE);
     tzr_m *m = tzr_this_m();
     if (m != NULL && m->p != NULL) {
@@ -1470,11 +1498,19 @@ TZR_API void tsuzuri_tz_go(void (*code)(void *), void *env) {
     tzr_wakep();
 }
 
+TZR_API void tsuzuri_tz_go(void (*code)(void *), void *env) {
+    tzr_start();
+    tzr_spawn(tzr_spawn_scope(tzr_current()), code, env, 0);
+}
+
 /* ---------------------------------------------------------------- scopes */
 
+/* A scope of a boundary (main, an export call, a test, a bench sample, a pool worker's item): the
+ * timers made in it are stopped at its end (TZ05). */
 TZR_API void *tsuzuri_tz_scope_enter(void) {
     tzr_scope *scope = calloc(1, sizeof *scope);
     if (scope == NULL) tzr_fatal("out of memory");
+    scope->boundary = scope;
     tzr_g *g = tzr_current();
     scope->outer = g->spawn_scope;
     g->spawn_scope = scope;
@@ -1485,14 +1521,12 @@ static void tzr_unlock_scope(void *arg) { tzr_lock_release(&((tzr_scope *)arg)->
 
 /* Waits until every tzroutine spawned in `scope` (and their descendants) has finished. Returns 1
  * when the deadlock detector ended the wait. */
-TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
-    tzr_scope *scope = opaque;
-    int doomed = 0;
+static int tzr_scope_wait(tzr_scope *scope) {
     for (;;) {
         tzr_lock_acquire(&scope->lock);
         if (scope->live == 0) {
             tzr_lock_release(&scope->lock);
-            break;
+            return 0;
         }
         tzr_g *g = tzr_current();
         scope->waiter = g;
@@ -1502,22 +1536,33 @@ TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
             if (scope->waiter == g) scope->waiter = NULL;
             int ended = scope->live == 0;
             tzr_lock_release(&scope->lock);
-            if (!ended) {
-                doomed = 1;
-                break;
-            }
+            if (!ended) return 1;
         }
     }
+    return 0;
+}
+
+TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
+    tzr_scope *scope = opaque;
+    int doomed = tzr_scope_wait(scope);
     tzr_current()->spawn_scope = scope->outer;
     if (!doomed) free(scope);
     return doomed;
 }
 
-/* The end of a boundary (main, an export call, a test, a bench sample): waits for the scope's
- * tzroutines (TZ02). A deadlock is reported by tsuzuri_tz_scope_leave's detector; the boundary has no
- * source position of its own, so it traps here. */
-TZR_API void tsuzuri_tz_boundary_leave(void *scope) {
-    if (tsuzuri_tz_scope_leave(scope)) __builtin_trap();
+static int tzr_boundary_settle(tzr_scope *scope);
+
+/* The end of a boundary: waits for the scope's tzroutines (TZ02), then stops the timers made in it
+ * that have not fired, without waiting for them (TZ05). A fired after_func spawns into the scope,
+ * and the drop of a stopped one runs code, so it waits again until a pass finds nothing. A deadlock
+ * is reported by the detector; the boundary has no source position of its own, so it traps here. */
+TZR_API void tsuzuri_tz_boundary_leave(void *opaque) {
+    tzr_scope *scope = opaque;
+    do {
+        if (tzr_scope_wait(scope)) __builtin_trap();
+    } while (tzr_boundary_settle(scope));
+    tzr_current()->spawn_scope = scope->outer;
+    free(scope);
 }
 
 /* ---------------------------------------------------------------- blocking calls */
@@ -1925,129 +1970,6 @@ TZR_API int32_t tsuzuri_tz_waitgroup_wait(_Atomic uint64_t *word) {
     }
 }
 
-/* ---------------------------------------------------------------- timers */
-
-typedef struct tzr_timer {
-    int64_t when;
-    tzr_g *g;
-} tzr_timer;
-
-/* One heap of timers under a tzr_lock, and one thread that sleeps until the earliest one. The
- * thread sleeps on its own mutex and condition variable (`kicked` prevents a lost wakeup), so the
- * heap lock is a tzr_lock that tzr_park can release (R4). */
-static struct {
-    tzr_lock lock;
-    tzr_timer **heap;
-    size_t count, capacity;
-    int started;
-    tzr_mutex wake_mutex;
-    tzr_cond wake;
-    int kicked;
-} tzr_timers = {
-    .wake_mutex = TZR_MUTEX_INIT,
-#if !defined(__linux__)
-    .wake = TZR_COND_INIT, /* Linux initializes it with the monotonic clock (tzr_timer_cond_init) */
-#endif
-};
-
-static void tzr_heap_up(size_t i) {
-    while (i > 0) {
-        size_t parent = (i - 1) / 2;
-        if (tzr_timers.heap[parent]->when <= tzr_timers.heap[i]->when) break;
-        tzr_timer *t = tzr_timers.heap[parent];
-        tzr_timers.heap[parent] = tzr_timers.heap[i];
-        tzr_timers.heap[i] = t;
-        i = parent;
-    }
-}
-
-static void tzr_heap_down(size_t i) {
-    for (;;) {
-        size_t l = 2 * i + 1, r = l + 1, m = i;
-        if (l < tzr_timers.count && tzr_timers.heap[l]->when < tzr_timers.heap[m]->when) m = l;
-        if (r < tzr_timers.count && tzr_timers.heap[r]->when < tzr_timers.heap[m]->when) m = r;
-        if (m == i) return;
-        tzr_timer *t = tzr_timers.heap[m];
-        tzr_timers.heap[m] = tzr_timers.heap[i];
-        tzr_timers.heap[i] = t;
-        i = m;
-    }
-}
-
-static void *tzr_timerproc(void *arg) {
-    (void)arg;
-    for (;;) {
-        tzr_lock_acquire(&tzr_timers.lock);
-        int64_t now = tzr_nanotime();
-        while (tzr_timers.count > 0 && tzr_timers.heap[0]->when <= now) {
-            tzr_timer *top = tzr_timers.heap[0];
-            tzr_timers.heap[0] = tzr_timers.heap[--tzr_timers.count];
-            tzr_heap_down(0);
-            tzr_ready(top->g); /* the G may run and leave `top` (its stack frame) at once */
-            if (atomic_fetch_sub(&tzr_sched.ntimers, 1) == 1) {
-                /* The G may have run and parked again before this, when the detector still saw a
-                 * timer: look again now that none is left (R3 allows the order of the locks). */
-                tzr_mutex_lock(&tzr_sched.lock);
-                tzr_checkdead();
-                tzr_mutex_unlock(&tzr_sched.lock);
-            }
-        }
-        int64_t next = tzr_timers.count > 0 ? tzr_timers.heap[0]->when : -1;
-        tzr_lock_release(&tzr_timers.lock);
-        tzr_mutex_lock(&tzr_timers.wake_mutex);
-        if (!tzr_timers.kicked) {
-            if (next < 0) {
-                tzr_cond_wait_for(&tzr_timers.wake, &tzr_timers.wake_mutex, -1);
-            } else {
-                /* the clock again: firing the batch above took time, and an overdue deadline waits not at all */
-                int64_t left = next - tzr_nanotime();
-                if (left > 0) tzr_cond_wait_for(&tzr_timers.wake, &tzr_timers.wake_mutex, left);
-            }
-        }
-        tzr_timers.kicked = 0;
-        tzr_mutex_unlock(&tzr_timers.wake_mutex);
-    }
-    return NULL;
-}
-
-static void tzr_unlock_timers(void *arg) {
-    (void)arg;
-    tzr_lock_release(&tzr_timers.lock);
-}
-
-TZR_API int32_t tsuzuri_tz_sleep(int64_t ns) {
-    if (ns <= 0) {
-        tsuzuri_tz_yield();
-        return 0;
-    }
-    tzr_start();
-    int64_t now = tzr_nanotime();
-    tzr_timer t = {now > INT64_MAX - ns ? INT64_MAX : now + ns, tzr_current()};
-    tzr_lock_acquire(&tzr_timers.lock);
-    if (!tzr_timers.started) {
-        tzr_timer_cond_init(&tzr_timers.wake);
-        tzr_thread_start(tzr_timerproc, NULL, 0, "cannot start the timer thread");
-        tzr_timers.started = 1;
-    }
-    if (tzr_timers.count == tzr_timers.capacity) {
-        size_t capacity = tzr_timers.capacity ? tzr_timers.capacity * 2 : 64;
-        tzr_timer **heap = realloc(tzr_timers.heap, capacity * sizeof *heap);
-        if (heap == NULL) tzr_fatal("out of memory");
-        tzr_timers.heap = heap;
-        tzr_timers.capacity = capacity;
-    }
-    tzr_timers.heap[tzr_timers.count] = &t;
-    tzr_heap_up(tzr_timers.count++);
-    atomic_fetch_add(&tzr_sched.ntimers, 1);
-    if (tzr_timers.heap[0] == &t) {
-        tzr_mutex_lock(&tzr_timers.wake_mutex);
-        tzr_timers.kicked = 1;
-        tzr_cond_signal(&tzr_timers.wake);
-        tzr_mutex_unlock(&tzr_timers.wake_mutex);
-    }
-    return tzr_park(tzr_unlock_timers, NULL, "Time.sleep");
-}
-
 #endif /* TZR_SINGLE */
 
 /* ---------------------------------------------------------------- channels */
@@ -2176,8 +2098,7 @@ static int tzr_cancel(tzr_chan *c, tzr_waitq *q, tzr_sudog *s) {
 
 /* block = 0 is try_send. Returns TZR_OK, TZR_CLOSED (the generated code traps for send),
  * TZR_WOULD_BLOCK (try only) or TZR_DEADLOCK. */
-TZR_API int32_t tsuzuri_tz_chan_send(tzr_chan *c, const void *elem, int32_t block) {
-    (void)tzr_current(); /* a host thread counts as running while it hands over (the detector) */
+static int32_t tzr_chan_send(tzr_chan *c, const void *elem, int32_t block) {
     tzr_lock_acquire(&c->lock);
     if (c->closed) {
         tzr_lock_release(&c->lock);
@@ -2205,6 +2126,11 @@ TZR_API int32_t tsuzuri_tz_chan_send(tzr_chan *c, const void *elem, int32_t bloc
     tzr_enqueue(&c->sendq, &me);
     if (tzr_park(tzr_unlock_chan, c, "Channel.send") && tzr_cancel(c, &c->sendq, &me)) return TZR_DEADLOCK;
     return me.success ? TZR_OK : TZR_CLOSED;
+}
+
+TZR_API int32_t tsuzuri_tz_chan_send(tzr_chan *c, const void *elem, int32_t block) {
+    (void)tzr_current(); /* a host thread counts as running while it hands over (the detector) */
+    return tzr_chan_send(c, elem, block);
 }
 
 /* Returns TZR_OK (out holds the item), TZR_CLOSED (closed and empty), TZR_WOULD_BLOCK or TZR_DEADLOCK. */
@@ -2272,6 +2198,431 @@ TZR_API int64_t tsuzuri_tz_chan_length(tzr_chan *c) {
 }
 
 #if !defined(TZR_SINGLE)
+/* ---------------------------------------------------------------- timers */
+
+/* A timer wakes a sleeper (WAKE, Time.sleep), sends the time to a channel once (SEND, Time.after and
+ * Timer) or every period (TICK, Time.tick and Ticker), or starts a function on a new tzroutine
+ * (FUNC, Time.after_func) (TZ05). A WAKE timer is on its sleeper's stack. The others are malloc'd
+ * (TZ01 D9): Time.after's and Time.tick's belong to the runtime until they fire or stop; a Timer or
+ * Ticker handle owns its record (`handle`), which the handle's drop frees. A pending timer other
+ * than WAKE is listed in the boundary scope of the G that made it, whose end stops it. */
+enum { TZR_TIMER_WAKE, TZR_TIMER_SEND, TZR_TIMER_TICK, TZR_TIMER_FUNC };
+enum { TZR_TIMER_PENDING, TZR_TIMER_FIRED, TZR_TIMER_STOPPED };
+
+struct tzr_timer {
+    int64_t when;               /* the deadline, on tzr_nanotime's clock */
+    int64_t period;             /* TICK */
+    int kind;
+    int state;                  /* tzr_timers.lock, as every field below that changes */
+    int handle;                 /* a Timer or Ticker handle owns the record */
+    size_t index;               /* its place in the heap while PENDING */
+    tzr_g *g;                   /* WAKE: the sleeper */
+    tzr_chan *chan;             /* SEND, TICK, and FUNC's closed one: the record holds one reference */
+    void (*release)(void *);    /* frees the channel's block: the generated code's deallocator */
+    void (*run)(void *);        /* FUNC: calls the boxed function once and frees the box */
+    void (*drop)(void *);       /* FUNC: drops the boxed function without calling it */
+    void *box;                  /* FUNC: the boxed function, until it runs or is dropped */
+    tzr_scope *scope;           /* the boundary that lists it, or NULL */
+    tzr_timer *scope_next, *scope_prev;
+};
+
+/* One heap of timers under a tzr_lock, and one thread that sleeps until the earliest one. The
+ * thread sleeps on its own mutex and condition variable (`kicked` prevents a lost wakeup), so the
+ * heap lock is a tzr_lock that tzr_park can release (R4). The thread never asks for a G of its own:
+ * it sends, readies and spawns through functions that do not call tzr_current. */
+static struct {
+    tzr_lock lock;
+    tzr_timer **heap;
+    size_t count, capacity;
+    int started;
+    tzr_mutex wake_mutex;
+    tzr_cond wake;
+    int kicked;
+} tzr_timers = {
+    .wake_mutex = TZR_MUTEX_INIT,
+#if !defined(__linux__)
+    .wake = TZR_COND_INIT, /* Linux initializes it with the monotonic clock (tzr_timer_cond_init) */
+#endif
+};
+
+static void tzr_heap_set(size_t i, tzr_timer *t) {
+    tzr_timers.heap[i] = t;
+    t->index = i;
+}
+
+static void tzr_heap_up(size_t i) {
+    while (i > 0) {
+        size_t parent = (i - 1) / 2;
+        if (tzr_timers.heap[parent]->when <= tzr_timers.heap[i]->when) break;
+        tzr_timer *t = tzr_timers.heap[parent];
+        tzr_heap_set(parent, tzr_timers.heap[i]);
+        tzr_heap_set(i, t);
+        i = parent;
+    }
+}
+
+static void tzr_heap_down(size_t i) {
+    for (;;) {
+        size_t l = 2 * i + 1, r = l + 1, m = i;
+        if (l < tzr_timers.count && tzr_timers.heap[l]->when < tzr_timers.heap[m]->when) m = l;
+        if (r < tzr_timers.count && tzr_timers.heap[r]->when < tzr_timers.heap[m]->when) m = r;
+        if (m == i) return;
+        tzr_timer *t = tzr_timers.heap[m];
+        tzr_heap_set(m, tzr_timers.heap[i]);
+        tzr_heap_set(i, t);
+        i = m;
+    }
+}
+
+static void *tzr_timerproc(void *arg);
+
+/* Adds t to the heap as PENDING and wakes the thread when t is the earliest (tzr_timers.lock). */
+static void tzr_heap_push(tzr_timer *t) {
+    if (!tzr_timers.started) {
+        tzr_timer_cond_init(&tzr_timers.wake);
+        tzr_thread_start(tzr_timerproc, NULL, 0, "cannot start the timer thread");
+        tzr_timers.started = 1;
+    }
+    if (tzr_timers.count == tzr_timers.capacity) {
+        size_t capacity = tzr_timers.capacity ? tzr_timers.capacity * 2 : 64;
+        tzr_timer **heap = realloc(tzr_timers.heap, capacity * sizeof *heap);
+        if (heap == NULL) tzr_fatal("out of memory");
+        tzr_timers.heap = heap;
+        tzr_timers.capacity = capacity;
+    }
+    t->state = TZR_TIMER_PENDING;
+    tzr_heap_set(tzr_timers.count, t);
+    tzr_heap_up(tzr_timers.count++);
+    if (tzr_timers.heap[0] == t) {
+        tzr_mutex_lock(&tzr_timers.wake_mutex);
+        tzr_timers.kicked = 1;
+        tzr_cond_signal(&tzr_timers.wake);
+        tzr_mutex_unlock(&tzr_timers.wake_mutex);
+    }
+}
+
+/* Takes the PENDING timer t out of the heap (tzr_timers.lock). */
+static void tzr_heap_remove(tzr_timer *t) {
+    size_t i = t->index;
+    tzr_timer *last = tzr_timers.heap[--tzr_timers.count];
+    if (i < tzr_timers.count) {
+        tzr_heap_set(i, last);
+        tzr_heap_up(i);
+        tzr_heap_down(last->index);
+    }
+}
+
+/* The deadline `ns` from now, saturated at INT64_MAX; a negative wait is now. */
+static int64_t tzr_deadline(int64_t now, int64_t ns) {
+    if (ns <= 0) return now;
+    return now > INT64_MAX - ns ? INT64_MAX : now + ns;
+}
+
+/* The pending timers fell by n: with none left, the detector looks again, as a G that a timer woke
+ * may have run and parked again while it still saw the timer (R3 allows the order of the locks). */
+static void tzr_timers_gone(int64_t n) {
+    if (n > 0 && atomic_fetch_sub(&tzr_sched.ntimers, n) == n) {
+        tzr_mutex_lock(&tzr_sched.lock);
+        tzr_checkdead();
+        tzr_mutex_unlock(&tzr_sched.lock);
+    }
+}
+
+/* Lists t in `scope`, or takes it out of its scope (tzr_timers.lock). */
+static void tzr_timer_list(tzr_timer *t, tzr_scope *scope) {
+    t->scope = scope;
+    t->scope_prev = NULL;
+    t->scope_next = scope->timers;
+    if (scope->timers) scope->timers->scope_prev = t;
+    scope->timers = t;
+}
+
+static void tzr_timer_unlist(tzr_timer *t) {
+    if (t->scope == NULL) return;
+    if (t->scope_prev) t->scope_prev->scope_next = t->scope_next;
+    else t->scope->timers = t->scope_next;
+    if (t->scope_next) t->scope_next->scope_prev = t->scope_prev;
+    t->scope = NULL;
+    t->scope_next = t->scope_prev = NULL;
+}
+
+/* Sends the time to a timer's channel without waiting: a receiver takes it, or the buffer of one
+ * keeps it, or it is dropped (a receiver that has not taken the last one misses this one). */
+static void tzr_timer_offer(tzr_chan *c, int64_t now) {
+    (void)tzr_chan_send(c, &now, 0);
+}
+
+/* Empties a timer's channel: after a stop or a reset, no time sent before is received (Go 1.23).
+ * The item is an i64, which needs no drop. The channel is a program's Channel<i64>, which it may
+ * send on too: a sender that waits for room (the buffer of one was full) puts its item in the freed
+ * slot and goes on, as a receive would let it, so that no sender waits on a buffer with room. */
+static void tzr_timer_discard(tzr_chan *c) {
+    tzr_lock_acquire(&c->lock);
+    c->count = 0;
+    c->sendx = c->recvx = 0;
+    tzr_sudog *s = tzr_dequeue(&c->sendq);
+    if (s == NULL) {
+        tzr_lock_release(&c->lock);
+        return;
+    }
+    memcpy(TZR_CHAN_BUF(c, 0), s->elem, c->elem_size);
+    c->sendx = 1 % c->capacity;
+    c->count = 1;
+    s->success = 1;
+    s->g->param = s;
+    tzr_ready_unlock(s->g, &c->lock);
+}
+
+/* Drops the timer's reference to its channel; the last one frees the block. */
+static void tzr_timer_unref(tzr_chan *c, void (*release)(void *)) {
+    if (atomic_fetch_sub_explicit(&c->refs, 1, memory_order_acq_rel) == 1) release(c);
+}
+
+static void *tzr_timerproc(void *arg) {
+    (void)arg;
+    for (;;) {
+        tzr_lock_acquire(&tzr_timers.lock);
+        int64_t now = tzr_nanotime();
+        int64_t gone = 0;
+        tzr_scope *spawn_scope = NULL;
+        void (*spawn_code)(void *) = NULL;
+        void *spawn_env = NULL;
+        while (tzr_timers.count > 0 && tzr_timers.heap[0]->when <= now && spawn_code == NULL) {
+            tzr_timer *top = tzr_timers.heap[0];
+            tzr_heap_remove(top);
+            top->state = TZR_TIMER_FIRED;
+            gone++;
+            switch (top->kind) {
+            case TZR_TIMER_WAKE:
+                tzr_ready(top->g); /* the G may run and leave `top` (its stack frame) at once */
+                break;
+            case TZR_TIMER_SEND:
+                tzr_timer_offer(top->chan, now);
+                tzr_timer_unlist(top);
+                if (!top->handle) {
+                    tzr_timer_unref(top->chan, top->release);
+                    free(top);
+                }
+                break;
+            case TZR_TIMER_TICK:
+                if (!top->handle && atomic_load(&top->chan->refs) == 1) {
+                    /* Time.tick: nobody else holds the channel, so nobody can receive again */
+                    tzr_timer_unlist(top);
+                    tzr_timer_unref(top->chan, top->release);
+                    free(top);
+                    break;
+                }
+                tzr_timer_offer(top->chan, now); /* dropped when the receiver has not taken the last one */
+                top->when = top->when > INT64_MAX - top->period ? INT64_MAX : top->when + top->period;
+                if (top->when <= now) top->when = tzr_deadline(now, top->period); /* late: from now */
+                tzr_heap_push(top);
+                gone--;
+                break;
+            default: /* FUNC: it pends only with its function */
+                spawn_scope = top->scope ? top->scope : &tzr_root_scope;
+                spawn_code = top->run;
+                spawn_env = top->box;
+                top->box = NULL;
+                tzr_timer_unlist(top);
+                /* counted before the lock goes, so that the end of its boundary waits for it */
+                tzr_spawn_reserve(spawn_scope);
+                break;
+            }
+        }
+        int64_t next = tzr_timers.count > 0 ? tzr_timers.heap[0]->when : -1;
+        tzr_lock_release(&tzr_timers.lock);
+        if (spawn_code != NULL) {
+            /* the stack and the M it may start are not made under the timers' lock */
+            tzr_spawn(spawn_scope, spawn_code, spawn_env, 1);
+            tzr_timers_gone(gone);
+            continue;
+        }
+        tzr_timers_gone(gone);
+        tzr_mutex_lock(&tzr_timers.wake_mutex);
+        if (!tzr_timers.kicked) {
+            if (next < 0) {
+                tzr_cond_wait_for(&tzr_timers.wake, &tzr_timers.wake_mutex, -1);
+            } else {
+                /* the clock again: firing the batch above took time, and an overdue deadline waits not at all */
+                int64_t left = next - tzr_nanotime();
+                if (left > 0) tzr_cond_wait_for(&tzr_timers.wake, &tzr_timers.wake_mutex, left);
+            }
+        }
+        tzr_timers.kicked = 0;
+        tzr_mutex_unlock(&tzr_timers.wake_mutex);
+    }
+    return NULL;
+}
+
+static void tzr_unlock_timers(void *arg) {
+    (void)arg;
+    tzr_lock_release(&tzr_timers.lock);
+}
+
+TZR_API int32_t tsuzuri_tz_sleep(int64_t ns) {
+    if (ns <= 0) {
+        tsuzuri_tz_yield();
+        return 0;
+    }
+    tzr_start();
+    tzr_timer t = {.when = tzr_deadline(tzr_nanotime(), ns), .kind = TZR_TIMER_WAKE, .g = tzr_current()};
+    tzr_lock_acquire(&tzr_timers.lock);
+    tzr_heap_push(&t);
+    atomic_fetch_add(&tzr_sched.ntimers, 1);
+    return tzr_park(tzr_unlock_timers, NULL, "Time.sleep");
+}
+
+#if !defined(_WIN32)
+static int32_t tzr_sleep_if_routine(int64_t ns) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL || m->blocked) return 0; /* a thread: os.c stops it */
+    tsuzuri_tz_sleep(ns);
+    return 1;
+}
+#endif
+
+/* The G's boundary, which lists the timers that it makes. */
+static tzr_scope *tzr_timer_scope(tzr_g *g) { return tzr_spawn_scope(g)->boundary; }
+
+/* Time.after, Time.tick, Timer.create, Ticker.create and Time.after_func (TZ05). `block` is the
+ * channel's block (the 128-byte header and one i64), which the generated code allocates so that
+ * the allocation is counted as the program's; the runtime frees it with `release` when it drops
+ * the last reference. A timer without a handle holds the second reference of a channel that the
+ * caller keeps the first of; a handle's record holds the only one, and a FUNC timer's channel is
+ * closed at once (Timer.channel of an after_func). Returns the record. */
+TZR_API void *tsuzuri_tz_timer_new(void *block, void (*release)(void *), int64_t ns, int64_t period, int32_t kind,
+                                   int32_t handle, void (*run)(void *), void (*drop)(void *), void *box) {
+    tzr_start();
+    tzr_chan *c = block;
+    tsuzuri_tz_chan_init(c, (int64_t)sizeof(int64_t), 1);
+    if (!handle) atomic_store(&c->refs, 2);
+    if (kind == TZR_TIMER_FUNC) c->closed = 1;
+    tzr_timer *t = calloc(1, sizeof *t);
+    if (t == NULL) tzr_fatal("out of memory");
+    t->when = tzr_deadline(tzr_nanotime(), ns);
+    t->period = period;
+    t->kind = kind;
+    t->handle = handle;
+    t->chan = c;
+    t->release = release;
+    t->run = run;
+    t->drop = drop;
+    t->box = box;
+    tzr_scope *scope = tzr_timer_scope(tzr_current());
+    tzr_lock_acquire(&tzr_timers.lock);
+    tzr_timer_list(t, scope);
+    tzr_heap_push(t);
+    atomic_fetch_add(&tzr_sched.ntimers, 1);
+    tzr_lock_release(&tzr_timers.lock);
+    return t;
+}
+
+/* Timer.channel and Ticker.channel: one more handle of the record's channel. */
+TZR_API void *tsuzuri_tz_timer_chan(void *timer) {
+    tzr_chan *c = ((tzr_timer *)timer)->chan;
+    tsuzuri_tz_chan_share(c);
+    return c;
+}
+
+/* Timer.stop and Ticker.stop: returns 1 when the timer was pending. Its channel keeps no time that
+ * it sent before (Go 1.23); a FUNC timer keeps its function for a reset, and so stays listed in its
+ * boundary, whose end drops the function that never ran. */
+TZR_API int32_t tsuzuri_tz_timer_stop(void *timer) {
+    tzr_timer *t = timer;
+    tzr_lock_acquire(&tzr_timers.lock);
+    int pending = t->state == TZR_TIMER_PENDING;
+    if (pending) {
+        tzr_heap_remove(t);
+        t->state = TZR_TIMER_STOPPED;
+        if (t->kind != TZR_TIMER_FUNC) tzr_timer_unlist(t);
+    }
+    if (t->kind != TZR_TIMER_FUNC) tzr_timer_discard(t->chan);
+    tzr_lock_release(&tzr_timers.lock);
+    if (pending) tzr_timers_gone(1);
+    return pending;
+}
+
+/* Timer.reset and Ticker.reset: the timer fires `ns` from now (a ticker every `ns` from then on),
+ * listed in the caller's boundary. Returns 1 when it was pending. A FUNC timer whose function has
+ * run or was dropped has nothing to start: it stays as it is and returns 0. */
+TZR_API int32_t tsuzuri_tz_timer_reset(void *timer, int64_t ns) {
+    tzr_timer *t = timer;
+    int64_t when = tzr_deadline(tzr_nanotime(), ns);
+    tzr_scope *scope = tzr_timer_scope(tzr_current());
+    tzr_lock_acquire(&tzr_timers.lock);
+    int pending = t->state == TZR_TIMER_PENDING;
+    if (t->kind == TZR_TIMER_FUNC && t->box == NULL) {
+        tzr_lock_release(&tzr_timers.lock);
+        return 0;
+    }
+    if (pending) tzr_heap_remove(t);
+    tzr_timer_unlist(t);
+    if (t->kind != TZR_TIMER_FUNC) tzr_timer_discard(t->chan);
+    t->when = when;
+    if (t->kind == TZR_TIMER_TICK) t->period = ns;
+    tzr_timer_list(t, scope);
+    tzr_heap_push(t);
+    if (!pending) atomic_fetch_add(&tzr_sched.ntimers, 1);
+    tzr_lock_release(&tzr_timers.lock);
+    return pending;
+}
+
+/* The drop of a Timer or Ticker handle: stops the timer, drops a FUNC timer's function that has not
+ * run, drops the record's reference to the channel and frees the record. */
+TZR_API void tsuzuri_tz_timer_free(void *timer) {
+    tzr_timer *t = timer;
+    tzr_lock_acquire(&tzr_timers.lock);
+    int pending = t->state == TZR_TIMER_PENDING;
+    if (pending) tzr_heap_remove(t);
+    tzr_timer_unlist(t);
+    void *box = t->box;
+    t->box = NULL;
+    tzr_lock_release(&tzr_timers.lock);
+    if (pending) tzr_timers_gone(1);
+    if (box) t->drop(box);
+    tzr_timer_unref(t->chan, t->release);
+    free(t);
+}
+
+/* After the boundary's tzroutines have finished: stops its timers one at a time and lets go of
+ * what the runtime holds for each (a timer without a handle is freed with its reference to the
+ * channel, a FUNC timer's function is dropped; a handle keeps its stopped record). The scope is
+ * looked at under the timers' lock before each timer: a fired after_func reserves its tzroutine
+ * under that lock, and the timers of a tzroutine that runs again must stay (it may wait for one), so
+ * the scope is waited for again first. Returns 1 when it must be waited for again, 0 when its list
+ * is empty with nothing left running (a dropped function may have spawned or made a timer). */
+static int tzr_boundary_settle(tzr_scope *scope) {
+    for (;;) {
+        tzr_lock_acquire(&tzr_timers.lock);
+        tzr_lock_acquire(&scope->lock);
+        int live = scope->live != 0;
+        tzr_lock_release(&scope->lock);
+        tzr_timer *t = scope->timers;
+        if (live || t == NULL) {
+            tzr_lock_release(&tzr_timers.lock);
+            return live;
+        }
+        int pending = t->state == TZR_TIMER_PENDING;
+        if (pending) {
+            tzr_heap_remove(t);
+            t->state = TZR_TIMER_STOPPED;
+        }
+        tzr_timer_unlist(t);
+        void *box = t->box;
+        void (*drop)(void *) = t->drop;
+        t->box = NULL;
+        /* after the lock goes, a handle's record may be freed by its drop on another G */
+        tzr_timer *owned = t->handle ? NULL : t;
+        tzr_lock_release(&tzr_timers.lock);
+        if (pending) tzr_timers_gone(1);
+        if (box) drop(box);
+        if (owned) {
+            tzr_timer_unref(owned->chan, owned->release);
+            free(owned);
+        }
+    }
+}
+
 /* ---------------------------------------------------------------- select */
 
 /* One case of a select, built by the generated code in a stack array. */

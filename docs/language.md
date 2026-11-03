@@ -373,9 +373,9 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 
 `Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Async`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -1376,7 +1376,7 @@ def main :: unit -> i32 = \() ->
 - `Env.args ()` は、実行プログラム名（`argv[0]`）を除いたコマンドライン引数の配列を返します。ライブラリ出力、`tsuzuri test` ランナー、および `tsuzuri run`（追加引数を渡さない）の実行環境では空配列となります。`tsuzuri build` でコンパイルした実行バイナリで使用します。
   `def main :: Array<string> -> i32` の引数受け渡し（[エントリーポイント](#アプリケーションのエントリーポイント) 参照）とは異なり、引数文字列が正当な UTF-8 でない場合でも置換を行わず、`InvalidEncoding` エラーを返します。
 - `Env.var name` は指定された環境変数の値を取得し、未設定の場合は `Ok None` を返します。変数名が空、等号記号 `=` を含む、あるいは NUL 文字を含む場合は `InvalidInput`、変数値が UTF-8 でない場合は `InvalidEncoding` エラーとなります。`Env.current_dir ()` は OS から報告された現在のカレントワーキングディレクトリを返します。
-- `Time.monotonic_ns ()` は単調増加するシステム時計のナノ秒を返します。起点は未規定であるため、2 点間の時間差分を計算する用途にのみ使用します。`Time.unix_ns ()` は 1970-01-01 UTC からの経過ナノ秒を返し、`i64` に収まらない場合は `Other` エラーとなります。`Time.sleep_ms count` は指定されたミリ秒数だけ現在のスレッドをスリープさせます（負数は `InvalidInput`、0 は OS コールを行わずに `Ok ()` を即座に返します）。
+- `Time.monotonic_ns ()` は単調増加するシステム時計のナノ秒を返します。起点は未規定であるため、2 点間の時間差分を計算する用途にのみ使用します。`Time.unix_ns ()` は 1970-01-01 UTC からの経過ナノ秒を返し、`i64` に収まらない場合は `Other` エラーとなります。`Time.sleep_ms count` は指定されたミリ秒数だけ現在のスレッドをスリープさせます（負数は `InvalidInput`、0 は OS コールを行わずに `Ok ()` を即座に返します）。tzroutine の中では、スレッドを止めずにその tzroutine だけを待たせます（TZ05）。タイマーは[タイマー](#タイマー)を見てください。
 - `Random.bytes count`（0 以上 $2^{30}$ 以下、範囲外は `InvalidInput`）および `Random.next_u64 ()`（8 バイトを little-endian で読み出した `i64u`）は、OS カーネルが提供する暗号論的乱数を取得します。
 - `Random.pcg seed sequence` は、PCG-XSH-RR 64/32 アルゴリズムに基づく純粋な乱数生成器 `Random.Pcg` を構築します。生成器は不変な値であり、`Random.pcg_next_u32` は `(i32u * Random.Pcg)` のタプルを、`Random.pcg_next_u64` は 2 回の出力を結合して `(i64u * Random.Pcg)` を返します。
   同一のシード値およびストリームシーケンスからは、ネイティブ環境でも WASM 環境でも完全に同一の乱数列が決定論的に得られ、外部インポートも不要です。`Random.Pcg` は不透明型として保護されており、コンストラクタ内でストリームから奇数のインクリメント値を自動合成するため、利用者が誤って偶数の不適切なインクリメントを指定してしまう事故を防ぎます。
@@ -3717,6 +3717,33 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - ターゲット: native の macOS・Linux・Windows。既定の wasm32・wasm64 では、tzroutine を起動しないプログラムが 1 本の実行として使います（待つべき操作はトラップ、import なし）。`--wasm-feature threads` は `E2000`（`Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend`）、`--freestanding` も `E2000` です。
 - 向きのあるハンドル（TZ03 Phase 2）: `Channel.send_only :: ref Channel<'a> -> SendOnly<'a>`・`Channel.receive_only :: ref Channel<'a> -> ReceiveOnly<'a>` は同じブロックのハンドルを 1 つ増やします（`Channel` へは戻せない）。`SendOnly<'a>`（`std/SendOnly.tz`）の操作は `SendOnly.send`・`try_send`・`close`・`length`・`capacity`・`share`、`ReceiveOnly<'a>`（`std/ReceiveOnly.tz`）の操作は `ReceiveOnly.recv`・`try_recv`・`length`・`capacity`・`share` と `for x in handle` で、型と意味は `Channel` の同じ名前の関数と同じです。向きの違う操作は名前がない（`E1002`）か、型が違います（`E1003`）。3 つのモジュールは一緒に読み込まれます。
 - 旧の名前: `Channel.bounded`・`Channel.clone_sender`・型 `Channel.Sender`・`Channel.Receiver` は `E1040`（kind `renamed_to_data_channel`、`'Channel.bounded' is now 'DataChannel.bounded'`）で、確かな修正案（`tsuzuri fix`）を持ちます。名前の解決の後で、新しい `Channel` にも利用者の定義にも解決しないときだけです。`DataChannel.Sender`・`Receiver` を `Channel.send`・`Channel.recv` に渡した `E1003` も、`E1040`（`'Channel.send' of a DataChannel.Sender is now 'DataChannel.send'`）に置き換えます。どれも置き換えの名前で検査を続けるので、1 回の解析がすべての旧の名前を見つけます。
+
+### タイマー
+
+TZ05 は Go の `time` パッケージのタイマーを入れます。長さはナノ秒の `i64`（Go の `time.Duration`）で、引数のない組み込みの関数 `Time.nanosecond()`（1）・`microsecond()`（10³）・`millisecond()`（10⁶）・`second()`（10⁹）・`minute()`（6×10¹⁰）・`hour()`（3.6×10¹²）と掛けて書きます（`Math.pi()` と同じ呼び方。`()` の前に空白を入れると `E1006`）。時刻は `Time.monotonic_ns` と同じ単調時計のナノ秒です（Windows は `QueryPerformanceCounter`）。
+
+| API | 型 | 意味 |
+|---|---|---|
+| `Time.sleep d` | `i64 -> unit` | 少なくとも `d` 待つ。tzroutine の中ではその tzroutine だけが待つ。0 以下は `Routine.yield` と同じ |
+| `Time.after d` | `i64 -> Channel<i64>` | `d` 後に時刻を 1 つ受け取る容量 1 のチャンネル |
+| `Time.tick d` | `i64 -> Channel<i64>` | `d` ごとに時刻を送る容量 1 のチャンネル。受け手が前の時刻を受け取っていない回は捨てる。返したハンドルがすべて drop されたら次の回に止まる。0 以下はトラップ |
+| `Time.after_func d f` | `i64 -> Owned.Function<unit, unit> -> Timer` | `d` 後に `f` を新しい tzroutine で 1 回呼ぶ |
+| `Timer.create d` | `i64 -> Timer` | `d` 後に時刻を 1 回送るタイマー |
+| `Timer.channel t`・`Ticker.channel t` | `ref Timer -> Channel<i64>`・`ref Ticker -> Channel<i64>` | チャンネルのハンドル（`share`）。`after_func` の `Timer` は閉じた空のチャンネル |
+| `Timer.stop t` | `ref Timer -> bool` | 止める。まだ待っていたなら真 |
+| `Timer.reset t d` | `ref Timer -> i64 -> bool` | 今から `d` 後に送り直す。まだ待っていたなら真 |
+| `Ticker.create d` | `i64 -> Ticker` | `d` ごとに時刻を送るティッカー。0 以下はトラップ |
+| `Ticker.stop t`・`Ticker.reset t d` | `ref Ticker -> unit`・`ref Ticker -> i64 -> unit` | 止める・周期を変えて今から数え直す（0 以下はトラップ） |
+
+- 期限は「今 + d」（`INT64_MAX` で飽和）で、早く送る・起こすことはありません。周期は `when += d` で、遅れて期限を過ぎていれば「今 + d」です。
+- `stop` と `reset` の後のチャンネルには、その前に送った時刻は残りません（Go 1.23 以降と同じ）。`after_func` の関数は、`stop` しても持ち続け、`reset` で予定し直せます。呼ばれるか、境界で止められるか、`Timer` が drop されたときに drop されます。一度呼んだ後の `reset` は偽を返して何も予定しません（所有する関数は 1 回しか呼べない。Go はもう一度呼ぶ）。
+- `IO` でない理由: タイマーは `Routine.go`・`Channel.send`・`select` と同じく、呼んだ時点で働く組み込みの関数です。`IO` は何度も実行できる値なので、1 回しか呼べない `after_func` の関数を持てず、`IO` のチャンネルはトップレベルの `let!` の継続（何度も呼べる関数）へ捕捉できません（`E1005`）。また `Time` の std のソースは変えないので（下の「読み込み」）、組み込みの関数にしています。時計を読む OS の効果（`os`）と権限 `time` は `IO` の関数と同じで、`pure` の関数からは呼べません。
+- 境界: `main`・`export`・`test`・`bench`（とプールの項目）の終わりは、その中の tzroutine の終わりを待ってから、そこで作ったまだ発火していないタイマーを待たずに止め、ランタイムの参照を離します（`Time.after`・`Time.tick` のチャンネルはここで解放され、`after_func` の関数は呼ばれずに drop されます）。`Timer`・`Ticker` のハンドルは境界の外へ出られ、止められたまま drop を待ちます。
+- `Timer`・`Ticker` は非 Copy の不透明な record（`{ handle: i64 }`。構築・フィールド参照・分解は `E1022`）で、`Drop` で止めてランタイムの記録を解放します。`Send`・`Sync` で、関数値への捕捉は `E1005` です。ハンドルを先に取ります（D-59 の資源のハンドルの例外）。私的な組み込み `Timer.__create`・`__channel`・`__stop`・`__reset`・`__free` と `Ticker` の同じ名前のものは、それぞれの std のモジュールの外では `E1022`（`private_std_primitive`）です。
+- 権限は `time`（時計を読む `Time.sleep`・`after`・`tick`・`after_func` と `create`・`reset`。長さの関数は権限も効果もない）。効果は `os`（`after_func` は `task`）、作るものは `alloc`、`tick`・`Ticker` の 0 以下と、tzroutine を起動するプログラムの `Mutex.with_lock` の中の `Time.sleep` と正の `Time.sleep_ms` は `trap` です（`Time.sleep_ms` は `@no_trap` の関数から呼べない）。
+- 読み込み: `Time` は今までどおり常に読み込むモジュールで、`std/Time.tz` は変えていません（関数を足すと、ほかのすべてのプログラムの生成コードの内部の名前の番号がずれるため）。`Time.after`・`Time.tick` の型は `Channel` を、`Time.after_func` は `Timer` を名指すので、ソースに `Time.after`・`Time.tick`・`Time.after_func`（ドットの前後の空白は問わない）が現れたプログラムは、`Channel`・`Timer` も読み込みます（`stdlib::MEMBER_TRIGGERS`）。`Timer`・`Ticker` は opt-in のモジュールで、`create`・`channel`・`stop`・`reset` は私的な組み込み（`Timer.__create` など）を呼ぶ std の関数です。
+- 実装: タイマーは TZ01 のタイマーのヒープとスレッドに `SEND`・`TICK`・`FUNC` の種類を足したものです。チャンネルのブロック（128 + 8 バイト）は生成コードが確保し（確保の追跡で数える）、ランタイムが最後の参照で `@tz.free` で解放します。`Time.sleep_ms` は `os.c` のフックで、tzroutine の中なら `Time.sleep` と同じ待ちになります。
+- ターゲット: ネイティブの macOS・Linux・Windows。タイマーを作る操作はスケジューラーの境界を要るので（tzroutine の起動と同じ扱い）、WebAssembly と `--trap-mode return` は `E2000` です。`Time.sleep` だけは起動しない操作で、WebAssembly では `Time.sleep_ms` と同じ OS の待ち（ミリ秒に切り上げ、`--wasm-host` が必要）に下がります。
 
 ### DataChannel
 

@@ -140,6 +140,8 @@
 - [Path](./built-in-types-and-modules/path.md)
 - [Env](./built-in-types-and-modules/env.md)
 - [Time](./built-in-types-and-modules/time.md)
+- [Timer](./built-in-types-and-modules/timer.md) — 一定時間後に 1 回送るタイマー（Go の `time.Timer`）
+- [Ticker](./built-in-types-and-modules/ticker.md) — 周期ごとに送るティッカー（Go の `time.Ticker`）
 - [Random](./built-in-types-and-modules/random.md)
 - [Os](./built-in-types-and-modules/os.md)
 - [Process](./built-in-types-and-modules/process.md)

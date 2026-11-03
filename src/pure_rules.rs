@@ -192,7 +192,16 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | AsyncResume | AsyncTake
         | AsyncPut | AsyncNextId | AsyncClock | AsyncWait | AsyncPosted | AsyncRetire
-        | RoutineGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount => Some(Task),
+        | RoutineGo | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount
+        | TimeAfterFunc => Some(Task),
+        TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
+        | TickerReset => Some(Clock),
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
+            None
+        }
+        TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
+            Some(State)
+        }
         AtomicCreate
         | AtomicLoad
         | AtomicStore
@@ -1521,7 +1530,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            122
+            136
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

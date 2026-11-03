@@ -166,6 +166,19 @@ impl FunctionEmitter<'_, '_> {
             Builtin::OsClose => "call i64 @tsuzuri_os_close(i64 %arg0)".to_owned(),
             _ => "call i64 @tsuzuri_os_sleep(i64 %arg0)".to_owned(),
         };
+        // TZ05: on a tzroutine a positive sleep waits through the scheduler (the hook of os.c), so
+        // in a program that waits it must not come inside the thread's Mutex.with_lock, as
+        // Time.sleep does not.
+        if builtin == Builtin::OsSleep && self.globals.waits {
+            let positive = self.value("icmp sgt i64 %arg0, 0");
+            let check = self.label();
+            let sleep = self.label();
+            self.branch(&positive, &check, &sleep);
+            self.begin(&check);
+            self.routine_unlocked();
+            self.jump(&sleep);
+            self.begin(&sleep);
+        }
         let result = self.value(call);
         if builtin == Builtin::OsClock {
             return result;

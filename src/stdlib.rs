@@ -1,5 +1,7 @@
 //! Standard library sources embedded in the compiler (GUIDE D-07).
 
+use crate::syntax::TokenKind;
+
 /// Embedded std sources as `(virtual path, text)` in load order. Programs
 /// always see them after the user sources.
 pub const SOURCES: &[(&str, &str)] = &[
@@ -50,6 +52,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/String.tz", include_str!("../std/String.tz")),
     ("std/Test.tz", include_str!("../std/Test.tz")),
     ("std/Time.tz", include_str!("../std/Time.tz")),
+    ("std/Timer.tz", include_str!("../std/Timer.tz")),
+    ("std/Ticker.tz", include_str!("../std/Ticker.tz")),
     ("std/Unicode.tz", include_str!("../std/Unicode.tz")),
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
@@ -128,6 +132,9 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Monoid",
     "Monoids",
     "Routine",
+    // TZ05: the handles of the timers.
+    "Timer",
+    "Ticker",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -180,6 +187,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Channel.Channel"
             | "SendOnly.SendOnly"
             | "ReceiveOnly.ReceiveOnly"
+            | "Timer.Timer"
+            | "Ticker.Ticker"
     )
 }
 
@@ -330,6 +339,18 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         uses: &[],
     },
     OptIn {
+        module: "Timer",
+        names: &["Timer"],
+        aliases: &[],
+        uses: &["Channel"],
+    },
+    OptIn {
+        module: "Ticker",
+        names: &["Ticker"],
+        aliases: &[],
+        uses: &["Channel"],
+    },
+    OptIn {
         module: "RegexText",
         names: &["RegexText"],
         aliases: &[],
@@ -349,6 +370,46 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     },
 ];
 
+/// The builtins of an always-loaded module whose types name an opt-in module (TZ05): a program
+/// that refers to one, as `Time.after` (with or without spaces around the dot), loads that module
+/// as if it named it. `Time` itself stays always loaded and unchanged, so a program that uses none
+/// of them loads what it loaded before.
+const MEMBER_TRIGGERS: &[(&str, &str, &str)] = &[
+    ("Time", "after", "Channel"),
+    ("Time", "tick", "Channel"),
+    ("Time", "after_func", "Timer"),
+];
+
+/// The opt-in modules of `MEMBER_TRIGGERS` that `text` refers to: a word of the table, a dot and the
+/// member, as the lexer reads them. So they may stand apart (spaces, newlines and comments between
+/// them), they count in the holes of an interpolated string, and they never count in a string or a
+/// character literal. The lexer recovers from an error, so a text that does not lex still finds them.
+fn member_triggers(text: &str, triggered: &mut Vec<&'static str>) {
+    // Most programs name no member of the table, and need no tokens.
+    if !MEMBER_TRIGGERS
+        .iter()
+        .any(|(_, member, _)| text.contains(member))
+    {
+        return;
+    }
+    let (tokens, _) = crate::lexer::lex_all(text, crate::syntax::Edition::LATEST);
+    for window in tokens.windows(3) {
+        let [owner, dot, member] = window else {
+            continue;
+        };
+        let (TokenKind::Ident(owner), TokenKind::Dot, TokenKind::Ident(member)) =
+            (&owner.kind, &dot.kind, &member.kind)
+        else {
+            continue;
+        };
+        for (module, name, opt_in) in MEMBER_TRIGGERS {
+            if owner == module && member == name && !triggered.contains(opt_in) {
+                triggered.push(opt_in);
+            }
+        }
+    }
+}
+
 /// Whether `module` is an opt-in std module, whose declarations user code names
 /// only qualified (D-40).
 pub(crate) fn is_opt_in(module: &str) -> bool {
@@ -366,7 +427,9 @@ pub fn sources_for<'a>(
         .flat_map(|module| module.aliases.iter().copied())
         .collect();
     let mut words = std::collections::BTreeSet::new();
+    let mut triggered = Vec::new();
     for text in texts {
+        member_triggers(text, &mut triggered);
         let bytes = text.as_bytes();
         let mut index = 0;
         while index < bytes.len() {
@@ -404,6 +467,11 @@ pub fn sources_for<'a>(
         })
         .map(|module| module.module)
         .collect();
+    for module in triggered {
+        if !needed.contains(&module) {
+            needed.push(module);
+        }
+    }
     let mut next = 0;
     while next < needed.len() {
         let module = OPT_IN
@@ -698,7 +766,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 63);
+        assert_eq!(RESERVED_MODULES.len(), 65);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

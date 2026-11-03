@@ -1,0 +1,63 @@
+/// A timer that sends the time to its channel once (Go's `time.Timer`, TZ05). `Timer.create` makes
+/// one, `Timer.channel` gives a handle of its channel, `Timer.stop` stops it and `Timer.reset`
+/// starts it again. `Time.after_func` returns one whose channel is closed. Dropping the timer stops
+/// it; the end of the `main`, `export`, `test` or `bench` that made it stops it too.
+record Timer { handle: i64 }
+instance Drop<Timer> {
+    fn drop timer = Timer.__free timer
+}
+
+/// A timer that sends the time (`Time.monotonic_ns`'s clock) to its channel once, the given
+/// nanoseconds from now (Go's `time.NewTimer`).
+///
+/// ```tsuzuri run=fired
+/// let timer = Timer.create (5 * Time.millisecond())
+/// let fired = Timer.channel timer
+/// match Channel.recv fired with
+/// | Maybe.Some _ -> "fired"
+/// | Maybe.None -> "closed"
+/// ```
+def create :: own i64 -> Timer
+fn create nanoseconds = Timer.__create nanoseconds
+
+/// A handle of the timer's channel (Go's `t.C`), which receives the time when the timer fires.
+/// Each call makes one more handle: take it once, before a loop. The channel of a timer from
+/// `Time.after_func` is closed and empty.
+///
+/// ```tsuzuri run=true
+/// let timer = Timer.create Time.millisecond()
+/// let fired = Timer.channel timer
+/// match Channel.recv fired with
+/// | Maybe.Some time -> time > 0
+/// | Maybe.None -> false
+/// ```
+def channel :: ref Timer -> Channel<i64>
+fn channel timer = Timer.__channel timer
+
+/// Stops the timer (Go's `t.Stop()`): true when it had not fired. After it, the channel holds no
+/// time sent before.
+///
+/// ```tsuzuri run=true%0Afalse
+/// let timer = Timer.create Time.hour()
+/// let first = Timer.stop timer
+/// let second = Timer.stop timer
+/// $"{first}\n{second}"
+/// ```
+def stop :: ref Timer -> bool
+fn stop timer = Timer.__stop timer
+
+/// Fires the timer the given nanoseconds from now (Go's `t.Reset(d)`): true when it had not fired
+/// yet. A time that it sent before is not received after it. 0 or less fires at once. A timer of
+/// `Time.after_func` calls its function again only if it never ran.
+///
+/// ```tsuzuri run=false%0Afired
+/// let timer = Timer.create Time.hour()
+/// let _stopped = Timer.stop timer
+/// let fired = Timer.channel timer
+/// let pending = Timer.reset timer Time.millisecond()
+/// match Channel.recv fired with
+/// | Maybe.Some _ -> $"{pending}\nfired"
+/// | Maybe.None -> "closed"
+/// ```
+def reset :: ref Timer -> own i64 -> bool
+fn reset timer nanoseconds = Timer.__reset timer nanoseconds

@@ -2558,6 +2558,29 @@ const suites = {
       assert.equal(ir.split("\n").filter((line) => line === "declare i64 @tsuzuri_tz_select(ptr, i64, i32, ptr)").length, 1);
     },
   },
+  // TZ05: the timers, at one and at four Ps (native only until TZ09). A time is checked for its
+  // order and for not being early; the end of each export frees the timers it left (live == 0).
+  timers: {
+    nativeOnly: true,
+    environments: [{ TSUZURI_MAXPROCS: "1" }, { TSUZURI_MAXPROCS: "4" }],
+    cases: [
+      ["after_is_a_timeout", [30n], 1n],
+      ["sleeps_are_not_early", [], 6n],
+      ["sleep_does_not_block_others", [], 1n],
+      ["timer_stop_reset", [], 10010n],
+      ["ticker_five", [], 5n],
+      ["tick_dropped", [], 2n],
+      ["after_func_runs", [], 1n],
+      ["after_func_stopped", [], 1n],
+      ["pending_at_exit", [], 1n],
+    ],
+    inspect(ir) {
+      for (const declaration of ["declare ptr @tsuzuri_tz_timer_new(ptr, ptr, i64, i64, i32, i32, ptr, ptr, ptr)",
+        "declare i32 @tsuzuri_tz_sleep(i64)", "declare void @tsuzuri_tz_timer_free(ptr)"]) {
+        assert.equal(ir.split("\n").filter((line) => line === declaration).length, 1, declaration);
+      }
+    },
+  },
   // TZ04: select without a second thread, native and default WebAssembly (TZR_SINGLE: no import).
   select_single: {
     cases: [

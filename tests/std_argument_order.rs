@@ -136,7 +136,9 @@ const MODULES: &[(&str, Kind)] = &[
     ("Test", Exempt(HARNESS)),
     // The methods of the class take the text, `'s`, last; they have no `fn` lines, so no names are read.
     ("Text", text(&["'s", "['s]"], &["text", "parts"])),
+    ("Ticker", Exempt(BUILTIN_HANDLE)),
     ("Time", SingleArgument),
+    ("Timer", Exempt(BUILTIN_HANDLE)),
     ("Unicode", subject(&["string", "utf8string"])),
     ("Utf8Char", SingleArgument),
     (

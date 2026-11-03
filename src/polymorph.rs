@@ -3158,6 +3158,32 @@ impl Checker<'_> {
                 span,
             ));
         }
+        // TZ05: the timers' primitives behind the `Timer` and `Ticker` modules and their drops.
+        let timer_module = match builtin {
+            Builtin::TimerCreate
+            | Builtin::TimerChannel
+            | Builtin::TimerStop
+            | Builtin::TimerReset
+            | Builtin::TimerFree => Some("Timer"),
+            Builtin::TickerCreate
+            | Builtin::TickerChannel
+            | Builtin::TickerStop
+            | Builtin::TickerReset
+            | Builtin::TickerFree => Some("Ticker"),
+            _ => None,
+        };
+        if let Some(module) = timer_module
+            && !(self.module == module && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
+                format!(
+                    "{} is private to the standard {module} module; use the Timer and Ticker modules, and drop a Timer or Ticker to stop it",
+                    builtin.name()
+                ),
+                span,
+            ));
+        }
         if builtin == Builtin::DebugPrintString
             && !(self.module == "Debug" && self.names.origin(self.module) == ModuleOrigin::Std)
         {

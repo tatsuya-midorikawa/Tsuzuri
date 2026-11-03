@@ -483,7 +483,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         // B14
         BenchNow | GenSeed => facts(Some(Effect::Os), false, false, false, false, false, None),
         // B15
-        OsClock | OsSleep | OsClose => facts(
+        OsClock | OsClose => facts(
             Some(Effect::Os),
             false,
             false,
@@ -492,6 +492,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             false,
             Some("host_status"),
         ),
+        // TZ05: in a program that waits, a positive sleep inside the thread's Mutex.with_lock
+        // traps, as Time.sleep does.
+        OsSleep => facts(Some(Effect::Os), false, true, false, false, false, None),
         // B16
         OsArgs | OsRandom => facts(
             Some(Effect::Os),
@@ -569,6 +572,35 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineYield => facts(Some(Effect::Task), false, true, false, false, false, None),
         RoutineCount | RoutineMaxProcs | RoutineCpuCount => {
             facts(Some(Effect::Task), false, false, false, false, false, None)
+        }
+        // TZ05: the timers read the clock. A sleep inside `Mutex.with_lock` traps in a program that
+        // spawns, as a yield does; a period of 0 or less traps; a timer's channel is allocated.
+        TimeSleep => facts(Some(Effect::Os), false, true, false, false, false, None),
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
+            facts(None, false, false, false, false, false, None)
+        }
+        TimeAfter | TimerCreate => facts(Some(Effect::Os), true, false, false, false, false, None),
+        TimeTick | TickerCreate => facts(Some(Effect::Os), true, true, false, false, false, None),
+        TimerReset => facts(Some(Effect::Os), false, false, false, false, false, None),
+        TickerReset => facts(Some(Effect::Os), false, true, false, false, false, None),
+        // `Time.after_func` spawns a tzroutine that calls the owned function it takes.
+        TimeAfterFunc => facts(Some(Effect::Task), true, false, false, true, false, None),
+        // A new handle of the timer's channel, which its drop releases.
+        TimerChannel | TickerChannel => {
+            facts(Some(Effect::Atomic), true, false, false, false, false, None)
+        }
+        TimerStop | TickerStop => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        // The drop of an after_func's `Timer` drops the function that has not run.
+        TimerFree | TickerFree => {
+            facts(Some(Effect::Atomic), false, false, false, true, false, None)
         }
         // B25
         AtomicLoad
@@ -3481,19 +3513,19 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        assert_eq!(Builtin::ALL.len(), 290);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 122);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 168);
+        assert_eq!(Builtin::ALL.len(), 310);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 136);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 174);
     }
 
     #[test]
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
         assert_eq!(by(Effect::Io), 10);
-        assert_eq!(by(Effect::Os), 12);
+        assert_eq!(by(Effect::Os), 19);
         assert_eq!(by(Effect::Net), 12);
-        assert_eq!(by(Effect::Task), 15);
-        assert_eq!(by(Effect::Atomic), 46);
+        assert_eq!(by(Effect::Task), 16);
+        assert_eq!(by(Effect::Atomic), 52);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3502,13 +3534,13 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 66);
+        assert_eq!(count(|facts| facts.alloc), 73);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 40);
-        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 37);
+        assert_eq!(count(|facts| facts.trap), 45);
+        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 36);
     }
 
     #[test]
@@ -3518,7 +3550,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 18);
+        assert_eq!(count(|facts| facts.callbacks), 21);
     }
 
     fn checked(source: &str) -> CheckedModule {

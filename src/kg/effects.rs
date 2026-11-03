@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 121;
+const IMPURE_BUILTINS: usize = 135;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -27,7 +27,17 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | NetWatch | NetUnwatch | NetConnect | NetNames | NetSend => Some("net"),
         TaskRun | TaskParallel | TaskParallelResults | TaskScope | ParallelInit | ParallelMap
         | ParallelMapRef | ParallelReduce | ParallelForEachChunk | DomainRun | RoutineGo
-        | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount => Some("task"),
+        | RoutineYield | RoutineCount | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc => {
+            Some("task")
+        }
+        TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
+        | TickerReset => Some("os"),
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
+            None
+        }
+        TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
+            Some("atomic")
+        }
         AtomicCreate
         | AtomicLoad
         | AtomicStore

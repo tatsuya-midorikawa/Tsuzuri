@@ -1024,6 +1024,336 @@ static void test_batches(void) {
     CHECK(pending() == 0);
 }
 
+/* 25. timers (TZ05). The channel blocks come from the caller, as the generated code allocates them;
+ * `timer_blocks` counts them as the program's allocator would. */
+static _Atomic int64_t timer_blocks;
+static tzr_chan *timer_block(void) {
+    atomic_fetch_add(&timer_blocks, 1);
+    tzr_chan *block = calloc(1, sizeof(tzr_chan) + sizeof(int64_t));
+    CHECK(block != NULL);
+    return block;
+}
+static void timer_block_free(void *block) {
+    atomic_fetch_sub(&timer_blocks, 1);
+    free(block);
+}
+/* The drop of one channel handle, as the generated code's. */
+static void timer_chan_drop(tzr_chan *c) {
+    if (tsuzuri_tz_chan_release(c)) timer_block_free(c);
+}
+/* The timers in the heap. Not tzr_sched.ntimers: the timer thread lowers it after it has started a
+ * fired after_func's tzroutine (so that the detector never sees neither), which may have run and
+ * ended by then. */
+static int64_t pending_timers(void) {
+    tzr_lock_acquire(&tzr_timers.lock);
+    int64_t count = (int64_t)tzr_timers.count;
+    tzr_lock_release(&tzr_timers.lock);
+    return count;
+}
+static void *timer_after(int64_t ns, tzr_chan *block) {
+    return tsuzuri_tz_timer_new(block, timer_block_free, ns, 0, TZR_TIMER_SEND, 0, NULL, NULL, NULL);
+}
+static void *timer_handle(int kind, int64_t ns) {
+    return tsuzuri_tz_timer_new(timer_block(), timer_block_free, ns, kind == TZR_TIMER_TICK ? ns : 0, kind, 1, NULL,
+                                NULL, NULL);
+}
+
+/* Time.after: one time, not before the deadline; the timer lets go of its reference by the end of
+ * the boundary, so the caller's drop frees the block */
+static int64_t timer_received;
+static void timer_receiver(void *env) {
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(env, &v, 1) == TZR_OK);
+    timer_received = v;
+}
+static void test_timer_channel(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    int64_t start = tzr_nanotime();
+    tzr_chan *c = timer_block();
+    timer_after(20000000, c);
+    tsuzuri_tz_go(timer_receiver, c);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(timer_received >= start + 20000000);
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_WOULD_BLOCK);
+    CHECK(atomic_load(&c->refs) == 1);
+    timer_chan_drop(c);
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    /* the main thread waits on one too */
+    scope = tsuzuri_tz_scope_enter();
+    c = timer_block();
+    start = tzr_nanotime();
+    timer_after(5000000, c);
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK && v >= start + 5000000);
+    timer_chan_drop(c);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    printf("timer channel: ok\n");
+}
+
+/* Timer.stop and Timer.reset: a stopped timer sends nothing, and no time sent before a stop or a
+ * reset is received after it */
+static void test_timer_stop(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    void *t = timer_handle(TZR_TIMER_SEND, INT64_MAX);
+    tzr_chan *c = tsuzuri_tz_timer_chan(t);
+    CHECK(pending_timers() == 1);
+    CHECK(tsuzuri_tz_timer_stop(t) == 1);
+    CHECK(tsuzuri_tz_timer_stop(t) == 0);
+    CHECK(pending_timers() == 0);
+    int64_t start = tzr_nanotime(), v = 0;
+    CHECK(tsuzuri_tz_timer_reset(t, 5000000) == 0);
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK && v >= start + 5000000);
+    CHECK(tsuzuri_tz_timer_stop(t) == 0); /* it fired */
+    CHECK(tsuzuri_tz_timer_reset(t, INT64_MAX) == 0);
+    CHECK(tsuzuri_tz_timer_reset(t, 1) == 1);
+    CHECK(tsuzuri_tz_sleep(20000000) == 0);
+    CHECK(tsuzuri_tz_chan_length(c) == 1); /* sent into the buffer */
+    CHECK(tsuzuri_tz_timer_reset(t, INT64_MAX) == 0);
+    CHECK(tsuzuri_tz_chan_length(c) == 0); /* the reset dropped it */
+    CHECK(tsuzuri_tz_timer_stop(t) == 1);
+    /* a stopped timer never sends: nothing after its deadline */
+    CHECK(tsuzuri_tz_timer_reset(t, 1000000) == 0);
+    CHECK(tsuzuri_tz_timer_stop(t) == 1);
+    CHECK(tsuzuri_tz_sleep(10000000) == 0);
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_WOULD_BLOCK);
+    tsuzuri_tz_timer_free(t);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&timer_blocks) == 1); /* the channel handle keeps the block */
+    timer_chan_drop(c);
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    printf("timer stop: ok\n");
+}
+
+/* A program may send on a timer's channel too: a stop or a reset that empties the full buffer lets a
+ * sender that waits for room put its item in, as a receive would, and the next receive takes it. */
+static void timer_chan_sender(void *env) {
+    int64_t v = 42;
+    CHECK(tsuzuri_tz_chan_send(env, &v, 1) == TZR_OK);
+}
+static int sender_queued(tzr_chan *c) {
+    tzr_lock_acquire(&c->lock);
+    int queued = c->sendq.first != NULL;
+    tzr_lock_release(&c->lock);
+    return queued;
+}
+static void test_timer_senders(void) {
+    for (int reset = 0; reset < 2; reset++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        void *t = timer_handle(TZR_TIMER_SEND, INT64_MAX);
+        tzr_chan *c = tsuzuri_tz_timer_chan(t);
+        int64_t v = 7;
+        CHECK(tsuzuri_tz_chan_send(c, &v, 0) == TZR_OK); /* the buffer of one is full */
+        tsuzuri_tz_go(timer_chan_sender, c);
+        while (!sender_queued(c)) CHECK(tsuzuri_tz_sleep(100000) == 0);
+        if (reset) CHECK(tsuzuri_tz_timer_reset(t, INT64_MAX) == 1);
+        else CHECK(tsuzuri_tz_timer_stop(t) == 1);
+        CHECK(!sender_queued(c) && tsuzuri_tz_chan_length(c) == 1);
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_OK && v == 42);
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_WOULD_BLOCK);
+        tsuzuri_tz_timer_free(t);
+        tsuzuri_tz_boundary_leave(scope);
+        timer_chan_drop(c);
+    }
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    printf("timer senders: ok\n");
+}
+
+/* Ticker: five times in order; a tick that the receiver has not taken the last one of is dropped;
+ * stop ends it and drops what it sent; reset starts it again */
+static void test_ticker(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    void *t = timer_handle(TZR_TIMER_TICK, 2000000);
+    tzr_chan *c = tsuzuri_tz_timer_chan(t);
+    int64_t last = 0, v = 0;
+    for (int i = 0; i < 5; i++) {
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK);
+        CHECK(v > last);
+        last = v;
+    }
+    CHECK(tsuzuri_tz_sleep(30000000) == 0);
+    CHECK(tsuzuri_tz_chan_length(c) == 1);
+    CHECK(tsuzuri_tz_timer_stop(t) == 1);
+    CHECK(tsuzuri_tz_chan_length(c) == 0);
+    CHECK(tsuzuri_tz_sleep(10000000) == 0);
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 0) == TZR_WOULD_BLOCK);
+    CHECK(tsuzuri_tz_timer_reset(t, 1000000) == 0);
+    for (int i = 0; i < 3; i++) CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK && v > last);
+    CHECK(pending_timers() == 1);
+    tsuzuri_tz_timer_free(t);
+    CHECK(pending_timers() == 0);
+    timer_chan_drop(c);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&timer_blocks) == 0);
+    printf("ticker: ok\n");
+}
+
+/* Time.tick: once the caller's handle is gone, the next tick stops it and frees the block */
+static void test_ticker_drop(void) {
+    void *scope = tsuzuri_tz_scope_enter();
+    tzr_chan *c = timer_block();
+    tsuzuri_tz_timer_new(c, timer_block_free, 1000000, 1000000, TZR_TIMER_TICK, 0, NULL, NULL, NULL);
+    int64_t v = 0;
+    for (int i = 0; i < 3; i++) CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK);
+    timer_chan_drop(c);
+    while (atomic_load(&timer_blocks) != 0) CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    CHECK(pending_timers() == 0);
+    tsuzuri_tz_boundary_leave(scope);
+    printf("ticker drop: ok\n");
+}
+
+/* Time.after_func: the function runs once on a new tzroutine of the boundary; a stopped one keeps
+ * it for a reset, and the drop of the handle drops it without a call */
+static _Atomic int64_t func_runs, func_drops;
+static void func_run(void *box) {
+    CHECK(box == &func_runs);
+    CHECK(tzr_current()->kind == TZR_KIND_ROUTINE);
+    atomic_fetch_add(&func_runs, 1);
+}
+static void func_drop(void *box) {
+    CHECK(box == &func_runs);
+    atomic_fetch_add(&func_drops, 1);
+}
+static void *timer_after(int64_t ns, tzr_chan *block);
+static void func_waits_for_timer(void *box) {
+    CHECK(box == &func_runs);
+    tzr_chan *c = timer_block();
+    timer_after(2000000, c);
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK);
+    timer_chan_drop(c);
+    atomic_fetch_add(&func_runs, 1);
+}
+static void *timer_func(int64_t ns) {
+    return tsuzuri_tz_timer_new(timer_block(), timer_block_free, ns, 0, TZR_TIMER_FUNC, 1, func_run, func_drop,
+                                &func_runs);
+}
+static void test_after_func(void) {
+    atomic_store(&func_runs, 0);
+    atomic_store(&func_drops, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    void *t = timer_func(5000000);
+    tzr_chan *c = tsuzuri_tz_timer_chan(t);
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_CLOSED); /* closed and empty */
+    while (atomic_load(&func_runs) == 0) CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    CHECK(tsuzuri_tz_timer_reset(t, 1) == 0); /* it ran: there is nothing to start again */
+    CHECK(tsuzuri_tz_timer_stop(t) == 0 && pending_timers() == 0);
+    tsuzuri_tz_timer_free(t);
+    timer_chan_drop(c);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&func_runs) == 1 && atomic_load(&func_drops) == 0);
+    scope = tsuzuri_tz_scope_enter();
+    t = timer_func(INT64_MAX);
+    CHECK(tsuzuri_tz_timer_stop(t) == 1);
+    CHECK(tsuzuri_tz_timer_reset(t, INT64_MAX) == 0); /* the same function, again */
+    CHECK(tsuzuri_tz_timer_stop(t) == 1);
+    CHECK(tsuzuri_tz_timer_reset(t, 1000000) == 0);
+    while (atomic_load(&func_runs) == 1) CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    tsuzuri_tz_timer_free(t);
+    t = timer_func(INT64_MAX);
+    CHECK(tsuzuri_tz_timer_stop(t) == 1);
+    tsuzuri_tz_timer_free(t);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&func_runs) == 2 && atomic_load(&func_drops) == 1);
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    printf("after func: ok\n");
+}
+
+/* The end of a boundary stops its pending timers without waiting for them: Time.after's and
+ * Time.tick's go with their references, a handle's record stays stopped for its drop, and an
+ * after_func's function is dropped. One that fires as the boundary ends runs and is waited for,
+ * or is dropped: never both, never neither. */
+static void test_boundary_timers(void) {
+    atomic_store(&func_runs, 0);
+    atomic_store(&func_drops, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    tzr_chan *after = timer_block();
+    timer_after(INT64_MAX, after);
+    tzr_chan *tick = timer_block();
+    tsuzuri_tz_timer_new(tick, timer_block_free, INT64_MAX, INT64_MAX, TZR_TIMER_TICK, 0, NULL, NULL, NULL);
+    void *timer = timer_handle(TZR_TIMER_SEND, INT64_MAX);
+    void *func = timer_func(INT64_MAX);
+    timer_chan_drop(after);
+    timer_chan_drop(tick);
+    CHECK(pending_timers() == 4);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(pending_timers() == 0);
+    CHECK(atomic_load(&timer_blocks) == 2); /* the handles' records keep their channels */
+    CHECK(atomic_load(&func_runs) == 0 && atomic_load(&func_drops) == 1);
+    CHECK(tsuzuri_tz_timer_stop(timer) == 0 && tsuzuri_tz_timer_stop(func) == 0);
+    tsuzuri_tz_timer_free(timer);
+    tsuzuri_tz_timer_free(func);
+    CHECK(atomic_load(&timer_blocks) == 0 && atomic_load(&func_drops) == 1);
+    enum { N = 1000 };
+    static void *funcs[N];
+    for (int round = 0; round < 3; round++) {
+        atomic_store(&func_runs, 0);
+        atomic_store(&func_drops, 0);
+        scope = tsuzuri_tz_scope_enter();
+        for (int i = 0; i < N; i++) funcs[i] = timer_func(i % 3 == 0 ? 0 : (int64_t)(i % 50) * 20000);
+        tsuzuri_tz_boundary_leave(scope);
+        CHECK(atomic_load(&func_runs) + atomic_load(&func_drops) == N);
+        CHECK(pending_timers() == 0);
+        for (int i = 0; i < N; i++) tsuzuri_tz_timer_free(funcs[i]);
+        CHECK(atomic_load(&func_runs) + atomic_load(&func_drops) == N);
+    }
+    CHECK(atomic_load(&timer_blocks) == 0);
+    /* a stopped after_func whose Timer outlives the boundary: the boundary drops its function, and
+     * a later reset has nothing to start */
+    atomic_store(&func_runs, 0);
+    atomic_store(&func_drops, 0);
+    scope = tsuzuri_tz_scope_enter();
+    void *kept = timer_func(INT64_MAX);
+    CHECK(tsuzuri_tz_timer_stop(kept) == 1);
+    tsuzuri_tz_boundary_leave(scope);
+    CHECK(atomic_load(&func_drops) == 1 && atomic_load(&func_runs) == 0);
+    CHECK(tsuzuri_tz_timer_reset(kept, 1) == 0);
+    CHECK(tsuzuri_tz_sleep(5000000) == 0);
+    CHECK(atomic_load(&func_runs) == 0 && pending_timers() == 0);
+    tsuzuri_tz_timer_free(kept);
+    CHECK(atomic_load(&func_drops) == 1 && atomic_load(&timer_blocks) == 0);
+    /* an after_func that fires as the boundary ends and waits for a timer of its own: the boundary
+     * waits for it instead of stopping the timer it waits for */
+    for (int round = 0; round < 200; round++) {
+        atomic_store(&func_runs, 0);
+        atomic_store(&func_drops, 0);
+        scope = tsuzuri_tz_scope_enter();
+        void *later = tsuzuri_tz_timer_new(timer_block(), timer_block_free, round % 2, 0, TZR_TIMER_FUNC, 1,
+                                           func_waits_for_timer, func_drop, &func_runs);
+        tsuzuri_tz_boundary_leave(scope);
+        CHECK(atomic_load(&func_runs) + atomic_load(&func_drops) == 1);
+        tsuzuri_tz_timer_free(later);
+    }
+    CHECK(atomic_load(&timer_blocks) == 0 && pending_timers() == 0);
+    printf("boundary timers: ok\n");
+}
+
+#if !defined(_WIN32)
+/* Time.sleep_ms on a tzroutine waits through the hook that the scheduler installs: 2,000 of them
+ * sleep at once without holding the Ms. A thread is not a tzroutine: os.c stops it itself. */
+static void hook_sleeper(void *env) {
+    (void)env;
+    int32_t (*hook)(int64_t) = atomic_load(&tsuzuri_os_sleep_hook);
+    CHECK(hook != NULL && hook(20000000) == 1);
+    atomic_fetch_add(&counter, 1);
+}
+static void test_sleep_ms_hook(void) {
+    atomic_store(&counter, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    double t = seconds();
+    for (int i = 0; i < 2000; i++) tsuzuri_tz_go(hook_sleeper, NULL);
+    join(scope);
+    double e = seconds() - t;
+    CHECK(atomic_load(&counter) == 2000);
+    CHECK(e >= 0.020);
+    CHECK(atomic_load(&tsuzuri_os_sleep_hook)(1) == 0);
+    printf("sleep_ms hook: 2000 x 20 ms in %.3f s\n", e);
+}
+#else
+static void test_sleep_ms_hook(void) { printf("sleep_ms hook: no os.c on Windows\n"); }
+#endif
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -1067,6 +1397,14 @@ int main(int argc, char **argv) {
     RUN("blocking", test_blocking());
     RUN("donor", test_donor());
     RUN("batches", test_batches());
+    RUN("timer_channel", test_timer_channel());
+    RUN("timer_stop", test_timer_stop());
+    RUN("timer_senders", test_timer_senders());
+    RUN("ticker", test_ticker());
+    RUN("ticker_drop", test_ticker_drop());
+    RUN("after_func", test_after_func());
+    RUN("boundary_timers", test_boundary_timers());
+    RUN("sleep_ms_hook", test_sleep_ms_hook());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;
