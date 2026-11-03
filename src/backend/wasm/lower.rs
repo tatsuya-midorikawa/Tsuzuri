@@ -1621,7 +1621,9 @@ impl<'w, 'a> Lower<'w, 'a> {
             } => {
                 let (ptr, value) = (self.val(ptr, Ty::Ptr)?, self.val(val, ty)?);
                 let result = self.atomic_rmw(op, ty, ptr, value)?;
-                self.set(dst, result);
+                if dst != NONE {
+                    self.set(dst, result);
+                }
             }
             Inst::CmpXchg {
                 dst,
@@ -1636,7 +1638,9 @@ impl<'w, 'a> Lower<'w, 'a> {
                     self.val(new, ty)?,
                 );
                 let result = self.cmpxchg(ty, ptr, cmp, new)?;
-                self.set(dst, result);
+                if dst != NONE {
+                    self.set(dst, result);
+                }
             }
             Inst::Fence => {}
             Inst::Freeze { dst, ty, a } => {
